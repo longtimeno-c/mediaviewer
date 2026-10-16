@@ -175,6 +175,41 @@ TEST_CASE("PDFium reads a PDF's text page by page", "[ai][documents][pdfium]") {
   CHECK(pages[0].second.empty());
 }
 
+// A page with an inline image (a 2 x 2 grey picture) drawn over w x h points.
+pdffx::page picture_page(int w, int h) {
+  pdffx::page p;
+  p.width = 612;
+  p.height = 792;
+  p.content = "q " + std::to_string(w) + " 0 0 " + std::to_string(h) +
+              " 40 40 cm BI /W 2 /H 2 /CS /G /BPC 8 ID \x10\x80\x80\x10 EI Q";
+  return p;
+}
+
+TEST_CASE("PDFium: the pages mostly covered by a picture (#354 D2)", "[ai][documents][pdfium]") {
+  auto reader = pdfium();
+  if (!reader) SKIP("no PDFium staged (MV_AI_PDFIUM_LIB)");
+  // Words; a full-page picture (a scan); a small one; words; a picture just
+  // over half the page; one just under.
+  const auto bytes = pdffx::make({text_page({"Cover"}), picture_page(540, 720), picture_page(100, 100),
+                                  text_page({"More words"}), picture_page(500, 500), picture_page(480, 480)});
+  temp_file f(bytes, "pictures.pdf");
+  auto look = reader->look(f.utf8(), mv::ai::pdf_limits{}, 0.5f);
+  REQUIRE(look);
+  CHECK(look->pages == 6);
+  CHECK(look->pictures == std::vector<std::uint32_t>{1, 4});
+  // The page cap holds here too.
+  mv::ai::pdf_limits two;
+  two.max_pages = 2;
+  look = reader->look(f.utf8(), two, 0.5f);
+  REQUIRE(look);
+  CHECK(look->pages == 6);
+  CHECK(look->pictures == std::vector<std::uint32_t>{1});
+  // Not a PDF: an error, never a crash.
+  const std::vector<std::uint8_t> junk(64, 0x42);
+  temp_file bad(junk, "junk.pdf");
+  CHECK_FALSE(reader->look(bad.utf8(), mv::ai::pdf_limits{}, 0.5f));
+}
+
 TEST_CASE("PDFium: a broken or missing PDF is an error, never a crash", "[ai][documents][pdfium]") {
   auto reader = pdfium();
   if (!reader) SKIP("no PDFium staged (MV_AI_PDFIUM_LIB)");

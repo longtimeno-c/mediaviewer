@@ -103,7 +103,7 @@ public enum MvAiDocs : uint
     Default = 0,   // per folder: follow Settings "doc_index"
     Off = 1,
     Words = 2,
-    Pages = 3,     // slice D2; reads as Words until then
+    Pages = 3,     // Words and pages: page pictures too (slice D2)
 }
 
 /// <summary>Mirrors <c>MV_AI_MEDIA_*</c>: what a folder's videos are indexed for.</summary>
@@ -225,6 +225,11 @@ public unsafe struct MvAiStatus
     public ulong DocsDone;
     public ulong DocsLocked;
     public ulong DocsFailed;
+    // Page pictures (#354 D2), appended: documents at Words and pages whose
+    // words are read, and those whose pages are pictured. Zero from a pack
+    // before them, and while no folder is at Words and pages.
+    public ulong PagesTotal;
+    public ulong PagesDone;
 
     /// <summary>Display only (rule 6: never logged).</summary>
     public readonly string ActiveRootText

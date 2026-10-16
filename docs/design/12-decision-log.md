@@ -1341,6 +1341,19 @@ the picture towers: on the M5 the pack spends about 118 s at every start moving 
 Neural Engine, during which every pass used to wait, and 200 documents then took 3 s. While the
 towers are not ready the workers now claim documents only, straight from the index.
 
+**Documents are also found by what their pages look like, at Words and pages (2026-10-16, #354
+D2).** No new model: a document's pages go through the picture tower the Core pack already
+loads, drawn by the host's own renderer (the same pixels as the viewer and the tiles), stored as
+ordinary `frames` rows with `pts_ms` the page and a page flag (`kFramePage`), so search, ranking,
+"nothing found" and the matrix treat a page as a clip's moment; no schema change. Which pages,
+by the plan's §3 limit: the first 3, and any page whose image objects (PDFium) cover over half of
+it. **Budget added:** at most 64 such picture pages a document beyond the first 3. The plan said
+"any page"; a 500-page scan would then be 500 page renders and tower runs (each render reads the
+file whole), minutes of a worker for one file. A DOCX is pictured on its first 3 pages only (the
+host's layout gives no image measure). The pass runs only after a document's words are read, so
+words are searchable first, and only at Words and pages (not the default). Going below it deletes
+the pictures at once. `mv_ai_status` appends `pages_total`, `pages_done`.
+
 ---
 
 ## Final Cut Pro search (Mac)

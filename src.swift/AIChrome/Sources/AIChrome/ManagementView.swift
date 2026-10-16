@@ -333,7 +333,8 @@ final class ManagementModel: ObservableObject {
   }
 
   /// #354: Settings "Documents". Off drops the text of every folder that
-  /// follows it; Words reads them again.
+  /// follows it; Words reads them again; Words and pages (D2) also pictures
+  /// their pages, and leaving it drops those pictures.
   func setDocIndex(_ level: Int) {
     guard (0...2).contains(level), level != docIndex else { return }
     set("doc_index", Int64(level))
@@ -390,7 +391,7 @@ final class ManagementModel: ObservableObject {
     pollStatus()
   }
 
-  /// #354, per folder: Default / Off / Words (root_set_documents; an older
+  /// #354, per folder: Default / Off / Words / Words and pages (root_set_documents; an older
   /// pack has none, and the menu is not shown).
   func setRootDocuments(_ id: UInt64, _ docs: UInt32) {
     guard table.has(\mv_ai_api.root_set_documents) else { return }
@@ -928,16 +929,17 @@ struct ManagementView: View {
       section("Documents") {
         if model.documentFiles {
           row("Index documents for",
-              detail: "Words finds PDFs and Word documents by the words in them, and opens one on the page that matched. Each folder can differ, from its menu below. An index of documents holds their text on this Mac; it never leaves it."
+              detail: "Words finds PDFs and Word documents by the words in them, and opens one on the page that matched. Words and pages also finds pages by what they look like (a receipt, a floor plan, a slide): the first pages of each, and any page that is mostly a picture. Each folder can differ, from its menu below. An index of documents holds their text on this Mac; it never leaves it."
                 + (model.pdfAvailable ? "" : " PDFs need the latest Core: update it above. Word documents are read meanwhile.")) {
-            Picker("Index documents for", selection: Binding(get: { min(model.docIndex, 1) },
+            Picker("Index documents for", selection: Binding(get: { model.docIndex },
                                                              set: { model.setDocIndex($0) })) {
               Text("Off").tag(0)
               Text("Words").tag(1)
+              Text("Words and pages").tag(2)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 160)
+            .frame(width: 300)
           }
         } else {
           row("PDF and Word documents",
@@ -1104,17 +1106,19 @@ struct ManagementView: View {
     MediaChoice(value: MV_AI_MEDIA_BOTH, label: "Both"),
   ]
 
-  // #354: a folder's Documents choice. "Words and pages" waits for slice D2.
+  // #354: a folder's Documents choice; Words and pages is slice D2's.
   static let docsChoices = [
     MediaChoice(value: MV_AI_DOCS_DEFAULT, label: "Default"),
     MediaChoice(value: MV_AI_DOCS_OFF, label: "Off"),
     MediaChoice(value: MV_AI_DOCS_WORDS, label: "Words"),
+    MediaChoice(value: MV_AI_DOCS_PAGES, label: "Words and pages"),
   ]
 
   static func docsLabel(_ docs: UInt32) -> String {
     switch docs {
     case MV_AI_DOCS_OFF: return "Documents: Off"
-    case MV_AI_DOCS_WORDS, MV_AI_DOCS_PAGES: return "Documents: Words"
+    case MV_AI_DOCS_WORDS: return "Documents: Words"
+    case MV_AI_DOCS_PAGES: return "Documents: Words and pages"
     default: return "Documents: Default"
     }
   }
@@ -1359,7 +1363,7 @@ struct ManagementView: View {
             Button {
               model.setRootDocuments(root.id, choice.value)
             } label: {
-              if root.docs == choice.value || (choice.value == MV_AI_DOCS_WORDS && root.docs == MV_AI_DOCS_PAGES) {
+              if root.docs == choice.value {
                 Label(choice.label, systemImage: "checkmark")
               } else {
                 Text(choice.label)
@@ -1371,7 +1375,7 @@ struct ManagementView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help("Whether this folder's PDFs and Word documents are searched by their words")
+        .help("Whether this folder's PDFs and Word documents are searched by their words, and by what their pages look like")
       }
       Button(root.scanning ? "Checking…" : "Rescan") { model.rescan(root.id) }
         .disabled(!root.enabled || root.scanning)

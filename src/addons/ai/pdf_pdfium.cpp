@@ -15,6 +15,7 @@
 #include <type_traits>
 #include <vector>
 
+#include <fpdf_edit.h>
 #include <fpdf_text.h>
 #include <fpdfview.h>
 
@@ -112,6 +113,11 @@ class pdfium_reader final : public pdf_reader {
       infer::dylib::close(lib);
       return nullptr;
     }
+    // #354 D2, optional: without them look() answers unsupported and the
+    // engine pictures the first pages alone.
+    r->can_look_ = sym(r->count_objects_, "FPDFPage_CountObjects") && sym(r->get_object_, "FPDFPage_GetObject") &&
+                   sym(r->object_type_, "FPDFPageObj_GetType") && sym(r->object_bounds_, "FPDFPageObj_GetBounds") &&
+                   sym(r->page_width_, "FPDF_GetPageWidthF") && sym(r->page_height_, "FPDF_GetPageHeightF");
     {
       std::lock_guard lock(pdfium_mutex());
       static bool initialised = false;  // once per process, under the lock
@@ -125,48 +131,18 @@ class pdfium_reader final : public pdf_reader {
 
   result<std::uint32_t> read(const std::string& path, std::uint32_t first, const pdf_limits& limits,
                              const std::function<bool(std::uint32_t, std::string_view)>& visit) override {
-    std::error_code ec;
-    const std::filesystem::path fp(std::u8string(path.begin(), path.end()));
-    const std::uintmax_t size = std::filesystem::file_size(fp, ec);
-    if (ec) return err(status::io);
-    if (size == 0 || size > limits.max_file_bytes || size > 0x7FFFFFFFull) return err(status::corrupt);
-    file_access fa;
-    fa.in.open(fp, std::ios::binary);
-    if (!fa.in) return err(status::io);
-    FPDF_FILEACCESS access{};
-    access.m_FileLen = static_cast<unsigned long>(size);
-    access.m_GetBlock = &file_access::get_block;
-    access.m_Param = &fa;
+    opened o(this);
+    MV_TRY_VOID(o.open(path, limits));
+    const FPDF_DOCUMENT doc = o.doc;
+    const std::uint32_t pages = o.pages;
 
     const auto started = std::chrono::steady_clock::now();
     std::vector<unsigned short> buf;
     std::string text;
-    std::uint32_t pages = 0;
     std::uint32_t page = first;
     bool more = true;
     // Page by page, the lock taken for each: two workers with a PDF each take
     // turns, and neither holds the lock while the engine commits passages.
-    FPDF_DOCUMENT doc = nullptr;
-    {
-      std::lock_guard lock(pdfium_mutex());
-      doc = load_(&access, nullptr);
-      if (!doc) {
-        const unsigned long e = last_error_();
-        return err(e == FPDF_ERR_PASSWORD || e == FPDF_ERR_SECURITY ? status::permission_denied
-                   : e == FPDF_ERR_FILE                             ? status::io
-                                                                    : status::corrupt);
-      }
-      const int n = page_count_(doc);
-      pages = n > 0 ? static_cast<std::uint32_t>(n) : 0;
-    }
-    struct closer {
-      pdfium_reader* self;
-      FPDF_DOCUMENT doc;
-      ~closer() {
-        std::lock_guard lock(pdfium_mutex());
-        self->close_doc_(doc);
-      }
-    } const close_doc{this, doc};
     const std::uint32_t last = std::min(pages, limits.max_pages);
     for (; more && page < last; ++page) {
       if (std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count() > limits.max_seconds) {
@@ -197,9 +173,85 @@ class pdfium_reader final : public pdf_reader {
     return pages;
   }
 
+  result<pdf_look> look(const std::string& path, const pdf_limits& limits, float min_cover) override {
+    if (!can_look_) return err(status::unsupported_format);
+    opened o(this);
+    MV_TRY_VOID(o.open(path, limits));
+    pdf_look out;
+    out.pages = o.pages;
+    const auto started = std::chrono::steady_clock::now();
+    const std::uint32_t last = std::min(o.pages, limits.max_pages);
+    for (std::uint32_t page = 0; page < last; ++page) {
+      if (std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count() > limits.max_seconds) {
+        break;  // the time cap: the pages looked at stand
+      }
+      std::lock_guard lock(pdfium_mutex());
+      FPDF_PAGE pg = load_page_(o.doc, static_cast<int>(page));
+      if (!pg) continue;
+      const double w = page_width_(pg), h = page_height_(pg);
+      double covered = 0;
+      // The page's own image objects, each clipped to the page; overlaps count
+      // twice, which only matters for a page of stacked pictures. A page with
+      // thousands of objects is a drawing, not a picture: looked at no further.
+      const int n = std::min(count_objects_(pg), 4096);
+      for (int i = 0; i < n && w > 0 && h > 0; ++i) {
+        FPDF_PAGEOBJECT obj = get_object_(pg, i);
+        if (!obj || object_type_(obj) != FPDF_PAGEOBJ_IMAGE) continue;
+        float l = 0, b = 0, r = 0, t = 0;
+        if (!object_bounds_(obj, &l, &b, &r, &t)) continue;
+        const double cw = std::min<double>(r, w) - std::max<double>(l, 0);
+        const double ch = std::min<double>(t, h) - std::max<double>(b, 0);
+        if (cw > 0 && ch > 0) covered += cw * ch;
+      }
+      close_page_(pg);
+      if (w > 0 && h > 0 && covered / (w * h) > min_cover) out.pictures.push_back(page);
+    }
+    return out;
+  }
+
   const std::string& name() const noexcept override { return name_; }
 
  private:
+  // An open document (its file stream with it), closed under the lock.
+  struct opened {
+    explicit opened(pdfium_reader* r) : self(r) {}
+    ~opened() {
+      if (!doc) return;
+      std::lock_guard lock(pdfium_mutex());
+      self->close_doc_(doc);
+    }
+    opened(const opened&) = delete;
+    opened& operator=(const opened&) = delete;
+    expected open(const std::string& path, const pdf_limits& limits) {
+      std::error_code ec;
+      const std::filesystem::path fp(std::u8string(path.begin(), path.end()));
+      const std::uintmax_t size = std::filesystem::file_size(fp, ec);
+      if (ec) return err(status::io);
+      if (size == 0 || size > limits.max_file_bytes || size > 0x7FFFFFFFull) return err(status::corrupt);
+      fa.in.open(fp, std::ios::binary);
+      if (!fa.in) return err(status::io);
+      access.m_FileLen = static_cast<unsigned long>(size);
+      access.m_GetBlock = &file_access::get_block;
+      access.m_Param = &fa;
+      std::lock_guard lock(pdfium_mutex());
+      doc = self->load_(&access, nullptr);
+      if (!doc) {
+        const unsigned long e = self->last_error_();
+        return err(e == FPDF_ERR_PASSWORD || e == FPDF_ERR_SECURITY ? status::permission_denied
+                   : e == FPDF_ERR_FILE                             ? status::io
+                                                                    : status::corrupt);
+      }
+      const int n = self->page_count_(doc);
+      pages = n > 0 ? static_cast<std::uint32_t>(n) : 0;
+      return {};
+    }
+    pdfium_reader* self;
+    file_access fa;
+    FPDF_FILEACCESS access{};
+    FPDF_DOCUMENT doc = nullptr;
+    std::uint32_t pages = 0;
+  };
+
   pdfium_reader() = default;
   decltype(&FPDF_InitLibrary) init_ = nullptr;
   decltype(&FPDF_LoadCustomDocument) load_ = nullptr;
@@ -212,6 +264,13 @@ class pdfium_reader final : public pdf_reader {
   decltype(&FPDFText_CountChars) text_count_ = nullptr;
   decltype(&FPDFText_GetText) text_get_ = nullptr;
   decltype(&FPDFText_ClosePage) text_close_ = nullptr;
+  bool can_look_ = false;
+  decltype(&FPDFPage_CountObjects) count_objects_ = nullptr;
+  decltype(&FPDFPage_GetObject) get_object_ = nullptr;
+  decltype(&FPDFPageObj_GetType) object_type_ = nullptr;
+  decltype(&FPDFPageObj_GetBounds) object_bounds_ = nullptr;
+  decltype(&FPDF_GetPageWidthF) page_width_ = nullptr;
+  decltype(&FPDF_GetPageHeightF) page_height_ = nullptr;
   std::string name_ = "PDFium";
 };
 

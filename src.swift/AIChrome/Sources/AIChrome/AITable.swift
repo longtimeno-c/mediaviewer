@@ -340,7 +340,7 @@ struct StatusLine: Equatable {
         // With iCloud clips still queued (issue #417) the line says so, and
         // the note under it carries on with those clips, so the two read as
         // one run rather than a nearly finished index beside a stray download.
-        text = (s.sound_total > 0 || s.speech_total > 0 || s.cues_total > 0 || s.text_total > 0 || s.docs_total > 0
+        text = (s.sound_total > 0 || s.speech_total > 0 || s.cues_total > 0 || s.text_total > 0 || s.docs_total > 0 || s.pages_total > 0
                 ? "Indexing pictures " : "Indexing ")
           + "\(countText(Self.picturesDone(s))) of \(countText(s.assets_total))"
           + (Self.icloudQueued(s) ? " on this Mac" : "")
@@ -348,6 +348,9 @@ struct StatusLine: Equatable {
       case .documents:
         // #354: the documents' words, after the pictures.
         text = "Reading documents \(countText(s.docs_done)) of \(countText(s.docs_total))"
+      case .pages:
+        // #354 D2: then their pages' pictures (Words and pages).
+        text = "Looking at document pages \(countText(s.pages_done)) of \(countText(s.pages_total))"
       case .cues:
         text = "Reading chapters and subtitles \(countText(s.cues_done)) of \(countText(s.cues_total)) clips"
       case .text:
@@ -406,6 +409,7 @@ struct StatusLine: Equatable {
     switch phase {
     case .pictures: progress = fraction(Self.picturesDone(s), s.assets_total)
     case .documents: progress = fraction(s.docs_done, s.docs_total)
+    case .pages: progress = fraction(s.pages_done, s.pages_total)
     case .cues: progress = fraction(s.cues_done, s.cues_total)
     case .text: progress = fraction(s.text_done, s.text_total)
     case .sound: progress = fraction(s.sound_done, s.sound_total)
@@ -472,7 +476,7 @@ struct StatusLine: Equatable {
     detail = notes.joined(separator: " · ")
   }
 
-  enum Phase { case pictures, documents, cues, text, sound, speech }
+  enum Phase { case pictures, documents, pages, cues, text, sound, speech }
 
   /// Whether the opt-in iCloud fetch still has clips to bring down and index
   /// this run (issue #417): a download in progress or any of its waits. Clips
@@ -539,6 +543,7 @@ struct StatusLine: Equatable {
   static func phase(_ s: mv_ai_status) -> Phase {
     if picturesDone(s) < s.assets_total { return .pictures }
     if s.docs_done < s.docs_total { return .documents }  // #354: the pack's order
+    if s.pages_done < s.pages_total { return .pages }    // #354 D2
     if s.cues_done < s.cues_total { return .cues }
     if s.text_done < s.text_total { return .text }
     if s.sound_done < s.sound_total { return .sound }

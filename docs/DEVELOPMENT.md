@@ -1733,6 +1733,54 @@ album artist, composer, genre). Sound and speech on audio files are slice A2.
   both hosts; both PR 1 gates with the pack indexing audio files; timing the walk with the
   setting off.
 
+### Local search over documents, slice D2: pages as pictures (#354, 2026-10-16)
+
+Settings → Local search → Documents gains **Words and pages** (`doc_index` 2, per folder
+`MV_AI_DOCS_PAGES`) on both hosts. A document's first 3 pages, and any page mostly covered by
+images, go through the picture tower already installed, so "a receipt" or "a floor plan" finds the
+page ([17](design/17-local-ai-search.md) "Documents", "Page pictures (D2)"). No new model, no
+schema change.
+
+- **Tests:** `mv_ai_tests "[documents]"`: which pages are drawn (first 3, picture pages, the end of
+  a DOCX, nothing for a locked one), found at their page as a picture match, kept through a
+  restart, dropped by a folder's or Settings' Words and drawn again at Words and pages. Also PDFium's
+  picture-page measure on hand-built PDFs (`[pdfium]`). Mac (M5, 2026-10-17, on D1 with main
+  merged): `mv_ai_tests` 148 cases, 140 passed, 8 skipped (model-backed); `mv_tests` 896 cases,
+  885 passed, 11 skipped; `mv_import_tests` 158 passed; the SwiftUI AI chrome builds; the WinUI AI
+  chrome's C# compiles.
+- **Verify set:** `tools/ai-bench/doc-pages/make_doc_pages.swift <out> <photos>` draws 120 PDFs,
+  6 each of 20 kinds of page (receipt, floor plan, bar / pie chart, line graph, slide, sheet music,
+  calendar, crossword, chessboard, flowchart, map, QR code, barcode, spreadsheet, certificate,
+  sudoku, circuit diagram, a full-page photo, business card). The kind's page sits on page 0-2, or
+  for 4 of the photos on page 7 or 8 of a long document. Names are neutral and the labels go to
+  `labels.tsv`. Run `ai-bench --documents --doc-index 2 --top 10 --query ...` over them beside D1's
+  200 text documents, then `score_doc_pages.py`.
+- **Verify line, Mac (M5, ViT-L/14 on the Neural Engine, 2026-10-16), 320 documents:**
+  - Mean P@5 over the 20 queries: **0.80** as typed (words and pictures) and **0.83** with Match
+    by Picture only (`--kinds 31`).
+  - Every relevant hit was on the labelled page (80 / 80 and 83 / 83). Queries took 10-25 ms, and
+    100 ms for "a receipt" as typed.
+  - 15 queries scored 1.0. "a line graph" and "a calendar" scored 0.8.
+  - "a map" scored 0.4: slides and sudoku pages ranked above two of the maps.
+  - "a spreadsheet" scored 0.0: D1's plain DOCX text pages rank above the drawn spreadsheets.
+  - "a receipt" scored 0.0 as typed: D1's random-word documents contain the word "receipt", and
+    a full word match outranks a picture. With Picture only it scored 0.6.
+  - "a photo of a person" found nothing. So did "a person", "a man", "a portrait" and "a face",
+    tried afterwards, although the 6 photo pages are indexed: the "nothing found" gate turns them
+    away.
+  - All 4 deep photo pages were found by the picture-page rule (pages 7 and 8).
+  - No new model: the pack's files are D1's, and the process opened `clip-l14/image.onnx` alone.
+  - Timing: with the tower in, 316 documents pictured (851 pages) in 49 s. The first start of a
+    freshly sideloaded pack spent about 11 minutes on ViT-L/14's Core ML compile first; words
+    were read meanwhile. The second start loaded in 4.6 s.
+- **Mac PR 1 gate** (`frametime --seconds 60`):
+  - Alone: 3,600 frames, p99 16.80 ms, max 22.4 ms, 0 idle presents, 0.035 % idle CPU, PASS.
+  - With `ai-bench` picturing 1,280 documents' pages in a separate process through both soaks:
+    3,600 frames, p99 17.05 ms, max 23.3 ms, 0 idle presents, 1.0 % idle CPU, PASS.
+- **Not measured:** Windows (the native and WinUI code is compiled by CI only; the Windows timing
+  and the Windows PR 1 gate are owed), the app on either host with a real document folder, and
+  DOCX picture pages beyond page 2.
+
 ### Local search over documents, slice D1 (#354, docs/plans/document-search.md, 2026-10-16)
 
 PDFs and DOCX files are indexed for their words while Settings → File types **Show documents**

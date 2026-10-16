@@ -696,6 +696,9 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
       // A walk of every root either way: Off drops what folders that follow
       // the setting hold (their documents are no longer seen), on lists them.
       if (level != settings_.doc_index) docs_turned = 1;
+      // D2: below Words and pages, the page pictures of the documents that
+      // follow the setting go (drop_pages).
+      if (level < 2 && settings_.doc_index == 2) drop_pages_ = true;
       settings_.doc_index = level;
       doc_index_ = level;
     } else if (key == "precision") {
@@ -723,6 +726,7 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
     }
     control_cv_.notify_all();
   }
+  if (drop_pages_.load()) control_cv_.notify_all();
   if (docs_turned != 0) {
     // #354, as audio_files: on (or a level change), every enabled root is
     // walked again; off, the control thread deletes the documents and their
@@ -886,7 +890,7 @@ void engine::refresh_counts() {
   const auto open = [](const counts& k) {
     return k.assets > k.done + k.failed + k.unavailable + k.locked + k.cloud_only;
   };
-  recount = recount || tc.key != text_key || open(tc.cues) || open(tc.photos) || open(tc.moments) || open(tc.docs) ||
+  recount = recount || tc.key != text_key || open(tc.cues) || open(tc.photos) || open(tc.moments) || open(tc.docs) || open(tc.pages) ||
             now_s() - tc.at >= 30.0;
   if (recount) {
     tc.cues = cue_spec.empty() ? counts{}
@@ -897,6 +901,9 @@ void engine::refresh_counts() {
                      : db_->count(ocr_spec + kMomentsSuffix,
                                   track_filter{false, MV_AI_MEDIA_PICTURES, media, skip, held_now}, build_spec);
     tc.docs = document_files_.load() ? db_->count(kDocTextSpec, docs_filter(media, skip, held_now)) : counts{};
+    tc.pages = document_files_.load() && !build_spec.empty()
+                   ? db_->count(doc_page_spec(build_spec), pages_filter(media, skip, held_now), kDocTextSpec)
+                   : counts{};
     tc.key = text_key;
     tc.at = now_s();
   }
@@ -904,6 +911,7 @@ void engine::refresh_counts() {
   const counts& ct = tc.photos;
   const counts& cm = tc.moments;
   const counts& cd = tc.docs;
+  const counts& cg = tc.pages;
   std::map<std::int64_t, std::pair<std::uint64_t, std::uint64_t>> per_root;
   const std::vector<root_row> roots = db_->roots();
   const std::string root_spec = counting_spec();
@@ -975,6 +983,8 @@ void engine::refresh_counts() {
   status_.docs_done = cd.done + cd.failed + cd.unavailable + cd.locked;
   status_.docs_locked = cd.locked;
   status_.docs_failed = cd.failed + cd.unavailable;
+  status_.pages_total = cg.assets;
+  status_.pages_done = cg.done + cg.failed + cg.unavailable + cg.locked;
   status_.frames_indexed = store_.live_rows();
   status_.index_bytes = bytes;
   status_.faces_total = face_total;
@@ -1043,7 +1053,8 @@ void engine::refresh_counts() {
                        cc.assets > cc.done + cc.failed + cc.unavailable + cc.cloud_only ||
                        ct.assets > ct.done + ct.failed + ct.unavailable + ct.cloud_only ||
                        cm.assets > cm.done + cm.failed + cm.unavailable + cm.cloud_only ||
-                       cd.assets > cd.done + cd.failed + cd.unavailable + cd.locked + cd.cloud_only;
+                       cd.assets > cd.done + cd.failed + cd.unavailable + cd.locked + cd.cloud_only ||
+                       cg.assets > cg.done + cg.failed + cg.unavailable + cg.locked + cg.cloud_only;
   std::uint32_t state = MV_AI_STATE_INDEXING;
   if (models_failed_) {
     state = MV_AI_STATE_ERROR;
@@ -1916,6 +1927,7 @@ void engine::control_loop() {
     }
     if (drop_audio_.exchange(false)) drop_audio();
     if (drop_documents_.exchange(false)) drop_documents();
+    if (drop_pages_.exchange(false)) drop_pages();
     bool all = false;
     std::set<std::int64_t> some;
     const double t = now_s();
@@ -2022,7 +2034,8 @@ void engine::control_loop() {
     std::unique_lock lock(control_m_);
     control_cv_.wait_for(lock, std::chrono::milliseconds(more_tags ? 0 : 1000), [this] {
       if (stopping_.load() || reload_models_.load() || reload_pieces_.load() || rescan_all_ ||
-          !rescan_roots_.empty() || drop_audio_.load() || drop_documents_.load()) {
+          !rescan_roots_.empty() || drop_audio_.load() || drop_documents_.load() ||
+          drop_pages_.load()) {
         return true;
       }
       std::lock_guard tl(transfer_m_);  // control_m_ -> transfer_m_ (a leaf)
@@ -2495,6 +2508,23 @@ track_filter engine::docs_filter(std::uint32_t media, std::int64_t skip, const s
   f.docs_min = 1;
   f.default_docs = doc_index_.load();
   return f;
+}
+
+track_filter engine::pages_filter(std::uint32_t media, std::int64_t skip, const std::vector<std::int64_t>& held) const {
+  track_filter f = docs_filter(media, skip, held);
+  f.docs_min = 2;
+  return f;
+}
+
+// #354 D2: documents now below Words and pages lose their page pictures; the
+// matrix holds nothing else of a document, so they leave it whole.
+void engine::drop_pages() {
+  auto gone = db_->drop_pages(doc_index_.load());
+  if (!gone || gone->empty()) return;
+  store_.remove_assets(*gone);
+  text_counts_due_ = true;
+  refresh_counts();
+  post(MV_ADDON_EVENT_AI_STATUS);
 }
 
 void engine::forget_vectors(const std::vector<std::int64_t>& ids) {
@@ -3092,6 +3122,9 @@ bool engine::claim(std::vector<work_item>& out, track& t, bool models_ok) {
   const std::string moments_spec = text_moments_spec();
   // #354: documents while they are shown.
   const std::string docs_spec = document_files_.load() ? std::string(kDocTextSpec) : std::string();
+  // #354 D2: their page pictures, once their words are read (pending's
+  // `after`), at Words and pages.
+  const std::string pages_spec = document_files_.load() ? doc_page_spec(spec) : std::string();
   std::lock_guard lock(work_m_);
   {
     // A folder opened (note_folder_opened): it goes first from now on.
@@ -3157,6 +3190,7 @@ bool engine::claim(std::vector<work_item>& out, track& t, bool models_ok) {
     // #354: documents' words after the pictures: cheap, and what a search for
     // a document needs first.
     take(docs_spec, track::docs, docs_filter(media, skip, held_now));
+    take(pages_spec, track::pages, pages_filter(media, skip, held_now), kDocTextSpec);
     // #406: a clip's own text, after its pictures (they never wait on it).
     take(cue_spec, track::cues, track_filter{false, MV_AI_MEDIA_BOTH, media, skip, held_now});
     // #403: the text in photos, after their pictures and the clips' own text.
@@ -3171,7 +3205,7 @@ bool engine::claim(std::vector<work_item>& out, track& t, bool models_ok) {
       for (const auto& [id, m] : assets_) {
         if (faces_scanned_.count(id) || in_flight_.count(id)) continue;
         if (m.kind == asset_kind::audio) continue;  // #355: cover art holds no People
-        if (m.kind == asset_kind::document) continue;  // #354: no People in a document (D2 adds pages)
+        if (m.kind == asset_kind::document) continue;  // #354: People are not looked for in a document's pages
         if (skip_faces != 0 && m.root == skip_faces) continue;
         if (std::find(held_now.begin(), held_now.end(), m.root) != held_now.end()) continue;
         if (m.cloud) continue;  // online-only: the fetch brings it down first
@@ -3250,6 +3284,9 @@ void engine::worker_loop(unsigned) {
       text_counts_due_ = true;
     } else if (t == track::docs) {
       process_document(items.front());
+      text_counts_due_ = true;
+    } else if (t == track::pages) {
+      if (clip.model) process_pages(items.front(), clip);
       text_counts_due_ = true;
     } else if (t == track::sound) {
       if (sound.model) process_sound(items.front(), sound);
@@ -4219,6 +4256,8 @@ expected engine::root_set_documents(std::int64_t id, std::uint32_t docs) {
   if (importing_elsewhere()) return err(status::busy);
   if (docs > MV_AI_DOCS_PAGES) return err(status::invalid_arg);
   MV_TRY_VOID(db_->set_root_docs(id, docs));
+  // D2: a folder below Words and pages loses its page pictures (drop_pages).
+  if (docs != MV_AI_DOCS_PAGES) drop_pages_ = true;
   {
     std::lock_guard lock(work_m_);
     queue_.clear();
@@ -5359,6 +5398,119 @@ void engine::process_document(const work_item& item) {
   }
   built.finish();
   (void)commit(work_state::done, pages);
+}
+
+// #354 D2 limits (docs/design/17 "Documents"): every document's first pages
+// as pictures, plus a page mostly covered by images (a scan, a photo, a
+// full-page figure: PDFium's image objects over half the page), at most
+// kMaxPicturePages of those (a 500-page scan is not 500 pictures).
+constexpr std::uint32_t kFirstPages = 3;
+constexpr float kPictureCover = 0.5f;
+constexpr std::size_t kMaxPicturePages = 64;
+
+void engine::process_pages(const work_item& item, const loaded_clip& clip) {
+  const std::string& path = item.asset.path;
+  const std::string progress = doc_page_spec(clip.meta.spec_key);
+  // Which pages: from PDFium's look when it can tell (a PDF), else the first
+  // few, the host saying where a document ends (invalid_arg past the end).
+  std::vector<std::uint32_t> pages;
+  bool known = false;
+  if (extension_of(path) == "pdf") {
+    pdf_reader* reader = nullptr;
+    {
+      std::lock_guard lock(models_m_);
+      reader = pdf_.get();  // set once, never replaced (engine.h)
+    }
+    if (reader) {
+      if (!wait_turn()) return;
+      const auto look = reader->look(path, pdf_limits{}, kPictureCover);
+      if (look) {
+        known = true;
+        for (std::uint32_t p = 0; p < std::min(look->pages, kFirstPages); ++p) pages.push_back(p);
+        std::size_t extra = 0;
+        for (std::uint32_t p : look->pictures) {
+          if (p < kFirstPages) continue;
+          if (++extra > kMaxPicturePages) break;
+          pages.push_back(p);
+        }
+      } else if (look.error() == status::permission_denied) {
+        (void)db_->mark_locked(item.asset.id, progress);
+        return;
+      } else if (look.error() != status::unsupported_format) {
+        (void)db_->fail(item.asset.id, progress);
+        return;
+      }
+    }
+  }
+  if (!known) {
+    for (std::uint32_t p = 0; p < kFirstPages; ++p) pages.push_back(p);
+  }
+  // The same edge as a photo's picture pass: the tower's input, twice over.
+  const std::uint32_t edge = std::max<std::uint32_t>(448u, clip.meta.input_edge * 2);
+  std::vector<frame_in> keep;
+  std::vector<float> embs;
+  std::vector<std::int64_t> at;
+  std::vector<rgb_frame> batch;
+  const auto embed = [&]() -> bool {
+    if (batch.empty()) return true;
+    std::vector<infer::rgb_view> views;
+    for (const rgb_frame& f : batch) views.push_back(infer::rgb_view{f.rgb.data(), f.width, f.height});
+    std::vector<float> e;
+    if (!clip.model->embed_images(views, e) || e.size() != batch.size() * clip.meta.dim) return false;
+    embs.insert(embs.end(), e.begin(), e.end());
+    batch.clear();
+    return true;
+  };
+  for (std::uint32_t page : pages) {
+    // A stop leaves it pending: a document is a handful of pages, drawn again.
+    if (!wait_turn()) return;
+    auto img = frame_of(path, page, edge);
+    // Past its last page (invalid_arg), or a page that does not draw: the
+    // pages drawn before it stand.
+    if (!img) break;
+    at.push_back(page);
+    batch.push_back(std::move(*img));
+    if (batch.size() >= kPhotoBatch && !embed()) {
+      (void)db_->fail(item.asset.id, progress);
+      return;
+    }
+  }
+  if (!embed()) {
+    (void)db_->fail(item.asset.id, progress);
+    return;
+  }
+  if (at.empty()) {
+    // Not one page drawn (broken, or no renderer for it on this OS): its
+    // words still find it.
+    (void)db_->fail(item.asset.id, progress);
+    return;
+  }
+  for (std::size_t i = 0; i < at.size(); ++i) {
+    frame_in f;
+    f.pts_ms = at[i];
+    f.flags = kFramePage;
+    f.emb = std::span<const float>(embs.data() + i * clip.meta.dim, clip.meta.dim);
+    f.generic = max_dot(f.emb, clip.generic);
+    keep.push_back(f);
+  }
+  if (!db_->commit_pages(item.asset.id, clip.meta.spec_key, progress, keep, clip.meta.dim)) return;
+  std::string active;
+  {
+    std::lock_guard lock(models_m_);
+    active = answer_.meta.spec_key;
+  }
+  if (clip.meta.spec_key == active) {
+    // Its pages drawn again replace those it had (a document holds no other vector).
+    store_.remove_assets(std::vector<std::int64_t>{item.asset.id});
+    for (const frame_in& f : keep) {
+      std::vector<std::int8_t> q;
+      float scale = 1;
+      quantise(f.emb, q, scale);
+      store_.add(item.asset.id, f.pts_ms, f.generic, scale, q);
+    }
+  }
+  std::lock_guard lock(status_m_);
+  frames_done_ += keep.size();
 }
 
 void engine::load_speech(const std::string& spec) {

@@ -786,8 +786,9 @@ does.
 
 PDFs and Word documents are searchable by the **words in them**: a quoted phrase from any page
 finds the document and opens it on that page, plain words rank documents by how many of them a
-passage holds. Slice D1 of [document-search](../plans/document-search.md); page pictures (D2),
-a text model for meaning (D3) and OCR for scans (D4) follow it.
+passage holds. At **Words and pages** they are also found by **what a page looks like** ("a
+receipt", "a floor plan"). Slices D1 and D2 of [document-search](../plans/document-search.md);
+a text model for meaning (D3) and OCR for scans (D4) follow them.
 
 - **Behind File types "Show documents"** (off by default), as audio files are behind "Show audio
   files": each chrome forwards it to the pack as `document_files` when it attaches and on every
@@ -796,9 +797,9 @@ a text model for meaning (D3) and OCR for scans (D4) follow it.
   and their text (`index_db::remove_kind`). A document is `asset_kind::document` (3; schema 9)
   and `MV_AI_KIND_DOCUMENTS` (4; `MV_AI_KIND_ALL` is 15, so an older chrome's 3 or 11 never sees
   one). It never pairs, never goes to the picture, People or text-in-pictures passes in D1, and
-  an `.mvindex` export leaves it out, name and all.
+  an `.mvindex` export leaves it out, name and all (page pictures too).
 - **What a folder indexes them for.** Settings "Documents" (`doc_index`): 0 Off, 1 **Words**
-  (the default: cheap, no model), 2 Words and pages (D2; reads as Words until then). Each folder
+  (the default: cheap, no model), 2 **Words and pages** (page pictures, below). Each folder
   may override it (`root_set_documents`, `MV_AI_DOCS_*`, `roots.docs`): the case is a Downloads
   folder that should search photos and not bank statements. A folder's Off leaves its documents
   out of the search at once and drops them with the walk that follows; a change of the setting
@@ -830,6 +831,30 @@ a text model for meaning (D3) and OCR for scans (D4) follow it.
   (tried again up to three times). A PDF with no text layer (a scan) is done with no passages; D4
   reads those. With no PDFium (an older pack) or no `document_text` (an older host) a document
   is set aside (`unavailable`) and read again at the next start that can.
+- **Page pictures (D2)**, at Words and pages: a document's pages through the **picture tower
+  already loaded** (no new model), so a visual query finds the page. Its own pass (`track::pages`,
+  progress spec `docpage/<picture spec>`, so a model change pictures them again) takes a document
+  once its words are read (`pending`'s `after` is `doctext/1`; a locked or broken one never comes),
+  after the words pass and before a clip's own text. Which pages: the **first 3**, plus any page
+  **mostly covered by images** (PDFium's image objects, each clipped to the page, over half its
+  area: a scan, a photo, a full-page figure; `pdf_reader::look`), at most **64** of those a
+  document, within the 500-page and 60 s caps. A DOCX (and a PDF with no PDFium): the first 3,
+  the host saying where the document ends. Each page is drawn by the host, `video_frame_rgb` with
+  `pts_ms` the page (the viewer's own renderer, as the tiles are), at the photo pass's edge (448 px
+  for ViT-B/32 and ViT-L/14), embedded in batches of 4, and stored in one transaction as `frames`
+  rows under the tower's spec with `pts_ms` the page and `kFramePage` (0x100) in `flags` (no
+  schema change), replacing the pages it had. A stop leaves the document pending: it is drawn
+  again whole. A page that does not draw ends the document there; none drawn fails it (its words
+  still find it). A folder or the setting going below Words and pages deletes those documents'
+  page pictures and their progress on the control thread (`index_db::drop_pages`) and takes them
+  out of the matrix. `mv_ai_status` appends `pages_total` and `pages_done`; while they differ the
+  state is not idle, and both chromes read "Looking at document pages 12 of 200".
+  **Measured** (M5, ViT-L/14, 2026-10-16; DEVELOPMENT, "slice D2"): 20 visual queries over 120
+  labelled visual PDFs among 200 text documents reach mean P@5 0.80 as typed and 0.83 with Match by
+  Picture only. Every hit is on the right page, and 316 documents (851 pages) are pictured in 49 s.
+  Weak spots: a word match outranks a picture ("a receipt" against documents that say "receipt"),
+  plain text pages pass for "a spreadsheet", and person queries meet the "nothing found" gate. The
+  Mac PR 1 gate held while pages were pictured: 0 dropped, p99 17.05 ms against 16.80 alone.
 - **Search.** Candidates come from the FTS5 index; the engine's own rule decides each, so the
   index only narrows. A **quoted phrase** matches a passage's words in order (anywhere, as it
   matches speech, cues and text in pictures); `text:` / `says:` matches documents only; `said:`
@@ -838,7 +863,9 @@ a text model for meaning (D3) and OCR for scans (D4) follow it.
   beside the picture search. Each matching passage is a row at its **page**: `pts_ms` is the
   0-based page, `kind` `MV_AI_KIND_DOCUMENTS`, `match` `MV_AI_MATCH_TEXT`, the snippet the part of
   the passage around the first word, shown unquoted. `clip_matches` returns a document's matching
-  pages, one each. `is:document` / `is:doc`, a leading or trailing `documents` / `docs` / `pdf` /
+  pages, one each. A page picture is a picture row like a clip's moment (`MV_AI_MATCH_PICTURE`,
+  `pts_ms` the page, under `MV_AI_FIND_PICTURES` and the "nothing found" rule); a document matched
+  both ways is one row at its better page. `is:document` / `is:doc`, a leading or trailing `documents` / `docs` / `pdf` /
   `pdfs`; `is:pdf` and `is:docx` (`is:word`) name the format by extension.
 - **Results.** The tile is the matched page: page 0 is the viewer's own thumbnail, any other is a
   moment row of the JPEG-512 cache (`path#t=<page>`), drawn by `video_frame_rgb` with `pts_ms` the
@@ -846,7 +873,7 @@ a text model for meaning (D3) and OCR for scans (D4) follow it.
   clip shows its time. Enter opens the result list with the page as the item's moment; both hosts
   open a document there (`present_lab_mac::open_item(..., page)`; Windows `mv_folder_select_page`
   from `edit_item_opened`), and Page Down goes on from it.
-- **Settings and status.** Both chromes: a Documents section (Off / Words, the privacy line "an
+- **Settings and status.** Both chromes: a Documents section (Off / Words / Words and pages, the privacy line "an
   index of documents holds their text on this computer; it never leaves it"), a per-folder
   "Documents: Default ▾" menu, the folder's document count beside its photos and videos (counted
   apart: `roots_json` `documents`, `documents_done`, `docs`; "Up to date" covers the picture pass

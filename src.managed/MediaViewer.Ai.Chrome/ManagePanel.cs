@@ -77,9 +77,9 @@ internal sealed partial class ManagePanel
     private readonly TextBlock _videoIndexHint;
     // #355: how audio files are indexed, or how to turn them on.
     private readonly TextBlock _audioFilesDetail;
-    // #354: Settings "Documents" (doc_index: Off | Words; "Words and pages"
-    // waits for slice D2), or how to turn documents on.
-    private readonly ToggleButton[] _docIndex = new ToggleButton[2];
+    // #354: Settings "Documents" (doc_index: Off | Words | Words and pages,
+    // the last slice D2's page pictures), or how to turn documents on.
+    private readonly ToggleButton[] _docIndex = new ToggleButton[3];
     private readonly StackPanel _docIndexTrack;
     private readonly TextBlock _documentsDetail;
     private uint _docIndexValue = 1;
@@ -247,10 +247,11 @@ internal sealed partial class ManagePanel
             "Pictures finds what a clip shows; Sound finds what it sounds like and what is said. Photos are always pictures.", 12));
         videoDetail.Children.Add(_videoIndexHint);
         Section("Videos").Children.Add(Row("Index videos for", videoDetail, _look.Track(segments, hc)));
-        // #354: documents, by their words, while File types "Show documents" is on.
+        // #354: documents, by their words (and with D2 their pages' look), while
+        // File types "Show documents" is on.
         var docSegments = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
-        string[] docNames = { "Off", "Words" };
-        for (int i = 0; i < 2; ++i)
+        string[] docNames = { "Off", "Words", "Words and pages" };
+        for (int i = 0; i < docNames.Length; ++i)
         {
             uint level = (uint)i;
             ToggleButton b = _look.Segment(docNames[i], () => SetDocIndex(level), hc);
@@ -666,14 +667,13 @@ internal sealed partial class ManagePanel
     {
         bool on = _chrome.DocumentFiles;
         _docIndexTrack.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
-        _docIndex[0].IsChecked = _docIndexValue == 0;
-        _docIndex[1].IsChecked = _docIndexValue >= 1;  // Words and pages (D2) reads as Words
+        for (int i = 0; i < _docIndex.Length; ++i) _docIndex[i].IsChecked = _docIndexValue == i;
         _documentsDetail.Text = DocumentsDetail(on, _pdfAvailable);
     }
 
     private void SetDocIndex(uint level)
     {
-        if (level == Math.Min(1u, _docIndexValue))
+        if (level == _docIndexValue)
         {
             ShowDocIndex();
             return;
@@ -689,6 +689,8 @@ internal sealed partial class ManagePanel
     private static string DocumentsDetail(bool on, bool pdf) => !on
         ? "Not searched. Turn on Show documents in Settings → File types to search them."
         : "Words finds PDFs and Word documents by the words in them, and opens one on the page that matched. "
+          + "Words and pages also finds pages by what they look like (a receipt, a floor plan, a slide): the first pages of each, "
+          + "and any page that is mostly a picture. "
           + "Each folder can differ, from its menu below. An index of documents holds their text on this PC; it never leaves it."
           + (pdf ? "" : " PDFs need the latest Core: update it above. Word documents are read meanwhile.");
 
@@ -1035,20 +1037,22 @@ internal sealed partial class ManagePanel
         return button;
     }
 
-    private static readonly string[] DocsNames = { "Default", "Off", "Words" };
+    private static readonly string[] DocsNames = { "Default", "Off", "Words", "Words and pages" };
+    private static readonly string[] DocLevelNames = { "Off", "Words", "Words and pages" };
 
     // #354: "Documents: Default ▾" — whether this folder's documents are searched
-    // by their words (a Downloads folder that should not show bank statements).
+    // by their words, and (D2) their pages' look (a Downloads folder that should
+    // not show bank statements).
     private Button DocsMenu(ulong root, MvAiDocs current)
     {
-        var shown = current == MvAiDocs.Pages ? MvAiDocs.Words : current;
+        var shown = (int)current < DocsNames.Length ? current : MvAiDocs.Default;
         var menu = new MenuFlyout();
         for (int i = 0; i < DocsNames.Length; ++i)
         {
             var docs = (MvAiDocs)i;
             var item = new ToggleMenuFlyoutItem
             {
-                Text = i == 0 ? $"Default ({(_docIndexValue == 0 ? "Off" : "Words")})" : DocsNames[i],
+                Text = i == 0 ? $"Default ({DocLevelNames[Math.Min(2u, _docIndexValue)]})" : DocsNames[i],
                 IsChecked = docs == shown,
             };
             item.Click += (_, _) => RootCall(() => _api.RootSetDocuments(root, docs));
@@ -1064,7 +1068,7 @@ internal sealed partial class ManagePanel
             Flyout = menu,
         };
         AutomationProperties.SetName(button, "Index this folder's documents for");
-        ToolTipService.SetToolTip(button, "Whether this folder's PDFs and Word documents are searched by their words");
+        ToolTipService.SetToolTip(button, "Whether this folder's PDFs and Word documents are searched by their words, and by what their pages look like");
         return button;
     }
 

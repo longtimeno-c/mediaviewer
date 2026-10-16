@@ -715,6 +715,71 @@ expected index_db::commit_frames(std::int64_t asset, const std::string& spec,
   return exec("COMMIT") ? expected{} : err(status::io);
 }
 
+expected index_db::commit_pages(std::int64_t asset, const std::string& frame_spec, const std::string& progress_spec,
+                                std::span<const frame_in> pages, std::uint32_t dim) {
+  std::lock_guard lock(m_);
+  if (!exec("BEGIN")) return err(status::io);
+  bool ok = true;
+  {
+    // Read again (a resumed or re-queued document): its old pages go first.
+    stmt del(db_, "DELETE FROM frames WHERE asset_id = ?1 AND spec = ?2 AND (flags & ?3) != 0");
+    ok = del.bind(1, asset).bind(2, frame_spec).bind(3, std::int64_t{kFramePage}).run();
+    stmt ins(db_, "INSERT INTO frames(asset_id, spec, pts_ms, pts_tb, tb_num, tb_den, flags,"
+                  " generic, scale, emb) VALUES(?1, ?2, ?3, 0, 0, 1, ?4, ?5, ?6, ?7)");
+    std::vector<std::int8_t> q;
+    for (const frame_in& f : pages) {
+      if (!ok) break;
+      if (f.emb.size() != dim || f.pts_ms < 0) {
+        ok = false;
+        break;
+      }
+      float scale = 1;
+      quantise(f.emb, q, scale);
+      ins.reset();
+      ins.bind(1, asset).bind(2, frame_spec).bind(3, f.pts_ms).bind(4, std::int64_t{f.flags | kFramePage})
+          .bind_real(5, f.generic).bind_real(6, scale).bind_blob(7, q.data(), q.size());
+      ok = ins.run();
+    }
+    stmt p(db_, "INSERT INTO progress(asset_id, spec, state, resume_ms, indexed_at)"
+                " VALUES(?1, ?2, 2, ?3, strftime('%s','now'))"
+                " ON CONFLICT(asset_id, spec) DO UPDATE SET state = 2,"
+                " resume_ms = excluded.resume_ms, indexed_at = excluded.indexed_at");
+    ok = ok && p.bind(1, asset).bind(2, progress_spec).bind(3, static_cast<std::int64_t>(pages.size())).run();
+  }
+  if (!ok) {
+    exec("ROLLBACK");
+    return err(status::io);
+  }
+  return exec("COMMIT") ? expected{} : err(status::io);
+}
+
+result<std::vector<std::int64_t>> index_db::drop_pages(std::uint32_t default_docs) {
+  std::lock_guard lock(m_);
+  std::vector<std::int64_t> ids;
+  {
+    stmt q(db_, "SELECT a.id FROM assets a JOIN roots r ON r.id = a.root_id WHERE a.kind = 3"
+                " AND (CASE r.docs WHEN 0 THEN ?1 ELSE r.docs - 1 END) < 2"
+                " AND (EXISTS(SELECT 1 FROM frames f WHERE f.asset_id = a.id AND (f.flags & ?2) != 0)"
+                " OR EXISTS(SELECT 1 FROM progress p WHERE p.asset_id = a.id AND p.spec LIKE 'docpage/%'))");
+    q.bind(1, std::int64_t{default_docs}).bind(2, std::int64_t{kFramePage});
+    while (q.step_row()) ids.push_back(q.i64(0));
+  }
+  if (ids.empty()) return ids;
+  if (!exec("BEGIN")) return err(status::io);
+  stmt f(db_, "DELETE FROM frames WHERE asset_id = ?1 AND (flags & ?2) != 0");
+  stmt p(db_, "DELETE FROM progress WHERE asset_id = ?1 AND spec LIKE 'docpage/%'");
+  for (std::int64_t id : ids) {
+    f.reset();
+    p.reset();
+    if (!f.bind(1, id).bind(2, std::int64_t{kFramePage}).run() || !p.bind(1, id).run()) {
+      exec("ROLLBACK");
+      return err(status::io);
+    }
+  }
+  if (!exec("COMMIT")) return err(status::io);
+  return ids;
+}
+
 expected index_db::fail(std::int64_t asset, const std::string& spec) {
   std::lock_guard lock(m_);
   stmt p(db_, "INSERT INTO progress(asset_id, spec, state, tries) VALUES(?1, ?2, 3, 1)"
