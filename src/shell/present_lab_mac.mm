@@ -215,8 +215,14 @@ std::uint64_t present_lab_mac::mark_navigation() noexcept {
   const std::uint64_t seq = nav_seq_.load(std::memory_order_relaxed) + 1;
   if (seq > 64) return 0;
   nav_mark_seconds_.store(monotonic_seconds(), std::memory_order_relaxed);
+  nav_full_ms_[seq - 1].store(-1.0, std::memory_order_relaxed);
   nav_seq_.store(seq, std::memory_order_release);
   return seq;
+}
+
+double present_lab_mac::navigation_full_ms(std::uint64_t seq) const noexcept {
+  if (seq == 0 || seq > 64) return -1.0;
+  return nav_full_ms_[seq - 1].load(std::memory_order_acquire);
 }
 
 bool present_lab_mac::navigation_done(std::uint64_t seq) const noexcept {
@@ -237,6 +243,7 @@ void present_lab_mac::note_nav_image(const image::gpu_image_mac& ready) noexcept
   nav_ready_ms_ = (monotonic_seconds() - nav_latch_seconds_) * 1000.0;
   nav_cached_ = ready.preview ? 0 : 1;
   nav_item_ = ready.item_id;
+  if (!ready.preview) nav_full_ms_[seq - 1].store(nav_ready_ms_, std::memory_order_release);
   nav_have_ready_ = true;
 }
 
@@ -1495,6 +1502,12 @@ void present_lab_mac::render_thread_main() noexcept {
           } else if (!loaded->preview && full_seconds_ < 0.0) {
             full_seconds_ = elapsed;
           }
+          if (!loaded->preview && nav_latched_seq_ != 0 && nav_latched_seq_ <= 64 &&
+              loaded->item_id == nav_item_ &&
+              nav_full_ms_[nav_latched_seq_ - 1].load(std::memory_order_relaxed) < 0.0) {
+            nav_full_ms_[nav_latched_seq_ - 1].store((monotonic_seconds() - nav_latch_seconds_) * 1000.0,
+                                                    std::memory_order_release);
+          }
           // Hold `\` (docs/design/16): the still just left stays as the
           // previous one; a re-publish of the same item is not an advance.
           if (!refinement && current_image_) previous_image_ = std::move(current_image_);
@@ -2278,6 +2291,11 @@ void present_lab_mac::render_thread_main() noexcept {
     // every exit path (soak completing here, not just an external stop()).
     // job_system::shutdown() is documented safe to call twice, so this does
     // not conflict with a caller's own shutdown (main_mac.mm's windowWillClose).
+    // The loop has stopped presenting, so it is no longer busy: a background
+    // pass waiting for it to go quiet (the folder tag pass, #291) finishes its
+    // chunk instead of holding shutdown's join for ever. An animated --soak
+    // over an opened file used to hang here, its report never written.
+    mv::shell::g_present_busy.store(false, std::memory_order_relaxed);
     if (options_.jobs) options_.jobs->shutdown();
 
     if (warmed_up_) {

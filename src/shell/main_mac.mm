@@ -259,6 +259,40 @@ constexpr double kMacBrowseDwell = 3.0;
 constexpr double kMacBrowseStepTimeout = 20.0;
 constexpr double kMacBrowseOpenTimeout = 60.0;
 
+// --page-soak PATH (issue #429): open a PDF, DOCX or PPTX, then (1) fling the
+// page sidebar from the first page to the last in 1.5 s, as a hard flick of
+// the strip does: the SwiftUI strip scrolls, its cells ask for thumbnails and
+// the pool renders them while the canvas presents (run it under --soak to have
+// the pacing measured); (2) go to pages as a thumbnail click does, each timed
+// to its first image, the present showing it and the full-size page. Writes
+// its own JSON; under --soak the soak report is the lab's as usual.
+struct mac_page_row {
+  int page = 0;
+  int timed_out = 0;
+  int placeholder = 0;  // the first image was not the full page
+  double ready_ms = -1.0;
+  double present_ms = -1.0;
+  double full_ms = -1.0;
+};
+enum class mac_page_phase { wait_doc, settle, fling, drain, jump, wait_jump, finish };
+struct mac_page_run {
+  bool enabled = false;
+  std::string json_path;
+  mac_page_phase step = mac_page_phase::wait_doc;
+  double t0 = 0.0, phase_t = 0.0;
+  std::uint32_t pages = 0;
+  double sidebar_s = -1.0;  // open -> the strip listing the document
+  double fling_s = 0.0;
+  double drain_s = -1.0;    // fling end -> the last screenful of thumbnails in
+  std::uint32_t landed = 0; // pages with a thumbnail once drained
+  std::vector<std::uint32_t> targets;
+  std::size_t next = 0;
+  std::uint64_t seq = 0;
+  std::vector<mac_page_row> rows;
+} g_mac_pages;
+constexpr double kMacPageFlingSeconds = 1.5;
+constexpr std::uint32_t kMacPageWindow = 6;  // cells a 900 pt strip shows
+
 double browse_now() {
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
@@ -2526,6 +2560,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   // reopens. kShownMomentStale after a new search, so its moment opens afresh.
   std::int64_t _shownMoment;
   NSTimer* _browseTimer;
+  NSTimer* _pageSoakTimer;  // --page-soak (issue #429)
   // Bumped whenever _items is replaced; Swift's name/thumbnail caches key off
   // it (mv_chrome_listing_generation).
   std::uint64_t _listingGeneration;
@@ -3365,6 +3400,13 @@ static void MvAdoptNewDefaultViewerTypes() {
                                                name:NSMenuDidEndTrackingNotification
                                              object:nil];
 
+  if (g_mac_pages.enabled) {
+    _pageSoakTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 120.0
+                                                      target:self
+                                                    selector:@selector(pageSoakTick)
+                                                    userInfo:nil
+                                                     repeats:YES];
+  }
   if (g_mac_browse.enabled) {
     _browseTimer = [NSTimer scheduledTimerWithTimeInterval:0.01
                                                     target:self
@@ -3384,6 +3426,125 @@ static void MvAdoptNewDefaultViewerTypes() {
   } else {
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
+  }
+}
+
+// --- --page-soak (see mac_page_run) --------------------------------------------
+
+- (std::uint32_t)pageSoakLanded:(std::uint32_t)first count:(std::uint32_t)count {
+  std::uint32_t n = 0;
+  for (std::uint32_t p = first; p < first + count; ++p) {
+    if (_pageThumbs && !_pageThumbs->path(p).empty()) ++n;
+  }
+  return n;
+}
+
+- (void)pageSoakFinish:(const char*)error {
+  auto& p = g_mac_pages;
+  if (p.step == mac_page_phase::finish) return;
+  p.step = mac_page_phase::finish;
+  [_pageSoakTimer invalidate];
+  _pageSoakTimer = nil;
+  if (FILE* f = std::fopen(p.json_path.c_str(), "wb")) {
+    std::fprintf(f, "{\n  \"schema\": 1,\n  \"error\": ");
+    if (error) browse_json_string(f, error);
+    else std::fputs("null", f);
+    std::fprintf(f,
+                 ",\n  \"pages\": %u,\n  \"sidebar_s\": %.3f,\n  \"fling_s\": %.3f,\n"
+                 "  \"drain_s\": %.3f,\n  \"landed\": %u,\n  \"jumps\": [\n",
+                 p.pages, p.sidebar_s, p.fling_s, p.drain_s, p.landed);
+    for (std::size_t i = 0; i < p.rows.size(); ++i) {
+      const auto& r = p.rows[i];
+      std::fprintf(f,
+                   "    {\"page\": %d, \"timed_out\": %d, \"placeholder\": %d, \"ready_ms\": %.3f, "
+                   "\"present_ms\": %.3f, \"full_ms\": %.3f}%s\n",
+                   r.page + 1, r.timed_out, r.placeholder, r.ready_ms, r.present_ms, r.full_ms,
+                   i + 1 < p.rows.size() ? "," : "");
+    }
+    std::fputs("  ]\n}\n", f);
+    std::fclose(f);
+  }
+  // Under --soak the soak's own timer ends the run and writes its report.
+  if (_options.soak_seconds <= 0.0) [NSApp terminate:nil];
+}
+
+- (void)pageSoakTick {
+  auto& p = g_mac_pages;
+  const double now = browse_now();
+  if (p.t0 == 0.0) p.t0 = p.phase_t = now;
+  switch (p.step) {
+    case mac_page_phase::wait_doc:
+      if ([self filmstripVisible]) [self setFilmstripVisible:NO];
+      if (_pageSidebarShown && _pageSidebarListed > 1 && _shownPageCount == _pageSidebarListed) {
+        p.pages = _pageSidebarListed;
+        p.sidebar_s = now - p.t0;
+        p.step = mac_page_phase::settle;
+        p.phase_t = now;
+      } else if (now - p.t0 > kMacBrowseOpenTimeout) {
+        [self pageSoakFinish:"no paged document with its sidebar appeared"];
+      }
+      return;
+    case mac_page_phase::settle:
+      if (now - p.phase_t < 2.0) return;
+      p.step = mac_page_phase::fling;
+      p.phase_t = now;
+      return;
+    case mac_page_phase::fling: {
+      const double t = std::min(1.0, (now - p.phase_t) / kMacPageFlingSeconds);
+      const std::uint32_t span = p.pages > kMacPageWindow ? p.pages - kMacPageWindow : 0;
+      [MVChromeHost pageSidebarHarnessScrollWithPage:static_cast<int32_t>(std::lround(t * span))];
+      if (t < 1.0) return;
+      p.fling_s = now - p.phase_t;
+      p.step = mac_page_phase::drain;
+      p.phase_t = now;
+      return;
+    }
+    case mac_page_phase::drain: {
+      const std::uint32_t window = std::min(kMacPageWindow, p.pages);
+      const std::uint32_t first = p.pages - window;
+      if ([self pageSoakLanded:first count:window] < window && now - p.phase_t < kMacBrowseStepTimeout) {
+        return;
+      }
+      p.drain_s = now - p.phase_t;
+      p.landed = [self pageSoakLanded:0 count:p.pages];
+      for (const std::uint32_t want : {249u, 9u, 149u, p.pages - 1, 0u, 249u, 99u}) {
+        p.targets.push_back(std::min(want, p.pages - 1));
+      }
+      p.step = mac_page_phase::jump;
+      p.phase_t = now;
+      return;
+    }
+    case mac_page_phase::jump: {
+      if (now - p.phase_t < 1.0) return;  // dwell: the page before is settled
+      if (p.next >= p.targets.size()) return [self pageSoakFinish:nullptr];
+      const std::uint32_t page = p.targets[p.next++];
+      if (page == _shownPage) return;  // already there: nothing to time
+      p.seq = _lab.mark_navigation();
+      if (p.seq == 0) return [self pageSoakFinish:"could not mark a jump"];
+      p.rows.push_back({static_cast<int>(page), 0, 0, -1.0, -1.0, -1.0});
+      [self selectPage:static_cast<int32_t>(page)];
+      p.step = mac_page_phase::wait_jump;
+      p.phase_t = now;
+      return;
+    }
+    case mac_page_phase::wait_jump: {
+      const bool done = _lab.navigation_done(p.seq) && _lab.navigation_full_ms(p.seq) >= 0.0;
+      if (!done && now - p.phase_t <= kMacBrowseStepTimeout) return;
+      mac_page_row& row = p.rows.back();
+      row.timed_out = done ? 0 : 1;
+      if (done) {
+        const auto sample = _lab.navigation_sample(p.seq);
+        row.ready_ms = sample.ready_ms;
+        row.present_ms = sample.present_ms;
+        row.full_ms = _lab.navigation_full_ms(p.seq);
+        row.placeholder = sample.cached ? 0 : 1;
+      }
+      p.step = mac_page_phase::jump;
+      p.phase_t = now;
+      return;
+    }
+    case mac_page_phase::finish:
+      return;
   }
 }
 
@@ -11697,6 +11858,7 @@ void usage() {
                "                  folder browse + drag-drop (PR 18)\n"
                "  --soak N --json PATH [--gate] [--static] [--no-overlay]\n"
                "  --browse-soak --json PATH FOLDER   time arrows and jumps (tools/perf)\n"
+               "  --page-soak PATH DOCUMENT          fling the page sidebar, time page jumps\n"
                "  --compare     start with the two-up compare on (`|`)\n"
                "  --open PATH   or a bare PATH: a folder opens that folder; a file opens its\n"
                "                folder with that file selected (docs/design/16-commands.md). Wheel to\n"
@@ -11739,6 +11901,9 @@ int main(int argc, char** argv) {
       g_new_window_from = NSMakePoint(x, y);
     } else if (std::strcmp(arg, "--browse-soak") == 0) {
       g_mac_browse.enabled = true;
+    } else if (std::strcmp(arg, "--page-soak") == 0) {
+      g_mac_pages.enabled = true;
+      g_mac_pages.json_path = next();
     } else if (std::strcmp(arg, "--compare") == 0) {
       g_start_compare = true;
     } else if (std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0) {
@@ -11760,6 +11925,13 @@ int main(int argc, char** argv) {
       usage();
       return 2;
     }
+  }
+  if (g_mac_pages.enabled) {
+    if (g_mac_pages.json_path.empty() || options.open_path.empty()) {
+      std::fprintf(stderr, "mediaviewer_lab: --page-soak needs a report PATH and a PDF, DOCX or PPTX\n");
+      return 2;
+    }
+    options.harness = true;
   }
   if (g_mac_browse.enabled) {
     if (options.soak_seconds > 0.0 || options.json_report_path.empty() || options.open_path.empty()) {
