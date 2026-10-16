@@ -89,7 +89,7 @@ public static partial class IslandHost
     {
         if (_slotsListening) return;
         _slotsListening = SlotNative.SetListener(SlotListener);
-        if (_slotsListening) OnSlotsChanged((SlotChange)0x3F);
+        if (_slotsListening) OnSlotsChanged((SlotChange)0x7F);
     }
 
     // ---- loading the add-ons that fill slots --------------------------------------
@@ -186,6 +186,7 @@ public static partial class IslandHost
         if (bits.HasFlag(SlotChange.Search)) ReadSlotSearch();
         if (bits.HasFlag(SlotChange.Badges)) ReadSlotBadges();
         if (bits.HasFlag(SlotChange.Status)) ReadSlotStatus();
+        if (bits.HasFlag(SlotChange.Notices)) ReadSlotNotices();  // IslandHost.Notices.cs
     }
 
     private static void ReadSlotContributions()

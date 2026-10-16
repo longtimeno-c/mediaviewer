@@ -810,7 +810,7 @@ a text model for meaning (D3) and OCR for scans (D4) follow it.
   hostile-input code in this process: it runs on the index workers only, one call at a time
   (it is not thread-safe), at most 500 pages and 60 s a document, through a file reader that
   reads the blocks it asks for. A DOCX's is the **host's** (`document_text` on the host table,
-  appended after `place_matches`): `codec::docx_text`, the viewer's own DOCX reader and
+  appended after `keep_alive`): `codec::docx_text`, the viewer's own DOCX reader and
   layout with no picture decoded, a paragraph at a time with the page that shows it.
 - **Passages** (`passages.h`): a few sentences each (a passage closes at a sentence end past 40
   words, and at 80 wherever it is), never across a page, at most 20,000 a document. A PDF page's

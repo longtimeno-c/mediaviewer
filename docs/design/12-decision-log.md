@@ -1433,6 +1433,20 @@ entry. The check is local to the sender (constant time, digits only, a partial e
 try); three wrong entries send `cancel` and end the link. The wire is unchanged (protocol 1): the
 receiver waits for the offer either way. Bluetooth's passkey entry is the pattern.
 
+**Receive when MediaViewer is closed: the same process stays, opt-in, with a notification (owner,
+2026-10-16, #452).** Off by default; on, it implies Keep receiving. The add-on asks the host to keep
+its process (`keep_alive`, host table, ABI 0.33) rather than shipping a helper app or a login agent:
+add-ons carry their own code and there is no second app. Closing the last window, ⌘Q and the
+Dock's Quit then hide the viewer (it drops what it showed) and leave a menu-bar item (Mac) or a
+notification-area icon (Windows) whose Quit really quits; logout, restart and an update's restart
+quit as before. An offer is a system notification (`notice_post`: `UNUserNotificationCenter`,
+`AppNotificationManager` under the process's AUMID) that names the sender, then the count and
+size, never a file name or the code; a click opens the window with the code, its one button is
+Decline, and Accept stays in the window. It shows whenever the window is not the front one, so
+Keep receiving gets it too. Without permission (asked when a toggle turns on, never at launch)
+the window opens as before. Off changes nothing: no keep-alive, no registration, no ask. Start at
+login is not built (a follow-up). Measured windowless idle: see DEVELOPMENT.md (#452).
+
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
 no-replace before its `file_done`; the sender's `done` waits for every check. Measured on loopback

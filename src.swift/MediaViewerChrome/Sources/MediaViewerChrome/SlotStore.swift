@@ -183,7 +183,7 @@ final class SlotStore: ObservableObject {
     // A hop later, not inside init: reading the contributions reaches
     // MetadataStore.shared, whose askSlots asks SlotStore.shared, and
     // re-entering a `static let` initialiser traps (swift_once).
-    DispatchQueue.main.async { SlotStore.shared.changed(0x3F) }
+    DispatchQueue.main.async { SlotStore.shared.changed(0x7F) }
   }
 
   // MARK: reading
@@ -214,6 +214,7 @@ final class SlotStore: ObservableObject {
     }
     if bits & 16 != 0 { readBadges() }
     if bits & 32 != 0 { readStatus() }
+    if bits & 64 != 0 { readNotices() }
   }
 
   private func readContributions() {
@@ -313,6 +314,12 @@ final class SlotStore: ObservableObject {
       byName[name] = keys.compactMap { badgeDefs[$0] }
     }
     badgesByName = byName
+  }
+
+  /// #452: notices and keep-alive (AddonNotices.swift draws them).
+  private func readNotices() {
+    guard let doc = Self.read({ mv_chrome_slots_notices($0, $1) }) as? [String: Any] else { return }
+    AddonNotices.shared.read(doc)
   }
 
   private func readStatus() {

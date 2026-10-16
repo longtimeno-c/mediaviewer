@@ -34,6 +34,8 @@ std::optional<prefs> parse(const std::string& text) {
   if (!doc || doc->k != json::kind::object) return std::nullopt;
   prefs p;
   p.receiving = doc->boolean("receiving").value_or(false);
+  p.background = doc->boolean("background").value_or(false);
+  if (p.background) p.receiving = true;
   if (const std::string* d = doc->str("destination")) p.destination = *d;
   return p;
 }
@@ -52,6 +54,7 @@ bool save_prefs(const std::string& path, const prefs& p) {
   if (path.empty()) return false;
   json::writer w;
   w.begin_object().key("v").integer(1).key("receiving").boolean(p.receiving);
+  w.key("background").boolean(p.background);
   w.key("destination").string(p.destination).end_object();
   const std::string text = w.take();
   const std::string fresh = path + ".new";

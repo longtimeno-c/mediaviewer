@@ -303,10 +303,17 @@ std::string build_tree(const view& v) {
   stack(w, "me", 6, "vertical", nullptr, "fill");
   text(w, "intro",
        "Nearby MediaViewers see this computer as \xE2\x80\x9C" + v.my_name +
-           "\xE2\x80\x9D while this window is open" + (v.receiving ? " and while MediaViewer runs." : "."),
+           "\xE2\x80\x9D while this window is open" +
+           (v.background ? ", and while MediaViewer is closed."
+                         : v.receiving ? " and while MediaViewer runs." : "."),
        "secondary");
   w.begin_object().key("type").string("toggle").key("id").string("receiving");
   w.key("label").string("Keep receiving when this window is closed").key("value").boolean(v.receiving).end_object();
+  // #452: opt-in, off by default. MediaViewer then stays in the menu bar /
+  // notification area with every window closed, and an offer is a system
+  // notification that opens this window (never the code itself).
+  w.begin_object().key("type").string("toggle").key("id").string("background");
+  w.key("label").string(kBackgroundLabel).key("value").boolean(v.background).end_object();
   {
     std::string where = v.wifi_up ? "Looking on the local network" : "The local network is not available";
     where += v.bluetooth_note.empty() ? (v.wifi_up ? " and Bluetooth." : "; looking on Bluetooth.")

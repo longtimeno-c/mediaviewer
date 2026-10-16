@@ -99,6 +99,19 @@ MV_API mv_status MV_CALL mv_slots_status_json(char* out, uint32_t cap, uint32_t*
   }));
 }
 
+MV_API mv_status MV_CALL mv_slots_notices_json(char* out, uint32_t cap, uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_slots_notices_json", [&] {
+    return write_out(mv::addon::default_slots().notices_json(), out, cap, needed);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_slots_notice_action(const char* addon, const char* notice_id, const char* action_id) {
+  return static_cast<mv_status>(mv::abi::guard("mv_slots_notice_action", [&] {
+    MV_REQUIRE(addon && notice_id && action_id, "addon, notice and action required");
+    return mv::addon::default_slots().notice_action(addon, notice_id, action_id);
+  }));
+}
+
 MV_API mv_status MV_CALL mv_slots_request_info(const char* path_utf8, const char* location_text,
                                                const mv_slot_theme* theme, float width_pt, float scale,
                                                uint64_t* out_generation) {

@@ -41,6 +41,7 @@ constexpr uint32_t kHostApiMin = 3;
 constexpr uint32_t kHostApiMax = 3;
 constexpr const char* kScreen = "sharepoint";
 constexpr const char* kStatusItem = "receiving";  // manifest.json status_items
+constexpr const char* kNotice = "offer";          // the one notice (#452): an offer waiting here
 
 template <typename Fn>
 mv_status guard(Fn&& fn) noexcept {
@@ -121,6 +122,33 @@ class host_bridge final : public mv::sharepoint::engine_host {
     return h_->status_post && h_->status_post(h_->host, kStatusItem, text.c_str()) == MV_OK;
   }
 
+  // #452: entries appended to the host table; an older host has none.
+#define MV_SP_HAS(field) \
+  (h_->struct_size >= offsetof(mv_host_api, field) + sizeof(h_->field) && h_->field != nullptr)
+
+  bool post_notice(const std::string& title, const std::string& body) override {
+    if (!MV_SP_HAS(notice_post)) return false;
+    if (title.empty()) return h_->notice_post(h_->host, kNotice, nullptr) == MV_OK;
+    mv_addon_notice n{};
+    n.struct_size = sizeof n;
+    n.screen_id = kScreen;
+    n.title_utf8 = title.c_str();
+    n.body_utf8 = body.c_str();
+    n.action_id = "decline";  // the window's own Decline (engine::on_event)
+    n.action_label = "Decline";
+    return h_->notice_post(h_->host, kNotice, &n) == MV_OK;
+  }
+
+  void ask_to_notify() override {
+    if (MV_SP_HAS(notice_authorize)) (void)h_->notice_authorize(h_->host);
+  }
+
+  bool keep_alive(bool on) override {
+    if (!MV_SP_HAS(keep_alive)) return true;  // an older host: nothing to keep
+    return h_->keep_alive(h_->host, on ? 1 : 0, kScreen, mv::sharepoint::kReceivingStatus) == MV_OK;
+  }
+#undef MV_SP_HAS
+
  private:
   const mv_host_api* h_;
   std::mutex m_;
@@ -159,7 +187,7 @@ struct addon_state {
   void start_if_kept() {
     if (prefs_path.empty()) return;
     auto kept = mv::sharepoint::load_prefs(prefs_path);
-    if (!kept || !kept->receiving) return;
+    if (!kept || !(kept->receiving || kept->background)) return;
     background = mv::sharepoint::net::try_lock_instance(prefs_path + ".lock");
     if (!background) return;  // another window's process receives
     (void)get(kept);
@@ -206,6 +234,11 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
       return MV_OK;
     }
     if (!e->screen_id || std::strcmp(e->screen_id, kScreen) != 0) return MV_OK;
+    if (e->kind == MV_SLOT_EVENT_NOTICE) {
+      // #452: Decline in the system notification is the window's Decline.
+      if (g->eng && std::strcmp(e->node_id, "decline") == 0) g->eng->on_event("decline", MV_SLOT_EVENT_CLICK, "");
+      return MV_OK;
+    }
     g->get().on_event(e->node_id, e->kind, e->value_json ? e->value_json : "");
     return MV_OK;
   });

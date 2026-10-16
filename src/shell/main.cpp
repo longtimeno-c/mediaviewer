@@ -155,6 +155,11 @@ constexpr UINT kMsgOpenWithReady = WM_APP + 0x7B;
 constexpr UINT kMsgScripts = WM_APP + 0x7C;
 constexpr UINT kMsgTextRead = WM_APP + 0x7E;  // text in images: a still was read (any thread posts)
 constexpr UINT kMsgShareReady = WM_APP + 0x7F;  // issue #444: a share's files were gathered (pool posts)
+// #452 (docs/design/28 "In the background"): the notification-area icon's
+// callback, and the chrome saying the add-ons' keep-alive list changed
+// (IslandHost.Notices.cs posts it).
+constexpr UINT kMsgTray = WM_APP + 0x80;
+constexpr UINT kMsgBackgroundChanged = WM_APP + 0x81;
 // Text in images: the pointer rests on a still this long before it is read.
 constexpr UINT_PTR kTextDwellTimerId = 0x7C01;
 constexpr UINT kTextDwellMs = 500;
@@ -497,6 +502,13 @@ struct app_state {
   int thumb_state = -1;
   // PR 15: the single instance. A second start hands its paths over here.
   mv::shell::instance_listener instance;
+  // #452: an add-on keeps the process with every window closed (Sharepoint's
+  // Receive when MediaViewer is closed). Closing hides the window instead;
+  // the notification-area icon shows while the add-on asks for it.
+  bool in_background = false;
+  bool quit_for_real = false;  // the icon's Quit, an update's restart
+  bool tray_shown = false;
+  UINT taskbar_restart_msg = 0;  // "TaskbarCreated": Explorer restarted, add the icon again
   // An add-on update's restart with no app update staged: MediaViewer starts
   // again with these arguments once this process has exited.
   std::optional<std::vector<std::wstring>> relaunch;
@@ -5199,6 +5211,7 @@ bool chrome_session_command(app_state* app, int command, float arg) {
     case mv::shell::chrome_cmd_update_restart: {
       if (arg != 0.0f) {
         // Update.exe is armed and waiting for this pid: leave the ordinary way.
+        app->quit_for_real = true;  // #452: never kept in the background
         if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
         return true;
       }
@@ -5230,6 +5243,7 @@ bool chrome_session_command(app_state* app, int command, float arg) {
         // An add-on update and no app update staged: start again on our own,
         // after this process has exited (the exit path below).
         app->relaunch = args;
+        app->quit_for_real = true;  // #452: never kept in the background
         ::PostMessageW(app->window, WM_CLOSE, 0, 0);
         return true;
       }
@@ -8522,6 +8536,129 @@ bool client_animations_off() noexcept {
   return on == FALSE;
 }
 
+// ---- #452: in the background (docs/design/28 "In the background") --------------------------
+// Off (the default) none of this runs: WM_CLOSE closes and the process exits.
+// On, the window drops what it showed (return_to_welcome: no clip plays, the
+// folder and its watch close), hides, and the add-on's threads are all that
+// run; the canvas presents nothing (window_visible is false).
+
+struct kept_alive_entry {
+  std::string addon, screen, title, label;
+};
+
+std::vector<kept_alive_entry> kept_alive() {
+  std::vector<kept_alive_entry> out;
+  std::string json(4096, '\0');
+  uint32_t needed = 0;
+  mv_status status = mv_slots_notices_json(json.data(), static_cast<uint32_t>(json.size()), &needed);
+  if (status == MV_ERR_INVALID_ARG && needed > json.size()) {
+    json.assign(needed, '\0');
+    status = mv_slots_notices_json(json.data(), static_cast<uint32_t>(json.size()), &needed);
+  }
+  if (status != MV_OK || needed == 0) return out;
+  json.resize(needed - 1);
+  const auto doc = mv::json::parse(json, 4);
+  if (!doc || doc->k != mv::json::kind::object) return out;
+  const mv::json::value* keep = doc->find("keep");
+  if (!keep || keep->k != mv::json::kind::array) return out;
+  for (const mv::json::value& k : keep->a) {
+    const std::string* addon = k.str("addon");
+    const std::string* screen = k.str("screen");
+    if (!addon || !screen) continue;
+    const std::string* title = k.str("title");
+    const std::string* label = k.str("label");
+    out.push_back({*addon, *screen, title ? *title : *screen, label ? *label : std::string()});
+  }
+  return out;
+}
+
+void sync_tray(app_state* app, const std::vector<kept_alive_entry>& keep) {
+  NOTIFYICONDATAW nid{};
+  nid.cbSize = sizeof nid;
+  nid.hWnd = app->window;
+  nid.uID = 1;
+  if (keep.empty()) {
+    if (app->tray_shown) (void)::Shell_NotifyIconW(NIM_DELETE, &nid);
+    app->tray_shown = false;
+    return;
+  }
+  nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
+  nid.uCallbackMessage = kMsgTray;
+  (void)::LoadIconWithScaleDown(::GetModuleHandleW(nullptr), MAKEINTRESOURCEW(MV_IDI_APP),
+                                ::GetSystemMetrics(SM_CXSMICON), ::GetSystemMetrics(SM_CYSMICON), &nid.hIcon);
+  const std::wstring tip = wide_from_utf8(keep.front().label.empty() ? std::string("MediaViewer") : keep.front().label);
+  (void)::wcsncpy_s(nid.szTip, tip.c_str(), _TRUNCATE);
+  if (!app->tray_shown) {
+    app->tray_shown = ::Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
+    nid.uVersion = NOTIFYICON_VERSION_4;
+    if (app->tray_shown) (void)::Shell_NotifyIconW(NIM_SETVERSION, &nid);
+  } else {
+    (void)::Shell_NotifyIconW(NIM_MODIFY, &nid);
+  }
+  if (nid.hIcon) ::DestroyIcon(nid.hIcon);  // the shell keeps its own copy
+}
+
+void enter_background(app_state* app) {
+  if (app->in_background) return;
+  if (app->editor.open) set_editor_open(app, false);  // PR 30: the canvas comes home first
+  stop_slideshow(app);
+  if (app->fullscreen) set_fullscreen(app, false);
+  return_to_welcome(app);
+  app->in_background = true;
+  app->input.window_visible = false;
+  publish(app);
+  ::ShowWindow(app->window, SW_HIDE);
+  sync_tray(app, kept_alive());
+}
+
+void leave_background(app_state* app) {
+  if (!app->in_background) return;
+  app->in_background = false;
+  ::ShowWindow(app->window, SW_SHOW);
+  if (::IsIconic(app->window)) ::ShowWindow(app->window, SW_RESTORE);
+  app->input.window_visible = !::IsIconic(app->window);
+  publish(app);
+  ::SetForegroundWindow(app->window);
+}
+
+void quit_from_background(app_state* app) {
+  app->quit_for_real = true;
+  ::PostMessageW(app->window, WM_CLOSE, 0, 0);
+}
+
+// The icon's menu: the add-on's line, Open <screen> for each, Open MediaViewer, Quit.
+void show_tray_menu(app_state* app, POINT at) {
+  const std::vector<kept_alive_entry> keep = kept_alive();
+  HMENU menu = ::CreatePopupMenu();
+  if (!menu) return;
+  constexpr UINT kOpenViewer = 1, kQuit = 2, kOpenScreen = 0x100;
+  if (!keep.empty() && !keep.front().label.empty()) {
+    (void)::AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, wide_from_utf8(keep.front().label).c_str());
+    (void)::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  }
+  for (std::size_t i = 0; i < keep.size() && i < 16; ++i) {
+    (void)::AppendMenuW(menu, MF_STRING, kOpenScreen + static_cast<UINT>(i),
+                        wide_from_utf8("Open " + keep[i].title).c_str());
+  }
+  (void)::AppendMenuW(menu, MF_STRING, kOpenViewer, L"Open MediaViewer");
+  (void)::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  (void)::AppendMenuW(menu, MF_STRING, kQuit, L"Quit MediaViewer");
+  // The documented dance: foreground first, so the menu closes when the person clicks away.
+  ::SetForegroundWindow(app->window);
+  const UINT picked = static_cast<UINT>(::TrackPopupMenuEx(
+      menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, at.x, at.y, app->window, nullptr));
+  ::PostMessageW(app->window, WM_NULL, 0, 0);
+  ::DestroyMenu(menu);
+  if (picked == kOpenViewer) {
+    leave_background(app);
+  } else if (picked == kQuit) {
+    quit_from_background(app);
+  } else if (picked >= kOpenScreen && picked - kOpenScreen < keep.size()) {
+    const kept_alive_entry& k = keep[picked - kOpenScreen];
+    (void)app->chrome.open_addon_screen(k.addon, k.screen);
+  }
+}
+
 // Issue #239. A value is the case's `return`. nullopt is a switch-level
 // `break`: window_proc then asks the next area and finally DefWindowProc.
 std::optional<LRESULT> window_on_geometry(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam,
@@ -8901,6 +9038,7 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
       // A second start's paths (docs/design/09): opened here, as a drop would be, and
       // the window comes forward. An empty hand-off only brings it forward.
       std::unique_ptr<std::wstring> paths(reinterpret_cast<std::wstring*>(lparam));
+      leave_background(app);  // #452: a start while hidden brings the window back
       if (paths && !paths->empty()) open_dropped_wide_list(app, *paths);
       if (::IsIconic(hwnd)) ::ShowWindow(hwnd, SW_RESTORE);
       ::SetForegroundWindow(hwnd);
@@ -8965,7 +9103,36 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
     case WM_ERASEBKGND:
       return 1;  // the swapchain owns every pixel; never let GDI flash over it
 
+    case kMsgTray:
+      // #452, NOTIFYICON_VERSION_4: the event in LOWORD(lparam), the anchor in wparam.
+      switch (LOWORD(lparam)) {
+        case NIN_SELECT:
+        case NIN_KEYSELECT:
+          leave_background(app);
+          return 0;
+        case WM_CONTEXTMENU:
+          show_tray_menu(app, POINT{GET_X_LPARAM(wparam), GET_Y_LPARAM(wparam)});
+          return 0;
+        default:
+          return 0;
+      }
+
+    case kMsgBackgroundChanged: {
+      // #452: the keep-alive list changed. Turned off while hidden: the window
+      // comes back (the person is in the add-on's window, which it owns), and
+      // the next close quits as before.
+      const std::vector<kept_alive_entry> keep = kept_alive();
+      sync_tray(app, keep);
+      if (keep.empty() && app->in_background) leave_background(app);
+      return 0;
+    }
+
     case WM_CLOSE: {
+      // #452: an add-on keeps the process: hide, do not close.
+      if (!app->closing && !app->quit_for_real && !kept_alive().empty()) {
+        enter_background(app);
+        return 0;
+      }
       // PR 3-era exit fail-fast (0xC0000602 in CoreUIComponents.dll, about 1
       // exit in 6 on main): the islands were disposed from WM_DESTROY, while
       // DestroyWindow was already tearing their bridge windows down under a
@@ -8995,6 +9162,7 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
     }
 
     case WM_DESTROY:
+      sync_tray(app, {});  // #452: the icon goes with the window
       if (app->keep_awake) {
         app->keep_awake = false;
         (void)::SetThreadExecutionState(ES_CONTINUOUS);
@@ -9138,6 +9306,12 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     on_taskbar_button_created(app);
     return 0;
   }
+  if (app->taskbar_restart_msg != 0 && msg == app->taskbar_restart_msg) {
+    // #452: Explorer restarted; its notification area lost the icon.
+    app->tray_shown = false;
+    sync_tray(app, kept_alive());
+    return 0;
+  }
 
   if (const auto handled = window_on_geometry(hwnd, msg, wparam, lparam, app)) return *handled;
   if (const auto handled = window_on_pointer(hwnd, msg, wparam, lparam, app)) return *handled;
@@ -9232,6 +9406,9 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
       // Every positional path: Explorer's "Open" with several files passes
       // them all. open_paths decides (docs/design/16).
       open_paths.emplace_back(arg);
+    } else if (arg.rfind(L"----AppNotificationActivated:", 0) == 0) {
+      // #452: a notification clicked after the process that showed it ended:
+      // Windows starts the app with this. It opens as an ordinary start.
     } else {
       error = L"unrecognised argument: " + std::wstring(arg);
       ok = false;
@@ -9369,6 +9546,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   }
   // The toolbar is added when Explorer reports the button, not before.
   app.taskbar_created_msg = ::RegisterWindowMessageW(L"TaskbarButtonCreated");
+  app.taskbar_restart_msg = ::RegisterWindowMessageW(L"TaskbarCreated");  // #452
   mv::shell::apply_key_remaps(mv::shell::load_key_remaps());
   app.router.rebuild(mv::shell::live_bindings());
   if (!app.files.start()) MV_LOG_WARN("files: I/O worker did not start; F7 / F8 / Delete disabled");

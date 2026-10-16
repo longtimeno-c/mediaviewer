@@ -840,6 +840,37 @@ mv_status MV_CALL t_place_matches(void* host, const char* place, mv_addon_path_f
   });
 }
 
+// #452: a notice (a system notification the hosts draw), the permission ask,
+// and keeping the process with every window closed. Tables, never a wait.
+mv_status MV_CALL t_notice_post(void* host, const char* notice_id, const mv_addon_notice* n) {
+  return guarded([&] {
+    if (!notice_id) return MV_ERR_INVALID_ARG;
+    std::optional<slot_registry::notice_fields> f;
+    if (n) {
+      if (n->struct_size < sizeof(mv_addon_notice) || !n->screen_id || !n->title_utf8) return MV_ERR_INVALID_ARG;
+      f = slot_registry::notice_fields{n->screen_id, n->title_utf8, str_of(n->body_utf8), str_of(n->action_id),
+                                       str_of(n->action_label)};
+    }
+    host_table& t = self(host);
+    return to_mv(t.slots().post_notice(t.addon_id(), notice_id, std::move(f)));
+  });
+}
+
+mv_status MV_CALL t_notice_authorize(void* host) {
+  return guarded([&] {
+    host_table& t = self(host);
+    return to_mv(t.slots().ask_notice_permission(t.addon_id()));
+  });
+}
+
+mv_status MV_CALL t_keep_alive(void* host, uint32_t on, const char* screen, const char* label) {
+  return guarded([&] {
+    if (on && !screen) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    return to_mv(t.slots().keep_alive(t.addon_id(), on != 0, str_of(screen), str_of(label)));
+  });
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -905,6 +936,9 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.locations_of_index = &t_locations_of_index;
   // Always set too: whether Places is loaded changes while the add-on runs.
   api_.place_matches = &t_place_matches;
+  api_.notice_post = &t_notice_post;
+  api_.notice_authorize = &t_notice_authorize;
+  api_.keep_alive = &t_keep_alive;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }
