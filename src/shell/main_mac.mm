@@ -187,6 +187,8 @@ static std::atomic<bool> g_tag_refresh_posted{false};
 // empty window; the viewer's state is one per process. Set from --new-window:
 // the top-left of the window that asked, so this one cascades from it.
 bool g_new_window = false;
+// `--compare` (issue #208): start with the two-up compare on, as `|` turns it on.
+bool g_start_compare = false;
 NSPoint g_new_window_from = NSZeroPoint;
 
 // Add-ons -- the AI pack and its indexer, Import's volume watch, Final Cut
@@ -6476,6 +6478,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       _snap.hold_previous = command == hold_previous;
       [self pokeSnapshot];
       return YES;
+    case compare_two_up:
+      // A level: the render thread splits only while a still is up.
+      _snap.compare = !_snap.compare;
+      [self pokeSnapshot];
+      return YES;
     // PR 9. The overlays are levels the render thread draws from `_snap.meta`;
     // turning one on asks for the record if it is not already here, and never
     // reads the file a second time.
@@ -10969,6 +10976,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   const auto prefs = mv::shell::view_settings::from_flags(_viewFlags);
   _index.set_wrap(prefs.wrap);
   _snap.sticky_zoom = prefs.sticky_zoom;
+  _snap.compare = g_start_compare;
 }
 
 - (void)resetKeys {
@@ -11523,6 +11531,7 @@ void usage() {
                "                  folder browse + drag-drop (PR 18)\n"
                "  --soak N --json PATH [--gate] [--static] [--no-overlay]\n"
                "  --browse-soak --json PATH FOLDER   time arrows and jumps (tools/perf)\n"
+               "  --compare     start with the two-up compare on (`|`)\n"
                "  --open PATH   or a bare PATH: a folder opens that folder; a file opens its\n"
                "                folder with that file selected (docs/design/16-commands.md). Wheel to\n"
                "                zoom toward the cursor, drag to pan, 0 fit, 1 one-to-one.\n"
@@ -11564,6 +11573,8 @@ int main(int argc, char** argv) {
       g_new_window_from = NSMakePoint(x, y);
     } else if (std::strcmp(arg, "--browse-soak") == 0) {
       g_mac_browse.enabled = true;
+    } else if (std::strcmp(arg, "--compare") == 0) {
+      g_start_compare = true;
     } else if (std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0) {
       usage();
       return 0;

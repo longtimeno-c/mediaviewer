@@ -827,6 +827,36 @@ TEST_CASE("holds are per key: a second hold cannot swallow the first release", "
   REQUIRE(r.on_key(up(z), s).command == command_id::loupe_release);
 }
 
+TEST_CASE("| toggles compare on a still or a clip; \\ still holds previous", "[shell][router][compare]") {
+  // Issue #208: `|` is the Shift twin of `\`. On a US layout Shift+\ produces
+  // '|', and the layout edge clears Shift, as it does for `?`.
+  std::uint8_t mods = mod_shift;
+  const key bar = resolve_layout_symbol(U'\\', U'|', U'|', false, &mods);
+  REQUIRE(bar == char_key('|'));
+  REQUIRE(mods == mod_none);
+
+  key_router r;
+  REQUIRE(r.on_key(down(bar), still()).command == command_id::compare_two_up);
+  REQUIRE_FALSE(r.on_key(rep(bar), still()).handled);  // edge: a held key toggles once
+  REQUIRE(r.on_key(down(bar), clip()).command == command_id::compare_two_up);
+  // While Z is held the loupe layers over browse and `|` falls through to it.
+  view_state loupe = still();
+  loupe.loupe_held = true;
+  REQUIRE(r.on_key(down(bar), loupe).command == command_id::compare_two_up);
+  // Hold `\` is untouched.
+  const key bs = char_key('\\');
+  REQUIRE(r.on_key(down(bs), still()).command == command_id::hold_previous);
+  REQUIRE(r.on_key(up(bs), still()).command == command_id::hold_previous_release);
+  // Not in crop mode, a slideshow or the gallery.
+  view_state crop = still();
+  crop.crop = true;
+  REQUIRE_FALSE(r.on_key(down(bar), crop).handled);
+  view_state show = still();
+  show.slideshow = true;
+  REQUIRE_FALSE(r.on_key(down(bar), show).handled);
+  REQUIRE(find_command(command_id::compare_two_up) != nullptr);
+}
+
 TEST_CASE("losing activation fires the releases held keys owe", "[shell][router]") {
   key_router r;
   const auto s = clip();
