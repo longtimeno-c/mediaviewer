@@ -10683,7 +10683,16 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   if (!_text.wants_read() || _items.empty() || _index.current() >= _items.size()) return;
   if (!_lab.still_map().valid) return;
   const mv::shell::text_select::source src = _text.current();
-  const std::string path = _items[_index.current()].path_utf8;
+  // A Photos item (issue #451) is read from the file the canvas shows (its
+  // rendition, or the preview standing in for an iCloud-only original), never
+  // its "photos:" key, which no decoder opens. Not resolved yet: no read, and
+  // the next rest on it asks again.
+  std::string path = _items[_index.current()].path_utf8;
+  if (mv::shell::photos::is_key(path)) {
+    const auto hit = _photosResolved.find(path);
+    if (hit == _photosResolved.end() || hit->second.path.empty()) return;
+    path = hit->second.path;
+  }
   _text.reading();
   MvLabApp* __weak weakSelf = self;
   _jobs.submit_at(mv::background_generation, [path, src, weakSelf](const mv::job_context&) -> mv::status {
