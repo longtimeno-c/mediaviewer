@@ -30,8 +30,9 @@
 namespace mv::meta {
 
 // Bump when search_facts_of changes what it extracts: meta_cache.db rows of an
-// older version are read again.
-inline constexpr std::int32_t kSearchFactsVersion = 1;
+// older version are read again. 2 (#405): rating, colour label and exposure.
+// 3 (#355): an audio file's album, album artist, composer and genre.
+inline constexpr std::int32_t kSearchFactsVersion = 3;
 
 // Between two folded fields. Never typed, never in a fold.
 inline constexpr char kFieldSeparator = '\x1f';
@@ -46,7 +47,26 @@ struct search_facts {
   bool ai_generated = false;
   std::int64_t date_taken_key = 0;  // 0 = none (summary::date_taken_key)
   std::optional<geo_point> where;
+  // #405: what Local search's rating: / label: / iso: / f: / mm: / shutter:
+  // terms ask. Never search fields: a word search for "400" must not return
+  // every ISO 400 frame. 0 = absent for every number.
+  int rating = 0;               // summary::rating: 1..5, -1 rejected, 0 unrated
+  std::string label;            // summary::label, as written ("Red")
+  std::int32_t iso = 0;         // ISO speed
+  std::int32_t aperture_x100 = 0;  // f/2.8 -> 280
+  std::int32_t focal_mm = 0;    // focal length, whole millimetres
+  std::int32_t shutter_den = 0; // N when the exposure time is 1/N s, else 0
+  std::int64_t shutter_us = 0;  // the exposure time in microseconds (2 s -> 2000000)
 };
+
+// #405: the summary's printed exposure values as numbers (pure; exposed for
+// the tests). Each returns 0 for text it cannot read.
+[[nodiscard]] std::int32_t iso_number(std::string_view printed);        // "ISO 400" -> 400
+[[nodiscard]] std::int32_t aperture_x100(std::string_view printed);     // "f/2.8" -> 280
+[[nodiscard]] std::int32_t focal_mm(std::string_view printed);          // "35 mm", "4.25 mm" -> 35, 4
+// "1/250 s" -> 4000 us and den 250; "2 s" -> 2000000 us and den 0;
+// "0.5 s" or "1/2" -> 500000 us and den 2.
+[[nodiscard]] std::int64_t shutter_us(std::string_view printed, std::int32_t* den = nullptr);
 
 // The facts of an already-read record (pure).
 [[nodiscard]] search_facts search_facts_of(const metadata& m);

@@ -53,6 +53,7 @@
 
 #include "addon/ai_resume.h"
 #include "addon/host.h"
+#include "addon/index_locations.h"
 #include "addon/manifest.h"
 #include "addon/open_json.h"
 #include "addon/script_host.h"
@@ -65,6 +66,7 @@
 #include "io/paths.h"
 #include "meta/location.h"
 #include "meta/meta.h"
+#include "meta/cues.h"
 #include "meta/meta_cache.h"
 #include "mv_chrome_bridge.h"
 #include "shell/commands.h"
@@ -115,6 +117,8 @@
 - (void)folderChanged:(NSString*)dir;
 // The canvas item changed ("" none): scrub markers for a clip in the search.
 - (void)itemChanged:(NSString*)path;
+// #355: File types "Show audio files", on attach and on each change.
+- (void)showAudioChanged:(BOOL)on;
 // Settings -> Local search: the management view, owned (and kept) by the chrome.
 - (NSView*)settingsView;
 @end
@@ -129,6 +133,10 @@ void MvAppCommandsChanged();
 namespace {
 
 void refresh_contributed_commands();
+// #410: the command rows of the loaded add-ons that fill slots (Sharepoint),
+// kept as each loads (below, slot_addons_state).
+std::vector<mv::shell::addon_command_row> slot_command_rows();
+bool is_loaded_slot_addon(const std::string& id);
 // docs/design/25 PR 57: the script add-ons (defined with the open add-ons below).
 std::vector<mv::addon::script_command_row> script_rows();
 void scripts_set_key_notes(const std::string& notes_json);
@@ -205,6 +213,7 @@ struct mac_addons {
   std::mutex thumbs_mutex;  // the lazy open below; lookups are the store's own
   mv::image::thumb_store thumbs;
   std::string folder;       // the directory the viewer last opened
+  bool show_audio = false;  // #355: File types "Show audio files" [main-thread]
   // Another window's process holds Add-ons/.host.lock (main_mac.mm
   // MvClaimAddonHost): this one loads the AI pack through its read-only door
   // only, indexes nothing, loads no Import, installs or removes nothing, and
@@ -375,7 +384,32 @@ bool tag_facts(const std::string& path, mv_addon_tag_facts& out) {
   put(out.lens_utf8, sizeof(out.lens_utf8), f.lens);
   put(out.made_with_utf8, sizeof(out.made_with_utf8), f.made_with);
   put(out.fields_utf8, sizeof(out.fields_utf8), mv::meta::joined_fields(f.fields, sizeof(out.fields_utf8)));
+  // #405: rating, label and exposure (the table's struct_size says they are there).
+  out.rating = f.rating;
+  out.iso = f.iso;
+  out.aperture_x100 = f.aperture_x100;
+  out.focal_mm = f.focal_mm;
+  out.shutter_den = f.shutter_den;
+  out.shutter_us = f.shutter_us;
+  put(out.label_utf8, sizeof(out.label_utf8), f.label);
   return true;
+}
+
+// #406: a clip's chapter titles and text subtitle cues for the AI pack (meta/cues.h).
+mv::expected read_cues(const std::string& path, std::int64_t start_ms, std::int64_t max_ms, std::uint32_t max_cues,
+                       const std::function<bool(const mv::addon::host_services::cue&)>& visit) {
+  mv::meta::cue_limits lim;
+  lim.start_ms = start_ms;
+  lim.max_ms = max_ms;
+  lim.max_cues = max_cues;
+  return mv::meta::read_cues(path, lim, [&](const mv::meta::cue& c) {
+    mv::addon::host_services::cue out;
+    out.kind = c.kind == mv::meta::cue_kind::chapter ? MV_ADDON_CUE_CHAPTER : MV_ADDON_CUE_SUBTITLE;
+    out.start_ms = c.start_ms;
+    out.end_ms = c.end_ms;
+    out.text = c.text;
+    return visit(out);
+  });
 }
 
 bool capture_info(const std::string& path, mv_addon_capture& out) {
@@ -475,6 +509,10 @@ void refresh_contributed_commands() {
   };
   const mac_addons& s = state();
   add(s.import.get());
+  // #410: MediaViewer's own add-ons that fill slots run their commands as
+  // events to the add-on (slot_registry::run_command); no key unless the
+  // manifest names one.
+  for (mv::shell::addon_command_row& r : slot_command_rows()) rows.push_back(std::move(r));
   // docs/design/25 PR 57: other makers' script commands, after ours. Their keys
   // give way to the base app's (set_addon_commands), and Settings says so.
   for (const mv::addon::script_command_row& c : script_rows()) {
@@ -528,6 +566,7 @@ bool load_import_attempt() {
   mv::addon::host_services svc;
   svc.capture = &capture_info;
   svc.tag_facts = &tag_facts;
+  svc.read_cues = &read_cues;
   svc.thumbnail = &thumbnail;
   svc.should_yield = [] { return mv::shell::g_present_busy.load(std::memory_order_relaxed); };
   svc.post = [](const mv_addon_event& e) {
@@ -600,6 +639,7 @@ mv::addon::host_services ai_services() {
   mv::addon::host_services svc;
   svc.capture = &capture_info;
   svc.tag_facts = &tag_facts;
+  svc.read_cues = &read_cues;
   svc.thumbnail = &thumbnail;
   // Indexing waits while the present loop is busy (docs/design/17 "Yield policy":
   // playback, panning, a slideshow, a transition).
@@ -643,6 +683,16 @@ void unload_ai() {
   }
   s.ai.chrome = nil;
   s.ai.table = nullptr;
+  // #398: other add-ons' locations_of_index stop reading the pack's index now
+  // (a walk in flight stops at its next row). The wait for it to leave the
+  // pack runs on addon_queue(), ahead of the retire queued there: never on
+  // the main thread.
+  mv::addon::retract_index_locations();
+  if (!g_quitting.load(std::memory_order_relaxed)) {
+    dispatch_async(addon_queue(), ^{
+      mv::addon::wait_index_locations_idle();
+    });
+  }
   retire(std::move(s.ai.addon));
   s.ai.bundle = nil;   // mapped until quit, inert (NSBundle -unload is unsafe for Swift)
   s.ai.loading = false;
@@ -695,8 +745,16 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   s.ai.bundle = bundle;
   s.ai.chrome = chrome;
   s.ai.error.clear();
+  // #398: while the pack is attached (the writer or a later window's reader:
+  // both read index.db), its index's coordinates serve every add-on's
+  // locations_of_index (Places' place: over the whole index).
+  mv::addon::publish_index_locations(mv::addon::ai_index_locations(static_cast<const mv_ai_api*>(table)));
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, true);
   register_local_search_provider(true);
+  // #355: before anything is searched, whether audio files are.
+  if ([chrome respondsToSelector:@selector(showAudioChanged:)]) {
+    [(id<MVAIChrome>)chrome showAudioChanged:s.show_audio ? YES : NO];
+  }
   // The folder already on screen counts as opened.
   if (!s.folder.empty() && [chrome respondsToSelector:@selector(folderChanged:)]) {
     [(id<MVAIChrome>)chrome folderChanged:[NSString stringWithUTF8String:s.folder.c_str()]];
@@ -997,6 +1055,10 @@ void MvAddonsStartReader(MvAddonsOpenPathFn open_path, void* ctx) {
   // keys answer in every window (each reads its own folder). Utility QoS,
   // after the chrome; they never write the store.
   scripts_reload_async();
+  // docs/design/25 PRs 58-59, issue #402: the add-ons that fill screens and
+  // slots load in this window too, on the add-on queue at utility QoS. Found
+  // by manifest only, so this hashes Places' files, never the AI pack's.
+  MvSlotAddonsStart();
 }
 
 namespace {
@@ -1064,6 +1126,13 @@ void MvAddonsFolderOpened(const std::string& dir) {
   if (chrome && [chrome respondsToSelector:@selector(folderChanged:)]) {
     [chrome folderChanged:ns(dir)];
   }
+}
+
+void MvAddonsShowAudioChanged(bool on) {
+  mac_addons& s = state();
+  s.show_audio = on;
+  id<MVAIChrome> chrome = ai_chrome();
+  if (chrome && [chrome respondsToSelector:@selector(showAudioChanged:)]) [chrome showAudioChanged:on ? YES : NO];
 }
 
 void MvAddonsItemChanged(const std::string& path) {
@@ -1138,6 +1207,8 @@ void MvAddonsQuit() {
   s.ai.table = nullptr;
   s.ai.bundle = nil;
   s.ai.loading = false;
+  // #398: no index walk starts now (not waited on: quit does not wait on a pack).
+  mv::addon::retract_index_locations();
   if (idle) {
     mv::addon::stop_for_exit(std::move(s.ai.addon));
   } else {
@@ -1166,6 +1237,12 @@ bool MvAddonsRunContributedCommand(const std::string& addon, const std::string& 
   // docs/design/25 PR 57: another maker's row runs in its script, on its worker.
   // Posting never blocks; the answer (a notice) comes back on its own.
   if (addon.find('.') != std::string::npos) return MvScriptsRunCommand(addon, command, payload_json);
+  // #410: an add-on that fills slots has no chrome: its command is an event
+  // to it, with the files the payload names.
+  if (is_loaded_slot_addon(addon)) {
+    const std::string paths = !payload_json.empty() && payload_json.front() == '[' ? payload_json : "[]";
+    return mv::addon::default_slots().run_command(addon, command, paths) == mv::status::ok;
+  }
   mac_addons& s = state();
   if (addon != "import" || !s.chrome) return false;
   NSString* name = [NSString stringWithUTF8String:command.c_str()];
@@ -1836,6 +1913,11 @@ extern "C" bool mv_addon2_ai_status(mv_chrome_ai_status* out) {
   out->sound_done = st.sound_done;
   out->speech_total = st.speech_total;
   out->speech_done = st.speech_done;
+  // Zero from a pack older than the text passes' counts (2026-10-15).
+  out->cues_total = st.cues_total;
+  out->cues_done = st.cues_done;
+  out->text_total = st.text_total;
+  out->text_done = st.text_done;
   return true;
 }
 
@@ -1850,6 +1932,12 @@ extern "C" bool mv_addon2_ai_status(mv_chrome_ai_status* out) {
 // (addon/host.cpp), and unloading detaches every item before its code goes
 // (no restart). The chrome reads the registry through mv_chrome_slots_*
 // (slots_mac.mm).
+//
+// Every window (issue #402): each window is its own process, and each loads
+// them once, the first window and later ones alike, so a later window shows
+// the same sections, providers, badges and entries, and closing the first
+// window takes nothing from the others. They only read; what stays the first
+// window's is installing and removing them (the store's writes).
 
 namespace {
 
@@ -1860,6 +1948,7 @@ struct slot_addons_state {
   std::mutex m;
   std::map<std::string, std::string> errors;  // id -> status name of the last failed load
   std::set<std::string> loaded_ids;
+  std::vector<mv::shell::addon_command_row> command_rows;  // of the loaded ones (#410)
 };
 
 slot_addons_state& slot_addons() {
@@ -1867,8 +1956,48 @@ slot_addons_state& slot_addons() {
   return *s;
 }
 
+// Rebuilds the command rows from what is loaded. [addon_queue]
+void note_slot_commands() {
+  slot_addons_state& sa = slot_addons();
+  std::vector<mv::shell::addon_command_row> rows;
+  for (const auto& [id, addon] : sa.loaded) {
+    if (!addon) continue;
+    const mv::addon::manifest& m = addon->info().m;
+    for (const mv::addon::manifest_command& c : m.commands) {
+      mv::shell::addon_command_row r;
+      r.addon = m.id;
+      r.id = c.id;
+      r.name = c.name;
+      if (!c.mac.empty() && !mv::shell::parse_key_label(c.mac, r.k, r.mods)) {
+        r.k = mv::shell::key::none;
+        r.mods = 0;
+      }
+      r.modes = mv::shell::parse_modes(c.modes);
+      r.payload = c.payload;
+      rows.push_back(std::move(r));
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lock(sa.m);
+    sa.command_rows = std::move(rows);
+  }
+  dispatch_async(dispatch_get_main_queue(), ^{ refresh_contributed_commands(); });
+}
+
+std::vector<mv::shell::addon_command_row> slot_command_rows() {
+  slot_addons_state& sa = slot_addons();
+  std::lock_guard<std::mutex> lock(sa.m);
+  return sa.command_rows;
+}
+
+bool is_loaded_slot_addon(const std::string& id) {
+  slot_addons_state& sa = slot_addons();
+  std::lock_guard<std::mutex> lock(sa.m);
+  return sa.loaded_ids.count(id) != 0;
+}
+
 bool fills_slots(const mv::addon::installed& i) {
-  return !i.m.slots.empty() && i.m.part_of.empty() && i.id != "import" && !is_ai_family(i.id);
+  return i.id == i.m.id && mv::addon::loads_for_slots(i.m) && !is_ai_family(i.id);
 }
 
 // A file's coordinates for the host table (location_of / locations_in), from
@@ -1900,30 +2029,52 @@ mv::addon::host_services slot_services() {
   return svc;
 }
 
-// [addon_queue] Loads every installed slot add-on not loaded yet.
+// [addon_queue] Loads every installed slot add-on not loaded yet. Found by
+// their signed manifests alone (no file hashed: a later window must not hash
+// the AI pack to find Places); loading one verifies its own files.
 void load_slot_addons_now() {
   if (g_quitting.load(std::memory_order_relaxed) || !ensure_store()) return;
   slot_addons_state& sa = slot_addons();
-  for (const mv::addon::installed& i : state().store->list()) {
-    if (!fills_slots(i) || sa.loaded.count(i.id)) continue;
-    auto loaded = mv::addon::loaded_addon::load(*state().store, i.id, slot_services());
-    std::lock_guard<std::mutex> lock(sa.m);
-    if (!loaded) {
-      sa.errors[i.id] = mv::status_name(loaded.error());
+  for (const mv::addon::store::listed& l : state().store->manifests()) {
+    const std::string& id = l.m.id;
+    if (!mv::addon::loads_for_slots(l.m) || is_ai_family(id) || sa.loaded.count(id)) continue;
+    if (l.state != mv::addon::install_state::ok) {
+      std::lock_guard<std::mutex> lock(sa.m);
+      sa.errors[id] = mv::status_name(mv::status::unsupported_format);  // needs a newer MediaViewer
       continue;
     }
-    sa.errors.erase(i.id);
-    sa.loaded_ids.insert(i.id);
-    sa.loaded.emplace(i.id, std::move(*loaded));
+    auto loaded = mv::addon::loaded_addon::load(*state().store, id, slot_services());
+    std::lock_guard<std::mutex> lock(sa.m);
+    if (!loaded) {
+      sa.errors[id] = mv::status_name(loaded.error());
+      continue;
+    }
+    sa.errors.erase(id);
+    sa.loaded_ids.insert(id);
+    sa.loaded.emplace(id, std::move(*loaded));
   }
+  note_slot_commands();
+}
+
+std::atomic<mv_chrome_slot_addons_changed_fn> g_slot_addons_changed{nullptr};
+
+// Main thread, after the store and the loaded set are both updated. The
+// contributions hop can land before loaded_ids is inserted, so Settings does
+// not treat that hop as "the list is current".
+void note_slot_addons_changed() {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (auto cb = g_slot_addons_changed.load()) cb();
+  });
 }
 
 }  // namespace
 
 void MvSlotAddonsStart() {
-  if (state().reader) return;  // the first window hosts the add-ons (docs/design/18 "One host process")
+  // Every window's process, the first and later ones (issue #402): they only
+  // read, so unlike Import and the indexer they are not the host's alone.
   dispatch_async(addon_queue(), ^{
     load_slot_addons_now();
+    note_slot_addons_changed();
   });
 }
 
@@ -1966,6 +2117,10 @@ extern "C" int32_t mv_chrome_slot_addons(char* buf, int32_t size) {
 // [main-thread] Loads a slot add-on just installed (or sideloaded).
 extern "C" void mv_chrome_slot_addons_refresh(void) { MvSlotAddonsStart(); }
 
+extern "C" void mv_chrome_slot_addons_set_changed(mv_chrome_slot_addons_changed_fn fn) {
+  g_slot_addons_changed.store(fn);
+}
+
 // [main-thread][no-block] Removes one: every item it contributed goes at once
 // (the registry detaches it on addon_queue before its shutdown), then its
 // files; keep_data keeps its data folder. No restart.
@@ -1986,10 +2141,13 @@ extern "C" bool mv_chrome_slot_addon_remove(const char* id, bool keep_data) {
       sa.loaded_ids.erase(s);
       sa.errors.erase(s);
     }
-    if (!ensure_store()) return;
-    mac_addons& st = state();
-    std::lock_guard<std::mutex> lock(st.store_writes);
-    (void)st.store->remove(s, keep_data);
+    note_slot_commands();
+    if (ensure_store()) {
+      mac_addons& st = state();
+      std::lock_guard<std::mutex> lock(st.store_writes);
+      (void)st.store->remove(s, keep_data);
+    }
+    note_slot_addons_changed();
   });
   return true;
 }

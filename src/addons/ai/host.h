@@ -101,6 +101,18 @@ class host {
   [[nodiscard]] bool has_tag_facts() const noexcept;
   [[nodiscard]] result<mv_addon_tag_facts> tag_facts(const std::string& path) const;
 
+  // #406: a clip's chapter titles and text subtitle cues, in start order (an
+  // older host has none: has_cues() false). `visit` false stops the read.
+  struct cue {
+    std::uint32_t kind = MV_ADDON_CUE_SUBTITLE;
+    std::int64_t start_ms = 0;
+    std::int64_t end_ms = 0;
+    std::string text;
+  };
+  [[nodiscard]] bool has_cues() const noexcept;
+  [[nodiscard]] expected read_cues(const std::string& path, std::int64_t start_ms, std::int64_t max_ms,
+                                   std::uint32_t max_cues, const std::function<bool(const cue&)>& visit) const;
+
   [[nodiscard]] bool should_yield() const noexcept;
   void post(mv_addon_event_kind kind, mv_status status, std::uint64_t id,
             std::int64_t payload) const noexcept;

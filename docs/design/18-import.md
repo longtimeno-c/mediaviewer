@@ -299,6 +299,10 @@ would fight over it. The lock is the process's until it exits, crash or not. Clo
 window does not hand the add-ons to a window that is already open; the next window to start
 takes them.
 
+MediaViewer's own add-ons that only fill screens and slots (Places) are the exception: they
+write nothing, so every window loads them (issue #402, [25](25-open-addons.md) "Every window");
+installing and removing them stays with the first window.
+
 Later windows search too (2026-10-07). At their first search (Ctrl+F / ⌘F, the search icon)
 or when Settings opens, not at launch, they load the AI pack through its reader
 (`MV_AI_READER_ENTRY_SYMBOL`; `mv_addon_load_reader` on Windows). Reading what is installed

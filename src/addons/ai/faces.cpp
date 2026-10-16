@@ -158,6 +158,7 @@ result<std::unique_ptr<faces_db>> faces_db::open(const std::string& path, const 
   d->serial_ = ++g_serial;
   d->same_ = tuning.same_person;
   d->ambiguous_ = tuning.ambiguous;
+  d->rules_ = tuning.refine();
   d->dim_ = dim;
   d->spec_ = spec;
   if (sqlite3_open_v2(path.c_str(), &d->db_,
@@ -231,6 +232,8 @@ result<std::unique_ptr<faces_db>> faces_db::open_read_only(const std::string& pa
   d->path_ = path;
   d->serial_ = ++g_serial;
   d->same_ = same_person;
+  d->rules_.join = same_person;
+  d->rules_.core = same_person;
   d->dim_ = dim;
   if (sqlite3_open_v2(path.c_str(), &d->db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr) !=
       SQLITE_OK) {
@@ -315,6 +318,7 @@ void faces_db::pin_cover_locked(std::int64_t person) {
 
 void faces_db::load_locked() {
   clusters_.clear();
+  exemplars_.clear();
   full_due_ = true;
   consolidate_full_ = true;
   stmt s(db_, "SELECT person_id, emb FROM faces WHERE person_id IS NOT NULL AND spec = ?1");
@@ -344,31 +348,154 @@ expected faces_db::import_with(const std::function<expected(sqlite3*)>& fn) {
   return r;
 }
 
+faces_db::match faces_db::match_locked(std::span<const float> emb, const std::set<std::int64_t>& rejected,
+                                        bool exemplars) {
+  // Every person by the mean pairwise cosine (sum . v / n): the prefilter,
+  // and the whole answer for a weak face.
+  match m;
+  std::vector<std::pair<float, std::int64_t>> shortlist;
+  const float prefilter = same_ - 2 * rules_.margin;  // find_duplicates' "not the same person"
+  for (const auto& [id, c] : clusters_) {
+    if (c.n == 0 || rejected.count(id)) continue;
+    const float s = mean_cosine(c.sum, c.n, emb);
+    if (s > m.best_score) {
+      m.second = m.best_score;
+      m.best = id;
+      m.best_score = s;
+    } else if (s > m.second) {
+      m.second = s;
+    }
+    if (exemplars && s >= prefilter) shortlist.emplace_back(s, id);
+  }
+  if (!exemplars) return m;
+  // The shortlist, scored as the refinement scores a face: by the support of
+  // each person's exemplars (pinned faces, then the good core), for a person
+  // the user confirmed (a pinned face: the cover they named, the covers they
+  // merged, the faces they split off). Anyone else answers by its mean: on
+  // LFW, exemplars of unconfirmed people let a newcomer join a lookalike
+  // (online BCubed F 0.9975 -> 0.9945, 2026-10-15). Ambiguity is judged
+  // among the shortlist alone.
+  const std::size_t keep = std::min<std::size_t>(shortlist.size(), std::max<std::uint32_t>(rules_.shortlist, 1));
+  std::partial_sort(shortlist.begin(), shortlist.begin() + static_cast<std::ptrdiff_t>(keep), shortlist.end(),
+                    [](const auto& a, const auto& b) {
+                      return a.first != b.first ? a.first > b.first : a.second < b.second;
+                    });
+  match x;
+  for (std::size_t i = 0; i < keep; ++i) {
+    const auto [mean, id] = shortlist[i];
+    const person_proto* pr = exemplars_locked(id);
+    float s = mean;
+    if (pr && pr->pinned && !pr->weak_only) {
+      if (const float sup = exemplar_support(emb, *pr, 0, rules_.top_k); sup > -1.0f) s = sup;
+    }
+    if (s > x.best_score) {
+      x.second = x.best_score;
+      x.best = id;
+      x.best_score = s;
+    } else if (s > x.second) {
+      x.second = s;
+    }
+  }
+  return x;
+}
+
+const person_proto* faces_db::exemplars_locked(std::int64_t person) {
+  const auto c = clusters_.find(person);
+  if (c == clusters_.end() || c->second.n == 0) return nullptr;
+  const std::uint64_t n = c->second.n;
+  if (const auto it = exemplars_.find(person); it != exemplars_.end()) {
+    // Ordinary growth: the exemplars stand until the person is a quarter
+    // larger (or smaller) than when they were built, so a scan does not
+    // rebuild a big person once per face.
+    const std::uint64_t was = it->second.n;
+    if (n * 4 < was * 5 && n * 5 > was * 4) return &it->second.proto;
+  }
+  exemplar_cache& cache = exemplars_[person];
+  cache.n = static_cast<std::uint32_t>(n);
+  cache.proto = person_proto{};
+  cache.proto.person = person;
+  {
+    // Unconfirmed: matched by its mean, so nothing to build (match_locked).
+    stmt s(db_, "SELECT 1 FROM faces WHERE person_id = ?1 AND pinned = 1 AND spec = ?2 LIMIT 1");
+    if (!s.bind(1, person).bind(2, spec_).step_row()) return &cache.proto;
+  }
+  // The refinement's refs (build_proto): pinned, then by quality, then id;
+  // the good ones, or all when every one is weak; at most max_refs. Only
+  // those vectors are read.
+  struct ref {
+    std::int64_t id;
+    bool pinned;
+    float quality;
+  };
+  std::vector<ref> refs;
+  {
+    stmt s(db_, "SELECT id, pinned, quality, score, w, h FROM faces WHERE person_id = ?1 AND spec = ?2");
+    s.bind(1, person).bind(2, spec_);
+    while (s.step_row()) {
+      const float q = s.null(2) ? face_quality_proxy(static_cast<float>(s.real(3)), static_cast<float>(s.real(4)),
+                                                     static_cast<float>(s.real(5)))
+                                : static_cast<float>(s.real(2));
+      refs.push_back(ref{s.i64(0), s.i64(1) != 0, q});
+    }
+  }
+  std::sort(refs.begin(), refs.end(), [](const ref& a, const ref& b) {
+    if (a.pinned != b.pinned) return a.pinned;
+    if (a.quality != b.quality) return a.quality > b.quality;
+    return a.id < b.id;
+  });
+  const bool any_good = std::any_of(refs.begin(), refs.end(),
+                                    [&](const ref& r) { return r.pinned || r.quality >= rules_.weak_quality; });
+  if (any_good) {
+    refs.erase(std::remove_if(refs.begin(), refs.end(),
+                              [&](const ref& r) { return !r.pinned && r.quality < rules_.weak_quality; }),
+               refs.end());
+  }
+  if (refs.size() > rules_.max_refs) refs.resize(rules_.max_refs);
+  std::vector<float> emb;
+  std::vector<refine_face> faces;
+  emb.reserve(refs.size() * dim_);
+  {
+    stmt e(db_, "SELECT emb FROM faces WHERE id = ?1");
+    for (const ref& r : refs) {
+      e.reset();
+      if (!e.bind(1, r.id).step_row()) continue;
+      const std::vector<float> v = e.floats(0);
+      if (v.size() != dim_) continue;
+      refine_face f;
+      f.id = r.id;
+      f.person = person;
+      f.quality = r.quality;
+      f.pinned = r.pinned;
+      f.row = static_cast<std::uint32_t>(faces.size());
+      emb.insert(emb.end(), v.begin(), v.end());
+      faces.push_back(std::move(f));
+    }
+  }
+  bool named = false;
+  {
+    stmt s(db_, "SELECT 1 FROM people WHERE id = ?1 AND name != ''");
+    named = s.bind(1, person).step_row();
+  }
+  cache.proto = build_person_proto(dim_, emb, faces, person, named, rules_);
+  cache.proto.core_mean = {};  // the prefilter is clusters_' mean
+  return &cache.proto;
+}
+
 std::int64_t faces_db::assign_locked(std::span<const float> emb, float quality,
                                      const std::set<std::int64_t>& rejected) {
   // A face nobody can be told from joins no one (refine_params::unusable_quality);
   // a weak one may join a person its betters made, never start one. Unknown
   // quality (< 0, a row from before it was recorded) counts as good.
-  const refine_params rules;
   const bool known = quality >= 0;
-  if (known && quality < rules.unusable_quality) return 0;
-  const bool may_start = !known || quality >= rules.weak_quality;
-  std::int64_t best = 0;
-  float best_score = -2.0f, second = -2.0f;
-  for (const auto& [id, c] : clusters_) {
-    if (c.n == 0 || rejected.count(id)) continue;
-    const float s = mean_cosine(c.sum, c.n, emb);
-    if (s > best_score) {
-      second = best_score;
-      best = id;
-      best_score = s;
-    } else if (s > second) {
-      second = s;
-    }
-  }
-  if (best_score < same_) {
+  if (known && quality < rules_.unusable_quality) return 0;
+  const bool may_start = !known || quality >= rules_.weak_quality;
+  // A weak face keeps the average rule: the refinement never admits or moves
+  // one by exemplars either.
+  const match m = match_locked(emb, rejected, may_start);
+  std::int64_t best = m.best;
+  if (m.best_score < same_) {
     best = 0;
-  } else if (second > best_score - ambiguous_) {
+  } else if (m.second > m.best_score - ambiguous_) {
     return 0;  // two people fit about as well: unassigned until refined
   }
   if (best == 0) {
@@ -386,6 +513,8 @@ std::int64_t faces_db::assign_locked(std::span<const float> emb, float quality,
 }
 
 void faces_db::recompute_locked(std::int64_t person) {
+  // Faces left, moved or were re-analysed: its exemplars are stale.
+  exemplars_.erase(person);
   cluster c;
   stmt s(db_, "SELECT emb FROM faces WHERE person_id = ?1 AND spec = ?2");
   s.bind(1, person).bind(2, spec_);
@@ -536,6 +665,24 @@ expected faces_db::mark_scanned(std::int64_t asset, const std::string& spec) {
   return {};
 }
 
+expected faces_db::forget_moments(std::int64_t asset) {
+  std::lock_guard lock(m_);
+  std::set<std::int64_t> touched;
+  {
+    stmt q(db_, "SELECT DISTINCT person_id FROM faces WHERE asset_id = ?1 AND pts_ms >= 0 AND person_id IS NOT NULL");
+    q.bind(1, asset);
+    while (q.step_row()) touched.insert(q.i64(0));
+  }
+  stmt d(db_, "DELETE FROM faces WHERE asset_id = ?1 AND pts_ms >= 0");
+  stmt s(db_, "DELETE FROM scanned WHERE asset_id = ?1");
+  if (!d.bind(1, asset).run() || !s.bind(1, asset).run()) return err(status::io);
+  for (std::int64_t p : touched) {
+    recompute_locked(p);
+    touch_locked(p);
+  }
+  return {};
+}
+
 expected faces_db::forget_asset(std::int64_t asset) {
   std::lock_guard lock(m_);
   std::set<std::int64_t> touched;
@@ -634,6 +781,7 @@ expected faces_db::rename(std::int64_t person, const std::string& name) {
   if (!s.bind(1, person).bind(2, name).run()) return err(status::io);
   // The cover is the face the user looked at when naming: an anchor.
   if (!folded(name).empty()) pin_cover_locked(person);
+  exemplars_.erase(person);
   // Touched either way: a name taken away lets the idle merge look at it again.
   touch_locked(person);
   return {};
@@ -688,6 +836,7 @@ expected faces_db::merge_locked(std::int64_t into, std::int64_t from) {
   }
   recompute_locked(into);
   clusters_.erase(from);
+  exemplars_.erase(from);
   protos_.erase(from);
   dirty_.erase(from);
   touch_locked(into);
@@ -786,17 +935,8 @@ std::vector<std::pair<std::int64_t, std::string>> faces_db::names() {
 
 std::int64_t faces_db::nearest_person(std::span<const float> emb) {
   std::lock_guard lock(m_);
-  std::int64_t best = 0;
-  float best_score = same_;
-  for (const auto& [id, c] : clusters_) {
-    if (c.n == 0) continue;
-    const float s = mean_cosine(c.sum, c.n, emb);
-    if (s >= best_score) {
-      best = id;
-      best_score = s;
-    }
-  }
-  return best;
+  const match m = match_locked(emb, {}, true);
+  return m.best_score >= same_ ? m.best : 0;
 }
 
 std::size_t faces_db::consolidate(float merge_at) {
@@ -853,6 +993,8 @@ std::size_t faces_db::consolidate(float merge_at) {
         a->second.sum[i] += b->second.sum[i];
       }
       a->second.n += b->second.n;
+      exemplars_.erase(ia);
+      exemplars_.erase(ib);
       protos_.erase(ib);
       dirty_.erase(ib);
       touch_locked(ia);
@@ -1044,6 +1186,12 @@ refine_stats faces_db::refine_commit(const refine_snapshot& snap, const refine_o
     if (!clusters_.count(pr.person) || (t != touched_at_.end() && t->second > snap.gen)) continue;
     protos_[pr.person] = pr;
     dirty_.erase(pr.person);
+    // The online matcher's exemplars too: the same rules, just rebuilt.
+    if (!pr.pinned) continue;
+    exemplar_cache& cache = exemplars_[pr.person];
+    cache.proto = pr;
+    cache.proto.core_mean = {};
+    cache.n = clusters_[pr.person].n;
   }
   for (std::int64_t p : snap.rebuilt) {
     const auto t = touched_at_.find(p);

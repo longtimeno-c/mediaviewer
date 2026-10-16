@@ -150,6 +150,19 @@ void camera::set_zoom(float zoom, float image_w, float image_h, float window_w,
   fill_mode_ = false;
 }
 
+void camera::zoom_to(float zoom, float centre_x, float centre_y, float image_w, float image_h,
+                     float window_w, float window_h) noexcept {
+  if (image_w <= 0.0f || image_h <= 0.0f || window_w <= 0.0f || window_h <= 0.0f) return;
+  clear_rubber();
+  if (zoom < kMinZoom) zoom = kMinZoom;
+  if (zoom > kMaxZoom) zoom = kMaxZoom;
+  target_zoom_ = zoom;
+  target_pan_x_ = clamp_centre(centre_x, image_w, window_w, zoom);
+  target_pan_y_ = clamp_centre(centre_y, image_h, window_h, zoom);
+  fit_mode_ = false;
+  fill_mode_ = false;
+}
+
 void camera::carry(float old_w, float old_h, float new_w, float new_h, float window_w,
                    float window_h) noexcept {
   if (old_w <= 0.0f || old_h <= 0.0f || new_w <= 0.0f || new_h <= 0.0f) return;
@@ -240,6 +253,15 @@ void camera::pan_by_screen(float dx_screen, float dy_screen, float image_w, floa
                                target_zoom_);
   target_pan_y_ = clamp_centre(target_pan_y_ + dy_screen / target_zoom_, image_h, window_h,
                                target_zoom_);
+}
+
+void camera::scroll_direct(float dx_screen, float dy_screen, float image_w, float image_h,
+                           float window_w, float window_h) noexcept {
+  const float old_x = target_pan_x_;
+  const float old_y = target_pan_y_;
+  pan_by_screen(dx_screen, dy_screen, image_w, image_h, window_w, window_h);
+  pan_x_ += target_pan_x_ - old_x;
+  pan_y_ += target_pan_y_ - old_y;
 }
 
 void camera::wheel_toward(float mouse_x, float mouse_y, float notches, float window_w,

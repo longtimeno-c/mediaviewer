@@ -104,7 +104,7 @@ enum class rejection : std::uint8_t {
   file_mismatch,
   unexpected_file,   // a file in the folder the manifest does not list
   needs_update,      // host API outside the add-on's range
-  over_ceiling,      // the family would exceed its installed-size ceiling (docs/design/17: 3 GB)
+  over_ceiling,      // the family would exceed its installed-size ceiling (docs/design/17: 5 GB)
   // Open add-ons (docs/design/25; package.h, open_manifest.h, open_store.h). Appended.
   too_large,         // the package or its entry count is over the cap
   bad_package,       // not the strict ZIP a package is
@@ -148,12 +148,20 @@ struct decision {
 // This process's CPU architecture as a manifest spells it.
 [[nodiscard]] std::string_view current_arch() noexcept;
 
-// Installed-size ceilings per family (docs/design/17: the AI pack's Core, one vendor
-// piece and Faces together stay under 3 GB). 0 = no ceiling.
+// Installed-size ceilings per family (docs/design/17: the AI pack stays under 5 GB).
+// 0 = no ceiling.
 [[nodiscard]] std::uint64_t family_ceiling(std::string_view family) noexcept;
 // The family an add-on or piece belongs to: its part_of, else its own id.
 [[nodiscard]] inline const std::string& family_of(const manifest& m) noexcept {
   return m.part_of.empty() ? m.id : m.part_of;
+}
+
+// An add-on both hosts load for its screens and slots alone (docs/design/25
+// PRs 58-59): it contributes some, and is not Import, the AI family or a
+// piece (those load with chromes of their own, or not at all).
+[[nodiscard]] inline bool loads_for_slots(const manifest& m) noexcept {
+  return !m.slots.empty() && m.part_of.empty() && m.id != "import" && family_of(m) != "ai" &&
+         m.id.rfind("ai-", 0) != 0;
 }
 
 // A relative path that stays inside its folder on every OS.

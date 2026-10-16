@@ -40,6 +40,8 @@
 #include "addons/ai/cloud_files.h"
 #include "addons/ai/photos_source.h"
 #include "addons/ai/platform.h"
+#include "addons/ai/query.h"
+#include "addons/ai/text_reader.h"
 #include "addons/ai/transfer.h"
 #include "addons/ai/vectors.h"
 #include "core/result.h"
@@ -191,6 +193,9 @@ struct engine_deps {
   // Online-only files in indexed folders (cloud_files.h): null uses
   // make_cloud_files() (OneDrive / iCloud Drive). The tests pass a fake.
   std::function<std::unique_ptr<cloud_files>()> cloud;
+  // Text in pictures (#403, text_reader.h): null uses make_text_reader()
+  // (Vision / Windows.Media.Ocr). The tests pass a fake, or one returning null.
+  std::function<std::unique_ptr<text_reader>()> text;
   // At most one change-driven Photos library rescan per this many seconds
   // (PhotoKit reports an iCloud sync as a burst of changes).
   double photos_rescan_gap_s = 10;
@@ -233,6 +238,10 @@ struct settings {
   std::uint32_t precision = kPrecisionDefault;      // 0 broader .. 2 calibrated .. 4 stricter
   bool icloud_videos = false;  // download iCloud-only clips to index them (2026-10-05, opt-in)
   bool cloud_files = false;    // fetch online-only OneDrive / iCloud Drive files to index them (2026-10-05, opt-in)
+  bool read_text = true;       // #403: read the text in photos (OS OCR), on by default
+  // #355: index MP3 / M4A / M4P. The base app's File types "Show audio files",
+  // which the chrome forwards; off by default, as that setting is.
+  bool audio_files = false;
 };
 
 // A spoken-phrase search's share of the query's words a transcript line must
@@ -332,6 +341,13 @@ class engine {
   [[nodiscard]] expected people_reanalyse();
   [[nodiscard]] result<std::string> face_thumb(std::int64_t face) const;  // [worker-thread]
 
+  // #398 (mv.ai.1 each_location): every indexed asset with coordinates, from
+  // index.db alone, in batches (the index is locked per batch's SELECT, never
+  // while `visit` runs). `visit` returning false stops: status::cancelled.
+  // [worker-thread]
+  static constexpr std::size_t kLocationBatch = 512;
+  [[nodiscard]] expected each_location(const std::function<bool(const index_db::located&)>& visit);
+
   // ---- sharing an index (docs/design/17 "Sharing an index") ---------------------------
   // An export / import runs on the control thread, one at a time (status::busy
   // while one is queued or running); transfer_json reports it. [no-block]
@@ -360,8 +376,16 @@ class engine {
     std::string dir_key;  // its folder's key
     asset_kind kind = asset_kind::photo;
     std::int64_t root = 0;
-    std::int64_t mtime = 0;  // unix seconds: in: / before: / after: (query.h)
+    std::int64_t mtime = 0;  // unix seconds: the file's modification time
+    // #404: the date taken (schema 4's taken_at: the camera's wall clock read
+    // as UTC, or a Photos item's creationDate) once the backfill has read it.
+    std::optional<std::int64_t> taken_at;
     bool cloud = false;      // online-only: no track reads it until fetched
+    // #407: a Live Photo still's paired movie ("" none): its frames are this
+    // asset's moments, and a moment opens the movie.
+    std::string motion;
+    std::string motion_key;  // path_key(motion)
+    bool motion_cloud = false;
     // #291 (schema 4): its tags, once the backfill has read them.
     bool tags = false;
     std::string camera, lens, made_with;  // folded
@@ -369,6 +393,11 @@ class engine {
     bool has_where = false;
     std::vector<std::string> fields;      // the search fields as shown (the why)
     std::string folded;                   // search.h's folded_text rule
+    // #405: rating, label and exposure (`rated` once level 2 was read).
+    query::exposure_facts exposure;
+    // What in: / before: / after: / since: / until: and the filter-only
+    // order go by (#404): the date taken, else the file's modification time.
+    [[nodiscard]] std::int64_t when() const noexcept { return taken_at ? *taken_at : mtime; }
   };
   struct result_row {
     std::int64_t asset = 0;
@@ -405,7 +434,7 @@ class engine {
   void worker_loop(unsigned index);
   void search_loop();
   // work
-  enum class track : std::uint8_t { picture, faces, sound, speech };
+  enum class track : std::uint8_t { picture, faces, sound, speech, cues, text };
   struct job {
     work_item w;
     track t = track::picture;
@@ -413,6 +442,27 @@ class engine {
   bool claim(std::vector<work_item>& out, track& t);
   void process_sound(const work_item& item, const loaded_sound& sound);
   void process_speech(const work_item& item, const loaded_speech& speech);
+  // #406: a clip's chapter titles and text subtitle lines (host read_cues),
+  // committed in batches under kCueSpec so a kill resumes. No model.
+  void process_cues(const work_item& item);
+  // #403: the text in a batch of photos, read by the OS, one cue row each;
+  // a clip goes to process_text_moments.
+  void process_text(std::vector<work_item>& items);
+  // The text on the moments a clip's picture pass kept: each decoded again,
+  // read, one cue row at its pts_ms (the same text as the moment before is
+  // not stored twice). Committed every few moments under `spec`, so a stop
+  // resumes after the last; nothing is embedded.
+  void process_text_moments(const work_item& item, text_reader& reader, const std::string& spec);
+  // Commits' rows into cue_rows_, first dropping the asset's picture rows from
+  // `replace_from` (index_db::commit_cues' rule); empties `rows`.
+  void store_text(std::int64_t asset, std::int64_t replace_from, std::vector<cue_in>& rows);
+  // The OS's lines as one row's text, capped.
+  [[nodiscard]] static std::string joined_text(const std::vector<std::string>& lines);
+  // The OS text reader's progress spec while reading text is on, else "".
+  [[nodiscard]] std::string text_spec() const;
+  // Its spec for clip moments (text_spec() + kMomentsSuffix), else "".
+  [[nodiscard]] std::string text_moments_spec() const;
+  static constexpr const char* kMomentsSuffix = "/moments";
   [[nodiscard]] std::uint32_t default_media() const;
   [[nodiscard]] platform::power power_state() const;
   // audio search
@@ -423,6 +473,21 @@ class engine {
     std::vector<std::string> words;
   };
   void load_speech(const std::string& spec);
+  // #406: a clip's own text in memory, matched like transcript lines but kept
+  // apart from them: removing the audio piece clears speech, never these.
+  struct cue_row {
+    std::int64_t asset = 0;
+    std::int64_t start_ms = 0;
+    cue_kind kind = cue_kind::subtitle;
+    std::string text;
+    std::vector<std::string> words;
+  };
+  void load_cues();
+  // "Chapter: …" / "Subtitle: …": the snippet says which.
+  [[nodiscard]] static std::string cue_snippet(const cue_row& r);
+  // A file's own text as matched words: folded (core/fold.h), then the
+  // speech rule's words, so "KÖLN" on a sign and a typed "koln" meet.
+  [[nodiscard]] static std::vector<std::string> cue_words(std::string_view utf8);
   void merge_audio(search_state& st, const std::string& query, const std::function<bool(std::int64_t)>& allow,
                    std::uint32_t find, std::uint32_t precision);
   void process_photos(std::vector<work_item>& items, const loaded_clip& clip, bool faces_only);
@@ -431,6 +496,24 @@ class engine {
   // unavailable so the whole clip is indexed once its original is on this Mac.
   void index_poster(const work_item& item, const loaded_clip& clip, std::uint32_t edge);
   void faces_of(std::int64_t asset, const std::string& path, std::int64_t pts_ms, const rgb_frame& img);
+  // #407: the moments the picture pass stored for an asset (its build
+  // tower's, else the answering one's), and the People pass over exactly
+  // those frames of `media` (a clip, or a Live Photo's movie). False when
+  // stopping part-way.
+  [[nodiscard]] std::vector<std::int64_t> stored_moments(std::int64_t asset);
+  bool faces_on_moments(std::int64_t asset, const std::string& media, const std::vector<std::int64_t>& moments,
+                        std::uint32_t edge);
+  // #407: a Live Photo's movie sampled onto its still's id (`seed`: the
+  // still's vector, so a first frame like it is not kept twice). Commits the
+  // asset done; returns false only when stopping (left partial: resumes).
+  bool index_motion(const work_item& item, const std::string& motion, bool motion_cloud, const loaded_clip& clip,
+                    bool faces_on, std::vector<float> seed);
+  // #407: a still whose movie changed: its motion vectors and faces go (the
+  // index dropped the rows); the still's own vector stays.
+  void motion_changed(const std::vector<std::int64_t>& ids);
+  // #407: what a result row opens: the asset, or for a Live Photo moment its
+  // movie (as a clip). [assets_m_ held]
+  void row_target_locked(std::int64_t asset, std::int64_t pts_ms, std::string& path, std::uint32_t& kind) const;
   bool wait_turn();  // false: stopping
   mv_ai_yield yield_reason() const;
   // scans
@@ -515,6 +598,9 @@ class engine {
   std::mutex photos_tags_m_;
   std::unordered_map<std::string, photos_tag> photos_tags_;
   std::atomic<bool> tags_pending_{true};
+  // The tag level this host can serve (#405): kTagsLevel, or 1 once its
+  // tag_facts came back without the rating and exposure fields.
+  std::atomic<int> tags_level_{kTagsLevel};
   // `replacing`: a piece reload, so an absent piece clears what it answered.
   void load_audio(const settings& s, std::uint32_t speech_quality, bool replacing);
   // Blocks until the viewer is quiet (or stopping): opening sessions contends
@@ -551,7 +637,7 @@ class engine {
   std::uint64_t submit(std::function<void(search_state&)> run);
   std::function<bool(std::int64_t)> scope_filter(const std::string& scope_dir, std::uint32_t scope,
                                                  std::uint32_t kinds) const;
-  // The assets in scope, of `kinds`, with a file date in [from_unix, to_unix):
+  // The assets in scope, of `kinds`, dated (asset_meta::when) in [from_unix, to_unix):
   // a snapshot, so a scan never takes assets_m_.
   std::shared_ptr<std::set<std::int64_t>> scope_assets(
       const std::string& scope_dir, std::uint32_t scope, std::uint32_t kinds,
@@ -639,6 +725,11 @@ class engine {
   vector_store sounds_;   // the CLAP matrix (window starts as pts)
   mutable std::mutex speech_m_;
   std::vector<speech_row> speech_rows_;
+  std::vector<cue_row> cue_rows_;  // under speech_m_ (#406)
+  // #403: made on the control thread (Windows joins it to the MTA first), set
+  // once under models_m_ and never replaced, so a worker may keep the pointer.
+  std::unique_ptr<text_reader> text_;
+  std::atomic<bool> text_none_{false};  // make_text_reader was asked and the OS has none
   std::atomic<bool> models_ready_{false};
   std::atomic<bool> models_failed_{false};
   std::atomic<bool> reload_models_{false};
@@ -670,6 +761,11 @@ class engine {
   // path_key -> id beside assets_ (issue #174): a path's asset without a walk
   // of every indexed asset under assets_m_. Kept with assets_ under assets_m_.
   std::unordered_map<std::string, std::int64_t> asset_by_key_;
+  // #407: a Live Photo movie's key -> its still's id (under assets_m_).
+  std::unordered_map<std::string, std::int64_t> motion_by_key_;
+  // A path's asset, or the still a Live Photo movie belongs to. [assets_m_ held]
+  [[nodiscard]] std::int64_t asset_or_motion_locked(const std::string& key) const;
+  void set_motion_locked(std::int64_t id, asset_meta& m, const std::string& motion, bool cloud);
   void unindex_key_locked(std::int64_t id, const std::string& key);
   void erase_asset_locked(std::int64_t id);
   [[nodiscard]] std::int64_t asset_of_key_locked(const std::string& key) const;
@@ -747,6 +843,12 @@ class engine {
   std::atomic<std::uint64_t> fetched_count_{0};
   std::atomic<std::uint64_t> icloud_left_{0};
   std::unique_ptr<cloud_files> cloud_;
+  // #355: "audio_files" was turned off: the control thread deletes the audio
+  // assets (index_db::remove_kind) and drops them from memory.
+  std::atomic<bool> drop_audio_{false};
+  // Its value for the walk and the search, read without settings_m_.
+  std::atomic<bool> audio_files_{false};
+  void drop_audio();
   std::atomic<bool> fetch_wake_{false};  // a fetch setting changed: look again now
   std::set<std::int64_t> cloud_skip_;  // the provider would not bring these down this run (fetch thread)
   std::atomic<std::uint32_t> cloud_state_{MV_AI_ICLOUD_OFF};
@@ -765,6 +867,19 @@ class engine {
   };
   std::deque<tick> ticks_;
   counts counts_{};
+  // The text passes' counts (cue, photo text, clip-moment text), kept between
+  // refreshes: three queries over every asset are ~14 ms at 25 k assets, so an
+  // idle refresh (once a second) reuses them unless something can have moved
+  // them (text_counts_due_, the picture counts or spec, work pending) or 30 s
+  // have passed. Under status_m_.
+  struct text_counts {
+    counts cues, photos, moments;
+    std::string key;  // the specs and picture counts they were taken with
+    double at = -1e9;
+  };
+  text_counts text_counts_;
+  // Set by a cue or text commit and by read_text: the next refresh counts again.
+  std::atomic<bool> text_counts_due_{true};
   std::string active_root_;
   std::map<std::int64_t, std::pair<std::uint64_t, std::uint64_t>> root_counts_;  // assets, done
   std::vector<root_row> roots_cache_;
@@ -800,7 +915,10 @@ class engine {
 
 // Media by name, for the walk only (the host still probes bytes when it
 // decodes; docs/design/04 "probe by magic bytes"): what is worth offering it.
-[[nodiscard]] int media_kind_of_name(const std::string& name) noexcept;  // 0 none, 1 photo, 2 video
+// 3 is an audio file (#355), which the walk offers only while audio_files is on.
+[[nodiscard]] int media_kind_of_name(const std::string& name) noexcept;  // 0 none, 1 photo, 2 video, 3 audio
+// An asset kind as the MV_AI_KIND_* bit a search filters and a result carries.
+[[nodiscard]] std::uint32_t kind_bit(asset_kind kind) noexcept;
 // A comparable form of a path: '/' separators, no trailing '/', and on
 // Windows ASCII case folded.
 [[nodiscard]] std::string path_key(const std::string& path);

@@ -482,6 +482,9 @@ include("${CMAKE_CURRENT_LIST_DIR}/script.cmake")
 # The Places add-on (docs/design/27): libmv_places.dylib in build/addons/places,
 # packed and signed separately; never in the app bundle.
 include("${CMAKE_CURRENT_LIST_DIR}/places.cmake")
+# The Sharepoint add-on (docs/design/28): libmv_sharepoint.dylib in
+# build/addons/sharepoint, packed and signed separately; never in the app bundle.
+include("${CMAKE_CURRENT_LIST_DIR}/sharepoint.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the still
 # pipeline, the clip sampler and the JPEG-512 cache. In the app; knows no
@@ -510,6 +513,7 @@ target_include_directories(playprobe PRIVATE src)
 # ---------------------------------------------------------------------------
 add_library(mv_canvas STATIC
   src/canvas/camera.cpp
+  src/canvas/document_scroll.cpp
   src/canvas/camera.h
   src/canvas/spring.h
 )
@@ -552,6 +556,11 @@ add_library(mv_shell STATIC
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
   src/shell/edit_session.cpp
   src/shell/edit_session.h
+  # Text in images (Vision is the host's, shell/text_recognition_mac.mm).
+  src/shell/text_in_image.cpp
+  src/shell/text_in_image.h
+  src/shell/text_select.cpp
+  src/shell/text_select.h
   src/shell/edit_workspace.cpp
   src/shell/edit_workspace.h
   src/shell/video_timeline.cpp
@@ -661,6 +670,9 @@ set(MV_MAC_HOST_SOURCES
   # docs/design/23: Final Cut Pro on / off (the agent and extension in the bundle).
   src/shell/fcp_mac.mm
   src/shell/present_busy.h
+  # Text in images: the Vision half of shell/text_in_image.h's port.
+  src/shell/text_recognition_mac.mm
+  src/shell/text_recognition_mac.h
 )
 set_source_files_properties(
   src/shell/main_mac.mm
@@ -670,6 +682,7 @@ set_source_files_properties(
   src/shell/slots_mac.mm
   src/shell/fcp_mac.mm
   src/shell/install_from_dmg_mac.mm
+  src/shell/text_recognition_mac.mm
   PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 function(mv_mac_host target)
@@ -705,6 +718,7 @@ function(mv_mac_host target)
     "-framework IOKit"
     "-framework Security"
     "-framework ServiceManagement"  # docs/design/23: the FCP search agent (SMAppService)
+    "-framework Vision"  # text in images (shell/text_recognition_mac.mm), on device
     bsm)
   target_include_directories(${target} PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}"
     "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include")
@@ -830,6 +844,7 @@ if(MV_BUILD_TESTS)
     tests/test_job_system.cpp
     tests/test_input_state.cpp
     tests/test_camera.cpp
+    tests/test_document_scroll.cpp
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
@@ -842,6 +857,8 @@ if(MV_BUILD_TESTS)
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
     tests/test_command_contract.cpp
+    # Issue #444: the one share command's file set and wire argument.
+    tests/test_share_menu.cpp
     tests/test_keymap.cpp
     tests/test_kind_filter.cpp
     tests/test_rename_stop.cpp
@@ -888,6 +905,8 @@ if(MV_BUILD_TESTS)
     # #345: the canvas's AI badge (setting, evidence text, the store's probe).
     tests/test_ai_badge.cpp
     tests/test_meta_search.cpp
+    # #406: a clip's chapter titles and text subtitle cues for Local search.
+    tests/test_meta_cues.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
     tests/test_meta_write.cpp
     tests/test_meta_location_edit.cpp
@@ -898,6 +917,8 @@ if(MV_BUILD_TESTS)
     tests/test_edit_workspace.cpp
     tests/test_video_timeline.cpp
     tests/test_export_carried.cpp
+    tests/test_text_in_image.cpp
+    tests/test_text_select.cpp
     # PR 11: colour adjusts, the FP16 working space, bake, histogram, pane state.
     tests/test_adjust.cpp
     # PR 11 (macOS crash reporting): the scrub, now with POSIX paths.
@@ -1011,6 +1032,7 @@ if(MV_BUILD_TESTS)
   endif()
   add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
   mv_places_addon_tests(mv_import_tests)
+  mv_sharepoint_tests(mv_import_tests)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC"
     SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
 
@@ -1048,6 +1070,8 @@ if(MV_BUILD_TESTS)
       tests/test_ai_infer.cpp
       tests/test_ai_audio.cpp
       tests/test_ai_query.cpp
+      # #403: the OS text reader over a labelled set (hidden: [.ocr-fixture]).
+      tests/test_ai_ocr.cpp
       tests/test_nle.cpp
     )
     target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io

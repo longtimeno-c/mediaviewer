@@ -7,7 +7,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Hosting;
 using Windows.Foundation;
 
 namespace MediaViewer.Chrome;
@@ -25,11 +25,14 @@ namespace MediaViewer.Chrome;
 /// worker that verifies the installed add-ons at launch (StartAddons): the pack
 /// itself is not loaded, so no runtime or model session opens until Resume.
 /// <para>
-/// The command-bar island covers only the bar, so the notice is a windowed
-/// <see cref="Popup"/> of that island (<c>ShouldConstrainToRootBounds = false</c>,
-/// as the bar's flyouts are), placed at the window's bottom-right corner from
-/// its client rectangle and moved on every resize. It is not light-dismissed and
-/// does not take focus: the viewer keeps the keyboard.
+/// The notice is a small island of its own over the canvas corner, as the AI
+/// badge is (IslandHost.AiBadge.cs): chrome over the swapchain, never drawn into
+/// it. Issue #443: it was a windowed <c>Popup</c> of the command-bar island,
+/// which never showed on Windows. It is placed from the window's client
+/// rectangle, above the filmstrip, and moved on every resize. It does not take
+/// focus: the viewer keeps the keyboard. A launch read that lands before the
+/// bar is up is kept and shown when the bar attaches, as the Mac's store waits
+/// for its host.
 /// </para>
 /// The twin of the Mac's ResumeNoticeView.swift.
 /// </remarks>
@@ -38,8 +41,10 @@ public static partial class IslandHost
     private const double ResumeNoticeWidth = 340;
     private const double ResumeNoticeMargin = 12;
 
-    private static Popup? _resumeNotice;
+    private static DesktopWindowXamlSource? _resumeNotice;
     private static FrameworkElement? _resumeNoticeCard;
+    // The launch read's roots, kept while the window cannot show them yet.
+    private static List<UnfinishedRoot>? _resumeRootsWaiting;
     // The notice's Resume started (or joined) the pack's load: every held root
     // resumes once it attaches.
     private static bool _aiResumePending;
@@ -116,20 +121,28 @@ public static partial class IslandHost
     private static void MaybeShowResumeNotice(List<UnfinishedRoot> roots)
     {
         if (roots.Count == 0 || _addonsElsewhere || !AiSlot.Usable || _resumeNotice is not null) return;
-        if (_source?.Content is not FrameworkElement bar || bar.XamlRoot is null) return;
+        // The bar (and the window under it) not up yet: asked once it is (Attach).
+        if (_themeWindow == IntPtr.Zero || _source?.Content is not FrameworkElement)
+        {
+            _resumeRootsWaiting = roots;
+            return;
+        }
+        _resumeRootsWaiting = null;
         string question = ResumeQuestion(roots);
         try
         {
+            _resumeNotice = new DesktopWindowXamlSource();
+            _resumeNotice.Initialize(Microsoft.UI.Win32Interop.GetWindowIdFromWindow(_themeWindow));
+            _resumeNotice.TakeFocusRequested += OnTakeFocusRequested;
+            // Parked off the client area until it is placed: a default
+            // full-client island would flash over the canvas.
+            MoveAt(_resumeNotice, 0, ClientHeightPx(), 1, 1);
             _resumeNoticeCard = BuildResumeNoticeCard(question);
-            _resumeNotice = new Popup
-            {
-                Child = _resumeNoticeCard,
-                XamlRoot = bar.XamlRoot,
-                ShouldConstrainToRootBounds = false,
-                IsLightDismissEnabled = false,
-            };
+            // Measured for real once it is in the island's live tree: placed again then.
+            _resumeNoticeCard.Loaded += (_, _) => Guarded(PlaceResumeNotice);
+            // Behind the card's rounded corners, the canvas colour (the AI badge's).
+            _resumeNotice.Content = new Grid { Background = Brush(Canvas), Children = { _resumeNoticeCard } };
             PlaceResumeNotice();
-            _resumeNotice.IsOpen = true;
             // Said once as it appears, not only when focused.
             FrameworkElementAutomationPeer.FromElement(_resumeNoticeCard)?.RaiseNotificationEvent(
                 AutomationNotificationKind.ActionCompleted, AutomationNotificationProcessing.ImportantMostRecent,
@@ -142,9 +155,15 @@ public static partial class IslandHost
         }
     }
 
+    /// <summary>Attach (the bar is up): a launch read that came first is shown now.</summary>
+    private static void ShowWaitingResumeNotice()
+    {
+        if (_resumeRootsWaiting is List<UnfinishedRoot> roots) MaybeShowResumeNotice(roots);
+    }
+
     private static FrameworkElement BuildResumeNoticeCard(string question)
     {
-        var stack = new StackPanel { Spacing = 8 };
+        var stack = new StackPanel { Spacing = Space(8) };
         stack.Children.Add(new TextBlock
         {
             Text = question,
@@ -164,7 +183,7 @@ public static partial class IslandHost
         var buttons = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 8,
+            Spacing = Space(8),
             HorizontalAlignment = HorizontalAlignment.Right,
         };
         Button dismiss = TextButton("Dismiss", DismissResumeNotice);
@@ -180,8 +199,8 @@ public static partial class IslandHost
         var card = new Border
         {
             Width = ResumeNoticeWidth,
-            Padding = new Thickness(14),
-            CornerRadius = new CornerRadius(8),
+            Padding = Pad(14),
+            CornerRadius = Corner(8),
             BorderThickness = new Thickness(1),
             BorderBrush = Brush(Hairline),
             Background = Brush(ChromeColour.Surface),
@@ -192,21 +211,30 @@ public static partial class IslandHost
     }
 
     /// <summary>The notice's bottom-right corner on the window's, above the
-    /// filmstrip when it is up. Offsets are the bar island's DIPs, whose origin
-    /// is the client area's (0, bar top).</summary>
+    /// filmstrip when it is up. The island is a child of the main window, so
+    /// its rectangle is client pixels.</summary>
     private static void PlaceResumeNotice()
     {
-        if (_resumeNotice is null || _resumeNoticeCard is null || _resumeNotice.XamlRoot is null) return;
+        if (_resumeNotice is null || _resumeNoticeCard is null) return;
         if (_themeWindow == IntPtr.Zero || !GetClientRect(_themeWindow, out NativeRect client)) return;
-        double scale = _resumeNotice.XamlRoot.RasterizationScale;
-        if (scale <= 0) scale = 1;
+        uint dpi = GetDpiForWindow(_themeWindow);
+        double scale = dpi > 0 ? dpi / 96.0 : 1;
         _resumeNoticeCard.Measure(new Size(ResumeNoticeWidth, double.PositiveInfinity));
         double height = _resumeNoticeCard.DesiredSize.Height;
-        int bottomPx = _filmstripTop > 0 ? _filmstripTop : client.Bottom - client.Top;
-        double bottom = (bottomPx - _barTop) / scale - ResumeNoticeMargin;
-        _resumeNotice.HorizontalOffset = Math.Max(0, (client.Right - client.Left) / scale - ResumeNoticeWidth - ResumeNoticeMargin);
-        _resumeNotice.VerticalOffset = Math.Max(0, bottom - height);
+        if (height <= 0) height = 140;  // not measured yet: about the card's two lines and buttons
+        int width = (int)Math.Ceiling(ResumeNoticeWidth * scale);
+        int tall = (int)Math.Ceiling(height * scale);
+        int margin = (int)Math.Round(ResumeNoticeMargin * scale);
+        int clientWidth = client.Right - client.Left;
+        int bottom = _filmstripTop > 0 ? _filmstripTop : client.Bottom - client.Top;
+        MoveAt(_resumeNotice, Math.Max(0, clientWidth - width - margin), Math.Max(0, bottom - margin - tall), width, tall);
+        // Above the gallery and the panes, as the Mac's is ("last in").
+        try { _resumeNotice.SiteBridge?.MoveInZOrderAtTop(); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
     }
+
+    private static int ClientHeightPx() =>
+        _themeWindow != IntPtr.Zero && GetClientRect(_themeWindow, out NativeRect r) ? r.Bottom - r.Top : 0;
 
     // ShowFilmstrip / ResizeFilmstrip: where the strip's top now is (0 hidden),
     // so the notice sits above it.
@@ -214,6 +242,7 @@ public static partial class IslandHost
     {
         _filmstripTop = visible ? Math.Max(0, y) : 0;
         PlaceResumeNotice();
+        PlaceHintNotice();
     }
 
     private static void ResumeFromNotice()
@@ -234,13 +263,32 @@ public static partial class IslandHost
 
     private static void CloseResumeNotice()
     {
-        Popup? popup = _resumeNotice;
+        _resumeRootsWaiting = null;
+        DesktopWindowXamlSource? island = _resumeNotice;
         _resumeNotice = null;
         _resumeNoticeCard = null;
-        if (popup is null) return;
-        try { popup.IsOpen = false; }
+        if (island is null) return;
+        // Parked at once; disposed after the click that closed it has returned
+        // (an island disposed inside its own button's Click is not safe).
+        try { MoveAt(island, 0, ClientHeightPx(), 1, 1); }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+        island.TakeFocusRequested -= OnTakeFocusRequested;
         RestoreCanvasFocus();
+        DispatcherQueueControllerTryEnqueue(() =>
+        {
+            DesktopWindowXamlSource? gone = island;
+            DisposeSource(ref gone);
+        });
+        PlaceHintNotice();  // the hint card stacked above it comes down
+    }
+
+    /// <summary>Detach (the window is going): no island outlives it.</summary>
+    private static void DropResumeNotice()
+    {
+        _resumeRootsWaiting = null;
+        _resumeNoticeCard = null;
+        if (_resumeNotice is not null) _resumeNotice.TakeFocusRequested -= OnTakeFocusRequested;
+        DisposeSource(ref _resumeNotice);
     }
 
     /// <summary>AttachAddonChrome, the pack attached: the notice's Resume, if it asked.</summary>
@@ -278,4 +326,7 @@ public static partial class IslandHost
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetClientRect(IntPtr hWnd, out NativeRect rect);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr hWnd);
 }

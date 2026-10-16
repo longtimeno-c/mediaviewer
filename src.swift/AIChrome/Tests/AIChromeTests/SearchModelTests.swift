@@ -72,6 +72,20 @@ final class SearchModelTests: XCTestCase {
     for _ in 0..<200 where !done() { try? await Task.sleep(nanoseconds: 5_000_000) }
   }
 
+  /// #355: the Audio segment shows only while "Show audio files" is on, and
+  /// turning it off while Audio is chosen goes back to All.
+  func testAudioSegmentFollowsShowAudioFiles() {
+    let m = model()
+    XCTAssertFalse(SearchKinds.shown(audioFiles: m.audioFiles).contains(.audio))
+    XCTAssertEqual(SearchKinds.all.rawValue, 11)  // MV_AI_KIND_ALL
+    m.audioFilesChanged(true)
+    XCTAssertTrue(SearchKinds.shown(audioFiles: m.audioFiles).contains(.audio))
+    m.kinds = .audio
+    m.audioFilesChanged(false)
+    XCTAssertEqual(m.kinds, .all)
+    XCTAssertFalse(SearchKinds.shown(audioFiles: m.audioFiles).contains(.audio))
+  }
+
   func testOpenPanelAsksTheNewFolder() {
     let m = model()
     m.folderChanged("/A")

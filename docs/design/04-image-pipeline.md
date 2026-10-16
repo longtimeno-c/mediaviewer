@@ -127,7 +127,16 @@ texture limit — a still is not one texture:
 - The render thread marks the tiles visible at the current LOD plus a **one-tile ring**
   through lock-free per-tile states; the session's `tile_service` thread builds and creates
   them — 4 per 16 ms tick, at most 24 in flight — and the render thread draws ready tiles coarse
-  to fine over the overview. It never waits on the service and never creates a texture.
+  to fine (up to two levels above the LOD) over the overview. Once every on-screen tile at the
+  LOD is ready, the coarser levels and the overview are hidden and are not drawn: the base pass
+  paints only the background (`blitter::draw_background`, no texture fetch) and the LOD's
+  tiles go over it (`tile_set::covers_view`, issue #164). It never waits on the service and
+  never creates a texture.
+- **Drawing tiles** (`gfx::blitter::draw_tiles`): every tile's record (content origin, level
+  scale, content size) is written into one dynamic per-instance vertex buffer with a single
+  `Map(WRITE_DISCARD)` per frame (1024 records per map; a frame with more maps again), then
+  each tile is one `DrawInstanced(6, 1, 0, i)` with its own texture bound. No per-tile
+  constant-buffer rename (issue #164). Windows only: the Mac host has no tiled path yet.
   The service sleeps on an atomic poke count with no timeout (0 wakeups on a still); a tile
   request, a new set, and dropping a set's last outside handle each poke it.
 - Resident tile VRAM is capped at **256 MB** (~750 tiles), LRU-evicted, separate from the
@@ -310,14 +319,24 @@ through `mv_folder_select_page` (ABI 0.16); the Mac host calls `present_lab_mac:
 The host remembers the count the core last reported and shows "Page n of m" in its notice line.
 **Scrolling a document.** Over a PDF or DOCX with the filmstrip hidden, the wheel and trackpad
 scroll instead of zooming (`⌘`/`Ctrl`+wheel and a pinch still zoom; with the filmstrip shown the
-wheel zooms as on any still). The host turns each event into screen pixels
-(`input_snapshot::scroll_px_x/y`; a wheel notch is a tenth of the canvas) and the render thread pans
-with `camera::pan_by_screen`. The render thread publishes which vertical edges the camera rests on
-(`scroll_edges()`, both at fit); a scroll held 60 px past one turns the page with `page_land_seq`,
-and the new page keeps its on-screen width and lands at its top (forward) or bottom (back)
-(`camera::turn_page`) instead of fitting. One trackpad gesture, or one wheel burst, turns at most one
-page. Hosts: `-scrollDocument:` (main_mac.mm), `scroll_document` (main.cpp, `WM_MOUSEWHEEL` /
-`WM_MOUSEHWHEEL`).
+wheel zooms as on any still, and the "Press T" hint below says so). Both hosts feed each event to
+the shared `canvas::document_scroller` (`canvas/document_scroll.h`), which decides pan or page turn
+and turns the travel into whole screen pixels. A wheel notch is a tenth of the canvas and goes to
+`input_snapshot::scroll_px_x/y`: the render thread moves the camera *target*
+(`camera::pan_by_screen`) and the canvas spring (ω=18, ζ=1) glides the view there, so a notch never
+jumps. A trackpad's deltas and its momentum go to `scroll_direct_px_x/y`: `camera::scroll_direct`
+moves the view with the target, so the page stays under the fingers. The render thread publishes
+which vertical edges the camera rests on (`scroll_edges()`, both at fit). Pushing past one turns the
+page at once, with no hold: a notch, or any trackpad travel past the edge of a page taller than the
+canvas; at fit (the whole page on screen) a trackpad turns one page per third of the canvas height
+of travel. The new page keeps its on-screen width and lands at its top (forward) or bottom (back)
+(`camera::turn_page`) instead of fitting, and momentum carries on into it, so a fling runs through
+the document. Until the render thread acknowledges the turn (`page_land_ack()`, stored after the
+edges; 0.5 s timeout for a page that fails) the published edges are the old page's, so nothing turns
+again and the vertical travel is dropped. Pages are still separate stops, not one continuous strip:
+laying the next page out under the current one needs two pages on the canvas at once, which the
+one-still present path does not do. Hosts: `-scrollDocument:` (main_mac.mm), `scroll_document`
+(main.cpp, `WM_MOUSEWHEEL` / `WM_MOUSEHWHEEL`; a touchpad is a delta that is not a multiple of 120).
 
 ## Leaving kinds out of a listing
 

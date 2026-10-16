@@ -25,8 +25,7 @@ final class SettingsStore: ObservableObject {
   static let filmstripImage: Int32 = 1 << 1
   static let wrap: Int32 = 1 << 2
   static let stickyZoom: Int32 = 1 << 3
-  static let backgroundShift: Int32 = 4
-  static let backgroundMask: Int32 = 7 << 4
+  // Bits 4-6 were the canvas background, removed by issue #408 (settings.h).
   /// Set = folders list the kind (settings.h kSettingShow*). Off by default.
   static let showAudio: Int32 = 1 << 12
   static let showDocuments: Int32 = 1 << 13
@@ -42,6 +41,8 @@ final class SettingsStore: ObservableObject {
   @Published private(set) var sort: Int32 = 0
   /// -1 without an updater (unsigned build), 0 stable, 1 preview.
   @Published private(set) var updateChannel: Int32 = -1
+  /// -1 without an updater, 0 off, 1 on (also the app menu's switch).
+  @Published private(set) var updateAutoCheck: Int32 = -1
 
   private var generation: UInt64 = .max
 
@@ -62,6 +63,8 @@ final class SettingsStore: ObservableObject {
     if sortNow != sort { sort = sortNow }
     let channelNow = mv_chrome_update_channel()
     if channelNow != updateChannel { updateChannel = channelNow }
+    let autoNow = mv_chrome_update_auto_check()
+    if autoNow != updateAutoCheck { updateAutoCheck = autoNow }
     let g = mv_chrome_keys_generation()
     if g == generation { return }
     generation = g
@@ -121,14 +124,6 @@ final class SettingsStore: ObservableObject {
     poll()
   }
 
-  var background: Int {
-    get { Int((flags & Self.backgroundMask) >> Self.backgroundShift) }
-    set {
-      mv_chrome_set_view_flags((flags & ~Self.backgroundMask) | (Int32(newValue) << Self.backgroundShift))
-      generation = .max
-      poll()
-    }
-  }
 
   var sortKey: Int {
     get { Int(sort & 7) }
@@ -142,6 +137,11 @@ final class SettingsStore: ObservableObject {
   func setUpdateChannel(_ channel: Int32) {
     mv_chrome_set_update_channel(channel)
     updateChannel = mv_chrome_update_channel()
+  }
+
+  func setUpdateAutoCheck(_ on: Bool) {
+    mv_chrome_set_update_auto_check(on)
+    updateAutoCheck = mv_chrome_update_auto_check()
   }
 
   func beginCapture(_ row: Int32) { mv_chrome_key_capture_begin(row); generation = .max; poll() }
@@ -286,40 +286,28 @@ struct SettingsView: View {
                        detail: "List PDF and Word (DOCX) files in folders. A file you open directly still opens.",
                        bit: SettingsStore.showDocuments, store: store)
         section("Appearance")
-        SettingsRow(title: "Canvas background", detail: "The area behind your photos and videos.") {
-          Picker("Canvas background", selection: Binding(get: { store.background }, set: { store.background = $0 })) {
-            Text("System").tag(0)
-            Text("Grey").tag(1)
-            Text("White").tag(2)
-            Text("Checkerboard").tag(3)
-            Text("Dark").tag(4)
-          }
-          .pickerStyle(.menu).frame(width: 180)
-        }
-        // docs/design/25: the chrome's colours, from an installed add-on. The
-        // photo is never recoloured.
+        // docs/design/25: the chrome's colours. Default, then the built-in
+        // palettes, then every theme an installed add-on contributes, chosen
+        // in a sheet. The photo is never recoloured.
         SettingsRow(title: "Theme",
                     detail: theme.note.isEmpty
-                      ? "Colours of the bars, panes and text. Themes come from add-ons; your photos are never recoloured."
+                      ? "Colours and a quiet ground for the window, its bars and panes, and the area around your photos and videos. Your photos are never recoloured."
                       : theme.note) {
-          Picker("Theme", selection: Binding(get: { theme.selection }, set: { theme.choose($0) })) {
-            Text("Default").tag("")
-            ForEach(addons.themes, id: \.key) { Text($0.name).tag($0.key) }
-            // A choice whose add-on is not installed now stays listed, so the
-            // picker shows what is chosen.
-            if !theme.selection.isEmpty, !addons.themes.contains(where: { $0.key == theme.selection }) {
-              // "Not available" when the add-on is there but refused (the
-              // line beside says why), "Not installed" when it is gone.
-              let addonID = String(theme.selection.prefix { $0 != "/" })
-              Text(addons.installed.contains { $0.addonID == addonID } ? "Not available" : "Not installed")
-                .tag(theme.selection)
-            }
-          }
-          .pickerStyle(.menu).frame(width: 180)
+          // Issue #394: a sheet of cards in each theme's colours (ThemePicker.swift).
+          ThemePickerButton()
         }
         .id(ThemeStore.rowAnchor)
         if store.updateChannel >= 0 {
           section("Updates")
+          if store.updateAutoCheck >= 0 {
+            SettingsRow(title: "Automatic update checks",
+                        detail: "Ask GitHub for new versions at launch and every six hours.") {
+              Toggle("Check for updates automatically",
+                     isOn: Binding(get: { store.updateAutoCheck == 1 }, set: { store.setUpdateAutoCheck($0) }))
+                .toggleStyle(.switch).fixedSize()
+                .help("Asks GitHub for a newer version at launch and every 6 hours. The request reveals your IP address and app version, nothing about your files.")
+            }
+          }
           SettingsRow(title: "Update channel",
                       detail: "Preview gets signed test builds before they become stable. Switching back to Stable keeps this version until a newer stable one is released.") {
             Picker("Update channel", selection: Binding(get: { store.updateChannel },
@@ -455,7 +443,7 @@ struct SettingsView: View {
       .padding(.horizontal, MVTheme.space(24)).padding(.vertical, MVTheme.space(12))
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(MVTheme.canvas)
+    .background(ThemeField())
     .onChange(of: keyboard) { _, _ in store.cancelCapture() }
   }
 }

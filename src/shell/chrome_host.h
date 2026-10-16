@@ -85,8 +85,11 @@ enum chrome_command : int {
   // PR 13. The island drained MV_COMPLETION_CLIP_INDEX (the island owns the
   // drain); arg is the request id, which native reads with mv_clip_index_get.
   chrome_cmd_clip_index = 1015,
-  // Appearance only: WinUI sends the system window colour as an exact
-  // 24-bit integer carried by float (all integers up to 2^24 are exact).
+  // Appearance only: WinUI sends the theme's canvas token (Default: the
+  // system window colour) as an exact 24-bit integer carried by float (all
+  // integers up to 2^24 are exact). Issue #408: it is the clear on every
+  // screen, and it comes last: it publishes the tokens sent before it
+  // (chrome_cmd_home_surface .. home_effect_size), which only store.
   chrome_cmd_home_colour = 1016,
   // Issue #38: arg != 0 while the transport is held open by something the
   // host cannot see from the canvas -- a scrub drag, the More flyout, a
@@ -152,6 +155,34 @@ enum chrome_command : int {
   // Issue #210: the rename popup was confirmed (Enter); native pulls the new
   // name (no extension) with take_parked_text. Esc sends nothing.
   chrome_cmd_rename = 1035,
+  // Issue #413: the gallery's shift-click range. Native pulls the folder
+  // indices (comma-separated, in the grid's order) with take_parked_text; arg
+  // is the anchor, the cell selected when it was made. While the gallery is up
+  // and the anchor is still selected, copy, F7/F8, Delete, copy path, Share and
+  // drag-out act on the range.
+  chrome_cmd_gallery_range = 1036,
+  // Issue #408: the rest of the theme the native empty window draws with,
+  // sent by RefreshTheme before chrome_cmd_home_colour. Tokens are 0xRRGGBB
+  // in the float, as home_colour. home_effect: arg is a shell::home_effect
+  // (0 none); then its ink (0xRRGGBB) and an intensity, a speed and a size in
+  // 0.01 .. 1. 1070 up, clear of the next free numbers other branches take.
+  chrome_cmd_home_surface = 1070,
+  chrome_cmd_home_title = 1071,
+  chrome_cmd_home_body = 1072,
+  chrome_cmd_home_hairline = 1073,
+  chrome_cmd_home_accent = 1074,
+  chrome_cmd_home_effect = 1075,
+  chrome_cmd_home_effect_rgb = 1076,
+  chrome_cmd_home_effect_intensity = 1077,
+  chrome_cmd_home_effect_speed = 1078,
+  chrome_cmd_home_effect_size = 1079,
+  // The pointer moved or a key went down over an island (the bar, a pane):
+  // the empty window's ground restarts its clock (input_snapshot::pointer_seq).
+  // The chrome sends it a few times a second at most; no frame by itself.
+  chrome_cmd_home_ground_input = 1080,
+  // The "Press T" filmstrip hint card's "Got it" (shell/filmstrip_hint.h): the
+  // hint is learned, as T hiding the strip over a document teaches it.
+  chrome_cmd_hint_learned = 1081,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -234,6 +265,25 @@ struct chrome_table_args {
 };
 
 static_assert(sizeof(chrome_table_args) == 16, "keep in sync with ChromeTableArgs");
+
+// Text in images: one still for Windows.Media.Ocr (IslandHost.TextRecognition.cs).
+// The pixels are BGRA8, opaque, row stride width * 4; the island writes the
+// words it read, UTF-8, one record per line (shell/text_in_image.h
+// parse_word_records), into `out_utf8` and says how many bytes in
+// `out_length`. Both buffers are valid for the call only. Back: 0 read (the
+// text may be empty), 1 no OCR language for the user's profile, 2 no OCR on
+// this system, anything else failed.
+struct chrome_text_recognition_args {
+  std::uint64_t pixels;
+  std::int32_t width;
+  std::int32_t height;
+  std::uint64_t out_utf8;
+  std::int32_t out_capacity;
+  std::int32_t out_length;
+};
+
+static_assert(sizeof(chrome_text_recognition_args) == 32,
+              "keep in sync with IslandHost.RecognizeText");
 
 // Commands and island notifications share one id space (docs/design/16). These pin
 // the values the island already sends; commands.h reserves the notifications.
@@ -318,6 +368,7 @@ static_assert(chrome_cmd_editor_trim_grab >= kCommandCount && chrome_cmd_editor_
 static_assert(chrome_cmd_open_in_app >= kCommandCount);
 static_assert(chrome_cmd_video_volume >= kCommandCount && chrome_cmd_video_loop >= kCommandCount);
 static_assert(chrome_cmd_rename >= kCommandCount);
+static_assert(chrome_cmd_gallery_range >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -345,7 +396,7 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_drag_items, chrome_cmd_drag_ended, chrome_cmd_open_recent,
       chrome_cmd_editor_trim_grab, chrome_cmd_editor_trim_to, chrome_cmd_open_in_app,
       chrome_cmd_video_volume, chrome_cmd_video_muted, chrome_cmd_video_track,
-      chrome_cmd_video_loop, chrome_cmd_rename};
+      chrome_cmd_video_loop, chrome_cmd_rename, chrome_cmd_gallery_range};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -401,6 +452,17 @@ struct chrome_show_args {
 };
 
 static_assert(sizeof(chrome_show_args) == 16, "keep in sync with ChromeShowArgs");
+
+// Issue #444: IslandHost.ShareMenu's header, followed by `bytes` of UTF-8 JSON.
+struct chrome_share_args {
+  std::int64_t hwnd;
+  std::int32_t target;  // shell::share_target
+  std::int32_t from;    // shell::share_from
+  std::int32_t bytes;
+  std::int32_t reserved;
+};
+
+static_assert(sizeof(chrome_share_args) == 24, "keep in sync with IslandHost.ShareMenu");
 
 // PR 9 panes. Native owns the geometry: x/y/width/height are client pixels, and a
 // hidden pane is parked below the client area (the gallery's rule).
@@ -935,9 +997,21 @@ class chrome_host {
   // with the last preset (kind 1, Ctrl+Shift+F7). Optional entry point: a
   // chrome without it ignores the call.
   void show_import(std::int32_t kind, const std::string& paths_json) noexcept;
-  // PR 15, Ctrl+Shift+S: Windows Share over `window` with the files in
-  // `paths_json` (a UTF-8 JSON array). False when the chrome cannot share.
-  bool share_files(HWND window, const std::string& paths_json) noexcept;
+  // Issue #444 (docs/design/16 "Share"): the one share command's files are
+  // gathered. `target` and `from` are shell::share_target / share_from: the
+  // menu (Sharepoint, Windows Share) anchored where it was asked, or the entry
+  // picked from a right-click Share submenu. `files_json` is
+  // {"files": [...stops with pair halves...], "media": [...system sheet's...]}.
+  // False when the chrome cannot share.
+  bool share_menu(HWND window, std::int32_t target, std::int32_t from, const std::string& files_json) noexcept;
+  // Text in images: the island's Windows.Media.Ocr entry
+  // (chrome_text_recognition_args). It runs the recognition synchronously on
+  // the thread that calls it, so only a worker calls it: the UI thread reads
+  // the pointer here and hands it to the job. Null without a chrome or on a
+  // chrome without the entry.
+  [[nodiscard]] chrome_entry_fn text_recognition_entry() const noexcept {
+    return attached_ ? recognize_text_ : nullptr;
+  }
   // Milestone H: an add-on command by family (commands.h addon_family; 2 is
   // the AI pack, kinds 0 search / 1 similar / 2 next match / 3 previous
   // match). `json` is what is on screen. True when the add-on ran it; false
@@ -954,6 +1028,11 @@ class chrome_host {
   // shows what it is in Settings and asks; nothing is installed without the
   // answer. False when the chrome has no such entry.
   [[nodiscard]] bool offer_addon(const std::string& path_utf8) noexcept;
+  // docs/design/25, issue #402: a right-click on the canvas at (x, y), client
+  // pixels of the main window. The chrome shows the add-ons' context-menu
+  // entries for the file on screen, as its gallery tile lists them. False when
+  // it showed nothing (no entry, no file, or no such entry point).
+  [[nodiscard]] bool show_canvas_menu(std::int32_t x, std::int32_t y) noexcept;
 
   // Drag-out. The answer to chrome_cmd_drag_items: the files to drag, one
   // UTF-8 path per line (empty: drag the cell alone). `own_drag` tells the
@@ -967,6 +1046,9 @@ class chrome_host {
   // (shell/keymap.h keymap_report_json: {"changed","displaced","skipped"}).
   // Answered inside chrome_cmd_apply_keymap. Optional: an older chrome lacks it.
   void set_keymap_report(const std::string& json) noexcept;
+  // The "Press T" filmstrip hint card (shell/filmstrip_hint.h): shows `utf8`
+  // in the bottom-right card for a few seconds, or hides it when empty.
+  void show_hint(const std::string& utf8) noexcept;
 
   // Opens a flyout on the command bar, or closes any (chrome_popup::close).
   void show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept;
@@ -1040,13 +1122,16 @@ class chrome_host {
   chrome_entry_fn apply_audio_ = nullptr;
   chrome_entry_fn set_command_table_ = nullptr;
   chrome_entry_fn show_import_ = nullptr;
-  chrome_entry_fn share_files_ = nullptr;
+  chrome_entry_fn share_menu_ = nullptr;
+  chrome_entry_fn recognize_text_ = nullptr;  // text in images, optional
   chrome_entry_fn show_addon_ = nullptr;  // Milestone H
   chrome_entry_fn offer_addon_ = nullptr;  // docs/design/25, optional
+  chrome_entry_fn show_canvas_menu_ = nullptr;  // issue #402, optional
   chrome_entry_fn run_addon_command_ = nullptr;  // docs/design/25, optional
   chrome_entry_fn set_drag_paths_ = nullptr;
   chrome_entry_fn set_recent_folders_ = nullptr;
   chrome_entry_fn set_keymap_report_ = nullptr;  // PR 56, optional
+  chrome_entry_fn show_hint_ = nullptr;  // optional: the filmstrip hint card
   chrome_entry_fn show_popup_ = nullptr;
   chrome_entry_fn attach_panels_ = nullptr;
   chrome_entry_fn detach_panels_ = nullptr;

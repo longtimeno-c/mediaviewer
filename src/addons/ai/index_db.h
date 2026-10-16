@@ -32,6 +32,27 @@
 // an FTS5 asset_text(rowid = asset id, text = the folded search fields). One
 // transaction, as every step: a kill in it leaves schema 3.
 //
+// Schema 5 (#405): assets gain rating, label, iso, aperture_x100, focal_mm,
+// shutter_den and shutter_us (NULL until read). `tags` becomes a level: 1 =
+// schema 4's facts read, 2 = these too (kTagsLevel), so the backfill reads a
+// schema-4 row once more for them and never a row that has them.
+//
+// Schema 6 (#406): cues(id, asset_id, start_ms, end_ms, kind, text), a clip's
+// own chapter titles and text subtitle lines. No spec: the text is the
+// file's, not a model's; a changed (mtime, size) drops the asset's rows. Its
+// progress is a progress row under kCueSpec, so a kill resumes it.
+//
+// Schema 7 (#407): assets gain motion, motion_mtime, motion_size and
+// motion_cloud: a Live Photo still's paired movie, whose frames are stored on
+// the still's id with their pts_ms. A changed partner (added, gone, edited,
+// brought down from the cloud) drops those frames and re-queues the motion
+// alone (progress back to partial); the still keeps its row.
+//
+// Schema 8 (#355): no table change; assets.kind 4 is an audio file (MP3, M4A,
+// M4P), indexed only while the pack's "audio_files" setting is on. Its cover
+// art is a frame at pts_ms -1 like a photo's; its tags go through the same
+// backfill. Turning the setting off deletes every kind-4 asset (remove_kind).
+//
 // docs/design/17 sketches one assets row per (path, mtime, size, spec); progress is
 // that row's per-model half, so two models' vectors live side by side while
 // a quality change migrates (PR 23: "old index kept until the new one
@@ -57,7 +78,8 @@ struct sqlite3;
 
 namespace mv::ai {
 
-enum class asset_kind : std::uint8_t { photo = 1, video = 2 };
+// 3 is reserved for documents (docs/plans/document-search.md).
+enum class asset_kind : std::uint8_t { photo = 1, video = 2, audio = 4 };
 enum class work_state : std::uint8_t { pending = 0, partial = 1, done = 2, failed = 3, unavailable = 4 };
 
 struct root_row {
@@ -81,6 +103,21 @@ struct track_filter {
   std::vector<std::int64_t> held;
 };
 
+// #406: the progress spec of the cue pass (not a model: there is no vector).
+inline constexpr const char* kCueSpec = "cues/1";
+// commit_cues' replace_from: drop every row of the pass's kind first.
+inline constexpr std::int64_t kAllCues = INT64_MIN;
+// #403: `picture` is text read in a picture by the OS (text_reader.h): one row
+// per photo at start_ms -1 under its reader's progress spec, and one per clip
+// moment at that moment's pts_ms under the reader's moments spec.
+enum class cue_kind : std::uint8_t { chapter = 1, subtitle = 2, picture = 3 };
+struct cue_in {
+  std::int64_t start_ms = 0;
+  std::int64_t end_ms = 0;
+  cue_kind kind = cue_kind::subtitle;
+  std::string text;
+};
+
 struct speech_in {
   std::int64_t start_ms = 0;
   std::int64_t end_ms = 0;
@@ -96,13 +133,23 @@ struct asset_row {
   asset_kind kind = asset_kind::photo;
   std::int64_t duration_ms = 0;
   bool cloud = false;  // only a cloud provider has it (schema 3): never read until fetched
+  // #407 (schema 7): a Live Photo still's paired movie, "" for none.
+  std::string motion;
+  std::int64_t motion_mtime = 0;
+  std::uint64_t motion_size = 0;
+  bool motion_cloud = false;
 };
+
+// What the tag backfill has read of an asset (assets.tags): 0 nothing, 1 the
+// schema 4 facts, 2 (#405, schema 5) rating, label and exposure too.
+inline constexpr int kTagsLevel = 2;
 
 // #291 (schema 4): what an asset's tags say, as the host's tag_facts gave
 // them. `text` is the search fields folded (core/fold.h) and joined by spaces,
 // as asset_text holds it.
 struct asset_tags {
   std::int64_t id = 0;
+  int level = kTagsLevel;  // what was read (an older host: 1, without the #405 facts)
   std::int64_t mtime = 0;  // the stamp the facts were read at
   std::uint64_t size = 0;
   std::optional<std::int64_t> taken_at;  // date taken read as UTC
@@ -111,6 +158,14 @@ struct asset_tags {
   std::string camera, lens, made_with;
   bool ai = false;
   std::string text;
+  // #405 (level 2). Absent: nullopt / empty / 0.
+  std::optional<int> rating;  // 1..5, -1 rejected, 0 unrated
+  std::string label;          // as written
+  std::int32_t iso = 0;
+  std::int32_t aperture_x100 = 0;
+  std::int32_t focal_mm = 0;
+  std::int32_t shutter_den = 0;
+  std::int64_t shutter_us = 0;
 };
 
 // One embedding to store. `emb` is float and L2-normalised; the store
@@ -183,6 +238,10 @@ class index_db {
   [[nodiscard]] expected set_root_media(std::int64_t id, std::uint32_t media);
   // Deletes the root, its assets, their progress and frames.
   [[nodiscard]] expected remove_root(std::int64_t id);
+  // Deletes every asset of `kind` with its progress, frames, speech, cues and
+  // text, in one transaction (#355: "Show audio files" turned off). Returns
+  // their ids so the search matrix can drop them.
+  [[nodiscard]] result<std::vector<std::int64_t>> remove_kind(asset_kind kind);
   // Moves every asset of `from` to `to` and deletes `from` (a new tree root
   // that swallows an older one).
   [[nodiscard]] expected merge_root(std::int64_t from, std::int64_t to);
@@ -193,6 +252,9 @@ class index_db {
     std::int64_t id = 0;
     bool added = false;
     bool changed = false;  // (mtime, size) differed: frames and progress dropped
+    // #407: the still is the same but its Live Photo movie changed: the
+    // motion frames were dropped and its picture progress set back to partial.
+    bool motion_changed = false;
   };
   struct seen_file {
     std::string path;
@@ -200,6 +262,11 @@ class index_db {
     std::uint64_t size = 0;
     asset_kind kind = asset_kind::photo;
     bool cloud = false;  // its bytes are only in the cloud (host walk_files2)
+    // #407: a Live Photo still's paired movie, "" for none.
+    std::string motion{};
+    std::int64_t motion_mtime = 0;
+    std::uint64_t motion_size = 0;
+    bool motion_cloud = false;
   };
   // Records a batch of files found under `root` in scan `generation`, in one
   // transaction. The result is in the batch's order.
@@ -214,13 +281,18 @@ class index_db {
   // ---- work ---------------------------------------------------------------------
   // Assets of enabled roots with no done / failed progress for `spec` (and
   // failed ones with tries < max_tries): partial clips first, then photos,
-  // then clips. The indexer puts the folder on screen first.
+  // then clips. The indexer puts the folder on screen first. `after`, when
+  // set, is a spec that must be done first: only assets whose progress for it
+  // is done (the text on a clip's moments waits for the picture pass that
+  // chose them); count() takes it too.
   [[nodiscard]] std::vector<work_item> pending(const std::string& spec, std::size_t limit,
-                                               std::int32_t max_tries, const track_filter& filter = {});
+                                               std::int32_t max_tries, const track_filter& filter = {},
+                                               const std::string& after = {});
   // pending(), limited to `ids`: the clips the iCloud fetch has downloaded,
   // which go to the front of the queue (2026-10-05).
   [[nodiscard]] std::vector<work_item> pending_among(const std::string& spec, std::span<const std::int64_t> ids,
-                                                     std::int32_t max_tries, const track_filter& filter = {});
+                                                     std::int32_t max_tries, const track_filter& filter = {},
+                                                     const std::string& after = {});
   [[nodiscard]] expected set_duration(std::int64_t asset, std::int64_t duration_ms);
   // Stores frames and moves progress in one transaction (a kill between two
   // commits resumes at `resume_ms`; nothing committed is redone).
@@ -260,13 +332,26 @@ class index_db {
       const std::string& spec,
       const std::function<void(std::int64_t asset, std::int64_t start_ms, std::int64_t end_ms,
                                const std::string& text)>& visit);
+  // #406: a clip's cues, with progress under kCueSpec, in one transaction.
+  // `replace_from` other than -1 first drops the asset's cues starting at or
+  // after it (a resumed pass sends them again; kAllCues drops every one).
+  // Only the pass's own kind goes: kCueSpec owns chapters and subtitles, a
+  // text reader's specs own `picture` rows.
+  [[nodiscard]] expected commit_cues(std::int64_t asset, std::span<const cue_in> cues, work_state state,
+                                     std::int64_t resume_ms, std::int64_t replace_from = -1,
+                                     const std::string& spec = kCueSpec);
+  [[nodiscard]] expected each_cue(
+      const std::function<void(std::int64_t asset, const cue_in& cue)>& visit);
   // Resets `spec`'s progress for every asset (a spec change, a clear).
   [[nodiscard]] expected drop_spec(const std::string& spec);
 
   // ---- reads --------------------------------------------------------------------
-  [[nodiscard]] counts count(const std::string& spec, const track_filter& filter = {});
+  [[nodiscard]] counts count(const std::string& spec, const track_filter& filter = {},
+                             const std::string& after = {});
   [[nodiscard]] std::uint64_t frames_in_root(std::int64_t root, const std::string& spec);
   [[nodiscard]] std::uint64_t assets_in_root(std::int64_t root);
+  // #355: how many of them are of `kind` (Settings' "N audio files").
+  [[nodiscard]] std::uint64_t kind_in_root(std::int64_t root, asset_kind kind);
   [[nodiscard]] std::uint64_t done_in_root(std::int64_t root, const std::string& spec);
   // How many assets of `root` pending() would still return for `spec` (the
   // filter's held roots aside): 0 when the root's indexing is finished.
@@ -280,19 +365,34 @@ class index_db {
                                     std::int64_t after_id = 0);
   [[nodiscard]] expected each_frame_of(std::int64_t asset, const std::string& spec,
                                        const std::function<void(const frame_out&)>& visit);
+  // #407: the moments stored for an asset under `spec` (pts_ms >= 0), in
+  // order, without their vectors: what the People pass decodes again.
+  [[nodiscard]] std::vector<std::int64_t> moment_times(std::int64_t asset, const std::string& spec);
   [[nodiscard]] std::vector<asset_row> all_assets();
   [[nodiscard]] result<asset_row> asset_by_path(const std::string& path);
   [[nodiscard]] result<asset_row> asset_by_id(std::int64_t id);
   // ---- tags (#291, schema 4) -----------------------------------------------------
-  // Assets of enabled roots whose tags are not read yet (tags = 0; cloud-only
-  // ones wait for their bytes), oldest first: the backfill's next batch.
-  [[nodiscard]] std::vector<asset_row> assets_needing_tags(std::size_t limit);
-  [[nodiscard]] std::uint64_t tags_pending();
+  // Assets of enabled roots whose tags are read below `level` (tags < level;
+  // cloud-only ones wait for their bytes), oldest first: the backfill's next
+  // batch.
+  [[nodiscard]] std::vector<asset_row> assets_needing_tags(std::size_t limit, int level = kTagsLevel);
+  [[nodiscard]] std::uint64_t tags_pending(int level = kTagsLevel);
   // Stores a batch in one transaction; a row whose asset's stamp moved since
   // the read is dropped (its tags are read again).
   [[nodiscard]] expected commit_tags(std::span<const asset_tags> rows);
-  // Every asset with tags read, for the engine's memory at start.
+  // Every asset with tags read (any level), for the engine's memory at start.
   [[nodiscard]] expected each_tags(const std::function<void(const asset_tags&)>& visit);
+  // #398: the assets with coordinates (lat and lon both set), id above
+  // `after_id`, in id order, at most `limit`: one batch of what the host
+  // table's locations_of_index streams. The lock is held for this SELECT
+  // only; the caller visits the batch after it returns and asks again from
+  // the last id.
+  struct located {
+    std::int64_t id = 0;
+    std::string path;
+    double lat = 0, lon = 0;
+  };
+  [[nodiscard]] result<std::vector<located>> located_assets(std::int64_t after_id, std::size_t limit);
   // An FTS5 MATCH over asset_text (empty when the index has no FTS5). For a
   // reader that does not keep the text in memory. `words` is what was typed:
   // each word is matched as a quoted string (fts_phrases), never parsed as
@@ -317,7 +417,8 @@ class index_db {
   index_db() = default;
   bool exec(const char* sql);
   std::vector<work_item> pending_where(const std::string& spec, std::size_t limit, std::int32_t max_tries,
-                                       const track_filter& filter, const std::string& extra);
+                                       const track_filter& filter, const std::string& extra,
+                                       const std::string& after);
   std::mutex m_;
   sqlite3* db_ = nullptr;
   std::string path_;

@@ -34,7 +34,11 @@ public static partial class IslandHost
 {
     private readonly record struct ScreenAt(string Addon, string Screen);
 
-    private static readonly FontFamily SymbolFont = new("Segoe Fluent Icons,Segoe MDL2 Assets");
+    // Lazy, like IconFont: Attach touches IslandHost statics (RegisterUiFont)
+    // before EnsureApp starts XAML, and a FontFamily built then throws
+    // RPC_E_WRONG_THREAD from the type initializer, so no island attaches.
+    private static FontFamily? _symbolFont;
+    private static FontFamily SymbolFont => _symbolFont ??= new("Segoe Fluent Icons,Segoe MDL2 Assets");
 
     /// <summary>The host's glyph for a contribution's symbol (contrib.h kSymbols).</summary>
     private static string SlotGlyph(string symbol) => symbol switch
@@ -129,10 +133,13 @@ public static partial class IslandHost
                             "fill" => HorizontalAlignment.Stretch,
                             _ => fe.HorizontalAlignment,
                         };
+                        // Text in a centred stack is centred too (#442's code and accept cards).
+                        if (fe is TextBlock tb && JStr(n, "align") == "center") tb.TextAlignment = TextAlignment.Center;
                     }
                     panel.Children.Add(child);
                 }
-                return panel;
+                // "look": "card" (#442): a rounded surface, as Settings' cards.
+                return JStr(n, "look") == "card" ? ScreenCard(panel) : panel;
             }
             case "grid":
             {
@@ -154,7 +161,7 @@ public static partial class IslandHost
             }
             case "scroll":
             {
-                var inner = new StackPanel { Spacing = 8 };
+                var inner = new StackPanel { Spacing = Space(8) };
                 foreach (JsonElement c in JArr(n, "children")) inner.Children.Add(BuildScreenNode(c, at));
                 bool horizontal = JStr(n, "axis") == "horizontal";
                 if (horizontal) inner.Orientation = Orientation.Horizontal;
@@ -192,7 +199,7 @@ public static partial class IslandHost
                 for (int i = 0; i < Math.Min(2, parts.Length); ++i)
                 {
                     var child = (FrameworkElement)BuildScreenNode(parts[i], at);
-                    child.Margin = new Thickness(8);
+                    child.Margin = Pad(8);
                     if (vertical) Grid.SetRow(child, i * 2); else Grid.SetColumn(child, i * 2);
                     grid.Children.Add(child);
                 }
@@ -214,6 +221,14 @@ public static partial class IslandHost
                     bold: style is "title" or "heading",
                     maxLines: (int)JNum(n, "lines", 0));
                 if (style == "mono") t.FontFamily = new FontFamily("Cascadia Mono,Consolas");
+                if (style == "display")
+                {
+                    // #442: a short code read off the screen across a room.
+                    t.FontFamily = new FontFamily("Segoe UI Variable Display,Segoe UI");
+                    t.FontSize = UiFontSize + 20;
+                    t.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+                    t.CharacterSpacing = 60;
+                }
                 if (JFlag(n, "copyable")) t.IsTextSelectionEnabled = true;
                 return t;
             }
@@ -246,7 +261,7 @@ public static partial class IslandHost
                 string symbol = JStr(n, "symbol");
                 if (symbol.Length > 0)
                 {
-                    var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+                    var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
                     row.Children.Add(new FontIcon { Glyph = SlotGlyph(symbol), FontFamily = SymbolFont, FontSize = 12, Foreground = Brush(Title) });
                     row.Children.Add(Text(label, Title, UiFontSize - 2));
                     b.Content = row;
@@ -313,6 +328,8 @@ public static partial class IslandHost
             }
             case "number":
                 return BuildNumber(n, at, id);
+            case "text_field" when JStr(n, "look") == "code":
+                return BuildCodeField(n, at, id);
             case "text_field":
             {
                 var field = new FakeInput(JStr(n, "placeholder").Length > 0 ? JStr(n, "placeholder") : JStr(n, "label"), 220)
@@ -331,16 +348,30 @@ public static partial class IslandHost
                     last = field.Text;
                     SendScreenEvent(at, id, SlotNative.EventChange, JsonString(field.Text));
                 };
-                return field;
+                if (JStr(n, "pick") != "folder") return field;
+                // "pick": "folder" (#410): the system folder dialog, reported as the
+                // field's change; typing a path still works.
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+                row.Children.Add(field);
+                Button choose = EditButton("Choose\u2026", () => PickScreenFolder(at, id, field, v => last = v));
+                choose.AllowFocusOnInteraction = true;
+                choose.IsTabStop = true;
+                AutomationProperties.SetName(choose, "Choose a folder for " + JStr(n, "label"));
+                row.Children.Add(choose);
+                return row;
             }
+            case "progress" when JStr(n, "look") == "ring":
+                return ScreenRing(JNum(n, "value", -1), JNum(n, "size", 64));
+            case "tiles":
+                return BuildTiles(n, at, id);
             case "progress":
             {
                 double v = JNum(n, "value", -1);
-                var track = new Grid { Height = 6, MinWidth = 120, Background = Brush(Hairline), CornerRadius = new CornerRadius(3) };
+                var track = new Grid { Height = 6, MinWidth = 120, Background = Brush(Hairline), CornerRadius = new CornerRadius(3) };  // a pill: half its height
                 var fill = new Border
                 {
                     Background = Brush(TrimAccent),
-                    CornerRadius = new CornerRadius(3),
+                    CornerRadius = new CornerRadius(3),  // the bar's pill ends: half its height
                     HorizontalAlignment = HorizontalAlignment.Left,
                 };
                 track.Children.Add(fill);
@@ -350,12 +381,248 @@ public static partial class IslandHost
                 return track;
             }
             case "separator":
-                return new Border { Height = 1, Background = Brush(Hairline), Margin = new Thickness(0, 4, 0, 4) };
+                return new Border { Height = 1, Background = Brush(Hairline), Margin = Pad(0, 4, 0, 4) };
             case "surface":
                 return BuildSurface(n, at);
             default:
                 return new Border();
         }
+    }
+
+    // ---- #442 additions: card, ring, tiles, code entry ------------------------------
+
+    private static Border ScreenCard(UIElement content) => new()
+    {
+        Child = content,
+        Padding = Pad(14),
+        Background = Brush(ChromeColour.Surface),
+        BorderBrush = Brush(Hairline),
+        BorderThickness = new Thickness(1),
+        CornerRadius = Corner(10),
+        HorizontalAlignment = HorizontalAlignment.Stretch,
+    };
+
+    /// <summary>An arc from 12 o'clock, clockwise, over <paramref name="fraction"/> of a
+    /// circle of <paramref name="size"/> drawn with a <paramref name="line"/> stroke.</summary>
+    private static Geometry RingArc(double size, double line, double fraction)
+    {
+        double r = (size - line) / 2, c = size / 2;
+        if (fraction >= 0.999)
+        {
+            return new EllipseGeometry { Center = new Windows.Foundation.Point(c, c), RadiusX = r, RadiusY = r };
+        }
+        double angle = Math.Max(0.02, fraction) * 2 * Math.PI;
+        var figure = new PathFigure { StartPoint = new Windows.Foundation.Point(c, c - r), IsClosed = false, IsFilled = false };
+        figure.Segments.Add(new ArcSegment
+        {
+            Point = new Windows.Foundation.Point(c + r * Math.Sin(angle), c - r * Math.Cos(angle)),
+            Size = new Windows.Foundation.Size(r, r),
+            IsLargeArc = fraction > 0.5,
+            SweepDirection = SweepDirection.Clockwise,
+        });
+        var g = new PathGeometry();
+        g.Figures.Add(figure);
+        return g;
+    }
+
+    // "look": "ring": a circle that fills, its percentage in the middle; an
+    // unknown value is a still third (nothing ticks while nothing moves).
+    private static FrameworkElement ScreenRing(double value, double size)
+    {
+        double line = Math.Max(3, size / 14);
+        var root = new Grid { Width = size, Height = size, HorizontalAlignment = HorizontalAlignment.Center };
+        root.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse
+        {
+            Width = size - line,
+            Height = size - line,
+            Margin = new Thickness(line / 2),
+            Stroke = Brush(Hairline),
+            StrokeThickness = line,
+        });
+        root.Children.Add(new Microsoft.UI.Xaml.Shapes.Path
+        {
+            Data = RingArc(size, line, value < 0 ? 0.33 : Math.Clamp(value, 0, 1)),
+            Stroke = Brush(ChromeColour.TrimAccent),
+            StrokeThickness = line,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+        });
+        if (value >= 0 && size >= 40)
+        {
+            TextBlock pct = Text($"{Math.Round(value * 100)}%", Title, size / 4.5, bold: true);
+            pct.HorizontalAlignment = HorizontalAlignment.Center;
+            pct.VerticalAlignment = VerticalAlignment.Center;
+            root.Children.Add(pct);
+        }
+        AutomationProperties.SetHelpText(root, value < 0 ? "In progress" : $"{Math.Round(value * 100)} percent");
+        return root;
+    }
+
+    // Large round tiles (#442): a monogram in a circle, the name and a caption
+    // under it; a ring round the circle while "progress" >= 0; a done / failed
+    // mark. A click, Space or Enter on one is `activate` with its id; a
+    // "static" set is shown, not chosen (no focus, no event). One row that
+    // scrolls sideways when the computers do not fit.
+    private static UIElement BuildTiles(JsonElement n, ScreenAt at, string id)
+    {
+        double size = JNum(n, "size", 72);
+        bool still = JFlag(n, "static");
+        HashSet<string> selected = SelectedSet(n);
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(12) };
+        foreach (JsonElement item in JArr(n, "items"))
+        {
+            string itemId = JStr(item, "id");
+            string name = JStr(item, "text"), detail = JStr(item, "detail");
+            double progress = JNum(item, "progress", -1);
+            string mark = JStr(item, "mark");
+            var face = new Grid { Width = size + 14, Height = size + 14 };
+            face.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse
+            {
+                Width = size,
+                Height = size,
+                Fill = Brush(ChromeColour.TrimAccent),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            TextBlock mono = Text(JStr(item, "initials") is { Length: > 0 } ini ? ini : "?", Title, size * 0.36, bold: true);
+            mono.Foreground = new SolidColorBrush(Colors.White);
+            mono.HorizontalAlignment = HorizontalAlignment.Center;
+            mono.VerticalAlignment = VerticalAlignment.Center;
+            face.Children.Add(mono);
+            if (progress >= 0)
+            {
+                face.Children.Add(new Microsoft.UI.Xaml.Shapes.Path
+                {
+                    Data = RingArc(size + 14, 4, Math.Clamp(progress, 0, 1)),
+                    Stroke = Brush(ChromeColour.TrimAccent),
+                    StrokeThickness = 4,
+                    StrokeStartLineCap = PenLineCap.Round,
+                    StrokeEndLineCap = PenLineCap.Round,
+                });
+            }
+            else if (selected.Contains(itemId))
+            {
+                face.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse { Stroke = Brush(ChromeColour.TrimAccent), StrokeThickness = 2 });
+            }
+            if (mark.Length > 0)
+            {
+                var badge = new Border
+                {
+                    Width = size * 0.32,
+                    Height = size * 0.32,
+                    CornerRadius = new CornerRadius(size * 0.16),
+                    Background = new SolidColorBrush(mark == "done" ? Windows.UI.Color.FromArgb(255, 52, 168, 83)
+                                                                    : Windows.UI.Color.FromArgb(255, 230, 126, 34)),
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    Child = new FontIcon
+                    {
+                        Glyph = mark == "done" ? "\uE73E" : "\uE7BA",
+                        FontFamily = SymbolFont,
+                        FontSize = size * 0.18,
+                        Foreground = new SolidColorBrush(Colors.White),
+                    },
+                };
+                face.Children.Add(badge);
+            }
+            var tile = new StackPanel { Spacing = Space(4), Width = size + 40 };
+            tile.Children.Add(face);
+            TextBlock title = Text(name, Title, UiFontSize - 2, maxLines: 2);
+            title.TextAlignment = TextAlignment.Center;
+            title.HorizontalAlignment = HorizontalAlignment.Center;
+            tile.Children.Add(title);
+            if (detail.Length > 0)
+            {
+                TextBlock caption = Text(detail, Body, UiFontSize - 4, maxLines: 1);
+                caption.HorizontalAlignment = HorizontalAlignment.Center;
+                tile.Children.Add(caption);
+            }
+            string spoken = detail.Length > 0 ? $"{name}, {detail}" : name;
+            if (still)
+            {
+                AutomationProperties.SetName(tile, spoken);
+                row.Children.Add(tile);
+                continue;
+            }
+            Button b = EditButton("", () => SendScreenEvent(at, id, SlotNative.EventActivate, JsonString(itemId)));
+            b.Content = tile;
+            b.Padding = Pad(4);
+            b.AllowFocusOnInteraction = true;
+            b.IsTabStop = true;
+            AutomationProperties.SetName(b, spoken);
+            row.Children.Add(b);
+        }
+        UIElement body = row;
+        if (!still)
+        {
+            body = new ScrollViewer
+            {
+                Content = row,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                HorizontalScrollMode = ScrollMode.Auto,
+                VerticalScrollMode = ScrollMode.Disabled,
+            };
+        }
+        else
+        {
+            row.HorizontalAlignment = HorizontalAlignment.Center;
+        }
+        return body;
+    }
+
+    private static readonly MediaViewer.Shared.FakeInputLook CodeInputLook = new()
+    {
+        Font = () => new FontFamily("Segoe UI Variable Display,Segoe UI"),
+        FontSize = () => UiFontSize + 14,
+        Title = () => Brush(Title),
+        Body = () => Brush(Body),
+        Canvas = () => Brush(Canvas),
+        Hairline = () => Brush(Hairline),
+        Selection = () => Brush(TextSelection),
+        SelectionInk = () => Brush(TextSelectionInk),
+        Accent = () => Brush(ChromeColour.Accent),
+    };
+
+    // "look": "code" (#442): large, digits only (grouped "123 456" as typed); it
+    // submits by itself once "digits" are typed (Enter submits too) and clears for
+    // a retry. FakeInput, as every field here: a WinUI TextBox fail-fasts.
+    private static UIElement BuildCodeField(JsonElement n, ScreenAt at, string id)
+    {
+        int digits = (int)JNum(n, "digits", 6);
+        var field = new MediaViewer.Shared.FakeInput(CodeInputLook,
+            JStr(n, "placeholder").Length > 0 ? JStr(n, "placeholder") : JStr(n, "label"), 240)
+        {
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        bool busy = false;
+        field.Changed += () =>
+        {
+            if (busy) return;
+            string only = new string(field.Text.Where(char.IsAsciiDigit).Take(digits).ToArray());
+            string shown = only.Length > 3 ? only[..3] + " " + only[3..] : only;
+            busy = true;
+            try
+            {
+                if (only.Length == digits)
+                {
+                    SendScreenEvent(at, id, SlotNative.EventSubmit, JsonString(only));
+                    field.SetText("");
+                }
+                else if (shown != field.Text)
+                {
+                    field.SetText(shown);
+                }
+            }
+            finally { busy = false; }
+        };
+        field.Submitted += () =>
+        {
+            string only = new string(field.Text.Where(char.IsAsciiDigit).ToArray());
+            if (only.Length > 0) SendScreenEvent(at, id, SlotNative.EventSubmit, JsonString(only));
+        };
+        field.Loaded += (_, _) => field.Focus(FocusState.Programmatic);
+        return field;
     }
 
     private static string ScreenNumberJson(double v) =>
@@ -368,7 +635,7 @@ public static partial class IslandHost
         double lo = JNum(n, "min", -1e12), hi = JNum(n, "max", 1e12), step = JNum(n, "step", 1);
         double value = JNum(n, "value", Math.Max(lo, 0));
         string label = JStr(n, "label");
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
         TextBlock shown = Text($"{label}: {ScreenNumberJson(value)}", Title, UiFontSize - 2);
         shown.VerticalAlignment = VerticalAlignment.Center;
         void Step(double by)
@@ -409,7 +676,7 @@ public static partial class IslandHost
         JsonElement[] columns = table ? JArr(n, "columns").ToArray() : Array.Empty<JsonElement>();
         if (table)
         {
-            var header = new Grid { Padding = new Thickness(8, 4, 8, 4) };
+            var header = new Grid { Padding = Pad(8, 4, 8, 4) };
             for (int c = 0; c < columns.Length; ++c)
             {
                 header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -441,7 +708,7 @@ public static partial class IslandHost
             }
             else
             {
-                var col = new StackPanel { Spacing = 1 };
+                var col = new StackPanel { Spacing = Space(1) };
                 col.Children.Add(Text(JStr(r, "text"), Title, UiFontSize - 2));
                 string detail = JStr(r, "detail");
                 if (detail.Length > 0) col.Children.Add(Text(detail, Body, UiFontSize - 4));
@@ -521,7 +788,7 @@ public static partial class IslandHost
         {
             Width = size,
             Height = size,
-            CornerRadius = new CornerRadius(6),
+            CornerRadius = Corner(6),
             Background = Brush(ChromeColour.Surface),
             Child = img,
         };
@@ -608,7 +875,7 @@ public static partial class IslandHost
         ScrollViewer? scroller = null;
         var repeater = new ItemsRepeater
         {
-            Layout = new UniformGridLayout { MinItemWidth = tile, MinItemHeight = tile, MinColumnSpacing = 8, MinRowSpacing = 8 },
+            Layout = new UniformGridLayout { MinItemWidth = tile, MinItemHeight = tile, MinColumnSpacing = Space(8), MinRowSpacing = Space(8) },
             ItemsSource = vms,
         };
         repeater.ItemTemplate = new SlotTileFactory(tile, vm =>
@@ -746,7 +1013,7 @@ public static partial class IslandHost
         var frame = new Grid
         {
             Height = height,
-            CornerRadius = new CornerRadius(6),
+            CornerRadius = Corner(6),
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(1),
             Background = Brush(ChromeColour.Surface),
@@ -1051,12 +1318,12 @@ public static partial class IslandHost
 
     private static UIElement BuildScreenRoot(JsonElement s, ScreenAt at, string place)
     {
-        var root = new Grid { Background = Brush(Canvas), RequestedTheme = IslandTheme, Padding = new Thickness(12) };
+        var root = new Grid { Background = Brush(Canvas), RequestedTheme = IslandTheme, Padding = Pad(12) };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         if (place != "window")
         {
-            var head = new Grid { Margin = new Thickness(0, 0, 0, 8) };
+            var head = new Grid { Margin = Pad(0, 0, 0, 8) };
             head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             head.Children.Add(Text(JStr(s, "title"), Title, UiFontSize, bold: true));
@@ -1085,37 +1352,118 @@ public static partial class IslandHost
         return root;
     }
 
+    // #410: a screen's folder field. The dialog belongs to the screen's own
+    // window (else the viewer's); the folder goes to the add-on as the field's
+    // change, as if typed.
+    private static async void PickScreenFolder(ScreenAt at, string id, FakeInput field, Action<string> remember)
+    {
+        try
+        {
+            var picker = new Windows.Storage.Pickers.FolderPicker();
+            picker.FileTypeFilter.Add("*");
+            IntPtr owner = ScreenWindows.TryGetValue(at, out var open)
+                ? WinRT.Interop.WindowNative.GetWindowHandle(open.Window)
+                : _themeWindow;
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, owner);
+            Windows.Storage.StorageFolder? folder = await picker.PickSingleFolderAsync();
+            if (folder is null) return;
+            field.Text = folder.Path;
+            remember(folder.Path);
+            SendScreenEvent(at, id, SlotNative.EventChange, JsonString(folder.Path));
+        }
+        catch (Exception ex)
+        {
+            // Never let an exception out of a XAML event: that is a fail-fast.
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
+    }
+
+    [DllImport("user32.dll", EntryPoint = "GetDpiForWindow")]
+    private static extern uint SlotGetDpiForWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    private static extern IntPtr SlotSetWindowLongPtr(IntPtr hwnd, int index, IntPtr value);
+
+    [DllImport("user32.dll", EntryPoint = "SetPropW", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SlotSetProp(IntPtr hwnd, string name, IntPtr data);
+
+    private const int SlotGwlpHwndParent = -8;
+
+    // #442: an add-on's window is a MediaViewer window. The app's icon in the
+    // title bar, the taskbar and Alt+Tab (AppIcon, as Import's windows); sized in
+    // DIPs at the viewer's DPI with a floor it cannot be shrunk past; a window or
+    // sheet is owned by the viewer (it stays above it and minimises with it) and
+    // centred over it; and every one is marked so the viewer's key router leaves
+    // its keys alone (main.cpp handle_app_key): a digit typed into a field is
+    // text, not a rating.
     private static Window OpenScreenWindow(JsonElement s, ScreenAt at, string place)
     {
-        var w = new Window { Title = JStr(s, "title") };
+        string title = JStr(s, "title");
+        var w = new Window { Title = title.Length > 0 ? title : "MediaViewer" };
+        MediaViewer.Shared.AppIcon.Apply(w);
+        IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(w);
         int width = (int)JNum(s, "width", 0), height = (int)JNum(s, "height", 0);
         SlotRect main = default;
         bool haveMain = _themeWindow != IntPtr.Zero && SlotGetWindowRect(_themeWindow, out main);
+        uint dpi = _themeWindow != IntPtr.Zero ? SlotGetDpiForWindow(_themeWindow) : 0;
+        double scale = dpi > 0 ? dpi / 96.0 : 1.0;
+        int Px(double dip) => (int)Math.Round(dip * scale);
+        int minW, minH;
         switch (place)
         {
             case "pane":
             {
                 // Docked to the right edge of the viewer window.
-                int pw = width > 0 ? width : 340;
-                int ph = haveMain ? main.Bottom - main.Top : (height > 0 ? height : 640);
+                int pw = Px(width > 0 ? width : 340);
+                int ph = haveMain ? main.Bottom - main.Top : Px(height > 0 ? height : 640);
                 w.AppWindow.Resize(new Windows.Graphics.SizeInt32(pw, ph));
                 if (haveMain) w.AppWindow.Move(new Windows.Graphics.PointInt32(main.Right - pw, main.Top));
+                (minW, minH) = (Px(260), Px(320));
                 break;
             }
             case "sheet":
             {
-                int sw = width > 0 ? width : 520, sh = height > 0 ? height : 420;
+                int sw = Px(width > 0 ? width : 520), sh = Px(height > 0 ? height : 420);
                 w.AppWindow.Resize(new Windows.Graphics.SizeInt32(sw, sh));
                 if (haveMain)
                 {
                     w.AppWindow.Move(new Windows.Graphics.PointInt32(
-                        main.Left + (main.Right - main.Left - sw) / 2, main.Top + 60));
+                        main.Left + (main.Right - main.Left - sw) / 2, main.Top + Px(60)));
                 }
+                (minW, minH) = (Px(360), Px(280));
                 break;
             }
             default:
-                w.AppWindow.Resize(new Windows.Graphics.SizeInt32(width > 0 ? width : 760, height > 0 ? height : 560));
+            {
+                int ww = Px(width > 0 ? width : 760), wh = Px(height > 0 ? height : 560);
+                w.AppWindow.Resize(new Windows.Graphics.SizeInt32(ww, wh));
+                if (haveMain)
+                {
+                    // Over the viewer, a third of the way down, as the AI windows open.
+                    int mw = main.Right - main.Left, mh = main.Bottom - main.Top;
+                    w.AppWindow.Move(new Windows.Graphics.PointInt32(
+                        main.Left + (mw - ww) / 2, main.Top + Math.Max(0, (mh - wh) / 3)));
+                }
+                (minW, minH) = (Px(Math.Min(420, width > 0 ? width : 420)), Px(Math.Min(480, height > 0 ? height : 480)));
                 break;
+            }
+        }
+        try
+        {
+            if (w.AppWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter op)
+            {
+                op.PreferredMinimumWidth = minW;
+                op.PreferredMinimumHeight = minH;
+                op.IsMinimizable = place == "pane";  // an owned window minimises with the viewer
+            }
+            if (place != "pane" && _themeWindow != IntPtr.Zero) SlotSetWindowLongPtr(hwnd, SlotGwlpHwndParent, _themeWindow);
+            SlotSetProp(hwnd, "MediaViewer.AddonWindow", 1);
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or COMException)
+        {
+            // Cosmetic: the window still works without the floor or the owner.
+            System.Diagnostics.Debug.WriteLine(ex.Message);
         }
         w.Closed += (_, _) =>
         {

@@ -129,6 +129,18 @@ public static partial class IslandHost
     private static void OnHighContrastChanged(AccessibilitySettings sender, object args) => QueueThemeRefresh();
     private static void QueueThemeRefresh() => _themeDispatcher?.TryEnqueue(RefreshTheme);
 
+    /// <summary>The chrome's own colours with no theme (Default), for the
+    /// appearance asked; the theme picker draws its Default card with them.</summary>
+    private static ThemePalette DefaultPalette(bool dark) => new(
+        Canvas: dark ? Rgb(33, 35, 42) : Rgb(243, 243, 243),
+        Surface: dark ? Rgb(48, 50, 58) : Rgb(255, 255, 255),
+        Title: dark ? Rgb(235, 236, 240) : Rgb(27, 27, 27),
+        Body: dark ? Rgb(177, 181, 191) : Rgb(92, 92, 92),
+        Disabled: dark ? Rgb(112, 115, 125) : Rgb(160, 161, 166),
+        Hairline: dark ? Rgb(78, 81, 91) : Rgb(195, 197, 202),
+        Accent: _themeSettings?.GetColorValue(dark ? UIColorType.AccentLight2 : UIColorType.AccentDark2)
+                ?? (dark ? Rgb(153, 235, 255) : Rgb(0, 62, 146)));
+
     private static void RefreshTheme()
     {
         if (_themeSettings is null) return; // a queued notification after shutdown
@@ -140,18 +152,19 @@ public static partial class IslandHost
         // appearance, so Windows' own controls match it.
         ThemePalette? themed = contrast ? null : ThemedPalette(ref dark);
 
-        Color canvas = dark ? Rgb(33, 35, 42) : Rgb(243, 243, 243);
+        ThemePalette basis = DefaultPalette(dark);
+        Color canvas = basis.Canvas;
         Color panel = dark ? Rgb(27, 29, 35) : Rgb(249, 249, 249);
-        Color surface = dark ? Rgb(48, 50, 58) : Rgb(255, 255, 255);
-        Color title = dark ? Rgb(235, 236, 240) : Rgb(27, 27, 27);
-        Color body = dark ? Rgb(177, 181, 191) : Rgb(92, 92, 92);
-        Color line = dark ? Rgb(78, 81, 91) : Rgb(195, 197, 202);
-        Color disabled = dark ? Rgb(112, 115, 125) : Rgb(160, 161, 166);
+        Color surface = basis.Surface;
+        Color title = basis.Title;
+        Color body = basis.Body;
+        Color line = basis.Hairline;
+        Color disabled = basis.Disabled;
         // The washes follow the appearance, not a theme token (docs/design/25,
         // the Mac's Color.primary): white on a dark chrome, black on a light one,
         // at low alpha. `dark` is resolved after a one-palette theme forces it.
         Color washInk = dark ? Rgb(255, 255, 255) : Rgb(0, 0, 0);
-        Color accent = _themeSettings.GetColorValue(dark ? UIColorType.AccentLight2 : UIColorType.AccentDark2);
+        Color accent = basis.Accent;
         if (themed is not null)
         {
             // The token table is the Mac's too (MVTheme): one background for
@@ -224,11 +237,29 @@ public static partial class IslandHost
             : accentLuma > 160 ? Rgb(0, 0, 0) : Rgb(255, 255, 255));
         PublishControlAccent();
 
-        // The native welcome/game is outside the XAML tree. Ship the current
-        // system window colour to its snapshot on the UI thread, including
-        // changes to Windows contrast themes. It never alters the photo canvas.
-        uint homeRgb = (uint)(canvas.R << 16 | canvas.G << 8 | canvas.B);
-        _onCommand?.Invoke(_context, Command.HomeColour, homeRgb);
+        // Issue #408: the native welcome/game and the clear behind every photo
+        // and video are outside the XAML tree. Ship them the same tokens, on
+        // the UI thread, including Windows contrast themes; a built-in's ground
+        // too (an add-on theme, Default and contrast have none). HomeColour
+        // comes last: it publishes the rest. Photo and video pixels are never
+        // recoloured.
+        static float Pack(Color c) => (uint)(c.R << 16 | c.G << 8 | c.B);
+        _onCommand?.Invoke(_context, Command.HomeSurface, Pack(surface));
+        _onCommand?.Invoke(_context, Command.HomeTitle, Pack(title));
+        _onCommand?.Invoke(_context, Command.HomeBody, Pack(body));
+        _onCommand?.Invoke(_context, Command.HomeHairline, Pack(line));
+        _onCommand?.Invoke(_context, Command.HomeAccent, Pack(accent));
+        BuiltinThemes.Item? ground = themed is null ? null : BuiltinThemes.Find(ChromeThemeSelection);
+        _onCommand?.Invoke(_context, Command.HomeEffect,
+            ground is { } g ? BuiltinThemes.EffectIndex(g.Effect) : 0);
+        if (ground is { } item)
+        {
+            _onCommand?.Invoke(_context, Command.HomeEffectRgb, item.EffectRgb & 0xFFFFFFu);
+            _onCommand?.Invoke(_context, Command.HomeEffectIntensity, (float)item.Intensity);
+            _onCommand?.Invoke(_context, Command.HomeEffectSpeed, (float)item.Speed);
+            _onCommand?.Invoke(_context, Command.HomeEffectSize, (float)item.Size);
+        }
+        _onCommand?.Invoke(_context, Command.HomeColour, Pack(canvas));
 
         ApplyIslandTheme(themed is null ? ElementTheme.Default
             : dark ? ElementTheme.Dark : ElementTheme.Light);
@@ -238,6 +269,8 @@ public static partial class IslandHost
 
         // Milestone H: an add-on's own window follows (IAddonHost2.ThemeChanged).
         RaiseHostThemeChanged();
+        // The ground effect follows the same brushes. It is not on the photo canvas.
+        ThemeMotion.Raise();
     }
 
     private static bool _themeTitleDark = true;
@@ -311,6 +344,8 @@ public static partial class IslandHost
         _accessibilitySettings = null;
         _themeDispatcher = null;
         _themeWindow = IntPtr.Zero;
+        ThemeMotion.Window = IntPtr.Zero;
+        ThemeMotion.ForwardInput = null;
         try
         {
             ResourceDictionary? resources = _controlAccentPublished ? Application.Current?.Resources : null;

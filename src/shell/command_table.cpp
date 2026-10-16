@@ -93,7 +93,10 @@ constexpr binding kBindings[] = {
     row(C('R'), mod_none, kViewing, edge, reset_stats),
     row(C('G'), mod_none, kNotCrop, edge, toggle_gallery),
     row(C('T'), mod_none, kAllModes, edge, toggle_filmstrip),
-    row(C('B'), mod_none, kViewing, edge, cycle_background),
+    // Issue #408: `B` cycled a canvas background, which is gone. The row stays,
+    // keyless and in no mode, because saved rebinds name rows by index (Windows
+    // settings.ini [keys], the Mac's mv.keys): never routed, never listed.
+    row(key::none, mod_none, 0, edge, retired_background),
     row(C('S'), mod_none, kBrowse | kVideo | kIsland, edge, sticky_zoom),
     row(C('C'), mod_none, kViewing, edge, clipping),
     row(C('O'), mod_none, kViewing, edge, info_overlay),
@@ -129,7 +132,8 @@ constexpr binding kBindings[] = {
     row(key::f7, mod_shift, kViewing, edge, copy_to_pick),
     row(key::f8, mod_none, kViewing, edge, move_to),
     row(key::f8, mod_shift, kViewing, edge, move_to_pick),
-    row(key::del, mod_none, kBrowse | kVideo, edge, delete_to_recycle_bin),
+    // Issue #413: in the gallery too, for its shift-click range (or the cell).
+    row(key::del, mod_none, kBrowse | kVideo | kGallery, edge, delete_to_recycle_bin),
 
     // Slideshow.
     row(C('+'), mod_none, kSlideshow, repeat, slideshow_faster),
@@ -309,12 +313,17 @@ constexpr binding kBindings[] = {
     row(C('8'), mod_ctrl | mod_shift, kViewing, edge, label_green),
     row(C('9'), mod_ctrl | mod_shift, kViewing, edge, label_blue),
     row(C('U'), mod_none, kBrowse | kVideo, edge, clear_label),
-    // Issue #361. Appended so every row above keeps its Settings index. On a
-    // clip that is playing, or with the filmstrip hidden, ← → are Q / E
-    // (mode::skim layers over video). Paused with the strip up they walk the
-    // folder (kWalk, first rows); A / D walk it in every case.
+    // Issue #416 (was #361). Appended so every row above keeps its Settings
+    // index. On a clip with the filmstrip hidden (T), ← → are Q / E
+    // (mode::skim layers over video), playing or paused. With the strip up
+    // they walk the folder (kWalk, first rows); A / D walk it in every case.
     row(key::left, mod_none, kSkim, tap_hold, skim_back, skim_back, skim_settle),
     row(key::right, mod_none, kSkim, tap_hold, skim_forward, skim_forward, skim_settle),
+    // Issue #209. Appended. The Shift twin of the loupe (hold `Z`, 100 % at the
+    // cursor): 100 % at the AF point, for a focus check in one key. Browse only:
+    // a clip has no AF points, and with the strip or gallery focused a shifted
+    // letter is typeahead. Held Z (loupe) falls back to browse, so it works there.
+    row(C('Z'), mod_shift, kBrowse, edge, zoom_af_point),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -364,7 +373,9 @@ constexpr command_info kCommands[] = {
     {gallery_smaller, "Gallery: smaller thumbnails"},
     {fill, "Fill"},
     {reset_view, "Reset view"},
-    {cycle_background, "Canvas background"},
+    // Issue #408: no canvas background; every screen is the theme's. Kept,
+    // keyless, so every later command keeps its wire value.
+    {retired_background, "Canvas background (retired)", true},
     {sticky_zoom, "Sticky zoom"},
     {clipping, "Clipping"},
     {loupe, "Loupe"},
@@ -501,6 +512,7 @@ constexpr command_info kCommands[] = {
     {label_green, "Label green"},
     {label_blue, "Label blue"},
     {clear_label, "Clear label"},
+    {zoom_af_point, "Zoom to AF point"},
 };
 
 const char* named_key(key k) noexcept {

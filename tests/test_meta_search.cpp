@@ -151,6 +151,51 @@ TEST_CASE("the search fields come from the summary and the tags, once each", "[s
   CHECK(f.where->lat == 38.7);
 }
 
+TEST_CASE("rating, label and exposure are facts, never search fields (#405)", "[search][exposure]") {
+  meta::metadata m;
+  m.s.camera = "Canon EOS R5";
+  m.s.iso = "ISO 400";
+  m.s.aperture = "f/2.8";
+  m.s.exposure = "1/250 s";
+  m.s.focal_length = "35 mm";
+  m.s.rating = 5;
+  m.s.label = "Red";
+  const meta::search_facts f = meta::search_facts_of(m);
+  CHECK(f.iso == 400);
+  CHECK(f.aperture_x100 == 280);
+  CHECK(f.shutter_us == 4000);
+  CHECK(f.shutter_den == 250);
+  CHECK(f.focal_mm == 35);
+  CHECK(f.rating == 5);
+  CHECK(f.label == "Red");
+  CHECK(f.fields == std::vector<std::string>{"Canon EOS R5"});  // no "400", no "Red"
+
+  std::int32_t den = -1;
+  CHECK(meta::shutter_us("2 s", &den) == 2000000);
+  CHECK(den == 0);
+  CHECK(meta::shutter_us("0.004 s", &den) == 4000);
+  CHECK(den == 250);
+  CHECK(meta::shutter_us("10/2500", &den) == 4000);
+  CHECK(den == 250);
+  CHECK(meta::shutter_us("1/3 s", &den) == 333333);
+  CHECK(den == 3);
+  CHECK(meta::shutter_us("", &den) == 0);
+  CHECK(meta::shutter_us("bulb", &den) == 0);
+  CHECK(meta::aperture_x100("f/1.4") == 140);
+  CHECK(meta::aperture_x100("") == 0);
+  CHECK(meta::focal_mm("4.25 mm") == 4);
+  CHECK(meta::focal_mm("85 mm") == 85);
+  CHECK(meta::iso_number("ISO 12800") == 12800);
+  CHECK(meta::iso_number("") == 0);
+
+  meta::metadata clip;
+  clip.is_clip = true;
+  const meta::search_facts c = meta::search_facts_of(clip);
+  CHECK(c.iso == 0);
+  CHECK(c.shutter_us == 0);
+  CHECK(c.rating == 0);
+}
+
 TEST_CASE("a clip's container tags are search fields", "[search]") {
   meta::metadata m;
   m.is_clip = true;

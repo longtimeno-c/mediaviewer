@@ -30,7 +30,7 @@ struct Camera {
   float2 image_size;
   float2 origin;
   float2 texture_size;
-  float background;
+  float unused0;  // the retired background mode (issue #408)
   float clipping;
   float time;
   float grid;
@@ -44,7 +44,7 @@ struct Camera {
   // mv_adjust, which never reads adj1.w itself.
   float4 adj0;
   float4 adj1;
-  float4 theme_background;  // linear RGB, mode 0
+  float4 theme_background;  // the theme's canvas, linear RGB
 };
 )";
 
@@ -87,14 +87,11 @@ static float4 sample_catmull(texture2d<float> tex, sampler samp_point, float2 uv
   return saturate(catmull_rom_1d(rows[0], rows[1], rows[2], rows[3], f.y));
 }
 
+// Issue #408: around the picture and through its alpha is the theme's canvas,
+// the colour the chrome paints; there is no canvas background of its own.
 static float3 background_at(constant Camera& cam, float2 screen) {
-  if (cam.background < 0.5) return cam.theme_background.rgb;
-  if (cam.background < 1.5) return float3(0.214, 0.214, 0.214);
-  if (cam.background < 2.5) return float3(1.0, 1.0, 1.0);
-  if (cam.background > 3.5) return float3(0.016, 0.018, 0.024);
-  float2 cell = floor((screen - cam.origin) / 12.0);
-  float odd = fmod(abs(cell.x + cell.y), 2.0);
-  return odd < 0.5 ? float3(0.527, 0.527, 0.527) : float3(0.815, 0.815, 0.815);
+  (void)screen;
+  return cam.theme_background.rgb;
 }
 
 static float4 sample_filtered(constant Camera& cam, texture2d<float> img, sampler samp_aniso,
@@ -156,7 +153,7 @@ struct alignas(16) camera_cb {
   float image_w, image_h;
   float origin_x, origin_y;
   float texture_w, texture_h;
-  float background, clipping, time, grid;
+  float unused0, clipping, time, grid;  // unused0: the retired background mode (#408)
   float map0[4];
   float map1[4];
   float adj0[4];
@@ -278,7 +275,6 @@ void blitter_mac::draw(void* encoder_ptr, void* texture_ptr, const blit_params_m
   cb.origin_y = p.origin_y;
   cb.texture_w = p.texture_w > 0.0f ? p.texture_w : p.image_w;
   cb.texture_h = p.texture_h > 0.0f ? p.texture_h : p.image_h;
-  cb.background = static_cast<float>(p.background);
   cb.clipping = p.clipping ? 1.0f : 0.0f;
   cb.time = p.time_seconds;
   cb.grid = p.pixel_grid ? 1.0f : 0.0f;

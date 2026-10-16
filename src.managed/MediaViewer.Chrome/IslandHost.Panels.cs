@@ -349,6 +349,7 @@ public static partial class IslandHost
         body = new Grid();
         Grid.SetRow(body, 1);
         root.Children.Add(body);
+        ThemeField.Lay(root);
         // Issue #224: every pane (metadata, folder tree, adjust, jobs) is an
         // island over the canvas's WM_DROPFILES, so it takes a file drop too.
         WireFileDrop(root);
@@ -693,7 +694,7 @@ public static partial class IslandHost
         v.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(v, 1);
         row.Children.Add(v);
-        var swatches = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        var swatches = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
         foreach ((string label, Color colour) in LabelSwatches)
         {
             bool on = string.Equals(label, value, StringComparison.OrdinalIgnoreCase);
@@ -704,7 +705,7 @@ public static partial class IslandHost
                 Padding = new Thickness(0),
                 MinWidth = 0,
                 MinHeight = 0,
-                CornerRadius = new CornerRadius(9),
+                CornerRadius = new CornerRadius(9),  // a circle: half of 18, not a theme radius
                 Background = Brush(colour),
                 BorderBrush = Brush(on ? ChromeColour.Title : ChromeColour.Hairline),
                 BorderThickness = new Thickness(on ? 2 : 1),
@@ -819,7 +820,7 @@ public static partial class IslandHost
 
     private static UIElement BuildLocationRow(string value)
     {
-        var col = new StackPanel { Spacing = 6 };
+        var col = new StackPanel { Spacing = Space(6) };
         var row = new Grid();
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(MetaLabelWidth) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -916,11 +917,11 @@ public static partial class IslandHost
     {
         var box = new StackPanel
         {
-            Spacing = 8,
-            Padding = new Thickness(12),
+            Spacing = Space(8),
+            Padding = Pad(12),
             Margin = new Thickness(MetaLabelWidth, 0, 0, 0),
             Background = Brush(ChromeColour.Surface),
-            CornerRadius = new CornerRadius(8),
+            CornerRadius = Corner(8),
         };
         box.Children.Add(Text("Remove location from this file?", Title, bold: true));
         // Revert all restores every tag as it was before this session's first
@@ -1068,7 +1069,7 @@ public static partial class IslandHost
         {
             Layout = new StackLayout(),
             ItemTemplate = new TagListFactory(),
-            Margin = new Thickness(10, 0, 10, 10),
+            Margin = Pad(10, 0, 10, 10),
         };
         var scroll = new ScrollViewer
         {
@@ -1155,7 +1156,7 @@ public static partial class IslandHost
                 {
                     // The Mac's List section header: regular, not bold (issue #198).
                     var header = Text(h.Group, Body, TypeBody);
-                    header.Margin = new Thickness(0, 10, 0, 2);
+                    header.Margin = Pad(0, 10, 0, 2);
                     return header;
                 }
                 case TagListNote n:

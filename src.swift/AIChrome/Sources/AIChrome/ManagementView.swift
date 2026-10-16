@@ -41,6 +41,8 @@ struct RootRow: Identifiable, Equatable {
   // Issue #299: left unfinished last session, it waits for Resume (nothing of
   // it is walked or indexed until then; search answers from what it committed).
   var held = false
+  // #355: the audio files among `assets` (0 while "Show audio files" is off).
+  var audio: Int64 = 0
   var isPhotos: Bool { kind == "photos" }
 }
 
@@ -92,6 +94,8 @@ final class ManagementModel: ObservableObject {
   /// The status line and the counters that move with it.
   let live = ManagementStatus()
   @Published private(set) var flags: UInt32 = 0
+  /// #355: File types "Show audio files", as the host last sent it.
+  @Published var audioFiles = false
   @Published private(set) var compute: Int = 0
   @Published private(set) var quality: Int = 0
   /// Settings "Precision": 0 broader … 2 as calibrated … 4 stricter.
@@ -103,6 +107,10 @@ final class ManagementModel: ObservableObject {
   @Published private(set) var icloudVideos = false
   /// Settings → Indexed folders → "Download iCloud Drive files to index them" (2026-10-05).
   @Published private(set) var cloudFiles = false
+  /// Settings → Text in pictures → "Read text in photos" (#403, on by default).
+  @Published private(set) var readText = true
+  /// macOS can read text here (Vision); false leaves the switch off and says why.
+  @Published private(set) var textAvailable = true
   /// "icloud" when the pack can fetch evicted iCloud Drive files here.
   @Published private(set) var cloudProvider = ""
   /// Why the last folder action did nothing, said under the list.
@@ -274,6 +282,8 @@ final class ManagementModel: ObservableObject {
     facesOn = obj["faces"] as? Bool ?? false
     icloudVideos = obj["icloud_videos"] as? Bool ?? false
     cloudFiles = obj["cloud_files"] as? Bool ?? false
+    readText = obj["read_text"] as? Bool ?? true
+    textAvailable = obj["text_available"] as? Bool ?? true
     cloudProvider = obj["cloud_provider"] as? String ?? ""
     coreMLAvailable = (obj["available"] as? [String: Any])?["coreml"] as? Bool ?? false
     let index = Int(int64(obj["video_index"]))
@@ -327,7 +337,7 @@ final class ManagementModel: ObservableObject {
                 unavailable: int64($0["unavailable"]), scanning: $0["scanning"] as? Bool ?? false,
                 cloudOnly: int64($0["cloud_only"]),
                 unreadable: $0["error"] as? String == "unreadable", lastScan: int64($0["last_scan"]),
-                held: $0["held"] as? Bool ?? false)
+                held: $0["held"] as? Bool ?? false, audio: int64($0["audio"]))
       }
       let suggested = Self.suggestions(t)
       await MainActor.run {
@@ -882,6 +892,28 @@ struct ManagementView: View {
           .help(model.audioReady ? "" : "Sound and Both need the Sound piece: install it above.")
         }
       }
+      // #355: audio files, by their tags and cover art, while they are shown.
+      section("Audio files") {
+        row("MP3, M4A and M4P",
+            detail: model.audioFiles
+              ? "Found by their tags (title, artist, album) and cover art."
+              : "Not searched. Turn on Show audio files in Settings → File types to search them.") {
+          EmptyView()
+        }
+      }
+      section("Text in pictures") {
+        row("Read text in photos",
+            detail: model.textAvailable
+              ? "Finds photos and video moments by the words in them: a sign, a shirt, a page. macOS reads them on this Mac; nothing leaves it."
+              : "macOS cannot read text on this Mac, so photos are not searched by the words in them.") {
+          Toggle("Read text in photos",
+                 isOn: Binding(get: { model.readText && model.textAvailable },
+                               set: { model.set("read_text", $0 ? 1 : 0) }))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .disabled(!model.textAvailable)
+        }
+      }
       if model.photosSupported {
         section("Photos Library") { photosSection }
       }
@@ -1195,6 +1227,7 @@ struct ManagementView: View {
     let local = max(0, root.assets - root.cloudOnly)
     var text = "\(countText(UInt64(max(0, root.done)))) of \(countText(UInt64(local))) · \(bytesText(UInt64(max(0, root.bytes))))"
     if root.cloudOnly > 0 { text += " · \(countText(UInt64(root.cloudOnly))) only in iCloud Drive" }
+    if root.audio > 0 { text += root.audio == 1 ? " · 1 audio file" : " · \(countText(UInt64(root.audio))) audio files" }
     return text
   }
 

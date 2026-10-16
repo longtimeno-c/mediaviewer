@@ -14,7 +14,7 @@ cbuffer Camera : register(b0) {
   float2 image_size;
   float2 origin;
   float2 texture_size;
-  float background;
+  float unused0;  // the retired background mode (issue #408)
   float clipping;
   float time;
   float grid;
@@ -31,19 +31,11 @@ cbuffer Camera : register(b0) {
   // mv_adjust on every sample; the kernel itself never reads adj1.w.
   float4 adj0;
   float4 adj1;
-  float4 theme_background;  // linear RGB, mode 0
+  float4 theme_background;  // the theme's canvas, linear RGB
 };
 
 #include "adjust_kernel_tokens.h"
 MV_ADJUST_KERNEL
-cbuffer Tile : register(b1) {
-  float2 tile_origin;
-  float2 tile_scale;
-  float2 tile_content;
-  float tile_border;
-  float tile_tex;
-};
-
 Texture2D img : register(t0);
 SamplerState samp_aniso : register(s0);
 SamplerState samp_point : register(s1);
@@ -64,12 +56,27 @@ VSOut vs_main(uint id : SV_VertexID) {
 // the inverse edit map, so an edited (turned, cropped, straightened) tiled
 // image still draws its tiles. The map is affine, so the shared-edge rule
 // above survives it: both tiles map the same edge through the same matrix.
-VSOut vs_tile(uint id : SV_VertexID) {
+// Issue #164: a tile's record is per-instance vertex data, every tile's record
+// in one buffer written once per frame; instance i of DrawInstanced(6, 1, 0, i)
+// reads record i. rec0 = content origin (level px) and full-resolution px per
+// level px; rec1 = content size (level px), border and texture size (texels).
+struct TileOut {
+  float4 pos : SV_Position;
+  nointerpolation float4 rec0 : TEXCOORD0;
+  nointerpolation float2 rec1 : TEXCOORD1;  // border, texture size
+};
+
+TileOut vs_tile(uint id : SV_VertexID, float4 rec0 : TILE0, float4 rec1 : TILE1) {
   static const float2 corners[6] = {
     float2(0, 0), float2(1, 0), float2(0, 1),
     float2(0, 1), float2(1, 0), float2(1, 1)
   };
-  VSOut o;
+  TileOut o;
+  o.rec0 = rec0;
+  o.rec1 = rec1.zw;
+  float2 tile_origin = rec0.xy;
+  float2 tile_scale = rec0.zw;
+  float2 tile_content = rec1.xy;
   float2 source_px = min((tile_origin + corners[id] * tile_content) * tile_scale, source_size.xy);
   float3 s = float3(source_px / source_size.xy, 1.0);
   float2 image_px = float2(dot(inv0.xyz, s), dot(inv1.xyz, s)) * image_size;
@@ -112,16 +119,10 @@ float4 sample_catmull(Texture2D tex, float2 uv, float2 tex_size) {
 }
 
 // Linear values: the render target view is _SRGB and encodes on write.
+// Issue #408: around the picture and through its alpha is the theme's canvas,
+// the colour the chrome paints; there is no canvas background of its own.
 float3 background_at(float2 screen) {
-  if (background < 0.5) return theme_background.rgb;
-  if (background < 1.5) return float3(0.214, 0.214, 0.214);
-  if (background < 2.5) return float3(1.0, 1.0, 1.0);
-  if (background > 3.5) return float3(0.016, 0.018, 0.024);
-  // Checkerboard: fixed 12 px cells in screen space, so it reads as "this is
-  // transparency" at every zoom instead of scaling with the image.
-  float2 cell = floor((screen - origin) / 12.0);
-  float odd = fmod(abs(cell.x + cell.y), 2.0);
-  return odd < 0.5 ? float3(0.527, 0.527, 0.527) : float3(0.815, 0.815, 0.815);
+  return theme_background.rgb;
 }
 
 float4 sample_filtered(float2 uv, float2 tex_size) {
@@ -174,7 +175,19 @@ float4 ps_main(VSOut vin) : SV_Target {
   return finish(sample_filtered(src, texture_size), vin.pos.xy, image_px);
 }
 
-float4 ps_tile(VSOut vin) : SV_Target {
+// Issue #164: the background alone, for a frame whose ready tiles at the drawn
+// level cover every image pixel in view. The overview under them would be
+// sampled (Catmull-Rom above 100 %) and then wholly overdrawn; outside the
+// image (and outside an edit's source) the background is all it shows anyway.
+float4 ps_background(VSOut vin) : SV_Target {
+  return float4(background_at(vin.pos.xy), opacity);
+}
+
+float4 ps_tile(TileOut vin) : SV_Target {
+  float2 tile_origin = vin.rec0.xy;
+  float2 tile_scale = vin.rec0.zw;
+  float tile_border = vin.rec1.x;
+  float tile_tex = vin.rec1.y;
   float2 image_px = image_px_at(vin.pos.xy);
   // Output pixel -> source pixel. A tile can reach past the edited output (the
   // cropped-away part of the source): those pixels are not the picture.

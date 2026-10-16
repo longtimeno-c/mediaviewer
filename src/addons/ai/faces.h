@@ -15,9 +15,13 @@
 //
 // Boxes are fractions of the image (0..1), so a result can outline a face on
 // any thumbnail without a crop ever being written to disk. Clustering is
-// online: a face joins the person whose members it resembles on average by
-// `same_person` (pairwise cosine, the units SFace's threshold is quoted in),
-// unless a second person is as close (then nobody, for now); an idle pass
+// online: the persons a face resembles most on average (pairwise cosine, the
+// units SFace's threshold is quoted in) are shortlisted, and it joins the one
+// that vouches for it by `same_person`, unless a second is as close (then
+// nobody, for now). A person the user confirmed (a pinned face) vouches by
+// its exemplars, the refinement's (pinned faces, then the good core), so
+// corrections are what new faces are matched against; anyone else, and any
+// weak face, by the average. An idle pass
 // merges near-duplicate unnamed clusters by the same average; and the
 // refinement (face_refine.h) re-checks every face against its person's core,
 // evicting outliers to unassigned and moving clear mistakes, in passes, with
@@ -140,6 +144,10 @@ class faces_db {
                              std::span<const face_in> faces);
   [[nodiscard]] expected mark_scanned(std::int64_t asset, const std::string& spec);
   [[nodiscard]] expected forget_asset(std::int64_t asset);
+  // #407: a Live Photo still's movie changed: its moments' faces go (pts_ms
+  // >= 0) and the asset is scanned again; the still's own faces, with their
+  // people, pins and "not this person", stay.
+  [[nodiscard]] expected forget_moments(std::int64_t asset);
 
   // Every person in min_faces photos or clips, or with a name. With `assets`
   // (the open folder's, docs/design/17 "People in the open folder"): only those
@@ -166,7 +174,8 @@ class faces_db {
   [[nodiscard]] std::vector<std::int64_t> people_named(const std::string& name);
   // Every named person, (id, name): the query language's names (query.h).
   [[nodiscard]] std::vector<std::pair<std::int64_t, std::string>> names();
-  // The person nearest a face vector, if within `same_person`.
+  // The person nearest a face vector, if within `same_person`: the online
+  // matcher's scorer (exemplars over a shortlist), without the ambiguity rule.
   [[nodiscard]] std::int64_t nearest_person(std::span<const float> emb);
   // The idle pass: merges clusters (not two named ones) whose faces resemble
   // each other by `merge_at` on average (pairwise cosine; unless a split said
@@ -215,6 +224,12 @@ class faces_db {
   bool migrate();
   void load_locked();
   std::int64_t assign_locked(std::span<const float> emb, float quality, const std::set<std::int64_t>& rejected);
+  struct match {
+    std::int64_t best = 0;
+    float best_score = -2.0f, second = -2.0f;
+  };
+  match match_locked(std::span<const float> emb, const std::set<std::int64_t>& rejected, bool exemplars);
+  const person_proto* exemplars_locked(std::int64_t person);
   void recompute_locked(std::int64_t person);
   expected merge_locked(std::int64_t into, std::int64_t from);
   void pin_cover_locked(std::int64_t person);
@@ -231,11 +246,21 @@ class faces_db {
   std::string path_;
   float same_ = 0.4f;
   float ambiguous_ = 0.03f;
+  refine_params rules_;  // the refinement's, for the online exemplars
   std::uint32_t dim_ = 128;
   std::string spec_;
   bool rerun_ = false;
   bool resettle_ = false;
   std::map<std::int64_t, cluster> clusters_;
+  // Online matching's exemplars per person (core_mean dropped; none for a
+  // person with no pinned face), and the person's size when built: rebuilt
+  // lazily once stale, i.e. erased on an identity change, or a quarter
+  // larger or smaller than then.
+  struct exemplar_cache {
+    person_proto proto;
+    std::uint32_t n = 0;
+  };
+  std::map<std::int64_t, exemplar_cache> exemplars_;
   // Refinement state (in memory: rebuilt by the first, full, pass after open).
   std::set<std::int64_t> dirty_;               // persons whose faces changed
   std::set<std::int64_t> loose_;               // unassigned faces not yet judged

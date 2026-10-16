@@ -16,6 +16,7 @@ TEST_CASE("chrome attach args stay 40 bytes") {
   REQUIRE(sizeof(mv::shell::chrome_flags_args) == 8);
   REQUIRE(sizeof(mv::shell::chrome_browse_args) == 32);
   REQUIRE(sizeof(mv::shell::chrome_meta_args) == 80);  // #290: provenance and position
+  REQUIRE(sizeof(mv::shell::chrome_share_args) == 24);  // #444: IslandHost.ShareMenu
 }
 
 TEST_CASE("view settings round-trip through the flag word") {
@@ -26,15 +27,14 @@ TEST_CASE("view settings round-trip through the flag word") {
 
   settings.filmstrip_for_image = true;
   settings.sticky_zoom = true;
-  settings.background = 3;
   const auto round = mv::shell::view_settings::from_flags(settings.flags());
   REQUIRE(round.filmstrip_for_folder);
   REQUIRE(round.filmstrip_for_image);
   REQUIRE(round.sticky_zoom);
-  REQUIRE(round.background == 3);
-  settings.background = 4;  // Explicit dark remains available beside the new System default.
-  REQUIRE(mv::shell::view_settings::from_flags(settings.flags()).background == 4);
-  REQUIRE(mv::shell::view_settings::from_flags(7 << mv::shell::kSettingBackgroundShift).background == 0);
+  // Issue #408: bits 4-6 were the canvas background. A word saved with them
+  // set still reads, means nothing, and is never written back.
+  REQUIRE(mv::shell::view_settings::from_flags(7 << 4).flags() == 0);
+  REQUIRE((settings.flags() & (7 << 4)) == 0);
   REQUIRE(mv::shell::view_settings::from_flags(0).flags() == 0);
 
   // "Show audio files" / "Show documents": off by default, and a saved word
@@ -49,7 +49,6 @@ TEST_CASE("view settings round-trip through the flag word") {
   REQUIRE(audio.hidden_kinds() == mv::io::kHideDocuments);
   settings.show_documents = true;
   REQUIRE(mv::shell::view_settings::from_flags(settings.flags()).hidden_kinds() == 0);
-  REQUIRE((settings.flags() & mv::shell::kSettingBackgroundMask) == (4 << mv::shell::kSettingBackgroundShift));
 }
 
 TEST_CASE("chrome bar height is 48 DIP, plus 28 with a path row") {

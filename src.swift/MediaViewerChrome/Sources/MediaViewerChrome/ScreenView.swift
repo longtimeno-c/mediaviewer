@@ -74,7 +74,7 @@ private struct SlotThumbnail: View {
           Rectangle().fill(MVTheme.surface)
         }
       }
-      .clipShape(RoundedRectangle(cornerRadius: 6))
+      .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(6)))
       .onAppear { thumbs.want(path) }
       .onDisappear { thumbs.drop(path) }
       .accessibilityElement(children: .ignore)
@@ -108,12 +108,19 @@ struct ScreenNodeView: View {
     switch node.type {
     case "stack":
       let spacing = CGFloat(node.int("spacing") ?? 8)
-      if node.string("axis") == "horizontal" {
-        HStack(alignment: .center, spacing: spacing) { ForEach(node.children) { child($0) } }
-      } else {
-        VStack(alignment: horizontalAlignment, spacing: spacing) { ForEach(node.children) { child($0) } }
-          .frame(maxWidth: node.string("align") == "fill" ? .infinity : nil, alignment: .leading)
+      Group {
+        if node.string("axis") == "horizontal" {
+          HStack(alignment: .center, spacing: spacing) { ForEach(node.children) { child($0) } }
+        } else {
+          VStack(alignment: horizontalAlignment, spacing: spacing) { ForEach(node.children) { child($0) } }
+            .frame(maxWidth: node.string("align") == "fill" || node.string("look") == "card" ? .infinity : nil,
+                   alignment: node.string("align") == "center" ? .center : .leading)
+            // Text in a centred stack is centred too (#442's code and accept cards).
+            .environment(\.screenCentered, node.string("align") == "center")
+        }
       }
+      // "look": "card" (#442): a rounded surface, as Settings' cards.
+      .modifier(CardLook(on: node.string("look") == "card"))
     case "grid":
       LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: max(1, node.int("columns") ?? 2)),
                 alignment: .leading, spacing: CGFloat(node.int("spacing") ?? 8)) {
@@ -122,7 +129,7 @@ struct ScreenNodeView: View {
     case "scroll":
       let height = node.int("height") ?? 0
       ScrollView(node.string("axis") == "horizontal" ? .horizontal : .vertical) {
-        VStack(alignment: .leading, spacing: 8) { ForEach(node.children) { child($0) } }.padding(2)
+        VStack(alignment: .leading, spacing: MVTheme.space(8)) { ForEach(node.children) { child($0) } }.padding(MVTheme.space(2))
       }
       .frame(maxHeight: height > 0 ? CGFloat(height) : .infinity)
     case "split":
@@ -165,17 +172,23 @@ struct ScreenNodeView: View {
     case "progress":
       let value = node.double("value") ?? -1
       Group {
-        if value < 0 {
+        if node.string("look") == "ring" {
+          // #442: a ring that fills, its percentage in the middle.
+          ScreenRing(value: value, size: CGFloat(node.int("size") ?? 64))
+        } else if value < 0 {
           ProgressView().controlSize(.small)
         } else {
           ProgressView(value: value).tint(MVTheme.accent)
         }
       }
       .accessibilityLabel(node.label)
+      .accessibilityValue(value < 0 ? "In progress" : "\(Int((value * 100).rounded())) percent")
     case "separator":
       Rectangle().fill(MVTheme.hairline).frame(height: 1).accessibilityHidden(true)
     case "surface":
       SurfaceNode(node: node, address: address, revision: revision)
+    case "tiles":
+      TilesNode(node: node, address: address, revision: revision)
     default:
       EmptyView()
     }
@@ -220,8 +233,21 @@ private struct SplitNode: View {
   }
 }
 
+private struct ScreenCenteredKey: EnvironmentKey {
+  static let defaultValue = false
+}
+
+extension EnvironmentValues {
+  /// Inside a vertical stack with "align": "center".
+  var screenCentered: Bool {
+    get { self[ScreenCenteredKey.self] }
+    set { self[ScreenCenteredKey.self] = newValue }
+  }
+}
+
 private struct TextNode: View {
   let node: ScreenNode
+  @Environment(\.screenCentered) private var centered
 
   var body: some View {
     let style = node.string("style") ?? "body"
@@ -230,7 +256,8 @@ private struct TextNode: View {
       .font(font(style))
       .foregroundStyle(style == "secondary" || style == "caption" ? MVTheme.body : MVTheme.title)
       .lineLimit(lines > 0 ? lines : nil)
-      .frame(maxWidth: .infinity, alignment: .leading)
+      .multilineTextAlignment(centered ? .center : .leading)
+      .frame(maxWidth: .infinity, alignment: centered ? .center : .leading)
     if node.bool("copyable") {
       text.textSelection(.enabled)
     } else {
@@ -245,8 +272,166 @@ private struct TextNode: View {
     case "secondary": return MVTheme.font(12)
     case "caption": return MVTheme.font(11)
     case "mono": return .system(.caption, design: .monospaced)
+    // #442: a short code read off the screen across a room.
+    case "display": return .system(size: 34, weight: .semibold, design: .rounded).monospacedDigit()
     default: return MVTheme.font(14)
     }
+  }
+}
+
+// MARK: #442 additions: card, ring, tiles, code entry
+
+/// "look": "card" on a stack: padding on a rounded surface with a hairline.
+private struct CardLook: ViewModifier {
+  let on: Bool
+  func body(content: Content) -> some View {
+    if on {
+      content
+        .padding(MVTheme.space(14))
+        .frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: MVTheme.radius(10)).fill(MVTheme.surface))
+        .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(10)).stroke(MVTheme.hairline, lineWidth: 1))
+    } else {
+      content
+    }
+  }
+}
+
+/// A progress ring: the track in the hairline colour, the fill in the accent;
+/// indeterminate (value < 0) is a still third, never a spinning animation that
+/// would tick while nothing moves.
+private struct ScreenRing: View {
+  let value: Double
+  let size: CGFloat
+
+  var body: some View {
+    let line = max(3, size / 14)
+    ZStack {
+      Circle().stroke(MVTheme.hairline, lineWidth: line)
+      Circle()
+        .trim(from: 0, to: value < 0 ? 0.33 : min(1, max(0, value)))
+        .stroke(MVTheme.accent, style: StrokeStyle(lineWidth: line, lineCap: .round))
+        .rotationEffect(.degrees(-90))
+        .animation(.easeOut(duration: 0.2), value: value)
+      if value >= 0 && size >= 40 {
+        Text("\(Int((value * 100).rounded()))%")
+          .font(.system(size: size / 4.5, weight: .semibold, design: .rounded).monospacedDigit())
+          .foregroundStyle(MVTheme.title)
+      }
+    }
+    .frame(width: size, height: size)
+    .padding(line / 2)
+  }
+}
+
+/// Large round tiles (#442): a monogram in a circle, the name under it and a
+/// caption; a ring around the circle while `progress` >= 0; a done / failed
+/// mark. A click (or Space / Return on the focused tile) is `activate`; a
+/// "static" set is shown, not chosen.
+@MainActor
+private struct TilesNode: View {
+  let node: ScreenNode
+  let address: ScreenAddress
+  let revision: Int
+
+  var body: some View {
+    let size = CGFloat(node.int("size") ?? 72)
+    let items = node.rows("items")
+    let selected = Set(node.props["selection"] as? [String] ?? [])
+    let still = node.bool("static")
+    Group {
+      if still {
+        // Shown, not chosen (a sender on an offer): centred, no button.
+        HStack(spacing: MVTheme.space(12)) {
+          ForEach(items.indices, id: \.self) { i in
+            Tile(item: items[i], size: size, selected: false).accessibilityElement(children: .combine)
+          }
+        }
+      } else {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: size + 40, maximum: size + 64), alignment: .top)],
+                  alignment: .leading, spacing: MVTheme.space(12)) {
+          ForEach(items.indices, id: \.self) { i in
+            let item = items[i]
+            let id = item["id"] as? String ?? ""
+            Button { SlotStore.shared.send(address, node: node.id, kind: 5, value: id) } label: {
+              Tile(item: item, size: size, selected: selected.contains(id))
+            }
+            .buttonStyle(TilePress())
+            .accessibilityLabel(Tile.name(item))
+            .accessibilityAddTraits(selected.contains(id) ? [.isSelected] : [])
+          }
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: still ? .center : .leading)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(node.label)
+  }
+}
+
+private struct TilePress: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .contentShape(Rectangle())
+      .scaleEffect(configuration.isPressed ? 0.96 : 1)
+      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+  }
+}
+
+private struct Tile: View {
+  let item: [String: Any]
+  let size: CGFloat
+  let selected: Bool
+  @State private var hovered = false
+  @Environment(\.isEnabled) private var enabled
+
+  static func name(_ item: [String: Any]) -> String {
+    let text = item["text"] as? String ?? ""
+    if let detail = item["detail"] as? String, !detail.isEmpty { return "\(text), \(detail)" }
+    return text
+  }
+
+  var body: some View {
+    let progress = (item["progress"] as? NSNumber)?.doubleValue ?? -1
+    let mark = item["mark"] as? String
+    VStack(spacing: MVTheme.space(6)) {
+      ZStack {
+        Circle()
+          .fill(LinearGradient(colors: [MVTheme.accent.opacity(0.85), MVTheme.accent.opacity(0.55)],
+                               startPoint: .top, endPoint: .bottom))
+        Text(item["initials"] as? String ?? "?")
+          .font(.system(size: size * 0.36, weight: .semibold, design: .rounded))
+          .foregroundStyle(.white)
+        if progress >= 0 {
+          Circle().stroke(MVTheme.hairline, lineWidth: 4).padding(-6)
+          Circle()
+            .trim(from: 0, to: min(1, progress))
+            .stroke(MVTheme.accent, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+            .rotationEffect(.degrees(-90))
+            .padding(-6)
+            .animation(.easeOut(duration: 0.2), value: progress)
+        } else if selected || hovered {
+          Circle().stroke(MVTheme.accent.opacity(selected ? 1 : 0.5), lineWidth: 2).padding(-5)
+        }
+        if let mark {
+          Image(systemName: mark == "done" ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+            .font(.system(size: size * 0.26))
+            .foregroundStyle(.white, mark == "done" ? Color.green : Color.orange)
+            .offset(x: size * 0.36, y: size * 0.36)
+        }
+      }
+      .frame(width: size, height: size)
+      .padding(6)
+      Text(item["text"] as? String ?? "")
+        .font(MVTheme.font(13)).foregroundStyle(MVTheme.title)
+        .lineLimit(2).multilineTextAlignment(.center)
+      if let detail = item["detail"] as? String, !detail.isEmpty {
+        Text(detail).font(MVTheme.font(11)).foregroundStyle(MVTheme.body).lineLimit(1)
+      }
+    }
+    .frame(width: size + 40)
+    .opacity(enabled ? 1 : 0.55)
+    .onHover { hovered = $0 }
   }
 }
 
@@ -392,8 +577,8 @@ private struct SurfaceNode: View {
     }
     .frame(width: width > 0 ? width : nil, height: height)
     .frame(maxWidth: width > 0 ? nil : .infinity)
-    .clipShape(RoundedRectangle(cornerRadius: 6))
-    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(MVTheme.hairline, lineWidth: 1))
+    .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(6)))
+    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(6)).strokeBorder(MVTheme.hairline, lineWidth: 1))
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(node.label)
     .accessibilityAddTraits(.isImage)
@@ -538,7 +723,7 @@ private struct SliderNode: View {
   var body: some View {
     let lo = node.double("min") ?? 0
     let hi = max(lo + 1e-9, node.double("max") ?? 1)
-    VStack(alignment: .leading, spacing: 2) {
+    VStack(alignment: .leading, spacing: MVTheme.space(2)) {
       Text("\(node.label): \(format(value))").font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
       Group {
         if let step = node.double("step"), step > 0 {
@@ -587,6 +772,9 @@ private struct NumberNode: View {
   }
 }
 
+// @MainActor as a whole: its helpers (the folder dialog, the field) send events
+// from outside `body`, which older compilers do not treat as isolated.
+@MainActor
 private struct TextFieldNode: View {
   let node: ScreenNode
   let address: ScreenAddress
@@ -595,6 +783,79 @@ private struct TextFieldNode: View {
   @FocusState private var focused: Bool
 
   var body: some View {
+    if node.string("look") == "code" {
+      codeField
+    } else {
+      HStack(spacing: 6) {
+        field
+        // "pick": "folder" (#410): the system folder dialog, reported as the field's change.
+      if node.string("pick") == "folder" {
+        Button("Choose\u{2026}") { chooseFolder() }
+          .buttonStyle(FlatButtonStyle(selected: false, compact: true))
+          .accessibilityLabel("Choose a folder for \(node.label)")
+        }
+      }
+    }
+  }
+
+  /// "look": "code" (#442): large, centred, digits only; it submits by itself
+  /// once "digits" are typed (Return submits too), then clears for a retry.
+  private var codeField: some View {
+    let digits = node.int("digits") ?? 6
+    return TextField(node.string("placeholder") ?? node.label, text: $text)
+      .textFieldStyle(.plain)
+      .multilineTextAlignment(.center)
+      .font(.system(size: 30, weight: .semibold, design: .rounded).monospacedDigit())
+      .padding(.vertical, MVTheme.space(8))
+      .frame(maxWidth: 260)
+      .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.canvas))
+      .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8))
+        .stroke(focused ? MVTheme.accent : MVTheme.hairline, lineWidth: focused ? 2 : 1))
+      .focused($focused)
+      .onChange(of: text) { _, now in
+        // Digits only, grouped as "123 456" while typing; at full length it goes.
+        let only = String(now.filter(\.isNumber).prefix(digits))
+        let shown = only.count > 3 ? String(only.prefix(3)) + " " + String(only.dropFirst(3)) : only
+        if shown != now { text = shown }
+        if only.count == digits {
+          SlotStore.shared.send(address, node: node.id, kind: 3, value: only)
+          text = ""
+        }
+      }
+      .onSubmit {
+        let only = text.filter(\.isNumber)
+        if !only.isEmpty { SlotStore.shared.send(address, node: node.id, kind: 3, value: only) }
+      }
+      .accessibilityLabel(node.label)
+      .onAppear { focused = true }
+  }
+
+  private func chooseFolder() {
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    panel.allowsMultipleSelection = false
+    panel.canCreateDirectories = true
+    panel.prompt = "Choose"
+    panel.message = node.label
+    let current = text.isEmpty ? (node.string("value") ?? "") : text
+    if !current.isEmpty { panel.directoryURL = URL(fileURLWithPath: current, isDirectory: true) }
+    let done: (NSApplication.ModalResponse) -> Void = { response in
+      guard response == .OK, let url = panel.url else { return }
+      // AppKit calls a sheet's handler on the main thread.
+      MainActor.assumeIsolated {
+        text = url.path
+        SlotStore.shared.send(address, node: node.id, kind: 2, value: url.path)
+      }
+    }
+    if let window = NSApp.keyWindow {
+      panel.beginSheetModal(for: window, completionHandler: done)
+    } else {
+      done(panel.runModal())
+    }
+  }
+
+  private var field: some View {
     Group {
       if node.bool("multiline") {
         TextField(node.string("placeholder") ?? node.label, text: $text, axis: .vertical).lineLimit(3...8)
@@ -631,7 +892,7 @@ private struct ListNode: View {
     })) {
       ForEach(rows.indices, id: \.self) { i in
         let id = rows[i]["id"] as? String ?? ""
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: MVTheme.space(2)) {
           Text(rows[i]["text"] as? String ?? "").font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
           if let detail = rows[i]["detail"] as? String {
             Text(detail).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
@@ -666,14 +927,14 @@ private struct TableNode: View {
     let columns = node.rows("columns")
     let rows = node.rows("rows")
     VStack(alignment: .leading, spacing: 0) {
-      HStack(spacing: 8) {
+      HStack(spacing: MVTheme.space(8)) {
         ForEach(columns.indices, id: \.self) { c in
           Text(columns[c]["title"] as? String ?? "").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
       }
-      .padding(.horizontal, 8)
-      .padding(.vertical, 4)
+      .padding(.horizontal, MVTheme.space(8))
+      .padding(.vertical, MVTheme.space(4))
       .accessibilityAddTraits(.isHeader)
       Rectangle().fill(MVTheme.hairline).frame(height: 1)
       List(selection: Binding(get: { selection }, set: { s in
@@ -683,7 +944,7 @@ private struct TableNode: View {
         ForEach(rows.indices, id: \.self) { r in
           let id = rows[r]["id"] as? String ?? ""
           let cells = rows[r]["cells"] as? [String] ?? []
-          HStack(spacing: 8) {
+          HStack(spacing: MVTheme.space(8)) {
             ForEach(columns.indices, id: \.self) { c in
               Text(c < cells.count ? cells[c] : "").font(MVTheme.font(13)).foregroundStyle(MVTheme.title)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -729,12 +990,12 @@ private struct ThumbnailGridNode: View {
       let cols = max(1, Int((geo.size.width - 16 + 8) / (tile + 8)))
       ScrollViewReader { proxy in
         ScrollView {
-          LazyVGrid(columns: Array(repeating: GridItem(.fixed(tile), spacing: 8), count: cols), spacing: 8) {
+          LazyVGrid(columns: Array(repeating: GridItem(.fixed(tile), spacing: MVTheme.space(8)), count: cols), spacing: MVTheme.space(8)) {
             ForEach(items.indices, id: \.self) { i in
               let path = items[i]["path"] as? String ?? ""
               let name = items[i]["label"] as? String ?? (path as NSString).lastPathComponent
               SlotThumbnail(path: path, size: tile, label: name)
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(
+                .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(6)).strokeBorder(
                   selection.contains(path) ? MVTheme.accent : (focused && i == cursor ? MVTheme.hairline : .clear),
                   lineWidth: 2))
                 .id(i)
@@ -746,7 +1007,7 @@ private struct ThumbnailGridNode: View {
                 .accessibilityAddTraits(selection.contains(path) ? [.isButton, .isSelected] : .isButton)
             }
           }
-          .padding(8)
+          .padding(MVTheme.space(8))
         }
         .focusable()
         .focused($focused)
@@ -799,13 +1060,13 @@ struct AddonInfoSections: View {
       VStack(alignment: .leading, spacing: 0) {
         ForEach(slots.sections) { section in
           Rectangle().fill(MVTheme.hairline).frame(height: 1)
-          VStack(alignment: .leading, spacing: 6) {
+          VStack(alignment: .leading, spacing: MVTheme.space(6)) {
             Text(section.title).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
               .accessibilityAddTraits(.isHeader)
             ScreenNodeView(node: section.tree, address: ScreenAddress(addon: section.addon, screen: section.section),
                            revision: section.revision)
           }
-          .padding(14)
+          .padding(MVTheme.space(14))
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -833,12 +1094,12 @@ struct SlotScreenRoot: View {
             .buttonStyle(FlatButtonStyle(compact: true))
             .keyboardShortcut(.cancelAction)
         }
-        .padding(12)
+        .padding(MVTheme.space(12))
         Rectangle().fill(MVTheme.hairline).frame(height: 1)
       }
       if let tree = screen?.tree {
         ScreenNodeView(node: tree, address: address, revision: screen?.revision ?? 0)
-          .padding(12)
+          .padding(MVTheme.space(12))
           .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       } else {
         ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)

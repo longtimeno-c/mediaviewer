@@ -260,10 +260,20 @@ make-default and adopt-new-types paths — the owner asked that they never be ma
 filmstrip hidden, the wheel and trackpad scroll the page instead of zooming (this replaces "no
 scrolling between pages" from the same day): held against the top or bottom edge they turn the page,
 which keeps its zoom and lands at the far edge (`camera::turn_page`). One trackpad gesture or one
-wheel burst turns one page, so momentum cannot run through a document. `⌘`/`Ctrl`+wheel and a pinch
+wheel burst turns one page, so momentum cannot run through a document. *(Reversed 2026-10-12, below.)* `⌘`/`Ctrl`+wheel and a pinch
 still zoom; with the filmstrip shown the wheel zooms as on any still. The Edit button gives way to
 **Open in <app>** (the default app, never MediaViewer) and a ▾ of the other apps, and `Enter` opens
 the default: there is nothing for the workspace to edit in a document.
+
+**Document scrolling glides and runs through pages (2026-10-12, issue #353).** Reverses "one
+gesture turns at most one page" and the 60 px hold at the edge (2026-10-05): reading a long
+document was scroll, stop, push, jump. A push past the top or bottom edge now turns the page at
+once and trackpad momentum carries into the next page; a wheel notch glides on the canvas spring and
+a trackpad pans directly. What stops a fling from skipping to the end is the render thread's land
+acknowledgement (one turn per landed page) and, at fit, one page per third of the canvas of travel.
+The rule is shared (`canvas/document_scroll.h`) instead of written twice in the hosts. Pages stay
+separate stops rather than one continuous strip, which would need two pages on the canvas at once.
+With the filmstrip up the wheel still zooms; a "Press T" hint now says so (docs/design/16).
 
 **Thumbnails are JPEG files on disk (2026-09-07).** Spec `jpg512.4` (was `.1`; bumped
 2026-09-24 when JPEG orientation was applied, 2026-10-03 when clip posters began following
@@ -373,7 +383,18 @@ from any codec. Forced through it, ProRes 422 played at 55 frames/s.
 **Arrows on a playing or strip-less clip (2026-10-12, issue #361).** `←` `→` are `Q` / `E` while the clip plays or the filmstrip is hidden (mode `skim`, layered over video);
 paused with the strip up they still walk, since that is when the strip is being used to pick.
 `A` / `D` walk in every case. A hold keeps its command until key-up, so a clip that ends
-mid-skim cannot turn the next repeat into a walk.
+mid-skim cannot turn the next repeat into a walk. *(The playing half reversed 2026-10-15, below.)*
+
+**Arrows skip only with the filmstrip hidden (2026-10-15, owner; issue #416).** Reverses the
+playing half of #361: with the carousel on screen `←` `→` move to the previous / next item on a
+clip, paused or playing, and never skip. Only `T` (strip hidden) makes them `Q` / `E` (mode `skim`):
+a tap is the exact ±2 s seek, a hold skims, release settles. The strip being visible is the one
+rule, so the router no longer carries a play-state bit. `Q` / `E` still skip, `A` / `D` still walk,
+a still walks either way, `Shift`+arrows pan and `J` / `L` are ±10 s, in every case. A hold keeps
+the command it started with until key-up in both directions: a skim stays a skim if `T` shows the
+strip under it, and a walk stays a walk if `T` hides it (the router now pins a plain repeat row's
+command for the hold, as it already did a tap/hold's; a pinned walk owes nothing on key-up or on
+a focus-loss cancel).
 
 **A transport click does not seek 0 on the way (2026-10-12).** The system slider reports its
 minimum before the time under the pointer. `media_source::seek` publishes that target and arms
@@ -597,6 +618,37 @@ document keeps its sideways scroll. At fit a one-finger stroke is swipe-next bec
 view is locked (no drag at fit); zoomed, it pans. The Mac already zoomed on `magnifyWithEvent:`; it
 gained the same remainder and the sideways swipe (`scrollWheel:` and `swipeWithEvent:`).
 
+**Copy Text in Image (2026-10-10, issue #289).** Preview's Edit ▸ Copy Text in Image: the still on
+screen goes through the OS's on-device text recognition and the lines it read go on the clipboard
+as plain text, with a notice ("Copied 42 words", "No text found"). The recogniser is a port
+(`shell/text_in_image.h`, D9): Vision `VNRecognizeTextRequest` (accurate, language correction,
+automatic language) on the Mac; `Windows.Media.Ocr` (`OcrEngine.TryCreateFromUserProfileLanguages`
+on a `SoftwareBitmap`) in the WinUI chrome on Windows, called synchronously from a pool worker. The
+decode, the geometry (rotate, flip, crop, straighten — colour adjusts change no letter), a cap of
+4096 px on the long edge, alpha flattened over white, the tidy-up and the count are shared C++.
+Nothing leaves the machine (rule 6) and no Store download is offered (rule 7): a Windows profile
+with no OCR language gets a notice naming the Language settings page. Reached as Preview has it —
+Edit ▸ Copy Text in Image on the Mac menu bar — and from a **Tools** flyout beside View on both
+command bars; disabled, never hidden, without a still on screen. Keyless like Preview's (Settings
+can give it one). No off switch: the owner's ease-of-access call (2026-10-10) was "no extra
+concepts or settings", and the command does nothing until it is chosen. Selecting text on the
+canvas (a Live Text overlay) is not built.
+
+**Text in images: select on the canvas, not a menu command (2026-10-15, owner, issue #289).**
+Replaces the entry above before it shipped. The owner asked for Photos' behaviour, "click down on
+the text to select it", instead of Edit ▸ Copy Text in Image and a Tools flyout; the command
+(`copy_text_in_image`), its menu item and both flyouts are gone. The recogniser port now returns
+words with boxes (`text_word`, 0..1 of the rendered still); `shell/text_select.h` is the shared
+selection model (press-drag by whole words, double-click word, triple-click line, a click clears),
+driven by each host from the UI thread through `canvas_map`, which the render thread publishes
+after each frame with a still. The highlight travels in the input snapshot like the AF quads, and
+`input_snapshot::text_press` keeps a press on text from panning. `⌘C`/`Ctrl+C` copies a selection
+before the eyedropper and files, `⌘A`/`Ctrl+A` selects all words only when some are selected (Mark
+all otherwise), and `Esc` has a `text_selection` level just inside the Live Photo's. Reading a
+still is the cost, so it waits for the pointer to rest on it for 500 ms and runs on the pool; a
+keyboard-only browse never reads anything. Selection is by whole words because
+`Windows.Media.Ocr` boxes words, not characters.
+
 ---
 
 ## Windows chrome (XAML islands)
@@ -606,6 +658,22 @@ a virtualising `ItemsRepeater`. `input_snapshot` carries `chrome_bottom_px` / `c
 `chrome_right_px`, and `usable_canvas` subtracts them. Flyouts use
 `ShouldConstrainToRootBounds = false` so they are siblings of the swapchain. Decoded pixels never
 go to a XAML `Image`.
+
+**Command bar menus stay visible (2026-10-15).** Open, View, Edit, Settings, About and `?` were
+losing the bar whenever a large change added an Auto-sized neighbour (the folder trail, an import
+hint, an indexing pill, an add-on icon). Those neighbours sat beside a Star column, the Star
+column shrank to nothing, and the new item painted over the menus. The menu cluster is an Auto
+column. The trail is the only column that gives up width, and `?` is its own Auto column on the
+right. New bar items go in the menu row or the trail, not in a new Star column on the left. The
+bar is one 48 DIP row. A star row under it is 0 tall while the island is only the bar, and content
+measured into that row blanks the menus — Settings is an overlay added after the island has grown
+to the client, not a child of a star row.
+
+**No XAML object in an `IslandHost` static initializer (2026-10-15).** From 2026-10-11 the chrome
+did not attach at all — no command bar, gallery or chrome keys. `Attach` touches `IslandHost`
+statics (`RegisterUiFont`) before `EnsureApp` starts XAML, and an eager `SymbolFont` `FontFamily`
+threw `RPC_E_WRONG_THREAD` from the type initializer. XAML statics are lazy (`IconFont`,
+`SymbolFont`), built on first use after XAML is up.
 
 **Tear the chrome down before `DestroyWindow` (2026-09-13).** Chrome-on exits fail-fast about one
 in five (`0xC0000602`, `CoreUIComponents.dll`) when islands were disposed during `WM_DESTROY`.
@@ -839,6 +907,16 @@ not "need an update" when Local search shipped. Fields appended without bumping 
 (`thumbnail_jpeg`, `thumbnail_store_jpeg`, `recycle_file`) are read only when `struct_size` covers
 them and they are non-NULL.
 
+**The Windows chrome does not pin `mv_ai_status`'s size (2026-10-15, issue #388).** `AiApi` refused
+any pack whose status struct was not exactly the size it was built with. The number was hand-copied
+and went stale (1336 against a 1640-byte struct from 2026-10-05), so the Windows chrome refused every
+pack and Local search "could not start". The struct already carries `struct_size`: the pack fills
+only what the chrome declared, and the chrome zeroes the rest, so an older or newer pack is safe to
+attach. The size check is dropped for `mv_ai_status`. `mv_ai_result` keeps its exact check, because
+it comes back as an array with no `struct_size`, so its size is the stride. Drift is now caught
+in CI: `tools/abi-layout` prints the offset and size of each field as MSVC lays them out, and the
+ABI smoke test compares them, both ways, with the C# mirror.
+
 **Developer key (2026-09-26).** `MV_ADDON_DEV_PUBLIC_KEY` lets a developer build trust a local key
 so a pack can be sideloaded; with it, `MV_DEV_ADDONS_DIR` / `MV_DEV_THUMBS_DIR` keep the run out of
 the user's install. CMake warns and refuses it under GitHub Actions.
@@ -951,7 +1029,18 @@ download from Settings, never in the base installer. Indexes are local to one ma
 
 **3 GB ceiling for the AI family (2026-09-25).** The base viewer's 250 MB limit does not apply to
 the optional pack. Installed pieces may total up to 3 GB; `index.db` and thumbnails are user data,
-outside it. CI rejects an oversized combination and the installer refuses it.
+outside it. CI rejects an oversized combination and the installer refuses it. Raised to 5 GB on
+2026-10-13 (next entry).
+
+**AI family ceiling is 5 GB (2026-10-13, owner).** Amends the row above. Installed pieces of the
+`ai` family may total 5 GB. The index, the thumbnail cache and the Core ML compile cache stay
+outside it, as before. Today's heaviest install (Core, People, Sound and the CUDA piece) is still
+about 2.93 GB, so nothing already installed grows and nothing new is downloaded. The room, about
+2.0 GB, is what a later piece has to fit in: the document text model in
+`docs/plans/document-search.md`, including multilingual-e5-small, which did not fit in 3 GB, or
+one more vision or speech piece of that size. A piece that would pass 5 GB is still refused
+before download. Enhance stays its own family. Its 5 GB figure is a per-weights-file cap, not
+this ceiling.
 
 **Towers and pieces (2026-09-26).** CLIP ViT-B/32 and ViT-L/14 both ship (L/14: +6 points R@1 but
 1.9 img/s on CPU); Auto picks by backend. int8 stored vectors (≤ 0.5 points), not int8 weights.
@@ -1011,6 +1100,14 @@ never start one, and an unnamed person of weak faces only dissolves. People are 
 and clips, not faces, and Settings lists the first 24 with "Show all". The online clustering had
 made people of blurred clip frames that resembled each other more than anyone; numbers in
 docs/design/17 "People model". Libraries settle once under the new rules, nothing read again.
+
+**New faces meet a confirmed person's exemplars (2026-10-15, #434).** This amends the 2026-10-06
+rule that a new face joins by mean pairwise cosine to every member. The best 3 people by that mean
+are shortlisted. A shortlisted person with a pinned face (the user named, merged or split it) is
+then rescored by the refinement's exemplar `support`, so the faces the user confirmed are what new
+photos are matched against. Weak faces and unconfirmed people keep the mean. Exemplars for every
+person were tried and dropped: on LFW they cost online BCubed F 0.9975 → 0.9945, because a newcomer
+joined a lookalike. Numbers are in docs/design/17 "Online clustering".
 
 **People follow the open folder (2026-10-03).** While a folder is open the People grid offers
 "This folder | + Subfolders" only; everyone shows only with no folder open. A folder open is the
@@ -1115,6 +1212,80 @@ treated like a path (never logged). The base app carries `NSPhotoLibraryUsageDes
 photos-library entitlement, because TCC attributes the request to the app; access is asked only on
 a click. A full re-enumeration of 23,089 assets takes 0.43 s, so no change tokens.
 
+**Date terms go by the date taken (2026-10-15, #404).** `in:`, `before:`, `after:`, `since:` and
+`until:`, and the newest-first order of a filters-only search, use schema 4's `taken_at` (the
+camera's wall clock read as UTC, the viewer's date-taken sort key, or a Photos item's
+`creationDate`) and fall back to the file's modification time only while an asset has none (no
+EXIF date, or the tag backfill has not reached it). A camera dump copied or synced in 2026 matched
+`in:2026` and not the year it was shot. No timezone conversion: `in:2024-06` is the stamp's own
+calendar month. Nothing is re-embedded and the schema is unchanged; the column was already there.
+**Cost:** during the backfill a file's date can move from its mtime to its date taken, so a date
+query run then may change its answer once.
+
+**Rating, label and exposure are query terms, not words (2026-10-15, #405).** `rating:`,
+`rejected`, `label:`, `iso:`, `f:`, `mm:` and `shutter:` filter on numbers the tag pass already
+reads from the header the Metadata pane's summary comes from, stored in AI index schema 5 and in
+meta_cache.db (`kSearchFactsVersion` 2). They are kept out of the search fields and `asset_text`
+on purpose: a plain "400" matching every ISO 400 frame would bury the picture search. Aperture
+matches within 0.05 stops (f/2.8 written as 2.8 or as APEX's 2.83) and shutter within a sixth of
+a stop (1/250 is not 1/320). The tag bookmark became a level (1 = schema 4's facts, 2 = these),
+so a schema-4 index reads each file's facts once more, embedding nothing. **Cost:** one bounded
+head read per indexed file after the update (the cache rows of version 1 are read again), and a
+rating written to a RAW's sidecar does not reach the AI index until the file's stamp changes.
+
+**A clip's chapters and text subtitles are indexed as exact text (2026-10-15, #406).** Quoted
+words and `said:` match a chapter title or a text subtitle line as they match a Whisper line,
+with the cue's start as the moment and a snippet that names the source ("Chapter: …",
+"Subtitle: …", `MV_AI_MATCH_TEXT`). The host reads cues as packet text through the FFmpeg it
+already links (no subtitle decoder, no new library); they live in their own `cues` table, not
+under the Whisper spec, so removing the audio piece keeps them and a shared index never disagrees
+about what was said. Bitmap subtitles are not OCR'd. **Cost:** one header open per indexed clip
+(after its pictures), and a full demux of the subtitle stream for files that have one (an MKV
+reads its clusters to find the cues), capped at two hours and 8,000 lines.
+
+**The People pass looks at the indexed frames; a Live Photo's motion is indexed (2026-10-15,
+#407).** Re-analyse (and People turned on after the pictures) used to resample a clip on its own
+2 s / 10 s grid from 0, so a face sharp on one kept frame and gone for the next ten seconds was
+never seen; on the owner's library, mostly clip frames, that was the common case. It now decodes
+exactly the `pts_ms` the picture pass kept (the host's frame fetch, no pixels stored), and keeps
+the grid only for a clip with no picture rows. A Live Photo's 1–3 s movie, dropped before, is
+sampled onto the still's id (same sampler, same dedupe, seeded with the still) and a moment opens
+the movie. Not changed: the sampler's 500 ms / 2 s gaps, keyframe-only decode, the dedupe.
+**Cost:** one host frame fetch per stored moment in a People-only pass (a file open and a decode
+from the keyframe each, against one sequential sampler pass before), and a handful of frames per
+Live Photo in the picture pass. An exported index carries no `motion` columns, so the receiver
+samples each Live Photo's movie once more.
+
+**Words in photos are read by the OS and searched as text (2026-10-15, #403, urgent).** "suited
+and booted" found the photo in Apple Photos and not here: CLIP does not read. The pack now asks the
+operating system's own recogniser (Vision on the Mac, Windows.Media.Ocr on Windows; no model, no
+download, nothing sent anywhere) for each photo's text in a background pass after the pictures,
+and stores it as a `cues` row (kind 3) that quoted words, `said:` and plain words match like a
+transcript line. A separate 2,048 px decode rather than the picture pass's 448 px one, because
+sign and shirt text is small: 95 % of 40 labelled phrases on the Mac at 44 ms median a photo.
+**Cost:** one extra decode and an OS read per photo, once; on the owner's 23 k-photo library that
+is about 20–35 minutes of one background worker on an M-series Mac, after the pictures are done.
+Video frames are not read yet.
+
+**The text on clip moments is read too, and the text passes count in the status (2026-10-15,
+#403 follow-up).** A sign or a burned-in caption in a clip is found at its moment: the text pass
+reads the moments the picture pass stored, after that pass is done with the clip, decoding each
+again at 2,048 px. Not the sampler's frames as they go by, because the picture pass decodes at
+448 and must never wait on the OS reader; not every keyframe, because the stored moments are
+already the clip's distinct views, and a sign held in shot over several of them is stored once.
+Its own progress spec (`<reader>/moments`) so the photos already read are not read again, and
+commits every 8 moments so a stop resumes; nothing is embedded. **Cost:** the moment's seek and
+decode, which is most of it, plus the OS read: about 0.2 s a moment on the Mac (180–218 ms median
+over three runs of 72 moments from six of the owner's clips, the read 20–22 ms of it, on a loaded
+machine), once per clip, after its pictures. The cue and text passes now have
+counts in `mv_ai_status` and keep the state from idle: before, the pill said "Up to date" while
+they ran. Those three counts are 14 ms a refresh at 25,000 assets and the refresh runs once a
+second even when idle, so they are cached and counted again only when something can have moved
+them, or every 30 s (about 0.5 ms a second idle). The **Read text in photos** switch (Settings → Local search, both hosts, on by
+default) turns both text passes off. The cue and text counts are appended on `mv_ai_status`
+(1,672 bytes with them) and read only when `struct_size` covers them. `AiApi` still does not
+pin that size (#388); the ABI smoke test compares the C# mirror with the header.
+
 ---
 
 ## Final Cut Pro search (Mac)
@@ -1155,6 +1326,87 @@ Cards are never read deep or by two files at once; local disks keep the sequenti
 read-back verify stays the default on a share. `F8` copy keeps the OS copier (unverified, several
 files at once to a share); `F8` move across volumes is verified and deep. SMB signing, channels and
 MTU are never changed by the app.
+
+---
+
+## Sharepoint
+
+Issues #410 and #413, [28](28-sharepoint.md).
+
+**A first-party add-on may open a local link the person asked for (owner, 2026-10-14).** Sharepoint
+listens, beacons and uses Bluetooth only while its window is open, receiving is on or a transfer
+runs; the idle viewer has no socket. Bytes go only to the peer the sender picked, after the person
+there accepted, sealed end to end. Rule 6's line is unchanged: no path, file name, pixel, EXIF,
+address or peer name reaches a log, telemetry or a crash report. Other makers' script add-ons
+still have no network permission (2026-10-03).
+
+**Discovery is one UDP beacon a second, not Bonjour / DNS-SD (2026-10-15).** One portable socket
+file per OS (`net_posix.cpp`, `net_win.cpp`) instead of `dns_sd` on the Mac and `DnsServiceBrowse`
+on Windows: the same code finds and is found on both, and it runs only while the window is open.
+Sent to an organisation-local multicast group and the subnet broadcast with a TTL of 1.
+
+**Bluetooth is a GATT pipe, and a set over 32 MiB is refused on it (2026-10-15; a budget).**
+Windows gives apps no connection-oriented LE channel, so a Mac-to-Windows send has GATT only:
+writes without response one way, notifications the other, tens of kilobytes a second. 32 MiB is a
+few minutes at that rate. Past it the window says so before Send, and Send waits for the peer on
+Wi-Fi and starts by itself when it is there (2026-10-15, owner), rather than failing after Send.
+
+**Commit, then reveal, and the sender confirms the code (2026-10-15).** With both keys sent at
+once, a machine in the middle could learn each side's key first and search a few thousand keys
+for two six-digit codes that match. The client now commits to a hash of its key before it sees
+the server's, and the server shows its key only after that. And the receiver's Accept alone did
+not protect the sender: a machine claiming the receiver's id from another address could answer
+Accept itself. So the sender's person confirms the code before the offer (even the names) leaves,
+and a fresh peer keeps its address. Two clicks, one per side, as Bluetooth's numeric comparison.
+
+**Keep receiving is kept across launches (owner, 2026-10-15, #442; reverses "the toggle is for this
+run").** Turned on, it stays on after a relaunch until turned off: the add-on keeps it in its own
+data folder (`sharepoint.json`), and at load, only when it was on, makes the engine, whose control
+thread starts presence. That is after first pixel and off the foreground queue (slot add-ons load
+on the add-on queue / a worker), and in one window's process at a time (a lock file). Off at load
+is one small read and nothing else. While it is on the command bar shows **Sharepoint: receiving**,
+so a person knows the machine is discoverable. Measured idle cost with it on, window closed (Mac,
+`[.sharepoint-idle]`, 15 s): 0.020 % CPU, 6.4 context switches a second, no present; off 0.0003 %.
+The earlier call kept the idle viewer silent by default; it still is unless the person asked.
+
+**The sender types the code; it is not compared (owner, 2026-10-15, #442; amends "the sender
+confirms the code").** People clicked **Same code, send** without looking at the other screen. Now
+the receiver's window shows the code and the sender's person types it; the sender's screen never
+shows it. Commit, answer, reveal and the code's derivation are unchanged, so a machine in the
+middle still cannot make the two links' codes match, and the offer still leaves only after a right
+entry. The check is local to the sender (constant time, digits only, a partial entry is not a
+try); three wrong entries send `cancel` and end the link. The wire is unchanged (protocol 1): the
+receiver waits for the offer either way. Bluetooth's passkey entry is the pattern.
+
+**The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
+at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
+no-replace before its `file_done`; the sender's `done` waits for every check. Measured on loopback
+(Mac, alternated): 500 × 2 MiB 124–141 → 158–180 MB/s; one 1 GiB file unchanged (crypto-bound).
+Reading ahead on the sender measured no faster and was not kept. `[.sharepoint-bench]`.
+
+**Each file's hash comes after its bytes, not in the offer (2026-10-15).** A hash list up front
+would make the sender read every file twice before the first byte moved (a large video read
+whole first). `file_end` carries the BLAKE3 of the bytes as read; the receiver checks it, then
+reads the temporary back uncached and checks again before the rename, as `verified_copy` does.
+
+**The receive is written in the add-on, with `verified_copy`'s rules (2026-10-15).** The bytes
+come from a link, not a path, and copying a temporary again would write a large video twice. The
+add-on compiles the file port in (exclusive create, durable flush, uncached read-back, no-replace
+rename), as Places compiles `io/mapped_file`; it links nothing of the core.
+`tools/check-module-graph.ps1` lets `addons/` include `io/` for it.
+
+**A slot add-on's manifest commands are events to it (2026-10-15).** It has no chrome to run
+them, so the host sends a `command` event with the payload's files (`run_command`, ABI 0.29).
+
+**The gallery's Shift-click range is the selection while it stands (2026-10-15, #413).** It is
+made only by Shift-click, so arrow browsing still never makes one; copy, `F7` / `F8`, `Delete`,
+copy path, Share and drag-out act on it ahead of the marks, which stay what `Insert` /
+`Shift+Space` edit. `Delete` reaches the gallery for it. On Windows native drops the range once
+its anchor is no longer selected, so no selection path needs a hook.
+
+**Gallery drag-out on the Mac starts below SwiftUI (2026-10-15, #413).** In the grid's vertical
+`ScrollView` the cell's `DragGesture` never saw the mouse drag; a local event monitor turns a
+press on a hovered cell that moves 4 pt into the file drag.
 
 ---
 
@@ -1263,6 +1515,45 @@ Verified on the Mac: the shell suite (contributed rows, the key-label round trip
 built-in binding, superseding and restoring), the manifest cases, the packer's cross-check,
 the full suite and the add-on rig. Not verified: a signed Import carrying the new manifest in
 the app (a local build cannot load its own unsigned Import); Windows beyond compiling.
+
+**Built-in themes are host palettes in the Appearance picker (2026-10-12, issue #359).**
+Settings → Appearance → Theme lists Default, then Ember, Graphite, Harbour, Linen and Studio,
+then every theme of every installed open add-on. The five are one palette each, compiled into
+both chromes, with no `font`. A fresh profile shows them with nothing installed. They do not
+go through the open-add-on store, a publisher key or the install sheet; `mediaviewer.` stays
+reserved, so the selection key `mediaviewer.builtin/<id>` cannot be an add-on's. One palette
+keeps that appearance, including system-drawn controls, and applies at once on both hosts
+because there is no typeface to defer. Default still clears the override (`mv.theme.*`,
+`theme.json`) and follows the system. High contrast still wins. Contribution API 1 remains
+the path for a theme someone else ships. The photo, the video, the colour pipeline, the
+histogram's channel colours and the F3 overlay are not tokens. The palettes add no work to
+the present loop and no file read before first pixel beyond the token cache the chrome
+already kept.
+
+**The five built-ins are Midnight, Starfield, Terminal, Ume and Porcelain, each with one
+ground effect (2026-10-12, same issue).** The first cut's Ember, Graphite, Harbour, Linen
+and Studio were flat palettes. A built-in theme is one palette and one quiet ground, drawn
+behind the chrome only: rain, a starfield, fireflies, petals, dots. The effect is not a
+token, not in the theme JSON, and not in Contribution API 1, so an add-on still cannot set
+one and the photo canvas still receives only the flat canvas colour it already did. The
+effect ticks at 10 Hz on the UI thread while the app is in front and input is recent, and
+it stops when the app is inactive, when the pointer and keyboard have been still for five
+seconds, under Reduce Motion, or when Windows animations are off. High contrast still wins.
+Dots do not tick. Mac panes that are a system material stay a system material. Nothing was
+added to the present loop.
+
+**Nineteen built-ins, and four more grounds (2026-10-12, same issue).** The picker is Dark,
+Light, Midnight, Cyberpunk, Retrowave, Forest, Starfield, Terminal, Organs, Ume, GPT, Claude,
+Cute, Eclipse, Porcelain, Arcade, Blueprint, Monolith and Yoyo, in that order. The new grounds
+are a circuit (a faint grid and a few pulses along it), embers, sparkles and a slow drift.
+Dark, GPT and Claude have no ground, so they do not tick. Organs is the same rain at a crawl:
+speed 0.05, size 0.75, colour #451616. Speed and size are host fields on the row, not tokens;
+every other theme leaves them at 1, so Midnight, Starfield, Terminal, Ume and Porcelain look
+the same as they did. Retrowave's title is #ed5e76, the same hue as #e94560 lifted so it
+clears 4.5 : 1 on both its canvas and its surface; the accent stays #e94560. A ground is
+still not a token, still not in Contribution API 1, and still absent from the present loop.
+The palettes follow the Odysseus set. The photo canvas still receives only the flat canvas
+colour.
 
 **Declarative contributions: contribution API 2 (2026-10-11; PR 56's second half,
 [25](25-open-addons.md#pr-56-second-half-declarative-contributions-2026-10-11)).** Owner, the
@@ -1378,7 +1669,65 @@ so WebAssembly was not taken up. What was decided while building it:
   were integrated (2026-10-12): a binding over the same `settings_values::value_json` the host
   table's `settings_get` reads.
 
+**No canvas background: every screen is the theme's (2026-10-15, issue #408).** Owner call:
+remove the canvas background rather than give it a colour scheme of its own. Settings' "Canvas
+background" row (System, Grey, White, Checkerboard, Dark), `B` and `cycle_background` are gone
+on both hosts. The clear behind the welcome card, behind a still and behind a video, and what
+shows through a transparent pixel, is the theme's `canvas` token, the colour the chrome
+already paints; only the slideshow blackout differs. The welcome card draws with the theme's
+surface, title, body, hairline and accent instead of a grey derived from one RGB, and a
+built-in's ground effect moves behind it on the empty window only (static presents by the
+panes' rest rule, never `live`, so a still stays at 0 presents). Kept, so nothing else moves:
+the command id (`retired_background`, keyless, like the palette's), a key-table row with no key
+and no mode (saved rebinds name rows by index), the constant buffer's float (`unused0`, so the
+HLSL and MSL layouts do not shift), and the thumbnail matte (changing it would re-encode every
+cached thumbnail). View-settings bits 4-6 are read and ignored. The checkerboard is gone with
+it: a transparent image now shows the theme's ground, not a pattern. Two rendering details:
+ImGui draws into the labs' _SRGB targets, which read a vertex colour as linear, so a token is
+decoded first (`home_ink.h`; drawn as is, Midnight's `#161b22` card came out `#555c65`), and a
+translucent token or ground mark is mixed over its known solid ground in sRGB, as the panes
+blend, because linear blending made the rain several times brighter than in the bar
+(`home_over`). On the Mac the chrome paints its theme before the app object exists, so the
+bridge keeps the latest theme and applies it when the app registers.
+
+**The ground effect moves faster, and behind other apps (2026-10-15, owner).** Was: 10 frames a
+second, only while the app was in front and the pointer or a key had moved in the last five
+seconds. The owner found it choppy, and frozen whenever another app was in front, and then
+asked for 60 at least. Now: every display frame in front and in use (60 a second, 120 on
+ProMotion: the home ticks on each pass of a loop the display paces, the panes on the display link
+on the Mac and `CompositionTarget.Rendering` on Windows, since a fixed 60 Hz timer drifts against
+the display. On the Mac the panes' marks are Core Animation layers moved on a thread of their
+own (`ThemeTicker`): publishing the clock to SwiftUI re-laid out and re-rendered each pane on
+every tick, and a main-thread display link woke the main run loop 60 times a second, where every
+pass polls all the chrome stores (`ChromePulse`). Profiled 2026-10-15: the native home's own
+work per frame is a few samples, and it was SwiftUI that cost); 10 a second while the window is visible (behind another app, or in
+front but quiet), for up to a minute after the last input; then rest. Never while hidden,
+minimised or covered, never under Reduce Motion or with Windows animations off. One rule in
+three places (`home_ground_clock`, both chromes' `ThemeMotion`), and the bar's and panes' input
+now reaches the empty window's clock, which only heard the canvas. The app sees no input in
+other apps, so a window left behind another app rests a minute after you leave it; moving for
+ever while visible was the alternative, at a steady cost with nobody using the app. A tick
+behind another app may present (`present_request::ground_tick`); nothing else does. Known gap: the home's
+marks do not line up with the panes' (own seed, own rect, own clock).
+
 ---
+
+## Video at 4K on Windows
+
+**One decode thread on D3D11VA, and a 1 ms timer while a clip plays (2026-10-06).** A 4K 30 fps
+HEVC clip showed ~24 fps on Windows (screen comparison, worst gap 367 ms) while the same clip
+plays at 29.7 decoded frames/s on the Mac. `thread_count = 0` had been set on the claim that
+it "is ignored on the hardware path"; FFmpeg runs frame threads around a D3D11VA hwaccel too, so
+a 16-thread CPU got ~15 frames of start-up latency and contended for the device lock. The
+pipeline's short waits (`reserve_slot`, the demuxer's full queue, FFmpeg's `Sleep(2)` on
+`E_PENDING`) each lasted a 15.6 ms Windows tick. Now: one thread on D3D11VA (VideoToolbox keeps
+auto), and `timeBeginPeriod(1)` held only while a clip is playing, so a still or a paused clip
+keeps the default tick. `--av-soak` reports `decoded`, `stale` and `decoder` so decode rate is
+told apart from selector drops. Measured 2026-10-15 on the RTX 4070 / 5700X3D desktop (18 s
+`--av-soak`, base/new alternated ×3): base was already at rate here (539 presented, 2 dropped),
+new presents 540 with 1 dropped and 545 decoded on `d3d11va`, and the worst poll gap falls from
+~32.7 ms to ~18.6 ms (A/V error p99 ~16–26 ms → ~2 ms on two of three runs). The ~24 fps of the
+screen comparison did not reproduce on this machine; the PR 1 gate and idle are unchanged.
 
 ## Not built
 

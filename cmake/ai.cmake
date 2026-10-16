@@ -104,6 +104,19 @@ else()
   list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/cloud_none.cpp)
 endif()
 
+# Text in pictures (#403, src/addons/ai/text_reader.h): Apple Vision on the
+# Mac, Windows.Media.Ocr (C++/WinRT from the Windows SDK) on Windows.
+if(WIN32)
+  list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/ocr_win.cpp)
+  # C++/WinRT throws hresult_error, which ocr_win.cpp catches at its edge
+  # (/EHsc, as CMake's default); /bigobj for the projection's headers.
+  set_source_files_properties(${R}/src/addons/ai/ocr_win.cpp PROPERTIES COMPILE_OPTIONS "/bigobj;/EHsc")
+elseif(APPLE)
+  list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/ocr_mac.mm)
+else()
+  list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/ocr_none.cpp)
+endif()
+
 add_library(mv_infer STATIC
   ${R}/src/infer/clip_tokenizer.cpp
   ${R}/src/infer/clip_tokenizer.h
@@ -152,6 +165,7 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/pack.h
   ${R}/src/addons/ai/platform.h
   ${R}/src/addons/ai/photos_source.h
+  ${R}/src/addons/ai/text_reader.h
   ${MV_AI_PLATFORM}
   ${R}/src/abi/include/mediaviewer/mediaviewer_ai.h
 )
@@ -162,7 +176,8 @@ target_link_libraries(mv_ai_engine PUBLIC Threads::Threads)
 if(APPLE)
   target_link_libraries(mv_ai_engine PRIVATE "-framework CoreFoundation" "-framework IOKit"
                         "-framework Foundation" "-framework AppKit" "-framework Photos"
-                        "-framework AVFoundation" "-framework Network")
+                        "-framework AVFoundation" "-framework Network" "-framework Vision"
+                        "-framework CoreGraphics")
 endif()
 set_target_properties(mv_ai_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)

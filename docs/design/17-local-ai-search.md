@@ -108,7 +108,7 @@ src/infer   embedder { embed_image(s), embed_text }    clip_model, clap, whisper
 - **Core ML needs static shapes.** The image tower's free dimensions are pinned at open
   (`session_options::fixed_dims`, batch 4 = the engine's photo batch; `embed_images` splits and
   pads other batch sizes), which puts every node on Core ML. Opening is slow even from its cache
-  (`data/cache/coreml`, ~1.2 GB B/32 / ~4.1 GB L/14, outside the 3 GB ceiling), so the pack
+  (`data/cache/coreml`, ~1.2 GB B/32 / ~4.1 GB L/14, outside the 5 GB install ceiling), so the pack
   **answers on CPU at once** and a background thread opens Core ML, runs the self-test and swaps
   it in (`upgrading_clip` in `pack.cpp`). Text queries stay on CPU (3.3 ms B/32, 6.4 ms L/14).
   **Indexing waits for the swap** (`engine::upgrading`, 2026-10-05): the status stays *Loading* /
@@ -142,10 +142,11 @@ signed manifest, verify-before-load, per-user versioned folder, explicit updates
   queues a Core that is itself behind first, so no piece runs ahead of the engine it was built
   with. Remove deletes the files and offers to delete the index; `data/cache` (Core ML) is
   deleted even when the index is kept.
-- **3 GB installed ceiling** for the family (`family_ceiling`, `addon-pack.py ceiling`): every
+- **5 GB installed ceiling** for the family (`family_ceiling`, `addon-pack.py ceiling`): every
   supported combination must fit, and the store refuses an install that would exceed it. The
-  index and the thumbnail cache are user data and do not count. Worst supported combination
-  ~2.93 GB.
+  index and the thumbnail cache are user data and do not count. The pieces that ship today
+  reach ~2.93 GB in the heaviest combination, which leaves about 2.0 GB for a later piece.
+  Raised from 3 GB on 2026-10-13 ([12](12-decision-log.md)).
 - Downloaded on explicit opt-in, a plain GET of fixed release URLs with no identifier. The Mac
   pack is Developer ID-signed and notarized and loads under library validation.
 - **Location:** `%LocalAppData%\MediaViewer\addons\ai\<version>` on Windows and
@@ -165,7 +166,10 @@ signed manifest, verify-before-load, per-user versioned folder, explicit updates
    ~1 s, so this yields ~1 candidate per second cheaply.
 2. **Coverage fallback.** Long-GOP sources can go minutes between keyframes. A **maximum gap**
    (2 s) fills the grid by decoding forward from kept packets; a **minimum gap** (500 ms) stops a
-   burst of scene-cut keyframes flooding the index. People-only sampling uses 2 s / 10 s.
+   burst of scene-cut keyframes flooding the index. The People pass on its own (re-analyse, or
+   People turned on after the pictures) decodes the moments the picture pass kept, through the
+   host's frame fetch, so a face sharp on one indexed frame is seen (#407); only a clip with no
+   picture rows falls back to its own 2 s / 10 s grid.
 3. **Dedupe by embedding.** A frame whose cosine to the last *kept* frame is above `dedupe`
    (0.97) is dropped. A static interview shot collapses to a few rows; an action scene keeps
    many.
@@ -176,7 +180,17 @@ signed manifest, verify-before-load, per-user versioned folder, explicit updates
 5. **Record** `pts` in the stream time base and in milliseconds, plus a keyframe / grid-fill
    flag, so jump-to-moment lands on the exact frame through the player's seek.
 6. **Photos** are one row each, embedded from a first-pixel-quality decode (RAW uses the embedded
-   preview). Live Photo and RAW+JPEG pairs index once, on the pair's still.
+   preview). Live Photo and RAW+JPEG pairs index once, on the pair's still. A Live Photo's movie
+   (the folder pair `IMG_1234.HEIC` + `IMG_1234.MOV`; schema 7's `motion` columns) is sampled
+   with the same sampler and the same 0.97 dedupe, seeded with the still's vector, and its frames
+   are stored on the still's id with their `pts_ms`, at most 32 (#407). A moment opens the movie
+   at that time (the result's path is the movie and its kind a clip; `N` walks the still's
+   moments); a match at no timestamp is the still. The still commits first (progress partial),
+   the movie after (done), so a kill resumes the motion alone. A movie edited, added or brought
+   down from the cloud under the same still re-queues only the motion. An online-only movie is
+   read only with *Index online-only files* on and the fetch's gate open (brought down in place
+   and given back), otherwise the still is indexed alone. Photos library Live Photos are one
+   PhotoKit asset and stay a still.
 
 ## Index store
 
@@ -188,15 +202,18 @@ meta(key, value)
 roots(id, path, recursive, enabled, last_scan_at, media)          -- remembered index locations
 assets(id, path, root_id, mtime, size, kind, duration_ms, seen, cloud,  -- cloud: schema 3
        tags, taken_at, lat, lon, camera, lens, made_with, ai,         -- schema 4 (#291)
-       place, country, region)                                        -- schema 4, always NULL
+       place, country, region,                                        -- schema 4, always NULL
+       rating, label, iso, aperture_x100, focal_mm, shutter_den, shutter_us)  -- schema 5 (#405)
 asset_text(rowid = asset id, text)                                  -- FTS5, schema 4
 progress(asset_id, spec, state, resume_ms, tries, indexed_at)     -- per asset and model spec
 frames(id, asset_id, spec, pts_ms, pts_tb, tb_num, tb_den, flags, generic, scale, emb)
 speech(id, asset_id, spec, start_ms, end_ms, text)                 -- Whisper transcript lines
+cues(id, asset_id, start_ms, end_ms, kind, text)                   -- schema 6: chapters, text subtitles (#406)
 ```
 
 `emb` is the int8 vector, `scale` its per-vector scale, `generic` its best cosine against the
-tower's generic prompts. Each schema step (1 -> 2 `media`, 2 -> 3 `cloud`, 3 -> 4 tags) is one
+tower's generic prompts. Each schema step (1 -> 2 `media`, 2 -> 3 `cloud`, 3 -> 4 tags, 4 -> 5
+rating and exposure, 5 -> 6 cues) is one
 transaction and skips a column already there, so a crash mid-migration never leaves an index that
 will not open. A new index is made as schema 3 and takes the same 3 -> 4 step, so a fresh index and
 a migrated one cannot differ.
@@ -229,6 +246,34 @@ What each asset's tags say, so Local search can filter on them:
   Photos library items take `PHAsset.location` and `creationDate` from the last enumeration. A host without `tag_facts` (the pack updated before the app) backfills nothing and leaves `tags = 0`, so the first host that has it fills them; a failed commit waits the loop's usual second before trying again.
   An exported index (Sharing an index) carries no tags; the receiver reads them itself.
 - `wait_idle` waits for the backfill too.
+
+### Schema 5 (#405, 2026-10-15)
+
+Rating, colour label and exposure, for the `rating:` / `label:` / `iso:` / `f:` / `mm:` /
+`shutter:` terms. Columns, NULL until read: `rating` (1..5, −1 rejected, 0 unrated), `label` (as
+written), `iso`, `aperture_x100` (f/2.8 → 280), `focal_mm`, `shutter_den` (N when the exposure
+time is 1/N s) and `shutter_us` (the exposure time in microseconds, always set when there is
+one, so 2 s and 1/250 both match). A clip has no exposure block: those stay NULL.
+
+- **Where they come from:** the host's `tag_facts`, whose struct gained the fields at its end
+  (`MV_ADDON_TAG_FACTS_V2_SIZE`); the host's meta_cache.db reads them in the same bounded head
+  read as the search fields (`kSearchFactsVersion` 2, so each file's cache row is read once more).
+- **`tags` is a level now:** 1 = schema 4's facts read, 2 = these too (`kTagsLevel`). The step
+  leaves every schema-4 row at 1, so the backfill reads it once more for the new facts alone;
+  nothing is re-embedded. A host from before #405 answers the shorter struct: its rows stop at 1,
+  the engine asks no more of it that run, and the first host that serves the fields reads them.
+- **Never search text:** the numbers are not in `asset_text`, so a plain "400" is not an ISO
+  match.
+- A rating written to a RAW's XMP sidecar leaves the RAW's own stamp alone, so the index keeps
+  the old rating until the file's stamp changes or the index is rebuilt (the base app's
+  meta_cache drops its row; the AI index has no such signal yet).
+### Schema 6 and 7 (#406, #407)
+
+Schema 6 adds `cues` ("Cues" below). Schema 7 adds `motion`, `motion_mtime`, `motion_size` and
+`motion_cloud` to `assets`: a Live Photo still's movie and its stamp (Frame sampling, step 6). The
+first walk after the step fills them and queues each Live Photo's motion alone; the still is not
+embedded again.
+
 People live in a separate `faces.db`; the label bars in `labels.f32`;
 the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model and piece).
 
@@ -265,9 +310,11 @@ the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model
     indexed from `resume_ms`, redoing nothing committed. **Dismiss** leaves them paused and loads
     nothing; the notice does not come back that session, and the next launch asks again. The Mac
     notice is a self-sizing SwiftUI card pinned over the canvas corner (`ResumeNoticeView.swift`,
-    above the filmstrip when it is up); Windows has no island in that corner, so the notice is a
-    windowed `Popup` of the command-bar island (`ShouldConstrainToRootBounds = false`, as the
-    bar's flyouts are), placed from the window's client rectangle on every resize. Neither takes
+    above the filmstrip when it is up); on Windows it is a small island of its own over that
+    corner, as the AI badge is (`IslandHost.ResumeNotice.cs`), placed from the window's client
+    rectangle on every resize and above the other islands. It was a windowed `Popup` of the
+    command-bar island until #443, and never showed on Windows. A launch read that lands before
+    the command bar is up waits for it, as the Mac's store waits for its host. Neither takes
     focus. A later window (the reader) indexes nothing and shows no notice.
   - **Settings → Local search**, in the pack's folder list (`ManagementView.swift`,
     `ManagePanel.cs`): a held root's row reads "N of M · paused since last time" and offers
@@ -411,7 +458,7 @@ same thing by the same words. Terms narrow each other (AND).
 | Typed | Means |
 |---|---|
 | `Tristan beach` | photos / moments with Tristan, ranked by "beach" (no "nothing found" test inside a person's own) |
-| `Tristan "hello"`, `Tristan:"hello"`, `said:hello` | Tristan, and a clip whose transcript has those words in that order; the line is the snippet |
+| `Tristan "hello"`, `Tristan:"hello"`, `said:hello` | Tristan, and a clip whose transcript, a chapter title or a text subtitle line (#406, "Cues"), or a photo or clip moment whose text (#403, "Text in pictures"), has those words in that order; the line is the snippet |
 | `Tristan Aaryan`, `Tristan and Aaryan` | both in the same photo or clip |
 | `Tristan or Aaryan` | either |
 | `Anna Smith`, `anna` | a named person: the whole name or the first name, any case, accents folded |
@@ -419,32 +466,53 @@ same thing by the same words. Terms narrow each other (AND).
 | `Trist`, `tristna` (alone) | a lone word that starts or nearly spells a name: those people first, then what the word describes (so "car" still finds cars when there is a Carla) |
 | `-Nico`, `-beach`, `-"goodbye"`, `-video` | leave out a person, what a picture search finds, a phrase said, a kind |
 | `beach video`, `is:photo`, `videos of Anna` | a kind: the last word, `is:` / `type:`, or a leading "videos of"; "photos of …" asks for anything |
-| `in:2024`, `in:2024-06`, `before:2025`, `after:2023-05`, `since:2024-03-01`, `until:2024` | the **file's** date (modification time, UTC). Capture dates (EXIF) are not in the index |
+| `in:2024`, `in:2024-06`, `before:2025`, `after:2023-05`, `since:2024-03-01`, `until:2024` | the **date taken** (`taken_at`: the camera's wall clock read as UTC, no timezone conversion; a Photos item's `creationDate`), and the file's modification time (UTC) for a file with none or whose tags are not read yet (#404) |
 | `file:IMG_12`, `file:"trip 2024"`, `-file:copy` | the file's **name** (not its folder) contains the text, case and accents folded. Indexed files only |
-| `video in:2024`, `file:IMG_12` | filters alone: everything they allow, newest first |
+| `video in:2024`, `file:IMG_12` | filters alone: everything they allow, newest first (by the same date) |
 | `camera:R5`, `camera:canon`, `-camera:iphone` | the file's camera tag (make and model) contains the text, folded (#291) |
 | `lens:24-70`, `lens:"RF 50"` | the lens tag contains the text |
 | `ai:yes`, `ai:no`, `made:yes` | AI provenance (positive evidence: C2PA / IPTC trained-algorithmic source, or a known generator); `ai:no` is every file without that evidence |
 | `made:chatgpt`, `ai:firefly`, `-made:midjourney` | the generator the file names ("made with") contains the text |
+| `rating:5`, `rating:3+`, `rating:0`, `rejected`, `rating:-1`, `-rating:1` | the stars the file states (0 unrated, −1 rejected), or at least that many (`+`); `-` leaves that rating out (#405) |
+| `label:red`, `-label:red` | the colour label contains the word, folded |
+| `iso:400`, `iso:100-800`, `iso:1600+` | ISO: exact, an inclusive range, or at least |
+| `f:2.8`, `f:1.4-2.8` | aperture, within 0.05 stops of the stored value (f/2.8 and APEX's f/2.83 are one) |
+| `mm:35`, `mm:24-70` | focal length in whole millimetres |
+| `shutter:1/250`, `shutter:250`, `shutter:2s` | the exposure time (a bare number N is 1/N s, as a camera shows it; `s` or a decimal point is seconds), within a sixth of a stop |
 | `place:portugal`, `in:lisbon`, `-place:spain` | where it was taken. `in:` is a date when it reads as one (`in:2024`) and a place otherwise; a word that starts with a digit is never a place; `in:` never names a folder (the scope does). The engine keeps the geotagged assets; which place matches is the Places add-on's search provider's answer, merged by the slot registry ([25](25-open-addons.md) §7) |
+| (any of the six above) | a file with no value for a kept term does not match it (an `iso:` term skips a clip); a left-out term drops only a value in its range. The terms filter before the towers run, so `iso:400 beach` ranks the ISO 400 frames by "beach" |
 | `R5`, `chatgpt`, `holiday` (plain words) | besides the picture / sound / speech search, files whose tags hold every word at the start of a word ("r5" in "Canon EOS R5", "70mm" in "RF24-70mm"; not "cat" inside "location") come first, with the tag as the snippet (`MV_AI_MATCH_TAGS`, shown unquoted under the tile) |
 
 Lead-ins ("pull up all the …", "show me …", "find …") are trimmed. Typing a name: the panel
 names people for the word being typed (`suggest_json`; prefix first, then a near spelling of one
 letter, two from eight letters); **Tab** or a click completes the word. A word that is not a
 name, a kind or an operator stays in the description; an unfinished `in:20` is ignored. Not in
-the index, so not in the syntax: OCR (quoted words search speech only). Date terms still use the
-file's modification time; `taken_at` makes date taken possible, a change of its own (plan "Out of
-scope"). Per keystroke the parse is linear in the query plus one `SELECT` of the named people.
+the index, so not in the syntax: nothing of a file's text is left out now; quoted words search
+speech, chapter titles, subtitle lines and the text in photos ("Text in pictures"). Date terms use the date
+taken where the tag backfill has read one (#404, [12](12-decision-log.md)). Per keystroke the parse is linear in the query plus one `SELECT` of the named people.
 
 Words fold with the shared rule (`core/fold.h`, the hosts' name fold): decompose, drop marks,
 lowercase; ß, æ, ø and ł stay themselves. Before #291 the pack's own Latin-1 fold turned ß into
 "ss" and æ into "ae"; "strasse" no longer finds "Straße", as in file search on Windows and its tag half on the Mac (the Mac chrome's name half uses Swift's full case folding, which does turn ß into "ss"; see `core/fold.h`).
 
-**Owed:** `place:` in Local search narrows to geotagged assets and relies on the Places
-provider's rows for the place itself. Over the whole index (folder "") the provider gets no
-rows until the host table can enumerate the index's coordinates (a `locations_of_index`
-call, not built); a combined query (`beach place:portugal`) is the geotagged beaches until then.
+**Places over the index (#398).** `place:` in Local search narrows to geotagged assets and
+relies on the Places provider's rows for the place itself. Over a folder the provider walks the
+host's `locations_in`; over the whole index (folder "", nothing open) it walks the host table's
+`locations_of_index`, appended after `read_cues`. That call streams (path, lat, lon) for every
+indexed asset with coordinates, from what index.db already holds (schema 4's `lat` / `lon`,
+filled by the tag backfill). No file and no file's metadata is read. The pack serves it as
+mv.ai.1 `each_location`, 512 rows a `SELECT` in id order (`index_db::located_assets`), with
+index.db's lock held for the `SELECT` only and never while a row is visited, so indexing goes on
+between batches. Because the pack is an add-on, the core cannot link it. Each host publishes the
+pack's row in a process-wide source (`src/addon/index_locations.h`) when the pack attaches (the
+writer or a later window's reader). It retracts the row before the pack goes: a walk in flight
+stops at its next row, and the library is unloaded only once no walk is inside it. The Mac waits
+on its add-on queue, never the main thread. The host's thunk is generation-tagged. A request that
+goes stale, or an add-on being removed (detach joins its worker), stops the walk with
+`MV_ERR_CANCELLED`; staleness is checked every 64 rows. With no pack attached the call returns
+`MV_ERR_NOT_FOUND`, and Places posts done with no rows. A combined query
+(`beach place:portugal`) is the intersection the chrome shows: the pack's geotagged beaches and
+the provider's Portuguese assets.
 
 ## UI and commands
 
@@ -556,7 +624,21 @@ host serves every layout from 1 up, so Import keeps loading.
 ## Audio
 
 A video's **soundtrack** is indexed for what it **sounds like** (CLAP) and what is **said**
-(Whisper transcripts). Standalone audio files are not indexed.
+(Whisper transcripts).
+
+**Standalone audio files** (MP3, M4A, M4P; #355, [audio-search](../plans/audio-search.md)) are
+indexed only while File types "Show audio files" is on. Each chrome forwards that setting to the
+pack as `audio_files` when it attaches and on every change; off is the default. Off, the walk
+drops them by name, so they cost nothing. Turned on, every enabled root is walked again. Turned
+off, the search leaves them out at once and the control thread deletes their rows
+(`index_db::remove_kind`). An audio file is `asset_kind::audio` (4; schema 8, no table change)
+and `MV_AI_KIND_AUDIO` (8; `MV_AI_KIND_ALL` is 11, so an older chrome's 3 still means photos and
+videos). Slice A1 indexes its tags (title, artist, album, album artist, composer, genre) and its
+cover art: one picture at `pts_ms` -1, read from the header (`edit::clip::cover_art_rgb`), on the
+picture track while the folder's media takes pictures. No cover art is done, not failed. It never
+pairs, never goes to People or to the text-in-photos pass, and an `.mvindex` import skips it. Its
+sound and speech are slice A2. Query words: `is:audio` / `is:music` / `is:song`, and a trailing
+or leading `audio` / `songs` / `tracks`; bare `music` stays a description.
 
 - **The option.** Settings "Index videos for" is Pictures / Sound / Both, and each remembered
   folder may override it (`root_set_media`, `MV_AI_MEDIA_*`). Unset means Pictures, or Both once
@@ -583,6 +665,97 @@ A video's **soundtrack** is indexed for what it **sounds like** (CLAP) and what 
   Each model's rows rank in their own units (margin over generic prompts for pictures and
   sounds, word coverage for speech) and merge per clip; a speech result carries its sentence
   (`result_snippet`). `MV_AI_STATUS_AUDIO_READY` and the sound / speech counts are in the status.
+
+## Cues (chapter titles and text subtitles, #406)
+
+Exact text a clip carries, so a chapter titled "birthday cake" or a caption "suited and booted"
+is found without the audio piece and without Whisper hearing it.
+
+- **Read by the host** (`read_cues` on the host table, appended after `tag_facts`;
+  `meta/cues.h`): chapters from the header, and the packets of text subtitle streams (mov_text,
+  SubRip, ASS / SSA, WebVTT) read as text with their markup removed. No subtitle decoder and no
+  new library: a cue is its packet. Bitmap subtitles (DVD, PGS) are pictures and are skipped, as
+  is a cue whose bytes are not UTF-8. At most the first two hours and 8,000 lines a file. A
+  file with neither chapters nor a text subtitle stream is done after its header.
+- **Stored** in `cues(id, asset_id, start_ms, end_ms, kind, text)` (schema 6), not as speech rows
+  under the Whisper spec: a shared index must not disagree about what was said, and removing the
+  audio piece keeps them. No spec: the text is the file's; a changed `(mtime, size)` drops the
+  rows. An export carries none (its cue progress is left out), so the receiver reads them.
+- **Its own pass:** a work track after the pictures (they never wait on it), on the index workers,
+  `wait_turn` between cues. It commits 64 cues at a time under progress spec `cues/1`; a kill
+  resumes at the last committed cue's start, and that commit first drops the rows from there, so
+  a resumed clip never holds a line twice. A host without `read_cues` leaves the track off.
+- **Search:** quoted phrases and `said:` match cue text as they match transcript lines, at the
+  cue's `start_ms`; plain words also match it by the speech rule (word coverage), beside the
+  picture search, not instead of it. Such a row has `MV_AI_MATCH_TEXT`, and its snippet names the
+  source: "Chapter: Birthday cake" or "Subtitle: suited and booted", shown unquoted (both chromes).
+  Burned-in text is read by the OS instead ("Text in pictures"). The cue pass and the text pass
+  share the table but not their rows: a resumed cue pass drops only chapters and subtitles.
+
+## Text in pictures (#403)
+
+Words in a photo (a sign, a poster, a shirt, a screenshot) are searchable: "suited and booted"
+finds the photo with those words on it, as Apple Photos' Live Text does. CLIP does not read; this
+does.
+
+- **Read by the operating system** (`text_reader.h`, a port in the pack like `cloud_files.h`):
+  Apple Vision's `VNRecognizeTextRequest` (accurate level, language correction, languages
+  detected) on the Mac, `Windows.Media.Ocr` for the user's profile languages on Windows (C++/WinRT
+  from the Windows SDK; `windowsapp.lib`, no package). No model ships and nothing leaves the
+  machine. A Windows with no OCR language installed, or another platform, has no reader: the
+  track stays off and nothing else changes.
+- **Its own pass** (`track::text`), after the pictures and the clips' cues: a 2,048 px decode
+  (small text needs pixels; the picture pass reads 448) and the OS reader, four photos a claim,
+  `wait_turn` before each. One `cues` row per photo, kind 3 (`picture`), `start_ms` −1, the lines
+  joined by spaces so a phrase split over two lines of a sign is one phrase, at most 4,000 bytes.
+  Progress under the reader's spec (`ocr/vision-accurate/1`, `ocr/windows-media/1`): read once,
+  ever, until the file changes; a photo read again (a new reader, a Live Photo's movie changed)
+  replaces its row. An export carries none.
+- **Clip moments** (2026-10-15): a clip is taken only once its picture pass is done
+  (`index_db::pending`'s `after`), under a spec of its own, the reader's plus `/moments`
+  (`ocr/vision-accurate/1/moments`), so photos already read stay read. The moments are the ones
+  the picture pass stored (`engine::stored_moments`, as the People pass reads them), each seeked
+  and decoded again at 2,048 px (the clip's own size when smaller) by the host's `video_frame`,
+  read, and dropped: nothing is embedded or kept but the text. One `picture` row per moment at its
+  `pts_ms`; a moment whose text is the one before's is not stored again, so a sign held in shot is
+  one row at the moment it appears. Committed every 8 moments (partial, `resume_ms` the last
+  moment read); a stop commits what was read and a restart goes on after it; a fresh read first
+  drops the clip's earlier text rows. A clip where no moment decoded or read is failed (tried
+  again like any failure). Only clips whose root indexes pictures; the iCloud fetch keeps a
+  downloaded clip until its moments are read. A quoted search returns the clip at that moment with
+  "In the picture: …" as the snippet.
+- **Search** as for cues: quoted words and `said:` match the photo's text, plain words by word
+  coverage beside the picture search; words are folded (`core/fold.h`) on both sides, so
+  "koln" finds "KÖLN". The row has `MV_AI_MATCH_TEXT` and the snippet "In the picture: …".
+- **Off switch:** Settings → Local search → Text in pictures → **Read text in photos** on both
+  hosts (`set_setting("read_text", 0/1)`, saved, read back from `settings_json`) leaves the
+  photo and clip passes out from the next claim; on brings them back for what was not read; text
+  already read stays searchable. `settings_json`'s `text_available` is false when the OS has no
+  reader (a Windows without an OCR language): the switch is shown off and greyed, and says why.
+- **Status:** `mv_ai_status` counts both text passes (appended `cues_total` / `cues_done`, a clip's
+  own text; `text_total` / `text_done`, photos plus clips whose pictures are done; failed and
+  unavailable count as done). While either is short the state is not idle, so no chrome says "Up
+  to date" while they run; the status lines name them ("Reading chapters and subtitles 3 of 40
+  clips", "Reading text in pictures 120 of 400"), after the pictures, as the pack runs them.
+  The three counts cost 14 ms together at 25,000 assets (`mv_ai_tests "[.perf-bench]"`, beside the
+  picture count's 8 ms), and the status refreshes once a second even idle, so they are kept
+  between refreshes and counted again only after a cue or text item, a `read_text` change, a
+  change in the picture counts, spec or held roots, while a text pass has work, or every 30 s.
+- **Measured** (Apple M-series, `mv_ai_tests "[.ocr-fixture]"` over `tools/ai/ocr-fixture.py`'s
+  40 labelled camera-sized photos: signs, posters, shirts, screenshots): Vision found 38 of 40
+  phrases (0.95), "suited and booted" among them; it read "trom" for "from" on one sign and lost
+  the last word of a tilted shirt. Per photo: the text pass's 2,048 px decode 10.1 ms median
+  against the picture pass's 448 px decode 8.6 ms, and the read 44 ms median, 84 ms mean. Two runs,
+  the same numbers. Windows is not measured.
+- **Measured, clip moments** (Apple M-series, `MV_OCR_CLIP_DIR=<dir> mv_ai_tests
+  "[.ocr-moments]"`: six of the owner's clips (3840×2160 and 2704×1520 GoPro, two 1080×1920
+  iPhone, a 2688×1520 CCTV clip with a burned-in clock, a 720×1280 phone clip), 12 moments each; 72 moments, 19 with text). Per moment, 180, 210 and 218 ms
+  median over three runs (264–269 ms mean), on a machine other builds kept at load 8–12 (two more
+  runs at load 33: 303 and 400 ms; not a quiet-machine number). Of that the OS read is 20–22 ms;
+  the rest is the host's seek and software decode from the keyframe before the moment, 165–170 ms
+  at 2,048 px and the same (166–169 ms) at 448 px: the decode, not the edge or the reader, is the
+  cost. So a clip costs its moment count × ~0.2 s once, on one background worker, after its
+  pictures; the People pass already pays one such decode a moment. Windows is not measured.
 
 ## People
 
@@ -656,14 +829,43 @@ faces on the control thread.
 
 ### Online clustering
 
-`faces.cpp`. Scores are mean pairwise cosine (sum · v / n) everywhere — assign, "this person",
-consolidate — not cosine to a normalised centroid (which inflates a stranger by ~√ρ). A new face
-joins the best person at `same_person`; one with a second person within `ambiguous` of the best
-waits **unassigned** (`person_id` NULL). **Quality gates it:** an *unusable* face (quality < 0.10)
-joins nobody, and a *weak* one (< 0.35) may join a person but never starts one. The idle consolidate merges at mean pairwise `merge_at`,
-an average that stays an average after a merge (no chaining). The user's faces are **pinned**:
-faces they split out; the cover of a person when they name it and of both sides when they merge;
-covers prefer pinned faces.
+`faces.cpp`. Scores are in pairwise cosine units everywhere — assign, "this person",
+consolidate — never cosine to a normalised centroid (which inflates a stranger by ~√ρ). A new face
+is matched in two steps. Every person is scored by mean pairwise cosine (sum · v / n), and the
+best `shortlist` (3) at or above `same_person − 2 × margin` are kept. Then each shortlisted person
+the user **confirmed** (it has a pinned face) is rescored by its **exemplars**: the refinement's
+`support`, the mean of the top 3 cosines to its pinned faces and good core (≤ 12, built by
+`build_person_proto`, the refinement's own `build_proto`). Every other person keeps its mean.
+The face joins the best person at `same_person`. If a second shortlisted person is within
+`ambiguous` of the best, it waits **unassigned** (`person_id` NULL). "This person"
+(`nearest_person`) uses the same scorer without the ambiguity rule. **Quality gates it:** an
+*unusable* face (quality < 0.10) joins nobody. A *weak* one (< 0.35) may join a person but never
+starts one, and it is matched by the mean alone, because the refinement never admits a weak face
+by exemplars either. The idle consolidate merges at mean pairwise `merge_at`, an average that
+stays an average after a merge (no chaining). The user's faces are **pinned**: faces they split
+out, the cover of a person when they name it, and both covers when they merge. Covers prefer
+pinned faces.
+
+**Corrections are what new faces meet (2026-10-15, #434).** Before this change a person's
+corrections counted only in the refinement. Online, a new face met the average of every member,
+so a varied person ("Tristan", front-on and side-on) scored *lower* as he grew. Now the faces the
+user confirmed are anchors for every new photo: a side-on face whose mean to him is below the
+threshold joins once a side-on cover of his is pinned. The exemplars are cached per person in
+`faces_db` and rebuilt lazily, under the lock, only for a shortlisted confirmed person. Only the
+first `max_refs` (256) refs' vectors are read. The cache is dropped on a rename, merge, split or
+reject, when faces leave or are re-analysed, and on an import. A refinement commit replaces it
+with the protos it just built. Ordinary growth rebuilds it only once the person is a quarter
+larger or smaller than when it was built. **Unconfirmed people keep the mean.** On LFW, scoring
+every person by exemplars let a newcomer whose mean was just under the threshold join a lookalike
+(IR-50 online BCubed F 0.9975 → 0.9945, P 0.9991 → 0.9933). Restricted to confirmed people, LFW
+is unchanged (`[.people-bench]`: IR-50 online F 0.9975, +merge 0.9980, settled 0.9988; SFace
+0.9899 / 0.9893 / 0.9938). The bench's corrections phase merges each person's fragments and names
+everyone with 3+ photos after 60 % of the faces, then files the remaining 40 % online. There, SFace's
+remaining 40 % rises from F 0.9964 (P 0.9983, R 0.9946) to 0.9969 (P 0.9972, R 0.9966), and
+IR-50's is unchanged at 0.9989. On a copy of the owner's library (`[.people-api]`), the 3,284 unfiled usable faces offered
+again cost 0.28–0.30 ms per `add` against 0.27–0.33 ms before (runs alternated), and one more of
+them files to a named person (556 against 555). The settle (`[.people-settle]`) does not use
+this path and is unchanged (263 people in 2+ photos, 76 in 5+).
 
 **Cost at a large library (2026-10-06, owner: "a lot of other UI seems to lag").** Every People
 read holds the engine's model lock, which a search, a rename and the status counts wait on, so
@@ -874,7 +1076,13 @@ original) into `<data>/cache/icloud/<row id>.<ext>`:
 - It waits (`mv_ai_status.icloud_fetch`) on battery, on an expensive or constrained network
   (`network_unmetered`, `NWPathMonitor`), under 10 GB free, and while indexing is paused. A clip iCloud
   does not send is skipped until the next start. `icloud_videos_left` / `_fetched` and the download's
-  progress are in the status; the status line says "Downloading from iCloud (42%) · 1,847 clips left".
+  progress are in the status. The status line treats the queue as the rest of the same run
+  (issue #417, 2026-10-15): while the pictures pass still has this Mac's files, its count and ETA
+  are that pass only, so the line says "Indexing pictures 24,442 of 24,443 on this Mac · under a
+  minute" and the note under it carries on with "Then 1,833 clips from iCloud · downloading the
+  next (42%), each indexed as it lands" (or why the fetch waits: for indexing to catch up, power,
+  an unmetered network, 10 GB free). Once nothing local is left the line is "Downloading from
+  iCloud · 1,847 clips left". Clips put off to the next launch are not counted as this run.
 - Photos are never fetched: PhotoKit keeps a local preview of nearly every photo, which is what the
   picture pass reads.
 
@@ -971,7 +1179,9 @@ refresh in the fourth, p99 ≤ 17.1 ms.
 - An OpenVINO piece (the code path exists, nothing is published).
 - A memory-mapped search matrix (it is loaded into memory).
 - Local search on Intel Macs (no x86_64 ORT).
-- OCR, places, EXIF capture dates or camera in the index and query language.
+- Place names in the index and query language (places are the Places add-on's, answered at query time).
+- Reading a clip's text from the picture pass's own decode: each moment is seeked and decoded
+  again, which is most of a moment's cost ("Text in pictures").
 - A "nothing found" z calibration for CLAP.
 - Background (unrequested) People refinement; the incremental refinement path
   (`refine_begin(false)`) exists in faces.db and its tests but has no caller.

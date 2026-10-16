@@ -280,6 +280,11 @@ public static partial class IslandHost
             // reader holds a text model: neither may compete with this window's
             // first pixel, nor cost a window that never searches.
             _addonsElsewhere = true;
+            // Issue #402: the add-ons that fill screens and slots load in every
+            // window, this one too, on a worker. They are found by manifest, so
+            // this hashes Places' files, never the AI pack's.
+            MediaViewerSession guestSession = _folderSession;
+            _ = Task.Run(() => StartSlotAddons(guestSession, guest: true));
             return;
         }
         MediaViewerSession session = _folderSession;
@@ -777,7 +782,15 @@ public static partial class IslandHost
             }
             if (parts.Count != 3) return unchecked((int)0x80070057);
             AddonSlot? slot = Array.Find(AddonSlots, s => s.Id == parts[0]);
-            if (slot?.Chrome is null) return 1;
+            if (slot is null)
+            {
+                // #410: an add-on that fills slots (Sharepoint) has no chrome; its
+                // command is an event to the add-on, with the files its payload
+                // names (a JSON array, or "[]" for a payload of none).
+                string paths = parts[2].StartsWith('[') ? parts[2] : "[]";
+                return SlotNative.Command(parts[0], parts[1], paths) ? 0 : 1;
+            }
+            if (slot.Chrome is null) return 1;
             if (slot.Chrome is IAddonCommands commands) return commands.RunCommand(parts[1], parts[2]) ? 0 : 1;
             // An Import chrome from before the generic entry: its two frozen calls.
             if (slot == ImportSlot)
@@ -874,6 +887,8 @@ public static partial class IslandHost
     private static void RefreshSlotUi(AddonSlot slot)
     {
         if (slot == ImportSlot) RefreshAddonRow();
+        else if (slot == SharepointSlot) RefreshSharepointOffer();  // #410
+        else if (slot == PlacesChannel) RefreshSlotSettings();
         else RefreshLocalSearch();
     }
 
@@ -1001,14 +1016,21 @@ public static partial class IslandHost
         heading.FontSize = TypeHeading;
         AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
         view.Children.Add(heading);
-        _addonRow = new StackPanel { Spacing = Space(8) };
+        // #442: Import's card holds everything of Import: its row (name, line,
+        // state, buttons or the install bar), its settings page, its status and
+        // its restart, as the Mac's AddonsSection does.
+        (Border importCard, StackPanel importBody) = AddonCard("Import");
+        importBody.Children.Clear();  // RefreshAddonRow writes the title itself
+        _addonRow = new StackPanel { Spacing = Space(6) };
         _addonStatus = Note("");
-        view.Children.Add(_addonRow);
-        view.Children.Add(FirstPartyPageHost(ImportSlot));  // PR 56: its settings page
-        view.Children.Add(_addonStatus);
+        importBody.Children.Add(_addonRow);
+        importBody.Children.Add(FirstPartyPageHost(ImportSlot));  // PR 56: its settings page
+        importBody.Children.Add(_addonStatus);
         _importRestartButton = AddonRestartButton();
-        view.Children.Add(_importRestartButton);
-        // docs/design/25 PRs 58-59: MediaViewer's own add-ons that fill screens and slots.
+        importBody.Children.Add(_importRestartButton);
+        view.Children.Add(importCard);
+        // docs/design/25 PRs 58-59: MediaViewer's own add-ons that fill screens
+        // and slots, a card each (IslandHost.Slots.cs).
         AddSlotAddonsSettingsRows(view);
         RefreshAddonRow();
         // Opening Settings asks the channel, whatever the automatic-check
@@ -1044,6 +1066,12 @@ public static partial class IslandHost
         {
             _importConfirming = false;
             RefreshAddonRow();
+            return true;
+        }
+        if (_slotConfirming is not null)
+        {
+            _slotConfirming = null;
+            RefreshSlotSettings();
             return true;
         }
         return CancelOpenAddonConfirm();
@@ -1264,7 +1292,7 @@ public static partial class IslandHost
     // fetched), then the archive (size + SHA-256 before it is opened), then
     // extraction into staging, then the core's full verify-and-install.
     // `admit` sees the verified manifest before the archive is requested and
-    // may refuse it (the AI family's 3 GB rule) by throwing.
+    // may refuse it (the AI family's 5 GB rule) by throwing.
     private static async Task DownloadAndInstall(AddonSlot slot, Action<JsonElement>? admit,
                                                  IProgress<AddonPhase>? progress = null)
     {

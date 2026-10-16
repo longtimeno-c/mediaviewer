@@ -696,6 +696,33 @@ status slot_registry::send_event(const std::string& addon_id, const std::string&
   return status::ok;
 }
 
+status slot_registry::run_command(const std::string& addon_id, const std::string& command_id,
+                                  const std::string& paths_json) {
+  const auto paths = json::parse(paths_json, 4);
+  if (!paths || paths->k != json::kind::array || paths->a.size() > screen::kMaxItems ||
+      !std::all_of(paths->a.begin(), paths->a.end(),
+                   [](const json::value& v) { return v.k == json::kind::string; })) {
+    return status::invalid_arg;
+  }
+  std::lock_guard lock(m_);
+  auto it = addons_.find(addon_id);
+  if (it == addons_.end()) return status::not_found;
+  addon_entry& e = *it->second;
+  if (std::find(e.c.commands.begin(), e.c.commands.end(), command_id) == e.c.commands.end()) {
+    return status::not_found;
+  }
+  enqueue(e, {}, [command_id, paths_json](slot_client& c) {
+    mv_slot_event ev{};
+    ev.struct_size = sizeof ev;
+    ev.kind = MV_SLOT_EVENT_COMMAND;
+    ev.screen_id = "";
+    ev.node_id = command_id.c_str();
+    ev.value_json = paths_json.c_str();
+    c.event(ev);
+  });
+  return status::ok;
+}
+
 status slot_registry::invoke_item(const std::string& addon_id, const std::string& item_id,
                                   const std::string& paths_json) {
   // The paths are the chrome's; check the shape before an add-on sees them.

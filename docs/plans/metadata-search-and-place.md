@@ -48,8 +48,8 @@ pane's Place section at the foot of the Metadata pane, the offline map (cursor z
 town scale, town dots and names, no streets), search by place for a folder (`portugal`, `place:`,
 `in:` when not a date), its settings page, packaging and both release workflows. Owed: the Windows
 half is compiled in CI only; 0 idle presents with the section shown and alternated
-first-pixel / browse runs on a quiet machine; Local search over the whole index (needs the index's
-coordinates through the host, doc 17).
+first-pixel / browse runs on a quiet machine. Local search over the whole index walks the
+index's coordinates through the host (#398, doc 17 "Places over the index").
 
 **Not built:** the `O` overlay line. The town radius stays 15 km (reasoning in doc 27).
 
@@ -58,7 +58,7 @@ the app (owner, 2026-10-11: places come from the Places add-on's search provider
 into `06-metadata.md` ("Search text"), `16-commands.md` ("File search") and `17-local-ai-search.md`
 ("Schema 4", "Query syntax"). Its Windows half (the native C++ in `abi.cpp` and the running WinUI
 search) is owed to Windows CI and a Windows run. The provider merge in the chromes is #348's.
-`place:` over the whole index waits for a host call that enumerates the index's coordinates.
+`place:` over the whole index uses the host table's `locations_of_index` (#398).
 
 ## 0. Rules this touches
 
@@ -245,8 +245,8 @@ hold.
 - A batch metadata engine.
 - Validating C2PA signatures online.
 - Inferring AI generation from pixels.
-- Switching the AI index's date terms from file modified time to date taken. `taken_at` makes that
-  possible, but it is its own change.
+- ~~Switching the AI index's date terms from file modified time to date taken.~~ Done in #404
+  (2026-10-15): date terms use `taken_at`, the mtime only for a file with none.
 
 ## 5. Open calls for the owner
 

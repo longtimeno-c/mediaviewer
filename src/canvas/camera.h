@@ -49,11 +49,26 @@ class camera {
   void pan_by_screen(float dx_screen, float dy_screen, float image_w, float image_h,
                      float window_w, float window_h) noexcept;
 
+  // Trackpad scroll of a document (canvas/document_scroll.h): pans like
+  // pan_by_screen, clamped the same way, but the view moves with the target
+  // (no spring lag under the fingers). A spring already in flight keeps its
+  // offset and velocity, so a wheel glide and a trackpad push add up.
+  void scroll_direct(float dx_screen, float dy_screen, float image_w, float image_h,
+                     float window_w, float window_h) noexcept;
+
   // Jump to an absolute zoom in [50 %, 6400 %]. 50 % is allowed even when
   // that is smaller than fit (letterboxed). Fit-to-window is a separate
   // command and may go below 50 % on a huge image.
   void set_zoom(float zoom, float image_w, float image_h, float window_w,
                 float window_h) noexcept;
+
+  // Spring to `zoom` (clamped like set_zoom) with image pixel (centre_x,
+  // centre_y) at the window centre, as far as the pan clamp allows: a point
+  // near an edge lands as close to the centre as the image can go without
+  // showing background. Leaves fit / fill. Issue #209: Shift+Z, 100 % on the
+  // AF point.
+  void zoom_to(float zoom, float centre_x, float centre_y, float image_w, float image_h,
+               float window_w, float window_h) noexcept;
 
   // Wheel zoom toward the cursor. `notches` is the usual WHEEL_DELTA units
   // already divided to ±1 per detent. Zoom-out floors at 50 %, or at fit when

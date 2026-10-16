@@ -5,8 +5,9 @@
 //
 // With no theme the tokens are AppKit's semantic colours, which follow light,
 // dark and increased contrast by themselves. A theme is seven colours per
-// palette from an add-on's file, read and checked by the core (contrast
-// included) and handed here as JSON; this file never reads an add-on.
+// palette: five built into the chrome (BuiltinThemes.swift), or one from an
+// add-on's file, read and checked by the core (contrast included) and handed
+// here as JSON. This file never reads an add-on.
 //
 // Start-up never waits for an add-on ("the view comes first"): the tokens of
 // the theme in use are kept in the defaults and painted at once. The add-on
@@ -108,7 +109,12 @@ struct ThemePalette: Equatable {
     return NSColor(srgbRed: CGFloat((v >> 24) & 0xFF) / 255, green: CGFloat((v >> 16) & 0xFF) / 255,
                    blue: CGFloat((v >> 8) & 0xFF) / 255, alpha: CGFloat(v & 0xFF) / 255)
   }
-  var canvasRGB: UInt32 { (rgba["canvas"] ?? 0) >> 8 }
+  /// The tokens the native empty window draws with (issue #408), 0xRRGGBBAA.
+  var home: mv_home_palette {
+    mv_home_palette(canvas: rgba["canvas"] ?? 0, surface: rgba["surface"] ?? 0,
+                    title: rgba["title"] ?? 0, body: rgba["body"] ?? 0,
+                    hairline: rgba["hairline"] ?? 0, accent: rgba["accent"] ?? 0)
+  }
 }
 
 /// A theme as the core hands it over (src/addon/theme.h theme_to_json).
@@ -188,7 +194,13 @@ final class ThemeStore: ObservableObject {
 
   private init() {
     selection = stored(Self.keySelection) ?? ""
-    if !selection.isEmpty, let cached = stored(Self.keyTokens) {
+    if let builtin = BuiltinThemes.item(selection: selection) {
+      // The palette is in the binary. The defaults hold the choice and the
+      // resolved tokens, which is what the next launch paints from.
+      let json = builtin.json
+      tokens = ThemeTokens(json: json)
+      if stored(Self.keyTokens) != json { store(json, Self.keyTokens) }
+    } else if !selection.isEmpty, let cached = stored(Self.keyTokens) {
       tokens = ThemeTokens(json: cached)
     }
     paint()
@@ -199,7 +211,7 @@ final class ThemeStore: ObservableObject {
     ) { [weak self] _ in
       MainActor.assumeIsolated { self?.paint() }
     }
-    if !selection.isEmpty { verify() }
+    if !selection.isEmpty, BuiltinThemes.item(selection: selection) == nil { verify() }
   }
 
   static func key(addon: String, theme: String) -> String { addon + "/" + theme }
@@ -224,18 +236,38 @@ final class ThemeStore: ObservableObject {
       tokens = nil
       store(nil, Self.keyTokens)
       paint()
+    } else if let builtin = BuiltinThemes.item(selection: key) {
+      apply(builtin)
     } else {
       verify()
     }
   }
 
+  /// A built-in palette, from the binary. No add-on read.
+  private func apply(_ item: BuiltinThemes.Item) {
+    let json = item.json
+    guard let fresh = ThemeTokens(json: json) else { return }
+    note = ""
+    if stored(Self.keyTokens) != json { store(json, Self.keyTokens) }
+    if fresh != tokens {
+      tokens = fresh
+      paint()
+    }
+  }
+
   /// An add-on was installed, updated or removed: what is painted may be stale.
   func addonsChanged() {
+    ThemePreviewStore.shared.forget()
     if !selection.isEmpty { verify() }
   }
 
   /// Reads the theme from its add-on, which re-verifies the add-on: a worker.
+  /// A built-in is already in the binary, so it never takes that path.
   private func verify() {
+    if let builtin = BuiltinThemes.item(selection: selection) {
+      apply(builtin)
+      return
+    }
     let chosen = selection
     let parts = chosen.split(separator: "/", maxSplits: 1).map(String.init)
     guard parts.count == 2 else { return }
@@ -279,7 +311,7 @@ final class ThemeStore: ObservableObject {
       MVTheme.density = 1
       MVTheme.typeScale = 1
       NSApp?.appearance = nil
-      mv_chrome_set_theme_canvas(false, false, 0, false, 0)
+      mv_chrome_set_home_theme(false, nil, nil, nil, 0, 1, 1, 1)
       MVChromeTheme.published = MVChromeTheme.defaults()
       generation += 1
       NotificationCenter.default.post(name: MVChromeTheme.didChange, object: nil)
@@ -309,8 +341,19 @@ final class ThemeStore: ObservableObject {
     MVTheme.radiusScale = CGFloat(t.radius)
     MVTheme.density = CGFloat(t.density)
     MVTheme.typeScale = CGFloat(t.typeScale)
-    mv_chrome_set_theme_canvas(true, t.dark != nil, t.dark?.canvasRGB ?? 0,
-                               t.light != nil, t.light?.canvasRGB ?? 0)
+    // Issue #408: the native empty window and the canvas clear take the same
+    // tokens and the built-in's ground; an add-on theme has no ground.
+    var darkHome = t.dark?.home ?? mv_home_palette()
+    var lightHome = t.light?.home ?? mv_home_palette()
+    let ground = BuiltinThemes.item(selection: selection)
+    withUnsafePointer(to: &darkHome) { d in
+      withUnsafePointer(to: &lightHome) { l in
+        mv_chrome_set_home_theme(true, t.dark != nil ? d : nil, t.light != nil ? l : nil,
+                                 ground?.effect ?? "none", ground?.effectRGB ?? 0,
+                                 Float(ground?.intensity ?? 1), Float(ground?.speed ?? 1),
+                                 Float(ground?.size ?? 1))
+      }
+    }
     var published: [String: Any] = ["font": MVTheme.family ?? "CozetteVector",
                                     "radius": t.radius, "density": t.density, "typeScale": t.typeScale]
     for token in ThemePalette.tokens { published[token] = dynamicNS(token) }

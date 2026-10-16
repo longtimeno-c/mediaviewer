@@ -82,7 +82,7 @@ struct EditStripView: View {
     }
     .padding(MVTheme.space(12))
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(MVTheme.canvas)
+    .background(ThemeField())
     .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
     .overlay(alignment: .bottom) { Rectangle().fill(MVTheme.hairline).frame(height: 1) }
     .clipped()
@@ -109,7 +109,7 @@ struct EditPaneView: View {
       .frame(maxWidth: .infinity, alignment: .topLeading)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(MVTheme.canvas)
+    .background(ThemeField())
     .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
     .clipped()
   }
@@ -125,7 +125,7 @@ private struct SectionTitle: View {
 
 private struct CropPane: View {
   @ObservedObject private var store = EditStore.shared
-  private let columns = [GridItem(.adaptive(minimum: 64), spacing: 6)]
+  private let columns = [GridItem(.adaptive(minimum: 64), spacing: MVTheme.space(6))]
 
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(14)) {
@@ -160,7 +160,7 @@ private struct CropPane: View {
 
       VStack(alignment: .leading, spacing: MVTheme.space(6)) {
         SectionTitle(text: "Aspect ratio")
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: MVTheme.space(6)) {
           ForEach(CropAspect.allCases, id: \.rawValue) { a in
             let selected = store.aspect == a
             Button { store.setAspect(a, portrait: store.portrait) } label: {

@@ -41,7 +41,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.28
+  VERSION 0.1.32
   DESCRIPTION "Media viewer for a real camera dump"
   LANGUAGES CXX)
 
@@ -265,6 +265,7 @@ set(_mv_blit_hlsl "${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/blit.hlsl")
 set(_mv_kernel_tokens "${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/adjust_kernel_tokens.h")
 mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" vs_main vs_5_0 kBlitVsMain "${_mv_kernel_tokens}")
 mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" ps_main ps_5_0 kBlitPsMain "${_mv_kernel_tokens}")
+mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" ps_background ps_5_0 kBlitPsBackground "${_mv_kernel_tokens}")
 mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" vs_tile vs_5_0 kBlitVsTile "${_mv_kernel_tokens}")
 mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" ps_tile ps_5_0 kBlitPsTile "${_mv_kernel_tokens}")
 set(_mv_video_blit_hlsl "${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/video_blit.hlsl")
@@ -544,7 +545,7 @@ target_link_directories(mv_player PRIVATE ${FFMPEG_LIBRARY_DIRS})
 target_link_libraries(mv_player
   PUBLIC mv_core mv_gfx
   PRIVATE mv_codec mv_io ${FFMPEG_LIBRARIES}
-          mfplat mfuuid ole32 uuid avrt ksuser)
+          mfplat mfuuid ole32 uuid avrt ksuser winmm)
 add_library(mv::player ALIAS mv_player)
 
 # ---------------------------------------------------------------------------
@@ -728,6 +729,9 @@ include("${CMAKE_SOURCE_DIR}/cmake/script.cmake")
 # The Places add-on (docs/design/27): mv_places.dll in build/addons/places,
 # packed and signed separately; never installed with the app.
 include("${CMAKE_SOURCE_DIR}/cmake/places.cmake")
+# The Sharepoint add-on (docs/design/28): mv_sharepoint.dll in
+# build/addons/sharepoint, packed and signed separately; never installed with the app.
+include("${CMAKE_SOURCE_DIR}/cmake/sharepoint.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the viewer's
 # still pipeline, the clip sampler and the JPEG-512 cache. In the base app;
@@ -750,11 +754,18 @@ add_executable(ai-bench tools/ai-bench/main.cpp)
 target_link_libraries(ai-bench PRIVATE mv_addon mv_addon_media mv_io mv_core mv_project_options)
 target_include_directories(ai-bench PRIVATE src src/abi/include)
 
+# mv_abi_layout: the native layout of the structs C# mirrors by hand, for the
+# ABI smoke test to compare with (tools/abi-layout). Headers only.
+add_executable(mv_abi_layout tools/abi-layout/main.cpp)
+target_link_libraries(mv_abi_layout PRIVATE mv_project_options)
+target_include_directories(mv_abi_layout PRIVATE src/abi/include)
+
 # ---------------------------------------------------------------------------
 # mv_canvas — pan/zoom springs (docs/design/03)
 # ---------------------------------------------------------------------------
 add_library(mv_canvas STATIC
   src/canvas/camera.cpp
+  src/canvas/document_scroll.cpp
   src/canvas/camera.h
   src/canvas/spring.h
   src/canvas/refinement.h
@@ -822,12 +833,17 @@ add_executable(mediaviewer_lab WIN32
   src/shell/file_jobs.cpp
   src/shell/file_jobs.h
   src/shell/marks.h
+  src/shell/share_menu.h
   src/shell/meta_store.cpp
   src/shell/meta_store.h
   src/shell/meta_writer.cpp
   src/shell/meta_writer.h
   src/shell/edit_session.cpp
   src/shell/edit_session.h
+  src/shell/text_in_image.cpp
+  src/shell/text_in_image.h
+  src/shell/text_select.cpp
+  src/shell/text_select.h
   src/shell/edit_workspace.cpp
   src/shell/edit_workspace.h
   src/shell/video_timeline.cpp
@@ -1082,9 +1098,11 @@ if(MV_BUILD_TESTS)
     tests/test_decode.cpp
     tests/test_colour.cpp
     tests/test_camera.cpp
+    tests/test_document_scroll.cpp
     tests/test_abi_image.cpp
     tests/test_upload.cpp
     tests/test_tiles.cpp
+    tests/test_blit.cpp
     tests/test_refinement.cpp
     tests/test_chrome_host.cpp
     tests/test_dir.cpp
@@ -1115,6 +1133,8 @@ if(MV_BUILD_TESTS)
     # Issue #344: the offline reverse geocoder (docs/design/06 "Place").
     tests/test_geo.cpp
     tests/test_meta_search.cpp
+    # #406: a clip's chapter titles and text subtitle cues for Local search.
+    tests/test_meta_cues.cpp
     # Issue #344 slice 3: the Places add-on's map, Place section and search.
     tests/test_places.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
@@ -1128,6 +1148,12 @@ if(MV_BUILD_TESTS)
     tests/test_edit_session.cpp
     tests/test_export_carried.cpp
     src/shell/edit_session.cpp
+    # Text in images: the recogniser's pixels, the words' layout and the
+    # selection (the OCR itself is the hosts' OS API).
+    tests/test_text_in_image.cpp
+    tests/test_text_select.cpp
+    src/shell/text_in_image.cpp
+    src/shell/text_select.cpp
     # PR 29: the Edit workspace's tab model.
     tests/test_edit_workspace.cpp
     src/shell/edit_workspace.cpp
@@ -1158,6 +1184,8 @@ if(MV_BUILD_TESTS)
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
     tests/test_command_contract.cpp
+    # Issue #444: the one share command's file set and wire argument.
+    tests/test_share_menu.cpp
     tests/test_keymap.cpp
     tests/test_collision_name.cpp
     tests/test_rename_stop.cpp
@@ -1338,6 +1366,7 @@ if(MV_BUILD_TESTS)
   endif()
   add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
   mv_places_addon_tests(mv_import_tests)
+  mv_sharepoint_tests(mv_import_tests)
   mv_asan_runtime_beside(mv_import_tests)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT}
@@ -1379,6 +1408,8 @@ if(MV_BUILD_TESTS)
     tests/test_ai_infer.cpp
     tests/test_ai_audio.cpp
     tests/test_ai_query.cpp
+    # #403: the OS text reader over a labelled set (hidden: [.ocr-fixture]).
+    tests/test_ai_ocr.cpp
     tests/test_nle.cpp
   )
   target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io

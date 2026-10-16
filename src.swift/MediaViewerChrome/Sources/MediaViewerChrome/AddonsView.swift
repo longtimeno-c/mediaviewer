@@ -542,8 +542,8 @@ struct AddonsSection: View {
       // The second add-on: install-only until Core is loaded, then the pack's
       // own management view (LocalSearchView.swift).
       LocalSearchSection().padding(.top, MVTheme.space(16))
-      // docs/design/25 PRs 58-59: MediaViewer's own add-ons that fill screens and
-      // slots (Places), each with Remove; absent when none is installed.
+      // Places is always here (optional, preferred). Any other installed slot
+      // add-on is listed under it, with Remove.
       SlotAddonsSection().padding(.top, MVTheme.space(16))
       // docs/design/25: add-ons from other makers, under their own heading.
       OpenAddonsSection().padding(.top, MVTheme.space(16)).id(OpenAddonStore.sectionAnchor)

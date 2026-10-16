@@ -286,12 +286,16 @@ expected chrome_host::load() noexcept {
 
   // Optional (Milestone G): a chrome without the Import hand-off still loads.
   show_import_ = get_entry(L"ShowImport");
-  // PR 15, optional the same way: without it Ctrl+Shift+S is not handled.
-  share_files_ = get_entry(L"ShareFiles");
+  // Issue #444, optional the same way: without it the share menu does not open.
+  share_menu_ = get_entry(L"ShareMenu");
+  // Optional the same way: without it Copy Text in Image says OCR is not available.
+  recognize_text_ = get_entry(L"RecognizeText");
   // Optional (Milestone H): the add-on command hand-off by family.
   show_addon_ = get_entry(L"ShowAddon");
   // Optional (docs/design/25): without it a dropped add-on package is not offered.
   offer_addon_ = get_entry(L"OfferAddon");
+  // Optional the same way (issue #402): without it the canvas has no context menu.
+  show_canvas_menu_ = get_entry(L"ShowCanvasMenu");
   run_addon_command_ = get_entry(L"RunAddonCommand");
   // Optional: without them a drag carries one cell and Open lists no recents.
   set_drag_paths_ = get_entry(L"SetDragPaths");
@@ -299,6 +303,8 @@ expected chrome_host::load() noexcept {
   // Optional (docs/design/25 PR 56): without it Settings cannot list what a
   // key layout skipped.
   set_keymap_report_ = get_entry(L"SetKeymapReport");
+  // Optional the same way: without it the filmstrip hint is not shown.
+  show_hint_ = get_entry(L"ShowHint");
   // Optional the same way (issue #214): without it the More flyout's audio
   // controls do not follow the keys.
   apply_audio_ = get_entry(L"ApplyAudio");
@@ -967,6 +973,14 @@ void chrome_host::set_keymap_report(const std::string& json) noexcept {
   (void)set_keymap_report_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
+void chrome_host::show_hint(const std::string& utf8) noexcept {
+  if (!attached_ || !show_hint_) return;
+  chrome_table_args args{};
+  args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(utf8.data()));
+  args.length = static_cast<std::int32_t>(utf8.size());
+  (void)show_hint_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
 void chrome_host::show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept {
   if (!attached_ || !show_popup_) return;
   chrome_popup_args args{};
@@ -975,17 +989,19 @@ void chrome_host::show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept
   (void)show_popup_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
-bool chrome_host::share_files(HWND window, const std::string& paths_json) noexcept {
-  if (!attached_ || !share_files_ || !window || paths_json.empty()) return false;
-  // { int64 hwnd; int32 byte count; int32 reserved; UTF-8 JSON }, mirrored by
-  // IslandHost.ShareFiles.
-  std::vector<std::uint8_t> buf(16 + paths_json.size());
-  const auto hwnd = static_cast<std::int64_t>(reinterpret_cast<std::intptr_t>(window));
-  const auto len = static_cast<std::int32_t>(paths_json.size());
-  std::memcpy(buf.data(), &hwnd, 8);
-  std::memcpy(buf.data() + 8, &len, 4);
-  std::memcpy(buf.data() + 16, paths_json.data(), paths_json.size());
-  return share_files_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
+bool chrome_host::share_menu(HWND window, std::int32_t target, std::int32_t from,
+                             const std::string& files_json) noexcept {
+  if (!attached_ || !share_menu_ || !window || files_json.empty()) return false;
+  // chrome_share_args, then the UTF-8 JSON; mirrored by IslandHost.ShareMenu.
+  chrome_share_args args{};
+  args.hwnd = static_cast<std::int64_t>(reinterpret_cast<std::intptr_t>(window));
+  args.target = target;
+  args.from = from;
+  args.bytes = static_cast<std::int32_t>(files_json.size());
+  std::vector<std::uint8_t> buf(sizeof(args) + files_json.size());
+  std::memcpy(buf.data(), &args, sizeof(args));
+  std::memcpy(buf.data() + sizeof(args), files_json.data(), files_json.size());
+  return share_menu_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
 }
 
 void chrome_host::show_import(std::int32_t kind, const std::string& paths_json) noexcept {
@@ -1034,6 +1050,13 @@ bool chrome_host::offer_addon(const std::string& path_utf8) noexcept {
   std::memcpy(buf.data(), &len, 4);
   std::memcpy(buf.data() + 4, path_utf8.data(), path_utf8.size());
   return offer_addon_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
+}
+
+bool chrome_host::show_canvas_menu(std::int32_t x, std::int32_t y) noexcept {
+  if (!attached_ || !show_canvas_menu_) return false;
+  // Two int32 fields, mirrored by IslandHost.ShowCanvasMenu.
+  std::int32_t args[] = {x, y};
+  return show_canvas_menu_(args, static_cast<std::int32_t>(sizeof(args))) == 0;
 }
 
 void chrome_host::navigate_gallery(std::int32_t direction, std::int32_t index) noexcept {

@@ -33,7 +33,6 @@ public static partial class IslandHost
     private static ToggleSwitch? _showAudio;
     private static ToggleSwitch? _showDocuments;
     private static ToggleSwitch? _aiBadgeToggle;  // #345
-    private static ComboBox? _background;
     private static ComboBox? _sortKey;
     private static ToggleSwitch? _sortDescending;
     private static int _capturingRow = -1;
@@ -72,8 +71,8 @@ public static partial class IslandHost
         b.Resources["ButtonBackgroundPointerOver"] = accent ? rest : Brush(ChromeColour.SettingsFillHover);
         b.Resources["ButtonBackgroundPressed"] = accent ? rest : Brush(ChromeColour.SettingsFillPressed);
         b.Resources["ButtonBackgroundDisabled"] = rest;
-        b.CornerRadius = new CornerRadius(RadiusSettingsButton);
-        b.Padding = new Thickness(12, 7, 12, 7);
+        b.CornerRadius = Corner(RadiusSettingsButton);
+        b.Padding = Pad(12, 7, 12, 7);
         if (!accent) return;
         SolidColorBrush ink = Brush(ChromeColour.AccentInk);
         b.Foreground = ink;
@@ -97,27 +96,6 @@ public static partial class IslandHost
         view.Children.Add(SettingsSection("Browsing"));
         view.Children.Add(SettingsRow("Wrap at the end", "Continue from the last item to the first.", _wrap));
         view.Children.Add(SettingsRow("Keep pan and zoom", "Keep your view position when moving to the next item.", _sticky));
-        _background = new ComboBox
-        {
-            FontFamily = UiFont,
-            FontSize = UiFontSize,
-            Foreground = Brush(Title),
-            Width = 180,
-        };
-        _background.Items.Add("System");
-        _background.Items.Add("Grey");
-        _background.Items.Add("White");
-        _background.Items.Add("Checkerboard");
-        _background.Items.Add("Dark");
-        _background.SelectedIndex = (_settingFlags & SettingFlag.BackgroundMask) >> SettingFlag.BackgroundShift;
-        _background.SelectionChanged += (_, _) =>
-        {
-            if (_updatingSettingsUi || _background.SelectedIndex < 0) return;
-            int next = (_settingFlags & ~SettingFlag.BackgroundMask) |
-                       (_background.SelectedIndex << SettingFlag.BackgroundShift);
-            Send(Command.SetSettings, next);
-        };
-
         _sortKey = new ComboBox
         {
             FontFamily = UiFont,
@@ -178,8 +156,8 @@ public static partial class IslandHost
             "Choose MediaViewer for photos and videos in Windows Settings.",
             SettingsButton("Make default…", () => OpenUri("ms-settings:defaultapps?registeredAppUser=MediaViewer"))));
         view.Children.Add(SettingsSection("Appearance"));
-        view.Children.Add(SettingsRow("Canvas background", "The area behind your photos and videos.", _background));
-        // docs/design/25: the chrome's colours, from an installed add-on.
+        // docs/design/25: the chrome's colours. Default, the built-in palettes,
+        // then every theme an installed add-on contributes.
         view.Children.Add(BuildThemeRow());
         view.Children.Add(SettingsSection("Updates and privacy"));
         AddUpdateSettingsRow(view);
@@ -345,6 +323,7 @@ public static partial class IslandHost
         root.Children.Add(footer);
         root.IsTabStop = true;
         SelectCategory(_settingsKeyboard, false);
+        ThemeField.Lay(root);
         return root;
     }
 
@@ -434,7 +413,7 @@ public static partial class IslandHost
         SetKeyFilter("");
         // Native resizes the island to the full client, then calls us. Wait one
         // tick so that MoveAndResize has been applied; building into the 48 DIP
-        // bar left this screen blank (star row height 0).
+        // bar left this screen blank.
         if (_dispatcher is not null)
             _dispatcher.DispatcherQueue.TryEnqueue(PresentSettings);
         else
@@ -451,8 +430,8 @@ public static partial class IslandHost
                 _settingsHost = BuildSettingsScreen();
                 _settingsHost.HorizontalAlignment = HorizontalAlignment.Stretch;
                 _settingsHost.VerticalAlignment = VerticalAlignment.Stretch;
-                Grid.SetRow(_settingsHost, 0);
-                Grid.SetRowSpan(_settingsHost, 3);
+                // Overlay, not a star row under the bar. A 0-tall star row
+                // blanks the menus (docs/design/12, 2026-10-15).
                 _chromeRoot.Children.Add(_settingsHost);
             }
             RefreshSettingsScreen();
@@ -552,11 +531,6 @@ public static partial class IslandHost
             if (_aiBadgeToggle is not null) _aiBadgeToggle.IsOn = !HasFlag(SettingFlag.HideAiBadge);
             RefreshUpdateSettingsRow();
             RefreshTelemetrySettingsRow();
-            if (_background is not null)
-            {
-                _background.SelectedIndex =
-                    (_settingFlags & SettingFlag.BackgroundMask) >> SettingFlag.BackgroundShift;
-            }
             if (_sortKey is not null) _sortKey.SelectedIndex = Math.Clamp(_sortPacked & 7, 0, SortNames.Length - 1);
             if (_sortDescending is not null) _sortDescending.IsOn = (_sortPacked & 8) != 0;
         }

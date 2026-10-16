@@ -73,7 +73,7 @@ final class LocalSearchStore: ObservableObject {
   /// install or a download until this is true.
   @Published private(set) var stateKnown = false
   @Published private(set) var used: UInt64 = 0
-  @Published private(set) var ceiling: UInt64 = 3_000_000_000
+  @Published private(set) var ceiling: UInt64 = 5_000_000_000
   @Published private(set) var loaded = false
   @Published private(set) var loading = false
   /// Installed and verified, waiting unloaded for the first search (issue
@@ -83,7 +83,7 @@ final class LocalSearchStore: ObservableObject {
   /// The same, in words (mv_addon2_load_reason): Settings' status line.
   @Published private(set) var loadReason = ""
   /// The piece downloading or installing now. Installs run one at a time (no
-  /// fight over bandwidth, and each piece's 3 GB check sees the one before it
+  /// fight over bandwidth, and each piece's 5 GB check sees the one before it
   /// landed); more clicks queue behind it in `queued`.
   @Published private(set) var busyPiece: String?
   /// The busy piece's install progress (Settings' bar).
@@ -94,12 +94,12 @@ final class LocalSearchStore: ObservableObject {
   /// What each install of the current batch said, shown together.
   private var batchNotes: [String] = []
   /// Between one install and the next: the installed sizes are being read
-  /// again, so the next piece's 3 GB check counts the one that just landed.
+  /// again, so the next piece's 5 GB check counts the one that just landed.
   @Published private(set) var advancing = false
   @Published var message = ""
   @Published var confirmingRemove: String?
   /// Pieces whose removal is queued on the host's add-on queue (it unloads,
-  /// then deletes up to 3 GB). Their rows read "Removing…" at once and offer
+  /// then deletes up to 5 GB). Their rows read "Removing…" at once and offer
   /// Install again the moment the store no longer lists them: before, the
   /// row still read Installed until the next start (owner report, 2026-09-27).
   @Published private(set) var removing: Set<String> = []
@@ -217,7 +217,14 @@ final class LocalSearchStore: ObservableObject {
       default: return "Indexing paused"
       }
     }
-    // Pictures first; then the Sound piece's clips (sounds, then speech).
+    // Pictures first; then the clips' own text and the text in pictures;
+    // then the Sound piece's clips (sounds, then speech): the pack's order.
+    if s.assets_done >= s.assets_total, s.cues_done < s.cues_total {
+      return "Reading chapters and subtitles \(count(s.cues_done)) of \(count(s.cues_total)) clips"
+    }
+    if s.assets_done >= s.assets_total, s.text_done < s.text_total {
+      return "Reading text in pictures \(count(s.text_done)) of \(count(s.text_total))"
+    }
     if s.assets_done >= s.assets_total, s.sound_done < s.sound_total {
       return "Indexing sound \(count(s.sound_done)) of \(count(s.sound_total)) clips"
     }
@@ -351,7 +358,7 @@ final class LocalSearchStore: ObservableObject {
     }
   }
 
-  /// The 3 GB rule (docs/design/17), before anything downloads: the piece's installed
+  /// The 5 GB rule (docs/design/17), before anything downloads: the piece's installed
   /// size, plus what the family already uses minus the copy it replaces.
   func refusal(for piece: Piece) -> String? {
     guard let bytes = piece.offeredBytes?.installed, ceiling > 0 else { return nil }
@@ -445,7 +452,7 @@ final class LocalSearchStore: ObservableObject {
       return
     }
     if !anyPending { batchNotes = [] }
-    // A piece behind a Core that is itself behind: Core first (its 3 GB check
+    // A piece behind a Core that is itself behind: Core first (its 5 GB check
     // runs when its turn comes, like every queued piece's).
     if !piece.required && coreBehind { queued.insert("ai", at: 0) }
     if piece.required { queued.insert(id, at: 0) } else { queued.append(id) }
@@ -477,7 +484,7 @@ final class LocalSearchStore: ObservableObject {
         note("\(piece.title) was not installed: it needs Core.")
         continue
       }
-      // The 3 GB rule, now that the pieces before it in the batch have landed.
+      // The 5 GB rule, now that the pieces before it in the batch have landed.
       if let refusal = refusal(for: piece) {
         note(refusal)
         continue
@@ -551,7 +558,7 @@ final class LocalSearchStore: ObservableObject {
         }
         self.note(text)
         // The next piece starts once the installed sizes are read again, so
-        // its 3 GB check counts the piece that just landed.
+        // its 5 GB check counts the piece that just landed.
         self.advancing = true
         self.refresh {
           self.advancing = false
@@ -710,7 +717,7 @@ struct LocalSearchSection: View {
     } else if store.onDemand {
       // Issue #292: nothing of the pack runs until the first search; its own
       // settings (compute, folders, People) need it running.
-      HStack(alignment: .firstTextBaseline, spacing: 12) {
+      HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(12)) {
         Text("Local search starts the first time you search. Start it now to see its folders and settings.")
           .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
           .fixedSize(horizontal: false, vertical: true)

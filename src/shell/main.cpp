@@ -11,6 +11,7 @@
 // WinUI 3 chrome inside it as XAML content islands.
 
 #include <algorithm>
+#include <charconv>
 #include <windows.h>
 #include <objbase.h>
 #include <ole2.h>
@@ -40,6 +41,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <thread>
 #include <cwctype>
 #include <utility>
@@ -53,12 +55,15 @@
 #include "mediaviewer/mediaviewer.h"
 #include "mediaviewer/mediaviewer_addon.h"
 #include "mediaviewer/mediaviewer_clip.h"
+#include "canvas/document_scroll.h"
 #include "canvas/refinement.h"
 #include "shell/adjust_pane.h"
 #include "shell/ai_badge.h"
 #include "shell/browse_path.h"
 #include "shell/chrome_host.h"
 #include "shell/edit_session.h"
+#include "shell/text_in_image.h"
+#include "shell/text_select.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
 #include "shell/video_timeline.h"
@@ -66,6 +71,7 @@
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
 #include "shell/file_jobs.h"
+#include "shell/filmstrip_hint.h"
 #include "shell/gesture.h"
 #include "shell/key_router.h"
 #include "shell/keymap.h"
@@ -83,6 +89,7 @@
 #include "core/json.h"
 #include "shell/listing_stamp.h"
 #include "shell/marks.h"
+#include "shell/share_menu.h"
 #include "shell/media_kind.h"
 #include "shell/meta_store.h"
 #include "shell/meta_writer.h"
@@ -145,6 +152,11 @@ constexpr UINT kMsgOpenWithReady = WM_APP + 0x7B;
 // docs/design/25 PR 57: the script add-ons have a notice (wparam 1) or started or
 // stopped (wparam 2). Posted by the core's listener, on any thread.
 constexpr UINT kMsgScripts = WM_APP + 0x7C;
+constexpr UINT kMsgTextRead = WM_APP + 0x7E;  // text in images: a still was read (any thread posts)
+constexpr UINT kMsgShareReady = WM_APP + 0x7F;  // issue #444: a share's files were gathered (pool posts)
+// Text in images: the pointer rests on a still this long before it is read.
+constexpr UINT_PTR kTextDwellTimerId = 0x7C01;
+constexpr UINT kTextDwellMs = 500;
 constexpr UINT kThumbPrev = 0x5101;                 // taskbar thumbnail toolbar button ids
 constexpr UINT kThumbPlay = 0x5102;
 constexpr UINT kThumbNext = 0x5103;
@@ -238,6 +250,18 @@ struct app_state {
   std::string edit_path;
   std::uint64_t edit_key = 0;
   std::uint32_t edit_generation = 0;
+  // Text in images (shell/text_select.h): the words read from the still on
+  // screen and what is selected; the dwell before a read; the I-beam; the last
+  // left press, for double and triple clicks (no CS_DBLCLKS: the canvas keeps
+  // plain downs); whether a missing OCR language was already said.
+  mv::shell::text_select text;
+  bool text_dwell = false;
+  bool text_beam = false;
+  bool text_told = false;
+  DWORD text_click_time = 0;
+  int text_click_x = 0;
+  int text_click_y = 0;
+  int text_clicks = 0;
   std::uint64_t edit_size = 0;
   std::int64_t edit_mtime = 0;
   // The export dialog's last answer, preselected next time (pack_export).
@@ -301,6 +325,9 @@ struct app_state {
   // path; a relist of the same file keeps it). Answered by meta.provenance.
   mv::shell::ai_badge ai_badge;
   std::string ai_badge_path;
+  // Issue #209: Shift+Z waits for the item's record (one read on the pool, or
+  // a cache hit) and fires the zoom when it is adopted. Cleared on navigation.
+  bool af_focus_pending = false;
   // PR 12 (docs/design/06 "Writing", docs/design/16 Rate). Rating, comment and revert are
   // queued here and written on `jobs`: a plain JPEG in place, everything else
   // in an XMP sidecar. `meta_written` is the paths written this session, the
@@ -319,15 +346,16 @@ struct app_state {
   std::uint32_t page = 0;
   std::uint32_t page_of = UINT32_MAX;
   std::uint32_t page_count = 0;
-  // Document scrolling (docs/design/04 "Pages"): travel pushed past an edge
-  // (screen px, signed), the sub-pixel remainders, and the latch that lets one
-  // flick turn one page.
-  double overscroll = 0.0;
-  double scroll_rem_x = 0.0;
-  double scroll_rem_y = 0.0;
-  ULONGLONG last_scroll_tick = 0;
-  ULONGLONG page_turn_tick = 0;
-  bool page_turn_latched = false;
+  // Document scrolling (docs/design/04 "Scrolling a document"): the shared
+  // page-turn rule and its sub-pixel carry (canvas/document_scroll.h).
+  mv::canvas::document_scroller doc_scroll;
+  // The "Press T" filmstrip hint (shell/filmstrip_hint.h): learned once the
+  // user hid the strip over a document; persisted in settings.ini [hints].
+  bool strip_hint_learned = false;
+  // Its bottom-right card (chrome_host::show_hint) was sent up, and when: the
+  // wheel re-shows it at most once a second, and a non-document hides it.
+  bool strip_hint_card = false;
+  std::uint64_t strip_hint_shown_at = 0;
   // Issue #212 (docs/design/16 "Touch and trackpad"): WM_GESTURE pinch and pan
   // on a touchscreen, and the touchpad's sideways swipe (WM_MOUSEHWHEEL).
   // Pinch -> wheel_total, pan -> scroll_px, swipe -> folder_step: no new
@@ -424,6 +452,14 @@ struct app_state {
   // docs/design/16 marks, copy, move. Marks are UI-thread state keyed by path; the
   // file work runs on files' own I/O worker and reports back by message.
   mv::shell::mark_set marks;
+  // Issue #413: the gallery's shift-click range: paths in the grid's order,
+  // and the cell selected when it was made. Live only while the gallery is up
+  // and that cell is still selected (selection_targets), so any other
+  // selection, another folder or the grid closing ends it with no hook.
+  std::vector<std::string> gallery_range;
+  std::string gallery_range_anchor;
+  // Issue #444: the latest share request; an older gather is dropped.
+  std::uint64_t share_seq = 0;
   // Issue #206: View > Show. For this run only; the core filters the listing.
   mv::io::kind_filter kind_filter = mv::io::kind_filter::all;
   mv::shell::file_jobs files;
@@ -587,7 +623,13 @@ bool welcome_lists_recents(const app_state* app) noexcept {
   return app->mode == open_mode::none && app->early_open_dir.empty() && app->record_recent;
 }
 
+void text_sync(app_state* app) noexcept;
+void text_publish(app_state* app);
+
 void publish(app_state* app) noexcept {
+  // Text in images: a new item, a turn, the gallery or the Edit workspace
+  // drops words read before (and their highlight) in this same snapshot.
+  text_sync(app);
   // The card's rows go the moment anything opens, whichever route opened it.
   if (app->input.recents.count != 0 && !welcome_lists_recents(app)) {
     app->input.recents.count = 0;
@@ -1006,6 +1048,25 @@ std::string current_item_path(app_state* app) {
   return item_path_at(app, selected);
 }
 
+// Issue #413: the gallery's range, when it still stands (the grid is up and
+// the cell it started from is still selected); a stale one is dropped here.
+bool gallery_range_live(app_state* app) {
+  if (app->gallery_range.empty()) return false;
+  if (!app->gallery_visible || current_item_path(app) != app->gallery_range_anchor) {
+    app->gallery_range.clear();
+    app->gallery_range_anchor.clear();
+    return false;
+  }
+  return true;
+}
+
+// What copy, F7/F8, Delete, copy path and Share act on: the gallery's range
+// while it stands, else the marks, else the current item (docs/design/16).
+std::vector<std::string> selection_targets(app_state* app) {
+  if (gallery_range_live(app)) return app->gallery_range;
+  return app->marks.targets(current_item_path(app));
+}
+
 // MV_PAIR_* of the selected stop; MV_PAIR_NONE with nothing selected.
 std::uint32_t current_pair_kind(app_state* app) noexcept {
   std::uint32_t selected = 0;
@@ -1197,7 +1258,25 @@ int right_pane_px(int client_width, std::uint32_t dpi) noexcept;
 // ---- PR 9: metadata for the overlays ---------------------------------------
 
 bool metadata_wanted(const app_state* app) noexcept {
-  return app->input.info_overlay || app->input.af_points || app->meta_pane_visible;
+  return app->input.info_overlay || app->input.af_points || app->meta_pane_visible ||
+         app->af_focus_pending;
+}
+
+void notice_show(app_state* app, const std::string& utf8) noexcept;
+
+// Issue #209 (Shift+Z): the record is here, so the overlay quads published
+// with it are the item's. The render thread picks the point and moves the
+// camera; this only says when, or why there is nothing to zoom to.
+void af_focus_fire(app_state* app) noexcept {
+  app->af_focus_pending = false;
+  if (app->input.meta.af_count == 0) {
+    notice_show(app, "No AF point recorded in this file");
+    return;
+  }
+  app->zoom_intent_tick = ::GetTickCount64();
+  ++app->input.af_focus_seq;
+  ++app->input.activity_seq;
+  publish(app);
 }
 
 // The selected item as the store keys it: path + mtime + size, from the
@@ -1246,6 +1325,7 @@ void adopt_metadata(app_state* app, std::shared_ptr<const mv::meta::metadata> re
   publish(app);
   push_meta_pane(app);
   ai_badge_refresh(app);  // #345: the full record is the badge's best answer
+  if (app->af_focus_pending) af_focus_fire(app);
 }
 
 // A cache hit is adopted at once; a miss submits one read on the pool and its
@@ -1276,6 +1356,7 @@ void metadata_ready(app_state* app) {
 void metadata_selection_changed(app_state* app) {
   if (!app->window) return;
   ::KillTimer(app->window, kMetaTimerId);
+  app->af_focus_pending = false;  // Shift+Z was for the item just left
   if (app->meta_record) {
     app->meta_record.reset();
     app->input.meta = mv::shell::meta_overlay{};
@@ -1938,11 +2019,24 @@ HGLOBAL bytes_to_global(const std::vector<std::uint8_t>& bytes) {
 
 bool copy_to_clipboard(app_state* app) {
   if (!app || !app->window) return false;
+  // Words selected in the still (text in images): that text, CRLF.
+  if (app->text.has_selection()) {
+    const std::string text = app->text.text();
+    std::string crlf;
+    crlf.reserve(text.size() + text.size() / 16);
+    for (const char c : text) {
+      if (c == '\n') crlf.push_back('\r');
+      crlf.push_back(c);
+    }
+    if (!set_clipboard(app, CF_UNICODETEXT, text_to_global(crlf))) return false;
+    notice_show(app, mv::shell::copy_text_notice(app->text.words()));
+    return true;
+  }
   if (app->input.eyedropper) {
     const std::string text = app->lab.eyedropper_text();
     if (!text.empty()) return set_clipboard(app, CF_UNICODETEXT, text_to_global(text));
   }
-  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  const auto targets = expand_pair_targets(app, selection_targets(app));
   if (targets.empty()) return false;
   return set_clipboard(app, CF_HDROP, hdrop_to_global(targets));
 }
@@ -1989,6 +2083,7 @@ void schedule_rotation_write(app_state* app) noexcept {
 
 void adjust_item_changed(app_state* app);
 void adjust_colour_changed(app_state* app);
+void strip_hint_show(app_state* app);
 
 // The canvas is about to show the selected item (a select, a listing landing,
 // a reselect after a rewrite). The previous slot keeps its geometry for the
@@ -2044,6 +2139,8 @@ void edit_item_opened(app_state* app) {
   adjust_item_changed(app);
   // PR 29: an open workspace follows the item to a tab it offers.
   workspace_item_changed(app);
+  // A document or a clip arriving under the filmstrip: say what T changes.
+  strip_hint_show(app);
 }
 
 void start_rotation_write(app_state* app) {
@@ -2411,6 +2508,65 @@ void folder_select(app_state* app, std::uint32_t index) {
   }
 }
 
+// The "Press T" filmstrip hint (shell/filmstrip_hint.h, docs/design/16): what the
+// canvas shows that the strip changes the input for. A document: with the strip
+// up the wheel zooms, hidden it scrolls. A clip (issue #416): with the strip up
+// ← → walk the folder, hidden they skip ±2 s.
+mv::shell::strip_hint_subject strip_hint_subject_now(app_state* app) {
+  if (!app || !app->session || app->mode == open_mode::none || app->edit_path.empty()) {
+    return mv::shell::strip_hint_subject::none;
+  }
+  if (app->gallery_visible || app->editor.open) return mv::shell::strip_hint_subject::none;
+  if (mv::io::is_document_name(app->edit_path)) return mv::shell::strip_hint_subject::document;
+  if (mv::shell::is_video_name(app->edit_path)) return mv::shell::strip_hint_subject::clip;
+  return mv::shell::strip_hint_subject::none;
+}
+
+// The hint's text when it is due now, else empty.
+std::string_view strip_hint_due_text(app_state* app) {
+  const auto subject = strip_hint_subject_now(app);
+  if (!mv::shell::strip_hint_due(subject, app->chrome.filmstrip_visible(), app->strip_hint_learned)) return {};
+  return mv::shell::strip_hint_text(subject);
+}
+
+void strip_hint_hide(app_state* app) {
+  if (!app->strip_hint_card) return;
+  app->strip_hint_card = false;
+  app->chrome.show_hint({});
+}
+
+// Shows the hint's card (bottom right, it fades by itself) if it is due, and
+// takes it down when what is on screen no longer has it due.
+void strip_hint_show(app_state* app) {
+  if (!app) return;
+  const auto text = strip_hint_due_text(app);
+  if (text.empty()) {
+    strip_hint_hide(app);
+    return;
+  }
+  const std::uint64_t now = ::GetTickCount64();
+  if (app->strip_hint_card && now - app->strip_hint_shown_at < 1000) return;
+  app->strip_hint_card = true;
+  app->strip_hint_shown_at = now;
+  app->chrome.show_hint(std::string(text));
+}
+
+// The hint is learned for good: T hid the strip over its subject, or the
+// card's "Got it" was clicked.
+void strip_hint_learn(app_state* app) {
+  app->strip_hint_learned = true;
+  mv::shell::save_strip_hint_learned();
+  strip_hint_hide(app);
+}
+
+// T: hiding the strip over a subject teaches the hint, for good.
+void strip_hint_toggled(app_state* app) {
+  if (!app || app->strip_hint_learned) return;
+  const auto subject = strip_hint_subject_now(app);
+  if (!mv::shell::strip_hint_learned_by_toggle(subject, app->chrome.filmstrip_visible())) return;
+  strip_hint_learn(app);
+}
+
 // Ctrl+PageDown / PageUp: the next or previous page of the multi-page still
 // on screen (docs/plans/audio-and-documents.md §2.3). The count is what the
 // core reported for the image on screen; until it has, and on a single-page
@@ -2439,7 +2595,8 @@ bool turn_page(app_state* app, int delta, bool land = false) {
   app->page = static_cast<std::uint32_t>(want);
   ++app->input.page_land_seq;
   app->input.page_land = land ? (delta > 0 ? 1 : -1) : 0;
-  notice_show(app, "Page " + std::to_string(app->page + 1) + " of " + std::to_string(app->page_count));
+  notice_show(app, mv::shell::page_notice(app->page, app->page_count));
+  strip_hint_show(app);
   ++app->input.activity_seq;
   publish(app);
   return true;
@@ -2456,49 +2613,40 @@ bool document_scrolls(app_state* app) {
 
 // `dx` / `dy` in wheel units (120 a notch; a touchpad sends less), positive
 // moving the view right / down. A notch is a tenth of the canvas, as a
-// keyboard pan step is. A scroll held against the top or bottom edge for
-// kTurnPx turns the page: one per notch on a wheel, one per flick on a
-// touchpad (its inertia does not run on through the document).
+// keyboard pan step is, and glides there on the canvas spring; a precision
+// touchpad's deltas (and its momentum) move the view directly. Pushing past the
+// top or bottom edge turns the page at once (canvas/document_scroll.h).
 void scroll_document(app_state* app, int dx, int dy) {
-  const ULONGLONG now = ::GetTickCount64();
   const bool notched = dx % WHEEL_DELTA == 0 && dy % WHEEL_DELTA == 0;
-  if (notched ? now - app->page_turn_tick > 120 : now - app->last_scroll_tick > 250) {
-    app->page_turn_latched = false;
-  }
+  // A notch is a tenth of the canvas. A touchpad keeps the step the wheel
+  // units always had here (a tenth of the canvas per 120), so a two-finger
+  // swipe covers the same ground as before, only without the spring.
   const double step = std::max(1.0, 0.1 * static_cast<double>(app->input.height)) / WHEEL_DELTA;
-  const double px = dx * step;
-  double py = dy * step;
-  const double turn_px = 60.0 * std::max(1.0f, app->input.dpi_scale);
-  const unsigned edges = app->lab.scroll_edges();
-  const bool at_edge = std::abs(py) >= std::abs(px) && py != 0.0 &&
-                       (py > 0 ? (edges & mv::canvas::camera::kEdgeBottom) != 0
-                               : (edges & mv::canvas::camera::kEdgeTop) != 0);
-  if (at_edge) {
-    if ((app->overscroll > 0) != (py > 0) || now - app->last_scroll_tick > 300) app->overscroll = 0;
-    app->overscroll += py;
-    if (!app->page_turn_latched && std::abs(app->overscroll) >= turn_px) {
-      const int delta = app->overscroll > 0 ? 1 : -1;
-      app->overscroll = 0;
-      const std::uint32_t before = app->page;
-      if (turn_page(app, delta, /*land=*/true) && app->page != before) {
-        app->page_turn_latched = true;
-        app->page_turn_tick = now;
-      }
+  // Read the ack before the edges: the lab stores them the other way round.
+  const std::uint32_t ack = app->lab.page_land_ack();
+  mv::canvas::document_scroll_input in;
+  in.dx = dx * step;
+  in.dy = dy * step;
+  in.precise = !notched;
+  in.now = static_cast<double>(::GetTickCount64()) / 1000.0;
+  in.edges = app->lab.scroll_edges();
+  in.canvas_h = static_cast<float>(app->input.height);
+  in.land_ack = ack;
+  const auto out = app->doc_scroll.feed(in);
+  if (out.turn != 0) {
+    const std::uint32_t before = app->page;
+    if (turn_page(app, out.turn, /*land=*/true) && app->page != before) {
+      app->doc_scroll.turned(app->input.page_land_seq, in.now);
     }
-    py = 0;
-  } else {
-    app->overscroll = 0;
   }
-  app->last_scroll_tick = now;
-  app->scroll_rem_x += px;
-  app->scroll_rem_y += py;
-  const auto ix = static_cast<std::int64_t>(std::trunc(app->scroll_rem_x));
-  const auto iy = static_cast<std::int64_t>(std::trunc(app->scroll_rem_y));
-  app->scroll_rem_x -= static_cast<double>(ix);
-  app->scroll_rem_y -= static_cast<double>(iy);
-  if (ix == 0 && iy == 0) return;
-  app->input.scroll_px_x += ix;
-  app->input.scroll_px_y += iy;
+  if (out.px_x == 0 && out.px_y == 0) return;
+  if (out.direct) {
+    app->input.scroll_direct_px_x += out.px_x;
+    app->input.scroll_direct_px_y += out.px_y;
+  } else {
+    app->input.scroll_px_x += out.px_x;
+    app->input.scroll_px_y += out.px_y;
+  }
   ++app->input.activity_seq;
   publish(app);
 }
@@ -3636,6 +3784,7 @@ void toggle_filmstrip_setting(app_state* app) {
   // T toggles the strip for the mode you are in, and that is the preference
   // that gets written: turning it off while browsing a folder should not also
   // turn it off for the single images you open from Explorer.
+  strip_hint_toggled(app);
   bool& flag = app->mode == open_mode::image ? app->settings.filmstrip_for_image
                                              : app->settings.filmstrip_for_folder;
   flag = !flag;
@@ -3688,6 +3837,7 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept;
 int right_pane_px(int client_width, std::uint32_t dpi) noexcept;
 void enable_dark_titlebar(HWND hwnd) noexcept;
 void set_editor_open(app_state* app, bool open);
+bool share_request_run(app_state* app, mv::shell::share_request request);
 
 std::string editor_name(const app_state* app) {
   const std::size_t slash = app->editor.path.find_last_of("\\/");
@@ -4412,14 +4562,49 @@ void chrome_on_command(void* ctx, int command, float arg) {
   // it went away may act on the app now.
   if (!app || app->closing) return;
   switch (command) {
-    case mv::shell::chrome_cmd_home_colour: {
-      const auto rgb = static_cast<std::uint32_t>(arg) & 0xFFFFFFu;
-      if (app->input.home_background_rgb != rgb) {
-        app->input.home_background_rgb = rgb;
-        publish(app);
-      }
+    // Issue #408: the theme's tokens and ground. Each stores; home_colour,
+    // which RefreshTheme sends last, publishes them together (one redraw).
+    case mv::shell::chrome_cmd_home_surface:
+    case mv::shell::chrome_cmd_home_title:
+    case mv::shell::chrome_cmd_home_body:
+    case mv::shell::chrome_cmd_home_hairline:
+    case mv::shell::chrome_cmd_home_accent: {
+      const std::uint32_t rgba = mv::shell::home_opaque(static_cast<std::uint32_t>(arg));
+      auto& h = app->input.home;
+      std::uint32_t* const slot[] = {&h.surface, &h.title, &h.body, &h.hairline, &h.accent};
+      *slot[command - mv::shell::chrome_cmd_home_surface] = rgba;
       return;
     }
+    case mv::shell::chrome_cmd_home_effect: {
+      const int e = static_cast<int>(arg);
+      app->input.home.effect = e > 0 && e < static_cast<int>(mv::shell::home_effect::count)
+                                   ? static_cast<mv::shell::home_effect>(e)
+                                   : mv::shell::home_effect::none;
+      return;
+    }
+    case mv::shell::chrome_cmd_home_effect_rgb:
+      app->input.home.effect_rgb = static_cast<std::uint32_t>(arg) & 0xFFFFFFu;
+      return;
+    case mv::shell::chrome_cmd_home_effect_intensity:
+    case mv::shell::chrome_cmd_home_effect_speed:
+    case mv::shell::chrome_cmd_home_effect_size: {
+      const float v = arg > 0.0f && arg <= 1.0f ? arg : 1.0f;
+      auto& h = app->input.home;
+      float* const slot[] = {&h.intensity, &h.speed, &h.size};
+      *slot[command - mv::shell::chrome_cmd_home_effect_intensity] = v;
+      return;
+    }
+    case mv::shell::chrome_cmd_hint_learned:
+      if (!app->strip_hint_learned) strip_hint_learn(app);
+      return;
+    case mv::shell::chrome_cmd_home_ground_input:
+      ++app->input.pointer_seq;
+      publish(app);  // wakes the render thread; it notes the time, draws nothing
+      return;
+    case mv::shell::chrome_cmd_home_colour:
+      app->input.home.canvas = mv::shell::home_opaque(static_cast<std::uint32_t>(arg));
+      publish(app);  // one redraw only if a token changed (present_lab compares)
+      return;
     case mv::shell::chrome_cmd_open:
       if (app->window) open_file_dialog(app, app->window);
       return;
@@ -4494,7 +4679,6 @@ void chrome_on_command(void* ctx, int command, float arg) {
             (static_cast<std::int32_t>(arg) & mv::shell::telemetry::kChromeFlagTelemetry) != 0);
       }
       app->input.sticky_zoom = app->settings.sticky_zoom;
-      app->input.background = app->settings.background;
       (void)mv_folder_set_hidden_kinds(app->session, app->settings.hidden_kinds());
       app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
       if (view_changed & mv::shell::kSettingHideAiBadge) ai_badge_setting_changed(app);
@@ -4620,7 +4804,16 @@ void chrome_on_command(void* ctx, int command, float arg) {
       // listing for the common case.
       app->own_drag = true;
       std::string lines;
-      if (!app->marks.empty()) {
+      const std::uint32_t at = static_cast<std::uint32_t>(arg < 0.0f ? 0.0f : arg);
+      // Issue #413: any cell of the gallery's range drags the whole range.
+      if (gallery_range_live(app) && at < folder_count(app) &&
+          std::find(app->gallery_range.begin(), app->gallery_range.end(), item_path_at(app, at)) !=
+              app->gallery_range.end()) {
+        for (const std::string& p : expand_pair_targets(app, app->gallery_range)) {
+          lines += p;
+          lines += '\n';
+        }
+      } else if (!app->marks.empty()) {
         const std::uint32_t count = folder_count(app);
         const auto index = static_cast<std::uint32_t>(arg < 0.0f ? 0.0f : arg);
         if (index < count && app->marks.contains(item_path_at(app, index))) {
@@ -4712,6 +4905,11 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case static_cast<int>(mv::shell::command_id::kind_filter_set):
       (void)set_kind_filter(app, mv::io::kind_filter_from(static_cast<int>(arg)));
       return;
+    // Issue #444: the share icon, the bar's share button and the right-click
+    // Share entries carry where they were asked and the clicked stop.
+    case static_cast<int>(mv::shell::command_id::share):
+      (void)share_request_run(app, mv::shell::unpack_share_request(arg));
+      return;
     case static_cast<int>(mv::shell::command_id::crop_straighten_set):
       edit_set_straighten(app, arg);
       return;
@@ -4747,6 +4945,30 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case mv::shell::chrome_cmd_meta_revert:
       revert_current_metadata(app);
       return;
+    case mv::shell::chrome_cmd_gallery_range: {
+      // Issue #413: Shift-click in the gallery. The indices come parked, in
+      // the grid's order; the range stands while `arg` stays selected.
+      std::string parked;
+      if (!app->chrome.take_parked_text(parked)) return;
+      app->gallery_range.clear();
+      app->gallery_range_anchor.clear();
+      std::uint32_t selected = 0;
+      if (!selected_index(app, selected) || arg < 0.0f || static_cast<std::uint32_t>(arg) != selected) return;
+      const std::uint32_t count = folder_count(app);
+      std::size_t at = 0;
+      while (at < parked.size()) {
+        const std::size_t comma = std::min(parked.find(',', at), parked.size());
+        std::uint32_t index = 0;
+        const auto [end, ec] = std::from_chars(parked.data() + at, parked.data() + comma, index);
+        if (ec == std::errc{} && end == parked.data() + comma && index < count) {
+          std::string p = item_path_at(app, index);
+          if (!p.empty()) app->gallery_range.push_back(std::move(p));
+        }
+        at = comma + 1;
+      }
+      if (!app->gallery_range.empty()) app->gallery_range_anchor = item_path_at(app, selected);
+      return;
+    }
     case mv::shell::chrome_cmd_rename:
       commit_rename(app);
       if (app->window) focus_canvas(app);
@@ -4764,6 +4986,14 @@ void chrome_on_command(void* ctx, int command, float arg) {
         if (title[0] != '\0' && app->list_title.empty()) app->list_return_select = app->edit_path;
         app->list_title = title;
         if (app->list_title.empty()) app->list_return_select.clear();
+        // Issue #443: a result list opened over the empty window (a later
+        // window's first search, a search from the welcome) is a listing like
+        // a folder. Every open route moves `mode` off `none`
+        // (welcome_lists_recents); this one did not, so the gallery was not
+        // available, the strip was not wanted and the arrows had no item:
+        // only the chosen result showed. Back from it is return_to_welcome,
+        // which puts `none` back.
+        if (!app->list_title.empty() && app->mode == open_mode::none) app->mode = open_mode::folder;
       }
       refresh_item_info(app);
       refresh_mark_state(app);
@@ -4978,11 +5208,10 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
       s.focus = mv::shell::focus_kind::text;
     }
   }
-  // One play-state read serves both: is a clip on screen, and is it playing
-  // (issue #361: ← → skip ±2 s while it plays or with the strip hidden).
+  // The play state says whether a clip is on screen. Issue #416: on a clip,
+  // ← → skip ±2 s only with the strip hidden; playing or paused is not a mode.
   std::uint32_t play = MV_PLAY_STOPPED;
   if (app->session && mv_video_state(app->session, &play) != MV_OK) play = MV_PLAY_STOPPED;
-  s.clip_playing = play == MV_PLAY_PLAYING;
   s.filmstrip_visible = app->chrome.filmstrip_visible();
   if (play != MV_PLAY_STOPPED) s.item = mv::shell::item_kind::clip;
   else if (app->lab.animation() != mv::shell::animation_state::none) s.item = mv::shell::item_kind::animation;
@@ -5005,6 +5234,7 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   // Milestone H: Esc from a result list is the path bar's "Back to folder"
   // (leave_result_list's own condition, so the key is never swallowed).
   s.list_open = !app->list_title.empty();
+  s.text_selected = app->text.has_selection();
   return s;
 }
 
@@ -5640,6 +5870,9 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
     case back_target::result_list:
       (void)leave_result_list(app);
       return;
+    case back_target::text_selection:
+      if (app->text.clear()) text_publish(app);
+      return;
     case back_target::pane:
       // Esc from the canvas closes what is open: the Edit workspace (PR 29;
       // a crop draft was cancelled one Esc earlier), else the tree first (it
@@ -5764,7 +5997,7 @@ void set_fullscreen_reveal(app_state* app, bool on) noexcept {
 // only UI-thread part; the bytes move on the file-job worker.
 bool start_transfer(app_state* app, mv::shell::file_job_kind kind, bool pick) {
   if (!app || !app->window) return false;
-  auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  auto targets = expand_pair_targets(app, selection_targets(app));
   if (targets.empty()) return false;
   std::string dest;
   if (!pick && !app->destinations.empty()) dest = app->destinations.front();
@@ -5791,7 +6024,7 @@ bool start_transfer(app_state* app, mv::shell::file_job_kind kind, bool pick) {
 // with no bin is refused on the worker, never deleted permanently.
 bool start_recycle(app_state* app) {
   if (!app || !app->window) return false;
-  const auto stops = app->marks.targets(current_item_path(app));
+  const auto stops = selection_targets(app);
   if (stops.empty()) return false;
   // A paired stop goes with both halves, and the question says so (PR 7).
   auto targets = expand_pair_targets(app, stops);
@@ -6044,7 +6277,7 @@ void motion_tick(app_state* app) noexcept {
 // pair gives both halves, as Ctrl+C does.
 bool copy_paths_to_clipboard(app_state* app) {
   if (!app) return false;
-  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  const auto targets = expand_pair_targets(app, selection_targets(app));
   const std::string text = mv::shell::paths_as_text(targets, "\r\n");
   if (text.empty()) return false;
   return set_clipboard(app, CF_UNICODETEXT, text_to_global(text));
@@ -6110,17 +6343,234 @@ void on_flatten_done(app_state* app, std::unique_ptr<flatten_job_result> r) {
   }
 }
 
-// Ctrl+Shift+S: Windows Share with the marked (else current) file(s). The
-// share sheet is WinRT, so the chrome shows it (IslandHost.Share.cs).
-bool share_targets(app_state* app) {
-  if (!app || !app->window) return false;
-  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
-  if (targets.empty()) return false;
+// Text in images (Live Text; docs/design/16): shell/text_in_image.h's port on
+// Windows. Windows.Media.Ocr is WinRT, so the chrome runs it
+// (IslandHost.RecognizeText), synchronously, on the worker that calls this.
+// On device (rule 6); no text or pixel is logged.
+class chrome_text_recognizer final : public mv::shell::text_recognizer {
+ public:
+  explicit chrome_text_recognizer(mv::shell::chrome_entry_fn entry) noexcept : entry_(entry) {}
+
+  mv::shell::text_recognition recognise(const mv::shell::text_image& image,
+                                        mv::shell::text_layout& layout) noexcept override {
+    using mv::shell::text_recognition;
+    layout = {};
+    if (!entry_) return text_recognition::unavailable;
+    try {
+      // A 4096 px page of small print is a few thousand words of ~30 bytes.
+      std::string buf(std::size_t{1} << 20, '\0');
+      mv::shell::chrome_text_recognition_args args{};
+      args.pixels = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(image.pixels.data()));
+      args.width = static_cast<std::int32_t>(image.width);
+      args.height = static_cast<std::int32_t>(image.height);
+      args.out_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(buf.data()));
+      args.out_capacity = static_cast<std::int32_t>(buf.size());
+      switch (entry_(&args, static_cast<std::int32_t>(sizeof(args)))) {
+        case 0:
+          if (args.out_length < 0 || args.out_length > args.out_capacity) return text_recognition::failed;
+          buf.resize(static_cast<std::size_t>(args.out_length));
+          layout = mv::shell::parse_word_records(buf, image.width, image.height);
+          return text_recognition::ok;
+        case 1: return text_recognition::no_language;
+        case 2: return text_recognition::unavailable;
+        default: return text_recognition::failed;
+      }
+    } catch (...) {
+      return text_recognition::failed;
+    }
+  }
+
+ private:
+  mv::shell::chrome_entry_fn entry_ = nullptr;
+};
+
+// What the words on screen would be read from: the still and its geometry, or
+// nothing when there is no still to select in (a clip, audio, a document, an
+// animation, the gallery, the Edit workspace, a crop, Show original).
+mv::shell::text_select::source text_source(app_state* app) noexcept {
+  mv::shell::text_select::source src;
+  if (edit_subject_of(app) != mv::shell::edit_subject::still || app->gallery_visible || app->ws.open ||
+      app->edits.crop_active() || app->show_original || app->edit_key == 0) {
+    return src;
+  }
+  // The path's key with the select's generation: a rewritten file is read again.
+  src.item = app->edit_key * 31u + app->edit_generation;
+  src.geometry = app->edits.export_geometry();
+  return src;
+}
+
+void text_sync(app_state* app) noexcept {
+  if (!app || !app->text.show(text_source(app))) return;
+  app->text.fill(app->input.text);
+  ++app->input.activity_seq;
+}
+
+void text_publish(app_state* app) {
+  app->text.fill(app->input.text);
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+// The pointer in 0..1 of the still as the render thread last drew it.
+bool text_point(app_state* app, float x, float y, float& u, float& v, float& aspect) noexcept {
+  const mv::shell::canvas_map map = app->lab.still_map();
+  if (!map.to_uv(x, y, u, v)) return false;
+  aspect = map.aspect();
+  return true;
+}
+
+// A left press at (x, y), client pixels. True when it landed on text: it
+// selects, and the render thread does not pan for it.
+bool text_press(app_state* app, int x, int y) {
+  // Double and triple clicks, by the system's time and distance.
+  const DWORD now = static_cast<DWORD>(::GetMessageTime());
+  const int cx = ::GetSystemMetrics(SM_CXDOUBLECLK) / 2;
+  const int cy = ::GetSystemMetrics(SM_CYDOUBLECLK) / 2;
+  const bool again = app->text_clicks > 0 && now - app->text_click_time <= ::GetDoubleClickTime() &&
+                     std::abs(x - app->text_click_x) <= cx && std::abs(y - app->text_click_y) <= cy;
+  app->text_clicks = again ? std::min(app->text_clicks + 1, 3) : 1;
+  app->text_click_time = now;
+  app->text_click_x = x;
+  app->text_click_y = y;
+  text_sync(app);
+  if (!app->text.has_words() || app->input.eyedropper || app->input.loupe) return false;
+  float u = 0, v = 0, aspect = 1;
+  if (!text_point(app, static_cast<float>(x), static_cast<float>(y), u, v, aspect)) return false;
+  const bool had = app->text.has_selection();
+  const bool on_text = app->text.press(u, v, aspect, app->text_clicks);
+  if (on_text || had) app->text.fill(app->input.text);
+  return on_text;
+}
+
+// The pointer moved over the canvas: the I-beam over words, and a read once
+// the pointer has rested on a still (arrowing through a folder never reads).
+void text_hover(app_state* app, int x, int y) {
+  text_sync(app);
+  float u = 0, v = 0, aspect = 1;
+  const bool placed = text_point(app, static_cast<float>(x), static_cast<float>(y), u, v, aspect);
+  if (placed && app->text.wants_read() && !app->text_dwell && app->window) {
+    app->text_dwell = ::SetTimer(app->window, kTextDwellTimerId, kTextDwellMs, nullptr) != 0;
+  }
+  app->text_beam = placed && !app->input.eyedropper && !app->input.loupe && app->text.over_text(u, v, aspect);
+}
+
+// Decode and OCR on the pool (rule 1), on device (rule 6); kMsgTextRead hands
+// the words to app->text if the still is still the one on screen.
+struct text_read_result {
+  mv::shell::text_select::source from;
+  mv::shell::read_text read;
+};
+
+void start_text_read(app_state* app) {
+  app->text_dwell = false;
+  if (app->window) ::KillTimer(app->window, kTextDwellTimerId);
+  text_sync(app);
+  if (!app->window || !app->text.wants_read() || !app->lab.still_map().valid) return;
+  const mv::shell::text_select::source from = app->text.current();
+  const mv::shell::chrome_entry_fn entry = app->chrome.text_recognition_entry();
+  app->text.reading();
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [path = app->edit_path, from, entry, hwnd](const mv::job_context&) -> mv::status {
+                        chrome_text_recognizer recognizer(entry);
+                        auto* r = new (std::nothrow) text_read_result{
+                            from, mv::shell::run_text_recognition(path, from.geometry, recognizer,
+                                                                  mv::shell::text_pixel_order::bgra)};
+                        if (r && !::PostMessageW(hwnd, kMsgTextRead, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return mv::status::ok;
+                      });
+}
+
+void on_text_read(app_state* app, std::unique_ptr<text_read_result> r) {
+  if (!app || !r) return;
+  const std::string why = mv::shell::text_recognition_notice(r->read);
+  if (!app->text.set_words(r->from, std::move(r->read.layout))) return;
+  // No OCR language, or no OCR: said once a session, not on every still.
+  if (!why.empty() && !app->text_told) {
+    app->text_told = true;
+    notice_show(app, why);
+  }
+}
+
+// Issue #444 (docs/design/16 "Share"): the one share command. Ctrl+Shift+S,
+// the gallery's share icon, the bar's share button and the right-click Share
+// entries all land here. The UI thread only picks the stops (the range, else
+// the marks, else the current file; or the right-clicked file when it is not
+// one of them). The pair halves come from a walk of the whole listing, so that
+// runs on the pool; kMsgShareReady then hands the files to the chrome, which
+// shows the menu (Sharepoint, Windows Share) or runs the entry picked. Nothing
+// is read from disk and nothing is sent until the person picks a target.
+struct share_gathered {
+  std::uint64_t seq = 0;
+  mv::shell::share_request request;
+  std::vector<std::string> files;  // stops with their pair halves: Sharepoint's
+};
+
+// Pool thread: each stop followed by its pair's other half. mv_folder_entries
+// is [any-thread][no-block], one copy of the listing; the listing can change
+// between the size query and the fill, so it asks again.
+std::vector<std::string> share_gather(mv_session_t session, std::vector<std::string> stops) {
+  std::vector<mv_folder_entry> entries;
+  std::vector<char> strings;
+  bool ok = false;
+  for (int attempt = 0; attempt < 4 && !ok; ++attempt) {
+    std::uint32_t count = 0, bytes = 0;
+    if (mv_folder_entries(session, entries.data(), static_cast<std::uint32_t>(entries.size()), strings.data(),
+                          static_cast<std::uint32_t>(strings.size()), &count, &bytes) == MV_OK) {
+      entries.resize(count);
+      ok = true;
+    } else {
+      entries.assign(static_cast<std::size_t>(count) + 16, mv_folder_entry{});
+      strings.assign(static_cast<std::size_t>(bytes) + 4096, '\0');
+    }
+  }
+  if (!ok) return stops;
+  std::map<std::string, std::string, std::less<>> pairs;
+  const std::unordered_set<std::string_view> wanted(stops.begin(), stops.end());
+  for (const mv_folder_entry& e : entries) {
+    if (e.item.pair_kind == MV_PAIR_NONE) continue;
+    const char* path = strings.data() + e.path_offset;
+    const char* pair = strings.data() + e.pair_offset;
+    if (*pair == '\0' || !wanted.count(std::string_view{path})) continue;
+    pairs.emplace(path, pair);
+  }
+  return mv::shell::share_with_pairs(std::move(stops), pairs);
+}
+
+bool share_request_run(app_state* app, mv::shell::share_request request) {
+  if (!app || !app->window || !app->session) return false;
+  std::string clicked;
+  if (request.clicked >= 0) clicked = item_path_at(app, static_cast<std::uint32_t>(request.clicked));
+  std::vector<std::string> stops = mv::shell::share_stops(selection_targets(app), clicked);
+  if (stops.empty()) return false;
+  const std::uint64_t seq = ++app->share_seq;
+  const HWND hwnd = app->window;
+  const mv_session_t session = app->session;
+  app->jobs.submit_at(mv::background_generation,
+                      [session, hwnd, seq, request, stops = std::move(stops)](const mv::job_context&) mutable
+                      -> mv::status {
+                        auto* r = new (std::nothrow) share_gathered{seq, request, share_gather(session, std::move(stops))};
+                        if (r && !::PostMessageW(hwnd, kMsgShareReady, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return mv::status::ok;
+                      });
+  return true;
+}
+
+// UI thread: the files are in. A newer request supersedes an older one.
+void on_share_ready(app_state* app, std::unique_ptr<share_gathered> r) {
+  if (!app || !r || !app->window || r->seq != app->share_seq || r->files.empty()) return;
   mv::json::writer w;
-  w.begin_array();
-  for (const std::string& t : targets) w.string(t);
+  w.begin_object();
+  w.key("files").begin_array();
+  for (const std::string& f : r->files) w.string(f);
   w.end_array();
-  return app->chrome.share_files(app->window, w.str());
+  // The system sheet's: media only, no sidecars (issue #444).
+  w.key("media").begin_array();
+  for (const std::string& f : mv::shell::share_system_files(r->files)) w.string(f);
+  w.end_array();
+  w.end_object();
+  (void)app->chrome.share_menu(app->window, static_cast<std::int32_t>(r->request.target),
+                               static_cast<std::int32_t>(r->request.from), w.str());
 }
 
 // The command line a jump list entry runs: the folder, quoted. A trailing
@@ -6586,7 +7036,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
         }
         w.end_array();
       } else if (row->payload == "marked_or_current") {
-        const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+        const auto targets = expand_pair_targets(app, selection_targets(app));
         if (targets.empty()) return false;
         w.begin_array();
         for (const std::string& t : targets) w.string(t);
@@ -6620,7 +7070,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case import_now: {
       if (!mv::shell::addon_commands_available()) return false;
       const auto targets =
-          expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+          expand_pair_targets(app, selection_targets(app));
       if (targets.empty()) return false;
       mv::json::writer w;
       w.begin_array();
@@ -6855,9 +7305,6 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return true;
 
     // View state the render thread draws from (levels, not edges).
-    case cycle_background:
-      app->input.background = static_cast<std::uint8_t>((app->input.background + 1) % 5);
-      return set_level(app);
     case sticky_zoom:
       app->input.sticky_zoom = !app->input.sticky_zoom;
       return set_level(app);
@@ -6895,6 +7342,17 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       app->input.af_points = !app->input.af_points;
       request_metadata_now(app);
       return set_level(app);
+    // Issue #209: 100 % on the AF point. The quads come from the record the
+    // store holds (or one read on the pool); the camera moves on the render
+    // thread. Nothing here reads the file.
+    case zoom_af_point:
+      if (app->meta_record) {
+        af_focus_fire(app);
+      } else {
+        app->af_focus_pending = true;
+        request_metadata_now(app);
+      }
+      return true;
     case eyedropper:
       app->input.eyedropper = !app->input.eyedropper;
       return set_level(app);
@@ -6906,7 +7364,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case copy_flattened:
       return start_flatten(app);
     case share:
-      return share_targets(app);
+      return share_request_run(app, {});  // the key's request: the menu, on the selection
     // PR 10 geometry, crop mode and export (docs/design/16 View + Crop).
     case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
     case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
@@ -6934,6 +7392,12 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return set_level(app);
     }
     case mark_all: {
+      // With words selected in the still, Select All is every word (Photos);
+      // otherwise it marks every file.
+      if (app->text.has_selection() && app->text.select_all()) {
+        text_publish(app);
+        return true;
+      }
       const std::uint32_t count = folder_count(app);
       if (count == 0) return false;
       std::vector<std::string> paths;
@@ -7702,6 +8166,10 @@ void apply_view_state(app_state* app) noexcept {
                                         : false);
   if (want_filmstrip != app->chrome.filmstrip_visible()) {
     app->chrome.show_filmstrip(want_filmstrip, width, height, dpi);
+    // The strip here is the shown state, not the wish (the Mac's
+    // -filmstripVisible is the wish): a clip or document that opened before
+    // its folder had a strip was not due then, so ask again now.
+    strip_hint_show(app);
   }
   const bool want_gallery = app->gallery_visible && !settings;
   if (want_gallery != app->chrome.gallery_visible()) {
@@ -7807,6 +8275,14 @@ void apply_window_icons(HWND hwnd) noexcept {
   if (next_small) icon_small = next_small;
 }
 
+// Windows' "Animation effects" (Settings > Accessibility), which the chrome
+// reads as UISettings.AnimationsEnabled: off stops the home's ground effect.
+bool client_animations_off() noexcept {
+  BOOL on = TRUE;
+  if (!::SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &on, 0)) return false;
+  return on == FALSE;
+}
+
 LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   if (msg == WM_NCCREATE) {
     auto* create = reinterpret_cast<CREATESTRUCTW*>(lparam);
@@ -7901,6 +8377,18 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         ::TrackMouseEvent(&tme);
         app->tracking_mouse = true;
       }
+      // Text in images: a drag that started on text extends the selection;
+      // otherwise the I-beam over words, and the dwell before a read.
+      if (app->input.text_press && (wparam & MK_LBUTTON)) {
+        float u = 0, v = 0, aspect = 1;
+        if (text_point(app, app->input.mouse_x, app->input.mouse_y, u, v, aspect)) {
+          app->text.drag(u, v);
+          app->text.fill(app->input.text);
+          ++app->input.activity_seq;
+        }
+      } else if (moved && app->input.recents.count == 0) {
+        text_hover(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      }
       // At fit, left-drag is not a pan. After the system drag threshold it
       // is a file drag of the current item (same CF_HDROP as the gallery).
       if (app->file_drag_armed && (wparam & MK_LBUTTON) && app->lab.view_fitted()) {
@@ -7928,6 +8416,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       ++app->input.activity_seq;
       app->tracking_mouse = false;
       app->input.mouse_in_client = false;
+      app->text_beam = false;
       app->input.recents.hover = -1;
       app->input.recents.hover_remove = false;
       publish(app);
@@ -7946,6 +8435,13 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT &&
           app->input.recents.hover >= 0) {
         ::SetCursor(::LoadCursorW(nullptr, IDC_HAND));
+        return TRUE;
+      }
+      // Text in images: the I-beam over words in a still, and through a drag
+      // that selects.
+      if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT &&
+          (app->text_beam || app->input.text_press)) {
+        ::SetCursor(::LoadCursorW(nullptr, IDC_IBEAM));
         return TRUE;
       }
       break;
@@ -7967,7 +8463,13 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         app->island_focus = mv::shell::focus_kind::command_bar;
         ::SetCapture(hwnd);
         transport_activity(app);
-        if (msg == WM_LBUTTONDOWN && app->lab.view_fitted()) {
+        // Text in images: a press on a word selects (published with the
+        // press, so the render thread never pans for it) and is never a
+        // file drag.
+        if (msg == WM_LBUTTONDOWN) {
+          app->input.text_press = text_press(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        }
+        if (msg == WM_LBUTTONDOWN && app->lab.view_fitted() && !app->input.text_press) {
           app->file_drag_armed = true;
           app->file_drag_x = GET_X_LPARAM(lparam);
           app->file_drag_y = GET_Y_LPARAM(lparam);
@@ -7985,7 +8487,20 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         ::ReleaseCapture();
         app->file_drag_armed = false;
       }
+      if (msg == WM_LBUTTONUP && app->input.text_press) {
+        app->input.text_press = false;
+        const bool had = app->text.has_selection();
+        app->text.release();
+        if (had != app->text.has_selection()) app->text.fill(app->input.text);
+      }
       publish(app);
+      // docs/design/25, issue #402: a right-click on the file on screen shows
+      // the add-ons' context-menu entries, as its gallery tile does. The
+      // chrome decides whether there is anything to show (a XAML flyout; it
+      // returns at once).
+      if (msg == WM_RBUTTONUP && !app->gallery_visible && !app->editor.open) {
+        (void)app->chrome.show_canvas_menu(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      }
       // A click on a recent folder (or its x): pressed and released on the
       // same row and the same part of it.
       if (msg == WM_LBUTTONUP && app->welcome_press >= 0) {
@@ -8043,6 +8558,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       ++app->input.activity_seq;
       publish(app);
       transport_activity(app);
+      // The wheel zoomed a document because the strip is up: say how to scroll.
+      if ((GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL) == 0) strip_hint_show(app);
       return 0;
     }
 
@@ -8120,6 +8637,14 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       on_flatten_done(app, std::unique_ptr<flatten_job_result>(reinterpret_cast<flatten_job_result*>(lparam)));
       return 0;
 
+    case kMsgTextRead:
+      on_text_read(app, std::unique_ptr<text_read_result>(reinterpret_cast<text_read_result*>(lparam)));
+      return 0;
+
+    case kMsgShareReady:
+      on_share_ready(app, std::unique_ptr<share_gathered>(reinterpret_cast<share_gathered*>(lparam)));
+      return 0;
+
     case kMsgEditorLoaded:  // PR 30: the Video Editor's probe and strip
       on_editor_loaded(app, std::unique_ptr<editor_load_result>(reinterpret_cast<editor_load_result*>(lparam)));
       return 0;
@@ -8190,6 +8715,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       return 0;
 
     case WM_TIMER:
+      if (wparam == kTextDwellTimerId) {
+        start_text_read(app);
+        return 0;
+      }
       if (wparam == kEditorReleaseTimerId) {
         editor_release_tick(app);
         return 0;
@@ -8319,6 +8848,15 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       app->chrome.detach();
       ::PostQuitMessage(0);
       return 0;
+
+    case WM_SETTINGCHANGE:
+      // Issue #408: Settings > Accessibility > Animation effects. The home's
+      // ground effect stops while they are off, as the chrome's panes do.
+      if (const bool off = client_animations_off(); off != app->input.reduce_motion) {
+        app->input.reduce_motion = off;
+        publish(app);
+      }
+      break;
 
     default:
       break;
@@ -8529,8 +9067,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   mv::shell::register_settings_ui_thread();
   (void)mv::shell::app_settings().start();
   app.settings = mv::shell::load_view_settings();
+  app.strip_hint_learned = mv::shell::load_strip_hint_learned();
   app.input.sticky_zoom = app.settings.sticky_zoom;
-  app.input.background = app.settings.background;
+  app.input.reduce_motion = client_animations_off();
   app.destinations = mv::shell::load_destinations();
   app.recent_folders = mv::shell::load_recent_folders();
   app.home_utf8 = profile_folder_utf8();

@@ -77,9 +77,7 @@ public static partial class IslandHost
     // What was typed into the link field, kept across the row's rebuilds (a
     // refused link must not wipe it; seen in the first Windows run).
     private static string _openLinkText = "";
-    private static ComboBox? _themePicker;
     private static TextBlock? _themeDetail;
-    private static List<string> _themeKeys = new();
 
     // Redirects are followed by hand, so each hop can be held to https.
     private static readonly HttpClient OpenAddonHttp = CreateOpenAddonClient();
@@ -245,78 +243,7 @@ public static partial class IslandHost
         });
     }
 
-    // ---- Settings → Appearance → Theme -------------------------------------------
-
-    private static FrameworkElement BuildThemeRow()
-    {
-        _themePicker = new ComboBox
-        {
-            FontFamily = UiFont,
-            FontSize = UiFontSize,
-            Foreground = Brush(Title),
-            Width = 180,
-        };
-        _themePicker.SelectionChanged += (_, _) =>
-        {
-            if (_updatingSettingsUi || _themePicker is null) return;
-            int i = _themePicker.SelectedIndex;
-            if (i < 0 || i >= _themeKeys.Count) return;
-            ChooseTheme(_themeKeys[i]);
-        };
-        FrameworkElement row = SettingsRow("Theme", ThemeDetail(), _themePicker);
-        _themeDetail = FindDetail(row);
-        RefreshThemeRow();
-        return row;
-    }
-
-    private static string ThemeDetail() => _themeNote.Length > 0
-        ? _themeNote
-        : "Colours of the bars, panes and text. Themes come from add-ons; your photos are never recoloured.";
-
-    // SettingsRow's second label, so the row can say why a theme is not showing.
-    private static TextBlock? FindDetail(FrameworkElement row) =>
-        row is Grid grid && grid.Children.Count > 0 && grid.Children[0] is StackPanel labels &&
-        labels.Children.Count > 1 ? labels.Children[1] as TextBlock : null;
-
-    private static void RefreshThemeRow()
-    {
-        if (_themePicker is null) return;
-        bool was = _updatingSettingsUi;
-        _updatingSettingsUi = true;
-        try
-        {
-            _themeKeys = new List<string> { "" };
-            _themePicker.Items.Clear();
-            _themePicker.Items.Add("Default");
-            foreach (OpenAddon addon in _openAddons)
-            {
-                if (addon.State != "ok") continue;
-                foreach (OpenTheme theme in addon.Themes)
-                {
-                    _themeKeys.Add(ThemeKey(addon.Id, theme.Id));
-                    _themePicker.Items.Add(addon.Themes.Count == 1 && theme.Name == addon.Name
-                        ? theme.Name : $"{theme.Name} ({addon.Name})");
-                }
-            }
-            // A choice whose add-on is not usable now stays listed, so the
-            // picker shows what is chosen: "Not available" when the add-on is
-            // there but refused (the row's line says why), "Not installed"
-            // when it is gone.
-            if (_themeSelection.Length > 0 && !_themeKeys.Contains(_themeSelection))
-            {
-                string addonId = _themeSelection[.._themeSelection.IndexOf('/')];
-                bool present = _openAddons.Any(a => a.Id == addonId);
-                _themeKeys.Add(_themeSelection);
-                _themePicker.Items.Add(present ? "Not available" : "Not installed");
-            }
-            _themePicker.SelectedIndex = Math.Max(0, _themeKeys.IndexOf(_themeSelection));
-            if (_themeDetail is not null) _themeDetail.Text = ThemeDetail();
-        }
-        finally
-        {
-            _updatingSettingsUi = was;
-        }
-    }
+    // Settings → Appearance → Theme is IslandHost.ThemePicker.cs.
 
     // ---- Settings → Add-ons → From others ------------------------------------------
 

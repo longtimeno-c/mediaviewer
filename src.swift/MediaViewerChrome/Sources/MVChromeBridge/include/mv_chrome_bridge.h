@@ -204,6 +204,19 @@ uint64_t mv_chrome_thumb_generation(void);
 uint64_t mv_chrome_marks_generation(void);
 int32_t mv_chrome_marked_count(void);
 bool mv_chrome_is_marked(int32_t index);
+// Issue #413: the gallery's shift-click range. `indices` in the order the grid
+// shows them; count 0 clears it. While it holds files, copy, F7/F8, Delete, copy
+// path and Share act on it. The host clears it on any other selection, a
+// relist, another folder, or the grid closing (the generation moves).
+void mv_chrome_gallery_set_range(const int32_t* indices, int32_t count);
+// Issue #444 (docs/design/16 "Share"): run the one share command. `target` is
+// shell::share_target (0 the menu, 1 Sharepoint, 2 the system picker), `from`
+// shell::share_from (0 key, 1 bar, 2 gallery icon, 3 right-click), `clicked`
+// the right-clicked item or -1. The host answers through
+// MVChromeHost.presentShare. [main-thread]
+void mv_chrome_share(int32_t target, int32_t from, int32_t clicked);
+uint64_t mv_chrome_gallery_range_generation(void);
+int32_t mv_chrome_gallery_range_count(void);
 
 // Is the item at `index` a clip (a video, by extension: the same test the host
 // uses to route it to the player)? Drives the gallery's play badge. False for
@@ -420,6 +433,9 @@ void mv_chrome_meta_set_location(const char* utf8);
 // text is empty once it has been up long enough. Returns the length needed.
 uint64_t mv_chrome_notice_generation(void);
 int32_t mv_chrome_notice_text(char* buf, int32_t size);
+// The "Press T" filmstrip hint card's "Got it" (shell/filmstrip_hint.h): the
+// hint is learned for good, as T hiding the strip over a document teaches it.
+void mv_chrome_hint_learned(void);
 
 // Folder tree. `mv_chrome_list_subdirectories` does a directory read, so call it
 // from a background task, never from the main actor. [any-thread] Writes
@@ -495,6 +511,12 @@ bool mv_chrome_set_kind_filter(int32_t filter);
 int32_t mv_chrome_update_channel(void);
 void mv_chrome_set_update_channel(int32_t channel);
 
+// Automatic update checks (Sparkle, the same switch as the app menu's "Check
+// for Updates Automatically"): -1 without an updater, 0 off, 1 on. Turning it
+// on checks now. [main-thread]
+int32_t mv_chrome_update_auto_check(void);
+void mv_chrome_set_update_auto_check(bool on);
+
 // ---- PR 10: export sheet (docs/design/10 "SwiftUI crop mode and export sheet") -------
 //
 // The sheet's choice is one integer, packed exactly as the Windows export
@@ -551,6 +573,8 @@ bool mv_chrome_slots_event(const char* addon, const char* screen, const char* no
                            const char* value_json);
 // An item was chosen; paths_json is a JSON array of the files it targets.
 bool mv_chrome_slots_invoke(const char* addon, const char* item, const char* paths_json);
+// #410: one of a slot add-on's manifest commands (Settings' Open, the share icon).
+bool mv_chrome_slots_command(const char* addon, const char* command, const char* paths_json);
 // A surface's BGRA pixels (premultiplied). Returns the bytes needed (0: none);
 // copies when `cap` is enough. [any-thread]
 int64_t mv_chrome_slots_surface(const char* addon, const char* screen, const char* surface,
@@ -567,9 +591,13 @@ void mv_chrome_slots_cancel_thumbnail(const char* path);
 // Settings -> Add-ons: the installed first-party add-ons that fill screens or
 // slots, [{"id","name","version","description","state","why","loaded"}].
 // [worker] (reads the store). Refresh loads one just installed; Remove takes
-// every item away at once, no restart. Implemented in src/shell/addons_mac.mm.
+// every item away at once, no restart. The changed callback (main thread) runs
+// after that load or remove has updated the list. Implemented in
+// src/shell/addons_mac.mm.
 int32_t mv_chrome_slot_addons(char* buf, int32_t size);
 void mv_chrome_slot_addons_refresh(void);
+typedef void (*mv_chrome_slot_addons_changed_fn)(void);
+void mv_chrome_slot_addons_set_changed(mv_chrome_slot_addons_changed_fn fn);
 bool mv_chrome_slot_addon_remove(const char* id, bool keep_data);
 
 // Milestone G add-ons (docs/design/18 "Add-ons"), implemented in src/shell/addons_mac.mm.
@@ -625,11 +653,25 @@ int32_t mv_open_addons_scripts(char* buf, int32_t size);
 // work runs on the scripts' own queue. [any-thread]
 void mv_open_addons_restart(const char* addon_id);
 void mv_open_addons_reload(void);
-// The theme's canvas colours (0xRRGGBB), so the viewer's own "System"
-// background follows the theme; has_dark / has_light say which palettes the
-// theme gives. active = false returns it to the window's colour. [main-thread]
-void mv_chrome_set_theme_canvas(bool active, bool has_dark, uint32_t dark_rgb,
-                                bool has_light, uint32_t light_rgb);
+// Issue #408: the theme the native empty window and the canvas clear use.
+// One palette of tokens, each 0xRRGGBBAA (sRGB). `canvas` is the clear on
+// every screen (welcome, still, video); the welcome card draws with the rest.
+typedef struct mv_home_palette {
+  uint32_t canvas, surface, title, body, hairline, accent;
+} mv_home_palette;
+// active = a theme is on: `dark` / `light` (either may be NULL, not both) are
+// its palettes, and the host picks one by the window's appearance. active =
+// false (Default, or increased contrast): the host resolves AppKit's own
+// colours. `effect` is a built-in's ground ("none", "rain", ... as
+// BuiltinThemes.swift names them; NULL = none) with its ink 0xRRGGBB and an
+// intensity, a speed and a size in 0.01 .. 1. [main-thread]
+void mv_chrome_set_home_theme(bool active, const mv_home_palette* dark, const mv_home_palette* light,
+                              const char* effect, uint32_t effect_rgb, float intensity, float speed,
+                              float size);
+// The pointer moved or a key went down over the chrome (the bar, a pane): the
+// empty window's ground effect restarts its clock as the panes' does. The
+// chrome calls it a few times a second at most. [main-thread]
+void mv_chrome_ground_input(void);
 
 // Milestone H (docs/design/17): the same management by add-on id, for the AI pack
 // ("ai" = Core, "ai-faces" = People, "ai-audio" = Sound) beside Import. Also addons_mac.mm. The
@@ -702,7 +744,7 @@ int32_t mv_fcp_state(void);                                                 // [
 // or hides the extension in Final Cut Pro. Returns the state after.
 int32_t mv_fcp_set_enabled(bool on);                                        // [worker]
 void mv_fcp_open_login_items(void);                                         // [main-thread]
-// A family's installed bytes and ceiling (0 = none); "ai" has 3 GB.
+// A family's installed bytes and ceiling (0 = none); "ai" has 5 GB.
 bool mv_addon2_family_usage(const char* family, uint64_t* used, uint64_t* ceiling);  // [worker]
 // The loaded chrome's Settings view (an NSView*, owned by the chrome), or NULL.
 void* mv_addon2_settings_view(const char* id);                             // [main-thread]
@@ -730,6 +772,12 @@ typedef struct mv_chrome_ai_status {
   uint64_t sound_done;
   uint64_t speech_total;
   uint64_t speech_done;
+  // 2026-10-15: a clip's own text (chapters, subtitles) and the text the OS
+  // reads in pictures (#403, #406); zero from an older pack.
+  uint64_t cues_total;
+  uint64_t cues_done;
+  uint64_t text_total;
+  uint64_t text_done;
 } mv_chrome_ai_status;
 bool mv_addon2_ai_status(mv_chrome_ai_status* out);
 

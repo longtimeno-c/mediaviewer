@@ -130,7 +130,7 @@ public final class MVChromeHost: NSObject {
                           styleMask: [.borderless], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     let root = AddonSettingsPage(addonID: addonID, fallbackTitle: addonID)
-      .frame(width: 560).padding(20).frame(maxHeight: .infinity, alignment: .top)
+      .frame(width: 560).padding(MVTheme.space(20)).frame(maxHeight: .infinity, alignment: .top)
       .background(MVTheme.canvas)
     window.contentView = NSHostingView(rootView: ThemedRoot(content: root))
     window.orderFrontRegardless()
@@ -158,6 +158,21 @@ public final class MVChromeHost: NSObject {
   @MainActor @objc public static func addonSelfTestOffer(_ path: String) {
     guard ProcessInfo.processInfo.environment["MV_ADDON_SELFTEST"] != nil else { return }
     OpenAddonStore.shared.offer(file: path)
+  }
+
+  /// docs/design/25, issue #402: the add-ons' context-menu entries for the file
+  /// on the canvas, as its gallery tile lists them, then Share (issue #444).
+  /// Nil when no file is on screen (the canvas then shows no menu).
+  @MainActor @objc public static func canvasContextMenu() -> NSMenu? {
+    TileMenu.make(tile: FolderStore.shared.currentIndex, event: NSApp.currentEvent)
+  }
+
+  /// Issue #444: the one share command's files are known (main_mac.mm's
+  /// shareRequest:). `target` / `from` are shell::share_target / share_from.
+  @MainActor @objc public static func presentShare(_ json: String, target: Int, from: Int) {
+    ShareMenu.shared.present(json: json,
+                             target: ShareMenu.Target(rawValue: Int32(clamping: target)) ?? .menu,
+                             from: ShareMenu.From(rawValue: Int32(clamping: from)) ?? .key)
   }
 
   /// PR 9: the metadata pane and folder tree, floating over the canvas.
@@ -213,6 +228,22 @@ public final class MVChromeHost: NSObject {
     hosting.isHidden = true
     ResumeNoticeStore.shared.host = hosting
     return hosting
+  }
+
+  /// The "Press T" filmstrip hint card (HintNoticeView.swift): sized like the
+  /// resume notice, pinned by its bottom-right corner, hidden until shown.
+  @MainActor @objc public static func makeHintNoticeView() -> NSView {
+    let hosting = NSHostingView(rootView: ThemedRoot(content: HintNoticeView()))
+    hosting.sizingOptions = [.intrinsicContentSize]
+    hosting.translatesAutoresizingMaskIntoConstraints = false
+    hosting.isHidden = true
+    HintNoticeStore.shared.host = hosting
+    return hosting
+  }
+
+  /// Show the hint card for a few seconds, or hide it with "".
+  @MainActor @objc public static func showHint(_ text: String) {
+    HintNoticeStore.shared.show(text)
   }
 
   /// PR 11 verify only (MV_CRASH_TEST=nsexception, crash_reporter_mac.h): an

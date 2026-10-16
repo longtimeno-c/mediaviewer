@@ -479,4 +479,34 @@ result<sample_rgb> frame_rgb_at(std::string_view utf8_path, std::int64_t at_ms,
   return out;
 }
 
+result<sample_rgb> cover_art_rgb(std::string_view utf8_path, std::uint32_t max_long_edge) {
+  const std::string path(utf8_path);
+  AVFormatContext* raw = nullptr;
+  if (avformat_open_input(&raw, path.c_str(), nullptr, nullptr) < 0) return err(status::io);
+  input_ptr format(raw);
+  // avformat_open_input reads the attached picture with the header: no stream
+  // info, no packets.
+  for (unsigned i = 0; i < format->nb_streams; ++i) {
+    AVStream* st = format->streams[i];
+    if (!(st->disposition & AV_DISPOSITION_ATTACHED_PIC) || st->attached_pic.size <= 0) continue;
+    auto dec = open_decoder(st, 1);
+    if (!dec) continue;
+    frame_ptr frame(av_frame_alloc());
+    if (!frame || avcodec_send_packet(dec->get(), &st->attached_pic) < 0) continue;
+    (void)avcodec_send_packet(dec->get(), nullptr);
+    if (avcodec_receive_frame(dec->get(), frame.get()) < 0 || frame->width < 2 || frame->height < 2) continue;
+    int w = 0, h = 0;
+    fit(frame->width, frame->height, frame->sample_aspect_ratio, max_long_edge, w, h);
+    rgba_converter conv;
+    std::vector<std::uint8_t> rgba;
+    if (!conv.convert(frame.get(), st->codecpar, w, h, rgba)) continue;
+    sample_rgb out;
+    out.width = static_cast<std::uint32_t>(w);
+    out.height = static_cast<std::uint32_t>(h);
+    to_rgb(rgba, out);
+    return out;
+  }
+  return err(status::not_found);
+}
+
 }  // namespace mv::edit::clip

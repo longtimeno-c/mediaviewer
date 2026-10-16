@@ -234,13 +234,13 @@ struct VideoEditorView: View {
     VStack(spacing: 0) {
       Rectangle().fill(MVTheme.hairline).frame(height: 1)
       toolbar
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, MVTheme.space(10))
+        .padding(.vertical, MVTheme.space(6))
       Rectangle().fill(MVTheme.hairline).frame(height: 1)
       if store.ready {
         TimelineArea()
-          .padding(.horizontal, 12)
-          .padding(.vertical, 10)
+          .padding(.horizontal, MVTheme.space(12))
+          .padding(.vertical, MVTheme.space(10))
       } else {
         VStack {
           Spacer()
@@ -255,11 +255,11 @@ struct VideoEditorView: View {
           .foregroundStyle(MVTheme.body)
         Spacer()
       }
-      .padding(.horizontal, 12)
-      .padding(.bottom, 8)
+      .padding(.horizontal, MVTheme.space(12))
+      .padding(.bottom, MVTheme.space(8))
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(MVTheme.canvas)
+    .background(ThemeField())
     .focusable()
     .focused($focused)
     .focusEffectDisabled()
@@ -301,14 +301,14 @@ struct VideoEditorView: View {
   }
 
   private var toolbar: some View {
-    HStack(spacing: 2) {
+    HStack(spacing: MVTheme.space(2)) {
       Button { store.step(-1) } label: { Image(systemName: "backward.frame") }
         .help("Previous frame (←)").accessibilityLabel("Previous frame")
       EditorPlayButton()
       Button { store.step(1) } label: { Image(systemName: "forward.frame") }
         .help("Next frame (→)").accessibilityLabel("Next frame")
       EditorTimecode()
-        .padding(.horizontal, 10)
+        .padding(.horizontal, MVTheme.space(10))
       divider
       Button("Split") { store.split() }.help("Split at the playhead (⌘B)")
       Button("Delete") { store.delete() }
@@ -323,7 +323,7 @@ struct VideoEditorView: View {
       divider
       Button("Undo") { store.undo() }.disabled(!store.canUndo).help("Undo (⌘Z)")
       Button("Redo") { store.redo() }.disabled(!store.canRedo).help("Redo (⇧⌘Z)")
-      Spacer(minLength: 8)
+      Spacer(minLength: MVTheme.space(8))
       Button("Export") { store.export(exact: false) }
         .disabled(!store.edited)
         .help("Write the edit as a new file, cut on keyframes: instant, no quality loss (⌘E)")
@@ -337,7 +337,7 @@ struct VideoEditorView: View {
   }
 
   private var divider: some View {
-    Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 18).padding(.horizontal, 6)
+    Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 18).padding(.horizontal, MVTheme.space(6))
   }
 }
 

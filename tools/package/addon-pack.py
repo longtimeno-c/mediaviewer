@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Pack and sign an add-on (docs/design/18 "Add-ons: how Import is installed").
 
-    addon-pack.py pack [--addon import|places|ai|ai-faces|ai-cuda] --platform win-x64|macos \
+    addon-pack.py pack [--addon import|places|sharepoint|ai|ai-faces|ai-cuda] --platform win-x64|macos \
         --src build/addons/<addon> --version 1.0.0 --key <ed25519-private-key-hex-file> --out dist/
     addon-pack.py ceiling dist/mediaviewer-addon-ai*-<platform>.json
     addon-pack.py stage-places --src build/addons/places [--downloads <cache> | --blob <places.mvgeo>]
@@ -20,7 +20,7 @@ or runtime-only pieces `ai-faces` and `ai-cuda` (`part_of: ai`, no native
 entry, no chrome). Model files carry the licence tools/package/ai-models.py
 recorded in the staged `licences.json`; a licence outside the allowed set
 fails the pack (the weights-licence gate). `ceiling` refuses a family whose
-supported installed combination exceeds 3 GB (docs/design/17).
+supported installed combination exceeds 5 GB (docs/design/17).
 
 The manifest lists every file with its SHA-256, size and licence, the host API
 range the add-on supports, and the archive's own name, size and SHA-256. It
@@ -54,7 +54,7 @@ import zipfile
 # an SPDX "A AND B" expression; every part must be allowed.
 ALLOWED_LICENCES = {"GPL-3.0-or-later", "MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause",
                     "Zlib", "ISC", "CC0-1.0", "CC-BY-4.0", "LicenseRef-PublicDomain"}
-CEILINGS = {"ai": 3_000_000_000}  # docs/design/17; src/addon/manifest.cpp family_ceiling agrees
+CEILINGS = {"ai": 5_000_000_000}  # docs/design/17; src/addon/manifest.cpp family_ceiling agrees
 
 # What ships, per add-on and platform. Anything else in the build folder stays
 # out. `licences`: (prefix, SPDX) for files the staged licences.json does not
@@ -113,6 +113,27 @@ ADDONS = {
                    "Place names: GeoNames (https://www.geonames.org), CC-BY 4.0.\n"
                    "Country and region outlines: Natural Earth (https://www.naturalearthdata.com), public domain.\n"
                    "Computed on this computer from the data in this package; no coordinates are sent anywhere.\n"),
+    },
+    # Sharepoint (docs/design/28, issues #410 / #413): send files to a MediaViewer
+    # nearby over Wi-Fi or Bluetooth. Code only, no chrome: the hosts render its
+    # window. Its description and contributions (one window, the "Send with
+    # Sharepoint…" context entry, one key-less command) live in
+    # src/addons/sharepoint/manifest.json, which the tests read too.
+    "sharepoint": {
+        "name": "Sharepoint",
+        "host_api": {"min": 3, "max": 3},  # table v3: screens and slots
+        "manifest_json": "src/addons/sharepoint/manifest.json",
+        "files": {
+            "win-x64": {"native": "mv_sharepoint.dll", "chrome": "", "include": ["mv_sharepoint.dll"]},
+            "macos": {"native": "libmv_sharepoint.dylib", "chrome": "",
+                      "include": ["libmv_sharepoint.dylib"]},
+        },
+        "licences": [],
+        "notice": ("Sharepoint add-on for MediaViewer. GPL-3.0-or-later.\n"
+                   "Its link is encrypted with libsodium (ISC) and files are checked with BLAKE3 (CC0-1.0):\n"
+                   "linked in on macOS, the app's own copies on Windows.\n"
+                   "Files move only to a MediaViewer the person there accepted, over the local network\n"
+                   "or Bluetooth. No account, no cloud, no internet relay.\n"),
     },
     "ai": {
         "name": "AI",
