@@ -70,22 +70,32 @@ namespace media_extension_detail {
 
 }  // namespace media_extension_detail
 
-// The table row for `ext` (with its dot, any ASCII case), or null.
-[[nodiscard]] constexpr const media_extension* find_media_extension(std::string_view ext) noexcept {
-  for (const auto& e : kMediaExtensions) {
-    if (media_extension_detail::equals_lower(ext, e.ext)) return &e;
+// The index of `ext`'s row in kMediaExtensions (with its dot, any ASCII
+// case), or kNoMediaExtension. An index, not a pointer, so the static_assert
+// below stays a constant expression under GCC's -fsanitize=undefined (the
+// Linux ASan job), which rejects `&row != nullptr` for a row of this table.
+inline constexpr std::size_t kNoMediaExtension = sizeof(kMediaExtensions) / sizeof(kMediaExtensions[0]);
+[[nodiscard]] constexpr std::size_t media_extension_index(std::string_view ext) noexcept {
+  for (std::size_t i = 0; i < kNoMediaExtension; ++i) {
+    if (media_extension_detail::equals_lower(ext, kMediaExtensions[i].ext)) return i;
   }
-  return nullptr;
+  return kNoMediaExtension;
+}
+
+// The table row for `ext`, or null.
+[[nodiscard]] constexpr const media_extension* find_media_extension(std::string_view ext) noexcept {
+  const std::size_t i = media_extension_index(ext);
+  return i == kNoMediaExtension ? nullptr : &kMediaExtensions[i];
 }
 
 // True when a folder listing keeps a file with this extension.
 [[nodiscard]] constexpr bool is_listed_extension(std::string_view ext) noexcept {
-  return find_media_extension(ext) != nullptr;
+  return media_extension_index(ext) != kNoMediaExtension;
 }
 
 [[nodiscard]] constexpr bool is_media_extension(std::string_view ext, media_kind kind) noexcept {
-  const media_extension* e = find_media_extension(ext);
-  return e != nullptr && e->kind == kind;
+  const std::size_t i = media_extension_index(ext);
+  return i != kNoMediaExtension && kMediaExtensions[i].kind == kind;
 }
 
 // The extension of a file name, dot included, or empty when there is none.
