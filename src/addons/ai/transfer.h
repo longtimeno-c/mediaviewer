@@ -20,6 +20,12 @@
 //   rejected(face_id, person_id)   no_merge(a, b)   face_scanned(asset_id, spec)
 //   -- with thumbnails:
 //   thumbs(asset_id, pts_ms, jpeg)                 pts_ms -1: the file's own
+//   -- v2 (#354 D3), with documents (the user ticked them; info.documents 1):
+//   passages(id, asset_id, spec, page, ord, text, words)
+//   passage_vecs(passage_id, spec, generic, scale, emb)   info.docs_spec: the text model
+//   (documents are assets of kind 3; their page pictures are frames with
+//   flags 0x100 whose progress is under docpage/<picture spec>). A v1 file
+//   still imports; without documents a v2 file is v1's rows.
 //
 // Nothing here logs a path, a name or a vector (rule 6). Every call is a
 // control-thread call.
@@ -40,7 +46,7 @@ struct sqlite3;
 namespace mv::ai::transfer {
 
 inline constexpr char kFormat[] = "mediaviewer.index";
-inline constexpr int kVersion = 1;
+inline constexpr int kVersion = 2;
 
 // Progress in [0, 1] for the chrome; cancel polled between batches.
 struct control {
@@ -69,6 +75,9 @@ struct export_options {
   std::vector<std::int64_t> roots;    // empty: every root
   bool faces = false;
   bool thumbs = false;
+  // #354 D3: documents, their passages (their text), vectors and page pictures.
+  bool documents = false;
+  std::string docs_spec;              // the text model's (info; "" without ai-docs)
   std::string picture_spec;           // the spec that answers here (info)
   std::string face_spec;              // the People model's (info)
   std::string from;                   // "macOS arm64", "Windows x64" (info)
@@ -82,6 +91,8 @@ struct export_counts {
   std::uint64_t assets = 0;
   std::uint64_t frames = 0;
   std::uint64_t speech = 0;
+  std::uint64_t passages = 0;
+  std::uint64_t passage_vecs = 0;
   std::uint64_t faces = 0;
   std::uint64_t people = 0;
   std::uint64_t thumbs = 0;
@@ -117,6 +128,9 @@ struct file_info {
   std::uint64_t people = 0;
   bool thumbs = false;
   std::uint64_t thumb_count = 0;
+  bool documents = false;             // v2: documents and their text travel
+  std::string docs_spec;
+  std::uint64_t document_count = 0;
   std::vector<file_root> roots;
 };
 
@@ -148,6 +162,8 @@ struct import_counts {
   std::uint64_t kept = 0;         // rows here kept (done, or a different file)
   std::uint64_t frames = 0;
   std::uint64_t speech = 0;
+  std::uint64_t passages = 0;
+  std::uint64_t passage_vecs = 0;
   std::uint64_t skipped_rows = 0; // progress rows of a spec not used here
   std::uint64_t faces = 0;
   std::uint64_t people_new = 0;
@@ -160,7 +176,8 @@ struct import_counts {
 [[nodiscard]] std::string local_path(const std::string& dir, const std::string& rel);
 
 // Step 1, on index.db's connection (index_db::with_connection): the rows of
-// the targets' roots, for `specs` only, in one transaction.
+// the targets' roots, for `specs` only, in one transaction. Documents come in
+// only when `specs` holds their text pass ("doctext/1") and the file has them.
 [[nodiscard]] expected import_index(sqlite3* db, const std::string& file,
                                     std::span<const root_target> targets,
                                     const std::set<std::string>& specs,

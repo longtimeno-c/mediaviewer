@@ -166,6 +166,8 @@ typedef enum mv_ai_scope {
                                            (2026-10-05): provider_detail_utf8 says why */
 #define MV_AI_STATUS_PEOPLE_SETTLING 128u /* ...every one is analysed: the faces are being
                                              filed into the people (seconds) */
+#define MV_AI_STATUS_DOCS_READY 512u   /* the ai-docs piece is loaded (#354 D3): document
+                                          words also match by meaning */
 
 /* Settings -> Local search -> the Photos library (issue #72; macOS only):
  * PhotoKit's authorization, as the add-on sees it. */
@@ -183,6 +185,9 @@ typedef enum mv_ai_photos_access {
 #define MV_AI_TRANSFER_PEOPLE 1u       /* face vectors, people and their names: the file
                                           then identifies the people in it. Off by default */
 #define MV_AI_TRANSFER_THUMBS 2u       /* the viewer's cached JPEG-512 tiles (never made) */
+#define MV_AI_TRANSFER_DOCUMENTS 4u    /* #354 D3 (.mvindex v2): documents with their text
+                                          (passages), passage vectors and page pictures: the
+                                          file then holds what the documents say. Off by default */
 
 /* Polled by the status line (~4 Hz while visible). [no-block]
  * Append only. The Windows chrome mirrors this field for field as MvAiStatus
@@ -276,6 +281,12 @@ typedef struct mv_ai_status {
    * not IDLE. Read these only when struct_size covers them. */
   uint64_t pages_total;
   uint64_t pages_done;
+  /* Meaning (#354 D3): with the ai-docs piece, documents whose words are read,
+   * and those whose passages are embedded by its text model (failed counted
+   * as done). 0 without the piece. While short the state is not IDLE. Read
+   * these only when struct_size covers them. */
+  uint64_t meaning_total;
+  uint64_t meaning_done;
 } mv_ai_status;
 
 typedef enum mv_ai_icloud_fetch {

@@ -24,7 +24,7 @@ final class LocalSearchStore: ObservableObject {
 
   /// One installable piece of the AI family (docs/design/17 per-piece Install/Remove).
   struct Piece: Identifiable, Equatable {
-    let id: String          // "ai" (Core), "ai-faces" (People), "ai-audio" (Sound)
+    let id: String          // "ai" (Core), "ai-faces" (People), "ai-audio" (Sound), "ai-docs" (Documents)
     let title: String
     let detail: String
     let required: Bool
@@ -65,6 +65,9 @@ final class LocalSearchStore: ObservableObject {
     Piece(id: "ai-audio", title: "Sound",
           detail: "Find videos by what you hear: sounds like “dog barking” and words that are said. Optional.",
           required: false),
+    // #354 D3: a text model, so document words also match by meaning.
+    Piece(id: "ai-docs", title: "Documents",
+          detail: "Search PDF and Word files by what they're about, not just their words.", required: false),
   ]
   /// The first installed-state read has landed. It verifies every installed
   /// file (seconds for the 2.3 GB pack), and the channel probe used to answer
@@ -246,7 +249,7 @@ final class LocalSearchStore: ObservableObject {
     guard supported else { return }
     Task.detached {
       var read: [String: [String: Any]] = [:]
-      for id in ["ai", "ai-faces", "ai-audio"] {
+      for id in ["ai", "ai-faces", "ai-audio", "ai-docs"] {
         let json = AddonStore.readString { mv_addon2_state_json(id, $0, $1) }
         read[id] = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
       }
@@ -956,7 +959,9 @@ struct LocalSearchSection: View {
       } else {
         Text(id == "ai-audio"
              ? "Remove Sound? Searching videos by sound and speech stops until it is installed again."
-             : "Remove People? Face search stops until it is installed again.")
+             : id == "ai-docs"
+               ? "Remove Documents? Document words match only as typed until it is installed again."
+               : "Remove People? Face search stops until it is installed again.")
           .font(MVTheme.font(13)).foregroundStyle(MVTheme.title)
           .fixedSize(horizontal: false, vertical: true)
         HStack {

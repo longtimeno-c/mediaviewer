@@ -3,9 +3,10 @@
 // Settings → Local search → Import and export (docs/design/17 "Sharing an index",
 // 2026-09-28): the index of some folders written to one .mvindex file, and a
 // file merged into this index with each of its folders pointed at where those
-// files are on this Mac (a NAS mounted elsewhere, a copied card). People and
-// thumbnails travel only when ticked; People is off by default because the
-// file then identifies the people in it.
+// files are on this Mac (a NAS mounted elsewhere, a copied card). People,
+// documents and thumbnails travel only when ticked; People and documents are
+// off by default because the file then identifies the people in it, or holds
+// what the documents say (#354 D3).
 //
 // export_index / import_index / transfer_json / transfer_cancel are
 // [no-block]; inspect_export reads the file and runs detached. Progress is
@@ -37,6 +38,8 @@ struct ImportPlan: Equatable {
   let people: Int64
   let peopleReady: Bool
   let peopleMatch: Bool
+  let documents: Int64    // -1: the file has no documents (#354 D3)
+  let documentsShown: Bool
   let thumbs: Int64
   var roots: [ImportRoot]
 }
@@ -49,9 +52,11 @@ final class IndexTransferModel: ObservableObject {
   @Published var exportRoots: Set<UInt64> = []
   @Published var exportThumbs = true
   @Published var exportPeople = false
+  @Published var exportDocuments = false
   @Published var plan: ImportPlan?
   @Published var importThumbs = true
   @Published var importPeople = false
+  @Published var importDocuments = false
   @Published private(set) var running = false
   @Published private(set) var runningImport = false
   @Published private(set) var fraction = 0.0
@@ -76,10 +81,11 @@ final class IndexTransferModel: ObservableObject {
     plan = nil
     exportRoots = Set(roots.map(\.id))
     exportPeople = false
+    exportDocuments = false
     exporting = true
   }
 
-  func export(peopleOn: Bool) {
+  func export(peopleOn: Bool, docsOn: Bool) {
     guard !exportRoots.isEmpty else { return }
     let panel = NSSavePanel()
     panel.allowedContentTypes = [Self.fileType]
@@ -90,6 +96,7 @@ final class IndexTransferModel: ObservableObject {
     var flags: UInt32 = 0
     if exportThumbs { flags |= MV_AI_TRANSFER_THUMBS }
     if exportPeople && peopleOn { flags |= MV_AI_TRANSFER_PEOPLE }
+    if exportDocuments && docsOn { flags |= MV_AI_TRANSFER_DOCUMENTS }
     let ids = Array(exportRoots)
     var id: UInt64 = 0
     let s = table.call {
@@ -127,12 +134,14 @@ final class IndexTransferModel: ObservableObject {
         self.plan = Self.plan(url, obj)
         self.importThumbs = (self.plan?.thumbs ?? 0) > 0
         self.importPeople = false
+        self.importDocuments = false
       }
     }
   }
 
   private static func plan(_ url: URL, _ o: [String: Any]) -> ImportPlan {
     let people = o["people"] as? [String: Any]
+    let documents = o["documents"] as? [String: Any]
     let roots = (o["roots"] as? [[String: Any]] ?? []).map { r -> ImportRoot in
       let path = r["path"] as? String ?? ""
       // The same place here (a NAS mounted at the same path) answers itself.
@@ -145,6 +154,8 @@ final class IndexTransferModel: ObservableObject {
                       adoptQuality: Int(int64(o["adopt_quality"])), whyNot: o["why_not"] as? String ?? "",
                       faces: people == nil ? -1 : int64(people?["faces"]), people: int64(people?["people"]),
                       peopleReady: people?["ready"] as? Bool ?? false, peopleMatch: people?["match"] as? Bool ?? false,
+                      documents: documents == nil ? -1 : int64(documents?["count"]),
+                      documentsShown: documents?["shown"] as? Bool ?? false,
                       thumbs: int64(o["thumbs"]), roots: roots)
   }
 
@@ -174,6 +185,7 @@ final class IndexTransferModel: ObservableObject {
     var flags: UInt32 = 0
     if importThumbs && plan.thumbs > 0 { flags |= MV_AI_TRANSFER_THUMBS }
     if importPeople && plan.faces > 0 { flags |= MV_AI_TRANSFER_PEOPLE }
+    if importDocuments && plan.documents >= 0 && plan.documentsShown { flags |= MV_AI_TRANSFER_DOCUMENTS }
     var id: UInt64 = 0
     let s = table.call { table.a.import_index?(table.ctx, plan.url.path, json, flags, &id) }
     guard s == MV_OK else {
@@ -219,6 +231,7 @@ final class IndexTransferModel: ObservableObject {
     var s = thumbs > 0 ? "Exported \(files) files and \(countText(UInt64(thumbs))) thumbnails (\(size))."
                        : "Exported \(files) files (\(size))."
     if o["people_included"] as? Bool ?? false { s += " People included." }
+    if o["documents_included"] as? Bool ?? false { s += " Documents' text included." }
     let missing = int64(o["thumbs_missing"])
     if missing > 0 { s += " \(countText(UInt64(missing))) thumbnails could not be made and were left out." }
     return s
@@ -249,6 +262,8 @@ struct IndexTransferSection: View {
   @ObservedObject var model: IndexTransferModel
   let roots: [RootRow]
   let peopleOn: Bool
+  /// #354 D3: documents are shown (File types), so they can travel.
+  let docsOn: Bool
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -308,10 +323,18 @@ struct IndexTransferSection: View {
         Text("People is off, so there are no faces to include.")
           .font(AITheme.font(11)).foregroundStyle(AITheme.body)
       }
+      if docsOn {
+        Toggle("Documents", isOn: $model.exportDocuments)
+          .toggleStyle(.checkbox)
+        if model.exportDocuments {
+          Label("The file will hold the text of your documents.", systemImage: "exclamationmark.triangle")
+            .font(AITheme.font(12)).foregroundStyle(AITheme.title)
+        }
+      }
       HStack {
         Spacer()
         Button("Cancel") { model.exporting = false }.keyboardShortcut(.cancelAction)
-        Button("Export…") { model.export(peopleOn: peopleOn) }
+        Button("Export…") { model.export(peopleOn: peopleOn, docsOn: docsOn) }
           .keyboardShortcut(.defaultAction)
           .disabled(model.exportRoots.isEmpty)
       }
@@ -372,6 +395,15 @@ struct IndexTransferSection: View {
           .toggleStyle(.checkbox)
         if plan.peopleReady && !plan.peopleMatch {
           Text("Its faces come from another People model and would be left out.")
+            .font(AITheme.font(11)).foregroundStyle(AITheme.body)
+        }
+      }
+      if plan.documents >= 0 {
+        Toggle("Documents (\(countText(UInt64(plan.documents))))", isOn: $model.importDocuments)
+          .toggleStyle(.checkbox)
+          .disabled(!plan.documentsShown)
+        if !plan.documentsShown {
+          Text("Turn on Show documents to import them.")
             .font(AITheme.font(11)).foregroundStyle(AITheme.body)
         }
       }

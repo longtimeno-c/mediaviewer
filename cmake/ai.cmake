@@ -173,6 +173,8 @@ add_library(mv_infer STATIC
   ${R}/src/infer/audio_features.h
   ${R}/src/infer/audio_models.cpp
   ${R}/src/infer/audio_models.h
+  ${R}/src/infer/text_models.cpp
+  ${R}/src/infer/text_models.h
   ${MV_INFER_DYLIB}
 )
 target_include_directories(mv_infer PUBLIC "${R}/src")

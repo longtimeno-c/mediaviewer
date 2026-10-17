@@ -703,10 +703,10 @@ void mv_chrome_set_home_theme(bool active, const mv_home_palette* dark, const mv
 void mv_chrome_ground_input(void);
 
 // Milestone H (docs/design/17): the same management by add-on id, for the AI pack
-// ("ai" = Core, "ai-faces" = People, "ai-audio" = Sound) beside Import. Also addons_mac.mm. The
-// mv_addons_* functions above stay Import's, unchanged. mv_addons_check_manifest
-// now also reports "id", "part_of" and "installed_size"; mv_addons_install and
-// mv_addons_make_staging / mv_addons_sha256 serve every add-on.
+// ("ai" = Core, "ai-faces" = People, "ai-audio" = Sound, "ai-docs" = Documents) beside Import.
+// Also addons_mac.mm. The mv_addons_* functions above stay Import's, unchanged.
+// mv_addons_check_manifest now also reports "id", "part_of" and "installed_size";
+// mv_addons_install and mv_addons_make_staging / mv_addons_sha256 serve every add-on.
 // False for "ai-cuda" (Windows only) and, on an Intel Mac, for the whole AI
 // family: ONNX Runtime ships no x86_64 macOS build, so Local search is hidden.
 bool mv_addon2_supported(const char* id);

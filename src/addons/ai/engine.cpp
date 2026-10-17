@@ -100,6 +100,8 @@ void copy_str(char* dst, std::size_t cap, const std::string& src) {
 }
 
 constexpr std::size_t kPhotoBatch = 4;
+// #354 D3: passages embedded per run of the text model, between wait_turns.
+constexpr std::size_t kMeaningBatch = 16;
 constexpr std::size_t kFrameBatch = 8;
 constexpr std::int32_t kMaxTries = 3;
 // resume.json (issue #299) is rewritten at most this often while nothing is
@@ -598,6 +600,9 @@ std::string engine::settings_json() const {
     w.key("audio_ready").boolean(pieces_.sound_ready || pieces_.speech_ready);
     w.key("sound_model").string(pieces_.sound_name);
     w.key("speech_model").string(pieces_.speech_name);
+    // #354 D3: the ai-docs piece: document words also match by meaning.
+    w.key("docs_ready").boolean(pieces_.docs_ready);
+    w.key("docs_model").string(pieces_.docs_name);
   }
   w.key("available").begin_object();
   w.key("cuda").boolean(deps_.backend_available && deps_.backend_available(infer::backend::cuda));
@@ -890,7 +895,7 @@ void engine::refresh_counts() {
   const auto open = [](const counts& k) {
     return k.assets > k.done + k.failed + k.unavailable + k.locked + k.cloud_only;
   };
-  recount = recount || tc.key != text_key || open(tc.cues) || open(tc.photos) || open(tc.moments) || open(tc.docs) || open(tc.pages) ||
+  recount = recount || tc.key != text_key || open(tc.cues) || open(tc.photos) || open(tc.moments) || open(tc.docs) || open(tc.pages) || open(tc.meaning) ||
             now_s() - tc.at >= 30.0;
   if (recount) {
     tc.cues = cue_spec.empty() ? counts{}
@@ -904,6 +909,16 @@ void engine::refresh_counts() {
     tc.pages = document_files_.load() && !build_spec.empty()
                    ? db_->count(doc_page_spec(build_spec), pages_filter(media, skip, held_now), kDocTextSpec)
                    : counts{};
+    {
+      std::string meaning_spec;
+      {
+        std::lock_guard lock(models_m_);
+        if (docs_.model) meaning_spec = docs_.spec_key;
+      }
+      tc.meaning = document_files_.load() && !meaning_spec.empty()
+                       ? db_->count(meaning_spec, docs_filter(media, skip, held_now), kDocTextSpec)
+                       : counts{};
+    }
     tc.key = text_key;
     tc.at = now_s();
   }
@@ -912,6 +927,7 @@ void engine::refresh_counts() {
   const counts& cm = tc.moments;
   const counts& cd = tc.docs;
   const counts& cg = tc.pages;
+  const counts& cn = tc.meaning;
   std::map<std::int64_t, std::pair<std::uint64_t, std::uint64_t>> per_root;
   const std::vector<root_row> roots = db_->roots();
   const std::string root_spec = counting_spec();
@@ -985,6 +1001,8 @@ void engine::refresh_counts() {
   status_.docs_failed = cd.failed + cd.unavailable;
   status_.pages_total = cg.assets;
   status_.pages_done = cg.done + cg.failed + cg.unavailable + cg.locked;
+  status_.meaning_total = cn.assets;
+  status_.meaning_done = cn.done + cn.failed + cn.unavailable + cn.locked;
   status_.frames_indexed = store_.live_rows();
   status_.index_bytes = bytes;
   status_.faces_total = face_total;
@@ -1018,6 +1036,10 @@ void engine::refresh_counts() {
   if (rerun) flags |= MV_AI_STATUS_PEOPLE_RERUN;
   if (small_fallback_) flags |= MV_AI_STATUS_SMALL_FALLBACK;
   if (settling_) flags |= MV_AI_STATUS_PEOPLE_SETTLING;
+  {
+    std::lock_guard pl(pieces_m_);
+    if (pieces_.docs_ready) flags |= MV_AI_STATUS_DOCS_READY;
+  }
   status_.flags = flags;
 
   // Rates over the last minute of active work; the ETA is a range from them
@@ -1054,7 +1076,8 @@ void engine::refresh_counts() {
                        ct.assets > ct.done + ct.failed + ct.unavailable + ct.cloud_only ||
                        cm.assets > cm.done + cm.failed + cm.unavailable + cm.cloud_only ||
                        cd.assets > cd.done + cd.failed + cd.unavailable + cd.locked + cd.cloud_only ||
-                       cg.assets > cg.done + cg.failed + cg.unavailable + cg.locked + cg.cloud_only;
+                       cg.assets > cg.done + cg.failed + cg.unavailable + cg.locked + cg.cloud_only ||
+                       cn.assets > cn.done + cn.failed + cn.unavailable + cn.locked + cn.cloud_only;
   std::uint32_t state = MV_AI_STATE_INDEXING;
   if (models_failed_) {
     state = MV_AI_STATE_ERROR;
@@ -1324,10 +1347,12 @@ void engine::load_models() {
     faces_scanned_ = std::move(people.scanned);
     sound_ = {};
     speech_ = {};
+    docs_ = {};
     publish_pieces_locked();
   }
   load_vectors(active, answer_dim);
   sounds_.reset(0);
+  meanings_.reset(0);
   {
     std::lock_guard lock(speech_m_);
     speech_rows_.clear();
@@ -1355,6 +1380,7 @@ void engine::load_models() {
 
   load_labels();
   load_audio(s, speech_quality, false);
+  load_docs(false);
 }
 
 void engine::retire(std::shared_ptr<infer::embedder> model) {
@@ -1385,6 +1411,8 @@ void engine::publish_pieces_locked() {
   v.faces_ready = faces_model_ != nullptr;
   v.sound_ready = sound_.model != nullptr;
   v.speech_ready = speech_.model != nullptr;
+  v.docs_ready = docs_.model != nullptr;
+  v.docs_name = docs_.name;
   v.sound_name = sound_.name;
   v.speech_name = speech_.name;
   std::lock_guard lock(pieces_m_);
@@ -1697,6 +1725,7 @@ void engine::load_pieces() {
     post(MV_ADDON_EVENT_AI_PEOPLE);
   }
   load_audio(s, speech_quality, true);
+  load_docs(true);
   {
     std::lock_guard lock(work_m_);
     queue_.clear();
@@ -1765,6 +1794,55 @@ void engine::load_audio(const settings& s, std::uint32_t speech_quality, bool re
     queue_.clear();
     queue_exhausted_ = false;
   }
+  refresh_counts();
+  work_cv_.notify_all();
+  post(MV_ADDON_EVENT_AI_STATUS);
+}
+
+void engine::load_docs(bool replacing) {
+  // #354 D3: only with the ai-docs piece. Small (tens of MB) and on CPU: it
+  // answers a query in milliseconds and embeds a passage in a few.
+  loaded_docs docs;
+  if (deps_.open_docs && !stopping_) {
+    if (!options_.read_only && !wait_viewer_quiet()) return;
+    if (auto d = deps_.open_docs()) {
+      docs = std::move(*d);
+      docs.generic.clear();
+      for (const std::string& g : docs.generic_prompts) {
+        if (auto v = docs.model->embed_query(g)) docs.generic.push_back(std::move(*v));
+      }
+    }
+  }
+  if (!docs.model) {
+    if (!replacing) return;
+    {
+      std::lock_guard lock(models_m_);
+      docs_ = {};
+      publish_pieces_locked();
+    }
+    meanings_.reset(0);
+    return;
+  }
+  // The stored vectors first, then the model: a job that lands between the
+  // two must not be wiped by the reload.
+  meanings_.reset(docs.dim);
+  reader_meaning_ = 0;
+  (void)db_->each_passage_vec(docs.spec_key, [&](const frame_out& f) {
+    meanings_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
+    reader_meaning_ = f.id;
+  });
+  {
+    std::lock_guard lock(models_m_);
+    docs_ = std::move(docs);
+    publish_pieces_locked();
+  }
+  if (options_.read_only) return;
+  {
+    std::lock_guard lock(work_m_);
+    queue_.clear();
+    queue_exhausted_ = false;
+  }
+  text_counts_due_ = true;
   refresh_counts();
   work_cv_.notify_all();
   post(MV_ADDON_EVENT_AI_STATUS);
@@ -2153,6 +2231,7 @@ bool engine::load_reader() {
       reader_sound_ = f.id;
     });
   }
+  load_docs(true);  // #354 D3: the passage vectors, with the ai-docs piece
   if (!reader_speech_spec_.empty()) {
     load_speech(reader_speech_spec_);
   } else {
@@ -2194,6 +2273,7 @@ void engine::catch_up_reader() {
   begin_answer_swap();
   store_.remove_assets(gone);
   sounds_.remove_assets(gone);
+  meanings_.remove_assets(gone);
   (void)db_->each_frame(active, [&](const frame_out& f) {
     store_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
     reader_frame_ = f.id;
@@ -2203,6 +2283,19 @@ void engine::catch_up_reader() {
       sounds_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
       reader_sound_ = f.id;
     }, reader_sound_);
+  }
+  {
+    std::string docs_spec;
+    {
+      std::lock_guard lock(models_m_);
+      if (docs_.model) docs_spec = docs_.spec_key;
+    }
+    if (!docs_spec.empty()) {
+      (void)db_->each_passage_vec(docs_spec, [&](const frame_out& f) {
+        meanings_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
+        reader_meaning_ = f.id;
+      }, reader_meaning_);
+    }
   }
   if (!reader_speech_spec_.empty()) load_speech(reader_speech_spec_);
   load_cues();
@@ -2531,6 +2624,7 @@ void engine::forget_vectors(const std::vector<std::int64_t>& ids) {
   if (ids.empty()) return;
   store_.remove_assets(ids);
   sounds_.remove_assets(ids);
+  meanings_.remove_assets(ids);
   {
     // Their People pass too: an unavailable asset was marked scanned so the
     // faces track would not ask for it again, and now there is something to scan.
@@ -2567,6 +2661,7 @@ void engine::end_root_scan(const root_row& root, std::int64_t gen, const std::ve
     for (std::int64_t id : *gone) erase_asset_locked(id);
     store_.remove_assets(*gone);
     sounds_.remove_assets(*gone);
+    meanings_.remove_assets(*gone);
   }
   if (gone) {
     std::lock_guard lock(models_m_);
@@ -2590,6 +2685,7 @@ void engine::end_root_scan(const root_row& root, std::int64_t gen, const std::ve
   }
   store_.remove_assets(changed);
   sounds_.remove_assets(changed);
+  meanings_.remove_assets(changed);
   for (std::int64_t id : changed) {
     std::lock_guard lock(models_m_);
     if (faces_) {
@@ -3089,15 +3185,27 @@ bool engine::claim(std::vector<work_item>& out, track& t, bool models_ok) {
     // Mac's Neural Engine) only the document pass runs: it reads words and
     // needs no model. Taken straight from the index, past the shared queue,
     // which keeps its order for when the towers are in.
+    // D3: so does the meaning pass, whose text model is its own and on CPU.
     if (!document_files_.load()) return false;
-    const std::vector<work_item> docs =
-        db_->pending(kDocTextSpec, 8, kMaxTries, docs_filter(default_media(), skip_root(), held_list()));
+    const track_filter f = docs_filter(default_media(), skip_root(), held_list());
+    std::vector<work_item> docs = db_->pending(kDocTextSpec, 8, kMaxTries, f);
+    track which = track::docs;
+    if (docs.empty()) {
+      std::string meaning_spec;
+      {
+        std::lock_guard ml(models_m_);
+        if (docs_.model) meaning_spec = docs_.spec_key;
+      }
+      if (meaning_spec.empty()) return false;
+      docs = db_->pending(meaning_spec, 8, kMaxTries, f, kDocTextSpec);
+      which = track::meaning;
+    }
     std::lock_guard lock(work_m_);
     for (const work_item& w : docs) {
       if (in_flight_.count(w.asset.id)) continue;
       in_flight_.insert(w.asset.id);
       out.push_back(w);
-      t = track::docs;
+      t = which;
       ++busy_workers_;
       return true;
     }
@@ -3125,6 +3233,12 @@ bool engine::claim(std::vector<work_item>& out, track& t, bool models_ok) {
   // #354 D2: their page pictures, once their words are read (pending's
   // `after`), at Words and pages.
   const std::string pages_spec = document_files_.load() ? doc_page_spec(spec) : std::string();
+  // #354 D3: their passages' meaning, once their words are read, with ai-docs.
+  std::string meaning_spec;
+  if (document_files_.load()) {
+    std::lock_guard ml(models_m_);
+    if (docs_.model) meaning_spec = docs_.spec_key;
+  }
   std::lock_guard lock(work_m_);
   {
     // A folder opened (note_folder_opened): it goes first from now on.
@@ -3191,6 +3305,7 @@ bool engine::claim(std::vector<work_item>& out, track& t, bool models_ok) {
     // a document needs first.
     take(docs_spec, track::docs, docs_filter(media, skip, held_now));
     take(pages_spec, track::pages, pages_filter(media, skip, held_now), kDocTextSpec);
+    take(meaning_spec, track::meaning, docs_filter(media, skip, held_now), kDocTextSpec);
     // #406: a clip's own text, after its pictures (they never wait on it).
     take(cue_spec, track::cues, track_filter{false, MV_AI_MEDIA_BOTH, media, skip, held_now});
     // #403: the text in photos, after their pictures and the clips' own text.
@@ -3256,7 +3371,7 @@ bool engine::claim(std::vector<work_item>& out, track& t, bool models_ok) {
 void engine::worker_loop(unsigned) {
   if (options_.background_threads) platform::enter_background();
   while (!stopping_) {
-    // The models' wait applies to every pass but the documents' (#354).
+    // The models' wait applies to every pass but the documents' words and meaning (#354).
     if (!wait_turn(false)) break;
     const bool models_ok = models_ready_ && !loading_ && !upgrading();
     std::vector<work_item> items;
@@ -3269,11 +3384,13 @@ void engine::worker_loop(unsigned) {
     loaded_clip clip;
     loaded_sound sound;
     loaded_speech speech;
+    loaded_docs docs;
     {
       std::lock_guard lock(models_m_);
       clip = build_;
       sound = sound_;
       speech = speech_;
+      docs = docs_;
     }
     const bool faces_only = t == track::faces;
     if (t == track::cues) {
@@ -3287,6 +3404,9 @@ void engine::worker_loop(unsigned) {
       text_counts_due_ = true;
     } else if (t == track::pages) {
       if (clip.model) process_pages(items.front(), clip);
+      text_counts_due_ = true;
+    } else if (t == track::meaning) {
+      if (docs.model) process_meaning(items.front(), docs);
       text_counts_due_ = true;
     } else if (t == track::sound) {
       if (sound.model) process_sound(items.front(), sound);
@@ -4331,6 +4451,7 @@ expected engine::root_remove(std::int64_t id) {
   }
   store_.remove_assets(gone);
   sounds_.remove_assets(gone);
+  meanings_.remove_assets(gone);
   {
     const std::set<std::int64_t> drop(gone.begin(), gone.end());
     std::lock_guard lock(speech_m_);
@@ -4421,6 +4542,7 @@ expected engine::clear_index() {
   }
   store_.clear();
   sounds_.reset(sounds_.dim());
+  meanings_.reset(meanings_.dim());
   {
     std::lock_guard lock(speech_m_);
     speech_rows_.clear();
@@ -4486,7 +4608,7 @@ result<std::uint64_t> engine::export_index(const std::string& dest, std::vector<
   job.id = next_transfer_++;
   job.file = dest;
   job.roots = std::move(roots);
-  job.flags = flags & (MV_AI_TRANSFER_PEOPLE | MV_AI_TRANSFER_THUMBS);
+  job.flags = flags & (MV_AI_TRANSFER_PEOPLE | MV_AI_TRANSFER_THUMBS | MV_AI_TRANSFER_DOCUMENTS);
   transfer_ = transfer_view{};
   transfer_.id = job.id;
   transfer_.running = true;
@@ -4514,7 +4636,7 @@ result<std::uint64_t> engine::import_index(const std::string& file, const std::s
   job.id = next_transfer_++;
   job.import = true;
   job.file = file;
-  job.flags = flags & (MV_AI_TRANSFER_PEOPLE | MV_AI_TRANSFER_THUMBS);
+  job.flags = flags & (MV_AI_TRANSFER_PEOPLE | MV_AI_TRANSFER_THUMBS | MV_AI_TRANSFER_DOCUMENTS);
   transfer_ = transfer_view{};
   transfer_.id = job.id;
   transfer_.import = true;
@@ -4630,6 +4752,23 @@ result<std::string> engine::inspect_export(const std::string& file) {
     w.null();
   }
   w.key("thumbs").integer(static_cast<std::int64_t>(f.thumbs ? f.thumb_count : 0));
+  // #354 D3 (v2): documents and their text; usable here while documents are
+  // shown, their vectors while the same text model is loaded.
+  w.key("documents");
+  if (f.documents) {
+    std::string docs_spec;
+    {
+      std::lock_guard lock(models_m_);
+      docs_spec = docs_.spec_key;
+    }
+    w.begin_object();
+    w.key("count").integer(static_cast<std::int64_t>(f.document_count));
+    w.key("shown").boolean(document_files_.load());
+    w.key("meaning_match").boolean(!f.docs_spec.empty() && f.docs_spec == docs_spec);
+    w.end_object();
+  } else {
+    w.null();
+  }
   w.key("roots").begin_array();
   for (const transfer::file_root& r : f.roots) {
     w.begin_object();
@@ -4679,12 +4818,15 @@ std::string engine::run_export(const transfer_job& job, mv::status& st) {
   o.roots = job.roots;
   o.faces = (job.flags & MV_AI_TRANSFER_PEOPLE) != 0;
   o.thumbs = (job.flags & MV_AI_TRANSFER_THUMBS) != 0;
+  // #354 D3: documents (and so their text) only when ticked, and shown here.
+  o.documents = (job.flags & MV_AI_TRANSFER_DOCUMENTS) != 0 && document_files_.load();
   o.from = machine_label();
   {
     std::lock_guard lock(models_m_);
     o.picture_spec = answer_.meta.spec_key;
     // People's vectors only travel with the model that made them.
     if (faces_ && faces_model_) o.face_spec = faces_model_->spec_key();
+    if (docs_.model) o.docs_spec = docs_.spec_key;
   }
   if (o.picture_spec.empty()) o.picture_spec = db_->meta("active_spec");
   if (o.face_spec.empty()) o.faces = false;
@@ -4703,6 +4845,9 @@ std::string engine::run_export(const transfer_job& job, mv::status& st) {
   w.key("assets").integer(static_cast<std::int64_t>(r->assets));
   w.key("frames").integer(static_cast<std::int64_t>(r->frames));
   w.key("speech").integer(static_cast<std::int64_t>(r->speech));
+  w.key("passages").integer(static_cast<std::int64_t>(r->passages));
+  w.key("passage_vecs").integer(static_cast<std::int64_t>(r->passage_vecs));
+  w.key("documents_included").boolean(o.documents);
   w.key("faces").integer(static_cast<std::int64_t>(r->faces));
   w.key("people").integer(static_cast<std::int64_t>(r->people));
   w.key("people_included").boolean(o.faces);
@@ -4775,8 +4920,17 @@ std::string engine::run_import(const transfer_job& job, mv::status& st) {
   transfer::control c{&transfer_cancel_, [this](double f) { set_transfer_progress(f); }};
   std::vector<transfer::imported_asset> assets;
   transfer::import_counts n;
+  // #354 D3: documents (text, page pictures, meaning) when ticked and shown here.
+  std::set<std::string> specs = plan.specs;
+  if ((job.flags & MV_AI_TRANSFER_DOCUMENTS) && document_files_.load()) {
+    specs.insert(kDocTextSpec);
+    std::lock_guard lock(models_m_);
+    if (!build_.meta.spec_key.empty()) specs.insert(doc_page_spec(build_.meta.spec_key));
+    if (!plan.picture.empty()) specs.insert(doc_page_spec(plan.picture));
+    if (docs_.model) specs.insert(docs_.spec_key);
+  }
   expected r = db_->with_connection([&](sqlite3* db) {
-    return transfer::import_index(db, job.file, targets, plan.specs, assets, n, c);
+    return transfer::import_index(db, job.file, targets, specs, assets, n, c);
   });
   std::string people_why;
   bool adopted = false;
@@ -4894,6 +5048,8 @@ std::string engine::run_import(const transfer_job& job, mv::status& st) {
   w.key("kept").integer(static_cast<std::int64_t>(n.kept));
   w.key("frames").integer(static_cast<std::int64_t>(n.frames));
   w.key("speech").integer(static_cast<std::int64_t>(n.speech));
+  w.key("passages").integer(static_cast<std::int64_t>(n.passages));
+  w.key("passage_vecs").integer(static_cast<std::int64_t>(n.passage_vecs));
   w.key("skipped_rows").integer(static_cast<std::int64_t>(n.skipped_rows));
   w.key("picture_usable").boolean(!plan.picture.empty());
   w.key("why_not").string(plan.why_not);
@@ -4956,6 +5112,24 @@ void engine::reload_from_db() {
     });
   }
   if (!speech_spec.empty()) load_speech(speech_spec);
+  {
+    // #354 D3: passage vectors the import brought.
+    std::string docs_spec;
+    std::uint32_t docs_dim = 0;
+    {
+      std::lock_guard lock(models_m_);
+      if (docs_.model) {
+        docs_spec = docs_.spec_key;
+        docs_dim = docs_.dim;
+      }
+    }
+    if (!docs_spec.empty()) {
+      meanings_.reset(docs_dim);
+      (void)db_->each_passage_vec(docs_spec, [&](const frame_out& f) {
+        meanings_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
+      });
+    }
+  }
   load_cues();
   {
     std::lock_guard lock(work_m_);
@@ -5513,6 +5687,46 @@ void engine::process_pages(const work_item& item, const loaded_clip& clip) {
   frames_done_ += keep.size();
 }
 
+void engine::process_meaning(const work_item& item, const loaded_docs& docs) {
+  // A document's passages in reading order, a batch at a time between the
+  // viewer's busy spells; committed whole, so a stop embeds it again.
+  const std::vector<passage_out> passages = db_->passages_of(item.asset.id);
+  std::vector<float> embs;
+  embs.reserve(passages.size() * docs.dim);
+  std::vector<std::string> batch;
+  for (std::size_t i = 0; i < passages.size(); i += kMeaningBatch) {
+    if (!wait_turn(false)) return;  // the picture towers are not this pass's
+    batch.clear();
+    for (std::size_t j = i; j < std::min(passages.size(), i + kMeaningBatch); ++j) batch.push_back(passages[j].text);
+    std::vector<float> e;
+    if (!docs.model->embed_passages(batch, e) || e.size() != batch.size() * docs.dim) {
+      (void)db_->fail(item.asset.id, docs.spec_key);
+      return;
+    }
+    embs.insert(embs.end(), e.begin(), e.end());
+  }
+  std::vector<passage_vec_in> rows(passages.size());
+  for (std::size_t i = 0; i < passages.size(); ++i) {
+    rows[i].passage = passages[i].id;
+    rows[i].emb = std::span<const float>(embs.data() + i * docs.dim, docs.dim);
+    rows[i].generic = max_dot(rows[i].emb, docs.generic);
+  }
+  if (!db_->commit_passage_vecs(item.asset.id, docs.spec_key, rows, docs.dim)) return;
+  std::string active;
+  {
+    std::lock_guard lock(models_m_);
+    active = docs_.spec_key;
+  }
+  if (docs.spec_key != active) return;
+  meanings_.remove_assets(std::vector<std::int64_t>{item.asset.id});
+  std::vector<std::int8_t> q;
+  for (const passage_vec_in& r : rows) {
+    float scale = 1;
+    quantise(r.emb, q, scale);
+    meanings_.add(item.asset.id, r.passage, r.generic, scale, q);
+  }
+}
+
 void engine::load_speech(const std::string& spec) {
   std::vector<speech_row> rows;
   (void)db_->each_speech(spec, [&](std::int64_t asset, std::int64_t start, std::int64_t, const std::string& text) {
@@ -5696,6 +5910,41 @@ void engine::merge_documents(search_state& st, const std::string& query,
   if (found.size() > 2000) found.resize(2000);
   for (hit& h : found) {
     add_row(st, h.asset, h.page, h.rank / 2.0f, h.rank, MV_AI_MATCH_TEXT, passage_snippet(h.text, want));
+  }
+}
+
+void engine::merge_meaning(search_state& st, const std::string& query, const std::function<bool(std::int64_t)>& allow,
+                           std::uint32_t precision) {
+  loaded_docs docs;
+  {
+    std::lock_guard lock(models_m_);
+    docs = docs_;
+  }
+  if (!docs.model) return;
+  auto v = docs.model->embed_query(query);
+  if (!v) return;
+  // CLAP's rule (merge_audio): margins over the generic prompts, scaled by
+  // Precision; no z calibration.
+  text_thresholds t;
+  t.query_margin = docs.query_margin;
+  t.result_margin = docs.result_margin;
+  t.query_z = 0;
+  t.result_z = 0;
+  const auto hits = find_text(meanings_, *v, allow, t, precision_scale::at(precision), true, 2000);
+  // pts is the passage: its page and words come from the index. A document
+  // leads with its best passage; the rest are its other pages.
+  const std::vector<std::string> words = match_words(query);
+  for (const vector_store::hit& h : hits) {
+    auto p = db_->passage_by_id(h.pts_ms);
+    if (!p) continue;
+    // The generic prompts gate a row (find_text) but do not order it: by
+    // cosine, passages ranked better in the D3 spike (P@5 0.757 against 0.728
+    // by margin). In units of the model's "nothing found" margin over its mean
+    // generic cosine, twice over: a close passage (~2.4) leads a document
+    // that only holds most of the words (0.6-1.6). Measured end to end in the
+    // engine at 1, 2 and 100 x: P@5 0.723, 0.731, 0.731 (DEVELOPMENT, D3).
+    const float rank = 2.0f * (h.score - docs.rank_offset) / std::max(docs.query_margin, 1e-3f);
+    add_row(st, h.asset, p->page, h.score, rank, MV_AI_MATCH_TEXT, passage_snippet(p->text, words));
   }
 }
 
@@ -6080,7 +6329,11 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       }
       merge_audio(st, plan.text, allow, find, precision);
       // #354: the words in documents.
-      if ((find & MV_AI_FIND_TEXT) && document_files_.load()) merge_documents(st, plan.text, allow, precision);
+      if ((find & MV_AI_FIND_TEXT) && document_files_.load()) {
+        merge_documents(st, plan.text, allow, precision);
+        // #354 D3: and what they are about, with the ai-docs piece.
+        merge_meaning(st, plan.text, allow, precision);
+      }
     } else if (!plan.people.empty()) {
       std::vector<std::int64_t> everyone;
       for (const auto& g : plan.people) everyone.insert(everyone.end(), g.begin(), g.end());

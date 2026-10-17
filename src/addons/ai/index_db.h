@@ -67,6 +67,13 @@
 // in flags, and their progress is under doc_page_spec(that spec). They exist
 // only for documents whose level is Words and pages (2).
 //
+// Schema 10 (#354 D3): `passage_vecs(passage_id, spec, generic, scale, emb)`,
+// a passage's vector under the Documents piece's text model, int8 with a
+// per-vector scale like frames, and its best cosine against the model's
+// generic prompts. Progress is under that model's spec, after kDocTextSpec;
+// a passage that goes (a changed file, a resumed read) takes its vectors
+// with it (ON DELETE CASCADE).
+//
 // docs/design/17 sketches one assets row per (path, mtime, size, spec); progress is
 // that row's per-model half, so two models' vectors live side by side while
 // a quality change migrates (PR 23: "old index kept until the new one
@@ -149,6 +156,13 @@ struct passage_out {
   std::uint32_t page = 0;
   std::string text;
   std::string words;
+};
+
+// #354 D3: a passage's vector to store (L2-normalised; the store quantises).
+struct passage_vec_in {
+  std::int64_t passage = 0;
+  float generic = 0;  // best cosine against the text model's generic prompts
+  std::span<const float> emb;
 };
 
 // #406: the progress spec of the cue pass (not a model: there is no vector).
@@ -421,6 +435,22 @@ class index_db {
   [[nodiscard]] expected find_passages(const std::string& fts_query, std::size_t limit,
                                        const std::function<bool(const passage_out&)>& visit);
   [[nodiscard]] bool has_passage_index();
+  // #354 D3: a document's passages in reading order (id, page, text; no
+  // words): what the text model embeds.
+  [[nodiscard]] std::vector<passage_out> passages_of(std::int64_t asset);
+  // One passage by id (page, text, asset; no words). not_found once gone.
+  [[nodiscard]] result<passage_out> passage_by_id(std::int64_t id);
+  // #354 D3: a document's passage vectors under `spec`, replacing those it
+  // had there, and its progress under `spec` done, in one transaction. A
+  // vector whose passage has gone meanwhile is skipped.
+  [[nodiscard]] expected commit_passage_vecs(std::int64_t asset, const std::string& spec,
+                                             std::span<const passage_vec_in> vecs, std::uint32_t dim);
+  // Every passage vector of `spec` whose passage id is above `after_id`, in
+  // passage id order: frame_out's id and pts_ms are the passage id.
+  [[nodiscard]] expected each_passage_vec(const std::string& spec,
+                                          const std::function<void(const frame_out&)>& visit,
+                                          std::int64_t after_id = 0);
+  [[nodiscard]] std::uint64_t passage_vec_count(const std::string& spec);
   // Passages stored for `asset` (0: all).
   [[nodiscard]] std::uint64_t passage_count(std::int64_t asset = 0);
   // Resets `spec`'s progress for every asset (a spec change, a clear).

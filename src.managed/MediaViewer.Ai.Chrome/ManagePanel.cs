@@ -82,6 +82,11 @@ internal sealed partial class ManagePanel
     private readonly ToggleButton[] _docIndex = new ToggleButton[3];
     private readonly StackPanel _docIndexTrack;
     private readonly TextBlock _documentsDetail;
+    // #354 D3: whether Words also matches by meaning (the ai-docs piece), or
+    // that the piece would add it (the pattern of _videoIndexHint).
+    private readonly TextBlock _docsMeaningHint;
+    private bool _docsReady;
+    private string _docsModel = "";
     private uint _docIndexValue = 1;
     private bool _pdfAvailable = true;
     private readonly TextBlock _audioLine;
@@ -262,7 +267,11 @@ internal sealed partial class ManagePanel
         _docIndexTrack = new StackPanel();
         _docIndexTrack.Children.Add(_look.Track(docSegments, hc));
         _documentsDetail = _look.Text(DocumentsDetail(_chrome.DocumentFiles, _pdfAvailable), 12);
-        Section("Documents").Children.Add(Row("PDF and Word documents", _documentsDetail, _docIndexTrack));
+        _docsMeaningHint = _look.Text("", 12);
+        var docsDetail = new StackPanel { Spacing = 2 };
+        docsDetail.Children.Add(_documentsDetail);
+        docsDetail.Children.Add(_docsMeaningHint);
+        Section("Documents").Children.Add(Row("PDF and Word documents", docsDetail, _docIndexTrack));
         ShowDocIndex();
         _audioFilesDetail = _look.Text(AudioFilesDetail(_chrome.AudioFiles), 12);
         Section("Audio files").Children.Add(Row("MP3, M4A and M4P", _audioFilesDetail, new StackPanel()));
@@ -563,6 +572,9 @@ internal sealed partial class ManagePanel
             _audioFilesDetail.Text = AudioFilesDetail(_chrome.AudioFiles);
             _docIndexValue = r.TryGetProperty("doc_index", out JsonElement di) ? Math.Min(2u, di.GetUInt32()) : 1;
             _pdfAvailable = !r.TryGetProperty("pdf_available", out JsonElement pa) || pa.ValueKind != JsonValueKind.False;
+            _docsReady = r.TryGetProperty("docs_ready", out JsonElement dr) && dr.ValueKind == JsonValueKind.True;
+            _docsModel = r.TryGetProperty("docs_model", out JsonElement dm) && dm.ValueKind == JsonValueKind.String
+                ? dm.GetString() ?? "" : "";
             ShowDocIndex();
             _cloudProvider = r.TryGetProperty("cloud_provider", out JsonElement cp) && cp.GetString() == "onedrive";
             _cloudUnsupported = r.TryGetProperty("cloud_supported", out JsonElement cs) && cs.ValueKind == JsonValueKind.False;
@@ -610,6 +622,13 @@ internal sealed partial class ManagePanel
             // day, it kept Sound and Both off until the folder list happened to
             // rebuild (the Mac's per-folder menu follows audioReady at once).
             RefreshRoots();
+        }
+        // #354 D3: the Documents piece loaded or went: the hint under Documents follows.
+        bool docs = (s.Flags & MvAiStatus.FlagDocsReady) != 0;
+        if (docs != _docsReady)
+        {
+            _docsReady = docs;
+            ShowDocIndex();
         }
         RefreshIndexRow(s);
         ShowCloud(s);
@@ -669,6 +688,14 @@ internal sealed partial class ManagePanel
         _docIndexTrack.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
         for (int i = 0; i < _docIndex.Length; ++i) _docIndex[i].IsChecked = _docIndexValue == i;
         _documentsDetail.Text = DocumentsDetail(on, _pdfAvailable);
+        // Loaded, not only installed, like Audio: installed but not yet picked
+        // up by the pack, say so, not "install".
+        _docsMeaningHint.Text = _docsReady
+            ? (_docsModel.Length > 0 ? $"Words also match by meaning ({_docsModel})." : "Words also match by meaning.")
+            : _chrome.Host.IsPieceInstalled("ai-docs")
+                ? "Documents is loading. Words also matches by meaning when it is ready."
+                : "With the Documents piece, Words also matches by meaning.";
+        _docsMeaningHint.Visibility = on && _docIndexValue > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void SetDocIndex(uint level)

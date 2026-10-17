@@ -122,6 +122,7 @@ public enum MvAiTransfer : uint
     None = 0,
     People = 1,   // face vectors, people and names: the file then identifies them
     Thumbs = 2,   // the viewer's cached JPEG-512 tiles
+    Documents = 4, // #354 D3: documents' text, passage vectors and page pictures: the file holds what they say
 }
 
 /// <summary>Mirrors <c>MV_AI_MATCH_*</c>: why a result matched.</summary>
@@ -140,7 +141,7 @@ public enum MvAiMatch : uint
 }
 
 /// <summary>
-/// Mirrors <c>mv_ai_status</c> field for field (1704 bytes with the document
+/// Mirrors <c>mv_ai_status</c> field for field (1720 bytes with the meaning
 /// counts). Append with the header: the ABI smoke test compares every field's
 /// offset and size with tools/abi-layout's dump of the native struct.
 /// </summary>
@@ -156,6 +157,7 @@ public unsafe struct MvAiStatus
                                              // time (Core ML on a Mac; never set on Windows today)
     public const uint FlagPeopleRerun = 64;     // People is re-analysing every photo and clip (2026-10-03)
     public const uint FlagPeopleSettling = 128; // ...all analysed: filing the faces into people
+    public const uint FlagDocsReady = 512;      // ai-docs is loaded: document words also match by meaning (#354 D3)
 
     public uint StructSize;
     public MvAiState State;
@@ -230,6 +232,11 @@ public unsafe struct MvAiStatus
     // before them, and while no folder is at Words and pages.
     public ulong PagesTotal;
     public ulong PagesDone;
+    // Meaning (#354 D3), appended: with the ai-docs piece, documents whose words
+    // are read, and those whose passages its text model has embedded (failed
+    // counted as done). Zero from a pack before them, and without the piece.
+    public ulong MeaningTotal;
+    public ulong MeaningDone;
 
     /// <summary>Display only (rule 6: never logged).</summary>
     public readonly string ActiveRootText

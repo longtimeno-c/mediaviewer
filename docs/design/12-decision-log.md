@@ -1365,6 +1365,34 @@ host's layout gives no image measure). The pass runs only after a document's wor
 words are searchable first, and only at Words and pages (not the default). Going below it deletes
 the pictures at once. `mv_ai_status` appends `pages_total`, `pages_done`.
 
+**Documents are also found by what they are about, with the Documents piece (2026-10-17, #354
+D3).** An optional piece, `ai-docs`, as Sound is, holding one sentence-embedding model chosen by
+the plan's spike (docs/design/17 "Documents", the table there): **all-MiniLM-L6-v2**, fp32, on CPU
+at 2 threads. It had the best P@5 of the four candidates (0.810 against arctic-embed-s 0.810 fp32
+/ 0.794 int8, bge-small 0.780, multilingual-e5-small 0.766), twice their passages per second, and
+a quarter of e5's size. **Not multilingual:** the owner's 2026-10-13 ceiling raise let
+multilingual-e5-small in, and the spike measured it; it led only on the 3 other-language queries
+and missed the R@10 target (0.793 int8), so the default is English, and a later multilingual
+piece is a measurement away, not a design change. **fp32, not int8** (90 against 23 MB): the int8
+export quantises activations per batch, so a passage's vector depended on its neighbours in the
+batch (cosine 0.998 to ORT-Python, under the verify line's 0.999) for ~10 % more speed and no
+quality. **Margins, as CLAP's** (no z rule): `query_margin` 0.415 and `result_margin` 0.25 from the
+spike's 50 queries and 20 queries about nothing. They gate a row; its cosine orders it (ordering
+by margin lost 0.03 of P@5), scaled to sit above a partial word match. **Short of a target:**
+end to end over every passage the engine reaches P@5 0.731 but R@10 0.767 against the 0.80 set
+before the spike (the spike's own capped run met both); long publications crowd the forms out.
+Kept because the engine's words alone reach P@5 0.304 / R@10 0.272 on the same set (19 of the 50
+queries answer nothing), and it costs nothing without the piece; the target is owed in #354.
+**Cost:** nothing without the piece. With it, a document's passages are embedded once after its
+words (schema 10 `passage_vecs`, int8 like frames: 0.4 KB a passage plus the row), on the
+workers, between the viewer's busy spells, and not behind the picture towers' load. The vectors
+are a third in-memory matrix like the sounds'. `mv_ai_status` appends `meaning_total`,
+`meaning_done` (1,720 bytes); `MV_AI_STATUS_DOCS_READY` is 512. **Sharing:** `.mvindex` goes to
+version 2; documents travel only when the new `MV_AI_TRANSFER_DOCUMENTS` is ticked on both sides
+(the file then holds their text, so off by default, as People is), with their passages, vectors
+and page pictures. A v1 file still imports. D1's "never in an export" now reads "never unless
+ticked".
+
 ---
 
 ## Final Cut Pro search (Mac)

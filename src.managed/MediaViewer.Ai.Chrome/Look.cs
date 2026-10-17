@@ -353,6 +353,11 @@ internal sealed class Look
                 {
                     return $"Looking at document pages {n(s.PagesDone)} of {n(s.PagesTotal)}";
                 }
+                // #354 D3: then their passages by meaning (the Documents piece).
+                if (picturesDone && s.MeaningDone < s.MeaningTotal)
+                {
+                    return $"Understanding documents {n(s.MeaningDone)} of {n(s.MeaningTotal)}";
+                }
                 if (picturesDone && s.CuesDone < s.CuesTotal)
                 {
                     return $"Reading chapters and subtitles {n(s.CuesDone)} of {n(s.CuesTotal)} clips";

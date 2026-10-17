@@ -391,6 +391,30 @@ class fake_sound final : public mv::ai::sound_model {
   std::atomic<int> windows_embedded{0};
 };
 
+// #354 D3: the Documents piece's text model, faked by topic: a passage or a
+// query about renting a home points one way, one about paying a bill
+// another, anything else at the generic prompts.
+class fake_docs final : public mv::ai::passage_model {
+ public:
+  static std::vector<float> topic(std::string_view t, bool query) {
+    const auto has = [&](const char* w) { return t.find(w) != std::string_view::npos; };
+    if (has("tenant") || has("rent") || (query && (has("landlord") || has("flat")))) return colour_vec(1, 0, 0);
+    if (has("Payment") || (query && has("bill"))) return colour_vec(0, 1, 0);
+    return colour_vec(0.3f, 0.3f, 0.3f);
+  }
+  mv::expected embed_passages(std::span<const std::string> texts, std::vector<float>& out) override {
+    out.clear();
+    for (const std::string& t : texts) {
+      const auto v = topic(t, false);
+      out.insert(out.end(), v.begin(), v.end());
+      ++passages_embedded;
+    }
+    return {};
+  }
+  mv::result<std::vector<float>> embed_query(std::string_view utf8) override { return topic(utf8, true); }
+  std::atomic<int> passages_embedded{0};
+};
+
 class fake_speech final : public mv::ai::speech_model {
  public:
   mv::result<mv::infer::speech_window> transcribe(std::span<const float> pcm, std::int64_t start_ms) override {
@@ -722,6 +746,8 @@ struct rig {
     large_failure = std::move(v);
   }
   std::shared_ptr<fake_sound> sound = std::make_shared<fake_sound>();
+  std::shared_ptr<fake_docs> docs_model = std::make_shared<fake_docs>();
+  std::atomic<bool> docs_available{false};  // #354 D3: the ai-docs piece
   std::shared_ptr<fake_speech> speech = std::make_shared<fake_speech>();
   // Never the real library: PhotoKit is not asked in a test.
   std::shared_ptr<photos_lib> library = std::make_shared<photos_lib>();
@@ -1008,6 +1034,18 @@ struct rig {
       s.hop_ms = 5000;
       s.generic_prompts = {"a sound."};
       return s;
+    };
+    d.open_docs = [this]() -> mv::result<mv::ai::loaded_docs> {
+      if (!docs_available) return mv::err(mv::status::io);
+      mv::ai::loaded_docs l;
+      l.model = docs_model;
+      l.name = "Fake text";
+      l.spec_key = "fake-text/int8/pre1";
+      l.dim = kDim;
+      l.query_margin = 0.05f;
+      l.result_margin = 0.02f;
+      l.generic_prompts = {"a document."};
+      return l;
     };
     d.photos = [this] { return std::unique_ptr<mv::ai::photos_source>(new fake_photos(library)); };
     d.photos_rescan_gap_s = 0;
@@ -1634,7 +1672,7 @@ TEST_CASE("clearing the index frees it and a size cap stops indexing", "[ai][eng
 }
 
 // The schema a fresh or migrated index ends at (index_db.cpp kSchemaVersion).
-constexpr const char* kSchemaNow = "9";
+constexpr const char* kSchemaNow = "10";
 
 TEST_CASE("schema 8 migrates to 9: documents' passages, their words and a folder's choice (#354)",
           "[ai][engine][documents]") {
@@ -2627,6 +2665,100 @@ TEST_CASE("documents are indexed for their words only while Show documents is on
   REQUIRE(r.idle());
   CHECK(setting("document_files") == 0);
   CHECK(root().integer("documents").value_or(-1) == 0);
+}
+
+TEST_CASE("the Documents piece finds documents by what they are about (#354 D3)", "[ai][engine][documents]") {
+  rig r;
+  r.file("red_photo.jpg");
+  r.file("invoice_march.pdf");
+  r.file("lease.docx");
+  r.file("locked_statement.pdf");
+  r.docs_available = true;
+  r.start();
+  REQUIRE(r.eng->set_setting("document_files", "1"));
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  const auto names = [](const std::vector<std::pair<std::string, std::int64_t>>& rows) {
+    std::set<std::string> out;
+    for (const auto& [n, _] : rows) out.insert(n);
+    return out;
+  };
+  const auto vecs = [&] {
+    auto db = mv::ai::index_db::open(utf8(r.dir / "data" / "index.db"));
+    REQUIRE(db);
+    return (*db)->passage_vec_count("fake-text/int8/pre1");
+  };
+  {
+    auto doc = mv::json::parse(r.eng->settings_json());
+    REQUIRE(doc);
+    CHECK(doc->boolean("docs_ready").value_or(false));
+    CHECK(*doc->str("docs_model") == "Fake text");
+  }
+  const mv_ai_status st = r.status();
+  CHECK((st.flags & MV_AI_STATUS_DOCS_READY) != 0);
+  // The readable documents, once their words are read; a locked one never comes.
+  CHECK(st.meaning_total == 2);
+  CHECK(st.meaning_done == 2);
+  CHECK(st.state == MV_AI_STATE_IDLE);
+  // invoice: 3 pages; lease: its heading and first sentence, then page 2.
+  CHECK(vecs() == 5);
+  const int embedded = r.docs_model->passages_embedded.load();
+  CHECK(embedded == 5);
+
+  // By meaning: none of these words is in the lease, which is found at the
+  // page that is about it, the passage as its snippet.
+  {
+    const std::uint64_t id = r.eng->search_text("paying my landlord", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+    REQUIRE(r.eng->wait_search(id, kSettleMs));
+    const auto rows = r.rows(id);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0] == std::pair<std::string, std::int64_t>{"lease.docx", 0});
+    auto res = r.eng->result_at(id, 0);
+    REQUIRE(res);
+    CHECK(res->kind == MV_AI_KIND_DOCUMENTS);
+    CHECK(res->match == MV_AI_MATCH_TEXT);
+    CHECK(r.eng->result_snippet(id, 0)->find("tenant shall pay") != std::string::npos);
+  }
+  CHECK(r.search("the electricity bill") == std::vector<std::pair<std::string, std::int64_t>>{{"invoice_march.pdf", 2}});
+  // "Nothing found": a query about nothing here answers nothing by meaning.
+  CHECK(r.search("wedding seating plan").empty());
+  // Words still match as typed, beside meaning.
+  CHECK(names(r.search("\"two months notice\"")) == std::set<std::string>{"lease.docx"});
+  // Text off in Match by: no document by meaning either.
+  CHECK(r.search("paying my landlord", MV_AI_SCOPE_ALL, "", MV_AI_KIND_ALL | MV_AI_FIND_PICTURES).empty());
+
+  // A restart answers from the stored vectors: nothing embedded again.
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(names(r.search("paying my landlord")) == std::set<std::string>{"lease.docx"});
+  CHECK(r.docs_model->passages_embedded.load() == embedded);
+
+  // The search agent's reader answers by meaning from the same vectors.
+  {
+    auto rd = r.start_reader();
+    const std::uint64_t id = rd->search_text("paying my landlord", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+    REQUIRE(rd->wait_search(id, kSettleMs));
+    auto n = rd->result_count(id);
+    REQUIRE(n);
+    CHECK(*n == 1);
+  }
+
+  // Without the piece: words only, and the vectors wait for it.
+  r.docs_available = false;
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.search("paying my landlord").empty());
+  CHECK((r.status().flags & MV_AI_STATUS_DOCS_READY) == 0);
+  CHECK(r.status().meaning_total == 0);
+  CHECK(vecs() == 5);
+
+  // Show documents off: documents and their vectors go.
+  r.docs_available = true;
+  r.start();
+  REQUIRE(r.idle());
+  REQUIRE(r.eng->set_setting("document_files", "0"));
+  REQUIRE(wait_for([&] { return vecs() == 0; }, kSettleMs));
+  CHECK(r.search("paying my landlord").empty());
 }
 
 TEST_CASE("a folder's Documents choice and Settings' Off drop its documents' text (#354)",
@@ -4709,6 +4841,77 @@ TEST_CASE("an index exported on one machine answers on another without embedding
   auto p = b.eng->result_path(path, 0);
   REQUIRE(p);
   CHECK(fs::path(*p).parent_path() == there);  // B's paths, not A's
+}
+
+TEST_CASE("documents travel only when ticked, with their text and meaning (.mvindex v2, #354 D3)",
+          "[ai][engine][transfer][documents]") {
+  rig a;
+  a.file("red_car.jpg");
+  a.file("lease.docx");
+  a.file("invoice_march.pdf");
+  a.docs_available = true;
+  a.start();
+  REQUIRE(a.eng->set_setting("document_files", "1"));
+  REQUIRE(a.eng->index_folder(utf8(a.photos()), false));
+  REQUIRE(a.idle());
+
+  // Not ticked: as v1, no document and not its name.
+  const std::string plain = utf8(a.dir / "plain.mvindex");
+  REQUIRE(a.eng->export_index(plain, {}, 0));
+  auto done = transfer_done(a);
+  CHECK(*done.find("outcome")->integer("assets") == 1);
+  CHECK(*done.find("outcome")->integer("passages") == 0);
+  CHECK(done.find("outcome")->boolean("documents_included") == false);
+
+  // Ticked: the documents, their passages and their vectors.
+  const std::string file = utf8(a.dir / "docs.mvindex");
+  REQUIRE(a.eng->export_index(file, {}, MV_AI_TRANSFER_DOCUMENTS));
+  done = transfer_done(a);
+  CHECK(*done.integer("status") == 0);
+  CHECK(*done.find("outcome")->integer("assets") == 3);
+  CHECK(*done.find("outcome")->integer("passages") == 5);
+  CHECK(*done.find("outcome")->integer("passage_vecs") == 5);
+
+  rig b;
+  const fs::path there = b.dir / "NAS" / "Docs";
+  copy_library(a, there);
+  b.docs_available = true;
+  b.start();
+  REQUIRE(b.eng->set_setting("document_files", "1"));
+  REQUIRE(b.idle());
+  auto info = mv::json::parse(*b.eng->inspect_export(file));
+  REQUIRE(info);
+  CHECK(*info->integer("version") == 2);
+  REQUIRE(info->find("documents"));
+  CHECK(*info->find("documents")->integer("count") == 2);
+  CHECK(info->find("documents")->boolean("meaning_match") == true);
+  CHECK(mv::json::parse(*b.eng->inspect_export(plain))->find("documents")->k == mv::json::kind::null);
+  const auto root_id = *info->find("roots")->a[0].integer("id");
+
+  // Imported without the tick: the documents stay out.
+  {
+    rig c;
+    copy_library(a, c.dir / "Docs");
+    c.docs_available = true;
+    c.start();
+    REQUIRE(c.eng->set_setting("document_files", "1"));
+    REQUIRE(c.idle());
+    REQUIRE(c.eng->import_index(file, map_json(root_id, c.dir / "Docs"), 0));
+    CHECK(*transfer_done(c).find("outcome")->integer("passages") == 0);
+  }
+
+  REQUIRE(b.eng->import_index(file, map_json(root_id, there), MV_AI_TRANSFER_DOCUMENTS));
+  done = transfer_done(b);
+  CHECK(*done.integer("status") == 0);
+  CHECK(*done.find("outcome")->integer("passages") == 5);
+  CHECK(*done.find("outcome")->integer("passage_vecs") == 5);
+  REQUIRE(b.idle());
+  // Found by their words and by meaning, nothing read or embedded again.
+  CHECK(b.docs_model->passages_embedded.load() == 0);
+  CHECK(b.pdf_pages_read == 0);
+  CHECK(b.search("\"two months notice\"") == std::vector<std::pair<std::string, std::int64_t>>{{"lease.docx", 1}});
+  CHECK(b.search("paying my landlord") == std::vector<std::pair<std::string, std::int64_t>>{{"lease.docx", 0}});
+  CHECK(b.status().meaning_done == 2);
 }
 
 TEST_CASE("an imported file that differs here is indexed again; rows done here stay",

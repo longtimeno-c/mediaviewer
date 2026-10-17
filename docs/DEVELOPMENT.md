@@ -1737,6 +1737,53 @@ album artist, composer, genre). Sound and speech on audio files are slice A2.
   both hosts; both PR 1 gates with the pack indexing audio files; timing the walk with the
   setting off.
 
+### Local search over documents, slice D3: the Documents piece (#354, 2026-10-17)
+
+An optional piece, **Documents** (`ai-docs`, ~91 MB), adds one sentence-embedding model,
+all-MiniLM-L6-v2 (fp32, CPU, 2 threads), so a document's words also match by meaning
+([17](design/17-local-ai-search.md) "Documents": the spike table, the margins, the ranking). Schema
+10 adds `passage_vecs`; `.mvindex` goes to v2, with documents behind the new **Documents** tick
+on export and import (`MV_AI_TRANSFER_DOCUMENTS`, off by default). Both chromes list the piece,
+say "Understanding documents N of M", and add the tick and the "matches by meaning" hint.
+
+- **Spike** (`tools/ai-bench/doc-meaning`): `fetch_corpus.py <out>` fetches the 478 public
+  documents (run it with `python -I`: they are untrusted), `spike.py passages|embed|speed|score|
+  calibrate` scores the candidates (`MV_SPIKE_CAP`, default 64 passages a document), and
+  `queries.json` holds the 50 queries, their relevance and 20 "nothing" queries. Targets were
+  written before the first score (P@5 >= 0.70, R@10 >= 0.80, above BM25).
+- **Model:** all-MiniLM-L6-v2 met them with the best P@5 in the capped spike (0.810 / 0.827 fp32;
+  the other three and their int8 numbers are in 17) and ran 112-119 passages/s at 2 threads
+  against 53-69 for the others (alternated, three rounds, load 10-36).
+- **ORT-Python reference:** `mv_ai_tests "[docs]"` with `MV_AI_PACK_DIR` (the ORT folder) and
+  `MV_AI_DOCS_DIR` (a staged ai-docs: `tools/package/ai-models.py stage --piece ai-docs`).
+  `tests/data/ai/docs_reference.json` comes from `tools/ai-reference/make_docs_reference.py`
+  (tokens and vectors, ORT-Python 1.31 on CPU). Mac (M5, ORT 1.30): every token id equal, worst
+  cosine **0.999999** over 12 passages (accents, Japanese, a 400-word one) and 4 queries, one at a
+  time and batched. The WordPiece rules always run (`"[docs]"`, no model).
+- **Engine, end to end** (M5, 2026-10-17): `ai-bench --addons <sideloaded ai + ai-docs> --index
+  <the 478> --documents --quality 1 --top 10 --query ...` then `doc-meaning/score_bench.py`:
+  - All 478 read for words in 61 s; every passage (93,726) embedded in 838 s from the start; the
+    meaning pass runs while the picture tower compiles for Core ML.
+  - The 50 queries: **P@5 0.731, R@10 0.767** (English 0.748 / 0.784). Words alone (no piece):
+    0.304 / 0.272, 19 queries answer nothing. Queries took up to 94 ms.
+  - **Short of the R@10 target (0.80).** The spike met it over 64 passages a document; uncapped,
+    the model alone scores 0.757 / 0.782, the long IRS publications' passages outranking the
+    forms. Ranking by margin instead of cosine lost a further 0.03 (now cosine).
+- **Ceiling:** `addon-pack.py ceiling` over the installed 0.1.32 AI, AI Audio and AI Faces
+  manifests and a dev-packed AI Documents: 2.419 GB of 5.0 GB (Mac). `ai-models.py check`:
+  Core + People + Sound + Documents + a vendor piece ~3.02 GB (the Windows case, estimated).
+- **Tests:** `mv_ai_tests` 151 cases, 142 passed, 9 skipped (model-backed) on the M5, including
+  the meaning pass (embedded after the words, found at its page, "nothing found", kept through a
+  restart, the reader, gone with Show documents) and `.mvindex` v2 (documents only when ticked,
+  passages and vectors imported with nothing embedded again); `mv_tests` 869 cases, 858 passed,
+  11 skipped; the packaging tests (`test_addon_pack`, `test_github_release`) pass. The SwiftUI AI
+  chrome builds and the WinUI AI chrome's C# compiles (MediaViewer.Chrome stops on
+  `IslandHost.Slots.cs`'s `DownloadSize`, unchanged here and fixed on main by #459).
+- **Not measured:** both present-loop gates (the Mac's screen was locked for every attempt; the
+  Windows gate is CI's), Windows altogether (the ORT-Python cosine, the timing, the ceiling on
+  real manifests), the app on either host with the piece installed, and another language than
+  English beyond the spike's 3 queries.
+
 ### Local search over documents, slice D2: pages as pictures (#354, 2026-10-16)
 
 Settings → Local search → Documents gains **Words and pages** (`doc_index` 2, per folder

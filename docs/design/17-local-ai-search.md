@@ -135,6 +135,7 @@ signed manifest, verify-before-load, per-user versioned folder, explicit updates
   | `ai` (Core) | `mv_ai`, ORT (CPU; Core ML on Mac), PDFium (a PDF's text, #354; ~6 MB, its parts' notices in `LICENSES/pdfium`), both CLIP towers, tokenizer, the chrome (`MediaViewer.Ai.Chrome` / `AI.bundle`) | ~1.19 GB installed |
   | `ai-faces` (People) | YuNet detector, AdaFace IR-50 embedder (fp16) | ~87 MB model |
   | `ai-audio` (Sound) | CLAP `larger_clap_general`, Whisper base and small, tokenizers | ~1 GB |
+  | `ai-docs` (Documents) | all-MiniLM-L6-v2 (fp32), its WordPiece vocab (#354 D3) | ~91 MB |
   | `ai-cuda` (Windows) | ORT's CUDA build | ~205 MB |
 
   Pieces declare `part_of: ai` and an `arch`. Clicks queue, Core first; "Install all"; "Update
@@ -267,11 +268,13 @@ one, so 2 s and 1/250 both match). A clip has no exposure block: those stay NULL
 - A rating written to a RAW's XMP sidecar leaves the RAW's own stamp alone, so the index keeps
   the old rating until the file's stamp changes or the index is rebuilt (the base app's
   meta_cache drops its row; the AI index has no such signal yet).
-### Schema 6 to 9 (#406, #407, #355, #354)
+### Schema 6 to 10 (#406, #407, #355, #354)
 
 Schema 6 adds `cues` ("Cues" below). Schema 8 lets `assets.kind` be 4, an audio file (no table
 change). Schema 9 lets it be 3, a document, and adds `roots.docs`, `passages` and `passage_text`
-("Documents" below). Schema 7 adds `motion`, `motion_mtime`, `motion_size` and
+("Documents" below). Schema 10 (D3) adds `passage_vecs(passage_id, spec, generic, scale, emb)`, a
+passage's vector under the Documents piece's text model, int8 like frames; a passage that goes
+takes its vectors with it. Schema 7 adds `motion`, `motion_mtime`, `motion_size` and
 `motion_cloud` to `assets`: a Live Photo still's movie and its stamp (Frame sampling, step 6). The
 first walk after the step fills them and queues each Live Photo's motion alone; the still is not
 embedded again.
@@ -787,8 +790,10 @@ does.
 PDFs and Word documents are searchable by the **words in them**: a quoted phrase from any page
 finds the document and opens it on that page, plain words rank documents by how many of them a
 passage holds. At **Words and pages** they are also found by **what a page looks like** ("a
-receipt", "a floor plan"). Slices D1 and D2 of [document-search](../plans/document-search.md);
-a text model for meaning (D3) and OCR for scans (D4) follow them.
+receipt", "a floor plan"), and with the **Documents** piece by **what a passage is about** ("tax
+return from my accountant" finds the page about one without those words). Slices D1 to D3 of
+[document-search](../plans/document-search.md);
+OCR for scans (D4) follows them.
 
 - **Behind File types "Show documents"** (off by default), as audio files are behind "Show audio
   files": each chrome forwards it to the pack as `document_files` when it attaches and on every
@@ -797,7 +802,8 @@ a text model for meaning (D3) and OCR for scans (D4) follow them.
   and their text (`index_db::remove_kind`). A document is `asset_kind::document` (3; schema 9)
   and `MV_AI_KIND_DOCUMENTS` (4; `MV_AI_KIND_ALL` is 15, so an older chrome's 3 or 11 never sees
   one). It never pairs, never goes to the picture, People or text-in-pictures passes in D1, and
-  an `.mvindex` export leaves it out, name and all (page pictures too).
+  an `.mvindex` export leaves it out, name and all (page pictures too), unless Documents is
+  ticked for that export (v2, D3; "Sharing an index").
 - **What a folder indexes them for.** Settings "Documents" (`doc_index`): 0 Off, 1 **Words**
   (the default: cheap, no model), 2 **Words and pages** (page pictures, below). Each folder
   may override it (`root_set_documents`, `MV_AI_DOCS_*`, `roots.docs`): the case is a Downloads
@@ -855,6 +861,67 @@ a text model for meaning (D3) and OCR for scans (D4) follow them.
   Weak spots: a word match outranks a picture ("a receipt" against documents that say "receipt"),
   plain text pages pass for "a spreadsheet", and person queries meet the "nothing found" gate. The
   Mac PR 1 gate held while pages were pictured: 0 dropped, p99 17.05 ms against 16.80 alone.
+- **Meaning (D3), with the Documents piece** (`ai-docs`, optional, as Sound is): a document's
+  passages through a small sentence-embedding model, **all-MiniLM-L6-v2** (Apache-2.0, the
+  Xenova ONNX export, fp32, 384 dimensions, ~91 MB), chosen by the spike below. Its tokenizer is
+  BERT's uncased WordPiece in `infer/text_models.*` (BertNormalizer's cleaning, CJK split and
+  accent strip: `core/fold.h` for Latin, Greek and Cyrillic, a generated NFD table past them,
+  Hangul by formula), mean pooling, no prefixes, 256 tokens. It runs on CPU, 2 threads, in every
+  compute choice: the same vector on every machine, and a query in ~2 ms. fp32 rather than the
+  int8 export: int8 quantises each batch's activations together, so a passage's vector moved with
+  its batch (cosine 0.998 against ORT-Python), for 10 % more speed and no gain in the spike.
+  Its own pass (`track::meaning`, progress under the model's spec `all-minilm-l6-v2/fp32/pre1`)
+  takes a document once its words are read, 16 passages a run between the viewer's busy spells,
+  and commits the document whole (`passage_vecs`, schema 10: int8 with a scale, as frames, and
+  each passage's best cosine against five generic prompts). A stop embeds it again. Like the
+  words pass it does not wait for the picture towers to load or move to an accelerator. The
+  vectors are a third matrix in memory (`meanings_`, the passage id as its "pts"), loaded at
+  start and kept as passes commit; a passage dropped (a changed file, a resumed read) takes its
+  vector. `mv_ai_status` appends `meaning_total`, `meaning_done` and sets
+  `MV_AI_STATUS_DOCS_READY`; `settings_json` has `docs_ready` and `docs_model`. Without the
+  piece nothing changes: Words matches as typed. Removing it keeps the vectors for when it comes
+  back (they are dropped with the documents).
+- **The spike** (D3, `tools/ai-bench/doc-meaning`): 478 public documents (141 IRS forms and
+  publications, 164 arXiv papers on 15 subjects, 173 Wikipedia articles on 12 subjects written
+  as DOCX or PDF, 29 of them in French, German or Spanish), 50 queries written from the titles
+  before any model ran (3 not in English), each document scored by its best passage, the first 64
+  passages a document. Targets fixed first: P@5 >= 0.70, R@10 >= 0.80, both above keyword
+  BM25 on the same passages. P@5 counts relevant results in the top 5 over min(5, relevant).
+
+  | Model (Xenova ONNX) | Licence | Size | P@5 fp32 / int8 | R@10 fp32 / int8 | passages/s, CPU 2 threads (M5) |
+  |---|---|---|---|---|---|
+  | **all-MiniLM-L6-v2** | Apache-2.0 | 90 / 23 MB | **0.810** / 0.806 | 0.827 / 0.832 | **112-119** / 118-132 |
+  | snowflake-arctic-embed-s | Apache-2.0 | 133 / 34 MB | 0.810 / 0.794 | 0.831 / 0.834 | 57-63 / 59-66 |
+  | bge-small-en-v1.5 | MIT | 133 / 34 MB | 0.780 / 0.757 | 0.838 / 0.802 | 59-61 / 62-69 |
+  | multilingual-e5-small | MIT | 470 / 118 MB | 0.766 / 0.755 | 0.818 / 0.793 | 57-58 / 53-61 |
+  | BM25 (keywords) | | | 0.662 | 0.639 | |
+
+  On the 3 other-language queries e5 led (P@5 0.53 against MiniLM's 0.40, n = 3); on the 47
+  English ones MiniLM did (0.836 / 0.851). The speed runs were alternated over three rounds on a
+  machine other work kept at load 10-36. MiniLM met the targets with the best P@5, at twice the
+  others' speed and a quarter of e5's size; the English-only cost is what Whisper's speech and
+  the keyword path already cover in other languages.
+- **Ranking by meaning** is CLAP's rule: a passage is a result when it beats the generic prompts
+  ("a document.", "some text.", "a page of a document.", "this is a paragraph of text.",
+  "information.", embedded as queries) by `result_margin` 0.25, and a query answers only when one
+  of its ten best passages beats them by `query_margin` 0.415 ("nothing found"), both scaled by
+  Precision. Calibrated in the spike, the way CLAP's margin was: at 0.415, 47 of the 50 queries
+  answer (the other 3 within 0.025) and 1 of 20 queries about nothing in the corpus ("a gym
+  membership contract"); the 0.25 row floor costs no P@5 or R@10. A hit is a row at its passage's
+  page with the passage as its snippet (`MV_AI_MATCH_TEXT`, as a word match), merged per document
+  with the words. The margins gate; the **cosine orders** (by margin the spike lost 0.03 of P@5
+  and R@10): a row's rank is 2 x (cosine - `rank_offset` 0.096, the mean generic cosine) /
+  `query_margin`, so a close passage (~2.4) leads a document that only holds most of the words
+  (0.6-1.6).
+- **Measured end to end** (M5, `ai-bench --documents` over the spike's 478 documents with every
+  passage embedded, 93,726, the 50 queries as typed, words and meaning merged; DEVELOPMENT, slice
+  D3): **P@5 0.731, R@10 0.767** (English 0.748 / 0.784), against 0.304 / 0.272 for the words
+  alone (no piece; 19 queries answer nothing) and 0.612 / 0.631 for BM25 on the same passages. The spike's 0.810 / 0.827 was over the first 64 passages a document: uncapped, the same
+  model scores 0.757 / 0.782 alone, because the long IRS publications' thousands of passages
+  outrank the forms a query is about. **The R@10 target (0.80) is not met** on the whole corpus.
+  One query ("turning recorded speech into written text automatically") meets "nothing found".
+  Embedding all 478 took 838 s of the run (about 112 passages a second on the workers, with the
+  machine at load 10-36); queries took up to 94 ms.
 - **Search.** Candidates come from the FTS5 index; the engine's own rule decides each, so the
   index only narrows. A **quoted phrase** matches a passage's words in order (anywhere, as it
   matches speech, cues and text in pictures); `text:` / `says:` matches documents only; `said:`
@@ -883,8 +950,8 @@ a text model for meaning (D3) and OCR for scans (D4) follow them.
   "Reading documents 12 of 200". `settings_json` has `document_files`, `doc_index` and
   `pdf_available`.
 - **Privacy.** A document's text is the most sensitive thing the index holds. It stays in
-  `index.db` beside the transcripts, never in a log, a crash report or telemetry, and never in an
-  export; Clear index, removing a root, a folder's Off and Show documents off delete it.
+  `index.db` beside the transcripts, never in a log, a crash report or telemetry, and in an
+  export only when Documents is ticked for it (D3, off by default); Clear index, removing a root, a folder's Off and Show documents off delete it.
 - **Never waits for the models.** Every other pass waits while the picture towers load or move
   to an accelerator (about two minutes for ViT-L/14 on the M5's Neural Engine at each pack start,
   more on a first compile). The document pass reads words and needs no model, so while they do,
@@ -1125,7 +1192,8 @@ Windows the repeater is virtualised already, so "Show all" expands the grid in p
 Index a library once and carry it to another machine (`src/addons/ai/transfer.*`,
 `export_index` / `inspect_export` / `import_index`, both chromes).
 
-**The file** (`.mvindex`, SQLite, `info.format = "mediaviewer.index"`, version 1) holds the chosen
+**The file** (`.mvindex`, SQLite, `info.format = "mediaviewer.index"`, version 2; a version 1 file
+still imports) holds the chosen
 roots with each asset's path **relative to its root** (`/`-separated), its `(mtime, size)`, kind
 and duration, and its rows: `progress` (done and partial only), `frames`, `speech`. Optional
 (`MV_AI_TRANSFER_*`): **People** (`people`, `faces` without a path, `rejected`, `no_merge`,
@@ -1165,6 +1233,16 @@ already scanned keep this machine's faces. Only the current face model's faces a
 `thumbnail_store_jpeg`; the host checks the bytes are a baseline JPEG no larger than 512 on the
 long edge before storing (a shared file is untrusted input), and the pack stores one only when
 the local file's `(mtime, size)` equals the file's row.
+
+**Documents** (v2, #354 D3; `MV_AI_TRANSFER_DOCUMENTS`): off by default, as People is, because
+the file then holds what the documents say. Ticked, it carries the documents (kind 3), their
+passages and words (`passages`), their passage vectors (`passage_vecs`, with `info.docs_spec` the
+text model) and their page pictures (frames with the page flag, whose progress is
+`docpage/<picture spec>`). Unticked, no document travels, nor its name, as in v1. An import takes
+them only when ticked there too and documents are shown on that machine; the passages get new ids
+and their vectors follow them. Vectors come only with the passages they belong to: a document
+whose words this machine had already read keeps its own and embeds them itself. `inspect_export`
+reports `documents` (`count`, `shown`, `meaning_match`: the same text model is loaded here).
 
 It is a one-off merge, not a sync. The Photos library root is never exported (its keys are this
 Mac's PhotoKit identifiers). The file carries folder and file names and, if ticked, faces and

@@ -11,7 +11,7 @@
 namespace mv::ai {
 namespace {
 
-constexpr int kSchemaVersion = 9;
+constexpr int kSchemaVersion = 10;
 
 // A prepared statement that finalizes itself; binds are 1-based.
 class stmt {
@@ -343,6 +343,22 @@ result<std::unique_ptr<index_db>> index_db::open(const std::string& path) {
       return err(status::corrupt);
     }
     v = "9";
+  }
+  // Schema 9 -> 10 (#354 D3): a passage's vector under the Documents piece's
+  // text model, int8 like frames. A passage that goes takes its vectors.
+  if (v == "9") {
+    if (!d->exec("BEGIN")) return err(status::corrupt);
+    const bool ok =
+        d->exec("CREATE TABLE IF NOT EXISTS passage_vecs(passage_id INTEGER NOT NULL REFERENCES passages(id)"
+                " ON DELETE CASCADE, spec TEXT NOT NULL, generic REAL NOT NULL, scale REAL NOT NULL,"
+                " emb BLOB NOT NULL, PRIMARY KEY(passage_id, spec)) WITHOUT ROWID;") &&
+        d->exec("CREATE INDEX IF NOT EXISTS passage_vecs_spec ON passage_vecs(spec, passage_id);") &&
+        static_cast<bool>(d->set_meta("schema", "10"));
+    if (!ok || !d->exec("COMMIT")) {
+      d->exec("ROLLBACK");
+      return err(status::corrupt);
+    }
+    v = "10";
   }
   if (v != std::to_string(kSchemaVersion)) {
     return err(status::unsupported_format);  // a newer add-on's index
@@ -1073,6 +1089,104 @@ expected index_db::find_passages(const std::string& fts_query, std::size_t limit
   return {};
 }
 
+std::vector<passage_out> index_db::passages_of(std::int64_t asset) {
+  std::lock_guard lock(m_);
+  std::vector<passage_out> out;
+  stmt s(db_, "SELECT id, page, text FROM passages WHERE asset_id = ?1 ORDER BY ord");
+  if (!s.ok()) return out;
+  s.bind(1, asset);
+  while (s.step_row()) {
+    passage_out p;
+    p.id = s.i64(0);
+    p.asset = asset;
+    p.page = static_cast<std::uint32_t>(s.i64(1));
+    p.text = s.text(2);
+    out.push_back(std::move(p));
+  }
+  return out;
+}
+
+result<passage_out> index_db::passage_by_id(std::int64_t id) {
+  std::lock_guard lock(m_);
+  stmt s(db_, "SELECT asset_id, page, text FROM passages WHERE id = ?1");
+  if (!s.ok()) return err(status::io);
+  s.bind(1, id);
+  if (!s.step_row()) return err(status::not_found);
+  passage_out p;
+  p.id = id;
+  p.asset = s.i64(0);
+  p.page = static_cast<std::uint32_t>(s.i64(1));
+  p.text = s.text(2);
+  return p;
+}
+
+expected index_db::commit_passage_vecs(std::int64_t asset, const std::string& spec,
+                                       std::span<const passage_vec_in> vecs, std::uint32_t dim) {
+  std::lock_guard lock(m_);
+  if (!exec("BEGIN")) return err(status::io);
+  bool ok = true;
+  {
+    stmt d(db_, "DELETE FROM passage_vecs WHERE spec = ?2 AND passage_id IN"
+                " (SELECT id FROM passages WHERE asset_id = ?1)");
+    ok = d.bind(1, asset).bind(2, spec).run();
+    // Only passages still there (a changed file dropped them meanwhile).
+    stmt ins(db_, "INSERT OR REPLACE INTO passage_vecs(passage_id, spec, generic, scale, emb)"
+                  " SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM passages WHERE id = ?1 AND asset_id = ?6)");
+    std::vector<std::int8_t> q;
+    for (const passage_vec_in& v : vecs) {
+      if (!ok) break;
+      if (v.emb.size() != dim) {
+        ok = false;
+        break;
+      }
+      float scale = 1;
+      quantise(v.emb, q, scale);
+      ins.reset();
+      ins.bind(1, v.passage).bind(2, spec).bind_real(3, v.generic).bind_real(4, scale)
+          .bind_blob(5, q.data(), q.size()).bind(6, asset);
+      ok = ins.run();
+    }
+    stmt pr(db_, "INSERT INTO progress(asset_id, spec, state, resume_ms, indexed_at)"
+                 " VALUES(?1, ?2, 2, 0, strftime('%s','now'))"
+                 " ON CONFLICT(asset_id, spec) DO UPDATE SET state = 2, resume_ms = 0,"
+                 " indexed_at = excluded.indexed_at");
+    ok = ok && pr.bind(1, asset).bind(2, spec).run();
+  }
+  if (!ok) {
+    exec("ROLLBACK");
+    return err(status::io);
+  }
+  return exec("COMMIT") ? expected{} : err(status::io);
+}
+
+expected index_db::each_passage_vec(const std::string& spec, const std::function<void(const frame_out&)>& visit,
+                                    std::int64_t after_id) {
+  std::lock_guard lock(m_);
+  stmt s(db_, "SELECT v.passage_id, p.asset_id, v.generic, v.scale, v.emb FROM passage_vecs v"
+              " JOIN passages p ON p.id = v.passage_id WHERE v.spec = ?1 AND v.passage_id > ?2"
+              " ORDER BY v.passage_id");
+  if (!s.ok()) return err(status::io);
+  s.bind(1, spec).bind(2, after_id);
+  while (s.step_row()) {
+    frame_out f;
+    f.id = s.i64(0);
+    f.asset_id = s.i64(1);
+    f.pts_ms = f.id;
+    f.generic = static_cast<float>(s.real(2));
+    f.scale = static_cast<float>(s.real(3));
+    f.emb = s.blob(4);
+    visit(f);
+  }
+  return {};
+}
+
+std::uint64_t index_db::passage_vec_count(const std::string& spec) {
+  std::lock_guard lock(m_);
+  stmt f(db_, "SELECT COUNT(*) FROM passage_vecs WHERE spec = ?1");
+  f.bind(1, spec);
+  return f.step_row() ? static_cast<std::uint64_t>(f.i64(0)) : 0;
+}
+
 std::uint64_t index_db::passage_count(std::int64_t asset) {
   std::lock_guard lock(m_);
   stmt f(db_, asset > 0 ? "SELECT COUNT(*) FROM passages WHERE asset_id = ?1" : "SELECT COUNT(*) FROM passages");
@@ -1086,7 +1200,8 @@ expected index_db::drop_spec(const std::string& spec) {
   stmt f(db_, "DELETE FROM frames WHERE spec = ?1");
   stmt p(db_, "DELETE FROM progress WHERE spec = ?1");
   stmt sp(db_, "DELETE FROM speech WHERE spec = ?1");
-  if (!f.bind(1, spec).run() || !p.bind(1, spec).run() || !sp.bind(1, spec).run()) {
+  stmt pv(db_, "DELETE FROM passage_vecs WHERE spec = ?1");
+  if (!f.bind(1, spec).run() || !p.bind(1, spec).run() || !sp.bind(1, spec).run() || !pv.bind(1, spec).run()) {
     exec("ROLLBACK");
     return err(status::io);
   }
@@ -1277,7 +1392,8 @@ expected index_db::set_meta(const std::string& key, const std::string& value) {
 
 expected index_db::clear() {
   std::lock_guard lock(m_);
-  if (!exec("DELETE FROM speech; DELETE FROM cues; DELETE FROM passages; DELETE FROM passage_text;"
+  if (!exec("DELETE FROM speech; DELETE FROM cues; DELETE FROM passage_vecs; DELETE FROM passages;"
+            " DELETE FROM passage_text;"
             " DELETE FROM frames; DELETE FROM progress; DELETE FROM asset_text; DELETE FROM assets; DELETE FROM roots;")) {
     return err(status::io);
   }

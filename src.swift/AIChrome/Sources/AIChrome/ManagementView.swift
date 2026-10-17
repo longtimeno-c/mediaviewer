@@ -131,6 +131,17 @@ final class ManagementModel: ObservableObject {
   @Published private(set) var videoIndex: Int = 1
   /// The Sound piece (ai-audio) is installed and loaded.
   @Published private(set) var audioReady = false
+  /// #354 D3: the Documents piece (ai-docs) is loaded: document words also
+  /// match by meaning, with this text model.
+  @Published private(set) var docsReady = false
+  @Published private(set) var docsModel = ""
+  /// The sentence under "Index documents for": whether Words also matches by
+  /// meaning, or that the Documents piece would add it ("" while Off).
+  var docsMeaningHint: String {
+    guard docIndex != 0 else { return "" }
+    guard docsReady else { return " With the Documents piece, Words also matches by meaning." }
+    return docsModel.isEmpty ? " Words also match by meaning." : " Words also match by meaning (\(docsModel))."
+  }
   @Published private(set) var models: [(quality: Int, name: String)] = []
   @Published private(set) var roots: [RootRow] = []
   var folderRoots: [RootRow] { roots.filter { !$0.isPhotos } }
@@ -243,10 +254,11 @@ final class ManagementModel: ObservableObject {
     if s.flags != flags {
       let facesChanged = (s.flags ^ flags) & (MV_AI_STATUS_FACES_READY | MV_AI_STATUS_FACES_ON) != 0
       let audioChanged = (s.flags ^ flags) & MV_AI_STATUS_AUDIO_READY != 0
+      let docsChanged = (s.flags ^ flags) & MV_AI_STATUS_DOCS_READY != 0
       flags = s.flags
-      // The People or Sound piece came or went (installed, removed, or the
-      // opt-in flipped): the view follows now, not at the next start.
-      if facesChanged || audioChanged { reloadSettings() }
+      // The People, Sound or Documents piece came or went (installed, removed,
+      // or the opt-in flipped): the view follows now, not at the next start.
+      if facesChanged || audioChanged || docsChanged { reloadSettings() }
       if facesChanged { reloadPeople() }
     }
     if s.faces_total != faceCounts.0 || s.people != faceCounts.1 {
@@ -302,6 +314,8 @@ final class ManagementModel: ObservableObject {
     audioReady = obj["audio_ready"] as? Bool ?? false
     docIndex = obj["doc_index"] == nil ? 1 : min(2, max(0, Int(int64(obj["doc_index"]))))
     pdfAvailable = obj["pdf_available"] as? Bool ?? true
+    docsReady = obj["docs_ready"] as? Bool ?? false
+    docsModel = obj["docs_model"] as? String ?? ""
     models = (obj["models"] as? [[String: Any]] ?? []).map {
       (quality: Int(int64($0["quality"])), name: $0["name"] as? String ?? "")
     }
@@ -930,7 +944,8 @@ struct ManagementView: View {
         if model.documentFiles {
           row("Index documents for",
               detail: "Words finds PDFs and Word documents by the words in them, and opens one on the page that matched. Words and pages also finds pages by what they look like (a receipt, a floor plan, a slide): the first pages of each, and any page that is mostly a picture. Each folder can differ, from its menu below. An index of documents holds their text on this Mac; it never leaves it."
-                + (model.pdfAvailable ? "" : " PDFs need the latest Core: update it above. Word documents are read meanwhile.")) {
+                + (model.pdfAvailable ? "" : " PDFs need the latest Core: update it above. Word documents are read meanwhile.")
+                + model.docsMeaningHint) {
             Picker("Index documents for", selection: Binding(get: { model.docIndex },
                                                              set: { model.setDocIndex($0) })) {
               Text("Off").tag(0)
@@ -1050,7 +1065,7 @@ struct ManagementView: View {
       if model.transfer.available {
         section("Import and export") {
           IndexTransferSection(model: model.transfer, roots: model.folderRoots,
-                               peopleOn: model.facesOn && model.facesReady)
+                               peopleOn: model.facesOn && model.facesReady, docsOn: model.documentFiles)
         }
       }
       section("People") {

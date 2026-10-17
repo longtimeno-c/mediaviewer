@@ -97,6 +97,8 @@ int main() {
   MV_FIELD(mv_ai_status, docs_failed);
   MV_FIELD(mv_ai_status, pages_total);
   MV_FIELD(mv_ai_status, pages_done);
+  MV_FIELD(mv_ai_status, meaning_total);
+  MV_FIELD(mv_ai_status, meaning_done);
   MV_END(mv_ai_status);
 
   MV_BEGIN(mv_ai_result);
