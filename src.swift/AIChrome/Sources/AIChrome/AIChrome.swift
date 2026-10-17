@@ -9,7 +9,8 @@
 //                 -shutdown (the selectors Import's chrome answers too), and the
 //                 optional -runCommand:, -folderChanged:, -itemChanged:, -settingsView.
 // To the host:    selectors on the host object (MvAddonHostMac): openList:,
-//                 closeList, viewerState, seekTo:, setMarkers:, viewerWindow.
+//                 closeList, viewerState, seekTo:, setMarkers:, viewerWindow,
+//                 placeTerms:.
 // The chrome never calls a host dispatcher from native code, and nothing here
 // logs a path, a query, or a name (rule 6).
 import AppKit
@@ -26,6 +27,7 @@ public final class MVAIChrome: NSObject {
   private var settingsHost: NSView?
   private var folder = ""
   private var showAudio = false  // #355: File types "Show audio files"
+  private var showDocuments = false  // #354: File types "Show documents"
   /// People → a person, opened in the gallery: its own search, apart from
   /// the panel's.
   private var personSearch: SearchModel?
@@ -48,6 +50,7 @@ public final class MVAIChrome: NSObject {
     let m = SearchModel(table: table)
     m.chrome = self
     m.audioFilesChanged(showAudio)
+    m.documentFilesChanged(showDocuments)
     if !folder.isEmpty { m.folderChanged(folder) }
     search = m
     return m
@@ -59,6 +62,7 @@ public final class MVAIChrome: NSObject {
     let m = ManagementModel(table: table)
     m.chrome = self
     m.audioFiles = showAudio
+    m.documentFiles = showDocuments
     if !folder.isEmpty { m.folderChanged(folder) }
     manage = m
     return m
@@ -108,6 +112,7 @@ public final class MVAIChrome: NSObject {
       switch name {
       case "search_open":
         guard let p = panelController() else { return false }
+        search?.refreshPlaces()
         p.show(over: viewerWindow())
         return true
       case "search_similar":
@@ -161,6 +166,19 @@ public final class MVAIChrome: NSObject {
       search?.audioFilesChanged(on)
       personSearch?.audioFilesChanged(on)
       manage?.audioFiles = on
+    }
+  }
+
+  /// #354: File types "Show documents", on attach and on each change. The pack
+  /// indexes and searches PDF and DOCX only while it is on.
+  @objc(showDocumentsChanged:)
+  public func showDocumentsChanged(_ on: Bool) {
+    MainActor.assumeIsolated {
+      showDocuments = on
+      if let table, !table.readOnly { table.setSetting("document_files", on ? "1" : "0") }
+      search?.documentFilesChanged(on)
+      personSearch?.documentFilesChanged(on)
+      manage?.documentFiles = on
     }
   }
 
@@ -234,6 +252,15 @@ public final class MVAIChrome: NSObject {
     return v
   }
 
+  /// #441: mv_slots_place_terms's bits for `query` (PlaceTerms); 0 from a
+  /// host without placeTerms:, which searches as before.
+  func hostPlaceTerms(_ query: String) -> UInt32 {
+    let sel = NSSelectorFromString("placeTerms:")
+    guard let host, host.responds(to: sel),
+          let n = host.perform(sel, with: query as NSString)?.takeUnretainedValue() as? NSNumber else { return 0 }
+    return n.uint32Value
+  }
+
   func viewerWindow() -> NSWindow? {
     let sel = NSSelectorFromString("viewerWindow")
     guard let host, host.responds(to: sel) else { return NSApp.mainWindow }
@@ -288,6 +315,7 @@ public final class MVAIChrome: NSObject {
       m = SearchModel(table: table)
       m.chrome = self
       m.audioFilesChanged(showAudio)
+    m.documentFilesChanged(showDocuments)
       personSearch = m
     }
     if !folder.isEmpty { m.folderChanged(folder) }

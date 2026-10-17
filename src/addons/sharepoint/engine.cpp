@@ -78,6 +78,15 @@ std::string plural(std::uint32_t n, const char* one, const char* many) {
   return std::to_string(n) + " " + (n == 1 ? one : many);
 }
 
+// "123 456", "123-456", " 123456 " -> "123456".
+std::string digits_of(std::string_view s) {
+  std::string out;
+  for (char c : s) {
+    if (c >= '0' && c <= '9') out.push_back(c);
+  }
+  return out;
+}
+
 }  // namespace
 
 engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(opts)) {
@@ -85,8 +94,19 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   id_ = random_id();
   if (opts_.my_name.empty()) opts_.my_name = net::machine_name();
   v_.my_name = clean_name(opts_.my_name);
+  // What was kept from the last run (#442). A saved folder that is gone
+  // falls back to the default; it is not forgotten until another is picked.
+  const prefs kept = opts_.initial ? *opts_.initial : load_prefs(opts_.prefs_path).value_or(prefs{});
+  v_.receiving = kept.receiving || kept.background;  // presence starts on the control thread, below
+  v_.background = kept.background;
   v_.destination = host_.default_destination();
+  if (!kept.destination.empty()) {
+    if (auto st = io::stat_path(kept.destination); st && st->is_directory) v_.destination = kept.destination;
+  }
   control_thread_ = std::thread([this] { control_loop(); });
+  // Keep receiving was on at the last launch (#442): presence and the status
+  // text come up on the control thread, never the caller's. Off: nothing.
+  if (v_.receiving) request_reconcile();
 }
 
 engine::~engine() {
@@ -101,11 +121,17 @@ engine::~engine() {
   {
     std::lock_guard lock(threads_m_);
     if (transfer_thread_.joinable()) transfer_thread_.join();
-    if (files_thread_.joinable()) files_thread_.join();
     for (auto& h : helpers_) {
       if (h.thread.joinable()) h.thread.join();
     }
     helpers_.clear();
+  }
+  {
+    std::unique_lock lock(files_m_);
+    files_cv_.notify_all();
+    std::thread reader = std::move(files_thread_);
+    lock.unlock();
+    if (reader.joinable()) reader.join();
   }
   {
     std::lock_guard lock(control_m_);
@@ -113,6 +139,7 @@ engine::~engine() {
   }
   if (control_thread_.joinable()) control_thread_.join();
   stop_presence();
+  if (save_wanted_) save_now();  // a change the control thread had not written yet
 }
 
 // ---- posting and the control thread ------------------------------------------------
@@ -143,15 +170,92 @@ void engine::request_reconcile() {
   control_cv_.notify_all();
 }
 
+void engine::request_save() {
+  if (opts_.prefs_path.empty()) return;
+  std::lock_guard lock(control_m_);
+  save_wanted_ = true;
+  control_cv_.notify_all();
+}
+
+void engine::save_now() {
+  prefs p;
+  {
+    std::lock_guard lock(m_);
+    p.receiving = v_.receiving;
+    p.background = v_.background;
+    p.destination = v_.destination == host_.default_destination() ? std::string() : v_.destination;
+  }
+  {
+    std::lock_guard lock(control_m_);
+    save_wanted_ = false;
+  }
+  if (!save_prefs(opts_.prefs_path, p)) host_.log(1, "sharepoint: could not keep the settings");
+}
+
+void engine::sync_status() {
+  std::string want;
+  bool keep = false;
+  {
+    std::lock_guard lock(m_);
+    want = v_.receiving && !stopping_.load() ? kReceivingStatus : "";
+    keep = v_.background && !stopping_.load();
+  }
+  if (want == status_shown_ && keep == keep_shown_) return;
+  bool taken = true;
+  if (want != status_shown_) {
+    if (host_.post_status(want)) {
+      status_shown_ = want;
+    } else {
+      taken = false;
+    }
+  }
+  // #452: the host keeps this process (menu-bar item / tray icon) with every
+  // window closed while Receive when MediaViewer is closed is on.
+  if (keep != keep_shown_) {
+    if (host_.keep_alive(keep)) {
+      keep_shown_ = keep;
+    } else {
+      taken = false;
+    }
+  }
+  if (taken) {
+    status_tries_ = 0;
+    std::lock_guard lock(control_m_);
+    status_due_ = {};
+    return;
+  }
+  // The add-on loads before the host attaches its items: try again shortly,
+  // for a while (40 x 250 ms).
+  std::lock_guard lock(control_m_);
+  status_due_ = ++status_tries_ < 40 ? std::chrono::steady_clock::now() + std::chrono::milliseconds(250)
+                                     : std::chrono::steady_clock::time_point{};
+}
+
 void engine::control_loop() {
   std::unique_lock lock(control_m_);
   while (!stopping_.load()) {
-    if (post_pending_) {
-      control_cv_.wait_until(lock, post_due_, [&] { return stopping_.load() || reconcile_wanted_; });
+    const auto none = std::chrono::steady_clock::time_point{};
+    const auto due = post_pending_ && status_due_ != none ? std::min(post_due_, status_due_)
+                     : post_pending_                     ? post_due_
+                                                         : status_due_;
+    const auto woken = [&] { return stopping_.load() || reconcile_wanted_ || save_wanted_; };
+    if (due != none) {
+      control_cv_.wait_until(lock, due, woken);
     } else {
-      control_cv_.wait(lock, [&] { return stopping_.load() || reconcile_wanted_ || post_pending_; });
+      control_cv_.wait(lock, [&] { return woken() || post_pending_; });
     }
     if (stopping_.load()) break;
+    if (status_due_ != none && std::chrono::steady_clock::now() >= status_due_) {
+      status_due_ = none;
+      lock.unlock();
+      sync_status();
+      lock.lock();
+    }
+    if (save_wanted_) {
+      lock.unlock();
+      save_now();
+      lock.lock();
+    }
     if (reconcile_wanted_) {
       reconcile_wanted_ = false;
       lock.unlock();
@@ -181,6 +285,7 @@ void engine::reconcile() {
   } else if (!want && presence_on_) {
     stop_presence();
   }
+  sync_status();
 }
 
 // ---- presence -----------------------------------------------------------------------
@@ -501,10 +606,44 @@ void engine::set_files(const std::vector<std::string>& paths) {
     gen = ++files_generation_;
     v_.reading_folder = true;
   }
-  post();
-  std::lock_guard threads(threads_m_);
-  if (files_thread_.joinable()) files_thread_.join();
-  files_thread_ = std::thread([this, paths, gen] { build_files(paths, gen); });
+  // Handed to the folder reader; this returns at once, whatever it is reading.
+  queue_files({paths, {}, gen});
+  post_throttled();
+}
+
+void engine::queue_files(files_job job) {
+  std::lock_guard lock(files_m_);
+  if (stopping_.load()) return;
+  files_next_ = std::move(job);  // a set waiting is replaced: only the newest is read
+  if (!files_thread_.joinable()) files_thread_ = std::thread([this] { files_loop(); });
+  files_cv_.notify_all();
+}
+
+bool engine::files_stale(std::uint64_t gen) const noexcept {
+  return stopping_.load() || gen != files_generation_.load();
+}
+
+void engine::files_loop() {
+  for (;;) {
+    files_job job;
+    {
+      std::unique_lock lock(files_m_);
+      files_cv_.wait(lock, [&] { return stopping_.load() || files_next_.has_value(); });
+      if (stopping_.load()) return;
+      job = std::move(*files_next_);
+      files_next_.reset();
+    }
+    if (files_stale(job.gen)) continue;
+    try {
+      if (!job.folder.empty()) {
+        walk_folder(job.folder, job.gen);
+      } else {
+        build_files(std::move(job.paths), job.gen);
+      }
+    } catch (...) {
+      publish_files({}, job.gen);  // out of memory: an empty set, not a stuck "Reading"
+    }
+  }
 }
 
 bool engine::out_busy_locked() const noexcept {
@@ -521,9 +660,11 @@ void engine::publish_files(std::vector<outgoing_file> files, std::uint64_t gen) 
     v_.file_count = files_.size();
     v_.file_bytes = 0;
     v_.file_names.clear();
+    v_.file_paths.clear();
     for (const auto& f : files_) {
       v_.file_bytes += f.size;
       if (v_.file_names.size() < kListedNames) v_.file_names.push_back(f.rel);
+      if (v_.file_paths.size() < kShownThumbs) v_.file_paths.push_back(f.path);
     }
     if (v_.out == view::out_phase::done || v_.out == view::out_phase::ended) v_.out = view::out_phase::idle;
   }
@@ -535,6 +676,7 @@ void engine::build_files(std::vector<std::string> paths, std::uint64_t gen) {
   std::set<std::string> taken;
   auto add = [&](const std::string& path) {
     if (out.size() >= kMaxFiles || !taken.insert(path).second) return;
+    if (files_stale(gen)) return;  // a newer set replaced this one
     auto st = io::stat_path(path);
     if (!st || st->is_directory) return;
     std::string rel(leaf_name(path));
@@ -542,7 +684,7 @@ void engine::build_files(std::vector<std::string> paths, std::uint64_t gen) {
     out.push_back({path, std::move(rel), st->size, st->mtime_unix});
   };
   for (const auto& p : paths) {
-    if (stopping_.load()) return;
+    if (files_stale(gen)) return;
     add(p);
   }
   // Each file with its pair half and its sidecars (docs/design/28 "What
@@ -550,12 +692,13 @@ void engine::build_files(std::vector<std::string> paths, std::uint64_t gen) {
   std::map<std::string, std::vector<std::string>> by_dir;
   for (const auto& f : out) by_dir[std::string(io::parent_of(f.path))].push_back(std::string(leaf_name(f.path)));
   for (const auto& [dir, chosen] : by_dir) {
-    if (stopping_.load()) return;
+    if (files_stale(gen)) return;
     std::vector<std::string> names;
     (void)io::walk_files(dir, 0, [&](const io::tree_entry& e) {
       if (!e.cloud_only) names.push_back(e.name_utf8);
-      return names.size() < 20000;
+      return names.size() < 20000 && !files_stale(gen);
     });
+    if (files_stale(gen)) return;
     std::unordered_map<std::string, std::size_t> index;
     std::unordered_map<std::string, std::vector<std::size_t>> by_stem;  // lower-case stem -> names
     for (std::size_t i = 0; i < names.size(); ++i) {
@@ -592,37 +735,58 @@ void engine::read_folder(std::string folder) {
     gen = ++files_generation_;
     v_.reading_folder = true;
   }
-  post();
-  std::lock_guard threads(threads_m_);
-  if (files_thread_.joinable()) files_thread_.join();
-  files_thread_ = std::thread([this, folder = std::move(folder), gen] {
-    std::vector<outgoing_file> out;
-    std::string top(leaf_name(folder));
-    while (!top.empty() && (top.back() == '/' || top.back() == '\\')) top.pop_back();
-    if (!safe_relative(top)) top = "Folder";
-    (void)io::walk_files(folder, 32, [&](const io::tree_entry& e) {
-      if (stopping_.load()) return false;
-      if (e.cloud_only || skipped_relative(e.relative_utf8)) return true;
-      std::string rel = top + "/" + e.relative_utf8;
-      if (safe_relative(rel)) out.push_back({e.path_utf8, std::move(rel), e.size, e.mtime_unix});
-      return out.size() < kMaxFiles;
-    });
-    publish_files(std::move(out), gen);
+  queue_files({{}, std::move(folder), gen});
+  post_throttled();
+}
+
+void engine::walk_folder(const std::string& folder, std::uint64_t gen) {
+  std::vector<outgoing_file> out;
+  std::string top(leaf_name(folder));
+  while (!top.empty() && (top.back() == '/' || top.back() == '\\')) top.pop_back();
+  if (!safe_relative(top)) top = "Folder";
+  (void)io::walk_files(folder, 32, [&](const io::tree_entry& e) {
+    if (files_stale(gen)) return false;
+    if (e.cloud_only || skipped_relative(e.relative_utf8)) return true;
+    std::string rel = top + "/" + e.relative_utf8;
+    if (safe_relative(rel)) out.push_back({e.path_utf8, std::move(rel), e.size, e.mtime_unix});
+    return out.size() < kMaxFiles;
   });
+  publish_files(std::move(out), gen);
 }
 
 void engine::on_event(const std::string& node, std::uint32_t kind, const std::string& value_json) {
   const auto value = value_json.empty() ? std::nullopt : json::parse(value_json, 4);
   const std::string* text = value && value->k == json::kind::string ? &value->s : nullptr;
-  constexpr std::uint32_t kClick = 1, kChange = 2, kSubmit = 3, kSelect = 4;
+  constexpr std::uint32_t kClick = 1, kChange = 2, kSubmit = 3, kSelect = 4, kActivate = 5;
 
-  if (node == "receiving" && kind == kChange && value && value->k == json::kind::boolean) {
+  if ((node == "receiving" || node == "background") && kind == kChange && value &&
+      value->k == json::kind::boolean) {
+    bool changed = false;
     {
       std::lock_guard lock(m_);
-      v_.receiving = value->b;
+      const bool was_receiving = v_.receiving, was_background = v_.background;
+      if (node == "receiving") {
+        v_.receiving = value->b;
+        if (!value->b) v_.background = false;  // closed MediaViewer cannot receive without it
+      } else {
+        v_.background = value->b;
+        if (value->b) v_.receiving = true;  // #452: receiving with MediaViewer closed is receiving
+      }
+      changed = v_.receiving != was_receiving || v_.background != was_background;
     }
+    // #452: the OS asks, once, the first time either is turned on; never at launch.
+    if (value->b) host_.ask_to_notify();
     request_reconcile();
+    if (changed) request_save();  // kept for the next launch (#442)
     post();
+  } else if (node == "peers" && kind == kActivate && text) {
+    // #442: one click on a nearby computer sends to it, as AirDrop.
+    {
+      std::lock_guard lock(m_);
+      if (transfer_running_ || out_busy_locked()) return;
+      v_.selected_peer = *text;
+    }
+    start_send();
   } else if (node == "peers" && kind == kSelect && value && value->k == json::kind::array) {
     std::lock_guard lock(m_);
     v_.selected_peer = !value->a.empty() && value->a[0].k == json::kind::string ? value->a[0].s : std::string();
@@ -637,6 +801,7 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
       v_.file_count = 0;
       v_.file_bytes = 0;
       v_.file_names.clear();
+      v_.file_paths.clear();
       v_.reading_folder = false;
     }
     post();
@@ -645,10 +810,15 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
     if (st && st->is_directory) read_folder(*text);
   } else if (node == "destination" && (kind == kChange || kind == kSubmit) && text) {
     auto st = io::stat_path(*text);
+    bool changed = false;
     {
       std::lock_guard lock(m_);
-      if (st && st->is_directory) v_.destination = *text;
+      if (st && st->is_directory && v_.destination != *text) {
+        v_.destination = *text;
+        changed = true;
+      }
     }
+    if (changed) request_save();  // kept for the next launch (#442)
     post();  // a folder that is not there puts the last good one back
   } else if ((node == "accept" || node == "decline") && kind == kClick) {
     bool connecting = false;
@@ -661,12 +831,29 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
       connecting = node == "decline" && v_.in == view::in_phase::connecting;
     }
     if (connecting) cancel_transfer();
-  } else if (node == "out_confirm" && kind == kClick) {
-    std::lock_guard lock(m_);
-    if (v_.out == view::out_phase::confirming && out_decision_ == 0) {
-      out_decision_ = 1;
-      decided_.notify_all();
+  } else if (node == "out_code_entry" && (kind == kChange || kind == kSubmit) && text) {
+    // The code the receiver's screen shows, typed here (#442). Checked on this
+    // machine against the code this link derived; a partial entry is not a try.
+    const std::string typed = digits_of(*text);
+    {
+      std::lock_guard lock(m_);
+      if (v_.out != view::out_phase::confirming || out_decision_ != 0 || out_expected_.empty()) return;
+      if (typed.size() < out_expected_.size()) {
+        if (kind == kSubmit && !typed.empty()) v_.out_entry_note = "The code has 6 digits.";
+      } else if (typed.size() == out_expected_.size() &&
+                 sodium_memcmp(typed.data(), out_expected_.data(), typed.size()) == 0) {
+        out_decision_ = 1;
+        v_.out_entry_note.clear();
+        decided_.notify_all();
+      } else if (--v_.out_tries_left <= 0) {
+        out_decision_ = 3;  // the link ends (run_send)
+        decided_.notify_all();
+      } else {
+        v_.out_entry_note = "That is not the code on " + v_.out_peer + "\xE2\x80\x99s screen. " +
+                            plural(static_cast<std::uint32_t>(v_.out_tries_left), "try", "tries") + " left.";
+      }
     }
+    post();
   } else if ((node == "in_cancel" || node == "out_cancel") && kind == kClick) {
     cancel_transfer();
   } else if (node == "in_dismiss" && kind == kClick) {
@@ -771,8 +958,11 @@ void engine::start_send() {
     if (transfer_running_ || files_.empty() || v_.reading_folder || v_.selected_peer.empty()) return;
     if (v_.out == view::out_phase::waiting_wifi || peers_.find(v_.selected_peer) == peers_.end()) return;
     v_.out_peer = peers_[v_.selected_peer].name;
-    v_.out_code.clear();
+    v_.out_peer_id = v_.selected_peer;
     v_.out_note.clear();
+    v_.out_entry_note.clear();
+    v_.out_tries_left = kCodeTries;
+    out_expected_.clear();
     if (needs_wifi(v_)) {
       // Too big for Bluetooth: wait for this peer on Wi-Fi (on_beacon starts
       // the send), with presence kept up meanwhile.
@@ -841,6 +1031,7 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
       std::lock_guard lock(m_);
       v_.out = view::out_phase::ended;
       v_.out_note = std::move(note);
+      out_expected_.clear();
     }
     end_transfer();
   };
@@ -883,12 +1074,13 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
     std::lock_guard lock(m_);
     live_ = ch;
     v_.out = view::out_phase::confirming;
-    v_.out_code = ch->code();
+    out_expected_ = digits_of(ch->code());
   }
   post();
-  // The person checks that the other screen shows the same code before the
-  // offer (even the files' names) leaves: a machine that only claimed the
-  // peer's id, or one in the middle, shows another code there or none.
+  // The person types the code the other screen shows before the offer (even
+  // the files' names) leaves (#442): a machine that only claimed the peer's
+  // id, or one in the middle, shows another code there or none, so what is
+  // typed cannot match this link's. Three wrong ones end the link.
   const auto asked = std::chrono::steady_clock::now();
   int confirmed = 0;
   for (;;) {
@@ -903,11 +1095,17 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
       ch->shutdown();
       return finish("Cancelled. Nothing was sent.");
     }
+    if (confirmed == 3) {
+      (void)ch->try_send(msg::cancel, "{}");
+      ch->shutdown();
+      return finish("The code was wrong " + std::to_string(kCodeTries) +
+                    " times, so the link to " + name + " ended. Nothing was sent.");
+    }
     if (confirmed == 1) break;
     if (std::chrono::steady_clock::now() - asked > kAskFor) {
       (void)ch->try_send(msg::cancel, "{}");
       ch->shutdown();
-      return finish("Nobody confirmed the code, so nothing was sent.");
+      return finish("Nobody typed the code, so nothing was sent.");
     }
     message m;
     auto r = ch->receive(m, 0);
@@ -925,6 +1123,7 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
   {
     std::lock_guard lock(m_);
     v_.out = view::out_phase::waiting;
+    out_expected_.clear();
   }
   post();
   const transfer_result r = send_files(*ch, files, hooks_for(true), [this] {
@@ -984,10 +1183,27 @@ void engine::run_receive(std::unique_ptr<link> l) {
       v_.in_code = ch->code();
       v_.in_via = transport_name(ch->via());
       v_.in_note.clear();
+      // Nothing of an earlier offer stays on screen while this one connects.
+      v_.in_names.clear();
+      v_.in_count = 0;
+      v_.in_total = 0;
+      v_.in_bytes = 0;
+      v_.in_files = 0;
       open_window = !screen_open_;
     }
   }
-  if (open_window) host_.show_screen(true);
+  // #452: a system notification (the host shows it unless this window is in
+  // front) that opens the window; one without notifications opens it now.
+  // Taken back however this offer ends.
+  struct notice_guard {
+    engine& e;
+    bool shown = false;
+    ~notice_guard() {
+      if (shown) (void)e.host_.post_notice("", "");
+    }
+  } shown_notice{*this};
+  shown_notice.shown = notice(name, 0, 0);
+  if (open_window && !shown_notice.shown) host_.show_screen(true);
   post();
   auto offer = read_offer(*ch, kAskMs);
   if (!offer) {
@@ -1020,6 +1236,8 @@ void engine::run_receive(std::unique_ptr<link> l) {
       v_.in_names.emplace_back(leaf_name(f.rel));
     }
   }
+  // The count and size are known now: the notification says so (still no names).
+  if (shown_notice.shown) (void)notice(name, offer->files.size(), offer->bytes);
   post();
 
   auto ended = [&](std::string note) {
@@ -1059,6 +1277,10 @@ void engine::run_receive(std::unique_ptr<link> l) {
       return ended("Something went wrong with the offer from " + name + ". Nothing was received.");
     }
     if (r.error() != status::timeout) return ended("The connection to " + name + " was lost. Nothing was received.");
+  }
+  if (shown_notice.shown) {
+    (void)host_.post_notice("", "");  // decided: nothing waits any more
+    shown_notice.shown = false;
   }
   if (decision != 1) {
     (void)send_decline(*ch, outcome::declined);
@@ -1113,6 +1335,17 @@ void engine::run_receive(std::unique_ptr<link> l) {
   }
   ch->shutdown();
   end_transfer();
+}
+
+bool engine::notice(const std::string& peer, std::size_t count, std::uint64_t bytes) {
+  return host_.post_notice(kNoticeTitle, notice_body(peer, count, bytes));
+}
+
+std::string notice_body(const std::string& peer, std::size_t count, std::uint64_t bytes) {
+  const std::string who = peer.empty() ? std::string("A computer nearby") : peer;
+  if (count == 0) return who + " wants to send you files. Open Sharepoint to see the code.";
+  return who + " wants to send you " + std::to_string(count) + (count == 1 ? " file, " : " files, ") +
+         size_text(bytes) + ". Open Sharepoint to accept.";
 }
 
 // ---- tests ------------------------------------------------------------------------------

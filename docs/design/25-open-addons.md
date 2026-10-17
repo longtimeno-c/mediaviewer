@@ -194,7 +194,10 @@ Local search becomes a search provider in PR 59 instead of owning the path-bar b
 keeps its native pack and its own channel. As built (2026-10-11): while the pack is attached the
 host lists it in the registry as the local-scope provider, a Local search query goes to every
 other local-scope provider too, and the result list's path row offers their rows ("+ 3 in
-Portugal"); the pack's own rich results stay in its panel.
+Portugal"); the pack's own rich results stay in its panel. A query with place terms
+(`place:portugal`) is sent to no other provider (#441): the pack asks the `place:` provider
+itself, through the host table's `place_matches`, and intersects ([17](17-local-ai-search.md)
+"Places over the index").
 
 ## 8. Themes (API 1)
 
@@ -342,7 +345,8 @@ small vocabulary both hosts render with their own controls.
 - **Vocabulary (PR 58):** stack, grid, scroll, split, text, image, thumbnail (a file's, from
   the viewer's cache), thumbnail grid (virtualised by the host), list, table, button, toggle,
   choice, slider, number, text field, progress, separator, and `surface` (pixels the add-on
-  drew, for what the vocabulary lacks).
+  drew, for what the vocabulary lacks). Since #442 also `tiles`, and looks on stack, progress,
+  text field and text (implementation notes below).
 - **State** lives in the add-on. It posts a tree, then diffs; the host applies them on the UI
   thread in one pass. Events (click, change, key, selection) post back to the add-on's worker.
 - **Keyboard-complete** by construction: every control the host renders is focusable and named;
@@ -587,7 +591,7 @@ a chrome-drawn pin) and a search provider (`portugal`, `place:`, `in:`).
 
 | Piece | Code |
 |---|---|
-| The view-tree vocabulary (all 19 node types), its checks, diffs and events | `src/addon/screen.*` |
+| The view-tree vocabulary (all 20 node types), its checks, diffs and events | `src/addon/screen.*` |
 | What a manifest contributes (screens, info sections, providers, items, badges; the symbol set) | `src/addon/contrib.h`; parsed for schema 1 in `src/addon/manifest.cpp` |
 | The registry: tables built at attach, one worker per add-on, coalesced generation-tagged requests, trees, surfaces, rows, badge sets, status | `src/addon/slots.*` |
 | Host table v3 (`screen_post` … `locations_in`) and the add-on side `mv.slots.1` | `mediaviewer_addon.h`, thunks in `src/addon/host.cpp`; `loaded_addon::load` attaches, its destructor detaches first |
@@ -650,7 +654,9 @@ How it works:
   name hits show at once and a provider's rows join when they arrive, with its reason
   ("Portugal") or "Still reading tags — N of M" under the field. A query starting with a
   provider's prefix (`place:`) goes to that provider alone, prefix removed, unless a digit follows
-  (Local search's `in:2024` stays a date term). `locations_in` walks the folder at background
+  (Local search's `in:2024` stays a date term). In Local search a query with place terms goes to
+  no provider; the AI pack asks the `place:` provider for each term as a request of its own
+  (`slot_registry::provider_paths`, #441). `locations_in` walks the folder at background
   priority (it waits while the viewer presents) and caches coordinates by path + size + mtime, so
   a second query reads nothing. Local search with no folder open has `locations_of_index`
   instead (#398): the AI pack's index's coordinates, read from the index, never from the files
@@ -716,6 +722,33 @@ How it works:
   It has no chrome to send the command to.
 - **Settings → Add-ons** gives such an add-on with a window screen an **Open …** button, as Import
   has; the window opens through `open_screen` with no file.
+- **Notices and keep-alive (#452, ABI 0.33)**, for a first-party native add-on (scripts have no
+  such entries): `notice_post` asks for a system notification about one of its screens (title,
+  body, one button that comes back as `MV_SLOT_EVENT_NOTICE`; the host skips it while that screen
+  is the front window and opens the screen on a click), `notice_authorize` asks the OS for
+  permission when the person turns something on, and `keep_alive` keeps the process, with a
+  menu-bar item / notification-area icon, after every window is closed. The registry holds them
+  (`notices_json`); the hosts draw them. Sharepoint is the one user
+  ([28 "In the background"](28-sharepoint.md#in-the-background-452)).
+
+**Added for an AirDrop-like Sharepoint (#442, 2026-10-15)**, generic, drawn by both hosts
+(`ScreenView.swift`, `IslandHost.Screens.cs`) and checked by the core (`"[screens]"`):
+
+- **`tiles`** (interactive; `label` required): `items` of `{id, text, detail?, initials?,
+  progress?, mark?}` (at most 256), `selection`, `size` (32–160 points) and `static`. Each item is a
+  large round tile: `initials` in a circle in the accent colour, the name and caption under it, a
+  ring round the circle while `progress` is 0–1, and a `"done"` / `"failed"` mark. A click, Space or
+  Return on one is `activate` with its id; `select` takes one id. A `static` set is shown, not
+  chosen: no focus, and its events are refused.
+- **`stack` `"look": "card"`**: drawn on a rounded surface with a hairline and padding, as the
+  Settings cards. In a vertical stack with `"align": "center"` the hosts centre text too.
+- **`progress` `"look": "ring"`** with `size` (16–256): a ring that fills, its percentage in the
+  middle; an unknown value is a still third (nothing ticks while nothing moves).
+- **`text_field` `"look": "code"`** with `digits` (1–12): one large centred field that takes
+  digits only, groups them as typed and submits by itself when the last one is typed (Return
+  submits too), then clears for a retry. On Windows it is `FakeInput` with a larger face, as every
+  field there.
+- **`text` `"style": "display"`**: a large face for a short code read across a room.
 
 For a script add-on (PR 57): the registry reaches code through `slot_client`; a script runtime
 implements it on its own worker and calls the same `post_*` functions the v3 rows wrap.

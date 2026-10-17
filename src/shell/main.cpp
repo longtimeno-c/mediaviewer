@@ -41,6 +41,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <thread>
 #include <cwctype>
 #include <utility>
@@ -73,6 +74,7 @@
 #include "shell/filmstrip_hint.h"
 #include "shell/gesture.h"
 #include "shell/key_router.h"
+#include "shell/command_coverage.h"
 #include "shell/keymap.h"
 #include "core/job_system.h"
 #include "edit/histogram.h"
@@ -88,6 +90,7 @@
 #include "core/json.h"
 #include "shell/listing_stamp.h"
 #include "shell/marks.h"
+#include "shell/share_menu.h"
 #include "shell/media_kind.h"
 #include "shell/meta_store.h"
 #include "shell/meta_writer.h"
@@ -151,6 +154,12 @@ constexpr UINT kMsgOpenWithReady = WM_APP + 0x7B;
 // stopped (wparam 2). Posted by the core's listener, on any thread.
 constexpr UINT kMsgScripts = WM_APP + 0x7C;
 constexpr UINT kMsgTextRead = WM_APP + 0x7E;  // text in images: a still was read (any thread posts)
+constexpr UINT kMsgShareReady = WM_APP + 0x7F;  // issue #444: a share's files were gathered (pool posts)
+// #452 (docs/design/28 "In the background"): the notification-area icon's
+// callback, and the chrome saying the add-ons' keep-alive list changed
+// (IslandHost.Notices.cs posts it).
+constexpr UINT kMsgTray = WM_APP + 0x80;
+constexpr UINT kMsgBackgroundChanged = WM_APP + 0x81;
 // Text in images: the pointer rests on a still this long before it is read.
 constexpr UINT_PTR kTextDwellTimerId = 0x7C01;
 constexpr UINT kTextDwellMs = 500;
@@ -343,6 +352,12 @@ struct app_state {
   std::uint32_t page = 0;
   std::uint32_t page_of = UINT32_MAX;
   std::uint32_t page_count = 0;
+  // Issue #429, the page sidebar: wanted (Shift+T, settings.ini [view]
+  // page_sidebar, on unless turned off), and a number bumped for every new
+  // stop, so the island tells two documents of the same length apart.
+  bool page_sidebar_wanted = true;
+  std::int32_t page_sidebar_stop = 0;
+  std::uint32_t page_sidebar_listed = 0;  // the count the island was last given
   // Document scrolling (docs/design/04 "Scrolling a document"): the shared
   // page-turn rule and its sub-pixel carry (canvas/document_scroll.h).
   mv::canvas::document_scroller doc_scroll;
@@ -455,6 +470,8 @@ struct app_state {
   // selection, another folder or the grid closing ends it with no hook.
   std::vector<std::string> gallery_range;
   std::string gallery_range_anchor;
+  // Issue #444: the latest share request; an older gather is dropped.
+  std::uint64_t share_seq = 0;
   // Issue #206: View > Show. For this run only; the core filters the listing.
   mv::io::kind_filter kind_filter = mv::io::kind_filter::all;
   mv::shell::file_jobs files;
@@ -485,6 +502,13 @@ struct app_state {
   int thumb_state = -1;
   // PR 15: the single instance. A second start hands its paths over here.
   mv::shell::instance_listener instance;
+  // #452: an add-on keeps the process with every window closed (Sharepoint's
+  // Receive when MediaViewer is closed). Closing hides the window instead;
+  // the notification-area icon shows while the add-on asks for it.
+  bool in_background = false;
+  bool quit_for_real = false;  // the icon's Quit, an update's restart
+  bool tray_shown = false;
+  UINT taskbar_restart_msg = 0;  // "TaskbarCreated": Explorer restarted, add the icon again
   // An add-on update's restart with no app update staged: MediaViewer starts
   // again with these arguments once this process has exited.
   std::optional<std::vector<std::wstring>> relaunch;
@@ -524,6 +548,9 @@ struct pending_restore {
 // PR 15: `--new-instance` runs a second, independent window (docs/design/09
 // "overridable"); without it a second start hands its paths to the first.
 bool g_new_instance = false;
+// `--compare` (issue #208): start with the two-up compare on, as `|` turns it
+// on. A start forwarded to a running viewer hands over its paths only.
+bool g_start_compare = false;
 // An add-on update's restart (update_guard.h relaunch_after_exit): the pid of
 // the MediaViewer that started this one and is exiting. 0 = not a relaunch.
 unsigned long g_relaunch_after = 0;
@@ -2079,6 +2106,8 @@ void schedule_rotation_write(app_state* app) noexcept {
 void adjust_item_changed(app_state* app);
 void adjust_colour_changed(app_state* app);
 void strip_hint_show(app_state* app);
+bool sync_page_stop(app_state* app, bool opened);
+void page_sidebar_changed(app_state* app);
 
 // The canvas is about to show the selected item (a select, a listing landing,
 // a reselect after a rewrite). The previous slot keeps its geometry for the
@@ -2136,6 +2165,22 @@ void edit_item_opened(app_state* app) {
   workspace_item_changed(app);
   // A document or a clip arriving under the filmstrip: say what T changes.
   strip_hint_show(app);
+  // Issue #429: a new stop has no page count until it opens; the sidebar goes.
+  (void)sync_page_stop(app, false);
+  // #354: a document from a result list opens on the page that matched (its
+  // moment in the list), as the Mac host does; the page's decode takes over
+  // from the first page's (mv_folder_select_page bumps the generation).
+  std::uint32_t index = 0;
+  std::int64_t moment = -1;
+  if (mv::io::is_document_name(entry.name_utf8) && mv_folder_selected(app->session, &index) == MV_OK &&
+      mv_folder_item_moment(app->session, index, &moment) == MV_OK && moment > 0 && moment <= UINT32_MAX) {
+    std::uint64_t job = 0;
+    if (mv_folder_select_page(app->session, static_cast<std::uint32_t>(moment), &job) == MV_OK) {
+      app->page_of = index;
+      app->page = static_cast<std::uint32_t>(moment);
+    }
+  }
+  page_sidebar_changed(app);
 }
 
 void start_rotation_write(app_state* app) {
@@ -2568,19 +2613,30 @@ void strip_hint_toggled(app_state* app) {
 // still or a clip, the keys do nothing.
 // `land`: a scroll turned it, so the page keeps the zoom and lands at its top
 // (forward) or bottom (back) instead of fitting.
-bool turn_page(app_state* app, int delta, bool land = false) {
-  if (!app || !app->session || video_mode(app)) return false;
+// The page state follows the selection: another stop starts at page 0 with its
+// count unknown (and a new page_sidebar_stop). With `opened`, the count is the
+// core's for the image on screen.
+bool sync_page_stop(app_state* app, bool opened) {
   std::uint32_t index = 0;
-  if (mv_folder_selected(app->session, &index) != MV_OK) return false;
+  if (!app->session || mv_folder_selected(app->session, &index) != MV_OK) return false;
   if (app->page_of != index) {
     app->page_of = index;
     app->page = 0;
     app->page_count = 0;
+    ++app->page_sidebar_stop;
   }
   mv_image_info info{};
-  if (mv_session_image_info(app->session, &info) == MV_OK && info.page_count > 0) {
+  if (opened && mv_session_image_info(app->session, &info) == MV_OK && info.page_count > 0) {
     app->page_count = info.page_count;
   }
+  return true;
+}
+
+void page_sidebar_changed(app_state* app);
+
+bool turn_page(app_state* app, int delta, bool land = false) {
+  if (!app || !app->session || video_mode(app)) return false;
+  if (!sync_page_stop(app, true)) return false;
   if (app->page_count <= 1) return false;
   const std::int64_t want = std::clamp<std::int64_t>(static_cast<std::int64_t>(app->page) + delta, 0,
                                                      static_cast<std::int64_t>(app->page_count) - 1);
@@ -2592,6 +2648,7 @@ bool turn_page(app_state* app, int delta, bool land = false) {
   app->input.page_land = land ? (delta > 0 ? 1 : -1) : 0;
   notice_show(app, mv::shell::page_notice(app->page, app->page_count));
   strip_hint_show(app);
+  page_sidebar_changed(app);  // the highlight follows the page
   ++app->input.activity_seq;
   publish(app);
   return true;
@@ -2604,6 +2661,71 @@ bool document_scrolls(app_state* app) {
   if (!app || !app->session || app->mode == open_mode::none || app->edit_path.empty()) return false;
   if (app->gallery_visible || app->editor.open || app->chrome.filmstrip_visible()) return false;
   return mv::io::is_document_name(app->edit_path);
+}
+
+// ---- Issue #429: the page sidebar (docs/design/04 "Page sidebar") ----------------
+//
+// A strip of page thumbnails down the left of a PDF, DOCX or PPTX with more
+// than one page, while the filmstrip is hidden: it takes the strip's role for a
+// document, so the two never show at once. It reserves its width
+// (input.chrome_left_px), so a page is never framed under it. The island
+// (IslandHost.PageSidebar.cs) asks the core for the thumbnails itself.
+
+constexpr int kPageSidebarDip = 148;  // the Mac's kPageSidebarWidthPoints
+
+int page_sidebar_px(std::uint32_t dpi) noexcept {
+  return ::MulDiv(kPageSidebarDip, static_cast<int>(dpi), 96);
+}
+
+// The count the sidebar lists: the stop's own once it is known. Until then,
+// while the last document's sidebar is up, that one's: arrowing from one
+// document to the next keeps the strip rather than taking it down and putting
+// it back, which would refit the canvas twice.
+std::uint32_t page_sidebar_count(const app_state* app) {
+  if (app->page_count > 0) return app->page_count;
+  return app->chrome.page_sidebar_visible() ? app->page_sidebar_listed : 0;
+}
+
+bool page_sidebar_shows(const app_state* app) {
+  if (!app->page_sidebar_wanted || !app->chrome.page_sidebar_supported()) return false;
+  if (page_sidebar_count(app) <= 1 || app->mode == open_mode::none || app->edit_path.empty()) return false;
+  if (app->gallery_visible || app->editor.open || app->settings_open) return false;
+  if (app->chrome.filmstrip_visible() || (app->fullscreen && !app->fullscreen_reveal)) return false;
+  return mv::io::is_document_name(app->edit_path);
+}
+
+// After anything that decides it: the full view pass when it appears or goes
+// (the canvas refits), else only the page count and the highlight.
+void page_sidebar_changed(app_state* app) {
+  if (!app || !app->chrome.page_sidebar_supported()) return;
+  if (page_sidebar_shows(app) != app->chrome.page_sidebar_visible()) {
+    apply_view_state(app);
+    return;
+  }
+  if (app->chrome.page_sidebar_visible()) {
+    app->page_sidebar_listed = page_sidebar_count(app);
+    app->chrome.set_page_sidebar(static_cast<std::int32_t>(app->page_sidebar_listed),
+                                 static_cast<std::int32_t>(app->page), app->page_sidebar_stop);
+  }
+}
+
+// The island saw the image on screen open (chrome_cmd_image_opened): its page
+// count is known now.
+void page_sidebar_image_opened(app_state* app) {
+  if (!app || !sync_page_stop(app, true)) return;
+  page_sidebar_changed(app);
+}
+
+void toggle_page_sidebar_setting(app_state* app) {
+  if (!app) return;
+  app->page_sidebar_wanted = !app->page_sidebar_wanted;
+  mv::shell::save_page_sidebar(app->page_sidebar_wanted);
+  apply_view_state(app);
+  // Asked for over a document that cannot show it: say why rather than nothing.
+  if (app->page_sidebar_wanted && !app->chrome.page_sidebar_visible() &&
+      app->chrome.filmstrip_visible() && mv::io::is_document_name(app->edit_path)) {
+    notice_show(app, "Press T to hide the filmstrip and show the page sidebar");
+  }
 }
 
 // `dx` / `dy` in wheel units (120 a notch; a touchpad sends less), positive
@@ -3832,6 +3954,7 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept;
 int right_pane_px(int client_width, std::uint32_t dpi) noexcept;
 void enable_dark_titlebar(HWND hwnd) noexcept;
 void set_editor_open(app_state* app, bool open);
+bool share_request_run(app_state* app, mv::shell::share_request request);
 
 std::string editor_name(const app_state* app) {
   const std::size_t slash = app->editor.path.find_last_of("\\/");
@@ -4550,11 +4673,12 @@ void set_editor_open(app_state* app, bool open) {
   }
 }
 
-void chrome_on_command(void* ctx, int command, float arg) {
-  auto* app = static_cast<app_state*>(ctx);
-  // WM_CLOSE pumps messages after detaching; nothing the island queued before
-  // it went away may act on the app now.
-  if (!app || app->closing) return;
+// Issue #239. The view arms (fit, zoom, overlay) are the only ones that
+// break into the activity bump. Every other arm returns on its own.
+// `done` is that return; `bump` is the break; `miss` tries the next area.
+enum class chrome_dispatch : std::uint8_t { miss, done, bump };
+
+chrome_dispatch chrome_canvas_command(app_state* app, int command, float arg) {
   switch (command) {
     // Issue #408: the theme's tokens and ground. Each stores; home_colour,
     // which RefreshTheme sends last, publishes them together (one redraw).
@@ -4567,18 +4691,18 @@ void chrome_on_command(void* ctx, int command, float arg) {
       auto& h = app->input.home;
       std::uint32_t* const slot[] = {&h.surface, &h.title, &h.body, &h.hairline, &h.accent};
       *slot[command - mv::shell::chrome_cmd_home_surface] = rgba;
-      return;
+      return chrome_dispatch::done;
     }
     case mv::shell::chrome_cmd_home_effect: {
       const int e = static_cast<int>(arg);
       app->input.home.effect = e > 0 && e < static_cast<int>(mv::shell::home_effect::count)
                                    ? static_cast<mv::shell::home_effect>(e)
                                    : mv::shell::home_effect::none;
-      return;
+      return chrome_dispatch::done;
     }
     case mv::shell::chrome_cmd_home_effect_rgb:
       app->input.home.effect_rgb = static_cast<std::uint32_t>(arg) & 0xFFFFFFu;
-      return;
+      return chrome_dispatch::done;
     case mv::shell::chrome_cmd_home_effect_intensity:
     case mv::shell::chrome_cmd_home_effect_speed:
     case mv::shell::chrome_cmd_home_effect_size: {
@@ -4586,49 +4710,55 @@ void chrome_on_command(void* ctx, int command, float arg) {
       auto& h = app->input.home;
       float* const slot[] = {&h.intensity, &h.speed, &h.size};
       *slot[command - mv::shell::chrome_cmd_home_effect_intensity] = v;
-      return;
+      return chrome_dispatch::done;
     }
     case mv::shell::chrome_cmd_hint_learned:
       if (!app->strip_hint_learned) strip_hint_learn(app);
-      return;
+      return chrome_dispatch::done;
+    case mv::shell::chrome_cmd_select_page:  // issue #429: a sidebar row
+      if (arg >= 0.0f) (void)turn_page(app, static_cast<int>(arg) - static_cast<int>(app->page));
+      return chrome_dispatch::done;
+    case mv::shell::chrome_cmd_image_opened:
+      page_sidebar_image_opened(app);
+      return chrome_dispatch::done;
     case mv::shell::chrome_cmd_home_ground_input:
       ++app->input.pointer_seq;
       publish(app);  // wakes the render thread; it notes the time, draws nothing
-      return;
+      return chrome_dispatch::done;
     case mv::shell::chrome_cmd_home_colour:
       app->input.home.canvas = mv::shell::home_opaque(static_cast<std::uint32_t>(arg));
       publish(app);  // one redraw only if a token changed (present_lab compares)
-      return;
+      return chrome_dispatch::done;
     case mv::shell::chrome_cmd_open:
       if (app->window) open_file_dialog(app, app->window);
-      return;
+      return chrome_dispatch::done;
     case mv::shell::chrome_cmd_open_folder:
       if (app->window) open_folder_dialog(app, app->window);
-      return;
-    case mv::shell::chrome_cmd_fit:         ++app->input.fit_seq; break;
-    case mv::shell::chrome_cmd_one_to_one:  ++app->input.one_to_one_seq; break;
-    case mv::shell::chrome_cmd_zoom_in:     ++app->input.zoom_in_seq; break;
-    case mv::shell::chrome_cmd_zoom_out:    ++app->input.zoom_out_seq; break;
+      return chrome_dispatch::done;
+    case mv::shell::chrome_cmd_fit:         ++app->input.fit_seq; return chrome_dispatch::bump;
+    case mv::shell::chrome_cmd_one_to_one:  ++app->input.one_to_one_seq; return chrome_dispatch::bump;
+    case mv::shell::chrome_cmd_zoom_in:     ++app->input.zoom_in_seq; return chrome_dispatch::bump;
+    case mv::shell::chrome_cmd_zoom_out:    ++app->input.zoom_out_seq; return chrome_dispatch::bump;
     case mv::shell::chrome_cmd_zoom_preset:
       app->input.zoom_preset = arg;
       ++app->input.zoom_preset_seq;
-      break;
-    case mv::shell::chrome_cmd_overlay:     ++app->input.toggle_overlay_seq; break;
+      return chrome_dispatch::bump;
+    case mv::shell::chrome_cmd_overlay:     ++app->input.toggle_overlay_seq; return chrome_dispatch::bump;
     case mv::shell::chrome_cmd_select_item:
       folder_select(app, static_cast<std::uint32_t>(arg));
-      return;
+      return chrome_dispatch::done;
     case mv::shell::chrome_cmd_prev:
       folder_step(app, -1);
-      return;
+      return chrome_dispatch::done;
     case mv::shell::chrome_cmd_next:
       folder_step(app, 1);
-      return;
+      return chrome_dispatch::done;
     case mv::shell::chrome_cmd_toggle_gallery:
       set_gallery(app, !app->gallery_visible);
-      return;
+      return chrome_dispatch::done;
     case mv::shell::chrome_cmd_close_gallery:
       set_gallery(app, false);
-      return;
+      return chrome_dispatch::done;
     case mv::shell::chrome_cmd_gallery_activate: {
       std::uint32_t cur = 0;
       (void)mv_folder_selected(app->session, &cur);
@@ -4643,151 +4773,42 @@ void chrome_on_command(void* ctx, int command, float arg) {
         publish(app);
       }
       set_gallery(app, false);
-      return;
+      return chrome_dispatch::done;
     }
     case mv::shell::chrome_cmd_toggle_filmstrip:
       toggle_filmstrip_setting(app);
-      return;
-    case mv::shell::chrome_cmd_set_settings: {
-      // #345: the AI badge alone is chrome only; switching it must not refit or
-      // present the canvas, so it skips apply_view_state below.
-      const std::int32_t view_before = app->settings.flags();
-      {
-        const std::int32_t keep_sort = app->settings.sort;
-        app->settings = mv::shell::view_settings::from_flags(static_cast<std::int32_t>(arg));
-        app->settings.sort = keep_sort;
-      }
-      const std::int32_t view_changed = view_before ^ app->settings.flags();
-      mv::shell::save_view_settings(app->settings);
-      mv::shell::app_settings().set_int(
-          "update", "auto_check",
-          (static_cast<std::int32_t>(arg) & mv::shell::update::kChromeFlagUpdateAutoCheck) != 0 ? 1 : 0);
-      mv::shell::app_settings().set(
-          "update", "channel",
-          (static_cast<std::int32_t>(arg) & mv::shell::update::kChromeFlagUpdatePreview) != 0 ? "preview" : "stable");
-      // Telemetry only ever changes through an explicit answer: the first-run
-      // screen, or the Settings row. Both arrive here with the Asked bit set,
-      // and a word without it leaves consent exactly as it was (docs/design/13).
-      if ((static_cast<std::int32_t>(arg) & mv::shell::telemetry::kChromeFlagTelemetryAsked) != 0) {
-        mv::shell::telemetry::set_enabled(
-            (static_cast<std::int32_t>(arg) & mv::shell::telemetry::kChromeFlagTelemetry) != 0);
-      }
-      app->input.sticky_zoom = app->settings.sticky_zoom;
-      (void)mv_folder_set_hidden_kinds(app->session, app->settings.hidden_kinds());
-      app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
-      if (view_changed & mv::shell::kSettingHideAiBadge) ai_badge_setting_changed(app);
-      if (view_changed != mv::shell::kSettingHideAiBadge) apply_view_state(app);
-      return;
-    }
+      return chrome_dispatch::done;
     case mv::shell::chrome_cmd_tree_open: {
       // The island cannot pass a string through the callback; it parks the
       // chosen folder and native pulls it (chrome_host::take_tree_path).
       const std::string dir = app->chrome.take_tree_path();
-      if (dir.empty()) return;
+      if (dir.empty()) return chrome_dispatch::done;
       app->mode = open_mode::folder;
       app->gallery_visible = false;
       sync_video_hold(app, false);
       {
         const int n = ::MultiByteToWideChar(CP_UTF8, 0, dir.c_str(), -1, nullptr, 0);
-        if (n <= 1) return;
+        if (n <= 1) return chrome_dispatch::done;
         std::wstring wide(static_cast<std::size_t>(n), 0);
         ::MultiByteToWideChar(CP_UTF8, 0, dir.c_str(), -1, wide.data(), n);
         wide.resize(static_cast<std::size_t>(n) - 1);
         open_folder(app, wide, {});
       }
       if (app->window) focus_canvas(app);
-      return;
-    }
-    case mv::shell::chrome_cmd_set_sort:
-      set_sort(app, static_cast<std::int32_t>(arg));
-      return;
-    case mv::shell::chrome_cmd_rebind: {
-      const int packed = static_cast<int>(arg);
-      const int row = packed & 0xFF;
-      const auto k = static_cast<mv::shell::key>((packed >> 8) & 0xFFF);
-      const auto mods = static_cast<std::uint8_t>((packed >> 20) & 7);
-      if (mv::shell::rebind_live(row, k, mods)) {
-        persist_live_keys();
-        app->router.rebuild(mv::shell::live_bindings());
-        publish_command_table(app);
-      }
-      return;
-    }
-    case mv::shell::chrome_cmd_reset_keys:
-      mv::shell::reset_live_bindings();
-      persist_live_keys();
-      app->router.rebuild(mv::shell::live_bindings());
-      publish_command_table(app);
-      return;
-    case mv::shell::chrome_cmd_apply_keymap: {
-      // Applied once (docs/design/16 "Keymap packs"): the table is the defaults
-      // with the pack's keys written in, then it is the person's like any remap.
-      std::vector<mv::addon::keymap_binding> bindings;
-      if (!mv::shell::keymap_bindings_from_json(app->chrome.take_tree_path(), bindings)) {
-        mv::shell::keymap_result refused;
-        refused.skipped.push_back("not a key layout");
-        app->chrome.set_keymap_report(mv::shell::keymap_report_json(refused));
-        return;
-      }
-      mv::shell::command_id released[mv::shell::key_router::kHeldSlots]{};
-      const std::size_t n = app->router.cancel_holds(released);
-      for (std::size_t i = 0; i < n; ++i) (void)run_command(app, released[i]);
-      const mv::shell::keymap_result r = mv::shell::apply_keymap(bindings);
-      if (!r.skipped.empty()) {
-        MV_LOG_INFO("keymap: %d rows set, %d unbound, %zu skipped", r.rows_changed, r.displaced,
-                    r.skipped.size());
-      }
-      persist_live_keys();
-      app->router.rebuild(mv::shell::live_bindings());
-      publish_command_table(app);
-      // Settings lists what was skipped or left unbound, as the Mac does.
-      app->chrome.set_keymap_report(mv::shell::keymap_report_json(r));
-      return;
-    }
-    case mv::shell::chrome_cmd_set_rate:
-      apply_rate(app, rate_index_for(static_cast<double>(arg)));
-      return;
-    case mv::shell::chrome_cmd_video_active: {
-      // 0 no clip, 1 paused or ended, 2 playing (IslandHost.Video.cs).
-      const bool on = arg != 0.0f;
-      const bool playing = arg >= 2.0f;
-      if (app->video_on == on) {
-        // Pause, end, or a media key: the controls come back (issue #38).
-        if (app->video_playing != playing) {
-          app->video_playing = playing;
-          apply_transport_autohide(app);
-        }
-        return;
-      }
-      app->video_on = on;
-      app->video_playing = playing;
-      // A freshly opened media_source starts at 1.00x, so the ladder and the
-      // dropdown have to start there too rather than inheriting the last clip.
-      if (on) {
-        apply_rate(app, kRateDefaultIndex);
-        // Volume, unlike the rate, is the listener's and carries across clips.
-        (void)mv_video_set_volume(app->session, app->volume);
-        app->muted = false;
-        app->audio_track = 0;
-        app->loop_a_ns = 0;
-        push_audio(app);
-      }
-      apply_view_state(app);
-      workspace_item_changed(app);  // PR 29: a clip playing is Trim's subject
-      return;
+      return chrome_dispatch::done;
     }
     case mv::shell::chrome_cmd_open_path: {
       // Import's Enter: open a card file in the viewer (culling before
       // copying). The path is parked like the tree's (take_tree_path).
       const std::string path = app->chrome.take_tree_path();
-      if (path.empty()) return;
+      if (path.empty()) return chrome_dispatch::done;
       const int n = ::MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-      if (n <= 1) return;
+      if (n <= 1) return chrome_dispatch::done;
       std::wstring wide(static_cast<std::size_t>(n), 0);
       ::MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wide.data(), n);
       wide.resize(static_cast<std::size_t>(n) - 1);
       open_path(app, wide);
-      return;
+      return chrome_dispatch::done;
     }
     case mv::shell::chrome_cmd_drag_items: {
       // A gallery / filmstrip cell is starting a drag (FolderStore.dragFiles on
@@ -4823,126 +4844,22 @@ void chrome_on_command(void* ctx, int command, float arg) {
         }
       }
       app->chrome.set_drag_paths(lines, true);
-      return;
+      return chrome_dispatch::done;
     }
     case mv::shell::chrome_cmd_drag_ended:
       end_own_drag(app);
-      return;
-    case mv::shell::chrome_cmd_open_recent:
-      open_recent_folder(app, static_cast<int>(arg));
-      return;
-    case mv::shell::chrome_cmd_addon_state: {
-      // The chrome installed, loaded, or removed an add-on: 0 / 1 Import
-      // (Milestone G), 2 / 3 the AI pack (Milestone H).
-      const int v = static_cast<int>(arg);
-      mv::shell::set_addon_commands_available(
-          v >= 2 ? mv::shell::addon_family::ai : mv::shell::addon_family::import, (v & 1) != 0);
-      // docs/design/25: the rows the loaded add-ons' manifests contribute, from the
-      // core (it holds the verified manifests); they supersede the built-in
-      // rows of the same add-on. The router re-reads the live table.
-      refresh_contributed_commands(app);
-    }
-      app->chrome.set_command_table(mv::shell::describe_commands());
-      return;
-    case mv::shell::chrome_cmd_export:
-      app->export_choice = static_cast<std::int32_t>(arg);
-      start_export(app, mv::shell::unpack_export(app->export_choice));
-      return;
-    // PR 13 / 14.
-    case mv::shell::chrome_cmd_clip_tool:
-      run_clip_tool(app, static_cast<std::int32_t>(arg));
-      return;
-    case mv::shell::chrome_cmd_clip_index:
-      trim_index_arrived(app, static_cast<std::uint64_t>(arg));
-      return;
-    // PR 29 (docs/design/20): the Edit workspace's strip, and the Crop pane's presets
-    // (arg = preset, + 16 portrait) and straighten slider (arg = degrees).
-    case mv::shell::chrome_cmd_edit_tab:
-      edit_select_tab(app, static_cast<int>(arg));
-      return;
-    // A document's "Open in <app>": arg is the row SetEditView listed, -1 the default.
-    case mv::shell::chrome_cmd_open_in_app:
-      open_document_with(app, static_cast<int>(arg));
-      return;
-    // Issue #214: the transport's More flyout, through the same state as the keys.
-    case mv::shell::chrome_cmd_video_volume:
-      set_clip_volume(app, arg);
-      return;
-    case mv::shell::chrome_cmd_video_muted:
-      set_clip_muted(app, arg != 0.0f);
-      return;
-    case mv::shell::chrome_cmd_video_track:
-      if (arg >= 0.0f) set_clip_audio_track(app, static_cast<std::uint32_t>(arg));
-      return;
-    case mv::shell::chrome_cmd_video_loop:
-      apply_ab_loop(app, static_cast<int>(arg));
-      return;
-    case mv::shell::chrome_cmd_edit_action:
-      run_edit_action(app, static_cast<int>(arg));
-      return;
-    // PR 30: the Video Editor's timeline.
-    case mv::shell::chrome_cmd_editor_seek:
-      editor_seek(app, static_cast<std::int64_t>(static_cast<double>(arg) * 1'000'000.0));
-      return;
-    case mv::shell::chrome_cmd_editor_action:
-      editor_run_action(app, static_cast<int>(arg));
-      return;
-    case mv::shell::chrome_cmd_editor_trim_grab:
-      editor_trim_grab(app, static_cast<int>(arg));
-      return;
-    case mv::shell::chrome_cmd_editor_trim_to:
-      editor_trim_to(app, static_cast<std::int64_t>(static_cast<double>(arg) * 1'000'000.0));
-      return;
-    case static_cast<int>(mv::shell::command_id::crop_aspect_set):
-      edit_set_aspect(app, static_cast<int>(arg));
-      return;
-    case static_cast<int>(mv::shell::command_id::kind_filter_set):
-      (void)set_kind_filter(app, mv::io::kind_filter_from(static_cast<int>(arg)));
-      return;
-    case static_cast<int>(mv::shell::command_id::crop_straighten_set):
-      edit_set_straighten(app, arg);
-      return;
-    // PR 29: the metadata pane's tag editor and Date taken.
-    case mv::shell::chrome_cmd_meta_tags:
-      set_tags_from_pane(app);
-      if (app->window && app->island_focus == mv::shell::focus_kind::text) focus_canvas(app);
-      return;
-    case mv::shell::chrome_cmd_meta_date:
-      set_date_from_pane(app, arg != 0.0f);
-      if (app->window && app->island_focus == mv::shell::focus_kind::text) focus_canvas(app);
-      return;
-    // PR 11: the adjust pane's sliders carry their value; Reset carries none.
-    case static_cast<int>(mv::shell::command_id::adjust_exposure):
-    case static_cast<int>(mv::shell::command_id::adjust_contrast):
-    case static_cast<int>(mv::shell::command_id::adjust_saturation):
-    case static_cast<int>(mv::shell::command_id::adjust_temperature):
-    case static_cast<int>(mv::shell::command_id::adjust_tint):
-      set_adjust_from_pane(app,
-                           static_cast<mv::edit::adjust_param>(
-                               command - static_cast<int>(mv::shell::command_id::adjust_exposure)),
-                           arg);
-      return;
-    case static_cast<int>(mv::shell::command_id::adjust_reset):
-      reset_adjust_from_pane(app);
-      return;
-    // PR 12: the pane's comment field and Revert button. Return hands the
-    // keyboard back to the canvas; leaving the field by mouse already did.
-    case mv::shell::chrome_cmd_meta_comment:
-      set_comment_from_pane(app);
-      if (app->window && app->island_focus == mv::shell::focus_kind::text) focus_canvas(app);
-      return;
-    case mv::shell::chrome_cmd_meta_revert:
-      revert_current_metadata(app);
-      return;
+      return chrome_dispatch::done;
     case mv::shell::chrome_cmd_gallery_range: {
       // Issue #413: Shift-click in the gallery. The indices come parked, in
       // the grid's order; the range stands while `arg` stays selected.
       std::string parked;
-      if (!app->chrome.take_parked_text(parked)) return;
+      if (!app->chrome.take_parked_text(parked)) return chrome_dispatch::done;
       app->gallery_range.clear();
       app->gallery_range_anchor.clear();
       std::uint32_t selected = 0;
-      if (!selected_index(app, selected) || arg < 0.0f || static_cast<std::uint32_t>(arg) != selected) return;
+      if (!selected_index(app, selected) || arg < 0.0f || static_cast<std::uint32_t>(arg) != selected) {
+        return chrome_dispatch::done;
+      }
       const std::uint32_t count = folder_count(app);
       std::size_t at = 0;
       while (at < parked.size()) {
@@ -4956,12 +4873,11 @@ void chrome_on_command(void* ctx, int command, float arg) {
         at = comma + 1;
       }
       if (!app->gallery_range.empty()) app->gallery_range_anchor = item_path_at(app, selected);
-      return;
+      return chrome_dispatch::done;
     }
-    case mv::shell::chrome_cmd_rename:
-      commit_rename(app);
-      if (app->window) focus_canvas(app);
-      return;
+    case mv::shell::chrome_cmd_open_recent:
+      open_recent_folder(app, static_cast<int>(arg));
+      return chrome_dispatch::done;
     case mv::shell::chrome_cmd_folder_ready: {
       // The island owns the completion drain (docs/design/12 2026-09-07), so this is
       // how the native side learns that a listing landed.
@@ -4975,6 +4891,14 @@ void chrome_on_command(void* ctx, int command, float arg) {
         if (title[0] != '\0' && app->list_title.empty()) app->list_return_select = app->edit_path;
         app->list_title = title;
         if (app->list_title.empty()) app->list_return_select.clear();
+        // Issue #443: a result list opened over the empty window (a later
+        // window's first search, a search from the welcome) is a listing like
+        // a folder. Every open route moves `mode` off `none`
+        // (welcome_lists_recents); this one did not, so the gallery was not
+        // available, the strip was not wanted and the arrows had no item:
+        // only the chosen result showed. Back from it is return_to_welcome,
+        // which puts `none` back.
+        if (!app->list_title.empty() && app->mode == open_mode::none) app->mode = open_mode::folder;
       }
       refresh_item_info(app);
       refresh_mark_state(app);
@@ -5011,17 +4935,269 @@ void chrome_on_command(void* ctx, int command, float arg) {
         g_restore.gallery = false;
         set_gallery(app, true);
       }
-      return;
+      return chrome_dispatch::done;
     }
     case mv::shell::chrome_cmd_open_subfolder:
       open_subfolder_at(app, static_cast<std::uint32_t>(arg));
-      return;
+      return chrome_dispatch::done;
     case mv::shell::chrome_cmd_open_crumb:
       open_crumb_at(app, static_cast<std::int32_t>(arg));
-      return;
+      return chrome_dispatch::done;
     case mv::shell::chrome_cmd_gallery_columns:
       app->gallery_columns = std::max(1, static_cast<int>(arg));
-      return;
+      return chrome_dispatch::done;
+    default:
+      return chrome_dispatch::miss;
+  }
+}
+
+bool chrome_transport_command(app_state* app, int command, float arg) {
+  switch (command) {
+    case mv::shell::chrome_cmd_set_rate:
+      apply_rate(app, rate_index_for(static_cast<double>(arg)));
+      return true;
+    case mv::shell::chrome_cmd_video_active: {
+      // 0 no clip, 1 paused or ended, 2 playing (IslandHost.Video.cs).
+      const bool on = arg != 0.0f;
+      const bool playing = arg >= 2.0f;
+      if (app->video_on == on) {
+        // Pause, end, or a media key: the controls come back (issue #38).
+        if (app->video_playing != playing) {
+          app->video_playing = playing;
+          apply_transport_autohide(app);
+        }
+        return true;
+      }
+      app->video_on = on;
+      app->video_playing = playing;
+      // A freshly opened media_source starts at 1.00x, so the ladder and the
+      // dropdown have to start there too rather than inheriting the last clip.
+      if (on) {
+        apply_rate(app, kRateDefaultIndex);
+        // Volume, unlike the rate, is the listener's and carries across clips.
+        (void)mv_video_set_volume(app->session, app->volume);
+        app->muted = false;
+        app->audio_track = 0;
+        app->loop_a_ns = 0;
+        push_audio(app);
+      }
+      apply_view_state(app);
+      workspace_item_changed(app);  // PR 29: a clip playing is Trim's subject
+      return true;
+    }
+    // PR 13 / 14.
+    case mv::shell::chrome_cmd_clip_tool:
+      run_clip_tool(app, static_cast<std::int32_t>(arg));
+      return true;
+    case mv::shell::chrome_cmd_clip_index:
+      trim_index_arrived(app, static_cast<std::uint64_t>(arg));
+      return true;
+    // Issue #214: the transport's More flyout, through the same state as the keys.
+    case mv::shell::chrome_cmd_video_volume:
+      set_clip_volume(app, arg);
+      return true;
+    case mv::shell::chrome_cmd_video_muted:
+      set_clip_muted(app, arg != 0.0f);
+      return true;
+    case mv::shell::chrome_cmd_video_track:
+      if (arg >= 0.0f) set_clip_audio_track(app, static_cast<std::uint32_t>(arg));
+      return true;
+    case mv::shell::chrome_cmd_video_loop:
+      apply_ab_loop(app, static_cast<int>(arg));
+      return true;
+    case mv::shell::chrome_cmd_transport_hold:
+      app->transport_hold = arg != 0.0f;
+      // Letting go of a scrub or closing a menu restarts the idle clock.
+      app->autohide.activity(::GetTickCount64());
+      apply_transport_autohide(app);
+      return true;
+    case mv::shell::chrome_cmd_transport_width:
+      // The row grew or shrank (trim armed, a longer clock): refit the bar.
+      if (app->chrome.set_transport_content(static_cast<int>(arg + 0.5f))) layout_chrome(app);
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool chrome_edit_command(app_state* app, int command, float arg) {
+  switch (command) {
+    case mv::shell::chrome_cmd_export:
+      app->export_choice = static_cast<std::int32_t>(arg);
+      start_export(app, mv::shell::unpack_export(app->export_choice));
+      return true;
+    // PR 29 (docs/design/20): the Edit workspace's strip, and the Crop pane's presets
+    // (arg = preset, + 16 portrait) and straighten slider (arg = degrees).
+    case mv::shell::chrome_cmd_edit_tab:
+      edit_select_tab(app, static_cast<int>(arg));
+      return true;
+    // A document's "Open in <app>": arg is the row SetEditView listed, -1 the default.
+    case mv::shell::chrome_cmd_open_in_app:
+      open_document_with(app, static_cast<int>(arg));
+      return true;
+    case mv::shell::chrome_cmd_edit_action:
+      run_edit_action(app, static_cast<int>(arg));
+      return true;
+    // PR 30: the Video Editor's timeline.
+    case mv::shell::chrome_cmd_editor_seek:
+      editor_seek(app, static_cast<std::int64_t>(static_cast<double>(arg) * 1'000'000.0));
+      return true;
+    case mv::shell::chrome_cmd_editor_action:
+      editor_run_action(app, static_cast<int>(arg));
+      return true;
+    case mv::shell::chrome_cmd_editor_trim_grab:
+      editor_trim_grab(app, static_cast<int>(arg));
+      return true;
+    case mv::shell::chrome_cmd_editor_trim_to:
+      editor_trim_to(app, static_cast<std::int64_t>(static_cast<double>(arg) * 1'000'000.0));
+      return true;
+    case static_cast<int>(mv::shell::command_id::crop_aspect_set):
+      edit_set_aspect(app, static_cast<int>(arg));
+      return true;
+    case static_cast<int>(mv::shell::command_id::crop_straighten_set):
+      edit_set_straighten(app, arg);
+      return true;
+    case static_cast<int>(mv::shell::command_id::kind_filter_set):
+      (void)set_kind_filter(app, mv::io::kind_filter_from(static_cast<int>(arg)));
+      return true;
+    // Issue #444: the share icon, the bar's share button and the right-click
+    // Share entries carry where they were asked and the clicked stop.
+    case static_cast<int>(mv::shell::command_id::share):
+      (void)share_request_run(app, mv::shell::unpack_share_request(arg));
+      return true;
+    // PR 29: the metadata pane's tag editor and Date taken.
+    case mv::shell::chrome_cmd_meta_tags:
+      set_tags_from_pane(app);
+      if (app->window && app->island_focus == mv::shell::focus_kind::text) focus_canvas(app);
+      return true;
+    case mv::shell::chrome_cmd_meta_date:
+      set_date_from_pane(app, arg != 0.0f);
+      if (app->window && app->island_focus == mv::shell::focus_kind::text) focus_canvas(app);
+      return true;
+    // PR 11: the adjust pane's sliders carry their value; Reset carries none.
+    case static_cast<int>(mv::shell::command_id::adjust_exposure):
+    case static_cast<int>(mv::shell::command_id::adjust_contrast):
+    case static_cast<int>(mv::shell::command_id::adjust_saturation):
+    case static_cast<int>(mv::shell::command_id::adjust_temperature):
+    case static_cast<int>(mv::shell::command_id::adjust_tint):
+      set_adjust_from_pane(app,
+                           static_cast<mv::edit::adjust_param>(
+                               command - static_cast<int>(mv::shell::command_id::adjust_exposure)),
+                           arg);
+      return true;
+    case static_cast<int>(mv::shell::command_id::adjust_reset):
+      reset_adjust_from_pane(app);
+      return true;
+    // PR 12: the pane's comment field and Revert button. Return hands the
+    // keyboard back to the canvas; leaving the field by mouse already did.
+    case mv::shell::chrome_cmd_meta_comment:
+      set_comment_from_pane(app);
+      if (app->window && app->island_focus == mv::shell::focus_kind::text) focus_canvas(app);
+      return true;
+    case mv::shell::chrome_cmd_meta_revert:
+      revert_current_metadata(app);
+      return true;
+    case mv::shell::chrome_cmd_rename:
+      commit_rename(app);
+      if (app->window) focus_canvas(app);
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool chrome_session_command(app_state* app, int command, float arg) {
+  switch (command) {
+    case mv::shell::chrome_cmd_set_settings: {
+      // #345: the AI badge alone is chrome only; switching it must not refit or
+      // present the canvas, so it skips apply_view_state below.
+      const std::int32_t view_before = app->settings.flags();
+      {
+        const std::int32_t keep_sort = app->settings.sort;
+        app->settings = mv::shell::view_settings::from_flags(static_cast<std::int32_t>(arg));
+        app->settings.sort = keep_sort;
+      }
+      const std::int32_t view_changed = view_before ^ app->settings.flags();
+      mv::shell::save_view_settings(app->settings);
+      mv::shell::app_settings().set_int(
+          "update", "auto_check",
+          (static_cast<std::int32_t>(arg) & mv::shell::update::kChromeFlagUpdateAutoCheck) != 0 ? 1 : 0);
+      mv::shell::app_settings().set(
+          "update", "channel",
+          (static_cast<std::int32_t>(arg) & mv::shell::update::kChromeFlagUpdatePreview) != 0 ? "preview" : "stable");
+      // Telemetry only ever changes through an explicit answer: the first-run
+      // screen, or the Settings row. Both arrive here with the Asked bit set,
+      // and a word without it leaves consent exactly as it was (docs/design/13).
+      if ((static_cast<std::int32_t>(arg) & mv::shell::telemetry::kChromeFlagTelemetryAsked) != 0) {
+        mv::shell::telemetry::set_enabled(
+            (static_cast<std::int32_t>(arg) & mv::shell::telemetry::kChromeFlagTelemetry) != 0);
+      }
+      app->input.sticky_zoom = app->settings.sticky_zoom;
+      (void)mv_folder_set_hidden_kinds(app->session, app->settings.hidden_kinds());
+      app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
+      if (view_changed & mv::shell::kSettingHideAiBadge) ai_badge_setting_changed(app);
+      if (view_changed != mv::shell::kSettingHideAiBadge) apply_view_state(app);
+      return true;
+    }
+    case mv::shell::chrome_cmd_set_sort:
+      set_sort(app, static_cast<std::int32_t>(arg));
+      return true;
+    case mv::shell::chrome_cmd_rebind: {
+      const int packed = static_cast<int>(arg);
+      const int row = packed & 0xFF;
+      const auto k = static_cast<mv::shell::key>((packed >> 8) & 0xFFF);
+      const auto mods = static_cast<std::uint8_t>((packed >> 20) & 7);
+      if (mv::shell::rebind_live(row, k, mods)) {
+        persist_live_keys();
+        app->router.rebuild(mv::shell::live_bindings());
+        publish_command_table(app);
+      }
+      return true;
+    }
+    case mv::shell::chrome_cmd_reset_keys:
+      mv::shell::reset_live_bindings();
+      persist_live_keys();
+      app->router.rebuild(mv::shell::live_bindings());
+      publish_command_table(app);
+      return true;
+    case mv::shell::chrome_cmd_apply_keymap: {
+      // Applied once (docs/design/16 "Keymap packs"): the table is the defaults
+      // with the pack's keys written in, then it is the person's like any remap.
+      std::vector<mv::addon::keymap_binding> bindings;
+      if (!mv::shell::keymap_bindings_from_json(app->chrome.take_tree_path(), bindings)) {
+        mv::shell::keymap_result refused;
+        refused.skipped.push_back("not a key layout");
+        app->chrome.set_keymap_report(mv::shell::keymap_report_json(refused));
+        return true;
+      }
+      mv::shell::command_id released[mv::shell::key_router::kHeldSlots]{};
+      const std::size_t n = app->router.cancel_holds(released);
+      for (std::size_t i = 0; i < n; ++i) (void)run_command(app, released[i]);
+      const mv::shell::keymap_result r = mv::shell::apply_keymap(bindings);
+      if (!r.skipped.empty()) {
+        MV_LOG_INFO("keymap: %d rows set, %d unbound, %zu skipped", r.rows_changed, r.displaced,
+                    r.skipped.size());
+      }
+      persist_live_keys();
+      app->router.rebuild(mv::shell::live_bindings());
+      publish_command_table(app);
+      // Settings lists what was skipped or left unbound, as the Mac does.
+      app->chrome.set_keymap_report(mv::shell::keymap_report_json(r));
+      return true;
+    }
+    case mv::shell::chrome_cmd_addon_state: {
+      // The chrome installed, loaded, or removed an add-on: 0 / 1 Import
+      // (Milestone G), 2 / 3 the AI pack (Milestone H).
+      const int v = static_cast<int>(arg);
+      mv::shell::set_addon_commands_available(
+          v >= 2 ? mv::shell::addon_family::ai : mv::shell::addon_family::import, (v & 1) != 0);
+      // docs/design/25: the rows the loaded add-ons' manifests contribute, from the
+      // core (it holds the verified manifests); they supersede the built-in
+      // rows of the same add-on. The router re-reads the live table.
+      refresh_contributed_commands(app);
+    }
+      app->chrome.set_command_table(mv::shell::describe_commands());
+      return true;
     case mv::shell::chrome_cmd_focus_changed: {
       const int kind = static_cast<int>(arg);
       if (kind >= static_cast<int>(mv::shell::focus_kind::command_bar) &&
@@ -5030,23 +5206,14 @@ void chrome_on_command(void* ctx, int command, float arg) {
       }
       // Focus into the transport holds it up (issue #38).
       if (kind == static_cast<int>(mv::shell::focus_kind::transport)) transport_activity(app);
-      return;
+      return true;
     }
-    case mv::shell::chrome_cmd_transport_hold:
-      app->transport_hold = arg != 0.0f;
-      // Letting go of a scrub or closing a menu restarts the idle clock.
-      app->autohide.activity(::GetTickCount64());
-      apply_transport_autohide(app);
-      return;
-    case mv::shell::chrome_cmd_transport_width:
-      // The row grew or shrank (trim armed, a longer clock): refit the bar.
-      if (app->chrome.set_transport_content(static_cast<int>(arg + 0.5f))) layout_chrome(app);
-      return;
     case mv::shell::chrome_cmd_update_restart: {
       if (arg != 0.0f) {
         // Update.exe is armed and waiting for this pid: leave the ordinary way.
+        app->quit_for_real = true;  // #452: never kept in the background
         if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
-        return;
+        return true;
       }
       // docs/design/13: never restart under a playing clip (no export/trim jobs in v1).
       std::uint32_t state = MV_PLAY_STOPPED;
@@ -5056,7 +5223,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
                            app->motion_playing || clip_jobs_busy(app);
       if (playing) {
         ::MessageBeep(MB_ICONWARNING);
-        return;
+        return true;
       }
       mv::shell::update::view_restore view;
       if (app->mode != open_mode::none) {
@@ -5071,16 +5238,17 @@ void chrome_on_command(void* ctx, int command, float arg) {
       view.fullscreen = app->fullscreen;
       view.gallery = app->gallery_visible;
       const auto args = mv::shell::update::restart_arguments(view);
-      if (app->chrome.request_update_restart(mv::shell::update::join_arguments(args))) return;
+      if (app->chrome.request_update_restart(mv::shell::update::join_arguments(args))) return true;
       if (arg == 2.0f && app->window) {
         // An add-on update and no app update staged: start again on our own,
         // after this process has exited (the exit path below).
         app->relaunch = args;
+        app->quit_for_real = true;  // #452: never kept in the background
         ::PostMessageW(app->window, WM_CLOSE, 0, 0);
-        return;
+        return true;
       }
       ::MessageBeep(MB_ICONWARNING);
-      return;
+      return true;
     }
     case mv::shell::chrome_cmd_popup:
       app->popup_open = arg != 0.0f;
@@ -5088,20 +5256,36 @@ void chrome_on_command(void* ctx, int command, float arg) {
       // SetFocus here: Closed of a replaced flyout can arrive after the
       // a replacement flyout's field already took keyboard focus.
       if (!app->popup_open && app->fullscreen) layout_chrome(app);
-      return;
+      return true;
     default:
-      // Island chrome can post a command id (help, open, …) through the same
-      // switch as its key.
-      if (command > 0 && command < mv::shell::kCommandCount &&
-          !mv::shell::is_reserved_notification(command) &&
-          !mv::shell::is_retired_command(command)) {
-        (void)run_command(app, static_cast<mv::shell::command_id>(command));
-      }
-      return;
+      return false;
   }
-  ++app->input.activity_seq;
-  publish(app);
 }
+
+void chrome_on_command(void* ctx, int command, float arg) {
+  auto* app = static_cast<app_state*>(ctx);
+  // WM_CLOSE pumps messages after detaching; nothing the island queued before
+  // it went away may act on the app now.
+  if (!app || app->closing) return;
+  const chrome_dispatch canvas = chrome_canvas_command(app, command, arg);
+  if (canvas == chrome_dispatch::bump) {
+    ++app->input.activity_seq;
+    publish(app);
+    return;
+  }
+  if (canvas == chrome_dispatch::done) return;
+  if (chrome_transport_command(app, command, arg)) return;
+  if (chrome_edit_command(app, command, arg)) return;
+  if (chrome_session_command(app, command, arg)) return;
+  // Island chrome can post a command id (help, open, …) through the same
+  // switch as its key.
+  if (command > 0 && command < mv::shell::kCommandCount &&
+      !mv::shell::is_reserved_notification(command) &&
+      !mv::shell::is_retired_command(command)) {
+    (void)run_command(app, static_cast<mv::shell::command_id>(command));
+  }
+}
+
 
 // docs/design/16: one router. Symbol keys are resolved through the active layout so
 // `?`, `+`, `[` and `\` mean the character, not a US key position. Letters and
@@ -5695,16 +5879,10 @@ void browse_tick(app_state* app) noexcept {
 }
 
 void persist_live_keys() noexcept {
-  std::vector<mv::shell::key_override> out;
-  const auto live = mv::shell::live_bindings();
-  const auto def = mv::shell::default_bindings();
-  const std::size_t n = live.size() < def.size() ? live.size() : def.size();
-  for (std::size_t i = 0; i < n; ++i) {
-    if (live[i].k == def[i].k && live[i].mods == def[i].mods) continue;
-    out.push_back(mv::shell::key_override{static_cast<int>(i),
-                                          static_cast<std::uint16_t>(live[i].k), live[i].mods});
+  try {
+    mv::shell::save_key_remaps(mv::shell::live_key_remaps());
+  } catch (...) {
   }
-  mv::shell::save_key_overrides(out);
 }
 
 void publish_command_table(app_state* app) noexcept {
@@ -6479,17 +6657,85 @@ void on_text_read(app_state* app, std::unique_ptr<text_read_result> r) {
   }
 }
 
-// Ctrl+Shift+S: Windows Share with the marked (else current) file(s). The
-// share sheet is WinRT, so the chrome shows it (IslandHost.Share.cs).
-bool share_targets(app_state* app) {
-  if (!app || !app->window) return false;
-  const auto targets = expand_pair_targets(app, selection_targets(app));
-  if (targets.empty()) return false;
+// Issue #444 (docs/design/16 "Share"): the one share command. Ctrl+Shift+S,
+// the gallery's share icon, the bar's share button and the right-click Share
+// entries all land here. The UI thread only picks the stops (the range, else
+// the marks, else the current file; or the right-clicked file when it is not
+// one of them). The pair halves come from a walk of the whole listing, so that
+// runs on the pool; kMsgShareReady then hands the files to the chrome, which
+// shows the menu (Sharepoint, Windows Share) or runs the entry picked. Nothing
+// is read from disk and nothing is sent until the person picks a target.
+struct share_gathered {
+  std::uint64_t seq = 0;
+  mv::shell::share_request request;
+  std::vector<std::string> files;  // stops with their pair halves: Sharepoint's
+};
+
+// Pool thread: each stop followed by its pair's other half. mv_folder_entries
+// is [any-thread][no-block], one copy of the listing; the listing can change
+// between the size query and the fill, so it asks again.
+std::vector<std::string> share_gather(mv_session_t session, std::vector<std::string> stops) {
+  std::vector<mv_folder_entry> entries;
+  std::vector<char> strings;
+  bool ok = false;
+  for (int attempt = 0; attempt < 4 && !ok; ++attempt) {
+    std::uint32_t count = 0, bytes = 0;
+    if (mv_folder_entries(session, entries.data(), static_cast<std::uint32_t>(entries.size()), strings.data(),
+                          static_cast<std::uint32_t>(strings.size()), &count, &bytes) == MV_OK) {
+      entries.resize(count);
+      ok = true;
+    } else {
+      entries.assign(static_cast<std::size_t>(count) + 16, mv_folder_entry{});
+      strings.assign(static_cast<std::size_t>(bytes) + 4096, '\0');
+    }
+  }
+  if (!ok) return stops;
+  std::map<std::string, std::string, std::less<>> pairs;
+  const std::unordered_set<std::string_view> wanted(stops.begin(), stops.end());
+  for (const mv_folder_entry& e : entries) {
+    if (e.item.pair_kind == MV_PAIR_NONE) continue;
+    const char* path = strings.data() + e.path_offset;
+    const char* pair = strings.data() + e.pair_offset;
+    if (*pair == '\0' || !wanted.count(std::string_view{path})) continue;
+    pairs.emplace(path, pair);
+  }
+  return mv::shell::share_with_pairs(std::move(stops), pairs);
+}
+
+bool share_request_run(app_state* app, mv::shell::share_request request) {
+  if (!app || !app->window || !app->session) return false;
+  std::string clicked;
+  if (request.clicked >= 0) clicked = item_path_at(app, static_cast<std::uint32_t>(request.clicked));
+  std::vector<std::string> stops = mv::shell::share_stops(selection_targets(app), clicked);
+  if (stops.empty()) return false;
+  const std::uint64_t seq = ++app->share_seq;
+  const HWND hwnd = app->window;
+  const mv_session_t session = app->session;
+  app->jobs.submit_at(mv::background_generation,
+                      [session, hwnd, seq, request, stops = std::move(stops)](const mv::job_context&) mutable
+                      -> mv::status {
+                        auto* r = new (std::nothrow) share_gathered{seq, request, share_gather(session, std::move(stops))};
+                        if (r && !::PostMessageW(hwnd, kMsgShareReady, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return mv::status::ok;
+                      });
+  return true;
+}
+
+// UI thread: the files are in. A newer request supersedes an older one.
+void on_share_ready(app_state* app, std::unique_ptr<share_gathered> r) {
+  if (!app || !r || !app->window || r->seq != app->share_seq || r->files.empty()) return;
   mv::json::writer w;
-  w.begin_array();
-  for (const std::string& t : targets) w.string(t);
+  w.begin_object();
+  w.key("files").begin_array();
+  for (const std::string& f : r->files) w.string(f);
   w.end_array();
-  return app->chrome.share_files(app->window, w.str());
+  // The system sheet's: media only, no sidecars (issue #444).
+  w.key("media").begin_array();
+  for (const std::string& f : mv::shell::share_system_files(r->files)) w.string(f);
+  w.end_array();
+  w.end_object();
+  (void)app->chrome.share_menu(app->window, static_cast<std::int32_t>(r->request.target),
+                               static_cast<std::int32_t>(r->request.from), w.str());
 }
 
 // The command line a jump list entry runs: the folder, quoted. A trailing
@@ -6886,46 +7132,15 @@ void release_taskbar(app_state* app) noexcept {
 // Command effects. A switch over a dense enum is the jump table docs/design/16 asks
 // for. Returning false means "not applicable here" and sends the key on to the
 // island — Q/E on a still, or a command whose slice has not landed yet.
-bool run_command(app_state* app, mv::shell::command_id command) noexcept {
+bool bump_input(app_state* app, std::uint32_t& seq) noexcept {
+  ++seq;
+  ++app->input.activity_seq;
+  publish(app);
+  return true;
+}
+
+bool run_canvas_command(app_state* app, mv::shell::command_id command) noexcept {
   using enum mv::shell::command_id;
-  const auto bump = [app](std::uint32_t& seq) {
-    ++seq;
-    ++app->input.activity_seq;
-    publish(app);
-    return true;
-  };
-  // Return (the bar's "Open in <app>") on a PDF or DOCX: its own app opens it.
-  if (command == edit_workspace && !app->ws.open && !app->editor.open &&
-      mv::io::is_document_name(app->edit_path)) {
-    open_document_with(app, -1);
-    return true;
-  }
-  // PR 30 (docs/design/21, owner): video is edited in its own window, not a pane.
-  if (command == edit_workspace &&
-      (app->editor.open || edit_subject_of(app) == mv::shell::edit_subject::clip)) {
-    if (app->editor.open) {
-      editor_request_close(app);
-    } else {
-      set_editor_open(app, true);
-    }
-    return true;
-  }
-  // PR 29 (docs/design/20): the keys that open a tab of the Edit workspace. The
-  // workspace decides the tab; crop_mode and trim_mode then do their own work.
-  if (command == edit_workspace || command == crop_mode || command == adjust_pane ||
-      command == trim_mode || command == metadata_pane || command == jobs_pane) {
-    const mv::shell::workspace_step step = mv::shell::route_workspace(app->ws, edit_subject_of(app), command);
-    if (step.action != mv::shell::workspace_action::none) {
-      if (mv::shell::apply_step(app->ws, step)) sync_workspace(app);
-      if (command != crop_mode && command != trim_mode) return true;
-    } else if (command == edit_workspace) {
-      ::MessageBeep(MB_ICONWARNING);  // nothing on the canvas to edit
-      return true;
-    } else if (app->ws.open && (command == metadata_pane || command == jobs_pane || command == adjust_pane)) {
-      // A pane the workspace does not hold here takes the edge on its own.
-      close_workspace(app);
-    }
-  }
   switch (command) {
     case open:
       if (app->window) open_file_dialog(app, app->window);
@@ -6933,9 +7148,405 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case open_folder:
       if (app->window) open_folder_dialog(app, app->window);
       return true;
+    case prev:
+      if (folder_cursor_step(app, -1)) return true;
+      // File search: with a name filter on, Left walks its matches.
+      if (app->gallery_visible && app->chrome.gallery_search(mv::shell::gallery_search_action::step, -1) ==
+                                      mv::shell::gallery_search_answer::took) {
+        return true;
+      }
+      folder_step(app, -1);
+      return true;
+    case next:
+      if (folder_cursor_step(app, 1)) return true;
+      if (app->gallery_visible && app->chrome.gallery_search(mv::shell::gallery_search_action::step, 1) ==
+                                      mv::shell::gallery_search_answer::took) {
+        return true;
+      }
+      // Nothing open: Space starts the empty-window runner (dino_game.h).
+      if (folder_count(app) == 0 && app->mode == open_mode::none && !video_mode(app)) {
+        app->game_on = true;
+        return bump_input(app, app->input.toggle_animation_seq);
+      }
+      folder_step(app, 1);
+      return true;
+    case first: folder_jump(app, -(1LL << 32)); return true;
+    case last: folder_jump(app, 1LL << 32); return true;
+    case skip_back: folder_jump(app, -10); return true;
+    case skip_forward: folder_jump(app, 10); return true;
+    case next_page: return turn_page(app, 1);
+    case prev_page: return turn_page(app, -1);
+    case toggle_gallery: set_gallery(app, !app->gallery_visible); return true;
+    case gallery_open_selected:
+      if (!app->gallery_visible) return false;
+      if (app->folder_cursor >= 0) {
+        open_subfolder_at(app, static_cast<std::uint32_t>(app->folder_cursor));
+        return true;
+      }
+      // Enter returns to the normal viewer, including the configured filmstrip.
+      // It also leaves any slideshow that was running behind the gallery.
+      stop_slideshow(app);
+      set_gallery(app, false);
+      set_fullscreen(app, false);
+      if (app->window) ::SetFocus(app->window);
+      return true;
+    case gallery_up:
+    case gallery_down: {
+      if (!app->gallery_visible) return false;
+      gallery_move_rows(app, command == gallery_up ? -1 : 1);
+      return true;
+    }
+    case gallery_larger:
+    case gallery_smaller: {
+      if (!app->gallery_visible) return false;
+      std::uint32_t selected = 0;
+      (void)mv_folder_selected(app->session, &selected);
+      app->chrome.scale_gallery(command == gallery_larger ? 1 : -1,
+                                static_cast<std::int32_t>(selected));
+      return true;
+    }
+    case toggle_filmstrip: toggle_filmstrip_setting(app); return true;
+    case toggle_page_sidebar: toggle_page_sidebar_setting(app); return true;
+    case fit:
+      app->zoom_intent_tick = 0;
+      return bump_input(app, app->input.fit_seq);
+    case one_to_one:
+      app->zoom_intent_tick = ::GetTickCount64();
+      return bump_input(app, app->input.one_to_one_seq);
+    case zoom_in:
+      app->zoom_intent_tick = ::GetTickCount64();
+      return bump_input(app, app->input.zoom_in_seq);
+    case zoom_out: return bump_input(app, app->input.zoom_out_seq);
+    case zoom_200:
+    case zoom_400:
+      app->input.zoom_preset = command == zoom_200 ? 2.0f : 4.0f;
+      app->zoom_intent_tick = ::GetTickCount64();
+      return bump_input(app, app->input.zoom_preset_seq);
+    case game_toggle_3d:
+      if (app->mode != open_mode::none || !app->game_on) return false;
+      return bump_input(app, app->input.game_view_seq);
+    case overlay: return bump_input(app, app->input.toggle_overlay_seq);
+    case reset_stats: return bump_input(app, app->input.reset_stats_seq);
+
+    case fullscreen: set_fullscreen(app, !app->fullscreen); return true;
+    case fill:
+      app->zoom_intent_tick = ::GetTickCount64();
+      return bump_input(app, app->input.fill_seq);
+    // docs/design/16: Ctrl+0 resets pan/zoom, which is the opening view — fit.
+    case reset_view:
+      app->zoom_intent_tick = 0;
+      return bump_input(app, app->input.fit_seq);
+    // docs/design/16: pan only when zoomed. At fit the view is locked, so the key is
+    // not ours and falls through to whatever else wants it.
+    case pan_up:
+    case pan_down:
+    case pan_left:
+    case pan_right: {
+      const bool zooming = app->zoom_intent_tick != 0 &&
+                           ::GetTickCount64() - app->zoom_intent_tick < kZoomIntentMs;
+      if (app->lab.view_fitted() && !zooming) {
+        // docs/design/16 §Focus: fullscreen hides the strips, and ↓ at fit is how a
+        // keyboard user gets them (and a clip's transport) back.
+        if (command == pan_down && app->fullscreen) {
+          set_fullscreen_reveal(app, true);
+          return true;
+        }
+        // A fitted clip has nothing to pan: ↑ ↓ are its volume.
+        if ((command == pan_up || command == pan_down) && video_mode(app)) {
+          set_clip_volume(app, app->volume + (command == pan_up ? 0.1f : -0.1f));
+          return true;
+        }
+        return false;
+      }
+    }
+      if (command == pan_up) --app->input.pan_steps_y;
+      if (command == pan_down) ++app->input.pan_steps_y;
+      if (command == pan_left) --app->input.pan_steps_x;
+      if (command == pan_right) ++app->input.pan_steps_x;
+      ++app->input.activity_seq;
+      publish(app);
+      return true;
+
+    // View state the render thread draws from (levels, not edges).
+    case sticky_zoom:
+      app->input.sticky_zoom = !app->input.sticky_zoom;
+      return set_level(app);
+    case clipping:
+      app->input.clipping = !app->input.clipping;
+      return set_level(app);
+    case loupe:
+    case loupe_release:
+      // The loupe magnifies a still. On a clip or an empty canvas Z is not
+      // ours: do not swallow it and then draw nothing.
+      if (command == loupe && !app->lab.showing_still()) return false;
+      app->input.loupe = command == loupe;
+      if (command == loupe) {
+        // Each hold starts at the cursor, or the canvas centre with none.
+        app->input.loupe_steps_x = 0;
+        app->input.loupe_steps_y = 0;
+      }
+      return set_level(app);
+    case loupe_nudge_left: --app->input.loupe_steps_x; return set_level(app);
+    case loupe_nudge_right: ++app->input.loupe_steps_x; return set_level(app);
+    case loupe_nudge_up: --app->input.loupe_steps_y; return set_level(app);
+    case loupe_nudge_down: ++app->input.loupe_steps_y; return set_level(app);
+    case hold_previous:
+    case hold_previous_release:
+      app->input.hold_previous = command == hold_previous;
+      return set_level(app);
+    case compare_two_up:
+      // A level, like the background: the render thread splits only while a
+      // still is up (shell/compare.h), so on a clip this just arms or clears it.
+      app->input.compare = !app->input.compare;
+      return set_level(app);
+    case info_overlay:
+      app->input.info_overlay = !app->input.info_overlay;
+      refresh_item_info(app);
+      request_metadata_now(app);
+      return set_level(app);
+    // PR 9: both read the record the store already holds; toggling them never
+    // reads the file (the verify line).
+    case af_points:
+      app->input.af_points = !app->input.af_points;
+      request_metadata_now(app);
+      return set_level(app);
+    // Issue #209: 100 % on the AF point. The quads come from the record the
+    // store holds (or one read on the pool); the camera moves on the render
+    // thread. Nothing here reads the file.
+    case zoom_af_point:
+      if (app->meta_record) {
+        af_focus_fire(app);
+      } else {
+        app->af_focus_pending = true;
+        request_metadata_now(app);
+      }
+      return true;
+    case eyedropper:
+      app->input.eyedropper = !app->input.eyedropper;
+      return set_level(app);
+    case folder_up:
+      return navigate_folder_up(app);
+    case folder_prev:
+      return navigate_sibling(app, -1);
+    case folder_next:
+      return navigate_sibling(app, 1);
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return false;
+  }
+}
+
+bool run_transport_command(app_state* app, mv::shell::command_id command) noexcept {
+  using enum mv::shell::command_id;
+  switch (command) {
+    case play_pause: {
+      // docs/design/16: on an animation Space plays and pauses it, like a clip.
+      if (app->lab.animation() != mv::shell::animation_state::none) {
+        ++app->input.anim_toggle_seq;
+        return set_level(app);
+      }
+      std::uint32_t state = MV_PLAY_STOPPED;
+      (void)mv_video_state(app->session, &state);
+      if (state == MV_PLAY_PLAYING) (void)mv_video_pause(app->session);
+      else if (state != MV_PLAY_STOPPED) (void)mv_video_play(app->session);
+      return true;
+    }
+    case pause: (void)mv_video_pause(app->session); return true;
+    case mute:
+      if (!video_mode(app)) return false;
+      set_clip_muted(app, !app->muted);
+      return true;
+    // docs/design/16: J / L are -10 s / +10 s, and a jump is not part of a skim burst.
+    case jump_back:
+    case jump_forward:
+      app->skim_tick_ms = 0;
+      (void)skim(app, (command == jump_forward ? 1 : -1) * kTransportStepNs, true);
+      return true;
+    case frame_back:
+    case frame_forward:
+      if (app->lab.animation() != mv::shell::animation_state::none) {
+        app->input.anim_steps += command == frame_forward ? 1 : -1;
+        return set_level(app);
+      }
+      (void)mv_video_step(app->session, command == frame_forward ? 1 : -1);
+      return true;
+    // Speed ladder: the command-bar dropdown is the owner. Q/E used to step
+    // it on tap; they skip instead (docs/design/12 2026-09-13).
+    case rate_down:
+    case rate_up:
+      if (!video_mode(app)) return false;
+      apply_rate(app, app->rate_index + (command == rate_up ? 1 : -1));
+      return true;
+    // Q/E: tap is one exact ±2 s skip; hold shuttles on the non-exact seek
+    // (nearest keyframe) so a held key cannot queue a decode-forward per
+    // repeat (docs/design/16 speed rule 1). A new burst re-reads the position.
+    case skim_back:
+    case skim_forward: {
+      if (!video_mode(app)) return false;
+      const std::uint64_t now = ::GetTickCount64();
+      const bool new_burst = !app->skim_shuttled || app->skim_tick_ms == 0 ||
+                             now - app->skim_tick_ms > kSkimBurstMs;
+      if (new_burst) app->skim_tick_ms = 0;
+      app->skim_shuttled = true;
+      (void)skim(app, (command == skim_forward ? 1 : -1) * kSkimStepNs, new_burst);
+      return true;
+    }
+    // Release settles on the exact frame, the way letting go of the scrubber
+    // does — otherwise it stops on whatever keyframe the last cheap seek hit.
+    case skim_settle:
+      if (!video_mode(app) || !app->skim_shuttled) return false;
+      (void)mv_video_seek(app->session, app->skim_target_ns, 1);
+      app->skim_shuttled = false;
+      app->skim_tick_ms = 0;
+      return true;
+
+    // PR 7 pairs.
+    case play_motion:
+      return start_motion(app);
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return false;
+  }
+}
+
+bool run_marks_command(app_state* app, mv::shell::command_id command) noexcept {
+  using enum mv::shell::command_id;
+  switch (command) {
     case reveal_in_explorer:
       reveal_current_in_explorer(app);
       return true;
+    case copy_clipboard:
+      return copy_to_clipboard(app);
+    // PR 15 (docs/design/16 View): the keyboard twins of drag-out.
+    case copy_path:
+      return copy_paths_to_clipboard(app);
+    case copy_flattened:
+      return start_flatten(app);
+    case share:
+      return share_request_run(app, {});  // the key's request: the menu, on the selection
+    // Marks (docs/design/16): a set separate from the selection, keyed by path.
+    case toggle_mark: {
+      const std::string current = current_item_path(app);
+      if (current.empty()) return false;
+      (void)app->marks.toggle(current);
+      refresh_mark_state(app);
+      return set_level(app);
+    }
+    case mark_all: {
+      // With words selected in the still, Select All is every word (Photos);
+      // otherwise it marks every file.
+      if (app->text.has_selection() && app->text.select_all()) {
+        text_publish(app);
+        return true;
+      }
+      const std::uint32_t count = folder_count(app);
+      if (count == 0) return false;
+      std::vector<std::string> paths;
+      paths.reserve(count);
+      for (std::uint32_t i = 0; i < count; ++i) paths.push_back(item_path_at(app, i));
+      app->marks.mark_all(paths);
+      refresh_mark_state(app);
+      return set_level(app);
+    }
+    case unmark_all:
+      app->marks.clear();
+      refresh_mark_state(app);
+      return set_level(app);
+    case copy_to:
+    case copy_to_pick:
+      return start_transfer(app, mv::shell::file_job_kind::copy, command == copy_to_pick);
+    case move_to:
+    case move_to_pick:
+      return start_transfer(app, mv::shell::file_job_kind::move, command == move_to_pick);
+    case delete_to_recycle_bin:
+      return start_recycle(app);
+
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return false;
+  }
+}
+
+bool run_slideshow_command(app_state* app, mv::shell::command_id command) noexcept {
+  using enum mv::shell::command_id;
+  switch (command) {
+    // Slideshow (docs/design/16): a mode, no transition pass.
+    case slideshow_start:
+      start_slideshow(app);
+      return app->show.active();
+    case slideshow_pause:
+      app->show.toggle_pause();
+      app->show_last_advance = ::GetTickCount64();  // resuming waits a full interval
+      publish_slideshow(app);
+      return true;
+    case slideshow_faster:
+      app->show.faster();
+      publish_slideshow(app);
+      return true;
+    case slideshow_slower:
+      app->show.slower();
+      publish_slideshow(app);
+      return true;
+    case blackout:
+      app->show.toggle_blackout();
+      publish_slideshow(app);
+      return true;
+    case shuffle: {
+      std::uint32_t selected = 0;
+      (void)mv_folder_selected(app->session, &selected);
+      app->show.toggle_shuffle(selected, ::GetTickCount64());
+      return true;
+    }
+
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return false;
+  }
+}
+
+bool run_edit_command_area(app_state* app, mv::shell::command_id command) noexcept {
+  using enum mv::shell::command_id;
+  switch (command) {
+    // PR 10 geometry, crop mode and export (docs/design/16 View + Crop).
+    case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
+    case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
+    case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
+    case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
+    case undo_edit: case reset_edits:
+    case crop_aspect_cycle: case crop_aspect_swap:  // PR 29: A / X in crop
+      return run_edit_command(app, command);
+    // PR 29: Y held shows the original pixels; the stack is untouched.
+    case show_original:
+    case show_original_release:
+      if (edit_subject_of(app) != mv::shell::edit_subject::still || !app->edits.has_item()) return false;
+      set_show_original(app, command == show_original);
+      return true;
+    case crop_aspect_set: case crop_straighten_set: case kind_filter_set:
+      return false;  // island-only: they carry a value (chrome_on_command)
+    case kind_filter_next:
+      return set_kind_filter(app, mv::io::next_kind_filter(app->kind_filter, !app->marks.empty()));
+    // PR 11 (docs/design/16 Pane): Shift+A shows the adjust pane and focuses its
+    // first slider; again (or its close button) hides it.
+    case adjust_pane:
+      set_adjust_pane(app, !app->adjust.visible());
+      return true;
+    case adjust_exposure: case adjust_contrast: case adjust_saturation:
+    case adjust_temperature: case adjust_tint: case adjust_reset:
+      return false;  // island-only: they carry a value (chrome_on_command)
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return false;
+  }
+}
+
+bool run_session_command(app_state* app, mv::shell::command_id command) noexcept {
+  using enum mv::shell::command_id;
+  switch (command) {
     case open_settings:
       set_settings_open(app, !app->settings_open);
       return true;
@@ -7044,329 +7655,6 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case new_window:
       open_new_window();
       return true;
-    case prev:
-      if (folder_cursor_step(app, -1)) return true;
-      // File search: with a name filter on, Left walks its matches.
-      if (app->gallery_visible && app->chrome.gallery_search(mv::shell::gallery_search_action::step, -1) ==
-                                      mv::shell::gallery_search_answer::took) {
-        return true;
-      }
-      folder_step(app, -1);
-      return true;
-    case next:
-      if (folder_cursor_step(app, 1)) return true;
-      if (app->gallery_visible && app->chrome.gallery_search(mv::shell::gallery_search_action::step, 1) ==
-                                      mv::shell::gallery_search_answer::took) {
-        return true;
-      }
-      // Nothing open: Space starts the empty-window runner (dino_game.h).
-      if (folder_count(app) == 0 && app->mode == open_mode::none && !video_mode(app)) {
-        app->game_on = true;
-        return bump(app->input.toggle_animation_seq);
-      }
-      folder_step(app, 1);
-      return true;
-    case first: folder_jump(app, -(1LL << 32)); return true;
-    case last: folder_jump(app, 1LL << 32); return true;
-    case skip_back: folder_jump(app, -10); return true;
-    case skip_forward: folder_jump(app, 10); return true;
-    case next_page: return turn_page(app, 1);
-    case prev_page: return turn_page(app, -1);
-    case toggle_gallery: set_gallery(app, !app->gallery_visible); return true;
-    case gallery_open_selected:
-      if (!app->gallery_visible) return false;
-      if (app->folder_cursor >= 0) {
-        open_subfolder_at(app, static_cast<std::uint32_t>(app->folder_cursor));
-        return true;
-      }
-      // Enter returns to the normal viewer, including the configured filmstrip.
-      // It also leaves any slideshow that was running behind the gallery.
-      stop_slideshow(app);
-      set_gallery(app, false);
-      set_fullscreen(app, false);
-      if (app->window) ::SetFocus(app->window);
-      return true;
-    case gallery_up:
-    case gallery_down: {
-      if (!app->gallery_visible) return false;
-      gallery_move_rows(app, command == gallery_up ? -1 : 1);
-      return true;
-    }
-    case gallery_larger:
-    case gallery_smaller: {
-      if (!app->gallery_visible) return false;
-      std::uint32_t selected = 0;
-      (void)mv_folder_selected(app->session, &selected);
-      app->chrome.scale_gallery(command == gallery_larger ? 1 : -1,
-                                static_cast<std::int32_t>(selected));
-      return true;
-    }
-    case toggle_filmstrip: toggle_filmstrip_setting(app); return true;
-    case fit:
-      app->zoom_intent_tick = 0;
-      return bump(app->input.fit_seq);
-    case one_to_one:
-      app->zoom_intent_tick = ::GetTickCount64();
-      return bump(app->input.one_to_one_seq);
-    case zoom_in:
-      app->zoom_intent_tick = ::GetTickCount64();
-      return bump(app->input.zoom_in_seq);
-    case zoom_out: return bump(app->input.zoom_out_seq);
-    case zoom_200:
-    case zoom_400:
-      app->input.zoom_preset = command == zoom_200 ? 2.0f : 4.0f;
-      app->zoom_intent_tick = ::GetTickCount64();
-      return bump(app->input.zoom_preset_seq);
-    case game_toggle_3d:
-      if (app->mode != open_mode::none || !app->game_on) return false;
-      return bump(app->input.game_view_seq);
-    case overlay: return bump(app->input.toggle_overlay_seq);
-    case reset_stats: return bump(app->input.reset_stats_seq);
-
-    case play_pause: {
-      // docs/design/16: on an animation Space plays and pauses it, like a clip.
-      if (app->lab.animation() != mv::shell::animation_state::none) {
-        ++app->input.anim_toggle_seq;
-        return set_level(app);
-      }
-      std::uint32_t state = MV_PLAY_STOPPED;
-      (void)mv_video_state(app->session, &state);
-      if (state == MV_PLAY_PLAYING) (void)mv_video_pause(app->session);
-      else if (state != MV_PLAY_STOPPED) (void)mv_video_play(app->session);
-      return true;
-    }
-    case pause: (void)mv_video_pause(app->session); return true;
-    case mute:
-      if (!video_mode(app)) return false;
-      set_clip_muted(app, !app->muted);
-      return true;
-    // docs/design/16: J / L are -10 s / +10 s, and a jump is not part of a skim burst.
-    case jump_back:
-    case jump_forward:
-      app->skim_tick_ms = 0;
-      (void)skim(app, (command == jump_forward ? 1 : -1) * kTransportStepNs, true);
-      return true;
-    case frame_back:
-    case frame_forward:
-      if (app->lab.animation() != mv::shell::animation_state::none) {
-        app->input.anim_steps += command == frame_forward ? 1 : -1;
-        return set_level(app);
-      }
-      (void)mv_video_step(app->session, command == frame_forward ? 1 : -1);
-      return true;
-    // Speed ladder: the command-bar dropdown is the owner. Q/E used to step
-    // it on tap; they skip instead (docs/design/12 2026-09-13).
-    case rate_down:
-    case rate_up:
-      if (!video_mode(app)) return false;
-      apply_rate(app, app->rate_index + (command == rate_up ? 1 : -1));
-      return true;
-    // Q/E: tap is one exact ±2 s skip; hold shuttles on the non-exact seek
-    // (nearest keyframe) so a held key cannot queue a decode-forward per
-    // repeat (docs/design/16 speed rule 1). A new burst re-reads the position.
-    case skim_back:
-    case skim_forward: {
-      if (!video_mode(app)) return false;
-      const std::uint64_t now = ::GetTickCount64();
-      const bool new_burst = !app->skim_shuttled || app->skim_tick_ms == 0 ||
-                             now - app->skim_tick_ms > kSkimBurstMs;
-      if (new_burst) app->skim_tick_ms = 0;
-      app->skim_shuttled = true;
-      (void)skim(app, (command == skim_forward ? 1 : -1) * kSkimStepNs, new_burst);
-      return true;
-    }
-    // Release settles on the exact frame, the way letting go of the scrubber
-    // does — otherwise it stops on whatever keyframe the last cheap seek hit.
-    case skim_settle:
-      if (!video_mode(app) || !app->skim_shuttled) return false;
-      (void)mv_video_seek(app->session, app->skim_target_ns, 1);
-      app->skim_shuttled = false;
-      app->skim_tick_ms = 0;
-      return true;
-
-    case fullscreen: set_fullscreen(app, !app->fullscreen); return true;
-    case fill:
-      app->zoom_intent_tick = ::GetTickCount64();
-      return bump(app->input.fill_seq);
-    // docs/design/16: Ctrl+0 resets pan/zoom, which is the opening view — fit.
-    case reset_view:
-      app->zoom_intent_tick = 0;
-      return bump(app->input.fit_seq);
-    // docs/design/16: pan only when zoomed. At fit the view is locked, so the key is
-    // not ours and falls through to whatever else wants it.
-    case pan_up:
-    case pan_down:
-    case pan_left:
-    case pan_right: {
-      const bool zooming = app->zoom_intent_tick != 0 &&
-                           ::GetTickCount64() - app->zoom_intent_tick < kZoomIntentMs;
-      if (app->lab.view_fitted() && !zooming) {
-        // docs/design/16 §Focus: fullscreen hides the strips, and ↓ at fit is how a
-        // keyboard user gets them (and a clip's transport) back.
-        if (command == pan_down && app->fullscreen) {
-          set_fullscreen_reveal(app, true);
-          return true;
-        }
-        // A fitted clip has nothing to pan: ↑ ↓ are its volume.
-        if ((command == pan_up || command == pan_down) && video_mode(app)) {
-          set_clip_volume(app, app->volume + (command == pan_up ? 0.1f : -0.1f));
-          return true;
-        }
-        return false;
-      }
-    }
-      if (command == pan_up) --app->input.pan_steps_y;
-      if (command == pan_down) ++app->input.pan_steps_y;
-      if (command == pan_left) --app->input.pan_steps_x;
-      if (command == pan_right) ++app->input.pan_steps_x;
-      ++app->input.activity_seq;
-      publish(app);
-      return true;
-
-    // View state the render thread draws from (levels, not edges).
-    case sticky_zoom:
-      app->input.sticky_zoom = !app->input.sticky_zoom;
-      return set_level(app);
-    case clipping:
-      app->input.clipping = !app->input.clipping;
-      return set_level(app);
-    case loupe:
-    case loupe_release:
-      // The loupe magnifies a still. On a clip or an empty canvas Z is not
-      // ours: do not swallow it and then draw nothing.
-      if (command == loupe && !app->lab.showing_still()) return false;
-      app->input.loupe = command == loupe;
-      if (command == loupe) {
-        // Each hold starts at the cursor, or the canvas centre with none.
-        app->input.loupe_steps_x = 0;
-        app->input.loupe_steps_y = 0;
-      }
-      return set_level(app);
-    case loupe_nudge_left: --app->input.loupe_steps_x; return set_level(app);
-    case loupe_nudge_right: ++app->input.loupe_steps_x; return set_level(app);
-    case loupe_nudge_up: --app->input.loupe_steps_y; return set_level(app);
-    case loupe_nudge_down: ++app->input.loupe_steps_y; return set_level(app);
-    case hold_previous:
-    case hold_previous_release:
-      app->input.hold_previous = command == hold_previous;
-      return set_level(app);
-    case info_overlay:
-      app->input.info_overlay = !app->input.info_overlay;
-      refresh_item_info(app);
-      request_metadata_now(app);
-      return set_level(app);
-    // PR 9: both read the record the store already holds; toggling them never
-    // reads the file (the verify line).
-    case af_points:
-      app->input.af_points = !app->input.af_points;
-      request_metadata_now(app);
-      return set_level(app);
-    // Issue #209: 100 % on the AF point. The quads come from the record the
-    // store holds (or one read on the pool); the camera moves on the render
-    // thread. Nothing here reads the file.
-    case zoom_af_point:
-      if (app->meta_record) {
-        af_focus_fire(app);
-      } else {
-        app->af_focus_pending = true;
-        request_metadata_now(app);
-      }
-      return true;
-    case eyedropper:
-      app->input.eyedropper = !app->input.eyedropper;
-      return set_level(app);
-    case copy_clipboard:
-      return copy_to_clipboard(app);
-    // PR 15 (docs/design/16 View): the keyboard twins of drag-out.
-    case copy_path:
-      return copy_paths_to_clipboard(app);
-    case copy_flattened:
-      return start_flatten(app);
-    case share:
-      return share_targets(app);
-    // PR 10 geometry, crop mode and export (docs/design/16 View + Crop).
-    case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
-    case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
-    case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
-    case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
-    case undo_edit: case reset_edits:
-    case crop_aspect_cycle: case crop_aspect_swap:  // PR 29: A / X in crop
-      return run_edit_command(app, command);
-    // PR 29: Y held shows the original pixels; the stack is untouched.
-    case show_original:
-    case show_original_release:
-      if (edit_subject_of(app) != mv::shell::edit_subject::still || !app->edits.has_item()) return false;
-      set_show_original(app, command == show_original);
-      return true;
-    case crop_aspect_set: case crop_straighten_set: case kind_filter_set:
-      return false;  // island-only: they carry a value (chrome_on_command)
-    case kind_filter_next:
-      return set_kind_filter(app, mv::io::next_kind_filter(app->kind_filter, !app->marks.empty()));
-    // Marks (docs/design/16): a set separate from the selection, keyed by path.
-    case toggle_mark: {
-      const std::string current = current_item_path(app);
-      if (current.empty()) return false;
-      (void)app->marks.toggle(current);
-      refresh_mark_state(app);
-      return set_level(app);
-    }
-    case mark_all: {
-      // With words selected in the still, Select All is every word (Photos);
-      // otherwise it marks every file.
-      if (app->text.has_selection() && app->text.select_all()) {
-        text_publish(app);
-        return true;
-      }
-      const std::uint32_t count = folder_count(app);
-      if (count == 0) return false;
-      std::vector<std::string> paths;
-      paths.reserve(count);
-      for (std::uint32_t i = 0; i < count; ++i) paths.push_back(item_path_at(app, i));
-      app->marks.mark_all(paths);
-      refresh_mark_state(app);
-      return set_level(app);
-    }
-    case unmark_all:
-      app->marks.clear();
-      refresh_mark_state(app);
-      return set_level(app);
-    case copy_to:
-    case copy_to_pick:
-      return start_transfer(app, mv::shell::file_job_kind::copy, command == copy_to_pick);
-    case move_to:
-    case move_to_pick:
-      return start_transfer(app, mv::shell::file_job_kind::move, command == move_to_pick);
-    case delete_to_recycle_bin:
-      return start_recycle(app);
-
-    // Slideshow (docs/design/16): a mode, no transition pass.
-    case slideshow_start:
-      start_slideshow(app);
-      return app->show.active();
-    case slideshow_pause:
-      app->show.toggle_pause();
-      app->show_last_advance = ::GetTickCount64();  // resuming waits a full interval
-      publish_slideshow(app);
-      return true;
-    case slideshow_faster:
-      app->show.faster();
-      publish_slideshow(app);
-      return true;
-    case slideshow_slower:
-      app->show.slower();
-      publish_slideshow(app);
-      return true;
-    case blackout:
-      app->show.toggle_blackout();
-      publish_slideshow(app);
-      return true;
-    case shuffle: {
-      std::uint32_t selected = 0;
-      (void)mv_folder_selected(app->session, &selected);
-      app->show.toggle_shuffle(selected, ::GetTickCount64());
-      return true;
-    }
-
     // docs/design/16 `?`, Ctrl+G go-to and `/` find: XAML flyouts on the command bar.
     case help:
     case go_to:
@@ -7416,24 +7704,10 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case folder_tree:
       set_folder_tree(app, !app->tree_visible);
       return true;
-    case folder_up:
-      return navigate_folder_up(app);
-    case folder_prev:
-      return navigate_sibling(app, -1);
-    case folder_next:
-      return navigate_sibling(app, 1);
     case metadata_pane:
       if (!app->meta_pane_visible && app->adjust.visible()) set_adjust_pane(app, false);
       set_meta_pane(app, !app->meta_pane_visible);
       return true;
-    // PR 11 (docs/design/16 Pane): Shift+A shows the adjust pane and focuses its
-    // first slider; again (or its close button) hides it.
-    case adjust_pane:
-      set_adjust_pane(app, !app->adjust.visible());
-      return true;
-    case adjust_exposure: case adjust_contrast: case adjust_saturation:
-    case adjust_temperature: case adjust_tint: case adjust_reset:
-      return false;  // island-only: they carry a value (chrome_on_command)
     // PR 12 (docs/design/16 Rate): 0-5 write the rating of the item on screen. The
     // pane's stars post the same ids.
     case set_rating_0: case set_rating_1: case set_rating_2: case set_rating_3:
@@ -7462,9 +7736,6 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
       return true;
 
-    // PR 7 pairs.
-    case play_motion:
-      return start_motion(app);
     // docs/design/04: the other half of a RAW+JPEG stop is never trapped. Open RAW
     // shows the RAW file on the canvas (same stop, same marks); Open JPEG goes
     // back to the primary, from the LRU. Not a RAW+JPEG stop: not ours.
@@ -7491,8 +7762,56 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     }
 
     default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
       return false;
   }
+}
+
+bool run_command(app_state* app, mv::shell::command_id command) noexcept {
+  using enum mv::shell::command_id;
+  // Return (the bar's "Open in <app>") on a PDF or DOCX: its own app opens it.
+  if (command == edit_workspace && !app->ws.open && !app->editor.open &&
+      mv::io::is_document_name(app->edit_path)) {
+    open_document_with(app, -1);
+    return true;
+  }
+  // PR 30 (docs/design/21, owner): video is edited in its own window, not a pane.
+  if (command == edit_workspace &&
+      (app->editor.open || edit_subject_of(app) == mv::shell::edit_subject::clip)) {
+    if (app->editor.open) {
+      editor_request_close(app);
+    } else {
+      set_editor_open(app, true);
+    }
+    return true;
+  }
+  // PR 29 (docs/design/20): the keys that open a tab of the Edit workspace. The
+  // workspace decides the tab; crop_mode and trim_mode then do their own work.
+  if (command == edit_workspace || command == crop_mode || command == adjust_pane ||
+      command == trim_mode || command == metadata_pane || command == jobs_pane) {
+    const mv::shell::workspace_step step = mv::shell::route_workspace(app->ws, edit_subject_of(app), command);
+    if (step.action != mv::shell::workspace_action::none) {
+      if (mv::shell::apply_step(app->ws, step)) sync_workspace(app);
+      if (command != crop_mode && command != trim_mode) return true;
+    } else if (command == edit_workspace) {
+      ::MessageBeep(MB_ICONWARNING);  // nothing on the canvas to edit
+      return true;
+    } else if (app->ws.open && (command == metadata_pane || command == jobs_pane || command == adjust_pane)) {
+      // A pane the workspace does not hold here takes the edge on its own.
+      close_workspace(app);
+    }
+  }
+  switch (mv::shell::win_command_area(command)) {
+    case mv::shell::command_area::canvas: return run_canvas_command(app, command);
+    case mv::shell::command_area::transport: return run_transport_command(app, command);
+    case mv::shell::command_area::marks: return run_marks_command(app, command);
+    case mv::shell::command_area::slideshow: return run_slideshow_command(app, command);
+    case mv::shell::command_area::edit: return run_edit_command_area(app, command);
+    case mv::shell::command_area::session: return run_session_command(app, command);
+    case mv::shell::command_area::excluded: return false;
+  }
+  return false;
 }
 
 // Runs before the island's pre-translate, so F3 and friends work with the
@@ -7929,7 +8248,17 @@ void layout_panels(app_state* app) noexcept {
   app->chrome.show_adjust_pane(want_adjust, width - side, pane_top, side, pane_span, app->focus_adjust_next);
   app->chrome.show_jobs_pane(want_jobs, width - side, pane_top, side, pane_span, app->focus_jobs_next);
   if (want_jobs) app->focus_jobs_next = false;
-  app->chrome.show_folder_tree(want_tree, 0, top, tree_w, span, app->focus_tree_next);
+  // Issue #429: the page sidebar on the left edge; the tree, when open, sits
+  // beside it rather than over it.
+  const bool want_sidebar = page_sidebar_shows(app);
+  const int sidebar_w = want_sidebar ? std::min(width / 3, page_sidebar_px(dpi)) : 0;
+  app->chrome.show_page_sidebar(want_sidebar, 0, top, std::max(sidebar_w, 1), span);
+  if (want_sidebar) {
+    app->page_sidebar_listed = page_sidebar_count(app);
+    app->chrome.set_page_sidebar(static_cast<std::int32_t>(app->page_sidebar_listed),
+                                 static_cast<std::int32_t>(app->page), app->page_sidebar_stop);
+  }
+  app->chrome.show_folder_tree(want_tree, sidebar_w, top, tree_w, span, app->focus_tree_next);
   if (want_meta && !want_adjust && !want_jobs) app->focus_meta_next = false;
   if (want_adjust) app->focus_adjust_next = false;
   if (want_tree) app->focus_tree_next = false;
@@ -8051,6 +8380,11 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept {
   int bottom = 0;
   if (app->chrome.filmstrip_visible()) bottom += mv::shell::chrome_filmstrip_height_px(dpi);
   app->input.chrome_bottom_px = static_cast<std::uint32_t>(bottom);
+  // Issue #429: the page sidebar reserves the left edge the same way.
+  app->input.chrome_left_px =
+      app->chrome.page_sidebar_visible()
+          ? static_cast<std::uint32_t>(std::min(static_cast<int>(app->input.width) / 3, page_sidebar_px(dpi)))
+          : 0;
   // PR 29: the docked Edit workspace; the canvas frames the picture left of it.
   app->input.chrome_right_px =
       app->chrome.edit_pane_visible()
@@ -8085,6 +8419,10 @@ void apply_view_state(app_state* app) noexcept {
                                         : false);
   if (want_filmstrip != app->chrome.filmstrip_visible()) {
     app->chrome.show_filmstrip(want_filmstrip, width, height, dpi);
+    // The strip here is the shown state, not the wish (the Mac's
+    // -filmstripVisible is the wish): a clip or document that opened before
+    // its folder had a strip was not due then, so ask again now.
+    strip_hint_show(app);
   }
   const bool want_gallery = app->gallery_visible && !settings;
   if (want_gallery != app->chrome.gallery_visible()) {
@@ -8198,21 +8536,133 @@ bool client_animations_off() noexcept {
   return on == FALSE;
 }
 
-LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
-  if (msg == WM_NCCREATE) {
-    auto* create = reinterpret_cast<CREATESTRUCTW*>(lparam);
-    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
-                        reinterpret_cast<LONG_PTR>(create->lpCreateParams));
-    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
-  }
+// ---- #452: in the background (docs/design/28 "In the background") --------------------------
+// Off (the default) none of this runs: WM_CLOSE closes and the process exits.
+// On, the window drops what it showed (return_to_welcome: no clip plays, the
+// folder and its watch close), hides, and the add-on's threads are all that
+// run; the canvas presents nothing (window_visible is false).
 
-  app_state* app = state_from(hwnd);
-  if (!app) return ::DefWindowProcW(hwnd, msg, wparam, lparam);
-  if (app->taskbar_created_msg != 0 && msg == app->taskbar_created_msg) {
-    on_taskbar_button_created(app);
-    return 0;
-  }
+struct kept_alive_entry {
+  std::string addon, screen, title, label;
+};
 
+std::vector<kept_alive_entry> kept_alive() {
+  std::vector<kept_alive_entry> out;
+  std::string json(4096, '\0');
+  uint32_t needed = 0;
+  mv_status status = mv_slots_notices_json(json.data(), static_cast<uint32_t>(json.size()), &needed);
+  if (status == MV_ERR_INVALID_ARG && needed > json.size()) {
+    json.assign(needed, '\0');
+    status = mv_slots_notices_json(json.data(), static_cast<uint32_t>(json.size()), &needed);
+  }
+  if (status != MV_OK || needed == 0) return out;
+  json.resize(needed - 1);
+  const auto doc = mv::json::parse(json, 4);
+  if (!doc || doc->k != mv::json::kind::object) return out;
+  const mv::json::value* keep = doc->find("keep");
+  if (!keep || keep->k != mv::json::kind::array) return out;
+  for (const mv::json::value& k : keep->a) {
+    const std::string* addon = k.str("addon");
+    const std::string* screen = k.str("screen");
+    if (!addon || !screen) continue;
+    const std::string* title = k.str("title");
+    const std::string* label = k.str("label");
+    out.push_back({*addon, *screen, title ? *title : *screen, label ? *label : std::string()});
+  }
+  return out;
+}
+
+void sync_tray(app_state* app, const std::vector<kept_alive_entry>& keep) {
+  NOTIFYICONDATAW nid{};
+  nid.cbSize = sizeof nid;
+  nid.hWnd = app->window;
+  nid.uID = 1;
+  if (keep.empty()) {
+    if (app->tray_shown) (void)::Shell_NotifyIconW(NIM_DELETE, &nid);
+    app->tray_shown = false;
+    return;
+  }
+  nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
+  nid.uCallbackMessage = kMsgTray;
+  (void)::LoadIconWithScaleDown(::GetModuleHandleW(nullptr), MAKEINTRESOURCEW(MV_IDI_APP),
+                                ::GetSystemMetrics(SM_CXSMICON), ::GetSystemMetrics(SM_CYSMICON), &nid.hIcon);
+  const std::wstring tip = wide_from_utf8(keep.front().label.empty() ? std::string("MediaViewer") : keep.front().label);
+  (void)::wcsncpy_s(nid.szTip, tip.c_str(), _TRUNCATE);
+  if (!app->tray_shown) {
+    app->tray_shown = ::Shell_NotifyIconW(NIM_ADD, &nid) != FALSE;
+    nid.uVersion = NOTIFYICON_VERSION_4;
+    if (app->tray_shown) (void)::Shell_NotifyIconW(NIM_SETVERSION, &nid);
+  } else {
+    (void)::Shell_NotifyIconW(NIM_MODIFY, &nid);
+  }
+  if (nid.hIcon) ::DestroyIcon(nid.hIcon);  // the shell keeps its own copy
+}
+
+void enter_background(app_state* app) {
+  if (app->in_background) return;
+  if (app->editor.open) set_editor_open(app, false);  // PR 30: the canvas comes home first
+  stop_slideshow(app);
+  if (app->fullscreen) set_fullscreen(app, false);
+  return_to_welcome(app);
+  app->in_background = true;
+  app->input.window_visible = false;
+  publish(app);
+  ::ShowWindow(app->window, SW_HIDE);
+  sync_tray(app, kept_alive());
+}
+
+void leave_background(app_state* app) {
+  if (!app->in_background) return;
+  app->in_background = false;
+  ::ShowWindow(app->window, SW_SHOW);
+  if (::IsIconic(app->window)) ::ShowWindow(app->window, SW_RESTORE);
+  app->input.window_visible = !::IsIconic(app->window);
+  publish(app);
+  ::SetForegroundWindow(app->window);
+}
+
+void quit_from_background(app_state* app) {
+  app->quit_for_real = true;
+  ::PostMessageW(app->window, WM_CLOSE, 0, 0);
+}
+
+// The icon's menu: the add-on's line, Open <screen> for each, Open MediaViewer, Quit.
+void show_tray_menu(app_state* app, POINT at) {
+  const std::vector<kept_alive_entry> keep = kept_alive();
+  HMENU menu = ::CreatePopupMenu();
+  if (!menu) return;
+  constexpr UINT kOpenViewer = 1, kQuit = 2, kOpenScreen = 0x100;
+  if (!keep.empty() && !keep.front().label.empty()) {
+    (void)::AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, wide_from_utf8(keep.front().label).c_str());
+    (void)::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  }
+  for (std::size_t i = 0; i < keep.size() && i < 16; ++i) {
+    (void)::AppendMenuW(menu, MF_STRING, kOpenScreen + static_cast<UINT>(i),
+                        wide_from_utf8("Open " + keep[i].title).c_str());
+  }
+  (void)::AppendMenuW(menu, MF_STRING, kOpenViewer, L"Open MediaViewer");
+  (void)::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  (void)::AppendMenuW(menu, MF_STRING, kQuit, L"Quit MediaViewer");
+  // The documented dance: foreground first, so the menu closes when the person clicks away.
+  ::SetForegroundWindow(app->window);
+  const UINT picked = static_cast<UINT>(::TrackPopupMenuEx(
+      menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, at.x, at.y, app->window, nullptr));
+  ::PostMessageW(app->window, WM_NULL, 0, 0);
+  ::DestroyMenu(menu);
+  if (picked == kOpenViewer) {
+    leave_background(app);
+  } else if (picked == kQuit) {
+    quit_from_background(app);
+  } else if (picked >= kOpenScreen && picked - kOpenScreen < keep.size()) {
+    const kept_alive_entry& k = keep[picked - kOpenScreen];
+    (void)app->chrome.open_addon_screen(k.addon, k.screen);
+  }
+}
+
+// Issue #239. A value is the case's `return`. nullopt is a switch-level
+// `break`: window_proc then asks the next area and finally DefWindowProc.
+std::optional<LRESULT> window_on_geometry(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam,
+                                          app_state* app) {
   switch (msg) {
     case WM_SIZE: {
       if (wparam == SIZE_MINIMIZED) {
@@ -8266,6 +8716,16 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       return 0;
     }
 
+    default:
+      break;
+  }
+  // A switch-level break, or a message this area does not own, is DefWindowProc.
+  return std::nullopt;
+}
+
+std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam,
+                                          app_state* app) {
+  switch (msg) {
     case WM_MOUSEMOVE: {
       // Fullscreen hot-edge: the bottom few pixels reveal the strips.
       if (app->fullscreen) {
@@ -8491,6 +8951,16 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       return 0;
     }
 
+    default:
+      break;
+  }
+  // A switch-level break, or a message this area does not own, is DefWindowProc.
+  return std::nullopt;
+}
+
+std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam,
+                                          app_state* app) {
+  switch (msg) {
     case WM_KEYDOWN: {
       if ((lparam & (1 << 30)) != 0) return 0;
       // Tab has nowhere visible to go while fullscreen hides the chrome.
@@ -8556,6 +9026,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       on_text_read(app, std::unique_ptr<text_read_result>(reinterpret_cast<text_read_result*>(lparam)));
       return 0;
 
+    case kMsgShareReady:
+      on_share_ready(app, std::unique_ptr<share_gathered>(reinterpret_cast<share_gathered*>(lparam)));
+      return 0;
+
     case kMsgEditorLoaded:  // PR 30: the Video Editor's probe and strip
       on_editor_loaded(app, std::unique_ptr<editor_load_result>(reinterpret_cast<editor_load_result*>(lparam)));
       return 0;
@@ -8564,6 +9038,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       // A second start's paths (docs/design/09): opened here, as a drop would be, and
       // the window comes forward. An empty hand-off only brings it forward.
       std::unique_ptr<std::wstring> paths(reinterpret_cast<std::wstring*>(lparam));
+      leave_background(app);  // #452: a start while hidden brings the window back
       if (paths && !paths->empty()) open_dropped_wide_list(app, *paths);
       if (::IsIconic(hwnd)) ::ShowWindow(hwnd, SW_RESTORE);
       ::SetForegroundWindow(hwnd);
@@ -8625,6 +9100,99 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                                   reinterpret_cast<meta_write_result*>(lparam)));
       return 0;
 
+    case WM_ERASEBKGND:
+      return 1;  // the swapchain owns every pixel; never let GDI flash over it
+
+    case kMsgTray:
+      // #452, NOTIFYICON_VERSION_4: the event in LOWORD(lparam), the anchor in wparam.
+      switch (LOWORD(lparam)) {
+        case NIN_SELECT:
+        case NIN_KEYSELECT:
+          leave_background(app);
+          return 0;
+        case WM_CONTEXTMENU:
+          show_tray_menu(app, POINT{GET_X_LPARAM(wparam), GET_Y_LPARAM(wparam)});
+          return 0;
+        default:
+          return 0;
+      }
+
+    case kMsgBackgroundChanged: {
+      // #452: the keep-alive list changed. Turned off while hidden: the window
+      // comes back (the person is in the add-on's window, which it owns), and
+      // the next close quits as before.
+      const std::vector<kept_alive_entry> keep = kept_alive();
+      sync_tray(app, keep);
+      if (keep.empty() && app->in_background) leave_background(app);
+      return 0;
+    }
+
+    case WM_CLOSE: {
+      // #452: an add-on keeps the process: hide, do not close.
+      if (!app->closing && !app->quit_for_real && !kept_alive().empty()) {
+        enter_background(app);
+        return 0;
+      }
+      // PR 3-era exit fail-fast (0xC0000602 in CoreUIComponents.dll, about 1
+      // exit in 6 on main): the islands were disposed from WM_DESTROY, while
+      // DestroyWindow was already tearing their bridge windows down under a
+      // live DesktopWindowXamlSource. Every exit path — the window's close
+      // button, Ctrl+W, and the soak's own PostMessage(WM_CLOSE) — comes
+      // through here, so detach while the parent is still whole, let the
+      // dispatcher run the dispose it queued, and only then destroy.
+      if (app->closing) return 0;
+      if (app->editor.open) set_editor_open(app, false);  // PR 30: the canvas comes home first
+      app->closing = true;
+      app->chrome.detach();
+      app->chrome_on_screen = false;
+      MSG pending{};
+      for (int i = 0; i < 64 && ::PeekMessageW(&pending, nullptr, 0, 0, PM_REMOVE); ++i) {
+        if (pending.message == WM_QUIT) {
+          ::PostQuitMessage(static_cast<int>(pending.wParam));
+          break;
+        }
+        ::TranslateMessage(&pending);
+        ::DispatchMessageW(&pending);
+      }
+      // Every source is gone and its queued dispose has run; now the XAML
+      // runtime itself, still before the parent window goes.
+      app->chrome.shutdown_for_exit();
+      ::DestroyWindow(hwnd);
+      return 0;
+    }
+
+    case WM_DESTROY:
+      sync_tray(app, {});  // #452: the icon goes with the window
+      if (app->keep_awake) {
+        app->keep_awake = false;
+        (void)::SetThreadExecutionState(ES_CONTINUOUS);
+      }
+      app->instance.stop();
+      release_taskbar(app);
+      app->chrome.detach();
+      ::PostQuitMessage(0);
+      return 0;
+
+    case WM_SETTINGCHANGE:
+      // Issue #408: Settings > Accessibility > Animation effects. The home's
+      // ground effect stops while they are off, as the chrome's panes do.
+      if (const bool off = client_animations_off(); off != app->input.reduce_motion) {
+        app->input.reduce_motion = off;
+        publish(app);
+      }
+      break;
+
+    default:
+      break;
+  }
+  // A switch-level break, or a message this area does not own, is DefWindowProc.
+  return std::nullopt;
+}
+
+std::optional<LRESULT> window_on_timer(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam,
+                                          app_state* app) {
+  (void)lparam;
+  switch (msg) {
     case WM_TIMER:
       if (wparam == kTextDwellTimerId) {
         start_text_read(app);
@@ -8717,63 +9285,41 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       }
       break;
 
-    case WM_ERASEBKGND:
-      return 1;  // the swapchain owns every pixel; never let GDI flash over it
-
-    case WM_CLOSE: {
-      // PR 3-era exit fail-fast (0xC0000602 in CoreUIComponents.dll, about 1
-      // exit in 6 on main): the islands were disposed from WM_DESTROY, while
-      // DestroyWindow was already tearing their bridge windows down under a
-      // live DesktopWindowXamlSource. Every exit path — the window's close
-      // button, Ctrl+W, and the soak's own PostMessage(WM_CLOSE) — comes
-      // through here, so detach while the parent is still whole, let the
-      // dispatcher run the dispose it queued, and only then destroy.
-      if (app->closing) return 0;
-      if (app->editor.open) set_editor_open(app, false);  // PR 30: the canvas comes home first
-      app->closing = true;
-      app->chrome.detach();
-      app->chrome_on_screen = false;
-      MSG pending{};
-      for (int i = 0; i < 64 && ::PeekMessageW(&pending, nullptr, 0, 0, PM_REMOVE); ++i) {
-        if (pending.message == WM_QUIT) {
-          ::PostQuitMessage(static_cast<int>(pending.wParam));
-          break;
-        }
-        ::TranslateMessage(&pending);
-        ::DispatchMessageW(&pending);
-      }
-      // Every source is gone and its queued dispose has run; now the XAML
-      // runtime itself, still before the parent window goes.
-      app->chrome.shutdown_for_exit();
-      ::DestroyWindow(hwnd);
-      return 0;
-    }
-
-    case WM_DESTROY:
-      if (app->keep_awake) {
-        app->keep_awake = false;
-        (void)::SetThreadExecutionState(ES_CONTINUOUS);
-      }
-      app->instance.stop();
-      release_taskbar(app);
-      app->chrome.detach();
-      ::PostQuitMessage(0);
-      return 0;
-
-    case WM_SETTINGCHANGE:
-      // Issue #408: Settings > Accessibility > Animation effects. The home's
-      // ground effect stops while they are off, as the chrome's panes do.
-      if (const bool off = client_animations_off(); off != app->input.reduce_motion) {
-        app->input.reduce_motion = off;
-        publish(app);
-      }
-      break;
-
     default:
       break;
   }
+  // A switch-level break, or a message this area does not own, is DefWindowProc.
+  return std::nullopt;
+}
+
+LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (msg == WM_NCCREATE) {
+    auto* create = reinterpret_cast<CREATESTRUCTW*>(lparam);
+    ::SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                        reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+    return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  }
+
+  app_state* app = state_from(hwnd);
+  if (!app) return ::DefWindowProcW(hwnd, msg, wparam, lparam);
+  if (app->taskbar_created_msg != 0 && msg == app->taskbar_created_msg) {
+    on_taskbar_button_created(app);
+    return 0;
+  }
+  if (app->taskbar_restart_msg != 0 && msg == app->taskbar_restart_msg) {
+    // #452: Explorer restarted; its notification area lost the icon.
+    app->tray_shown = false;
+    sync_tray(app, kept_alive());
+    return 0;
+  }
+
+  if (const auto handled = window_on_geometry(hwnd, msg, wparam, lparam, app)) return *handled;
+  if (const auto handled = window_on_pointer(hwnd, msg, wparam, lparam, app)) return *handled;
+  if (const auto handled = window_on_jobs(hwnd, msg, wparam, lparam, app)) return *handled;
+  if (const auto handled = window_on_timer(hwnd, msg, wparam, lparam, app)) return *handled;
   return ::DefWindowProcW(hwnd, msg, wparam, lparam);
 }
+
 
 void enable_dark_titlebar(HWND hwnd) noexcept {
   const BOOL dark = TRUE;
@@ -8850,6 +9396,8 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
       if (ok) g_relaunch_after = std::wcstoul(value.c_str(), nullptr, 10);
     } else if (arg == L"--new-instance") {
       g_new_instance = true;
+    } else if (arg == L"--compare") {
+      g_start_compare = true;
     } else if (arg == L"--restore-fullscreen") {
       g_restore.fullscreen = true;
     } else if (arg == L"--restore-gallery") {
@@ -8858,6 +9406,9 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
       // Every positional path: Explorer's "Open" with several files passes
       // them all. open_paths decides (docs/design/16).
       open_paths.emplace_back(arg);
+    } else if (arg.rfind(L"----AppNotificationActivated:", 0) == 0) {
+      // #452: a notification clicked after the process that showed it ended:
+      // Windows starts the app with this. It opens as an ordinary start.
     } else {
       error = L"unrecognised argument: " + std::wstring(arg);
       ok = false;
@@ -8979,8 +9530,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   (void)mv::shell::app_settings().start();
   app.settings = mv::shell::load_view_settings();
   app.strip_hint_learned = mv::shell::load_strip_hint_learned();
+  app.page_sidebar_wanted = mv::shell::load_page_sidebar();
   app.input.sticky_zoom = app.settings.sticky_zoom;
   app.input.reduce_motion = client_animations_off();
+  app.input.compare = g_start_compare;
   app.destinations = mv::shell::load_destinations();
   app.recent_folders = mv::shell::load_recent_folders();
   app.home_utf8 = profile_folder_utf8();
@@ -8993,9 +9546,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   }
   // The toolbar is added when Explorer reports the button, not before.
   app.taskbar_created_msg = ::RegisterWindowMessageW(L"TaskbarButtonCreated");
-  for (const auto& o : mv::shell::load_key_overrides()) {
-    (void)mv::shell::set_live_key(o.row, static_cast<mv::shell::key>(o.k), o.mods);
-  }
+  app.taskbar_restart_msg = ::RegisterWindowMessageW(L"TaskbarCreated");  // #452
+  mv::shell::apply_key_remaps(mv::shell::load_key_remaps());
   app.router.rebuild(mv::shell::live_bindings());
   if (!app.files.start()) MV_LOG_WARN("files: I/O worker did not start; F7 / F8 / Delete disabled");
   mv_session_config config{};

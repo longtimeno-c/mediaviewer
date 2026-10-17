@@ -3,6 +3,7 @@
 #include "addon/slots.h"
 
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstring>
@@ -196,6 +197,68 @@ std::string fold_query(std::string_view text) {
   return out;
 }
 
+bool has_place_terms(std::string_view s) {
+  const auto space = [](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'; };
+  // ASCII ", or the typographic “ ” a Mac field types (query.cpp quote_at).
+  const auto quote_at = [&](std::size_t i) -> std::size_t {
+    if (i >= s.size()) return 0;
+    if (s[i] == '"') return 1;
+    if (i + 2 < s.size() && static_cast<unsigned char>(s[i]) == 0xE2 && static_cast<unsigned char>(s[i + 1]) == 0x80 &&
+        (static_cast<unsigned char>(s[i + 2]) == 0x9C || static_cast<unsigned char>(s[i + 2]) == 0x9D)) {
+      return 3;
+    }
+    return 0;
+  };
+  const auto letter = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
+  std::size_t i = 0;
+  while (i < s.size()) {
+    if (space(s[i])) {
+      ++i;
+      continue;
+    }
+    if (s[i] == '-' && i + 1 < s.size() && !space(s[i + 1]) && s[i + 1] != '-') ++i;
+    std::string op;
+    if (i < s.size() && s[i] == '@') {
+      ++i;
+    } else {
+      std::size_t j = i;
+      while (j < s.size() && letter(s[j])) ++j;
+      if (j > i && j < s.size() && s[j] == ':') {
+        op = fold_query(s.substr(i, j - i));
+        i = j + 1;
+        // Name:"words": any other word before a colon is a word, and what
+        // follows is a term of its own.
+        if (op != "place" && op != "in" && op != "before" && op != "after" && op != "since" && op != "until" &&
+            op != "is" && op != "type" && op != "kind" && op != "person" && op != "said" && op != "file" &&
+            op != "camera" && op != "lens" && op != "ai" && op != "made" && op != "rating" && op != "label" &&
+            op != "iso" && op != "f" && op != "mm" && op != "shutter") {
+          continue;
+        }
+      }
+    }
+    // The term's text: quoted (to the closing quote, or the end), or a word.
+    std::size_t begin = i, end = i;
+    if (const std::size_t q = quote_at(i)) {
+      begin = i + q;
+      end = begin;
+      std::size_t ql = 0;
+      while (end < s.size() && (ql = quote_at(end)) == 0) ++end;
+      i = end >= s.size() ? s.size() : end + ql;
+    } else {
+      while (end < s.size() && !space(s[end]) && quote_at(end) == 0) ++end;
+      i = end;
+    }
+    if (op != "place" && op != "in") continue;
+    std::size_t k = begin;
+    while (k < end && space(s[k])) ++k;
+    if (k == end) continue;  // "place:" still being typed
+    // in: is a date when its word starts with a digit (in:2024); never a place.
+    if (op == "in" && s[k] >= '0' && s[k] <= '9') continue;
+    return true;
+  }
+  return false;
+}
+
 // ---- workers ------------------------------------------------------------------
 
 struct slot_registry::worker {
@@ -323,6 +386,11 @@ void slot_registry::detach(const std::string& addon_id) {
     for (auto i = status_.begin(); i != status_.end();) {
       i = i->first.first == addon_id ? status_.erase(i) : std::next(i);
     }
+    for (auto i = notices_.begin(); i != notices_.end();) {
+      i = i->first.first == addon_id ? notices_.erase(i) : std::next(i);
+    }
+    keep_.erase(addon_id);
+    private_cv_.notify_all();  // a provider_paths waiting on it returns not_found
   }
   {
     std::lock_guard lk(e->w->m);
@@ -341,7 +409,7 @@ void slot_registry::detach(const std::string& addon_id) {
     }
   }
   notify(slot_changed_contributions | slot_changed_info | slot_changed_screens | slot_changed_search |
-         slot_changed_badges | slot_changed_status);
+         slot_changed_badges | slot_changed_status | slot_changed_notices);
 }
 
 bool slot_registry::attached(const std::string& addon_id) const {
@@ -500,7 +568,10 @@ std::uint64_t slot_registry::search(std::uint32_t scope, const std::string& quer
     s.query = trimmed;
     s.providers.clear();
     s.rows.clear();
-    if (!trimmed.empty()) {
+    // #441: the AI pack answers a Local search query's place terms itself
+    // (provider_paths, intersected with the rest of the query), so its own
+    // results are the whole answer and nobody else is asked.
+    if (!trimmed.empty() && !(scope == MV_SLOT_SCOPE_LOCAL && has_place_terms(trimmed))) {
       const std::string folded = fold_query(trimmed);
       // A query that starts with a provider's prefix ("place:") goes to the
       // providers that declare it, prefix removed; any other query to every
@@ -563,6 +634,89 @@ std::uint64_t slot_registry::search(std::uint32_t scope, const std::string& quer
   }
   notify(slot_changed_search);
   return g;
+}
+
+bool slot_registry::answers_prefix(std::uint32_t scope, std::string_view prefix) const {
+  std::lock_guard lock(m_);
+  for (const auto& [id, e] : addons_) {
+    for (const search_provider_contrib& p : e->c.search_providers) {
+      if (!(scope == MV_SLOT_SCOPE_FILES ? p.files : p.local)) continue;
+      if (std::find(p.prefixes.begin(), p.prefixes.end(), prefix) != p.prefixes.end()) return true;
+    }
+  }
+  return false;
+}
+
+result<std::vector<std::string>> slot_registry::provider_paths(const std::string& prefix, const std::string& query,
+                                                               const std::function<bool()>& keep_going) {
+  std::string q = query;
+  while (!q.empty() && (q.back() == ' ' || q.back() == '\t')) q.pop_back();
+  while (!q.empty() && (q.front() == ' ' || q.front() == '\t')) q.erase(0, 1);
+  std::uint64_t g = 0;
+  std::string addon;
+  {
+    std::lock_guard lock(m_);
+    addon_entry* found = nullptr;
+    const search_provider_contrib* provider = nullptr;
+    for (auto& [id, e] : addons_) {
+      for (const search_provider_contrib& p : e->c.search_providers) {
+        if (!p.local || std::find(p.prefixes.begin(), p.prefixes.end(), prefix) == p.prefixes.end()) continue;
+        found = e.get();
+        provider = &p;
+        break;
+      }
+      if (found) break;
+    }
+    if (!found) return err(status::not_found);
+    g = next_generation();
+    addon = found->id;
+    private_[g] = private_search{addon, provider->id, {}, false};
+    const std::string provider_id = provider->id;
+    const std::string folded = fold_query(q);
+    // Its own key: a chrome's search of the same provider never replaces it.
+    enqueue(*found, "paths:" + std::to_string(g), [this, g, provider_id, q, folded](slot_client& c) {
+      mv_slot_search_request r{};
+      r.struct_size = sizeof r;
+      r.scope = MV_SLOT_SCOPE_LOCAL;
+      r.generation = g;
+      r.provider_id = provider_id.c_str();
+      r.query_utf8 = q.c_str();
+      r.folded_utf8 = folded.c_str();
+      r.folder_utf8 = "";  // the whole index (locations_of_index)
+      (void)c.search(r);
+      // Returned: done, whether or not it said so (a failed call posts nothing).
+      std::lock_guard done_lock(m_);
+      if (auto it = private_.find(g); it != private_.end()) it->second.done = true;
+      private_cv_.notify_all();
+    });
+  }
+  std::unique_lock lock(m_);
+  for (;;) {
+    private_cv_.wait_for(lock, std::chrono::milliseconds(20), [&] {
+      const auto it = private_.find(g);
+      return it == private_.end() || it->second.done || addons_.count(addon) == 0;
+    });
+    const auto it = private_.find(g);
+    if (it == private_.end() || addons_.count(addon) == 0) {
+      if (it != private_.end()) private_.erase(it);
+      return err(status::not_found);
+    }
+    const bool done = it->second.done;
+    lock.unlock();
+    const bool wanted = !keep_going || keep_going();
+    lock.lock();
+    const auto again = private_.find(g);
+    if (!wanted || again == private_.end()) {
+      // Erased: is_stale says so, and the provider's walk stops.
+      if (again != private_.end()) private_.erase(again);
+      return err(wanted ? status::not_found : status::cancelled);
+    }
+    if (done) {
+      std::vector<std::string> paths = std::move(again->second.paths);
+      private_.erase(again);
+      return paths;
+    }
+  }
 }
 
 std::uint64_t slot_registry::request_badges(const std::string& folder) {
@@ -1081,7 +1235,7 @@ bool slot_registry::is_stale(std::uint64_t g) const {
   std::lock_guard lock(m_);
   if (g == 0) return true;
   if (g == info_generation_ || g == badges_generation_ || g == search_[0].generation ||
-      g == search_[1].generation) {
+      g == search_[1].generation || private_.count(g) != 0) {
     return false;
   }
   // A section asked again after a settings change has a generation of its own.
@@ -1199,6 +1353,17 @@ status slot_registry::post_search(const std::string& addon_id, const std::string
                                   std::uint64_t generation, std::vector<search_row> rows, bool done) {
   {
     std::lock_guard lock(m_);
+    if (auto it = private_.find(generation); it != private_.end()) {
+      private_search& ps = it->second;
+      if (ps.addon != addon_id || ps.provider != provider_id) return status::not_found;
+      for (search_row& r : rows) {
+        if (r.path.empty() || r.path.size() > 4096 || !json::detail::valid_utf8(r.path)) continue;
+        ps.paths.push_back(std::move(r.path));
+      }
+      if (done) ps.done = true;
+      private_cv_.notify_all();
+      return status::ok;
+    }
     search_state* s = nullptr;
     for (auto& candidate : search_) {
       if (candidate.generation == generation) s = &candidate;
@@ -1297,6 +1462,127 @@ status slot_registry::show_screen(const std::string& addon_id, const std::string
   return st;
 }
 
+// ---- #452: notices and keep-alive ---------------------------------------------------
+
+namespace {
+bool notice_text_ok(const std::string& s, std::size_t max) { return s.size() <= max && json::detail::valid_utf8(s); }
+bool has_screen(const contributions& c, const std::string& screen_id) {
+  return std::any_of(c.screens.begin(), c.screens.end(), [&](const screen_contrib& s) { return s.id == screen_id; });
+}
+}  // namespace
+
+status slot_registry::post_notice(const std::string& addon_id, const std::string& notice_id,
+                                  std::optional<notice_fields> notice) {
+  if (notice_id.empty() || notice_id.size() > 64 || !json::detail::valid_utf8(notice_id)) return status::invalid_arg;
+  if (notice && (notice->title.empty() || !notice_text_ok(notice->title, 120) || !notice_text_ok(notice->body, 400) ||
+                 notice->action.size() > 32 || !notice_text_ok(notice->action, 32) ||
+                 !notice_text_ok(notice->action_label, 40) || (!notice->action.empty() && notice->action_label.empty()))) {
+    return status::invalid_arg;
+  }
+  {
+    std::lock_guard lock(m_);
+    auto it = addons_.find(addon_id);
+    if (it == addons_.end()) return status::not_found;
+    const auto key = std::make_pair(addon_id, notice_id);
+    if (!notice) {
+      if (notices_.erase(key) == 0) return status::ok;  // nothing to take back: no wake
+    } else {
+      if (!has_screen(it->second->c, notice->screen)) return status::not_found;
+      notices_[key] = notice_state{std::move(*notice), ++notice_revision_};
+    }
+  }
+  notify(slot_changed_notices);
+  return status::ok;
+}
+
+status slot_registry::ask_notice_permission(const std::string& addon_id) {
+  {
+    std::lock_guard lock(m_);
+    if (addons_.find(addon_id) == addons_.end()) return status::not_found;
+    ++notice_asks_;
+  }
+  notify(slot_changed_notices);
+  return status::ok;
+}
+
+status slot_registry::keep_alive(const std::string& addon_id, bool on, const std::string& screen_id,
+                                 std::string label) {
+  if (on && (!notice_text_ok(label, 120))) return status::invalid_arg;
+  {
+    std::lock_guard lock(m_);
+    auto it = addons_.find(addon_id);
+    if (it == addons_.end()) return status::not_found;
+    if (!on) {
+      if (keep_.erase(addon_id) == 0) return status::ok;
+    } else {
+      if (!has_screen(it->second->c, screen_id)) return status::not_found;
+      auto want = std::make_pair(screen_id, std::move(label));
+      auto k = keep_.find(addon_id);
+      if (k != keep_.end() && k->second == want) return status::ok;
+      keep_[addon_id] = std::move(want);
+    }
+  }
+  notify(slot_changed_notices);
+  return status::ok;
+}
+
+bool slot_registry::keeping_alive() const {
+  std::lock_guard lock(m_);
+  return !keep_.empty();
+}
+
+std::string slot_registry::notices_json() const {
+  std::lock_guard lock(m_);
+  json::writer w;
+  w.begin_object().key("ask").integer(static_cast<std::int64_t>(notice_asks_)).key("keep").begin_array();
+  for (const auto& [addon, k] : keep_) {
+    std::string title = k.first;
+    if (auto it = addons_.find(addon); it != addons_.end()) {
+      for (const auto& sc : it->second->c.screens) {
+        if (sc.id == k.first) title = sc.title;
+      }
+    }
+    w.begin_object().key("addon").string(addon).key("screen").string(k.first).key("title").string(title);
+    w.key("label").string(k.second).end_object();
+  }
+  w.end_array().key("notices").begin_array();
+  for (const auto& [key, n] : notices_) {
+    w.begin_object()
+        .key("addon").string(key.first)
+        .key("id").string(key.second)
+        .key("screen").string(n.f.screen)
+        .key("title").string(n.f.title)
+        .key("body").string(n.f.body)
+        .key("action").string(n.f.action)
+        .key("action_label").string(n.f.action_label)
+        .key("revision").integer(static_cast<std::int64_t>(n.revision))
+        .end_object();
+  }
+  w.end_array().end_object();
+  return w.take();
+}
+
+status slot_registry::notice_action(const std::string& addon_id, const std::string& notice_id,
+                                    const std::string& action_id) {
+  std::lock_guard lock(m_);
+  auto it = addons_.find(addon_id);
+  if (it == addons_.end()) return status::not_found;
+  auto n = notices_.find(std::make_pair(addon_id, notice_id));
+  if (n == notices_.end() || n->second.f.action.empty() || n->second.f.action != action_id) return status::not_found;
+  json::writer v;
+  v.string(notice_id);
+  enqueue(*it->second, {}, [screen = n->second.f.screen, action_id, value = v.take()](slot_client& c) {
+    mv_slot_event ev{};
+    ev.struct_size = sizeof ev;
+    ev.kind = MV_SLOT_EVENT_NOTICE;
+    ev.screen_id = screen.c_str();
+    ev.node_id = action_id.c_str();
+    ev.value_json = value.c_str();
+    c.event(ev);
+  });
+  return status::ok;
+}
+
 slot_registry& default_slots() {
   static slot_registry r;
   return r;
@@ -1318,6 +1604,13 @@ class local_search_client final : public slot_client {
   slot_registry& r_;
 };
 }  // namespace
+
+std::uint32_t place_terms(const slot_registry& registry, std::string_view query) {
+  std::uint32_t out = 0;
+  if (has_place_terms(query)) out |= MV_SLOTS_PLACE_TERMS;
+  if (registry.answers_prefix(MV_SLOT_SCOPE_LOCAL, "place:")) out |= MV_SLOTS_PLACE_PROVIDER;
+  return out;
+}
 
 void set_local_search_provider(slot_registry& registry, bool on) {
   if (!on) {

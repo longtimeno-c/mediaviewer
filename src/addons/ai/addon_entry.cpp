@@ -325,6 +325,12 @@ mv_status MV_CALL t_root_media(void* ctx, uint64_t root, uint32_t media) {
     return r ? MV_OK : to_mv(r.error());
   });
 }
+mv_status MV_CALL t_root_documents(void* ctx, uint64_t root, uint32_t docs) {
+  return guard([&] {
+    auto r = eng(ctx).root_set_documents(static_cast<std::int64_t>(root), docs);
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
 mv_status MV_CALL t_result_snippet(void* ctx, uint64_t id, uint32_t index, char* out, uint32_t cap) {
   return guard([&] {
     auto r = eng(ctx).result_snippet(id, index);
@@ -498,6 +504,7 @@ mv_status make(uint32_t host_api, const mv_host_api* host, mv_addon_api* out, bo
 
     a.people_reanalyse = &t_people_reanalyse;
     a.each_location = &t_each_location;
+    a.root_set_documents = &t_root_documents;  // #354
 
     *out = mv_addon_api{};
     out->struct_size = sizeof(mv_addon_api);

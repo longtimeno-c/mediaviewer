@@ -7,8 +7,10 @@
 #include "abi/addon_media.h"
 
 #include <algorithm>
+#include <iterator>
 #include <mutex>
 
+#include "codec/decode.h"
 #include "edit/clip_sample.h"
 #include "image/pipeline.h"
 #include "image/thumb.h"
@@ -104,6 +106,28 @@ std::vector<std::uint8_t> rgba_of(const std::uint8_t* rgb, std::uint32_t w, std:
   return rgba;
 }
 
+// #354: a document's page, drawn by the viewer's own renderer (the OS's PDF
+// renderer, codec/'s DOCX layout) at `max_long_edge`: the page a search
+// result opens on, as its tile. `page` is 0-based; past the end is invalid_arg.
+result<rgb_image> document_page(const std::string& path, std::int64_t page, std::uint32_t max_long_edge) {
+  if (page < 0 || page > static_cast<std::int64_t>(UINT32_MAX)) return err(status::invalid_arg);
+  MV_TRY(auto bytes, io::read_all(path));
+  const std::uint32_t edge = std::clamp<std::uint32_t>(max_long_edge == 0 ? 512 : max_long_edge, 16, 2048);
+  const auto family = codec::probe(bytes);
+  result<codec::raster> r = err(status::unsupported_format);
+  if (family == codec::format_family::pdf) {
+    r = codec::decode_pdf(bytes, static_cast<std::uint32_t>(page), nullptr, edge);
+  } else if (family == codec::format_family::docx) {
+    r = codec::decode_docx(bytes, static_cast<std::uint32_t>(page), nullptr, edge);
+  }
+  if (!r) return err(r.error());
+  if (r->width == 0 || r->height == 0 ||
+      r->rgba.size() < static_cast<std::size_t>(r->width) * r->height * 4) {
+    return err(status::corrupt);
+  }
+  return fit_rgb(r->rgba.data(), r->width, r->height, max_long_edge);
+}
+
 }  // namespace
 
 result<rgb_image> decode_still(const std::string& path, std::uint32_t max_long_edge) {
@@ -172,6 +196,8 @@ result<std::unique_ptr<video_sampler>> open_sampler(const std::string& path,
 
 result<rgb_image> video_frame(const std::string& path, std::int64_t pts_ms,
                               std::uint32_t max_long_edge) {
+  // #354: a document's "moment" is a page (pts_ms is its index).
+  if (io::is_document_name(path)) return document_page(path, pts_ms, max_long_edge);
   MV_TRY(auto f, edit::clip::frame_rgb_at(path, pts_ms, max_long_edge));
   rgb_image out;
   out.width = f.width;
@@ -259,6 +285,11 @@ expected store_thumbnail_jpeg(const std::string& path, std::int64_t pts_ms,
 
 result<std::vector<std::uint8_t>> encode_moment_thumb(const std::string& path, std::int64_t pts_ms,
                                                       const std::atomic<bool>* cancel) {
+  if (io::is_document_name(path)) {
+    MV_TRY(rgb_image page, document_page(path, pts_ms, image::kThumbLongEdge));
+    const std::vector<std::uint8_t> rgba = rgba_of(page.rgb.data(), page.width, page.height);
+    return image::encode_thumb_rgba(rgba, page.width, page.height);
+  }
   MV_TRY(auto f, edit::clip::frame_rgb_at(path, pts_ms, image::kThumbLongEdge, cancel));
   if (f.width == 0 || f.height == 0 ||
       f.rgb.size() < static_cast<std::size_t>(f.width) * f.height * 3) {
@@ -266,6 +297,27 @@ result<std::vector<std::uint8_t>> encode_moment_thumb(const std::string& path, s
   }
   const std::vector<std::uint8_t> rgba = rgba_of(f.rgb.data(), f.width, f.height);
   return image::encode_thumb_rgba(rgba, f.width, f.height);
+}
+
+expected document_text(const std::string& path, const std::function<bool(const document_line&)>& visit) {
+  // PDF text is the AI pack's own (PDFium in the pack, docs/plans/document-search.md
+  // §2): the host answers for the documents it lays out itself.
+  if (!io::is_document_name(path)) return err(status::unsupported_format);
+  MV_TRY(auto bytes, io::read_all(path));
+  // A password-protected DOCX is an OLE compound file around the encrypted
+  // package, not a zip: locked, not broken.
+  static constexpr std::uint8_t kOle[] = {0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1};
+  if (bytes.size() >= sizeof kOle && std::equal(std::begin(kOle), std::end(kOle), bytes.begin())) {
+    return err(status::permission_denied);
+  }
+  if (codec::probe(bytes) != codec::format_family::docx) return err(status::unsupported_format);
+  MV_TRY(auto paragraphs, codec::docx_text(bytes));
+  std::uint32_t pages = 1;
+  for (const codec::docx_paragraph& p : paragraphs) pages = std::max(pages, p.page + 1);
+  for (const codec::docx_paragraph& p : paragraphs) {
+    if (!visit(document_line{p.page, pages, p.text})) return err(status::cancelled);
+  }
+  return {};
 }
 
 }  // namespace mv::addon::media

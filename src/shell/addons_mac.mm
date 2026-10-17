@@ -27,6 +27,7 @@
 // pack's additions are new optional selectors and the mv_addon2_* functions.
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
+#import <UserNotifications/UserNotifications.h>
 
 #include "shell/addons_mac.h"
 
@@ -119,6 +120,8 @@
 - (void)itemChanged:(NSString*)path;
 // #355: File types "Show audio files", on attach and on each change.
 - (void)showAudioChanged:(BOOL)on;
+// #354: File types "Show documents", on attach and on each change.
+- (void)showDocumentsChanged:(BOOL)on;
 // Settings -> Local search: the management view, owned (and kept) by the chrome.
 - (NSView*)settingsView;
 @end
@@ -214,6 +217,7 @@ struct mac_addons {
   mv::image::thumb_store thumbs;
   std::string folder;       // the directory the viewer last opened
   bool show_audio = false;  // #355: File types "Show audio files" [main-thread]
+  bool show_documents = false;  // #354: File types "Show documents" [main-thread]
   // Another window's process holds Add-ons/.host.lock (main_mac.mm
   // MvClaimAddonHost): this one loads the AI pack through its read-only door
   // only, indexes nothing, loads no Import, installs or removes nothing, and
@@ -244,7 +248,7 @@ constexpr bool ai_supported() {
 }
 
 bool is_ai_family(const std::string& id) {
-  return id == "ai" || id == "ai-faces" || id == "ai-audio";
+  return id == "ai" || id == "ai-faces" || id == "ai-audio" || id == "ai-docs";
 }
 
 std::string hint_marker() {
@@ -662,6 +666,7 @@ mv::addon::host_services ai_services() {
   svc.open_audio = &mv::addon::media::open_audio;
   svc.thumbnail_jpeg = &mv::addon::media::thumbnail_jpeg;
   svc.store_thumbnail_jpeg = &mv::addon::media::store_thumbnail_jpeg;
+  svc.document_text = &mv::addon::media::document_text;  // #354
   // piece_dir is left empty: loaded_addon::load serves the family's own
   // verified pieces from the store.
   return svc;
@@ -754,6 +759,10 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   // #355: before anything is searched, whether audio files are.
   if ([chrome respondsToSelector:@selector(showAudioChanged:)]) {
     [(id<MVAIChrome>)chrome showAudioChanged:s.show_audio ? YES : NO];
+  }
+  // #354: and whether documents are.
+  if ([chrome respondsToSelector:@selector(showDocumentsChanged:)]) {
+    [(id<MVAIChrome>)chrome showDocumentsChanged:s.show_documents ? YES : NO];
   }
   // The folder already on screen counts as opened.
   if (!s.folder.empty() && [chrome respondsToSelector:@selector(folderChanged:)]) {
@@ -866,11 +875,32 @@ std::string read_bridge(int32_t (*fn)(char*, int32_t)) {
   state().status = text ? std::string(text.UTF8String ?: "") : std::string();
 }
 - (void)notifyTitle:(NSString*)title body:(NSString*)body {
-  // UNUserNotificationCenter needs an authorization prompt; the summary in the
-  // Import window is the notification until the user allows them.
-  (void)title;
-  (void)body;
-  NSBeep();
+  // #452: a notification when the person has allowed them (Sharepoint asks,
+  // when one of its toggles is turned on); otherwise the summary in the Import
+  // window is the notification, and a beep. Never asked for here. The lab
+  // binary has no bundle and no notification centre.
+  if (![NSBundle.mainBundle.bundleURL.pathExtension isEqualToString:@"app"] || !title) {
+    NSBeep();
+    return;
+  }
+  UNUserNotificationCenter* center = UNUserNotificationCenter.currentNotificationCenter;
+  NSString* text = body ?: @"";
+  [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings* settings) {
+    const UNAuthorizationStatus st = settings.authorizationStatus;
+    if (st != UNAuthorizationStatusAuthorized && st != UNAuthorizationStatusProvisional) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        NSBeep();
+      });
+      return;
+    }
+    UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
+    content.title = title;
+    content.body = text;
+    [center addNotificationRequest:[UNNotificationRequest requestWithIdentifier:NSUUID.UUID.UUIDString
+                                                                         content:content
+                                                                         trigger:nil]
+             withCompletionHandler:nil];
+  }];
 }
 
 // ---- Milestone H: what the AI chrome asks of the viewer ----------------------
@@ -912,14 +942,23 @@ std::string read_bridge(int32_t (*fn)(char*, int32_t)) {
   const bool ok = mv_chrome_open_list(title.UTF8String ?: "", ptrs.data(), ms.data(),
                                       static_cast<int32_t>(ptrs.size()), select, gallery);
   // docs/design/25 PR 59: the same query to the other Local search providers
-  // (Places' `place:`), on their workers; their rows show under the result
-  // list's title when they arrive (CommandBarView ListTitleBar).
+  // (Places' "portugal"), on their workers; their rows show under the result
+  // list's title when they arrive (CommandBarView ListTitleBar). A query with
+  // place terms asks nobody: the pack intersected them already (#441).
   if (ok) (void)mv::addon::default_slots().search(MV_SLOT_SCOPE_LOCAL, title.UTF8String ?: "", "");
   return ok ? @YES : @NO;
 }
 
 - (void)closeList {
   mv_chrome_close_list();
+}
+
+// #441: what Local search can do with `query`'s place terms, as
+// mv_slots_place_terms's bits: 1 it has one, 2 a loaded add-on (Places)
+// answers them. "" asks only the second (the help line).
+- (NSNumber*)placeTerms:(NSString*)query {
+  NSString* q = [query isKindOfClass:[NSString class]] ? query : @"";
+  return @(mv::addon::place_terms(mv::addon::default_slots(), q.UTF8String ?: ""));
 }
 
 // What find-similar and N / Shift+N need: the item on the canvas, the folder
@@ -1133,6 +1172,15 @@ void MvAddonsShowAudioChanged(bool on) {
   s.show_audio = on;
   id<MVAIChrome> chrome = ai_chrome();
   if (chrome && [chrome respondsToSelector:@selector(showAudioChanged:)]) [chrome showAudioChanged:on ? YES : NO];
+}
+
+void MvAddonsShowDocumentsChanged(bool on) {
+  mac_addons& s = state();
+  s.show_documents = on;
+  id<MVAIChrome> chrome = ai_chrome();
+  if (chrome && [chrome respondsToSelector:@selector(showDocumentsChanged:)]) {
+    [chrome showDocumentsChanged:on ? YES : NO];
+  }
 }
 
 void MvAddonsItemChanged(const std::string& path) {
@@ -1839,7 +1887,7 @@ extern "C" bool mv_addon2_remove(const char* id, bool keep_data) {
   if (!id) return false;
   const std::string s(id);
   if (s == "import") return mv_addons_remove(keep_data);
-  if (s != "ai" && s != "ai-faces" && s != "ai-audio") return false;
+  if (s != "ai" && s != "ai-faces" && s != "ai-audio" && s != "ai-docs") return false;
   if (state().reader) return false;  // the first window manages add-ons
   if (s == "ai") unload_ai();  // queues the pack's shutdown ahead of the removal below
   dispatch_async(addon_queue(), ^{
@@ -1850,7 +1898,7 @@ extern "C" bool mv_addon2_remove(const char* id, bool keep_data) {
       (void)st.store->remove("ai", keep_data);
       // A piece that is not installed answers invalid_arg: remove() matches on
       // the manifests' ids without hashing anything, so no find() first.
-      for (const char* piece : {"ai-faces", "ai-audio"}) (void)st.store->remove(piece, false);
+      for (const char* piece : {"ai-faces", "ai-audio", "ai-docs"}) (void)st.store->remove(piece, false);
       return;
     }
     (void)st.store->remove(s, keep_data);

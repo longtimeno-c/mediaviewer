@@ -31,12 +31,14 @@ class link {
 };
 
 // Reads exactly `into.size()` bytes by `deadline` (the whole span, however the
-// peer slices it). A clean close part-way is status::io.
+// peer slices it). A clean close part-way is status::io. What is left is
+// rounded up to whole milliseconds: rounded down, a deadline under 1 ms away
+// (channel::receive's poll) is 0 ms and times out without reading at all.
 [[nodiscard]] inline expected read_exact_until(link& l, std::span<std::uint8_t> into,
                                                std::chrono::steady_clock::time_point deadline) {
   std::size_t got = 0;
   while (got < into.size()) {
-    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+    const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
     if (left.count() <= 0) return err(status::timeout);
     auto n = l.read_some(into.subspan(got), static_cast<int>(left.count()));
     if (!n) return err(n.error());

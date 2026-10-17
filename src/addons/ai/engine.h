@@ -38,6 +38,7 @@
 #include "addons/ai/host.h"
 #include "addons/ai/index_db.h"
 #include "addons/ai/cloud_files.h"
+#include "addons/ai/pdf_reader.h"
 #include "addons/ai/photos_source.h"
 #include "addons/ai/platform.h"
 #include "addons/ai/query.h"
@@ -133,6 +134,28 @@ struct loaded_speech {
   std::string spec_key;
 };
 
+// #354 D3: what a document's passages are about (the ai-docs piece's text
+// model): passages and a typed query in one vector space.
+class passage_model {
+ public:
+  virtual ~passage_model() = default;
+  // One L2-normalised vector per passage; `out` texts.size() * dim.
+  [[nodiscard]] virtual expected embed_passages(std::span<const std::string> texts, std::vector<float>& out) = 0;
+  [[nodiscard]] virtual result<std::vector<float>> embed_query(std::string_view utf8) = 0;
+};
+
+struct loaded_docs {
+  std::shared_ptr<passage_model> model;
+  std::string name;       // "BGE small (English)"
+  std::string spec_key;
+  std::uint32_t dim = 384;
+  float query_margin = 0.05f;   // "nothing found" below this (the D3 spike's calibration)
+  float result_margin = 0.02f;  // a passage must beat the generic prompts by this
+  float rank_offset = 0.0f;     // a row ranks by its cosine less this (model.json)
+  std::vector<std::string> generic_prompts;
+  std::vector<std::vector<float>> generic;
+};
+
 struct engine_deps {
   // Loads the runtime and reads the pack (seconds: ONNX Runtime and, with the
   // vendor piece, the CUDA libraries). The control thread calls it, after the
@@ -152,6 +175,8 @@ struct engine_deps {
   // Audio: an error when the ai-audio piece is not installed.
   std::function<result<loaded_sound>(std::uint32_t compute)> open_sound;
   std::function<result<loaded_speech>(std::uint32_t quality, std::uint32_t compute)> open_speech;
+  // #354 D3: the ai-docs piece's text model; an error when it is not installed.
+  std::function<result<loaded_docs>()> open_docs;
   // "CLIP ViT-B/32" for a quality, without opening it (Settings).
   std::function<std::string(std::uint32_t quality)> model_name;
   // The index key of a quality's tower, without opening it (sharing an
@@ -196,6 +221,9 @@ struct engine_deps {
   // Text in pictures (#403, text_reader.h): null uses make_text_reader()
   // (Vision / Windows.Media.Ocr). The tests pass a fake, or one returning null.
   std::function<std::unique_ptr<text_reader>()> text;
+  // #354: a PDF's text (pdf_reader.h): null uses make_pdf_reader() (PDFium
+  // beside the pack). The tests pass a fake, or one returning null.
+  std::function<std::unique_ptr<pdf_reader>()> pdf;
   // At most one change-driven Photos library rescan per this many seconds
   // (PhotoKit reports an iCloud sync as a burst of changes).
   double photos_rescan_gap_s = 10;
@@ -242,6 +270,12 @@ struct settings {
   // #355: index MP3 / M4A / M4P. The base app's File types "Show audio files",
   // which the chrome forwards; off by default, as that setting is.
   bool audio_files = false;
+  // #354: index PDF / DOCX. The base app's File types "Show documents", which
+  // the chrome forwards; off by default, as that setting is.
+  bool document_files = false;
+  // #354: what folders that follow the setting index documents for: 0 Off,
+  // 1 Words (the default: cheap, no model), 2 Words and pages (slice D2).
+  std::uint32_t doc_index = 1;
 };
 
 // A spoken-phrase search's share of the query's words a transcript line must
@@ -282,6 +316,7 @@ class engine {
   void note_folder_opened(const std::string& dir);
   [[nodiscard]] expected clear_index();
   [[nodiscard]] expected root_set_media(std::int64_t id, std::uint32_t media);
+  [[nodiscard]] expected root_set_documents(std::int64_t id, std::uint32_t docs);  // #354: MV_AI_DOCS_*
 
   // ---- the Photos library (issue #72; macOS) --------------------------------
   // Remembers the library as a root ("photos:") and scans it. unsupported_format
@@ -434,12 +469,13 @@ class engine {
   void worker_loop(unsigned index);
   void search_loop();
   // work
-  enum class track : std::uint8_t { picture, faces, sound, speech, cues, text };
+  enum class track : std::uint8_t { picture, faces, sound, speech, cues, text, docs, pages, meaning };
   struct job {
     work_item w;
     track t = track::picture;
   };
-  bool claim(std::vector<work_item>& out, track& t);
+  // `models_ok` false: the towers are not ready; only a document is claimed.
+  bool claim(std::vector<work_item>& out, track& t, bool models_ok = true);
   void process_sound(const work_item& item, const loaded_sound& sound);
   void process_speech(const work_item& item, const loaded_speech& speech);
   // #406: a clip's chapter titles and text subtitle lines (host read_cues),
@@ -453,6 +489,35 @@ class engine {
   // not stored twice). Committed every few moments under `spec`, so a stop
   // resumes after the last; nothing is embedded.
   void process_text_moments(const work_item& item, text_reader& reader, const std::string& spec);
+  // #354: a document's words (a PDF through pdf_, a DOCX through the host),
+  // cut into passages (passages.h) and committed under kDocTextSpec: a PDF
+  // every few pages, so a stop resumes at the next page. No model.
+  void process_document(const work_item& item);
+  // #354 D2: a document's page pictures through the picture tower: the first
+  // kFirstPages pages and any page mostly covered by images (pdf_reader::look),
+  // drawn by the host (video_frame with pts_ms the page), stored as frames
+  // with kFramePage under the tower's spec, progress under doc_page_spec.
+  void process_pages(const work_item& item, const loaded_clip& clip);
+  // #354 D3: a document's passages through the ai-docs text model, committed
+  // as passage_vecs under its spec once the words are read. A stop leaves it
+  // pending: it is embedded again whole.
+  void process_meaning(const work_item& item, const loaded_docs& docs);
+  // The ai-docs model (or none), its generic prompts embedded, and its stored
+  // vectors into meanings_. `replacing`: a piece change while running.
+  void load_docs(bool replacing);
+  // Meaning rows for a query: the passages that beat the generic prompts by
+  // the calibrated margins, each at its page with the passage as snippet.
+  void merge_meaning(search_state& st, const std::string& query, const std::function<bool(std::int64_t)>& allow,
+                     std::uint32_t precision);
+  // #354: the level (MV_AI_DOCS_* - 1) a root indexes its documents at: 0
+  // Off, 1 Words, 2 Words and pages. The setting for a root that follows it.
+  [[nodiscard]] std::uint32_t docs_level(std::uint32_t root_docs) const noexcept;
+  // The document track's filter (claim, counts).
+  [[nodiscard]] track_filter docs_filter(std::uint32_t media, std::int64_t skip,
+                                         const std::vector<std::int64_t>& held) const;
+  // #354 D2: the page-picture track's: documents at Words and pages.
+  [[nodiscard]] track_filter pages_filter(std::uint32_t media, std::int64_t skip,
+                                          const std::vector<std::int64_t>& held) const;
   // Commits' rows into cue_rows_, first dropping the asset's picture rows from
   // `replace_from` (index_db::commit_cues' rule); empties `rows`.
   void store_text(std::int64_t asset, std::int64_t replace_from, std::vector<cue_in>& rows);
@@ -490,6 +555,13 @@ class engine {
   [[nodiscard]] static std::vector<std::string> cue_words(std::string_view utf8);
   void merge_audio(search_state& st, const std::string& query, const std::function<bool(std::int64_t)>& allow,
                    std::uint32_t find, std::uint32_t precision);
+  // #354: plain words in documents' passages (the speech rule: most of the
+  // words, a word of four letters or more also its longer forms), each
+  // matching passage a row at its page.
+  void merge_documents(search_state& st, const std::string& query, const std::function<bool(std::int64_t)>& allow,
+                       std::uint32_t precision);
+  // A passage's text cut to the part around the first of `words` (folded).
+  [[nodiscard]] static std::string passage_snippet(const std::string& text, const std::vector<std::string>& words);
   void process_photos(std::vector<work_item>& items, const loaded_clip& clip, bool faces_only);
   void process_video(const work_item& item, const loaded_clip& clip, bool faces_only);
   // An iCloud-only Photos clip: its local poster as one row at 0 ms, marked
@@ -514,7 +586,10 @@ class engine {
   // #407: what a result row opens: the asset, or for a Live Photo moment its
   // movie (as a clip). [assets_m_ held]
   void row_target_locked(std::int64_t asset, std::int64_t pts_ms, std::string& path, std::uint32_t& kind) const;
-  bool wait_turn();  // false: stopping
+  // False: stopping. `needs_models` false (#354, the document pass: words, no
+  // model) does not wait for the picture towers to load or move to an
+  // accelerator; every other wait (pause, yield, a clear, an import) holds.
+  bool wait_turn(bool needs_models = true);
   mv_ai_yield yield_reason() const;
   // scans
   void scan_root(const root_row& root);
@@ -723,6 +798,9 @@ class engine {
   loaded_sound sound_;    // empty model: no ai-audio piece
   loaded_speech speech_;
   vector_store sounds_;   // the CLAP matrix (window starts as pts)
+  loaded_docs docs_;      // #354 D3: empty model: no ai-docs piece
+  vector_store meanings_; // its passage vectors (pts: the passage id)
+  std::int64_t reader_meaning_ = 0;  // a reader: the last passage id taken
   mutable std::mutex speech_m_;
   std::vector<speech_row> speech_rows_;
   std::vector<cue_row> cue_rows_;  // under speech_m_ (#406)
@@ -730,6 +808,10 @@ class engine {
   // once under models_m_ and never replaced, so a worker may keep the pointer.
   std::unique_ptr<text_reader> text_;
   std::atomic<bool> text_none_{false};  // make_text_reader was asked and the OS has none
+  // #354: made on the control thread, set once under models_m_, never
+  // replaced (as text_). Null: this pack cannot read PDFs here.
+  std::unique_ptr<pdf_reader> pdf_;
+  std::atomic<bool> pdf_ready_{false};
   std::atomic<bool> models_ready_{false};
   std::atomic<bool> models_failed_{false};
   std::atomic<bool> reload_models_{false};
@@ -749,6 +831,8 @@ class engine {
     bool faces_ready = false;
     bool sound_ready = false;
     bool speech_ready = false;
+    bool docs_ready = false;
+    std::string docs_name;
     std::string sound_name;
     std::string speech_name;
   };
@@ -849,6 +933,18 @@ class engine {
   // Its value for the walk and the search, read without settings_m_.
   std::atomic<bool> audio_files_{false};
   void drop_audio();
+  // #354: "document_files" turned off: the control thread deletes every
+  // document with its text (index_db::remove_kind). Its value and doc_index's
+  // for the walk, the claim and the search, read without settings_m_.
+  std::atomic<bool> drop_documents_{false};
+  std::atomic<bool> document_files_{false};
+  std::atomic<std::uint32_t> doc_index_{1};
+  void drop_documents();
+  // #354 D2: a Documents level went below Words and pages (the setting or a
+  // folder's choice): the control thread deletes those documents' page
+  // pictures (index_db::drop_pages) and takes them out of the matrix.
+  std::atomic<bool> drop_pages_{false};
+  void drop_pages();
   std::atomic<bool> fetch_wake_{false};  // a fetch setting changed: look again now
   std::set<std::int64_t> cloud_skip_;  // the provider would not bring these down this run (fetch thread)
   std::atomic<std::uint32_t> cloud_state_{MV_AI_ICLOUD_OFF};
@@ -873,7 +969,7 @@ class engine {
   // them (text_counts_due_, the picture counts or spec, work pending) or 30 s
   // have passed. Under status_m_.
   struct text_counts {
-    counts cues, photos, moments;
+    counts cues, photos, moments, docs, pages, meaning;
     std::string key;  // the specs and picture counts they were taken with
     double at = -1e9;
   };
@@ -915,8 +1011,9 @@ class engine {
 
 // Media by name, for the walk only (the host still probes bytes when it
 // decodes; docs/design/04 "probe by magic bytes"): what is worth offering it.
-// 3 is an audio file (#355), which the walk offers only while audio_files is on.
-[[nodiscard]] int media_kind_of_name(const std::string& name) noexcept;  // 0 none, 1 photo, 2 video, 3 audio
+// 3 is an audio file (#355), which the walk offers only while audio_files is
+// on, and 4 a document (#354: PDF, DOCX), only while document_files is.
+[[nodiscard]] int media_kind_of_name(const std::string& name) noexcept;  // 0 none, 1 photo, 2 video, 3 audio, 4 document
 // An asset kind as the MV_AI_KIND_* bit a search filters and a result carries.
 [[nodiscard]] std::uint32_t kind_bit(asset_kind kind) noexcept;
 // A comparable form of a path: '/' separators, no trailing '/', and on

@@ -245,6 +245,25 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
     /// the Settings copy follow it.</summary>
     internal bool AudioFiles { get; private set; }
 
+    /// <summary>"Show documents" as last sent (#354): the Documents segment,
+    /// the Text token and the Settings section follow it.</summary>
+    internal bool DocumentFiles { get; private set; }
+
+    public void OnShowDocumentsChanged(bool on)
+    {
+        bool changed = on != DocumentFiles;
+        DocumentFiles = on;
+        if (_api is not null && !ReadOnly)
+        {
+            try { _api.SetSetting("document_files", on ? "1" : "0"); }
+            catch (MediaViewerException) { }
+        }
+        if (!changed) return;
+        _window?.OnDocumentFilesChanged();
+        _panel?.RefreshSettings();
+        _panel?.RefreshRoots();  // the folders' Documents menus and counts
+    }
+
     public void OnShowAudioChanged(bool on)
     {
         bool changed = on != AudioFiles;

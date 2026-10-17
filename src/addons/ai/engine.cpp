@@ -15,6 +15,7 @@
 #include <optional>
 #include <sstream>
 
+#include "addons/ai/passages.h"
 #include "addons/ai/platform.h"
 #include "addons/ai/query.h"
 #include "addons/ai/transfer.h"
@@ -99,6 +100,8 @@ void copy_str(char* dst, std::size_t cap, const std::string& src) {
 }
 
 constexpr std::size_t kPhotoBatch = 4;
+// #354 D3: passages embedded per run of the text model, between wait_turns.
+constexpr std::size_t kMeaningBatch = 16;
 constexpr std::size_t kFrameBatch = 8;
 constexpr std::int32_t kMaxTries = 3;
 // resume.json (issue #299) is rewritten at most this often while nothing is
@@ -143,6 +146,8 @@ int media_kind_of_name(const std::string& name) noexcept {
   for (const char* e : {"mp3", "m4a", "m4p"}) {
     if (ext == e) return 3;
   }
+  // #354: PDF and DOCX (io::is_document_name's set).
+  if (ext == "pdf" || ext == "docx") return 4;
   return 0;
 }
 
@@ -150,6 +155,7 @@ std::uint32_t kind_bit(asset_kind kind) noexcept {
   switch (kind) {
     case asset_kind::video: return MV_AI_KIND_VIDEOS;
     case asset_kind::audio: return MV_AI_KIND_AUDIO;
+    case asset_kind::document: return MV_AI_KIND_DOCUMENTS;
     default: return MV_AI_KIND_PHOTOS;
   }
 }
@@ -506,6 +512,10 @@ void engine::load_settings() {
   settings_.read_text = doc->boolean("read_text").value_or(true);
   settings_.audio_files = doc->boolean("audio_files").value_or(false);
   audio_files_ = settings_.audio_files;
+  settings_.document_files = doc->boolean("document_files").value_or(false);
+  document_files_ = settings_.document_files;
+  settings_.doc_index = static_cast<std::uint32_t>(std::clamp<std::int64_t>(doc->integer("doc_index").value_or(1), 0, 2));
+  doc_index_ = settings_.doc_index;
 }
 
 void engine::save_settings() const {
@@ -524,6 +534,8 @@ void engine::save_settings() const {
     w.key("cloud_files").boolean(settings_.cloud_files);
     w.key("read_text").boolean(settings_.read_text);
     w.key("audio_files").boolean(settings_.audio_files);
+    w.key("document_files").boolean(settings_.document_files);
+    w.key("doc_index").integer(settings_.doc_index);
     w.end_object();
   }
   const std::string tmp = join(data_dir_, "settings.json.tmp");
@@ -559,6 +571,10 @@ std::string engine::settings_json() const {
   w.key("cloud_files").boolean(s.cloud_files);
   w.key("read_text").boolean(s.read_text);
   w.key("audio_files").boolean(s.audio_files);
+  w.key("document_files").boolean(s.document_files);
+  w.key("doc_index").integer(s.doc_index);
+  // #354: PDFium loaded (false until the control thread has looked).
+  w.key("pdf_available").boolean(pdf_ready_.load());
   // Whether the OS can read text here (Settings says why the switch does
   // nothing when it cannot): true until the reader has been asked for. Not
   // models_m_: this is the UI thread's call.
@@ -584,6 +600,9 @@ std::string engine::settings_json() const {
     w.key("audio_ready").boolean(pieces_.sound_ready || pieces_.speech_ready);
     w.key("sound_model").string(pieces_.sound_name);
     w.key("speech_model").string(pieces_.speech_name);
+    // #354 D3: the ai-docs piece: document words also match by meaning.
+    w.key("docs_ready").boolean(pieces_.docs_ready);
+    w.key("docs_model").string(pieces_.docs_name);
   }
   w.key("available").begin_object();
   w.key("cuda").boolean(deps_.backend_available && deps_.backend_available(infer::backend::cuda));
@@ -636,6 +655,7 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
   bool reload = false;
   bool pieces = false;
   int audio_turned = 0;  // #355: 1 on, -1 off
+  int docs_turned = 0;   // #354: 1 on (or more folders indexed), -1 off
   {
     std::lock_guard lock(settings_m_);
     if (key == "compute") {
@@ -670,6 +690,22 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
       if (on != settings_.audio_files) audio_turned = on ? 1 : -1;
       settings_.audio_files = on;
       audio_files_ = on;  // the search drops audio results from here on
+    } else if (key == "document_files") {
+      const bool on = x != 0;
+      if (on != settings_.document_files) docs_turned = on ? 1 : -1;
+      settings_.document_files = on;
+      document_files_ = on;  // the search drops document results from here on
+    } else if (key == "doc_index") {
+      if (x < 0 || x > 2) return err(status::invalid_arg);
+      const auto level = static_cast<std::uint32_t>(x);
+      // A walk of every root either way: Off drops what folders that follow
+      // the setting hold (their documents are no longer seen), on lists them.
+      if (level != settings_.doc_index) docs_turned = 1;
+      // D2: below Words and pages, the page pictures of the documents that
+      // follow the setting go (drop_pages).
+      if (level < 2 && settings_.doc_index == 2) drop_pages_ = true;
+      settings_.doc_index = level;
+      doc_index_ = level;
     } else if (key == "precision") {
       // Read by each search as it starts: no reload, no re-index (docs/design/17
       // "Precision scale"). Out of range clamps to the nearest end.
@@ -695,11 +731,24 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
     }
     control_cv_.notify_all();
   }
+  if (drop_pages_.load()) control_cv_.notify_all();
+  if (docs_turned != 0) {
+    // #354, as audio_files: on (or a level change), every enabled root is
+    // walked again; off, the control thread deletes the documents and their
+    // text, which the search already leaves out.
+    std::lock_guard lock(control_m_);
+    if (docs_turned > 0) {
+      rescan_all_ = true;
+    } else {
+      drop_documents_ = true;
+    }
+    control_cv_.notify_all();
+  }
   if (key == "icloud_videos" || key == "cloud_files") {
     fetch_wake_ = true;
     fetch_cv_.notify_all();
   }
-  if (key == "video_index" || key == "read_text") {
+  if (key == "video_index" || key == "read_text" || key == "doc_index") {
     std::lock_guard lock(work_m_);
     queue_.clear();
     queue_exhausted_ = false;
@@ -832,7 +881,9 @@ void engine::refresh_counts() {
   // only when they can have moved (text_counts_).
   const std::string ocr_spec = text_spec();
   const std::string cue_spec = host_.has_cues() ? std::string(kCueSpec) : std::string();
-  const std::string text_key = cue_spec + "|" + ocr_spec + "|" + build_spec + "|" + std::to_string(c.assets) + "|" +
+  const std::string text_key = cue_spec + "|" + ocr_spec + "|" + build_spec + "|" +
+                               std::to_string(document_files_.load()) + std::to_string(doc_index_.load()) + "|" +
+                               std::to_string(c.assets) + "|" +
                                std::to_string(c.done + c.failed + c.unavailable) + "|" + std::to_string(skip) + "|" +
                                std::to_string(held_now.size());
   text_counts tc;
@@ -841,8 +892,10 @@ void engine::refresh_counts() {
     std::lock_guard lock(status_m_);
     tc = text_counts_;
   }
-  const auto open = [](const counts& k) { return k.assets > k.done + k.failed + k.unavailable + k.cloud_only; };
-  recount = recount || tc.key != text_key || open(tc.cues) || open(tc.photos) || open(tc.moments) ||
+  const auto open = [](const counts& k) {
+    return k.assets > k.done + k.failed + k.unavailable + k.locked + k.cloud_only;
+  };
+  recount = recount || tc.key != text_key || open(tc.cues) || open(tc.photos) || open(tc.moments) || open(tc.docs) || open(tc.pages) || open(tc.meaning) ||
             now_s() - tc.at >= 30.0;
   if (recount) {
     tc.cues = cue_spec.empty() ? counts{}
@@ -852,12 +905,29 @@ void engine::refresh_counts() {
                      ? counts{}
                      : db_->count(ocr_spec + kMomentsSuffix,
                                   track_filter{false, MV_AI_MEDIA_PICTURES, media, skip, held_now}, build_spec);
+    tc.docs = document_files_.load() ? db_->count(kDocTextSpec, docs_filter(media, skip, held_now)) : counts{};
+    tc.pages = document_files_.load() && !build_spec.empty()
+                   ? db_->count(doc_page_spec(build_spec), pages_filter(media, skip, held_now), kDocTextSpec)
+                   : counts{};
+    {
+      std::string meaning_spec;
+      {
+        std::lock_guard lock(models_m_);
+        if (docs_.model) meaning_spec = docs_.spec_key;
+      }
+      tc.meaning = document_files_.load() && !meaning_spec.empty()
+                       ? db_->count(meaning_spec, docs_filter(media, skip, held_now), kDocTextSpec)
+                       : counts{};
+    }
     tc.key = text_key;
     tc.at = now_s();
   }
   const counts& cc = tc.cues;
   const counts& ct = tc.photos;
   const counts& cm = tc.moments;
+  const counts& cd = tc.docs;
+  const counts& cg = tc.pages;
+  const counts& cn = tc.meaning;
   std::map<std::int64_t, std::pair<std::uint64_t, std::uint64_t>> per_root;
   const std::vector<root_row> roots = db_->roots();
   const std::string root_spec = counting_spec();
@@ -925,6 +995,14 @@ void engine::refresh_counts() {
   status_.cues_done = cc.done + cc.failed + cc.unavailable;
   status_.text_total = ct.assets + cm.assets;
   status_.text_done = ct.done + ct.failed + ct.unavailable + cm.done + cm.failed + cm.unavailable;
+  status_.docs_total = cd.assets;
+  status_.docs_done = cd.done + cd.failed + cd.unavailable + cd.locked;
+  status_.docs_locked = cd.locked;
+  status_.docs_failed = cd.failed + cd.unavailable;
+  status_.pages_total = cg.assets;
+  status_.pages_done = cg.done + cg.failed + cg.unavailable + cg.locked;
+  status_.meaning_total = cn.assets;
+  status_.meaning_done = cn.done + cn.failed + cn.unavailable + cn.locked;
   status_.frames_indexed = store_.live_rows();
   status_.index_bytes = bytes;
   status_.faces_total = face_total;
@@ -958,6 +1036,10 @@ void engine::refresh_counts() {
   if (rerun) flags |= MV_AI_STATUS_PEOPLE_RERUN;
   if (small_fallback_) flags |= MV_AI_STATUS_SMALL_FALLBACK;
   if (settling_) flags |= MV_AI_STATUS_PEOPLE_SETTLING;
+  {
+    std::lock_guard pl(pieces_m_);
+    if (pieces_.docs_ready) flags |= MV_AI_STATUS_DOCS_READY;
+  }
   status_.flags = flags;
 
   // Rates over the last minute of active work; the ETA is a range from them
@@ -992,7 +1074,10 @@ void engine::refresh_counts() {
                        cp.assets > cp.done + cp.failed + cp.unavailable + cp.cloud_only ||
                        cc.assets > cc.done + cc.failed + cc.unavailable + cc.cloud_only ||
                        ct.assets > ct.done + ct.failed + ct.unavailable + ct.cloud_only ||
-                       cm.assets > cm.done + cm.failed + cm.unavailable + cm.cloud_only;
+                       cm.assets > cm.done + cm.failed + cm.unavailable + cm.cloud_only ||
+                       cd.assets > cd.done + cd.failed + cd.unavailable + cd.locked + cd.cloud_only ||
+                       cg.assets > cg.done + cg.failed + cg.unavailable + cg.locked + cg.cloud_only ||
+                       cn.assets > cn.done + cn.failed + cn.unavailable + cn.locked + cn.cloud_only;
   std::uint32_t state = MV_AI_STATE_INDEXING;
   if (models_failed_) {
     state = MV_AI_STATE_ERROR;
@@ -1262,10 +1347,12 @@ void engine::load_models() {
     faces_scanned_ = std::move(people.scanned);
     sound_ = {};
     speech_ = {};
+    docs_ = {};
     publish_pieces_locked();
   }
   load_vectors(active, answer_dim);
   sounds_.reset(0);
+  meanings_.reset(0);
   {
     std::lock_guard lock(speech_m_);
     speech_rows_.clear();
@@ -1293,6 +1380,7 @@ void engine::load_models() {
 
   load_labels();
   load_audio(s, speech_quality, false);
+  load_docs(false);
 }
 
 void engine::retire(std::shared_ptr<infer::embedder> model) {
@@ -1323,6 +1411,8 @@ void engine::publish_pieces_locked() {
   v.faces_ready = faces_model_ != nullptr;
   v.sound_ready = sound_.model != nullptr;
   v.speech_ready = speech_.model != nullptr;
+  v.docs_ready = docs_.model != nullptr;
+  v.docs_name = docs_.name;
   v.sound_name = sound_.name;
   v.speech_name = speech_.name;
   std::lock_guard lock(pieces_m_);
@@ -1635,6 +1725,7 @@ void engine::load_pieces() {
     post(MV_ADDON_EVENT_AI_PEOPLE);
   }
   load_audio(s, speech_quality, true);
+  load_docs(true);
   {
     std::lock_guard lock(work_m_);
     queue_.clear();
@@ -1703,6 +1794,55 @@ void engine::load_audio(const settings& s, std::uint32_t speech_quality, bool re
     queue_.clear();
     queue_exhausted_ = false;
   }
+  refresh_counts();
+  work_cv_.notify_all();
+  post(MV_ADDON_EVENT_AI_STATUS);
+}
+
+void engine::load_docs(bool replacing) {
+  // #354 D3: only with the ai-docs piece. Small (tens of MB) and on CPU: it
+  // answers a query in milliseconds and embeds a passage in a few.
+  loaded_docs docs;
+  if (deps_.open_docs && !stopping_) {
+    if (!options_.read_only && !wait_viewer_quiet()) return;
+    if (auto d = deps_.open_docs()) {
+      docs = std::move(*d);
+      docs.generic.clear();
+      for (const std::string& g : docs.generic_prompts) {
+        if (auto v = docs.model->embed_query(g)) docs.generic.push_back(std::move(*v));
+      }
+    }
+  }
+  if (!docs.model) {
+    if (!replacing) return;
+    {
+      std::lock_guard lock(models_m_);
+      docs_ = {};
+      publish_pieces_locked();
+    }
+    meanings_.reset(0);
+    return;
+  }
+  // The stored vectors first, then the model: a job that lands between the
+  // two must not be wiped by the reload.
+  meanings_.reset(docs.dim);
+  reader_meaning_ = 0;
+  (void)db_->each_passage_vec(docs.spec_key, [&](const frame_out& f) {
+    meanings_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
+    reader_meaning_ = f.id;
+  });
+  {
+    std::lock_guard lock(models_m_);
+    docs_ = std::move(docs);
+    publish_pieces_locked();
+  }
+  if (options_.read_only) return;
+  {
+    std::lock_guard lock(work_m_);
+    queue_.clear();
+    queue_exhausted_ = false;
+  }
+  text_counts_due_ = true;
   refresh_counts();
   work_cv_.notify_all();
   post(MV_ADDON_EVENT_AI_STATUS);
@@ -1817,6 +1957,19 @@ void engine::control_loop() {
     text_none_ = reader == nullptr;
     text_ = std::move(reader);
   }
+  {
+    // #354: PDFium from beside the pack, on this thread. Documents set aside
+    // because nothing here could read them (an older pack or host) are tried
+    // again now that something may.
+    auto pdf = deps_.pdf ? deps_.pdf() : make_pdf_reader();
+    const bool any = pdf != nullptr || host_.has_document_text();
+    {
+      std::lock_guard lock(models_m_);
+      pdf_ready_ = pdf != nullptr;
+      pdf_ = std::move(pdf);
+    }
+    if (any) (void)db_->reset_state(kDocTextSpec, work_state::unavailable);
+  }
   load_models();
   const unsigned cores = std::max(1u, platform::hardware_threads());
   const unsigned n = std::max(1u, std::min(2u, cores / 4));
@@ -1851,6 +2004,8 @@ void engine::control_loop() {
       if (t) run_transfer(std::move(*t));
     }
     if (drop_audio_.exchange(false)) drop_audio();
+    if (drop_documents_.exchange(false)) drop_documents();
+    if (drop_pages_.exchange(false)) drop_pages();
     bool all = false;
     std::set<std::int64_t> some;
     const double t = now_s();
@@ -1957,7 +2112,8 @@ void engine::control_loop() {
     std::unique_lock lock(control_m_);
     control_cv_.wait_for(lock, std::chrono::milliseconds(more_tags ? 0 : 1000), [this] {
       if (stopping_.load() || reload_models_.load() || reload_pieces_.load() || rescan_all_ ||
-          !rescan_roots_.empty() || drop_audio_.load()) {
+          !rescan_roots_.empty() || drop_audio_.load() || drop_documents_.load() ||
+          drop_pages_.load()) {
         return true;
       }
       std::lock_guard tl(transfer_m_);  // control_m_ -> transfer_m_ (a leaf)
@@ -2075,6 +2231,7 @@ bool engine::load_reader() {
       reader_sound_ = f.id;
     });
   }
+  load_docs(true);  // #354 D3: the passage vectors, with the ai-docs piece
   if (!reader_speech_spec_.empty()) {
     load_speech(reader_speech_spec_);
   } else {
@@ -2116,6 +2273,7 @@ void engine::catch_up_reader() {
   begin_answer_swap();
   store_.remove_assets(gone);
   sounds_.remove_assets(gone);
+  meanings_.remove_assets(gone);
   (void)db_->each_frame(active, [&](const frame_out& f) {
     store_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
     reader_frame_ = f.id;
@@ -2125,6 +2283,19 @@ void engine::catch_up_reader() {
       sounds_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
       reader_sound_ = f.id;
     }, reader_sound_);
+  }
+  {
+    std::string docs_spec;
+    {
+      std::lock_guard lock(models_m_);
+      if (docs_.model) docs_spec = docs_.spec_key;
+    }
+    if (!docs_spec.empty()) {
+      (void)db_->each_passage_vec(docs_spec, [&](const frame_out& f) {
+        meanings_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
+        reader_meaning_ = f.id;
+      }, reader_meaning_);
+    }
   }
   if (!reader_speech_spec_.empty()) load_speech(reader_speech_spec_);
   load_cues();
@@ -2220,6 +2391,9 @@ void engine::scan_root(const root_row& root) {
   // One value for the whole walk: a toggle mid-walk is the next walk's (on)
   // or drop_audio's (off).
   const bool audio_files = audio_files_.load();
+  // #354: documents while they are shown and this folder indexes them; off,
+  // a walk no longer sees them, so end_scan drops them and their text.
+  const bool documents = document_files_.load() && docs_level(root.docs) >= 1;
   std::vector<index_db::seen_file> batch;
   std::vector<std::int64_t> changed;
   bool failed = false;
@@ -2234,7 +2408,7 @@ void engine::scan_root(const root_row& root) {
     const std::string key = path_key(e.path);
     const int k = media_kind_of_name(e.path);
     // #355: audio only while the setting is on; off, it costs nothing past the name.
-    if (housekeeping(key) || k == 0 || (k == 3 && !audio_files)) return true;
+    if (housekeeping(key) || k == 0 || (k == 3 && !audio_files) || (k == 4 && !documents)) return true;
     by_dir[key_parent(key)].push_back(e);
     return true;
   });
@@ -2275,6 +2449,13 @@ void engine::scan_root(const root_row& root) {
       if (k == 3) {
         // #355: an audio file never pairs; its cover art is its picture.
         batch.push_back(index_db::seen_file{files[i].path, files[i].mtime, files[i].size, asset_kind::audio,
+                                            files[i].cloud_only});
+        if (batch.size() >= 512) flush();
+        continue;
+      }
+      if (k == 4) {
+        // #354: a document never pairs; its words are read by their own pass.
+        batch.push_back(index_db::seen_file{files[i].path, files[i].mtime, files[i].size, asset_kind::document,
                                             files[i].cloud_only});
         if (batch.size() >= 512) flush();
         continue;
@@ -2395,10 +2576,55 @@ void engine::drop_audio() {
   post(MV_ADDON_EVENT_AI_STATUS);
 }
 
+// #354: "document_files" off. Every document goes with its passages (their
+// text) at once, as drop_audio does for audio files.
+void engine::drop_documents() {
+  auto gone = db_->remove_kind(asset_kind::document);
+  if (!gone || gone->empty()) return;
+  {
+    std::lock_guard lock(assets_m_);
+    for (std::int64_t id : *gone) erase_asset_locked(id);
+  }
+  forget_vectors(*gone);
+  text_counts_due_ = true;
+  refresh_counts();
+  post(MV_ADDON_EVENT_AI_ROOTS);
+  post(MV_ADDON_EVENT_AI_STATUS);
+}
+
+std::uint32_t engine::docs_level(std::uint32_t root_docs) const noexcept {
+  return root_docs == MV_AI_DOCS_DEFAULT ? doc_index_.load() : root_docs - 1;
+}
+
+track_filter engine::docs_filter(std::uint32_t media, std::int64_t skip, const std::vector<std::int64_t>& held) const {
+  track_filter f{false, 0, media, skip, held};
+  f.docs_min = 1;
+  f.default_docs = doc_index_.load();
+  return f;
+}
+
+track_filter engine::pages_filter(std::uint32_t media, std::int64_t skip, const std::vector<std::int64_t>& held) const {
+  track_filter f = docs_filter(media, skip, held);
+  f.docs_min = 2;
+  return f;
+}
+
+// #354 D2: documents now below Words and pages lose their page pictures; the
+// matrix holds nothing else of a document, so they leave it whole.
+void engine::drop_pages() {
+  auto gone = db_->drop_pages(doc_index_.load());
+  if (!gone || gone->empty()) return;
+  store_.remove_assets(*gone);
+  text_counts_due_ = true;
+  refresh_counts();
+  post(MV_ADDON_EVENT_AI_STATUS);
+}
+
 void engine::forget_vectors(const std::vector<std::int64_t>& ids) {
   if (ids.empty()) return;
   store_.remove_assets(ids);
   sounds_.remove_assets(ids);
+  meanings_.remove_assets(ids);
   {
     // Their People pass too: an unavailable asset was marked scanned so the
     // faces track would not ask for it again, and now there is something to scan.
@@ -2435,6 +2661,7 @@ void engine::end_root_scan(const root_row& root, std::int64_t gen, const std::ve
     for (std::int64_t id : *gone) erase_asset_locked(id);
     store_.remove_assets(*gone);
     sounds_.remove_assets(*gone);
+    meanings_.remove_assets(*gone);
   }
   if (gone) {
     std::lock_guard lock(models_m_);
@@ -2458,6 +2685,7 @@ void engine::end_root_scan(const root_row& root, std::int64_t gen, const std::ve
   }
   store_.remove_assets(changed);
   sounds_.remove_assets(changed);
+  meanings_.remove_assets(changed);
   for (std::int64_t id : changed) {
     std::lock_guard lock(models_m_);
     if (faces_) {
@@ -2920,9 +3148,10 @@ platform::power engine::power_state() const {
   return deps_.power ? deps_.power() : platform::power_state();
 }
 
-bool engine::wait_turn() {
+bool engine::wait_turn(bool needs_models) {
   while (!stopping_) {
-    if (clearing_ || transferring_ || !models_ready_ || loading_ || paused_ || index_full_ || upgrading()) {
+    const bool models_wait = needs_models && (!models_ready_ || loading_ || upgrading());
+    if (clearing_ || transferring_ || models_wait || paused_ || index_full_) {
       std::unique_lock lock(work_m_);
       work_cv_.wait_for(lock, std::chrono::milliseconds(200));
       continue;
@@ -2948,9 +3177,40 @@ std::uint32_t engine::default_media() const {
   return pieces_.sound_ready ? MV_AI_MEDIA_BOTH : MV_AI_MEDIA_PICTURES;
 }
 
-bool engine::claim(std::vector<work_item>& out, track& t) {
+bool engine::claim(std::vector<work_item>& out, track& t, bool models_ok) {
   out.clear();
   t = track::picture;
+  if (!models_ok) {
+    // #354: while the towers load (or move to an accelerator, minutes on a
+    // Mac's Neural Engine) only the document pass runs: it reads words and
+    // needs no model. Taken straight from the index, past the shared queue,
+    // which keeps its order for when the towers are in.
+    // D3: so does the meaning pass, whose text model is its own and on CPU.
+    if (!document_files_.load()) return false;
+    const track_filter f = docs_filter(default_media(), skip_root(), held_list());
+    std::vector<work_item> docs = db_->pending(kDocTextSpec, 8, kMaxTries, f);
+    track which = track::docs;
+    if (docs.empty()) {
+      std::string meaning_spec;
+      {
+        std::lock_guard ml(models_m_);
+        if (docs_.model) meaning_spec = docs_.spec_key;
+      }
+      if (meaning_spec.empty()) return false;
+      docs = db_->pending(meaning_spec, 8, kMaxTries, f, kDocTextSpec);
+      which = track::meaning;
+    }
+    std::lock_guard lock(work_m_);
+    for (const work_item& w : docs) {
+      if (in_flight_.count(w.asset.id)) continue;
+      in_flight_.insert(w.asset.id);
+      out.push_back(w);
+      t = which;
+      ++busy_workers_;
+      return true;
+    }
+    return false;
+  }
   std::string spec, sound_spec, speech_spec;
   bool faces_on = false;
   const std::uint32_t media = default_media();
@@ -2968,6 +3228,17 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
   // on the moments a clip's picture pass kept, once it has.
   const std::string ocr_spec = text_spec();
   const std::string moments_spec = text_moments_spec();
+  // #354: documents while they are shown.
+  const std::string docs_spec = document_files_.load() ? std::string(kDocTextSpec) : std::string();
+  // #354 D2: their page pictures, once their words are read (pending's
+  // `after`), at Words and pages.
+  const std::string pages_spec = document_files_.load() ? doc_page_spec(spec) : std::string();
+  // #354 D3: their passages' meaning, once their words are read, with ai-docs.
+  std::string meaning_spec;
+  if (document_files_.load()) {
+    std::lock_guard ml(models_m_);
+    if (docs_.model) meaning_spec = docs_.spec_key;
+  }
   std::lock_guard lock(work_m_);
   {
     // A folder opened (note_folder_opened): it goes first from now on.
@@ -3008,6 +3279,7 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
         among(cue_spec, track::cues, track_filter{false, MV_AI_MEDIA_BOTH, media, skip, held_now});
         among(ocr_spec, track::text, track_filter{true, 0, media, skip, held_now});
         among(moments_spec, track::text, track_filter{false, MV_AI_MEDIA_PICTURES, media, skip, held_now}, spec);
+        among(docs_spec, track::docs, docs_filter(media, skip, held_now));
         among(sound_spec, track::sound, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
         among(speech_spec, track::speech, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
         if (queue_.empty() && faces_on) {
@@ -3016,7 +3288,7 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
           for (std::int64_t id : fetched) {
             const auto it = assets_.find(id);
             if (it == assets_.end() || faces_scanned_.count(id) || in_flight_.count(id)) continue;
-            if (it->second.kind == asset_kind::audio) continue;  // cover art holds no People
+            if (it->second.kind == asset_kind::audio || it->second.kind == asset_kind::document) continue;
             if (std::find(held_now.begin(), held_now.end(), it->second.root) != held_now.end()) continue;
             work_item w;
             w.asset.id = id;
@@ -3029,6 +3301,11 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
       }
     }
     take(spec, track::picture, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip, held_now});
+    // #354: documents' words after the pictures: cheap, and what a search for
+    // a document needs first.
+    take(docs_spec, track::docs, docs_filter(media, skip, held_now));
+    take(pages_spec, track::pages, pages_filter(media, skip, held_now), kDocTextSpec);
+    take(meaning_spec, track::meaning, docs_filter(media, skip, held_now), kDocTextSpec);
     // #406: a clip's own text, after its pictures (they never wait on it).
     take(cue_spec, track::cues, track_filter{false, MV_AI_MEDIA_BOTH, media, skip, held_now});
     // #403: the text in photos, after their pictures and the clips' own text.
@@ -3043,6 +3320,7 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
       for (const auto& [id, m] : assets_) {
         if (faces_scanned_.count(id) || in_flight_.count(id)) continue;
         if (m.kind == asset_kind::audio) continue;  // #355: cover art holds no People
+        if (m.kind == asset_kind::document) continue;  // #354: People are not looked for in a document's pages
         if (skip_faces != 0 && m.root == skip_faces) continue;
         if (std::find(held_now.begin(), held_now.end(), m.root) != held_now.end()) continue;
         if (m.cloud) continue;  // online-only: the fetch brings it down first
@@ -3093,10 +3371,12 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
 void engine::worker_loop(unsigned) {
   if (options_.background_threads) platform::enter_background();
   while (!stopping_) {
-    if (!wait_turn()) break;
+    // The models' wait applies to every pass but the documents' words and meaning (#354).
+    if (!wait_turn(false)) break;
+    const bool models_ok = models_ready_ && !loading_ && !upgrading();
     std::vector<work_item> items;
     track t = track::picture;
-    if (!claim(items, t)) {
+    if (!claim(items, t, models_ok)) {
       std::unique_lock lock(work_m_);
       work_cv_.wait_for(lock, std::chrono::milliseconds(500));
       continue;
@@ -3104,11 +3384,13 @@ void engine::worker_loop(unsigned) {
     loaded_clip clip;
     loaded_sound sound;
     loaded_speech speech;
+    loaded_docs docs;
     {
       std::lock_guard lock(models_m_);
       clip = build_;
       sound = sound_;
       speech = speech_;
+      docs = docs_;
     }
     const bool faces_only = t == track::faces;
     if (t == track::cues) {
@@ -3116,6 +3398,15 @@ void engine::worker_loop(unsigned) {
       text_counts_due_ = true;  // done, failed or partial: the counts moved
     } else if (t == track::text) {
       process_text(items);
+      text_counts_due_ = true;
+    } else if (t == track::docs) {
+      process_document(items.front());
+      text_counts_due_ = true;
+    } else if (t == track::pages) {
+      if (clip.model) process_pages(items.front(), clip);
+      text_counts_due_ = true;
+    } else if (t == track::meaning) {
+      if (docs.model) process_meaning(items.front(), docs);
       text_counts_due_ = true;
     } else if (t == track::sound) {
       if (sound.model) process_sound(items.front(), sound);
@@ -3961,6 +4252,12 @@ std::string engine::roots_json() {
     w.key("assets").integer(static_cast<std::int64_t>(db_->assets_in_root(r.id)));
     // #355: the audio files among them (0 while "audio_files" is off).
     if (!photos) w.key("audio").integer(static_cast<std::int64_t>(db_->kind_in_root(r.id, asset_kind::audio)));
+    // #354: its documents, counted apart from "assets" (0 while they are not indexed).
+    if (!photos) {
+      w.key("docs").integer(r.docs);
+      w.key("documents").integer(static_cast<std::int64_t>(db_->kind_in_root(r.id, asset_kind::document)));
+      w.key("documents_done").integer(static_cast<std::int64_t>(db_->done_in_root(r.id, kDocTextSpec)));
+    }
     w.key("done").integer(static_cast<std::int64_t>(spec.empty() ? 0 : db_->done_in_root(r.id, spec)));
     const std::uint64_t frames = spec.empty() ? 0 : db_->frames_in_root(r.id, spec);
     w.key("frames").integer(static_cast<std::int64_t>(frames));
@@ -4074,6 +4371,38 @@ expected engine::root_set_media(std::int64_t id, std::uint32_t media) {
   return {};
 }
 
+expected engine::root_set_documents(std::int64_t id, std::uint32_t docs) {
+  if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
+  if (importing_elsewhere()) return err(status::busy);
+  if (docs > MV_AI_DOCS_PAGES) return err(status::invalid_arg);
+  MV_TRY_VOID(db_->set_root_docs(id, docs));
+  // D2: a folder below Words and pages loses its page pictures (drop_pages).
+  if (docs != MV_AI_DOCS_PAGES) drop_pages_ = true;
+  {
+    std::lock_guard lock(work_m_);
+    queue_.clear();
+    queue_exhausted_ = false;
+  }
+  {
+    // A walk: Off leaves the folder's documents unseen, so they go with their
+    // text (end_scan); on lists them. The search leaves an Off folder's
+    // documents out from now (roots_cache_), before the walk.
+    std::lock_guard lock(status_m_);
+    for (root_row& r : roots_cache_) {
+      if (r.id == id) r.docs = docs;
+    }
+  }
+  {
+    std::lock_guard lock(control_m_);
+    rescan_roots_.insert(id);
+  }
+  control_cv_.notify_all();
+  work_cv_.notify_all();
+  text_counts_due_ = true;
+  post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(id));
+  return {};
+}
+
 expected engine::root_rescan(std::int64_t id) {
   if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   (void)unhold(id);  // asking for a walk is asking for the work (issue #299)
@@ -4122,6 +4451,7 @@ expected engine::root_remove(std::int64_t id) {
   }
   store_.remove_assets(gone);
   sounds_.remove_assets(gone);
+  meanings_.remove_assets(gone);
   {
     const std::set<std::int64_t> drop(gone.begin(), gone.end());
     std::lock_guard lock(speech_m_);
@@ -4212,6 +4542,7 @@ expected engine::clear_index() {
   }
   store_.clear();
   sounds_.reset(sounds_.dim());
+  meanings_.reset(meanings_.dim());
   {
     std::lock_guard lock(speech_m_);
     speech_rows_.clear();
@@ -4277,7 +4608,7 @@ result<std::uint64_t> engine::export_index(const std::string& dest, std::vector<
   job.id = next_transfer_++;
   job.file = dest;
   job.roots = std::move(roots);
-  job.flags = flags & (MV_AI_TRANSFER_PEOPLE | MV_AI_TRANSFER_THUMBS);
+  job.flags = flags & (MV_AI_TRANSFER_PEOPLE | MV_AI_TRANSFER_THUMBS | MV_AI_TRANSFER_DOCUMENTS);
   transfer_ = transfer_view{};
   transfer_.id = job.id;
   transfer_.running = true;
@@ -4305,7 +4636,7 @@ result<std::uint64_t> engine::import_index(const std::string& file, const std::s
   job.id = next_transfer_++;
   job.import = true;
   job.file = file;
-  job.flags = flags & (MV_AI_TRANSFER_PEOPLE | MV_AI_TRANSFER_THUMBS);
+  job.flags = flags & (MV_AI_TRANSFER_PEOPLE | MV_AI_TRANSFER_THUMBS | MV_AI_TRANSFER_DOCUMENTS);
   transfer_ = transfer_view{};
   transfer_.id = job.id;
   transfer_.import = true;
@@ -4421,6 +4752,23 @@ result<std::string> engine::inspect_export(const std::string& file) {
     w.null();
   }
   w.key("thumbs").integer(static_cast<std::int64_t>(f.thumbs ? f.thumb_count : 0));
+  // #354 D3 (v2): documents and their text; usable here while documents are
+  // shown, their vectors while the same text model is loaded.
+  w.key("documents");
+  if (f.documents) {
+    std::string docs_spec;
+    {
+      std::lock_guard lock(models_m_);
+      docs_spec = docs_.spec_key;
+    }
+    w.begin_object();
+    w.key("count").integer(static_cast<std::int64_t>(f.document_count));
+    w.key("shown").boolean(document_files_.load());
+    w.key("meaning_match").boolean(!f.docs_spec.empty() && f.docs_spec == docs_spec);
+    w.end_object();
+  } else {
+    w.null();
+  }
   w.key("roots").begin_array();
   for (const transfer::file_root& r : f.roots) {
     w.begin_object();
@@ -4470,12 +4818,15 @@ std::string engine::run_export(const transfer_job& job, mv::status& st) {
   o.roots = job.roots;
   o.faces = (job.flags & MV_AI_TRANSFER_PEOPLE) != 0;
   o.thumbs = (job.flags & MV_AI_TRANSFER_THUMBS) != 0;
+  // #354 D3: documents (and so their text) only when ticked, and shown here.
+  o.documents = (job.flags & MV_AI_TRANSFER_DOCUMENTS) != 0 && document_files_.load();
   o.from = machine_label();
   {
     std::lock_guard lock(models_m_);
     o.picture_spec = answer_.meta.spec_key;
     // People's vectors only travel with the model that made them.
     if (faces_ && faces_model_) o.face_spec = faces_model_->spec_key();
+    if (docs_.model) o.docs_spec = docs_.spec_key;
   }
   if (o.picture_spec.empty()) o.picture_spec = db_->meta("active_spec");
   if (o.face_spec.empty()) o.faces = false;
@@ -4494,6 +4845,9 @@ std::string engine::run_export(const transfer_job& job, mv::status& st) {
   w.key("assets").integer(static_cast<std::int64_t>(r->assets));
   w.key("frames").integer(static_cast<std::int64_t>(r->frames));
   w.key("speech").integer(static_cast<std::int64_t>(r->speech));
+  w.key("passages").integer(static_cast<std::int64_t>(r->passages));
+  w.key("passage_vecs").integer(static_cast<std::int64_t>(r->passage_vecs));
+  w.key("documents_included").boolean(o.documents);
   w.key("faces").integer(static_cast<std::int64_t>(r->faces));
   w.key("people").integer(static_cast<std::int64_t>(r->people));
   w.key("people_included").boolean(o.faces);
@@ -4566,8 +4920,17 @@ std::string engine::run_import(const transfer_job& job, mv::status& st) {
   transfer::control c{&transfer_cancel_, [this](double f) { set_transfer_progress(f); }};
   std::vector<transfer::imported_asset> assets;
   transfer::import_counts n;
+  // #354 D3: documents (text, page pictures, meaning) when ticked and shown here.
+  std::set<std::string> specs = plan.specs;
+  if ((job.flags & MV_AI_TRANSFER_DOCUMENTS) && document_files_.load()) {
+    specs.insert(kDocTextSpec);
+    std::lock_guard lock(models_m_);
+    if (!build_.meta.spec_key.empty()) specs.insert(doc_page_spec(build_.meta.spec_key));
+    if (!plan.picture.empty()) specs.insert(doc_page_spec(plan.picture));
+    if (docs_.model) specs.insert(docs_.spec_key);
+  }
   expected r = db_->with_connection([&](sqlite3* db) {
-    return transfer::import_index(db, job.file, targets, plan.specs, assets, n, c);
+    return transfer::import_index(db, job.file, targets, specs, assets, n, c);
   });
   std::string people_why;
   bool adopted = false;
@@ -4685,6 +5048,8 @@ std::string engine::run_import(const transfer_job& job, mv::status& st) {
   w.key("kept").integer(static_cast<std::int64_t>(n.kept));
   w.key("frames").integer(static_cast<std::int64_t>(n.frames));
   w.key("speech").integer(static_cast<std::int64_t>(n.speech));
+  w.key("passages").integer(static_cast<std::int64_t>(n.passages));
+  w.key("passage_vecs").integer(static_cast<std::int64_t>(n.passage_vecs));
   w.key("skipped_rows").integer(static_cast<std::int64_t>(n.skipped_rows));
   w.key("picture_usable").boolean(!plan.picture.empty());
   w.key("why_not").string(plan.why_not);
@@ -4747,6 +5112,24 @@ void engine::reload_from_db() {
     });
   }
   if (!speech_spec.empty()) load_speech(speech_spec);
+  {
+    // #354 D3: passage vectors the import brought.
+    std::string docs_spec;
+    std::uint32_t docs_dim = 0;
+    {
+      std::lock_guard lock(models_m_);
+      if (docs_.model) {
+        docs_spec = docs_.spec_key;
+        docs_dim = docs_.dim;
+      }
+    }
+    if (!docs_spec.empty()) {
+      meanings_.reset(docs_dim);
+      (void)db_->each_passage_vec(docs_spec, [&](const frame_out& f) {
+        meanings_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
+      });
+    }
+  }
   load_cues();
   {
     std::lock_guard lock(work_m_);
@@ -4808,12 +5191,23 @@ std::shared_ptr<std::set<std::int64_t>> engine::scope_assets(const std::string& 
   // #355: no audio result while "audio_files" is off, from the moment it is
   // turned off (its rows go on the control thread after).
   if (!audio_files_.load()) kinds &= ~MV_AI_KIND_AUDIO;
+  // #354: documents likewise, and none from a folder whose Documents choice
+  // is Off (its rows go with the walk that follows the change).
+  if (!document_files_.load()) kinds &= ~MV_AI_KIND_DOCUMENTS;
+  std::set<std::int64_t> docs_off;
+  if (kinds & MV_AI_KIND_DOCUMENTS) {
+    std::lock_guard lock(status_m_);
+    for (const root_row& r : roots_cache_) {
+      if (docs_level(r.docs) == 0) docs_off.insert(r.id);
+    }
+  }
   // A snapshot of the qualifying assets, so the scan never takes assets_m_.
   auto allowed = std::make_shared<std::set<std::int64_t>>();
   {
     std::lock_guard lock(assets_m_);
     for (const auto& [id, m] : assets_) {
       if (!(kind_bit(m.kind) & kinds)) continue;
+      if (m.kind == asset_kind::document && docs_off.count(m.root)) continue;
       // #404: the date taken when the tags gave one, else the file's time.
       const std::int64_t when = m.when();
       if (when < from_unix || when >= to_unix) continue;
@@ -5081,6 +5475,258 @@ void engine::process_text_moments(const work_item& item, text_reader& reader, co
   (void)flush(work_state::done);
 }
 
+void engine::process_document(const work_item& item) {
+  const std::string& path = item.asset.path;
+  const bool pdf = extension_of(path) == "pdf";
+  // A PDF resumes at the first page it had not committed; a DOCX is read
+  // whole (its layout needs every page before the one asked for), so a
+  // resumed one starts again and replaces what it had.
+  const bool resumed = item.state == work_state::partial;
+  const std::uint32_t first =
+      pdf && resumed ? static_cast<std::uint32_t>(std::clamp<std::int64_t>(item.resume_ms, 0, UINT32_MAX)) : 0;
+  std::int64_t replace_from = resumed ? std::int64_t{first} : -1;
+  passage_builder built;
+  std::vector<passage_in> rows;
+  const auto commit = [&](work_state state, std::int64_t resume) -> bool {
+    for (passage& p : built.take()) rows.push_back(passage_in{p.page, std::move(p.text), std::move(p.words)});
+    const bool ok = static_cast<bool>(db_->commit_passages(item.asset.id, kDocTextSpec, rows, state, resume, replace_from));
+    rows.clear();
+    if (ok) replace_from = -1;
+    return ok;
+  };
+  const auto failed = [&](mv::status why) {
+    // Password-protected: locked, never retried. Anything else (broken, gone,
+    // unreadable) fails and is tried again kMaxTries times at most.
+    if (why == status::permission_denied) {
+      (void)db_->mark_locked(item.asset.id, kDocTextSpec);
+    } else {
+      (void)db_->fail(item.asset.id, kDocTextSpec);
+    }
+  };
+  if (pdf) {
+    pdf_reader* reader = nullptr;
+    {
+      std::lock_guard lock(models_m_);
+      reader = pdf_.get();  // set once, never replaced (engine.h)
+    }
+    if (!reader) {
+      // No PDFium here (an older pack): set aside, read once one is (control_loop).
+      (void)db_->mark_unavailable(item.asset.id, kDocTextSpec);
+      return;
+    }
+    // Committed every few pages, so a stop resumes after the last of them.
+    constexpr std::uint32_t kCommitEvery = 8;
+    bool stopping = false, write_failed = false;
+    std::uint32_t next = first;
+    const auto read = reader->read(path, first, pdf_limits{}, [&](std::uint32_t page, std::string_view text) {
+      if (!wait_turn(false)) {
+        stopping = true;
+        return false;
+      }
+      for (const std::string& para : pdf_paragraphs(text)) built.add(page, para, true);
+      next = page + 1;
+      if (built.full()) return false;  // the passage cap: what was read stands
+      if (next % kCommitEvery == 0) {
+        built.finish();
+        if (!commit(work_state::partial, next)) {
+          write_failed = true;
+          return false;
+        }
+      }
+      return true;
+    });
+    if (stopping) {
+      built.finish();
+      (void)commit(work_state::partial, next);  // the rest resumes
+      return;
+    }
+    if (write_failed) return;  // left partial or pending: tried again
+    if (!read && read.error() != status::cancelled) {
+      failed(read.error());
+      return;
+    }
+    built.finish();
+    (void)commit(work_state::done, read ? std::int64_t{read.value()} : std::int64_t{next});
+    return;
+  }
+  if (!host_.has_document_text()) {
+    (void)db_->mark_unavailable(item.asset.id, kDocTextSpec);  // an older host: read once one can
+    return;
+  }
+  bool stopping = false;
+  std::size_t seen = 0;
+  std::uint32_t pages = 1;
+  const expected read = host_.document_text(path, [&](const host::doc_line& l) {
+    if ((++seen & 63) == 0 && !wait_turn(false)) {
+      stopping = true;
+      return false;
+    }
+    pages = std::max(pages, l.page_count);
+    built.add(l.page, l.text, true);
+    return !built.full();
+  });
+  if (stopping) return;  // still pending: read again from the start
+  if (!read && read.error() != status::cancelled) {
+    failed(read.error());
+    return;
+  }
+  built.finish();
+  (void)commit(work_state::done, pages);
+}
+
+// #354 D2 limits (docs/design/17 "Documents"): every document's first pages
+// as pictures, plus a page mostly covered by images (a scan, a photo, a
+// full-page figure: PDFium's image objects over half the page), at most
+// kMaxPicturePages of those (a 500-page scan is not 500 pictures).
+constexpr std::uint32_t kFirstPages = 3;
+constexpr float kPictureCover = 0.5f;
+constexpr std::size_t kMaxPicturePages = 64;
+
+void engine::process_pages(const work_item& item, const loaded_clip& clip) {
+  const std::string& path = item.asset.path;
+  const std::string progress = doc_page_spec(clip.meta.spec_key);
+  // Which pages: from PDFium's look when it can tell (a PDF), else the first
+  // few, the host saying where a document ends (invalid_arg past the end).
+  std::vector<std::uint32_t> pages;
+  bool known = false;
+  if (extension_of(path) == "pdf") {
+    pdf_reader* reader = nullptr;
+    {
+      std::lock_guard lock(models_m_);
+      reader = pdf_.get();  // set once, never replaced (engine.h)
+    }
+    if (reader) {
+      if (!wait_turn()) return;
+      const auto look = reader->look(path, pdf_limits{}, kPictureCover);
+      if (look) {
+        known = true;
+        for (std::uint32_t p = 0; p < std::min(look->pages, kFirstPages); ++p) pages.push_back(p);
+        std::size_t extra = 0;
+        for (std::uint32_t p : look->pictures) {
+          if (p < kFirstPages) continue;
+          if (++extra > kMaxPicturePages) break;
+          pages.push_back(p);
+        }
+      } else if (look.error() == status::permission_denied) {
+        (void)db_->mark_locked(item.asset.id, progress);
+        return;
+      } else if (look.error() != status::unsupported_format) {
+        (void)db_->fail(item.asset.id, progress);
+        return;
+      }
+    }
+  }
+  if (!known) {
+    for (std::uint32_t p = 0; p < kFirstPages; ++p) pages.push_back(p);
+  }
+  // The same edge as a photo's picture pass: the tower's input, twice over.
+  const std::uint32_t edge = std::max<std::uint32_t>(448u, clip.meta.input_edge * 2);
+  std::vector<frame_in> keep;
+  std::vector<float> embs;
+  std::vector<std::int64_t> at;
+  std::vector<rgb_frame> batch;
+  const auto embed = [&]() -> bool {
+    if (batch.empty()) return true;
+    std::vector<infer::rgb_view> views;
+    for (const rgb_frame& f : batch) views.push_back(infer::rgb_view{f.rgb.data(), f.width, f.height});
+    std::vector<float> e;
+    if (!clip.model->embed_images(views, e) || e.size() != batch.size() * clip.meta.dim) return false;
+    embs.insert(embs.end(), e.begin(), e.end());
+    batch.clear();
+    return true;
+  };
+  for (std::uint32_t page : pages) {
+    // A stop leaves it pending: a document is a handful of pages, drawn again.
+    if (!wait_turn()) return;
+    auto img = frame_of(path, page, edge);
+    // Past its last page (invalid_arg), or a page that does not draw: the
+    // pages drawn before it stand.
+    if (!img) break;
+    at.push_back(page);
+    batch.push_back(std::move(*img));
+    if (batch.size() >= kPhotoBatch && !embed()) {
+      (void)db_->fail(item.asset.id, progress);
+      return;
+    }
+  }
+  if (!embed()) {
+    (void)db_->fail(item.asset.id, progress);
+    return;
+  }
+  if (at.empty()) {
+    // Not one page drawn (broken, or no renderer for it on this OS): its
+    // words still find it.
+    (void)db_->fail(item.asset.id, progress);
+    return;
+  }
+  for (std::size_t i = 0; i < at.size(); ++i) {
+    frame_in f;
+    f.pts_ms = at[i];
+    f.flags = kFramePage;
+    f.emb = std::span<const float>(embs.data() + i * clip.meta.dim, clip.meta.dim);
+    f.generic = max_dot(f.emb, clip.generic);
+    keep.push_back(f);
+  }
+  if (!db_->commit_pages(item.asset.id, clip.meta.spec_key, progress, keep, clip.meta.dim)) return;
+  std::string active;
+  {
+    std::lock_guard lock(models_m_);
+    active = answer_.meta.spec_key;
+  }
+  if (clip.meta.spec_key == active) {
+    // Its pages drawn again replace those it had (a document holds no other vector).
+    store_.remove_assets(std::vector<std::int64_t>{item.asset.id});
+    for (const frame_in& f : keep) {
+      std::vector<std::int8_t> q;
+      float scale = 1;
+      quantise(f.emb, q, scale);
+      store_.add(item.asset.id, f.pts_ms, f.generic, scale, q);
+    }
+  }
+  std::lock_guard lock(status_m_);
+  frames_done_ += keep.size();
+}
+
+void engine::process_meaning(const work_item& item, const loaded_docs& docs) {
+  // A document's passages in reading order, a batch at a time between the
+  // viewer's busy spells; committed whole, so a stop embeds it again.
+  const std::vector<passage_out> passages = db_->passages_of(item.asset.id);
+  std::vector<float> embs;
+  embs.reserve(passages.size() * docs.dim);
+  std::vector<std::string> batch;
+  for (std::size_t i = 0; i < passages.size(); i += kMeaningBatch) {
+    if (!wait_turn(false)) return;  // the picture towers are not this pass's
+    batch.clear();
+    for (std::size_t j = i; j < std::min(passages.size(), i + kMeaningBatch); ++j) batch.push_back(passages[j].text);
+    std::vector<float> e;
+    if (!docs.model->embed_passages(batch, e) || e.size() != batch.size() * docs.dim) {
+      (void)db_->fail(item.asset.id, docs.spec_key);
+      return;
+    }
+    embs.insert(embs.end(), e.begin(), e.end());
+  }
+  std::vector<passage_vec_in> rows(passages.size());
+  for (std::size_t i = 0; i < passages.size(); ++i) {
+    rows[i].passage = passages[i].id;
+    rows[i].emb = std::span<const float>(embs.data() + i * docs.dim, docs.dim);
+    rows[i].generic = max_dot(rows[i].emb, docs.generic);
+  }
+  if (!db_->commit_passage_vecs(item.asset.id, docs.spec_key, rows, docs.dim)) return;
+  std::string active;
+  {
+    std::lock_guard lock(models_m_);
+    active = docs_.spec_key;
+  }
+  if (docs.spec_key != active) return;
+  meanings_.remove_assets(std::vector<std::int64_t>{item.asset.id});
+  std::vector<std::int8_t> q;
+  for (const passage_vec_in& r : rows) {
+    float scale = 1;
+    quantise(r.emb, q, scale);
+    meanings_.add(item.asset.id, r.passage, r.generic, scale, q);
+  }
+}
+
 void engine::load_speech(const std::string& spec) {
   std::vector<speech_row> rows;
   (void)db_->each_speech(spec, [&](std::int64_t asset, std::int64_t start, std::int64_t, const std::string& text) {
@@ -5102,6 +5748,68 @@ bool stop_word(const std::string& w) {
     if (w == s) return true;
   }
   return false;
+}
+
+// How much of the query a line's words hold, as a rank (-1: not enough): the
+// speech rule, shared by transcripts, a file's own text and documents. A word
+// of four letters or more also matches its longer forms ("land" -> "landing").
+float coverage_rank(const std::vector<std::string>& want, const std::string& phrase, double need,
+                    const std::vector<std::string>& words) {
+  std::size_t hit = 0;
+  for (const std::string& q : want) {
+    for (const std::string& w : words) {
+      if (w == q || (q.size() >= 4 && w.size() > q.size() && w.compare(0, q.size(), q) == 0)) {
+        ++hit;
+        break;
+      }
+    }
+  }
+  if (want.empty()) return -1.0f;
+  const double coverage = static_cast<double>(hit) / static_cast<double>(want.size());
+  if (coverage < need) return -1.0f;
+  std::string joined;
+  for (const std::string& w : words) joined += (joined.empty() ? "" : " ") + w;
+  const bool exact = joined.find(phrase) != std::string::npos;
+  return static_cast<float>(0.6 + 0.8 * coverage + (exact ? 0.2 : 0.0));
+}
+
+// #354: candidates for a document search, from the passages' FTS5 index. The
+// engine's own rule decides each (coverage_rank, query::contains_phrase); the
+// index only narrows. A passage's stored words are match_words' output, and
+// so is every word here: letters, digits and bytes >= 0x80, never a quote.
+constexpr std::size_t kPassageCandidates = 5000;
+
+// Each word a quoted string, one of four letters or more a prefix too; all
+// of them (AND) or any (OR).
+std::string fts_words(const std::vector<std::string>& words, bool any) {
+  std::string q;
+  for (const std::string& w : words) {
+    if (!q.empty()) q += any ? " OR " : " ";
+    q += '"' + w + '"';
+    if (w.size() >= 4) q += '*';
+  }
+  return q;
+}
+
+// The words in order, the last a prefix while its quote is still open.
+std::string fts_phrase(const std::vector<std::string>& words, bool open) {
+  std::string q = "\"";
+  for (std::size_t i = 0; i < words.size(); ++i) q += (i ? " " : "") + words[i];
+  q += '"';
+  if (open) q += '*';
+  return q;
+}
+
+std::vector<std::string> split_words(const std::string& joined) {
+  std::vector<std::string> out;
+  std::size_t i = 0;
+  while (i < joined.size()) {
+    const std::size_t end = joined.find(' ', i);
+    const std::size_t stop = end == std::string::npos ? joined.size() : end;
+    if (stop > i) out.emplace_back(joined, i, stop - i);
+    i = stop + 1;
+  }
+  return out;
 }
 
 }  // namespace
@@ -5149,25 +5857,7 @@ void engine::merge_audio(search_state& st, const std::string& query, const std::
   std::string phrase_f;
   for (const std::string& w : cue_words(query)) phrase_f += (phrase_f.empty() ? "" : " ") + w;
   // How much of the query a line's words hold (-1: not enough).
-  const auto rank_by = [](const std::vector<std::string>& want, const std::string& phrase, double need,
-                          const std::vector<std::string>& words) -> float {
-    std::size_t hit = 0;
-    for (const std::string& q : want) {
-      for (const std::string& w : words) {
-        if (w == q || (q.size() >= 4 && w.size() > q.size() && w.compare(0, q.size(), q) == 0)) {
-          ++hit;
-          break;
-        }
-      }
-    }
-    if (want.empty()) return -1.0f;
-    const double coverage = static_cast<double>(hit) / static_cast<double>(want.size());
-    if (coverage < need) return -1.0f;
-    std::string joined;
-    for (const std::string& w : words) joined += (joined.empty() ? "" : " ") + w;
-    const bool exact = joined.find(phrase) != std::string::npos;
-    return static_cast<float>(0.6 + 0.8 * coverage + (exact ? 0.2 : 0.0));
-  };
+  const auto& rank_by = coverage_rank;
   const double need_f = speech_coverage_needed(want_f.size(), precision);
   {
     std::lock_guard lock(speech_m_);
@@ -5190,6 +5880,100 @@ void engine::merge_audio(search_state& st, const std::string& query, const std::
     std::string snippet = text.size() > 160 ? text.substr(0, 157) + "..." : text;
     add_row(st, asset, start, rank / 2.0f, rank, match, std::move(snippet));
   }
+}
+
+void engine::merge_documents(search_state& st, const std::string& query,
+                             const std::function<bool(std::int64_t)>& allow, std::uint32_t precision) {
+  std::vector<std::string> want;
+  std::string phrase;
+  for (std::string& w : match_words(query)) {
+    phrase += (phrase.empty() ? "" : " ") + w;
+    if (!stop_word(w) && std::find(want.begin(), want.end(), w) == want.end()) want.push_back(std::move(w));
+  }
+  if (want.empty()) return;
+  const double need = speech_coverage_needed(want.size(), precision);
+  struct hit {
+    float rank;
+    std::int64_t asset;
+    std::uint32_t page;
+    std::string text;
+  };
+  std::vector<hit> found;
+  // Every word wanted: the index can ask for all of them; most of them: any.
+  (void)db_->find_passages(fts_words(want, need < 1.0), kPassageCandidates, [&](const passage_out& p) {
+    if (!allow(p.asset)) return true;
+    const float rank = coverage_rank(want, phrase, need, split_words(p.words));
+    if (rank >= 0) found.push_back(hit{rank, p.asset, p.page, p.text});
+    return true;
+  });
+  std::stable_sort(found.begin(), found.end(), [](const hit& a, const hit& b) { return a.rank > b.rank; });
+  if (found.size() > 2000) found.resize(2000);
+  for (hit& h : found) {
+    add_row(st, h.asset, h.page, h.rank / 2.0f, h.rank, MV_AI_MATCH_TEXT, passage_snippet(h.text, want));
+  }
+}
+
+void engine::merge_meaning(search_state& st, const std::string& query, const std::function<bool(std::int64_t)>& allow,
+                           std::uint32_t precision) {
+  loaded_docs docs;
+  {
+    std::lock_guard lock(models_m_);
+    docs = docs_;
+  }
+  if (!docs.model) return;
+  auto v = docs.model->embed_query(query);
+  if (!v) return;
+  // CLAP's rule (merge_audio): margins over the generic prompts, scaled by
+  // Precision; no z calibration.
+  text_thresholds t;
+  t.query_margin = docs.query_margin;
+  t.result_margin = docs.result_margin;
+  t.query_z = 0;
+  t.result_z = 0;
+  const auto hits = find_text(meanings_, *v, allow, t, precision_scale::at(precision), true, 2000);
+  // pts is the passage: its page and words come from the index. A document
+  // leads with its best passage; the rest are its other pages.
+  const std::vector<std::string> words = match_words(query);
+  for (const vector_store::hit& h : hits) {
+    auto p = db_->passage_by_id(h.pts_ms);
+    if (!p) continue;
+    // The generic prompts gate a row (find_text) but do not order it: by
+    // cosine, passages ranked better in the D3 spike (P@5 0.757 against 0.728
+    // by margin). In units of the model's "nothing found" margin over its mean
+    // generic cosine, twice over: a close passage (~2.4) leads a document
+    // that only holds most of the words (0.6-1.6). Measured end to end in the
+    // engine at 1, 2 and 100 x: P@5 0.723, 0.731, 0.731 (DEVELOPMENT, D3).
+    const float rank = 2.0f * (h.score - docs.rank_offset) / std::max(docs.query_margin, 1e-3f);
+    add_row(st, h.asset, p->page, h.score, rank, MV_AI_MATCH_TEXT, passage_snippet(p->text, words));
+  }
+}
+
+std::string engine::passage_snippet(const std::string& text, const std::vector<std::string>& words) {
+  constexpr std::size_t kMax = 150;
+  if (text.size() <= kMax) return text;
+  // Where the first word is: the folded words have other offsets, so it is
+  // looked for in the text lower-cased (ASCII); not found (an accent folded
+  // away), the passage's start.
+  const std::string lower = lower_ascii(text);
+  std::size_t at = std::string::npos;
+  for (const std::string& w : words) {
+    at = lower.find(w);
+    if (at != std::string::npos) break;
+  }
+  std::size_t start = at == std::string::npos || at < 40 ? 0 : at - 40;
+  if (start > 0) {
+    const std::size_t sp = text.find(' ', start);
+    start = sp == std::string::npos || sp >= at ? start : sp + 1;
+  }
+  std::size_t end = std::min(text.size(), start + kMax);
+  if (end < text.size()) {
+    const std::size_t sp = text.rfind(' ', end);
+    if (sp != std::string::npos && sp > start) end = sp;
+  }
+  // Never half a UTF-8 sequence at either cut.
+  while (start > 0 && start < text.size() && (static_cast<unsigned char>(text[start]) & 0xC0) == 0x80) --start;
+  while (end > start && end < text.size() && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) --end;
+  return (start > 0 ? "..." : "") + text.substr(start, end - start) + (end < text.size() ? "..." : "");
 }
 
 std::vector<float> engine::query_vector(const loaded_clip& answer, const std::string& text) {
@@ -5280,6 +6064,44 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       }
     }
     if (plan.impossible) return;
+    // #441: which place a place: / in: term names is the Places add-on's
+    // answer (the host's place_matches, over the whole index), intersected
+    // here with the rest of the query: in every place named, in none left
+    // out. With nothing to answer (Places not installed) a place term matches
+    // nothing, never every geotagged file. Path keys, as assets_ holds them.
+    std::optional<std::set<std::string>> in_places;  // nullopt: no kept place term
+    std::set<std::string> out_places;
+    if (!plan.places.empty() || !plan.not_places.empty()) {
+      // A newer search queued behind this one makes it stale: stop waiting.
+      const std::function<bool()> keep_going = [this] {
+        if (stopping_.load()) return false;
+        std::lock_guard lock(search_m_);
+        return search_queue_.empty();
+      };
+      const auto keys_in = [&](const std::string& place) -> std::optional<std::set<std::string>> {
+        auto paths = host_.place_matches(place, keep_going);
+        if (!paths) return std::nullopt;
+        std::set<std::string> keys;
+        for (const std::string& p : *paths) keys.insert(path_key(p));
+        return keys;
+      };
+      for (const std::string& place : plan.places) {
+        auto keys = keys_in(place);
+        if (!keys) return;
+        if (!in_places) {
+          in_places = std::move(*keys);
+          continue;
+        }
+        for (auto it = in_places->begin(); it != in_places->end();) {
+          it = keys->count(*it) ? std::next(it) : in_places->erase(it);
+        }
+      }
+      for (const std::string& place : plan.not_places) {
+        auto keys = keys_in(place);
+        if (!keys) return;
+        out_places.merge(*keys);
+      }
+    }
     // Kinds: the chips' and the query's, both.
     std::uint32_t k = kinds;
     if (plan.kinds != 0) {
@@ -5299,11 +6121,20 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
         it = keep ? std::next(it) : allowed->erase(it);
       }
     }
+    // #354: is:pdf / is:docx, the format by its extension.
+    if (!plan.extensions.empty()) {
+      std::lock_guard lock(assets_m_);
+      for (auto it = allowed->begin(); it != allowed->end();) {
+        const auto m = assets_.find(*it);
+        const bool keep = m != assets_.end() && std::find(plan.extensions.begin(), plan.extensions.end(),
+                                                          extension_of(m->second.path)) != plan.extensions.end();
+        it = keep ? std::next(it) : allowed->erase(it);
+      }
+    }
     // #291: camera: / lens: / made: / ai: against the tags read so far (an
     // asset whose tags are not read yet does not match a tag term), and
-    // place: / in: (not a date) to the geotagged ones: which place is the
-    // Places add-on's provider's answer, merged by the slot registry.
-    if (plan.has_tags() || !plan.places.empty()) {
+    // place: / in: (not a date) to the assets Places put there (above).
+    if (plan.has_tags() || in_places || !out_places.empty()) {
       const auto all_in = [](const std::string& value, const std::vector<std::string>& terms) {
         for (const std::string& t : terms) {
           if (value.find(t) == std::string::npos) return false;
@@ -5331,7 +6162,8 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
             // has no value yet, so a kept term does not match it.
             if (keep && plan.has_exposure()) keep = plan.exposure_matches(a.exposure);
           }
-          if (keep && !plan.places.empty()) keep = a.has_where;
+          if (keep && in_places) keep = in_places->count(a.key) != 0;
+          if (keep && !out_places.empty()) keep = out_places.count(a.key) == 0;
         }
         it = keep ? std::next(it) : allowed->erase(it);
       }
@@ -5370,20 +6202,30 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       for (const std::string& p : plan.not_phrases) not_want_f.push_back(cue_words(p));
       std::vector<std::set<std::int64_t>> have(want.size());
       std::set<std::int64_t> drop;
+      // #354: where each phrase may be found (text: is a document's alone,
+      // said: a clip's alone).
+      const auto where = [&](std::size_t i) {
+        return i < plan.phrase_where.size() ? plan.phrase_where[i] : query::phrase_in::anywhere;
+      };
+      const auto not_where = [&](std::size_t i) {
+        return i < plan.not_phrase_where.size() ? plan.not_phrase_where[i] : query::phrase_in::anywhere;
+      };
       {
         std::lock_guard lock(speech_m_);
         for (const speech_row& r : speech_rows_) {
           if (!allowed->count(r.asset)) continue;
           bool any = false;
           for (std::size_t i = 0; i < want.size(); ++i) {
+            if (where(i) == query::phrase_in::documents) continue;
             const bool open = plan.last_phrase_open && i + 1 == want.size();
             if (query::contains_phrase(r.words, want[i], open)) {
               have[i].insert(r.asset);
               any = true;
             }
           }
-          for (const auto& w : not_want) {
-            if (query::contains_phrase(r.words, w, false)) drop.insert(r.asset);
+          for (std::size_t i = 0; i < not_want.size(); ++i) {
+            if (not_where(i) == query::phrase_in::documents) continue;
+            if (query::contains_phrase(r.words, not_want[i], false)) drop.insert(r.asset);
           }
           if (any) said_rows.push_back({r.asset, r.start_ms, r.text});
         }
@@ -5391,16 +6233,43 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
           if (!allowed->count(r.asset)) continue;
           bool any = false;
           for (std::size_t i = 0; i < want_f.size(); ++i) {
+            if (where(i) == query::phrase_in::documents) continue;
             const bool open = plan.last_phrase_open && i + 1 == want_f.size();
             if (query::contains_phrase(r.words, want_f[i], open)) {
               have[i].insert(r.asset);
               any = true;
             }
           }
-          for (const auto& w : not_want_f) {
-            if (query::contains_phrase(r.words, w, false)) drop.insert(r.asset);
+          for (std::size_t i = 0; i < not_want_f.size(); ++i) {
+            if (not_where(i) == query::phrase_in::documents) continue;
+            if (query::contains_phrase(r.words, not_want_f[i], false)) drop.insert(r.asset);
           }
           if (any) said_rows.push_back({r.asset, r.start_ms, cue_snippet(r), MV_AI_MATCH_TEXT});
+        }
+      }
+      // #354: a document's passages, the phrase's words in order (a passage
+      // also holds the last words of the one before, so a phrase over a
+      // passage break is found). Each matching page is a moment.
+      if (document_files_.load()) {
+        for (std::size_t i = 0; i < want_f.size(); ++i) {
+          if (where(i) == query::phrase_in::said || want_f[i].empty()) continue;
+          const bool open = plan.last_phrase_open && i + 1 == want_f.size();
+          (void)db_->find_passages(fts_phrase(want_f[i], open), kPassageCandidates, [&](const passage_out& p) {
+            if (!allowed->count(p.asset)) return true;
+            if (!query::contains_phrase(split_words(p.words), want_f[i], open)) return true;
+            have[i].insert(p.asset);
+            said_rows.push_back({p.asset, p.page, passage_snippet(p.text, want_f[i]), MV_AI_MATCH_TEXT});
+            return true;
+          });
+        }
+        for (std::size_t i = 0; i < not_want_f.size(); ++i) {
+          if (not_where(i) == query::phrase_in::said || not_want_f[i].empty()) continue;
+          (void)db_->find_passages(fts_phrase(not_want_f[i], false), kPassageCandidates, [&](const passage_out& p) {
+            if (allowed->count(p.asset) && query::contains_phrase(split_words(p.words), not_want_f[i], false)) {
+              drop.insert(p.asset);
+            }
+            return true;
+          });
         }
       }
       for (const auto& h : have) keep_only(h);
@@ -5448,8 +6317,9 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       std::sort(tagged.begin(), tagged.end());
       for (auto& [a, why] : tagged) add_row(st, a, -1, 1.0f, 200.0f, MV_AI_MATCH_TAGS, std::move(why));
     }
-    std::uint32_t find = k & (MV_AI_FIND_PICTURES | MV_AI_FIND_SOUNDS | MV_AI_FIND_SPEECH);
-    if (find == 0) find = MV_AI_FIND_PICTURES | MV_AI_FIND_SOUNDS | MV_AI_FIND_SPEECH;
+    constexpr std::uint32_t kFindAll = MV_AI_FIND_PICTURES | MV_AI_FIND_SOUNDS | MV_AI_FIND_SPEECH | MV_AI_FIND_TEXT;
+    std::uint32_t find = k & kFindAll;
+    if (find == 0) find = kFindAll;
     if (!plan.text.empty()) {
       // A description, among the assets the rest allowed. Narrowed by a
       // person or a phrase, it ranks without "nothing found" (as a name in the
@@ -5458,6 +6328,12 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
         group(st, picture_hits(plan.text, allow, !plan.narrows(), precision), true, -1.0f, MV_AI_MATCH_PICTURE, true);
       }
       merge_audio(st, plan.text, allow, find, precision);
+      // #354: the words in documents.
+      if ((find & MV_AI_FIND_TEXT) && document_files_.load()) {
+        merge_documents(st, plan.text, allow, precision);
+        // #354 D3: and what they are about, with the ai-docs piece.
+        merge_meaning(st, plan.text, allow, precision);
+      }
     } else if (!plan.people.empty()) {
       std::vector<std::int64_t> everyone;
       for (const auto& g : plan.people) everyone.insert(everyone.end(), g.begin(), g.end());
@@ -5471,7 +6347,7 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       said_rows.clear();
     } else if (plan.people_first.empty() &&
                (plan.kinds != 0 || plan.has_dates() || plan.has_files() || plan.has_tags() ||
-                !plan.places.empty() || !plan.not_people.empty() ||
+                !plan.places.empty() || !plan.not_places.empty() || !plan.not_people.empty() ||
                 !plan.not_text.empty() || !plan.not_phrases.empty())) {
       // Filters alone ("video in:2024", "file:IMG_12"): everything they allow,
       // newest first.
@@ -5702,7 +6578,11 @@ result<std::string> engine::result_thumb(std::uint64_t id, std::uint32_t index) 
     auto it = searches_.find(id);
     if (it == searches_.end() || index >= it->second->rows.size()) return err(status::invalid_arg);
     path = it->second->rows[index].path;
-    ms = it->second->rows[index].kind == MV_AI_KIND_VIDEOS ? it->second->rows[index].pts_ms : -1;
+    const std::uint32_t kind = it->second->rows[index].kind;
+    ms = kind == MV_AI_KIND_VIDEOS ? it->second->rows[index].pts_ms : -1;
+    // #354: a document's tile is the page that matched; its first page is
+    // the viewer's own thumbnail.
+    if (kind == MV_AI_KIND_DOCUMENTS && it->second->rows[index].pts_ms > 0) ms = it->second->rows[index].pts_ms;
   }
   return tile_of(path, ms);
 }
@@ -5722,7 +6602,13 @@ result<std::vector<std::pair<std::int64_t, float>>> engine::clip_matches(std::ui
   if (m == it->second->moments.end()) return std::vector<std::pair<std::int64_t, float>>{};
   std::vector<std::pair<std::int64_t, float>> out;
   for (const auto& p : m->second) {
-    if (p.first >= 0) out.push_back(p);
+    if (p.first < 0) continue;
+    // #354: a document's page can hold several matching passages: one stop.
+    if (!out.empty() && out.back().first == p.first) {
+      out.back().second = std::max(out.back().second, p.second);
+      continue;
+    }
+    out.push_back(p);
   }
   return out;
 }

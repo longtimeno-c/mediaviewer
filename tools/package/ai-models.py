@@ -140,9 +140,11 @@ def check(_args) -> int:
         sizes[piece] = total
     # The largest supported combination: Core models + Faces + the runtime and
     # a vendor piece (ORT CUDA: ~205 MB; allow 400 MB for native code and chrome).
-    worst = sizes.get("ai", 0) + sizes.get("ai-faces", 0) + sizes.get("ai-audio", 0) + 400_000_000 + 250_000_000
+    worst = (sizes.get("ai", 0) + sizes.get("ai-faces", 0) + sizes.get("ai-audio", 0) + sizes.get("ai-docs", 0) +
+             400_000_000 + 250_000_000)
     if worst > CEILING:
-        bad.append(f"Core + Faces + Audio + a vendor piece is ~{worst / 1e9:.2f} GB, over the {CEILING / 1e9:.0f} GB ceiling")
+        bad.append(f"Core + Faces + Audio + Documents + a vendor piece is ~{worst / 1e9:.2f} GB, "
+                   f"over the {CEILING / 1e9:.0f} GB ceiling")
     for b in bad:
         print(b, file=sys.stderr)
     if not bad:

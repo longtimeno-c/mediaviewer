@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "io/pairing.h"
+#include "shell/commands.h"
 #include "shell/settings_store.h"
 
 namespace mv::shell {
@@ -103,6 +104,13 @@ struct key_override {
 void save_key_overrides(settings_store& store, std::span<const key_override> list) noexcept;
 [[nodiscard]] std::vector<key_override> load_key_overrides() noexcept;
 void save_key_overrides(std::span<const key_override> list) noexcept;
+// The live table's remaps (commands.h live_key_remaps / apply_key_remaps) as this
+// file keeps them. A row a swap left unbound is stored with key 0 and loads back
+// unbound (issue #153: it used to be dropped, so the reload re-bound it).
+[[nodiscard]] std::vector<key_remap> load_key_remaps(const settings_store& store) noexcept;
+void save_key_remaps(settings_store& store, std::span<const key_remap> list) noexcept;
+[[nodiscard]] std::vector<key_remap> load_key_remaps() noexcept;
+void save_key_remaps(std::span<const key_remap> list) noexcept;
 
 // Never fails loudly: a missing or unreadable file is the defaults above.
 [[nodiscard]] view_settings load_view_settings(const settings_store& store) noexcept;
@@ -117,6 +125,13 @@ void save_view_settings(const view_settings& settings) noexcept;
 void save_strip_hint_learned(settings_store& store) noexcept;
 [[nodiscard]] bool load_strip_hint_learned() noexcept;
 void save_strip_hint_learned() noexcept;
+
+// Issue #429: the page sidebar is wanted (Shift+T; `[view] page_sidebar`, on
+// unless turned off). Kept apart from view_settings for the same reason.
+[[nodiscard]] bool load_page_sidebar(const settings_store& store) noexcept;
+void save_page_sidebar(settings_store& store, bool on) noexcept;
+[[nodiscard]] bool load_page_sidebar() noexcept;
+void save_page_sidebar(bool on) noexcept;
 
 // F7 / F8 destinations, most recent first, at most five (docs/design/16). UTF-8
 // folder paths the user picked; they stay in the local settings file.

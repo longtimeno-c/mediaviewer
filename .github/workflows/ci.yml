@@ -72,7 +72,7 @@ jobs:
     name: SwiftUI chrome
     if: github.event_name != 'schedule'
     runs-on: macos-14
-    timeout-minutes: 15
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
@@ -81,6 +81,97 @@ jobs:
       - run: swift build --package-path src.swift/MediaViewerChrome -c release
       - run: swift build --package-path src.swift/ImportChrome -c release
       - run: swift build --package-path src.swift/AIChrome -c release
+      # Issue #153: the chromes' headless tests. MediaViewerChrome reads src/shell and
+      # tests/data/command_table.snapshot as text (its library cannot link without the
+      # host); ImportChrome tests its model.
+      - run: swift test --package-path src.swift/MediaViewerChrome
+      - run: swift test --package-path src.swift/ImportChrome
+      # The People grid measurements (no baselines, so they report, not gate)
+      # and the chrome's own unit tests.
+      - run: swift test --package-path src.swift/AIChrome
+
+  # The native core on macOS, built and tested on every pull request (#144).
+  # From PR 9 every PR holds on both platforms; before this job the Mac-only
+  # tests (Metal pacer, AVFoundation EOF, PDFKit, the Photos virtual folder,
+  # the write guard) first ran at release time. The vcpkg steps mirror
+  # release.yml's macos-build arm64 leg, and the cache key is the same one, so
+  # a release run and a PR run share the dependency trees. A cold cache is the
+  # whole manifest plus the LGPL dylibs; a warm one is the build and ~20 s of
+  # tests.
+  mac-build:
+    name: macOS core (build + tests)
+    if: github.event_name != 'schedule'
+    runs-on: macos-15
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    env:
+      TRIPLET: arm64-osx
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
+        run: |
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> "$GITHUB_ENV"
+
+      # Keep this key identical to release.yml's macos-build (arm64 leg).
+      - name: Cache vcpkg packages
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/vcpkg_installed
+            build/vcpkg_dynamic
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'tools/mac/dependencies/vcpkg.json', 'tools/mac/triplets/*.cmake', 'tools/vcpkg/triplets/*-osx.cmake') }}-${{ env.TRIPLET }}-mixed-v2
+
+      # The LGPL dylibs have their own manifest and install tree, as in
+      # release.yml: a second manifest install would remove the other triplet.
+      - name: Install macOS dynamic codec libraries
+        run: |
+          brew install libomp nasm ninja autoconf autoconf-archive automake libtool
+          "$VCPKG_ROOT/vcpkg" install --triplet "$TRIPLET-dynamic" \
+            --overlay-triplets="$GITHUB_WORKSPACE/tools/mac/triplets" \
+            --x-manifest-root="$GITHUB_WORKSPACE/tools/mac/dependencies" \
+            --x-install-root="$GITHUB_WORKSPACE/build/vcpkg_dynamic"
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DVCPKG_TARGET_TRIPLET="$TRIPLET" \
+            -DMV_VCPKG_DYNAMIC_PREFIX="$GITHUB_WORKSPACE/build/vcpkg_dynamic/$TRIPLET-dynamic"
+
+      - name: Save dependencies before the build can fail
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/vcpkg_installed
+            build/vcpkg_dynamic
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
+
+      - name: Licence policy (manifests + vcpkg trees)
+        shell: pwsh
+        run: ./tools/licence-check.ps1 -VcpkgInstalledRoot build/vcpkg_installed, build/vcpkg_dynamic
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Unit tests
+        timeout-minutes: 20
+        # A hosted macOS runner has no audio output device, so the audio clock
+        # never advances: "plays 0.6 s, then pauses" stays at the seek point. The
+        # one case that measures real playback time is left to a Mac with audio.
+        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error -E "An audio-only clip seeks, pauses in place"
 
   windows-chrome:
     name: WinUI chrome
@@ -94,6 +185,9 @@ jobs:
           dotnet-version: '8.0.x'
       - run: dotnet build src.managed/MediaViewer.Chrome/MediaViewer.Chrome.csproj -c Release
       - run: dotnet build src.managed/MediaViewer.Import.Chrome/MediaViewer.Import.Chrome.csproj -c Release
+      # Issue #153: the chrome's copies of command ids, key codes and menu shortcuts
+      # against src/shell and the describe_commands() snapshot (headless, no core).
+      - run: dotnet test src.managed/MediaViewer.Chrome.Tests/MediaViewer.Chrome.Tests.csproj -c Release
 
   mac-packaging:
     name: Release tooling and macOS bundle policy
@@ -742,7 +836,7 @@ jobs:
         # script (PR 57, the add-on sandbox) likewise, until its first CI run.
         # pdf and docx (D5 amendment, 2026-10-03) follow the same path: built in
         # every fuzz job, run here until they are seen starting, then gating.
-        run: ./tools/fuzz/run.ps1 -BuildDir build -Seconds 30 -Harness 'decode','animation','thumbnail','script','pdf','docx'
+        run: ./tools/fuzz/run.ps1 -BuildDir build -Seconds 30 -Harness 'decode','animation','thumbnail','script','pdf','docx','pptx'
 
       - name: Upload fuzz artefacts
         if: failure()

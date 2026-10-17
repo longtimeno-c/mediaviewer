@@ -31,6 +31,7 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -46,6 +47,7 @@
 
 #include "addon/contrib.h"
 #include "addon/screen.h"
+#include "core/result.h"
 #include "core/status.h"
 
 namespace mv::addon {
@@ -72,6 +74,7 @@ enum slot_change : std::uint32_t {
   slot_changed_search = 1u << 3,
   slot_changed_badges = 1u << 4,
   slot_changed_status = 1u << 5,
+  slot_changed_notices = 1u << 6,  // #452: a notice, the keep-alive list or a permission ask
 };
 
 struct surface_pixels {
@@ -88,6 +91,13 @@ struct surface_pixels {
 // What a query is compared as: lowercase, Latin diacritics dropped (the
 // hosts' FoldedNames / FoldName, for the letters a place or tag uses).
 [[nodiscard]] std::string fold_query(std::string_view text);
+
+// #441: the Local search query names a place: a place:x term, or in:<word>
+// where the word does not start with a digit (in:2024 is a date), kept or
+// left out (-place:spain), outside "quotes". The AI pack's parser
+// (src/addons/ai/query.cpp) reads the same terms; the pack cannot be linked
+// here, so this is its rule for the operators alone.
+[[nodiscard]] bool has_place_terms(std::string_view query);
 
 class slot_registry {
  public:
@@ -127,7 +137,24 @@ class slot_registry {
   void settings_changed(const std::string& addon_id);
   // File search (MV_SLOT_SCOPE_FILES) or Local search (MV_SLOT_SCOPE_LOCAL).
   // An empty query clears the results and asks nobody.
+  // A Local search query with place terms (has_place_terms) asks nobody:
+  // the AI pack intersects them itself through place_paths (#441), so no
+  // provider's rows are offered beside its results.
   std::uint64_t search(std::uint32_t scope, const std::string& query, const std::string& folder);
+  // #441: whether an attached add-on's provider for `scope` declares `prefix`
+  // ("place:").
+  [[nodiscard]] bool answers_prefix(std::uint32_t scope, std::string_view prefix) const;
+  // #441 (the host table's place_matches): every path the Local search
+  // provider that declares `prefix` answers for `query` (the prefix already
+  // removed) over the whole index (folder ""). Blocks the calling worker
+  // until that provider is done; the request has its own generation, so
+  // neither the chrome's searches nor this one replaces the other.
+  // `keep_going` is asked about every 20 ms and before returning; false
+  // stops it (status::cancelled), and the provider sees the request go stale.
+  // not_found when no attached add-on declares the prefix, or it detaches
+  // meanwhile.
+  [[nodiscard]] result<std::vector<std::string>> provider_paths(const std::string& prefix, const std::string& query,
+                                                                const std::function<bool()>& keep_going);
   // The gallery shows `folder`: one badges request per add-on with badges.
   std::uint64_t request_badges(const std::string& folder);
   status open_screen(const std::string& addon_id, const std::string& screen_id,
@@ -178,6 +205,13 @@ class slot_registry {
   [[nodiscard]] std::vector<std::string> badges_for(const std::string& path) const;
   // [{"addon","id","label","text"}] for the status items with text.
   [[nodiscard]] std::string status_json() const;
+  // #452: {"ask": n, "keep": [{"addon","screen","title","label"}],
+  //  "notices": [{"addon","id","screen","title","body","action","action_label","revision"}]}.
+  [[nodiscard]] std::string notices_json() const;
+  // #452: some add-on asks to keep the process with every window closed.
+  [[nodiscard]] bool keeping_alive() const;
+  // #452: a notice's button was clicked: MV_SLOT_EVENT_NOTICE to its add-on.
+  status notice_action(const std::string& addon_id, const std::string& notice_id, const std::string& action_id);
 
   // ---- the add-on answers (host table v3; any thread) ---------------------------
   status post_screen(const std::string& addon_id, const std::string& screen_id,
@@ -205,6 +239,14 @@ class slot_registry {
                      std::uint64_t generation, std::vector<std::string> paths, bool replace);
   status post_status(const std::string& addon_id, const std::string& item_id, std::string text);
   status show_screen(const std::string& addon_id, const std::string& screen_id, bool show);
+  // #452 (host table notice_post / notice_authorize / keep_alive).
+  struct notice_fields {
+    std::string screen, title, body, action, action_label;
+  };
+  status post_notice(const std::string& addon_id, const std::string& notice_id,
+                     std::optional<notice_fields> notice);
+  status ask_notice_permission(const std::string& addon_id);
+  status keep_alive(const std::string& addon_id, bool on, const std::string& screen_id, std::string label);
 
   // ---- for tests and the PR 59 verify --------------------------------------
   // Every call made into any add-on's client since construction.
@@ -266,10 +308,26 @@ class slot_registry {
   // Windows, panes and sheets that are open.
   std::map<std::pair<std::string, std::string>, screen_state> screens_;
   search_state search_[2];  // [0] files, [1] local
+  // provider_paths' requests in flight, by generation: what has arrived.
+  struct private_search {
+    std::string addon, provider;
+    std::vector<std::string> paths;
+    bool done = false;
+  };
+  std::map<std::uint64_t, private_search> private_;
+  std::condition_variable private_cv_;  // with m_: a row or done arrived, or an add-on went
   std::uint64_t badges_generation_ = 0;
   std::string badges_folder_;
   std::map<std::string, std::set<std::string>> badge_sets_;  // "addon/badge" -> paths
   std::map<std::pair<std::string, std::string>, std::string> status_;
+  struct notice_state {
+    notice_fields f;
+    std::uint64_t revision = 0;
+  };
+  std::map<std::pair<std::string, std::string>, notice_state> notices_;  // (addon, notice)
+  std::map<std::string, std::pair<std::string, std::string>> keep_;    // addon -> (screen, label)
+  std::uint64_t notice_asks_ = 0;
+  std::uint64_t notice_revision_ = 0;
   mv_slot_theme last_theme_{};
   float last_scale_ = 1.0f;
   std::uint64_t surface_revision_ = 0;  // under m_
@@ -290,6 +348,11 @@ class slot_registry {
 // provider it answers with no extra rows. Both hosts call this when the pack
 // attaches (on = true) and goes.
 void set_local_search_provider(slot_registry& registry, bool on);
+
+// #441 (mv_slots_place_terms): MV_SLOTS_PLACE_TERMS when `query` has place
+// terms (has_place_terms), MV_SLOTS_PLACE_PROVIDER when an add-on answers
+// them for Local search (Places is loaded).
+[[nodiscard]] std::uint32_t place_terms(const slot_registry& registry, std::string_view query);
 
 // A file's coordinates, cached by path + size + mtime for the process (the
 // host table's location_of / locations_in). `read` is the host's metadata

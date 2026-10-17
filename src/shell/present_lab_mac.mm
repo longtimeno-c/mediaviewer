@@ -5,6 +5,7 @@
 #include "shell/video_report.h"
 #include "shell/edit_view.h"
 #include "shell/af_focus.h"
+#include "shell/compare.h"
 #include "shell/loupe.h"
 #include "shell/dino_draw.h"
 #include "shell/home_ground.h"
@@ -214,8 +215,14 @@ std::uint64_t present_lab_mac::mark_navigation() noexcept {
   const std::uint64_t seq = nav_seq_.load(std::memory_order_relaxed) + 1;
   if (seq > 64) return 0;
   nav_mark_seconds_.store(monotonic_seconds(), std::memory_order_relaxed);
+  nav_full_ms_[seq - 1].store(-1.0, std::memory_order_relaxed);
   nav_seq_.store(seq, std::memory_order_release);
   return seq;
+}
+
+double present_lab_mac::navigation_full_ms(std::uint64_t seq) const noexcept {
+  if (seq == 0 || seq > 64) return -1.0;
+  return nav_full_ms_[seq - 1].load(std::memory_order_acquire);
 }
 
 bool present_lab_mac::navigation_done(std::uint64_t seq) const noexcept {
@@ -236,6 +243,7 @@ void present_lab_mac::note_nav_image(const image::gpu_image_mac& ready) noexcept
   nav_ready_ms_ = (monotonic_seconds() - nav_latch_seconds_) * 1000.0;
   nav_cached_ = ready.preview ? 0 : 1;
   nav_item_ = ready.item_id;
+  if (!ready.preview) nav_full_ms_[seq - 1].store(nav_ready_ms_, std::memory_order_release);
   nav_have_ready_ = true;
 }
 
@@ -281,6 +289,7 @@ bool present_lab_mac::cache_publish(const std::string& path, std::int64_t mtime,
   hit->preview = false;
   pages_count_.store(hit->page_count, std::memory_order_release);
   pages_item_.store(item_id, std::memory_order_release);
+  if (options_.page_count_known) options_.page_count_known(item_id, hit->page_count);
   delete pending_image_.exchange(hit);
   wake();
   return true;
@@ -379,7 +388,8 @@ void present_lab_mac::submit_prefetch(const std::vector<std::string>& paths_utf8
 // item before it loaded -- ctx.cancelled() catches it below and the result
 // is discarded instead of clobbering the newer selection.
 void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t item_id,
-                                        std::uint32_t page) noexcept {
+                                        std::uint32_t page, std::int64_t mtime_unix,
+                                        std::uint64_t size) noexcept {
   if (path_utf8.empty() || !options_.jobs) return;
 
   void* mtl_device = device_.native_device();
@@ -389,8 +399,8 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
   const std::uint64_t cid = *crash_context::last_call_address();
 
   options_.jobs->submit(
-      [this, path = std::move(path_utf8), mtl_device, pending, item_id, page,
-       cid](const job_context& ctx) -> status {
+      [this, path = std::move(path_utf8), mtl_device, pending, item_id, page, mtime_unix,
+       stamp_size = size, cid](const job_context& ctx) -> status {
         const crash_context::correlation_scope correlation(cid);
         std::ifstream f(path, std::ios::binary | std::ios::ate);
         if (!f) return status::io;
@@ -406,9 +416,14 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
         // RAW's embedded JPEG or a HEIC's thumbnail item goes up first; the full decode then replaces it
         // as a refinement of the same item (item_id), keeping the view.
         const double t_start = monotonic_seconds();
-        // A page past the first has no cheap first pixel of its own: the
-        // file's preview would be page 0.
+        // A page past the first: the file's preview would be page 0. Its own
+        // first pixel is the page sidebar's thumbnail when one is cached
+        // (issue #429), a lookup and a small JPEG decode; else none.
         if (page != 0) {
+          if (publish_page_thumb(path, mtime_unix, stamp_size, page, item_id, mtl_device, ctx) ==
+              status::cancelled) {
+            return status::cancelled;
+          }
         } else if (auto preview = image::decode_first_pixel(bytes, &ctx)) {
           if (ctx.cancelled()) return status::cancelled;
           if (auto up = image::upload(mtl_device, preview.value(), &ctx)) {
@@ -447,6 +462,9 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
         if (ctx.cancelled()) return status::cancelled;
         pages_count_.store(decoded.value().page_count, std::memory_order_release);
         pages_item_.store(item_id, std::memory_order_release);
+        if (options_.page_count_known) {
+          options_.page_count_known(item_id, decoded.value().page_count);
+        }
 
         if (page == 0 && cacheable_still(path)) {
           std::int64_t mtime = 0;
@@ -518,6 +536,37 @@ void present_lab_mac::submit_video_open(std::string path_utf8, std::uint64_t ite
       });
 }
 
+// Issue #429: page `page`'s cached sidebar thumbnail up as the first pixel of a
+// page turn, inside the page's own load job (so the full page, which follows
+// in the same job, can never be overtaken by it). Anything missing is quiet.
+status present_lab_mac::publish_page_thumb(const std::string& path, std::int64_t mtime_unix,
+                                           std::uint64_t size, std::uint32_t page,
+                                           std::uint64_t item_id, void* mtl_device,
+                                           const job_context& ctx) noexcept {
+  if (!options_.page_thumb || mtime_unix == kNoStamp) return status::ok;
+  const std::string jpeg = options_.page_thumb(path, mtime_unix, size, page);
+  if (jpeg.empty()) return status::ok;
+  std::ifstream f(jpeg, std::ios::binary | std::ios::ate);
+  if (!f) return status::ok;
+  const std::streamoff bytes_size = f.tellg();
+  if (bytes_size <= 0) return status::ok;
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(bytes_size));
+  f.seekg(0);
+  if (!f.read(reinterpret_cast<char*>(bytes.data()), bytes_size)) return status::ok;
+  if (ctx.cancelled()) return status::cancelled;
+  auto decoded = image::decode_bytes_mac(bytes, &ctx);
+  if (!decoded) return decoded.error() == status::cancelled ? status::cancelled : status::ok;
+  auto uploaded = image::upload(mtl_device, decoded.value(), &ctx);
+  if (!uploaded) return uploaded.error() == status::cancelled ? status::cancelled : status::ok;
+  if (ctx.cancelled()) return status::cancelled;
+  auto* img = new image::gpu_image_mac(std::move(uploaded).value());
+  img->item_id = item_id;
+  img->preview = true;
+  delete pending_image_.exchange(img);
+  wake();
+  return status::ok;
+}
+
 // A lookup and a 512-px JPEG decode on a worker, at the view generation
 // open_item() just set: navigating on abandons it like any open.
 void present_lab_mac::submit_clip_placeholder(std::string path_utf8, std::int64_t mtime_unix,
@@ -570,6 +619,33 @@ void present_lab_mac::update_video_status() noexcept {
   vs_volume_.store(video_volume_, std::memory_order_relaxed);
   vs_item_.store(media_item_, std::memory_order_relaxed);
   vs_active_.store(true, std::memory_order_release);
+}
+
+bool present_lab_mac::apply_compare_split(input_snapshot& snapshot,
+                                          std::uint32_t host_chrome_left) noexcept {
+  snapshot.chrome_left_px = host_chrome_left;
+  compare_split split;
+  // Stills only, as on Windows: a clip, crop mode and a blackout stay one-up.
+  const bool still = current_image_ && !video_frame_;
+  if (snapshot.compare && still && !snapshot.blackout && !snapshot.edit[0].crop_overlay) {
+    split = split_compare(canvas_origin_x(snapshot), usable_window_w(snapshot), snapshot.dpi_scale);
+    if (split.valid) snapshot.chrome_left_px = static_cast<std::uint32_t>(split.right_x);
+  }
+  const bool changed = split.valid != compare_split_.valid ||
+                       (split.valid && (split.right_x != compare_split_.right_x ||
+                                        split.right_w != compare_split_.right_w));
+  compare_split_ = split;
+  if (!changed) return false;
+  if (float pw = 0, ph = 0; picture_size(&pw, &ph)) {
+    // A fitted (or filled) view stays fitted in its new frame at once, as a
+    // resize does; a zoomed one keeps its zoom and pan.
+    if (camera_.fit_mode()) {
+      camera_.fit(pw, ph, usable_window_w(snapshot), usable_window_h(snapshot), /*immediate=*/true);
+    } else if (camera_.fill_mode()) {
+      camera_.fill(pw, ph, usable_window_w(snapshot), usable_window_h(snapshot), /*immediate=*/true);
+    }
+  }
+  return true;
 }
 
 bool present_lab_mac::picture_size(float* w, float* h) const noexcept {
@@ -868,7 +944,7 @@ std::uint64_t present_lab_mac::open_item(std::string path_utf8, std::int64_t mti
   if (page != 0 || !cacheable_still(path_utf8) ||
       !cache_publish(path_utf8, mtime_unix, size, item)) {
     loading_item_.store(item, std::memory_order_release);
-    submit_image_load(std::move(path_utf8), item, page);
+    submit_image_load(std::move(path_utf8), item, page, mtime_unix, size);
   }
   return item;
 }
@@ -1263,7 +1339,10 @@ void present_lab_mac::render_thread_main() noexcept {
 
     while (running_.load(std::memory_order_acquire)) {
       @autoreleasepool {
-        const input_snapshot snapshot = input_.acquire();
+        // Not const: the compare split (issue #208) docks the previous still on
+        // the left of this copy, as PR 29's Edit pane docks on the right.
+        input_snapshot snapshot = input_.acquire();
+        const std::uint32_t host_chrome_left = snapshot.chrome_left_px;
         edit_slots_[0] = snapshot.edit[0];
         edit_slots_[1] = snapshot.edit[1];
         const double elapsed = monotonic_seconds() - start;
@@ -1284,6 +1363,9 @@ void present_lab_mac::render_thread_main() noexcept {
         const bool input_activity = input_cursor_.consume_activity(snapshot);
         if (input_activity && warmed_up_ && !options_.start_animating) ++idle_stats_.input_events;
         bool redraw = input_activity;
+        // Before anything frames the camera: usable_window_w and
+        // canvas_origin_x are then the right half while compare is up.
+        if (apply_compare_split(snapshot, host_chrome_left)) redraw = true;
         if (!seen_home_valid_ || !(snapshot.home == seen_home_)) {
           seen_home_ = snapshot.home;
           seen_home_valid_ = true;
@@ -1419,6 +1501,12 @@ void present_lab_mac::render_thread_main() noexcept {
             full_seconds_ = loaded->preview ? -1.0 : elapsed;
           } else if (!loaded->preview && full_seconds_ < 0.0) {
             full_seconds_ = elapsed;
+          }
+          if (!loaded->preview && nav_latched_seq_ != 0 && nav_latched_seq_ <= 64 &&
+              loaded->item_id == nav_item_ &&
+              nav_full_ms_[nav_latched_seq_ - 1].load(std::memory_order_relaxed) < 0.0) {
+            nav_full_ms_[nav_latched_seq_ - 1].store((monotonic_seconds() - nav_latch_seconds_) * 1000.0,
+                                                    std::memory_order_release);
           }
           // Hold `\` (docs/design/16): the still just left stays as the
           // previous one; a re-publish of the same item is not an advance.
@@ -1577,6 +1665,8 @@ void present_lab_mac::render_thread_main() noexcept {
         seen_fill_seq_ = snapshot.fill_seq;
         std::int64_t pan_steps_x = 0, pan_steps_y = 0;
         const bool panned = input_cursor_.consume_pan(snapshot, pan_steps_x, pan_steps_y);
+        // A still that just landed may start the split; refit before input.
+        if (apply_compare_split(snapshot, host_chrome_left)) redraw = true;
         bool picture_framed = false;
         const float wheel = input_cursor_.consume_wheel(snapshot);
         if (wheel != 0.0f) redraw = true;
@@ -1660,7 +1750,10 @@ void present_lab_mac::render_thread_main() noexcept {
           last_mouse_y_ = snapshot.mouse_y;
 
           if (wheel != 0.0f && snapshot.mouse_in_client) {
-            camera_.wheel_toward(snapshot.mouse_x - canvas_origin_x(snapshot), snapshot.mouse_y, wheel,
+            // Over either half of a compare, toward the same spot of the picture.
+            camera_.wheel_toward(compare_cursor_x(snapshot.mouse_x, compare_split_) -
+                                     canvas_origin_x(snapshot),
+                                 snapshot.mouse_y, wheel,
                                  window_w, window_h,
                                  image_w, image_h);
           }
@@ -1826,6 +1919,8 @@ void present_lab_mac::render_thread_main() noexcept {
           }
         }
 
+        // A clip's first frame ends the split (a clip never splits).
+        if (apply_compare_split(snapshot, host_chrome_left)) redraw = true;
         pacer_.frame_begin();
         const double now = monotonic_seconds();
         const float delta = static_cast<float>(now - last_frame);
@@ -1956,7 +2051,10 @@ void present_lab_mac::render_thread_main() noexcept {
 
         // Hold `\` and hold Z need a still under them; neither draws on a clip.
         const bool still_up = current_image_ && !video_frame_ && !snapshot.blackout;
-        const bool show_previous = still_up && snapshot.hold_previous && previous_image_;
+        // With compare up the previous still is already on screen; hold `\`
+        // then changes nothing.
+        const bool show_previous =
+            still_up && snapshot.hold_previous && !compare_split_.valid && previous_image_;
         const float view_x = canvas_origin_x(snapshot);
         const float view_y = static_cast<float>(snapshot.chrome_height_px);
         const float view_w = usable_window_w(snapshot);
@@ -1980,6 +2078,16 @@ void present_lab_mac::render_thread_main() noexcept {
                         IM_COL32(0, 0, 0, 200), "\\  previous");
             fg->AddText(ImGui::GetFont(), fs, ImVec2(view_x + pad, view_y + pad), text,
                         "\\  previous");
+          }
+          if (still_up && compare_split_.valid) {
+            // view_x is the right half here; the left one starts at the split.
+            const float pad = 12.0f * scale;
+            const float fs = 16.0f * scale;
+            const char* label = previous_image_ ? "|  previous" : "|  no previous still yet";
+            const float lx = compare_split_.left_x + pad;
+            fg->AddText(ImGui::GetFont(), fs, ImVec2(lx + scale, view_y + pad + scale),
+                        IM_COL32(0, 0, 0, 200), label);
+            fg->AddText(ImGui::GetFont(), fs, ImVec2(lx, view_y + pad), text, label);
           }
         }
 
@@ -2008,6 +2116,24 @@ void present_lab_mac::render_thread_main() noexcept {
           video_blitter_.draw((__bridge void*)enc, video_frame_->luma, video_frame_->chroma,
                               video_frame_->colour, vp);
         } else if (current_image_) {
+          // Two-up compare: the blitter's triangle covers the drawable, so each
+          // half is scissored to its own rect (the loupe does the same).
+          const auto target_w = static_cast<float>(drawable.texture.width);
+          const auto target_h = static_cast<float>(drawable.texture.height);
+          const auto scissor_to = [&](float x, float y, float w, float h) {
+            const float x0 = std::clamp(x, 0.0f, target_w);
+            const float y0 = std::clamp(y, 0.0f, target_h);
+            const float x1 = std::clamp(x + w, x0, target_w);
+            const float y1 = std::clamp(y + h, y0, target_h);
+            if (x1 - x0 < 1.0f || y1 - y0 < 1.0f) return false;
+            [enc setScissorRect:MTLScissorRect{static_cast<NSUInteger>(x0),
+                                               static_cast<NSUInteger>(y0),
+                                               static_cast<NSUInteger>(x1 - x0),
+                                               static_cast<NSUInteger>(y1 - y0)}];
+            return true;
+          };
+          const bool split = compare_split_.valid && !show_previous;
+          if (split) (void)scissor_to(view_x, view_y, view_w, view_h);
           gfx::blit_params_mac bp;
           bp.pan_x = camera_.pan_x();
           bp.pan_y = camera_.pan_y();
@@ -2108,6 +2234,43 @@ void present_lab_mac::render_thread_main() noexcept {
               }
             }
           }
+          if (split && previous_image_) {
+            // The previous still in the left half: a second draw of a texture
+            // already resident, in this same present (shell/compare.h). The
+            // camera is the current one's, linked as a fraction of each picture.
+            const image::gpu_image_mac& prev = *previous_image_;
+            const edit::placement pp = place_image(prev);
+            const edit_view* pev = edit_for(prev.item_id);
+            gfx::blit_params_mac pb;
+            pb.image_w = static_cast<float>(pp.cropped.w);
+            pb.image_h = static_cast<float>(pp.cropped.h);
+            pb.texture_w = static_cast<float>(prev.texture_width ? prev.texture_width : prev.width);
+            pb.texture_h =
+                static_cast<float>(prev.texture_height ? prev.texture_height : prev.height);
+            for (int i = 0; i < 6; ++i) pb.uv_map[i] = pp.map.m[i];
+            pb.clip_to_source = pev && pev->keep_frame;
+            apply_adjust(pev, pb);
+            const compare_camera lc =
+                linked_camera(camera_.pan_x(), camera_.pan_y(), camera_.zoom(), bp.image_w,
+                              bp.image_h, pb.image_w, pb.image_h, compare_split_.left_w, view_h);
+            pb.pan_x = lc.pan_x;
+            pb.pan_y = lc.pan_y;
+            pb.zoom = lc.zoom;
+            pb.window_w = compare_split_.left_w;
+            pb.window_h = view_h;
+            pb.origin_x = compare_split_.left_x;
+            pb.origin_y = view_y;
+            for (int i = 0; i < 3; ++i) pb.theme_background[i] = theme_rgb[i];
+            pb.time_seconds = static_cast<float>(elapsed);
+            pb.clipping = snapshot.clipping;
+            if (scissor_to(compare_split_.left_x, view_y, compare_split_.left_w, view_h)) {
+              blitter_.draw((__bridge void*)enc, prev.texture, pb);
+            }
+          }
+          if (split) {
+            [enc setScissorRect:MTLScissorRect{0, 0, drawable.texture.width,
+                                               drawable.texture.height}];
+          }
         }
         ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
         [enc endEncoding];
@@ -2128,6 +2291,11 @@ void present_lab_mac::render_thread_main() noexcept {
     // every exit path (soak completing here, not just an external stop()).
     // job_system::shutdown() is documented safe to call twice, so this does
     // not conflict with a caller's own shutdown (main_mac.mm's windowWillClose).
+    // The loop has stopped presenting, so it is no longer busy: a background
+    // pass waiting for it to go quiet (the folder tag pass, #291) finishes its
+    // chunk instead of holding shutdown's join for ever. An animated --soak
+    // over an opened file used to hang here, its report never written.
+    mv::shell::g_present_busy.store(false, std::memory_order_relaxed);
     if (options_.jobs) options_.jobs->shutdown();
 
     if (warmed_up_) {

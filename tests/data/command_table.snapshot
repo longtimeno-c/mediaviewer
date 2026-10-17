@@ -1,0 +1,544 @@
+# describe_commands() by mode (tests/test_command_contract.cpp). One line per binding:
+# keys <TAB> command name <TAB> command id <TAB> palette-runnable. Rows always have
+# tabs; a line without one is a comment or a [mode] header (a key can be [ or #).
+# Regenerate: MV_UPDATE_SNAPSHOTS=1 mv_tests "[snapshot]", then review the diff.
+
+[browse]
+Left	Previous	9	1
+Right	Next	10	1
+A	Previous	9	1
+D	Next	10	1
+Backspace	Previous	9	1
+Space	Next	10	1
+Home	First	22	1
+End	Last	23	1
+PageUp	Back ten	24	1
+PageDown	Forward ten	25	1
+F5	Slideshow	69	1
+F	Fullscreen	41	1
+F11	Fullscreen	41	1
+Ctrl+O	Open media…	1	1
+Ctrl+Shift+O	Open folder…	11	1
+Ctrl+E	Show in Explorer	80	1
+Ctrl+W	Close window	38	1
+Ctrl+N	New window	171	1
+0	Fit	2	1
+1	Zoom 100 %	3	1
+2	Zoom 200 %	39	1
+3	Zoom 400 %	40	1
+4	Fill	42	1
+Ctrl+0	Reset view	43	1
++	Zoom in	4	1
+=	Zoom in	4	1
+-	Zoom out	5	1
+Up	Pan up	53	1
+Down	Pan down	54	1
+Shift+Up	Pan up	53	1
+Shift+Down	Pan down	54	1
+Shift+Left	Pan left	55	1
+Shift+Right	Pan right	56	1
+F3	Frame-time overlay	7	1
+R	Reset frame stats	37	1
+G	Gallery	12	1
+T	Filmstrip	17	1
+S	Sticky zoom	45	1
+C	Clipping	46	1
+O	Info overlay	52	1
+hold Z	Loupe	47	0
+hold \	Hold previous	49	0
+Ctrl+Shift+A	Always on top	51	1
+Insert	Toggle mark	61	1
+Shift+Space	Toggle mark	61	1
+Ctrl+A	Mark all	62	1
+Ctrl+D	Unmark all	63	1
+F7	Copy to last folder	64	1
+Shift+F7	Copy to…	65	1
+F8	Move to last folder	66	1
+Shift+F8	Move to…	67	1
+Delete	Delete to Recycle Bin	68	1
+?	Keyboard shortcuts	75	1
+Ctrl+,	Settings	84	1
+Ctrl+G	Go to index…	77	1
+Ctrl+Shift+E	Folder tree	78	1
+/	Find by name…	79	1
+;	Play Live Photo motion	87	1
+	Open RAW of pair	88	1
+	Open JPEG of pair	89	1
+I	Metadata pane	92	1
+Shift+O	AF points	93	1
+Shift+I	Eyedropper	94	1
+Ctrl+C	Copy	95	1
+[	Rotate left	96	1
+]	Rotate right	97	1
+H	Flip horizontal	98	1
+V	Flip vertical	99	1
+Shift+C	Crop / straighten	100	1
+Ctrl+S	Export…	112	1
+Ctrl+Z	Undo edit	113	1
+Ctrl+R	Reset edits	114	1
+Ctrl+Up	Up one folder	115	1
+Ctrl+Left	Previous folder	116	1
+Ctrl+Right	Next folder	117	1
+Shift+A	Adjust pane	118	1
+Numpad 0	Rating: none	127	1
+Numpad 1	Rating: 1 star	128	1
+Numpad 2	Rating: 2 stars	129	1
+Numpad 3	Rating: 3 stars	130	1
+Numpad 4	Rating: 4 stars	131	1
+Numpad 5	Rating: 5 stars	132	1
+Ctrl+Shift+0	Rating: none	127	1
+Ctrl+Shift+1	Rating: 1 star	128	1
+Ctrl+Shift+2	Rating: 2 stars	129	1
+Ctrl+Shift+3	Rating: 3 stars	130	1
+Ctrl+Shift+4	Rating: 4 stars	131	1
+Ctrl+Shift+5	Rating: 5 stars	132	1
+Ctrl+I	Edit comment	133	1
+Ctrl+J	Jobs	143	1
+Ctrl+Shift+C	Copy path	147	1
+Ctrl+Alt+C	Copy edited image	148	1
+Ctrl+Shift+S	Share…	149	1
+Enter	Edit image / Edit video	150	1
+hold Y	Show original (hold)	153	0
+Ctrl+F	Search…	157	1
+Ctrl+PageDown	Next page	161	1
+Ctrl+PageUp	Previous page	162	1
+F2	Rename…	172	1
+	Show next kind	173	1
+X	Reject / unreject	175	1
+Numpad 6	Label red	176	1
+Numpad 7	Label yellow	177	1
+Numpad 8	Label green	178	1
+Numpad 9	Label blue	179	1
+Ctrl+Shift+6	Label red	176	1
+Ctrl+Shift+7	Label yellow	177	1
+Ctrl+Shift+8	Label green	178	1
+Ctrl+Shift+9	Label blue	179	1
+U	Clear label	180	1
+Shift+Z	Zoom to AF point	181	1
+|	Compare with previous	182	1
+Shift+T	Page sidebar	183	1
+
+[video]
+Left	Previous	9	1
+Right	Next	10	1
+A	Previous	9	1
+D	Next	10	1
+Backspace	Previous	9	1
+Space	Play / pause	26	1
+Home	First	22	1
+End	Last	23	1
+PageUp	Back ten	24	1
+PageDown	Forward ten	25	1
+F5	Slideshow	69	1
+F	Fullscreen	41	1
+F11	Fullscreen	41	1
+Ctrl+O	Open media…	1	1
+Ctrl+Shift+O	Open folder…	11	1
+Ctrl+E	Show in Explorer	80	1
+Ctrl+W	Close window	38	1
+Ctrl+N	New window	171	1
+0	Fit	2	1
+1	Zoom 100 %	3	1
+2	Zoom 200 %	39	1
+3	Zoom 400 %	40	1
+4	Fill	42	1
+Ctrl+0	Reset view	43	1
++	Zoom in	4	1
+=	Zoom in	4	1
+-	Zoom out	5	1
+Up	Pan up	53	1
+Down	Pan down	54	1
+Shift+Up	Pan up	53	1
+Shift+Down	Pan down	54	1
+Shift+Left	Pan left	55	1
+Shift+Right	Pan right	56	1
+F3	Frame-time overlay	7	1
+R	Reset frame stats	37	1
+G	Gallery	12	1
+T	Filmstrip	17	1
+S	Sticky zoom	45	1
+C	Clipping	46	1
+O	Info overlay	52	1
+hold Z	Loupe	47	0
+hold \	Hold previous	49	0
+Ctrl+Shift+A	Always on top	51	1
+J	Back 10 s	27	1
+K	Pause	28	1
+L	Forward 10 s	29	1
+,	Previous frame	30	1
+.	Next frame	31	1
+Q	Skip back 2 s	34	1
+hold Q	Skip back 2 s	34	1
+E	Skip forward 2 s	35	1
+hold E	Skip forward 2 s	35	1
+Shift+Q	Slower	32	1
+Shift+E	Faster	33	1
+Insert	Toggle mark	61	1
+Shift+Space	Toggle mark	61	1
+Ctrl+A	Mark all	62	1
+Ctrl+D	Unmark all	63	1
+F7	Copy to last folder	64	1
+Shift+F7	Copy to…	65	1
+F8	Move to last folder	66	1
+Shift+F8	Move to…	67	1
+Delete	Delete to Recycle Bin	68	1
+?	Keyboard shortcuts	75	1
+Ctrl+,	Settings	84	1
+Ctrl+G	Go to index…	77	1
+Ctrl+Shift+E	Folder tree	78	1
+/	Find by name…	79	1
+;	Play Live Photo motion	87	1
+	Open RAW of pair	88	1
+	Open JPEG of pair	89	1
+Shift+M	Mute	90	1
+I	Metadata pane	92	1
+Shift+O	AF points	93	1
+Shift+I	Eyedropper	94	1
+Ctrl+C	Copy	95	1
+Ctrl+Up	Up one folder	115	1
+Ctrl+Left	Previous folder	116	1
+Ctrl+Right	Next folder	117	1
+Numpad 0	Rating: none	127	1
+Numpad 1	Rating: 1 star	128	1
+Numpad 2	Rating: 2 stars	129	1
+Numpad 3	Rating: 3 stars	130	1
+Numpad 4	Rating: 4 stars	131	1
+Numpad 5	Rating: 5 stars	132	1
+Ctrl+Shift+0	Rating: none	127	1
+Ctrl+Shift+1	Rating: 1 star	128	1
+Ctrl+Shift+2	Rating: 2 stars	129	1
+Ctrl+Shift+3	Rating: 3 stars	130	1
+Ctrl+Shift+4	Rating: 4 stars	131	1
+Ctrl+Shift+5	Rating: 5 stars	132	1
+Ctrl+I	Edit comment	133	1
+Ctrl+T	Trim clip	134	1
+Ctrl+J	Jobs	143	1
+Ctrl+S	Clip tools…	144	1
+Ctrl+B	Split clip at playhead	145	1
+Ctrl+Shift+C	Copy path	147	1
+Ctrl+Shift+S	Share…	149	1
+Enter	Edit image / Edit video	150	1
+Ctrl+F	Search…	157	1
+F2	Rename…	172	1
+	Show next kind	173	1
+X	Reject / unreject	175	1
+Numpad 6	Label red	176	1
+Numpad 7	Label yellow	177	1
+Numpad 8	Label green	178	1
+Numpad 9	Label blue	179	1
+Ctrl+Shift+6	Label red	176	1
+Ctrl+Shift+7	Label yellow	177	1
+Ctrl+Shift+8	Label green	178	1
+Ctrl+Shift+9	Label blue	179	1
+U	Clear label	180	1
+|	Compare with previous	182	1
+
+[slideshow]
+Left	Previous	9	1
+Right	Next	10	1
+A	Previous	9	1
+D	Next	10	1
+Backspace	Previous	9	1
+Space	Pause slideshow	70	1
+Home	First	22	1
+End	Last	23	1
+PageUp	Back ten	24	1
+PageDown	Forward ten	25	1
+F	Fullscreen	41	1
+F11	Fullscreen	41	1
+Ctrl+O	Open media…	1	1
+Ctrl+Shift+O	Open folder…	11	1
+Ctrl+E	Show in Explorer	80	1
+Ctrl+W	Close window	38	1
+Ctrl+N	New window	171	1
+F3	Frame-time overlay	7	1
+G	Gallery	12	1
+T	Filmstrip	17	1
+Ctrl+Shift+A	Always on top	51	1
++	Shorter interval	71	1
+=	Shorter interval	71	1
+-	Longer interval	72	1
+.	Blackout	73	1
+R	Shuffle	74	1
+?	Keyboard shortcuts	75	1
+Ctrl+,	Settings	84	1
+Ctrl+Shift+E	Folder tree	78	1
+
+[island]
+A	Previous	9	1
+D	Next	10	1
+F	Fullscreen	41	1
+F11	Fullscreen	41	1
+Ctrl+O	Open media…	1	1
+Ctrl+Shift+O	Open folder…	11	1
+Ctrl+E	Show in Explorer	80	1
+Ctrl+W	Close window	38	1
+Ctrl+N	New window	171	1
+0	Fit	2	1
+1	Zoom 100 %	3	1
+2	Zoom 200 %	39	1
+3	Zoom 400 %	40	1
+4	Fill	42	1
+Ctrl+0	Reset view	43	1
++	Zoom in	4	1
+=	Zoom in	4	1
+-	Zoom out	5	1
+F3	Frame-time overlay	7	1
+R	Reset frame stats	37	1
+G	Gallery	12	1
+T	Filmstrip	17	1
+S	Sticky zoom	45	1
+C	Clipping	46	1
+O	Info overlay	52	1
+Ctrl+Shift+A	Always on top	51	1
+Ctrl+A	Mark all	62	1
+Ctrl+D	Unmark all	63	1
+F7	Copy to last folder	64	1
+Shift+F7	Copy to…	65	1
+F8	Move to last folder	66	1
+Shift+F8	Move to…	67	1
+?	Keyboard shortcuts	75	1
+Ctrl+,	Settings	84	1
+Ctrl+G	Go to index…	77	1
+Ctrl+Shift+E	Folder tree	78	1
+I	Metadata pane	92	1
+Shift+O	AF points	93	1
+Shift+I	Eyedropper	94	1
+Ctrl+C	Copy	95	1
+Ctrl+Up	Up one folder	115	1
+Numpad 0	Rating: none	127	1
+Numpad 1	Rating: 1 star	128	1
+Numpad 2	Rating: 2 stars	129	1
+Numpad 3	Rating: 3 stars	130	1
+Numpad 4	Rating: 4 stars	131	1
+Numpad 5	Rating: 5 stars	132	1
+Ctrl+Shift+0	Rating: none	127	1
+Ctrl+Shift+1	Rating: 1 star	128	1
+Ctrl+Shift+2	Rating: 2 stars	129	1
+Ctrl+Shift+3	Rating: 3 stars	130	1
+Ctrl+Shift+4	Rating: 4 stars	131	1
+Ctrl+Shift+5	Rating: 5 stars	132	1
+Ctrl+I	Edit comment	133	1
+Ctrl+J	Jobs	143	1
+Ctrl+Shift+C	Copy path	147	1
+Ctrl+Shift+S	Share…	149	1
+Ctrl+F	Search…	157	1
+Ctrl+PageDown	Next page	161	1
+Ctrl+PageUp	Previous page	162	1
+F2	Rename…	172	1
+	Show next kind	173	1
+Numpad 6	Label red	176	1
+Numpad 7	Label yellow	177	1
+Numpad 8	Label green	178	1
+Numpad 9	Label blue	179	1
+Ctrl+Shift+6	Label red	176	1
+Ctrl+Shift+7	Label yellow	177	1
+Ctrl+Shift+8	Label green	178	1
+Ctrl+Shift+9	Label blue	179	1
+Shift+T	Page sidebar	183	1
+
+[loupe]
+A	Previous	9	1
+D	Next	10	1
+F	Fullscreen	41	1
+F11	Fullscreen	41	1
+Ctrl+O	Open media…	1	1
+Ctrl+Shift+O	Open folder…	11	1
+Ctrl+E	Show in Explorer	80	1
+Ctrl+W	Close window	38	1
+Ctrl+N	New window	171	1
+F3	Frame-time overlay	7	1
+G	Gallery	12	1
+T	Filmstrip	17	1
+hold Z	Loupe	47	0
+hold \	Hold previous	49	0
+Left	Loupe left	57	1
+Right	Loupe right	58	1
+Up	Loupe up	59	1
+Down	Loupe down	60	1
+Ctrl+Shift+A	Always on top	51	1
+?	Keyboard shortcuts	75	1
+Ctrl+,	Settings	84	1
+Ctrl+Shift+E	Folder tree	78	1
+
+[gallery]
+A	Previous	9	1
+D	Next	10	1
+F	Fullscreen	41	1
+F11	Fullscreen	41	1
+Enter	Gallery: open selected image	83	1
+W	Gallery: previous row	81	1
+S	Gallery: next row	82	1
+Up	Gallery: previous row	81	1
+Down	Gallery: next row	82	1
+Left	Previous	9	1
+Right	Next	10	1
+Ctrl+O	Open media…	1	1
+Ctrl+Shift+O	Open folder…	11	1
+Ctrl+E	Show in Explorer	80	1
+Ctrl+W	Close window	38	1
+Ctrl+N	New window	171	1
+0	Fit	2	1
+1	Zoom 100 %	3	1
+2	Zoom 200 %	39	1
+3	Zoom 400 %	40	1
+4	Fill	42	1
+Ctrl+0	Reset view	43	1
+F3	Frame-time overlay	7	1
+R	Reset frame stats	37	1
+G	Gallery	12	1
+T	Filmstrip	17	1
+C	Clipping	46	1
+O	Info overlay	52	1
+Ctrl+Shift+A	Always on top	51	1
+Ctrl+A	Mark all	62	1
+Ctrl+D	Unmark all	63	1
+F7	Copy to last folder	64	1
+Shift+F7	Copy to…	65	1
+F8	Move to last folder	66	1
+Shift+F8	Move to…	67	1
+Delete	Delete to Recycle Bin	68	1
+?	Keyboard shortcuts	75	1
+Ctrl+,	Settings	84	1
+Ctrl+G	Go to index…	77	1
+Ctrl+Shift+E	Folder tree	78	1
+/	Find by name…	79	1
++	Gallery: larger thumbnails	85	1
+=	Gallery: larger thumbnails	85	1
+-	Gallery: smaller thumbnails	86	1
+I	Metadata pane	92	1
+Shift+O	AF points	93	1
+Shift+I	Eyedropper	94	1
+Ctrl+C	Copy	95	1
+Ctrl+Up	Up one folder	115	1
+Numpad 0	Rating: none	127	1
+Numpad 1	Rating: 1 star	128	1
+Numpad 2	Rating: 2 stars	129	1
+Numpad 3	Rating: 3 stars	130	1
+Numpad 4	Rating: 4 stars	131	1
+Numpad 5	Rating: 5 stars	132	1
+Ctrl+Shift+0	Rating: none	127	1
+Ctrl+Shift+1	Rating: 1 star	128	1
+Ctrl+Shift+2	Rating: 2 stars	129	1
+Ctrl+Shift+3	Rating: 3 stars	130	1
+Ctrl+Shift+4	Rating: 4 stars	131	1
+Ctrl+Shift+5	Rating: 5 stars	132	1
+Ctrl+I	Edit comment	133	1
+Ctrl+J	Jobs	143	1
+Ctrl+Shift+C	Copy path	147	1
+Ctrl+Shift+S	Share…	149	1
+Ctrl+F	Search…	157	1
+F2	Rename…	172	1
+	Show next kind	173	1
+Numpad 6	Label red	176	1
+Numpad 7	Label yellow	177	1
+Numpad 8	Label green	178	1
+Numpad 9	Label blue	179	1
+Ctrl+Shift+6	Label red	176	1
+Ctrl+Shift+7	Label yellow	177	1
+Ctrl+Shift+8	Label green	178	1
+Ctrl+Shift+9	Label blue	179	1
+
+[runner]
+A	Previous	9	1
+D	Next	10	1
+F	Fullscreen	41	1
+F11	Fullscreen	41	1
+Ctrl+O	Open media…	1	1
+Ctrl+Shift+O	Open folder…	11	1
+Ctrl+E	Show in Explorer	80	1
+Ctrl+W	Close window	38	1
+Ctrl+N	New window	171	1
+F3	Frame-time overlay	7	1
+G	Gallery	12	1
+T	Filmstrip	17	1
+Ctrl+Shift+A	Always on top	51	1
+?	Keyboard shortcuts	75	1
+Ctrl+,	Settings	84	1
+Ctrl+Shift+E	Folder tree	78	1
+Space	Next	10	1
+3	Runner: toggle 3D view	91	1
+
+[crop]
+F	Fullscreen	41	1
+F11	Fullscreen	41	1
+Ctrl+E	Show in Explorer	80	1
+Ctrl+W	Close window	38	1
+Ctrl+N	New window	171	1
+F3	Frame-time overlay	7	1
+T	Filmstrip	17	1
+Ctrl+Shift+A	Always on top	51	1
+?	Keyboard shortcuts	75	1
+[	Rotate left	96	1
+]	Rotate right	97	1
+H	Flip horizontal	98	1
+V	Flip vertical	99	1
+Enter	Apply crop	101	1
+Left	Crop: move left	102	1
+Right	Crop: move right	103	1
+Up	Crop: move up	104	1
+Down	Crop: move down	105	1
+Shift+Left	Crop: narrower	106	1
+Shift+Right	Crop: wider	107	1
+Shift+Up	Crop: shorter	108	1
+Shift+Down	Crop: taller	109	1
+,	Straighten left	110	1
+.	Straighten right	111	1
+Ctrl+Z	Undo edit	113	1
+Ctrl+R	Reset edits	114	1
+A	Crop: next aspect ratio	151	1
+X	Crop: portrait / landscape	152	1
+
+[trim]
+A	Previous	9	1
+D	Next	10	1
+F	Fullscreen	41	1
+F11	Fullscreen	41	1
+Ctrl+O	Open media…	1	1
+Ctrl+Shift+O	Open folder…	11	1
+Ctrl+E	Show in Explorer	80	1
+Ctrl+W	Close window	38	1
+Ctrl+N	New window	171	1
+F3	Frame-time overlay	7	1
+G	Gallery	12	1
+T	Filmstrip	17	1
+Ctrl+Shift+A	Always on top	51	1
+?	Keyboard shortcuts	75	1
+Ctrl+,	Settings	84	1
+Ctrl+Shift+E	Folder tree	78	1
+Ctrl+T	Trim clip	134	1
+[	Trim: in marker	135	1
+]	Trim: out marker	136	1
+Backspace	Trim: clear markers	137	1
+Delete	Trim: clear markers	137	1
+P	Trim: preview the cut	138	1
+Enter	Trim: save (keyframe, instant)	139	1
+Shift+Enter	Trim: save (re-encode, frame-accurate, slower)	140	1
+Ctrl+Left	Previous keyframe	141	1
+Ctrl+Right	Next keyframe	142	1
+Ctrl+J	Jobs	143	1
+Ctrl+S	Clip tools…	144	1
+Ctrl+B	Split clip at playhead	145	1
+Ctrl+X	Trim: remove in–out	146	1
+
+[skim]
+A	Previous	9	1
+D	Next	10	1
+F	Fullscreen	41	1
+F11	Fullscreen	41	1
+Ctrl+O	Open media…	1	1
+Ctrl+Shift+O	Open folder…	11	1
+Ctrl+E	Show in Explorer	80	1
+Ctrl+W	Close window	38	1
+Ctrl+N	New window	171	1
+F3	Frame-time overlay	7	1
+G	Gallery	12	1
+T	Filmstrip	17	1
+Ctrl+Shift+A	Always on top	51	1
+?	Keyboard shortcuts	75	1
+Ctrl+,	Settings	84	1
+Ctrl+Shift+E	Folder tree	78	1
+Left	Skip back 2 s	34	1
+hold Left	Skip back 2 s	34	1
+Right	Skip forward 2 s	35	1
+hold Right	Skip forward 2 s	35	1

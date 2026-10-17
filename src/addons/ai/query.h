@@ -15,7 +15,12 @@
 //                          the date taken (#404: the camera's wall clock read
 //                          as UTC, or a Photos item's creationDate), else the
 //                          file's modification time (UTC) while there is none
-//   said:hello             same as "hello"
+//   said:hello             same as "hello", in a clip only (its speech, or its
+//                          own text: a chapter title, a subtitle line)
+//   text:lease  says:"invoice 4471"
+//                          in a document's text only (#354)
+//   is:document  is:pdf  is:docx  invoice documents  receipts pdfs
+//                          documents (PDF, DOCX); is:pdf / is:docx the format
 //   file:IMG_12  file:"my trip"  -file:copy
 //                          the file's name contains the text (case and accents
 //                          folded); the base app's file search, in the query
@@ -55,6 +60,13 @@
 
 namespace mv::ai::query {
 
+// Where a quoted phrase must be found (#354).
+enum class phrase_in : std::uint8_t {
+  anywhere = 0,   // "quoted": speech, a clip's own text, a picture's text, a document
+  said = 1,       // said: a clip's speech or its own text (as before #354)
+  documents = 2,  // text: / says: a document's text only
+};
+
 // #405: a numeric term as an inclusive range in the index's own units
 // (rating, ISO, aperture hundredths, focal mm, shutter microseconds).
 struct range {
@@ -84,10 +96,12 @@ struct parsed {
     std::string text;
     bool negated = false;
     bool open = false;        // the closing quote is not typed yet: the last word may be partial
+    phrase_in in = phrase_in::anywhere;
   };
   std::vector<phrase> phrases;
   std::uint32_t kinds = 0;    // MV_AI_KIND_* bits the query asked for; 0 = not said
   std::uint32_t not_kinds = 0;
+  std::vector<std::string> extensions;  // #354: is:pdf / is:docx: the file's extension is one of these
   std::int64_t from_unix = std::numeric_limits<std::int64_t>::min();  // inclusive
   std::int64_t to_unix = std::numeric_limits<std::int64_t>::max();    // exclusive
   std::vector<std::string> files;      // file:x, folded: the name must contain each
@@ -122,7 +136,10 @@ struct plan {
   std::vector<std::int64_t> not_people;
   std::vector<std::string> phrases;               // each must be said (speech transcript)
   std::vector<std::string> not_phrases;
+  std::vector<phrase_in> phrase_where;            // where each of `phrases` must be (#354)
+  std::vector<phrase_in> not_phrase_where;
   bool last_phrase_open = false;                  // phrases.back()'s last word may be partial
+  std::vector<std::string> extensions;            // #354: is:pdf / is:docx
   std::uint32_t kinds = 0;                        // MV_AI_KIND_* to keep; 0 = any
   std::int64_t from_unix = std::numeric_limits<std::int64_t>::min();
   std::int64_t to_unix = std::numeric_limits<std::int64_t>::max();
@@ -131,8 +148,9 @@ struct plan {
   // #291: tag terms, as parsed (folded).
   std::vector<std::string> cameras, not_cameras, lenses, not_lenses, made, not_made;
   int ai = 0;
-  // place: / in: (not a date). The engine keeps only geotagged assets; which
-  // place matches is the Places add-on's provider's answer (docs/design/17).
+  // place: / in: (not a date). Which assets are there is the Places add-on's
+  // answer (the host's place_matches), which the engine intersects; with no
+  // Places a place term matches nothing (#441, docs/design/17).
   std::vector<std::string> places, not_places;
   // #405: the rating, label and exposure terms, as parsed.
   std::vector<range> ratings, isos, apertures, focals, shutters;

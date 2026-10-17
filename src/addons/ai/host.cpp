@@ -102,6 +102,55 @@ expected host::read_cues(const std::string& path, std::int64_t start_ms, std::in
   return s == MV_OK ? expected{} : err(to_status(s));
 }
 
+namespace {
+struct place_visit {
+  const std::function<bool()>* keep_going;
+  std::vector<std::string> paths;
+};
+int32_t MV_CALL place_thunk(void* user, const char* path) {
+  auto& v = *static_cast<place_visit*>(user);
+  if (!path) return (*v.keep_going)() ? 1 : 0;
+  v.paths.emplace_back(path);
+  return 1;
+}
+}  // namespace
+
+result<std::vector<std::string>> host::place_matches(const std::string& place,
+                                                     const std::function<bool()>& keep_going) const {
+  if (!api_ || api_->struct_size < offsetof(mv_host_api, place_matches) + sizeof(api_->place_matches) ||
+      !api_->place_matches) {
+    return err(status::not_found);
+  }
+  place_visit v{&keep_going, {}};
+  const mv_status s = api_->place_matches(api_->host, place.c_str(), &place_thunk, &v);
+  if (s != MV_OK) return err(to_status(s));
+  return std::move(v.paths);
+}
+
+bool host::has_document_text() const noexcept {
+  return api_ && api_->struct_size >= offsetof(mv_host_api, document_text) + sizeof(api_->document_text) &&
+         api_->document_text;
+}
+
+namespace {
+int32_t MV_CALL doc_text_thunk(void* user, const mv_addon_doc_text* t) {
+  const auto& visit = *static_cast<const std::function<bool(const host::doc_line&)>*>(user);
+  if (!t || !t->text_utf8) return 1;
+  host::doc_line out;
+  out.page = t->page;
+  out.page_count = t->page_count;
+  out.text = t->text_utf8;
+  return visit(out) ? 1 : 0;
+}
+}  // namespace
+
+expected host::document_text(const std::string& path, const std::function<bool(const doc_line&)>& visit) const {
+  if (!has_document_text()) return err(status::unsupported_format);
+  void* user = const_cast<void*>(static_cast<const void*>(&visit));
+  const mv_status s = api_->document_text(api_->host, path.c_str(), &doc_text_thunk, user);
+  return s == MV_OK ? expected{} : err(to_status(s));
+}
+
 bool host::has_walk2() const noexcept {
   return api_ && api_->struct_size >= offsetof(mv_host_api, walk_files2) + sizeof(api_->walk_files2) &&
          api_->walk_files2;

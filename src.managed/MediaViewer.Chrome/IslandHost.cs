@@ -97,6 +97,11 @@ public static partial class IslandHost
         // The filmstrip hint card's "Got it" (chrome_cmd_hint_learned,
         // IslandHost.HintNotice.cs). Not in Checksum, as the Home ids are not.
         public const int HintLearned = 1081;
+        // Issue #429: a page sidebar row was clicked; arg is the page
+        // (chrome_cmd_select_page). Not in Checksum, as HintLearned is not.
+        public const int SelectPage = 1082;
+        // Issue #429: an image opened (chrome_cmd_image_opened); native reads its page count.
+        public const int ImageOpened = 1083;
         // Issue #38: arg 1 while a scrub or the More flyout holds the transport
         // up, 0 when it lets go (chrome_cmd_transport_hold).
         public const int TransportHold = 1017;
@@ -418,6 +423,7 @@ public static partial class IslandHost
             Move(_source, args.ClientWidth, args.ClientHeight, 0);
             EnsureFocusHook();
             StartUpdater();
+            ShowWaitingResumeNotice();  // issue #443: a launch read that came first
             return 0;
         }
         catch (Exception ex)
@@ -610,6 +616,8 @@ public static partial class IslandHost
         try
         {
             UnhookFocus();
+            DropResumeNotice();  // its island is a child of this window
+            DropHintNotice();  // so is the hint card's
             if (_source is not null) _source.TakeFocusRequested -= OnTakeFocusRequested;
             DisposeSource(ref _source);
             _onCommand = null;
@@ -631,6 +639,7 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < FlagsArgsSize) return unchecked((int)0x80070057);
             ChromeFlagsArgs args = Marshal.PtrToStructure<ChromeFlagsArgs>(arg);
             bool audioWas = HasFlag(SettingFlag.ShowAudio);
+            bool documentsWere = HasFlag(SettingFlag.ShowDocuments);
             _settingFlags = args.Flags;
             if (HasFlag(SettingFlag.ShowAudio) != audioWas)
             {
@@ -638,10 +647,15 @@ public static partial class IslandHost
                 try { SearchChrome?.OnShowAudioChanged(!audioWas); }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
             }
+            if (HasFlag(SettingFlag.ShowDocuments) != documentsWere)
+            {
+                // #354: and PDF / DOCX only while this is.
+                try { SearchChrome?.OnShowDocumentsChanged(!documentsWere); }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+            }
             _sortPacked = args.Sort & 0xFF;
             _kindFilter = (args.Sort >> 8) & 15;
             UpdateChannelApplied();
-            RefreshSettingsMenu();
             RefreshSettingsScreen();
             // PR 8: the telemetry first-run screen, once, when native reports
             // the choice has never been made (IslandHost.Telemetry.cs). It
@@ -1043,39 +1057,6 @@ public static partial class IslandHost
         return new FontFamily("Consolas");
     }
 
-    private static Button TextButton(string label, Action click)
-    {
-        var button = new Button
-        {
-            Content = new TextBlock
-            {
-                Text = label,
-                FontFamily = UiFont,
-                FontSize = UiFontSize,
-                FontWeight = Microsoft.UI.Text.FontWeights.Normal,
-                Foreground = Brush(Title),
-            },
-            Foreground = Brush(Title),
-            Background = new SolidColorBrush(Colors.Transparent),
-            BorderThickness = new Thickness(0),
-            Padding = Pad(14, 7, 14, 7),
-            FontFamily = UiFont,
-            FontSize = UiFontSize,
-            FontWeight = Microsoft.UI.Text.FontWeights.Normal,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            // Clicking Open / Play / More must not park keyboard focus on the
-            // island, or A/D/Q/E wait for the window to be deactivated.
-            AllowFocusOnInteraction = false,
-        };
-        // WinUI's own template, restyled through lightweight resources only:
-        // a custom ControlTemplate that loads in these islands fail-fasts
-        // (0xC000027B) once a bar flyout opens or closes (2026-09-27).
-        FlattenButton(button);
-        button.Click += (_, _) => Guarded(click);
-        return button;
-    }
-
     // Every chrome click runs through here. An exception escaping a XAML event
     // handler is a fail-fast (0xC000027B) with no managed report, so a bug in
     // one button must not take the viewer down with it.
@@ -1249,8 +1230,6 @@ public static partial class IslandHost
         }
     }
 
-    private static MenuFlyout? _settingsFlyout;
-
     private static bool HasFlag(int flag) => (_settingFlags & flag) != 0;
 
     // Native owns the file. Send the whole word, let it persist, and wait for
@@ -1357,26 +1336,6 @@ public static partial class IslandHost
         }
     }
 
-    private static void RefreshSettingsMenu()
-    {
-        if (_settingsFlyout is null) return;
-        _settingsFlyout.Items.Clear();
-        _settingsFlyout.Items.Add(
-            Item("Filmstrip when opening a folder",
-                 HasFlag(SettingFlag.FilmstripForFolder) ? "on" : "off",
-                 () => SetFlag(SettingFlag.FilmstripForFolder,
-                               !HasFlag(SettingFlag.FilmstripForFolder))));
-        _settingsFlyout.Items.Add(
-            Item("Filmstrip when opening an image",
-                 HasFlag(SettingFlag.FilmstripForImage) ? "on" : "off",
-                 () => SetFlag(SettingFlag.FilmstripForImage,
-                               !HasFlag(SettingFlag.FilmstripForImage))));
-        _settingsFlyout.Items.Add(
-            Item("Wrap at the end of the folder",
-                 HasFlag(SettingFlag.Wrap) ? "on" : "off",
-                 () => SetFlag(SettingFlag.Wrap, !HasFlag(SettingFlag.Wrap))));
-    }
-
     private static readonly string[] SortNames =
         { "Name", "Date modified", "Size", "Type", "Date taken (EXIF)" };
 
@@ -1472,16 +1431,6 @@ public static partial class IslandHost
         // live table's, so a key remapped in Settings shows here.
         viewFlyout.Opening += (_, _) => RefreshViewMenu(viewFlyout, sortMenu, kindMenu);
         RefreshViewMenu(viewFlyout, sortMenu, kindMenu);
-
-        _settingsFlyout = new MenuFlyout
-        {
-            ShouldConstrainToRootBounds = false,
-            MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle(),
-        };
-        // Rebuild on open as well as on ApplySettings, so the on/off column is
-        // right even if a keyboard toggle raced the last push.
-        _settingsFlyout.Opening += (_, _) => RefreshSettingsMenu();
-        RefreshSettingsMenu();
 
         var aboutFlyout = new Flyout
         {

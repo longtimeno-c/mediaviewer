@@ -41,7 +41,7 @@ public sealed partial class MediaViewerSession : IDisposable
     private MediaViewerSession(MvSessionHandle handle)
     {
         _handle = handle;
-        CompletionSignal = new AutoResetEventStandIn(
+        CompletionSignal = new BorrowedWaitHandle(
             NativeMethods.mv_completion_wait_handle(handle));
     }
 
@@ -167,6 +167,30 @@ public sealed partial class MediaViewerSession : IDisposable
 
     public void FolderThumbsVisible(uint first, uint count) =>
         ThrowIfFailed(NativeMethods.mv_folder_thumbs_visible(_handle, first, count));
+
+    /// <summary>
+    /// Issue #429 (ABI 0.32): thumbnails of pages <paramref name="first"/> onward of the
+    /// selected stop, for the page sidebar; each lands as
+    /// <see cref="MvCompletionKind.PageThumbReady"/> (payload = page, generation = the
+    /// returned serial). Returns the serial naming the stop, or 0 on a core without it.
+    /// </summary>
+    public uint FolderPageThumbs(uint first, uint count)
+    {
+        try
+        {
+            return NativeMethods.mv_folder_page_thumbs(_handle, first, count, out uint serial) == MvStatus.Ok
+                ? serial
+                : 0;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>The JPEG path of a landed page thumbnail; empty until it lands.</summary>
+    public string FolderPageThumbPath(uint page) =>
+        ReadFolderString(NativeMethods.mv_folder_page_thumb_path, page);
 
     public string FolderDirectory => ReadUtf8(NativeMethods.mv_folder_directory);
 
@@ -542,7 +566,8 @@ public sealed partial class MediaViewerSession : IDisposable
     }
 
     /// <summary>
-    /// A <see cref="WaitHandle"/> over a native event the core owns.
+    /// A <see cref="WaitHandle"/> over a native event the core owns: a
+    /// manual-reset event that stays signalled while completions are pending.
     /// </summary>
     /// <remarks>
     /// <c>ownsHandle: false</c> is the whole point: the session's event belongs
@@ -551,9 +576,9 @@ public sealed partial class MediaViewerSession : IDisposable
     /// symptom would be a completion signal that stops arriving on a machine
     /// under GC pressure.
     /// </remarks>
-    private sealed class AutoResetEventStandIn : WaitHandle
+    private sealed class BorrowedWaitHandle : WaitHandle
     {
-        public AutoResetEventStandIn(IntPtr nativeHandle)
+        public BorrowedWaitHandle(IntPtr nativeHandle)
         {
             SafeWaitHandle = new SafeWaitHandle(nativeHandle, ownsHandle: false);
         }

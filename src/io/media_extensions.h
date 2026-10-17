@@ -52,6 +52,7 @@ inline constexpr media_extension kMediaExtensions[] = {
     {".mp3", media_kind::audio},   {".m4a", media_kind::audio},  {".m4p", media_kind::audio},
 
     {".pdf", media_kind::document}, {".docx", media_kind::document},
+    {".pptx", media_kind::document},  // D5 amended 2026-10-15 (#429)
 };
 
 namespace media_extension_detail {

@@ -92,6 +92,7 @@ decoder_label label_for(format_family f) noexcept {
     case format_family::raw:  return {"libraw", v.raw};
     case format_family::pdf:  return {"os-pdf", ""};
     case format_family::docx: return {"mv-docx", ""};
+    case format_family::pptx: return {"mv-pptx", ""};
     case format_family::unknown: break;
   }
   return {"none", ""};

@@ -65,6 +65,24 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    lifetimes, struct layouts, completion drain against the built core. Structs C# mirrors by
    hand (`MvAiStatus`, `MvAiResult`) are compared field for field with `tools/abi-layout`'s
    dump of the native layout, so a mirror that misses an appended field fails CI.
+   **Chrome contract tests** (issue #153). Neither chrome is linked into a test: the WinUI
+   chrome is a class library the host loads through hostfxr, and the SwiftUI package calls
+   bridge functions that resolve only in the app's final link. So
+   `src.managed/MediaViewer.Chrome.Tests` (xUnit, plain net8.0) and the
+   `MediaViewerChromeTests` SwiftPM target read the chromes' sources as text against
+   `src/shell`: every command-id constant must name a `command_id` (or, C#, a
+   `chrome_command`) by the same value, the C# checksum list must follow
+   `chrome_command_checksum()`, Settings key capture must encode `commands.h`'s key codes
+   and the `chrome_cmd_rebind` packing native unpacks, and every shortcut a Windows menu
+   prints or a Mac menu looks up by name must be in the table. `mv_tests`
+   (`test_command_contract.cpp`) holds the native half: a remap survives persist and
+   reload exactly (`live_key_remaps` / `apply_key_remaps`, which both hosts persist with),
+   and `describe_commands()` by mode matches the committed
+   `tests/data/command_table.snapshot`, so a default-map change is a reviewed diff
+   (`MV_UPDATE_SNAPSHOTS=1` rewrites it). `ImportChromeTests` covers the Import model's
+   table-free pieces; AIChrome's tests run in CI, where its `PeopleGridBench` reports and
+   does not gate. Not built yet: a UI smoke test per platform (UIA, XCUITest) opening
+   `tests/data` and walking G → Enter → Esc.
 3. **Format corpus.** Not in git. `tools/testmedia/raw-manifest.json` and
    `heif-manifest.json` list each sample's URL, SHA-256, licence and source;
    `fetch-raw.ps1` / `fetch-heif.ps1` download and verify. The video corpus (~1.5 GB, incl. a
@@ -118,7 +136,10 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
      popped (fade cut short, view jumped, frame dropped inside the fade), with the animated gate
      judged on the same run.
    - The lab itself has `--soak`, `--static`, `--pan-soak`, `--browse-soak`, `--av-soak N --csv`
-     (A/V drift; under 1800 s it is diagnostic only) and `--json`.
+     (A/V drift; under 1800 s it is diagnostic only) and `--json`. `--compare` starts in the
+     two-up compare; with `--pan-soak` (one file, so no previous still) the left half draws the
+     same texture again, so the soak measures both draws, and the report's `compare_frames`
+     counts the presents that drew two halves.
    - The soak proves the render thread presented on time; it does not see first-pixel time,
      full-resolution time or media rate, which have their own reports.
 8. **Swapchain recovery** (`mv_swapchain_recovery`): device-loss and handle ownership.
@@ -160,7 +181,8 @@ it replaces.
 | `windows-deps` | windows-latest | Installs the vcpkg manifest once and caches it (≈45 min after a manifest/baseline change, mostly FFmpeg) |
 | `build` | windows-latest | MSVC Release, MSVC Debug, clang-cl, ASan; full `ctest`; uploads broken-corpus reproducers |
 | `abi-smoke` | windows-latest | The C# ABI smoke test |
-| `windows-chrome`, `mac-chrome` | windows-latest, macos-14 | WinUI and SwiftUI chrome compile |
+| `windows-chrome`, `mac-chrome` | windows-latest, macos-14 | WinUI and SwiftUI chrome compile; the chrome contract tests (`dotnet test`, `swift test`) |
+| `mac-build` | macos-15 | The native core on macOS (arm64): vcpkg trees cached under release.yml's key, the licence gate over both Mac trees, the full build and `ctest --no-tests=error` (`mv_tests`, `mv_import_tests`, `mv_ai_tests`, the Mac-only Metal pacer / AVFoundation / PDFKit / Photos-folder / write-guard tests) |
 | `mac-packaging` | ubuntu-latest | Release tooling tests and macOS bundle policy (`tools/mac/*`) |
 | `portable-core` | ubuntu-latest | `cmake/portable` under ASan + UBSan: the Import engine, add-on host and verified copy (`mv_import_tests`), the add-on packer and SDK cross-checks against the C++ verifier, and the clip and trim suites against the distro FFmpeg |
 | `frametime` | self-hosted `[windows, gpu]` | Swapchain recovery, then the 60 s animated + idle gates against the rolling baseline (cached per runner; updated only on `main`). Runs only when `MV_GPU_RUNNER_ENABLED` is set and never for fork PRs; hosted runners have no usable GPU, so a skip is not a pass |
@@ -236,7 +258,8 @@ Velopack keeps one full package for rollback. `build-release.ps1` fails above 25
   checks that the pipe's server process runs as the same user; if not, it sends nothing and
   runs alone. `--new-instance` overrides it.
 - **Command line:** `mediaviewer <path>` opens a file or folder. The remaining switches are
-  lab / harness switches (`--soak`, `--browse-soak`, `--no-chrome`, `--restore-*`, …).
+  lab / harness switches (`--soak`, `--browse-soak`, `--no-chrome`, `--restore-*`, …), except
+  `--compare`, which starts in the two-up compare (`|`).
 
 ## Distribution
 
@@ -258,7 +281,7 @@ Code signing, the update manifest, staged rollout, crash reports and telemetry a
 
 - Golden-image (perceptual-diff) tests of decoded output.
 - A memory/handle-leak check over a 500-file browse loop.
-- `--slideshow`, `--fullscreen`, `--compare` command-line switches.
+- `--slideshow`, `--fullscreen` command-line switches.
 - Explorer property handler; shell "Edit" verb; tabs / multi-window.
 - Mica backdrop on the main window (used only in add-on windows).
 - An AppContainer decode process.

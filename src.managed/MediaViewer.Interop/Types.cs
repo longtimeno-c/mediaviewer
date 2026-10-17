@@ -40,6 +40,7 @@ public enum MvCompletionKind : uint
     FolderSummary = 10,  // PR 26: payload = subfolder index
     ClipIndex = 11,      // PR 13 (mediaviewer_clip.h): job id = request id, payload = keyframe count
     ClipJob = 12,        // PR 13 / 14: job id = clip job, payload = MvClipJobState
+    PageThumbReady = 13, // 0.32, issue #429: payload = page, generation = mv_folder_page_thumbs' serial
 }
 
 /// <summary>Mirrors <c>mv_session_config</c>.</summary>

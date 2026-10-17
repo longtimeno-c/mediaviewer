@@ -32,7 +32,9 @@ and a verify line on each platform (D9, amended). The order is:
 | 56 | **Declarative contributions** (the second half; contribution API 2): an add-on's settings page drawn from its manifest on both hosts, its values kept per add-on (and on remove unless asked), key layouts (keymap packs) applied once with Reset back to the defaults, theme shape (radius, density, type scale), and Import / Duplicates / Local search on the host's theme tokens ([docs/design/25](design/25-open-addons.md#pr-56-second-half-declarative-contributions-2026-10-11), [ADDONS.md](ADDONS.md)); ABI 0.24 | Mac: Catch2 (schema, values, keymaps over every built-in command, shape), the SDK cross-check, 2.5 M fuzz inputs, the full suite and the rig's PR 56 leg pass in the app; launch and pacing measured against the base on a loaded machine (no difference; the idle CPU clause fails on base too). Windows: every C# project compiles clean; the native half is CI's; nothing run in the app yet |
 | 57 | **Add-on scripts**: other makers' add-ons run Lua 5.4 (vendored, static) in a sandbox per add-on on its own worker, with commands on keys, permissions in the consent sheet (`folder.read`, `thumbnails`, `selection`; no network) and limits (64 MB, 100 M instructions and 1 s per task, a watchdog) that stop the add-on and say why in Settings ([docs/design/25-open-addons.md](design/25-open-addons.md#implementation-notes-pr-57-2026-10-11), [ADDONS.md](ADDONS.md#scripts)); ABI 0.26 | Mac: built, `mv_script_tests` and the SDK cross-check pass, the key walk runs in the app (`MV_SCRIPT_SELFTEST`), the fuzz harness ran ~15 min clean, Mac PR 1 gate and launch timings measured with a script spinning / installed. Windows: compiled in CI only (shell, ABI, chrome); the Windows key walk, the Windows gate with a script spinning and Narrator / VoiceOver on the new Settings lines owed |
 | 58–59 | **Screens and slots**: MediaViewer's own native add-ons add to pages that exist (an info-pane section at the very bottom of the Metadata pane, file search and Local search providers, command-bar / path-bar / status items, gallery tile badges, context-menu entries) and open windows, docked panes and sheets from a view tree both chromes render ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)); host table v3; ABI 0.25 | Mac: the shared suite passes (with a real test add-on through a signed store; also under ASan / UBSan and TSan); the app built and, with the test add-on sideloaded, drew its section at the bottom of the pane and its items. Windows: both C# projects compile; the native side is CI's. Measurements and the keyboard / VoiceOver / Narrator passes are owed ([Where this actually is](#screens-and-slots-prs-58-59-2026-10-11)). Script add-ons wait for PR 57; Places is #344 |
-| #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; both screens show the same code and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
+| #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
+| #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
+| #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -108,7 +110,7 @@ Then the **PR 12 metadata writes** (Windows and macOS, same core): keypad `0`–
 
 And **PR 13 / 14 clip editing** (Windows and macOS, same core): on a clip, `Ctrl+T` (`⌘T`) arms trim — `[` `]` set in and out, the scrub bar shows the keyframe grid and what will be kept, `P` previews the cut as a loop, `Enter` saves an instant keyframe cut (stream copy, no quality loss) and `Shift+Enter` a frame-accurate re-encode on the GPU's hardware encoder (NVENC / Quick Sync / AMF / Media Foundation, VideoToolbox on Mac; labelled slower). `Ctrl+S` on a clip opens the clip tools: lossless rotate, split, remove in–out, MP4 ↔ MKV remux, save the frame as PNG / JPEG, extract the audio (copy, WAV or FLAC), and GIF / WebP. Every result is a new file beside the clip (`<name>_trimmed.mp4`, …); the original is never touched, and jobs run in a Jobs pane (`Ctrl+J`) where they can be cancelled without leaving a partial file. Anything that decodes or encodes runs in a separate helper process (`MediaViewerClipJob`), so a crash in a GPU driver fails that one job and never the viewer. The shared core is also tested headless on Linux ([tools/portable](../tools/portable/README.md)).
 
-**PR 15 OS integration** (Windows and macOS, same command rows): `Ctrl+Shift+C` (`⌘⇧C`) copies the marked or current file's path as text; `Ctrl+Alt+C` (`⌘⌥C`) copies the photo as you see it, edits applied, as a PNG (both a file and an image, so it pastes into Explorer / Finder and into Word, Keynote or a chat; no EXIF rides along); `Ctrl+Shift+S` (`⌘⇧S`) opens the system Share sheet. The folders you open show up as **Recent folders** in the taskbar jump list and in the Dock icon's menu, in File ▸ Open Recent on the Mac, and as clickable rows on the empty window's welcome card (up to six, as many as the window has room for; a folder that has gone is dropped when clicked, and the × on a hovered row removes a folder from every recent list without touching it on disk). The card and the host share one layout (`src/shell/welcome_layout.h`), so the row drawn and the row hit are the same. The taskbar thumbnail gains previous / play-pause / next buttons, and on the Mac, Control Centre, the media keys and AirPods drive a clip through Now Playing. Explorer gets MediaViewer's thumbnails (HEIC, AVIF, RAW and the rest) for the file types you make MediaViewer the default for; the handler runs outside Explorer, so a damaged file can't take Explorer down. Explorer's Details-pane properties need a machine-wide install and are deferred. On the Mac, Spotlight learns the length, size and codecs of MKV, WebM, AVI and TS clips (macOS already indexes photos and MP4/MOV itself). `Ctrl+Alt`-drag (`⌘⌥`-drag) drags out the edited copy, and opening a file while MediaViewer is running opens it in the running window instead of starting a second one (`--new-instance` overrides). `Ctrl+N` (`⌘N`, File ▸ New Window) opens another window as its own process. Several windows grouped as tabs come in a later update ([docs/design/10](design/10-roadmap.md) PR 15). The macOS half is built, its tests pass and the Metal present-loop gate holds; the Windows half builds in CI. Neither platform's hands-on verify (Explorer / Finder, installed builds) has been run yet.
+**PR 15 OS integration** (Windows and macOS, same command rows): `Ctrl+Shift+C` (`⌘⇧C`) copies the marked or current file's path as text; `Ctrl+Alt+C` (`⌘⌥C`) copies the photo as you see it, edits applied, as a PNG (both a file and an image, so it pastes into Explorer / Finder and into Word, Keynote or a chat; no EXIF rides along); `Ctrl+Shift+S` (`⌘⇧S`) opens the share menu: Sharepoint, then the system Share sheet (#444). The folders you open show up as **Recent folders** in the taskbar jump list and in the Dock icon's menu, in File ▸ Open Recent on the Mac, and as clickable rows on the empty window's welcome card (up to six, as many as the window has room for; a folder that has gone is dropped when clicked, and the × on a hovered row removes a folder from every recent list without touching it on disk). The card and the host share one layout (`src/shell/welcome_layout.h`), so the row drawn and the row hit are the same. The taskbar thumbnail gains previous / play-pause / next buttons, and on the Mac, Control Centre, the media keys and AirPods drive a clip through Now Playing. Explorer gets MediaViewer's thumbnails (HEIC, AVIF, RAW and the rest) for the file types you make MediaViewer the default for; the handler runs outside Explorer, so a damaged file can't take Explorer down. Explorer's Details-pane properties need a machine-wide install and are deferred. On the Mac, Spotlight learns the length, size and codecs of MKV, WebM, AVI and TS clips (macOS already indexes photos and MP4/MOV itself). `Ctrl+Alt`-drag (`⌘⌥`-drag) drags out the edited copy, and opening a file while MediaViewer is running opens it in the running window instead of starting a second one (`--new-instance` overrides). `Ctrl+N` (`⌘N`, File ▸ New Window) opens another window as its own process. Several windows grouped as tabs come in a later update ([docs/design/10](design/10-roadmap.md) PR 15). The macOS half is built, its tests pass and the Metal present-loop gate holds; the Windows half builds in CI. Neither platform's hands-on verify (Explorer / Finder, installed builds) has been run yet.
 Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
@@ -468,8 +470,9 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `Space` / `Backspace` | next / previous. On a clip, `Space` is play/pause. It is no longer the lab sweep |
 | `Home` / `End` | first / last in the folder |
 | `PageUp` / `PageDown` | back / forward ten |
-| `Ctrl+PageUp` / `Ctrl+PageDown` | previous / next page of a TIFF, PDF or DOCX, size of an ICO, or image of a multi-image HEIC (`⌘` on the Mac). Within a page: zoom (wheel, `+` `-`, `1`–`4`) and drag to pan. On a PDF or DOCX with the filmstrip hidden the wheel / trackpad scrolls (a notch glides, a trackpad follows the fingers) and turns pages as soon as it pushes past an edge, momentum running on into the next page; `⌘`/`Ctrl`+wheel or a pinch zooms. With the filmstrip shown the notice line says "Press T to hide the filmstrip and scroll" until `T` has been used on a document |
-| `Enter` on a PDF or DOCX | open it in its default app (the bar's **Open in <app>**, ▾ for the others) |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | previous / next page of a TIFF, PDF, DOCX or PPTX, size of an ICO, or image of a multi-image HEIC (`⌘` on the Mac). Within a page: zoom (wheel, `+` `-`, `1`–`4`) and drag to pan. On a PDF or DOCX with the filmstrip hidden the wheel / trackpad scrolls (a notch glides, a trackpad follows the fingers) and turns pages as soon as it pushes past an edge, momentum running on into the next page; `⌘`/`Ctrl`+wheel or a pinch zooms. With the filmstrip shown the notice line says "Press T to hide the filmstrip and scroll" until `T` has been used on a document |
+| `Enter` on a PDF, DOCX or PPTX | open it in its default app (the bar's **Open in <app>**, ▾ for the others) |
+| `Shift+T` | page sidebar on / off: page thumbnails down the left of a multi-page PDF, DOCX or PPTX while the filmstrip is hidden; a click turns to that page (remembered; View ▸ Page Sidebar on the Mac) |
 | `J` / `K` / `L` | clip transport: −10 s / pause / +10 s ([docs/design/16](design/16-commands.md)) |
 | `,` / `.` | frame step back / forward while paused |
 | `A` / `D` | previous / next beside the arrows, in every mode including on a clip |
@@ -485,6 +488,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `S` | sticky zoom: keep zoom and position when you move to the next item (off by default) |
 | hold `Z` | loupe: 100 % (or 2x the current zoom) around the cursor |
 | hold `\` | show the previous image, for picking between burst frames |
+| `\|` | two-up compare: the previous image beside the current one, panned and zoomed together (stills; `--compare` starts with it on) |
 | `C` | clipping blinkies (red highlights, blue shadows). The canvas keeps presenting while on |
 | `O` | info line: file name, position in the folder, size, zoom |
 | `Ctrl+Shift+A` | always on top |
@@ -596,10 +600,17 @@ Windows lab adds `quick` steps — Right as soon as the last photo is on screen 
 `held` run — a Right every 50 ms, then the last photo timed to full resolution, with the
 run's decode job counts under `"held"`; every step carries `full_ms`. Those are the cases
 the in-flight decode hand-off is for, and `perf-browse.svg` ignores them),
+`--page-soak <path>` (macOS lab, issue #429: with a PDF, DOCX or PPTX, scroll the page sidebar
+from the first page to the last in 1.5 s, as a hard flick does, then go to pages 250, 10, 150, the
+last, 1, 250 and 100 the way a thumbnail click does, each timed to its first image, the present
+showing it and the full-size page; add `--soak N` to have the canvas pacing measured meanwhile),
 `--av-soak <seconds> --csv <path>` (headless A/V drift soak on a clip — see
 [Test](#test)), `--pan-soak` (with `--soak` and `--open`: pan the still at 100 % across
-the whole frame on a fixed path, to measure cached-image and tiled-pyramid pan), or a
-positional file or folder.
+the whole frame on a fixed path, to measure cached-image and tiled-pyramid pan),
+`--compare` (start in the two-up compare; add it to `--pan-soak` to pan both halves, the
+left one drawing the same still again since one file has no previous, or to `--browse-soak`
+to walk a folder with the split up; `compare_frames` in the soak JSON counts the two-half
+presents), or a positional file or folder.
 
 A still's first pixel is a preview (JPEG DCT 1/4, or a RAW's embedded JPEG); the full
 decode then *refines* the same item rather than replacing it: the view you have — fit,
@@ -685,7 +696,11 @@ owed: [docs/design/17](design/17-local-ai-search.md); the Mac checklist is
    "CUDA 13 or cuDNN 9 not found — using CPU". Stable releases publish this piece.
 4. Run the app or `ai-bench --addons <folder> --index <media folder> --query "a dog"` with
    `MV_DEV_ADDONS_DIR=<folder>` and `MV_DEV_THUMBS_DIR=<another folder>`, so a real install
-   is untouched.
+   is untouched. `--documents` turns on File types "Show documents" for the run, so the
+   folder's PDFs and DOCX files are read for their words (#354); the status lines then carry
+   `"docs":[done,total,locked,failed]`. The pack stages PDFium beside `mv_ai` from its pinned
+   download (`cmake/ai.cmake`); set `MV_ORT_ARCHIVE_DIR` to a folder holding
+   `pdfium-<platform>-8066.tgz` (and ORT's archive) to configure offline.
 5. Quit's cost with a pack loaded: `ai-bench --addons <folder> --query dog --quit-after 1`
    quits the way both hosts do (the pack gets half a second to stop, then the exit skips static
    destructors; `src/addon/host.h`, "Quit") and prints the time it took; `--quit-legacy` is the
@@ -721,12 +736,15 @@ a pack with a new face model does the same by itself. Tests: `mv_ai_tests "[reru
 `"[.people-bench]"` with `MV_FACE_EVAL` (a vector file: uint32 n, uint32 dim, n int32 labels,
 n x dim float32) and optionally `MV_FACE_TUNING="same keep keep_weak margin ambiguous merge"`,
 which runs real vectors through faces.db's online clustering and the re-run's settle and prints
-BCubed precision and recall.
+BCubed precision and recall. Then a corrections phase: after 60 % of the faces, it merges each
+person's fragments and names everyone with 3+ photos, and files the remaining 40 % online
+(`corrected`, `new 40%`).
 LFW has only clear faces, so check a clustering or People-speed change on a real library too:
 copy its `faces.db` (`sqlite3 "file:<faces.db>?mode=ro" ".backup <copy>"`; opening migrates, so
 never the live one), then `MV_FACES_DB=<copy> mv_ai_tests "[.people-settle]"` (the settle, with
 people listed before and after) or `"[.people-api]"` (what each People read the chrome makes
-costs). Delete the copy after: it is face data.
+costs, then the copy's unfiled faces offered again through `add`: ms per face and where they
+went; it writes, so use a fresh copy per run). Delete the copy after: it is face data.
 
 The People grid (Settings → People, on both platforms) follows the folder
 the viewer has open: **People in · This folder | + Subfolders**, + Subfolders by default;
@@ -868,8 +886,8 @@ File gains *Open Photos Library*: the host lists the library as **virtual items*
 (`shell/photos_items_mac.h`). Search results take the same path. Settings → *Photos Library* →
 **Back Up Now** runs `shell/photos_backup.h` over PhotoKit into a chosen folder. Tests, no library
 needed: `mv_tests "[folder][photos]"` (virtual entries and tiles over a fake provider),
-`"[photos_backup]"` (the engine over a fake library: layout, verified copies, the manifest, a
-collision, a cancel), `"[write_guard]"` and `"[poster]"` (a clip's display matrix turns its
+`"[photos_backup]"` (the engine over a fake library: each folder layout, verified copies, the
+manifest across a layout change and a remount, a collision, a cancel), `"[write_guard]"` and `"[poster]"` (a clip's display matrix turns its
 poster; the thumbnail spec is `jpg512.4`). A dev build shows the row and the section only when
 its own bundle id has Photos access and the flag `mv.photosLibrary.added` is set in its
 defaults; the flag is set by the pack's Settings when the library is a root, so a dev build
@@ -913,6 +931,20 @@ dotnet src.managed\MediaViewer.AbiSmokeTest\bin\Release\net8.0-windows\MediaView
 
 # WinUI chrome (also published beside mediaviewer_lab.exe by the CMake build)
 dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Release -r win-x64 --no-self-contained
+
+# Issue #153, the chromes' headless tests (no core build needed; CI's "WinUI chrome"
+# and "SwiftUI chrome" jobs run them). They read the chromes' sources as text and fail
+# when a copy of a command id, a captured key code, the rebind packing or a menu's
+# printed shortcut drifts from src/shell or from tests/data/command_table.snapshot.
+dotnet test src.managed\MediaViewer.Chrome.Tests\MediaViewer.Chrome.Tests.csproj -c Release
+# macOS: the same checks for the SwiftUI chrome, Import's model, AI's search model
+swift test --package-path src.swift/MediaViewerChrome
+swift test --package-path src.swift/ImportChrome
+swift test --package-path src.swift/AIChrome --filter SearchModelTests
+# The native half (part of plain ctest): key remaps survive persist and reload, and
+# describe_commands() by mode matches tests/data/command_table.snapshot. A change to
+# the default key map fails it on purpose; regenerate, then read the diff:
+$env:MV_UPDATE_SNAPSHOTS = "1"; .\build\bin\Release\mv_tests.exe "[snapshot]"; Remove-Item Env:MV_UPDATE_SNAPSHOTS
 
 # Milestone G: the Import add-on's suite (built with the core, both platforms)
 # Its verified copies flush durably and read back uncached in scratch folders
@@ -1071,7 +1103,10 @@ python3 tools/package/addon-pack.py pack --addon places --platform macos --src b
 # Sharepoint (docs/design/28): build/addons/sharepoint/(lib)mv_sharepoint.(dylib|dll)
 cmake --build build --target mv_sharepoint
 build/bin/mv_import_tests "[sharepoint]"       # wire, channel, 2-3 engines over loopback TCP, the add-on through the loader
+build/bin/mv_import_tests "[.sharepoint-bench]"   # MB/s against a plain copy over loopback (MV_BENCH_DIR, _BIG_MB, _SMALL, _SMALL_KB, _CASES)
+build/bin/mv_import_tests "[.sharepoint-idle]"    # CPU while Keep receiving is on, window closed (MV_IDLE_SECONDS)
 python3 -m unittest tools/package/test_addon_pack.py   # SharepointPackTest among them
+build/bin/mv_import_tests "[.sharepoint-send]"    # #452: a sender on this machine (MV_SEND_FILE, MV_SEND_CODE_FILE or MV_SEND_HOLD)
 python3 tools/package/addon-pack.py pack --addon sharepoint --platform macos --src build/addons/sharepoint \
   --version 1.0.0 --key <key file> --out dist/
 ```
@@ -1465,7 +1500,7 @@ manifest, clients reject updates. The production public key is already pinned in
 
 ### Continuous integration
 
-Pushes to `main` and pull requests build four Windows variants (MSVC Release, MSVC Debug, clang-cl, ASan), run the C# ABI smoke test, and fuzz each decoder for a minute. A newer push to the same branch cancels the run it replaces. Dependencies are installed by one job and reused. The first run after `vcpkg.json` or the pinned vcpkg baseline changes spends about 45 minutes there, mostly building FFmpeg. Later runs restore that cache. The nightly schedule is the long fuzz run, separate from pull requests.
+Pushes to `main` and pull requests build four Windows variants (MSVC Release, MSVC Debug, clang-cl, ASan), run the C# ABI smoke test, and fuzz each decoder for a minute. On macOS they build the native core on macos-15 (arm64) and run the full `ctest` suite (`mv_tests`, `mv_import_tests`, `mv_ai_tests` and the Mac-only tests), build the three SwiftPM chrome packages, and run `swift test` on `src.swift/AIChrome`. The Mac job shares its vcpkg cache key with the release workflow's arm64 leg, so a cold cache costs the whole Mac manifest once. A newer push to the same branch cancels the run it replaces. Dependencies are installed by one job and reused. The first run after `vcpkg.json` or the pinned vcpkg baseline changes spends about 45 minutes there, mostly building FFmpeg. Later runs restore that cache. The nightly schedule is the long fuzz run, separate from pull requests.
 
 ### Releasing from CI
 
@@ -1549,6 +1584,43 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Windows search: the typed space, the resume notice, a result list from an empty window (#443, 2026-10-15)
+
+Three Windows-only fixes; the Mac is unchanged.
+
+- **Space in a search box.** Every type-in field (`Shared/FakeInput.cs`: Local search, file
+  search, rename, Settings, add-on pages) draws its text in TextBlocks either side of the caret,
+  and a TextBlock measures no trailing space, so the caret sat against the last letter until the
+  next one came. The runs now draw spaces as no-break spaces (same advance); the text keeps plain
+  spaces. The key router already left every key but Esc to a focused field
+  (`test_key_router.cpp`, "a focused text control owns every key but Esc").
+- **Resume indexing notice.** It is now an island of its own over the canvas corner, as the AI
+  badge is, instead of a windowed `Popup` of the command bar that never showed. A launch read
+  that lands before the bar is up waits for it.
+- **A result list from an empty window** (a later window's first search, a search from the
+  welcome) left native on "nothing open": no gallery, no strip, no arrows, only the chosen
+  result. FolderReady for a list now moves it to a listing (`main.cpp`), and the chrome sends
+  the panel's Enter / Ctrl+Enter view after FolderReady, not before it.
+- **Checked:** the three C# chromes (Chrome, Ai.Chrome, Import.Chrome) compile on the Mac
+  (`dotnet msbuild -t:Compile`, warnings as errors); no banned WinUI control. Not run on Windows:
+  the native change (`main.cpp`) compiles only in CI, and the verify line, the placement of the
+  notice island (100 % / 200 %, resize, under Settings) and the PR 1 gate are owed to a Windows
+  machine.
+
+### Windows: the "Press T" filmstrip hint shows (#446, 2026-10-15)
+
+The hint card never appeared on Windows. It was the last windowed `Popup` in the chrome, built like
+the resume notice above, and is now an island of its own in the same corner
+(`IslandHost.HintNotice.cs`), made on the first show and parked, not disposed, when it fades. Native
+also asks again when the filmstrip comes up (`main.cpp`, the layout sync): on Windows the strip
+state is what is shown, so a clip or document that opened before its folder had a strip was never
+due. The Mac was already correct; a Mac that has learned the hint (`mv.hint.filmstripT`) shows
+nothing, by design.
+
+- **Checked:** the C# compiles on the Mac (warnings as errors). Not run on Windows: the native line
+  compiles only in CI, and the card's placement, stacking over the resume notice, "Got it" keeping
+  the keyboard on the canvas and the PR 1 gate are owed to a Windows machine.
 
 ### The AI badge on the canvas (#345, docs/plans/metadata-search-and-place.md slice 5, 2026-10-12)
 
@@ -1668,6 +1740,137 @@ album artist, composer, genre). Sound and speech on audio files are slice A2.
   both hosts; both PR 1 gates with the pack indexing audio files; timing the walk with the
   setting off.
 
+### Local search over documents, slice D3: the Documents piece (#354, 2026-10-17)
+
+An optional piece, **Documents** (`ai-docs`, ~91 MB), adds one sentence-embedding model,
+all-MiniLM-L6-v2 (fp32, CPU, 2 threads), so a document's words also match by meaning
+([17](design/17-local-ai-search.md) "Documents": the spike table, the margins, the ranking). Schema
+10 adds `passage_vecs`; `.mvindex` goes to v2, with documents behind the new **Documents** tick
+on export and import (`MV_AI_TRANSFER_DOCUMENTS`, off by default). Both chromes list the piece,
+say "Understanding documents N of M", and add the tick and the "matches by meaning" hint.
+
+- **Spike** (`tools/ai-bench/doc-meaning`): `fetch_corpus.py <out>` fetches the 478 public
+  documents (run it with `python -I`: they are untrusted), `spike.py passages|embed|speed|score|
+  calibrate` scores the candidates (`MV_SPIKE_CAP`, default 64 passages a document), and
+  `queries.json` holds the 50 queries, their relevance and 20 "nothing" queries. Targets were
+  written before the first score (P@5 >= 0.70, R@10 >= 0.80, above BM25).
+- **Model:** all-MiniLM-L6-v2 met them with the best P@5 in the capped spike (0.810 / 0.827 fp32;
+  the other three and their int8 numbers are in 17) and ran 112-119 passages/s at 2 threads
+  against 53-69 for the others (alternated, three rounds, load 10-36).
+- **ORT-Python reference:** `mv_ai_tests "[docs]"` with `MV_AI_PACK_DIR` (the ORT folder) and
+  `MV_AI_DOCS_DIR` (a staged ai-docs: `tools/package/ai-models.py stage --piece ai-docs`).
+  `tests/data/ai/docs_reference.json` comes from `tools/ai-reference/make_docs_reference.py`
+  (tokens and vectors, ORT-Python 1.31 on CPU). Mac (M5, ORT 1.30): every token id equal, worst
+  cosine **0.999999** over 12 passages (accents, Japanese, a 400-word one) and 4 queries, one at a
+  time and batched. The WordPiece rules always run (`"[docs]"`, no model).
+- **Engine, end to end** (M5, 2026-10-17): `ai-bench --addons <sideloaded ai + ai-docs> --index
+  <the 478> --documents --quality 1 --top 10 --query ...` then `doc-meaning/score_bench.py`:
+  - All 478 read for words in 61 s; every passage (93,726) embedded in 838 s from the start; the
+    meaning pass runs while the picture tower compiles for Core ML.
+  - The 50 queries: **P@5 0.731, R@10 0.767** (English 0.748 / 0.784). Words alone (no piece):
+    0.304 / 0.272, 19 queries answer nothing. Queries took up to 94 ms.
+  - **Short of the R@10 target (0.80).** The spike met it over 64 passages a document; uncapped,
+    the model alone scores 0.757 / 0.782, the long IRS publications' passages outranking the
+    forms. Ranking by margin instead of cosine lost a further 0.03 (now cosine).
+- **Ceiling:** `addon-pack.py ceiling` over the installed 0.1.32 AI, AI Audio and AI Faces
+  manifests and a dev-packed AI Documents: 2.419 GB of 5.0 GB (Mac). `ai-models.py check`:
+  Core + People + Sound + Documents + a vendor piece ~3.02 GB (the Windows case, estimated).
+- **Tests:** `mv_ai_tests` 151 cases, 142 passed, 9 skipped (model-backed) on the M5, including
+  the meaning pass (embedded after the words, found at its page, "nothing found", kept through a
+  restart, the reader, gone with Show documents) and `.mvindex` v2 (documents only when ticked,
+  passages and vectors imported with nothing embedded again); `mv_tests` 869 cases, 858 passed,
+  11 skipped; the packaging tests (`test_addon_pack`, `test_github_release`) pass. The SwiftUI AI
+  chrome builds and the WinUI AI chrome's C# compiles (MediaViewer.Chrome stops on
+  `IslandHost.Slots.cs`'s `DownloadSize`, unchanged here and fixed on main by #459).
+- **Not measured:** both present-loop gates (the Mac's screen was locked for every attempt; the
+  Windows gate is CI's), Windows altogether (the ORT-Python cosine, the timing, the ceiling on
+  real manifests), the app on either host with the piece installed, and another language than
+  English beyond the spike's 3 queries.
+
+### Local search over documents, slice D2: pages as pictures (#354, 2026-10-16)
+
+Settings → Local search → Documents gains **Words and pages** (`doc_index` 2, per folder
+`MV_AI_DOCS_PAGES`) on both hosts. A document's first 3 pages, and any page mostly covered by
+images, go through the picture tower already installed, so "a receipt" or "a floor plan" finds the
+page ([17](design/17-local-ai-search.md) "Documents", "Page pictures (D2)"). No new model, no
+schema change.
+
+- **Tests:** `mv_ai_tests "[documents]"`: which pages are drawn (first 3, picture pages, the end of
+  a DOCX, nothing for a locked one), found at their page as a picture match, kept through a
+  restart, dropped by a folder's or Settings' Words and drawn again at Words and pages. Also PDFium's
+  picture-page measure on hand-built PDFs (`[pdfium]`). Mac (M5, 2026-10-17, on D1 with main
+  merged): `mv_ai_tests` 148 cases, 140 passed, 8 skipped (model-backed); `mv_tests` 896 cases,
+  885 passed, 11 skipped; `mv_import_tests` 158 passed; the SwiftUI AI chrome builds; the WinUI AI
+  chrome's C# compiles.
+- **Verify set:** `tools/ai-bench/doc-pages/make_doc_pages.swift <out> <photos>` draws 120 PDFs,
+  6 each of 20 kinds of page (receipt, floor plan, bar / pie chart, line graph, slide, sheet music,
+  calendar, crossword, chessboard, flowchart, map, QR code, barcode, spreadsheet, certificate,
+  sudoku, circuit diagram, a full-page photo, business card). The kind's page sits on page 0-2, or
+  for 4 of the photos on page 7 or 8 of a long document. Names are neutral and the labels go to
+  `labels.tsv`. Run `ai-bench --documents --doc-index 2 --top 10 --query ...` over them beside D1's
+  200 text documents, then `score_doc_pages.py`.
+- **Verify line, Mac (M5, ViT-L/14 on the Neural Engine, 2026-10-16), 320 documents:**
+  - Mean P@5 over the 20 queries: **0.80** as typed (words and pictures) and **0.83** with Match
+    by Picture only (`--kinds 31`).
+  - Every relevant hit was on the labelled page (80 / 80 and 83 / 83). Queries took 10-25 ms, and
+    100 ms for "a receipt" as typed.
+  - 15 queries scored 1.0. "a line graph" and "a calendar" scored 0.8.
+  - "a map" scored 0.4: slides and sudoku pages ranked above two of the maps.
+  - "a spreadsheet" scored 0.0: D1's plain DOCX text pages rank above the drawn spreadsheets.
+  - "a receipt" scored 0.0 as typed: D1's random-word documents contain the word "receipt", and
+    a full word match outranks a picture. With Picture only it scored 0.6.
+  - "a photo of a person" found nothing. So did "a person", "a man", "a portrait" and "a face",
+    tried afterwards, although the 6 photo pages are indexed: the "nothing found" gate turns them
+    away.
+  - All 4 deep photo pages were found by the picture-page rule (pages 7 and 8).
+  - No new model: the pack's files are D1's, and the process opened `clip-l14/image.onnx` alone.
+  - Timing: with the tower in, 316 documents pictured (851 pages) in 49 s. The first start of a
+    freshly sideloaded pack spent about 11 minutes on ViT-L/14's Core ML compile first; words
+    were read meanwhile. The second start loaded in 4.6 s.
+- **Mac PR 1 gate** (`frametime --seconds 60`):
+  - Alone: 3,600 frames, p99 16.80 ms, max 22.4 ms, 0 idle presents, 0.035 % idle CPU, PASS.
+  - With `ai-bench` picturing 1,280 documents' pages in a separate process through both soaks:
+    3,600 frames, p99 17.05 ms, max 23.3 ms, 0 idle presents, 1.0 % idle CPU, PASS.
+- **Not measured:** Windows (the native and WinUI code is compiled by CI only; the Windows timing
+  and the Windows PR 1 gate are owed), the app on either host with a real document folder, and
+  DOCX picture pages beyond page 2.
+
+### Local search over documents, slice D1 (#354, docs/plans/document-search.md, 2026-10-16)
+
+PDFs and DOCX files are indexed for their words while Settings → File types **Show documents**
+is on ([17](design/17-local-ai-search.md) "Documents"): a quoted phrase finds the page, Enter
+opens the document there, plain words rank by the speech rule. PDFium (pinned in
+`cmake/ai.cmake`) ships in the Core pack; the index goes to schema 9.
+
+- **Tests:** `mv_ai_tests "[documents],[query]"` (the gate on, off and through a restart; first
+  and last page phrases, page rows, `is:pdf`, `text:` / `said:`, locked and broken files, a
+  folder's Off and Settings' Off dropping the text, a 600-page PDF stopped mid-way and resumed
+  under the 500-page cap, no PDFium setting PDFs aside; the passage rule; PDFium on hand-built
+  PDFs; the host's DOCX text and page tiles; schema 8 → 9); `mv_tests "[docx]"` (`docx_text`
+  reading order and pages); `swift test --filter SearchModelTests`; `tools/package/test_addon_pack.py`
+  (PDFium and its notices in the pack). Mac (M5, 2026-10-16): `mv_ai_tests` 145 cases, 137
+  passed, 8 skipped (model-backed); `mv_tests` 856 cases, 845 passed, 11 skipped;
+  `mv_import_tests` 151 passed; the SwiftUI chrome's tests 9 passed; everything builds.
+- **Verify line, Mac (M5, 2026-10-16), through `ai-bench --documents` on a dev-signed pack:** a
+  synthetic folder of 200 documents (120 PDFs incl. one of 500 pages, two password-protected and
+  one cut short; 80 DOCX incl. one cut short), made by CoreGraphics / CoreText and a zip writer.
+  All 196 text documents found by a quoted phrase from their first page (page 0) and from their
+  last page (the PDF's last page, checked against CoreGraphics' page count): 392 of 392, slowest
+  query 4.1 ms. The 2 locked and 2 broken are counted, nothing crashed. Indexing the 200: within
+  3 s of the pack loading on three runs (all 200 done at the first 5 s status line), so ≤ 60 s
+  holds. Plain words ("tenant invoice") 70 ms over 190 matches.
+- **Mac PR 1 gate with documents indexing:** `frametime --seconds 60`, alone and then with
+  `ai-bench` reading 4,000 documents (the 200 hard-linked 20 times, about 90 a second, through
+  the first 45 s of the soak, in a separate process, so the viewer's yield never reached it):
+  animated 3,599 frames and 0 dropped both times, p99 16.95 → 16.90 ms, 0 idle presents. The
+  idle-CPU clause failed both times (5.55 % and 5.68 % of a core) on this used machine, as it
+  does on base.
+- **Not measured:** the verify line's 300 photos beside the documents, and Enter in the app (both
+  hosts open a document result on its page in code; only the core tests ran it). Windows: both
+  C# chromes compile on the Mac; `main.cpp`, `addon_abi.cpp`, `abi.cpp` and PDFium's Windows
+  build are compiled by CI only. The Windows timing on the dev box and the Windows PR 1 gate are
+  owed.
+
 ### Local search reads more of each file (#403–#407, 2026-10-15)
 
 Five changes to the AI pack's index and query language
@@ -1708,6 +1911,34 @@ Five changes to the AI pack's index and query language
   by CI there. The cue and text counts are appended on `MvAiStatus` (1,672 bytes). `AiApi` does not
   pin that size (#388); the ABI smoke test compares the C# mirror with the header. Windows OCR on
   clips, both PR 1 gates with the pack indexing are owed.
+
+### Place terms need Places, and intersect (#441, 2026-10-16)
+
+Without the Places add-on, `place:portugal` in Local search now shows no results and "Place search
+needs the Places add-on". The help line names `place:` only while Places is loaded. With Places,
+the AI pack's engine asks it for each place term through the host table's new `place_matches`
+and intersects: `beach place:portugal` is Portugal's beaches only, and `-place:spain` takes
+Spain's out. The "+ N in Portugal" button no longer appears for place terms
+([17](design/17-local-ai-search.md) "Places over the index", ABI 0.31).
+
+- **Tests:** `mv_import_tests "[slots]"` (`has_place_terms`; Local search asks no provider for a
+  place term; `provider_paths` with no provider, every batch, a failing provider, a caller that
+  stops, a provider removed mid-request; the host table's `place_matches`);
+  `mv_import_tests "[places]"` (the real `mv_places` answering the pack's requests over a fake
+  `locations_of_index`); `mv_ai_tests "[places]"` (no Places: `place:` / `in:` / `-place:` and
+  `blue place:portugal` find nothing; with a fake Places: only its assets, `-place:`, two places,
+  `blue place:portugal` ranks only Portugal's, kinds and scope still apply);
+  `swift test --filter SearchModelTests` (`testPlaceTermsNeedPlaces`).
+- **Mac (M-series, 2026-10-16):** `mv_tests` 860 cases (849 passed, 11 skipped);
+  `mv_import_tests` 155 passed; `mv_ai_tests` 136 cases (128 passed, 8 skipped, model-backed as
+  before); AIChrome `SearchModelTests` 9 passed. `MediaViewer` and the AI chrome bundle build.
+  Not run: the live check with the pack and Places installed, and the PR 1 gate. The change adds
+  no render-thread or UI-thread work: a place-term search now waits on its own search worker for
+  Places' walk of the index's coordinates. That walk used to run after Return instead. Its
+  latency was not measured on a large index.
+- **Windows:** the core change (`slots.cpp`, `host.cpp`, `slots_abi.cpp`) is shared and compiled on
+  the Mac; MSVC builds it only in CI. The C# (`SearchWindow.cs`, `Slots.cs`) compiles on the Mac
+  (dotnet@8, compile-only). The live check is owed on Windows too.
 
 ### `place:` over the whole Local search index (#398, 2026-10-15)
 
@@ -1915,6 +2146,70 @@ What is built is in [docs/design/28](design/28-sharepoint.md).
   the app, both hosts' first-run prompts (local network and Bluetooth on the Mac, Defender
   Firewall on Windows), VoiceOver and Narrator over the window, the Windows PR 1 gate.
 
+### Sharepoint in the background (issue #452, 2026-10-16)
+
+What changed is in [docs/design/28 "In the background"](design/28-sharepoint.md#in-the-background-452):
+**Receive when MediaViewer is closed** (off by default, implies Keep receiving) keeps the process
+with a menu-bar item / notification-area icon; offers are system notifications that open the
+window; the host table gains `notice_post`, `notice_authorize` and `keep_alive` (ABI 0.33).
+
+- **Mac (M-series):** the app, the Swift chrome and `libmv_sharepoint.dylib` build. `mv_tests`
+  (849 passed, 11 skipped) and `mv_import_tests` (154 cases) pass; new cases: the notice names the
+  sender and then the count and size, never the file name or the code, is taken back when the
+  offer ends, and its Decline declines; the toggle implies Keep receiving, keeps the process, is
+  kept across launches and asks for permission only when turned on; the registry's notice and
+  keep-alive tables (bounds, replace, the button's event, detach).
+- **In a dev copy (dev-signed, own bundle id and HOME):** with the toggle kept on, the add-on came
+  up receiving at load (listener and beacon, the lock held) and a quit event was refused as the
+  background path should. The run stopped there: macOS asked the dev copy for local-network
+  access and a first-run alert was open over the viewer, both needing the owner's click, so the
+  hide, the menu-bar item, the windowless idle cost and the notification were not seen.
+- **Measured (Mac, base and new built in their own trees, alternated, load average ~5 with
+  another session's lab at 99 % CPU and a Simulator running):** the PR 1 gate's animated soak
+  passed on both (3600 frames, p99 16.75 ms, max 16.82 ms new / 16.85 ms base); its idle phase
+  failed on both on CPU (8.2 % new, 5.7 % base, 0 presents each): the machine, not the change, so
+  the quiet-machine idle verdict is owed. Launch → first pixel (`--soak 6 --static`, a HEIC
+  fixture, 5 each): base 6–17 ms, new 3–17 ms, no difference within noise.
+- **Windows:** the C# compiles (warnings are errors). `main.cpp` (hide on close, the tray icon and
+  its menu, the `----AppNotificationActivated:` argument) and `chrome_host.cpp` meet a compiler in
+  CI only. Not run: anything in the app.
+- **Owed:** the issue's verify on two machines per platform (notification within ~2 s, click opens
+  the code, Accept saves); the windowless idle measurement in the app against `"[.sharepoint-idle]"`
+  (Keep receiving 0.020 %); note that a hidden viewer window is occluded, and the Mac render loop
+  polls occlusion every 200 ms (`k_occlusion_poll_ms`), which is in that number; with it off, no
+  process after quitting and no beacon seen by the other machine; start at login (not built).
+
+### Sharepoint, AirDrop-smooth (issue #442, 2026-10-15)
+
+What changed is in [docs/design/28](design/28-sharepoint.md): the AirDrop-like window on both
+hosts and the screen vocabulary it added (`tiles`, card, ring, code field, display text); the
+sender types the code the receiver shows (three wrong codes end the link); received files go to
+Downloads and Save to is kept; Keep receiving is kept across launches with **Sharepoint:
+receiving** in the command bar; the receiver checks file N while N+1 arrives; the share icon no
+longer waits for an earlier selection; Windows screen windows have the app icon, a size floor and
+an owner, and Settings shows each add-on as one card.
+
+- **Mac (M-series, Mac17,4):** `MediaViewer.app`, the Swift chrome and `libmv_sharepoint.dylib`
+  build. `mv_import_tests` 150 cases and `mv_tests` 850 (839 passed, 11 skipped) pass;
+  `"[sharepoint]"` 33 cases and `"[screens]"` 13. ThreadSanitizer: `"[sharepoint]"` four runs at
+  once, 0 reports; `"[screens]"` 0. `test_addon_pack.py` passes.
+- **Measured (Mac):** `"[.sharepoint-bench]"` (loopback, alternated with the base three times):
+  500 × 2 MiB 124–141 → 158–180 MB/s, 1 GiB unchanged (crypto-bound); `"[.sharepoint-idle]"`
+  Keep receiving on, window closed: 0.020 % CPU, 6.4 switches a second, no present (off 0.0003 %).
+  The PR 1 gate (`frametime --seconds 60`) passed alone (3599 frames, p99 16.8 ms, max 16.9 ms,
+  idle 0 presents, 0.042 %) and with Sharepoint sending over loopback in another process the whole
+  time (p99 16.8 ms, max 16.8 ms, idle 0 presents, 0.037 %).
+- **Seen on the Mac:** every state of the window drawn by the chrome's own `ScreenNodeView` (light
+  and dark) in a scratch render harness, and the window opened in a dev copy of the app, offline
+  (`MV_SHAREPOINT_OFFLINE=1`, dev-signed, files handed over through `mv_chrome_slots_invoke`).
+- **Windows:** the C# compiles (warnings are errors). `net_win.cpp`'s Downloads lookup and lock
+  meet a compiler in CI only. Not run: the window's look, its icon, Settings' cards, the stall fix
+  in the app.
+- **Owed:** two machines (Wi-Fi and Bluetooth MB/s against a plain copy, typing the code, Keep
+  receiving after a relaunch seen from the other machine), Bluetooth's idle cost with Keep
+  receiving on, Windows screenshots and an ETW trace of the share icon on 500 items, the Windows
+  PR 1 gate, VoiceOver and Narrator over the new tiles and code field.
+
 ### Local search: ask before resuming an interrupted index (issue #299, 2026-10-11)
 
 A quit or a kill part-way through indexing no longer carries on, or loads the pack, at the next
@@ -1981,10 +2276,44 @@ the full suite: 597 cases, 8 skipped for the absent RAW corpus). `pdf_win.cpp`,
 
 **DOCX (slices 4–5):** pages laid out and drawn by `codec/docx.cpp` over HarfBuzz and FreeType
 (new vcpkg ports), with fonts found through CoreText / DirectWrite. Text, styles, lists, tables,
-pictures and breaks; not headers, footers, footnotes, text boxes or columns (docs/design/04).
-Measured on the Mac (`mv_tests "[docx]"`; a `textutil`-written DOCX rendered by
-`MV_DOCX_DUMP=out.jpg MV_DOCX_FILE=x.docx mv_tests "[.docx-dump]"` and looked at). The Windows font
-lookup (`fonts_win.cpp`) and the DLLs' packaging are compiled and staged by CI only.
+pictures and breaks; since issue #429 also headers and footers with page fields, footnotes and
+endnotes, columns, floating pictures and shapes with text wrap, text boxes and right-to-left text
+(the shared layout is `codec/doclayout`); not comments (docs/design/04). Measured on the Mac
+(`mv_tests "[docx]"`; a `textutil`-written DOCX rendered by
+`MV_DOCX_DUMP=out.jpg MV_DOCX_FILE=x.docx mv_tests "[.docx-dump]"` and looked at; the #429 verify
+report by `MV_DOCX_REPORT=1 MV_DOCX_PAGE=0 MV_DOCX_DUMP=out.jpg`, its bytes kept with
+`MV_DOCX_SAVE=report.docx`; `mv_tests "[.docx-mutate]"` damages a package's bytes and its XML).
+The Windows font lookup (`fonts_win.cpp`) and the DLLs' packaging are compiled and staged by CI
+only.
+
+**PPTX (issue #429, D5 amended 2026-10-15):** a slide a page, drawn by `codec/pptx.cpp` over the
+DOCX zip / XML / `codec/doclayout` path; what is and is not drawn is in docs/design/04 and the
+file's header. Only the slide being drawn is parsed (with its layout, master and theme). Tests:
+`mv_tests "[pptx]"`, `"[.pptx-mutate]"` (package bytes and slide XML, also clean under
+`-DMV_ASAN=ON`), the seed `tests/data/seeds/pptx/small.pptx` (`make-seeds.py pptx_small()`) for
+`tools/fuzz/fuzz_pptx.cpp` and the Windows broken-corpus sweep. A slide is looked at with the DOCX
+dump: `MV_DOCX_DUMP=out.jpg MV_DOCX_FILE=deck.pptx MV_DOCX_PAGE=n mv_tests "[.docx-dump]"`.
+
+**Page sidebar (issue #429):** both hosts, `Shift+T`, docs/design/04 "Page sidebar" and
+docs/design/16. Core: `codec::decode_pages` (PDF opened once, DOCX laid out once, PPTX slides
+parsed one by one), `image::make_page_thumbs` / `page_thumb_book`; Windows ABI 0.32
+`mv_folder_page_thumbs`. Tests: `mv_tests "[page-sidebar]"`. Numbers:
+`MV_BENCH_DOC=file mv_tests "[.perf-bench][page-sidebar]"` prints a JSON line (8 thumbnails cold
+at the top and at the far end, and a jump to page 250: the cached thumbnail's first pixel, then the
+full page). Measured 2026-10-16 on the Mac (M-series, release build), medians of 5:
+
+| Document | 8 thumbnails cold | jump: first pixel | jump: full page |
+|---|---|---|---|
+| PDF, 300 pages (`cupsfilter` text) | 5.3 ms | 0.22 ms | 3.4 ms |
+| DOCX, 78 pages (`textutil`) | 56 ms | 0.11 ms | 40 ms |
+| PPTX, 100 slides (pictures, table) | 5.3 ms | 0.22 ms | 7.3 ms |
+
+The machine was shared with other builds (load average 18–33) for later runs, which spread the
+DOCX numbers to 190–300 ms; the table is the first, quietest run. A DOCX page past the first lays
+out the whole document, as before #429. **Not done yet:** the Windows half (native `main.cpp`,
+`chrome_host`, ABI) is compiled by CI only and has not been run; the PR 1 present-loop soak while
+flinging the sidebar has not been run on either platform; first pixel of a document open is
+unchanged in code (the open path does not touch the sidebar) but was not re-measured.
 
 **Culling (issue #207):** `X` reject, colour labels on keypad / `Ctrl+Shift` `6`–`9`, `U`
 to clear, and the pane's Label swatches, on both hosts through PR 12's writer and sidecar rule

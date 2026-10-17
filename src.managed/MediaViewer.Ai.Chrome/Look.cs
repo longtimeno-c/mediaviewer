@@ -343,6 +343,21 @@ internal sealed class Look
                 // After the pictures, the pack reads a clip's own text, then the
                 // text in pictures (before sound and speech, which have their own line).
                 bool picturesDone = s.AssetsDone + s.AssetsFailed + s.AssetsUnavailable + s.CloudFilesLeft >= s.AssetsTotal;
+                // #354: documents' words come straight after the pictures.
+                if (picturesDone && s.DocsDone < s.DocsTotal)
+                {
+                    return $"Reading documents {n(s.DocsDone)} of {n(s.DocsTotal)}";
+                }
+                // #354 D2: then their pages' pictures (Words and pages).
+                if (picturesDone && s.PagesDone < s.PagesTotal)
+                {
+                    return $"Looking at document pages {n(s.PagesDone)} of {n(s.PagesTotal)}";
+                }
+                // #354 D3: then their passages by meaning (the Documents piece).
+                if (picturesDone && s.MeaningDone < s.MeaningTotal)
+                {
+                    return $"Understanding documents {n(s.MeaningDone)} of {n(s.MeaningTotal)}";
+                }
                 if (picturesDone && s.CuesDone < s.CuesTotal)
                 {
                     return $"Reading chapters and subtitles {n(s.CuesDone)} of {n(s.CuesTotal)} clips";
@@ -354,7 +369,10 @@ internal sealed class Look
                 // Online-only files wait for the fetch: they are not "of" the work in hand.
                 return $"Indexing {n(s.AssetsDone)} of {n(s.AssetsTotal - Math.Min(s.AssetsTotal, s.CloudFilesLeft))}" + Eta(s);
             default:
-                string done = s.FramesIndexed == 0 ? "Nothing indexed yet" : $"Up to date · {n(s.FramesIndexed)} moments";
+                string done = s.FramesIndexed == 0 && s.DocsTotal == 0 ? "Nothing indexed yet" : $"Up to date · {n(s.FramesIndexed)} moments";
+                // #354: the documents read for their words, and any skipped behind a password.
+                if (s.DocsTotal > 0) done += s.DocsTotal == 1 ? " · 1 document" : $" · {n(s.DocsTotal)} documents";
+                if (s.DocsLocked > 0) done += s.DocsLocked == 1 ? " · 1 protected document skipped" : $" · {n(s.DocsLocked)} protected documents skipped";
                 return s.CloudFilesLeft > 0 ? $"{done} · {n(s.CloudFilesLeft)} only in OneDrive" : done;
         }
     }
@@ -426,13 +444,6 @@ internal sealed class Look
         long sec = Math.Max(0, ms) / 1000;
         return sec >= 3600 ? $"{sec / 3600}:{sec / 60 % 60:00}:{sec % 60:00}" : $"{sec / 60}:{sec % 60:00}";
     }
-
-    public static string Size(long bytes) => bytes switch
-    {
-        >= 1_000_000_000 => $"{bytes / 1e9:0.0} GB",
-        >= 1_000_000 => $"{bytes / 1e6:0} MB",
-        _ => $"{Math.Max(0, bytes) / 1000} KB",
-    };
 }
 
 /// <summary>Win32 bits the add-on's own windows need: owner, placement, corners.</summary>

@@ -43,6 +43,8 @@ enum MvMenuCmd : int32_t {
   kMenuShowBlue, kMenuShowPurple,
   // Issue #210: File > Rename… (F2).
   kMenuRename,
+  // Issue #429: View > Page Sidebar (Shift+T).
+  kMenuPageSidebar,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 
@@ -161,6 +163,16 @@ void mv_chrome_set_thumb_ready_callback(mv_chrome_thumb_ready_fn callback);
 // A no-op if `index` is out of range.
 void mv_chrome_request_thumb(int32_t index);
 
+// Issue #429, the page sidebar. The host tells the sidebar what to show
+// through MVChromeHost (setPageSidebar(count:current:serial:), and
+// pageThumbReady(serial:page:path:) as each thumbnail lands); these are its
+// two calls back. request_page_thumbs: the pages the strip shows,
+// `first` .. `first + count - 1` (a background job renders the ones not
+// cached; a later call replaces the window). select_page: show that page,
+// as Ctrl+PageDown would. [main-thread]
+void mv_chrome_request_page_thumbs(int32_t first, int32_t count);
+void mv_chrome_select_page(int32_t page);
+
 // G toggles this from keyDown: (main_mac.mm); Swift polls it (a plain bool,
 // not worth a push channel the way thumbnails are) to decide whether to show
 // the gallery view it already hosts.
@@ -209,6 +221,12 @@ bool mv_chrome_is_marked(int32_t index);
 // path and Share act on it. The host clears it on any other selection, a
 // relist, another folder, or the grid closing (the generation moves).
 void mv_chrome_gallery_set_range(const int32_t* indices, int32_t count);
+// Issue #444 (docs/design/16 "Share"): run the one share command. `target` is
+// shell::share_target (0 the menu, 1 Sharepoint, 2 the system picker), `from`
+// shell::share_from (0 key, 1 bar, 2 gallery icon, 3 right-click), `clicked`
+// the right-clicked item or -1. The host answers through
+// MVChromeHost.presentShare. [main-thread]
+void mv_chrome_share(int32_t target, int32_t from, int32_t clicked);
 uint64_t mv_chrome_gallery_range_generation(void);
 int32_t mv_chrome_gallery_range_count(void);
 
@@ -457,7 +475,8 @@ void mv_chrome_open_photos_library(void);
 
 // docs/design/26 "Backup": every original of the Photos library (iCloud Photos and
 // the Hidden album included; a Live Photo's video and a RAW+JPEG pair's RAW
-// too) copied, verified, into <destination>/YYYY/YYYY-MM-DD. Originals only
+// too) copied, verified, into <destination> in the chosen layout (YYYY/YYYY-MM-DD
+// by default; issue #414). Originals only
 // iCloud has are downloaded for it. A manifest in the destination makes the
 // next run copy only what is new or missing. One run at a time; it survives
 // Settings closing and is cancelled at quit (nothing half-written is left).
@@ -482,6 +501,11 @@ void mv_chrome_photos_backup_cancel(void);
 void mv_chrome_photos_backup_progress(mv_chrome_photos_backup* out);
 // The destination last used (persisted); length needed, "" when none.
 int32_t mv_chrome_photos_backup_destination(char* buf, int32_t size);
+// The folders new files go into (persisted beside the destination; issue #414):
+// 0 YYYY/YYYY-MM-DD (default), 1 YYYY, 2 YYYY/MM/DD, 3 YYYY-MM-DD, 4 flat.
+// Used by the next start; files already backed up are never moved.
+int32_t mv_chrome_photos_backup_layout(void);
+void mv_chrome_set_photos_backup_layout(int32_t layout);
 // The last run that finished, this session or an earlier one (persisted:
 // finished_unix, done, skipped, failed, state). False when there was none.
 bool mv_chrome_photos_backup_last(mv_chrome_photos_backup* out);
@@ -552,6 +576,17 @@ int32_t mv_chrome_slots_screens(char* buf, int32_t size);
 int32_t mv_chrome_slots_search_results(uint32_t scope, char* buf, int32_t size);  // 1 files, 2 local
 int32_t mv_chrome_slots_badges(char* buf, int32_t size);
 int32_t mv_chrome_slots_status(char* buf, int32_t size);
+// #452: {"ask","keep":[{"addon","screen","title","label"}],"notices":[{"addon","id","screen",
+// "title","body","action","action_label","revision"}]} (change bit 64), and a notice's button.
+int32_t mv_chrome_slots_notices(char* buf, int32_t size);
+bool mv_chrome_slots_notice_action(const char* addon, const char* notice, const char* action);
+// #452 (src/shell/main_mac.mm): the viewer comes back from the background, the
+// process quits for real (the menu-bar item's Quit), the keep-alive list
+// changed, and an add-on window is coming forward (the Dock icon returns). [main-thread]
+void mv_chrome_background_show_viewer(void);
+void mv_chrome_background_quit(void);
+void mv_chrome_background_changed(void);
+void mv_chrome_background_window_shown(void);
 uint64_t mv_chrome_slots_request_info(const char* path, const char* location_text,
                                       const mv_chrome_slot_theme* theme, float width, float scale);
 void mv_chrome_slots_clear_info(void);
@@ -668,10 +703,10 @@ void mv_chrome_set_home_theme(bool active, const mv_home_palette* dark, const mv
 void mv_chrome_ground_input(void);
 
 // Milestone H (docs/design/17): the same management by add-on id, for the AI pack
-// ("ai" = Core, "ai-faces" = People, "ai-audio" = Sound) beside Import. Also addons_mac.mm. The
-// mv_addons_* functions above stay Import's, unchanged. mv_addons_check_manifest
-// now also reports "id", "part_of" and "installed_size"; mv_addons_install and
-// mv_addons_make_staging / mv_addons_sha256 serve every add-on.
+// ("ai" = Core, "ai-faces" = People, "ai-audio" = Sound, "ai-docs" = Documents) beside Import.
+// Also addons_mac.mm. The mv_addons_* functions above stay Import's, unchanged.
+// mv_addons_check_manifest now also reports "id", "part_of" and "installed_size";
+// mv_addons_install and mv_addons_make_staging / mv_addons_sha256 serve every add-on.
 // False for "ai-cuda" (Windows only) and, on an Intel Mac, for the whole AI
 // family: ONNX Runtime ships no x86_64 macOS build, so Local search is hidden.
 bool mv_addon2_supported(const char* id);

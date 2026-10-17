@@ -50,7 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 30 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: issue #226 mv_folder_entries; 0.21: mv_folder_renamed; 0.22: mv_folder_set_kind_filter; 0.23: cull bits and mv_folder_note_metadata_written; 0.24: docs/design/25 PR 56 settings pages and keymap packs (mv_addon_settings_*, mv_open_addon_keymap_json); 0.25: docs/design/25 PRs 58-59 screens and slots (mv_slots_*, host table v3, #348); 0.26: docs/design/25 PR 57 script add-ons (mv_script_*); 0.27: #352 mv_meta_parse_location; 0.28: #291 mv_folder_tag_search; 0.29: #410 mv_slots_command (a slot add-on's manifest command); 0.30: #402 slot add-ons in every window (mv_addon_load_guest, mv_addon_slot_addons_json) */
+#define MV_ABI_VERSION_MINOR 33 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: issue #226 mv_folder_entries; 0.21: mv_folder_renamed; 0.22: mv_folder_set_kind_filter; 0.23: cull bits and mv_folder_note_metadata_written; 0.24: docs/design/25 PR 56 settings pages and keymap packs (mv_addon_settings_*, mv_open_addon_keymap_json); 0.25: docs/design/25 PRs 58-59 screens and slots (mv_slots_*, host table v3, #348); 0.26: docs/design/25 PR 57 script add-ons (mv_script_*); 0.27: #352 mv_meta_parse_location; 0.28: #291 mv_folder_tag_search; 0.29: #410 mv_slots_command (a slot add-on's manifest command); 0.30: #402 slot add-ons in every window (mv_addon_load_guest, mv_addon_slot_addons_json); 0.31: #441 place terms (mv_slots_place_terms, host table place_matches); 0.32: #429 page sidebar (mv_folder_page_thumbs, mv_folder_page_thumb_path, MV_COMPLETION_PAGE_THUMB_READY); 0.33: #452 add-on notices and keep-alive (mv_slots_notices_json, mv_slots_notice_action; host table notice_post / notice_authorize / keep_alive) */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -169,7 +169,11 @@ typedef enum mv_completion_kind {
    * the end of a clip, device loss. */
   MV_COMPLETION_VIDEO_STATE = 9,
   /* PR 26. payload = subfolder index. Cover thumb path is then readable. */
-  MV_COMPLETION_FOLDER_SUMMARY = 10
+  MV_COMPLETION_FOLDER_SUMMARY = 10,
+  /* 0.32 (#429). 11 and 12 are mediaviewer_clip.h's. payload = page;
+   * generation = the page-thumb serial of mv_folder_page_thumbs. The page's
+   * thumbnail path is then readable with mv_folder_page_thumb_path. */
+  MV_COMPLETION_PAGE_THUMB_READY = 13
 } mv_completion_kind;
 
 typedef struct mv_completion {
@@ -331,6 +335,25 @@ MV_API mv_status MV_CALL mv_folder_select_page(mv_session_t session, uint32_t pa
  * thumb, just not visible-first. */
 MV_API mv_status MV_CALL mv_folder_thumbs_visible(mv_session_t session, uint32_t first,
                                                   uint32_t count);
+
+/* 0.32 [any-thread][no-block] The page sidebar (issue #429): thumbnails of
+ * pages `first` .. `first + count - 1` of the selected stop (a PDF or DOCX),
+ * made by one background job from one open of the file and kept in the
+ * thumbnail cache (pages past the end are skipped). Asking again for pages
+ * already made or in flight costs nothing; a request replaces the wanted
+ * window, so pages an earlier request asked for and that have scrolled away
+ * are not rendered. Each page lands as MV_COMPLETION_PAGE_THUMB_READY with
+ * payload = page and generation = `*out_serial`, which changes whenever the
+ * selected stop does: a completion with another serial is stale. */
+MV_API mv_status MV_CALL mv_folder_page_thumbs(mv_session_t session, uint32_t first,
+                                               uint32_t count, uint32_t* out_serial);
+
+/* 0.32 [any-thread][no-block] The JPEG path of page `page`'s thumbnail of the
+ * selected stop, UTF-8, copied like mv_folder_item_thumb_path.
+ * MV_ERR_NOT_FOUND until its MV_COMPLETION_PAGE_THUMB_READY. */
+MV_API mv_status MV_CALL mv_folder_page_thumb_path(mv_session_t session, uint32_t page,
+                                                   char* utf8, uint32_t cap,
+                                                   uint32_t* out_bytes);
 
 /* [any-thread][no-block] Ends the directory or result list: nothing is listed
  * afterwards. Pushes MV_COMPLETION_FOLDER_READY with payload 0, so a host

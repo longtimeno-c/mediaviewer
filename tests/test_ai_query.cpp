@@ -110,7 +110,9 @@ TEST_CASE("query: leaving things out", "[ai][query]") {
   CHECK(p.not_phrases == std::vector<std::string>{"goodbye"});
 
   p = run("-video Tristan");
-  CHECK(p.kinds == (1u | 8u));  // photos and audio files (#355; none while they are not shown)
+  // Photos, documents and audio files (#354, #355; none of the last two while
+  // they are not shown).
+  CHECK(p.kinds == (1u | 4u | 8u));
   p = run("-@nic beach");
   CHECK(p.not_people == std::vector<std::int64_t>{2});
   // A hyphenated word and a lone dash are not exclusions.
@@ -171,7 +173,60 @@ TEST_CASE("query: kinds, first or last, or is:", "[ai][query]") {
   CHECK(p.kinds == 0);
   CHECK(p.text == "piano music");
   p = run("red -is:audio");
-  CHECK(p.kinds == (1u | 2u));
+  CHECK(p.kinds == (1u | 2u | 4u));
+}
+
+TEST_CASE("query: documents, is:pdf and text:", "[ai][query]") {
+  // #354: "documents", "docs", "pdf" and "pdfs" filter where a kind word does;
+  // "document", "word" only after is:, since "word" is a word to find.
+  auto p = run("lease documents");
+  CHECK(p.kinds == 4u);
+  CHECK(p.text == "lease");
+  p = run("documents about tax");
+  CHECK(p.kinds == 4u);
+  p = run("invoice pdf");
+  CHECK(p.kinds == 4u);
+  CHECK(p.text == "invoice");
+  CHECK(p.extensions.empty());  // bare, any document
+  p = run("is:document lease");
+  CHECK(p.kinds == 4u);
+  CHECK(p.text == "lease");
+  p = run("word count");
+  CHECK(p.kinds == 0);
+  CHECK(p.text == "word count");
+  p = run("is:pdf");
+  CHECK(p.kinds == 4u);
+  CHECK(p.extensions == std::vector<std::string>{"pdf"});
+  p = run("is:docx contract");
+  CHECK(p.kinds == 4u);
+  CHECK(p.extensions == std::vector<std::string>{"docx"});
+  CHECK(p.text == "contract");
+  p = run("is:word");
+  CHECK(p.extensions == std::vector<std::string>{"docx"});
+  p = run("beach -is:document");
+  CHECK(p.kinds == (1u | 2u | 8u));
+
+  // Where a phrase must be: anywhere ("quoted"), said: a clip, text: / says: a
+  // document.
+  p = run("\"invoice 4471\" text:lease says:\"net 30\" said:hello");
+  REQUIRE(p.phrases.size() == 4);
+  REQUIRE(p.phrase_where.size() == 4);
+  CHECK(p.phrases[0] == "invoice 4471");
+  CHECK(p.phrase_where[0] == q::phrase_in::anywhere);
+  CHECK(p.phrases[1] == "lease");
+  CHECK(p.phrase_where[1] == q::phrase_in::documents);
+  CHECK(p.phrases[2] == "net 30");
+  CHECK(p.phrase_where[2] == q::phrase_in::documents);
+  CHECK(p.phrase_where[3] == q::phrase_in::said);
+  CHECK(p.text.empty());
+  p = run("-text:draft beach");
+  CHECK(p.not_phrases == std::vector<std::string>{"draft"});
+  REQUIRE(p.not_phrase_where.size() == 1);
+  CHECK(p.not_phrase_where[0] == q::phrase_in::documents);
+  CHECK(p.text == "beach");
+  p = run("text:");  // still being typed: nothing
+  CHECK(p.phrases.empty());
+  CHECK(p.text.empty());
 }
 
 TEST_CASE("query: dates are the file's, in UTC", "[ai][query]") {

@@ -38,18 +38,8 @@ public static partial class IslandHost
     {
         try
         {
-            if (arg == IntPtr.Zero || sizeBytes < FilmstripArgsSize) return unchecked((int)0x80070057);
-            ChromeFilmstripArgs args = Marshal.PtrToStructure<ChromeFilmstripArgs>(arg);
-            IntPtr parent = checked((IntPtr)args.ParentHwnd);
-            if (parent == IntPtr.Zero) return unchecked((int)0x80070057);
-
-            EnsureApp();
-            _context = checked((IntPtr)args.Context);
-            if (args.OnCommand != 0)
-            {
-                _onCommand = Marshal.GetDelegateForFunctionPointer<NativeCommand>(
-                    checked((IntPtr)args.OnCommand));
-            }
+            int hr = BeginAttach(arg, sizeBytes, out ChromeFilmstripArgs args, out IntPtr parent);
+            if (hr != 0) return hr;
 
             if (args.Session != 0)
             {
@@ -60,16 +50,11 @@ public static partial class IslandHost
                 StartVideoControls(parent);
             }
 
-            DisposeSource(ref _filmstrip);
-            _filmstrip = new DesktopWindowXamlSource();
-            EnsureFocusHook();
-            _filmstrip.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
-            _filmstrip.TakeFocusRequested += OnTakeFocusRequested;  // Tab on (issue #217)
             // Park with no content, same as the gallery. Building the repeater
             // here and then immediately hiding it left an ItemsRepeater bound
             // to `Items`; the first folder-open show bound a second one and
             // AccessViolation'd in set_ItemsSource.
-            Move(_filmstrip, 1, 1, args.ClientHeight);
+            Move(NewIsland(ref _filmstrip, parent, takeFocus: true), 1, 1, args.ClientHeight);
             return 0;
         }
         catch (Exception ex)
@@ -113,6 +98,7 @@ public static partial class IslandHost
             _filmstripRoot = null;
             Items.Clear();
             _selectedIndex = -1;
+            UpdateBarShareButton();
             SetBusy(false);
             return 0;
         }
@@ -178,6 +164,7 @@ public static partial class IslandHost
         bool? busy = null;
         bool video = false;
         bool itemChanged = false;
+        bool imageOpened = false;
         foreach (var c in _folderSession.Drain())
         {
             if (AddonCompletion.TryFrom(c, out AddonCompletion addon))
@@ -200,6 +187,10 @@ public static partial class IslandHost
                 int index = (int)c.Payload;
                 UpdateThumb(index);
             }
+            else if (c.Kind == MvCompletionKind.PageThumbReady && c.Status == MvStatus.Ok)
+            {
+                OnPageThumbReady(c.Generation, (int)c.Payload);  // issue #429 (IslandHost.PageSidebar.cs)
+            }
             else if (c.Kind == MvCompletionKind.FolderSummary)
             {
                 ApplyFolderSummary((int)c.Payload);
@@ -216,6 +207,7 @@ public static partial class IslandHost
                 // there is nothing left to wait for.
                 busy = false;
                 video = true;
+                if (c.Kind == MvCompletionKind.ImageOpened && c.Status == MvStatus.Ok) imageOpened = true;
             }
             else if (c.Kind is MvCompletionKind.VideoState or MvCompletionKind.VideoEnded)
             {
@@ -233,6 +225,11 @@ public static partial class IslandHost
         if (busy is bool want) SetBusy(want);
         if (video) UpdateVideoControls();
         if (itemChanged) NotifySearchItem();  // Milestone H (IslandHost.LocalSearch.cs)
+        // Issue #429: native learns the page count of what opened (it does not
+        // drain while we are attached). Queued, not sent from inside the drain,
+        // for FolderReady's reason (ReloadItems): native may show the sidebar.
+        if (imageOpened && _dispatcher is not null)
+            _dispatcher.DispatcherQueue.TryEnqueue(() => Send(Command.ImageOpened));
     }
 
     private static void ReloadItems()
@@ -271,6 +268,7 @@ public static partial class IslandHost
             if (Items[i].Selected) { selected = i; break; }
         }
         _selectedIndex = selected;
+        UpdateBarShareButton();
         if (selected >= 0) ScrollTo(selected);
         ReloadFolders();
         UpdateGalleryCount();
@@ -278,22 +276,33 @@ public static partial class IslandHost
         // this is how it learns a listing landed. Do not Send synchronously:
         // FolderReady -> apply_view_state -> ShowFilmstrip -> BuildFilmstrip
         // re-entered from DrainFolder and AccessViolation'd in set_ItemsSource.
+        // Issue #443: a result list's view (the panel's Enter or Ctrl+Enter) is
+        // applied after native has heard FolderReady, not before. Native learns
+        // there that a list landed, and a list opened over the empty window
+        // (a later window's first search) is what moves it off "nothing open";
+        // a ToggleGallery sent ahead of that was refused, so the grid and the
+        // strip never showed the results.
         int listed = Items.Count;
+        _listOpen = list;
         if (_dispatcher is not null)
-            _dispatcher.DispatcherQueue.TryEnqueue(() => Send(Command.FolderReady, listed));
+        {
+            _dispatcher.DispatcherQueue.TryEnqueue(() =>
+            {
+                Send(Command.FolderReady, listed);
+                if (list) ApplyPendingListView();
+            });
+        }
         else
+        {
             Send(Command.FolderReady, listed);
+            if (list) ApplyPendingListView();
+        }
 
         // Milestone H: Local search learns the folder (its index offer and
         // "This folder" scope), and a list asked for from the panel shows in
-        // the view it asked for.
-        _listOpen = list;
+        // the view it asked for (above, once FolderReady is sent).
         bool newFolder = false;
-        if (list)
-        {
-            ApplyPendingListView();
-        }
-        else
+        if (!list)
         {
             _pendingListGallery = null;
             string dir = _folderSession.FolderDirectory;
@@ -369,6 +378,7 @@ public static partial class IslandHost
         if (_selectedIndex >= 0 && _selectedIndex < Items.Count) Items[_selectedIndex].Selected = false;
         if (index >= 0 && index < Items.Count) Items[index].Selected = true;
         _selectedIndex = index;
+        UpdateBarShareButton();
         ScrollTo(index);
         GalleryScrollTo(index);
         AnnounceSelection(index);
@@ -477,16 +487,8 @@ public static partial class IslandHost
                 Child = col,
             };
 
-            void SetThumb()
-            {
-                if (string.IsNullOrEmpty(vm.ThumbPath)) return;
-                try
-                {
-                    // Enough for a 2x-DPI fill crop, not the full JPEG-512 disk thumb.
-                    image.Source = new BitmapImage(new Uri(vm.ThumbPath)) { DecodePixelWidth = FilmstripDecodeWidth };
-                }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
-            }
+            // Enough for a 2x-DPI fill crop, not the full JPEG-512 disk thumb.
+            void SetThumb() => ShowTileImage(image, vm.ThumbPath, FilmstripDecodeWidth);
             SetThumb();
 
             void OnChanged(object? _, System.ComponentModel.PropertyChangedEventArgs e)
@@ -495,10 +497,7 @@ public static partial class IslandHost
                 if (e.PropertyName is nameof(FolderItemVm.Selected) or null)
                     border.BorderThickness = new Thickness(vm.Selected ? 2 : 0);
             }
-            vm.PropertyChanged += OnChanged;
-            // Recycling without this leaks a handler per realisation (as the
-            // gallery's factory notes), keeping every tile arrowed past alive.
-            border.Tag = (Action)(() => vm.PropertyChanged -= OnChanged);
+            BindTile(border, vm, OnChanged);
 
             border.Tapped += (_, _) => Send(Command.SelectItem, vm.Index);
             // docs/design/25, issue #402: the add-ons' context-menu entries, as on the
@@ -509,14 +508,7 @@ public static partial class IslandHost
             return border;
         }
 
-        public void RecycleElement(ElementFactoryRecycleArgs args)
-        {
-            if (args.Element is Border { Tag: Action unsubscribe })
-            {
-                unsubscribe();
-                ((Border)args.Element).Tag = null;
-            }
-        }
+        public void RecycleElement(ElementFactoryRecycleArgs args) => UnbindTile(args.Element);
     }
 }
 

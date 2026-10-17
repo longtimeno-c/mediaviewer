@@ -111,9 +111,9 @@ module, NLE or movie player; the larger editing surfaces are their own documents
 | Containers | MP4/M4V, MOV, MKV, WebM, AVI, TS |
 | Video codecs | H.264, HEVC, VP9, AV1, MPEG-2; **on macOS also Apple ProRes** (422 and 4444, in MOV) |
 | Audio | MP3, M4A (AAC/ALAC); M4P is recognised and shown with a padlock, never played (FairPlay) |
-| Documents | PDF, DOCX — one navigation stop per file, pages inside it |
+| Documents | PDF, DOCX, PPTX — one navigation stop per file, pages (slides) inside it |
 
-Audio and documents joined the set on 2026-10-03 at the owner's request: an audio file plays through the clip path with its cover art (or a card) as the picture, and a document's pages render as stills. They are declared to the OS for Open With only, never made the default. AVIF is in the set because dav1d already ships for AV1 video. ProRes is Mac-only because Apple silicon
+Audio and documents joined the set on 2026-10-03 at the owner's request: an audio file plays through the clip path with its cover art (or a card) as the picture, and a document's pages render as stills. They are declared to the OS for Open With only, never made the default. PPTX joined on 2026-10-15 (owner, issue #429): one slide per page, drawn by our own layout over the DOCX zip/XML/HarfBuzz/FreeType path, under the same rules as DOCX. AVIF is in the set because dav1d already ships for AV1 video. ProRes is Mac-only because Apple silicon
 decodes it in hardware through VideoToolbox (decoded as 10-bit 4:2:0); on Windows it would be a software
 decode not measured to hold 4K pacing. Formats are probed by magic bytes, never extension, and adding
 one is one decoder file plus one registry line ([04-image-pipeline.md](04-image-pipeline.md)).

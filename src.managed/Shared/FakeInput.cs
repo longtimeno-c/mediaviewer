@@ -496,9 +496,9 @@ internal class FakeInput : ContentControl
         else
         {
             int start = SelStart, end = SelEnd;
-            _before.Text = _text[..start];
-            _selected.Text = _text[start..end];
-            _after.Text = _text[end..];
+            _before.Text = Shown(_text[..start]);
+            _selected.Text = Shown(_text[start..end]);
+            _after.Text = Shown(_text[end..]);
         }
         Brush ink = empty ? _look.Body() : _look.Title();
         _before.Foreground = ink;
@@ -528,6 +528,15 @@ internal class FakeInput : ContentControl
         _inner.BorderBrush = focused ? (_look.Accent?.Invoke() ?? _look.Title()) : _look.Hairline();
         _inner.BorderThickness = new Thickness(1);
     }
+
+    /// <summary>
+    /// What a run draws for <paramref name="part"/>: spaces as no-break spaces
+    /// (U+00A0, the same advance). A TextBlock leaves trailing white space out of
+    /// the width it measures, so in "beach " the caret, the next run in the row,
+    /// sat against the "h" and the space showed only once "d" followed it
+    /// (issue #443). <see cref="Text"/> keeps plain spaces; only the drawing changes.
+    /// </summary>
+    private static string Shown(string part) => part.Replace(' ', '\u00A0');
 
     private void StartCaret()
     {

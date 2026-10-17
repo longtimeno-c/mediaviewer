@@ -43,6 +43,11 @@ struct RootRow: Identifiable, Equatable {
   var held = false
   // #355: the audio files among `assets` (0 while "Show audio files" is off).
   var audio: Int64 = 0
+  // #354: its Documents choice (MV_AI_DOCS_*), and its documents (not among
+  // `assets`) and those read.
+  var docs: UInt32 = 0
+  var documents: Int64 = 0
+  var documentsDone: Int64 = 0
   var isPhotos: Bool { kind == "photos" }
 }
 
@@ -96,6 +101,12 @@ final class ManagementModel: ObservableObject {
   @Published private(set) var flags: UInt32 = 0
   /// #355: File types "Show audio files", as the host last sent it.
   @Published var audioFiles = false
+  /// #354: File types "Show documents", as the host last sent it.
+  @Published var documentFiles = false
+  /// #354: Settings "Documents": 0 Off, 1 Words (the default), 2 Words and pages.
+  @Published private(set) var docIndex: Int = 1
+  /// The pack's PDFium loaded: PDFs can be read on this Mac.
+  @Published private(set) var pdfAvailable = true
   @Published private(set) var compute: Int = 0
   @Published private(set) var quality: Int = 0
   /// Settings "Precision": 0 broader … 2 as calibrated … 4 stricter.
@@ -120,6 +131,17 @@ final class ManagementModel: ObservableObject {
   @Published private(set) var videoIndex: Int = 1
   /// The Sound piece (ai-audio) is installed and loaded.
   @Published private(set) var audioReady = false
+  /// #354 D3: the Documents piece (ai-docs) is loaded: document words also
+  /// match by meaning, with this text model.
+  @Published private(set) var docsReady = false
+  @Published private(set) var docsModel = ""
+  /// The sentence under "Index documents for": whether Words also matches by
+  /// meaning, or that the Documents piece would add it ("" while Off).
+  var docsMeaningHint: String {
+    guard docIndex != 0 else { return "" }
+    guard docsReady else { return " With the Documents piece, Words also matches by meaning." }
+    return docsModel.isEmpty ? " Words also match by meaning." : " Words also match by meaning (\(docsModel))."
+  }
   @Published private(set) var models: [(quality: Int, name: String)] = []
   @Published private(set) var roots: [RootRow] = []
   var folderRoots: [RootRow] { roots.filter { !$0.isPhotos } }
@@ -232,10 +254,11 @@ final class ManagementModel: ObservableObject {
     if s.flags != flags {
       let facesChanged = (s.flags ^ flags) & (MV_AI_STATUS_FACES_READY | MV_AI_STATUS_FACES_ON) != 0
       let audioChanged = (s.flags ^ flags) & MV_AI_STATUS_AUDIO_READY != 0
+      let docsChanged = (s.flags ^ flags) & MV_AI_STATUS_DOCS_READY != 0
       flags = s.flags
-      // The People or Sound piece came or went (installed, removed, or the
-      // opt-in flipped): the view follows now, not at the next start.
-      if facesChanged || audioChanged { reloadSettings() }
+      // The People, Sound or Documents piece came or went (installed, removed,
+      // or the opt-in flipped): the view follows now, not at the next start.
+      if facesChanged || audioChanged || docsChanged { reloadSettings() }
       if facesChanged { reloadPeople() }
     }
     if s.faces_total != faceCounts.0 || s.people != faceCounts.1 {
@@ -289,6 +312,10 @@ final class ManagementModel: ObservableObject {
     let index = Int(int64(obj["video_index"]))
     videoIndex = index == 0 ? Int(MV_AI_MEDIA_PICTURES) : index
     audioReady = obj["audio_ready"] as? Bool ?? false
+    docIndex = obj["doc_index"] == nil ? 1 : min(2, max(0, Int(int64(obj["doc_index"]))))
+    pdfAvailable = obj["pdf_available"] as? Bool ?? true
+    docsReady = obj["docs_ready"] as? Bool ?? false
+    docsModel = obj["docs_model"] as? String ?? ""
     models = (obj["models"] as? [[String: Any]] ?? []).map {
       (quality: Int(int64($0["quality"])), name: $0["name"] as? String ?? "")
     }
@@ -319,6 +346,15 @@ final class ManagementModel: ObservableObject {
     set("video_index", Int64(media))
   }
 
+  /// #354: Settings "Documents". Off drops the text of every folder that
+  /// follows it; Words reads them again; Words and pages (D2) also pictures
+  /// their pages, and leaving it drops those pictures.
+  func setDocIndex(_ level: Int) {
+    guard (0...2).contains(level), level != docIndex else { return }
+    set("doc_index", Int64(level))
+    reloadRoots()
+  }
+
   func modelName(_ q: Int) -> String { models.first(where: { $0.quality == q })?.name ?? "" }
 
   // MARK: roots
@@ -337,7 +373,9 @@ final class ManagementModel: ObservableObject {
                 unavailable: int64($0["unavailable"]), scanning: $0["scanning"] as? Bool ?? false,
                 cloudOnly: int64($0["cloud_only"]),
                 unreadable: $0["error"] as? String == "unreadable", lastScan: int64($0["last_scan"]),
-                held: $0["held"] as? Bool ?? false, audio: int64($0["audio"]))
+                held: $0["held"] as? Bool ?? false, audio: int64($0["audio"]),
+                docs: UInt32(clamping: int64($0["docs"])), documents: int64($0["documents"]),
+                documentsDone: int64($0["documents_done"]))
       }
       let suggested = Self.suggestions(t)
       await MainActor.run {
@@ -363,6 +401,15 @@ final class ManagementModel: ObservableObject {
   func setRootMedia(_ id: UInt64, _ media: UInt32) {
     guard table.has(\mv_ai_api.root_set_media), media & MV_AI_MEDIA_SOUND == 0 || audioReady else { return }
     _ = table.a.root_set_media?(table.ctx, id, media)
+    reloadRoots()
+    pollStatus()
+  }
+
+  /// #354, per folder: Default / Off / Words / Words and pages (root_set_documents; an older
+  /// pack has none, and the menu is not shown).
+  func setRootDocuments(_ id: UInt64, _ docs: UInt32) {
+    guard table.has(\mv_ai_api.root_set_documents) else { return }
+    _ = table.a.root_set_documents?(table.ctx, id, docs)
     reloadRoots()
     pollStatus()
   }
@@ -892,6 +939,30 @@ struct ManagementView: View {
           .help(model.audioReady ? "" : "Sound and Both need the Sound piece: install it above.")
         }
       }
+      // #354: documents, by their words, while they are shown.
+      section("Documents") {
+        if model.documentFiles {
+          row("Index documents for",
+              detail: "Words finds PDFs and Word documents by the words in them, and opens one on the page that matched. Words and pages also finds pages by what they look like (a receipt, a floor plan, a slide): the first pages of each, and any page that is mostly a picture. Each folder can differ, from its menu below. An index of documents holds their text on this Mac; it never leaves it."
+                + (model.pdfAvailable ? "" : " PDFs need the latest Core: update it above. Word documents are read meanwhile.")
+                + model.docsMeaningHint) {
+            Picker("Index documents for", selection: Binding(get: { model.docIndex },
+                                                             set: { model.setDocIndex($0) })) {
+              Text("Off").tag(0)
+              Text("Words").tag(1)
+              Text("Words and pages").tag(2)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 300)
+          }
+        } else {
+          row("PDF and Word documents",
+              detail: "Not searched. Turn on Show documents in Settings → File types to search them.") {
+            EmptyView()
+          }
+        }
+      }
       // #355: audio files, by their tags and cover art, while they are shown.
       section("Audio files") {
         row("MP3, M4A and M4P",
@@ -994,7 +1065,7 @@ struct ManagementView: View {
       if model.transfer.available {
         section("Import and export") {
           IndexTransferSection(model: model.transfer, roots: model.folderRoots,
-                               peopleOn: model.facesOn && model.facesReady)
+                               peopleOn: model.facesOn && model.facesReady, docsOn: model.documentFiles)
         }
       }
       section("People") {
@@ -1049,6 +1120,23 @@ struct ManagementView: View {
     MediaChoice(value: MV_AI_MEDIA_SOUND, label: "Sound"),
     MediaChoice(value: MV_AI_MEDIA_BOTH, label: "Both"),
   ]
+
+  // #354: a folder's Documents choice; Words and pages is slice D2's.
+  static let docsChoices = [
+    MediaChoice(value: MV_AI_DOCS_DEFAULT, label: "Default"),
+    MediaChoice(value: MV_AI_DOCS_OFF, label: "Off"),
+    MediaChoice(value: MV_AI_DOCS_WORDS, label: "Words"),
+    MediaChoice(value: MV_AI_DOCS_PAGES, label: "Words and pages"),
+  ]
+
+  static func docsLabel(_ docs: UInt32) -> String {
+    switch docs {
+    case MV_AI_DOCS_OFF: return "Documents: Off"
+    case MV_AI_DOCS_WORDS: return "Documents: Words"
+    case MV_AI_DOCS_PAGES: return "Documents: Words and pages"
+    default: return "Documents: Default"
+    }
+  }
 
   static func mediaLabel(_ media: UInt32) -> String {
     switch media {
@@ -1223,11 +1311,23 @@ struct ManagementView: View {
   /// one with nothing to index, and files only iCloud Drive has.
   private func rootState(_ root: RootRow) -> String {
     if root.unreadable { return "Couldn't read this folder: it may be offline, moved or renamed. Its index is kept." }
-    if root.assets == 0 && root.lastScan != 0 && !root.scanning { return "No photos or videos found here" }
+    if root.assets == 0 && root.documents == 0 && root.lastScan != 0 && !root.scanning {
+      return "No photos or videos found here"
+    }
+    if root.assets == 0 && root.documents > 0 {
+      // #354: a folder of documents alone.
+      let n = UInt64(root.documents)
+      return "\(countText(UInt64(max(0, root.documentsDone)))) of \(countText(n)) \(n == 1 ? "document" : "documents") read"
+    }
     let local = max(0, root.assets - root.cloudOnly)
     var text = "\(countText(UInt64(max(0, root.done)))) of \(countText(UInt64(local))) · \(bytesText(UInt64(max(0, root.bytes))))"
     if root.cloudOnly > 0 { text += " · \(countText(UInt64(root.cloudOnly))) only in iCloud Drive" }
     if root.audio > 0 { text += root.audio == 1 ? " · 1 audio file" : " · \(countText(UInt64(root.audio))) audio files" }
+    if root.documents > 0 {
+      let n = UInt64(root.documents)
+      text += n == 1 ? " · 1 document" : " · \(countText(n)) documents"
+      if root.documentsDone < root.documents { text += " (\(countText(UInt64(max(0, root.documentsDone)))) read)" }
+    }
     return text
   }
 
@@ -1272,6 +1372,26 @@ struct ManagementView: View {
       .menuStyle(.borderlessButton)
       .fixedSize()
       .help("What this folder's videos are indexed for")
+      if model.documentFiles && model.table.has(\mv_ai_api.root_set_documents) {
+        Menu {
+          ForEach(Self.docsChoices) { choice in
+            Button {
+              model.setRootDocuments(root.id, choice.value)
+            } label: {
+              if root.docs == choice.value {
+                Label(choice.label, systemImage: "checkmark")
+              } else {
+                Text(choice.label)
+              }
+            }
+          }
+        } label: {
+          Text(Self.docsLabel(root.docs))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Whether this folder's PDFs and Word documents are searched by their words, and by what their pages look like")
+      }
       Button(root.scanning ? "Checking…" : "Rescan") { model.rescan(root.id) }
         .disabled(!root.enabled || root.scanning)
       if model.confirming == .removeRoot(root.id) {

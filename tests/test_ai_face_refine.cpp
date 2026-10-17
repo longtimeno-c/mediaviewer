@@ -728,6 +728,69 @@ TEST_CASE("faces.db: unusable faces join nobody, weak ones start nobody; people 
   CHECK((*db)->unassigned_count() == 37);
 }
 
+TEST_CASE("faces.db: new faces are matched against a person's exemplars, so corrections count",
+          "[ai][faces][refine]") {
+  const std::string path = temp_db("exemplars.db");
+  world w;
+  const auto front = w.direction();
+  // The same person side-on: like the front-on face, not enough for the average.
+  const auto side = world::mix(front, w.direction(), 0.65f);
+  auto db = mv::ai::faces_db::open(path, mv::ai::face_tuning{}, kDim, "q/1");
+  REQUIRE(db);
+  std::vector<std::vector<float>> tristan;  // every vector filed under him
+  std::int64_t asset = 100;
+  const auto add = [&](const std::vector<float>& base, float quality) {
+    mv::ai::face_in f = face_in_of(w, base, 0.9f, 0.1f);
+    f.quality = quality;
+    REQUIRE((*db)->add(asset++, "p", -1, std::span<const mv::ai::face_in>(&f, 1)));
+    return f.emb;
+  };
+  const auto mean_to = [&](const std::vector<float>& v) {
+    double s = 0;
+    for (const auto& t : tristan) {
+      for (std::uint32_t i = 0; i < kDim; ++i) s += static_cast<double>(t[i]) * v[i];
+    }
+    return static_cast<float>(s / static_cast<double>(tristan.size()));
+  };
+  for (int i = 0; i < 16; ++i) tristan.push_back(add(front, 0.8f));
+  auto people = (*db)->people(1);
+  REQUIRE(people.size() == 1);
+  const std::int64_t him = people[0].id;
+  REQUIRE((*db)->rename(him, "Tristan"));
+  // Side-on, he is somebody new: neither his average nor his front-on
+  // exemplars vouch for it (and the exemplars are now cached, at 16 faces).
+  std::vector<std::vector<float>> sides;
+  for (int i = 0; i < 2; ++i) sides.push_back(add(side, 0.9f));
+  people = (*db)->people(1);
+  REQUIRE(people.size() == 2);
+  const std::int64_t other = people[0].id == him ? people[1].id : people[0].id;
+  CHECK((*db)->faces_of(other).size() == 2);
+  // The user merges the duplicate: both covers are pinned. 18 faces is not
+  // the quarter of growth that would rebuild the exemplars: the merge does.
+  REQUIRE((*db)->merge(him, other));
+  tristan.insert(tristan.end(), sides.begin(), sides.end());
+  // A new side-on photo: the average still says no, his exemplars say yes.
+  {
+    mv::ai::face_in f = face_in_of(w, side, 0.9f, 0.1f);
+    CHECK(mean_to(f.emb) < mv::ai::face_tuning{}.same_person);
+    CHECK((*db)->nearest_person(f.emb) == him);
+    REQUIRE((*db)->add(asset++, "p", -1, std::span<const mv::ai::face_in>(&f, 1)));
+    tristan.push_back(f.emb);
+  }
+  CHECK((*db)->faces_of(him).size() == 19);
+  CHECK((*db)->unassigned_count() == 0);
+  // A weak side-on face keeps the average rule: it joins nobody.
+  {
+    mv::ai::face_in f = face_in_of(w, side, 0.9f, 0.1f);
+    f.quality = 0.25f;
+    CHECK(mean_to(f.emb) < mv::ai::face_tuning{}.same_person);
+    REQUIRE((*db)->add(asset++, "p", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  }
+  CHECK((*db)->faces_of(him).size() == 19);
+  CHECK((*db)->unassigned_count() == 1);
+  CHECK((*db)->people(1).size() == 1);
+}
+
 TEST_CASE("faces.db: the idle merge looks again only at people who changed", "[ai][faces][refine]") {
   const std::string path = temp_db("consolidate.db");
   world w;
@@ -1076,8 +1139,11 @@ TEST_CASE("People API: a copy of a real faces.db, call by call", "[.people-api]"
     WARN("MV_FACES_DB is not set");
     return;
   }
-  mv::ai::face_tuning t;
+  mv::ai::face_tuning t;  // IR-50's (ai-models.json)
   t.same_person = 0.30f;
+  t.keep = 0.20f;
+  t.keep_weak = 0.24f;
+  t.margin = 0.10f;
   t.ambiguous = 0.04f;
   t.merge_at = 0.32f;
   const auto t_open = std::chrono::steady_clock::now();
@@ -1108,6 +1174,70 @@ TEST_CASE("People API: a copy of a real faces.db, call by call", "[.people-api]"
   time("names()", [&] { n = (*db)->names().size(); });
   time("consolidate", [&] { n = (*db)->consolidate(t.merge_at); });
   std::printf("(last result %zu)\n", n);
+
+  // Online filing (docs/design/17 "Online clustering"): the copy's unfiled,
+  // usable faces offered again as new photos, against the people the user
+  // named and merged. What add costs per face, and where they go. Writes.
+  struct offer {
+    std::vector<float> emb;
+    float quality;
+  };
+  std::vector<offer> offers;
+  {
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open_v2(file, &raw, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
+    sqlite3_stmt* q = nullptr;
+    sqlite3_prepare_v2(raw,
+                       "SELECT emb, quality FROM faces WHERE person_id IS NULL AND spec = ?1 AND quality >= 0.10"
+                       " ORDER BY id LIMIT 4000",
+                       -1, &q, nullptr);
+    sqlite3_bind_text(q, 1, (*db)->spec().c_str(), -1, SQLITE_TRANSIENT);
+    while (sqlite3_step(q) == SQLITE_ROW) {
+      const auto* b = static_cast<const float*>(sqlite3_column_blob(q, 0));
+      const auto bytes = static_cast<std::size_t>(sqlite3_column_bytes(q, 0));
+      if (bytes != 512 * sizeof(float)) continue;
+      offers.push_back(offer{std::vector<float>(b, b + 512), static_cast<float>(sqlite3_column_double(q, 1))});
+    }
+    sqlite3_finalize(q);
+    sqlite3_close(raw);
+  }
+  const std::set<std::int64_t> before = [&] {
+    std::set<std::int64_t> ids;
+    for (const auto& p : (*db)->people(1)) ids.insert(p.id);
+    return ids;
+  }();
+  std::map<std::int64_t, std::string> named;
+  for (const auto& [id, name] : (*db)->names()) named[id] = name;
+  constexpr std::int64_t kAsset = 4'000'000'000'000LL;
+  const auto t_add = std::chrono::steady_clock::now();
+  for (std::size_t i = 0; i < offers.size(); ++i) {
+    mv::ai::face_in f;
+    f.x = 0.3f;
+    f.y = 0.3f;
+    f.w = 0.3f;
+    f.h = 0.3f;
+    f.score = 0.9f;
+    f.quality = offers[i].quality;
+    f.emb = std::move(offers[i].emb);
+    REQUIRE((*db)->add(kAsset + static_cast<std::int64_t>(i), "o", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  }
+  const double add_ms = ms_since(t_add);
+  std::size_t to_named = 0, to_known = 0, to_new = 0;
+  for (const auto& p : (*db)->people(1)) {
+    std::size_t mine = 0;
+    for (const auto& f : (*db)->faces_of(p.id)) mine += f.asset >= kAsset ? 1 : 0;
+    if (named.count(p.id)) {
+      to_named += mine;
+    } else if (before.count(p.id)) {
+      to_known += mine;
+    } else {
+      to_new += mine;
+    }
+  }
+  std::printf("add: %zu unfiled faces offered again, %.3f ms per face; filed to a named person %zu, another"
+              " person %zu, a new one %zu; unfiled %zu\n",
+              offers.size(), offers.empty() ? 0.0 : add_ms / static_cast<double>(offers.size()), to_named,
+              to_known, to_new, offers.size() - to_named - to_known - to_new);
 }
 
 TEST_CASE("People bench: real face vectors through faces.db, online and settled", "[.people-bench]") {
@@ -1180,4 +1310,67 @@ TEST_CASE("People bench: real face vectors through faces.db, online and settled"
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   report("settled", measure());
   std::printf("settle took %.0f ms for %u faces of %u-d\n", ms, n, dim);
+
+  // Corrections (docs/design/17 "Online clustering"): the first 60 % arrive,
+  // the user merges each person's fragments and names everyone with 3+
+  // photos (both pin covers), then the rest arrive, filed online only.
+  const std::string path2 = temp_db("bench2.db");
+  auto db2 = mv::ai::faces_db::open(path2, t, dim, "bench/1");
+  REQUIRE(db2);
+  const std::size_t first = order.size() * 6 / 10;
+  const auto add_one = [&](std::uint32_t i) {
+    mv::ai::face_in f;
+    f.x = 0.3f;
+    f.y = 0.3f;
+    f.w = 0.3f;
+    f.h = 0.3f;
+    f.score = 0.95f;
+    f.quality = 0.8f;
+    f.emb.assign(emb.begin() + std::ptrdiff_t{i} * dim, emb.begin() + std::ptrdiff_t{i + 1} * dim);
+    REQUIRE((*db2)->add(i, "f", -1, std::span<const mv::ai::face_in>(&f, 1)));
+  };
+  for (std::size_t k = 0; k < first; ++k) add_one(order[k]);
+  {
+    // Each person's majority label; fragments of one label, largest first.
+    std::map<std::int32_t, std::vector<std::pair<std::size_t, std::int64_t>>> fragments;
+    for (const mv::ai::person_row& p : (*db2)->people(1)) {
+      std::map<std::int32_t, std::size_t> votes;
+      const auto faces = (*db2)->faces_of(p.id);
+      for (const mv::ai::face_row& f : faces) ++votes[label[static_cast<std::size_t>(f.asset)]];
+      const auto top = std::max_element(votes.begin(), votes.end(),
+                                         [](const auto& a, const auto& b) { return a.second < b.second; });
+      fragments[top->first].emplace_back(faces.size(), p.id);
+    }
+    std::size_t merged = 0, named = 0;
+    for (auto& [lab, fs] : fragments) {
+      std::sort(fs.begin(), fs.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+      std::size_t total = 0;
+      for (std::size_t k = 1; k < fs.size(); ++k) {
+        REQUIRE((*db2)->merge(fs[0].second, fs[k].second));
+        total += fs[k].first;
+        ++merged;
+      }
+      if (fs[0].first + total >= 3) {
+        REQUIRE((*db2)->rename(fs[0].second, "L" + std::to_string(lab)));
+        ++named;
+      }
+    }
+    std::printf("corrections: %zu merges, %zu named\n", merged, named);
+  }
+  const auto measure2 = [&](std::size_t from) {
+    std::vector<std::int64_t> person(n, 0);
+    for (const mv::ai::person_row& p : (*db2)->people(1)) {
+      for (const mv::ai::face_row& f : (*db2)->faces_of(p.id)) person[static_cast<std::size_t>(f.asset)] = p.id;
+    }
+    std::vector<std::int32_t> l;
+    std::vector<std::int64_t> pr;
+    for (std::size_t k = from; k < order.size(); ++k) {
+      l.push_back(label[order[k]]);
+      pr.push_back(person[order[k]]);
+    }
+    return bcubed(l, pr);
+  };
+  for (std::size_t k = first; k < order.size(); ++k) add_one(order[k]);
+  report("corrected", measure2(0));
+  report("new 40%", measure2(first));
 }

@@ -6,7 +6,7 @@
 
     ai-sideload.py --build <build dir> --models <staged pieces root> \
         --key <dev key hex file> --addons <add-ons folder> [--platform win-x64|macos] \
-        [--pieces ai,ai-audio,ai-faces,ai-cuda] [--version 1.0.0]
+        [--pieces ai,ai-audio,ai-docs,ai-faces,ai-cuda] [--version 1.0.0]
 
 For each piece it lays out the files as the release does (the native add-on,
 ONNX Runtime and the chrome from <build>/addons/<piece>, the models staged by
@@ -54,6 +54,10 @@ def gather(piece: str, platform: str, build: Path, models: Path, out: Path) -> N
     for n in notices.glob("*/ThirdPartyNotices.txt"):
         shutil.copy2(n, out / "ThirdPartyNotices.txt")
         break
+    # Folders of notices the pack ships under LICENSES/ (PDFium's, #354).
+    for folder, _ in addon_pack.ADDONS[piece].get("ship_notice_dirs", []):
+        if (built / folder).is_dir():
+            shutil.copytree(built / folder, out / folder)
 
 
 def main(argv=None) -> int:
@@ -63,7 +67,7 @@ def main(argv=None) -> int:
     ap.add_argument("--key", required=True)
     ap.add_argument("--addons", required=True)
     ap.add_argument("--platform", default="macos" if sys.platform == "darwin" else "win-x64")
-    ap.add_argument("--pieces", default="ai,ai-audio,ai-faces")
+    ap.add_argument("--pieces", default="ai,ai-audio,ai-docs,ai-faces")
     ap.add_argument("--version", default="1.0.0")
     a = ap.parse_args(argv)
     addons = Path(a.addons)

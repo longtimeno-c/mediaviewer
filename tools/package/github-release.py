@@ -85,7 +85,7 @@ def prepare():
 ADDON_PLATFORMS = ('win-x64', 'macos')
 FIRST_PARTY_ADDONS = ('import', 'sharepoint')
 PREFERRED_ADDONS = ('places',)
-AI_ADDONS = ('ai', 'ai-audio', 'ai-faces', 'ai-cuda')
+AI_ADDONS = ('ai', 'ai-audio', 'ai-docs', 'ai-faces', 'ai-cuda')
 WINDOWS_ONLY_ADDONS = ('ai-cuda',)
 
 

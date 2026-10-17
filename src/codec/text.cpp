@@ -296,7 +296,7 @@ shaped engine::metrics(const style& s) {
   return out;
 }
 
-shaped engine::shape(std::string_view utf8, const style& s) {
+shaped engine::shape(std::string_view utf8, const style& s, direction dir) {
   shaped out = metrics(s);
   if (out.font < 0) return out;
   int slot = out.font;
@@ -319,6 +319,9 @@ shaped engine::shape(std::string_view utf8, const style& s) {
 
   hb_buffer_t* buf = hb_buffer_create();
   hb_buffer_add_utf8(buf, utf8.data(), static_cast<int>(utf8.size()), 0, static_cast<int>(utf8.size()));
+  if (dir != direction::automatic) {
+    hb_buffer_set_direction(buf, dir == direction::rtl ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
+  }
   hb_buffer_guess_segment_properties(buf);
   hb_shape(f.shaper, buf, nullptr, 0);
   unsigned count = 0;

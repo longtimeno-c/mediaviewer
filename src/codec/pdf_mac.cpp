@@ -35,39 +35,10 @@ raster locked_page() {
   return out;
 }
 
-}  // namespace
-
-result<raster> decode_pdf(std::span<const std::uint8_t> bytes, std::uint32_t page,
-                          const job_context* ctx, std::uint32_t long_edge) {
-  long_edge = std::clamp<std::uint32_t>(long_edge, 16, kPdfLongEdge);
-  if (probe(bytes) != format_family::pdf) return err(status::unsupported_format);
-  if (ctx && ctx->cancelled()) return err(status::cancelled);
-
-  // No copy: CoreGraphics reads the caller's bytes, which outlive this call.
-  cf_release<CFDataRef> data{CFDataCreateWithBytesNoCopy(
-      kCFAllocatorDefault, bytes.data(), static_cast<CFIndex>(bytes.size()), kCFAllocatorNull)};
-  if (!data.ref) return err(status::out_of_memory);
-  cf_release<CGDataProviderRef> provider{CGDataProviderCreateWithCFData(data.ref)};
-  if (!provider.ref) return err(status::out_of_memory);
-  CGPDFDocumentRef raw_doc = CGPDFDocumentCreateWithProvider(provider.ref);
-  if (!raw_doc) return err(status::corrupt);
-  struct doc_release {
-    CGPDFDocumentRef d;
-    ~doc_release() { CGPDFDocumentRelease(d); }
-  } doc{raw_doc};
-
-  // A file that opens with the empty password (owner-password-only, the
-  // common "no printing" kind) shows; one that needs a password is the card.
-  if (CGPDFDocumentIsEncrypted(doc.d) && !CGPDFDocumentIsUnlocked(doc.d) &&
-      !CGPDFDocumentUnlockWithPassword(doc.d, "")) {
-    if (page != 0) return err(status::invalid_arg);
-    return locked_page();
-  }
-
-  const std::size_t count = CGPDFDocumentGetNumberOfPages(doc.d);
-  if (count == 0) return err(status::corrupt);
-  if (page >= count) return err(status::invalid_arg);
-  CGPDFPageRef pdf_page = CGPDFDocumentGetPage(doc.d, page + 1);  // 1-based
+// One page of an open document at `long_edge` on white.
+result<raster> render_page(CGPDFDocumentRef doc, std::uint32_t page, std::size_t count,
+                           std::uint32_t long_edge, const job_context* ctx) {
+  CGPDFPageRef pdf_page = CGPDFDocumentGetPage(doc, page + 1);  // 1-based
   if (!pdf_page) return err(status::corrupt);
 
   const CGRect box = CGPDFPageGetBoxRect(pdf_page, kCGPDFCropBox);
@@ -138,6 +109,81 @@ result<raster> decode_pdf(std::span<const std::uint8_t> bytes, std::uint32_t pag
   // Opaque paper: premultiplied and straight alpha agree.
   for (std::size_t i = 3; i < out.rgba.size(); i += 4) out.rgba[i] = 255;
   return out;
+}
+
+// The document over the caller's bytes, which outlive it. `locked` when it
+// needs a password (one that opens with the empty password, the common "no
+// printing" kind, is not).
+struct pdf_doc {
+  CGPDFDocumentRef doc = nullptr;
+  bool locked = false;
+  std::size_t count = 0;
+  pdf_doc() = default;
+  pdf_doc(const pdf_doc&) = delete;
+  pdf_doc& operator=(const pdf_doc&) = delete;
+  ~pdf_doc() {
+    if (doc) CGPDFDocumentRelease(doc);
+  }
+};
+
+status open_doc(std::span<const std::uint8_t> bytes, pdf_doc& out) {
+  // No copy: CoreGraphics reads the caller's bytes, which outlive this call.
+  cf_release<CFDataRef> data{CFDataCreateWithBytesNoCopy(
+      kCFAllocatorDefault, bytes.data(), static_cast<CFIndex>(bytes.size()), kCFAllocatorNull)};
+  if (!data.ref) return status::out_of_memory;
+  cf_release<CGDataProviderRef> provider{CGDataProviderCreateWithCFData(data.ref)};
+  if (!provider.ref) return status::out_of_memory;
+  out.doc = CGPDFDocumentCreateWithProvider(provider.ref);
+  if (!out.doc) return status::corrupt;
+  if (CGPDFDocumentIsEncrypted(out.doc) && !CGPDFDocumentIsUnlocked(out.doc) &&
+      !CGPDFDocumentUnlockWithPassword(out.doc, "")) {
+    out.locked = true;
+    out.count = 1;
+    return status::ok;
+  }
+  out.count = CGPDFDocumentGetNumberOfPages(out.doc);
+  if (out.count == 0) return status::corrupt;
+  return status::ok;
+}
+
+}  // namespace
+
+result<raster> decode_pdf(std::span<const std::uint8_t> bytes, std::uint32_t page,
+                          const job_context* ctx, std::uint32_t long_edge) {
+  long_edge = std::clamp<std::uint32_t>(long_edge, 16, kPdfLongEdge);
+  if (probe(bytes) != format_family::pdf) return err(status::unsupported_format);
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  pdf_doc doc;
+  if (const status s = open_doc(bytes, doc); s != status::ok) return err(s);
+  if (page >= doc.count) return err(status::invalid_arg);
+  if (doc.locked) return locked_page();
+  return render_page(doc.doc, page, doc.count, long_edge, ctx);
+}
+
+result<std::uint32_t> decode_pdf_pages(std::span<const std::uint8_t> bytes,
+                                       std::span<const std::uint32_t> pages,
+                                       std::uint32_t long_edge, const job_context* ctx,
+                                       void* user, page_sink sink) {
+  long_edge = std::clamp<std::uint32_t>(long_edge, 16, kPdfLongEdge);
+  if (probe(bytes) != format_family::pdf) return err(status::unsupported_format);
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  pdf_doc doc;
+  if (const status s = open_doc(bytes, doc); s != status::ok) return err(s);
+  const auto count = static_cast<std::uint32_t>(doc.count);
+  for (const std::uint32_t page : pages) {
+    if (page >= count) continue;
+    if (ctx && ctx->cancelled()) return err(status::cancelled);
+    auto one = doc.locked ? result<raster>(locked_page())
+                          : render_page(doc.doc, page, doc.count, long_edge, ctx);
+    if (!one) {
+      if (one.error() == status::cancelled || one.error() == status::out_of_memory) {
+        return err(one.error());
+      }
+      continue;  // a broken page leaves its thumbnail empty, not the others
+    }
+    if (!sink(user, std::move(one).value())) break;
+  }
+  return count;
 }
 
 }  // namespace mv::codec

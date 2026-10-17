@@ -34,6 +34,7 @@
 #include "player/media_source.h"
 #include "player/playback_hold.h"
 #include "shell/dino_game.h"
+#include "shell/compare.h"
 #include "shell/home_theme.h"
 #include "shell/input_state.h"
 
@@ -60,6 +61,16 @@ struct mac_lab_options {
   std::function<std::string(const std::string& path_utf8, std::int64_t mtime_unix,
                             std::uint64_t size, std::int64_t moment_ms)>
       clip_thumb;
+  // Issue #429: [any thread] a decode (or a cache hit) learned how many pages open_item's
+  // `item` has (page_count() reads the same). The page sidebar appears on it;
+  // the host hops to its own thread. Unset: nothing is told.
+  std::function<void(std::uint64_t item, std::uint32_t page_count)> page_count_known;
+  // Issue #429, rule 3 for a page turn: [pool thread] the page's cached
+  // sidebar thumbnail (image/page_thumbs.h), "" for none. A cache lookup,
+  // never a render: it goes up while the page itself renders.
+  std::function<std::string(const std::string& path_utf8, std::int64_t mtime_unix,
+                            std::uint64_t size, std::uint32_t page)>
+      page_thumb;
 };
 
 class present_lab_mac {
@@ -150,6 +161,10 @@ class present_lab_mac {
   [[nodiscard]] std::uint64_t mark_navigation() noexcept;
   [[nodiscard]] bool navigation_done(std::uint64_t seq) const noexcept;
   [[nodiscard]] nav_sample navigation_sample(std::uint64_t seq) const noexcept;
+  // Mark -> the full-resolution image of that navigation's item adopted by the
+  // render thread; -1 until then (the first image was a placeholder or a
+  // preview, and the full one is still coming). --page-soak reads it.
+  [[nodiscard]] double navigation_full_ms(std::uint64_t seq) const noexcept;
   [[nodiscard]] bool showing_still() const noexcept {
     return shown_item_.load(std::memory_order_acquire) != 0;
   }
@@ -238,8 +253,12 @@ class present_lab_mac {
  private:
   void render_thread_main() noexcept;
   bool write_json_report() const noexcept;
-  void submit_image_load(std::string path_utf8, std::uint64_t item_id,
-                         std::uint32_t page = 0) noexcept;
+  void submit_image_load(std::string path_utf8, std::uint64_t item_id, std::uint32_t page = 0,
+                         std::int64_t mtime_unix = kNoStamp, std::uint64_t size = 0) noexcept;
+  [[nodiscard]] status publish_page_thumb(const std::string& path, std::int64_t mtime_unix,
+                                          std::uint64_t size, std::uint32_t page,
+                                          std::uint64_t item_id, void* mtl_device,
+                                          const job_context& ctx) noexcept;
 
   // Full-resolution stills already on the GPU, keyed by path + size + mtime:
   // the item on screen and its prefetched neighbours. Budgeted by bytes (a
@@ -283,6 +302,7 @@ class present_lab_mac {
   std::uint64_t nav_item_ = 0;
   int nav_cached_ = 0;
   bool nav_have_ready_ = false;
+  std::atomic<double> nav_full_ms_[64]{};
   mutable std::mutex still_cache_mutex_;
   std::vector<cached_still> still_cache_;
   std::uint64_t still_cache_bytes_ = 0;
@@ -386,6 +406,14 @@ class present_lab_mac {
   // Hold `\` (docs/design/16): the last *different* still, kept when the next
   // one lands, so burst pick swaps textures and never decodes.
   std::unique_ptr<image::gpu_image_mac> previous_image_;
+  // `|` two-up compare (issue #208, shell/compare.h): this frame's split of the
+  // canvas, or !valid for one-up. Same rule as the Windows lab: the current
+  // still keeps the camera in the right half, previous_image_ draws in the
+  // left through linked_camera. Render thread only.
+  compare_split compare_split_;
+  // Docks the split on the render thread's copy of the snapshot (chrome_left_px)
+  // and refits a fitted / filled camera when it moves. True when it changed.
+  bool apply_compare_split(input_snapshot& snapshot, std::uint32_t host_chrome_left) noexcept;
   canvas::crossfade fade_;
   std::atomic<std::uint32_t> stills_shown_{0};
 

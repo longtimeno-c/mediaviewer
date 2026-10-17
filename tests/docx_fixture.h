@@ -135,6 +135,101 @@ inline std::string para(const std::string& text, const std::string& ppr = {}, co
          text + "</w:t></w:r></w:p>";
 }
 
+// word/_rels/*.rels: {id, target} pairs (the type is not read).
+inline std::string rels(const std::vector<std::pair<std::string, std::string>>& targets) {
+  std::string out = R"(<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">)";
+  for (const auto& [id, target] : targets) {
+    out += R"(<Relationship Id=")" + id +
+           R"(" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/x" Target=")" + target + R"("/>)";
+  }
+  return out + "</Relationships>";
+}
+
+constexpr const char* kNamespaces =
+    R"(xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" )"
+    R"(xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" )"
+    R"(xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" )"
+    R"(xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" )"
+    R"(xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" )"
+    R"(xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" )"
+    R"(xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" )"
+    R"(xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w10="urn:schemas-microsoft-com:office:word")";
+
+// A header (`w:hdr`) or footer (`w:ftr`) part around paragraphs.
+inline std::string story(const std::string& root, const std::string& body) {
+  return std::string(R"(<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:)") + root + " " + kNamespaces +
+         ">" + body + "</w:" + root + ">";
+}
+
+// word/footnotes.xml with Word's two separator notes and `notes` ({id, paragraphs}).
+inline std::string notes(const std::string& root, const std::vector<std::pair<int, std::string>>& list) {
+  const std::string item = root.substr(0, root.size() - 1);  // footnotes -> footnote
+  std::string out = std::string(R"(<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:)") + root + " " +
+                    kNamespaces + ">";
+  out += "<w:" + item + R"( w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:)" + item + ">";
+  out += "<w:" + item + R"( w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:)" + item + ">";
+  for (const auto& [id, body] : list) {
+    out += "<w:" + item + " w:id=\"" + std::to_string(id) + "\">" + body + "</w:" + item + ">";
+  }
+  return out + "</w:" + root + ">";
+}
+
+// A note's paragraph: its number, then `text` in `rgb`.
+inline std::string note_para(const std::string& text, const std::string& rgb = "000000") {
+  return R"(<w:p><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteRef/></w:r><w:r><w:rPr><w:color w:val=")" +
+         rgb + R"("/></w:rPr><w:t xml:space="preserve"> )" + text + "</w:t></w:r></w:p>";
+}
+
+// A paragraph citing footnote `id` after `text`.
+inline std::string para_with_note(const std::string& text, int id) {
+  return R"(<w:p><w:r><w:t xml:space="preserve">)" + text +
+         R"(</w:t></w:r><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id=")" +
+         std::to_string(id) + R"("/></w:r></w:p>)";
+}
+
+// sectPr: Letter, 1" margins, header/footer at 0.5", then `inner`.
+inline std::string sect(const std::string& inner = {}) {
+  return R"(<w:sectPr>)" + inner +
+         R"(<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>)";
+}
+
+inline std::string page_break() { return R"(<w:p><w:r><w:br w:type="page"/></w:r></w:p>)"; }
+
+// A floating object: `graphic` (a:graphic's child XML) at (x, y) EMU from
+// `hrel` / `vrel`, `w` x `h` EMU, wrapped by `wrap` (wrapSquare, wrapNone …).
+inline std::string anchor(const std::string& graphic, long long x, long long y, long long w, long long h,
+                          const std::string& wrap = R"(<wp:wrapSquare wrapText="bothSides"/>)",
+                          const std::string& hrel = "column", const std::string& vrel = "paragraph",
+                          bool behind = false) {
+  return R"(<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="2" behindDoc=")" +
+         std::string(behind ? "1" : "0") + R"(" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/>)"
+         R"(<wp:positionH relativeFrom=")" + hrel + R"("><wp:posOffset>)" + std::to_string(x) + R"(</wp:posOffset></wp:positionH>)"
+         R"(<wp:positionV relativeFrom=")" + vrel + R"("><wp:posOffset>)" + std::to_string(y) + R"(</wp:posOffset></wp:positionV>)"
+         R"(<wp:extent cx=")" + std::to_string(w) + R"(" cy=")" + std::to_string(h) + R"("/><wp:effectExtent l="0" t="0" r="0" b="0"/>)" +
+         wrap + R"(<wp:docPr id="1" name="Object"/><a:graphic><a:graphicData>)" + graphic +
+         R"(</a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>)";
+}
+
+// A picture (pic:pic) for anchor() or an inline drawing.
+inline std::string picture(const std::string& rel) {
+  return R"(<pic:pic><pic:nvPicPr><pic:cNvPr id="1" name="p"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed=")" + rel +
+         R"("/></pic:blipFill><pic:spPr><a:prstGeom prst="rect"/></pic:spPr></pic:pic>)";
+}
+
+// A shape (wps:wsp): `prst` geometry filled `fill`, outlined `line` (empty:
+// none), with `paragraphs` in its text box.
+inline std::string shape(const std::string& prst, const std::string& fill, const std::string& line,
+                         const std::string& paragraphs = {}) {
+  std::string out = R"(<wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:prstGeom prst=")" + prst + R"("><a:avLst/></a:prstGeom>)";
+  out += fill.empty() ? "<a:noFill/>" : R"(<a:solidFill><a:srgbClr val=")" + fill + R"("/></a:solidFill>)";
+  out += line.empty() ? R"(<a:ln><a:noFill/></a:ln>)"
+                      : R"(<a:ln w="12700"><a:solidFill><a:srgbClr val=")" + line + R"("/></a:solidFill></a:ln>)";
+  out += "</wps:spPr>";
+  if (!paragraphs.empty()) out += "<wps:txbx><w:txbxContent>" + paragraphs + "</w:txbxContent></wps:txbx>";
+  out += R"(<wps:bodyPr lIns="91440" tIns="45720" rIns="91440" bIns="45720" anchor="t"/></wps:wsp>)";
+  return out;
+}
+
 inline std::vector<std::uint8_t> docx(const std::string& body, std::vector<part> extra = {}) {
   std::vector<part> parts = {
       {"[Content_Types].xml", kContentTypes},
@@ -144,6 +239,51 @@ inline std::vector<std::uint8_t> docx(const std::string& body, std::vector<part>
   };
   for (part& p : extra) parts.push_back(std::move(p));
   return zip(parts);
+}
+
+// The issue #429 verify file: a report with a header, a "Page X of Y"
+// footer, footnotes, a two-column section between continuous breaks, a
+// floating picture with square wrap, a text box and a right-to-left
+// paragraph, over three pages. `jpeg` is a picture for rId20.
+inline std::vector<std::uint8_t> report(const std::string& jpeg) {
+  const std::string lorem =
+      "Readable pages are the point: the viewer draws what the document says, in the order it says it, "
+      "with the page furniture where Word puts it. ";
+  std::string body = para("Quarterly field report", R"(<w:pStyle w:val="Heading1"/>)");
+  body += para_with_note(lorem + "The survey covered three valleys", 1);
+  body += "<w:p>" + anchor(picture("rId20"), 0, 0, 1371600, 1371600) + R"(<w:r><w:t xml:space="preserve">)" + lorem + lorem +
+          lorem + "</w:t></w:r></w:p>";
+  body += para_with_note(lorem + "Counts were taken twice", 2);
+  // The intro ends a one-column section; the two columns start continuous.
+  const std::string refs = R"(<w:headerReference w:type="default" r:id="rId10"/><w:footerReference w:type="default" r:id="rId11"/>)";
+  body += R"(<w:p><w:pPr>)" + sect(refs) + R"(</w:pPr><w:r><w:t>Findings by site follow in two columns.</w:t></w:r></w:p>)";
+  for (int i = 1; i <= 8; ++i) {
+    body += para("Site " + std::to_string(i) + ": " + lorem.substr(0, 90 + static_cast<std::size_t>(i) * 7));
+  }
+  body += R"(<w:p><w:pPr>)" +
+          sect(R"(<w:type w:val="continuous"/><w:cols w:num="2" w:space="720" w:sep="1"/>)") +
+          R"(</w:pPr><w:r><w:t>End of the site list.</w:t></w:r></w:p>)";
+  body += "<w:p>" +
+          anchor(shape("roundRect", "DCE6F2", "1F4E79", para("Text box: what to read first.")), 3657600, 0, 2286000, 685800,
+                 "<wp:wrapSquare wrapText=\"bothSides\"/>") +
+          R"(<w:r><w:t xml:space="preserve">)" + lorem + lorem + "</w:t></w:r></w:p>";
+  body += para("\xD7\xA9\xD7\x9C\xD7\x95\xD7\x9D \xD7\xA2\xD7\x95\xD7\x9C\xD7\x9D 2026 and more", R"(<w:bidi/>)");
+  for (int i = 0; i < 30; ++i) body += para("Appendix line " + std::to_string(i + 1) + ". " + lorem);
+  body += sect(R"(<w:type w:val="continuous"/>)");
+  const std::string header = story("hdr", para("Field report \xE2\x80\x94 confidential", R"(<w:jc w:val="right"/>)", R"(<w:color w:val="C00000"/>)"));
+  const std::string footer = story(
+      "ftr", R"(<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t xml:space="preserve">Page </w:t></w:r>)"
+             R"(<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>)"
+             R"(<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>)"
+             R"(<w:r><w:t xml:space="preserve"> of </w:t></w:r><w:fldSimple w:instr=" NUMPAGES "><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p>)");
+  const std::string footnotes = notes("footnotes", {{1, note_para("Valleys north of the river only.", "0000FF")},
+                                                   {2, note_para("A second pass a week later.", "0000FF")}});
+  return docx(body, {{"word/_rels/document.xml.rels",
+                      rels({{"rId10", "header1.xml"}, {"rId11", "footer1.xml"}, {"rId20", "media/image1.jpeg"}})},
+                     {"word/header1.xml", header},
+                     {"word/footer1.xml", footer},
+                     {"word/footnotes.xml", footnotes},
+                     {"word/media/image1.jpeg", jpeg}});
 }
 
 }  // namespace mv::test::docxfx

@@ -341,18 +341,20 @@ jobs:
           if ($LASTEXITCODE) { throw 'packing sharepoint failed' }
 
       # Local search (docs/design/17): the Core pack and its Sound and People pieces,
-      # each its own signed download on the same release, like Import. Only our
-      # own two DLLs are signed; ONNX Runtime's carry Microsoft's signature.
+      # each its own signed download on the same release, like Import. Our own
+      # two DLLs and PDFium (#354; unsigned as bblanchon/pdfium-binaries ships it,
+      # as the Mac pack signs its dylib) are signed; ONNX Runtime's carry
+      # Microsoft's signature.
       - name: Collect the Local search binaries to sign
         id: aisign
         if: inputs.mode == 'stable'
         run: |
-          foreach ($f in 'mv_ai.dll', 'MediaViewer.Ai.Chrome.dll') {
+          foreach ($f in 'mv_ai.dll', 'MediaViewer.Ai.Chrome.dll', 'pdfium.dll') {
             if (-not (Test-Path "build/addons/ai/$f")) { throw "$f was not built" }
           }
           $dir = Join-Path $env:RUNNER_TEMP 'ai-sign'
           New-Item -ItemType Directory -Force $dir | Out-Null
-          Copy-Item build/addons/ai/mv_ai.dll, build/addons/ai/MediaViewer.Ai.Chrome.dll $dir
+          Copy-Item build/addons/ai/mv_ai.dll, build/addons/ai/MediaViewer.Ai.Chrome.dll, build/addons/ai/pdfium.dll $dir
           "dir=$dir" >> $env:GITHUB_OUTPUT
 
       - name: Sign the Local search binaries
@@ -387,7 +389,7 @@ jobs:
           python -m pip install --disable-pip-version-check -r tools/package/requirements-export.txt
           if ($LASTEXITCODE) { throw 'pip install (model export) failed' }
           # Pinned revisions, SHA-256 and licence checked (docs/design/17 licence gate).
-          foreach ($piece in 'ai', 'ai-audio', 'ai-faces') {
+          foreach ($piece in 'ai', 'ai-audio', 'ai-docs', 'ai-faces') {
             python tools/package/ai-models.py stage --piece $piece --out "build/addons/$piece"
             if ($LASTEXITCODE) { throw "staging $piece models failed" }
             python tools/package/addon-pack.py pack --addon $piece --platform win-x64 --src "build/addons/$piece" `
@@ -403,7 +405,7 @@ jobs:
             --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
           if ($LASTEXITCODE) { throw 'packing ai-cuda failed' }
           python tools/package/addon-pack.py ceiling (Get-ChildItem dist/addon/mediaviewer-addon-ai*-win-x64.json).FullName
-          if ($LASTEXITCODE) { throw 'the AI family is over its 3 GB ceiling' }
+          if ($LASTEXITCODE) { throw 'the AI family is over its 5 GB ceiling' }
 
       - name: Collect release assets
         run: |
@@ -416,7 +418,7 @@ jobs:
           }
           # Add-ons stay on the stable feed (docs/design/18): previews carry none.
           if ($env:MODE -eq 'stable') {
-            foreach ($addon in 'import', 'sharepoint', 'ai', 'ai-audio', 'ai-faces', 'ai-cuda') {
+            foreach ($addon in 'import', 'sharepoint', 'ai', 'ai-audio', 'ai-docs', 'ai-faces', 'ai-cuda') {
               Copy-Item "dist/addon/mediaviewer-addon-$addon-win-x64.zip", "dist/addon/mediaviewer-addon-$addon-win-x64.json", "dist/addon/mediaviewer-addon-$addon-win-x64.json.sig" upload
             }
             # Places is preferred: upload a complete pack, and publish without it
@@ -606,7 +608,7 @@ jobs:
           if [[ -d build/addons/ai ]]; then
             cp build/_ort/*/ThirdPartyNotices.txt build/addons/ai/
             tar -C build/addons/ai -cf "upload/AiAddon-${{ matrix.arch }}.tar" \
-              libmv_ai.dylib libonnxruntime.dylib AI.bundle ThirdPartyNotices.txt
+              libmv_ai.dylib libonnxruntime.dylib libpdfium.dylib AI.bundle ThirdPartyNotices.txt pdfium-licenses
           fi
 
       # No version suffix: publish only collects artifacts named *-<version>.
@@ -827,10 +829,10 @@ jobs:
           mkdir -p build/addons/ai
           tar -xf apps/AiAddon-arm64.tar -C build/addons/ai
           # Code first: the notary service gets the binaries, not a gigabyte of
-          # weights. The Sound and People pieces carry no code.
+          # weights. The Sound, Documents and People pieces carry no code.
           python3 tools/mac/macpack.py addon --dir build/addons/ai \
             --identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
-          for piece in ai ai-audio ai-faces; do
+          for piece in ai ai-audio ai-docs ai-faces; do
             python3 tools/package/ai-models.py stage --piece "$piece" --out "build/addons/$piece"
             python3 tools/package/addon-pack.py pack --addon "$piece" --platform macos --src "build/addons/$piece" \
               --version "$VERSION" --key "$RUNNER_TEMP/release.key" --out build/release/addon --require-pinned-key

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Pack and sign an add-on (docs/design/18 "Add-ons: how Import is installed").
 
-    addon-pack.py pack [--addon import|places|sharepoint|ai|ai-faces|ai-cuda] --platform win-x64|macos \
+    addon-pack.py pack [--addon import|places|sharepoint|ai|ai-audio|ai-docs|ai-faces|ai-cuda] --platform win-x64|macos \
         --src build/addons/<addon> --version 1.0.0 --key <ed25519-private-key-hex-file> --out dist/
     addon-pack.py ceiling dist/mediaviewer-addon-ai*-<platform>.json
     addon-pack.py stage-places --src build/addons/places [--downloads <cache> | --blob <places.mvgeo>]
@@ -52,8 +52,21 @@ import zipfile
 # the About box and THIRD-PARTY.md carry) and Natural Earth (public domain, which
 # SPDX has no identifier for, hence the LicenseRef marker). A file's licence may be
 # an SPDX "A AND B" expression; every part must be allowed.
+#
+# #354 (2026-10-16): the AI pack's PDFium carries the permissive notices of what
+# is built into it: FreeType (FTL) and libjpeg-turbo (IJG), both already in the
+# base app (THIRD-PARTY.md), ICU (Unicode-3.0), libpng (libpng-2.0) and
+# Anti-Grain Geometry 2.3 (a notice-only permission SPDX has no identifier for).
 ALLOWED_LICENCES = {"GPL-3.0-or-later", "MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause",
-                    "Zlib", "ISC", "CC0-1.0", "CC-BY-4.0", "LicenseRef-PublicDomain"}
+                    "Zlib", "ISC", "CC0-1.0", "CC-BY-4.0", "LicenseRef-PublicDomain",
+                    "FTL", "IJG", "Unicode-3.0", "libpng-2.0", "LicenseRef-AGG-2.3"}
+# PDFium as bblanchon/pdfium-binaries builds it (cmake/ai.cmake): PDFium itself
+# (BSD-3-Clause) and its licenses/ folder's parts, shipped in LICENSES/pdfium.
+PDFIUM_LICENCE = ("BSD-3-Clause AND BSD-2-Clause AND Apache-2.0 AND MIT AND Zlib AND FTL AND IJG"
+                  " AND Unicode-3.0 AND libpng-2.0 AND LicenseRef-AGG-2.3")
+# #354 D3: the Documents piece's notice names its text model (ai-models.json).
+DOCS_NOTICE = ("Document search by meaning for MediaViewer's Local search. Model: all-MiniLM-L6-v2 (Apache-2.0; ONNX export by Xenova).\n"
+               "Runs on this computer only; what your documents say never leaves it.\n")
 CEILINGS = {"ai": 5_000_000_000}  # docs/design/17; src/addon/manifest.cpp family_ceiling agrees
 
 # What ships, per add-on and platform. Anything else in the build folder stays
@@ -142,22 +155,27 @@ ADDONS = {
             "win-x64": {
                 "native": "mv_ai.dll",
                 "chrome": "MediaViewer.Ai.Chrome.dll",
-                "include": ["mv_ai.dll", "onnxruntime.dll", "onnxruntime_providers_shared.dll",
+                "include": ["mv_ai.dll", "onnxruntime.dll", "onnxruntime_providers_shared.dll", "pdfium.dll",
                             "MediaViewer.Ai.Chrome.dll", "MediaViewer.Ai.Chrome.deps.json", "models"],
             },
             "macos": {
                 "native": "libmv_ai.dylib",
                 "chrome": "AI.bundle",
                 "arch": "arm64",  # ONNX Runtime 1.30 ships no x86_64 macOS build
-                "include": ["libmv_ai.dylib", "libonnxruntime.dylib", "AI.bundle", "models"],
+                "include": ["libmv_ai.dylib", "libonnxruntime.dylib", "libpdfium.dylib", "AI.bundle", "models"],
             },
         },
-        "licences": [("onnxruntime", "MIT"), ("libonnxruntime", "MIT")],
+        "licences": [("onnxruntime", "MIT"), ("libonnxruntime", "MIT"),
+                     ("pdfium.dll", PDFIUM_LICENCE), ("libpdfium.dylib", PDFIUM_LICENCE)],
         "notice": ("Local search (the AI pack) for MediaViewer. GPL-3.0-or-later.\n"
                    "ONNX Runtime (MIT, Microsoft). OpenAI CLIP ViT-B/32 and ViT-L/14 weights (MIT),\n"
                    "ONNX exports by Xenova (MIT). Uses SQLite (public domain) in the app.\n"
+                   "PDFium (BSD-3-Clause, The PDFium Authors; built by bblanchon/pdfium-binaries)\n"
+                   "reads the text of PDFs; its parts' notices are in LICENSES/pdfium.\n"
                    "Runs entirely on this computer; nothing is sent anywhere.\n"),
         "ship_notices": ["ThirdPartyNotices.txt"],
+        # (folder beside mv_ai, folder under LICENSES/): PDFium's licenses/ (#354).
+        "ship_notice_dirs": [("pdfium-licenses", "pdfium")],
     },
     "ai-audio": {
         "name": "AI Audio",
@@ -171,6 +189,17 @@ ADDONS = {
         "notice": ("Audio search for MediaViewer's Local search: what clips sound like and what is said\n"
                    "in them. Models: LAION CLAP (Apache-2.0), OpenAI Whisper base and small\n"
                    "(Apache-2.0; ONNX exports by Xenova / onnx-community). Runs on this computer only.\n"),
+    },
+    "ai-docs": {
+        "name": "AI Documents",
+        "part_of": "ai",
+        "host_api": {"min": 2, "max": 2},
+        "files": {
+            "win-x64": {"include": ["models"]},
+            "macos": {"arch": "arm64", "include": ["models"]},
+        },
+        "licences": [],
+        "notice": DOCS_NOTICE,
     },
     "ai-faces": {
         "name": "AI Faces",
@@ -314,6 +343,9 @@ def collect(src: Path, platform: str, stage: Path, addon_id: str = "import") -> 
     for notice in addon.get("ship_notices", []):
         if (src / notice).exists():
             shutil.copy2(src / notice, stage / "LICENSES" / notice)
+    for folder, to in addon.get("ship_notice_dirs", []):
+        if (src / folder).is_dir():
+            shutil.copytree(src / folder, stage / "LICENSES" / to, dirs_exist_ok=True)
     # Model files name their licence in the staged licences.json (ai-models.py).
     staged = {}
     if (src / "licences.json").exists():

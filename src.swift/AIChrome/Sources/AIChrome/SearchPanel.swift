@@ -446,9 +446,10 @@ struct SearchRootView: View {
   private func kindGroup(captioned: Bool) -> some View {
     FilterGroup(caption: captioned ? "Show" : nil) {
       SegmentTrack {
-        ForEach(SearchKinds.shown(audioFiles: model.audioFiles)) { k in
+        ForEach(SearchKinds.shown(audioFiles: model.audioFiles, documentFiles: model.documentFiles)) { k in
           FilterButton(label: k.label, on: model.kinds == k, style: .segment,
-                       help: k == .all && model.audioFiles ? "Show photos, videos and audio files." : k.help) {
+                       help: k == .all ? SearchKinds.allHelp(audioFiles: model.audioFiles,
+                                                             documentFiles: model.documentFiles) : k.help) {
             model.kinds = k
             model.chipsChanged()
           }
@@ -459,7 +460,8 @@ struct SearchRootView: View {
 
   // 2026-09-27: what the words are matched against. Sound and Speech need
   // the Sound piece (Settings → Local search); without it they stay visible,
-  // dimmed, and their tooltip says how to get them.
+  // dimmed, and their tooltip says how to get them. #354: Text, a document's
+  // words, needs documents shown (Settings → File types).
   private func matchGroup(captioned: Bool) -> some View {
     FilterGroup(caption: captioned ? "Match by" : nil) {
       HStack(spacing: 6) {
@@ -469,7 +471,9 @@ struct SearchRootView: View {
                        available: available,
                        help: available
                          ? f.help + (model.matchOn(f) ? "" : " Off: click to include it.")
-                         : "Needs the Sound piece: install it in Settings → Local search to find videos by what you hear.") {
+                         : f == .text
+                           ? "Turn on Show documents in Settings → File types to search PDFs and Word documents."
+                           : "Needs the Sound piece: install it in Settings → Local search to find videos by what you hear.") {
             model.toggleMatch(f)
           }
         }
@@ -544,6 +548,15 @@ struct SearchRootView: View {
         Image(systemName: "exclamationmark.magnifyingglass").font(.system(size: 30)).foregroundStyle(AITheme.body)
         Text("Search did not finish.").font(AITheme.font(15)).foregroundStyle(AITheme.title)
         Text("Try again, or change the words.").font(AITheme.font(13)).foregroundStyle(AITheme.body)
+      } else if model.needsPlaces {
+        // #441: a place term with no Places: say so, list nothing.
+        Image(systemName: "mappin.slash").font(.system(size: 30)).foregroundStyle(AITheme.body)
+        Text("Place search needs the Places add-on.")
+          .font(AITheme.font(15)).foregroundStyle(AITheme.title)
+        Text("Install it from Settings → Add-ons. It names places offline; nothing is sent anywhere.")
+          .font(AITheme.font(13)).foregroundStyle(AITheme.body)
+          .multilineTextAlignment(.center).frame(maxWidth: 460)
+          .fixedSize(horizontal: false, vertical: true)
       } else if model.finished && (model.reference != nil || !model.query.isEmpty) {
         Image(systemName: "sparkle.magnifyingglass").font(.system(size: 30)).foregroundStyle(AITheme.body)
         if let reference = model.reference {
@@ -553,7 +566,7 @@ struct SearchRootView: View {
           Text("Nothing matches “\(model.query)”. Try fewer words, or describe what's in the picture.")
             .font(AITheme.font(15)).foregroundStyle(AITheme.title)
             .multilineTextAlignment(.center).frame(maxWidth: 460)
-          SyntaxHint()
+          SyntaxHint(places: model.placesAvailable)
         }
         if model.indexing {
           Text("Indexing is still running; more may match soon.")
@@ -564,7 +577,7 @@ struct SearchRootView: View {
              + (model.audioReady ? " Or a sound, “dog barking”, or words someone said." : ""))
           .font(AITheme.font(14)).foregroundStyle(AITheme.body)
           .multilineTextAlignment(.center).frame(maxWidth: 460)
-        SyntaxHint()
+        SyntaxHint(places: model.placesAvailable)
         if model.indexing {
           Text("Results appear as the index grows.")
             .font(AITheme.font(13)).foregroundStyle(AITheme.body)
@@ -735,17 +748,22 @@ private struct SearchStatusPill: View {
 // MARK: query syntax
 
 /// The query language in one line (docs/design/17 "Query syntax"): the pack parses
-/// it, so the Windows panel shows the same examples.
+/// it, so the Windows panel shows the same examples. place: only while an
+/// add-on answers it (#441: Places is installed).
 private struct SyntaxHint: View {
+  let places: Bool
+
   var body: some View {
     VStack(spacing: 4) {
-      Text("Sam beach   ·   Sam “happy birthday”   ·   -video   ·   in:2024   ·   camera:R5   ·   ai:yes   ·   place:Portugal")
+      Text("Sam beach   ·   Sam “happy birthday”   ·   -video   ·   in:2024   ·   camera:R5   ·   ai:yes"
+           + (places ? "   ·   place:Portugal" : ""))
         .font(.system(size: 12, design: .monospaced))
         .foregroundStyle(AITheme.title.opacity(0.8))
       Text("A name finds that person; “quotes” find words said in videos; - leaves something out; "
            + "video or photo picks a kind; in:, before: and after: use the file's date; file: matches its name; "
-           + "camera:, lens: and made: match its tags, ai:yes its AI provenance; place: or in:<place> where it was "
-           + "taken (with the Places add-on); a plain word also matches tags.")
+           + "camera:, lens: and made: match its tags, ai:yes its AI provenance; "
+           + (places ? "place: or in:<place> where it was taken; " : "")
+           + "a plain word also matches tags.")
         .font(AITheme.font(12))
         .foregroundStyle(AITheme.body)
         .multilineTextAlignment(.center)
@@ -948,7 +966,8 @@ private struct ResultTile: View {
           .clipped()
           .transition(.opacity)
       } else {
-        Image(systemName: result.isClip ? "film" : "photo").foregroundStyle(AITheme.body)
+        Image(systemName: result.isClip ? "film" : result.isDocument ? "doc.text" : "photo")
+          .foregroundStyle(AITheme.body)
       }
     }
     .frame(width: size, height: h)
@@ -988,11 +1007,19 @@ private struct ResultTile: View {
           .padding(.horizontal, 5).padding(.vertical, 2)
           .background(Capsule().fill(.black.opacity(0.6)))
           .padding(5)
+      } else if let page = result.page {
+        // #354: the page that matched, where a clip shows its moment.
+        Text("p. \(page)")
+          .font(.system(size: 10, weight: .semibold).monospacedDigit())
+          .foregroundStyle(.white)
+          .padding(.horizontal, 5).padding(.vertical, 2)
+          .background(Capsule().fill(.black.opacity(0.6)))
+          .padding(5)
       }
     }
     .overlay(alignment: .bottomTrailing) {
       if result.more > 0 {
-        Text("+\(result.more) in this clip")
+        Text("+\(result.more) in this \(result.isDocument ? "document" : "clip")")
           .font(.system(size: 10, weight: .medium))
           .foregroundStyle(.white)
           .padding(.horizontal, 5).padding(.vertical, 2)
@@ -1051,7 +1078,8 @@ private struct ResultTile: View {
   }
 
   private var accessibilityText: String {
-    var text = result.isClip ? "\(result.name), at \(momentText(result.ptsMs))" : result.name
+    var text = result.isClip ? "\(result.name), at \(momentText(result.ptsMs))"
+      : result.page.map { "\(result.name), page \($0)" } ?? result.name
     if result.matchedSound { text += ", matched by sound" }
     if result.matchedSpeech { text += ", matched by speech" + (slot.snippet.isEmpty ? "" : ": \(slot.snippet)") }
     if result.matchedTags && !result.matchedSpeech && !result.matchedText {

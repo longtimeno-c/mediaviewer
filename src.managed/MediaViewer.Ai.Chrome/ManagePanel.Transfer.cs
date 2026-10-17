@@ -14,8 +14,9 @@ namespace MediaViewer.Ai.Chrome;
 /// 2026-09-28): the index of some folders written to one .mvindex file, and a
 /// file merged into this index with each of its folders pointed at where those
 /// files are on this PC (a NAS mapped to another letter, a copied card).
-/// People and thumbnails travel only when ticked; People is off by default,
-/// because the file then identifies the people in it.
+/// People, documents and thumbnails travel only when ticked; People and
+/// documents are off by default, because the file then identifies the people
+/// in it, or holds what the documents say (#354 D3).
 /// </summary>
 /// <remarks>
 /// No text entry (the Settings island fail-fasts on a TextBox): folders are
@@ -47,6 +48,8 @@ internal sealed partial class ManagePanel
         public long Faces = -1;  // -1: the file has no People
         public bool PeopleReady;
         public bool PeopleMatch;
+        public long Documents = -1;  // -1: the file has no documents (#354 D3)
+        public bool DocumentsShown;
         public long Thumbs;
         public List<ImportRoot> Roots = new();
     }
@@ -58,9 +61,11 @@ internal sealed partial class ManagePanel
     private readonly HashSet<ulong> _exportRoots = new();
     private bool _exportThumbs = true;
     private bool _exportPeople;
+    private bool _exportDocuments;
     private ImportPlan? _importPlan;
     private bool _importThumbs = true;
     private bool _importPeople;
+    private bool _importDocuments;
     private ulong _transferJob;
     private bool _transferRunning;
     private bool _transferIsImport;
@@ -100,6 +105,7 @@ internal sealed partial class ManagePanel
             _exportRoots.Clear();
             foreach (RootRow r in _rootsShown) _exportRoots.Add(r.Id);
             _exportPeople = false;
+            _exportDocuments = false;
             ShowTransfer();
         });
         export.IsEnabled = !_transferRunning && _rootsShown.Count > 0;
@@ -171,8 +177,21 @@ internal sealed partial class ManagePanel
             warning.Visibility = on || !peopleOn ? Visibility.Visible : Visibility.Collapsed;
         }, peopleOn));
         box.Children.Add(warning);
+        // #354 D3: documents with their text, only while documents are shown.
+        bool docsOn = _chrome.DocumentFiles;
+        if (docsOn)
+        {
+            TextBlock docsWarning = _look.Text("The file will hold the text of your documents.", 12, AddonColour.Title);
+            docsWarning.Visibility = _exportDocuments ? Visibility.Visible : Visibility.Collapsed;
+            box.Children.Add(Check("Documents", _exportDocuments, on =>
+            {
+                _exportDocuments = on;
+                docsWarning.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+            }));
+            box.Children.Add(docsWarning);
+        }
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        buttons.Children.Add(_look.Button("Export…", () => _ = Export(peopleOn), accent: true));
+        buttons.Children.Add(_look.Button("Export…", () => _ = Export(peopleOn, docsOn), accent: true));
         buttons.Children.Add(_look.Button("Cancel", () =>
         {
             _exportOpen = false;
@@ -182,7 +201,7 @@ internal sealed partial class ManagePanel
         return Pad(box);
     }
 
-    private async Task Export(bool peopleOn)
+    private async Task Export(bool peopleOn, bool docsOn)
     {
         if (_exportRoots.Count == 0) return;
         var picker = new FileSavePicker { SuggestedFileName = "MediaViewer index" };
@@ -198,6 +217,7 @@ internal sealed partial class ManagePanel
         MvAiTransfer flags = MvAiTransfer.None;
         if (_exportThumbs) flags |= MvAiTransfer.Thumbs;
         if (_exportPeople && peopleOn) flags |= MvAiTransfer.People;
+        if (_exportDocuments && docsOn) flags |= MvAiTransfer.Documents;
         try
         {
             // The picker made an empty file; the export replaces it when done.
@@ -246,6 +266,7 @@ internal sealed partial class ManagePanel
                 _transferNote = plan is null ? "That file is not a MediaViewer index, or it comes from a newer version." : "";
                 _importThumbs = plan is not null && plan.Thumbs > 0;
                 _importPeople = false;
+                _importDocuments = false;
                 ShowTransfer();
             });
         });
@@ -268,6 +289,11 @@ internal sealed partial class ManagePanel
             plan.Faces = p.TryGetProperty("faces", out JsonElement fc) ? fc.GetInt64() : 0;
             plan.PeopleReady = p.TryGetProperty("ready", out JsonElement pr) && pr.ValueKind == JsonValueKind.True;
             plan.PeopleMatch = p.TryGetProperty("match", out JsonElement pm) && pm.ValueKind == JsonValueKind.True;
+        }
+        if (o.TryGetProperty("documents", out JsonElement d) && d.ValueKind == JsonValueKind.Object)
+        {
+            plan.Documents = d.TryGetProperty("count", out JsonElement dc) ? dc.GetInt64() : 0;
+            plan.DocumentsShown = d.TryGetProperty("shown", out JsonElement ds) && ds.ValueKind == JsonValueKind.True;
         }
         foreach (JsonElement r in o.GetProperty("roots").EnumerateArray())
         {
@@ -356,6 +382,12 @@ internal sealed partial class ManagePanel
                 box.Children.Add(_look.Text("Its faces come from another People model and would be left out.", 12));
             }
         }
+        if (plan.Documents >= 0)
+        {
+            box.Children.Add(Check($"Documents ({plan.Documents:N0})", _importDocuments && plan.DocumentsShown,
+                                   on => _importDocuments = on, plan.DocumentsShown));
+            if (!plan.DocumentsShown) box.Children.Add(_look.Text("Turn on Show documents to import them.", 12));
+        }
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         buttons.Children.Add(go);
         buttons.Children.Add(_look.Button("Cancel", () =>
@@ -396,6 +428,7 @@ internal sealed partial class ManagePanel
         MvAiTransfer flags = MvAiTransfer.None;
         if (_importThumbs && plan.Thumbs > 0) flags |= MvAiTransfer.Thumbs;
         if (_importPeople && plan.Faces > 0) flags |= MvAiTransfer.People;
+        if (_importDocuments && plan.Documents >= 0 && plan.DocumentsShown) flags |= MvAiTransfer.Documents;
         try
         {
             _transferJob = _api.ImportIndex(plan.File, JsonSerializer.Serialize(map), flags);
@@ -458,9 +491,10 @@ internal sealed partial class ManagePanel
         if (status != (int)MvStatus.Ok) return "The index could not be exported.";
         long thumbs = Count(o, "thumbs");
         string s = thumbs > 0
-            ? $"Exported {Count(o, "assets"):N0} files and {thumbs:N0} thumbnails ({Look.Size(Count(o, "bytes"))})."
-            : $"Exported {Count(o, "assets"):N0} files ({Look.Size(Count(o, "bytes"))}).";
+            ? $"Exported {Count(o, "assets"):N0} files and {thumbs:N0} thumbnails ({MediaViewer.Shared.ByteSize.Text(Count(o, "bytes"))})."
+            : $"Exported {Count(o, "assets"):N0} files ({MediaViewer.Shared.ByteSize.Text(Count(o, "bytes"))}).";
         if (o.TryGetProperty("people_included", out JsonElement p) && p.ValueKind == JsonValueKind.True) s += " People included.";
+        if (o.TryGetProperty("documents_included", out JsonElement d) && d.ValueKind == JsonValueKind.True) s += " Documents' text included.";
         long missing = Count(o, "thumbs_missing");
         if (missing > 0) s += $" {missing:N0} thumbnails could not be made and were left out.";
         return s;

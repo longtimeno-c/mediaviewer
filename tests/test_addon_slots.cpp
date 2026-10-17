@@ -14,6 +14,7 @@
 
 #include <sodium.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -227,7 +228,8 @@ TEST_CASE("contributions are tables resolved once at attach; detach removes ever
   r.detach("slotstest");
   REQUIRE(changes == (mv::addon::slot_changed_contributions | mv::addon::slot_changed_info |
                       mv::addon::slot_changed_screens | mv::addon::slot_changed_search |
-                      mv::addon::slot_changed_badges | mv::addon::slot_changed_status));
+                      mv::addon::slot_changed_badges | mv::addon::slot_changed_status |
+                      mv::addon::slot_changed_notices));
   REQUIRE_FALSE(r.attached("slotstest"));
   const auto after = mv::json::parse(r.contributions_json());
   REQUIRE(after->find("sections")->a.empty());
@@ -328,6 +330,216 @@ TEST_CASE("a slow provider never delays typing; a stale answer is dropped", "[ad
   r.drain();
   REQUIRE(fc->searches == before);
   REQUIRE(mv::json::parse(r.search_json(MV_SLOT_SCOPE_FILES))->find("rows")->a.empty());
+}
+
+// #441: which queries name a place, read as the AI pack's parser reads them.
+TEST_CASE("place terms are place:x and in:<word>, never a date or a quoted phrase", "[addon][slots][places]") {
+  using mv::addon::has_place_terms;
+  CHECK(has_place_terms("place:Portugal"));
+  CHECK(has_place_terms("beach place:portugal"));
+  CHECK(has_place_terms("PLACE:lisbon"));
+  CHECK(has_place_terms("in:lisbon"));
+  CHECK(has_place_terms("-place:spain"));
+  CHECK(has_place_terms("video -in:spain"));
+  CHECK(has_place_terms("place:\"new york\""));
+  CHECK(has_place_terms("place:\xE2\x80\x9Cnew york\xE2\x80\x9D"));
+  CHECK_FALSE(has_place_terms(""));
+  CHECK_FALSE(has_place_terms("portugal"));        // a plain word: the description, and tags
+  CHECK_FALSE(has_place_terms("in:2024"));         // a date
+  CHECK_FALSE(has_place_terms("in:2024-06 beach"));
+  CHECK_FALSE(has_place_terms("place:"));          // still being typed
+  CHECK_FALSE(has_place_terms("place:\""));
+  CHECK_FALSE(has_place_terms("\"we went place:x\""));  // words said, not an operator
+  CHECK_FALSE(has_place_terms("file:place"));
+  CHECK_FALSE(has_place_terms("replace:x"));       // not an operator the pack knows
+  CHECK_FALSE(has_place_terms("--place:x"));
+}
+
+namespace {
+
+// A Places stand-in: "portugal" is two files, posted in two batches; "slow"
+// waits for release(); "fail" returns an error having posted nothing.
+class place_client final : public mv::addon::slot_client {
+ public:
+  explicit place_client(slot_registry& r) : r_(r) {}
+  status info_section(const mv_slot_info_request&) override { return status::ok; }
+  status search(const mv_slot_search_request& q) override {
+    ++searches;
+    const std::string f = q.folded_utf8;
+    {
+      std::lock_guard lock(m);
+      folders.emplace_back(q.folder_utf8);
+      generations.push_back(q.generation);
+    }
+    if (f == "fail") return status::io;
+    if (f == "slow") {
+      std::unique_lock lock(m);
+      cv.wait(lock, [this] { return released; });
+      stale_seen = r_.is_stale("places", q.generation);
+      return status::ok;
+    }
+    if (f == "portugal") {
+      (void)r_.post_search("places", q.provider_id, q.generation, {{"/i/lisboa.jpg", "Lisbon, Portugal"}}, false);
+      (void)r_.post_search("places", q.provider_id, q.generation, {{"/i/porto.jpg", "Porto, Portugal"}}, true);
+      return status::ok;
+    }
+    return r_.post_search("places", q.provider_id, q.generation, {}, true);
+  }
+  status screen_open(const mv_slot_screen_request&) override { return status::unsupported_format; }
+  status badges(const mv_slot_badges_request&) override { return status::unsupported_format; }
+  void event(const mv_slot_event&) override {}
+
+  void release() {
+    {
+      std::lock_guard lock(m);
+      released = true;
+    }
+    cv.notify_all();
+  }
+
+  std::atomic<int> searches{0};
+  std::atomic<bool> stale_seen{false};
+  std::mutex m;
+  std::condition_variable cv;
+  bool released = false;
+  std::vector<std::string> folders;
+  std::vector<std::uint64_t> generations;
+
+ private:
+  slot_registry& r_;
+};
+
+mv::addon::contributions places_point() {
+  mv::addon::contributions c;
+  c.api_min = 5;
+  c.api_max = 5;
+  c.search_providers.push_back({"place", "Places", {"place:", "in:"}, true, true});
+  return c;
+}
+
+std::vector<std::string> sorted(std::vector<std::string> v) {
+  std::sort(v.begin(), v.end());
+  return v;
+}
+
+int32_t MV_CALL collect_path(void* user, const char* path) {
+  auto& out = *static_cast<std::vector<std::string>*>(user);
+  if (path) out.emplace_back(path);
+  return 1;
+}
+
+}  // namespace
+
+TEST_CASE("Local search's place terms are the pack's: no provider is asked beside it", "[addon][slots][places]") {
+  slot_registry r;
+  auto client = std::make_unique<fake_client>(r, "slotstest");
+  fake_client* fc = client.get();
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::move(client)) == status::ok);
+  auto places = std::make_unique<place_client>(r);
+  place_client* pc = places.get();
+  REQUIRE(r.attach("places", "Places", places_point(), std::move(places)) == status::ok);
+
+  // "place:portugal" and "beach place:portugal": the pack intersects; nobody
+  // posts "+ N in Portugal" rows beside its results.
+  for (const char* q : {"place:portugal", "beach place:portugal", "-place:spain"}) {
+    r.search(MV_SLOT_SCOPE_LOCAL, q, "");
+    r.drain();
+    const auto res = mv::json::parse(r.search_json(MV_SLOT_SCOPE_LOCAL));
+    CHECK(res->find("providers")->a.empty());
+    CHECK(res->find("rows")->a.empty());
+  }
+  CHECK(fc->searches == 0);
+  CHECK(pc->searches == 0);
+  // A plain word still goes to every Local search provider (Places' "portugal").
+  r.search(MV_SLOT_SCOPE_LOCAL, "portugal", "");
+  r.drain();
+  CHECK(pc->searches == 1);
+  // File search keeps its routing: "place:lisbon" is Places' alone.
+  r.search(MV_SLOT_SCOPE_FILES, "place:portugal", "/f");
+  r.drain();
+  CHECK(pc->searches == 2);
+  CHECK(fc->searches == 1);  // "portugal" above; not the routed one
+}
+
+TEST_CASE("a place term's assets come from the provider that declares place:, or none", "[addon][slots][places]") {
+  slot_registry r;
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::make_unique<fake_client>(r, "slotstest")) ==
+          status::ok);
+  const auto keep_going = [] { return true; };
+
+  // No add-on declares place: (Places not installed): not_found, no rows.
+  CHECK(mv::addon::place_terms(r, "") == 0u);
+  CHECK(mv::addon::place_terms(r, "place:portugal") == MV_SLOTS_PLACE_TERMS);
+  auto none = r.provider_paths("place:", "portugal", keep_going);
+  REQUIRE_FALSE(none);
+  CHECK(none.error() == status::not_found);
+
+  auto places = std::make_unique<place_client>(r);
+  place_client* pc = places.get();
+  REQUIRE(r.attach("places", "Places", places_point(), std::move(places)) == status::ok);
+  CHECK(mv::addon::place_terms(r, "") == MV_SLOTS_PLACE_PROVIDER);
+  CHECK(mv::addon::place_terms(r, "in:sintra") == (MV_SLOTS_PLACE_TERMS | MV_SLOTS_PLACE_PROVIDER));
+  CHECK(mv::addon::place_terms(r, "in:2024") == MV_SLOTS_PLACE_PROVIDER);
+
+  SECTION("every batch, over the whole index, beside the chrome's own search") {
+    const std::uint64_t chrome = r.search(MV_SLOT_SCOPE_FILES, "nothing", "/f");
+    auto paths = r.provider_paths("place:", " Portugal ", keep_going);
+    REQUIRE(paths);
+    CHECK(sorted(*paths) == std::vector<std::string>{"/i/lisboa.jpg", "/i/porto.jpg"});
+    CHECK(pc->folders.back().empty());  // the whole index (locations_of_index)
+    CHECK(r.is_stale(pc->generations.back()));  // finished: its generation is gone
+    CHECK_FALSE(r.is_stale(chrome));            // and the chrome's search was not replaced
+    // Nothing of it reached the chrome's results.
+    CHECK(mv::json::parse(r.search_json(MV_SLOT_SCOPE_LOCAL))->find("rows")->a.empty());
+  }
+  SECTION("a provider that fails says nothing: done, no rows") {
+    auto paths = r.provider_paths("place:", "fail", keep_going);
+    REQUIRE(paths);
+    CHECK(paths->empty());
+  }
+  SECTION("the caller stops waiting; the provider sees its request go stale") {
+    std::atomic<int> asked{0};
+    auto paths = r.provider_paths("place:", "slow", [&] { return ++asked < 3; });
+    REQUIRE_FALSE(paths);
+    CHECK(paths.error() == status::cancelled);
+    pc->release();
+    r.drain();
+    CHECK(pc->stale_seen);
+  }
+  SECTION("the provider is removed while it works") {
+    std::thread remover([&] {
+      (void)eventually([&] { return pc->searches.load() == 1; });
+      pc->release();  // detach joins the worker: let the call return
+      r.detach("places");
+    });
+    auto paths = r.provider_paths("place:", "slow", keep_going);
+    remover.join();
+    // Either it finished before the detach (no rows) or it went: never a hang.
+    if (!paths) CHECK(paths.error() == status::not_found);
+    CHECK(mv::addon::place_terms(r, "") == 0u);
+  }
+}
+
+TEST_CASE("the host table's place_matches serves the AI pack the provider's paths", "[addon][slots][places]") {
+  slot_registry r;
+  mv::addon::host_services svc;
+  svc.slots = &r;
+  mv::addon::host_table t(svc);
+  t.set_addon_id("ai");
+  const mv_host_api* api = t.api();
+  REQUIRE(api->struct_size >= offsetof(mv_host_api, place_matches) + sizeof(api->place_matches));
+  REQUIRE(api->place_matches);
+  std::vector<std::string> out;
+  CHECK(api->place_matches(api->host, "portugal", &collect_path, &out) == MV_ERR_NOT_FOUND);
+  CHECK(out.empty());
+  CHECK(api->place_matches(api->host, nullptr, &collect_path, &out) == MV_ERR_INVALID_ARG);
+
+  REQUIRE(r.attach("places", "Places", places_point(), std::make_unique<place_client>(r)) == status::ok);
+  REQUIRE(api->place_matches(api->host, "portugal", &collect_path, &out) == MV_OK);
+  CHECK(sorted(out) == std::vector<std::string>{"/i/lisboa.jpg", "/i/porto.jpg"});
+  // The visitor stops it.
+  const auto stop = [](void*, const char*) -> int32_t { return 0; };
+  CHECK(api->place_matches(api->host, "portugal", stop, nullptr) == MV_ERR_CANCELLED);
 }
 
 namespace {
@@ -587,6 +799,98 @@ TEST_CASE("screens open from items, take checked events, and close", "[addon][sl
   REQUIRE(r.status_json() == "[]");
   REQUIRE(r.post_status("slotstest", "open", "x") == status::not_found);  // not a status item
   REQUIRE(r.post_status("slotstest", "count", std::string(200, 'x')) == status::invalid_arg);
+}
+
+TEST_CASE("notices and keep-alive are tables the hosts read; a notice's button reaches the add-on (#452)",
+          "[addon][slots][screens]") {
+  slot_registry r;
+  std::atomic<std::uint32_t> bits{0};
+  r.set_listener([&](std::uint32_t b) { bits |= b; });
+  // Before attach (an add-on calling from mv_addon_get): not found, so it retries.
+  REQUIRE(r.keep_alive("slotstest", true, "explorer", "Slots: on") == status::not_found);
+  auto client = std::make_unique<fake_client>(r, "slotstest");
+  fake_client* fc = client.get();
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::move(client)) == status::ok);
+  REQUIRE(*mv::json::parse(r.notices_json())->integer("ask") == 0);
+  REQUIRE_FALSE(r.keeping_alive());
+
+  bits = 0;
+  slot_registry::notice_fields n{"explorer", "Slots", "Ann wants to send you files.", "decline", "Decline"};
+  REQUIRE(r.post_notice("slotstest", "offer", n) == status::ok);
+  REQUIRE((bits & mv::addon::slot_changed_notices) != 0);
+  auto doc = mv::json::parse(r.notices_json());
+  REQUIRE(doc->find("notices")->a.size() == 1);
+  const auto& first = doc->find("notices")->a[0];
+  CHECK(*first.str("addon") == "slotstest");
+  CHECK(*first.str("id") == "offer");
+  CHECK(*first.str("screen") == "explorer");
+  CHECK(*first.str("body") == "Ann wants to send you files.");
+  CHECK(*first.str("action") == "decline");
+  const auto rev = *first.integer("revision");
+  // The same id replaces it, under a new revision (the host shows it again).
+  n.body = "Ann wants to send you 3 files, 2 MB.";
+  REQUIRE(r.post_notice("slotstest", "offer", n) == status::ok);
+  doc = mv::json::parse(r.notices_json());
+  REQUIRE(doc->find("notices")->a.size() == 1);
+  CHECK(*doc->find("notices")->a[0].integer("revision") > rev);
+
+  // Bounds: a screen it does not have, no title, text too long, a button without a label.
+  slot_registry::notice_fields bad = n;
+  bad.screen = "nowhere";
+  CHECK(r.post_notice("slotstest", "offer", bad) == status::not_found);
+  bad = n;
+  bad.title.clear();
+  CHECK(r.post_notice("slotstest", "offer", bad) == status::invalid_arg);
+  bad = n;
+  bad.body = std::string(401, 'x');
+  CHECK(r.post_notice("slotstest", "offer", bad) == status::invalid_arg);
+  bad = n;
+  bad.action_label.clear();
+  CHECK(r.post_notice("slotstest", "offer", bad) == status::invalid_arg);
+  CHECK(r.post_notice("slotstest", "", n) == status::invalid_arg);
+  CHECK(r.post_notice("ghost", "offer", n) == status::not_found);
+
+  // The button: an event to the add-on, never checked against a tree (no window open).
+  REQUIRE(r.notice_action("slotstest", "offer", "decline") == status::ok);
+  CHECK(r.notice_action("slotstest", "offer", "accept") == status::not_found);  // not its button
+  CHECK(r.notice_action("slotstest", "other", "decline") == status::not_found);
+  r.drain();
+  {
+    std::lock_guard lock(fc->m);
+    REQUIRE(fc->events.size() == 1);
+    CHECK(fc->events[0] == "13:decline:\"offer\"");
+  }
+  // Taken back; taking back what is gone wakes nobody.
+  REQUIRE(r.post_notice("slotstest", "offer", std::nullopt) == status::ok);
+  CHECK(mv::json::parse(r.notices_json())->find("notices")->a.empty());
+  bits = 0;
+  REQUIRE(r.post_notice("slotstest", "offer", std::nullopt) == status::ok);
+  CHECK(bits == 0);
+
+  // Permission asks count up; the hosts ask the OS when the count moves.
+  REQUIRE(r.ask_notice_permission("slotstest") == status::ok);
+  CHECK(*mv::json::parse(r.notices_json())->integer("ask") == 1);
+
+  // Keep-alive, with the screen's title for the host's "Open …".
+  REQUIRE(r.keep_alive("slotstest", true, "explorer", "Slots: on") == status::ok);
+  REQUIRE(r.keeping_alive());
+  doc = mv::json::parse(r.notices_json());
+  REQUIRE(doc->find("keep")->a.size() == 1);
+  CHECK(*doc->find("keep")->a[0].str("title") == "Explorer");
+  CHECK(*doc->find("keep")->a[0].str("label") == "Slots: on");
+  bits = 0;
+  REQUIRE(r.keep_alive("slotstest", true, "explorer", "Slots: on") == status::ok);
+  CHECK(bits == 0);  // unchanged: no wake
+  CHECK(r.keep_alive("slotstest", true, "nowhere", "x") == status::not_found);
+  REQUIRE(r.keep_alive("slotstest", false, "", "") == status::ok);
+  CHECK_FALSE(r.keeping_alive());
+
+  // Detach takes both with it.
+  REQUIRE(r.keep_alive("slotstest", true, "explorer", "Slots: on") == status::ok);
+  REQUIRE(r.post_notice("slotstest", "offer", n) == status::ok);
+  r.detach("slotstest");
+  CHECK_FALSE(r.keeping_alive());
+  CHECK(mv::json::parse(r.notices_json())->find("notices")->a.empty());
 }
 
 TEST_CASE("surfaces are copied, bounded, and go with their tree", "[addon][slots][screens]") {

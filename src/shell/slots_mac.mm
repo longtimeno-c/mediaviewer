@@ -90,6 +90,13 @@ extern "C" int32_t mv_chrome_slots_status(char* buf, int32_t size) {
   return copy_out(mv::addon::default_slots().status_json(), buf, size);
 }
 
+extern "C" int32_t mv_chrome_slots_notices(char* buf, int32_t size) {
+  return copy_out(mv::addon::default_slots().notices_json(), buf, size);
+}
+extern "C" bool mv_chrome_slots_notice_action(const char* addon, const char* notice, const char* action) {
+  return mv::addon::default_slots().notice_action(str(addon), str(notice), str(action)) == mv::status::ok;
+}
+
 extern "C" uint64_t mv_chrome_slots_request_info(const char* path, const char* location_text,
                                                  const mv_chrome_slot_theme* theme, float width,
                                                  float scale) {

@@ -292,9 +292,10 @@ under 0.2 ms. During a gesture nothing is drawn: the chrome moves the last bitma
   accepted, declaring only the section, the provider and settings; then `mv_places` installed in a
   signed store with the test blob as `data/places.mvgeo`, loaded through host table v3, answering
   the section (label, coordinates, 600 × 320 surface, pin, marks), a −, a zoom, a pan and a
-  double-click, `portugal` / `place:spain` / `in:2024` over a fake `locations_in`, Local search
-  with no folder (`place:portugal`, `in:spain`) over a fake `locations_of_index`, done with no
-  rows when no index is attached, and removal.
+  double-click, `portugal` / `place:spain` / `in:2024` over a fake `locations_in`, the AI pack's
+  place terms (`portugal`, `spain`, `atlantis` through `provider_paths`, #441) over a fake
+  `locations_of_index` while Local search's own `place:portugal` asks nobody, no rows when no index
+  is attached, and removal.
   Until PR 56 lands in the same host, the test leaves the settings page out of the manifest (the
   host would refuse it).
 - `tools/package/test_addon_pack.py` `PlacesPackTest`: the package's files, licences, notice and
@@ -424,11 +425,21 @@ up and posts rows in batches of 128 with the file's place label as the `why`. Th
 (`place_query`): the folded query equals a country's or region's name in any of the database's
 languages, or starts one at 4 letters or more ("portu" finds Portugal while typing, "po" does
 not); or it equals the file's own town (starts it, at 4 letters). A point at sea is in no country.
-A query starting with a digit is never a place. Local search over the whole index (folder "",
-nothing open) walks the host table's `locations_of_index` instead (#398): the AI pack's
-index.db coordinates, streamed with no file read, under the same rule and the same batches. A
-host without that row, or with no AI pack loaded, gets `done` with no rows (doc 17 "Places over
-the index").
+A query starting with a digit is never a place. A Local search request (folder "") walks the
+host table's `locations_of_index` instead (#398): the AI pack's index.db coordinates, streamed
+with no file read, under the same rule and the same batches. A host without that row, or with no
+AI pack loaded, gets `done` with no rows.
+
+In Local search the provider is asked by the AI pack, not beside it (#441). For each place term
+(`place:portugal`, `in:lisbon`, `-place:spain`) the pack's engine calls the host table's
+`place_matches`, which sends Places one request for that word over the whole index and hands
+back every row's path once Places posts done. The engine intersects those assets with the rest of
+the query, so `beach place:portugal` is Portugal's beaches and nothing else (doc 17 "Places over
+the index"). Local search sends a query with place terms to no other provider, so there is no
+"+ N in Portugal" beside the list. **Without Places a place term matches nothing**: the core has
+no borders, so the search panel says "Place search needs the Places add-on. Install it from
+Settings → Add-ons", and its help line leaves `place:` out while Places is not loaded. File search
+(the path bar's field) routes `place:` to Places as before.
 
 ### Settings (PR 56 schema)
 

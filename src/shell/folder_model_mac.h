@@ -137,6 +137,20 @@ class folder_model {
   void request_thumb(std::string path_utf8, std::int64_t mtime_unix, std::uint64_t size,
                      thumb_ready_fn on_ready, std::int64_t moment_ms = -1);
 
+  // Issue #429, the page sidebar: looks up or renders the thumbnails of
+  // `pages` of the document `path_utf8` in one job, from one open of the file
+  // (image/page_thumbs.h). `still_wanted` runs first on the pool thread and
+  // returns the pages still worth rendering (page_thumb_book::still_wanted);
+  // `on_page` runs there for each that lands and returns false to stop;
+  // `on_done` runs there last, with the pages the job set out to render,
+  // whatever happened. The caller marshals to its own thread.
+  using page_filter_fn = std::function<std::vector<std::uint32_t>(std::vector<std::uint32_t>)>;
+  using page_thumb_fn = std::function<bool(std::uint32_t page, std::string thumb_path)>;
+  using page_done_fn = std::function<void(std::vector<std::uint32_t> pages)>;
+  void request_page_thumbs(std::string path_utf8, std::int64_t mtime_unix, std::uint64_t size,
+                           std::vector<std::uint32_t> pages, page_filter_fn still_wanted,
+                           page_thumb_fn on_page, page_done_fn on_done);
+
   // [pool thread] The cached JPEG-512 for a clip about to open on `moment_ms`:
   // the moment's row, else the clip's poster; "" when neither is cached. A
   // lookup only, never a decode or a stat (rule 3's "disk thumb" step for a
@@ -144,6 +158,10 @@ class folder_model {
   // has gone is dropped by the sweep's next verified lookup.
   [[nodiscard]] std::string cached_clip_thumb(const std::string& path_utf8, std::int64_t mtime_unix,
                                               std::uint64_t size, std::int64_t moment_ms) const;
+  // Issue #429, [pool thread]: page `page`'s cached sidebar thumbnail, "" when
+  // none; a lookup only, as cached_clip_thumb.
+  [[nodiscard]] std::string cached_page_thumb(const std::string& path_utf8, std::int64_t mtime_unix,
+                                              std::uint64_t size, std::uint32_t page) const;
 
  private:
   // job_system's queue can outlive this object (jobs already submitted when

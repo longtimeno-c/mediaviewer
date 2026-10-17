@@ -261,6 +261,9 @@ expected chrome_host::load() noexcept {
   detach_panels_ = get_entry(L"DetachPanels");
   show_meta_pane_ = get_entry(L"ShowMetaPane");
   show_folder_tree_ = get_entry(L"ShowFolderTree");
+  // Issue #429, optional the same way: without it there is no page sidebar.
+  show_page_sidebar_ = get_entry(L"ShowPageSidebar");
+  set_page_sidebar_ = get_entry(L"SetPageSidebar");
   set_meta_data_ = get_entry(L"SetMetaData");
   set_tree_root_ = get_entry(L"SetTreeRoot");
   take_tree_path_ = get_entry(L"TakeTreePath");
@@ -286,8 +289,8 @@ expected chrome_host::load() noexcept {
 
   // Optional (Milestone G): a chrome without the Import hand-off still loads.
   show_import_ = get_entry(L"ShowImport");
-  // PR 15, optional the same way: without it Ctrl+Shift+S is not handled.
-  share_files_ = get_entry(L"ShareFiles");
+  // Issue #444, optional the same way: without it the share menu does not open.
+  share_menu_ = get_entry(L"ShareMenu");
   // Optional the same way: without it Copy Text in Image says OCR is not available.
   recognize_text_ = get_entry(L"RecognizeText");
   // Optional (Milestone H): the add-on command hand-off by family.
@@ -297,6 +300,7 @@ expected chrome_host::load() noexcept {
   // Optional the same way (issue #402): without it the canvas has no context menu.
   show_canvas_menu_ = get_entry(L"ShowCanvasMenu");
   run_addon_command_ = get_entry(L"RunAddonCommand");
+  open_addon_screen_ = get_entry(L"OpenAddonScreen");  // #452, optional
   // Optional: without them a drag carries one cell and Open lists no recents.
   set_drag_paths_ = get_entry(L"SetDragPaths");
   set_recent_folders_ = get_entry(L"SetRecentFolders");
@@ -703,6 +707,8 @@ expected chrome_host::attach_panels(HWND parent, void* context, chrome_command_f
   adjust_visible_ = false;
   jobs_visible_ = false;
   edit_visible_ = false;
+  page_sidebar_visible_ = false;
+  page_sidebar_sent_ = {-1, -1, -1};
 
   chrome_filmstrip_args args{};
   args.parent_hwnd = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(parent));
@@ -750,6 +756,25 @@ void chrome_host::show_folder_tree(bool visible, int x, int y, int width, int he
   if (!panels_attached_ || !show_folder_tree_) return;
   show_panel(show_folder_tree_, visible, x, y, width, height, focus, y + height + 1);
   tree_visible_ = visible;
+}
+
+void chrome_host::show_page_sidebar(bool visible, int x, int y, int width, int height) noexcept {
+  if (!panels_attached_ || !show_page_sidebar_) return;
+  show_panel(show_page_sidebar_, visible, x, y, width, height, false, y + height + 1);
+  page_sidebar_visible_ = visible;
+}
+
+// Sent only when it changes: the host calls it on every layout pass.
+void chrome_host::set_page_sidebar(std::int32_t count, std::int32_t current,
+                                   std::int32_t stop) noexcept {
+  if (!panels_attached_ || !set_page_sidebar_) return;
+  if (page_sidebar_sent_.count == count && page_sidebar_sent_.current == current &&
+      page_sidebar_sent_.stop == stop) {
+    return;
+  }
+  page_sidebar_sent_ = {count, current, stop};
+  chrome_page_sidebar_args args{count, current, stop};
+  (void)set_page_sidebar_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 void chrome_host::show_adjust_pane(bool visible, int x, int y, int width, int height,
@@ -989,17 +1014,19 @@ void chrome_host::show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept
   (void)show_popup_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
-bool chrome_host::share_files(HWND window, const std::string& paths_json) noexcept {
-  if (!attached_ || !share_files_ || !window || paths_json.empty()) return false;
-  // { int64 hwnd; int32 byte count; int32 reserved; UTF-8 JSON }, mirrored by
-  // IslandHost.ShareFiles.
-  std::vector<std::uint8_t> buf(16 + paths_json.size());
-  const auto hwnd = static_cast<std::int64_t>(reinterpret_cast<std::intptr_t>(window));
-  const auto len = static_cast<std::int32_t>(paths_json.size());
-  std::memcpy(buf.data(), &hwnd, 8);
-  std::memcpy(buf.data() + 8, &len, 4);
-  std::memcpy(buf.data() + 16, paths_json.data(), paths_json.size());
-  return share_files_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
+bool chrome_host::share_menu(HWND window, std::int32_t target, std::int32_t from,
+                             const std::string& files_json) noexcept {
+  if (!attached_ || !share_menu_ || !window || files_json.empty()) return false;
+  // chrome_share_args, then the UTF-8 JSON; mirrored by IslandHost.ShareMenu.
+  chrome_share_args args{};
+  args.hwnd = static_cast<std::int64_t>(reinterpret_cast<std::intptr_t>(window));
+  args.target = target;
+  args.from = from;
+  args.bytes = static_cast<std::int32_t>(files_json.size());
+  std::vector<std::uint8_t> buf(sizeof(args) + files_json.size());
+  std::memcpy(buf.data(), &args, sizeof(args));
+  std::memcpy(buf.data() + sizeof(args), files_json.data(), files_json.size());
+  return share_menu_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
 }
 
 void chrome_host::show_import(std::int32_t kind, const std::string& paths_json) noexcept {
@@ -1038,6 +1065,18 @@ bool chrome_host::run_addon_command(const std::string& addon, const std::string&
     buf.push_back(0);
   }
   return run_addon_command_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
+}
+
+bool chrome_host::open_addon_screen(const std::string& addon, const std::string& screen) noexcept {
+  if (!attached_ || !open_addon_screen_) return false;
+  // Two UTF-8 strings, each NUL-terminated, mirrored by IslandHost.OpenAddonScreen.
+  std::vector<std::uint8_t> buf;
+  buf.reserve(addon.size() + screen.size() + 2);
+  for (const std::string* part : {&addon, &screen}) {
+    buf.insert(buf.end(), part->begin(), part->end());
+    buf.push_back(0);
+  }
+  return open_addon_screen_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
 }
 
 bool chrome_host::offer_addon(const std::string& path_utf8) noexcept {

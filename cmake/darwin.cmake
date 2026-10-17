@@ -188,8 +188,11 @@ add_library(mv_codec STATIC
   src/codec/xml.h
   src/codec/text.cpp
   src/codec/text.h
+  src/codec/doclayout.cpp
+  src/codec/doclayout.h
   src/codec/fonts.h
   src/codec/docx.cpp
+  src/codec/pptx.cpp
   src/codec/fonts_mac.cpp
   src/codec/os_decode.h
   src/codec/crash_test_hook.cpp
@@ -273,6 +276,8 @@ add_library(mv_image STATIC
   src/image/thumb.cpp
   src/image/thumb_pixels.cpp
   src/image/thumb_store.cpp
+  src/image/page_thumbs.cpp
+  src/image/page_thumbs.h
   src/image/colour.h
   src/image/pipeline.h
   src/image/pipeline_mac.h
@@ -725,6 +730,7 @@ function(mv_mac_host target)
     "-framework Security"
     "-framework ServiceManagement"  # docs/design/23: the FCP search agent (SMAppService)
     "-framework Vision"  # text in images (shell/text_recognition_mac.mm), on device
+    "-framework UserNotifications"  # #452: add-on notices (AddonNotices.swift, shell/addons_mac.mm)
     bsm)
   target_include_directories(${target} PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}"
     "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include")
@@ -861,7 +867,12 @@ if(MV_BUILD_TESTS)
     # Issue #167: the folder listing reads size + mtime in bulk; links stat'ed.
     tests/test_dir_mac.cpp
     tests/test_key_router.cpp
+    # Issue #239: every command id is handled or explicitly excluded, per host.
+    tests/test_command_coverage.cpp
     tests/test_key_router_review.cpp
+    tests/test_command_contract.cpp
+    # Issue #444: the one share command's file set and wire argument.
+    tests/test_share_menu.cpp
     tests/test_keymap.cpp
     tests/test_kind_filter.cpp
     tests/test_rename_stop.cpp
@@ -894,7 +905,9 @@ if(MV_BUILD_TESTS)
     tests/test_audio_files.cpp
     tests/test_pages.cpp
     tests/test_pdf.cpp
+    tests/test_page_thumbs.cpp
     tests/test_docx.cpp
+    tests/test_pptx.cpp
     # Issue #43: Space at natural EOF restarts, on the real Metal player.
     tests/test_video_eof_mac.mm
     tests/test_audio_only_mac.mm
@@ -1073,6 +1086,8 @@ if(MV_BUILD_TESTS)
       tests/test_ai_infer.cpp
       tests/test_ai_audio.cpp
       tests/test_ai_query.cpp
+      tests/test_ai_documents.cpp
+      tests/test_ai_docs.cpp
       # #403: the OS text reader over a labelled set (hidden: [.ocr-fixture]).
       tests/test_ai_ocr.cpp
       tests/test_nle.cpp
@@ -1080,7 +1095,7 @@ if(MV_BUILD_TESTS)
     target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io
       Catch2::Catch2WithMain)
     target_include_directories(mv_ai_tests PRIVATE src tests)
-    target_compile_definitions(mv_ai_tests PRIVATE MV_AI_TEST_DECODE
+    target_compile_definitions(mv_ai_tests PRIVATE MV_AI_TEST_DECODE MV_AI_PDFIUM_LIB="${MV_PDFIUM_LIB}"
       MV_AI_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data/ai")
     set_target_properties(mv_ai_tests PROPERTIES OSX_ARCHITECTURES "arm64")
     catch_discover_tests(mv_ai_tests TEST_PREFIX "ai_"

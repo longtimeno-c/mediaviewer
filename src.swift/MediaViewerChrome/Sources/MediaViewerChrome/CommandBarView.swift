@@ -190,6 +190,7 @@ public struct CommandBarView: View {
             FlyoutItem(title: "Gallery", shortcut: key("Gallery"), enabled: hasFolder) { close(); mv_chrome_menu(kMenuGallery) }
             FlyoutItem(title: "Full screen", shortcut: key("Fullscreen")) { close(); mv_chrome_menu(kMenuFullscreen) }
             FlyoutItem(title: "Filmstrip", shortcut: key("Filmstrip"), enabled: hasFolder) { close(); mv_chrome_menu(kMenuFilmstrip) }
+            FlyoutItem(title: "Page sidebar", shortcut: key("Page sidebar"), enabled: hasFolder) { close(); mv_chrome_menu(kMenuPageSidebar) }
             FlyoutRule()
             // Issue #206: View > Show, as on the Windows bar. The dot is the
             // filter native applied, read when the flyout opens.
@@ -401,6 +402,8 @@ struct PathBar: View {
       PathIcon(symbol: "house", enabled: crumbs.count > 1) { store.openCrumb(0) }
         .help(crumbs.first.map { "Return to browsing root: " + $0.path } ?? "No folder open")
         .accessibilityLabel("Return to browsing root")
+      // Issue #444: Share beside Home (ShareMenu.swift).
+      BarShareButton()
 
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: MVTheme.space(4)) {

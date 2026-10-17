@@ -79,7 +79,7 @@ constexpr std::string_view kMediaExt[] = {
     "heic", "heif", "hif", "avif", "ico", "cur", "dng", "cr2", "cr3", "crw", "nef", "nrw",
     "arw", "srf", "sr2", "raf", "orf", "rw2", "pef", "srw", "x3f", "erf", "kdc", "mos",
     "mrw", "3fr", "iiq", "rwl", "mp4", "m4v", "mov", "mkv", "webm", "avi", "ts", "mts",
-    "m2ts", "mpg", "mpeg", "xmp", "aae", "thm", "lrv", "mp3", "m4a", "m4p", "pdf", "docx"};
+    "m2ts", "mpg", "mpeg", "xmp", "aae", "thm", "lrv", "mp3", "m4a", "m4p", "pdf", "docx", "pptx"};
 
 constexpr std::uint32_t kMask = '_';
 

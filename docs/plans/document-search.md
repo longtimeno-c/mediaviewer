@@ -7,7 +7,28 @@ photo and video extensions only. This plan makes documents searchable, says whic
 needs, and lays out the Settings and search-panel changes on both hosts. Slice 0 is a Windows bug
 found while looking, and it comes first. Written 2026-10-05.
 
-## Status (2026-10-05)
+## Status (2026-10-05; D1 and D2 2026-10-16)
+
+**D1 is built** (#354, 2026-10-16): documents are indexed for their words behind File types "Show
+documents", as the issue asks; what it does is in [17](../design/17-local-ai-search.md)
+"Documents". Departures from §2-§4: no new host call for pages (a document's page is
+`video_frame_rgb` with `pts_ms` the page, and its tile a moment row); `document_open` /
+`document_close` were not needed; Settings offers Off / Words until D2 brings Words and pages;
+N / Shift+N do not step through a document's pages yet (`clip_matches` returns them).
+
+**D2 is built** (#354, 2026-10-16): at Words and pages a document's first 3 pages, and any page
+mostly covered by images, go through the picture tower already installed; 17 "Documents", "Page
+pictures (D2)". Departures from §3: picture pages beyond the first 3 are capped at 64 a document
+(a 500-page scan is not 500 pictures); a DOCX is pictured on its first 3 pages only (no image
+measure without PDFium); a stopped document is drawn again whole rather than resumed.
+
+**D3 is built** (#354, 2026-10-17): the `ai-docs` ("Documents") piece holds **all-MiniLM-L6-v2**
+(fp32, ~91 MB), chosen by the spike in §1 (17 "Documents", the table; DEVELOPMENT "slice D3").
+Departures: multilingual-e5-small was measured and not chosen (it missed the R@10 target and led
+only on the 3 other-language queries); fp32 rather than int8 (int8's vectors depend on the batch,
+cosine 0.998 to ORT-Python); `.mvindex` v2 carries documents only behind a new opt-in,
+`MV_AI_TRANSFER_DOCUMENTS` (their text travels with them), as People does; the meaning pass,
+like the words pass, does not wait for the picture towers. D4 is not started.
 
 **Owner calls taken (2026-10-05):**
 

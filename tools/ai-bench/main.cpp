@@ -6,7 +6,8 @@
 // media services), remembers a folder, prints status as JSON lines while it
 // indexes, then times queries.
 //
-//   ai-bench --addons <folder> --index <media folder> [--recursive] [--media 1|2|3]
+//   ai-bench --addons <folder> --index <media folder> [--recursive] [--media 1|2|3] [--documents]
+//            [--doc-index 0..2] [--kinds N] [--top N]
 //            [--compute 0..4] [--quality 0..2] [--timeout <s>] [--query "text"]...
 //   ai-bench --addons <folder> --photos ...   the Mac's Photos library instead (issue #72;
 //            macOS, run through tools/ai-bench/photos-bench.sh for the permission prompt)
@@ -15,6 +16,14 @@
 //            [--export <file> [--export-flags N]]      after indexing (MV_AI_TRANSFER_*)
 //            [--import <file> --import-to <dir> [--import-flags N]]   every root of the file -> dir
 //            [--make-thumbs <dir>] [--count-thumbs <dir>]   the viewer's JPEG-512 cache, first / last
+//
+// --documents (#354): File types "Show documents" on, so the folder's PDFs and
+// DOCX files are read for their words; the status lines carry "docs" [done,
+// total, locked, failed]. --doc-index 2 (Settings "Documents": Words and
+// pages, slice D2) pictures their pages too; the lines carry "pages" [done,
+// total]. With the ai-docs piece installed (D3) they carry "meaning" [done,
+// total]: documents whose passages the text model embedded. --kinds N searches with those kind and MV_AI_FIND_* bits (default
+// MV_AI_KIND_ALL); --top N prints that many results a query (default 5).
 //
 // --export / --import (docs/design/17 "Sharing an index"): two --addons folders are two
 // machines. Import prints what inspect_export said and the outcome, then waits
@@ -33,6 +42,7 @@
 // add-on key trusts the pack (MV_ADDON_DEV_PUBLIC_KEY for a dev-signed one).
 #include <mediaviewer/mediaviewer_ai.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -60,6 +70,10 @@ bool ai_bench_ask_photos();
 namespace {
 
 std::atomic<bool> g_busy{false};
+// MV_ADDON_EVENT_AI_SEARCH_DONE ids, from the host table's post.
+std::mutex g_done_m;
+std::condition_variable g_done_cv;
+std::vector<std::uint64_t> g_done;
 
 double now_s() {
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -78,7 +92,8 @@ void print_status(const mv_ai_api* ai, double t0) {
   std::printf("{\"t\":%.1f,\"state\":%u,\"yield\":%u,\"backend\":%u,\"fault\":%u,\"model\":\"%s\","
               "\"assets\":%llu,\"done\":%llu,\"failed\":%llu,\"frames\":%llu,\"assets_per_s\":%.2f,"
               "\"frames_per_s\":%.2f,\"eta\":[%.0f,%.0f],\"sound\":[%llu,%llu],\"speech\":[%llu,%llu],"
-              "\"index_bytes\":%llu,\"flags\":%u,\"unavailable\":%llu,\"fault_detail\":\"%s\"}\n",
+              "\"index_bytes\":%llu,\"flags\":%u,\"unavailable\":%llu,\"docs\":[%llu,%llu,%llu,%llu],\"pages\":[%llu,%llu],"
+              "\"meaning\":[%llu,%llu],\"fault_detail\":\"%s\"}\n",
               now_s() - t0, s.state, s.yield_reason, s.backend, s.provider_fault, s.model_utf8,
               static_cast<unsigned long long>(s.assets_total), static_cast<unsigned long long>(s.assets_done),
               static_cast<unsigned long long>(s.assets_failed), static_cast<unsigned long long>(s.frames_indexed),
@@ -86,7 +101,11 @@ void print_status(const mv_ai_api* ai, double t0) {
               static_cast<unsigned long long>(s.sound_done), static_cast<unsigned long long>(s.sound_total),
               static_cast<unsigned long long>(s.speech_done), static_cast<unsigned long long>(s.speech_total),
               static_cast<unsigned long long>(s.index_bytes), s.flags,
-              static_cast<unsigned long long>(s.assets_unavailable), detail.c_str());
+              static_cast<unsigned long long>(s.assets_unavailable), static_cast<unsigned long long>(s.docs_done),
+              static_cast<unsigned long long>(s.docs_total), static_cast<unsigned long long>(s.docs_locked),
+              static_cast<unsigned long long>(s.docs_failed), static_cast<unsigned long long>(s.pages_done),
+              static_cast<unsigned long long>(s.pages_total), static_cast<unsigned long long>(s.meaning_done),
+              static_cast<unsigned long long>(s.meaning_total), detail.c_str());
   std::fflush(stdout);
 }
 
@@ -94,7 +113,7 @@ bool idle(const mv_ai_api* ai) {
   mv_ai_status s{};
   s.struct_size = sizeof(s);
   if (ai->status(ai->ctx, &s) != MV_OK) return false;
-  return s.state == MV_AI_STATE_IDLE && s.assets_total > 0;
+  return s.state == MV_AI_STATE_IDLE && (s.assets_total > 0 || s.docs_total > 0);
 }
 
 // Quit as the hosts do (addon/host.h "Quit"): the pack's stop starts on a
@@ -132,9 +151,10 @@ bool quit_pack_legacy(std::unique_ptr<mv::addon::loaded_addon> pack) {
 int main(int argc, char** argv) {
   std::string addons, folder;
   bool recursive = false;
-  int media = -1, compute = -1, quality = -1;
+  int media = -1, compute = -1, quality = -1, doc_index = -1;
+  unsigned kinds = MV_AI_KIND_ALL, top = 5;
   double timeout = 3600, busy_after = -1, busy_for = 0, quit_after = -1, quit_budget = 0.5;
-  bool quit_hash = false, quit_legacy = false, photos = false;
+  bool quit_hash = false, quit_legacy = false, photos = false, documents = false;
   std::string export_file, import_file, import_to, make_thumbs, count_thumbs;
   unsigned export_flags = 0, import_flags = 0;
   std::vector<std::string> queries;
@@ -144,6 +164,10 @@ int main(int argc, char** argv) {
     if (a == "--addons") addons = next();
     else if (a == "--index") folder = next();
     else if (a == "--recursive") recursive = true;
+    else if (a == "--documents") documents = true;
+    else if (a == "--doc-index") doc_index = std::stoi(next());
+    else if (a == "--kinds") kinds = static_cast<unsigned>(std::stoul(next()));
+    else if (a == "--top") top = static_cast<unsigned>(std::stoul(next()));
     else if (a == "--media") media = std::stoi(next());
     else if (a == "--compute") compute = std::stoi(next());
     else if (a == "--quality") quality = std::stoi(next());
@@ -173,7 +197,13 @@ int main(int argc, char** argv) {
   static mv::addon::store store(addons, std::vector<std::uint8_t>(key.begin(), key.end()), MV_ADDON_HOST_API);
   mv::addon::host_services svc;
   svc.should_yield = [] { return g_busy.load(); };
-  svc.post = [](const mv_addon_event&) {};
+  svc.post = [](const mv_addon_event& e) {
+    // A search's answer is complete when it says so: the query timings wait for it.
+    if (e.kind != MV_ADDON_EVENT_AI_SEARCH_DONE) return;
+    std::lock_guard lock(g_done_m);
+    g_done.push_back(e.id);
+    g_done_cv.notify_all();
+  };
   svc.still_rgb = &mv::addon::media::decode_still;
   svc.open_sampler = &mv::addon::media::open_sampler;
   svc.video_frame = &mv::addon::media::video_frame;
@@ -181,6 +211,7 @@ int main(int argc, char** argv) {
   svc.open_audio = &mv::addon::media::open_audio;
   svc.thumbnail_jpeg = &mv::addon::media::thumbnail_jpeg;
   svc.store_thumbnail_jpeg = &mv::addon::media::store_thumbnail_jpeg;
+  svc.document_text = &mv::addon::media::document_text;  // #354
   // The files of a folder, for the thumbnail steps (not its subfolders).
   const auto files_in = [](const std::string& dir) {
     std::vector<std::string> out;
@@ -216,6 +247,8 @@ int main(int argc, char** argv) {
   if (compute >= 0) ai->set_setting(ai->ctx, "compute", std::to_string(compute).c_str());
   if (quality >= 0) ai->set_setting(ai->ctx, "quality", std::to_string(quality).c_str());
   if (media >= 0) ai->set_setting(ai->ctx, "video_index", std::to_string(media).c_str());
+  if (documents) ai->set_setting(ai->ctx, "document_files", "1");
+  if (doc_index >= 0) ai->set_setting(ai->ctx, "doc_index", std::to_string(doc_index).c_str());
   const double t0 = now_s();
   if (!folder.empty() || photos) {
     uint64_t root = 0;
@@ -321,12 +354,17 @@ int main(int argc, char** argv) {
   for (const std::string& q : queries) {
     const double tq = now_s();
     uint64_t id = 0;
-    ai->search_text(ai->ctx, q.c_str(), nullptr, MV_AI_SCOPE_ALL, MV_AI_KIND_ALL, &id);
+    ai->search_text(ai->ctx, q.c_str(), nullptr, MV_AI_SCOPE_ALL, kinds, &id);
     uint32_t n = 0;
+    {
+      std::unique_lock lock(g_done_m);
+      g_done_cv.wait_for(lock, std::chrono::seconds(30),
+                         [&] { return std::find(g_done.begin(), g_done.end(), id) != g_done.end(); });
+    }
     while (ai->result_count(ai->ctx, id, &n) != MV_OK) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     const double ms = (now_s() - tq) * 1000;
     std::printf("{\"query\":\"%s\",\"ms\":%.1f,\"results\":%u,\"top\":[", q.c_str(), ms, n);
-    for (uint32_t i = 0; i < n && i < 5; ++i) {
+    for (uint32_t i = 0; i < n && i < top; ++i) {
       mv_ai_result r{};
       char path[4096] = {};
       char snip[512] = {};
@@ -336,8 +374,14 @@ int main(int argc, char** argv) {
       const char* name = std::strrchr(path, '\\') ? std::strrchr(path, '\\') + 1 : path;
       // A Photos asset's identifier is as private as a path: never printed.
       if (std::strncmp(path, "photos:", 7) == 0) name = r.pts_ms >= 0 ? "photos:video" : "photos:photo";
+      // A document's snippet is its own text: quotes and control characters escaped.
+      std::string snippet;
+      for (const char* c = snip; *c; ++c) {
+        if (*c == '"' || *c == '\\') snippet += '\\';
+        snippet += static_cast<unsigned char>(*c) < 0x20 ? ' ' : *c;
+      }
       std::printf("%s{\"file\":\"%s\",\"ms\":%lld,\"score\":%.3f,\"match\":%u,\"snippet\":\"%s\"}", i ? "," : "",
-                  name, static_cast<long long>(r.pts_ms), r.score, r.match, snip);
+                  name, static_cast<long long>(r.pts_ms), r.score, r.match, snippet.c_str());
     }
     std::printf("]}\n");
     std::fflush(stdout);

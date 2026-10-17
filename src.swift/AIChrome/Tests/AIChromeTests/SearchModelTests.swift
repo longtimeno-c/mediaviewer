@@ -37,6 +37,17 @@ private final class FakePack: @unchecked Sendable {
 
 private let pack = FakePack()
 
+/// The viewer's placeTerms: (#441), as mv_slots_place_terms answers it: a
+/// "place:" word is a place term; `installed` says whether Places is loaded.
+private final class FakeViewer: NSObject {
+  var installed = false
+  @objc(placeTerms:) func placeTerms(_ query: NSString) -> NSNumber {
+    var flags: UInt32 = installed ? PlaceTerms.provider : 0
+    if (query as String).contains("place:") { flags |= PlaceTerms.present }
+    return NSNumber(value: flags)
+  }
+}
+
 @MainActor
 final class SearchModelTests: XCTestCase {
   private static let api: UnsafeMutablePointer<mv_ai_api> = {
@@ -72,12 +83,42 @@ final class SearchModelTests: XCTestCase {
     for _ in 0..<200 where !done() { try? await Task.sleep(nanoseconds: 5_000_000) }
   }
 
+  /// #354: the Documents segment and the Text token show only while "Show
+  /// documents" is on; turning it off while either is chosen goes back.
+  func testDocumentsFollowShowDocuments() {
+    let m = model()
+    XCTAssertFalse(SearchKinds.shown(audioFiles: false, documentFiles: m.documentFiles).contains(.documents))
+    XCTAssertFalse(m.availableFinds.contains(.text))
+    XCTAssertEqual(SearchKinds.allHelp(audioFiles: false, documentFiles: false), "Show photos and videos.")
+    m.documentFilesChanged(true)
+    XCTAssertTrue(SearchKinds.shown(audioFiles: false, documentFiles: m.documentFiles).contains(.documents))
+    XCTAssertTrue(m.availableFinds.contains(.text))
+    XCTAssertEqual(SearchKinds.allHelp(audioFiles: true, documentFiles: true),
+                   "Show photos, videos, documents and audio files.")
+    m.kinds = .documents
+    m.toggleMatch(.pictures)  // Text alone (and nothing else) on
+    XCTAssertTrue(m.matchOn(.text))
+    XCTAssertFalse(m.matchOn(.pictures))
+    m.documentFilesChanged(false)
+    XCTAssertEqual(m.kinds, .all)
+    XCTAssertFalse(m.finds.contains(.text))
+    // A document result's moment is its page, never a clip time.
+    let page = AIResult(index: 0, search: 1, path: "/d/lease.pdf", ptsMs: 2, kind: MV_AI_KIND_DOCUMENTS, more: 0,
+                        match: MV_AI_MATCH_TEXT)
+    XCTAssertTrue(page.isDocument)
+    XCTAssertFalse(page.isClip)
+    XCTAssertEqual(page.page, 3)
+    let clip = AIResult(index: 0, search: 1, path: "/d/a.mov", ptsMs: 2000, kind: MV_AI_KIND_VIDEOS, more: 0, match: 0)
+    XCTAssertTrue(clip.isClip)
+    XCTAssertNil(clip.page)
+  }
+
   /// #355: the Audio segment shows only while "Show audio files" is on, and
   /// turning it off while Audio is chosen goes back to All.
   func testAudioSegmentFollowsShowAudioFiles() {
     let m = model()
     XCTAssertFalse(SearchKinds.shown(audioFiles: m.audioFiles).contains(.audio))
-    XCTAssertEqual(SearchKinds.all.rawValue, 11)  // MV_AI_KIND_ALL
+    XCTAssertEqual(SearchKinds.all.rawValue, 15)  // MV_AI_KIND_ALL (#354 widened it)
     m.audioFilesChanged(true)
     XCTAssertTrue(SearchKinds.shown(audioFiles: m.audioFiles).contains(.audio))
     m.kinds = .audio
@@ -123,6 +164,37 @@ final class SearchModelTests: XCTestCase {
     let before = pack.asked.count
     m.folderChanged("/B")
     XCTAssertEqual(pack.asked.count, before)
+    m.disappeared()
+  }
+
+  /// #441: place:Portugal without the Places add-on searches nothing and says
+  /// Places is needed (it used to list every geotagged file); with Places it
+  /// is an ordinary search, and the help line offers place:.
+  func testPlaceTermsNeedPlaces() {
+    let viewer = FakeViewer()
+    let chrome = MVAIChrome()
+    chrome.attach(table: NSValue(pointer: UnsafeRawPointer(Self.api)), host: viewer)
+    let m = model()
+    m.chrome = chrome
+    m.appeared()
+    m.query = "place:Portugal"
+    m.chipsChanged()
+    XCTAssertTrue(m.needsPlaces)
+    XCTAssertFalse(m.searching)
+    XCTAssertTrue(m.results.isEmpty)
+    XCTAssertTrue(pack.asked.isEmpty, "nothing is searched")
+    XCTAssertFalse(m.placesAvailable)
+    m.query = "beach"
+    m.chipsChanged()
+    XCTAssertFalse(m.needsPlaces)
+    XCTAssertEqual(pack.asked.count, 1)
+    viewer.installed = true
+    m.refreshPlaces()
+    XCTAssertTrue(m.placesAvailable)
+    m.query = "beach place:Portugal"
+    m.chipsChanged()
+    XCTAssertFalse(m.needsPlaces)
+    XCTAssertEqual(pack.asked.count, 2, "with Places the pack answers (and intersects)")
     m.disappeared()
   }
 

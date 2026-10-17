@@ -81,15 +81,29 @@ public enum MvAiKinds : uint
 {
     Photos = 1,
     Videos = 2,
+    // #354: documents (PDF, DOCX), while "document_files" is on; a result's
+    // PtsMs is then the page that matched.
+    Documents = 4,
     // #355: standalone audio files (MP3, M4A, M4P), while "audio_files" is on.
-    // 4 is reserved for documents; All widened from 3 to 11.
+    // All widened from 3 to 11, then 15.
     Audio = 8,
-    All = 11,
+    All = 15,
 
     // MV_AI_FIND_* (audio, 2026-09-27), OR'ed in: what to look for. None = all.
     FindPictures = 0x10,
     FindSounds = 0x20,
     FindSpeech = 0x40,
+    // #354: a document's words.
+    FindText = 0x80,
+}
+
+/// <summary>Mirrors <c>MV_AI_DOCS_*</c>: what a folder's documents are indexed for (#354).</summary>
+public enum MvAiDocs : uint
+{
+    Default = 0,   // per folder: follow Settings "doc_index"
+    Off = 1,
+    Words = 2,
+    Pages = 3,     // Words and pages: page pictures too (slice D2)
 }
 
 /// <summary>Mirrors <c>MV_AI_MEDIA_*</c>: what a folder's videos are indexed for.</summary>
@@ -108,6 +122,7 @@ public enum MvAiTransfer : uint
     None = 0,
     People = 1,   // face vectors, people and names: the file then identifies them
     Thumbs = 2,   // the viewer's cached JPEG-512 tiles
+    Documents = 4, // #354 D3: documents' text, passage vectors and page pictures: the file holds what they say
 }
 
 /// <summary>Mirrors <c>MV_AI_MATCH_*</c>: why a result matched.</summary>
@@ -126,7 +141,7 @@ public enum MvAiMatch : uint
 }
 
 /// <summary>
-/// Mirrors <c>mv_ai_status</c> field for field (1672 bytes with the text-pass
+/// Mirrors <c>mv_ai_status</c> field for field (1720 bytes with the meaning
 /// counts). Append with the header: the ABI smoke test compares every field's
 /// offset and size with tools/abi-layout's dump of the native struct.
 /// </summary>
@@ -142,6 +157,7 @@ public unsafe struct MvAiStatus
                                              // time (Core ML on a Mac; never set on Windows today)
     public const uint FlagPeopleRerun = 64;     // People is re-analysing every photo and clip (2026-10-03)
     public const uint FlagPeopleSettling = 128; // ...all analysed: filing the faces into people
+    public const uint FlagDocsReady = 512;      // ai-docs is loaded: document words also match by meaning (#354 D3)
 
     public uint StructSize;
     public MvAiState State;
@@ -203,6 +219,24 @@ public unsafe struct MvAiStatus
     public ulong CuesDone;
     public ulong TextTotal;
     public ulong TextDone;
+    // Documents (#354), appended: PDFs and DOCX files to read for their words
+    // and those read (locked and failed counted as read); the locked
+    // (password-protected) and the ones that did not open. Zero from a pack
+    // before them, and while "document_files" is off.
+    public ulong DocsTotal;
+    public ulong DocsDone;
+    public ulong DocsLocked;
+    public ulong DocsFailed;
+    // Page pictures (#354 D2), appended: documents at Words and pages whose
+    // words are read, and those whose pages are pictured. Zero from a pack
+    // before them, and while no folder is at Words and pages.
+    public ulong PagesTotal;
+    public ulong PagesDone;
+    // Meaning (#354 D3), appended: with the ai-docs piece, documents whose words
+    // are read, and those whose passages its text model has embedded (failed
+    // counted as done). Zero from a pack before them, and without the piece.
+    public ulong MeaningTotal;
+    public ulong MeaningDone;
 
     /// <summary>Display only (rule 6: never logged).</summary>
     public readonly string ActiveRootText
@@ -317,6 +351,12 @@ public unsafe struct MvAiApi
 
     // re-analysing people (2026-10-03, docs/design/17 "People model")
     public delegate* unmanaged[Cdecl]<IntPtr, MvStatus> PeopleReanalyse;
+
+    // #398, the index's coordinates: the host serves it; this chrome never calls it.
+    public IntPtr EachLocation;
+
+    // #354, a folder's Documents choice. Appended: read only when StructSize covers it.
+    public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, MvStatus> RootSetDocuments;
 }
 
 /// <summary>
@@ -342,7 +382,11 @@ public sealed unsafe class AiApi
         if (sizeof(MvAiResult) != 32)
             throw new InvalidOperationException("mv_ai_result layout drifted");
         _api = (MvAiApi*)table;
-        if (_api->StructSize < (uint)sizeof(MvAiApi))
+        // Every entry up to people_reanalyse is required; the ones after it
+        // are appended and each is checked where it is used (HasRootSetDocuments).
+        MvAiApi* layout = null;
+        uint required = (uint)((byte*)&layout->EachLocation - (byte*)layout);
+        if (_api->StructSize < required)
             throw new InvalidOperationException("AI add-on table is older than this chrome");
     }
 
@@ -573,6 +617,16 @@ public sealed unsafe class AiApi
     /// <summary>What a folder's videos are indexed for; Default follows "video_index".</summary>
     public void RootSetMedia(ulong root, MvAiMedia media) => Check(_api->RootSetMedia(Ctx, root, (uint)media));
 
+    /// <summary>#354: whether this pack has a folder's Documents choice.</summary>
+    public bool HasRootSetDocuments => _api->StructSize >= (uint)sizeof(MvAiApi) && _api->RootSetDocuments != null;
+
+    /// <summary>#354: what a folder's documents are indexed for (no-block).</summary>
+    public void RootSetDocuments(ulong root, MvAiDocs docs)
+    {
+        if (!HasRootSetDocuments) throw new MediaViewerException(MvStatus.UnsupportedFormat, "ai.RootSetDocuments", 0);
+        Check(_api->RootSetDocuments(Ctx, root, (uint)docs));
+    }
+
     /// <summary>Worker: the words that matched, for a speech result; "" otherwise.</summary>
     public string ResultSnippet(ulong search, uint index) =>
         ReadPath((b, c) => _api->ResultSnippet(Ctx, search, index, (byte*)b, c));
@@ -584,7 +638,8 @@ public sealed unsafe class AiApi
     /// </summary>
     public long ResultDurationMs(ulong search, uint index)
     {
-        if (_api->StructSize < (uint)sizeof(MvAiApi) || _api->ResultDuration == null) return 0;
+        // Within the required table (the constructor checked StructSize).
+        if (_api->ResultDuration == null) return 0;
         long ms = 0;
         Check(_api->ResultDuration(Ctx, search, index, &ms));
         return ms;

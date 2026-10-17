@@ -44,12 +44,14 @@
 #include <unordered_map>
 #include <vector>
 
+#include "addon/slots.h"
 #include "canvas/document_scroll.h"
 #include "core/job_system.h"
 #include "core/json.h"
 #include "core/trace.h"
 #include "edit/histogram.h"
 #include "image/linear.h"
+#include "image/page_thumbs.h"
 #include "io/collision_name.h"
 #include "io/paths.h"
 #include "io/file.h"
@@ -61,6 +63,7 @@
 #include "shell/addons_mac.h"
 #include "shell/fcp_mac.h"
 #include "shell/filmstrip_hint.h"
+#include "shell/share_menu.h"
 #if defined(MV_WITH_SEARCH_AGENT)
 #include "nle/mac/agent_mac.h"
 #endif
@@ -73,6 +76,7 @@
 #include "shell/browse_index.h"
 #include "shell/browse_path.h"
 #include "shell/commands.h"
+#include "shell/command_coverage.h"
 #include "shell/crash_reporter_mac.h"
 #include "shell/edit_session.h"
 #include "shell/text_in_image.h"
@@ -152,77 +156,22 @@ namespace {
 // lifetime as the window; the lab and its snapshot outlive the app delegate
 // only because both are ivars of the single MvLabApp instance that owns this
 // process's only window (docs/design/14-abi.md's shape, scoped to the lab).
+// command_coverage.inc is the set runCommand: handles, so Settings cannot list a
+// command the dispatcher does not run. Import and similar-search stay off until
+// that add-on is loaded. search_open stays on: with no AI pack it is file search.
 static bool MvCommandSupported(mv::shell::command_id c) {
+  if (!mv::shell::mac_dispatcher_handles(c)) return false;
   using enum mv::shell::command_id;
   switch (c) {
-    case open: case open_folder: case fit: case one_to_one: case overlay: case prev: case next:
-    case first: case last: case skip_back: case skip_forward: case back: case toggle_gallery:
-    case toggle_filmstrip: case gallery_up: case gallery_down: case gallery_open_selected:
-    case gallery_larger: case gallery_smaller: case fullscreen: case reset_view: case play_pause:
-    case pause: case jump_back: case jump_forward: case frame_back: case frame_forward:
-    case rate_down: case rate_up: case skim_back: case skim_forward: case skim_settle: case mute:
-    case toggle_mark: case mark_all: case unmark_all: case copy_to: case copy_to_pick:
-    case move_to: case move_to_pick: case delete_to_recycle_bin: case slideshow_start:
-    case slideshow_pause: case slideshow_faster: case slideshow_slower: case help:
-    case reveal_in_explorer: case open_settings: case sticky_zoom:
-    case reset_stats: case always_on_top: case close_window: case new_window: case pan_up: case pan_down:
-    case folder_up: case folder_prev: case folder_next:
-    // Issue #183: the View keys, the loupe, hold-previous and the slideshow's
-    // blackout and shuffle, ported from the Windows host.
-    case zoom_in: case zoom_out: case zoom_200: case zoom_400: case fill: case pan_left:
-    case pan_right: case clipping: case loupe: case loupe_release: case loupe_nudge_left:
-    case loupe_nudge_right: case loupe_nudge_up: case loupe_nudge_down: case hold_previous:
-    case hold_previous_release: case blackout: case shuffle:
-    // PR 9
-    case info_overlay: case af_points: case eyedropper: case copy_clipboard: case metadata_pane: case folder_tree:
-    // Issue #209
-    case zoom_af_point:
-    // PR 10
-    case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
-    case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
-    case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
-    case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
-    case undo_edit: case reset_edits:
-    // PR 11
-    case adjust_pane:
-    // PR 12
-    case set_rating_0: case set_rating_1: case set_rating_2: case set_rating_3:
-    case set_rating_4: case set_rating_5: case edit_comment:
-    // Issue #207
-    case reject: case label_red: case label_yellow: case label_green: case label_blue:
-    case clear_label:
-    // PR 13 / 14
-    case trim_mode: case trim_in: case trim_out: case trim_clear: case trim_preview:
-    case trim_keyframe: case trim_reencode: case trim_remove_middle: case keyframe_prev:
-    case keyframe_next: case jobs_pane: case clip_tools: case clip_split:
-    // PR 15
-    case copy_path: case copy_flattened: case share:
-    // Pages (docs/plans/audio-and-documents.md §2.3)
-    case next_page: case prev_page:
-    // PR 29
-    case edit_workspace: case crop_aspect_cycle: case crop_aspect_swap: case show_original:
-    case show_original_release:
-    // ⌘F is always there: Local search's panel while the pack is loaded, file
-    // search otherwise (docs/design/16 "File search", 2026-09-28).
-    case search_open:
-    // Issue #184: `/` (find by name in the gallery), the runner's `3`, and the
-    // rows an add-on's manifest fills; runCommand: handles each.
-    case typeahead: case game_toggle_3d:
-    // Issue #206: View > Show, cycled (unbound by default); the menus set it.
-    case kind_filter_next:
-    // Issue #210: F2.
-    case rename_file:
-    case addon_cmd_0: case addon_cmd_1: case addon_cmd_2: case addon_cmd_3:
-    case addon_cmd_4: case addon_cmd_5: case addon_cmd_6: case addon_cmd_7:
-      return true;
-    // Milestone G: only while the Import add-on is loaded (docs/design/18).
-    case open_import: case import_now:
+    case open_import:
+    case import_now:
       return mv::shell::addon_commands_available(mv::shell::addon_family::import);
-    // Milestone H: only while the AI pack is loaded (docs/design/17 "UI and commands").
-    case search_similar: case search_next_match: case search_prev_match:
+    case search_similar:
+    case search_next_match:
+    case search_prev_match:
       return mv::shell::addon_commands_available(mv::shell::addon_family::ai);
     default:
-      return false;
+      return true;
   }
 }
 mv::shell::input_snapshot* g_chrome_snap = nullptr;
@@ -240,6 +189,8 @@ static std::atomic<bool> g_tag_refresh_posted{false};
 // empty window; the viewer's state is one per process. Set from --new-window:
 // the top-left of the window that asked, so this one cascades from it.
 bool g_new_window = false;
+// `--compare` (issue #208): start with the two-up compare on, as `|` turns it on.
+bool g_start_compare = false;
 NSPoint g_new_window_from = NSZeroPoint;
 
 // Add-ons -- the AI pack and its indexer, Import's volume watch, Final Cut
@@ -308,6 +259,40 @@ struct mac_browse_run {
 constexpr double kMacBrowseDwell = 3.0;
 constexpr double kMacBrowseStepTimeout = 20.0;
 constexpr double kMacBrowseOpenTimeout = 60.0;
+
+// --page-soak PATH (issue #429): open a PDF, DOCX or PPTX, then (1) fling the
+// page sidebar from the first page to the last in 1.5 s, as a hard flick of
+// the strip does: the SwiftUI strip scrolls, its cells ask for thumbnails and
+// the pool renders them while the canvas presents (run it under --soak to have
+// the pacing measured); (2) go to pages as a thumbnail click does, each timed
+// to its first image, the present showing it and the full-size page. Writes
+// its own JSON; under --soak the soak report is the lab's as usual.
+struct mac_page_row {
+  int page = 0;
+  int timed_out = 0;
+  int placeholder = 0;  // the first image was not the full page
+  double ready_ms = -1.0;
+  double present_ms = -1.0;
+  double full_ms = -1.0;
+};
+enum class mac_page_phase { wait_doc, settle, fling, drain, jump, wait_jump, finish };
+struct mac_page_run {
+  bool enabled = false;
+  std::string json_path;
+  mac_page_phase step = mac_page_phase::wait_doc;
+  double t0 = 0.0, phase_t = 0.0;
+  std::uint32_t pages = 0;
+  double sidebar_s = -1.0;  // open -> the strip listing the document
+  double fling_s = 0.0;
+  double drain_s = -1.0;    // fling end -> the last screenful of thumbnails in
+  std::uint32_t landed = 0; // pages with a thumbnail once drained
+  std::vector<std::uint32_t> targets;
+  std::size_t next = 0;
+  std::uint64_t seq = 0;
+  std::vector<mac_page_row> rows;
+} g_mac_pages;
+constexpr double kMacPageFlingSeconds = 1.5;
+constexpr std::uint32_t kMacPageWindow = 6;  // cells a 900 pt strip shows
 
 double browse_now() {
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -396,6 +381,10 @@ constexpr int kEditorThumbs = 48;          // thumbnails across the source
 constexpr std::uint32_t kEditorThumbPx = 96;  // their height in pixels (48 pt at 2x)
 constexpr std::uint32_t kEditorPeaks = 1200;
 constexpr CGFloat kTreeWidthPoints = 280.0;
+// Issue #429: the page sidebar down the left of the canvas. It reserves its
+// width (input_snapshot.chrome_left_px) as the docked Edit pane reserves the
+// right, so a page is never framed under it.
+constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 
 // Declared in full (not just `@class`) because MvMetalView's own methods,
 // defined below, send it messages (navigatePrev etc.) -- a bare forward
@@ -431,6 +420,8 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // gallery does. Mac has no horizontal canvas inset yet (docs/design/12 2026-09-24).
 @property(nonatomic, strong) NSView* metaHost;
 @property(nonatomic, strong) NSView* treeHost;
+// Issue #429: the page sidebar (left, under the command bar).
+@property(nonatomic, strong) NSView* pageSidebarHost;
 @property(nonatomic, strong) NSLayoutConstraint* metaBottom;
 @property(nonatomic, strong) NSLayoutConstraint* treeBottom;
 // PR 11: the adjust pane, on the metadata pane's edge (one at a time).
@@ -529,6 +520,8 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)cancelPhotosBackup;
 - (void)photosBackupProgress:(mv_chrome_photos_backup*)out;
 - (std::string)photosBackupDestination;
+- (int32_t)photosBackupLayout;
+- (void)setPhotosBackupLayout:(int32_t)layout;
 - (BOOL)photosBackupLast:(mv_chrome_photos_backup*)out;
 - (BOOL)openListTitled:(const std::string&)title
                entries:(std::vector<mv::shell::folder_model::list_entry>)entries
@@ -602,6 +595,12 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // route's command runs here. -handleKeyEvent: returns whether the key was ours.
 - (BOOL)handleKeyEvent:(NSEvent*)event;
 - (BOOL)runCommand:(mv::shell::command_id)command back:(mv::shell::back_target)back;
+- (BOOL)runCanvasCommand:(mv::shell::command_id)command back:(mv::shell::back_target)target;
+- (BOOL)runTransportCommand:(mv::shell::command_id)command;
+- (BOOL)runMarksCommand:(mv::shell::command_id)command;
+- (BOOL)runSlideshowCommand:(mv::shell::command_id)command;
+- (BOOL)runEditStackCommand:(mv::shell::command_id)command;
+- (BOOL)runSessionCommand:(mv::shell::command_id)command;
 - (void)cancelKeyHolds;
 // Issue #38: pointer, click, transport key or transport button. Wakes the
 // clip's controls and restarts their idle clock; a no-op with no clip.
@@ -672,6 +671,8 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // it holds files, copy, F7/F8, Delete, copy path, Share and drag-out act on it.
 - (void)setGalleryRangeIndices:(const int32_t*)indices count:(int32_t)count;
 - (void)clearGalleryRange;
+// Issue #444: the one share command (docs/design/16 "Share") and its files.
+- (BOOL)shareRequest:(mv::shell::share_request)request;
 - (uint64_t)galleryRangeGeneration;
 - (NSInteger)galleryRangeCount;
 - (uint64_t)thumbGeneration;
@@ -764,6 +765,10 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // Points the Edit workspace docks on the right (0 when closed): the canvas
 // frames the picture left of it (input_snapshot.chrome_right_px).
 - (CGFloat)dockedRightPoints;
+// Issue #429: the page sidebar is on screen (MvMetalView's -syncSize reserves it).
+- (BOOL)pageSidebarShown;
+- (void)requestPageThumbsFrom:(int32_t)first count:(int32_t)count;
+- (void)selectPage:(int32_t)page;
 - (void)editViewInto:(mv_edit_view*)out;
 - (std::string)editName;
 - (void)editSelectTab:(int32_t)tab;
@@ -805,6 +810,12 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)closeList;
 - (void)returnToWelcome;
 - (void)openNewWindow;
+// #452 (docs/design/28 "In the background"): an add-on keeps the process.
+- (void)quitFromMenu:(id)sender;
+- (void)enterBackground;
+- (void)leaveBackground;
+- (void)quitFromBackground;
+- (void)backgroundChanged;
 - (BOOL)listOpen;
 - (BOOL)liveClipIsShown;
 - (std::string)listTitle;
@@ -822,6 +833,25 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // rather than beside mv_chrome_fit/mv_chrome_one_to_one above, which predate
 // MvLabApp's declaration in this file. [main-thread] -- see the header's
 // doc comment; every one of these just forwards to g_chrome_app.
+// #452: the menu-bar item and the notices (AddonNotices.swift). [main-thread]
+extern "C" void mv_chrome_background_show_viewer(void) {
+  if (MvLabApp* app = (MvLabApp*)NSApp.delegate; [app isKindOfClass:[MvLabApp class]]) [app leaveBackground];
+}
+extern "C" void mv_chrome_background_quit(void) {
+  if (MvLabApp* app = (MvLabApp*)NSApp.delegate; [app isKindOfClass:[MvLabApp class]]) [app quitFromBackground];
+}
+extern "C" void mv_chrome_background_changed(void) {
+  if (MvLabApp* app = (MvLabApp*)NSApp.delegate; [app isKindOfClass:[MvLabApp class]]) [app backgroundChanged];
+}
+// An add-on window is coming forward (a notification, the menu-bar item): the
+// app is a regular one again (Dock icon, menu bar) while it is on screen.
+extern "C" void mv_chrome_background_window_shown(void) {
+  if (NSApp.activationPolicy != NSApplicationActivationPolicyRegular) {
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+  }
+  [NSApp activateIgnoringOtherApps:YES];
+}
+
 extern "C" int32_t mv_chrome_item_count(void) {
   return g_chrome_app ? static_cast<int32_t>([g_chrome_app itemCount]) : 0;
 }
@@ -843,6 +873,14 @@ extern "C" void mv_chrome_set_thumb_ready_callback(mv_chrome_thumb_ready_fn call
 extern "C" void mv_chrome_request_thumb(int32_t index) {
   if (!g_chrome_app || index < 0) return;
   [g_chrome_app requestThumbAtIndex:index];
+}
+// Issue #429: the page sidebar.
+extern "C" void mv_chrome_request_page_thumbs(int32_t first, int32_t count) {
+  if (g_chrome_app) [g_chrome_app requestPageThumbsFrom:first count:count];
+}
+extern "C" void mv_chrome_select_page(int32_t page) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app selectPage:page];
 }
 extern "C" void mv_chrome_menu(MvMenuCmd cmd) {
   (void)mv::shell::crash::note_native_call();
@@ -1253,6 +1291,16 @@ extern "C" int32_t mv_chrome_item_thumb_key(int32_t index, char* buf, int32_t si
 extern "C" int32_t mv_chrome_listing(char* buf, int32_t size) {
   return MvCopyOut(g_chrome_app ? [g_chrome_app listingSnapshot] : std::string{}, buf, size);
 }
+// Issue #444: the share icon, the bar's share button and the right-click
+// Share entries run the one share command.
+extern "C" void mv_chrome_share(int32_t target, int32_t from, int32_t clicked) {
+  if (!g_chrome_app) return;
+  mv::shell::share_request r;
+  r.target = target >= 0 && target <= 2 ? static_cast<mv::shell::share_target>(target) : mv::shell::share_target::menu;
+  r.from = from >= 0 && from <= 3 ? static_cast<mv::shell::share_from>(from) : mv::shell::share_from::key;
+  r.clicked = clicked;
+  (void)[g_chrome_app shareRequest:r];
+}
 
 extern "C" uint64_t mv_chrome_meta_generation(void) {
   return g_chrome_app ? [g_chrome_app metaGeneration] : 0;
@@ -1491,6 +1539,12 @@ extern "C" void mv_chrome_photos_backup_progress(mv_chrome_photos_backup* out) {
 }
 extern "C" int32_t mv_chrome_photos_backup_destination(char* buf, int32_t size) {
   return MvCopyOut(g_chrome_app ? [g_chrome_app photosBackupDestination] : std::string{}, buf, size);
+}
+extern "C" int32_t mv_chrome_photos_backup_layout(void) {
+  return g_chrome_app ? [g_chrome_app photosBackupLayout] : 0;
+}
+extern "C" void mv_chrome_set_photos_backup_layout(int32_t layout) {
+  if (g_chrome_app) [g_chrome_app setPhotosBackupLayout:layout];
 }
 extern "C" bool mv_chrome_photos_backup_last(mv_chrome_photos_backup* out) {
   return g_chrome_app && out && [g_chrome_app photosBackupLast:out] == YES;
@@ -2048,6 +2102,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   self.snap->chrome_bottom_px = (self.app && [self.app filmstripVisible] && ![self.app editorOwnsCanvas])
       ? static_cast<std::uint32_t>(kFilmstripHeightPoints * self.window.backingScaleFactor)
       : 0;
+  // Issue #429: the page sidebar reserves the left edge the same way.
+  self.snap->chrome_left_px = (self.app && [self.app pageSidebarShown])
+      ? static_cast<std::uint32_t>(kPageSidebarWidthPoints * self.window.backingScaleFactor)
+      : 0;
   // PR 29: the Edit workspace docks instead of covering the picture.
   self.snap->chrome_right_px = self.app
       ? static_cast<std::uint32_t>([self.app dockedRightPoints] * self.window.backingScaleFactor)
@@ -2428,6 +2486,12 @@ static void MvAdoptNewDefaultViewerTypes() {
   mv::job_system _jobs;
   mv::shell::mac_lab_options _options;
   bool _terminating;
+  // #452: every window closed while an add-on keeps the process (Sharepoint's
+  // Receive when MediaViewer is closed). The viewer window is hidden, not
+  // closed, and comes back on reopen, a file open, or the menu-bar item.
+  bool _inBackground;
+  bool _quitForReal;
+  id _backgroundCloseWatch;
 
   // Folder navigation (PR 18, folded-in PR 4/6 -- docs/design/12 2026-09-17).
   // `_items`/`_index` are a cache: refreshed only when -refreshFolderIfChanged
@@ -2517,6 +2581,13 @@ static void MvAdoptNewDefaultViewerTypes() {
   // §2.3): 0 for the file itself; a new stop starts at 0.
   std::uint32_t _shownPage;
   std::uint32_t _shownPageCount;  // last count the lab reported for this stop; 0 unknown
+  // Issue #429, the page sidebar: wanted (Shift+T, NSUserDefaults
+  // mv.pageSidebar, on unless turned off), shown (-pageSidebarVisible) and
+  // the bookkeeping of its thumbnails, shared with jobs that outlive a call.
+  BOOL _pageSidebarWanted;
+  BOOL _pageSidebarShown;
+  std::uint32_t _pageSidebarListed;  // the count the strip was last given
+  std::shared_ptr<mv::image::page_thumb_book> _pageThumbs;
   // Document scrolling (docs/design/04 "Scrolling a document"): the shared
   // page-turn rule and its sub-pixel carry (canvas/document_scroll.h).
   mv::canvas::document_scroller _docScroll;
@@ -2529,6 +2600,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   // reopens. kShownMomentStale after a new search, so its moment opens afresh.
   std::int64_t _shownMoment;
   NSTimer* _browseTimer;
+  NSTimer* _pageSoakTimer;  // --page-soak (issue #429)
   // Bumped whenever _items is replaced; Swift's name/thumbnail caches key off
   // it (mv_chrome_listing_generation).
   std::uint64_t _listingGeneration;
@@ -3081,6 +3153,18 @@ static void MvAdoptNewDefaultViewerTypes() {
   [container addSubview:self.metaHost];
   self.metaBottom = [self.metaHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
                                                                constant:0.0];
+  // Issue #429: the page sidebar, left of the canvas from the command bar
+  // down. Added before the tree, so the tree (when open) floats over it.
+  self.pageSidebarHost = [MVChromeHost makePageSidebarView];
+  self.pageSidebarHost.hidden = YES;
+  self.pageSidebarHost.translatesAutoresizingMaskIntoConstraints = NO;
+  [container addSubview:self.pageSidebarHost];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.pageSidebarHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+    [self.pageSidebarHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
+    [self.pageSidebarHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+    [self.pageSidebarHost.widthAnchor constraintEqualToConstant:kPageSidebarWidthPoints],
+  ]];
   self.treeHost = [MVChromeHost makeFolderTreeView];
   self.treeHost.hidden = YES;
   self.treeHost.translatesAutoresizingMaskIntoConstraints = NO;
@@ -3271,7 +3355,18 @@ static void MvAdoptNewDefaultViewerTypes() {
                                    std::int64_t moment_ms) {
       return folder->cached_clip_thumb(path, mtime, size, moment_ms);
     };
+    _options.page_thumb = [folder](const std::string& path, std::int64_t mtime, std::uint64_t size,
+                                   std::uint32_t page) {
+      return folder->cached_page_thumb(path, mtime, size, page);
+    };
   }
+  // Issue #429: a document's page count arrives with its decode; the page
+  // sidebar appears on it, on the main thread, as the bridge calls do.
+  _options.page_count_known = [](std::uint64_t item, std::uint32_t count) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (g_chrome_app) [g_chrome_app pageCount:count knownForItem:item];
+    });
+  };
   if (auto started = _lab.start((__bridge void*)self.view, _options); !started) {
     MV_LOG_ERROR("present lab failed to start");
     [NSApp terminate:nil];
@@ -3345,6 +3440,13 @@ static void MvAdoptNewDefaultViewerTypes() {
                                                name:NSMenuDidEndTrackingNotification
                                              object:nil];
 
+  if (g_mac_pages.enabled) {
+    _pageSoakTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 120.0
+                                                      target:self
+                                                    selector:@selector(pageSoakTick)
+                                                    userInfo:nil
+                                                     repeats:YES];
+  }
   if (g_mac_browse.enabled) {
     _browseTimer = [NSTimer scheduledTimerWithTimeInterval:0.01
                                                     target:self
@@ -3364,6 +3466,125 @@ static void MvAdoptNewDefaultViewerTypes() {
   } else {
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
+  }
+}
+
+// --- --page-soak (see mac_page_run) --------------------------------------------
+
+- (std::uint32_t)pageSoakLanded:(std::uint32_t)first count:(std::uint32_t)count {
+  std::uint32_t n = 0;
+  for (std::uint32_t p = first; p < first + count; ++p) {
+    if (_pageThumbs && !_pageThumbs->path(p).empty()) ++n;
+  }
+  return n;
+}
+
+- (void)pageSoakFinish:(const char*)error {
+  auto& p = g_mac_pages;
+  if (p.step == mac_page_phase::finish) return;
+  p.step = mac_page_phase::finish;
+  [_pageSoakTimer invalidate];
+  _pageSoakTimer = nil;
+  if (FILE* f = std::fopen(p.json_path.c_str(), "wb")) {
+    std::fprintf(f, "{\n  \"schema\": 1,\n  \"error\": ");
+    if (error) browse_json_string(f, error);
+    else std::fputs("null", f);
+    std::fprintf(f,
+                 ",\n  \"pages\": %u,\n  \"sidebar_s\": %.3f,\n  \"fling_s\": %.3f,\n"
+                 "  \"drain_s\": %.3f,\n  \"landed\": %u,\n  \"jumps\": [\n",
+                 p.pages, p.sidebar_s, p.fling_s, p.drain_s, p.landed);
+    for (std::size_t i = 0; i < p.rows.size(); ++i) {
+      const auto& r = p.rows[i];
+      std::fprintf(f,
+                   "    {\"page\": %d, \"timed_out\": %d, \"placeholder\": %d, \"ready_ms\": %.3f, "
+                   "\"present_ms\": %.3f, \"full_ms\": %.3f}%s\n",
+                   r.page + 1, r.timed_out, r.placeholder, r.ready_ms, r.present_ms, r.full_ms,
+                   i + 1 < p.rows.size() ? "," : "");
+    }
+    std::fputs("  ]\n}\n", f);
+    std::fclose(f);
+  }
+  // Under --soak the soak's own timer ends the run and writes its report.
+  if (_options.soak_seconds <= 0.0) [NSApp terminate:nil];
+}
+
+- (void)pageSoakTick {
+  auto& p = g_mac_pages;
+  const double now = browse_now();
+  if (p.t0 == 0.0) p.t0 = p.phase_t = now;
+  switch (p.step) {
+    case mac_page_phase::wait_doc:
+      if ([self filmstripVisible]) [self setFilmstripVisible:NO];
+      if (_pageSidebarShown && _pageSidebarListed > 1 && _shownPageCount == _pageSidebarListed) {
+        p.pages = _pageSidebarListed;
+        p.sidebar_s = now - p.t0;
+        p.step = mac_page_phase::settle;
+        p.phase_t = now;
+      } else if (now - p.t0 > kMacBrowseOpenTimeout) {
+        [self pageSoakFinish:"no paged document with its sidebar appeared"];
+      }
+      return;
+    case mac_page_phase::settle:
+      if (now - p.phase_t < 2.0) return;
+      p.step = mac_page_phase::fling;
+      p.phase_t = now;
+      return;
+    case mac_page_phase::fling: {
+      const double t = std::min(1.0, (now - p.phase_t) / kMacPageFlingSeconds);
+      const std::uint32_t span = p.pages > kMacPageWindow ? p.pages - kMacPageWindow : 0;
+      [MVChromeHost pageSidebarHarnessScrollWithPage:static_cast<int32_t>(std::lround(t * span))];
+      if (t < 1.0) return;
+      p.fling_s = now - p.phase_t;
+      p.step = mac_page_phase::drain;
+      p.phase_t = now;
+      return;
+    }
+    case mac_page_phase::drain: {
+      const std::uint32_t window = std::min(kMacPageWindow, p.pages);
+      const std::uint32_t first = p.pages - window;
+      if ([self pageSoakLanded:first count:window] < window && now - p.phase_t < kMacBrowseStepTimeout) {
+        return;
+      }
+      p.drain_s = now - p.phase_t;
+      p.landed = [self pageSoakLanded:0 count:p.pages];
+      for (const std::uint32_t want : {249u, 9u, 149u, p.pages - 1, 0u, 249u, 99u}) {
+        p.targets.push_back(std::min(want, p.pages - 1));
+      }
+      p.step = mac_page_phase::jump;
+      p.phase_t = now;
+      return;
+    }
+    case mac_page_phase::jump: {
+      if (now - p.phase_t < 1.0) return;  // dwell: the page before is settled
+      if (p.next >= p.targets.size()) return [self pageSoakFinish:nullptr];
+      const std::uint32_t page = p.targets[p.next++];
+      if (page == _shownPage) return;  // already there: nothing to time
+      p.seq = _lab.mark_navigation();
+      if (p.seq == 0) return [self pageSoakFinish:"could not mark a jump"];
+      p.rows.push_back({static_cast<int>(page), 0, 0, -1.0, -1.0, -1.0});
+      [self selectPage:static_cast<int32_t>(page)];
+      p.step = mac_page_phase::wait_jump;
+      p.phase_t = now;
+      return;
+    }
+    case mac_page_phase::wait_jump: {
+      const bool done = _lab.navigation_done(p.seq) && _lab.navigation_full_ms(p.seq) >= 0.0;
+      if (!done && now - p.phase_t <= kMacBrowseStepTimeout) return;
+      mac_page_row& row = p.rows.back();
+      row.timed_out = done ? 0 : 1;
+      if (done) {
+        const auto sample = _lab.navigation_sample(p.seq);
+        row.ready_ms = sample.ready_ms;
+        row.present_ms = sample.present_ms;
+        row.full_ms = _lab.navigation_full_ms(p.seq);
+        row.placeholder = sample.cached ? 0 : 1;
+      }
+      p.step = mac_page_phase::jump;
+      p.phase_t = now;
+      return;
+    }
+    case mac_page_phase::finish:
+      return;
   }
 }
 
@@ -4012,10 +4233,16 @@ static void MvAdoptNewDefaultViewerTypes() {
         _photosFetchCancel.reset();
         _shownItem = 0;
         [self openPhotosEntry:entry moment:moment];
+      } else if (moment > 0 && mv::io::is_document_name(entry.path_utf8)) {
+        // #354: a document from a result list opens on the page that matched.
+        _shownItem = _lab.open_item(entry.path_utf8, entry.mtime_unix, entry.size, -1,
+                                    static_cast<std::uint32_t>(std::min<std::int64_t>(moment, UINT32_MAX)));
       } else {
         _shownItem = _lab.open_item(entry.path_utf8, entry.mtime_unix, entry.size, moment);
       }
-      _shownPage = 0;
+      _shownPage = moment > 0 && mv::io::is_document_name(entry.path_utf8)
+                       ? static_cast<std::uint32_t>(std::min<std::int64_t>(moment, UINT32_MAX))
+                       : 0;
       _shownPageCount = 0;
     }
     _shownMoment = moment;
@@ -4719,6 +4946,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   if (!visible) [self clearGalleryRange];  // #413: the range belongs to the grid
   _galleryVisible = visible;
   self.galleryHost.hidden = !visible;
+  [self applyPageSidebarLayout];  // issue #429: not under the grid
   [self textSync];
   [self layoutAIBadge];  // #345
   if (changed && visible) [self followGalleryFilter];
@@ -4756,6 +4984,8 @@ static void MvAdoptNewDefaultViewerTypes() {
 // screen already matches.
 - (void)applyFilmstripLayout {
   const BOOL shown = [self filmstripVisible];
+  // The page sidebar takes the filmstrip's role for a document (issue #429).
+  [self applyPageSidebarLayout];
   if (self.filmstripHost.hidden == !shown) return;
   self.filmstripHost.hidden = !shown;
   self.transportBottom.constant = -(shown ? kFilmstripHeightPoints + 10.0 : 10.0);
@@ -5363,6 +5593,7 @@ static mv::shell::command_id MvMenuCommand(NSInteger cmd) {
     case kMenuFit: return fit;
     case kMenuOneToOne: return one_to_one;
     case kMenuFilmstrip: return toggle_filmstrip;
+    case kMenuPageSidebar: return toggle_page_sidebar;
     case kMenuGallery: return toggle_gallery;
     case kMenuFullscreen: return fullscreen;
     case kMenuSlideshow: return slideshow_start;
@@ -5543,6 +5774,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     case kMenuFit: mv_chrome_fit(); break;
     case kMenuOneToOne: mv_chrome_one_to_one(); break;
     case kMenuFilmstrip: [self toggleFilmstrip]; break;
+    case kMenuPageSidebar: [self togglePageSidebar]; break;
     case kMenuGallery: [self toggleGallery]; break;
     case kMenuFullscreen: [self toggleFullscreen]; break;
     case kMenuSlideshow: [self startSlideshow]; break;
@@ -5647,6 +5879,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     return subject == mv::shell::edit_subject::still;
   }
   if (tag == kMenuFolderTree) item.state = _treeVisible ? NSControlStateValueOn : NSControlStateValueOff;
+  if (tag == kMenuPageSidebar) item.state = _pageSidebarWanted ? NSControlStateValueOn : NSControlStateValueOff;
   if ([self menuCmdBlocked:tag]) return NO;
   switch (static_cast<MvMenuCmd>(item.tag)) {
     case kMenuOpen: case kMenuOpenFolder: case kMenuFit: case kMenuOneToOne: case kMenuFullscreen: case kMenuHelp: case kMenuSettings: case kMenuOverlay:
@@ -5763,7 +5996,11 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   [app addItem:[NSMenuItem separatorItem]];
   [app addItemWithTitle:@"Hide MediaViewer" action:@selector(hide:) keyEquivalent:@"h"];
   [app addItem:[NSMenuItem separatorItem]];
-  [app addItemWithTitle:@"Quit MediaViewer" action:@selector(terminate:) keyEquivalent:@"q"];
+  // #452: Quit goes to the background while an add-on keeps the process;
+  // otherwise it is terminate:, as before. Logout and the Dock's Quit still
+  // terminate.
+  NSMenuItem* quit = [app addItemWithTitle:@"Quit MediaViewer" action:@selector(quitFromMenu:) keyEquivalent:@"q"];
+  quit.target = self;
 
   NSMenu* file = submenu(@"File");
   [self addMenuItem:@"New Window" cmd:kMenuNewWindow key:@"" mods:0 toMenu:file];
@@ -5816,6 +6053,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   [self addMenuItem:@"Actual Size" cmd:kMenuOneToOne key:@"" mods:0 toMenu:view];
   [view addItem:[NSMenuItem separatorItem]];
   [self addMenuItem:@"Filmstrip" cmd:kMenuFilmstrip key:@"" mods:0 toMenu:view];
+  [self addMenuItem:@"Page Sidebar" cmd:kMenuPageSidebar key:@"" mods:0 toMenu:view];
   [self addMenuItem:@"Gallery" cmd:kMenuGallery key:@"" mods:0 toMenu:view];
   [self addMenuItem:@"Metadata" cmd:kMenuMetadata key:@"" mods:0 toMenu:view];
   [self addMenuItem:@"Folder Tree" cmd:kMenuFolderTree key:@"" mods:0 toMenu:view];
@@ -5901,6 +6139,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     [paths addObject:url.path];
   }
   if (paths.count == 0) return NSBeep();
+  if (_inBackground) [self leaveBackground];
   [self.window makeKeyAndOrderFront:nil];
   [self openEntryPaths:paths failed:nil];
 }
@@ -6355,43 +6594,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   }
 }
 
-- (BOOL)runCommand:(mv::shell::command_id)command back:(mv::shell::back_target)target {
+- (BOOL)runCanvasCommand:(mv::shell::command_id)command back:(mv::shell::back_target)target {
   using enum mv::shell::command_id;
-  // PR 11 (docs/design/13): every command is a native call with its own id, so a
-  // chrome exception or a crash in the work it starts carries the same one.
-  (void)mv::shell::crash::note_native_call();
   const bool clip = [self currentItemIsVideo];
-  const bool anim = !clip && _lab.anim_active();
-  // PR 29 (docs/design/20): the keys that open a tab of the Edit workspace. The
-  // workspace decides the tab; crop_mode and trim_mode then do their own work.
-  // PR 30 (docs/design/21, owner): video is edited in its own window, not a pane.
-  // Return (the bar's "Open in <app>") on a PDF or DOCX: its own app opens it.
-  if (command == edit_workspace && !_ws.open && !_editorOpen && [self currentItemIsDocument]) {
-    [self openDocumentInApp:nil];
-    return YES;
-  }
-  if (command == edit_workspace && (_editorOpen || [self editSubject] == mv::shell::edit_subject::clip)) {
-    if (_editorOpen) {
-      [self editorRequestClose];
-    } else {
-      [self setEditorOpen:YES];
-    }
-    return YES;
-  }
-  if (command == edit_workspace || command == crop_mode || command == adjust_pane ||
-      command == trim_mode || command == metadata_pane || command == jobs_pane) {
-    const mv::shell::workspace_step step = mv::shell::route_workspace(_ws, [self editSubject], command);
-    if (step.action != mv::shell::workspace_action::none) {
-      if (mv::shell::apply_step(_ws, step)) [self syncWorkspace];
-      if (command != crop_mode && command != trim_mode) return YES;
-    } else if (command == edit_workspace) {
-      NSBeep();  // nothing on the canvas to edit
-      return YES;
-    } else if (_ws.open && (command == metadata_pane || command == jobs_pane || command == adjust_pane)) {
-      // A pane the workspace does not hold here takes the edge on its own.
-      [self editClose];
-    }
-  }
   switch (command) {
     case open: [self openFolderPanel:NO]; return YES;
     case open_folder: [self openFolderPanel:YES]; return YES;
@@ -6479,6 +6684,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       return YES;
     case toggle_gallery: [self toggleGallery]; return YES;
     case toggle_filmstrip: [self toggleFilmstrip]; return YES;
+    case toggle_page_sidebar: [self togglePageSidebar]; return YES;
     case gallery_up: [self galleryMoveRows:-1]; return YES;
     case gallery_down: [self galleryMoveRows:1]; return YES;
     case gallery_open_selected:
@@ -6507,6 +6713,258 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case gallery_larger: [self adjustGalleryCellSize:1]; return YES;
     case gallery_smaller: [self adjustGalleryCellSize:-1]; return YES;
     case fullscreen: [self toggleFullscreen]; return YES;
+    case sticky_zoom: [self setViewFlags:_viewFlags ^ mv::shell::kSettingStickyZoom]; return YES;
+    // docs/design/16: pan only when zoomed. At fit the view is locked, so the key is
+    // not ours and falls through; on a fitted clip ↑ ↓ are its volume.
+    case pan_up: case pan_down: case pan_left: case pan_right: {
+      const bool zooming = _zoomIntentAt > 0.0 && CACurrentMediaTime() - _zoomIntentAt < kZoomIntentSeconds;
+      if (_lab.view_fitted() && !zooming) {
+        if (!clip || (command != pan_up && command != pan_down)) return NO;
+        _snap.video_volume_steps += command == pan_up ? 1 : -1; [self pokeSnapshot]; return YES;
+      }
+      if (command == pan_up) --_snap.pan_steps_y;
+      if (command == pan_down) ++_snap.pan_steps_y;
+      if (command == pan_left) --_snap.pan_steps_x;
+      if (command == pan_right) ++_snap.pan_steps_x;
+      [self pokeSnapshot];
+      return YES;
+    }
+    // View state the render thread draws from (levels, not edges).
+    case clipping: _snap.clipping = !_snap.clipping; [self pokeSnapshot]; return YES;
+    case loupe: case loupe_release:
+      // The loupe magnifies a still. On a clip or an empty canvas Z is not
+      // ours: do not swallow it and then draw nothing.
+      if (command == loupe && (clip || _items.empty() || !_lab.showing_still())) return NO;
+      _snap.loupe = command == loupe;
+      if (command == loupe) {
+        // Each hold starts at the cursor, or the canvas centre with none.
+        _snap.loupe_steps_x = 0;
+        _snap.loupe_steps_y = 0;
+      }
+      [self pokeSnapshot];
+      return YES;
+    case loupe_nudge_left: --_snap.loupe_steps_x; [self pokeSnapshot]; return YES;
+    case loupe_nudge_right: ++_snap.loupe_steps_x; [self pokeSnapshot]; return YES;
+    case loupe_nudge_up: --_snap.loupe_steps_y; [self pokeSnapshot]; return YES;
+    case loupe_nudge_down: ++_snap.loupe_steps_y; [self pokeSnapshot]; return YES;
+    case hold_previous: case hold_previous_release:
+      _snap.hold_previous = command == hold_previous;
+      [self pokeSnapshot];
+      return YES;
+    case compare_two_up:
+      // A level: the render thread splits only while a still is up.
+      _snap.compare = !_snap.compare;
+      [self pokeSnapshot];
+      return YES;
+    // PR 9. The overlays are levels the render thread draws from `_snap.meta`;
+    // turning one on asks for the record if it is not already here, and never
+    // reads the file a second time.
+    case info_overlay:
+      _snap.info_overlay = !_snap.info_overlay;
+      if (_snap.info_overlay) [self requestMetadataNow];
+      [self pokeSnapshot];
+      return YES;
+    case af_points:
+      _snap.af_points = !_snap.af_points;
+      if (_snap.af_points) [self requestMetadataNow];
+      [self pokeSnapshot];
+      return YES;
+    // Issue #209: 100 % on the AF point, from the record already held (or one
+    // read on the pool); the render thread moves the camera.
+    case zoom_af_point:
+      if (_metaRecord) {
+        [self afFocusFire];
+      } else {
+        _afFocusPending = YES;
+        [self requestMetadataNow];
+      }
+      return YES;
+    case eyedropper:
+      _snap.eyedropper = !_snap.eyedropper;
+      [self pokeSnapshot];
+      return YES;
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return NO;
+  }
+}
+
+- (BOOL)runTransportCommand:(mv::shell::command_id)command {
+  using enum mv::shell::command_id;
+  const bool clip = [self currentItemIsVideo];
+  const bool anim = !clip && _lab.anim_active();
+  switch (command) {
+    // Clip / animation transport. Space, K and `,` `.` reach the render thread as
+    // latched counters (input_snapshot), like pan and zoom.
+    case play_pause: case pause:
+      if (!clip && !anim) return NO;
+      ++_snap.anim_toggle_seq; [self pokeSnapshot]; return YES;
+    case frame_back: case frame_forward:
+      if (!clip && !anim) return NO;
+      _snap.anim_steps += command == frame_forward ? 1 : -1; [self pokeSnapshot]; return YES;
+    case jump_back: case jump_forward:
+      if (!clip) return NO;
+      _snap.video_skip_ms += command == jump_forward ? 10000 : -10000; [self pokeSnapshot]; return YES;
+    case skim_back: case skim_forward:
+      if (!clip) return NO;
+      _snap.video_skip_ms += command == skim_forward ? 2000 : -2000; [self pokeSnapshot]; return YES;
+    case skim_settle: return YES;
+    case rate_down: case rate_up:
+      if (!clip) return NO;
+      _snap.video_speed_steps += command == rate_up ? 1 : -1; [self pokeSnapshot]; return YES;
+    case mute:
+      if (!clip) return NO;
+      ++_snap.video_mute_seq; [self pokeSnapshot]; return YES;
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return NO;
+  }
+}
+
+- (BOOL)runMarksCommand:(mv::shell::command_id)command {
+  using enum mv::shell::command_id;
+  switch (command) {
+    case reveal_in_explorer: {
+      // docs/design/26: a Photos library item is shown where it lives, in
+      // Photos, not as its rendition inside the library bundle or the cache.
+      if (!_items.empty() && _index.current() < _items.size() &&
+          mv::shell::photos::is_key(_items[_index.current()].path_utf8)) {
+        return mv::shell::photos::show_in_photos(_items[_index.current()].path_utf8) ? YES : NO;
+      }
+      NSString* path = [self currentItemPathForDrag];
+      if (!path) return NO;
+      [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:path] ]];
+      return YES;
+    }
+    case toggle_mark: [self toggleMarkCurrent]; return YES;
+    case mark_all:
+      // With words selected in the still, Select All is every word (Photos);
+      // otherwise it marks every file.
+      if (_text.has_selection() && _text.select_all()) {
+        [self textPublish];
+        return YES;
+      }
+      [self markAll];
+      return YES;
+    case unmark_all: [self unmarkAll]; return YES;
+    case copy_to: [self copyMarkedPickDestination:NO]; return YES;
+    case copy_to_pick: [self copyMarkedPickDestination:YES]; return YES;
+    case move_to: [self moveMarkedPickDestination:NO]; return YES;
+    case move_to_pick: [self moveMarkedPickDestination:YES]; return YES;
+    case delete_to_recycle_bin:
+      if (_items.empty()) return NO;
+      [self deleteMarkedToTrash];
+      return YES;
+    case copy_clipboard: {
+      NSPasteboard* board = [NSPasteboard generalPasteboard];
+      // Words selected in the still (text in images): that text.
+      if (_text.has_selection()) {
+        const std::string text = _text.text();
+        [board clearContents];
+        if (![board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString]) {
+          NSBeep();
+          return YES;
+        }
+        [self noticeShow:mv::shell::copy_text_notice(_text.words())];
+        return YES;
+      }
+      // Eyedropper on and a pixel under the cursor: that colour.
+      if (_snap.eyedropper) {
+        const std::string text = _lab.eyedropper_text();
+        if (!text.empty()) {
+          [board clearContents];
+          [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
+          return YES;
+        }
+      }
+      // Otherwise the file(s): the marks, else the current item, which is the selected
+      // cell while the gallery is up. Pasteable in Finder, Mail, Messages.
+      NSMutableArray<NSURL*>* urls = [NSMutableArray array];
+      for (const auto& entry : [self markedOrCurrentEntries]) {
+        [urls addObject:[NSURL fileURLWithPath:[NSString stringWithUTF8String:entry.path_utf8.c_str()]]];
+      }
+      if (urls.count == 0) return NO;
+      [board clearContents];
+      return [board writeObjects:urls] ? YES : NO;
+    }
+    // PR 15 (docs/design/16 View): the keyboard twins of drag-out.
+    case copy_path: {
+      std::vector<std::string> paths;
+      for (const auto& entry : [self markedOrCurrentEntries]) paths.push_back(entry.path_utf8);
+      const std::string text = mv::shell::paths_as_text(paths, "\n");
+      if (text.empty()) return NO;
+      NSPasteboard* board = [NSPasteboard generalPasteboard];
+      [board clearContents];
+      return [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
+    }
+    case copy_flattened: return [self copyFlattened];
+    case share: return [self shareRequest:{}];  // the key's request: the menu, on the selection
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return NO;
+  }
+}
+
+- (BOOL)runSlideshowCommand:(mv::shell::command_id)command {
+  using enum mv::shell::command_id;
+  switch (command) {
+    case slideshow_start:
+      if (_items.empty()) return NO;
+      [self startSlideshow];
+      return YES;
+    case slideshow_pause: [self toggleSlideshowPause]; return YES;
+    case slideshow_faster: [self adjustSlideshowInterval:-1.0]; return YES;
+    case slideshow_slower: [self adjustSlideshowInterval:1.0]; return YES;
+    case blackout:
+      if (!_slideshowActive) return NO;
+      _snap.blackout = !_snap.blackout;
+      [self pokeSnapshot];
+      return YES;
+    case shuffle:
+      if (!_slideshowActive) return NO;
+      _slideshowOrder.toggle_shuffle(static_cast<std::uint32_t>(_index.current()),
+                                     static_cast<std::uint64_t>(CACurrentMediaTime() * 1000.0));
+      return YES;
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return NO;
+  }
+}
+
+- (BOOL)runEditStackCommand:(mv::shell::command_id)command {
+  using enum mv::shell::command_id;
+  const bool clip = [self currentItemIsVideo];
+  const bool anim = !clip && _lab.anim_active();
+  switch (command) {
+    // PR 11 (docs/design/16 Pane): ⇧A shows the adjust pane and focuses it.
+    case adjust_pane: [self setAdjustVisible:!_adjust.visible()]; return YES;
+    // PR 10 geometry, crop mode and export (docs/design/16 View + Crop).
+    case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
+    case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
+    case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
+    case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
+    case undo_edit: case reset_edits:
+    case crop_aspect_cycle: case crop_aspect_swap:
+      return [self runEditCommand:command];
+    // PR 29: Y held shows the original pixels; the stack is untouched.
+    case show_original: case show_original_release:
+      if (_items.empty() || clip || anim) return NO;
+      [self editShowOriginal:command == show_original];
+      return YES;
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return NO;
+  }
+}
+
+- (BOOL)runSessionCommand:(mv::shell::command_id)command {
+  using enum mv::shell::command_id;
+  switch (command) {
     case close_window: [self.window performClose:nil]; return YES;
     case new_window: [self openNewWindow]; return YES;
     case kind_filter_next:
@@ -6579,184 +7037,6 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
                                                         : "search_prev_match";
       return MvAddonsRunCommand(name) ? YES : NO;
     }
-    case reveal_in_explorer: {
-      // docs/design/26: a Photos library item is shown where it lives, in
-      // Photos, not as its rendition inside the library bundle or the cache.
-      if (!_items.empty() && _index.current() < _items.size() &&
-          mv::shell::photos::is_key(_items[_index.current()].path_utf8)) {
-        return mv::shell::photos::show_in_photos(_items[_index.current()].path_utf8) ? YES : NO;
-      }
-      NSString* path = [self currentItemPathForDrag];
-      if (!path) return NO;
-      [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:path] ]];
-      return YES;
-    }
-    case sticky_zoom: [self setViewFlags:_viewFlags ^ mv::shell::kSettingStickyZoom]; return YES;
-    // Clip / animation transport. Space, K and `,` `.` reach the render thread as
-    // latched counters (input_snapshot), like pan and zoom.
-    case play_pause: case pause:
-      if (!clip && !anim) return NO;
-      ++_snap.anim_toggle_seq; [self pokeSnapshot]; return YES;
-    case frame_back: case frame_forward:
-      if (!clip && !anim) return NO;
-      _snap.anim_steps += command == frame_forward ? 1 : -1; [self pokeSnapshot]; return YES;
-    case jump_back: case jump_forward:
-      if (!clip) return NO;
-      _snap.video_skip_ms += command == jump_forward ? 10000 : -10000; [self pokeSnapshot]; return YES;
-    case skim_back: case skim_forward:
-      if (!clip) return NO;
-      _snap.video_skip_ms += command == skim_forward ? 2000 : -2000; [self pokeSnapshot]; return YES;
-    case skim_settle: return YES;
-    case rate_down: case rate_up:
-      if (!clip) return NO;
-      _snap.video_speed_steps += command == rate_up ? 1 : -1; [self pokeSnapshot]; return YES;
-    case mute:
-      if (!clip) return NO;
-      ++_snap.video_mute_seq; [self pokeSnapshot]; return YES;
-    // docs/design/16: pan only when zoomed. At fit the view is locked, so the key is
-    // not ours and falls through; on a fitted clip ↑ ↓ are its volume.
-    case pan_up: case pan_down: case pan_left: case pan_right: {
-      const bool zooming = _zoomIntentAt > 0.0 && CACurrentMediaTime() - _zoomIntentAt < kZoomIntentSeconds;
-      if (_lab.view_fitted() && !zooming) {
-        if (!clip || (command != pan_up && command != pan_down)) return NO;
-        _snap.video_volume_steps += command == pan_up ? 1 : -1; [self pokeSnapshot]; return YES;
-      }
-      if (command == pan_up) --_snap.pan_steps_y;
-      if (command == pan_down) ++_snap.pan_steps_y;
-      if (command == pan_left) --_snap.pan_steps_x;
-      if (command == pan_right) ++_snap.pan_steps_x;
-      [self pokeSnapshot];
-      return YES;
-    }
-    // View state the render thread draws from (levels, not edges).
-    case clipping: _snap.clipping = !_snap.clipping; [self pokeSnapshot]; return YES;
-    case loupe: case loupe_release:
-      // The loupe magnifies a still. On a clip or an empty canvas Z is not
-      // ours: do not swallow it and then draw nothing.
-      if (command == loupe && (clip || _items.empty() || !_lab.showing_still())) return NO;
-      _snap.loupe = command == loupe;
-      if (command == loupe) {
-        // Each hold starts at the cursor, or the canvas centre with none.
-        _snap.loupe_steps_x = 0;
-        _snap.loupe_steps_y = 0;
-      }
-      [self pokeSnapshot];
-      return YES;
-    case loupe_nudge_left: --_snap.loupe_steps_x; [self pokeSnapshot]; return YES;
-    case loupe_nudge_right: ++_snap.loupe_steps_x; [self pokeSnapshot]; return YES;
-    case loupe_nudge_up: --_snap.loupe_steps_y; [self pokeSnapshot]; return YES;
-    case loupe_nudge_down: ++_snap.loupe_steps_y; [self pokeSnapshot]; return YES;
-    case hold_previous: case hold_previous_release:
-      _snap.hold_previous = command == hold_previous;
-      [self pokeSnapshot];
-      return YES;
-    case toggle_mark: [self toggleMarkCurrent]; return YES;
-    case mark_all:
-      // With words selected in the still, Select All is every word (Photos);
-      // otherwise it marks every file.
-      if (_text.has_selection() && _text.select_all()) {
-        [self textPublish];
-        return YES;
-      }
-      [self markAll];
-      return YES;
-    case unmark_all: [self unmarkAll]; return YES;
-    case copy_to: [self copyMarkedPickDestination:NO]; return YES;
-    case copy_to_pick: [self copyMarkedPickDestination:YES]; return YES;
-    case move_to: [self moveMarkedPickDestination:NO]; return YES;
-    case move_to_pick: [self moveMarkedPickDestination:YES]; return YES;
-    case delete_to_recycle_bin:
-      if (_items.empty()) return NO;
-      [self deleteMarkedToTrash];
-      return YES;
-    case slideshow_start:
-      if (_items.empty()) return NO;
-      [self startSlideshow];
-      return YES;
-    case slideshow_pause: [self toggleSlideshowPause]; return YES;
-    case slideshow_faster: [self adjustSlideshowInterval:-1.0]; return YES;
-    case slideshow_slower: [self adjustSlideshowInterval:1.0]; return YES;
-    case blackout:
-      if (!_slideshowActive) return NO;
-      _snap.blackout = !_snap.blackout;
-      [self pokeSnapshot];
-      return YES;
-    case shuffle:
-      if (!_slideshowActive) return NO;
-      _slideshowOrder.toggle_shuffle(static_cast<std::uint32_t>(_index.current()),
-                                     static_cast<std::uint64_t>(CACurrentMediaTime() * 1000.0));
-      return YES;
-    // PR 9. The overlays are levels the render thread draws from `_snap.meta`;
-    // turning one on asks for the record if it is not already here, and never
-    // reads the file a second time.
-    case info_overlay:
-      _snap.info_overlay = !_snap.info_overlay;
-      if (_snap.info_overlay) [self requestMetadataNow];
-      [self pokeSnapshot];
-      return YES;
-    case af_points:
-      _snap.af_points = !_snap.af_points;
-      if (_snap.af_points) [self requestMetadataNow];
-      [self pokeSnapshot];
-      return YES;
-    // Issue #209: 100 % on the AF point, from the record already held (or one
-    // read on the pool); the render thread moves the camera.
-    case zoom_af_point:
-      if (_metaRecord) {
-        [self afFocusFire];
-      } else {
-        _afFocusPending = YES;
-        [self requestMetadataNow];
-      }
-      return YES;
-    case eyedropper:
-      _snap.eyedropper = !_snap.eyedropper;
-      [self pokeSnapshot];
-      return YES;
-    case copy_clipboard: {
-      NSPasteboard* board = [NSPasteboard generalPasteboard];
-      // Words selected in the still (text in images): that text.
-      if (_text.has_selection()) {
-        const std::string text = _text.text();
-        [board clearContents];
-        if (![board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString]) {
-          NSBeep();
-          return YES;
-        }
-        [self noticeShow:mv::shell::copy_text_notice(_text.words())];
-        return YES;
-      }
-      // Eyedropper on and a pixel under the cursor: that colour.
-      if (_snap.eyedropper) {
-        const std::string text = _lab.eyedropper_text();
-        if (!text.empty()) {
-          [board clearContents];
-          [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
-          return YES;
-        }
-      }
-      // Otherwise the file(s): the marks, else the current item, which is the selected
-      // cell while the gallery is up. Pasteable in Finder, Mail, Messages.
-      NSMutableArray<NSURL*>* urls = [NSMutableArray array];
-      for (const auto& entry : [self markedOrCurrentEntries]) {
-        [urls addObject:[NSURL fileURLWithPath:[NSString stringWithUTF8String:entry.path_utf8.c_str()]]];
-      }
-      if (urls.count == 0) return NO;
-      [board clearContents];
-      return [board writeObjects:urls] ? YES : NO;
-    }
-    // PR 15 (docs/design/16 View): the keyboard twins of drag-out.
-    case copy_path: {
-      std::vector<std::string> paths;
-      for (const auto& entry : [self markedOrCurrentEntries]) paths.push_back(entry.path_utf8);
-      const std::string text = mv::shell::paths_as_text(paths, "\n");
-      if (text.empty()) return NO;
-      NSPasteboard* board = [NSPasteboard generalPasteboard];
-      [board clearContents];
-      return [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
-    }
-    case copy_flattened: return [self copyFlattened];
-    case share: return [self shareMarkedOrCurrent];
     case metadata_pane:
       if (!_metaPaneVisible && _adjust.visible()) [self setAdjustVisible:NO];
       if (!_metaPaneVisible && _jobsVisible) [self setJobsVisible:NO];
@@ -6772,29 +7052,70 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       return [self labelCurrentItem:static_cast<mv::shell::colour_label>(
                                         mv::shell::label_of_command(command))];
     case edit_comment: return [self focusCommentField];
-    // PR 11 (docs/design/16 Pane): ⇧A shows the adjust pane and focuses it.
-    case adjust_pane: [self setAdjustVisible:!_adjust.visible()]; return YES;
     // PR 13 / 14 (docs/design/08, docs/design/16 "Video and trim").
     case trim_mode: case trim_in: case trim_out: case trim_clear: case trim_preview:
     case trim_keyframe: case trim_reencode: case trim_remove_middle: case keyframe_prev:
     case keyframe_next: case jobs_pane: case clip_tools: case clip_split:
       return [self runClipCommand:command];
     case folder_tree: [self setTreeVisible:!_treeVisible]; return YES;
-    // PR 10 geometry, crop mode and export (docs/design/16 View + Crop).
-    case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
-    case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
-    case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
-    case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
-    case undo_edit: case reset_edits:
-    case crop_aspect_cycle: case crop_aspect_swap:
-      return [self runEditCommand:command];
-    // PR 29: Y held shows the original pixels; the stack is untouched.
-    case show_original: case show_original_release:
-      if (_items.empty() || clip || anim) return NO;
-      [self editShowOriginal:command == show_original];
-      return YES;
-    default: return NO;
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return NO;
   }
+}
+- (BOOL)runCommand:(mv::shell::command_id)command back:(mv::shell::back_target)target {
+  using enum mv::shell::command_id;
+  // PR 11 (docs/design/13): every command is a native call with its own id, so a
+  // chrome exception or a crash in the work it starts carries the same one.
+  (void)mv::shell::crash::note_native_call();
+  // PR 29 (docs/design/20): the keys that open a tab of the Edit workspace. The
+  // workspace decides the tab; crop_mode and trim_mode then do their own work.
+  // PR 30 (docs/design/21, owner): video is edited in its own window, not a pane.
+  // Return (the bar's "Open in <app>") on a PDF or DOCX: its own app opens it.
+  if (command == edit_workspace && !_ws.open && !_editorOpen && [self currentItemIsDocument]) {
+    [self openDocumentInApp:nil];
+    return YES;
+  }
+  if (command == edit_workspace && (_editorOpen || [self editSubject] == mv::shell::edit_subject::clip)) {
+    if (_editorOpen) {
+      [self editorRequestClose];
+    } else {
+      [self setEditorOpen:YES];
+    }
+    return YES;
+  }
+  if (command == edit_workspace || command == crop_mode || command == adjust_pane ||
+      command == trim_mode || command == metadata_pane || command == jobs_pane) {
+    const mv::shell::workspace_step step = mv::shell::route_workspace(_ws, [self editSubject], command);
+    if (step.action != mv::shell::workspace_action::none) {
+      if (mv::shell::apply_step(_ws, step)) [self syncWorkspace];
+      if (command != crop_mode && command != trim_mode) return YES;
+    } else if (command == edit_workspace) {
+      NSBeep();  // nothing on the canvas to edit
+      return YES;
+    } else if (_ws.open && (command == metadata_pane || command == jobs_pane || command == adjust_pane)) {
+      // A pane the workspace does not hold here takes the edge on its own.
+      [self editClose];
+    }
+  }
+  switch (mv::shell::mac_command_area(command)) {
+    case mv::shell::command_area::canvas:
+      return [self runCanvasCommand:command back:target];
+    case mv::shell::command_area::transport:
+      return [self runTransportCommand:command];
+    case mv::shell::command_area::marks:
+      return [self runMarksCommand:command];
+    case mv::shell::command_area::slideshow:
+      return [self runSlideshowCommand:command];
+    case mv::shell::command_area::edit:
+      return [self runEditStackCommand:command];
+    case mv::shell::command_area::session:
+      return [self runSessionCommand:command];
+    case mv::shell::command_area::excluded:
+      return NO;
+  }
+  return NO;
 }
 
 // ---- PR 10: edit stack, lossless rotate, crop, export ---------------------------
@@ -6803,6 +7124,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 // item's geometry moves to slot 1 so its texture keeps it until the new
 // pixels land; slot 0 is the new item's.
 - (void)editItemOpened:(const mv::io::dir_entry&)entry item:(std::uint64_t)item {
+  [self applyPageSidebarLayout];  // issue #429: a new stop or page
   _snap.edit[1] = _snap.edit[0];
   _itemId = item;
   mv::shell::edit_item e;
@@ -8003,7 +8325,8 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
                   const BOOL closeViewer = me->_closeAfterEditor;
                   if (response == NSAlertSecondButtonReturn) [me setEditorOpen:NO];
                   me->_closeAfterEditor = NO;
-                  if (closeViewer && response == NSAlertSecondButtonReturn) [me.window close];
+                  // performClose: so a kept process (#452) hides the viewer rather than closing it.
+                  if (closeViewer && response == NSAlertSecondButtonReturn) [me.window performClose:nil];
                 }];
 }
 
@@ -8022,6 +8345,106 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   if (self.editorWindow != nil && sender == self.editorWindow && _editorOpen && _timeline.edited() &&
       _timeline.revision() != _editorExportedRevision) {
     [self editorRequestClose];
+    return NO;
+  }
+  // #452: the viewer window closing while an add-on keeps the process hides
+  // it instead; the process stays in the menu bar.
+  if (sender == self.window && !_quitForReal && mv::addon::default_slots().keeping_alive()) {
+    [self enterBackground];
+    return NO;
+  }
+  return YES;
+}
+
+// ---- #452: in the background (docs/design/28 "In the background") ----------------------
+// Off (the default) none of this runs: Quit terminates and the last window
+// closing quits. On, the viewer drops what it showed (returnToWelcome: no
+// clip plays, the folder and its watch close), its window is ordered out, and
+// with no window left the app leaves the Dock (accessory). The add-on's own
+// threads are all that run; the canvas presents nothing.
+
+- (void)quitFromMenu:(id)sender {
+  (void)sender;
+  if (!_quitForReal && mv::addon::default_slots().keeping_alive()) {
+    // Every window goes: add-on windows close (their add-on hears it), Settings closes.
+    for (NSWindow* w in [NSApp.windows copy]) {
+      if (w == self.window || !w.isVisible || w.sheetParent != nil) continue;
+      if (w == self.editorWindow) continue;  // windowShouldClose: of the viewer handles it
+      [w close];
+    }
+    if ([self windowShouldClose:self.window]) [self.window close];
+    return;
+  }
+  [NSApp terminate:nil];
+}
+
+- (void)enterBackground {
+  if (_inBackground) return;
+  _inBackground = true;
+  if (_slideshowActive) [self leaveSlideshow];
+  if ((self.window.styleMask & NSWindowStyleMaskFullScreen) != 0) [self.window toggleFullScreen:nil];
+  [self returnToWelcome];
+  [self.window orderOut:nil];
+  [self backgroundSettle];
+  if (!_backgroundCloseWatch) {
+    __weak MvLabApp* weakSelf = self;
+    _backgroundCloseWatch = [NSNotificationCenter.defaultCenter
+        addObserverForName:NSWindowWillCloseNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification*) {
+                  // After the close: the window is still visible while it closes.
+                  dispatch_async(dispatch_get_main_queue(), ^{
+                    [weakSelf backgroundSettle];
+                  });
+                }];
+  }
+}
+
+// No window left on screen: out of the Dock and the app switcher; the
+// menu-bar item stays. A window still open (Sharepoint's) keeps the Dock icon.
+- (void)backgroundSettle {
+  if (!_inBackground) return;
+  for (NSWindow* w in NSApp.windows) {
+    if (w.isVisible && w != self.window && ![w isKindOfClass:NSClassFromString(@"NSStatusBarWindow")]) return;
+  }
+  if (!mv::addon::default_slots().keeping_alive()) {
+    // Turned off while hidden: nothing keeps the process any more.
+    [self quitFromBackground];
+    return;
+  }
+  if (NSApp.activationPolicy != NSApplicationActivationPolicyAccessory) {
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+  }
+}
+
+- (void)leaveBackground {
+  if (NSApp.activationPolicy != NSApplicationActivationPolicyRegular) {
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+  }
+  if (!_inBackground) return;
+  _inBackground = false;
+  [self.window makeKeyAndOrderFront:nil];
+  [NSApp activateIgnoringOtherApps:YES];
+}
+
+- (void)quitFromBackground {
+  _quitForReal = true;
+  [NSApp terminate:nil];
+}
+
+// The keep-alive list changed (the chrome's notice reader): off while hidden
+// with nothing on screen quits; an add-on window opening from the menu-bar
+// item or a notification brings the Dock icon back.
+- (void)backgroundChanged {
+  if (_inBackground) [self backgroundSettle];
+}
+
+- (BOOL)applicationShouldHandleReopen:(NSApplication*)sender hasVisibleWindows:(BOOL)flag {
+  (void)sender;
+  (void)flag;
+  if (_inBackground) {
+    [self leaveBackground];
     return NO;
   }
   return YES;
@@ -10151,6 +10574,7 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
 
 static NSString* const kPhotosBackupDestinationDefault = @"mv.photosBackup.destination";
 static NSString* const kPhotosBackupLastDefault = @"mv.photosBackup.last";
+static NSString* const kPhotosBackupLayoutDefault = @"mv.photosBackup.layout";  // backup::layout
 
 static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::progress& p) {
   *out = {};
@@ -10173,6 +10597,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   if (!_photosBackup) _photosBackup = std::make_unique<mv::shell::backup::engine>();
   mv::shell::backup::options opts;
   opts.destination = destination;
+  opts.folders = static_cast<mv::shell::backup::layout>([self photosBackupLayout]);
   // Fetched originals wait here for their verified copy; emptied at the end.
   NSArray<NSString*>* caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
   NSString* base = caches.firstObject ?: [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches"];
@@ -10217,6 +10642,18 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 - (std::string)photosBackupDestination {
   NSString* dest = [[NSUserDefaults standardUserDefaults] stringForKey:kPhotosBackupDestinationDefault];
   return dest.UTF8String ? std::string(dest.UTF8String) : std::string();
+}
+
+// Absent (every backup before issue #414) is 0, year/day: an existing backup
+// keeps writing the tree it has.
+- (int32_t)photosBackupLayout {
+  const NSInteger v = [[NSUserDefaults standardUserDefaults] integerForKey:kPhotosBackupLayoutDefault];
+  return v >= 0 && v < mv::shell::backup::kLayoutCount ? static_cast<int32_t>(v) : 0;
+}
+
+- (void)setPhotosBackupLayout:(int32_t)layout {
+  if (layout < 0 || layout >= mv::shell::backup::kLayoutCount) return;
+  [[NSUserDefaults standardUserDefaults] setInteger:layout forKey:kPhotosBackupLayoutDefault];
 }
 
 - (BOOL)photosBackupLast:(mv_chrome_photos_backup*)out {
@@ -10635,7 +11072,16 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   if (!_text.wants_read() || _items.empty() || _index.current() >= _items.size()) return;
   if (!_lab.still_map().valid) return;
   const mv::shell::text_select::source src = _text.current();
-  const std::string path = _items[_index.current()].path_utf8;
+  // A Photos item (issue #451) is read from the file the canvas shows (its
+  // rendition, or the preview standing in for an iCloud-only original), never
+  // its "photos:" key, which no decoder opens. Not resolved yet: no read, and
+  // the next rest on it asks again.
+  std::string path = _items[_index.current()].path_utf8;
+  if (mv::shell::photos::is_key(path)) {
+    const auto hit = _photosResolved.find(path);
+    if (hit == _photosResolved.end() || hit->second.path.empty()) return;
+    path = hit->second.path;
+  }
   _text.reading();
   MvLabApp* __weak weakSelf = self;
   _jobs.submit_at(mv::background_generation, [path, src, weakSelf](const mv::job_context&) -> mv::status {
@@ -10651,22 +11097,54 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   });
 }
 
-// ⌘⇧S: the system share picker with the marked files, else the current one,
-// anchored at the top centre of the canvas.
-- (BOOL)shareMarkedOrCurrent {
-  NSMutableArray<NSURL*>* urls = [NSMutableArray array];
+// Issue #444 (docs/design/16 "Share"): the one share command. ⌘⇧S, the
+// gallery's share icon, the bar's share button and the right-click Share
+// submenu all run it. The files are the range, else the marks, else the
+// current one (markedOrCurrentEntries), or the right-clicked file when it is
+// not one of them. The Mac lists both halves of a pair as items and keeps no
+// pairing, so this is a walk of the in-memory listing with no syscall: no
+// stat, no read (a Photos item without a file yet is left out). The chrome
+// (ShareMenu.swift) shows the menu: Sharepoint, then the system's picker.
+- (std::vector<std::string>)shareFilesForClicked:(NSInteger)clicked {
+  std::vector<std::string> selection;
   for (const auto& entry : [self markedOrCurrentEntries]) {
-    if (NSString* p = [NSString stringWithUTF8String:entry.path_utf8.c_str()]) {
-      [urls addObject:[NSURL fileURLWithPath:p]];
-    }
+    std::string file = [self fileForEntry:entry];
+    if (!file.empty()) selection.push_back(std::move(file));
   }
-  if (urls.count == 0 || !self.view) return NO;
-  NSSharingServicePicker* picker = [[NSSharingServicePicker alloc] initWithItems:urls];
-  const NSRect b = self.view.bounds;
-  const NSRect at = NSMakeRect(NSMidX(b) - 1.0, self.view.isFlipped ? NSMinY(b) : NSMaxY(b) - 1.0, 2.0, 1.0);
-  [picker showRelativeToRect:at
-                      ofView:self.view
-               preferredEdge:self.view.isFlipped ? NSRectEdgeMaxY : NSRectEdgeMinY];
+  std::string picked;
+  if (clicked >= 0 && static_cast<std::size_t>(clicked) < _items.size()) {
+    picked = [self fileForEntry:_items[static_cast<std::size_t>(clicked)]];
+    if (picked.empty()) return {};  // a Photos item still without its file
+  }
+  return mv::shell::share_stops(std::move(selection), picked);
+}
+
+// {"files": [...], "media": [...]}: Sharepoint's, and the system picker's
+// (media only, no sidecars).
+- (std::string)shareFilesJSONForClicked:(NSInteger)clicked {
+  const std::vector<std::string> files = [self shareFilesForClicked:clicked];
+  if (files.empty()) return {};
+  mv::json::writer w;
+  w.begin_object();
+  w.key("files").begin_array();
+  for (const std::string& f : files) w.string(f);
+  w.end_array();
+  w.key("media").begin_array();
+  for (const std::string& f : mv::shell::share_system_files(files)) w.string(f);
+  w.end_array();
+  w.end_object();
+  return w.str();
+}
+
+- (BOOL)shareRequest:(mv::shell::share_request)request {
+  const std::string json = [self shareFilesJSONForClicked:request.clicked];
+  if (json.empty()) {
+    NSBeep();
+    return NO;
+  }
+  [MVChromeHost presentShare:[NSString stringWithUTF8String:json.c_str()]
+                      target:static_cast<NSInteger>(request.target)
+                        from:static_cast<NSInteger>(request.from)];
   return YES;
 }
 
@@ -10833,6 +11311,10 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   _viewFlags = flags;
   // #355: Local search indexes audio files only while they are shown.
   if (changed & mv::shell::kSettingShowAudio) MvAddonsShowAudioChanged((flags & mv::shell::kSettingShowAudio) != 0);
+  // #354: and documents only while they are shown.
+  if (changed & mv::shell::kSettingShowDocuments) {
+    MvAddonsShowDocumentsChanged((flags & mv::shell::kSettingShowDocuments) != 0);
+  }
   // Picked up on the main queue, like any relist.
   if (mv::shell::view_settings::from_flags(flags).hidden_kinds() != before) {
     _refilterListing = YES;
@@ -10849,14 +11331,12 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 - (void)persistKeys {
   // The verify rig changes keys (PR 56's key layout leg); the person's stay theirs.
   if (std::getenv("MV_ADDON_SELFTEST") != nullptr) return;
-  const auto live = mv::shell::live_bindings();
-  const auto def = mv::shell::default_bindings();
+  // commands.h live_key_remaps: the same list Windows keeps in settings.ini, a
+  // row a swap left unbound included as key 0 (issue #153).
   NSMutableArray<NSString*>* rows = [NSMutableArray array];
-  for (std::size_t i = 0; i < live.size() && i < def.size(); ++i) {
-    if (live[i].k != def[i].k || live[i].mods != def[i].mods) {
-      [rows addObject:[NSString stringWithFormat:@"%zu,%d,%d", i, static_cast<int>(live[i].k),
-                                                  static_cast<int>(live[i].mods)]];
-    }
+  for (const mv::shell::key_remap& r : mv::shell::live_key_remaps()) {
+    [rows addObject:[NSString stringWithFormat:@"%d,%d,%d", r.row, static_cast<int>(r.k),
+                                                static_cast<int>(r.mods)]];
   }
   [[NSUserDefaults standardUserDefaults] setObject:rows forKey:kDefaultsKeys];
 }
@@ -10868,14 +11348,18 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
                    : mv::shell::view_settings{}.flags();
   // #355: before the AI pack attaches, which reads it.
   MvAddonsShowAudioChanged((_viewFlags & mv::shell::kSettingShowAudio) != 0);
+  MvAddonsShowDocumentsChanged((_viewFlags & mv::shell::kSettingShowDocuments) != 0);  // #354
   _stripHintLearned = [d boolForKey:@"mv.hint.filmstripT"];
-  mv::shell::reset_live_bindings();
+  _pageSidebarWanted = [d objectForKey:@"mv.pageSidebar"] == nil || [d boolForKey:@"mv.pageSidebar"];
+  std::vector<mv::shell::key_remap> remaps;
   for (NSString* row in [d arrayForKey:kDefaultsKeys]) {
     int idx = 0, k = 0, m = 0;
-    if (sscanf(row.UTF8String, "%d,%d,%d", &idx, &k, &m) == 3) {
-      (void)mv::shell::set_live_key(idx, static_cast<mv::shell::key>(k), static_cast<std::uint8_t>(m));
+    if ([row isKindOfClass:[NSString class]] && sscanf(row.UTF8String, "%d,%d,%d", &idx, &k, &m) == 3 &&
+        k >= 0 && k < mv::shell::kKeyCount && m >= 0 && m < mv::shell::kModCombos) {
+      remaps.push_back(mv::shell::key_remap{idx, static_cast<mv::shell::key>(k), static_cast<std::uint8_t>(m)});
     }
   }
+  mv::shell::apply_key_remaps(remaps);  // resets the live table first
   [self rebuildKeys];
   _sort = mv::io::unpack_sort(static_cast<std::int32_t>([d integerForKey:@"mv.sort"]));
   _recentFolders.clear();
@@ -10896,6 +11380,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   const auto prefs = mv::shell::view_settings::from_flags(_viewFlags);
   _index.set_wrap(prefs.wrap);
   _snap.sticky_zoom = prefs.sticky_zoom;
+  _snap.compare = g_start_compare;
 }
 
 - (void)resetKeys {
@@ -11094,6 +11579,100 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   return YES;
 }
 
+// Issue #429 (docs/design/04 "Page sidebar"): a strip of page thumbnails down
+// the left of a PDF, DOCX or PPTX with more than one page, when the filmstrip
+// is hidden. It takes the filmstrip's role for a document, so the two never
+// show at once; Shift+T turns it off and on (remembered, on by default).
+- (void)pageCount:(std::uint32_t)count knownForItem:(std::uint64_t)item {
+  if (item != _shownItem || count == 0) return;
+  if (count == _shownPageCount && _pageSidebarShown) return;
+  _shownPageCount = count;
+  [self applyPageSidebarLayout];
+}
+- (BOOL)pageSidebarShown {
+  return _pageSidebarShown;
+}
+// The count the strip lists: the stop's own once the lab knows it. Until then,
+// while the last document's strip is up, that one's: arrowing from one
+// document to the next keeps the strip rather than taking it down and putting
+// it back, which would refit the canvas twice.
+- (std::uint32_t)pageSidebarCount {
+  if (_shownPageCount > 0) return _shownPageCount;
+  return _pageSidebarShown ? _pageSidebarListed : 0;
+}
+- (BOOL)pageSidebarVisible {
+  if (!_pageSidebarWanted || [self pageSidebarCount] <= 1) return NO;
+  if (_items.empty() || _shownItem == 0 || _shownPath.empty()) return NO;
+  if (_galleryVisible || [self filmstripVisible] || _editorOpen) return NO;
+  if (mv::shell::photos::is_key(_shownPath)) return NO;
+  return mv::io::is_document_name(_shownPath) ? YES : NO;
+}
+// Re-run whenever what decides it changes (a stop, a page, the count, the
+// filmstrip, the gallery). Tells the sidebar the page on screen every time,
+// so its highlight follows a scroll or a key.
+- (void)applyPageSidebarLayout {
+  if (!self.pageSidebarHost) return;
+  const BOOL shown = [self pageSidebarVisible];
+  if (!_pageThumbs) _pageThumbs = std::make_shared<mv::image::page_thumb_book>();
+  // The serial names the stop: a new one (or none) starts a new serial, so a
+  // thumbnail of the last document still in flight is never shown on this one.
+  std::uint32_t serial = 0;
+  if (shown) {
+    serial = _pageThumbs->want(_shownPath, 0, 0).serial;
+  } else {
+    _pageThumbs->clear();
+    serial = _pageThumbs->serial();
+  }
+  _pageSidebarListed = shown ? [self pageSidebarCount] : 0;
+  [MVChromeHost setPageSidebarWithCount:static_cast<int32_t>(_pageSidebarListed)
+                                current:static_cast<int32_t>(_shownPage)
+                                 serial:serial];
+  if (shown == _pageSidebarShown) return;
+  _pageSidebarShown = shown;
+  self.pageSidebarHost.hidden = !shown;
+  [self layoutHintNotice];
+  [self.view syncSize];  // chrome_left_px: the canvas frames right of it
+}
+- (void)togglePageSidebar {
+  _pageSidebarWanted = !_pageSidebarWanted;
+  [NSUserDefaults.standardUserDefaults setBool:_pageSidebarWanted forKey:@"mv.pageSidebar"];
+  [self applyPageSidebarLayout];
+  // Asked for over a document that cannot show it: say why rather than nothing.
+  if (_pageSidebarWanted && !_pageSidebarShown && mv::io::is_document_name(_shownPath) &&
+      [self filmstripVisible]) {
+    [self noticeShow:"Press T to hide the filmstrip and show the page sidebar"];
+  }
+}
+// The sidebar's visible window of pages (from the SwiftUI strip). Thumbnails
+// render on a background job from one open of the file; each lands on the
+// main thread with the serial it was made for.
+- (void)requestPageThumbsFrom:(int32_t)first count:(int32_t)count {
+  if (!_pageSidebarShown || first < 0 || count <= 0 || !_pageThumbs) return;
+  auto want = _pageThumbs->want(_shownPath, static_cast<std::uint32_t>(first),
+                                static_cast<std::uint32_t>(count));
+  if (want.pages.empty()) return;
+  const std::int64_t mtime = _shownMtime == kShownStampUnknown ? 0 : _shownMtime;
+  std::shared_ptr<mv::image::page_thumb_book> book = _pageThumbs;
+  const std::uint32_t serial = want.serial;
+  _folder.request_page_thumbs(
+      _shownPath, mtime, _shownSize, std::move(want.pages),
+      [book, serial](std::vector<std::uint32_t> pages) { return book->still_wanted(serial, pages); },
+      [book, serial](std::uint32_t page, std::string path) {
+        if (!book->landed(serial, page, path)) return false;
+        NSString* ns = [NSString stringWithUTF8String:path.c_str()] ?: @"";
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [MVChromeHost pageThumbReadyWithSerial:serial page:static_cast<int32_t>(page) path:ns];
+        });
+        return true;
+      },
+      [book, serial](std::vector<std::uint32_t> pages) { book->finished(serial, pages); });
+}
+// A sidebar click: that page, fitted, as Ctrl+PageDown would show it.
+- (void)selectPage:(int32_t)page {
+  if (page < 0 || !_pageSidebarShown) return;
+  (void)[self turnPage:page - static_cast<int>(_shownPage) land:NO];
+}
+
 - (BOOL)documentScrolls {
   if (_items.empty() || _shownItem == 0 || _shownPath.empty()) return NO;
   if (_galleryVisible || [self filmstripVisible] || _editorOpen) return NO;
@@ -11240,6 +11819,18 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
   (void)sender;
+  // #452: a Quit the person asked for (the Dock's, or another app's quit
+  // event) goes to the background while an add-on keeps the process, as ⌘Q
+  // does. Logout, restart and shut down carry a reason and quit; the app's own
+  // terminate: calls (an update's restart) have no event and quit.
+  if (!_terminating && !_quitForReal && mv::addon::default_slots().keeping_alive()) {
+    NSAppleEventDescriptor* event = NSAppleEventManager.sharedAppleEventManager.currentAppleEvent;
+    if (event.eventClass == kCoreEventClass && event.eventID == kAEQuitApplication &&
+        [event paramDescriptorForKeyword:kAEQuitReason] == nil) {
+      [self quitFromMenu:nil];
+      return NSTerminateCancel;
+    }
+  }
   if (_terminating) return NSTerminateLater;
   _terminating = true;
   // PR 12: writes the user asked for and has not seen land -- a rating inside
@@ -11450,6 +12041,8 @@ void usage() {
                "                  folder browse + drag-drop (PR 18)\n"
                "  --soak N --json PATH [--gate] [--static] [--no-overlay]\n"
                "  --browse-soak --json PATH FOLDER   time arrows and jumps (tools/perf)\n"
+               "  --page-soak PATH DOCUMENT          fling the page sidebar, time page jumps\n"
+               "  --compare     start with the two-up compare on (`|`)\n"
                "  --open PATH   or a bare PATH: a folder opens that folder; a file opens its\n"
                "                folder with that file selected (docs/design/16-commands.md). Wheel to\n"
                "                zoom toward the cursor, drag to pan, 0 fit, 1 one-to-one.\n"
@@ -11491,6 +12084,11 @@ int main(int argc, char** argv) {
       g_new_window_from = NSMakePoint(x, y);
     } else if (std::strcmp(arg, "--browse-soak") == 0) {
       g_mac_browse.enabled = true;
+    } else if (std::strcmp(arg, "--page-soak") == 0) {
+      g_mac_pages.enabled = true;
+      g_mac_pages.json_path = next();
+    } else if (std::strcmp(arg, "--compare") == 0) {
+      g_start_compare = true;
     } else if (std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0) {
       usage();
       return 0;
@@ -11510,6 +12108,13 @@ int main(int argc, char** argv) {
       usage();
       return 2;
     }
+  }
+  if (g_mac_pages.enabled) {
+    if (g_mac_pages.json_path.empty() || options.open_path.empty()) {
+      std::fprintf(stderr, "mediaviewer_lab: --page-soak needs a report PATH and a PDF, DOCX or PPTX\n");
+      return 2;
+    }
+    options.harness = true;
   }
   if (g_mac_browse.enabled) {
     if (options.soak_seconds > 0.0 || options.json_report_path.empty() || options.open_path.empty()) {

@@ -99,8 +99,8 @@ inline std::string key_of(std::string_view name) {
   return is_media_extension(extension_of(name), media_kind::audio);
 }
 
-// A document (PDF, DOCX), by its extension. Decoded page by page as a still
-// (docs/design/04 "Pages").
+// A document (PDF, DOCX, PPTX), by its extension. Decoded page by page as a
+// still (docs/design/04 "Pages").
 [[nodiscard]] inline bool is_document_name(std::string_view name) noexcept {
   return is_media_extension(extension_of(name), media_kind::document);
 }

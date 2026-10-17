@@ -230,38 +230,14 @@ public static partial class IslandHost
     {
         try
         {
-            if (arg == IntPtr.Zero || sizeBytes < FilmstripArgsSize) return unchecked((int)0x80070057);
-            ChromeFilmstripArgs args = Marshal.PtrToStructure<ChromeFilmstripArgs>(arg);
-            IntPtr parent = checked((IntPtr)args.ParentHwnd);
-            if (parent == IntPtr.Zero) return unchecked((int)0x80070057);
+            int hr = BeginAttach(arg, sizeBytes, out ChromeFilmstripArgs args, out IntPtr parent);
+            if (hr != 0) return hr;
+            BorrowSessionIfNone(args);
 
-            EnsureApp();
-            _context = checked((IntPtr)args.Context);
-            if (args.OnCommand != 0)
-            {
-                _onCommand = Marshal.GetDelegateForFunctionPointer<NativeCommand>(
-                    checked((IntPtr)args.OnCommand));
-            }
-
-            // The filmstrip normally attaches first and owns the drain. Borrow
-            // only if it did not, so a --no-filmstrip layout still lists.
-            if (_folderSession is null && args.Session != 0)
-            {
-                _folderSession = MediaViewerSession.Borrow(checked((IntPtr)args.Session));
-                StartDrain();
-            }
-
-            DisposeSource(ref _gallery);
-            _gallery = new DesktopWindowXamlSource();
-            EnsureFocusHook();
-            _gallery.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
-            _gallery.TakeFocusRequested += OnTakeFocusRequested;  // Tab on (issue #217)
-            // Park it before content exists: a default full-client island would
-            // flash over the canvas for a frame on startup.
             // No content until the first show: the island exists so native can
             // size it, and building the grid for a folder nobody has opened yet
             // would be a listing's worth of work for a hidden view.
-            Move(_gallery, 1, 1, args.ClientHeight);
+            Move(NewIsland(ref _gallery, parent, takeFocus: true), 1, 1, args.ClientHeight);
             _galleryVisible = false;
             return 0;
         }
@@ -381,16 +357,8 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < ShowArgsSize) return unchecked((int)0x80070057);
             if (source is null) return 1;
             ChromeShowArgs args = Marshal.PtrToStructure<ChromeShowArgs>(arg);
-            if (args.Visible == 0)
-            {
-                onHidden();
-                source.Content = null;
-                Move(source, args.Width, args.Height, args.Y);
-                return 0;
-            }
-            Move(source, args.Width, args.Height, args.Y);
-            source.Content = build();
-            onShown();
+            ShowOrPark(source, args.Visible != 0, () => Move(source, args.Width, args.Height, args.Y),
+                       build, rebuild: true, onShown, onHidden);
             return 0;
         }
         catch (Exception ex)
@@ -561,8 +529,8 @@ public static partial class IslandHost
         _galleryStack.Children.Add(_folderStrip);
         _galleryStack.Children.Add(_folderRepeater);
         // Issue #413: the photos' header, and one share icon for the grid's
-        // selection (the shift-click range, else the selected cell): Sharepoint,
-        // not the system share sheet.
+        // selection. Issue #444: it opens the share menu (Sharepoint, then
+        // Windows Share), the one share command's.
         var photosRow = new Grid();
         photosRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         photosRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -649,6 +617,15 @@ public static partial class IslandHost
         AutomationProperties.SetName(_barUpButton, "Up one folder");
         _barRootButton = PathIconButton("\uE80F", () => Send(Command.OpenCrumb, 0));
         AutomationProperties.SetName(_barRootButton, "Return to browsing root");
+        // Issue #444: Share beside Home, in Home's column so the trail's
+        // columns (2 and 3, FitBarPath) keep their numbers.
+        var rootAndShare = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = Space(2),
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { _barRootButton, BuildBarShareButton() },
+        };
         _barCrumbTrail = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -693,7 +670,7 @@ public static partial class IslandHost
         for (int i = 0; i < 7; ++i)
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto, MinWidth = 0 });
         Put(row, _barUpButton, 0);
-        Put(row, _barRootButton, 1);
+        Put(row, rootAndShare, 1);
         Put(row, scroller, 2);
         Put(row, _barPathCurrent, 3);
         Put(row, _barSearchButton, 4);
@@ -1158,16 +1135,8 @@ public static partial class IslandHost
                 Child = col,
             };
 
-            void SetThumb()
-            {
-                if (string.IsNullOrEmpty(vm.ThumbPath)) { image.Source = null; return; }
-                try
-                {
-                    // Decode for the current tile size, bounded by the JPEG-512 cache.
-                    image.Source = new BitmapImage(new Uri(vm.ThumbPath)) { DecodePixelWidth = GalleryDecodeWidth };
-                }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
-            }
+            // Decode for the current tile size, bounded by the JPEG-512 cache.
+            void SetThumb() => ShowTileImage(image, vm.ThumbPath, GalleryDecodeWidth);
             SetThumb();
 
             // Issue #413: the shift-click range is tinted and outlined.
@@ -1190,16 +1159,7 @@ public static partial class IslandHost
                     or nameof(FolderItemVm.InRange) or null)
                     PaintRange();
             }
-            vm.PropertyChanged += OnChanged;
-            // Recycling without this leaks a handler per realisation, and every
-            // thumb completion then walks a growing list of dead elements.
-            border.Tag = unsubscribeBadges is null
-                ? (Action)(() => vm.PropertyChanged -= OnChanged)
-                : (Action)(() =>
-                {
-                    vm.PropertyChanged -= OnChanged;
-                    unsubscribeBadges();
-                });
+            BindTile(border, vm, OnChanged, unsubscribeBadges);
 
             border.Tapped += (_, _) =>
             {
@@ -1208,20 +1168,14 @@ public static partial class IslandHost
                 if (ShiftDown()) ExtendGalleryRange(vm.Index);
                 else Send(Command.GalleryActivate, vm.Index);
             };
-            // docs/design/25 PR 59: the add-ons' context-menu entries, only when some exist.
-            if (_slotTileContext) AttachSlotContextMenu(border, vm);
+            // docs/design/25 PR 59: the add-ons' context-menu entries; issue #444:
+            // Share, always.
+            AttachSlotContextMenu(border, vm);
             WireFileDrag(border, vm);
             return border;
         }
 
-        public void RecycleElement(ElementFactoryRecycleArgs args)
-        {
-            if (args.Element is Border { Tag: Action unsubscribe })
-            {
-                unsubscribe();
-                ((Border)args.Element).Tag = null;
-            }
-        }
+        public void RecycleElement(ElementFactoryRecycleArgs args) => UnbindTile(args.Element);
     }
 
     private sealed class FolderTileFactory : IElementFactory
@@ -1304,28 +1258,7 @@ public static partial class IslandHost
                 Child = col,
             };
 
-            void SetCover()
-            {
-                if (string.IsNullOrEmpty(vm.CoverPath))
-                {
-                    cover.Source = null;
-                    cover.Visibility = Visibility.Collapsed;
-                    placeholder.Visibility = Visibility.Visible;
-                    return;
-                }
-                try
-                {
-                    cover.Source = new BitmapImage(new Uri(vm.CoverPath)) { DecodePixelWidth = GalleryDecodeWidth };
-                    cover.Visibility = Visibility.Visible;
-                    placeholder.Visibility = Visibility.Collapsed;
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine(ex);
-                    cover.Visibility = Visibility.Collapsed;
-                    placeholder.Visibility = Visibility.Visible;
-                }
-            }
+            void SetCover() => ShowTileImage(cover, vm.CoverPath, GalleryDecodeWidth, placeholder);
             void SetCount()
             {
                 count.Visibility = vm.Loaded ? Visibility.Visible : Visibility.Collapsed;
@@ -1344,8 +1277,7 @@ public static partial class IslandHost
                 if (e.PropertyName is nameof(FolderCardVm.Cursor) or null)
                     border.BorderThickness = new Thickness(vm.Cursor ? 2 : 0);
             }
-            vm.PropertyChanged += OnChanged;
-            border.Tag = (Action)(() => vm.PropertyChanged -= OnChanged);
+            BindTile(border, vm, OnChanged);
             border.Tapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);
             if (!vm.Requested)
             {
@@ -1356,14 +1288,7 @@ public static partial class IslandHost
             return border;
         }
 
-        public void RecycleElement(ElementFactoryRecycleArgs args)
-        {
-            if (args.Element is Border { Tag: Action unsubscribe })
-            {
-                unsubscribe();
-                ((Border)args.Element).Tag = null;
-            }
-        }
+        public void RecycleElement(ElementFactoryRecycleArgs args) => UnbindTile(args.Element);
     }
 
     private sealed class FolderChipFactory : IElementFactory
@@ -1420,28 +1345,7 @@ public static partial class IslandHost
                 Child = row,
             };
 
-            void SetCover()
-            {
-                if (string.IsNullOrEmpty(vm.CoverPath))
-                {
-                    cover.Source = null;
-                    cover.Visibility = Visibility.Collapsed;
-                    placeholder.Visibility = Visibility.Visible;
-                    return;
-                }
-                try
-                {
-                    cover.Source = new BitmapImage(new Uri(vm.CoverPath)) { DecodePixelWidth = 72 };
-                    cover.Visibility = Visibility.Visible;
-                    placeholder.Visibility = Visibility.Collapsed;
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine(ex);
-                    cover.Visibility = Visibility.Collapsed;
-                    placeholder.Visibility = Visibility.Visible;
-                }
-            }
+            void SetCover() => ShowTileImage(cover, vm.CoverPath, 72, placeholder);
             void SetText()
             {
                 name.Text = vm.Name;
@@ -1467,8 +1371,7 @@ public static partial class IslandHost
                     SetText();
                 if (e.PropertyName is nameof(FolderCardVm.Cursor) or null) SetCursor();
             }
-            vm.PropertyChanged += OnChanged;
-            border.Tag = (Action)(() => vm.PropertyChanged -= OnChanged);
+            BindTile(border, vm, OnChanged);
             border.Tapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);
             if (!vm.Requested)
             {
@@ -1479,14 +1382,7 @@ public static partial class IslandHost
             return border;
         }
 
-        public void RecycleElement(ElementFactoryRecycleArgs args)
-        {
-            if (args.Element is Border { Tag: Action unsubscribe })
-            {
-                unsubscribe();
-                ((Border)args.Element).Tag = null;
-            }
-        }
+        public void RecycleElement(ElementFactoryRecycleArgs args) => UnbindTile(args.Element);
     }
 }
 

@@ -19,7 +19,15 @@ struct page {
   std::string content;  // the page's content stream, e.g. "0 0 1 rg 0 0 100 100 re f"
 };
 
-inline std::vector<std::uint8_t> make(const std::vector<page>& pages, const std::string& prefix = {}) {
+// A page's resources with /F1 the standard Helvetica (no font file needed):
+// content can then draw text, "BT /F1 12 Tf 10 50 Td (Hello) Tj ET".
+inline std::string text_resources() {
+  return "<< /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >>";
+}
+
+// `resources`: every page's /Resources dictionary, e.g. text_resources() ("" none).
+inline std::vector<std::uint8_t> make(const std::vector<page>& pages, const std::string& prefix = {},
+                                      const std::string& resources = {}) {
   std::string out = prefix + "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
   std::vector<std::size_t> offsets;
   auto object = [&](const std::string& body) {
@@ -36,6 +44,7 @@ inline std::vector<std::uint8_t> make(const std::vector<page>& pages, const std:
     std::string dict = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + std::to_string(p.width) + " " +
                        std::to_string(p.height) + "] /Contents " + std::to_string(4 + 2 * i) + " 0 R";
     if (p.rotate != 0) dict += " /Rotate " + std::to_string(p.rotate);
+    if (!resources.empty()) dict += " /Resources " + resources;
     object(dict + " >>");
     object("<< /Length " + std::to_string(p.content.size()) + " >>\nstream\n" + p.content +
            "\nendstream");

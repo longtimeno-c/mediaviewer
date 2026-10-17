@@ -892,4 +892,9 @@ public interface ISearchChrome
     /// only while it is on (#355). A default body, so an older search chrome
     /// still loads.</summary>
     void OnShowAudioChanged(bool on) { }
+
+    /// <summary>Settings → File types "Show documents", sent the same way: PDF
+    /// and DOCX files are indexed for their words and searched only while it is
+    /// on (#354). A default body, so an older search chrome still loads.</summary>
+    void OnShowDocumentsChanged(bool on) { }
 }

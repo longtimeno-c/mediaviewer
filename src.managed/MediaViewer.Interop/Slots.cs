@@ -31,6 +31,7 @@ public enum SlotChange : uint
     Search = 8,
     Badges = 16,
     Status = 32,
+    Notices = 64,  // #452: notices, the keep-alive list, a permission ask
 }
 
 /// <summary>
@@ -86,6 +87,14 @@ public static unsafe partial class SlotNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_slots_notices_json(byte* output, uint cap, uint* needed);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_slots_notice_action(byte* addon, byte* notice, byte* action);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_slots_request_info(byte* path, byte* locationText, MvSlotTheme* theme,
         float widthPt, float scale, ulong* generation);
 
@@ -131,6 +140,10 @@ public static unsafe partial class SlotNative
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_slots_local_search_provider(uint on);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_slots_place_terms(byte* query, uint* flags);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -201,6 +214,20 @@ public static unsafe partial class SlotNative
     public static string ScreensJson() => Json(mv_slots_screens_json);
     public static string BadgesJson() => Json(mv_slots_badges_json);
     public static string StatusJson() => Json(mv_slots_status_json);
+    /// <summary>#452: {"ask","keep":[...],"notices":[...]} (slot_registry::notices_json); "" on an older core.</summary>
+    public static string NoticesJson() => Json(mv_slots_notices_json);
+
+    /// <summary>#452: a notice's button was clicked in the system notification.</summary>
+    public static bool NoticeAction(string addon, string notice, string action) =>
+        Try(() =>
+        {
+            fixed (byte* a = Z(addon))
+            fixed (byte* n = Z(notice))
+            fixed (byte* c = Z(action))
+            {
+                return mv_slots_notice_action(a, n, c) == MvStatus.Ok;
+            }
+        }, false);
     public static string SearchJson(uint scope) => Json((o, c, n) => mv_slots_search_json(scope, o, c, n));
 
     private static T Try<T>(Func<T> call, T fallback)
@@ -343,4 +370,24 @@ public static unsafe partial class SlotNative
 
     /// <summary>docs/design/25 §7: the AI pack attached (true) or went: Local search is a provider.</summary>
     public static void LocalSearchProvider(bool on) => Try(() => mv_slots_local_search_provider(on ? 1u : 0u), MvStatus.Ok);
+
+    /// <summary>#441 (ABI 0.31): the query has place terms (place:x, in:&lt;place&gt;).</summary>
+    public const uint PlaceTerms = 1;
+    /// <summary>#441: a loaded add-on (Places) answers place terms.</summary>
+    public const uint PlaceProvider = 2;
+
+    /// <summary>
+    /// #441: <see cref="PlaceTerms"/> | <see cref="PlaceProvider"/> for <paramref name="query"/>
+    /// ("" asks only the second). 0 from an older core, which searches as before.
+    /// </summary>
+    public static uint PlaceTermsOf(string query) =>
+        Try(() =>
+        {
+            uint flags = 0;
+            fixed (byte* q = Z(query))
+            {
+                if (mv_slots_place_terms(q, &flags) != MvStatus.Ok) return 0u;
+            }
+            return flags;
+        }, 0u);
 }

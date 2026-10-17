@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace mv::shell {
 
@@ -361,6 +362,14 @@ enum class command_id : std::uint16_t {
   // active AF point from the maker notes already read. Camera state only.
   // Appended after #207's ids so every earlier wire id stays put.
   zoom_af_point,
+  // Issue #208 (docs/design/16 "View"): `|` toggles a two-up compare of the
+  // previous still beside the current one, under one camera. Appended.
+  // Appended after #207's ids so every earlier wire id stays put.
+  compare_two_up,
+  // Issue #429 (docs/design/16 "View"): the page sidebar of a PDF, DOCX or PPTX
+  // with the filmstrip hidden. Appended. Shift+T, beside T: the two strips
+  // share the job (the folder's files, this file's pages) and never show at once.
+  toggle_page_sidebar,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;
@@ -427,6 +436,20 @@ void reset_live_bindings() noexcept;
 // how a saved table is put back (each row's saved key is its final key) and
 // how a keymap pack (shell/keymap.h) writes the rows it names.
 [[nodiscard]] bool set_live_key(int index, key k, std::uint8_t mods) noexcept;
+// What Settings persists of the remaps, on both hosts (issue #153): one entry per
+// built-in row whose key or modifiers differ from the default, in row order. A row a
+// swap left unbound is carried as key::none, so a reload unbinds it instead of
+// handing its default key back (two rows on one key). apply_key_remaps resets the
+// live table and sets the listed rows as listed (not a rebind_live replay, whose
+// swaps would move rows the list does not name). Out-of-range entries are skipped.
+// Contributed add-on rows are never in the list.
+struct key_remap {
+  int row = 0;
+  key k = key::none;
+  std::uint8_t mods = mod_none;
+};
+[[nodiscard]] std::vector<key_remap> live_key_remaps();
+void apply_key_remaps(std::span<const key_remap> remaps) noexcept;
 [[nodiscard]] std::span<const command_info> command_infos() noexcept;
 [[nodiscard]] const command_info* find_command(command_id id) noexcept;
 // Bound commands whose effect has not landed yet. Empty before PR 6 ships.

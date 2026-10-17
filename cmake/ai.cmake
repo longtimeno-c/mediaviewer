@@ -80,6 +80,49 @@ endfunction()
 mv_fetch_ort(${_ort_name} ${_ort_ext} ${_ort_sha} MV_ORT_DIR)
 set(MV_ORT_INCLUDE "${MV_ORT_DIR}/include")
 
+# ---- PDFium, pinned (#354) ------------------------------------------------------
+# A PDF's text for Local search (docs/plans/document-search.md §2, owner call 2):
+# bblanchon/pdfium-binaries (PDFium is BSD-3-Clause / Apache-2.0), loaded at
+# run time by src/addons/ai/pdf_pdfium.cpp from beside mv_ai. Never linked and
+# never in the base install tree; the viewer renders PDFs with the OS.
+set(MV_PDFIUM_RELEASE "8066")  # chromium/8066, 2026-09-21
+if(WIN32)
+  set(_pdfium_name "pdfium-win-x64")
+  set(_pdfium_sha "739a57d597d864297909cc40a2411eba728490c76a0fa25e3ea299c7f6b07020")
+elseif(APPLE)
+  set(_pdfium_name "pdfium-mac-arm64")
+  set(_pdfium_sha "336219e80580b93c6523f44db7dc1de59cc497b13a7390ddac84223f68ca162b")
+else()
+  set(_pdfium_name "pdfium-linux-x64")
+  set(_pdfium_sha "0b43f405477cf2cfc4dbff06905093c3309756c6bca1fb9da99234a2ca97fed2")
+endif()
+set(MV_PDFIUM_DIR "${CMAKE_BINARY_DIR}/_pdfium/${_pdfium_name}-${MV_PDFIUM_RELEASE}")
+if(NOT EXISTS "${MV_PDFIUM_DIR}/include/fpdf_text.h")
+  set(_pdfium_dl "${CMAKE_BINARY_DIR}/_pdfium/${_pdfium_name}-${MV_PDFIUM_RELEASE}.tgz")
+  if(DEFINED ENV{MV_ORT_ARCHIVE_DIR} AND EXISTS "$ENV{MV_ORT_ARCHIVE_DIR}/${_pdfium_name}-${MV_PDFIUM_RELEASE}.tgz")
+    set(_pdfium_dl "$ENV{MV_ORT_ARCHIVE_DIR}/${_pdfium_name}-${MV_PDFIUM_RELEASE}.tgz")  # offline / CI cache
+  else()
+    message(STATUS "Fetching ${_pdfium_name}.tgz chromium/${MV_PDFIUM_RELEASE} (PDFium, BSD-3-Clause / Apache-2.0)")
+    file(DOWNLOAD
+      "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${MV_PDFIUM_RELEASE}/${_pdfium_name}.tgz"
+      "${_pdfium_dl}" EXPECTED_HASH SHA256=${_pdfium_sha} TLS_VERIFY ON)
+  endif()
+  file(SHA256 "${_pdfium_dl}" _got)
+  if(NOT _got STREQUAL _pdfium_sha)
+    message(FATAL_ERROR "${_pdfium_name}.tgz: SHA-256 ${_got}, expected ${_pdfium_sha}")
+  endif()
+  file(MAKE_DIRECTORY "${MV_PDFIUM_DIR}")
+  file(ARCHIVE_EXTRACT INPUT "${_pdfium_dl}" DESTINATION "${MV_PDFIUM_DIR}")
+endif()
+set(MV_PDFIUM_INCLUDE "${MV_PDFIUM_DIR}/include")
+if(WIN32)
+  set(MV_PDFIUM_LIB "${MV_PDFIUM_DIR}/bin/pdfium.dll")
+elseif(APPLE)
+  set(MV_PDFIUM_LIB "${MV_PDFIUM_DIR}/lib/libpdfium.dylib")
+else()
+  set(MV_PDFIUM_LIB "${MV_PDFIUM_DIR}/lib/libpdfium.so")
+endif()
+
 # ---- mv_infer -----------------------------------------------------------------
 if(WIN32)
   set(MV_INFER_DYLIB ${R}/src/infer/ort_dylib_win.cpp)
@@ -130,6 +173,8 @@ add_library(mv_infer STATIC
   ${R}/src/infer/audio_features.h
   ${R}/src/infer/audio_models.cpp
   ${R}/src/infer/audio_models.h
+  ${R}/src/infer/text_models.cpp
+  ${R}/src/infer/text_models.h
   ${MV_INFER_DYLIB}
 )
 target_include_directories(mv_infer PUBLIC "${R}/src")
@@ -166,10 +211,16 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/platform.h
   ${R}/src/addons/ai/photos_source.h
   ${R}/src/addons/ai/text_reader.h
+  ${R}/src/addons/ai/passages.cpp
+  ${R}/src/addons/ai/passages.h
+  ${R}/src/addons/ai/pdf_reader.h
+  ${R}/src/addons/ai/pdf_pdfium.cpp
   ${MV_AI_PLATFORM}
   ${R}/src/abi/include/mediaviewer/mediaviewer_ai.h
 )
 target_include_directories(mv_ai_engine PUBLIC "${R}/src" "${R}/src/abi/include")
+# PDFium's C headers for pdf_pdfium.cpp alone (the library is loaded at run time).
+set_source_files_properties(${R}/src/addons/ai/pdf_pdfium.cpp PROPERTIES INCLUDE_DIRECTORIES "${MV_PDFIUM_INCLUDE}")
 target_link_libraries(mv_ai_engine PUBLIC mv_infer mv_project_options PRIVATE ${MV_SQLITE_TARGET})
 find_package(Threads REQUIRED)
 target_link_libraries(mv_ai_engine PUBLIC Threads::Threads)
@@ -212,6 +263,21 @@ if(APPLE)
 elseif(WIN32)
   set_target_properties(mv_ai PROPERTIES PREFIX "")
 endif()
+
+# PDFium beside mv_ai, as the pack lays it out (#354; for tests and packing).
+if(WIN32)
+  set(_pdfium_staged "${CMAKE_BINARY_DIR}/addons/ai/pdfium.dll")
+elseif(APPLE)
+  set(_pdfium_staged "${CMAKE_BINARY_DIR}/addons/ai/libpdfium.dylib")
+else()
+  set(_pdfium_staged "${CMAKE_BINARY_DIR}/addons/ai/libpdfium.so")
+endif()
+add_custom_command(TARGET mv_ai POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MV_PDFIUM_LIB}" "${_pdfium_staged}"
+  # Its parts' notices (FreeType, ICU, libjpeg-turbo, ...): addon-pack.py ships
+  # them as LICENSES/pdfium.
+  COMMAND ${CMAKE_COMMAND} -E copy_directory "${MV_PDFIUM_DIR}/licenses" "${CMAKE_BINARY_DIR}/addons/ai/pdfium-licenses"
+  COMMENT "Staging PDFium beside mv_ai")
 
 # The runtime beside mv_ai, as the pack lays it out (for tests and packing).
 if(WIN32)

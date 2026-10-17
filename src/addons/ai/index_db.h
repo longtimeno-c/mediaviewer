@@ -53,6 +53,27 @@
 // art is a frame at pts_ms -1 like a photo's; its tags go through the same
 // backfill. Turning the setting off deletes every kind-4 asset (remove_kind).
 //
+// Schema 9 (#354): assets.kind 3 is a document (PDF, DOCX), walked only while
+// the pack's "document_files" setting is on and its root's Documents choice
+// (roots.docs, MV_AI_DOCS_*; 0 follows "doc_index") is not Off. Its text is
+// `passages(id, asset_id, spec, page, ord, text)`, a few sentences each with
+// the page that shows them, and `passage_text(rowid = passage id, words)`, the
+// folded words the keyword search matches (FTS5, else a plain table). Its
+// progress is under kDocTextSpec; a password-protected file is `locked` (5):
+// neither done nor failed, never retried, counted apart.
+//
+// D2 (#354, no schema change): a document's page pictures are frames rows
+// under the picture model's spec with pts_ms the 0-based page and kFramePage
+// in flags, and their progress is under doc_page_spec(that spec). They exist
+// only for documents whose level is Words and pages (2).
+//
+// Schema 10 (#354 D3): `passage_vecs(passage_id, spec, generic, scale, emb)`,
+// a passage's vector under the Documents piece's text model, int8 with a
+// per-vector scale like frames, and its best cosine against the model's
+// generic prompts. Progress is under that model's spec, after kDocTextSpec;
+// a passage that goes (a changed file, a resumed read) takes its vectors
+// with it (ON DELETE CASCADE).
+//
 // docs/design/17 sketches one assets row per (path, mtime, size, spec); progress is
 // that row's per-model half, so two models' vectors live side by side while
 // a quality change migrates (PR 23: "old index kept until the new one
@@ -78,9 +99,10 @@ struct sqlite3;
 
 namespace mv::ai {
 
-// 3 is reserved for documents (docs/plans/document-search.md).
-enum class asset_kind : std::uint8_t { photo = 1, video = 2, audio = 4 };
-enum class work_state : std::uint8_t { pending = 0, partial = 1, done = 2, failed = 3, unavailable = 4 };
+// 3: a document (#354, schema 9); 4: an audio file (#355, schema 8).
+enum class asset_kind : std::uint8_t { photo = 1, video = 2, document = 3, audio = 4 };
+// `locked` (#354): a password-protected document. Not retried, not failed.
+enum class work_state : std::uint8_t { pending = 0, partial = 1, done = 2, failed = 3, unavailable = 4, locked = 5 };
 
 struct root_row {
   std::int64_t id = 0;
@@ -89,6 +111,7 @@ struct root_row {
   bool enabled = true;
   std::int64_t last_scan_at = 0;
   std::uint32_t media = 0;  // MV_AI_MEDIA_* for its videos; 0 = the default
+  std::uint32_t docs = 0;   // #354: MV_AI_DOCS_* for its documents; 0 = the default
 };
 
 // Which assets a work track covers: photos (the picture track only), and
@@ -101,6 +124,45 @@ struct track_filter {
   // Roots held until the user resumes them (issue #299, engine_options::
   // hold_unfinished): left out of the work and of the counts.
   std::vector<std::int64_t> held;
+  // #354: documents whose root's level (MV_AI_DOCS_* - 1, or `default_docs`,
+  // the "doc_index" setting, for a root that follows it) is at least this:
+  // 1 words, 2 words and pages. 0: no document is on the track.
+  std::uint32_t docs_min = 0;
+  std::uint32_t default_docs = 1;
+};
+
+// #354: the progress spec of a document's text pass (no model: the text is
+// the file's). Bumped when the passage rule changes, so every document is
+// read again.
+inline constexpr const char* kDocTextSpec = "doctext/1";
+
+// #354 D2: a frames row that is a document's page picture (pts_ms the 0-based
+// page). Beside the MV_ADDON_FRAME_* bits a sampler sets, never one of them.
+inline constexpr std::uint32_t kFramePage = 0x100;
+// #354 D2: the progress spec of a document's page pictures under the picture
+// model `clip_spec`: a model change queues every document's pages again.
+inline std::string doc_page_spec(const std::string& clip_spec) { return "docpage/" + clip_spec; }
+
+// A passage to store (passages.h makes them).
+struct passage_in {
+  std::uint32_t page = 0;
+  std::string text;   // the snippet
+  std::string words;  // the folded words matched
+};
+// A stored passage as the search reads it.
+struct passage_out {
+  std::int64_t id = 0;
+  std::int64_t asset = 0;
+  std::uint32_t page = 0;
+  std::string text;
+  std::string words;
+};
+
+// #354 D3: a passage's vector to store (L2-normalised; the store quantises).
+struct passage_vec_in {
+  std::int64_t passage = 0;
+  float generic = 0;  // best cosine against the text model's generic prompts
+  std::span<const float> emb;
 };
 
 // #406: the progress spec of the cue pass (not a model: there is no vector).
@@ -206,6 +268,7 @@ struct counts {
   std::uint64_t pending_photos = 0;
   std::uint64_t unavailable = 0;  // only in iCloud (the Photos library)
   std::uint64_t cloud_only = 0;   // cloud files not yet indexed (OneDrive, iCloud Drive)
+  std::uint64_t locked = 0;       // #354: password-protected documents, skipped
 };
 
 // int8 quantisation of an L2-normalised vector: v ~= q * scale.
@@ -236,6 +299,7 @@ class index_db {
   [[nodiscard]] expected set_root_enabled(std::int64_t id, bool enabled);
   [[nodiscard]] expected set_root_recursive(std::int64_t id, bool recursive);
   [[nodiscard]] expected set_root_media(std::int64_t id, std::uint32_t media);
+  [[nodiscard]] expected set_root_docs(std::int64_t id, std::uint32_t docs);  // #354: MV_AI_DOCS_*
   // Deletes the root, its assets, their progress and frames.
   [[nodiscard]] expected remove_root(std::int64_t id);
   // Deletes every asset of `kind` with its progress, frames, speech, cues and
@@ -342,6 +406,53 @@ class index_db {
                                      const std::string& spec = kCueSpec);
   [[nodiscard]] expected each_cue(
       const std::function<void(std::int64_t asset, const cue_in& cue)>& visit);
+  // #354: a document's passages, with progress under `spec`, in one
+  // transaction. `replace_from` other than -1 first drops the asset's
+  // passages from that page on (a resumed read sends that page again);
+  // `resume` is the next page to read (state partial) or the page count.
+  [[nodiscard]] expected commit_passages(std::int64_t asset, const std::string& spec,
+                                         std::span<const passage_in> passages, work_state state, std::int64_t resume,
+                                         std::int64_t replace_from = -1);
+  // #354 D2: a document's page pictures (kFramePage set on each) as frames
+  // under `frame_spec`, in one transaction that first drops the pages stored
+  // there before, and its progress under `progress_spec` (doc_page_spec) done.
+  [[nodiscard]] expected commit_pages(std::int64_t asset, const std::string& frame_spec,
+                                      const std::string& progress_spec, std::span<const frame_in> pages,
+                                      std::uint32_t dim);
+  // #354 D2: the page pictures and their progress of every document whose
+  // level (its root's Documents choice, or `default_docs` for one that
+  // follows the setting) is below Words and pages. Returns those documents.
+  [[nodiscard]] result<std::vector<std::int64_t>> drop_pages(std::uint32_t default_docs);
+  // Every asset in `state` for `spec` back to pending (its progress row goes).
+  [[nodiscard]] expected reset_state(const std::string& spec, work_state state);
+  // A password-protected document: `locked`, never retried.
+  [[nodiscard]] expected mark_locked(std::int64_t asset, const std::string& spec);
+  // Passages whose words match an FTS5 query (the engine builds it from
+  // match_words' output), best first, at most `limit`; every passage, without
+  // a limit, when the index has no FTS5 (has_passage_index false) or the
+  // query is empty: the caller's own rule decides each either way.
+  // `visit` false stops. The lock is held throughout: the visitor only copies.
+  [[nodiscard]] expected find_passages(const std::string& fts_query, std::size_t limit,
+                                       const std::function<bool(const passage_out&)>& visit);
+  [[nodiscard]] bool has_passage_index();
+  // #354 D3: a document's passages in reading order (id, page, text; no
+  // words): what the text model embeds.
+  [[nodiscard]] std::vector<passage_out> passages_of(std::int64_t asset);
+  // One passage by id (page, text, asset; no words). not_found once gone.
+  [[nodiscard]] result<passage_out> passage_by_id(std::int64_t id);
+  // #354 D3: a document's passage vectors under `spec`, replacing those it
+  // had there, and its progress under `spec` done, in one transaction. A
+  // vector whose passage has gone meanwhile is skipped.
+  [[nodiscard]] expected commit_passage_vecs(std::int64_t asset, const std::string& spec,
+                                             std::span<const passage_vec_in> vecs, std::uint32_t dim);
+  // Every passage vector of `spec` whose passage id is above `after_id`, in
+  // passage id order: frame_out's id and pts_ms are the passage id.
+  [[nodiscard]] expected each_passage_vec(const std::string& spec,
+                                          const std::function<void(const frame_out&)>& visit,
+                                          std::int64_t after_id = 0);
+  [[nodiscard]] std::uint64_t passage_vec_count(const std::string& spec);
+  // Passages stored for `asset` (0: all).
+  [[nodiscard]] std::uint64_t passage_count(std::int64_t asset = 0);
   // Resets `spec`'s progress for every asset (a spec change, a clear).
   [[nodiscard]] expected drop_spec(const std::string& spec);
 

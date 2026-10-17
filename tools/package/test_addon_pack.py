@@ -155,9 +155,11 @@ class AiPackTest(unittest.TestCase):
         core = self.tmp / "ai"
         (core / "models/clip-b32").mkdir(parents=True)
         (core / "models/clip-tokenizer").mkdir(parents=True)
-        for name in ("mv_ai.dll", "onnxruntime.dll", "onnxruntime_providers_shared.dll",
+        for name in ("mv_ai.dll", "onnxruntime.dll", "onnxruntime_providers_shared.dll", "pdfium.dll",
                      "MediaViewer.Ai.Chrome.dll"):
             (core / name).write_bytes(b"MZ" + os.urandom(512))
+        (core / "pdfium-licenses").mkdir()
+        (core / "pdfium-licenses/pdfium.txt").write_text("BSD-3-Clause")
         (core / "MediaViewer.Ai.Chrome.deps.json").write_text("{}")
         (core / "sqlite3.dll").write_bytes(b"not shipped: the app has it")
         (core / "models/clip-b32/image.onnx").write_bytes(os.urandom(1024))
@@ -189,6 +191,10 @@ class AiPackTest(unittest.TestCase):
         self.assertNotIn("part_of", m)
         lic = {f["path"]: f["licence"] for f in m["files"]}
         self.assertEqual(lic["onnxruntime.dll"], "MIT")
+        # #354: PDFium and the notices of what is built into it.
+        self.assertTrue(lic["pdfium.dll"].startswith("BSD-3-Clause AND "))
+        self.assertIn("LICENSES/pdfium/pdfium.txt", lic)
+        self.assertNotIn("pdfium-licenses/pdfium.txt", lic)
         self.assertEqual(lic["models/clip-b32/image.onnx"], "MIT")
         self.assertEqual(lic["mv_ai.dll"], "GPL-3.0-or-later")
         self.assertNotIn("sqlite3.dll", lic)
@@ -282,7 +288,7 @@ class SharepointPackTest(unittest.TestCase):
             self.assertEqual(lic[native], "GPL-3.0-or-later")
             self.assertNotIn("mv_sharepoint.pdb", lic)
             c = m["contributes"]
-            self.assertEqual(sorted(c), ["api", "commands", "context_menu", "screens"])
+            self.assertEqual(sorted(c), ["api", "commands", "context_menu", "screens", "status_items"])
             self.assertEqual(c["screens"][0]["place"], "window")
             self.assertEqual(c["context_menu"][0]["id"], "send_files")
             # Issue #410: no new default key until the command table has one.

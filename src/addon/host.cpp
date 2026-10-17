@@ -312,6 +312,23 @@ mv_status MV_CALL t_read_cues(void* host, const char* path, int64_t start_ms, in
   });
 }
 
+mv_status MV_CALL t_document_text(void* host, const char* path, mv_addon_doc_text_fn visit, void* user) {
+  return guarded([&] {
+    if (!path || !visit) return MV_ERR_INVALID_ARG;
+    const auto& read = self(host).services().document_text;
+    if (!read) return MV_ERR_UNSUPPORTED_FORMAT;
+    const expected r = read(path, [&](const document_line& l) {
+      mv_addon_doc_text out{};
+      out.struct_size = sizeof(out);
+      out.page = l.page;
+      out.page_count = l.page_count;
+      out.text_utf8 = l.text.c_str();
+      return visit(user, &out) != 0;
+    });
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+
 mv_status MV_CALL t_pair(void*, const char* const* names, uint32_t count, uint32_t* partner,
                          uint32_t* kind) {
   return guarded([&] {
@@ -799,6 +816,61 @@ mv_status MV_CALL t_locations_of_index(void* host, uint64_t g, mv_addon_location
   });
 }
 
+// #441: a place term's assets, from the add-on that answers `place:` (Places).
+// The caller (the AI pack's search worker) waits here; `visit` with NULL lets
+// it stop waiting.
+mv_status MV_CALL t_place_matches(void* host, const char* place, mv_addon_path_fn visit, void* user) {
+  return guarded([&] {
+    if (!place || !visit) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    bool stopped = false;
+    const std::function<bool()> keep_going = [&] {
+      if (visit(user, nullptr) != 0) return true;
+      stopped = true;
+      return false;
+    };
+    const auto& svc = t.services().place_matches;
+    auto paths = svc ? svc(place, keep_going) : t.slots().provider_paths("place:", place, keep_going);
+    if (stopped) return MV_ERR_CANCELLED;
+    if (!paths) return to_mv(paths.error());
+    for (const std::string& p : *paths) {
+      if (visit(user, p.c_str()) == 0) return MV_ERR_CANCELLED;
+    }
+    return MV_OK;
+  });
+}
+
+// #452: a notice (a system notification the hosts draw), the permission ask,
+// and keeping the process with every window closed. Tables, never a wait.
+mv_status MV_CALL t_notice_post(void* host, const char* notice_id, const mv_addon_notice* n) {
+  return guarded([&] {
+    if (!notice_id) return MV_ERR_INVALID_ARG;
+    std::optional<slot_registry::notice_fields> f;
+    if (n) {
+      if (n->struct_size < sizeof(mv_addon_notice) || !n->screen_id || !n->title_utf8) return MV_ERR_INVALID_ARG;
+      f = slot_registry::notice_fields{n->screen_id, n->title_utf8, str_of(n->body_utf8), str_of(n->action_id),
+                                       str_of(n->action_label)};
+    }
+    host_table& t = self(host);
+    return to_mv(t.slots().post_notice(t.addon_id(), notice_id, std::move(f)));
+  });
+}
+
+mv_status MV_CALL t_notice_authorize(void* host) {
+  return guarded([&] {
+    host_table& t = self(host);
+    return to_mv(t.slots().ask_notice_permission(t.addon_id()));
+  });
+}
+
+mv_status MV_CALL t_keep_alive(void* host, uint32_t on, const char* screen, const char* label) {
+  return guarded([&] {
+    if (on && !screen) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    return to_mv(t.slots().keep_alive(t.addon_id(), on != 0, str_of(screen), str_of(label)));
+  });
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -858,9 +930,15 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.locations_in = &t_locations_in;
   api_.tag_facts = svc_.tag_facts ? &t_tag_facts : nullptr;
   api_.read_cues = svc_.read_cues ? &t_read_cues : nullptr;
+  api_.document_text = svc_.document_text ? &t_document_text : nullptr;
   // Always set: whether an index is attached changes while the add-on runs
   // (MV_ERR_NOT_FOUND meanwhile).
   api_.locations_of_index = &t_locations_of_index;
+  // Always set too: whether Places is loaded changes while the add-on runs.
+  api_.place_matches = &t_place_matches;
+  api_.notice_post = &t_notice_post;
+  api_.notice_authorize = &t_notice_authorize;
+  api_.keep_alive = &t_keep_alive;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

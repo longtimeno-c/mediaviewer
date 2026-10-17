@@ -183,6 +183,13 @@ enum chrome_command : int {
   // The "Press T" filmstrip hint card's "Got it" (shell/filmstrip_hint.h): the
   // hint is learned, as T hiding the strip over a document teaches it.
   chrome_cmd_hint_learned = 1081,
+  // Issue #429: a page sidebar row was clicked; arg is the page (0-based).
+  // Native turns to it as Ctrl+PageDown would.
+  chrome_cmd_select_page = 1082,
+  // Issue #429: the island drained MV_COMPLETION_IMAGE_OPENED (native does not
+  // drain while it is attached), so the page count of what is on screen is
+  // known: native shows or updates the page sidebar.
+  chrome_cmd_image_opened = 1083,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -453,6 +460,17 @@ struct chrome_show_args {
 
 static_assert(sizeof(chrome_show_args) == 16, "keep in sync with ChromeShowArgs");
 
+// Issue #444: IslandHost.ShareMenu's header, followed by `bytes` of UTF-8 JSON.
+struct chrome_share_args {
+  std::int64_t hwnd;
+  std::int32_t target;  // shell::share_target
+  std::int32_t from;    // shell::share_from
+  std::int32_t bytes;
+  std::int32_t reserved;
+};
+
+static_assert(sizeof(chrome_share_args) == 24, "keep in sync with IslandHost.ShareMenu");
+
 // PR 9 panes. Native owns the geometry: x/y/width/height are client pixels, and a
 // hidden pane is parked below the client area (the gallery's rule).
 struct chrome_panel_args {
@@ -465,6 +483,17 @@ struct chrome_panel_args {
 };
 
 static_assert(sizeof(chrome_panel_args) == 24, "keep in sync with ChromePanelArgs");
+
+// Issue #429: what the page sidebar lists. `count` 0 when there is nothing to
+// list; `current` the page on screen (0-based); `stop` changes whenever the
+// document does, so two documents of the same length are told apart.
+struct chrome_page_sidebar_args {
+  std::int32_t count;
+  std::int32_t current;
+  std::int32_t stop;
+};
+
+static_assert(sizeof(chrome_page_sidebar_args) == 12, "keep in sync with ChromePageSidebarArgs");
 
 // PR 13: trim mode on the transport's scrub bar (shell/trim_state.h). Times in
 // ns on the player's timeline; -1 = unset. `cut_*` is what Path 1 will write
@@ -875,6 +904,17 @@ class chrome_host {
                         bool focus = false) noexcept;
   [[nodiscard]] bool meta_pane_visible() const noexcept { return panels_attached_ && meta_visible_; }
   [[nodiscard]] bool folder_tree_visible() const noexcept { return panels_attached_ && tree_visible_; }
+  // Issue #429: the page sidebar, a panel island on the left edge that does
+  // inset the canvas (input.chrome_left_px). Optional like the panes: an older
+  // chrome without it makes these no-ops and page_sidebar_supported() false.
+  void show_page_sidebar(bool visible, int x, int y, int width, int height) noexcept;
+  void set_page_sidebar(std::int32_t count, std::int32_t current, std::int32_t stop) noexcept;
+  [[nodiscard]] bool page_sidebar_supported() const noexcept {
+    return panels_attached_ && show_page_sidebar_ && set_page_sidebar_;
+  }
+  [[nodiscard]] bool page_sidebar_visible() const noexcept {
+    return panels_attached_ && page_sidebar_visible_;
+  }
   // The record's tables, formatted once by the host; the pane re-renders from them.
   // #290: `facts` (null while loading) supplies made_with, ai_generated and where.
   void set_meta_data(bool loading, const std::string& summary, const std::string& properties,
@@ -986,9 +1026,13 @@ class chrome_host {
   // with the last preset (kind 1, Ctrl+Shift+F7). Optional entry point: a
   // chrome without it ignores the call.
   void show_import(std::int32_t kind, const std::string& paths_json) noexcept;
-  // PR 15, Ctrl+Shift+S: Windows Share over `window` with the files in
-  // `paths_json` (a UTF-8 JSON array). False when the chrome cannot share.
-  bool share_files(HWND window, const std::string& paths_json) noexcept;
+  // Issue #444 (docs/design/16 "Share"): the one share command's files are
+  // gathered. `target` and `from` are shell::share_target / share_from: the
+  // menu (Sharepoint, Windows Share) anchored where it was asked, or the entry
+  // picked from a right-click Share submenu. `files_json` is
+  // {"files": [...stops with pair halves...], "media": [...system sheet's...]}.
+  // False when the chrome cannot share.
+  bool share_menu(HWND window, std::int32_t target, std::int32_t from, const std::string& files_json) noexcept;
   // Text in images: the island's Windows.Media.Ocr entry
   // (chrome_text_recognition_args). It runs the recognition synchronously on
   // the thread that calls it, so only a worker calls it: the UI thread reads
@@ -1009,6 +1053,9 @@ class chrome_host {
   // no such entry or the add-on declined.
   [[nodiscard]] bool run_addon_command(const std::string& addon, const std::string& id,
                                        const std::string& json) noexcept;
+  // #452: an add-on's screen, opened or brought forward (the notification-area
+  // icon's Open <screen>). False when the chrome has no such entry.
+  [[nodiscard]] bool open_addon_screen(const std::string& addon, const std::string& screen) noexcept;
   // docs/design/25: an add-on package (*.mvaddon) handed to the app. The chrome
   // shows what it is in Settings and asks; nothing is installed without the
   // answer. False when the chrome has no such entry.
@@ -1107,12 +1154,13 @@ class chrome_host {
   chrome_entry_fn apply_audio_ = nullptr;
   chrome_entry_fn set_command_table_ = nullptr;
   chrome_entry_fn show_import_ = nullptr;
-  chrome_entry_fn share_files_ = nullptr;
+  chrome_entry_fn share_menu_ = nullptr;
   chrome_entry_fn recognize_text_ = nullptr;  // text in images, optional
   chrome_entry_fn show_addon_ = nullptr;  // Milestone H
   chrome_entry_fn offer_addon_ = nullptr;  // docs/design/25, optional
   chrome_entry_fn show_canvas_menu_ = nullptr;  // issue #402, optional
   chrome_entry_fn run_addon_command_ = nullptr;  // docs/design/25, optional
+  chrome_entry_fn open_addon_screen_ = nullptr;  // #452, optional
   chrome_entry_fn set_drag_paths_ = nullptr;
   chrome_entry_fn set_recent_folders_ = nullptr;
   chrome_entry_fn set_keymap_report_ = nullptr;  // PR 56, optional
@@ -1122,6 +1170,10 @@ class chrome_host {
   chrome_entry_fn detach_panels_ = nullptr;
   chrome_entry_fn show_meta_pane_ = nullptr;
   chrome_entry_fn show_folder_tree_ = nullptr;
+  chrome_entry_fn show_page_sidebar_ = nullptr;  // issue #429, optional
+  chrome_entry_fn set_page_sidebar_ = nullptr;
+  bool page_sidebar_visible_ = false;
+  chrome_page_sidebar_args page_sidebar_sent_{-1, -1, -1};
   chrome_entry_fn set_meta_data_ = nullptr;
   chrome_entry_fn set_tree_root_ = nullptr;
   chrome_entry_fn take_tree_path_ = nullptr;

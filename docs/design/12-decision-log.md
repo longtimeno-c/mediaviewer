@@ -265,6 +265,12 @@ still zoom; with the filmstrip shown the wheel zooms as on any still. The Edit b
 **Open in <app>** (the default app, never MediaViewer) and a ▾ of the other apps, and `Enter` opens
 the default: there is nothing for the workspace to edit in a document.
 
+**PPTX joins D5 (2026-10-15, owner, issue #429).** PowerPoint files open as documents: one slide per
+page, probed by magic bytes (a zip holding `ppt/presentation.xml`), Open With only and never made the
+default, like PDF and DOCX. The renderer is ours (`codec/pptx.cpp`), reusing the DOCX zip, XML and
+HarfBuzz/FreeType text path, for the same reasons DOCX is: a hosted OS preview would be a second
+canvas (rule 2) and LibreOffice is a 300 MB download. Readable slides, not a PowerPoint replica.
+
 **Document scrolling glides and runs through pages (2026-10-12, issue #353).** Reverses "one
 gesture turns at most one page" and the 60 px hold at the edge (2026-10-05): reading a long
 document was scroll, stop, push, jump. A push past the top or bottom edge now turns the page at
@@ -481,6 +487,16 @@ file search and Local search. AI index schema 4 adds the tag columns and an FTS5
 (`sqlite3[fts5]` in vcpkg). Its place / country / region columns stay NULL, and `place:` is
 answered at query time by the provider.
 
+**A place term needs Places, and intersects (2026-10-16, owner, #441).** Without the Places
+add-on, `place:Portugal` used to list every geotagged file, newest first, including a photo taken
+in England. With Places, the provider's rows were only offered beside the list ("+ N in
+Portugal"), never intersected, though doc 17 said they were. Now the AI pack's engine asks the
+`place:` provider for each place term through the host table's `place_matches` and keeps only
+those assets (`-place:` removes them). With no provider a place term matches nothing, and the
+search panel says Places is needed instead of guessing; the owner asked that `place:` leave the
+help line until Places is installed. The core still links no geocoder: the borders stay in the
+add-on.
+
 ---
 
 ## Photo editing
@@ -596,6 +612,12 @@ focus. The tree follows the directory watcher and diffs rows in place.
 
 **Add-on commands are gated rows (2026-09-24).** Static table rows enabled at run time
 (`set_addon_commands_available`); hidden from `?`, Settings and the router while absent.
+
+**Host dispatch is one coverage list (2026-10-12).** `command_coverage.inc` names, for every
+`command_id`, whether each host handles it and which area of `run_command` / `runCommand:`
+runs it. The Mac Settings list is that Mac set plus the Import and AI gates, so it cannot
+drift from the dispatcher. The island callback and the window procedure are split by area
+the same way. `tests/test_command_coverage.cpp` fails until a new id has a row.
 
 **File search and the path-bar icon (2026-09-28).** The gallery search bar is gone. A magnifier at
 the end of the folder path runs `Ctrl+F` / `⌘F`: with Local search loaded, starting, or installed
@@ -879,6 +901,18 @@ with GPL-2.0 code), libsodium (ISC), SQLite (public domain); all in THIRD-PARTY.
 **Final Cut Pro framework (2026-09-28).** The extension loads FCP's own `ProExtension.framework`
 at run time; no Apple code is distributed. The owner's call as copyright holder.
 
+**PDFium in the AI pack (2026-10-16, #354).** Owner call 2 of docs/plans/document-search.md
+(2026-10-05): PDFium reads a PDF's text, shipped in the Core pack, never the base installer. The
+prebuilt bblanchon/pdfium-binaries chromium/8066 is pinned by SHA-256 in `cmake/ai.cmake` and
+loaded at run time. PDFium is BSD-3-Clause; the binary also carries FreeType (FTL), libjpeg-turbo
+(IJG, BSD-3, Zlib), ICU (Unicode-3.0), libpng (libpng-2.0), OpenJPEG (BSD-2), Little CMS and
+simdutf (MIT), abseil and LLVM libc (Apache-2.0), zlib and Anti-Grain Geometry 2.3 (a notice-only
+permission). All are permissive and combine with GPL-3.0; FTL and IJG were already accepted for
+the base app. `addon-pack.py`'s allowed set gains FTL, IJG, Unicode-3.0, libpng-2.0 and
+`LicenseRef-AGG-2.3`, the library is labelled with their conjunction, and the pack ships the
+upstream notices as `LICENSES/pdfium`. The Windows release signs `pdfium.dll` with the app's
+Authenticode certificate, as the Mac pack signs every dylib it carries.
+
 ---
 
 ## CI and fuzzing
@@ -1101,6 +1135,14 @@ and clips, not faces, and Settings lists the first 24 with "Show all". The onlin
 made people of blurred clip frames that resembled each other more than anyone; numbers in
 docs/design/17 "People model". Libraries settle once under the new rules, nothing read again.
 
+**New faces meet a confirmed person's exemplars (2026-10-15, #434).** This amends the 2026-10-06
+rule that a new face joins by mean pairwise cosine to every member. The best 3 people by that mean
+are shortlisted. A shortlisted person with a pinned face (the user named, merged or split it) is
+then rescored by the refinement's exemplar `support`, so the faces the user confirmed are what new
+photos are matched against. Weak faces and unconfirmed people keep the mean. Exemplars for every
+person were tried and dropped: on LFW they cost online BCubed F 0.9975 → 0.9945, because a newcomer
+joined a lookalike. Numbers are in docs/design/17 "Online clustering".
+
 **People follow the open folder (2026-10-03).** While a folder is open the People grid offers
 "This folder | + Subfolders" only; everyone shows only with no folder open. A folder open is the
 user saying what they are looking at, and everyone-from-everywhere inside one read as a leak. A
@@ -1122,6 +1164,17 @@ user asking for the file; the index downloads only clips, and only with the 2026
 there; not a mirror, no schedule. Both platforms: the player honours a clip's display matrix
 (`video_stream_info::rotation`), because portrait phone clips played sideways. See
 [26](26-photos-library.md).
+
+**The Photos backup's folders are a choice (2026-10-16, issue #414).** Was: always Import's
+`YYYY/YYYY-MM-DD`, so a library of a few years became thousands of day folders. Settings →
+Photos Library → *Folders* offers Year (`YYYY`, which Import does not have), Year and day (the
+default, so a backup already on a NAS keeps writing the tree it has), Year, month and day
+(`YYYY/MM/DD`), Day (`YYYY-MM-DD`) and Flat; remembered as `mv.photosBackup.layout` beside the
+destination. A change moves nothing: a verified file stays where the manifest says, and only a
+new or missing file is written in the layout chosen now. The manifest therefore stores each
+file's real place under the destination at whatever depth (`2024/IMG_0001.HEIC`), not the last
+three components; absolute rows from before 2026-10-05 were all year/day, so their last three
+components still rebase. Import's presets, camera and type folders stay Import's.
 
 **The index may download iCloud-only clips, opt-in (2026-10-05, owner).** Reverses "Indexing never
 downloads" below for videos only. With Optimize Mac Storage most of an iCloud library's clips are
@@ -1278,6 +1331,68 @@ default) turns both text passes off. The cue and text counts are appended on `mv
 (1,672 bytes with them) and read only when `struct_size` covers them. `AiApi` still does not
 pin that size (#388); the ABI smoke test compares the C# mirror with the header.
 
+**Documents are searchable by their words, behind Show documents (2026-10-16, #354 D1).** PDF and
+DOCX open in the viewer (#123, #124) but Local search skipped them. Slice D1 of
+`docs/plans/document-search.md`, under the owner calls of 2026-10-05 (PDFium in the pack;
+`doc_index` defaults to Words) and the issue's gate: indexed only while File types "Show
+documents" is on, as audio files are. A PDF's text is read by PDFium in the Core pack, not the
+viewer's renderer (the OS's), so both OSes write the same text into the same index; a DOCX's by
+the viewer's own reader through the host table (`document_text`). Text is kept as passages of a
+few sentences with their page (schema 9), matched through an FTS5 index by the speech rule, not
+held in memory like transcript lines: a library of documents holds far more text than its clips'
+speech. A password-protected file is a new progress state, `locked`, never retried. **Cost:** none
+while the switch is off (the walk drops them by name). On, a document is read once, on one
+background worker, after the pictures; the M5 timing is in docs/design/17 "Documents". Index size
+grows by the documents' text (about their plain-text size twice over: passages and words).
+`MV_AI_KIND_ALL` widens from 11 to 15, so an older chrome never sees a document; `mv_ai_status`
+appends four counts (1,704 bytes); `mv_ai_api` appends `root_set_documents`, and the Windows
+chrome's `AiApi` now requires the table only up to `people_reanalyse`, checking appended entries
+where it uses them, so a pack one entry behind still attaches. The document pass does not wait for
+the picture towers: on the M5 the pack spends about 118 s at every start moving ViT-L/14 to the
+Neural Engine, during which every pass used to wait, and 200 documents then took 3 s. While the
+towers are not ready the workers now claim documents only, straight from the index.
+
+**Documents are also found by what their pages look like, at Words and pages (2026-10-16, #354
+D2).** No new model: a document's pages go through the picture tower the Core pack already
+loads, drawn by the host's own renderer (the same pixels as the viewer and the tiles), stored as
+ordinary `frames` rows with `pts_ms` the page and a page flag (`kFramePage`), so search, ranking,
+"nothing found" and the matrix treat a page as a clip's moment; no schema change. Which pages,
+by the plan's §3 limit: the first 3, and any page whose image objects (PDFium) cover over half of
+it. **Budget added:** at most 64 such picture pages a document beyond the first 3. The plan said
+"any page"; a 500-page scan would then be 500 page renders and tower runs (each render reads the
+file whole), minutes of a worker for one file. A DOCX is pictured on its first 3 pages only (the
+host's layout gives no image measure). The pass runs only after a document's words are read, so
+words are searchable first, and only at Words and pages (not the default). Going below it deletes
+the pictures at once. `mv_ai_status` appends `pages_total`, `pages_done`.
+
+**Documents are also found by what they are about, with the Documents piece (2026-10-17, #354
+D3).** An optional piece, `ai-docs`, as Sound is, holding one sentence-embedding model chosen by
+the plan's spike (docs/design/17 "Documents", the table there): **all-MiniLM-L6-v2**, fp32, on CPU
+at 2 threads. It had the best P@5 of the four candidates (0.810 against arctic-embed-s 0.810 fp32
+/ 0.794 int8, bge-small 0.780, multilingual-e5-small 0.766), twice their passages per second, and
+a quarter of e5's size. **Not multilingual:** the owner's 2026-10-13 ceiling raise let
+multilingual-e5-small in, and the spike measured it; it led only on the 3 other-language queries
+and missed the R@10 target (0.793 int8), so the default is English, and a later multilingual
+piece is a measurement away, not a design change. **fp32, not int8** (90 against 23 MB): the int8
+export quantises activations per batch, so a passage's vector depended on its neighbours in the
+batch (cosine 0.998 to ORT-Python, under the verify line's 0.999) for ~10 % more speed and no
+quality. **Margins, as CLAP's** (no z rule): `query_margin` 0.415 and `result_margin` 0.25 from the
+spike's 50 queries and 20 queries about nothing. They gate a row; its cosine orders it (ordering
+by margin lost 0.03 of P@5), scaled to sit above a partial word match. **Short of a target:**
+end to end over every passage the engine reaches P@5 0.731 but R@10 0.767 against the 0.80 set
+before the spike (the spike's own capped run met both); long publications crowd the forms out.
+Kept because the engine's words alone reach P@5 0.304 / R@10 0.272 on the same set (19 of the 50
+queries answer nothing), and it costs nothing without the piece; the target is owed in #354.
+**Cost:** nothing without the piece. With it, a document's passages are embedded once after its
+words (schema 10 `passage_vecs`, int8 like frames: 0.4 KB a passage plus the row), on the
+workers, between the viewer's busy spells, and not behind the picture towers' load. The vectors
+are a third in-memory matrix like the sounds'. `mv_ai_status` appends `meaning_total`,
+`meaning_done` (1,720 bytes); `MV_AI_STATUS_DOCS_READY` is 512. **Sharing:** `.mvindex` goes to
+version 2; documents travel only when the new `MV_AI_TRANSFER_DOCUMENTS` is ticked on both sides
+(the file then holds their text, so off by default, as People is), with their passages, vectors
+and page pictures. A v1 file still imports. D1's "never in an export" now reads "never unless
+ticked".
+
 ---
 
 ## Final Cut Pro search (Mac)
@@ -1350,6 +1465,45 @@ the server's, and the server shows its key only after that. And the receiver's A
 not protect the sender: a machine claiming the receiver's id from another address could answer
 Accept itself. So the sender's person confirms the code before the offer (even the names) leaves,
 and a fresh peer keeps its address. Two clicks, one per side, as Bluetooth's numeric comparison.
+
+**Keep receiving is kept across launches (owner, 2026-10-15, #442; reverses "the toggle is for this
+run").** Turned on, it stays on after a relaunch until turned off: the add-on keeps it in its own
+data folder (`sharepoint.json`), and at load, only when it was on, makes the engine, whose control
+thread starts presence. That is after first pixel and off the foreground queue (slot add-ons load
+on the add-on queue / a worker), and in one window's process at a time (a lock file). Off at load
+is one small read and nothing else. While it is on the command bar shows **Sharepoint: receiving**,
+so a person knows the machine is discoverable. Measured idle cost with it on, window closed (Mac,
+`[.sharepoint-idle]`, 15 s): 0.020 % CPU, 6.4 context switches a second, no present; off 0.0003 %.
+The earlier call kept the idle viewer silent by default; it still is unless the person asked.
+
+**The sender types the code; it is not compared (owner, 2026-10-15, #442; amends "the sender
+confirms the code").** People clicked **Same code, send** without looking at the other screen. Now
+the receiver's window shows the code and the sender's person types it; the sender's screen never
+shows it. Commit, answer, reveal and the code's derivation are unchanged, so a machine in the
+middle still cannot make the two links' codes match, and the offer still leaves only after a right
+entry. The check is local to the sender (constant time, digits only, a partial entry is not a
+try); three wrong entries send `cancel` and end the link. The wire is unchanged (protocol 1): the
+receiver waits for the offer either way. Bluetooth's passkey entry is the pattern.
+
+**Receive when MediaViewer is closed: the same process stays, opt-in, with a notification (owner,
+2026-10-16, #452).** Off by default; on, it implies Keep receiving. The add-on asks the host to keep
+its process (`keep_alive`, host table, ABI 0.33) rather than shipping a helper app or a login agent:
+add-ons carry their own code and there is no second app. Closing the last window, ⌘Q and the
+Dock's Quit then hide the viewer (it drops what it showed) and leave a menu-bar item (Mac) or a
+notification-area icon (Windows) whose Quit really quits; logout, restart and an update's restart
+quit as before. An offer is a system notification (`notice_post`: `UNUserNotificationCenter`,
+`AppNotificationManager` under the process's AUMID) that names the sender, then the count and
+size, never a file name or the code; a click opens the window with the code, its one button is
+Decline, and Accept stays in the window. It shows whenever the window is not the front one, so
+Keep receiving gets it too. Without permission (asked when a toggle turns on, never at launch)
+the window opens as before. Off changes nothing: no keep-alive, no registration, no ask. Start at
+login is not built (a follow-up). Measured windowless idle: see DEVELOPMENT.md (#452).
+
+**The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
+at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
+no-replace before its `file_done`; the sender's `done` waits for every check. Measured on loopback
+(Mac, alternated): 500 × 2 MiB 124–141 → 158–180 MB/s; one 1 GiB file unchanged (crypto-bound).
+Reading ahead on the sender measured no faster and was not kept. `[.sharepoint-bench]`.
 
 **Each file's hash comes after its bytes, not in the offer (2026-10-15).** A hash list up front
 would make the sender read every file twice before the first byte moved (a large video read

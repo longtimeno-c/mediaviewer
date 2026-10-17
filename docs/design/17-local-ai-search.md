@@ -132,9 +132,10 @@ signed manifest, verify-before-load, per-user versioned folder, explicit updates
 
   | Piece | Contents | Size |
   |---|---|---|
-  | `ai` (Core) | `mv_ai`, ORT (CPU; Core ML on Mac), both CLIP towers, tokenizer, the chrome (`MediaViewer.Ai.Chrome` / `AI.bundle`) | ~1.18 GB installed |
+  | `ai` (Core) | `mv_ai`, ORT (CPU; Core ML on Mac), PDFium (a PDF's text, #354; ~6 MB, its parts' notices in `LICENSES/pdfium`), both CLIP towers, tokenizer, the chrome (`MediaViewer.Ai.Chrome` / `AI.bundle`) | ~1.19 GB installed |
   | `ai-faces` (People) | YuNet detector, AdaFace IR-50 embedder (fp16) | ~87 MB model |
   | `ai-audio` (Sound) | CLAP `larger_clap_general`, Whisper base and small, tokenizers | ~1 GB |
+  | `ai-docs` (Documents) | all-MiniLM-L6-v2 (fp32), its WordPiece vocab (#354 D3) | ~91 MB |
   | `ai-cuda` (Windows) | ORT's CUDA build | ~205 MB |
 
   Pieces declare `part_of: ai` and an `arch`. Clicks queue, Core first; "Install all"; "Update
@@ -267,9 +268,13 @@ one, so 2 s and 1/250 both match). A clip has no exposure block: those stay NULL
 - A rating written to a RAW's XMP sidecar leaves the RAW's own stamp alone, so the index keeps
   the old rating until the file's stamp changes or the index is rebuilt (the base app's
   meta_cache drops its row; the AI index has no such signal yet).
-### Schema 6 and 7 (#406, #407)
+### Schema 6 to 10 (#406, #407, #355, #354)
 
-Schema 6 adds `cues` ("Cues" below). Schema 7 adds `motion`, `motion_mtime`, `motion_size` and
+Schema 6 adds `cues` ("Cues" below). Schema 8 lets `assets.kind` be 4, an audio file (no table
+change). Schema 9 lets it be 3, a document, and adds `roots.docs`, `passages` and `passage_text`
+("Documents" below). Schema 10 (D3) adds `passage_vecs(passage_id, spec, generic, scale, emb)`, a
+passage's vector under the Documents piece's text model, int8 like frames; a passage that goes
+takes its vectors with it. Schema 7 adds `motion`, `motion_mtime`, `motion_size` and
 `motion_cloud` to `assets`: a Live Photo still's movie and its stamp (Frame sampling, step 6). The
 first walk after the step fills them and queues each Live Photo's motion alone; the still is not
 embedded again.
@@ -310,9 +315,11 @@ the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model
     indexed from `resume_ms`, redoing nothing committed. **Dismiss** leaves them paused and loads
     nothing; the notice does not come back that session, and the next launch asks again. The Mac
     notice is a self-sizing SwiftUI card pinned over the canvas corner (`ResumeNoticeView.swift`,
-    above the filmstrip when it is up); Windows has no island in that corner, so the notice is a
-    windowed `Popup` of the command-bar island (`ShouldConstrainToRootBounds = false`, as the
-    bar's flyouts are), placed from the window's client rectangle on every resize. Neither takes
+    above the filmstrip when it is up); on Windows it is a small island of its own over that
+    corner, as the AI badge is (`IslandHost.ResumeNotice.cs`), placed from the window's client
+    rectangle on every resize and above the other islands. It was a windowed `Popup` of the
+    command-bar island until #443, and never showed on Windows. A launch read that lands before
+    the command bar is up waits for it, as the Mac's store waits for its host. Neither takes
     focus. A later window (the reader) indexes nothing and shows no notice.
   - **Settings → Local search**, in the pack's folder list (`ManagementView.swift`,
     `ManagePanel.cs`): a held root's row reads "N of M · paused since last time" and offers
@@ -456,7 +463,9 @@ same thing by the same words. Terms narrow each other (AND).
 | Typed | Means |
 |---|---|
 | `Tristan beach` | photos / moments with Tristan, ranked by "beach" (no "nothing found" test inside a person's own) |
-| `Tristan "hello"`, `Tristan:"hello"`, `said:hello` | Tristan, and a clip whose transcript, a chapter title or a text subtitle line (#406, "Cues"), or a photo or clip moment whose text (#403, "Text in pictures"), has those words in that order; the line is the snippet |
+| `Tristan "hello"`, `Tristan:"hello"`, `said:hello` | Tristan, and a clip whose transcript, a chapter title or a text subtitle line (#406, "Cues"), or a photo or clip moment whose text (#403, "Text in pictures"), has those words in that order; the line is the snippet. Quoted words also match a document's text (#354); `said:` never does |
+| `text:lease`, `says:"net 30 days"`, `-text:draft` | a document's text only (#354, "Documents"): the words in that order, at the page that holds them |
+| `lease documents`, `is:document`, `is:pdf`, `is:docx` | documents (#354); `is:pdf` / `is:docx` (`is:word`) the format |
 | `Tristan Aaryan`, `Tristan and Aaryan` | both in the same photo or clip |
 | `Tristan or Aaryan` | either |
 | `Anna Smith`, `anna` | a named person: the whole name or the first name, any case, accents folded |
@@ -477,7 +486,7 @@ same thing by the same words. Terms narrow each other (AND).
 | `f:2.8`, `f:1.4-2.8` | aperture, within 0.05 stops of the stored value (f/2.8 and APEX's f/2.83 are one) |
 | `mm:35`, `mm:24-70` | focal length in whole millimetres |
 | `shutter:1/250`, `shutter:250`, `shutter:2s` | the exposure time (a bare number N is 1/N s, as a camera shows it; `s` or a decimal point is seconds), within a sixth of a stop |
-| `place:portugal`, `in:lisbon`, `-place:spain` | where it was taken. `in:` is a date when it reads as one (`in:2024`) and a place otherwise; a word that starts with a digit is never a place; `in:` never names a folder (the scope does). The engine keeps the geotagged assets; which place matches is the Places add-on's search provider's answer, merged by the slot registry ([25](25-open-addons.md) §7) |
+| `place:portugal`, `in:lisbon`, `-place:spain` | where it was taken. `in:` is a date when it reads as one (`in:2024`) and a place otherwise; a word that starts with a digit is never a place; `in:` never names a folder (the scope does). **Needs the Places add-on** (#441): which assets are in the place is its search provider's answer, which the engine asks for through the host and intersects with the rest of the query ("Places over the index" below). Without Places a place term matches nothing: the panel says "Place search needs the Places add-on" and its help line leaves `place:` out |
 | (any of the six above) | a file with no value for a kept term does not match it (an `iso:` term skips a clip); a left-out term drops only a value in its range. The terms filter before the towers run, so `iso:400 beach` ranks the ISO 400 frames by "beach" |
 | `R5`, `chatgpt`, `holiday` (plain words) | besides the picture / sound / speech search, files whose tags hold every word at the start of a word ("r5" in "Canon EOS R5", "70mm" in "RF24-70mm"; not "cat" inside "location") come first, with the tag as the snippet (`MV_AI_MATCH_TAGS`, shown unquoted under the tile) |
 
@@ -493,10 +502,32 @@ Words fold with the shared rule (`core/fold.h`, the hosts' name fold): decompose
 lowercase; ß, æ, ø and ł stay themselves. Before #291 the pack's own Latin-1 fold turned ß into
 "ss" and æ into "ae"; "strasse" no longer finds "Straße", as in file search on Windows and its tag half on the Mac (the Mac chrome's name half uses Swift's full case folding, which does turn ß into "ss"; see `core/fold.h`).
 
-**Places over the index (#398).** `place:` in Local search narrows to geotagged assets and
-relies on the Places provider's rows for the place itself. Over a folder the provider walks the
-host's `locations_in`; over the whole index (folder "", nothing open) it walks the host table's
-`locations_of_index`, appended after `read_cues`. That call streams (path, lat, lon) for every
+**Places over the index (#398, #441).** A place term in Local search is answered by the add-on
+whose search provider declares `place:` for Local search (Places), and intersected in the engine.
+For each `place:` / `in:<place>` term, kept or left out, the engine calls the host table's
+`place_matches` (appended after `locations_of_index`) on its search worker. The host routes it
+through the slot registry (`slot_registry::provider_paths`) to that provider as a request of its
+own, with its own generation and folder "" (the whole index), so a chrome's search never replaces
+it and it never replaces one. The registry collects the provider's rows and returns their paths
+when it posts done. The engine then keeps the assets the scope, kinds, dates and other terms
+allow that are in **every** kept place and in **none** left out (`-place:spain`), by path key.
+A pure `place:portugal` is the provider's rows within the scope and kinds, newest first. A
+description (`beach place:portugal`) ranks only those assets. Two kept places are their overlap.
+While it waits, the engine stops (no rows) once a newer search is queued or the pack is stopping.
+The registry asks it every 20 ms, and the provider sees the request go stale and stops its walk.
+With no such provider (Places not installed, or removed meanwhile), or a host table without the
+row, a place term matches nothing. Before #441 the engine kept every geotagged asset and listed
+them newest first, so `place:Portugal` without Places showed a photo taken in England as its
+first result; with Places the provider's rows were only offered beside the list ("+ N in
+Portugal"). Local search no longer sends a query with place terms to other providers
+(`has_place_terms`, the pack's rule for the operators, in `src/addon/slots.cpp`): the pack's list
+is the whole answer. A plain word (`portugal`) still goes to them. The chromes ask
+`mv_slots_place_terms` (Mac: the host's `placeTerms:`) whether the words have a place term and
+whether Places is loaded. With a term and no Places they search nothing and show the empty state;
+the help line names `place:` only while Places is loaded.
+
+Over a folder Places walks the host's `locations_in`; for Local search (folder "") it walks the
+host table's `locations_of_index`, appended after `read_cues`. That call streams (path, lat, lon) for every
 indexed asset with coordinates, from what index.db already holds (schema 4's `lat` / `lon`,
 filled by the tag backfill). No file and no file's metadata is read. The pack serves it as
 mv.ai.1 `each_location`, 512 rows a `SELECT` in id order (`index_db::located_assets`), with
@@ -508,9 +539,7 @@ stops at its next row, and the library is unloaded only once no walk is inside i
 on its add-on queue, never the main thread. The host's thunk is generation-tagged. A request that
 goes stale, or an add-on being removed (detach joins its worker), stops the walk with
 `MV_ERR_CANCELLED`; staleness is checked every 64 rows. With no pack attached the call returns
-`MV_ERR_NOT_FOUND`, and Places posts done with no rows. A combined query
-(`beach place:portugal`) is the intersection the chrome shows: the pack's geotagged beaches and
-the provider's Portuguese assets.
+`MV_ERR_NOT_FOUND`, and Places posts done with no rows.
 
 ## UI and commands
 
@@ -604,7 +633,7 @@ Indexing is a background load on the machine and GPU of a viewer whose point is 
 | Group | Entries |
 |---|---|
 | Status and settings | `status` (`mv_ai_status`), `settings_json`, `set_setting` (compute, quality, precision, battery, cap, video_index, reload), `pause` |
-| Roots | `roots_json`, `index_folder`, `root_set_enabled`, `root_rescan`, `root_remove`, `root_set_media`, `folder_coverage`, `note_folder_opened`, `clear_index` |
+| Roots | `roots_json`, `index_folder`, `root_set_enabled`, `root_rescan`, `root_remove`, `root_set_media`, `root_set_documents` (#354, appended), `folder_coverage`, `note_folder_opened`, `clear_index` |
 | Search | `search_text`, `search_similar`, `result_count`, `result_at`, `result_path`, `result_thumb`, `result_snippet`, `result_duration`, `clip_matches`, `search_release`, `suggest_json` |
 | People | `faces_enable`, `people_json`, `people_in_json`, `person_faces_json`, `person_rename`, `person_merge`, `face_reject`, `face_split`, `search_person`, `search_this_person`, `face_thumb`, `person_refine`, `people_dedupe`, `people_reanalyse` |
 | Sharing | `export_index`, `inspect_export`, `import_index`, `transfer_json`, `transfer_cancel` |
@@ -616,8 +645,9 @@ read-only for the Final Cut Pro search agent ([23](23-nle-search.md)).
 The host table (`mediaviewer_addon.h`) v2 gives the pack stills and sampled video frames as
 pixels, moment thumbnails in the JPEG-512 cache, `audio_open` / `audio_read` / `audio_close`
 (mono float PCM at a requested rate from the viewer's FFmpeg), `thumbnail_jpeg` /
-`thumbnail_store_jpeg` (sharing), and verified family pieces. Table versions only append; the
-host serves every layout from 1 up, so Import keeps loading.
+`thumbnail_store_jpeg` (sharing), `read_cues` (#406), `document_text` (#354: a DOCX's text; a
+document's page is `video_frame_rgb` with `pts_ms` the page), and verified family pieces. Table
+versions only append; the host serves every layout from 1 up, so Import keeps loading.
 
 ## Audio
 
@@ -755,6 +785,185 @@ does.
   cost. So a clip costs its moment count × ~0.2 s once, on one background worker, after its
   pictures; the People pass already pays one such decode a moment. Windows is not measured.
 
+## Documents (#354)
+
+PDFs and Word documents are searchable by the **words in them**: a quoted phrase from any page
+finds the document and opens it on that page, plain words rank documents by how many of them a
+passage holds. At **Words and pages** they are also found by **what a page looks like** ("a
+receipt", "a floor plan"), and with the **Documents** piece by **what a passage is about** ("tax
+return from my accountant" finds the page about one without those words). Slices D1 to D3 of
+[document-search](../plans/document-search.md);
+OCR for scans (D4) follows them.
+
+- **Behind File types "Show documents"** (off by default), as audio files are behind "Show audio
+  files": each chrome forwards it to the pack as `document_files` when it attaches and on every
+  change. Off, the walk drops `.pdf` and `.docx` by name, so they cost nothing; on, every root is
+  walked again; off again, documents leave results at once and the control thread deletes them
+  and their text (`index_db::remove_kind`). A document is `asset_kind::document` (3; schema 9)
+  and `MV_AI_KIND_DOCUMENTS` (4; `MV_AI_KIND_ALL` is 15, so an older chrome's 3 or 11 never sees
+  one). It never pairs, never goes to the picture, People or text-in-pictures passes in D1, and
+  an `.mvindex` export leaves it out, name and all (page pictures too), unless Documents is
+  ticked for that export (v2, D3; "Sharing an index").
+- **What a folder indexes them for.** Settings "Documents" (`doc_index`): 0 Off, 1 **Words**
+  (the default: cheap, no model), 2 **Words and pages** (page pictures, below). Each folder
+  may override it (`root_set_documents`, `MV_AI_DOCS_*`, `roots.docs`): the case is a Downloads
+  folder that should search photos and not bank statements. A folder's Off leaves its documents
+  out of the search at once and drops them with the walk that follows; a change of the setting
+  walks every root.
+- **Text.** A PDF's is read by **PDFium in the pack** (owner call 2): bblanchon/pdfium-binaries
+  chromium/8066, pinned by SHA-256 in `cmake/ai.cmake`, staged beside `mv_ai` and loaded at run
+  time (`pdf_pdfium.cpp`, `infer::dylib`), so the base installer does not grow and both OSes
+  read the same text into the same index. The viewer still draws pages with the OS. PDFium is
+  hostile-input code in this process: it runs on the index workers only, one call at a time
+  (it is not thread-safe), at most 500 pages and 60 s a document, through a file reader that
+  reads the blocks it asks for. A DOCX's is the **host's** (`document_text` on the host table,
+  appended after `keep_alive`): `codec::docx_text`, the viewer's own DOCX reader and
+  layout with no picture decoded, a paragraph at a time with the page that shows it.
+- **Passages** (`passages.h`): a few sentences each (a passage closes at a sentence end past 40
+  words, and at 80 wherever it is), never across a page, at most 20,000 a document. A PDF page's
+  lines are joined (a word hyphenated over a line break is whole again); typographic quotes,
+  dashes, no-break spaces and ligatures (ﬁ) are made plain. Each passage stores its text (the
+  snippet) and its **words**: folded (`core/fold.h`) and split by the speech rule, led by the last
+  8 words of the passage before, so a quoted phrase over a passage break is still one phrase.
+  Schema 9: `passages(id, asset_id, spec, page, ord, text)` and `passage_text(rowid, words)`, FTS5
+  when SQLite has it (else a plain table the engine scans); a deleted passage takes its words
+  with it (a trigger, which the cascade from `assets` fires too). A changed file drops them.
+- **Its own pass** (`track::docs`, progress spec `doctext/1`), after the pictures and before a
+  clip's own text, one document a claim, `wait_turn` before each page (a DOCX: every 64
+  paragraphs). A PDF commits every 8 pages, so a stop resumes at the next page; a DOCX is read
+  whole (its layout needs every page before the one asked for) and a resumed one starts again. A
+  password-protected file (PDFium's password error; a DOCX that is an OLE container, not a zip)
+  is **`locked`** (progress state 5): never retried, counted apart. One that does not open fails
+  (tried again up to three times). A PDF with no text layer (a scan) is done with no passages; D4
+  reads those. With no PDFium (an older pack) or no `document_text` (an older host) a document
+  is set aside (`unavailable`) and read again at the next start that can.
+- **Page pictures (D2)**, at Words and pages: a document's pages through the **picture tower
+  already loaded** (no new model), so a visual query finds the page. Its own pass (`track::pages`,
+  progress spec `docpage/<picture spec>`, so a model change pictures them again) takes a document
+  once its words are read (`pending`'s `after` is `doctext/1`; a locked or broken one never comes),
+  after the words pass and before a clip's own text. Which pages: the **first 3**, plus any page
+  **mostly covered by images** (PDFium's image objects, each clipped to the page, over half its
+  area: a scan, a photo, a full-page figure; `pdf_reader::look`), at most **64** of those a
+  document, within the 500-page and 60 s caps. A DOCX (and a PDF with no PDFium): the first 3,
+  the host saying where the document ends. Each page is drawn by the host, `video_frame_rgb` with
+  `pts_ms` the page (the viewer's own renderer, as the tiles are), at the photo pass's edge (448 px
+  for ViT-B/32 and ViT-L/14), embedded in batches of 4, and stored in one transaction as `frames`
+  rows under the tower's spec with `pts_ms` the page and `kFramePage` (0x100) in `flags` (no
+  schema change), replacing the pages it had. A stop leaves the document pending: it is drawn
+  again whole. A page that does not draw ends the document there; none drawn fails it (its words
+  still find it). A folder or the setting going below Words and pages deletes those documents'
+  page pictures and their progress on the control thread (`index_db::drop_pages`) and takes them
+  out of the matrix. `mv_ai_status` appends `pages_total` and `pages_done`; while they differ the
+  state is not idle, and both chromes read "Looking at document pages 12 of 200".
+  **Measured** (M5, ViT-L/14, 2026-10-16; DEVELOPMENT, "slice D2"): 20 visual queries over 120
+  labelled visual PDFs among 200 text documents reach mean P@5 0.80 as typed and 0.83 with Match by
+  Picture only. Every hit is on the right page, and 316 documents (851 pages) are pictured in 49 s.
+  Weak spots: a word match outranks a picture ("a receipt" against documents that say "receipt"),
+  plain text pages pass for "a spreadsheet", and person queries meet the "nothing found" gate. The
+  Mac PR 1 gate held while pages were pictured: 0 dropped, p99 17.05 ms against 16.80 alone.
+- **Meaning (D3), with the Documents piece** (`ai-docs`, optional, as Sound is): a document's
+  passages through a small sentence-embedding model, **all-MiniLM-L6-v2** (Apache-2.0, the
+  Xenova ONNX export, fp32, 384 dimensions, ~91 MB), chosen by the spike below. Its tokenizer is
+  BERT's uncased WordPiece in `infer/text_models.*` (BertNormalizer's cleaning, CJK split and
+  accent strip: `core/fold.h` for Latin, Greek and Cyrillic, a generated NFD table past them,
+  Hangul by formula), mean pooling, no prefixes, 256 tokens. It runs on CPU, 2 threads, in every
+  compute choice: the same vector on every machine, and a query in ~2 ms. fp32 rather than the
+  int8 export: int8 quantises each batch's activations together, so a passage's vector moved with
+  its batch (cosine 0.998 against ORT-Python), for 10 % more speed and no gain in the spike.
+  Its own pass (`track::meaning`, progress under the model's spec `all-minilm-l6-v2/fp32/pre1`)
+  takes a document once its words are read, 16 passages a run between the viewer's busy spells,
+  and commits the document whole (`passage_vecs`, schema 10: int8 with a scale, as frames, and
+  each passage's best cosine against five generic prompts). A stop embeds it again. Like the
+  words pass it does not wait for the picture towers to load or move to an accelerator. The
+  vectors are a third matrix in memory (`meanings_`, the passage id as its "pts"), loaded at
+  start and kept as passes commit; a passage dropped (a changed file, a resumed read) takes its
+  vector. `mv_ai_status` appends `meaning_total`, `meaning_done` and sets
+  `MV_AI_STATUS_DOCS_READY`; `settings_json` has `docs_ready` and `docs_model`. Without the
+  piece nothing changes: Words matches as typed. Removing it keeps the vectors for when it comes
+  back (they are dropped with the documents).
+- **The spike** (D3, `tools/ai-bench/doc-meaning`): 478 public documents (141 IRS forms and
+  publications, 164 arXiv papers on 15 subjects, 173 Wikipedia articles on 12 subjects written
+  as DOCX or PDF, 29 of them in French, German or Spanish), 50 queries written from the titles
+  before any model ran (3 not in English), each document scored by its best passage, the first 64
+  passages a document. Targets fixed first: P@5 >= 0.70, R@10 >= 0.80, both above keyword
+  BM25 on the same passages. P@5 counts relevant results in the top 5 over min(5, relevant).
+
+  | Model (Xenova ONNX) | Licence | Size | P@5 fp32 / int8 | R@10 fp32 / int8 | passages/s, CPU 2 threads (M5) |
+  |---|---|---|---|---|---|
+  | **all-MiniLM-L6-v2** | Apache-2.0 | 90 / 23 MB | **0.810** / 0.806 | 0.827 / 0.832 | **112-119** / 118-132 |
+  | snowflake-arctic-embed-s | Apache-2.0 | 133 / 34 MB | 0.810 / 0.794 | 0.831 / 0.834 | 57-63 / 59-66 |
+  | bge-small-en-v1.5 | MIT | 133 / 34 MB | 0.780 / 0.757 | 0.838 / 0.802 | 59-61 / 62-69 |
+  | multilingual-e5-small | MIT | 470 / 118 MB | 0.766 / 0.755 | 0.818 / 0.793 | 57-58 / 53-61 |
+  | BM25 (keywords) | | | 0.662 | 0.639 | |
+
+  On the 3 other-language queries e5 led (P@5 0.53 against MiniLM's 0.40, n = 3); on the 47
+  English ones MiniLM did (0.836 / 0.851). The speed runs were alternated over three rounds on a
+  machine other work kept at load 10-36. MiniLM met the targets with the best P@5, at twice the
+  others' speed and a quarter of e5's size; the English-only cost is what Whisper's speech and
+  the keyword path already cover in other languages.
+- **Ranking by meaning** is CLAP's rule: a passage is a result when it beats the generic prompts
+  ("a document.", "some text.", "a page of a document.", "this is a paragraph of text.",
+  "information.", embedded as queries) by `result_margin` 0.25, and a query answers only when one
+  of its ten best passages beats them by `query_margin` 0.415 ("nothing found"), both scaled by
+  Precision. Calibrated in the spike, the way CLAP's margin was: at 0.415, 47 of the 50 queries
+  answer (the other 3 within 0.025) and 1 of 20 queries about nothing in the corpus ("a gym
+  membership contract"); the 0.25 row floor costs no P@5 or R@10. A hit is a row at its passage's
+  page with the passage as its snippet (`MV_AI_MATCH_TEXT`, as a word match), merged per document
+  with the words. The margins gate; the **cosine orders** (by margin the spike lost 0.03 of P@5
+  and R@10): a row's rank is 2 x (cosine - `rank_offset` 0.096, the mean generic cosine) /
+  `query_margin`, so a close passage (~2.4) leads a document that only holds most of the words
+  (0.6-1.6).
+- **Measured end to end** (M5, `ai-bench --documents` over the spike's 478 documents with every
+  passage embedded, 93,726, the 50 queries as typed, words and meaning merged; DEVELOPMENT, slice
+  D3): **P@5 0.731, R@10 0.767** (English 0.748 / 0.784), against 0.304 / 0.272 for the words
+  alone (no piece; 19 queries answer nothing) and 0.612 / 0.631 for BM25 on the same passages. The spike's 0.810 / 0.827 was over the first 64 passages a document: uncapped, the same
+  model scores 0.757 / 0.782 alone, because the long IRS publications' thousands of passages
+  outrank the forms a query is about. **The R@10 target (0.80) is not met** on the whole corpus.
+  One query ("turning recorded speech into written text automatically") meets "nothing found".
+  Embedding all 478 took 838 s of the run (about 112 passages a second on the workers, with the
+  machine at load 10-36); queries took up to 94 ms.
+- **Search.** Candidates come from the FTS5 index; the engine's own rule decides each, so the
+  index only narrows. A **quoted phrase** matches a passage's words in order (anywhere, as it
+  matches speech, cues and text in pictures); `text:` / `says:` matches documents only; `said:`
+  never a document. **Plain words** match by the speech rule (most of the words; a word of four
+  letters or more also matches its longer forms) when `MV_AI_FIND_TEXT` is asked (none set: all),
+  beside the picture search. Each matching passage is a row at its **page**: `pts_ms` is the
+  0-based page, `kind` `MV_AI_KIND_DOCUMENTS`, `match` `MV_AI_MATCH_TEXT`, the snippet the part of
+  the passage around the first word, shown unquoted. `clip_matches` returns a document's matching
+  pages, one each. A page picture is a picture row like a clip's moment (`MV_AI_MATCH_PICTURE`,
+  `pts_ms` the page, under `MV_AI_FIND_PICTURES` and the "nothing found" rule); a document matched
+  both ways is one row at its better page. `is:document` / `is:doc`, a leading or trailing `documents` / `docs` / `pdf` /
+  `pdfs`; `is:pdf` and `is:docx` (`is:word`) name the format by extension.
+- **Results.** The tile is the matched page: page 0 is the viewer's own thumbnail, any other is a
+  moment row of the JPEG-512 cache (`path#t=<page>`), drawn by `video_frame_rgb` with `pts_ms` the
+  page (the host's renderer, so the tile is what the viewer shows). The chromes show "p. 3" where a
+  clip shows its time. Enter opens the result list with the page as the item's moment; both hosts
+  open a document there (`present_lab_mac::open_item(..., page)`; Windows `mv_folder_select_page`
+  from `edit_item_opened`), and Page Down goes on from it.
+- **Settings and status.** Both chromes: a Documents section (Off / Words / Words and pages, the privacy line "an
+  index of documents holds their text on this computer; it never leaves it"), a per-folder
+  "Documents: Default ▾" menu, the folder's document count beside its photos and videos (counted
+  apart: `roots_json` `documents`, `documents_done`, `docs`; "Up to date" covers the picture pass
+  only), and the panel's **Documents** segment and **Text** token while documents are shown.
+  `mv_ai_status` appends `docs_total`, `docs_done` (failed and locked count as done), `docs_locked`
+  and `docs_failed`; while documents are short the state is not idle, and the line reads
+  "Reading documents 12 of 200". `settings_json` has `document_files`, `doc_index` and
+  `pdf_available`.
+- **Privacy.** A document's text is the most sensitive thing the index holds. It stays in
+  `index.db` beside the transcripts, never in a log, a crash report or telemetry, and in an
+  export only when Documents is ticked for it (D3, off by default); Clear index, removing a root, a folder's Off and Show documents off delete it.
+- **Never waits for the models.** Every other pass waits while the picture towers load or move
+  to an accelerator (about two minutes for ViT-L/14 on the M5's Neural Engine at each pack start,
+  more on a first compile). The document pass reads words and needs no model, so while they do,
+  `claim` hands the workers documents alone, straight from the index (`wait_turn(false)`); the
+  pause, the viewer's yield, a clear and an import still hold it.
+- **Measured** (Apple M5, `ai-bench --documents`, a synthetic 200-document folder, three runs):
+  every document read within 3 s of the pack loading, the 500-page PDF included; a quoted phrase
+  from the first and from the last page of each of the 196 readable ones found that page (392 of
+  392, the slowest query 4.1 ms); plain words 70 ms over 190 matches. The Mac PR 1 gate held with
+  4,000 documents being read (0 dropped, p99 16.90 ms against 16.95 alone). Windows is not
+  measured.
+
 ## People
 
 Local face search: faces are detected in photos and video frames, clustered on-device into
@@ -827,14 +1036,43 @@ faces on the control thread.
 
 ### Online clustering
 
-`faces.cpp`. Scores are mean pairwise cosine (sum · v / n) everywhere — assign, "this person",
-consolidate — not cosine to a normalised centroid (which inflates a stranger by ~√ρ). A new face
-joins the best person at `same_person`; one with a second person within `ambiguous` of the best
-waits **unassigned** (`person_id` NULL). **Quality gates it:** an *unusable* face (quality < 0.10)
-joins nobody, and a *weak* one (< 0.35) may join a person but never starts one. The idle consolidate merges at mean pairwise `merge_at`,
-an average that stays an average after a merge (no chaining). The user's faces are **pinned**:
-faces they split out; the cover of a person when they name it and of both sides when they merge;
-covers prefer pinned faces.
+`faces.cpp`. Scores are in pairwise cosine units everywhere — assign, "this person",
+consolidate — never cosine to a normalised centroid (which inflates a stranger by ~√ρ). A new face
+is matched in two steps. Every person is scored by mean pairwise cosine (sum · v / n), and the
+best `shortlist` (3) at or above `same_person − 2 × margin` are kept. Then each shortlisted person
+the user **confirmed** (it has a pinned face) is rescored by its **exemplars**: the refinement's
+`support`, the mean of the top 3 cosines to its pinned faces and good core (≤ 12, built by
+`build_person_proto`, the refinement's own `build_proto`). Every other person keeps its mean.
+The face joins the best person at `same_person`. If a second shortlisted person is within
+`ambiguous` of the best, it waits **unassigned** (`person_id` NULL). "This person"
+(`nearest_person`) uses the same scorer without the ambiguity rule. **Quality gates it:** an
+*unusable* face (quality < 0.10) joins nobody. A *weak* one (< 0.35) may join a person but never
+starts one, and it is matched by the mean alone, because the refinement never admits a weak face
+by exemplars either. The idle consolidate merges at mean pairwise `merge_at`, an average that
+stays an average after a merge (no chaining). The user's faces are **pinned**: faces they split
+out, the cover of a person when they name it, and both covers when they merge. Covers prefer
+pinned faces.
+
+**Corrections are what new faces meet (2026-10-15, #434).** Before this change a person's
+corrections counted only in the refinement. Online, a new face met the average of every member,
+so a varied person ("Tristan", front-on and side-on) scored *lower* as he grew. Now the faces the
+user confirmed are anchors for every new photo: a side-on face whose mean to him is below the
+threshold joins once a side-on cover of his is pinned. The exemplars are cached per person in
+`faces_db` and rebuilt lazily, under the lock, only for a shortlisted confirmed person. Only the
+first `max_refs` (256) refs' vectors are read. The cache is dropped on a rename, merge, split or
+reject, when faces leave or are re-analysed, and on an import. A refinement commit replaces it
+with the protos it just built. Ordinary growth rebuilds it only once the person is a quarter
+larger or smaller than when it was built. **Unconfirmed people keep the mean.** On LFW, scoring
+every person by exemplars let a newcomer whose mean was just under the threshold join a lookalike
+(IR-50 online BCubed F 0.9975 → 0.9945, P 0.9991 → 0.9933). Restricted to confirmed people, LFW
+is unchanged (`[.people-bench]`: IR-50 online F 0.9975, +merge 0.9980, settled 0.9988; SFace
+0.9899 / 0.9893 / 0.9938). The bench's corrections phase merges each person's fragments and names
+everyone with 3+ photos after 60 % of the faces, then files the remaining 40 % online. There, SFace's
+remaining 40 % rises from F 0.9964 (P 0.9983, R 0.9946) to 0.9969 (P 0.9972, R 0.9966), and
+IR-50's is unchanged at 0.9989. On a copy of the owner's library (`[.people-api]`), the 3,284 unfiled usable faces offered
+again cost 0.28–0.30 ms per `add` against 0.27–0.33 ms before (runs alternated), and one more of
+them files to a named person (556 against 555). The settle (`[.people-settle]`) does not use
+this path and is unchanged (263 people in 2+ photos, 76 in 5+).
 
 **Cost at a large library (2026-10-06, owner: "a lot of other UI seems to lag").** Every People
 read holds the engine's model lock, which a search, a rename and the status counts wait on, so
@@ -954,7 +1192,8 @@ Windows the repeater is virtualised already, so "Show all" expands the grid in p
 Index a library once and carry it to another machine (`src/addons/ai/transfer.*`,
 `export_index` / `inspect_export` / `import_index`, both chromes).
 
-**The file** (`.mvindex`, SQLite, `info.format = "mediaviewer.index"`, version 1) holds the chosen
+**The file** (`.mvindex`, SQLite, `info.format = "mediaviewer.index"`, version 2; a version 1 file
+still imports) holds the chosen
 roots with each asset's path **relative to its root** (`/`-separated), its `(mtime, size)`, kind
 and duration, and its rows: `progress` (done and partial only), `frames`, `speech`. Optional
 (`MV_AI_TRANSFER_*`): **People** (`people`, `faces` without a path, `rejected`, `no_merge`,
@@ -994,6 +1233,16 @@ already scanned keep this machine's faces. Only the current face model's faces a
 `thumbnail_store_jpeg`; the host checks the bytes are a baseline JPEG no larger than 512 on the
 long edge before storing (a shared file is untrusted input), and the pack stores one only when
 the local file's `(mtime, size)` equals the file's row.
+
+**Documents** (v2, #354 D3; `MV_AI_TRANSFER_DOCUMENTS`): off by default, as People is, because
+the file then holds what the documents say. Ticked, it carries the documents (kind 3), their
+passages and words (`passages`), their passage vectors (`passage_vecs`, with `info.docs_spec` the
+text model) and their page pictures (frames with the page flag, whose progress is
+`docpage/<picture spec>`). Unticked, no document travels, nor its name, as in v1. An import takes
+them only when ticked there too and documents are shown on that machine; the passages get new ids
+and their vectors follow them. Vectors come only with the passages they belong to: a document
+whose words this machine had already read keeps its own and embeds them itself. `inspect_export`
+reports `documents` (`count`, `shown`, `meaning_match`: the same text model is loaded here).
 
 It is a one-off merge, not a sync. The Photos library root is never exported (its keys are this
 Mac's PhotoKit identifiers). The file carries folder and file names and, if ticked, faces and
@@ -1143,6 +1392,10 @@ non-yielding bench process indexing on every core: 0 dropped frames in 3 of 4 ru
 refresh in the fourth, p99 ≤ 17.1 ms.
 
 ## Not built
+
+- Documents' page pictures (D2), meaning search over passages with a text model (D3, the
+  `ai-docs` piece, `.mvindex` v2 carrying passages) and OCR of scanned pages (D4)
+  ([document-search](../plans/document-search.md)).
 
 - Hardware decode (D3D11VA / VideoToolbox) for the frame sampler; it decodes in software.
 - An OpenVINO piece (the code path exists, nothing is published).

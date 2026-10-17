@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "addons/sharepoint/channel.h"
+#include "addons/sharepoint/prefs.h"
 #include "addons/sharepoint/presence.h"
 #include "addons/sharepoint/transfer.h"
 
@@ -52,16 +53,22 @@ inline constexpr int kPeerForgetMs = 4500;
 inline constexpr std::size_t kMaxPeers = 64;
 // Names listed under "Files to send" / in an offer, at most.
 inline constexpr std::size_t kListedNames = 200;
+// Thumbnails shown of the files to send (the window's strip).
+inline constexpr std::size_t kShownThumbs = 6;
+// Wrong codes typed on the sender before the link ends (#442).
+inline constexpr int kCodeTries = 3;
 
 // What the window shows, as data (build_tree turns it into the view tree).
 struct view {
   std::string my_name;
   bool receiving = false;       // the toggle: stay visible after the window closes
+  bool background = false;      // #452: and after MediaViewer closes (implies receiving)
   bool wifi_up = false;         // the listener and the beacon are running
   std::string bluetooth_note;   // "" when Bluetooth runs, else why not
 
   // ---- send
   std::vector<std::string> file_names;  // the first kListedNames
+  std::vector<std::string> file_paths;  // the first kShownThumbs, on this machine (thumbnails; never sent)
   std::size_t file_count = 0;
   std::uint64_t file_bytes = 0;
   bool reading_folder = false;
@@ -73,12 +80,16 @@ struct view {
   std::string selected_peer;
   // waiting_wifi: the set is too big for Bluetooth and the peer is only in
   // Bluetooth range; the send starts by itself once the peer is heard on Wi-Fi.
-  // confirming: the link is up and both screens show the code; nothing about
-  // the files has left until this person says the codes match.
+  // confirming: the link is up and the receiver's screen shows the code; this
+  // person types it here (#442). Nothing about the files has left until the
+  // code typed is the one this link derived; kCodeTries wrong ones end it.
+  // This screen never shows the code.
   enum class out_phase : std::uint8_t {
     idle, waiting_wifi, connecting, confirming, waiting, sending, done, ended
   } out = out_phase::idle;
-  std::string out_peer, out_code, out_note;
+  std::string out_peer, out_peer_id, out_note;
+  std::string out_entry_note;  // confirming: "That is not the code ..." after a wrong one
+  int out_tries_left = kCodeTries;
   std::uint64_t out_bytes = 0, out_total = 0;
   std::uint32_t out_files = 0, out_count = 0;
 
@@ -110,8 +121,8 @@ class engine_host {
   // Opens (an offer arrived while receiving with the window closed) or
   // closes the window.
   virtual void show_screen(bool show) = 0;
-  // Where received files go unless the person picks another folder:
-  // <the default photo folder>/Received. "" when there is none.
+  // Where received files go unless the person picks another folder: the
+  // Downloads folder (#442; net::downloads_folder). "" when there is none.
   [[nodiscard]] virtual std::string default_destination() = 0;
   // Free bytes on the volume of `dir`, if known.
   [[nodiscard]] virtual std::optional<std::uint64_t> free_bytes(const std::string& dir) = 0;
@@ -122,7 +133,46 @@ class engine_host {
   [[nodiscard]] virtual std::vector<std::uint32_t> pair_partners(const std::vector<std::string>& names) = 0;
   // Never a path, a name or an address (rule 6).
   virtual void log(int level, const char* ascii) = 0;
+  // The command bar's status text ("" hides it): shows that this machine is
+  // discoverable while Keep receiving is on (#442). False when the host did
+  // not take it (the add-on not attached yet): the engine tries again.
+  virtual bool post_status(const std::string& text) {
+    (void)text;
+    return true;
+  }
+  // #452: a system notification for the offer waiting here. `body` names the
+  // sender and, once known, the count and size: never a file name or the code
+  // (rule 6; a lock screen shows it). Clicking it opens the window; its one
+  // button is Decline (an on_event "decline" click). An empty title takes it
+  // back. False when the host shows no notifications: the engine then opens
+  // the window itself, as before #452.
+  virtual bool post_notice(const std::string& title, const std::string& body) {
+    (void)title;
+    (void)body;
+    return false;
+  }
+  // #452: ask the person to allow notifications (a toggle turned on; the OS
+  // asks once). Never at launch.
+  virtual void ask_to_notify() {}
+  // #452: keep this process, with a menu-bar item / tray icon, after every
+  // window is closed (Receive when MediaViewer is closed). False when the host
+  // did not take it (the add-on not attached yet): the engine tries again.
+  virtual bool keep_alive(bool on) {
+    (void)on;
+    return true;
+  }
 };
+
+// The status text while Keep receiving is on.
+inline constexpr const char* kReceivingStatus = "Sharepoint: receiving";
+// The toggle that keeps MediaViewer running with every window closed (#452),
+// and the menu-bar / tray item's first line while it is on.
+inline constexpr const char* kBackgroundLabel = "Receive when MediaViewer is closed";
+inline constexpr const char* kNoticeTitle = "Sharepoint";
+// The notification's text for an offer (#452): the sender's name, and the
+// count and size once the offer has arrived (count 0: not yet). Never a file
+// name or the code. Pure; tested.
+[[nodiscard]] std::string notice_body(const std::string& peer, std::size_t count, std::uint64_t bytes);
 
 class engine {
  public:
@@ -136,6 +186,11 @@ class engine {
     // No presence at all: no socket, no beacon, no Bluetooth (the loader
     // test, which opens the window; MV_SHAREPOINT_OFFLINE=1).
     bool offline = false;
+    // Where the prefs live (prefs.h; the add-on's data folder). "" keeps
+    // nothing across launches. `initial`: already read by the caller; when
+    // empty the engine reads `prefs_path` itself.
+    std::string prefs_path;
+    std::optional<prefs> initial;
   };
 
   engine(engine_host& host, options opts);
@@ -178,6 +233,11 @@ class engine {
   void control_loop();
   void request_reconcile();
   void reconcile();
+  // The prefs change: written on the control thread, never the caller's.
+  void request_save();
+  void save_now();
+  // The control thread: the status text for the toggle, posted (or retried).
+  void sync_status();
   void post();            // the tree now (any thread)
   void post_throttled();  // within ~100 ms, coalesced
   void start_presence();
@@ -193,13 +253,29 @@ class engine {
   void start_waiting_send();
   void run_send(std::string peer_id, std::vector<outgoing_file> files);
   void run_receive(std::unique_ptr<link> l);
+  // The offer's notification (#452), from the receive thread only. False:
+  // the host has none (open the window instead).
+  bool notice(const std::string& peer, std::size_t count, std::uint64_t bytes);
   void end_transfer();
   void refuse_busy(std::shared_ptr<link> l);
   // channel::open with `l` listed in opening_ meanwhile.
   [[nodiscard]] result<std::unique_ptr<channel>> open_tracked(std::shared_ptr<link> l, bool client);
   void forget_opening(const std::shared_ptr<link>& l);
   void fail_transfer(bool sending) noexcept;  // after an exception on a transfer thread
+  // The files to send are read on one thread of the engine's (the folder
+  // reader), never on the caller's: a set asked for replaces one waiting, and
+  // the one being read stops at its next file (its generation is stale).
+  // Nobody waits for it (issue #442: the share icon stalled the UI on Windows).
+  struct files_job {
+    std::vector<std::string> paths;  // a set handed over...
+    std::string folder;              // ...or a folder, recursively
+    std::uint64_t gen = 0;
+  };
+  void queue_files(files_job job);
+  void files_loop();
+  [[nodiscard]] bool files_stale(std::uint64_t gen) const noexcept;
   void build_files(std::vector<std::string> paths, std::uint64_t gen);
+  void walk_folder(const std::string& folder, std::uint64_t gen);
   void publish_files(std::vector<outgoing_file> files, std::uint64_t gen);
   void read_folder(std::string folder);
   void cancel_transfer();
@@ -219,9 +295,10 @@ class engine {
   std::vector<outgoing_file> files_;      // under m_
   bool screen_open_ = false;              // under m_
   bool transfer_running_ = false;         // under m_
-  std::uint64_t files_generation_ = 0;    // under m_
+  std::atomic<std::uint64_t> files_generation_{0};  // changed under m_; read anywhere
   int decision_ = 0;                      // under m_: 0 none, 1 accept, 2 decline
-  int out_decision_ = 0;                  // under m_: 0 none, 1 codes match, 2 cancel
+  int out_decision_ = 0;                  // under m_: 0 none, 1 code right, 2 cancel, 3 wrong too often
+  std::string out_expected_;              // under m_: the link's code, digits only; never in the view
   // The peer a too-big set waits to see on Wi-Fi (out_phase::waiting_wifi).
   std::string waiting_peer_;              // under m_
   // Links in their handshake (no channel yet), so a cancel or the destructor
@@ -239,6 +316,13 @@ class engine {
   std::condition_variable control_cv_;
   bool reconcile_wanted_ = false;                     // under control_m_
   bool post_pending_ = false;                         // under control_m_
+  bool save_wanted_ = false;                          // under control_m_
+  // The status text the host shows (post_status), and a retry while the
+  // host is not ready for it.
+  std::string status_shown_;                          // control thread
+  bool keep_shown_ = false;                           // control thread: keep_alive taken
+  int status_tries_ = 0;                              // control thread
+  std::chrono::steady_clock::time_point status_due_{};  // under control_m_; {} = none
   std::chrono::steady_clock::time_point post_due_{};  // under control_m_
   std::thread control_thread_;
 
@@ -252,11 +336,13 @@ class engine {
 
   std::mutex threads_m_;
   std::thread transfer_thread_;
-  std::thread files_thread_;
   std::vector<helper> helpers_;  // busy refusals
-};
 
-// "Received" under the default photo folder.
-inline constexpr const char* kReceivedFolder = "Received";
+  // The folder reader (queue_files).
+  std::mutex files_m_;
+  std::condition_variable files_cv_;
+  std::optional<files_job> files_next_;  // under files_m_
+  std::thread files_thread_;             // under files_m_; made at the first set
+};
 
 }  // namespace mv::sharepoint

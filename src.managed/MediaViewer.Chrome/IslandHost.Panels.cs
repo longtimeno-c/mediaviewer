@@ -60,50 +60,20 @@ public static partial class IslandHost
     {
         try
         {
-            if (arg == IntPtr.Zero || sizeBytes < FilmstripArgsSize) return unchecked((int)0x80070057);
-            ChromeFilmstripArgs args = Marshal.PtrToStructure<ChromeFilmstripArgs>(arg);
-            IntPtr parent = checked((IntPtr)args.ParentHwnd);
-            if (parent == IntPtr.Zero) return unchecked((int)0x80070057);
+            int hr = BeginAttach(arg, sizeBytes, out ChromeFilmstripArgs args, out IntPtr parent);
+            if (hr != 0) return hr;
 
-            EnsureApp();
-            _context = checked((IntPtr)args.Context);
-            if (args.OnCommand != 0)
-            {
-                _onCommand = Marshal.GetDelegateForFunctionPointer<NativeCommand>(
-                    checked((IntPtr)args.OnCommand));
-            }
-
-            DisposeSource(ref _metaPane);
-            DisposeSource(ref _tree);
-            DisposeSource(ref _adjustPane);
-            DisposeSource(ref _jobsPane);
-            DisposeSource(ref _editPane);
-            EnsureFocusHook();
-            _metaPane = new DesktopWindowXamlSource();
-            _metaPane.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
-            _metaPane.TakeFocusRequested += OnTakeFocusRequested;
-            _tree = new DesktopWindowXamlSource();
-            _tree.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
-            _tree.TakeFocusRequested += OnTakeFocusRequested;
-            // PR 11: the adjust pane, on the same right edge as the metadata pane.
-            _adjustPane = new DesktopWindowXamlSource();
-            _adjustPane.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
-            _adjustPane.TakeFocusRequested += OnTakeFocusRequested;
-            // PR 13 / 14: the Jobs pane, the same right edge again (one at a time).
-            _jobsPane = new DesktopWindowXamlSource();
-            _jobsPane.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
-            _jobsPane.TakeFocusRequested += OnTakeFocusRequested;
-            // PR 29: the Edit workspace, heading the same right column.
-            _editPane = new DesktopWindowXamlSource();
-            _editPane.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
-            _editPane.TakeFocusRequested += OnTakeFocusRequested;
-            // Parked below the client area with no content until first shown: a
-            // default full-client island would flash over the canvas.
-            MoveAt(_metaPane, 0, args.ClientHeight, 1, 1);
-            MoveAt(_tree, 0, args.ClientHeight, 1, 1);
-            MoveAt(_adjustPane, 0, args.ClientHeight, 1, 1);
-            MoveAt(_jobsPane, 0, args.ClientHeight, 1, 1);
-            MoveAt(_editPane, 0, args.ClientHeight, 1, 1);
+            // Parked below the client area with no content until first shown.
+            // The metadata pane, then on the same right edge (one at a time) the
+            // adjust pane (PR 11), the Jobs pane (PR 13 / 14) and the Edit
+            // workspace heading the column (PR 29); the tree on the left.
+            MoveAt(NewIsland(ref _metaPane, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
+            MoveAt(NewIsland(ref _tree, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
+            MoveAt(NewIsland(ref _adjustPane, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
+            MoveAt(NewIsland(ref _jobsPane, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
+            MoveAt(NewIsland(ref _editPane, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
+            // Issue #429: the page sidebar, on the tree's edge.
+            MoveAt(NewIsland(ref _pageSidebar, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
             // #345: the AI badge, a small island of its own (IslandHost.AiBadge.cs).
             AttachAiBadge(parent, args.ClientHeight);
             _metaPaneVisible = false;
@@ -136,12 +106,14 @@ public static partial class IslandHost
             DropTreeUi();
             DropAdjustUi();
             DropEditUi();
+            DropPageSidebarUi();
             DetachAiBadge();
             DisposeSource(ref _metaPane);
             DisposeSource(ref _tree);
             DisposeSource(ref _adjustPane);
             DisposeSource(ref _jobsPane);
             DisposeSource(ref _editPane);
+            DisposeSource(ref _pageSidebar);
             return 0;
         }
         catch (Exception ex)
@@ -185,19 +157,9 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < PanelArgsSize) return unchecked((int)0x80070057);
             if (source is null) return 1;
             ChromePanelArgs args = Marshal.PtrToStructure<ChromePanelArgs>(arg);
-            if (args.Visible == 0)
-            {
-                onHidden();
-                source.Content = null;
-                MoveAt(source, args.X, args.Y, args.Width, args.Height);
-                return 0;
-            }
-            MoveAt(source, args.X, args.Y, args.Width, args.Height);
-            if (source.Content is null)
-            {
-                source.Content = build();
-                onShown();
-            }
+            ShowOrPark(source, args.Visible != 0, () => MoveAt(source, args.X, args.Y, args.Width, args.Height),
+                       build, rebuild: false, onShown, onHidden);
+            if (args.Visible == 0) return 0;
             // `I` / Ctrl+Shift+E focus the pane (docs/design/16): the first focusable
             // element takes it, arrows walk, and Esc returns to the canvas.
             if (args.Focus != 0)
@@ -1619,24 +1581,6 @@ public static partial class IslandHost
             all[at + step].StartBringIntoView();
         }
         e.Handled = true;
-    }
-
-    private static Button FlatButton(UIElement content, Thickness padding, bool tabStop = true)
-    {
-        var b = new Button
-        {
-            Content = content,
-            Background = Brush(Colors.Transparent),
-            BorderThickness = new Thickness(0),
-            Padding = padding,
-            IsTabStop = tabStop,
-            AllowFocusOnInteraction = false,
-            HorizontalContentAlignment = HorizontalAlignment.Left,
-        };
-        // No grey disabled fill (a disabled clip tool read as selected) and
-        // the chrome's washes, not Windows' stock ones.
-        FlattenButton(b);
-        return b;
     }
 
     private static void RebuildTreeRoot()
