@@ -574,8 +574,10 @@ listing, which jumps to the first name match, else the first tag match with its 
 (`describe_commands()`: id, modes, label, key label). On Windows it is a XAML flyout with
 `ShouldConstrainToRootBounds = false`, so a strip does not clip it; it does not composite onto the
 swapchain. On the Mac it is a SwiftUI overlay over the canvas, filtered the same way. Both list
-the bindings live in the mode underneath, as if the canvas had focus. There is no command palette;
-Settings search and `?` cover finding a command.
+the bindings live in the mode underneath, as if the canvas had focus. Both lay the rows out in as
+many columns of at least 340 as the window holds, under a "Keyboard shortcuts" title and over the
+hint "Wheel zooms toward the cursor, drag pans. Keys change in Settings…" (issue #201). There is no
+command palette; Settings search and `?` cover finding a command.
 
 ### Empty window
 
@@ -588,6 +590,11 @@ the scene folds away before the welcome card returns. Opening a file over the ru
 A left strip, hidden by default. `Ctrl+Shift+E` shows and focuses it: `↑` `↓` walk, `→` `←` open
 and close a folder, `Enter` opens it and returns to the canvas, `Esc` returns to the canvas and a
 second `Esc` closes it. Names only, from `mv_list_subdirectories` on a worker; no thumbnails.
+
+The tree is rooted at the browsing trail's root (the highest crumb, `shell/browse_path.h`), not the
+folder on screen: opening a child keeps the tree, expands the path down to the open folder, lists
+that folder again, marks it (filled folder, accent) and scrolls it to the middle (issue #201, both
+platforms). Opening from outside the trail (Open, a drop) starts a new trail and so a new root.
 
 ## Overlays on the hot path
 
