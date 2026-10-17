@@ -1172,6 +1172,26 @@ struct rig {
     REQUIRE(eng->wait_search(id, kSettleMs));
     return rows(id);
   }
+  // #412: the rows a search answered. A description nothing answers lists
+  // the scope newest first instead, rows with no match of their own.
+  std::vector<std::pair<std::string, std::int64_t>> matched(std::uint64_t id) {
+    std::vector<std::pair<std::string, std::int64_t>> out;
+    const auto all = rows(id);
+    for (std::uint32_t i = 0; i < all.size(); ++i) {
+      auto r = eng->result_at(id, i);
+      REQUIRE(r);
+      if (r->match != 0) out.push_back(all[i]);
+    }
+    return out;
+  }
+  std::vector<std::pair<std::string, std::int64_t>> answered(const std::string& q,
+                                                             std::uint32_t scope = MV_AI_SCOPE_ALL,
+                                                             const std::string& dir_scope = "",
+                                                             std::uint32_t kinds = MV_AI_KIND_ALL) {
+    const std::uint64_t id = eng->search_text(q, dir_scope, scope, kinds);
+    REQUIRE(eng->wait_search(id, kSettleMs));
+    return matched(id);
+  }
   std::vector<std::pair<std::string, std::int64_t>> rows(std::uint64_t id) {
     std::vector<std::pair<std::string, std::int64_t>> out;
     auto n = eng->result_count(id);
@@ -1224,7 +1244,7 @@ TEST_CASE("a remembered folder indexes in the background and answers a descripti
   CHECK(red.front().first == "red_car.jpg");
   CHECK(red.front().second == -1);
   // docs/design/17: a nonsense query says "nothing found", not the least-bad ten.
-  CHECK(r.search("xyzzy plugh").empty());
+  CHECK(r.answered("xyzzy plugh").empty());
   CHECK(r.eng->folder_coverage(utf8(r.photos())) == 2u);
   CHECK(r.eng->folder_coverage(utf8(r.dir / "Elsewhere")) == 0u);
 }
@@ -1628,7 +1648,7 @@ TEST_CASE("precision: stricter answers a subset, broader a superset, and the set
   CHECK(includes(base, strict3));
   CHECK(includes(strict3, strict4));
   CHECK(strict4 == std::set<std::string>{"red_1.jpg", "red_2.jpg", "red_3.jpg"});
-  CHECK(found("xyzzy plugh").empty());
+  CHECK(r.answered("xyzzy plugh").empty());
   CHECK(r.clip_opens.load() == opens);
 
   // Broader: a superset, with the looser match.
@@ -2223,6 +2243,47 @@ TEST_CASE("date terms use the date taken, and the file's time only when there is
   CHECK(r.fast->images_embedded.load() == embedded);
 }
 
+TEST_CASE("a description nothing answers lists newest by date created; an answered one keeps best match",
+          "[ai][engine][dates][order]") {
+  // #412.
+  rig r;
+  r.file("red_plain.jpg");    // no date taken: its mtime, today
+  r.file("green_y2019.jpg");  // taken 2019-06-15
+  const std::int64_t day = 86400;
+  // Edited in Photos in 2025, created in 2018: it goes by the day it was created.
+  photos_lib::item edited{"blue-edited", mv::ai::query::days_from_civil(2025, 1, 1) * day};
+  edited.created = mv::ai::query::days_from_civil(2018, 3, 1) * day;
+  // Two created in the same second: by path, the same way every time.
+  photos_lib::item b{"grey-b", 1};
+  b.created = mv::ai::query::days_from_civil(2017, 1, 1) * day;
+  photos_lib::item a{"grey-a", 1};
+  a.created = b.created;
+  r.library->items = {edited, b, a};
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.eng->index_photos_library());
+  REQUIRE(r.idle());
+  const auto names = [](const std::vector<std::pair<std::string, std::int64_t>>& rows) {
+    std::vector<std::string> out;
+    for (const auto& [n, _] : rows) out.push_back(n);
+    return out;
+  };
+  const std::vector<std::string> newest{"red_plain.jpg", "green_y2019.jpg", "photos:blue-edited", "photos:grey-a",
+                                        "photos:grey-b"};
+  // Not an empty page, and not a score ranking: newest created first.
+  CHECK(names(r.search("xyzzy plugh")) == newest);
+  CHECK(r.answered("xyzzy plugh").empty());
+  CHECK(names(r.search("xyzzy plugh")) == newest);  // the same order again
+  // Within the Photos library alone too.
+  CHECK(names(r.search("xyzzy plugh", MV_AI_SCOPE_FOLDER, "photos:")) ==
+        (std::vector<std::string>{"photos:blue-edited", "photos:grey-a", "photos:grey-b"}));
+  // An answered query stays best match, not date order.
+  const auto blue = r.answered("something blue");
+  REQUIRE_FALSE(blue.empty());
+  CHECK(blue.front().first == "photos:blue-edited");
+  CHECK(r.search("something blue").front().first == "photos:blue-edited");
+}
+
 TEST_CASE("rating:, label:, iso:, f:, mm: and shutter: in Local search (#405)", "[ai][engine][tags][exposure]") {
   rig r;
   r.file("red_iso400.jpg");  // ISO 400, f/2.8, 1/250, 35 mm, five stars, Red
@@ -2532,7 +2593,7 @@ TEST_CASE("audio files are indexed only while Show audio files is on (#355)", "[
   CHECK(audio_rows() == 0);
   CHECK_FALSE(r.was_decoded("red_cover.mp3"));
   CHECK(names(r.search("red")) == std::set<std::string>{"red_photo.jpg"});
-  CHECK(r.search("beatles").empty());
+  CHECK(r.answered("beatles").empty());
 
   // On: the folder's audio files are walked and indexed like a new folder.
   REQUIRE(r.eng->set_setting("audio_files", "1"));
@@ -2567,7 +2628,7 @@ TEST_CASE("audio files are indexed only while Show audio files is on (#355)", "[
   // Off again: gone from results at once, then from the index.
   REQUIRE(r.eng->set_setting("audio_files", "0"));
   CHECK(names(r.search("red")) == std::set<std::string>{"red_photo.jpg"});
-  CHECK(r.search("beatles").empty());
+  CHECK(r.answered("beatles").empty());
   REQUIRE(wait_for([&] { return audio_rows() == 0; }, kSettleMs));
   REQUIRE(r.idle());
   CHECK(r.status().assets_total == 1);
@@ -2577,7 +2638,7 @@ TEST_CASE("audio files are indexed only while Show audio files is on (#355)", "[
   REQUIRE(r.idle());
   CHECK(setting() == false);
   CHECK(audio_rows() == 0);
-  CHECK(r.search("beatles").empty());
+  CHECK(r.answered("beatles").empty());
 }
 
 TEST_CASE("documents are indexed for their words only while Show documents is on (#354)",
@@ -2656,7 +2717,7 @@ TEST_CASE("documents are indexed for their words only while Show documents is on
   // Plain words: the speech rule (most of them; longer forms of a long one).
   CHECK(names(r.search("tenant rent")) == std::set<std::string>{"lease.docx"});
   CHECK(names(r.search("payment terms")) == std::set<std::string>{"invoice_march.pdf"});
-  CHECK(r.search("payment terms", MV_AI_SCOPE_ALL, "", MV_AI_KIND_PHOTOS | MV_AI_KIND_VIDEOS).empty());
+  CHECK(r.answered("payment terms", MV_AI_SCOPE_ALL, "", MV_AI_KIND_PHOTOS | MV_AI_KIND_VIDEOS).empty());
   // The pages that match, for N / Shift+N: one stop a page.
   {
     const std::uint64_t id = r.eng->search_text("\"lease\"", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
@@ -2676,9 +2737,9 @@ TEST_CASE("documents are indexed for their words only while Show documents is on
   CHECK(r.search("said:tenant").empty());
   CHECK(names(r.search("\"lease\" -text:tenant")) == std::set<std::string>{"invoice_march.pdf"});
   // Text off in Match by: no document by its words (a phrase still filters).
-  CHECK(r.search("tenant rent", MV_AI_SCOPE_ALL, "", MV_AI_KIND_ALL | MV_AI_FIND_PICTURES).empty());
+  CHECK(r.answered("tenant rent", MV_AI_SCOPE_ALL, "", MV_AI_KIND_ALL | MV_AI_FIND_PICTURES).empty());
   // An older chrome's kinds (photos, videos, audio) never see a document.
-  CHECK(r.search("tenant rent", MV_AI_SCOPE_ALL, "", 11u).empty());
+  CHECK(r.answered("tenant rent", MV_AI_SCOPE_ALL, "", 11u).empty());
 
   // Off again: gone from results at once, then from the index, text and all.
   REQUIRE(r.eng->set_setting("document_files", "0"));
@@ -2753,11 +2814,11 @@ TEST_CASE("the Documents piece finds documents by what they are about (#354 D3)"
   }
   CHECK(r.search("the electricity bill") == std::vector<std::pair<std::string, std::int64_t>>{{"invoice_march.pdf", 2}});
   // "Nothing found": a query about nothing here answers nothing by meaning.
-  CHECK(r.search("wedding seating plan").empty());
+  CHECK(r.answered("wedding seating plan").empty());
   // Words still match as typed, beside meaning.
   CHECK(names(r.search("\"two months notice\"")) == std::set<std::string>{"lease.docx"});
   // Text off in Match by: no document by meaning either.
-  CHECK(r.search("paying my landlord", MV_AI_SCOPE_ALL, "", MV_AI_KIND_ALL | MV_AI_FIND_PICTURES).empty());
+  CHECK(r.answered("paying my landlord", MV_AI_SCOPE_ALL, "", MV_AI_KIND_ALL | MV_AI_FIND_PICTURES).empty());
 
   // A restart answers from the stored vectors: nothing embedded again.
   r.start();
@@ -2779,7 +2840,7 @@ TEST_CASE("the Documents piece finds documents by what they are about (#354 D3)"
   r.docs_available = false;
   r.start();
   REQUIRE(r.idle());
-  CHECK(r.search("paying my landlord").empty());
+  CHECK(r.answered("paying my landlord").empty());
   CHECK((r.status().flags & MV_AI_STATUS_DOCS_READY) == 0);
   CHECK(r.status().meaning_total == 0);
   CHECK(vecs() == 5);
@@ -2790,7 +2851,7 @@ TEST_CASE("the Documents piece finds documents by what they are about (#354 D3)"
   REQUIRE(r.idle());
   REQUIRE(r.eng->set_setting("document_files", "0"));
   REQUIRE(wait_for([&] { return vecs() == 0; }, kSettleMs));
-  CHECK(r.search("paying my landlord").empty());
+  CHECK(r.answered("paying my landlord").empty());
 }
 
 TEST_CASE("a folder's Documents choice and Settings' Off drop its documents' text (#354)",
@@ -2911,7 +2972,7 @@ TEST_CASE("Words and pages pictures a document's first pages and its picture pag
   CHECK(r.search("green", MV_AI_SCOPE_ALL, "", MV_AI_KIND_DOCUMENTS) ==
         std::vector<std::pair<std::string, std::int64_t>>{{"gallery_brochure.pdf", 6}});
   // Match by Text alone leaves the pictures out; the words still find theirs.
-  CHECK(r.search("green", MV_AI_SCOPE_ALL, "", MV_AI_KIND_ALL | MV_AI_FIND_TEXT).empty());
+  CHECK(r.answered("green", MV_AI_SCOPE_ALL, "", MV_AI_KIND_ALL | MV_AI_FIND_TEXT).empty());
   CHECK(names(r.search("tenant rent")) == std::set<std::string>{"lease.docx"});
 
   // A restart keeps them: loaded with the other vectors, nothing drawn again.
@@ -2925,7 +2986,7 @@ TEST_CASE("Words and pages pictures a document's first pages and its picture pag
   // and pages they are drawn again.
   const std::int64_t id = root_id();
   REQUIRE(r.eng->root_set_documents(id, MV_AI_DOCS_WORDS));
-  REQUIRE(wait_for([&] { return r.search("green", MV_AI_SCOPE_ALL, "", MV_AI_KIND_DOCUMENTS).empty(); }, kSettleMs));
+  REQUIRE(wait_for([&] { return r.answered("green", MV_AI_SCOPE_ALL, "", MV_AI_KIND_DOCUMENTS).empty(); }, kSettleMs));
   REQUIRE(r.idle());
   CHECK(page_frames() == 0);
   CHECK(r.status().pages_total == 0);
@@ -2941,7 +3002,7 @@ TEST_CASE("Words and pages pictures a document's first pages and its picture pag
   REQUIRE(r.idle());
   CHECK(page_frames() == 12);
   REQUIRE(r.eng->set_setting("doc_index", "1"));
-  REQUIRE(wait_for([&] { return r.search("red", MV_AI_SCOPE_ALL, "", MV_AI_KIND_DOCUMENTS).empty(); }, kSettleMs));
+  REQUIRE(wait_for([&] { return r.answered("red", MV_AI_SCOPE_ALL, "", MV_AI_KIND_DOCUMENTS).empty(); }, kSettleMs));
   REQUIRE(r.idle());
   CHECK(page_frames() == 0);
   CHECK(r.status().pages_total == 0);
@@ -3195,7 +3256,7 @@ TEST_CASE("audio: a clip's sounds and speech are indexed and found at their mome
   const std::uint64_t pics =
       r.eng->search_text("birthday anna", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL | MV_AI_FIND_PICTURES);
   REQUIRE(r.eng->wait_search(pics, kSettleMs));
-  CHECK(r.rows(pics).empty());
+  CHECK(r.matched(pics).empty());
 
   // Photos still answer as pictures alongside. Not necessarily first: both
   // clips open on red frames that tie with the photo exactly, and a tie's
@@ -3753,7 +3814,7 @@ TEST_CASE("audio: without the ai-audio piece nothing changes", "[ai][engine][aud
   REQUIRE(r.idle());
   CHECK((r.status().flags & MV_AI_STATUS_AUDIO_READY) == 0);
   CHECK(r.status().sound_total == 0);
-  CHECK(r.search("birthday anna").empty());
+  CHECK(r.answered("birthday anna").empty());
 }
 
 // Owner report (2026-09-27): choosing Sound or Both before the Sound piece was
@@ -3865,7 +3926,7 @@ TEST_CASE("audio: a piece installed under a running pack keeps the picture tower
   r.audio_available = false;
   REQUIRE(r.eng->set_setting("reload", "1"));
   REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_AUDIO_READY) == 0; }, kSettleMs));
-  CHECK(r.search("birthday anna").empty());
+  CHECK(r.answered("birthday anna").empty());
   CHECK(r.clip_opens.load() == opens);
 }
 
@@ -4104,7 +4165,7 @@ TEST_CASE("indexing waits while the tower is still its CPU stand-in for Core ML"
   std::this_thread::sleep_for(std::chrono::milliseconds(600));
   CHECK(r.high->images_embedded.load() == 0);
   CHECK(r.status().state == MV_AI_STATE_LOADING);
-  CHECK(r.search("red").empty());  // answers (nothing yet), never waits on the compile
+  CHECK(r.answered("red").empty());  // answers (nothing yet), never waits on the compile
 
   large->upgraded = true;
   REQUIRE(r.idle());
@@ -4217,7 +4278,10 @@ struct scored {
   std::uint32_t more;
 };
 
-std::vector<scored> ranked(engine& e, const std::string& q, std::uint32_t kinds = MV_AI_KIND_ALL) {
+// `answered`: only the rows the query answered, not the newest-first list of
+// one it did not (#412).
+std::vector<scored> ranked(engine& e, const std::string& q, std::uint32_t kinds = MV_AI_KIND_ALL,
+                           bool answered = true) {
   const std::uint64_t id = e.search_text(q, "", MV_AI_SCOPE_ALL, kinds);
   REQUIRE(e.wait_search(id, kSettleMs));
   std::vector<scored> out;
@@ -4228,6 +4292,7 @@ std::vector<scored> ranked(engine& e, const std::string& q, std::uint32_t kinds 
     auto p = e.result_path(id, i);
     REQUIRE(r);
     REQUIRE(p);
+    if (answered && r->match == 0) continue;
     out.push_back({utf8(fs::path(*p).filename()), r->pts_ms, r->score, r->more_in_clip});
   }
   e.search_release(id);
@@ -4545,7 +4610,7 @@ TEST_CASE("the agent's session returns the in-app top-K through the reader, over
 
   for (const char* q : {"red", "green", "blue", "xyzzy plugh", "red video"}) {
     INFO(q);
-    const auto app = ranked(*r.eng, q);
+    const auto app = ranked(*r.eng, q, MV_AI_KIND_ALL, false);
     mv::nle::request req;
     req.correlation_id = 7;
     const mv::nle::reply rep = session->run(req, q, "", kSettleMs);
@@ -4806,7 +4871,7 @@ TEST_CASE("the opt-in iCloud fetch downloads iCloud-only clips, indexes them, th
   REQUIRE(r.idle());
   CHECK(r.status().assets_unavailable == 2);
   CHECK(r.status().icloud_fetch == MV_AI_ICLOUD_OFF);  // off by default
-  CHECK_FALSE(has_row(r.search("blue"), "photos:red-cloudclip"));  // only its red poster
+  CHECK_FALSE(has_row(r.answered("blue"), "photos:red-cloudclip"));  // only its red poster
   CHECK(r.library->fetches == 0);
 
   // On battery, then on a metered network: it waits, downloading nothing.
@@ -4862,7 +4927,7 @@ TEST_CASE("online-only cloud files are counted, never read, and fetched in place
   REQUIRE(eventually([&] { return r.status().state == MV_AI_STATE_IDLE; }));
   CHECK(s.cloud_fetch == MV_AI_ICLOUD_OFF);  // off by default
   CHECK_FALSE(r.was_decoded("blue_sea.jpg"));  // reading it would have downloaded it
-  CHECK(r.search("something blue").empty());
+  CHECK(r.answered("something blue").empty());
   CHECK(r.eng->roots_json().find("\"cloud_only\":1") != std::string::npos);
   CHECK(r.cloud->log.empty());
 

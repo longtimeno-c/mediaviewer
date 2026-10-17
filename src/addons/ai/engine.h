@@ -746,6 +746,11 @@ class engine {
   void add_row(search_state& st, std::int64_t asset, std::int64_t pts_ms, float score, float rank,
                std::uint32_t match, std::string snippet) const;
   static void finish(search_state& st);
+  // `allowed`, newest by date created first (#412): a Photos item's
+  // creationDate, a file's date taken, else its modification time; the same
+  // second by path. A filter-only query, and a description the engine cannot
+  // answer, list this rather than a score ranking or an empty page.
+  void newest_first(search_state& st, const std::set<std::int64_t>& allowed);
   std::vector<float> query_vector(const loaded_clip& answer, const std::string& text);
   // sharing an index
   struct transfer_job {
