@@ -1037,7 +1037,7 @@ void engine::refresh_counts() {
   if (small_fallback_) flags |= MV_AI_STATUS_SMALL_FALLBACK;
   if (settling_) flags |= MV_AI_STATUS_PEOPLE_SETTLING;
   {
-    std::lock_guard lock(pieces_m_);
+    std::lock_guard pl(pieces_m_);
     if (pieces_.docs_ready) flags |= MV_AI_STATUS_DOCS_READY;
   }
   status_.flags = flags;
