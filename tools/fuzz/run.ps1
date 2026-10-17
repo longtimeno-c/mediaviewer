@@ -153,8 +153,11 @@ foreach ($name in $Harness) {
         $stats = Select-String -Path $log -Pattern 'stat::number_of_executed_units|stat::peak_rss_mb' |
             ForEach-Object { $_.Line.Trim() }
         $execs = ($stats | Where-Object { $_ -match 'executed' }) -replace '.*:\s*', ''
+        # A harness that dies mid-run (a trap libFuzzer cannot catch, so no
+        # final stats and no artefact) still printed INITED: it started.
+        $started = Select-String -Path $log -Pattern '^#\d+\s+INITED' -Quiet
         $launchFailed = ($exit -is [int]) -and ($exit -ne 0) -and (-not $execs) -and
-                        ($found.Count -eq 0)
+                        (-not $started) -and ($found.Count -eq 0)
         if (-not ($launchFailed -and $attempt -eq 1)) { break }
         Write-Host ("    did not start (exit 0x{0:X8}); relaunching once" -f $exit)
         Start-Sleep -Seconds 5
@@ -174,7 +177,7 @@ foreach ($name in $Harness) {
     $results += [pscustomobject]@{
         Harness = $name; Exit = $(if ($launchFailed) { '0x{0:X8}' -f $exit } else { $exit })
         Artifacts = $found.Count
-        Execs = $(if ($launchFailed) { 'never started' } else { $execs })
+        Execs = $(if ($launchFailed) { 'never started' } elseif (-not $execs -and $started) { 'died mid-run' } else { $execs })
         Ok = $ok
     }
 }
