@@ -24,6 +24,16 @@
 // total]. With the ai-docs piece installed (D3) they carry "meaning" [done,
 // total]: documents whose passages the text model embedded. --kinds N searches with those kind and MV_AI_FIND_* bits (default
 // MV_AI_KIND_ALL); --top N prints that many results a query (default 5).
+// The lines also carry "scans" [done, total] (slice D4: documents whose
+// scanned pages the OS has read). --query-file reads one query a line;
+// --brief prints a result's file and page alone (no score, no snippet).
+//
+// --add <dir> --add-after <s> (#354 D4): <s> seconds after every pass but the
+// scanned pages' is done (the models in, the pictures, the documents' words
+// and pages), hard-links every file of <dir> into the --index folder, rescans
+// it, and prints {"added":N,...} with the status then and
+// {"added_pictured_s":...} once every picture is done: how long new photos
+// waited beside a long scan being read, or beside nothing.
 //
 // --export / --import (docs/design/17 "Sharing an index"): two --addons folders are two
 // machines. Import prints what inspect_export said and the outcome, then waits
@@ -93,7 +103,7 @@ void print_status(const mv_ai_api* ai, double t0) {
               "\"assets\":%llu,\"done\":%llu,\"failed\":%llu,\"frames\":%llu,\"assets_per_s\":%.2f,"
               "\"frames_per_s\":%.2f,\"eta\":[%.0f,%.0f],\"sound\":[%llu,%llu],\"speech\":[%llu,%llu],"
               "\"index_bytes\":%llu,\"flags\":%u,\"unavailable\":%llu,\"docs\":[%llu,%llu,%llu,%llu],\"pages\":[%llu,%llu],"
-              "\"meaning\":[%llu,%llu],\"fault_detail\":\"%s\"}\n",
+              "\"meaning\":[%llu,%llu],\"scans\":[%llu,%llu],\"fault_detail\":\"%s\"}\n",
               now_s() - t0, s.state, s.yield_reason, s.backend, s.provider_fault, s.model_utf8,
               static_cast<unsigned long long>(s.assets_total), static_cast<unsigned long long>(s.assets_done),
               static_cast<unsigned long long>(s.assets_failed), static_cast<unsigned long long>(s.frames_indexed),
@@ -105,7 +115,8 @@ void print_status(const mv_ai_api* ai, double t0) {
               static_cast<unsigned long long>(s.docs_total), static_cast<unsigned long long>(s.docs_locked),
               static_cast<unsigned long long>(s.docs_failed), static_cast<unsigned long long>(s.pages_done),
               static_cast<unsigned long long>(s.pages_total), static_cast<unsigned long long>(s.meaning_done),
-              static_cast<unsigned long long>(s.meaning_total), detail.c_str());
+              static_cast<unsigned long long>(s.meaning_total), static_cast<unsigned long long>(s.scans_done),
+              static_cast<unsigned long long>(s.scans_total), detail.c_str());
   std::fflush(stdout);
 }
 
@@ -154,7 +165,9 @@ int main(int argc, char** argv) {
   int media = -1, compute = -1, quality = -1, doc_index = -1;
   unsigned kinds = MV_AI_KIND_ALL, top = 5;
   double timeout = 3600, busy_after = -1, busy_for = 0, quit_after = -1, quit_budget = 0.5;
-  bool quit_hash = false, quit_legacy = false, photos = false, documents = false;
+  bool quit_hash = false, quit_legacy = false, photos = false, documents = false, brief = false;
+  std::string add_dir;
+  double add_after = -1;
   std::string export_file, import_file, import_to, make_thumbs, count_thumbs;
   unsigned export_flags = 0, import_flags = 0;
   std::vector<std::string> queries;
@@ -173,6 +186,19 @@ int main(int argc, char** argv) {
     else if (a == "--quality") quality = std::stoi(next());
     else if (a == "--timeout") timeout = std::stod(next());
     else if (a == "--query") queries.push_back(next());
+    else if (a == "--query-file") {
+      std::FILE* f = std::fopen(next().c_str(), "rb");
+      char line[4096];
+      while (f && std::fgets(line, sizeof line, f)) {
+        std::string q(line);
+        while (!q.empty() && (q.back() == '\n' || q.back() == '\r')) q.pop_back();
+        if (!q.empty()) queries.push_back(q);
+      }
+      if (f) std::fclose(f);
+    }
+    else if (a == "--brief") brief = true;
+    else if (a == "--add") add_dir = next();
+    else if (a == "--add-after") add_after = std::stod(next());
     else if (a == "--busy-after") busy_after = std::stod(next());
     else if (a == "--busy-for") busy_for = std::stod(next());
     else if (a == "--quit-after") quit_after = std::stod(next());
@@ -268,6 +294,10 @@ int main(int argc, char** argv) {
       return 1;
     }
     double last = 0;
+    // --add: when only the scan pass (or nothing) was left, when the files
+    // went in, and the picture count they wait for.
+    double t_quiet = -1, t_added = -1;
+    std::uint64_t want_assets = 0;
     while (now_s() - t0 < timeout) {
       const double t = now_s() - t0;
       if (busy_after >= 0) g_busy = t >= busy_after && t < busy_after + busy_for;
@@ -275,7 +305,40 @@ int main(int argc, char** argv) {
         print_status(ai, t0);
         last = t;
       }
-      if (t > 10 && idle(ai)) break;
+      if (!add_dir.empty()) {
+        mv_ai_status s{};
+        s.struct_size = sizeof(s);
+        (void)ai->status(ai->ctx, &s);
+        if (t_quiet < 0 && s.state != MV_AI_STATE_LOADING && s.docs_total > 0 && s.docs_done >= s.docs_total &&
+            s.pages_done >= s.pages_total && s.assets_done + s.assets_failed + s.assets_unavailable >= s.assets_total) {
+          t_quiet = t;
+        }
+        if (t_added < 0 && t_quiet >= 0 && t - t_quiet >= add_after) {
+          unsigned n = 0;
+          for (const std::string& f : files_in(add_dir)) {
+            const auto from = std::filesystem::path(std::u8string(f.begin(), f.end()));
+            std::error_code ec;
+            std::filesystem::create_hard_link(
+                from, std::filesystem::path(std::u8string(folder.begin(), folder.end())) / from.filename(), ec);
+            if (!ec) ++n;
+          }
+          (void)ai->root_rescan(ai->ctx, root);
+          t_added = t;
+          want_assets = s.assets_total + n;
+          std::printf("{\"added\":%u,\"t\":%.1f,\"pictures\":[%llu,%llu],\"scans\":[%llu,%llu]}\n", n, t,
+                      static_cast<unsigned long long>(s.assets_done), static_cast<unsigned long long>(s.assets_total),
+                      static_cast<unsigned long long>(s.scans_done), static_cast<unsigned long long>(s.scans_total));
+          std::fflush(stdout);
+        }
+        if (t_added >= 0 && want_assets > 0 && s.assets_total >= want_assets &&
+            s.assets_done + s.assets_failed + s.assets_unavailable >= s.assets_total) {
+          std::printf("{\"added_pictured_s\":%.2f,\"scans\":[%llu,%llu]}\n", t - t_added,
+                      static_cast<unsigned long long>(s.scans_done), static_cast<unsigned long long>(s.scans_total));
+          std::fflush(stdout);
+          want_assets = 0;
+        }
+      }
+      if (t > 10 && idle(ai) && (add_dir.empty() || (t_added >= 0 && want_assets == 0))) break;
       std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
     print_status(ai, t0);
@@ -363,7 +426,13 @@ int main(int argc, char** argv) {
     }
     while (ai->result_count(ai->ctx, id, &n) != MV_OK) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     const double ms = (now_s() - tq) * 1000;
-    std::printf("{\"query\":\"%s\",\"ms\":%.1f,\"results\":%u,\"top\":[", q.c_str(), ms, n);
+    // The query as a JSON string: a quoted phrase's quotes escaped.
+    std::string qj;
+    for (char c : q) {
+      if (c == '"' || c == '\\') qj += '\\';
+      qj += c;
+    }
+    std::printf("{\"query\":\"%s\",\"ms\":%.1f,\"results\":%u,\"top\":[", qj.c_str(), ms, n);
     for (uint32_t i = 0; i < n && i < top; ++i) {
       mv_ai_result r{};
       char path[4096] = {};
@@ -372,6 +441,11 @@ int main(int argc, char** argv) {
       ai->result_path(ai->ctx, id, i, path, sizeof path);
       if (ai->result_snippet) ai->result_snippet(ai->ctx, id, i, snip, sizeof snip);
       const char* name = std::strrchr(path, '\\') ? std::strrchr(path, '\\') + 1 : path;
+      if (brief) {
+        const char* base = std::strrchr(name, '/') ? std::strrchr(name, '/') + 1 : name;
+        std::printf("%s[\"%s\",%lld]", i ? "," : "", base, static_cast<long long>(r.pts_ms));
+        continue;
+      }
       // A Photos asset's identifier is as private as a path: never printed.
       if (std::strncmp(path, "photos:", 7) == 0) name = r.pts_ms >= 0 ? "photos:video" : "photos:photo";
       // A document's snippet is its own text: quotes and control characters escaped.

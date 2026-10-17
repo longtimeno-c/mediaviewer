@@ -237,6 +237,11 @@ public unsafe struct MvAiStatus
     // counted as done). Zero from a pack before them, and without the piece.
     public ulong MeaningTotal;
     public ulong MeaningDone;
+    // Scanned pages (#354 D4), appended: documents whose words are read, and
+    // those whose pages with no text layer the OS has read. Zero from a pack
+    // before them, and where Windows has no OCR language.
+    public ulong ScansTotal;
+    public ulong ScansDone;
 
     /// <summary>Display only (rule 6: never logged).</summary>
     public readonly string ActiveRootText

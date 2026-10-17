@@ -366,6 +366,11 @@ internal sealed class Look
                 {
                     return $"Reading text in pictures {n(s.TextDone)} of {n(s.TextTotal)}";
                 }
+                // #354 D4: last, the pages of scanned documents, read by the OS.
+                if (picturesDone && s.ScansDone < s.ScansTotal)
+                {
+                    return $"Reading scanned pages {n(s.ScansDone)} of {n(s.ScansTotal)} documents";
+                }
                 // Online-only files wait for the fetch: they are not "of" the work in hand.
                 return $"Indexing {n(s.AssetsDone)} of {n(s.AssetsTotal - Math.Min(s.AssetsTotal, s.CloudFilesLeft))}" + Eta(s);
             default:

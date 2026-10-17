@@ -341,7 +341,7 @@ struct StatusLine: Equatable {
         // the note under it carries on with those clips, so the two read as
         // one run rather than a nearly finished index beside a stray download.
         text = (s.sound_total > 0 || s.speech_total > 0 || s.cues_total > 0 || s.text_total > 0 || s.docs_total > 0 || s.pages_total > 0
-                || s.meaning_total > 0
+                || s.meaning_total > 0 || s.scans_total > 0
                 ? "Indexing pictures " : "Indexing ")
           + "\(countText(Self.picturesDone(s))) of \(countText(s.assets_total))"
           + (Self.icloudQueued(s) ? " on this Mac" : "")
@@ -363,6 +363,9 @@ struct StatusLine: Equatable {
         text = "Indexing sound \(countText(s.sound_done)) of \(countText(s.sound_total)) clips"
       case .speech:
         text = "Indexing speech \(countText(s.speech_done)) of \(countText(s.speech_total)) clips"
+      case .scans:
+        // #354 D4: last, the pages of scanned documents, read by the OS.
+        text = "Reading scanned pages \(countText(s.scans_done)) of \(countText(s.scans_total)) documents"
       }
       spinning = true
       indexing = true
@@ -402,7 +405,10 @@ struct StatusLine: Equatable {
       text = s.frames_indexed == 0 && s.docs_total == 0 ? "Nothing indexed yet"
         : "Up to date · \(countText(s.frames_indexed)) moments"
       // #354: the documents read for their words.
-      if s.docs_total > 0 { text += " · " + (s.docs_total == 1 ? "1 document" : "\(countText(s.docs_total)) documents") }
+      // (Not on the scanned pages' line, which counts them already.)
+      if s.docs_total > 0 && Self.phase(s) != .scans {
+        text += " · " + (s.docs_total == 1 ? "1 document" : "\(countText(s.docs_total)) documents")
+      }
       if s.cloud_files_left > 0 { text += " · \(countText(s.cloud_files_left)) only in iCloud Drive" }
     }
     // The ring follows the pass the line names.
@@ -419,6 +425,7 @@ struct StatusLine: Equatable {
     case .text: progress = fraction(s.text_done, s.text_total)
     case .sound: progress = fraction(s.sound_done, s.sound_total)
     case .speech: progress = fraction(s.speech_done, s.speech_total)
+    case .scans: progress = fraction(s.scans_done, s.scans_total)
     }
     audioReady = s.flags & MV_AI_STATUS_AUDIO_READY != 0
     badge = s.backend == MV_AI_BACKEND_COREML.rawValue ? "Neural Engine" : "CPU"
@@ -481,7 +488,7 @@ struct StatusLine: Equatable {
     detail = notes.joined(separator: " · ")
   }
 
-  enum Phase { case pictures, documents, pages, meaning, cues, text, sound, speech }
+  enum Phase { case pictures, documents, pages, meaning, cues, text, sound, speech, scans }
 
   /// Whether the opt-in iCloud fetch still has clips to bring down and index
   /// this run (issue #417): a download in progress or any of its waits. Clips
@@ -554,6 +561,7 @@ struct StatusLine: Equatable {
     if s.text_done < s.text_total { return .text }
     if s.sound_done < s.sound_total { return .sound }
     if s.speech_done < s.speech_total { return .speech }
+    if s.scans_done < s.scans_total { return .scans }  // #354 D4: after every other pass
     return .pictures
   }
 }

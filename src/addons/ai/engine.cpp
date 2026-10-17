@@ -881,7 +881,8 @@ void engine::refresh_counts() {
   // only when they can have moved (text_counts_).
   const std::string ocr_spec = text_spec();
   const std::string cue_spec = host_.has_cues() ? std::string(kCueSpec) : std::string();
-  const std::string text_key = cue_spec + "|" + ocr_spec + "|" + build_spec + "|" +
+  const std::string scans_spec = scan_spec();
+  const std::string text_key = cue_spec + "|" + ocr_spec + "|" + scans_spec + "|" + build_spec + "|" +
                                std::to_string(document_files_.load()) + std::to_string(doc_index_.load()) + "|" +
                                std::to_string(c.assets) + "|" +
                                std::to_string(c.done + c.failed + c.unavailable) + "|" + std::to_string(skip) + "|" +
@@ -896,6 +897,7 @@ void engine::refresh_counts() {
     return k.assets > k.done + k.failed + k.unavailable + k.locked + k.cloud_only;
   };
   recount = recount || tc.key != text_key || open(tc.cues) || open(tc.photos) || open(tc.moments) || open(tc.docs) || open(tc.pages) || open(tc.meaning) ||
+            open(tc.scans) ||
             now_s() - tc.at >= 30.0;
   if (recount) {
     tc.cues = cue_spec.empty() ? counts{}
@@ -916,9 +918,12 @@ void engine::refresh_counts() {
         if (docs_.model) meaning_spec = docs_.spec_key;
       }
       tc.meaning = document_files_.load() && !meaning_spec.empty()
-                       ? db_->count(meaning_spec, docs_filter(media, skip, held_now), kDocTextSpec)
+                       ? db_->count(meaning_spec, docs_filter(media, skip, held_now), meaning_after())
                        : counts{};
     }
+    // #354 D4: documents whose words are read, and those whose scanned pages
+    // are (a document with none is done when its words are).
+    tc.scans = scans_spec.empty() ? counts{} : db_->count(scans_spec, docs_filter(media, skip, held_now), kDocTextSpec);
     tc.key = text_key;
     tc.at = now_s();
   }
@@ -928,6 +933,7 @@ void engine::refresh_counts() {
   const counts& cd = tc.docs;
   const counts& cg = tc.pages;
   const counts& cn = tc.meaning;
+  const counts& co = tc.scans;
   std::map<std::int64_t, std::pair<std::uint64_t, std::uint64_t>> per_root;
   const std::vector<root_row> roots = db_->roots();
   const std::string root_spec = counting_spec();
@@ -1003,6 +1009,8 @@ void engine::refresh_counts() {
   status_.pages_done = cg.done + cg.failed + cg.unavailable + cg.locked;
   status_.meaning_total = cn.assets;
   status_.meaning_done = cn.done + cn.failed + cn.unavailable + cn.locked;
+  status_.scans_total = co.assets;
+  status_.scans_done = co.done + co.failed + co.unavailable + co.locked;
   status_.frames_indexed = store_.live_rows();
   status_.index_bytes = bytes;
   status_.faces_total = face_total;
@@ -1077,7 +1085,8 @@ void engine::refresh_counts() {
                        cm.assets > cm.done + cm.failed + cm.unavailable + cm.cloud_only ||
                        cd.assets > cd.done + cd.failed + cd.unavailable + cd.locked + cd.cloud_only ||
                        cg.assets > cg.done + cg.failed + cg.unavailable + cg.locked + cg.cloud_only ||
-                       cn.assets > cn.done + cn.failed + cn.unavailable + cn.locked + cn.cloud_only;
+                       cn.assets > cn.done + cn.failed + cn.unavailable + cn.locked + cn.cloud_only ||
+                       co.assets > co.done + co.failed + co.unavailable + co.locked + co.cloud_only;
   std::uint32_t state = MV_AI_STATE_INDEXING;
   if (models_failed_) {
     state = MV_AI_STATE_ERROR;
@@ -3185,20 +3194,28 @@ bool engine::claim(std::vector<work_item>& out, track& t, bool models_ok) {
     // Mac's Neural Engine) only the document pass runs: it reads words and
     // needs no model. Taken straight from the index, past the shared queue,
     // which keeps its order for when the towers are in.
-    // D3: so does the meaning pass, whose text model is its own and on CPU.
+    // D3: so does the meaning pass, whose text model is its own and on CPU,
+    // and (D4) the scanned pages' pass, which needs the OS reader alone.
     if (!document_files_.load()) return false;
     const track_filter f = docs_filter(default_media(), skip_root(), held_list());
     std::vector<work_item> docs = db_->pending(kDocTextSpec, 8, kMaxTries, f);
     track which = track::docs;
     if (docs.empty()) {
-      std::string meaning_spec;
-      {
-        std::lock_guard ml(models_m_);
-        if (docs_.model) meaning_spec = docs_.spec_key;
+      // #354 D4: a document's scanned pages, then (D3) its meaning, which
+      // waits for them (meaning_after).
+      const std::string scans_spec = scan_spec();
+      if (!scans_spec.empty()) docs = db_->pending(scans_spec, 8, kMaxTries, f, kDocTextSpec);
+      which = track::scan;
+      if (docs.empty()) {
+        std::string meaning_spec;
+        {
+          std::lock_guard ml(models_m_);
+          if (docs_.model) meaning_spec = docs_.spec_key;
+        }
+        if (meaning_spec.empty()) return false;
+        docs = db_->pending(meaning_spec, 8, kMaxTries, f, meaning_after());
+        which = track::meaning;
       }
-      if (meaning_spec.empty()) return false;
-      docs = db_->pending(meaning_spec, 8, kMaxTries, f, kDocTextSpec);
-      which = track::meaning;
     }
     std::lock_guard lock(work_m_);
     for (const work_item& w : docs) {
@@ -3233,12 +3250,15 @@ bool engine::claim(std::vector<work_item>& out, track& t, bool models_ok) {
   // #354 D2: their page pictures, once their words are read (pending's
   // `after`), at Words and pages.
   const std::string pages_spec = document_files_.load() ? doc_page_spec(spec) : std::string();
-  // #354 D3: their passages' meaning, once their words are read, with ai-docs.
+  // #354 D3: their passages' meaning, once their words (and scanned pages,
+  // D4) are read, with ai-docs.
   std::string meaning_spec;
   if (document_files_.load()) {
     std::lock_guard ml(models_m_);
     if (docs_.model) meaning_spec = docs_.spec_key;
   }
+  // #354 D4: their scanned pages, once their words are read, by the OS reader.
+  const std::string scans_spec = scan_spec();
   std::lock_guard lock(work_m_);
   {
     // A folder opened (note_folder_opened): it goes first from now on.
@@ -3255,9 +3275,9 @@ bool engine::claim(std::vector<work_item>& out, track& t, bool models_ok) {
     // Pictures first (fast, and what most searches need), then what clips
     // sound like, then what is said in them, then the People pass.
     const auto take = [&](const std::string& track_spec, track which, const track_filter& f,
-                          const std::string& after = {}) {
+                          const std::string& after = {}, std::size_t limit = 256) {
       if (!queue_.empty() || track_spec.empty()) return;
-      for (work_item& w : db_->pending(track_spec, 256, kMaxTries, f, after)) {
+      for (work_item& w : db_->pending(track_spec, limit, kMaxTries, f, after)) {
         if (!in_flight_.count(w.asset.id)) queue_.push_back(job{std::move(w), which});
       }
     };
@@ -3305,7 +3325,7 @@ bool engine::claim(std::vector<work_item>& out, track& t, bool models_ok) {
     // a document needs first.
     take(docs_spec, track::docs, docs_filter(media, skip, held_now));
     take(pages_spec, track::pages, pages_filter(media, skip, held_now), kDocTextSpec);
-    take(meaning_spec, track::meaning, docs_filter(media, skip, held_now), kDocTextSpec);
+    take(meaning_spec, track::meaning, docs_filter(media, skip, held_now), meaning_after());
     // #406: a clip's own text, after its pictures (they never wait on it).
     take(cue_spec, track::cues, track_filter{false, MV_AI_MEDIA_BOTH, media, skip, held_now});
     // #403: the text in photos, after their pictures and the clips' own text.
@@ -3333,6 +3353,11 @@ bool engine::claim(std::vector<work_item>& out, track& t, bool models_ok) {
         if (queue_.size() >= 64) break;
       }
     }
+    // #354 D4: scanned pages last of all, one document at a time: each claim
+    // reads a few of its pages and returns (process_scan), and with nothing
+    // else queued the next claim looks at every other pass first. A 100-page
+    // scan never stands in front of a photo for more than one chunk.
+    take(scans_spec, track::scan, docs_filter(media, skip, held_now), kDocTextSpec, 1);
     if (queue_.empty()) {
       queue_exhausted_ = true;
       return false;
@@ -3407,6 +3432,9 @@ void engine::worker_loop(unsigned) {
       text_counts_due_ = true;
     } else if (t == track::meaning) {
       if (docs.model) process_meaning(items.front(), docs);
+      text_counts_due_ = true;
+    } else if (t == track::scan) {
+      process_scan(items.front());
       text_counts_due_ = true;
     } else if (t == track::sound) {
       if (sound.model) process_sound(items.front(), sound);
@@ -5353,6 +5381,19 @@ std::string engine::text_moments_spec() const {
   return spec.empty() ? spec : spec + kMomentsSuffix;
 }
 
+std::string engine::scan_spec() const {
+  if (!document_files_.load()) return {};
+  std::lock_guard lock(models_m_);
+  return text_ ? text_->spec_key() + kScanSuffix : std::string();
+}
+
+std::string engine::meaning_after() const {
+  // #354 D4: a scanned document's meaning waits for its pages to be read (a
+  // text document's scan progress is done with its words, so it never waits).
+  const std::string scans = scan_spec();
+  return scans.empty() ? std::string(kDocTextSpec) : scans;
+}
+
 void engine::store_text(std::int64_t asset, std::int64_t replace_from, std::vector<cue_in>& rows) {
   text_counts_due_ = true;  // a commit just moved the text counts
   std::lock_guard lock(speech_m_);
@@ -5475,9 +5516,35 @@ void engine::process_text_moments(const work_item& item, text_reader& reader, co
   (void)flush(work_state::done);
 }
 
+namespace {
+
+// #354 D4: a PDF page with no text layer, to the OS reader. A stamped page or
+// Bates number on a scan is not a text layer: fewer than this many characters
+// other than spaces is none. (A real page that short, a title alone, is read
+// again by the OS; a search finds the document either way.)
+constexpr std::size_t kTextLayerChars = 16;
+
+bool no_text_layer(std::string_view text) {
+  std::size_t n = 0;
+  for (char c : text) {
+    if (c != ' ' && c != '\r' && c != '\n' && c != '\t' && c != '\f' && ++n >= kTextLayerChars) return false;
+  }
+  return true;
+}
+
+}  // namespace
+
 void engine::process_document(const work_item& item) {
   const std::string& path = item.asset.path;
   const bool pdf = extension_of(path) == "pdf";
+  // #354 D4: a document read whole from its first page that has no page
+  // without a text layer has nothing for the OS reader: its scan progress is
+  // done with it, so the scan pass never opens it again.
+  const std::string scans_spec = scan_spec();
+  bool blank_seen = false;
+  const auto nothing_scanned = [&] {
+    if (!scans_spec.empty()) (void)db_->commit_passages(item.asset.id, scans_spec, {}, work_state::done, 0);
+  };
   // A PDF resumes at the first page it had not committed; a DOCX is read
   // whole (its layout needs every page before the one asked for), so a
   // resumed one starts again and replaces what it had.
@@ -5523,6 +5590,7 @@ void engine::process_document(const work_item& item) {
         stopping = true;
         return false;
       }
+      if (no_text_layer(text)) blank_seen = true;
       for (const std::string& para : pdf_paragraphs(text)) built.add(page, para, true);
       next = page + 1;
       if (built.full()) return false;  // the passage cap: what was read stands
@@ -5546,7 +5614,10 @@ void engine::process_document(const work_item& item) {
       return;
     }
     built.finish();
-    (void)commit(work_state::done, read ? std::int64_t{read.value()} : std::int64_t{next});
+    if (commit(work_state::done, read ? std::int64_t{read.value()} : std::int64_t{next}) && read && first == 0 &&
+        !blank_seen) {
+      nothing_scanned();
+    }
     return;
   }
   if (!host_.has_document_text()) {
@@ -5571,7 +5642,7 @@ void engine::process_document(const work_item& item) {
     return;
   }
   built.finish();
-  (void)commit(work_state::done, pages);
+  if (commit(work_state::done, pages)) nothing_scanned();  // a DOCX's words are all its text
 }
 
 // #354 D2 limits (docs/design/17 "Documents"): every document's first pages
@@ -5725,6 +5796,111 @@ void engine::process_meaning(const work_item& item, const loaded_docs& docs) {
     quantise(r.emb, q, scale);
     meanings_.add(item.asset.id, r.passage, r.generic, scale, q);
   }
+}
+
+// #354 D4: pages a scan pass reads before it hands its worker back (a page is
+// a host draw at the text edge and an OS read, ~0.1-0.3 s; docs/design/17).
+constexpr std::uint32_t kScanPagesPerClaim = 4;
+
+void engine::process_scan(const work_item& item) {
+  const std::string& path = item.asset.path;
+  text_reader* reader = nullptr;
+  pdf_reader* pdf = nullptr;
+  {
+    std::lock_guard lock(models_m_);
+    reader = text_.get();  // both set once, never replaced (engine.h)
+    pdf = pdf_.get();
+  }
+  if (!reader) return;
+  const std::string spec = reader->spec_key() + kScanSuffix;
+  if (extension_of(path) != "pdf" || !pdf) {
+    // A DOCX's text is all in its words; a PDF with no PDFium here never had
+    // its words read (claim takes a document only after them).
+    (void)db_->commit_passages(item.asset.id, spec, {}, work_state::done, 0);
+    return;
+  }
+  // A resumed document goes on at the page after the last it committed; a
+  // fresh one first drops what an earlier read of it stored.
+  const bool resumed = item.state == work_state::partial;
+  const std::uint32_t from =
+      resumed ? static_cast<std::uint32_t>(std::clamp<std::int64_t>(item.resume_ms, 0, UINT32_MAX)) : 0;
+  std::int64_t replace_from = resumed ? std::int64_t{from} : 0;
+  // This claim's pages: the next few from there with no text layer (PDFium's
+  // text), and whether another follows them, where the next claim starts. The
+  // read stops there: every page left asked again each claim would grow with
+  // the square of a scan's length.
+  std::vector<std::uint32_t> blank;
+  bool stopping = false, more = false;
+  std::uint32_t next_blank = 0;
+  const auto pages = pdf->read(path, from, pdf_limits{}, [&](std::uint32_t page, std::string_view text) {
+    if (!wait_turn(false)) {
+      stopping = true;
+      return false;
+    }
+    if (!no_text_layer(text)) return true;
+    if (blank.size() == kScanPagesPerClaim) {
+      more = true;
+      next_blank = page;
+      return false;
+    }
+    blank.push_back(page);
+    return true;
+  });
+  if (stopping) return;  // pending or partial as it was: asked again
+  if (!pages && !(more && pages.error() == status::cancelled)) {
+    if (pages.error() == status::permission_denied) {
+      (void)db_->mark_locked(item.asset.id, spec);
+    } else {
+      // Done with nothing read, not failed: its meaning (D3) waits for this
+      // pass to be done, and its words still find it.
+      (void)db_->commit_passages(item.asset.id, spec, {}, work_state::done, from);
+    }
+    return;
+  }
+  passage_builder built;
+  std::vector<passage_in> rows;
+  const auto commit = [&](work_state state, std::int64_t resume) -> bool {
+    built.finish();
+    for (passage& p : built.take()) rows.push_back(passage_in{p.page, std::move(p.text), std::move(p.words)});
+    const bool ok = static_cast<bool>(db_->commit_passages(item.asset.id, spec, rows, state, resume, replace_from));
+    rows.clear();
+    if (ok) replace_from = -1;
+    return ok;
+  };
+  std::uint32_t tried = 0, failed = 0;
+  for (std::uint32_t page : blank) {
+    if (!wait_turn(false)) {
+      (void)commit(work_state::partial, page);  // the rest resumes here
+      return;
+    }
+    ++tried;
+    auto img = frame_of(path, page, kTextEdge);
+    auto lines = img ? reader->read(*img) : result<std::vector<std::string>>(err(img.error()));
+    if (!lines) {
+      ++failed;  // a page that does not draw or read: the others still count
+    } else {
+      // The OS's lines as a PDF page's ("\r\n" ends each), so a word it
+      // hyphenated over a line break is whole again.
+      std::string text;
+      for (const std::string& l : *lines) text += l + "\r\n";
+      for (const std::string& para : pdf_paragraphs(text)) built.add(page, para, true);
+    }
+    // Each page committed: a stop resumes at the next.
+    if (!commit(work_state::partial, std::int64_t{page} + 1)) return;  // left partial: tried again
+    if (built.full()) break;
+  }
+  if (tried > 0 && failed == tried && !resumed) {
+    // Not one page drew or read: the document, not a page, is the problem.
+    // Done with nothing read rather than failed (as above).
+    (void)commit(work_state::done, pages ? std::int64_t{pages.value()} : std::int64_t{next_blank});
+    return;
+  }
+  if (more && !built.full()) {
+    // The rest at the next claim, after whatever else is waiting.
+    (void)commit(work_state::partial, next_blank);
+    return;
+  }
+  (void)commit(work_state::done, pages ? std::int64_t{pages.value()} : std::int64_t{next_blank});
 }
 
 void engine::load_speech(const std::string& spec) {

@@ -7,7 +7,7 @@ photo and video extensions only. This plan makes documents searchable, says whic
 needs, and lays out the Settings and search-panel changes on both hosts. Slice 0 is a Windows bug
 found while looking, and it comes first. Written 2026-10-05.
 
-## Status (2026-10-05; D1 and D2 2026-10-16)
+## Status (2026-10-05; D1 and D2 2026-10-16; D4 2026-10-17)
 
 **D1 is built** (#354, 2026-10-16): documents are indexed for their words behind File types "Show
 documents", as the issue asks; what it does is in [17](../design/17-local-ai-search.md)
@@ -28,7 +28,14 @@ Departures: multilingual-e5-small was measured and not chosen (it missed the R@1
 only on the 3 other-language queries); fp32 rather than int8 (int8's vectors depend on the batch,
 cosine 0.998 to ORT-Python); `.mvindex` v2 carries documents only behind a new opt-in,
 `MV_AI_TRANSFER_DOCUMENTS` (their text travels with them), as People does; the meaning pass,
-like the words pass, does not wait for the picture towers. D4 is not started.
+like the words pass, does not wait for the picture towers. D4 was not started then.
+
+**D4 is built** (#354, 2026-10-17): a PDF page with no text layer is drawn by the host and read
+by the OS text reader of #403, stored as passages of its page; 17 "Documents", "Scanned pages
+(D4)". Departures from §5: no setting of its own and not behind Read text in photos (it is part
+of Words); 4 pages a claim, last of all, so a long scan hands its worker back between chunks; it
+runs while the towers load, as the words pass does; D3's meaning pass waits for it, so scanned
+text is embedded too.
 
 **Owner calls taken (2026-10-05):**
 

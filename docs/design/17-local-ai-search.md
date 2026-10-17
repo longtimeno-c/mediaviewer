@@ -791,9 +791,9 @@ PDFs and Word documents are searchable by the **words in them**: a quoted phrase
 finds the document and opens it on that page, plain words rank documents by how many of them a
 passage holds. At **Words and pages** they are also found by **what a page looks like** ("a
 receipt", "a floor plan"), and with the **Documents** piece by **what a passage is about** ("tax
-return from my accountant" finds the page about one without those words). Slices D1 to D3 of
-[document-search](../plans/document-search.md);
-OCR for scans (D4) follows them.
+return from my accountant" finds the page about one without those words). A **scanned** page,
+one with no text layer, is read by the operating system, so its words are found the same way.
+Slices D1 to D4 of [document-search](../plans/document-search.md).
 
 - **Behind File types "Show documents"** (off by default), as audio files are behind "Show audio
   files": each chrome forwards it to the pack as `document_files` when it attaches and on every
@@ -837,6 +837,38 @@ OCR for scans (D4) follows them.
   (tried again up to three times). A PDF with no text layer (a scan) is done with no passages; D4
   reads those. With no PDFium (an older pack) or no `document_text` (an older host) a document
   is set aside (`unavailable`) and read again at the next start that can.
+- **Scanned pages (D4)**, at Words (no setting of their own): a PDF page with **no text layer**
+  (fewer than 16 characters other than spaces, so a stamped page or Bates number alone is still
+  none) is drawn by the host (`video_frame_rgb`, `pts_ms` the page, at 2,048 px, the host's
+  ceiling: 1,583 × 2,048 for a Letter page, about 186 dpi) and read by the **OS text reader of
+  "Text in pictures"** (`text_reader.h`: Vision on the Mac, `Windows.Media.Ocr` on Windows; no
+  model). Its lines are joined as a PDF page's are (`pdf_paragraphs`: a word hyphenated over a
+  line is whole again) and stored as **passages of that page** under the reader's spec plus
+  `/pages` (`ocr/vision-accurate/1/pages`), beside the text layer's `doctext/1` rows, which it
+  never touches; search reads both alike, so a quoted phrase finds the scanned page and Enter opens
+  it there. Its own pass (`track::scan`), **last of all**: after every other pass, the People pass
+  included, and one document at a time (`pending`'s `after` is `doctext/1`). The pass asks PDFium
+  again which pages from its resume point have no text layer (cheap beside a draw and a read),
+  then reads **at most 4 pages a claim**, committing each (state partial, resume the next page),
+  and returns: the next claim looks at every other pass first, so a 100-page scan never stands in
+  front of a new photo for more than one chunk, and a stop resumes at the next page. A fresh read
+  first drops what an earlier one stored. Like the words pass it **needs no model**, so it also runs
+  while the picture towers load. A document read whole from its first page with no page lacking a
+  text layer, and every DOCX, is done for this pass with its words, so a text library is never
+  opened twice. Not behind **Read text in photos**: that switch is the photos' and clips'; a
+  machine with no reader (a Windows without an OCR language) has no pass and no count. A page
+  that does not draw or read is skipped; a document none of whose pages draw or read is done with
+  nothing read, not failed. With the Documents piece the meaning pass (D3) waits for this one
+  (`meaning_after`), so a scan's text is embedded too.
+  `mv_ai_status` appends `scans_total` (documents whose words are read) and `scans_done`; while
+  they differ the state is not idle, and both chromes read "Reading scanned pages 3 of 5
+  documents" after the other passes' lines.
+  **Measured** (M5, 2026-10-17; DEVELOPMENT, "slice D4"): over 50 synthetic scanned pages
+  (`tools/ai-bench/doc-scans`), a quoted search finds a mean 99.4 % of a page's words, 49 of 50
+  pages at 90 % or more. On the worst, 83.5 %, Vision skipped four lines at that scale. A dense
+  page costs about 60 ms to draw and 640 ms to read, so a 100-page scan is about 70 s of one
+  worker. While a Core ML compile holds the Neural Engine, Vision waits behind it. The real-machine
+  timing of a long scan beside new photos, Windows and the Mac PR 1 gate with scans read are owed.
 - **Page pictures (D2)**, at Words and pages: a document's pages through the **picture tower
   already loaded** (no new model), so a visual query finds the page. Its own pass (`track::pages`,
   progress spec `docpage/<picture spec>`, so a model change pictures them again) takes a document
