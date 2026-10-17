@@ -67,12 +67,16 @@ $table = [ordered]@{
     # #352: the Location editor's parser; the text is capped at 256 bytes.
     meta_location = @{ Seeds = @('location');                           MaxLen = 512 }
     meta_probe  = @{ Seeds = @('jpeg', 'png', 'webp', 'heic', 'avif', 'c2pa', 'probe'); MaxLen = 131072 }
+    # #291: the folder tag pass (meta/search.h): any still or clip, read whole.
+    meta_search = @{ Seeds = @('jpeg', 'png', 'webp', 'tiff', 'heic', 'avif', 'raw', 'c2pa'); MaxLen = 131072 }
     # The place database loader (docs/design/06 "Place"); its seed is the test blob.
     geo         = @{ Seeds = @(); SeedDirs = @('tests\data\geo');     MaxLen = 131072 }
     # The Places map (docs/design/27): numbers, not a file; it reads the test blob itself.
     places_map  = @{ Seeds = @();                                       MaxLen = 512 }
     addon_contributions = @{ Seeds = @('addon');                        MaxLen = 16384 }
     script      = @{ Seeds = @('script');                               MaxLen = 16384 }
+    # #291: the Local search query language; the harness ignores input past 4 KB.
+    ai_query    = @{ Seeds = @('query');                                MaxLen = 4096 }
 }
 
 if ($Harness.Count -eq 1 -and $Harness[0] -match ',') { $Harness = $Harness[0] -split ',' }

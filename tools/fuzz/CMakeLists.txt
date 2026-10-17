@@ -141,6 +141,8 @@ set(MV_FUZZ_HARNESSES
   meta_location
   # #345: the AI badge's provenance probe, every container it seeks through.
   meta_probe
+  # #291: the folder tag pass's bounded read and the search text it builds (mv_meta).
+  meta_search
   # #344: the place database loader, and the Places add-on's map.
   geo places_map
   # docs/design/25 PR 56: settings pages, keymap packs and themes.
@@ -182,6 +184,9 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   if(name MATCHES "^meta_")
     target_sources(${target} PRIVATE fuzz_meta.h)
     target_link_libraries(${target} PRIVATE mv_meta_parse)
+  endif()
+  if(name STREQUAL "meta_search")
+    target_link_libraries(${target} PRIVATE mv_meta)
   endif()
   if(name STREQUAL "meta_location")
     target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src/meta/location_edit.cpp")
