@@ -588,9 +588,9 @@ public static partial class IslandHost
         var rows = new StackPanel { Spacing = Space(6), Padding = Pad(14, 10, 14, 14) };
         foreach ((string label, string value) in _metaSummary)
         {
-            if (label == "Date taken")
+            if (IsDateRow(label))
             {
-                rows.Children.Add(BuildDateRow(value));
+                rows.Children.Add(BuildDateRow(label, value));
                 continue;
             }
             if (label == "Location")
@@ -684,16 +684,24 @@ public static partial class IslandHost
         return row;
     }
 
+    // #415: Summary's one date row (native meta::summary_date). Without a
+    // capture stamp it is a fallback — Created, Signed at or File created —
+    // which is not when the picture was taken, so Edit opens an empty Date
+    // taken field and nothing is written unless a date is typed.
+    private static bool IsDateRow(string label) =>
+        label is "Date taken" or "Created" or "Signed at" or "File created";
+
     // PR 29: the date taken moves every capture-time tag together (native's
     // write_fields::date_taken), so no reader sees two dates.
-    private static UIElement BuildDateRow(string value)
+    private static UIElement BuildDateRow(string rowLabel, string value)
     {
+        bool taken = rowLabel == "Date taken";
         var col = new StackPanel { Spacing = Space(6) };
         var row = new Grid();
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(MetaLabelWidth) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        TextBlock label = Text("Date taken", Body, TypeBody);
+        TextBlock label = Text(_metaEditingDate ? "Date taken" : rowLabel, Body, TypeBody);
         label.VerticalAlignment = VerticalAlignment.Center;
         row.Children.Add(label);
         if (_metaEditingDate)
@@ -716,7 +724,7 @@ public static partial class IslandHost
                     CancelMetaEdits();
                     Send(Command.MetaDate, 1);
                     RenderMeta();
-                }, tip: "Remove every date-taken tag", enabled: value.Length > 0),
+                }, tip: "Remove every date-taken tag", enabled: taken && value.Length > 0),
                 MetaButton("Cancel", () =>
                 {
                     CancelMetaEdits();
@@ -735,9 +743,10 @@ public static partial class IslandHost
         {
             CancelMetaEdits();
             _metaEditingDate = true;
-            _metaDraft = value.Length >= 19 ? value[..19] : value;
+            _metaDraft = !taken ? "" : value.Length >= 19 ? value[..19] : value;
             RenderMeta();
-        }, tip: "Change when this was taken; every date tag in the file moves together", enabled: _metaCanEdit);
+        }, tip: taken ? "Change when this was taken; every date tag in the file moves together"
+                      : "Set when this was taken; the date shown is not written", enabled: _metaCanEdit);
         AutomationProperties_SetName(edit, "Edit date taken");
         Grid.SetColumn(edit, 2);
         row.Children.Add(edit);

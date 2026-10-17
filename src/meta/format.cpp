@@ -1,9 +1,11 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Pure helpers behind the metadata read model: no Exiv2, no FFmpeg, no I/O.
+// Pure helpers behind the metadata read model: no Exiv2, no FFmpeg, no I/O
+// (format_local_time reads the C library's local zone, nothing else).
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <initializer_list>
 
 #include "meta/meta.h"
@@ -33,6 +35,30 @@ int digits(std::string_view s, std::size_t& pos, std::size_t n) noexcept {
   }
   pos += n;
   return v;
+}
+
+// The inverse of days_from_civil, with the time of day. UTC, no zone.
+struct civil_time {
+  int year, month, day, hour, minute, second;
+};
+civil_time civil_of(std::int64_t s) noexcept {
+  std::int64_t days = s / 86400;
+  std::int64_t rem = s % 86400;
+  if (rem < 0) {
+    rem += 86400;
+    --days;
+  }
+  days += 719468;
+  const std::int64_t era = (days >= 0 ? days : days - 146096) / 146097;
+  const auto doe = static_cast<unsigned>(days - era * 146097);
+  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const unsigned mp = (5 * doy + 2) / 153;
+  const unsigned d = doy - (153 * mp + 2) / 5 + 1;
+  const unsigned m = mp < 10 ? mp + 3 : mp - 9;
+  const std::int64_t y = static_cast<std::int64_t>(yoe) + era * 400 + (m <= 2 ? 1 : 0);
+  return {static_cast<int>(y), static_cast<int>(m), static_cast<int>(d), static_cast<int>(rem / 3600),
+          static_cast<int>((rem / 60) % 60), static_cast<int>(rem % 60)};
 }
 
 }  // namespace
@@ -70,6 +96,62 @@ std::optional<std::int64_t> parse_date_key(std::string_view s) noexcept {
   const std::int64_t days = days_from_civil(year, static_cast<unsigned>(month),
                                             static_cast<unsigned>(day));
   return days * 86400 + hour * 3600 + minute * 60 + second;
+}
+
+std::string format_instant_utc(std::string_view iso) {
+  while (!iso.empty() && (iso.front() == ' ' || iso.front() == '	')) iso.remove_prefix(1);
+  const auto wall = parse_date_key(iso);
+  if (!wall) return {};
+  // The zone, after the seconds and any fraction: Z, +hh:mm, +hhmm or +hh.
+  std::size_t pos = iso.find_first_of("Tt ");
+  if (pos == std::string_view::npos) pos = iso.size();
+  while (pos < iso.size() && iso[pos] != 'Z' && iso[pos] != 'z' && iso[pos] != '+' && iso[pos] != '-') ++pos;
+  std::int64_t t = *wall;
+  bool zoned = false;
+  if (pos < iso.size()) {
+    if (iso[pos] == 'Z' || iso[pos] == 'z') {
+      zoned = true;
+    } else {
+      const int sign = iso[pos] == '-' ? -1 : 1;
+      std::size_t p = pos + 1;
+      const int hh = digits(iso, p, 2);
+      int mm = 0;
+      if (p < iso.size() && iso[p] == ':') ++p;
+      if (p < iso.size()) mm = digits(iso, p, 2);
+      if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return {};
+      t -= sign * (hh * 3600 + mm * 60);  // local = UTC + offset
+      zoned = true;
+    }
+  }
+  const civil_time c = civil_of(t);
+  char buf[48];
+  std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d%s", c.year, c.month, c.day, c.hour, c.minute,
+                c.second, zoned ? " UTC" : "");
+  return buf;
+}
+
+std::string format_local_time(std::int64_t unix_seconds) {
+  if (unix_seconds == 0) return {};
+  const auto t = static_cast<std::time_t>(unix_seconds);
+  std::tm local{};
+#if defined(_WIN32)
+  if (localtime_s(&local, &t) != 0) return {};
+#else
+  if (!localtime_r(&t, &local)) return {};
+#endif
+  char buf[48];
+  std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d", local.tm_year + 1900, local.tm_mon + 1,
+                local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec);
+  return buf;
+}
+
+field summary_date(const metadata& m) {
+  const summary& s = m.s;
+  if (!s.date_taken.empty()) return {"Date taken", s.date_taken};
+  if (!s.c2pa_created.empty()) return {"Created", s.c2pa_created};
+  if (!s.c2pa_signed.empty()) return {"Signed at", s.c2pa_signed};
+  if (std::string local = format_local_time(s.file_created_unix); !local.empty()) return {"File created", local};
+  return {"Date taken", {}};
 }
 
 std::string format_coordinate(double degrees, char hemisphere) {
@@ -263,7 +345,7 @@ std::vector<field> summary_rows(const metadata& m) {
     add("Focal length", s.focal_length);
     add("Colour space", s.colour_space);
   }
-  add("Date taken", s.date_taken);
+  rows.push_back(summary_date(m));
   add("Location", s.gps);
   // #290: only when the file names a generator or says it is AI-made; there is
   // no "—" for it, because no provenance is not a gap a file is expected to fill.
@@ -300,7 +382,8 @@ std::string overlay_exposure_line(const metadata& m) {
 }
 
 std::string overlay_date_line(const metadata& m) {
-  return join({&m.s.date_taken, &m.s.gps}, "   ");
+  const std::string date = summary_date(m).value;  // #415: the same text as Summary
+  return join({&date, &m.s.gps}, "   ");
 }
 
 std::vector<af_point> displayed_af_points(const metadata& m) {
