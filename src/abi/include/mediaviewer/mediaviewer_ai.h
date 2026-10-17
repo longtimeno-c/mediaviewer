@@ -129,8 +129,9 @@ typedef enum mv_ai_scope {
 /* What a folder's DOCUMENTS are indexed for (#354; Settings "Documents", and
  * per folder with root_set_documents). The setting "doc_index" is 0 Off, 1
  * Words (the default), 2 Words and pages; a folder's choice is that plus one,
- * with 0 following the setting. Words and pages adds page pictures (slice D2)
- * and reads as Words until then. */
+ * with 0 following the setting. Words and pages also finds a document's pages
+ * by what they look like (slice D2): its first pages, and any page mostly
+ * covered by images, through the picture tower already installed. */
 #define MV_AI_DOCS_DEFAULT 0u
 #define MV_AI_DOCS_OFF 1u
 #define MV_AI_DOCS_WORDS 2u
@@ -269,6 +270,12 @@ typedef struct mv_ai_status {
   uint64_t docs_done;
   uint64_t docs_locked;
   uint64_t docs_failed;
+  /* Page pictures (#354 D2): documents at Words and pages whose words are
+   * read, and those whose pages are pictured (failed and locked counted as
+   * done). 0 while no folder is at Words and pages. While short the state is
+   * not IDLE. Read these only when struct_size covers them. */
+  uint64_t pages_total;
+  uint64_t pages_done;
 } mv_ai_status;
 
 typedef enum mv_ai_icloud_fetch {
@@ -333,7 +340,7 @@ typedef struct mv_ai_api {
    * results go at once and their rows, text included, are deleted)
    * | "doc_index" (0 Off, 1 Words, 2 Words and pages; saved; #354: what folders that follow
    * the setting index their documents for. A change walks every root again: Off drops
-   * their documents and their text)
+   * their documents and their text; below Words and pages drops their page pictures)
    * | "retry_large" (any value: forget that the accelerated provider failed the large tower
    * here, MV_AI_STATUS_SMALL_FALLBACK, and let Auto try it again; 2026-10-05)
    * | "video_index" (MV_AI_MEDIA_*, 0 = Pictures, plus
@@ -598,7 +605,8 @@ typedef struct mv_ai_api {
   /* ---- documents (#354, docs/plans/document-search.md) ----------------------------- */
   /* What a remembered folder's documents are indexed for (MV_AI_DOCS_*; 0
    * follows Settings "doc_index"). Off drops the folder's documents and their
-   * text at once (a walk), on queues them. Appended: read it only when
+   * text at once (a walk), on queues them; below MV_AI_DOCS_PAGES drops their
+   * page pictures. Appended: read it only when
    * `struct_size` covers it and the pointer is non-NULL. [no-block] */
   mv_status(MV_CALL* root_set_documents)(void* ctx, uint64_t root_id, uint32_t docs);
 } mv_ai_api;

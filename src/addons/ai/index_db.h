@@ -62,6 +62,11 @@
 // progress is under kDocTextSpec; a password-protected file is `locked` (5):
 // neither done nor failed, never retried, counted apart.
 //
+// D2 (#354, no schema change): a document's page pictures are frames rows
+// under the picture model's spec with pts_ms the 0-based page and kFramePage
+// in flags, and their progress is under doc_page_spec(that spec). They exist
+// only for documents whose level is Words and pages (2).
+//
 // docs/design/17 sketches one assets row per (path, mtime, size, spec); progress is
 // that row's per-model half, so two models' vectors live side by side while
 // a quality change migrates (PR 23: "old index kept until the new one
@@ -123,6 +128,13 @@ struct track_filter {
 // the file's). Bumped when the passage rule changes, so every document is
 // read again.
 inline constexpr const char* kDocTextSpec = "doctext/1";
+
+// #354 D2: a frames row that is a document's page picture (pts_ms the 0-based
+// page). Beside the MV_ADDON_FRAME_* bits a sampler sets, never one of them.
+inline constexpr std::uint32_t kFramePage = 0x100;
+// #354 D2: the progress spec of a document's page pictures under the picture
+// model `clip_spec`: a model change queues every document's pages again.
+inline std::string doc_page_spec(const std::string& clip_spec) { return "docpage/" + clip_spec; }
 
 // A passage to store (passages.h makes them).
 struct passage_in {
@@ -387,6 +399,16 @@ class index_db {
   [[nodiscard]] expected commit_passages(std::int64_t asset, const std::string& spec,
                                          std::span<const passage_in> passages, work_state state, std::int64_t resume,
                                          std::int64_t replace_from = -1);
+  // #354 D2: a document's page pictures (kFramePage set on each) as frames
+  // under `frame_spec`, in one transaction that first drops the pages stored
+  // there before, and its progress under `progress_spec` (doc_page_spec) done.
+  [[nodiscard]] expected commit_pages(std::int64_t asset, const std::string& frame_spec,
+                                      const std::string& progress_spec, std::span<const frame_in> pages,
+                                      std::uint32_t dim);
+  // #354 D2: the page pictures and their progress of every document whose
+  // level (its root's Documents choice, or `default_docs` for one that
+  // follows the setting) is below Words and pages. Returns those documents.
+  [[nodiscard]] result<std::vector<std::int64_t>> drop_pages(std::uint32_t default_docs);
   // Every asset in `state` for `spec` back to pending (its progress row goes).
   [[nodiscard]] expected reset_state(const std::string& spec, work_state state);
   // A password-protected document: `locked`, never retried.

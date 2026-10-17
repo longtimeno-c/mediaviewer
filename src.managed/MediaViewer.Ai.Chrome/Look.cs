@@ -348,6 +348,11 @@ internal sealed class Look
                 {
                     return $"Reading documents {n(s.DocsDone)} of {n(s.DocsTotal)}";
                 }
+                // #354 D2: then their pages' pictures (Words and pages).
+                if (picturesDone && s.PagesDone < s.PagesTotal)
+                {
+                    return $"Looking at document pages {n(s.PagesDone)} of {n(s.PagesTotal)}";
+                }
                 if (picturesDone && s.CuesDone < s.CuesTotal)
                 {
                     return $"Reading chapters and subtitles {n(s.CuesDone)} of {n(s.CuesTotal)} clips";

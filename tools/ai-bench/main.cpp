@@ -7,6 +7,7 @@
 // indexes, then times queries.
 //
 //   ai-bench --addons <folder> --index <media folder> [--recursive] [--media 1|2|3] [--documents]
+//            [--doc-index 0..2] [--kinds N] [--top N]
 //            [--compute 0..4] [--quality 0..2] [--timeout <s>] [--query "text"]...
 //   ai-bench --addons <folder> --photos ...   the Mac's Photos library instead (issue #72;
 //            macOS, run through tools/ai-bench/photos-bench.sh for the permission prompt)
@@ -18,7 +19,10 @@
 //
 // --documents (#354): File types "Show documents" on, so the folder's PDFs and
 // DOCX files are read for their words; the status lines carry "docs" [done,
-// total, locked, failed].
+// total, locked, failed]. --doc-index 2 (Settings "Documents": Words and
+// pages, slice D2) pictures their pages too; the lines carry "pages" [done,
+// total]. --kinds N searches with those kind and MV_AI_FIND_* bits (default
+// MV_AI_KIND_ALL); --top N prints that many results a query (default 5).
 //
 // --export / --import (docs/design/17 "Sharing an index"): two --addons folders are two
 // machines. Import prints what inspect_export said and the outcome, then waits
@@ -87,7 +91,7 @@ void print_status(const mv_ai_api* ai, double t0) {
   std::printf("{\"t\":%.1f,\"state\":%u,\"yield\":%u,\"backend\":%u,\"fault\":%u,\"model\":\"%s\","
               "\"assets\":%llu,\"done\":%llu,\"failed\":%llu,\"frames\":%llu,\"assets_per_s\":%.2f,"
               "\"frames_per_s\":%.2f,\"eta\":[%.0f,%.0f],\"sound\":[%llu,%llu],\"speech\":[%llu,%llu],"
-              "\"index_bytes\":%llu,\"flags\":%u,\"unavailable\":%llu,\"docs\":[%llu,%llu,%llu,%llu],"
+              "\"index_bytes\":%llu,\"flags\":%u,\"unavailable\":%llu,\"docs\":[%llu,%llu,%llu,%llu],\"pages\":[%llu,%llu],"
               "\"fault_detail\":\"%s\"}\n",
               now_s() - t0, s.state, s.yield_reason, s.backend, s.provider_fault, s.model_utf8,
               static_cast<unsigned long long>(s.assets_total), static_cast<unsigned long long>(s.assets_done),
@@ -98,7 +102,8 @@ void print_status(const mv_ai_api* ai, double t0) {
               static_cast<unsigned long long>(s.index_bytes), s.flags,
               static_cast<unsigned long long>(s.assets_unavailable), static_cast<unsigned long long>(s.docs_done),
               static_cast<unsigned long long>(s.docs_total), static_cast<unsigned long long>(s.docs_locked),
-              static_cast<unsigned long long>(s.docs_failed), detail.c_str());
+              static_cast<unsigned long long>(s.docs_failed), static_cast<unsigned long long>(s.pages_done),
+              static_cast<unsigned long long>(s.pages_total), detail.c_str());
   std::fflush(stdout);
 }
 
@@ -144,7 +149,8 @@ bool quit_pack_legacy(std::unique_ptr<mv::addon::loaded_addon> pack) {
 int main(int argc, char** argv) {
   std::string addons, folder;
   bool recursive = false;
-  int media = -1, compute = -1, quality = -1;
+  int media = -1, compute = -1, quality = -1, doc_index = -1;
+  unsigned kinds = MV_AI_KIND_ALL, top = 5;
   double timeout = 3600, busy_after = -1, busy_for = 0, quit_after = -1, quit_budget = 0.5;
   bool quit_hash = false, quit_legacy = false, photos = false, documents = false;
   std::string export_file, import_file, import_to, make_thumbs, count_thumbs;
@@ -157,6 +163,9 @@ int main(int argc, char** argv) {
     else if (a == "--index") folder = next();
     else if (a == "--recursive") recursive = true;
     else if (a == "--documents") documents = true;
+    else if (a == "--doc-index") doc_index = std::stoi(next());
+    else if (a == "--kinds") kinds = static_cast<unsigned>(std::stoul(next()));
+    else if (a == "--top") top = static_cast<unsigned>(std::stoul(next()));
     else if (a == "--media") media = std::stoi(next());
     else if (a == "--compute") compute = std::stoi(next());
     else if (a == "--quality") quality = std::stoi(next());
@@ -237,6 +246,7 @@ int main(int argc, char** argv) {
   if (quality >= 0) ai->set_setting(ai->ctx, "quality", std::to_string(quality).c_str());
   if (media >= 0) ai->set_setting(ai->ctx, "video_index", std::to_string(media).c_str());
   if (documents) ai->set_setting(ai->ctx, "document_files", "1");
+  if (doc_index >= 0) ai->set_setting(ai->ctx, "doc_index", std::to_string(doc_index).c_str());
   const double t0 = now_s();
   if (!folder.empty() || photos) {
     uint64_t root = 0;
@@ -342,7 +352,7 @@ int main(int argc, char** argv) {
   for (const std::string& q : queries) {
     const double tq = now_s();
     uint64_t id = 0;
-    ai->search_text(ai->ctx, q.c_str(), nullptr, MV_AI_SCOPE_ALL, MV_AI_KIND_ALL, &id);
+    ai->search_text(ai->ctx, q.c_str(), nullptr, MV_AI_SCOPE_ALL, kinds, &id);
     uint32_t n = 0;
     {
       std::unique_lock lock(g_done_m);
@@ -352,7 +362,7 @@ int main(int argc, char** argv) {
     while (ai->result_count(ai->ctx, id, &n) != MV_OK) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     const double ms = (now_s() - tq) * 1000;
     std::printf("{\"query\":\"%s\",\"ms\":%.1f,\"results\":%u,\"top\":[", q.c_str(), ms, n);
-    for (uint32_t i = 0; i < n && i < 5; ++i) {
+    for (uint32_t i = 0; i < n && i < top; ++i) {
       mv_ai_result r{};
       char path[4096] = {};
       char snip[512] = {};

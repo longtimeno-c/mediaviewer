@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "core/result.h"
 
@@ -26,6 +27,12 @@ struct pdf_limits {
   std::uint32_t max_pages = 500;       // text from every page up to this (docs/design/17 "Documents")
   double max_seconds = 60.0;           // a document still being read after this stops there
   std::uint64_t max_file_bytes = 1ull << 31;  // PDFium's file access is 32-bit on Windows
+};
+
+// #354 D2: which pages are worth a page picture beyond the first few.
+struct pdf_look {
+  std::uint32_t pages = 0;              // the document's page count
+  std::vector<std::uint32_t> pictures;  // 0-based, in order: pages mostly covered by images
 };
 
 class pdf_reader {
@@ -38,6 +45,17 @@ class pdf_reader {
   [[nodiscard]] virtual result<std::uint32_t> read(
       const std::string& path, std::uint32_t first, const pdf_limits& limits,
       const std::function<bool(std::uint32_t page, std::string_view text)>& visit) = 0;
+  // #354 D2: the page count, and the pages (up to limits.max_pages, within
+  // limits.max_seconds) whose image objects cover more than `min_cover` of
+  // the page (a scan, a photo, a full-page figure). Errors as read's. A
+  // reader that cannot tell answers unsupported_format; the engine then takes
+  // the first pages alone. [worker-thread]
+  [[nodiscard]] virtual result<pdf_look> look(const std::string& path, const pdf_limits& limits, float min_cover) {
+    (void)path;
+    (void)limits;
+    (void)min_cover;
+    return err(status::unsupported_format);
+  }
   // "PDFium": for Settings.
   [[nodiscard]] virtual const std::string& name() const noexcept = 0;
 };

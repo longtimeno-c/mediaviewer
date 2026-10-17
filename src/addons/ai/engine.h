@@ -445,7 +445,7 @@ class engine {
   void worker_loop(unsigned index);
   void search_loop();
   // work
-  enum class track : std::uint8_t { picture, faces, sound, speech, cues, text, docs };
+  enum class track : std::uint8_t { picture, faces, sound, speech, cues, text, docs, pages };
   struct job {
     work_item w;
     track t = track::picture;
@@ -469,12 +469,20 @@ class engine {
   // cut into passages (passages.h) and committed under kDocTextSpec: a PDF
   // every few pages, so a stop resumes at the next page. No model.
   void process_document(const work_item& item);
+  // #354 D2: a document's page pictures through the picture tower: the first
+  // kFirstPages pages and any page mostly covered by images (pdf_reader::look),
+  // drawn by the host (video_frame with pts_ms the page), stored as frames
+  // with kFramePage under the tower's spec, progress under doc_page_spec.
+  void process_pages(const work_item& item, const loaded_clip& clip);
   // #354: the level (MV_AI_DOCS_* - 1) a root indexes its documents at: 0
   // Off, 1 Words, 2 Words and pages. The setting for a root that follows it.
   [[nodiscard]] std::uint32_t docs_level(std::uint32_t root_docs) const noexcept;
   // The document track's filter (claim, counts).
   [[nodiscard]] track_filter docs_filter(std::uint32_t media, std::int64_t skip,
                                          const std::vector<std::int64_t>& held) const;
+  // #354 D2: the page-picture track's: documents at Words and pages.
+  [[nodiscard]] track_filter pages_filter(std::uint32_t media, std::int64_t skip,
+                                          const std::vector<std::int64_t>& held) const;
   // Commits' rows into cue_rows_, first dropping the asset's picture rows from
   // `replace_from` (index_db::commit_cues' rule); empties `rows`.
   void store_text(std::int64_t asset, std::int64_t replace_from, std::vector<cue_in>& rows);
@@ -892,6 +900,11 @@ class engine {
   std::atomic<bool> document_files_{false};
   std::atomic<std::uint32_t> doc_index_{1};
   void drop_documents();
+  // #354 D2: a Documents level went below Words and pages (the setting or a
+  // folder's choice): the control thread deletes those documents' page
+  // pictures (index_db::drop_pages) and takes them out of the matrix.
+  std::atomic<bool> drop_pages_{false};
+  void drop_pages();
   std::atomic<bool> fetch_wake_{false};  // a fetch setting changed: look again now
   std::set<std::int64_t> cloud_skip_;  // the provider would not bring these down this run (fetch thread)
   std::atomic<std::uint32_t> cloud_state_{MV_AI_ICLOUD_OFF};
@@ -916,7 +929,7 @@ class engine {
   // them (text_counts_due_, the picture counts or spec, work pending) or 30 s
   // have passed. Under status_m_.
   struct text_counts {
-    counts cues, photos, moments, docs;
+    counts cues, photos, moments, docs, pages;
     std::string key;  // the specs and picture counts they were taken with
     double at = -1e9;
   };

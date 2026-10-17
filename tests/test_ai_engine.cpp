@@ -191,6 +191,17 @@ class fake_text final : public mv::ai::text_reader {
 // on the first, "net 30 days" on the last); "long*.pdf" 600 pages, each with
 // "page N"; "scan*.pdf" pages with no text layer; "locked*" a password;
 // "broken*" does not open. `on_page` is told of each page before it is visited.
+// D2's look: "gallery*" has 8 pages, 5 and 6 mostly pictures; "scan*" both
+// pages; "long*" pages 10 and 400.
+std::uint32_t fake_pdf_pages(const std::string& name) {
+  if (name.find("invoice") != std::string::npos) return 3;
+  if (name.find("long") != std::string::npos) return 600;
+  if (name.find("scan") != std::string::npos) return 2;
+  if (name.find("gallery") != std::string::npos) return 8;
+  if (name.find("lease") != std::string::npos) return 2;  // the DOCX the host lays out
+  return 1;
+}
+
 class fake_pdf final : public mv::ai::pdf_reader {
  public:
   explicit fake_pdf(std::function<void()> on_page) : on_page_(std::move(on_page)) {}
@@ -214,6 +225,20 @@ class fake_pdf final : public mv::ai::pdf_reader {
       if (!visit(i, pages[i])) return mv::err(mv::status::cancelled);
     }
     return n;
+  }
+  mv::result<mv::ai::pdf_look> look(const std::string& path, const mv::ai::pdf_limits& limits,
+                                    float min_cover) override {
+    CHECK(min_cover == 0.5f);
+    const std::string name = fs::path(path).filename().string();
+    if (name.find("locked") != std::string::npos) return mv::err(mv::status::permission_denied);
+    if (name.find("broken") != std::string::npos) return mv::err(mv::status::corrupt);
+    mv::ai::pdf_look l;
+    l.pages = fake_pdf_pages(name);
+    if (name.find("gallery") != std::string::npos) l.pictures = {5, 6};
+    if (name.find("scan") != std::string::npos) l.pictures = {0, 1};
+    if (name.find("long") != std::string::npos) l.pictures = {10, 400};
+    std::erase_if(l.pictures, [&](std::uint32_t p) { return p >= limits.max_pages; });
+    return l;
   }
   const std::string& name() const noexcept override { return name_; }
 
@@ -678,6 +703,7 @@ struct rig {
   mv_host_api api{};  // the table, its walk_files2 flagging `cloud`'s online-only names
   std::mutex decoded_m;
   std::vector<std::string> decoded;  // every still the host decoded, by name
+  std::vector<std::string> pages_drawn;  // #354 D2: "name#page", each page the host drew
   std::shared_ptr<fake_embedder> fast = std::make_shared<fake_embedder>("fake-fast/fp16/pre1");
   std::shared_ptr<fake_embedder> high = std::make_shared<fake_embedder>("fake-high/fp16/pre1", 0.01f);
   std::atomic<bool> faces_available{true};
@@ -748,7 +774,24 @@ struct rig {
       return std::unique_ptr<mv::addon::video_sampler>(
           new fake_sampler(utf8(fs::path(path).filename()), o.start_ms, o.min_gap_ms));
     };
-    svc.video_frame = [](const std::string& path, std::int64_t ms, std::uint32_t) -> mv::result<mv::addon::rgb_image> {
+    svc.video_frame = [this](const std::string& path, std::int64_t ms,
+                             std::uint32_t) -> mv::result<mv::addon::rgb_image> {
+      // #354 D2: a document's page, as the host draws it: "gallery*" page 5
+      // is red and page 6 green, every other page grey; invalid_arg past the end.
+      if (mv::io::is_document_name(path)) {
+        const std::string name = utf8(fs::path(path).filename());
+        if (name.find("broken") != std::string::npos || name.find("locked") != std::string::npos) {
+          return mv::err(mv::status::corrupt);
+        }
+        if (ms < 0 || ms >= fake_pdf_pages(name)) return mv::err(mv::status::invalid_arg);
+        {
+          std::lock_guard lock(decoded_m);
+          pages_drawn.push_back(name + "#" + std::to_string(ms));
+        }
+        const bool gallery = name.find("gallery") != std::string::npos;
+        return solid(gallery && ms == 5 ? rgb{220, 20, 20} : gallery && ms == 6 ? rgb{20, 220, 20}
+                                                                                : rgb{128, 128, 128});
+      }
       fake_sampler s(utf8(fs::path(path).filename()), ms);
       MV_TRY(auto f, s.next());
       return f.image;
@@ -896,6 +939,12 @@ struct rig {
     }
     std::lock_guard lock(g_walks_m);
     g_walks.erase(api.host);
+  }
+  std::vector<std::string> drawn_pages() {
+    std::lock_guard lock(decoded_m);
+    std::vector<std::string> out = pages_drawn;
+    std::sort(out.begin(), out.end());
+    return out;
   }
   bool was_decoded(const std::string& name) {
     std::lock_guard lock(decoded_m);
@@ -2617,6 +2666,121 @@ TEST_CASE("a folder's Documents choice and Settings' Off drop its documents' tex
   REQUIRE(wait_for([&] { return root().integer("documents").value_or(-1) == 0; }, kSettleMs));
   CHECK(r.search("\"two months notice\"").empty());
   CHECK_FALSE(r.eng->set_setting("doc_index", "3"));
+}
+
+TEST_CASE("Words and pages pictures a document's first pages and its picture pages (#354 D2)",
+          "[ai][engine][documents]") {
+  rig r;
+  r.file("red_photo.jpg");
+  r.file("gallery_brochure.pdf");  // 8 pages; 5 (red) and 6 (green) mostly pictures
+  r.file("invoice_march.pdf");     // 3 pages of words
+  r.file("lease.docx");            // 2 pages, laid out by the host
+  r.file("scan_receipt.pdf");      // 2 pages, both pictures
+  r.file("locked_statement.pdf");  // its words are locked: no pictures either
+  r.start();
+  REQUIRE(r.eng->set_setting("document_files", "1"));
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  const auto names = [](const std::vector<std::pair<std::string, std::int64_t>>& rows) {
+    std::set<std::string> out;
+    for (const auto& [n, _] : rows) out.insert(n);
+    return out;
+  };
+  // Stored page pictures (frames rows with kFramePage), read beside the engine.
+  const auto page_frames = [&] {
+    sqlite3* db = nullptr;
+    std::int64_t n = -1;
+    if (sqlite3_open(utf8(r.dir / "data" / "index.db").c_str(), &db) == SQLITE_OK) {
+      sqlite3_stmt* q = nullptr;
+      const std::string sql = "SELECT COUNT(*) FROM frames WHERE (flags & " + std::to_string(mv::ai::kFramePage) +
+                              ") != 0 AND pts_ms >= 0";
+      if (sqlite3_prepare_v2(db, sql.c_str(), -1, &q, nullptr) == SQLITE_OK && sqlite3_step(q) == SQLITE_ROW) {
+        n = sqlite3_column_int64(q, 0);
+      }
+      sqlite3_finalize(q);
+    }
+    sqlite3_close(db);
+    return n;
+  };
+  const auto root_id = [&] {
+    auto doc = mv::json::parse(r.eng->roots_json());
+    REQUIRE(doc);
+    REQUIRE(doc->a.size() == 1);
+    return doc->a[0].integer("id").value_or(0);
+  };
+
+  // Words (the default): no page is drawn, nothing is pictured.
+  CHECK(r.drawn_pages().empty());
+  CHECK(r.status().pages_total == 0);
+  CHECK(names(r.search("red")) == std::set<std::string>{"red_photo.jpg"});
+
+  // Words and pages: after their words, the first three pages of each and
+  // any page mostly a picture; never past the last page, never twice.
+  REQUIRE(r.eng->set_setting("doc_index", "2"));
+  REQUIRE(wait_for([&] { return r.status().pages_total == 4; }, kSettleMs));
+  REQUIRE(r.idle());
+  const mv_ai_status on = r.status();
+  CHECK(on.pages_done == 4);
+  CHECK(on.state == MV_AI_STATE_IDLE);
+  CHECK(on.docs_locked == 1);
+  CHECK(r.drawn_pages() ==
+        std::vector<std::string>{"gallery_brochure.pdf#0", "gallery_brochure.pdf#1", "gallery_brochure.pdf#2",
+                                 "gallery_brochure.pdf#5", "gallery_brochure.pdf#6", "invoice_march.pdf#0",
+                                 "invoice_march.pdf#1", "invoice_march.pdf#2", "lease.docx#0", "lease.docx#1",
+                                 "scan_receipt.pdf#0", "scan_receipt.pdf#1"});
+  CHECK(page_frames() == 12);
+  // Found by what the page shows, at that page, beside the photo.
+  {
+    const std::uint64_t id = r.eng->search_text("red", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+    REQUIRE(r.eng->wait_search(id, kSettleMs));
+    const auto rows = r.rows(id);
+    CHECK(names(rows) == std::set<std::string>{"red_photo.jpg", "gallery_brochure.pdf"});
+    for (std::uint32_t i = 0; i < rows.size(); ++i) {
+      if (rows[i].first != "gallery_brochure.pdf") continue;
+      CHECK(rows[i].second == 5);
+      auto res = r.eng->result_at(id, i);
+      REQUIRE(res);
+      CHECK(res->kind == MV_AI_KIND_DOCUMENTS);
+      CHECK(res->match == MV_AI_MATCH_PICTURE);
+    }
+  }
+  CHECK(r.search("green", MV_AI_SCOPE_ALL, "", MV_AI_KIND_DOCUMENTS) ==
+        std::vector<std::pair<std::string, std::int64_t>>{{"gallery_brochure.pdf", 6}});
+  // Match by Text alone leaves the pictures out; the words still find theirs.
+  CHECK(r.search("green", MV_AI_SCOPE_ALL, "", MV_AI_KIND_ALL | MV_AI_FIND_TEXT).empty());
+  CHECK(names(r.search("tenant rent")) == std::set<std::string>{"lease.docx"});
+
+  // A restart keeps them: loaded with the other vectors, nothing drawn again.
+  const std::size_t drawn = r.drawn_pages().size();
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.drawn_pages().size() == drawn);
+  CHECK(r.search("green", MV_AI_SCOPE_ALL, "", MV_AI_KIND_DOCUMENTS).size() == 1);
+
+  // The folder at Words: its pictures go (the words stay), and back at Words
+  // and pages they are drawn again.
+  const std::int64_t id = root_id();
+  REQUIRE(r.eng->root_set_documents(id, MV_AI_DOCS_WORDS));
+  REQUIRE(wait_for([&] { return r.search("green", MV_AI_SCOPE_ALL, "", MV_AI_KIND_DOCUMENTS).empty(); }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(page_frames() == 0);
+  CHECK(r.status().pages_total == 0);
+  CHECK(names(r.search("tenant rent")) == std::set<std::string>{"lease.docx"});
+  REQUIRE(r.eng->root_set_documents(id, MV_AI_DOCS_PAGES));
+  REQUIRE(wait_for([&] { return r.status().pages_total == 4; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(page_frames() == 12);
+  CHECK(r.drawn_pages().size() == drawn * 2);
+
+  // Following Settings again, and Settings back at Words: dropped.
+  REQUIRE(r.eng->root_set_documents(id, MV_AI_DOCS_DEFAULT));
+  REQUIRE(r.idle());
+  CHECK(page_frames() == 12);
+  REQUIRE(r.eng->set_setting("doc_index", "1"));
+  REQUIRE(wait_for([&] { return r.search("red", MV_AI_SCOPE_ALL, "", MV_AI_KIND_DOCUMENTS).empty(); }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(page_frames() == 0);
+  CHECK(r.status().pages_total == 0);
 }
 
 TEST_CASE("a long PDF stops at a page and resumes there; no PDFium sets PDFs aside (#354)",
