@@ -821,11 +821,13 @@ internal sealed class PeopleGrid
                 FontSize = 14,
                 CornerRadius = new CornerRadius(12),
                 BorderThickness = new Thickness(0),
-                Background = fill,
-                Foreground = ink,
                 HorizontalContentAlignment = HorizontalAlignment.Center,
                 VerticalContentAlignment = VerticalAlignment.Center,
             };
+            // Its own fill on hover and press too, never WinUI's grey.
+            Windows.UI.Color c = fill is SolidColorBrush s ? s.Color : Microsoft.UI.Colors.Transparent;
+            Look.HoldFill(b, fill, new SolidColorBrush(Windows.UI.Color.FromArgb(255, c.R, c.G, c.B)),
+                          new SolidColorBrush(Windows.UI.Color.FromArgb((byte)(c.A * 0.8), c.R, c.G, c.B)), ink);
             return b;
         }
 

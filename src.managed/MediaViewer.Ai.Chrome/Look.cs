@@ -306,7 +306,8 @@ internal sealed class Look
     public static string StatusLine(in MvAiStatus s)
     {
         if ((s.Flags & MvAiStatus.FlagNoModels) != 0) return "The search models are missing. Reinstall local search in Settings.";
-        if ((s.Flags & MvAiStatus.FlagIndexFull) != 0) return "Index is full — raise the cap or remove a folder";
+        // A full index is the pill's detail line (StatusPill), as on the Mac:
+        // the line goes on naming the pass.
         string n(ulong v) => v.ToString("N0", CultureInfo.CurrentCulture);
         switch (s.State)
         {
@@ -342,7 +343,7 @@ internal sealed class Look
                 }
                 // After the pictures, the pack reads a clip's own text, then the
                 // text in pictures (before sound and speech, which have their own line).
-                bool picturesDone = s.AssetsDone + s.AssetsFailed + s.AssetsUnavailable + s.CloudFilesLeft >= s.AssetsTotal;
+                bool picturesDone = PicturesDone(s) >= s.AssetsTotal;
                 // #354: documents' words come straight after the pictures.
                 if (picturesDone && s.DocsDone < s.DocsTotal)
                 {
@@ -366,6 +367,15 @@ internal sealed class Look
                 {
                     return $"Reading text in pictures {n(s.TextDone)} of {n(s.TextTotal)}";
                 }
+                // Then the clips' sound and speech (the Audio piece), as the Mac's line.
+                if (picturesDone && s.SoundDone < s.SoundTotal)
+                {
+                    return $"Indexing sound {n(s.SoundDone)} of {n(s.SoundTotal)} clips";
+                }
+                if (picturesDone && s.SpeechDone < s.SpeechTotal)
+                {
+                    return $"Indexing speech {n(s.SpeechDone)} of {n(s.SpeechTotal)} clips";
+                }
                 // #354 D4: last, the pages of scanned documents, read by the OS.
                 if (picturesDone && s.ScansDone < s.ScansTotal)
                 {
@@ -379,6 +389,71 @@ internal sealed class Look
                 if (s.DocsTotal > 0) done += s.DocsTotal == 1 ? " · 1 document" : $" · {n(s.DocsTotal)} documents";
                 if (s.DocsLocked > 0) done += s.DocsLocked == 1 ? " · 1 protected document skipped" : $" · {n(s.DocsLocked)} protected documents skipped";
                 return s.CloudFilesLeft > 0 ? $"{done} · {n(s.CloudFilesLeft)} only in OneDrive" : done;
+        }
+    }
+
+    /// <summary>The passes in the pack's order; the line and the ring follow the one running.</summary>
+    public enum Phase { Pictures, Documents, Pages, Meaning, Cues, Text, Sound, Speech, Scans }
+
+    /// <summary>Pictures handled: indexed, failed, or online-only and waiting for the fetch.</summary>
+    public static ulong PicturesDone(in MvAiStatus s) =>
+        s.AssetsDone + s.AssetsFailed + s.AssetsUnavailable + s.CloudFilesLeft;
+
+    /// <summary>The pass running now (the Mac's StatusLine.phase); pictures once all are done.</summary>
+    public static Phase PhaseOf(in MvAiStatus s)
+    {
+        if (PicturesDone(s) < s.AssetsTotal) return Phase.Pictures;
+        if (s.DocsDone < s.DocsTotal) return Phase.Documents;
+        if (s.PagesDone < s.PagesTotal) return Phase.Pages;
+        if (s.MeaningDone < s.MeaningTotal) return Phase.Meaning;
+        if (s.CuesDone < s.CuesTotal) return Phase.Cues;
+        if (s.TextDone < s.TextTotal) return Phase.Text;
+        if (s.SoundDone < s.SoundTotal) return Phase.Sound;
+        if (s.SpeechDone < s.SpeechTotal) return Phase.Speech;
+        if (s.ScansDone < s.ScansTotal) return Phase.Scans;
+        return Phase.Pictures;
+    }
+
+    /// <summary>0…1: how far the pass the line names has got (the ring's arc).</summary>
+    public static double Progress(in MvAiStatus s)
+    {
+        static double f(ulong done, ulong total) => total == 0 ? 0 : Math.Min(1.0, (double)done / total);
+        if (s.State == MvAiState.Indexing && s.MigrateTotal > 0) return f(s.MigrateDone, s.MigrateTotal);
+        return PhaseOf(s) switch
+        {
+            Phase.Documents => f(s.DocsDone, s.DocsTotal),
+            Phase.Pages => f(s.PagesDone, s.PagesTotal),
+            Phase.Meaning => f(s.MeaningDone, s.MeaningTotal),
+            Phase.Cues => f(s.CuesDone, s.CuesTotal),
+            Phase.Text => f(s.TextDone, s.TextTotal),
+            Phase.Sound => f(s.SoundDone, s.SoundTotal),
+            Phase.Speech => f(s.SpeechDone, s.SpeechTotal),
+            Phase.Scans => f(s.ScansDone, s.ScansTotal),
+            _ => f(PicturesDone(s), s.AssetsTotal),
+        };
+    }
+
+    /// <summary>
+    /// Lightweight hover styling for a button with its own fill: WinUI's
+    /// template otherwise swaps it for ButtonBackgroundPointerOver (grey) on
+    /// hover and press. <paramref name="ink"/> keeps the label's colour too.
+    /// </summary>
+    public static void HoldFill(Button b, Brush rest, Brush over, Brush pressed, Brush? ink = null)
+    {
+        b.Background = rest;
+        b.Resources["ButtonBackground"] = rest;
+        b.Resources["ButtonBackgroundPointerOver"] = over;
+        b.Resources["ButtonBackgroundPressed"] = pressed;
+        var clear = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        foreach (string key in new[] { "ButtonBorderBrush", "ButtonBorderBrushPointerOver", "ButtonBorderBrushPressed" })
+        {
+            b.Resources[key] = clear;
+        }
+        if (ink is null) return;
+        b.Foreground = ink;
+        foreach (string key in new[] { "ButtonForeground", "ButtonForegroundPointerOver", "ButtonForegroundPressed" })
+        {
+            b.Resources[key] = ink;
         }
     }
 

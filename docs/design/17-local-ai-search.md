@@ -554,6 +554,13 @@ goes stale, or an add-on being removed (detach joins its worker), stops the walk
   subfolders · everywhere · Photos on the Mac when indexed), kind and Pictures / Sounds / Speech
   filters, the snippet under a spoken result. Without the pack the same icon and key open the
   base app's file search ([16](16-commands.md) "File search").
+  Both hosts draw it alike (#202): a spinner in the query row while the words on screen are
+  answered; a click selects a tile and a double-click opens (Ctrl / ⌘ for the gallery grid); a
+  caption only under a tile whose words matched (speech, a tag, a document's text); capsule
+  badges (a clip's moment with a play glyph, a page, "+N in this clip") and a match badge only
+  when a sound or speech matched; a placeholder icon until the thumbnail lands; the selection
+  ring hinted, not hidden, while the keyboard is in the query; keycap hints for Enter / Return
+  and Ctrl+Enter / ⌘↩; and an icon over each empty state.
 - **Commands** (rows in `src/shell/command_table.cpp`, listed only while the pack is loaded,
   except `Ctrl+F`):
 
@@ -571,7 +578,10 @@ goes stale, or an add-on being removed (detach joins its worker), stops the walk
   completed work (`mv_ai_status`). The Windows pill does not appear for a load that is waiting
   on the viewer. On both hosts the command-bar pill has a ring (the pass's progress, with an arc
   that turns while work runs), fades in and out, and has a menu: Open search, and Index anyway
-  while on battery. On Windows the pack reports these through `IAddonHost3.SetIndexingPill`;
+  while on battery. The search footer and Settings → Local search show the same pill in full:
+  the ring (a check when idle), the line, the other passes as stage chips ("Pictures ✓",
+  "Sound 14%") while sound or speech work is in hand, and a detail line for a provider fallback,
+  an upgrade, a full index and (in the footer) a OneDrive wait. On Windows the pack reports these through `IAddonHost3.SetIndexingPill`;
   an older pack's `SetIndexingStatus` still drives the line.
 - **Settings → Local search:** per-piece install, Compute, Quality, Precision, "Index videos
   for", battery threshold, index size and cap, remembered roots (with *Index Pictures* / *Videos*
