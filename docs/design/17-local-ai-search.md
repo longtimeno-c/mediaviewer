@@ -371,11 +371,19 @@ unindexed.
   `search_similar`; issue #174).
 - **Ranking:** top frames, then **grouped per clip** with the best moment first and "N more in
   this clip", so one long video cannot fill the page (`mv_ai_result`). `find_text` returns at
-  most 5,000 rows.
+  most 5,000 rows; a result list holds at most 1,000.
+- **Order (#412, 2026-10-15).** Best match first when the search knows what it is answering.
+  When no pass answers a description (the "nothing found" gate holds every row back), the list
+  is not empty and not a score ranking of the least-bad rows: it is what the rest of the query
+  allows, **newest by date created first** (`engine::newest_first`) — a Photos item's
+  `creationDate` (`taken_at`, else the enumeration's `created`, never its edit time), a file's
+  `taken_at`, else its modification time; the same second by path. A filter-only query (`in:2024`, `file:IMG_12`) is listed the same way.
+  The hosts keep the order they are handed: the panel's grid, and the gallery and filmstrip
+  opened from it, are one sequence.
 - **Scope:** the open folder and its subfolders (default) · all indexed folders
   (`MV_AI_SCOPE_TREE` / `MV_AI_SCOPE_ALL`; the panel offers no folder-only scope). Kind filter
-  (photos / videos) and tower filter (pictures / sounds / speech). A nonsense query returns
-  "nothing found", not the least-bad ten (below). With no folder open the folder scope searches
+  (photos / videos) and tower filter (pictures / sounds / speech). A nonsense query is not
+  answered with the least-bad ten (below, "Nothing found"). With no folder open the folder scope searches
   everywhere, and the Mac panel shows *Everywhere* chosen; opening another folder asks a
   folder-scoped search again (on the panel's next showing if it is closed), never leaving the
   last folder's results under the new one (issue #191).

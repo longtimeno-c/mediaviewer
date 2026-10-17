@@ -1105,6 +1105,15 @@ of noise, and a 705-label vocabulary that keeps a row only where the query score
 ninth-best label. At 25 k assets nonsense answered 63 → 23 of 85 (L/14), category precision .60 →
 .87, P@5 unchanged, category recall −.06 to −.08. Sentence-like gibberish still floods on L/14.
 
+**Result order (#412, 2026-10-15).** Best match when the search knows what it is answering;
+newest by date created to oldest when it does not. A description the "nothing found" gate holds
+back used to be an empty page (and, the report said, read as a weak ranking); the owner asked for
+what the rest of the query allows, newest first, instead, and kept best match for every answered
+query (amended the same day: never replace an answered query with date order). The date is the
+one the photo was created — a Photos item's `creationDate`, a file's date taken, else its
+modification time — so an edit in Photos does not move it; ties go by path. The gate itself is
+not retuned (gibberish that passes it is still #85).
+
 **Precision scale (2026-09-27).** Five steps in Settings; the middle is the calibrated rule. A
 stricter level answers a subset of a looser one; read per search, no re-index. On COCO, level 3 stops
 L/14 answering "helicopter" with planes. It is the only search-quality setting (2026-09-28).

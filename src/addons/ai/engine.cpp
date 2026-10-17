@@ -5329,6 +5329,46 @@ void engine::finish(search_state& st) {
   for (auto& [asset, list] : st.moments) std::sort(list.begin(), list.end());
 }
 
+void engine::newest_first(search_state& st, const std::set<std::int64_t>& allowed) {
+  struct dated {
+    std::int64_t when;
+    std::string path;
+    std::int64_t asset;
+    bool photos;
+  };
+  std::vector<dated> rows;
+  {
+    std::lock_guard lock(assets_m_);
+    rows.reserve(allowed.size());
+    for (std::int64_t a : allowed) {
+      if (auto it = assets_.find(a); it != assets_.end()) {
+        rows.push_back({it->second.when(), it->second.path, a, !it->second.taken_at && is_photos_key(it->second.path)});
+      }
+    }
+  }
+  {
+    // A Photos item whose tags are not read yet: its creationDate from the
+    // last enumeration, never the index's mtime (the item's edit time).
+    std::lock_guard lock(photos_tags_m_);
+    for (dated& d : rows) {
+      if (!d.photos) continue;
+      if (auto p = photos_tags_.find(d.path); p != photos_tags_.end() && p->second.created != 0) {
+        d.when = p->second.created;
+      }
+    }
+  }
+  std::sort(rows.begin(), rows.end(), [](const dated& a, const dated& b) {
+    if (a.when != b.when) return a.when > b.when;
+    if (a.path != b.path) return a.path < b.path;
+    return a.asset < b.asset;
+  });
+  // A result list holds at most 1,000 rows (add_row).
+  if (rows.size() > 1000) rows.resize(1000);
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    add_row(st, rows[i].asset, -1, 0, static_cast<float>(rows.size() - i), 0, {});
+  }
+}
+
 void engine::load_cues() {
   std::vector<cue_row> rows;
   (void)db_->each_cue([&](std::int64_t asset, const cue_in& c) {
@@ -6527,19 +6567,12 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
                 !plan.not_text.empty() || !plan.not_phrases.empty())) {
       // Filters alone ("video in:2024", "file:IMG_12"): everything they allow,
       // newest first.
-      std::vector<std::pair<std::int64_t, std::int64_t>> by_date;  // (date taken else mtime, asset)
-      {
-        std::lock_guard lock(assets_m_);
-        for (std::int64_t a : *allowed) {
-          if (auto it = assets_.find(a); it != assets_.end()) by_date.push_back({it->second.when(), a});
-        }
-      }
-      std::sort(by_date.begin(), by_date.end(), std::greater<>());
-      if (by_date.size() > 1000) by_date.resize(1000);
-      for (std::size_t i = 0; i < by_date.size(); ++i) {
-        add_row(st, by_date[i].second, -1, 0, static_cast<float>(by_date.size() - i), 0, {});
-      }
+      newest_first(st, *allowed);
     }
+    // #412: a description nothing answered (the "nothing found" rule held
+    // every pass back) is not an empty page: what the rest of the query
+    // allows, newest first. An answered query keeps its best match.
+    if (!plan.text.empty() && st.rows.empty()) newest_first(st, *allowed);
     // The phrase under a result that matched on something else too.
     for (said& r : said_rows) {
       if (!st.row_of.count(r.asset)) continue;

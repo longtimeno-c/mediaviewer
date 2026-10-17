@@ -416,8 +416,10 @@ typedef struct mv_ai_api {
   /* ---- search (PR 22, 23) ------------------------------------------------- */
   /* Natural-language query. `scope_dir` may be NULL for MV_AI_SCOPE_ALL.
    * Runs on a worker; MV_ADDON_EVENT_AI_SEARCH_DONE carries the id and the
-   * result count (0: "nothing found" — the min-score cutoff, not the
-   * least-bad ten). The query language (docs/design/17 "Query syntax"): a named
+   * result count. A description nothing answers ("nothing found": the
+   * calibrated gate, not the least-bad ten) lists what the rest of the query
+   * allows, newest by date created first (#412).
+   * The query language (docs/design/17 "Query syntax"): a named
    * person narrows to them, "quoted words" must be said, -x leaves x out,
    * video / photo and in: / before: / after: filter; the kind bits here and
    * the query's must both hold. [no-block] */
