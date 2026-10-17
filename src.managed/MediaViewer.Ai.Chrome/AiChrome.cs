@@ -475,7 +475,7 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
         }
         string? line = Look.PillVisible(_status) ? Look.StatusLine(_status) : null;
         bool busy = Look.Busy(_status);
-        double fraction = _status.AssetsTotal == 0 ? 0 : Math.Min(1.0, (double)_status.AssetsDone / _status.AssetsTotal);
+        double fraction = Look.Progress(_status);  // the pass the line names, as the search footer's ring
         bool reported = false;
         try
         {

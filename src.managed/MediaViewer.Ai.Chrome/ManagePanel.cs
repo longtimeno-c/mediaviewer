@@ -27,7 +27,7 @@ internal sealed partial class ManagePanel
     private readonly AiChrome _chrome;
     private readonly AiApi _api;
     private readonly Look _look;
-    private readonly TextBlock _status;
+    private readonly StatusPill _status;
     private readonly TextBlock _compute;
     private readonly Button _pause;
     private readonly Button _indexAnyway;
@@ -124,14 +124,16 @@ internal sealed partial class ManagePanel
         _look = chrome.Look;
         Root = new StackPanel { Spacing = 10, Margin = new Thickness(0, 8, 0, 0) };
 
-        // Status, compute, Pause / Resume.
-        _status = _look.Text("", null, AddonColour.Title);
+        // Status (the search footer's pill: ring, line, stages, detail), compute, Pause / Resume.
+        _status = new StatusPill(_look, _look.FontSize, AddonColour.Title, inSettings: true);
         _compute = _look.Text("", 12);
+        _compute.Margin = new Thickness(26, 0, 0, 0);  // under the line, past the ring
         _pause = _look.Button("Pause indexing", TogglePause);
         var statusText = new StackPanel { Spacing = 2 };
-        statusText.Children.Add(_status);
+        statusText.Children.Add(_status.Root);
         statusText.Children.Add(_compute);
         _audioLine = _look.Text("", 12);
+        _audioLine.Margin = new Thickness(26, 0, 0, 0);
         _audioLine.Visibility = Visibility.Collapsed;
         statusText.Children.Add(_audioLine);
         var statusRow = new Grid { ColumnSpacing = 16 };
@@ -599,12 +601,12 @@ internal sealed partial class ManagePanel
     {
         if (!_chrome.StatusValid)
         {
-            _status.Text = "Local search is not running.";
+            _status.ShowNotRunning();
             _compute.Text = "";
             return;
         }
         MvAiStatus s = _chrome.Status;
-        _status.Text = Look.StatusLine(s);
+        _status.Show(s);
         string? why = Look.FallbackReason(s);
         string model = s.ModelText.Length > 0 ? " · " + s.ModelText : "";
         _compute.Text = (why ?? $"Running on {Look.ComputeBadge(s)}") + model;

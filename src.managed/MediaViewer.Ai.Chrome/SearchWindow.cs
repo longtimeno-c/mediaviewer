@@ -100,15 +100,16 @@ internal sealed class SearchWindow : Window, IDisposable
     private Border _ring = null!;
     private ContentControl _gridHost = null!;
     private StackPanel _empty = null!;
-    // A still accent dot, not a ProgressRing: that control has no default style
-    // in this island host and fail-fasts when it enters the tree.
-    private Microsoft.UI.Xaml.Shapes.Ellipse _footerDot = null!;
-    private TextBlock _footerText = null!;
+    // Rings of Ellipse and Path arcs, not a ProgressRing: that control has no
+    // default style in this island host and fail-fasts when it enters the tree.
+    private StatusPill _status = null!;
+    private StatusRing _searching = null!;
     private Border _badge = null!;
     private TextBlock _badgeText = null!;
     private Button _pause = null!;
     private Button _indexAnyway = null!;
-    private TextBlock _hint = null!;
+    private StackPanel _hint = null!;
+    private TextBlock _hintEnter = null!;
 
     private List<ResultTile> _tiles = new();
     private int _sel = -1;
@@ -204,10 +205,11 @@ internal sealed class SearchWindow : Window, IDisposable
             Content = "✕",
             FontSize = 12,
             Padding = new Thickness(6, 2, 6, 2),
-            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
             BorderThickness = new Thickness(0),
             IsTabStop = false,
         };
+        Look.HoldFill(removeSimilar, new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+                      _look.LiveTint(AddonColour.Body, 36), _look.LiveTint(AddonColour.Body, 56), _look[AddonColour.Title]);
         AutomationProperties.SetName(removeSimilar, "Remove find similar");
         removeSimilar.Click += (_, _) => ClearSimilar(runQuery: true);
         var chipRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
@@ -233,17 +235,34 @@ internal sealed class SearchWindow : Window, IDisposable
         };
         AutomationProperties.SetName(_query, "Search photos and videos");
         _query.Changed += OnQueryChanged;
-        var glyph = _look.Text("⌕", 26, AddonColour.Body, wrap: false);
-        glyph.VerticalAlignment = VerticalAlignment.Center;
+        // Segoe Fluent's Search, not "⌕": the UI font may not carry that one.
+        var glyph = new FontIcon
+        {
+            Glyph = "",
+            FontFamily = IconFont,
+            FontSize = 18,
+            Foreground = _look[AddonColour.Body],
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(2, 0, 0, 0),
+        };
+        AutomationProperties.SetAccessibilityView(glyph, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        // Turning while the words on screen are being answered; its room is
+        // kept while hidden, so the field does not change width.
+        _searching = new StatusRing(_look, 16, 2);
+        _searching.Root.Opacity = 0;
+        _searching.Root.OpacityTransition = new ScalarTransition { Duration = TimeSpan.FromMilliseconds(150) };
         var queryRow = new Grid { ColumnSpacing = 8 };
         queryRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         queryRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         queryRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        queryRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         queryRow.Children.Add(glyph);
         Grid.SetColumn(_similarChip, 1);
         queryRow.Children.Add(_similarChip);
         Grid.SetColumn(_query, 2);
         queryRow.Children.Add(_query);
+        Grid.SetColumn(_searching.Root, 3);
+        queryRow.Children.Add(_searching.Root);
         var queryCard = new Border
         {
             Child = queryRow,
@@ -405,7 +424,7 @@ internal sealed class SearchWindow : Window, IDisposable
         };
         _gridHost.LostFocus += (_, _) =>
         {
-            _ring.Opacity = 0;
+            MoveRing(animate: false);  // hinted: where the keyboard lands again
             UpdateHint();
         };
         // Typing in the grid goes back to the words: the character lands at
@@ -435,27 +454,16 @@ internal sealed class SearchWindow : Window, IDisposable
         Grid.SetRow(middle, 2);
         body.Children.Add(middle);
 
-        // The footer: status pill, compute badge, Pause, Manage.
-        _footerDot = new Microsoft.UI.Xaml.Shapes.Ellipse
-        {
-            Width = 8,
-            Height = 8,
-            Fill = _look[AddonColour.Accent],
-            VerticalAlignment = VerticalAlignment.Center,
-            Visibility = Visibility.Collapsed,
-        };
-        _footerText = _look.Text("", 13, AddonColour.Body, wrap: false);
-        _footerText.VerticalAlignment = VerticalAlignment.Center;
-        var pillRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        pillRow.Children.Add(_footerDot);
-        pillRow.Children.Add(_footerText);
+        // The footer: status pill (ring, line, stages, detail), compute badge, Pause, Manage.
+        _status = new StatusPill(_look, 13, AddonColour.Title, inSettings: false);
         var pill = new Border
         {
-            Child = pillRow,
-            Padding = new Thickness(10, 4, 12, 4),
-            CornerRadius = new CornerRadius(12),
+            Child = _status.Root,
+            Padding = new Thickness(10, 5, 14, 5),
+            CornerRadius = new CornerRadius(16),
             Background = _look.Tint(AddonColour.Surface, 170),
             VerticalAlignment = VerticalAlignment.Center,
+            MaxWidth = 520,
         };
         _badgeText = _look.Text("", 12, AddonColour.Body, wrap: false);
         _badge = new Border
@@ -482,9 +490,16 @@ internal sealed class SearchWindow : Window, IDisposable
         // Always there: closing never stops indexing or a search.
         Button close = _look.Button("Close", Hide);
         ToolTipService.SetToolTip(close, "Close the panel (Esc). Indexing carries on in the background.");
-        var hint = _look.Text(HintInQuery, 13, AddonColour.Body, wrap: false);
-        hint.VerticalAlignment = VerticalAlignment.Center;
-        hint.Visibility = Visibility.Collapsed;  // with results only
+        // What Enter does where the keyboard is, as keycaps (the Mac's KeyHint).
+        var hint = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 10,
+            VerticalAlignment = VerticalAlignment.Center,
+            Visibility = Visibility.Collapsed,  // with results only
+        };
+        hint.Children.Add(KeyHint("Enter", "Go to results", out _hintEnter));
+        hint.Children.Add(KeyHint("Ctrl+Enter", "Open all", out _));
         _hint = hint;
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
         actions.Children.Add(_indexAnyway);
@@ -528,6 +543,30 @@ internal sealed class SearchWindow : Window, IDisposable
         row.Children.Add(label);
         if (control is FrameworkElement fe) fe.VerticalAlignment = VerticalAlignment.Center;
         row.Children.Add(control);
+        return row;
+    }
+
+    /// <summary>"[Enter] Open": a keycap and what it does, in the footer (the Mac's KeyHint).</summary>
+    private FrameworkElement KeyHint(string key, string label, out TextBlock labelText)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
+        var cap = new Border
+        {
+            Child = _look.Text(key, 12, AddonColour.Title, wrap: false),
+            Padding = new Thickness(5, 0, 5, 1),
+            MinWidth = 20,
+            MinHeight = 18,
+            CornerRadius = new CornerRadius(4),
+            Background = _look.LiveTint(AddonColour.Body, 18),
+            BorderBrush = _look[AddonColour.Hairline],
+            BorderThickness = new Thickness(1),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        row.Children.Add(cap);
+        labelText = _look.Text(label, 13, AddonColour.Body, wrap: false);
+        labelText.VerticalAlignment = VerticalAlignment.Center;
+        row.Children.Add(labelText);
+        AutomationProperties.SetName(row, $"{key}: {label}");
         return row;
     }
 
@@ -621,6 +660,8 @@ internal sealed class SearchWindow : Window, IDisposable
     private const string GlyphSound = "";
     private const string GlyphSpeech = "";
     private const string GlyphText = "";  // Document
+    private const string GlyphVideo = "";  // Video: a clip's placeholder
+    private const string GlyphPlay = "";   // Play: before a clip's moment
     private static FontFamily IconFont => Look.IconFont;
 
     // What can be matched: sounds and speech need the Audio piece, text (#354)
@@ -740,6 +781,7 @@ internal sealed class SearchWindow : Window, IDisposable
         {
             ShowStart();
         }
+        UpdateSearching();
     }
 
     private void Hide()
@@ -749,6 +791,7 @@ internal sealed class SearchWindow : Window, IDisposable
         _startedIndexing = false;
         _poll.Stop();
         _debounce.Stop();
+        UpdateSearching();
         _look.PanelOut(_card, () =>
         {
             if (_visible) return;  // shown again inside the fade
@@ -853,10 +896,13 @@ internal sealed class SearchWindow : Window, IDisposable
                 Content = label,
                 Padding = new Thickness(10, 3, 10, 3),
                 CornerRadius = new CornerRadius(14),
-                Background = _look.Tint(AddonColour.Accent, (byte)(i == 0 ? 48 : 20)),
                 BorderThickness = new Thickness(0),
                 IsTabStop = false,  // Tab in the query takes the first; the grid keeps the keyboard model
             };
+            // Its accent tint stays on hover, a little stronger, never WinUI's grey.
+            byte rest = (byte)(i == 0 ? 48 : 20);
+            Look.HoldFill(button, _look.Tint(AddonColour.Accent, rest), _look.Tint(AddonColour.Accent, (byte)(rest + 24)),
+                          _look.Tint(AddonColour.Accent, (byte)(rest + 44)));
             AutomationProperties.SetName(button, $"Person: {s.Name}");
             ToolTipService.SetToolTip(button, $"Search for {s.Name}");
             button.Click += (_, _) => AcceptSuggestion(s.Completion);
@@ -992,6 +1038,7 @@ internal sealed class SearchWindow : Window, IDisposable
             _focusWhenReady = 0;
             SetTiles(new List<ResultTile>(), ulong.MinValue);
             ShowStart();
+            UpdateSearching();
             return;
         }
         if (_similar is null)
@@ -1009,7 +1056,9 @@ internal sealed class SearchWindow : Window, IDisposable
                 _openWhenReady = null;
                 SetTiles(new List<ResultTile>(), ulong.MinValue);
                 ShowEmpty("Place search needs the Places add-on.",
-                          "Install it from Settings → Add-ons. It names places offline; nothing is sent anywhere.");
+                          "Install it from Settings → Add-ons. It names places offline; nothing is sent anywhere.",
+                          icon: GlyphMapPin);
+                UpdateSearching();
                 return;
             }
         }
@@ -1023,7 +1072,8 @@ internal sealed class SearchWindow : Window, IDisposable
         catch (MediaViewerException)
         {
             _focusWhenReady = 0;
-            ShowEmpty("Search is not available right now.", "Local search may still be getting ready. Try again in a moment.");
+            ShowEmpty("Search is not available right now.", "Local search may still be getting ready. Try again in a moment.",
+                      icon: GlyphWarning);
             return;
         }
         // Enter waits on the words it was pressed for: a quiet re-run of them
@@ -1039,6 +1089,19 @@ internal sealed class SearchWindow : Window, IDisposable
         _lastRunTick = Environment.TickCount64;
         _lastRunFrames = _chrome.StatusValid ? _chrome.Status.FramesIndexed : 0;
         if (!quiet && _tiles.Count == 0) _count.Text = "Searching…";
+        UpdateSearching();
+    }
+
+    /// <summary>The answer for the words on screen is on its way (not a quiet re-run as the index grows).</summary>
+    private bool Searching => (_pending != 0 || _landing != 0) && (_pendingFresh || _tiles.Count == 0);
+
+    /// <summary>The query row's spinner follows <see cref="Searching"/>; it turns only while shown.</summary>
+    private void UpdateSearching()
+    {
+        bool on = _visible && Searching;
+        _searching.Root.Opacity = on ? 1 : 0;
+        // Reduce motion: a still arc says the same without turning.
+        _searching.Set(on && !_look.Motion ? 0.3 : -1, on && _look.Motion);
     }
 
     internal void OnSearchDone(ulong id, MvStatus status, long count)
@@ -1054,7 +1117,8 @@ internal sealed class SearchWindow : Window, IDisposable
             _pendingFresh = false;
             _focusWhenReady = 0;
             _openWhenReady = null;
-            ShowEmpty("Search did not finish.", "Try again, or change the words.");
+            ShowEmpty("Search did not finish.", "Try again, or change the words.", icon: GlyphWarning);
+            UpdateSearching();
             return;
         }
         _landing = id;
@@ -1127,6 +1191,7 @@ internal sealed class SearchWindow : Window, IDisposable
             // Enter was pressed on these words before their answer: go to it now.
             EnterGrid(first: true);
         }
+        UpdateSearching();
     }
 
     /// <summary>
@@ -1209,14 +1274,14 @@ internal sealed class SearchWindow : Window, IDisposable
         if (_similar is not null)
         {
             ShowEmpty("Nothing similar found here.",
-                      indexing ? "Results appear as the index grows." : "Try Look in: Everywhere.");
+                      indexing ? "Results appear as the index grows." : "Try Look in: Everywhere.", icon: GlyphSearch);
             return;
         }
         ShowEmpty($"Nothing matches “{q}”.",
                   "Try fewer words, or describe what's in the picture." +
                   (AudioReady ? " Or try a sound — “dog barking” — or words someone said." : "") +
                   (indexing ? " Results appear as the index grows." : ""),
-                  syntax: true);
+                  syntax: true, icon: GlyphSearch);
     }
 
     private void ShowIndexOffer()
@@ -1226,6 +1291,7 @@ internal sealed class SearchWindow : Window, IDisposable
         _empty.Children.Clear();
         _count.Text = "";
         string name = System.IO.Path.GetFileName(_chrome.Folder!.TrimEnd('\\', '/'));
+        _empty.Children.Add(EmptyIcon(GlyphAdd));
         _empty.Children.Add(Centre(_look.Text($"“{name}” is not indexed yet.", 18, AddonColour.Title)));
         if (_chrome.ReadOnly)
         {
@@ -1247,12 +1313,13 @@ internal sealed class SearchWindow : Window, IDisposable
         FadeIn(_empty);
     }
 
-    private void ShowEmpty(string title, string detail, bool syntax = false)
+    private void ShowEmpty(string title, string detail, bool syntax = false, string? icon = null)
     {
         _indexOffered = false;
         _gridHost.Visibility = Visibility.Collapsed;
         _empty.Children.Clear();
         _count.Text = "";
+        if (icon is not null) _empty.Children.Add(EmptyIcon(icon));
         _empty.Children.Add(Centre(_look.Text(title, 18, AddonColour.Title)));
         _empty.Children.Add(Centre(_look.Text(detail, 14)));
         if (syntax)
@@ -1278,6 +1345,29 @@ internal sealed class SearchWindow : Window, IDisposable
         FadeIn(_empty);
     }
 
+    // Segoe Fluent Icons for the empty states (the Mac's SF Symbols there).
+    private const string GlyphSync = "\uE895";
+    private const string GlyphAdd = "\uE710";
+    private const string GlyphSearch = "\uE721";
+    private const string GlyphWarning = "\uE7BA";
+    private const string GlyphMapPin = "\uE707";
+
+    /// <summary>The empty state's icon, over its title.</summary>
+    private FontIcon EmptyIcon(string glyph)
+    {
+        var icon = new FontIcon
+        {
+            Glyph = glyph,
+            FontFamily = IconFont,
+            FontSize = 30,
+            Foreground = _look[AddonColour.Body],
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 2),
+        };
+        AutomationProperties.SetAccessibilityView(icon, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        return icon;
+    }
+
     private static TextBlock Centre(TextBlock t)
     {
         t.TextAlignment = TextAlignment.Center;
@@ -1299,7 +1389,7 @@ internal sealed class SearchWindow : Window, IDisposable
         try { _api.IndexFolder(dir, recursive: true); }
         catch (MediaViewerException)
         {
-            ShowEmpty("This folder could not be added.", "Check that it is still there, then try again.");
+            ShowEmpty("This folder could not be added.", "Check that it is still there, then try again.", icon: GlyphWarning);
             return;
         }
         _chrome.RefreshCoverage();
@@ -1321,6 +1411,7 @@ internal sealed class SearchWindow : Window, IDisposable
         _empty.Children.Clear();
         _count.Text = "";
         string name = _chrome.Folder is string f ? System.IO.Path.GetFileName(f.TrimEnd('\\', '/')) : "this folder";
+        _empty.Children.Add(EmptyIcon(GlyphSync));
         _empty.Children.Add(Centre(_look.Text(
             $"Indexing “{name}” and its subfolders in the background", 18, AddonColour.Title)));
         string q = _query.Text.Trim();
@@ -1368,24 +1459,20 @@ internal sealed class SearchWindow : Window, IDisposable
     {
         if (!_chrome.StatusValid)
         {
-            _footerText.Text = "Local search is not running.";
-            _footerDot.Visibility = Visibility.Collapsed;
+            _status.ShowNotRunning();
             _badge.Visibility = Visibility.Collapsed;
             return;
         }
         MvAiStatus s = _chrome.Status;
-        _footerText.Text = Look.StatusLine(s);
+        // The ring turns only while work runs; a fallback is the pill's detail line.
+        _status.Show(s);
         bool audio = (s.Flags & MvAiStatus.FlagAudioReady) != 0;
         if (audio != _findAudio)
         {
             _findAudio = audio;
             ShowFind();
         }
-        // The dot shows only while indexing.
-        bool busy = Look.Busy(s);
-        _footerDot.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
-        string? why = Look.FallbackReason(s);
-        _badgeText.Text = why is null ? Look.ComputeBadge(s) : $"{Look.ComputeBadge(s)} · {why}";
+        _badgeText.Text = Look.ComputeBadge(s);
         _badge.Visibility = Visibility.Visible;
         ToolTipService.SetToolTip(_badge, s.ModelText.Length > 0 ? s.ModelText : null);
         bool paused = s.State == MvAiState.Paused;
@@ -1393,7 +1480,7 @@ internal sealed class SearchWindow : Window, IDisposable
         _pause.Content = paused ? "Resume" : "Pause";
         _pause.Visibility = _chrome.ReadOnly || (s.State == MvAiState.Idle && s.AssetsDone >= s.AssetsTotal)
             ? Visibility.Collapsed : Visibility.Visible;
-        if (_chrome.ReadOnly) ToolTipService.SetToolTip(_footerText, AiChrome.ReadOnlyNote);
+        if (_chrome.ReadOnly) ToolTipService.SetToolTip(_status.Line, AiChrome.ReadOnlyNote);
 
         // Results appear as the index grows: re-ask now and then while it does.
         if (_visible && _pending == 0 && s.State == MvAiState.Indexing &&
@@ -1543,13 +1630,12 @@ internal sealed class SearchWindow : Window, IDisposable
         Select(first ? 0 : Math.Max(0, _sel));
     }
 
-    private const string HintInQuery = "Enter go to results · Ctrl+Enter open all";
-    private const string HintInGrid = "Enter open · Ctrl+Enter open all";
-
     /// <summary>The footer says what Enter does where the keyboard is.</summary>
     private void UpdateHint()
     {
-        _hint.Text = _gridHost.FocusState != FocusState.Unfocused ? HintInGrid : HintInQuery;
+        string label = _gridHost.FocusState != FocusState.Unfocused ? "Open" : "Go to results";
+        _hintEnter.Text = label;
+        if (_hintEnter.Parent is UIElement row) AutomationProperties.SetName(row, $"Enter: {label}");
     }
 
     private int Columns()
@@ -1578,12 +1664,17 @@ internal sealed class SearchWindow : Window, IDisposable
     }
 
     // The selection ring glides between tiles (a compositor-side translation).
+    // Outside the grid it stays as a faint hint on the tile Enter goes to (the
+    // Mac's hinted ring), not hidden.
     private void MoveRing(bool animate)
     {
-        bool show = _sel >= 0 && _sel < _tiles.Count && _gridHost.FocusState != FocusState.Unfocused;
-        _ring.Opacity = show ? 1 : 0;
+        bool focused = _gridHost.FocusState != FocusState.Unfocused;
+        int at = focused ? _sel : Math.Max(0, _sel);
+        bool show = at >= 0 && at < _tiles.Count;
+        _ring.Opacity = !show ? 0 : focused ? 1 : 0.45;
+        _ring.BorderThickness = new Thickness(focused ? 2.5 : 1.5);
         if (!show) return;
-        (double x, double y) = TileOrigin(_sel);
+        (double x, double y) = TileOrigin(at);
         _ring.TranslationTransition = animate && _look.Motion
             ? new Vector3Transition { Duration = TimeSpan.FromMilliseconds(160) }
             : null;
@@ -1644,10 +1735,22 @@ internal sealed class SearchWindow : Window, IDisposable
         tile.View = image;
         var layers = new Grid { Width = TileW, Height = ImageH };
         layers.Children.Add(new Border { Background = _look.Tint(AddonColour.Surface, 255) });
+        // What it is, until its thumbnail lands over it (the Mac's placeholder).
+        var placeholder = new FontIcon
+        {
+            Glyph = tile.Video ? GlyphVideo : tile.Document ? GlyphText : GlyphPicture,
+            FontFamily = IconFont,
+            FontSize = 20,
+            Foreground = _look[AddonColour.Body],
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        AutomationProperties.SetAccessibilityView(placeholder, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        layers.Children.Add(placeholder);
         layers.Children.Add(image);
         if (tile.Video)
         {
-            layers.Children.Add(Badge(Look.Moment(tile.PtsMs), HorizontalAlignment.Left));
+            layers.Children.Add(Badge(Look.Moment(tile.PtsMs), HorizontalAlignment.Left, GlyphPlay));
             if (tile.More > 0) layers.Children.Add(Badge($"+{tile.More} in this clip", HorizontalAlignment.Right));
         }
         else if (tile.Page is long page)
@@ -1679,9 +1782,12 @@ internal sealed class SearchWindow : Window, IDisposable
             frame.Scale = Vector3.One;
             frame.Translation = Vector3.Zero;
         };
-        var caption = _look.Text(tile.Name, 12, AddonColour.Body, wrap: false);
+        // Only the words that matched go under a tile (a speech, tag or text
+        // snippet, as on the Mac); the name is in the tooltip.
+        var caption = _look.Text("", 12, AddonColour.Body, wrap: false);
         caption.Margin = new Thickness(2, 4, 2, 0);
         caption.MaxWidth = TileW;
+        caption.Visibility = Visibility.Collapsed;
         tile.Caption = caption;
         var root = new StackPanel { Width = TileW, Height = TileH };
         root.Children.Add(frame);
@@ -1690,7 +1796,16 @@ internal sealed class SearchWindow : Window, IDisposable
                                         : tile.Page is long pg ? $"{tile.Name}, page {pg}" : tile.Name);
         if (tile.Snippet is string known) ShowSnippet(tile, known);
         else RequestSnippet(tile);
+        // A click selects (and takes the keyboard into the grid); a double-click
+        // opens, Ctrl+double-click in the gallery grid, as on the Mac.
         root.Tapped += (_, _) =>
+        {
+            _sel = tile.Index;
+            if (_gridHost.FocusState == FocusState.Unfocused) _gridHost.Focus(FocusState.Pointer);
+            Select(tile.Index);
+            UpdateHint();
+        };
+        root.DoubleTapped += (_, _) =>
         {
             _sel = tile.Index;
             OpenResults(gallery: Down(VirtualKey.Control));
@@ -1730,11 +1845,12 @@ internal sealed class SearchWindow : Window, IDisposable
         }
     }
 
-    // Why a tile matched: picture, sound, speech (Segoe Fluent Icons glyphs),
-    // top-right over the thumbnail. Nothing when the pack does not say.
+    // Why a tile matched, top-left over the thumbnail (Segoe Fluent Icons
+    // glyphs), as on the Mac: only when a sound or words matched. A plain
+    // picture match needs none; the picture glyph shows only beside another.
     private Border? MatchBadge(MvAiMatch match)
     {
-        if (match == MvAiMatch.None) return null;
+        if ((match & (MvAiMatch.Sound | MvAiMatch.Speech)) == 0) return null;
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
         var names = new List<string>(3);
         void Add(MvAiMatch bit, string glyph, string name)
@@ -1744,7 +1860,7 @@ internal sealed class SearchWindow : Window, IDisposable
             {
                 Glyph = glyph,
                 FontFamily = IconFont,
-                FontSize = 12,
+                FontSize = 11,
                 Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
             });
             names.Add(name);
@@ -1755,11 +1871,11 @@ internal sealed class SearchWindow : Window, IDisposable
         var badge = new Border
         {
             Child = row,
-            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(170, 0, 0, 0)),
-            CornerRadius = new CornerRadius(4),
-            Padding = new Thickness(5, 3, 5, 3),
-            Margin = new Thickness(6),
-            HorizontalAlignment = HorizontalAlignment.Right,
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(153, 0, 0, 0)),
+            CornerRadius = new CornerRadius(9),  // a capsule
+            Padding = new Thickness(6, 3, 6, 3),
+            Margin = new Thickness(5),
+            HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Top,
         };
         string text = "Matched by " + string.Join(" and ", names);
@@ -1796,6 +1912,7 @@ internal sealed class SearchWindow : Window, IDisposable
     private void ShowSnippet(ResultTile tile, string snippet)
     {
         if (tile.Caption is not TextBlock caption || snippet.Length == 0) return;
+        caption.Visibility = Visibility.Visible;
         caption.Inlines.Clear();
         if ((tile.Match & MvAiMatch.Speech) == 0 || (tile.Match & MvAiMatch.Text) != 0)
         {
@@ -1843,22 +1960,43 @@ internal sealed class SearchWindow : Window, IDisposable
         if (start < text.Length) yield return text[start..];
     }
 
-    private Border Badge(string text, HorizontalAlignment side) => new()
+    // A capsule over the thumbnail's bottom edge: a clip's moment (with a play
+    // glyph), a document's page, "+3 in this clip".
+    private Border Badge(string text, HorizontalAlignment side, string? glyph = null)
     {
-        Child = new TextBlock
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 3 };
+        var white = new SolidColorBrush(Microsoft.UI.Colors.White);
+        if (glyph is not null)
+        {
+            row.Children.Add(new FontIcon
+            {
+                Glyph = glyph,
+                FontFamily = IconFont,
+                FontSize = 8,
+                Foreground = white,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+        }
+        row.Children.Add(new TextBlock
         {
             Text = text,
             FontFamily = _look.Font,
-            FontSize = 12,
-            Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
-        },
-        Background = new SolidColorBrush(Windows.UI.Color.FromArgb(170, 0, 0, 0)),
-        CornerRadius = new CornerRadius(4),
-        Padding = new Thickness(5, 1, 5, 2),
-        Margin = new Thickness(6),
-        HorizontalAlignment = side,
-        VerticalAlignment = VerticalAlignment.Bottom,
-    };
+            FontSize = 11,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            Foreground = white,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        return new Border
+        {
+            Child = row,
+            Background = new SolidColorBrush(Windows.UI.Color.FromArgb(153, 0, 0, 0)),
+            CornerRadius = new CornerRadius(9),
+            Padding = new Thickness(6, 1, 6, 2),
+            Margin = new Thickness(5),
+            HorizontalAlignment = side,
+            VerticalAlignment = VerticalAlignment.Bottom,
+        };
+    }
 
     // The first 16 new tiles of a batch fade and rise in, 25 ms apart; a fade
     // alone under reduce motion. Compositor-side: input is never held.
