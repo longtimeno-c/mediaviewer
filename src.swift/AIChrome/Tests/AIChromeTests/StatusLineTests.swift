@@ -77,6 +77,20 @@ final class StatusLineTests: XCTestCase {
                    "iCloud downloads wait for indexing to catch up · 1,833 clips left to download and index")
   }
 
+  /// #354 D4: the scanned pages' pass runs after every other one.
+  func testScannedPagesAreTheLastPass() {
+    var s = status(done: 24_443, left: 0, fetch: MV_AI_ICLOUD_OFF)
+    s.sound_done = 100
+    s.speech_done = 100
+    s.docs_total = 5
+    s.docs_done = 5
+    s.scans_total = 5
+    s.scans_done = 3
+    XCTAssertEqual(StatusLine(s).text, "Reading scanned pages 3 of 5 documents")
+    s.speech_done = 99
+    XCTAssertTrue(StatusLine(s).text.hasPrefix("Indexing speech 99 of 100 clips"))
+  }
+
   func testSoundPassIsUntouched() {
     var s = status(done: 24_443, left: 1_833, fetch: MV_AI_ICLOUD_WAIT_INDEXER)
     s.sound_done = 40

@@ -287,6 +287,13 @@ typedef struct mv_ai_status {
    * these only when struct_size covers them. */
   uint64_t meaning_total;
   uint64_t meaning_done;
+  /* Scanned pages (#354 D4): documents whose words are read, and those whose
+   * pages with no text layer the OS has read (a document with none is done
+   * with its words; failed and locked counted as done). 0 where the OS has
+   * no text reader. While short the state is not IDLE. Read these only when
+   * struct_size covers them. */
+  uint64_t scans_total;
+  uint64_t scans_done;
 } mv_ai_status;
 
 typedef enum mv_ai_icloud_fetch {

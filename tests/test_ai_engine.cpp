@@ -169,6 +169,9 @@ class fake_embedder final : public mv::infer::embedder {
 // blue (fake_sampler).
 constexpr std::uint8_t kSignSuited = 77;  // "*sign*": a sign reading SUITED AND / BOOTED
 constexpr std::uint8_t kSignKoln = 78;    // "*koln*": Grüße aus / KÖLN
+// #354 D4: a document page the host drew for a "scan*" or "mixed*" PDF; its
+// 0-based page + 1 in pixel 1's blue. The fake reads three lines from it.
+constexpr std::uint8_t kScanPage = 79;
 class fake_text final : public mv::ai::text_reader {
  public:
   // `seen` is told of every picture before it is read (it may block).
@@ -178,6 +181,10 @@ class fake_text final : public mv::ai::text_reader {
     if (img.rgb.size() < 6) return std::vector<std::string>{};
     if (img.rgb[4] == kSignSuited) return std::vector<std::string>{"SUITED AND", "BOOTED"};
     if (img.rgb[4] == kSignKoln) return std::vector<std::string>{"Grüße aus", "KÖLN"};
+    if (img.rgb[4] == kScanPage) {
+      return std::vector<std::string>{"Scanned page " + std::to_string(img.rgb[5] - 1) + " of the",
+                                      "archive, kept for re-", "cords."};
+    }
     return std::vector<std::string>{};
   }
   const std::string& spec_key() const noexcept override { return key_; }
@@ -191,12 +198,16 @@ class fake_text final : public mv::ai::text_reader {
 // on the first, "net 30 days" on the last); "long*.pdf" 600 pages, each with
 // "page N"; "scan*.pdf" pages with no text layer; "locked*" a password;
 // "broken*" does not open. `on_page` is told of each page before it is visited.
+// D4: "scanbook*" 100 pages with no text layer; "mixed*" three pages, words on
+// the first and last and a stamped "- 2 -" alone on the second.
 // D2's look: "gallery*" has 8 pages, 5 and 6 mostly pictures; "scan*" both
 // pages; "long*" pages 10 and 400.
 std::uint32_t fake_pdf_pages(const std::string& name) {
   if (name.find("invoice") != std::string::npos) return 3;
   if (name.find("long") != std::string::npos) return 600;
+  if (name.find("scanbook") != std::string::npos) return 100;
   if (name.find("scan") != std::string::npos) return 2;
+  if (name.find("mixed") != std::string::npos) return 3;
   if (name.find("gallery") != std::string::npos) return 8;
   if (name.find("lease") != std::string::npos) return 2;  // the DOCX the host lays out
   return 1;
@@ -216,8 +227,13 @@ class fake_pdf final : public mv::ai::pdf_reader {
                "Payment terms: net 30 days from the date of this in-\r\nvoice.\r\n"};
     } else if (name.find("long") != std::string::npos) {
       for (int i = 0; i < 600; ++i) pages.push_back("Report page " + std::to_string(i + 1) + " ends here.");
+    } else if (name.find("scanbook") != std::string::npos) {
+      pages.assign(100, "");
     } else if (name.find("scan") != std::string::npos) {
       pages = {"", ""};
+    } else if (name.find("mixed") != std::string::npos) {
+      pages = {"Mixed report opening page, typed with plenty of words.\r\n", "- 2 -\r\n",
+               "Closing page of the mixed report, typed as well.\r\n"};
     }
     const auto n = static_cast<std::uint32_t>(pages.size());
     for (std::uint32_t i = first; i < std::min(n, limits.max_pages); ++i) {
@@ -722,6 +738,9 @@ struct rig {
   std::atomic<int> text_holding{0};  // reads that waited on hold_text
   std::atomic<bool> hold_cues{false};       // set: read_cues waits
   std::atomic<int> yield_after_clip_reads{-1};  // >= 0: the host asks to yield after that many
+  std::atomic<int> scan_reads{0};               // #354 D4: scanned document pages read
+  std::atomic<int> yield_after_scan_reads{-1};  // >= 0: the host asks to yield after that many
+  std::atomic<int> scan_read_ms{0};             // each scanned page's read takes this long
   std::unique_ptr<mv::addon::host_table> table;
   std::shared_ptr<cloud_world> cloud = std::make_shared<cloud_world>();
   mv_host_api api{};  // the table, its walk_files2 flagging `cloud`'s online-only names
@@ -815,8 +834,13 @@ struct rig {
           pages_drawn.push_back(name + "#" + std::to_string(ms));
         }
         const bool gallery = name.find("gallery") != std::string::npos;
-        return solid(gallery && ms == 5 ? rgb{220, 20, 20} : gallery && ms == 6 ? rgb{20, 220, 20}
-                                                                                : rgb{128, 128, 128});
+        auto page = solid(gallery && ms == 5 ? rgb{220, 20, 20} : gallery && ms == 6 ? rgb{20, 220, 20}
+                                                                                     : rgb{128, 128, 128});
+        if (name.find("scan") != std::string::npos || name.find("mixed") != std::string::npos) {
+          page.rgb[4] = kScanPage;  // #354 D4: what the fake OS reads on it
+          page.rgb[5] = static_cast<std::uint8_t>(ms + 1);
+        }
+        return page;
       }
       fake_sampler s(utf8(fs::path(path).filename()), ms);
       MV_TRY(auto f, s.next());
@@ -1062,6 +1086,11 @@ struct rig {
         if (hold_text && img.width == 64) {
           ++text_holding;
           while (hold_text) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        if (img.width != 64 && img.rgb.size() >= 6 && img.rgb[4] == kScanPage) {
+          if (scan_read_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(scan_read_ms.load()));
+          if (++scan_reads == yield_after_scan_reads) busy = true;
+          return;
         }
         if (img.width != 64) {
           ++text_reads;
@@ -2971,6 +3000,127 @@ TEST_CASE("a long PDF stops at a page and resumes there; no PDFium sets PDFs asi
   CHECK(s.search("\"invoice 4471\"").size() == 1);
 }
 
+TEST_CASE("a scanned PDF's pages are read by the OS and found by a quoted phrase (#354 D4)",
+          "[ai][engine][documents][ocr]") {
+  rig r;
+  r.text_available = true;
+  r.file("red_photo.jpg");
+  r.file("scan_receipt.pdf");   // two pages, no text layer
+  r.file("mixed_report.pdf");   // words on pages 0 and 2; page 1 a stamped number alone
+  r.file("invoice_march.pdf");  // words on every page: never drawn
+  r.file("lease.docx");         // a DOCX: its words are all its text
+  r.file("locked_statement.pdf");
+  r.start();
+  REQUIRE(r.eng->set_setting("document_files", "1"));
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  const auto names = [](const std::vector<std::pair<std::string, std::int64_t>>& rows) {
+    std::set<std::string> out;
+    for (const auto& [n, _] : rows) out.insert(n);
+    return out;
+  };
+
+  // Only the pages with no text layer were drawn and read.
+  CHECK(r.drawn_pages() ==
+        std::vector<std::string>{"mixed_report.pdf#1", "scan_receipt.pdf#0", "scan_receipt.pdf#1"});
+  CHECK(r.scan_reads == 3);
+  const mv_ai_status s = r.status();
+  CHECK(s.scans_total == 4);  // the documents whose words are read (the locked one never is)
+  CHECK(s.scans_done == 4);
+  CHECK(s.state == MV_AI_STATE_IDLE);
+
+  // A quoted phrase finds each scanned page, at its page, over the line the
+  // OS hyphenated ("re-" / "cords.").
+  CHECK(names(r.search("\"kept for records\"")) == std::set<std::string>{"scan_receipt.pdf", "mixed_report.pdf"});
+  CHECK(r.search("\"scanned page 1 of the archive\"", MV_AI_SCOPE_ALL, "", MV_AI_KIND_DOCUMENTS).size() == 2);
+  {
+    const std::uint64_t id = r.eng->search_text("\"scanned page 0 of the archive\"", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+    REQUIRE(r.eng->wait_search(id, kSettleMs));
+    const auto rows = r.rows(id);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0] == std::pair<std::string, std::int64_t>{"scan_receipt.pdf", 0});
+    auto res = r.eng->result_at(id, 0);
+    REQUIRE(res);
+    CHECK(res->kind == MV_AI_KIND_DOCUMENTS);
+    CHECK(res->match == MV_AI_MATCH_TEXT);
+  }
+  // The text layer's passages are untouched beside them.
+  CHECK(names(r.search("\"invoice 4471\"")) == std::set<std::string>{"invoice_march.pdf"});
+  CHECK(r.search("\"mixed report opening page\"") ==
+        std::vector<std::pair<std::string, std::int64_t>>{{"mixed_report.pdf", 0}});
+  CHECK(names(r.search("tenant rent")) == std::set<std::string>{"lease.docx"});
+
+  // Read once: a restart draws nothing again.
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.scan_reads == 3);
+  CHECK(r.drawn_pages().size() == 3);
+  CHECK(names(r.search("\"kept for records\"")).size() == 2);
+
+  // No OS reader: nothing to count, nothing drawn, the words still found.
+  rig n;
+  n.file("scan_receipt.pdf");
+  n.file("invoice_march.pdf");
+  n.start();
+  REQUIRE(n.eng->set_setting("document_files", "1"));
+  REQUIRE(n.eng->index_folder(utf8(n.photos()), false));
+  REQUIRE(n.idle());
+  CHECK(n.status().scans_total == 0);
+  CHECK(n.drawn_pages().empty());
+  CHECK(n.search("\"invoice 4471\"").size() == 1);
+}
+
+TEST_CASE("a 100-page scan resumes at its next page and never holds up the photos (#354 D4)",
+          "[ai][engine][documents][ocr]") {
+  rig r;
+  r.text_available = true;
+  r.file("scanbook.pdf");
+  // The viewer gets busy after the tenth page read: the engine stops there.
+  r.yield_after_scan_reads = 10;
+  r.start();
+  REQUIRE(r.eng->set_setting("document_files", "1"));
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(wait_for([&] { return r.scan_reads >= 10; }, kSettleMs));
+  r.eng.reset();
+  r.busy = false;
+  r.yield_after_scan_reads = -1;
+  {
+    auto db = mv::ai::index_db::open(utf8(r.dir / "data" / "index.db"));
+    REQUIRE(db);
+    CHECK((*db)->passage_count() >= 10);  // every page read so far stands
+  }
+
+  // Started again, and a photo arrives while the scan is being read (each
+  // page a slow read): the photo's pictures do not wait for the rest of it.
+  r.scan_read_ms = 30;
+  r.start();
+  REQUIRE(wait_for([&] { return r.scan_reads >= 14; }, kSettleMs));
+  r.file("red_photo.jpg");
+  auto doc = mv::json::parse(r.eng->roots_json());
+  REQUIRE(doc);
+  REQUIRE(doc->a.size() == 1);
+  REQUIRE(r.eng->root_rescan(doc->a[0].integer("id").value_or(0)));
+  REQUIRE(wait_for([&] { return r.search("red").size() == 1; }, kSettleMs));
+  CHECK(r.scan_reads < 60);  // the photo came in while most of the scan was still to read
+  r.scan_read_ms = 0;
+  REQUIRE(r.idle());
+  // Resumed at the next page: each of the 100 pages read once.
+  CHECK(r.scan_reads == 100);
+  // PDFium's text is asked for a claim's pages and one more, never every
+  // page left each claim (that would be about 1,300 page visits here).
+  CHECK(r.pdf_pages_read < 300);
+  CHECK(r.search("\"scanned page 0 of the archive\"").size() == 1);
+  CHECK(r.search("\"scanned page 9 of the archive\"").size() == 1);
+  CHECK(r.search("\"scanned page 10 of the archive\"").size() == 1);
+  {
+    const std::uint64_t id = r.eng->search_text("\"scanned page 99 of the archive\"", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+    REQUIRE(r.eng->wait_search(id, kSettleMs));
+    REQUIRE(r.rows(id).size() == 1);
+    CHECK(r.rows(id)[0].second == 99);
+  }
+  CHECK(r.status().scans_done == 1);
+}
+
 TEST_CASE("a file the host cannot decode fails without stopping the rest", "[ai][engine]") {
   rig r;
   r.file("broken_red.jpg");
@@ -3941,6 +4091,35 @@ TEST_CASE("indexing waits while the tower is still its CPU stand-in for Core ML"
   CHECK(r.high->images_embedded.load() > 0);
   CHECK(r.status().backend == static_cast<std::uint32_t>(mv::infer::backend::coreml));
   CHECK(r.search("red").front().first == "red.jpg");
+}
+
+// #354 D4: a scan's pages need the OS reader, not a tower: they are read while
+// Core ML still compiles it (minutes at a pack's first start), as words are.
+TEST_CASE("scanned pages are read while the tower is still its CPU stand-in (#354 D4)",
+          "[ai][engine][documents][ocr]") {
+  rig r;
+  r.text_available = true;
+  r.lands_on = mv::infer::backend::coreml;
+  auto large = std::make_shared<upgrading_stand_in>(r.high);
+  r.tower = [&](std::uint32_t q) -> std::shared_ptr<mv::infer::embedder> {
+    if (q == 2) return large;
+    return r.fast;
+  };
+  r.file("scan_receipt.pdf");
+  r.start();
+  REQUIRE(r.eng->set_setting("document_files", "1"));
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(wait_for([&] { return r.scan_reads == 2; }, kSettleMs));
+  CHECK(r.status().state == MV_AI_STATE_LOADING);
+  {
+    auto db = mv::ai::index_db::open(utf8(r.dir / "data" / "index.db"));
+    REQUIRE(db);
+    CHECK((*db)->passage_count() == 2);  // stored before the tower is in
+  }
+  large->upgraded = true;
+  REQUIRE(r.idle());
+  CHECK(r.scan_reads == 2);
+  CHECK(r.search("\"kept for records\"").size() == 1);
 }
 
 // The query is embedded by the tower whose vectors are in the matrix, and

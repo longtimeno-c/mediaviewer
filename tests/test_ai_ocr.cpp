@@ -18,7 +18,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <numeric>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -176,5 +178,91 @@ TEST_CASE("the OS text reader's cost per clip moment (#403)", "[.ocr-moments]") 
       "\"seek_2048_ms_median\":%.1f,\"read_ms_median\":%.1f,\"moment_ms_median\":%.1f,\"moment_ms_mean\":%.1f}\n",
       reader->spec_key().c_str(), clips, moments, with_text, median(seek_small), median(seek_large), median(ocr),
       median(total), std::accumulate(total.begin(), total.end(), 0.0) / static_cast<double>(total.size()));
+#endif
+}
+
+// #354 D4: a scanned PDF's page as the scan pass reads it: drawn by the host
+// (video_frame with pts_ms the page, the viewer's own renderer) at the text
+// edge, then read by the OS. Prints the draw and the read apart, per page, and
+// with MV_OCR_SCAN_LINES=1 each page's lines (the verify set's text, never a
+// user's: the folder is tools/ai-bench/doc-scans' output). MV_OCR_SCAN_EDGE
+// draws at another edge (the pass's is 2,048); MV_OCR_SCAN_TRUTH=<out>/truth.tsv
+// scores each page's words read against the words drawn (the engine's rule).
+//
+//   swift tools/ai-bench/doc-scans/make_doc_scans.swift <out>
+//   MV_OCR_SCAN_DIR=<out>/scans MV_OCR_SCAN_TRUTH=<out>/truth.tsv mv_ai_tests "[.ocr-scans]"
+TEST_CASE("the OS text reader's cost per scanned page (#354 D4)", "[.ocr-scans]") {
+#if !defined(MV_AI_TEST_DECODE)
+  SKIP("built without the host's decoders");
+#else
+  const char* dir_env = std::getenv("MV_OCR_SCAN_DIR");
+  if (!dir_env) SKIP("MV_OCR_SCAN_DIR not set");
+  const bool show = std::getenv("MV_OCR_SCAN_LINES") != nullptr;
+  const std::uint32_t edge =
+      std::getenv("MV_OCR_SCAN_EDGE") ? static_cast<std::uint32_t>(std::atoi(std::getenv("MV_OCR_SCAN_EDGE"))) : 2048u;
+  // file#page -> the words drawn there.
+  std::map<std::string, std::vector<std::string>> truth;
+  if (const char* t = std::getenv("MV_OCR_SCAN_TRUTH")) {
+    std::ifstream in(t);
+    std::string line;
+    std::getline(in, line);  // header
+    while (std::getline(in, line)) {
+      const auto a = line.find('\t'), b = line.find('\t', a + 1);
+      if (a == std::string::npos || b == std::string::npos) continue;
+      truth[line.substr(0, a) + "#" + line.substr(a + 1, b - a - 1)] = words(line.substr(b + 1));
+    }
+  }
+  std::vector<double> recall;
+  auto reader = mv::ai::make_text_reader();
+  if (!reader) SKIP("no OS text reader here");
+  std::vector<fs::path> files;
+  for (const auto& e : fs::directory_iterator(fs::path(dir_env))) {
+    if (e.is_regular_file() && e.path().extension() == ".pdf") files.push_back(e.path());
+  }
+  std::sort(files.begin(), files.end());
+  std::vector<double> draw, read, lines_n;
+  for (const fs::path& p : files) {
+    for (std::int64_t page = 0;; ++page) {
+      auto t0 = std::chrono::steady_clock::now();
+      auto img = mv::addon::media::video_frame(p.string(), page, edge);
+      const double d = ms_since(t0);
+      if (!img) break;  // past the last page
+      draw.push_back(d);
+      mv::ai::rgb_frame f;
+      f.width = img->width;
+      f.height = img->height;
+      f.rgb = std::move(img->rgb);
+      t0 = std::chrono::steady_clock::now();
+      auto lines = reader->read(f);
+      read.push_back(ms_since(t0));
+      REQUIRE(lines);
+      lines_n.push_back(static_cast<double>(lines->size()));
+      if (auto it = truth.find(p.filename().string() + "#" + std::to_string(page)); it != truth.end()) {
+        std::string all;
+        for (const std::string& l : *lines) all += l + " ";
+        const std::vector<std::string> got = words(all);
+        const std::set<std::string> have(got.begin(), got.end());
+        const std::set<std::string> want(it->second.begin(), it->second.end());
+        std::size_t hit = 0;
+        for (const std::string& w : want) hit += have.count(w);
+        recall.push_back(want.empty() ? 1.0 : static_cast<double>(hit) / static_cast<double>(want.size()));
+      }
+      if (show) {
+        std::printf("%s p%lld %ux%u: %zu lines\n", p.filename().string().c_str(), static_cast<long long>(page),
+                    f.width, f.height, lines->size());
+        for (const std::string& l : *lines) std::printf("  | %s\n", l.c_str());
+      }
+    }
+  }
+  if (draw.empty()) SKIP("no PDF page drew in MV_OCR_SCAN_DIR");
+  const double recall_mean =
+      recall.empty() ? 0 : std::accumulate(recall.begin(), recall.end(), 0.0) / static_cast<double>(recall.size());
+  std::printf("{\"reader\":\"%s\",\"edge\":%u,\"pages\":%zu,\"draw_ms_median\":%.1f,\"read_ms_median\":%.1f,"
+              "\"read_ms_mean\":%.1f,\"lines_median\":%.0f,\"recall_mean\":%.3f,\"recall_min\":%.3f,"
+              "\"pages_at_90\":%zu}\n",
+              reader->spec_key().c_str(), edge, draw.size(), median(draw), median(read),
+              std::accumulate(read.begin(), read.end(), 0.0) / static_cast<double>(read.size()), median(lines_n),
+              recall_mean, recall.empty() ? 0 : *std::min_element(recall.begin(), recall.end()),
+              static_cast<std::size_t>(std::count_if(recall.begin(), recall.end(), [](double x) { return x >= 0.9; })));
 #endif
 }

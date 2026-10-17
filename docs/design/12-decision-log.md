@@ -1393,6 +1393,32 @@ version 2; documents travel only when the new `MV_AI_TRANSFER_DOCUMENTS` is tick
 and page pictures. A v1 file still imports. D1's "never in an export" now reads "never unless
 ticked".
 
+**Scanned PDF pages are read by the OS, last of all and a few pages a claim (2026-10-17, #354
+D4).** A PDF page with no text layer (under 16 characters other than spaces, so a stamped page
+number alone still counts as none) is drawn by the host and read by the text reader built for
+#403 (Vision, `Windows.Media.Ocr`; no model). What it reads is stored as passages of that page
+under the reader's spec plus `/pages`, beside the text layer's, which it never touches. Three
+calls, each because the alternative measured or reasoned worse:
+- **Last of all, 4 pages a claim.** A dense page is about 0.6 s of Vision (M5, accurate level),
+  so a 100-page scan is a minute or more of one worker. Taking a document whole would hold that
+  worker for the whole minute while new photos wait. Each claim reads 4 pages, commits each and
+  returns, and the queue then looks at every other pass first. The pass also stops asking
+  PDFium for text once it has found its pages and one more. Asking again for every remaining
+  page each claim cost about 1,300 page visits for 100 pages in the rig, against 227.
+- **Not behind Read text in photos, and no setting of its own.** Documents already have
+  "Documents" (Off / Words / Words and pages) and Show documents; a scan's words are its words.
+  The photo switch stays the photos' and clips'.
+- **While the towers load.** Like the words pass, it needs no model, so it runs during the
+  minutes a first Core ML compile takes. It still yields to the viewer, the pause, battery and a
+  clear like every pass.
+- **Meaning (D3) waits for it.** D3 embeds a document's passages once, whole; scanned text
+  added after that would never be embedded. So where the OS reads, the meaning pass waits for
+  this pass to be done, not just the words (`engine::meaning_after`). A text document's scan
+  progress is done with its words, so only a scanned one waits. A scan whose pages never
+  draw or read is done with nothing read, not failed, so its meaning is never held up.
+
+`mv_ai_status` appends `scans_total`, `scans_done`.
+
 ---
 
 ## Final Cut Pro search (Mac)

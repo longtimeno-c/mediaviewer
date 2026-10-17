@@ -469,12 +469,13 @@ class engine {
   void worker_loop(unsigned index);
   void search_loop();
   // work
-  enum class track : std::uint8_t { picture, faces, sound, speech, cues, text, docs, pages, meaning };
+  enum class track : std::uint8_t { picture, faces, sound, speech, cues, text, docs, pages, meaning, scan };
   struct job {
     work_item w;
     track t = track::picture;
   };
-  // `models_ok` false: the towers are not ready; only a document is claimed.
+  // `models_ok` false: the towers are not ready; only a document's words or
+  // scanned pages (#354 D4) are claimed: neither needs a model.
   bool claim(std::vector<work_item>& out, track& t, bool models_ok = true);
   void process_sound(const work_item& item, const loaded_sound& sound);
   void process_speech(const work_item& item, const loaded_speech& speech);
@@ -509,6 +510,13 @@ class engine {
   // the calibrated margins, each at its page with the passage as snippet.
   void merge_meaning(search_state& st, const std::string& query, const std::function<bool(std::int64_t)>& allow,
                      std::uint32_t precision);
+  // #354 D4: a PDF's pages with no text layer (a scan), drawn by the host at
+  // the text edge and read by the OS (text_reader.h), stored as passages of
+  // their page under scan_spec(), beside the text layer's. At most
+  // kScanPagesPerClaim pages a claim, each committed (state partial, resume
+  // the next page), so a stop resumes at the next page and a long scan hands
+  // the worker back to the other passes between chunks.
+  void process_scan(const work_item& item);
   // #354: the level (MV_AI_DOCS_* - 1) a root indexes its documents at: 0
   // Off, 1 Words, 2 Words and pages. The setting for a root that follows it.
   [[nodiscard]] std::uint32_t docs_level(std::uint32_t root_docs) const noexcept;
@@ -528,6 +536,14 @@ class engine {
   // Its spec for clip moments (text_spec() + kMomentsSuffix), else "".
   [[nodiscard]] std::string text_moments_spec() const;
   static constexpr const char* kMomentsSuffix = "/moments";
+  // #354 D4: the OS reader's spec for a document's scanned pages (its
+  // spec_key() + kScanSuffix) while documents are shown, else "". Not
+  // behind read_text: that switch is the photos' and clips'.
+  [[nodiscard]] std::string scan_spec() const;
+  // #354 D3 + D4: what a document's meaning pass waits for: its scanned
+  // pages (scan_spec) where the OS reads them, else its words.
+  [[nodiscard]] std::string meaning_after() const;
+  static constexpr const char* kScanSuffix = "/pages";
   [[nodiscard]] std::uint32_t default_media() const;
   [[nodiscard]] platform::power power_state() const;
   // audio search
@@ -969,7 +985,7 @@ class engine {
   // them (text_counts_due_, the picture counts or spec, work pending) or 30 s
   // have passed. Under status_m_.
   struct text_counts {
-    counts cues, photos, moments, docs, pages, meaning;
+    counts cues, photos, moments, docs, pages, meaning, scans;
     std::string key;  // the specs and picture counts they were taken with
     double at = -1e9;
   };
