@@ -2252,8 +2252,20 @@ window; the host table gains `notice_post`, `notice_authorize` and `keep_alive` 
   `"[.login-item]"` (writes and removes the real Run value) pass. Not seen: the tray icon (a
   tool-launched lab is on another desktop), an installed build writing the value, a real sign-in.
   The PR 1 gate failed 3 of 3 runs of the new build on a loaded machine (one with 15 dropped
-  frames, one on idle CPU only); the alternating base runs are owed. **Mac: written, not compiled
-  or run.**
+  frames, one on idle CPU only); the alternating base runs are owed.
+  Mac, MediaViewer.app (M-series, 2026-10-18; a copy with its own bundle id, `HOME` and a
+  dev-signed Sharepoint): `--background` with no add-ons has no window and no Dock icon and quits
+  at 60 s; with Receive when closed kept on, Sharepoint listens, the menu-bar item appears and
+  nothing else; reopening from Finder or Open MediaViewer shows the window, a Quit event goes
+  back to the menu bar, the menu's Quit ends the process. A kept start registers
+  `SMAppService.mainApp` (status enabled); the toggle off unregisters it, and closing the
+  Sharepoint window then quits; a login start with the toggle off quits at 60 s and removes a
+  registered item. Fixed on the way: a Quit event (Dock, AppleScript) while kept closed the
+  menu-bar item's window and then AppKit's last-window check terminated the app. Mac PR 1 gate
+  2 × 60 s PASS (p99 16.80 / 16.75 ms, 0 idle presents). The kept windowless app: 0.12 % of one
+  core over 60 s (`ps`, 10 ms resolution) against 0.047 % for `"[.sharepoint-idle]"`'s engine
+  alone. Not seen on the Mac: a real logout/login (`keyAELaunchedAsLogInItem` on a mainApp
+  item), the notification from a second machine.
 
 ### Sharepoint, AirDrop-smooth (issue #442, 2026-10-15)
 

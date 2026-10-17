@@ -8393,6 +8393,7 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
     for (NSWindow* w in [NSApp.windows copy]) {
       if (w == self.window || !w.isVisible || w.sheetParent != nil) continue;
       if (w == self.editorWindow) continue;  // windowShouldClose: of the viewer handles it
+      if ([w isKindOfClass:NSClassFromString(@"NSStatusBarWindow")]) continue;  // the menu-bar item stays
       [w close];
     }
     if ([self windowShouldClose:self.window]) [self.window close];
@@ -8455,6 +8456,9 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   }
   if (!_inBackground) return;
   _inBackground = false;
+  // Shown: the login-item grace no longer applies, and turning the toggle off
+  // after a later hide must quit (-backgroundSettle).
+  _backgroundStart = false;
   [self.window makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
 }
@@ -11874,7 +11878,10 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 }
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
   (void)sender;
-  return YES;
+  // #452: in the background the viewer window is only ordered out, so AppKit's
+  // check can find nothing on screen after an add-on window closes;
+  // -backgroundSettle decides whether the process goes.
+  return !_inBackground;
 }
 - (void)windowWillClose:(NSNotification*)notification {
   // PR 30: the Video Editor closing hands the canvas back; the app goes on.
