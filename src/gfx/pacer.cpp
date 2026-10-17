@@ -74,8 +74,8 @@ void pacer::set_refresh(double refresh_seconds) noexcept {
 }
 
 void pacer::reset_window() noexcept {
-  buckets_.fill(0);
-  cpu_buckets_.fill(0);
+  intervals_.clear();
+  cpu_times_.clear();
   history_.fill(0.0f);
   history_cursor_ = 0;
   last_present_qpc_ = 0;
@@ -103,9 +103,7 @@ void pacer::record_interval(double ms) noexcept {
   interval_sum_ms_ += ms;
   max_ms_ = std::max(max_ms_, ms);
 
-  auto index = static_cast<std::size_t>(ms / bucket_ms);
-  if (index >= bucket_count) index = bucket_count - 1;
-  ++buckets_[index];
+  intervals_.add(ms);
 
   history_[history_cursor_] = static_cast<float>(ms);
   history_cursor_ = (history_cursor_ + 1) % history_size;
@@ -134,9 +132,7 @@ void pacer::frame_end(IDXGISwapChain* swapchain) noexcept {
 
     cpu_sum_ms_ += last_cpu_frame_ms_;
     cpu_max_ms_ = std::max(cpu_max_ms_, last_cpu_frame_ms_);
-    auto cpu_index = static_cast<std::size_t>(last_cpu_frame_ms_ / bucket_ms);
-    if (cpu_index >= bucket_count) cpu_index = bucket_count - 1;
-    ++cpu_buckets_[cpu_index];
+    cpu_times_.add(last_cpu_frame_ms_);
 
     displayed_presents_ += display.presents;
     if (display.discontinuity) ++discontinuities_;
@@ -185,31 +181,14 @@ pace_stats pacer::stats() const noexcept {
                         static_cast<double>(qpc_frequency_);
   }
 
-  std::uint64_t total = 0;
-  for (auto count : buckets_) total += count;
+  const std::uint64_t total = intervals_.count();
   if (total == 0) return s;
 
   s.mean_ms = interval_sum_ms_ / static_cast<double>(total);
-
-  const auto percentile = [total](const std::array<std::uint32_t, bucket_count>& histogram,
-                                  double fraction) {
-    const auto target = static_cast<std::uint64_t>(std::ceil(static_cast<double>(total) * fraction));
-    std::uint64_t seen = 0;
-    for (std::size_t i = 0; i < bucket_count; ++i) {
-      seen += histogram[i];
-      if (seen >= target) {
-        // Report the bucket's upper edge: percentiles should never flatter.
-        return static_cast<double>(i + 1) * bucket_ms;
-      }
-    }
-    return static_cast<double>(bucket_count) * bucket_ms;
-  };
-
-  s.p50_ms = percentile(buckets_, 0.50);
-  s.p99_ms = percentile(buckets_, 0.99);
-
+  s.p50_ms = intervals_.percentile(0.50);
+  s.p99_ms = intervals_.percentile(0.99);
   s.cpu_mean_ms = cpu_sum_ms_ / static_cast<double>(total);
-  s.cpu_p99_ms = percentile(cpu_buckets_, 0.99);
+  s.cpu_p99_ms = cpu_times_.percentile(0.99);
   s.cpu_max_ms = cpu_max_ms_;
   return s;
 }

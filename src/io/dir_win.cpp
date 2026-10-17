@@ -1,6 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "io/dir.h"
+#include "io/media_extensions.h"
 
 #include <windows.h>
 
@@ -45,40 +46,20 @@ std::int64_t unix_from_filetime(FILETIME ft) noexcept {
   return static_cast<std::int64_t>(u.QuadPart / 10000000ull - kEpochDiff);
 }
 
+// The D5 listing set, shared with dir_mac.cpp (io/media_extensions.h). Every
+// listed extension is short ASCII, so anything else is not one of ours.
 bool still_extension(std::wstring_view name) noexcept {
   const auto dot = name.find_last_of(L'.');
   if (dot == std::wstring_view::npos || dot + 1 >= name.size()) return false;
-  wchar_t ext[8]{};
+  char ext[8]{};
   const std::size_t n = name.size() - dot;
-  if (n >= 8) return false;
+  if (n >= sizeof(ext)) return false;
   for (std::size_t i = 0; i < n; ++i) {
-    wchar_t c = name[dot + i];
-    if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
-    ext[i] = c;
+    const wchar_t c = name[dot + i];
+    if (c >= 0x80) return false;
+    ext[i] = static_cast<char>(c);
   }
-  return std::wcscmp(ext, L".jpg") == 0 || std::wcscmp(ext, L".jpeg") == 0 ||
-         std::wcscmp(ext, L".png") == 0 || std::wcscmp(ext, L".bmp") == 0 ||
-         std::wcscmp(ext, L".gif") == 0 || std::wcscmp(ext, L".webp") == 0 ||
-         std::wcscmp(ext, L".tif") == 0 || std::wcscmp(ext, L".tiff") == 0 ||
-         std::wcscmp(ext, L".ico") == 0 || std::wcscmp(ext, L".heic") == 0 ||
-         std::wcscmp(ext, L".heif") == 0 || std::wcscmp(ext, L".hif") == 0 ||
-         std::wcscmp(ext, L".avif") == 0 || std::wcscmp(ext, L".dng") == 0 ||
-         std::wcscmp(ext, L".cr2") == 0 || std::wcscmp(ext, L".cr3") == 0 ||
-         std::wcscmp(ext, L".nef") == 0 || std::wcscmp(ext, L".nrw") == 0 ||
-         std::wcscmp(ext, L".arw") == 0 || std::wcscmp(ext, L".srf") == 0 ||
-         std::wcscmp(ext, L".sr2") == 0 || std::wcscmp(ext, L".orf") == 0 ||
-         std::wcscmp(ext, L".raf") == 0 || std::wcscmp(ext, L".rw2") == 0 ||
-         std::wcscmp(ext, L".pef") == 0 || std::wcscmp(ext, L".ptx") == 0 ||
-         std::wcscmp(ext, L".srw") == 0 || std::wcscmp(ext, L".rwl") == 0 ||
-         std::wcscmp(ext, L".3fr") == 0 || std::wcscmp(ext, L".fff") == 0 ||
-         std::wcscmp(ext, L".iiq") == 0 || std::wcscmp(ext, L".mef") == 0 ||
-         std::wcscmp(ext, L".mos") == 0 || std::wcscmp(ext, L".raw") == 0 ||
-         std::wcscmp(ext, L".mp4") == 0 || std::wcscmp(ext, L".mov") == 0 ||
-         std::wcscmp(ext, L".mkv") == 0 || std::wcscmp(ext, L".webm") == 0 ||
-         std::wcscmp(ext, L".avi") == 0 || std::wcscmp(ext, L".ts") == 0 || std::wcscmp(ext, L".m4v") == 0 ||
-         std::wcscmp(ext, L".mp3") == 0 || std::wcscmp(ext, L".m4a") == 0 ||
-         std::wcscmp(ext, L".m4p") == 0 || std::wcscmp(ext, L".pdf") == 0 ||
-         std::wcscmp(ext, L".docx") == 0 || std::wcscmp(ext, L".pptx") == 0;
+  return is_listed_extension(std::string_view(ext, n));
 }
 
 std::string join_utf8(std::string_view dir, std::string_view name) {

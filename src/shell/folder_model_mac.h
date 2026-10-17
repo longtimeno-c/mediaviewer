@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // PR 18 (folded-in PR 4, docs/design/12 2026-09-17): the backend a SwiftUI
 // filmstrip/gallery consumes. Folder listing + FSEvents watch (io/dir_mac.cpp)
-// tied to the JPEG-512 thumbnail cache (image/thumb_mac.cpp). No UI, no key
+// tied to the JPEG-512 thumbnail cache (image/thumb.h). No UI, no key
 // router, no marks/copy-to/Trash/drag-drop, no RAW+JPEG/Live Photo pairing —
 // those are the SwiftUI-side follow-up's job.
 #pragma once

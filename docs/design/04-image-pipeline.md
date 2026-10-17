@@ -238,8 +238,10 @@ Ambiguous groups degrade to separate stops.
 ## Companion files — hide, do not navigate
 
 The listing ([`src/io/dir_win.cpp`](../../src/io/dir_win.cpp),
-[`src/io/dir_mac.cpp`](../../src/io/dir_mac.cpp)) keeps only files with a decodable still or a
-video extension, so companions are never navigation stops:
+[`src/io/dir_mac.cpp`](../../src/io/dir_mac.cpp)) keeps only files whose extension is in the D5
+table, [`src/io/media_extensions.h`](../../src/io/media_extensions.h) (stills, RAW, video, audio,
+documents; written once for both platforms and for the pairing and badges in `io/pairing.h`), so
+companions are never navigation stops:
 
 | Companion | How it is dropped |
 |---|---|
@@ -258,8 +260,9 @@ instead of refitting. Default off. Camera state only — prefetch and generation
 
 ## Thumbnails / filmstrip
 
-[`src/image/thumb.h`](../../src/image/thumb.h) (Windows), `thumb_mac.cpp` (macOS, same spec
-and schema); the SQLite index is one file for both, `thumb_store.cpp`.
+[`src/image/thumb.h`](../../src/image/thumb.h), one implementation for both hosts:
+`thumb_pixels.cpp` (decode and box-fit, also linked by the Explorer handler), `thumb.cpp` (the
+JPEG encode) and `thumb_store.cpp` (the SQLite index).
 
 - **Spec `jpg512.4`:** a JPEG, long edge 512, never enlarged, ICC → sRGB, EXIF orientation
   applied, and a clip's poster turned by its display matrix ([26](26-photos-library.md)). The

@@ -1173,6 +1173,9 @@ an iPhone's layout (4032x3024 as 8x6 tiles of 512, a 320x240 thumbnail item, Dis
 `MV_OS_CODEC=0` times the bundled libheif path, the one a PC without the HEVC extension takes.
 `mv_tests "thumb store lookup throughput"` (also tagged `[.perf-bench]`, printed, not in the
 JSON) times 2,000 thumbnail-cache hits from four threads, the filmstrip sweep's lookups.
+`mv_tests "job system per-job overhead"` (the same tag, printed) times the worker pool alone:
+100,000 empty jobs on four workers, foreground only and alternating lanes (on macOS, a QoS switch
+per job).
 
 `mv_tests "foreground start latency under a background sweep"` (also `[.perf-bench]`, printed)
 times how long a view-tied job waits for a worker while 60 ms background jobs fill a two-worker

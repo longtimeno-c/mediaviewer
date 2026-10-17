@@ -5,12 +5,19 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <vector>
+
+#if defined(__APPLE__)
+#include <pthread/qos.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#endif
 
 #include "core/job_system.h"
 #include "core/parallel.h"
@@ -310,6 +317,89 @@ TEST_CASE("view-tied work does not queue behind the background sweep",
   REQUIRE(view_rank.load() == 0);
 
   jobs.shutdown();
+}
+
+TEST_CASE("workers run at the platform's job priority", "[core][jobs][priority]") {
+  // Issue #170: name, priority and QoS moved behind core/job_system_platform.h.
+  // Apple: a view-tied job runs at USER_INITIATED (the performance cores), a
+  // background one at UTILITY. Windows: every worker is below normal.
+  mv::job_system jobs;
+  REQUIRE(jobs.start(1) == mv::status::ok);
+  std::atomic<int> foreground{-100}, background{-100};
+  std::atomic<int> done{0};
+  auto observe = [](std::atomic<int>& into) {
+    return [&into](const mv::job_context&) {
+#if defined(__APPLE__)
+      into.store(static_cast<int>(qos_class_self()));
+#elif defined(_WIN32)
+      into.store(::GetThreadPriority(::GetCurrentThread()));
+#else
+      into.store(0);
+#endif
+      return mv::status::ok;
+    };
+  };
+  auto count = [&](mv::job_id, mv::generation, mv::status) { done.fetch_add(1); };
+  // Background first, then foreground, then background again: the class
+  // switches both ways on the one worker.
+  jobs.submit_at(mv::background_generation, observe(background), count);
+  REQUIRE(wait_for([&] { return done.load() == 1; }));
+  const int first_background = background.load();
+  jobs.submit(observe(foreground), count);
+  jobs.submit_at(mv::background_generation, observe(background), count);
+  REQUIRE(wait_for([&] { return done.load() == 3; }));
+#if defined(__APPLE__)
+  CHECK(first_background == static_cast<int>(QOS_CLASS_UTILITY));
+  CHECK(foreground.load() == static_cast<int>(QOS_CLASS_USER_INITIATED));
+  CHECK(background.load() == static_cast<int>(QOS_CLASS_UTILITY));
+#elif defined(_WIN32)
+  CHECK(first_background == THREAD_PRIORITY_BELOW_NORMAL);
+  CHECK(foreground.load() == THREAD_PRIORITY_BELOW_NORMAL);
+  CHECK(background.load() == THREAD_PRIORITY_BELOW_NORMAL);
+#else
+  (void)first_background;
+#endif
+  jobs.shutdown();
+}
+
+// Issue #170: the pool's own per-job cost (queue, platform hooks, autorelease
+// scope, completion) with job bodies that do nothing. Four workers, 100,000
+// jobs per round, median of 9 rounds. "mixed" alternates the foreground and
+// background lanes, so on Apple every job switches QoS class.
+// Not part of the normal run: mv_tests "[.perf-bench]".
+TEST_CASE("job system per-job overhead", "[.perf-bench]") {
+  constexpr int kJobs = 100000;
+  constexpr int kRounds = 9;
+  auto run = [&](bool mixed) {
+    std::vector<double> ns_per_job;
+    for (int round = 0; round < kRounds; ++round) {
+      mv::job_system jobs;
+      REQUIRE(jobs.start(4) == mv::status::ok);
+      std::atomic<int> done{0};
+      const auto t0 = std::chrono::steady_clock::now();
+      for (int i = 0; i < kJobs; ++i) {
+        const mv::generation gen =
+            mixed && (i & 1) ? mv::background_generation : jobs.current_generation();
+        jobs.submit_at(gen, [](const mv::job_context&) { return mv::status::ok; },
+                       [&](mv::job_id, mv::generation, mv::status) {
+                         done.fetch_add(1, std::memory_order_relaxed);
+                       });
+      }
+      while (done.load(std::memory_order_relaxed) != kJobs) std::this_thread::yield();
+      const auto t1 = std::chrono::steady_clock::now();
+      ns_per_job.push_back(
+          static_cast<double>(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()) /
+          kJobs);
+      jobs.shutdown();
+    }
+    std::sort(ns_per_job.begin(), ns_per_job.end());
+    return ns_per_job[ns_per_job.size() / 2];
+  };
+  const double fg = run(false);
+  const double mixed = run(true);
+  std::printf("job_system: 4 workers, %d empty jobs: foreground %.1f ns/job, mixed lanes %.1f ns/job\n",
+              kJobs, fg, mixed);
 }
 
 TEST_CASE("a foreground job gets a worker while the background sweep holds the rest",

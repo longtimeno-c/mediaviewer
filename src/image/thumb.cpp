@@ -1,5 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
+// The JPEG half of the JPEG-512 thumbnail (image/thumb.h). Both hosts build it
+// (issue #170); the pixels are thumb_pixels.cpp, the SQLite index thumb_store.cpp.
 #include "image/thumb.h"
 
 #include "codec/decode.h"

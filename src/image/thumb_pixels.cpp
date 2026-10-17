@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The pixel half of the JPEG-512 thumbnail (image/thumb.h make_thumb_rgba),
 // in its own translation unit: the Explorer thumbnail handler (shellext/)
-// links this and nothing of the SQLite cache in thumb.cpp.
+// links this and nothing of the SQLite cache in thumb_store.cpp. Both hosts
+// build it (issue #170).
 #include <algorithm>
 
 #include "codec/decode.h"
@@ -91,7 +92,7 @@ result<thumb_pixels> make_thumb_rgba(std::span<const std::uint8_t> src_bytes,
     // per file would make a folder of RAWs take minutes to thumbnail. A PDF or
     // DOCX gets page 1 at the preview size, not the 3200 px page (docs/plans
     // §2.4, §2.5). decode_preview is unsupported for the other formats, so
-    // this is a no-op for them. Same ladder as thumb_mac.cpp.
+    // this is a no-op for them. One ladder for both hosts (issue #170).
     if (auto preview = decode_preview(src_bytes, ctx)) {
       decoded = std::move(preview);
     } else if (preview.error() == status::cancelled) {

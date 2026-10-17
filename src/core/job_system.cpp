@@ -1,15 +1,10 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// POSIX job pool. Same queues and cancellation as job_system_win.cpp; the
-// Windows file is thread-description / priority, this file is pthread name
-// and QoS. docs/design/15: the Mac file arrives with Milestone F as a real impl.
-//
-// .mm rather than .cpp: job bodies may call Metal/AppKit APIs (image upload,
-// decode) that autorelease temporaries. A worker thread with no pool in
-// place doesn't crash, it just leaks every one of them silently.
+// The job pool, one file for both hosts (issue #170). What differs per
+// platform is behind core/job_system_platform.h: the worker's name and
+// priority / QoS (job_system_win.cpp, job_system_posix.cpp) and the scope
+// around each job body and completion (an autorelease pool on Apple).
 #include "core/job_system.h"
-
-#include <pthread.h>
 
 #include <condition_variable>
 #include <deque>
@@ -18,11 +13,7 @@
 #include <thread>
 #include <vector>
 
-#if defined(__APPLE__)
-#include <pthread/qos.h>
-#include <Foundation/Foundation.h>
-#endif
-
+#include "core/job_system_platform.h"
 #include "core/trace.h"
 
 namespace mv {
@@ -37,18 +28,15 @@ struct job_record {
 
 void notify_done(const job_record& job, status result) noexcept {
   if (!job.on_done) return;
-  // Same reasoning as the job-body pool below: on_done may be a callback
-  // that touches Metal/AppKit/Foundation APIs, and this runs on a worker
-  // thread with no pool of its own otherwise — every autoreleased temporary
-  // would silently leak rather than crash. One pool here covers all three
-  // call sites (post-run, pre-run cancellation, and shutdown drain).
-  @autoreleasepool {
-    try {
-      job.on_done(job.id, job.gen, result);
-    } catch (...) {
-      MV_LOG_ERROR("job_system: completion callback threw for job %llu",
-                   static_cast<unsigned long long>(job.id));
-    }
+  // on_done may touch Metal/AppKit/Foundation APIs too. One scope here covers
+  // all three call sites: post-run, pre-run cancellation and the shutdown drain.
+  [[maybe_unused]] const detail::job_scope scope;
+  try {
+    job.on_done(job.id, job.gen, result);
+  } catch (...) {
+    // A callback may already have side effects; never invoke it a second time.
+    MV_LOG_ERROR("job_system: completion callback threw for job %llu",
+                 static_cast<unsigned long long>(job.id));
   }
 }
 }  // namespace
@@ -56,6 +44,10 @@ void notify_done(const job_record& job, status result) noexcept {
 struct job_system::impl {
   std::mutex mutex;
   std::condition_variable cv;
+  // Two queues, not one. A view-tied job (the image the user is looking at)
+  // must never queue behind the thumbnail sweep of a 2000-file camera dump:
+  // FIFO across both meant the first arrow press after opening a folder waited
+  // for every thumb job ahead of it (docs/design/02, "nothing blocks the view").
   std::deque<job_record> foreground;
   std::deque<job_record> background;
   std::vector<std::thread> workers;
@@ -110,13 +102,14 @@ job_system::job_system() noexcept = default;
 job_system::~job_system() { shutdown(); }
 
 status job_system::start(std::uint32_t worker_count) noexcept {
-  if (impl_) return status::internal;
+  if (impl_) return status::internal;  // already started
 
   impl_ = std::make_unique<impl>();
   if (!impl_) return status::out_of_memory;
 
   if (worker_count == 0) {
     const unsigned hw = std::thread::hardware_concurrency();
+    // The UI thread and the render thread are not the pool's to spend.
     worker_count = hw > 3 ? hw - 2 : 1;
   }
   worker_count_ = worker_count;
@@ -127,16 +120,10 @@ status job_system::start(std::uint32_t worker_count) noexcept {
 
   for (std::uint32_t i = 0; i < worker_count; ++i) {
     impl_->workers.emplace_back([this, i] {
-#if defined(__APPLE__)
-      pthread_setname_np("mv.worker");
-      // UTILITY between jobs and for background sweeps (thumbnails, relists,
-      // date scans); USER_INITIATED while a view-tied job runs. Apple Silicon
-      // steers UTILITY to the efficiency cores, 2-3x slower, and the decode of
-      // the photo on screen was running there. Changed only when the class
-      // differs from the last job's.
-      pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
-      qos_class_t current_qos = QOS_CLASS_UTILITY;
-#endif
+      // Named, so traces and the debugger show which thread stalled, and run
+      // below the frame it feeds (priority on Windows, QoS on Apple).
+      detail::worker_thread thread;
+
       for (;;) {
         job_record job;
         {
@@ -158,6 +145,8 @@ status job_system::start(std::uint32_t worker_count) noexcept {
         } fg_guard{job.gen != background_generation ? &fg_running_ : nullptr};
         const bool is_background = job.gen == background_generation;
 
+        // Cancellation check before doing any work: navigating away while a
+        // hundred decodes are queued must cost approximately nothing.
         const generation now = generation_.load(std::memory_order_relaxed);
         if (job.gen != background_generation && job.gen != now) {
           trace::job_cancelled(job.id, job.gen);
@@ -166,15 +155,12 @@ status job_system::start(std::uint32_t worker_count) noexcept {
           continue;
         }
 
-#if defined(__APPLE__)
-        const qos_class_t want =
-            job.gen == background_generation ? QOS_CLASS_UTILITY : QOS_CLASS_USER_INITIATED;
-        if (want != current_qos && pthread_set_qos_class_self_np(want, 0) == 0) current_qos = want;
-#endif
+        thread.enter_lane(job.gen == background_generation);
         trace::job_begin(job.id, i);
         const job_context ctx(job.id, job.gen, &generation_, i);
         status result = status::invalid_arg;
-        @autoreleasepool {
+        {
+          [[maybe_unused]] const detail::job_scope scope;
           try {
             if (job.fn) result = job.fn(ctx);
           } catch (const std::bad_alloc&) {
@@ -220,6 +206,8 @@ void job_system::shutdown() noexcept {
   }
   impl_->workers.clear();
 
+  // Report the never-started jobs so nobody is left waiting on a completion
+  // that will not arrive.
   for (auto& job : abandoned) {
     cancelled_.fetch_add(1, std::memory_order_relaxed);
     notify_done(job, status::cancelled);

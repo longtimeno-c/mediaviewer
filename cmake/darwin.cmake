@@ -40,11 +40,13 @@ target_compile_options(mv_project_options INTERFACE
 target_compile_definitions(mv_project_options INTERFACE MV_DARWIN=1)
 
 add_library(mv_core STATIC
-  src/core/job_system_posix.mm
+  src/core/job_system.cpp
+  src/core/job_system_posix.cpp
   src/core/trace_posix.cpp
   src/core/crash_context.cpp
   src/core/crash_context.h
   src/core/job_system.h
+  src/core/job_system_platform.h
   src/core/result.h
   src/core/spsc_ring.h
   src/core/status.h
@@ -52,9 +54,10 @@ add_library(mv_core STATIC
 )
 target_include_directories(mv_core PUBLIC src)
 target_link_libraries(mv_core PUBLIC mv_project_options)
-# job_system_posix.mm wraps each job body in @autoreleasepool (a job may call
-# Metal/AppKit APIs that autorelease temporaries) — needs the ObjC runtime.
-target_link_libraries(mv_core PRIVATE "-framework Foundation")
+# job_system.cpp wraps each job body and completion in an autorelease pool (a
+# job may call Metal/AppKit APIs that autorelease temporaries) through
+# objc_autoreleasePoolPush/Pop (core/job_system_platform.h): the ObjC runtime.
+target_link_libraries(mv_core PRIVATE objc)
 add_library(mv::core ALIAS mv_core)
 
 add_library(mv_gfx STATIC
@@ -69,6 +72,7 @@ add_library(mv_gfx STATIC
   src/gfx/video_blit_metal.mm
   src/gfx/video_blit_metal.h
   src/gfx/metal_pacer.h
+  src/gfx/frame_histogram.h
   src/gfx/present_policy.h
   src/gfx/pace_json.h
   src/gfx/device_mac.h
@@ -222,6 +226,7 @@ add_library(mv_io STATIC
   src/io/replace.h
   src/io/paths_mac.cpp
   src/io/dir.h
+  src/io/media_extensions.h
   src/io/file.h
   src/io/paths.h
   # Milestone G (docs/design/18): verified copy (also F8 across volumes) and the file
@@ -251,11 +256,11 @@ include("${CMAKE_CURRENT_LIST_DIR}/geo.cmake")
 
 # ---------------------------------------------------------------------------
 # mv_image — colour (LCMS) + PR 17's decode entrypoint + Metal upload +
-# PR 18's JPEG-512 thumbnail cache (folded-in PR 4). image/pipeline.cpp/
-# upload.cpp/gpu_image.h/thumb.cpp stay Windows-only (D3D11, or thumb
-# pixels through decode_bytes()); PR 17/18 use the _mac twins instead
-# (docs/design/12 2026-09-17). thumb_store.cpp, the cache's SQLite index, is
-# shared by both hosts (issue #168).
+# PR 18's JPEG-512 thumbnail cache (folded-in PR 4). upload.cpp/gpu_image.h
+# stay Windows-only (D3D11); the Mac uses the _mac twins (docs/design/12
+# 2026-09-17). The thumbnail cache is shared by both hosts: thumb_store.cpp
+# (the SQLite index, issue #168), thumb_pixels.cpp (decode + box-fit) and
+# thumb.cpp (the JPEG encode), issue #170.
 # ---------------------------------------------------------------------------
 find_package(lcms2 CONFIG REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
@@ -268,7 +273,8 @@ add_library(mv_image STATIC
   src/image/pipeline.cpp
   src/image/pipeline_mac.cpp
   src/image/upload_mac.mm
-  src/image/thumb_mac.cpp
+  src/image/thumb.cpp
+  src/image/thumb_pixels.cpp
   src/image/thumb_store.cpp
   src/image/page_thumbs.cpp
   src/image/page_thumbs.h

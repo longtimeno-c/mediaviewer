@@ -176,11 +176,13 @@ endfunction()
 # tools/check-module-graph.ps1 enforces it in CI.
 # ---------------------------------------------------------------------------
 add_library(mv_core STATIC
+  src/core/job_system.cpp
   src/core/job_system_win.cpp
   src/core/trace_win.cpp
   src/core/crash_context.cpp
   src/core/crash_context.h
   src/core/job_system.h
+  src/core/job_system_platform.h
   src/core/result.h
   src/core/spsc_ring.h
   src/core/status.h
@@ -294,6 +296,7 @@ add_library(mv_gfx STATIC
   src/gfx/colour_desc.h
   src/gfx/metal_pacer.cpp
   src/gfx/metal_pacer.h
+  src/gfx/frame_histogram.h
   src/gfx/present_policy.h
   src/gfx/pace_json.h
   # Not compiled by the target (the VS generator would FXCompile a listed .hlsl
@@ -326,6 +329,7 @@ add_library(mv_io STATIC
   src/io/file_ops.h
   src/io/file_ops_win.cpp
   src/io/pairing.h
+  src/io/media_extensions.h
   src/io/sort_order.cpp
   src/io/sort_order.h
   # Milestone G (docs/design/18): verified copy (also F8 across volumes), the file

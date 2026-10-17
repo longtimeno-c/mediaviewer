@@ -125,10 +125,11 @@ Every feature exists on both platforms; this table records where the per-OS half
 
 | Feature | Shared | Windows half | macOS half |
 |---|---|---|---|
-| Present, idle-stop, pacing gate (PR 1) | `gfx/pacer` policy | DXGI lab | Metal lab |
+| Worker pool | `core/job_system.cpp` (queues, lanes, cancellation) | `core/job_system_win.cpp`: thread name, `THREAD_PRIORITY_BELOW_NORMAL` | `core/job_system_posix.cpp`: thread name, QoS (UTILITY; USER_INITIATED while a view-tied job runs); an autorelease pool around each job and completion (`core/job_system_platform.h`) |
+| Present, idle-stop, pacing gate (PR 1) | `gfx/pacer` policy; one `gfx/frame_histogram` scores both pacers | DXGI lab | Metal lab |
 | Stills, colour, pan/zoom (PR 2, 7) | `codec/`, `image/`, `canvas/` | D3D11 upload + HLSL blit | Metal upload + MSL blit |
 | Chrome (PR 3) | ABI | WinUI islands | SwiftUI in AppKit |
-| Folder, filmstrip, gallery, thumbs (PR 4) | folder ABI, SQLite thumb cache `jpg512.1` | `io/dir_win.cpp` | `io/dir_mac.cpp`, `shell/folder_model_mac.cpp` |
+| Folder, filmstrip, gallery, thumbs (PR 4) | folder ABI; the JPEG-512 thumb cache, one `image/thumb*` implementation (pixels, encode, SQLite index) | `io/dir_win.cpp` | `io/dir_mac.cpp`, `shell/folder_model_mac.cpp` |
 | Video (PR 5) | demux, clock policy, transport | D3D11VA + WASAPI | VideoToolbox + Core Audio |
 | Keyboard browse, slideshow, delete (PR 6) | command table, key router | Recycle Bin | Trash, `⌘` map |
 | Metadata read, overlays (PR 9) | `meta/` | WinUI pane | SwiftUI pane |

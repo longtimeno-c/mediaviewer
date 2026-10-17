@@ -7,6 +7,7 @@
 
 #include <thread>
 
+#include "gfx/frame_histogram.h"
 #include "gfx/metal_pacer.h"
 
 using namespace std::chrono_literals;
@@ -209,4 +210,32 @@ TEST_CASE("percentiles do not flatter", "[gfx][metal_pacer]") {
   REQUIRE(stats.p99_ms >= stats.p50_ms);
   constexpr double bucket_width_ms = 0.05;
   REQUIRE(stats.max_ms >= stats.p99_ms - bucket_width_ms);
+}
+
+// gfx/frame_histogram.h is the one histogram both pacers score the PR 1 gate
+// with (issue #170); these pin its rounding so neither platform's gate moves.
+TEST_CASE("the shared frame histogram reports bucket upper edges", "[gfx][frame_histogram]") {
+  mv::gfx::frame_histogram h;
+  REQUIRE(h.count() == 0);
+  REQUIRE(h.percentile(0.99) == 0.0);
+
+  for (int i = 0; i < 99; ++i) h.add(16.66);
+  h.add(33.42);
+  REQUIRE(h.count() == 100);
+  // 16.66 ms is in [16.65, 16.70): its upper edge, never the flattering lower.
+  REQUIRE(h.percentile(0.50) > 16.69);
+  REQUIRE(h.percentile(0.50) < 16.71);
+  REQUIRE(h.percentile(0.99) < 16.71);
+  REQUIRE(h.percentile(1.00) > 33.44);
+  REQUIRE(h.percentile(1.00) < 33.46);
+
+  // Past 60 ms everything is the overflow bucket; garbage lands in bucket 0.
+  h.clear();
+  h.add(500.0);
+  h.add(-1.0);
+  REQUIRE(h.count() == 2);
+  REQUIRE(h.percentile(0.50) > 0.049);
+  REQUIRE(h.percentile(0.50) < 0.051);
+  REQUIRE(h.percentile(1.00) > 60.04);
+  REQUIRE(h.percentile(1.00) < 60.06);
 }
