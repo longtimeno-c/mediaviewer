@@ -182,8 +182,10 @@ class fake_text final : public mv::ai::text_reader {
     if (img.rgb[4] == kSignSuited) return std::vector<std::string>{"SUITED AND", "BOOTED"};
     if (img.rgb[4] == kSignKoln) return std::vector<std::string>{"Grüße aus", "KÖLN"};
     if (img.rgb[4] == kScanPage) {
-      return std::vector<std::string>{"Scanned page " + std::to_string(img.rgb[5] - 1) + " of the",
-                                      "archive, kept for re-", "cords."};
+      std::vector<std::string> lines{"Scanned page " + std::to_string(img.rgb[5] - 1) + " of the",
+                                     "archive, kept for re-", "cords."};
+      if (img.rgb[6] == 1) lines.push_back("The tenant pays the rent monthly.");  // "scan_rent*"
+      return lines;
     }
     return std::vector<std::string>{};
   }
@@ -839,6 +841,7 @@ struct rig {
         if (name.find("scan") != std::string::npos || name.find("mixed") != std::string::npos) {
           page.rgb[4] = kScanPage;  // #354 D4: what the fake OS reads on it
           page.rgb[5] = static_cast<std::uint8_t>(ms + 1);
+          if (name.find("rent") != std::string::npos) page.rgb[6] = 1;  // a scanned lease
         }
         return page;
       }
@@ -3068,6 +3071,23 @@ TEST_CASE("a scanned PDF's pages are read by the OS and found by a quoted phrase
   CHECK(n.status().scans_total == 0);
   CHECK(n.drawn_pages().empty());
   CHECK(n.search("\"invoice 4471\"").size() == 1);
+}
+
+TEST_CASE("a scan's pages are embedded by meaning once the OS has read them (#354 D3 + D4)",
+          "[ai][engine][documents][ocr]") {
+  rig r;
+  r.text_available = true;
+  r.docs_available = true;
+  r.file("scan_rent.pdf");  // two pages with no text layer; the OS reads a lease on them
+  r.start();
+  REQUIRE(r.eng->set_setting("document_files", "1"));
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  CHECK(r.scan_reads == 2);
+  // The meaning pass waited for the pages (its words alone had no passage).
+  CHECK(r.docs_model->passages_embedded.load() == 2);
+  CHECK(r.status().meaning_done == 1);
+  CHECK(r.search("paying my landlord") == std::vector<std::pair<std::string, std::int64_t>>{{"scan_rent.pdf", 0}});
 }
 
 TEST_CASE("a 100-page scan resumes at its next page and never holds up the photos (#354 D4)",

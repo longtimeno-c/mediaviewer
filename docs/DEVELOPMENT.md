@@ -1750,9 +1750,11 @@ its own (part of Words), no schema change. Its own pass, last of all, 4 pages a 
   read while the tower is still its CPU stand-in for Core ML, and a 100-page scan stopped at a
   page resumes at the next (each page read once, PDFium asked for 227 page visits rather than
   about 1,300) while a photo added mid-scan is pictured before most of the scan is read. The
-  SwiftUI chrome's `StatusLineTests` cover the new line. Mac (M5, 2026-10-17, rebased on D2):
-  `mv_ai_tests "[ai]"` 152 cases, 141 passed, 11 skipped (hidden benches); `mv_tests` 895 cases,
-  884 passed, 11 skipped; `swift test` on `src.swift/AIChrome` 24 passed; the WinUI AI chrome's
+  SwiftUI chrome's `StatusLineTests` cover the new line. With D3's piece, a scan's read text is
+  embedded by meaning (the meaning pass waits for the scan pass). Mac (M5, 2026-10-17, rebased
+  on main with D3): `mv_ai_tests "[ai]"` 157 cases, 145 passed, 12 skipped (hidden benches);
+  `mv_tests` 900 cases, 889 passed, 11 skipped (one run under load had one failure that two
+  reruns did not repeat); `swift test` on `src.swift/AIChrome` 24 passed; the WinUI AI chrome's
   C# compiles.
 - **Verify set:** `swift tools/ai-bench/doc-scans/make_doc_scans.swift <out> --photos <dir> 300`
   types 50 one-page letters, invoices and reports (5 fonts, 9-12 pt body, a 7.5 pt footer),
