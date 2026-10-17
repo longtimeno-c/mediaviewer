@@ -1737,6 +1737,64 @@ album artist, composer, genre). Sound and speech on audio files are slice A2.
   both hosts; both PR 1 gates with the pack indexing audio files; timing the walk with the
   setting off.
 
+### Local search over documents, slice D4: scanned pages (#354, 2026-10-17)
+
+A PDF page with no text layer is drawn by the host and read by the OS text reader of #403
+(Vision on the Mac, `Windows.Media.Ocr` on Windows), so a quoted phrase finds a scan's page
+([17](design/17-local-ai-search.md) "Documents", "Scanned pages (D4)"). No model, no setting of
+its own (part of Words), no schema change. Its own pass, last of all, 4 pages a claim.
+
+- **Tests:** `mv_ai_tests "[documents],[ocr]"`: only pages without a text layer are drawn (a
+  stamped "- 2 -" counts as none; a text PDF and a DOCX never are), found at their page with the
+  text layer's passages untouched, read once across a restart, no count without an OS reader,
+  read while the tower is still its CPU stand-in for Core ML, and a 100-page scan stopped at a
+  page resumes at the next (each page read once, PDFium asked for 227 page visits rather than
+  about 1,300) while a photo added mid-scan is pictured before most of the scan is read. The
+  SwiftUI chrome's `StatusLineTests` cover the new line. Mac (M5, 2026-10-17, rebased on D2):
+  `mv_ai_tests "[ai]"` 152 cases, 141 passed, 11 skipped (hidden benches); `mv_tests` 895 cases,
+  884 passed, 11 skipped; `swift test` on `src.swift/AIChrome` 24 passed; the WinUI AI chrome's
+  C# compiles.
+- **Verify set:** `swift tools/ai-bench/doc-scans/make_doc_scans.swift <out> --photos <dir> 300`
+  types 50 one-page letters, invoices and reports (5 fonts, 9-12 pt body, a 7.5 pt footer),
+  rasterises them at 200 dpi in grey, turns them up to a degree, adds paper tone and noise,
+  JPEG-compresses them and writes image-only PDFs, plus a 100-page scanned book (142 MB),
+  `truth.tsv` and `queries.txt` (every scored word, quoted, and a 4-word phrase a book page).
+  Then `ai-bench --documents --brief --top 200 --query-file queries.txt` and
+  `score_doc_scans.py <output> truth.tsv`. The reader's own cost and recall, without the engine:
+  `MV_OCR_SCAN_DIR=<out>/scans MV_OCR_SCAN_TRUTH=<out>/truth.tsv mv_ai_tests "[.ocr-scans]"`.
+- **Verify line, Mac (M5, 2026-10-17), real Vision, PDFium and host renderer through `ai-bench`
+  on a dev-signed pack:** the 50 scanned pages, every word quoted (1,261 searches, stop words and
+  single letters not scored): **mean 99.4 % of a page's words found, median 100 %, 49 of 50
+  pages at ≥ 90 %**. The worst page, 83.5 %, lost four lines of its first paragraph: Vision
+  skips them at 1,583 × 2,048 and reads them at 1,236 × 1,600 or when the top half is read alone,
+  every time; the other misses are single misread numbers and words. The reader bench agrees
+  (recall 0.995, min 0.839, 49 of 50). Slowest query 0.7 ms.
+- **Cost a page** (`[.ocr-scans]`, default QoS, the 50 pages): the host's draw 60 ms median, the
+  read 640 ms median (614 mean) for a full page of text: about 15 times a photo's (44 ms, #403),
+  so a 100-page scan is about 70 s of one worker. Inside the engine, at background QoS on this
+  machine while other sessions held its load at 35-46, both were far slower: while ViT-B/32 was
+  compiling for Core ML, Vision waited behind it (0 % CPU, in Vision's compute-device query) and
+  the 50 pages took 47 s on the two workers.
+- **Seen, not fixed (D1's words pass):** inside `ai-bench` the 142 MB book's text layer took 51-76 s
+  to read on five of six runs (0.7 s on the other), against 50-190 ms through the same reader in a test
+  process at the same QoS and load; samples put the time in the file reader's `read()` calls. A
+  256 KB read-ahead window in `pdf_pdfium.cpp` measured no better (alternated, 62-76 s against
+  0.7-56 s), so it is not in this change. The scan pass waits on it only for a document whose words
+  are still being read.
+- **A 100-page scan and the photo pass:** shown by the engine test (a photo added while a
+  100-page scan is read is pictured before 60 of its pages are, each page read once), not yet timed
+  on hardware. Timed runs (`ai-bench --documents --add <30 photos> --add-after 15` on a folder
+  holding the scan, alternated with one without it) were started three times, and this Mac stayed at load
+  35-90 from other sessions' work throughout. Background-QoS work crawled: 4 photos and one
+  scanned page in 10 minutes. The photos kept moving on the other worker while the scan's read
+  waited in Vision, but those are not numbers to publish. The timed A/B is owed on a quiet
+  machine.
+- **Not measured:** Windows (the native and WinUI code compiles in CI only; `Windows.Media.Ocr`
+  on scans, the Windows timing and the Windows PR 1 gate are owed). The Mac PR 1 gate with scans
+  being read is owed: the screen was locked through this session, and a soak there gets no
+  frames. The book's 4-word page phrases on hardware (`score_doc_scans.py` prints them; the
+  engine test covers a phrase at its page). Real scans (phone-camera pages, skew past a degree, two columns, handwriting) beyond
+  the synthetic set. The app on either host with a scanned folder.
 ### Local search over documents, slice D3: the Documents piece (#354, 2026-10-17)
 
 An optional piece, **Documents** (`ai-docs`, ~91 MB), adds one sentence-embedding model,

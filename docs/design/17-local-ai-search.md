@@ -863,6 +863,12 @@ Slices D1 to D4 of [document-search](../plans/document-search.md).
   `mv_ai_status` appends `scans_total` (documents whose words are read) and `scans_done`; while
   they differ the state is not idle, and both chromes read "Reading scanned pages 3 of 5
   documents" after the other passes' lines.
+  **Measured** (M5, 2026-10-17; DEVELOPMENT, "slice D4"): over 50 synthetic scanned pages
+  (`tools/ai-bench/doc-scans`), a quoted search finds a mean 99.4 % of a page's words, 49 of 50
+  pages at 90 % or more. On the worst, 83.5 %, Vision skipped four lines at that scale. A dense
+  page costs about 60 ms to draw and 640 ms to read, so a 100-page scan is about 70 s of one
+  worker. While a Core ML compile holds the Neural Engine, Vision waits behind it. The real-machine
+  timing of a long scan beside new photos, Windows and the Mac PR 1 gate with scans read are owed.
 - **Page pictures (D2)**, at Words and pages: a document's pages through the **picture tower
   already loaded** (no new model), so a visual query finds the page. Its own pass (`track::pages`,
   progress spec `docpage/<picture spec>`, so a model change pictures them again) takes a document
