@@ -2251,14 +2251,14 @@ TEST_CASE("a description nothing answers lists newest by date created; an answer
   r.file("green_y2019.jpg");  // taken 2019-06-15
   const std::int64_t day = 86400;
   // Edited in Photos in 2025, created in 2018: it goes by the day it was created.
-  photos_lib::item edited{"blue-edited", mv::ai::query::days_from_civil(2025, 1, 1) * day};
-  edited.created = mv::ai::query::days_from_civil(2018, 3, 1) * day;
-  // Two created in the same second: by path, the same way every time.
-  photos_lib::item b{"grey-b", 1};
-  b.created = mv::ai::query::days_from_civil(2017, 1, 1) * day;
-  photos_lib::item a{"grey-a", 1};
-  a.created = b.created;
-  r.library->items = {edited, b, a};
+  const std::int64_t created_2017 = mv::ai::query::days_from_civil(2017, 1, 1) * day;
+  r.library->items = {
+      {"blue-edited", mv::ai::query::days_from_civil(2025, 1, 1) * day, mv::ai::asset_kind::photo, true, "",
+       mv::ai::query::days_from_civil(2018, 3, 1) * day},
+      // Two created in the same second: by path, the same way every time.
+      {"grey-b", 1, mv::ai::asset_kind::photo, true, "", created_2017},
+      {"grey-a", 1, mv::ai::asset_kind::photo, true, "", created_2017},
+  };
   r.start();
   REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
   REQUIRE(r.eng->index_photos_library());
@@ -3261,7 +3261,7 @@ TEST_CASE("audio: a clip's sounds and speech are indexed and found at their mome
   // Photos still answer as pictures alongside. Not necessarily first: both
   // clips open on red frames that tie with the photo exactly, and a tie's
   // order is the order the workers committed in.
-  CHECK(has_row(r.search("red"), "red_photo.jpg"));
+  CHECK(has_row(r.answered("red"), "red_photo.jpg"));
 
   // Quoted words must be said, in that order (docs/design/17 "Query syntax"); the
   // phrase is the snippet. A kind or a date narrows them like anything else.
@@ -3530,7 +3530,7 @@ TEST_CASE("words in a photo are found by quoted and plain words (#403)", "[ai][e
   CHECK(r.rows(top("\"grüße aus köln\"")).size() == 1);
   CHECK(r.rows(top("\"GRÜSSE\"")).empty());
   // A description still runs: "red" finds the sign by its colour.
-  CHECK(has_row(r.search("red"), "red_sign.jpg"));
+  CHECK(has_row(r.answered("red"), "red_sign.jpg"));
   CHECK(r.fast->images_embedded.load() == embedded);  // reading text embeds nothing
 
   // Read once, ever: a restart reads nothing again.
@@ -3920,7 +3920,7 @@ TEST_CASE("audio: a piece installed under a running pack keeps the picture tower
       },
       kSettleMs));
   CHECK(r.clip_opens.load() == opens);
-  CHECK(has_row(r.search("red"), "red_photo.jpg"));  // ties with the clip's red frames
+  CHECK(has_row(r.answered("red"), "red_photo.jpg"));  // ties with the clip's red frames
 
   // And removing it clears what it answered, still without a tower reload.
   r.audio_available = false;
@@ -4740,8 +4740,8 @@ TEST_CASE("the Photos library indexes what is on this Mac and counts iCloud-only
   CHECK(has_row(red, "photos:red-rose"));
   CHECK(has_row(red, "red_folder.jpg"));
   CHECK(has_row(red, "photos:red-cloudclip"));  // found by its poster, at 0 ms
-  CHECK(has_row(r.search("blue"), "photos:rgb-clip"));  // the local clip's blue moment
-  CHECK_FALSE(has_row(r.search("blue"), "photos:blue-cloud"));
+  CHECK(has_row(r.answered("blue"), "photos:rgb-clip"));  // the local clip's blue moment
+  CHECK_FALSE(has_row(r.answered("blue"), "photos:blue-cloud"));
 
   // Scoped to the library ("photos:"): the folder's photo is out.
   const auto in_library = r.search("red", MV_AI_SCOPE_FOLDER, "photos:");
@@ -4780,7 +4780,7 @@ TEST_CASE("the Photos library is never read before access is granted, and keeps 
   auto root = r.eng->index_photos_library();
   REQUIRE(root);
   REQUIRE(r.idle());
-  CHECK(has_row(r.search("red"), "photos:red-rose"));
+  CHECK(has_row(r.answered("red"), "photos:red-rose"));
 
   // Revoked in System Settings: the rows stay searchable (like a drive that
   // is not plugged in), nothing is read, and the index is not "busy".
@@ -4793,7 +4793,7 @@ TEST_CASE("the Photos library is never read before access is granted, and keeps 
   REQUIRE(r.eng->root_rescan(*root));
   REQUIRE(r.idle());
   CHECK(r.library->stills == stills);
-  CHECK(has_row(r.search("red"), "photos:red-rose"));
+  CHECK(has_row(r.answered("red"), "photos:red-rose"));
   CHECK(r.status().state == MV_AI_STATE_IDLE);
   CHECK(r.eng->roots_json().find("\"access\":\"denied\"") != std::string::npos);
 }
@@ -4815,10 +4815,10 @@ TEST_CASE("a Photos edit re-queues its asset, a delete drops it, and a change no
     r.library->items.push_back({"blue-sky", 1, mv::ai::asset_kind::photo, true, ""});  // imported
   }
   r.library->notify();  // PhotoKit's change observer
-  REQUIRE(eventually([&] { return has_row(r.search("blue"), "photos:blue-sky"); }));
+  REQUIRE(eventually([&] { return has_row(r.answered("blue"), "photos:blue-sky"); }));
   REQUIRE(r.idle());
-  CHECK_FALSE(has_row(r.search("green"), "photos:green-leaf"));
-  CHECK(has_row(r.search("red"), "photos:red-rose"));
+  CHECK_FALSE(has_row(r.answered("green"), "photos:green-leaf"));
+  CHECK(has_row(r.answered("red"), "photos:red-rose"));
   // The edit and the import were embedded; nothing else was.
   CHECK(r.fast->images_embedded + r.high->images_embedded == embedded + 2);
 }
@@ -4834,7 +4834,7 @@ TEST_CASE("an iCloud-only asset is tried again after a restart and indexes once 
   REQUIRE(r.eng->index_photos_library());
   REQUIRE(r.idle());
   CHECK(r.status().assets_unavailable == 2);
-  CHECK(has_row(r.search("red"), "photos:red-cloudclip"));  // its poster
+  CHECK(has_row(r.answered("red"), "photos:red-cloudclip"));  // its poster
   // A favourite toggled elsewhere changes nothing about it: not asked again.
   const int asked = r.library->stills;
   r.library->notify();
@@ -4851,10 +4851,10 @@ TEST_CASE("an iCloud-only asset is tried again after a restart and indexes once 
   REQUIRE(eventually([&] { return r.status().assets_done == 1; }));
   REQUIRE(r.idle());
   CHECK(r.status().assets_unavailable == 1);  // the clip, still only in iCloud
-  CHECK(has_row(r.search("blue"), "photos:blue-cloud"));
+  CHECK(has_row(r.answered("blue"), "photos:blue-cloud"));
   // The clip was asked whether it is here now (one lookup), not read again:
   // its poster row stayed, and nothing was re-embedded for it.
-  CHECK(has_row(r.search("red"), "photos:red-cloudclip"));
+  CHECK(has_row(r.answered("red"), "photos:red-cloudclip"));
   CHECK(r.library->stills == posters + 2);  // the photo: the launch check, then its embedding
 }
 
@@ -4886,7 +4886,7 @@ TEST_CASE("the opt-in iCloud fetch downloads iCloud-only clips, indexes them, th
 
   r.library->unmetered = true;
   // Downloaded, then indexed from the original: its blue moment is found.
-  REQUIRE(eventually([&] { return has_row(r.search("blue"), "photos:red-cloudclip"); }));
+  REQUIRE(eventually([&] { return has_row(r.answered("blue"), "photos:red-cloudclip"); }));
   REQUIRE(eventually([&] { return r.status().icloud_fetch == MV_AI_ICLOUD_DONE; }));
   REQUIRE(r.idle());
   const mv_ai_status s = r.status();
@@ -4943,7 +4943,7 @@ TEST_CASE("online-only cloud files are counted, never read, and fetched in place
   CHECK(r.cloud->log.empty());
 
   r.cloud->unmetered = true;
-  REQUIRE(eventually([&] { return has_row(r.search("something blue"), "blue_sea.jpg"); }));
+  REQUIRE(eventually([&] { return has_row(r.answered("something blue"), "blue_sea.jpg"); }));
   REQUIRE(eventually([&] { return r.status().cloud_fetch == MV_AI_ICLOUD_DONE; }));
   REQUIRE(r.idle());
   // Brought down, indexed, then made online-only again.
