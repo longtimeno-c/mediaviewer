@@ -868,6 +868,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/os_integration.h
   src/shell/shellext_install.cpp
   src/shell/shellext_install.h
+  src/shell/login_item_win.cpp
+  src/shell/login_item_win.h
   src/shell/single_instance_win.cpp
   src/shell/single_instance_win.h
   src/shell/open_with_win.cpp
@@ -1206,6 +1208,8 @@ if(MV_BUILD_TESTS)
     tests/test_file_jobs.cpp
     tests/test_settings_store.cpp
     tests/test_update_guard.cpp
+    # #452: start at sign-in.
+    tests/test_login_item.cpp
     tests/test_telemetry.cpp
     tests/test_folder_reselect.cpp
     # Issue #231: the selection's stamp from the listing, not a UI-thread stat.
@@ -1249,6 +1253,7 @@ if(MV_BUILD_TESTS)
     src/shell/settings.cpp
     src/shell/settings_store.cpp
     src/shell/update_guard.cpp
+    src/shell/login_item_win.cpp
     src/shell/telemetry.cpp
     src/shell/app.manifest
   )

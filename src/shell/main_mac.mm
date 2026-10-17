@@ -11,6 +11,7 @@
 #import <MediaPlayer/MediaPlayer.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <ServiceManagement/ServiceManagement.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 // Sparkle 2 (PR 20, docs/design/13): only MediaViewer.app links it, and only when the
@@ -191,6 +192,10 @@ static std::atomic<bool> g_tag_refresh_posted{false};
 bool g_new_window = false;
 // `--compare` (issue #208): start with the two-up compare on, as `|` turns it on.
 bool g_start_compare = false;
+// #452: started as a login item (SMAppService.mainApp, keyAELaunchedAsLogInItem) or
+// with `--background`: the viewer window is never shown and only the menu-bar
+// item appears, once an add-on keeps the process (docs/design/28 "In the background").
+bool g_start_background = false;
 NSPoint g_new_window_from = NSZeroPoint;
 
 // Add-ons -- the AI pack and its indexer, Import's volume watch, Final Cut
@@ -2492,6 +2497,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   bool _inBackground;
   bool _quitForReal;
   id _backgroundCloseWatch;
+  // A login-item start not yet kept by an add-on: an empty keep list means
+  // "still loading", not "turned off"; -backgroundStartExpired decides.
+  bool _backgroundStart;
+  int _loginItemKept;  // the keep list last seen: -1 not yet, 0 empty, 1 not
 
   // Folder navigation (PR 18, folded-in PR 4/6 -- docs/design/12 2026-09-17).
   // `_items`/`_index` are a cache: refreshed only when -refreshFolderIfChanged
@@ -2889,10 +2898,22 @@ static void MvAdoptNewDefaultViewerTypes() {
     // PR 11: generation 0 is "never cancelled" (core/job_system.h); a build's
     // context must start at a real view intent.
     _adjustGen.store(1, std::memory_order_relaxed);
+    _loginItemKept = -1;
   }
   return self;
 }
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
+  // #452: a login item's launch says so in the open-application event (the
+  // same check SMAppService.mainApp apps use). Never for a measuring run.
+  {
+    NSAppleEventDescriptor* e = NSAppleEventManager.sharedAppleEventManager.currentAppleEvent;
+    if (e.eventClass == kCoreEventClass && e.eventID == kAEOpenApplication &&
+        [e paramDescriptorForKeyword:keyAEPropData].enumCodeValue == keyAELaunchedAsLogInItem) {
+      g_start_background = true;
+    }
+    if (_options.soak_seconds > 0.0 || _options.harness || !_options.open_path.empty()) g_start_background = false;
+    if (g_start_background) [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+  }
   // docs/design/25 PR 57 verify rigs: open add-ons from a scratch store, never the
   // profile's. Before anything lists the store.
   if (const char* dir = std::getenv("MV_SCRIPT_SELFTEST"); dir && *dir) {
@@ -3463,6 +3484,8 @@ static void MvAdoptNewDefaultViewerTypes() {
     // presenting and voids the soak).
     self.window.level = NSFloatingWindowLevel;
     [self.window orderFrontRegardless];
+  } else if (g_start_background) {
+    [self startInBackground];
   } else {
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
@@ -8386,6 +8409,12 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   [self returnToWelcome];
   [self.window orderOut:nil];
   [self backgroundSettle];
+  [self watchBackgroundCloses];
+}
+
+// After every window close while in the background: settle (the Dock icon goes
+// once nothing is on screen).
+- (void)watchBackgroundCloses {
   if (!_backgroundCloseWatch) {
     __weak MvLabApp* weakSelf = self;
     _backgroundCloseWatch = [NSNotificationCenter.defaultCenter
@@ -8409,6 +8438,8 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
     if (w.isVisible && w != self.window && ![w isKindOfClass:NSClassFromString(@"NSStatusBarWindow")]) return;
   }
   if (!mv::addon::default_slots().keeping_alive()) {
+    // A login-item start whose add-ons are still loading: the grace decides.
+    if (_backgroundStart) return;
     // Turned off while hidden: nothing keeps the process any more.
     [self quitFromBackground];
     return;
@@ -8437,7 +8468,74 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
 // with nothing on screen quits; an add-on window opening from the menu-bar
 // item or a notification brings the Dock icon back.
 - (void)backgroundChanged {
+  const bool kept = mv::addon::default_slots().keeping_alive();
+  if (kept) _backgroundStart = false;
+  [self syncLoginItem:kept];
   if (_inBackground) [self backgroundSettle];
+}
+
+// #452: the login-item start (or --background). The window was made but is
+// never shown; the add-ons load as on any start, and Sharepoint keeps the
+// process (the menu-bar item) or, after the grace, it quits and takes its
+// login item with it (the add-on is gone, or its toggle was turned off where
+// this process could not see it).
+- (void)startInBackground {
+  _inBackground = true;
+  _backgroundStart = true;
+  if (NSApp.activationPolicy != NSApplicationActivationPolicyAccessory) {
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+  }
+  [self watchBackgroundCloses];
+  __weak MvLabApp* weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+    [weakSelf backgroundStartExpired];
+  });
+}
+
+- (void)backgroundStartExpired {
+  if (!_backgroundStart || !_inBackground) return;
+  _backgroundStart = false;
+  if (mv::addon::default_slots().keeping_alive()) return;
+#if MV_APP_BUNDLE
+  // An XPC call off the main thread; quit once it has answered.
+  __weak MvLabApp* weakSelf = self;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    NSError* error = nil;
+    SMAppService* app = SMAppService.mainAppService;
+    if (app.status != SMAppServiceStatusNotRegistered) (void)[app unregisterAndReturnError:&error];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf quitFromBackground];
+    });
+  });
+#else
+  [self quitFromBackground];
+#endif
+}
+
+// #452: start at login follows the keep-alive list (SMAppService.mainApp; the
+// Windows twin is shell/login_item_win.h). Only an edge counts: a window whose
+// add-on never kept the process (another window, an add-on still loading)
+// leaves the login item alone, and the list emptying while the app quits is
+// not the person turning it off. The bundled app only: the lab binary is not
+// an app LaunchServices can start at login.
+- (void)syncLoginItem:(bool)kept {
+  const int now = kept ? 1 : 0;
+  const int was = _loginItemKept;
+  _loginItemKept = now;
+  if (was == now || (was == -1 && !kept)) return;
+  if (_terminating || _quitForReal) return;
+#if MV_APP_BUNDLE
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    NSError* error = nil;
+    SMAppService* app = SMAppService.mainAppService;
+    if (kept) {
+      if (app.status != SMAppServiceStatusEnabled) (void)[app registerAndReturnError:&error];
+    } else if (app.status != SMAppServiceStatusNotRegistered) {
+      (void)[app unregisterAndReturnError:&error];
+    }
+    if (error != nil) MV_LOG_WARN("login item: SMAppService refused (%ld)", static_cast<long>(error.code));
+  });
+#endif
 }
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication*)sender hasVisibleWindows:(BOOL)flag {
@@ -12089,6 +12187,8 @@ int main(int argc, char** argv) {
       g_mac_pages.json_path = next();
     } else if (std::strcmp(arg, "--compare") == 0) {
       g_start_compare = true;
+    } else if (std::strcmp(arg, "--background") == 0) {
+      g_start_background = true;  // #452: as a login item starts it
     } else if (std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0) {
       usage();
       return 0;

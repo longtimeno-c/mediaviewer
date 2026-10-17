@@ -1522,8 +1522,18 @@ quit as before. An offer is a system notification (`notice_post`: `UNUserNotific
 size, never a file name or the code; a click opens the window with the code, its one button is
 Decline, and Accept stays in the window. It shows whenever the window is not the front one, so
 Keep receiving gets it too. Without permission (asked when a toggle turns on, never at launch)
-the window opens as before. Off changes nothing: no keep-alive, no registration, no ask. Start at
-login is not built (a follow-up). Measured windowless idle: see DEVELOPMENT.md (#452).
+the window opens as before. Off changes nothing: no keep-alive, no registration, no ask. Measured
+windowless idle: see DEVELOPMENT.md (#452).
+
+**…and it starts at login (owner, 2026-10-17, #452).** Without it a restart left the machine
+unreachable until the app was opened by hand ("it does not work when the app is not open"). Still
+the same app, not a helper: while the keep-alive list is non-empty the host registers the app
+itself as a login item (`SMAppService.mainApp`; a per-user Run value naming the install's stub
+with `--background` on Windows) and removes it when the list empties; that launch makes the window
+but never shows it, so a person sees only the menu-bar item / tray icon. A login launch that no
+add-on keeps within 60 s removes its own item and quits. Not a LaunchAgent with its own plist on
+the Mac (the Final Cut Pro agent's way): a login item needs no second launchd job, no bundle
+change and no separate approval path, and Login Items names it "MediaViewer".
 
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with

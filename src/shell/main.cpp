@@ -101,6 +101,7 @@
 #include "shell/present_lab.h"
 #include "shell/settings.h"
 #include "shell/shellext_install.h"
+#include "shell/login_item_win.h"
 #include "shell/single_instance_win.h"
 #include "shell/open_with_win.h"
 #include "shell/telemetry.h"
@@ -160,6 +161,10 @@ constexpr UINT kMsgShareReady = WM_APP + 0x7F;  // issue #444: a share's files w
 // (IslandHost.Notices.cs posts it).
 constexpr UINT kMsgTray = WM_APP + 0x80;
 constexpr UINT kMsgBackgroundChanged = WM_APP + 0x81;
+// #452: a --background start (sign-in) that no add-on has kept by now removes its
+// Run entry and quits. Sharepoint asks within ~10 s of its load.
+constexpr UINT_PTR kBackgroundStartTimerId = 0x7D01;
+constexpr UINT kBackgroundStartGraceMs = 60000;
 // Text in images: the pointer rests on a still this long before it is read.
 constexpr UINT_PTR kTextDwellTimerId = 0x7C01;
 constexpr UINT kTextDwellMs = 500;
@@ -508,6 +513,11 @@ struct app_state {
   bool in_background = false;
   bool quit_for_real = false;  // the icon's Quit, an update's restart
   bool tray_shown = false;
+  // Started hidden at sign-in (--background) and not yet kept by an add-on:
+  // an empty keep list then means "not loaded yet", not "show the window".
+  bool background_start = false;
+  int login_item_kept = -1;  // the keep list last seen: -1 not yet, 0 empty, 1 not
+  bool remove_login_item_at_exit = false;  // a sign-in start nothing kept
   UINT taskbar_restart_msg = 0;  // "TaskbarCreated": Explorer restarted, add the icon again
   // An add-on update's restart with no app update staged: MediaViewer starts
   // again with these arguments once this process has exited.
@@ -548,6 +558,10 @@ struct pending_restore {
 // PR 15: `--new-instance` runs a second, independent window (docs/design/09
 // "overridable"); without it a second start hands its paths to the first.
 bool g_new_instance = false;
+// #452: `--background`, the sign-in start (login_item_win.h): the window stays
+// hidden and only the notification-area icon shows, once an add-on keeps the
+// process. Never forwards to a running viewer: one already running is enough.
+bool g_start_background = false;
 // `--compare` (issue #208): start with the two-up compare on, as `|` turns it
 // on. A start forwarded to a running viewer hands over its paths only.
 bool g_start_compare = false;
@@ -8626,6 +8640,24 @@ void quit_from_background(app_state* app) {
   ::PostMessageW(app->window, WM_CLOSE, 0, 0);
 }
 
+// #452: start at sign-in follows the keep-alive list (login_item_win.h), on the
+// pool (registry I/O). Only an edge counts: a window whose add-on never kept the
+// process (another window, an add-on still loading) leaves the entry alone, and
+// the list emptying while the app quits is not the person turning it off.
+void sync_login_item(app_state* app, bool kept) {
+  const int now = kept ? 1 : 0;
+  const int was = app->login_item_kept;
+  app->login_item_kept = now;
+  if (was == now || (was == -1 && !kept)) return;
+  if (app->closing || app->quit_for_real || !g_install.installed()) return;
+  app->jobs.submit_at(mv::background_generation, [kept, exe = jump_list_exe()](const mv::job_context&) {
+    if (!mv::shell::login_item::set(kept, exe)) {
+      MV_LOG_WARN("login item: the sign-in entry could not be %s", kept ? "written" : "removed");
+    }
+    return mv::status::ok;
+  });
+}
+
 // The icon's menu: the add-on's line, Open <screen> for each, Open MediaViewer, Quit.
 void show_tray_menu(app_state* app, POINT at) {
   const std::vector<kept_alive_entry> keep = kept_alive();
@@ -8668,7 +8700,7 @@ std::optional<LRESULT> window_on_geometry(HWND hwnd, UINT msg, WPARAM wparam, LP
       if (wparam == SIZE_MINIMIZED) {
         app->input.window_visible = false;
       } else {
-        app->input.window_visible = true;
+        app->input.window_visible = !app->in_background;  // #452: hidden presents nothing
         update_client_metrics(app, hwnd);
         layout_chrome(app);
         ++app->input.resize_seq;
@@ -9121,9 +9153,17 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
       // #452: the keep-alive list changed. Turned off while hidden: the window
       // comes back (the person is in the add-on's window, which it owns), and
       // the next close quits as before.
+      // A sign-in start (--background) waits, hidden, for its add-ons to load:
+      // until one keeps the process an empty list is not "turned off", and
+      // kBackgroundStartTimerId decides.
       const std::vector<kept_alive_entry> keep = kept_alive();
       sync_tray(app, keep);
-      if (keep.empty() && app->in_background) leave_background(app);
+      sync_login_item(app, !keep.empty());
+      if (!keep.empty()) {
+        app->background_start = false;
+      } else if (app->in_background && !app->background_start) {
+        leave_background(app);
+      }
       return 0;
     }
 
@@ -9243,6 +9283,17 @@ std::optional<LRESULT> window_on_timer(HWND hwnd, UINT msg, WPARAM wparam, LPARA
       if (wparam == kUpdateConfirmTimerId) {
         ::KillTimer(hwnd, kUpdateConfirmTimerId);
         confirm_update_start_async();
+        return 0;
+      }
+      if (wparam == kBackgroundStartTimerId) {
+        // #452: a sign-in start nothing kept (the add-on is gone, or its toggle
+        // was turned off where this process could not see it): no entry, no process.
+        ::KillTimer(hwnd, kBackgroundStartTimerId);
+        if (app->background_start && app->in_background && kept_alive().empty()) {
+          MV_LOG_INFO("background start: nothing keeps the process; quitting");
+          app->remove_login_item_at_exit = true;
+          quit_from_background(app);
+        }
         return 0;
       }
       if (wparam == kSlideshowTimerId) {
@@ -9396,6 +9447,8 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
       if (ok) g_relaunch_after = std::wcstoul(value.c_str(), nullptr, 10);
     } else if (arg == L"--new-instance") {
       g_new_instance = true;
+    } else if (arg == L"--background") {
+      g_start_background = true;
     } else if (arg == L"--compare") {
       g_start_compare = true;
     } else if (arg == L"--restore-fullscreen") {
@@ -9441,7 +9494,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     int argc = 0;
     if (LPWSTR* argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc)) {
       const bool hook = argc >= 2 && mv::shell::update::is_velopack_hook(argv[1]);
+      // #452: an uninstall takes the sign-in entry with it.
+      const bool uninstall = hook && std::wstring_view(argv[1]).starts_with(L"--veloapp-uninstall");
       ::LocalFree(argv);
+      if (uninstall) (void)mv::shell::login_item::set(false, {});
       if (hook) return 0;
     }
   }
@@ -9495,7 +9551,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // Claimed here, not once the window exists: starts that arrive while this
   // one is still loading queue on the pipe instead of becoming "first" too.
   mv::shell::instance_claim instance_claim;
-  if (single_instance) {
+  if (single_instance && g_start_background) {
+    // #452: the sign-in start. A viewer already running receives (or not) as it
+    // is; this one neither forwards nor shows anything.
+    if (!instance_claim.claim()) return 0;
+  } else if (single_instance) {
     if (mv::shell::forward_to_running_instance(requested_paths)) return 0;
     if (!instance_claim.claim()) {
       // Another start claimed the name between our look and our claim.
@@ -9639,8 +9699,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
                        });
   }
 
-  ::ShowWindow(hwnd, show_command);
-  ::UpdateWindow(hwnd);
+  if (g_start_background && app.chrome_enabled) {
+    // #452: the sign-in start. The window is made but never shown: the chrome
+    // attaches to it and loads the add-ons as on any start; Sharepoint keeps
+    // the process (the notification-area icon) or, after the grace, it quits.
+    app.in_background = true;
+    app.background_start = true;
+    app.input.window_visible = false;
+    publish(&app);
+    ::SetTimer(hwnd, kBackgroundStartTimerId, kBackgroundStartGraceMs, nullptr);
+  } else {
+    ::ShowWindow(hwnd, show_command);
+    ::UpdateWindow(hwnd);
+  }
   if (app.chrome_enabled && !requested_paths.empty()) open_paths_early(&app, requested_paths);
   if (app.chrome_enabled && !attach_chrome(&app)) {
     MV_LOG_WARN("chrome: island did not attach; command bar is unavailable");
@@ -9701,6 +9772,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // static destruction after main returned, joining a pack's model load or
   // inference batch (seconds), and could free it under a chrome read.
   (void)mv_addon_quit();
+  // #452: a sign-in start that nothing kept removes its own entry (one registry
+  // delete; the window is gone).
+  if (app.remove_login_item_at_exit && g_install.installed()) (void)mv::shell::login_item::set(false, {});
   // Scripts stop at their next instruction check; their workers are joined here.
   (void)mv_script_set_listener(nullptr, nullptr);
   (void)mv_script_stop_all();

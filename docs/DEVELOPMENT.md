@@ -593,7 +593,9 @@ maths has unit tests (`mv_tests "[gesture]"`); real touch hardware is not in
 any automated run.
 
 Command line: `--soak <seconds>`, `--json <path>`, `--gate` (non-zero exit if the verify
-line fails), `--no-overlay`, `--static`, `--no-chrome`, `--open <path>`,
+line fails), `--no-overlay`, `--static`, `--no-chrome`, `--open <path>`, `--background` (#452:
+the sign-in start: the window is never shown, only the tray / menu-bar icon once Sharepoint keeps
+the process; it quits after 60 s if nothing does),
 `--browse-soak` (with `--json` and a folder: time each arrow to the next still, and jumps
 past the prefetched neighbours; 3 s dwell between arrows; the macOS lab has it too. The
 Windows lab adds `quick` steps — Right as soon as the last photo is on screen — and one
@@ -2237,7 +2239,21 @@ window; the host table gains `notice_post`, `notice_authorize` and `keep_alive` 
   the code, Accept saves); the windowless idle measurement in the app against `"[.sharepoint-idle]"`
   (Keep receiving 0.020 %); note that a hidden viewer window is occluded, and the Mac render loop
   polls occlusion every 200 ms (`k_occlusion_poll_ms`), which is in that number; with it off, no
-  process after quitting and no beacon seen by the other machine; start at login (not built).
+  process after quitting and no beacon seen by the other machine.
+- **Start at login (2026-10-17):** built on both hosts ([28](design/28-sharepoint.md#in-the-background-452)):
+  `SMAppService.mainApp` on the Mac, the Run value `MediaViewer` = `"<install>\MediaViewer.exe"
+  --background` on Windows (`src/shell/login_item_win.*`), both following the keep-alive list.
+  Try the hidden start without signing out: `mediaviewer_lab.exe --background` (Windows; it exits
+  at once if a viewer is already running) or `MediaViewer.app/Contents/MacOS/MediaViewer
+  --background` (Mac). Installed builds and the bundled app only write the login item.
+  Windows, dev build (2026-10-17): with a viewer running, `--background` exits in 195 ms without
+  bringing it forward; with no add-ons it stays hidden and exits 0 at 60 s; with Sharepoint's
+  toggle kept on it stays hidden and kept (`keep=1`); `mv_tests "[login-item]"` and the hidden
+  `"[.login-item]"` (writes and removes the real Run value) pass. Not seen: the tray icon (a
+  tool-launched lab is on another desktop), an installed build writing the value, a real sign-in.
+  The PR 1 gate failed 3 of 3 runs of the new build on a loaded machine (one with 15 dropped
+  frames, one on idle CPU only); the alternating base runs are owed. **Mac: written, not compiled
+  or run.**
 
 ### Sharepoint, AirDrop-smooth (issue #442, 2026-10-15)
 
