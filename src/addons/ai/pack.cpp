@@ -19,6 +19,7 @@
 
 #include "addons/ai/platform.h"
 #include "infer/audio_models.h"
+#include "infer/text_models.h"
 #include "infer/models.h"
 #include "infer/ort.h"
 
@@ -440,6 +441,18 @@ class ort_sound final : public sound_model {
   std::unique_ptr<infer::clap_model> m_;
 };
 
+class ort_docs final : public passage_model {
+ public:
+  explicit ort_docs(std::unique_ptr<infer::text_model> m) : m_(std::move(m)) {}
+  expected embed_passages(std::span<const std::string> texts, std::vector<float>& out) override {
+    return m_->embed_passages(texts, out);
+  }
+  result<std::vector<float>> embed_query(std::string_view utf8) override { return m_->embed_query(utf8); }
+
+ private:
+  std::unique_ptr<infer::text_model> m_;
+};
+
 class ort_speech final : public speech_model {
  public:
   explicit ort_speech(std::unique_ptr<infer::whisper_model> m) : m_(std::move(m)) {}
@@ -772,6 +785,28 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     s.result_margin = spec.result_margin;
     s.generic_prompts = spec.generic_prompts;
     return s;
+  };
+  // #354 D3: the ai-docs piece's text model, on CPU (2 threads, as audio): a
+  // small model whose vectors must not depend on the compute choice.
+  d.open_docs = [p]() -> result<loaded_docs> {
+    p->ensure();
+    if (!p->rt) return err(status::unsupported_format);
+    MV_TRY(std::string dir, p->h->piece_dir("ai-docs"));
+    MV_TRY(infer::text_spec spec, infer::read_text_spec(join(join(dir, "models"), "doc-text")));
+    infer::session_options cpu;
+    cpu.on = infer::backend::cpu;
+    cpu.threads = 2;
+    MV_TRY(auto m, infer::text_model::open(*p->rt, spec, cpu));
+    loaded_docs out;
+    out.model = std::make_shared<ort_docs>(std::move(m));
+    out.name = spec.name;
+    out.spec_key = spec.spec_key();
+    out.dim = spec.dim;
+    out.query_margin = spec.query_margin;
+    out.result_margin = spec.result_margin;
+    out.rank_offset = spec.rank_offset;
+    out.generic_prompts = spec.generic_prompts;
+    return out;
   };
   d.speech_spec_key = [p](std::uint32_t quality) {
     auto dir = p->h->piece_dir("ai-audio");

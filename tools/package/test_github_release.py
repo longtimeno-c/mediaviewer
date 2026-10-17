@@ -316,7 +316,7 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
 
     def test_stable_needs_the_nvidia_piece_on_windows(self):
         self.stable_assets()
-        self.ai_assets(addons=('ai', 'ai-audio', 'ai-faces'))
+        self.ai_assets(addons=('ai', 'ai-audio', 'ai-docs', 'ai-faces'))
         with patch.object(release, 'gh') as cli:
             with self.assertRaisesRegex(ValueError, 'mediaviewer-addon-ai-cuda-win-x64'):
                 release.publish(self.folder)

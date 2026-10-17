@@ -640,7 +640,7 @@ public static partial class IslandHost
         _localSearchPanel = new StackPanel { Spacing = Space(10) };
         _localSearchStatus = Note("");
         view.Children.Add(_localSearchPanel);
-        view.Children.Add(FirstPartyPageHost(AiSlot, FacesSlot, AudioSlot, CudaSlot));  // PR 56
+        view.Children.Add(FirstPartyPageHost(AiSlot, FacesSlot, AudioSlot, DocsSlot, CudaSlot));  // PR 56
         view.Children.Add(_localSearchStatus);
         EnsureReaderStarted();  // a later window: what is installed, read now
         _localSearchRestartButton = AddonRestartButton();
@@ -649,7 +649,7 @@ public static partial class IslandHost
         // Opening Settings asks the channel for every piece, like Import: the
         // person is looking at what can be installed or updated. The GETs
         // carry nothing about them.
-        foreach (AddonSlot piece in new[] { AiSlot, FacesSlot, AudioSlot })
+        foreach (AddonSlot piece in new[] { AiSlot, FacesSlot, AudioSlot, DocsSlot })
         {
             if (piece.Offer.Kind is OfferKind.Unknown or OfferKind.Unreachable) ProbeOffer(piece);
         }
@@ -745,11 +745,11 @@ public static partial class IslandHost
                     install.IsEnabled = !AiQueuedOrInstalling(AiSlot);
                     install.HorizontalAlignment = HorizontalAlignment.Left;
                     intro.Children.Add(install);
-                    // Core, People and Audio in one click, one after another.
+                    // Core, People, Audio and Documents in one click, one after another.
                     // Offered while none is installed; NVIDIA acceleration is
                     // never installed unasked (docs/design/17).
                     AddonSlot[] all = InstallAllSlots();
-                    if (!AnyAiPending() && all.Length > 1 && !FacesSlot.State.Installed && !AudioSlot.State.Installed)
+                    if (!AnyAiPending() && all.Length > 1 && !FacesSlot.State.Installed && !AudioSlot.State.Installed && !DocsSlot.State.Installed)
                     {
                         long archive = all.Sum(s => s.Offer.ArchiveSize);
                         long uses = all.Sum(s => s.Offer.InstalledSize);
@@ -814,6 +814,8 @@ public static partial class IslandHost
         Piece(PieceRow(FacesSlot, "People", "Find people in your photos. Optional; off until you turn it on."));
         Piece(PieceRow(AudioSlot, "Audio",
             "Sounds and speech in videos — find “dog barking” or what someone said. Optional."));
+        Piece(PieceRow(DocsSlot, "Documents",
+            "Search PDF and Word files by what they're about, not just their words."));
         if (_nvidiaPresent == true || CudaSlot.State.Installed)
         {
             Piece(PieceRow(CudaSlot, "NVIDIA acceleration", "Index faster on this computer's NVIDIA graphics. Needs NVIDIA's CUDA 13 and cuDNN 9, installed separately."));
@@ -1001,21 +1003,21 @@ public static partial class IslandHost
         return row;
     }
 
-    private static bool AnyAiBusy() => AiSlot.Busy || FacesSlot.Busy || AudioSlot.Busy || CudaSlot.Busy;
+    private static bool AnyAiBusy() => AiSlot.Busy || FacesSlot.Busy || AudioSlot.Busy || DocsSlot.Busy || CudaSlot.Busy;
 
     // Busy (installing, loading, removing) or waiting in the install queue.
     private static bool AnyAiPending() => AnyAiBusy() || _aiQueue.Count > 0;
 
-    private static bool AnyAiRemoving() => AiSlot.Removing || FacesSlot.Removing || AudioSlot.Removing || CudaSlot.Removing;
+    private static bool AnyAiRemoving() => AiSlot.Removing || FacesSlot.Removing || AudioSlot.Removing || DocsSlot.Removing || CudaSlot.Removing;
 
     private static bool AiQueuedOrInstalling(AddonSlot slot) => _aiInstalling == slot || _aiQueue.Contains(slot);
 
     // Core is installed or on its way in this batch: a piece may queue behind it.
     private static bool CoreComing() => AiSlot.State.Installed || AiQueuedOrInstalling(AiSlot);
 
-    // What "Install all" fetches: Core, People and Audio where not installed
+    // What "Install all" fetches: Core, People, Audio and Documents where not installed
     // and offered (never NVIDIA acceleration unasked).
-    private static AddonSlot[] InstallAllSlots() => new[] { AiSlot, FacesSlot, AudioSlot }
+    private static AddonSlot[] InstallAllSlots() => new[] { AiSlot, FacesSlot, AudioSlot, DocsSlot }
         .Where(s => !s.State.Installed && !s.Removing && !AiQueuedOrInstalling(s) && s.Offer.Kind == OfferKind.Available)
         .ToArray();
 
@@ -1023,7 +1025,7 @@ public static partial class IslandHost
     // version of; the queue puts Core first. Owner, 2026-10-03: the pieces had
     // been updated one by one and the 1 GB Core left behind, so a piece ran
     // ahead of the engine it was built with.
-    private static AddonSlot[] UpdateAllSlots() => new[] { AiSlot, FacesSlot, AudioSlot, CudaSlot }
+    private static AddonSlot[] UpdateAllSlots() => new[] { AiSlot, FacesSlot, AudioSlot, DocsSlot, CudaSlot }
         .Where(s => UpdateVersion(s) is not null && !s.Removing && !AiQueuedOrInstalling(s))
         .ToArray();
 
@@ -1080,7 +1082,7 @@ public static partial class IslandHost
     private static FrameworkElement BuildCoreRemoveConfirm()
     {
         var box = ConfirmBox();
-        TextBlock ask = Note("Remove local search? People, Audio and NVIDIA acceleration go with it.");
+        TextBlock ask = Note("Remove local search? People, Audio, Documents and NVIDIA acceleration go with it.");
         ask.Foreground = Brush(Title);
         box.Children.Add(ask);
         box.Children.Add(Note("Also delete the search index? Keeping it means a reinstall searches at once, without indexing again."));
@@ -1104,7 +1106,9 @@ public static partial class IslandHost
             ? "Remove Audio? Searching videos by sound and speech stops until it is installed again."
             : slot == FacesSlot
                 ? "Remove People? Face search stops until it is installed again."
-                : $"Remove {slot.Name}? Indexing runs on the CPU until it is installed again.");
+                : slot == DocsSlot
+                    ? "Remove Documents? Document words match only as typed until it is installed again."
+                    : $"Remove {slot.Name}? Indexing runs on the CPU until it is installed again.");
         ask.Foreground = Brush(Title);
         box.Children.Add(ask);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
@@ -1150,7 +1154,7 @@ public static partial class IslandHost
         _confirmCoreRemove = false;
         AiSlot.Busy = true;
         // Removing Core removes its pieces: their rows say so too.
-        foreach (AddonSlot gone in new[] { AiSlot, FacesSlot, AudioSlot, CudaSlot })
+        foreach (AddonSlot gone in new[] { AiSlot, FacesSlot, AudioSlot, DocsSlot, CudaSlot })
         {
             if (gone == AiSlot || gone.State.Installed) gone.Removing = true;
         }
@@ -1160,7 +1164,7 @@ public static partial class IslandHost
         _ = Task.Run(() =>
         {
             string done = "Local search removed.";
-            foreach (AddonSlot slot in new[] { CudaSlot, AudioSlot, FacesSlot, AiSlot })
+            foreach (AddonSlot slot in new[] { CudaSlot, DocsSlot, AudioSlot, FacesSlot, AiSlot })
             {
                 try
                 {
@@ -1214,7 +1218,7 @@ public static partial class IslandHost
             if (_aiInstalling == slot) _aiInstalling = null;
             if (!install)
             {
-                foreach (AddonSlot gone in new[] { AiSlot, FacesSlot, AudioSlot, CudaSlot }) gone.Removing = false;
+                foreach (AddonSlot gone in new[] { AiSlot, FacesSlot, AudioSlot, DocsSlot, CudaSlot }) gone.Removing = false;
             }
             ApplyAddonStates(states);
             _aiUsed = used;
@@ -1238,7 +1242,7 @@ public static partial class IslandHost
                 AddAiNote(message);
             }
             // A piece just removed offers Install again: its size must be known.
-            foreach (AddonSlot piece in new[] { AiSlot, FacesSlot, AudioSlot })
+            foreach (AddonSlot piece in new[] { AiSlot, FacesSlot, AudioSlot, DocsSlot })
             {
                 if (!piece.State.Installed && piece.Offer.Kind is OfferKind.Unknown or OfferKind.Unreachable) ProbeOffer(piece);
             }

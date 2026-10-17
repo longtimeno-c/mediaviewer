@@ -20,8 +20,15 @@ N / Shift+N do not step through a document's pages yet (`clip_matches` returns t
 mostly covered by images, go through the picture tower already installed; 17 "Documents", "Page
 pictures (D2)". Departures from §3: picture pages beyond the first 3 are capped at 64 a document
 (a 500-page scan is not 500 pictures); a DOCX is pictured on its first 3 pages only (no image
-measure without PDFium); a stopped document is drawn again whole rather than resumed. D3 and D4
-are not started.
+measure without PDFium); a stopped document is drawn again whole rather than resumed.
+
+**D3 is built** (#354, 2026-10-17): the `ai-docs` ("Documents") piece holds **all-MiniLM-L6-v2**
+(fp32, ~91 MB), chosen by the spike in §1 (17 "Documents", the table; DEVELOPMENT "slice D3").
+Departures: multilingual-e5-small was measured and not chosen (it missed the R@10 target and led
+only on the 3 other-language queries); fp32 rather than int8 (int8's vectors depend on the batch,
+cosine 0.998 to ORT-Python); `.mvindex` v2 carries documents only behind a new opt-in,
+`MV_AI_TRANSFER_DOCUMENTS` (their text travels with them), as People does; the meaning pass,
+like the words pass, does not wait for the picture towers. D4 is not started.
 
 **Owner calls taken (2026-10-05):**
 

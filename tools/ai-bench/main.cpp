@@ -21,7 +21,8 @@
 // DOCX files are read for their words; the status lines carry "docs" [done,
 // total, locked, failed]. --doc-index 2 (Settings "Documents": Words and
 // pages, slice D2) pictures their pages too; the lines carry "pages" [done,
-// total]. --kinds N searches with those kind and MV_AI_FIND_* bits (default
+// total]. With the ai-docs piece installed (D3) they carry "meaning" [done,
+// total]: documents whose passages the text model embedded. --kinds N searches with those kind and MV_AI_FIND_* bits (default
 // MV_AI_KIND_ALL); --top N prints that many results a query (default 5).
 //
 // --export / --import (docs/design/17 "Sharing an index"): two --addons folders are two
@@ -92,7 +93,7 @@ void print_status(const mv_ai_api* ai, double t0) {
               "\"assets\":%llu,\"done\":%llu,\"failed\":%llu,\"frames\":%llu,\"assets_per_s\":%.2f,"
               "\"frames_per_s\":%.2f,\"eta\":[%.0f,%.0f],\"sound\":[%llu,%llu],\"speech\":[%llu,%llu],"
               "\"index_bytes\":%llu,\"flags\":%u,\"unavailable\":%llu,\"docs\":[%llu,%llu,%llu,%llu],\"pages\":[%llu,%llu],"
-              "\"fault_detail\":\"%s\"}\n",
+              "\"meaning\":[%llu,%llu],\"fault_detail\":\"%s\"}\n",
               now_s() - t0, s.state, s.yield_reason, s.backend, s.provider_fault, s.model_utf8,
               static_cast<unsigned long long>(s.assets_total), static_cast<unsigned long long>(s.assets_done),
               static_cast<unsigned long long>(s.assets_failed), static_cast<unsigned long long>(s.frames_indexed),
@@ -103,7 +104,8 @@ void print_status(const mv_ai_api* ai, double t0) {
               static_cast<unsigned long long>(s.assets_unavailable), static_cast<unsigned long long>(s.docs_done),
               static_cast<unsigned long long>(s.docs_total), static_cast<unsigned long long>(s.docs_locked),
               static_cast<unsigned long long>(s.docs_failed), static_cast<unsigned long long>(s.pages_done),
-              static_cast<unsigned long long>(s.pages_total), detail.c_str());
+              static_cast<unsigned long long>(s.pages_total), static_cast<unsigned long long>(s.meaning_done),
+              static_cast<unsigned long long>(s.meaning_total), detail.c_str());
   std::fflush(stdout);
 }
 
@@ -372,8 +374,14 @@ int main(int argc, char** argv) {
       const char* name = std::strrchr(path, '\\') ? std::strrchr(path, '\\') + 1 : path;
       // A Photos asset's identifier is as private as a path: never printed.
       if (std::strncmp(path, "photos:", 7) == 0) name = r.pts_ms >= 0 ? "photos:video" : "photos:photo";
+      // A document's snippet is its own text: quotes and control characters escaped.
+      std::string snippet;
+      for (const char* c = snip; *c; ++c) {
+        if (*c == '"' || *c == '\\') snippet += '\\';
+        snippet += static_cast<unsigned char>(*c) < 0x20 ? ' ' : *c;
+      }
       std::printf("%s{\"file\":\"%s\",\"ms\":%lld,\"score\":%.3f,\"match\":%u,\"snippet\":\"%s\"}", i ? "," : "",
-                  name, static_cast<long long>(r.pts_ms), r.score, r.match, snip);
+                  name, static_cast<long long>(r.pts_ms), r.score, r.match, snippet.c_str());
     }
     std::printf("]}\n");
     std::fflush(stdout);

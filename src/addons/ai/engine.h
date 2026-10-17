@@ -134,6 +134,28 @@ struct loaded_speech {
   std::string spec_key;
 };
 
+// #354 D3: what a document's passages are about (the ai-docs piece's text
+// model): passages and a typed query in one vector space.
+class passage_model {
+ public:
+  virtual ~passage_model() = default;
+  // One L2-normalised vector per passage; `out` texts.size() * dim.
+  [[nodiscard]] virtual expected embed_passages(std::span<const std::string> texts, std::vector<float>& out) = 0;
+  [[nodiscard]] virtual result<std::vector<float>> embed_query(std::string_view utf8) = 0;
+};
+
+struct loaded_docs {
+  std::shared_ptr<passage_model> model;
+  std::string name;       // "BGE small (English)"
+  std::string spec_key;
+  std::uint32_t dim = 384;
+  float query_margin = 0.05f;   // "nothing found" below this (the D3 spike's calibration)
+  float result_margin = 0.02f;  // a passage must beat the generic prompts by this
+  float rank_offset = 0.0f;     // a row ranks by its cosine less this (model.json)
+  std::vector<std::string> generic_prompts;
+  std::vector<std::vector<float>> generic;
+};
+
 struct engine_deps {
   // Loads the runtime and reads the pack (seconds: ONNX Runtime and, with the
   // vendor piece, the CUDA libraries). The control thread calls it, after the
@@ -153,6 +175,8 @@ struct engine_deps {
   // Audio: an error when the ai-audio piece is not installed.
   std::function<result<loaded_sound>(std::uint32_t compute)> open_sound;
   std::function<result<loaded_speech>(std::uint32_t quality, std::uint32_t compute)> open_speech;
+  // #354 D3: the ai-docs piece's text model; an error when it is not installed.
+  std::function<result<loaded_docs>()> open_docs;
   // "CLIP ViT-B/32" for a quality, without opening it (Settings).
   std::function<std::string(std::uint32_t quality)> model_name;
   // The index key of a quality's tower, without opening it (sharing an
@@ -445,7 +469,7 @@ class engine {
   void worker_loop(unsigned index);
   void search_loop();
   // work
-  enum class track : std::uint8_t { picture, faces, sound, speech, cues, text, docs, pages };
+  enum class track : std::uint8_t { picture, faces, sound, speech, cues, text, docs, pages, meaning };
   struct job {
     work_item w;
     track t = track::picture;
@@ -474,6 +498,17 @@ class engine {
   // drawn by the host (video_frame with pts_ms the page), stored as frames
   // with kFramePage under the tower's spec, progress under doc_page_spec.
   void process_pages(const work_item& item, const loaded_clip& clip);
+  // #354 D3: a document's passages through the ai-docs text model, committed
+  // as passage_vecs under its spec once the words are read. A stop leaves it
+  // pending: it is embedded again whole.
+  void process_meaning(const work_item& item, const loaded_docs& docs);
+  // The ai-docs model (or none), its generic prompts embedded, and its stored
+  // vectors into meanings_. `replacing`: a piece change while running.
+  void load_docs(bool replacing);
+  // Meaning rows for a query: the passages that beat the generic prompts by
+  // the calibrated margins, each at its page with the passage as snippet.
+  void merge_meaning(search_state& st, const std::string& query, const std::function<bool(std::int64_t)>& allow,
+                     std::uint32_t precision);
   // #354: the level (MV_AI_DOCS_* - 1) a root indexes its documents at: 0
   // Off, 1 Words, 2 Words and pages. The setting for a root that follows it.
   [[nodiscard]] std::uint32_t docs_level(std::uint32_t root_docs) const noexcept;
@@ -763,6 +798,9 @@ class engine {
   loaded_sound sound_;    // empty model: no ai-audio piece
   loaded_speech speech_;
   vector_store sounds_;   // the CLAP matrix (window starts as pts)
+  loaded_docs docs_;      // #354 D3: empty model: no ai-docs piece
+  vector_store meanings_; // its passage vectors (pts: the passage id)
+  std::int64_t reader_meaning_ = 0;  // a reader: the last passage id taken
   mutable std::mutex speech_m_;
   std::vector<speech_row> speech_rows_;
   std::vector<cue_row> cue_rows_;  // under speech_m_ (#406)
@@ -793,6 +831,8 @@ class engine {
     bool faces_ready = false;
     bool sound_ready = false;
     bool speech_ready = false;
+    bool docs_ready = false;
+    std::string docs_name;
     std::string sound_name;
     std::string speech_name;
   };
@@ -929,7 +969,7 @@ class engine {
   // them (text_counts_due_, the picture counts or spec, work pending) or 30 s
   // have passed. Under status_m_.
   struct text_counts {
-    counts cues, photos, moments, docs, pages;
+    counts cues, photos, moments, docs, pages, meaning;
     std::string key;  // the specs and picture counts they were taken with
     double at = -1e9;
   };

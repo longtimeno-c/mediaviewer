@@ -181,7 +181,18 @@ constexpr const char* kSchema =
     "CREATE TABLE no_merge(a INTEGER NOT NULL, b INTEGER NOT NULL);"
     "CREATE TABLE face_scanned(asset_id INTEGER NOT NULL, spec TEXT NOT NULL);"
     "CREATE TABLE thumbs(asset_id INTEGER NOT NULL, pts_ms INTEGER NOT NULL, jpeg BLOB NOT NULL,"
-    " PRIMARY KEY(asset_id, pts_ms));";
+    " PRIMARY KEY(asset_id, pts_ms));"
+    // v2 (#354 D3), filled only with documents.
+    "CREATE TABLE passages(id INTEGER PRIMARY KEY, asset_id INTEGER NOT NULL, spec TEXT NOT NULL,"
+    " page INTEGER NOT NULL, ord INTEGER NOT NULL, text TEXT NOT NULL, words TEXT NOT NULL);"
+    "CREATE TABLE passage_vecs(passage_id INTEGER NOT NULL, spec TEXT NOT NULL, generic REAL NOT NULL,"
+    " scale REAL NOT NULL, emb BLOB NOT NULL);";
+
+// #354 D3: a document's text pass (index_db.h kDocTextSpec) and its page
+// pictures' (doc_page_spec): their rows are passages and page frames.
+constexpr const char* kDocText = "doctext/1";
+constexpr const char* kDocPagePrefix = "docpage/";
+constexpr std::uint32_t kPageFlag = 0x100;  // index_db.h kFramePage
 
 // Opens someone else's file to read: read-only, and its schema is not
 // trusted to run anything (no triggers, views or functions it could carry).
@@ -279,6 +290,8 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
     put("face_spec", with_faces ? o.face_spec : std::string());
     put("faces", with_faces ? "1" : "0");
     put("thumbs", o.thumbs && o.thumb ? "1" : "0");
+    put("documents", o.documents ? "1" : "0");
+    put("docs_spec", o.documents ? o.docs_spec : std::string());
   }
   // Roots, and their assets with paths made relative.
   std::set<std::int64_t> wanted(o.roots.begin(), o.roots.end());
@@ -303,9 +316,11 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
   n.roots = roots.size();
   std::unordered_map<std::int64_t, thumb_want> file_of;  // for thumbnails
   {
-    // #354: no document travels in D1, nor its name: its passages are its
-    // text, and sharing them waits for .mvindex v2 (docs/plans/document-search.md D3).
-    stmt q(x, "SELECT id, path, mtime, size, kind, duration_ms FROM src.assets WHERE root_id = ?1 AND kind != 3");
+    // #354: a document travels only when asked (v2, MV_AI_TRANSFER_DOCUMENTS):
+    // its passages are its text. Otherwise not even its name does.
+    stmt q(x, o.documents ? "SELECT id, path, mtime, size, kind, duration_ms FROM src.assets WHERE root_id = ?1"
+                          : "SELECT id, path, mtime, size, kind, duration_ms FROM src.assets WHERE root_id = ?1"
+                            " AND kind != 3");
     stmt ins(x, "INSERT INTO assets(id, root_id, rel, mtime, size, kind, duration_ms)"
                 " VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)");
     for (const auto& [id, rpath] : roots) {
@@ -332,9 +347,12 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
                " FROM src.progress p JOIN assets a ON a.id = p.asset_id WHERE p.state IN (1, 2)"
                " AND p.spec != 'cues/1' AND p.spec NOT LIKE 'ocr/%'");  // #406 / #403: no cue rows travel
   if (!ok) return fail(status::io);
+  // A document's page pictures are frames of the picture spec whose progress
+  // is under docpage/<that spec>.
   ok = exec(x, "INSERT INTO frames SELECT f.asset_id, f.spec, f.pts_ms, f.pts_tb, f.tb_num, f.tb_den, f.flags,"
-               " f.generic, f.scale, f.emb FROM src.frames f"
-               " JOIN progress p ON p.asset_id = f.asset_id AND p.spec = f.spec");
+               " f.generic, f.scale, f.emb FROM src.frames f WHERE EXISTS (SELECT 1 FROM progress p"
+               " WHERE p.asset_id = f.asset_id AND (p.spec = f.spec OR"
+               " (p.spec = 'docpage/' || f.spec AND (f.flags & 256) != 0)))");
   n.frames = static_cast<std::uint64_t>(sqlite3_changes64(x));
   if (!ok || c.cancelled()) return fail(ok ? status::cancelled : status::io);
   c.report(0.4);
@@ -342,6 +360,17 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
                " JOIN progress p ON p.asset_id = s.asset_id AND p.spec = s.spec");
   n.speech = static_cast<std::uint64_t>(sqlite3_changes64(x));
   if (!ok) return fail(status::io);
+  if (o.documents) {
+    ok = exec(x, "INSERT INTO passages SELECT g.id, g.asset_id, g.spec, g.page, g.ord, g.text, t.words"
+                 " FROM src.passages g JOIN src.passage_text t ON t.rowid = g.id"
+                 " JOIN progress p ON p.asset_id = g.asset_id AND p.spec = g.spec");
+    n.passages = static_cast<std::uint64_t>(sqlite3_changes64(x));
+    ok = ok && exec(x, "INSERT INTO passage_vecs SELECT v.passage_id, v.spec, v.generic, v.scale, v.emb"
+                       " FROM src.passage_vecs v JOIN passages g ON g.id = v.passage_id"
+                       " JOIN progress p ON p.asset_id = g.asset_id AND p.spec = v.spec");
+    n.passage_vecs = static_cast<std::uint64_t>(sqlite3_changes64(x));
+    if (!ok) return fail(status::io);
+  }
   if (with_faces) {
     ok = exec(x, "INSERT INTO face_scanned SELECT s.asset_id, s.spec FROM fdb.scanned s"
                  " JOIN assets a ON a.id = s.asset_id") &&
@@ -430,6 +459,11 @@ result<file_info> inspect(const std::string& file) {
   f.face_spec = info_value(db, "face_spec");
   f.faces = info_value(db, "faces") == "1";
   f.thumbs = info_value(db, "thumbs") == "1";
+  if (f.version >= 2 && info_value(db, "documents") == "1") {
+    f.documents = true;
+    f.docs_spec = info_value(db, "docs_spec");
+    f.document_count = count_of(db, "SELECT COUNT(*) FROM assets WHERE kind = 3");
+  }
   {
     stmt s(db, "SELECT DISTINCT spec FROM progress ORDER BY spec");
     while (s.step_row()) f.specs.push_back(s.text(0));
@@ -468,6 +502,10 @@ expected import_index(sqlite3* db, const std::string& file, std::span<const root
 
   std::map<std::int64_t, const root_target*> target_of;
   for (const root_target& t : targets) target_of[t.file_root] = &t;
+  // #354 D3: documents come in when the caller takes their text (it does
+  // while documents are shown here) and the file carries them (v2).
+  const bool documents = specs.count(kDocText) != 0 && info_value(x, "documents") == "1";
+  const std::string file_docs_spec = documents ? info_value(x, "docs_spec") : std::string();
 
   // The file's done / partial work per asset and spec.
   std::map<std::int64_t, std::map<std::string, std::pair<std::int64_t, std::int64_t>>> work;  // state, resume
@@ -503,6 +541,11 @@ expected import_index(sqlite3* db, const std::string& file, std::span<const root
     stmt drop_f(db, "DELETE FROM frames WHERE asset_id = ?1 AND spec = ?2");
     stmt drop_s(db, "DELETE FROM speech WHERE asset_id = ?1 AND spec = ?2");
     stmt drop_p(db, "DELETE FROM progress WHERE asset_id = ?1 AND spec = ?2");
+    // #354 D3: what a document's passes stored, by spec.
+    stmt drop_g(db, "DELETE FROM passages WHERE asset_id = ?1 AND spec = ?2");
+    stmt drop_v(db, "DELETE FROM passage_vecs WHERE spec = ?2 AND passage_id IN"
+                    " (SELECT id FROM passages WHERE asset_id = ?1)");
+    stmt drop_pg(db, "DELETE FROM frames WHERE asset_id = ?1 AND spec = ?2 AND (flags & 256) != 0");
     stmt dur(db, "UPDATE assets SET duration_ms = MAX(duration_ms, ?2) WHERE id = ?1");
     stmt ins(db, "INSERT INTO assets(path, root_id, mtime, size, kind, duration_ms, seen)"
                  " VALUES(?1, ?2, ?3, ?4, ?5, ?6, 0)");
@@ -512,7 +555,7 @@ expected import_index(sqlite3* db, const std::string& file, std::span<const root
       if (t == target_of.end()) continue;
       const std::string rel = a.text(2);
       const std::int64_t kind = a.i64(5);
-      if (!safe_rel(rel) || (kind != 1 && kind != 2)) continue;
+      if (!safe_rel(rel) || (kind != 1 && kind != 2 && !(kind == 3 && documents))) continue;
       ++n.assets;
       imported_asset im;
       im.file_id = a.i64(0);
@@ -540,9 +583,17 @@ expected import_index(sqlite3* db, const std::string& file, std::span<const root
             drop_f.reset();
             drop_s.reset();
             drop_p.reset();
+            drop_g.reset();
+            drop_v.reset();
+            drop_pg.reset();
             ok = ok && drop_f.bind(1, im.local_id).bind(2, spec).run() &&
                  drop_s.bind(1, im.local_id).bind(2, spec).run() &&
-                 drop_p.bind(1, im.local_id).bind(2, spec).run();
+                 drop_p.bind(1, im.local_id).bind(2, spec).run() &&
+                 drop_g.bind(1, im.local_id).bind(2, spec).run() &&
+                 drop_v.bind(1, im.local_id).bind(2, spec).run();
+            if (ok && spec.rfind(kDocPagePrefix, 0) == 0) {
+              ok = drop_pg.bind(1, im.local_id).bind(2, spec.substr(std::char_traits<char>::length(kDocPagePrefix))).run();
+            }
             take.emplace(im.file_id, spec);
             replaced = true;
           }
@@ -565,6 +616,25 @@ expected import_index(sqlite3* db, const std::string& file, std::span<const root
       local_of[im.file_id] = im.local_id;
       out.push_back(std::move(im));
       if ((++seen & 1023) == 0 && c.cancelled()) return rollback(status::cancelled);
+    }
+  }
+  if (!ok) return rollback(status::io);
+  if (!file_docs_spec.empty()) {
+    // A passage vector names a passage by id: only where the passages came
+    // from the file too. Elsewhere the text model embeds this machine's own,
+    // so its progress here goes back to pending.
+    stmt drop_p(db, "DELETE FROM progress WHERE asset_id = ?1 AND spec = ?2");
+    for (auto it = take.begin(); it != take.end();) {
+      if (it->second == file_docs_spec && !take.count({it->first, std::string(kDocText)})) {
+        it = take.erase(it);
+        ++n.skipped_rows;
+      } else {
+        if (it->second == kDocText && !take.count({it->first, file_docs_spec})) {
+          drop_p.reset();
+          ok = ok && drop_p.bind(1, local_of[it->first]).bind(2, file_docs_spec).run();
+        }
+        ++it;
+      }
     }
   }
   if (!ok) return rollback(status::io);
@@ -593,7 +663,8 @@ expected import_index(sqlite3* db, const std::string& file, std::span<const root
     while (ok && f.step_row()) {
       const std::int64_t file_id = f.i64(0);
       std::string spec = f.text(1);
-      if (!take.count({file_id, spec})) continue;
+      const bool page = (f.i64(6) & kPageFlag) != 0;
+      if (page ? !take.count({file_id, kDocPagePrefix + spec}) : !take.count({file_id, spec})) continue;
       const auto emb = f.blob(9);
       const double generic = f.real(7), scale = f.real(8);
       if (emb.empty() || emb.size() > 8192 || !std::isfinite(generic) || !std::isfinite(scale) || scale <= 0) continue;
@@ -624,6 +695,52 @@ expected import_index(sqlite3* db, const std::string& file, std::span<const root
     }
   }
   if (!ok) return rollback(status::io);
+  if (documents) {
+    // Passages (and their words, for the keyword search), new ids here.
+    std::unordered_map<std::int64_t, std::int64_t> passage_of;  // file passage -> local
+    std::unordered_map<std::int64_t, std::int64_t> asset_of_passage;  // file passage -> file asset
+    stmt g(x, "SELECT id, asset_id, spec, page, ord, text, words FROM passages");
+    stmt ins(db, "INSERT INTO passages(asset_id, spec, page, ord, text) VALUES(?1, ?2, ?3, ?4, ?5)");
+    stmt words(db, "INSERT INTO passage_text(rowid, words) VALUES(?1, ?2)");
+    std::uint64_t i = 0;
+    while (ok && g.step_row()) {
+      const std::int64_t file_id = g.i64(1);
+      std::string spec = g.text(2);
+      if (!take.count({file_id, spec})) continue;
+      std::string text = g.text(5), w = g.text(6);
+      if (text.size() > 16384 || w.size() > 16384 || g.i64(3) < 0) continue;
+      ins.reset();
+      ok = ins.bind(1, local_of[file_id]).bind(2, spec).bind(3, g.i64(3)).bind(4, g.i64(4)).bind(5, text).run();
+      if (!ok) break;
+      const std::int64_t local = sqlite3_last_insert_rowid(db);
+      words.reset();
+      ok = words.bind(1, local).bind(2, w).run();
+      passage_of[g.i64(0)] = local;
+      asset_of_passage[g.i64(0)] = file_id;
+      ++n.passages;
+      if ((++i & 4095) == 0 && c.cancelled()) return rollback(status::cancelled);
+    }
+    if (!ok) return rollback(status::io);
+    std::size_t dim = 0;
+    stmt v(x, "SELECT passage_id, spec, generic, scale, emb FROM passage_vecs");
+    stmt vin(db, "INSERT OR REPLACE INTO passage_vecs(passage_id, spec, generic, scale, emb) VALUES(?1, ?2, ?3, ?4, ?5)");
+    while (ok && v.step_row()) {
+      const auto local = passage_of.find(v.i64(0));
+      if (local == passage_of.end()) continue;
+      std::string spec = v.text(1);
+      if (!take.count({asset_of_passage[v.i64(0)], spec})) continue;
+      const auto emb = v.blob(4);
+      const double generic = v.real(2), scale = v.real(3);
+      if (emb.empty() || emb.size() > 8192 || !std::isfinite(generic) || !std::isfinite(scale) || scale <= 0) continue;
+      if (dim == 0) dim = emb.size();
+      if (emb.size() != dim) continue;
+      vin.reset();
+      ok = vin.bind(1, local->second).bind(2, spec).bind_real(3, generic).bind_real(4, scale)
+               .bind_blob(5, emb.data(), emb.size()).run();
+      ++n.passage_vecs;
+    }
+    if (!ok) return rollback(status::io);
+  }
   if (!exec(db, "COMMIT")) return rollback(status::io);
   c.report(0.7);
   return {};

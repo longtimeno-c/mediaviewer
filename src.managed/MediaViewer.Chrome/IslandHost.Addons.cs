@@ -96,7 +96,9 @@ public static partial class IslandHost
     private static readonly AddonSlot CudaSlot = new("ai-cuda", "NVIDIA acceleration", null, "ai");
     // 2026-09-27: sounds (CLAP) and speech (Whisper) in videos.
     private static readonly AddonSlot AudioSlot = new("ai-audio", "Audio", null, "ai");
-    private static readonly AddonSlot[] AddonSlots = { ImportSlot, AiSlot, FacesSlot, AudioSlot, CudaSlot };
+    // #354 D3: a text model, so document words also match by meaning.
+    private static readonly AddonSlot DocsSlot = new("ai-docs", "Documents", null, "ai");
+    private static readonly AddonSlot[] AddonSlots = { ImportSlot, AiSlot, FacesSlot, AudioSlot, DocsSlot, CudaSlot };
 
     /// <summary>What an install is doing, for the bar under its button (the
     /// Mac's AddonChannel.Phase): a determinate download, then the checking
