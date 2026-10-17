@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -24,6 +25,8 @@ namespace media {
 [[nodiscard]] result<rgb_image> decode_still(const std::string& path, std::uint32_t max_long_edge);
 [[nodiscard]] result<std::unique_ptr<video_sampler>> open_sampler(const std::string& path,
                                                                   const sampler_options& options);
+// A clip's frame at `pts_ms`; for a document (PDF, DOCX; #354) the page whose
+// 0-based index is `pts_ms`, drawn by the viewer's renderer.
 [[nodiscard]] result<rgb_image> video_frame(const std::string& path, std::int64_t pts_ms,
                                             std::uint32_t max_long_edge);
 // The JPEG-512 cache entry for a moment: stores `image` when given, else
@@ -48,6 +51,12 @@ namespace media {
 [[nodiscard]] result<std::unique_ptr<audio_stream>> open_audio(const std::string& path,
                                                                std::uint32_t sample_rate,
                                                                std::int64_t start_ms);
+// #354: a document's text in reading order with the page each paragraph
+// starts on: a DOCX through codec::docx_text. unsupported_format for anything
+// else (PDF text is the AI pack's own, through PDFium). `visit` false stops
+// the read (status::cancelled). Worker threads: it lays the document out.
+[[nodiscard]] expected document_text(const std::string& path,
+                                     const std::function<bool(const document_line&)>& visit);
 }  // namespace media
 
 }  // namespace mv::addon

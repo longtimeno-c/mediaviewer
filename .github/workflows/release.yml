@@ -341,18 +341,20 @@ jobs:
           if ($LASTEXITCODE) { throw 'packing sharepoint failed' }
 
       # Local search (docs/design/17): the Core pack and its Sound and People pieces,
-      # each its own signed download on the same release, like Import. Only our
-      # own two DLLs are signed; ONNX Runtime's carry Microsoft's signature.
+      # each its own signed download on the same release, like Import. Our own
+      # two DLLs and PDFium (#354; unsigned as bblanchon/pdfium-binaries ships it,
+      # as the Mac pack signs its dylib) are signed; ONNX Runtime's carry
+      # Microsoft's signature.
       - name: Collect the Local search binaries to sign
         id: aisign
         if: inputs.mode == 'stable'
         run: |
-          foreach ($f in 'mv_ai.dll', 'MediaViewer.Ai.Chrome.dll') {
+          foreach ($f in 'mv_ai.dll', 'MediaViewer.Ai.Chrome.dll', 'pdfium.dll') {
             if (-not (Test-Path "build/addons/ai/$f")) { throw "$f was not built" }
           }
           $dir = Join-Path $env:RUNNER_TEMP 'ai-sign'
           New-Item -ItemType Directory -Force $dir | Out-Null
-          Copy-Item build/addons/ai/mv_ai.dll, build/addons/ai/MediaViewer.Ai.Chrome.dll $dir
+          Copy-Item build/addons/ai/mv_ai.dll, build/addons/ai/MediaViewer.Ai.Chrome.dll, build/addons/ai/pdfium.dll $dir
           "dir=$dir" >> $env:GITHUB_OUTPUT
 
       - name: Sign the Local search binaries
@@ -606,7 +608,7 @@ jobs:
           if [[ -d build/addons/ai ]]; then
             cp build/_ort/*/ThirdPartyNotices.txt build/addons/ai/
             tar -C build/addons/ai -cf "upload/AiAddon-${{ matrix.arch }}.tar" \
-              libmv_ai.dylib libonnxruntime.dylib AI.bundle ThirdPartyNotices.txt
+              libmv_ai.dylib libonnxruntime.dylib libpdfium.dylib AI.bundle ThirdPartyNotices.txt pdfium-licenses
           fi
 
       # No version suffix: publish only collects artifacts named *-<version>.

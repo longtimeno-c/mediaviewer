@@ -2167,6 +2167,19 @@ void edit_item_opened(app_state* app) {
   strip_hint_show(app);
   // Issue #429: a new stop has no page count until it opens; the sidebar goes.
   (void)sync_page_stop(app, false);
+  // #354: a document from a result list opens on the page that matched (its
+  // moment in the list), as the Mac host does; the page's decode takes over
+  // from the first page's (mv_folder_select_page bumps the generation).
+  std::uint32_t index = 0;
+  std::int64_t moment = -1;
+  if (mv::io::is_document_name(entry.name_utf8) && mv_folder_selected(app->session, &index) == MV_OK &&
+      mv_folder_item_moment(app->session, index, &moment) == MV_OK && moment > 0 && moment <= UINT32_MAX) {
+    std::uint64_t job = 0;
+    if (mv_folder_select_page(app->session, static_cast<std::uint32_t>(moment), &job) == MV_OK) {
+      app->page_of = index;
+      app->page = static_cast<std::uint32_t>(moment);
+    }
+  }
   page_sidebar_changed(app);
 }
 

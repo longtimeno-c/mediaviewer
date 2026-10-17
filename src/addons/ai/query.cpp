@@ -18,6 +18,8 @@ namespace {
 constexpr std::uint32_t kPhotos = 1u;  // MV_AI_KIND_PHOTOS (the ABI header stays out of this TU)
 constexpr std::uint32_t kVideos = 2u;  // MV_AI_KIND_VIDEOS
 constexpr std::uint32_t kAudio = 8u;   // MV_AI_KIND_AUDIO (#355)
+constexpr std::uint32_t kDocuments = 4u;  // MV_AI_KIND_DOCUMENTS (#354)
+constexpr std::uint32_t kAllKinds = kPhotos | kVideos | kDocuments | kAudio;
 
 bool space(unsigned char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'; }
 
@@ -68,6 +70,11 @@ std::uint32_t kind_word(std::string_view folded, bool named = false) {
   }
   if (is_one_of(folded, {"audio", "songs", "tracks"})) return kAudio;
   if (named && is_one_of(folded, {"music", "song", "track", "mp3", "m4a"})) return kAudio;
+  // #354: "documents", "docs", "pdf" and "pdfs" filter wherever a kind word
+  // does; "document", "doc", "docx" and "word" only after is: (bare, "word"
+  // and "document" stay words to find).
+  if (is_one_of(folded, {"documents", "docs", "pdf", "pdfs"})) return kDocuments;
+  if (named && is_one_of(folded, {"document", "doc", "docx", "word"})) return kDocuments;
   return 0;
 }
 
@@ -150,7 +157,8 @@ std::vector<token> tokens_of(std::string_view s) {
       while (j < s.size() && ((s[j] >= 'a' && s[j] <= 'z') || (s[j] >= 'A' && s[j] <= 'Z'))) ++j;
       if (j > i && j < s.size() && s[j] == ':') {
         const std::string op = lower_ascii(s.substr(i, j - i));
-        if (is_one_of(op, {"in", "before", "after", "since", "until", "is", "type", "kind", "person", "said",
+        if (is_one_of(op, {"in", "before", "after", "since", "until", "is", "type", "kind", "person", "said", "text",
+                          "says",
                           "file", "camera", "lens", "ai", "made", "place", "rating", "label", "iso", "f", "mm",
                           "shutter"})) {
           t.op = op;
@@ -606,13 +614,18 @@ parsed parse(std::string_view utf8) {
       or_pending = false;
       continue;
     }
-    if (t.quoted && (t.op.empty() || t.op == "said")) {
-      if (!words_of(t.text).empty()) p.phrases.push_back({t.text, t.negated, t.open});
+    // Where a phrase must be: anywhere (quoted), said (said:, a clip's
+    // speech and own text), or in a document's text (#354: text: / says:).
+    const phrase_in in = t.op == "said"                      ? phrase_in::said
+                         : t.op == "text" || t.op == "says" ? phrase_in::documents
+                                                            : phrase_in::anywhere;
+    if (t.quoted && (t.op.empty() || t.op == "said" || t.op == "text" || t.op == "says")) {
+      if (!words_of(t.text).empty()) p.phrases.push_back({t.text, t.negated, t.open, in});
       or_pending = false;
       continue;
     }
-    if (t.op == "said") {
-      if (!words_of(t.text).empty()) p.phrases.push_back({t.text, t.negated, false});
+    if (t.op == "said" || t.op == "text" || t.op == "says") {
+      if (!words_of(t.text).empty()) p.phrases.push_back({t.text, t.negated, false, in});
       or_pending = false;
       continue;
     }
@@ -683,8 +696,12 @@ parsed parse(std::string_view utf8) {
       }
     }
     if (t.op == "is" || t.op == "type" || t.op == "kind") {
-      const std::uint32_t k = kind_word(fold(t.text), true);
+      const std::string f = fold(t.text);
+      const std::uint32_t k = kind_word(f, true);
       (t.negated ? p.not_kinds : p.kinds) |= k;
+      // #354: is:pdf / is:docx (is:word) name the format too.
+      if (!t.negated && (f == "pdf" || f == "pdfs")) p.extensions.push_back("pdf");
+      if (!t.negated && (f == "docx" || f == "word")) p.extensions.push_back("docx");
       continue;
     }
     if (!t.op.empty()) {
@@ -733,7 +750,7 @@ parsed parse(std::string_view utf8) {
   const auto take_kind = [&](std::size_t at, bool first) {
     const std::uint32_t k = kind_word(fold(p.words[at].text));
     if (k == 0) return;
-    if (!first || k == kVideos || k == kAudio) p.kinds |= k;
+    if (!first || k == kVideos || k == kAudio || k == kDocuments) p.kinds |= k;
     p.words.erase(p.words.begin() + static_cast<std::ptrdiff_t>(at));
   };
   if (!bare.empty()) {
@@ -749,7 +766,8 @@ parsed parse(std::string_view utf8) {
 plan resolve(const parsed& p, std::span<const person_name> people) {
   plan out;
   out.kinds = p.kinds;
-  if (p.not_kinds != 0) out.kinds = (out.kinds == 0 ? (kPhotos | kVideos | kAudio) : out.kinds) & ~p.not_kinds;
+  if (p.not_kinds != 0) out.kinds = (out.kinds == 0 ? kAllKinds : out.kinds) & ~p.not_kinds;
+  out.extensions = p.extensions;
   if ((p.kinds != 0 || p.not_kinds != 0) && out.kinds == 0) out.impossible = true;
   out.from_unix = p.from_unix;
   out.to_unix = p.to_unix;
@@ -775,8 +793,10 @@ plan resolve(const parsed& p, std::span<const person_name> people) {
   for (const parsed::phrase& ph : p.phrases) {
     if (ph.negated) {
       out.not_phrases.push_back(ph.text);
+      out.not_phrase_where.push_back(ph.in);
     } else {
       out.phrases.push_back(ph.text);
+      out.phrase_where.push_back(ph.in);
       out.last_phrase_open = ph.open;
     }
   }

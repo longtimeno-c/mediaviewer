@@ -91,6 +91,12 @@ int main() {
   MV_FIELD(mv_ai_status, cues_done);
   MV_FIELD(mv_ai_status, text_total);
   MV_FIELD(mv_ai_status, text_done);
+  MV_FIELD(mv_ai_status, docs_total);
+  MV_FIELD(mv_ai_status, docs_done);
+  MV_FIELD(mv_ai_status, docs_locked);
+  MV_FIELD(mv_ai_status, docs_failed);
+  MV_FIELD(mv_ai_status, pages_total);
+  MV_FIELD(mv_ai_status, pages_done);
   MV_END(mv_ai_status);
 
   MV_BEGIN(mv_ai_result);

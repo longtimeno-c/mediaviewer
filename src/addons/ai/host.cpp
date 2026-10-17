@@ -127,6 +127,30 @@ result<std::vector<std::string>> host::place_matches(const std::string& place,
   return std::move(v.paths);
 }
 
+bool host::has_document_text() const noexcept {
+  return api_ && api_->struct_size >= offsetof(mv_host_api, document_text) + sizeof(api_->document_text) &&
+         api_->document_text;
+}
+
+namespace {
+int32_t MV_CALL doc_text_thunk(void* user, const mv_addon_doc_text* t) {
+  const auto& visit = *static_cast<const std::function<bool(const host::doc_line&)>*>(user);
+  if (!t || !t->text_utf8) return 1;
+  host::doc_line out;
+  out.page = t->page;
+  out.page_count = t->page_count;
+  out.text = t->text_utf8;
+  return visit(out) ? 1 : 0;
+}
+}  // namespace
+
+expected host::document_text(const std::string& path, const std::function<bool(const doc_line&)>& visit) const {
+  if (!has_document_text()) return err(status::unsupported_format);
+  void* user = const_cast<void*>(static_cast<const void*>(&visit));
+  const mv_status s = api_->document_text(api_->host, path.c_str(), &doc_text_thunk, user);
+  return s == MV_OK ? expected{} : err(to_status(s));
+}
+
 bool host::has_walk2() const noexcept {
   return api_ && api_->struct_size >= offsetof(mv_host_api, walk_files2) + sizeof(api_->walk_files2) &&
          api_->walk_files2;

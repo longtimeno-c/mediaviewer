@@ -639,11 +639,18 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < FlagsArgsSize) return unchecked((int)0x80070057);
             ChromeFlagsArgs args = Marshal.PtrToStructure<ChromeFlagsArgs>(arg);
             bool audioWas = HasFlag(SettingFlag.ShowAudio);
+            bool documentsWere = HasFlag(SettingFlag.ShowDocuments);
             _settingFlags = args.Flags;
             if (HasFlag(SettingFlag.ShowAudio) != audioWas)
             {
                 // #355: Local search indexes audio files only while this is on.
                 try { SearchChrome?.OnShowAudioChanged(!audioWas); }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+            }
+            if (HasFlag(SettingFlag.ShowDocuments) != documentsWere)
+            {
+                // #354: and PDF / DOCX only while this is.
+                try { SearchChrome?.OnShowDocumentsChanged(!documentsWere); }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
             }
             _sortPacked = args.Sort & 0xFF;

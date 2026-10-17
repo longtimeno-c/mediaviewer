@@ -182,13 +182,14 @@ signed downloads per platform: `mediaviewer-addon-ai-*` (the Core pack: the nati
 Runtime, the chrome and both CLIP towers), `mediaviewer-addon-ai-audio-*` (Sound: CLAP and
 Whisper) and `mediaviewer-addon-ai-faces-*` (People). About 2.3 GB per platform.
 
-- **Windows:** `mv_ai.dll` and `MediaViewer.Ai.Chrome.dll` are Authenticode-signed when Trusted
-  Signing is configured (ONNX Runtime's DLLs keep Microsoft's signature). `ai-models.py stage`
+- **Windows:** `mv_ai.dll`, `MediaViewer.Ai.Chrome.dll` and `pdfium.dll` (#354) are
+  Authenticode-signed when Trusted Signing is configured (ONNX Runtime's DLLs keep Microsoft's
+  signature). `ai-models.py stage`
   fetches each piece's models from their pinned revisions and checks every SHA-256 and licence,
   then `addon-pack.py pack --require-pinned-key` packs each piece and `ceiling` checks the 5 GB
   family limit.
-- **macOS (arm64 only):** the arm64 build hands `libmv_ai.dylib`, `libonnxruntime.dylib` and
-  `AI.bundle` to the disk-image job, which signs and notarizes that code *before* the models
+- **macOS (arm64 only):** the arm64 build hands `libmv_ai.dylib`, `libonnxruntime.dylib`,
+  `libpdfium.dylib` (with PDFium's notices, #354) and `AI.bundle` to the disk-image job, which signs and notarizes that code *before* the models
   are staged (the notary service never receives the weights), then stages, packs and checks
   the ceiling as on Windows. Intel builds define no AI target.
 - **NVIDIA acceleration (`ai-cuda`, Windows only):** a stable run configures with

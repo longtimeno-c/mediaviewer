@@ -27,6 +27,7 @@ public final class MVAIChrome: NSObject {
   private var settingsHost: NSView?
   private var folder = ""
   private var showAudio = false  // #355: File types "Show audio files"
+  private var showDocuments = false  // #354: File types "Show documents"
   /// People → a person, opened in the gallery: its own search, apart from
   /// the panel's.
   private var personSearch: SearchModel?
@@ -49,6 +50,7 @@ public final class MVAIChrome: NSObject {
     let m = SearchModel(table: table)
     m.chrome = self
     m.audioFilesChanged(showAudio)
+    m.documentFilesChanged(showDocuments)
     if !folder.isEmpty { m.folderChanged(folder) }
     search = m
     return m
@@ -60,6 +62,7 @@ public final class MVAIChrome: NSObject {
     let m = ManagementModel(table: table)
     m.chrome = self
     m.audioFiles = showAudio
+    m.documentFiles = showDocuments
     if !folder.isEmpty { m.folderChanged(folder) }
     manage = m
     return m
@@ -163,6 +166,19 @@ public final class MVAIChrome: NSObject {
       search?.audioFilesChanged(on)
       personSearch?.audioFilesChanged(on)
       manage?.audioFiles = on
+    }
+  }
+
+  /// #354: File types "Show documents", on attach and on each change. The pack
+  /// indexes and searches PDF and DOCX only while it is on.
+  @objc(showDocumentsChanged:)
+  public func showDocumentsChanged(_ on: Bool) {
+    MainActor.assumeIsolated {
+      showDocuments = on
+      if let table, !table.readOnly { table.setSetting("document_files", on ? "1" : "0") }
+      search?.documentFilesChanged(on)
+      personSearch?.documentFilesChanged(on)
+      manage?.documentFiles = on
     }
   }
 
@@ -299,6 +315,7 @@ public final class MVAIChrome: NSObject {
       m = SearchModel(table: table)
       m.chrome = self
       m.audioFilesChanged(showAudio)
+    m.documentFilesChanged(showDocuments)
       personSearch = m
     }
     if !folder.isEmpty { m.folderChanged(folder) }

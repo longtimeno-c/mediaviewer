@@ -696,7 +696,11 @@ owed: [docs/design/17](design/17-local-ai-search.md); the Mac checklist is
    "CUDA 13 or cuDNN 9 not found — using CPU". Stable releases publish this piece.
 4. Run the app or `ai-bench --addons <folder> --index <media folder> --query "a dog"` with
    `MV_DEV_ADDONS_DIR=<folder>` and `MV_DEV_THUMBS_DIR=<another folder>`, so a real install
-   is untouched.
+   is untouched. `--documents` turns on File types "Show documents" for the run, so the
+   folder's PDFs and DOCX files are read for their words (#354); the status lines then carry
+   `"docs":[done,total,locked,failed]`. The pack stages PDFium beside `mv_ai` from its pinned
+   download (`cmake/ai.cmake`); set `MV_ORT_ARCHIVE_DIR` to a folder holding
+   `pdfium-<platform>-8066.tgz` (and ORT's archive) to configure offline.
 5. Quit's cost with a pack loaded: `ai-bench --addons <folder> --query dog --quit-after 1`
    quits the way both hosts do (the pack gets half a second to stop, then the exit skips static
    destructors; `src/addon/host.h`, "Quit") and prints the time it took; `--quit-legacy` is the
@@ -1732,6 +1736,90 @@ album artist, composer, genre). Sound and speech on audio files are slice A2.
 - **Owed:** the plan's A1 verify on a real folder (300 photos and 200 audio files) in the app on
   both hosts; both PR 1 gates with the pack indexing audio files; timing the walk with the
   setting off.
+
+### Local search over documents, slice D2: pages as pictures (#354, 2026-10-16)
+
+Settings → Local search → Documents gains **Words and pages** (`doc_index` 2, per folder
+`MV_AI_DOCS_PAGES`) on both hosts. A document's first 3 pages, and any page mostly covered by
+images, go through the picture tower already installed, so "a receipt" or "a floor plan" finds the
+page ([17](design/17-local-ai-search.md) "Documents", "Page pictures (D2)"). No new model, no
+schema change.
+
+- **Tests:** `mv_ai_tests "[documents]"`: which pages are drawn (first 3, picture pages, the end of
+  a DOCX, nothing for a locked one), found at their page as a picture match, kept through a
+  restart, dropped by a folder's or Settings' Words and drawn again at Words and pages. Also PDFium's
+  picture-page measure on hand-built PDFs (`[pdfium]`). Mac (M5, 2026-10-17, on D1 with main
+  merged): `mv_ai_tests` 148 cases, 140 passed, 8 skipped (model-backed); `mv_tests` 896 cases,
+  885 passed, 11 skipped; `mv_import_tests` 158 passed; the SwiftUI AI chrome builds; the WinUI AI
+  chrome's C# compiles.
+- **Verify set:** `tools/ai-bench/doc-pages/make_doc_pages.swift <out> <photos>` draws 120 PDFs,
+  6 each of 20 kinds of page (receipt, floor plan, bar / pie chart, line graph, slide, sheet music,
+  calendar, crossword, chessboard, flowchart, map, QR code, barcode, spreadsheet, certificate,
+  sudoku, circuit diagram, a full-page photo, business card). The kind's page sits on page 0-2, or
+  for 4 of the photos on page 7 or 8 of a long document. Names are neutral and the labels go to
+  `labels.tsv`. Run `ai-bench --documents --doc-index 2 --top 10 --query ...` over them beside D1's
+  200 text documents, then `score_doc_pages.py`.
+- **Verify line, Mac (M5, ViT-L/14 on the Neural Engine, 2026-10-16), 320 documents:**
+  - Mean P@5 over the 20 queries: **0.80** as typed (words and pictures) and **0.83** with Match
+    by Picture only (`--kinds 31`).
+  - Every relevant hit was on the labelled page (80 / 80 and 83 / 83). Queries took 10-25 ms, and
+    100 ms for "a receipt" as typed.
+  - 15 queries scored 1.0. "a line graph" and "a calendar" scored 0.8.
+  - "a map" scored 0.4: slides and sudoku pages ranked above two of the maps.
+  - "a spreadsheet" scored 0.0: D1's plain DOCX text pages rank above the drawn spreadsheets.
+  - "a receipt" scored 0.0 as typed: D1's random-word documents contain the word "receipt", and
+    a full word match outranks a picture. With Picture only it scored 0.6.
+  - "a photo of a person" found nothing. So did "a person", "a man", "a portrait" and "a face",
+    tried afterwards, although the 6 photo pages are indexed: the "nothing found" gate turns them
+    away.
+  - All 4 deep photo pages were found by the picture-page rule (pages 7 and 8).
+  - No new model: the pack's files are D1's, and the process opened `clip-l14/image.onnx` alone.
+  - Timing: with the tower in, 316 documents pictured (851 pages) in 49 s. The first start of a
+    freshly sideloaded pack spent about 11 minutes on ViT-L/14's Core ML compile first; words
+    were read meanwhile. The second start loaded in 4.6 s.
+- **Mac PR 1 gate** (`frametime --seconds 60`):
+  - Alone: 3,600 frames, p99 16.80 ms, max 22.4 ms, 0 idle presents, 0.035 % idle CPU, PASS.
+  - With `ai-bench` picturing 1,280 documents' pages in a separate process through both soaks:
+    3,600 frames, p99 17.05 ms, max 23.3 ms, 0 idle presents, 1.0 % idle CPU, PASS.
+- **Not measured:** Windows (the native and WinUI code is compiled by CI only; the Windows timing
+  and the Windows PR 1 gate are owed), the app on either host with a real document folder, and
+  DOCX picture pages beyond page 2.
+
+### Local search over documents, slice D1 (#354, docs/plans/document-search.md, 2026-10-16)
+
+PDFs and DOCX files are indexed for their words while Settings → File types **Show documents**
+is on ([17](design/17-local-ai-search.md) "Documents"): a quoted phrase finds the page, Enter
+opens the document there, plain words rank by the speech rule. PDFium (pinned in
+`cmake/ai.cmake`) ships in the Core pack; the index goes to schema 9.
+
+- **Tests:** `mv_ai_tests "[documents],[query]"` (the gate on, off and through a restart; first
+  and last page phrases, page rows, `is:pdf`, `text:` / `said:`, locked and broken files, a
+  folder's Off and Settings' Off dropping the text, a 600-page PDF stopped mid-way and resumed
+  under the 500-page cap, no PDFium setting PDFs aside; the passage rule; PDFium on hand-built
+  PDFs; the host's DOCX text and page tiles; schema 8 → 9); `mv_tests "[docx]"` (`docx_text`
+  reading order and pages); `swift test --filter SearchModelTests`; `tools/package/test_addon_pack.py`
+  (PDFium and its notices in the pack). Mac (M5, 2026-10-16): `mv_ai_tests` 145 cases, 137
+  passed, 8 skipped (model-backed); `mv_tests` 856 cases, 845 passed, 11 skipped;
+  `mv_import_tests` 151 passed; the SwiftUI chrome's tests 9 passed; everything builds.
+- **Verify line, Mac (M5, 2026-10-16), through `ai-bench --documents` on a dev-signed pack:** a
+  synthetic folder of 200 documents (120 PDFs incl. one of 500 pages, two password-protected and
+  one cut short; 80 DOCX incl. one cut short), made by CoreGraphics / CoreText and a zip writer.
+  All 196 text documents found by a quoted phrase from their first page (page 0) and from their
+  last page (the PDF's last page, checked against CoreGraphics' page count): 392 of 392, slowest
+  query 4.1 ms. The 2 locked and 2 broken are counted, nothing crashed. Indexing the 200: within
+  3 s of the pack loading on three runs (all 200 done at the first 5 s status line), so ≤ 60 s
+  holds. Plain words ("tenant invoice") 70 ms over 190 matches.
+- **Mac PR 1 gate with documents indexing:** `frametime --seconds 60`, alone and then with
+  `ai-bench` reading 4,000 documents (the 200 hard-linked 20 times, about 90 a second, through
+  the first 45 s of the soak, in a separate process, so the viewer's yield never reached it):
+  animated 3,599 frames and 0 dropped both times, p99 16.95 → 16.90 ms, 0 idle presents. The
+  idle-CPU clause failed both times (5.55 % and 5.68 % of a core) on this used machine, as it
+  does on base.
+- **Not measured:** the verify line's 300 photos beside the documents, and Enter in the app (both
+  hosts open a document result on its page in code; only the core tests ran it). Windows: both
+  C# chromes compile on the Mac; `main.cpp`, `addon_abi.cpp`, `abi.cpp` and PDFium's Windows
+  build are compiled by CI only. The Windows timing on the dev box and the Windows PR 1 gate are
+  owed.
 
 ### Local search reads more of each file (#403–#407, 2026-10-15)
 

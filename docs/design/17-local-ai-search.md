@@ -132,7 +132,7 @@ signed manifest, verify-before-load, per-user versioned folder, explicit updates
 
   | Piece | Contents | Size |
   |---|---|---|
-  | `ai` (Core) | `mv_ai`, ORT (CPU; Core ML on Mac), both CLIP towers, tokenizer, the chrome (`MediaViewer.Ai.Chrome` / `AI.bundle`) | ~1.18 GB installed |
+  | `ai` (Core) | `mv_ai`, ORT (CPU; Core ML on Mac), PDFium (a PDF's text, #354; ~6 MB, its parts' notices in `LICENSES/pdfium`), both CLIP towers, tokenizer, the chrome (`MediaViewer.Ai.Chrome` / `AI.bundle`) | ~1.19 GB installed |
   | `ai-faces` (People) | YuNet detector, AdaFace IR-50 embedder (fp16) | ~87 MB model |
   | `ai-audio` (Sound) | CLAP `larger_clap_general`, Whisper base and small, tokenizers | ~1 GB |
   | `ai-cuda` (Windows) | ORT's CUDA build | ~205 MB |
@@ -267,9 +267,11 @@ one, so 2 s and 1/250 both match). A clip has no exposure block: those stay NULL
 - A rating written to a RAW's XMP sidecar leaves the RAW's own stamp alone, so the index keeps
   the old rating until the file's stamp changes or the index is rebuilt (the base app's
   meta_cache drops its row; the AI index has no such signal yet).
-### Schema 6 and 7 (#406, #407)
+### Schema 6 to 9 (#406, #407, #355, #354)
 
-Schema 6 adds `cues` ("Cues" below). Schema 7 adds `motion`, `motion_mtime`, `motion_size` and
+Schema 6 adds `cues` ("Cues" below). Schema 8 lets `assets.kind` be 4, an audio file (no table
+change). Schema 9 lets it be 3, a document, and adds `roots.docs`, `passages` and `passage_text`
+("Documents" below). Schema 7 adds `motion`, `motion_mtime`, `motion_size` and
 `motion_cloud` to `assets`: a Live Photo still's movie and its stamp (Frame sampling, step 6). The
 first walk after the step fills them and queues each Live Photo's motion alone; the still is not
 embedded again.
@@ -458,7 +460,9 @@ same thing by the same words. Terms narrow each other (AND).
 | Typed | Means |
 |---|---|
 | `Tristan beach` | photos / moments with Tristan, ranked by "beach" (no "nothing found" test inside a person's own) |
-| `Tristan "hello"`, `Tristan:"hello"`, `said:hello` | Tristan, and a clip whose transcript, a chapter title or a text subtitle line (#406, "Cues"), or a photo or clip moment whose text (#403, "Text in pictures"), has those words in that order; the line is the snippet |
+| `Tristan "hello"`, `Tristan:"hello"`, `said:hello` | Tristan, and a clip whose transcript, a chapter title or a text subtitle line (#406, "Cues"), or a photo or clip moment whose text (#403, "Text in pictures"), has those words in that order; the line is the snippet. Quoted words also match a document's text (#354); `said:` never does |
+| `text:lease`, `says:"net 30 days"`, `-text:draft` | a document's text only (#354, "Documents"): the words in that order, at the page that holds them |
+| `lease documents`, `is:document`, `is:pdf`, `is:docx` | documents (#354); `is:pdf` / `is:docx` (`is:word`) the format |
 | `Tristan Aaryan`, `Tristan and Aaryan` | both in the same photo or clip |
 | `Tristan or Aaryan` | either |
 | `Anna Smith`, `anna` | a named person: the whole name or the first name, any case, accents folded |
@@ -626,7 +630,7 @@ Indexing is a background load on the machine and GPU of a viewer whose point is 
 | Group | Entries |
 |---|---|
 | Status and settings | `status` (`mv_ai_status`), `settings_json`, `set_setting` (compute, quality, precision, battery, cap, video_index, reload), `pause` |
-| Roots | `roots_json`, `index_folder`, `root_set_enabled`, `root_rescan`, `root_remove`, `root_set_media`, `folder_coverage`, `note_folder_opened`, `clear_index` |
+| Roots | `roots_json`, `index_folder`, `root_set_enabled`, `root_rescan`, `root_remove`, `root_set_media`, `root_set_documents` (#354, appended), `folder_coverage`, `note_folder_opened`, `clear_index` |
 | Search | `search_text`, `search_similar`, `result_count`, `result_at`, `result_path`, `result_thumb`, `result_snippet`, `result_duration`, `clip_matches`, `search_release`, `suggest_json` |
 | People | `faces_enable`, `people_json`, `people_in_json`, `person_faces_json`, `person_rename`, `person_merge`, `face_reject`, `face_split`, `search_person`, `search_this_person`, `face_thumb`, `person_refine`, `people_dedupe`, `people_reanalyse` |
 | Sharing | `export_index`, `inspect_export`, `import_index`, `transfer_json`, `transfer_cancel` |
@@ -638,8 +642,9 @@ read-only for the Final Cut Pro search agent ([23](23-nle-search.md)).
 The host table (`mediaviewer_addon.h`) v2 gives the pack stills and sampled video frames as
 pixels, moment thumbnails in the JPEG-512 cache, `audio_open` / `audio_read` / `audio_close`
 (mono float PCM at a requested rate from the viewer's FFmpeg), `thumbnail_jpeg` /
-`thumbnail_store_jpeg` (sharing), and verified family pieces. Table versions only append; the
-host serves every layout from 1 up, so Import keeps loading.
+`thumbnail_store_jpeg` (sharing), `read_cues` (#406), `document_text` (#354: a DOCX's text; a
+document's page is `video_frame_rgb` with `pts_ms` the page), and verified family pieces. Table
+versions only append; the host serves every layout from 1 up, so Import keeps loading.
 
 ## Audio
 
@@ -776,6 +781,121 @@ does.
   at 2,048 px and the same (166–169 ms) at 448 px: the decode, not the edge or the reader, is the
   cost. So a clip costs its moment count × ~0.2 s once, on one background worker, after its
   pictures; the People pass already pays one such decode a moment. Windows is not measured.
+
+## Documents (#354)
+
+PDFs and Word documents are searchable by the **words in them**: a quoted phrase from any page
+finds the document and opens it on that page, plain words rank documents by how many of them a
+passage holds. At **Words and pages** they are also found by **what a page looks like** ("a
+receipt", "a floor plan"). Slices D1 and D2 of [document-search](../plans/document-search.md);
+a text model for meaning (D3) and OCR for scans (D4) follow them.
+
+- **Behind File types "Show documents"** (off by default), as audio files are behind "Show audio
+  files": each chrome forwards it to the pack as `document_files` when it attaches and on every
+  change. Off, the walk drops `.pdf` and `.docx` by name, so they cost nothing; on, every root is
+  walked again; off again, documents leave results at once and the control thread deletes them
+  and their text (`index_db::remove_kind`). A document is `asset_kind::document` (3; schema 9)
+  and `MV_AI_KIND_DOCUMENTS` (4; `MV_AI_KIND_ALL` is 15, so an older chrome's 3 or 11 never sees
+  one). It never pairs, never goes to the picture, People or text-in-pictures passes in D1, and
+  an `.mvindex` export leaves it out, name and all (page pictures too).
+- **What a folder indexes them for.** Settings "Documents" (`doc_index`): 0 Off, 1 **Words**
+  (the default: cheap, no model), 2 **Words and pages** (page pictures, below). Each folder
+  may override it (`root_set_documents`, `MV_AI_DOCS_*`, `roots.docs`): the case is a Downloads
+  folder that should search photos and not bank statements. A folder's Off leaves its documents
+  out of the search at once and drops them with the walk that follows; a change of the setting
+  walks every root.
+- **Text.** A PDF's is read by **PDFium in the pack** (owner call 2): bblanchon/pdfium-binaries
+  chromium/8066, pinned by SHA-256 in `cmake/ai.cmake`, staged beside `mv_ai` and loaded at run
+  time (`pdf_pdfium.cpp`, `infer::dylib`), so the base installer does not grow and both OSes
+  read the same text into the same index. The viewer still draws pages with the OS. PDFium is
+  hostile-input code in this process: it runs on the index workers only, one call at a time
+  (it is not thread-safe), at most 500 pages and 60 s a document, through a file reader that
+  reads the blocks it asks for. A DOCX's is the **host's** (`document_text` on the host table,
+  appended after `keep_alive`): `codec::docx_text`, the viewer's own DOCX reader and
+  layout with no picture decoded, a paragraph at a time with the page that shows it.
+- **Passages** (`passages.h`): a few sentences each (a passage closes at a sentence end past 40
+  words, and at 80 wherever it is), never across a page, at most 20,000 a document. A PDF page's
+  lines are joined (a word hyphenated over a line break is whole again); typographic quotes,
+  dashes, no-break spaces and ligatures (ﬁ) are made plain. Each passage stores its text (the
+  snippet) and its **words**: folded (`core/fold.h`) and split by the speech rule, led by the last
+  8 words of the passage before, so a quoted phrase over a passage break is still one phrase.
+  Schema 9: `passages(id, asset_id, spec, page, ord, text)` and `passage_text(rowid, words)`, FTS5
+  when SQLite has it (else a plain table the engine scans); a deleted passage takes its words
+  with it (a trigger, which the cascade from `assets` fires too). A changed file drops them.
+- **Its own pass** (`track::docs`, progress spec `doctext/1`), after the pictures and before a
+  clip's own text, one document a claim, `wait_turn` before each page (a DOCX: every 64
+  paragraphs). A PDF commits every 8 pages, so a stop resumes at the next page; a DOCX is read
+  whole (its layout needs every page before the one asked for) and a resumed one starts again. A
+  password-protected file (PDFium's password error; a DOCX that is an OLE container, not a zip)
+  is **`locked`** (progress state 5): never retried, counted apart. One that does not open fails
+  (tried again up to three times). A PDF with no text layer (a scan) is done with no passages; D4
+  reads those. With no PDFium (an older pack) or no `document_text` (an older host) a document
+  is set aside (`unavailable`) and read again at the next start that can.
+- **Page pictures (D2)**, at Words and pages: a document's pages through the **picture tower
+  already loaded** (no new model), so a visual query finds the page. Its own pass (`track::pages`,
+  progress spec `docpage/<picture spec>`, so a model change pictures them again) takes a document
+  once its words are read (`pending`'s `after` is `doctext/1`; a locked or broken one never comes),
+  after the words pass and before a clip's own text. Which pages: the **first 3**, plus any page
+  **mostly covered by images** (PDFium's image objects, each clipped to the page, over half its
+  area: a scan, a photo, a full-page figure; `pdf_reader::look`), at most **64** of those a
+  document, within the 500-page and 60 s caps. A DOCX (and a PDF with no PDFium): the first 3,
+  the host saying where the document ends. Each page is drawn by the host, `video_frame_rgb` with
+  `pts_ms` the page (the viewer's own renderer, as the tiles are), at the photo pass's edge (448 px
+  for ViT-B/32 and ViT-L/14), embedded in batches of 4, and stored in one transaction as `frames`
+  rows under the tower's spec with `pts_ms` the page and `kFramePage` (0x100) in `flags` (no
+  schema change), replacing the pages it had. A stop leaves the document pending: it is drawn
+  again whole. A page that does not draw ends the document there; none drawn fails it (its words
+  still find it). A folder or the setting going below Words and pages deletes those documents'
+  page pictures and their progress on the control thread (`index_db::drop_pages`) and takes them
+  out of the matrix. `mv_ai_status` appends `pages_total` and `pages_done`; while they differ the
+  state is not idle, and both chromes read "Looking at document pages 12 of 200".
+  **Measured** (M5, ViT-L/14, 2026-10-16; DEVELOPMENT, "slice D2"): 20 visual queries over 120
+  labelled visual PDFs among 200 text documents reach mean P@5 0.80 as typed and 0.83 with Match by
+  Picture only. Every hit is on the right page, and 316 documents (851 pages) are pictured in 49 s.
+  Weak spots: a word match outranks a picture ("a receipt" against documents that say "receipt"),
+  plain text pages pass for "a spreadsheet", and person queries meet the "nothing found" gate. The
+  Mac PR 1 gate held while pages were pictured: 0 dropped, p99 17.05 ms against 16.80 alone.
+- **Search.** Candidates come from the FTS5 index; the engine's own rule decides each, so the
+  index only narrows. A **quoted phrase** matches a passage's words in order (anywhere, as it
+  matches speech, cues and text in pictures); `text:` / `says:` matches documents only; `said:`
+  never a document. **Plain words** match by the speech rule (most of the words; a word of four
+  letters or more also matches its longer forms) when `MV_AI_FIND_TEXT` is asked (none set: all),
+  beside the picture search. Each matching passage is a row at its **page**: `pts_ms` is the
+  0-based page, `kind` `MV_AI_KIND_DOCUMENTS`, `match` `MV_AI_MATCH_TEXT`, the snippet the part of
+  the passage around the first word, shown unquoted. `clip_matches` returns a document's matching
+  pages, one each. A page picture is a picture row like a clip's moment (`MV_AI_MATCH_PICTURE`,
+  `pts_ms` the page, under `MV_AI_FIND_PICTURES` and the "nothing found" rule); a document matched
+  both ways is one row at its better page. `is:document` / `is:doc`, a leading or trailing `documents` / `docs` / `pdf` /
+  `pdfs`; `is:pdf` and `is:docx` (`is:word`) name the format by extension.
+- **Results.** The tile is the matched page: page 0 is the viewer's own thumbnail, any other is a
+  moment row of the JPEG-512 cache (`path#t=<page>`), drawn by `video_frame_rgb` with `pts_ms` the
+  page (the host's renderer, so the tile is what the viewer shows). The chromes show "p. 3" where a
+  clip shows its time. Enter opens the result list with the page as the item's moment; both hosts
+  open a document there (`present_lab_mac::open_item(..., page)`; Windows `mv_folder_select_page`
+  from `edit_item_opened`), and Page Down goes on from it.
+- **Settings and status.** Both chromes: a Documents section (Off / Words / Words and pages, the privacy line "an
+  index of documents holds their text on this computer; it never leaves it"), a per-folder
+  "Documents: Default ▾" menu, the folder's document count beside its photos and videos (counted
+  apart: `roots_json` `documents`, `documents_done`, `docs`; "Up to date" covers the picture pass
+  only), and the panel's **Documents** segment and **Text** token while documents are shown.
+  `mv_ai_status` appends `docs_total`, `docs_done` (failed and locked count as done), `docs_locked`
+  and `docs_failed`; while documents are short the state is not idle, and the line reads
+  "Reading documents 12 of 200". `settings_json` has `document_files`, `doc_index` and
+  `pdf_available`.
+- **Privacy.** A document's text is the most sensitive thing the index holds. It stays in
+  `index.db` beside the transcripts, never in a log, a crash report or telemetry, and never in an
+  export; Clear index, removing a root, a folder's Off and Show documents off delete it.
+- **Never waits for the models.** Every other pass waits while the picture towers load or move
+  to an accelerator (about two minutes for ViT-L/14 on the M5's Neural Engine at each pack start,
+  more on a first compile). The document pass reads words and needs no model, so while they do,
+  `claim` hands the workers documents alone, straight from the index (`wait_turn(false)`); the
+  pause, the viewer's yield, a clear and an import still hold it.
+- **Measured** (Apple M5, `ai-bench --documents`, a synthetic 200-document folder, three runs):
+  every document read within 3 s of the pack loading, the 500-page PDF included; a quoted phrase
+  from the first and from the last page of each of the 196 readable ones found that page (392 of
+  392, the slowest query 4.1 ms); plain words 70 ms over 190 matches. The Mac PR 1 gate held with
+  4,000 documents being read (0 dropped, p99 16.90 ms against 16.95 alone). Windows is not
+  measured.
 
 ## People
 
@@ -1194,6 +1314,10 @@ non-yielding bench process indexing on every core: 0 dropped frames in 3 of 4 ru
 refresh in the fourth, p99 ≤ 17.1 ms.
 
 ## Not built
+
+- Documents' page pictures (D2), meaning search over passages with a text model (D3, the
+  `ai-docs` piece, `.mvindex` v2 carrying passages) and OCR of scanned pages (D4)
+  ([document-search](../plans/document-search.md)).
 
 - Hardware decode (D3D11VA / VideoToolbox) for the frame sampler; it decodes in software.
 - An OpenVINO piece (the code path exists, nothing is published).

@@ -18,7 +18,7 @@ struct AIResult: Identifiable, Equatable, Sendable {
   let index: Int
   let search: UInt64
   let path: String
-  let ptsMs: Int64          // -1 for a photo
+  let ptsMs: Int64          // -1 for a photo; a document's page (0-based, #354)
   let kind: UInt32
   let more: UInt32          // other matching moments in the same clip
   let match: UInt32         // MV_AI_MATCH_*: picture, sound, speech (0 from an older pack)
@@ -39,7 +39,11 @@ struct AIResult: Identifiable, Equatable, Sendable {
     return (path as NSString).lastPathComponent
   }
   var isPhotos: Bool { PhotosLibrary.isKey(path) }
-  var isClip: Bool { ptsMs >= 0 }
+  /// #354: a PDF or DOCX; `ptsMs` is then the page that matched, not a time.
+  var isDocument: Bool { kind == MV_AI_KIND_DOCUMENTS }
+  var isClip: Bool { ptsMs >= 0 && !isDocument }
+  /// The page that matched, 1-based for people ("p. 3"); nil when not a document page.
+  var page: Int64? { isDocument && ptsMs >= 0 ? ptsMs + 1 : nil }
   /// The same tile on screen (a re-run moves only `search` and `index`).
   func looksLike(_ o: AIResult) -> Bool { path == o.path && ptsMs == o.ptsMs && kind == o.kind && more == o.more && match == o.match }
 }
@@ -81,15 +85,17 @@ enum SearchScope: UInt32, CaseIterable, Identifiable {
 }
 
 /// MV_AI_KIND_*. #355: audio files (8) while File types "Show audio files" is
-/// on; 4 is reserved for documents, and All widened from 3 to 11.
+/// on; #354: documents (4) while "Show documents" is. All widened from 3 to 11,
+/// then 15.
 enum SearchKinds: UInt32, CaseIterable, Identifiable {
-  case all = 11, photos = 1, videos = 2, audio = 8
+  case all = 15, photos = 1, videos = 2, documents = 4, audio = 8
   var id: UInt32 { rawValue }
   var label: String {
     switch self {
     case .all: return "All"
     case .photos: return "Photos"
     case .videos: return "Videos"
+    case .documents: return "Documents"
     case .audio: return "Audio"
     }
   }
@@ -98,12 +104,21 @@ enum SearchKinds: UInt32, CaseIterable, Identifiable {
     case .all: return "Show photos and videos."
     case .photos: return "Show photos only."
     case .videos: return "Show videos only."
+    case .documents: return "Show documents only (PDF, DOCX)."
     case .audio: return "Show audio files only (MP3, M4A, M4P)."
     }
   }
-  /// The segments shown: Audio only while audio files are searched.
-  static func shown(audioFiles: Bool) -> [SearchKinds] {
-    audioFiles ? allCases : allCases.filter { $0 != .audio }
+  /// The segments shown: Documents and Audio only while they are searched.
+  static func shown(audioFiles: Bool, documentFiles: Bool = false) -> [SearchKinds] {
+    allCases.filter { ($0 != .audio || audioFiles) && ($0 != .documents || documentFiles) }
+  }
+  /// All's tooltip: the kinds it covers now.
+  static func allHelp(audioFiles: Bool, documentFiles: Bool) -> String {
+    var kinds = ["photos", "videos"]
+    if documentFiles { kinds.append("documents") }
+    if audioFiles { kinds.append("audio files") }
+    let last = kinds.removeLast()
+    return "Show " + kinds.joined(separator: ", ") + " and " + last + "."
   }
 }
 
@@ -124,11 +139,14 @@ final class SearchModel: ObservableObject {
   @Published var kinds: SearchKinds = .all
   /// #355: File types "Show audio files", as the host last sent it.
   @Published private(set) var audioFiles = false
-  /// What to find (2026-09-27): Pictures · Sounds · Speech. Empty = all three.
+  /// #354: File types "Show documents", as the host last sent it.
+  @Published private(set) var documentFiles = false
+  /// What to find (2026-09-27): Pictures · Sounds · Speech, and (#354) Text,
+  /// a document's words. Empty = all of them.
   @Published var finds: Set<Find> = []
 
   enum Find: UInt32, CaseIterable, Identifiable {
-    case pictures = 0x10, sounds = 0x20, speech = 0x40
+    case pictures = 0x10, sounds = 0x20, speech = 0x40, text = 0x80
     var id: UInt32 { rawValue }
     /// What in a file the words are matched against, under "Match by": how it
     /// looks, what is heard, what is said.
@@ -137,6 +155,7 @@ final class SearchModel: ObservableObject {
       case .pictures: return "Picture"
       case .sounds: return "Sound"
       case .speech: return "Speech"
+      case .text: return "Text"
       }
     }
     var symbol: String {
@@ -144,6 +163,7 @@ final class SearchModel: ObservableObject {
       case .pictures: return "photo"
       case .sounds: return "speaker.wave.2"
       case .speech: return "text.bubble"
+      case .text: return "doc.text"
       }
     }
     var help: String {
@@ -151,12 +171,19 @@ final class SearchModel: ObservableObject {
       case .pictures: return "Match what is in the picture or the video frame."
       case .sounds: return "Match what you hear in videos: “dog barking”, “applause”."
       case .speech: return "Match words said in videos."
+      case .text: return "Match the words in PDFs and Word documents."
       }
     }
   }
 
-  /// What can be matched here: sounds and speech need the Sound piece.
-  var availableFinds: Set<Find> { audioReady ? Set(Find.allCases) : [.pictures] }
+  /// What can be matched here: sounds and speech need the Sound piece, text
+  /// (#354) documents being searched.
+  var availableFinds: Set<Find> {
+    var out: Set<Find> = [.pictures]
+    if audioReady { out.formUnion([.sounds, .speech]) }
+    if documentFiles { out.insert(.text) }
+    return out
+  }
 
   /// Shown on: every available one when none is chosen (the default, all
   /// searched), else the chosen ones. The row reads as "all on" at rest,
@@ -186,11 +213,11 @@ final class SearchModel: ObservableObject {
     chipsChanged()
   }
 
-  /// The kinds word with the FIND bits OR'ed in (none set = all). Without
-  /// the ai-audio piece every search is a picture search: no bits (the
-  /// Windows SearchKinds).
+  /// The kinds word with the FIND bits OR'ed in (none set = all): only the
+  /// ones that can match here, so a choice made while a piece or documents
+  /// were in never narrows a search after they went.
   private var kindBits: UInt32 {
-    audioReady ? finds.reduce(kinds.rawValue) { $0 | $1.rawValue } : kinds.rawValue
+    finds.intersection(availableFinds).reduce(kinds.rawValue) { $0 | $1.rawValue }
   }
 
   /// Sounds and speech exist only with the ai-audio piece loaded.
@@ -490,6 +517,16 @@ final class SearchModel: ObservableObject {
   }
 
   func chipsChanged() { run(keepSelection: false) }
+
+  /// #354: the Documents segment and the Text token follow "Show documents",
+  /// as Audio follows "Show audio files".
+  func documentFilesChanged(_ on: Bool) {
+    guard on != documentFiles else { return }
+    documentFiles = on
+    if !on && kinds == .documents { kinds = .all }
+    if !on { finds.remove(.text) }
+    if !query.trimmingCharacters(in: .whitespaces).isEmpty || reference != nil { run(keepSelection: true) }
+  }
 
   /// #355: the Audio segment follows "Show audio files"; turned off while it
   /// is chosen, All. An open search answers again (audio results come or go).

@@ -120,6 +120,8 @@
 - (void)itemChanged:(NSString*)path;
 // #355: File types "Show audio files", on attach and on each change.
 - (void)showAudioChanged:(BOOL)on;
+// #354: File types "Show documents", on attach and on each change.
+- (void)showDocumentsChanged:(BOOL)on;
 // Settings -> Local search: the management view, owned (and kept) by the chrome.
 - (NSView*)settingsView;
 @end
@@ -215,6 +217,7 @@ struct mac_addons {
   mv::image::thumb_store thumbs;
   std::string folder;       // the directory the viewer last opened
   bool show_audio = false;  // #355: File types "Show audio files" [main-thread]
+  bool show_documents = false;  // #354: File types "Show documents" [main-thread]
   // Another window's process holds Add-ons/.host.lock (main_mac.mm
   // MvClaimAddonHost): this one loads the AI pack through its read-only door
   // only, indexes nothing, loads no Import, installs or removes nothing, and
@@ -663,6 +666,7 @@ mv::addon::host_services ai_services() {
   svc.open_audio = &mv::addon::media::open_audio;
   svc.thumbnail_jpeg = &mv::addon::media::thumbnail_jpeg;
   svc.store_thumbnail_jpeg = &mv::addon::media::store_thumbnail_jpeg;
+  svc.document_text = &mv::addon::media::document_text;  // #354
   // piece_dir is left empty: loaded_addon::load serves the family's own
   // verified pieces from the store.
   return svc;
@@ -755,6 +759,10 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   // #355: before anything is searched, whether audio files are.
   if ([chrome respondsToSelector:@selector(showAudioChanged:)]) {
     [(id<MVAIChrome>)chrome showAudioChanged:s.show_audio ? YES : NO];
+  }
+  // #354: and whether documents are.
+  if ([chrome respondsToSelector:@selector(showDocumentsChanged:)]) {
+    [(id<MVAIChrome>)chrome showDocumentsChanged:s.show_documents ? YES : NO];
   }
   // The folder already on screen counts as opened.
   if (!s.folder.empty() && [chrome respondsToSelector:@selector(folderChanged:)]) {
@@ -1164,6 +1172,15 @@ void MvAddonsShowAudioChanged(bool on) {
   s.show_audio = on;
   id<MVAIChrome> chrome = ai_chrome();
   if (chrome && [chrome respondsToSelector:@selector(showAudioChanged:)]) [chrome showAudioChanged:on ? YES : NO];
+}
+
+void MvAddonsShowDocumentsChanged(bool on) {
+  mac_addons& s = state();
+  s.show_documents = on;
+  id<MVAIChrome> chrome = ai_chrome();
+  if (chrome && [chrome respondsToSelector:@selector(showDocumentsChanged:)]) {
+    [chrome showDocumentsChanged:on ? YES : NO];
+  }
 }
 
 void MvAddonsItemChanged(const std::string& path) {

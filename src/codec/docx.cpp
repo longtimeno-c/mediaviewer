@@ -830,6 +830,10 @@ class body_reader {
               const std::unordered_map<std::string, std::string>& rels, document& doc, const job_context* ctx)
       : zip_(zip), st_(st), nb_(nb), rels_(&rels), doc_rels_(rels), doc_(doc), ctx_(ctx) {}
 
+  // docx_text (#354): pictures keep their size for the layout but are never
+  // decoded; the text does not need their pixels.
+  void skip_pixels() noexcept { decode_images_ = false; }
+
   status read(std::string_view xml_doc) {
     xml::reader r(xml_doc);
     status s = status::ok;
@@ -1671,6 +1675,7 @@ class body_reader {
     if (target == rels_->end()) return nullptr;
     if (auto it = images_.find(target->second); it != images_.end()) return it->second;
     std::shared_ptr<const raster> pixels;
+    if (!decode_images_) return pixels;
     if (images_loaded_ < kMaxImages) {
       ++images_loaded_;
       if (auto bytes = zip_.read(target->second, std::size_t{48} << 20)) {
@@ -1815,6 +1820,7 @@ class body_reader {
   std::size_t section_start_ = 0;
   std::optional<section> final_;
   int images_loaded_ = 0;
+  bool decode_images_ = true;
   int nest_ = 0;
   int in_note_ = 0;
   std::string note_label_;
@@ -1922,6 +1928,9 @@ class layout final : public dl::frame {
   }
 
   [[nodiscard]] std::uint32_t pages() const noexcept { return pages_; }
+  // docx_text (#354): the page each body paragraph's first line lands on (a
+  // table cell's paragraph: its row's), recorded as the body places them.
+  void record_pages(std::unordered_map<const paragraph*, std::uint32_t>* to) noexcept { pages_of_ = to; }
   const page_info* info(std::uint32_t page) const {
     auto it = infos_.find(page);
     return it == infos_.end() ? nullptr : &it->second;
@@ -2000,6 +2009,10 @@ class layout final : public dl::frame {
   }
 
   void placed(double y, double h, std::span<const int> notes) override {
+    if (pages_of_) {
+      for (const paragraph* p : pending_pages_) (*pages_of_)[p] = c_.page;
+      pending_pages_.clear();
+    }
     c_.col_content = c_.page_content = true;
     c_.region_low = std::max(c_.region_low, y + h);
     for (int id : notes) {
@@ -2184,6 +2197,7 @@ class layout final : public dl::frame {
           place_anchor(it.obj, f, y, flow);
         }
       }
+      if (pages_of_ && flow) pending_pages_.assign(1, &p);
       return dl::lay_paragraph(eng_, to_para(p), f, y);
     }
     if (b.tbl) return lay_table(*b.tbl, f, y);
@@ -2341,6 +2355,14 @@ class layout final : public dl::frame {
         notes.insert(notes.end(), measure.notes.begin(), measure.notes.end());
       }
       height += 2 * kRule + 2.0;
+      if (pages_of_ && &f == this) {
+        pending_pages_.clear();
+        for (const cell& c : row) {
+          for (const block& b : c.blocks) {
+            if (b.para) pending_pages_.push_back(b.para.get());
+          }
+        }
+      }
       const dl::slot s = f.fit(y, height, 0.0, 0.0, notes);
       y = s.y;
       grid = grid_for(f.column(), left);
@@ -2594,6 +2616,8 @@ class layout final : public dl::frame {
   std::map<std::uint32_t, page_info> infos_;
   std::unordered_map<int, double> note_h_;
   std::unordered_map<long long, double> story_h_;
+  std::unordered_map<const paragraph*, std::uint32_t>* pages_of_ = nullptr;
+  std::vector<const paragraph*> pending_pages_;
 };
 
 void story_frame::object(int id, double x, double y, double w, double h) {
@@ -2608,7 +2632,7 @@ struct parsed {
   document doc;
 };
 
-status parse(std::span<const std::uint8_t> bytes, const job_context* ctx, parsed& out) {
+status parse(std::span<const std::uint8_t> bytes, const job_context* ctx, parsed& out, bool pixels = true) {
   auto opened = zip::archive::open(bytes);
   if (!opened) return opened.error();
   const zip::archive& zip = opened.value();
@@ -2627,10 +2651,74 @@ status parse(std::span<const std::uint8_t> bytes, const job_context* ctx, parsed
   if (auto r = zip.read("word/_rels/document.xml.rels")) rels = body_reader::read_rels(view(*r));
 
   body_reader reader(zip, out.st, out.nb, rels, out.doc, ctx);
+  if (!pixels) reader.skip_pixels();
   return reader.read(view(*main));
 }
 
+// A paragraph's words as one line: tabs and breaks are spaces, objects and
+// hidden runs drop out, a list keeps its number or bullet.
+std::string paragraph_text(const paragraph& p) {
+  std::string out = p.label;
+  if (!out.empty()) out.push_back(' ');
+  for (const item& it : p.items) {
+    if (it.r.hidden.value_or(false)) continue;
+    if (it.k == item::text) {
+      out += it.str;
+    } else if (it.k != item::object && it.k != item::field && !out.empty() && out.back() != ' ') {
+      out.push_back(' ');
+    }
+  }
+  while (!out.empty() && (out.back() == ' ' || out.back() == '\t')) out.pop_back();
+  std::size_t lead = 0;
+  while (lead < out.size() && (out[lead] == ' ' || out[lead] == '\t')) ++lead;
+  return out.substr(lead);
+}
+
 }  // namespace
+
+result<std::vector<docx_paragraph>> docx_text(std::span<const std::uint8_t> bytes, const job_context* ctx) {
+  if (probe(bytes) != format_family::docx) return err(status::unsupported_format);
+  auto doc = std::make_unique<parsed>();
+  const status read = parse(bytes, ctx, *doc, false);
+  if (read != status::ok) return err(read);
+  // Laid out once, drawing nothing, to learn each paragraph's page. A layout
+  // that fails (cancelled aside) still gives the words, all on page one.
+  std::unordered_map<const paragraph*, std::uint32_t> pages;
+  std::uint32_t page_count = 1;
+  {
+    text::engine engine;
+    layout lay(engine, doc->st, doc->doc, {});
+    lay.record_pages(&pages);
+    const status laid = lay.run(ctx);
+    if (laid == status::cancelled) return err(status::cancelled);
+    if (laid == status::ok) page_count = std::max<std::uint32_t>(1, lay.pages());
+  }
+  std::vector<docx_paragraph> out;
+  std::uint32_t last = 0;
+  const auto add = [&](const paragraph& p) {
+    std::string t = paragraph_text(p);
+    if (t.empty()) return;
+    const auto it = pages.find(&p);
+    // A paragraph the layout never placed (an empty one) reads as the page before it.
+    const std::uint32_t at = it == pages.end() ? last : std::min(it->second, page_count - 1);
+    last = std::max(last, at);
+    out.push_back(docx_paragraph{last, std::move(t)});
+  };
+  for (const block& b : doc->doc.body) {
+    if (b.para) {
+      add(*b.para);
+    } else if (b.tbl) {
+      for (const auto& row : b.tbl->rows) {
+        for (const cell& c : row) {
+          for (const block& inner : c.blocks) {
+            if (inner.para) add(*inner.para);
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
 
 result<std::uint32_t> decode_docx_pages(std::span<const std::uint8_t> bytes, std::span<const std::uint32_t> pages,
                                         std::uint32_t long_edge, const job_context* ctx, void* user,

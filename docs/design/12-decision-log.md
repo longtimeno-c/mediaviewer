@@ -901,6 +901,18 @@ with GPL-2.0 code), libsodium (ISC), SQLite (public domain); all in THIRD-PARTY.
 **Final Cut Pro framework (2026-09-28).** The extension loads FCP's own `ProExtension.framework`
 at run time; no Apple code is distributed. The owner's call as copyright holder.
 
+**PDFium in the AI pack (2026-10-16, #354).** Owner call 2 of docs/plans/document-search.md
+(2026-10-05): PDFium reads a PDF's text, shipped in the Core pack, never the base installer. The
+prebuilt bblanchon/pdfium-binaries chromium/8066 is pinned by SHA-256 in `cmake/ai.cmake` and
+loaded at run time. PDFium is BSD-3-Clause; the binary also carries FreeType (FTL), libjpeg-turbo
+(IJG, BSD-3, Zlib), ICU (Unicode-3.0), libpng (libpng-2.0), OpenJPEG (BSD-2), Little CMS and
+simdutf (MIT), abseil and LLVM libc (Apache-2.0), zlib and Anti-Grain Geometry 2.3 (a notice-only
+permission). All are permissive and combine with GPL-3.0; FTL and IJG were already accepted for
+the base app. `addon-pack.py`'s allowed set gains FTL, IJG, Unicode-3.0, libpng-2.0 and
+`LicenseRef-AGG-2.3`, the library is labelled with their conjunction, and the pack ships the
+upstream notices as `LICENSES/pdfium`. The Windows release signs `pdfium.dll` with the app's
+Authenticode certificate, as the Mac pack signs every dylib it carries.
+
 ---
 
 ## CI and fuzzing
@@ -1318,6 +1330,40 @@ them, or every 30 s (about 0.5 ms a second idle). The **Read text in photos** sw
 default) turns both text passes off. The cue and text counts are appended on `mv_ai_status`
 (1,672 bytes with them) and read only when `struct_size` covers them. `AiApi` still does not
 pin that size (#388); the ABI smoke test compares the C# mirror with the header.
+
+**Documents are searchable by their words, behind Show documents (2026-10-16, #354 D1).** PDF and
+DOCX open in the viewer (#123, #124) but Local search skipped them. Slice D1 of
+`docs/plans/document-search.md`, under the owner calls of 2026-10-05 (PDFium in the pack;
+`doc_index` defaults to Words) and the issue's gate: indexed only while File types "Show
+documents" is on, as audio files are. A PDF's text is read by PDFium in the Core pack, not the
+viewer's renderer (the OS's), so both OSes write the same text into the same index; a DOCX's by
+the viewer's own reader through the host table (`document_text`). Text is kept as passages of a
+few sentences with their page (schema 9), matched through an FTS5 index by the speech rule, not
+held in memory like transcript lines: a library of documents holds far more text than its clips'
+speech. A password-protected file is a new progress state, `locked`, never retried. **Cost:** none
+while the switch is off (the walk drops them by name). On, a document is read once, on one
+background worker, after the pictures; the M5 timing is in docs/design/17 "Documents". Index size
+grows by the documents' text (about their plain-text size twice over: passages and words).
+`MV_AI_KIND_ALL` widens from 11 to 15, so an older chrome never sees a document; `mv_ai_status`
+appends four counts (1,704 bytes); `mv_ai_api` appends `root_set_documents`, and the Windows
+chrome's `AiApi` now requires the table only up to `people_reanalyse`, checking appended entries
+where it uses them, so a pack one entry behind still attaches. The document pass does not wait for
+the picture towers: on the M5 the pack spends about 118 s at every start moving ViT-L/14 to the
+Neural Engine, during which every pass used to wait, and 200 documents then took 3 s. While the
+towers are not ready the workers now claim documents only, straight from the index.
+
+**Documents are also found by what their pages look like, at Words and pages (2026-10-16, #354
+D2).** No new model: a document's pages go through the picture tower the Core pack already
+loads, drawn by the host's own renderer (the same pixels as the viewer and the tiles), stored as
+ordinary `frames` rows with `pts_ms` the page and a page flag (`kFramePage`), so search, ranking,
+"nothing found" and the matrix treat a page as a clip's moment; no schema change. Which pages,
+by the plan's §3 limit: the first 3, and any page whose image objects (PDFium) cover over half of
+it. **Budget added:** at most 64 such picture pages a document beyond the first 3. The plan said
+"any page"; a 500-page scan would then be 500 page renders and tower runs (each render reads the
+file whole), minutes of a worker for one file. A DOCX is pictured on its first 3 pages only (the
+host's layout gives no image measure). The pass runs only after a document's words are read, so
+words are searchable first, and only at Words and pages (not the default). Going below it deletes
+the pictures at once. `mv_ai_status` appends `pages_total`, `pages_done`.
 
 ---
 
