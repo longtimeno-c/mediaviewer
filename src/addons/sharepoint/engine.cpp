@@ -150,13 +150,23 @@ engine::~engine() {
   }
   // The transfer and the busy refusals first, while the bearers they may be
   // using still exist; then the control thread, then presence.
-  {
-    std::lock_guard lock(threads_m_);
-    if (transfer_thread_.joinable()) transfer_thread_.join();
-    for (auto& h : helpers_) {
+  // Joined outside threads_m_: a transfer's way in (#472 PR 5) joins its
+  // accept thread, which may be waiting for threads_m_ in on_incoming. A
+  // link that slipped past stopping_ there is joined on the next round.
+  for (;;) {
+    std::thread transfer;
+    std::vector<helper> helpers;
+    {
+      std::lock_guard lock(threads_m_);
+      transfer = std::move(transfer_thread_);
+      helpers = std::move(helpers_);
+      helpers_.clear();
+    }
+    if (!transfer.joinable() && helpers.empty()) break;
+    if (transfer.joinable()) transfer.join();
+    for (auto& h : helpers) {
       if (h.thread.joinable()) h.thread.join();
     }
-    helpers_.clear();
   }
   {
     std::unique_lock lock(files_m_);
@@ -2381,45 +2391,51 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
   post();
   // #472 PR 5: over a local link, to a sender that takes them, with the
   // toggle on: a way in from the internet while the files arrive (on a
-  // worker: the router may take seconds), and its places to the sender.
-  std::unique_ptr<way_in> way;
-  std::thread way_opener;
-  struct way_guard {
-    engine& e;
-    std::thread& t;
-    std::unique_ptr<way_in>& w;
-    ~way_guard() {
-      if (t.joinable()) t.join();
-      w.reset();  // the listener closes, the mappings go
-      std::lock_guard lock(e.m_);
-      e.v_.in_handover = false;
-    }
-  } close_way{*this, way_opener, way};
+  // worker: the router may take seconds), and its places to the sender. It
+  // closes when the files are in, before this transfer ends: its accept
+  // thread may be waiting for threads_m_, which a next transfer holds while
+  // it joins this thread.
+  transfer_result r;
   {
-    bool want = false;
-    std::string forwarded;
+    std::unique_ptr<way_in> way;
+    std::thread way_opener;
+    struct way_guard {
+      engine& e;
+      std::thread& t;
+      std::unique_ptr<way_in>& w;
+      ~way_guard() {
+        if (t.joinable()) t.join();
+        w.reset();  // the listener closes, the mappings go
+        std::lock_guard lock(e.m_);
+        e.v_.in_handover = false;
+      }
+    } close_way{*this, way_opener, way};
     {
-      std::lock_guard lock(m_);
-      want = v_.internet && v_.handover;
-      forwarded = v_.forwarded;
-    }
-    if (want && offer->handover && ch->resumable() && !ch->internet()) {
-      way_opener = std::thread([this, ch, &way, forwarded] {
-        try {
-          auto w = way_in::open(opts_.internet_loopback, opts_.internet_mapping, forwarded,
-                                [this](std::unique_ptr<link> l) { on_internet_link(std::move(l)); });
-          if (!w) return;
-          if (send_places(*ch, w->places())) {
-            std::lock_guard lock(m_);
-            v_.in_handover = true;
+      bool want = false;
+      std::string forwarded;
+      {
+        std::lock_guard lock(m_);
+        want = v_.internet && v_.handover;
+        forwarded = v_.forwarded;
+      }
+      if (want && offer->handover && ch->resumable() && !ch->internet()) {
+        way_opener = std::thread([this, ch, &way, forwarded] {
+          try {
+            auto w = way_in::open(opts_.internet_loopback, opts_.internet_mapping, forwarded,
+                                  [this](std::unique_ptr<link> l) { on_internet_link(std::move(l)); });
+            if (!w) return;
+            if (send_places(*ch, w->places())) {
+              std::lock_guard lock(m_);
+              v_.in_handover = true;
+            }
+            way = std::move(w);
+          } catch (...) {
           }
-          way = std::move(w);
-        } catch (...) {
-        }
-      });
+        });
+      }
     }
+    r = receive_files(*ch, *offer, dest, hooks_for(false));
   }
-  const transfer_result r = receive_files(*ch, *offer, dest, hooks_for(false));
   std::string note;
   const std::string got = plural(r.done, "file", "files");
   switch (r.how) {
