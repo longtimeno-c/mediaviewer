@@ -247,7 +247,7 @@ bool client::start(const std::function<bool()>& stop) {
 
 bool client::refresh(const std::function<bool()>& stop) {
   std::vector<net::endpoint> ask;
-  std::map<std::string, int> before;
+  std::map<std::string, vote> before;
   {
     std::lock_guard lock(m_);
     before.swap(votes_);
@@ -272,7 +272,7 @@ bool client::refresh(const std::function<bool()>& stop) {
   if (answered.load() > 0) return true;
   // Nobody answered: what the DHT said before is all there is.
   std::lock_guard lock(m_);
-  for (const auto& [k, c] : before) votes_[k] += c;
+  for (const auto& [k, v] : before) votes_.try_emplace(k, v);  // a vote heard since stays
   return false;
 }
 
