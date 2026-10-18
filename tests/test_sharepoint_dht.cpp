@@ -487,9 +487,27 @@ TEST_CASE("sharepoint dht: two sides meet on four words, punch, and open the int
   r.join();
   REQUIRE(at_r);
   REQUIRE(at_s);
+  std::shared_ptr<sp::link> lr(std::move(*at_r)), ls(std::move(*at_s));
+  // The punched stream carries bytes both ways before any handshake: the
+  // sender first (the receiver learns its peer from that packet).
+  const auto read_all = [](sp::link& l, std::size_t n) {
+    std::vector<std::uint8_t> got;
+    std::vector<std::uint8_t> buf(n);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (got.size() < n && std::chrono::steady_clock::now() < until) {
+      auto r = l.read_some(std::span(buf.data(), n - got.size()), 500);
+      if (r) got.insert(got.end(), buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(*r));
+      else if (r.error() != mv::status::timeout) break;
+    }
+    return got;
+  };
+  const auto there = pattern(3000, 4), back = pattern(2000, 5);
+  REQUIRE(ls->write_all(there));
+  CHECK(read_all(*lr, there.size()) == there);
+  REQUIRE(lr->write_all(back));
+  CHECK(read_all(*ls, back.size()) == back);
   // The internet handshake over the punched path, CPace on the code's password.
   const std::vector<std::uint8_t> pw(kr->password.begin(), kr->password.end());
-  std::shared_ptr<sp::link> lr(std::move(*at_r)), ls(std::move(*at_s));
   mv::result<std::unique_ptr<sp::channel>> server = mv::err(mv::status::internal);
   std::thread t([&] {
     auto h = sp::channel::read_hello(*lr, std::chrono::steady_clock::now() + std::chrono::seconds(5));
@@ -503,6 +521,8 @@ TEST_CASE("sharepoint dht: two sides meet on four words, punch, and open the int
   });
   auto client = sp::channel::open_internet(ls, pw, "aaaaaaaaaaaaaaaa", "Ann");
   t.join();
+  INFO("client " << (client ? 0 : static_cast<int>(client.error())) << ", server "
+                 << (server ? 0 : static_cast<int>(server.error())));
   REQUIRE(client);
   REQUIRE(server);
   CHECK((*client)->code() == (*server)->code());
