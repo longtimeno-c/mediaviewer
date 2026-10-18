@@ -85,6 +85,11 @@ class client {
   // Fills the table from the saved one, the routers and `extra`; false when
   // no node answered.
   [[nodiscard]] bool start(const std::function<bool()>& stop);
+  // After this machine may have changed networks (#472's handover): forget
+  // how the DHT saw it and ask up to eight known nodes again, at once (one
+  // round trip; query_ms at most). False when none answered (the old votes
+  // are kept then).
+  bool refresh(const std::function<bool()>& stop);
 
   struct item {
     std::string v;  // the value's bytes (a bencoded string's contents)

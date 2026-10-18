@@ -37,7 +37,9 @@ and a verify line on each platform (D9, amended). The order is:
 | #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
 | #472 PR 1 | **Sharepoint protocol 2 on the local bearers**: a Noise handshake (`XXhfs`, X25519 + ML-KEM-768, the Cacophony vectors pass) whose code still cannot be matched by a machine in the middle; a transfer that survives its link: sequence numbers, a 16 MiB replay, rejoin with a fresh `NNhfs+psk0` handshake and `resume_at`, no new code or Accept; Bluetooth ↔ Wi-Fi moves (make before break, suspect at 3 s, 20 s ends, flapping ends); a big set may start on Bluetooth to a protocol 2 peer; protocol 1 peers still work ([docs/design/28](design/28-sharepoint.md#the-session-protocol-2-472)) | Mac: built; `"[sharepoint]"` 54 cases pass (TSan-clean), with stand-in radios; `[.sharepoint-bench]` alternated, no difference within noise; the fuzz harness ran clean; the ProVerif model of the handshake and rejoin holds (`tools/formal`). Windows: the shared code is the same; `bt_win.cpp`'s INFO change meets a compiler in CI only. Owed: two real machines, real Bluetooth and Wi-Fi on both hosts, both PR 1 gates ([Where this actually is](#sharepoint-protocol-2-issue-472-pr-1-2026-10-18)) |
 | #472 PR 3 | **Sharepoint four-word codes over the public DHT**, opt-in, off by default: with no public address, the code is four BIP-39 words; Argon2id keys; BEP 44 items (sealed, padded, four targets per side) found and checked on the DHT by a small read-only client (BEP 5/42/43/44; BEP 42 own-address votes, saved table); one UDP socket for DHT, punching (+ port prediction) and a reliable stream of our own; then CPace + Noise and the session ([docs/design/28](design/28-sharepoint.md#four-words-over-the-dht-472-pr-3)) | Mac: built; `"[sharepoint]"` passes (TSan-clean) with BEP 44 / 42 / CRC-32C vectors, the stream under 1 % and 5 % loss, a stand-in swarm with a forging node, and two engines over four words; the fuzz harness covers the DHT parsers. Not run: the public DHT (`"[.sharepoint-dht-live]"`, owed), real NATs. Windows: `net_win.cpp`'s dual-stack UDP and `getaddrinfo` meet a compiler in CI only ([Where this actually is](#sharepoint-four-word-codes-issue-472-pr-3-2026-10-18)) |
-| #472 PR 5 | **Sharepoint Wi-Fi → internet handover**, opt-in (**Continue over the internet if Wi-Fi drops**, off by default, both sides): during a local protocol 2 transfer the receiver opens a way in (listener, router mapping, IPv6 pinhole) and sends its places over the sealed link (`places`, only to a sender whose offer asked); on a drop the mover races them with the local bearers and rejoins over the internet ([docs/design/28](design/28-sharepoint.md#wi-fi--internet-472-pr-5)) | Mac: built; `"[sharepoint]"` passes (97 cases) with a Wi-Fi cut and no Bluetooth moving to the internet in 10–14 ms on loopback, the file whole and once, and the toggle off offering nothing; TSan-clean for the new cases; the fuzz harness covers the places parser. Not built: the receiver's network going or both moving (the DHT path), the configured relay and Tor (spikes not run). Windows: CI only ([Where this actually is](#sharepoint-wi-fi--internet-issue-472-pr-5-2026-10-18)) |
+| #472 relays | **Sharepoint relays**, sealed end to end, no server of ours: **Use my other computers to relay** (off by default; both mark each other "is my computer"): a sender whose code's places do not answer meets its own computer over the DHT, which connects onward to those public places only and splices; and **Relay (your own server)**: `mv-sharepoint-relay` pairs a waiter that proves the server's key with a sender, by a random token carried in the code. TURN left out; Tor evaluated on paper and dropped for now ([docs/design/28](design/28-sharepoint.md#relays-472), [plan](plans/sharepoint-tor-spike.md)) | Mac: built; `"[sharepoint]"` passes (112 cases) with three engines (A, own relay R, B; A cannot reach B) and two engines through an in-process relay server, files byte for byte, no 32-byte run of a file through either relay in the clear; TSan-clean for the new cases; the fuzz harness covers the hello, the request and the answer. Not run: real networks, the Tor harness (needs the live Tor network: the owner's). Windows: CI only ([Where this actually is](#sharepoint-relays-issue-472-2026-10-18)) |
+| #472 PR 5 | **Sharepoint Wi-Fi → internet handover**, opt-in (**Continue over the internet if Wi-Fi drops**, off by default, both sides): during a local protocol 2 transfer the receiver opens a way in (listener, router mapping, IPv6 pinhole) and sends its places over the sealed link (`places`, only to a sender whose offer asked); on a drop the mover races them with the local bearers and rejoins over the internet ([docs/design/28](design/28-sharepoint.md#wi-fi--internet-472-pr-5)) | Mac: built; `"[sharepoint]"` passes (97 cases) with a Wi-Fi cut and no Bluetooth moving to the internet in 10–14 ms on loopback, the file whole and once, and the toggle off offering nothing; TSan-clean for the new cases; the fuzz harness covers the places parser. The receiver's network going or both moving: the next row. Relays: the #472 relays row (Tor dropped for now). Windows: CI only ([Where this actually is](#sharepoint-wi-fi--internet-issue-472-pr-5-2026-10-18)) |
+| #472 (after PR 5) | **Sharepoint handover when both sides move**: with the handover and DHT toggles on (both sides; the offer and `places` say `"dht"`), each side keeps its UDP hub open and the DHT joined while a local protocol 2 transfer runs; when the link drops and the receiver's swapped places are gone too, both meet on the DHT under keys from the session's resume secret (`handover_secret`, `dht_handover`) and the send rejoins over the punched stream ([docs/design/28](design/28-sharepoint.md#wi-fi--internet-472-pr-5)) | Mac: built; `"[sharepoint]"` passes (102 cases) with a Wi-Fi cut that takes the receiver's way in, moving over the stand-in swarm in 0.81–1.88 s, the file whole and once; a second drop meets again (~5.5–6 s); the DHT toggle off on either side ends the send as before; TSan: 0 reports (one flaky PR 3 case). Not run: the public DHT, real NATs, two machines. Windows: CI only ([Where this actually is](#sharepoint-wi-fi--internet-when-both-sides-move-issue-472-2026-10-18)) |
 | #472 NAT | **Sharepoint birthday punch and TCP simultaneous open** (four-word codes): when the DHT's votes show exactly one side behind a NAT that maps each destination apart, that side opens 256 more UDP sockets on the hub (one reader polls them all) and probes the other's public address while the other probes random ports of its address, ≤100 probes/s each way, all extra sockets but the stream's closed after; beside it, both sides connect() from one bound TCP port to the other's while listening on it (`net::tcp_rendezvous`, POSIX and Winsock; word-code meetings only); every probe ≤200/s each way; the sender's pick is now offered and answered (choose / chosen) ([docs/design/28](design/28-sharepoint.md#four-words-over-the-dht-472-pr-3)) | Mac: built; `"[sharepoint]"` passes (103 cases) with stand-in NATs on loopback (a symmetric one and a port-restricted cone): either side hard meets by the birthday punch, two hard NATs time out over UDP and meet over TCP; TSan and the fuzz harness (the item's new trailer) below. Loopback only: no real NAT, and the SYN-crossing case does not occur on loopback. Windows: `net_win.cpp`'s `WSAPoll` and rendezvous meet a compiler in CI only ([Where this actually is](#sharepoint-birthday-punch-and-tcp-simultaneous-open-issue-472-2026-10-18)) |
 | #472 PR 4 | **Sharepoint remembered devices**: an identity key kept in the Keychain / Credential Manager (a secret-store port); after a protocol 2 transfer **Remember** on both sides keeps the peer's name, key and a pairing secret; a later send is one click, met on the DHT under hourly per-direction keys, CPace + Noise on the pair's secret, the remembered key checked (refused loudly if it changed); "Waiting for … to come online" until Cancel; Forget ([docs/design/28](design/28-sharepoint.md#remembered-devices-472-pr-4)) | Mac: built; `"[sharepoint]"` passes (TSan-clean for the new cases) with two engines remembering each other over a stand-in swarm, the list and identity across restarts, an impostor holding the pair's secret refused; the fuzz harness covers the record. Keychain and Credential Manager are not exercised by tests (a folder stands in). Not built: the own-device relay. Windows: `secrets_win.cpp` meets a compiler in CI only ([Where this actually is](#sharepoint-remembered-devices-issue-472-pr-4-2026-10-18)) |
 | #472 PR 2 | **Sharepoint over the internet with a code**, opt-in and off by default: the receiver makes a code (works once, for 10 minutes) carrying its forwarded port, a router-mapped port (PCP, NAT-PMP, UPnP-IGD; external 443 too; an IGDv2 IPv6 pinhole), its public IPv6 and its LAN address; the sender races them, retries 1/2/5/10/30 s with the reason, proves the code with CPace (ristretto255, the draft's vectors pass) keying Noise `XXhfs+psk0`; both confirm the name and may compare a six-digit check; no server ([docs/design/28](design/28-sharepoint.md#over-the-internet-472-pr-2)) | Mac: built; `"[sharepoint]"` passes (TSan-clean) with two engines over a code on loopback and the mapper against stand-in routers; the fuzz harness covers the new parsers. Windows: `net_win.cpp`'s IPv6, `GetAdaptersAddresses` and `GetBestRoute2` meet a compiler in CI only. Owed: real routers, two machines over the internet, both platforms ([Where this actually is](#sharepoint-over-the-internet-issue-472-pr-2-2026-10-18)) |
@@ -1115,6 +1117,12 @@ build/bin/mv_import_tests "[.sharepoint-bench]"   # MB/s against a plain copy ov
 build/bin/mv_import_tests "[.sharepoint-idle]"    # CPU while Keep receiving is on, window closed (MV_IDLE_SECONDS)
 python3 -m unittest tools/package/test_addon_pack.py   # SharepointPackTest among them
 build/bin/mv_import_tests "[.sharepoint-send]"    # #452: a sender on this machine (MV_SEND_FILE, MV_SEND_CODE_FILE or MV_SEND_HOLD)
+# #472 relays: a relay server of your own (built beside the add-on, never shipped with the app).
+# On a machine both ends reach (a VPS, or a home server with the port forwarded); then type
+# "<address or name>:47614#<key>" (it prints the key) in Sharepoint's "Relay (your own server)" on
+# the receiving computer. Only a holder of the key can wait there.
+build/bin/mv-sharepoint-relay --port 47614      # --key K (or MV_RELAY_KEY) --max-pairs 8 --wait-s 600 --max-gb 64 --rate-mbs 0 --idle-s 120
+python3 tools/sharepoint-relay/tor_spike.py --tor /opt/homebrew/bin/tor --mb 64 --runs 3 --live-tor   # owner only: joins the live Tor network
 python3 tools/package/addon-pack.py pack --addon sharepoint --platform macos --src build/addons/sharepoint \
   --version 1.0.0 --key <key file> --out dist/
 # #472: the parsers of what a peer sends, fuzzed on the Mac with Homebrew's LLVM (CI builds
@@ -1123,7 +1131,8 @@ python3 tools/package/addon-pack.py pack --addon sharepoint --platform macos --s
   -Isrc -Ibuild/vcpkg_installed/arm64-osx/include tools/fuzz/fuzz_sharepoint.cpp $S/wire.cpp $S/noise.cpp \
   $S/cpace.cpp $S/channel.cpp $S/transfer.cpp $S/bt_pipe.cpp $S/invite.cpp $S/mapping.cpp $S/net_address.cpp \
   $S/net_posix.cpp $S/machine_mac.cpp $S/bencode.cpp $S/sha1.cpp $S/dht_item.cpp $S/dht.cpp $S/udp_hub.cpp \
-  $S/known.cpp $S/secrets_file.cpp src/io/file_port.cpp src/io/file_port_mac.cpp src/io/content_hash.cpp \
+  $S/known.cpp $S/secrets_file.cpp $S/splice.cpp $S/relay.cpp $S/internet.cpp $S/meet.cpp \
+  src/io/file_port.cpp src/io/file_port_mac.cpp src/io/content_hash.cpp \
   build/vcpkg_installed/arm64-osx/lib/libsodium.a build/vcpkg_installed/arm64-osx/lib/libblake3.a \
   -framework CoreFoundation -framework SystemConfiguration -o build/fuzz_sharepoint
 build/fuzz_sharepoint <corpus dir> -max_total_time=180 -max_len=4096
@@ -2224,6 +2233,43 @@ What is built is in [docs/design/28](design/28-sharepoint.md).
   the app, both hosts' first-run prompts (local network and Bluetooth on the Mac, Defender
   Firewall on Windows), VoiceOver and Narrator over the window, the Windows PR 1 gate.
 
+### Sharepoint relays (issue #472, 2026-10-18)
+
+What is built is in [docs/design/28 "Relays"](design/28-sharepoint.md#relays-472); why, and Tor's
+keep/drop, in [12](design/12-decision-log.md#sharepoint) and the
+[Tor plan](plans/sharepoint-tor-spike.md).
+
+- **Mac (M-series, Release):** `mv_import_tests "[sharepoint]"` passes (112 cases; 14 new). New:
+  the rendezvous hello and the key's proof; a code with a relay place (and one with only the relay);
+  the server pairing a waiter and a sender both ways byte for byte, closing a waiter with the wrong
+  key, a sender with no waiter (at once), a replaced wait, garbage and a waiter that speaks first;
+  per-address caps on handshakes and waits; the splice's byte cap and rate cap (after a second
+  idle, 1 MiB at 2 MB/s still took over 0.2 s: a quarter second of burst); a link over a channel and its cancel; R's answers (off, refused for private
+  addresses, unreachable, ok and spliced); two engines where Ann may reach only the relay server's
+  port, through it, the check the same on both; a relay server that does not answer left out of the
+  code; three engines over the stand-in DHT where Ann cannot reach Bea and goes through Rob (marked
+  as hers on both), and Rob, not marking Ann, saying no; the "my computer" mark in the stored
+  record, a record without one written as before. Through either relay no 32-byte run of the
+  file passed in the clear.
+- **Found in testing:** under load the round's "Nothing answered" note replaced what the person's
+  own computer had said; it now follows it. A relay field typed while the receiver of codes was
+  being made was lost; it is passed on now. Two tests reused a freed port another process could
+  take; they use port 1. A review (2026-10-18) found the server an open relay, fillable from one
+  address, and its waits killed by NATs; R's "public" check let IPv6 back into its own /64; the own
+  relay blocked the round for 45 s; its toggle was keyed by list position; the rate cap let an idle
+  pair burst. All fixed, with cases.
+- **ThreadSanitizer:** after the review's fixes, the full `"[sharepoint]"` (112 cases) and the relay
+  cases twice more, 0 reports, all passing. Under TSan the own-relay cases first failed every time:
+  the engine made its receiver of codes before the DHT toggle reached it (a window of every setting
+  copied at that moment: DHT, forwarded port, relay), so the code was direct, not words; each is now
+  passed on once the receiver exists.
+- **Fuzzing:** the harness adds the rendezvous hello, the relay field as typed, the relay request
+  and its answer (a relay code goes through the pasted-code case): 12.9 million inputs in 181 s,
+  clean.
+- `mv-sharepoint-relay` is 306 KB (Mac, Release); nothing new is linked (11 unchanged).
+- **Not measured, owed:** real networks (a VPS relay, an own relay behind a real router), throughput
+  through either relay, the Tor harness (the owner's: it joins the live Tor network), the PR 1
+  gates, Windows anything (`net_win.cpp` is unchanged; the new code is portable).
 ### Sharepoint birthday punch and TCP simultaneous open (issue #472, 2026-10-18)
 
 What is built is in [docs/design/28 "Four words over the DHT"](design/28-sharepoint.md#four-words-over-the-dht-472-pr-3);
@@ -2282,8 +2328,47 @@ why in [12](design/12-decision-log.md#sharepoint).
 - **ThreadSanitizer:** the handover cases and the Wi-Fi → Bluetooth one, 0 reports.
 - **Fuzzing:** the harness adds the places parser: 12.5 million inputs in 150 s, clean.
 - **Not measured, owed:** a real router's mapping during a transfer, two machines with Wi-Fi turned
-  off on one, the 2 GiB set of #472's verify, the PR 1 gates, Windows anything. Not built: the DHT
-  path (receiver's network gone, both moved), the configured relay, Tor.
+  off on one, the 2 GiB set of #472's verify, the PR 1 gates, Windows anything. Not built: the
+  configured relay, Tor. The DHT path (receiver's network gone, both moved) is
+  [the next section](#sharepoint-wi-fi--internet-when-both-sides-move-issue-472-2026-10-18).
+
+### Sharepoint Wi-Fi → internet when both sides move (issue #472, 2026-10-18)
+
+What is built is in [docs/design/28 "Wi-Fi → internet"](design/28-sharepoint.md#wi-fi--internet-472-pr-5)
+("When both sides move"); why in [12](design/12-decision-log.md#sharepoint).
+
+- **Mac (M-series, Release):** `mv_import_tests "[sharepoint]"` passes (102 cases). New in
+  `tests/test_sharepoint_session.cpp`, on the stand-in swarm (now `tests/sharepoint_swarm.h`,
+  shared with the DHT tests): two engines on Wi-Fi with the handover and DHT toggles on; both have
+  joined the DHT before the cut; Wi-Fi is cut and refused and the receiver's swapped places refuse
+  every connect (its network went too); the send meets the receiver on the DHT (one stream met)
+  and is done, the file byte for byte, once, nothing temporary left, both sides' "DHT ready" flags
+  cleared after (the hubs' closing itself is not observed). Then the DHT path is cut too: a second
+  meeting under the next keys, a second stream, the file whole and once. With the DHT toggle off
+  on the receiver only, and on the sender only, nobody joins the DHT and the same cut ends the
+  send ("The connection to Bea was lost") with no file. A unit case for the offer's and the
+  places' `"dht"` and the session's DHT keys (per secret and per rejoin count).
+- **Measured** (cut → the send over the internet, `{"case":"wifi_to_dht"}`, 10 runs one after
+  another): 884, 872, 865, 866, 1334, 1835, 1847, 1868, 1870, 1872 ms; inside `kRejoinMs` (20 s)
+  by a wide margin. Instrumented runs (not committed): the drop is seen and the votes refreshed in
+  ~0 ms, the publish takes 2–6 ms, the lookup finds the other side at ~540 ms (one 500 ms retry),
+  the punch ~130 ms later; the rest is the rejoin's handshake (~200 ms) and, in about half the runs,
+  one 1 s stream retransmit when the receiver's punch completes after the sender's first stream
+  packet. Before the 500 ms retry (a word code's 2 s), the lookup alone was ~2.16 s. After the
+  review fixes (keys per rejoin count, withdraw after every meeting): 826 and 807 ms in the full
+  runs. The second drop (`{"case":"dht_to_dht"}`, cut → rejoined): 5551, 5665, 5962 ms; the
+  receiver notices only by silence, `kSuspectMs` (3 s) after the sender.
+- **ThreadSanitizer:** the whole `"[sharepoint]"`: 102 cases, 0 reports. One assertion failure
+  there, in PR 3's "four words send files between two engines" (Bea made a link code, not words);
+  alone it fails 2 runs in 6 under TSan, a timing question about the DHT toggle reaching the
+  receiver before `make_code`, in code this change does not touch; the base branch's own TSan build
+  fails it too (1 run in 8).
+- **Not measured, owed:** the public DHT's publish and lookup times during a drop
+  (`"[.sharepoint-dht-live]"` measures lookups only), real NATs and a real change of network, two
+  machines, a suspect-only drop where the sender is the one that only hears silence, rejoin counts
+  that differ, the PR 1 gates, Windows anything. A name filter that matches "DHT" (such as
+  `"*DHT*"`) also runs the hidden live harness, which joins the public DHT: filter by tag. The 1 s retransmit tail could go with a hub that
+  keeps a stream's first packet for an id it does not know yet (`udp_hub.*`, not changed here).
 
 ### Sharepoint remembered devices (issue #472 PR 4, 2026-10-18)
 

@@ -124,6 +124,8 @@ class tcp_link final : public link {
   std::atomic<bool> down_{false};
 };
 
+endpoint endpoint_of(const sockaddr_storage& s);  // below
+
 class tcp_listener final : public listener {
  public:
   tcp_listener(int fd, std::uint16_t port) : fd_(fd), port_(port) {}
@@ -134,6 +136,11 @@ class tcp_listener final : public listener {
   std::uint16_t port() const noexcept override { return port_; }
 
   result<std::unique_ptr<link>> accept(int timeout_ms) override {
+    address ignored;
+    return accept_from(timeout_ms, ignored);
+  }
+
+  result<std::unique_ptr<link>> accept_from(int timeout_ms, address& from) override {
     // Short polls, so shutdown() is noticed without closing the fd under a
     // thread that is using it.
     const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms < 0 ? 0 : timeout_ms);
@@ -142,8 +149,13 @@ class tcp_listener final : public listener {
       const int ev = wait_for(fd_, POLLIN, 200);
       if (ev < 0) return err(status::io);
       if (ev > 0) {
-        const int c = ::accept(fd_, nullptr, nullptr);
-        if (c >= 0) return std::unique_ptr<link>(std::make_unique<tcp_link>(c));
+        sockaddr_storage peer{};
+        socklen_t len = sizeof peer;
+        const int c = ::accept(fd_, reinterpret_cast<sockaddr*>(&peer), &len);
+        if (c >= 0) {
+          from = parse_address(endpoint_of(peer).address).value_or(address{});
+          return std::unique_ptr<link>(std::make_unique<tcp_link>(c));
+        }
         if (errno != EINTR && errno != EAGAIN && errno != ECONNABORTED) return err(status::io);
       }
       if (timeout_ms >= 0 && std::chrono::steady_clock::now() >= until) return err(status::timeout);

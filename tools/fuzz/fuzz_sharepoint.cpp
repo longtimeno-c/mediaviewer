@@ -12,7 +12,9 @@
 // compact node lists and endpoints, word codes, an item opened under a code's
 // key; and from #472 PR 4, a remembered-devices record as the secret store
 // returns it (damaged, or written by another version); and from #472 PR 5,
-// the receiver's internet places as a sender reads them. The first byte picks
+// the receiver's internet places as a sender reads them; and from #472's
+// relays, a relay server's rendezvous hello, the relay field as typed, and the own-device relay's
+// request (as R reads it) and answer (as A reads it). The first byte picks
 // which. Whatever comes in, every call must
 // return, read nothing past the input and never hang: a link that runs out is
 // a closed link.
@@ -39,6 +41,8 @@
 #include "addons/sharepoint/mapping.h"
 #include "addons/sharepoint/net.h"
 #include "addons/sharepoint/noise.h"
+#include "addons/sharepoint/relay.h"
+#include "addons/sharepoint/splice.h"
 #include "addons/sharepoint/transfer.h"
 #include "addons/sharepoint/wire.h"
 
@@ -85,7 +89,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   const std::span<const std::uint8_t> in(data + 1, size - 1);
   const std::string_view text(reinterpret_cast<const char*>(in.data()), in.size());
   std::vector<std::uint8_t> out, payload;
-  switch (data[0] % 24) {
+  switch (data[0] % 28) {
     case 0:
       (void)sp::decode_beacon(in);
       break;
@@ -201,7 +205,22 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     case 22:
       (void)sp::parse_places(text);
       break;
-    case 23: {
+    case 23:
+      (void)sp::relay::parse_hello(in);
+      break;
+    case 24:
+      for (const auto& p : sp::relay::parse_request(text)) (void)sp::relay::may_reach(p, false);
+      break;
+    case 25:
+      (void)sp::relay::parse_answer(text);
+      break;
+    case 26: {
+      // The relay field as typed (split only: nothing resolves here).
+      std::string why;
+      (void)sp::relay_server_of(std::string(text), why);
+      break;
+    }
+    case 27: {
       // #472: an item's plaintext (candidates, the hard flag, the TCP port), as
       // if it had opened: padded or cut to the item's size, magic in front.
       std::array<std::uint8_t, mv::sharepoint::dht::kPlainBytes> plain{};

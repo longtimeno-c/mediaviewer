@@ -293,7 +293,8 @@ send or a receive waits through a rejoin.
     slow" rule; after a move the next move for speed waits **10 s** (`kSwitchHoldMs`).
   - **Flapping.** Three rejoins in **10 s** end the session.
   - **Wi-Fi → internet** (#472 PR 5, [below](#wi-fi--internet-472-pr-5)): with the toggle on, the
-    receiver's internet places are raced too.
+    receiver's internet places are raced too; with the DHT toggle on as well, both sides also meet
+    on the DHT under the session's keys when those places are gone.
 - **One bad byte ends the link, not the session**: after the handshake, a frame that does not open
   is treated as a dropped link, and the rejoin sends it again. A gap in the sequence numbers (never
   on an ordered link) or an acknowledgement of what was never sent ends the session.
@@ -484,10 +485,49 @@ need it on (and "Send and receive over the internet").
   either side nothing is offered and a Wi-Fi drop with no Bluetooth ends the transfer as before.
 - What the sender learns: the receiver's public address, which the receiver gives to a peer its
   person already accepted from.
-- **Not built** (said so in #472's PR 5): the receiver's own Wi-Fi going (its mapped place goes
-  with it; only a public IPv6 on another interface survives); the DHT meeting from the session's
-  secret when both sides moved; the **configured relay** (a TURN server or a splice program of the
-  person's own) and **Tor**, whose spikes were not run, so neither is offered.
+- **When both sides move (#472, after PR 5).** The places above go with the receiver's own
+  network (its mapped port, its pinhole; only a public IPv6 on another interface survives). With
+  **Find each other over the internet** (the DHT, [above](#four-words-over-the-dht-472-pr-3)) on as
+  well, on both sides, the two meet on the DHT the way four words do, under keys from the session
+  itself (`dht_handover`, `handover.h`):
+  - The sender's offer says `"dht":true` beside `"handover"`; a receiver with the DHT toggle on
+    answers at once with `places` carrying `"dht":true` (before its way in has opened, which may
+    take the router seconds), and again with its places.
+  - **Pre-started.** The receiver once it has accepted and the offer asked, the sender once those
+    `places` arrive (so a receiver that never says so costs the sender nothing): from then until the
+    files are in, each side keeps its UDP hub open and has joined the DHT (the bootstrap and saved
+    table, as a word code's), so a drop costs no join. With nothing to rescue a side sends nothing
+    more on the DHT than the join; the window shows nothing new. When the transfer ends the engine
+    stops it without waiting (a join may be in a DNS lookup) and joins its thread later.
+  - **The keys.** `channel::handover_secret()`: BLAKE2b over the resume secret under its own context
+    (`"MediaViewer Sharepoint handover v1"`, apart from the pairing secret's), then `crypto_kdf`
+    (context `MVSPhand`) into the four parts of a word code's set (item key, box, salt base, CPace
+    password), at index `4 × rejoins()`: the resume secret is fixed for the session (decision log,
+    2026-10-18), so the count of rejoins both ends have adopted is what makes each drop's targets
+    and stream id new. Only the two ends of the session hold the secret. Should the counts ever
+    differ (a rejoin that completed on one end only), the meeting finds nobody and the session
+    ends after 20 s, as with the toggle off. The sender publishes and looks as the sender, the
+    receiver as the receiver, so neither meets its own item.
+  - **On a drop** (the link suspect or down, looked at every 200 ms): each side asks up to eight
+    known nodes again how they see it (its network may have changed), publishes its candidates,
+    looks up the other's every 500 ms (a word code waits 2 s between looks), and punches. The
+    sender rejoins over the punched stream (`NNhfs+psk0`, `resume_at`, as any rejoin); the receiver
+    hands it to the engine's rejoin path. A meeting stops as soon as the link is up again some
+    other way (Wi-Fi back, the swapped places); the sender drops a stream met after that. Every
+    meeting, met or not, ends with this side's items saying "gone" (at most 2 s, at a sequence
+    number above any it used under those keys). It runs beside the swapped places, not after them,
+    so a drop the places rescue in milliseconds may still cost each side one publish.
+  - **Measured** on the stand-in swarm (16 loopback nodes; 10 runs, 2026-10-18): the stream is up
+    0.14–0.69 s after the drop is seen, the send is over the internet 0.87–1.88 s after the cut.
+    The bimodal tail is the stream's first retransmit (1 s): when the receiver's punch completes
+    ~100 ms after the sender's, the sender's first stream packet arrives before the receiver's
+    stream exists. A second drop after a move over the DHT meets again under the next keys in
+    ~5.5 s: the sender sees its cut at once, the receiver only as silence (`kSuspectMs`, 3 s).
+    Well inside `kRejoinMs` (20 s); the public DHT's publish and lookup during a drop and real NATs
+    are not measured.
+  - With the DHT toggle off on either side (both cases tested), neither joins the DHT, and a drop
+    that takes the receiver's places ends the transfer after 20 s, as before.
+- **Not built** (said so in #472's PR 5): a handover does not go through a relay ([below](#relays-472)); with the DHT toggle off on either side, the receiver's own network going still ends the transfer after 20 s.
 
 ## Remembered devices (#472 PR 4)
 
@@ -527,11 +567,65 @@ are online. The receiver still accepts or declines every transfer. (`secrets.*`,
 - What DHT nodes see: this computer's address taking part, and while something is remembered, an
   item per remembered device each hour under targets that change every hour and mean nothing
   without the pair's secret.
-- **Not built**: the **own-device relay** (#472 PR 4's "relay only through the person's own
-  devices"): a remembered device of one's own forwarding a transfer between two others needs a
-  relay role in the session and a second hop's keys, and is left for later. Remembered devices are
-  not marked on the nearby tiles (the beacon carries an id, not the identity). Two clocks more than
+- **Not built**: remembered devices are not marked on the nearby tiles (the beacon carries an id, not the identity). Two clocks more than
   a minute apart around the hour may miss each other for that minute.
+
+## Relays (#472)
+
+When nothing answers directly, a transfer may go **through a computer of the person's own** or
+**through a relay server they run**, never anyone else's. Either way the two MediaViewers' handshake
+(CPace on the code, then Noise XX) and their session run end to end through it: the relay passes
+ciphertext, holds no key of theirs, and cannot read or change what they say; at most it drops the
+link. The tests check that no 32-byte run of the file passes through either relay in the clear.
+
+- **Through your own computer** (option 9; `relay.*`, `engine_relay.cpp`). A toggle in the internet
+  section, **Use my other computers to relay**, off by default; with it on, each remembered device
+  shows **<name> is my computer** (kept in its record, `known.h`, and keyed in the window by a hash
+  of the device's key, not its place in the list; a record with no mark is written as before). A
+  sends to a direct code; beside the code's places, 1.5 s in, each round also meets each computer
+  marked as its own in turn, as any remembered device (the DHT, the pair's hourly keys, its key
+  checked; up to 45 s each, given up as soon as the round is decided), and over that sealed channel
+  sends `relay` (20) with the code's places. R serves only if its toggle is on and it marks A as
+  its own too, now: then it connects onward to those places and only those, and only to public
+  addresses that are not its own and not in an IPv6 /64 it has an address in (R's own public IPv4
+  reached through its router is not known to R; what the router forwards there is open to the
+  whole internet anyway), answers `relay_answer` (21), and from then on the bytes of A's link to B
+  travel as `relay_data` (22), sealed again between A and R. A runs the internet handshake with B
+  through it; B sees R's address as the sender's, and both see the same check. One relay at a time
+  (it is R's one transfer; while R is busy it meets nobody, so A's meeting runs out rather than
+  hearing "busy"); 256 GiB each way at most, no rate cap (it is the person's own line); 120 s of
+  silence ends it. R's window says **Relaying for Ann**, sealed, with **Stop relaying**; A's says
+  **Through R (your computer)**, and when R says no, why (after the round's own reason). Nothing is
+  logged about either peer; R logs one fixed line that it relayed. A relayed send does not move
+  between links (its rejoins would need R again), and R must be reachable over the DHT (Keep
+  receiving on, the internet and DHT toggles on). Word codes and sends to a remembered device are
+  not relayed: R would need the code's DHT meeting. R reads a remembered sender's first message
+  within 20 s (`kSilenceMs`): the request or the offer comes at once, nothing waits on a person.
+- **Through your own relay server** (option 10; `splice.*`, `tools/sharepoint-relay`). An advanced
+  field, **Relay (your own server)**, `<address or name>:<port>#<key>`; the server prints the key
+  (or takes `--key`). The name is the one Sharepoint resolves, because the person typed it; the
+  code carries the address, never the key. With it set, each code also registers at that server as
+  a **waiter** under a fresh random 16-byte token sealed in the code with its places, proving the
+  key (keyed BLAKE2b over the token); this runs beside the router's mapping, and a server slower
+  than 3 s is left out of that code and the window says so. A code with a relay is about 115
+  characters, and only a build with relays opens it. A sender races the code's places as before
+  and the relay 1.5 s later, so a direct path that works wins; it says the token only. The server
+  pairs a sender with the waiter under its token and copies bytes between them; it relays only for
+  key holders' codes, so it is not an open relay. A sender with no waiter is closed at once
+  (senders never wait); a waiter registering again under its token replaces its old wait, which
+  the receiver does every 60 s, new connection before closing the old, ahead of NATs that drop an
+  idle TCP connection. Anything that is not a hello, a waiter whose proof is wrong, or a byte
+  before the pair, is closed. The receiver hands a paired link on only once the sender has spoken,
+  so a sender that lost its race to a direct place costs nothing. The token is not the code's
+  secret and says nothing about it; the server learns two addresses, the time and the size, and
+  prints counts only. Caps: 16 hellos being read at once and 4 from one address; 64 waiters, 4 from
+  one address; 8 splices; per splice 64 GiB each way, an optional rate as a token bucket (a quarter
+  second of burst), 120 s idle. The program is about 300 KB (Mac, Release), the splice alone,
+  portable (D9), no state on disk.
+- **TURN is left out**: allocations, permissions, STUN's message format and long-term credentials
+  are a server of their own for the same job the splice does in a few hundred lines.
+- **Tor** (option 11) was evaluated, not built, and dropped for now
+  ([plan](../plans/sharepoint-tor-spike.md), [12](12-decision-log.md#sharepoint)).
 
 ## What moves, and how it lands
 
@@ -631,7 +725,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 - **Over the internet** (#472 PR 2, opt-in, off by default; [12](12-decision-log.md#sharepoint)
   amends "no internet relay, by design"): a sealed link to the peer the person picked, local or
   over the internet, with no server of ours. A relay only ever through the person's own devices or
-  one they configure (PRs 4–5). What cannot be hidden: the code gives its holder this machine's
+  one they configure ([Relays](#relays-472)), and it sees only ciphertext. What cannot be hidden: the code gives its holder this machine's
   public address; the router learns of a mapping (PCP, NAT-PMP, UPnP); a network observer sees
   encrypted traffic and roughly how much moved. Nothing goes anywhere else: no lookup, no STUN,
   no name resolution. Codes, addresses and peer names are never logged. While four words meet
@@ -690,6 +784,8 @@ second while bytes move; those posts update chrome and never present the canvas.
 | CPace, internet codes, port mapping, the code's life and the sender's race (#472 PR 2) | `cpace.*`, `invite.*`, `mapping.*`, `internet.*`, `race.h`, `net_address.cpp` |
 | Word codes, the DHT, one UDP socket and its stream, punching (#472 PR 3) | `dht_item.*`, `wordlist.inc` (BIP-39, MIT), `dht.*`, `bencode.*`, `sha1.*`, `udp_hub.*`, `meet.*` |
 | The way in for Wi-Fi → internet (#472 PR 5) | `internet.*` (`way_in`), `transfer.*` (`places`) |
+| Relays: the splice and rendezvous, the own-device relay, the relay server program (#472) | `splice.*`, `relay.*`, `engine_relay.cpp`, `tools/sharepoint-relay/main.cpp` |
+| The DHT meeting when both sides move (#472) | `handover.*` (`dht_handover`), `channel.*` (`handover_secret`) |
 | The identity, remembered devices and their hourly keys (#472 PR 4) | `secrets.h`, `secrets_mac.cpp` (Keychain), `secrets_win.cpp` (Credential Manager), `secrets_file.cpp`, `known.*` |
 | Sealed channel, and protocol 2's session (replay, rejoin, resume) | `channel.*`, `link.h` |
 | Sending and the verified receive | `transfer.*` |
@@ -702,14 +798,13 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Windows chrome | `IslandHost.Sharepoint.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
-| Tests | `tests/test_sharepoint.cpp`, `tests/test_sharepoint_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_sharepoint_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_sharepoint_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices and an impostor with the pair's secret, #472 PR 3–4), `tests/test_sharepoint_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_sharepoint_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, #472), `tests/sharepoint_fixture.h`, `tests/test_sharepoint_addon.cpp` (`mv_import_tests "[sharepoint]"`), `tools/package/test_addon_pack.py` |
+| Tests | `tests/test_sharepoint.cpp`, `tests/test_sharepoint_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_sharepoint_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_sharepoint_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices and an impostor with the pair's secret, #472 PR 3–4), `tests/test_sharepoint_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_sharepoint_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_sharepoint_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_sharepoint_dht.cpp`, #472), `tests/sharepoint_fixture.h`, `tests/sharepoint_swarm.h` (the stand-in DHT swarm), `tests/test_sharepoint_addon.cpp` (`mv_import_tests "[sharepoint]"`), `tools/package/test_addon_pack.py` |
 
 ## Not built
 
 - Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6 on the LAN.
-- Over the internet, after PR 5: the own-device relay ([above](#remembered-devices-472-pr-4)), the
-  configured relay and Tor, the handover when the receiver's network goes or both move
-  ([above](#wi-fi--internet-472-pr-5)).
+- Over the internet, after the relays: Tor (dropped for now, [plan](../plans/sharepoint-tor-spike.md)),
+  TURN, relaying word codes, remembered-device sends and the handover, a relayed send moving.
 - Resuming a protocol 1 transfer that dropped: finished files stay, the rest is sent again.
   Protocol 2 rejoins and resumes within 20 s; a session that ends (20 s without a link, three
   rejoins in 10 s, the app quitting) is not resumed later.

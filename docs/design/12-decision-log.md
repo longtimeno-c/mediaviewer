@@ -1643,6 +1643,26 @@ local bearers on a drop. Not built here: the DHT path for when both sides moved 
 own network goes, and the configured relay and Tor (their spikes were not run, so neither is
 offered).
 
+**Wi-Fi → internet when both sides move: meet on the DHT under the session's keys, pre-started
+(2026-10-18, #472; completes PR 5).** When the receiver's network goes too, its swapped places go
+with it, and nothing either side knows says where the other is now; a lookup is needed. Both sides
+already hold a secret nobody else does (the session's resume secret), so they meet on the DHT the
+way four words do, keyed by `handover_secret()` (its own BLAKE2b context, so it gives away neither
+the pairing secret nor the rejoins' psk) and the count of rejoins both ends have adopted, through
+`crypto_kdf`; no code, no new prompt. The count, not a new secret, because the resume secret stays
+fixed for the session (above); without it every drop would reuse the targets (linkable) and the
+stream id. Counts that differ after a one-sided rejoin find nobody, and the session ends as it
+would with the toggle off. It
+needs the DHT toggle on both sides (the offer and `places` say `"dht"`), because joining the
+public DHT is what that toggle consents to. The hub and the DHT client are started while the
+transfer runs (the receiver at Accept, the sender when the receiver says it meets too), not at the
+drop: a cold join (DNS for the routers, a table round) would spend much of `kRejoinMs` before the
+first publish. Cost while nothing drops: one join per transfer and a 200 ms look at the link, no
+DHT traffic. Every meeting withdraws its items, met or not; the engine never waits for the
+handover's thread on a transfer's way out. The handover's lookups retry every 500 ms instead of a
+word code's 2 s (both sides start within moments; measured: the 2 s wait was 2.2 of 2.3 s on the
+stand-in swarm). Roles stay sender / receiver so neither side meets its own item.
+
 **Remembered devices: the OS's secret store, a pairing secret, hourly DHT keys per direction
 (2026-10-18, #472 PR 4).** The identity is an X25519 key kept in the Keychain / Credential Manager
 behind a port (`secrets.h`; a folder for the tests), never a plain file; without a store each run
@@ -1654,6 +1674,38 @@ found so in testing: with one key set per pair, a device that both waits and sen
 item. The waiting side looks for a sender every 15 s rather than every 2 s, to keep the standing
 load on the DHT low; the sender punches 15 s longer to cover that. A key that differs from the
 remembered one ends the link loudly (TOFU); the own-device relay is not built in this PR.
+
+**Relays: through the person's own computer, or a splice server of their own; TURN left out
+(2026-10-18, #472).** Both relay paths carry the two ends' handshake and session end to end, so a
+relay holds no key and sees ciphertext only. The own-device relay reuses the remembered-device
+meeting and asks over that sealed channel (new messages 20–22, a range of their own so other work
+on the stack can take 15–19); it serves only when both computers mark each other as the person's
+own and the toggle is on, connects onward only to the public places the sender names (never into
+the relay's own network) and is the relay's one transfer, so one at a time. It relays direct codes
+only: word codes and remembered-device sends would need the relay to hold the DHT meeting's keys.
+No rate cap by default (the person's own line), 256 GiB each way, 120 s idle. It runs in the
+sender's race beside the direct places rather than after them (a meeting takes up to 45 s), and
+never connects to R's own addresses or IPv6 /64s. The relay server is a rendezvous by a random token
+carried in the code, not derived from the code's secret: a 48-bit secret behind a hash could be
+searched by the server's owner within the code's life. Review (2026-10-18): a server any two
+sockets could pair on is an open bandwidth relay, so it has a key of its own (typed with its
+address, never in a code) that the waiting side proves; senders never wait; caps per source address
+and on handshakes stop one host filling it; and a waiter re-registers every minute (replacing its
+own wait) because NATs drop idle TCP after a few minutes. A relay
+place joins the sender's race 1.5 s after the direct places, and the receiver hands on a paired
+link only once the sender has spoken, so a lost race costs nothing. The relay field is the one
+name Sharepoint resolves (the person typed it); the code carries the address. TURN is left out:
+it is a server protocol of its own (allocations, permissions, STUN, credentials) for what the
+splice does in a few hundred lines.
+
+**Tor: dropped for #472, on paper (2026-10-18).** C tor as a child process (BSD-3; OpenSSL,
+libevent) is the feasible way on both OSes: mature v3 onion services, ephemeral `ADD_ONION` with no
+key on disk, about 5–10 MB a platform, but an executable to sign in the add-on, tens of seconds to
+a reachable onion and a few MB/s over six hops. Arti (MIT/Apache-2.0) would bring Rust into the
+build, and its onion-service hosting was still marked incomplete when last checked. The relays
+cover the hard-NAT pair without a third-party network. Nothing was measured: that needs the live
+Tor network, so the harness (`tools/sharepoint-relay/tor_spike.py`) waits for the owner
+([plan](../plans/sharepoint-tor-spike.md)). Reopen for address hiding, or if its numbers surprise.
 
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with

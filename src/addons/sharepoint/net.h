@@ -16,6 +16,7 @@
 #pragma once
 
 #include <array>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -40,6 +41,7 @@ struct address {
   bool v6 = false;
   std::array<std::uint8_t, 16> bytes{};
   friend bool operator==(const address&, const address&) = default;
+  friend auto operator<=>(const address&, const address&) = default;  // a map key (#472 relays)
 };
 // Dotted IPv4 or IPv6 text (no zone, no brackets). Portable (net_address.cpp).
 [[nodiscard]] std::optional<address> parse_address(std::string_view text) noexcept;
@@ -58,6 +60,12 @@ class listener {
   // The next connection; status::timeout when none came within `timeout_ms`;
   // status::cancelled after shutdown().
   [[nodiscard]] virtual result<std::unique_ptr<link>> accept(int timeout_ms) = 0;
+  // As accept, and the peer's address (#472 relays: the relay server's caps
+  // per source; never logged).
+  [[nodiscard]] virtual result<std::unique_ptr<link>> accept_from(int timeout_ms, address& from) {
+    from = {};
+    return accept(timeout_ms);
+  }
   virtual void shutdown() noexcept = 0;
 };
 [[nodiscard]] result<std::unique_ptr<listener>> listen(bool loopback_only = false);

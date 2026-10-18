@@ -203,24 +203,35 @@ class tcp_link final : public link {
   std::atomic<bool> down_{false};
 };
 
+address address_of(const sockaddr* sa) noexcept;  // below
+
 class tcp_listener final : public listener {
  public:
   tcp_listener(SOCKET s, std::uint16_t port) : s_(s), port_(port) {}
+  result<std::unique_ptr<link>> accept(int timeout_ms) override {
+    address ignored;
+    return accept_from(timeout_ms, ignored);
+  }
   ~tcp_listener() override {
     shutdown();
     ::closesocket(s_);
   }
   std::uint16_t port() const noexcept override { return port_; }
 
-  result<std::unique_ptr<link>> accept(int timeout_ms) override {
+  result<std::unique_ptr<link>> accept_from(int timeout_ms, address& from) override {
     const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms < 0 ? 0 : timeout_ms);
     for (;;) {
       if (down_.load()) return err(status::cancelled);
       const int ev = wait_for(s_, POLLRDNORM, 200);
       if (ev < 0) return err(status::io);
       if (ev > 0) {
-        const SOCKET c = ::accept(s_, nullptr, nullptr);
-        if (c != INVALID_SOCKET) return std::unique_ptr<link>(std::make_unique<tcp_link>(c));
+        sockaddr_storage peer{};
+        int len = sizeof peer;
+        const SOCKET c = ::accept(s_, reinterpret_cast<sockaddr*>(&peer), &len);
+        if (c != INVALID_SOCKET) {
+          from = address_of(reinterpret_cast<const sockaddr*>(&peer));
+          return std::unique_ptr<link>(std::make_unique<tcp_link>(c));
+        }
         const int e = ::WSAGetLastError();
         if (e != WSAEWOULDBLOCK && e != WSAECONNRESET && e != WSAEINTR) return err(status::io);
       }
