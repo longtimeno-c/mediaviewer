@@ -42,11 +42,31 @@ struct clip_spec {
   float result_margin = 0.015f;   // a result must beat the generic prompts by this
   float similar_min = 0.62f;      // find-similar: image-to-image cosine floor
   std::vector<std::string> generic_prompts;
+  // The model contract (#482 T2, docs/plans/model-tiers.md): what a tower
+  // must be for a manifest entry alone to add it. A kind this build does not
+  // implement is status::unsupported_format, never a guess.
+  //   tokenizer_kind  "clip-bpe" (OpenAI CLIP's BPE, lower-cased, sot/eot)
+  //   score           "cosine" (CLIP, softmax-trained) or "sigmoid" (SigLIP-style:
+  //                   still ranked by cosine, which the sigmoid is monotonic in;
+  //                   the thresholds above are its own, from tools/ai-eval)
+  //   image_output    the image tower's embedding output by name; "" = the
+  //   text_output     first [n, dim] output (Xenova exports put a pooled one first)
+  //   coreml_dims     the image input's symbolic dims, batch/channels/height/width,
+  //                   that Core ML fixes (exporters name them differently)
+  std::string tokenizer_kind = "clip-bpe";
+  std::string score = "cosine";
+  std::string image_output, text_output;
+  std::array<std::string, 4> coreml_dims{"batch_size", "num_channels", "height", "width"};
   // The index key: a change of model, precision or preprocessing re-queues.
   [[nodiscard]] std::string spec_key() const { return id + "/" + precision + "/pre1"; }
 };
 
-[[nodiscard]] result<clip_spec> read_clip_spec(const std::string& folder_utf8);
+// `fetched_utf8`: where the add-on's downloader put the upstream files
+// (docs/plans/model-tiers.md T3). A file named by model.json is taken from
+// `folder_utf8` when it is there (sideloaded and older packs carry
+// everything), else from `fetched_utf8`; the tokenizer folder likewise.
+[[nodiscard]] result<clip_spec> read_clip_spec(const std::string& folder_utf8,
+                                               const std::string& fetched_utf8 = {});
 
 // docs/design/17's IEmbedder.
 class embedder {
@@ -139,7 +159,7 @@ struct face_spec {
   std::string spec_key = "yunet-2023mar+sface-2021dec/pre1";
 };
 
-[[nodiscard]] result<face_spec> read_face_spec(const std::string& folder_utf8);
+[[nodiscard]] result<face_spec> read_face_spec(const std::string& folder_utf8, const std::string& fetched_utf8 = {});
 
 struct face_box {
   float x = 0, y = 0, w = 0, h = 0;  // image pixels

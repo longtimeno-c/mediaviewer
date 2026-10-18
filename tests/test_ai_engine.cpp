@@ -1121,9 +1121,13 @@ struct rig {
   void start(mv::ai::engine_options options = kTestOptions) {
     eng.reset();
     options.background_threads = false;  // see kTestOptions (issue #154)
-    eng = std::make_unique<engine>(&api, deps(), options);
+    mv::ai::engine_deps d = deps();
+    if (tweak) tweak(d);
+    eng = std::make_unique<engine>(&api, std::move(d), options);
     REQUIRE(eng->start());
   }
+  // A test's own changes to the fake pack (#482: tiers and downloads).
+  std::function<void(mv::ai::engine_deps&)> tweak;
 
   // The search agent's engine (docs/design/23): the same data folder, read-only,
   // the towers' text halves only (here the same fakes: the vectors match).
@@ -5537,4 +5541,84 @@ TEST_CASE("perf: the text passes' status counts on a 25 k index", "[.perf-bench]
   std::printf("{\"assets\":25000,\"pictures_count_ms\":%.2f,\"cues_count_ms\":%.2f,\"text_count_ms\":%.2f,"
               "\"moments_count_ms\":%.2f,\"added_ms_per_refresh\":%.2f}\n",
               pictures, cues, photos_text, moments_text, cues + photos_text + moments_text);
+}
+
+// #482: a model tier is the user's choice. A fresh install asks (the picker)
+// and fetches nothing; the choice is saved, fetched with the pictures first,
+// and kept across starts; the local check and the tiers reach the picker.
+TEST_CASE("a model tier is chosen once, then fetched, pictures first", "[ai][engine][tiers]") {
+  rig r;
+  std::atomic<int> fetches{0};
+  std::atomic<int> pictures_called{0};
+  std::mutex m;
+  std::vector<std::string> tiers_set;
+  r.tweak = [&](mv::ai::engine_deps& d) {
+    d.set_tier = [&](const std::string& t) {
+      std::lock_guard lock(m);
+      tiers_set.push_back(t);
+    };
+    d.tiers_json = [] { return std::string(R"({"default":"default","profiles":{"default":{"name":"Default"}}})"); };
+    d.machine = [] { return std::string(R"({"recommended":"potato","cores":2})"); };
+    d.fetch_models = [&](const std::atomic<bool>&, const std::function<void(const mv::ai::fetch_progress&)>& progress,
+                         const std::function<void()>& pictures) -> mv::expected {
+      ++fetches;
+      mv::ai::fetch_progress p;
+      p.state = mv::ai::fetch_state::downloading;
+      p.total_bytes = 100;
+      p.done_bytes = 40;
+      p.files_total = 3;
+      progress(p);
+      pictures();
+      ++pictures_called;
+      p.done_bytes = 100;
+      p.files_done = 3;
+      p.state = mv::ai::fetch_state::done;
+      progress(p);
+      return {};
+    };
+  };
+  r.start();
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_TIER_UNCHOSEN) != 0; }, kSettleMs));
+  const std::string first = r.eng->settings_json();
+  CHECK(first.find(R"("tier":"")") != std::string::npos);
+  CHECK(first.find(R"("recommended":"potato")") != std::string::npos);
+  CHECK(first.find(R"("profiles":{"default")") != std::string::npos);
+  CHECK(fetches == 0);  // nothing downloads until the user picks
+
+  CHECK_FALSE(r.eng->set_setting("tier", "3"));
+  CHECK_FALSE(r.eng->set_setting("tier", R"("../up")"));
+  REQUIRE(r.eng->set_setting("tier", R"("potato")"));
+  REQUIRE(wait_for([&] { return fetches == 1 && r.status().fetch_state == MV_AI_FETCH_DONE; }, kSettleMs));
+  mv_ai_status s = r.status();
+  CHECK(std::string(s.tier_utf8) == "potato");
+  CHECK((s.flags & MV_AI_STATUS_TIER_UNCHOSEN) == 0);
+  CHECK(s.fetch_done_bytes == 100);
+  CHECK(s.fetch_files_total == 3);
+  CHECK(pictures_called == 1);
+  {
+    std::lock_guard lock(m);
+    CHECK(tiers_set.back() == "potato");
+  }
+
+  // Saved: the next start runs it and fetches what is missing without asking.
+  r.start();
+  REQUIRE(wait_for([&] { return fetches == 2; }, kSettleMs));
+  CHECK(std::string(r.status().tier_utf8) == "potato");
+  {
+    std::lock_guard lock(m);
+    CHECK(tiers_set.back() == "potato");
+  }
+}
+
+// An index made before tiers came from the Default tier's towers: that
+// install has chosen, and is not asked again.
+TEST_CASE("an index from before tiers keeps the Default tier without asking", "[ai][engine][tiers]") {
+  rig r;
+  r.file("red.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  r.start();
+  REQUIRE(wait_for([&] { return std::string(r.status().tier_utf8) == "default"; }, kSettleMs));
+  CHECK((r.status().flags & MV_AI_STATUS_TIER_UNCHOSEN) == 0);
 }

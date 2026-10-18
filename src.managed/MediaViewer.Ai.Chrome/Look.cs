@@ -306,6 +306,12 @@ internal sealed class Look
     public static string StatusLine(in MvAiStatus s)
     {
         if ((s.Flags & MvAiStatus.FlagNoModels) != 0) return "The search models are missing. Reinstall local search in Settings.";
+        // #482: the models download before anything indexes with them; while
+        // the old tier still indexes, the line names that and the pill's detail
+        // the download (StatusPill.Detail).
+        if (s.State != MvAiState.Indexing && FetchLine(s) is string fetch) return fetch;
+        if (s.State == MvAiState.Idle && (s.Flags & MvAiStatus.FlagTierUnchosen) != 0)
+            return "Choose your search models in Settings to start";
         // A full index is the pill's detail line (StatusPill), as on the Mac:
         // the line goes on naming the pass.
         string n(ulong v) => v.ToString("N0", CultureInfo.CurrentCulture);
@@ -392,6 +398,42 @@ internal sealed class Look
         }
     }
 
+    // ---- the model download (#482 T3) ------------------------------------------------
+
+    public static MvAiFetchState Fetch(in MvAiStatus s) => (MvAiFetchState)s.FetchState;
+
+    /// <summary>Cancelled part-way: kept, and Resume picks it up (fetch_retry).</summary>
+    public static bool FetchPaused(in MvAiStatus s) =>
+        Fetch(s) == MvAiFetchState.Idle && s.FetchTotalBytes > 0 && s.FetchDoneBytes < s.FetchTotalBytes;
+
+    /// <summary>Models are arriving, or about to (the tier's fetch is queued).</summary>
+    public static bool Fetching(in MvAiStatus s) =>
+        Fetch(s) is MvAiFetchState.Downloading or MvAiFetchState.Waiting ||
+        (Fetch(s) == MvAiFetchState.Idle && (s.Flags & MvAiStatus.FlagFetching) != 0 && !FetchPaused(s));
+
+    /// <summary>The download's short line for the pill and the footer; null when there is none.</summary>
+    public static string? FetchLine(in MvAiStatus s)
+    {
+        switch (Fetch(s))
+        {
+            case MvAiFetchState.Waiting:
+                return "Waiting for Hugging Face";
+            case MvAiFetchState.Gone:
+                return "A model file is no longer on Hugging Face";
+            case MvAiFetchState.Failed:
+                return "A model download did not verify";
+        }
+        if (FetchPaused(s)) return "Model download paused";
+        if (!Fetching(s)) return null;
+        return s.FetchTotalBytes > 0
+            ? $"Downloading models · {MediaViewer.Shared.ByteSize.Text((long)s.FetchDoneBytes)} of {MediaViewer.Shared.ByteSize.Text((long)s.FetchTotalBytes)}"
+            : "Downloading models…";
+    }
+
+    /// <summary>0…1 of the download; 0 before its size is known.</summary>
+    public static double FetchProgress(in MvAiStatus s) =>
+        s.FetchTotalBytes == 0 ? 0 : Math.Min(1.0, (double)s.FetchDoneBytes / s.FetchTotalBytes);
+
     /// <summary>The passes in the pack's order; the line and the ring follow the one running.</summary>
     public enum Phase { Pictures, Documents, Pages, Meaning, Cues, Text, Sound, Speech, Scans }
 
@@ -419,6 +461,7 @@ internal sealed class Look
     {
         static double f(ulong done, ulong total) => total == 0 ? 0 : Math.Min(1.0, (double)done / total);
         if (s.State == MvAiState.Indexing && s.MigrateTotal > 0) return f(s.MigrateDone, s.MigrateTotal);
+        if (s.State != MvAiState.Indexing && Fetching(s)) return FetchProgress(s);  // the line names the download
         return PhaseOf(s) switch
         {
             Phase.Documents => f(s.DocsDone, s.DocsTotal),
@@ -509,7 +552,8 @@ internal sealed class Look
     // viewer that is busy (the load waits for it) would cost it a frame.
     public static bool PillVisible(in MvAiStatus s) =>
         s.State is MvAiState.Indexing or MvAiState.Yielding ||
-        (s.State == MvAiState.Paused && s.AssetsDone < s.AssetsTotal);
+        (s.State == MvAiState.Paused && s.AssetsDone < s.AssetsTotal) ||
+        Fetching(s);  // #482: the models downloading is work in hand too
 
     /// <summary>Indexing waits on battery: "Index anyway" can override it for now.</summary>
     public static bool OnBattery(in MvAiStatus s) =>
@@ -517,7 +561,8 @@ internal sealed class Look
 
     // Work is running: the ring spins. A load waiting for the viewer is still.
     public static bool Busy(in MvAiStatus s) =>
-        s.State == MvAiState.Indexing || (s.State == MvAiState.Loading && s.YieldReason == MvAiYield.None);
+        s.State == MvAiState.Indexing || (s.State == MvAiState.Loading && s.YieldReason == MvAiYield.None) ||
+        Fetch(s) == MvAiFetchState.Downloading;
 
     public static string Moment(long ms)
     {
