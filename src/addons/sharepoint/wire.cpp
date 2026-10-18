@@ -48,14 +48,9 @@ std::string_view cut_utf8(std::string_view s, std::size_t max) noexcept {
 
 const char* transport_name(transport t) noexcept { return t == transport::bluetooth ? "Bluetooth" : "Wi-Fi"; }
 
-std::string pairing_code(std::span<const std::uint8_t, 32> client_pk, std::span<const std::uint8_t, 32> server_pk) {
-  static constexpr char kContext[] = "MediaViewer Sharepoint code v1";
-  crypto_generichash_state st;
+namespace {
+std::string code_of(crypto_generichash_state& st) {
   std::uint8_t out[16];
-  crypto_generichash_init(&st, nullptr, 0, sizeof out);
-  crypto_generichash_update(&st, reinterpret_cast<const unsigned char*>(kContext), sizeof kContext - 1);
-  crypto_generichash_update(&st, client_pk.data(), client_pk.size());
-  crypto_generichash_update(&st, server_pk.data(), server_pk.size());
   crypto_generichash_final(&st, out, sizeof out);
   std::uint64_t v = 0;
   for (int i = 0; i < 8; ++i) v = (v << 8) | out[i];
@@ -63,6 +58,27 @@ std::string pairing_code(std::span<const std::uint8_t, 32> client_pk, std::span<
   char text[8];
   std::snprintf(text, sizeof text, "%03u %03u", n / 1000, n % 1000);
   return text;
+}
+}  // namespace
+
+std::string pairing_code(std::span<const std::uint8_t, 32> client_pk, std::span<const std::uint8_t, 32> server_pk) {
+  static constexpr char kContext[] = "MediaViewer Sharepoint code v1";
+  crypto_generichash_state st;
+  crypto_generichash_init(&st, nullptr, 0, 16);
+  crypto_generichash_update(&st, reinterpret_cast<const unsigned char*>(kContext), sizeof kContext - 1);
+  crypto_generichash_update(&st, client_pk.data(), client_pk.size());
+  crypto_generichash_update(&st, server_pk.data(), server_pk.size());
+  return code_of(st);
+}
+
+std::string pairing_code_v2(std::span<const std::uint8_t> handshake_hash, std::span<const std::uint8_t, 32> client_nonce) {
+  static constexpr char kContext[] = "MediaViewer Sharepoint code v2";
+  crypto_generichash_state st;
+  crypto_generichash_init(&st, nullptr, 0, 16);
+  crypto_generichash_update(&st, reinterpret_cast<const unsigned char*>(kContext), sizeof kContext - 1);
+  crypto_generichash_update(&st, handshake_hash.data(), handshake_hash.size());
+  crypto_generichash_update(&st, client_nonce.data(), client_nonce.size());
+  return code_of(st);
 }
 
 bool safe_relative(std::string_view rel) noexcept {
@@ -117,12 +133,19 @@ std::string clean_name(std::string_view raw) {
 std::string encode_beacon(const beacon& b) {
   json::writer w;
   w.begin_object()
-      .key("v").integer(kProtocolVersion)
+      .key("v").integer(kBeaconVersion)
+      .key("p").integer(b.protocol)
       .key("id").string(b.id)
       .key("name").string(clean_name(b.name))
       .key("port").integer(b.port)
       .end_object();
   return std::string(kBeaconMagic) + w.take();
+}
+
+std::uint32_t protocol_of(std::optional<std::int64_t> p) noexcept {
+  if (!p || *p <= static_cast<std::int64_t>(kProtocol1)) return kProtocol1;
+  // A newer one speaks ours too: the client asks for the highest both have.
+  return *p >= static_cast<std::int64_t>(kProtocolVersion) ? kProtocolVersion : static_cast<std::uint32_t>(*p);
 }
 
 std::optional<beacon> decode_beacon(std::span<const std::uint8_t> datagram) {
@@ -135,8 +158,8 @@ std::optional<beacon> decode_beacon(std::span<const std::uint8_t> datagram) {
   const std::string* id = doc->str("id");
   const std::string* name = doc->str("name");
   const auto port = doc->integer("port");
-  // A newer protocol's beacon is not ours to answer.
-  if (!v || *v != static_cast<std::int64_t>(kProtocolVersion) || !id || !valid_id(*id) || !name || !port ||
+  // A newer beacon is not ours to answer ("p" is how a newer protocol says so).
+  if (!v || *v != static_cast<std::int64_t>(kBeaconVersion) || !id || !valid_id(*id) || !name || !port ||
       *port <= 0 || *port > 65535) {
     return std::nullopt;
   }
@@ -144,6 +167,7 @@ std::optional<beacon> decode_beacon(std::span<const std::uint8_t> datagram) {
   b.id = *id;
   b.name = clean_name(*name);
   b.port = static_cast<std::uint16_t>(*port);
+  b.protocol = protocol_of(doc->integer("p"));
   return b;
 }
 

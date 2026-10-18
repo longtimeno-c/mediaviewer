@@ -229,7 +229,8 @@ The optional **Sharepoint** add-on sends photos, video and audio to another Medi
 - **Pick, then send.** Shift-click a run of photos in the gallery and press *Send*, or drag them straight out of the grid.
 - **Type the code the other screen shows.** Nothing moves until you have typed it and the person on the other side accepts.
 - **Verified copies.** Every file is checked as it lands and read back before it appears; a cancelled or dropped send leaves nothing half-written, and your originals stay where they are.
-- **Wi-Fi or Bluetooth.** Over the same network for anything, over Bluetooth for a few photos when you are not on one. No account, no cloud.
+- **Wi-Fi or Bluetooth, and it keeps going.** A send starts on whichever is there and moves to Wi-Fi the moment both computers are on one network. If Wi-Fi drops or Bluetooth goes out of range, it picks up where it was within seconds, with no new code and nothing sent twice. No account, no cloud.
+- **Encrypted for the long run.** Every send is sealed end to end with a post-quantum handshake, so a recording made today cannot be opened later.
 
 ## Themes and add-ons from anyone
 

@@ -5,7 +5,10 @@ two clients find each other, the receiver shows a short code that the sender typ
 moves until the person on the other side accepts. Issues [#410](https://github.com/longtimeno-c/mediaviewer/issues/410)
 (the add-on and its window) and [#413](https://github.com/longtimeno-c/mediaviewer/issues/413)
 (the gallery's range, drag-out and share icon). Built 2026-10-15; where each part stands is in
-[DEVELOPMENT.md](../DEVELOPMENT.md#sharepoint-issues-410-413-2026-10-15).
+[DEVELOPMENT.md](../DEVELOPMENT.md#sharepoint-issues-410-413-2026-10-15). Protocol 2 (issue
+[#472](https://github.com/longtimeno-c/mediaviewer/issues/472) PR 1, 2026-10-18): a Noise handshake
+with a post-quantum hybrid, and a transfer that survives its link, moving between Bluetooth and
+Wi-Fi with no new code and no new Accept ([The wire](#the-wire), [The session](#the-session-protocol-2-472)).
 
 Sharepoint is a first-party add-on (option B of [25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs),
 the same kind as Import and Places). It carries its own code, has no chrome of its own, and
@@ -74,15 +77,20 @@ the engine never touches the canvas.
 | **Wi-Fi** (`presence.cpp`, `net_*`) | A UDP beacon a second, port 47613, to the group 239.255.77.83 and the subnet broadcast, TTL 1 | The same socket, shared with other windows on the machine | One TCP connection to the beacon's address and port; the listener's port is the OS's pick |
 | **Bluetooth** (`bt_mac.mm`, `bt_win.cpp`) | A GATT service advertised connectable | A scan filtered to that service; each new device is read once for its INFO (id, name) | The service as a byte pipe (`bt_pipe.h`): C2P written without response, P2C notifying |
 
-- A **beacon** is `MVSP1` and `{"v","id","name","port"}`: a random session id (16 hex digits, new
-  each run), the machine's name (the Sharing name on the Mac, the computer name on Windows) and a
-  port. Never a path, a name of a file or anything about one.
+- A **beacon** is `MVSP1` and `{"v","p","id","name","port"}`: a random session id (16 hex digits,
+  new each run), the machine's name (the Sharing name on the Mac, the computer name on Windows), a
+  port, and `"p"`, the highest protocol it speaks (#472; `"v"` stays 1, which is what a protocol 1
+  client checks, so old and new still see each other; no `"p"` is protocol 1). Bluetooth's INFO
+  carries the same `"p"`. Never a path, a name of a file or anything about one.
 - A peer leaves the list 4.5 s after its last beacon or advertisement. One heard on both bearers
   is one row.
 - **Bluetooth LE between a Mac and a Windows PC** has one common way to move bytes: GATT. Windows
-  gives apps no connection-oriented LE channel. GATT moves tens of kilobytes a second, so a set
-  over **32 MiB never goes over Bluetooth** ([12](12-decision-log.md#sharepoint)); Wi-Fi carries
-  anything. A peer heard only on Bluetooth, selected with such a set, shows why and what to do:
+  gives apps no connection-oriented LE channel. GATT moves tens of kilobytes a second. To a
+  **protocol 2** peer (#472) a set of any size starts on Bluetooth when that is all there is, and
+  the session moves to Wi-Fi the moment the peer is heard there ([The session](#the-session-protocol-2-472)).
+  To a **protocol 1** peer a set over **32 MiB never goes over Bluetooth**
+  ([12](12-decision-log.md#sharepoint)); Wi-Fi carries anything. A protocol 1 peer heard only on
+  Bluetooth, selected with such a set, shows why and what to do:
   put both computers on the same Wi-Fi network, or, when this computer has no network, turn on
   Wi-Fi here. A click on its tile then waits ("Waiting for … on Wi-Fi", with Cancel); the moment
   that peer's beacon arrives the send starts by itself, code and Accept as always. Presence stays up while it waits, window closed or not.
@@ -152,44 +160,112 @@ process (`keep_alive`), and the hosts do the rest.
 
 ## The wire
 
-`wire.h`, `channel.h`. One session, either bearer; the bearer moves bytes and decides nothing.
+`wire.h`, `noise.h`, `channel.h`. One session, either bearer; the bearer moves bytes and decides
+nothing. A client speaks the protocol the peer's beacon or INFO announces (`"p"`); a receiver
+answers whichever hello arrives, so protocol 1 peers (from before #472) still send and receive on
+the LAN and Bluetooth. They get no rejoin and no move between bearers.
 
-1. **Commit, answer, reveal**, each with an X25519 key made for this link alone: the client (the
-   side that connected, the sender) sends `MVSP`, the version and a BLAKE2b hash of its public
-   key; the server (the receiver) answers `MVSP`, the version and its public key; the client then
-   reveals its key, which must hash to what it sent. The client is bound to its key before it
-   sees the server's, and the server shows its key only after that, so a machine in the middle
-   cannot search for keys that give both people the same digits (the ZRTP / Bluetooth numeric
-   comparison pattern). Another version is refused at the hello.
-2. Both derive one key per direction (libsodium `crypto_kx`) and open an XChaCha20-Poly1305
-   secretstream each way. Every later message is encrypted, authenticated and in order: one
-   altered, dropped, replayed or reordered byte ends the link.
-3. **The code** is six digits from a BLAKE2b hash of both public keys, the client's first. Both
-   sides derive it; only the receiver's window shows it: a machine in the middle has a different
-   one on each link.
-4. The first sealed message on each side is who it is (`ident`: id, name). Names on screen are
+**Protocol 2 (#472)**, `Noise_XXhfs_25519+MLKEM768_ChaChaPoly_BLAKE2b`:
+
+1. The client (the side that connected, the sender) sends `MVSP`, 2, `N` and the first Noise
+   message: an X25519 key and an **ML-KEM-768** key made for this link (the "hfs" modifier), and as
+   its payload a BLAKE2b commitment to a random 32-byte nonce.
+2. The server (the receiver) answers: its X25519 key, `ee`, the ML-KEM ciphertext encapsulated to
+   the client's key (its shared secret mixed into the chaining key beside the X25519 ones), its
+   static key and `es`. A recording of the link needs both X25519 and ML-KEM-768 broken to read.
+3. The client sends its static key, `se`, and reveals the nonce, which must match the commitment.
+   Statics are a key the engine makes once a run (the XX shape is there for remembered devices,
+   #472 PR 4); nothing on the LAN or Bluetooth trusts them yet.
+4. **The code** is six digits from a BLAKE2b hash of the handshake hash after message 2 and the
+   nonce. Everything the server contributes is fixed before the client's nonce is seen, and the
+   nonce is fixed before the server speaks, so a machine in the middle cannot search for keys that
+   give both people the same digits (protocol 1's commit-then-reveal, carried into Noise). Only the
+   receiver's window shows it.
+5. Both sides open an XChaCha20-Poly1305 secretstream each way keyed from the handshake's Split, and
+   keep Split's third output as the session's **resume secret** (memory only). Ephemerals are wiped
+   (`sodium_memzero`) as the handshake ends. Every later message is sealed with a sequence number
+   and an acknowledgement ([The session](#the-session-protocol-2-472)).
+
+The Noise core is checked against the published Cacophony vectors (`Noise_XX` and `Noise_NNpsk0`
+over 25519, ChaChaPoly and BLAKE2b); the hybrid patterns have fixed-key regression vectors and
+tests that the ML-KEM secret is in the keys and a tampered key or ciphertext fails
+(`tests/test_sharepoint_noise.cpp`). libsodium 1.0.22 (already pinned) has ML-KEM-768.
+
+**Protocol 1** (a peer from before #472): commit, answer, reveal, each with an X25519 key made for
+this link alone: the client sends `MVSP`, 1 and a BLAKE2b hash of its public key; the server
+answers `MVSP`, 1 and its public key; the client reveals its key, which must hash to what it sent.
+Both derive one key per direction (`crypto_kx`) and open the same secretstreams. The code is six
+digits from a hash of both public keys. Another version is refused at the hello.
+
+Then, on either protocol:
+
+1. The first sealed message on each side is who it is (`ident`: id, name). Names on screen are
    these, not the beacon's.
-5. **The sender's person types the code** the receiver's screen shows (#442, passkey entry rather
+2. **The sender's person types the code** the receiver's screen shows (#442, passkey entry rather
    than numeric comparison: typing makes the person read the other screen). The sender checks it
    on its own machine against the code it derived, digits only, in constant time; a partial entry
    is not a try. A wrong one says so and how many tries are left; the third wrong one sends
    `cancel` and ends the link. Until a right one nothing about the files leaves, not even a name:
    a machine that only claimed the peer's id, or one in the middle, shows the receiver no code or
-   another one, so what the person types cannot match. The wire is unchanged from the comparison
-   (the receiver waits for the offer either way), so the protocol version stays 1.
-6. The sender's **offer**: the count, the total, and each file's relative path and size. No hash
+   another one, so what the person types cannot match.
+3. The sender's **offer**: the count, the total, and each file's relative path and size. No hash
    up front: the sender would have to read every file twice before the first byte moved.
-7. The receiver answers `accept`, or `decline` with `declined`, `busy` or `no_room`. Closing the
+4. The receiver answers `accept`, or `decline` with `declined`, `busy` or `no_room`. Closing the
    window, or three minutes without an answer, declines; a receiver already in a transfer answers
    `busy` straight after the handshake.
-8. Each file: `file_begin` (index, size, mtime), `data` chunks of 256 KiB, `file_end` with the
+5. Each file: `file_begin` (index, size, mtime), `data` chunks of 256 KiB, `file_end` with the
    BLAKE3 of the bytes as read; or `file_skip` for one that is gone or changed since the offer.
    The receiver answers each with `file_done` (verified or not) and the end with `done`.
-9. `cancel` from either side ends it (sent only if the link is free, never behind a chunk). A ping
-   goes out whenever a side has sent nothing for 2 s and 20 s of silence is a dropped link; a
-   frame must arrive whole within 20 s of its first byte. Every wait before Accept is a deadline
-   (the handshake 8 s, typing the code and the answer 3 minutes) that pings never extend, and a
-   handshake still running is ended by Cancel or by the add-on stopping.
+6. `cancel` from either side ends it (sent only if the link is free, never behind a chunk).
+   Protocol 1: a ping goes out whenever a side has sent nothing for 2 s, 20 s of silence is a
+   dropped link, and a frame must arrive whole within 20 s of its first byte. Protocol 2: below.
+   Every wait before Accept is a deadline (the handshake 8 s, typing the code and the answer 3
+   minutes) that pings never extend, and a handshake still running is ended by Cancel or by the
+   add-on stopping.
+
+## The session (protocol 2, #472)
+
+The channel is a session above the link (`channel.h`); `transfer.h` sees none of what follows: a
+send or a receive waits through a rejoin.
+
+- **Nothing lost, nothing twice.** Every sealed message carries its sequence number and the count
+  the sender of it has received (the acknowledgement). A side keeps what the other has not
+  acknowledged, at most **16 MiB** (`kReplayBytes`, a budget: [12](12-decision-log.md#sharepoint));
+  past it a sender waits, as a full socket would. The receiver acknowledges at least every 1 MiB
+  and at once for anything but file bytes; pings (at least every second while a link is idle)
+  carry the acknowledgement too.
+- **Rejoin over any bearer, no second code.** The client opens a new link and sends `MVSP`, 2, `R`,
+  a 16-byte tag (8 random bytes and a keyed hash of them under the resume secret: only the two
+  sides make or recognise one, and no two look alike) and a fresh
+  `Noise_NNhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b` handshake with the resume secret as the psk:
+  new X25519 and ML-KEM keys, new link keys. The receiver routes it by the tag to the session it
+  names (`engine::route_busy`); a tag that names nothing here closes the link. Each side's first
+  sealed message on the new link is **`resume_at`**: how many messages it has received. That
+  proves it holds the keys (a recorded rejoin played again opens its first message and stops
+  there), and the other side sends again, in order, what is past that point. A message that came
+  twice (sent on the old link, and again after the rejoin) is dropped by its sequence number.
+  Messages are chunk-sized, so this is the issue's "resume at a chunk boundary": the receiver
+  keeps its open `.mvtmp`, its BLAKE3 state and its verifier exactly as they were, and nothing
+  that arrived is sent again. Every file is still verified end to end.
+- **When it moves** (the sender's mover thread, `engine::run_mover`):
+  - **Break.** A link that fails, or that is silent for **3 s** (`kSuspectMs`), is suspect: every
+    bearer the peer is heard on is raced (`link_race`: Wi-Fi to its fresh beacon, Bluetooth to its
+    handle) and the session rejoins on the first that connects; the slower ones close. The window
+    says **Reconnecting to …** and the ring holds where it is. **20 s** (`kRejoinMs`) without a
+    link, or without a sign of life, ends the session as a lost link ends it today.
+  - **Make before break.** A send on Bluetooth whose peer appears on Wi-Fi opens Wi-Fi alongside,
+    rejoins there, and closes Bluetooth; the switch loses nothing (what was in flight on Bluetooth
+    is sent again from the replay). Wi-Fi is always the faster by far, so this is also the "too
+    slow" rule; after a move the next move for speed waits **10 s** (`kSwitchHoldMs`).
+  - **Flapping.** Three rejoins in **10 s** end the session.
+- **One bad byte ends the link, not the session**: after the handshake, a frame that does not open
+  is treated as a dropped link, and the rejoin sends it again. A gap in the sequence numbers (never
+  on an ordered link) or an acknowledgement of what was never sent ends the session.
+- **The end.** The receiver answers `done` and waits up to 5 s for it to be acknowledged before it
+  closes, so a link that drops at the last moment is rejoined rather than the sender waiting out a
+  lost `done`.
+- Not here yet (#472 PRs 2–5): rejoining over the internet, the internet bearers themselves, and
+  the slower too-slow rule between two fast bearers.
 
 **Who can take what.** Bytes move only from a sender to the peer its person picked, after that
 person typed the code the peer's screen showed and the person at that peer accepted. A sender never answers a request for
@@ -234,7 +310,8 @@ address is ignored, and the list holds at most 64. A receiver already in a trans
   and read-back. A cancel or a dropped link still drops the file being written; files that had
   arrived whole finish their check, as they did when it ran inline.
 - Between chunks both sides wait while the viewer presents (the host table's `should_yield`, as
-  Import does), so a pan keeps its frames.
+  Import does), so a pan keeps its frames. A rejoin changes nothing here (`should_yield` is
+  unchanged).
 
 **Throughput** (`mv_import_tests "[.sharepoint-bench]"`, #442): two engines in one process over
 loopback TCP, timed from Accept to the receiver's `done`, against a plain copy of the same files
@@ -258,12 +335,22 @@ with Import; it would need a host change on both platforms and the PR 1 gate mea
 transfer running). Loopback is not Wi-Fi or Bluetooth: no radio was measured here, so the MB/s a
 person sees between two machines is not in this table.
 
+**Protocol 2 (#472, 2026-10-18)**, the same bench, base (protocol 1) and new alternated three times,
+Mac M-series, Release, warm cache, load average ~4.6: 1 GiB 395.8–397.6 → 392.6–398.2 MB/s, 500 ×
+2 MiB 178.9–183.3 → 178.0–201.1 MB/s. No difference within noise. The first measurement was 3 %
+slower on 1 GiB: the receiver's wait for its `done` to be acknowledged read in 100 ms slices; it
+now returns on the acknowledgement. Kept messages are sealed where they lie and their buffers
+reused (one copy a chunk, as protocol 1 had).
+
 ## Threads
 
 The host calls in on its worker for this add-on (open, close, clicks, commands). The engine
 (`engine.h`) keeps its own threads for what waits on the network: a control thread (the only one
 that starts and stops presence, and sends throttled posts), the listener's accept loop, the
-discovery thread, Bluetooth's queue or handlers, the one transfer, and a folder reader. The folder
+discovery thread, Bluetooth's queue or handlers, the one transfer, a folder reader, and while a
+protocol 2 send runs, its mover (#472) with a connect thread per bearer it races, each with its own
+timeout and joined before the send's thread ends. A channel has its pinger, which also watches the
+session's health (suspect at 3 s, ended at 20 s). The folder
 reader is one thread, made at the first set: a newer set replaces one waiting and stops one being
 read (its generation goes stale), and no caller waits for it, so handing over a large gallery
 selection returns at once (#442; it used to join the previous reader on the caller's thread). On
@@ -278,9 +365,12 @@ second while bytes move; those posts update chrome and never present the canvas.
 - Nothing about a transfer goes to telemetry or a crash report: no path, file name, pixel, EXIF,
   address or peer name is logged (`log` takes ASCII without them) or annotated. The minidump
   scrub ([13](13-updates-and-telemetry.md)) applies unchanged.
-- The beacon carries a random id, the machine's name and a port; the offer travels sealed, to the
-  peer picked. No account, no cloud, no internet relay: the beacon's TTL is 1 and nothing resolves
-  a name.
+- The beacon carries a random id, the machine's name, a port and the protocol it speaks; the offer
+  travels sealed, to the peer picked. No account, no cloud, no internet relay: the beacon's TTL is 1
+  and nothing resolves a name. Protocol 2 (#472 PR 1) opens no new network surface: the same
+  listener, beacon and Bluetooth service carry it.
+- Protocol 2's resume secret and keys live in memory only, wiped when the session ends; nothing
+  about a session is written down.
 - Receiving is off until the window opens or the person turns it on. Turned on, it stays on across
   launches until turned off (#442), and the command bar says so (**Sharepoint: receiving**).
 - A notification (#452) names the sender and a count and size; never a file name, a path or the
@@ -325,7 +415,8 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Piece | Code |
 |---|---|
 | Wire, code, path rule, beacon | `src/addons/sharepoint/wire.*` |
-| Sealed channel | `channel.*`, `link.h` |
+| Noise (protocol 2's handshakes, #472) | `noise.*` |
+| Sealed channel, and protocol 2's session (replay, rejoin, resume) | `channel.*`, `link.h` |
 | Sending and the verified receive | `transfer.*` |
 | Engine, presence, the window's tree | `engine.*`, `presence.*`, `tree.cpp` |
 | What is kept across launches | `prefs.*` |
@@ -336,10 +427,18 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Windows chrome | `IslandHost.Sharepoint.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
-| Tests | `tests/test_sharepoint.cpp`, `tests/test_sharepoint_addon.cpp` (`mv_import_tests "[sharepoint]"`), `tools/package/test_addon_pack.py` |
+| Tests | `tests/test_sharepoint.cpp`, `tests/test_sharepoint_noise.cpp` (the Cacophony vectors, #472), `tests/test_sharepoint_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, #472), `tests/sharepoint_fixture.h`, `tests/test_sharepoint_addon.cpp` (`mv_import_tests "[sharepoint]"`), `tools/package/test_addon_pack.py` |
 
 ## Not built
 
 - Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6.
-- A peer that is neither on the LAN nor in Bluetooth range: no relay, by design.
-- Resuming a transfer that dropped: finished files stay, the rest is sent again.
+- A peer that is neither on the LAN nor in Bluetooth range: no relay, by design. #472 plans the
+  internet (direct codes, an opt-in DHT, remembered devices, the person's own relay) in PRs 2–5.
+- Resuming a protocol 1 transfer that dropped: finished files stay, the rest is sent again.
+  Protocol 2 rejoins and resumes within 20 s; a session that ends (20 s without a link, three
+  rejoins in 10 s, the app quitting) is not resumed later.
+- A formal model of the handshake and rejoin (Tamarin or ProVerif), from #472's assurance list.
+  The parsers of what a peer sends before it is authenticated (the beacon, INFO, the hello, the
+  Noise messages, a whole receiver's open) and the offer have a libFuzzer harness
+  (`tools/fuzz/fuzz_sharepoint.cpp`); `resume_at` is parsed only after its frame opens under the
+  rejoin's keys.

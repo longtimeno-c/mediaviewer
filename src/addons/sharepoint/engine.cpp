@@ -92,6 +92,7 @@ std::string digits_of(std::string_view s) {
 engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(opts)) {
   (void)sodium_init();
   id_ = random_id();
+  randombytes_buf(static_key_.data(), static_key_.size());
   if (opts_.my_name.empty()) opts_.my_name = net::machine_name();
   v_.my_name = clean_name(opts_.my_name);
   // What was kept from the last run (#442). A saved folder that is gone
@@ -140,6 +141,7 @@ engine::~engine() {
   if (control_thread_.joinable()) control_thread_.join();
   stop_presence();
   if (save_wanted_) save_now();  // a change the control thread had not written yet
+  sodium_memzero(static_key_.data(), static_key_.size());
 }
 
 // ---- posting and the control thread ------------------------------------------------
@@ -312,6 +314,7 @@ void engine::start_presence() {
     self.id = id_;
     self.name = opts_.my_name;
     self.port = listener_->port();
+    self.protocol = kProtocolVersion;  // #472: "p", beside the "v" protocol 1 checks
     wifi = discovery_ && discovery_->start(
                              self, [this](const beacon& b, const std::string& a) { on_beacon(b, a); },
                              [this] { on_tick(); });
@@ -376,14 +379,15 @@ void engine::refresh_peers_locked() {
     const bool wifi = p.wifi && fresh(p.wifi_seen);
     const bool bt = !p.bt_handle.empty() && fresh(p.bt_seen);
     if (!wifi && !bt) continue;
-    rows.push_back({id, p.name, wifi && bt ? "Wi-Fi and Bluetooth" : wifi ? "Wi-Fi" : "Bluetooth", wifi, bt});
+    const bool resumable = (wifi && p.wifi_protocol >= 2) || (bt && p.bt_protocol >= 2);
+    rows.push_back({id, p.name, wifi && bt ? "Wi-Fi and Bluetooth" : wifi ? "Wi-Fi" : "Bluetooth", wifi, bt, resumable});
   }
   std::sort(rows.begin(), rows.end(), [](const view::peer_row& a, const view::peer_row& b) {
     return a.name != b.name ? a.name < b.name : a.id < b.id;
   });
   const bool same = rows.size() == v_.peers.size() &&
                     std::equal(rows.begin(), rows.end(), v_.peers.begin(), [](const auto& a, const auto& b) {
-                      return a.id == b.id && a.name == b.name && a.via == b.via;
+                      return a.id == b.id && a.name == b.name && a.via == b.via && a.resumable == b.resumable;
                     });
   if (same) return;
   v_.peers = std::move(rows);
@@ -411,11 +415,18 @@ void engine::on_beacon(const beacon& b, const std::string& address) {
     peer& p = it->second;
     p.id = b.id;
     p.name = b.name;
+    const bool was_fresh = p.wifi && now - p.wifi_seen < std::chrono::milliseconds(kPeerForgetMs);
     p.wifi = net::endpoint{address, b.port};
     p.wifi_seen = std::chrono::steady_clock::now();
+    p.wifi_protocol = b.protocol;
     refresh_peers_locked();
     changed = std::exchange(peers_changed_, false);
     ready = b.id == waiting_peer_ && !transfer_running_;
+    // #472: the peer of a send is on Wi-Fi now: the mover may move there.
+    if (!was_fresh && b.id == v_.out_peer_id && transfer_running_) {
+      mover_kick_ = true;
+      mover_cv_.notify_all();
+    }
   }
   if (ready) {
     start_waiting_send();  // the peer the big set waited for is on Wi-Fi now
@@ -459,6 +470,7 @@ void engine::on_bt_peer(const bt_peer& b) {
     if (p.name.empty() || !p.wifi) p.name = clean_name(b.name);
     p.bt_handle = b.handle;
     p.bt_seen = std::chrono::steady_clock::now();
+    p.bt_protocol = b.protocol;
     refresh_peers_locked();
     changed = std::exchange(peers_changed_, false);
   }
@@ -497,7 +509,7 @@ void engine::on_incoming(std::unique_ptr<link> l) {
     auto done = std::make_shared<std::atomic<bool>>(false);
     helpers_.push_back({std::thread([this, done, link = std::shared_ptr<sharepoint::link>(std::move(l))]() mutable {
                           try {
-                            refuse_busy(std::move(link));
+                            route_busy(std::move(link));
                           } catch (...) {
                           }
                           done->store(true);
@@ -526,22 +538,56 @@ void engine::reap_helpers() {
   }
 }
 
-void engine::refuse_busy(std::shared_ptr<link> l) {
+void engine::route_busy(std::shared_ptr<link> l) {
+  {
+    std::lock_guard lock(m_);
+    if (stopping_.load()) return;
+    opening_.push_back(l);
+  }
+  auto h = channel::read_hello(*l, std::chrono::steady_clock::now() + std::chrono::milliseconds(kConnectMs));
+  if (h && h->rejoin) {
+    // #472: the sender of the transfer under way, back on another link (or
+    // the same bearer, after a drop). It goes to the session it names; a
+    // rejoin naming anything else is closed.
+    std::shared_ptr<channel> ch;
+    {
+      std::lock_guard lock(m_);
+      ch = live_;
+    }
+    if (ch && ch->names_this(*h)) {
+      if (auto r = ch->accept_rejoin(l, *h); !r) host_.log(1, "sharepoint: a rejoin did not complete");
+    } else {
+      l->shutdown();
+    }
+    forget_opening(l);
+    return;
+  }
+  if (!h) {
+    l->shutdown();
+    forget_opening(l);
+    return;
+  }
   // At once, after the handshake: the sender learns before its person is
   // asked to check a code that this side will not show.
-  auto ch = open_tracked(std::move(l), false);
+  auto ch = open_tracked(l, false, kProtocolVersion, &*h);
+  forget_opening(l);
   if (!ch) return;
   (void)send_decline(**ch, outcome::busy);
   (*ch)->shutdown();
 }
 
-result<std::unique_ptr<channel>> engine::open_tracked(std::shared_ptr<link> l, bool client) {
+result<std::unique_ptr<channel>> engine::open_tracked(std::shared_ptr<link> l, bool client, std::uint32_t version,
+                                                      const hello* read) {
   {
     std::lock_guard lock(m_);
     if (stopping_.load()) return err(status::cancelled);
     opening_.push_back(l);
   }
-  auto ch = channel::open(l, client, id_, opts_.my_name);
+  channel::options o;
+  o.version = version;
+  o.static_key = static_key_;
+  auto ch = read ? channel::open_server(l, *read, id_, opts_.my_name, o)
+                 : channel::open(l, client, id_, opts_.my_name, o);
   forget_opening(l);
   return ch;
 }
@@ -922,6 +968,8 @@ hooks engine::hooks_for(bool sending) {
         v_.in_bytes = bytes;
         v_.in_files = files;
       }
+      // #472: a link that was suspect and is heard again (no rejoin needed).
+      if (live_ && live_->link_up()) (sending ? v_.out_reconnecting : v_.in_reconnecting) = false;
     }
     post_throttled();
   };
@@ -944,7 +992,9 @@ void engine::start_waiting_send() {
 bool needs_wifi(const view& v) noexcept {
   if (v.selected_peer.empty() || v.file_bytes <= kBluetoothMaxBytes) return false;
   for (const auto& p : v.peers) {
-    if (p.id == v.selected_peer) return p.bt && !p.wifi;
+    // #472: a protocol 2 peer takes it over Bluetooth, and the send moves to
+    // Wi-Fi once both are on one network.
+    if (p.id == v.selected_peer) return p.bt && !p.wifi && !p.resumable;
   }
   return false;
 }
@@ -1012,6 +1062,7 @@ void engine::end_transfer() {
 void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
   std::optional<net::endpoint> wifi;
   std::string bt_handle, name;
+  std::uint32_t protocol = kProtocol1;
   std::uint64_t total = 0;
   for (const auto& f : files) total += f.size;
   {
@@ -1024,6 +1075,9 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
       }
       bt_handle = it->second.bt_handle;
       name = it->second.name;
+      // #472: protocol 2 when the peer announced it (a peer from before
+      // speaks protocol 1, on the LAN and Bluetooth, without moving).
+      protocol = std::max(it->second.wifi_protocol, it->second.bt_protocol) >= 2 ? kProtocolVersion : kProtocol1;
     }
   }
   auto finish = [&](std::string note) {
@@ -1039,10 +1093,10 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
   // Wi-Fi when the peer is on this network; Bluetooth only for a small set.
   result<std::unique_ptr<link>> l = err(status::not_found);
   if (wifi && !cancel_.load()) {
-    l = net::connect(*wifi, kConnectMs);
+    l = opts_.connect_wifi ? opts_.connect_wifi(*wifi, kConnectMs) : net::connect(*wifi, kConnectMs);
   }
   if (!l && !bt_handle.empty() && !cancel_.load()) {
-    if (total > kBluetoothMaxBytes) {
+    if (total > kBluetoothMaxBytes && protocol < 2) {
       return finish(wifi ? "Could not reach " + name + " on the local network, and " + size_text(total) +
                                " is too much for Bluetooth (32 MB at most). Join the same Wi-Fi network and try again."
                          : size_text(total) + " is too much for Bluetooth (32 MB at most). Join the same Wi-Fi "
@@ -1057,7 +1111,7 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
   }
   if (cancel_.load()) return finish("Cancelled. Nothing was sent.");
   if (!l) return finish("Could not reach " + name + ". Check that its Sharepoint window is still open.");
-  auto opened = open_tracked(std::shared_ptr<link>(std::move(*l)), true);
+  auto opened = open_tracked(std::shared_ptr<link>(std::move(*l)), true, protocol);
   if (cancel_.load()) return finish("Cancelled. Nothing was sent.");
   if (!opened) {
     return finish(opened.error() == status::unsupported_format
@@ -1074,9 +1128,39 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
     std::lock_guard lock(m_);
     live_ = ch;
     v_.out = view::out_phase::confirming;
+    v_.out_via = transport_name(ch->via());
+    v_.out_reconnecting = false;
+    v_.out_protocol = ch->version();
     out_expected_ = digits_of(ch->code());
   }
   post();
+  // #472: protocol 2 moves between bearers while the send runs (a drop, or
+  // Wi-Fi appearing under a Bluetooth send); the mover does it.
+  std::atomic<bool> mover_stop{false};
+  std::thread mover;
+  struct mover_guard {
+    engine& e;
+    std::atomic<bool>& stop;
+    std::thread& t;
+    ~mover_guard() {
+      stop.store(true);
+      {
+        std::lock_guard lock(e.m_);
+        e.mover_cv_.notify_all();
+      }
+      if (t.joinable()) t.join();
+    }
+  } stop_mover{*this, mover_stop, mover};
+  if (ch->resumable()) {
+    channel* raw = ch.get();
+    ch->set_on_link([this, raw](link_event e) { on_link_event(true, e, *raw); });
+    mover = std::thread([this, ch, peer_id, &mover_stop] {
+      try {
+        run_mover(ch, peer_id, mover_stop);
+      } catch (...) {
+      }
+    });
+  }
   // The person types the code the other screen shows before the offer (even
   // the files' names) leaves (#442): a machine that only claimed the peer's
   // id, or one in the middle, shows another code there or none, so what is
@@ -1161,6 +1245,158 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
   end_transfer();
 }
 
+void engine::on_link_event(bool sending, link_event e, const channel& ch) {
+  {
+    std::lock_guard lock(m_);
+    bool& reconnecting = sending ? v_.out_reconnecting : v_.in_reconnecting;
+    reconnecting = e != link_event::up;
+    if (e == link_event::up) (sending ? v_.out_via : v_.in_via) = transport_name(ch.via());
+    if (sending) {
+      mover_kick_ = true;
+      mover_cv_.notify_all();
+    }
+  }
+  post_throttled();
+}
+
+namespace {
+
+// The first of several connects to finish wins; the others' links close as
+// they arrive. Each connect has its own timeout; their threads are joined
+// before the race's owner goes (no thread of the add-on outlives the engine).
+class link_race {
+ public:
+  using connect_fn = std::function<result<std::unique_ptr<link>>()>;
+  ~link_race() { join(); }
+  void add(connect_fn fn) {
+    {
+      std::lock_guard lock(m_);
+      ++pending_;
+    }
+    threads_.emplace_back([this, fn = std::move(fn)] {
+      result<std::unique_ptr<link>> l = err(status::io);
+      try {
+        l = fn();
+      } catch (...) {
+      }
+      std::lock_guard lock(m_);
+      if (l && !winner_ && !taken_) {
+        winner_ = std::move(*l);
+      } else if (l) {
+        (*l)->shutdown();  // a slower bearer: not needed now
+      }
+      --pending_;
+      cv_.notify_all();
+    });
+  }
+  // The winner, once one connects or every connect has failed; nullptr when
+  // none did or `stopped()` turned true.
+  template <typename Stopped>
+  std::unique_ptr<link> wait(const Stopped& stopped) {
+    std::unique_lock lock(m_);
+    while (!winner_ && pending_ > 0 && !stopped()) cv_.wait_for(lock, std::chrono::milliseconds(100));
+    taken_ = true;
+    return std::move(winner_);
+  }
+  // Every connect has returned (their threads end at once).
+  bool settled() {
+    std::lock_guard lock(m_);
+    return pending_ == 0;
+  }
+  void join() {
+    for (auto& t : threads_) {
+      if (t.joinable()) t.join();
+    }
+    threads_.clear();
+  }
+
+ private:
+  std::mutex m_;
+  std::condition_variable cv_;
+  int pending_ = 0;
+  bool taken_ = false;
+  std::unique_ptr<link> winner_;
+  std::vector<std::thread> threads_;
+};
+
+// A connect that is not the first of a send is shorter: the bearer that
+// answers at all answers quickly, and a race's slow loser is joined at the end.
+constexpr int kRaceWifiMs = 4000;
+constexpr int kRaceBluetoothMs = kConnectMs;
+
+}  // namespace
+
+void engine::run_mover(std::shared_ptr<channel> ch, std::string peer_id, const std::atomic<bool>& stop) {
+  using clock = std::chrono::steady_clock;
+  clock::time_point last_move{};  // none yet: the first move for speed may come at once
+  std::vector<std::unique_ptr<link_race>> races;
+  auto stopped = [&] { return stop.load() || stopping_.load() || cancel_.load() || ch->closed(); };
+  while (!stopped()) {
+    std::optional<net::endpoint> wifi;
+    std::string bt_handle;
+    {
+      std::unique_lock lock(m_);
+      mover_cv_.wait_for(lock, std::chrono::milliseconds(500), [&] { return mover_kick_ || stopped(); });
+      mover_kick_ = false;
+      // Ended (done, cancelled, or gone too long): nothing to rescue.
+      if (stopped()) break;
+      const auto it = peers_.find(peer_id);
+      if (it != peers_.end()) {
+        const auto now = clock::now();
+        if (it->second.wifi && now - it->second.wifi_seen < std::chrono::milliseconds(kPeerForgetMs)) {
+          wifi = it->second.wifi;
+        }
+        if (!it->second.bt_handle.empty() && now - it->second.bt_seen < std::chrono::milliseconds(kPeerForgetMs)) {
+          bt_handle = it->second.bt_handle;
+        }
+      }
+    }
+    // Races whose connects have all returned are joined as they go (never
+    // waiting on a slow one here); the rest at the end.
+    std::erase_if(races, [](const std::unique_ptr<link_race>& r) {
+      if (!r->settled()) return false;
+      r->join();
+      return true;
+    });
+    const bool up = ch->link_up();
+    // Dropped or silent: every bearer at once. Up on Bluetooth with the peer
+    // on Wi-Fi: Wi-Fi alongside, then the switch (Wi-Fi is always the faster
+    // by far, so this is also the "too slow" rule).
+    const bool rescue = !up;
+    const bool faster = up && ch->via() == transport::bluetooth && wifi &&
+                        clock::now() - last_move >= std::chrono::milliseconds(kSwitchHoldMs);
+    if (!rescue && !faster) continue;
+    std::shared_ptr<bluetooth> bt;
+    if (rescue && !bt_handle.empty()) {
+      std::lock_guard p(presence_m_);
+      bt = bluetooth_;
+    }
+    if (!wifi && !bt) continue;  // nowhere to try yet: the next beacon kicks this
+    auto race = std::make_unique<link_race>();
+    if (wifi) {
+      race->add([this, to = *wifi] {
+        return opts_.connect_wifi ? opts_.connect_wifi(to, kRaceWifiMs) : net::connect(to, kRaceWifiMs);
+      });
+    }
+    if (bt) race->add([bt, h = bt_handle] { return bt->connect(h, kRaceBluetoothMs); });
+    std::unique_ptr<link> l = race->wait(stopped);
+    races.push_back(std::move(race));
+    if (!l) continue;
+    if (stopped()) {
+      l->shutdown();
+      break;
+    }
+    if (auto r = ch->rejoin(std::shared_ptr<link>(std::move(l))); r) {
+      last_move = clock::now();
+    } else if (r.error() == status::cancelled || r.error() == status::busy) {
+      break;  // the session ended (or flapped and ended)
+    } else {
+      host_.log(1, "sharepoint: a rejoin did not complete");
+    }
+  }
+  for (auto& r : races) r->join();
+}
+
 // ---- receiving --------------------------------------------------------------------------
 
 void engine::run_receive(std::unique_ptr<link> l) {
@@ -1168,6 +1404,10 @@ void engine::run_receive(std::unique_ptr<link> l) {
   if (!opened) return end_transfer();  // not a MediaViewer, or gone: nothing to show
   std::shared_ptr<channel> ch(std::move(*opened));
   const std::string name = ch->peer_name();
+  if (ch->resumable()) {
+    channel* raw = ch.get();
+    ch->set_on_link([this, raw](link_event e) { on_link_event(false, e, *raw); });
+  }
   // The code shows now: the person there checks it against this screen
   // before anything about the files is sent.
   bool open_window = false;
@@ -1182,6 +1422,8 @@ void engine::run_receive(std::unique_ptr<link> l) {
       v_.in_peer = name;
       v_.in_code = ch->code();
       v_.in_via = transport_name(ch->via());
+      v_.in_reconnecting = false;
+      v_.in_protocol = ch->version();
       v_.in_note.clear();
       // Nothing of an earlier offer stays on screen while this one connects.
       v_.in_names.clear();

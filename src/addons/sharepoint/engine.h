@@ -24,6 +24,7 @@
 // Portable (D9): the bearers are injected.
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -44,8 +45,9 @@
 
 namespace mv::sharepoint {
 
-// A set over this is refused on Bluetooth (a budget, docs/design/12): it
-// would take many minutes. Wi-Fi carries anything.
+// A set over this is refused on Bluetooth to a protocol 1 peer (a budget,
+// docs/design/12): it would take many minutes. Wi-Fi carries anything. With
+// protocol 2 (#472) a send starts on Bluetooth and moves to Wi-Fi by itself.
 inline constexpr std::uint64_t kBluetoothMaxBytes = 32ull * 1024 * 1024;
 // A peer not heard for this long leaves the list.
 inline constexpr int kPeerForgetMs = 4500;
@@ -75,6 +77,7 @@ struct view {
   struct peer_row {
     std::string id, name, via;  // via: "Wi-Fi", "Bluetooth", "Wi-Fi and Bluetooth"
     bool wifi = false, bt = false;  // heard on each in the last kPeerForgetMs
+    bool resumable = false;         // speaks protocol 2: a send moves between bearers (#472)
   };
   std::vector<peer_row> peers;
   std::string selected_peer;
@@ -92,6 +95,11 @@ struct view {
   int out_tries_left = kCodeTries;
   std::uint64_t out_bytes = 0, out_total = 0;
   std::uint32_t out_files = 0, out_count = 0;
+  // #472: the bearer the send is on, and whether it is between links
+  // (suspect or dropped, a rejoin under way).
+  std::string out_via;
+  bool out_reconnecting = false;
+  std::uint32_t out_protocol = 0;  // the send's protocol, once its link is open (tests, the log)
 
   // ---- receive
   // connecting: a sender's link is up and the code shows; its offer comes
@@ -102,11 +110,14 @@ struct view {
   std::size_t in_count = 0;
   std::uint64_t in_total = 0, in_bytes = 0;
   std::uint32_t in_files = 0;
+  bool in_reconnecting = false;  // #472, as out_reconnecting
+  std::uint32_t in_protocol = 0;  // as out_protocol
   std::string destination;
 };
 
-// The selected peer is heard only on Bluetooth and the set is over
-// kBluetoothMaxBytes: Send waits for it on Wi-Fi instead (the window says so).
+// The selected peer is heard only on Bluetooth, speaks only protocol 1, and
+// the set is over kBluetoothMaxBytes: Send waits for it on Wi-Fi instead (the
+// window says so).
 [[nodiscard]] bool needs_wifi(const view& v) noexcept;
 
 // The view tree (docs/design/25 §10 vocabulary) for `v`. Pure; tested.
@@ -180,6 +191,9 @@ class engine {
     std::string my_name;  // net::machine_name() when empty
     std::function<std::unique_ptr<discovery>()> make_discovery;  // wifi_discovery() when empty
     std::function<std::unique_ptr<bluetooth>()> make_bluetooth;  // make_bluetooth() when empty
+    // A TCP connection to a peer's beacon address (net::connect when empty;
+    // the tests wrap it to cut a link mid-transfer).
+    std::function<result<std::unique_ptr<link>>(const net::endpoint&, int timeout_ms)> connect_wifi;
     bool use_bluetooth = true;
     // Tests: listen on loopback only.
     bool loopback_only = false;
@@ -221,6 +235,7 @@ class engine {
     std::optional<net::endpoint> wifi;
     std::string bt_handle;
     std::chrono::steady_clock::time_point wifi_seen{}, bt_seen{};
+    std::uint32_t wifi_protocol = kProtocol1, bt_protocol = kProtocol1;  // what each announced
   };
   struct helper {
     std::thread thread;
@@ -252,14 +267,28 @@ class engine {
   // The peer the send waited for is on Wi-Fi now: go.
   void start_waiting_send();
   void run_send(std::string peer_id, std::vector<outgoing_file> files);
+  // #472, the sender's side of a protocol 2 send, on its own thread while
+  // the send runs: when the link is suspect or drops, races every bearer the
+  // peer is heard on and rejoins over the first that connects; when the send
+  // is on Bluetooth and the peer is heard on Wi-Fi, moves there (make before
+  // break), at most once per kSwitchHoldMs.
+  void run_mover(std::shared_ptr<channel> ch, std::string peer_id, const std::atomic<bool>& stop);
+  // A channel's link event, for the window (and the mover, on the sender).
+  void on_link_event(bool sending, link_event e, const channel& ch);
   void run_receive(std::unique_ptr<link> l);
   // The offer's notification (#452), from the receive thread only. False:
   // the host has none (open the window instead).
   bool notice(const std::string& peer, std::size_t count, std::uint64_t bytes);
   void end_transfer();
-  void refuse_busy(std::shared_ptr<link> l);
+  // A link while a transfer runs: a rejoin of it goes to it (#472); any
+  // other is answered busy.
+  void route_busy(std::shared_ptr<link> l);
   // channel::open with `l` listed in opening_ meanwhile.
-  [[nodiscard]] result<std::unique_ptr<channel>> open_tracked(std::shared_ptr<link> l, bool client);
+  // A handshake the engine can end (cancel, the destructor). The client
+  // speaks `version`; the server answers the hello it read.
+  [[nodiscard]] result<std::unique_ptr<channel>> open_tracked(std::shared_ptr<link> l, bool client,
+                                                              std::uint32_t version = kProtocolVersion,
+                                                              const hello* read = nullptr);
   void forget_opening(const std::shared_ptr<link>& l);
   void fail_transfer(bool sending) noexcept;  // after an exception on a transfer thread
   // The files to send are read on one thread of the engine's (the folder
@@ -306,7 +335,11 @@ class engine {
   std::vector<std::shared_ptr<link>> opening_;  // under m_
   std::condition_variable decided_;
   std::condition_variable idle_;
-  std::shared_ptr<channel> live_;         // under m_: the transfer's channel, to cancel it
+  std::shared_ptr<channel> live_;         // under m_: the transfer's channel, to cancel it (and rejoin it)
+  bool mover_kick_ = false;               // under m_: the mover looks again now
+  std::condition_variable mover_cv_;
+  // This run's X25519 key in protocol 2's XX handshake. Wiped at the end.
+  std::array<std::uint8_t, 32> static_key_{};
   std::atomic<bool> cancel_{false};
   std::atomic<bool> stopping_{false};
 

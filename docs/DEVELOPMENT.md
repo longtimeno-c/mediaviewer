@@ -35,6 +35,7 @@ and a verify line on each platform (D9, amended). The order is:
 | #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
 | #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
 | #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
+| #472 PR 1 | **Sharepoint protocol 2 on the local bearers**: a Noise handshake (`XXhfs`, X25519 + ML-KEM-768, the Cacophony vectors pass) whose code still cannot be matched by a machine in the middle; a transfer that survives its link: sequence numbers, a 16 MiB replay, rejoin with a fresh `NNhfs+psk0` handshake and `resume_at`, no new code or Accept; Bluetooth ↔ Wi-Fi moves (make before break, suspect at 3 s, 20 s ends, flapping ends); a big set may start on Bluetooth to a protocol 2 peer; protocol 1 peers still work ([docs/design/28](design/28-sharepoint.md#the-session-protocol-2-472)) | Mac: built; `"[sharepoint]"` 54 cases pass (TSan-clean), with stand-in radios; `[.sharepoint-bench]` alternated, no difference within noise; the fuzz harness ran clean. Windows: the shared code is the same; `bt_win.cpp`'s INFO change meets a compiler in CI only. Owed: two real machines, real Bluetooth and Wi-Fi on both hosts, both PR 1 gates ([Where this actually is](#sharepoint-protocol-2-issue-472-pr-1-2026-10-18)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -1104,13 +1105,20 @@ python3 tools/package/addon-pack.py pack --addon places --platform macos --src b
 
 # Sharepoint (docs/design/28): build/addons/sharepoint/(lib)mv_sharepoint.(dylib|dll)
 cmake --build build --target mv_sharepoint
-build/bin/mv_import_tests "[sharepoint]"       # wire, channel, 2-3 engines over loopback TCP, the add-on through the loader
+build/bin/mv_import_tests "[sharepoint]"       # wire, Noise (Cacophony vectors), channel, protocol 2's session (rejoin, resume, Bluetooth <-> Wi-Fi), 2-3 engines over loopback TCP, the add-on through the loader
 build/bin/mv_import_tests "[.sharepoint-bench]"   # MB/s against a plain copy over loopback (MV_BENCH_DIR, _BIG_MB, _SMALL, _SMALL_KB, _CASES)
 build/bin/mv_import_tests "[.sharepoint-idle]"    # CPU while Keep receiving is on, window closed (MV_IDLE_SECONDS)
 python3 -m unittest tools/package/test_addon_pack.py   # SharepointPackTest among them
 build/bin/mv_import_tests "[.sharepoint-send]"    # #452: a sender on this machine (MV_SEND_FILE, MV_SEND_CODE_FILE or MV_SEND_HOLD)
 python3 tools/package/addon-pack.py pack --addon sharepoint --platform macos --src build/addons/sharepoint \
   --version 1.0.0 --key <key file> --out dist/
+# #472: the parsers of what a peer sends, fuzzed on the Mac with Homebrew's LLVM (CI builds
+# tools/fuzz/fuzz_sharepoint.cpp with clang-cl in the fuzz job); S=src/addons/sharepoint
+/opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -O1 -g -fsanitize=fuzzer,address -isysroot $(xcrun --show-sdk-path) \
+  -Isrc -Ibuild/vcpkg_installed/arm64-osx/include tools/fuzz/fuzz_sharepoint.cpp $S/wire.cpp $S/noise.cpp \
+  $S/channel.cpp $S/transfer.cpp $S/bt_pipe.cpp src/io/file_port.cpp src/io/file_port_mac.cpp src/io/content_hash.cpp \
+  build/vcpkg_installed/arm64-osx/lib/libsodium.a build/vcpkg_installed/arm64-osx/lib/libblake3.a -o build/fuzz_sharepoint
+build/fuzz_sharepoint <corpus dir> -max_total_time=180 -max_len=4096
 ```
 
 To see it in the app on a developer build (`-DMV_ADDON_DEV_PUBLIC_KEY`): pack with the dev key as
@@ -2207,6 +2215,53 @@ What is built is in [docs/design/28](design/28-sharepoint.md).
   Mac–Windows, Windows–Windows), the crash-report check after a transfer, Windows anything in
   the app, both hosts' first-run prompts (local network and Bluetooth on the Mac, Defender
   Firewall on Windows), VoiceOver and Narrator over the window, the Windows PR 1 gate.
+
+### Sharepoint protocol 2 (issue #472 PR 1, 2026-10-18)
+
+What is built is in [docs/design/28 "The wire"](design/28-sharepoint.md#the-wire) and
+["The session"](design/28-sharepoint.md#the-session-protocol-2-472); why in
+[12](design/12-decision-log.md#sharepoint). One shared change in the add-on: no chrome, ABI or host
+table change; the window's new text ("Reconnecting to …", "over Bluetooth") is in the view tree
+both hosts already draw. Bluetooth's bearers changed only to read the INFO's `"p"`.
+
+- **Mac (M-series, Release):** `mv_import_tests "[sharepoint]"` 54 cases pass, 10 runs of 10 on
+  the final code (1492 assertions each). New: `tests/test_sharepoint_noise.cpp` (the
+  Cacophony vectors for `Noise_XX` and `Noise_NNpsk0` byte for byte; the hybrid patterns agree,
+  carry the ML-KEM secret in their keys, keep fixed-key transcripts, and refuse a tampered key or
+  ciphertext) and `tests/test_sharepoint_session.cpp`: a dropped link rejoins and 160 messages
+  arrive once, in order; make before break loses and repeats nothing; another session's rejoin
+  and a replayed one are refused while the session carries on; three rejoins in 10 s and 20 s
+  without a link each end it; a protocol 1 client and a protocol 2 server meet in protocol 1; the
+  beacon keeps `"v":1`. And engines over stand-in radios (a loopback link that says "Bluetooth",
+  slowed to 2 MB/s; Wi-Fi links the test can cut or silence):
+  - a 40 MiB set (over protocol 1's Bluetooth limit) starts on Bluetooth and is on Wi-Fi **110 ms**
+    after the peer's beacon arrives (verify: within 3 s); the ring never went back;
+  - Wi-Fi cut part-way: on Bluetooth in **15 ms** (a closed socket is seen at once); then out of
+    Bluetooth range for 5 s: "Reconnecting to Bea…", and it resumes and finishes;
+  - a Wi-Fi link that goes silent with no error: suspect and moved after **3.1–3.2 s**;
+  - each time the file arrives once, byte for byte, with no `.mvtmp` left.
+- **ThreadSanitizer:** the same configure as [#410's](#sharepoint-issues-410-413-2026-10-15),
+  `"[sharepoint]~[addon]"` (the loader test loads the uninstrumented module): every report in
+  the first run was the new tests' beacon pump reading the fake discovery without its `ready`
+  handshake; fixed, then 3 runs of 3 on the final code: 52 cases, 0 reports.
+- **Fuzzing:** `tools/fuzz/fuzz_sharepoint.cpp` (the beacon, INFO, the offer, the hello, the
+  Noise messages each way, a rejoin without the secret, a whole receiver's open fed from the
+  input), built on the Mac with Homebrew LLVM (`-fsanitize=fuzzer,address`, command above): 16.4
+  million inputs in 180 s, no report, no hang. In CI it joins the non-gating fuzz step until it is
+  seen starting on the runner, as each new harness does.
+- **Throughput:** `[.sharepoint-bench]`, base (the #452 branch head, its own worktree and build)
+  and new alternated three times, warm, load ~4.6: 1 GiB 395.8–397.6 → 392.6–398.2 MB/s; 500 ×
+  2 MiB 178.9–183.3 → 178.0–201.1 MB/s: no difference within noise. (The first alternated set
+  showed 1 GiB 3 % slower, ranges apart; the cause was the receiver's flush reading in 100 ms
+  slices, fixed before these runs.) The handshake's cost is outside this timing (Accept to done).
+- **Windows:** nothing Windows-only beyond `bt_win.cpp`'s INFO field; all of protocol 2 is the
+  portable code above, which CI compiles under MSVC `/W4 /WX` and clang-cl.
+- **Not measured, owed:** two real machines (Mac ↔ Windows, both directions) with a 2 GiB set
+  over real Bluetooth and Wi-Fi: Bluetooth → Wi-Fi within 3 s, out of range and back within
+  20 s; real Bluetooth's goodput; the PR 1 present-loop gate on both
+  platforms with a transfer running (the screen was locked when this ran: no frames, so not
+  run); the formal model (Tamarin / ProVerif); the external review before anything internet is
+  on by default (#472 PRs 2–5).
 
 ### Sharepoint in the background (issue #452, 2026-10-16)
 

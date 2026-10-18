@@ -1535,6 +1535,46 @@ add-on keeps within 60 s removes its own item and quits. Not a LaunchAgent with 
 the Mac (the Final Cut Pro agent's way): a login item needs no second launchd job, no bundle
 change and no separate approval path, and Login Items names it "MediaViewer".
 
+**Protocol 2: Noise with ML-KEM-768 beside X25519, not a bespoke handshake (2026-10-18, #472 PR 1).**
+`Noise_XXhfs_25519+MLKEM768_ChaChaPoly_BLAKE2b`: a published framework whose core is checked against
+the Cacophony vectors, and Noise's own hybrid forward secrecy modifier, so a link recorded today
+needs both X25519 and ML-KEM-768 broken to read. ML-KEM-768 is libsodium 1.0.22's, already the
+vcpkg baseline's: no new dependency. Not X-Wing in place of the DH tokens (PQNoise's shape): that
+changes every token, where hfs adds two to a pattern that is already vetted. XX alone lets the
+responder choose its key after seeing the initiator's, which would let a machine in the middle
+search for matching six-digit codes; so the first message commits to a nonce that only the last
+reveals, and the code hashes the handshake hash after the server's message with it (protocol 1's
+commit-then-reveal, carried into Noise). Statics are a key made once a run until remembered devices
+(#472 PR 4); the LAN and Bluetooth still trust the typed code, as before. A protocol 1 peer is
+spoken to in protocol 1 and still works.
+
+**A protocol 2 transfer is a session above its link (2026-10-18, #472 PR 1).** Sequence numbers,
+acknowledgements, and a replay of what is unacknowledged, rather than the issue's sketch of a
+`resume_at` that names a file and an offset: it resumes at the same chunk boundary (every message
+is at most a chunk), but it also covers the control messages in flight (a lost `file_done` or
+`done`), and `transfer.cpp` did not change. **The replay is at most 16 MiB a transfer (a budget):**
+past it a sender waits; acknowledgements go at least every 1 MiB, and pings carry them. Suspect
+after 3 s of silence, ended after 20 s without a link, three rejoins in 10 s end it: the issue's
+numbers. After the handshake one bad byte ends the link and not the session (the issue's table:
+"one bad byte ends the link"), since the rejoin sends that message again; a sequence gap still
+ends the session. Measured in DEVELOPMENT.md (#472).
+
+**The resume secret is fixed for the session; each rejoin's tag is a keyed hash (2026-10-18).** A
+secret replaced at every rejoin would leave the two sides on different ones whenever a link dropped
+between their two confirmations, and that session could never rejoin again. Fresh link keys come
+from each rejoin's fresh X25519 and ML-KEM keys; the tag (8 random bytes, 8 of a keyed hash) is
+never the same twice to an observer; and a recorded rejoin played again is stopped at the first
+sealed message (`resume_at`), which it cannot make.
+
+**The 32 MiB Bluetooth refusal is for protocol 1 peers only (2026-10-18, #472; amends 2026-10-15).**
+To a protocol 2 peer a set of any size starts on Bluetooth when that is all there is and moves to
+Wi-Fi when the peer is heard there, with no new code and no new Accept. Waiting for Wi-Fi first
+stays for protocol 1 peers.
+
+**The beacon and INFO keep `"v":1` and add `"p"` (2026-10-18, #472).** A protocol 1 client drops a
+beacon whose `"v"` is not 1, so old and new would stop seeing each other; `"p"` names the protocol
+the sender speaks, and its absence means 1.
+
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
 no-replace before its `file_done`; the sender's `done` waits for every check. Measured on loopback

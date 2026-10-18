@@ -148,7 +148,10 @@ set(MV_FUZZ_HARNESSES
   # docs/design/25 PR 57: the script sandbox.
   script
   # #291: the Local search query language (pure; compiled from its source).
-  ai_query)
+  ai_query
+  # #472: what a peer sends Sharepoint before it is authenticated (the beacon,
+  # INFO, the hello, protocol 2's Noise messages) and the offer.
+  sharepoint)
 
 # docs/design/25 PR 57: the script sandbox. Lua is not linked to
 # mv_project_options (it is not our code, and builds without our warnings), so
@@ -167,6 +170,9 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
     target_link_libraries(${target} PRIVATE mv_geo)
   elseif(name STREQUAL "script")
     target_link_libraries(${target} PRIVATE mv_script)
+  elseif(name STREQUAL "sharepoint")
+    # The add-on's engine library and the file port its transfer compiles in.
+    target_link_libraries(${target} PRIVATE mv_sharepoint_engine mv_io)
   elseif(name STREQUAL "places_map")
     # docs/design/27 "The map": the Places add-on's rasteriser and view maths,
     # driven by numbers over the committed test blob.

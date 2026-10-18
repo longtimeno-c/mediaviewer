@@ -148,13 +148,17 @@ void incoming(writer& w, const view& v) {
       button(w, "accept", "Accept", "primary", v.destination.empty());
       end(w);
       break;
-    case view::in_phase::receiving:
-      ring(w, "in_progress", "Receiving from " + v.in_peer, v.in_bytes, v.in_total, 88);
-      text(w, "in_title", "Receiving from " + v.in_peer, "heading");
+    case view::in_phase::receiving: {
+      // #472: between links the ring holds where it is and says so; it never restarts.
+      const std::string what = v.in_reconnecting ? "Reconnecting to " + v.in_peer + "\xE2\x80\xA6"
+                                                 : "Receiving from " + v.in_peer;
+      ring(w, "in_progress", what, v.in_bytes, v.in_total, 88);
+      text(w, "in_title", what, "heading");
       text(w, "in_moved", moved_text(v.in_files, static_cast<std::uint32_t>(v.in_count), v.in_bytes, v.in_total),
            "secondary");
       button(w, "in_cancel", "Cancel", "destructive");
       break;
+    }
     case view::in_phase::done:
     case view::in_phase::ended:
       text(w, "in_note", v.in_note);
@@ -280,7 +284,10 @@ void nearby(writer& w, const view& v, bool sending) {
       button(w, "out_cancel", "Cancel", "destructive");
       break;
     case view::out_phase::sending:
-      text(w, "out_moved", "Sending to " + v.out_peer + ": " + moved_text(v.out_files, v.out_count, v.out_bytes, v.out_total),
+      text(w, "out_moved",
+           (v.out_reconnecting ? "Reconnecting to " + v.out_peer + "\xE2\x80\xA6 "
+                               : "Sending to " + v.out_peer + (v.out_via.empty() ? "" : " over " + v.out_via) + ": ") +
+               moved_text(v.out_files, v.out_count, v.out_bytes, v.out_total),
            "secondary");
       button(w, "out_cancel", "Cancel", "destructive");
       break;

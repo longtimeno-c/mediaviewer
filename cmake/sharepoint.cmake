@@ -5,7 +5,7 @@
 # Included by the Windows root and cmake/darwin.cmake after import.cmake and
 # places.cmake, so the two cannot drift.
 #
-#   mv_sharepoint_engine  the wire, the sealed channel, the transfer, the
+#   mv_sharepoint_engine  the wire, Noise, the sealed channel, the transfer, the
 #                         engine and its view tree, and the network and
 #                         Bluetooth ports. Links libsodium and BLAKE3; not the
 #                         core's io (the tests bring mv_io, the module compiles
@@ -42,6 +42,7 @@ endif()
 add_library(mv_sharepoint_engine STATIC
   ${_S}/wire.cpp ${_S}/wire.h
   ${_S}/link.h
+  ${_S}/noise.cpp ${_S}/noise.h
   ${_S}/channel.cpp ${_S}/channel.h
   ${_S}/transfer.cpp ${_S}/transfer.h
   ${_S}/presence.cpp ${_S}/presence.h
@@ -109,6 +110,8 @@ endif()
 function(mv_sharepoint_tests target)
   target_sources(${target} PRIVATE
     "${MV_SOURCE_ROOT}/tests/test_sharepoint.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_sharepoint_noise.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_sharepoint_session.cpp"
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_addon.cpp"
     "${MV_SOURCE_ROOT}/src/addons/sharepoint/bt_none.cpp")
   target_link_libraries(${target} PRIVATE mv_sharepoint_engine)

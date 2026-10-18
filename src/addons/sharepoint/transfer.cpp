@@ -24,6 +24,8 @@ namespace mv::sharepoint {
 namespace {
 
 constexpr int kTempAttempts = 16;
+// The receiver waits at most this for its "done" to be acknowledged.
+constexpr int kFlushMs = 5000;
 constexpr int kRenameAttempts = 32;
 // The uncached read-back's buffer (aligned, a kIoAlign multiple).
 constexpr std::size_t kReadBackBytes = 4u * 1024 * 1024;
@@ -609,6 +611,9 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         }
         if (h.progress) h.progress(moved, res.done);
         (void)ch.send(msg::done, std::string_view("{}"));
+        // Protocol 2: until the sender has it (a link that drops now is
+        // rejoined first), so the sender never waits out a lost "done".
+        ch.flush(kFlushMs);
         ch.shutdown();
         res.how = failed == 0 ? outcome::delivered : outcome::failed;
         return res;
