@@ -5,7 +5,6 @@
 // Sends a User-Agent and, when resuming, a Range header; nothing else.
 #include "addons/ai/fetch.h"
 
-#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winhttp.h>
 
