@@ -26,6 +26,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "addons/sharepoint/net.h"
@@ -488,15 +489,29 @@ std::optional<address> local_address_toward(const address& peer) {
 
 namespace {
 
+class udp_port;
+// wait_readable's way from a socket to its udp_port: it may be handed a
+// udp_socket that wraps one (the tests' stand-in NAT), so not a cast.
+std::mutex ports_m;
+std::unordered_map<SOCKET, udp_port*> ports;
+
 class udp_port final : public udp_socket {
  public:
   // Read on one thread (the hub's reader, #472) while others send
   // (socket_events).
   udp_port(SOCKET s, std::uint16_t port, bool dual = false)
-      : s_(s), port_(port), dual_(dual), events_(s, FD_READ | FD_WRITE) {}
+      : s_(s), port_(port), dual_(dual), events_(s, FD_READ | FD_WRITE) {
+    std::lock_guard lock(ports_m);
+    ports[s_] = this;
+  }
   std::uint16_t port() const noexcept override { return port_; }
   ~udp_port() override {
     shutdown();
+    {
+      // Before the close: Windows may hand the same SOCKET value out again.
+      std::lock_guard lock(ports_m);
+      ports.erase(s_);
+    }
     ::closesocket(s_);
   }
   expected send_to(std::span<const std::uint8_t> d, const endpoint& to) override {
@@ -567,11 +582,22 @@ class udp_port final : public udp_socket {
 
 result<std::size_t> wait_readable(std::span<udp_socket* const> socks, std::span<bool> ready, int timeout_ms) {
   // Not one WSAPoll over them all: streams send on these sockets meanwhile
-  // (socket_events). Every udp_socket here is a udp_port.
+  // (socket_events). The caller holds them open for the call.
+  std::vector<socket_events*> evs(socks.size(), nullptr);
+  {
+    std::lock_guard lock(ports_m);
+    for (std::size_t i = 0; i < socks.size(); ++i) {
+      if (auto it = ports.find(static_cast<SOCKET>(socks[i]->handle())); it != ports.end()) {
+        evs[i] = &it->second->events();
+      }
+    }
+  }
   const auto look = [&] {
     std::size_t n = 0;
     for (std::size_t i = 0; i < socks.size() && i < ready.size(); ++i) {
-      ready[i] = static_cast<udp_port*>(socks[i])->events().wait(FD_READ, 0) > 0;
+      // A socket not opened here (none is today) is polled without waiting.
+      ready[i] = evs[i] ? evs[i]->wait(FD_READ, 0) > 0
+                        : wait_for(static_cast<SOCKET>(socks[i]->handle()), POLLRDNORM, 0) > 0;
       n += ready[i] ? 1 : 0;
     }
     return n;
@@ -579,15 +605,15 @@ result<std::size_t> wait_readable(std::span<udp_socket* const> socks, std::span<
   if (const std::size_t n = look(); n > 0) return n;
   // WSAWaitForMultipleEvents takes 64 at most: a birthday punch's sockets
   // past those are seen when the wait ends, `timeout_ms` later at most.
-  WSAEVENT evs[WSA_MAXIMUM_WAIT_EVENTS];
+  WSAEVENT handles[WSA_MAXIMUM_WAIT_EVENTS];
   DWORD count = 0;
-  for (std::size_t i = 0; i < socks.size() && count < WSA_MAXIMUM_WAIT_EVENTS; ++i) {
-    const WSAEVENT e = static_cast<udp_port*>(socks[i])->events().event();
-    if (e != WSA_INVALID_EVENT) evs[count++] = e;
+  for (std::size_t i = 0; i < evs.size() && count < WSA_MAXIMUM_WAIT_EVENTS; ++i) {
+    if (evs[i] && evs[i]->event() != WSA_INVALID_EVENT) handles[count++] = evs[i]->event();
   }
-  if (count == 0) return err(status::io);
-  if (::WSAWaitForMultipleEvents(count, evs, FALSE, static_cast<DWORD>(std::max(timeout_ms, 0)), FALSE) ==
-      WSA_WAIT_FAILED) {
+  const DWORD wait_ms = static_cast<DWORD>(std::max(timeout_ms, 0));
+  if (count == 0) {
+    ::Sleep(wait_ms);
+  } else if (::WSAWaitForMultipleEvents(count, handles, FALSE, wait_ms, FALSE) == WSA_WAIT_FAILED) {
     return err(status::io);
   }
   if (const std::size_t n = look(); n > 0) return n;
