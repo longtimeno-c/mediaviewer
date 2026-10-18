@@ -35,6 +35,7 @@
 #include <mediaviewer/mediaviewer_ai.h>
 
 #include "addons/ai/faces.h"
+#include "addons/ai/fetch.h"
 #include "addons/ai/host.h"
 #include "addons/ai/index_db.h"
 #include "addons/ai/cloud_files.h"
@@ -224,6 +225,32 @@ struct engine_deps {
   // #354: a PDF's text (pdf_reader.h): null uses make_pdf_reader() (PDFium
   // beside the pack). The tests pass a fake, or one returning null.
   std::function<std::unique_ptr<pdf_reader>()> pdf;
+  // ---- model tiers and downloads (#482, docs/plans/model-tiers.md) ----
+  // Switches the pack to a tier ("" = its default): which folders fill each
+  // role. Cheap and any thread: the pack re-reads on the next open.
+  std::function<void(const std::string& tier)> set_tier;
+  // The pack's tiers (models/tiers.json) for the picker; "{}" before `prepare`.
+  std::function<std::string()> tiers_json;
+  // Blocks: fetches what the tier in force needs for the installed pieces,
+  // the picture towers first (`pictures` is called once they are verified).
+  // ok when everything is here; status::cancelled on `stop`; not_found when a
+  // pinned file is gone; corrupt when one never matched its hash.
+  std::function<expected(const std::atomic<bool>& stop, const std::function<void(const fetch_progress&)>& progress,
+                         const std::function<void()>& pictures)>
+      fetch_models;
+  // Nothing of the tier in force is still to fetch (cheap: stats).
+  std::function<bool()> models_present;
+  // Deletes fetched files the tier in force does not need (the old tier's,
+  // once the new one covers the folders).
+  std::function<void()> prune_models;
+  // A tower of any tier by its index key, on CPU: after a change of tier the
+  // old tier's vectors answer until the new tower covers the folders.
+  std::function<result<loaded_clip>(const std::string& spec_key)> open_clip_spec;
+  // The tier's clip sampling gaps (min, max) in ms; 0 = the engine's own.
+  std::function<std::pair<std::uint32_t, std::uint32_t>()> clip_gaps;
+  // The local check (machine.h) as JSON, with the tier it recommends; null
+  // uses machine_json() of this machine. The tests fake it.
+  std::function<std::string()> machine;
   // At most one change-driven Photos library rescan per this many seconds
   // (PhotoKit reports an iCloud sync as a burst of changes).
   double photos_rescan_gap_s = 10;
@@ -276,6 +303,10 @@ struct settings {
   // #354: what folders that follow the setting index documents for: 0 Off,
   // 1 Words (the default: cheap, no model), 2 Words and pages (slice D2).
   std::uint32_t doc_index = 1;
+  // #482: the model tier ("default", "potato", ...); "" = none chosen yet, so
+  // the add-on's picker opens and nothing is fetched (the pack's default runs
+  // whatever the pack already carries).
+  std::string tier;
 };
 
 // A spoken-phrase search's share of the query's words a transcript line must
@@ -650,6 +681,11 @@ class engine {
   // its thread downloads iCloud-only clips a couple ahead of the workers,
   // re-queues each at the front, and deletes its file once every track is done.
   void fetch_loop();
+  // #482 T3: the model downloader's thread (dl_*).
+  void download_loop();
+  void kick_download();
+  // #482 T4: set_setting("tier", "\"potato\"").
+  [[nodiscard]] expected set_tier(const std::string& value_json);
   [[nodiscard]] mv_ai_icloud_fetch fetch_gate() const;  // why it waits; DOWNLOADING when it may go
   void fetch_reap(bool all);  // delete the files the workers are done with (all: every one)
   [[nodiscard]] bool fetch_wanted(std::int64_t asset);  // a track still wants this clip
@@ -939,6 +975,20 @@ class engine {
     bool in_place = false;  // a cloud file brought down where it is: given back, not deleted
   };
   std::thread fetch_thread_;
+  // #482 T3: the model downloader. download_loop runs deps_.fetch_models when
+  // kicked (start with a tier chosen, a tier change, a piece installed,
+  // Retry); dl_stop_ cancels it (Cancel, a tier change, stop).
+  std::thread download_thread_;
+  std::mutex dl_m_;
+  std::condition_variable dl_cv_;
+  bool dl_kick_ = false;
+  std::atomic<bool> dl_stop_{false};
+  std::atomic<bool> dl_running_{false};
+  fetch_progress dl_progress_;  // under dl_m_
+  std::atomic<bool> models_waiting_{false};  // the towers' files are still to come
+  std::atomic<bool> kick_{false};            // set_setting: kick the downloader once unlocked
+  mutable std::mutex machine_m_;
+  std::string machine_json_;  // the local check (machine.h), made once on the control thread
   mutable std::mutex fetch_m_;
   std::condition_variable fetch_cv_;
   std::vector<fetched_clip> fetched_;     // under fetch_m_

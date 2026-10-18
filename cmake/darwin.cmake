@@ -1090,6 +1090,7 @@ if(MV_BUILD_TESTS)
       tests/test_ai_docs.cpp
       tests/test_ai_tiers.cpp
       tests/test_ai_contract.cpp
+      tests/test_ai_fetch.cpp
       # #403: the OS text reader over a labelled set (hidden: [.ocr-fixture]).
       tests/test_ai_ocr.cpp
       tests/test_nle.cpp

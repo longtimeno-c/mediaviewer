@@ -3,9 +3,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Stage the AI pack's model files (docs/design/17 "The AI pack").
 
-    ai-models.py stage --piece ai --out build/addons/ai [--cache DIR]
+    ai-models.py stage --piece ai --out build/addons/ai [--cache DIR] [--upstream remote]
     ai-models.py stage --piece ai-faces --out build/addons/ai-faces [--cache DIR]
     ai-models.py check
+
+`--upstream remote` (release builds, #482 T3): an upstream file is not staged
+at all. It goes in `remote.json` at the piece's root, {url, path, size, sha256,
+licence} each, which addon-pack.py signs into the manifest's `remote` list; the
+add-on fetches it from Hugging Face on install and checks it against that list
+(docs/plans/model-tiers.md T3). Only files we build ourselves (`export`) and
+the model.json / tiers.json we write ship in the add-on. The default,
+`--upstream bundle`, stages everything, as sideloaded dev packs need.
 
 An entry with `export` is a checkpoint the pack runs as ONNX it builds itself
 (the People embedder, docs/design/17 "People model"): `stage` verifies the pinned
@@ -26,9 +34,10 @@ src/addons/ai/tiers.h reads so the add-on's code names no model.
 
 `check` is the weights-licence gate docs/design/17 names: every file must carry a
 licence from ALLOWED_LICENCES (non-commercial or research-only weights fail),
-every tier must name a model folder of the right piece for every role, and the
-Core pack's supported combinations must fit the 5 GB ceiling given the sizes
-listed. CI runs it; it needs no network.
+every tier must name a model folder of the right piece for every role, and
+every upstream file must be a pinned Hugging Face file. CI runs it; it needs no
+network. (The 5 GB ceiling it once checked is retired: the add-on carries no
+upstream model, docs/design/12 2026-10-18.)
 """
 import argparse
 import hashlib
@@ -44,8 +53,6 @@ MODELS = Path(__file__).with_name("ai-models.json")
 
 ALLOWED_LICENCES = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "Zlib", "ISC", "CC0-1.0",
                     "GPL-3.0-or-later"}
-CEILING = 5_000_000_000  # docs/design/17: installed pieces of the ai family
-
 # The piece each role's model folders live in (src/addons/ai/tiers.h). Pictures
 # and speech have a high and a fast slot (mv_ai_quality 2 and 1).
 ROLES = {"pictures": "ai", "speech": "ai-audio", "sounds": "ai-audio", "faces": "ai-faces",
@@ -65,12 +72,34 @@ def load() -> dict:
     return json.loads(MODELS.read_text(encoding="utf-8"))
 
 
+def url_of(entry: dict) -> str:
+    """The fixed URL of a pinned upstream file: a plain GET, no token, no query."""
+    return f"https://huggingface.co/{entry['repo']}/resolve/{entry['revision']}/{entry['file']}"
+
+
+def tier_folders(data: dict, profile: dict) -> dict:
+    """Piece -> the model folders a tier needs, tokenizer folders included."""
+    out = {}
+    for role, piece in ROLES.items():
+        value = profile.get(role)
+        folders = [f for f in (value.values() if isinstance(value, dict) else [value]) if f]
+        for folder in folders:
+            want = out.setdefault(piece, [])
+            if folder not in want:
+                want.append(folder)
+            tok = data["pieces"][piece]["folders"][folder]["model"].get("tokenizer")
+            tok_folder = f"models/{tok}" if tok else None
+            if tok_folder and tok_folder in data["pieces"][piece]["folders"] and tok_folder not in want:
+                want.append(tok_folder)
+    return out
+
+
 def fetch(entry: dict, cache: Path) -> Path:
     cache.mkdir(parents=True, exist_ok=True)
     target = cache / f"{entry['sha256']}-{Path(entry['file']).name}"
     if target.exists() and target.stat().st_size == entry["size"] and sha256_file(target) == entry["sha256"]:
         return target
-    url = f"https://huggingface.co/{entry['repo']}/resolve/{entry['revision']}/{entry['file']}"
+    url = url_of(entry)
     tmp = target.with_suffix(target.suffix + ".part")
     req = urllib.request.Request(url, headers={"User-Agent": "MediaViewer-pack-builder"})
     with urllib.request.urlopen(req, timeout=120) as r, tmp.open("wb") as out:
@@ -134,10 +163,18 @@ def stage(args) -> int:
     out = Path(args.out)
     cache = Path(args.cache) if args.cache else out.parent / ".model-cache"
     licences = {}
+    remote = []
     for folder, f in spec["folders"].items():
         dest = out / folder
         dest.mkdir(parents=True, exist_ok=True)
         for entry in f["files"]:
+            if args.upstream == "remote" and "export" not in entry:
+                remote.append({"url": url_of(entry), "path": f"{folder}/{entry['as']}", "size": entry["size"],
+                               "sha256": entry["sha256"], "licence": entry["licence"]})
+                stale = dest / entry["as"]
+                if stale.exists():
+                    stale.unlink()
+                continue
             src = fetch(entry, cache)
             target = dest / entry["as"]
             if "export" in entry:
@@ -157,9 +194,16 @@ def stage(args) -> int:
                 print(p, file=sys.stderr)
             return 1
         tiers = {k: v for k, v in data["tiers"].items() if k != "comment"}
+        for tier, prof in tiers["profiles"].items():
+            prof["folders"] = tier_folders(data, prof)
         (out / "models").mkdir(parents=True, exist_ok=True)
         (out / "models" / "tiers.json").write_text(json.dumps(tiers, indent=1) + "\n", encoding="utf-8")
         licences["models/tiers.json"] = "GPL-3.0-or-later"
+    remote_path = out / "remote.json"
+    if remote:
+        remote_path.write_text(json.dumps(remote, indent=1) + "\n", encoding="utf-8")
+    elif remote_path.exists():
+        remote_path.unlink()
     # Merge with licences from an earlier stage into the same folder.
     lic_path = out / "licences.json"
     if lic_path.exists():
@@ -175,6 +219,7 @@ def check(_args) -> int:
     data = load()
     bad = tier_problems(data)
     sizes = {}
+    hf = "https://huggingface.co/"
     for piece, spec in data["pieces"].items():
         total = 0
         for folder, f in spec["folders"].items():
@@ -189,19 +234,14 @@ def check(_args) -> int:
                     bad.append(f"{piece}:{folder}/{entry.get('as', '?')} has an export without its golden check")
                 if len(entry.get("revision", "")) != 40 or len(entry.get("sha256", "")) != 64:
                     bad.append(f"{piece}:{folder}/{entry.get('as', '?')} is not pinned")
+                elif not url_of(entry).startswith(hf) or any(c in url_of(entry) for c in "?#"):
+                    bad.append(f"{piece}:{folder}/{entry.get('as', '?')} is not a plain Hugging Face URL")
                 total += (ex or {}).get("installed_size", entry.get("size", 0))
         sizes[piece] = total
-    # The largest supported combination: Core models + Faces + the runtime and
-    # a vendor piece (ORT CUDA: ~205 MB; allow 400 MB for native code and chrome).
-    worst = (sizes.get("ai", 0) + sizes.get("ai-faces", 0) + sizes.get("ai-audio", 0) + sizes.get("ai-docs", 0) +
-             400_000_000 + 250_000_000)
-    if worst > CEILING:
-        bad.append(f"Core + Faces + Audio + Documents + a vendor piece is ~{worst / 1e9:.2f} GB, "
-                   f"over the {CEILING / 1e9:.0f} GB ceiling")
     for b in bad:
         print(b, file=sys.stderr)
     if not bad:
-        print(f"ok: models {sizes}, worst supported combination ~{worst / 1e9:.2f} GB of {CEILING / 1e9:.0f} GB")
+        print(f"ok: models {sizes}")
     return 1 if bad else 0
 
 
@@ -212,6 +252,8 @@ def main(argv=None) -> int:
     s.add_argument("--piece", required=True)
     s.add_argument("--out", required=True)
     s.add_argument("--cache")
+    s.add_argument("--upstream", choices=["bundle", "remote"], default="bundle",
+                   help="remote: list upstream files for the add-on to fetch instead of staging them")
     sub.add_parser("check")
     args = ap.parse_args(argv)
     return stage(args) if args.cmd == "stage" else check(args)

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/ai/tiers.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -40,18 +41,7 @@ bool read_slots(const json::value* v, std::string& high, std::string& fast) {
 
 }  // namespace
 
-result<tier_profile> parse_tier_profile(std::string_view json_text, std::string_view tier) {
-  const auto doc = json::parse(json_text, 8);
-  if (!doc || doc->k != json::kind::object) return err(status::corrupt);
-  const json::value* profiles = doc->find("profiles");
-  if (!profiles || profiles->k != json::kind::object) return err(status::corrupt);
-  std::string id(tier);
-  if (id.empty()) {
-    const std::string* d = doc->str("default");
-    if (!d) return err(status::corrupt);
-    id = *d;
-  }
-  const json::value* p = profiles->find(id);
+static result<tier_profile> profile_of(const json::value* p, const std::string& id) {
   if (!p) return err(status::not_found);
   if (p->k != json::kind::object) return err(status::corrupt);
   tier_profile t;
@@ -65,7 +55,68 @@ result<tier_profile> parse_tier_profile(std::string_view json_text, std::string_
       !read_folder(p->find("documents"), t.documents)) {
     return err(status::corrupt);
   }
+  if (const json::value* f = p->find("folders")) {
+    if (f->k != json::kind::object) return err(status::corrupt);
+    for (const auto& [piece, list] : f->o) {
+      if (list.k != json::kind::array) return err(status::corrupt);
+      auto& out = t.folders[piece];
+      for (const json::value& v : list.a) {
+        if (v.k != json::kind::string || !folder_ok(v.s)) return err(status::corrupt);
+        out.push_back(v.s);
+      }
+    }
+  }
+  if (const json::value* c = p->find("clips"); c && c->k == json::kind::object) {
+    t.min_gap_ms = static_cast<std::uint32_t>(std::clamp<std::int64_t>(c->integer("min_gap_ms").value_or(0), 0, 60000));
+    t.max_gap_ms = static_cast<std::uint32_t>(std::clamp<std::int64_t>(c->integer("max_gap_ms").value_or(0), 0, 600000));
+  }
+  t.sounds_off_by_default = p->boolean("sounds_off_by_default").value_or(false);
   return t;
+}
+
+result<tier_profile> parse_tier_profile(std::string_view json_text, std::string_view tier) {
+  const auto doc = json::parse(json_text, 8);
+  if (!doc || doc->k != json::kind::object) return err(status::corrupt);
+  const json::value* profiles = doc->find("profiles");
+  if (!profiles || profiles->k != json::kind::object) return err(status::corrupt);
+  std::string id(tier);
+  if (id.empty()) {
+    const std::string* d = doc->str("default");
+    if (!d) return err(status::corrupt);
+    id = *d;
+  }
+  return profile_of(profiles->find(id), id);
+}
+
+result<tier_set> parse_tier_set(std::string_view json_text) {
+  const auto doc = json::parse(json_text, 8);
+  if (!doc || doc->k != json::kind::object) return err(status::corrupt);
+  const json::value* profiles = doc->find("profiles");
+  const std::string* d = doc->str("default");
+  if (!profiles || profiles->k != json::kind::object || !d) return err(status::corrupt);
+  tier_set s;
+  s.default_id = *d;
+  for (const auto& [id, v] : profiles->o) {
+    if (auto t = profile_of(&v, id)) s.tiers.push_back(std::move(*t));
+  }
+  if (s.tiers.empty()) return err(status::corrupt);
+  return s;
+}
+
+tier_set read_tier_set(const std::string& core_dir) {
+  std::string path = core_dir;
+  if (!path.empty() && path.back() != '/' && path.back() != '\\') path += '/';
+  path += "models/tiers.json";
+  std::ifstream in(std::filesystem::path(std::u8string(path.begin(), path.end())), std::ios::binary);
+  if (in) {
+    std::ostringstream text;
+    text << in.rdbuf();
+    if (auto s = parse_tier_set(text.str())) return std::move(*s);
+  }
+  tier_set s;
+  s.default_id = "default";
+  s.tiers.push_back(legacy_profile());
+  return s;
 }
 
 tier_profile legacy_profile() {

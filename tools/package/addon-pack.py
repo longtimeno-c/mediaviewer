@@ -67,7 +67,10 @@ PDFIUM_LICENCE = ("BSD-3-Clause AND BSD-2-Clause AND Apache-2.0 AND MIT AND Zlib
 # #354 D3: the Documents piece's notice names its text model (ai-models.json).
 DOCS_NOTICE = ("Document search by meaning for MediaViewer's Local search. Model: all-MiniLM-L6-v2 (Apache-2.0; ONNX export by Xenova).\n"
                "Runs on this computer only; what your documents say never leaves it.\n")
-CEILINGS = {"ai": 5_000_000_000}  # docs/design/17; src/addon/manifest.cpp family_ceiling agrees
+# Family ceilings (installed size). The ai family's 5 GB one is retired
+# (owner, 2026-10-18; docs/design/12): its pieces carry no upstream model, they
+# fetch them (`remote`), so none is set. `ceiling` still checks any listed here.
+CEILINGS = {}
 
 # What ships, per add-on and platform. Anything else in the build folder stays
 # out. `licences`: (prefix, SPDX) for files the staged licences.json does not
@@ -376,8 +379,31 @@ def make_archive(stage: Path, archive: Path, platform: str):
                 z.write(p, p.relative_to(stage).as_posix())
 
 
+def read_remote(src: Path) -> list:
+    """ai-models.py --upstream remote's list: files the add-on fetches on install
+    (docs/plans/model-tiers.md T3). Signed into the manifest, never shipped."""
+    path = src / "remote.json"
+    if not path.exists():
+        return []
+    remote = json.loads(path.read_text(encoding="utf-8"))
+    seen = set()
+    for r in remote:
+        if set(r) != {"url", "path", "size", "sha256", "licence"}:
+            raise ValueError(f"remote entry {r.get('path')} has unexpected fields")
+        if not r["url"].startswith("https://huggingface.co/") or any(c in r["url"] for c in "?#"):
+            raise ValueError(f"{r['path']}: only plain Hugging Face URLs are fetched")
+        if not re.fullmatch(r"[0-9a-f]{64}", r["sha256"]) or not isinstance(r["size"], int) or r["size"] <= 0:
+            raise ValueError(f"{r['path']}: needs a size and a SHA-256")
+        if not licence_allowed(r["licence"]):
+            raise ValueError(f"{r['path']} is licensed {r['licence']}: not one the pack may point to")
+        if r["path"].startswith("/") or ".." in r["path"].split("/") or "\\" in r["path"] or r["path"].lower() in seen:
+            raise ValueError(f"{r['path']}: not a safe relative path, or listed twice")
+        seen.add(r["path"].lower())
+    return remote
+
+
 def build_manifest(platform: str, version: str, files: list, archive: Path,
-                   addon_id: str = "import") -> bytes:
+                   addon_id: str = "import", remote: list = None) -> bytes:
     addon = ADDONS[addon_id]
     spec = addon["files"][platform]
     manifest = {
@@ -394,6 +420,9 @@ def build_manifest(platform: str, version: str, files: list, archive: Path,
                     "size": archive.stat().st_size},
         "files": files,
     }
+    if remote:
+        manifest["remote"] = remote
+        manifest["download_size"] = sum(r["size"] for r in remote)
     if addon.get("part_of"):
         manifest["part_of"] = addon["part_of"]
     manifest.update(addon_metadata(addon))
@@ -419,13 +448,19 @@ def pack(args) -> Path:
     if stage.exists():
         shutil.rmtree(stage)
     files = collect(Path(args.src), args.platform, stage, addon_id)
+    remote = read_remote(Path(args.src))
+    shipped = {f["path"].lower() for f in files}
+    clash = [r["path"] for r in remote if r["path"].lower() in shipped]
+    if clash:
+        raise ValueError(f"{clash[0]} is both shipped and fetched")
     archive = out / (base + ".zip")
     make_archive(stage, archive, args.platform)
-    manifest = build_manifest(args.platform, args.version, files, archive, addon_id)
+    manifest = build_manifest(args.platform, args.version, files, archive, addon_id, remote)
     (out / (base + ".json")).write_bytes(manifest)
     (out / (base + ".json.sig")).write_bytes(key.sign(manifest))
     shutil.rmtree(stage)
-    print(f"packed {base}: {len(files)} files, {archive.stat().st_size} bytes")
+    fetched = f", {len(remote)} fetched on install" if remote else ""
+    print(f"packed {base}: {len(files)} files, {archive.stat().st_size} bytes{fetched}")
     return out / (base + ".json")
 
 

@@ -234,18 +234,58 @@ class AiPackTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.pack("ai-faces", self.faces)
 
-    def test_the_family_ceiling(self):
-        core = self.pack("ai", self.core)
-        faces = self.pack("ai-faces", self.faces)
-        self.assertEqual(addon_pack.main(["ceiling", str(self.out / "mediaviewer-addon-ai-win-x64.json"),
-                                          str(self.out / "mediaviewer-addon-ai-faces-win-x64.json")]), 0)
-        big = dict(faces)
-        big["id"] = "ai-cuda"
-        big["installed_size"] = addon_pack.CEILINGS["ai"] - core["installed_size"] + 1
-        big["files"] = [{"path": "onnxruntime_providers_cuda.dll", "sha256": "0" * 64, "size": 1, "licence": "MIT"}]
+    def test_the_ai_family_has_no_ceiling(self):
+        # Retired 2026-10-18 (docs/design/12): the pieces fetch their models.
+        self.assertNotIn("ai", addon_pack.CEILINGS)
+        self.pack("ai", self.core)
+        big = self.pack("ai-faces", self.faces)
+        big["installed_size"] = 50_000_000_000
         (self.out / "big.json").write_text(json.dumps(big))
         self.assertEqual(addon_pack.main(["ceiling", str(self.out / "mediaviewer-addon-ai-win-x64.json"),
-                                          str(self.out / "big.json")]), 1)
+                                          str(self.out / "big.json")]), 0)
+
+    def remote_entry(self, **change):
+        r = {"url": "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/" + "a" * 40 + "/onnx/text_model_fp16.onnx",
+             "path": "models/clip-b32/text.onnx", "size": 1234, "sha256": "b" * 64, "licence": "MIT"}
+        r.update(change)
+        return r
+
+    def test_fetched_files_are_signed_into_the_manifest_not_shipped(self):
+        (self.core / "remote.json").write_text(json.dumps([self.remote_entry()]))
+        m = self.pack("ai", self.core)
+        self.assertEqual(m["remote"], [self.remote_entry()])
+        self.assertEqual(m["download_size"], 1234)
+        paths = {f["path"] for f in m["files"]}
+        self.assertNotIn("remote.json", paths)
+        self.assertNotIn("models/clip-b32/text.onnx", paths)
+
+    def test_a_fetched_file_must_be_a_pinned_hugging_face_file(self):
+        for bad in (self.remote_entry(url="https://example.com/x.onnx"),
+                    self.remote_entry(url=self.remote_entry()["url"] + "?download=1"),
+                    self.remote_entry(sha256="nope"),
+                    self.remote_entry(licence="CC-BY-NC-4.0"),
+                    self.remote_entry(path="../escape.onnx"),
+                    self.remote_entry(path="models/clip-b32/image.onnx")):  # also shipped
+            with self.subTest(bad=bad):
+                (self.core / "remote.json").write_text(json.dumps([bad]))
+                with self.assertRaises(ValueError):
+                    self.pack("ai", self.core)
+
+    def test_remote_staging_lists_upstream_files_and_keeps_exports(self):
+        gate = importlib.util.spec_from_file_location("ai_models", Path(__file__).with_name("ai-models.py"))
+        mod = importlib.util.module_from_spec(gate)
+        gate.loader.exec_module(mod)
+        out = self.tmp / "staged-ai"
+        self.assertEqual(mod.main(["stage", "--piece", "ai", "--out", str(out), "--upstream", "remote"]), 0)
+        remote = json.loads((out / "remote.json").read_text())
+        self.assertTrue(remote)
+        self.assertTrue(all(r["url"].startswith("https://huggingface.co/") for r in remote))
+        self.assertFalse(any((out / r["path"]).exists() for r in remote))
+        self.assertTrue((out / "models/clip-l14/model.json").exists())
+        tiers = json.loads((out / "models/tiers.json").read_text())
+        default = tiers["profiles"][tiers["default"]]
+        self.assertIn("models/clip-tokenizer", default["folders"]["ai"])
+        self.assertIn("models/whisper-tokenizer", default["folders"]["ai-audio"])
 
     def test_model_list_passes_the_licence_gate(self):
         gate = importlib.util.spec_from_file_location("ai_models", Path(__file__).with_name("ai-models.py"))

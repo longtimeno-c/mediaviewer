@@ -438,3 +438,39 @@ TEST_CASE("a manifest may say what it contributes (docs/design/25)", "[addon][ma
             rejection::malformed);
   }
 }
+
+TEST_CASE("a manifest may list files the add-on fetches itself (#482 T3)", "[addon][manifest]") {
+  keypair k;
+  const std::vector<file_spec> files{{"mv_import.bin", {1, 2, 3}}};
+  const std::string m = manifest_json(files, "mv_import.bin");
+  const auto with = [&](const std::string& url, const std::string& path) {
+    std::string out = m;
+    out.insert(out.size() - 1, R"(,"remote":[{"url":")" + url + R"(","path":")" + path +
+                                   R"(","size":1234,"sha256":")" + std::string(64, 'b') + R"(","licence":"MIT"}])");
+    return out;
+  };
+  const std::string good = "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/" + std::string(40, 'a') +
+                           "/onnx/text_model_fp16.onnx";
+  const std::string ok = with(good, "models/clip-b32/text.onnx");
+  const auto d = mv::addon::check_manifest(bytes_of(ok), k.sign(ok), k.pub, 1);
+  REQUIRE(d.trusted());
+  REQUIRE(d.m.remote.size() == 1);
+  CHECK(d.m.remote[0].path == "models/clip-b32/text.onnx");
+  CHECK(d.m.remote[0].size == 1234);
+  CHECK(d.m.remote_urls[0] == good);
+  // No other host, no query, no credentials, no climbing out; never a shipped path.
+  for (const auto& [url, path] : std::vector<std::pair<std::string, std::string>>{
+           {"https://example.com/resolve/x.onnx", "models/a.onnx"},
+           {"http://huggingface.co/a/resolve/b/c.onnx", "models/a.onnx"},
+           {good + "?download=true", "models/a.onnx"},
+           {"https://user@huggingface.co/a/resolve/b/c.onnx", "models/a.onnx"},
+           {good, "../outside.onnx"},
+           {good, "mv_import.bin"}}) {
+    INFO(url << " -> " << path);
+    const std::string bad = with(url, path);
+    CHECK_FALSE(mv::addon::check_manifest(bytes_of(bad), k.sign(bad), k.pub, 1).trusted());
+  }
+  // Fetched files are not in the version folder, so an install with them
+  // still to come verifies like any other.
+  CHECK(mv::addon::family_ceiling("ai") == 0);
+}

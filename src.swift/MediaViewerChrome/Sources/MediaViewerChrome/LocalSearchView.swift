@@ -76,7 +76,9 @@ final class LocalSearchStore: ObservableObject {
   /// install or a download until this is true.
   @Published private(set) var stateKnown = false
   @Published private(set) var used: UInt64 = 0
-  @Published private(set) var ceiling: UInt64 = 5_000_000_000
+  /// The family's installed-size ceiling; 0 is none (the ai family's 5 GB was
+  /// retired 2026-10-18: its pieces fetch their models, docs/design/12).
+  @Published private(set) var ceiling: UInt64 = 0
   @Published private(set) var loaded = false
   @Published private(set) var loading = false
   /// Installed and verified, waiting unloaded for the first search (issue
@@ -270,7 +272,7 @@ final class LocalSearchStore: ObservableObject {
         }
         if room {
           self.used = used
-          if ceiling > 0 { self.ceiling = ceiling }
+          self.ceiling = ceiling
         }
         self.stateKnown = true
         then?()

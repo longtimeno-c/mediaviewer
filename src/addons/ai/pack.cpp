@@ -13,15 +13,18 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "addons/ai/fetch.h"
 #include "addons/ai/platform.h"
 #include "addons/ai/tiers.h"
 #include "infer/audio_models.h"
 #include "infer/text_models.h"
 #include "infer/models.h"
+#include "core/json.h"
 #include "infer/ort.h"
 
 namespace mv::ai {
@@ -31,6 +34,10 @@ std::string join(const std::string& dir, const std::string& name) {
   if (dir.empty()) return name;
   const char last = dir.back();
   return (last == '/' || last == '\\') ? dir + name : dir + "/" + name;
+}
+
+std::filesystem::path fs_path(const std::string& utf8) {
+  return std::filesystem::path(std::u8string(utf8.begin(), utf8.end()));
 }
 
 // The pack, opened once on first use (the engine's control thread).
@@ -43,9 +50,18 @@ struct pack_state {
   std::atomic<bool> ready{false};  // ensure() has run (loaded or not)
   std::unique_ptr<infer::runtime> rt;
   bool from_piece = false;  // ORT came from the ai-cuda piece
-  std::map<std::uint32_t, infer::clip_spec> towers;  // by mv_ai_quality
-  std::once_flag tier_once;
-  tier_profile tier_;  // profile(): which folder fills each role (tiers.h)
+  // Model tiers (#482, tiers.h): the profile in force and the towers it
+  // names. tier_m guards both; a change of tier (set_tier, any thread) only
+  // marks them stale, and the next use on the control thread re-reads them,
+  // so the UI thread never reads a model.json.
+  std::mutex tier_m;
+  bool tiers_read = false;
+  bool tier_stale = true;
+  tier_set tiers;
+  std::string tiers_text;  // models/tiers.json as read, for the picker (tiers_json)
+  std::string tier_id;  // the engine's setting; "" = the pack's default
+  tier_profile tier_;
+  std::map<std::uint32_t, infer::clip_spec> towers;  // by mv_ai_quality, for tier_
 
   // Core ML compiles (upgrading_clip). One tower compiles once at a time: a
   // first compile of L/14 writes gigabytes for minutes on a MacBook Air, and
@@ -69,36 +85,145 @@ struct pack_state {
       if (!loaded && ort_dir != core_dir) loaded = infer::runtime::load(core_dir);
       if (!loaded) return;
       rt = std::move(*loaded);
-      // The tier names the towers; its slot, not model.json, says which
-      // quality each one answers for.
-      const tier_profile& t = profile();
-      for (const auto& [quality, folder] : {std::pair{MV_AI_QUALITY_FAST, &t.picture_fast},
-                                            std::pair{MV_AI_QUALITY_HIGH, &t.picture_high}}) {
-        if (folder->empty()) continue;
-        auto spec = infer::read_clip_spec(join(core_dir, *folder));
-        if (!spec) continue;
-        spec->quality = quality;
-        towers[quality] = std::move(*spec);
-      }
     });
     ready = true;
   }
 
-  // The engine runs the pack's default tier until the picker (#482 T4) adds a
-  // choice. Read once, on first use (I/O, so never in mv_addon_get).
-  const tier_profile& profile() {
-    std::call_once(tier_once, [this] { tier_ = read_tier_profile(core_dir, {}); });
+  // Where the downloader puts a piece's upstream files (fetch.h): the same
+  // layout as the piece, under the add-on's data folder.
+  std::string fetched(const std::string& piece) const { return join(join(data_dir, "fetched"), piece); }
+
+  // The profile in force, re-read after a change of tier. I/O on first use
+  // and after a change only: the control thread's, never mv_addon_get's.
+  tier_profile profile() {
+    std::lock_guard lock(tier_m);
+    refresh_locked();
     return tier_;
+  }
+
+  void refresh_locked() {
+    if (!tiers_read) {
+      tiers = read_tier_set(core_dir);
+      std::ifstream in(fs_path(join(join(core_dir, "models"), "tiers.json")), std::ios::binary);
+      std::ostringstream text;
+      if (in) text << in.rdbuf();
+      tiers_text = text.str();
+      tiers_read = true;
+    }
+    if (!tier_stale) return;
+    tier_stale = false;
+    const std::string want = tier_id.empty() ? tiers.default_id : tier_id;
+    tier_ = tiers.tiers.front();
+    for (const tier_profile& t : tiers.tiers) {
+      if (t.id == want) tier_ = t;
+    }
+    // The tier names the towers; its slot, not model.json, says which
+    // quality each one answers for.
+    towers.clear();
+    for (const auto& [quality, folder] : {std::pair{MV_AI_QUALITY_FAST, &tier_.picture_fast},
+                                          std::pair{MV_AI_QUALITY_HIGH, &tier_.picture_high}}) {
+      if (folder->empty()) continue;
+      auto spec = infer::read_clip_spec(join(core_dir, *folder), join(fetched("ai"), *folder));
+      if (!spec) continue;
+      spec->quality = quality;
+      towers[quality] = std::move(*spec);
+    }
+  }
+
+  void set_tier(const std::string& id) {
+    std::lock_guard lock(tier_m);
+    if (id == tier_id && !tier_stale) return;
+    tier_id = id;
+    tier_stale = true;
+  }
+
+  // A tower of the tier in force; nullopt when it names none for `quality`.
+  // `fresh`: re-read a stale tier first (the control thread); the UI
+  // thread's informational calls take what is there.
+  std::optional<infer::clip_spec> tower(std::uint32_t quality, bool fresh = true) {
+    std::lock_guard lock(tier_m);
+    if (fresh) refresh_locked();
+    auto it = towers.find(quality);
+    if (it == towers.end()) return std::nullopt;
+    return it->second;
+  }
+
+  std::vector<std::uint32_t> qualities() {
+    std::lock_guard lock(tier_m);
+    std::vector<std::uint32_t> q;
+    for (const auto& [k, v] : towers) q.push_back(k);
+    return q;
   }
 
   // The Whisper folder for a quality: the slot asked for, else the other one.
   result<infer::whisper_spec> speech_spec(const std::string& audio_dir, std::uint32_t quality) {
-    const tier_profile& t = profile();
+    const tier_profile t = profile();
     const std::string& first = quality >= MV_AI_QUALITY_HIGH && !t.speech_high.empty() ? t.speech_high : t.speech_fast;
     const std::string& second = &first == &t.speech_high ? t.speech_fast : t.speech_high;
-    auto spec = infer::read_whisper_spec(join(audio_dir, first));
-    if (!spec && !second.empty()) spec = infer::read_whisper_spec(join(audio_dir, second));
+    if (first.empty()) return err(status::unsupported_format);
+    auto spec = infer::read_whisper_spec(join(audio_dir, first), join(fetched("ai-audio"), first));
+    if (!spec && !second.empty()) spec = infer::read_whisper_spec(join(audio_dir, second), join(fetched("ai-audio"), second));
     return spec;
+  }
+
+  // ---- downloads (#482 T3) --------------------------------------------------------
+  // The upstream files a piece's signed manifest lists for fetching, which
+  // this tier needs, as paths under fetched(): "<piece>/models/<folder>/<file>".
+  // The host verified that manifest before the piece's folder was handed out.
+  std::vector<remote_file> needed(const std::string& piece, const std::string& dir, const tier_profile& t,
+                                  bool pictures_only) const {
+    std::vector<remote_file> out;
+    std::ifstream in(fs_path(join(dir, "manifest.json")), std::ios::binary);
+    if (!in) return out;
+    std::ostringstream text;
+    text << in.rdbuf();
+    const auto doc = json::parse(text.str(), 8);
+    const json::value* remote = doc ? doc->find("remote") : nullptr;
+    if (!remote || remote->k != json::kind::array) return out;
+    std::vector<std::string> folders;
+    if (auto f = t.folders.find(piece); f != t.folders.end()) folders = f->second;
+    if (pictures_only) {
+      // The picture towers and what they share (the tokenizer folder):
+      // search opens on these alone.
+      std::vector<std::string> keep;
+      for (const std::string& f : folders) {
+        const bool tower = f == t.picture_high || f == t.picture_fast;
+        if (tower || f.find("tokenizer") != std::string::npos) keep.push_back(f);
+      }
+      folders = std::move(keep);
+    }
+    for (const json::value& r : remote->a) {
+      const std::string* url = r.str("url");
+      const std::string* path = r.str("path");
+      const std::string* sha = r.str("sha256");
+      const auto size = r.integer("size");
+      if (!url || !path || !sha || !size || *size <= 0) continue;
+      const bool wanted = t.folders.empty() || std::any_of(folders.begin(), folders.end(), [&](const std::string& f) {
+                            return path->rfind(f + "/", 0) == 0;
+                          });
+      if (!wanted) continue;
+      out.push_back(remote_file{*url, piece + "/" + *path, *sha, static_cast<std::uint64_t>(*size)});
+    }
+    return out;
+  }
+
+  // Everything the tier in force needs, the pictures first: (pictures, rest).
+  std::pair<std::vector<remote_file>, std::vector<remote_file>> downloads() {
+    const tier_profile t = profile();
+    auto pictures = needed("ai", core_dir, t, true);
+    std::vector<remote_file> rest;
+    for (const remote_file& f : needed("ai", core_dir, t, false)) {
+      if (std::none_of(pictures.begin(), pictures.end(), [&](const remote_file& g) { return g.path == f.path; })) {
+        rest.push_back(f);
+      }
+    }
+    for (const char* piece : {"ai-audio", "ai-faces", "ai-docs"}) {
+      if (auto dir = h->piece_dir(piece)) {
+        auto more = needed(piece, *dir, t, false);
+        rest.insert(rest.end(), more.begin(), more.end());
+      }
+    }
+    return {std::move(pictures), std::move(rest)};
   }
 };
 
@@ -121,10 +246,6 @@ std::vector<std::uint8_t> test_card(std::uint32_t w, std::uint32_t h) {
     }
   }
   return px;
-}
-
-std::filesystem::path fs_path(const std::string& utf8) {
-  return std::filesystem::path(std::u8string(utf8.begin(), utf8.end()));
 }
 
 // The CPU half of the provider self-test (docs/design/17), kept so a later start
@@ -259,6 +380,18 @@ double time_batch(infer::embedder& m, std::vector<float>& out) {
   std::sort(ms.begin(), ms.end());
   return ms[1];
 }
+
+// Every file a model needs is on disk (shipped, or fetched and verified):
+// the downloader writes a file under its final name only once it matches.
+bool files_present(std::initializer_list<std::string> files) {
+  std::error_code ec;
+  for (const std::string& f : files) {
+    if (f.empty() || !std::filesystem::is_regular_file(fs_path(f), ec)) return false;
+  }
+  return true;
+}
+
+bool files_present(const infer::clip_spec& s) { return files_present({s.image_file, s.text_file, s.vocab_file, s.merges_file}); }
 
 clip_meta meta_of(const infer::clip_spec& s) {
   clip_meta m;
@@ -550,19 +683,17 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
   d.prepare = [p] { p->ensure(); };
   d.qualities = [p] {
     if (!p->ready) return std::vector<std::uint32_t>{};
-    std::vector<std::uint32_t> q;
-    for (const auto& [k, v] : p->towers) q.push_back(k);
-    return q;
+    return p->qualities();
   };
   d.model_name = [p](std::uint32_t q) {
     if (!p->ready) return std::string();
-    auto it = p->towers.find(q);
-    return it == p->towers.end() ? std::string() : it->second.name;
+    auto t = p->tower(q, false);
+    return t ? t->name : std::string();
   };
   d.clip_spec = [p](std::uint32_t q) {
     if (!p->ready) return std::string();
-    auto it = p->towers.find(q);
-    return it == p->towers.end() ? std::string() : it->second.spec_key();
+    auto t = p->tower(q, false);
+    return t ? t->spec_key() : std::string();
   };
   d.backend_available = [p](infer::backend b) {
     if (!p->ready) return false;
@@ -571,9 +702,12 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
   d.open_clip = [p](std::uint32_t quality, std::uint32_t compute) -> result<loaded_clip> {
     p->ensure();
     if (!p->rt) return err(status::unsupported_format);
-    auto it = p->towers.find(quality);
-    if (it == p->towers.end()) return err(status::unsupported_format);
-    const infer::clip_spec& spec = it->second;
+    const auto found = p->tower(quality);
+    if (!found) return err(status::unsupported_format);
+    const infer::clip_spec& spec = *found;
+    // Still downloading (#482 T3): not_found, which the engine reports as
+    // waiting for the files rather than as a pack without models.
+    if (!files_present(spec)) return err(status::not_found);
     infer::session_options cpu;
     cpu.on = infer::backend::cpu;
     cpu.threads = 2;
@@ -658,7 +792,10 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     p->ensure();
     if (!p->rt) return err(status::unsupported_format);
     MV_TRY(std::string dir, p->h->piece_dir("ai-audio"));
-    MV_TRY(infer::clap_spec spec, infer::read_clap_spec(join(dir, p->profile().sounds)));
+    const std::string sounds = p->profile().sounds;
+    if (sounds.empty()) return err(status::unsupported_format);  // a tier without sound search
+    MV_TRY(infer::clap_spec spec, infer::read_clap_spec(join(dir, sounds), join(p->fetched("ai-audio"), sounds)));
+    if (!files_present({spec.audio_file, spec.text_file, spec.vocab_file})) return err(status::not_found);
     infer::session_options o;
     audio_options(compute, o);
     auto m = infer::clap_model::open(*p->rt, spec, o, nullptr);
@@ -686,6 +823,7 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     MV_TRY(std::string dir, p->h->piece_dir("ai-audio"));
     auto spec = p->speech_spec(dir, quality);
     if (!spec) return err(spec.error());
+    if (!files_present({spec->encoder_file, spec->decoder_file, spec->vocab_file})) return err(status::not_found);
     infer::session_options o;
     audio_options(compute, o);
     auto m = infer::whisper_model::open(*p->rt, *spec, o, nullptr);
@@ -704,7 +842,10 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     p->ensure();
     if (!p->rt) return err(status::unsupported_format);
     MV_TRY(std::string dir, p->h->piece_dir("ai-faces"));
-    MV_TRY(infer::face_spec spec, infer::read_face_spec(join(dir, p->profile().faces)));
+    const std::string faces = p->profile().faces;
+    if (faces.empty()) return err(status::unsupported_format);
+    MV_TRY(infer::face_spec spec, infer::read_face_spec(join(dir, faces), join(p->fetched("ai-faces"), faces)));
+    if (!files_present({spec.detector_file, spec.embedder_file})) return err(status::not_found);
     infer::session_options cpu;
     cpu.threads = 1;
     // The embedder on the towers' compute choice (the detector stays on CPU:
@@ -742,13 +883,13 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
                                 : compute == MV_AI_COMPUTE_COREML ? infer::backend::coreml
                                                                   : infer::backend::cpu;
     if (want != infer::backend::coreml || !p->rt->has_provider(want)) return false;
-    auto it = p->towers.find(quality);
-    if (it == p->towers.end()) return false;
+    const auto tower = p->tower(quality);
+    if (!tower) return false;
     std::error_code ec;
     for (const auto& e : std::filesystem::directory_iterator(fs_path(coreml_cache(*p)), ec)) {
       std::ifstream in(e.path() / "model.txt", std::ios::binary);
       std::string model;
-      if (in && std::getline(in, model) && model == it->second.image_file && coreml_entry_complete(e.path())) {
+      if (in && std::getline(in, model) && model == tower->image_file && coreml_entry_complete(e.path())) {
         return false;
       }
     }
@@ -757,34 +898,35 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
   d.accelerated_failure = [p](std::uint32_t quality) -> std::optional<std::string> {
     if (!p->ready || !p->rt) return std::nullopt;
     const infer::backend on = accelerated(*p->rt);
-    auto it = p->towers.find(quality);
-    if (on == infer::backend::cpu || it == p->towers.end()) return std::nullopt;
-    auto v = read_verdict(*p, verdict_key(*p->rt, on, it->second.spec_key()));
+    const auto tower = p->tower(quality, false);
+    if (on == infer::backend::cpu || !tower) return std::nullopt;
+    auto v = read_verdict(*p, verdict_key(*p->rt, on, tower->spec_key()));
     if (!v || v->outcome == "ok") return std::nullopt;
     return v->detail;
   };
   d.forget_accelerated_failure = [p](std::uint32_t quality) {
     if (!p->ready || !p->rt) return;
-    auto it = p->towers.find(quality);
-    if (it != p->towers.end()) forget_verdict(*p, verdict_key(*p->rt, accelerated(*p->rt), it->second.spec_key()));
+    if (const auto tower = p->tower(quality, false)) {
+      forget_verdict(*p, verdict_key(*p->rt, accelerated(*p->rt), tower->spec_key()));
+    }
   };
   // A reader (engine_options::read_only, docs/design/23): text towers only, on CPU.
   d.clip_spec_key = [p](std::uint32_t quality) {
     p->ensure();
-    auto it = p->towers.find(quality);
-    return it == p->towers.end() ? std::string() : it->second.spec_key();
+    const auto tower = p->tower(quality);
+    return tower ? tower->spec_key() : std::string();
   };
   d.open_clip_text = [p](std::uint32_t quality) -> result<loaded_clip> {
     p->ensure();
     if (!p->rt) return err(status::unsupported_format);
-    auto it = p->towers.find(quality);
-    if (it == p->towers.end()) return err(status::unsupported_format);
+    const auto tower = p->tower(quality);
+    if (!tower) return err(status::unsupported_format);
     infer::session_options cpu;
     cpu.on = infer::backend::cpu;
     cpu.threads = 2;
-    MV_TRY(auto m, infer::clip_model::open_text_only(*p->rt, it->second, cpu));
+    MV_TRY(auto m, infer::clip_model::open_text_only(*p->rt, *tower, cpu));
     loaded_clip out;
-    out.meta = meta_of(it->second);
+    out.meta = meta_of(*tower);
     out.model = std::shared_ptr<infer::embedder>(std::move(m));
     out.on = infer::backend::cpu;
     return out;
@@ -793,7 +935,10 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     p->ensure();
     if (!p->rt) return err(status::unsupported_format);
     MV_TRY(std::string dir, p->h->piece_dir("ai-audio"));
-    MV_TRY(infer::clap_spec spec, infer::read_clap_spec(join(dir, p->profile().sounds)));
+    const std::string sounds = p->profile().sounds;
+    if (sounds.empty()) return err(status::unsupported_format);  // a tier without sound search
+    MV_TRY(infer::clap_spec spec, infer::read_clap_spec(join(dir, sounds), join(p->fetched("ai-audio"), sounds)));
+    if (!files_present({spec.audio_file, spec.text_file, spec.vocab_file})) return err(status::not_found);
     infer::session_options cpu;
     cpu.on = infer::backend::cpu;
     cpu.threads = 2;
@@ -817,7 +962,10 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     p->ensure();
     if (!p->rt) return err(status::unsupported_format);
     MV_TRY(std::string dir, p->h->piece_dir("ai-docs"));
-    MV_TRY(infer::text_spec spec, infer::read_text_spec(join(dir, p->profile().documents)));
+    const std::string documents = p->profile().documents;
+    if (documents.empty()) return err(status::unsupported_format);
+    MV_TRY(infer::text_spec spec, infer::read_text_spec(join(dir, documents), join(p->fetched("ai-docs"), documents)));
+    if (!files_present({spec.model_file, spec.vocab_file})) return err(status::not_found);
     infer::session_options cpu;
     cpu.on = infer::backend::cpu;
     cpu.threads = 2;
@@ -838,6 +986,94 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     if (!dir) return std::string();
     auto spec = p->speech_spec(*dir, quality);
     return spec ? spec->spec_key() : std::string();
+  };
+  // ---- model tiers and downloads (#482) ----
+  d.set_tier = [p](const std::string& tier) { p->set_tier(tier); };
+  d.tiers_json = [p]() -> std::string {
+    // What the control thread read (refresh_locked): Settings asks from the UI thread.
+    std::lock_guard lock(p->tier_m);
+    return p->tiers_text.empty() ? std::string("{}") : p->tiers_text;
+  };
+  d.fetch_models = [p](const std::atomic<bool>& stop, const std::function<void(const fetch_progress&)>& progress,
+                       const std::function<void()>& pictures) -> expected {
+    auto [first, rest] = p->downloads();
+    const std::string root = join(p->data_dir, "fetched");
+    auto net = make_http_transport();
+    if (!net) {
+      // No transport here: the pack must carry its models.
+      return first.empty() && rest.empty() ? expected{} : expected{err(status::unsupported_format)};
+    }
+    fetcher f(root, *net);
+    std::uint64_t all = 0, first_bytes = 0;
+    for (const remote_file& r : first) first_bytes += r.size;
+    all = first_bytes;
+    for (const remote_file& r : rest) all += r.size;
+    const auto files_all = static_cast<std::uint32_t>(first.size() + rest.size());
+    const auto relay = [&](std::uint64_t offset, std::uint32_t files_before) {
+      return [&progress, offset, files_before, all, files_all](const fetch_progress& q) {
+        fetch_progress out = q;
+        out.done_bytes = offset + q.done_bytes;
+        out.total_bytes = all;
+        out.files_done = files_before + q.files_done;
+        out.files_total = files_all;
+        if (q.state == fetch_state::done && out.files_done < files_all) out.state = fetch_state::downloading;
+        if (progress) progress(out);
+      };
+    };
+    MV_TRY_VOID(f.run(first, stop, relay(0, 0)));
+    if (pictures) pictures();
+    return f.run(rest, stop, relay(first_bytes, static_cast<std::uint32_t>(first.size())));
+  };
+  d.models_present = [p] {
+    auto [first, rest] = p->downloads();
+    const std::string root = join(p->data_dir, "fetched");
+    for (const auto* list : {&first, &rest}) {
+      for (const remote_file& r : *list) {
+        if (!fetch_ready(root, r)) return false;
+      }
+    }
+    return true;
+  };
+  d.prune_models = [p] {
+    auto [first, rest] = p->downloads();
+    first.insert(first.end(), rest.begin(), rest.end());
+    prune_fetched(join(p->data_dir, "fetched"), first);
+  };
+  // A tower of any tier, by its index key, on CPU: after a change of tier the
+  // vectors in the index came from the old one, which answers until the new
+  // one covers the folder (load_models), so it must still open.
+  d.open_clip_spec = [p](const std::string& spec_key) -> result<loaded_clip> {
+    p->ensure();
+    if (!p->rt) return err(status::unsupported_format);
+    tier_set all;
+    {
+      std::lock_guard lock(p->tier_m);
+      p->refresh_locked();
+      all = p->tiers;
+    }
+    for (const tier_profile& t : all.tiers) {
+      for (const auto& [quality, folder] : {std::pair{MV_AI_QUALITY_FAST, &t.picture_fast},
+                                            std::pair{MV_AI_QUALITY_HIGH, &t.picture_high}}) {
+        if (folder->empty()) continue;
+        auto spec = infer::read_clip_spec(join(p->core_dir, *folder), join(p->fetched("ai"), *folder));
+        if (!spec || spec->spec_key() != spec_key || !files_present(*spec)) continue;
+        spec->quality = quality;
+        infer::session_options cpu;
+        cpu.on = infer::backend::cpu;
+        cpu.threads = 2;
+        MV_TRY(auto m, infer::clip_model::open(*p->rt, *spec, cpu, nullptr));
+        loaded_clip out;
+        out.meta = meta_of(*spec);
+        out.model = std::shared_ptr<infer::embedder>(std::move(m));
+        out.on = infer::backend::cpu;
+        return out;
+      }
+    }
+    return err(status::not_found);
+  };
+  d.clip_gaps = [p]() -> std::pair<std::uint32_t, std::uint32_t> {
+    const tier_profile t = p->profile();
+    return {t.min_gap_ms, t.max_gap_ms};
   };
   d.runtime_version = [p] {
     if (!p->ready) return std::string();

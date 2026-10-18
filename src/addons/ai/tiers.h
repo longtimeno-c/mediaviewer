@@ -11,8 +11,11 @@
 // either may be empty (a tier with one tower), never both.
 #pragma once
 
+#include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "core/result.h"
 
@@ -26,7 +29,25 @@ struct tier_profile {
   std::string sounds;
   std::string faces;
   std::string documents;
+  // Piece -> every folder this tier needs there, tokenizers included
+  // (ai-models.py writes it): what the downloader fetches. Empty in a pack
+  // staged before it: the downloader then fetches every file a piece lists.
+  std::map<std::string, std::vector<std::string>> folders;
+  // Clip sampling (docs/design/17 "Frame sampling"): 0 = the engine's own.
+  std::uint32_t min_gap_ms = 0;
+  std::uint32_t max_gap_ms = 0;
+  bool sounds_off_by_default = false;  // Intel: CLAP installed, not run until asked
 };
+
+struct tier_set {
+  std::string default_id;
+  std::vector<tier_profile> tiers;  // in the file's order (the picker's)
+};
+
+// Every profile of a tiers.json text; profiles that do not parse are left out.
+[[nodiscard]] result<tier_set> parse_tier_set(std::string_view json_text);
+// <core_dir>/models/tiers.json's, or a set of legacy_profile() alone.
+[[nodiscard]] tier_set read_tier_set(const std::string& core_dir_utf8);
 
 // The profile `tier` of a tiers.json text; "" means the file's default.
 // status::corrupt for a malformed file or a folder that is not models/<name>;
