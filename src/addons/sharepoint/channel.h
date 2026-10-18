@@ -76,8 +76,10 @@ struct message {
 struct hello {
   std::uint32_t version = 0;
   bool rejoin = false;
-  std::array<std::uint8_t, 16> tag{};  // rejoin: which session
-  std::vector<std::uint8_t> body;      // protocol 1: the commitment; 2: the first Noise message
+  bool internet = false;               // #472 PR 2: a sender with an internet code
+  std::array<std::uint8_t, 16> tag{};  // rejoin: which session; internet: CPace's session id
+  std::vector<std::uint8_t> body;      // protocol 1: the commitment; 2: the first Noise message;
+                                       // internet: the sender's CPace message
 };
 
 // What happened to a protocol 2 channel's link (channel::set_on_link).
@@ -94,6 +96,9 @@ struct channel_options {
   // Protocol 2: this side's X25519 key in the XX handshake (the engine's,
   // made once a run). Empty: one is made for this link.
   std::optional<std::array<std::uint8_t, 32>> static_key;
+  // #472 PR 2, the receiver: the secret of the code it showed, which an
+  // internet hello must know. Empty: an internet hello is refused.
+  std::optional<std::array<std::uint8_t, 6>> internet_secret;
 };
 
 class channel {
@@ -118,8 +123,19 @@ class channel {
                                                              std::string_view my_id, std::string_view my_name) {
     return open(std::move(l), client, my_id, my_name, options{});
   }
+  // #472 PR 2, the sender with an internet code: CPace on `secret`, then
+  // Noise_XXhfs+psk0 keyed by it (noise.h). A wrong or spent code fails
+  // (status::io or ::corrupt: the receiver hangs up). code() is then the
+  // six-digit check both windows may show (it differs whenever someone is in
+  // the middle), not a code to type.
+  [[nodiscard]] static result<std::unique_ptr<channel>> open_internet(std::shared_ptr<link> l,
+                                                                      std::span<const std::uint8_t> secret,
+                                                                      std::string_view my_id, std::string_view my_name,
+                                                                      const options& opts = {});
   // The server in two steps: the hello first (a rejoin goes to the live
-  // channel it names, accept_rejoin), then a new channel from it.
+  // channel it names, accept_rejoin), then a new channel from it. An
+  // internet hello needs opts.internet_secret; a wrong code is
+  // status::permission_denied.
   [[nodiscard]] static result<hello> read_hello(link& l, std::chrono::steady_clock::time_point deadline);
   [[nodiscard]] static result<std::unique_ptr<channel>> open_server(std::shared_ptr<link> l, hello h,
                                                                     std::string_view my_id, std::string_view my_name,
@@ -132,6 +148,9 @@ class channel {
   [[nodiscard]] std::uint32_t version() const noexcept { return version_; }
   // Protocol 2: the session can move to another link.
   [[nodiscard]] bool resumable() const noexcept { return version_ >= 2; }
+  // Opened with an internet code (#472 PR 2): the peer is a new device,
+  // known only by the code; code() is the check, not a code to type.
+  [[nodiscard]] bool internet() const noexcept { return internet_; }
 
   // Any thread; serialised. Protocol 2: the message is kept until the peer
   // acknowledges it, so a link that drops under it does not fail the send;
@@ -191,6 +210,11 @@ class channel {
   [[nodiscard]] static result<std::unique_ptr<channel>> open_v2(std::unique_ptr<channel> c, bool client,
                                                                 const hello* theirs, const options& opts,
                                                                 std::chrono::steady_clock::time_point deadline);
+  [[nodiscard]] static result<std::unique_ptr<channel>> open_internet_v2(std::unique_ptr<channel> c, bool client,
+                                                                         const hello* theirs,
+                                                                         std::span<const std::uint8_t> secret,
+                                                                         const options& opts,
+                                                                         std::chrono::steady_clock::time_point deadline);
   [[nodiscard]] expected exchange_ident(std::string_view my_id, std::string_view my_name,
                                         std::chrono::steady_clock::time_point deadline);
   // Protocol 1: one message, sealed, on the link. send_m_ held.
@@ -220,6 +244,7 @@ class channel {
   void notify(link_event e);
 
   std::uint32_t version_ = kProtocolVersion;
+  bool internet_ = false;
   std::atomic<transport> via_{transport::wifi};
   std::string code_, peer_id_, peer_name_;
   std::unique_ptr<state> st_;  // the keys: push under send_m_, pull the reader's

@@ -395,3 +395,61 @@ TEST_CASE("sharepoint internet: UPnP-IGD maps a port, opens an IPv6 pinhole, and
     CHECK(has("#DeletePinhole"));
   }
 }
+
+// ---- the internet handshake ------------------------------------------------------------------------
+
+namespace {
+struct internet_pair {
+  mv::result<std::unique_ptr<sp::channel>> sender = mv::err(mv::status::internal);
+  mv::result<std::unique_ptr<sp::channel>> receiver = mv::err(mv::status::internal);
+};
+internet_pair open_internet(const std::array<std::uint8_t, 6>& typed, std::optional<std::array<std::uint8_t, 6>> shown) {
+  auto [a, b] = loopback_pair();
+  internet_pair p;
+  std::thread t([&, l = std::shared_ptr<sp::link>(std::move(b))]() mutable {
+    auto h = sp::channel::read_hello(*l, std::chrono::steady_clock::now() + std::chrono::seconds(5));
+    if (!h) {
+      p.receiver = mv::err(h.error());
+      return;
+    }
+    sp::channel::options o;
+    o.internet_secret = shown;
+    p.receiver = sp::channel::open_server(l, std::move(*h), "bbbbbbbbbbbbbbbb", "Bea", o);
+  });
+  p.sender = sp::channel::open_internet(std::shared_ptr<sp::link>(std::move(a)), typed, "aaaaaaaaaaaaaaaa", "Ann");
+  t.join();
+  return p;
+}
+}  // namespace
+
+TEST_CASE("sharepoint internet: the right code opens both ends, with the same check", "[sharepoint]") {
+  const std::array<std::uint8_t, 6> secret = {1, 2, 3, 4, 5, 6};
+  auto p = open_internet(secret, secret);
+  REQUIRE(p.sender);
+  REQUIRE(p.receiver);
+  CHECK((*p.sender)->internet());
+  CHECK((*p.receiver)->internet());
+  CHECK((*p.sender)->code() == (*p.receiver)->code());
+  CHECK((*p.sender)->code().size() == 7);
+  CHECK((*p.sender)->resumable());
+  CHECK((*p.receiver)->peer_name() == "Ann");
+  REQUIRE((*p.sender)->send(sp::msg::offer, std::string_view("{\"n\":1}")));
+  sp::message m;
+  REQUIRE((*p.receiver)->receive(m, 3000));
+  CHECK(m.text() == "{\"n\":1}");
+}
+
+TEST_CASE("sharepoint internet: a wrong code is refused at the receiver's first read", "[sharepoint]") {
+  const std::array<std::uint8_t, 6> shown = {1, 2, 3, 4, 5, 6};
+  std::array<std::uint8_t, 6> typed = shown;
+  typed[5] ^= 1;
+  auto p = open_internet(typed, shown);
+  REQUIRE_FALSE(p.receiver);
+  CHECK(p.receiver.error() == mv::status::permission_denied);
+  REQUIRE_FALSE(p.sender);
+  // And with no code waiting, an internet hello is simply closed.
+  auto q = open_internet(shown, std::nullopt);
+  REQUIRE_FALSE(q.receiver);
+  CHECK(q.receiver.error() == mv::status::not_found);
+  REQUIRE_FALSE(q.sender);
+}
