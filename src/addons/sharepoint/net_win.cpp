@@ -77,6 +77,7 @@ class socket_events {
   }
   socket_events(const socket_events&) = delete;
   socket_events& operator=(const socket_events&) = delete;
+  WSAEVENT event() const noexcept { return ev_; }
 
   // Up to `timeout_ms` for FD_READ or FD_WRITE (a read also takes FD_CLOSE,
   // which stays: every later read sees it). 1 when it came or may have (the
@@ -548,6 +549,7 @@ class udp_port final : public udp_socket {
   }
   void shutdown() noexcept override { down_.store(true); }
   std::intptr_t handle() const noexcept override { return static_cast<std::intptr_t>(s_); }
+  socket_events& events() noexcept { return events_; }
   void set_buffers(int bytes) noexcept override {
     (void)::setsockopt(s_, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&bytes), sizeof bytes);
     (void)::setsockopt(s_, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&bytes), sizeof bytes);
@@ -564,20 +566,32 @@ class udp_port final : public udp_socket {
 }  // namespace
 
 result<std::size_t> wait_readable(std::span<udp_socket* const> socks, std::span<bool> ready, int timeout_ms) {
-  std::vector<WSAPOLLFD> p(socks.size());
-  for (std::size_t i = 0; i < socks.size(); ++i) {
-    p[i].fd = static_cast<SOCKET>(socks[i]->handle());
-    p[i].events = POLLRDNORM;
+  // Not one WSAPoll over them all: streams send on these sockets meanwhile
+  // (socket_events). Every udp_socket here is a udp_port.
+  const auto look = [&] {
+    std::size_t n = 0;
+    for (std::size_t i = 0; i < socks.size() && i < ready.size(); ++i) {
+      ready[i] = static_cast<udp_port*>(socks[i])->events().wait(FD_READ, 0) > 0;
+      n += ready[i] ? 1 : 0;
+    }
+    return n;
+  };
+  if (const std::size_t n = look(); n > 0) return n;
+  // WSAWaitForMultipleEvents takes 64 at most: a birthday punch's sockets
+  // past those are seen when the wait ends, `timeout_ms` later at most.
+  WSAEVENT evs[WSA_MAXIMUM_WAIT_EVENTS];
+  DWORD count = 0;
+  for (std::size_t i = 0; i < socks.size() && count < WSA_MAXIMUM_WAIT_EVENTS; ++i) {
+    const WSAEVENT e = static_cast<udp_port*>(socks[i])->events().event();
+    if (e != WSA_INVALID_EVENT) evs[count++] = e;
   }
-  const int r = ::WSAPoll(p.data(), static_cast<ULONG>(p.size()), timeout_ms);
-  if (r == SOCKET_ERROR) return err(status::io);
-  if (r == 0) return err(status::timeout);
-  std::size_t n = 0;
-  for (std::size_t i = 0; i < socks.size() && i < ready.size(); ++i) {
-    ready[i] = p[i].revents != 0;
-    n += ready[i] ? 1 : 0;
+  if (count == 0) return err(status::io);
+  if (::WSAWaitForMultipleEvents(count, evs, FALSE, static_cast<DWORD>(std::max(timeout_ms, 0)), FALSE) ==
+      WSA_WAIT_FAILED) {
+    return err(status::io);
   }
-  return n;
+  if (const std::size_t n = look(); n > 0) return n;
+  return err(status::timeout);
 }
 
 void reserve_sockets(int) noexcept {}  // Winsock has no per-process socket limit to raise
