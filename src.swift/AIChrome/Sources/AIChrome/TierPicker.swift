@@ -33,6 +33,7 @@ extension AITable {
   }
 }
 
+@MainActor
 struct TierPickerView: View {
   let catalogue: TierCatalogue
   /// Download: the tier and the pieces to install.
