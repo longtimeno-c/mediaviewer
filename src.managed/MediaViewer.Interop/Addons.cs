@@ -841,6 +841,26 @@ public interface IAddonThemeShape
     double TypeScale { get; }
 }
 
+/// <summary>
+/// #482: the Local search model picker (the add-on's own window) asks the host
+/// to install the family pieces the chosen tier and its checkboxes need, as
+/// their Install buttons in Settings would. A new interface, never new members
+/// on <see cref="IAddonHost2"/>: an installed pack's chrome was compiled
+/// against that as it is. A chrome compiled against this reaches it only from
+/// a method that can fail to load on an older host (AiChrome.ReportPill's
+/// pattern); without it, the pieces stay to be installed from Settings.
+/// </summary>
+public interface IAddonPieces
+{
+    /// <summary>
+    /// Queues installs of these pieces ("ai-faces", "ai-audio", "ai-docs",
+    /// "ai-large"), one after another. Ids the host does not offer this way
+    /// are ignored; an installed or already queued piece is skipped. Any
+    /// thread (the host marshals to its UI thread); never blocks.
+    /// </summary>
+    void InstallPieces(IReadOnlyList<string> pieceIds);
+}
+
 /// <summary>The search commands the native router forwards (ShowAddon kinds).</summary>
 public static class SearchCommand
 {

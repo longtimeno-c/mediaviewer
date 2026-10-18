@@ -153,27 +153,27 @@ void clap_features::compute(std::span<const float> pcm, std::vector<float>& out)
   }
 }
 
-whisper_features::whisper_features()
-    : fft_(400), window_(periodic_hann(400)), mel_(slaney_mel_bank(201, kMels, 0.0, 8000.0, kRate)) {}
+whisper_features::whisper_features(std::size_t mels)
+    : mels_(mels), fft_(400), window_(periodic_hann(400)), mel_(slaney_mel_bank(201, mels, 0.0, 8000.0, kRate)) {}
 
 void whisper_features::compute(std::span<const float> pcm, std::vector<float>& out) const {
   std::vector<float> x(kSamples, 0.0f);
   std::copy_n(pcm.begin(), std::min(pcm.size(), kSamples), x.begin());
   std::vector<double> m;
-  mel_power(x, 400, 160, kFrames + 1, fft_, window_, mel_, kMels, m);  // the last frame is dropped
-  std::vector<double> lg(kFrames * kMels);
+  mel_power(x, 400, 160, kFrames + 1, fft_, window_, mel_, mels_, m);  // the last frame is dropped
+  std::vector<double> lg(kFrames * mels_);
   double peak = -1e30;
   for (std::size_t f = 0; f < kFrames; ++f) {
-    for (std::size_t j = 0; j < kMels; ++j) {
-      const double v = std::log10(std::max(1e-10, m[f * kMels + j]));
-      lg[f * kMels + j] = v;
+    for (std::size_t j = 0; j < mels_; ++j) {
+      const double v = std::log10(std::max(1e-10, m[f * mels_ + j]));
+      lg[f * mels_ + j] = v;
       peak = std::max(peak, v);
     }
   }
-  out.assign(kMels * kFrames, 0.0f);
+  out.assign(mels_ * kFrames, 0.0f);
   for (std::size_t f = 0; f < kFrames; ++f) {
-    for (std::size_t j = 0; j < kMels; ++j) {
-      const double v = std::max(lg[f * kMels + j], peak - 8.0);
+    for (std::size_t j = 0; j < mels_; ++j) {
+      const double v = std::max(lg[f * mels_ + j], peak - 8.0);
       out[j * kFrames + f] = static_cast<float>((v + 4.0) / 4.0);  // [mels x frames]
     }
   }

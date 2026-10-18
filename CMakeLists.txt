@@ -969,31 +969,19 @@ add_custom_command(TARGET mediaviewer_lab POST_BUILD
 # The core still builds with no .NET; chrome is a lab-side host, not a back-edge.
 find_program(DOTNET_EXE dotnet)
 set(MV_CHROME_PROJ "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/MediaViewer.Chrome.csproj")
-set(MV_CHROME_SOURCES
-  ${MV_CHROME_PROJ}
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Filmstrip.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Video.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Commands.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Gallery.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Settings.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.DragDrop.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.About.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/ChromeApp.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/CrashCapture.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Update.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Telemetry.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Addons.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Panels.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/IslandHost.Edit.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/Shared/FakeInput.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Interop/Addons.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/MediaViewer.Updater.csproj"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/UpdateKeys.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/UpdateManifest.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/SignedManifestSource.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/TrialState.cs"
-  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/UpdateService.cs"
+# Every source the publish compiles: the chrome project and the projects it
+# references (Interop, Updater) plus the Shared files it links in. Globbed, not
+# listed - a hand-kept list went stale and an edit to an unlisted file left an
+# old MediaViewer.Chrome.dll beside the lab. Top level only, so obj/ is out;
+# CONFIGURE_DEPENDS re-globs on build, so a new .cs file is picked up too.
+file(GLOB MV_CHROME_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/*.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Chrome/*.csproj"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Interop/*.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Interop/*.csproj"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/*.cs"
+  "${CMAKE_SOURCE_DIR}/src.managed/MediaViewer.Updater/*.csproj"
+  "${CMAKE_SOURCE_DIR}/src.managed/Shared/*.cs"
 )
 if(DOTNET_EXE)
   # Publish beside the lab on every lab link so `cmake --build --target
@@ -1428,6 +1416,9 @@ if(MV_BUILD_TESTS)
     tests/test_ai_query.cpp
     tests/test_ai_documents.cpp
     tests/test_ai_docs.cpp
+    tests/test_ai_tiers.cpp
+    tests/test_ai_contract.cpp
+    tests/test_ai_fetch.cpp
     # #403: the OS text reader over a labelled set (hidden: [.ocr-fixture]).
     tests/test_ai_ocr.cpp
     tests/test_nle.cpp

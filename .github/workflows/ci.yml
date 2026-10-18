@@ -842,6 +842,19 @@ jobs:
         # sharepoint (#472) too.
         run: ./tools/fuzz/run.ps1 -BuildDir build -Seconds 30 -Harness 'decode','animation','thumbnail','script','pdf','docx','pptx','sharepoint'
 
+      # #384: the metadata readers (#290, #352, #345, #291), the place loader and
+      # map (#344), the add-on contributions (PR 56) and the Local search query
+      # language (#291). Built since they landed, each fuzzed clean on the Mac,
+      # never run here. They start non-gating like every new harness and move to
+      # the gating step once CI has seen them start and run clean on the runner.
+      - name: Fuzz (new harnesses, non-gating)
+        continue-on-error: true
+        run: |
+          $harnesses = 'meta_c2pa','meta_jpeg','meta_png','meta_webp','meta_bmff','meta_xmp','meta_icc',
+                       'meta_location','meta_probe','meta_search','geo','places_map',
+                       'addon_contributions','ai_query'
+          ./tools/fuzz/run.ps1 -BuildDir build -Seconds 30 -Harness $harnesses
+
       - name: Upload fuzz artefacts
         if: failure()
         uses: actions/upload-artifact@v4

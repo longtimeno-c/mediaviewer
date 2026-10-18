@@ -225,6 +225,13 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
   opened, and every file (and that there is nothing extra) before install **and at every load**.
   Windows binaries are Authenticode-signed when the release is. The Mac bundle is Developer
   ID-signed and notarized and loads only under library validation (same Team ID).
+- **Files an add-on fetches itself (#482).** A manifest may list `remote` files (URL, path,
+  size, SHA-256, licence): pinned `https://huggingface.co/` files the add-on downloads after
+  install into its `data` folder and checks against that list (the AI pack's models,
+  [17](17-local-ai-search.md) "The AI pack"). They are not in the version folder, so the
+  install and every load verify without them; the core checks the list's shape (only plain
+  Hugging Face URLs, safe paths, never a shipped path). Third-party add-ons get no network
+  ([25](25-open-addons.md)).
 - **Location:** `%LocalAppData%\MediaViewer\addons\import\<version>` on Windows and
   `~/Library/Application Support/MediaViewer/Add-ons/Import/<version>` on Mac; the add-on's own
   data (`import.db`) is in `<addon>/data`, and downloads verify in `<addons>/.staging/<n>`

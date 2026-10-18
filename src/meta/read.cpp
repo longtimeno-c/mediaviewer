@@ -104,6 +104,8 @@ void read_beyond(std::string_view utf8_path, std::span<const std::uint8_t> prefi
       ev.c2pa_generator = probed.c2pa_generator;
       ev.c2pa_agents = probed.c2pa_agents;
       ev.c2pa_signer = probed.c2pa_signer;
+      ev.c2pa_created = probed.c2pa_created;
+      ev.c2pa_signed = probed.c2pa_signed;
       bool xmp_skipped = probed.xmp_source_type.empty();
       for (const std::string& t : probed.source_types) {
         if (!xmp_skipped && t == probed.xmp_source_type) {
@@ -132,6 +134,9 @@ void read_beyond(std::string_view utf8_path, std::span<const std::uint8_t> prefi
   out.s.made_with = p.made_with;
   out.s.ai_generated = p.ai_generated;
   out.s.ai_evidence = p.evidence;
+  // #415: Summary's fallback dates (meta.h summary_date), never the sort key.
+  out.s.c2pa_created = ev.c2pa_created;
+  out.s.c2pa_signed = ev.c2pa_signed;
 }
 
 }  // namespace
@@ -150,7 +155,12 @@ result<metadata> read(std::string_view utf8_path) {
   const std::span<const std::uint8_t> head(prefix->data(), std::min<std::size_t>(prefix->size(), 1024));
   const codec::format_family family = codec::probe(head);
   metadata out;
-  out.s.file_size = file_size_of(utf8_path);
+  // One stat, as before: the size, and (#415) the volume's creation time for
+  // Summary's File created fallback.
+  if (auto st = io::stat_path(utf8_path)) {
+    out.s.file_size = st->size;
+    out.s.file_created_unix = st->created_unix;
+  }
   out.s.format = codec::format_name(family);
   parse::evidence ev;
   if (family == codec::format_family::unknown) {

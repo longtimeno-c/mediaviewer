@@ -385,12 +385,14 @@ jobs:
           $notices = Get-ChildItem build/_ort -Recurse -Filter ThirdPartyNotices.txt | Select-Object -First 1
           if (-not $notices) { throw 'ONNX Runtime ThirdPartyNotices.txt not found' }
           Copy-Item $notices.FullName build/addons/ai
-          # Staging ai-faces re-exports the People embedder (face-export.py, torch).
+          # Staging re-exports our own models (face-export.py, clip-export.py: torch).
           python -m pip install --disable-pip-version-check -r tools/package/requirements-export.txt
           if ($LASTEXITCODE) { throw 'pip install (model export) failed' }
           # Pinned revisions, SHA-256 and licence checked (docs/design/17 licence gate).
-          foreach ($piece in 'ai', 'ai-audio', 'ai-docs', 'ai-faces') {
-            python tools/package/ai-models.py stage --piece $piece --out "build/addons/$piece"
+          # --upstream remote (#482): upstream models are listed in the signed
+          # manifest and fetched from Hugging Face on install, never zipped here.
+          foreach ($piece in 'ai', 'ai-audio', 'ai-docs', 'ai-faces', 'ai-large') {
+            python tools/package/ai-models.py stage --piece $piece --out "build/addons/$piece" --upstream remote
             if ($LASTEXITCODE) { throw "staging $piece models failed" }
             python tools/package/addon-pack.py pack --addon $piece --platform win-x64 --src "build/addons/$piece" `
               --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
@@ -404,8 +406,6 @@ jobs:
           python tools/package/addon-pack.py pack --addon ai-cuda --platform win-x64 --src build/addons/ai-cuda `
             --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
           if ($LASTEXITCODE) { throw 'packing ai-cuda failed' }
-          python tools/package/addon-pack.py ceiling (Get-ChildItem dist/addon/mediaviewer-addon-ai*-win-x64.json).FullName
-          if ($LASTEXITCODE) { throw 'the AI family is over its 5 GB ceiling' }
 
       - name: Collect release assets
         run: |
@@ -418,7 +418,7 @@ jobs:
           }
           # Add-ons stay on the stable feed (docs/design/18): previews carry none.
           if ($env:MODE -eq 'stable') {
-            foreach ($addon in 'import', 'sharepoint', 'ai', 'ai-audio', 'ai-docs', 'ai-faces', 'ai-cuda') {
+            foreach ($addon in 'import', 'sharepoint', 'ai', 'ai-audio', 'ai-docs', 'ai-faces', 'ai-large', 'ai-cuda') {
               Copy-Item "dist/addon/mediaviewer-addon-$addon-win-x64.zip", "dist/addon/mediaviewer-addon-$addon-win-x64.json", "dist/addon/mediaviewer-addon-$addon-win-x64.json.sig" upload
             }
             # Places is preferred: upload a complete pack, and publish without it
@@ -711,7 +711,7 @@ jobs:
 
       # A job-local venv: the runner's Homebrew Python owns packages such as
       # cryptography that pip cannot uninstall, so pinned versions go here.
-      # requirements-export.txt: staging ai-faces re-exports the People embedder
+      # requirements-export.txt: staging re-exports our own models (People embedder, #482 towers)
       # (face-export.py, torch); the stable add-on step needs it.
       - name: Python tools (dmgbuild, add-on packer)
         run: |
@@ -828,19 +828,19 @@ jobs:
           set -euo pipefail
           mkdir -p build/addons/ai
           tar -xf apps/AiAddon-arm64.tar -C build/addons/ai
-          # Code first: the notary service gets the binaries, not a gigabyte of
-          # weights. The Sound, Documents and People pieces carry no code.
+          # Code first: the notary service gets the binaries, not our exports.
+          # The Sound, Documents, People and Large pieces carry no code.
           python3 tools/mac/macpack.py addon --dir build/addons/ai \
             --identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
-          for piece in ai ai-audio ai-docs ai-faces; do
-            python3 tools/package/ai-models.py stage --piece "$piece" --out "build/addons/$piece"
+          # --upstream remote (#482): upstream models are fetched on install.
+          for piece in ai ai-audio ai-docs ai-faces ai-large; do
+            python3 tools/package/ai-models.py stage --piece "$piece" --out "build/addons/$piece" --upstream remote
             python3 tools/package/addon-pack.py pack --addon "$piece" --platform macos --src "build/addons/$piece" \
               --version "$VERSION" --key "$RUNNER_TEMP/release.key" --out build/release/addon --require-pinned-key
             cp "build/release/addon/mediaviewer-addon-$piece-macos.zip" \
                "build/release/addon/mediaviewer-addon-$piece-macos.json" \
                "build/release/addon/mediaviewer-addon-$piece-macos.json.sig" upload/
           done
-          python3 tools/package/addon-pack.py ceiling build/release/addon/mediaviewer-addon-ai*-macos.json
 
       - uses: actions/upload-artifact@v4
         with:

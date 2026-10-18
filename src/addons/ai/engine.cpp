@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/ai/engine.h"
 
+#include "addons/ai/machine.h"
+
 #include <algorithm>
 #include <numeric>
 #include <cctype>
@@ -220,11 +222,30 @@ expected engine::start() {
       }
     }
   }
+  if (!options_.read_only) {
+    // #482: an index made before tiers came from the Default tier's towers:
+    // that install already chose, and keeps them without asking.
+    std::lock_guard lock(settings_m_);
+    if (settings_.tier.empty() && !db_->meta("active_spec").empty()) settings_.tier = "default";
+  }
+  if (deps_.set_tier) {
+    std::lock_guard lock(settings_m_);
+    deps_.set_tier(settings_.tier);
+  }
   if (options_.read_only) {
     control_ = std::thread([this] { reader_loop(); });
   } else {
     control_ = std::thread([this] { control_loop(); });
     if (photos_ || cloud_) fetch_thread_ = std::thread([this] { fetch_loop(); });
+    if (deps_.fetch_models) download_thread_ = std::thread([this] { download_loop(); });
+    bool chosen = false;
+    {
+      std::lock_guard lock(settings_m_);
+      chosen = !settings_.tier.empty();
+    }
+    // Nothing downloads until a tier is chosen (the picker); with one, what
+    // is missing of it (a cut download, a piece installed) comes now.
+    if (chosen) kick_download();
   }
   search_thread_ = std::thread([this] { search_loop(); });
   return {};
@@ -477,6 +498,9 @@ void engine::stop() noexcept {
   search_cv_.notify_all();
   fetch_cv_.notify_all();
   if (fetch_thread_.joinable()) fetch_thread_.join();  // a download in flight cancels (stopping_)
+  dl_stop_ = true;
+  dl_cv_.notify_all();
+  if (download_thread_.joinable()) download_thread_.join();  // a model download stops between chunks
   if (control_.joinable()) control_.join();
   for (std::thread& t : workers_) {
     if (t.joinable()) t.join();
@@ -516,6 +540,7 @@ void engine::load_settings() {
   document_files_ = settings_.document_files;
   settings_.doc_index = static_cast<std::uint32_t>(std::clamp<std::int64_t>(doc->integer("doc_index").value_or(1), 0, 2));
   doc_index_ = settings_.doc_index;
+  if (const std::string* tier = doc->str("tier"); tier && tier->size() < 32) settings_.tier = *tier;
 }
 
 void engine::save_settings() const {
@@ -536,6 +561,7 @@ void engine::save_settings() const {
     w.key("audio_files").boolean(settings_.audio_files);
     w.key("document_files").boolean(settings_.document_files);
     w.key("doc_index").integer(settings_.doc_index);
+    w.key("tier").string(settings_.tier);
     w.end_object();
   }
   const std::string tmp = join(data_dir_, "settings.json.tmp");
@@ -621,12 +647,33 @@ std::string engine::settings_json() const {
   w.end_array();
   w.key("runtime").string(deps_.runtime_version ? deps_.runtime_version() : std::string());
   w.key("restart_needed").boolean(deps_.restart_needed && deps_.restart_needed());
+  // #482: the model tiers, the choice and the local check, for the picker.
+  w.key("tier").string(s.tier);
+  {
+    const std::string tiers = deps_.tiers_json ? deps_.tiers_json() : std::string("{}");
+    const auto parsed = json::parse(tiers, 16);
+    w.key("tiers").raw(parsed && parsed->k == json::kind::object ? tiers : std::string("{}"));
+  }
+  {
+    std::lock_guard lock(machine_m_);
+    w.key("machine").raw(machine_json_.empty() ? std::string("{}") : machine_json_);
+  }
   w.end_object();
   return w.take();
 }
 
 expected engine::set_setting(const std::string& key, const std::string& value_json) {
   if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
+  if (key == "tier") return set_tier(value_json);
+  if (key == "fetch_cancel") {
+    dl_stop_ = true;  // the part fetched so far is kept for the next run
+    post(MV_ADDON_EVENT_AI_STATUS);
+    return {};
+  }
+  if (key == "fetch_retry") {
+    kick_download();
+    return {};
+  }
   const auto v = json::parse(value_json, 2);
   if (!v || v->k != json::kind::number) return err(status::invalid_arg);
   const double x = v->is_integer ? static_cast<double>(v->i) : v->d;
@@ -675,6 +722,7 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
       // Calibrated per model (model.json); accepted and ignored.
     } else if (key == "reload") {
       pieces = true;  // a piece came or went: the towers stay as they are
+      kick_.store(true);  // ...and its models of the tier in force are fetched
     } else if (key == "video_index") {
       if (x < 0 || x > 3) return err(status::invalid_arg);
       settings_.video_index = static_cast<std::uint32_t>(x);
@@ -715,6 +763,7 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
     }
   }
   if (!pieces) save_settings();
+  if (kick_.exchange(false)) kick_download();
   if (reload || pieces) {
     (reload ? reload_models_ : reload_pieces_) = true;
     control_cv_.notify_all();
@@ -1048,6 +1097,21 @@ void engine::refresh_counts() {
     std::lock_guard pl(pieces_m_);
     if (pieces_.docs_ready) flags |= MV_AI_STATUS_DOCS_READY;
   }
+  {
+    std::lock_guard sl(settings_m_);
+    if (settings_.tier.empty()) flags |= MV_AI_STATUS_TIER_UNCHOSEN;
+    copy_str(status_.tier_utf8, sizeof(status_.tier_utf8), settings_.tier);
+  }
+  {
+    std::lock_guard dl(dl_m_);
+    status_.fetch_state = static_cast<std::uint32_t>(dl_progress_.state);
+    status_.fetch_files_done = dl_progress_.files_done;
+    status_.fetch_files_total = dl_progress_.files_total;
+    status_.fetch_retry_seconds = static_cast<std::uint32_t>(dl_progress_.retry_in_s);
+    status_.fetch_done_bytes = dl_progress_.done_bytes;
+    status_.fetch_total_bytes = dl_progress_.total_bytes;
+    if (dl_running_ || dl_progress_.state == fetch_state::waiting) flags |= MV_AI_STATUS_FETCHING;
+  }
   status_.flags = flags;
 
   // Rates over the last minute of active work; the ETA is a range from them
@@ -1205,6 +1269,7 @@ void engine::load_models() {
   if (!reloading) models_ready_ = false;
   if (!wait_viewer_quiet()) return;
   if (deps_.prepare) deps_.prepare();
+  quiet_sounds_ = deps_.sounds_off_by_default && deps_.sounds_off_by_default();
   if (!deps_.open_clip) {
     models_ready_ = false;
     models_failed_ = true;
@@ -1231,7 +1296,14 @@ void engine::load_models() {
       compute = build_compute_;
       on = build_.on;
     }
-    if (have_model && compute == s.compute && effective_quality(on) == quality) {
+    // A change of tier keeps the quality and changes the tower behind it.
+    const std::string spec_now = deps_.clip_spec_key ? deps_.clip_spec_key(quality) : std::string();
+    bool same_tower = true;
+    {
+      std::lock_guard lock(models_m_);
+      same_tower = spec_now.empty() || spec_now == build_.meta.spec_key;
+    }
+    if (have_model && compute == s.compute && effective_quality(on) == quality && same_tower) {
       post(MV_ADDON_EVENT_AI_STATUS);
       return;
     }
@@ -1276,12 +1348,23 @@ void engine::load_models() {
       }
     }
   }
+  if (!opened && opened.error() == status::not_found) {
+    // The tier's towers are still downloading (#482 T3): not a pack without
+    // models. The downloader reloads once the pictures are verified. A tower
+    // in service (a change of tier) goes on answering meanwhile.
+    models_waiting_ = true;
+    models_failed_ = false;
+    if (!reloading) models_ready_ = false;
+    post(MV_ADDON_EVENT_AI_STATUS);
+    return;
+  }
   if (!opened) {
     models_ready_ = false;
     models_failed_ = true;
     post(MV_ADDON_EVENT_AI_COMPUTE, 0, -1);
     return;
   }
+  models_waiting_ = false;
   // The generic prompts, embedded once per tower (the result margin, PR 20).
   const auto embed_generic = [](loaded_clip& c) {
     c.generic.clear();
@@ -1318,6 +1401,15 @@ void engine::load_models() {
         found = true;
       } else if (other) {
         retire(std::move(other->model));
+      }
+    }
+    if (!found && deps_.open_clip_spec) {
+      // A change of tier (#482): the old tier's tower still opens (CPU) and
+      // answers until the new one covers the folders.
+      if (auto other = deps_.open_clip_spec(active)) {
+        embed_generic(*other);
+        answer = std::move(*other);
+        found = true;
       }
     }
     if (!found) {
@@ -1951,14 +2043,119 @@ void engine::maybe_finish_migration() {
   end_answer_swap();
   retire(std::move(old_answer.model));
   (void)db_->drop_spec(active_spec);
+  // A change of tier (#482): the old tier's fetched models are no longer
+  // needed by anything that answers.
+  if (deps_.prune_models && !dl_running_) deps_.prune_models();
   post(MV_ADDON_EVENT_AI_STATUS);
   load_labels();
+}
+
+// ---- model tiers and downloads (#482) -------------------------------------------------
+
+expected engine::set_tier(const std::string& value_json) {
+  const auto v = json::parse(value_json, 2);
+  if (!v || v->k != json::kind::string || v->s.empty() || v->s.size() >= 32) return err(status::invalid_arg);
+  for (const char c : v->s) {
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) return err(status::invalid_arg);
+  }
+  {
+    std::lock_guard lock(settings_m_);
+    if (settings_.tier == v->s) {
+      kick_.store(true);  // the same tier again: fetch what is missing (Retry)
+    } else {
+      settings_.tier = v->s;
+    }
+  }
+  save_settings();
+  // A download for the old tier stops (its part files stay until pruned);
+  // the pack switches; the new tier's files come, then its towers open and
+  // re-index while the old index answers (load_models, open_clip_spec).
+  dl_stop_ = true;
+  if (deps_.set_tier) deps_.set_tier(v->s);
+  kick_.store(false);
+  kick_download();
+  reload_models_ = true;
+  reload_pieces_ = true;
+  control_cv_.notify_all();
+  post(MV_ADDON_EVENT_AI_STATUS);
+  return {};
+}
+
+void engine::kick_download() {
+  {
+    std::lock_guard lock(dl_m_);
+    dl_kick_ = true;
+  }
+  dl_cv_.notify_all();
+}
+
+void engine::download_loop() {
+  platform::enter_background();
+  for (;;) {
+    {
+      std::unique_lock lock(dl_m_);
+      dl_cv_.wait(lock, [this] { return dl_kick_ || stopping_.load(); });
+      if (stopping_) return;
+      dl_kick_ = false;
+    }
+    dl_stop_ = false;
+    dl_running_ = true;
+    auto last_post = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    const auto progress = [&](const fetch_progress& p) {
+      {
+        std::lock_guard lock(dl_m_);
+        dl_progress_ = p;
+      }
+      const auto now = std::chrono::steady_clock::now();
+      if (p.state != fetch_state::downloading || now - last_post > std::chrono::milliseconds(500)) {
+        last_post = now;
+        post(MV_ADDON_EVENT_AI_STATUS);
+      }
+    };
+    // The picture towers are verified: search can open on them now, while
+    // speech, sounds, faces and documents follow.
+    const auto pictures = [this] {
+      if (models_waiting_ || !models_ready_) {
+        reload_models_ = true;
+        control_cv_.notify_all();
+      }
+    };
+    const expected r = deps_.fetch_models(dl_stop_, progress, pictures);
+    dl_running_ = false;
+    {
+      std::lock_guard lock(dl_m_);
+      if (r) {
+        dl_progress_.state = fetch_state::done;
+      } else if (r.error() == status::cancelled) {
+        dl_progress_.state = fetch_state::idle;
+      } else if (r.error() == status::not_found) {
+        dl_progress_.state = fetch_state::gone;
+      } else if (r.error() != status::unsupported_format) {
+        dl_progress_.state = fetch_state::failed;
+      }
+    }
+    if (r) {
+      // Everything is here: the pieces' models open (and the towers, if the
+      // pictures came before the engine looked).
+      reload_pieces_ = true;
+      if (models_waiting_ || !models_ready_) reload_models_ = true;
+      control_cv_.notify_all();
+    }
+    post(MV_ADDON_EVENT_AI_STATUS);
+  }
 }
 
 // ---- control ------------------------------------------------------------------------------
 
 void engine::control_loop() {
   loading_ = true;
+  {
+    // #482 T4: the picker's local check, once, here (sysctl / DXGI: never the
+    // UI thread). Never sent anywhere.
+    std::string m = deps_.machine ? deps_.machine() : machine_json(probe_machine(data_dir_));
+    std::lock_guard lock(machine_m_);
+    machine_json_ = std::move(m);
+  }
   {
     // #403: the OS text reader, on this thread (not a host's UI thread).
     auto reader = deps_.text ? deps_.text() : make_text_reader();
@@ -3181,7 +3378,9 @@ std::uint32_t engine::default_media() const {
   }
   if (v != MV_AI_MEDIA_DEFAULT) return v;
   // Unset: pictures, and sound too once the ai-audio piece is installed
-  // (installing it is the choice to index what clips sound like).
+  // (installing it is the choice to index what clips sound like) unless the
+  // tier leaves sound off until asked (#482: Intel, where CLAP costs most).
+  if (quiet_sounds_) return MV_AI_MEDIA_PICTURES;
   std::lock_guard lock(pieces_m_);
   return pieces_.sound_ready ? MV_AI_MEDIA_BOTH : MV_AI_MEDIA_PICTURES;
 }
@@ -4051,6 +4250,12 @@ void engine::process_video(const work_item& item, const loaded_clip& clip, bool 
   o.struct_size = sizeof(o);
   o.min_gap_ms = faces_only ? 2000 : 500;
   o.max_gap_ms = faces_only ? 10000 : 2000;
+  if (!faces_only && deps_.clip_gaps) {
+    // The tier's sampling (#482): denser on Maxxed, sparser on Potato.
+    const auto [min_gap, max_gap] = deps_.clip_gaps();
+    if (min_gap > 0) o.min_gap_ms = min_gap;
+    if (max_gap > 0) o.max_gap_ms = std::max(max_gap, o.min_gap_ms);
+  }
   o.max_long_edge = faces_on ? 768u : std::max<std::uint32_t>(448u, clip.meta.input_edge * 2);
   o.start_ms = faces_only ? 0 : item.resume_ms;
   // Nothing to scan for faces: said so, or the faces track would claim the
@@ -5329,6 +5534,46 @@ void engine::finish(search_state& st) {
   for (auto& [asset, list] : st.moments) std::sort(list.begin(), list.end());
 }
 
+void engine::newest_first(search_state& st, const std::set<std::int64_t>& allowed) {
+  struct dated {
+    std::int64_t when;
+    std::string path;
+    std::int64_t asset;
+    bool photos;
+  };
+  std::vector<dated> rows;
+  {
+    std::lock_guard lock(assets_m_);
+    rows.reserve(allowed.size());
+    for (std::int64_t a : allowed) {
+      if (auto it = assets_.find(a); it != assets_.end()) {
+        rows.push_back({it->second.when(), it->second.path, a, !it->second.taken_at && is_photos_key(it->second.path)});
+      }
+    }
+  }
+  {
+    // A Photos item whose tags are not read yet: its creationDate from the
+    // last enumeration, never the index's mtime (the item's edit time).
+    std::lock_guard lock(photos_tags_m_);
+    for (dated& d : rows) {
+      if (!d.photos) continue;
+      if (auto p = photos_tags_.find(d.path); p != photos_tags_.end() && p->second.created != 0) {
+        d.when = p->second.created;
+      }
+    }
+  }
+  std::sort(rows.begin(), rows.end(), [](const dated& a, const dated& b) {
+    if (a.when != b.when) return a.when > b.when;
+    if (a.path != b.path) return a.path < b.path;
+    return a.asset < b.asset;
+  });
+  // A result list holds at most 1,000 rows (add_row).
+  if (rows.size() > 1000) rows.resize(1000);
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    add_row(st, rows[i].asset, -1, 0, static_cast<float>(rows.size() - i), 0, {});
+  }
+}
+
 void engine::load_cues() {
   std::vector<cue_row> rows;
   (void)db_->each_cue([&](std::int64_t asset, const cue_in& c) {
@@ -6527,19 +6772,12 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
                 !plan.not_text.empty() || !plan.not_phrases.empty())) {
       // Filters alone ("video in:2024", "file:IMG_12"): everything they allow,
       // newest first.
-      std::vector<std::pair<std::int64_t, std::int64_t>> by_date;  // (date taken else mtime, asset)
-      {
-        std::lock_guard lock(assets_m_);
-        for (std::int64_t a : *allowed) {
-          if (auto it = assets_.find(a); it != assets_.end()) by_date.push_back({it->second.when(), a});
-        }
-      }
-      std::sort(by_date.begin(), by_date.end(), std::greater<>());
-      if (by_date.size() > 1000) by_date.resize(1000);
-      for (std::size_t i = 0; i < by_date.size(); ++i) {
-        add_row(st, by_date[i].second, -1, 0, static_cast<float>(by_date.size() - i), 0, {});
-      }
+      newest_first(st, *allowed);
     }
+    // #412: a description nothing answered (the "nothing found" rule held
+    // every pass back) is not an empty page: what the rest of the query
+    // allows, newest first. An answered query keeps its best match.
+    if (!plan.text.empty() && st.rows.empty()) newest_first(st, *allowed);
     // The phrase under a result that matched on something else too.
     for (said& r : said_rows) {
       if (!st.row_of.count(r.asset)) continue;

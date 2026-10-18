@@ -588,9 +588,9 @@ public static partial class IslandHost
         var rows = new StackPanel { Spacing = Space(6), Padding = Pad(14, 10, 14, 14) };
         foreach ((string label, string value) in _metaSummary)
         {
-            if (label == "Date taken")
+            if (IsDateRow(label))
             {
-                rows.Children.Add(BuildDateRow(value));
+                rows.Children.Add(BuildDateRow(label, value));
                 continue;
             }
             if (label == "Location")
@@ -684,16 +684,24 @@ public static partial class IslandHost
         return row;
     }
 
+    // #415: Summary's one date row (native meta::summary_date). Without a
+    // capture stamp it is a fallback — Created, Signed at or File created —
+    // which is not when the picture was taken, so Edit opens an empty Date
+    // taken field and nothing is written unless a date is typed.
+    private static bool IsDateRow(string label) =>
+        label is "Date taken" or "Created" or "Signed at" or "File created";
+
     // PR 29: the date taken moves every capture-time tag together (native's
     // write_fields::date_taken), so no reader sees two dates.
-    private static UIElement BuildDateRow(string value)
+    private static UIElement BuildDateRow(string rowLabel, string value)
     {
+        bool taken = rowLabel == "Date taken";
         var col = new StackPanel { Spacing = Space(6) };
         var row = new Grid();
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(MetaLabelWidth) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        TextBlock label = Text("Date taken", Body, TypeBody);
+        TextBlock label = Text(_metaEditingDate ? "Date taken" : rowLabel, Body, TypeBody);
         label.VerticalAlignment = VerticalAlignment.Center;
         row.Children.Add(label);
         if (_metaEditingDate)
@@ -716,7 +724,7 @@ public static partial class IslandHost
                     CancelMetaEdits();
                     Send(Command.MetaDate, 1);
                     RenderMeta();
-                }, tip: "Remove every date-taken tag", enabled: value.Length > 0),
+                }, tip: "Remove every date-taken tag", enabled: taken && value.Length > 0),
                 MetaButton("Cancel", () =>
                 {
                     CancelMetaEdits();
@@ -735,9 +743,10 @@ public static partial class IslandHost
         {
             CancelMetaEdits();
             _metaEditingDate = true;
-            _metaDraft = value.Length >= 19 ? value[..19] : value;
+            _metaDraft = !taken ? "" : value.Length >= 19 ? value[..19] : value;
             RenderMeta();
-        }, tip: "Change when this was taken; every date tag in the file moves together", enabled: _metaCanEdit);
+        }, tip: taken ? "Change when this was taken; every date tag in the file moves together"
+                      : "Set when this was taken; the date shown is not written", enabled: _metaCanEdit);
         AutomationProperties_SetName(edit, "Edit date taken");
         Grid.SetColumn(edit, 2);
         row.Children.Add(edit);
@@ -1506,24 +1515,40 @@ public static partial class IslandHost
     // these islands, TreeView did on first show, and the row count here is a
     // folder's subfolders, so virtualising buys nothing.
 
-    private static string _treeRoot = "";
+    // The open folder, as native pushes it (SetTreeRoot).
+    private static string _treeCurrent = "";
     private static string _treePending = "";
     private static StackPanel? _treeList;
     private static Border? _treeUp;
+    private static TreeNodeUi? _treeRootNode;
+    private static TreeNodeUi? _treeCurrentNode;
+    // Bumped by each reveal, so a listing that lands after the user has moved
+    // on does not carry an old reveal down the tree.
+    private static int _treeRevealGen;
+    // The root and open folder last revealed: the trail is pushed again on
+    // every gallery cursor move, and only a change is revealed (and the open
+    // folder listed again), as on the Mac.
+    private static string _treeRevealedKey = "";
 
     private static void DropTreeUi()
     {
         _treeList = null;
         _treeUp = null;
         _treeRootNode = null;
+        _treeCurrentNode = null;
+        _treeRevealedKey = "";
     }
 
     private static UIElement BuildTree()
     {
         Grid root = PanelShell("Folders", Command.FolderTree, out Grid body);
         body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        _treeUp = new Border { Padding = Pad(14, 2, 14, 8) };
+        // The Mac's Divider under "Folders" (FolderTreeView.swift).
+        body.Children.Add(new Border { Height = 1, Background = Brush(Hairline) });
+        _treeUp = new Border { Padding = Pad(14, 8, 14, 6) };
+        Grid.SetRow(_treeUp, 1);
         body.Children.Add(_treeUp);
         _treeList = new StackPanel { Padding = Pad(8, 0, 8, 12) };
         var scroll = new ScrollViewer
@@ -1531,9 +1556,9 @@ public static partial class IslandHost
             Content = _treeList,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
-        Grid.SetRow(scroll, 1);
+        Grid.SetRow(scroll, 2);
         body.Children.Add(scroll);
-        RebuildTreeRoot();
+        SyncTree();
         return root;
     }
 
@@ -1583,63 +1608,156 @@ public static partial class IslandHost
         e.Handled = true;
     }
 
-    private static void RebuildTreeRoot()
+    // Folder paths compare as the shell's trail does (browse_path.h): either
+    // separator, no trailing one, any case.
+    private static string TreeKey(string path) =>
+        path.Replace('/', '\\').TrimEnd('\\').ToUpperInvariant();
+
+    private static bool TreeWithin(string childKey, string parentKey) =>
+        childKey == parentKey || childKey.StartsWith(parentKey + "\\", StringComparison.Ordinal);
+
+    // Issue #201: rooted at the highest crumb (the trail's root), as the Mac's
+    // tree is, so opening a child keeps the tree and expands down to it. Until
+    // the trail holds the open folder (its push may land after this one), the
+    // tree already built if it holds it, else the open folder itself.
+    private static string TreeRootPath()
     {
-        if (_treeList is null || _treeUp is null) return;
-        _treeList.Children.Clear();
-        _treeUp.Child = null;
-        if (_treeRoot.Length == 0)
+        if (_treeCurrent.Length == 0) return "";
+        string current = TreeKey(_treeCurrent);
+        foreach (var (_, path) in Crumbs)
         {
-            _treeUp.Child = Text("No folder open", Body);
-            return;
+            if (path.Length == 0) continue;
+            if (TreeWithin(current, TreeKey(path))) return path;
+            break;  // only the first crumb with a path is the root
         }
-        string? parent = Path.GetDirectoryName(_treeRoot.TrimEnd('\\', '/'));
-        if (!string.IsNullOrEmpty(parent))
-        {
-            string name = Path.GetFileName(parent.TrimEnd('\\', '/'));
-            string target = parent;
-            Button up = FlatButton(
-                Text("↑  Up to " + (name.Length == 0 ? parent : name), Body), Pad(0, 2, 8, 2));
-            up.Click += (_, _) => OpenTreePath(target);
-            up.KeyDown += (_, e) => TreeArrow(up, e);
-            _treeUp.Child = up;
-        }
-        string label = Path.GetFileName(_treeRoot.TrimEnd('\\', '/'));
-        // The open folder is the root, expanded, and shown as the current one.
-        _treeRootNode = new TreeNodeUi(label.Length == 0 ? _treeRoot : label, _treeRoot, 0, current: true);
-        _treeList.Children.Add(_treeRootNode.Node);
-        _treeRootNode.SetOpen(true);
+        if (_treeRootNode is not null && TreeWithin(current, TreeKey(_treeRootNode.Path))) return _treeRootNode.Path;
+        return _treeCurrent;
     }
 
-    // One folder: a row (expander glyph + name) and a children panel that is
-    // filled on first expand. The listing is one directory read on a pool thread;
-    // the rows are added back on the UI thread, so a slow disk never freezes the
-    // chrome (CLAUDE.md rule 1). Refresh() re-lists an already-listed folder and
-    // diffs it in place, so the tree follows the watcher without collapsing what
-    // the user opened or dropping the keyboard focus sitting on a row.
+    // root … current, inclusive: the folders to expand to reach the open one.
+    private static List<string> TreeChain(string root, string current)
+    {
+        var chain = new List<string>();
+        string rootKey = TreeKey(root);
+        string? p = current.Length > 3 ? current.TrimEnd('\\', '/') : current;
+        for (; !string.IsNullOrEmpty(p); p = Path.GetDirectoryName(p))
+        {
+            chain.Add(p);
+            if (TreeKey(p) == rootKey) break;
+        }
+        chain.Reverse();
+        return chain;
+    }
+
+    // Puts the tree where the open folder and the trail say: a new root
+    // rebuilds it; otherwise what is listed stays and the path down to the
+    // open folder is expanded, the folder marked and centred.
+    private static void SyncTree()
+    {
+        if (_treeList is null || _treeUp is null) return;
+        string root = TreeRootPath();
+        if (root.Length == 0)
+        {
+            _treeList.Children.Clear();
+            _treeRootNode = null;
+            _treeCurrentNode = null;
+            _treeUp.Child = Text("No folder open", Body);
+            _treeRevealedKey = "";
+            return;
+        }
+        if (_treeRootNode is null || TreeKey(_treeRootNode.Path) != TreeKey(root))
+        {
+            _treeList.Children.Clear();
+            _treeCurrentNode = null;
+            string label = Path.GetFileName(root.TrimEnd('\\', '/'));
+            _treeRootNode = new TreeNodeUi(label.Length == 0 ? root : label, root, 0);
+            _treeList.Children.Add(_treeRootNode.Node);
+            _treeRevealedKey = "";
+        }
+        UpdateTreeUp();
+        string key = TreeKey(root) + "|" + TreeKey(_treeCurrent);
+        if (key == _treeRevealedKey) return;
+        _treeRevealedKey = key;
+        _treeRootNode.Reveal(TreeChain(root, _treeCurrent), 0, ++_treeRevealGen);
+    }
+
+    // "Up to" the open folder's parent, as on the Mac.
+    private static void UpdateTreeUp()
+    {
+        if (_treeUp is null) return;
+        string? parent = Path.GetDirectoryName(_treeCurrent.TrimEnd('\\', '/'));
+        if (string.IsNullOrEmpty(parent))
+        {
+            _treeUp.Child = null;
+            return;
+        }
+        string name = Path.GetFileName(parent.TrimEnd('\\', '/'));
+        // The button is kept while it still says the same, so arrow-key focus
+        // sitting on it survives a refresh.
+        string label = "↑  Up to " + (name.Length == 0 ? parent : name);
+        if (_treeUp.Child is Button { Content: TextBlock { Text: var shown } } && shown == label) return;
+        string target = parent;
+        Button up = FlatButton(Text(label, Body), Pad(0, 2, 8, 2));
+        up.Click += (_, _) => OpenTreePath(target);
+        up.KeyDown += (_, e) => TreeArrow(up, e);
+        _treeUp.Child = up;
+    }
+
+    // One folder: a row (chevron, folder icon and name) and a children panel
+    // that is filled on first expand. The listing is one directory read on a
+    // pool thread; the rows are added back on the UI thread, so a slow disk
+    // never freezes the chrome (CLAUDE.md rule 1). Refresh() re-lists an
+    // already-listed folder and diffs it in place, so the tree follows the
+    // watcher without collapsing what the user opened or dropping the keyboard
+    // focus sitting on a row.
     private sealed class TreeNodeUi
     {
+        // Segoe Fluent Icons: the Mac's chevrons and folder / folder.fill.
+        private const string ChevronClosed = "";
+        private const string ChevronOpen = "";
+        private const string FolderGlyph = "";
+        private const string FolderCurrentGlyph = "";
+
         public readonly string Path;
         public readonly int Depth;
         public readonly StackPanel Node = new();
         public readonly StackPanel Children = new() { Visibility = Visibility.Collapsed };
         private readonly Dictionary<string, TreeNodeUi> _kids = new(StringComparer.OrdinalIgnoreCase);
-        private readonly TextBlock _glyph;
+        private readonly FontIcon _chevron;
+        private readonly FontIcon _icon;
+        private readonly TextBlock _name;
+        private readonly StackPanel _row;
         private bool _open;
         private bool _loaded;
+        private bool _listed;
+        private bool _empty;
+        // A reveal waiting for this folder's first listing: the chain, where
+        // this node sits in it, and the reveal it belongs to.
+        private (List<string> Chain, int At, int Gen)? _pendingReveal;
 
-        public TreeNodeUi(string name, string path, int depth, bool current)
+        public TreeNodeUi(string name, string path, int depth)
         {
             Path = path;
             Depth = depth;
-            _glyph = new TextBlock
+            _chevron = new FontIcon
             {
-                Text = "▸", FontFamily = UiFont, FontSize = UiFontSize, Foreground = Brush(Body),
-                Width = 16, TextAlignment = TextAlignment.Center,
+                Glyph = ChevronClosed, FontSize = 10, Foreground = Brush(Body),
+                Width = 16, HorizontalAlignment = HorizontalAlignment.Center,
             };
-            Button toggle = FlatButton(_glyph, Pad(0, 2, 0, 2), tabStop: false);
-            Button open_folder = FlatButton(
-                Text(name, current ? Title : Body, UiFontSize, bold: current), Pad(2, 2, 8, 2));
+            Button toggle = FlatButton(_chevron, Pad(0, 2, 0, 2), tabStop: false);
+            _icon = new FontIcon
+            {
+                Glyph = FolderGlyph, FontSize = 14, Foreground = Brush(Title),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            _name = Text(name, Title, UiFontSize);
+            _name.TextWrapping = TextWrapping.NoWrap;
+            _name.VerticalAlignment = VerticalAlignment.Center;
+            var label = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
+            label.Children.Add(_icon);
+            label.Children.Add(_name);
+            Button open_folder = FlatButton(label, Pad(2, 2, 8, 2));
+            AutomationProperties_SetName(open_folder, name);
             open_folder.Click += (_, _) => OpenTreePath(Path);
             toggle.Click += (_, _) => SetOpen(!_open);
             // Right opens a folder's children, Left closes them; Enter (the button's
@@ -1651,14 +1769,14 @@ public static partial class IslandHost
                 else if (e.Key == Windows.System.VirtualKey.Left && _open) { SetOpen(false); e.Handled = true; }
                 else TreeArrow(open_folder, e);
             };
-            var row = new StackPanel
+            _row = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
                 Margin = new Thickness(depth * 14, 0, 0, 0),
             };
-            row.Children.Add(toggle);
-            row.Children.Add(open_folder);
-            Node.Children.Add(row);
+            _row.Children.Add(toggle);
+            _row.Children.Add(open_folder);
+            Node.Children.Add(_row);
             Node.Children.Add(Children);
         }
 
@@ -1666,13 +1784,82 @@ public static partial class IslandHost
         {
             if (want == _open) return;
             _open = want;
-            _glyph.Text = _open ? "▾" : "▸";
+            ShowChevron();
             Children.Visibility = _open ? Visibility.Visible : Visibility.Collapsed;
             if (_open && !_loaded)
             {
                 _loaded = true;
                 List();
             }
+        }
+
+        private void ShowChevron() => _chevron.Glyph = _empty ? "" : _open ? ChevronOpen : ChevronClosed;
+
+        // The Mac's current row: folder.fill, semibold, in the accent.
+        private void SetCurrent(bool current)
+        {
+            _icon.Glyph = current ? FolderCurrentGlyph : FolderGlyph;
+            _icon.Foreground = Brush(current ? ChromeColour.Accent : ChromeColour.Title);
+            _name.Foreground = Brush(current ? ChromeColour.Accent : ChromeColour.Title);
+            _name.FontWeight = current ? FontWeights.SemiBold : FontWeights.Normal;
+        }
+
+        // Expands this node and each descendant named by `chain` (chain[at] is
+        // this node). The last is the open folder: expanded, listed again,
+        // marked current and centred. A step whose folder is still being
+        // listed resumes when the listing lands (Apply).
+        public void Reveal(List<string> chain, int at, int gen)
+        {
+            if (at >= chain.Count || TreeKey(chain[at]) != TreeKey(Path)) return;
+            _pendingReveal = null;
+            if (at == chain.Count - 1)
+            {
+                if (_open) Refresh();
+                else SetOpen(true);
+                MakeCurrent();
+                return;
+            }
+            SetOpen(true);
+            if (!_listed)
+            {
+                _pendingReveal = (chain, at, gen);
+                return;
+            }
+            RevealChild(chain, at, gen);
+        }
+
+        private void RevealChild(List<string> chain, int at, int gen)
+        {
+            string next = TreeKey(chain[at + 1]);
+            foreach (TreeNodeUi kid in _kids.Values)
+            {
+                if (TreeKey(kid.Path) != next) continue;
+                kid.Reveal(chain, at + 1, gen);
+                return;
+            }
+        }
+
+        private void MakeCurrent()
+        {
+            if (ReferenceEquals(_treeCurrentNode, this)) return;
+            _treeCurrentNode?.SetCurrent(false);
+            _treeCurrentNode = this;
+            SetCurrent(true);
+            // Centred once laid out: the row may have just been added, or its
+            // parents just opened, so it has no place to scroll to yet.
+            StackPanel row = _row;
+            EventHandler<object>? once = null;
+            once = (_, _) =>
+            {
+                row.LayoutUpdated -= once;
+                row.StartBringIntoView(new BringIntoViewOptions
+                {
+                    AnimationDesired = false,
+                    VerticalAlignmentRatio = 0.5,
+                });
+            };
+            row.LayoutUpdated += once;
+            row.InvalidateMeasure();
         }
 
         // Re-list a folder that has been listed before (the watcher saw a change).
@@ -1701,25 +1888,31 @@ public static partial class IslandHost
             // visual tree, and with it the keyboard focus and its expanded children.
             foreach (string gone in _kids.Keys.Where(k => !keep.Contains(k)).ToList())
             {
+                if (ReferenceEquals(_treeCurrentNode, _kids[gone])) _treeCurrentNode = null;
                 Children.Children.Remove(_kids[gone].Node);
                 _kids.Remove(gone);
             }
             for (int i = 0; i < subs.Count; i++)
             {
                 if (_kids.ContainsKey(subs[i].Path)) continue;
-                var kid = new TreeNodeUi(subs[i].Name, subs[i].Path, Depth + 1, false);
+                var kid = new TreeNodeUi(subs[i].Name, subs[i].Path, Depth + 1);
                 _kids[subs[i].Path] = kid;
                 Children.Children.Insert(Math.Min(i, Children.Children.Count), kid.Node);
             }
-            _glyph.Text = subs.Count == 0 ? " " : (_open ? "▾" : "▸");
+            _listed = true;
+            _empty = subs.Count == 0;
+            ShowChevron();
+            if (_pendingReveal is { } pending)
+            {
+                _pendingReveal = null;
+                if (pending.Gen == _treeRevealGen) RevealChild(pending.Chain, pending.At, pending.Gen);
+            }
         }
     }
 
-    private static TreeNodeUi? _treeRootNode;
-
     // The watcher saw the open folder change (a subfolder came or went): re-list
-    // the root and diff. Deeper folders are not watched, so they refresh when opened.
-    private static void RefreshTreeRoot() => _treeRootNode?.Refresh();
+    // it and diff. Other folders are not watched, so they refresh when opened.
+    private static void RefreshTreeCurrent() => (_treeCurrentNode ?? _treeRootNode)?.Refresh();
 
     // Choosing a folder opens it exactly as Open Folder does. Native asks for the
     // path with TakeTreePath: the command callback carries only a float.
@@ -1762,15 +1955,15 @@ public static partial class IslandHost
             string path = a.Utf8 == 0 || a.Length <= 0
                 ? ""
                 : Marshal.PtrToStringUTF8(checked((IntPtr)a.Utf8), a.Length) ?? "";
-            if (path == _treeRoot)
+            if (path == _treeCurrent)
             {
                 // Same folder pushed again: native saw the listing change, so a
                 // subfolder may have come or gone (io::directory_watcher).
-                if (_treeVisible) RefreshTreeRoot();
+                if (_treeVisible) RefreshTreeCurrent();
                 return 0;
             }
-            _treeRoot = path;
-            if (_treeVisible) RebuildTreeRoot();
+            _treeCurrent = path;
+            if (_treeVisible) SyncTree();
             return 0;
         }
         catch (Exception ex)
@@ -1778,6 +1971,12 @@ public static partial class IslandHost
             System.Diagnostics.Debug.WriteLine(ex);
             return unchecked((int)0x80004005);
         }
+    }
+
+    // The trail moved (ApplyBrowse): its root may be higher now.
+    private static void SyncTreeToTrail()
+    {
+        if (_treeVisible) SyncTree();
     }
 }
 

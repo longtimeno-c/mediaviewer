@@ -192,7 +192,7 @@ All of it is computed on your computer; nothing is uploaded.
 
 ![Local search accuracy on a 25,000-photo library](docs/img/search-accuracy.svg)
 
-Search for something your library does not have and you mostly get "nothing found". The exception is text CLIP recognises: "qwerty" finds keyboards and "314159" finds numbers, and some placeholder text such as "lorem ipsum" still returns photos.
+Search for something your library does not have and you mostly get no near misses: it lists what you searched in, newest first, instead of a ranking of the least-bad matches. The exception is text CLIP recognises: "qwerty" finds keyboards and "314159" finds numbers, and some placeholder text such as "lorem ipsum" still returns photos.
 
 ### People
 
