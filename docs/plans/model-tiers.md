@@ -25,6 +25,9 @@ slices below:
   SentencePiece tokenizer); Maxxed faces stay AdaFace IR-50 (IR-101's LFW gain does not pay for
   twice the cost without a real-library gain); SigLIP 2 waits for a SentencePiece tokenizer.
 - **Calibration** is a quantile match against B/32's hand-set thresholds (`tools/ai-eval`).
+- **Potato's pictures are B/32:** TinyCLIP 8M/16 missed the bar and 39M/16 is slower than B/32
+  on CPU (17 "Model tiers"). The contract is proven by Whisper tiny, SFace, Whisper turbo and
+  ViT-H/14, all added as data.
 - **Not done here:** the per-tier measurement rows on Windows, and both present-loop gates
   while indexing on every tier (T8); the PR says what was measured.
 

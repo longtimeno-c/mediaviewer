@@ -690,8 +690,8 @@ owed: [docs/design/17](design/17-local-ai-search.md); the Mac checklist is
    before that has no such file and opens the Default tier's folders. The default,
    `--upstream bundle`, stages every file (a sideloaded dev pack carries its models); releases
    pass `--upstream remote`, which lists upstream files in `remote.json` for the add-on to
-   fetch from Hugging Face on install. Staging the TinyCLIP (`ai`), ViT-H/14 (`ai-large`) and
-   AdaFace (`ai-faces`) exports needs `requirements-export.txt` (torch, transformers); pass
+   fetch from Hugging Face on install. Staging the ViT-H/14 (`ai-large`) and AdaFace
+   (`ai-faces`) exports needs `requirements-export.txt` (torch, transformers); pass
    `--skip-exports` to leave them out. A sideloaded pack starts with no tier chosen: pick one
    in the picker, or write `{"tier":"default"}` to the add-on's `data/settings.json`.
 2. Configure with `-DMV_ADDON_DEV_PUBLIC_KEY=<your key's public half>` and build `mv_ai`,
@@ -1601,7 +1601,7 @@ Four tiers (Maxxed, Default, Intel, Potato), each a profile in `tools/package/ai
 naming a model per role; the add-on names no model ([17](design/17-local-ai-search.md) "Model
 tiers"). Upstream models are fetched from Hugging Face on install (`src/addons/ai/fetch.*`);
 the 5 GB ceiling is retired; the add-on's picker (Mac sheet, Windows window) recommends a tier
-from a local check. New tools: `tools/package/clip-export.py` (our TinyCLIP / ViT-H/14 exports,
+from a local check. New tools: `tools/package/clip-export.py` (our ViT-H/14 export,
 golden-checked) and `tools/ai-eval/calibrate.py` (the PR 20 eval and threshold calibration
 against B/32).
 
@@ -1610,7 +1610,7 @@ Tests: `mv_ai_tests "[tiers],[contract],[fetch]"`, `mv_tests "[addon][manifest]"
 ceiling), the AIChrome Swift tests and the Windows chrome's C# compile. Calibration and eval:
 
 ```bash
-python3 tools/ai-eval/calibrate.py --eval <coco-1k> --model <staged>/ai/models/tinyclip-8m --tokenizer <clip tokenizer.json> --reference <staged>/ai/models/clip-b32 --write tools/package/ai-models.json --piece ai --folder models/tinyclip-8m
+python3 tools/ai-eval/calibrate.py --eval <coco-1k> --model <staged>/ai-large/models/clip-h14 --tokenizer <clip tokenizer.json> --reference <staged>/ai/models/clip-b32 --write tools/package/ai-models.json --piece ai-large --folder models/clip-h14
 ```
 
 Measured and not measured are in the PR and in 17 "Measurements".

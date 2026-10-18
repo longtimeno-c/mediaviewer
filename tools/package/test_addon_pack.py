@@ -291,10 +291,11 @@ class AiPackTest(unittest.TestCase):
         self.assertIn("CLIP ViT-L/14", default["summary"]["models"]["pictures"])
         self.assertGreater(default["summary"]["download_bytes"]["ai"], 0)
         self.assertTrue(set(default["summary"]["licences"]) <= mod.ALLOWED_LICENCES)
-        # Potato has no sound search, and its own picture tower.
+        # Potato has no sound search, and the cheapest towers that pass.
         potato = tiers["profiles"]["potato"]
         self.assertNotIn("sounds", potato["summary"]["models"])
-        self.assertIn("models/tinyclip-8m", potato["folders"]["ai"])
+        self.assertIn("models/whisper-tiny", potato["folders"]["ai-audio"])
+        self.assertIn("models/faces-sface", potato["folders"]["ai-faces"])
 
     def test_model_list_passes_the_licence_gate(self):
         gate = importlib.util.spec_from_file_location("ai_models", Path(__file__).with_name("ai-models.py"))

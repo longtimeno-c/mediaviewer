@@ -55,23 +55,29 @@ today's Default folders.
 
 | | Maxxed | Default | Intel | Potato |
 |---|---|---|---|---|
-| Pictures (high / fast) | OpenCLIP ViT-H/14 / B/32 | L/14 / B/32 | B/32 | TinyCLIP ViT-8M/16 |
+| Pictures (high / fast) | OpenCLIP ViT-H/14 / B/32 | L/14 / B/32 | B/32 | B/32 |
 | Speech (high / fast) | Whisper large-v3-turbo / small | small / base | base | tiny |
 | Sounds | CLAP | CLAP | CLAP, off by default | none |
 | People | YuNet + AdaFace IR-50 | YuNet + AdaFace IR-50 | YuNet + AdaFace IR-50 | YuNet + SFace |
 | Documents | all-MiniLM-L6-v2 | all-MiniLM-L6-v2 | all-MiniLM-L6-v2 | all-MiniLM-L6-v2 |
 | Clip gaps (min / max) | 250 / 1000 ms | 500 / 2000 ms | 500 / 2000 ms | 1000 / 6000 ms |
 
-ViT-H/14 (~2 GB, our fp16 export) rides in its own piece, `ai-large`, which only Maxxed
-installs; TinyCLIP (our export, ~47 MB) rides in the Core pack. Both are exported by
-`tools/package/clip-export.py` from pinned checkpoints and verified by a golden output.
+ViT-H/14 (~2 GB, our fp16 export by `tools/package/clip-export.py` from the pinned checkpoint,
+verified by a golden output) rides in its own piece, `ai-large`, which only Maxxed installs.
+
+**Potato's picture tower is B/32 (2026-10-18).** Both TinyCLIP candidates were exported and
+measured and neither is a Potato: ViT-8M/16 misses the bar (COCO-1k R@10 0.838 < 0.88), and
+ViT-39M/16 passes (0.922) but runs about 4× slower than B/32 on two CPU threads (6.2 vs
+25.6 img/s, fp16, ONNX Runtime 1.30, M-series). B/32 is the cheapest tower that passes; Potato
+saves elsewhere (Whisper tiny, SFace, no sound search, sparser clips). B/32 int8 weights stay
+rejected (R@10 0.822). MobileCLIP waits for its weights licence to clear `ai-models.py check`.
 
 - **The model contract** (`infer/models.h`, `audio_models.h`): a CLIP tower states
   `tokenizer_kind` (`clip-bpe`), `score` (`cosine`, or `sigmoid`, still ranked by cosine),
   named outputs and the Core ML dim names; Whisper states `n_mels` (80, or 128 for large-v3 /
   turbo) and its special tokens. A kind this build lacks is unsupported, never guessed. A model
-  that fits is a manifest entry: with the contract in place, TinyCLIP, ViT-H/14, Whisper tiny
-  and turbo and SFace are all data.
+  that fits is a manifest entry: with the contract in place, ViT-H/14, Whisper tiny and turbo
+  and SFace went in as data, with no C++ change (TinyCLIP too, before it was measured out).
 - **Choosing.** Nothing downloads until a tier is chosen (`MV_AI_STATUS_TIER_UNCHOSEN`; the
   add-on's picker opens on install and from Settings → Local search → Models). The local check
   (`machine.h`) recommends one: Potato on ≤ 2 cores or ≤ 8 GB, Intel on an x86_64 Mac or a PC
@@ -172,7 +178,7 @@ signed manifest, verify-before-load, per-user versioned folder, explicit updates
 
   | Piece | Contents | Size |
   |---|---|---|
-  | `ai` (Core) | `mv_ai`, ORT (CPU; Core ML on Mac), PDFium (a PDF's text, #354; ~6 MB, its parts' notices in `LICENSES/pdfium`), the chrome (`MediaViewer.Ai.Chrome` / `AI.bundle`), the TinyCLIP export; the CLIP towers and tokenizer are fetched | ~100 MB, plus 1.16 GB fetched (Default) |
+  | `ai` (Core) | `mv_ai`, ORT (CPU; Core ML on Mac), PDFium (a PDF's text, #354; ~6 MB, its parts' notices in `LICENSES/pdfium`), the chrome (`MediaViewer.Ai.Chrome` / `AI.bundle`); the CLIP towers and tokenizer are fetched | ~100 MB, plus 1.16 GB fetched (Default) |
   | `ai-large` (Maxxed) | OpenCLIP ViT-H/14, our fp16 export | ~1.97 GB |
   | `ai-faces` (People) | YuNet detector, AdaFace IR-50 embedder (fp16) | ~87 MB model |
   | `ai-audio` (Sound) | CLAP `larger_clap_general`, Whisper base and small, tokenizers | ~1 GB |

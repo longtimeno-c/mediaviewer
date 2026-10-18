@@ -1079,7 +1079,7 @@ this ceiling. Retired on 2026-10-18 (next entry).
 **Models come from Hugging Face; the 5 GB ceiling is retired (2026-10-18, owner, #482).**
 Supersedes the 2026-10-13 row's "nothing new is downloaded" and its ceiling. The `ai` pieces
 published on GitHub carry code, the signed model list and our own exports only (AdaFace, the
-TinyCLIP and ViT-H/14 towers). Every upstream model file is listed in the piece's Ed25519-signed
+ViT-H/14 tower). Every upstream model file is listed in the piece's Ed25519-signed
 manifest (`remote`: URL, size, SHA-256, licence) and fetched by the add-on from Hugging Face at
 its pinned revision, a plain GET with no token, identifier, query or cookies. A file that does
 not match is deleted and fetched again, never loaded. When Hugging Face cannot be reached the
@@ -1106,8 +1106,9 @@ Maxxed's pictures are OpenCLIP ViT-H/14 (CLIP BPE, so no new tokenizer; SigLIP 2
 SentencePiece tokenizer); its speech is Whisper large-v3-turbo; its documents stay
 all-MiniLM-L6-v2, since multilingual-e5-small already missed the R@10 target in the #354 D3
 spike; its faces stay AdaFace IR-50, since IR-101's gain on LFW (99.90 % vs 99.81 % TAR at 24 px)
-does not pay for twice the cost without a real-library gain. Potato is TinyCLIP ViT-8M/16,
-Whisper tiny and SFace. Each tower's thresholds come from `tools/ai-eval/calibrate.py`, and a
+does not pay for twice the cost without a real-library gain. Potato is B/32, Whisper tiny and
+SFace: TinyCLIP ViT-8M/16 missed the bar (R@10 0.838) and ViT-39M/16, which passes (0.922), is
+about 4x slower than B/32 on CPU, so neither saves anything. Each tower's thresholds come from `tools/ai-eval/calibrate.py`, and a
 tower under the PR 20 bar is swapped, not waved through (17 "Model tiers").
 
 **Towers and pieces (2026-09-26).** CLIP ViT-B/32 and ViT-L/14 both ship (L/14: +6 points R@1 but

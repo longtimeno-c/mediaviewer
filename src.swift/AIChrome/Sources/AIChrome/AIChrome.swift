@@ -78,6 +78,8 @@ public final class MVAIChrome: NSObject {
   @MainActor private func chooseTier(_ tier: String, pieces: [String], current: String) {
     guard let table, !table.readOnly else { return }
     if tier != current { table.setTier(tier) }
+    // Ticking People is the People opt-in too, not only its piece.
+    if pieces.contains("ai-faces") { table.setSetting("faces", "1") }
     if !pieces.isEmpty { hostInstallPieces(pieces) }
     manage?.reloadSettings()
     manage?.statusChanged()

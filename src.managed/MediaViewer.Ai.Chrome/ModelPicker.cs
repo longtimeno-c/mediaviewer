@@ -480,6 +480,12 @@ internal sealed class ModelPicker : Window
             try { _chrome.Api.SetSetting("tier", JsonSerializer.Serialize(tier.Id)); }
             catch (MediaViewerException) { }
         }
+        if (pieces.Contains("ai-faces"))
+        {
+            // Ticking People is the People opt-in too, not only its piece.
+            try { _chrome.Api.SetSetting("faces", "1"); }
+            catch (MediaViewerException) { }
+        }
         if (pieces.Count > 0)
         {
             try { RequestPieces(_chrome.Host, pieces); }

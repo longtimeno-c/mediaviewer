@@ -74,7 +74,7 @@
     "for": "Dual-core laptops, old PCs, 8 GB of memory",
     "pictures": {
      "high": null,
-     "fast": "models/tinyclip-8m"
+     "fast": "models/clip-b32"
     },
     "speech": {
      "high": null,
@@ -87,7 +87,11 @@
      "min_gap_ms": 1000,
      "max_gap_ms": 6000
     },
-    "coreml_cache_bytes": 100000000
+    "coreml_cache_bytes": 600000000,
+    "photos_per_s": {
+     "accelerated": 499,
+     "cpu": 40
+    }
    }
   }
  },
@@ -227,203 +231,6 @@
        "size": 247784246,
        "sha256": "643d385d6adbc4b9067f3f94384cc63a8409accb1bfd414496d17df84b161032",
        "licence": "MIT"
-      }
-     ]
-    },
-    "models/tinyclip-8m": {
-     "model": {
-      "id": "tinyclip-vit-8m-16",
-      "name": "TinyCLIP ViT-8M/16",
-      "precision": "fp16",
-      "dim": 512,
-      "image_size": 224,
-      "image": "image.onnx",
-      "text": "text.onnx",
-      "tokenizer": "clip-tokenizer",
-      "tokenizer_kind": "clip-bpe",
-      "score": "cosine",
-      "context": 77,
-      "image_output": "image_embeds",
-      "text_output": "text_embeds",
-      "mean": [
-       0.48145466,
-       0.4578275,
-       0.40821073
-      ],
-      "std": [
-       0.26862954,
-       0.26130258,
-       0.27577711
-      ],
-      "dedupe": 0.97,
-      "query_margin": 0.04,
-      "query_z": 2.5,
-      "result_z": 2.0,
-      "result_margin": 0.015,
-      "similar_min": 0.62,
-      "generic_prompts": [
-       "a photo.",
-       "a picture of something.",
-       "an image.",
-       "a photo of a thing.",
-       "a blurry photo."
-      ],
-      "calibrated": false
-     },
-     "files": [
-      {
-       "repo": "wkcn/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M",
-       "revision": "a2a8c6eaa2549ad66eb7c31b85022bf58273a26c",
-       "file": "model.safetensors",
-       "size": 93812468,
-       "sha256": "9339ee3d736344d0ddcaa6c03edc9f89688f08caaea5401220885233da726fcc",
-       "licence": "MIT",
-       "as": "image.onnx",
-       "export": {
-        "tool": "clip-export.py",
-        "tower": "image",
-        "fp16": true,
-        "installed_size": 16733009,
-        "golden": [
-         -0.00292,
-         -0.01743,
-         0.02374,
-         -0.006,
-         0.02039,
-         0.06275,
-         0.00734,
-         0.036,
-         -0.01279,
-         -0.07617,
-         -0.04451,
-         0.04455,
-         -0.03284,
-         0.03762,
-         -0.0088,
-         -0.00704,
-         6.0769
-        ],
-        "config": {
-         "architectures": [
-          "CLIPModel"
-         ],
-         "logit_scale_init_value": 2.6592,
-         "model_type": "clip",
-         "projection_dim": 512,
-         "vision_config": {
-          "attention_dropout": 0.0,
-          "bos_token_id": null,
-          "dropout": 0.0,
-          "eos_token_id": null,
-          "hidden_act": "gelu",
-          "hidden_size": 256,
-          "image_size": 224,
-          "initializer_factor": 1.0,
-          "initializer_range": 0.02,
-          "intermediate_size": 1024,
-          "layer_norm_eps": 1e-05,
-          "num_attention_heads": 4,
-          "num_channels": 3,
-          "num_hidden_layers": 10,
-          "pad_token_id": null,
-          "patch_size": 16
-         },
-         "text_config": {
-          "attention_dropout": 0.0,
-          "bos_token_id": 0,
-          "dropout": 0.0,
-          "eos_token_id": 2,
-          "hidden_act": "gelu",
-          "hidden_size": 256,
-          "initializer_factor": 1.0,
-          "initializer_range": 0.02,
-          "intermediate_size": 1024,
-          "layer_norm_eps": 1e-05,
-          "max_position_embeddings": 77,
-          "num_attention_heads": 4,
-          "num_hidden_layers": 3,
-          "pad_token_id": 1,
-          "vocab_size": 49408
-         }
-        }
-       }
-      },
-      {
-       "repo": "wkcn/TinyCLIP-ViT-8M-16-Text-3M-YFCC15M",
-       "revision": "a2a8c6eaa2549ad66eb7c31b85022bf58273a26c",
-       "file": "model.safetensors",
-       "size": 93812468,
-       "sha256": "9339ee3d736344d0ddcaa6c03edc9f89688f08caaea5401220885233da726fcc",
-       "licence": "MIT",
-       "as": "text.onnx",
-       "export": {
-        "tool": "clip-export.py",
-        "tower": "text",
-        "fp16": true,
-        "installed_size": 30433754,
-        "golden": [
-         -0.04581,
-         -0.01644,
-         -0.01765,
-         0.02339,
-         0.00886,
-         0.00435,
-         -0.00052,
-         0.02194,
-         -0.02929,
-         -0.02321,
-         -0.02758,
-         0.03135,
-         -0.01738,
-         0.03418,
-         0.01357,
-         0.02073,
-         7.8507
-        ],
-        "config": {
-         "architectures": [
-          "CLIPModel"
-         ],
-         "logit_scale_init_value": 2.6592,
-         "model_type": "clip",
-         "projection_dim": 512,
-         "vision_config": {
-          "attention_dropout": 0.0,
-          "bos_token_id": null,
-          "dropout": 0.0,
-          "eos_token_id": null,
-          "hidden_act": "gelu",
-          "hidden_size": 256,
-          "image_size": 224,
-          "initializer_factor": 1.0,
-          "initializer_range": 0.02,
-          "intermediate_size": 1024,
-          "layer_norm_eps": 1e-05,
-          "num_attention_heads": 4,
-          "num_channels": 3,
-          "num_hidden_layers": 10,
-          "pad_token_id": null,
-          "patch_size": 16
-         },
-         "text_config": {
-          "attention_dropout": 0.0,
-          "bos_token_id": 0,
-          "dropout": 0.0,
-          "eos_token_id": 2,
-          "hidden_act": "gelu",
-          "hidden_size": 256,
-          "initializer_factor": 1.0,
-          "initializer_range": 0.02,
-          "intermediate_size": 1024,
-          "layer_norm_eps": 1e-05,
-          "max_position_embeddings": 77,
-          "num_attention_heads": 4,
-          "num_hidden_layers": 3,
-          "pad_token_id": 1,
-          "vocab_size": 49408
-         }
-        }
-       }
       }
      ]
     }

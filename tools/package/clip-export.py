@@ -7,7 +7,7 @@
                    --out image.onnx [--fp16] [--golden] [--expect "v0 ... v15 norm"]
 
 For towers with no upstream ONNX we trust (#482, docs/plans/model-tiers.md):
-TinyCLIP (Microsoft, MIT; the Potato tier) is published only as one combined
+TinyCLIP (Microsoft, MIT; measured for Potato) is published only as one combined
 graph, and OpenCLIP ViT-H/14 (LAION, MIT; Maxxed) only as PyTorch weights. The
 checkpoint is read as data through transformers' CLIP classes (no remote code),
 and each tower is exported on its own, as src/infer/models.h's contract wants:
