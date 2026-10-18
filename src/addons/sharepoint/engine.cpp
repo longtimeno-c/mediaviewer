@@ -1644,8 +1644,8 @@ void engine::run_mover(std::shared_ptr<channel> ch, std::string peer_id, const s
 
 // ---- receiving --------------------------------------------------------------------------
 
-void engine::run_receive(std::unique_ptr<link> raw, bool internet) {
-  std::shared_ptr<link> l(std::move(raw));
+void engine::run_receive(std::unique_ptr<link> incoming, bool internet) {
+  std::shared_ptr<link> l(std::move(incoming));
   // #472 PR 2: an internet sender spends the code (its first attempt, right
   // or wrong); the listener and mappings stay until this receive ends.
   std::shared_ptr<internet_receiver> in;
