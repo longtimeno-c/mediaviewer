@@ -1,0 +1,46 @@
+(* Sharepoint protocol 2, the first link: the client's nonce is secret until
+   the client's h2 is fixed (the other half of handshake_code.pv's ordering
+   argument). Clients here stop right after message 2, where the code fixes
+   h2 and before message 3 reveals the nonce; servers are complete, the
+   attacker owns the network and has the collision oracle. If the nonce leaked
+   any earlier (from the commitment, message 1, or anything a server says) the
+   attacker could search for a message 2 matching it; it does not.
+   Expected: true. *)
+
+free ncHeld: bitstring [private].
+
+query attacker(ncHeld).
+
+(* XXClient up to h2 (sharepoint.pvl), with ncHeld as every run's nonce, which
+   only helps the attacker. *)
+let ClientUntilH2 =
+  let h0 = NAME_XXHFS in
+  let ck0 = h0 in
+  let hp = hash(h0, PROLOGUE_NEW) in
+  new e: bitstring; new e1: bitstring;
+  let epub = exp(g, e) in
+  let ha = hash(hp, epub) in
+  let e1pub = kpk(e1) in
+  let hb = hash(ha, e1pub) in
+  let cm = commit(ncHeld) in
+  let hc = hash(hb, cm) in
+  out(c, (epub, e1pub, cm));
+  in(c, (re: bitstring, ct_enc: bitstring, rs_enc: bitstring, p_enc: bitstring));
+  let hd = hash(hc, re) in
+  let ck1 = hkdf1(ck0, exp(re, e)) in let k1 = hkdf2(ck0, exp(re, e)) in
+  let ct = aead_open(k1, n0, AD_XX, ct_enc) in
+  let he = hash(hd, ct_enc) in
+  let ss = kdec(ct, e1) in
+  let ck2 = hkdf1(ck1, ss) in let k2 = hkdf2(ck1, ss) in
+  let rs = aead_open(k2, n0, AD_XX, rs_enc) in
+  let hf = hash(he, rs_enc) in
+  let ck3 = hkdf1(ck2, exp(rs, e)) in let k3 = hkdf2(ck2, exp(rs, e)) in
+  if aead_open(k3, n0, AD_XX, p_enc) = empty then
+  let h2 = hash(hf, p_enc) in
+  event ClientFixedH2(h2, ncHeld).
+
+process
+  new ss: bitstring;
+  out(c, exp(g, ss));
+  ( !ClientUntilH2
+  | !(new screen: channel; XXServer(c, c, screen, ss, false, true)) )

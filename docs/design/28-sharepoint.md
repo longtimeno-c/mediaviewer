@@ -191,6 +191,39 @@ over 25519, ChaChaPoly and BLAKE2b); the hybrid patterns have fixed-key regressi
 tests that the ML-KEM secret is in the keys and a tampered key or ciphertext fails
 (`tests/test_sharepoint_noise.cpp`). libsodium 1.0.22 (already pinned) has ML-KEM-768.
 
+**The formal model** (`tools/formal/`, ProVerif 2.05, #472's assurance list) writes both handshakes
+out token by token from `noise.cpp` and `channel.cpp`: h and ck as hash and HKDF chains, the
+commitment, the code, the tag and `resume_at`. The attacker owns the network, replays and crosses
+messages between any number of sessions and rejoins, and for the code holds a **collision oracle**:
+given one side's code inputs and the other side's h2 it gets a nonce that gives both the same six
+digits, the power a real search over 10^6 gives. What it shows:
+
+- **The code.** When the sender's person typed the code the receiver showed, both sides ran the
+  same handshake (same h2, nonce, link keys and resume secret, one for one), and the files and the
+  resume secret stay secret, oracle and all. The oracle never helps because of the order: the
+  server's nonce is bound by its commitment before the server's ephemeral (so its h2) exists, and
+  the client's nonce is secret until its h2 is fixed. So each try of the attacker in the middle
+  matches with probability 10^-6 and three wrong codes end the link: at most 3 × 10^-6 per
+  attempt. On the handshake's skeleton with the commitment check removed, ProVerif finds that
+  attack (the full first link without the check does not finish).
+- **Broken later.** A first link recorded now stays secret if X25519 is broken later (every
+  ephemeral and static handed over), or ML-KEM-768 is; with both broken it is read (the check that
+  the model can lose).
+- **The rejoin.** A link is adopted only by a side holding the session's resume secret, each
+  adoption matches one rejoin the other side really ran (a replayed first message is never adopted,
+  either way round), no two adoptions share link keys, and what a rejoined link carries stays
+  secret even if the resume secret leaks after the session, and then also X25519 or ML-KEM-768
+  is broken.
+
+Simplifications: the primitives are ideal (symbolic hashes, HKDF, AEAD, the Diffie-Hellman
+equation, ML-KEM as an ideal KEM), so this says nothing about side channels or implementation
+bugs (the tests, the vectors and the fuzz harness do). The first link's handshake ciphertexts carry
+a constant associated data instead of h; that only helps the attacker, so what holds there holds for
+the code, and with the real h ProVerif does not finish. The code's 10^-6 is outside the symbolic
+model: the oracle gives the attacker a perfect search, and the model shows no order of messages lets
+it use one. Not modelled: protocol 1, `ident` (sent sealed before the code, so a machine in the
+middle learns the sender's id and name before a code is typed), timeouts and the flapping rule.
+
 **Protocol 1** (a peer from before #472): commit, answer, reveal, each with an X25519 key made for
 this link alone: the client sends `MVSP`, 1 and a BLAKE2b hash of its public key; the server
 answers `MVSP`, 1 and its public key; the client reveals its key, which must hash to what it sent.
@@ -552,8 +585,8 @@ second while bytes move; those posts update chrome and never present the canvas.
 - Resuming a protocol 1 transfer that dropped: finished files stay, the rest is sent again.
   Protocol 2 rejoins and resumes within 20 s; a session that ends (20 s without a link, three
   rejoins in 10 s, the app quitting) is not resumed later.
-- A formal model of the handshake and rejoin (Tamarin or ProVerif), from #472's assurance list.
-  The parsers of what a peer sends before it is authenticated (the beacon, INFO, the hello, the
+- A formal model of protocol 1, and of CPace and the internet bearers (#472 PRs 2–5). Protocol 2's
+  handshake and rejoin are modelled ([The wire](#the-wire)). The parsers of what a peer sends before it is authenticated (the beacon, INFO, the hello, the
   Noise messages, a whole receiver's open) and the offer have a libFuzzer harness
   (`tools/fuzz/fuzz_sharepoint.cpp`); `resume_at` is parsed only after its frame opens under the
   rejoin's keys.

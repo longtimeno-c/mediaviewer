@@ -35,7 +35,7 @@ and a verify line on each platform (D9, amended). The order is:
 | #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
 | #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
 | #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
-| #472 PR 1 | **Sharepoint protocol 2 on the local bearers**: a Noise handshake (`XXhfs`, X25519 + ML-KEM-768, the Cacophony vectors pass) whose code still cannot be matched by a machine in the middle; a transfer that survives its link: sequence numbers, a 16 MiB replay, rejoin with a fresh `NNhfs+psk0` handshake and `resume_at`, no new code or Accept; Bluetooth ↔ Wi-Fi moves (make before break, suspect at 3 s, 20 s ends, flapping ends); a big set may start on Bluetooth to a protocol 2 peer; protocol 1 peers still work ([docs/design/28](design/28-sharepoint.md#the-session-protocol-2-472)) | Mac: built; `"[sharepoint]"` 54 cases pass (TSan-clean), with stand-in radios; `[.sharepoint-bench]` alternated, no difference within noise; the fuzz harness ran clean. Windows: the shared code is the same; `bt_win.cpp`'s INFO change meets a compiler in CI only. Owed: two real machines, real Bluetooth and Wi-Fi on both hosts, both PR 1 gates ([Where this actually is](#sharepoint-protocol-2-issue-472-pr-1-2026-10-18)) |
+| #472 PR 1 | **Sharepoint protocol 2 on the local bearers**: a Noise handshake (`XXhfs`, X25519 + ML-KEM-768, the Cacophony vectors pass) whose code still cannot be matched by a machine in the middle; a transfer that survives its link: sequence numbers, a 16 MiB replay, rejoin with a fresh `NNhfs+psk0` handshake and `resume_at`, no new code or Accept; Bluetooth ↔ Wi-Fi moves (make before break, suspect at 3 s, 20 s ends, flapping ends); a big set may start on Bluetooth to a protocol 2 peer; protocol 1 peers still work ([docs/design/28](design/28-sharepoint.md#the-session-protocol-2-472)) | Mac: built; `"[sharepoint]"` 54 cases pass (TSan-clean), with stand-in radios; `[.sharepoint-bench]` alternated, no difference within noise; the fuzz harness ran clean; the ProVerif model of the handshake and rejoin holds (`tools/formal`). Windows: the shared code is the same; `bt_win.cpp`'s INFO change meets a compiler in CI only. Owed: two real machines, real Bluetooth and Wi-Fi on both hosts, both PR 1 gates ([Where this actually is](#sharepoint-protocol-2-issue-472-pr-1-2026-10-18)) |
 | #472 PR 3 | **Sharepoint four-word codes over the public DHT**, opt-in, off by default: with no public address, the code is four BIP-39 words; Argon2id keys; BEP 44 items (sealed, padded, four targets per side) found and checked on the DHT by a small read-only client (BEP 5/42/43/44; BEP 42 own-address votes, saved table); one UDP socket for DHT, punching (+ port prediction) and a reliable stream of our own; then CPace + Noise and the session ([docs/design/28](design/28-sharepoint.md#four-words-over-the-dht-472-pr-3)) | Mac: built; `"[sharepoint]"` passes (TSan-clean) with BEP 44 / 42 / CRC-32C vectors, the stream under 1 % and 5 % loss, a stand-in swarm with a forging node, and two engines over four words; the fuzz harness covers the DHT parsers. Not run: the public DHT (`"[.sharepoint-dht-live]"`, owed), real NATs. Windows: `net_win.cpp`'s dual-stack UDP and `getaddrinfo` meet a compiler in CI only ([Where this actually is](#sharepoint-four-word-codes-issue-472-pr-3-2026-10-18)) |
 | #472 PR 2 | **Sharepoint over the internet with a code**, opt-in and off by default: the receiver makes a code (works once, for 10 minutes) carrying its forwarded port, a router-mapped port (PCP, NAT-PMP, UPnP-IGD; external 443 too; an IGDv2 IPv6 pinhole), its public IPv6 and its LAN address; the sender races them, retries 1/2/5/10/30 s with the reason, proves the code with CPace (ristretto255, the draft's vectors pass) keying Noise `XXhfs+psk0`; both confirm the name and may compare a six-digit check; no server ([docs/design/28](design/28-sharepoint.md#over-the-internet-472-pr-2)) | Mac: built; `"[sharepoint]"` passes (TSan-clean) with two engines over a code on loopback and the mapper against stand-in routers; the fuzz harness covers the new parsers. Windows: `net_win.cpp`'s IPv6, `GetAdaptersAddresses` and `GetBestRoute2` meet a compiler in CI only. Owed: real routers, two machines over the internet, both platforms ([Where this actually is](#sharepoint-over-the-internet-issue-472-pr-2-2026-10-18)) |
 
@@ -2317,6 +2317,34 @@ both hosts already draw. Bluetooth's bearers changed only to read the INFO's `"p
   input), built on the Mac with Homebrew LLVM (`-fsanitize=fuzzer,address`, command above): 16.4
   million inputs in 180 s, no report, no hang. In CI it joins the non-gating fuzz step until it is
   seen starting on the runner, as each new harness does.
+- **Formal model:** `tools/formal/` (ProVerif 2.05; what each model shows is in
+  [docs/design/28 "The wire"](design/28-sharepoint.md#the-wire)). ProVerif is not in Homebrew and
+  opam's package pulls in GTK for the interactive mode, so build the command-line tool from its
+  source with opam's OCaml:
+
+  ```bash
+  brew install opam && opam init -y --bare --disable-sandboxing && opam switch create default ocaml-base-compiler
+  ```
+
+  ```bash
+  eval $(opam env --switch=default) && opam source proverif.2.05 && (cd proverif.2.05 && ./build -nointeract)
+  ```
+
+  ```bash
+  PROVERIF=$PWD/proverif.2.05/proverif tools/formal/run.sh
+  ```
+
+  `run.sh` runs the seven models in parallel and checks every result against the expected one.
+  On an M-series Mac all seven passed in 5.4 minutes wall time (`handshake_code` 322 s, the three
+  broken-later models 125 s each, `rejoin` 89 s, the other two under a second). Every query came out as expected: the code
+  (injective agreement on h2, nonce, link keys and resume secret; the files and the resume secret
+  secret; the client's nonce secret until its h2 is fixed), broken later (X25519 or ML-KEM-768
+  alone: secret), the rejoin (both injective agreements, no shared link keys, secrecy with the
+  resume secret and then X25519 or ML-KEM leaked later); the three sanity checks find their
+  attacks (the code's on the handshake's skeleton: the full first link without the commitment
+  check does not finish in ProVerif). No attack on protocol 2 was found. Found in passing: `ident` (id and name) goes before
+  the code, so a machine in the middle learns them before a code is typed (as docs/design/28
+  says, nothing about the files does).
 - **Throughput:** `[.sharepoint-bench]`, base (the #452 branch head, its own worktree and build)
   and new alternated three times, warm, load ~4.6: 1 GiB 395.8–397.6 → 392.6–398.2 MB/s; 500 ×
   2 MiB 178.9–183.3 → 178.0–201.1 MB/s: no difference within noise. (The first alternated set
@@ -2328,7 +2356,7 @@ both hosts already draw. Bluetooth's bearers changed only to read the INFO's `"p
   over real Bluetooth and Wi-Fi: Bluetooth → Wi-Fi within 3 s, out of range and back within
   20 s; real Bluetooth's goodput; the PR 1 present-loop gate on both
   platforms with a transfer running (the screen was locked when this ran: no frames, so not
-  run); the formal model (Tamarin / ProVerif); the external review before anything internet is
+  run); the external review before anything internet is
   on by default (#472 PRs 2–5).
 
 ### Sharepoint in the background (issue #452, 2026-10-16)
