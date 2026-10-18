@@ -701,8 +701,24 @@ TEST_CASE("sharepoint session: Wi-Fi drops to Bluetooth, which goes out of range
   wifi.refuse.store(true);
   wifi.links.cut_all();
   auto t0 = clock_type::now();
-  REQUIRE(eventually([&] { return ann.eng.snapshot().out_via == "Bluetooth"; }, 15));
+  const int bt_before = bt.connects.load();
+  const int wifi_before = wifi.connects.load();
+  // When each side saw the cut, and what the mover tried: printed if slow.
+  long long ann_saw = -1, bea_saw = -1, first_bt = -1;
+  REQUIRE(eventually(
+      [&] {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock_type::now() - t0).count();
+        const auto a = ann.eng.snapshot();
+        if (ann_saw < 0 && a.out_reconnecting) ann_saw = ms;
+        if (bea_saw < 0 && bea.eng.snapshot().in_reconnecting) bea_saw = ms;
+        if (first_bt < 0 && bt.connects.load() > bt_before) first_bt = ms;
+        return a.out_via == "Bluetooth";
+      },
+      15));
   const auto to_bt_ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock_type::now() - t0).count();
+  INFO("Ann saw the cut at " << ann_saw << " ms, Bea at " << bea_saw << " ms; first Bluetooth connect at "
+                             << first_bt << " ms; " << bt.connects.load() - bt_before << " Bluetooth and "
+                             << wifi.connects.load() - wifi_before << " Wi-Fi connects");
   // A cut that a side sees at once moves in milliseconds; one that shows only
   // as silence takes the suspect timer, then a race (slow CI runners: both).
   CHECK(to_bt_ms <= sp::kSuspectMs + 3000);
