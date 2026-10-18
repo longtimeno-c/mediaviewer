@@ -29,10 +29,10 @@ set(_S "${MV_SOURCE_ROOT}/src/addons/sharepoint")
 # The Bluetooth bearer goes into the module only: the tests run the engine
 # over loopback and link bt_none.cpp (one Objective-C class per process).
 if(WIN32)
-  set(_sharepoint_port ${_S}/net_win.cpp)
+  set(_sharepoint_port ${_S}/net_win.cpp ${_S}/secrets_win.cpp)
   set(_sharepoint_bt ${_S}/bt_win.cpp)
 elseif(APPLE)
-  set(_sharepoint_port ${_S}/net_posix.cpp ${_S}/machine_mac.cpp)
+  set(_sharepoint_port ${_S}/net_posix.cpp ${_S}/machine_mac.cpp ${_S}/secrets_mac.cpp)
   set(_sharepoint_bt ${_S}/bt_mac.mm)
 else()
   set(_sharepoint_port ${_S}/net_posix.cpp)
@@ -59,6 +59,7 @@ add_library(mv_sharepoint_engine STATIC
   ${_S}/udp_hub.cpp ${_S}/udp_hub.h
   ${_S}/dht.cpp ${_S}/dht.h
   ${_S}/meet.cpp ${_S}/meet.h
+  ${_S}/secrets.h ${_S}/secrets_file.cpp
   ${_S}/engine.cpp ${_S}/engine.h
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/tree.cpp
@@ -72,9 +73,12 @@ set_target_properties(mv_sharepoint_engine PROPERTIES POSITION_INDEPENDENT_CODE 
 if(WIN32)
   # shell32 / ole32: the Downloads folder (SHGetKnownFolderPath, CoTaskMemFree).
   # iphlpapi: this machine's addresses and its default route (#472 PR 2).
-  target_link_libraries(mv_sharepoint_engine PUBLIC ws2_32 shell32 ole32 iphlpapi)
+  # advapi32: Credential Manager (#472 PR 4).
+  target_link_libraries(mv_sharepoint_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32)
 elseif(APPLE)
-  target_link_libraries(mv_sharepoint_engine PUBLIC "-framework CoreFoundation" "-framework SystemConfiguration")
+  # Security: the Keychain (#472 PR 4).
+  target_link_libraries(mv_sharepoint_engine PUBLIC "-framework CoreFoundation" "-framework SystemConfiguration"
+    "-framework Security")
 endif()
 
 if(WIN32)
