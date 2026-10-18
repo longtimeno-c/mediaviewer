@@ -43,6 +43,7 @@ add_library(mv_sharepoint_engine STATIC
   ${_S}/wire.cpp ${_S}/wire.h
   ${_S}/link.h
   ${_S}/noise.cpp ${_S}/noise.h
+  ${_S}/cpace.cpp ${_S}/cpace.h
   ${_S}/channel.cpp ${_S}/channel.h
   ${_S}/transfer.cpp ${_S}/transfer.h
   ${_S}/presence.cpp ${_S}/presence.h

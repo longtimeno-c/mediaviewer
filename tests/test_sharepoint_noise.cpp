@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "addons/sharepoint/cpace.h"
 #include "addons/sharepoint/noise.h"
 
 namespace noise = mv::sharepoint::noise;
@@ -303,4 +304,74 @@ TEST_CASE("sharepoint noise: HMAC-BLAKE2b is RFC 2104 over BLAKE2b-512", "[share
   crypto_generichash_update(&st, inner, 64);
   crypto_generichash_final(&st, outer, 64);
   CHECK(std::equal(mac.begin(), mac.end(), outer));
+}
+
+// ---- CPace (#472 PR 2): draft-irtf-cfrg-cpace-18, Appendix B.3 ------------------------------------
+
+namespace {
+std::vector<std::uint8_t> cat(std::initializer_list<const char*> parts) {
+  std::string s;
+  for (const char* p : parts) s += p;
+  return hex(s);
+}
+}  // namespace
+
+TEST_CASE("sharepoint cpace: ristretto255 / SHA-512 matches the draft's vectors", "[sharepoint]") {
+  const std::string prs_text = "Password";
+  const std::vector<std::uint8_t> prs(prs_text.begin(), prs_text.end());
+  const auto ci = hex("6f630b425f726573706f6e6465720b415f696e69746961746f72");
+  const auto sid = hex("7e4b4791d6a8ef019b936c79fb7f2c57");
+  // B.3.1: the generator string and its hash.
+  const auto gs = mv::sharepoint::cpace::generator_string(prs, ci, sid);
+  CHECK(gs.size() == 172);
+  CHECK(to_hex(gs) == to_hex(cat({"11435061636552697374726574746f3235350850617373776f726464",
+                                   "00000000000000000000000000000000000000000000000000000000",
+                                   "00000000000000000000000000000000000000000000000000000000",
+                                   "00000000000000000000000000000000000000000000000000000000",
+                                   "000000000000000000000000000000001a6f630b425f726573706f6e",
+                                   "6465720b415f696e69746961746f72107e4b4791d6a8ef019b936c79", "fb7f2c57"})));
+  std::array<std::uint8_t, 64> h;
+  crypto_hash_sha512(h.data(), gs.data(), gs.size());
+  CHECK(to_hex(h) == to_hex(cat({"c63a5750e2439c17ccd8213be14fde2f87e1bc637001a97f5929c77b",
+                                  "30ea0e08afbc75ace5d3d73b2842a79d01488c5fd7ea30d475ee6095", "45af1bfd1ff77c8e"})));
+  std::array<std::uint8_t, 32> g;
+  REQUIRE(crypto_core_ristretto255_from_hash(g.data(), h.data()) == 0);
+  CHECK(to_hex(g) == "a6fc82c3b8968fbb2e06fee81ca858586dea50d248f0c7ca6a18b0902a30b36b");
+  // B.3.2-B.3.5: both messages, then the ISK each side computes.
+  const auto ya = key32("da3d23700a9e5699258aef94dc060dfda5ebb61f02a5ea77fad53f4ff0976d08");
+  const auto yb = key32("d2316b454718c35362d83d69df6320f38578ed5984651435e2949762d900b80d");
+  mv::sharepoint::cpace::party a(prs, ci, sid, ya), b(prs, ci, sid, yb);
+  REQUIRE(a.ok());
+  REQUIRE(b.ok());
+  CHECK(to_hex(a.message()) == "d40fb265a7abeaee7939d91a585fe59f7053f982c296ec413c624c669308f87a");
+  CHECK(to_hex(b.message()) == "08bcf6e9777a9c313a3db6daa510f2d398403319c2341bd506a92e672eb7e307");
+  const std::vector<std::uint8_t> ada = {'A', 'D', 'a'}, adb = {'A', 'D', 'b'};
+  const auto a_msg = a.message(), b_msg = b.message();
+  auto isk_a = a.finish(b_msg, true, ada, adb);
+  auto isk_b = b.finish(a_msg, false, ada, adb);
+  REQUIRE(isk_a);
+  REQUIRE(isk_b);
+  const std::string want = "4c5469a16b2364c4b944ebc1a79e51d1674ad47db26e8718154f59faebfaa52d8346f30aa58377117eb20d527f2cbc5c"
+                           "76381f7fd372e89df8239f87f2e02ed1";
+  CHECK(to_hex(*isk_a) == want);
+  CHECK(to_hex(*isk_b) == want);
+}
+
+TEST_CASE("sharepoint cpace: another code gives another key; the identity and non-points are refused",
+          "[sharepoint]") {
+  const std::vector<std::uint8_t> right = {'1', '2', '3'}, wrong = {'1', '2', '4'}, ci = {'c'}, sid(16, 7);
+  mv::sharepoint::cpace::party a(right, ci, sid), b(wrong, ci, sid);
+  const auto am = a.message(), bm = b.message();
+  auto ka = a.finish(bm, true, {}, {});
+  auto kb = b.finish(am, false, {}, {});
+  REQUIRE(ka);
+  REQUIRE(kb);
+  CHECK(*ka != *kb);
+  // The identity (all zeros encodes it) and an encoding that is not a point.
+  mv::sharepoint::cpace::party c(right, ci, sid), d(right, ci, sid);
+  const std::array<std::uint8_t, 32> identity{};
+  std::array<std::uint8_t, 32> junk;
+  junk.fill(0xff);
+  CHECK_FALSE(c.finish(identity, true, {}, {}));
+  CHECK_FALSE(d.finish(junk, true, {}, {}));
 }
