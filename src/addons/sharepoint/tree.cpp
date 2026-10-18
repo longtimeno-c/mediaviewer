@@ -119,6 +119,17 @@ bool out_busy(const view& v) {
          v.out == view::out_phase::sending || v.out == view::out_phase::reaching || v.out == view::out_phase::naming;
 }
 
+// #472 PR 4: under a transfer's result over protocol 2.
+void remember_toggle(writer& w, const view& v) {
+  if (!v.remember_offer) return;
+  w.begin_object().key("type").string("toggle").key("id").string("remember");
+  w.key("label").string("Remember " + v.remember_peer).key("value").boolean(v.remembered).end_object();
+  text(w, "remember_note",
+       "Send to each other later over the internet, with no code. It works once " + v.remember_peer +
+           " remembers this computer too.",
+       "caption");
+}
+
 // ---- what is offered to this computer -------------------------------------------------
 
 void incoming(writer& w, const view& v) {
@@ -133,7 +144,11 @@ void incoming(writer& w, const view& v) {
   w.end_object().end_array().end_object();
   switch (v.in) {
     case view::in_phase::connecting:
-      if (v.in_internet) {
+      if (v.in_known) {
+        // #472 PR 4: a remembered device; its key is the one remembered.
+        text(w, "in_title", v.in_peer + " (remembered) wants to send you files", "heading");
+        text(w, "in_check", "Its key is the one you remembered.", "secondary");
+      } else if (v.in_internet) {
         // #472 PR 2: the code already proved them; the check is to compare.
         text(w, "in_title", v.in_peer + " (new device) wants to send you files", "heading");
         text(w, "in_code", v.in_code, "display");
@@ -171,6 +186,7 @@ void incoming(writer& w, const view& v) {
     case view::in_phase::done:
     case view::in_phase::ended:
       text(w, "in_note", v.in_note);
+      if (v.in == view::in_phase::done) remember_toggle(w, v);
       button(w, "in_dismiss", "OK", "plain");
       break;
     case view::in_phase::none:
@@ -301,6 +317,12 @@ void nearby(writer& w, const view& v, bool sending) {
       button(w, "out_cancel", "Cancel", "destructive");
       break;
     case view::out_phase::reaching:
+      if (v.out_known) {
+        // #472 PR 4: waiting for a remembered device, as long as it takes.
+        text(w, "out_note", v.out_note, "secondary");
+        button(w, "out_cancel", "Cancel", "destructive");
+        break;
+      }
       // #472 PR 2: round after round until one place answers, or Cancel.
       text(w, "out_reaching",
            "Trying to reach the other computer" +
@@ -327,6 +349,7 @@ void nearby(writer& w, const view& v, bool sending) {
     case view::out_phase::done:
     case view::out_phase::ended:
       text(w, "out_note", v.out_note);
+      if (v.out == view::out_phase::done && v.in == view::in_phase::none) remember_toggle(w, v);
       break;
   }
   end(w);
@@ -386,6 +409,30 @@ void internet(writer& w, const view& v, bool sending) {
   button(w, "send_to_code", "Send", "primary", v.file_count == 0 || v.reading_folder || sending);
   end(w);
   if (!v.send_code_note.empty()) text(w, "send_code_note", v.send_code_note, "secondary");
+  // #472 PR 4: remembered devices; one click sends, no code.
+  if (!v.known.empty()) {
+    text(w, "known_title", "Remembered devices", "heading");
+    w.begin_object().key("type").string("tiles").key("id").string("known").key("label").string("Remembered devices");
+    w.key("size").integer(64).key("items").begin_array();
+    for (std::size_t i = 0; i < v.known.size(); ++i) {
+      w.begin_object().key("id").string("dev" + std::to_string(i)).key("text").string(v.known[i]);
+      w.key("detail").string("Over the internet").key("initials").string(initials(v.known[i])).end_object();
+    }
+    w.end_array();
+    if (v.file_count == 0 || v.reading_folder || sending || !v.dht) w.key("disabled").boolean(true);
+    w.end_object();
+    text(w, "known_note",
+         v.dht ? std::string("Click one to send it these files. It waits until that computer is online.")
+               : std::string("Turn on \xE2\x80\x9C" "Find each other over the internet\xE2\x80\x9D to send to these."),
+         "caption");
+    row(w, "known_forget");
+    for (std::size_t i = 0; i < v.known.size(); ++i) {
+      const std::string id = "forget" + std::to_string(i);
+      w.begin_object().key("type").string("button").key("id").string(id).key("label").string("Forget " + v.known[i]);
+      w.key("style").string("plain").end_object();
+    }
+    end(w);
+  }
   end(w);
 }
 

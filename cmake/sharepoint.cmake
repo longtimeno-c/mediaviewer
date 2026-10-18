@@ -60,6 +60,7 @@ add_library(mv_sharepoint_engine STATIC
   ${_S}/dht.cpp ${_S}/dht.h
   ${_S}/meet.cpp ${_S}/meet.h
   ${_S}/secrets.h ${_S}/secrets_file.cpp
+  ${_S}/known.h ${_S}/known.cpp
   ${_S}/engine.cpp ${_S}/engine.h
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/tree.cpp
@@ -130,6 +131,7 @@ function(mv_sharepoint_tests target)
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_session.cpp"
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_internet.cpp"
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_dht.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_sharepoint_known.cpp"
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_addon.cpp"
     "${MV_SOURCE_ROOT}/src/addons/sharepoint/bt_none.cpp")
   target_link_libraries(${target} PRIVATE mv_sharepoint_engine)

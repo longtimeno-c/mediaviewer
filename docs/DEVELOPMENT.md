@@ -37,6 +37,7 @@ and a verify line on each platform (D9, amended). The order is:
 | #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
 | #472 PR 1 | **Sharepoint protocol 2 on the local bearers**: a Noise handshake (`XXhfs`, X25519 + ML-KEM-768, the Cacophony vectors pass) whose code still cannot be matched by a machine in the middle; a transfer that survives its link: sequence numbers, a 16 MiB replay, rejoin with a fresh `NNhfs+psk0` handshake and `resume_at`, no new code or Accept; Bluetooth ↔ Wi-Fi moves (make before break, suspect at 3 s, 20 s ends, flapping ends); a big set may start on Bluetooth to a protocol 2 peer; protocol 1 peers still work ([docs/design/28](design/28-sharepoint.md#the-session-protocol-2-472)) | Mac: built; `"[sharepoint]"` 54 cases pass (TSan-clean), with stand-in radios; `[.sharepoint-bench]` alternated, no difference within noise; the fuzz harness ran clean. Windows: the shared code is the same; `bt_win.cpp`'s INFO change meets a compiler in CI only. Owed: two real machines, real Bluetooth and Wi-Fi on both hosts, both PR 1 gates ([Where this actually is](#sharepoint-protocol-2-issue-472-pr-1-2026-10-18)) |
 | #472 PR 3 | **Sharepoint four-word codes over the public DHT**, opt-in, off by default: with no public address, the code is four BIP-39 words; Argon2id keys; BEP 44 items (sealed, padded, four targets per side) found and checked on the DHT by a small read-only client (BEP 5/42/43/44; BEP 42 own-address votes, saved table); one UDP socket for DHT, punching (+ port prediction) and a reliable stream of our own; then CPace + Noise and the session ([docs/design/28](design/28-sharepoint.md#four-words-over-the-dht-472-pr-3)) | Mac: built; `"[sharepoint]"` passes (TSan-clean) with BEP 44 / 42 / CRC-32C vectors, the stream under 1 % and 5 % loss, a stand-in swarm with a forging node, and two engines over four words; the fuzz harness covers the DHT parsers. Not run: the public DHT (`"[.sharepoint-dht-live]"`, owed), real NATs. Windows: `net_win.cpp`'s dual-stack UDP and `getaddrinfo` meet a compiler in CI only ([Where this actually is](#sharepoint-four-word-codes-issue-472-pr-3-2026-10-18)) |
+| #472 PR 4 | **Sharepoint remembered devices**: an identity key kept in the Keychain / Credential Manager (a secret-store port); after a protocol 2 transfer **Remember** on both sides keeps the peer's name, key and a pairing secret; a later send is one click, met on the DHT under hourly per-direction keys, CPace + Noise on the pair's secret, the remembered key checked (refused loudly if it changed); "Waiting for … to come online" until Cancel; Forget ([docs/design/28](design/28-sharepoint.md#remembered-devices-472-pr-4)) | Mac: built; `"[sharepoint]"` passes (TSan-clean for the new cases) with two engines remembering each other over a stand-in swarm, the list and identity across restarts, an impostor holding the pair's secret refused; the fuzz harness covers the record. Keychain and Credential Manager are not exercised by tests (a folder stands in). Not built: the own-device relay. Windows: `secrets_win.cpp` meets a compiler in CI only ([Where this actually is](#sharepoint-remembered-devices-issue-472-pr-4-2026-10-18)) |
 | #472 PR 2 | **Sharepoint over the internet with a code**, opt-in and off by default: the receiver makes a code (works once, for 10 minutes) carrying its forwarded port, a router-mapped port (PCP, NAT-PMP, UPnP-IGD; external 443 too; an IGDv2 IPv6 pinhole), its public IPv6 and its LAN address; the sender races them, retries 1/2/5/10/30 s with the reason, proves the code with CPace (ristretto255, the draft's vectors pass) keying Noise `XXhfs+psk0`; both confirm the name and may compare a six-digit check; no server ([docs/design/28](design/28-sharepoint.md#over-the-internet-472-pr-2)) | Mac: built; `"[sharepoint]"` passes (TSan-clean) with two engines over a code on loopback and the mapper against stand-in routers; the fuzz harness covers the new parsers. Windows: `net_win.cpp`'s IPv6, `GetAdaptersAddresses` and `GetBestRoute2` meet a compiler in CI only. Owed: real routers, two machines over the internet, both platforms ([Where this actually is](#sharepoint-over-the-internet-issue-472-pr-2-2026-10-18)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
@@ -1107,7 +1108,7 @@ python3 tools/package/addon-pack.py pack --addon places --platform macos --src b
 
 # Sharepoint (docs/design/28): build/addons/sharepoint/(lib)mv_sharepoint.(dylib|dll)
 cmake --build build --target mv_sharepoint
-build/bin/mv_import_tests "[sharepoint]"       # wire, Noise (Cacophony vectors), channel, protocol 2's session (rejoin, resume, Bluetooth <-> Wi-Fi), 2-3 engines over loopback TCP, the add-on through the loader
+build/bin/mv_import_tests "[sharepoint]"       # wire, Noise (Cacophony vectors), channel, protocol 2's session (rejoin, resume, Bluetooth <-> Wi-Fi), 2-3 engines over loopback TCP, codes, the DHT, remembered devices (a folder stands in for the Keychain), the add-on through the loader
 build/bin/mv_import_tests "[.sharepoint-bench]"   # MB/s against a plain copy over loopback (MV_BENCH_DIR, _BIG_MB, _SMALL, _SMALL_KB, _CASES)
 build/bin/mv_import_tests "[.sharepoint-idle]"    # CPU while Keep receiving is on, window closed (MV_IDLE_SECONDS)
 python3 -m unittest tools/package/test_addon_pack.py   # SharepointPackTest among them
@@ -1119,7 +1120,8 @@ python3 tools/package/addon-pack.py pack --addon sharepoint --platform macos --s
 /opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -O1 -g -fsanitize=fuzzer,address -isysroot $(xcrun --show-sdk-path) \
   -Isrc -Ibuild/vcpkg_installed/arm64-osx/include tools/fuzz/fuzz_sharepoint.cpp $S/wire.cpp $S/noise.cpp \
   $S/cpace.cpp $S/channel.cpp $S/transfer.cpp $S/bt_pipe.cpp $S/invite.cpp $S/mapping.cpp $S/net_address.cpp \
-  $S/net_posix.cpp $S/machine_mac.cpp src/io/file_port.cpp src/io/file_port_mac.cpp src/io/content_hash.cpp \
+  $S/net_posix.cpp $S/machine_mac.cpp $S/bencode.cpp $S/sha1.cpp $S/dht_item.cpp $S/dht.cpp $S/udp_hub.cpp \
+  $S/known.cpp $S/secrets_file.cpp src/io/file_port.cpp src/io/file_port_mac.cpp src/io/content_hash.cpp \
   build/vcpkg_installed/arm64-osx/lib/libsodium.a build/vcpkg_installed/arm64-osx/lib/libblake3.a \
   -framework CoreFoundation -framework SystemConfiguration -o build/fuzz_sharepoint
 build/fuzz_sharepoint <corpus dir> -max_total_time=180 -max_len=4096
@@ -2219,6 +2221,29 @@ What is built is in [docs/design/28](design/28-sharepoint.md).
   Mac–Windows, Windows–Windows), the crash-report check after a transfer, Windows anything in
   the app, both hosts' first-run prompts (local network and Bluetooth on the Mac, Defender
   Firewall on Windows), VoiceOver and Narrator over the window, the Windows PR 1 gate.
+
+### Sharepoint remembered devices (issue #472 PR 4, 2026-10-18)
+
+What is built is in [docs/design/28 "Remembered devices"](design/28-sharepoint.md#remembered-devices-472-pr-4);
+why in [12](design/12-decision-log.md#sharepoint).
+
+- **Mac (M-series, Release):** `mv_import_tests "[sharepoint]"` passes (95 cases). New in
+  `tests/test_sharepoint_known.cpp`: the file store (keep, replace, forget, too big refused); the
+  identity made once and kept, or this run's without a store; the records (round trip, every
+  truncation refused, long names cut on a character, 16 at most, under Credential Manager's
+  2560 bytes); the hourly keys (the same on both sides, new each hour and per direction); a
+  protocol 2 session naming each side's key and giving both one pairing secret (protocol 1: none).
+  In `tests/test_sharepoint_dht.cpp`: two engines remember each other after a four-word send, then
+  send with one click and no code; the list and the identity outlive the engine and Forget
+  forgets; an impostor holding the pair's secret but another key is refused with the loud note;
+  one-sided remembering waits and Cancel ends it.
+- **Found in testing:** with one key set per pair, a device that both waits and sends met its own
+  item on the DHT; the keys are now per direction.
+- **ThreadSanitizer:** the ten new cases, 0 reports.
+- **Fuzzing:** the harness adds the remembered-devices record: 12.4 million inputs in 150 s, clean.
+- **Not exercised:** the Keychain and Credential Manager themselves (the tests use a folder; the
+  app uses the OS store), two machines over the internet, the waiting side's DHT load over hours,
+  the PR 1 gates, Windows anything. The own-device relay is not built.
 
 ### Sharepoint four-word codes (issue #472 PR 3, 2026-10-18)
 

@@ -9,6 +9,8 @@
 
 #include "addons/sharepoint/bencode.h"
 #include "addons/sharepoint/dht_item.h"
+#include "addons/sharepoint/known.h"
+#include "addons/sharepoint/secrets.h"
 #include "addons/sharepoint/sha1.h"
 
 namespace bc = mv::sharepoint::bencode;
@@ -551,14 +553,20 @@ namespace {
 struct word_client {
   fake_host host;
   sp::engine eng;
-  word_client(const fs::path& received, const std::string& name, const swarm& s)
-      : host(received), eng(host, options(name, s)) {
+  // `secrets`: a folder for the secret store (#472 PR 4); empty: none.
+  word_client(const fs::path& received, const std::string& name, const swarm& s, const fs::path& secrets = {})
+      : host(received), eng(host, options(name, s, secrets)) {
     eng.screen_opened("");
     eng.on_event("internet", 2, "true");
     eng.on_event("dht", 2, "true");
   }
-  static sp::engine::options options(const std::string& name, const swarm& s) {
+  static sp::engine::options options(const std::string& name, const swarm& s, const fs::path& secrets) {
     sp::engine::options o;
+    if (!secrets.empty()) {
+      fs::create_directories(secrets);
+      o.make_secrets = [dir = utf8(secrets)] { return mv::sharepoint::secrets::file_store(dir); };
+    }
+    o.known_poll_ms = 300;
     o.my_name = name;
     o.use_bluetooth = false;
     o.loopback_only = true;
@@ -640,4 +648,189 @@ TEST_CASE("sharepoint dht: lookups on the public DHT (harness)", "[.sharepoint-d
               "\"public_ports_seen\":%zu}\n",
               start_s, c.known(), n, ms[ms.size() / 2], ms[std::min(ms.size() - 1, ms.size() * 95 / 100)],
               votes.size());
+}
+
+// ---- known devices (#472 PR 4) ----------------------------------------------------------------
+
+namespace {
+// Ann sends `f` to Bea with four words, and both see the Remember toggle.
+void send_with_words(word_client& ann, word_client& bea, const fs::path& f) {
+  ann.eng.set_files({utf8(f)});
+  REQUIRE(eventually([&] { return ann.eng.snapshot().file_count == 1; }));
+  bea.eng.on_event("make_code", 1, "");
+  std::string words;
+  REQUIRE(eventually([&] {
+    const auto v = bea.eng.snapshot();
+    words = v.code_text;
+    return v.code_phase == static_cast<std::uint8_t>(sp::internet_receiver::phase::ready) && !words.empty();
+  }, 20));
+  ann.eng.on_event("send_code", 2, "\"" + words + "\"");
+  ann.eng.on_event("send_to_code", 1, "");
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::naming; }, 30));
+  ann.eng.on_event("out_confirm", 1, "");
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  REQUIRE(ann.eng.snapshot().out == sp::view::out_phase::done);
+  REQUIRE(bea.eng.snapshot().in == sp::view::in_phase::done);
+}
+
+fs::path file_of(const scratch_dir& dir, const char* name, std::size_t size, std::uint32_t seed) {
+  const fs::path f = dir / "out" / name;
+  write_bytes(f, pattern(size, seed));
+  return f;
+}
+}  // namespace
+
+TEST_CASE("sharepoint known: two devices that remember each other send again with no code", "[sharepoint]") {
+  scratch_dir dir("sharepoint_known_send");
+  swarm s(16);
+  word_client bea(dir / "bea_received", "Bea", s, dir / "bea_secrets");
+  word_client ann(dir / "ann_received", "Ann", s, dir / "ann_secrets");
+  CHECK(ann.eng.snapshot().can_remember);
+  send_with_words(ann, bea, file_of(dir, "first.jpg", 300 * 1024, 3));
+
+  // Both offer Remember, named for the other; ticking keeps it.
+  CHECK(ann.eng.snapshot().remember_offer);
+  CHECK(ann.eng.snapshot().remember_peer == "Bea");
+  CHECK_FALSE(ann.eng.snapshot().remembered);
+  CHECK(bea.eng.snapshot().remember_offer);
+  CHECK(sp::build_tree(ann.eng.snapshot()).find("\"remember\"") != std::string::npos);
+  ann.eng.on_event("remember", 2, "true");
+  bea.eng.on_event("remember", 2, "true");
+  CHECK(ann.eng.snapshot().remembered);
+  CHECK(ann.eng.snapshot().known == std::vector<std::string>{"Bea"});
+  CHECK(bea.eng.snapshot().known == std::vector<std::string>{"Ann"});
+
+  // A send to Bea now: no code, no name to confirm.
+  const fs::path second = file_of(dir, "second.mov", 1024 * 1024 + 7, 4);
+  ann.eng.set_files({utf8(second)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_names == std::vector<std::string>{"second.mov"};
+  }));
+  ann.eng.on_event("known", 5, "\"dev0\"");
+  CHECK(ann.eng.snapshot().out_known);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }, 60));
+  CHECK(bea.eng.snapshot().in_known);
+  CHECK(bea.eng.snapshot().in_peer == "Ann");
+  bea.eng.on_event("accept", 1, "");  // Bea still decides
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  INFO(ann.eng.snapshot().out_note);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(read_bytes(dir / "bea_received" / "second.mov") == read_bytes(second));
+}
+
+TEST_CASE("sharepoint known: the list and the identity outlive the engine, and Forget forgets", "[sharepoint]") {
+  scratch_dir dir("sharepoint_known_kept");
+  swarm s(12);
+  {
+    word_client bea(dir / "bea_received", "Bea", s, dir / "bea_secrets");
+    word_client ann(dir / "ann_received", "Ann", s, dir / "ann_secrets");
+    send_with_words(ann, bea, file_of(dir, "a.jpg", 100 * 1024, 5));
+    ann.eng.on_event("remember", 2, "true");
+  }
+  word_client ann(dir / "ann_received", "Ann", s, dir / "ann_secrets");
+  CHECK(ann.eng.snapshot().known == std::vector<std::string>{"Bea"});
+  const std::string tree = sp::build_tree(ann.eng.snapshot());
+  CHECK(tree.find("Remembered devices") != std::string::npos);
+  CHECK(tree.find("Forget Bea") != std::string::npos);
+  ann.eng.on_event("forget0", 1, "");
+  CHECK(ann.eng.snapshot().known.empty());
+  word_client again(dir / "ann_received", "Ann", s, dir / "ann_secrets");
+  CHECK(again.eng.snapshot().known.empty());
+  // Without a store nothing can be remembered: no toggle.
+  word_client none(dir / "none_received", "Cid", s);
+  CHECK_FALSE(none.eng.snapshot().can_remember);
+}
+
+TEST_CASE("sharepoint known: a remembered device with another key is refused, loudly", "[sharepoint]") {
+  scratch_dir dir("sharepoint_known_changed");
+  swarm s(16);
+  {
+    word_client bea(dir / "bea_received", "Bea", s, dir / "bea_secrets");
+    word_client ann(dir / "ann_received", "Ann", s, dir / "ann_secrets");
+    send_with_words(ann, bea, file_of(dir, "a.jpg", 100 * 1024, 6));
+    ann.eng.on_event("remember", 2, "true");
+    bea.eng.on_event("remember", 2, "true");
+  }
+  // Someone holding the pair's secret (a copied record) answers for Bea,
+  // under Bea's direction, with another key.
+  namespace known = mv::sharepoint::known;
+  auto bea_store = mv::sharepoint::secrets::file_store(utf8(dir / "bea_secrets"));
+  auto ann_store = mv::sharepoint::secrets::file_store(utf8(dir / "ann_secrets"));
+  const auto pair = known::load(*bea_store);
+  const auto bea_key = known::load(*ann_store);
+  REQUIRE(pair.size() == 1);
+  REQUIRE(bea_key.size() == 1);
+  const auto k = known::presence_keys(pair[0], known::hour_of(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                                  std::chrono::system_clock::now().time_since_epoch())
+                                                                  .count()),
+                                      bea_key[0].key);
+  auto hub = sp::udp_hub::open(0, true);
+  REQUIRE(hub);
+  dht::client client(*hub, test_options(s));
+  REQUIRE(client.start({}));
+  std::atomic<bool> done{false};
+  std::atomic<bool> opened{false};
+  std::thread impostor([&] {
+    dht::meet_options mo;
+    mo.loopback = true;
+    mo.wait_ms = 60000;
+    auto met = dht::meet(*hub, client, k, dht::role::receiver, mo, [&] { return done.load(); }, {});
+    if (!met) return;
+    std::shared_ptr<sp::link> l(std::move(*met));
+    auto h = sp::channel::read_hello(*l, std::chrono::steady_clock::now() + std::chrono::seconds(10));
+    if (!h) return;
+    sp::channel::options o;
+    std::array<std::uint8_t, 32> other{};
+    randombytes_buf(other.data(), other.size());
+    o.static_key = other;
+    o.internet_secret = std::vector<std::uint8_t>(k.password.begin(), k.password.end());
+    auto ch = sp::channel::open_server(l, *h, "cccccccccccccccc", "Bea", o);
+    opened.store(static_cast<bool>(ch));
+    if (ch) (void)eventually([&] { return done.load(); }, 30);
+  });
+  word_client ann(dir / "ann_received", "Ann", s, dir / "ann_secrets");
+  const fs::path f = file_of(dir, "b.jpg", 100 * 1024, 7);
+  ann.eng.set_files({utf8(f)});
+  REQUIRE(eventually([&] { return ann.eng.snapshot().file_count == 1; }));
+  ann.eng.on_event("known", 5, "\"dev0\"");
+  const bool ended = eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::ended; }, 60);
+  done.store(true);
+  impostor.join();
+  REQUIRE(ended);
+  CHECK(opened.load());  // it held the secret: the handshake worked, the key did not
+  INFO(ann.eng.snapshot().out_note);
+  CHECK(ann.eng.snapshot().out_note.find("security key has changed") != std::string::npos);
+  CHECK(ann.eng.snapshot().out_note.find("Nothing was sent") != std::string::npos);
+}
+
+TEST_CASE("sharepoint known: a send to a device that does not answer waits, and Cancel ends it", "[sharepoint]") {
+  scratch_dir dir("sharepoint_known_waits");
+  swarm s(12);
+  {
+    word_client bea(dir / "bea_received", "Bea", s, dir / "bea_secrets");
+    word_client ann(dir / "ann_received", "Ann", s, dir / "ann_secrets");
+    send_with_words(ann, bea, file_of(dir, "a.jpg", 100 * 1024, 8));
+    ann.eng.on_event("remember", 2, "true");  // Bea does not remember Ann
+  }
+  word_client ann(dir / "ann_received", "Ann", s, dir / "ann_secrets");
+  const fs::path f = file_of(dir, "b.jpg", 100 * 1024, 9);
+  ann.eng.set_files({utf8(f)});
+  REQUIRE(eventually([&] { return ann.eng.snapshot().file_count == 1; }));
+  ann.eng.on_event("known", 5, "\"dev0\"");
+  const bool waits =
+      eventually([&] { return ann.eng.snapshot().out_note.find("Waiting for Bea to come online") == 0; }, 20);
+  INFO(ann.eng.snapshot().out_note << " / " << ann.eng.snapshot().send_code_note << " / "
+                                   << static_cast<int>(ann.eng.snapshot().out));
+  REQUIRE(waits);
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::reaching);
+  CHECK(sp::build_tree(ann.eng.snapshot()).find("Waiting for Bea") != std::string::npos);
+  ann.eng.on_event("out_cancel", 1, "");
+  ann.eng.wait_idle();
+  CHECK(ann.eng.snapshot().out_note == "Cancelled. Nothing was sent.");
 }

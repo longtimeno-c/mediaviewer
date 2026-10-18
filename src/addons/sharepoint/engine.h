@@ -40,6 +40,7 @@
 
 #include "addons/sharepoint/channel.h"
 #include "addons/sharepoint/internet.h"
+#include "addons/sharepoint/known.h"
 #include "addons/sharepoint/prefs.h"
 #include "addons/sharepoint/presence.h"
 #include "addons/sharepoint/transfer.h"
@@ -120,6 +121,7 @@ struct view {
   bool in_reconnecting = false;  // #472, as out_reconnecting
   std::uint32_t in_protocol = 0;  // as out_protocol
   bool in_internet = false;       // #472 PR 2: from a code; in_code is the check, not a code to type
+  bool in_known = false;          // #472 PR 4: from a remembered device (its key checked)
   std::string destination;
 
   // ---- over the internet (#472 PR 2; the toggle off: none of it shows or runs)
@@ -129,6 +131,16 @@ struct view {
   std::uint8_t code_phase = 0;  // internet_receiver::phase
   std::string code_text, code_link, code_note, code_how;
   std::string send_code_note;   // a pasted code that is not one
+
+  // ---- known devices (#472 PR 4)
+  bool can_remember = false;      // this machine keeps its identity (a secret store)
+  std::vector<std::string> known;  // the remembered devices' names, in order
+  // A protocol 2 transfer just went through: "Remember <peer>" shows under
+  // its result, with whether it is remembered.
+  bool remember_offer = false;
+  bool remembered = false;
+  std::string remember_peer;
+  bool out_known = false;  // the send is to a remembered device (reaching: waiting for it)
 };
 
 // The selected peer is heard only on Bluetooth, speaks only protocol 1, and
@@ -232,6 +244,12 @@ class engine {
     std::optional<std::vector<net::endpoint>> dht_nodes;
     bool dht_fast_kdf = false;
     bool internet_force_words = false;
+    // #472 PR 4: where this machine's identity and the devices it remembers
+    // are kept (secrets::os_store() in the app; a folder in the tests).
+    // Empty, or nullptr from it: a key per run, and nothing is remembered.
+    std::function<std::unique_ptr<secrets::store>()> make_secrets;
+    // How often a remembered device's wait looks for a sender on the DHT.
+    int known_poll_ms = 15000;
   };
 
   engine(engine_host& host, options opts);
@@ -289,23 +307,41 @@ class engine {
   void on_tick();
   void on_bt_peer(const bt_peer& p);
   // `internet`: from the internet listener (#472 PR 2).
-  void on_incoming(std::unique_ptr<link> l, bool internet = false);
+  // `from_known` (#472 PR 4): met on the DHT as a remembered device.
+  void on_incoming(std::unique_ptr<link> l, bool internet = false,
+                   std::optional<known::device> from_known = std::nullopt);
   void accept_loop();
   void start_send();
   // The peer the send waited for is on Wi-Fi now: go.
   void start_waiting_send();
   // `code` (#472 PR 2): to the receiver of an internet code instead of a
   // peer nearby; peer_id is then empty.
+  // `to_known` (#472 PR 4): to a remembered device, met on the DHT.
   void run_send(std::string peer_id, std::vector<outgoing_file> files, std::optional<invite::code> code = std::nullopt,
-                std::optional<dht::word_code> words = std::nullopt);
+                std::optional<dht::word_code> words = std::nullopt,
+                std::optional<known::device> to_known = std::nullopt);
+  // #472 PR 4: known devices. Sending to one; the toggle under a transfer's
+  // result; Forget.
+  void start_send_known(std::size_t index);
+  void set_remembered(bool on);
+  void forget_known(std::size_t index);
+  void publish_known_locked();
+  // The control thread: the wait for remembered devices, started and
+  // stopped with the window or Keep receiving, the internet and DHT
+  // toggles, and whether any device is remembered.
+  void sync_known();
+  void run_known_wait();
+  // A transfer ended well over protocol 2: what Remember would keep.
+  void offer_remember(const channel& ch, const std::string& name);
   // #472 PR 3: the DHT client's options (the routers, or the tests' nodes;
   // the table kept beside the prefs).
   [[nodiscard]] dht::client::options dht_options() const;
   void start_send_code();
   // After the link is open and the peer is known: the code typed (nearby) or
   // the name confirmed (internet), then the offer, Accept and the files.
+  // `trusted` (#472 PR 4): a remembered device, its key checked; nothing to confirm.
   void send_on(std::shared_ptr<channel> ch, std::vector<outgoing_file> files, std::string name, std::uint64_t total,
-               std::string peer_id, std::optional<net::endpoint> internet_place);
+               std::string peer_id, std::optional<net::endpoint> internet_place, bool trusted = false);
   // The control thread: the internet receiver made or dropped with the toggle.
   void sync_internet();
   void on_internet_link(std::unique_ptr<link> l);
@@ -320,7 +356,8 @@ class engine {
   void on_link_event(bool sending, link_event e, const channel& ch);
   // `internet`: the link came to the internet listener (a code's sender, or
   // a rejoin of a transfer over one).
-  void run_receive(std::unique_ptr<link> l, bool internet = false);
+  void run_receive(std::unique_ptr<link> l, bool internet = false,
+                   std::optional<known::device> from_known = std::nullopt);
   // The offer's notification (#452), from the receive thread only. False:
   // the host has none (open the window instead).
   bool notice(const std::string& peer, std::size_t count, std::uint64_t bytes);
@@ -383,8 +420,20 @@ class engine {
   std::shared_ptr<channel> live_;         // under m_: the transfer's channel, to cancel it (and rejoin it)
   bool mover_kick_ = false;               // under m_: the mover looks again now
   std::condition_variable mover_cv_;
-  // This run's X25519 key in protocol 2's XX handshake. Wiped at the end.
+  // This machine's X25519 key in protocol 2's XX handshake: kept in the
+  // secret store (#472 PR 4), else this run's. Set in the constructor, read
+  // anywhere after. Wiped at the end.
   std::array<std::uint8_t, 32> static_key_{};
+  std::array<std::uint8_t, 32> public_key_{};  // static_key_'s public half
+  // #472 PR 4: the secret store (calls under secrets_m_, never on the UI
+  // thread), the remembered devices, and what Remember would keep.
+  std::mutex secrets_m_;
+  std::unique_ptr<secrets::store> secrets_;  // under secrets_m_
+  std::vector<known::device> devices_;       // under m_
+  std::optional<known::device> last_pair_;   // under m_
+  // The wait for remembered devices (the control thread starts and stops it).
+  std::thread known_thread_;
+  std::atomic<bool> known_stop_{false};
   // #472 PR 2: the receiver of codes while the toggle is on (made and dropped
   // on the control thread; a receive in flight keeps its own reference).
   std::shared_ptr<internet_receiver> internet_;  // under m_

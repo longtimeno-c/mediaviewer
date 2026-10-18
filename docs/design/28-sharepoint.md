@@ -174,8 +174,9 @@ the LAN and Bluetooth. They get no rejoin and no move between bearers.
    the client's key (its shared secret mixed into the chaining key beside the X25519 ones), its
    static key and `es`. A recording of the link needs both X25519 and ML-KEM-768 broken to read.
 3. The client sends its static key, `se`, and reveals the nonce, which must match the commitment.
-   Statics are a key the engine makes once a run (the XX shape is there for remembered devices,
-   #472 PR 4); nothing on the LAN or Bluetooth trusts them yet.
+   The static is this machine's identity, kept in the OS's secret store (#472 PR 4,
+   [below](#remembered-devices-472-pr-4)); without a store, a key made once a run. Nothing on the
+   LAN or Bluetooth trusts it: only a remembered device's meeting checks it.
 4. **The code** is six digits from a BLAKE2b hash of the handshake hash after message 2 and the
    nonce. Everything the server contributes is fixed before the client's nonce is seen, and the
    nonce is fixed before the server speaks, so a machine in the middle cannot search for keys that
@@ -380,6 +381,50 @@ only while a code waits or a send looks for its receiver; never at idle. (`dht_i
   them over the keyspace). Two hard NATs, or a network with no UDP, do not meet this way, and the
   window says what to try.
 
+## Remembered devices (#472 PR 4)
+
+After a transfer over protocol 2 that went through, either window shows **Remember Bea** under the
+result. Ticked on both computers, a later send needs no code: Bea is a tile under **Remembered
+devices** (in the internet section), and one click sends to it over the internet, whenever both
+are online. The receiver still accepts or declines every transfer. (`secrets.*`, `known.*`.)
+
+- **Identity.** An X25519 key made once and kept in the OS's secret store (`secrets.h`, a port, D9):
+  the login Keychain on the Mac (a generic password under "MediaViewer Sharepoint", this device
+  only, after first unlock), Credential Manager on Windows (generic credentials, this machine only,
+  not roamed). It is the static of every protocol 2 handshake. Where there is no store (or it does
+  not keep what it is given) the key is this run's and nothing can be remembered; the toggle does
+  not show. The tests use a folder (`secrets::file_store`).
+- **What is remembered**: the peer's name, its static key from that session, and a **pairing
+  secret** only the two ends of that session hold (BLAKE2b over the session's resume secret). At
+  most 16 devices, in one value of the store; Forget removes one.
+- **Mutual by construction.** Nothing is sent to say "I remembered you": the meeting is keyed by
+  the pairing secret, so a device is found only when both kept it. One-sided, the sender waits
+  ("Waiting for Bea to come online… Bea must remember this computer too") until Cancel.
+- **Meeting.** Each hour (UTC) the secret gives the pair a fresh set of the four-word code's keys
+  ([above](#four-words-over-the-dht-472-pr-3)) per direction: toward the receiving device's
+  identity, so each side's wait and send are apart and a device never meets its own item. While
+  the window is open (or Keep receiving is on), the internet and DHT toggles are on and something
+  is remembered, one UDP socket and DHT client publish this computer's item for each remembered
+  device (again every 4 minutes; an item is believed for 10) and look for a sender's every 15
+  seconds, one target per look. A sender's item found, the two meet and punch as with four words
+  (the sender punches 15 s longer, as the other side looks only that often). The sender's rounds
+  end on the hour, when both change keys; it keeps going until it meets or Cancel.
+- **Trust on first use.** The handshake is the internet one (CPace on this hour's password, then
+  `Noise_XXhfs+psk0`), so only a holder of the pairing secret gets through; then the peer's static
+  must be the one remembered. Another key ends the link on the side that sees it, loudly: "This is
+  not the Bea you remembered: its security key has changed… If Bea was set up again, forget it
+  here and send once nearby or with a code to remember it again. If not, someone may be pretending
+  to be Bea." Nothing is sent or received. A device set up again with a new key is not found at all
+  (its wait is keyed by its new identity), which is the same advice.
+- What DHT nodes see: this computer's address taking part, and while something is remembered, an
+  item per remembered device each hour under targets that change every hour and mean nothing
+  without the pair's secret.
+- **Not built**: the **own-device relay** (#472 PR 4's "relay only through the person's own
+  devices"): a remembered device of one's own forwarding a transfer between two others needs a
+  relay role in the session and a second hop's keys, and is left for later. Remembered devices are
+  not marked on the nearby tiles (the beacon carries an id, not the identity). Two clocks more than
+  a minute apart around the hour may miss each other for that minute.
+
 ## What moves, and how it lands
 
 `transfer.h`. Copies only: an original is only ever read (rule 5).
@@ -483,7 +528,9 @@ second while bytes move; those posts update chrome and never present the canvas.
   encrypted traffic and roughly how much moved. Nothing goes anywhere else: no lookup, no STUN,
   no name resolution. Codes, addresses and peer names are never logged.
 - Protocol 2's resume secret and keys live in memory only, wiped when the session ends; nothing
-  about a session is written down.
+  about a session is written down, except what Remember keeps (#472 PR 4): the peer's name, key
+  and pairing secret, in the OS's secret store (Keychain, Credential Manager), never a plain file,
+  until Forget.
 - Receiving is off until the window opens or the person turns it on. Turned on, it stays on across
   launches until turned off (#442), and the command bar says so (**Sharepoint: receiving**).
 - A notification (#452) names the sender and a count and size; never a file name, a path or the
@@ -531,6 +578,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Noise (protocol 2's handshakes, #472) | `noise.*` |
 | CPace, internet codes, port mapping, the code's life and the sender's race (#472 PR 2) | `cpace.*`, `invite.*`, `mapping.*`, `internet.*`, `race.h`, `net_address.cpp` |
 | Word codes, the DHT, one UDP socket and its stream, punching (#472 PR 3) | `dht_item.*`, `wordlist.inc` (BIP-39, MIT), `dht.*`, `bencode.*`, `sha1.*`, `udp_hub.*`, `meet.*` |
+| The identity, remembered devices and their hourly keys (#472 PR 4) | `secrets.h`, `secrets_mac.cpp` (Keychain), `secrets_win.cpp` (Credential Manager), `secrets_file.cpp`, `known.*` |
 | Sealed channel, and protocol 2's session (replay, rejoin, resume) | `channel.*`, `link.h` |
 | Sending and the verified receive | `transfer.*` |
 | Engine, presence, the window's tree | `engine.*`, `presence.*`, `tree.cpp` |
@@ -542,13 +590,13 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Windows chrome | `IslandHost.Sharepoint.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
-| Tests | `tests/test_sharepoint.cpp`, `tests/test_sharepoint_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_sharepoint_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_sharepoint_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, #472 PR 3), `tests/test_sharepoint_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, #472), `tests/sharepoint_fixture.h`, `tests/test_sharepoint_addon.cpp` (`mv_import_tests "[sharepoint]"`), `tools/package/test_addon_pack.py` |
+| Tests | `tests/test_sharepoint.cpp`, `tests/test_sharepoint_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_sharepoint_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_sharepoint_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices and an impostor with the pair's secret, #472 PR 3–4), `tests/test_sharepoint_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_sharepoint_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, #472), `tests/sharepoint_fixture.h`, `tests/test_sharepoint_addon.cpp` (`mv_import_tests "[sharepoint]"`), `tools/package/test_addon_pack.py` |
 
 ## Not built
 
 - Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6 on the LAN.
-- Over the internet, after PR 3: remembered devices and the own-device relay (PR 4), Wi-Fi →
-  internet handover (PR 5); the birthday punch and TCP simultaneous open ([above](#four-words-over-the-dht-472-pr-3)).
+- Over the internet, after PR 4: the own-device relay ([above](#remembered-devices-472-pr-4)),
+  Wi-Fi → internet handover (PR 5); the birthday punch and TCP simultaneous open ([above](#four-words-over-the-dht-472-pr-3)).
 - Resuming a protocol 1 transfer that dropped: finished files stay, the rest is sent again.
   Protocol 2 rejoins and resumes within 20 s; a session that ends (20 s without a link, three
   rejoins in 10 s, the app quitting) is not resumed later.

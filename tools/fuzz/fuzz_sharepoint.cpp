@@ -10,7 +10,9 @@
 // address, a router's PCP / NAT-PMP / SSDP / HTTP / XML replies, a CPace
 // message and an internet hello; and from #472 PR 3, the DHT: bencoding,
 // compact node lists and endpoints, word codes, an item opened under a code's
-// key. The first byte picks which. Whatever comes in, every call must
+// key; and from #472 PR 4, a remembered-devices record as the secret store
+// returns it (damaged, or written by another version). The first byte picks
+// which. Whatever comes in, every call must
 // return, read nothing past the input and never hang: a link that runs out is
 // a closed link.
 #include <algorithm>
@@ -32,6 +34,7 @@
 #include "addons/sharepoint/dht.h"
 #include "addons/sharepoint/dht_item.h"
 #include "addons/sharepoint/invite.h"
+#include "addons/sharepoint/known.h"
 #include "addons/sharepoint/mapping.h"
 #include "addons/sharepoint/net.h"
 #include "addons/sharepoint/noise.h"
@@ -81,7 +84,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   const std::span<const std::uint8_t> in(data + 1, size - 1);
   const std::string_view text(reinterpret_cast<const char*>(in.data()), in.size());
   std::vector<std::uint8_t> out, payload;
-  switch (data[0] % 21) {
+  switch (data[0] % 22) {
     case 0:
       (void)sp::decode_beacon(in);
       break;
@@ -191,6 +194,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
       }
       break;
     }
+    case 21:
+      if (auto d = mv::sharepoint::known::decode(in)) (void)mv::sharepoint::known::encode(*d);
+      break;
     case 15: {
       // A sender with a code, answered by the input.
       auto l = std::make_shared<input_link>(in);

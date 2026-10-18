@@ -1616,6 +1616,18 @@ can find different working paths (one hears the other's LAN address, the other i
 the sender's choice wins. A stream id comes from the code, so only a holder of the words can be
 that first packet, and what it carries is the channel's AEAD-sealed frames.
 
+**Remembered devices: the OS's secret store, a pairing secret, hourly DHT keys per direction
+(2026-10-18, #472 PR 4).** The identity is an X25519 key kept in the Keychain / Credential Manager
+behind a port (`secrets.h`; a folder for the tests), never a plain file; without a store each run
+makes its own and nothing is remembered. A remembered device is its name, its static key and a
+pairing secret derived from that session's resume secret, so remembering is mutual by construction
+(no "remember me" message: both must hold the secret to meet). Remembered devices meet on the DHT
+under keys that change every hour and differ per direction (keyed by the waiting device's identity),
+found so in testing: with one key set per pair, a device that both waits and sends met its own
+item. The waiting side looks for a sender every 15 s rather than every 2 s, to keep the standing
+load on the DHT low; the sender punches 15 s longer to cover that. A key that differs from the
+remembered one ends the link loudly (TOFU); the own-device relay is not built in this PR.
+
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
 no-replace before its `file_done`; the sender's `done` waits for every check. Measured on loopback

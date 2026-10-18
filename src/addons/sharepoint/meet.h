@@ -43,6 +43,10 @@ struct meet_options {
   // The tests: publish loopback addresses only.
   bool loopback = false;
   int wait_ms = 10 * 60 * 1000;  // how long to look for the other side
+  // How long to punch once the other side's item is found. A remembered
+  // device (#472 PR 4) notices a sender only at its next look, so the
+  // sender punches that much longer.
+  int punch_ms = kPunchMs;
 };
 
 // What a meeting reports along the way, for the window ("Looking for the

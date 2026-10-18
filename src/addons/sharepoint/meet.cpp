@@ -150,7 +150,7 @@ result<std::unique_ptr<link>> meet(const std::shared_ptr<udp_hub>& hub, client& 
   hello[0] = kProbe;
   hello[1] = kHello;
   std::memcpy(hello + 2, tag.data(), tag.size());
-  const auto punch_until = clock::now() + std::chrono::milliseconds(kPunchMs);
+  const auto punch_until = clock::now() + std::chrono::milliseconds(o.punch_ms);
   std::optional<net::endpoint> path;
   while (clock::now() < punch_until && !(stop && stop())) {
     for (const auto& t : targets) (void)hub->send(hello, t);
