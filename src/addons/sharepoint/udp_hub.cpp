@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <utility>
 #include <vector>
 
 #include "addons/sharepoint/wire.h"
@@ -28,6 +29,7 @@ constexpr double kMaxCwnd = 8.0 * 1024 * 1024;
 constexpr std::size_t kMaxRx = 16u * 1024 * 1024;       // the receiver's buffer, at most
 constexpr std::uint32_t kMaxAhead = 16384;               // packets held out of order, at most
 constexpr int kInitialRtoMs = 1000, kMinRtoMs = 200, kMaxRtoMs = 8000;
+constexpr int kExtraBuffers = 64 * 1024;  // a birthday socket carries probes only, until a stream adopts it
 
 void put32(std::uint8_t* p, std::uint32_t v) noexcept {
   for (int i = 0; i < 4; ++i) p[i] = static_cast<std::uint8_t>(v >> (8 * i));
@@ -52,6 +54,7 @@ bool before(std::uint32_t a, std::uint32_t b) noexcept { return static_cast<std:
 struct udp_hub::stream_state {
   std::weak_ptr<udp_hub> hub;  // a stream that outlives its hub just fails
   std::shared_ptr<net::udp_socket> sock;  // under m: the socket it runs on
+  std::uint32_t extra = 0;                // the hub's extra it owns (0: the main socket)
   net::endpoint peer;
   std::uint32_t id = 0;
   bool learn = false;  // under m: the first packet's sender becomes the peer
@@ -311,11 +314,23 @@ class udp_stream final : public link {
     } catch (...) {
     }
     s_->cv.notify_all();
+    release_extra();
   }
 
   transport via() const noexcept override { return transport::internet; }
 
  private:
+  // Under s_->m. The birthday socket this stream ran on goes with it: the hub
+  // is back to its one socket (and its reader to its idle wait).
+  void release_extra() noexcept {
+    const std::uint32_t id = std::exchange(s_->extra, 0);
+    if (id == 0) return;
+    try {
+      if (auto h = s_->hub.lock()) h->close_extras(std::span<const std::uint32_t>(&id, 1));
+    } catch (...) {
+    }
+  }
+
   std::shared_ptr<udp_hub::stream_state> s_;
 };
 
@@ -386,7 +401,7 @@ std::vector<std::uint32_t> udp_hub::open_extras(int n) {
   net::reserve_sockets(n);
   std::vector<std::uint32_t> ids;
   for (int i = 0; i < n && !stop_.load(); ++i) {
-    auto s = net::open_udp_dual(0, loopback_);
+    auto s = net::open_udp_dual(0, loopback_, kExtraBuffers);
     if (!s) break;  // out of sockets: the punch runs with fewer
     std::shared_ptr<net::udp_socket> sock = wrap_ ? wrap_(std::move(*s)) : std::move(*s);
     std::lock_guard lock(m_);
@@ -440,6 +455,8 @@ std::unique_ptr<link> udp_hub::stream(const net::endpoint& peer, std::uint32_t i
       s->sock = sock_;
     } else if (auto it = extras_.find(sock); it != extras_.end()) {
       s->sock = it->second;
+      s->sock->set_buffers(net::kUdpBuffers);  // a transfer now runs on it
+      s->extra = sock;
     }
     if (s->sock) streams_[id] = s;
   }

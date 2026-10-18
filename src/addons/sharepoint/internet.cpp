@@ -331,6 +331,7 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
     dht_keys_ = std::move(keys);
     meet_stop_.store(false);
     dht::meet_options mo;
+    mo.tcp = true;  // a word code's meeting, the window open: TCP simultaneous open too
     mo.loopback = opts_.loopback_only;
     mo.wait_ms = opts_.lifetime_ms;
     meet_thread_ = std::thread([this, mo] {

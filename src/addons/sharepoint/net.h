@@ -91,6 +91,8 @@ class udp_socket {
   [[nodiscard]] virtual std::uint16_t port() const noexcept = 0;
   // The OS's socket (an fd, a SOCKET), for wait_readable only.
   [[nodiscard]] virtual std::intptr_t handle() const noexcept = 0;
+  // The kernel's send and receive buffers, each `bytes` (best effort).
+  virtual void set_buffers(int bytes) noexcept = 0;
 };
 // IPv4 (or IPv6) on a port the OS picks, bound at once; `multicast_ttl`: the
 // TTL of a multicast send (SSDP asks for 2). `loopback_only`: bound to
@@ -100,7 +102,12 @@ class udp_socket {
 // addresses either way), on `port` (0: the OS picks): the DHT, hole punching
 // and the transfer share it, so the hole a probe punches is the one the
 // transfer uses. `loopback_only`: ::1 and 127.0.0.1 (the tests).
-[[nodiscard]] result<std::unique_ptr<udp_socket>> open_udp_dual(std::uint16_t port, bool loopback_only = false);
+// `buffer_bytes`: the kernel's buffers (a fast transfer's bursts want the
+// default; the birthday punch's 256 extras ask for little, set_buffers()
+// grows the one a stream then runs on).
+inline constexpr int kUdpBuffers = 4 * 1024 * 1024;
+[[nodiscard]] result<std::unique_ptr<udp_socket>> open_udp_dual(std::uint16_t port, bool loopback_only = false,
+                                                              int buffer_bytes = kUdpBuffers);
 // #472: which of `socks` have a datagram waiting, within `timeout_ms`
 // (ready[i] set for each): the hub reads its own socket and the birthday
 // punch's many from one thread. The count; status::timeout when none.
@@ -108,8 +115,10 @@ class udp_socket {
                                                 int timeout_ms);
 // #472: room for about `n` more sockets in this process. POSIX raises the
 // soft RLIMIT_NOFILE (the Mac's default of 256 cannot hold the birthday
-// punch's sockets) to 1024 + n, within the hard limit; Windows has no such
-// limit. A socket that still does not open is one fewer, not a failure.
+// punch's sockets) to 1024 + n, within the hard limit, for the rest of the
+// process's life (lowering it again under descriptors other code may have
+// opened since would make their next open fail); Windows has no such limit.
+// A socket that still does not open is one fewer, not a failure.
 void reserve_sockets(int n) noexcept;
 
 // #472: TCP simultaneous open. One port, bound for listening and connecting

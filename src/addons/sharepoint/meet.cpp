@@ -25,11 +25,12 @@ using clock = std::chrono::steady_clock;
 constexpr std::uint8_t kHello = 1, kReply = 2, kChoose = 3, kChosen = 4;
 constexpr std::size_t kProbeBytes = 2 + 12;
 constexpr char kTagContext[] = "MediaViewer Sharepoint punch v1";
-constexpr std::size_t kMaxLearned = 16;  // hello senders not in the item, probed back
+constexpr std::size_t kMaxLearned = 8;  // hello senders not in the item, probed back
 constexpr int kTickMs = 100;
 constexpr int kMinVotes = 4;  // BEP 42 answers before a NAT is called easy
 constexpr int kBirthdayPerTick = kBirthdayRate * kTickMs / 1000;
-constexpr int kTcpAnswerMs = 2000;  // a TCP choose and its answer
+constexpr int kProbesPerTick = kProbeRate * kTickMs / 1000;
+static_assert(kMaxLearned + kBirthdayPerTick < kProbesPerTick, "room left for the item's addresses");
 constexpr int kTcpAfterMs = 1500;   // the sender picks TCP only when UDP found nothing by then
 
 std::int64_t unix_ms() {
@@ -85,8 +86,9 @@ bool contains(const std::vector<net::endpoint>& v, const net::endpoint& e) {
   return std::any_of(v.begin(), v.end(), [&](const net::endpoint& x) { return x.port == e.port && x.address == e.address; });
 }
 
-// Where the other side's NAT faces the internet (its IPv4 the DHT saw); with
-// `loopback`, the first IPv4 (the tests' stand-in NATs).
+// The other side's public IPv4 addresses (the one the DHT saw comes first in
+// its item): where its NAT faces the internet. With `loopback`, every IPv4
+// (the tests' stand-in NATs).
 std::vector<net::endpoint> public_v4(const contents& c, bool loopback) {
   std::vector<net::endpoint> out;
   for (const auto& e : c.candidates) {
@@ -99,15 +101,7 @@ std::vector<net::endpoint> public_v4(const contents& c, bool loopback) {
 
 }  // namespace
 
-bool seen_hard(const client& dht) {
-  const auto votes = dht.external_votes();
-  for (std::size_t i = 0; i < votes.size(); ++i) {
-    for (std::size_t j = i + 1; j < votes.size(); ++j) {
-      if (votes[i].address == votes[j].address && votes[i].port != votes[j].port) return true;
-    }
-  }
-  return false;
-}
+bool seen_hard(const client& dht) { return dht.looks_hard(); }
 
 std::vector<net::endpoint> own_candidates(const udp_hub& hub, const client& dht, bool loopback) {
   std::vector<net::endpoint> out;
@@ -308,18 +302,28 @@ result<std::unique_ptr<link>> meet(const std::shared_ptr<udp_hub>& hub, client& 
             if (ps->nominated || done.load()) return;  // UDP picked first
             ps->nominated = true;
           }
+          if (!l->write_all(probe_of(kChoose, tag))) {
+            // Not all of it went: the receiver cannot have taken it.
+            std::lock_guard lock(ps->m);
+            ps->nominated = false;
+            continue;
+          }
+          // Offered: the receiver may have taken it, so this side never falls
+          // back to UDP. The answer is waited for here until the punch ends.
           std::array<std::uint8_t, kProbeBytes> got{};
-          if (l->write_all(probe_of(kChoose, tag)) &&
-              read_exact_until(*l, got, clock::now() + std::chrono::milliseconds(kTcpAnswerMs)) &&
-              got == probe_of(kChosen, tag)) {
+          std::size_t have = 0;
+          while (have < got.size() && !done.load()) {
+            auto n = l->read_some(std::span(got).subspan(have), 100);
+            if (!n && n.error() == status::timeout) continue;
+            if (!n || *n == 0) break;
+            have += *n;
+          }
+          if (have == got.size() && got == probe_of(kChosen, tag)) {
             std::lock_guard lock(ps->m);
             ps->tcp = std::move(l);
             ps->cv.notify_all();
-            return;
           }
-          std::lock_guard lock(ps->m);
-          ps->nominated = false;  // never answered: the receiver did not take it either
-          continue;
+          return;
         }
         if (c && held.size() < kMaxLearned) held.push_back({std::move(*c)});
         for (auto it = held.begin(); it != held.end();) {
@@ -350,8 +354,14 @@ result<std::unique_ptr<link>> meet(const std::shared_ptr<udp_hub>& hub, client& 
             std::lock_guard lock(ps->m);
             ps->tcp = std::move(it->l);
             ps->cv.notify_all();
+            return;
           }
-          return;
+          {
+            // Not answered: the sender cannot take it; a UDP offer may still come.
+            std::lock_guard lock(ps->m);
+            ps->tcp_taken = false;
+          }
+          it = held.erase(it);
         }
       }
     });
@@ -361,7 +371,8 @@ result<std::unique_ptr<link>> meet(const std::shared_ptr<udp_hub>& hub, client& 
   const auto choose = probe_of(kChoose, tag);
   const auto punch_until = clock::now() + std::chrono::milliseconds(o.punch_ms);
   const int span_ports = std::max(1, static_cast<int>(o.birthday_hi) - static_cast<int>(o.birthday_lo) + 1);
-  std::size_t rr = 0;  // the hard side's round robin over its extras
+  std::size_t rr = 0;           // the hard side's round robin over its extras
+  std::size_t next_target = 0;  // the item's addresses, in turn
   std::optional<punch_path> path_out;
   std::unique_ptr<link> tcp_out;
   while (clock::now() < punch_until && !stopped()) {
@@ -376,8 +387,18 @@ result<std::unique_ptr<link>> meet(const std::shared_ptr<udp_hub>& hub, client& 
       // The sender's pick, offered until the receiver answers.
       (void)hub->send(choose, nominee->at, nominee->sock);
     } else {
-      for (const auto& t : targets) (void)hub->send(hello, t);
-      for (const auto& l : learned) (void)hub->send(hello, l.at, l.sock);
+      // This tick's probes, kProbesPerTick in all: the learned paths (live
+      // mappings) first, the birthday's share, then the item's addresses in
+      // turn with what is left.
+      const int birthday = birthday_easy || (birthday_hard && !extras.empty()) ? kBirthdayPerTick : 0;
+      int left = kProbesPerTick - birthday;
+      for (const auto& l : learned) {
+        (void)hub->send(hello, l.at, l.sock);
+        --left;
+      }
+      for (int i = 0; i < left && !targets.empty() && i < static_cast<int>(targets.size()); ++i, ++next_target) {
+        (void)hub->send(hello, targets[next_target % targets.size()]);
+      }
       if (birthday_easy) {
         for (int i = 0; i < kBirthdayPerTick; ++i) {
           const auto port = static_cast<std::uint16_t>(o.birthday_lo + randombytes_uniform(static_cast<std::uint32_t>(span_ports)));

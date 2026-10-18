@@ -1620,13 +1620,18 @@ that first packet, and what it carries is the channel's AEAD-sealed frames.
 #472).** Amends the row above. With a birthday socket or a TCP connection in play, "the first
 packet" no longer says which socket the receiver's stream runs on, nor which transport: the sender
 now offers its pick (*choose*, tagged by the code) until the receiver answers (*chosen*), and the
-receiver answers only the first it was offered, UDP or TCP. Birthday punch only when exactly one
-side's DHT votes show several ports (two hard NATs would need far more than 256 × 256 probes);
-256 extra sockets on the hard side, at most 100 probes a second each way, all but the stream's
-closed at the punch's end; on POSIX the soft descriptor limit is raised to 1024 + 256 for them
-(the Mac starts processes at 256). TCP runs beside UDP, but the sender takes it only when no UDP
-path answered in 1.5 s, so a path that works both ways stays on the stream the PR 3 numbers are
-for. Tested on loopback with stand-in NATs only; not measured on a real NAT, and the SYN-crossing
+receiver answers only the first it was offered, UDP or TCP; a sender that offered TCP never falls
+back to UDP. Birthday punch only when exactly one side looks hard: per-node votes for ten minutes,
+three or more ports and no port with half the voters (a single unverified "ip" field must not set
+off 256 sockets and ~1000 probes); two hard NATs would need far more than 256 × 256 probes. 256
+extra sockets (64 KiB buffers) on the hard side, birthday probes at most 100 a second and every
+probe at most 200 a second each way, all extras but the stream's closed at the punch's end and
+the stream's with the stream (an idle hub polls one socket again); on POSIX the soft descriptor
+limit is raised to 1024 + 256 for the rest of the process (the Mac starts processes at 256;
+lowering it again could fail another part's open). TCP runs beside UDP only in a word code's
+meeting, never a remembered device's background one (it listens on every interface, a firewall
+prompt on Windows), and the sender takes it only when no UDP path answered in 1.5 s, so a path
+that works both ways stays on the stream the PR 3 numbers are for. Tested on loopback with stand-in NATs only; not measured on a real NAT, and the SYN-crossing
 case itself does not occur on loopback (a reset answers a SYN there), so it is untested here.
 
 **Wi-Fi → internet: the receiver's places, swapped over the sealed link (2026-10-18, #472 PR 5).**

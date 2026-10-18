@@ -1740,6 +1740,7 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std
     dht::meet_options mo;
     mo.loopback = opts_.internet_loopback;
     mo.wait_ms = opts_.code_lifetime_ms;
+    mo.tcp = true;  // a word code's meeting, the window open: TCP simultaneous open too
     auto met = dht::meet(hub, client, *k, dht::role::sender, mo, stopped, say);
     if (stopped()) return finish("Cancelled. Nothing was sent.");
     if (!met) {

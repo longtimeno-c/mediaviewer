@@ -695,6 +695,7 @@ struct stand_in_nat {
     void shutdown() noexcept override { in_->shutdown(); }
     std::uint16_t port() const noexcept override { return in_->port(); }
     std::intptr_t handle() const noexcept override { return in_->handle(); }
+    void set_buffers(int bytes) noexcept override { in_->set_buffers(bytes); }
 
    private:
     stand_in_nat& nat_;
@@ -782,7 +783,7 @@ TEST_CASE("sharepoint nat: a hard NAT meets an easy one by the birthday punch, e
     auto hr = hub_behind(receiver_hard ? &hard_nat : &easy_nat);
     auto hs = hub_behind(receiver_hard ? &easy_nat : &hard_nat);
     dht::meet_options o;
-    o.tcp = false;  // UDP only: the birthday punch alone
+    o.tcp = false;  // UDP only (the default): the birthday punch alone
     o.birthday_lo = hard_nat.lo;
     o.birthday_hi = hard_nat.hi();
     bool r_hard = false, s_hard = false;
@@ -801,6 +802,9 @@ TEST_CASE("sharepoint nat: a hard NAT meets an easy one by the birthday punch, e
     CHECK(hard_hub->extra_count() == 1);
     CHECK((receiver_hard ? hs : hr)->extra_count() == 0);
     handshake_over(std::move(*met.r), std::move(*met.s), *met.k);
+    // The links are gone: so is the stream's birthday socket, and the hub is
+    // back to its one socket (and its reader to the idle wait).
+    CHECK(hard_hub->extra_count() == 0);
   }
 }
 
@@ -864,6 +868,7 @@ TEST_CASE("sharepoint nat: two hard NATs meet over TCP simultaneous open when UD
   auto hs = hub_behind(&b);
   dht::meet_options o;
   o.punch_ms = 8000;
+  o.tcp = true;
   auto met = meet_both(sw, hr, hs, o);
   REQUIRE(met.r);
   REQUIRE(met.s);
@@ -900,10 +905,14 @@ TEST_CASE("sharepoint nat: the hub reads extra sockets with its own and runs a s
   auto sb = h.b->stream(h.at_a(), 5, false, ids[4]);
   auto sa = h.a->stream({"127.0.0.1", seen.port}, 5);
   const auto data = pattern(300 * 1024, 4);
-  std::thread w([&] { REQUIRE(sb->write_all(data)); });
+  std::atomic<bool> wrote{false};  // asserted here, not on the writer's thread (Catch2)
+  std::thread w([&] { wrote.store(static_cast<bool>(sb->write_all(data))); });
   std::vector<std::uint8_t> back(data.size());
-  REQUIRE(sp::read_exact_until(*sa, back, std::chrono::steady_clock::now() + std::chrono::seconds(10)));
+  const bool read = static_cast<bool>(
+      sp::read_exact_until(*sa, back, std::chrono::steady_clock::now() + std::chrono::seconds(10)));
   w.join();
+  REQUIRE(wrote.load());
+  REQUIRE(read);
   CHECK(back == data);
   // The others closed; a send on a closed one says so, and the stream lives on.
   std::vector<std::uint32_t> rest(ids.begin(), ids.end());
@@ -916,6 +925,9 @@ TEST_CASE("sharepoint nat: the hub reads extra sockets with its own and runs a s
   std::uint8_t two[2];
   REQUIRE(sp::read_exact_until(*sa, two, std::chrono::steady_clock::now() + std::chrono::seconds(5)));
   CHECK(two[0] == 7);
+  // The stream ended: its extra closes with it.
+  sb.reset();
+  CHECK(h.b->extra_count() == 0);
 }
 
 // ---- two engines over four words ----------------------------------------------------------------

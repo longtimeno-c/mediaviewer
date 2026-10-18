@@ -25,15 +25,22 @@
 //   - The birthday punch (one hard NAT): the hard side opens kBirthdaySockets
 //     more sockets on the hub and probes the easy side's public address from
 //     each (every one a new mapping in its NAT); the easy side probes random
-//     ports of the hard side's address. At kBirthdayRate a second each way,
-//     256 mappings against ~1000 random probes meet within the punch time
-//     about 98 times in 100. Every extra socket but the stream's is closed.
-//   - TCP simultaneous open (net::tcp_rendezvous), beside the UDP punch: each
+//     ports of the hard side's address. At kBirthdayRate a second each way
+//     (the hard side's mappings open 10 at a time, all 256 by 2.6 s), the
+//     ~1000 random probes of a 10 s punch meet about 97 times in 100. Every
+//     extra socket but the stream's is closed; the stream's own goes with it.
+//   - Every probe, all kinds together, at most kProbeRate a second each way:
+//     the paths learned from hellos first, then the item's addresses and
+//     predicted ports in turn.
+//   - TCP simultaneous open (net::tcp_rendezvous, meet_options::tcp: a word
+//     code's meeting, never a remembered device's in the background), beside the UDP punch: each
 //     side publishes its TCP port, and both connect() from it to the other's
 //     at each of its addresses while listening on it. Works where a NAT
 //     keeps a TCP connection's port (most home routers), whatever it does to
 //     UDP. The sender's choose goes on the first connection that opens if
-//     UDP found nothing in its first 1.5 s; one pick only, either way.
+//     UDP found nothing in its first 1.5 s; one pick only, either way: a
+//     sender that offered a TCP connection waits for its answer there until
+//     the punch ends, never falls back to UDP.
 //   - Two hard NATs whose TCP ports are rewritten too, or a network with no
 //     UDP, still do not meet; the window says so.
 // Portable (D9).
@@ -52,10 +59,11 @@ namespace mv::sharepoint::dht {
 inline constexpr int kPunchMs = 10000;
 inline constexpr int kPredictPorts = 16;
 inline constexpr int kBirthdaySockets = 256;
-inline constexpr int kBirthdayRate = 100;  // probes a second, each way
+inline constexpr int kBirthdayRate = 100;  // birthday probes a second, each way
+inline constexpr int kProbeRate = 200;     // every probe a second, each way (the birthday's among them)
 
-// The DHT saw this machine on more than one port of one address (BEP 42
-// votes): its NAT maps each destination apart.
+// The DHT's voters saw this machine on many ports of one address, none on
+// most of them (client::looks_hard): its NAT maps each destination apart.
 [[nodiscard]] bool seen_hard(const client& dht);
 
 struct meet_options {
@@ -66,7 +74,10 @@ struct meet_options {
   // device (#472 PR 4) notices a sender only at its next look, so the
   // sender punches that much longer.
   int punch_ms = kPunchMs;
-  bool tcp = true;  // try TCP simultaneous open beside the UDP punch
+  // Try TCP simultaneous open beside the UDP punch. Off unless asked: it
+  // listens on every interface while it runs (a firewall prompt on Windows),
+  // so a remembered device's background meetings leave it off.
+  bool tcp = false;
   // The ports the easy side's birthday probes pick from (the tests: the
   // stand-in NAT's window).
   std::uint16_t birthday_lo = 1024, birthday_hi = 65535;

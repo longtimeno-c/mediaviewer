@@ -462,6 +462,10 @@ class udp_port final : public udp_socket {
   }
   void shutdown() noexcept override { down_.store(true); }
   std::intptr_t handle() const noexcept override { return fd_; }
+  void set_buffers(int bytes) noexcept override {
+    (void)::setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &bytes, sizeof bytes);
+    (void)::setsockopt(fd_, SOL_SOCKET, SO_SNDBUF, &bytes, sizeof bytes);
+  }
 
  private:
   int fd_;
@@ -565,6 +569,8 @@ class tcp_meet final : public tcp_rendezvous {
           if (known) return blocking_link(c);
           ::close(c);  // a stranger: the port is not a listener for anyone else
         }
+        // EAGAIN, ECONNABORTED (it reset between the poll and here), EINTR:
+        // the listener is non-blocking, so this only waits for the next poll.
       }
       if (r > 0) {
         for (std::size_t i = 1; i < pf.size(); ++i) {
@@ -685,6 +691,9 @@ result<std::unique_ptr<tcp_rendezvous>> open_rendezvous(bool loopback_only) {
   }
   close_on_exec(fd);
   reuse_port(fd);
+  // Non-blocking: a connection that resets between poll() and accept() must
+  // not leave accept() (and meet's join of this thread) waiting.
+  (void)::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
   if (::bind(fd, reinterpret_cast<sockaddr*>(&s), len) != 0 || ::listen(fd, 8) != 0 ||
       ::getsockname(fd, reinterpret_cast<sockaddr*>(&s), &len) != 0) {
     ::close(fd);
@@ -693,7 +702,7 @@ result<std::unique_ptr<tcp_rendezvous>> open_rendezvous(bool loopback_only) {
   return std::unique_ptr<tcp_rendezvous>(std::make_unique<tcp_meet>(fd, s, len, dual));
 }
 
-result<std::unique_ptr<udp_socket>> open_udp_dual(std::uint16_t port, bool loopback_only) {
+result<std::unique_ptr<udp_socket>> open_udp_dual(std::uint16_t port, bool loopback_only, int buffer_bytes) {
   const int fd = ::socket(AF_INET6, SOCK_DGRAM, 0);
   if (fd < 0) return err(status::io);
   close_on_exec(fd);
@@ -701,7 +710,7 @@ result<std::unique_ptr<udp_socket>> open_udp_dual(std::uint16_t port, bool loopb
   int zero = 0;
   (void)::setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &zero, sizeof zero);
   // Room for a fast transfer's bursts.
-  int buf = 4 * 1024 * 1024;
+  int buf = buffer_bytes;
   (void)::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf, sizeof buf);
   (void)::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf, sizeof buf);
   sockaddr_in6 a{};

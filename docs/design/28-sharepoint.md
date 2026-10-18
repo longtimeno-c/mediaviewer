@@ -402,25 +402,41 @@ only while a code waits or a send looks for its receiver; never at idle. (`dht_i
   answered and probed back at once. The sender takes the first path a reply came back on and
   offers it (*choose*) until the receiver answers (*chosen*); the receiver answers only the first
   path it is offered, so both end on the same one, whichever transport it is on.
-- **The birthday punch** (one hard NAT, #472): each item says whether the DHT saw its side on more
-  than one port of one address (BEP 42 votes: a NAT that maps each destination apart). A client
-  with fewer than four votes looks up once more before it decides, and a side the puts show to be
-  hard says so again. When exactly one side is hard, it opens 256 more UDP sockets on the hub (one
-  reader thread polls them all, `net::wait_readable`; on POSIX the soft descriptor limit is raised
-  for them) and probes the easy side's public address from each, every one a new mapping in its
-  NAT; the easy side probes random ports of the hard side's address. Each way at most 100 probes a
-  second, until the punch's deadline: 256 mappings against ~1000 random probes meet about 98
-  times in 100 on a real NAT (the arithmetic, not a measurement). The stream runs on the socket
-  that met; every other one is closed when the punch ends. Two hard NATs do not birthday-punch
-  each other (256 × 256 of 64k ports would not meet in time).
+- **Every probe**, of every kind, is at most 200 a second each way (20 a 100 ms tick): the paths
+  learned from hellos first (at most 8), the birthday's share (below), then the item's addresses
+  and predicted ports in turn with what is left.
+- **The birthday punch** (one hard NAT, #472): each item says whether its side's NAT maps each
+  destination apart, from BEP 42 votes: each node's latest answer counts once, for ten minutes,
+  and "hard" needs at least three ports seen for the most-seen address with no port seen by half
+  the voters, so one node's lie (or two's) does not set it. A client with fewer than four voters
+  looks up once more before it decides, and a side the puts show to be hard says so again. When
+  exactly one side is hard, it opens 256 more UDP sockets on the hub (64 KiB buffers; one reader
+  thread polls them all, `net::wait_readable`) and probes the easy side's public address from
+  each, every one a new mapping in its NAT; the easy side probes random ports of the hard side's
+  address. The birthday's probes are at most 100 a second each way, until the punch's deadline.
+  The hard side's mappings open 10 at a time (all 256 by 2.6 s), so the ~1000 random probes of a
+  10 s punch meet about 97 times in 100 on a real NAT (the arithmetic, not a measurement). The
+  stream runs on the socket that met (its buffers grown to the main socket's); every other one is
+  closed when the punch ends, and the stream's own when the stream ends, so the hub is back to its
+  one socket and its idle wait. On POSIX the soft descriptor limit is raised to 1024 + 256 for
+  them, for the rest of the process (lowered again it could fail another part's next open). Two
+  hard NATs do not birthday-punch each other (256 × 256 of 64k ports would not meet in time).
 - **TCP simultaneous open** (#472, `net::tcp_rendezvous`, POSIX and Winsock): each side binds one
   TCP port (`SO_REUSEADDR`, and `SO_REUSEPORT` where the OS has it), publishes it, and while
   listening on it connects from it to the other's port at each of its addresses, again every
   250 ms, so SYNs that cross in two NATs open one connection and one that arrives after ours
-  failed is accepted. It runs beside the UDP punch; the sender picks a TCP connection only if no
-  UDP path came back in the first 1.5 s, and the same choose / chosen settles it. It meets where
-  a NAT keeps a TCP connection's port (most home routers), whatever it does to UDP: two hard UDP
-  NATs can still meet this way.
+  failed is accepted. It runs beside the UDP punch, only in a word code's meeting (the window is
+  open), never in a remembered device's background meetings, since it listens on every interface
+  (Windows asks its firewall at the first). The sender picks a TCP connection only if no UDP path
+  came back in the first 1.5 s, and the same choose / chosen settles it; once it has offered a TCP
+  connection it waits for the answer there until the punch ends and never falls back to UDP, so
+  the two sides cannot end on different transports. It meets where a NAT keeps a TCP
+  connection's port (most home routers), whatever it does to UDP: two hard UDP NATs can still
+  meet this way. On Windows the port is shared with `SO_REUSEADDR` (there is no `SO_REUSEPORT`),
+  not `SO_EXCLUSIVEADDRUSE`, so another process of the same user could bind it too and take a
+  connection; CPace on the code still refuses it. A connection closed after its choose leaves the
+  4-tuple in TIME_WAIT on this side, which blocks a retry to the same peer from the same port:
+  the sender does not retry that way.
 - **The stream** over it is the spike's third option, "our own simple UDP transport", not QUIC: it
   must share the socket on both OSes (msquic owns its sockets and has no macOS; ngtcp2 needs TLS
   beside Noise), and the session above already seals, orders and resumes. 1200-byte packets,
@@ -618,9 +634,10 @@ second while bytes move; those posts update chrome and never present the canvas.
   one they configure (PRs 4–5). What cannot be hidden: the code gives its holder this machine's
   public address; the router learns of a mapping (PCP, NAT-PMP, UPnP); a network observer sees
   encrypted traffic and roughly how much moved. Nothing goes anywhere else: no lookup, no STUN,
-  no name resolution. Codes, addresses and peer names are never logged. While four words meet,
-  a TCP port listens on every interface (its number is in the sealed item), and a birthday punch
-  sends its 14-byte probes to random ports of the other side's public address only.
+  no name resolution. Codes, addresses and peer names are never logged. While four words meet
+  (a word code, not a remembered device), a TCP port listens on every interface (its number is in
+  the sealed item), and a birthday punch sends its 14-byte probes to random ports of the other
+  side's public address only.
 - Protocol 2's resume secret and keys live in memory only, wiped when the session ends; nothing
   about a session is written down, except what Remember keeps (#472 PR 4): the peer's name, key
   and pairing secret, in the OS's secret store (Keychain, Credential Manager), never a plain file,

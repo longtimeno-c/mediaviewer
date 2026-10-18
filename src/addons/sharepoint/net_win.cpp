@@ -481,6 +481,10 @@ class udp_port final : public udp_socket {
   }
   void shutdown() noexcept override { down_.store(true); }
   std::intptr_t handle() const noexcept override { return static_cast<std::intptr_t>(s_); }
+  void set_buffers(int bytes) noexcept override {
+    (void)::setsockopt(s_, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&bytes), sizeof bytes);
+    (void)::setsockopt(s_, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&bytes), sizeof bytes);
+  }
 
  private:
   SOCKET s_;
@@ -583,6 +587,8 @@ class tcp_meet final : public tcp_rendezvous {
           if (known) return std::unique_ptr<link>(std::make_unique<tcp_link>(c));
           ::closesocket(c);
         }
+        // WSAEWOULDBLOCK, WSAECONNRESET: the listener is non-blocking, so this
+        // only waits for the next poll.
       }
       if (r > 0) {
         for (std::size_t i = 1; i < pf.size(); ++i) {
@@ -689,8 +695,14 @@ result<std::unique_ptr<tcp_rendezvous>> open_rendezvous(bool loopback_only) {
   }
   // Windows has no SO_REUSEPORT: SO_REUSEADDR on the listener and on every
   // connecting socket lets them share the port.
+  // Without SO_EXCLUSIVEADDRUSE another process of the same user could bind
+  // the port too and take a connection; CPace on the code still refuses it.
   BOOL one = TRUE;
   (void)::setsockopt(s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof one);
+  // Non-blocking: a connection that resets between WSAPoll and accept must
+  // not leave accept (and meet's join of this thread) waiting.
+  u_long nb = 1;
+  (void)::ioctlsocket(s, FIONBIO, &nb);
   if (::bind(s, reinterpret_cast<sockaddr*>(&st), len) != 0 || ::listen(s, 8) != 0 ||
       ::getsockname(s, reinterpret_cast<sockaddr*>(&st), &len) != 0) {
     ::closesocket(s);
@@ -699,14 +711,14 @@ result<std::unique_ptr<tcp_rendezvous>> open_rendezvous(bool loopback_only) {
   return std::unique_ptr<tcp_rendezvous>(std::make_unique<tcp_meet>(s, st, len, dual));
 }
 
-result<std::unique_ptr<udp_socket>> open_udp_dual(std::uint16_t port, bool loopback_only) {
+result<std::unique_ptr<udp_socket>> open_udp_dual(std::uint16_t port, bool loopback_only, int buffer_bytes) {
   (void)loopback_only;  // :: still, so 127.0.0.1 reaches it too; the tests send only to loopback
   if (!winsock_ready()) return err(status::io);
   const SOCKET s = ::WSASocketW(AF_INET6, SOCK_DGRAM, IPPROTO_UDP, nullptr, 0, WSA_FLAG_NO_HANDLE_INHERIT);
   if (s == INVALID_SOCKET) return err(status::io);
   DWORD v6only = 0;
   (void)::setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&v6only), sizeof v6only);
-  int buf = 4 * 1024 * 1024;
+  int buf = buffer_bytes;
   (void)::setsockopt(s, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&buf), sizeof buf);
   (void)::setsockopt(s, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&buf), sizeof buf);
   BOOL no_reset = FALSE;
