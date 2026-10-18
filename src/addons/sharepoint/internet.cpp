@@ -135,19 +135,23 @@ void internet_receiver::run() {
       notify();
       lock.lock();
     }
+    bool expired = false;
     if (snap_.p == phase::ready && clock::now() >= expires_) {
       secret_.reset();
       snap_.p = phase::expired;
       snap_.text.clear();
       snap_.link.clear();
       snap_.note = "The code expired unused after 10 minutes. Make a new one when you need it.";
+      expired = true;
+    }
+    // No code waits and no transfer holds them: the listener and the
+    // mappings go, before the window hears the code is over.
+    if (snap_.p != phase::ready && snap_.p != phase::preparing && holding_ == 0) release_locked(lock);
+    if (expired) {
       lock.unlock();
       notify();
       lock.lock();
     }
-    // No code waits and no transfer holds them: the listener and the
-    // mappings go.
-    if (snap_.p != phase::ready && snap_.p != phase::preparing && holding_ == 0) release_locked(lock);
   }
   holding_ = 0;
   release_locked(lock);

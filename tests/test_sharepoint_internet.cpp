@@ -453,3 +453,164 @@ TEST_CASE("sharepoint internet: a wrong code is refused at the receiver's first 
   CHECK(q.receiver.error() == mv::status::not_found);
   REQUIRE_FALSE(q.sender);
 }
+
+// ---- two engines over a code ----------------------------------------------------------------------
+
+namespace {
+
+// One MediaViewer on "the internet": no LAN beacon heard, no Bluetooth; its
+// codes point at its loopback addresses and no router is asked.
+struct far_client {
+  fake_host host;
+  sp::engine eng;
+  far_client(const fs::path& received, const std::string& name, int code_ms = sp::kCodeLifetimeMs)
+      : host(received), eng(host, options(name, code_ms)) {
+    eng.screen_opened("");
+    eng.on_event("internet", 2, "true");
+  }
+  static sp::engine::options options(const std::string& name, int code_ms) {
+    sp::engine::options o;
+    o.my_name = name;
+    o.use_bluetooth = false;
+    o.loopback_only = true;
+    o.make_discovery = [] { return std::make_unique<inject_discovery>(); };
+    o.internet_loopback = true;
+    o.internet_mapping = std::nullopt;
+    o.code_lifetime_ms = code_ms;
+    return o;
+  }
+  std::string make_code() {
+    eng.on_event("make_code", 1, "");
+    std::string code;
+    REQUIRE(eventually([&] {
+      const auto v = eng.snapshot();
+      code = v.code_text;
+      return v.code_phase == static_cast<std::uint8_t>(sp::internet_receiver::phase::ready) && !code.empty();
+    }));
+    return code;
+  }
+  void send_to(const std::string& code) {
+    eng.on_event("send_code", 2, "\"" + code + "\"");
+    eng.on_event("send_to_code", 1, "");
+  }
+  void pick(const std::vector<fs::path>& files) {
+    std::vector<std::string> paths;
+    for (const auto& f : files) paths.push_back(utf8(f));
+    eng.set_files(paths);
+    REQUIRE(eventually([&] {
+      const auto v = eng.snapshot();
+      return !v.reading_folder && v.file_count >= files.size();
+    }));
+  }
+};
+
+}  // namespace
+
+TEST_CASE("sharepoint internet: a code sends files, with the name confirmed and the same check on both screens",
+          "[sharepoint]") {
+  scratch_dir s("sharepoint_code_send");
+  far_client bea(s / "bea_received", "Bea");
+  far_client ann(s / "ann_received", "Ann");
+  const fs::path f = s / "out" / "clip.mov";
+  write_bytes(f, pattern(3 * 1024 * 1024 + 17, 9));
+  ann.pick({f});
+  const std::string code = bea.make_code();
+  ann.send_to(code);
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::naming; }));
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::connecting; }));
+  const auto a = ann.eng.snapshot();
+  const auto b = bea.eng.snapshot();
+  CHECK(a.out_peer == "Bea");
+  CHECK(b.in_peer == "Ann");
+  CHECK(b.in_internet);
+  CHECK(a.out_check == b.in_code);  // the check, the same on both screens
+  CHECK(a.out_via == "the internet");
+  // The code is spent the moment it is tried.
+  CHECK(b.code_phase == static_cast<std::uint8_t>(sp::internet_receiver::phase::used));
+  ann.eng.on_event("out_confirm", 1, "");
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  INFO(ann.eng.snapshot().out_note);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(read_bytes(s / "bea_received" / "clip.mov") == read_bytes(f));
+  CHECK_FALSE(any_temporary(s / "bea_received"));
+
+  // The same code again: it worked once, so it does not work now.
+  far_client cy(s / "cy_received", "Cy");
+  cy.pick({f});
+  cy.send_to(code);
+  REQUIRE(eventually([&] { return cy.eng.snapshot().out == sp::view::out_phase::ended ||
+                                  cy.eng.snapshot().out_attempt >= 2; }, 20));
+  cy.eng.on_event("out_cancel", 1, "");
+  cy.eng.wait_idle();
+  CHECK(cy.eng.snapshot().out == sp::view::out_phase::ended);
+  CHECK(bea.eng.snapshot().in != sp::view::in_phase::asking);
+}
+
+TEST_CASE("sharepoint internet: a wrong code is refused, and the code it guessed at dies", "[sharepoint]") {
+  scratch_dir s("sharepoint_code_wrong");
+  far_client bea(s / "bea_received", "Bea");
+  far_client mal(s / "mal_received", "Mallory");
+  far_client ann(s / "ann_received", "Ann");
+  const fs::path f = s / "out" / "a.jpg";
+  write_bytes(f, pattern(1000, 3));
+  mal.pick({f});
+  ann.pick({f});
+  const std::string code = bea.make_code();
+  // Mallory knows where Bea is (the places) but not the secret.
+  auto c = sp::invite::decode(code);
+  REQUIRE(c);
+  c->secret[0] ^= 0x5a;
+  mal.send_to(sp::invite::encode(*c));
+  mal.eng.wait_idle();
+  CHECK(mal.eng.snapshot().out == sp::view::out_phase::ended);
+  CHECK(mal.eng.snapshot().out_note.find("did not work") != std::string::npos);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().code_note.find("wrong") != std::string::npos; }));
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::none);  // nothing was offered there
+  // The real code, after the wrong one: dead too (one attempt per code).
+  ann.send_to(code);
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::ended ||
+                                  ann.eng.snapshot().out_attempt >= 2; }, 20));
+  ann.eng.on_event("out_cancel", 1, "");
+  ann.eng.wait_idle();
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::none);
+}
+
+TEST_CASE("sharepoint internet: an expired code is refused, and the sender says why and keeps trying until Cancel",
+          "[sharepoint]") {
+  scratch_dir s("sharepoint_code_expired");
+  far_client bea(s / "bea_received", "Bea", 300);
+  far_client ann(s / "ann_received", "Ann");
+  const fs::path f = s / "out" / "a.jpg";
+  write_bytes(f, pattern(1000, 4));
+  ann.pick({f});
+  const std::string code = bea.make_code();
+  REQUIRE(eventually([&] {
+    return bea.eng.snapshot().code_phase == static_cast<std::uint8_t>(sp::internet_receiver::phase::expired);
+  }));
+  ann.send_to(code);
+  // The listener closed with the code: refused, round after round.
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out_attempt >= 2; }, 10));
+  const auto v = ann.eng.snapshot();
+  CHECK(v.out == sp::view::out_phase::reaching);
+  CHECK(v.out_note.find("not listening") != std::string::npos);
+  ann.eng.on_event("out_cancel", 1, "");
+  ann.eng.wait_idle();
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::ended);
+  CHECK(ann.eng.snapshot().out_note == "Cancelled. Nothing was sent.");
+}
+
+TEST_CASE("sharepoint internet: what is not a code is caught before anything is tried", "[sharepoint]") {
+  scratch_dir s("sharepoint_code_junk");
+  far_client ann(s / "ann_received", "Ann");
+  const fs::path f = s / "out" / "a.jpg";
+  write_bytes(f, pattern(1000, 5));
+  ann.pick({f});
+  ann.send_to("HELLO-WORL-D123");
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const auto v = ann.eng.snapshot();
+  CHECK(v.out == sp::view::out_phase::idle);
+  CHECK(v.send_code_note.find("not a whole code") != std::string::npos);
+}
