@@ -120,6 +120,7 @@ struct bt_world {
   std::atomic<bool> reachable{true};
   std::atomic<std::size_t> rate{0};
   std::atomic<int> connects{0};
+  std::atomic<long long> last_connect_ms{-1};  // how long the last connect took (the timeline)
   cuttable links;
 };
 
@@ -168,10 +169,13 @@ class world_bluetooth final : public sp::bluetooth {
       if (it == w_.members.end()) return mv::err(mv::status::not_found);
       deliver = it->second.on_link;
     }
+    const auto began = clock_type::now();
     auto pair = try_loopback_pair();
     if (!pair) return mv::err(mv::status::io);
     w_.links.keep(pair->first);
     deliver(std::make_unique<bearer_link>(pair->second, sp::transport::bluetooth, &w_.rate));
+    w_.last_connect_ms.store(
+        std::chrono::duration_cast<std::chrono::milliseconds>(clock_type::now() - began).count());
     return std::unique_ptr<sp::link>(std::make_unique<bearer_link>(pair->first, sp::transport::bluetooth, &w_.rate));
   }
 
@@ -701,8 +705,27 @@ TEST_CASE("sharepoint session: Wi-Fi drops to Bluetooth, which goes out of range
   wifi.refuse.store(true);
   wifi.links.cut_all();
   auto t0 = clock_type::now();
-  REQUIRE(eventually([&] { return ann.eng.snapshot().out_via == "Bluetooth"; }, 15));
+  const int bt_before = bt.connects.load();
+  const int wifi_before = wifi.connects.load();
+  // When each side saw the cut, and what the mover tried: printed if slow.
+  long long ann_saw = -1, bea_saw = -1, first_bt = -1, bea_on_bt = -1;
+  REQUIRE(eventually(
+      [&] {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock_type::now() - t0).count();
+        const auto a = ann.eng.snapshot();
+        if (ann_saw < 0 && a.out_reconnecting) ann_saw = ms;
+        if (bea_saw < 0 && bea.eng.snapshot().in_reconnecting) bea_saw = ms;
+        if (first_bt < 0 && bt.connects.load() > bt_before) first_bt = ms;
+        if (bea_on_bt < 0 && bea.eng.snapshot().in_via == "Bluetooth") bea_on_bt = ms;
+        return a.out_via == "Bluetooth";
+      },
+      15));
   const auto to_bt_ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock_type::now() - t0).count();
+  INFO("Ann saw the cut at " << ann_saw << " ms, Bea at " << bea_saw << " ms; first Bluetooth connect at "
+                             << first_bt << " ms, taking " << bt.last_connect_ms.load() << " ms; Bea on Bluetooth at "
+                             << bea_on_bt << " ms; " << bt.connects.load() - bt_before << " Bluetooth and "
+                             << wifi.connects.load() - wifi_before << " Wi-Fi connects; " << bea.eng.snapshot().in_bytes
+                             << " bytes in at the move");
   // A cut that a side sees at once moves in milliseconds; one that shows only
   // as silence takes the suspect timer, then a race (slow CI runners: both).
   CHECK(to_bt_ms <= sp::kSuspectMs + 3000);
