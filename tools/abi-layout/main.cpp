@@ -101,6 +101,13 @@ int main() {
   MV_FIELD(mv_ai_status, meaning_done);
   MV_FIELD(mv_ai_status, scans_total);
   MV_FIELD(mv_ai_status, scans_done);
+  MV_FIELD(mv_ai_status, tier_utf8);
+  MV_FIELD(mv_ai_status, fetch_state);
+  MV_FIELD(mv_ai_status, fetch_files_done);
+  MV_FIELD(mv_ai_status, fetch_files_total);
+  MV_FIELD(mv_ai_status, fetch_retry_seconds);
+  MV_FIELD(mv_ai_status, fetch_done_bytes);
+  MV_FIELD(mv_ai_status, fetch_total_bytes);
   MV_END(mv_ai_status);
 
   MV_BEGIN(mv_ai_result);

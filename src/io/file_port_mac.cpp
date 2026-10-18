@@ -86,6 +86,7 @@ result<file_stat> stat_path(std::string_view utf8_path) {
   out.mtime_unix = mtime_of(st);
 #if defined(__APPLE__)
   out.mtime_ns = static_cast<std::int64_t>(st.st_mtimespec.tv_sec) * 1000000000LL + st.st_mtimespec.tv_nsec;
+  if (st.st_birthtimespec.tv_sec > 0) out.created_unix = static_cast<std::int64_t>(st.st_birthtimespec.tv_sec);
 #else
   out.mtime_ns = static_cast<std::int64_t>(st.st_mtim.tv_sec) * 1000000000LL + st.st_mtim.tv_nsec;
 #endif

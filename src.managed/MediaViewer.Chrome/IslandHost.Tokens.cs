@@ -32,6 +32,15 @@ public static partial class IslandHost
     private const byte WashHoverAlpha = 15;
     private const byte WashPressedAlpha = 28;
 
+    // A tile whose thumbnail has not arrived: the Mac's .quaternary fill, the
+    // appearance's text colour at about 0.1 (FilmstripView, GalleryView).
+    private const byte PlaceholderAlpha = 26;
+    // The gallery's shift-click range over a thumbnail: accent at 0.22.
+    private const byte RangeWashAlpha = 56;
+    // A folder tile's count capsule: the Mac's .ultraThinMaterial, a surface
+    // that lets the cover show through.
+    private const byte CapsuleAlpha = 0xC8;
+
     // Settings buttons are filled (SettingsView.swift SettingsButtonStyle):
     // primary.opacity 0.08 at rest, 0.16 pressed; hover sits between.
     private const byte SettingsFillAlpha = 20;

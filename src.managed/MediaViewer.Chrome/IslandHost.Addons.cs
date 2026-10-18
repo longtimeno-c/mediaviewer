@@ -98,7 +98,10 @@ public static partial class IslandHost
     private static readonly AddonSlot AudioSlot = new("ai-audio", "Audio", null, "ai");
     // #354 D3: a text model, so document words also match by meaning.
     private static readonly AddonSlot DocsSlot = new("ai-docs", "Documents", null, "ai");
-    private static readonly AddonSlot[] AddonSlots = { ImportSlot, AiSlot, FacesSlot, AudioSlot, DocsSlot, CudaSlot };
+    // #482: the Maxxed tier's picture tower (ViT-H/14, our own export, ~2 GB).
+    // Installed when the add-on's model picker chooses Maxxed (InstallPieces).
+    private static readonly AddonSlot LargeSlot = new("ai-large", "Large pictures", null, "ai");
+    private static readonly AddonSlot[] AddonSlots = { ImportSlot, AiSlot, FacesSlot, AudioSlot, DocsSlot, LargeSlot, CudaSlot };
 
     /// <summary>What an install is doing, for the bar under its button (the
     /// Mac's AddonChannel.Phase): a determinate download, then the checking
@@ -587,7 +590,7 @@ public static partial class IslandHost
     }
 
     /// <summary>The base chrome's services for an add-on (docs/design/18 IAddonHost; Milestone H IAddonHost2).</summary>
-    private sealed class AddonHost(AddonSlot slot) : IAddonHost3, IAddonThemeShape
+    private sealed class AddonHost(AddonSlot slot) : IAddonHost3, IAddonThemeShape, IAddonPieces
     {
         public void Post(Action action) => DispatcherQueueControllerTryEnqueue(action);
 
@@ -650,6 +653,13 @@ public static partial class IslandHost
         public void SetIndexingPill(string? text, bool busy, double fraction, bool onBattery) =>
             OnUi(() => HostSetIndexingPill(text, busy, fraction, onBattery));
         public void ShowSettings() => OnUi(HostShowLocalSearchSettings);
+
+        // ---- IAddonPieces (#482): the model picker's Download ----
+        public void InstallPieces(IReadOnlyList<string> pieceIds)
+        {
+            string[] ids = pieceIds.ToArray();  // the caller's list may change after it returns
+            OnUi(() => HostInstallPieces(ids));
+        }
 
         private static void OnUi(Action action)
         {

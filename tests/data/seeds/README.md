@@ -35,6 +35,7 @@ safe to redistribute. The real format corpus stays out of git (docs/design/09).
 | XMP (#290) | a Midjourney-like packet: unregistered namespace, struct, lang-alt, history | the same |
 | ICC (#290) | a v4 display profile with `desc` (mluc) and `cprt` | the same |
 | Location (#352) | what a person types in the Location editor: decimal, DMS with `°′″`, spaces, `º` and `''`, lettered and swapped, blank | hand-written text |
+| Query (#291) | Local search queries (`fuzz_ai_query`): people, `or`, `-`, quotes, tag, date, place, rating and exposure terms, a name with a diaeresis | hand-written text |
 
 The #290 families are written by the test builders instead:
 `MV_SEED_DIR=tests/data/seeds mv_tests "[.write-seeds]"`.
