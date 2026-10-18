@@ -129,9 +129,26 @@ process (`keep_alive`), and the hosts do the rest.
   the process ended starts the app normally (`----AppNotificationActivated:` is accepted).
 - **Idle cost, windowless:** see [12](12-decision-log.md#sharepoint) and DEVELOPMENT.md. The
   canvas presents nothing while hidden.
-- **Not built:** start at login / sign-in. A person turns the background on and starts the app
-  once after a restart; Keep receiving then comes up at load as before. `SMAppService` (Mac) and a
-  Run key (Windows) are a follow-up.
+- **It starts at login / sign-in** (2026-10-17), so a restart does not leave the machine
+  unreachable until someone opens MediaViewer. While the toggle is on the host keeps a login item:
+  on the Mac `SMAppService.mainApp` (System Settings → General → Login Items lists MediaViewer);
+  on Windows a per-user Run value, `HKCU\…\CurrentVersion\Run\MediaViewer` =
+  `"<install>\MediaViewer.exe" --background` (Settings → Apps → Startup lists it;
+  `src/shell/login_item_win.*`). The host follows the keep-alive list: it registers when the list
+  turns non-empty and removes the item when it turns empty, and only on that edge (a window whose
+  add-on never kept the process, or the list emptying while the app quits, leaves it alone). The
+  Windows uninstaller hook removes it too. Installed builds and the bundled app only; a dev build
+  or the lab binary registers nothing.
+- **That start is the background, not a window.** On the Mac a login item's launch (the
+  open-application event's `keyAELaunchedAsLogInItem`) and on Windows `--background` make the
+  viewer window but never show it: the app is an accessory app (Mac) with no taskbar button
+  (Windows), the add-ons load as on any start, and Sharepoint's keep-alive brings up the menu-bar
+  item / notification-area icon. Opening MediaViewer, a file or the icon's **Open MediaViewer**
+  shows the window as from the background. A Windows `--background` start never forwards to a
+  viewer already running; it exits. **Self-cleaning:** if no add-on keeps the process within
+  60 s (the add-on was removed, or the toggle was turned off where this process could not see it),
+  the start removes its own login item and quits, so an orphaned entry costs one quiet launch.
+  `--background` also starts the Mac host this way, for testing.
 
 ## The wire
 
@@ -317,7 +334,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 | The add-on's export and manifest | `addon_entry.cpp`, `manifest.json`; `cmake/sharepoint.cmake` |
 | Mac chrome | `Sharepoint.swift` (offer, share icon), `SlotItems.swift` (Settings), `ScreenView.swift` (Choose…), `GalleryView.swift` / `FolderStore.swift` (range, drag), `AddonNotices.swift` (notifications, the menu-bar item, #452) |
 | Windows chrome | `IslandHost.Sharepoint.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
-| Native hosts | `src/shell/main_mac.mm` (the background, #452), `src/shell/main.cpp` (the background and the notification-area icon, #452), `src/shell/addons_mac.mm` |
+| Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
 | Tests | `tests/test_sharepoint.cpp`, `tests/test_sharepoint_addon.cpp` (`mv_import_tests "[sharepoint]"`), `tools/package/test_addon_pack.py` |
 
