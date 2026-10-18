@@ -394,8 +394,18 @@ void engine::sync_internet() {
         }
         post_throttled();
       });
-  std::lock_guard lock(m_);
-  internet_ = std::move(in);
+  std::string forwarded_now;
+  bool dht_now = false;
+  {
+    std::lock_guard lock(m_);
+    internet_ = in;
+    forwarded_now = v_.forwarded;
+    dht_now = v_.dht;
+  }
+  // A setting changed while the receiver was made, when there was no
+  // receiver to tell: it hears it now.
+  if (forwarded_now != o.forwarded) in->set_forwarded(std::move(forwarded_now));
+  if (dht_now != o.dht) in->set_dht(dht_now);
 }
 
 // ---- presence -----------------------------------------------------------------------
