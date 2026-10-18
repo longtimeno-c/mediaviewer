@@ -146,6 +146,10 @@ struct view {
   bool handover = false;      // "Continue over the internet if Wi-Fi drops", off by default
   bool out_handover = false;  // the receiver sent where it can be reached: a drop continues there
   bool in_handover = false;   // this side sent its places to the sender
+  // #472: both sides also meet on the DHT if both move (needs the DHT
+  // toggle on both): this side's hub is open and the DHT answered.
+  bool out_handover_dht = false;
+  bool in_handover_dht = false;
 };
 
 // The selected peer is heard only on Bluetooth, speaks only protocol 1, and
@@ -445,6 +449,8 @@ class engine {
   // #472 PR 5: the receiver's internet places, as it sent them, for the
   // send running now (the mover races them when the local link goes).
   std::vector<net::endpoint> handover_places_;  // under m_
+  // #472: the receiver said it meets on the DHT too, if both sides move.
+  bool handover_dht_ = false;  // under m_
   // #472 PR 2: the receiver of codes while the toggle is on (made and dropped
   // on the control thread; a receive in flight keeps its own reference).
   std::shared_ptr<internet_receiver> internet_;  // under m_

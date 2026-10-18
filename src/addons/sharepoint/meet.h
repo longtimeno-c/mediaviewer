@@ -47,6 +47,10 @@ struct meet_options {
   // device (#472 PR 4) notices a sender only at its next look, so the
   // sender punches that much longer.
   int punch_ms = kPunchMs;
+  // Between lookups that found nothing yet. The handover (#472) looks again
+  // sooner: both sides start within moments of each other, and the session
+  // waits only kRejoinMs.
+  int retry_ms = 2000;
 };
 
 // What a meeting reports along the way, for the window ("Looking for the

@@ -104,7 +104,9 @@ result<std::unique_ptr<link>> meet(const std::shared_ptr<udp_hub>& hub, client& 
     if (!theirs) {
       // Not there yet (the other side has not typed the code, or its put is
       // still on its way): again shortly; our item stays published.
-      for (int w = 0; w < 20 && !(stop && stop()); ++w) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      for (int w = 0; w < o.retry_ms / 100 && !(stop && stop()); ++w) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
     }
   }
 

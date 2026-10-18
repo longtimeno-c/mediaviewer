@@ -1625,6 +1625,20 @@ local bearers on a drop. Not built here: the DHT path for when both sides moved 
 own network goes, and the configured relay and Tor (their spikes were not run, so neither is
 offered).
 
+**Wi-Fi → internet when both sides move: meet on the DHT under the session's keys, pre-started
+(2026-10-18, #472; completes PR 5).** When the receiver's network goes too, its swapped places go
+with it, and nothing either side knows says where the other is now; a lookup is needed. Both sides
+already hold a secret nobody else does (the session's resume secret), so they meet on the DHT the
+way four words do, keyed by `handover_secret()` (its own BLAKE2b context, so it gives away neither
+the pairing secret nor the next rejoin's psk) through `crypto_kdf`; no code, no new prompt. It
+needs the DHT toggle on both sides (the offer and `places` say `"dht"`), because joining the
+public DHT is what that toggle consents to. The hub and the DHT client are started when the
+transfer starts, not at the drop: a cold join (DNS for the routers, a table round) would spend
+much of `kRejoinMs` before the first publish. Cost while nothing drops: one join per transfer and
+a 200 ms look at the link, no DHT traffic. The handover's lookups retry every 500 ms instead of a
+word code's 2 s (both sides start within moments; measured: the 2 s wait was 2.2 of 2.3 s on the
+stand-in swarm). Roles stay sender / receiver so neither side meets its own item.
+
 **Remembered devices: the OS's secret store, a pairing secret, hourly DHT keys per direction
 (2026-10-18, #472 PR 4).** The identity is an X25519 key kept in the Keychain / Credential Manager
 behind a port (`secrets.h`; a folder for the tests), never a plain file; without a store each run

@@ -51,6 +51,7 @@ struct incoming_offer {
   std::vector<incoming_file> files;
   std::uint64_t bytes = 0;
   bool handover = false;  // #472 PR 5: the sender takes msg::places
+  bool dht = false;       // #472: and meets on the DHT if both sides move
 };
 
 // bytes moved so far (both ends), files finished so far.
@@ -70,6 +71,7 @@ struct hooks {
   // and what to do with it (the receiver's places, its JSON). The receiver's
   // side sends it apart (send_places).
   bool handover = false;
+  bool handover_dht = false;  // #472: the offer says it meets on the DHT too
   std::function<void(std::string_view json)> on_places;
 };
 
@@ -92,7 +94,8 @@ struct transfer_result {
 
 // ---- sender ------------------------------------------------------------------
 // The offer for `files`, as sealed JSON.
-[[nodiscard]] std::string offer_json(const std::vector<outgoing_file>& files, bool handover = false);
+[[nodiscard]] std::string offer_json(const std::vector<outgoing_file>& files, bool handover = false,
+                                     bool dht = false);
 // After the channel is open: offers, waits for the answer, calls
 // `on_accepted`, then sends. The cancel flag is polled between chunks; the
 // engine also shuts the channel down to end a wait.
@@ -107,10 +110,13 @@ struct transfer_result {
 [[nodiscard]] result<incoming_offer> parse_offer(std::string_view json);
 // #472 PR 5, the receiver: where it can be reached from the internet, to a
 // sender whose offer had "handover". Any thread (the channel's sends are).
-[[nodiscard]] expected send_places(channel& ch, const std::vector<net::endpoint>& places);
+// `dht`: this side also waits on the DHT if both sides move (the offer had
+// "dht" too; dht_handover).
+[[nodiscard]] expected send_places(channel& ch, const std::vector<net::endpoint>& places, bool dht = false);
 // The sender: msg::places' JSON, read (at most kMaxPlaces, each checked).
 inline constexpr std::size_t kMaxPlaces = 8;
 [[nodiscard]] std::vector<net::endpoint> parse_places(std::string_view json);
+[[nodiscard]] bool places_dht(std::string_view json);
 // After the person accepted (msg::accept already sent): receives into
 // `dest_dir`, which exists.
 [[nodiscard]] transfer_result receive_files(channel& ch, const incoming_offer& offer, const std::string& dest_dir,
