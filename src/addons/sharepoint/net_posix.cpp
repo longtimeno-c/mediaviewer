@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
+#include <netdb.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -247,8 +248,14 @@ endpoint endpoint_of(const sockaddr_storage& s) {
   std::uint16_t port = 0;
   if (s.ss_family == AF_INET6) {
     const auto* a = reinterpret_cast<const sockaddr_in6*>(&s);
-    ip.v6 = true;
-    std::memcpy(ip.bytes.data(), &a->sin6_addr, 16);
+    static constexpr std::uint8_t kMapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+    if (std::memcmp(&a->sin6_addr, kMapped, 12) == 0) {
+      // An IPv4 peer on a dual-stack socket: its plain address.
+      std::memcpy(ip.bytes.data(), reinterpret_cast<const std::uint8_t*>(&a->sin6_addr) + 12, 4);
+    } else {
+      ip.v6 = true;
+      std::memcpy(ip.bytes.data(), &a->sin6_addr, 16);
+    }
     port = ntohs(a->sin6_port);
   } else {
     const auto* a = reinterpret_cast<const sockaddr_in*>(&s);
@@ -414,7 +421,7 @@ namespace {
 
 class udp_port final : public udp_socket {
  public:
-  udp_port(int fd, std::uint16_t port) : fd_(fd), port_(port) {}
+  udp_port(int fd, std::uint16_t port, bool dual = false) : fd_(fd), port_(port), dual_(dual) {}
   std::uint16_t port() const noexcept override { return port_; }
   ~udp_port() override {
     shutdown();
@@ -422,8 +429,20 @@ class udp_port final : public udp_socket {
   }
   expected send_to(std::span<const std::uint8_t> d, const endpoint& to) override {
     sockaddr_storage a;
-    const socklen_t alen = sockaddr_of(to, a);
+    socklen_t alen = sockaddr_of(to, a);
     if (alen == 0) return err(status::invalid_arg);
+    if (dual_ && a.ss_family == AF_INET) {
+      // An IPv4 peer from a dual-stack socket: ::ffff:a.b.c.d.
+      const sockaddr_in v4 = *reinterpret_cast<const sockaddr_in*>(&a);
+      auto* m = reinterpret_cast<sockaddr_in6*>(&a);
+      std::memset(m, 0, sizeof *m);
+      m->sin6_family = AF_INET6;
+      m->sin6_port = v4.sin_port;
+      m->sin6_addr.s6_addr[10] = 0xff;
+      m->sin6_addr.s6_addr[11] = 0xff;
+      std::memcpy(&m->sin6_addr.s6_addr[12], &v4.sin_addr, 4);
+      alen = sizeof *m;
+    }
     if (::sendto(fd_, d.data(), d.size(), kSendFlags, reinterpret_cast<sockaddr*>(&a), alen) < 0) return err(status::io);
     return {};
   }
@@ -444,10 +463,54 @@ class udp_port final : public udp_socket {
  private:
   int fd_;
   std::uint16_t port_;
+  bool dual_;
   std::atomic<bool> down_{false};
 };
 
 }  // namespace
+
+result<std::unique_ptr<udp_socket>> open_udp_dual(std::uint16_t port, bool loopback_only) {
+  const int fd = ::socket(AF_INET6, SOCK_DGRAM, 0);
+  if (fd < 0) return err(status::io);
+  close_on_exec(fd);
+  no_sigpipe(fd);
+  int zero = 0;
+  (void)::setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &zero, sizeof zero);
+  // Room for a fast transfer's bursts.
+  int buf = 4 * 1024 * 1024;
+  (void)::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf, sizeof buf);
+  (void)::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf, sizeof buf);
+  sockaddr_in6 a{};
+  a.sin6_family = AF_INET6;
+  a.sin6_port = htons(port);
+  // Loopback for the tests: :: still, so 127.0.0.1 reaches it too (a dual-stack
+  // socket cannot bind both loopbacks); the tests only ever send to loopback.
+  a.sin6_addr = in6addr_any;
+  (void)loopback_only;
+  socklen_t len = sizeof a;
+  if (::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 ||
+      ::getsockname(fd, reinterpret_cast<sockaddr*>(&a), &len) != 0) {
+    ::close(fd);
+    return err(status::io);
+  }
+  return std::unique_ptr<udp_socket>(std::make_unique<udp_port>(fd, ntohs(a.sin6_port), true));
+}
+
+std::vector<address> resolve(const std::string& name) {
+  std::vector<address> out;
+  addrinfo hints{};
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_DGRAM;
+  addrinfo* res = nullptr;
+  if (::getaddrinfo(name.c_str(), nullptr, &hints, &res) != 0) return out;
+  for (addrinfo* r = res; r && out.size() < 8; r = r->ai_next) {
+    sockaddr_storage s{};
+    std::memcpy(&s, r->ai_addr, std::min<std::size_t>(r->ai_addrlen, sizeof s));
+    if (const auto ip = parse_address(endpoint_of(s).address)) out.push_back(*ip);
+  }
+  ::freeaddrinfo(res);
+  return out;
+}
 
 result<std::unique_ptr<udp_socket>> open_udp(bool v6, int multicast_ttl, bool loopback_only) {
   const int fd = ::socket(v6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);

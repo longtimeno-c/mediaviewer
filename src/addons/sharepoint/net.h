@@ -91,6 +91,14 @@ class udp_socket {
 // TTL of a multicast send (SSDP asks for 2). `loopback_only`: bound to
 // 127.0.0.1 / ::1 (the tests' stand-in routers).
 [[nodiscard]] result<std::unique_ptr<udp_socket>> open_udp(bool v6, int multicast_ttl = 1, bool loopback_only = false);
+// #472 PR 3: one socket for IPv6 and IPv4 both (IPv4 peers as plain dotted
+// addresses either way), on `port` (0: the OS picks): the DHT, hole punching
+// and the transfer share it, so the hole a probe punches is the one the
+// transfer uses. `loopback_only`: ::1 and 127.0.0.1 (the tests).
+[[nodiscard]] result<std::unique_ptr<udp_socket>> open_udp_dual(std::uint16_t port, bool loopback_only = false);
+// A name to addresses (the DHT's bootstrap routers only; nothing else in
+// Sharepoint resolves a name).
+[[nodiscard]] std::vector<address> resolve(const std::string& name);
 
 // The discovery socket: UDP on `port`, joined to kMulticastGroup, sharing the
 // port with other MediaViewers on this machine.
