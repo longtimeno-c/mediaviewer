@@ -98,6 +98,9 @@ result<file_stat> stat_path(std::string_view utf8_path) {
   const std::int64_t ticks = (static_cast<std::int64_t>(data.ftLastWriteTime.dwHighDateTime) << 32) |
                              data.ftLastWriteTime.dwLowDateTime;
   out.mtime_ns = (ticks - kEpochDelta) * 100;
+  if (data.ftCreationTime.dwHighDateTime != 0 || data.ftCreationTime.dwLowDateTime != 0) {
+    out.created_unix = unix_from_filetime(data.ftCreationTime);
+  }
   return out;
 }
 

@@ -38,6 +38,8 @@ struct evidence {
   std::string xmp_source_type;              // #345: the XMP one alone (also in source_types), so the
                                             // badge can say which of the two said it
   std::string c2pa_signer;                  // the signing certificate's subject O, else CN
+  std::string c2pa_created;                 // #415: the active manifest's c2pa.created `when`, in UTC
+  std::string c2pa_signed;                  // #415: the signature timestamp, as Signed at shows it
   bool png_parameters = false;              // a PNG `parameters` text chunk (AUTOMATIC1111 / SD)
   bool png_comfyui = false;                 // a PNG `prompt` / `workflow` chunk holding JSON
   std::string png_software;                 // PNG `Software`

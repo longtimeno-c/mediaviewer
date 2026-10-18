@@ -245,6 +245,18 @@ std::optional<geo_point> where_of(const Exiv2::ExifData& e, const Exiv2::XmpData
 
 }  // namespace
 
+bool read_capture_date(const Exiv2::ExifData& e, const Exiv2::XmpData& x, summary& s) noexcept {
+  try {
+    const std::string stamp = date_stamp(e, x);
+    if (stamp.empty()) return false;
+    s.date_taken = pretty_date(stamp);
+    s.date_taken_key = parse_date_key(stamp).value_or(0);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 std::optional<geo_point> file_where(const Exiv2::ExifData& e, const Exiv2::XmpData& x) noexcept {
   try {
     return where_of(e, x);
@@ -350,11 +362,7 @@ void fill_summary(const Exiv2::ExifData& e, const Exiv2::XmpData& x, Exiv2::Imag
     }
   }
 
-  const std::string stamp = date_stamp(e, x);
-  if (!stamp.empty()) {
-    s.date_taken = pretty_date(stamp);
-    s.date_taken_key = parse_date_key(stamp).value_or(0);
-  }
+  (void)read_capture_date(e, x, s);
   s.where = where_of(e, x);
   s.gps = s.where ? format_point(*s.where) : std::string{};
 
