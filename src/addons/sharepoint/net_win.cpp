@@ -62,8 +62,11 @@ class tcp_link final : public link {
     no_inherit(s_);
     BOOL one = TRUE;
     (void)::setsockopt(s_, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<const char*>(&one), sizeof one);
-    DWORD ms = kSilenceMs;
-    (void)::setsockopt(s_, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&ms), sizeof ms);
+    // Non-blocking, waited on in slices: Windows' shutdown() does not wake a
+    // thread blocked in send(), and a rejoin (#472) must not wait behind a
+    // write on a link that is gone.
+    u_long nb = 1;
+    (void)::ioctlsocket(s_, FIONBIO, &nb);
   }
   ~tcp_link() override {
     shutdown();
@@ -83,15 +86,24 @@ class tcp_link final : public link {
 
   expected write_all(std::span<const std::uint8_t> bytes) override {
     std::size_t sent = 0;
+    // A stalled write is a dropped link: the channel pings, so a healthy
+    // receiver never leaves the send buffer full this long.
+    auto stalled_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(kSilenceMs);
     while (sent < bytes.size()) {
       if (down_.load()) return err(status::cancelled);
       const int want = static_cast<int>(std::min<std::size_t>(bytes.size() - sent, 1u << 20));
       const int n = ::send(s_, reinterpret_cast<const char*>(bytes.data() + sent), want, 0);
       if (n == SOCKET_ERROR) {
         const int e = ::WSAGetLastError();
-        return err(e == WSAETIMEDOUT ? status::timeout : status::io);
+        if (e != WSAEWOULDBLOCK) return err(down_.load() ? status::cancelled : status::io);
+        // Full: wait for room in slices, so shutdown() is noticed.
+        if (std::chrono::steady_clock::now() >= stalled_at) return err(status::timeout);
+        const int ev = wait_for(s_, POLLWRNORM, 100);
+        if (ev < 0) return err(status::io);
+        continue;
       }
       sent += static_cast<std::size_t>(n);
+      stalled_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(kSilenceMs);
     }
     return {};
   }
@@ -101,26 +113,33 @@ class tcp_link final : public link {
     // In slices: closing the sending side does not wake a WSAPoll that waits
     // to read, so shutdown() is noticed here instead.
     const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms < 0 ? 0 : timeout_ms);
-    int ev = 0;
     for (;;) {
-      if (down_.load()) return err(status::cancelled);
-      int slice = 100;
-      if (timeout_ms >= 0) {
-        // Rounded up, so a timeout of 1 ms polls once rather than none.
-        const auto left = std::chrono::ceil<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
-        if (left.count() <= 0 && timeout_ms > 0) return err(status::timeout);
-        slice = static_cast<int>(std::min<long long>(slice, std::max<long long>(left.count(), 0)));
+      int ev = 0;
+      for (;;) {
+        if (down_.load()) return err(status::cancelled);
+        int slice = 100;
+        if (timeout_ms >= 0) {
+          // Rounded up, so a timeout of 1 ms polls once rather than none.
+          const auto left = std::chrono::ceil<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
+          if (left.count() <= 0 && timeout_ms > 0) return err(status::timeout);
+          slice = static_cast<int>(std::min<long long>(slice, std::max<long long>(left.count(), 0)));
+        }
+        ev = wait_for(s_, POLLRDNORM, slice);
+        if (ev != 0) break;
+        if (timeout_ms == 0) return err(status::timeout);
       }
-      ev = wait_for(s_, POLLRDNORM, slice);
-      if (ev != 0) break;
-      if (timeout_ms == 0) return err(status::timeout);
+      if (ev < 0) return err(status::io);
+      if (down_.load()) return err(status::cancelled);
+      const int want = static_cast<int>(std::min<std::size_t>(into.size(), 1u << 20));
+      const int n = ::recv(s_, reinterpret_cast<char*>(into.data()), want, 0);
+      if (n != SOCKET_ERROR) return static_cast<std::size_t>(n);
+      // Readable but nothing after all (non-blocking): wait again.
+      if (::WSAGetLastError() == WSAEWOULDBLOCK) {
+        if (timeout_ms == 0) return err(status::timeout);
+        continue;
+      }
+      return err(down_.load() ? status::cancelled : status::io);
     }
-    if (ev < 0) return err(status::io);
-    if (down_.load()) return err(status::cancelled);
-    const int want = static_cast<int>(std::min<std::size_t>(into.size(), 1u << 20));
-    const int n = ::recv(s_, reinterpret_cast<char*>(into.data()), want, 0);
-    if (n == SOCKET_ERROR) return err(down_.load() ? status::cancelled : status::io);
-    return static_cast<std::size_t>(n);
   }
 
   void shutdown() noexcept override {
