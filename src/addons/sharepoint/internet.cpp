@@ -76,8 +76,8 @@ internet_receiver::snapshot internet_receiver::state() const {
   return snap_;
 }
 
-std::optional<std::array<std::uint8_t, invite::kSecretBytes>> internet_receiver::spend() {
-  std::optional<std::array<std::uint8_t, invite::kSecretBytes>> out;
+std::optional<std::vector<std::uint8_t>> internet_receiver::spend() {
+  std::optional<std::vector<std::uint8_t>> out;
   {
     std::lock_guard lock(m_);
     if (snap_.p != phase::ready || !secret_ || clock::now() >= expires_) return std::nullopt;
@@ -275,7 +275,7 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
     s.text = invite::encode(c);
     s.link = invite::link(c);
     s.note = "Send this code to the other person. It works once, for 10 minutes.";
-    secret_ = c.secret;
+    secret_ = std::vector<std::uint8_t>(c.secret.begin(), c.secret.end());
     expires_ = clock::now() + std::chrono::milliseconds(opts_.lifetime_ms);
     listener_ = std::move(*l);
     net::listener* raw = listener_.get();

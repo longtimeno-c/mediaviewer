@@ -457,3 +457,90 @@ TEST_CASE("sharepoint dht: the routing table is kept between runs", "[sharepoint
   CHECK(c.known() >= 8);
   CHECK(c.start({}));
 }
+
+// ---- meeting on a word code ----------------------------------------------------------------------
+
+#include "addons/sharepoint/meet.h"
+
+TEST_CASE("sharepoint dht: two sides meet on four words, punch, and open the internet handshake over UDP",
+          "[sharepoint]") {
+  swarm s(16);
+  auto hr = sp::udp_hub::open(0, true);
+  auto hs = sp::udp_hub::open(0, true);
+  REQUIRE(hr);
+  REQUIRE(hs);
+  dht::client cr(*hr, test_options(s)), cs(*hs, test_options(s));
+  REQUIRE(cr.start({}));
+  REQUIRE(cs.start({}));
+  const dht::word_code code = dht::random_code();
+  auto kr = dht::derive(code, true);
+  auto ks = dht::derive(*dht::parse_words(dht::words_text(code)), true);  // typed on the other side
+  REQUIRE(kr);
+  REQUIRE(ks);
+  dht::meet_options o;
+  o.loopback = true;
+  o.wait_ms = 20000;
+  mv::result<std::unique_ptr<sp::link>> at_r = mv::err(mv::status::internal);
+  std::thread r([&] { at_r = dht::meet(*hr, cr, *kr, dht::role::receiver, o, {}, {}); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));  // the sender types the code a little later
+  auto at_s = dht::meet(*hs, cs, *ks, dht::role::sender, o, {}, {});
+  r.join();
+  REQUIRE(at_r);
+  REQUIRE(at_s);
+  // The internet handshake over the punched path, CPace on the code's password.
+  const std::vector<std::uint8_t> pw(kr->password.begin(), kr->password.end());
+  std::shared_ptr<sp::link> lr(std::move(*at_r)), ls(std::move(*at_s));
+  mv::result<std::unique_ptr<sp::channel>> server = mv::err(mv::status::internal);
+  std::thread t([&] {
+    auto h = sp::channel::read_hello(*lr, std::chrono::steady_clock::now() + std::chrono::seconds(5));
+    if (!h) {
+      server = mv::err(h.error());
+      return;
+    }
+    sp::channel::options so;
+    so.internet_secret = pw;
+    server = sp::channel::open_server(lr, std::move(*h), "bbbbbbbbbbbbbbbb", "Bea", so);
+  });
+  auto client = sp::channel::open_internet(ls, pw, "aaaaaaaaaaaaaaaa", "Ann");
+  t.join();
+  REQUIRE(client);
+  REQUIRE(server);
+  CHECK((*client)->code() == (*server)->code());
+  CHECK((*client)->via() == sp::transport::internet);
+  REQUIRE((*client)->send(sp::msg::data, pattern(sp::kChunkBytes, 1)));
+  sp::message m;
+  REQUIRE((*server)->receive(m, 5000));
+  CHECK(m.body == pattern(sp::kChunkBytes, 1));
+  // Then each side's items say it is gone.
+  dht::withdraw(cs, *ks, dht::role::sender, {});
+  auto left = cr.get(ks->public_key, dht::salt_of(*ks, dht::role::sender, 0), {});
+  REQUIRE(left);
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::system_clock::now().time_since_epoch()).count();
+  CHECK(dht::open(*ks, dht::salt_of(*ks, dht::role::sender, 0), left->v, now)->gone);
+}
+
+TEST_CASE("sharepoint dht: a wrong word code finds nobody", "[sharepoint]") {
+  swarm s(12);
+  auto hr = sp::udp_hub::open(0, true);
+  auto hs = sp::udp_hub::open(0, true);
+  REQUIRE(hr);
+  REQUIRE(hs);
+  dht::client cr(*hr, test_options(s)), cs(*hs, test_options(s));
+  REQUIRE(cr.start({}));
+  REQUIRE(cs.start({}));
+  auto kr = dht::derive({10, 20, 30, 40}, true);
+  auto ks = dht::derive({10, 20, 30, 41}, true);
+  REQUIRE(kr);
+  REQUIRE(ks);
+  dht::meet_options o;
+  o.loopback = true;
+  o.wait_ms = 2500;
+  std::atomic<bool> done{false};
+  std::thread r([&] { (void)dht::meet(*hr, cr, *kr, dht::role::receiver, o, [&] { return done.load(); }, {}); });
+  const auto at_s = dht::meet(*hs, cs, *ks, dht::role::sender, o, {}, {});
+  done.store(true);
+  r.join();
+  REQUIRE_FALSE(at_s);
+  CHECK(at_s.error() == mv::status::timeout);
+}

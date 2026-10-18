@@ -413,7 +413,7 @@ internet_pair open_internet(const std::array<std::uint8_t, 6>& typed, std::optio
       return;
     }
     sp::channel::options o;
-    o.internet_secret = shown;
+    if (shown) o.internet_secret = std::vector<std::uint8_t>(shown->begin(), shown->end());
     p.receiver = sp::channel::open_server(l, std::move(*h), "bbbbbbbbbbbbbbbb", "Bea", o);
   });
   p.sender = sp::channel::open_internet(std::shared_ptr<sp::link>(std::move(a)), typed, "aaaaaaaaaaaaaaaa", "Ann");

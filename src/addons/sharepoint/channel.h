@@ -98,7 +98,7 @@ struct channel_options {
   std::optional<std::array<std::uint8_t, 32>> static_key;
   // #472 PR 2, the receiver: the secret of the code it showed, which an
   // internet hello must know. Empty: an internet hello is refused.
-  std::optional<std::array<std::uint8_t, 6>> internet_secret;
+  std::optional<std::vector<std::uint8_t>> internet_secret;  // a direct code's 6 bytes, a word code's 32
 };
 
 class channel {

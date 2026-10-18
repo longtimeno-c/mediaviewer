@@ -58,6 +58,7 @@ add_library(mv_sharepoint_engine STATIC
   ${_S}/dht_item.cpp ${_S}/dht_item.h ${_S}/wordlist.inc
   ${_S}/udp_hub.cpp ${_S}/udp_hub.h
   ${_S}/dht.cpp ${_S}/dht.h
+  ${_S}/meet.cpp ${_S}/meet.h
   ${_S}/engine.cpp ${_S}/engine.h
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/tree.cpp

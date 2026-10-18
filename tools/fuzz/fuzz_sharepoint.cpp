@@ -122,7 +122,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
       auto l = std::make_shared<input_link>(in);
       auto h = sp::channel::read_hello(*l, std::chrono::steady_clock::now() + std::chrono::seconds(1));
       sp::channel::options o;
-      o.internet_secret = std::array<std::uint8_t, 6>{1, 2, 3, 4, 5, 6};
+      o.internet_secret = std::vector<std::uint8_t>{1, 2, 3, 4, 5, 6};
       if (h) (void)sp::channel::open_server(l, std::move(*h), "bbbbbbbbbbbbbbbb", "Fuzz", o);
       break;
     }

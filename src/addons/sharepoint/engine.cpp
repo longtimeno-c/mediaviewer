@@ -667,7 +667,7 @@ void engine::route_busy(std::shared_ptr<link> l, bool internet) {
 
 result<std::unique_ptr<channel>> engine::open_tracked(std::shared_ptr<link> l, bool client, std::uint32_t version,
                                                       const hello* read,
-                                                      const std::array<std::uint8_t, invite::kSecretBytes>* internet_secret) {
+                                                      const std::vector<std::uint8_t>* internet_secret) {
   {
     std::lock_guard lock(m_);
     if (stopping_.load()) return err(status::cancelled);

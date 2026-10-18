@@ -61,7 +61,9 @@ class udp_hub {
   void on_probe(datagram_fn fn);
   // A reliable stream to `peer`, both sides with the same `id` (the sender
   // picks it during punching). Packets for it from anyone else are dropped.
-  [[nodiscard]] std::unique_ptr<link> stream(const net::endpoint& peer, std::uint32_t id);
+  // `learn`: the peer is whoever sends the first packet of this id (the
+  // receiver of a punched path: the sender chose which of the paths found).
+  [[nodiscard]] std::unique_ptr<link> stream(const net::endpoint& peer, std::uint32_t id, bool learn = false);
   // Stops the threads; every stream fails. Idempotent.
   void stop() noexcept;
   // The tests: drop this many in a thousand of the stream packets sent.

@@ -92,7 +92,7 @@ class internet_receiver {
   [[nodiscard]] snapshot state() const;
   // An internet hello arrived: the code's secret, spent now (right or wrong,
   // it never works again); nullopt when no code waits.
-  [[nodiscard]] std::optional<std::array<std::uint8_t, invite::kSecretBytes>> spend();
+  [[nodiscard]] std::optional<std::vector<std::uint8_t>> spend();
   // The attempt was a wrong code: the window says so.
   void wrong_attempt();
   // spend() holds the listener and mappings for the attempt it starts (and
@@ -114,7 +114,7 @@ class internet_receiver {
   mutable std::mutex m_;
   std::condition_variable cv_;
   snapshot snap_;                                                       // under m_
-  std::optional<std::array<std::uint8_t, invite::kSecretBytes>> secret_;  // under m_: while ready
+  std::optional<std::vector<std::uint8_t>> secret_;  // under m_: while ready (the code's CPace password)
   std::chrono::steady_clock::time_point expires_{};                     // under m_
   bool want_code_ = false;                                              // under m_
   bool want_drop_ = false;                                              // under m_

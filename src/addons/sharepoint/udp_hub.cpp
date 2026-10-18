@@ -53,6 +53,7 @@ struct udp_hub::stream_state {
   udp_hub* hub = nullptr;
   net::endpoint peer;
   std::uint32_t id = 0;
+  bool learn = false;  // under m: the first packet's sender becomes the peer
   std::mutex m;
   std::condition_variable cv;
   bool down = false;
@@ -368,11 +369,12 @@ void udp_hub::on_probe(datagram_fn fn) {
   probe_ = std::move(fn);
 }
 
-std::unique_ptr<link> udp_hub::stream(const net::endpoint& peer, std::uint32_t id) {
+std::unique_ptr<link> udp_hub::stream(const net::endpoint& peer, std::uint32_t id, bool learn) {
   auto s = std::make_shared<stream_state>();
   s->hub = this;
   s->peer = peer;
   s->id = id;
+  s->learn = learn;
   {
     std::lock_guard lock(m_);
     streams_[id] = s;
@@ -412,9 +414,13 @@ void udp_hub::read_loop() {
       std::lock_guard lock(m_);
       if (auto it = streams_.find(id); it != streams_.end()) s = it->second.lock();
     }
-    if (!s || s->peer.address != from.address || s->peer.port != from.port) continue;
+    if (!s) continue;
     std::lock_guard l(s->m);
-    if (s->down) continue;
+    if (s->learn) {
+      s->peer = from;
+      s->learn = false;
+    }
+    if (s->down || s->peer.address != from.address || s->peer.port != from.port) continue;
     const std::uint8_t type = d[1];
     if (type == kData) {
       s->on_data(get32(d.data() + 6), d.subspan(kHead), false);
