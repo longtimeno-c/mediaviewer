@@ -155,6 +155,33 @@ TEST_CASE("sharepoint noise: Noise_NNpsk0_25519_ChaChaPoly_BLAKE2b matches the C
              kMessages);
 }
 
+TEST_CASE("sharepoint noise: Noise_XXpsk3_25519_ChaChaPoly_BLAKE2b matches the Cacophony vector", "[sharepoint]") {
+  static constexpr vector_message kMessages[] = {
+      {"4c756477696720766f6e204d69736573",
+       "ca35def5ae56cec33dc2036731ab14896bc4c75dbb07a61f879f8e3afa4c79440aa831d1e3bbd16bd7ffda87e9f7b6eeca25100064"
+       "99a573ac27af3392ed1b69"},
+      {"4d757272617920526f746862617264",
+       "95ebc60d2b1fa672c1f46a8aa265ef51bfe38e7ccb39ec5be34069f14480884381a78489d56c9e2ac962826f25684980b25244dbfd50"
+       "5b7d903a94d4f4fd84004a1c7fbe94d686bc4c1f67259364f6f2a41cb40bf5198b9b3975be2cdd49d3e065a554e12c477d82029fab"
+       "c6555bc1"},
+      {"462e20412e20486179656b",
+       "291dfeff6eff386e29adb0bdbd5a1ae9e09de4449c8695d109adcb63e80e489555792a3e9150eff75d6d45571f824ed231173cb66e31"
+       "e7da914241f86d0cbb678335ffe768a7445d2f5bc1"},
+      {"4361726c204d656e676572", "6579dd60eb5e6a8b29dd60004289f5d3c2f69fcdbf683a869f59a8"},
+      {"4a65616e2d426170746973746520536179", "24715fd39c3c7606e81b26e69e47b54d043d9d87c512f9417bae51ab48ebb17722"},
+      {"457567656e2042f6686d20766f6e2042617765726b",
+       "e49194a013d873712318643acbf0e3851086326bb168c500a766439ff543a7a1e2deb3215c"},
+  };
+  run_vector(noise::xx_psk3(), 3, "4a6f686e2047616c74", "e61ef9919cde45dd5f82166404bd08e38bceb5dfdfded0a34c8df7ed542214d1",
+             "4a3acbfdb163dec651dfa3194dece676d437029c62a408b4c5ea9114246e4893",
+             "54686973206973206d7920417573747269616e20706572737065637469766521",
+             "893e28b9dc6ca8d611ab664754b8ceb7bac5117349a4439a6b0569da977c464a",
+             "bbdb4cdbd309f1a1f2e1456967fe288cadd6f712d65dc7b7793d5e63da6b375b",
+             "46b5997dfa51492ae9be5b611748455e83aebdbc2ea3c47d264ec6dd408cc076e962ff056890c60398fe3e7a430bbe057f34383a"
+             "84df9ff99391266dcfd638b0",
+             kMessages);
+}
+
 namespace {
 
 struct hybrid_run {
@@ -233,6 +260,22 @@ TEST_CASE("sharepoint noise: the hybrid XX handshake agrees, and its keys hold t
   CHECK(to_hex(a.h) ==
         "2454b423f8478cc037b69ec327ebe7f24c51a41f53288789ecb854a8081c14da226e0067c1a038f54c905df74d51ae6ba63326b2e1cf"
         "389c59e032e77d9c3312");
+}
+
+TEST_CASE("sharepoint noise: the internet XX handshake agrees with the same CPace key only", "[sharepoint]") {
+  std::array<std::uint8_t, 32> psk;
+  psk.fill(0x51);
+  const hybrid_run a = run_hybrid(noise::xx_hfs_psk0(), 3, 0x66, true, psk);
+  REQUIRE(a.ok);
+  // Another key on the receiver: the first message does not open there, so
+  // nothing of the receiver (not even its static key) goes to a wrong code.
+  std::array<std::uint8_t, 32> other = psk;
+  other[31] ^= 1;
+  noise::handshake init(noise::xx_hfs_psk0(), true, {}, std::array<std::uint8_t, 32>{1}, psk);
+  noise::handshake resp(noise::xx_hfs_psk0(), false, {}, std::array<std::uint8_t, 32>{2}, other);
+  std::vector<std::uint8_t> m, payload;
+  REQUIRE(init.write_message({}, m));
+  CHECK_FALSE(resp.read_message(m, payload));
 }
 
 TEST_CASE("sharepoint noise: the hybrid psk rejoin agrees only with the same psk", "[sharepoint]") {

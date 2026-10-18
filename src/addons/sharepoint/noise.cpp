@@ -29,6 +29,10 @@ constexpr token kXXhfs1[] = {token::e, token::e1};
 constexpr token kXXhfs2[] = {token::e, token::ee, token::ekem1, token::s, token::es};
 constexpr token kXXhfs3[] = {token::s, token::se};
 constexpr std::span<const token> kXXhfs[] = {kXXhfs1, kXXhfs2, kXXhfs3};
+constexpr token kXXpsk33[] = {token::s, token::se, token::psk};
+constexpr std::span<const token> kXXpsk3[] = {kXX1, kXX2, kXXpsk33};
+constexpr token kXXhfspsk01[] = {token::psk, token::e, token::e1};
+constexpr std::span<const token> kXXhfspsk0[] = {kXXhfspsk01, kXXhfs2, kXXhfs3};
 constexpr token kNNhfspsk01[] = {token::psk, token::e, token::e1};
 constexpr token kNNhfspsk02[] = {token::e, token::ee, token::ekem1};
 constexpr std::span<const token> kNNhfspsk0[] = {kNNhfspsk01, kNNhfspsk02};
@@ -36,6 +40,8 @@ constexpr std::span<const token> kNNhfspsk0[] = {kNNhfspsk01, kNNhfspsk02};
 const pattern kPatternXX{"Noise_XX_25519_ChaChaPoly_BLAKE2b", kXX, false};
 const pattern kPatternNNpsk0{"Noise_NNpsk0_25519_ChaChaPoly_BLAKE2b", kNNpsk0, true};
 const pattern kPatternXXhfs{"Noise_XXhfs_25519+MLKEM768_ChaChaPoly_BLAKE2b", kXXhfs, false};
+const pattern kPatternXXpsk3{"Noise_XXpsk3_25519_ChaChaPoly_BLAKE2b", kXXpsk3, true};
+const pattern kPatternXXhfspsk0{"Noise_XXhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b", kXXhfspsk0, true};
 const pattern kPatternNNhfspsk0{"Noise_NNhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b", kNNhfspsk0, true};
 
 void blake2b(std::span<const std::span<const std::uint8_t>> parts, std::span<std::uint8_t, kHashBytes> out) noexcept {
@@ -52,6 +58,8 @@ const pattern& xx() { return kPatternXX; }
 const pattern& nn_psk0() { return kPatternNNpsk0; }
 const pattern& xx_hfs() { return kPatternXXhfs; }
 const pattern& nn_hfs_psk0() { return kPatternNNhfspsk0; }
+const pattern& xx_psk3() { return kPatternXXpsk3; }
+const pattern& xx_hfs_psk0() { return kPatternXXhfspsk0; }
 
 // ---- HMAC and HKDF (Noise §4.3) ------------------------------------------------------
 

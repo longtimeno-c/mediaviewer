@@ -11,6 +11,8 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <iphlpapi.h>
+#include <mstcpip.h>
 #include <knownfolders.h>
 #include <shlobj.h>
 
@@ -20,6 +22,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "addons/sharepoint/net.h"
 #include "addons/sharepoint/wire.h"
@@ -237,17 +240,55 @@ result<std::unique_ptr<listener>> listen(bool loopback_only) {
   return std::unique_ptr<listener>(std::make_unique<tcp_listener>(s, ::ntohs(a.sin_port)));
 }
 
+namespace {
+
+// A sockaddr for `to` (either family); its length, 0 when it does not parse.
+int sockaddr_of(const endpoint& to, sockaddr_storage& out) noexcept {
+  const auto ip = parse_address(to.address);
+  if (!ip || to.port == 0) return 0;
+  std::memset(&out, 0, sizeof out);
+  if (ip->v6) {
+    auto* a = reinterpret_cast<sockaddr_in6*>(&out);
+    a->sin6_family = AF_INET6;
+    a->sin6_port = ::htons(to.port);
+    std::memcpy(&a->sin6_addr, ip->bytes.data(), 16);
+    return static_cast<int>(sizeof *a);
+  }
+  auto* a = reinterpret_cast<sockaddr_in*>(&out);
+  a->sin_family = AF_INET;
+  a->sin_port = ::htons(to.port);
+  std::memcpy(&a->sin_addr, ip->bytes.data(), 4);
+  return static_cast<int>(sizeof *a);
+}
+
+address address_of(const sockaddr* sa) noexcept {
+  address ip;
+  if (sa->sa_family == AF_INET6) {
+    ip.v6 = true;
+    std::memcpy(ip.bytes.data(), &reinterpret_cast<const sockaddr_in6*>(sa)->sin6_addr, 16);
+  } else {
+    std::memcpy(ip.bytes.data(), &reinterpret_cast<const sockaddr_in*>(sa)->sin_addr, 4);
+  }
+  return ip;
+}
+
+std::uint16_t port_of(const sockaddr_storage& s) noexcept {
+  return s.ss_family == AF_INET6 ? ::ntohs(reinterpret_cast<const sockaddr_in6*>(&s)->sin6_port)
+                                 : ::ntohs(reinterpret_cast<const sockaddr_in*>(&s)->sin_port);
+}
+
+}  // namespace
+
 result<std::unique_ptr<link>> connect(const endpoint& to, int timeout_ms) {
   if (!winsock_ready()) return err(status::io);
-  sockaddr_in a{};
-  a.sin_family = AF_INET;
-  a.sin_port = ::htons(to.port);
-  if (to.port == 0 || ::inet_pton(AF_INET, to.address.c_str(), &a.sin_addr) != 1) return err(status::invalid_arg);
-  const SOCKET s = ::WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_NO_HANDLE_INHERIT);
+  sockaddr_storage a;
+  const int alen = sockaddr_of(to, a);
+  if (alen == 0) return err(status::invalid_arg);
+  const SOCKET s = ::WSASocketW(a.ss_family, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_NO_HANDLE_INHERIT);
   if (s == INVALID_SOCKET) return err(status::io);
   u_long nb = 1;
   (void)::ioctlsocket(s, FIONBIO, &nb);
-  int r = ::connect(s, reinterpret_cast<sockaddr*>(&a), sizeof a);
+  int r = ::connect(s, reinterpret_cast<sockaddr*>(&a), alen);
   if (r != 0 && ::WSAGetLastError() == WSAEWOULDBLOCK) {
     const int ev = wait_for(s, POLLWRNORM, timeout_ms);
     if (ev == 0) {
@@ -268,6 +309,155 @@ result<std::unique_ptr<link>> connect(const endpoint& to, int timeout_ms) {
   nb = 0;
   (void)::ioctlsocket(s, FIONBIO, &nb);
   return std::unique_ptr<link>(std::make_unique<tcp_link>(s));
+}
+
+result<std::unique_ptr<listener>> listen_internet(std::uint16_t port, bool loopback_only) {
+  if (!winsock_ready()) return err(status::io);
+  // Dual stack where IPv6 exists; IPv4 alone where it does not.
+  SOCKET s = ::WSASocketW(AF_INET6, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_NO_HANDLE_INHERIT);
+  sockaddr_storage st{};
+  int len = 0;
+  if (s != INVALID_SOCKET) {
+    DWORD v6only = loopback_only ? 1 : 0;
+    (void)::setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&v6only), sizeof v6only);
+    auto* a = reinterpret_cast<sockaddr_in6*>(&st);
+    a->sin6_family = AF_INET6;
+    a->sin6_port = ::htons(port);
+    if (loopback_only) a->sin6_addr.s6_addr[15] = 1;  // ::1 (else ::, all zeros)
+    len = static_cast<int>(sizeof *a);
+  } else {
+    s = ::WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_NO_HANDLE_INHERIT);
+    if (s == INVALID_SOCKET) return err(status::io);
+    auto* a = reinterpret_cast<sockaddr_in*>(&st);
+    a->sin_family = AF_INET;
+    a->sin_port = ::htons(port);
+    a->sin_addr.s_addr = ::htonl(loopback_only ? INADDR_LOOPBACK : INADDR_ANY);
+    len = static_cast<int>(sizeof *a);
+  }
+  BOOL excl = TRUE;
+  (void)::setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&excl), sizeof excl);
+  if (::bind(s, reinterpret_cast<sockaddr*>(&st), len) != 0 || ::listen(s, 8) != 0 ||
+      ::getsockname(s, reinterpret_cast<sockaddr*>(&st), &len) != 0) {
+    ::closesocket(s);
+    return err(status::io);
+  }
+  return std::unique_ptr<listener>(std::make_unique<tcp_listener>(s, port_of(st)));
+}
+
+std::vector<address> local_addresses() {
+  std::vector<address> out;
+  ULONG size = 16 * 1024;
+  std::vector<unsigned char> buf;
+  ULONG r = ERROR_BUFFER_OVERFLOW;
+  for (int tries = 0; tries < 3 && r == ERROR_BUFFER_OVERFLOW; ++tries) {
+    buf.resize(size);
+    r = ::GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+                               nullptr, reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data()), &size);
+  }
+  if (r != NO_ERROR) return out;
+  for (auto* ad = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data()); ad; ad = ad->Next) {
+    if (ad->OperStatus != IfOperStatusUp || ad->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+    for (auto* u = ad->FirstUnicastAddress; u; u = u->Next) {
+      const sockaddr* sa = u->Address.lpSockaddr;
+      if (!sa || (sa->sa_family != AF_INET && sa->sa_family != AF_INET6)) continue;
+      const address a = address_of(sa);
+      bool seen = false;
+      for (const auto& o : out) seen = seen || o == a;
+      if (!seen) out.push_back(a);
+    }
+  }
+  return out;
+}
+
+std::optional<address> default_gateway() {
+  // The best IPv4 route to anywhere public: its next hop is the router.
+  SOCKADDR_INET dest{};
+  dest.Ipv4.sin_family = AF_INET;
+  dest.Ipv4.sin_addr.s_addr = ::htonl(0x08080808);  // a destination only; nothing is sent
+  MIB_IPFORWARD_ROW2 row{};
+  SOCKADDR_INET source{};
+  if (::GetBestRoute2(nullptr, 0, nullptr, &dest, 0, &row, &source) != NO_ERROR) return std::nullopt;
+  if (row.NextHop.si_family != AF_INET || row.NextHop.Ipv4.sin_addr.s_addr == 0) return std::nullopt;
+  address a;
+  std::memcpy(a.bytes.data(), &row.NextHop.Ipv4.sin_addr, 4);
+  return a;
+}
+
+namespace {
+
+class udp_port final : public udp_socket {
+ public:
+  explicit udp_port(SOCKET s) : s_(s) {}
+  ~udp_port() override {
+    shutdown();
+    ::closesocket(s_);
+  }
+  expected send_to(std::span<const std::uint8_t> d, const endpoint& to) override {
+    sockaddr_storage a;
+    const int alen = sockaddr_of(to, a);
+    if (alen == 0) return err(status::invalid_arg);
+    if (::sendto(s_, reinterpret_cast<const char*>(d.data()), static_cast<int>(d.size()), 0,
+                 reinterpret_cast<sockaddr*>(&a), alen) == SOCKET_ERROR) {
+      return err(status::io);
+    }
+    return {};
+  }
+  result<std::size_t> receive_from(std::span<std::uint8_t> into, int timeout_ms, endpoint& from) override {
+    if (down_.load()) return err(status::cancelled);
+    const int ev = wait_for(s_, POLLRDNORM, timeout_ms);
+    if (ev == 0) return err(status::timeout);
+    if (ev < 0) return err(status::io);
+    sockaddr_storage st{};
+    int flen = sizeof st;
+    const int n = ::recvfrom(s_, reinterpret_cast<char*>(into.data()), static_cast<int>(into.size()), 0,
+                             reinterpret_cast<sockaddr*>(&st), &flen);
+    if (n == SOCKET_ERROR) {
+      const int e = ::WSAGetLastError();
+      return err(e == WSAEMSGSIZE || e == WSAECONNRESET ? status::timeout : status::io);
+    }
+    from = {address_text(address_of(reinterpret_cast<const sockaddr*>(&st))), port_of(st)};
+    return static_cast<std::size_t>(n);
+  }
+  void shutdown() noexcept override { down_.store(true); }
+
+ private:
+  SOCKET s_;
+  std::atomic<bool> down_{false};
+};
+
+}  // namespace
+
+result<std::unique_ptr<udp_socket>> open_udp(bool v6, int multicast_ttl) {
+  if (!winsock_ready()) return err(status::io);
+  const SOCKET s = ::WSASocketW(v6 ? AF_INET6 : AF_INET, SOCK_DGRAM, IPPROTO_UDP, nullptr, 0, WSA_FLAG_NO_HANDLE_INHERIT);
+  if (s == INVALID_SOCKET) return err(status::io);
+  DWORD ttl = static_cast<DWORD>(multicast_ttl);
+  if (v6) {
+    (void)::setsockopt(s, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, reinterpret_cast<const char*>(&ttl), sizeof ttl);
+  } else {
+    (void)::setsockopt(s, IPPROTO_IP, IP_MULTICAST_TTL, reinterpret_cast<const char*>(&ttl), sizeof ttl);
+  }
+  // Windows reports an ICMP port-unreachable on the next receive; it is noise here.
+  BOOL no_reset = FALSE;
+  DWORD unused = 0;
+  (void)::WSAIoctl(s, SIO_UDP_CONNRESET, &no_reset, sizeof no_reset, nullptr, 0, &unused, nullptr, nullptr);
+  // An unbound UDP socket cannot receive until it sends; bind to the OS's pick.
+  sockaddr_storage st{};
+  int len = 0;
+  if (v6) {
+    auto* a = reinterpret_cast<sockaddr_in6*>(&st);
+    a->sin6_family = AF_INET6;
+    len = static_cast<int>(sizeof *a);
+  } else {
+    auto* a = reinterpret_cast<sockaddr_in*>(&st);
+    a->sin_family = AF_INET;
+    len = static_cast<int>(sizeof *a);
+  }
+  if (::bind(s, reinterpret_cast<sockaddr*>(&st), len) != 0) {
+    ::closesocket(s);
+    return err(status::io);
+  }
+  return std::unique_ptr<udp_socket>(std::make_unique<udp_port>(s));
 }
 
 result<std::unique_ptr<beacon_socket>> open_beacon_socket(std::uint16_t port) {

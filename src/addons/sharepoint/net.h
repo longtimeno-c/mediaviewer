@@ -4,16 +4,23 @@
 // and the portable build, net_win.cpp over Winsock).
 //
 // Only Sharepoint opens these, only while its window is open or receiving is
-// on (docs/design/28 "What stays put"): the idle viewer has no socket. IPv4 on
-// the local network; nothing here resolves a name or reaches past the subnet
-// (the beacon goes out with a TTL of 1). Nothing is logged with an address.
+// on (docs/design/28 "What stays put"): the idle viewer has no socket. On the
+// local network, IPv4 (the beacon goes out with a TTL of 1). Over the
+// internet (#472 PR 2, opt-in, off by default): a TCP listener on IPv6 and
+// IPv4 while a code waits, connects to the addresses in a code, and the
+// router's port mapping (UDP to the gateway, SSDP and HTTP to it). Nothing
+// here resolves a name. Nothing is logged with an address.
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "addons/sharepoint/link.h"
 #include "core/result.h"
@@ -21,9 +28,23 @@
 namespace mv::sharepoint::net {
 
 struct endpoint {
-  std::string address;  // dotted IPv4, as a beacon's sender
+  std::string address;  // dotted IPv4 (a beacon's sender), or IPv6 text (#472)
   std::uint16_t port = 0;
 };
+
+// An IP address as bytes (IPv4 in the first 4).
+struct address {
+  bool v6 = false;
+  std::array<std::uint8_t, 16> bytes{};
+  friend bool operator==(const address&, const address&) = default;
+};
+// Dotted IPv4 or IPv6 text (no zone, no brackets). Portable (net_address.cpp).
+[[nodiscard]] std::optional<address> parse_address(std::string_view text) noexcept;
+[[nodiscard]] std::string address_text(const address& a);
+// Reachable from the internet if nothing in between blocks it: not loopback,
+// private (RFC 1918), shared (CGNAT, RFC 6598), link-local, unique local
+// (fc00::/7), multicast, documentation or unspecified.
+[[nodiscard]] bool is_public(const address& a) noexcept;
 
 // A TCP listener on a port the OS picks: on every interface, or on loopback
 // only (the tests).
@@ -38,8 +59,33 @@ class listener {
 };
 [[nodiscard]] result<std::unique_ptr<listener>> listen(bool loopback_only = false);
 
-// Connects within `timeout_ms`.
+// Connects within `timeout_ms`, over IPv4 or IPv6 as the address is.
 [[nodiscard]] result<std::unique_ptr<link>> connect(const endpoint& to, int timeout_ms);
+
+// #472 PR 2: the listener a code points at. TCP on `port` (0: the OS picks),
+// IPv6 and IPv4 both ([::] dual stack; IPv4 alone where there is no IPv6).
+// `loopback_only`: ::1 and 127.0.0.1 only (the tests).
+[[nodiscard]] result<std::unique_ptr<listener>> listen_internet(std::uint16_t port, bool loopback_only);
+
+// This machine's unicast addresses, every interface that is up.
+[[nodiscard]] std::vector<address> local_addresses();
+// The IPv4 default gateway (the router a port mapping asks), if any.
+[[nodiscard]] std::optional<address> default_gateway();
+
+// A UDP socket: the router's mapping protocols (NAT-PMP, PCP) and UPnP's
+// SSDP search. Never the beacon's port.
+class udp_socket {
+ public:
+  virtual ~udp_socket() = default;
+  [[nodiscard]] virtual expected send_to(std::span<const std::uint8_t> datagram, const endpoint& to) = 0;
+  // One datagram and its sender; status::timeout when none came.
+  [[nodiscard]] virtual result<std::size_t> receive_from(std::span<std::uint8_t> into, int timeout_ms,
+                                                         endpoint& from) = 0;
+  virtual void shutdown() noexcept = 0;
+};
+// IPv4 (or IPv6) on a port the OS picks; `multicast_ttl`: the TTL of a
+// multicast send (SSDP asks for 2).
+[[nodiscard]] result<std::unique_ptr<udp_socket>> open_udp(bool v6, int multicast_ttl = 1);
 
 // The discovery socket: UDP on `port`, joined to kMulticastGroup, sharing the
 // port with other MediaViewers on this machine.

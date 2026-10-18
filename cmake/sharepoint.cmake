@@ -48,7 +48,8 @@ add_library(mv_sharepoint_engine STATIC
   ${_S}/transfer.cpp ${_S}/transfer.h
   ${_S}/presence.cpp ${_S}/presence.h
   ${_S}/bt_pipe.cpp ${_S}/bt_pipe.h
-  ${_S}/net.h
+  ${_S}/net.h ${_S}/net_address.cpp
+  ${_S}/invite.cpp ${_S}/invite.h
   ${_S}/engine.cpp ${_S}/engine.h
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/tree.cpp
@@ -61,7 +62,8 @@ set_target_properties(mv_sharepoint_engine PROPERTIES POSITION_INDEPENDENT_CODE 
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 if(WIN32)
   # shell32 / ole32: the Downloads folder (SHGetKnownFolderPath, CoTaskMemFree).
-  target_link_libraries(mv_sharepoint_engine PUBLIC ws2_32 shell32 ole32)
+  # iphlpapi: this machine's addresses and its default route (#472 PR 2).
+  target_link_libraries(mv_sharepoint_engine PUBLIC ws2_32 shell32 ole32 iphlpapi)
 elseif(APPLE)
   target_link_libraries(mv_sharepoint_engine PUBLIC "-framework CoreFoundation" "-framework SystemConfiguration")
 endif()
