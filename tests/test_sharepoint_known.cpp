@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Sharepoint's known devices (issue #472, PR 4): the secret store's file
 // form, the identity kept in it, the remembered devices' records, the
-// hourly presence keys, and what a protocol 2 session gives Remember. The
-// OS stores (Keychain, Credential Manager) are not touched here.
+// hourly presence keys, and what a protocol 2 session gives Remember. Of the
+// OS stores, only Credential Manager is touched (on Windows, under a name of
+// the run's own); the Keychain is not.
 #include "sharepoint_fixture.h"
 
 #include <sodium.h>
@@ -41,6 +42,33 @@ TEST_CASE("sharepoint known: the file store keeps, replaces and forgets values b
   CHECK_FALSE(store->get("identity"));
   CHECK_FALSE(store->erase("identity"));
 }
+
+#if defined(_WIN32)
+// The Windows half of the port: Credential Manager itself (secrets_win.cpp),
+// under a name of this run's own that the test removes again. The Keychain
+// is not touched on the Mac (a test there could stop at an access prompt).
+TEST_CASE("sharepoint known: Credential Manager keeps, replaces and forgets a value", "[sharepoint]") {
+  auto store = secrets::os_store();
+  REQUIRE(store);
+  std::uint8_t r[8];
+  randombytes_buf(r, sizeof r);
+  std::string name = "test/";
+  for (const std::uint8_t b : r) name += "0123456789abcdef"[b & 15];
+  CHECK_FALSE(store->get(name));
+  REQUIRE(store->put(name, bytes_of("first")));
+  CHECK(store->get(name) == bytes_of("first"));
+  REQUIRE(store->put(name, bytes_of("second")));  // replaced
+  CHECK(store->get(name) == bytes_of("second"));
+  const std::vector<std::uint8_t> biggest(secrets::kMaxValue, 9);
+  REQUIRE(store->put(name, biggest));
+  CHECK(store->get(name) == biggest);
+  CHECK_FALSE(store->put(name, std::vector<std::uint8_t>(secrets::kMaxValue + 1, 7)));
+  CHECK(store->get(name) == biggest);  // a refused value leaves the old one
+  CHECK(store->erase(name));
+  CHECK_FALSE(store->get(name));
+  CHECK_FALSE(store->erase(name));
+}
+#endif
 
 TEST_CASE("sharepoint known: the identity is made once and kept; without a store it is this run's", "[sharepoint]") {
   scratch_dir s("sharepoint_identity");

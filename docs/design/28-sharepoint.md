@@ -727,8 +727,12 @@ second while bytes move; those posts update chrome and never present the canvas.
   over the internet, with no server of ours. A relay only ever through the person's own devices or
   one they configure ([Relays](#relays-472)), and it sees only ciphertext. What cannot be hidden: the code gives its holder this machine's
   public address; the router learns of a mapping (PCP, NAT-PMP, UPnP); a network observer sees
-  encrypted traffic and roughly how much moved. Nothing goes anywhere else: no lookup, no STUN,
-  no name resolution. Codes, addresses and peer names are never logged. While four words meet
+  encrypted traffic and roughly how much moved. With only the internet toggle on, nothing goes
+  anywhere else: no lookup, no STUN, no name resolution. With **Find each other over the internet**
+  (the DHT) on, the client resolves the four bootstrap routers' names (`dht.h`) unless its saved
+  table answers, and DHT nodes see this machine's address taking part in the DHT (never what it
+  looks up: the targets mean nothing without the code or the pair's secret). A relay server the
+  person typed is resolved too. Codes, addresses and peer names are never logged. While four words meet
   (a word code, not a remembered device), a TCP port listens on every interface (its number is in
   the sealed item), and a birthday punch sends its 14-byte probes to random ports of the other
   side's public address only.
@@ -805,6 +809,13 @@ second while bytes move; those posts update chrome and never present the canvas.
 - Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6 on the LAN.
 - Over the internet, after the relays: Tor (dropped for now, [plan](../plans/sharepoint-tor-spike.md)),
   TURN, relaying word codes, remembered-device sends and the handover, a relayed send moving.
+- The rest of #472, deferred by the owner (2026-10-18, [12](12-decision-log.md#sharepoint)):
+  re-gathering and republishing on an OS network change; a remembered device's last-known direct
+  addresses; DHT bootstrap from a LAN peer or a remembered device; a 15 s keepalive during a wait;
+  S/Kademlia disjoint lookups; the 2x-faster switch between two fast bearers; port mapping for the
+  UDP socket; per-source rate limits on the add-on's listener and on rejoins; the Wi-Fi Direct
+  soft-AP spike; AES-256-GCM, larger chunks and parallel streams; a word code's failure naming its
+  reason.
 - Resuming a protocol 1 transfer that dropped: finished files stay, the rest is sent again.
   Protocol 2 rejoins and resumes within 20 s; a session that ends (20 s without a link, three
   rejoins in 10 s, the app quitting) is not resumed later.

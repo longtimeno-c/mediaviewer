@@ -1693,8 +1693,9 @@ address, never in a code) that the waiting side proves; senders never wait; caps
 and on handshakes stop one host filling it; and a waiter re-registers every minute (replacing its
 own wait) because NATs drop idle TCP after a few minutes. A relay
 place joins the sender's race 1.5 s after the direct places, and the receiver hands on a paired
-link only once the sender has spoken, so a lost race costs nothing. The relay field is the one
-name Sharepoint resolves (the person typed it); the code carries the address. TURN is left out:
+link only once the sender has spoken, so a lost race costs nothing. The relay field is resolved
+because the person typed it (the DHT's bootstrap routers are the only other names, and only with
+the DHT on); the code carries the address. TURN is left out:
 it is a server protocol of its own (allocations, permissions, STUN, credentials) for what the
 splice does in a few hundred lines.
 
@@ -1706,6 +1707,21 @@ build, and its onion-service hosting was still marked incomplete when last check
 cover the hard-NAT pair without a third-party network. Nothing was measured: that needs the live
 Tor network, so the harness (`tools/sharepoint-relay/tor_spike.py`) waits for the owner
 ([plan](../plans/sharepoint-tor-spike.md)). Reopen for address hiding, or if its numbers surprise.
+
+**#472 merges with these asks deferred (owner, 2026-10-18).** The owner chose to land the stack
+with the rest of #472 as follow-ups, not to build more before merge: re-gathering candidates and
+republishing the DHT item when the OS reports a network change (needs a network-change port on
+both hosts); remembered devices keeping last-known direct addresses (a remembered device is met on
+the DHT only); bootstrapping the DHT from a LAN peer or a remembered device; a 15 s keepalive while
+a wait (not a link) is up; S/Kademlia disjoint lookup paths; the 2x-faster switch between two fast
+bearers (only Bluetooth to Wi-Fi switches); port mapping for the UDP socket; per-source rate limits
+on the add-on's own listener and on rejoins (the relay server has them); the Wi-Fi Direct soft-AP
+spike; AES-256-GCM, larger chunks and parallel streams for throughput; and a word code's failure
+naming its reason (it says one generic thing today). The birthday punch also departs from the
+issue: it starts with the meeting rather than after paths 1-4 have had 2 s, and punches for 10 s
+(about 97 %) rather than up to ~2,048 probes. Everything off by default stays off; the external
+review before anything is on by default still stands. [28 "Not built"](28-sharepoint.md#not-built)
+lists them.
 
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
