@@ -123,11 +123,23 @@ struct pack_state {
     for (const auto& [quality, folder] : {std::pair{MV_AI_QUALITY_FAST, &tier_.picture_fast},
                                           std::pair{MV_AI_QUALITY_HIGH, &tier_.picture_high}}) {
       if (folder->empty()) continue;
-      auto spec = infer::read_clip_spec(join(core_dir, *folder), join(fetched("ai"), *folder));
+      auto spec = picture_spec(*folder);
       if (!spec) continue;
       spec->quality = quality;
       towers[quality] = std::move(*spec);
     }
+  }
+
+  // A picture tower's model.json: in the Core pack, or in the ai-large piece
+  // (#482: Maxxed's tower, too large for the Core pack). Its upstream files
+  // come from the same piece's fetched folder.
+  result<infer::clip_spec> picture_spec(const std::string& folder) const {
+    std::error_code ec;
+    if (std::filesystem::exists(fs_path(join(join(core_dir, folder), "model.json")), ec)) {
+      return infer::read_clip_spec(join(core_dir, folder), join(fetched("ai"), folder));
+    }
+    MV_TRY(std::string large, h->piece_dir("ai-large"));
+    return infer::read_clip_spec(join(large, folder), join(fetched("ai-large"), folder));
   }
 
   void set_tier(const std::string& id) {
@@ -216,6 +228,10 @@ struct pack_state {
       if (std::none_of(pictures.begin(), pictures.end(), [&](const remote_file& g) { return g.path == f.path; })) {
         rest.push_back(f);
       }
+    }
+    if (auto large = h->piece_dir("ai-large")) {
+      auto more = needed("ai-large", *large, t, true);
+      pictures.insert(pictures.end(), more.begin(), more.end());
     }
     for (const char* piece : {"ai-audio", "ai-faces", "ai-docs"}) {
       if (auto dir = h->piece_dir(piece)) {
@@ -1055,7 +1071,7 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
       for (const auto& [quality, folder] : {std::pair{MV_AI_QUALITY_FAST, &t.picture_fast},
                                             std::pair{MV_AI_QUALITY_HIGH, &t.picture_high}}) {
         if (folder->empty()) continue;
-        auto spec = infer::read_clip_spec(join(p->core_dir, *folder), join(p->fetched("ai"), *folder));
+        auto spec = p->picture_spec(*folder);
         if (!spec || spec->spec_key() != spec_key || !files_present(*spec)) continue;
         spec->quality = quality;
         infer::session_options cpu;
@@ -1071,6 +1087,7 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     }
     return err(status::not_found);
   };
+  d.sounds_off_by_default = [p] { return p->profile().sounds_off_by_default; };
   d.clip_gaps = [p]() -> std::pair<std::uint32_t, std::uint32_t> {
     const tier_profile t = p->profile();
     return {t.min_gap_ms, t.max_gap_ms};

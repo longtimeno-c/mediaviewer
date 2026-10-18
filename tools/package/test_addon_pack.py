@@ -276,7 +276,8 @@ class AiPackTest(unittest.TestCase):
         mod = importlib.util.module_from_spec(gate)
         gate.loader.exec_module(mod)
         out = self.tmp / "staged-ai"
-        self.assertEqual(mod.main(["stage", "--piece", "ai", "--out", str(out), "--upstream", "remote"]), 0)
+        self.assertEqual(mod.main(["stage", "--piece", "ai", "--out", str(out), "--upstream", "remote",
+                                   "--skip-exports"]), 0)
         remote = json.loads((out / "remote.json").read_text())
         self.assertTrue(remote)
         self.assertTrue(all(r["url"].startswith("https://huggingface.co/") for r in remote))
@@ -286,6 +287,14 @@ class AiPackTest(unittest.TestCase):
         default = tiers["profiles"][tiers["default"]]
         self.assertIn("models/clip-tokenizer", default["folders"]["ai"])
         self.assertIn("models/whisper-tokenizer", default["folders"]["ai-audio"])
+        # The picker's summary: names by role, bytes fetched per piece, licences.
+        self.assertIn("CLIP ViT-L/14", default["summary"]["models"]["pictures"])
+        self.assertGreater(default["summary"]["download_bytes"]["ai"], 0)
+        self.assertTrue(set(default["summary"]["licences"]) <= mod.ALLOWED_LICENCES)
+        # Potato has no sound search, and its own picture tower.
+        potato = tiers["profiles"]["potato"]
+        self.assertNotIn("sounds", potato["summary"]["models"])
+        self.assertIn("models/tinyclip-8m", potato["folders"]["ai"])
 
     def test_model_list_passes_the_licence_gate(self):
         gate = importlib.util.spec_from_file_location("ai_models", Path(__file__).with_name("ai-models.py"))

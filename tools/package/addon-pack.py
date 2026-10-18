@@ -217,6 +217,21 @@ ADDONS = {
                    "Shiqi Yu), AdaFace IR-50 (MIT, CVLface; fp16 ONNX export). Face data never leaves\n"
                    "this computer.\n"),
     },
+    # #482: the Maxxed tier's picture tower (OpenCLIP ViT-H/14, our fp16 export,
+    # ~2 GB): too large to ride in the Core pack, and each file stays under
+    # GitHub's 2 GiB asset limit. Only Maxxed installs it.
+    "ai-large": {
+        "name": "AI Large",
+        "part_of": "ai",
+        "host_api": {"min": 2, "max": 2},
+        "files": {
+            "win-x64": {"include": ["models"]},
+            "macos": {"arch": "arm64", "include": ["models"]},
+        },
+        "licences": [],
+        "notice": ("Large pictures for MediaViewer's Local search (the Maxxed tier): OpenCLIP ViT-H/14\n"
+                   "trained on LAION-2B (MIT, LAION; fp16 ONNX export by MediaViewer). Runs on this computer only.\n"),
+    },
     "ai-cuda": {
         "name": "AI CUDA",
         "part_of": "ai",

@@ -6,6 +6,7 @@
 // names no model itself, so a different tower is a manifest change.
 //
 // A folder is relative to its role's piece: pictures in the Core pack (`ai`),
+// or `ai-large` for a tower too large to ride in it (Maxxed's ViT-H/14);
 // speech and sounds in `ai-audio`, faces in `ai-faces`, documents in `ai-docs`.
 // Pictures and speech have a high and a fast slot (mv_ai_quality 2 and 1);
 // either may be empty (a tier with one tower), never both.

@@ -248,6 +248,8 @@ struct engine_deps {
   std::function<result<loaded_clip>(const std::string& spec_key)> open_clip_spec;
   // The tier's clip sampling gaps (min, max) in ms; 0 = the engine's own.
   std::function<std::pair<std::uint32_t, std::uint32_t>()> clip_gaps;
+  // The tier installs sound search but leaves it off until asked (Intel).
+  std::function<bool()> sounds_off_by_default;
   // The local check (machine.h) as JSON, with the tier it recommends; null
   // uses machine_json() of this machine. The tests fake it.
   std::function<std::string()> machine;
@@ -987,6 +989,7 @@ class engine {
   fetch_progress dl_progress_;  // under dl_m_
   std::atomic<bool> models_waiting_{false};  // the towers' files are still to come
   std::atomic<bool> kick_{false};            // set_setting: kick the downloader once unlocked
+  std::atomic<bool> quiet_sounds_{false};    // the tier's sounds_off_by_default (control thread)
   mutable std::mutex machine_m_;
   std::string machine_json_;  // the local check (machine.h), made once on the control thread
   mutable std::mutex fetch_m_;

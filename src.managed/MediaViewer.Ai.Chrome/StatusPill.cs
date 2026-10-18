@@ -234,7 +234,7 @@ internal sealed class StatusPill
     public void Show(in MvAiStatus s)
     {
         _text.Text = Look.StatusLine(s);
-        bool idle = s.State == MvAiState.Idle;
+        bool idle = s.State == MvAiState.Idle && !Look.Fetching(s);  // #482: a download is work in hand
         _ring.Root.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
         _done.Visibility = idle ? Visibility.Visible : Visibility.Collapsed;
         _ring.Set(idle ? -1 : Look.Progress(s), !idle && Look.Busy(s) && _look.Motion);
@@ -332,6 +332,8 @@ internal sealed class StatusPill
             notes.Add($"Upgrading search quality: {n(s.MigrateDone)} of {n(s.MigrateTotal)}. Searches use the current index until it finishes");
         }
         if ((s.Flags & MvAiStatus.FlagIndexFull) != 0) notes.Add("Index is full — raise the cap or remove a folder");
+        // #482: while the old tier indexes, the line names that; the download is said here.
+        if (s.State == MvAiState.Indexing && Look.FetchLine(s) is string fetch) notes.Add(fetch);
         if (!_inSettings && Look.CloudWait(s) is string wait) notes.Add(wait.TrimEnd('.'));
         return string.Join(" · ", notes);
     }

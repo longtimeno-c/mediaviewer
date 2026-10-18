@@ -1074,7 +1074,41 @@ about 2.93 GB, so nothing already installed grows and nothing new is downloaded.
 `docs/plans/document-search.md`, including multilingual-e5-small, which did not fit in 3 GB, or
 one more vision or speech piece of that size. A piece that would pass 5 GB is still refused
 before download. Enhance stays its own family. Its 5 GB figure is a per-weights-file cap, not
-this ceiling.
+this ceiling. Retired on 2026-10-18 (next entry).
+
+**Models come from Hugging Face; the 5 GB ceiling is retired (2026-10-18, owner, #482).**
+Supersedes the 2026-10-13 row's "nothing new is downloaded" and its ceiling. The `ai` pieces
+published on GitHub carry code, the signed model list and our own exports only (AdaFace, the
+TinyCLIP and ViT-H/14 towers). Every upstream model file is listed in the piece's Ed25519-signed
+manifest (`remote`: URL, size, SHA-256, licence) and fetched by the add-on from Hugging Face at
+its pinned revision, a plain GET with no token, identifier, query or cookies. A file that does
+not match is deleted and fetched again, never loaded. When Hugging Face cannot be reached the
+download waits and resumes by itself from the last verified byte, including after a restart; a
+404 on a pinned revision is reported as gone (it needs a new pin in an app update). There is no
+mirror of our own and no offline path. Hugging Face sees an IP address and which public files
+were fetched, as GitHub does for the add-on; nothing about the user's media. With the models out
+of the archives, the ceiling has nothing to bound: `family_ceiling` returns none, `addon-pack.py
+ceiling` has no `ai` limit, and `ai-models.py check` no longer sums sizes. The picker still shows
+each tier's download and disk size. `ai-models.py check` stays the licence gate: pointing at
+research-only weights is no better than shipping them.
+
+**The first-party AI add-on may use the network to fetch its models (2026-10-18, #482).** Through
+its own transport (`fetch_mac.mm`: NSURLSession, ephemeral; `fetch_win.cpp`: WinHTTP, cookies
+off), to `https://huggingface.co/` URLs that its signed manifest lists, and nothing else. The
+"no network, ever" rule of [25](25-open-addons.md) is for third-party code and is unchanged.
+
+**Model tiers (2026-10-18, #482).** Four tiers (Maxxed, Default, Intel, Potato), each a profile
+in `ai-models.json` that names a model per role; the add-on names no model in code. Nothing
+downloads until the user picks one in the add-on's picker, which recommends a tier from a local
+check (cores, memory, accelerator) that is never sent anywhere. An index made before tiers keeps
+Default without asking. A change of tier re-indexes while the old index answers. Candidates:
+Maxxed's pictures are OpenCLIP ViT-H/14 (CLIP BPE, so no new tokenizer; SigLIP 2 waits for a
+SentencePiece tokenizer); its speech is Whisper large-v3-turbo; its documents stay
+all-MiniLM-L6-v2, since multilingual-e5-small already missed the R@10 target in the #354 D3
+spike; its faces stay AdaFace IR-50, since IR-101's gain on LFW (99.90 % vs 99.81 % TAR at 24 px)
+does not pay for twice the cost without a real-library gain. Potato is TinyCLIP ViT-8M/16,
+Whisper tiny and SFace. Each tower's thresholds come from `tools/ai-eval/calibrate.py`, and a
+tower under the PR 20 bar is swapped, not waved through (17 "Model tiers").
 
 **Towers and pieces (2026-09-26).** CLIP ViT-B/32 and ViT-L/14 both ship (L/14: +6 points R@1 but
 1.9 img/s on CPU); Auto picks by backend. int8 stored vectors (≤ 0.5 points), not int8 weights.

@@ -44,12 +44,45 @@ tower's thresholds, generic prompts and preprocessing live in its `model.json`
 Changing quality migrates: the old index answers until the new one completes, and a query
 never compares vectors from two towers.
 
-**Which model fills each role** (the picture tower for each quality, the Whisper models, CLAP,
-the face models and the documents model) comes from a **tier profile**: the pack's
-`models/tiers.json`, written from the `tiers` block of `ai-models.json` (#482,
-[model-tiers plan](../plans/model-tiers.md)). The add-on's code names no model folder, and
-a tower answers for the quality slot the profile gives it. Only the Default tier exists, and it
-names the folders above. A pack staged without `tiers.json` opens the same folders.
+### Model tiers (#482)
+
+**Which model fills each role** (the picture tower for each quality slot, the Whisper models,
+CLAP, the face models and the documents model) comes from a **tier profile**: the pack's
+`models/tiers.json`, written from the `tiers` block of `ai-models.json`
+([model-tiers plan](../plans/model-tiers.md)). The add-on's code names no model folder; a tower
+answers for the quality slot the profile gives it. A pack staged without `tiers.json` opens
+today's Default folders.
+
+| | Maxxed | Default | Intel | Potato |
+|---|---|---|---|---|
+| Pictures (high / fast) | OpenCLIP ViT-H/14 / B/32 | L/14 / B/32 | B/32 | TinyCLIP ViT-8M/16 |
+| Speech (high / fast) | Whisper large-v3-turbo / small | small / base | base | tiny |
+| Sounds | CLAP | CLAP | CLAP, off by default | none |
+| People | YuNet + AdaFace IR-50 | YuNet + AdaFace IR-50 | YuNet + AdaFace IR-50 | YuNet + SFace |
+| Documents | all-MiniLM-L6-v2 | all-MiniLM-L6-v2 | all-MiniLM-L6-v2 | all-MiniLM-L6-v2 |
+| Clip gaps (min / max) | 250 / 1000 ms | 500 / 2000 ms | 500 / 2000 ms | 1000 / 6000 ms |
+
+ViT-H/14 (~2 GB, our fp16 export) rides in its own piece, `ai-large`, which only Maxxed
+installs; TinyCLIP (our export, ~47 MB) rides in the Core pack. Both are exported by
+`tools/package/clip-export.py` from pinned checkpoints and verified by a golden output.
+
+- **The model contract** (`infer/models.h`, `audio_models.h`): a CLIP tower states
+  `tokenizer_kind` (`clip-bpe`), `score` (`cosine`, or `sigmoid`, still ranked by cosine),
+  named outputs and the Core ML dim names; Whisper states `n_mels` (80, or 128 for large-v3 /
+  turbo) and its special tokens. A kind this build lacks is unsupported, never guessed. A model
+  that fits is a manifest entry: with the contract in place, TinyCLIP, ViT-H/14, Whisper tiny
+  and turbo and SFace are all data.
+- **Choosing.** Nothing downloads until a tier is chosen (`MV_AI_STATUS_TIER_UNCHOSEN`; the
+  add-on's picker opens on install and from Settings → Local search → Models). The local check
+  (`machine.h`) recommends one: Potato on ≤ 2 cores or ≤ 8 GB, Intel on an x86_64 Mac or a PC
+  with no accelerator, Maxxed with an accelerator and ≥ 32 GB, else Default. It is shown in the
+  picker and never sent anywhere. An index made before tiers keeps Default without asking.
+- **Changing** tier fetches the new models, then re-indexes with the new towers while the old
+  index answers (the old tier's tower still opens by its spec key, `open_clip_spec`); once the
+  new one covers the folders the old vectors and the old tier's fetched files go.
+- **Thresholds** come from `tools/ai-eval/calibrate.py`: the PR 20 eval (COCO-1k R@10 ≥ 0.88,
+  labelled-query P@5 ≥ 0.8) and a quantile match against B/32's hand-set thresholds. Results are
+  in "Measurements".
 
 **Weights licence gate.** Every model file names its licence; `tools/package/ai-models.py check`
 refuses one outside the allow-list (a CC-BY-NC file fails the pack, tested). Licences in the
@@ -139,7 +172,8 @@ signed manifest, verify-before-load, per-user versioned folder, explicit updates
 
   | Piece | Contents | Size |
   |---|---|---|
-  | `ai` (Core) | `mv_ai`, ORT (CPU; Core ML on Mac), PDFium (a PDF's text, #354; ~6 MB, its parts' notices in `LICENSES/pdfium`), both CLIP towers, tokenizer, the chrome (`MediaViewer.Ai.Chrome` / `AI.bundle`) | ~1.19 GB installed |
+  | `ai` (Core) | `mv_ai`, ORT (CPU; Core ML on Mac), PDFium (a PDF's text, #354; ~6 MB, its parts' notices in `LICENSES/pdfium`), the chrome (`MediaViewer.Ai.Chrome` / `AI.bundle`), the TinyCLIP export; the CLIP towers and tokenizer are fetched | ~100 MB, plus 1.16 GB fetched (Default) |
+  | `ai-large` (Maxxed) | OpenCLIP ViT-H/14, our fp16 export | ~1.97 GB |
   | `ai-faces` (People) | YuNet detector, AdaFace IR-50 embedder (fp16) | ~87 MB model |
   | `ai-audio` (Sound) | CLAP `larger_clap_general`, Whisper base and small, tokenizers | ~1 GB |
   | `ai-docs` (Documents) | all-MiniLM-L6-v2 (fp32), its WordPiece vocab (#354 D3) | ~91 MB |
@@ -150,13 +184,18 @@ signed manifest, verify-before-load, per-user versioned folder, explicit updates
   queues a Core that is itself behind first, so no piece runs ahead of the engine it was built
   with. Remove deletes the files and offers to delete the index; `data/cache` (Core ML) is
   deleted even when the index is kept.
-- **5 GB installed ceiling** for the family (`family_ceiling`, `addon-pack.py ceiling`): every
-  supported combination must fit, and the store refuses an install that would exceed it. The
-  index and the thumbnail cache are user data and do not count. The pieces that ship today
-  reach ~2.93 GB in the heaviest combination, which leaves about 2.0 GB for a later piece.
-  Raised from 3 GB on 2026-10-13 ([12](12-decision-log.md)).
-- Downloaded on explicit opt-in, a plain GET of fixed release URLs with no identifier. The Mac
-  pack is Developer ID-signed and notarized and loads under library validation.
+- **Models from Hugging Face (#482).** The pieces on GitHub carry code, the signed model list
+  and our own exports only; each upstream model file is in the piece's signed manifest
+  (`remote`: URL, size, SHA-256, licence) and the add-on fetches the ones the chosen tier
+  needs into `data/fetched/<piece>/`, a plain GET of the pinned `resolve/<revision>/<file>`
+  URL (`fetch.h`). Resumable, verified (a mismatch is fetched again, never loaded), patient
+  (an outage waits and resumes by itself; a 404 is reported as gone). The picture tower comes
+  first, so search opens before speech, sounds, faces and documents arrive. Status:
+  `fetch_state`, `fetch_done_bytes` / `fetch_total_bytes`. No family ceiling since 2026-10-18
+  ([12](12-decision-log.md)); the picker shows each tier's download and disk size.
+- The add-on is downloaded on explicit opt-in, a plain GET of fixed release URLs with no
+  identifier. The Mac pack is Developer ID-signed and notarized and loads under library
+  validation.
 - **Location:** `%LocalAppData%\MediaViewer\addons\ai\<version>` on Windows and
   `~/Library/Application Support/MediaViewer/Add-ons/AI/<version>` on Mac; the index and caches
   are in that add-on's `data` folder.

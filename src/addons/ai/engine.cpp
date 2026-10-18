@@ -1269,6 +1269,7 @@ void engine::load_models() {
   if (!reloading) models_ready_ = false;
   if (!wait_viewer_quiet()) return;
   if (deps_.prepare) deps_.prepare();
+  quiet_sounds_ = deps_.sounds_off_by_default && deps_.sounds_off_by_default();
   if (!deps_.open_clip) {
     models_ready_ = false;
     models_failed_ = true;
@@ -3377,7 +3378,9 @@ std::uint32_t engine::default_media() const {
   }
   if (v != MV_AI_MEDIA_DEFAULT) return v;
   // Unset: pictures, and sound too once the ai-audio piece is installed
-  // (installing it is the choice to index what clips sound like).
+  // (installing it is the choice to index what clips sound like) unless the
+  // tier leaves sound off until asked (#482: Intel, where CLAP costs most).
+  if (quiet_sounds_) return MV_AI_MEDIA_PICTURES;
   std::lock_guard lock(pieces_m_);
   return pieces_.sound_ready ? MV_AI_MEDIA_BOTH : MV_AI_MEDIA_PICTURES;
 }

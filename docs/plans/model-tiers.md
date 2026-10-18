@@ -13,10 +13,20 @@ mean/std, tokenizer, context and thresholds, and `ai-models.py stage` writes the
 `src/addons/ai/pack.cpp` names the folders (`clip-b32`, `clip-l14`, `whisper-small`,
 `whisper-base`, `clap-general`, `faces`, `doc-text`), so a different tower is a code change.
 
-## Status
+## Status (2026-10-18)
 
-**T1 is built** (this branch): the tier profiles are data, and `pack.cpp` names no model. No
-behaviour changes. T2 onward are not started.
+T1 to T7 are built on one branch (#482); what they do is in
+[17](../design/17-local-ai-search.md) "Model tiers" and "The AI pack". Departures from the
+slices below:
+- **Pieces:** ViT-H/14 rides in a new piece, `ai-large`, which only Maxxed installs; the hosts
+  install the pieces the picker asks for through a new host hook.
+- **Candidates swapped before landing:** Maxxed documents stay all-MiniLM-L6-v2
+  (multilingual-e5-small already missed the R@10 target in the #354 D3 spike, and it needs a
+  SentencePiece tokenizer); Maxxed faces stay AdaFace IR-50 (IR-101's LFW gain does not pay for
+  twice the cost without a real-library gain); SigLIP 2 waits for a SentencePiece tokenizer.
+- **Calibration** is a quantile match against B/32's hand-set thresholds (`tools/ai-eval`).
+- **Not done here:** the per-tier measurement rows on Windows, and both present-loop gates
+  while indexing on every tier (T8); the PR says what was measured.
 
 ## The tiers (from #482)
 

@@ -48,6 +48,17 @@ public enum MvAiCloudFetch : uint
     RetryLater = 8,
 }
 
+/// <summary>Mirrors <c>mv_ai_fetch_state</c>: the model downloader (#482 T3), <see cref="MvAiStatus.FetchState"/>.</summary>
+public enum MvAiFetchState : uint
+{
+    Idle = 0,
+    Downloading = 1,
+    Waiting = 2,  // Hugging Face did not answer: retrying by itself (FetchRetrySeconds)
+    Gone = 3,     // a pinned file is gone (404): needs an app update
+    Failed = 4,   // a file never matched its SHA-256
+    Done = 5,
+}
+
 public enum MvAiState : uint
 {
     Idle = 0,

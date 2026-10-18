@@ -685,9 +685,15 @@ owed: [docs/design/17](design/17-local-ai-search.md); the Mac checklist is
 
 1. Stage the models (pinned revisions and SHA-256s):
    `python3 tools/package/ai-models.py stage --piece ai --out <staged>/ai` (and `ai-audio`,
-   `ai-faces`). Staging `ai` also writes `models/tiers.json`, the model tiers the add-on reads
-   (#482, [docs/plans/model-tiers.md](plans/model-tiers.md)). A pack staged before that has no
-   such file and opens the Default tier's folders.
+   `ai-faces`, `ai-large`). Staging `ai` also writes `models/tiers.json`, the model tiers the
+   add-on reads (#482, [docs/plans/model-tiers.md](plans/model-tiers.md)). A pack staged
+   before that has no such file and opens the Default tier's folders. The default,
+   `--upstream bundle`, stages every file (a sideloaded dev pack carries its models); releases
+   pass `--upstream remote`, which lists upstream files in `remote.json` for the add-on to
+   fetch from Hugging Face on install. Staging the TinyCLIP (`ai`), ViT-H/14 (`ai-large`) and
+   AdaFace (`ai-faces`) exports needs `requirements-export.txt` (torch, transformers); pass
+   `--skip-exports` to leave them out. A sideloaded pack starts with no tier chosen: pick one
+   in the picker, or write `{"tier":"default"}` to the add-on's `data/settings.json`.
 2. Configure with `-DMV_ADDON_DEV_PUBLIC_KEY=<your key's public half>` and build `mv_ai`,
    `mv_ai_chrome` (Mac) or the WinUI chrome, `mv_ai_tests` and `ai-bench`. On the Mac the AI
    targets exist on arm64 only.
@@ -1589,16 +1595,25 @@ There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
 
-### Local search model tiers, slice T1: tiers as data (#482, docs/plans/model-tiers.md, 2026-10-18)
+### Local search model tiers (#482, docs/plans/model-tiers.md, 2026-10-18)
 
-`tools/package/ai-models.json` has a `tiers` block. Each profile names a model folder per role
-(pictures high/fast, speech high/fast, sounds, faces, documents). `ai-models.py stage --piece ai`
-writes it to the Core pack's `models/tiers.json`, and `check` refuses a profile that names a
-folder outside its role's piece. `src/addons/ai/tiers.{h,cpp}` reads it, and `pack.cpp` names no
-model. Only **Default** is defined and nothing behaves differently: the same towers, the same
-spec keys, no re-index. Tests: `mv_ai_tests "[tiers]"` and `python3 -m unittest
-test_addon_pack -k tier` (in `tools/package`). Not built yet: the model contract, the
-Hugging Face downloader, the picker and the other tiers (T2–T8 in the plan).
+Four tiers (Maxxed, Default, Intel, Potato), each a profile in `tools/package/ai-models.json`
+naming a model per role; the add-on names no model ([17](design/17-local-ai-search.md) "Model
+tiers"). Upstream models are fetched from Hugging Face on install (`src/addons/ai/fetch.*`);
+the 5 GB ceiling is retired; the add-on's picker (Mac sheet, Windows window) recommends a tier
+from a local check. New tools: `tools/package/clip-export.py` (our TinyCLIP / ViT-H/14 exports,
+golden-checked) and `tools/ai-eval/calibrate.py` (the PR 20 eval and threshold calibration
+against B/32).
+
+Tests: `mv_ai_tests "[tiers],[contract],[fetch]"`, `mv_tests "[addon][manifest]"` (the
+`remote` list), `python3 -m unittest test_addon_pack` (remote staging, tier checks, no
+ceiling), the AIChrome Swift tests and the Windows chrome's C# compile. Calibration and eval:
+
+```bash
+python3 tools/ai-eval/calibrate.py --eval <coco-1k> --model <staged>/ai/models/tinyclip-8m --tokenizer <clip tokenizer.json> --reference <staged>/ai/models/clip-b32 --write tools/package/ai-models.json --piece ai --folder models/tinyclip-8m
+```
+
+Measured and not measured are in the PR and in 17 "Measurements".
 
 ### Windows search: the typed space, the resume notice, a result list from an empty window (#443, 2026-10-15)
 

@@ -55,9 +55,20 @@ ALLOWED_LICENCES = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "Zlib",
                     "GPL-3.0-or-later"}
 # The piece each role's model folders live in (src/addons/ai/tiers.h). Pictures
 # and speech have a high and a fast slot (mv_ai_quality 2 and 1).
-ROLES = {"pictures": "ai", "speech": "ai-audio", "sounds": "ai-audio", "faces": "ai-faces",
-         "documents": "ai-docs"}
+ROLES = {"pictures": ("ai", "ai-large"), "speech": ("ai-audio",), "sounds": ("ai-audio",), "faces": ("ai-faces",),
+         "documents": ("ai-docs",)}
+
+
+def piece_of(data: dict, role: str, folder: str):
+    """The piece of a role's that defines `folder` as a model, or None."""
+    for piece in ROLES[role]:
+        f = data["pieces"].get(piece, {}).get("folders", {}).get(folder)
+        if f is not None and "model" in f:
+            return piece
+    return None
 SLOTTED = {"pictures", "speech"}
+OPTIONAL = {"sounds"}  # a tier may have no sound search (Potato)
+EXPORT_TOOLS = {"face-export.py", "clip-export.py"}
 
 
 def sha256_file(path: Path) -> str:
@@ -77,13 +88,45 @@ def url_of(entry: dict) -> str:
     return f"https://huggingface.co/{entry['repo']}/resolve/{entry['revision']}/{entry['file']}"
 
 
+def tier_summary(data: dict, profile: dict, folders: dict) -> dict:
+    """What the picker shows for a tier: model names by role, licences, and the
+    bytes each piece fetches (upstream) and holds (with our exports)."""
+    names = {}
+    for role in ROLES:
+        value = profile.get(role)
+        picked = [f for f in (value.values() if isinstance(value, dict) else [value]) if f]
+        for folder in picked:
+            model = data["pieces"][piece_of(data, role, folder)]["folders"][folder]["model"]
+            name = model.get("name", folder)
+            if role == "faces":
+                name = "YuNet + " + name
+            names.setdefault(role, [])
+            if name not in names[role]:
+                names[role].append(name)
+    download, disk, licences = {}, {}, set()
+    for piece, list_ in folders.items():
+        for folder in list_:
+            for entry in data["pieces"][piece]["folders"][folder]["files"]:
+                ex = entry.get("export")
+                licences.add(entry["licence"])
+                disk[piece] = disk.get(piece, 0) + (ex["installed_size"] if ex else entry["size"])
+                if not ex:
+                    download[piece] = download.get(piece, 0) + entry["size"]
+    out = {"models": names, "licences": sorted(licences), "download_bytes": download, "disk_bytes": disk}
+    for key in ("coreml_cache_bytes", "photos_per_s"):
+        if key in profile:
+            out[key] = profile[key]
+    return out
+
+
 def tier_folders(data: dict, profile: dict) -> dict:
     """Piece -> the model folders a tier needs, tokenizer folders included."""
     out = {}
-    for role, piece in ROLES.items():
+    for role in ROLES:
         value = profile.get(role)
         folders = [f for f in (value.values() if isinstance(value, dict) else [value]) if f]
         for folder in folders:
+            piece = piece_of(data, role, folder)
             want = out.setdefault(piece, [])
             if folder not in want:
                 want.append(folder)
@@ -113,15 +156,25 @@ def fetch(entry: dict, cache: Path) -> Path:
 
 def export(entry: dict, src: Path, target: Path) -> None:
     ex = entry["export"]
-    if ex.get("tool") != "face-export.py":
-        raise ValueError(f"{entry['as']}: unknown export tool {ex.get('tool')}")
+    tool = ex.get("tool")
+    if tool not in EXPORT_TOOLS:
+        raise ValueError(f"{entry['as']}: unknown export tool {tool}")
     golden = " ".join(str(v) for v in ex["golden"])
-    cmd = [sys.executable, str(Path(__file__).with_name("face-export.py")), "--arch", ex["arch"],
-           "--weights", str(src), "--out", str(target), "--expect", golden]
-    if ex.get("fp16"):
-        cmd.append("--fp16")
+    cmd = [sys.executable, str(Path(__file__).with_name(tool)), "--weights", str(src), "--out", str(target),
+           "--expect", golden]
     import subprocess
-    subprocess.run(cmd, check=True)
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        if tool == "face-export.py":
+            cmd += ["--arch", ex["arch"]]
+        else:
+            # The checkpoint's config, pinned in ai-models.json with the weights.
+            config = Path(tmp) / "config.json"
+            config.write_text(json.dumps(ex["config"]), encoding="utf-8")
+            cmd += ["--config", str(config), "--tower", ex["tower"]]
+        if ex.get("fp16"):
+            cmd.append("--fp16")
+        subprocess.run(cmd, check=True)
 
 
 def tier_problems(data: dict) -> list:
@@ -137,9 +190,10 @@ def tier_problems(data: dict) -> list:
         if not isinstance(prof, dict) or not isinstance(prof.get("name"), str) or not prof["name"]:
             bad.append(f"tiers.{tier}: lacks a name")
             continue
-        for role, piece in ROLES.items():
-            want = data["pieces"].get(piece, {}).get("folders", {})
+        for role, pieces in ROLES.items():
             value = prof.get(role)
+            if value is None and role in OPTIONAL:
+                continue
             slots = value if role in SLOTTED else {"": value}
             if not isinstance(slots, dict) or not any(slots.values()):
                 bad.append(f"tiers.{tier}: no {role} model")
@@ -150,8 +204,8 @@ def tier_problems(data: dict) -> list:
                     bad.append(f"{where}: unknown slot")
                 elif folder is None:
                     continue
-                elif not isinstance(folder, str) or folder not in want or "model" not in want[folder]:
-                    bad.append(f"{where}: {folder!r} is not a model folder of the {piece} piece")
+                elif not isinstance(folder, str) or piece_of(data, role, folder) is None:
+                    bad.append(f"{where}: {folder!r} is not a model folder of the {' or '.join(pieces)} piece")
     return bad
 
 
@@ -168,6 +222,8 @@ def stage(args) -> int:
         dest = out / folder
         dest.mkdir(parents=True, exist_ok=True)
         for entry in f["files"]:
+            if "export" in entry and getattr(args, "skip_exports", False):
+                continue
             if args.upstream == "remote" and "export" not in entry:
                 remote.append({"url": url_of(entry), "path": f"{folder}/{entry['as']}", "size": entry["size"],
                                "sha256": entry["sha256"], "licence": entry["licence"]})
@@ -196,6 +252,7 @@ def stage(args) -> int:
         tiers = {k: v for k, v in data["tiers"].items() if k != "comment"}
         for tier, prof in tiers["profiles"].items():
             prof["folders"] = tier_folders(data, prof)
+            prof["summary"] = tier_summary(data, prof, prof["folders"])
         (out / "models").mkdir(parents=True, exist_ok=True)
         (out / "models" / "tiers.json").write_text(json.dumps(tiers, indent=1) + "\n", encoding="utf-8")
         licences["models/tiers.json"] = "GPL-3.0-or-later"
@@ -230,7 +287,9 @@ def check(_args) -> int:
                     if key not in entry:
                         bad.append(f"{piece}:{folder}/{entry.get('as', '?')} lacks {key}")
                 ex = entry.get("export")
-                if ex is not None and (ex.get("tool") != "face-export.py" or len(ex.get("golden", [])) != 17):
+                if ex is not None and (ex.get("tool") not in EXPORT_TOOLS or len(ex.get("golden", [])) != 17 or
+                                       (ex.get("tool") == "clip-export.py" and
+                                        (ex.get("tower") not in ("image", "text") or not ex.get("config")))):
                     bad.append(f"{piece}:{folder}/{entry.get('as', '?')} has an export without its golden check")
                 if len(entry.get("revision", "")) != 40 or len(entry.get("sha256", "")) != 64:
                     bad.append(f"{piece}:{folder}/{entry.get('as', '?')} is not pinned")
@@ -254,6 +313,8 @@ def main(argv=None) -> int:
     s.add_argument("--cache")
     s.add_argument("--upstream", choices=["bundle", "remote"], default="bundle",
                    help="remote: list upstream files for the add-on to fetch instead of staging them")
+    s.add_argument("--skip-exports", action="store_true",
+                   help="leave out the files we export ourselves (tests: no torch, no download)")
     sub.add_parser("check")
     args = ap.parse_args(argv)
     return stage(args) if args.cmd == "stage" else check(args)

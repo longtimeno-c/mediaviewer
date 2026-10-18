@@ -25,6 +25,9 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
     private Look? _look;
     private SearchWindow? _window;
     private ManagePanel? _panel;
+    private ModelPicker? _picker;
+    // #482: the picker opens by itself once a process, when no tier is chosen.
+    private static bool _pickerOffered;
     private FaceCrops? _crops;
     private DispatcherQueue? _queue;
     private DispatcherQueueTimer? _statusThrottle;
@@ -146,6 +149,8 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
     public void Shutdown()
     {
         _statusThrottle?.Stop();
+        _picker?.Close();
+        _picker = null;
         _window?.Dispose();
         _window = null;
         _panel?.Detach();
@@ -487,6 +492,42 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
         }
         if (!reported) _host.SetIndexingStatus(line, busy);
         StatusChanged?.Invoke();
+        // No model tier chosen yet (#482): nothing is fetched until one is, so
+        // the picker offers itself once, after this read, never over a reader.
+        if (!_pickerOffered && !ReadOnly && (_status.Flags & MvAiStatus.FlagTierUnchosen) != 0)
+        {
+            _pickerOffered = true;
+            _queue?.TryEnqueue(ShowModelPicker);
+        }
+    }
+
+    // ---- the model picker (#482) ---------------------------------------------------------
+
+    /// <summary>"Choose your Local search models": by itself once with no tier chosen,
+    /// and from Settings → Local search → Models. Nothing from a pack before tiers.</summary>
+    internal void ShowModelPicker()
+    {
+        if (_api is null || _host is null || ReadOnly) return;
+        if (_picker is not null)
+        {
+            _picker.Activate();
+            return;
+        }
+        if (ModelTiers.Read(_api) is not ModelTiers.Choice choice) return;
+        _picker = new ModelPicker(this, choice);
+        ModelPicker shown = _picker;
+        shown.Closed += (_, _) =>
+        {
+            if (_picker == shown) _picker = null;
+        };
+        shown.Present();
+    }
+
+    /// <summary>The picker saved a tier: Settings' Models row and the status follow.</summary>
+    internal void TierChosen()
+    {
+        _panel?.RefreshSettings();
+        ReadStatus();
     }
 
     // Its own method so that on a host whose Interop has no IAddonHost3, only
