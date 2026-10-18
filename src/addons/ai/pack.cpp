@@ -718,9 +718,9 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
   d.open_clip = [p](std::uint32_t quality, std::uint32_t compute) -> result<loaded_clip> {
     p->ensure();
     if (!p->rt) return err(status::unsupported_format);
-    const auto found = p->tower(quality);
-    if (!found) return err(status::unsupported_format);
-    const infer::clip_spec& spec = *found;
+    const auto tower = p->tower(quality);
+    if (!tower) return err(status::unsupported_format);
+    const infer::clip_spec& spec = *tower;
     // Still downloading (#482 T3): not_found, which the engine reports as
     // waiting for the files rather than as a pack without models.
     if (!files_present(spec)) return err(status::not_found);
