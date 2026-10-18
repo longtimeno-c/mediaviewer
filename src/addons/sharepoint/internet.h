@@ -84,7 +84,7 @@ class internet_receiver {
     bool dht_fast_kdf = false;
     bool force_words = false;
     // #472 relays: the advanced "Relay (your own server)", "<address or
-    // name>:<port>" (tools/sharepoint-relay). Set: each code also waits
+    // name>:<port>#<key>" (tools/sharepoint-relay prints it). Set: each code also waits
     // there under a fresh token the code carries, so a sender whose direct
     // tries fail meets this computer through it.
     std::string relay;
@@ -125,7 +125,7 @@ class internet_receiver {
   void notify();
   // #472 relays: waits at the relay server while the code does, handing on
   // each sender it is paired with (once that sender has spoken).
-  void relay_loop(net::endpoint at, std::array<std::uint8_t, 16> token, std::unique_ptr<link> first);
+  void relay_loop(net::endpoint at, std::array<std::uint8_t, 16> token, std::string key, std::unique_ptr<link> first);
 
   options opts_;
   link_fn on_link_;
@@ -152,6 +152,7 @@ class internet_receiver {
   std::thread meet_thread_;                                             // the run thread only
   std::atomic<bool> meet_stop_{false};
   std::thread relay_thread_;                                            // the run thread only
+  std::thread relay_setup_thread_;                                      // the run thread only
   std::atomic<bool> relay_stop_{false};
   std::thread thread_;
 };
@@ -187,6 +188,15 @@ class way_in {
 // "<address>:<port>", or "<name>:<port>" resolved (the relay server only:
 // the person typed it). nullopt: neither.
 [[nodiscard]] std::optional<net::endpoint> relay_endpoint(const std::string& text);
+// The relay field, "<address or name>:<port>#<key>", split (not resolved);
+// nullopt with `why` (the window's words) when it is not one.
+struct relay_server_field {
+  std::string at;   // "<address or name>:<port>"
+  std::string key;  // what only a waiter there proves (splice.h)
+};
+[[nodiscard]] std::optional<relay_server_field> relay_server_of(const std::string& text, std::string& why);
+// How long a code waits for its relay server to answer before it is shown without it.
+inline constexpr int kRelaySetupMs = 3000;
 
 // The retry ladder: 1, 2, 5, 10 s, then every 30 s.
 [[nodiscard]] int backoff_ms(int attempt) noexcept;

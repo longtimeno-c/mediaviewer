@@ -13,7 +13,7 @@
 // key; and from #472 PR 4, a remembered-devices record as the secret store
 // returns it (damaged, or written by another version); and from #472 PR 5,
 // the receiver's internet places as a sender reads them; and from #472's
-// relays, a relay server's rendezvous hello, and the own-device relay's
+// relays, a relay server's rendezvous hello, the relay field as typed, and the own-device relay's
 // request (as R reads it) and answer (as A reads it). The first byte picks
 // which. Whatever comes in, every call must
 // return, read nothing past the input and never hang: a link that runs out is
@@ -89,7 +89,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   const std::span<const std::uint8_t> in(data + 1, size - 1);
   const std::string_view text(reinterpret_cast<const char*>(in.data()), in.size());
   std::vector<std::uint8_t> out, payload;
-  switch (data[0] % 26) {
+  switch (data[0] % 27) {
     case 0:
       (void)sp::decode_beacon(in);
       break;
@@ -214,6 +214,12 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     case 25:
       (void)sp::relay::parse_answer(text);
       break;
+    case 26: {
+      // The relay field as typed (split only: nothing resolves here).
+      std::string why;
+      (void)sp::relay_server_of(std::string(text), why);
+      break;
+    }
     case 15: {
       // A sender with a code, answered by the input.
       auto l = std::make_shared<input_link>(in);

@@ -433,7 +433,7 @@ void internet(writer& w, const view& v, bool sending) {
   // #472 relays: the person's own relay server (tools/sharepoint-relay).
   w.begin_object().key("type").string("text_field").key("id").string("relay_server");
   w.key("label").string("Relay (your own server, advanced)").key("value").string(v.relay_server);
-  w.key("placeholder").string("address or name:port").end_object();
+  w.key("placeholder").string("address or name:port#key").end_object();
   // Send to a code.
   text(w, "send_code_title", "Send to a code", "heading");
   row(w, "send_code_row");
@@ -470,7 +470,7 @@ void internet(writer& w, const view& v, bool sending) {
     if (v.relay) {
       // #472 relays: which of them are this person's own (relay for each other).
       for (std::size_t i = 0; i < v.known.size(); ++i) {
-        const std::string id = "own" + std::to_string(i);
+        const std::string id = "own" + (i < v.known_ids.size() ? v.known_ids[i] : std::string());
         w.begin_object().key("type").string("toggle").key("id").string(id);
         w.key("label").string(v.known[i] + " is my computer");
         w.key("value").boolean(i < v.known_own.size() && v.known_own[i]).end_object();

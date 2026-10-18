@@ -3,7 +3,9 @@
 // mv-sharepoint-relay: a relay server of your own for Sharepoint (issue
 // #472, option 10; docs/design/28 "Relays"). Run it on a machine both ends
 // can reach (a VPS, a home server with a forwarded port), then type
-// "<its address or name>:<port>" in Sharepoint's "Relay (your own server)".
+// "<its address or name>:<port>#<key>" in Sharepoint's "Relay (your own
+// server)". Only a holder of the key can wait there, so it relays for your
+// codes and nobody else's; the key is never in a code.
 //
 // It pairs two TCP connections that present the same random token and
 // copies bytes between them (src/addons/sharepoint/splice.h). The two
@@ -11,8 +13,9 @@
 // holds a key and sees only ciphertext. It prints counts, never an address
 // or a token. No configuration file, no state on disk, no account.
 //
-//   mv-sharepoint-relay [--port N] [--max-pairs N] [--wait-s N] [--max-gb N]
-//                       [--rate-mbs N] [--idle-s N] [--loopback]
+//   mv-sharepoint-relay [--key KEY] [--port N] [--max-pairs N] [--wait-s N]
+//                       [--max-gb N] [--rate-mbs N] [--idle-s N] [--loopback]
+// Without --key (or MV_RELAY_KEY) it makes one and prints it.
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -43,8 +46,9 @@ bool number(const char* text, unsigned long long& out, unsigned long long max) {
 
 int usage() {
   std::fprintf(stderr,
-               "usage: mv-sharepoint-relay [--port N] [--max-pairs N] [--wait-s N] [--max-gb N] [--rate-mbs N] "
-               "[--idle-s N] [--loopback]\n"
+               "usage: mv-sharepoint-relay [--key KEY] [--port N] [--max-pairs N] [--wait-s N] [--max-gb N] "
+               "[--rate-mbs N] [--idle-s N] [--loopback]\n"
+               "  --key        the key Sharepoint proves (16+ characters; default MV_RELAY_KEY, else a new one)\n"
                "  --port       TCP port, IPv6 and IPv4 (default %u)\n"
                "  --max-pairs  transfers relayed at once (default 8)\n"
                "  --wait-s     how long one side waits for the other (default 600)\n"
@@ -70,7 +74,9 @@ int main(int argc, char** argv) {
     }
     if (!next) return usage();
     ++i;
-    if (std::strcmp(a, "--port") == 0 && number(next, v, 65535)) {
+    if (std::strcmp(a, "--key") == 0 && std::strlen(next) >= relay::kMinKeyChars) {
+      o.key = next;
+    } else if (std::strcmp(a, "--port") == 0 && number(next, v, 65535)) {
       o.port = static_cast<std::uint16_t>(v);
     } else if (std::strcmp(a, "--max-pairs") == 0 && number(next, v, 1024) && v > 0) {
       o.max_pairs = static_cast<int>(v);
@@ -86,6 +92,10 @@ int main(int argc, char** argv) {
       return usage();
     }
   }
+  if (o.key.empty()) {
+    const char* env = std::getenv("MV_RELAY_KEY");
+    o.key = env && std::strlen(env) >= relay::kMinKeyChars ? std::string(env) : relay::random_key();
+  }
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
   auto s = relay::server::start(o);
@@ -95,6 +105,9 @@ int main(int argc, char** argv) {
   }
   std::printf("mv-sharepoint-relay: listening on port %u (%s)\n", static_cast<unsigned>((*s)->port()),
               o.loopback_only ? "127.0.0.1 only" : "IPv6 and IPv4");
+  // The person's own key, on their own terminal: what they type after '#'.
+  std::printf("mv-sharepoint-relay: in Sharepoint type <this machine's address or name>:%u#%s\n",
+              static_cast<unsigned>((*s)->port()), o.key.c_str());
   std::fflush(stdout);
   while (!g_stop.load()) std::this_thread::sleep_for(std::chrono::milliseconds(200));
   const auto c = (*s)->snapshot();

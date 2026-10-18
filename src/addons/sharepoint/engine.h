@@ -152,6 +152,7 @@ struct view {
   bool relay = false;            // "Use my other computers to relay", off by default
   std::string relay_server;      // the advanced "Relay (your own server)"
   std::vector<bool> known_own;   // beside `known`: marked "This is my computer"
+  std::vector<std::string> known_ids;  // beside `known`: each key's fingerprint (relay::fingerprint), for its controls
   // The send goes (or the receive came) through a relay: the own computer's
   // name, or "your relay server". "" for a direct path.
   std::string out_relay, in_relay;
@@ -364,13 +365,15 @@ class engine {
   // answer; through each of the person's own computers in turn (met as a
   // remembered device), the link to the code's receiver, or nullptr. `via`:
   // the one it went through; `why`, when none did, what the last one said.
+  // `give_up`: the round was decided without it.
   [[nodiscard]] std::unique_ptr<link> reach_through_own(const std::vector<net::endpoint>& places, std::string& via,
-                                                        std::string& why);
+                                                        std::string& why, const std::function<bool()>& give_up);
+  [[nodiscard]] bool own_relay_possible() const;
   // The relay side: `first` came from `from` (a remembered device, its key
   // checked) as the first message of a link; a relay request is served here
   // (true), anything else is the receive's (false).
   bool maybe_relay(const std::shared_ptr<channel>& ch, const known::device& from, const message& first);
-  void set_own(std::size_t index, bool on);
+  void set_own(const std::string& fingerprint, bool on);
   void save_known();
   // A transfer ended well over protocol 2: what Remember would keep.
   void offer_remember(const channel& ch, const std::string& name);

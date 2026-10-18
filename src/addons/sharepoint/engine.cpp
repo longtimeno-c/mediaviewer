@@ -411,14 +411,20 @@ void engine::sync_internet() {
         }
         post_throttled();
       });
-  std::string relay_now;
+  std::string relay_now, forwarded_now;
+  bool dht_now = false;
   {
     std::lock_guard lock(m_);
     internet_ = in;
     relay_now = v_.relay_server;
+    forwarded_now = v_.forwarded;
+    dht_now = v_.dht;
   }
-  // #472 relays: the field changed while the receiver was made (it had no receiver to tell then).
+  // A setting changed while the receiver was made, when there was no
+  // receiver to tell: it hears it now.
   if (relay_now != o.relay) in->set_relay(std::move(relay_now));
+  if (forwarded_now != o.forwarded) in->set_forwarded(std::move(forwarded_now));
+  if (dht_now != o.dht) in->set_dht(dht_now);
 }
 
 // ---- presence -----------------------------------------------------------------------
@@ -627,9 +633,11 @@ void engine::accept_loop() {
 void engine::publish_known_locked() {
   v_.known.clear();
   v_.known_own.clear();
+  v_.known_ids.clear();
   for (const auto& d : devices_) {
     v_.known.push_back(d.name);
     v_.known_own.push_back(d.own);
+    v_.known_ids.push_back(relay::fingerprint(d.key));
   }
   if (last_pair_) {
     v_.remembered = std::any_of(devices_.begin(), devices_.end(),
@@ -1245,7 +1253,8 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
     return;
   }
   if (node.rfind("own", 0) == 0 && node.size() > 3 && kind == kChange && value && value->k == json::kind::boolean) {
-    set_own(static_cast<std::size_t>(std::strtoul(node.c_str() + 3, nullptr, 10)), value->b);
+    // Keyed by the device's key, not its place in the list: it grants relaying.
+    set_own(node.substr(3), value->b);
     return;
   }
   if (node == "forwarded" && (kind == kChange || kind == kSubmit) && text) {
@@ -1833,9 +1842,35 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std
       post();
       auto race = std::make_unique<link_race>();
       start_round(*race, code->places, connect);
-      // #472 relays: the receiver's relay server, a moment after the places.
+      // #472 relays: the receiver's relay server, a moment after the places;
+      // and, beside them, the person's own computers (a meeting over the DHT
+      // takes a while, so it runs in the race, not after it). Given up as
+      // soon as the round is decided.
       if (code->relay) relay::add_relay(*race, *code->relay, connect, stopped);
+      auto round_over = std::make_shared<std::atomic<bool>>(false);
+      struct own_try {
+        std::mutex m;
+        std::string via, why;
+      };
+      auto own = std::make_shared<own_try>();
+      const int own_at = static_cast<int>(code->places.size()) + (code->relay ? 1 : 0);
+      bool own_tried = false;
+      if (!code->places.empty() && own_relay_possible()) {
+        own_tried = true;
+        race->add(
+            [this, places = code->places, round_over, own]() -> result<std::unique_ptr<link>> {
+              std::string via, why;
+              auto through = reach_through_own(places, via, why, [round_over] { return round_over->load(); });
+              std::lock_guard g(own->m);
+              own->via = std::move(via);
+              own->why = std::move(why);
+              if (!through) return err(status::not_found);
+              return through;
+            },
+            relay::kRelayDelayMs);
+      }
       reached = race->wait(stopped);
+      round_over->store(true);
       const int won = race->winner_index();
       const auto outcomes = race->outcomes();
       races.push_back(std::move(race));
@@ -1845,18 +1880,17 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std
       }
       if (reached) {
         if (won >= 0 && static_cast<std::size_t>(won) < code->places.size()) internet_place = code->places[won];
-        if (reached->through()) relayed_by = "your relay server";
+        if (won == own_at && own_tried) {
+          std::lock_guard g(own->m);
+          relayed_by = own->via;
+        } else if (reached->through()) {
+          relayed_by = "your relay server";
+        }
         break;
       }
-      // #472 relays: through one of the person's own computers, if any is
-      // marked so and the toggle is on (it may reach what this one cannot).
-      // The first round that fails, then every fourth (a meeting can take a while).
-      if (!code->places.empty() && (attempt == 1 || attempt % 4 == 0)) {
-        if (auto through = reach_through_own(code->places, relayed_by, relay_why)) {
-          reached = std::move(through);
-          break;
-        }
-        if (stopped()) return finish("Cancelled. Nothing was sent.");
+      if (own_tried) {
+        std::lock_guard g(own->m);
+        relay_why = own->why;
       }
       const auto mine = net::local_addresses();
       const bool here_v6 =
@@ -2305,8 +2339,10 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
   // to relay (it sends its offer at once otherwise: nothing to confirm).
   std::optional<message> first;
   if (from_known) {
+    // It sends its offer (or the request) as soon as the channel is open:
+    // nothing waits on a person there. kSilenceMs is a dead link's limit.
     message m;
-    if (auto r = ch->receive(m, kConnectMs); !r) {
+    if (auto r = ch->receive(m, kSilenceMs); !r) {
       ch->shutdown();
       return end_transfer();
     }

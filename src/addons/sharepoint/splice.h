@@ -9,14 +9,21 @@
 // it holds no key of theirs and cannot read or change what they say; at most
 // it can drop the link, which either end then sees as a dropped link.
 //
-// The rendezvous: each side opens a TCP connection to the relay and says
-// kHelloBytes: "MVRL", the version, three zero bytes and a random 16-byte
-// token. The receiver's token is in the code it shows (invite.h), sealed
-// under the code's secret, so only someone with the code learns it. Two
-// connections with the same token are paired: each gets kPaired, and from
-// then on every byte one sends reaches the other. A third with that token is
-// closed; so is one that says anything else, or nothing within kHelloMs, or
-// sends before it is paired. An unpaired one waits at most `wait_ms`.
+// The rendezvous. The server has a key of its own (its person types it in
+// "Relay (your own server)" with the address); only a holder of it can wait
+// there, so the server relays for its person's codes and nobody else's.
+//   - The waiting side (the receiver of a code) says "MVRL", the version,
+//     kWaiter, two zero bytes, a random 16-byte token, and a keyed BLAKE2b of
+//     the token under the server's key. The token is in the code it shows
+//     (invite.h), sealed under the code's secret; the key never is.
+//   - The sending side says the same with kSender and the token, no proof:
+//     it can only ever be paired with a waiter that proved the key.
+// A sender whose token has no waiter is closed at once (senders never wait).
+// A waiter with the token of one already waiting replaces it (a receiver
+// re-registers every kReregisterMs, ahead of NATs that drop an idle TCP
+// connection). Paired, each side gets kPaired, and from then on every byte
+// one sends reaches the other. Anything that is not a hello, nothing within
+// kHelloMs, or a byte before the pair, is closed. A waiter waits `wait_ms`.
 //
 // The token is not the code's secret and says nothing about it: the relay
 // learns that two connections wanted each other, their addresses, the time
@@ -34,6 +41,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -44,20 +52,40 @@ namespace mv::sharepoint::relay {
 
 inline constexpr std::size_t kTokenBytes = 16;
 using token = std::array<std::uint8_t, kTokenBytes>;
-inline constexpr std::uint8_t kVersion = 1;
-inline constexpr std::size_t kHelloBytes = 4 + 1 + 3 + kTokenBytes;
+inline constexpr std::size_t kProofBytes = 32;
+using proof = std::array<std::uint8_t, kProofBytes>;
+inline constexpr std::uint8_t kVersion = 2;
+inline constexpr std::uint8_t kSender = 0, kWaiter = 1;
+// A sender's hello; a waiter's adds kProofBytes.
+inline constexpr std::size_t kHelloBytes = 4 + 1 + 1 + 2 + kTokenBytes;
+inline constexpr std::size_t kWaiterHelloBytes = kHelloBytes + kProofBytes;
 inline constexpr std::uint8_t kPaired = 'P';
-// A connection to a relay server says its token within this.
+// A connection to a relay server says its hello within this.
 inline constexpr int kHelloMs = 5000;
-// The sender's wait to be paired: the receiver is already waiting there.
-inline constexpr int kPairWaitMs = 10000;
+// The sender's wait for kPaired: the receiver is already waiting there, so
+// the answer is at once (or a close).
+inline constexpr int kPairWaitMs = 5000;
+// A waiting receiver registers again this often, under the same token.
+inline constexpr int kReregisterMs = 60000;
 // tools/sharepoint-relay's port unless told another.
 inline constexpr std::uint16_t kDefaultPort = 47614;
+// A server key, as typed after '#', at least this long.
+inline constexpr std::size_t kMinKeyChars = 16;
 
 [[nodiscard]] token random_token();
-[[nodiscard]] std::array<std::uint8_t, kHelloBytes> hello_bytes(const token& t);
-// The token, if `bytes` is a whole hello of this version.
-[[nodiscard]] std::optional<token> parse_hello(std::span<const std::uint8_t> bytes) noexcept;
+// A fresh server key: 26 characters of Crockford base32 (130 bits).
+[[nodiscard]] std::string random_key();
+// The keyed BLAKE2b of `t` under the server key `key` (its text).
+[[nodiscard]] proof prove(const std::string& key, const token& t);
+[[nodiscard]] std::array<std::uint8_t, kHelloBytes> sender_hello(const token& t);
+[[nodiscard]] std::array<std::uint8_t, kWaiterHelloBytes> waiter_hello(const token& t, const std::string& key);
+struct hello {
+  std::uint8_t role = kSender;
+  token t{};
+  proof p{};  // a waiter's
+};
+// The first kHelloBytes: the role and token, if a hello of this version.
+[[nodiscard]] std::optional<hello> parse_hello(std::span<const std::uint8_t> head) noexcept;
 
 // What a splice allows, each way.
 struct limits {
@@ -67,6 +95,9 @@ struct limits {
   // The tests: every byte as it passes, each way (two threads call it).
   std::function<void(bool a_to_b, std::span<const std::uint8_t>)> tap;
 };
+// A rate cap's bucket holds at most this long of bytes (an idle pair may
+// burst only that much), and never less than one buffer.
+inline constexpr double kBurstSeconds = 0.25;
 enum class ended : std::uint8_t { closed, capped, idle, stopped, failed };
 struct splice_result {
   std::uint64_t a_to_b = 0, b_to_a = 0;
@@ -74,17 +105,19 @@ struct splice_result {
 };
 // Copies both ways (this thread and one more) until a side closes or fails,
 // a cap or the idle limit is reached, or `stopped()`; then both links are
-// shut down. Holds no lock across I/O.
-[[nodiscard]] splice_result splice(link& a, link& b, const limits& lim, const std::function<bool()>& stopped);
+// shut down. Holds no lock across I/O. Never throws (no thread: failed).
+[[nodiscard]] splice_result splice(link& a, link& b, const limits& lim, const std::function<bool()>& stopped) noexcept;
 
-// A relay server's client: says `t` on `l` and waits up to `wait_ms` (or
-// `stopped()`) to be paired. The link then carries the other side's bytes.
-// status::timeout unpaired, ::io when the server closed it (a token in use).
+// A relay server's sender: says `t` on `l` and waits up to `wait_ms` for
+// kPaired. status::io when the server closed it (no waiter for the token).
 [[nodiscard]] result<std::unique_ptr<link>> join(std::unique_ptr<link> l, const token& t, int wait_ms,
                                                  const std::function<bool()>& stopped);
-// join's second half, after the hello was written on `l`.
-[[nodiscard]] result<std::unique_ptr<link>> await_pair(std::unique_ptr<link> l, int wait_ms,
-                                                       const std::function<bool()>& stopped);
+// A waiter: the hello, with the proof of `key`.
+[[nodiscard]] expected register_waiter(link& l, const token& t, const std::string& key);
+// Waits up to `wait_ms` for kPaired on a registered waiter: ok when paired,
+// status::timeout (still waiting: the link stays as it is), else the server
+// closed it (replaced, refused, or gone).
+[[nodiscard]] expected wait_paired(link& l, int wait_ms, const std::function<bool()>& stopped);
 
 // A link through a relay (through() says so, for the window), whose first
 // bytes may already have been read: they come first.
@@ -108,18 +141,23 @@ class relayed_link final : public link {
 // sender's hello), then gives the link with them still to read. A receiver
 // hands a link on only then: a sender that paired but lost its race to a
 // direct place closes without a byte, and is not a sender at all.
-// status::io when it closed first (a sender that lost its race).
+// status::io when it closed first.
 [[nodiscard]] result<std::unique_ptr<link>> first_bytes(std::unique_ptr<link> l, int wait_ms,
                                                         const std::function<bool()>& stopped, const char* through);
 
 // The rendezvous, as tools/sharepoint-relay runs it (and the tests, in
-// process). Its own threads: an accept loop, one per connection waiting to
-// be paired (at most max_waiting) and one pair of copiers per splice (at most
-// max_pairs). Destroying it closes every connection and joins every thread.
+// process). Its own threads: an accept loop, one per connection reading its
+// hello (at most kMaxHandshakes at once, kPerSource from one address), one
+// per waiter (at most max_waiting, kPerSource from one address) which runs
+// its splice once paired (at most max_pairs). Destroying it closes every
+// connection and joins every thread.
 class server {
  public:
+  static constexpr int kMaxHandshakes = 16;
+  static constexpr int kPerSource = 4;
   struct options {
-    std::uint16_t port = kDefaultPort;  // 0: the OS picks (the tests)
+    std::string key;  // required: the waiters' proof (at least kMinKeyChars)
+    std::uint16_t port = kDefaultPort;  // ignored with loopback_only: the OS picks
     bool loopback_only = false;
     int max_pairs = 8;
     int max_waiting = 64;
@@ -141,7 +179,8 @@ class server {
   struct waiter;
   explicit server(options o) : opts_(std::move(o)) {}
   void accept_loop();
-  void handle(std::shared_ptr<link> l);
+  void handle(std::shared_ptr<link> l, const net::address& from);
+  void serve_waiter(std::shared_ptr<link> l, const token& t, const net::address& from);
   void reap_locked();
 
   options opts_;
@@ -151,6 +190,9 @@ class server {
   mutable std::mutex m_;
   std::condition_variable cv_;
   std::map<token, std::shared_ptr<waiter>> waiting_;  // under m_
+  std::map<net::address, int> handshaking_from_;      // under m_
+  std::map<net::address, int> waiting_from_;          // under m_
+  int handshaking_ = 0;                               // under m_
   struct worker {
     std::thread t;
     std::shared_ptr<std::atomic<bool>> done;

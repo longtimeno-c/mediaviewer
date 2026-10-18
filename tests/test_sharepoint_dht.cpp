@@ -672,7 +672,9 @@ void send_with_words(word_client& ann, word_client& bea, const fs::path& f) {
   }, 20));
   ann.eng.on_event("send_code", 2, "\"" + words + "\"");
   ann.eng.on_event("send_to_code", 1, "");
-  REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::naming; }, 30));
+  const bool named = eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::naming; }, 30);
+  INFO("out " << static_cast<int>(ann.eng.snapshot().out) << ": " << ann.eng.snapshot().out_note);
+  REQUIRE(named);
   ann.eng.on_event("out_confirm", 1, "");
   REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
   bea.eng.on_event("accept", 1, "");
@@ -890,7 +892,7 @@ TEST_CASE("sharepoint relay: a send goes through another of the person's own com
   rob.eng.on_event("remember", 2, "true");
   for (word_client* c : {&ann, &rob}) {
     c->eng.on_event("relay", 2, "true");
-    c->eng.on_event("own0", 2, "true");
+    c->eng.on_event("own" + c->eng.snapshot().known_ids.at(0), 2, "true");
   }
   CHECK(ann.eng.snapshot().known_own == std::vector<bool>{true});
   CHECK(sp::build_tree(ann.eng.snapshot()).find("Rob is my computer") != std::string::npos);
@@ -946,7 +948,7 @@ TEST_CASE("sharepoint relay: a computer not marked as the person's own there doe
   ann.eng.on_event("remember", 2, "true");
   rob.eng.on_event("remember", 2, "true");
   ann.eng.on_event("relay", 2, "true");
-  ann.eng.on_event("own0", 2, "true");
+  ann.eng.on_event("own" + ann.eng.snapshot().known_ids.at(0), 2, "true");
   rob.eng.on_event("relay", 2, "true");  // but Ann is not marked as Rob's person's own there
   word_client bea(dir / "bea_received", "Bea", s, {}, direct_codes);
   const std::string code = direct_code(bea);

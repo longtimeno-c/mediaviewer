@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/sharepoint/relay.h"
 
+#include <sodium.h>
+
 #include <algorithm>
 #include <cstring>
 
@@ -14,9 +16,23 @@ namespace mv::sharepoint::relay {
 
 namespace {
 
-constexpr const char* kWhy[] = {"ok", "off", "busy", "unreachable", "refused"};
+constexpr const char* kWhy[] = {"ok", "off", "unreachable", "refused"};
 
 }  // namespace
+
+std::string fingerprint(const std::array<std::uint8_t, 32>& key) {
+  std::uint8_t h[8];
+  static constexpr char kContext[] = "MediaViewer Sharepoint device id";
+  crypto_generichash(h, sizeof h, key.data(), key.size(), reinterpret_cast<const std::uint8_t*>(kContext),
+                     sizeof kContext - 1);
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  for (const std::uint8_t b : h) {
+    out.push_back(kHex[b >> 4]);
+    out.push_back(kHex[b & 15]);
+  }
+  return out;
+}
 
 const char* answer_name(answer a) noexcept {
   const auto i = static_cast<std::size_t>(a);
@@ -60,9 +76,13 @@ std::optional<answer> parse_answer(std::string_view text) {
   return answer::refused;  // a reason this build does not know: still no
 }
 
-bool may_reach(const net::endpoint& to, bool allow_loopback) noexcept {
+bool may_reach(const net::endpoint& to, bool allow_loopback, std::span<const net::address> own) noexcept {
   const auto ip = net::parse_address(to.address);
   if (!ip || to.port == 0) return false;
+  for (const auto& mine : own) {
+    if (mine.v6 != ip->v6) continue;
+    if (ip->v6 ? std::memcmp(mine.bytes.data(), ip->bytes.data(), 8) == 0 : mine == *ip) return false;
+  }
   if (net::is_public(*ip)) return true;
   if (!allow_loopback) return false;
   static constexpr std::uint8_t kLoop6[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
@@ -134,7 +154,7 @@ result<std::unique_ptr<link>> open_through(std::shared_ptr<channel> ch, const st
   const auto a = m.type == msg::relay_answer ? parse_answer(m.text()) : std::nullopt;
   if (!a) return err(status::unsupported_format);
   said = *a;
-  if (*a != answer::ok) return err(*a == answer::busy ? status::busy : status::not_found);
+  if (*a != answer::ok) return err(status::not_found);
   return std::unique_ptr<link>(std::make_unique<channel_link>(std::move(ch), std::move(keep), "relay"));
 }
 
@@ -153,8 +173,9 @@ served serve(const std::shared_ptr<channel>& ch, const message& request, bool al
   }
   std::vector<net::endpoint> to;
   if (request.type == msg::relay) {
+    const std::vector<net::address> own = o.own ? *o.own : net::local_addresses();
     for (const auto& p : parse_request(request.text())) {
-      if (may_reach(p, o.allow_loopback)) to.push_back(p);
+      if (may_reach(p, o.allow_loopback, own)) to.push_back(p);
     }
   }
   if (to.empty()) {

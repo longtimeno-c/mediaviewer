@@ -38,8 +38,10 @@ would take about an hour.
    Tor's SOCKS port (a full circuit to its own service);
 4. the throughput of `--mb` MB sent through the onion to a local sink.
 
-It refuses to run without `--live-tor`, writes nothing outside a temporary data directory (removed
-after), and prints one JSON line. It drives C tor only; Arti is left out until its onion services
+It refuses to run without `--live-tor`, binds tor's control and SOCKS ports to 127.0.0.1 with
+cookie authentication, gives bootstrap `--bootstrap-timeout` seconds (300), drains tor's log to the
+end, writes nothing outside a temporary data directory (removed after), and prints one JSON line
+per run. It drives C tor only; Arti is left out until its onion services
 are no longer experimental, and the plan says so.
 
 ```bash

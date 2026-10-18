@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -36,6 +37,10 @@
 
 namespace mv::sharepoint::relay {
 
+// A device key's short name for the window's controls: 16 hex digits of a
+// hash of it (never the key itself).
+[[nodiscard]] std::string fingerprint(const std::array<std::uint8_t, 32>& key);
+
 // relay_data's bytes, at most, per message.
 inline constexpr std::size_t kDataChunk = 64 * 1024;
 // A waits this long for R's answer: R races B's places first.
@@ -46,7 +51,6 @@ inline constexpr std::uint64_t kOwnRelayMaxBytes = 256ull << 30;
 enum class answer : std::uint8_t {
   ok,
   off,          // R does not relay (its toggle is off, or A is not marked as the person's own there)
-  busy,         // R is in a transfer or another relay
   unreachable,  // nothing at B's places answered R either
   refused,      // no place R may connect to (none public), or a request it could not read
 };
@@ -56,9 +60,13 @@ enum class answer : std::uint8_t {
 [[nodiscard]] std::vector<net::endpoint> parse_request(std::string_view json);
 [[nodiscard]] std::string answer_json(answer a);
 [[nodiscard]] std::optional<answer> parse_answer(std::string_view json);
-// R connects onward only to a public address (net::is_public) with a port;
-// `allow_loopback`: and loopback (the tests).
-[[nodiscard]] bool may_reach(const net::endpoint& to, bool allow_loopback) noexcept;
+// R connects onward only to a public address (net::is_public) with a port,
+// and never to one of its own (`own`: net::local_addresses()), nor into an
+// IPv6 /64 it has an address in. `allow_loopback`: and loopback (the tests).
+// (R's own public IPv4, reached through its router, is not known here; what
+// its router forwards there is open to the whole internet anyway.)
+[[nodiscard]] bool may_reach(const net::endpoint& to, bool allow_loopback,
+                             std::span<const net::address> own = {}) noexcept;
 
 // ---- a relay server (option 10), the sender's side ----------------------------------
 // A code's relay place joins its round this much after the direct places,
@@ -105,6 +113,8 @@ class channel_link final : public link {
 // `allowed`: R's toggle is on and A is marked as the person's own here.
 struct serve_options {
   bool allow_loopback = false;
+  // R's own addresses (net::local_addresses() when empty and not the tests').
+  std::optional<std::vector<net::address>> own;
   connect_fn connect;  // net::connect when empty
   limits lim;
   std::function<bool()> stopped;

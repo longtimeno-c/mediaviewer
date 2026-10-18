@@ -77,22 +77,32 @@ def socks_connect(socks_port, host, port, timeout=120):
     return s
 
 
-def run_once(tor, mb):
+def run_once(tor, mb, bootstrap_timeout):
     data = tempfile.mkdtemp(prefix="mv-tor-spike-")
     ctl, socks = free_port(), free_port()
     t0 = time.monotonic()
-    p = subprocess.Popen([tor, "--DataDirectory", data, "--ControlPort", str(ctl), "--SocksPort", str(socks),
-                          "--CookieAuthentication", "0", "--Log", "notice stdout"],
+    cookie = os.path.join(data, "control_auth_cookie")
+    # Cookie authentication: only this user can read the cookie, so nothing
+    # else on the machine can drive this tor's control port.
+    p = subprocess.Popen([tor, "--DataDirectory", data, "--ControlPort", "127.0.0.1:%d" % ctl,
+                          "--SocksPort", "127.0.0.1:%d" % socks, "--CookieAuthentication", "1",
+                          "--CookieAuthFile", cookie, "--Log", "notice stdout"],
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     result = {"case": "tor_spike"}
-    try:
-        boot = None
+    booted = threading.Event()
+
+    def read_log():
+        # Drained to the end, so tor never blocks on a full pipe.
         for line in p.stdout:
             if "Bootstrapped 100%" in line:
-                boot = time.monotonic() - t0
-                break
-        if boot is None:
-            raise OSError("tor did not bootstrap")
+                booted.set()
+
+    reader = threading.Thread(target=read_log, daemon=True)
+    reader.start()
+    try:
+        if not booted.wait(bootstrap_timeout):
+            raise OSError("tor did not bootstrap in %d s" % bootstrap_timeout)
+        boot = time.monotonic() - t0
         result["bootstrap_s"] = round(boot, 2)
         # A sink the onion forwards to.
         sink = socket.socket()
@@ -110,7 +120,10 @@ def run_once(tor, mb):
             c.close()
 
         c = control(ctl)
-        c.cmd("AUTHENTICATE")
+        with open(cookie, "rb") as f:
+            r = c.cmd("AUTHENTICATE " + f.read().hex())
+        if not r or not r[-1].startswith("250"):
+            raise OSError("control port refused the cookie")
         t1 = time.monotonic()
         r = c.cmd("ADD_ONION NEW:ED25519-V3 Flags=DiscardPK Port=80,127.0.0.1:%d" % sink.getsockname()[1])
         onion = next(l.split("=", 1)[1] for l in r if "ServiceID=" in l) + ".onion"
@@ -146,6 +159,7 @@ def run_once(tor, mb):
             p.wait(10)
         except subprocess.TimeoutExpired:
             p.kill()
+        reader.join(5)
         shutil.rmtree(data, ignore_errors=True)
     return result
 
@@ -155,6 +169,7 @@ def main():
     a.add_argument("--tor", required=True, help="path to a C tor binary")
     a.add_argument("--mb", type=int, default=64)
     a.add_argument("--runs", type=int, default=3)
+    a.add_argument("--bootstrap-timeout", type=int, default=300, help="seconds to wait for bootstrap 100%%")
     a.add_argument("--live-tor", action="store_true", help="required: this joins the live Tor network")
     o = a.parse_args()
     if not o.live_tor:
@@ -163,7 +178,7 @@ def main():
     exe, with_libs = binary_size(o.tor)
     print(json.dumps({"case": "tor_size", "binary_bytes": exe, "with_libraries_bytes": with_libs}))
     for _ in range(o.runs):
-        print(json.dumps(run_once(o.tor, o.mb)), flush=True)
+        print(json.dumps(run_once(o.tor, o.mb, o.bootstrap_timeout)), flush=True)
     return 0
 
 

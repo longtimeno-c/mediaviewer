@@ -59,37 +59,73 @@ std::vector<std::uint8_t> read_n(sp::link& l, std::size_t n) {
   return out;
 }
 
-// Both sides of a rendezvous, joined at once.
+constexpr const char* kKey = "TEST-RELAY-KEY-0123456789";
+
+// A waiter registered with the key; nullptr when the server closed it.
+std::unique_ptr<sp::link> waiter(std::uint16_t port, const relay::token& t, const std::string& key = kKey) {
+  auto l = dial(port);
+  REQUIRE(relay::register_waiter(*l, t, key));
+  return l;
+}
+
+// Both sides of a rendezvous: a waiter, then a sender with its token.
 std::pair<std::unique_ptr<sp::link>, std::unique_ptr<sp::link>> paired(std::uint16_t port, const relay::token& t) {
-  mv::result<std::unique_ptr<sp::link>> b = mv::err(mv::status::internal);
-  std::thread waits([&] { b = relay::join(dial(port), t, 5000, {}); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  auto b = waiter(port, t);
+  mv::expected waited = mv::err(mv::status::internal);
+  std::thread waits([&] { waited = relay::wait_paired(*b, 5000, {}); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));  // registered before the sender comes
   auto a = relay::join(dial(port), t, 5000, {});
   waits.join();
   REQUIRE(a);
-  REQUIRE(b);
-  return {std::move(*a), std::move(*b)};
+  REQUIRE(waited);
+  return {std::move(*a), std::move(b)};
+}
+
+relay::server::options server_options(relay::limits lim = {}) {
+  relay::server::options o;
+  o.key = kKey;
+  o.loopback_only = true;
+  o.lim = std::move(lim);
+  return o;
+}
+
+bool closed_soon(sp::link& l) {
+  std::uint8_t one = 0;
+  auto n = l.read_some({&one, 1}, 3000);
+  return !n || *n == 0;
 }
 
 }  // namespace
 
-TEST_CASE("sharepoint relay: a rendezvous hello carries its token, and nothing else is one", "[sharepoint]") {
+TEST_CASE("sharepoint relay: a rendezvous hello carries its role and token, and a waiter's proves the key",
+          "[sharepoint]") {
   const auto t = relay::random_token();
   CHECK(relay::random_token() != t);
-  const auto h = relay::hello_bytes(t);
+  const auto h = relay::sender_hello(t);
   CHECK(h.size() == relay::kHelloBytes);
   auto back = relay::parse_hello(h);
   REQUIRE(back);
-  CHECK(*back == t);
+  CHECK(back->role == relay::kSender);
+  CHECK(back->t == t);
   for (std::size_t i = 0; i < 8; ++i) {
     auto bad = h;
-    bad[i] ^= 1;
-    CHECK_FALSE(relay::parse_hello(bad));  // magic, version, reserved
+    bad[i] ^= 2;
+    CHECK_FALSE(relay::parse_hello(bad));  // magic, version, role, reserved
   }
   CHECK_FALSE(relay::parse_hello(std::span(h).first(h.size() - 1)));
-  std::vector<std::uint8_t> longer(h.begin(), h.end());
-  longer.push_back(0);
-  CHECK_FALSE(relay::parse_hello(longer));
+  const auto w = relay::waiter_hello(t, kKey);
+  CHECK(w.size() == relay::kWaiterHelloBytes);
+  auto wb = relay::parse_hello(std::span<const std::uint8_t>(w).first(relay::kHelloBytes));
+  REQUIRE(wb);
+  CHECK(wb->role == relay::kWaiter);
+  const auto p = relay::prove(kKey, t);
+  CHECK(std::equal(p.begin(), p.end(), w.begin() + relay::kHelloBytes));
+  CHECK(relay::prove("another key, long enough", t) != p);
+  CHECK(relay::prove(kKey, relay::random_token()) != p);
+  const auto k = relay::random_key();
+  CHECK(k.size() == 26);
+  CHECK(k.size() >= relay::kMinKeyChars);
+  CHECK(relay::random_key() != k);
 }
 
 TEST_CASE("sharepoint relay: a code carries the relay place and its token, after the places", "[sharepoint]") {
@@ -130,13 +166,10 @@ TEST_CASE("sharepoint relay: a code carries the relay place and its token, after
   CHECK(plain->places.size() == 4);
 }
 
-TEST_CASE("sharepoint relay: the server pairs two connections with one token, byte for byte both ways",
+TEST_CASE("sharepoint relay: the server pairs a waiter and a sender with one token, byte for byte both ways",
           "[sharepoint]") {
   recorder rec;
-  relay::server::options o;
-  o.loopback_only = true;
-  o.lim = rec.limits();
-  auto s = relay::server::start(o);
+  auto s = relay::server::start(server_options(rec.limits()));
   REQUIRE(s);
   auto [a, b] = paired((*s)->port(), relay::random_token());
   const auto there = pattern(3 * 1024 * 1024 + 11, 5);
@@ -151,53 +184,83 @@ TEST_CASE("sharepoint relay: the server pairs two connections with one token, by
   // One side going ends the splice for the other.
   a->shutdown();
   a.reset();
-  std::uint8_t one = 0;
-  auto n = b->read_some({&one, 1}, 5000);
-  CHECK((!n || *n == 0));
+  CHECK(closed_soon(*b));
   REQUIRE(eventually([&] { return (*s)->snapshot().active == 0; }));
   CHECK((*s)->snapshot().bytes == there.size() + back.size());
+  // A server without a key does not start.
+  relay::server::options keyless = server_options();
+  keyless.key = "short";
+  CHECK_FALSE(relay::server::start(keyless));
 }
 
-TEST_CASE("sharepoint relay: another token waits alone, a third with a token is closed, and garbage is refused",
+TEST_CASE("sharepoint relay: only a key holder waits; senders never wait; a waiter again replaces itself",
           "[sharepoint]") {
-  relay::server::options o;
-  o.loopback_only = true;
-  o.wait_ms = 1500;
-  auto s = relay::server::start(o);
+  auto s = relay::server::start(server_options());
   REQUIRE(s);
   const auto port = (*s)->port();
-  // Two different tokens: neither is paired; each waits out wait_ms.
-  mv::result<std::unique_ptr<sp::link>> x = mv::err(mv::status::internal);
-  std::thread tx([&] { x = relay::join(dial(port), relay::random_token(), 4000, {}); });
-  auto y = relay::join(dial(port), relay::random_token(), 4000, {});
-  tx.join();
-  CHECK_FALSE(x);
-  CHECK_FALSE(y);
-  CHECK((*s)->snapshot().paired == 0);
-  // A pair, then a third with the same token while they are spliced.
+  // A waiter with the wrong key: closed, and nobody waits.
+  auto wrong = waiter(port, relay::random_token(), "not the server's key at all");
+  CHECK(closed_soon(*wrong));
+  CHECK((*s)->snapshot().waiting == 0);
+  // A sender with no waiter for its token: closed at once (it never waits).
+  const auto t0 = std::chrono::steady_clock::now();
+  auto lone = relay::join(dial(port), relay::random_token(), 5000, {});
+  CHECK_FALSE(lone);
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(2));
+  // A waiter registering again under its token replaces its old wait: the
+  // old connection is closed, and a sender pairs with the new one.
   const auto t = relay::random_token();
-  auto [a, b] = paired(port, t);
-  auto third = relay::join(dial(port), t, 2500, {});
-  CHECK_FALSE(third);  // waits alone (the token's pair is gone from the list), then closed
-  // Not a hello: closed at once.
+  auto first = waiter(port, t);
+  REQUIRE(eventually([&] { return (*s)->snapshot().waiting == 1; }));
+  auto second = waiter(port, t);
+  CHECK(closed_soon(*first));
+  CHECK((*s)->snapshot().waiting == 1);
+  mv::expected waited = mv::err(mv::status::internal);
+  std::thread w([&] { waited = relay::wait_paired(*second, 5000, {}); });
+  auto a = relay::join(dial(port), t, 5000, {});
+  w.join();
+  REQUIRE(a);
+  REQUIRE(waited);
+  // Then a second sender with that token: nobody waits under it now.
+  CHECK_FALSE(relay::join(dial(port), t, 3000, {}));
+  // Not a hello: closed.
   auto junk = dial(port);
   const std::uint8_t noise[relay::kHelloBytes] = {'G', 'E', 'T', ' ', '/'};
   REQUIRE(junk->write_all(noise));
-  std::uint8_t one = 0;
-  auto n = junk->read_some({&one, 1}, 3000);
-  CHECK((!n || *n == 0));
-  // One that speaks before it is paired: closed.
-  auto eager = dial(port);
-  REQUIRE(eager->write_all(relay::hello_bytes(relay::random_token())));
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  CHECK(closed_soon(*junk));
+  // A waiter that speaks before it is paired: closed.
+  auto eager = waiter(port, relay::random_token());
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
   REQUIRE(eager->write_all(std::span<const std::uint8_t>(noise, 4)));
-  n = eager->read_some({&one, 1}, 3000);
-  CHECK((!n || *n == 0));
-  CHECK((*s)->snapshot().refused >= 1);
+  CHECK(closed_soon(*eager));
+  CHECK((*s)->snapshot().refused >= 4);
   // The pair still works.
   const auto bytes = pattern(1000, 1);
-  REQUIRE(a->write_all(bytes));
-  CHECK(read_n(*b, bytes.size()) == bytes);
+  REQUIRE((*a)->write_all(bytes));
+  CHECK(read_n(*second, bytes.size()) == bytes);
+}
+
+TEST_CASE("sharepoint relay: one address cannot fill the server's handshakes or its waits", "[sharepoint]") {
+  relay::server::options o = server_options();
+  o.max_waiting = 64;
+  auto s = relay::server::start(o);
+  REQUIRE(s);
+  const auto port = (*s)->port();
+  // Silent connections from one address: past kPerSource they are closed at once.
+  std::vector<std::unique_ptr<sp::link>> silent;
+  for (int i = 0; i < relay::server::kPerSource; ++i) silent.push_back(dial(port));
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  auto extra = dial(port);
+  CHECK(closed_soon(*extra));
+  silent.clear();
+  // Key holders' waits from one address: kPerSource at most.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  std::vector<std::unique_ptr<sp::link>> waits;
+  for (int i = 0; i < relay::server::kPerSource; ++i) waits.push_back(waiter(port, relay::random_token()));
+  REQUIRE(eventually([&] { return (*s)->snapshot().waiting == static_cast<std::uint64_t>(relay::server::kPerSource); }));
+  auto over = waiter(port, relay::random_token());
+  CHECK(closed_soon(*over));
+  CHECK((*s)->snapshot().waiting == static_cast<std::uint64_t>(relay::server::kPerSource));
 }
 
 TEST_CASE("sharepoint relay: a splice ends at its byte cap, and a rate cap paces it", "[sharepoint]") {
@@ -231,11 +294,14 @@ TEST_CASE("sharepoint relay: a splice ends at its byte cap, and a rate cap paces
     std::atomic<bool> stop{false};
     std::thread t([&, &a2 = a2, &b1 = b1] { r = relay::splice(*a2, *b1, lim, [&] { return stop.load(); }); });
     const auto data = pattern(1024 * 1024, 3);
+    // Idle first: a cap paced from the splice's start would now let it all
+    // through at once; the bucket holds a quarter second's worth.
+    std::this_thread::sleep_for(std::chrono::seconds(1));
     const auto t0 = std::chrono::steady_clock::now();
     std::thread w([&, &a1 = a1] { (void)a1->write_all(data); });
     CHECK(read_n(*b2, data.size()) == data);
     const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    CHECK(s >= 0.35);  // 1 MiB at 2 MB/s is ~0.52 s
+    CHECK(s >= 0.2);  // (1 MiB - 0.5 MB of burst) at 2 MB/s is ~0.27 s
     w.join();
     stop.store(true);
     t.join();
@@ -269,7 +335,7 @@ TEST_CASE("sharepoint relay: requests and answers read with care, and only publi
   for (int i = 0; i < 20; ++i) many += std::string(i ? "," : "") + "{\"a\":\"198.51.100.1\",\"p\":" + std::to_string(i + 1) + "}";
   many += "]}";
   CHECK(relay::parse_request(many).size() == invite::kMaxPlaces);
-  for (auto a : {relay::answer::ok, relay::answer::off, relay::answer::busy, relay::answer::unreachable,
+  for (auto a : {relay::answer::ok, relay::answer::off, relay::answer::unreachable,
                  relay::answer::refused}) {
     CHECK(relay::parse_answer(relay::answer_json(a)) == a);
   }
@@ -289,6 +355,13 @@ TEST_CASE("sharepoint relay: requests and answers read with care, and only publi
   CHECK(relay::may_reach({"127.0.0.1", 80}, true));
   CHECK(relay::may_reach({"::1", 80}, true));
   CHECK_FALSE(relay::may_reach({"192.168.1.10", 80}, true));
+  // Never one of R's own addresses, nor its own IPv6 /64.
+  const std::vector<sp::net::address> own{*sp::net::parse_address("2001:4860:4860::1"),
+                                          *sp::net::parse_address("8.8.4.4")};
+  CHECK_FALSE(relay::may_reach({"2001:4860:4860::8888", 80}, false, own));
+  CHECK_FALSE(relay::may_reach({"8.8.4.4", 80}, false, own));
+  CHECK(relay::may_reach({"2001:4860:4861::8888", 80}, false, own));
+  CHECK(relay::may_reach({"8.8.8.8", 80}, false, own));
 }
 
 TEST_CASE("sharepoint relay: R says no when it does not relay, or may not reach, and splices when it may",
@@ -309,6 +382,7 @@ TEST_CASE("sharepoint relay: R says no when it does not relay, or may not reach,
         if (!r->receive(m, 5000)) return;
         relay::serve_options o;
         o.allow_loopback = loopback;
+        o.own = std::vector<sp::net::address>{};
         out = relay::serve(r, m, allowed, o);
         r->shutdown();
       });
@@ -419,16 +493,13 @@ TEST_CASE("sharepoint relay: two computers that cannot reach each other send thr
           "[sharepoint]") {
   scratch_dir dir("sharepoint_relay_server");
   recorder rec;
-  relay::server::options so;
-  so.loopback_only = true;
-  so.lim = rec.limits();
-  auto server = relay::server::start(so);
+  auto server = relay::server::start(server_options(rec.limits()));
   REQUIRE(server);
   const std::uint16_t relay_port = (*server)->port();
   far_end bea(dir / "bea_received", "Bea", {});
   // Ann's network lets out only the relay's port: Bea's own places time out.
   far_end ann(dir / "ann_received", "Ann", [relay_port](const sp::net::endpoint& to) { return to.port == relay_port; });
-  bea.eng.on_event("relay_server", 2, "\"127.0.0.1:" + std::to_string(relay_port) + "\"");
+  bea.eng.on_event("relay_server", 2, "\"127.0.0.1:" + std::to_string(relay_port) + "#" + kKey + "\"");
   const std::string code = bea.make_code();
   CHECK(bea.eng.snapshot().code_how.find("your relay") != std::string::npos);
   auto decoded = invite::decode(code);
@@ -467,14 +538,23 @@ TEST_CASE("sharepoint relay: a relay server that does not answer leaves it out o
   scratch_dir dir("sharepoint_relay_gone");
   const std::uint16_t port = 1;  // nothing listens there, and no test can bind it
   far_end bea(dir / "bea_received", "Bea", {});
-  bea.eng.on_event("relay_server", 2, "\"127.0.0.1:" + std::to_string(port) + "\"");
+  bea.eng.on_event("relay_server", 2, "\"127.0.0.1:" + std::to_string(port) + "#" + kKey + "\"");
   const std::string code = bea.make_code();
   auto decoded = invite::decode(code);
   REQUIRE(decoded);
   CHECK_FALSE(decoded->relay);
   CHECK(bea.eng.snapshot().code_note.find("relay server did not answer") != std::string::npos);
   // And the setting is kept with the others.
-  CHECK(bea.eng.snapshot().relay_server == "127.0.0.1:" + std::to_string(port));
+  CHECK(bea.eng.snapshot().relay_server == "127.0.0.1:" + std::to_string(port) + "#" + kKey);
+  std::string why;
+  auto f = sp::relay_server_of("relay.example:47614#" + std::string(kKey), why);
+  REQUIRE(f);
+  CHECK(f->at == "relay.example:47614");
+  CHECK(f->key == kKey);
+  CHECK_FALSE(sp::relay_server_of("relay.example:47614", why));
+  CHECK(why.find("key") != std::string::npos);
+  CHECK_FALSE(sp::relay_server_of("relay.example:47614#short", why));
+  CHECK_FALSE(sp::relay_server_of("nocolon#" + std::string(kKey), why));
   CHECK(sp::relay_endpoint("127.0.0.1:47614")->port == 47614);
   CHECK(sp::relay_endpoint("[::1]:9")->address == "::1");
   CHECK_FALSE(sp::relay_endpoint("no port"));

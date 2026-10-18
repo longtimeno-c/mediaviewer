@@ -495,36 +495,48 @@ link. The tests check that no 32-byte run of the file passes through either rela
 
 - **Through your own computer** (option 9; `relay.*`, `engine_relay.cpp`). A toggle in the internet
   section, **Use my other computers to relay**, off by default; with it on, each remembered device
-  shows **<name> is my computer** (kept in its record, `known.h`; a record with no mark is written
-  as before PR 4's readers expect). A sends to a direct code; when the code's places do not answer
-  (the first round, then every fourth), A meets each computer marked as its own in turn, as any
-  remembered device (the DHT, the pair's hourly keys, its key checked; up to 45 s each), and over
-  that sealed channel sends `relay` (20) with the code's places. R serves only if its toggle is on
-  and it marks A as its own too, now: then it connects onward to those places and only those, and
-  only to public addresses (never into R's own network), answers `relay_answer` (21), and from
-  then on the bytes of A's link to B travel as `relay_data` (22), sealed again between A and R. A
-  runs the internet handshake with B through it; B sees R's address as the sender's, and both see
-  the same check. One relay at a time (it is R's one transfer, so R is busy meanwhile); 256 GiB
-  each way at most, no rate cap (it is the person's own line); 120 s of silence ends it. R's window
-  says **Relaying for Ann**, sealed, with **Stop relaying**; A's says **Through R (your
-  computer)**. Nothing is logged about either peer; R logs one fixed line that it relayed. A
-  relayed send does not move between links (its rejoins would need R again), and R must be
-  reachable over the DHT (Keep receiving on, the internet and DHT toggles on). Word codes and sends
-  to a remembered device are not relayed: R would need the code's DHT meeting.
+  shows **<name> is my computer** (kept in its record, `known.h`, and keyed in the window by a hash
+  of the device's key, not its place in the list; a record with no mark is written as before). A
+  sends to a direct code; beside the code's places, 1.5 s in, each round also meets each computer
+  marked as its own in turn, as any remembered device (the DHT, the pair's hourly keys, its key
+  checked; up to 45 s each, given up as soon as the round is decided), and over that sealed channel
+  sends `relay` (20) with the code's places. R serves only if its toggle is on and it marks A as
+  its own too, now: then it connects onward to those places and only those, and only to public
+  addresses that are not its own and not in an IPv6 /64 it has an address in (R's own public IPv4
+  reached through its router is not known to R; what the router forwards there is open to the
+  whole internet anyway), answers `relay_answer` (21), and from then on the bytes of A's link to B
+  travel as `relay_data` (22), sealed again between A and R. A runs the internet handshake with B
+  through it; B sees R's address as the sender's, and both see the same check. One relay at a time
+  (it is R's one transfer; while R is busy it meets nobody, so A's meeting runs out rather than
+  hearing "busy"); 256 GiB each way at most, no rate cap (it is the person's own line); 120 s of
+  silence ends it. R's window says **Relaying for Ann**, sealed, with **Stop relaying**; A's says
+  **Through R (your computer)**, and when R says no, why (after the round's own reason). Nothing is
+  logged about either peer; R logs one fixed line that it relayed. A relayed send does not move
+  between links (its rejoins would need R again), and R must be reachable over the DHT (Keep
+  receiving on, the internet and DHT toggles on). Word codes and sends to a remembered device are
+  not relayed: R would need the code's DHT meeting. R reads a remembered sender's first message
+  within 20 s (`kSilenceMs`): the request or the offer comes at once, nothing waits on a person.
 - **Through your own relay server** (option 10; `splice.*`, `tools/sharepoint-relay`). An advanced
-  field, **Relay (your own server)**, `<address or name>:<port>` (the one name Sharepoint resolves,
-  because the person typed it; the code carries the address). With it set, each code also waits at
-  that server under a fresh random 16-byte token, sealed in the code with its places (a code with a
-  relay is about 115 characters, and only a build with relays opens it); the window says "Ways in:
-  …, your relay", or that the server did not answer. A sender races the code's places as before
-  and the relay 1.5 s later, so a direct path that works wins. The server pairs two TCP connections
-  that say the same token (`MVRL`, version, token) and copies bytes between them: a third with the
-  token, anything that is not a hello, or a byte before the pair, is closed; an unpaired side waits
-  10 minutes at most. The receiver hands a paired link on only once the sender has spoken, so a
-  sender that lost its race to a direct place costs nothing. The token is not the code's secret
-  and says nothing about it; the server learns two addresses, the time and the size, and prints
-  counts only. Caps per transfer: 64 GiB each way, optional MB/s, 120 s idle; 8 at once, 64 waiting.
-  The program is about 290 KB (Mac, Release), the splice alone, portable (D9), no state on disk.
+  field, **Relay (your own server)**, `<address or name>:<port>#<key>`; the server prints the key
+  (or takes `--key`). The name is the one Sharepoint resolves, because the person typed it; the
+  code carries the address, never the key. With it set, each code also registers at that server as
+  a **waiter** under a fresh random 16-byte token sealed in the code with its places, proving the
+  key (keyed BLAKE2b over the token); this runs beside the router's mapping, and a server slower
+  than 3 s is left out of that code and the window says so. A code with a relay is about 115
+  characters, and only a build with relays opens it. A sender races the code's places as before
+  and the relay 1.5 s later, so a direct path that works wins; it says the token only. The server
+  pairs a sender with the waiter under its token and copies bytes between them; it relays only for
+  key holders' codes, so it is not an open relay. A sender with no waiter is closed at once
+  (senders never wait); a waiter registering again under its token replaces its old wait, which
+  the receiver does every 60 s, new connection before closing the old, ahead of NATs that drop an
+  idle TCP connection. Anything that is not a hello, a waiter whose proof is wrong, or a byte
+  before the pair, is closed. The receiver hands a paired link on only once the sender has spoken,
+  so a sender that lost its race to a direct place costs nothing. The token is not the code's
+  secret and says nothing about it; the server learns two addresses, the time and the size, and
+  prints counts only. Caps: 16 hellos being read at once and 4 from one address; 64 waiters, 4 from
+  one address; 8 splices; per splice 64 GiB each way, an optional rate as a token bucket (a quarter
+  second of burst), 120 s idle. The program is about 300 KB (Mac, Release), the splice alone,
+  portable (D9), no state on disk.
 - **TURN is left out**: allocations, permissions, STUN's message format and long-term credentials
   are a server of their own for the same job the splice does in a few hundred lines.
 - **Tor** (option 11) was evaluated, not built, and dropped for now

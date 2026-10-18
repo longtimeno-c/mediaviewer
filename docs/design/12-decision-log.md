@@ -1645,9 +1645,15 @@ on the stack can take 15–19); it serves only when both computers mark each oth
 own and the toggle is on, connects onward only to the public places the sender names (never into
 the relay's own network) and is the relay's one transfer, so one at a time. It relays direct codes
 only: word codes and remembered-device sends would need the relay to hold the DHT meeting's keys.
-No rate cap by default (the person's own line), 256 GiB each way, 120 s idle. The relay server is a
-rendezvous by a random token carried in the code, not derived from the code's secret: a 48-bit
-secret behind a hash could be searched by the server's owner within the code's life. A relay
+No rate cap by default (the person's own line), 256 GiB each way, 120 s idle. It runs in the
+sender's race beside the direct places rather than after them (a meeting takes up to 45 s), and
+never connects to R's own addresses or IPv6 /64s. The relay server is a rendezvous by a random token
+carried in the code, not derived from the code's secret: a 48-bit secret behind a hash could be
+searched by the server's owner within the code's life. Review (2026-10-18): a server any two
+sockets could pair on is an open bandwidth relay, so it has a key of its own (typed with its
+address, never in a code) that the waiting side proves; senders never wait; caps per source address
+and on handshakes stop one host filling it; and a waiter re-registers every minute (replacing its
+own wait) because NATs drop idle TCP after a few minutes. A relay
 place joins the sender's race 1.5 s after the direct places, and the receiver hands on a paired
 link only once the sender has spoken, so a lost race costs nothing. The relay field is the one
 name Sharepoint resolves (the person typed it); the code carries the address. TURN is left out:

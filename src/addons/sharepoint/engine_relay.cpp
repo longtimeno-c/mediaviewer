@@ -36,8 +36,6 @@ std::string why_not(relay::answer a, const std::string& who) {
     case relay::answer::off:
       return who + " does not relay: turn on \xE2\x80\x9CUse my other computers to relay\xE2\x80\x9D there, and mark "
                    "this computer as yours in its remembered devices.";
-    case relay::answer::busy:
-      return who + " is busy with another transfer.";
     case relay::answer::unreachable:
       return who + " could not reach the other computer either.";
     default:
@@ -57,11 +55,19 @@ void engine::save_known() {
   if (secrets_ && !known::save(*secrets_, copy)) host_.log(1, "sharepoint: the remembered devices were not kept");
 }
 
-void engine::set_own(std::size_t index, bool on) {
+bool engine::own_relay_possible() const {
+  std::lock_guard lock(m_);
+  return v_.relay && v_.internet && v_.dht &&
+         std::any_of(devices_.begin(), devices_.end(), [](const known::device& d) { return d.own; });
+}
+
+void engine::set_own(const std::string& fingerprint, bool on) {
   {
     std::lock_guard lock(m_);
-    if (index >= devices_.size() || devices_[index].own == on) return;
-    devices_[index].own = on;
+    const auto it = std::find_if(devices_.begin(), devices_.end(),
+                                 [&](const known::device& d) { return relay::fingerprint(d.key) == fingerprint; });
+    if (it == devices_.end() || it->own == on) return;
+    it->own = on;
     publish_known_locked();
   }
   save_known();  // this worker's, never the UI thread
@@ -69,7 +75,7 @@ void engine::set_own(std::size_t index, bool on) {
 }
 
 std::unique_ptr<link> engine::reach_through_own(const std::vector<net::endpoint>& places, std::string& via,
-                                                std::string& why) {
+                                                std::string& why, const std::function<bool()>& give_up) {
   std::vector<known::device> own;
   {
     std::lock_guard lock(m_);
@@ -78,7 +84,7 @@ std::unique_ptr<link> engine::reach_through_own(const std::vector<net::endpoint>
       if (d.own) own.push_back(d);
     }
   }
-  const auto stopped = [this] { return cancel_.load() || stopping_.load(); };
+  const auto stopped = [&] { return cancel_.load() || stopping_.load() || (give_up && give_up()); };
   const auto say = [this](const std::string& s) {
     {
       std::lock_guard lock(m_);
@@ -88,7 +94,7 @@ std::unique_ptr<link> engine::reach_through_own(const std::vector<net::endpoint>
   };
   for (const auto& r : own) {
     if (stopped()) return nullptr;
-    say("Nothing answered directly. Trying through " + r.name + ", your computer\xE2\x80\xA6");
+    say("Trying through " + r.name + ", your computer, too\xE2\x80\xA6");
     auto h = udp_hub::open(0, opts_.internet_loopback);
     if (!h) continue;
     auto keep = std::make_shared<met_over_dht>();
@@ -185,15 +191,29 @@ bool engine::maybe_relay(const std::shared_ptr<channel>& ch, const known::device
   o.connect = opts_.connect_internet;
   o.lim = opts_.relay_limits;
   o.stopped = [this] { return cancel_.load() || stopping_.load(); };
-  const auto r = relay::serve(ch, first, allowed, o);
-  ch->shutdown();
-  if (r.said == relay::answer::ok) host_.log(2, "sharepoint: relayed for another of this person's computers");
-  {
-    std::lock_guard lock(m_);
-    v_.relaying_for.clear();
-    if (r.said == relay::answer::ok) ++v_.relayed;
+  // Whatever happens below (a thread that could not start, memory), the
+  // window and the channel are put back.
+  struct relaying_guard {
+    engine& e;
+    const std::shared_ptr<channel>& ch;
+    bool served = false;
+    ~relaying_guard() {
+      ch->shutdown();
+      {
+        std::lock_guard lock(e.m_);
+        e.v_.relaying_for.clear();
+        if (served) ++e.v_.relayed;
+      }
+      e.post();
+    }
+  } guard{*this, ch};
+  try {
+    const auto r = relay::serve(ch, first, allowed, o);
+    guard.served = r.said == relay::answer::ok;
+  } catch (...) {
+    host_.log(1, "sharepoint: a relay ended with an error");
   }
-  post();
+  if (guard.served) host_.log(2, "sharepoint: relayed for another of this person's computers");
   return true;
 }
 

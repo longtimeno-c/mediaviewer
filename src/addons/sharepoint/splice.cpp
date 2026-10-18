@@ -16,9 +16,6 @@ using clock = std::chrono::steady_clock;
 constexpr char kMagic[4] = {'M', 'V', 'R', 'L'};
 constexpr std::size_t kSpliceBuffer = 64 * 1024;
 constexpr int kPollMs = 250;
-// Connections a server reads a hello from at once, beyond those waiting
-// and those spliced; past it a new one is closed at once.
-constexpr int kMaxHandshakes = 16;
 
 std::int64_t now_ns() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now().time_since_epoch()).count();
@@ -33,67 +30,139 @@ token random_token() {
   return t;
 }
 
-std::array<std::uint8_t, kHelloBytes> hello_bytes(const token& t) {
-  std::array<std::uint8_t, kHelloBytes> out{};
-  std::memcpy(out.data(), kMagic, 4);
-  out[4] = kVersion;
-  std::memcpy(out.data() + 8, t.data(), t.size());
+std::string random_key() {
+  (void)sodium_init();
+  static constexpr char kAlphabet[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";  // Crockford
+  std::array<std::uint8_t, 17> b{};
+  randombytes_buf(b.data(), b.size());
+  std::string out;
+  std::uint32_t acc = 0;
+  int bits = 0;
+  for (const std::uint8_t x : b) {
+    acc = acc << 8 | x;
+    bits += 8;
+    while (bits >= 5 && out.size() < 26) {
+      out.push_back(kAlphabet[(acc >> (bits - 5)) & 31]);
+      bits -= 5;
+    }
+  }
+  sodium_memzero(b.data(), b.size());
   return out;
 }
 
-std::optional<token> parse_hello(std::span<const std::uint8_t> bytes) noexcept {
-  if (bytes.size() != kHelloBytes || std::memcmp(bytes.data(), kMagic, 4) != 0 || bytes[4] != kVersion ||
-      bytes[5] != 0 || bytes[6] != 0 || bytes[7] != 0) {
-    return std::nullopt;
-  }
-  token t;
-  std::memcpy(t.data(), bytes.data() + 8, t.size());
-  return t;
+proof prove(const std::string& key, const token& t) {
+  (void)sodium_init();
+  std::uint8_t k[32];
+  crypto_generichash(k, sizeof k, reinterpret_cast<const std::uint8_t*>(key.data()), key.size(), nullptr, 0);
+  static constexpr char kContext[] = "MediaViewer Sharepoint relay waiter v2";
+  std::uint8_t msg[sizeof kContext - 1 + kTokenBytes];
+  std::memcpy(msg, kContext, sizeof kContext - 1);
+  std::memcpy(msg + sizeof kContext - 1, t.data(), t.size());
+  proof p;
+  crypto_generichash(p.data(), p.size(), msg, sizeof msg, k, sizeof k);
+  sodium_memzero(k, sizeof k);
+  return p;
 }
 
-splice_result splice(link& a, link& b, const limits& lim, const std::function<bool()>& stopped) {
+namespace {
+void put_head(std::uint8_t* out, std::uint8_t role, const token& t) {
+  std::memcpy(out, kMagic, 4);
+  out[4] = kVersion;
+  out[5] = role;
+  out[6] = out[7] = 0;
+  std::memcpy(out + 8, t.data(), t.size());
+}
+}  // namespace
+
+std::array<std::uint8_t, kHelloBytes> sender_hello(const token& t) {
+  std::array<std::uint8_t, kHelloBytes> out{};
+  put_head(out.data(), kSender, t);
+  return out;
+}
+
+std::array<std::uint8_t, kWaiterHelloBytes> waiter_hello(const token& t, const std::string& key) {
+  std::array<std::uint8_t, kWaiterHelloBytes> out{};
+  put_head(out.data(), kWaiter, t);
+  const auto p = prove(key, t);
+  std::memcpy(out.data() + kHelloBytes, p.data(), p.size());
+  return out;
+}
+
+std::optional<hello> parse_hello(std::span<const std::uint8_t> head) noexcept {
+  if (head.size() != kHelloBytes || std::memcmp(head.data(), kMagic, 4) != 0 || head[4] != kVersion ||
+      (head[5] != kSender && head[5] != kWaiter) || head[6] != 0 || head[7] != 0) {
+    return std::nullopt;
+  }
+  hello h;
+  h.role = head[5];
+  std::memcpy(h.t.data(), head.data() + 8, h.t.size());
+  return h;
+}
+
+splice_result splice(link& a, link& b, const limits& lim, const std::function<bool()>& stopped) noexcept {
   splice_result out;
   std::atomic<bool> over{false};
   std::atomic<bool> told{false};  // the first reason wins
   std::atomic<ended> why{ended::closed};
   std::atomic<std::int64_t> last_ns{now_ns()};
-  const auto end_with = [&](ended e) {
+  const auto end_with = [&](ended e) noexcept {
     bool expected = false;
     if (told.compare_exchange_strong(expected, true)) why.store(e);
     over.store(true);
     a.shutdown();
     b.shutdown();
   };
-  const auto pump = [&](link& from, link& to, bool a_to_b, std::uint64_t& moved) {
-    std::vector<std::uint8_t> buf(kSpliceBuffer);
-    const auto start = clock::now();
-    while (!over.load()) {
-      if (stopped && stopped()) return end_with(ended::stopped);
-      auto n = from.read_some(buf, kPollMs);
-      if (!n) {
-        if (n.error() != status::timeout) return end_with(over.load() ? ended::closed : ended::failed);
-        if (now_ns() - last_ns.load() > std::int64_t{lim.idle_ms} * 1'000'000) return end_with(ended::idle);
-        continue;
-      }
-      if (*n == 0) return end_with(ended::closed);
-      if (moved + *n > lim.max_bytes) return end_with(ended::capped);
-      if (lim.rate > 0) {
-        // Paced to `rate` from the start: a burst under it passes at once.
-        const auto due = start + std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(
-                                     static_cast<double>(moved + *n) / static_cast<double>(lim.rate)));
-        while (clock::now() < due && !over.load() && !(stopped && stopped())) {
-          std::this_thread::sleep_for(std::min<clock::duration>(due - clock::now(), std::chrono::milliseconds(100)));
+  const auto pump = [&](link& from, link& to, bool a_to_b, std::uint64_t& moved) noexcept {
+    try {
+      std::vector<std::uint8_t> buf(kSpliceBuffer);
+      // A token bucket: `rate` a second, at most kBurstSeconds of it saved up.
+      const double rate = static_cast<double>(lim.rate);
+      const double burst = std::max(rate * kBurstSeconds, static_cast<double>(kSpliceBuffer));
+      double tokens = burst;
+      auto refilled = clock::now();
+      const auto refill = [&] {
+        const auto now = clock::now();
+        tokens = std::min(burst, tokens + rate * std::chrono::duration<double>(now - refilled).count());
+        refilled = now;
+      };
+      while (!over.load()) {
+        if (stopped && stopped()) return end_with(ended::stopped);
+        auto n = from.read_some(buf, kPollMs);
+        if (!n) {
+          if (n.error() != status::timeout) return end_with(over.load() ? ended::closed : ended::failed);
+          if (now_ns() - last_ns.load() > std::int64_t{lim.idle_ms} * 1'000'000) return end_with(ended::idle);
+          continue;
         }
+        if (*n == 0) return end_with(ended::closed);
+        if (moved + *n > lim.max_bytes) return end_with(ended::capped);
+        if (lim.rate > 0) {
+          refill();
+          tokens -= static_cast<double>(*n);
+          while (tokens < 0 && !over.load() && !(stopped && stopped())) {
+            std::this_thread::sleep_for(std::min(std::chrono::duration<double>(-tokens / rate),
+                                                 std::chrono::duration<double>(0.1)));
+            refill();
+          }
+        }
+        if (lim.tap) lim.tap(a_to_b, std::span<const std::uint8_t>(buf.data(), *n));
+        if (!to.write_all(std::span<const std::uint8_t>(buf.data(), *n))) {
+          return end_with(over.load() ? ended::closed : ended::failed);
+        }
+        moved += *n;
+        last_ns.store(now_ns());
       }
-      if (lim.tap) lim.tap(a_to_b, std::span<const std::uint8_t>(buf.data(), *n));
-      if (!to.write_all(std::span<const std::uint8_t>(buf.data(), *n))) {
-        return end_with(over.load() ? ended::closed : ended::failed);
-      }
-      moved += *n;
-      last_ns.store(now_ns());
+    } catch (...) {
+      end_with(ended::failed);
     }
   };
-  std::thread back([&] { pump(b, a, false, out.b_to_a); });
+  std::thread back;
+  try {
+    back = std::thread([&] { pump(b, a, false, out.b_to_a); });
+  } catch (...) {
+    end_with(ended::failed);
+    out.why = why.load();
+    return out;
+  }
   pump(a, b, true, out.a_to_b);
   back.join();
   out.why = why.load();
@@ -103,32 +172,34 @@ splice_result splice(link& a, link& b, const limits& lim, const std::function<bo
 result<std::unique_ptr<link>> join(std::unique_ptr<link> l, const token& t, int wait_ms,
                                    const std::function<bool()>& stopped) {
   if (!l) return err(status::invalid_arg);
-  const auto hello = hello_bytes(t);
+  const auto hello = sender_hello(t);
   if (auto w = l->write_all(hello); !w) return err(w.error());
-  return await_pair(std::move(l), wait_ms, stopped);
+  if (auto r = wait_paired(*l, wait_ms, stopped); !r) {
+    l->shutdown();
+    return err(r.error());
+  }
+  return l;
 }
 
-result<std::unique_ptr<link>> await_pair(std::unique_ptr<link> l, int wait_ms, const std::function<bool()>& stopped) {
-  if (!l) return err(status::invalid_arg);
+expected register_waiter(link& l, const token& t, const std::string& key) {
+  const auto hello = waiter_hello(t, key);
+  return l.write_all(hello);
+}
+
+expected wait_paired(link& l, int wait_ms, const std::function<bool()>& stopped) {
   const auto deadline = clock::now() + std::chrono::milliseconds(wait_ms);
   std::uint8_t b = 0;
   while (clock::now() < deadline) {
-    if (stopped && stopped()) {
-      l->shutdown();
-      return err(status::cancelled);
-    }
-    auto n = l->read_some({&b, 1}, kPollMs);
+    if (stopped && stopped()) return err(status::cancelled);
+    const auto left = std::chrono::ceil<std::chrono::milliseconds>(deadline - clock::now()).count();
+    auto n = l.read_some({&b, 1}, static_cast<int>(std::clamp<long long>(left, 1, kPollMs)));
     if (!n) {
       if (n.error() == status::timeout) continue;
       return err(n.error());
     }
-    if (*n == 0 || b != kPaired) {
-      l->shutdown();
-      return err(status::io);
-    }
-    return l;
+    if (*n == 0 || b != kPaired) return err(status::io);
+    return {};
   }
-  l->shutdown();
   return err(status::timeout);
 }
 
@@ -173,10 +244,11 @@ result<std::unique_ptr<link>> first_bytes(std::unique_ptr<link> l, int wait_ms, 
 
 struct server::waiter {
   std::shared_ptr<link> partner;  // under server::m_
-  bool refused = false;           // under server::m_
+  bool replaced = false;          // under server::m_
 };
 
 result<std::unique_ptr<server>> server::start(options o) {
+  if (o.key.size() < kMinKeyChars) return err(status::invalid_arg);
   auto l = o.loopback_only ? net::listen(true) : net::listen_internet(o.port, false);
   if (!l) return err(l.error());
   std::unique_ptr<server> s(new server(std::move(o)));
@@ -222,7 +294,8 @@ void server::reap_locked() {
 
 void server::accept_loop() {
   while (!stop_.load()) {
-    auto c = listener_->accept(500);
+    net::address from;
+    auto c = listener_->accept_from(500, from);
     if (!c) {
       if (c.error() == status::cancelled) return;
       if (c.error() != status::timeout) std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -231,102 +304,153 @@ void server::accept_loop() {
     std::shared_ptr<link> l(std::move(*c));
     std::lock_guard lock(m_);
     reap_locked();
-    if (static_cast<int>(workers_.size()) >= opts_.max_waiting + 2 * opts_.max_pairs + kMaxHandshakes) {
+    const bool full = static_cast<int>(workers_.size()) >= opts_.max_waiting + 2 * opts_.max_pairs + kMaxHandshakes;
+    if (full || handshaking_ >= kMaxHandshakes || handshaking_from_[from] >= kPerSource) {
       ++counts_.refused;
+      if (handshaking_from_[from] == 0) handshaking_from_.erase(from);
       l->shutdown();
       continue;
     }
+    ++handshaking_;
+    ++handshaking_from_[from];
     auto done = std::make_shared<std::atomic<bool>>(false);
-    workers_.push_back({std::thread([this, l, done] {
-                          try {
-                            handle(l);
-                          } catch (...) {
-                            l->shutdown();
-                          }
-                          done->store(true);
-                        }),
-                        done, l});
+    try {
+      workers_.push_back({std::thread([this, l, done, from] {
+                            try {
+                              handle(l, from);
+                            } catch (...) {
+                              l->shutdown();
+                            }
+                            done->store(true);
+                          }),
+                          done, l});
+    } catch (...) {
+      // No thread: its handshake never starts.
+      --handshaking_;
+      if (--handshaking_from_[from] <= 0) handshaking_from_.erase(from);
+      l->shutdown();
+    }
   }
 }
 
-void server::handle(std::shared_ptr<link> l) {
-  std::array<std::uint8_t, kHelloBytes> hello{};
-  const auto said = read_exact(*l, hello, kHelloMs);
-  const auto t = said ? parse_hello(hello) : std::nullopt;
-  std::shared_ptr<waiter> me;
+void server::handle(std::shared_ptr<link> l, const net::address& from) {
+  // The handshake's place in the caps, given back however this ends.
+  struct handshake_slot {
+    server& s;
+    net::address from;
+    bool held = true;
+    void release() {
+      if (!held) return;
+      held = false;
+      std::lock_guard lock(s.m_);
+      --s.handshaking_;
+      if (--s.handshaking_from_[from] <= 0) s.handshaking_from_.erase(from);
+    }
+    ~handshake_slot() { release(); }
+  } slot{*this, from};
+  std::array<std::uint8_t, kWaiterHelloBytes> bytes{};
+  const auto deadline = clock::now() + std::chrono::milliseconds(kHelloMs);
+  auto h = read_exact_until(*l, std::span(bytes).first(kHelloBytes), deadline)
+               ? parse_hello(std::span<const std::uint8_t>(bytes).first(kHelloBytes))
+               : std::nullopt;
+  bool proven = false;
+  if (h && h->role == kWaiter && read_exact_until(*l, std::span(bytes).subspan(kHelloBytes), deadline)) {
+    const auto want = prove(opts_.key, h->t);
+    proven = sodium_memcmp(want.data(), bytes.data() + kHelloBytes, kProofBytes) == 0;
+  }
+  slot.release();
+  if (!h || (h->role == kWaiter && !proven) || stop_.load()) {
+    std::lock_guard lock(m_);
+    ++counts_.refused;
+    l->shutdown();
+    return;
+  }
+  if (h->role == kSender) {
+    // Paired with the waiter for this token, or closed: a sender never waits.
+    std::lock_guard lock(m_);
+    const auto it = waiting_.find(h->t);
+    if (it == waiting_.end() || static_cast<int>(counts_.active) >= opts_.max_pairs) {
+      ++counts_.refused;
+      l->shutdown();
+      return;
+    }
+    it->second->partner = l;
+    ++counts_.active;  // reserved now (the waiter's thread gives it back), so a burst cannot overrun max_pairs
+    waiting_.erase(it);
+    cv_.notify_all();
+    return;
+  }
+  serve_waiter(std::move(l), h->t, from);
+}
+
+void server::serve_waiter(std::shared_ptr<link> l, const token& t, const net::address& from) {
+  auto me = std::make_shared<waiter>();
   {
     std::lock_guard lock(m_);
-    if (!t || stop_.load()) {
+    const auto it = waiting_.find(t);
+    const bool replacing = it != waiting_.end();
+    if ((!replacing && static_cast<int>(waiting_.size()) >= opts_.max_waiting) ||
+        waiting_from_[from] >= kPerSource + (replacing ? 1 : 0)) {
+      if (waiting_from_[from] == 0) waiting_from_.erase(from);
       ++counts_.refused;
       l->shutdown();
       return;
     }
-    if (auto it = waiting_.find(*t); it != waiting_.end()) {
-      // The second with this token: hand this link to the one waiting (its
-      // thread runs the splice), unless the server is full.
-      auto w = it->second;
-      waiting_.erase(it);
-      if (static_cast<int>(counts_.active) >= opts_.max_pairs) {
-        w->refused = true;
-        ++counts_.refused;
-        l->shutdown();
-      } else {
-        w->partner = l;
-        ++counts_.active;  // reserved now, so a burst cannot overrun max_pairs
-      }
-      cv_.notify_all();
-      return;
+    if (replacing) {
+      it->second->replaced = true;  // its thread closes it
+      it->second = me;
+    } else {
+      waiting_.emplace(t, me);
     }
-    if (static_cast<int>(waiting_.size()) >= opts_.max_waiting) {
-      ++counts_.refused;
-      l->shutdown();
-      return;
-    }
-    me = std::make_shared<waiter>();
-    waiting_.emplace(*t, me);
+    ++waiting_from_[from];
   }
+  // Given back however this ends: the place from this source, the token's
+  // entry if still ours, and the pair's reservation.
+  struct waiter_guard {
+    server& s;
+    const token& t;
+    const net::address& from;
+    std::shared_ptr<waiter>& me;
+    std::shared_ptr<link> partner;
+    ~waiter_guard() {
+      std::lock_guard lock(s.m_);
+      if (--s.waiting_from_[from] <= 0) s.waiting_from_.erase(from);
+      if (auto it = s.waiting_.find(t); it != s.waiting_.end() && it->second == me) s.waiting_.erase(it);
+      if (partner) {
+        partner->shutdown();
+        --s.counts_.active;
+      }
+    }
+  } guard{*this, t, from, me, nullptr};
   // Waiting: nothing may arrive before the partner (a byte, or a close,
   // ends the wait).
   const auto deadline = clock::now() + std::chrono::milliseconds(opts_.wait_ms);
-  std::shared_ptr<link> partner;
   bool gone = false;
   for (;;) {
     {
-      std::unique_lock lock(m_);
-      if (me->partner || me->refused || stop_.load() || clock::now() >= deadline || gone) {
-        partner = me->partner;
-        if (!partner) {
-          // Still listed only if nobody took it.
-          if (auto it = waiting_.find(*t); it != waiting_.end() && it->second == me) waiting_.erase(it);
-        } else if (gone || stop_.load()) {
-          partner->shutdown();
-          --counts_.active;
-          partner.reset();
-        }
-        break;
-      }
+      std::lock_guard lock(m_);
+      guard.partner = me->partner;
+      if (guard.partner || me->replaced || stop_.load() || clock::now() >= deadline || gone) break;
     }
     std::uint8_t b = 0;
     auto n = l->read_some({&b, 1}, 100);
     if (n || n.error() != status::timeout) gone = true;  // spoke first, or closed
   }
-  if (!partner) {
+  if (!guard.partner || gone || stop_.load()) {
     l->shutdown();
     return;
   }
   const std::uint8_t ok = kPaired;
   splice_result r;
-  if (l->write_all({&ok, 1}) && partner->write_all({&ok, 1})) {
+  if (l->write_all({&ok, 1}) && guard.partner->write_all({&ok, 1})) {
     {
       std::lock_guard lock(m_);
       ++counts_.paired;
     }
-    r = splice(*l, *partner, opts_.lim, [this] { return stop_.load(); });
+    r = splice(*l, *guard.partner, opts_.lim, [this] { return stop_.load(); });
   }
   l->shutdown();
-  partner->shutdown();
   std::lock_guard lock(m_);
-  --counts_.active;
   counts_.bytes += r.a_to_b + r.b_to_a;
 }
 
