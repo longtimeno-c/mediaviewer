@@ -1,0 +1,8 @@
+{
+ "description": "Let Claude, or any MCP agent, edit the Final Cut Pro project you drag onto the MediaViewer panel, using only that timeline's media and the folders you give. Each pass is a new project beside yours; your project and files are never changed.",
+ "contributes": {
+  "api": {"min": 5, "max": 5},
+  "screens": [{"id": "agents", "title": "AI agents", "place": "window", "width": 620, "height": 720}],
+  "commands": [{"id": "open", "name": "AI agents", "modes": "all"}]
+ }
+}

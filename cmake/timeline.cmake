@@ -27,6 +27,8 @@ add_library(mv_nle_timeline STATIC
   ${_tl}/rational.h
   ${_tl}/timeline.cpp
   ${_tl}/timeline.h
+  ${_tl}/edit.cpp
+  ${_tl}/edit.h
   ${_tl}/bridge_state.cpp
   ${_tl}/bridge_state.h
 )

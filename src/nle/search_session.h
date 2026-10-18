@@ -60,6 +60,10 @@ class search_session {
   // panel's completions. [worker-thread]
   [[nodiscard]] result<std::string> suggest_json(const std::string& query, int timeout_ms) const;
 
+  // A file's transcript as the index has it (mv.ai.1 transcript_json, #485).
+  // status::unsupported_format: the installed pack predates it. [worker-thread]
+  [[nodiscard]] result<std::string> transcript_json(const std::string& path, int timeout_ms) const;
+
   // The host's event sink: a finished search wakes run() at once.
   void on_event(const mv_addon_event& e);
 

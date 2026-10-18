@@ -141,7 +141,7 @@ Every feature exists on both platforms; this table records where the per-OS half
 | Local AI search (PR 20–24) | `infer/`, `addons/ai` | ONNX Runtime | ONNX Runtime + Core ML ([17-local-ai-search.md](17-local-ai-search.md)) |
 | Edit workspace, Video Editor (PR 29–31) | `edit/` | WinUI | SwiftUI ([20](20-edit-workspace.md), [21](21-video-editor.md)) |
 | Local search in Final Cut Pro (issue #71) | `nle/` | FCPXML export only | Agent + FCP extension ([23-nle-search.md](23-nle-search.md)) |
-| An agent edits the FCP timeline (issue #485) | `nle/xml`, `nle/timeline`, `nle/bridge_state` | an FCPXML file opened | the panel's timeline bar ([29-agent-timeline.md](29-agent-timeline.md)) |
+| An agent edits the FCP timeline (issue #485) | `nle/xml`, `nle/timeline`, `nle/edit`, `nle/bridge_state`; the AI agents add-on (`addons/agent`), `shell/mcp_host` | `--mcp` on an FCPXML file; `platform_win.cpp`; the Settings offer (`IslandHost.Slots.cs`) | the panel's timeline bar; `platform_posix.cpp`; the Settings offer (`SlotItems.swift`) ([29-agent-timeline.md](29-agent-timeline.md)) |
 
 ## Distribution, per OS
 

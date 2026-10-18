@@ -161,7 +161,115 @@ version has been imported into FCP and compared clip by clip; the panel's drop, 
 hand-off to FCP have not been run inside FCP (the extension must be Developer ID-signed for FCP to
 load it). The issue's verify line asks for 20 real FCP projects dragged in; that run is owed.
 
+## Edits
+
+`nle/edit.h`: the operations the agent's `edit` tool and the Script Editor apply to a timeline,
+each a few attribute and child-list changes on the lossless tree.
+
+| Op | Does |
+|---|---|
+| `cut` from, to | removes that range of the timeline; ripple closes the gap (default), else a gap is left (a lift) |
+| `trim` item, from/to or head/tail | an item keeps part of itself; a negative head or tail lengthens it into its media (checked against the asset's length) |
+| `split` item, at | two items; anchored clips and markers from `at` on go with the second |
+| `remove` item | a storyline item ripples (or leaves a gap); a connected one goes |
+| `move` item, before | reorders the storyline |
+| `source` item, source_in[, path] | the same clip plays another range of its file, or another file in the scope (another take) |
+| `insert` path, source_in, duration[, before] | a clip from the scope into the storyline |
+| `connect` path, source_in, duration, at[, lane, with_audio] | B-roll from the scope, connected at `at` (video only unless asked) |
+| `marker` at, text[, todo] / `unmarker` item, n | markers |
+| `title` item, text | a title's or caption's text (its runs keep their style) |
+| `volume` item, dB / `enable` item, on | levels and on / off |
+
+Rules every op keeps: times snap to the sequence's frame grid; only `editable` items change, units
+(compound, multicam, sync, audition) only as units; connected clips follow their content (a cut
+removes the part of a connected clip inside it, splitting one that spans it; a music clip, role
+`music` or audio only below the storyline, plays on through a cut, shortened by what was cut); a
+connected storyline a cut crosses refuses the cut; transitions a cut or move touches go; J and L
+cuts keep their lead and tail when an edge moves; every change leaves a "Claude: …" marker where it
+happened (`edit_options::mark_changes`). A batch is atomic, and its item ids and times are those of
+the timeline before the batch: later times are mapped through the batch's earlier cuts and
+inserts, so "cut 0:12-0:13 and 0:40-0:41.5" means what it says. A batch with a `move` holds no
+time-addressed op. `parse_ops` reads the JSON form (times as seconds, `m:ss.ff` or FCPXML).
+
+## The agent
+
+`MediaViewer --mcp [--timeline FILE.fcpxml] [--folder DIR]... [--no-handoff]` is an MCP server
+over the stdio pipes the client starts it with (JSON-RPC 2.0, one message per line; MCP
+2025-06-18, 2025-03-26 and 2024-11-05). No socket is opened by the host or the add-on.
+
+```
+MCP client (Claude Code, Claude Desktop, …)
+   │ stdin / stdout
+MediaViewer --mcp   (shell/mcp_host.cpp: main() hands over before the viewer starts)
+   │ loaded_addon::load(store, "agent", host table v3: sound, frames)      mv.agent.1 serve
+   │ Local search services (search, find similar, transcript) over the AI pack's read-only
+   │ reader, opened at the first call (nle/search_session)
+libmv_agent / mv_agent.dll   (src/addons/agent: server, scope, transcript, nle/edit)
+   │ reads Timeline/ (the panel's bridge), or --timeline FILE
+   │ writes versions/ (or beside FILE) and hands a version to Final Cut Pro (open -b com.apple.FinalCut)
+```
+
+| Tool | Does |
+|---|---|
+| `get_timeline` | the working copy (or `original`): items with ids, kind, timeline `at` / `end`, lane, file and file range, role, text, markers, flags, not-editable reasons; length, frame rate, the playhead, the scope's folders; `stale` when FCP changed the project after the drag (the agent is told to ask for a new drag) |
+| `transcript` | per storyline clip (or `item`, `from`/`to`, or a scope `path` in file time): phrases on the timeline, refined against the sound; words with estimated times; silences measured in the sound, with `cut_from`/`cut_to` keeping 80 ms of air; "not transcribed yet" where the index has none |
+| `search` / `find_similar` | Local search over the scope only: each given folder (and below), and each folder the timeline's files sit in (that folder only), every answer filtered to the scope; which timeline items already use a result |
+| `scope_files` | the media files in the given folders (kind, size, length for a short list, whether the timeline uses it); hidden files and packages skipped |
+| `edit` | a batch of `nle/edit.h` ops on the working copy; every path must be in the scope; files are probed through the host table |
+| `preview_changes` | the change list, runtime before and after, what `commit` would name the version |
+| `commit` | writes "<Project> (Claude N)" (the panel's `versions/`, or beside `--timeline`), lists it in the bridge, asks FCP to import it; never the original's name |
+| `reset` | the project as last dragged |
+| `thumbnail` | a frame as JPEG, only when the editor turned frames on |
+
+The server's `instructions` carry the editing rules every client gets (read first, propose before
+changing, cut on silences and phrase edges never inside a word, keep J/L cuts, roles, effects and
+B-roll, units stay units, never lose a take the brief needs, one batch in the timeline's own times,
+preview then commit, a stale drag means ask for a new one).
+
+### Scope
+
+The timeline's own media (`timeline::media_paths()`, compounds and multicams included) plus the
+folders the editor gave (the panel's Folders, `--folder`, or the AI agents window on Windows). The
+server checks every path a tool is given and every result before the client sees it (`scope.h`):
+`photos:` keys are refused (even when a timeline names one), relative paths are refused, paths are
+compared after resolving `..` and symbolic links (a link inside a given folder that points outside
+is outside), case-insensitively on macOS and Windows, and `/` or a drive root is never a folder of
+the scope. A search query with `photos:` or `in:photos` is refused. Search never asks the pack for
+the whole index (`MV_AI_SCOPE_ALL` is refused by the host's services).
+
+### Transcript
+
+The index keeps Whisper's phrases (`mv.ai.1 transcript_json`, appended for this; file time). The
+agent lays each phrase of the range an item plays onto the timeline, moves its edges to where the
+sound starts and stops (within 1.5 s), shares the phrase among its words by length and moves each
+word boundary to the quietest 10 ms within 120 ms, and finds silences from the loudness itself
+(16 kHz mono through the host table's `audio_open`, RMS per 10 ms, the threshold 30 % of the way from
+the 10th to the 90th percentile, at least 6 dB over the floor, clamped to -60…-28 dBFS). Silences do
+not depend on the transcript: a clip not transcribed yet still has its pauses. Word times are
+estimates (Whisper's phrases carry no word timing, and Whisper often leaves fillers such as "um"
+out); the tool says so.
+
+## Install
+
+The AI agents add-on (`src/addons/agent`, id `agent`, a slot add-on: no chrome of its own). It is
+offered with one click in Settings > Add-ons on both hosts while it is not installed; installed, its
+card opens the **AI agents** window, a view tree both hosts draw:
+
+- **What the agent sees:** file paths, timecodes and transcript text of the dragged timeline and the
+  given folders; a cloud model receives what it reads; no pictures unless frames are on; no network
+  connection; status names in logs.
+- **Let the agent see frames** (off by default): the `thumbnail` tool. Kept in the add-on's data
+  folder (`agent.json`).
+- **Claude Code:** finds `claude` (`~/.local/bin`, Homebrew, a login shell's PATH; `%USERPROFILE%\.local\bin`,
+  npm's shim, the PATH on Windows) and runs `claude mcp add --scope user mediaviewer -- <MediaViewer> --mcp`,
+  or removes it; it shows whether it is added (`claude mcp get`).
+- **Claude Desktop:** asks first, then adds `mcpServers.mediaviewer` to `claude_desktop_config.json`
+  (every other key kept, the old file kept as `.bak`), or removes it.
+- **Another client:** the command line and the JSON entry, copyable.
+- **The timeline:** on the Mac, which project the panel holds and its folders; on Windows (no FCP), the
+  FCPXML file to work on (exported from DaVinci Resolve or Premiere Pro) and folders to give.
+
 ## Not built
 
-The agent (`MediaViewer --mcp`) and its tools, edits, `analyse`, the editing know-how and its eval
-set, the Final Cut Pro add-on, the Script Editor: issue #485 slices 2–6.
+`analyse` (the agent asking the app to index), the editing skills and the eval set, the Final Cut
+Pro add-on, the Script Editor: issue #485 slices 3-6.

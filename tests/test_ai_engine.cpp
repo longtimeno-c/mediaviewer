@@ -1778,6 +1778,37 @@ TEST_CASE("schema 8 migrates to 9: documents' passages, their words and a folder
   CHECK((*d)->passage_count() == 0);
 }
 
+TEST_CASE("a clip's transcript, for the timeline agent (#485)", "[ai][engine][nle]") {
+  scratch_dir dir{"ai-transcript"};
+  auto d = mv::ai::index_db::open(utf8(dir / "index.db"));
+  REQUIRE(d);
+  REQUIRE((*d)->add_root("/clips", true));
+  const mv::ai::index_db::seen_file f{"/clips/talk.mov", 5, 10, mv::ai::asset_kind::video};
+  auto up = (*d)->see_assets((*d)->roots().front().id, std::span(&f, 1), (*d)->next_generation());
+  REQUIRE(up);
+  const std::int64_t asset = (*up)[0].id;
+  std::vector<mv::ai::speech_in> rows;
+  bool done = true;
+  REQUIRE((*d)->speech_of(asset, "whisper-test", rows, done));
+  CHECK(rows.empty());
+  CHECK_FALSE(done);
+  // Partial, then finished: rows in time order, whatever order they went in.
+  const std::vector<mv::ai::speech_in> part = {{4000, 6000, " second"}, {1000, 3000, " first"}};
+  REQUIRE((*d)->commit_speech(asset, "whisper-test", part, mv::ai::work_state::partial, 6000));
+  REQUIRE((*d)->speech_of(asset, "whisper-test", rows, done));
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0].text == " first");
+  CHECK_FALSE(done);
+  const std::vector<mv::ai::speech_in> rest = {{7000, 9000, " third"}};
+  REQUIRE((*d)->commit_speech(asset, "whisper-test", rest, mv::ai::work_state::done, 9000));
+  REQUIRE((*d)->speech_of(asset, "whisper-test", rows, done));
+  CHECK(rows.size() == 3);
+  CHECK(done);
+  // Another spec's rows are not this one's.
+  REQUIRE((*d)->speech_of(asset, "whisper-other", rows, done));
+  CHECK(rows.empty());
+}
+
 TEST_CASE("an index migrates from schema 1, and again after a crash left a step half done", "[ai][engine]") {
   scratch_dir dir{"ai-migrate"};
   const std::string path = utf8(dir / "index.db");

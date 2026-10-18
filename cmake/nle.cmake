@@ -37,7 +37,8 @@ add_library(mv_nle STATIC
   ${_nle}/search_session.h
 )
 target_include_directories(mv_nle PUBLIC "${MV_SOURCE_ROOT}/src" "${MV_SOURCE_ROOT}/src/abi/include")
-target_link_libraries(mv_nle PUBLIC mv_addon mv_project_options PRIVATE ${MV_SQLITE_TARGET})
+# file_url lives with the timeline model (docs/design/29).
+target_link_libraries(mv_nle PUBLIC mv_addon mv_nle_timeline mv_project_options PRIVATE ${MV_SQLITE_TARGET})
 set_target_properties(mv_nle PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_executable(mv-nle-export "${_nle}/export_main.cpp")

@@ -51,6 +51,7 @@
 
 #include "abi/guard.h"
 #include "shell/app_icon.h"
+#include "shell/mcp_host.h"
 #include "core/trace.h"
 #include "mediaviewer/mediaviewer.h"
 #include "mediaviewer/mediaviewer_addon.h"
@@ -9487,6 +9488,26 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
+  // docs/design/29: an MCP client started this executable as its server, on its
+  // stdio pipes. Before anything of the viewer: no window, no update guard, no
+  // single-instance hand-off, no crash reporter.
+  {
+    int argc = 0;
+    if (LPWSTR* argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc)) {
+      const bool mcp = argc >= 2 && std::wstring_view(argv[1]) == L"--mcp";
+      std::vector<std::string> args;
+      if (mcp) {
+        for (int i = 1; i < argc; ++i) {
+          const int n = ::WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, nullptr, 0, nullptr, nullptr);
+          std::string utf8(n > 0 ? static_cast<std::size_t>(n - 1) : 0, '\0');
+          if (n > 1) ::WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, utf8.data(), n, nullptr, nullptr);
+          args.push_back(std::move(utf8));
+        }
+      }
+      ::LocalFree(argv);
+      if (mcp) return mv::shell::run_mcp(args);
+    }
+  }
   // PR 8 updater, before anything that can fail or show a window. Velopack
   // runs the exe with --veloapp-* during install/update/uninstall and kills it
   // after 15-30 s; the viewer has no work there.

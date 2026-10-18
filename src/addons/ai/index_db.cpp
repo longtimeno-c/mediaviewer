@@ -938,6 +938,21 @@ expected index_db::commit_speech(std::int64_t asset, const std::string& spec,
   return exec("COMMIT") ? expected{} : err(status::io);
 }
 
+expected index_db::speech_of(std::int64_t asset, const std::string& spec, std::vector<speech_in>& out, bool& done) {
+  std::lock_guard lock(m_);
+  out.clear();
+  done = false;
+  stmt s(db_, "SELECT start_ms, end_ms, text FROM speech WHERE asset_id = ?1 AND spec = ?2 ORDER BY start_ms");
+  if (!s.ok()) return err(status::io);
+  s.bind(1, asset).bind(2, spec);
+  while (s.step_row()) out.push_back(speech_in{s.i64(0), s.i64(1), s.text(2)});
+  stmt p(db_, "SELECT state FROM progress WHERE asset_id = ?1 AND spec = ?2");
+  if (!p.ok()) return err(status::io);
+  p.bind(1, asset).bind(2, spec);
+  if (p.step_row()) done = p.i64(0) == static_cast<int>(work_state::done);
+  return {};
+}
+
 expected index_db::each_speech(
     const std::string& spec,
     const std::function<void(std::int64_t, std::int64_t, std::int64_t, const std::string&)>& visit) {

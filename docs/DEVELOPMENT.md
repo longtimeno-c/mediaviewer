@@ -35,6 +35,7 @@ and a verify line on each platform (D9, amended). The order is:
 | #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
 | #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
 | #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
+| #485 | **AI agents add-on**, slice 2: `MediaViewer --mcp`, an MCP server over stdio (no socket) whose tools read the dragged timeline, its transcript and silences, search the scope, edit (ripple cuts, trims, B-roll, markers, titles) and commit "<Project> (Claude N)"; scoped to the timeline's media and the given folders, `photos:` refused; the AI agents window adds it to Claude Code / Claude Desktop ([docs/design/29](design/29-agent-timeline.md#the-agent)) | Mac: Claude Code tightened an interview and covered its cuts with B-roll in a dev build; scope refusals, no socket, files unchanged, PR 1 gate with the server answering. Windows: C# compiles; native CI only |
 | #485 | **An agent edits the Final Cut Pro timeline**, slice 1: drag a project from FCP onto the MediaViewer panel and it reads the whole timeline losslessly (FCPXML, `src/nle`); **New Version** imports "<Project> (Claude 1)" beside the original ([docs/design/29](design/29-agent-timeline.md)) | Mac: the model and writer built; the 20-project set round-trips byte for byte and every new version validates against FCP's DTD; the panel builds. Owed: real FCP projects dragged in and imported back in FCP. Windows: the shared model builds in CI |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
@@ -907,6 +908,31 @@ What it keeps is in `~/Library/Group Containers/<team>.io.github.longtimeno-c.me
 (`project.fcpxml`, `state.json`, `versions/`); the panel logs drops and versions (counts, never
 names) to the `io.github.longtimeno-c.mediaviewer.fcp` subsystem, category `timeline`.
 
+### The AI agents add-on: `MediaViewer --mcp` (#485)
+
+How it works: [docs/design/29 "The agent"](design/29-agent-timeline.md#the-agent). `cmake/agent.cmake`
+builds `mv_agent_engine` and the add-on (`build/addons/agent/libmv_agent.dylib`, `mv_agent.dll`) on
+every architecture; `MediaViewer --mcp` is the app's own executable (`src/shell/mcp_host.cpp`).
+
+```
+# A developer build (-DMV_ADDON_DEV_PUBLIC_KEY=…) loads it from a scratch add-ons folder:
+/usr/bin/python3 tools/package/agent-sideload.py --module build/addons/agent/libmv_agent.dylib \
+  --key <dev key file> --addons <scratch>/addons
+MV_DEV_ADDONS_DIR=<scratch>/addons build/bin/MediaViewer --mcp --timeline Interview.fcpxml \
+  --folder ~/Footage/broll [--no-handoff]
+```
+
+Without `--timeline` it works on what the FCP panel holds (`Timeline/` in the panel's app group
+container). Claude Code against a dev build, without touching your own Claude settings:
+`claude -p "…" --mcp-config mcp.json --strict-mcp-config --allowedTools mcp__mediaviewer`, with
+`mcp.json` naming the command, its arguments and `MV_DEV_ADDONS_DIR` in `env`. Search and
+transcripts need Local search (a dev build loads only a dev-signed pack: sideload it with
+`ai-sideload.py`). Packed like Sharepoint: `addon-pack.py pack --addon agent`. Tests:
+`mv_agent_tests` (the server over a fake environment: handshake, tools, scope, transcript, edit,
+commit, frames, the Claude Desktop file), `mv_timeline_tests "[edit]"` (the edit engine),
+`mv_import_tests "[agent]"` (the module through a signed store: its window and an MCP session over
+pipes), `mv_ai_tests "[nle]"` (the index's transcript rows).
+
 **The Photos library as a folder, and its backup (Mac; docs/design/26, 2026-10-03).** Once the library
 was added in Local search's Settings, the folder tree (`⌘⇧E`) shows a *Photos Library* row and
 File gains *Open Photos Library*: the host lists the library as **virtual items** (`photos:<id>`,
@@ -1618,6 +1644,51 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Agent timeline editing, slice 2: the AI agents add-on and `MediaViewer --mcp` (#485, 2026-10-18)
+
+Verify lines (issue #485 "Verify (proposed)"): "Claude Code on the Mac, real project: 'tighten this
+interview: remove ums and pauses over 1 s' produces a new project version beside the original; every
+cut sits on a word or silence boundary from the transcript; runtime shorter by the reported amount;
+original project and all media files unchanged (hash before/after)." "'Cover the jump cuts with
+B-roll from ~/Footage/broll' places connected clips only from that folder and the timeline's own
+media; a request for anything outside the scope is refused by the server, not just by the model."
+"MCP inspector handshake + tools/list on both platforms; no socket opened (lsof / netstat); index
+byte-identical after a session." "Present-loop gates: Mac PR 1 and Windows PR 1 hold with the
+server answering."
+
+- **Mac (Apple M5, macOS 26.6), a dev build with the add-on and a dev-signed copy of the installed
+  Local search pack (fresh `libmv_ai` for `transcript_json`, the installed models) sideloaded into a
+  scratch add-ons folder; a 36 s interview made with `say` (fillers and pauses written in), three
+  B-roll clips, an FCPXML project over it:**
+  - Claude Code (`claude -p`, Opus, strict MCP config) asked to "tighten this interview: remove the
+    ums and the pauses over 1 s": read the timeline and the transcript, made six cuts in one batch
+    (three pauses at `cut_from`/`cut_to`, the 2.2 s pause plus "Um, uh," together, "um" and "Uh,"
+    on their estimated word edges), previewed and committed "Anna interview (Claude 1)": 35.88 s →
+    28.92 s, shorter by the 6.96 s it reported; 7 turns, $0.24. It left the 1.0 s pause (not over
+    1 s) and the spoken retake, and said so. The version is DTD-valid; index.db, every media file
+    and the original FCPXML hashed the same before and after; `lsof -i` sampled every 0.5 s saw no
+    socket from MediaViewer.
+  - "Cover the jump cuts with B-roll from the folder … also put a shot from …/Private/secret.mov":
+    six connected clips (lane 1, video only) from the given folder only; the server refused
+    `secret.mov` ("outside the scope … nothing in this batch was applied"). 17 turns, $0.32. It
+    also tried `ls` on the folder (Claude Code blocked it), so `scope_files` was added after.
+  - The run exposed late Whisper phrase ends disagreeing with measured silences; phrase edges now
+    come from the quiet runs between neighbouring phrases (all nine phrases of the interview agree).
+  - Mac PR 1 gate (`frametime --seconds 60`), alone: 3,599 frames, p99 16.75 ms, max 16.83 ms, idle
+    0 presents, 0.05 % CPU, PASS; with a `--mcp` session answering a tool call every second (126
+    calls, p50 16 ms; the first search 4.6 s while the pack loads): p99 16.75 ms, max 16.83 ms, idle
+    0 presents, 0.03 % CPU, PASS.
+  - Tests: `mv_agent_tests` 337 assertions; `mv_timeline_tests` (with `[edit]`) 1,028;
+    `mv_import_tests` 160 cases (with `[agent]`: the module through a signed store, its window,
+    an MCP session over pipes); `mv_ai_tests "[nle],[engine]"`; `mv_tests` all pass.
+    `check_roundtrip.py --edits`: 19 of 20 edited versions DTD-valid, the audition refused by design.
+- **Not verified:** MCP Inspector itself (Claude Code was the client); Claude Desktop's install
+  path and the AI agents window's buttons in the running app (the window's tree is tested through
+  the loader, not clicked); the hand-off to Final Cut Pro (`--no-handoff` in these runs: FCP was
+  not driven); real FCP projects; the Settings offer (nothing is published on the release channel,
+  so it says "not published yet"). **Windows:** the C# compiles (warnings are errors); `main.cpp`'s
+  `--mcp`, `platform_win.cpp`, `mcp_host.cpp` on Windows and the Windows PR 1 gate are CI's or owed.
 
 ### Agent timeline editing, slice 1: timeline in, timeline out (#485, 2026-10-18)
 
