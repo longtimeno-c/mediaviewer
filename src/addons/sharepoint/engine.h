@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "addons/sharepoint/channel.h"
+#include "addons/sharepoint/internet.h"
 #include "addons/sharepoint/prefs.h"
 #include "addons/sharepoint/presence.h"
 #include "addons/sharepoint/transfer.h"
@@ -87,8 +88,11 @@ struct view {
   // person types it here (#442). Nothing about the files has left until the
   // code typed is the one this link derived; kCodeTries wrong ones end it.
   // This screen never shows the code.
+  // reaching (#472 PR 2): trying the places in an internet code, round after
+  // round. naming: connected over the internet; this person confirms the
+  // other's name (and may compare the check) before the offer leaves.
   enum class out_phase : std::uint8_t {
-    idle, waiting_wifi, connecting, confirming, waiting, sending, done, ended
+    idle, waiting_wifi, connecting, confirming, waiting, sending, done, ended, reaching, naming
   } out = out_phase::idle;
   std::string out_peer, out_peer_id, out_note;
   std::string out_entry_note;  // confirming: "That is not the code ..." after a wrong one
@@ -100,6 +104,9 @@ struct view {
   std::string out_via;
   bool out_reconnecting = false;
   std::uint32_t out_protocol = 0;  // the send's protocol, once its link is open (tests, the log)
+  bool out_internet = false;       // #472 PR 2: to a code, over the internet
+  int out_attempt = 0;             // reaching: the round
+  std::string out_check;           // naming: the six digits both screens show
 
   // ---- receive
   // connecting: a sender's link is up and the code shows; its offer comes
@@ -112,7 +119,15 @@ struct view {
   std::uint32_t in_files = 0;
   bool in_reconnecting = false;  // #472, as out_reconnecting
   std::uint32_t in_protocol = 0;  // as out_protocol
+  bool in_internet = false;       // #472 PR 2: from a code; in_code is the check, not a code to type
   std::string destination;
+
+  // ---- over the internet (#472 PR 2; the toggle off: none of it shows or runs)
+  bool internet = false;
+  std::string forwarded;     // the advanced "Forwarded port"
+  std::uint8_t code_phase = 0;  // internet_receiver::phase
+  std::string code_text, code_link, code_note, code_how;
+  std::string send_code_note;   // a pasted code that is not one
 };
 
 // The selected peer is heard only on Bluetooth, speaks only protocol 1, and
@@ -205,6 +220,12 @@ class engine {
     // empty the engine reads `prefs_path` itself.
     std::string prefs_path;
     std::optional<prefs> initial;
+    // #472 PR 2, the tests: a code's places are this machine's loopback
+    // addresses, the router is asked nothing (or a stand-in), and codes live
+    // this long.
+    bool internet_loopback = false;
+    std::optional<mapping::options> internet_mapping = mapping::options{};
+    int code_lifetime_ms = kCodeLifetimeMs;
   };
 
   engine(engine_host& host, options opts);
@@ -261,34 +282,48 @@ class engine {
   void on_beacon(const beacon& b, const std::string& address);
   void on_tick();
   void on_bt_peer(const bt_peer& p);
-  void on_incoming(std::unique_ptr<link> l);
+  // `internet`: from the internet listener (#472 PR 2).
+  void on_incoming(std::unique_ptr<link> l, bool internet = false);
   void accept_loop();
   void start_send();
   // The peer the send waited for is on Wi-Fi now: go.
   void start_waiting_send();
-  void run_send(std::string peer_id, std::vector<outgoing_file> files);
+  // `code` (#472 PR 2): to the receiver of an internet code instead of a
+  // peer nearby; peer_id is then empty.
+  void run_send(std::string peer_id, std::vector<outgoing_file> files, std::optional<invite::code> code = std::nullopt);
+  void start_send_code();
+  // After the link is open and the peer is known: the code typed (nearby) or
+  // the name confirmed (internet), then the offer, Accept and the files.
+  void send_on(std::shared_ptr<channel> ch, std::vector<outgoing_file> files, std::string name, std::uint64_t total,
+               std::string peer_id, std::optional<net::endpoint> internet_place);
+  // The control thread: the internet receiver made or dropped with the toggle.
+  void sync_internet();
+  void on_internet_link(std::unique_ptr<link> l);
   // #472, the sender's side of a protocol 2 send, on its own thread while
   // the send runs: when the link is suspect or drops, races every bearer the
   // peer is heard on and rejoins over the first that connects; when the send
   // is on Bluetooth and the peer is heard on Wi-Fi, moves there (make before
   // break), at most once per kSwitchHoldMs.
-  void run_mover(std::shared_ptr<channel> ch, std::string peer_id, const std::atomic<bool>& stop);
+  void run_mover(std::shared_ptr<channel> ch, std::string peer_id, const std::atomic<bool>& stop,
+                 std::optional<net::endpoint> internet_place = std::nullopt);
   // A channel's link event, for the window (and the mover, on the sender).
   void on_link_event(bool sending, link_event e, const channel& ch);
-  void run_receive(std::unique_ptr<link> l);
+  // `internet`: the link came to the internet listener (a code's sender, or
+  // a rejoin of a transfer over one).
+  void run_receive(std::unique_ptr<link> l, bool internet = false);
   // The offer's notification (#452), from the receive thread only. False:
   // the host has none (open the window instead).
   bool notice(const std::string& peer, std::size_t count, std::uint64_t bytes);
   void end_transfer();
   // A link while a transfer runs: a rejoin of it goes to it (#472); any
   // other is answered busy.
-  void route_busy(std::shared_ptr<link> l);
+  void route_busy(std::shared_ptr<link> l, bool internet = false);
   // channel::open with `l` listed in opening_ meanwhile.
   // A handshake the engine can end (cancel, the destructor). The client
   // speaks `version`; the server answers the hello it read.
-  [[nodiscard]] result<std::unique_ptr<channel>> open_tracked(std::shared_ptr<link> l, bool client,
-                                                              std::uint32_t version = kProtocolVersion,
-                                                              const hello* read = nullptr);
+  [[nodiscard]] result<std::unique_ptr<channel>> open_tracked(
+      std::shared_ptr<link> l, bool client, std::uint32_t version = kProtocolVersion, const hello* read = nullptr,
+      const std::array<std::uint8_t, invite::kSecretBytes>* internet_secret = nullptr);
   void forget_opening(const std::shared_ptr<link>& l);
   void fail_transfer(bool sending) noexcept;  // after an exception on a transfer thread
   // The files to send are read on one thread of the engine's (the folder
@@ -340,6 +375,10 @@ class engine {
   std::condition_variable mover_cv_;
   // This run's X25519 key in protocol 2's XX handshake. Wiped at the end.
   std::array<std::uint8_t, 32> static_key_{};
+  // #472 PR 2: the receiver of codes while the toggle is on (made and dropped
+  // on the control thread; a receive in flight keeps its own reference).
+  std::shared_ptr<internet_receiver> internet_;  // under m_
+  std::string code_entry_;                       // under m_: what the "send to a code" field holds
   std::atomic<bool> cancel_{false};
   std::atomic<bool> stopping_{false};
 

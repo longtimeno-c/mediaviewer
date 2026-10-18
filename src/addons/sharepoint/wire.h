@@ -79,7 +79,8 @@ inline constexpr std::size_t kMaxPartBytes = 240;
 // One file's size, at most (an offer above it is refused whole).
 inline constexpr std::uint64_t kMaxFileBytes = 1ull << 50;
 
-enum class transport : std::uint8_t { wifi, bluetooth };
+// `internet`: a TCP link over the internet with a code (#472 PR 2).
+enum class transport : std::uint8_t { wifi, bluetooth, internet };
 [[nodiscard]] const char* transport_name(transport t) noexcept;
 
 // Sealed message types (the first plaintext byte).

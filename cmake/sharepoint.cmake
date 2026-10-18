@@ -51,6 +51,8 @@ add_library(mv_sharepoint_engine STATIC
   ${_S}/net.h ${_S}/net_address.cpp
   ${_S}/invite.cpp ${_S}/invite.h
   ${_S}/mapping.cpp ${_S}/mapping.h
+  ${_S}/race.h
+  ${_S}/internet.cpp ${_S}/internet.h
   ${_S}/engine.cpp ${_S}/engine.h
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/tree.cpp

@@ -24,6 +24,11 @@ struct prefs {
   // item / tray icon) with every window closed. Implies `receiving`.
   bool background = false;
   std::string destination;  // Save to; "" = the default (Downloads)
+  // #472 PR 2: "Send and receive over the internet" (off by default), and
+  // the advanced "Forwarded port": "<public address>:<port>" the person
+  // forwarded on their router to this machine's same port ("" = none).
+  bool internet = false;
+  std::string forwarded;
   bool operator==(const prefs&) const = default;
 };
 

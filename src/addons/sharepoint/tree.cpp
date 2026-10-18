@@ -116,7 +116,7 @@ std::string moved_text(std::uint32_t files, std::uint32_t count, std::uint64_t b
 bool out_busy(const view& v) {
   return v.out == view::out_phase::waiting_wifi || v.out == view::out_phase::connecting ||
          v.out == view::out_phase::confirming || v.out == view::out_phase::waiting ||
-         v.out == view::out_phase::sending;
+         v.out == view::out_phase::sending || v.out == view::out_phase::reaching || v.out == view::out_phase::naming;
 }
 
 // ---- what is offered to this computer -------------------------------------------------
@@ -133,10 +133,19 @@ void incoming(writer& w, const view& v) {
   w.end_object().end_array().end_object();
   switch (v.in) {
     case view::in_phase::connecting:
-      // #442: the code shows here only; the person at the sender types it.
-      text(w, "in_title", v.in_peer + " wants to send you files", "heading");
-      text(w, "in_code", v.in_code, "display");
-      text(w, "in_check", "Type this code on " + v.in_peer + " to continue.", "secondary");
+      if (v.in_internet) {
+        // #472 PR 2: the code already proved them; the check is to compare.
+        text(w, "in_title", v.in_peer + " (new device) wants to send you files", "heading");
+        text(w, "in_code", v.in_code, "display");
+        text(w, "in_check",
+             "The same six digits show on " + v.in_peer + "\xE2\x80\x99s screen. If they differ, decline.",
+             "secondary");
+      } else {
+        // #442: the code shows here only; the person at the sender types it.
+        text(w, "in_title", v.in_peer + " wants to send you files", "heading");
+        text(w, "in_code", v.in_code, "display");
+        text(w, "in_check", "Type this code on " + v.in_peer + " to continue.", "secondary");
+      }
       button(w, "decline", "Decline", "plain");
       break;
     case view::in_phase::asking:
@@ -291,11 +300,81 @@ void nearby(writer& w, const view& v, bool sending) {
            "secondary");
       button(w, "out_cancel", "Cancel", "destructive");
       break;
+    case view::out_phase::reaching:
+      // #472 PR 2: round after round until one place answers, or Cancel.
+      text(w, "out_reaching",
+           "Trying to reach the other computer" +
+               (v.out_attempt > 1 ? " (attempt " + std::to_string(v.out_attempt) + ")" : std::string()) +
+               "\xE2\x80\xA6",
+           "secondary");
+      if (!v.out_note.empty()) text(w, "out_note", v.out_note, "secondary");
+      button(w, "out_cancel", "Cancel", "destructive");
+      break;
+    case view::out_phase::naming:
+      stack(w, "out_name", 8, "vertical", "card", "center");
+      text(w, "out_note", "Connected to " + v.out_peer + " (new device)", "heading");
+      text(w, "out_check", v.out_check, "display");
+      text(w, "out_check_note",
+           "The same six digits show on their screen. If they differ, someone else has the code: cancel. Nothing has "
+           "been sent yet.",
+           "secondary");
+      row(w, "out_name_actions");
+      button(w, "out_cancel", "Cancel", "plain");
+      button(w, "out_confirm", "Send to " + v.out_peer, "primary");
+      end(w);
+      end(w);
+      break;
     case view::out_phase::done:
     case view::out_phase::ended:
       text(w, "out_note", v.out_note);
       break;
   }
+  end(w);
+}
+
+// ---- over the internet (#472 PR 2) -------------------------------------------------------
+
+void internet(writer& w, const view& v, bool sending) {
+  stack(w, "internet_section", 10, "vertical", nullptr, "fill");
+  w.begin_object().key("type").string("toggle").key("id").string("internet");
+  w.key("label").string("Send and receive over the internet").key("value").boolean(v.internet).end_object();
+  if (!v.internet) {
+    end(w);
+    return;
+  }
+  text(w, "internet_intro",
+       "No server: the other computer connects straight to this one with a code that works once. Your public "
+       "address goes to whoever you give the code to.",
+       "caption");
+  // Receive: one code at a time.
+  text(w, "code_title", "Receive from anywhere", "heading");
+  using phase = internet_receiver::phase;
+  const auto p = static_cast<phase>(v.code_phase);
+  if (p == phase::ready) {
+    stack(w, "code_card", 8, "vertical", "card", "center");
+    text(w, "code_text", v.code_text, "display");
+    text(w, "code_link", v.code_link, "caption");
+    if (!v.code_note.empty()) text(w, "code_note", v.code_note, "secondary");
+    if (!v.code_how.empty()) text(w, "code_how", "Ways in: " + v.code_how + ".", "caption");
+    button(w, "stop_code", "Stop", "plain");
+    end(w);
+  } else {
+    if (!v.code_note.empty()) text(w, "code_note", v.code_note, "secondary");
+    button(w, "make_code", p == phase::preparing ? "Making a code\xE2\x80\xA6" : "Make a code", "primary",
+           p == phase::preparing);
+  }
+  w.begin_object().key("type").string("text_field").key("id").string("forwarded");
+  w.key("label").string("Forwarded port (advanced)").key("value").string(v.forwarded);
+  w.key("placeholder").string("public address:port").end_object();
+  // Send to a code.
+  text(w, "send_code_title", "Send to a code", "heading");
+  row(w, "send_code_row");
+  w.begin_object().key("type").string("text_field").key("id").string("send_code");
+  w.key("label").string("Code or link").key("value").string("");
+  w.key("placeholder").string("Paste the code they sent").end_object();
+  button(w, "send_to_code", "Send", "primary", v.file_count == 0 || v.reading_folder || sending);
+  end(w);
+  if (!v.send_code_note.empty()) text(w, "send_code_note", v.send_code_note, "secondary");
   end(w);
 }
 
@@ -333,6 +412,7 @@ std::string build_tree(const view& v) {
   const bool sending = out_busy(v);
   files_card(w, v, sending);
   nearby(w, v, sending);
+  internet(w, v, sending);
 
   end(w);                      // page
   w.end_array().end_object();  // root

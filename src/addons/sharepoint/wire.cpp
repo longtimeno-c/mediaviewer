@@ -46,7 +46,14 @@ std::string_view cut_utf8(std::string_view s, std::size_t max) noexcept {
 
 }  // namespace
 
-const char* transport_name(transport t) noexcept { return t == transport::bluetooth ? "Bluetooth" : "Wi-Fi"; }
+const char* transport_name(transport t) noexcept {
+  switch (t) {
+    case transport::bluetooth: return "Bluetooth";
+    case transport::internet: return "the internet";
+    case transport::wifi: break;
+  }
+  return "Wi-Fi";
+}
 
 namespace {
 std::string code_of(crypto_generichash_state& st) {
