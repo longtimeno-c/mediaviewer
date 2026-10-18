@@ -45,7 +45,7 @@ inline constexpr std::uint8_t kProbe = 0xA6;
 inline constexpr std::uint8_t kStream = 0xB7;
 inline constexpr std::size_t kStreamPayload = 1200;
 
-class udp_hub {
+class udp_hub : public std::enable_shared_from_this<udp_hub> {
  public:
   using datagram_fn = std::function<void(std::span<const std::uint8_t>, const net::endpoint& from)>;
   // `port` 0: the OS picks.

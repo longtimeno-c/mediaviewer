@@ -124,6 +124,7 @@ struct view {
 
   // ---- over the internet (#472 PR 2; the toggle off: none of it shows or runs)
   bool internet = false;
+  bool dht = false;          // #472 PR 3: word codes on the public DHT (opt-in)
   std::string forwarded;     // the advanced "Forwarded port"
   std::uint8_t code_phase = 0;  // internet_receiver::phase
   std::string code_text, code_link, code_note, code_how;
@@ -226,6 +227,11 @@ class engine {
     bool internet_loopback = false;
     std::optional<mapping::options> internet_mapping = mapping::options{};
     int code_lifetime_ms = kCodeLifetimeMs;
+    // #472 PR 3, the tests: the DHT starts from these nodes (no routers), the
+    // code's key derivation is the cheapest, and every code is a word code.
+    std::optional<std::vector<net::endpoint>> dht_nodes;
+    bool dht_fast_kdf = false;
+    bool internet_force_words = false;
   };
 
   engine(engine_host& host, options opts);
@@ -290,7 +296,11 @@ class engine {
   void start_waiting_send();
   // `code` (#472 PR 2): to the receiver of an internet code instead of a
   // peer nearby; peer_id is then empty.
-  void run_send(std::string peer_id, std::vector<outgoing_file> files, std::optional<invite::code> code = std::nullopt);
+  void run_send(std::string peer_id, std::vector<outgoing_file> files, std::optional<invite::code> code = std::nullopt,
+                std::optional<dht::word_code> words = std::nullopt);
+  // #472 PR 3: the DHT client's options (the routers, or the tests' nodes;
+  // the table kept beside the prefs).
+  [[nodiscard]] dht::client::options dht_options() const;
   void start_send_code();
   // After the link is open and the peer is known: the code typed (nearby) or
   // the name confirmed (internet), then the offer, Accept and the files.

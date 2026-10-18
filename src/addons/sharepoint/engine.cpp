@@ -9,6 +9,7 @@
 #include <set>
 #include <unordered_map>
 
+#include "addons/sharepoint/meet.h"
 #include "addons/sharepoint/race.h"
 #include "core/json.h"
 #include "io/file_port.h"
@@ -102,6 +103,7 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   v_.receiving = kept.receiving || kept.background;  // presence starts on the control thread, below
   v_.background = kept.background;
   v_.internet = kept.internet;  // #472 PR 2: the receiver of codes, made on the control thread
+  v_.dht = kept.dht;
   v_.forwarded = kept.forwarded;
   v_.destination = host_.default_destination();
   if (!kept.destination.empty()) {
@@ -200,6 +202,7 @@ void engine::save_now() {
     p.destination = v_.destination == host_.default_destination() ? std::string() : v_.destination;
     p.internet = v_.internet;
     p.forwarded = v_.forwarded;
+    p.dht = v_.dht;
   }
   {
     std::lock_guard lock(control_m_);
@@ -325,6 +328,10 @@ void engine::sync_internet() {
       o.forwarded = v_.forwarded;
       o.mapping = opts_.internet_mapping;
       o.lifetime_ms = opts_.code_lifetime_ms;
+      o.dht = v_.dht;
+      o.dht_client = dht_options();
+      o.dht_fast_kdf = opts_.dht_fast_kdf;
+      o.force_words = opts_.internet_force_words;
     }
   }
   if (drop) {
@@ -908,6 +915,19 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
     post();
     return;
   }
+  if (node == "dht" && kind == kChange && value && value->k == json::kind::boolean) {
+    // #472 PR 3: opt-in, off by default; the DHT runs only while a code waits.
+    std::shared_ptr<internet_receiver> in;
+    {
+      std::lock_guard lock(m_);
+      v_.dht = value->b;
+      in = internet_;
+    }
+    if (in) in->set_dht(value->b);
+    request_save();
+    post();
+    return;
+  }
   if (node == "forwarded" && (kind == kChange || kind == kSubmit) && text) {
     std::shared_ptr<internet_receiver> in;
     {
@@ -1205,19 +1225,26 @@ void engine::end_transfer() {
 
 void engine::start_send_code() {
   std::optional<invite::code> code;
+  std::optional<dht::word_code> words;
   std::vector<outgoing_file> files;
   {
     std::lock_guard lock(m_);
     if (!v_.internet || transfer_running_ || out_busy_locked() || v_.reading_folder) return;
     code = invite::decode(code_entry_);
-    if (!code) {
-      v_.send_code_note = code_entry_.empty() ? "Paste the code or link the other person sent you."
-                                              : "That is not a whole code: check it against what they sent (a "
-                                                "mistyped code is caught here, before it is spent).";
+    if (!code && v_.dht) words = dht::parse_words(code_entry_);
+    if (!code && !words) {
+      v_.send_code_note = code_entry_.empty()
+                              ? std::string(v_.dht ? "Paste the code or link, or type the four words, the other person "
+                                                     "sent you."
+                                                   : "Paste the code or link the other person sent you.")
+                              : std::string("That is not a whole code: check it against what they sent (a mistyped "
+                                            "code is caught here, before it is spent).");
     } else if (files_.empty()) {
       v_.send_code_note = "Pick the files to send first.";
       code.reset();
-    } else {
+      words.reset();
+    }
+    if ((code || words) && !files_.empty()) {
       v_.send_code_note.clear();
       transfer_running_ = true;
       cancel_.store(false);
@@ -1237,19 +1264,35 @@ void engine::start_send_code() {
     }
   }
   post();
-  if (!code) return;
+  if (!code && !words) return;
   std::lock_guard threads(threads_m_);
   if (transfer_thread_.joinable()) transfer_thread_.join();
-  transfer_thread_ = std::thread([this, files = std::move(files), code = std::move(*code)]() mutable {
+  transfer_thread_ = std::thread([this, files = std::move(files), code = std::move(code), words]() mutable {
     try {
-      run_send({}, std::move(files), std::move(code));
+      run_send({}, std::move(files), std::move(code), words);
     } catch (...) {
       fail_transfer(true);
     }
   });
 }
 
-void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std::optional<invite::code> code) {
+dht::client::options engine::dht_options() const {
+  dht::client::options o;
+  if (opts_.dht_nodes) {
+    o.use_routers = false;
+    o.extra = *opts_.dht_nodes;
+    o.query_ms = 500;
+    o.lookup_ms = 5000;
+  }
+  if (!opts_.prefs_path.empty()) {
+    o.table_path = std::string(io::parent_of(opts_.prefs_path));
+    o.table_path = o.table_path.empty() ? std::string("sharepoint_dht.dat") : io::join_path(o.table_path, "sharepoint_dht.dat");
+  }
+  return o;
+}
+
+void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std::optional<invite::code> code,
+                      std::optional<dht::word_code> words) {
   std::optional<net::endpoint> wifi;
   std::string bt_handle, name;
   std::uint32_t protocol = kProtocol1;
@@ -1290,6 +1333,69 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std
     }
   } join_races{races};
   std::optional<net::endpoint> internet_place;
+  if (words) {
+    // #472 PR 3: four words. Meet on the DHT, punch, then the internet
+    // handshake over the punched path, keyed by the words.
+    const auto stopped = [this] { return cancel_.load() || stopping_.load(); };
+    auto say = [this](const std::string& s) {
+      {
+        std::lock_guard lock(m_);
+        v_.out_note = s;
+      }
+      post_throttled();
+    };
+    say("Working out the code\xE2\x80\xA6");
+    auto k = dht::derive(*words, opts_.dht_fast_kdf);
+    auto h = udp_hub::open(0, opts_.internet_loopback);
+    if (!k || !h) return finish("Could not use the code on this computer.");
+    std::shared_ptr<udp_hub> hub = std::move(*h);
+    struct hub_guard {
+      std::shared_ptr<udp_hub>& h;
+      ~hub_guard() { h->stop(); }
+    } stop_hub{hub};
+    dht::client client(hub, dht_options());
+    say("Joining the public DHT\xE2\x80\xA6");
+    if (!client.start(stopped)) {
+      if (stopped()) return finish("Cancelled. Nothing was sent.");
+      return finish("The public DHT did not answer: this network may block UDP, or there is no connection. "
+                    "Nothing was sent.");
+    }
+    dht::meet_options mo;
+    mo.loopback = opts_.internet_loopback;
+    mo.wait_ms = opts_.code_lifetime_ms;
+    auto met = dht::meet(hub, client, *k, dht::role::sender, mo, stopped, say);
+    if (stopped()) return finish("Cancelled. Nothing was sent.");
+    if (!met) {
+      return finish(met.error() == status::timeout
+                        ? "Could not reach the other computer with these words: they may be mistyped, used or "
+                          "expired, or both networks block a direct path (two strict NATs, or no UDP). Check the "
+                          "words, or ask for a code made where the router can open a port. Nothing was sent."
+                        : "Could not reach the other computer. Nothing was sent.");
+    }
+    std::shared_ptr<link> l(std::move(*met));
+    {
+      std::lock_guard lock(m_);
+      if (stopping_.load()) return finish("Cancelled. Nothing was sent.");
+      opening_.push_back(l);
+    }
+    channel::options o;
+    o.static_key = static_key_;
+    const std::vector<std::uint8_t> pw(k->password.begin(), k->password.end());
+    auto opened = channel::open_internet(l, pw, id_, opts_.my_name, o);
+    forget_opening(l);
+    if (cancel_.load()) return finish("Cancelled. Nothing was sent.");
+    if (!opened) {
+      return finish("The words did not work: they were mistyped, used, or have expired. Ask for new ones. "
+                    "Nothing was sent.");
+    }
+    // The link is up: this side's items now say "gone", while the send runs.
+    std::thread gone([&client, &k] { dht::withdraw(client, *k, dht::role::sender, {}); });
+    std::shared_ptr<channel> ich(std::move(*opened));
+    name = ich->peer_name();
+    send_on(std::move(ich), std::move(files), name, total, {}, std::nullopt);
+    gone.join();
+    return;
+  }
   if (code) {
     const auto connect = [this](const net::endpoint& to, int ms) -> result<std::unique_ptr<link>> {
       auto c = opts_.connect_wifi ? opts_.connect_wifi(to, ms) : net::connect(to, ms);

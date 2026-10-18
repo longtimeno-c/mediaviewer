@@ -346,6 +346,16 @@ void internet(writer& w, const view& v, bool sending) {
        "No server: the other computer connects straight to this one with a code that works once. Your public "
        "address goes to whoever you give the code to.",
        "caption");
+  // #472 PR 3: opt-in, off by default.
+  w.begin_object().key("type").string("toggle").key("id").string("dht");
+  w.key("label").string("Find each other over the internet (public DHT)").key("value").boolean(v.dht).end_object();
+  if (v.dht) {
+    text(w, "dht_note",
+         "When this computer has no public address, a code is four words instead, and both computers meet through "
+         "the BitTorrent DHT, only while a code waits. DHT nodes see this computer's address taking part; they "
+         "cannot read or change what the two computers say.",
+         "caption");
+  }
   // Receive: one code at a time.
   text(w, "code_title", "Receive from anywhere", "heading");
   using phase = internet_receiver::phase;
@@ -353,7 +363,7 @@ void internet(writer& w, const view& v, bool sending) {
   if (p == phase::ready) {
     stack(w, "code_card", 8, "vertical", "card", "center");
     text(w, "code_text", v.code_text, "display");
-    text(w, "code_link", v.code_link, "caption");
+    if (!v.code_link.empty()) text(w, "code_link", v.code_link, "caption");
     if (!v.code_note.empty()) text(w, "code_note", v.code_note, "secondary");
     if (!v.code_how.empty()) text(w, "code_how", "Ways in: " + v.code_how + ".", "caption");
     button(w, "stop_code", "Stop", "plain");
@@ -371,7 +381,8 @@ void internet(writer& w, const view& v, bool sending) {
   row(w, "send_code_row");
   w.begin_object().key("type").string("text_field").key("id").string("send_code");
   w.key("label").string("Code or link").key("value").string("");
-  w.key("placeholder").string("Paste the code they sent").end_object();
+  w.key("placeholder").string(v.dht ? "Paste the code, or type the four words" : "Paste the code they sent")
+      .end_object();
   button(w, "send_to_code", "Send", "primary", v.file_count == 0 || v.reading_folder || sending);
   end(w);
   if (!v.send_code_note.empty()) text(w, "send_code_note", v.send_code_note, "secondary");

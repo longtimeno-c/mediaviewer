@@ -50,7 +50,7 @@ bool before(std::uint32_t a, std::uint32_t b) noexcept { return static_cast<std:
 }  // namespace
 
 struct udp_hub::stream_state {
-  udp_hub* hub = nullptr;
+  std::weak_ptr<udp_hub> hub;  // a stream that outlives its hub just fails
   net::endpoint peer;
   std::uint32_t id = 0;
   bool learn = false;  // under m: the first packet's sender becomes the peer
@@ -94,7 +94,9 @@ struct udp_hub::stream_state {
   int unacked = 0;
   clock::time_point ack_due{};
 
-  void send_wire(std::span<const std::uint8_t> w) { (void)hub->send(w, peer); }
+  void send_wire(std::span<const std::uint8_t> w) {
+    if (auto h = hub.lock()) (void)h->send(w, peer);
+  }
 
   // Under m.
   void send_ack() {
@@ -371,7 +373,7 @@ void udp_hub::on_probe(datagram_fn fn) {
 
 std::unique_ptr<link> udp_hub::stream(const net::endpoint& peer, std::uint32_t id, bool learn) {
   auto s = std::make_shared<stream_state>();
-  s->hub = this;
+  s->hub = weak_from_this();
   s->peer = peer;
   s->id = id;
   s->learn = learn;

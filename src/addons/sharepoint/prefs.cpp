@@ -38,6 +38,7 @@ std::optional<prefs> parse(const std::string& text) {
   if (p.background) p.receiving = true;
   if (const std::string* d = doc->str("destination")) p.destination = *d;
   p.internet = doc->boolean("internet").value_or(false);
+  p.dht = doc->boolean("dht").value_or(false);
   if (const std::string* f = doc->str("forwarded")) p.forwarded = *f;
   return p;
 }
@@ -58,7 +59,8 @@ bool save_prefs(const std::string& path, const prefs& p) {
   w.begin_object().key("v").integer(1).key("receiving").boolean(p.receiving);
   w.key("background").boolean(p.background);
   w.key("destination").string(p.destination);
-  w.key("internet").boolean(p.internet).key("forwarded").string(p.forwarded).end_object();
+  w.key("internet").boolean(p.internet).key("forwarded").string(p.forwarded);
+  w.key("dht").boolean(p.dht).end_object();
   const std::string text = w.take();
   const std::string fresh = path + ".new";
   (void)io::remove_file(fresh);  // a leftover from a write that stopped

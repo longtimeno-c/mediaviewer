@@ -41,6 +41,7 @@
 #include <thread>
 #include <vector>
 
+#include "addons/sharepoint/dht.h"
 #include "addons/sharepoint/invite.h"
 #include "addons/sharepoint/mapping.h"
 #include "addons/sharepoint/net.h"
@@ -75,6 +76,13 @@ class internet_receiver {
     // The router's port mapping; nullopt: none asked (the tests).
     std::optional<mapping::options> mapping = mapping::options{};
     int lifetime_ms = kCodeLifetimeMs;
+    // #472 PR 3: with no public place, a four-word code on the public DHT
+    // (opt-in, "Find each other over the internet"). `dht_fast_kdf` and
+    // `force_words` are the tests'.
+    bool dht = false;
+    dht::client::options dht_client;
+    bool dht_fast_kdf = false;
+    bool force_words = false;
   };
   using link_fn = std::function<void(std::unique_ptr<link>)>;
 
@@ -89,6 +97,8 @@ class internet_receiver {
   void drop_code();
   // The advanced "Forwarded port" for the next code.
   void set_forwarded(std::string forwarded);
+  // The DHT toggle, for the next code.
+  void set_dht(bool on);
   [[nodiscard]] snapshot state() const;
   // An internet hello arrived: the code's secret, spent now (right or wrong,
   // it never works again); nullopt when no code waits.
@@ -124,6 +134,13 @@ class internet_receiver {
   std::thread accept_thread_;                                           // this object's thread only
   std::unique_ptr<mapping::mapper> mapper_;                             // the run thread only
   std::vector<mapping::mapped> mapped_;                                 // the run thread only
+  // A word code (#472 PR 3): its socket, DHT client and keys, and the thread
+  // that waits for the sender on the DHT and punches to it.
+  std::shared_ptr<udp_hub> hub_;                                        // the run thread only
+  std::unique_ptr<dht::client> dht_;                                    // the run thread only
+  std::unique_ptr<dht::keys> dht_keys_;                                 // the run thread only
+  std::thread meet_thread_;                                             // the run thread only
+  std::atomic<bool> meet_stop_{false};
   std::thread thread_;
 };
 

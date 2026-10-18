@@ -4,6 +4,8 @@
 
 #include <algorithm>
 
+#include "addons/sharepoint/meet.h"
+
 namespace mv::sharepoint {
 
 namespace {
@@ -63,6 +65,11 @@ void internet_receiver::make_code() {
 void internet_receiver::set_forwarded(std::string forwarded) {
   std::lock_guard lock(m_);
   opts_.forwarded = std::move(forwarded);
+}
+
+void internet_receiver::set_dht(bool on) {
+  std::lock_guard lock(m_);
+  opts_.dht = on;
 }
 
 void internet_receiver::drop_code() {
@@ -163,6 +170,15 @@ void internet_receiver::release_locked(std::unique_lock<std::mutex>& lock) {
   if (l) l->shutdown();
   if (accept_thread_.joinable()) accept_thread_.join();
   l.reset();
+  // A word code: the wait on the DHT stops (it withdraws its items), then
+  // the client (which keeps its table) and the socket go.
+  meet_stop_.store(true);
+  if (meet_thread_.joinable()) meet_thread_.join();
+  meet_stop_.store(false);
+  dht_.reset();
+  dht_keys_.reset();
+  if (hub_) hub_->stop();
+  hub_.reset();
   if (mapper_) {
     for (const auto& m : mapped_) mapper_->remove(m);
   }
@@ -189,6 +205,7 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
   // over it still runs (then this one waits for it to end: one listener).
   release_locked(lock);  // a code before this one: its listener and mappings go
   const std::string forwarded_text = opts_.forwarded;
+  const bool use_dht = opts_.dht;
   lock.unlock();
   notify();
 
@@ -206,7 +223,9 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
     s.note = "Could not listen for a sender on this computer.";
   } else {
     const std::uint16_t port = (*l)->port();
-    if (opts_.loopback_only) {
+    if (opts_.loopback_only && opts_.force_words && use_dht) {
+      s.p = phase::preparing;  // the tests' word code (below)
+    } else if (opts_.loopback_only) {
       places = {{"::1", port}, {"127.0.0.1", port}};
       s.how = {"this computer"};
     } else {
@@ -238,7 +257,7 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
         places.push_back({net::address_text(*v6), port});
         s.how.emplace_back("IPv6");
       }
-      const bool reachable = !places.empty();
+      const bool reachable = !places.empty() && !opts_.force_words;
       // This network's address: a sender on the same network, or behind the
       // same router, comes in this way.
       const auto gw = opts_.mapping && opts_.mapping->gateway ? opts_.mapping->gateway : net::default_gateway();
@@ -246,7 +265,9 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
         places.push_back({net::address_text(*lan), port});
       }
       if (places.size() > invite::kMaxPlaces) places.resize(invite::kMaxPlaces);
-      if (!reachable) {
+      if (!reachable && use_dht) {
+        s.p = phase::preparing;  // a word code instead (below)
+      } else if (!reachable) {
         s.p = phase::failed;
         const bool nat = mapper && mapper->behind_another_nat();
         s.note = nat ? "This network has no public address of its own: its router sits behind another NAT (often "
@@ -256,6 +277,39 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
                      : "No way in from the internet was found: the router did not open a port (turn on UPnP or "
                        "NAT-PMP in its settings), and this computer has no public IPv6 address. Forward a port by "
                        "hand (Forwarded port, below), or try another network (a phone hotspot often has IPv6).";
+      }
+    }
+  }
+  // #472 PR 3: no public place, the DHT on: four words, and a wait on the
+  // DHT for the sender (on its own thread) that punches to it.
+  std::shared_ptr<udp_hub> hub;
+  std::unique_ptr<dht::client> client;
+  std::unique_ptr<dht::keys> keys;
+  if (l && s.p == phase::preparing) {
+    (*l)->shutdown();  // no TCP way in: the words are the way
+    const dht::word_code words = dht::random_code();
+    auto k = dht::derive(words, opts_.dht_fast_kdf);
+    auto h = udp_hub::open(0, opts_.loopback_only);
+    if (!k || !h) {
+      s.p = phase::failed;
+      s.note = "Could not make a code on this computer.";
+    } else {
+      hub = std::move(*h);
+      client = std::make_unique<dht::client>(hub, opts_.dht_client);
+      if (!client->start([this] { return meet_stop_.load() || stop_; })) {
+        s.p = phase::failed;
+        s.note = "The public DHT did not answer: this network may block UDP, or there is no connection. Forward a "
+                 "port by hand (Forwarded port, below), or try another network.";
+        client.reset();
+        hub->stop();
+        hub.reset();
+      } else {
+        keys = std::make_unique<dht::keys>(std::move(*k));
+        s.p = phase::ready;
+        s.text = dht::words_text(words);
+        s.note = "Read these four words to the other person, or send them. They work once, for 10 minutes. Both "
+                 "computers find each other through the public DHT.";
+        s.how = {"DHT"};
       }
     }
   }
@@ -269,7 +323,23 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
     lock.lock();
     return;
   }
-  if (l && s.p != phase::failed) {
+  if (keys) {
+    secret_ = std::vector<std::uint8_t>(keys->password.begin(), keys->password.end());
+    expires_ = clock::now() + std::chrono::milliseconds(opts_.lifetime_ms);
+    hub_ = std::move(hub);
+    dht_ = std::move(client);
+    dht_keys_ = std::move(keys);
+    meet_stop_.store(false);
+    dht::meet_options mo;
+    mo.loopback = opts_.loopback_only;
+    mo.wait_ms = opts_.lifetime_ms;
+    meet_thread_ = std::thread([this, mo] {
+      const auto stopped = [this] { return meet_stop_.load(); };
+      auto l2 = dht::meet(hub_, *dht_, *dht_keys_, dht::role::receiver, mo, stopped, {});
+      if (l2 && on_link_) on_link_(std::move(*l2));  // the internet hello comes over it
+      dht::withdraw(*dht_, *dht_keys_, dht::role::receiver, stopped);
+    });
+  } else if (l && s.p != phase::failed) {
     const invite::code c = invite::make(places);
     s.p = phase::ready;
     s.text = invite::encode(c);

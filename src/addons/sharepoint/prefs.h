@@ -29,6 +29,7 @@ struct prefs {
   // forwarded on their router to this machine's same port ("" = none).
   bool internet = false;
   std::string forwarded;
+  bool dht = false;  // #472 PR 3: "Find each other over the internet (public DHT)", off by default
   bool operator==(const prefs&) const = default;
 };
 

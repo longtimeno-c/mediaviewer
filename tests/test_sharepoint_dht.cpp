@@ -544,3 +544,100 @@ TEST_CASE("sharepoint dht: a wrong word code finds nobody", "[sharepoint]") {
   REQUIRE_FALSE(at_s);
   CHECK(at_s.error() == mv::status::timeout);
 }
+
+// ---- two engines over four words ----------------------------------------------------------------
+
+namespace {
+struct word_client {
+  fake_host host;
+  sp::engine eng;
+  word_client(const fs::path& received, const std::string& name, const swarm& s)
+      : host(received), eng(host, options(name, s)) {
+    eng.screen_opened("");
+    eng.on_event("internet", 2, "true");
+    eng.on_event("dht", 2, "true");
+  }
+  static sp::engine::options options(const std::string& name, const swarm& s) {
+    sp::engine::options o;
+    o.my_name = name;
+    o.use_bluetooth = false;
+    o.loopback_only = true;
+    o.make_discovery = [] { return std::make_unique<inject_discovery>(); };
+    o.internet_loopback = true;
+    o.internet_mapping = std::nullopt;
+    o.dht_nodes = std::vector<sp::net::endpoint>{s.seed()};
+    o.dht_fast_kdf = true;
+    o.internet_force_words = true;
+    return o;
+  }
+};
+}  // namespace
+
+TEST_CASE("sharepoint dht: four words send files between two engines, through the DHT and a punched path",
+          "[sharepoint]") {
+  scratch_dir dir("sharepoint_words_send");
+  swarm s(16);
+  word_client bea(dir / "bea_received", "Bea", s);
+  word_client ann(dir / "ann_received", "Ann", s);
+  const fs::path f = dir / "out" / "clip.mov";
+  write_bytes(f, pattern(2 * 1024 * 1024 + 5, 21));
+  ann.eng.set_files({utf8(f)});
+  REQUIRE(eventually([&] { return ann.eng.snapshot().file_count == 1; }));
+  bea.eng.on_event("make_code", 1, "");
+  std::string words;
+  REQUIRE(eventually([&] {
+    const auto v = bea.eng.snapshot();
+    words = v.code_text;
+    return v.code_phase == static_cast<std::uint8_t>(sp::internet_receiver::phase::ready) && !words.empty();
+  }, 20));
+  CHECK(std::count(words.begin(), words.end(), ' ') == 3);  // four words
+  CHECK(bea.eng.snapshot().code_link.empty());
+  ann.eng.on_event("send_code", 2, "\"" + words + "\"");
+  ann.eng.on_event("send_to_code", 1, "");
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::naming; }, 30));
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::connecting; }));
+  CHECK(ann.eng.snapshot().out_check == bea.eng.snapshot().in_code);
+  CHECK(ann.eng.snapshot().out_via == "the internet");
+  ann.eng.on_event("out_confirm", 1, "");
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  INFO(ann.eng.snapshot().out_note);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(read_bytes(dir / "bea_received" / "clip.mov") == read_bytes(f));
+}
+
+// ---- harness: the real DHT (#472 spike), never run by CI -------------------------------------------
+//
+// mv_import_tests "[.sharepoint-dht-live]": joins the public BitTorrent DHT
+// from this machine (its routers, then a saved table under MV_DHT_TABLE if
+// set), and times MV_DHT_LOOKUPS gets of random targets (default 10). Read
+// only: nothing is put. DHT nodes see this machine's address taking part.
+// Prints one JSON line: start time, nodes known, lookup p50 / p95, and the
+// public address votes (how many distinct ports: a hard NAT shows several).
+TEST_CASE("sharepoint dht: lookups on the public DHT (harness)", "[.sharepoint-dht-live]") {
+  auto h = sp::udp_hub::open(0, false);
+  REQUIRE(h);
+  dht::client::options o;
+  if (const char* t = std::getenv("MV_DHT_TABLE"); t && *t) o.table_path = t;
+  dht::client c(*h, o);
+  const auto t0 = std::chrono::steady_clock::now();
+  REQUIRE(c.start({}));
+  const double start_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  const int n = std::getenv("MV_DHT_LOOKUPS") ? std::atoi(std::getenv("MV_DHT_LOOKUPS")) : 10;
+  std::vector<double> ms;
+  for (int i = 0; i < n; ++i) {
+    std::array<std::uint8_t, 32> key;
+    randombytes_buf(key.data(), key.size());
+    const auto a = std::chrono::steady_clock::now();
+    (void)c.get(key, "", {});
+    ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count());
+  }
+  std::sort(ms.begin(), ms.end());
+  const auto votes = c.external_votes();
+  std::printf("{\"case\":\"dht_live\",\"start_s\":%.2f,\"known\":%zu,\"lookups\":%d,\"p50_ms\":%.0f,\"p95_ms\":%.0f,"
+              "\"public_ports_seen\":%zu}\n",
+              start_s, c.known(), n, ms[ms.size() / 2], ms[std::min(ms.size() - 1, ms.size() * 95 / 100)],
+              votes.size());
+}
