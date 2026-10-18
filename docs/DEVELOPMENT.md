@@ -35,6 +35,7 @@ and a verify line on each platform (D9, amended). The order is:
 | #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
 | #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
 | #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
+| #485 | **`analyse`**, slice 3: the agent asks MediaViewer to index the timeline's media and the given folders; with none running, `--mcp` starts `MediaViewer --agent-index` (background, gone when idle, start at login untouched) and follows progress through the reader ([docs/design/29 "Analyse"](design/29-agent-timeline.md#analyse)) | Mac: the full loop ran in a dev build. Windows: C# compiles; native CI only |
 | #485 | **AI agents add-on**, slice 2: `MediaViewer --mcp`, an MCP server over stdio (no socket) whose tools read the dragged timeline, its transcript and silences, search the scope, edit (ripple cuts, trims, B-roll, markers, titles) and commit "<Project> (Claude N)"; scoped to the timeline's media and the given folders, `photos:` refused; the AI agents window adds it to Claude Code / Claude Desktop ([docs/design/29](design/29-agent-timeline.md#the-agent)) | Mac: Claude Code tightened an interview and covered its cuts with B-roll in a dev build; scope refusals, no socket, files unchanged, PR 1 gate with the server answering. Windows: C# compiles; native CI only |
 | #485 | **An agent edits the Final Cut Pro timeline**, slice 1: drag a project from FCP onto the MediaViewer panel and it reads the whole timeline losslessly (FCPXML, `src/nle`); **New Version** imports "<Project> (Claude 1)" beside the original ([docs/design/29](design/29-agent-timeline.md)) | Mac: the model and writer built; the 20-project set round-trips byte for byte and every new version validates against FCP's DTD; the panel builds. Owed: real FCP projects dragged in and imported back in FCP. Windows: the shared model builds in CI |
 
@@ -931,7 +932,13 @@ transcripts need Local search (a dev build loads only a dev-signed pack: sideloa
 `mv_agent_tests` (the server over a fake environment: handshake, tools, scope, transcript, edit,
 commit, frames, the Claude Desktop file), `mv_timeline_tests "[edit]"` (the edit engine),
 `mv_import_tests "[agent]"` (the module through a signed store: its window and an MCP session over
-pipes), `mv_ai_tests "[nle]"` (the index's transcript rows).
+pipes), `mv_import_tests "[index_request]"` (an index request's checks, kept until the pack
+attaches), `mv_ai_tests "[nle]"` (the index's transcript rows).
+
+`analyse` asks the running MediaViewer to index (docs/design/29 "Analyse"); with none running, `--mcp`
+starts one as `MediaViewer --agent-index` (background, gone when the pack is idle). In a dev build,
+give that start a scratch profile as well: `HOME=<scratch>/home MV_DEV_ADDONS_DIR=… MV_DEV_THUMBS_DIR=…`
+on the `--mcp` command passes to it.
 
 **The Photos library as a folder, and its backup (Mac; docs/design/26, 2026-10-03).** Once the library
 was added in Local search's Settings, the folder tree (`⌘⇧E`) shows a *Photos Library* row and
@@ -1644,6 +1651,26 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Agent timeline editing, slice 3: `analyse` (#485, 2026-10-19)
+
+The issue's slice: "`analyse` from the agent (both platforms)"; owner call 4: "the agent may ask the
+app to analyse (index) the timeline's media and the given folder."
+
+- **Mac (M5), dev build, scratch profile and add-ons:** with no MediaViewer running, `analyse`
+  (`wait_s` 120) found no answer to its notification, started `MediaViewer --agent-index`, which
+  acknowledged the request ("queued": the pack had not attached), started Local search for it and
+  indexed the new folder: pictures, sound and text in under 5 minutes of the request, Whisper's
+  phrases after that (most of the ~24 minutes was ViT-L/14's first Core ML compile in the scratch
+  profile's empty cache). The agent's reader followed it ("indexing" → "indexed", `done: true`),
+  `transcript` then had the new take's two phrases and its pause, and the background app quit by
+  itself 5 s after the pack went idle. Start at login was not touched (a bare dev binary has none;
+  the code path skips it). Tests: `mv_import_tests` 161 cases (with `[index_request]`),
+  `mv_agent_tests` (with `[analyse]`), `mv_timeline_tests` pass. Windows C# compiles.
+- **Owed:** the Mac PR 1 gate for this slice's app (the run at 00:34 met a locked screen: 0 frames,
+  void; slice 2's run passed); a request to an app that is already running and attached (the
+  `started` path) by hand; Windows everything (the pipe message, `mv_addon_index_request`,
+  `--agent-index`, `AiStartForAgent` in the chrome) is CI-compiled only.
 
 ### Agent timeline editing, slice 2: the AI agents add-on and `MediaViewer --mcp` (#485, 2026-10-18)
 

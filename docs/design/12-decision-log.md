@@ -1499,6 +1499,15 @@ text, no buttons; a screen (PR 58) has buttons and is drawn by both hosts. So Se
 offers the add-on and, installed, opens its AI agents window, where the buttons, the disclosure and
 the frames switch live, with no host chrome of its own on either platform.
 
+**`analyse` asks the hosting window; `--agent-index` is not the sign-in start (2026-10-19).** The
+agent's index requests go to the one process that indexes (the add-on host), by the transports
+the hosts already have (a distributed notification on the Mac, the single-instance pipe on Windows):
+no new listener, nothing awake while nobody asks. When no MediaViewer runs, one is started for the
+work with `--agent-index` rather than `--background`, because the sign-in start quits after a minute
+with nothing kept alive and, bundled, unregisters start at login: an agent's request must neither
+stop at a minute nor change the person's login items. A developer build uses its own notification
+name, so a test request cannot reach the installed app's index.
+
 **The panel and the agent share the app group's container (2026-10-18).** The panel is sandboxed
 and the agent is not; the group container is the one folder both can use without a new IPC
 channel. A development build without a group container falls back to the extension's own.

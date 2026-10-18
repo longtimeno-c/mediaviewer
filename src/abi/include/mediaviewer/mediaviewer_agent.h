@@ -53,6 +53,20 @@ typedef struct mv_agent_services {
    * MV_ERR_UNSUPPORTED_FORMAT: the installed pack cannot answer. */
   mv_status(MV_CALL* transcript_json)(void* ctx, const char* path_utf8, char* out, uint32_t cap,
                                       uint32_t* needed);
+
+  /* ---- appended (#485 slice 3, docs/design/29 "analyse"): read them only when
+   * struct_size covers them and the pointer is non-NULL. --------------------- */
+  /* Asks the MediaViewer window that hosts the add-ons to index folders
+   * (addon/index_request.h JSON), starting it in the background when none
+   * runs. {"state":"started"|"queued"|"refused"|"no_app","launched":bool}. The
+   * host never indexes itself (one indexer per index). */
+  mv_status(MV_CALL* request_index)(void* ctx, const char* request_json, char* out, uint32_t cap,
+                                    uint32_t* needed);
+  /* How far the index has these folders, through the read-only reader:
+   * paths_json ["...",...] -> [{"path":"...","state":0|1|2}] (MV_AI folder_coverage:
+   * 0 not covered, 1 covered and indexing, 2 complete). */
+  mv_status(MV_CALL* coverage_json)(void* ctx, const char* paths_json, char* out, uint32_t cap,
+                                    uint32_t* needed);
 } mv_agent_services;
 
 typedef struct mv_agent_serve_args {

@@ -29,6 +29,7 @@
 #include <mutex>
 #include <new>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "addons/agent/environment.h"
@@ -299,6 +300,52 @@ class host_env final : public environment {
     jpeg.assign(bytes.begin(), bytes.end());
     return true;
   }
+  bool request_index(const std::vector<std::pair<std::string, bool>>& folders, std::string& state, bool& launched,
+                     std::string* why) override {
+    if (!has_appended(s_, offsetof(mv_agent_services, request_index)) || !s_->request_index) {
+      if (why) *why = "this MediaViewer cannot be asked to index";
+      return false;
+    }
+    json::writer w;
+    w.begin_object().key("version").integer(1).key("id").string(std::to_string(now_ms())).key("folders").begin_array();
+    for (const auto& [p, rec] : folders) w.begin_object().key("path").string(p).key("recursive").boolean(rec).end_object();
+    w.end_array().end_object();
+    const std::string request = w.take();
+    std::string text;
+    const mv_status st = call_json(
+        [&](char* buf, uint32_t cap, uint32_t* need) { return s_->request_index(s_->ctx, request.c_str(), buf, cap, need); },
+        text);
+    if (st != MV_OK) {
+      if (why) *why = "the request failed";
+      return false;
+    }
+    const auto v = json::parse(text, 4);
+    state = v && v->str("state") ? *v->str("state") : "refused";
+    launched = v && v->boolean("launched").value_or(false);
+    return true;
+  }
+  bool coverage(const std::vector<std::string>& folders, std::vector<int>& states, std::string* why) override {
+    states.clear();
+    if (!has_appended(s_, offsetof(mv_agent_services, coverage_json)) || !s_->coverage_json) return none(why);
+    json::writer w;
+    w.begin_array();
+    for (const std::string& f : folders) w.string(f);
+    w.end_array();
+    const std::string paths = w.take();
+    std::string text;
+    const mv_status st = call_json(
+        [&](char* buf, uint32_t cap, uint32_t* need) { return s_->coverage_json(s_->ctx, paths.c_str(), buf, cap, need); },
+        text);
+    if (st != MV_OK) {
+      if (why) *why = st == MV_ERR_NOT_FOUND ? "Local search is not installed" : mv_status_name_of(st);
+      return false;
+    }
+    const auto v = json::parse(text, 4);
+    if (!v || v->k != json::kind::array) return false;
+    for (const json::value& e : v->a) states.push_back(static_cast<int>(e.integer("state").value_or(0)));
+    return states.size() == folders.size();
+  }
+  void sleep_ms(int ms) override { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
   bool hand_to_editor(const std::string& fcpxml, std::string* why) override {
     return platform::open_in_final_cut(fcpxml, why);
   }
@@ -313,6 +360,9 @@ class host_env final : public environment {
   }
 
  private:
+  static bool has_appended(const mv_agent_services* s, std::size_t offset) {
+    return s && s->struct_size >= offset + sizeof(void*);
+  }
   static const char* mv_status_name_of(mv_status st) {
     switch (st) {
       case MV_ERR_BUSY: return "Local search is busy";

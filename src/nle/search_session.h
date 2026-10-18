@@ -64,6 +64,9 @@ class search_session {
   // status::unsupported_format: the installed pack predates it. [worker-thread]
   [[nodiscard]] result<std::string> transcript_json(const std::string& path, int timeout_ms) const;
 
+  // mv.ai.1 folder_coverage (#485 analyse): 0 not covered, 1 indexing, 2 complete.
+  [[nodiscard]] result<std::uint32_t> folder_coverage(const std::string& dir, int timeout_ms) const;
+
   // The host's event sink: a finished search wakes run() at once.
   void on_event(const mv_addon_event& e);
 

@@ -23,6 +23,7 @@
 #include "abi/guard.h"
 #include "addon/host.h"
 #include "addon/index_locations.h"
+#include "addon/index_request.h"
 #include "addon/manifest.h"
 #include "addon/open_json.h"
 #include "abi/addon_media.h"
@@ -565,6 +566,7 @@ MV_API mv_status MV_CALL mv_addon_unload(const char* id) {
     // first; a walk in flight stops at its next row, and none is inside the
     // pack when its library goes.
     if (std::string_view(id) == "ai") {
+      mv::addon::retract_index_requests();
       mv::addon::retract_index_locations();
       mv::addon::wait_index_locations_idle();
     }
@@ -583,6 +585,7 @@ MV_API mv_status MV_CALL mv_addon_quit(void) {
     }
     // #398: no index walk starts now; one in flight stops at its next row.
     // Not waited on: the pack is abandoned, never unmapped.
+    mv::addon::retract_index_requests();
     mv::addon::retract_index_locations();
     for (auto& [id, entry] : all) {
       // The entry's session stays retained: a pack left running still posts.
@@ -713,8 +716,18 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     // index.db), its index's coordinates serve every add-on's
     // locations_of_index (Places' place: over the whole index).
     if (std::string_view(id) == "ai") {
-      mv::addon::publish_index_locations(mv::addon::ai_index_locations(
-          static_cast<const mv_ai_api*>(it->second.addon->query(MV_AI_INTERFACE))));
+      const auto* ai = static_cast<const mv_ai_api*>(it->second.addon->query(MV_AI_INTERFACE));
+      mv::addon::publish_index_locations(mv::addon::ai_index_locations(ai));
+      // docs/design/29: the writer takes the timeline agent's "index these
+      // folders" (a reader cannot index).
+      if (!reader && ai && ai->index_folder) {
+        mv::addon::publish_index_requests([ai](const mv::addon::index_folder_request& f) -> mv::expected {
+          uint64_t root = 0;
+          const mv_status st = ai->index_folder(ai->ctx, f.path.c_str(), f.recursive ? 1u : 0u, &root);
+          if (st != MV_OK) return mv::err(static_cast<status>(st));
+          return {};
+        });
+      }
     }
   }
   const void* iface = it->second.addon->query(interface_id);
@@ -740,6 +753,38 @@ MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
                                        char* out_chrome_utf8, uint32_t chrome_cap) {
   return static_cast<mv_status>(mv::abi::guard("mv_addon_load", [&] {
     return load_addon(session, id, interface_id, out_interface, out_chrome_utf8, chrome_cap, load_door::host);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_addon_index_request(const char* json_utf8, uint32_t* out_state) {
+  return static_cast<mv_status>(mv::abi::guard("mv_addon_index_request", [&] {
+    MV_REQUIRE(json_utf8, "json is required");
+    const mv::addon::index_delivery d = mv::addon::deliver_index_request(json_utf8);
+    if (out_state) *out_state = static_cast<uint32_t>(d);
+    return d == mv::addon::index_delivery::refused ? status::invalid_arg : status::ok;
+  }));
+}
+
+MV_API mv_status MV_CALL mv_addon_ai_busy(uint32_t* out_busy) {
+  return static_cast<mv_status>(mv::abi::guard("mv_addon_ai_busy", [&] {
+    MV_REQUIRE(out_busy, "out_busy is required");
+    *out_busy = 0;
+    const mv_ai_api* ai = nullptr;
+    {
+      std::lock_guard lock(g_mutex);
+      auto it = g_loaded.find("ai");
+      if (it == g_loaded.end() || it->second.reader) return status::ok;
+      ai = static_cast<const mv_ai_api*>(it->second.addon->query(MV_AI_INTERFACE));
+    }
+    if (!ai || !ai->status) return status::ok;
+    mv_ai_status st{};
+    st.struct_size = sizeof st;
+    if (ai->status(ai->ctx, &st) != MV_OK) return status::ok;
+    *out_busy = st.state == MV_AI_STATE_INDEXING || st.state == MV_AI_STATE_LOADING ||
+                        st.state == MV_AI_STATE_YIELDING
+                    ? 1u
+                    : 0u;
+    return status::ok;
   }));
 }
 

@@ -135,6 +135,15 @@ result<std::string> search_session::transcript_json(const std::string& path, int
   return err(status::internal);
 }
 
+result<std::uint32_t> search_session::folder_coverage(const std::string& dir, int timeout_ms) const {
+  if (!api_ || !api_->folder_coverage) return err(status::unsupported_format);
+  if (!wait_ready(timeout_ms)) return err(status::busy);
+  std::uint32_t state = 0;
+  const mv_status st = api_->folder_coverage(api_->ctx, dir.c_str(), &state);
+  if (st != MV_OK) return err(static_cast<status>(st));
+  return state;
+}
+
 reply search_session::run(const request& r, const std::string& text, const std::string& scope_dir, int timeout_ms) {
   reply out;
   out.correlation_id = r.correlation_id;

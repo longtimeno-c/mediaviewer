@@ -109,7 +109,12 @@ bool wait_io(HANDLE pipe, OVERLAPPED& ov, HANDLE stop, DWORD timeout, DWORD& byt
 
 }  // namespace
 
-bool forward_to_running_instance(const std::vector<std::wstring>& paths) noexcept {
+namespace {
+
+// One message to the running instance's pipe; `make` builds it once the
+// server is known to be this user's.
+template <typename Make>
+bool send_to_running_instance(Make&& make) noexcept {
   try {
     const std::wstring name = pipe_name();
     HANDLE pipe = INVALID_HANDLE_VALUE;
@@ -128,12 +133,7 @@ bool forward_to_running_instance(const std::vector<std::wstring>& paths) noexcep
       ::CloseHandle(pipe);  // not ours: send it nothing and run alone
       return false;
     }
-    std::wstring message;
-    for (const std::wstring& p : paths) {
-      if (p.empty()) continue;
-      if (!message.empty()) message.push_back(L'\n');
-      message += absolute(p);
-    }
+    const std::wstring message = make();
     // The running instance may bring its window forward: this process has
     // the foreground right now (the user just opened something), it does not.
     (void)::AllowSetForegroundWindow(server);
@@ -148,6 +148,25 @@ bool forward_to_running_instance(const std::vector<std::wstring>& paths) noexcep
   } catch (...) {
     return false;
   }
+}
+
+}  // namespace
+
+bool forward_to_running_instance(const std::vector<std::wstring>& paths) noexcept {
+  return send_to_running_instance([&] {
+    std::wstring message;
+    for (const std::wstring& p : paths) {
+      if (p.empty()) continue;
+      if (!message.empty()) message.push_back(L'\n');
+      message += absolute(p);
+    }
+    return message;
+  });
+}
+
+bool forward_message_to_running_instance(const std::wstring& message) noexcept {
+  if (message.empty()) return false;
+  return send_to_running_instance([&] { return message; });
 }
 
 instance_claim::~instance_claim() {

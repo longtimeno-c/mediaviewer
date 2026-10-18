@@ -27,6 +27,8 @@ void MvAddonsStartReader(MvAddonsOpenPathFn open_path, void* ctx);
 // for the former. False: do what ⌘F does without Local search (not
 // installed; or a reader tried less than 10 s ago, the note then in the bar).
 bool MvAddonsSearchOnDemand();
+// docs/design/29: the AI pack is indexing (or loading) work an agent asked for.
+bool MvAddonsAiBusy();
 // Ctrl+Shift+I / ⌘⇧I: the Import window, with the viewer's marks.
 void MvAddonsOpenImport(const std::vector<std::string>& marks);
 // ⌘⇧F7: import these now with the last preset.

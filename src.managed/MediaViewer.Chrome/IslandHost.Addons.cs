@@ -724,6 +724,9 @@ public static partial class IslandHost
     // Mirrors mv::shell::addon_family (commands.h).
     private const int FamilyImport = 1;
     private const int FamilyAi = 2;
+    // docs/design/29: native asks to start Local search for an agent's index
+    // request (main.cpp kAiStartForAgent); nothing is shown.
+    private const int AiStartForAgent = 100;
 
     /// <summary>
     /// Native: an add-on command from the router (Milestone H). In:
@@ -748,6 +751,7 @@ public static partial class IslandHost
             return family switch
             {
                 FamilyImport => RunImportCommand(kind, json),
+                FamilyAi when kind == AiStartForAgent => StartAiOnDemand(open: false) || AiStarting() ? 0 : 1,
                 FamilyAi => AiSlot.Chrome is ISearchChrome search && search.RunCommand(kind) ? 0 : 1,
                 _ => 1,
             };

@@ -21,8 +21,23 @@
 #include <fcntl.h>
 #include <io.h>
 #include <windows.h>
+#include "shell/single_instance_win.h"
 #else
+#include <fcntl.h>
+#include <spawn.h>
 #include <unistd.h>
+#endif
+#if defined(__APPLE__)
+#include <CoreFoundation/CoreFoundation.h>
+#include <mach-o/dyld.h>
+#endif
+#include <chrono>
+#include <thread>
+
+#include "addon/index_request.h"
+
+#if !defined(_WIN32)
+extern char** environ;
 #endif
 
 #include "abi/addon_media.h"
@@ -72,6 +87,176 @@ std::intptr_t stdin_handle() {
 #else
   return 0;
 #endif
+}
+
+// ---- "index these folders": to the window that hosts the add-ons (docs/design/29) -------
+
+std::string self_exe() {
+#if defined(_WIN32)
+  std::wstring buf(32768, L'\0');
+  const DWORD n = ::GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+  buf.resize(n);
+  const int m = ::WideCharToMultiByte(CP_UTF8, 0, buf.data(), static_cast<int>(buf.size()), nullptr, 0, nullptr, nullptr);
+  std::string out(m > 0 ? static_cast<std::size_t>(m) : 0, '\0');
+  if (m > 0) ::WideCharToMultiByte(CP_UTF8, 0, buf.data(), static_cast<int>(buf.size()), out.data(), m, nullptr, nullptr);
+  return out;
+#elif defined(__APPLE__)
+  std::uint32_t size = 0;
+  _NSGetExecutablePath(nullptr, &size);
+  std::string buf(size, '\0');
+  if (_NSGetExecutablePath(buf.data(), &size) != 0) return {};
+  buf.resize(std::strlen(buf.c_str()));
+  return buf;
+#else
+  return {};
+#endif
+}
+
+// Starts MediaViewer in the background (no window, `--agent-index`): it hosts
+// the add-ons, takes the request once its AI pack attaches, stays while the
+// pack indexes and quits after; start at login is left alone.
+bool launch_background() {
+  const std::string exe = self_exe();
+  if (exe.empty()) return false;
+#if defined(_WIN32)
+  std::wstring w(static_cast<std::size_t>(::MultiByteToWideChar(CP_UTF8, 0, exe.c_str(), -1, nullptr, 0)), L'\0');
+  ::MultiByteToWideChar(CP_UTF8, 0, exe.c_str(), -1, w.data(), static_cast<int>(w.size()));
+  if (!w.empty() && w.back() == L'\0') w.pop_back();
+  std::wstring cmd = L"\"" + w + L"\" --agent-index";
+  STARTUPINFOW si{};
+  si.cb = sizeof si;
+  PROCESS_INFORMATION pi{};
+  if (!::CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, DETACHED_PROCESS, nullptr, nullptr, &si, &pi)) {
+    return false;
+  }
+  ::CloseHandle(pi.hThread);
+  ::CloseHandle(pi.hProcess);
+  return true;
+#else
+  std::vector<std::string> argv;
+  const std::size_t app = exe.find(".app/Contents/MacOS/");
+  if (app != std::string::npos) {
+    // The app bundle through LaunchServices, hidden.
+    argv = {"/usr/bin/open", "-g", "-a", exe.substr(0, app + 4), "--args", "--agent-index"};
+  } else {
+    argv = {exe, "--agent-index"};  // a bare developer binary
+  }
+  posix_spawn_file_actions_t fa;
+  posix_spawn_file_actions_init(&fa);
+  posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+  posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+  posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+  posix_spawnattr_t attr;
+  posix_spawnattr_init(&attr);
+#if defined(POSIX_SPAWN_SETSID)
+  posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSID);
+#endif
+  std::vector<char*> args;
+  for (std::string& a : argv) args.push_back(a.data());
+  args.push_back(nullptr);
+  pid_t pid = 0;
+  const int rc = posix_spawn(&pid, args[0], &fa, &attr, args.data(), environ);
+  posix_spawn_file_actions_destroy(&fa);
+  posix_spawnattr_destroy(&attr);
+  return rc == 0;
+#endif
+}
+
+#if defined(__APPLE__)
+struct ack_wait {
+  std::string id;
+  std::string answer;
+};
+
+CFStringRef notification_name(const char* suffix) {
+  CFStringRef bundle = CFBundleGetIdentifier(CFBundleGetMainBundle());
+  char id[512] = "";
+  if (bundle) (void)CFStringGetCString(bundle, id, sizeof id, kCFStringEncodingUTF8);
+  const std::string name = addon::index_notification_name(id) + suffix;
+  return CFStringCreateWithCString(nullptr, name.c_str(), kCFStringEncodingUTF8);
+}
+
+void on_ack(CFNotificationCenterRef, void* observer, CFNotificationName, const void* object, CFDictionaryRef) {
+  auto* w = static_cast<ack_wait*>(observer);
+  if (!object || CFGetTypeID(object) != CFStringGetTypeID()) return;
+  char buf[512];
+  if (!CFStringGetCString(static_cast<CFStringRef>(object), buf, sizeof buf, kCFStringEncodingUTF8)) return;
+  const auto v = json::parse(buf, 4);
+  if (v && v->str("id") && *v->str("id") == w->id && v->str("state")) w->answer = *v->str("state");
+}
+
+// Posts the request and waits up to `ms` for the window's acknowledgement.
+std::string post_and_wait(const std::string& json, const std::string& id, int ms) {
+  ack_wait w{id, {}};
+  CFNotificationCenterRef c = CFNotificationCenterGetDistributedCenter();
+  CFStringRef ack = notification_name(".ack");
+  CFStringRef name = notification_name("");
+  CFNotificationCenterAddObserver(c, &w, &on_ack, ack, nullptr, CFNotificationSuspensionBehaviorDeliverImmediately);
+  CFStringRef body = CFStringCreateWithCString(nullptr, json.c_str(), kCFStringEncodingUTF8);
+  CFNotificationCenterPostNotification(c, name, body, nullptr, true);
+  const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+  while (w.answer.empty() && std::chrono::steady_clock::now() < until) {
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
+  }
+  CFNotificationCenterRemoveObserver(c, &w, ack, nullptr);
+  CFRelease(body);
+  CFRelease(name);
+  CFRelease(ack);
+  return w.answer;
+}
+#endif
+
+// One request: to the running window, or to one started for it.
+std::string deliver(const std::string& json, const std::string& id, bool& launched) {
+  launched = false;
+#if defined(__APPLE__)
+  std::string state = post_and_wait(json, id, 1500);
+  if (!state.empty()) return state;
+  if (!launch_background()) return "no_app";
+  launched = true;
+  for (int i = 0; i < 15 && state.empty(); ++i) state = post_and_wait(json, id, 2000);
+  return state.empty() ? "no_app" : state;
+#elif defined(_WIN32)
+  std::wstring w(static_cast<std::size_t>(::MultiByteToWideChar(CP_UTF8, 0, json.c_str(), -1, nullptr, 0)), L'\0');
+  ::MultiByteToWideChar(CP_UTF8, 0, json.c_str(), -1, w.data(), static_cast<int>(w.size()));
+  if (!w.empty() && w.back() == L'\0') w.pop_back();
+  const std::wstring message = std::wstring(kAgentIndexPrefix) + w;
+  if (forward_message_to_running_instance(message)) return "started";
+  if (!launch_background()) return "no_app";
+  launched = true;
+  for (int i = 0; i < 30; ++i) {
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    if (forward_message_to_running_instance(message)) return "queued";
+  }
+  return "no_app";
+#else
+  (void)json;
+  (void)id;
+  return "no_app";
+#endif
+}
+
+mv_status out_text(const std::string& text, char* out, uint32_t cap, uint32_t* needed) {
+  const auto need = static_cast<uint32_t>(text.size() + 1);
+  if (needed) *needed = need;
+  if (!out || cap < need) return MV_ERR_INVALID_ARG;
+  std::memcpy(out, text.c_str(), need);
+  return MV_OK;
+}
+
+mv_status MV_CALL request_index(void*, const char* request, char* out, uint32_t cap, uint32_t* needed) {
+  try {
+    if (!request) return MV_ERR_INVALID_ARG;
+    const auto r = addon::index_request_from_json(request);
+    if (!r) return out_text(R"({"state":"refused","launched":false})", out, cap, needed);
+    bool launched = false;
+    const std::string state = deliver(request, r->id, launched);
+    json::writer w;
+    w.begin_object().key("state").string(state).key("launched").boolean(launched).end_object();
+    return out_text(w.str(), out, cap, needed);
+  } catch (...) {
+    return MV_ERR_INTERNAL;
+  }
 }
 
 #if defined(MV_MCP_WITH_SEARCH)
@@ -144,6 +329,26 @@ struct search_services {
     try {
       return static_cast<search_services*>(ctx)->run(nle::request_kind::similar, path, pts, dir, scope, kinds, max,
                                                      out, cap, needed);
+    } catch (...) {
+      return MV_ERR_INTERNAL;
+    }
+  }
+  static mv_status MV_CALL coverage(void* ctx, const char* paths, char* out, uint32_t cap, uint32_t* needed) {
+    try {
+      auto* self = static_cast<search_services*>(ctx);
+      const auto list = paths ? json::parse(paths, 4) : std::nullopt;
+      if (!list || list->k != json::kind::array) return MV_ERR_INVALID_ARG;
+      nle::search_session* s = self->get();
+      if (!s) return to_mv(self->failed);
+      json::writer w;
+      w.begin_array();
+      for (const json::value& p : list->a) {
+        if (p.k != json::kind::string) continue;
+        auto c = s->folder_coverage(p.s, 30000);
+        w.begin_object().key("path").string(p.s).key("state").integer(c ? *c : 0).end_object();
+      }
+      w.end_array();
+      return out_json(w.str(), out, cap, needed);
     } catch (...) {
       return MV_ERR_INTERNAL;
     }
@@ -229,7 +434,9 @@ int run_mcp(const std::vector<std::string>& args) {
   services.search_json = &search_services::search;
   services.similar_json = &search_services::similar;
   services.transcript_json = &search_services::transcript;
+  services.coverage_json = &search_services::coverage;
 #endif
+  services.request_index = &request_index;
   std::vector<const char*> folder_ptrs;
   for (const std::string& f : folders) folder_ptrs.push_back(f.c_str());
   mv_agent_serve_args a{};
