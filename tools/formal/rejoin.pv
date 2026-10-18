@@ -1,0 +1,44 @@
+(* Sharepoint protocol 2, a rejoin (NNhfs+psk0 keyed by the resume secret, the
+   tag, and the resume_at frame each way before either side adopts the link).
+
+   Each session has its own resume secret rs (Split's third output of its first
+   link; handshake_code.pv shows the attacker does not have it) and rejoins any
+   number of times with it, as the code allows. The attacker owns the network:
+   it can replay, reorder and cross messages between sessions and rejoins.
+
+   Expected: every query true except the last pair (the sanity check: with the
+   resume secret, X25519 and ML-KEM all broken later, a recorded rejoin is read). *)
+
+free probe0, probeRS, probeRSDH, probeRSKEM, probeAll: bitstring [private].
+
+(* Only a holder of the session's resume secret gets a link adopted, and each
+   adoption is a distinct rejoin the client really ran (a replayed first
+   message is never adopted). Both directions. *)
+query rs: bitstring, k1: bitstring, k2: bitstring, id: bitstring;
+  inj-event(ServerAdopts(rs, k1, k2, id)) ==> inj-event(ClientResumeAt(rs, k1, k2)).
+query rs: bitstring, k1: bitstring, k2: bitstring;
+  inj-event(ClientAdopts(rs, k1, k2)) ==> inj-event(ServerResumeAt(rs, k1, k2)).
+(* Fresh link keys per rejoin: no two adoptions share them. *)
+query rs: bitstring, rs2: bitstring, k1: bitstring, k2: bitstring, id: bitstring, id2: bitstring;
+  event(ServerAdopts(rs, k1, k2, id)) && event(ServerAdopts(rs2, k1, k2, id2)) ==> id = id2.
+(* What is sent on a rejoined link is secret ... *)
+query attacker(probe0).
+(* ... even if the resume secret leaks after the session (forward secrecy) ... *)
+query attacker(probeRS) phase 1.
+(* ... and if X25519, or ML-KEM-768, is broken later as well (hybrid). *)
+query attacker(probeRSDH) phase 1.
+query attacker(probeRSKEM) phase 1.
+(* Sanity: everything broken later; expected false. *)
+query attacker(probeAll) phase 1.
+
+let Session(reveal_rs: bool, reveal_dh: bool, reveal_kem: bool, probe: bitstring) =
+  new rs: bitstring;
+  ( !RejoinClient(rs, reveal_rs, reveal_dh, reveal_kem, probe)
+  | !RejoinServer(rs, reveal_dh, probe) ).
+
+process
+  ( !Session(false, false, false, probe0)
+  | !Session(true, false, false, probeRS)
+  | !Session(true, true, false, probeRSDH)
+  | !Session(true, false, true, probeRSKEM)
+  | !Session(true, true, true, probeAll) )

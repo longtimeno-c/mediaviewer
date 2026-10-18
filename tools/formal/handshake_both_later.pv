@@ -1,0 +1,17 @@
+(* Sharepoint protocol 2, the first link (XXhfs): "harvest now, decrypt later".
+   Phase 0: honest runs of the first link; the attacker owns the network
+   (stronger than only recording it: the code check is what keeps it out of the
+   middle, handshake_code.pv). Phase 1: both are broken: the sanity check that the reveals are real.
+   Expected: both false (the recording is read). *)
+
+free file, probe: bitstring [private].
+
+query attacker(file) phase 1.    (* the files sent after the code *)
+query attacker(probe) phase 1.   (* the resume secret *)
+
+process
+  new sc: bitstring; new ss: bitstring;
+  out(c, (exp(g, sc), exp(g, ss)));
+  !( new screen: channel;
+     ( XXClient(c, c, screen, sc, true, true, file, probe)
+     | XXServer(c, c, screen, ss, true, true) ) )

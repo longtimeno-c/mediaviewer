@@ -1,0 +1,44 @@
+(* The sanity check for handshake_code.pv: the collision oracle (codeeq in
+   sharepoint.pvl) is a real power, and the commitment is what defeats it.
+
+   The full first link without the server's commitment check does not finish in
+   ProVerif (saturation ran past 70 minutes under every setting tried), so this
+   is the first link's skeleton: the client commits to its nonce, the server
+   answers with its own contribution, the client reveals, both derive the code
+   from their h2 and the nonce, and the person carries the server's code to the
+   client. The same skeleton runs twice, with the commitment checked and not.
+   Expected: the first query true, the second false (ProVerif finds the attack
+   in the middle: it reveals to the server a nonce coll() made from the
+   client's h2 and nonce, so the two codes match). *)
+
+event SkelClientAccepts(bool, bitstring, bitstring).
+event SkelServerShows(bool, bitstring, bitstring).
+
+query h: bitstring, n: bitstring;
+  event(SkelClientAccepts(true, h, n)) ==> event(SkelServerShows(true, h, n)).
+query h: bitstring, n: bitstring;
+  event(SkelClientAccepts(false, h, n)) ==> event(SkelServerShows(false, h, n)).
+
+let SkelClient(check: bool, screen: channel) =
+  new ec: bitstring; new nc: bitstring;
+  out(c, (ec, commit(nc)));
+  in(c, es: bitstring);
+  let h2 = hash((ec, commit(nc)), es) in
+  out(c, nc);
+  in(screen, typed: bitstring);
+  if codeeq(typed, sas(h2, nc)) = true then
+  event SkelClientAccepts(check, h2, nc).
+
+let SkelServer(check: bool, screen: channel) =
+  in(c, (ec: bitstring, cm: bitstring));
+  new es: bitstring;
+  let h2 = hash((ec, cm), es) in
+  out(c, es);
+  in(c, nc: bitstring);
+  if check = false || commit(nc) = cm then
+  event SkelServerShows(check, h2, nc);
+  out(screen, sas(h2, nc)); out(c, sas(h2, nc)).
+
+process
+  ( !(new screen: channel; (SkelClient(true, screen) | SkelServer(true, screen)))
+  | !(new screen: channel; (SkelClient(false, screen) | SkelServer(false, screen))) )
