@@ -801,6 +801,9 @@ std::vector<key_remap> live_key_remaps() {
   const std::size_t n = std::min(live.size(), std::size(kBindings));
   for (std::size_t i = 0; i < n; ++i) {
     if (live[i].k == kBindings[i].k && live[i].mods == kBindings[i].mods) continue;
+    // A row its add-on's own rows supersede has no key only while that add-on
+    // is loaded, so it is saved as its default (issue #357).
+    if (command_superseded(kBindings[i].command)) continue;
     out.push_back(key_remap{static_cast<int>(i), live[i].k, live[i].mods});
   }
   return out;

@@ -65,6 +65,9 @@ coverage file says so. A new `command_id` fails the test until it has a row.
   rather than swapped. Unknown commands and keys are skipped and listed, not refused. The Mac
   also refuses a chord a fixed menu item owns at capture; a layout is not checked against the
   menu (owed). A saved table is put back exactly (`set_live_key`), unbound rows included.
+  What is saved is `live_key_remaps`: built-in rows off their default, never a contributed row
+  and never a built-in row its add-on's own rows supersede, whose missing key exists only
+  while that add-on is loaded; it is saved as its default (issue #357).
 - **Add-on commands** (Import: `open_import`, `import_now`; Local search: `search_*`) are listed,
   routed and shown only while their add-on is loaded (`set_addon_commands_available` per
   family); otherwise the key falls through as if unbound. The exception is `Ctrl+F`, which runs

@@ -227,6 +227,56 @@ TEST_CASE("key remaps: Reset in Settings persists as the default table", "[shell
   REQUIRE(live_key_remaps().empty());
 }
 
+// Issue #357: a saved table is put back exactly, so it must not record the missing
+// key of a built-in row an add-on's own rows supersede; that state exists only while
+// the add-on is loaded.
+TEST_CASE("key remaps: superseded built-in rows are saved as their defaults",
+          "[shell][commands][remap]") {
+  const clean_table clean;
+  // Load Import with a row of its own: its two built-in rows lose their key.
+  addon_command_row row;
+  row.addon = "import";
+  row.id = "open";
+  row.name = "Import";
+  row.k = char_key('I');
+  row.mods = mod_ctrl | mod_shift;
+  row.modes = mask_of(mode::browse);
+  set_addon_commands_available(addon_family::import, true);
+  set_addon_commands(std::span<const addon_command_row>(&row, 1));
+  const auto def = default_bindings();
+  bool any_superseded = false;
+  for (std::size_t i = 0; i < def.size(); ++i) {
+    if (addon_family_of(def[i].command) != addon_family::import) continue;
+    REQUIRE(def[i].k != key::none);
+    REQUIRE(live_bindings()[i].k == key::none);
+    any_superseded = true;
+  }
+  REQUIRE(any_superseded);
+  // And an ordinary remap, which must survive.
+  const int help = row_of(command_id::help);
+  REQUIRE(help >= 0);
+  REQUIRE(rebind_live(help, key::f9, mod_ctrl | mod_alt));
+
+  // Save, remove the add-on, restart: defaults, then the saved list, before any
+  // add-on's rows are known (both hosts' launch order).
+  const auto saved = live_key_remaps();
+  REQUIRE(saved.size() == 1);
+  REQUIRE(saved[0].row == help);
+  set_addon_commands({});
+  set_addon_commands_available(addon_family::import, false);
+  reset_live_bindings();
+  apply_key_remaps(saved);
+
+  for (std::size_t i = 0; i < def.size(); ++i) {
+    if (addon_family_of(def[i].command) == addon_family::none) continue;
+    INFO("row " << i);
+    REQUIRE(live_bindings()[i].k == def[i].k);
+    REQUIRE(live_bindings()[i].mods == def[i].mods);
+  }
+  REQUIRE(live_bindings()[static_cast<std::size_t>(help)].k == key::f9);
+  REQUIRE(live_bindings()[static_cast<std::size_t>(help)].mods == (mod_ctrl | mod_alt));
+}
+
 #if defined(_WIN32)
 TEST_CASE("key remaps: round trip through settings.ini and a restart", "[shell][commands][remap][settings]") {
   const clean_table clean;
