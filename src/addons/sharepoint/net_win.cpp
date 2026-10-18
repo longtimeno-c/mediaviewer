@@ -13,6 +13,10 @@
 #include <windows.h>
 #include <iphlpapi.h>
 #include <mstcpip.h>
+#ifndef SIO_UDP_CONNRESET
+// mstcpip.h names it only for some targets; the value is fixed (Winsock).
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#endif
 #include <knownfolders.h>
 #include <shlobj.h>
 
