@@ -53,6 +53,9 @@ add_library(mv_sharepoint_engine STATIC
   ${_S}/mapping.cpp ${_S}/mapping.h
   ${_S}/race.h
   ${_S}/internet.cpp ${_S}/internet.h
+  ${_S}/bencode.cpp ${_S}/bencode.h
+  ${_S}/sha1.cpp ${_S}/sha1.h
+  ${_S}/dht_item.cpp ${_S}/dht_item.h ${_S}/wordlist.inc
   ${_S}/engine.cpp ${_S}/engine.h
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/tree.cpp
@@ -119,6 +122,7 @@ function(mv_sharepoint_tests target)
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_noise.cpp"
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_session.cpp"
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_internet.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_sharepoint_dht.cpp"
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_addon.cpp"
     "${MV_SOURCE_ROOT}/src/addons/sharepoint/bt_none.cpp")
   target_link_libraries(${target} PRIVATE mv_sharepoint_engine)
