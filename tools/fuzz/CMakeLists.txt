@@ -118,7 +118,8 @@ if(NOT MV_FUZZ_MODE MATCHES "^static")
 endif()
 
 # Instrument everything that links mv_project_options.
-set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io mv_meta_parse mv_geo mv_places_engine)
+set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io mv_meta_parse mv_geo mv_places_engine
+  mv_sharepoint_engine)
 set_target_properties(${MV_FUZZ_INSTRUMENTED} PROPERTIES
   MSVC_RUNTIME_LIBRARY "${MV_FUZZ_CRT}")
 target_compile_options(mv_project_options INTERFACE

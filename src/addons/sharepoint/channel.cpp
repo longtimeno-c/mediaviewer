@@ -777,10 +777,10 @@ expected channel::receive_v2(message& out, int timeout_ms, bool until_acked) {
     if (out.type == msg::done) {
       // The last message of a transfer: acknowledged now, from here, before
       // the caller shuts the channel down (the peer flushes until it has this).
-      std::lock_guard s(send_m_);
+      std::lock_guard sending(send_m_);
       bool current = false;
       {
-        std::lock_guard l(link_m_);
+        std::lock_guard on_link(link_m_);
         current = up_ && write_gen_ == gen_;
       }
       if (current) (void)write_frame2(msg::ping, 0, {});
