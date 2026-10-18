@@ -52,21 +52,76 @@ int wait_for(SOCKET s, short events, int timeout_ms) noexcept {
   return p.revents;
 }
 
+// Waits on a socket that one thread reads while another writes. Not WSAPoll
+// or select: while a thread waits on a socket in either, send() and sendto()
+// on that socket from another thread take about 0.25 s, and up to seconds
+// (measured 2026-10-18, #472); waiting with WSAEventSelect leaves them at
+// 0.05 ms. Polling a different socket costs nothing, so a socket only one
+// thread uses can keep wait_for().
+//
+// WSAEventSelect takes one event per socket, so a reader and a writer waiting
+// at once share it: what one of them collects is kept in ready_, and the event
+// is set again when it holds what the other may want. It also makes the
+// socket non-blocking.
+class socket_events {
+ public:
+  socket_events(SOCKET s, long events) noexcept : s_(s), ev_(::WSACreateEvent()) {
+    if (ev_ != WSA_INVALID_EVENT && ::WSAEventSelect(s_, ev_, events) != 0) {
+      ::WSACloseEvent(ev_);
+      ev_ = WSA_INVALID_EVENT;
+    }
+  }
+  // Closing the socket ends the association; the owner closes it first.
+  ~socket_events() {
+    if (ev_ != WSA_INVALID_EVENT) ::WSACloseEvent(ev_);
+  }
+  socket_events(const socket_events&) = delete;
+  socket_events& operator=(const socket_events&) = delete;
+
+  // Up to `timeout_ms` for FD_READ or FD_WRITE (a read also takes FD_CLOSE,
+  // which stays: every later read sees it). 1 when it came or may have (the
+  // caller's next recv or send says which), 0 when it did not, -1 on an error.
+  int wait(long want, int timeout_ms) noexcept {
+    if (ev_ == WSA_INVALID_EVENT) return -1;
+    if (want & FD_READ) want |= FD_CLOSE;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(timeout_ms, 0));
+    for (;;) {
+      if (take(want)) return 1;
+      const auto left = std::chrono::ceil<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
+      const DWORD r =
+          ::WSAWaitForMultipleEvents(1, &ev_, FALSE, static_cast<DWORD>(std::max<long long>(left.count(), 0)), FALSE);
+      if (r == WSA_WAIT_FAILED) return -1;
+      if (r == WSA_WAIT_TIMEOUT) return take(want) ? 1 : 0;
+      WSANETWORKEVENTS ne{};
+      if (::WSAEnumNetworkEvents(s_, ev_, &ne) != 0) return -1;
+      if (ne.lNetworkEvents == 0) continue;
+      ready_.fetch_or(ne.lNetworkEvents);
+      // The other thread may be waiting for some of this.
+      if (ne.lNetworkEvents & (~want | FD_CLOSE)) (void)::WSASetEvent(ev_);
+    }
+  }
+
+ private:
+  bool take(long want) noexcept { return (ready_.fetch_and(~(want & ~FD_CLOSE)) & want) != 0; }
+
+  SOCKET s_;
+  WSAEVENT ev_;
+  std::atomic<long> ready_{0};
+};
+
 void no_inherit(SOCKET s) noexcept {
   (void)::SetHandleInformation(reinterpret_cast<HANDLE>(s), HANDLE_FLAG_INHERIT, 0);
 }
 
 class tcp_link final : public link {
  public:
-  explicit tcp_link(SOCKET s) : s_(s) {
+  // Non-blocking (socket_events), waited on in slices: Windows' shutdown()
+  // does not wake a thread blocked in send(), and a rejoin (#472) must not
+  // wait behind a write on a link that is gone.
+  explicit tcp_link(SOCKET s) : s_(s), events_(s, FD_READ | FD_WRITE | FD_CLOSE) {
     no_inherit(s_);
     BOOL one = TRUE;
     (void)::setsockopt(s_, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<const char*>(&one), sizeof one);
-    // Non-blocking, waited on in slices: Windows' shutdown() does not wake a
-    // thread blocked in send(), and a rejoin (#472) must not wait behind a
-    // write on a link that is gone.
-    u_long nb = 1;
-    (void)::ioctlsocket(s_, FIONBIO, &nb);
   }
   ~tcp_link() override {
     shutdown();
@@ -77,8 +132,11 @@ class tcp_link final : public link {
     char sink[4096];
     const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
     while (std::chrono::steady_clock::now() < until) {
-      if (wait_for(s_, POLLRDNORM, 50) <= 0) continue;
       const int n = ::recv(s_, sink, sizeof sink, 0);
+      if (n == SOCKET_ERROR && ::WSAGetLastError() == WSAEWOULDBLOCK) {
+        if (events_.wait(FD_READ, 50) < 0) break;
+        continue;
+      }
       if (n <= 0) break;
     }
     ::closesocket(s_);
@@ -98,8 +156,7 @@ class tcp_link final : public link {
         if (e != WSAEWOULDBLOCK) return err(down_.load() ? status::cancelled : status::io);
         // Full: wait for room in slices, so shutdown() is noticed.
         if (std::chrono::steady_clock::now() >= stalled_at) return err(status::timeout);
-        const int ev = wait_for(s_, POLLWRNORM, 100);
-        if (ev < 0) return err(status::io);
+        if (events_.wait(FD_WRITE, 100) < 0) return err(status::io);
         continue;
       }
       sent += static_cast<std::size_t>(n);
@@ -110,35 +167,24 @@ class tcp_link final : public link {
 
   result<std::size_t> read_some(std::span<std::uint8_t> into, int timeout_ms) override {
     if (into.empty()) return std::size_t{0};
-    // In slices: closing the sending side does not wake a WSAPoll that waits
-    // to read, so shutdown() is noticed here instead.
+    // In slices: closing the sending side does not wake a wait to read, so
+    // shutdown() is noticed here instead.
     const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms < 0 ? 0 : timeout_ms);
     for (;;) {
-      int ev = 0;
-      for (;;) {
-        if (down_.load()) return err(status::cancelled);
-        int slice = 100;
-        if (timeout_ms >= 0) {
-          // Rounded up, so a timeout of 1 ms polls once rather than none.
-          const auto left = std::chrono::ceil<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
-          if (left.count() <= 0 && timeout_ms > 0) return err(status::timeout);
-          slice = static_cast<int>(std::min<long long>(slice, std::max<long long>(left.count(), 0)));
-        }
-        ev = wait_for(s_, POLLRDNORM, slice);
-        if (ev != 0) break;
-        if (timeout_ms == 0) return err(status::timeout);
-      }
-      if (ev < 0) return err(status::io);
       if (down_.load()) return err(status::cancelled);
       const int want = static_cast<int>(std::min<std::size_t>(into.size(), 1u << 20));
       const int n = ::recv(s_, reinterpret_cast<char*>(into.data()), want, 0);
       if (n != SOCKET_ERROR) return static_cast<std::size_t>(n);
-      // Readable but nothing after all (non-blocking): wait again.
-      if (::WSAGetLastError() == WSAEWOULDBLOCK) {
-        if (timeout_ms == 0) return err(status::timeout);
-        continue;
+      if (::WSAGetLastError() != WSAEWOULDBLOCK) return err(down_.load() ? status::cancelled : status::io);
+      // Nothing yet: wait.
+      int slice = 100;
+      if (timeout_ms >= 0) {
+        // Rounded up, so a timeout of 1 ms waits once rather than none.
+        const auto left = std::chrono::ceil<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
+        if (left.count() <= 0) return err(status::timeout);
+        slice = static_cast<int>(std::min<long long>(slice, left.count()));
       }
-      return err(down_.load() ? status::cancelled : status::io);
+      if (events_.wait(FD_READ, slice) < 0) return err(status::io);
     }
   }
 
@@ -152,6 +198,7 @@ class tcp_link final : public link {
 
  private:
   SOCKET s_;
+  socket_events events_;
   std::atomic<bool> down_{false};
 };
 
@@ -201,7 +248,8 @@ class tcp_listener final : public listener {
 
 class udp_beacon final : public beacon_socket {
  public:
-  udp_beacon(SOCKET s, std::uint16_t port) : s_(s), port_(port) {}
+  // Read on presence's thread while it sends from another (socket_events).
+  udp_beacon(SOCKET s, std::uint16_t port) : s_(s), port_(port), events_(s, FD_READ) {}
   ~udp_beacon() override {
     shutdown();
     ::closesocket(s_);
@@ -225,18 +273,23 @@ class udp_beacon final : public beacon_socket {
 
   result<std::size_t> receive(std::span<std::uint8_t> into, int timeout_ms, std::string& from_address) override {
     if (down_.load()) return err(status::cancelled);
-    const int ev = wait_for(s_, POLLRDNORM, timeout_ms);
-    if (ev == 0) return err(status::timeout);
-    if (ev < 0) return err(status::io);
     sockaddr_in from{};
     int flen = sizeof from;
-    const int n = ::recvfrom(s_, reinterpret_cast<char*>(into.data()), static_cast<int>(into.size()), 0,
-                             reinterpret_cast<sockaddr*>(&from), &flen);
+    int n = ::recvfrom(s_, reinterpret_cast<char*>(into.data()), static_cast<int>(into.size()), 0,
+                       reinterpret_cast<sockaddr*>(&from), &flen);
+    if (n == SOCKET_ERROR && ::WSAGetLastError() == WSAEWOULDBLOCK) {
+      const int ev = events_.wait(FD_READ, timeout_ms);
+      if (ev == 0) return err(status::timeout);
+      if (ev < 0) return err(status::io);
+      flen = sizeof from;
+      n = ::recvfrom(s_, reinterpret_cast<char*>(into.data()), static_cast<int>(into.size()), 0,
+                     reinterpret_cast<sockaddr*>(&from), &flen);
+    }
     if (n == SOCKET_ERROR) {
       // A datagram longer than the buffer is not a beacon; a port-unreachable
       // reply to our own send is noise.
       const int e = ::WSAGetLastError();
-      return err(e == WSAEMSGSIZE || e == WSAECONNRESET ? status::timeout : status::io);
+      return err(e == WSAEMSGSIZE || e == WSAECONNRESET || e == WSAEWOULDBLOCK ? status::timeout : status::io);
     }
     char text[INET_ADDRSTRLEN] = {};
     if (!::inet_ntop(AF_INET, &from.sin_addr, text, sizeof text)) return err(status::io);
@@ -249,6 +302,7 @@ class udp_beacon final : public beacon_socket {
  private:
   SOCKET s_;
   std::uint16_t port_;
+  socket_events events_;
   std::atomic<bool> down_{false};
 };
 
@@ -446,7 +500,10 @@ namespace {
 
 class udp_port final : public udp_socket {
  public:
-  udp_port(SOCKET s, std::uint16_t port, bool dual = false) : s_(s), port_(port), dual_(dual) {}
+  // Read on one thread (the hub's reader, #472) while others send
+  // (socket_events).
+  udp_port(SOCKET s, std::uint16_t port, bool dual = false)
+      : s_(s), port_(port), dual_(dual), events_(s, FD_READ | FD_WRITE) {}
   std::uint16_t port() const noexcept override { return port_; }
   ~udp_port() override {
     shutdown();
@@ -468,24 +525,34 @@ class udp_port final : public udp_socket {
       std::memcpy(&m->sin6_addr.s6_addr[12], &v4.sin_addr, 4);
       alen = static_cast<int>(sizeof *m);
     }
-    if (::sendto(s_, reinterpret_cast<const char*>(d.data()), static_cast<int>(d.size()), 0,
-                 reinterpret_cast<sockaddr*>(&a), alen) == SOCKET_ERROR) {
-      return err(status::io);
+    // Non-blocking now: a full send buffer waits for room, as a blocking
+    // sendto did, a second at most.
+    for (int tries = 0;; ++tries) {
+      if (::sendto(s_, reinterpret_cast<const char*>(d.data()), static_cast<int>(d.size()), 0,
+                   reinterpret_cast<sockaddr*>(&a), alen) != SOCKET_ERROR) {
+        return {};
+      }
+      if (::WSAGetLastError() != WSAEWOULDBLOCK || tries == 10 || down_.load()) return err(status::io);
+      if (events_.wait(FD_WRITE, 100) < 0) return err(status::io);
     }
-    return {};
   }
   result<std::size_t> receive_from(std::span<std::uint8_t> into, int timeout_ms, endpoint& from) override {
     if (down_.load()) return err(status::cancelled);
-    const int ev = wait_for(s_, POLLRDNORM, timeout_ms);
-    if (ev == 0) return err(status::timeout);
-    if (ev < 0) return err(status::io);
     sockaddr_storage st{};
     int flen = sizeof st;
-    const int n = ::recvfrom(s_, reinterpret_cast<char*>(into.data()), static_cast<int>(into.size()), 0,
-                             reinterpret_cast<sockaddr*>(&st), &flen);
+    int n = ::recvfrom(s_, reinterpret_cast<char*>(into.data()), static_cast<int>(into.size()), 0,
+                       reinterpret_cast<sockaddr*>(&st), &flen);
+    if (n == SOCKET_ERROR && ::WSAGetLastError() == WSAEWOULDBLOCK) {
+      const int ev = events_.wait(FD_READ, timeout_ms);
+      if (ev == 0) return err(status::timeout);
+      if (ev < 0) return err(status::io);
+      flen = sizeof st;
+      n = ::recvfrom(s_, reinterpret_cast<char*>(into.data()), static_cast<int>(into.size()), 0,
+                     reinterpret_cast<sockaddr*>(&st), &flen);
+    }
     if (n == SOCKET_ERROR) {
       const int e = ::WSAGetLastError();
-      return err(e == WSAEMSGSIZE || e == WSAECONNRESET ? status::timeout : status::io);
+      return err(e == WSAEMSGSIZE || e == WSAECONNRESET || e == WSAEWOULDBLOCK ? status::timeout : status::io);
     }
     from = {address_text(address_of(reinterpret_cast<const sockaddr*>(&st))), port_of(st)};
     return static_cast<std::size_t>(n);
@@ -496,6 +563,7 @@ class udp_port final : public udp_socket {
   SOCKET s_;
   std::uint16_t port_;
   bool dual_;
+  socket_events events_;
   std::atomic<bool> down_{false};
 };
 
