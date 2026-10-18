@@ -1014,6 +1014,12 @@ python tools\testmedia\make-seeds.py
 cmake -S . -B build-fuzz -A x64 -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF
 cmake --build build-fuzz --config Release --target mv_fuzzers
 .\tools\fuzz\run.ps1 -BuildDir build-fuzz -Seconds 60      # -Harness png,gif to pick
+# CI (#384) gates on the eleven single-format image harnesses and runs the rest
+# non-gating, 30 s each: decode animation thumbnail script pdf docx pptx in one step;
+# meta_c2pa meta_jpeg meta_png meta_webp meta_bmff meta_xmp meta_icc meta_location
+# meta_probe meta_search geo places_map addon_contributions ai_query in another.
+# meta_search (#291, links mv_meta) and ai_query (#291, the Local search query
+# language, seeds tests/data/seeds/query) are in mv_fuzzers like the rest.
 # #290: the metadata readers (meta/parse.h) have harnesses too: meta_c2pa, meta_jpeg,
 # meta_png, meta_webp, meta_bmff, meta_xmp, meta_icc, and (#345) meta_probe, the AI badge's
 # provenance probe (add src/meta/probe.cpp src/codec/probe.cpp to the line below, seeds
