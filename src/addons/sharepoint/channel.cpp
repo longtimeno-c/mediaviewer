@@ -1155,6 +1155,10 @@ expected channel::adopt(std::shared_ptr<link> l, std::unique_ptr<stream_keys> ke
   link_cv_.notify_all();
   if (old && old != l) old->shutdown();  // a writer or the reader blocked on it returns
   rejoins_.fetch_add(1);
+  // Up now: the window says where the transfer is before what the peer
+  // missed is sent again (up to kReplayBytes, as fast as the peer takes it;
+  // a slow receiver made the move look seconds long).
+  notify(link_event::up);
   {
     std::lock_guard s(send_m_);
     st_->push = push;
@@ -1181,7 +1185,6 @@ expected channel::adopt(std::shared_ptr<link> l, std::unique_ptr<stream_keys> ke
       ++next;
     }
   }
-  notify(link_event::up);
   return {};
 }
 
