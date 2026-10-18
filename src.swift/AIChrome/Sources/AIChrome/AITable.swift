@@ -466,6 +466,12 @@ struct StatusLine: Equatable {
     if s.flags & MV_AI_STATUS_NO_MODELS != 0 {
       notes.append("The search models could not be loaded. Reinstall Core in Settings")
     }
+    // #482: the model tier: none chosen yet, or its models still arriving.
+    if s.flags & MV_AI_STATUS_TIER_UNCHOSEN != 0 {
+      notes.append("Choose your models in Settings → Local search to start")
+    } else if let fetch = FetchLine.from(s) {
+      notes.append(fetch.text)
+    }
     // The Sound piece's progress: "Sound: 12 of 40 clips · Speech: 8 of 40".
     if s.sound_total > 0 || s.speech_total > 0 {
       var parts: [String] = []

@@ -24,7 +24,8 @@ final class LocalSearchStore: ObservableObject {
 
   /// One installable piece of the AI family (docs/design/17 per-piece Install/Remove).
   struct Piece: Identifiable, Equatable {
-    let id: String          // "ai" (Core), "ai-faces" (People), "ai-audio" (Sound), "ai-docs" (Documents)
+    let id: String          // "ai" (Core), "ai-faces" (People), "ai-audio" (Sound), "ai-docs" (Documents),
+                            // "ai-large" (Large pictures)
     let title: String
     let detail: String
     let required: Bool
@@ -68,7 +69,15 @@ final class LocalSearchStore: ObservableObject {
     // #354 D3: a text model, so document words also match by meaning.
     Piece(id: "ai-docs", title: "Documents",
           detail: "Search PDF and Word files by what they're about, not just their words.", required: false),
+    // #482: the Maxxed tier's picture tower (~2 GB). Installed by the model
+    // picker's Download when that tier is chosen; listed once installed.
+    Piece(id: "ai-large", title: "Large pictures",
+          detail: "The Maxxed tier's ViT-H/14 picture tower.", required: false),
   ]
+  /// The rows Settings lists: Large pictures only once it is installed or on its way.
+  var shownPieces: [Piece] {
+    pieces.filter { $0.id != "ai-large" || $0.installed || isPending($0.id) || removing.contains($0.id) }
+  }
   /// The first installed-state read has landed. It verifies every installed
   /// file (seconds for the 2.3 GB pack), and the channel probe used to answer
   /// first: Settings offered "Install local search" on every start and a click
@@ -140,6 +149,39 @@ final class LocalSearchStore: ObservableObject {
     // this one still ticks; the tolerance lets the system coalesce it.
     timer?.tolerance = 0.1
     if !elsewhere { refresh() }  // a later window reads it when Settings opens
+    // #482: the AI chrome's model picker asks for the pieces its tier and
+    // checkboxes want (addons_mac.mm -installLocalSearchPieces:).
+    pieceRequests = NotificationCenter.default.addObserver(
+      forName: Self.installPiecesRequest, object: nil, queue: .main
+    ) { [weak self] note in
+      let ids = note.userInfo?["ids"] as? [String] ?? []
+      MainActor.assumeIsolated { self?.installRequested(ids) }
+    }
+  }
+
+  static let installPiecesRequest = Notification.Name("MVInstallLocalSearchPieces")
+  private var pieceRequests: NSObjectProtocol?
+
+  /// The picker's Download: each piece not installed, queued behind Core as a
+  /// click on its Install would be. Before the first installed-state read
+  /// (a later Settings open reads it) the read comes first. Unknown ids,
+  /// Core, and installed or queued pieces are skipped.
+  func installRequested(_ ids: [String]) {
+    guard !elsewhere else { return }
+    let wanted = ids.filter { id in id != "ai" && pieces.contains(where: { $0.id == id }) }
+    guard !wanted.isEmpty else { return }
+    let run: @MainActor @Sendable () -> Void = { [weak self] in
+      guard let self else { return }
+      for id in wanted {
+        guard let piece = self.pieces.first(where: { $0.id == id }), !piece.installed else { continue }
+        self.install(id)
+      }
+    }
+    if stateKnown {
+      run()
+    } else {
+      refresh(then: run)
+    }
   }
 
   var core: Piece { pieces[0] }
@@ -251,7 +293,7 @@ final class LocalSearchStore: ObservableObject {
     guard supported else { return }
     Task.detached {
       var read: [String: [String: Any]] = [:]
-      for id in ["ai", "ai-faces", "ai-audio", "ai-docs"] {
+      for id in ["ai", "ai-faces", "ai-audio", "ai-docs", "ai-large"] {
         let json = AddonStore.readString { mv_addon2_state_json(id, $0, $1) }
         read[id] = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
       }
@@ -382,7 +424,9 @@ final class LocalSearchStore: ObservableObject {
 
   /// What "Install all" fetches: every piece not installed that the channel offers.
   var installAllIDs: [String] {
-    pieces.filter { !$0.installed && $0.offeredBytes != nil && !removing.contains($0.id) && !isPending($0.id) }
+    // Not Large pictures: it is the Maxxed tier's, which the picker installs.
+    pieces.filter { !$0.installed && $0.id != "ai-large" && $0.offeredBytes != nil && !removing.contains($0.id)
+                    && !isPending($0.id) }
       .map(\.id)
   }
 
@@ -688,9 +732,9 @@ struct LocalSearchSection: View {
         .transition(.opacity)
     }
     VStack(spacing: 0) {
-      ForEach(store.pieces) { piece in
+      ForEach(store.shownPieces) { piece in
         pieceRow(piece)
-        if piece.id != store.pieces.last?.id {
+        if piece.id != store.shownPieces.last?.id {
           Rectangle().fill(MVTheme.hairline).frame(height: 1)
         }
       }
@@ -963,7 +1007,9 @@ struct LocalSearchSection: View {
              ? "Remove Sound? Searching videos by sound and speech stops until it is installed again."
              : id == "ai-docs"
                ? "Remove Documents? Document words match only as typed until it is installed again."
-               : "Remove People? Face search stops until it is installed again.")
+               : id == "ai-large"
+                 ? "Remove Large pictures? The Maxxed tier cannot search pictures until it is installed again."
+                 : "Remove People? Face search stops until it is installed again.")
           .font(MVTheme.font(13)).foregroundStyle(MVTheme.title)
           .fixedSize(horizontal: false, vertical: true)
         HStack {
