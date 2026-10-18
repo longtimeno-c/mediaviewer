@@ -524,7 +524,7 @@ A one-pixel grid appears at 400 % and above.
 | `+` / `-` | zoom in / out (`=` and the numpad keys too) |
 | `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP/GIF/WebP/TIFF/ICO/HEIC/AVIF/RAW, MP4/MOV/MKV/WebM/AVI/TS) |
 | `Ctrl+Shift+O` | open a folder |
-| `Ctrl+E` | show the current file in Explorer, selected (`⌘E`: Finder; a Photos library item opens in Photos, selected). Open menu: **Show in Explorer** (Mac: **Show in Finder**) |
+| `Ctrl+E` | show the current file in Explorer, selected (`⌘E`: Finder; a Photos library item opens in Photos, selected). Open menu: **Show in Explorer** (Mac: **Show in Finder**, or **Open in Photos** while a Photos library item is current; `?` and Settings use the same words) |
 | Open ▸ **Recent folders** | the folders you opened lately, the jump list's (File ▸ Open Recent on the Mac). From the keyboard: `Tab` to the command bar, `Enter` on Open, arrow to Recent folders, `Right`. A folder that has gone beeps and leaves the list, as a welcome-card row does. The welcome card writes your profile folder as `~` (`~\Pictures`). With OneDrive set up, a **OneDrive** row leads the card, above Recent folders, as iCloud Photos does on the Mac: it opens OneDrive's Pictures folder (OneDrive itself if there is none) |
 | `Space` / `,` / `.` on an animation | play or pause (a finished one plays again) / previous frame / next frame, like a clip. Delays follow browsers: 10 ms or less plays as 100 ms |
 | `?` | the shortcuts for what you are doing right now. Also the `?` button on the right of the command bar |
@@ -690,7 +690,15 @@ owed: [docs/design/17](design/17-local-ai-search.md); the Mac checklist is
 
 1. Stage the models (pinned revisions and SHA-256s):
    `python3 tools/package/ai-models.py stage --piece ai --out <staged>/ai` (and `ai-audio`,
-   `ai-faces`).
+   `ai-faces`, `ai-large`). Staging `ai` also writes `models/tiers.json`, the model tiers the
+   add-on reads (#482, [docs/plans/model-tiers.md](plans/model-tiers.md)). A pack staged
+   before that has no such file and opens the Default tier's folders. The default,
+   `--upstream bundle`, stages every file (a sideloaded dev pack carries its models); releases
+   pass `--upstream remote`, which lists upstream files in `remote.json` for the add-on to
+   fetch from Hugging Face on install. Staging the ViT-H/14 (`ai-large`) and AdaFace
+   (`ai-faces`) exports needs `requirements-export.txt` (torch, transformers); pass
+   `--skip-exports` to leave them out. A sideloaded pack starts with no tier chosen: pick one
+   in the picker, or write `{"tier":"default"}` to the add-on's `data/settings.json`.
 2. Configure with `-DMV_ADDON_DEV_PUBLIC_KEY=<your key's public half>` and build `mv_ai`,
    `mv_ai_chrome` (Mac) or the WinUI chrome, `mv_ai_tests` and `ai-bench`. On the Mac the AI
    targets exist on arm64 only.
@@ -1019,6 +1027,12 @@ python tools\testmedia\make-seeds.py
 cmake -S . -B build-fuzz -A x64 -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF
 cmake --build build-fuzz --config Release --target mv_fuzzers
 .\tools\fuzz\run.ps1 -BuildDir build-fuzz -Seconds 60      # -Harness png,gif to pick
+# CI (#384) gates on the eleven single-format image harnesses and runs the rest
+# non-gating, 30 s each: decode animation thumbnail script pdf docx pptx in one step;
+# meta_c2pa meta_jpeg meta_png meta_webp meta_bmff meta_xmp meta_icc meta_location
+# meta_probe meta_search geo places_map addon_contributions ai_query in another.
+# meta_search (#291, links mv_meta) and ai_query (#291, the Local search query
+# language, seeds tests/data/seeds/query) are in mv_fuzzers like the rest.
 # #290: the metadata readers (meta/parse.h) have harnesses too: meta_c2pa, meta_jpeg,
 # meta_png, meta_webp, meta_bmff, meta_xmp, meta_icc, and (#345) meta_probe, the AI badge's
 # provenance probe (add src/meta/probe.cpp src/codec/probe.cpp to the line below, seeds
@@ -1601,6 +1615,26 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Local search model tiers (#482, docs/plans/model-tiers.md, 2026-10-18)
+
+Four tiers (Maxxed, Default, Intel, Potato), each a profile in `tools/package/ai-models.json`
+naming a model per role; the add-on names no model ([17](design/17-local-ai-search.md) "Model
+tiers"). Upstream models are fetched from Hugging Face on install (`src/addons/ai/fetch.*`);
+the 5 GB ceiling is retired; the add-on's picker (Mac sheet, Windows window) recommends a tier
+from a local check. New tools: `tools/package/clip-export.py` (our ViT-H/14 export,
+golden-checked) and `tools/ai-eval/calibrate.py` (the PR 20 eval and threshold calibration
+against B/32).
+
+Tests: `mv_ai_tests "[tiers],[contract],[fetch]"`, `mv_tests "[addon][manifest]"` (the
+`remote` list), `python3 -m unittest test_addon_pack` (remote staging, tier checks, no
+ceiling), the AIChrome Swift tests and the Windows chrome's C# compile. Calibration and eval:
+
+```bash
+python3 tools/ai-eval/calibrate.py --eval <coco-1k> --model <staged>/ai-large/models/clip-h14 --tokenizer <clip tokenizer.json> --reference <staged>/ai/models/clip-b32 --write tools/package/ai-models.json --piece ai-large --folder models/clip-h14
+```
+
+Measured and not measured are in the PR and in 17 "Measurements".
 
 ### Windows search: the typed space, the resume notice, a result list from an empty window (#443, 2026-10-15)
 

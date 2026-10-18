@@ -103,6 +103,17 @@ struct summary {
   // Camera stamps carry no zone, so this orders correctly within a folder and
   // is not a real instant. 0 = unknown.
   std::int64_t date_taken_key = 0;
+  // #415: the dates Summary falls back to when there is no capture stamp, in
+  // this order (summary_date). None is a capture time, so none is ever the
+  // sort key or the search stamp (#404), and none is written back.
+  //   c2pa_created: the active C2PA manifest's c2pa.created action `when`, in
+  //                 UTC ("2026-09-28 18:12:03 UTC"); empty when it has none.
+  //   c2pa_signed:  the signature's timestamp, as All tags' Signed at shows it.
+  //   file_created_unix: when the file was created on this volume (io::file_stat
+  //                 created_unix, from the stat that reads the size); 0 = unknown.
+  std::string c2pa_created;
+  std::string c2pa_signed;
+  std::int64_t file_created_unix = 0;
   // EXIF orientation as stored (1..8, 1 when absent).
   std::uint8_t orientation = 1;
   // PR 12: what the file (or its XMP sidecar, which wins) says. 1..5 stars,
@@ -245,6 +256,22 @@ struct carried_metadata {
 // gap ("—") instead of hiding it, so missing metadata reads as missing rather
 // than as a broken pane (PR 9 verify).
 [[nodiscard]] std::vector<field> summary_rows(const metadata& m);
+
+// #415: Summary's one date row. The capture stamp ("Date taken") wins; without
+// one, "Created" (the C2PA created action's time), else "Signed at" (the C2PA
+// signature time), else "File created" (this volume's creation time, local).
+// With none of them it is "Date taken" and empty, shown as a gap. Both hosts
+// edit any of these labels as Date taken, starting from an empty field when it
+// is a fallback (the fallback is never copied into the file).
+[[nodiscard]] field summary_date(const metadata& m);
+
+// #415, pure: an ISO 8601 instant ("2026-09-28T18:12:03Z", "...+02:00",
+// fractions dropped) as "2026-09-28 18:12:03 UTC"; with no zone, the wall time
+// with no suffix. Empty when it is not a date.
+[[nodiscard]] std::string format_instant_utc(std::string_view iso);
+// #415: seconds since the Unix epoch in this machine's local time,
+// "2026-09-28 19:12:03" (the way Date taken is shown). Empty for 0.
+[[nodiscard]] std::string format_local_time(std::int64_t unix_seconds);
 
 // The three lines the on-canvas info overlay adds under the item line. An
 // empty string means "nothing to say", and the host draws no line for it.

@@ -234,24 +234,98 @@ class AiPackTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.pack("ai-faces", self.faces)
 
-    def test_the_family_ceiling(self):
-        core = self.pack("ai", self.core)
-        faces = self.pack("ai-faces", self.faces)
-        self.assertEqual(addon_pack.main(["ceiling", str(self.out / "mediaviewer-addon-ai-win-x64.json"),
-                                          str(self.out / "mediaviewer-addon-ai-faces-win-x64.json")]), 0)
-        big = dict(faces)
-        big["id"] = "ai-cuda"
-        big["installed_size"] = addon_pack.CEILINGS["ai"] - core["installed_size"] + 1
-        big["files"] = [{"path": "onnxruntime_providers_cuda.dll", "sha256": "0" * 64, "size": 1, "licence": "MIT"}]
+    def test_the_ai_family_has_no_ceiling(self):
+        # Retired 2026-10-18 (docs/design/12): the pieces fetch their models.
+        self.assertNotIn("ai", addon_pack.CEILINGS)
+        self.pack("ai", self.core)
+        big = self.pack("ai-faces", self.faces)
+        big["installed_size"] = 50_000_000_000
         (self.out / "big.json").write_text(json.dumps(big))
         self.assertEqual(addon_pack.main(["ceiling", str(self.out / "mediaviewer-addon-ai-win-x64.json"),
-                                          str(self.out / "big.json")]), 1)
+                                          str(self.out / "big.json")]), 0)
+
+    def remote_entry(self, **change):
+        r = {"url": "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/" + "a" * 40 + "/onnx/text_model_fp16.onnx",
+             "path": "models/clip-b32/text.onnx", "size": 1234, "sha256": "b" * 64, "licence": "MIT"}
+        r.update(change)
+        return r
+
+    def test_fetched_files_are_signed_into_the_manifest_not_shipped(self):
+        (self.core / "remote.json").write_text(json.dumps([self.remote_entry()]))
+        m = self.pack("ai", self.core)
+        self.assertEqual(m["remote"], [self.remote_entry()])
+        self.assertEqual(m["download_size"], 1234)
+        paths = {f["path"] for f in m["files"]}
+        self.assertNotIn("remote.json", paths)
+        self.assertNotIn("models/clip-b32/text.onnx", paths)
+
+    def test_a_fetched_file_must_be_a_pinned_hugging_face_file(self):
+        for bad in (self.remote_entry(url="https://example.com/x.onnx"),
+                    self.remote_entry(url=self.remote_entry()["url"] + "?download=1"),
+                    self.remote_entry(sha256="nope"),
+                    self.remote_entry(licence="CC-BY-NC-4.0"),
+                    self.remote_entry(path="../escape.onnx"),
+                    self.remote_entry(path="models/clip-b32/image.onnx")):  # also shipped
+            with self.subTest(bad=bad):
+                (self.core / "remote.json").write_text(json.dumps([bad]))
+                with self.assertRaises(ValueError):
+                    self.pack("ai", self.core)
+
+    def test_remote_staging_lists_upstream_files_and_keeps_exports(self):
+        gate = importlib.util.spec_from_file_location("ai_models", Path(__file__).with_name("ai-models.py"))
+        mod = importlib.util.module_from_spec(gate)
+        gate.loader.exec_module(mod)
+        out = self.tmp / "staged-ai"
+        self.assertEqual(mod.main(["stage", "--piece", "ai", "--out", str(out), "--upstream", "remote",
+                                   "--skip-exports"]), 0)
+        remote = json.loads((out / "remote.json").read_text())
+        self.assertTrue(remote)
+        self.assertTrue(all(r["url"].startswith("https://huggingface.co/") for r in remote))
+        self.assertFalse(any((out / r["path"]).exists() for r in remote))
+        self.assertTrue((out / "models/clip-l14/model.json").exists())
+        tiers = json.loads((out / "models/tiers.json").read_text())
+        default = tiers["profiles"][tiers["default"]]
+        self.assertIn("models/clip-tokenizer", default["folders"]["ai"])
+        self.assertIn("models/whisper-tokenizer", default["folders"]["ai-audio"])
+        # The picker's summary: names by role, bytes fetched per piece, licences.
+        self.assertIn("CLIP ViT-L/14", default["summary"]["models"]["pictures"])
+        self.assertGreater(default["summary"]["download_bytes"]["ai"], 0)
+        self.assertTrue(set(default["summary"]["licences"]) <= mod.ALLOWED_LICENCES)
+        # Potato has no sound search, and the cheapest towers that pass.
+        potato = tiers["profiles"]["potato"]
+        self.assertNotIn("sounds", potato["summary"]["models"])
+        self.assertIn("models/whisper-tiny", potato["folders"]["ai-audio"])
+        self.assertIn("models/faces-sface", potato["folders"]["ai-faces"])
 
     def test_model_list_passes_the_licence_gate(self):
         gate = importlib.util.spec_from_file_location("ai_models", Path(__file__).with_name("ai-models.py"))
         mod = importlib.util.module_from_spec(gate)
         gate.loader.exec_module(mod)
         self.assertEqual(mod.main(["check"]), 0)
+
+    def test_a_tier_must_name_a_model_of_each_role_in_its_piece(self):
+        gate = importlib.util.spec_from_file_location("ai_models", Path(__file__).with_name("ai-models.py"))
+        mod = importlib.util.module_from_spec(gate)
+        gate.loader.exec_module(mod)
+        data = mod.load()
+        self.assertEqual(mod.tier_problems(data), [])
+        prof = data["tiers"]["profiles"][data["tiers"]["default"]]
+
+        def broken(change):
+            d = json.loads(json.dumps(data))
+            change(d["tiers"]["profiles"][d["tiers"]["default"]], d)
+            return mod.tier_problems(d)
+
+        # A picture tower from the audio piece, a missing role, a tokenizer
+        # folder (no model.json), an unknown slot, an unknown default.
+        self.assertTrue(broken(lambda p, d: p["pictures"].update(high=prof["sounds"])))
+        self.assertTrue(broken(lambda p, d: p.pop("documents")))
+        self.assertTrue(broken(lambda p, d: p.update(faces="models/clip-tokenizer")))
+        self.assertTrue(broken(lambda p, d: p["speech"].update(huge="models/whisper-small")))
+        self.assertTrue(broken(lambda p, d: d["tiers"].update(default="nope")))
+        # A tier may leave one slot empty (Intel has no high tower), not both.
+        self.assertEqual(broken(lambda p, d: p["pictures"].update(high=None)), [])
+        self.assertTrue(broken(lambda p, d: p.update(pictures={"high": None, "fast": None})))
 
 
 class SharepointPackTest(unittest.TestCase):

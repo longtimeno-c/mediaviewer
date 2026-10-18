@@ -640,7 +640,7 @@ public static partial class IslandHost
         _localSearchPanel = new StackPanel { Spacing = Space(10) };
         _localSearchStatus = Note("");
         view.Children.Add(_localSearchPanel);
-        view.Children.Add(FirstPartyPageHost(AiSlot, FacesSlot, AudioSlot, DocsSlot, CudaSlot));  // PR 56
+        view.Children.Add(FirstPartyPageHost(AiSlot, FacesSlot, AudioSlot, DocsSlot, LargeSlot, CudaSlot));  // PR 56
         view.Children.Add(_localSearchStatus);
         EnsureReaderStarted();  // a later window: what is installed, read now
         _localSearchRestartButton = AddonRestartButton();
@@ -653,6 +653,8 @@ public static partial class IslandHost
         {
             if (piece.Offer.Kind is OfferKind.Unknown or OfferKind.Unreachable) ProbeOffer(piece);
         }
+        // Large pictures only once installed, for its updates: the picker installs it.
+        if (LargeSlot.State.Installed && LargeSlot.Offer.Kind is OfferKind.Unknown or OfferKind.Unreachable) ProbeOffer(LargeSlot);
         StartNvidiaProbe();
         RefreshFamilyUsage();
     }
@@ -816,6 +818,12 @@ public static partial class IslandHost
             "Sounds and speech in videos — find “dog barking” or what someone said. Optional."));
         Piece(PieceRow(DocsSlot, "Documents",
             "Search PDF and Word files by what they're about, not just their words."));
+        // #482: listed once the model picker has asked for it (Maxxed) or it is installed;
+        // never offered on its own.
+        if (LargeSlot.State.Installed || LargeSlot.Removing || AiQueuedOrInstalling(LargeSlot))
+        {
+            Piece(PieceRow(LargeSlot, "Large pictures", "The Maxxed tier's ViT-H/14 picture tower."));
+        }
         if (_nvidiaPresent == true || CudaSlot.State.Installed)
         {
             Piece(PieceRow(CudaSlot, "NVIDIA acceleration", "Index faster on this computer's NVIDIA graphics. Needs NVIDIA's CUDA 13 and cuDNN 9, installed separately."));
@@ -1003,12 +1011,12 @@ public static partial class IslandHost
         return row;
     }
 
-    private static bool AnyAiBusy() => AiSlot.Busy || FacesSlot.Busy || AudioSlot.Busy || DocsSlot.Busy || CudaSlot.Busy;
+    private static bool AnyAiBusy() => AiSlot.Busy || FacesSlot.Busy || AudioSlot.Busy || DocsSlot.Busy || LargeSlot.Busy || CudaSlot.Busy;
 
     // Busy (installing, loading, removing) or waiting in the install queue.
     private static bool AnyAiPending() => AnyAiBusy() || _aiQueue.Count > 0;
 
-    private static bool AnyAiRemoving() => AiSlot.Removing || FacesSlot.Removing || AudioSlot.Removing || DocsSlot.Removing || CudaSlot.Removing;
+    private static bool AnyAiRemoving() => AiSlot.Removing || FacesSlot.Removing || AudioSlot.Removing || DocsSlot.Removing || LargeSlot.Removing || CudaSlot.Removing;
 
     private static bool AiQueuedOrInstalling(AddonSlot slot) => _aiInstalling == slot || _aiQueue.Contains(slot);
 
@@ -1025,7 +1033,7 @@ public static partial class IslandHost
     // version of; the queue puts Core first. Owner, 2026-10-03: the pieces had
     // been updated one by one and the 1 GB Core left behind, so a piece ran
     // ahead of the engine it was built with.
-    private static AddonSlot[] UpdateAllSlots() => new[] { AiSlot, FacesSlot, AudioSlot, DocsSlot, CudaSlot }
+    private static AddonSlot[] UpdateAllSlots() => new[] { AiSlot, FacesSlot, AudioSlot, DocsSlot, LargeSlot, CudaSlot }
         .Where(s => UpdateVersion(s) is not null && !s.Removing && !AiQueuedOrInstalling(s))
         .ToArray();
 
@@ -1108,7 +1116,9 @@ public static partial class IslandHost
                 ? "Remove People? Face search stops until it is installed again."
                 : slot == DocsSlot
                     ? "Remove Documents? Document words match only as typed until it is installed again."
-                    : $"Remove {slot.Name}? Indexing runs on the CPU until it is installed again.");
+                    : slot == LargeSlot
+                        ? "Remove Large pictures? The Maxxed tier cannot search pictures until it is installed again; choose another tier under Models."
+                        : $"Remove {slot.Name}? Indexing runs on the CPU until it is installed again.");
         ask.Foreground = Brush(Title);
         box.Children.Add(ask);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
@@ -1154,7 +1164,7 @@ public static partial class IslandHost
         _confirmCoreRemove = false;
         AiSlot.Busy = true;
         // Removing Core removes its pieces: their rows say so too.
-        foreach (AddonSlot gone in new[] { AiSlot, FacesSlot, AudioSlot, DocsSlot, CudaSlot })
+        foreach (AddonSlot gone in new[] { AiSlot, FacesSlot, AudioSlot, DocsSlot, LargeSlot, CudaSlot })
         {
             if (gone == AiSlot || gone.State.Installed) gone.Removing = true;
         }
@@ -1164,7 +1174,7 @@ public static partial class IslandHost
         _ = Task.Run(() =>
         {
             string done = "Local search removed.";
-            foreach (AddonSlot slot in new[] { CudaSlot, DocsSlot, AudioSlot, FacesSlot, AiSlot })
+            foreach (AddonSlot slot in new[] { CudaSlot, LargeSlot, DocsSlot, AudioSlot, FacesSlot, AiSlot })
             {
                 try
                 {
@@ -1218,7 +1228,7 @@ public static partial class IslandHost
             if (_aiInstalling == slot) _aiInstalling = null;
             if (!install)
             {
-                foreach (AddonSlot gone in new[] { AiSlot, FacesSlot, AudioSlot, DocsSlot, CudaSlot }) gone.Removing = false;
+                foreach (AddonSlot gone in new[] { AiSlot, FacesSlot, AudioSlot, DocsSlot, LargeSlot, CudaSlot }) gone.Removing = false;
             }
             ApplyAddonStates(states);
             _aiUsed = used;
@@ -1297,6 +1307,27 @@ public static partial class IslandHost
         if (slot == AiSlot) _aiQueue.Insert(0, slot);
         else _aiQueue.Add(slot);
         StartNextPiece();
+    }
+
+    /// <summary>
+    /// The model picker's Download (#482, IAddonPieces): the pieces the chosen
+    /// tier and its checkboxes need, queued as their Install buttons would be.
+    /// Only People, Audio, Documents and Large pictures; any other id is
+    /// ignored (NVIDIA acceleration is never installed unasked), and an
+    /// installed or already queued piece is skipped.
+    /// </summary>
+    private static void HostInstallPieces(IReadOnlyList<string> ids)
+    {
+        AddonSlot[] allowed = { FacesSlot, AudioSlot, DocsSlot, LargeSlot };
+        bool any = false;
+        foreach (string id in ids.Distinct(StringComparer.Ordinal))
+        {
+            AddonSlot? slot = Array.Find(allowed, s => s.Id == id);
+            if (slot is null || slot.State.Installed || AiQueuedOrInstalling(slot)) continue;
+            StartPieceInstall(slot);
+            any = true;
+        }
+        if (any) RefreshLocalSearch();
     }
 
     private static void BeginPieceInstall(AddonSlot slot)

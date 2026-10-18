@@ -201,6 +201,7 @@ final class MetadataStore: ObservableObject {
   func setLocation(_ text: String) { text.withCString { mv_chrome_meta_set_location($0) } }
 
   /// The date as the editor shows it ("2024-05-01 14:03:22"), from the summary.
+  /// Empty when the row is a #415 fallback (Created, Signed at, File created).
   var dateTaken: String {
     summary.first { $0.label == "Date taken" }?.value ?? ""
   }

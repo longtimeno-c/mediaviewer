@@ -179,6 +179,7 @@ public static partial class IslandHost
                 ReloadFolders();
             }
             RebuildPathBars();
+            SyncTreeToTrail();  // issue #201: the tree is rooted at the trail's root
             ApplyFolderCursor();
             UpdateGallerySections();
             if (_folderCursor >= 0) FolderScrollTo(_folderCursor);
@@ -875,12 +876,12 @@ public static partial class IslandHost
                 for (int hidden = 1; hidden < Crumbs.Count - 2; ++hidden)
                 {
                     int index = hidden;
-                    var item = new MenuFlyoutItem { Text = Crumbs[index].Name };
+                    // The chrome's menu item (Item), as the bar's other menus.
+                    MenuFlyoutItem item = Item(Crumbs[index].Name, null, () => Send(Command.OpenCrumb, index));
                     ToolTipService.SetToolTip(item, Crumbs[index].Path);
-                    item.Click += (_, _) => Send(Command.OpenCrumb, index);
                     menu.Items.Add(item);
                 }
-                Button more = TextButton("…", () => { });
+                Button more = CrumbButton("…", () => { });
                 more.Flyout = menu;
                 more.Padding = Pad(4, 2, 4, 2);
                 more.MinHeight = 24;
@@ -891,11 +892,12 @@ public static partial class IslandHost
             else
             {
                 int index = piece.Index;
-                Button crumb = TextButton(piece.Name, () => Send(Command.OpenCrumb, index));
+                Button crumb = CrumbButton(piece.Name, () => Send(Command.OpenCrumb, index));
                 crumb.Padding = Pad(4, 2, 4, 2);
                 crumb.MinHeight = 24;
                 crumb.MaxWidth = 120;
-                if (crumb.Content is TextBlock label) label.TextTrimming = TextTrimming.CharacterEllipsis;
+                // The Mac's crumb: .truncationMode(.middle) inside 120.
+                if (crumb.Content is TextBlock label) SetMiddleTrimmed(label, piece.Name, 120 - 8);
                 ToolTipService.SetToolTip(crumb, Crumbs[index].Path);
                 trail.Children.Add(crumb);
             }
@@ -912,6 +914,17 @@ public static partial class IslandHost
     }
 
     private readonly record struct PathPiece(int Index, string Name, bool Ellipsis);
+
+    // An ancestor in the trail: the Mac's PathBar crumb, 14 in the body colour
+    // (the current folder after it stays the title colour), not the bar's 16.
+    private static Button CrumbButton(string name, Action click)
+    {
+        TextBlock label = ButtonLabel(name, TypeSize(TypeBody), trim: true);
+        label.Foreground = Brush(Body);
+        Button b = ChromeButton(label, ButtonPadding, click, fontSize: TypeSize(TypeBody));
+        b.Foreground = Brush(Body);
+        return b;
+    }
 
     private static List<PathPiece> DisplayCrumbs()
     {
@@ -1064,8 +1077,10 @@ public static partial class IslandHost
                 Glyph = "\uF5B0",  // PlaySolid
                 FontFamily = new FontFamily("Segoe Fluent Icons,Segoe MDL2 Assets"),
                 FontSize = diameter * 0.4,
-                // The triangle's optical centre sits left of its box.
-                Margin = new Thickness(diameter * 0.075, 0, 0, 0),
+                // The triangle's optical centre sits left of its box: the
+                // Mac's 0.04 offset (PlayBadge.swift). A left margin moves a
+                // centred glyph by half its width, so the margin is twice that.
+                Margin = new Thickness(diameter * 0.08, 0, 0, 0),
                 Foreground = new SolidColorBrush(Colors.White),
             },
         });
@@ -1085,7 +1100,6 @@ public static partial class IslandHost
             };
             var name = new TextBlock
             {
-                Text = vm.Name,
                 FontFamily = UiFont,
                 FontSize = 12,
                 Foreground = Brush(Body),
@@ -1093,6 +1107,8 @@ public static partial class IslandHost
                 MaxWidth = GalleryTile,
                 Margin = new Thickness(0, 2, 0, 0),
             };
+            // The Mac's .truncationMode(.middle): a camera name keeps its number.
+            SetMiddleTrimmed(name, vm.Name, GalleryTile);
             var col = new StackPanel { Spacing = 4 };  // the tile's height (MinItemHeight): grid geometry
             // docs/design/25 PR 59: the add-ons' badges, from a table (no add-on call per
             // tile). With no add-on contributing badges the tile is exactly the plain one:
@@ -1104,14 +1120,13 @@ public static partial class IslandHost
                 badged = WithSlotBadges(badged, vm, out Action unsubscribe);
                 unsubscribeBadges = unsubscribe;
             }
-            var clipped = new Border
-            {
-                CornerRadius = Corner(6),
-                Child = badged,
-                Width = GalleryTile,
-                Height = GalleryTile,
-            };
-            col.Children.Add(clipped);
+            // Issue #201: the placeholder until the thumbnail arrives, and the
+            // outline and the range's wash on the thumbnail only, as on the
+            // Mac's GalleryCell, never around the name under it.
+            Border placeholder = TilePlaceholder();
+            var wash = new Border { Background = Brush(ChromeColour.RangeWash) };
+            Grid box = ThumbBox(GalleryTile, 6, badged, placeholder, out Border outline, wash);
+            col.Children.Add(box);
             col.Children.Add(name);
             // #291: why a file search showed this tile when its name did not match.
             var why = new TextBlock
@@ -1128,22 +1143,18 @@ public static partial class IslandHost
             var border = new Border
             {
                 Width = GalleryTile,
-                Padding = new Thickness(0),
-                CornerRadius = Corner(6),
-                BorderThickness = new Thickness(vm.Selected && _folderCursor < 0 ? 2 : 0),
-                BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
                 Child = col,
             };
 
             // Decode for the current tile size, bounded by the JPEG-512 cache.
-            void SetThumb() => ShowTileImage(image, vm.ThumbPath, GalleryDecodeWidth);
+            void SetThumb() => ShowTileImage(image, vm.ThumbPath, GalleryDecodeWidth, placeholder);
             SetThumb();
 
             // Issue #413: the shift-click range is tinted and outlined.
             void PaintRange()
             {
-                border.Background = vm.InRange ? Brush(Hairline) : null;
-                border.BorderThickness = new Thickness((vm.Selected && _folderCursor < 0) || vm.InRange ? 2 : 0);
+                wash.Visibility = vm.InRange ? Visibility.Visible : Visibility.Collapsed;
+                SetOutline(outline, (vm.Selected && _folderCursor < 0) || vm.InRange);
             }
             PaintRange();
 
@@ -1193,7 +1204,7 @@ public static partial class IslandHost
             {
                 Width = GalleryTile,
                 Height = GalleryTile,
-                Background = Brush(ChromeColour.Surface),
+                Background = Brush(ChromeColour.Placeholder),  // the Mac's .quaternary
             };
             placeholder.Children.Add(new FontIcon
             {
@@ -1207,9 +1218,11 @@ public static partial class IslandHost
             box.Children.Add(placeholder);
             box.Children.Add(cover);
 
+            // The Mac's .ultraThinMaterial Capsule: the theme's surface, a
+            // little see-through, and its text colour, not a fixed black.
             var count = new Border
             {
-                Background = new SolidColorBrush(ColorHelper.FromArgb(0xC0, 0, 0, 0)),
+                Background = Brush(ChromeColour.Capsule),
                 CornerRadius = new CornerRadius(10),  // a pill (the Mac's Capsule), not a theme radius
                 Padding = Pad(6, 2, 6, 2),
                 Margin = Pad(6),
@@ -1219,7 +1232,7 @@ public static partial class IslandHost
                 {
                     FontFamily = UiFont,
                     FontSize = 11,
-                    Foreground = new SolidColorBrush(Colors.White),
+                    Foreground = Brush(Title),
                 },
             };
             var overlay = new Grid { Width = GalleryTile, Height = GalleryTile };
@@ -1228,33 +1241,26 @@ public static partial class IslandHost
 
             var caption = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4), Width = GalleryTile };
             caption.Children.Add(new FontIcon { Glyph = "\uE8B7", FontSize = 12, Foreground = Brush(Body) });
-            caption.Children.Add(new TextBlock
+            var captionName = new TextBlock
             {
-                Text = vm.Name,
                 FontFamily = UiFont,
                 FontSize = 12,
                 Foreground = Brush(Body),
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 MaxWidth = GalleryTile - 20,
-            });
+            };
+            SetMiddleTrimmed(captionName, vm.Name, GalleryTile - 20);
+            caption.Children.Add(captionName);
 
             var col = new StackPanel { Spacing = 4 };  // the tile's height (MinItemHeight): grid geometry
-            var clipped = new Border
-            {
-                CornerRadius = Corner(6),
-                Child = overlay,
-                Width = GalleryTile,
-                Height = GalleryTile,
-            };
+            // The outline wraps the cover only, as on the Mac's FolderTile.
+            Grid clipped = ThumbBox(GalleryTile, 6, overlay, new Grid(), out Border outline);
+            SetOutline(outline, vm.Cursor);
             col.Children.Add(clipped);
             col.Children.Add(caption);
             var border = new Border
             {
                 Width = GalleryTile,
-                Padding = new Thickness(0),
-                CornerRadius = Corner(6),
-                BorderThickness = new Thickness(vm.Cursor ? 2 : 0),
-                BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
                 Child = col,
             };
 
@@ -1274,8 +1280,7 @@ public static partial class IslandHost
                     or nameof(FolderCardVm.SubfolderCount) or nameof(FolderCardVm.PhotosInside)
                     or nameof(FolderCardVm.SearchStopped) or nameof(FolderCardVm.Status) or null)
                     SetCount();
-                if (e.PropertyName is nameof(FolderCardVm.Cursor) or null)
-                    border.BorderThickness = new Thickness(vm.Cursor ? 2 : 0);
+                if (e.PropertyName is nameof(FolderCardVm.Cursor) or null) SetOutline(outline, vm.Cursor);
             }
             BindTile(border, vm, OnChanged);
             border.Tapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);

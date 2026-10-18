@@ -740,7 +740,8 @@ using chrome_entry_fn = int (*)(void* arg, std::int32_t arg_size_in_bytes);
 
 // DIP height of the command-bar strip. Physical pixels = this * dpi / 96.
 inline constexpr int kChromeBarDip = 48;
-inline constexpr int kFilmstripDip = 112;
+// The Mac's strip height (FilmstripView.swift, issue #201).
+inline constexpr int kFilmstripDip = 88;
 // The transport bar. Issue #38 (docs/design/12 2026-09-26): it floats over the bottom
 // of the video, centred and above the filmstrip, like the Mac's, and leaves
 // after an idle interval while the clip plays (shell/transport_autohide.h). It
@@ -872,7 +873,7 @@ class chrome_host {
   [[nodiscard]] bool filmstrip_attached() const noexcept { return filmstrip_attached_; }
 
   // The strip stays attached when hidden: it owns the completion drain that
-  // feeds both it and the gallery, so tearing it down to hide 112 DIP would
+  // feeds both it and the gallery, so tearing it down to hide 88 DIP would
   // also stop the folder listening ([12](12-decision-log.md) 2026-09-07).
   void show_filmstrip(bool visible, int width, int client_height, std::uint32_t dpi) noexcept;
   [[nodiscard]] bool filmstrip_visible() const noexcept {
