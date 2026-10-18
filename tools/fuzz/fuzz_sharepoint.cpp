@@ -6,7 +6,9 @@
 // receiver reading a first message, a sender reading the reply, a receiver
 // reading a rejoin), a whole receiver's open fed from the input, and the
 // offer (sealed, but the receiver's one structured parse of the sender's
-// words). The first byte picks which. Whatever comes in, every call must
+// words); and from #472 PR 2, what the internet brings: a pasted code, an
+// address, a router's PCP / NAT-PMP / SSDP / HTTP / XML replies, a CPace
+// message and an internet hello. The first byte picks which. Whatever comes in, every call must
 // return, read nothing past the input and never hang: a link that runs out is
 // a closed link.
 #include <algorithm>
@@ -23,6 +25,10 @@
 
 #include "addons/sharepoint/bt_pipe.h"
 #include "addons/sharepoint/channel.h"
+#include "addons/sharepoint/cpace.h"
+#include "addons/sharepoint/invite.h"
+#include "addons/sharepoint/mapping.h"
+#include "addons/sharepoint/net.h"
 #include "addons/sharepoint/noise.h"
 #include "addons/sharepoint/transfer.h"
 #include "addons/sharepoint/wire.h"
@@ -70,7 +76,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   const std::span<const std::uint8_t> in(data + 1, size - 1);
   const std::string_view text(reinterpret_cast<const char*>(in.data()), in.size());
   std::vector<std::uint8_t> out, payload;
-  switch (data[0] % 8) {
+  switch (data[0] % 16) {
     case 0:
       (void)sp::decode_beacon(in);
       break;
@@ -111,10 +117,54 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
       break;
     }
     case 7: {
-      // A whole receiver's open: the hello, then whatever follows it.
+      // A whole receiver's open: the hello, then whatever follows it (an
+      // internet hello meets a code that waits).
       auto l = std::make_shared<input_link>(in);
       auto h = sp::channel::read_hello(*l, std::chrono::steady_clock::now() + std::chrono::seconds(1));
-      if (h) (void)sp::channel::open_server(l, std::move(*h), "bbbbbbbbbbbbbbbb", "Fuzz");
+      sp::channel::options o;
+      o.internet_secret = std::array<std::uint8_t, 6>{1, 2, 3, 4, 5, 6};
+      if (h) (void)sp::channel::open_server(l, std::move(*h), "bbbbbbbbbbbbbbbb", "Fuzz", o);
+      break;
+    }
+    case 8:
+      if (auto c = sp::invite::decode(text)) (void)sp::invite::encode(*c);
+      break;
+    case 9:
+      if (auto a = sp::net::parse_address(text)) {
+        (void)sp::net::address_text(*a);
+        (void)sp::net::is_public(*a);
+      }
+      break;
+    case 10: {
+      std::array<std::uint8_t, 12> nonce{};
+      if (in.size() >= 36) std::memcpy(nonce.data(), in.data() + 24, 12);  // sometimes the right one
+      (void)mv::sharepoint::mapping::parse_pcp_map(in, nonce);
+      (void)mv::sharepoint::mapping::parse_nat_pmp_map(in);
+      (void)mv::sharepoint::mapping::parse_nat_pmp_address(in);
+      break;
+    }
+    case 11:
+      (void)mv::sharepoint::mapping::parse_ssdp_location(text);
+      break;
+    case 12:
+      (void)mv::sharepoint::mapping::parse_description(text, "http://192.168.1.1:5000/rootDesc.xml");
+      break;
+    case 13:
+      if (auto r = mv::sharepoint::mapping::parse_http(text)) (void)mv::sharepoint::mapping::xml_value(r->body, "NewExternalIPAddress");
+      break;
+    case 14: {
+      // A receiver's CPace with a peer message from the input.
+      const std::uint8_t prs[] = {1, 2, 3, 4, 5, 6}, ci[] = {'c'};
+      std::uint8_t sid[16] = {};
+      mv::sharepoint::cpace::party p(prs, ci, sid);
+      (void)p.finish(in, false, {}, {});
+      break;
+    }
+    case 15: {
+      // A sender with a code, answered by the input.
+      auto l = std::make_shared<input_link>(in);
+      const std::uint8_t secret[] = {1, 2, 3, 4, 5, 6};
+      (void)sp::channel::open_internet(l, secret, "aaaaaaaaaaaaaaaa", "Fuzz");
       break;
     }
   }

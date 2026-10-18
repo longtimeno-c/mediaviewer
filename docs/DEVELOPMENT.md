@@ -36,6 +36,7 @@ and a verify line on each platform (D9, amended). The order is:
 | #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
 | #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
 | #472 PR 1 | **Sharepoint protocol 2 on the local bearers**: a Noise handshake (`XXhfs`, X25519 + ML-KEM-768, the Cacophony vectors pass) whose code still cannot be matched by a machine in the middle; a transfer that survives its link: sequence numbers, a 16 MiB replay, rejoin with a fresh `NNhfs+psk0` handshake and `resume_at`, no new code or Accept; Bluetooth ↔ Wi-Fi moves (make before break, suspect at 3 s, 20 s ends, flapping ends); a big set may start on Bluetooth to a protocol 2 peer; protocol 1 peers still work ([docs/design/28](design/28-sharepoint.md#the-session-protocol-2-472)) | Mac: built; `"[sharepoint]"` 54 cases pass (TSan-clean), with stand-in radios; `[.sharepoint-bench]` alternated, no difference within noise; the fuzz harness ran clean. Windows: the shared code is the same; `bt_win.cpp`'s INFO change meets a compiler in CI only. Owed: two real machines, real Bluetooth and Wi-Fi on both hosts, both PR 1 gates ([Where this actually is](#sharepoint-protocol-2-issue-472-pr-1-2026-10-18)) |
+| #472 PR 2 | **Sharepoint over the internet with a code**, opt-in and off by default: the receiver makes a code (works once, for 10 minutes) carrying its forwarded port, a router-mapped port (PCP, NAT-PMP, UPnP-IGD; external 443 too; an IGDv2 IPv6 pinhole), its public IPv6 and its LAN address; the sender races them, retries 1/2/5/10/30 s with the reason, proves the code with CPace (ristretto255, the draft's vectors pass) keying Noise `XXhfs+psk0`; both confirm the name and may compare a six-digit check; no server ([docs/design/28](design/28-sharepoint.md#over-the-internet-472-pr-2)) | Mac: built; `"[sharepoint]"` passes (TSan-clean) with two engines over a code on loopback and the mapper against stand-in routers; the fuzz harness covers the new parsers. Windows: `net_win.cpp`'s IPv6, `GetAdaptersAddresses` and `GetBestRoute2` meet a compiler in CI only. Owed: real routers, two machines over the internet, both platforms ([Where this actually is](#sharepoint-over-the-internet-issue-472-pr-2-2026-10-18)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -1116,8 +1117,10 @@ python3 tools/package/addon-pack.py pack --addon sharepoint --platform macos --s
 # tools/fuzz/fuzz_sharepoint.cpp with clang-cl in the fuzz job); S=src/addons/sharepoint
 /opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -O1 -g -fsanitize=fuzzer,address -isysroot $(xcrun --show-sdk-path) \
   -Isrc -Ibuild/vcpkg_installed/arm64-osx/include tools/fuzz/fuzz_sharepoint.cpp $S/wire.cpp $S/noise.cpp \
-  $S/channel.cpp $S/transfer.cpp $S/bt_pipe.cpp src/io/file_port.cpp src/io/file_port_mac.cpp src/io/content_hash.cpp \
-  build/vcpkg_installed/arm64-osx/lib/libsodium.a build/vcpkg_installed/arm64-osx/lib/libblake3.a -o build/fuzz_sharepoint
+  $S/cpace.cpp $S/channel.cpp $S/transfer.cpp $S/bt_pipe.cpp $S/invite.cpp $S/mapping.cpp $S/net_address.cpp \
+  $S/net_posix.cpp $S/machine_mac.cpp src/io/file_port.cpp src/io/file_port_mac.cpp src/io/content_hash.cpp \
+  build/vcpkg_installed/arm64-osx/lib/libsodium.a build/vcpkg_installed/arm64-osx/lib/libblake3.a \
+  -framework CoreFoundation -framework SystemConfiguration -o build/fuzz_sharepoint
 build/fuzz_sharepoint <corpus dir> -max_total_time=180 -max_len=4096
 ```
 
@@ -2215,6 +2218,38 @@ What is built is in [docs/design/28](design/28-sharepoint.md).
   Mac–Windows, Windows–Windows), the crash-report check after a transfer, Windows anything in
   the app, both hosts' first-run prompts (local network and Bluetooth on the Mac, Defender
   Firewall on Windows), VoiceOver and Narrator over the window, the Windows PR 1 gate.
+
+### Sharepoint over the internet (issue #472 PR 2, 2026-10-18)
+
+What is built is in [docs/design/28 "Over the internet"](design/28-sharepoint.md#over-the-internet-472-pr-2);
+why in [12](design/12-decision-log.md#sharepoint) (the owner's amendment of "no internet relay", and
+the code's shape). One shared change in the add-on plus the two socket ports (`net_posix.cpp`,
+`net_win.cpp`); no chrome or ABI change: the new section and phases are in the view tree.
+
+- **Mac (M-series, Release):** `mv_import_tests "[sharepoint]"` passes. New in
+  `tests/test_sharepoint_internet.cpp`: address parsing and printing (RFC 5952) and which are
+  public; the code's round trip, link, loose typing, and typos caught; the routers' replies parsed
+  (PCP, NAT-PMP, SSDP, an IGD description, chunked HTTP); the mapper against stand-in routers on
+  loopback (PCP maps and removes; a NAT-PMP-only router answers after PCP gets nothing; a router
+  behind carrier NAT is reported, not used; UPnP-IGD maps, opens an IPv6 pinhole and removes
+  both, plain and chunked); the handshake (the right code opens both ends with the same check, a
+  wrong one is refused at the receiver's first read); two engines over a code (sent and verified
+  byte for byte, the same check on both screens, the code spent at the first attempt; a second
+  sender with it fails; a wrong code kills it; an expired one is refused and the sender says the
+  receiver is not listening and keeps trying until Cancel; junk is caught before anything is
+  tried). In `test_sharepoint_noise.cpp`: CPace against draft-irtf-cfrg-cpace-18's ristretto255
+  vectors (generator, both messages, ISK), and `Noise_XXpsk3` against Cacophony.
+- **ThreadSanitizer:** `"[sharepoint]~[addon]"`, 70 cases, 0 reports.
+- **Fuzzing:** `tools/fuzz/fuzz_sharepoint.cpp` now also takes a pasted code, an address, PCP /
+  NAT-PMP / SSDP / HTTP / XML replies, a CPace message, an internet hello and a sender answered by
+  the input. Mac, Homebrew LLVM: 9.5 million inputs in 180 s over all sixteen entry points, no
+  report, no hang.
+- **Not measured, owed:** a real router for each of PCP, NAT-PMP and UPnP (and an IGDv2 IPv6
+  pinhole); two machines on different networks, Mac ↔ Windows both ways, with a 2 GiB set over a
+  direct IPv6 code, a mapped-port code and a forwarded port; an office network that lets only 443
+  out; a packet capture showing traffic only to the peer and the router; throughput against
+  `iperf3` on a real path; the PR 1 gates. No real network was used here: every router and the
+  internet are stand-ins on loopback.
 
 ### Sharepoint protocol 2 (issue #472 PR 1, 2026-10-18)
 

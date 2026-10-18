@@ -274,6 +274,67 @@ peer heard in the last 4.5 s keeps its address and device: a beacon claiming its
 address is ignored, and the list holds at most 64. A receiver already in a transfer answers
 `busy`; at most four such refusals run at once.
 
+## Over the internet (#472 PR 2)
+
+A sender anywhere reaches a receiver with a **code**, and no server of anyone's is involved. One
+toggle, **Send and receive over the internet**, is off by default; with it off nothing below runs or
+shows: no listener, no router mapping, no socket. (`internet.*`, `invite.*`, `mapping.*`,
+`cpace.*`.)
+
+- **The receiver makes a code** (one at a time). It opens a TCP listener on IPv6 and IPv4, then
+  gathers the places a sender could reach, in this order, at most four:
+  - a **port forwarded by hand** (the advanced field "Forwarded port": `public address:port`,
+    listened on at the same port number);
+  - a port the **router maps** (`mapping.h`): PCP (RFC 6887), then NAT-PMP (RFC 6886), then
+    UPnP-IGD (WANIPConnection 1/2, WANPPPConnection), the first that answers; also external
+    **443** when the router allows, for a sender whose network lets only 443 out. A router whose
+    own outside address is not public (double NAT, carrier NAT) is reported, not used;
+  - this machine's **public IPv6** address (with an IGDv2 pinhole on the router when it offers
+    one);
+  - its address on this network, for a sender on the same network or behind the same router.
+
+  With no public place at all, the window says why (no mapping and no IPv6, or the router behind
+  another NAT) and what to try (UPnP / NAT-PMP on the router, a forwarded port, a phone hotspot
+  with IPv6). A UPnP description is fetched only from an address on this network, never a public
+  one, so a stray SSDP answer cannot point it anywhere else.
+- **The code** (`invite.h`) is a 48-bit secret and the places, encrypted under a key from the
+  secret (a link preview shows no address), and a two-byte check that catches a typo on the
+  sender before the code is spent. Crockford base32 in groups of four, case and O/0, I/1 forgiven,
+  or a link (`mediaviewer://sharepoint?code=…`). An IPv4-only code is 26 characters; with IPv6
+  and several places up to about 90. The issue's "about 16 characters" cannot hold an address and
+  a secret: the link carries the long ones.
+- **It works once, for 10 minutes.** It dies at the first internet hello that reaches it, right or
+  wrong, and at 10 minutes; then the listener closes and every mapping is removed (before the
+  window shows it over), unless a transfer over it runs, whose rejoins come back the same way.
+  A wrong attempt is said on the receiver ("Someone tried this code and it was wrong, so it no
+  longer works").
+- **The sender pastes the code** and tries every place at once, IPv6 first and the rest 250 ms
+  later (happy eyeballs, `race.h`). The first TCP connection wins; the others close before a byte
+  goes, so one attempt reaches the receiver. A round with no connection is tried again after 1, 2,
+  5, 10, then every 30 seconds until Cancel, the window saying "Trying to reach the other computer
+  (attempt 4)…" and, from what each place answered, why: nothing answered (a firewall, either
+  side), refused (the code expired or MediaViewer closed), or only IPv6 in the code and none
+  here.
+- **The handshake** (`channel::open_internet`): the hello `MVSP` 2 `I` carries a CPace session id
+  and the sender's CPace message (draft-irtf-cfrg-cpace-18, ristretto255 / SHA-512, checked
+  against the draft's vectors); the receiver answers with its own. Then
+  `Noise_XXhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b` keyed by the CPace key, with the CPace
+  transcript in the prologue: a wrong code fails at the receiver's first read, before it says
+  anything of itself (not even its static key), and a machine in the middle gets one live guess
+  per code and nothing to test guesses against offline.
+- **Both confirm the other's name before any byte moves.** The sender sees "Connected to Bea
+  (new device)" and a six-digit **check** (from the whole handshake hash), and clicks **Send to
+  Bea**; the receiver sees "Ann (new device) wants to send you files" with the same check, and
+  still accepts or declines as always. The check is optional to compare and differs whenever
+  someone else is in the middle. Names are self-declared for a first-time peer: "new device".
+- Then the transfer is protocol 2's session ([above](#the-session-protocol-2-472)) over the TCP
+  link ("over the internet" on the window): a drop rejoins at the place the sender reached, and if
+  the peer turns up on this network the send moves there.
+- **TCP only, in PR 2.** With a direct code only the receiver's addresses are known, so the
+  paths that need both sides to send (UDP hole punching, birthday punch, port prediction, IPv6
+  simultaneous sends) wait for the DHT (#472 PR 3), and with them the QUIC-or-own-UDP transport
+  spike. The keepalive is the session's ping (every second while a link is up).
+
 ## What moves, and how it lands
 
 `transfer.h`. Copies only: an original is only ever read (rule 5).
@@ -366,9 +427,16 @@ second while bytes move; those posts update chrome and never present the canvas.
   address or peer name is logged (`log` takes ASCII without them) or annotated. The minidump
   scrub ([13](13-updates-and-telemetry.md)) applies unchanged.
 - The beacon carries a random id, the machine's name, a port and the protocol it speaks; the offer
-  travels sealed, to the peer picked. No account, no cloud, no internet relay: the beacon's TTL is 1
-  and nothing resolves a name. Protocol 2 (#472 PR 1) opens no new network surface: the same
+  travels sealed, to the peer picked. No account, no cloud, no server of ours: the beacon's TTL is
+  1 and nothing resolves a name. Protocol 2 (#472 PR 1) opens no new network surface: the same
   listener, beacon and Bluetooth service carry it.
+- **Over the internet** (#472 PR 2, opt-in, off by default; [12](12-decision-log.md#sharepoint)
+  amends "no internet relay, by design"): a sealed link to the peer the person picked, local or
+  over the internet, with no server of ours. A relay only ever through the person's own devices or
+  one they configure (PRs 4–5). What cannot be hidden: the code gives its holder this machine's
+  public address; the router learns of a mapping (PCP, NAT-PMP, UPnP); a network observer sees
+  encrypted traffic and roughly how much moved. Nothing goes anywhere else: no lookup, no STUN,
+  no name resolution. Codes, addresses and peer names are never logged.
 - Protocol 2's resume secret and keys live in memory only, wiped when the session ends; nothing
   about a session is written down.
 - Receiving is off until the window opens or the person turns it on. Turned on, it stays on across
@@ -416,6 +484,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 |---|---|
 | Wire, code, path rule, beacon | `src/addons/sharepoint/wire.*` |
 | Noise (protocol 2's handshakes, #472) | `noise.*` |
+| CPace, internet codes, port mapping, the code's life and the sender's race (#472 PR 2) | `cpace.*`, `invite.*`, `mapping.*`, `internet.*`, `race.h`, `net_address.cpp` |
 | Sealed channel, and protocol 2's session (replay, rejoin, resume) | `channel.*`, `link.h` |
 | Sending and the verified receive | `transfer.*` |
 | Engine, presence, the window's tree | `engine.*`, `presence.*`, `tree.cpp` |
@@ -427,13 +496,14 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Windows chrome | `IslandHost.Sharepoint.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
-| Tests | `tests/test_sharepoint.cpp`, `tests/test_sharepoint_noise.cpp` (the Cacophony vectors, #472), `tests/test_sharepoint_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, #472), `tests/sharepoint_fixture.h`, `tests/test_sharepoint_addon.cpp` (`mv_import_tests "[sharepoint]"`), `tools/package/test_addon_pack.py` |
+| Tests | `tests/test_sharepoint.cpp`, `tests/test_sharepoint_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_sharepoint_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_sharepoint_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, #472), `tests/sharepoint_fixture.h`, `tests/test_sharepoint_addon.cpp` (`mv_import_tests "[sharepoint]"`), `tools/package/test_addon_pack.py` |
 
 ## Not built
 
-- Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6.
-- A peer that is neither on the LAN nor in Bluetooth range: no relay, by design. #472 plans the
-  internet (direct codes, an opt-in DHT, remembered devices, the person's own relay) in PRs 2–5.
+- Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6 on the LAN.
+- Over the internet, after PR 2's direct codes: word codes over the BitTorrent DHT and the UDP
+  paths that need both sides' addresses (PR 3), remembered devices and the own-device relay (PR
+  4), Wi-Fi → internet handover (PR 5).
 - Resuming a protocol 1 transfer that dropped: finished files stay, the rest is sent again.
   Protocol 2 rejoins and resumes within 20 s; a session that ends (20 s without a link, three
   rejoins in 10 s, the app quitting) is not resumed later.

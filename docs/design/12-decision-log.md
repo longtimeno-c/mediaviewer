@@ -1575,6 +1575,29 @@ stays for protocol 1 peers.
 beacon whose `"v"` is not 1, so old and new would stop seeing each other; `"p"` names the protocol
 the sender speaks, and its absence means 1.
 
+**A sealed link to the peer the person picked, over the internet too; no server of ours (owner,
+2026-10-17, #472; amends "A first-party add-on may open a local link the person asked for" and 28's
+"no internet relay, by design").** Sharepoint may reach a peer over the internet, client to client,
+with no MediaViewer server of any kind: no rendezvous, no relay, no account. The public BitTorrent
+DHT is acceptable, opt-in. A relay is allowed only through the person's own devices or a relay they
+configure themselves. Each internet path is opt-in and off by default (find each other over the
+internet; continue over the internet if Wi-Fi drops; use my other computers to relay; Tor if its
+spike keeps it). Some pairs still cannot connect (two hard NATs and no IPv6, mapping or own relay; a
+network that blocks UDP and all TCP but the web) and the window says so honestly. Recorded with PR
+2 (2026-10-18), the first change that opens an internet path.
+
+**Internet codes: one toggle, CPace, TCP first (2026-10-18, #472 PR 2).** One toggle, "Send and
+receive over the internet", rather than a send toggle and a receive toggle: sending to a code opens
+nothing, but with the toggle off the window must be as before, so both live behind it. CPace's
+ristretto255 / SHA-512 suite because libsodium (already linked) has the group and the one-way map;
+checked against draft-18's vectors. Its key is Noise's psk0, so a wrong code fails at the
+receiver's first read, before the receiver's static key goes out. A code is a 48-bit secret
+(single use, one live guess, nothing offline: more would only lengthen it), up to four places, and
+a two-byte check so a typo dies on the sender, not the code; it is 26–90 characters, not the
+issue's 16, which cannot hold an address. With a direct code only the receiver's addresses are
+known, so PR 2 is TCP: the paths that need both sides sending, and the QUIC-or-own-UDP spike with
+them, move to the DHT PR. A UPnP description is fetched only from a non-public address.
+
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
 no-replace before its `file_done`; the sender's `done` waits for every check. Measured on loopback
