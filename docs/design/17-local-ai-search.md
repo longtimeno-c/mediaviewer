@@ -1443,6 +1443,27 @@ Harnesses: `tools/ai/photos-spike.sh` (the source alone) and `tools/ai-bench/pho
 
 ## Measurements
 
+### Model tiers: the picture towers (#482, 2026-10-18)
+
+`tools/ai-eval/calibrate.py` on COCO-1k (val2017's first 1,000 images, five captions each),
+ONNX Runtime 1.30 on CPU, Apple M-series, the pack's preprocessing. Bar: R@10 ≥ 0.88 and
+P@5 ≥ 0.8. Calibrated thresholds are a quantile match against B/32's hand-set ones.
+
+| Tower | Tier | R@1 | R@5 | R@10 | P@5 | Passes | img/s, 2 CPU threads |
+|---|---|---|---|---|---|---|---|
+| CLIP ViT-B/32 | Default fast, Intel, Potato | — | — | 0.881 | 0.943 | yes (reference) | 25.6 |
+| CLIP ViT-L/14 | Default high | 0.553 | 0.813 | 0.904 | 0.914 | yes | — |
+| OpenCLIP ViT-H/14 | Maxxed high | 0.687 | 0.894 | 0.946 | 0.971 | yes | — |
+| TinyCLIP ViT-8M/16 | (Potato candidate) | 0.415 | 0.731 | 0.838 | 0.886 | **no** | 23.4 |
+| TinyCLIP ViT-39M/16 | (Potato candidate) | 0.592 | 0.852 | 0.922 | 1.000 | yes, but slower than B/32 | 6.2 |
+
+The img/s column was timed while another eval ran, so read it as a ratio. On L/14 the method
+gives query_margin 0.033 and result_margin 0.010 against the 0.04 and 0.015 set by hand in PR
+20: it lands near the hand calibration, so ViT-H/14's (0.023, -0.015, similar_min 0.449) are
+used as computed. **Not measured yet:** per-tier img/s on an accelerator, Whisper RTF, time to
+first searchable result and size on disk per tier, on either platform, and both present-loop
+gates while indexing on every tier (plan T8).
+
 ### Verified on Windows
 
 Ryzen 16-thread, RTX 4070, ORT 1.30.

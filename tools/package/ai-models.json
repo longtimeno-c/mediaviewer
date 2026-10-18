@@ -696,11 +696,11 @@
        0.27577711
       ],
       "dedupe": 0.97,
-      "query_margin": 0.04,
+      "query_margin": 0.0231,
       "query_z": 2.5,
       "result_z": 2.0,
-      "result_margin": 0.015,
-      "similar_min": 0.62,
+      "result_margin": -0.0148,
+      "similar_min": 0.4488,
       "generic_prompts": [
        "a photo.",
        "a picture of something.",
@@ -708,7 +708,12 @@
        "a photo of a thing.",
        "a blurry photo."
       ],
-      "calibrated": false
+      "calibrated": true,
+      "eval": {
+       "set": "coco-1000",
+       "r10": 0.9464,
+       "p5": 0.9714
+      }
      },
      "files": [
       {
