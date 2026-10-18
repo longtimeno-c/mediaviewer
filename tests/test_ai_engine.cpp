@@ -4607,6 +4607,15 @@ bool eventually(const std::function<bool()>& ok, int ms = kSettleMs) {
   return ok();
 }
 
+// Whether `p` is gone, without throwing. On Windows a file the engine is removing
+// or renaming over is briefly delete-pending, and the throwing fs::exists reports
+// that as "Access is denied" instead of an answer; that is "not yet".
+bool gone(const fs::path& p) {
+  std::error_code ec;
+  const bool there = fs::exists(p, ec);
+  return !ec && !there;
+}
+
 }  // namespace
 
 // ---- sharing an index (docs/design/17 "Sharing an index") ---------------------------------------
@@ -4893,7 +4902,7 @@ TEST_CASE("online-only cloud files are counted, never read, and fetched in place
   CHECK(s.cloud_files_left == 0);
   CHECK(s.cloud_files_fetched == 1);
   // The crash note goes once the file is given back (just after the provider call).
-  CHECK(eventually([&] { return !fs::exists(r.dir / "data" / "cache" / "cloud-fetched"); }));
+  CHECK(eventually([&] { return gone(r.dir / "data" / "cache" / "cloud-fetched"); }));
 
   // A rescan sees it online-only again; it is indexed, so nothing is fetched.
   REQUIRE(r.eng->root_rescan(*root));
@@ -4926,7 +4935,7 @@ TEST_CASE("a cloud file a crash left on disk is made online-only again at the ne
     out << "1\n";
   }
   r.start();
-  REQUIRE(eventually([&] { return !fs::exists(note); }));
+  REQUIRE(eventually([&] { return gone(note); }));
   REQUIRE(eventually([&] { return r.cloud->is_online_only("red_car.jpg"); }));
 }
 
