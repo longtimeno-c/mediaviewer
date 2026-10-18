@@ -230,7 +230,7 @@ The optional **Sharepoint** add-on sends photos, video and audio to another Medi
 - **Type the code the other screen shows.** Nothing moves until you have typed it and the person on the other side accepts.
 - **Verified copies.** Every file is checked as it lands and read back before it appears; a cancelled or dropped send leaves nothing half-written, and your originals stay where they are.
 - **Wi-Fi or Bluetooth, and it keeps going.** A send starts on whichever is there and moves to Wi-Fi the moment both computers are on one network. If Wi-Fi drops or Bluetooth goes out of range, it picks up where it was within seconds, with no new code and nothing sent twice. No account, no cloud.
-- **Or anywhere, with a code.** Turn on *Send and receive over the internet*, make a code and send it to someone: they paste it and the files come straight to you, no server in between. A code works once, for ten minutes.
+- **Or anywhere, with a code.** Turn on *Send and receive over the internet*, make a code and send it to someone: they paste it and the files come straight to you, no server in between. A code works once, for ten minutes. Behind a router that won't open a port, turn on the public DHT too and the code is just four words to read out.
 - **Encrypted for the long run.** Every send is sealed end to end with a post-quantum handshake, so a recording made today cannot be opened later.
 
 ## Themes and add-ons from anyone

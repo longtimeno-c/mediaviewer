@@ -1598,6 +1598,24 @@ issue's 16, which cannot hold an address. With a direct code only the receiver's
 known, so PR 2 is TCP: the paths that need both sides sending, and the QUIC-or-own-UDP spike with
 them, move to the DHT PR. A UPnP description is fetched only from a non-public address.
 
+**Word codes on the public DHT: our own small client and our own UDP transport (2026-10-18, #472 PR
+3).** The two spikes, decided on what this machine can show: a KRPC + BEP 44/42 client in the add-on
+rather than libtorrent-rasterbar (Boost, a torrent engine, its own sockets, for two signed items and
+an address vote), read-only (BEP 43) so it answers nothing and stays out of others' tables; and a
+reliable stream of our own over the one UDP socket rather than QUIC, because the socket must be
+shared with the DHT and the punching on both OSes (msquic owns its sockets and has no macOS; ngtcp2
+needs a TLS stack beside Noise) and the session above already seals, orders and resumes. Not
+measured on a real network (the live-DHT harness exists; it was not run without the owner, since
+it shows this machine's address to the DHT) nor against `iperf3`. The words are BIP-39's English
+list (MIT), so four words are exactly the issue's 44 bits and four letters of each are enough.
+Argon2id at libsodium's "moderate" (256 MiB) is the issue's "moderate cost". The birthday punch
+and TCP simultaneous open are not in this PR: the first needs a hub that polls 256 sockets.
+
+**The receiver's stream takes its peer from the sender's first packet (2026-10-18).** Both sides
+can find different working paths (one hears the other's LAN address, the other its public one);
+the sender's choice wins. A stream id comes from the code, so only a holder of the words can be
+that first packet, and what it carries is the channel's AEAD-sealed frames.
+
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
 no-replace before its `file_done`; the sender's `done` waits for every check. Measured on loopback

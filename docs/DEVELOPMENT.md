@@ -36,6 +36,7 @@ and a verify line on each platform (D9, amended). The order is:
 | #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
 | #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
 | #472 PR 1 | **Sharepoint protocol 2 on the local bearers**: a Noise handshake (`XXhfs`, X25519 + ML-KEM-768, the Cacophony vectors pass) whose code still cannot be matched by a machine in the middle; a transfer that survives its link: sequence numbers, a 16 MiB replay, rejoin with a fresh `NNhfs+psk0` handshake and `resume_at`, no new code or Accept; Bluetooth ↔ Wi-Fi moves (make before break, suspect at 3 s, 20 s ends, flapping ends); a big set may start on Bluetooth to a protocol 2 peer; protocol 1 peers still work ([docs/design/28](design/28-sharepoint.md#the-session-protocol-2-472)) | Mac: built; `"[sharepoint]"` 54 cases pass (TSan-clean), with stand-in radios; `[.sharepoint-bench]` alternated, no difference within noise; the fuzz harness ran clean. Windows: the shared code is the same; `bt_win.cpp`'s INFO change meets a compiler in CI only. Owed: two real machines, real Bluetooth and Wi-Fi on both hosts, both PR 1 gates ([Where this actually is](#sharepoint-protocol-2-issue-472-pr-1-2026-10-18)) |
+| #472 PR 3 | **Sharepoint four-word codes over the public DHT**, opt-in, off by default: with no public address, the code is four BIP-39 words; Argon2id keys; BEP 44 items (sealed, padded, four targets per side) found and checked on the DHT by a small read-only client (BEP 5/42/43/44; BEP 42 own-address votes, saved table); one UDP socket for DHT, punching (+ port prediction) and a reliable stream of our own; then CPace + Noise and the session ([docs/design/28](design/28-sharepoint.md#four-words-over-the-dht-472-pr-3)) | Mac: built; `"[sharepoint]"` passes (TSan-clean) with BEP 44 / 42 / CRC-32C vectors, the stream under 1 % and 5 % loss, a stand-in swarm with a forging node, and two engines over four words; the fuzz harness covers the DHT parsers. Not run: the public DHT (`"[.sharepoint-dht-live]"`, owed), real NATs. Windows: `net_win.cpp`'s dual-stack UDP and `getaddrinfo` meet a compiler in CI only ([Where this actually is](#sharepoint-four-word-codes-issue-472-pr-3-2026-10-18)) |
 | #472 PR 2 | **Sharepoint over the internet with a code**, opt-in and off by default: the receiver makes a code (works once, for 10 minutes) carrying its forwarded port, a router-mapped port (PCP, NAT-PMP, UPnP-IGD; external 443 too; an IGDv2 IPv6 pinhole), its public IPv6 and its LAN address; the sender races them, retries 1/2/5/10/30 s with the reason, proves the code with CPace (ristretto255, the draft's vectors pass) keying Noise `XXhfs+psk0`; both confirm the name and may compare a six-digit check; no server ([docs/design/28](design/28-sharepoint.md#over-the-internet-472-pr-2)) | Mac: built; `"[sharepoint]"` passes (TSan-clean) with two engines over a code on loopback and the mapper against stand-in routers; the fuzz harness covers the new parsers. Windows: `net_win.cpp`'s IPv6, `GetAdaptersAddresses` and `GetBestRoute2` meet a compiler in CI only. Owed: real routers, two machines over the internet, both platforms ([Where this actually is](#sharepoint-over-the-internet-issue-472-pr-2-2026-10-18)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
@@ -2218,6 +2219,38 @@ What is built is in [docs/design/28](design/28-sharepoint.md).
   Mac–Windows, Windows–Windows), the crash-report check after a transfer, Windows anything in
   the app, both hosts' first-run prompts (local network and Bluetooth on the Mac, Defender
   Firewall on Windows), VoiceOver and Narrator over the window, the Windows PR 1 gate.
+
+### Sharepoint four-word codes (issue #472 PR 3, 2026-10-18)
+
+What is built is in [docs/design/28 "Four words over the DHT"](design/28-sharepoint.md#four-words-over-the-dht-472-pr-3);
+why in [12](design/12-decision-log.md#sharepoint) (the two spikes, decided).
+
+- **Mac (M-series, Release):** the full `mv_import_tests` passes (207 cases). New in
+  `tests/test_sharepoint_dht.cpp`: bencoding (round trips, sixteen malformed inputs refused);
+  SHA-1 (FIPS vectors incl. a million `a`), BEP 44's test vectors (the signed buffer, both
+  signatures, the targets with and without salt), BEP 42's node-id vectors and CRC-32C's check
+  value; the four-word codes (typed any way, four letters enough, junk refused); items sealed,
+  padded, refused when old, from the future, altered, or under another code or salt; the UDP
+  stream (16 MiB in order, 5 % loss each way, IPv6 on the same socket) with numbers printed; the
+  Noise handshake and session over it; the hub's dispatch; a DHT client against 16 stand-in nodes
+  on loopback (put by one client, got by another, a newer seq replaces, a node forging every item
+  ignored, its own address from BEP 42 votes, the routing table reused with no seed); meeting on
+  four words (publish, find, punch, then CPace + Noise over the punched path; a wrong code finds
+  nobody); two engines over four words (sent byte for byte, the same check on both screens).
+- **Stream numbers (loopback, Mac, Release):** clean 56–68 MB/s, 1 % loss each way 17–26 MB/s,
+  5 % 6–10 MB/s. No real path, no `iperf3` comparison.
+- **ThreadSanitizer:** 83 cases, 0 reports (two runs). The first run's four reports showed a real
+  race in the hub (a handler cleared while a call to it ran: the DHT client's destructor could
+  meet a late reply); a handler change now waits for a running call.
+- **Fuzzing:** the harness adds bencoding, compact node lists and endpoints, word codes, an item
+  opened under a code's key and item signatures: 9.9 million inputs in 180 s, clean.
+- **The public DHT, not run:** `mv_import_tests "[.sharepoint-dht-live]"` joins it from this machine
+  (read only, nothing put) and prints start time, nodes known, lookup p50 / p95 and how many public
+  ports the DHT saw (several: a hard NAT). It was not run for this PR: it shows this machine's
+  address to the DHT, which is the owner's call. `MV_DHT_TABLE=<file>` times a warm start.
+- **Not measured, owed:** two machines behind ordinary home NATs (the issue's DHT case), a hard
+  NAT (no birthday punch here: it fails, and says so), battery and packets a second while waiting,
+  the PR 1 gates, Windows anything.
 
 ### Sharepoint over the internet (issue #472 PR 2, 2026-10-18)
 

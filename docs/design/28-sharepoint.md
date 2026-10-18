@@ -335,6 +335,51 @@ shows: no listener, no router mapping, no socket. (`internet.*`, `invite.*`, `ma
   simultaneous sends) wait for the DHT (#472 PR 3), and with them the QUIC-or-own-UDP transport
   spike. The keepalive is the session's ping (every second while a link is up).
 
+## Four words over the DHT (#472 PR 3)
+
+When the receiver has no public address of its own (no mapping, no IPv6, no forwarded port), a
+second opt-in toggle, **Find each other over the internet (public DHT)**, off by default, lets the
+code be **four words** instead, and both computers meet on the public BitTorrent DHT. The DHT runs
+only while a code waits or a send looks for its receiver; never at idle. (`dht_item.*`, `dht.*`,
+`meet.*`, `udp_hub.*`, `bencode.*`, `sha1.*`.)
+
+- **The words** are BIP-39's English list (2048 words, MIT; `wordlist.inc`), 44 bits; typed whole
+  or as their first four letters. Argon2id (libsodium, moderate: 256 MiB, about a second) turns
+  them into an Ed25519 key, a key for the items' contents, a salt base and CPace's password.
+- **Each side publishes a BEP 44 mutable item** under four salts of its role (receiver, sender):
+  its addresses (on this network, its public address as the DHT saw it, its public IPv6, all at
+  its one UDP port), XChaCha20-Poly1305-sealed, padded to 512 bytes, the timestamp inside. The
+  target is SHA-1(key ‖ salt): without the words, 20 random bytes nobody can find, read or forge.
+  Each side looks up the other's four targets in parallel; an item is taken only if its key
+  hashes to the target, its signature verifies, it opens under the code and it is under ten
+  minutes old. After the link is up each side overwrites its items with "gone".
+- **The DHT client** (`dht.h`) is the spike's "small KRPC + BEP 44/42 client in the add-on", not
+  libtorrent (Boost, a torrent engine, sockets of its own): read-only (BEP 43, it answers no
+  queries and stays out of others' tables), iterative lookups (three in flight, the eight closest),
+  BEP 42 votes for this machine's public address from every answer (no STUN), nodes whose id
+  matches their address preferred, a routing table kept between runs (`sharepoint_dht.dat` beside
+  the prefs), and the four routers of #472 to start from the first time.
+- **One UDP socket** (`udp_hub.h`) carries the DHT, the punching and the transfer: the hole a probe
+  punches is the one the transfer uses. **Punching**: each side probes every address the other
+  gave, and 16 ports above the other's public one (a NAT that hands ports out in sequence), every
+  100 ms for up to 10 s; the first that answers both ways is the path, and the sender's choice is
+  the one (the receiver takes the peer from the first stream packet).
+- **The stream** over it is the spike's third option, "our own simple UDP transport", not QUIC: it
+  must share the socket on both OSes (msquic owns its sockets and has no macOS; ngtcp2 needs TLS
+  beside Noise), and the session above already seals, orders and resumes. 1200-byte packets,
+  cumulative and 256-packet selective acknowledgements, RACK loss detection and a tail-loss probe
+  (RFC 8985, simplified), NewReno growth, the receiver's buffer as the window; no pacing yet.
+  Loopback, Mac (`"[sharepoint]"`'s stream case): about 60 MB/s clean, 17–26 MB/s at 1 % loss each
+  way, 6–10 MB/s at 5 %; no real path measured.
+- Then the **internet handshake** runs over the stream as with a direct code (CPace on the words'
+  password, `Noise_XXhfs+psk0`), the names are confirmed and the check is shown, and the transfer
+  is protocol 2's session ("over the internet").
+- **Not built**: the birthday punch for one hard NAT (256 sockets on the hard side; needs a hub
+  that polls many sockets), TCP simultaneous open, port mapping for the UDP socket, and disjoint
+  lookup paths in the S/Kademlia sense (each item has four targets, looked up apart, which spreads
+  them over the keyspace). Two hard NATs, or a network with no UDP, do not meet this way, and the
+  window says what to try.
+
 ## What moves, and how it lands
 
 `transfer.h`. Copies only: an original is only ever read (rule 5).
@@ -485,6 +530,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Wire, code, path rule, beacon | `src/addons/sharepoint/wire.*` |
 | Noise (protocol 2's handshakes, #472) | `noise.*` |
 | CPace, internet codes, port mapping, the code's life and the sender's race (#472 PR 2) | `cpace.*`, `invite.*`, `mapping.*`, `internet.*`, `race.h`, `net_address.cpp` |
+| Word codes, the DHT, one UDP socket and its stream, punching (#472 PR 3) | `dht_item.*`, `wordlist.inc` (BIP-39, MIT), `dht.*`, `bencode.*`, `sha1.*`, `udp_hub.*`, `meet.*` |
 | Sealed channel, and protocol 2's session (replay, rejoin, resume) | `channel.*`, `link.h` |
 | Sending and the verified receive | `transfer.*` |
 | Engine, presence, the window's tree | `engine.*`, `presence.*`, `tree.cpp` |
@@ -496,14 +542,13 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Windows chrome | `IslandHost.Sharepoint.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
-| Tests | `tests/test_sharepoint.cpp`, `tests/test_sharepoint_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_sharepoint_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_sharepoint_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, #472), `tests/sharepoint_fixture.h`, `tests/test_sharepoint_addon.cpp` (`mv_import_tests "[sharepoint]"`), `tools/package/test_addon_pack.py` |
+| Tests | `tests/test_sharepoint.cpp`, `tests/test_sharepoint_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_sharepoint_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_sharepoint_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, #472 PR 3), `tests/test_sharepoint_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, #472), `tests/sharepoint_fixture.h`, `tests/test_sharepoint_addon.cpp` (`mv_import_tests "[sharepoint]"`), `tools/package/test_addon_pack.py` |
 
 ## Not built
 
 - Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6 on the LAN.
-- Over the internet, after PR 2's direct codes: word codes over the BitTorrent DHT and the UDP
-  paths that need both sides' addresses (PR 3), remembered devices and the own-device relay (PR
-  4), Wi-Fi → internet handover (PR 5).
+- Over the internet, after PR 3: remembered devices and the own-device relay (PR 4), Wi-Fi →
+  internet handover (PR 5); the birthday punch and TCP simultaneous open ([above](#four-words-over-the-dht-472-pr-3)).
 - Resuming a protocol 1 transfer that dropped: finished files stay, the rest is sent again.
   Protocol 2 rejoins and resumes within 20 s; a session that ends (20 s without a link, three
   rejoins in 10 s, the app quitting) is not resumed later.
