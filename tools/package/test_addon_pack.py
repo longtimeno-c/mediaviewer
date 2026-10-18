@@ -253,6 +253,30 @@ class AiPackTest(unittest.TestCase):
         gate.loader.exec_module(mod)
         self.assertEqual(mod.main(["check"]), 0)
 
+    def test_a_tier_must_name_a_model_of_each_role_in_its_piece(self):
+        gate = importlib.util.spec_from_file_location("ai_models", Path(__file__).with_name("ai-models.py"))
+        mod = importlib.util.module_from_spec(gate)
+        gate.loader.exec_module(mod)
+        data = mod.load()
+        self.assertEqual(mod.tier_problems(data), [])
+        prof = data["tiers"]["profiles"][data["tiers"]["default"]]
+
+        def broken(change):
+            d = json.loads(json.dumps(data))
+            change(d["tiers"]["profiles"][d["tiers"]["default"]], d)
+            return mod.tier_problems(d)
+
+        # A picture tower from the audio piece, a missing role, a tokenizer
+        # folder (no model.json), an unknown slot, an unknown default.
+        self.assertTrue(broken(lambda p, d: p["pictures"].update(high=prof["sounds"])))
+        self.assertTrue(broken(lambda p, d: p.pop("documents")))
+        self.assertTrue(broken(lambda p, d: p.update(faces="models/clip-tokenizer")))
+        self.assertTrue(broken(lambda p, d: p["speech"].update(huge="models/whisper-small")))
+        self.assertTrue(broken(lambda p, d: d["tiers"].update(default="nope")))
+        # A tier may leave one slot empty (Intel has no high tower), not both.
+        self.assertEqual(broken(lambda p, d: p["pictures"].update(high=None)), [])
+        self.assertTrue(broken(lambda p, d: p.update(pictures={"high": None, "fast": None})))
+
 
 class SharepointPackTest(unittest.TestCase):
     """docs/design/28: Sharepoint is code only; the hosts render its window."""

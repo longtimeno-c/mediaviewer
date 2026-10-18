@@ -208,6 +208,8 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/engine.h
   ${R}/src/addons/ai/pack.cpp
   ${R}/src/addons/ai/pack.h
+  ${R}/src/addons/ai/tiers.cpp
+  ${R}/src/addons/ai/tiers.h
   ${R}/src/addons/ai/platform.h
   ${R}/src/addons/ai/photos_source.h
   ${R}/src/addons/ai/text_reader.h

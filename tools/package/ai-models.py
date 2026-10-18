@@ -20,10 +20,15 @@ folder, and `licences.json` (relative path -> SPDX) for addon-pack.py. A file
 already in --cache with the right hash is not fetched again. The request is a
 plain GET of a fixed URL: no token, no identifier.
 
+Staging the Core piece (`ai`) also writes `models/tiers.json`: the model tiers
+(docs/plans/model-tiers.md), each naming a model folder per role, which
+src/addons/ai/tiers.h reads so the add-on's code names no model.
+
 `check` is the weights-licence gate docs/design/17 names: every file must carry a
 licence from ALLOWED_LICENCES (non-commercial or research-only weights fail),
-and the Core pack's supported combinations must fit the 5 GB ceiling given
-the sizes listed. CI runs it; it needs no network.
+every tier must name a model folder of the right piece for every role, and the
+Core pack's supported combinations must fit the 5 GB ceiling given the sizes
+listed. CI runs it; it needs no network.
 """
 import argparse
 import hashlib
@@ -40,6 +45,12 @@ MODELS = Path(__file__).with_name("ai-models.json")
 ALLOWED_LICENCES = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "Zlib", "ISC", "CC0-1.0",
                     "GPL-3.0-or-later"}
 CEILING = 5_000_000_000  # docs/design/17: installed pieces of the ai family
+
+# The piece each role's model folders live in (src/addons/ai/tiers.h). Pictures
+# and speech have a high and a fast slot (mv_ai_quality 2 and 1).
+ROLES = {"pictures": "ai", "speech": "ai-audio", "sounds": "ai-audio", "faces": "ai-faces",
+         "documents": "ai-docs"}
+SLOTTED = {"pictures", "speech"}
 
 
 def sha256_file(path: Path) -> str:
@@ -84,6 +95,37 @@ def export(entry: dict, src: Path, target: Path) -> None:
     subprocess.run(cmd, check=True)
 
 
+def tier_problems(data: dict) -> list:
+    """Why the tiers block is unusable, or [] (check runs this; stage refuses on it)."""
+    tiers = data.get("tiers")
+    if not isinstance(tiers, dict) or not isinstance(tiers.get("profiles"), dict) or not tiers["profiles"]:
+        return ["tiers: no profiles"]
+    bad = []
+    profiles = tiers["profiles"]
+    if tiers.get("default") not in profiles:
+        bad.append(f"tiers: default {tiers.get('default')!r} is not a profile")
+    for tier, prof in profiles.items():
+        if not isinstance(prof, dict) or not isinstance(prof.get("name"), str) or not prof["name"]:
+            bad.append(f"tiers.{tier}: lacks a name")
+            continue
+        for role, piece in ROLES.items():
+            want = data["pieces"].get(piece, {}).get("folders", {})
+            value = prof.get(role)
+            slots = value if role in SLOTTED else {"": value}
+            if not isinstance(slots, dict) or not any(slots.values()):
+                bad.append(f"tiers.{tier}: no {role} model")
+                continue
+            for slot, folder in slots.items():
+                where = f"tiers.{tier}.{role}{'.' + slot if slot else ''}"
+                if role in SLOTTED and slot not in ("high", "fast"):
+                    bad.append(f"{where}: unknown slot")
+                elif folder is None:
+                    continue
+                elif not isinstance(folder, str) or folder not in want or "model" not in want[folder]:
+                    bad.append(f"{where}: {folder!r} is not a model folder of the {piece} piece")
+    return bad
+
+
 def stage(args) -> int:
     spec = load()["pieces"].get(args.piece)
     if spec is None:
@@ -107,6 +149,17 @@ def stage(args) -> int:
             text = json.dumps(f["model"], indent=1) + "\n"
             (dest / "model.json").write_text(text, encoding="utf-8")
             licences[f"{folder}/model.json"] = "GPL-3.0-or-later"
+    if args.piece == "ai":
+        data = load()
+        problems = tier_problems(data)
+        if problems:
+            for p in problems:
+                print(p, file=sys.stderr)
+            return 1
+        tiers = {k: v for k, v in data["tiers"].items() if k != "comment"}
+        (out / "models").mkdir(parents=True, exist_ok=True)
+        (out / "models" / "tiers.json").write_text(json.dumps(tiers, indent=1) + "\n", encoding="utf-8")
+        licences["models/tiers.json"] = "GPL-3.0-or-later"
     # Merge with licences from an earlier stage into the same folder.
     lic_path = out / "licences.json"
     if lic_path.exists():
@@ -120,7 +173,7 @@ def stage(args) -> int:
 
 def check(_args) -> int:
     data = load()
-    bad = []
+    bad = tier_problems(data)
     sizes = {}
     for piece, spec in data["pieces"].items():
         total = 0

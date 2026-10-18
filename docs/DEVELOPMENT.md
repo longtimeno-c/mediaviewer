@@ -685,7 +685,9 @@ owed: [docs/design/17](design/17-local-ai-search.md); the Mac checklist is
 
 1. Stage the models (pinned revisions and SHA-256s):
    `python3 tools/package/ai-models.py stage --piece ai --out <staged>/ai` (and `ai-audio`,
-   `ai-faces`).
+   `ai-faces`). Staging `ai` also writes `models/tiers.json`, the model tiers the add-on reads
+   (#482, [docs/plans/model-tiers.md](plans/model-tiers.md)). A pack staged before that has no
+   such file and opens the Default tier's folders.
 2. Configure with `-DMV_ADDON_DEV_PUBLIC_KEY=<your key's public half>` and build `mv_ai`,
    `mv_ai_chrome` (Mac) or the WinUI chrome, `mv_ai_tests` and `ai-bench`. On the Mac the AI
    targets exist on arm64 only.
@@ -1586,6 +1588,17 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Local search model tiers, slice T1: tiers as data (#482, docs/plans/model-tiers.md, 2026-10-18)
+
+`tools/package/ai-models.json` has a `tiers` block. Each profile names a model folder per role
+(pictures high/fast, speech high/fast, sounds, faces, documents). `ai-models.py stage --piece ai`
+writes it to the Core pack's `models/tiers.json`, and `check` refuses a profile that names a
+folder outside its role's piece. `src/addons/ai/tiers.{h,cpp}` reads it, and `pack.cpp` names no
+model. Only **Default** is defined and nothing behaves differently: the same towers, the same
+spec keys, no re-index. Tests: `mv_ai_tests "[tiers]"` and `python3 -m unittest
+test_addon_pack -k tier` (in `tools/package`). Not built yet: the model contract, the
+Hugging Face downloader, the picker and the other tiers (T2–T8 in the plan).
 
 ### Windows search: the typed space, the resume notice, a result list from an empty window (#443, 2026-10-15)
 

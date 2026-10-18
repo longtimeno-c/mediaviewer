@@ -1,5 +1,19 @@
 {
   "comment": "The AI pack's model files (docs/design/17 'Model choice'), pinned by revision and SHA-256. Chosen by the PR 20 spike (docs/design/17 'PR 20 spike results'); the People embedder by docs/design/17 'People model' (2026-10-03). Every file names its licence; tools/package/ai-models.py refuses one outside ALLOWED_LICENCES (the weights-licence gate). An entry with 'export' pins its source (size, sha256) and is built by face-export.py; 'installed_size' is what the pack carries.",
+  "tiers": {
+    "comment": "Model tiers (docs/plans/model-tiers.md, #482): each profile names a model folder per role. A role's folders live in that role's piece (pictures: ai; speech, sounds: ai-audio; faces: ai-faces; documents: ai-docs). stage writes this block to the Core pack's models/tiers.json; src/addons/ai/tiers.h reads it.",
+    "default": "default",
+    "profiles": {
+      "default": {
+        "name": "Default",
+        "pictures": {"high": "models/clip-l14", "fast": "models/clip-b32"},
+        "speech": {"high": "models/whisper-small", "fast": "models/whisper-base"},
+        "sounds": "models/clap-general",
+        "faces": "models/faces",
+        "documents": "models/doc-text"
+      }
+    }
+  },
   "pieces": {
     "ai": {
       "folders": {

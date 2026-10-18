@@ -44,6 +44,13 @@ tower's thresholds, generic prompts and preprocessing live in its `model.json`
 Changing quality migrates: the old index answers until the new one completes, and a query
 never compares vectors from two towers.
 
+**Which model fills each role** (the picture tower for each quality, the Whisper models, CLAP,
+the face models and the documents model) comes from a **tier profile**: the pack's
+`models/tiers.json`, written from the `tiers` block of `ai-models.json` (#482,
+[model-tiers plan](../plans/model-tiers.md)). The add-on's code names no model folder, and
+a tower answers for the quality slot the profile gives it. Only the Default tier exists, and it
+names the folders above. A pack staged without `tiers.json` opens the same folders.
+
 **Weights licence gate.** Every model file names its licence; `tools/package/ai-models.py check`
 refuses one outside the allow-list (a CC-BY-NC file fails the pack, tested). Licences in the
 pack: CLIP weights MIT, ONNX Runtime MIT, YuNet MIT, AdaFace MIT (weights; trained on WebFace4M,

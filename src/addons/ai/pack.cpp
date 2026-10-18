@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "addons/ai/platform.h"
+#include "addons/ai/tiers.h"
 #include "infer/audio_models.h"
 #include "infer/text_models.h"
 #include "infer/models.h"
@@ -43,6 +44,8 @@ struct pack_state {
   std::unique_ptr<infer::runtime> rt;
   bool from_piece = false;  // ORT came from the ai-cuda piece
   std::map<std::uint32_t, infer::clip_spec> towers;  // by mv_ai_quality
+  std::once_flag tier_once;
+  tier_profile tier_;  // profile(): which folder fills each role (tiers.h)
 
   // Core ML compiles (upgrading_clip). One tower compiles once at a time: a
   // first compile of L/14 writes gigabytes for minutes on a MacBook Air, and
@@ -66,12 +69,36 @@ struct pack_state {
       if (!loaded && ort_dir != core_dir) loaded = infer::runtime::load(core_dir);
       if (!loaded) return;
       rt = std::move(*loaded);
-      for (const char* folder : {"clip-b32", "clip-l14"}) {
-        auto spec = infer::read_clip_spec(join(join(core_dir, "models"), folder));
-        if (spec) towers[spec->quality] = std::move(*spec);
+      // The tier names the towers; its slot, not model.json, says which
+      // quality each one answers for.
+      const tier_profile& t = profile();
+      for (const auto& [quality, folder] : {std::pair{MV_AI_QUALITY_FAST, &t.picture_fast},
+                                            std::pair{MV_AI_QUALITY_HIGH, &t.picture_high}}) {
+        if (folder->empty()) continue;
+        auto spec = infer::read_clip_spec(join(core_dir, *folder));
+        if (!spec) continue;
+        spec->quality = quality;
+        towers[quality] = std::move(*spec);
       }
     });
     ready = true;
+  }
+
+  // The engine runs the pack's default tier until the picker (#482 T4) adds a
+  // choice. Read once, on first use (I/O, so never in mv_addon_get).
+  const tier_profile& profile() {
+    std::call_once(tier_once, [this] { tier_ = read_tier_profile(core_dir, {}); });
+    return tier_;
+  }
+
+  // The Whisper folder for a quality: the slot asked for, else the other one.
+  result<infer::whisper_spec> speech_spec(const std::string& audio_dir, std::uint32_t quality) {
+    const tier_profile& t = profile();
+    const std::string& first = quality >= MV_AI_QUALITY_HIGH && !t.speech_high.empty() ? t.speech_high : t.speech_fast;
+    const std::string& second = &first == &t.speech_high ? t.speech_fast : t.speech_high;
+    auto spec = infer::read_whisper_spec(join(audio_dir, first));
+    if (!spec && !second.empty()) spec = infer::read_whisper_spec(join(audio_dir, second));
+    return spec;
   }
 };
 
@@ -631,7 +658,7 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     p->ensure();
     if (!p->rt) return err(status::unsupported_format);
     MV_TRY(std::string dir, p->h->piece_dir("ai-audio"));
-    MV_TRY(infer::clap_spec spec, infer::read_clap_spec(join(join(dir, "models"), "clap-general")));
+    MV_TRY(infer::clap_spec spec, infer::read_clap_spec(join(dir, p->profile().sounds)));
     infer::session_options o;
     audio_options(compute, o);
     auto m = infer::clap_model::open(*p->rt, spec, o, nullptr);
@@ -657,9 +684,7 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     p->ensure();
     if (!p->rt) return err(status::unsupported_format);
     MV_TRY(std::string dir, p->h->piece_dir("ai-audio"));
-    const char* folder = quality >= MV_AI_QUALITY_HIGH ? "whisper-small" : "whisper-base";
-    auto spec = infer::read_whisper_spec(join(join(dir, "models"), folder));
-    if (!spec) spec = infer::read_whisper_spec(join(join(dir, "models"), "whisper-base"));
+    auto spec = p->speech_spec(dir, quality);
     if (!spec) return err(spec.error());
     infer::session_options o;
     audio_options(compute, o);
@@ -679,7 +704,7 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     p->ensure();
     if (!p->rt) return err(status::unsupported_format);
     MV_TRY(std::string dir, p->h->piece_dir("ai-faces"));
-    MV_TRY(infer::face_spec spec, infer::read_face_spec(join(join(dir, "models"), "faces")));
+    MV_TRY(infer::face_spec spec, infer::read_face_spec(join(dir, p->profile().faces)));
     infer::session_options cpu;
     cpu.threads = 1;
     // The embedder on the towers' compute choice (the detector stays on CPU:
@@ -768,7 +793,7 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     p->ensure();
     if (!p->rt) return err(status::unsupported_format);
     MV_TRY(std::string dir, p->h->piece_dir("ai-audio"));
-    MV_TRY(infer::clap_spec spec, infer::read_clap_spec(join(join(dir, "models"), "clap-general")));
+    MV_TRY(infer::clap_spec spec, infer::read_clap_spec(join(dir, p->profile().sounds)));
     infer::session_options cpu;
     cpu.on = infer::backend::cpu;
     cpu.threads = 2;
@@ -792,7 +817,7 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     p->ensure();
     if (!p->rt) return err(status::unsupported_format);
     MV_TRY(std::string dir, p->h->piece_dir("ai-docs"));
-    MV_TRY(infer::text_spec spec, infer::read_text_spec(join(join(dir, "models"), "doc-text")));
+    MV_TRY(infer::text_spec spec, infer::read_text_spec(join(dir, p->profile().documents)));
     infer::session_options cpu;
     cpu.on = infer::backend::cpu;
     cpu.threads = 2;
@@ -811,9 +836,7 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
   d.speech_spec_key = [p](std::uint32_t quality) {
     auto dir = p->h->piece_dir("ai-audio");
     if (!dir) return std::string();
-    const char* folder = quality >= MV_AI_QUALITY_HIGH ? "whisper-small" : "whisper-base";
-    auto spec = infer::read_whisper_spec(join(join(*dir, "models"), folder));
-    if (!spec) spec = infer::read_whisper_spec(join(join(*dir, "models"), "whisper-base"));
+    auto spec = p->speech_spec(*dir, quality);
     return spec ? spec->spec_key() : std::string();
   };
   d.runtime_version = [p] {
