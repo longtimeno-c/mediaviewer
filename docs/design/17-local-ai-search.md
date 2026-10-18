@@ -44,6 +44,52 @@ tower's thresholds, generic prompts and preprocessing live in its `model.json`
 Changing quality migrates: the old index answers until the new one completes, and a query
 never compares vectors from two towers.
 
+### Model tiers (#482)
+
+**Which model fills each role** (the picture tower for each quality slot, the Whisper models,
+CLAP, the face models and the documents model) comes from a **tier profile**: the pack's
+`models/tiers.json`, written from the `tiers` block of `ai-models.json`
+([model-tiers plan](../plans/model-tiers.md)). The add-on's code names no model folder; a tower
+answers for the quality slot the profile gives it. A pack staged without `tiers.json` opens
+today's Default folders.
+
+| | Maxxed | Default | Intel | Potato |
+|---|---|---|---|---|
+| Pictures (high / fast) | OpenCLIP ViT-H/14 / B/32 | L/14 / B/32 | B/32 | B/32 |
+| Speech (high / fast) | Whisper large-v3-turbo / small | small / base | base | tiny |
+| Sounds | CLAP | CLAP | CLAP, off by default | none |
+| People | YuNet + AdaFace IR-50 | YuNet + AdaFace IR-50 | YuNet + AdaFace IR-50 | YuNet + SFace |
+| Documents | all-MiniLM-L6-v2 | all-MiniLM-L6-v2 | all-MiniLM-L6-v2 | all-MiniLM-L6-v2 |
+| Clip gaps (min / max) | 250 / 1000 ms | 500 / 2000 ms | 500 / 2000 ms | 1000 / 6000 ms |
+
+ViT-H/14 (~2 GB, our fp16 export by `tools/package/clip-export.py` from the pinned checkpoint,
+verified by a golden output) rides in its own piece, `ai-large`, which only Maxxed installs.
+
+**Potato's picture tower is B/32 (2026-10-18).** Both TinyCLIP candidates were exported and
+measured and neither is a Potato: ViT-8M/16 misses the bar (COCO-1k R@10 0.838 < 0.88), and
+ViT-39M/16 passes (0.922) but runs about 4× slower than B/32 on two CPU threads (6.2 vs
+25.6 img/s, fp16, ONNX Runtime 1.30, M-series). B/32 is the cheapest tower that passes; Potato
+saves elsewhere (Whisper tiny, SFace, no sound search, sparser clips). B/32 int8 weights stay
+rejected (R@10 0.822). MobileCLIP waits for its weights licence to clear `ai-models.py check`.
+
+- **The model contract** (`infer/models.h`, `audio_models.h`): a CLIP tower states
+  `tokenizer_kind` (`clip-bpe`), `score` (`cosine`, or `sigmoid`, still ranked by cosine),
+  named outputs and the Core ML dim names; Whisper states `n_mels` (80, or 128 for large-v3 /
+  turbo) and its special tokens. A kind this build lacks is unsupported, never guessed. A model
+  that fits is a manifest entry: with the contract in place, ViT-H/14, Whisper tiny and turbo
+  and SFace went in as data, with no C++ change (TinyCLIP too, before it was measured out).
+- **Choosing.** Nothing downloads until a tier is chosen (`MV_AI_STATUS_TIER_UNCHOSEN`; the
+  add-on's picker opens on install and from Settings → Local search → Models). The local check
+  (`machine.h`) recommends one: Potato on ≤ 2 cores or ≤ 8 GB, Intel on an x86_64 Mac or a PC
+  with no accelerator, Maxxed with an accelerator and ≥ 32 GB, else Default. It is shown in the
+  picker and never sent anywhere. An index made before tiers keeps Default without asking.
+- **Changing** tier fetches the new models, then re-indexes with the new towers while the old
+  index answers (the old tier's tower still opens by its spec key, `open_clip_spec`); once the
+  new one covers the folders the old vectors and the old tier's fetched files go.
+- **Thresholds** come from `tools/ai-eval/calibrate.py`: the PR 20 eval (COCO-1k R@10 ≥ 0.88,
+  labelled-query P@5 ≥ 0.8) and a quantile match against B/32's hand-set thresholds. Results are
+  in "Measurements".
+
 **Weights licence gate.** Every model file names its licence; `tools/package/ai-models.py check`
 refuses one outside the allow-list (a CC-BY-NC file fails the pack, tested). Licences in the
 pack: CLIP weights MIT, ONNX Runtime MIT, YuNet MIT, AdaFace MIT (weights; trained on WebFace4M,
@@ -132,7 +178,8 @@ signed manifest, verify-before-load, per-user versioned folder, explicit updates
 
   | Piece | Contents | Size |
   |---|---|---|
-  | `ai` (Core) | `mv_ai`, ORT (CPU; Core ML on Mac), PDFium (a PDF's text, #354; ~6 MB, its parts' notices in `LICENSES/pdfium`), both CLIP towers, tokenizer, the chrome (`MediaViewer.Ai.Chrome` / `AI.bundle`) | ~1.19 GB installed |
+  | `ai` (Core) | `mv_ai`, ORT (CPU; Core ML on Mac), PDFium (a PDF's text, #354; ~6 MB, its parts' notices in `LICENSES/pdfium`), the chrome (`MediaViewer.Ai.Chrome` / `AI.bundle`); the CLIP towers and tokenizer are fetched | ~100 MB, plus 1.16 GB fetched (Default) |
+  | `ai-large` (Maxxed) | OpenCLIP ViT-H/14, our fp16 export | ~1.97 GB |
   | `ai-faces` (People) | YuNet detector, AdaFace IR-50 embedder (fp16) | ~87 MB model |
   | `ai-audio` (Sound) | CLAP `larger_clap_general`, Whisper base and small, tokenizers | ~1 GB |
   | `ai-docs` (Documents) | all-MiniLM-L6-v2 (fp32), its WordPiece vocab (#354 D3) | ~91 MB |
@@ -143,13 +190,18 @@ signed manifest, verify-before-load, per-user versioned folder, explicit updates
   queues a Core that is itself behind first, so no piece runs ahead of the engine it was built
   with. Remove deletes the files and offers to delete the index; `data/cache` (Core ML) is
   deleted even when the index is kept.
-- **5 GB installed ceiling** for the family (`family_ceiling`, `addon-pack.py ceiling`): every
-  supported combination must fit, and the store refuses an install that would exceed it. The
-  index and the thumbnail cache are user data and do not count. The pieces that ship today
-  reach ~2.93 GB in the heaviest combination, which leaves about 2.0 GB for a later piece.
-  Raised from 3 GB on 2026-10-13 ([12](12-decision-log.md)).
-- Downloaded on explicit opt-in, a plain GET of fixed release URLs with no identifier. The Mac
-  pack is Developer ID-signed and notarized and loads under library validation.
+- **Models from Hugging Face (#482).** The pieces on GitHub carry code, the signed model list
+  and our own exports only; each upstream model file is in the piece's signed manifest
+  (`remote`: URL, size, SHA-256, licence) and the add-on fetches the ones the chosen tier
+  needs into `data/fetched/<piece>/`, a plain GET of the pinned `resolve/<revision>/<file>`
+  URL (`fetch.h`). Resumable, verified (a mismatch is fetched again, never loaded), patient
+  (an outage waits and resumes by itself; a 404 is reported as gone). The picture tower comes
+  first, so search opens before speech, sounds, faces and documents arrive. Status:
+  `fetch_state`, `fetch_done_bytes` / `fetch_total_bytes`. No family ceiling since 2026-10-18
+  ([12](12-decision-log.md)); the picker shows each tier's download and disk size.
+- The add-on is downloaded on explicit opt-in, a plain GET of fixed release URLs with no
+  identifier. The Mac pack is Developer ID-signed and notarized and loads under library
+  validation.
 - **Location:** `%LocalAppData%\MediaViewer\addons\ai\<version>` on Windows and
   `~/Library/Application Support/MediaViewer/Add-ons/AI/<version>` on Mac; the index and caches
   are in that add-on's `data` folder.
@@ -1390,6 +1442,27 @@ Harnesses: `tools/ai/photos-spike.sh` (the source alone) and `tools/ai-bench/pho
 (the whole pack).
 
 ## Measurements
+
+### Model tiers: the picture towers (#482, 2026-10-18)
+
+`tools/ai-eval/calibrate.py` on COCO-1k (val2017's first 1,000 images, five captions each),
+ONNX Runtime 1.30 on CPU, Apple M-series, the pack's preprocessing. Bar: R@10 ≥ 0.88 and
+P@5 ≥ 0.8. Calibrated thresholds are a quantile match against B/32's hand-set ones.
+
+| Tower | Tier | R@1 | R@5 | R@10 | P@5 | Passes | img/s, 2 CPU threads |
+|---|---|---|---|---|---|---|---|
+| CLIP ViT-B/32 | Default fast, Intel, Potato | — | — | 0.881 | 0.943 | yes (reference) | 25.6 |
+| CLIP ViT-L/14 | Default high | 0.553 | 0.813 | 0.904 | 0.914 | yes | — |
+| OpenCLIP ViT-H/14 | Maxxed high | 0.687 | 0.894 | 0.946 | 0.971 | yes | — |
+| TinyCLIP ViT-8M/16 | (Potato candidate) | 0.415 | 0.731 | 0.838 | 0.886 | **no** | 23.4 |
+| TinyCLIP ViT-39M/16 | (Potato candidate) | 0.592 | 0.852 | 0.922 | 1.000 | yes, but slower than B/32 | 6.2 |
+
+The img/s column was timed while another eval ran, so read it as a ratio. On L/14 the method
+gives query_margin 0.033 and result_margin 0.010 against the 0.04 and 0.015 set by hand in PR
+20: it lands near the hand calibration, so ViT-H/14's (0.023, -0.015, similar_min 0.449) are
+used as computed. **Not measured yet:** per-tier img/s on an accelerator, Whisper RTF, time to
+first searchable result and size on disk per tier, on either platform, and both present-loop
+gates while indexing on every tier (plan T8).
 
 ### Verified on Windows
 
