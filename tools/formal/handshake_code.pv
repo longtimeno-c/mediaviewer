@@ -1,0 +1,35 @@
+(* Sharepoint protocol 2, the first link (XXhfs) under an active attacker in
+   the middle: what the six-digit code buys.
+
+   The code is sas(h2, nc): h2 the handshake hash after message 2, nc the
+   client's nonce, committed to in message 1 and revealed in message 3. Six
+   digits are short, so the attacker is given a collision oracle: knowing one
+   side's (h2, nc) and the other side's h2, coll() makes a nonce that gives the
+   other side the same code. That is the power a real attacker has by search
+   (10^6 tries). What stops it is order: the server's nonce is fixed by the
+   commitment before the server's ephemeral (and so its h2) exists, and the
+   client's h2 is fixed before its nonce leaves (handshake_nonce.pv).
+   code_order.pv is the sanity check: on the handshake's skeleton, removing
+   the commitment check lets ProVerif find the attack with this oracle (this
+   full model without the check does not finish).
+
+   The person reading the receiver's screen is an authentic channel (`screen`);
+   the code is also public once shown. Statics are one key per machine for the
+   whole run (the engine makes one at start), as in the code; nothing trusts
+   them. Expected: every query true (about 5 minutes on an M-series Mac). *)
+
+free fileA, probeA: bitstring [private].
+
+(* The sender's person typed the code the receiver showed: both ran the same
+   handshake (same h2, nonce, keys and resume secret), one for one. *)
+query h: bitstring, n: bitstring, k1: bitstring, k2: bitstring, r: bitstring;
+  inj-event(ClientAccepts(h, n, k1, k2, r)) ==> inj-event(ServerShows(h, n, k1, k2, r)).
+(* What goes after the code (the offer, the files) and the resume secret stay secret. *)
+query attacker(fileA).
+query attacker(probeA).
+process
+  new sc: bitstring; new ss: bitstring;
+  out(c, (exp(g, sc), exp(g, ss)));
+  !( new screen: channel;
+     ( XXClient(c, c, screen, sc, false, false, fileA, probeA)
+     | XXServer(c, c, screen, ss, false, true) ) )
