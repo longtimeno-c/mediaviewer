@@ -141,6 +141,8 @@ results, 1 with none, 2 on a usage or load error.
 - **Grid:** the viewer's tiles, with the match time, the clip length and "+N" more matches.
   Hovering scrubs through the clip. Multi-select and drag hand FCPXML plus file URLs to FCP. The
   context menu has Find similar (Cmd+Shift+F), Show in Finder and Open in MediaViewer.
+- **Timeline bar** (top): the project the timeline agent works on, dropped here from FCP's browser,
+  the folders it may use, and **New Version**; [29](29-agent-timeline.md) "The panel".
 - **Options:** the clip handles a drag uses (1 s, 2/3 s, 5 s, 10 s, or the whole clip), whether
   the search becomes a keyword collection, and a fixed test drag (`~/Movies/test/clip1.mov`,
   `clip2.mov`, `photo.jpg`).

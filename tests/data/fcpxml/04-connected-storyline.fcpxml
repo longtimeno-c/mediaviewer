@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<fcpxml version="1.13">
+    <resources>
+        <format id="r1" name="FFVideoFormat3840x2160p25" frameDuration="1/25s" width="3840" height="2160" colorSpace="1-1-1 (Rec. 709)"/>
+        <effect id="r2" name="Cross Dissolve" uid="FxPlug:4731E73A-8DAC-4113-9A30-AE85B1761265"/>
+        <effect id="r3" name="Audio Crossfade" uid="FFAudioTransition"/>
+        <asset id="r4" name="Walk" uid="13E7A86D4579AD5E0AF9A9281E73AEEB" start="0s" duration="900s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="13E7A86D4579AD5E" src="file:///Users/editor/Footage/Walk.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r5" name="Peak 1" uid="760C275754B82DA60489562C18EAD874" start="0s" duration="30s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="760C275754B82DA6" src="file:///Users/editor/Footage/broll/Peak%201.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r6" name="Peak 2" uid="CDFD3DA818C115A8C4CCB6A65B73E82D" start="0s" duration="30s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="CDFD3DA818C115A8" src="file:///Users/editor/Footage/broll/Peak%202.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r7" name="Peak 3" uid="443CF0F9E96A100B39E76631C6FF7D0D" start="0s" duration="30s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="443CF0F9E96A100B" src="file:///Users/editor/Footage/broll/Peak%203.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+    </resources>
+    <library location="file:///Users/editor/Movies/Dolomites%20trip.fcpbundle/">
+        <event name="18-09-2026" uid="E9875B5C1757A908">
+            <project name="Connected storyline" uid="PB8FD35D2AA70F7A" modDate="2026-10-11 21:37:12 +0100">
+                <sequence format="r1" duration="60s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <asset-clip ref="r4" offset="0s" name="Walk" start="0s" duration="60s" format="r1" tcFormat="NDF" audioRole="dialogue">
+                            <spine lane="1" offset="8s" format="r1">
+                                <asset-clip ref="r5" offset="0s" name="Peak 1" start="0s" duration="4s" format="r1" tcFormat="NDF"/>
+                                <transition name="Cross Dissolve" offset="18/5s" duration="4/5s">
+                                    <filter-video ref="r2" name="Cross Dissolve">
+                                        <param name="Look" key="1" value="11 (Video)"/>
+                                        <param name="Amount" key="2" value="50"/>
+                                        <param name="Ease" key="50" value="2 (In &amp; Out)"/>
+                                        <param name="Ease Amount" key="51" value="0"/>
+                                    </filter-video>
+                                    <filter-audio ref="r3" name="Audio Crossfade"/>
+                                </transition>
+                                <asset-clip ref="r6" offset="4s" name="Peak 2" start="6/5s" duration="6s" format="r1" tcFormat="NDF"/>
+                                <asset-clip ref="r7" offset="10s" name="Peak 3" start="1/5s" duration="18/5s" format="r1" tcFormat="NDF"/>
+                            </spine>
+                        </asset-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+    </library>
+</fcpxml>

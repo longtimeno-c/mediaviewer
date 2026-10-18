@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<fcpxml version="1.13">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p25" frameDuration="1/25s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <format id="r2" name="FFVideoFormat1080p120" frameDuration="1/120s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r3" name="Jump 120fps" uid="CEA6F8A7DACE615F220D118FED79EE44" start="0s" duration="20s" hasVideo="1" format="r2" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="CEA6F8A7DACE615F" src="file:///Users/editor/Footage/Jump%20120fps.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r4" name="Ridge" uid="89AE2CBA88A13A16DEF914F837EF2C75" start="0s" duration="60s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="89AE2CBA88A13A16" src="file:///Users/editor/Footage/Ridge.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+    </resources>
+    <library location="file:///Users/editor/Movies/Dolomites%20trip.fcpbundle/">
+        <event name="18-09-2026" uid="E9875B5C1757A908">
+            <project name="Retiming" uid="P02BBA36DA55FC7C" modDate="2026-10-11 21:37:12 +0100">
+                <sequence format="r1" duration="19s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <asset-clip ref="r4" offset="0s" name="Ridge" start="0s" duration="5s" format="r1" tcFormat="NDF"/>
+                        <asset-clip ref="r3" offset="5s" name="Jump 120fps" start="0s" tcFormat="NDF" duration="10s">
+                            <conform-rate scaleEnabled="0" srcFrameRate="119.88"/>
+                            <timeMap>
+                                <timept time="0s" value="0s" interp="smooth2"/>
+                                <timept time="5s" value="1s" interp="smooth2"/>
+                                <timept time="10s" value="6s" interp="smooth2"/>
+                            </timeMap>
+                        </asset-clip>
+                        <asset-clip ref="r4" offset="15s" name="Ridge" start="8s" duration="4s" format="r1" tcFormat="NDF">
+                            <conform-rate srcFrameRate="23.98"/>
+                        </asset-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+    </library>
+</fcpxml>

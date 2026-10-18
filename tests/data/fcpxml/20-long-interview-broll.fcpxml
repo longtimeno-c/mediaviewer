@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<fcpxml version="1.14">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p25" frameDuration="1/25s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r2" name="Long talk" uid="D7A32B59C59EC2414DA522C2AD74F565" start="0s" duration="1800s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="D7A32B59C59EC241" src="file:///Users/editor/Footage/Interview/Long%20talk.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r3" name="Drone 01" uid="39D2D56E6F55BB4C3D132D959DCEE414" start="0s" duration="45s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="39D2D56E6F55BB4C" src="file:///Users/editor/Footage/broll/Drone%2001.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r4" name="Drone 02" uid="1317841EF047240F79249B7B574CD336" start="0s" duration="45s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="1317841EF047240F" src="file:///Users/editor/Footage/broll/Drone%2002.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r5" name="Drone 03" uid="5F015A77391A7CA29BBCFB02432D8BC5" start="0s" duration="45s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="5F015A77391A7CA2" src="file:///Users/editor/Footage/broll/Drone%2003.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r6" name="Drone 04" uid="86B65885132E287252FC1998AF58DE63" start="0s" duration="45s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="86B65885132E2872" src="file:///Users/editor/Footage/broll/Drone%2004.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r7" name="Drone 05" uid="A3386C5025046D48E98F266FD0ADADE0" start="0s" duration="45s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="A3386C5025046D48" src="file:///Users/editor/Footage/broll/Drone%2005.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r8" name="Drone 06" uid="C7DDDE7D87AD7774DCECED3F91D8171D" start="0s" duration="45s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="C7DDDE7D87AD7774" src="file:///Users/editor/Footage/broll/Drone%2006.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <effect id="r9" name="Basic Title" uid=".../Titles.localized/Bumper:Opener.localized/Basic Title.localized/Basic Title.moti"/>
+    </resources>
+    <library location="file:///Users/editor/Movies/Dolomites%20trip.fcpbundle/">
+        <event name="18-09-2026" uid="E9875B5C1757A908">
+            <project name="Long interview with B-roll" uid="PFE80777D4B8A149" modDate="2026-10-11 21:37:12 +0100">
+                <sequence format="r1" duration="240s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <asset-clip ref="r2" offset="0s" name="Long talk" start="0s" duration="40s" format="r1" tcFormat="NDF" audioRole="dialogue">
+                            <asset-clip ref="r3" lane="1" offset="8s" name="Drone 01" start="1s" duration="6s" format="r1" tcFormat="NDF" videoRole="video.B-roll"/>
+                            <marker start="20s" duration="1/25s" value="section 1"/>
+                        </asset-clip>
+                        <asset-clip ref="r2" offset="40s" name="Long talk" start="48s" duration="40s" format="r1" tcFormat="NDF" audioRole="dialogue">
+                            <asset-clip ref="r4" lane="1" offset="56s" name="Drone 02" start="1s" duration="6s" format="r1" tcFormat="NDF" videoRole="video.B-roll"/>
+                            <marker start="68s" duration="1/25s" value="section 2"/>
+                        </asset-clip>
+                        <asset-clip ref="r2" offset="80s" name="Long talk" start="96s" duration="40s" format="r1" tcFormat="NDF" audioRole="dialogue">
+                            <asset-clip ref="r5" lane="1" offset="104s" name="Drone 03" start="1s" duration="6s" format="r1" tcFormat="NDF" videoRole="video.B-roll"/>
+                            <title ref="r9" lane="2" offset="108s" name="Section 3" start="3600s" duration="4s">
+                                <text>
+                                    <text-style ref="ts9">Part three</text-style>
+                                </text>
+                                <text-style-def id="ts9">
+                                    <text-style font="Helvetica" fontSize="72"/>
+                                </text-style-def>
+                            </title>
+                            <marker start="116s" duration="1/25s" value="section 3"/>
+                        </asset-clip>
+                        <asset-clip ref="r2" offset="120s" name="Long talk" start="144s" duration="40s" format="r1" tcFormat="NDF" audioRole="dialogue">
+                            <asset-clip ref="r6" lane="1" offset="152s" name="Drone 04" start="1s" duration="6s" format="r1" tcFormat="NDF" videoRole="video.B-roll"/>
+                            <marker start="164s" duration="1/25s" value="section 4"/>
+                        </asset-clip>
+                        <asset-clip ref="r2" offset="160s" name="Long talk" start="192s" duration="40s" format="r1" tcFormat="NDF" audioRole="dialogue">
+                            <asset-clip ref="r7" lane="1" offset="200s" name="Drone 05" start="1s" duration="6s" format="r1" tcFormat="NDF" videoRole="video.B-roll"/>
+                            <marker start="212s" duration="1/25s" value="section 5"/>
+                        </asset-clip>
+                        <asset-clip ref="r2" offset="200s" name="Long talk" start="240s" duration="40s" format="r1" tcFormat="NDF" audioRole="dialogue">
+                            <asset-clip ref="r8" lane="1" offset="248s" name="Drone 06" start="1s" duration="6s" format="r1" tcFormat="NDF" videoRole="video.B-roll"/>
+                            <marker start="260s" duration="1/25s" value="section 6"/>
+                        </asset-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+    </library>
+</fcpxml>

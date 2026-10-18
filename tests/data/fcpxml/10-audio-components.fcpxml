@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<fcpxml version="1.13">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p25" frameDuration="1/25s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r2" name="Q1" uid="6959C85CBA6F51CF87F52A4FB9172648" start="0s" duration="300s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="6959C85CBA6F51CF" src="file:///Users/editor/Footage/Interview/Q1.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r3" name="Q2" uid="3A98C6CBB823CC55CD0F4B8EE30B4BC9" start="0s" duration="300s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="3A98C6CBB823CC55" src="file:///Users/editor/Footage/Interview/Q2.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r4" name="Q3" uid="6295555CADB0A8C2340611AD81B50C5E" start="0s" duration="300s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="6295555CADB0A8C2" src="file:///Users/editor/Footage/Interview/Q3.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+    </resources>
+    <library location="file:///Users/editor/Movies/Dolomites%20trip.fcpbundle/">
+        <event name="18-09-2026" uid="E9875B5C1757A908">
+            <project name="Audio components and split edits" uid="PE5B89193D973BE3" modDate="2026-10-11 21:37:12 +0100">
+                <sequence format="r1" duration="60s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <asset-clip ref="r2" offset="0s" name="Q1" start="4s" duration="20s" format="r1" tcFormat="NDF" audioRole="dialogue">
+                            <audio-channel-source srcCh="1, 2" role="dialogue.dialogue-1">
+                                <adjust-EQ mode="voice_enhance"/>
+                            </audio-channel-source>
+                        </asset-clip>
+                        <asset-clip ref="r3" offset="20s" name="Q2" start="8/5s" duration="16s" format="r1" tcFormat="NDF" audioRole="dialogue" audioStart="8/5s" audioDuration="18s">
+                            <audio-channel-source srcCh="1" role="dialogue.dialogue-1"/>
+                            <audio-channel-source srcCh="2" role="dialogue.dialogue-2" enabled="0"/>
+                        </asset-clip>
+                        <asset-clip ref="r4" offset="36s" name="Q3" start="24/5s" duration="24s" format="r1" tcFormat="NDF" audioRole="dialogue" audioStart="14/5s" audioDuration="26s">
+                            <audio-channel-source srcCh="1, 2" role="dialogue.dialogue-1" outCh="L, R">
+                                <mute start="8s" duration="1s"/>
+                            </audio-channel-source>
+                        </asset-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+    </library>
+</fcpxml>

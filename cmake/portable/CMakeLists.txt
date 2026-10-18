@@ -96,6 +96,8 @@ set(MV_SOURCE_ROOT "${MV_ROOT}")
 include("${MV_ROOT}/cmake/import.cmake")
 # Milestone H: the AI pack (cmake/ai.cmake); its engine tests run here too.
 include("${MV_ROOT}/cmake/ai.cmake")
+# docs/design/29: the timeline model and its round trip.
+include("${MV_ROOT}/cmake/timeline.cmake")
 
 # ---- tests ----------------------------------------------------------------------
 enable_testing()
@@ -128,6 +130,12 @@ target_compile_definitions(mv_import_tests PRIVATE
   MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>")
 add_dependencies(mv_import_tests mv_import)
 add_test(NAME mv_import_tests COMMAND mv_import_tests)
+
+add_executable(mv_timeline_tests "${MV_ROOT}/tests/test_timeline.cpp")
+target_link_libraries(mv_timeline_tests PRIVATE mv_nle_timeline ${MV_CATCH2_TARGET})
+target_include_directories(mv_timeline_tests PRIVATE "${MV_ROOT}/src" "${MV_ROOT}/tests")
+target_compile_definitions(mv_timeline_tests PRIVATE MV_TIMELINE_FIXTURES="${MV_ROOT}/tests/data/fcpxml")
+add_test(NAME mv_timeline_tests COMMAND mv_timeline_tests)
 # The dateless-file fallback is local wall-clock time; pin the zone.
 set_tests_properties(mv_import_tests PROPERTIES ENVIRONMENT "TZ=UTC")
 

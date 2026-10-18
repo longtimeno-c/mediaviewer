@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<fcpxml version="1.13">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p25" frameDuration="1/25s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r2" name="Boat" uid="C297BD1C504A49BE1009292A2B6D3663" start="0s" duration="120s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="C297BD1C504A49BE" src="file:///Users/editor/Footage/Boat.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r3" name="VO take 3" uid="1D3C64B0F11A49C9BDF8E317AD600161" start="0s" duration="60s" hasAudio="1" audioSources="1" audioChannels="1" audioRate="48000">
+            <media-rep kind="original-media" sig="1D3C64B0F11A49C9" src="file:///Users/editor/Audio/VO%20take%203.wav">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r4" name="Waves" uid="AA392847B6A796FE5343C704DA05234C" start="0s" duration="60s" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="AA392847B6A796FE" src="file:///Users/editor/Audio/Waves.wav">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+    </resources>
+    <library location="file:///Users/editor/Movies/Dolomites%20trip.fcpbundle/">
+        <event name="18-09-2026" uid="E9875B5C1757A908">
+            <project name="Roles" uid="PFACCB20DE97303B" modDate="2026-10-11 21:37:12 +0100">
+                <sequence format="r1" duration="40s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <asset-clip ref="r2" offset="0s" name="Boat" start="0s" duration="40s" format="r1" tcFormat="NDF" videoRole="video.Hero" audioRole="effects.Natural sound">
+                            <audio ref="r3" lane="-1" offset="4s" name="VO take 3" start="0s" duration="24s" role="dialogue.VO" srcCh="1" outCh="C"/>
+                            <audio ref="r4" lane="-2" offset="0s" name="Waves" duration="40s" role="effects.Ambience">
+                                <adjust-volume amount="-12dB"/>
+                            </audio>
+                            <video ref="r2" lane="1" offset="20s" name="Boat (video only)" start="8/5s" duration="4s" role="video.Inserts"/>
+                        </asset-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+    </library>
+</fcpxml>

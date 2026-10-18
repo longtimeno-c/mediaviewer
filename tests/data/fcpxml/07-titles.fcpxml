@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<fcpxml version="1.13">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p25" frameDuration="1/25s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <effect id="r2" name="Basic Title" uid=".../Titles.localized/Bumper:Opener.localized/Basic Title.localized/Basic Title.moti"/>
+        <effect id="r3" name="Basic Lower Third" uid=".../Titles.localized/Lower Thirds.localized/Basic Lower Third.localized/Basic Lower Third.moti"/>
+        <asset id="r4" name="Anna_01" uid="81C43DE6F9AFEDB47A498181148E6EA6" start="0s" duration="300s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="81C43DE6F9AFEDB4" src="file:///Users/editor/Footage/Interview/Anna_01.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+    </resources>
+    <library location="file:///Users/editor/Movies/Dolomites%20trip.fcpbundle/">
+        <event name="18-09-2026" uid="E9875B5C1757A908">
+            <project name="Titles" uid="P5E520762C7A9D06" modDate="2026-10-11 21:37:12 +0100">
+                <sequence format="r1" duration="36s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <title ref="r2" offset="0s" name="Dolomites - Basic Title" start="3600s" duration="4s">
+                            <param name="Position" key="9999/999166631/999166633/1/100/101" value="0 0"/>
+                            <param name="Alignment" key="9999/999166631/999166633/2/354/999169573/401" value="1 (Center)"/>
+                            <text>
+                                <text-style ref="ts1">Dolomites 2026</text-style>
+                            </text>
+                            <text-style-def id="ts1">
+                                <text-style font="Helvetica Neue" fontSize="96" fontFace="Bold" fontColor="1 1 1 1" alignment="center"/>
+                            </text-style-def>
+                        </title>
+                        <asset-clip ref="r4" offset="4s" name="Anna_01" start="0s" duration="32s" format="r1" tcFormat="NDF" audioRole="dialogue">
+                            <title ref="r3" lane="1" offset="2s" name="Anna Weber - Basic Lower Third" start="3600s" duration="6s">
+                                <text>
+                                    <text-style ref="ts2">Anna Weber</text-style>
+                                </text>
+                                <text>
+                                    <text-style ref="ts3">Mountain guide</text-style>
+                                </text>
+                                <text-style-def id="ts2">
+                                    <text-style font="Helvetica Neue" fontSize="60" fontColor="1 1 1 1"/>
+                                </text-style-def>
+                                <text-style-def id="ts3">
+                                    <text-style font="Helvetica Neue" fontSize="40" fontColor="0.8 0.8 0.8 1"/>
+                                </text-style-def>
+                            </title>
+                        </asset-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+    </library>
+</fcpxml>

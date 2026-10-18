@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<fcpxml version="1.8">
+    <resources>
+        <format id="r1" name="FFVideoFormat720p25" frameDuration="1/25s" width="1280" height="720" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r2" name="Old export" uid="E1B41665A38D627C5FDB5AD8B89F5D5C" start="0s" duration="90s" hasVideo="1" format="r1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000" src="file:///Users/editor/Footage/Old%20export.mov"/>
+        <asset id="r3" name="Old export 2" uid="5023AC62DC555324BC1FC6EA93FE268A" start="0s" duration="90s" hasVideo="1" format="r1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000" src="file:///Users/editor/Footage/Old%20export%202.mov"/>
+    </resources>
+    <library location="file:///Users/editor/Movies/Dolomites%20trip.fcpbundle/">
+        <event name="18-09-2026" uid="E9875B5C1757A908">
+            <project name="Legacy 1.8" uid="P05673EFCF81AB65" modDate="2026-10-11 21:37:12 +0100">
+                <sequence format="r1" duration="20s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <clip offset="0s" name="Old export" start="0s" duration="12s" format="r1" tcFormat="NDF">
+                            <video ref="r2" offset="0s" duration="12s"/>
+                            <audio ref="r2" lane="-1" offset="0s" duration="12s" role="dialogue"/>
+                        </clip>
+                        <asset-clip ref="r3" offset="12s" name="Old export 2" start="2s" duration="8s" format="r1" tcFormat="NDF"/>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+    </library>
+</fcpxml>

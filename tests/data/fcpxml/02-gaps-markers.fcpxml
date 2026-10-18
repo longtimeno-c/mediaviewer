@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<fcpxml version="1.13">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p25" frameDuration="1/25s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r2" name="B002_C010" uid="B2BC629123BEB2A8D58A5412A69114A2" start="0s" duration="300s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="B2BC629123BEB2A8" src="file:///Users/editor/Footage/Interview/B002_C010.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r3" name="B002_C011" uid="316E1233A28419C12EE8CED38FD26269" start="0s" duration="300s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="316E1233A28419C1" src="file:///Users/editor/Footage/Interview/B002_C011.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+    </resources>
+    <library location="file:///Users/editor/Movies/Dolomites%20trip.fcpbundle/">
+        <event name="18-09-2026" uid="E9875B5C1757A908">
+            <project name="Interview with gaps &amp; markers" uid="P660F4C6D0BDF8FB" modDate="2026-10-11 21:37:12 +0100">
+                <sequence format="r1" duration="323/5s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <gap offset="0s" name="Gap" start="3600s" duration="2s">
+                            <chapter-marker start="3600s" duration="1/25s" value="Intro" posterOffset="0s"/>
+                        </gap>
+                        <asset-clip ref="r2" offset="2s" name="B002_C010" start="3s" duration="36s" format="r1" tcFormat="NDF" audioRole="dialogue">
+                            <marker start="8s" duration="1/25s" value="cut the um here" completed="0"/>
+                            <marker start="16s" duration="1/25s" value="checked" completed="1"/>
+                            <chapter-marker start="24s" duration="1/25s" value="Pricing" posterOffset="1/5s"/>
+                        </asset-clip>
+                        <gap offset="38s" name="Gap" start="3600s" duration="1s"/>
+                        <asset-clip ref="r3" offset="39s" name="B002_C011" start="2/5s" duration="128/5s" format="r1" tcFormat="NDF" audioRole="dialogue" enabled="0"/>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+    </library>
+</fcpxml>

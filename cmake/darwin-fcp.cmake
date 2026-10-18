@@ -67,19 +67,24 @@ target_compile_definitions(mv-search-client PRIVATE ${_fcp_defs})
 
 add_executable(MediaViewerSearch
   "${_fcp}/extension_mac.mm"
+  "${_fcp}/timeline_bar_mac.mm"
   "${CMAKE_SOURCE_DIR}/src/nle/fcpxml.cpp"
   "${CMAKE_SOURCE_DIR}/src/nle/search_wire.cpp")
+# docs/design/29: the timeline bar reads a dropped project with the shared model.
+target_link_libraries(MediaViewerSearch PRIVATE mv_nle_timeline)
 target_include_directories(MediaViewerSearch PRIVATE "${CMAKE_SOURCE_DIR}/src")
 target_link_libraries(MediaViewerSearch PRIVATE mv_project_options "-framework Foundation" "-framework AppKit"
   "-framework AVFoundation" "-framework AVKit" "-framework CoreMedia")
 target_compile_definitions(MediaViewerSearch PRIVATE ${_fcp_defs}
+  MV_FCP_APP_GROUP="${MV_FCP_APP_GROUP}"       # the timeline bar's shared folder
   MV_FCP_APP_BUNDLE_ID="${MV_MAC_BUNDLE_ID}")  # "Open in MediaViewer"
 # Its own main: loads FCP's ProExtension.framework, then NSExtensionMain.
 target_link_options(MediaViewerSearch PRIVATE "-fapplication-extension")
 
 set_source_files_properties("${_fcp}/agent_mac.mm" "${_fcp}/client_mac.mm"
                             PROPERTIES COMPILE_FLAGS "-fobjc-arc")
-set_source_files_properties("${_fcp}/extension_mac.mm" PROPERTIES COMPILE_FLAGS "-fobjc-arc -fapplication-extension")
+set_source_files_properties("${_fcp}/extension_mac.mm" "${_fcp}/timeline_bar_mac.mm"
+                            PROPERTIES COMPILE_FLAGS "-fobjc-arc -fapplication-extension")
 set_target_properties(mv-search-client MediaViewerSearch PROPERTIES OSX_ARCHITECTURES "arm64")
 
 configure_file("${CMAKE_SOURCE_DIR}/packaging/macos/fcp/Extension-Info.plist.in"

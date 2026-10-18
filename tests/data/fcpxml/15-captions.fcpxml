@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<fcpxml version="1.13">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p25" frameDuration="1/25s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r2" name="Caption talk" uid="3EEC07E4FCEC6F9109C72C7D5E31F319" start="0s" duration="300s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="3EEC07E4FCEC6F91" src="file:///Users/editor/Footage/Interview/Caption%20talk.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+    </resources>
+    <library location="file:///Users/editor/Movies/Dolomites%20trip.fcpbundle/">
+        <event name="18-09-2026" uid="E9875B5C1757A908">
+            <project name="Captions" uid="P66DD081B09F57C1" modDate="2026-10-11 21:37:12 +0100">
+                <sequence format="r1" duration="16s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <asset-clip ref="r2" offset="0s" name="Caption talk" start="0s" duration="16s" format="r1" tcFormat="NDF" audioRole="dialogue">
+                            <caption lane="1" offset="2s" name="Welcome to the Dolomites." start="3600s" duration="14/5s" role="SRT?captionFormat=SRT.en">
+                                <text placement="bottom">
+                                    <text-style ref="cs0">Welcome to the Dolomites.</text-style>
+                                </text>
+                                <text-style-def id="cs0">
+                                    <text-style font=".AppleSystemUIFont" fontSize="13" fontFace="Regular" fontColor="1 1 1 1" backgroundColor="0 0 0 1"/>
+                                </text-style-def>
+                            </caption>
+                            <caption lane="1" offset="5s" name="We start at Passo Giau." start="3600s" duration="14/5s" role="SRT?captionFormat=SRT.en">
+                                <text placement="bottom">
+                                    <text-style ref="cs1">We start at Passo Giau.</text-style>
+                                </text>
+                                <text-style-def id="cs1">
+                                    <text-style font=".AppleSystemUIFont" fontSize="13" fontFace="Regular" fontColor="1 1 1 1" backgroundColor="0 0 0 1"/>
+                                </text-style-def>
+                            </caption>
+                            <caption lane="1" offset="44/5s" name="It’s 2,236 m up." start="3600s" duration="14/5s" role="SRT?captionFormat=SRT.en">
+                                <text placement="bottom">
+                                    <text-style ref="cs2">It’s 2,236 m up.</text-style>
+                                </text>
+                                <text-style-def id="cs2">
+                                    <text-style font=".AppleSystemUIFont" fontSize="13" fontFace="Regular" fontColor="1 1 1 1" backgroundColor="0 0 0 1"/>
+                                </text-style-def>
+                            </caption>
+                        </asset-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+    </library>
+</fcpxml>

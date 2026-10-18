@@ -37,3 +37,4 @@ built yet live in [../plans/](../plans/).
 | [26-photos-library.md](26-photos-library.md) | The Mac Photos library as a folder, its backup, and upright clips (display matrix) |
 | [27-places.md](27-places.md) | Places: the offline reverse geocoder (`src/geo`), its place database, the label rule, and the Places add-on that carries them |
 | [28-sharepoint.md](28-sharepoint.md) | Sharepoint: sending files to a MediaViewer nearby over Wi-Fi or Bluetooth (code, accept, verified receive), and the gallery's range, drag-out and share icon |
+| [29-agent-timeline.md](29-agent-timeline.md) | An agent edits the Final Cut Pro timeline: the lossless FCPXML model, the panel's drop and new versions, the bridge |

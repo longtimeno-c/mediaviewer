@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<fcpxml version="1.13">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p25" frameDuration="1/25s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r2" name="Talk_01" uid="1AC39411A4CA3AAC8EFE2AFF170E03A6" start="0s" duration="600s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="1AC39411A4CA3AAC" src="file:///Users/editor/Footage/Interview/Talk_01.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r3" name="GX010042" uid="B168B2476826BFB29A6CFE94DFC37DBB" start="0s" duration="40s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="B168B2476826BFB2" src="file:///Users/editor/Footage/broll/GX010042.MP4">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r4" name="GX010043" uid="F221C025D91D15E7875863AED718BABA" start="0s" duration="40s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="F221C025D91D15E7" src="file:///Users/editor/Footage/broll/GX010043.MP4">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r5" name="GX010044" uid="77CBB69A6ABFF88E9082CFBFF57561BA" start="0s" duration="40s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="77CBB69A6ABFF88E" src="file:///Users/editor/Footage/broll/GX010044.MP4">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r6" name="Dolomites Theme" uid="6EB7E9718BFBADCC67050D58295005E4" start="0s" duration="240s" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="6EB7E9718BFBADCC" src="file:///Users/editor/Music/Dolomites%20Theme.m4a">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+    </resources>
+    <library location="file:///Users/editor/Movies/Dolomites%20trip.fcpbundle/">
+        <event name="18-09-2026" uid="E9875B5C1757A908">
+            <project name="B-roll over talk" uid="P87F7C7A163072FD" modDate="2026-10-11 21:37:12 +0100">
+                <sequence format="r1" duration="105s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <asset-clip ref="r2" offset="0s" name="Talk_01" start="0s" duration="100s" format="r1" tcFormat="NDF" audioRole="dialogue">
+                            <asset-clip ref="r3" lane="1" offset="20s" name="GX010042" start="4s" duration="5s" format="r1" tcFormat="NDF" videoRole="video.B-roll" audioRole="effects">
+                                <adjust-volume amount="-96dB"/>
+                            </asset-clip>
+                            <asset-clip ref="r4" lane="2" offset="36s" name="GX010043" start="2s" duration="3s" format="r1" tcFormat="NDF" videoRole="video.B-roll" audioRole="effects" enabled="0"/>
+                            <asset-clip ref="r6" lane="-1" offset="0s" name="Dolomites Theme" duration="100s" audioRole="music">
+                                <adjust-volume amount="-18dB">
+                                    <param name="amount">
+                                        <fadeIn type="easeIn" duration="1s"/>
+                                        <fadeOut type="easeOut" duration="2s"/>
+                                    </param>
+                                </adjust-volume>
+                            </asset-clip>
+                        </asset-clip>
+                        <asset-clip ref="r5" offset="100s" name="GX010044" start="2/5s" duration="5s" format="r1" tcFormat="NDF" videoRole="video.B-roll"/>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+    </library>
+</fcpxml>

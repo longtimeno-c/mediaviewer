@@ -1456,6 +1456,35 @@ grid, not SwiftUI, to keep the extension one Objective-C++ build.
 
 ---
 
+## Agent timeline editing
+
+**Owner calls (2026-10-18, issue #485).** An agent reads the open Final Cut Pro timeline and edits
+that footage. Its scope is the timeline's own media plus folders the editor gives: no library-wide
+search, no Photos library, no camera roll; the agent refuses `photos:` keys and any path outside
+the scope. A cloud model may see paths, timecodes and transcript lines of that scope (disclosed in
+Settings). The agent may ask the app to index. It ships as an add-on, and Final Cut Pro search
+moves into an add-on too. The Script Editor is in scope. Editing quality comes from existing
+open-source skills and prompts where their licences allow, measured with an eval set.
+
+**FCPXML round trip, a new project each pass (2026-10-18).** FCP has no API to edit an open
+timeline: an extension gets the active project's name, playhead and change notifications, and
+FCPXML by drag. So the editor drags the project onto the panel, and each pass goes back as a new
+project, "<Project> (Claude N)", without the original's uid, in the same event (rule 5 in spirit:
+the original project is never written). Whether the active project's FCPXML can be had without a
+drag is slice 4's spike.
+
+**A lossless tree of our own, not an XML library (2026-10-18).** A round trip must give back every
+byte it did not edit (effects, colour, keyframes, metadata, elements a newer FCP adds). DOM
+libraries normalise quoting, whitespace and entities on write; this tree keeps source spans and
+writes unchanged nodes and attributes from them (`src/nle/xml.h`). It refuses declared entities.
+The 20-project set comes back byte-identical, and each new version validates against FCP's DTD.
+
+**The panel and the agent share the app group's container (2026-10-18).** The panel is sandboxed
+and the agent is not; the group container is the one folder both can use without a new IPC
+channel. A development build without a group container falls back to the extension's own.
+
+---
+
 ## Network copies
 
 **Deep, parallel copies only to or from a share (2026-10-01).** `verified_copy` had one blocking

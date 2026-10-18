@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<fcpxml version="1.13">
+    <resources>
+        <format id="r1" name="FFVideoFormat3840x2160p25" frameDuration="1/25s" width="3840" height="2160" colorSpace="9-18-9 (Rec. 2020 HLG)"/>
+        <asset id="r2" name="Sunrise" uid="09AF08B0CCD5DF84CBABB19BBF3F741A" start="0s" duration="120s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="09AF08B0CCD5DF84" src="file:///Users/editor/Footage/Sunrise.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r3" name="Lake" uid="155F04521CC5206B4332CE4D47822C47" start="0s" duration="120s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="155F04521CC5206B" src="file:///Users/editor/Footage/Lake.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <effect id="r4" name="Color Wheels" uid="FFHDRColorWheels"/>
+        <effect id="r5" name="Color Curves" uid="FFHDRColorCurves"/>
+        <effect id="r6" name="Custom LUT" uid="FFCustomLUTEffect"/>
+    </resources>
+    <library location="file:///Users/editor/Movies/Holden%20CCTV.fcpbundle/">
+        <event name="Grades" uid="E2932A5AB89E09C6">
+            <project name="Colour and effects" uid="P442805341CDA6A2" modDate="2026-10-11 21:37:12 +0100">
+                <sequence format="r1" duration="22s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <asset-clip ref="r2" offset="0s" name="Sunrise" start="12/5s" duration="12s" format="r1" tcFormat="NDF">
+                            <adjust-crop mode="trim">
+                                <trim-rect left="2.5" right="2.5" top="1.2" bottom="1.2"/>
+                            </adjust-crop>
+                            <adjust-transform position="12.5 -3.75" scale="1.08 1.08" rotation="1.5">
+                                <param name="position">
+                                    <keyframeAnimation>
+                                        <keyframe time="0s" value="0 0"/>
+                                        <keyframe time="3s" value="12.5 -3.75" curve="smooth"/>
+                                    </keyframeAnimation>
+                                </param>
+                            </adjust-transform>
+                            <filter-video ref="r4" name="Color Wheels">
+                                <data key="effectConfig">YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb24=</data>
+                                <param name="Master" key="1" value="0 0 0.02"/>
+                                <param name="Shadows" key="2" value="-0.01 0.004 0"/>
+                                <param name="Mix" key="100" value="0.85"/>
+                            </filter-video>
+                            <filter-video ref="r5" name="Color Curves">
+                                <data key="effectConfig">YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb24=</data>
+                            </filter-video>
+                            <filter-video ref="r6" name="Custom LUT">
+                                <param name="LUT" key="1" value="Dolomites.cube"/>
+                                <param name="Mix" key="2" value="1"/>
+                            </filter-video>
+                        </asset-clip>
+                        <asset-clip ref="r3" offset="12s" name="Lake" start="0s" duration="10s" format="r1" tcFormat="NDF">
+                            <adjust-blend amount="0.9" mode="13 (Overlay)"/>
+                            <adjust-stabilization type="automatic"/>
+                            <audio-channel-source srcCh="1, 2">
+                                <adjust-loudness amount="0.4" uniformity="0.2"/>
+                                <adjust-noiseReduction amount="0.5"/>
+                            </audio-channel-source>
+                        </asset-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+    </library>
+</fcpxml>

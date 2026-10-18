@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<fcpxml version="1.13">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p24" frameDuration="1001/24000s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r2" name="Scene 4 cam" uid="1483B2934036337F51D39D81A081F767" start="0s" duration="300s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="1483B2934036337F" src="file:///Users/editor/Footage/Scene%204%20cam.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r3" name="Scene 4 zoom" uid="943C4032BF4B6A368C5F3DDAA12A67CD" start="0s" duration="300s" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="943C4032BF4B6A36" src="file:///Users/editor/Footage/Scene%204%20zoom.wav">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+    </resources>
+    <library location="file:///Users/editor/Movies/Dolomites%20trip.fcpbundle/">
+        <event name="18-09-2026" uid="E9875B5C1757A908">
+            <project name="Synchronised clip" uid="PB32BB9DA637C4BF" modDate="2026-10-11 21:37:12 +0100">
+                <sequence format="r1" duration="3003/80s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <sync-clip offset="0s" name="Scene 4 - Synchronized" start="1001/100s" duration="3003/80s" format="r1" tcFormat="NDF">
+                            <spine>
+                                <asset-clip ref="r2" offset="0s" name="Scene 4 cam" duration="1001/12s" format="r1" tcFormat="NDF" audioRole="dialogue"/>
+                            </spine>
+                            <asset-clip ref="r3" lane="-1" offset="1001/2000s" name="Scene 4 zoom" duration="199199/2400s" audioRole="dialogue"/>
+                            <sync-source sourceID="storyline">
+                                <audio-role-source role="dialogue.dialogue-1" active="0"/>
+                            </sync-source>
+                            <sync-source sourceID="connected">
+                                <audio-role-source role="dialogue.dialogue-1"/>
+                            </sync-source>
+                        </sync-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+    </library>
+</fcpxml>

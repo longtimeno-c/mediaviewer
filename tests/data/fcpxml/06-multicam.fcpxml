@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<fcpxml version="1.13">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p2997" frameDuration="1001/30000s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r2" name="CamA" uid="343BF2E9AA9C03C02448BA4835EBD6A5" start="3600s" duration="1800s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="343BF2E9AA9C03C0" src="file:///Users/editor/Footage/Multicam/CamA.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r3" name="CamB" uid="4138726EA020A5D42D24D65962180A54" start="3600s" duration="1800s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="4138726EA020A5D4" src="file:///Users/editor/Footage/Multicam/CamB.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r4" name="Lav" uid="E20732FB06A4982319F3F34D58577BEF" start="3600s" duration="1800s" hasAudio="1" audioSources="1" audioChannels="1" audioRate="48000">
+            <media-rep kind="original-media" sig="E20732FB06A49823" src="file:///Users/editor/Footage/Multicam/Lav.wav">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <media id="r5" name="Panel discussion" uid="M04F8398A89137894ECD0E492620DF57" modDate="2026-10-11 21:37:12 +0100">
+            <multicam format="r1" tcStart="3600s" tcFormat="DF">
+                <mc-angle name="Cam A" angleID="angleA">
+                    <asset-clip ref="r2" offset="3600s" name="CamA" start="3600s" duration="1800s" format="r1" tcFormat="DF"/>
+                </mc-angle>
+                <mc-angle name="Cam B" angleID="angleB">
+                    <gap name="Gap" offset="3600s" start="3600s" duration="1001/100s"/>
+                    <asset-clip ref="r3" offset="361001/100s" name="CamB" start="3600s" duration="1700s" format="r1" tcFormat="DF"/>
+                </mc-angle>
+                <mc-angle name="Lav" angleID="angleL">
+                    <asset-clip ref="r4" offset="3600s" name="Lav" start="3600s" duration="1800s" audioRole="dialogue"/>
+                </mc-angle>
+            </multicam>
+        </media>
+    </resources>
+    <library location="file:///Users/editor/Movies/Dolomites%20trip.fcpbundle/">
+        <event name="18-09-2026" uid="E9875B5C1757A908">
+            <project name="Multicam panel" uid="PD17EB55B1216BBB" modDate="2026-10-11 21:37:12 +0100">
+                <sequence format="r1" duration="13013/200s" tcStart="3600s" tcFormat="DF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <mc-clip ref="r5" offset="3600s" name="Panel discussion" start="109001/30s" duration="1001/50s">
+                            <mc-source angleID="angleA" srcEnable="video"/>
+                            <mc-source angleID="angleL" srcEnable="audio"/>
+                        </mc-clip>
+                        <mc-clip ref="r5" offset="181001/50s" name="Panel discussion" start="55001/15s" duration="3003/200s">
+                            <mc-source angleID="angleB" srcEnable="video"/>
+                            <mc-source angleID="angleL" srcEnable="audio"/>
+                        </mc-clip>
+                        <mc-clip ref="r5" offset="727007/200s" name="Panel discussion" start="37001/10s" duration="3003/100s">
+                            <mc-source angleID="angleA" srcEnable="video"/>
+                            <mc-source angleID="angleL" srcEnable="audio"/>
+                        </mc-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+    </library>
+</fcpxml>

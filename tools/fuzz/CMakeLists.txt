@@ -118,7 +118,8 @@ if(NOT MV_FUZZ_MODE MATCHES "^static")
 endif()
 
 # Instrument everything that links mv_project_options.
-set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io mv_meta_parse mv_meta mv_geo mv_places_engine)
+set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io mv_meta_parse mv_meta mv_geo mv_places_engine
+  mv_nle_timeline)
 set_target_properties(${MV_FUZZ_INSTRUMENTED} PROPERTIES
   MSVC_RUNTIME_LIBRARY "${MV_FUZZ_CRT}")
 target_compile_options(mv_project_options INTERFACE
@@ -145,6 +146,8 @@ set(MV_FUZZ_HARNESSES
   meta_search
   # #344: the place database loader, and the Places add-on's map.
   geo places_map
+  # #485: a project dropped on the Final Cut Pro panel (docs/design/29).
+  fcpxml
   # docs/design/25 PR 56: settings pages, keymap packs and themes.
   addon_contributions
   # docs/design/25 PR 57: the script sandbox.
@@ -199,6 +202,9 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
       "${CMAKE_SOURCE_DIR}/src/addon/keymap.cpp"
       "${CMAKE_SOURCE_DIR}/src/addon/theme.cpp")
   endif()
+  if(name STREQUAL "fcpxml")
+    target_link_libraries(${target} PRIVATE mv_nle_timeline)
+  endif()
   if(name STREQUAL "ai_query")
     target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src/addons/ai/query.cpp")
   endif()
@@ -235,9 +241,9 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   # libFuzzer runs a unit, which is the shape of a dependency the loader could
   # not bring up. This is CMake's own answer to that question and it no-ops
   # for anything already deployed.
-  # fuzz_geo and fuzz_places_map import no DLL of ours, and copy_if_different
+  # fuzz_geo, fuzz_places_map and fuzz_fcpxml import no DLL of ours, and copy_if_different
   # with an empty list is a usage error that fails the build.
-  if(NOT name MATCHES "^(geo|places_map)$")
+  if(NOT name MATCHES "^(geo|places_map|fcpxml)$")
     add_custom_command(TARGET ${target} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
               "$<TARGET_RUNTIME_DLLS:${target}>" "$<TARGET_FILE_DIR:${target}>"

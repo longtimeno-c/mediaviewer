@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<fcpxml version="1.13">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p2997" frameDuration="1001/30000s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r2" name="NTSC 1" uid="ABAB61E4BC3AC8D77B5480CFDB41BB4F" start="3600s" duration="600s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="ABAB61E4BC3AC8D7" src="file:///Users/editor/Footage/NTSC%201.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r3" name="NTSC 2" uid="041C0ED429B091263C6919C440263EFF" start="3600s" duration="600s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="041C0ED429B09126" src="file:///Users/editor/Footage/NTSC%202.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r4" name="NTSC 3" uid="8C7984DFF81C4929505ABF9CD097038F" start="3600s" duration="600s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="8C7984DFF81C4929" src="file:///Users/editor/Footage/NTSC%203.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+    </resources>
+    <library location="file:///Users/editor/Movies/Dolomites%20trip.fcpbundle/">
+        <event name="18-09-2026" uid="E9875B5C1757A908">
+            <project name="NTSC drop frame" uid="PF2F2B120D1A21E7" modDate="2026-10-11 21:37:12 +0100">
+                <sequence format="r1" duration="3160157/30000s" tcStart="3600s" tcFormat="DF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <asset-clip ref="r2" offset="3600s" name="NTSC 1" start="3601001/1000s" duration="901901/30000s" format="r1" tcFormat="DF">
+                            <marker start="7203003/2000s" duration="1001/30000s" value="beat 1"/>
+                        </asset-clip>
+                        <asset-clip ref="r3" offset="108901901/30000s" name="NTSC 2" start="1801001/500s" duration="1800799/30000s" format="r1" tcFormat="DF">
+                            <marker start="1441001/400s" duration="1001/30000s" value="beat 2"/>
+                        </asset-clip>
+                        <asset-clip ref="r4" offset="369009/100s" name="NTSC 3" start="3603003/1000s" duration="457457/30000s" format="r1" tcFormat="DF">
+                            <marker start="7207007/2000s" duration="1001/30000s" value="beat 3"/>
+                        </asset-clip>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+    </library>
+</fcpxml>

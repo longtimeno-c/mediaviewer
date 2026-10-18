@@ -35,6 +35,7 @@ and a verify line on each platform (D9, amended). The order is:
 | #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
 | #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
 | #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
+| #485 | **An agent edits the Final Cut Pro timeline**, slice 1: drag a project from FCP onto the MediaViewer panel and it reads the whole timeline losslessly (FCPXML, `src/nle`); **New Version** imports "<Project> (Claude 1)" beside the original ([docs/design/29](design/29-agent-timeline.md)) | Mac: the model and writer built; the 20-project set round-trips byte for byte and every new version validates against FCP's DTD; the panel builds. Owed: real FCP projects dragged in and imported back in FCP. Windows: the shared model builds in CI |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -881,6 +882,31 @@ agent) is built and measured; Phase 0's hands-on run in Final Cut Pro is owed.
   `/usr/bin/log show --predicate 'subsystem == "io.github.longtimeno-c.mediaviewer.fcp"'`; in zsh,
   a bare `log` is a shell builtin.
 
+### The Final Cut Pro timeline: model, round trip, panel (#485)
+
+How it works: [docs/design/29](design/29-agent-timeline.md). Both platforms build `mv_nle_timeline`
+and `mv-timeline` (`cmake/timeline.cmake`, every architecture, no AI pack needed):
+
+```
+build/bin/mv-timeline describe project.fcpxml            # one line per item and marker
+build/bin/mv-timeline roundtrip tests/data/fcpxml/*.fcpxml # byte-identical, then a new version
+build/bin/mv-timeline version project.fcpxml --out v.fcpxml [--name "Cut (Claude 1)"]
+python3 tools/timeline/check_roundtrip.py --tool build/bin/mv-timeline [--keep DIR]
+```
+
+`check_roundtrip.py` also validates each new version against Final Cut Pro's DTD when FCP is
+installed (`ctest -R timeline_roundtrip`); `--keep DIR` leaves the versions there for an import
+test in FCP. The round-trip set in `tests/data/fcpxml` is generated:
+`python3 tools/timeline/make_fixtures.py --check` rewrites it and validates every file. Tests:
+`mv_timeline_tests` (`[timeline]`: the tree, time, the model over the set, new versions, the
+bridge state).
+
+In Final Cut Pro, the MediaViewer panel (Extensions ▸ MediaViewer Search, see above) has the
+timeline bar at the top: drag a project from the browser onto it, add folders, **New Version**.
+What it keeps is in `~/Library/Group Containers/<team>.io.github.longtimeno-c.mediaviewer.fcp/Timeline/`
+(`project.fcpxml`, `state.json`, `versions/`); the panel logs drops and versions (counts, never
+names) to the `io.github.longtimeno-c.mediaviewer.fcp` subsystem, category `timeline`.
+
 **The Photos library as a folder, and its backup (Mac; docs/design/26, 2026-10-03).** Once the library
 was added in Local search's Settings, the folder tree (`⌘⇧E`) shows a *Photos Library* row and
 File gains *Open Photos Library*: the host lists the library as **virtual items** (`photos:<id>`,
@@ -1592,6 +1618,26 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Agent timeline editing, slice 1: timeline in, timeline out (#485, 2026-10-18)
+
+Verify line (issue #485): "20 real FCP projects (connected clips, compounds, multicam, titles,
+effects) dragged in and written back unchanged import identically (same clip list, same timing,
+effects intact)."
+
+- **Done, Mac (Apple M5, macOS 26.6):** the 20-project set (generated in FCP's export shape and
+  validated against FCP 12.4's own DTDs, not exported from FCP) parses and writes back
+  byte-identical; each new version is renamed, has no uid, keeps the event and library, describes
+  the same timeline and keeps every item's bytes, and validates against FCP's DTD for its version
+  (`check_roundtrip.py`: 20/20). `mv_timeline_tests`: 706 assertions pass. The extension builds
+  with the timeline bar.
+- **Owed:** the verify line proper. No real project has been dragged out of Final Cut Pro, and no
+  version has been imported into FCP and compared clip by clip; the panel's drop, labels and the
+  hand-off to FCP have not been run in FCP (that needs a Developer ID-signed extension and driving
+  FCP). The viewer binary is unchanged by this slice (no source in the MediaViewer target), so its
+  gates are unaffected; they are run with the agent answering in slice 2.
+- **Windows:** the model is portable C++ in the Windows build (`cmake/timeline.cmake` from the root
+  CMakeLists.txt); only CI compiles it there.
 
 ### Windows search: the typed space, the resume notice, a result list from an empty window (#443, 2026-10-15)
 

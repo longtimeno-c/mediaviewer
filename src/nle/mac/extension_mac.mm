@@ -51,6 +51,7 @@
 #include "nle/fcpxml.h"
 #include "nle/search_wire.h"
 #import "nle/mac/agent_protocol.h"
+#import "nle/mac/timeline_bar_mac.h"
 
 namespace {
 
@@ -145,13 +146,29 @@ NSURL* active_library_url() {
   return nil;
 }
 
+// The open project's name, "" when FCP has none open or answers nothing.
+NSString* active_project_name() {
+  id name = object_value(object_value(object_value(fcp_host(), @"timeline"), @"activeSequence"), @"name");
+  return [name isKindOfClass:[NSString class]] ? name : @"";
+}
+
+// FCP's playhead in the open project, in seconds; < 0 when unknown.
+double active_playhead() {
+  id t = object_value(object_value(fcp_host(), @"timeline"), @"playheadTime");
+  if (![t isKindOfClass:[NSValue class]]) return -1;
+  const CMTime time = [(NSValue*)t CMTimeValue];
+  return CMTIME_IS_NUMERIC(time) ? CMTimeGetSeconds(time) : -1;
+}
+
 }  // namespace
 
 // ---- the timeline observer --------------------------------------------------------------
 
-// FCP calls these (FCPXTimelineObserver) when the open project changes.
+// FCP calls these (FCPXTimelineObserver) when the open project changes, or
+// something in it, or the playhead moves.
 @interface MVTimelineObserver : NSObject
 @property(nonatomic, copy) void (^changed)(void);
+@property(nonatomic, copy) void (^playheadMoved)(void);
 @end
 
 @implementation MVTimelineObserver
@@ -160,6 +177,9 @@ NSURL* active_library_url() {
 }
 - (void)sequenceChanged {
   [self activeSequenceChanged];
+}
+- (void)playheadTimeChanged {
+  if (self.playheadMoved) dispatch_async(dispatch_get_main_queue(), self.playheadMoved);
 }
 @end
 
@@ -333,6 +353,7 @@ NSURL* active_library_url() {
   NSTextField* _caption;
   MVGrid* _grid;
   NSTextField* _status;
+  MVTimelineBar* _bar;
   NSXPCConnection* _agent;
 
   std::vector<mv::nle::row> _rows;
@@ -362,6 +383,15 @@ NSURL* active_library_url() {
 - (void)loadView {
   NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 560, 720)];
   root.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];  // FCP's look
+
+  // docs/design/29: the project the timeline agent works on, dropped here.
+  _bar = [[MVTimelineBar alloc] initWithAppGroup:@MV_FCP_APP_GROUP];
+  _bar.activeProject = ^NSString* {
+    return active_project_name();
+  };
+  _bar.playhead = ^double {
+    return active_playhead();
+  };
 
   _field = [[NSSearchField alloc] initWithFrame:NSZeroRect];
   _field.placeholderString = @"Describe what you are looking for: “dog on a beach”, @Anna, -night";
@@ -426,13 +456,16 @@ NSURL* active_library_url() {
   _status.textColor = NSColor.secondaryLabelColor;
   _status.lineBreakMode = NSLineBreakByTruncatingTail;
 
-  for (NSView* v in @[ _field, _options, _kinds, _scope, _people, _player, _still, _caption, scroll, _status ]) {
+  for (NSView* v in @[ _bar, _field, _options, _kinds, _scope, _people, _player, _still, _caption, scroll, _status ]) {
     v.translatesAutoresizingMaskIntoConstraints = NO;
     [root addSubview:v];
   }
   const CGFloat m = 10;
   [NSLayoutConstraint activateConstraints:@[
-    [_field.topAnchor constraintEqualToAnchor:root.topAnchor constant:m],
+    [_bar.topAnchor constraintEqualToAnchor:root.topAnchor constant:m],
+    [_bar.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:m],
+    [_bar.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-m],
+    [_field.topAnchor constraintEqualToAnchor:_bar.bottomAnchor constant:8],
     [_field.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:m],
     [_options.centerYAnchor constraintEqualToAnchor:_field.centerYAnchor],
     [_options.leadingAnchor constraintEqualToAnchor:_field.trailingAnchor constant:6],
@@ -502,11 +535,18 @@ NSURL* active_library_url() {
   [self.view.window makeFirstResponder:_field];
   [self refreshRoots];
   [self refreshLibrary];
+  [_bar finalCutChanged];
   if (!_observer) {
     _observer = [[MVTimelineObserver alloc] init];
     __weak MVSearchViewController* weak = self;
     _observer.changed = ^{
       [weak refreshLibrary];
+      MVSearchViewController* me = weak;
+      if (me) [me->_bar finalCutChanged];
+    };
+    _observer.playheadMoved = ^{
+      MVSearchViewController* me = weak;
+      if (me) [me->_bar playheadChanged];
     };
     MVTimelineObserver* observer = _observer;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{

@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+
+<fcpxml version="1.13">
+    <resources>
+        <format id="r1" name="FFVideoFormat1080p25" frameDuration="1/25s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+        <asset id="r2" name="Event A" uid="E66DB9171D0B27E8DBFB7BC65E6A4A14" start="0s" duration="300s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="E66DB9171D0B27E8" src="file:///Users/editor/Footage/Interview/Event%20A.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+        <asset id="r3" name="Event B" uid="4EE04337E2EA3AFC80702FD630505F6A" start="0s" duration="300s" hasVideo="1" format="r1" videoSources="1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+            <media-rep kind="original-media" sig="4EE04337E2EA3AFC" src="file:///Users/editor/Footage/Interview/Event%20B.mov">
+                <bookmark>Ym9vazgEAAAAAAQQMAAAAA==</bookmark>
+            </media-rep>
+            <metadata>
+                <md key="com.apple.proapps.studio.rawToLogConversion" value="0"/>
+                <md key="com.apple.proapps.spotlight.kMDItemProfileName" value="HD (Rec. 709)"/>
+                <md key="com.apple.proapps.studio.cameraISO" value="400"/>
+            </metadata>
+        </asset>
+    </resources>
+    <library location="file:///Users/editor/Movies/Dolomites%20trip.fcpbundle/">
+        <event name="18-09-2026" uid="E9875B5C1757A908">
+            <asset-clip ref="r2" name="Event A" duration="300s" format="r1" tcFormat="NDF" audioRole="dialogue">
+                <keyword start="0s" duration="300s" value="selects"/>
+            </asset-clip>
+            <asset-clip ref="r3" name="Event B" duration="300s" format="r1" tcFormat="NDF" audioRole="dialogue"/>
+            <keyword-collection name="selects"/>
+            <collection-folder name="Folder">
+                <keyword-collection name="maybe"/>
+            </collection-folder>
+            <smart-collection name="Favourites" match="all">
+                <match-ratings value="favorites"/>
+            </smart-collection>
+            <project name="Rough cut v1" uid="PROUGH00000001" modDate="2026-10-01 10:00:00 +0100">
+                <sequence format="r1" duration="4s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <asset-clip ref="r3" offset="0s" name="Event B" start="0s" duration="4s" format="r1" tcFormat="NDF"/>
+                    </spine>
+                </sequence>
+            </project>
+            <project name="Rough cut v2" uid="P58795CD5B24AA72" modDate="2026-10-11 21:37:12 +0100">
+                <sequence format="r1" duration="22s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+                    <spine>
+                        <asset-clip ref="r2" offset="0s" name="Event A" start="1s" duration="10s" format="r1" tcFormat="NDF" audioRole="dialogue"/>
+                        <asset-clip ref="r3" offset="10s" name="Event B" start="20s" duration="12s" format="r1" tcFormat="NDF" audioRole="dialogue"/>
+                    </spine>
+                </sequence>
+            </project>
+        </event>
+        <smart-collection name="Projects" match="all">
+            <match-clip rule="is" type="project"/>
+        </smart-collection>
+    </library>
+</fcpxml>

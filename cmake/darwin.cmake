@@ -496,6 +496,9 @@ include("${CMAKE_CURRENT_LIST_DIR}/places.cmake")
 # The Sharepoint add-on (docs/design/28): libmv_sharepoint.dylib in
 # build/addons/sharepoint, packed and signed separately; never in the app bundle.
 include("${CMAKE_CURRENT_LIST_DIR}/sharepoint.cmake")
+# docs/design/29: a Final Cut Pro project as a timeline model (mv_nle_timeline,
+# mv-timeline); every architecture.
+include("${CMAKE_CURRENT_LIST_DIR}/timeline.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the still
 # pipeline, the clip sampler and the JPEG-512 cache. In the app; knows no
@@ -1063,6 +1066,22 @@ if(MV_BUILD_TESTS)
   target_include_directories(mv_script_tests PRIVATE src tests)
   catch_discover_tests(mv_script_tests TEST_PREFIX "script_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
+
+  # docs/design/29: the FCPXML timeline model and its lossless round trip over
+  # the fixture set (tests/data/fcpxml), validated by Final Cut Pro's own DTD
+  # when it is installed.
+  add_executable(mv_timeline_tests tests/test_timeline.cpp)
+  target_link_libraries(mv_timeline_tests PRIVATE mv_nle_timeline Catch2::Catch2WithMain)
+  target_include_directories(mv_timeline_tests PRIVATE src tests)
+  target_compile_definitions(mv_timeline_tests PRIVATE
+    MV_TIMELINE_FIXTURES="${CMAKE_SOURCE_DIR}/tests/data/fcpxml")
+  catch_discover_tests(mv_timeline_tests TEST_PREFIX "timeline_"
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME timeline_roundtrip COMMAND Python3::Interpreter
+             "${CMAKE_SOURCE_DIR}/tools/timeline/check_roundtrip.py" --tool "$<TARGET_FILE:mv-timeline>")
+  endif()
 
   # docs/design/25: the add-on SDK (tools/addon-sdk) packs, and the app's own reader
   # says what it makes of each package, so the two cannot drift.
