@@ -696,9 +696,11 @@ TEST_CASE("sharepoint nat: a hard NAT meets an easy one by the birthday punch, e
     REQUIRE(met.r);
     REQUIRE(met.s);
     // The hard side's stream runs on the one birthday socket that met; the
-    // other 255 are closed.
+    // other 255 are closed. Its main socket punches the easy side too, so
+    // the easy side's random probes can meet that one instead (about 1 run
+    // in 20 here): then no extra socket is kept.
     auto& hard_hub = receiver_hard ? hr : hs;
-    CHECK(hard_hub->extra_count() == 1);
+    CHECK(hard_hub->extra_count() <= 1);
     CHECK((receiver_hard ? hs : hr)->extra_count() == 0);
     handshake_over(std::move(*met.r), std::move(*met.s), *met.k);
     // The links are gone: so is the stream's birthday socket, and the hub is

@@ -2310,7 +2310,7 @@ why in [12](design/12-decision-log.md#sharepoint).
   assertions). New (`tests/test_sharepoint_dht.cpp`, "sharepoint nat:"): stand-in NATs that wrap
   every socket a hub opens (`udp_hub::socket_wrap`), a symmetric one and a port-restricted cone,
   outside ports in a 1024-port window; with a hard receiver and then a hard sender, the DHT's
-  votes call the right side hard, both meet by the birthday punch, the hard side keeps exactly one
+  votes call the right side hard, both meet by the birthday punch, the hard side keeps at most one
   extra socket and the internet handshake and a chunk go over it; two hard NATs time out over UDP
   in 2.5 s with no extra socket opened, and meet over TCP when it is allowed; two
   `tcp_rendezvous` ports connect to each other, bytes both ways, a port nobody is at times out and
