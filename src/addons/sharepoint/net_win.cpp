@@ -482,7 +482,9 @@ namespace {
 
 class udp_port final : public udp_socket {
  public:
-  udp_port(SOCKET s, std::uint16_t port) : s_(s), port_(port) {}
+  // Read on one thread (the hub's reader, #472) while others send
+  // (socket_events).
+  udp_port(SOCKET s, std::uint16_t port) : s_(s), port_(port), events_(s, FD_READ | FD_WRITE) {}
   std::uint16_t port() const noexcept override { return port_; }
   ~udp_port() override {
     shutdown();
@@ -492,24 +494,34 @@ class udp_port final : public udp_socket {
     sockaddr_storage a;
     const int alen = sockaddr_of(to, a);
     if (alen == 0) return err(status::invalid_arg);
-    if (::sendto(s_, reinterpret_cast<const char*>(d.data()), static_cast<int>(d.size()), 0,
-                 reinterpret_cast<sockaddr*>(&a), alen) == SOCKET_ERROR) {
-      return err(status::io);
+    // Non-blocking now: a full send buffer waits for room, as a blocking
+    // sendto did, a second at most.
+    for (int tries = 0;; ++tries) {
+      if (::sendto(s_, reinterpret_cast<const char*>(d.data()), static_cast<int>(d.size()), 0,
+                   reinterpret_cast<sockaddr*>(&a), alen) != SOCKET_ERROR) {
+        return {};
+      }
+      if (::WSAGetLastError() != WSAEWOULDBLOCK || tries == 10 || down_.load()) return err(status::io);
+      if (events_.wait(FD_WRITE, 100) < 0) return err(status::io);
     }
-    return {};
   }
   result<std::size_t> receive_from(std::span<std::uint8_t> into, int timeout_ms, endpoint& from) override {
     if (down_.load()) return err(status::cancelled);
-    const int ev = wait_for(s_, POLLRDNORM, timeout_ms);
-    if (ev == 0) return err(status::timeout);
-    if (ev < 0) return err(status::io);
     sockaddr_storage st{};
     int flen = sizeof st;
-    const int n = ::recvfrom(s_, reinterpret_cast<char*>(into.data()), static_cast<int>(into.size()), 0,
-                             reinterpret_cast<sockaddr*>(&st), &flen);
+    int n = ::recvfrom(s_, reinterpret_cast<char*>(into.data()), static_cast<int>(into.size()), 0,
+                       reinterpret_cast<sockaddr*>(&st), &flen);
+    if (n == SOCKET_ERROR && ::WSAGetLastError() == WSAEWOULDBLOCK) {
+      const int ev = events_.wait(FD_READ, timeout_ms);
+      if (ev == 0) return err(status::timeout);
+      if (ev < 0) return err(status::io);
+      flen = sizeof st;
+      n = ::recvfrom(s_, reinterpret_cast<char*>(into.data()), static_cast<int>(into.size()), 0,
+                     reinterpret_cast<sockaddr*>(&st), &flen);
+    }
     if (n == SOCKET_ERROR) {
       const int e = ::WSAGetLastError();
-      return err(e == WSAEMSGSIZE || e == WSAECONNRESET ? status::timeout : status::io);
+      return err(e == WSAEMSGSIZE || e == WSAECONNRESET || e == WSAEWOULDBLOCK ? status::timeout : status::io);
     }
     from = {address_text(address_of(reinterpret_cast<const sockaddr*>(&st))), port_of(st)};
     return static_cast<std::size_t>(n);
@@ -519,6 +531,7 @@ class udp_port final : public udp_socket {
  private:
   SOCKET s_;
   std::uint16_t port_;
+  socket_events events_;
   std::atomic<bool> down_{false};
 };
 
