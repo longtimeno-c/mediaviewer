@@ -173,7 +173,9 @@ public struct CommandBarView: View {
             FlyoutItem(title: "Media…", shortcut: key("Open media…")) { close(); mv_chrome_menu(kMenuOpen) }
             FlyoutItem(title: "Folder…", shortcut: key("Open folder…")) { close(); mv_chrome_menu(kMenuOpenFolder) }
             // kMenuReveal reveals the file in Finder; it does not open it (issue #187).
-            FlyoutItem(title: "Show in Finder", shortcut: key("Show in Explorer"), enabled: current != nil) {
+            // A Photos library item opens in Photos, selected (issue #412).
+            FlyoutItem(title: SettingsStore.displayName(SettingsStore.revealName),
+                       shortcut: key("Show in Explorer"), enabled: current != nil) {
               close(); mv_chrome_menu(kMenuReveal)
             }
           }

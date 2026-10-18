@@ -60,15 +60,19 @@ class clap_features {
 
 class whisper_features {
  public:
-  whisper_features();
+  // `mels`: 80 for Whisper tiny to large-v2, 128 for large-v3 and turbo
+  // (whisper_spec::n_mels, from model.json).
+  explicit whisper_features(std::size_t mels = kMels);
   static constexpr std::uint32_t kRate = 16000;
   static constexpr std::size_t kSamples = 480000;  // 30 s
   static constexpr std::size_t kFrames = 3000;
   static constexpr std::size_t kMels = 80;
-  // [80 x 3000] floats for one window (zero-padded when short).
+  // [mels x 3000] floats for one window (zero-padded when short).
   void compute(std::span<const float> pcm, std::vector<float>& out) const;
+  [[nodiscard]] std::size_t mels() const noexcept { return mels_; }
 
  private:
+  std::size_t mels_;
   real_fft fft_;
   std::vector<double> window_;
   std::vector<double> mel_;

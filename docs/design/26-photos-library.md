@@ -76,12 +76,19 @@ access and the **added flag**: `mv.photosLibrary.added` (NSUserDefaults, one pro
 while the library is a root of the index and cleared with *Remove*; the host's `available()`
 is that flag and PhotoKit access, both.
 
+**Result order.** A Photos search keeps the order the search panel handed it: best match when
+the search can answer, else newest by date created (`creationDate`, never the edit time) first
+(issue #412, docs/design/17 "Order"). The grid and the gallery and filmstrip opened from it are
+the same sequence, and the item opened stays current. Opening the library as a folder is not a
+search: oldest first, the newest selected.
+
 **Cleared after.** On-view downloads go when the list ends (a folder opens, another list opens,
 Back) and at quit; the whole cache folder is emptied at launch. Previews are small and stay
 for the session.
 
 **Show in Photos.** `⌘E` on a library item (a search result or the library opened as a folder)
-opens it in the Photos app, selected, instead of revealing its rendition inside the library
+— **Open in Photos** in the Open flyout, `?` and Settings while such an item is current (issue
+#412; *Show in Finder* for a file) — opens it in the Photos app, selected, instead of revealing its rendition inside the library
 bundle or the cache folder in Finder (owner, 2026-10-05). Photos has no API for this; its
 scripting `spotlight` command does it, sent as an Apple Event built from the key's
 `localIdentifier` (Photos' scripting id for a media item), never as script source

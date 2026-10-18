@@ -306,7 +306,14 @@ internal sealed class Look
     public static string StatusLine(in MvAiStatus s)
     {
         if ((s.Flags & MvAiStatus.FlagNoModels) != 0) return "The search models are missing. Reinstall local search in Settings.";
-        if ((s.Flags & MvAiStatus.FlagIndexFull) != 0) return "Index is full — raise the cap or remove a folder";
+        // #482: the models download before anything indexes with them; while
+        // the old tier still indexes, the line names that and the pill's detail
+        // the download (StatusPill.Detail).
+        if (s.State != MvAiState.Indexing && FetchLine(s) is string fetch) return fetch;
+        if (s.State == MvAiState.Idle && (s.Flags & MvAiStatus.FlagTierUnchosen) != 0)
+            return "Choose your search models in Settings to start";
+        // A full index is the pill's detail line (StatusPill), as on the Mac:
+        // the line goes on naming the pass.
         string n(ulong v) => v.ToString("N0", CultureInfo.CurrentCulture);
         switch (s.State)
         {
@@ -342,7 +349,7 @@ internal sealed class Look
                 }
                 // After the pictures, the pack reads a clip's own text, then the
                 // text in pictures (before sound and speech, which have their own line).
-                bool picturesDone = s.AssetsDone + s.AssetsFailed + s.AssetsUnavailable + s.CloudFilesLeft >= s.AssetsTotal;
+                bool picturesDone = PicturesDone(s) >= s.AssetsTotal;
                 // #354: documents' words come straight after the pictures.
                 if (picturesDone && s.DocsDone < s.DocsTotal)
                 {
@@ -366,6 +373,15 @@ internal sealed class Look
                 {
                     return $"Reading text in pictures {n(s.TextDone)} of {n(s.TextTotal)}";
                 }
+                // Then the clips' sound and speech (the Audio piece), as the Mac's line.
+                if (picturesDone && s.SoundDone < s.SoundTotal)
+                {
+                    return $"Indexing sound {n(s.SoundDone)} of {n(s.SoundTotal)} clips";
+                }
+                if (picturesDone && s.SpeechDone < s.SpeechTotal)
+                {
+                    return $"Indexing speech {n(s.SpeechDone)} of {n(s.SpeechTotal)} clips";
+                }
                 // #354 D4: last, the pages of scanned documents, read by the OS.
                 if (picturesDone && s.ScansDone < s.ScansTotal)
                 {
@@ -379,6 +395,108 @@ internal sealed class Look
                 if (s.DocsTotal > 0) done += s.DocsTotal == 1 ? " · 1 document" : $" · {n(s.DocsTotal)} documents";
                 if (s.DocsLocked > 0) done += s.DocsLocked == 1 ? " · 1 protected document skipped" : $" · {n(s.DocsLocked)} protected documents skipped";
                 return s.CloudFilesLeft > 0 ? $"{done} · {n(s.CloudFilesLeft)} only in OneDrive" : done;
+        }
+    }
+
+    // ---- the model download (#482 T3) ------------------------------------------------
+
+    public static MvAiFetchState Fetch(in MvAiStatus s) => (MvAiFetchState)s.FetchState;
+
+    /// <summary>Cancelled part-way: kept, and Resume picks it up (fetch_retry).</summary>
+    public static bool FetchPaused(in MvAiStatus s) =>
+        Fetch(s) == MvAiFetchState.Idle && s.FetchTotalBytes > 0 && s.FetchDoneBytes < s.FetchTotalBytes;
+
+    /// <summary>Models are arriving, or about to (the tier's fetch is queued).</summary>
+    public static bool Fetching(in MvAiStatus s) =>
+        Fetch(s) is MvAiFetchState.Downloading or MvAiFetchState.Waiting ||
+        (Fetch(s) == MvAiFetchState.Idle && (s.Flags & MvAiStatus.FlagFetching) != 0 && !FetchPaused(s));
+
+    /// <summary>The download's short line for the pill and the footer; null when there is none.</summary>
+    public static string? FetchLine(in MvAiStatus s)
+    {
+        switch (Fetch(s))
+        {
+            case MvAiFetchState.Waiting:
+                return "Waiting for Hugging Face";
+            case MvAiFetchState.Gone:
+                return "A model file is no longer on Hugging Face";
+            case MvAiFetchState.Failed:
+                return "A model download did not verify";
+        }
+        if (FetchPaused(s)) return "Model download paused";
+        if (!Fetching(s)) return null;
+        return s.FetchTotalBytes > 0
+            ? $"Downloading models · {MediaViewer.Shared.ByteSize.Text((long)s.FetchDoneBytes)} of {MediaViewer.Shared.ByteSize.Text((long)s.FetchTotalBytes)}"
+            : "Downloading models…";
+    }
+
+    /// <summary>0…1 of the download; 0 before its size is known.</summary>
+    public static double FetchProgress(in MvAiStatus s) =>
+        s.FetchTotalBytes == 0 ? 0 : Math.Min(1.0, (double)s.FetchDoneBytes / s.FetchTotalBytes);
+
+    /// <summary>The passes in the pack's order; the line and the ring follow the one running.</summary>
+    public enum Phase { Pictures, Documents, Pages, Meaning, Cues, Text, Sound, Speech, Scans }
+
+    /// <summary>Pictures handled: indexed, failed, or online-only and waiting for the fetch.</summary>
+    public static ulong PicturesDone(in MvAiStatus s) =>
+        s.AssetsDone + s.AssetsFailed + s.AssetsUnavailable + s.CloudFilesLeft;
+
+    /// <summary>The pass running now (the Mac's StatusLine.phase); pictures once all are done.</summary>
+    public static Phase PhaseOf(in MvAiStatus s)
+    {
+        if (PicturesDone(s) < s.AssetsTotal) return Phase.Pictures;
+        if (s.DocsDone < s.DocsTotal) return Phase.Documents;
+        if (s.PagesDone < s.PagesTotal) return Phase.Pages;
+        if (s.MeaningDone < s.MeaningTotal) return Phase.Meaning;
+        if (s.CuesDone < s.CuesTotal) return Phase.Cues;
+        if (s.TextDone < s.TextTotal) return Phase.Text;
+        if (s.SoundDone < s.SoundTotal) return Phase.Sound;
+        if (s.SpeechDone < s.SpeechTotal) return Phase.Speech;
+        if (s.ScansDone < s.ScansTotal) return Phase.Scans;
+        return Phase.Pictures;
+    }
+
+    /// <summary>0…1: how far the pass the line names has got (the ring's arc).</summary>
+    public static double Progress(in MvAiStatus s)
+    {
+        static double f(ulong done, ulong total) => total == 0 ? 0 : Math.Min(1.0, (double)done / total);
+        if (s.State == MvAiState.Indexing && s.MigrateTotal > 0) return f(s.MigrateDone, s.MigrateTotal);
+        if (s.State != MvAiState.Indexing && Fetching(s)) return FetchProgress(s);  // the line names the download
+        return PhaseOf(s) switch
+        {
+            Phase.Documents => f(s.DocsDone, s.DocsTotal),
+            Phase.Pages => f(s.PagesDone, s.PagesTotal),
+            Phase.Meaning => f(s.MeaningDone, s.MeaningTotal),
+            Phase.Cues => f(s.CuesDone, s.CuesTotal),
+            Phase.Text => f(s.TextDone, s.TextTotal),
+            Phase.Sound => f(s.SoundDone, s.SoundTotal),
+            Phase.Speech => f(s.SpeechDone, s.SpeechTotal),
+            Phase.Scans => f(s.ScansDone, s.ScansTotal),
+            _ => f(PicturesDone(s), s.AssetsTotal),
+        };
+    }
+
+    /// <summary>
+    /// Lightweight hover styling for a button with its own fill: WinUI's
+    /// template otherwise swaps it for ButtonBackgroundPointerOver (grey) on
+    /// hover and press. <paramref name="ink"/> keeps the label's colour too.
+    /// </summary>
+    public static void HoldFill(Button b, Brush rest, Brush over, Brush pressed, Brush? ink = null)
+    {
+        b.Background = rest;
+        b.Resources["ButtonBackground"] = rest;
+        b.Resources["ButtonBackgroundPointerOver"] = over;
+        b.Resources["ButtonBackgroundPressed"] = pressed;
+        var clear = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        foreach (string key in new[] { "ButtonBorderBrush", "ButtonBorderBrushPointerOver", "ButtonBorderBrushPressed" })
+        {
+            b.Resources[key] = clear;
+        }
+        if (ink is null) return;
+        b.Foreground = ink;
+        foreach (string key in new[] { "ButtonForeground", "ButtonForegroundPointerOver", "ButtonForegroundPressed" })
+        {
+            b.Resources[key] = ink;
         }
     }
 
@@ -434,7 +552,8 @@ internal sealed class Look
     // viewer that is busy (the load waits for it) would cost it a frame.
     public static bool PillVisible(in MvAiStatus s) =>
         s.State is MvAiState.Indexing or MvAiState.Yielding ||
-        (s.State == MvAiState.Paused && s.AssetsDone < s.AssetsTotal);
+        (s.State == MvAiState.Paused && s.AssetsDone < s.AssetsTotal) ||
+        Fetching(s);  // #482: the models downloading is work in hand too
 
     /// <summary>Indexing waits on battery: "Index anyway" can override it for now.</summary>
     public static bool OnBattery(in MvAiStatus s) =>
@@ -442,7 +561,8 @@ internal sealed class Look
 
     // Work is running: the ring spins. A load waiting for the viewer is still.
     public static bool Busy(in MvAiStatus s) =>
-        s.State == MvAiState.Indexing || (s.State == MvAiState.Loading && s.YieldReason == MvAiYield.None);
+        s.State == MvAiState.Indexing || (s.State == MvAiState.Loading && s.YieldReason == MvAiYield.None) ||
+        Fetch(s) == MvAiFetchState.Downloading;
 
     public static string Moment(long ms)
     {
