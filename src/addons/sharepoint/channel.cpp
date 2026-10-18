@@ -610,6 +610,15 @@ std::array<std::uint8_t, 32> channel::pairing_secret() const {
   return out;
 }
 
+std::array<std::uint8_t, 32> channel::handover_secret() const {
+  static constexpr char kContext[] = "MediaViewer Sharepoint handover v1";
+  std::array<std::uint8_t, 32> out{};
+  std::lock_guard lock(secret_m_);
+  crypto_generichash(out.data(), out.size(), reinterpret_cast<const std::uint8_t*>(kContext), sizeof kContext - 1,
+                     resume_.data(), resume_.size());
+  return out;
+}
+
 bool channel::link_up() const noexcept {
   if (down_.load()) return false;
   if (version_ < 2) return true;

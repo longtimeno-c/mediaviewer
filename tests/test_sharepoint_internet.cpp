@@ -6,6 +6,7 @@
 // its IPv6 pinhole). No real router or network is used here.
 #include "sharepoint_fixture.h"
 
+#include "addons/sharepoint/handover.h"
 #include "addons/sharepoint/invite.h"
 #include "addons/sharepoint/mapping.h"
 
@@ -624,6 +625,31 @@ TEST_CASE("sharepoint internet: the offer asks for places, and places are read w
   REQUIRE(asks);
   CHECK_FALSE(plain->handover);
   CHECK(asks->handover);
+  // #472: "dht" only rides with "handover"; the places say so apart.
+  auto dht_too = sp::parse_offer(sp::offer_json(files, true, true));
+  auto dht_alone = sp::parse_offer(sp::offer_json(files, false, true));
+  REQUIRE(dht_too);
+  REQUIRE(dht_alone);
+  CHECK(dht_too->dht);
+  CHECK_FALSE(asks->dht);
+  CHECK_FALSE(dht_alone->dht);
+  CHECK(sp::places_dht(R"({"places":[],"dht":true})"));
+  CHECK_FALSE(sp::places_dht(R"({"places":[]})"));
+  CHECK_FALSE(sp::places_dht("junk"));
+  {
+    // The session's DHT keys: the same from the same secret and count of
+    // rejoins, others from another secret or after another move.
+    std::array<std::uint8_t, 32> a{}, b{};
+    b[0] = 1;
+    const auto ka = sp::handover_keys(a, 0), ka2 = sp::handover_keys(a, 0), kb = sp::handover_keys(b, 0);
+    const auto ka1 = sp::handover_keys(a, 1);
+    CHECK(ka.public_key == ka2.public_key);
+    CHECK(ka.salt_base == ka2.salt_base);
+    CHECK(ka.public_key != kb.public_key);
+    CHECK(ka.box != kb.box);
+    CHECK(ka.public_key != ka1.public_key);
+    CHECK(ka.salt_base != ka1.salt_base);
+  }
   const auto p = sp::parse_places(
       R"({"places":[{"a":"203.0.113.5","p":41000},{"a":"2001:db8::5","p":443},{"a":"not an address","p":1},)"
       R"({"a":"198.51.100.1","p":0},{"a":"198.51.100.2","p":70000},{"p":5},{"a":"198.51.100.3"}]})");

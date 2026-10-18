@@ -236,6 +236,37 @@ bool client::start(const std::function<bool()>& stop) {
   return answered.load() > 0;
 }
 
+bool client::refresh(const std::function<bool()>& stop) {
+  std::vector<net::endpoint> ask;
+  std::map<std::string, int> before;
+  {
+    std::lock_guard lock(m_);
+    before.swap(votes_);
+    // The secure nodes first: their votes cannot be steered by where they sit.
+    for (int pass = 0; pass < 2; ++pass) {
+      for (const auto& n : table_) {
+        if (ask.size() >= 8) break;
+        if (n.secure == (pass == 0)) ask.push_back(n.at);
+      }
+    }
+  }
+  std::vector<std::thread> asks;
+  std::atomic<int> answered{0};
+  for (const auto& to : ask) {
+    asks.emplace_back([&, to] {
+      if (query(to, "find_node", bencode::value::dict({{"target", bencode::value::bytes(as_string(self_))}}), stop)) {
+        ++answered;
+      }
+    });
+  }
+  for (auto& t : asks) t.join();
+  if (answered.load() > 0) return true;
+  // Nobody answered: what the DHT said before is all there is.
+  std::lock_guard lock(m_);
+  for (const auto& [k, c] : before) votes_[k] += c;
+  return false;
+}
+
 std::vector<client::contact> client::lookup(const node_id& target, const std::string& ask,
                                             const std::function<bool()>& stop,
                                             const std::function<void(const contact&, const bencode::value&)>& on_reply) {

@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "addons/sharepoint/channel.h"
+#include "addons/sharepoint/handover.h"
 #include "addons/sharepoint/internet.h"
 #include "addons/sharepoint/known.h"
 #include "addons/sharepoint/prefs.h"
@@ -159,6 +160,10 @@ struct view {
   // This computer is relaying for another of the person's own: its name.
   std::string relaying_for;
   std::uint32_t relayed = 0;     // relays this computer has carried this run (tests, the window)
+  // #472: both sides also meet on the DHT if both move (needs the DHT
+  // toggle on both): this side's hub is open and the DHT answered.
+  bool out_handover_dht = false;
+  bool in_handover_dht = false;
 };
 
 // The selected peer is heard only on Bluetooth, speaks only protocol 1, and
@@ -280,6 +285,9 @@ class engine {
       return l;
     }();
     int relay_meet_ms = 45000;
+    // #472, the tests: the sender's stream met on the DHT, before it rejoins
+    // (wrapped to cut or slow it).
+    std::function<std::unique_ptr<link>(std::unique_ptr<link>)> wrap_handover_link;
   };
 
   engine(engine_host& host, options opts);
@@ -435,6 +443,9 @@ class engine {
   void read_folder(std::string folder);
   void cancel_transfer();
   void reap_helpers();  // under threads_m_
+  // #472: a transfer's DHT handover, stopped and joined later (its thread
+  // may be in a DNS lookup or a withdraw): never on the transfer's way out.
+  void retire(std::unique_ptr<dht_handover> h);
   [[nodiscard]] bool visible_locked() const noexcept;
   [[nodiscard]] bool out_busy_locked() const noexcept;
   [[nodiscard]] hooks hooks_for(bool sending);
@@ -481,6 +492,8 @@ class engine {
   // #472 PR 5: the receiver's internet places, as it sent them, for the
   // send running now (the mover races them when the local link goes).
   std::vector<net::endpoint> handover_places_;  // under m_
+  // #472: the receiver said it meets on the DHT too, if both sides move.
+  bool handover_dht_ = false;  // under m_
   // #472 PR 2: the receiver of codes while the toggle is on (made and dropped
   // on the control thread; a receive in flight keeps its own reference).
   std::shared_ptr<internet_receiver> internet_;  // under m_
@@ -515,6 +528,7 @@ class engine {
   std::mutex threads_m_;
   std::thread transfer_thread_;
   std::vector<helper> helpers_;  // busy refusals
+  std::vector<std::unique_ptr<dht_handover>> retired_;  // under threads_m_
 
   // The folder reader (queue_files).
   std::mutex files_m_;

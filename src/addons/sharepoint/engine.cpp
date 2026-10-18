@@ -10,6 +10,7 @@
 #include <set>
 #include <unordered_map>
 
+#include "addons/sharepoint/handover.h"
 #include "addons/sharepoint/meet.h"
 #include "addons/sharepoint/race.h"
 #include "core/json.h"
@@ -158,17 +159,21 @@ engine::~engine() {
   for (;;) {
     std::thread transfer;
     std::vector<helper> helpers;
+    std::vector<std::unique_ptr<dht_handover>> retired;
     {
       std::lock_guard lock(threads_m_);
       transfer = std::move(transfer_thread_);
       helpers = std::move(helpers_);
       helpers_.clear();
+      retired = std::move(retired_);
+      retired_.clear();
     }
-    if (!transfer.joinable() && helpers.empty()) break;
+    if (!transfer.joinable() && helpers.empty() && retired.empty()) break;
     if (transfer.joinable()) transfer.join();
     for (auto& h : helpers) {
       if (h.thread.joinable()) h.thread.join();
     }
+    retired.clear();  // each joins its thread (#472's DHT handovers)
   }
   {
     std::unique_lock lock(files_m_);
@@ -900,6 +905,14 @@ void engine::on_incoming(std::unique_ptr<link> l, bool internet, std::optional<k
       fail_transfer(false);
     }
   });
+}
+
+void engine::retire(std::unique_ptr<dht_handover> h) {
+  if (!h) return;
+  h->request_stop();
+  std::lock_guard lock(threads_m_);
+  std::erase_if(retired_, [](const std::unique_ptr<dht_handover>& r) { return r->finished(); });
+  retired_.push_back(std::move(h));
 }
 
 void engine::reap_helpers() {
@@ -2091,17 +2104,57 @@ void engine::send_on(std::shared_ptr<channel> ch, std::vector<outgoing_file> fil
   {
     std::lock_guard lock(m_);
     handover_places_.clear();
+    handover_dht_ = false;
     v_.out_handover = false;
+    v_.out_handover_dht = false;
     hk.handover = ch->resumable() && !internet && v_.internet && v_.handover;
+    hk.handover_dht = hk.handover && v_.dht;
   }
+  // #472: with the DHT toggle on too, once the receiver says it meets on
+  // the DHT (its places, right after Accept): the hub and the DHT up while
+  // the files go, for a drop that takes the receiver's places with it. Both
+  // sides then meet under the session's keys and the send rejoins there.
+  std::mutex meet_m;
+  std::unique_ptr<dht_handover> meet_dht;  // under meet_m
+  auto start_meet = [&] {
+    std::lock_guard lock(meet_m);
+    if (meet_dht) return;
+    dht_handover::options mo;
+    mo.me = dht::role::sender;
+    mo.client = dht_options();
+    mo.loopback = opts_.internet_loopback;
+    meet_dht = std::make_unique<dht_handover>(
+        ch, std::move(mo), [] { return true; },
+        [this, ch](std::unique_ptr<link> l) {
+          // Back some other way since the meeting ended: the link that works stays.
+          if (ch->link_up()) {
+            l->shutdown();
+            return;
+          }
+          if (opts_.wrap_handover_link) l = opts_.wrap_handover_link(std::move(l));
+          if (auto r = ch->rejoin(std::shared_ptr<link>(std::move(l))); !r && r.error() != status::cancelled) {
+            host_.log(1, "sharepoint: a rejoin over the DHT did not complete");
+          }
+        },
+        [this] {
+          {
+            std::lock_guard lock(m_);
+            v_.out_handover_dht = true;
+          }
+          post_throttled();
+        });
+  };
   if (hk.handover) {
-    hk.on_places = [this](std::string_view text) {
+    hk.on_places = [this, &start_meet, ask_dht = hk.handover_dht](std::string_view text) {
       auto places = parse_places(text);
+      const bool dht = ask_dht && places_dht(text);  // only if this side asked
       {
         std::lock_guard lock(m_);
         handover_places_ = std::move(places);
-        v_.out_handover = !handover_places_.empty();
+        handover_dht_ = handover_dht_ || dht;
+        v_.out_handover = !handover_places_.empty() || handover_dht_;
       }
+      if (dht) start_meet();
       post_throttled();
     };
   }
@@ -2110,9 +2163,24 @@ void engine::send_on(std::shared_ptr<channel> ch, std::vector<outgoing_file> fil
     ~places_guard() {
       std::lock_guard lock(e.m_);
       e.handover_places_.clear();
+      e.handover_dht_ = false;
       e.v_.out_handover = false;
+      e.v_.out_handover_dht = false;
     }
   } forget_places{*this};
+  struct meet_guard {
+    engine& e;
+    std::mutex& m;
+    std::unique_ptr<dht_handover>& h;
+    ~meet_guard() {
+      std::unique_ptr<dht_handover> done;
+      {
+        std::lock_guard lock(m);
+        done = std::move(h);
+      }
+      e.retire(std::move(done));
+    }
+  } retire_meet{*this, meet_m, meet_dht};
   const transfer_result r = send_files(*ch, files, hk, [this] {
     {
       std::lock_guard lock(m_);
@@ -2524,21 +2592,59 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
         e.v_.in_handover = false;
       }
     } close_way{*this, way_opener, way};
+    // #472: and, with the DHT toggle on (here and in the offer), the hub
+    // and the DHT up while the files arrive, for a drop that takes this
+    // side's way in with it. Closed first (declared last).
+    std::unique_ptr<dht_handover> meet_dht;
+    struct meet_guard {
+      engine& e;
+      std::unique_ptr<dht_handover>& m;
+      ~meet_guard() {
+        e.retire(std::move(m));  // stopped, not waited for
+        std::lock_guard lock(e.m_);
+        e.v_.in_handover_dht = false;
+      }
+    } close_meet{*this, meet_dht};
     {
-      bool want = false;
+      bool want = false, want_dht = false;
       std::string forwarded;
       {
         std::lock_guard lock(m_);
         want = v_.internet && v_.handover;
+        want_dht = want && v_.dht;
         forwarded = v_.forwarded;
+        v_.in_handover_dht = false;
       }
       if (want && offer->handover && ch->resumable() && !ch->internet()) {
-        way_opener = std::thread([this, ch, &way, forwarded] {
+        const bool dht = want_dht && offer->dht;
+        if (dht) {
+          dht_handover::options mo;
+          mo.me = dht::role::receiver;
+          mo.client = dht_options();
+          mo.loopback = opts_.internet_loopback;
+          meet_dht = std::make_unique<dht_handover>(
+              ch, std::move(mo), [] { return true; },
+              [this](std::unique_ptr<link> l) { on_internet_link(std::move(l)); },
+              [this] {
+                {
+                  std::lock_guard lock(m_);
+                  v_.in_handover_dht = true;
+                }
+                post_throttled();
+              });
+          // The sender learns at once that a drop of both is met on the DHT
+          // (the way in may take seconds to open).
+          if (send_places(*ch, {}, true)) {
+            std::lock_guard lock(m_);
+            v_.in_handover = true;
+          }
+        }
+        way_opener = std::thread([this, ch, &way, forwarded, dht] {
           try {
             auto w = way_in::open(opts_.internet_loopback, opts_.internet_mapping, forwarded,
                                   [this](std::unique_ptr<link> l) { on_internet_link(std::move(l)); });
             if (!w) return;
-            if (send_places(*ch, w->places())) {
+            if (send_places(*ch, w->places(), dht)) {
               std::lock_guard lock(m_);
               v_.in_handover = true;
             }

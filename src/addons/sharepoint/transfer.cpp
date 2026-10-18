@@ -140,7 +140,7 @@ std::string temp_name(const std::string& final_path, int attempt) {
 
 // ---- sender ----------------------------------------------------------------------
 
-std::string offer_json(const std::vector<outgoing_file>& files, bool handover) {
+std::string offer_json(const std::vector<outgoing_file>& files, bool handover, bool dht) {
   std::uint64_t bytes = 0;
   for (const auto& f : files) bytes += f.size;
   json::writer w;
@@ -152,6 +152,7 @@ std::string offer_json(const std::vector<outgoing_file>& files, bool handover) {
   }
   w.end_array();
   if (handover) w.key("handover").boolean(true);
+  if (handover && dht) w.key("dht").boolean(true);
   w.end_object();
   return w.take();
 }
@@ -167,7 +168,7 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
     return res;
   };
   if (files.empty() || files.size() > kMaxFiles) return stop(outcome::failed, __LINE__);
-  if (!ch.send(msg::offer, offer_json(files, h.handover))) return stop(cancelled(h) ? outcome::cancelled : outcome::failed, __LINE__);
+  if (!ch.send(msg::offer, offer_json(files, h.handover, h.handover_dht))) return stop(cancelled(h) ? outcome::cancelled : outcome::failed, __LINE__);
 
   // The answer, while the person there decides (it declines by itself after
   // kAskMs; this waits a little longer, then gives up).
@@ -349,16 +350,18 @@ result<incoming_offer> parse_offer(std::string_view text) {
   if (sum != static_cast<std::uint64_t>(*bytes)) return err(status::corrupt);
   o.bytes = sum;
   o.handover = doc->boolean("handover").value_or(false);
+  o.dht = o.handover && doc->boolean("dht").value_or(false);
   return o;
 }
 
-expected send_places(channel& ch, const std::vector<net::endpoint>& places) {
+expected send_places(channel& ch, const std::vector<net::endpoint>& places, bool dht) {
   return ch.send(msg::places, json_of([&](json::writer& w) {
     w.key("places").begin_array();
     for (std::size_t i = 0; i < places.size() && i < kMaxPlaces; ++i) {
       w.begin_object().key("a").string(places[i].address).key("p").integer(places[i].port).end_object();
     }
     w.end_array();
+    if (dht) w.key("dht").boolean(true);
   }));
 }
 
@@ -375,6 +378,11 @@ std::vector<net::endpoint> parse_places(std::string_view text) {
     out.push_back({*a, static_cast<std::uint16_t>(*port)});
   }
   return out;
+}
+
+bool places_dht(std::string_view text) {
+  const auto doc = json::parse(text, 4);
+  return doc && doc->boolean("dht").value_or(false);
 }
 
 result<incoming_offer> read_offer(channel& ch, int timeout_ms) {

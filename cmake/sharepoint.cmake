@@ -59,6 +59,7 @@ add_library(mv_sharepoint_engine STATIC
   ${_S}/udp_hub.cpp ${_S}/udp_hub.h
   ${_S}/dht.cpp ${_S}/dht.h
   ${_S}/meet.cpp ${_S}/meet.h
+  ${_S}/handover.cpp ${_S}/handover.h
   ${_S}/secrets.h ${_S}/secrets_file.cpp
   ${_S}/known.h ${_S}/known.cpp
   ${_S}/splice.cpp ${_S}/splice.h
