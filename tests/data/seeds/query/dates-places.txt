@@ -1,0 +1,1 @@
+in:2024 before:2025-06 since:2024-03-01 in:lisbon place:portugal

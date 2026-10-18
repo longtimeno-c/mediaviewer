@@ -50,7 +50,8 @@ final class HelpStore: ObservableObject {
         }
       } else {
         index[id] = out.count
-        out.append(Entry(id: id, name: String(f[2]), keys: keys))
+        // Issue #412: in the Mac's words for what is current (Open in Photos).
+        out.append(Entry(id: id, name: SettingsStore.displayName(String(f[2])), keys: keys))
       }
     }
     entries = out

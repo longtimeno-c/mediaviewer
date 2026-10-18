@@ -108,8 +108,11 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    generic decode, the Explorer thumbnail handler, the PDF and DOCX readers, the place
    database loader `fuzz_geo` and the Places map `fuzz_places_map`, [27](27-places.md)), built
    with clang-cl + ASan (`-DMV_FUZZ=ON`). CI gates on the eleven single-format image harnesses;
-   `decode`, `animation`, `thumbnail`, `pdf` and `docx` run in a quarantined, non-gating step
-   (30 s each) until they are seen starting on the runner (`docs/design/12-decision-log.md`).
+   `decode`, `animation`, `thumbnail`, `script`, `pdf`, `docx` and `pptx` run in a quarantined,
+   non-gating step (30 s each) until they are seen starting on the runner
+   (`docs/design/12-decision-log.md`). The metadata, place, add-on and query harnesses below
+   (#384) run in a second non-gating step, 30 s each, until CI has seen them start and run
+   clean there; then they join the gating list.
    #290 adds one per metadata reader beyond Exiv2 (`fuzz_meta_c2pa`, `_jpeg`, `_png`, `_webp`,
    `_bmff`, `_xmp`, `_icc`; [06-metadata.md](06-metadata.md#beyond-exiv2-290)), which link only
    `mv_meta_parse` and abort on a row past the cap or a string that is not valid UTF-8. Their
@@ -118,6 +121,10 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    built from `src/meta/location_edit.cpp` alone): an accepted point is finite, in range and
    never `-0`, a refusal is one UTF-8 line that fits the ABI's 128 bytes, and the editor's
    starting text reads back to the point. Seeds: `tests/data/seeds/location`.
+   #345 adds `fuzz_meta_probe` (the AI badge's provenance probe). #291 adds `fuzz_meta_search`
+   (the folder tag pass's bounded read and the search text it builds; it links `mv_meta`, so
+   Exiv2 and FFmpeg come in as uninstrumented DLLs) and `fuzz_ai_query` (the Local search query
+   language; seeds `tests/data/seeds/query`). PR 56 adds `fuzz_addon_contributions`.
 6. **Clean-VM gate** (`test_clean_vm_heic.cpp`, label `cleanvm`). A HEIC decodes with
    `MV_OS_CODEC=0`, and the process has loaded libheif + libde265 and no Media Foundation,
    WIC codec extension or `\WindowsApps\` module. It is its own executable because

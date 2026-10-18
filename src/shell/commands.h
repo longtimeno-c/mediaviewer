@@ -442,7 +442,9 @@ void reset_live_bindings() noexcept;
 // handing its default key back (two rows on one key). apply_key_remaps resets the
 // live table and sets the listed rows as listed (not a rebind_live replay, whose
 // swaps would move rows the list does not name). Out-of-range entries are skipped.
-// Contributed add-on rows are never in the list.
+// Contributed add-on rows are never in the list, nor is a built-in row its add-on's
+// own rows supersede (command_superseded): its missing key exists only while that
+// add-on is loaded, so it is saved as its default (issue #357).
 struct key_remap {
   int row = 0;
   key k = key::none;

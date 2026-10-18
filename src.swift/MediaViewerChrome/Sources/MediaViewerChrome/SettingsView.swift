@@ -81,6 +81,18 @@ final class SettingsStore: ObservableObject {
       .replacingOccurrences(of: "Shift+", with: "⇧")
   }
 
+  /// The shared table's name of reveal_in_explorer (command_table.cpp); lookups
+  /// such as keyLabel keep using it.
+  static let revealName = "Show in Explorer"
+
+  /// Issue #412: the words the Mac shows for a table name. ⌘E reveals a file
+  /// in Finder, and opens a Photos library item in Photos, selected; the Open
+  /// flyout, `?` and Settings say which.
+  static func displayName(_ name: String) -> String {
+    guard name == revealName else { return name }
+    return FolderStore.shared.currentIsPhotosItem ? "Open in Photos" : "Show in Finder"
+  }
+
   /// The shortcut currently bound to the command called `name`, for menu labels.
   /// The bar asks for about 20 labels each time it renders, so the table is
   /// parsed once per keys generation, not once per label (issue #179).
@@ -228,7 +240,7 @@ struct SettingsView: View {
     let q = filter.trimmingCharacters(in: .whitespaces).lowercased()
     if q.isEmpty { return store.rows }
     return store.rows.filter {
-      $0.name.lowercased().contains(q) || $0.keys.lowercased().contains(q)
+      SettingsStore.displayName($0.name).lowercased().contains(q) || $0.keys.lowercased().contains(q)
         || SettingsStore.macLabel($0.keys).lowercased().contains(q)
     }
   }
@@ -387,7 +399,7 @@ struct SettingsView: View {
         LazyVStack(spacing: 0) {
           ForEach(shown) { row in
             HStack(spacing: MVTheme.space(16)) {
-              Text(row.name).font(MVTheme.font()).foregroundStyle(MVTheme.title)
+              Text(SettingsStore.displayName(row.name)).font(MVTheme.font()).foregroundStyle(MVTheme.title)
                 .frame(maxWidth: .infinity, alignment: .leading)
               Button {
                 store.beginCapture(row.row)
@@ -397,7 +409,7 @@ struct SettingsView: View {
                   .frame(width: 160)
               }
               .buttonStyle(SettingsButtonStyle())
-              .accessibilityLabel("Change shortcut for " + row.name)
+              .accessibilityLabel("Change shortcut for " + SettingsStore.displayName(row.name))
             }
             .padding(.vertical, MVTheme.space(6))
             Rectangle().fill(MVTheme.hairline.opacity(0.5)).frame(height: 1)
