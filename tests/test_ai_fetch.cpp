@@ -26,6 +26,9 @@ std::string utf8(const fs::path& p) {
   return std::string(s.begin(), s.end());
 }
 
+// A UTF-8 path as a filesystem path (one string: never iterators of two).
+fs::path native(const std::string& u) { return fs::path(std::u8string(u.begin(), u.end())); }
+
 std::string hex_of(const std::vector<std::uint8_t>& bytes) {
   mv::ai::sha256 h;
   h.update(bytes);
@@ -142,7 +145,7 @@ TEST_CASE("the downloader fetches, verifies, and does not fetch twice", "[ai][fe
   REQUIRE(f.run(both, stop, {}));
   CHECK(net.calls.size() == 2);  // ready: not asked again
   // A file changed on disk is not ready: fetched again.
-  std::ofstream(fs::path(std::u8string(f.local_path(b).begin(), f.local_path(b).end())), std::ios::binary | std::ios::app)
+  std::ofstream(native(f.local_path(b)), std::ios::binary | std::ios::app)
       << "x";
   CHECK_FALSE(f.ready(b));
 }
@@ -242,7 +245,7 @@ TEST_CASE("bytes that miss the hash are deleted and fetched again, never kept", 
   CHECK(r.error() == mv::status::corrupt);
   CHECK(net.calls.size() == 3);  // hash_attempts
   CHECK_FALSE(f.ready(a));
-  CHECK_FALSE(fs::exists(fs::path(std::u8string(f.local_path(a).begin(), f.local_path(a).end()))));
+  CHECK_FALSE(fs::exists(native(f.local_path(a))));
   // Fixed upstream: the next run gets it.
   net.files[a.url][50] ^= 0xFF;
   REQUIRE(f.run(one, stop, {}));
