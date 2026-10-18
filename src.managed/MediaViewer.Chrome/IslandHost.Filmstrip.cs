@@ -26,13 +26,15 @@ public static partial class IslandHost
     private static ScrollViewer? _filmstripScroll;
     private static FrameworkElement? _filmstripRoot;
     private static int _selectedIndex = -1;
-    private const int FilmstripDip = 112;
-    // The 80x80 tile is UniformToFill, so a landscape thumb is cropped by its
-    // height: at 2x DPI the short side must reach 160 px. 288 wide covers a
-    // 16:9 clip frame (288x162) and is still about a third of the 512 px
-    // disk thumb's pixels; 160 wide would leave a 3:2 photo at 107 px tall.
-    private const int FilmstripDecodeWidth = 288;
-    private const double ItemStride = 102; // 96 width + 6 spacing
+    // The Mac's strip (FilmstripView.swift, issue #201): 88 high, 78 square
+    // cells 4 apart, the thumbnail fitted, no name under it.
+    private const int FilmstripDip = 88;
+    private const double FilmstripCell = 78;
+    private const double FilmstripSpacing = 4;
+    // The 78x78 cell fits the thumb, so its long side is what must reach
+    // 2x DPI: 160 px covers 156.
+    private const int FilmstripDecodeWidth = 160;
+    private const double ItemStride = FilmstripCell + FilmstripSpacing;
 
     public static int AttachFilmstrip(IntPtr arg, int sizeBytes)
     {
@@ -400,7 +402,7 @@ public static partial class IslandHost
             return;
         }
         if (_filmstripScroll is null) return;
-        double x = index * ItemStride - _filmstripScroll.ViewportWidth * 0.5 + 48;
+        double x = 8 + index * ItemStride - _filmstripScroll.ViewportWidth * 0.5 + FilmstripCell * 0.5;
         _filmstripScroll.ChangeView(Math.Max(0, x), null, null, disableAnimation: true);
     }
 
@@ -418,13 +420,17 @@ public static partial class IslandHost
         // AV in IItemsRepeaterMethods.set_ItemsSource on a populated listing.
         _repeater = new ItemsRepeater
         {
-            Layout = new StackLayout { Orientation = Orientation.Horizontal, Spacing = 6 },  // the strip keeps its sizes (docs/ADDONS.md)
+            Layout = new StackLayout { Orientation = Orientation.Horizontal, Spacing = FilmstripSpacing },  // the strip keeps its sizes (docs/ADDONS.md)
+            Margin = new Thickness(8, 0, 8, 0),
+            VerticalAlignment = VerticalAlignment.Center,
             ItemTemplate = new FilmstripFactory(),
         };
         _filmstripScroll = new ScrollViewer
         {
             Content = _repeater,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            // The Mac's showsIndicators: false. The wheel, touch and the
+            // arrows still scroll it.
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
             HorizontalScrollMode = ScrollMode.Enabled,
             VerticalScrollMode = ScrollMode.Disabled,
@@ -459,43 +465,26 @@ public static partial class IslandHost
         public UIElement GetElement(ElementFactoryGetArgs args)
         {
             var vm = (FolderItemVm)args.Data;
-            var image = new Image
-            {
-                Width = 80,
-                Height = 80,
-                Stretch = Stretch.UniformToFill,
-            };
-            var name = new TextBlock
-            {
-                Text = vm.Name,
-                FontFamily = UiFont,
-                FontSize = 12,
-                Foreground = Brush(Body),
-                TextTrimming = TextTrimming.CharacterEllipsis,
-                MaxWidth = 88,
-            };
-            var col = new StackPanel { Spacing = 4 };  // the cell fills the native strip (FilmstripDip): geometry, not density
-            col.Children.Add(WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 28));
-            col.Children.Add(name);
-            var border = new Border
-            {
-                Width = 96,
-                Padding = new Thickness(4),
-                CornerRadius = Corner(RadiusButton),
-                BorderThickness = new Thickness(vm.Selected ? 2 : 0),
-                BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
-                Child = col,
-            };
+            // The Mac's FilmstripCell: the thumbnail fitted in a 78 square
+            // (a cropped strip hid what a frame held), the placeholder until it
+            // arrives, the accent outline over it. No name: the strip is the
+            // Mac's 88 high; the name is the accessible one.
+            var image = new Image { Stretch = Stretch.Uniform };
+            Border placeholder = TilePlaceholder();
+            Grid box = ThumbBox(FilmstripCell, 4, WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 28),
+                                placeholder, out Border outline);
+            SetOutline(outline, vm.Selected);
+            var border = new Border { Child = box };  // the cell fills the native strip (FilmstripDip): geometry, not density
+            AutomationProperties_SetName(border, vm.Name);
 
-            // Enough for a 2x-DPI fill crop, not the full JPEG-512 disk thumb.
-            void SetThumb() => ShowTileImage(image, vm.ThumbPath, FilmstripDecodeWidth);
+            // Enough for a 2x-DPI fit, not the full JPEG-512 disk thumb.
+            void SetThumb() => ShowTileImage(image, vm.ThumbPath, FilmstripDecodeWidth, placeholder);
             SetThumb();
 
             void OnChanged(object? _, System.ComponentModel.PropertyChangedEventArgs e)
             {
                 if (e.PropertyName is nameof(FolderItemVm.ThumbPath) or null) SetThumb();
-                if (e.PropertyName is nameof(FolderItemVm.Selected) or null)
-                    border.BorderThickness = new Thickness(vm.Selected ? 2 : 0);
+                if (e.PropertyName is nameof(FolderItemVm.Selected) or null) SetOutline(outline, vm.Selected);
             }
             BindTile(border, vm, OnChanged);
 

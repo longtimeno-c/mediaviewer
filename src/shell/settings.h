@@ -46,7 +46,7 @@ inline constexpr std::int32_t kSettingShowDocuments = 1 << 13;
 inline constexpr std::int32_t kSettingHideAiBadge = 1 << 14;
 
 // A folder open is an explicit "show me this folder", so the filmstrip earns
-// its 112 DIP. Opening one image is a viewing intent: the folder is still
+// its 88 DIP. Opening one image is a viewing intent: the folder is still
 // listed behind it (so arrows and the gallery work), but the strip does not
 // take a slice of the canvas until asked.
 struct view_settings {

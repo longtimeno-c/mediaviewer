@@ -46,6 +46,9 @@ void overlay_sidecar(std::string_view utf8_path, metadata& out) noexcept {
     if (f.rating) out.s.rating = *f.rating;
     if (f.comment) out.s.comment = *f.comment;
     if (f.label) out.s.label = *f.label;
+    // #415: a date taken the writer put here (a PNG's, a RAW's) is the file's
+    // capture stamp, and it wins as the rating does.
+    (void)read_capture_date(none, xmp, out.s);
     // #352: a position the sidecar states wins, as its rating does. Its
     // altitude goes with it; with none, the file's own altitude stays (an edit
     // of latitude / longitude alone keeps it).

@@ -50,6 +50,9 @@ def gather(piece: str, platform: str, build: Path, models: Path, out: Path) -> N
         staged = models / piece
         shutil.copytree(staged / "models", out / "models")
         shutil.copy2(staged / "licences.json", out / "licences.json")
+        # #482: a piece staged --upstream remote lists what the add-on fetches.
+        if (staged / "remote.json").is_file():
+            shutil.copy2(staged / "remote.json", out / "remote.json")
     notices = build / "_ort"
     for n in notices.glob("*/ThirdPartyNotices.txt"):
         shutil.copy2(n, out / "ThirdPartyNotices.txt")

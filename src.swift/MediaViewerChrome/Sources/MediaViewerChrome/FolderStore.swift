@@ -94,6 +94,12 @@ final class FolderStore: ObservableObject {
   /// Not published by this store: see CurrentItem.
   let current = CurrentItem()
   var currentIndex: Int { current.index }
+  /// Issue #412: the current item is a Photos library item ("photos:<id>",
+  /// docs/design/26), which ⌘E opens in Photos rather than showing in Finder.
+  var currentIsPhotosItem: Bool {
+    let i = current.index
+    return i >= 0 && i < thumbKeys.count && thumbKeys[i].hasPrefix("photos:")
+  }
   /// Item names by index; replaced wholesale when the host relists.
   @Published private(set) var names: [String] = []
   /// `names.indices` and `folders.indices` as arrays, rebuilt when those

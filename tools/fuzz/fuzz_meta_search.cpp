@@ -10,9 +10,9 @@
 // break, the folded text has one separator fewer than there are fields, and
 // every field's own first word matches the file and names a field.
 //
-// Not in MV_FUZZ_HARNESSES yet: it links mv_meta (Exiv2, FFmpeg), which the
-// Windows fuzz configuration does not instrument or deploy. Built and run on
-// the Mac with Homebrew LLVM for the #291 review (15 min, no finding):
+// In mv_fuzzers since #384, linked with mv_meta: Exiv2 and FFmpeg come in as
+// the uninstrumented vcpkg DLLs, as the decoders' libraries do. First built and
+// run on the Mac with Homebrew LLVM for the #291 review (15 min, no finding):
 //   clang++ -fsanitize=fuzzer-no-link,address,undefined on src/meta/*.cpp and
 //   this file, linked with the Release mv_codec / mv_image / mv_gfx / mv_io /
 //   mv_core archives and the vcpkg Exiv2 / FFmpeg dylibs.
@@ -20,7 +20,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#ifdef _WIN32
+#include <process.h>
+#define MV_FUZZ_PID _getpid
+#else
 #include <unistd.h>
+#define MV_FUZZ_PID ::getpid
+#endif
 
 #include "meta/search.h"
 
@@ -35,9 +41,10 @@ namespace {
 const std::string& scratch() {
   static const std::string path = [] {
     const char* dir = std::getenv("TMPDIR");
+    if (!dir || !*dir) dir = std::getenv("TEMP");  // Windows
     std::string p = (dir && *dir) ? dir : "/tmp";
-    if (p.back() != '/') p.push_back('/');
-    return p + "mv_fuzz_meta_search_" + std::to_string(::getpid()) + ".jpg";
+    if (p.back() != '/' && p.back() != '\\') p.push_back('/');
+    return p + "mv_fuzz_meta_search_" + std::to_string(MV_FUZZ_PID()) + ".jpg";
   }();
   return path;
 }

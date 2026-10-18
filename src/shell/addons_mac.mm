@@ -248,7 +248,8 @@ constexpr bool ai_supported() {
 }
 
 bool is_ai_family(const std::string& id) {
-  return id == "ai" || id == "ai-faces" || id == "ai-audio" || id == "ai-docs";
+  // #482: ai-large holds the Maxxed tier's ViT-H/14 picture tower.
+  return id == "ai" || id == "ai-faces" || id == "ai-audio" || id == "ai-docs" || id == "ai-large";
 }
 
 std::string hint_marker() {
@@ -1008,6 +1009,25 @@ std::string read_bridge(int32_t (*fn)(char*, int32_t)) {
   }
   mv_chrome_set_scrub_markers(path.UTF8String ?: "", ms.data(), static_cast<int32_t>(ms.size()),
                               current);
+}
+
+// #482: the model picker's Download. {"ai-faces", "ai-audio", "ai-docs",
+// "ai-large"}: the pieces the chosen tier and its checkboxes want, handed to
+// the Swift Settings' install queue (LocalSearchStore observes the name below;
+// it skips what is installed or queued). Other ids are dropped; a later
+// window's reader installs nothing.
+- (void)installLocalSearchPieces:(NSArray<NSString*>*)ids {
+  if (![ids isKindOfClass:[NSArray class]] || state().reader) return;
+  NSMutableArray<NSString*>* keep = [NSMutableArray array];
+  for (id v in ids) {
+    if (![v isKindOfClass:[NSString class]]) continue;
+    const std::string s([(NSString*)v UTF8String] ?: "");
+    if (s != "ai" && is_ai_family(s) && ![keep containsObject:v]) [keep addObject:v];
+  }
+  if (keep.count == 0) return;
+  [NSNotificationCenter.defaultCenter postNotificationName:@"MVInstallLocalSearchPieces"
+                                                    object:nil
+                                                  userInfo:@{@"ids" : keep}];
 }
 
 // The main window, for centring the search panel over it.
@@ -1887,7 +1907,7 @@ extern "C" bool mv_addon2_remove(const char* id, bool keep_data) {
   if (!id) return false;
   const std::string s(id);
   if (s == "import") return mv_addons_remove(keep_data);
-  if (s != "ai" && s != "ai-faces" && s != "ai-audio" && s != "ai-docs") return false;
+  if (!is_ai_family(s)) return false;
   if (state().reader) return false;  // the first window manages add-ons
   if (s == "ai") unload_ai();  // queues the pack's shutdown ahead of the removal below
   dispatch_async(addon_queue(), ^{
@@ -1898,7 +1918,9 @@ extern "C" bool mv_addon2_remove(const char* id, bool keep_data) {
       (void)st.store->remove("ai", keep_data);
       // A piece that is not installed answers invalid_arg: remove() matches on
       // the manifests' ids without hashing anything, so no find() first.
-      for (const char* piece : {"ai-faces", "ai-audio", "ai-docs"}) (void)st.store->remove(piece, false);
+      for (const char* piece : {"ai-faces", "ai-audio", "ai-docs", "ai-large"}) {
+        (void)st.store->remove(piece, false);
+      }
       return;
     }
     (void)st.store->remove(s, keep_data);

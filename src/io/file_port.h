@@ -58,6 +58,10 @@ struct file_stat {
   // The same time at the filesystem's own precision (ns since the Unix
   // epoch; NTFS keeps 100 ns): tells apart two writes within one second.
   std::int64_t mtime_ns = 0;
+  // #415: when the file was created on this volume (Windows creation time,
+  // macOS birth time), seconds since the Unix epoch. 0 = the filesystem keeps
+  // none. Comes with the same call as the size: no extra syscall.
+  std::int64_t created_unix = 0;
 };
 
 // status::io when nothing is there or it cannot be read.

@@ -10,7 +10,7 @@
 //                 optional -runCommand:, -folderChanged:, -itemChanged:, -settingsView.
 // To the host:    selectors on the host object (MvAddonHostMac): openList:,
 //                 closeList, viewerState, seekTo:, setMarkers:, viewerWindow,
-//                 placeTerms:.
+//                 placeTerms:, installLocalSearchPieces: (#482).
 // The chrome never calls a host dispatcher from native code, and nothing here
 // logs a path, a query, or a name (rule 6).
 import AppKit
@@ -34,6 +34,9 @@ public final class MVAIChrome: NSObject {
   /// The model whose results the viewer lists now: its clip matches are the
   /// scrub markers and N / Shift+N.
   private weak var lister: SearchModel?
+  /// #482: the model tier picker, and whether this process offered it yet.
+  private var tierPicker: TierPickerController?
+  @MainActor private static var tiersOffered = false
 
   @objc public override init() { super.init() }
 
@@ -42,6 +45,50 @@ public final class MVAIChrome: NSObject {
     guard let raw = table.pointerValue else { return }
     self.table = AITable(raw.assumingMemoryBound(to: mv_ai_api.self))
     self.host = host
+    // #482: no tier chosen yet: the picker, once the host has finished attaching.
+    DispatchQueue.main.async { [weak self] in
+      MainActor.assumeIsolated { self?.offerTiersIfUnchosen() }
+    }
+  }
+
+  /// The picker over the viewer, once per process start, while the pack says
+  /// no tier is chosen (MV_AI_STATUS_TIER_UNCHOSEN). A later window's reader
+  /// chooses nothing.
+  @MainActor private func offerTiersIfUnchosen() {
+    guard !Self.tiersOffered, let table, !table.readOnly, let s = table.status(),
+          s.flags & MV_AI_STATUS_TIER_UNCHOSEN != 0 else { return }
+    Self.tiersOffered = true
+    showTierPicker(over: settingsHost?.window ?? viewerWindow())
+  }
+
+  /// "Choose your Local search models": Settings' Change… and the first-run offer.
+  @MainActor func showTierPicker(over parent: NSWindow?) {
+    guard let table, !table.readOnly, let read = table.tierCatalogue() else { return }
+    let catalogue = read.catalogue
+    let picker = tierPicker ?? TierPickerController()
+    tierPicker = picker
+    picker.show(over: parent, catalogue: catalogue, installed: read.installed,
+                documentFiles: read.documentFiles) { [weak self] tier, ids in
+      self?.chooseTier(tier, pieces: ids, current: catalogue.chosen)
+    }
+  }
+
+  /// Download / Switch: the tier (the pack fetches its models and, for a
+  /// switch, re-indexes while the old index answers), then the pieces.
+  @MainActor private func chooseTier(_ tier: String, pieces: [String], current: String) {
+    guard let table, !table.readOnly else { return }
+    if tier != current { table.setTier(tier) }
+    // Ticking People is the People opt-in too, not only its piece.
+    if pieces.contains("ai-faces") { table.setSetting("faces", "1") }
+    if !pieces.isEmpty { hostInstallPieces(pieces) }
+    manage?.reloadSettings()
+    manage?.statusChanged()
+    search?.pollStatus()
+  }
+
+  /// Settings' Change…: over the window Settings is in.
+  @MainActor func showTierPickerFromSettings() {
+    showTierPicker(over: settingsHost?.window ?? viewerWindow())
   }
 
   @MainActor private func searchModel() -> SearchModel? {
@@ -92,6 +139,7 @@ public final class MVAIChrome: NSObject {
       case MV_ADDON_EVENT_AI_STATUS.rawValue:
         search?.pollStatus()
         manage?.statusChanged()
+        offerTiersIfUnchosen()
       case MV_ADDON_EVENT_AI_ROOTS.rawValue:
         search?.refreshCoverage()
         manage?.reloadRoots()
@@ -226,6 +274,8 @@ public final class MVAIChrome: NSObject {
     return MainActor.assumeIsolated {
       panel?.close()
       panel = nil
+      tierPicker?.close()
+      tierPicker = nil
       search?.disappeared()
       search?.releaseAll()
       search = nil
@@ -286,6 +336,15 @@ public final class MVAIChrome: NSObject {
       "current": NSNumber(value: current),
     ]
     _ = host.perform(sel, with: request)
+  }
+
+  /// #482: the picker's pieces, to the host's install queue (Settings →
+  /// Local search shows them installing). A host from before #482 has no
+  /// such selector: the pieces are then installed from Settings by hand.
+  func hostInstallPieces(_ ids: [String]) {
+    let sel = NSSelectorFromString("installLocalSearchPieces:")
+    guard let host, host.responds(to: sel) else { return }
+    _ = host.perform(sel, with: ids as NSArray)
   }
 
   func hostSeek(_ ms: Int64) {

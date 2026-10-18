@@ -6,11 +6,15 @@
 // face models from the ai-faces piece.
 //
 //   <core>/onnxruntime.dll | libonnxruntime.dylib    (+ providers_shared)
+//   <core>/models/tiers.json                     which folder fills each role (tiers.h)
 //   <core>/models/clip-tokenizer/{vocab.json, merges.txt}
-//   <core>/models/clip-b32/{model.json, image.onnx, text.onnx}   quality 1 (Fast)
-//   <core>/models/clip-l14/{model.json, image.onnx, text.onnx}   quality 2 (High)
+//   <core>/models/clip-b32/{model.json, image.onnx, text.onnx}   Default's fast tower (quality 1)
+//   <core>/models/clip-l14/{model.json, image.onnx, text.onnx}   Default's high tower (quality 2)
 //   <ai-cuda>/{onnxruntime.dll, onnxruntime_providers_shared.dll, onnxruntime_providers_cuda.dll}
-//   <ai-faces>/models/faces/{model.json, yunet.onnx, sface.onnx}
+//   <ai-faces>/models/faces/{model.json, yunet.onnx, adaface.onnx}
+//
+// The folder names are the Default tier's; the code takes them from the
+// tier profile, never from here.
 //
 // Loading is lazy and happens on the engine's control thread, never inside
 // mv_addon_get (which the host may call from its UI thread).

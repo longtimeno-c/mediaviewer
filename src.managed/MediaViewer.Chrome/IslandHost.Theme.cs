@@ -34,6 +34,9 @@ public static partial class IslandHost
         ControlAccent,
         // Text on a ControlAccent fill (the default button of a sheet).
         OnAccent,
+        // Tiles (issue #201): a thumbnail not yet arrived, the gallery's range
+        // over a thumbnail, and a folder tile's count capsule.
+        Placeholder, RangeWash, Capsule,
     }
 
     private static readonly Dictionary<ChromeColour, SolidColorBrush> ThemeBrushes = new();
@@ -228,6 +231,12 @@ public static partial class IslandHost
             : ColorHelper.FromArgb(SettingsFillHoverAlpha, washInk.R, washInk.G, washInk.B));
         Set(ChromeColour.SettingsFillPressed, contrast ? SystemColour(13)
             : ColorHelper.FromArgb(SettingsFillPressedAlpha, washInk.R, washInk.G, washInk.B));
+        Set(ChromeColour.Placeholder, contrast ? SystemColour(15)  // COLOR_BTNFACE
+            : ColorHelper.FromArgb(PlaceholderAlpha, washInk.R, washInk.G, washInk.B));
+        Set(ChromeColour.RangeWash, contrast ? Colors.Transparent  // the outline alone carries it
+            : ColorHelper.FromArgb(RangeWashAlpha, accent.R, accent.G, accent.B));
+        Set(ChromeColour.Capsule, contrast ? surface
+            : ColorHelper.FromArgb(CapsuleAlpha, surface.R, surface.G, surface.B));
         Set(ChromeColour.AccentInk, contrast ? SystemColour(14) : Rgb(255, 255, 255));  // COLOR_HIGHLIGHTTEXT
         Set(ChromeColour.ControlAccent, controlAccent);
         // White on a dark accent, black on a light one; the contrast theme's
