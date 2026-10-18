@@ -195,7 +195,8 @@ public static partial class IslandHost
             var flyout = new Flyout
             {
                 ShouldConstrainToRootBounds = false,
-                FlyoutPresenterStyle = sheet ? SheetPresenterStyle() : FlyoutPresenterStyle(),
+                FlyoutPresenterStyle = sheet ? SheetPresenterStyle()
+                    : args.Kind == PopupKind.Help ? HelpPresenterStyle() : FlyoutPresenterStyle(),
                 Placement = FlyoutPlacementMode.BottomEdgeAlignedLeft,
                 Content = content,
             };
@@ -331,31 +332,93 @@ public static partial class IslandHost
     // drift from what the keys do. No TextBox: a text control in a Flyout
     // hanging off a DesktopWindowXamlSource is a Microsoft.UI.Xaml fail-fast
     // (0xC000027B).
+    //
+    // Issue #201: the Mac's HelpView. Its adaptive grid (columns of at least
+    // HelpColumn, as many as the window holds, filled row by row), body type,
+    // and the footer hint. Sized from the window once, as it opens.
+    private const double HelpColumn = 340;
+    private const double HelpColumnGap = 24;
+    private const double HelpKeysWidth = 160;
+
     private static UIElement BuildHelp(int modeMask)
     {
-        var list = new StackPanel { Spacing = Space(2), Margin = Pad(12, 8, 12, 10) };
-        list.Children.Add(Label("Keyboard shortcuts", UiFontSize + 2));
-        list.Children.Add(Label("Esc closes.", UiFontSize, mute: true));
-        foreach (CommandEntry entry in Entries(modeMask))
+        double windowWidth = 0, windowHeight = 0;
+        if (_themeWindow != IntPtr.Zero && GetClientRect(_themeWindow, out ClientRect rect)
+            && _source?.Content is FrameworkElement { XamlRoot: { } root })
         {
-            var row = new Grid { ColumnSpacing = Space(16) };
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(220) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            TextBlock keys = Label(entry.Keys, UiFontSize);
-            TextBlock name = Label(entry.Name, UiFontSize, mute: true);
-            Grid.SetColumn(keys, 0);
+            double scale = root.RasterizationScale > 0 ? root.RasterizationScale : 1;
+            windowWidth = (rect.Right - rect.Left) / scale;
+            windowHeight = (rect.Bottom - rect.Top) / scale;
+        }
+        double gap = Space(HelpColumnGap);
+        // The room inside the flyout: the window less its margins and padding.
+        double room = windowWidth > 0 ? windowWidth - 2 * 16 - 2 * Space(32) : HelpColumn;
+        int columns = Math.Clamp((int)((room + gap) / (HelpColumn + gap)), 1, 4);
+        List<CommandEntry> entries = Entries(modeMask);
+        columns = Math.Max(1, Math.Min(columns, entries.Count));
+
+        var grid = new Grid { ColumnSpacing = gap, RowSpacing = Space(6), Margin = Pad(32, 0, 32, 0) };
+        for (int c = 0; c < columns; ++c)
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(HelpColumn) });
+        int rows = (entries.Count + columns - 1) / columns;
+        for (int r = 0; r < rows; ++r)
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        double type = TypeSize(TypeBody);
+        for (int i = 0; i < entries.Count; ++i)
+        {
+            var row = new Grid { ColumnSpacing = Space(8) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(HelpKeysWidth) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            TextBlock keys = Label(entries[i].Keys, type);
+            keys.TextWrapping = TextWrapping.Wrap;
+            TextBlock name = Label(entries[i].Name, type, mute: true);
+            name.TextWrapping = TextWrapping.Wrap;
             Grid.SetColumn(name, 1);
             row.Children.Add(keys);
             row.Children.Add(name);
-            list.Children.Add(row);
+            Grid.SetRow(row, i / columns);
+            Grid.SetColumn(row, i % columns);
+            grid.Children.Add(row);
         }
-        return new ScrollViewer
+
+        var scroll = new ScrollViewer
         {
-            Content = list,
-            MaxHeight = 560,
+            Content = grid,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             IsTabStop = true,  // so the flyout holds focus and does not light-dismiss
         };
+        TextBlock title = Label("Keyboard shortcuts", TypeSize(TypeHeading));
+        title.HorizontalAlignment = HorizontalAlignment.Center;
+        string help = KeyOf(Command.Help) ?? "?";
+        TextBlock footer = Label(
+            $"Wheel zooms toward the cursor, drag pans. Keys change in Settings{KeyNote(Command.OpenSettings)}. "
+            + $"{help} or Esc to close.", TypeSize(TypeCaption), mute: true);
+        footer.HorizontalAlignment = HorizontalAlignment.Center;
+        footer.TextWrapping = TextWrapping.Wrap;
+        footer.TextAlignment = TextAlignment.Center;
+
+        var page = new Grid { RowSpacing = Space(16), Padding = Pad(0, 16, 0, 12) };
+        page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        page.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Grid.SetRow(scroll, 1);
+        Grid.SetRow(footer, 2);
+        page.Children.Add(title);
+        page.Children.Add(scroll);
+        page.Children.Add(footer);
+        // Tall enough to show most of the table, short enough to stay on screen.
+        page.MaxHeight = windowHeight > 0 ? Math.Max(240, windowHeight - 96) : 560;
+        return page;
+    }
+
+    // The stock presenter caps its width (~456), which a grid of columns
+    // overflows; the help sizes to its content.
+    private static Style HelpPresenterStyle()
+    {
+        Style style = FlyoutPresenterStyle();
+        style.Setters.Add(new Setter(FrameworkElement.MaxWidthProperty, double.PositiveInfinity));
+        style.Setters.Add(new Setter(FrameworkElement.MaxHeightProperty, double.PositiveInfinity));
+        return style;
     }
 
     // The chrome's type-in field: Shared\FakeInput.cs in the chrome's look (a

@@ -56,6 +56,19 @@ Views:
    item's kind is present; an empty one shows "—" so missing reads as missing. The one
    exception is **Made with** (#290), shown only when the file names a generator or says it
    is AI-made ("ChatGPT · AI-generated"): no provenance is not a gap a file is expected to fill.
+
+   **The date row** (#415, `summary_date`) is one row whose label says which date it is.
+   **Date taken** is the capture stamp (EXIF `DateTimeOriginal`, `DateTimeDigitized`,
+   `DateTime`, then XMP `exif:DateTimeOriginal`, `photoshop:DateCreated`, `xmp:CreateDate`;
+   the XMP sidecar's wins, as its rating does) and always wins. Without one, the row falls back
+   to **Created** (the active C2PA manifest's `c2pa.created` action `when`, shown in UTC like
+   Signed at, and listed in All tags beside it), else **Signed at** (`C2PA.signature.time`),
+   else **File created** (Windows creation time / macOS birth time, local, taken from the
+   `io::stat_path` that already reads the size: no extra syscall, and never per folder row).
+   None of the fallbacks is a capture time: `date_taken_key` (sort, search, #404) stays the
+   capture stamp, nothing writes a fallback back, and Edit on a fallback row opens an empty
+   Date taken field (both hosts match the four labels). The on-canvas date line uses the same
+   text.
 2. **Full tree** ("All tags") — every tag, grouped by source, searchable, raw key and value
    kept. A row's value is Exiv2's print, except XMP `Iptc4xmpExt:DigitalSourceType` (#402):
    Exiv2's vocabulary knows five IPTC terms and prints any other (`trainedAlgorithmicMedia`)

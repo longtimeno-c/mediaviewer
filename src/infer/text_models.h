@@ -70,7 +70,7 @@ struct text_spec {
   [[nodiscard]] std::string spec_key() const { return id + "/" + precision + "/pre1"; }
 };
 
-[[nodiscard]] result<text_spec> read_text_spec(const std::string& folder_utf8);
+[[nodiscard]] result<text_spec> read_text_spec(const std::string& folder_utf8, const std::string& fetched_utf8 = {});
 
 class text_model {
  public:

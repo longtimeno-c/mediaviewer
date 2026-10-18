@@ -1,9 +1,11 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Pure helpers behind the metadata read model: no Exiv2, no FFmpeg, no I/O.
+// Pure helpers behind the metadata read model: no Exiv2, no FFmpeg, no I/O
+// (format_local_time reads the C library's local zone, nothing else).
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <initializer_list>
 
 #include "meta/meta.h"
@@ -70,6 +72,30 @@ std::optional<std::int64_t> parse_date_key(std::string_view s) noexcept {
   const std::int64_t days = days_from_civil(year, static_cast<unsigned>(month),
                                             static_cast<unsigned>(day));
   return days * 86400 + hour * 3600 + minute * 60 + second;
+}
+
+std::string format_local_time(std::int64_t unix_seconds) {
+  if (unix_seconds == 0) return {};
+  const auto t = static_cast<std::time_t>(unix_seconds);
+  std::tm local{};
+#if defined(_WIN32)
+  if (localtime_s(&local, &t) != 0) return {};
+#else
+  if (!localtime_r(&t, &local)) return {};
+#endif
+  char buf[48];
+  std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d", local.tm_year + 1900, local.tm_mon + 1,
+                local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec);
+  return buf;
+}
+
+field summary_date(const metadata& m) {
+  const summary& s = m.s;
+  if (!s.date_taken.empty()) return {"Date taken", s.date_taken};
+  if (!s.c2pa_created.empty()) return {"Created", s.c2pa_created};
+  if (!s.c2pa_signed.empty()) return {"Signed at", s.c2pa_signed};
+  if (std::string local = format_local_time(s.file_created_unix); !local.empty()) return {"File created", local};
+  return {"Date taken", {}};
 }
 
 std::string format_coordinate(double degrees, char hemisphere) {
@@ -263,7 +289,7 @@ std::vector<field> summary_rows(const metadata& m) {
     add("Focal length", s.focal_length);
     add("Colour space", s.colour_space);
   }
-  add("Date taken", s.date_taken);
+  rows.push_back(summary_date(m));
   add("Location", s.gps);
   // #290: only when the file names a generator or says it is AI-made; there is
   // no "—" for it, because no provenance is not a gap a file is expected to fill.
@@ -300,7 +326,8 @@ std::string overlay_exposure_line(const metadata& m) {
 }
 
 std::string overlay_date_line(const metadata& m) {
-  return join({&m.s.date_taken, &m.s.gps}, "   ");
+  const std::string date = summary_date(m).value;  // #415: the same text as Summary
+  return join({&date, &m.s.gps}, "   ");
 }
 
 std::vector<af_point> displayed_af_points(const metadata& m) {

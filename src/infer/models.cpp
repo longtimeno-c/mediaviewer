@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "infer/models.h"
 
+#include "infer/model_files.h"
+
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -57,6 +59,19 @@ bool inside(const std::string& rel) {
   return true;
 }
 
+// A tower's [n, dim] embedding: the output named `name`, or with none named
+// the first output of that shape.
+const tensor_f32* embedding(const std::vector<tensor_f32>& outs, const std::vector<std::string>& names,
+                            const std::string& name, std::int64_t n, std::uint32_t dim) {
+  for (std::size_t i = 0; i < outs.size(); ++i) {
+    const tensor_f32& t = outs[i];
+    if (!name.empty() && (i >= names.size() || names[i] != name)) continue;
+    if (t.shape.size() == 2 && t.shape[0] == n && t.shape[1] == static_cast<std::int64_t>(dim)) return &t;
+    if (!name.empty()) return nullptr;
+  }
+  return nullptr;
+}
+
 }  // namespace
 
 void l2_normalise(std::span<float> v) noexcept {
@@ -74,7 +89,7 @@ float dot(std::span<const float> a, std::span<const float> b) noexcept {
   return s;
 }
 
-result<clip_spec> read_clip_spec(const std::string& folder) {
+result<clip_spec> read_clip_spec(const std::string& folder, const std::string& fetched) {
   MV_TRY(std::string text, read_text(join(folder, "model.json")));
   const auto doc = json::parse(text, 8);
   if (!doc || doc->k != json::kind::object) return err(status::corrupt);
@@ -121,10 +136,25 @@ result<clip_spec> read_clip_spec(const std::string& folder) {
     s.generic_prompts = {"a photo.", "a picture of something.", "an image.", "a photo of a thing.",
                          "a blurry photo."};
   }
-  s.image_file = join(folder, *image);
-  s.text_file = join(folder, *text_file);
-  s.vocab_file = join(tok_dir, "vocab.json");
-  s.merges_file = join(tok_dir, "merges.txt");
+  if (const std::string* k = doc->str("tokenizer_kind")) s.tokenizer_kind = *k;
+  if (s.tokenizer_kind != "clip-bpe") return err(status::unsupported_format);
+  if (const std::string* k = doc->str("score")) s.score = *k;
+  if (s.score == "softmax") s.score = "cosine";
+  if (s.score != "cosine" && s.score != "sigmoid") return err(status::unsupported_format);
+  if (const std::string* o = doc->str("image_output")) s.image_output = *o;
+  if (const std::string* o = doc->str("text_output")) s.text_output = *o;
+  if (const json::value* d = doc->find("coreml_dims")) {
+    if (d->k != json::kind::array || d->a.size() != 4) return err(status::corrupt);
+    for (std::size_t i = 0; i < 4; ++i) {
+      if (d->a[i].k != json::kind::string || d->a[i].s.empty()) return err(status::corrupt);
+      s.coreml_dims[i] = d->a[i].s;
+    }
+  }
+  const std::string fetched_tok = fetched_sibling(fetched, *tokenizer);
+  s.image_file = model_file(folder, fetched, *image);
+  s.text_file = model_file(folder, fetched, *text_file);
+  s.vocab_file = model_file(tok_dir, fetched_tok, "vocab.json");
+  s.merges_file = model_file(tok_dir, fetched_tok, "merges.txt");
   return s;
 }
 
@@ -144,8 +174,8 @@ result<std::unique_ptr<clip_model>> clip_model::open(const runtime& rt, const cl
     // the engine's photo batch; embed_images splits and pads to it.
     const auto side = static_cast<std::int64_t>(spec.norm.size);
     m->image_batch_ = kCoreMLImageBatch;
-    image_opts.fixed_dims = {{"batch_size", static_cast<std::int64_t>(kCoreMLImageBatch)},
-                             {"num_channels", 3}, {"height", side}, {"width", side}};
+    image_opts.fixed_dims = {{spec.coreml_dims[0], static_cast<std::int64_t>(kCoreMLImageBatch)},
+                             {spec.coreml_dims[1], 3}, {spec.coreml_dims[2], side}, {spec.coreml_dims[3], side}};
   }
   MV_TRY(auto image, session::open(rt, spec.image_file, image_opts, fault));
   m->image_ = std::move(image);
@@ -202,13 +232,7 @@ expected clip_model::embed_images(std::span<const rgb_view> images, std::vector<
   MV_TRY(auto outs, image_->run(std::span<const tensor_f32>(&in, 1)));
   if (outs.empty()) return err(status::internal);
   // The projected embedding: [n, dim] (some exports add a pooled output first).
-  const tensor_f32* e = nullptr;
-  for (const tensor_f32& t : outs) {
-    if (t.shape.size() == 2 && t.shape[0] == n && t.shape[1] == spec_.dim) {
-      e = &t;
-      break;
-    }
-  }
+  const tensor_f32* e = embedding(outs, image_->output_names(), spec_.image_output, n, spec_.dim);
   if (!e) return err(status::corrupt);
   out = e->data;
   for (std::int64_t i = 0; i < n; ++i) {
@@ -223,12 +247,10 @@ result<std::vector<float>> clip_model::embed_text(std::string_view utf8) {
   in.shape = {1, static_cast<std::int64_t>(ids.size())};
   in.data = ids;
   MV_TRY(auto outs, text_->run_ids(in));
-  for (const tensor_f32& t : outs) {
-    if (t.shape.size() == 2 && t.shape[0] == 1 && t.shape[1] == spec_.dim) {
-      std::vector<float> v = t.data;
-      l2_normalise(v);
-      return v;
-    }
+  if (const tensor_f32* t = embedding(outs, text_->output_names(), spec_.text_output, 1, spec_.dim)) {
+    std::vector<float> v = t->data;
+    l2_normalise(v);
+    return v;
   }
   return err(status::corrupt);
 }
@@ -280,22 +302,21 @@ result<std::vector<float>> clip_model::embed_text_mean(std::span<const std::stri
     in.data.insert(in.data.end(), len - row.size(), tok_.end_id());
   }
   MV_TRY(auto outs, text_->run_ids(in));
-  for (const tensor_f32& t : outs) {
-    if (t.shape.size() == 2 && t.shape[0] == static_cast<std::int64_t>(ids.size()) && t.shape[1] == spec_.dim) {
-      std::vector<float> sum;
-      for (std::size_t r = 0; r < ids.size(); ++r) {
-        accumulate(sum, std::span<const float>(t.data.data() + r * spec_.dim, spec_.dim));
-      }
-      l2_normalise(sum);
-      return sum;
+  if (const tensor_f32* t = embedding(outs, text_->output_names(), spec_.text_output,
+                                      static_cast<std::int64_t>(ids.size()), spec_.dim)) {
+    std::vector<float> sum;
+    for (std::size_t r = 0; r < ids.size(); ++r) {
+      accumulate(sum, std::span<const float>(t->data.data() + r * spec_.dim, spec_.dim));
     }
+    l2_normalise(sum);
+    return sum;
   }
   return err(status::corrupt);
 }
 
 // ---- faces ---------------------------------------------------------------------
 
-result<face_spec> read_face_spec(const std::string& folder) {
+result<face_spec> read_face_spec(const std::string& folder, const std::string& fetched) {
   MV_TRY(std::string text, read_text(join(folder, "model.json")));
   const auto doc = json::parse(text, 8);
   if (!doc || doc->k != json::kind::object) return err(status::corrupt);
@@ -303,8 +324,8 @@ result<face_spec> read_face_spec(const std::string& folder) {
   const std::string* emb = doc->str("embedder");
   if (!det || !emb || !inside(*det) || !inside(*emb)) return err(status::corrupt);
   face_spec s;
-  s.detector_file = join(folder, *det);
-  s.embedder_file = join(folder, *emb);
+  s.detector_file = model_file(folder, fetched, *det);
+  s.embedder_file = model_file(folder, fetched, *emb);
   s.detector_side = static_cast<std::uint32_t>(doc->integer("detector_side").value_or(640));
   s.min_confidence = number_or(*doc, "min_confidence", s.min_confidence);
   s.nms_iou = number_or(*doc, "nms_iou", s.nms_iou);

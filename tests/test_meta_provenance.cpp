@@ -17,10 +17,12 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
 #include "fixtures.h"
+#include "io/file_port.h"
 #include "meta/generators.h"
 #include "meta/meta.h"
 #include "meta/parse.h"
@@ -166,12 +168,19 @@ bytes superbox(std::string_view label, std::initializer_list<bytes> children) {
   return box("jumb", payload);
 }
 
-bytes c2pa_store(std::string_view generator, std::string_view source_type, std::string_view agent) {
-  const bytes actions = cmap({{ctext("actions"),
-                               carr({cmap({{ctext("action"), ctext("c2pa.created")},
-                                           {ctext("digitalSourceType"), ctext(source_type)},
-                                           {ctext("softwareAgent"), ctext(agent)}}),
-                                     cmap({{ctext("action"), ctext("c2pa.converted")}})})}});
+// #415: `when` is the created action's time (actions v2); `timestamp` = the
+// signature carries a time-stamp token (Signed at).
+bytes c2pa_store(std::string_view generator, std::string_view source_type, std::string_view agent,
+                 std::string_view when = {}, bool timestamp = true) {
+  const bytes created = when.empty() ? cmap({{ctext("action"), ctext("c2pa.created")},
+                                             {ctext("digitalSourceType"), ctext(source_type)},
+                                             {ctext("softwareAgent"), ctext(agent)}})
+                                     : cmap({{ctext("action"), ctext("c2pa.created")},
+                                             {ctext("digitalSourceType"), ctext(source_type)},
+                                             {ctext("softwareAgent"), ctext(agent)},
+                                             {ctext("when"), ctext(when)}});
+  const bytes actions =
+      cmap({{ctext("actions"), carr({created, cmap({{ctext("action"), ctext("c2pa.converted")}})})}});
   const bytes claim = cmap({{ctext("claim_generator_info"), carr({cmap({{ctext("name"), ctext(generator)},
                                                                         {ctext("version"), ctext("1.0")}})})},
                             {ctext("dc:title"), ctext("image.png")},
@@ -179,10 +188,11 @@ bytes c2pa_store(std::string_view generator, std::string_view source_type, std::
   bytes protected_hdr = cmap({{cuint(1), bytes{0x26}}, {cuint(33), cbytes(certificate())}});
   bytes sig;
   cbor_head(sig, 6, 18);
-  append(sig, carr({cbytes(protected_hdr),
-                    cmap({{ctext("sigTst"), cmap({{ctext("tstTokens"),
-                                                   carr({cmap({{ctext("val"), cbytes(timestamp_token())}})})}})}}),
-                    bytes{0xF6}, cbytes(bytes(64, 0xAB))}));
+  const bytes unprotected =
+      timestamp ? cmap({{ctext("sigTst"),
+                         cmap({{ctext("tstTokens"), carr({cmap({{ctext("val"), cbytes(timestamp_token())}})})}})}})
+                : cmap({{ctext("pad"), cbytes(bytes(4, 0))}});
+  append(sig, carr({cbytes(protected_hdr), unprotected, bytes{0xF6}, cbytes(bytes(64, 0xAB))}));
   return superbox("c2pa",
                   {superbox("urn:uuid:abc",
                             {superbox("c2pa.assertions",
@@ -1370,4 +1380,149 @@ TEST_CASE("XMP Iptc4xmpExt:DigitalSourceType shows its whole value in All tags",
   CHECK(mv::meta::describe_source_type_value(" " + std::string(kTrained) + " ") ==
         "AI-generated (" + std::string(kTrained) + ")");
   CHECK(mv::meta::describe_source_type_value("").empty());
+}
+
+// ---- #415: Summary's date when the file has no capture stamp ------------------
+
+TEST_CASE("instant formatting: UTC from an ISO zone, local from a stat", "[meta][provenance][date]") {
+  using mv::meta::format_instant_utc;
+  CHECK(format_instant_utc("2026-09-28T18:12:03Z") == "2026-09-28 18:12:03 UTC");
+  CHECK(format_instant_utc("2026-09-28T18:12:03.456Z") == "2026-09-28 18:12:03 UTC");
+  CHECK(format_instant_utc("2026-09-28T20:12:03+02:00") == "2026-09-28 18:12:03 UTC");
+  CHECK(format_instant_utc("2026-09-28T20:12:03+0200") == "2026-09-28 18:12:03 UTC");
+  CHECK(format_instant_utc("2026-09-28T01:00:00-05:30") == "2026-09-28 06:30:00 UTC");
+  CHECK(format_instant_utc("2026-01-01T00:30:00+01:00") == "2025-12-31 23:30:00 UTC");  // across a year
+  CHECK(format_instant_utc("2026-09-28T18:12:03") == "2026-09-28 18:12:03");            // no zone: as stated
+  CHECK(format_instant_utc("yesterday").empty());
+  CHECK(format_instant_utc("").empty());
+  CHECK(mv::meta::format_local_time(0).empty());
+  CHECK(mv::meta::format_local_time(1790000000).size() == 19);  // "YYYY-MM-DD HH:MM:SS"
+}
+
+TEST_CASE("summary date: capture stamp, then C2PA created, signed at, file created", "[meta][provenance][date]") {
+  const auto date_of = [](const mv::meta::metadata& m) { return mv::meta::summary_date(m); };
+
+  // An OpenAI-style PNG: Content Credentials in caBX, no EXIF, a created `when`.
+  const bytes created_png =
+      png_with(small_png(), {png_chunk("caBX", c2pa_store("ChatGPT", kTrained, "GPT-4o", "2026-09-28T18:12:03Z"))});
+  const auto created = read_bytes("d_created.png", created_png);
+  CHECK(date_of(created).label == "Created");
+  CHECK(date_of(created).value == "2026-09-28 18:12:03 UTC");
+  CHECK(summary_value(created, "Created") == "2026-09-28 18:12:03 UTC");
+  CHECK(summary_value(created, "Date taken") == "<absent>");  // one date row, not two
+  CHECK(created.s.date_taken.empty());
+  CHECK(created.s.date_taken_key == 0);  // never the sort key or the search stamp (#404)
+  CHECK(mv::meta::overlay_date_line(created) == "2026-09-28 18:12:03 UTC");
+  // All tags: a curated row for the `when`, beside Signed at.
+  REQUIRE(find_tag(created, "C2PA.actions.when"));
+  CHECK(find_tag(created, "C2PA.actions.when")->label == "Created");
+  CHECK(find_tag(created, "C2PA.actions.when")->value == "2026-09-28 18:12:03 UTC");
+  CHECK(find_tag(created, "C2PA.signature.time")->value == "2025-03-01 12:34:56 UTC");
+
+  // The same store with no `when`: the signature time, as All tags prints it.
+  const auto signed_only =
+      read_bytes("d_signed.png", png_with(small_png(), {png_chunk("caBX", c2pa_store("ChatGPT", kTrained, "GPT-4o"))}));
+  CHECK(date_of(signed_only).label == "Signed at");
+  REQUIRE(find_tag(signed_only, "C2PA.signature.time"));
+  CHECK(date_of(signed_only).value == find_tag(signed_only, "C2PA.signature.time")->value);
+  CHECK(find_tag(signed_only, "C2PA.actions.when") == nullptr);
+  CHECK(signed_only.s.date_taken_key == 0);
+
+  // A store with neither a `when` nor a time-stamp token falls through to the file.
+  const auto unsigned_time = read_bytes(
+      "d_bare.png", png_with(small_png(), {png_chunk("caBX", c2pa_store("ChatGPT", kTrained, "GPT-4o", {}, false))}));
+  CHECK(find_tag(unsigned_time, "C2PA.signature.time") == nullptr);
+  CHECK(date_of(unsigned_time).label != "Signed at");
+  CHECK(date_of(unsigned_time).label != "Created");
+
+  // A PNG with neither: when the file was created on this volume, in local time.
+  {
+    temp_file f("d_plain.png");
+    f.write(png_with(small_png(), {text_chunk("Author", "Me")}));
+    const auto st = mv::io::stat_path(f.utf8());
+    REQUIRE(st);
+    auto m = mv::meta::read(f.utf8());
+    REQUIRE(m);
+    CHECK(m->s.file_created_unix == st->created_unix);
+    CHECK(m->s.date_taken_key == 0);
+    if (st->created_unix != 0) {
+      CHECK(date_of(*m).label == "File created");
+      CHECK(date_of(*m).value == mv::meta::format_local_time(st->created_unix));
+    } else {
+      CHECK(date_of(*m).label == "Date taken");  // a filesystem with no birth time: a gap
+      CHECK(date_of(*m).value.empty());
+    }
+#if defined(_WIN32) || defined(__APPLE__)
+    CHECK(st->created_unix != 0);  // NTFS and APFS keep one
+#endif
+  }
+  // Nothing at all (a record built in memory): the gap, still labelled Date taken.
+  CHECK(date_of(mv::meta::metadata{}).label == "Date taken");
+  CHECK(date_of(mv::meta::metadata{}).value.empty());
+
+  // A capture stamp wins over everything, and the file time is not shown.
+  const std::string taken_xmp =
+      xmp_packet("xmlns:exif=\"http://ns.adobe.com/exif/1.0/\" exif:DateTimeOriginal=\"2024-05-01T14:03:22\"");
+  std::vector<bytes> segs{xmp_app1(taken_xmp)};
+  for (auto& s : app11(c2pa_store("ChatGPT", kTrained, "GPT-4o", "2026-09-28T18:12:03Z"), 200)) segs.push_back(s);
+  for (const bytes& b : {jpeg_with_segments(grey_jpeg(), {xmp_app1(taken_xmp)}), jpeg_with_segments(grey_jpeg(), segs)}) {
+    const auto m = read_bytes("d_taken.jpg", b);
+    CHECK(date_of(m).label == "Date taken");
+    CHECK(date_of(m).value == "2024-05-01 14:03:22");
+    CHECK(summary_value(m, "Created") == "<absent>");
+    CHECK(summary_value(m, "File created") == "<absent>");
+    CHECK(m.s.date_taken_key == *mv::meta::parse_date_key("2024-05-01T14:03:22"));
+  }
+}
+
+TEST_CASE("setting a date taken over a fallback writes the capture tags only", "[meta][provenance][date]") {
+  temp_file f("d_write.png");
+  const bytes original =
+      png_with(small_png(), {png_chunk("caBX", c2pa_store("ChatGPT", kTrained, "GPT-4o", "2026-09-28T18:12:03Z"))});
+  f.write(original);
+  const std::string sidecar = mv::meta::sidecar_path_for(f.utf8());
+  struct cleanup {
+    std::string p;
+    ~cleanup() {
+      std::error_code ec;
+      fs::remove(fs::path(p), ec);
+    }
+  } gone{sidecar};
+
+  mv::meta::write_fields w;
+  w.date_taken = mv::meta::change<std::string>::to("2024-05-01 14:03:22");
+  const auto out = mv::meta::write(f.utf8(), w);
+  REQUIRE(out);
+  CHECK(out->target == mv::meta::write_target::sidecar);  // rule 5: the PNG is not rewritten
+
+  // The original is byte for byte what it was.
+  {
+    std::ifstream in(f.path, std::ios::binary);
+    const bytes now((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(now == original);
+  }
+  // The sidecar holds the typed date, never a fallback.
+  {
+    std::ifstream sc(fs::path(sidecar), std::ios::binary);
+    const std::string packet((std::istreambuf_iterator<char>(sc)), std::istreambuf_iterator<char>());
+    CHECK(packet.find("2024-05-01T14:03:22") != std::string::npos);
+    CHECK(packet.find("2026-09-28") == std::string::npos);
+    CHECK(packet.find("2025-03-01") == std::string::npos);
+  }
+
+  // Read back: the row is Date taken and the fallback hides.
+  auto m = mv::meta::read(f.utf8());
+  REQUIRE(m);
+  CHECK(mv::meta::summary_date(*m).label == "Date taken");
+  CHECK(mv::meta::summary_date(*m).value == "2024-05-01 14:03:22");
+  CHECK(summary_value(*m, "Created") == "<absent>");
+  CHECK(m->s.c2pa_created == "2026-09-28 18:12:03 UTC");  // still known, just not shown
+
+  // Removing it brings the fallback back.
+  mv::meta::write_fields r;
+  r.date_taken = mv::meta::change<std::string>::remove();
+  REQUIRE(mv::meta::write(f.utf8(), r));
+  auto back = mv::meta::read(f.utf8());
+  REQUIRE(back);
+  CHECK(mv::meta::summary_date(*back).label == "Created");
 }

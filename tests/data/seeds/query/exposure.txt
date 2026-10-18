@@ -1,0 +1,1 @@
+rating:3+ label:red iso:100-800 f:1.4-2.8 mm:35 shutter:1/250 -rating:1

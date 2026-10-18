@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "infer/text_models.h"
 
+#include "infer/model_files.h"
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -259,7 +261,7 @@ std::vector<std::int64_t> wordpiece_tokenizer::encode(std::string_view utf8, std
 
 // ---- the model --------------------------------------------------------------------------------
 
-result<text_spec> read_text_spec(const std::string& folder) {
+result<text_spec> read_text_spec(const std::string& folder, const std::string& fetched) {
   MV_TRY(std::string text, read_text(join(folder, "model.json")));
   const auto doc = json::parse(text, 8);
   if (!doc || doc->k != json::kind::object) return err(status::corrupt);
@@ -279,8 +281,8 @@ result<text_spec> read_text_spec(const std::string& folder) {
   s.name = *name;
   s.precision = *precision;
   s.dim = static_cast<std::uint32_t>(doc->integer("dim").value_or(384));
-  s.model_file = join(folder, *model);
-  s.vocab_file = join(folder, *vocab);
+  s.model_file = model_file(folder, fetched, *model);
+  s.vocab_file = model_file(folder, fetched, *vocab);
   s.mean_pool = !pooling || *pooling == "mean";
   if (const std::string* q = doc->str("query_prefix")) s.query_prefix = *q;
   if (const std::string* p = doc->str("passage_prefix")) s.passage_prefix = *p;

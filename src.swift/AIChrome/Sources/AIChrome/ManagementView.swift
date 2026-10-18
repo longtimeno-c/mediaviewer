@@ -82,6 +82,8 @@ final class ManagementStatus: ObservableObject {
   @Published fileprivate(set) var peopleModel = ""
   @Published fileprivate(set) var rerun: (done: UInt64, total: UInt64)?
   @Published fileprivate(set) var settling = false
+  /// #482: the model download's line (fetch_state), nil when there is none.
+  @Published fileprivate(set) var fetch: FetchLine?
 }
 
 /// Re-renders `content` alone when the status moves.
@@ -143,6 +145,8 @@ final class ManagementModel: ObservableObject {
     return docsModel.isEmpty ? " Words also match by meaning." : " Words also match by meaning (\(docsModel))."
   }
   @Published private(set) var models: [(quality: Int, name: String)] = []
+  /// #482: the model tiers and the one in force (settings "tiers", "tier").
+  @Published private(set) var tiers = TierCatalogue()
   @Published private(set) var roots: [RootRow] = []
   var folderRoots: [RootRow] { roots.filter { !$0.isPhotos } }
   var photosRoot: RootRow? { roots.first { $0.isPhotos } }
@@ -255,10 +259,12 @@ final class ManagementModel: ObservableObject {
       let facesChanged = (s.flags ^ flags) & (MV_AI_STATUS_FACES_READY | MV_AI_STATUS_FACES_ON) != 0
       let audioChanged = (s.flags ^ flags) & MV_AI_STATUS_AUDIO_READY != 0
       let docsChanged = (s.flags ^ flags) & MV_AI_STATUS_DOCS_READY != 0
+      let tierChanged = (s.flags ^ flags) & (MV_AI_STATUS_TIER_UNCHOSEN | MV_AI_STATUS_FETCHING) != 0
       flags = s.flags
       // The People, Sound or Documents piece came or went (installed, removed,
-      // or the opt-in flipped): the view follows now, not at the next start.
-      if facesChanged || audioChanged || docsChanged { reloadSettings() }
+      // or the opt-in flipped), or a tier was chosen or finished arriving:
+      // the view follows now, not at the next start.
+      if facesChanged || audioChanged || docsChanged || tierChanged { reloadSettings() }
       if facesChanged { reloadPeople() }
     }
     if s.faces_total != faceCounts.0 || s.people != faceCounts.1 {
@@ -278,6 +284,8 @@ final class ManagementModel: ObservableObject {
     if line != live.line { live.line = line }
     if s.cloud_files_left != live.cloudLeft { live.cloudLeft = s.cloud_files_left }
     if s.cloud_fetch != live.cloudFetch { live.cloudFetch = s.cloud_fetch }
+    let fetch = FetchLine.from(s)
+    if fetch != live.fetch { live.fetch = fetch }
     transfer.poll()
   }
 
@@ -295,8 +303,8 @@ final class ManagementModel: ObservableObject {
   // MARK: settings
 
   func reloadSettings() {
-    guard let obj = parseJSON(table.json { table.a.settings_json?(table.ctx, $0, $1, $2) ?? MV_ERR_INVALID_ARG })
-            as? [String: Any] else { return }
+    guard let raw = table.json({ table.a.settings_json?(table.ctx, $0, $1, $2) ?? MV_ERR_INVALID_ARG }),
+          let obj = parseJSON(raw) as? [String: Any] else { return }
     compute = Int(int64(obj["compute"]))
     quality = Int(int64(obj["quality"]))
     precision = obj["precision"] == nil ? 2 : min(4, max(0, Int(int64(obj["precision"]))))
@@ -319,6 +327,27 @@ final class ManagementModel: ObservableObject {
     models = (obj["models"] as? [[String: Any]] ?? []).map {
       (quality: Int(int64($0["quality"])), name: $0["name"] as? String ?? "")
     }
+    let catalogue = TierCatalogue(settings: obj, raw: raw)
+    if catalogue != tiers { tiers = catalogue }
+  }
+
+  /// The Models row's sentence: the tier's models, or why to choose one.
+  var tierDetail: String {
+    guard let tier = tiers.tier(tiers.chosen) else {
+      return "Choose the models Local search uses on this Mac. Nothing is downloaded until you do."
+    }
+    let line = tier.modelsLine
+    return line.isEmpty ? tier.forLine : line
+  }
+
+  /// The download row's button: Cancel (kept, to resume), Try again, Resume.
+  func fetchAction(_ action: FetchLine.Action) {
+    switch action {
+    case .cancel: table.setSetting("fetch_cancel", "1")
+    case .retry, .resume: table.setSetting("fetch_retry", "1")
+    case .none: return
+    }
+    pollStatus()
   }
 
   func set(_ key: String, _ value: Int64) {
@@ -883,6 +912,17 @@ struct ManagementView: View {
       if !model.message.isEmpty {
         Text(model.message).font(AITheme.font(12)).foregroundStyle(AITheme.body)
       }
+      // #482: the model tier, and its download while it arrives.
+      if !model.tiers.isEmpty {
+        section("Models") {
+          row("Models — \(model.tiers.chosenTitle)", detail: model.tierDetail) {
+            Button("Change…") { model.chrome?.showTierPickerFromSettings() }
+          }
+          LiveStatus(live: model.live) { live in
+            if let fetch = live.fetch { fetchRow(fetch) }
+          }
+        }
+      }
       section("Compute") {
         row("Where search runs",
             detail: "Auto uses Core ML (the Neural Engine and GPU) when it is faster than the CPU, and falls back on its own. Changing it does not re-index.") {
@@ -1420,6 +1460,28 @@ struct ManagementView: View {
         Button("Re-analyse") { model.reanalyse() }
       }
     }
+  }
+
+  /// "Downloading models… 1.2 of 3.4 GB (5 of 12 files)" with its bar and
+  /// button; the waits and faults as one line.
+  private func fetchRow(_ fetch: FetchLine) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 10) {
+        Text(fetch.text).font(AITheme.font(12)).foregroundStyle(AITheme.title)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        switch fetch.action {
+        case .cancel: Button("Cancel") { model.fetchAction(.cancel) }
+        case .retry: Button("Try again") { model.fetchAction(.retry) }
+        case .resume: Button("Resume") { model.fetchAction(.resume) }
+        case .none: EmptyView()
+        }
+      }
+      if let fraction = fetch.fraction {
+        ProgressView(value: fraction).progressViewStyle(.linear)
+      }
+    }
+    .padding(.horizontal, 12).padding(.vertical, 10)
   }
 
   private func progressRow(_ text: String, fraction: Double?) -> some View {

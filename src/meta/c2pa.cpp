@@ -574,7 +574,9 @@ void read_signature(const box& sig, sink& out, bool curated) {
     std::string when;
     std::size_t nodes = 0;
     if (find_gentime(bytes(reinterpret_cast<const std::uint8_t*>(v.data()), v.size()), 0, nodes, when)) {
-      (void)out.add(origin::c2pa, kGroup, "SigningTime", "Signed at", pretty_gentime(when), "C2PA.signature.time");
+      std::string signed_at = pretty_gentime(when);
+      if (out.ev.c2pa_signed.empty()) out.ev.c2pa_signed = signed_at;
+      (void)out.add(origin::c2pa, kGroup, "SigningTime", "Signed at", signed_at, "C2PA.signature.time");
       return;
     }
   }
@@ -590,6 +592,10 @@ void read_actions(const cbor& assertion, std::vector<std::string>& names, sink& 
     }
     if (const cbor* d = a.get("digitalSourceType"); d && !d->text().empty()) {
       if (out.ev.source_types.size() < 32) out.ev.source_types.emplace_back(d->text());
+    }
+    // #415: when the file was made, as its maker states it (actions v2 `when`).
+    if (const cbor* n = a.get("action"); n && active && n->text() == "c2pa.created" && out.ev.c2pa_created.empty()) {
+      if (const cbor* w = a.get("when"); w && !w->text().empty()) out.ev.c2pa_created = format_instant_utc(w->text());
     }
     if (const cbor* sa = a.get("softwareAgent"); sa && active) {
       if (std::string n = agent_name(*sa); !n.empty() && out.ev.c2pa_agents.size() < 32) {
@@ -664,6 +670,9 @@ void read_c2pa(std::span<const std::uint8_t> jumbf, sink& out) {
     }
     if (!agents.empty()) (void)out.add(origin::c2pa, kGroup, "SoftwareAgent", "Software agent", agents, "C2PA.actions.softwareAgent");
     if (active.signature) read_signature(*active.signature, out, true);
+    if (!out.ev.c2pa_created.empty()) {
+      (void)out.add(origin::c2pa, kGroup, "Created", "Created", out.ev.c2pa_created, "C2PA.actions.when");
+    }
     if (manifests.size() > 1) {
       (void)out.add(origin::c2pa, kGroup, "Manifests", "Manifests", std::to_string(manifests.size()), "C2PA.manifests");
     }

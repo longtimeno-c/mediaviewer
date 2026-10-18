@@ -171,3 +171,105 @@ std::string number_text(double v) {
 }  // namespace util
 
 }  // namespace mv::meta::parse
+
+namespace mv::meta {
+namespace {
+
+// Reads exactly `n` ASCII digits at `s[pos]`, advancing pos. -1 on failure.
+int read_digits(std::string_view s, std::size_t& pos, std::size_t n) noexcept {
+  if (pos + n > s.size()) return -1;
+  int v = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const char c = s[pos + i];
+    if (c < '0' || c > '9') return -1;
+    v = v * 10 + (c - '0');
+  }
+  pos += n;
+  return v;
+}
+
+// Howard Hinnant's days_from_civil and its inverse: proleptic Gregorian, no zone.
+std::int64_t days_of(std::int64_t y, unsigned m, unsigned d) noexcept {
+  y -= m <= 2;
+  const std::int64_t era = (y >= 0 ? y : y - 399) / 400;
+  const auto yoe = static_cast<unsigned>(y - era * 400);
+  const unsigned doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + static_cast<std::int64_t>(doe) - 719468;
+}
+
+}  // namespace
+
+// Here, not in format.cpp, because C2PA (this library) calls it and the
+// fuzz harnesses link mv_meta_parse alone.
+std::string format_instant_utc(std::string_view iso) {
+  while (!iso.empty() && (iso.front() == ' ' || iso.front() == '\t')) iso.remove_prefix(1);
+  std::size_t pos = 0;
+  const int year = read_digits(iso, pos, 4);
+  if (year < 1 || pos >= iso.size() || iso[pos] != '-') return {};
+  ++pos;
+  const int month = read_digits(iso, pos, 2);
+  if (month < 1 || month > 12 || pos >= iso.size() || iso[pos] != '-') return {};
+  ++pos;
+  const int day = read_digits(iso, pos, 2);
+  if (day < 1 || day > 31) return {};
+  int hour = 0, minute = 0, second = 0;
+  if (pos < iso.size() && (iso[pos] == 'T' || iso[pos] == 't' || iso[pos] == ' ')) {
+    ++pos;
+    hour = read_digits(iso, pos, 2);
+    if (hour < 0 || hour > 23 || pos >= iso.size() || iso[pos] != ':') return {};
+    ++pos;
+    minute = read_digits(iso, pos, 2);
+    if (minute < 0 || minute > 59) return {};
+    if (pos < iso.size() && iso[pos] == ':') {
+      ++pos;
+      second = read_digits(iso, pos, 2);
+      if (second < 0 || second > 60) return {};
+    }
+    if (pos < iso.size() && (iso[pos] == '.' || iso[pos] == ',')) {
+      ++pos;
+      while (pos < iso.size() && iso[pos] >= '0' && iso[pos] <= '9') ++pos;  // fractions dropped
+    }
+  }
+  std::int64_t t = days_of(year, static_cast<unsigned>(month), static_cast<unsigned>(day)) * 86400 +
+                   hour * 3600 + minute * 60 + second;
+  // The zone: Z, +hh:mm, +hhmm or +hh. None = the wall time as stated.
+  bool zoned = false;
+  if (pos < iso.size()) {
+    if (iso[pos] == 'Z' || iso[pos] == 'z') {
+      zoned = true;
+    } else if (iso[pos] == '+' || iso[pos] == '-') {
+      const int sign = iso[pos] == '-' ? -1 : 1;
+      std::size_t p = pos + 1;
+      const int hh = read_digits(iso, p, 2);
+      int mm = 0;
+      if (p < iso.size() && iso[p] == ':') ++p;
+      if (p < iso.size()) mm = read_digits(iso, p, 2);
+      if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return {};
+      t -= sign * (hh * 3600 + mm * 60);  // local = UTC + offset
+      zoned = true;
+    }
+  }
+  std::int64_t days = t / 86400;
+  std::int64_t rem = t % 86400;
+  if (rem < 0) {
+    rem += 86400;
+    --days;
+  }
+  days += 719468;
+  const std::int64_t era = (days >= 0 ? days : days - 146096) / 146097;
+  const auto doe = static_cast<unsigned>(days - era * 146097);
+  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const unsigned mp = (5 * doy + 2) / 153;
+  const unsigned d = doy - (153 * mp + 2) / 5 + 1;
+  const unsigned m = mp < 10 ? mp + 3 : mp - 9;
+  const std::int64_t y = static_cast<std::int64_t>(yoe) + era * 400 + (m <= 2 ? 1 : 0);
+  char buf[48];
+  std::snprintf(buf, sizeof(buf), "%04lld-%02u-%02u %02d:%02d:%02d%s", static_cast<long long>(y), m, d,
+                static_cast<int>(rem / 3600), static_cast<int>((rem / 60) % 60), static_cast<int>(rem % 60),
+                zoned ? " UTC" : "");
+  return buf;
+}
+
+}  // namespace mv::meta
