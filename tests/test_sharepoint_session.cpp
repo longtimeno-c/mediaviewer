@@ -703,7 +703,9 @@ TEST_CASE("sharepoint session: Wi-Fi drops to Bluetooth, which goes out of range
   auto t0 = clock_type::now();
   REQUIRE(eventually([&] { return ann.eng.snapshot().out_via == "Bluetooth"; }, 15));
   const auto to_bt_ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock_type::now() - t0).count();
-  CHECK(to_bt_ms <= 5000);
+  // A cut that a side sees at once moves in milliseconds; one that shows only
+  // as silence takes the suspect timer, then a race (slow CI runners: both).
+  CHECK(to_bt_ms <= sp::kSuspectMs + 3000);
   const std::uint64_t at_cut = bea.eng.snapshot().in_bytes;
 
   // Out of Bluetooth range for 5 s, then back: it resumes.
@@ -788,7 +790,9 @@ TEST_CASE("sharepoint session: a link that goes silent is suspect at 3 s and the
   const auto t0 = clock_type::now();
   REQUIRE(eventually([&] { return wifi.connects.load() > before; }, 10));
   const auto suspect_ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock_type::now() - t0).count();
-  CHECK(suspect_ms >= sp::kSuspectMs - 500);
+  // The timer counts from the last byte heard from the receiver (its acks
+  // and pings), up to about a second before the freeze.
+  CHECK(suspect_ms >= sp::kSuspectMs - 1000);
   CHECK(suspect_ms <= sp::kSuspectMs + 1500);
   ann.eng.wait_idle();
   bea.eng.wait_idle();
