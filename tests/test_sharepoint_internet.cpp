@@ -637,14 +637,18 @@ TEST_CASE("sharepoint internet: the offer asks for places, and places are read w
   CHECK_FALSE(sp::places_dht(R"({"places":[]})"));
   CHECK_FALSE(sp::places_dht("junk"));
   {
-    // The session's DHT keys: the same from the same secret, others from another.
+    // The session's DHT keys: the same from the same secret and count of
+    // rejoins, others from another secret or after another move.
     std::array<std::uint8_t, 32> a{}, b{};
     b[0] = 1;
-    const auto ka = sp::handover_keys(a), ka2 = sp::handover_keys(a), kb = sp::handover_keys(b);
+    const auto ka = sp::handover_keys(a, 0), ka2 = sp::handover_keys(a, 0), kb = sp::handover_keys(b, 0);
+    const auto ka1 = sp::handover_keys(a, 1);
     CHECK(ka.public_key == ka2.public_key);
     CHECK(ka.salt_base == ka2.salt_base);
     CHECK(ka.public_key != kb.public_key);
     CHECK(ka.box != kb.box);
+    CHECK(ka.public_key != ka1.public_key);
+    CHECK(ka.salt_base != ka1.salt_base);
   }
   const auto p = sp::parse_places(
       R"({"places":[{"a":"203.0.113.5","p":41000},{"a":"2001:db8::5","p":443},{"a":"not an address","p":1},)"

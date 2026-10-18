@@ -26,6 +26,7 @@
 // Portable (D9).
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -51,6 +52,9 @@ struct meet_options {
   // sooner: both sides start within moments of each other, and the session
   // waits only kRejoinMs.
   int retry_ms = 2000;
+  // The items' sequence number is at least this (BEP 44 nodes keep only a
+  // higher one): a meeting soon after a withdraw under the same keys.
+  std::int64_t seq_floor = 0;
 };
 
 // What a meeting reports along the way, for the window ("Looking for the
@@ -64,7 +68,9 @@ using progress_fn = std::function<void(const std::string& ascii)>;
 [[nodiscard]] result<std::unique_ptr<link>> meet(const std::shared_ptr<udp_hub>& hub, client& dht, const keys& k, role me,
                                                  const meet_options& o, const std::function<bool()>& stop,
                                                  const progress_fn& progress);
-// After the link is up: this side's items say "gone".
-void withdraw(client& dht, const keys& k, role me, const std::function<bool()>& stop);
+// After the link is up (or a meeting gave up): this side's items say
+// "gone", at a sequence number above `seq_floor`; the number used.
+std::int64_t withdraw(client& dht, const keys& k, role me, const std::function<bool()>& stop,
+                      std::int64_t seq_floor = 0);
 
 }  // namespace mv::sharepoint::dht

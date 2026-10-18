@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "addons/sharepoint/channel.h"
+#include "addons/sharepoint/handover.h"
 #include "addons/sharepoint/internet.h"
 #include "addons/sharepoint/known.h"
 #include "addons/sharepoint/prefs.h"
@@ -262,6 +263,9 @@ class engine {
     // #472 PR 5: a TCP connection to a receiver's internet place, for the
     // Wi-Fi -> internet handover (net::connect when empty; the tests').
     std::function<result<std::unique_ptr<link>>(const net::endpoint&, int timeout_ms)> connect_internet;
+    // #472, the tests: the sender's stream met on the DHT, before it rejoins
+    // (wrapped to cut or slow it).
+    std::function<std::unique_ptr<link>(std::unique_ptr<link>)> wrap_handover_link;
   };
 
   engine(engine_host& host, options opts);
@@ -403,6 +407,9 @@ class engine {
   void read_folder(std::string folder);
   void cancel_transfer();
   void reap_helpers();  // under threads_m_
+  // #472: a transfer's DHT handover, stopped and joined later (its thread
+  // may be in a DNS lookup or a withdraw): never on the transfer's way out.
+  void retire(std::unique_ptr<dht_handover> h);
   [[nodiscard]] bool visible_locked() const noexcept;
   [[nodiscard]] bool out_busy_locked() const noexcept;
   [[nodiscard]] hooks hooks_for(bool sending);
@@ -485,6 +492,7 @@ class engine {
   std::mutex threads_m_;
   std::thread transfer_thread_;
   std::vector<helper> helpers_;  // busy refusals
+  std::vector<std::unique_ptr<dht_handover>> retired_;  // under threads_m_
 
   // The folder reader (queue_files).
   std::mutex files_m_;

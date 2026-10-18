@@ -238,9 +238,10 @@ bool client::start(const std::function<bool()>& stop) {
 
 bool client::refresh(const std::function<bool()>& stop) {
   std::vector<net::endpoint> ask;
+  std::map<std::string, int> before;
   {
     std::lock_guard lock(m_);
-    votes_.clear();
+    before.swap(votes_);
     // The secure nodes first: their votes cannot be steered by where they sit.
     for (int pass = 0; pass < 2; ++pass) {
       for (const auto& n : table_) {
@@ -259,7 +260,11 @@ bool client::refresh(const std::function<bool()>& stop) {
     });
   }
   for (auto& t : asks) t.join();
-  return answered.load() > 0;
+  if (answered.load() > 0) return true;
+  // Nobody answered: what the DHT said before is all there is.
+  std::lock_guard lock(m_);
+  for (const auto& [k, c] : before) votes_[k] += c;
+  return false;
 }
 
 std::vector<client::contact> client::lookup(const node_id& target, const std::string& ask,

@@ -87,7 +87,8 @@ class client {
   [[nodiscard]] bool start(const std::function<bool()>& stop);
   // After this machine may have changed networks (#472's handover): forget
   // how the DHT saw it and ask up to eight known nodes again, at once (one
-  // round trip; query_ms at most). False when none answered.
+  // round trip; query_ms at most). False when none answered (the old votes
+  // are kept then).
   bool refresh(const std::function<bool()>& stop);
 
   struct item {

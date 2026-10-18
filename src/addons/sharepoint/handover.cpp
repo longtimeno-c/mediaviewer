@@ -19,14 +19,19 @@ constexpr char kContext[crypto_kdf_CONTEXTBYTES + 1] = "MVSPhand";
 constexpr int kTakeMs = 5000;
 // A lookup that found nothing: the other side's put is likely on its way.
 constexpr int kRetryMs = 500;
+// How long the "gone" items may take.
+constexpr int kWithdrawMs = 2000;
 
 }  // namespace
 
-dht::keys handover_keys(std::span<const std::uint8_t, 32> secret) {
+dht::keys handover_keys(std::span<const std::uint8_t, 32> secret, std::uint32_t rejoins) {
   (void)sodium_init();
   static_assert(crypto_kdf_KEYBYTES == 32);
   std::uint8_t part[4][32];
-  for (std::uint64_t i = 0; i < 4; ++i) crypto_kdf_derive_from_key(part[i], sizeof part[i], i, kContext, secret.data());
+  const std::uint64_t base = static_cast<std::uint64_t>(rejoins) * 4;
+  for (std::uint64_t i = 0; i < 4; ++i) {
+    crypto_kdf_derive_from_key(part[i], sizeof part[i], base + i, kContext, secret.data());
+  }
   dht::keys k;
   crypto_sign_seed_keypair(k.public_key.data(), k.secret_key.data(), part[0]);
   std::memcpy(k.box.data(), part[1], 32);
@@ -48,16 +53,21 @@ dht_handover::dht_handover(std::shared_ptr<channel> ch, options o, std::function
       run();
     } catch (...) {
     }
+    finished_.store(true);
   });
 }
 
 dht_handover::~dht_handover() {
+  request_stop();
+  if (thread_.joinable()) thread_.join();
+}
+
+void dht_handover::request_stop() {
   {
     std::lock_guard lock(m_);
     stop_ = true;
   }
   cv_.notify_all();
-  if (thread_.joinable()) thread_.join();
 }
 
 bool dht_handover::stopped() const {
@@ -86,7 +96,7 @@ void dht_handover::run() {
   dht::client client(hub, opts_.client);
   // Joined while the local link still works: a drop then costs no bootstrap.
   bool joined = client.start(halt);
-  if (joined) {
+  if (joined && !stopped()) {
     ready_.store(true);
     if (on_ready_) on_ready_();
   }
@@ -105,27 +115,29 @@ void dht_handover::run() {
     // Both ends compute these from the session as it stands; a rejoin
     // elsewhere changes them for the next drop.
     const auto secret = ch_->handover_secret();
-    const dht::keys k = handover_keys(secret);
+    const dht::keys k = handover_keys(secret, ch_->rejoins());
     dht::meet_options mo;
     mo.loopback = opts_.loopback;
     mo.wait_ms = opts_.wait_ms;
     mo.retry_ms = kRetryMs;
+    mo.seq_floor = seq_floor_;
     const std::function<bool()> give_up = [this] { return stopped() || ch_->link_up(); };
     auto met = dht::meet(hub, client, k, opts_.me, mo, give_up, {});
-    if (!met) continue;
-    if (give_up()) {
+    if (met && give_up()) {
       (*met)->shutdown();  // back some other way meanwhile
-      continue;
+    } else if (met) {
+      last_meet_ms_.store(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - seen).count());
+      meetings_.fetch_add(1);
+      on_link_(std::make_unique<bearer_as>(std::move(*met), transport::internet));
+      // The session takes it (or not) before a next meeting.
+      const auto until = clock::now() + std::chrono::milliseconds(kTakeMs);
+      while (clock::now() < until && !ch_->link_up() && pause(50)) {
+      }
     }
-    last_meet_ms_.store(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - seen).count());
-    meetings_.fetch_add(1);
-    on_link_(std::make_unique<bearer_as>(std::move(*met), transport::internet));
-    // The session takes it (or not) before a next meeting; then this side's
-    // items say "gone".
-    const auto until = clock::now() + std::chrono::milliseconds(kTakeMs);
-    while (clock::now() < until && !ch_->link_up() && pause(50)) {
-    }
-    dht::withdraw(client, k, opts_.me, halt);
+    // Met, abandoned or not found: this side's items say "gone" (briefly,
+    // even when stopping; the engine does not wait for it).
+    const auto withdraw_until = clock::now() + std::chrono::milliseconds(kWithdrawMs);
+    seq_floor_ = dht::withdraw(client, k, opts_.me, [&] { return clock::now() >= withdraw_until; }, seq_floor_) + 1;
   }
 }
 

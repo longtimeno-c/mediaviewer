@@ -7,10 +7,14 @@
 // as two four-word sides do (meet.h), under keys from the session itself:
 //
 //   - The keys: channel::handover_secret() (the resume secret under its own
-//     context, so neither the pairing secret nor the next rejoin's psk can be
-//     told from them), through crypto_kdf into the four parts of a word
-//     code's set (dht_item.h). Only the two ends of the session hold it; it
-//     changes at every rejoin, so each drop meets under fresh targets.
+//     context, so neither the pairing secret nor the rejoins' psk can be
+//     told from them; fixed for the session), and the session's rejoins so
+//     far (both ends count every rejoin they adopt), through crypto_kdf into
+//     the four parts of a word code's set (dht_item.h). Only the two ends of
+//     the session hold the secret; each move gives the next drop fresh
+//     targets and a fresh stream id. Should the two counts ever differ (a
+//     rejoin that completed on one end only), the meeting finds nobody and
+//     the session ends after kRejoinMs, as with the toggle off.
 //   - Roles: the sender publishes as the sender and looks up the receiver's
 //     items, the receiver the other way round, so a side never meets its own
 //     item.
@@ -22,7 +26,8 @@
 //   - On a drop (the link suspect or down): the sender rejoins over the met
 //     stream (channel::rejoin), the receiver hands it to the engine's rejoin
 //     path (route_busy, accept_rejoin). A meeting stops as soon as the link
-//     is up again some other way (Wi-Fi back, the swapped places).
+//     is up again some other way (Wi-Fi back, the swapped places). Every
+//     meeting ends with this side's items saying "gone", met or not.
 // Nothing is logged with an address. Portable (D9).
 #pragma once
 
@@ -43,8 +48,8 @@
 
 namespace mv::sharepoint {
 
-// The DHT keys for a session secret (handover_secret()).
-[[nodiscard]] dht::keys handover_keys(std::span<const std::uint8_t, 32> secret);
+// The DHT keys for a session secret (handover_secret()) after `rejoins` moves.
+[[nodiscard]] dht::keys handover_keys(std::span<const std::uint8_t, 32> secret, std::uint32_t rejoins);
 
 class dht_handover {
  public:
@@ -63,6 +68,10 @@ class dht_handover {
   dht_handover(std::shared_ptr<channel> ch, options o, std::function<bool()> armed, link_fn on_link,
                std::function<void()> on_ready = {});
   ~dht_handover();  // stops a meeting under way, joins, closes the hub
+  // Any thread: stop without waiting (the engine retires it and joins it
+  // once finished(), off the transfer's way).
+  void request_stop();
+  [[nodiscard]] bool finished() const noexcept { return finished_.load(); }
   dht_handover(const dht_handover&) = delete;
   dht_handover& operator=(const dht_handover&) = delete;
 
@@ -89,6 +98,8 @@ class dht_handover {
   std::atomic<bool> ready_{false};
   std::atomic<std::uint32_t> meetings_{0};
   std::atomic<std::int64_t> last_meet_ms_{-1};
+  std::atomic<bool> finished_{false};
+  std::int64_t seq_floor_ = 0;  // this object's thread only: above the last withdraw
   std::thread thread_;
 };
 

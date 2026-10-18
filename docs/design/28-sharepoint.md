@@ -448,32 +448,40 @@ need it on (and "Send and receive over the internet").
   - The sender's offer says `"dht":true` beside `"handover"`; a receiver with the DHT toggle on
     answers at once with `places` carrying `"dht":true` (before its way in has opened, which may
     take the router seconds), and again with its places.
-  - **Pre-started.** From then until the files are in, each side keeps its UDP hub open and has
-    joined the DHT (the bootstrap and saved table, as a word code's), so a drop costs no join. A
-    side with both toggles on and nothing to rescue sends nothing more on the DHT than the join;
-    the window shows nothing new.
+  - **Pre-started.** The receiver once it has accepted and the offer asked, the sender once those
+    `places` arrive (so a receiver that never says so costs the sender nothing): from then until the
+    files are in, each side keeps its UDP hub open and has joined the DHT (the bootstrap and saved
+    table, as a word code's), so a drop costs no join. With nothing to rescue a side sends nothing
+    more on the DHT than the join; the window shows nothing new. When the transfer ends the engine
+    stops it without waiting (a join may be in a DNS lookup) and joins its thread later.
   - **The keys.** `channel::handover_secret()`: BLAKE2b over the resume secret under its own context
     (`"MediaViewer Sharepoint handover v1"`, apart from the pairing secret's), then `crypto_kdf`
     (context `MVSPhand`) into the four parts of a word code's set (item key, box, salt base, CPace
-    password). Only the two ends of the session hold it; it changes at every rejoin, so each drop
-    meets under targets nobody saw before. The sender publishes and looks as the sender, the
+    password), at index `4 × rejoins()`: the resume secret is fixed for the session (decision log,
+    2026-10-18), so the count of rejoins both ends have adopted is what makes each drop's targets
+    and stream id new. Only the two ends of the session hold the secret. Should the counts ever
+    differ (a rejoin that completed on one end only), the meeting finds nobody and the session
+    ends after 20 s, as with the toggle off. The sender publishes and looks as the sender, the
     receiver as the receiver, so neither meets its own item.
   - **On a drop** (the link suspect or down, looked at every 200 ms): each side asks up to eight
     known nodes again how they see it (its network may have changed), publishes its candidates,
     looks up the other's every 500 ms (a word code waits 2 s between looks), and punches. The
     sender rejoins over the punched stream (`NNhfs+psk0`, `resume_at`, as any rejoin); the receiver
     hands it to the engine's rejoin path. A meeting stops as soon as the link is up again some
-    other way (Wi-Fi back, the swapped places); after a move each side's items say "gone". It
-    runs beside the swapped places, not after them, so a drop the places rescue in milliseconds
-    may still cost each side one publish.
+    other way (Wi-Fi back, the swapped places); the sender drops a stream met after that. Every
+    meeting, met or not, ends with this side's items saying "gone" (at most 2 s, at a sequence
+    number above any it used under those keys). It runs beside the swapped places, not after them,
+    so a drop the places rescue in milliseconds may still cost each side one publish.
   - **Measured** on the stand-in swarm (16 loopback nodes; 10 runs, 2026-10-18): the stream is up
     0.14–0.69 s after the drop is seen, the send is over the internet 0.87–1.88 s after the cut.
     The bimodal tail is the stream's first retransmit (1 s): when the receiver's punch completes
     ~100 ms after the sender's, the sender's first stream packet arrives before the receiver's
-    stream exists. Well inside `kRejoinMs` (20 s); the public DHT's lookups (`"[.sharepoint-dht-live]"`)
-    and real NATs are not measured.
-  - With the DHT toggle off on either side, a drop that takes the receiver's places ends the
-    transfer after 20 s, as before.
+    stream exists. A second drop after a move over the DHT meets again under the next keys in
+    ~5.5 s: the sender sees its cut at once, the receiver only as silence (`kSuspectMs`, 3 s).
+    Well inside `kRejoinMs` (20 s); the public DHT's publish and lookup during a drop and real NATs
+    are not measured.
+  - With the DHT toggle off on either side (both cases tested), neither joins the DHT, and a drop
+    that takes the receiver's places ends the transfer after 20 s, as before.
 - **Not built** (said so in #472's PR 5): the **configured relay** (a TURN server or a splice
   program of the person's own) and **Tor**, whose spikes were not run, so neither is offered. Two
   hard NATs do not meet on the DHT ([above](#four-words-over-the-dht-472-pr-3)).

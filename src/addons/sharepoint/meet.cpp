@@ -67,7 +67,7 @@ result<std::unique_ptr<link>> meet(const std::shared_ptr<udp_hub>& hub, client& 
   contents mine;
   mine.candidates = own_candidates(*hub, dht, o.loopback);
   mine.written_ms = unix_ms();
-  const std::int64_t seq = mine.written_ms / 1000;
+  const std::int64_t seq = std::max(mine.written_ms / 1000, o.seq_floor);
   say("Publishing where this computer can be reached\xE2\x80\xA6");
   {
     std::vector<std::thread> puts;
@@ -104,7 +104,7 @@ result<std::unique_ptr<link>> meet(const std::shared_ptr<udp_hub>& hub, client& 
     if (!theirs) {
       // Not there yet (the other side has not typed the code, or its put is
       // still on its way): again shortly; our item stays published.
-      for (int w = 0; w < o.retry_ms / 100 && !(stop && stop()); ++w) {
+      for (int w = 0; w < std::max(1, o.retry_ms / 100) && !(stop && stop()); ++w) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
       }
     }
@@ -177,11 +177,11 @@ result<std::unique_ptr<link>> meet(const std::shared_ptr<udp_hub>& hub, client& 
   return hub->stream(*path, stream_id_of(tag), me == role::receiver);
 }
 
-void withdraw(client& dht, const keys& k, role me, const std::function<bool()>& stop) {
+std::int64_t withdraw(client& dht, const keys& k, role me, const std::function<bool()>& stop, std::int64_t seq_floor) {
   contents gone;
   gone.gone = true;
   gone.written_ms = unix_ms();
-  const std::int64_t seq = gone.written_ms / 1000 + 1;
+  const std::int64_t seq = std::max(gone.written_ms / 1000 + 1, seq_floor + 1);
   std::vector<std::thread> puts;
   for (int i = 0; i < kTargets; ++i) {
     puts.emplace_back([&, i] {
@@ -190,6 +190,7 @@ void withdraw(client& dht, const keys& k, role me, const std::function<bool()>& 
     });
   }
   for (auto& t : puts) t.join();
+  return seq;
 }
 
 }  // namespace mv::sharepoint::dht
