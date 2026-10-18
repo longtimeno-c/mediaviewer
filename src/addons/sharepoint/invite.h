@@ -12,8 +12,9 @@
 //
 // Text: Crockford base32 in groups of four ("7KQ2-M9XA-..."), case and
 // O/0, I/L/1 ignored; or a link, mediaviewer://sharepoint?code=<text>. An
-// IPv4-only code is 26 characters; with an IPv6 address, 52. (The issue's
-// "about 16 characters" cannot hold an address and a secret.)
+// IPv4-only code is 26 characters; one IPv6 address alone, 45; four places at
+// most, about 90. (The issue's "about 16 characters" cannot hold an address
+// and a secret; the link and a QR code carry the long ones.)
 //
 // Portable (D9).
 #pragma once

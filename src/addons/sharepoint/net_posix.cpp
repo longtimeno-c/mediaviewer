@@ -393,11 +393,29 @@ std::optional<address> default_gateway() {
 #endif
 }
 
+std::optional<address> local_address_toward(const address& peer) {
+  sockaddr_storage a;
+  const socklen_t alen = sockaddr_of({address_text(peer), 9}, a);
+  if (alen == 0) return std::nullopt;
+  const int fd = ::socket(a.ss_family, SOCK_DGRAM, 0);
+  if (fd < 0) return std::nullopt;
+  std::optional<address> out;
+  sockaddr_storage s{};
+  socklen_t len = sizeof s;
+  if (::connect(fd, reinterpret_cast<sockaddr*>(&a), alen) == 0 &&
+      ::getsockname(fd, reinterpret_cast<sockaddr*>(&s), &len) == 0) {
+    out = parse_address(endpoint_of(s).address);
+  }
+  ::close(fd);
+  return out;
+}
+
 namespace {
 
 class udp_port final : public udp_socket {
  public:
-  explicit udp_port(int fd) : fd_(fd) {}
+  udp_port(int fd, std::uint16_t port) : fd_(fd), port_(port) {}
+  std::uint16_t port() const noexcept override { return port_; }
   ~udp_port() override {
     shutdown();
     ::close(fd_);
@@ -425,12 +443,13 @@ class udp_port final : public udp_socket {
 
  private:
   int fd_;
+  std::uint16_t port_;
   std::atomic<bool> down_{false};
 };
 
 }  // namespace
 
-result<std::unique_ptr<udp_socket>> open_udp(bool v6, int multicast_ttl) {
+result<std::unique_ptr<udp_socket>> open_udp(bool v6, int multicast_ttl, bool loopback_only) {
   const int fd = ::socket(v6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
   if (fd < 0) return err(status::io);
   close_on_exec(fd);
@@ -442,7 +461,25 @@ result<std::unique_ptr<udp_socket>> open_udp(bool v6, int multicast_ttl) {
     unsigned char ttl = static_cast<unsigned char>(multicast_ttl);
     (void)::setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof ttl);
   }
-  return std::unique_ptr<udp_socket>(std::make_unique<udp_port>(fd));
+  sockaddr_storage s{};
+  socklen_t len = 0;
+  if (v6) {
+    auto* a = reinterpret_cast<sockaddr_in6*>(&s);
+    a->sin6_family = AF_INET6;
+    a->sin6_addr = loopback_only ? in6addr_loopback : in6addr_any;
+    len = sizeof *a;
+  } else {
+    auto* a = reinterpret_cast<sockaddr_in*>(&s);
+    a->sin_family = AF_INET;
+    a->sin_addr.s_addr = htonl(loopback_only ? INADDR_LOOPBACK : INADDR_ANY);
+    len = sizeof *a;
+  }
+  if (::bind(fd, reinterpret_cast<sockaddr*>(&s), len) != 0 ||
+      ::getsockname(fd, reinterpret_cast<sockaddr*>(&s), &len) != 0) {
+    ::close(fd);
+    return err(status::io);
+  }
+  return std::unique_ptr<udp_socket>(std::make_unique<udp_port>(fd, endpoint_of(s).port));
 }
 
 result<std::unique_ptr<beacon_socket>> open_beacon_socket(std::uint16_t port) {

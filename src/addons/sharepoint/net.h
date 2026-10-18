@@ -71,6 +71,9 @@ class listener {
 [[nodiscard]] std::vector<address> local_addresses();
 // The IPv4 default gateway (the router a port mapping asks), if any.
 [[nodiscard]] std::optional<address> default_gateway();
+// This machine's address on the route to `peer` (a UDP socket connected to
+// it, then asked; nothing is sent): what a mapping names as its client.
+[[nodiscard]] std::optional<address> local_address_toward(const address& peer);
 
 // A UDP socket: the router's mapping protocols (NAT-PMP, PCP) and UPnP's
 // SSDP search. Never the beacon's port.
@@ -82,10 +85,12 @@ class udp_socket {
   [[nodiscard]] virtual result<std::size_t> receive_from(std::span<std::uint8_t> into, int timeout_ms,
                                                          endpoint& from) = 0;
   virtual void shutdown() noexcept = 0;
+  [[nodiscard]] virtual std::uint16_t port() const noexcept = 0;
 };
-// IPv4 (or IPv6) on a port the OS picks; `multicast_ttl`: the TTL of a
-// multicast send (SSDP asks for 2).
-[[nodiscard]] result<std::unique_ptr<udp_socket>> open_udp(bool v6, int multicast_ttl = 1);
+// IPv4 (or IPv6) on a port the OS picks, bound at once; `multicast_ttl`: the
+// TTL of a multicast send (SSDP asks for 2). `loopback_only`: bound to
+// 127.0.0.1 / ::1 (the tests' stand-in routers).
+[[nodiscard]] result<std::unique_ptr<udp_socket>> open_udp(bool v6, int multicast_ttl = 1, bool loopback_only = false);
 
 // The discovery socket: UDP on `port`, joined to kMulticastGroup, sharing the
 // port with other MediaViewers on this machine.
