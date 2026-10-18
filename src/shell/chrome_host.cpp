@@ -9,6 +9,7 @@
 #include <cwchar>
 #include <vector>
 
+#include "core/boot_timeline.h"
 #include "core/trace.h"
 
 namespace mv::shell {
@@ -221,6 +222,7 @@ expected chrome_host::load() noexcept {
   }
   if (!load_hostfxr()) return err(status::io);
   if (!load_runtime()) return err(status::internal);
+  mv::boot::mark(mv::boot::stage::chrome_runtime);
 
   probe_ = get_entry(L"Probe");
   attach_ = get_entry(L"Attach");
@@ -320,6 +322,7 @@ expected chrome_host::load() noexcept {
   update_restart_ = get_entry(L"UpdateRestart");
   updater_exit_ = get_entry(L"UpdaterExit");
 
+  mv::boot::mark(mv::boot::stage::chrome_loaded);
   MV_LOG_INFO("chrome: runtime loaded from %ls", chrome_dll_);
   return {};
 }

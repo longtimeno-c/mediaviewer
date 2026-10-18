@@ -51,6 +51,7 @@
 
 #include "abi/guard.h"
 #include "shell/app_icon.h"
+#include "core/boot_timeline.h"
 #include "core/trace.h"
 #include "mediaviewer/mediaviewer.h"
 #include "mediaviewer/mediaviewer_addon.h"
@@ -498,6 +499,8 @@ struct app_state {
   // Soaks and scripted runs open fixtures, not the user's folders: they never
   // reach settings.ini [recent] or the jump list.
   bool record_recent = true;
+  // Issue #486: the launch named a path, so "ready" waits for its full resolution.
+  bool boot_with_paths = false;
   // PR 15: the taskbar thumbnail toolbar (prev / play-pause / next). Created
   // when Explorer says the button exists; `thumb_state` is what it shows:
   // -1 not yet, 0 a still (play disabled), 1 a paused clip, 2 a playing one.
@@ -558,6 +561,15 @@ struct pending_restore {
 // PR 15: `--new-instance` runs a second, independent window (docs/design/09
 // "overridable"); without it a second start hands its paths to the first.
 bool g_new_instance = false;
+// Issue #486: `--boot-report <path>` writes the boot timeline (core/boot_timeline.h)
+// as JSON once the launch is ready, then closes the window: a measuring run,
+// repeated by tools/perf/boot.ps1. It implies --new-instance and keeps
+// [recent] as it was; the rest of the launch is the plain one.
+std::wstring g_boot_report;
+bool g_boot_report_sent = false;
+// A launch with a file is ready at its full-resolution present; one that never
+// gets there (a document, a clip, an unreadable file) reports after this.
+constexpr double kBootReportGiveUpMs = 15000.0;
 // #452: `--background`, the sign-in start (login_item_win.h): the window stays
 // hidden and only the notification-area icon shows, once an add-on keeps the
 // process. Never forwards to a running viewer: one already running is enough.
@@ -6116,6 +6128,37 @@ void folder_jump(app_state* app, long long delta) {
 // docs/design/16 "Status / title": name — i/N — W×H — zoom %. From the folder model
 // and the render thread's published numbers; no decode, no I/O. Ratings (★)
 // arrive with PR 11.
+// Issue #486: once the launch is ready, logs the boot timeline and, for
+// --boot-report, writes it on a worker (rule 1) and closes the window. Ready:
+// the UI is interactive, a frame is on screen and, with a path, its full
+// resolution was presented (or kBootReportGiveUpMs passed).
+void boot_report_tick(app_state* app) noexcept {
+  if (g_boot_report_sent) return;
+  const mv::boot::snapshot s = mv::boot::read();
+  const auto at = [&](mv::boot::stage st) { return s.ms[static_cast<std::size_t>(st)]; };
+  if (at(mv::boot::stage::interactive) < 0.0 || at(mv::boot::stage::first_frame) < 0.0) return;
+  if (app->boot_with_paths && at(mv::boot::stage::full_resolution) < 0.0 &&
+      mv::boot::now_ms() < kBootReportGiveUpMs) {
+    return;
+  }
+  g_boot_report_sent = true;
+  char line[1024];
+  if (mv::boot::write_line(s, line, sizeof line)) MV_LOG_INFO("%s", line);
+  if (g_boot_report.empty()) return;
+  app->jobs.submit_at(mv::background_generation,
+                      [s, path = g_boot_report, hwnd = app->window](const mv::job_context&) {
+                        char json[4096];
+                        const std::size_t n = mv::boot::write_json(s, json, sizeof json);
+                        FILE* f = nullptr;
+                        if (n && _wfopen_s(&f, path.c_str(), L"wb") == 0 && f) {
+                          (void)std::fwrite(json, 1, n, f);
+                          (void)std::fclose(f);
+                        }
+                        ::PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                        return mv::status::ok;
+                      });
+}
+
 void update_title(app_state* app) noexcept {
   if (!app || !app->window) return;
   std::wstring title = kWindowTitle;
@@ -8352,6 +8395,7 @@ bool attach_chrome(app_state* app) {
   auto attached = app->chrome.attach(app->window, app, &chrome_on_command,
                                      rc.right - rc.left, bar, dpi);
   if (!attached) return false;
+  mv::boot::mark(mv::boot::stage::chrome_bar);
   const int height = rc.bottom - rc.top;
   (void)app->chrome.attach_filmstrip(app->window, app, &chrome_on_command, app->session,
                                      rc.right - rc.left, height, dpi);
@@ -8364,6 +8408,7 @@ bool attach_chrome(app_state* app) {
                                    rc.right - rc.left, height, dpi);
   (void)app->chrome.attach_panels(app->window, app, &chrome_on_command, app->session,
                                   rc.right - rc.left, height, dpi);
+  mv::boot::mark(mv::boot::stage::chrome_islands);
   app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
   // `?` and the palette read the same static table as the router (docs/design/16).
   publish_command_table(app);
@@ -9263,6 +9308,7 @@ std::optional<LRESULT> window_on_timer(HWND hwnd, UINT msg, WPARAM wparam, LPARA
         return 0;
       }
       if (wparam == kTitleTimerId) {
+        boot_report_tick(app);
         if (app->folder_find && ::GetTickCount64() - app->folder_find_tick > 1200) {
           clear_folder_find(app);
           push_browse_state(app);
@@ -9447,6 +9493,9 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
       if (ok) g_relaunch_after = std::wcstoul(value.c_str(), nullptr, 10);
     } else if (arg == L"--new-instance") {
       g_new_instance = true;
+    } else if (arg == L"--boot-report") {
+      next(g_boot_report);
+      if (ok) g_new_instance = true;
     } else if (arg == L"--background") {
       g_start_background = true;
     } else if (arg == L"--compare") {
@@ -9487,6 +9536,20 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
+  // Issue #486: the boot timeline counts from process creation, so the loader,
+  // static initialisers and DLL attach before this line are in it too.
+  {
+    FILETIME created{}, exited{}, kernel{}, user{}, now{};
+    if (::GetProcessTimes(::GetCurrentProcess(), &created, &exited, &kernel, &user)) {
+      ::GetSystemTimePreciseAsFileTime(&now);
+      const auto ticks = [](FILETIME t) {
+        return (static_cast<std::uint64_t>(t.dwHighDateTime) << 32) | t.dwLowDateTime;
+      };
+      const std::uint64_t c = ticks(created), n = ticks(now);
+      if (n > c) mv::boot::set_process_age((n - c) * 100);  // FILETIME is 100 ns
+    }
+    mv::boot::mark(mv::boot::stage::host_entry);
+  }
   // PR 8 updater, before anything that can fail or show a window. Velopack
   // runs the exe with --veloapp-* during install/update/uninstall and kills it
   // after 15-30 s; the viewer has no work there.
@@ -9575,6 +9638,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // PR 7 crash reporting (docs/design/13 Part 2): Crashpad out-of-process, armed
   // before the session and its decoders exist. Asynchronous; never blocks.
   (void)mv::shell::crash::start();
+  mv::boot::mark(mv::boot::stage::crash_armed);
 
   // The ABI round-trip, exercised from the native side as well as from C#: the
   // shell is a client of the core through exactly the same header the managed
@@ -9598,7 +9662,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.recent_folders = mv::shell::load_recent_folders();
   app.home_utf8 = profile_folder_utf8();
   app.onedrive_utf8 = onedrive_folder_utf8();
-  app.record_recent = !harness_run;
+  app.record_recent = !harness_run && g_boot_report.empty();
   // Straight into the snapshot: the render thread is not up yet. A launch
   // with a path to open never shows the rows, not even for its first frame.
   if (requested_paths.empty() && welcome_lists_recents(&app)) {
@@ -9609,6 +9673,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.taskbar_restart_msg = ::RegisterWindowMessageW(L"TaskbarCreated");  // #452
   mv::shell::apply_key_remaps(mv::shell::load_key_remaps());
   app.router.rebuild(mv::shell::live_bindings());
+  mv::boot::mark(mv::boot::stage::settings_loaded);
   if (!app.files.start()) MV_LOG_WARN("files: I/O worker did not start; F7 / F8 / Delete disabled");
   mv_session_config config{};
   config.worker_count = 0;
@@ -9620,6 +9685,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // PR 9: the saved folder sort applies to every open from here on.
   (void)mv_folder_set_sort(app.session, app.settings.sort);
   (void)mv_folder_set_hidden_kinds(app.session, app.settings.hidden_kinds());
+  mv::boot::mark(mv::boot::stage::session_created);
   // PR 13 / 14: every clip job that opens a decoder or an encoder runs in
   // MediaViewerClipJob.exe beside this exe, never in the viewer (docs/design/12
   // 2026-09-25). Set even if the file is missing: those jobs then fail
@@ -9665,6 +9731,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     return 2;
   }
 
+  mv::boot::mark(mv::boot::stage::window_created);
   enable_dark_titlebar(hwnd);
   apply_window_icons(hwnd);
   ::DragAcceptFiles(hwnd, TRUE);
@@ -9686,6 +9753,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     mv_session_release(app.session);
     return 2;
   }
+  mv::boot::mark(mv::boot::stage::render_started);
   if (instance_claim.claimed() && !app.instance.start(hwnd, kMsgOpenForwarded, instance_claim)) {
     MV_LOG_WARN("single instance: the listener did not start; this one runs alone");
   }
@@ -9711,6 +9779,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   } else {
     ::ShowWindow(hwnd, show_command);
     ::UpdateWindow(hwnd);
+    mv::boot::mark(mv::boot::stage::window_shown);
   }
   if (app.chrome_enabled && !requested_paths.empty()) open_paths_early(&app, requested_paths);
   if (app.chrome_enabled && !attach_chrome(&app)) {
@@ -9739,6 +9808,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   if (g_install.installed() && (!app.chrome_enabled || app.chrome_on_screen)) {
     ::SetTimer(hwnd, kUpdateConfirmTimerId, kUpdateConfirmMs, nullptr);
   }
+  if (!app.chrome_enabled || app.chrome_on_screen) mv::boot::mark(mv::boot::stage::interactive);
+  app.boot_with_paths = !requested_paths.empty();
 
   MSG msg{};
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {

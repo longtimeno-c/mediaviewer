@@ -1,6 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "shell/present_lab.h"
+#include "core/boot_timeline.h"
 #include "shell/video_report.h"
 #include "shell/dino_draw.h"
 #include "shell/error_screen.h"
@@ -654,6 +655,7 @@ void present_lab::render_thread_main() noexcept {
             note_nav_full(*current_image_);
             if (ready->quality == image::gpu_quality::full && full_seconds_ < 0.0) {
               full_seconds_ = elapsed;
+              boot_full_due_ = true;
             }
             redraw = true;
           } else {
@@ -665,6 +667,8 @@ void present_lab::render_thread_main() noexcept {
             item_start_seconds_ = elapsed;
             first_pixel_seconds_ = elapsed;
             full_seconds_ = ready->quality == image::gpu_quality::full ? elapsed : -1.0;
+            boot_pixel_due_ = true;
+            boot_full_due_ = ready->quality == image::gpu_quality::full;
             tiles_complete_seconds_ = -1.0;
             current_video_ = {};
             // Hold-previous keeps the last *different* still; a re-publish of
@@ -1468,6 +1472,11 @@ void present_lab::render_thread_main() noexcept {
     if (warmed_up_ && !options_.start_animating) ++idle_stats_.presents;
     if (hr == S_OK) {
       ++total_presents_;
+      // Issue #486. First marks win, so these cost a load after launch.
+      mv::boot::mark(mv::boot::stage::first_frame);
+      if (boot_pixel_due_) mv::boot::mark(mv::boot::stage::first_pixel);
+      if (boot_full_due_) mv::boot::mark(mv::boot::stage::full_resolution);
+      boot_pixel_due_ = boot_full_due_ = false;
       pacer_.frame_end(swapchain_.dxgi());
       if (!live) painted_static_ = true;
       if (compare_split_.valid) ++compare_frames_;
