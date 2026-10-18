@@ -8,7 +8,9 @@
 // offer (sealed, but the receiver's one structured parse of the sender's
 // words); and from #472 PR 2, what the internet brings: a pasted code, an
 // address, a router's PCP / NAT-PMP / SSDP / HTTP / XML replies, a CPace
-// message and an internet hello. The first byte picks which. Whatever comes in, every call must
+// message and an internet hello; and from #472 PR 3, the DHT: bencoding,
+// compact node lists and endpoints, word codes, an item opened under a code's
+// key. The first byte picks which. Whatever comes in, every call must
 // return, read nothing past the input and never hang: a link that runs out is
 // a closed link.
 #include <algorithm>
@@ -25,7 +27,10 @@
 
 #include "addons/sharepoint/bt_pipe.h"
 #include "addons/sharepoint/channel.h"
+#include "addons/sharepoint/bencode.h"
 #include "addons/sharepoint/cpace.h"
+#include "addons/sharepoint/dht.h"
+#include "addons/sharepoint/dht_item.h"
 #include "addons/sharepoint/invite.h"
 #include "addons/sharepoint/mapping.h"
 #include "addons/sharepoint/net.h"
@@ -76,7 +81,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   const std::span<const std::uint8_t> in(data + 1, size - 1);
   const std::string_view text(reinterpret_cast<const char*>(in.data()), in.size());
   std::vector<std::uint8_t> out, payload;
-  switch (data[0] % 16) {
+  switch (data[0] % 21) {
     case 0:
       (void)sp::decode_beacon(in);
       break;
@@ -158,6 +163,32 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
       std::uint8_t sid[16] = {};
       mv::sharepoint::cpace::party p(prs, ci, sid);
       (void)p.finish(in, false, {}, {});
+      break;
+    }
+    case 16:
+      if (auto v = mv::sharepoint::bencode::decode(text)) (void)mv::sharepoint::bencode::encode(*v);
+      break;
+    case 17:
+      (void)mv::sharepoint::dht::parse_nodes(text, in.size() % 38 == 0);
+      (void)mv::sharepoint::dht::parse_compact_endpoint(text);
+      break;
+    case 18:
+      if (auto w = mv::sharepoint::dht::parse_words(text)) (void)mv::sharepoint::dht::words_text(*w);
+      break;
+    case 19: {
+      // An item's value opened under a code's key (derived once).
+      static auto k = mv::sharepoint::dht::derive({1, 2, 3, 4}, true);
+      if (k) (void)mv::sharepoint::dht::open(*k, "salt", text, 1'760'000'000'000);
+      break;
+    }
+    case 20: {
+      // An item signature check over hostile bytes.
+      std::array<std::uint8_t, 32> key{};
+      if (in.size() >= 96) {
+        std::memcpy(key.data(), in.data(), 32);
+        (void)mv::sharepoint::dht::verify(key, text.substr(96, 16), 1, text.substr(96),
+                                          in.subspan(32, 64));
+      }
       break;
     }
     case 15: {

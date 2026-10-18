@@ -56,7 +56,9 @@ class udp_hub : public std::enable_shared_from_this<udp_hub> {
 
   [[nodiscard]] std::uint16_t port() const noexcept { return port_; }
   [[nodiscard]] expected send(std::span<const std::uint8_t> datagram, const net::endpoint& to);
-  // Handlers, on the hub's reader thread (brief; never blocking).
+  // Handlers, on the hub's reader thread (brief; never blocking, never
+  // setting a handler). Setting one waits for a call of the old one that is
+  // running: after on_dht(nullptr) returns, the old handler is not called.
   void on_dht(datagram_fn fn);
   void on_probe(datagram_fn fn);
   // A reliable stream to `peer`, both sides with the same `id` (the sender
@@ -79,6 +81,7 @@ class udp_hub : public std::enable_shared_from_this<udp_hub> {
   std::unique_ptr<net::udp_socket> sock_;
   std::uint16_t port_ = 0;
   std::mutex m_;
+  std::mutex calling_m_;                                       // held while a handler runs
   datagram_fn dht_, probe_;                                    // under m_
   std::map<std::uint32_t, std::weak_ptr<stream_state>> streams_;  // under m_
   std::atomic<bool> stop_{false};

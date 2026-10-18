@@ -362,11 +362,13 @@ expected udp_hub::send(std::span<const std::uint8_t> datagram, const net::endpoi
 }
 
 void udp_hub::on_dht(datagram_fn fn) {
+  std::lock_guard calling(calling_m_);  // no call of the old one is running
   std::lock_guard lock(m_);
   dht_ = std::move(fn);
 }
 
 void udp_hub::on_probe(datagram_fn fn) {
+  std::lock_guard calling(calling_m_);
   std::lock_guard lock(m_);
   probe_ = std::move(fn);
 }
@@ -391,20 +393,12 @@ void udp_hub::read_loop() {
     auto n = sock_->receive_from(buf, 200, from);
     if (!n || *n == 0) continue;
     const std::span<const std::uint8_t> d(buf.data(), *n);
-    if (d[0] == 'd') {
+    if (d[0] == 'd' || d[0] == kProbe) {
+      std::lock_guard calling(calling_m_);
       datagram_fn fn;
       {
         std::lock_guard lock(m_);
-        fn = dht_;
-      }
-      if (fn) fn(d, from);
-      continue;
-    }
-    if (d[0] == kProbe) {
-      datagram_fn fn;
-      {
-        std::lock_guard lock(m_);
-        fn = probe_;
+        fn = d[0] == 'd' ? dht_ : probe_;
       }
       if (fn) fn(d, from);
       continue;
