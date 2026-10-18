@@ -519,8 +519,13 @@ TEST_CASE("sharepoint dht: two sides meet on four words, punch, and open the int
     so.internet_secret = pw;
     server = sp::channel::open_server(lr, std::move(*h), "bbbbbbbbbbbbbbbb", "Bea", so);
   });
+  const auto opened_at = std::chrono::steady_clock::now();
   auto client = sp::channel::open_internet(ls, pw, "aaaaaaaaaaaaaaaa", "Ann");
   t.join();
+  // Milliseconds on loopback; seconds is a socket wait holding up the sends
+  // (WSAPoll on Windows, #472).
+  std::printf("{\"case\":\"dht_meet_handshake\",\"open_internet_ms\":%.1f}\n",
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - opened_at).count());
   INFO("client " << (client ? 0 : static_cast<int>(client.error())) << ", server "
                  << (server ? 0 : static_cast<int>(server.error())));
   REQUIRE(client);
