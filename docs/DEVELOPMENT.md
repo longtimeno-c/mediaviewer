@@ -593,7 +593,9 @@ maths has unit tests (`mv_tests "[gesture]"`); real touch hardware is not in
 any automated run.
 
 Command line: `--soak <seconds>`, `--json <path>`, `--gate` (non-zero exit if the verify
-line fails), `--no-overlay`, `--static`, `--no-chrome`, `--open <path>`, `--background` (#452:
+line fails), `--no-overlay`, `--static`, `--no-chrome`, `--open <path>`, `--boot-report <path>`
+(#486, Windows: write the boot timeline as JSON once the launch is ready and close; implies
+`--new-instance`, leaves the recent folders alone; see "Performance suite"), `--background` (#452:
 the sign-in start: the window is never shown, only the tray / menu-bar icon once Sharepoint keeps
 the process; it quits after 60 s if nothing does),
 `--browse-soak` (with `--json` and a folder: time each arrow to the next still, and jumps
@@ -1172,6 +1174,21 @@ build. `mv_tests "[.perf-bench]"` holds the colour-stage starvation bound, pairi
 dump and, on Windows, the WARP tile frame and create budgets; `mv_ai_tests "[.perf-bench]"`
 holds the 100 k-row search scan.
 
+**Launch (issue #486).** Every Windows launch logs its boot timeline once it is ready
+(`boot (ms from process start): host_entry=… interactive=…`, in the debugger output). To measure,
+alternate builds with the harness, warm, one file or none:
+
+```powershell
+powershell -File tools\perfoot.ps1 -Exe C:asein\mediaviewer_lab.exe,C:
+ewin\mediaviewer_lab.exe `
+  -Runs 10 -Open C:\mediarw\sony_ilce7rm3.arw -Out boot.json
+```
+
+It discards one warm-up launch per build, prints min / median / max per stage and writes every run.
+Put the file in a folder of its own so the folder scan is the same each run. The stage list and
+the report shape are `src/core/boot_timeline.h`; the published runs are `docs/perf/boot/`. Not a
+README chart yet. The Mac host does not mark its stages yet (see "Where this actually is").
+
 `mv_tests "[.perf-bench]"` is the quick loop for decode work: `MV_BENCH_JSON=path` writes
 its medians, `MV_BENCH_DIR=folder` adds your own files to the decode rows. Its `preview` row is
 the canvas's first pixel (`decode_first_pixel`). libheif's example is one small image, so for
@@ -1592,6 +1609,52 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Startup time: the boot timeline and the chrome preload (#486, 2026-10-18)
+
+Windows half. A boot timeline in the core (`core/boot_timeline.h`, `mv_tests "[boot]"`) records
+each launch stage from process creation; the Windows host marks fifteen stages, logs them once
+ready, and `--boot-report` / `tools/perf/boot.ps1` measure them. Where a warm launch with no file
+spends its time on the RTX 4070 / 5700X3D desktop (median of 10, base):
+
+| Stage (gap from the previous) | ms |
+|---|---|
+| process start → `wWinMain` (loader, imports) | 23 |
+| crash reporter, settings, session, window | 9 |
+| render thread: device + swapchain (UI thread waits) | 203 |
+| show window | 12 |
+| chrome: hostfxr + .NET runtime | 17 |
+| chrome: bind ~50 entry points | 79 |
+| chrome: command bar island (XAML start-up) | 253 |
+| chrome: filmstrip, transport, gallery, panels islands | 63 |
+| → interactive | 663 |
+
+The one cold first launch measured (after a build) took 1,235 ms: entry points 238, command bar 531.
+The change: the chrome's runtime and entry points now load on their own thread, below normal
+priority, while the UI thread makes the window and waits for the device (`chrome_host::preload`,
+docs/design/12 "Launch").
+
+| Warm, alternated, median [min–max] | Base | New |
+|---|---|---|
+| Interactive, no file (10 runs) | 663 [653–690] | 569 [559–608] |
+| Interactive, 42 MP ARW (10) | 735 [723–761] | 622 [606–658] |
+| Interactive, CR3 (12) | 763 [733–814] | 663 [656–708] |
+| First frame, no file | 243 [238–271] | 244 [238–256] |
+| First pixel, ARW / CR3 | 295 / 295 | 297 / 292 |
+| Full resolution, ARW / CR3 | 1,213 / 779 | 1,205 / 795 (ranges overlap: 764–821 vs 781–820) |
+
+- **Checked (Windows):** Ninja Release build; `mv_tests "[boot]"`; the reports above
+  (`docs/perf/boot/`). The PR 1 gate (`--soak 60 --gate`, base / new / base / new) fails on base and
+  new alike on this machine with other work running (max 50.1 ms on one base and one new run, one
+  drop on a new run, idle CPU 2.5–3.2 % on both); a quiet-machine gate run is owed.
+- **Not measured:** a cold launch A/B (only one cold sample), launch with add-ons that load at
+  start versus none, an installed (Velopack) build, a clip or a document as the opened file.
+- **Next contributors, not changed:** the command bar's XAML island (~255 ms warm) and the
+  device wait (~200 ms) are serial on the UI thread; the four other islands (~60 ms) attach at
+  launch though none is shown with no file.
+- **Mac half owed:** marks in `main_mac.mm` / `present_lab_mac.mm` (process age from
+  `kinfo_proc`), `--boot-report` in the Mac lab, a Mac breakdown and its own top costs, the Mac
+  PR 1 gate.
 
 ### Windows search: the typed space, the resume notice, a result list from an empty window (#443, 2026-10-15)
 

@@ -111,6 +111,18 @@ in an autorelease pool on Apple ([15-platforms.md](15-platforms.md)). Everything
 is single-producer/single-consumer rings of POD messages (`core/spsc_ring.h`) and a wait-free triple
 buffer. No mutex is held across a call the holder does not own.
 
+### Launch order (Windows, issue #486)
+
+`wWinMain` reads settings, makes the session and the window, and starts the render thread, which
+makes the device and swapchain while the UI thread waits for it (an opened file's first decode
+needs the device). Beside all of that, from just after the crash reporter, one short-lived
+**chrome loader** thread (below normal priority) loads the chrome's .NET runtime and binds its
+entry points (`chrome_host::preload`); `attach_chrome` joins it and attaches the islands on the
+UI thread once the window is shown and the early open is issued. Every stage is marked on the
+boot timeline ([`src/core/boot_timeline.h`](../../src/core/boot_timeline.h)), counted from
+process creation; [09-build-and-test.md](09-build-and-test.md#performance-targets) says how it is
+measured.
+
 ### Free-threaded resource creation
 
 The D3D11 device is free-threaded. Decode workers call `CreateTexture2D` with

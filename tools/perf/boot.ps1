@@ -17,6 +17,8 @@ param(
   [int]$PauseMs = 1500
 )
 $ErrorActionPreference = 'Stop'
+# powershell -File hands a comma list over as one string.
+$Exe = @($Exe | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("mv-boot-" + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force $tmp | Out-Null
 

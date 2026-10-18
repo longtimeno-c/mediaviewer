@@ -9645,6 +9645,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // interop uses. If the shell ever reaches around the ABI, the two-language
   // boundary stops being tested by the thing that matters most.
   app_state app;
+  // Issue #486: the chrome's .NET runtime and entry points load on their own
+  // thread from here, beside the settings, the session, the window and the
+  // render thread's device; attach_chrome joins it. Was ~80-100 ms warm
+  // (~260 ms cold) on the UI thread after the device, before the command bar.
+  if (chrome_enabled) app.chrome.preload();
   (void)app.jobs.start();
   app.chrome_enabled = chrome_enabled;
   // settings.ini was read once, at startup, by app_settings(). From here every

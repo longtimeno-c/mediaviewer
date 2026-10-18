@@ -143,7 +143,29 @@ bool find_hostfxr(const wchar_t* exe_dir, wchar_t* out, std::size_t cap,
 
 }  // namespace
 
-chrome_host::~chrome_host() { detach(); }
+chrome_host::~chrome_host() {
+  join_preload();
+  detach();
+}
+
+void chrome_host::preload() noexcept {
+  if (preload_thread_.joinable() || loaded()) return;
+  try {
+    preload_thread_ = std::thread([this] {
+      // Below the render thread, which is making the device at the same time:
+      // the view comes first (CLAUDE.md), the chrome is not on screen yet.
+      (void)::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+      const expected result = load_now();
+      preload_error_ = result ? status::ok : result.error();
+    });
+  } catch (...) {
+    // No thread: load() runs it on the caller, as before.
+  }
+}
+
+void chrome_host::join_preload() noexcept {
+  if (preload_thread_.joinable()) preload_thread_.join();
+}
 
 bool chrome_host::resolve_paths() noexcept {
   if (!module_directory(chrome_dir_, MAX_PATH)) return false;
@@ -215,6 +237,15 @@ chrome_entry_fn chrome_host::get_entry(const wchar_t* method) noexcept {
 }
 
 expected chrome_host::load() noexcept {
+  if (preload_thread_.joinable()) {
+    join_preload();
+    if (preload_error_ != status::ok) return err(preload_error_);
+    return {};
+  }
+  return load_now();
+}
+
+expected chrome_host::load_now() noexcept {
   if (loaded()) return {};
   if (!resolve_paths()) {
     MV_LOG_WARN("chrome: MediaViewer.Chrome.dll not published beside the exe");
@@ -334,6 +365,7 @@ bool chrome_host::request_update_restart(const std::wstring& args_blob) noexcept
 }
 
 void chrome_host::updater_exit() noexcept {
+  join_preload();
   if (!updater_exit_) return;
   (void)updater_exit_(nullptr, 0);
 }
@@ -1197,6 +1229,7 @@ void chrome_host::detach() noexcept {
 }
 
 void chrome_host::shutdown_for_exit() noexcept {
+  join_preload();
   if (attached_ || filmstrip_attached_ || gallery_attached_ || transport_attached_ ||
       panels_attached_) {
     detach();

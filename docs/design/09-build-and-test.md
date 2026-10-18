@@ -210,6 +210,7 @@ Release packaging is a separate manual workflow (`release.yml`; see
 | Metric | Target |
 |---|---|
 | Cold start to first pixel of an image passed on argv | < 400 ms with the WinUI shell (< 250 ms in the lab) |
+| Launch to interactive (chrome attached, input pumping) | tracked, no target yet: ~570 ms warm with no file on the Windows desktop (issue #486) |
 | Warm folder navigation (next image visible) | < 40 ms |
 | First pixel, 45 MP RAW (embedded preview) | < 60 ms |
 | Full-res RAW decode complete | < 500 ms |
@@ -220,6 +221,14 @@ Release packaging is a separate manual workflow (`release.yml`; see
 | Installed app (Windows payload) | **< 250 MB**, enforced by `build-release.ps1` |
 
 Measured results are in `docs/perf/` and the README charts.
+
+Launch is measured by the **boot timeline** (issue #486, `core/boot_timeline.h`): the host marks
+each stage (host entry, crash reporter, settings, session, window, render thread, show, the
+chrome's runtime / entry points / command bar / other islands, interactive, first frame, first
+pixel, full resolution) as milliseconds from process creation, logs the line once the launch is
+ready, and with `--boot-report <path>` writes it as JSON and closes. `tools/perf/boot.ps1` repeats
+such launches, alternating builds, and prints per-stage medians; reports are in `docs/perf/boot/`.
+A stage a host does not have stays -1, so both hosts write one shape.
 
 ## Installed size
 

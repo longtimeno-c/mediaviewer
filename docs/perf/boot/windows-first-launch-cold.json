@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "origin": "process_start",
+  "stages_ms": {
+    "host_entry": 39.216,
+    "crash_armed": 44.150,
+    "settings_loaded": 45.134,
+    "session_created": 45.550,
+    "window_created": 47.832,
+    "render_started": 261.095,
+    "window_shown": 276.983,
+    "chrome_runtime": 299.084,
+    "chrome_loaded": 537.010,
+    "chrome_bar": 1068.239,
+    "chrome_islands": 1230.299,
+    "interactive": 1234.922,
+    "first_frame": 273.895,
+    "first_pixel": -1.000,
+    "full_resolution": -1.000
+  },
+  "gaps_ms": {
+    "host_entry": 39.216,
+    "crash_armed": 4.934,
+    "settings_loaded": 0.984,
+    "session_created": 0.416,
+    "window_created": 2.282,
+    "render_started": 213.263,
+    "window_shown": 15.888,
+    "chrome_runtime": 22.101,
+    "chrome_loaded": 237.925,
+    "chrome_bar": 531.230,
+    "chrome_islands": 162.060,
+    "interactive": 4.623,
+    "first_frame": -961.026
+  }
+}
