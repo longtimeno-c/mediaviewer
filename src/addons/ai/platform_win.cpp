@@ -1,7 +1,10 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <windows.h>
+#include <dxgi.h>
+#include <intrin.h>
 
+#include <cstring>
 #include <thread>
 
 #include "addons/ai/platform.h"
@@ -44,5 +47,44 @@ void enter_background() noexcept {
 }
 
 unsigned hardware_threads() noexcept { return std::thread::hardware_concurrency(); }
+
+machine_facts machine() noexcept {
+  machine_facts m;
+  MEMORYSTATUSEX mem{};
+  mem.dwLength = sizeof(mem);
+  if (GlobalMemoryStatusEx(&mem)) m.ram_bytes = mem.ullTotalPhys;
+  int regs[4] = {};
+  char brand[49] = {};
+  __cpuid(regs, static_cast<int>(0x80000000));
+  if (static_cast<unsigned>(regs[0]) >= 0x80000004u) {
+    for (int i = 0; i < 3; ++i) {
+      __cpuid(regs, static_cast<int>(0x80000002 + i));
+      memcpy(brand + i * 16, regs, 16);
+    }
+    m.chip = brand;
+    while (!m.chip.empty() && m.chip.front() == ' ') m.chip.erase(m.chip.begin());
+  }
+  // An NVIDIA adapter (PCI vendor 0x10DE) whose driver installed CUDA's.
+  IDXGIFactory1* factory = nullptr;
+  if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory)))) {
+    IDXGIAdapter1* adapter = nullptr;
+    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+      DXGI_ADAPTER_DESC1 d{};
+      if (SUCCEEDED(adapter->GetDesc1(&d)) && d.VendorId == 0x10DE && !(d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
+        m.nvidia = true;
+      }
+      adapter->Release();
+    }
+    factory->Release();
+  }
+  if (m.nvidia) {
+    HMODULE cuda = LoadLibraryExW(L"nvcuda.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    m.nvidia = cuda != nullptr;
+    if (cuda) FreeLibrary(cuda);
+  }
+  SYSTEM_POWER_STATUS s{};
+  m.laptop = GetSystemPowerStatus(&s) && s.BatteryFlag != 128 && s.BatteryFlag != 255;
+  return m;
+}
 
 }  // namespace mv::ai::platform

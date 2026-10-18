@@ -27,7 +27,7 @@ internal sealed partial class ManagePanel
     private readonly AiChrome _chrome;
     private readonly AiApi _api;
     private readonly Look _look;
-    private readonly TextBlock _status;
+    private readonly StatusPill _status;
     private readonly TextBlock _compute;
     private readonly Button _pause;
     private readonly Button _indexAnyway;
@@ -102,6 +102,17 @@ internal sealed partial class ManagePanel
     private uint _facesFlags = uint.MaxValue;
     private uint _peopleShown = uint.MaxValue;
     private readonly List<MvAiCompute> _computeValues = new();
+    // #482: Models: the tier in force and Change… (the picker), and under it
+    // the download of its models while one runs or needs a hand.
+    private readonly FrameworkElement _modelsSection;
+    private readonly TextBlock _modelsTitle;
+    private readonly TextBlock _modelsDetail;
+    private readonly FrameworkElement _fetchRow;
+    private readonly TextBlock _fetchText;
+    private readonly MediaViewer.Shared.FlatBar _fetchBar;
+    private readonly Button _fetchButton;
+    private FetchAction _fetchAction;
+    private enum FetchAction { None, Cancel, Retry }
 
     private static readonly int[] BatteryValues = { 0, 20, 30, 50, 100 };
     private static readonly string[] BatteryNames =
@@ -124,14 +135,16 @@ internal sealed partial class ManagePanel
         _look = chrome.Look;
         Root = new StackPanel { Spacing = 10, Margin = new Thickness(0, 8, 0, 0) };
 
-        // Status, compute, Pause / Resume.
-        _status = _look.Text("", null, AddonColour.Title);
+        // Status (the search footer's pill: ring, line, stages, detail), compute, Pause / Resume.
+        _status = new StatusPill(_look, _look.FontSize, AddonColour.Title, inSettings: true);
         _compute = _look.Text("", 12);
+        _compute.Margin = new Thickness(26, 0, 0, 0);  // under the line, past the ring
         _pause = _look.Button("Pause indexing", TogglePause);
         var statusText = new StackPanel { Spacing = 2 };
-        statusText.Children.Add(_status);
+        statusText.Children.Add(_status.Root);
         statusText.Children.Add(_compute);
         _audioLine = _look.Text("", 12);
+        _audioLine.Margin = new Thickness(26, 0, 0, 0);
         _audioLine.Visibility = Visibility.Collapsed;
         statusText.Children.Add(_audioLine);
         var statusRow = new Grid { ColumnSpacing = 16 };
@@ -152,6 +165,38 @@ internal sealed partial class ManagePanel
 
         // Sections as on the Mac (ManagementView.section): a 15 semibold title
         // over one card with a hairline stroke, its rows inside.
+        // #482: Models first: which tier runs, Change… opens the picker.
+        StackPanel models = Section("Models");
+        _modelsSection = (FrameworkElement)Root.Children[^1];
+        _modelsSection.Visibility = Visibility.Collapsed;  // a pack before tiers has none
+        _modelsTitle = _look.Text("Models", 14, AddonColour.Title);
+        _modelsDetail = _look.Text("", 12);
+        Button change = _look.Button("Change…", () => _chrome.ShowModelPicker());
+        models.Children.Add(Row(_modelsTitle, _modelsDetail, change));
+        AutomationProperties.SetName(change, "Change models");
+        // The download: its line, a bar while bytes arrive, and Cancel / Try
+        // again / Resume. Built once and updated in place at 4 Hz, so the
+        // button keeps keyboard focus. A FlatBar: ProgressBar fail-fasts here.
+        _fetchText = _look.Text("", 12, AddonColour.Title);
+        _fetchBar = new MediaViewer.Shared.FlatBar(_look[AddonColour.Hairline], _look[AddonColour.Accent]);
+        _fetchButton = _look.Button("Cancel", OnFetchButton);
+        var fetchLines = new StackPanel { Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+        fetchLines.Children.Add(_fetchText);
+        fetchLines.Children.Add(_fetchBar.Root);
+        var fetchGrid = new Grid { ColumnSpacing = 16 };
+        fetchGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        fetchGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        fetchGrid.Children.Add(fetchLines);
+        _fetchButton.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(_fetchButton, 1);
+        fetchGrid.Children.Add(_fetchButton);
+        var fetch = new StackPanel();
+        fetch.Children.Add(Divider(12));
+        fetch.Children.Add(Pad(fetchGrid));
+        _fetchRow = fetch;
+        _fetchRow.Visibility = Visibility.Collapsed;
+        models.Children.Add(_fetchRow);
+
         StackPanel compute = Section("Compute");
         _computeBox = Combo();
         _computeBox.SelectionChanged += (_, _) =>
@@ -463,17 +508,21 @@ internal sealed partial class ManagePanel
         Row(title, _look.Text(detail, 12), control);
 
     /// <summary>A row of a section (the Mac's row): a 14 title and its 12 detail, the control at the end.</summary>
-    private FrameworkElement Row(string title, FrameworkElement detail, FrameworkElement control)
+    private FrameworkElement Row(string title, FrameworkElement detail, FrameworkElement control) =>
+        Row(_look.Text(title, 14, AddonColour.Title), detail, control);
+
+    /// <summary>A row whose title changes (Models — the tier in force).</summary>
+    private FrameworkElement Row(TextBlock title, FrameworkElement detail, FrameworkElement control)
     {
         var grid = new Grid { ColumnSpacing = 20, Padding = new Thickness(12) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var labels = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
-        labels.Children.Add(_look.Text(title, 14, AddonColour.Title));
+        labels.Children.Add(title);
         labels.Children.Add(detail);
         grid.Children.Add(labels);
         control.VerticalAlignment = VerticalAlignment.Center;
-        AutomationProperties.SetName(control, title);
+        AutomationProperties.SetName(control, title.Text);
         Grid.SetColumn(control, 1);
         grid.Children.Add(control);
         return grid;
@@ -586,6 +635,7 @@ internal sealed partial class ManagePanel
             _readTextDetail.Text = ReadTextDetail(textAvailable);
             ShowCap(r.TryGetProperty("index_cap_bytes", out JsonElement ic) && ic.TryGetInt64(out long cap)
                 ? Math.Max(0, cap) : 8_000_000_000);
+            ShowModels(ModelTiers.Parse(r));
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException) { }
         finally
@@ -599,12 +649,12 @@ internal sealed partial class ManagePanel
     {
         if (!_chrome.StatusValid)
         {
-            _status.Text = "Local search is not running.";
+            _status.ShowNotRunning();
             _compute.Text = "";
             return;
         }
         MvAiStatus s = _chrome.Status;
-        _status.Text = Look.StatusLine(s);
+        _status.Show(s);
         string? why = Look.FallbackReason(s);
         string model = s.ModelText.Length > 0 ? " · " + s.ModelText : "";
         _compute.Text = (why ?? $"Running on {Look.ComputeBadge(s)}") + model;
@@ -631,6 +681,7 @@ internal sealed partial class ManagePanel
             ShowDocIndex();
         }
         RefreshIndexRow(s);
+        ShowFetch(s);
         ShowCloud(s);
         uint faces = s.Flags & (MvAiStatus.FlagFacesReady | MvAiStatus.FlagFacesOn);
         if (faces != _facesFlags) RefreshPeople();
@@ -642,6 +693,92 @@ internal sealed partial class ManagePanel
         }
         UpdateRerun(s);
         PollTransfer();
+    }
+
+    // ---- models (#482) ----------------------------------------------------------------
+
+    private void ShowModels(ModelTiers.Choice? choice)
+    {
+        _modelsSection.Visibility = choice is null ? Visibility.Collapsed : Visibility.Visible;
+        if (choice is null) return;
+        ModelTiers.Tier? tier = choice.Find(choice.Current);
+        _modelsTitle.Text = tier is null ? "Models" : $"Models — {tier.Title}";
+        _modelsDetail.Text = tier is null
+            ? "No models chosen yet. Nothing downloads until you choose; Change… shows what each choice runs and its size."
+            : tier.ModelLine.Length > 0 ? tier.ModelLine : tier.For;
+    }
+
+    // The download's row (the Mac's): words, bar and button follow fetch_state.
+    private void ShowFetch(in MvAiStatus s)
+    {
+        string text;
+        FetchAction action;
+        bool bar = false;
+        string n(ulong v) => v.ToString("N0", System.Globalization.CultureInfo.CurrentCulture);
+        switch (Look.Fetch(s))
+        {
+            case MvAiFetchState.Waiting:
+                text = "Waiting for Hugging Face… downloads resume automatically";
+                action = FetchAction.Cancel;
+                break;
+            case MvAiFetchState.Gone:
+                text = "A model file is no longer on Hugging Face. An app update will fix this.";
+                action = FetchAction.None;
+                break;
+            case MvAiFetchState.Failed:
+                text = "A downloaded model did not match its checksum.";
+                action = FetchAction.Retry;
+                break;
+            default:
+                if (Look.FetchPaused(s))
+                {
+                    text = "Download paused";
+                    action = FetchAction.Retry;
+                }
+                else if (Look.Fetching(s))
+                {
+                    text = s.FetchTotalBytes > 0
+                        ? $"Downloading models… {MediaViewer.Shared.ByteSize.Text((long)s.FetchDoneBytes)} of {MediaViewer.Shared.ByteSize.Text((long)s.FetchTotalBytes)}"
+                        : "Downloading models…";
+                    if (s.FetchFilesTotal > 0) text += $" ({n(s.FetchFilesDone)} of {n(s.FetchFilesTotal)} files)";
+                    action = FetchAction.Cancel;
+                    bar = true;
+                }
+                else
+                {
+                    _fetchRow.Visibility = Visibility.Collapsed;
+                    _fetchAction = FetchAction.None;
+                    return;
+                }
+                break;
+        }
+        _fetchRow.Visibility = Visibility.Visible;
+        if (_fetchText.Text != text) _fetchText.Text = text;
+        _fetchBar.Root.Visibility = bar ? Visibility.Visible : Visibility.Collapsed;
+        _fetchBar.IsIndeterminate = bar && s.FetchTotalBytes == 0;
+        if (bar) _fetchBar.Value = Look.FetchProgress(s);
+        _fetchAction = action;
+        _fetchButton.Visibility = action == FetchAction.None ? Visibility.Collapsed : Visibility.Visible;
+        string label = action == FetchAction.Cancel ? "Cancel"
+            : Look.FetchPaused(s) ? "Resume" : "Try again";
+        if (!Equals(_fetchButton.Content, label))
+        {
+            _fetchButton.Content = label;
+            AutomationProperties.SetName(_fetchButton, label + " the model download");
+        }
+    }
+
+    private void OnFetchButton()
+    {
+        switch (_fetchAction)
+        {
+            case FetchAction.Cancel:
+                Set("fetch_cancel", "1");  // kept: Resume carries on from the last verified byte
+                break;
+            case FetchAction.Retry:
+                Set("fetch_retry", "1");
+                break;
+        }
     }
 
     // ---- index videos for --------------------------------------------------------------

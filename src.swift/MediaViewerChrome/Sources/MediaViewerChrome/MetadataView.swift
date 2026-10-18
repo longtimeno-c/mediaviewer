@@ -153,7 +153,7 @@ struct MetadataView: View {
       } else {
         VStack(alignment: .leading, spacing: MVTheme.space(8)) {
           ForEach(store.summary) { row in
-            if row.label == "Date taken" {
+            if Self.dateLabels.contains(row.label) {
               dateRow(row)
             } else if row.label == "Location" {
               locationRow(row)
@@ -226,10 +226,17 @@ struct MetadataView: View {
     .font(MVTheme.font(14))
   }
 
+  /// #415: Summary's one date row (the core's meta::summary_date). Without a
+  /// capture stamp it is a fallback (Created, Signed at, File created), which is
+  /// not when the picture was taken: Edit opens an empty Date taken field, and
+  /// nothing is written unless a date is typed.
+  private static let dateLabels: Set<String> = ["Date taken", "Created", "Signed at", "File created"]
+
   private func dateRow(_ row: MetaRow) -> some View {
-    VStack(alignment: .leading, spacing: MVTheme.space(6)) {
+    let taken = row.label == "Date taken"
+    return VStack(alignment: .leading, spacing: MVTheme.space(6)) {
       HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(10)) {
-        Text(row.label).foregroundStyle(MVTheme.body).frame(width: 100, alignment: .leading)
+        Text(editingDate ? "Date taken" : row.label).foregroundStyle(MVTheme.body).frame(width: 100, alignment: .leading)
         if editingDate {
           TextField("YYYY-MM-DD HH:MM:SS", text: $dateDraft)
             .textFieldStyle(.roundedBorder)
@@ -244,13 +251,14 @@ struct MetadataView: View {
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
           Button("Edit") {
-            dateDraft = row.value.isEmpty ? "" : String(row.value.prefix(19))
+            dateDraft = !taken || row.value.isEmpty ? "" : String(row.value.prefix(19))
             editingDate = true
             fieldFocused = true
           }
           .buttonStyle(FlatButtonStyle(compact: true))
           .disabled(!store.canEdit)
-          .help("Change when this was taken; every date tag in the file moves together")
+          .help(taken ? "Change when this was taken; every date tag in the file moves together"
+                      : "Set when this was taken; the date shown is not written")
           .accessibilityLabel("Edit date taken")
         }
       }
@@ -263,7 +271,7 @@ struct MetadataView: View {
             cancelEdits()
           }
           .buttonStyle(FlatButtonStyle(compact: true))
-          .disabled(row.value.isEmpty)
+          .disabled(!taken || row.value.isEmpty)
           .help("Remove every date-taken tag")
           Button("Cancel") { cancelEdits(); store.blur() }.buttonStyle(FlatButtonStyle(compact: true))
         }

@@ -58,6 +58,12 @@ struct field_state {
 [[nodiscard]] field_state read_fields(const Exiv2::ExifData& exif, const Exiv2::XmpData& xmp,
                                       comment_order order = comment_order::unknown) noexcept;
 
+// The capture stamp (EXIF DateTimeOriginal, DateTimeDigitized, DateTime, then
+// XMP exif:DateTimeOriginal, photoshop:DateCreated, xmp:CreateDate) into
+// s.date_taken and s.date_taken_key. False, `s` untouched, when there is none.
+// #415: the sidecar's too, so a date written there is the Date taken.
+bool read_capture_date(const Exiv2::ExifData& exif, const Exiv2::XmpData& xmp, summary& s) noexcept;
+
 // #290 / #352: XMP exif:GPSLatitude / GPSLongitude (and GPSAltitude + Ref) as
 // a point; nullopt when the packet has no valid pair. Never throws.
 [[nodiscard]] std::optional<geo_point> xmp_where(const Exiv2::XmpData& xmp) noexcept;

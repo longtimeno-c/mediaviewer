@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "infer/audio_models.h"
 
+#include "infer/model_files.h"
+
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -44,11 +46,13 @@ bool plain_name(const std::string& rel) {
 }
 
 // The tokenizer folder is a sibling of the model folder.
-bool tokenizer_files(const std::string& folder, const std::string& name, std::string& vocab, std::string& merges) {
+bool tokenizer_files(const std::string& folder, const std::string& fetched, const std::string& name,
+                     std::string& vocab, std::string& merges) {
   if (!plain_name(name) || name.find('/') != std::string::npos || name.find('\\') != std::string::npos) return false;
   const std::string dir = join(join(folder, ".."), name);
-  vocab = join(dir, "vocab.json");
-  merges = join(dir, "merges.txt");
+  const std::string got = fetched_sibling(fetched, name);
+  vocab = model_file(dir, got, "vocab.json");
+  merges = model_file(dir, got, "merges.txt");
   return true;
 }
 
@@ -74,7 +78,7 @@ std::vector<std::string> speech_words(std::string_view utf8) {
 
 // ---- CLAP -------------------------------------------------------------------------------
 
-result<clap_spec> read_clap_spec(const std::string& folder) {
+result<clap_spec> read_clap_spec(const std::string& folder, const std::string& fetched) {
   MV_TRY(std::string text, read_text(join(folder, "model.json")));
   const auto doc = json::parse(text, 8);
   if (!doc || doc->k != json::kind::object) return err(status::corrupt);
@@ -93,9 +97,9 @@ result<clap_spec> read_clap_spec(const std::string& folder) {
   s.name = *name;
   s.precision = *precision;
   s.dim = static_cast<std::uint32_t>(doc->integer("dim").value_or(512));
-  s.audio_file = join(folder, *audio);
-  s.text_file = join(folder, *text_file);
-  if (!tokenizer_files(folder, *tokenizer, s.vocab_file, s.merges_file)) return err(status::corrupt);
+  s.audio_file = model_file(folder, fetched, *audio);
+  s.text_file = model_file(folder, fetched, *text_file);
+  if (!tokenizer_files(folder, fetched, *tokenizer, s.vocab_file, s.merges_file)) return err(status::corrupt);
   s.bos = doc->integer("bos").value_or(0);
   s.eos = doc->integer("eos").value_or(2);
   s.window_ms = static_cast<std::uint32_t>(doc->integer("window_ms").value_or(10000));
@@ -182,7 +186,7 @@ result<std::vector<float>> clap_model::embed_text(std::string_view utf8) {
 
 // ---- Whisper ------------------------------------------------------------------------------
 
-result<whisper_spec> read_whisper_spec(const std::string& folder) {
+result<whisper_spec> read_whisper_spec(const std::string& folder, const std::string& fetched) {
   MV_TRY(std::string text, read_text(join(folder, "model.json")));
   const auto doc = json::parse(text, 8);
   if (!doc || doc->k != json::kind::object) return err(status::corrupt);
@@ -201,11 +205,26 @@ result<whisper_spec> read_whisper_spec(const std::string& folder) {
   s.name = *name;
   s.precision = *precision;
   s.quality = static_cast<std::uint32_t>(doc->integer("quality").value_or(1));
-  s.encoder_file = join(folder, *encoder);
-  s.decoder_file = join(folder, *decoder);
-  if (!tokenizer_files(folder, *tokenizer, s.vocab_file, s.merges_file)) return err(status::corrupt);
+  s.encoder_file = model_file(folder, fetched, *encoder);
+  s.decoder_file = model_file(folder, fetched, *decoder);
+  if (!tokenizer_files(folder, fetched, *tokenizer, s.vocab_file, s.merges_file)) return err(status::corrupt);
   s.no_speech_threshold = number_or(*doc, "no_speech_threshold", s.no_speech_threshold);
   s.logprob_threshold = number_or(*doc, "logprob_threshold", s.logprob_threshold);
+  const auto mels = doc->integer("n_mels").value_or(80);
+  if (mels != 80 && mels != 128) return err(status::unsupported_format);
+  s.n_mels = static_cast<std::uint32_t>(mels);
+  if (const json::value* t = doc->find("tokens")) {
+    if (t->k != json::kind::object) return err(status::corrupt);
+    for (auto [key, field] : {std::pair{"sot", &s.sot}, std::pair{"lang", &s.lang}, std::pair{"transcribe", &s.transcribe},
+                              std::pair{"no_timestamps", &s.no_timestamps}, std::pair{"no_speech", &s.no_speech},
+                              std::pair{"eot", &s.eot}, std::pair{"first_special", &s.first_special},
+                              std::pair{"ts_begin", &s.ts_begin}}) {
+      if (const json::value* v = t->find(key)) {
+        if (v->k != json::kind::number || !v->is_integer || v->i < 0) return err(status::corrupt);
+        *field = v->i;
+      }
+    }
+  }
   return s;
 }
 
@@ -221,6 +240,7 @@ result<std::unique_ptr<whisper_model>> whisper_model::open(const runtime& rt, co
   MV_TRY(auto dec, session::open(rt, spec.decoder_file, options, fault));
   m->encoder_ = std::move(enc);
   m->decoder_ = std::move(dec);
+  m->features_ = std::make_unique<whisper_features>(spec.n_mels);
   return m;
 }
 
@@ -230,8 +250,8 @@ result<speech_window> whisper_model::transcribe(std::span<const float> pcm, std:
   out.consumed_ms = std::max<std::int64_t>(window_ms, 1);
   // Encoder.
   tensor_f32 feats;
-  feats.shape = {1, static_cast<std::int64_t>(whisper_features::kMels), static_cast<std::int64_t>(whisper_features::kFrames)};
-  features_.compute(pcm, feats.data);
+  feats.shape = {1, static_cast<std::int64_t>(features_->mels()), static_cast<std::int64_t>(whisper_features::kFrames)};
+  features_->compute(pcm, feats.data);
   MV_TRY(auto enc, encoder_->run(std::span<const tensor_f32>(&feats, 1)));
   if (enc.empty() || enc[0].shape.size() != 3) return err(status::corrupt);
   const tensor_f32& hidden = enc[0];

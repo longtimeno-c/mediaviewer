@@ -54,6 +54,20 @@ bool parse_version(std::string_view v) noexcept {
   return parts == 2 && digits > 0;
 }
 
+// A fetched file's URL (#482 T3): Hugging Face over HTTPS, a fixed path, no
+// query, fragment, credentials or other host.
+bool remote_url_ok(std::string_view url) {
+  constexpr std::string_view kHost = "https://huggingface.co/";
+  if (url.size() <= kHost.size() || url.size() > 1024 || url.substr(0, kHost.size()) != kHost) return false;
+  for (const char c : url) {
+    if (c == '?' || c == '#' || c == '@' || c == '\\' || static_cast<unsigned char>(c) <= 0x20 ||
+        static_cast<unsigned char>(c) >= 0x7F) {
+      return false;
+    }
+  }
+  return url.find("/../") == std::string_view::npos && url.find("/resolve/") != std::string_view::npos;
+}
+
 bool read_file(const json::value& v, manifest_file& out, bool need_licence) {
   if (v.k != json::kind::object) return false;
   const std::string* path = v.str("path");
@@ -400,9 +414,11 @@ std::string_view current_arch() noexcept {
 }
 
 std::uint64_t family_ceiling(std::string_view family) noexcept {
-  // docs/design/17 "The AI pack": installed pieces of the family stay <= 5 GB
-  // (raised from 3 GB, 2026-10-13). Decimal GB, the unit the Settings page shows.
-  if (family == "ai") return 5'000'000'000ull;
+  // No family has one today. The ai family's 5 GB (docs/design/17, raised from
+  // 3 GB 2026-10-13) was retired on 2026-10-18 (owner, #482; docs/design/12):
+  // its pieces carry code and our own exports, and fetch the upstream models
+  // their signed manifest lists (`remote`). 0 is "none" to every caller.
+  (void)family;
   return 0;
 }
 
@@ -591,6 +607,27 @@ decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std
   if (!safe_relative_path(m.archive.path) || m.archive.path.find('/') != std::string::npos) {
     d.why = rejection::unsafe_path;
     return d;
+  }
+  if (const json::value* remote = doc->find("remote")) {
+    if (remote->k != json::kind::array) return d;
+    std::set<std::string> where;
+    for (const json::value& r : remote->a) {
+      manifest_file mf;
+      const std::string* url = r.str("url");
+      if (!read_file(r, mf, true) || !url || !remote_url_ok(*url)) return d;
+      if (!safe_relative_path(mf.path)) {
+        d.why = rejection::unsafe_path;
+        return d;
+      }
+      std::string folded = mf.path;
+      for (char& c : folded) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+      }
+      // Fetched files never shadow a shipped one, nor each other.
+      if (seen.count(folded) || !where.insert(folded).second) return d;
+      m.remote.push_back(std::move(mf));
+      m.remote_urls.push_back(*url);
+    }
   }
   const auto listed = [&m](const std::string& p) {
     return std::any_of(m.files.begin(), m.files.end(), [&p](const manifest_file& f) {

@@ -168,6 +168,23 @@ typedef enum mv_ai_scope {
                                              filed into the people (seconds) */
 #define MV_AI_STATUS_DOCS_READY 512u   /* the ai-docs piece is loaded (#354 D3): document
                                           words also match by meaning */
+#define MV_AI_STATUS_TIER_UNCHOSEN 1024u /* no model tier chosen yet (#482): the add-on's
+                                            picker should open; nothing is fetched until one
+                                            is (settings_json "tiers", "machine") */
+#define MV_AI_STATUS_FETCHING 2048u    /* models of the chosen tier are still arriving
+                                          (fetch_state, fetch_done_bytes / _total_bytes):
+                                          search opens once the picture tower is verified */
+
+/* The model downloader (#482 T3): mv_ai_status::fetch_state. */
+typedef enum mv_ai_fetch_state {
+  MV_AI_FETCH_IDLE = 0,
+  MV_AI_FETCH_DOWNLOADING = 1,
+  MV_AI_FETCH_WAITING = 2,  /* Hugging Face did not answer: retrying by itself
+                               (fetch_retry_seconds); Cancel stays available */
+  MV_AI_FETCH_GONE = 3,     /* a pinned file is gone (404): needs an app update */
+  MV_AI_FETCH_FAILED = 4,   /* a file never matched its SHA-256 */
+  MV_AI_FETCH_DONE = 5
+} mv_ai_fetch_state;
 
 /* Settings -> Local search -> the Photos library (issue #72; macOS only):
  * PhotoKit's authorization, as the add-on sees it. */
@@ -294,6 +311,16 @@ typedef struct mv_ai_status {
    * struct_size covers them. */
   uint64_t scans_total;
   uint64_t scans_done;
+  /* Model tiers (#482): the tier in force ("default", "potato", ...; "" before
+   * the pack is read) and the downloader's progress over every file that tier
+   * needs for the installed pieces. Read these only when struct_size covers them. */
+  char tier_utf8[32];
+  uint32_t fetch_state;        /* mv_ai_fetch_state */
+  uint32_t fetch_files_done;
+  uint32_t fetch_files_total;
+  uint32_t fetch_retry_seconds; /* WAITING: the next try, from now */
+  uint64_t fetch_done_bytes;
+  uint64_t fetch_total_bytes;
 } mv_ai_status;
 
 typedef enum mv_ai_icloud_fetch {
@@ -344,6 +371,11 @@ typedef struct mv_ai_api {
    *  2026-10-07),
    *  "available":{"cuda":bool,"openvino":bool,"coreml":bool},
    *  "models":[{"quality":1,"name":"CLIP ViT-B/32","dim":512},...],
+   *  "tier":"default" (the choice, "" = none yet: the picker opens; #482),
+   *  "tiers":{...} (the pack's models/tiers.json: every tier with its model names, licences,
+   *  download and disk sizes, written by tools/package/ai-models.py),
+   *  "machine":{"arch","cores","ram_bytes","free_bytes","chip","accelerator","laptop",
+   *  "recommended"} (the local check: computed here, never sent anywhere),
    *  "runtime":"1.30.0"}  [no-block] */
   mv_status(MV_CALL* settings_json)(void* ctx, char* out, uint32_t cap, uint32_t* needed);
   /* key: "compute" | "quality" | "pause_on_battery_percent" | "battery_override"
@@ -379,7 +411,12 @@ typedef struct mv_ai_api {
    * "resume_root" (a root id; 0 = every one) resumes a root held since start because its
    * indexing was left unfinished (issue #299, docs/design/17 "Unfinished roots wait for
    * Resume"): walked first, then indexed from its last committed frame. A root not held is
-   * left alone. [no-block] */
+   * left alone.
+   * "tier" (a JSON string: a tier id of settings_json "tiers"; #482): the model tier. Saved;
+   * fetches what it needs from Hugging Face (fetch_state), then re-indexes with its towers
+   * while the old index answers, and deletes the old tier's files once the new one covers
+   * the folders. "fetch_cancel" (any value) stops a download in progress (kept to resume);
+   * "fetch_retry" (any value) starts it again. [no-block] */
   mv_status(MV_CALL* set_setting)(void* ctx, const char* key, const char* value_json);
   /* Pause / resume all indexing. [no-block] */
   mv_status(MV_CALL* pause)(void* ctx, uint32_t paused);
@@ -416,8 +453,10 @@ typedef struct mv_ai_api {
   /* ---- search (PR 22, 23) ------------------------------------------------- */
   /* Natural-language query. `scope_dir` may be NULL for MV_AI_SCOPE_ALL.
    * Runs on a worker; MV_ADDON_EVENT_AI_SEARCH_DONE carries the id and the
-   * result count (0: "nothing found" — the min-score cutoff, not the
-   * least-bad ten). The query language (docs/design/17 "Query syntax"): a named
+   * result count. A description nothing answers ("nothing found": the
+   * calibrated gate, not the least-bad ten) lists what the rest of the query
+   * allows, newest by date created first (#412).
+   * The query language (docs/design/17 "Query syntax"): a named
    * person narrows to them, "quoted words" must be said, -x leaves x out,
    * video / photo and in: / before: / after: filter; the kind bits here and
    * the query's must both hold. [no-block] */

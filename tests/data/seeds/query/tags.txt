@@ -1,0 +1,1 @@
+camera:R5 lens:"24-70" -camera:iphone made:chatgpt ai:no

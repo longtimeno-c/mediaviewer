@@ -73,6 +73,13 @@ struct manifest {
   std::string arch;
   manifest_file archive;  // the download: name, sha256, size (licence unused)
   std::vector<manifest_file> files;
+  // Optional (#482 T3, docs/plans/model-tiers.md): upstream files the add-on
+  // fetches itself after install, each a plain https://huggingface.co/ GET of
+  // a pinned revision, checked against its size and sha256 here. They live in
+  // the add-on's data folder, never the version folder, so verify_files does
+  // not see them: an add-on with files still to fetch verifies and loads.
+  std::vector<manifest_file> remote;  // path (where it goes), sha256, size, licence
+  std::vector<std::string> remote_urls;  // remote[i]'s URL
   // Optional (2026-10-03): one line for Settings; the commands and keys it
   // adds; the one-time hint it asks for ("card": offer it when a removable
   // volume appears and it is not installed). An older manifest has none,
