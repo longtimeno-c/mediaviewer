@@ -4,6 +4,7 @@
 
 #include <sodium.h>
 
+#include <algorithm>
 #include <cstring>
 
 namespace mv::sharepoint::known {
@@ -11,6 +12,11 @@ namespace mv::sharepoint::known {
 namespace {
 
 constexpr std::uint8_t kVersion = 1;
+// #472 relays: a flags byte after each name (bit 0: the person's own
+// computer). Written only when a device has a flag, so a build before relays
+// still reads a list that has none.
+constexpr std::uint8_t kVersionFlags = 2;
+constexpr std::uint8_t kFlagOwn = 1;
 constexpr char kContext[crypto_kdf_CONTEXTBYTES + 1] = "MVSPpres";  // 8 bytes
 
 // Cut to kMaxName bytes on a character boundary.
@@ -47,7 +53,8 @@ std::array<std::uint8_t, 32> identity(secrets::store* store, bool& kept) {
 }
 
 std::vector<std::uint8_t> encode(const std::vector<device>& devices) {
-  std::vector<std::uint8_t> out{kVersion, 0};
+  const bool flags = std::any_of(devices.begin(), devices.end(), [](const device& d) { return d.own; });
+  std::vector<std::uint8_t> out{flags ? kVersionFlags : kVersion, 0};
   for (const auto& d : devices) {
     if (out[1] == kMaxDevices) break;
     const std::string name = clip(d.name);
@@ -55,13 +62,17 @@ std::vector<std::uint8_t> encode(const std::vector<device>& devices) {
     out.insert(out.end(), d.secret.begin(), d.secret.end());
     out.push_back(static_cast<std::uint8_t>(name.size()));
     out.insert(out.end(), name.begin(), name.end());
+    if (flags) out.push_back(d.own ? kFlagOwn : 0);
     ++out[1];
   }
   return out;
 }
 
 std::optional<std::vector<device>> decode(std::span<const std::uint8_t> bytes) {
-  if (bytes.size() < 2 || bytes[0] != kVersion || bytes[1] > kMaxDevices) return std::nullopt;
+  if (bytes.size() < 2 || (bytes[0] != kVersion && bytes[0] != kVersionFlags) || bytes[1] > kMaxDevices) {
+    return std::nullopt;
+  }
+  const bool flags = bytes[0] == kVersionFlags;
   std::vector<device> out;
   std::size_t at = 2;
   for (std::uint8_t i = 0; i < bytes[1]; ++i) {
@@ -74,6 +85,10 @@ std::optional<std::vector<device>> decode(std::span<const std::uint8_t> bytes) {
     if (n > kMaxName || bytes.size() - at < n) return std::nullopt;
     d.name.assign(reinterpret_cast<const char*>(bytes.data() + at), n);
     at += n;
+    if (flags) {
+      if (at >= bytes.size() || (bytes[at] & ~kFlagOwn) != 0) return std::nullopt;
+      d.own = (bytes[at++] & kFlagOwn) != 0;
+    }
     out.push_back(std::move(d));
   }
   if (at != bytes.size()) return std::nullopt;

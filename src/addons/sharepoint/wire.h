@@ -105,6 +105,12 @@ enum class msg : std::uint8_t {
   // rejoin if the local link goes. Sent only to a sender whose offer had
   // "handover": a sender before PR 5 would end the link on it.
   places = 14,
+  // Protocol 2, #472 relays through the person's own computer (relay.h),
+  // only on a link between two of that person's remembered devices, never
+  // to a stranger. 15-19 are left for other work on the stack.
+  relay = 20,         // {"places":[{"a","p"},...]} (A -> R): connect onward to these
+  relay_answer = 21,  // {"ok":bool,"why"} (R -> A); after ok, only relay_data either way
+  relay_data = 22,    // raw bytes of A's link to B, sealed again between A and R
 };
 
 // "123 456": six digits from both public keys (client = the sender).

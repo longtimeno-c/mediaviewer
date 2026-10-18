@@ -187,6 +187,11 @@ std::span<const std::uint8_t> seal_kept(std::vector<std::uint8_t>& buf, crypto_s
 
 bool valid_type(std::uint8_t raw, std::uint32_t version) noexcept {
   const auto last = version >= 2 ? msg::places : msg::ping;  // places: #472 PR 5
+  // #472 relays (relay.h): their own range, protocol 2 only.
+  if (version >= 2 && raw >= static_cast<std::uint8_t>(msg::relay) &&
+      raw <= static_cast<std::uint8_t>(msg::relay_data)) {
+    return true;
+  }
   return raw >= static_cast<std::uint8_t>(msg::ident) && raw <= static_cast<std::uint8_t>(last);
 }
 

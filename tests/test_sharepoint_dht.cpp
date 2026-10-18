@@ -554,11 +554,17 @@ struct word_client {
   fake_host host;
   sp::engine eng;
   // `secrets`: a folder for the secret store (#472 PR 4); empty: none.
-  word_client(const fs::path& received, const std::string& name, const swarm& s, const fs::path& secrets = {})
-      : host(received), eng(host, options(name, s, secrets)) {
+  // `tweak` (#472 relays): changes to the options before the engine starts.
+  word_client(const fs::path& received, const std::string& name, const swarm& s, const fs::path& secrets = {},
+              const std::function<void(sp::engine::options&)>& tweak = {})
+      : host(received), eng(host, tweaked(options(name, s, secrets), tweak)) {
     eng.screen_opened("");
     eng.on_event("internet", 2, "true");
     eng.on_event("dht", 2, "true");
+  }
+  static sp::engine::options tweaked(sp::engine::options o, const std::function<void(sp::engine::options&)>& tweak) {
+    if (tweak) tweak(o);
+    return o;
   }
   static sp::engine::options options(const std::string& name, const swarm& s, const fs::path& secrets) {
     sp::engine::options o;
@@ -833,4 +839,132 @@ TEST_CASE("sharepoint known: a send to a device that does not answer waits, and 
   ann.eng.on_event("out_cancel", 1, "");
   ann.eng.wait_idle();
   CHECK(ann.eng.snapshot().out_note == "Cancelled. Nothing was sent.");
+}
+
+// ---- relays through the person's own computers (#472, option 9) ------------------------------
+
+namespace {
+// Bea's code, asked for until the receiver of codes is up.
+std::string direct_code(word_client& c) {
+  std::string code;
+  auto asked = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+  REQUIRE(eventually([&] {
+    const auto v = c.eng.snapshot();
+    if (v.code_phase == 0 && std::chrono::steady_clock::now() - asked > std::chrono::milliseconds(300)) {
+      c.eng.on_event("make_code", 1, "");
+      asked = std::chrono::steady_clock::now();
+    }
+    code = v.code_text;
+    return v.code_phase == static_cast<std::uint8_t>(sp::internet_receiver::phase::ready) && !code.empty();
+  }, 20));
+  REQUIRE(std::count(code.begin(), code.end(), ' ') == 0);  // a direct code, not words
+  return code;
+}
+
+// Ann's connects all time out: Bea's places are out of her reach.
+void cut_off(sp::engine::options& o) {
+  o.relay_meet_ms = 60000;
+  o.connect_wifi = [](const sp::net::endpoint&, int) -> mv::result<std::unique_ptr<sp::link>> {
+    return mv::err(mv::status::timeout);
+  };
+}
+
+void direct_codes(sp::engine::options& o) { o.internet_force_words = false; }
+}  // namespace
+
+TEST_CASE("sharepoint relay: a send goes through another of the person's own computers, sealed end to end",
+          "[sharepoint]") {
+  scratch_dir dir("sharepoint_own_relay");
+  swarm s(16);
+  std::mutex m;
+  std::vector<std::uint8_t> seen;
+  word_client rob(dir / "rob_received", "Rob", s, dir / "rob_secrets", [&](sp::engine::options& o) {
+    o.relay_limits.tap = [&](bool, std::span<const std::uint8_t> b) {
+      std::lock_guard lock(m);
+      seen.insert(seen.end(), b.begin(), b.end());
+    };
+  });
+  word_client ann(dir / "ann_received", "Ann", s, dir / "ann_secrets", cut_off);
+  send_with_words(ann, rob, file_of(dir, "first.jpg", 100 * 1024, 30));
+  ann.eng.on_event("remember", 2, "true");
+  rob.eng.on_event("remember", 2, "true");
+  for (word_client* c : {&ann, &rob}) {
+    c->eng.on_event("relay", 2, "true");
+    c->eng.on_event("own0", 2, "true");
+  }
+  CHECK(ann.eng.snapshot().known_own == std::vector<bool>{true});
+  CHECK(sp::build_tree(ann.eng.snapshot()).find("Rob is my computer") != std::string::npos);
+  rob.eng.on_event("in_dismiss", 1, "");  // the pairing send's result
+
+  // Bea, somewhere else, with a direct code Ann cannot reach.
+  word_client bea(dir / "bea_received", "Bea", s, {}, direct_codes);
+  const std::string code = direct_code(bea);
+  const fs::path f = dir / "out" / "clip.mov";
+  const auto bytes = pattern(1536 * 1024 + 77, 31);
+  write_bytes(f, bytes);
+  ann.eng.set_files({utf8(f)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_names == std::vector<std::string>{"clip.mov"};
+  }));
+  ann.eng.on_event("send_code", 2, "\"" + code + "\"");
+  ann.eng.on_event("send_to_code", 1, "");
+  const bool named = eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::naming; }, 90);
+  INFO(ann.eng.snapshot().out_note);
+  REQUIRE(named);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::connecting; }));
+  CHECK(ann.eng.snapshot().out_relay == "Rob");
+  CHECK(rob.eng.snapshot().relaying_for == "Ann");
+  CHECK(sp::build_tree(rob.eng.snapshot()).find("Relaying for Ann") != std::string::npos);
+  CHECK(sp::build_tree(ann.eng.snapshot()).find("Through Rob (your computer)") != std::string::npos);
+  CHECK(ann.eng.snapshot().out_check == bea.eng.snapshot().in_code);  // one session, A to B
+  CHECK(bea.eng.snapshot().in_peer == "Ann");
+  ann.eng.on_event("out_confirm", 1, "");
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  INFO(ann.eng.snapshot().out_note);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(read_bytes(dir / "bea_received" / "clip.mov") == bytes);
+  REQUIRE(eventually([&] { return rob.eng.snapshot().relaying_for.empty(); }));
+  CHECK(rob.eng.snapshot().relayed == 1);
+  CHECK(rob.eng.snapshot().in == sp::view::in_phase::none);  // it received nothing itself
+  std::lock_guard lock(m);
+  CHECK(seen.size() > bytes.size());
+  for (std::size_t at = 0; at + 32 <= bytes.size(); at += 4096) {
+    CHECK(std::search(seen.begin(), seen.end(), bytes.begin() + at, bytes.begin() + at + 32) == seen.end());
+  }
+}
+
+TEST_CASE("sharepoint relay: a computer not marked as the person's own there does not relay", "[sharepoint]") {
+  scratch_dir dir("sharepoint_own_relay_off");
+  swarm s(12);
+  word_client rob(dir / "rob_received", "Rob", s, dir / "rob_secrets");
+  word_client ann(dir / "ann_received", "Ann", s, dir / "ann_secrets", cut_off);
+  send_with_words(ann, rob, file_of(dir, "first.jpg", 100 * 1024, 32));
+  ann.eng.on_event("remember", 2, "true");
+  rob.eng.on_event("remember", 2, "true");
+  ann.eng.on_event("relay", 2, "true");
+  ann.eng.on_event("own0", 2, "true");
+  rob.eng.on_event("relay", 2, "true");  // but Ann is not marked as Rob's person's own there
+  word_client bea(dir / "bea_received", "Bea", s, {}, direct_codes);
+  const std::string code = direct_code(bea);
+  const fs::path f = file_of(dir, "b.jpg", 100 * 1024, 33);
+  ann.eng.set_files({utf8(f)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_names == std::vector<std::string>{"b.jpg"};
+  }));
+  ann.eng.on_event("send_code", 2, "\"" + code + "\"");
+  ann.eng.on_event("send_to_code", 1, "");
+  const bool said =
+      eventually([&] { return ann.eng.snapshot().out_note.find("Rob does not relay") != std::string::npos; }, 90);
+  INFO(ann.eng.snapshot().out_note);
+  CHECK(said);
+  CHECK(rob.eng.snapshot().relayed == 0);
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::none);
+  ann.eng.on_event("out_cancel", 1, "");
+  ann.eng.wait_idle();
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::ended);
 }

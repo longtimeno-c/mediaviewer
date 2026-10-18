@@ -12,7 +12,9 @@
 // compact node lists and endpoints, word codes, an item opened under a code's
 // key; and from #472 PR 4, a remembered-devices record as the secret store
 // returns it (damaged, or written by another version); and from #472 PR 5,
-// the receiver's internet places as a sender reads them. The first byte picks
+// the receiver's internet places as a sender reads them; and from #472's
+// relays, a relay server's rendezvous hello, and the own-device relay's
+// request (as R reads it) and answer (as A reads it). The first byte picks
 // which. Whatever comes in, every call must
 // return, read nothing past the input and never hang: a link that runs out is
 // a closed link.
@@ -39,6 +41,8 @@
 #include "addons/sharepoint/mapping.h"
 #include "addons/sharepoint/net.h"
 #include "addons/sharepoint/noise.h"
+#include "addons/sharepoint/relay.h"
+#include "addons/sharepoint/splice.h"
 #include "addons/sharepoint/transfer.h"
 #include "addons/sharepoint/wire.h"
 
@@ -85,7 +89,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   const std::span<const std::uint8_t> in(data + 1, size - 1);
   const std::string_view text(reinterpret_cast<const char*>(in.data()), in.size());
   std::vector<std::uint8_t> out, payload;
-  switch (data[0] % 23) {
+  switch (data[0] % 26) {
     case 0:
       (void)sp::decode_beacon(in);
       break;
@@ -200,6 +204,15 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
       break;
     case 22:
       (void)sp::parse_places(text);
+      break;
+    case 23:
+      (void)sp::relay::parse_hello(in);
+      break;
+    case 24:
+      for (const auto& p : sp::relay::parse_request(text)) (void)sp::relay::may_reach(p, false);
+      break;
+    case 25:
+      (void)sp::relay::parse_answer(text);
       break;
     case 15: {
       // A sender with a code, answered by the input.

@@ -44,6 +44,9 @@ struct device {
   std::string name;
   std::array<std::uint8_t, 32> key{};     // its X25519 identity
   std::array<std::uint8_t, 32> secret{};  // the pairing secret
+  // #472 relays: "This is my computer": with "Use my other computers to
+  // relay" on, each relays for the other (relay.h). Off when remembered.
+  bool own = false;
 };
 
 // This machine's identity: kept in `store`, made and kept there when it has

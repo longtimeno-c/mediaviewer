@@ -1637,6 +1637,32 @@ item. The waiting side looks for a sender every 15 s rather than every 2 s, to k
 load on the DHT low; the sender punches 15 s longer to cover that. A key that differs from the
 remembered one ends the link loudly (TOFU); the own-device relay is not built in this PR.
 
+**Relays: through the person's own computer, or a splice server of their own; TURN left out
+(2026-10-18, #472).** Both relay paths carry the two ends' handshake and session end to end, so a
+relay holds no key and sees ciphertext only. The own-device relay reuses the remembered-device
+meeting and asks over that sealed channel (new messages 20–22, a range of their own so other work
+on the stack can take 15–19); it serves only when both computers mark each other as the person's
+own and the toggle is on, connects onward only to the public places the sender names (never into
+the relay's own network) and is the relay's one transfer, so one at a time. It relays direct codes
+only: word codes and remembered-device sends would need the relay to hold the DHT meeting's keys.
+No rate cap by default (the person's own line), 256 GiB each way, 120 s idle. The relay server is a
+rendezvous by a random token carried in the code, not derived from the code's secret: a 48-bit
+secret behind a hash could be searched by the server's owner within the code's life. A relay
+place joins the sender's race 1.5 s after the direct places, and the receiver hands on a paired
+link only once the sender has spoken, so a lost race costs nothing. The relay field is the one
+name Sharepoint resolves (the person typed it); the code carries the address. TURN is left out:
+it is a server protocol of its own (allocations, permissions, STUN, credentials) for what the
+splice does in a few hundred lines.
+
+**Tor: dropped for #472, on paper (2026-10-18).** C tor as a child process (BSD-3; OpenSSL,
+libevent) is the feasible way on both OSes: mature v3 onion services, ephemeral `ADD_ONION` with no
+key on disk, about 5–10 MB a platform, but an executable to sign in the add-on, tens of seconds to
+a reachable onion and a few MB/s over six hops. Arti (MIT/Apache-2.0) would bring Rust into the
+build, and its onion-service hosting was still marked incomplete when last checked. The relays
+cover the hard-NAT pair without a third-party network. Nothing was measured: that needs the live
+Tor network, so the harness (`tools/sharepoint-relay/tor_spike.py`) waits for the owner
+([plan](../plans/sharepoint-tor-spike.md)). Reopen for address hiding, or if its numbers surprise.
+
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
 no-replace before its `file_done`; the sender's `done` waits for every check. Measured on loopback
