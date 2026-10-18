@@ -101,6 +101,8 @@ class client {
   // Every vote, distinct endpoints: more than one port for one address means
   // the NAT maps each destination apart (a "hard" NAT, birthday punching).
   [[nodiscard]] std::vector<net::endpoint> external_votes() const;
+  // How many answers said how they saw us, in all.
+  [[nodiscard]] int vote_count() const;
   [[nodiscard]] std::size_t known() const;
 
  private:

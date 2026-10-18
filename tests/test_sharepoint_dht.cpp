@@ -127,6 +127,16 @@ TEST_CASE("sharepoint dht: an item is sealed to the code, padded, and refused wh
   REQUIRE(back->candidates.size() == 3);
   CHECK(back->candidates[1].address == "2a00:1450:4009:81f::200e");
   CHECK_FALSE(back->gone);
+  CHECK_FALSE(back->hard);
+  CHECK(back->tcp_port == 0);
+  // #472: the hard flag and the TCP port ride after the candidates.
+  c.hard = true;
+  c.tcp_port = 50123;
+  auto flagged = dht::open(*k, salt, dht::seal(*k, salt, c), c.written_ms);
+  REQUIRE(flagged);
+  CHECK(flagged->hard);
+  CHECK(flagged->tcp_port == 50123);
+  CHECK(flagged->candidates.size() == 3);
   // Another code, another salt, one flipped byte, too old or from the future: refused.
   auto other = dht::derive(dht::word_code{12, 345, 678, 1998}, true);
   REQUIRE(other);
@@ -229,7 +239,7 @@ TEST_CASE("sharepoint dht: the hub hands KRPC and probes to their handlers, and 
   hub_pair h;
   std::atomic<int> dht{0}, probes{0};
   h.b->on_dht([&](std::span<const std::uint8_t>, const sp::net::endpoint&) { ++dht; });
-  h.b->on_probe([&](std::span<const std::uint8_t>, const sp::net::endpoint&) { ++probes; });
+  h.b->on_probe([&](std::span<const std::uint8_t>, const sp::net::endpoint&, std::uint32_t) { ++probes; });
   const std::string krpc = "d1:t2:aa1:y1:qe";
   REQUIRE(h.a->send({reinterpret_cast<const std::uint8_t*>(krpc.data()), krpc.size()}, h.at_b()));
   const std::uint8_t probe[] = {sp::kProbe, 1, 2, 3};
@@ -545,6 +555,367 @@ TEST_CASE("sharepoint dht: a wrong word code finds nobody", "[sharepoint]") {
   r.join();
   REQUIRE_FALSE(at_s);
   CHECK(at_s.error() == mv::status::timeout);
+}
+
+
+// ---- stand-in NATs: the birthday punch and TCP simultaneous open (#472) ------------------------
+
+#include <set>
+
+namespace {
+
+// A NAT on loopback, for the tests only: every socket a hub opens is wrapped
+// (udp_hub::socket_wrap). A send leaves from one of the NAT's outside sockets,
+// on a port in [lo, lo + 1023]; what comes back to that port from a peer the
+// mapping allows is handed in, with the peer as its sender. Anything reaching
+// the inside socket directly is dropped: behind a NAT nobody can. IPv4 only
+// (an IPv6 send is dropped).
+//   hard: a new outside port for each destination, answered only by it
+//         (endpoint-dependent mapping and filtering: a "symmetric" NAT).
+//   else: one outside port per inside socket, answered only by peers it has
+//         sent to (a port-restricted cone: the easy side).
+struct stand_in_nat {
+  struct mapping {
+    std::shared_ptr<sp::net::udp_socket> out;
+    std::uint16_t inside = 0;
+    std::set<std::string> peers;  // "address|port" that may answer
+  };
+  bool hard;
+  std::uint16_t lo;
+  std::mutex m;
+  std::map<std::string, std::shared_ptr<mapping>> by_key;
+  std::map<std::uint16_t, std::shared_ptr<mapping>> by_out;
+  std::atomic<bool> stop{false};
+  std::thread pump;
+
+  explicit stand_in_nat(bool h) : hard(h), lo(static_cast<std::uint16_t>(20000 + randombytes_uniform(30000))) {
+    pump = std::thread([this] { run(); });
+  }
+  ~stand_in_nat() {
+    stop.store(true);
+    pump.join();
+  }
+  static std::string key(const sp::net::endpoint& e) { return e.address + "|" + std::to_string(e.port); }
+  std::uint16_t hi() const { return static_cast<std::uint16_t>(lo + 1023); }
+  std::size_t outside_ports() {
+    std::lock_guard lock(m);
+    return by_out.size();
+  }
+
+  // Outbound through the NAT.
+  mv::expected send(std::uint16_t inside, std::span<const std::uint8_t> d, const sp::net::endpoint& to) {
+    const auto ip = sp::net::parse_address(to.address);
+    if (!ip || ip->v6) return {};
+    std::shared_ptr<mapping> mp;
+    {
+      std::lock_guard lock(m);
+      const std::string k = hard ? std::to_string(inside) + "|" + key(to) : std::to_string(inside);
+      auto& slot = by_key[k];
+      if (!slot) {
+        for (int tries = 0; tries < 4000 && !slot; ++tries) {
+          const auto port = static_cast<std::uint16_t>(lo + randombytes_uniform(1024));
+          if (by_out.count(port)) continue;
+          auto o = sp::net::open_udp_dual(port, true);
+          if (!o) continue;
+          slot = std::make_shared<mapping>();
+          slot->out = std::move(*o);
+          slot->inside = inside;
+          by_out[port] = slot;
+        }
+        if (!slot) return mv::err(mv::status::io);
+      }
+      slot->peers.insert(key(to));
+      mp = slot;
+    }
+    return mp->out->send_to(d, to);
+  }
+
+  // Inbound: allowed answers go to the inside socket, the peer in front.
+  void run() {
+    std::vector<std::uint8_t> buf(65536);
+    while (!stop.load()) {
+      std::vector<std::shared_ptr<mapping>> all;
+      {
+        std::lock_guard lock(m);
+        for (auto& [p, mp] : by_out) all.push_back(mp);
+      }
+      if (all.empty()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        continue;
+      }
+      std::vector<sp::net::udp_socket*> raw;
+      for (auto& mp : all) raw.push_back(mp->out.get());
+      std::unique_ptr<bool[]> ready(new bool[raw.size()]());
+      if (!sp::net::wait_readable(raw, std::span<bool>(ready.get(), raw.size()), 20)) continue;
+      for (std::size_t i = 0; i < raw.size(); ++i) {
+        if (!ready[i]) continue;
+        sp::net::endpoint from;
+        auto n = raw[i]->receive_from({buf.data() + 6, buf.size() - 6}, 0, from);
+        if (!n) continue;
+        {
+          std::lock_guard lock(m);
+          if (!all[i]->peers.count(key(from))) continue;  // nobody inside asked
+        }
+        const auto ip = sp::net::parse_address(from.address);
+        if (!ip || ip->v6) continue;
+        std::memcpy(buf.data(), ip->bytes.data(), 4);
+        buf[4] = static_cast<std::uint8_t>(from.port >> 8);
+        buf[5] = static_cast<std::uint8_t>(from.port);
+        (void)raw[i]->send_to({buf.data(), *n + 6}, {"127.0.0.1", all[i]->inside});
+      }
+    }
+  }
+
+  bool is_outside(const sp::net::endpoint& e) {
+    std::lock_guard lock(m);
+    return e.address == "127.0.0.1" && by_out.count(e.port);
+  }
+
+  // A socket behind this NAT.
+  class inside_socket final : public sp::net::udp_socket {
+   public:
+    inside_socket(stand_in_nat& nat, std::unique_ptr<sp::net::udp_socket> in) : nat_(nat), in_(std::move(in)) {}
+    mv::expected send_to(std::span<const std::uint8_t> d, const sp::net::endpoint& to) override {
+      return nat_.send(in_->port(), d, to);
+    }
+    mv::result<std::size_t> receive_from(std::span<std::uint8_t> into, int timeout_ms,
+                                         sp::net::endpoint& from) override {
+      std::uint8_t buf[65536];
+      sp::net::endpoint via;
+      auto n = in_->receive_from(buf, timeout_ms, via);
+      if (!n) return n;
+      if (*n < 6 || !nat_.is_outside(via)) return mv::err(mv::status::timeout);  // not through the NAT: dropped
+      sp::net::address ip;
+      std::memcpy(ip.bytes.data(), buf, 4);
+      from = {sp::net::address_text(ip), static_cast<std::uint16_t>(buf[4] << 8 | buf[5])};
+      const std::size_t len = std::min(*n - 6, into.size());
+      std::memcpy(into.data(), buf + 6, len);
+      return len;
+    }
+    void shutdown() noexcept override { in_->shutdown(); }
+    std::uint16_t port() const noexcept override { return in_->port(); }
+    std::intptr_t handle() const noexcept override { return in_->handle(); }
+
+   private:
+    stand_in_nat& nat_;
+    std::unique_ptr<sp::net::udp_socket> in_;
+  };
+
+  sp::udp_hub::socket_wrap wrap() {
+    return [this](std::unique_ptr<sp::net::udp_socket> s) -> std::unique_ptr<sp::net::udp_socket> {
+      return std::make_unique<inside_socket>(*this, std::move(s));
+    };
+  }
+};
+
+std::shared_ptr<sp::udp_hub> hub_behind(stand_in_nat* nat) {
+  auto h = sp::udp_hub::open(0, true, nat ? nat->wrap() : sp::udp_hub::socket_wrap{});
+  REQUIRE(h);
+  return std::move(*h);
+}
+
+// The internet handshake and a chunk over a met link, CPace on the code's password.
+void handshake_over(std::unique_ptr<sp::link> r, std::unique_ptr<sp::link> s, const dht::keys& k) {
+  const std::vector<std::uint8_t> pw(k.password.begin(), k.password.end());
+  std::shared_ptr<sp::link> lr(std::move(r)), ls(std::move(s));
+  mv::result<std::unique_ptr<sp::channel>> server = mv::err(mv::status::internal);
+  std::thread t([&] {
+    auto h = sp::channel::read_hello(*lr, std::chrono::steady_clock::now() + std::chrono::seconds(5));
+    if (!h) {
+      server = mv::err(h.error());
+      return;
+    }
+    sp::channel::options so;
+    so.internet_secret = pw;
+    server = sp::channel::open_server(lr, std::move(*h), "bbbbbbbbbbbbbbbb", "Bea", so);
+  });
+  auto client = sp::channel::open_internet(ls, pw, "aaaaaaaaaaaaaaaa", "Ann");
+  t.join();
+  REQUIRE(client);
+  REQUIRE(server);
+  CHECK((*client)->code() == (*server)->code());
+  CHECK((*client)->via() == sp::transport::internet);
+  REQUIRE((*client)->send(sp::msg::data, pattern(sp::kChunkBytes, 3)));
+  sp::message msg;
+  REQUIRE((*server)->receive(msg, 5000));
+  CHECK(msg.body == pattern(sp::kChunkBytes, 3));
+}
+
+struct met_pair {
+  mv::result<std::unique_ptr<sp::link>> r = mv::err(mv::status::internal), s = mv::err(mv::status::internal);
+  std::optional<dht::keys> k;
+};
+
+// Both sides meet on one code: the receiver's hub `hr`, the sender's `hs`.
+met_pair meet_both(swarm& sw, const std::shared_ptr<sp::udp_hub>& hr, const std::shared_ptr<sp::udp_hub>& hs,
+                   dht::meet_options o, bool* r_hard = nullptr, bool* s_hard = nullptr) {
+  dht::client cr(hr, test_options(sw)), cs(hs, test_options(sw));
+  REQUIRE(cr.start({}));
+  REQUIRE(cs.start({}));
+  const dht::word_code code = dht::random_code();
+  auto kr = dht::derive(code, true);
+  auto ks = dht::derive(code, true);
+  REQUIRE(kr);
+  REQUIRE(ks);
+  o.loopback = true;
+  o.wait_ms = 20000;
+  met_pair out;
+  std::thread r([&] { out.r = dht::meet(hr, cr, *kr, dht::role::receiver, o, {}, {}); });
+  out.s = dht::meet(hs, cs, *ks, dht::role::sender, o, {}, {});
+  r.join();
+  // How the DHT saw each side (the meeting's own puts asked many nodes).
+  if (r_hard) *r_hard = dht::seen_hard(cr);
+  if (s_hard) *s_hard = dht::seen_hard(cs);
+  out.k.emplace();
+  *out.k = std::move(*kr);
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("sharepoint nat: a hard NAT meets an easy one by the birthday punch, either side hard",
+          "[sharepoint]") {
+  for (const bool receiver_hard : {true, false}) {
+    INFO("receiver hard: " << receiver_hard);
+    swarm sw(12);
+    stand_in_nat hard_nat(true), easy_nat(false);
+    auto hr = hub_behind(receiver_hard ? &hard_nat : &easy_nat);
+    auto hs = hub_behind(receiver_hard ? &easy_nat : &hard_nat);
+    dht::meet_options o;
+    o.tcp = false;  // UDP only: the birthday punch alone
+    o.birthday_lo = hard_nat.lo;
+    o.birthday_hi = hard_nat.hi();
+    bool r_hard = false, s_hard = false;
+    const auto t0 = std::chrono::steady_clock::now();
+    auto met = meet_both(sw, hr, hs, o, &r_hard, &s_hard);
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    UNSCOPED_INFO("met in " << secs << " s");
+    // The DHT saw the hard side on many ports, the easy side on one.
+    CHECK(r_hard == receiver_hard);
+    CHECK(s_hard == !receiver_hard);
+    REQUIRE(met.r);
+    REQUIRE(met.s);
+    // The hard side's stream runs on the one birthday socket that met; the
+    // other 255 are closed.
+    auto& hard_hub = receiver_hard ? hr : hs;
+    CHECK(hard_hub->extra_count() == 1);
+    CHECK((receiver_hard ? hs : hr)->extra_count() == 0);
+    handshake_over(std::move(*met.r), std::move(*met.s), *met.k);
+  }
+}
+
+TEST_CASE("sharepoint nat: two hard NATs do not meet over UDP, and every extra socket is closed", "[sharepoint]") {
+  swarm sw(12);
+  stand_in_nat a(true), b(true);
+  auto hr = hub_behind(&a);
+  auto hs = hub_behind(&b);
+  dht::meet_options o;
+  o.tcp = false;
+  o.punch_ms = 2500;
+  auto met = meet_both(sw, hr, hs, o);
+  REQUIRE_FALSE(met.r);
+  REQUIRE_FALSE(met.s);
+  CHECK(met.s.error() == mv::status::timeout);
+  // Neither side birthday-punches another hard NAT: it would not meet.
+  CHECK(hr->extra_count() == 0);
+  CHECK(hs->extra_count() == 0);
+}
+
+TEST_CASE("sharepoint nat: TCP simultaneous open connects two ports that each connect to the other",
+          "[sharepoint]") {
+  auto a = sp::net::open_rendezvous(true);
+  auto b = sp::net::open_rendezvous(true);
+  REQUIRE(a);
+  REQUIRE(b);
+  const sp::net::endpoint at_a{"127.0.0.1", (*a)->port()}, at_b{"127.0.0.1", (*b)->port()};
+  mv::result<std::unique_ptr<sp::link>> la = mv::err(mv::status::internal);
+  std::thread t([&] { la = (*a)->next(std::span<const sp::net::endpoint>(&at_b, 1), 5000); });
+  auto lb = (*b)->next(std::span<const sp::net::endpoint>(&at_a, 1), 5000);
+  t.join();
+  REQUIRE(la);
+  REQUIRE(lb);
+  // One connection between the two ports, whoever's SYN got there: bytes both ways.
+  const std::uint8_t ping[] = {1, 2, 3, 4};
+  REQUIRE((*la)->write_all(ping));
+  std::uint8_t got[4] = {};
+  REQUIRE(sp::read_exact_until(**lb, got, std::chrono::steady_clock::now() + std::chrono::seconds(5)));
+  CHECK(std::memcmp(got, ping, 4) == 0);
+  REQUIRE((*lb)->write_all(ping));
+  REQUIRE(sp::read_exact_until(**la, got, std::chrono::steady_clock::now() + std::chrono::seconds(5)));
+  // A port nobody is at: the attempts are tried again until the time is up, then a timeout.
+  auto c = sp::net::open_rendezvous(true);
+  REQUIRE(c);
+  const sp::net::endpoint nobody{"127.0.0.1", 9};
+  const auto t0 = std::chrono::steady_clock::now();
+  auto none = (*c)->next(std::span<const sp::net::endpoint>(&nobody, 1), 700);
+  REQUIRE_FALSE(none);
+  CHECK(none.error() == mv::status::timeout);
+  CHECK(std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(650));
+  (*c)->shutdown();
+  auto after = (*c)->next(std::span<const sp::net::endpoint>(&nobody, 1), 700);
+  REQUIRE_FALSE(after);
+  CHECK(after.error() == mv::status::cancelled);
+}
+
+TEST_CASE("sharepoint nat: two hard NATs meet over TCP simultaneous open when UDP cannot", "[sharepoint]") {
+  swarm sw(12);
+  stand_in_nat a(true), b(true);  // UDP only; the stand-ins leave TCP alone (a NAT that keeps TCP ports)
+  auto hr = hub_behind(&a);
+  auto hs = hub_behind(&b);
+  dht::meet_options o;
+  o.punch_ms = 8000;
+  auto met = meet_both(sw, hr, hs, o);
+  REQUIRE(met.r);
+  REQUIRE(met.s);
+  CHECK((*met.r)->via() == sp::transport::internet);
+  handshake_over(std::move(*met.r), std::move(*met.s), *met.k);
+}
+
+TEST_CASE("sharepoint nat: the hub reads extra sockets with its own and runs a stream on one", "[sharepoint]") {
+  hub_pair h;
+  std::atomic<int> on_extra{0};
+  std::atomic<std::uint32_t> last_sock{0};
+  h.b->on_probe([&](std::span<const std::uint8_t>, const sp::net::endpoint&, std::uint32_t sock) {
+    last_sock.store(sock);
+    ++on_extra;
+  });
+  const auto ids = h.b->open_extras(8);
+  REQUIRE(ids.size() == 8);
+  CHECK(h.b->extra_count() == 8);
+  // A probe from b's fifth extra to a, and a's answer back to where it came from.
+  sp::net::endpoint seen;
+  std::atomic<bool> got{false};
+  h.a->on_probe([&](std::span<const std::uint8_t>, const sp::net::endpoint& from, std::uint32_t) {
+    seen = from;
+    got.store(true);
+  });
+  const std::uint8_t probe[] = {sp::kProbe, 9};
+  REQUIRE(h.b->send(probe, h.at_a(), ids[4]));
+  REQUIRE(eventually([&] { return got.load(); }, 5));
+  CHECK(seen.port != h.b->port());
+  REQUIRE(h.a->send(probe, {"127.0.0.1", seen.port}));
+  REQUIRE(eventually([&] { return on_extra.load() == 1; }, 5));
+  CHECK(last_sock.load() == ids[4]);
+  // A stream on that extra, both ways.
+  auto sb = h.b->stream(h.at_a(), 5, false, ids[4]);
+  auto sa = h.a->stream({"127.0.0.1", seen.port}, 5);
+  const auto data = pattern(300 * 1024, 4);
+  std::thread w([&] { REQUIRE(sb->write_all(data)); });
+  std::vector<std::uint8_t> back(data.size());
+  REQUIRE(sp::read_exact_until(*sa, back, std::chrono::steady_clock::now() + std::chrono::seconds(10)));
+  w.join();
+  CHECK(back == data);
+  // The others closed; a send on a closed one says so, and the stream lives on.
+  std::vector<std::uint32_t> rest(ids.begin(), ids.end());
+  rest.erase(rest.begin() + 4);
+  h.b->close_extras(rest);
+  CHECK(h.b->extra_count() == 1);
+  CHECK(h.b->send(probe, h.at_a(), ids[0]).error() == mv::status::not_found);
+  const std::uint8_t more[] = {7, 7};
+  REQUIRE(sb->write_all(more));
+  std::uint8_t two[2];
+  REQUIRE(sp::read_exact_until(*sa, two, std::chrono::steady_clock::now() + std::chrono::seconds(5)));
+  CHECK(two[0] == 7);
 }
 
 // ---- two engines over four words ----------------------------------------------------------------

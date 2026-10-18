@@ -480,6 +480,7 @@ class udp_port final : public udp_socket {
     return static_cast<std::size_t>(n);
   }
   void shutdown() noexcept override { down_.store(true); }
+  std::intptr_t handle() const noexcept override { return static_cast<std::intptr_t>(s_); }
 
  private:
   SOCKET s_;
@@ -489,6 +490,214 @@ class udp_port final : public udp_socket {
 };
 
 }  // namespace
+
+result<std::size_t> wait_readable(std::span<udp_socket* const> socks, std::span<bool> ready, int timeout_ms) {
+  std::vector<WSAPOLLFD> p(socks.size());
+  for (std::size_t i = 0; i < socks.size(); ++i) {
+    p[i].fd = static_cast<SOCKET>(socks[i]->handle());
+    p[i].events = POLLRDNORM;
+  }
+  const int r = ::WSAPoll(p.data(), static_cast<ULONG>(p.size()), timeout_ms);
+  if (r == SOCKET_ERROR) return err(status::io);
+  if (r == 0) return err(status::timeout);
+  std::size_t n = 0;
+  for (std::size_t i = 0; i < socks.size() && i < ready.size(); ++i) {
+    ready[i] = p[i].revents != 0;
+    n += ready[i] ? 1 : 0;
+  }
+  return n;
+}
+
+void reserve_sockets(int) noexcept {}  // Winsock has no per-process socket limit to raise
+
+namespace {
+
+// A v4-mapped IPv6 address for an IPv4 peer of a dual-stack socket.
+int mapped(sockaddr_storage& a, int alen) noexcept {
+  if (a.ss_family != AF_INET) return alen;
+  const sockaddr_in v4 = *reinterpret_cast<const sockaddr_in*>(&a);
+  auto* m = reinterpret_cast<sockaddr_in6*>(&a);
+  std::memset(m, 0, sizeof *m);
+  m->sin6_family = AF_INET6;
+  m->sin6_port = v4.sin_port;
+  m->sin6_addr.s6_addr[10] = 0xff;
+  m->sin6_addr.s6_addr[11] = 0xff;
+  std::memcpy(&m->sin6_addr.s6_addr[12], &v4.sin_addr, 4);
+  return static_cast<int>(sizeof *m);
+}
+
+class tcp_meet final : public tcp_rendezvous {
+ public:
+  tcp_meet(SOCKET s, const sockaddr_storage& local, int len, bool dual)
+      : s_(s), local_(local), len_(len), dual_(dual), port_(port_of(local)) {}
+  ~tcp_meet() override {
+    for (auto& a : tries_) {
+      if (a.s != INVALID_SOCKET) ::closesocket(a.s);
+    }
+    ::closesocket(s_);
+  }
+  std::uint16_t port() const noexcept override { return port_; }
+  void shutdown() noexcept override { down_.store(true); }
+
+  result<std::unique_ptr<link>> next(std::span<const endpoint> peers, int timeout_ms) override {
+    using clock = std::chrono::steady_clock;
+    const auto until = clock::now() + std::chrono::milliseconds(std::max(timeout_ms, 0));
+    for (;;) {
+      if (down_.load()) return err(status::cancelled);
+      const auto now = clock::now();
+      for (const auto& p : peers) {
+        attempt* a = find(p);
+        if (!a) {
+          tries_.push_back({p});
+          a = &tries_.back();
+        }
+        // A SYN that was dropped is sent again soon, not at the OS's backoff.
+        if (a->s != INVALID_SOCKET && now - a->started > std::chrono::milliseconds(4 * kRetryMs)) {
+          ::closesocket(a->s);
+          a->s = INVALID_SOCKET;
+        }
+        if (a->s == INVALID_SOCKET && now >= a->retry_at) start(*a, now);
+      }
+      std::vector<WSAPOLLFD> pf(1);
+      pf[0].fd = s_;
+      pf[0].events = POLLRDNORM;
+      for (const auto& a : tries_) {
+        if (a.s == INVALID_SOCKET) continue;
+        WSAPOLLFD w{};
+        w.fd = a.s;
+        w.events = POLLWRNORM;
+        pf.push_back(w);
+      }
+      const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - now).count();
+      const int r = ::WSAPoll(pf.data(), static_cast<ULONG>(pf.size()),
+                              static_cast<int>(std::clamp<long long>(left, 0, 50)));
+      if (r == SOCKET_ERROR) return err(status::io);
+      if (r > 0 && pf[0].revents != 0) {
+        sockaddr_storage from{};
+        int flen = sizeof from;
+        const SOCKET c = ::accept(s_, reinterpret_cast<sockaddr*>(&from), &flen);
+        if (c != INVALID_SOCKET) {
+          const std::string at = address_text(address_of(reinterpret_cast<const sockaddr*>(&from)));
+          const bool known =
+              std::any_of(peers.begin(), peers.end(), [&](const endpoint& p) { return p.address == at; });
+          if (known) return std::unique_ptr<link>(std::make_unique<tcp_link>(c));
+          ::closesocket(c);
+        }
+      }
+      if (r > 0) {
+        for (std::size_t i = 1; i < pf.size(); ++i) {
+          if (pf[i].revents == 0) continue;
+          attempt* a = by_socket(pf[i].fd);
+          if (!a) continue;
+          int so = 0;
+          int sl = sizeof so;
+          const bool ok = !(pf[i].revents & (POLLERR | POLLHUP)) &&
+                          ::getsockopt(a->s, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&so), &sl) == 0 &&
+                          so == 0;
+          const SOCKET c = a->s;
+          a->s = INVALID_SOCKET;
+          a->retry_at = clock::now() + std::chrono::milliseconds(kRetryMs);
+          if (ok) return std::unique_ptr<link>(std::make_unique<tcp_link>(c));
+          ::closesocket(c);
+        }
+      }
+      if (clock::now() >= until) return err(status::timeout);
+    }
+  }
+
+ private:
+  struct attempt {
+    endpoint to;
+    SOCKET s = INVALID_SOCKET;
+    std::chrono::steady_clock::time_point started{}, retry_at{};
+  };
+
+  attempt* find(const endpoint& p) {
+    for (auto& a : tries_) {
+      if (a.to.address == p.address && a.to.port == p.port) return &a;
+    }
+    return nullptr;
+  }
+  attempt* by_socket(SOCKET s) {
+    for (auto& a : tries_) {
+      if (a.s == s) return &a;
+    }
+    return nullptr;
+  }
+
+  void start(attempt& a, std::chrono::steady_clock::time_point now) {
+    a.retry_at = now + std::chrono::milliseconds(kRetryMs);
+    sockaddr_storage to;
+    int tlen = sockaddr_of(a.to, to);
+    if (tlen == 0) return;
+    if (dual_) tlen = mapped(to, tlen);
+    if (to.ss_family != local_.ss_family) return;  // an IPv6 peer from an IPv4-only port
+    const SOCKET c = ::WSASocketW(local_.ss_family, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_NO_HANDLE_INHERIT);
+    if (c == INVALID_SOCKET) return;
+    BOOL one = TRUE;
+    (void)::setsockopt(c, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof one);
+    if (dual_) {
+      DWORD v6only = 0;
+      (void)::setsockopt(c, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&v6only), sizeof v6only);
+    }
+    u_long nb = 1;
+    (void)::ioctlsocket(c, FIONBIO, &nb);
+    if (::bind(c, reinterpret_cast<const sockaddr*>(&local_), len_) != 0) {
+      ::closesocket(c);
+      return;
+    }
+    if (::connect(c, reinterpret_cast<sockaddr*>(&to), tlen) != 0 && ::WSAGetLastError() != WSAEWOULDBLOCK) {
+      ::closesocket(c);
+      return;
+    }
+    a.s = c;
+    a.started = now;
+  }
+
+  SOCKET s_;
+  sockaddr_storage local_;
+  int len_;
+  bool dual_;
+  std::uint16_t port_;
+  std::vector<attempt> tries_;  // next()'s thread only
+  std::atomic<bool> down_{false};
+};
+
+}  // namespace
+
+result<std::unique_ptr<tcp_rendezvous>> open_rendezvous(bool loopback_only) {
+  if (!winsock_ready()) return err(status::io);
+  sockaddr_storage st{};
+  int len = 0;
+  bool dual = false;
+  SOCKET s = loopback_only ? INVALID_SOCKET
+                           : ::WSASocketW(AF_INET6, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_NO_HANDLE_INHERIT);
+  if (s != INVALID_SOCKET) {
+    DWORD v6only = 0;
+    (void)::setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&v6only), sizeof v6only);
+    auto* a = reinterpret_cast<sockaddr_in6*>(&st);
+    a->sin6_family = AF_INET6;  // :: (all zeros)
+    len = static_cast<int>(sizeof *a);
+    dual = true;
+  } else {
+    s = ::WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP, nullptr, 0, WSA_FLAG_NO_HANDLE_INHERIT);
+    if (s == INVALID_SOCKET) return err(status::io);
+    auto* a = reinterpret_cast<sockaddr_in*>(&st);
+    a->sin_family = AF_INET;
+    a->sin_addr.s_addr = ::htonl(loopback_only ? INADDR_LOOPBACK : INADDR_ANY);
+    len = static_cast<int>(sizeof *a);
+  }
+  // Windows has no SO_REUSEPORT: SO_REUSEADDR on the listener and on every
+  // connecting socket lets them share the port.
+  BOOL one = TRUE;
+  (void)::setsockopt(s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof one);
+  if (::bind(s, reinterpret_cast<sockaddr*>(&st), len) != 0 || ::listen(s, 8) != 0 ||
+      ::getsockname(s, reinterpret_cast<sockaddr*>(&st), &len) != 0) {
+    ::closesocket(s);
+    return err(status::io);
+  }
+  return std::unique_ptr<tcp_rendezvous>(std::make_unique<tcp_meet>(s, st, len, dual));
+}
 
 result<std::unique_ptr<udp_socket>> open_udp_dual(std::uint16_t port, bool loopback_only) {
   (void)loopback_only;  // :: still, so 127.0.0.1 reaches it too; the tests send only to loopback

@@ -392,6 +392,13 @@ std::vector<net::endpoint> client::external_votes() const {
   return out;
 }
 
+int client::vote_count() const {
+  std::lock_guard lock(m_);
+  int n = 0;
+  for (const auto& [k, c] : votes_) n += c;
+  return n;
+}
+
 std::size_t client::known() const {
   std::lock_guard lock(m_);
   return table_.size();

@@ -51,6 +51,7 @@ bool before(std::uint32_t a, std::uint32_t b) noexcept { return static_cast<std:
 
 struct udp_hub::stream_state {
   std::weak_ptr<udp_hub> hub;  // a stream that outlives its hub just fails
+  std::shared_ptr<net::udp_socket> sock;  // under m: the socket it runs on
   net::endpoint peer;
   std::uint32_t id = 0;
   bool learn = false;  // under m: the first packet's sender becomes the peer
@@ -95,7 +96,7 @@ struct udp_hub::stream_state {
   clock::time_point ack_due{};
 
   void send_wire(std::span<const std::uint8_t> w) {
-    if (auto h = hub.lock()) (void)h->send(w, peer);
+    if (auto h = hub.lock()) (void)h->send_on(*sock, w, peer);
   }
 
   // Under m.
@@ -320,12 +321,14 @@ class udp_stream final : public link {
 
 }  // namespace
 
-result<std::shared_ptr<udp_hub>> udp_hub::open(std::uint16_t port, bool loopback_only) {
+result<std::shared_ptr<udp_hub>> udp_hub::open(std::uint16_t port, bool loopback_only, socket_wrap wrap) {
   auto sock = net::open_udp_dual(port, loopback_only);
   if (!sock) return err(sock.error());
   std::shared_ptr<udp_hub> h(new udp_hub());
   h->port_ = (*sock)->port();
-  h->sock_ = std::move(*sock);
+  h->sock_ = wrap ? wrap(std::move(*sock)) : std::move(*sock);
+  h->loopback_ = loopback_only;
+  h->wrap_ = std::move(wrap);
   h->reader_ = std::thread([raw = h.get()] { raw->read_loop(); });
   h->timer_ = std::thread([raw = h.get()] { raw->timer_loop(); });
   return h;
@@ -339,9 +342,12 @@ void udp_hub::stop() noexcept {
   if (reader_.joinable()) reader_.join();
   if (timer_.joinable()) timer_.join();
   std::map<std::uint32_t, std::weak_ptr<stream_state>> all;
+  std::map<std::uint32_t, std::shared_ptr<net::udp_socket>> extras;
   {
     std::lock_guard lock(m_);
     all.swap(streams_);
+    extras.swap(extras_);
+    has_extras_.store(false);
   }
   for (auto& [id, w] : all) {
     if (auto s = w.lock()) {
@@ -353,12 +359,61 @@ void udp_hub::stop() noexcept {
 }
 
 expected udp_hub::send(std::span<const std::uint8_t> datagram, const net::endpoint& to) {
+  return send_on(*sock_, datagram, to);
+}
+
+expected udp_hub::send(std::span<const std::uint8_t> datagram, const net::endpoint& to, std::uint32_t sock) {
+  if (sock == 0) return send_on(*sock_, datagram, to);
+  std::shared_ptr<net::udp_socket> s;
+  {
+    std::lock_guard lock(m_);
+    if (auto it = extras_.find(sock); it != extras_.end()) s = it->second;
+  }
+  if (!s) return err(status::not_found);
+  return send_on(*s, datagram, to);
+}
+
+expected udp_hub::send_on(net::udp_socket& sock, std::span<const std::uint8_t> datagram, const net::endpoint& to) {
   if (stop_.load()) return err(status::cancelled);
   if (const int loss = loss_.load(); loss > 0 && !datagram.empty() && datagram[0] == kStream &&
                                      static_cast<int>(randombytes_uniform(1000)) < loss) {
     return {};  // the tests' lossy network
   }
-  return sock_->send_to(datagram, to);
+  return sock.send_to(datagram, to);
+}
+
+std::vector<std::uint32_t> udp_hub::open_extras(int n) {
+  net::reserve_sockets(n);
+  std::vector<std::uint32_t> ids;
+  for (int i = 0; i < n && !stop_.load(); ++i) {
+    auto s = net::open_udp_dual(0, loopback_);
+    if (!s) break;  // out of sockets: the punch runs with fewer
+    std::shared_ptr<net::udp_socket> sock = wrap_ ? wrap_(std::move(*s)) : std::move(*s);
+    std::lock_guard lock(m_);
+    const std::uint32_t id = next_extra_++;
+    extras_.emplace(id, std::move(sock));
+    ids.push_back(id);
+  }
+  std::lock_guard lock(m_);
+  has_extras_.store(!extras_.empty());
+  return ids;
+}
+
+void udp_hub::close_extras(std::span<const std::uint32_t> ids) {
+  std::vector<std::shared_ptr<net::udp_socket>> gone;  // closed outside the lock
+  std::lock_guard lock(m_);
+  for (const auto id : ids) {
+    if (auto it = extras_.find(id); it != extras_.end()) {
+      gone.push_back(std::move(it->second));
+      extras_.erase(it);
+    }
+  }
+  has_extras_.store(!extras_.empty());
+}
+
+std::size_t udp_hub::extra_count() {
+  std::lock_guard lock(m_);
+  return extras_.size();
 }
 
 void udp_hub::on_dht(datagram_fn fn) {
@@ -367,13 +422,13 @@ void udp_hub::on_dht(datagram_fn fn) {
   dht_ = std::move(fn);
 }
 
-void udp_hub::on_probe(datagram_fn fn) {
+void udp_hub::on_probe(probe_fn fn) {
   std::lock_guard calling(calling_m_);
   std::lock_guard lock(m_);
   probe_ = std::move(fn);
 }
 
-std::unique_ptr<link> udp_hub::stream(const net::endpoint& peer, std::uint32_t id, bool learn) {
+std::unique_ptr<link> udp_hub::stream(const net::endpoint& peer, std::uint32_t id, bool learn, std::uint32_t sock) {
   auto s = std::make_shared<stream_state>();
   s->hub = weak_from_this();
   s->peer = peer;
@@ -381,52 +436,106 @@ std::unique_ptr<link> udp_hub::stream(const net::endpoint& peer, std::uint32_t i
   s->learn = learn;
   {
     std::lock_guard lock(m_);
-    streams_[id] = s;
+    if (sock == 0) {
+      s->sock = sock_;
+    } else if (auto it = extras_.find(sock); it != extras_.end()) {
+      s->sock = it->second;
+    }
+    if (s->sock) streams_[id] = s;
+  }
+  if (!s->sock) {
+    s->sock = sock_;  // that socket is closed: a stream that has failed
+    s->down = true;
   }
   return std::make_unique<udp_stream>(std::move(s));
 }
 
 void udp_hub::read_loop() {
   std::vector<std::uint8_t> buf(65536);
+  std::vector<std::pair<std::uint32_t, std::shared_ptr<net::udp_socket>>> socks;
+  std::vector<net::udp_socket*> raw;
+  std::unique_ptr<bool[]> ready;
+  std::size_t ready_cap = 0;
   while (!stop_.load()) {
     net::endpoint from;
-    auto n = sock_->receive_from(buf, 200, from);
-    if (!n || *n == 0) continue;
-    const std::span<const std::uint8_t> d(buf.data(), *n);
-    if (d[0] == 'd' || d[0] == kProbe) {
-      std::lock_guard calling(calling_m_);
-      datagram_fn fn;
-      {
-        std::lock_guard lock(m_);
-        fn = d[0] == 'd' ? dht_ : probe_;
-      }
-      if (fn) fn(d, from);
+    if (!has_extras_.load()) {
+      // The usual case: the one socket.
+      auto n = sock_->receive_from(buf, 200, from);
+      if (n && *n > 0) take({buf.data(), *n}, from, 0, sock_);
       continue;
     }
-    if (d[0] != kStream || d.size() < kHead) continue;
-    const std::uint32_t id = get32(d.data() + 2);
-    std::shared_ptr<stream_state> s;
+    // A birthday punch: every socket, polled together. Short waits, so an
+    // extra opened meanwhile is read soon.
+    socks.clear();
+    socks.emplace_back(0, sock_);
     {
       std::lock_guard lock(m_);
-      if (auto it = streams_.find(id); it != streams_.end()) s = it->second.lock();
+      for (const auto& [id, s] : extras_) socks.emplace_back(id, s);
     }
-    if (!s) continue;
-    std::lock_guard l(s->m);
-    if (s->learn) {
-      s->peer = from;
-      s->learn = false;
+    raw.clear();
+    for (const auto& [id, s] : socks) raw.push_back(s.get());
+    if (ready_cap < raw.size()) {
+      ready_cap = raw.size();
+      ready.reset(new bool[ready_cap]);  // a vector<bool> has no span
     }
-    if (s->down || s->peer.address != from.address || s->peer.port != from.port) continue;
-    const std::uint8_t type = d[1];
-    if (type == kData) {
-      s->on_data(get32(d.data() + 6), d.subspan(kHead), false);
-    } else if (type == kFin) {
-      s->on_data(get32(d.data() + 6), {}, true);
-    } else if (type == kAck && d.size() >= kAckPacket) {
-      std::uint64_t sack[kSackWords];
-      for (std::size_t w = 0; w < kSackWords; ++w) sack[w] = get64(d.data() + 10 + 8 * w);
-      s->on_ack(get32(d.data() + 6), sack, get32(d.data() + 10 + 8 * kSackWords));
+    auto any = net::wait_readable(raw, std::span<bool>(ready.get(), raw.size()), 20);
+    if (!any) continue;
+    for (std::size_t i = 0; i < raw.size() && !stop_.load(); ++i) {
+      if (!ready[i]) continue;
+      auto n = raw[i]->receive_from(buf, 0, from);
+      if (n && *n > 0) take({buf.data(), *n}, from, socks[i].first, socks[i].second);
     }
+  }
+}
+
+void udp_hub::take(std::span<const std::uint8_t> d, const net::endpoint& from, std::uint32_t sock_id,
+                   const std::shared_ptr<net::udp_socket>& sock) {
+  if (d[0] == 'd') {
+    // KRPC on the main socket only: the DHT's queries never go out on an extra.
+    if (sock_id != 0) return;
+    std::lock_guard calling(calling_m_);
+    datagram_fn fn;
+    {
+      std::lock_guard lock(m_);
+      fn = dht_;
+    }
+    if (fn) fn(d, from);
+    return;
+  }
+  if (d[0] == kProbe) {
+    std::lock_guard calling(calling_m_);
+    probe_fn fn;
+    {
+      std::lock_guard lock(m_);
+      fn = probe_;
+    }
+    if (fn) fn(d, from, sock_id);
+    return;
+  }
+  if (d[0] != kStream || d.size() < kHead) return;
+  const std::uint32_t id = get32(d.data() + 2);
+  std::shared_ptr<stream_state> s;
+  {
+    std::lock_guard lock(m_);
+    if (auto it = streams_.find(id); it != streams_.end()) s = it->second.lock();
+  }
+  if (!s) return;
+  std::lock_guard l(s->m);
+  if (s->learn) {
+    s->peer = from;
+    s->sock = sock;
+    s->learn = false;
+  }
+  if (s->down || s->sock != sock || s->peer.address != from.address || s->peer.port != from.port) return;
+  const std::uint8_t type = d[1];
+  if (type == kData) {
+    s->on_data(get32(d.data() + 6), d.subspan(kHead), false);
+  } else if (type == kFin) {
+    s->on_data(get32(d.data() + 6), {}, true);
+  } else if (type == kAck && d.size() >= kAckPacket) {
+    std::uint64_t sack[kSackWords];
+    for (std::size_t w = 0; w < kSackWords; ++w) sack[w] = get64(d.data() + 10 + 8 * w);
+    s->on_ack(get32(d.data() + 6), sack, get32(d.data() + 10 + 8 * kSackWords));
   }
 }
 
