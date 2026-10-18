@@ -314,6 +314,9 @@ void nearby(writer& w, const view& v, bool sending) {
                                : "Sending to " + v.out_peer + (v.out_via.empty() ? "" : " over " + v.out_via) + ": ") +
                moved_text(v.out_files, v.out_count, v.out_bytes, v.out_total),
            "secondary");
+      if (v.out_handover && v.out_via != "the internet") {
+        text(w, "out_handover", "If Wi-Fi drops, this continues over the internet.", "caption");
+      }
       button(w, "out_cancel", "Cancel", "destructive");
       break;
     case view::out_phase::reaching:
@@ -377,6 +380,15 @@ void internet(writer& w, const view& v, bool sending) {
          "When this computer has no public address, a code is four words instead, and both computers meet through "
          "the BitTorrent DHT, only while a code waits. DHT nodes see this computer's address taking part; they "
          "cannot read or change what the two computers say.",
+         "caption");
+  }
+  // #472 PR 5: opt-in, off by default.
+  w.begin_object().key("type").string("toggle").key("id").string("handover");
+  w.key("label").string("Continue over the internet if Wi-Fi drops").key("value").boolean(v.handover).end_object();
+  if (v.handover) {
+    text(w, "handover_note",
+         "While a transfer runs nearby, the receiving computer gives the sender where it can be reached from the "
+         "internet, so a transfer whose Wi-Fi goes carries on there. Both computers need this on.",
          "caption");
   }
   // Receive: one code at a time.

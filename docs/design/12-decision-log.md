@@ -1616,6 +1616,15 @@ can find different working paths (one hears the other's LAN address, the other i
 the sender's choice wins. A stream id comes from the code, so only a holder of the words can be
 that first packet, and what it carries is the channel's AEAD-sealed frames.
 
+**Wi-Fi → internet: the receiver's places, swapped over the sealed link (2026-10-18, #472 PR 5).**
+"Continue over the internet if Wi-Fi drops", off by default, on both sides. The receiver opens a
+way in (listener, router mapping, IPv6 pinhole) only for the transfer and sends its places as a
+new message, `places` (14), only to a sender whose offer asked: the channel ends the link on a type
+it does not know, so a sender before this PR must never see one. The sender races them with the
+local bearers on a drop. Not built here: the DHT path for when both sides moved or the receiver's
+own network goes, and the configured relay and Tor (their spikes were not run, so neither is
+offered).
+
 **Remembered devices: the OS's secret store, a pairing secret, hourly DHT keys per direction
 (2026-10-18, #472 PR 4).** The identity is an X25519 key kept in the Keychain / Credential Manager
 behind a port (`secrets.h`; a folder for the tests), never a plain file; without a store each run

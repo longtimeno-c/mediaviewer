@@ -614,3 +614,27 @@ TEST_CASE("sharepoint internet: what is not a code is caught before anything is 
   CHECK(v.out == sp::view::out_phase::idle);
   CHECK(v.send_code_note.find("not a whole code") != std::string::npos);
 }
+
+TEST_CASE("sharepoint internet: the offer asks for places, and places are read with care", "[sharepoint]") {
+  // #472 PR 5: only a sender that says so is sent msg::places.
+  const std::vector<sp::outgoing_file> files{{"/x/a.jpg", "a.jpg", 10, 0}};
+  auto plain = sp::parse_offer(sp::offer_json(files));
+  auto asks = sp::parse_offer(sp::offer_json(files, true));
+  REQUIRE(plain);
+  REQUIRE(asks);
+  CHECK_FALSE(plain->handover);
+  CHECK(asks->handover);
+  const auto p = sp::parse_places(
+      R"({"places":[{"a":"203.0.113.5","p":41000},{"a":"2001:db8::5","p":443},{"a":"not an address","p":1},)"
+      R"({"a":"198.51.100.1","p":0},{"a":"198.51.100.2","p":70000},{"p":5},{"a":"198.51.100.3"}]})");
+  REQUIRE(p.size() == 2);
+  CHECK(p[0].address == "203.0.113.5");
+  CHECK(p[0].port == 41000);
+  CHECK(p[1].address == "2001:db8::5");
+  std::string many = R"({"places":[)";
+  for (int i = 0; i < 20; ++i) many += std::string(i ? "," : "") + R"({"a":"203.0.113.)" + std::to_string(i) + R"(","p":1})";
+  many += "]}";
+  CHECK(sp::parse_places(many).size() == sp::kMaxPlaces);
+  CHECK(sp::parse_places("").empty());
+  CHECK(sp::parse_places(R"({"places":5})").empty());
+}

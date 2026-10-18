@@ -100,6 +100,11 @@ enum class msg : std::uint8_t {
   // Protocol 2 only: the first sealed message on a rejoined link, either way:
   // 8 bytes, the count of messages received so far (what to re-send from).
   resume_at = 13,
+  // Protocol 2, #472 PR 5: {"places":[{"a","p"},...]} (receiver -> sender),
+  // where the receiver can be reached from the internet, for the sender to
+  // rejoin if the local link goes. Sent only to a sender whose offer had
+  // "handover": a sender before PR 5 would end the link on it.
+  places = 14,
 };
 
 // "123 456": six digits from both public keys (client = the sender).

@@ -144,6 +144,34 @@ class internet_receiver {
   std::thread thread_;
 };
 
+// #472 PR 5: a way in from the internet while a transfer runs over a local
+// link, for "Continue over the internet if Wi-Fi drops": a listener, the
+// router asked for a port (and an IPv6 pinhole), and the places a sender
+// elsewhere can reach (the forwarded port, the mapped one, the public IPv6;
+// no LAN address: it is the local link that went). Links that arrive go to
+// `on_link` (the engine's rejoin path). Destroying it closes the listener and
+// removes every mapping.
+class way_in {
+ public:
+  using link_fn = std::function<void(std::unique_ptr<link>)>;
+  ~way_in();
+  way_in(const way_in&) = delete;
+  way_in& operator=(const way_in&) = delete;
+  // Blocks while the router answers (a worker's call); nullptr when there is
+  // no place a sender elsewhere could reach.
+  [[nodiscard]] static std::unique_ptr<way_in> open(bool loopback_only, const std::optional<mapping::options>& mapping,
+                                                    const std::string& forwarded, link_fn on_link);
+  [[nodiscard]] const std::vector<net::endpoint>& places() const noexcept { return places_; }
+
+ private:
+  way_in() = default;
+  std::unique_ptr<net::listener> listener_;
+  std::vector<net::endpoint> places_;
+  std::unique_ptr<mapping::mapper> mapper_;
+  std::vector<mapping::mapped> mapped_;
+  std::thread accept_thread_;
+};
+
 // The retry ladder: 1, 2, 5, 10 s, then every 30 s.
 [[nodiscard]] int backoff_ms(int attempt) noexcept;
 // What a round of connects to a code's places points to, for the window.

@@ -11,7 +11,8 @@
 // message and an internet hello; and from #472 PR 3, the DHT: bencoding,
 // compact node lists and endpoints, word codes, an item opened under a code's
 // key; and from #472 PR 4, a remembered-devices record as the secret store
-// returns it (damaged, or written by another version). The first byte picks
+// returns it (damaged, or written by another version); and from #472 PR 5,
+// the receiver's internet places as a sender reads them. The first byte picks
 // which. Whatever comes in, every call must
 // return, read nothing past the input and never hang: a link that runs out is
 // a closed link.
@@ -84,7 +85,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   const std::span<const std::uint8_t> in(data + 1, size - 1);
   const std::string_view text(reinterpret_cast<const char*>(in.data()), in.size());
   std::vector<std::uint8_t> out, payload;
-  switch (data[0] % 22) {
+  switch (data[0] % 23) {
     case 0:
       (void)sp::decode_beacon(in);
       break;
@@ -196,6 +197,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     }
     case 21:
       if (auto d = mv::sharepoint::known::decode(in)) (void)mv::sharepoint::known::encode(*d);
+      break;
+    case 22:
+      (void)sp::parse_places(text);
       break;
     case 15: {
       // A sender with a code, answered by the input.

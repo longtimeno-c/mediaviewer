@@ -259,14 +259,16 @@ send or a receive waits through a rejoin.
     is sent again from the replay). Wi-Fi is always the faster by far, so this is also the "too
     slow" rule; after a move the next move for speed waits **10 s** (`kSwitchHoldMs`).
   - **Flapping.** Three rejoins in **10 s** end the session.
+  - **Wi-Fi → internet** (#472 PR 5, [below](#wi-fi--internet-472-pr-5)): with the toggle on, the
+    receiver's internet places are raced too.
 - **One bad byte ends the link, not the session**: after the handshake, a frame that does not open
   is treated as a dropped link, and the rejoin sends it again. A gap in the sequence numbers (never
   on an ordered link) or an acknowledgement of what was never sent ends the session.
 - **The end.** The receiver answers `done` and waits up to 5 s for it to be acknowledged before it
   closes, so a link that drops at the last moment is rejoined rather than the sender waiting out a
   lost `done`.
-- Not here yet (#472 PRs 2–5): rejoining over the internet, the internet bearers themselves, and
-  the slower too-slow rule between two fast bearers.
+- Not here yet: the slower too-slow rule between two fast bearers (over the internet a send
+  moves back to Wi-Fi when the peer is heard there again, as Bluetooth does).
 
 **Who can take what.** Bytes move only from a sender to the peer its person picked, after that
 person typed the code the peer's screen showed and the person at that peer accepted. A sender never answers a request for
@@ -380,6 +382,34 @@ only while a code waits or a send looks for its receiver; never at idle. (`dht_i
   lookup paths in the S/Kademlia sense (each item has four targets, looked up apart, which spreads
   them over the keyspace). Two hard NATs, or a network with no UDP, do not meet this way, and the
   window says what to try.
+
+## Wi-Fi → internet (#472 PR 5)
+
+A third opt-in toggle in the internet section, **Continue over the internet if Wi-Fi drops**, off
+by default, lets a transfer nearby carry on over the internet when its Wi-Fi goes. Both computers
+need it on (and "Send and receive over the internet").
+
+- **Places swapped over the sealed link, no lookup.** A sender with the toggle on says so in its
+  offer (`"handover":true`). A receiver with it on, receiving over Wi-Fi or Bluetooth in protocol 2,
+  then opens a way in for as long as the transfer runs (`way_in`, `internet.h`): a listener, the
+  router asked for a port (PCP, NAT-PMP, UPnP-IGD) and an IPv6 pinhole, as a code's places
+  ([above](#over-the-internet-472-pr-2)) less the LAN address. It sends those places to the sender
+  as `places` (message 14, protocol 2; only to a sender whose offer asked, since a channel before
+  this PR ends the link on a type it does not know). The sender's window says "If Wi-Fi drops,
+  this continues over the internet."
+- **The move.** When the link is suspect or drops, the mover races the receiver's places beside
+  Wi-Fi and Bluetooth; a TCP connection that reaches the way in is a rejoin (`NNhfs+psk0` and
+  `resume_at`, as any), and the window says "over the internet". When the peer is heard on Wi-Fi
+  again, the send moves back there (make before break). On loopback in the tests the move takes
+  10–14 ms after the cut.
+- When the transfer ends the listener closes and every mapping is removed. With the toggle off on
+  either side nothing is offered and a Wi-Fi drop with no Bluetooth ends the transfer as before.
+- What the sender learns: the receiver's public address, which the receiver gives to a peer its
+  person already accepted from.
+- **Not built** (said so in #472's PR 5): the receiver's own Wi-Fi going (its mapped place goes
+  with it; only a public IPv6 on another interface survives); the DHT meeting from the session's
+  secret when both sides moved; the **configured relay** (a TURN server or a splice program of the
+  person's own) and **Tor**, whose spikes were not run, so neither is offered.
 
 ## Remembered devices (#472 PR 4)
 
@@ -578,6 +608,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Noise (protocol 2's handshakes, #472) | `noise.*` |
 | CPace, internet codes, port mapping, the code's life and the sender's race (#472 PR 2) | `cpace.*`, `invite.*`, `mapping.*`, `internet.*`, `race.h`, `net_address.cpp` |
 | Word codes, the DHT, one UDP socket and its stream, punching (#472 PR 3) | `dht_item.*`, `wordlist.inc` (BIP-39, MIT), `dht.*`, `bencode.*`, `sha1.*`, `udp_hub.*`, `meet.*` |
+| The way in for Wi-Fi → internet (#472 PR 5) | `internet.*` (`way_in`), `transfer.*` (`places`) |
 | The identity, remembered devices and their hourly keys (#472 PR 4) | `secrets.h`, `secrets_mac.cpp` (Keychain), `secrets_win.cpp` (Credential Manager), `secrets_file.cpp`, `known.*` |
 | Sealed channel, and protocol 2's session (replay, rejoin, resume) | `channel.*`, `link.h` |
 | Sending and the verified receive | `transfer.*` |
@@ -595,8 +626,9 @@ second while bytes move; those posts update chrome and never present the canvas.
 ## Not built
 
 - Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6 on the LAN.
-- Over the internet, after PR 4: the own-device relay ([above](#remembered-devices-472-pr-4)),
-  Wi-Fi → internet handover (PR 5); the birthday punch and TCP simultaneous open ([above](#four-words-over-the-dht-472-pr-3)).
+- Over the internet, after PR 5: the own-device relay ([above](#remembered-devices-472-pr-4)), the
+  configured relay and Tor, the handover when the receiver's network goes or both move
+  ([above](#wi-fi--internet-472-pr-5)); the birthday punch and TCP simultaneous open ([above](#four-words-over-the-dht-472-pr-3)).
 - Resuming a protocol 1 transfer that dropped: finished files stay, the rest is sent again.
   Protocol 2 rejoins and resumes within 20 s; a session that ends (20 s without a link, three
   rejoins in 10 s, the app quitting) is not resumed later.

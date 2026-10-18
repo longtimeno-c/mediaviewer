@@ -730,6 +730,106 @@ TEST_CASE("sharepoint session: Wi-Fi drops to Bluetooth, which goes out of range
   std::printf("{\"case\":\"wifi_to_bluetooth\",\"to_bluetooth_ms\":%lld}\n", static_cast<long long>(to_bt_ms));
 }
 
+// #472 PR 5: Ann sends to Bea over Wi-Fi, both with the internet on and
+// (unless `handover` is false) "Continue over the internet if Wi-Fi drops".
+struct internet_pair {
+  bt_world bt;
+  bus b;
+  wifi_world wifi;
+  std::atomic<inject_discovery*> ann_wifi{nullptr};
+  std::optional<node> bea, ann;
+  std::optional<beacon_pump> pump;
+  internet_pair(const scratch_dir& s, bool handover) {
+    wifi.rate = 6 * 1024 * 1024;
+    bt.audible.store(false);  // no Bluetooth to fall back on
+    sp::engine::options bo = node_options("Bea", bt);
+    bo.make_discovery = [this] { return std::make_unique<bus_discovery>(b); };
+    bo.internet_loopback = true;
+    bo.internet_mapping = std::nullopt;
+    bea.emplace(s / "bea_received", bo);
+    const std::uint16_t port = port_on(b);
+    sp::engine::options ao = node_options("Ann", bt);
+    ao.make_discovery = [this] {
+      auto d = std::make_unique<inject_discovery>();
+      ann_wifi.store(d.get());
+      return std::unique_ptr<sp::discovery>(std::move(d));
+    };
+    ao.connect_wifi = wifi.connector();
+    ao.internet_loopback = true;
+    ao.internet_mapping = std::nullopt;
+    ann.emplace(s / "ann_received", ao);
+    for (node* n : {&*ann, &*bea}) {
+      n->eng.on_event("internet", 2, "true");
+      n->eng.on_event("handover", 2, handover ? "true" : "false");
+    }
+    pump.emplace(ann_wifi, sp::beacon{bea->eng.id(), "Bea", port, sp::kProtocolVersion});
+    pump->on.store(true);
+  }
+};
+
+TEST_CASE("sharepoint session: Wi-Fi drops and the send continues over the internet", "[sharepoint]") {
+  scratch_dir s("sharepoint_handover_internet");
+  internet_pair p(s, true);
+  node& ann = *p.ann;
+  node& bea = *p.bea;
+  const fs::path src = big_file(s / "out", 48ull * 1024 * 1024);
+  ann.eng.set_files({utf8(src)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_count == 1 && !v.peers.empty() && v.peers[0].wifi;
+  }));
+  ann.eng.on_event("peers", 5, "\"" + bea.eng.id() + "\"");
+  confirm_and_accept(ann, bea);
+  CHECK(ann.eng.snapshot().out_via == "Wi-Fi");
+  progress_watch watch(ann, bea);
+  // Bea's places reach Ann over the sealed link while the files go.
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out_handover && bea.eng.snapshot().in_handover; }));
+  CHECK(build_tree_has(ann.eng.snapshot(), "If Wi-Fi drops, this continues over the internet."));
+  REQUIRE(bytes_arrive(ann, bea, 4 * 1024 * 1024));
+
+  // Wi-Fi goes, with no Bluetooth: within 5 s the send is on the internet.
+  p.pump->on.store(false);
+  p.wifi.refuse.store(true);
+  p.wifi.links.cut_all();
+  const auto t0 = clock_type::now();
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out_via == "the internet"; }, 15));
+  const auto moved_ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock_type::now() - t0).count();
+  CHECK(moved_ms <= 5000);
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  INFO(ann.eng.snapshot().out_note);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::done);
+  CHECK_FALSE(watch.went_back.load());
+  CHECK(same_bytes(src, s / "bea_received" / "clip.mov"));
+  CHECK(files_in(s / "bea_received") == std::vector<std::string>{"clip.mov"});  // once
+  CHECK_FALSE(any_temporary(s / "bea_received"));
+  CHECK(eventually([&] { return !bea.eng.snapshot().in_handover; }));  // the way in closed with the transfer
+  std::printf("{\"case\":\"wifi_to_internet\",\"moved_ms\":%lld}\n", static_cast<long long>(moved_ms));
+}
+
+TEST_CASE("sharepoint session: with the handover toggle off, no internet places are offered", "[sharepoint]") {
+  scratch_dir s("sharepoint_handover_off");
+  internet_pair p(s, false);
+  node& ann = *p.ann;
+  node& bea = *p.bea;
+  const fs::path src = big_file(s / "out", 24ull * 1024 * 1024);
+  ann.eng.set_files({utf8(src)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_count == 1 && !v.peers.empty() && v.peers[0].wifi;
+  }));
+  ann.eng.on_event("peers", 5, "\"" + bea.eng.id() + "\"");
+  confirm_and_accept(ann, bea);
+  REQUIRE(bytes_arrive(ann, bea, 6 * 1024 * 1024));
+  CHECK_FALSE(ann.eng.snapshot().out_handover);
+  CHECK_FALSE(bea.eng.snapshot().in_handover);
+  // Only the receiver on: still nothing (the sender's offer did not ask).
+  ann.eng.on_event("out_cancel", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+}
+
 TEST_CASE("sharepoint session: a peer that announces protocol 1 is sent to in protocol 1", "[sharepoint]") {
   scratch_dir s("sharepoint_protocol1_peer");
   bus b;

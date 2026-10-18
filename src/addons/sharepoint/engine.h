@@ -141,6 +141,11 @@ struct view {
   bool remembered = false;
   std::string remember_peer;
   bool out_known = false;  // the send is to a remembered device (reaching: waiting for it)
+
+  // ---- Wi-Fi -> internet (#472 PR 5; needs the internet toggle)
+  bool handover = false;      // "Continue over the internet if Wi-Fi drops", off by default
+  bool out_handover = false;  // the receiver sent where it can be reached: a drop continues there
+  bool in_handover = false;   // this side sent its places to the sender
 };
 
 // The selected peer is heard only on Bluetooth, speaks only protocol 1, and
@@ -250,6 +255,9 @@ class engine {
     std::function<std::unique_ptr<secrets::store>()> make_secrets;
     // How often a remembered device's wait looks for a sender on the DHT.
     int known_poll_ms = 15000;
+    // #472 PR 5: a TCP connection to a receiver's internet place, for the
+    // Wi-Fi -> internet handover (net::connect when empty; the tests').
+    std::function<result<std::unique_ptr<link>>(const net::endpoint&, int timeout_ms)> connect_internet;
   };
 
   engine(engine_host& host, options opts);
@@ -434,6 +442,9 @@ class engine {
   // The wait for remembered devices (the control thread starts and stops it).
   std::thread known_thread_;
   std::atomic<bool> known_stop_{false};
+  // #472 PR 5: the receiver's internet places, as it sent them, for the
+  // send running now (the mover races them when the local link goes).
+  std::vector<net::endpoint> handover_places_;  // under m_
   // #472 PR 2: the receiver of codes while the toggle is on (made and dropped
   // on the control thread; a receive in flight keeps its own reference).
   std::shared_ptr<internet_receiver> internet_;  // under m_

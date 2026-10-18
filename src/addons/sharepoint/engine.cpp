@@ -129,6 +129,7 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   v_.background = kept.background;
   v_.internet = kept.internet;  // #472 PR 2: the receiver of codes, made on the control thread
   v_.dht = kept.dht;
+  v_.handover = kept.handover;
   v_.forwarded = kept.forwarded;
   v_.destination = host_.default_destination();
   if (!kept.destination.empty()) {
@@ -232,6 +233,7 @@ void engine::save_now() {
     p.internet = v_.internet;
     p.forwarded = v_.forwarded;
     p.dht = v_.dht;
+    p.handover = v_.handover;
   }
   {
     std::lock_guard lock(control_m_);
@@ -1185,6 +1187,16 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
     post();
     return;
   }
+  if (node == "handover" && kind == kChange && value && value->k == json::kind::boolean) {
+    // #472 PR 5: opt-in, off by default; for the next transfer.
+    {
+      std::lock_guard lock(m_);
+      v_.handover = value->b;
+    }
+    request_save();
+    post();
+    return;
+  }
   if (node == "forwarded" && (kind == kChange || kind == kSubmit) && text) {
     std::shared_ptr<internet_receiver> in;
     {
@@ -1965,7 +1977,35 @@ void engine::send_on(std::shared_ptr<channel> ch, std::vector<outgoing_file> fil
     out_expected_.clear();
   }
   post();
-  const transfer_result r = send_files(*ch, files, hooks_for(true), [this] {
+  // #472 PR 5: over a local link, with the toggle on, the offer says the
+  // receiver's internet places are welcome; they arrive while the files go.
+  hooks hk = hooks_for(true);
+  {
+    std::lock_guard lock(m_);
+    handover_places_.clear();
+    v_.out_handover = false;
+    hk.handover = ch->resumable() && !internet && v_.internet && v_.handover;
+  }
+  if (hk.handover) {
+    hk.on_places = [this](std::string_view text) {
+      auto places = parse_places(text);
+      {
+        std::lock_guard lock(m_);
+        handover_places_ = std::move(places);
+        v_.out_handover = !handover_places_.empty();
+      }
+      post_throttled();
+    };
+  }
+  struct places_guard {
+    engine& e;
+    ~places_guard() {
+      std::lock_guard lock(e.m_);
+      e.handover_places_.clear();
+      e.v_.out_handover = false;
+    }
+  } forget_places{*this};
+  const transfer_result r = send_files(*ch, files, hk, [this] {
     {
       std::lock_guard lock(m_);
       v_.out = view::out_phase::sending;
@@ -2033,12 +2073,14 @@ void engine::run_mover(std::shared_ptr<channel> ch, std::string peer_id, const s
   while (!stopped()) {
     std::optional<net::endpoint> wifi;
     std::string bt_handle;
+    std::vector<net::endpoint> handover;  // #472 PR 5: the receiver's internet places
     {
       std::unique_lock lock(m_);
       mover_cv_.wait_for(lock, std::chrono::milliseconds(500), [&] { return mover_kick_ || stopped(); });
       mover_kick_ = false;
       // Ended (done, cancelled, or gone too long): nothing to rescue.
       if (stopped()) break;
+      handover = handover_places_;
       const auto it = peers_.find(peer_id);
       if (it != peers_.end()) {
         const auto now = clock::now();
@@ -2073,7 +2115,8 @@ void engine::run_mover(std::shared_ptr<channel> ch, std::string peer_id, const s
       bt = bluetooth_;
     }
     const bool over_internet = rescue && internet_place.has_value();
-    if (!wifi && !bt && !over_internet) continue;  // nowhere to try yet: the next beacon kicks this
+    const bool over_handover = rescue && !handover.empty();
+    if (!wifi && !bt && !over_internet && !over_handover) continue;  // nowhere to try yet: the next beacon kicks this
     auto race = std::make_unique<link_race>();
     if (over_internet) {
       // Where the code's sender reached it: the receiver's listener stays up
@@ -2090,6 +2133,17 @@ void engine::run_mover(std::shared_ptr<channel> ch, std::string peer_id, const s
       });
     }
     if (bt) race->add([bt, h = bt_handle] { return bt->connect(h, kRaceBluetoothMs); });
+    if (over_handover) {
+      // #472 PR 5: Wi-Fi went, the toggle is on: the receiver's internet
+      // places (swapped over the local link, no lookup), alongside the rest.
+      for (const auto& to : handover) {
+        race->add([this, to]() -> result<std::unique_ptr<link>> {
+          auto c = opts_.connect_internet ? opts_.connect_internet(to, kRaceWifiMs) : net::connect(to, kRaceWifiMs);
+          if (!c) return err(c.error());
+          return std::unique_ptr<link>(std::make_unique<bearer_as>(std::move(*c), transport::internet));
+        });
+      }
+    }
     std::unique_ptr<link> l = race->wait(stopped);
     races.push_back(std::move(race));
     if (!l) continue;
@@ -2322,8 +2376,49 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
   {
     std::lock_guard lock(m_);
     v_.in = view::in_phase::receiving;
+    v_.in_handover = false;
   }
   post();
+  // #472 PR 5: over a local link, to a sender that takes them, with the
+  // toggle on: a way in from the internet while the files arrive (on a
+  // worker: the router may take seconds), and its places to the sender.
+  std::unique_ptr<way_in> way;
+  std::thread way_opener;
+  struct way_guard {
+    engine& e;
+    std::thread& t;
+    std::unique_ptr<way_in>& w;
+    ~way_guard() {
+      if (t.joinable()) t.join();
+      w.reset();  // the listener closes, the mappings go
+      std::lock_guard lock(e.m_);
+      e.v_.in_handover = false;
+    }
+  } close_way{*this, way_opener, way};
+  {
+    bool want = false;
+    std::string forwarded;
+    {
+      std::lock_guard lock(m_);
+      want = v_.internet && v_.handover;
+      forwarded = v_.forwarded;
+    }
+    if (want && offer->handover && ch->resumable() && !ch->internet()) {
+      way_opener = std::thread([this, ch, &way, forwarded] {
+        try {
+          auto w = way_in::open(opts_.internet_loopback, opts_.internet_mapping, forwarded,
+                                [this](std::unique_ptr<link> l) { on_internet_link(std::move(l)); });
+          if (!w) return;
+          if (send_places(*ch, w->places())) {
+            std::lock_guard lock(m_);
+            v_.in_handover = true;
+          }
+          way = std::move(w);
+        } catch (...) {
+        }
+      });
+    }
+  }
   const transfer_result r = receive_files(*ch, *offer, dest, hooks_for(false));
   std::string note;
   const std::string got = plural(r.done, "file", "files");

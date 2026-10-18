@@ -30,6 +30,7 @@ struct prefs {
   bool internet = false;
   std::string forwarded;
   bool dht = false;  // #472 PR 3: "Find each other over the internet (public DHT)", off by default
+  bool handover = false;  // #472 PR 5: "Continue over the internet if Wi-Fi drops", off by default
   bool operator==(const prefs&) const = default;
 };
 

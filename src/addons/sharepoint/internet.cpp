@@ -373,6 +373,59 @@ void internet_receiver::accept_loop(net::listener* l) {
   }
 }
 
+way_in::~way_in() {
+  if (listener_) listener_->shutdown();
+  if (accept_thread_.joinable()) accept_thread_.join();
+  listener_.reset();
+  if (mapper_) {
+    for (const auto& m : mapped_) mapper_->remove(m);
+  }
+}
+
+std::unique_ptr<way_in> way_in::open(bool loopback_only, const std::optional<mapping::options>& mapping,
+                                     const std::string& forwarded_text, link_fn on_link) {
+  const auto forwarded = forwarded_text.empty() ? std::nullopt : parse_hostport(forwarded_text);
+  auto l = net::listen_internet(forwarded ? forwarded->port : 0, loopback_only);
+  if (!l && forwarded) l = net::listen_internet(0, loopback_only);
+  if (!l) return nullptr;
+  std::unique_ptr<way_in> w(new way_in());
+  w->listener_ = std::move(*l);
+  const std::uint16_t port = w->listener_->port();
+  if (loopback_only) {
+    w->places_ = {{"::1", port}, {"127.0.0.1", port}};  // the tests
+  } else {
+    // As a code's places (internet_receiver::prepare), less the LAN address.
+    if (forwarded) w->places_.push_back(*forwarded);
+    const auto mine = net::local_addresses();
+    const auto v6 = std::find_if(mine.begin(), mine.end(), [](const net::address& a) { return a.v6 && net::is_public(a); });
+    if (mapping) {
+      w->mapper_ = std::make_unique<mapping::mapper>(*mapping);
+      if (auto m = w->mapper_->map_tcp(port, port, kMapLifetimeS)) {
+        w->places_.push_back(m->external);
+        w->mapped_.push_back(*m);
+      }
+      if (v6 != mine.end()) {
+        if (auto hole = w->mapper_->pinhole_v6(*v6, port, kMapLifetimeS)) w->mapped_.push_back(*hole);
+      }
+    }
+    if (v6 != mine.end()) w->places_.push_back({net::address_text(*v6), port});
+  }
+  if (w->places_.empty()) return nullptr;  // nowhere a sender elsewhere could reach: the destructor tidies
+  net::listener* raw = w->listener_.get();
+  w->accept_thread_ = std::thread([raw, on_link = std::move(on_link)] {
+    for (;;) {
+      auto c = raw->accept(500);
+      if (c) {
+        on_link(std::move(*c));
+        continue;
+      }
+      if (c.error() == status::cancelled) return;
+      if (c.error() != status::timeout) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+  });
+  return w;
+}
+
 int backoff_ms(int attempt) noexcept {
   static constexpr int kSteps[] = {1000, 2000, 5000, 10000};
   if (attempt < 1) return 0;
