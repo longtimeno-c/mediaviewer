@@ -40,7 +40,7 @@ struct clap_spec {
   [[nodiscard]] std::string spec_key() const { return id + "/" + precision + "/pre1"; }
 };
 
-[[nodiscard]] result<clap_spec> read_clap_spec(const std::string& folder_utf8);
+[[nodiscard]] result<clap_spec> read_clap_spec(const std::string& folder_utf8, const std::string& fetched_utf8 = {});
 
 class clap_model {
  public:
@@ -72,6 +72,11 @@ struct whisper_spec {
   std::string precision;
   std::uint32_t quality = 1;  // mv_ai_quality: 1 base, 2 small
   std::string encoder_file, decoder_file, vocab_file, merges_file;
+  // The model contract (#482 T2): the encoder's mel bins and the special
+  // tokens are model.json's ("n_mels", "tokens"). These defaults are the
+  // multilingual tiny-to-large-v2 ones; large-v3 and turbo take 128 mels and
+  // an extra language token, which moves transcribe and everything after it.
+  std::uint32_t n_mels = 80;
   std::int64_t sot = 50258, lang = 50259, transcribe = 50359, no_timestamps = 50363;
   std::int64_t no_speech = 50362, eot = 50257, first_special = 50257, ts_begin = 50364;
   float no_speech_threshold = 0.6f;   // skip a window the model thinks is not speech
@@ -80,7 +85,8 @@ struct whisper_spec {
   [[nodiscard]] std::string spec_key() const { return id + "/" + precision + "/pre1"; }
 };
 
-[[nodiscard]] result<whisper_spec> read_whisper_spec(const std::string& folder_utf8);
+[[nodiscard]] result<whisper_spec> read_whisper_spec(const std::string& folder_utf8,
+                                                     const std::string& fetched_utf8 = {});
 
 struct speech_segment {
   std::int64_t start_ms = 0;
@@ -108,7 +114,7 @@ class whisper_model {
   whisper_spec spec_;
   std::unique_ptr<session> encoder_, decoder_;
   gpt2_tokenizer tok_;
-  whisper_features features_;
+  std::unique_ptr<whisper_features> features_;  // spec_.n_mels
 };
 
 // Words for the transcript match: lower-case letters and digits, split on

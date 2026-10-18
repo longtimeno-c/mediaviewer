@@ -169,6 +169,7 @@ add_library(mv_infer STATIC
   ${R}/src/infer/ort.h
   ${R}/src/infer/models.cpp
   ${R}/src/infer/models.h
+  ${R}/src/infer/model_files.h
   ${R}/src/infer/audio_features.cpp
   ${R}/src/infer/audio_features.h
   ${R}/src/infer/audio_models.cpp
