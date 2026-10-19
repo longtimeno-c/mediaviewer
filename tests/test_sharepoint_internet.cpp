@@ -6,6 +6,7 @@
 // its IPv6 pinhole). No real router or network is used here.
 #include "sharepoint_fixture.h"
 
+#include "addons/sharepoint/handover.h"
 #include "addons/sharepoint/invite.h"
 #include "addons/sharepoint/mapping.h"
 
@@ -613,4 +614,65 @@ TEST_CASE("sharepoint internet: what is not a code is caught before anything is 
   const auto v = ann.eng.snapshot();
   CHECK(v.out == sp::view::out_phase::idle);
   CHECK(v.send_code_note.find("not a whole code") != std::string::npos);
+}
+
+TEST_CASE("sharepoint internet: the offer asks for places, and places are read with care", "[sharepoint]") {
+  // #472 PR 5: only a sender that says so is sent msg::places.
+  const std::vector<sp::outgoing_file> files{{"/x/a.jpg", "a.jpg", 10, 0}};
+  auto plain = sp::parse_offer(sp::offer_json(files));
+  auto asks = sp::parse_offer(sp::offer_json(files, true));
+  REQUIRE(plain);
+  REQUIRE(asks);
+  CHECK_FALSE(plain->handover);
+  CHECK(asks->handover);
+  // #472: "dht" only rides with "handover"; the places say so apart.
+  auto dht_too = sp::parse_offer(sp::offer_json(files, true, true));
+  auto dht_alone = sp::parse_offer(sp::offer_json(files, false, true));
+  REQUIRE(dht_too);
+  REQUIRE(dht_alone);
+  CHECK(dht_too->dht);
+  CHECK_FALSE(asks->dht);
+  CHECK_FALSE(dht_alone->dht);
+  CHECK(sp::places_dht(R"({"places":[],"dht":true})"));
+  CHECK_FALSE(sp::places_dht(R"({"places":[]})"));
+  CHECK_FALSE(sp::places_dht("junk"));
+  {
+    // The session's DHT keys: the same from the same secret and count of
+    // rejoins, others from another secret or after another move.
+    std::array<std::uint8_t, 32> a{}, b{};
+    b[0] = 1;
+    const auto ka = sp::handover_keys(a, 0), ka2 = sp::handover_keys(a, 0), kb = sp::handover_keys(b, 0);
+    const auto ka1 = sp::handover_keys(a, 1);
+    CHECK(ka.public_key == ka2.public_key);
+    CHECK(ka.salt_base == ka2.salt_base);
+    CHECK(ka.public_key != kb.public_key);
+    CHECK(ka.box != kb.box);
+    CHECK(ka.public_key != ka1.public_key);
+    CHECK(ka.salt_base != ka1.salt_base);
+  }
+  const auto p = sp::parse_places(
+      R"({"places":[{"a":"203.0.113.5","p":41000},{"a":"2001:db8::5","p":443},{"a":"not an address","p":1},)"
+      R"({"a":"198.51.100.1","p":0},{"a":"198.51.100.2","p":70000},{"p":5},{"a":"198.51.100.3"}]})");
+  REQUIRE(p.size() == 2);
+  CHECK(p[0].address == "203.0.113.5");
+  CHECK(p[0].port == 41000);
+  CHECK(p[1].address == "2001:db8::5");
+  std::string many = R"({"places":[)";
+  for (int i = 0; i < 20; ++i) many += std::string(i ? "," : "") + R"({"a":"203.0.113.)" + std::to_string(i) + R"(","p":1})";
+  many += "]}";
+  CHECK(sp::parse_places(many).size() == sp::kMaxPlaces);
+  CHECK(sp::parse_places("").empty());
+  CHECK(sp::parse_places(R"({"places":5})").empty());
+}
+
+// #472 "Retries": failed rounds wait 1 s, 2 s, 5 s, 10 s, then every 30 s.
+TEST_CASE("sharepoint internet: failed rounds back off 1, 2, 5, 10, then 30 s", "[sharepoint]") {
+  CHECK(sp::backoff_ms(0) == 0);
+  CHECK(sp::backoff_ms(-3) == 0);
+  CHECK(sp::backoff_ms(1) == 1000);
+  CHECK(sp::backoff_ms(2) == 2000);
+  CHECK(sp::backoff_ms(3) == 5000);
+  CHECK(sp::backoff_ms(4) == 10000);
+  CHECK(sp::backoff_ms(5) == 30000);
+  CHECK(sp::backoff_ms(1000) == 30000);
 }

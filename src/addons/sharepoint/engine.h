@@ -39,9 +39,11 @@
 #include <vector>
 
 #include "addons/sharepoint/channel.h"
+#include "addons/sharepoint/handover.h"
 #include "addons/sharepoint/internet.h"
 #include "addons/sharepoint/known.h"
 #include "addons/sharepoint/prefs.h"
+#include "addons/sharepoint/relay.h"
 #include "addons/sharepoint/presence.h"
 #include "addons/sharepoint/transfer.h"
 
@@ -141,6 +143,27 @@ struct view {
   bool remembered = false;
   std::string remember_peer;
   bool out_known = false;  // the send is to a remembered device (reaching: waiting for it)
+
+  // ---- Wi-Fi -> internet (#472 PR 5; needs the internet toggle)
+  bool handover = false;      // "Continue over the internet if Wi-Fi drops", off by default
+  bool out_handover = false;  // the receiver sent where it can be reached: a drop continues there
+  bool in_handover = false;   // this side sent its places to the sender
+
+  // ---- relays (#472 options 9 and 10; relay.h, splice.h)
+  bool relay = false;            // "Use my other computers to relay", off by default
+  std::string relay_server;      // the advanced "Relay (your own server)"
+  std::vector<bool> known_own;   // beside `known`: marked "This is my computer"
+  std::vector<std::string> known_ids;  // beside `known`: each key's fingerprint (relay::fingerprint), for its controls
+  // The send goes (or the receive came) through a relay: the own computer's
+  // name, or "your relay server". "" for a direct path.
+  std::string out_relay, in_relay;
+  // This computer is relaying for another of the person's own: its name.
+  std::string relaying_for;
+  std::uint32_t relayed = 0;     // relays this computer has carried this run (tests, the window)
+  // #472: both sides also meet on the DHT if both move (needs the DHT
+  // toggle on both): this side's hub is open and the DHT answered.
+  bool out_handover_dht = false;
+  bool in_handover_dht = false;
 };
 
 // The selected peer is heard only on Bluetooth, speaks only protocol 1, and
@@ -250,6 +273,21 @@ class engine {
     std::function<std::unique_ptr<secrets::store>()> make_secrets;
     // How often a remembered device's wait looks for a sender on the DHT.
     int known_poll_ms = 15000;
+    // #472 PR 5: a TCP connection to a receiver's internet place, for the
+    // Wi-Fi -> internet handover (net::connect when empty; the tests').
+    std::function<result<std::unique_ptr<link>>(const net::endpoint&, int timeout_ms)> connect_internet;
+    // #472 relays: what this computer allows when it relays for another of
+    // the person's own (relay::serve; the tests set a tap), and how long a
+    // sender waits to meet one of its own to relay through.
+    relay::limits relay_limits = [] {
+      relay::limits l;
+      l.max_bytes = relay::kOwnRelayMaxBytes;
+      return l;
+    }();
+    int relay_meet_ms = 45000;
+    // #472, the tests: the sender's stream met on the DHT, before it rejoins
+    // (wrapped to cut or slow it).
+    std::function<std::unique_ptr<link>(std::unique_ptr<link>)> wrap_handover_link;
   };
 
   engine(engine_host& host, options opts);
@@ -331,6 +369,20 @@ class engine {
   // toggles, and whether any device is remembered.
   void sync_known();
   void run_known_wait();
+  // #472 relays (engine_relay.cpp). The sender: a code's places did not
+  // answer; through each of the person's own computers in turn (met as a
+  // remembered device), the link to the code's receiver, or nullptr. `via`:
+  // the one it went through; `why`, when none did, what the last one said.
+  // `give_up`: the round was decided without it.
+  [[nodiscard]] std::unique_ptr<link> reach_through_own(const std::vector<net::endpoint>& places, std::string& via,
+                                                        std::string& why, const std::function<bool()>& give_up);
+  [[nodiscard]] bool own_relay_possible() const;
+  // The relay side: `first` came from `from` (a remembered device, its key
+  // checked) as the first message of a link; a relay request is served here
+  // (true), anything else is the receive's (false).
+  bool maybe_relay(const std::shared_ptr<channel>& ch, const known::device& from, const message& first);
+  void set_own(const std::string& fingerprint, bool on);
+  void save_known();
   // A transfer ended well over protocol 2: what Remember would keep.
   void offer_remember(const channel& ch, const std::string& name);
   // #472 PR 3: the DHT client's options (the routers, or the tests' nodes;
@@ -391,6 +443,9 @@ class engine {
   void read_folder(std::string folder);
   void cancel_transfer();
   void reap_helpers();  // under threads_m_
+  // #472: a transfer's DHT handover, stopped and joined later (its thread
+  // may be in a DNS lookup or a withdraw): never on the transfer's way out.
+  void retire(std::unique_ptr<dht_handover> h);
   [[nodiscard]] bool visible_locked() const noexcept;
   [[nodiscard]] bool out_busy_locked() const noexcept;
   [[nodiscard]] hooks hooks_for(bool sending);
@@ -434,6 +489,11 @@ class engine {
   // The wait for remembered devices (the control thread starts and stops it).
   std::thread known_thread_;
   std::atomic<bool> known_stop_{false};
+  // #472 PR 5: the receiver's internet places, as it sent them, for the
+  // send running now (the mover races them when the local link goes).
+  std::vector<net::endpoint> handover_places_;  // under m_
+  // #472: the receiver said it meets on the DHT too, if both sides move.
+  bool handover_dht_ = false;  // under m_
   // #472 PR 2: the receiver of codes while the toggle is on (made and dropped
   // on the control thread; a receive in flight keeps its own reference).
   std::shared_ptr<internet_receiver> internet_;  // under m_
@@ -468,6 +528,7 @@ class engine {
   std::mutex threads_m_;
   std::thread transfer_thread_;
   std::vector<helper> helpers_;  // busy refusals
+  std::vector<std::unique_ptr<dht_handover>> retired_;  // under threads_m_
 
   // The folder reader (queue_files).
   std::mutex files_m_;

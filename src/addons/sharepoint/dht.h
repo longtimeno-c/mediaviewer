@@ -85,6 +85,11 @@ class client {
   // Fills the table from the saved one, the routers and `extra`; false when
   // no node answered.
   [[nodiscard]] bool start(const std::function<bool()>& stop);
+  // After this machine may have changed networks (#472's handover): forget
+  // how the DHT saw it and ask up to eight known nodes again, at once (one
+  // round trip; query_ms at most). False when none answered (the old votes
+  // are kept then).
+  bool refresh(const std::function<bool()>& stop);
 
   struct item {
     std::string v;  // the value's bytes (a bencoded string's contents)
@@ -96,11 +101,21 @@ class client {
   // BEP 44 put: stored on the closest nodes that answered; how many took it.
   int put(const keys& k, std::string_view salt, std::int64_t seq, const std::string& v,
           const std::function<bool()>& stop);
-  // This machine as the DHT sees it (the most votes), once any answer said.
+  // BEP 42 votes: each node's latest answer of how it saw us, for
+  // kVoteMaxAgeMs (a network change or an old lie ages out), at most
+  // kMaxVoters of them.
+  static constexpr std::int64_t kVoteMaxAgeMs = 10 * 60 * 1000;
+  static constexpr std::size_t kMaxVoters = 256;
+  // This machine as the DHT sees it (the most voters), once any answer said.
   [[nodiscard]] std::optional<net::endpoint> external() const;
-  // Every vote, distinct endpoints: more than one port for one address means
-  // the NAT maps each destination apart (a "hard" NAT, birthday punching).
+  // The distinct endpoints the voters saw.
   [[nodiscard]] std::vector<net::endpoint> external_votes() const;
+  // How many nodes have voted.
+  [[nodiscard]] int vote_count() const;
+  // The NAT maps each destination apart (a "hard" NAT, birthday punching):
+  // for the most-seen address, at least three ports, and no port seen by
+  // half the voters. One node's lie, or two's, does not make it so.
+  [[nodiscard]] bool looks_hard() const;
   [[nodiscard]] std::size_t known() const;
 
  private:
@@ -132,7 +147,12 @@ class client {
   std::map<std::string, std::shared_ptr<pending>> pending_;  // by transaction id
   std::uint16_t next_tid_ = 0;
   std::vector<node> table_;                                 // under m_, at most kTable
-  std::map<std::string, int> votes_;                        // under m_: "address|port" -> votes
+  struct vote {
+    net::endpoint seen;
+    std::chrono::steady_clock::time_point at;
+  };
+  std::map<std::string, vote> votes_;  // under m_: by the voter's "address|port"
+  [[nodiscard]] std::vector<const vote*> recent_votes() const;  // under m_
 };
 
 }  // namespace mv::sharepoint::dht

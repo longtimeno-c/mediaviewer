@@ -13,6 +13,7 @@
 // that drops moves to Bluetooth, which goes out of range and comes back.
 // Radios are stand-ins: no real Bluetooth or Wi-Fi is measured here.
 #include "sharepoint_fixture.h"
+#include "sharepoint_swarm.h"
 
 namespace {
 
@@ -751,6 +752,280 @@ TEST_CASE("sharepoint session: Wi-Fi drops to Bluetooth, which goes out of range
   CHECK(same_bytes(src, s / "bea_received" / "clip.mov"));
   CHECK(files_in(s / "bea_received") == std::vector<std::string>{"clip.mov"});
   std::printf("{\"case\":\"wifi_to_bluetooth\",\"to_bluetooth_ms\":%lld}\n", static_cast<long long>(to_bt_ms));
+}
+
+// #472 PR 5: Ann sends to Bea over Wi-Fi, both with the internet on and
+// (unless `handover` is false) "Continue over the internet if Wi-Fi drops".
+// With a swarm, both also have "Find each other over the internet" (the DHT)
+// on, on the stand-in swarm, unless `ann_dht` / `bea_dht` say otherwise.
+// `way_in_gone`: Bea's network went too, so her swapped places answer
+// nobody. Ann's streams met on the DHT are kept in `dht_links` (to cut) and
+// slowed to `dht_rate` (0: not slowed).
+struct internet_pair {
+  bt_world bt;
+  bus b;
+  wifi_world wifi;
+  std::atomic<bool> way_in_gone{false};
+  std::atomic<int> way_in_tries{0};
+  cuttable dht_links;
+  std::atomic<std::size_t> dht_rate{0};
+  std::atomic<int> dht_met{0};
+  std::atomic<inject_discovery*> ann_wifi{nullptr};
+  std::optional<node> bea, ann;
+  std::optional<beacon_pump> pump;
+  internet_pair(const scratch_dir& s, bool handover, const swarm* dht_swarm = nullptr, bool ann_dht = true,
+                bool bea_dht = true) {
+    wifi.rate = 6 * 1024 * 1024;
+    bt.audible.store(false);  // no Bluetooth to fall back on
+    sp::engine::options bo = node_options("Bea", bt);
+    bo.make_discovery = [this] { return std::make_unique<bus_discovery>(b); };
+    bo.internet_loopback = true;
+    bo.internet_mapping = std::nullopt;
+    if (dht_swarm) bo.dht_nodes = std::vector<sp::net::endpoint>{dht_swarm->seed()};
+    bea.emplace(s / "bea_received", bo);
+    const std::uint16_t port = port_on(b);
+    sp::engine::options ao = node_options("Ann", bt);
+    ao.make_discovery = [this] {
+      auto d = std::make_unique<inject_discovery>();
+      ann_wifi.store(d.get());
+      return std::unique_ptr<sp::discovery>(std::move(d));
+    };
+    ao.connect_wifi = wifi.connector();
+    ao.internet_loopback = true;
+    ao.internet_mapping = std::nullopt;
+    if (dht_swarm) ao.dht_nodes = std::vector<sp::net::endpoint>{dht_swarm->seed()};
+    ao.connect_internet = [this](const sp::net::endpoint& to, int ms) -> mv::result<std::unique_ptr<sp::link>> {
+      ++way_in_tries;
+      if (way_in_gone.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        return mv::err(mv::status::io);
+      }
+      auto c = sp::net::connect(to, ms);
+      if (!c) return mv::err(c.error());
+      return std::move(*c);
+    };
+    ao.wrap_handover_link = [this](std::unique_ptr<sp::link> l) -> std::unique_ptr<sp::link> {
+      ++dht_met;
+      std::shared_ptr<sp::link> inner(std::move(l));
+      dht_links.keep(inner);
+      return std::make_unique<bearer_link>(inner, sp::transport::internet, &dht_rate);
+    };
+    ann.emplace(s / "ann_received", ao);
+    for (node* n : {&*ann, &*bea}) {
+      n->eng.on_event("internet", 2, "true");
+      n->eng.on_event("handover", 2, handover ? "true" : "false");
+    }
+    if (dht_swarm && ann_dht) ann->eng.on_event("dht", 2, "true");
+    if (dht_swarm && bea_dht) bea->eng.on_event("dht", 2, "true");
+    pump.emplace(ann_wifi, sp::beacon{bea->eng.id(), "Bea", port, sp::kProtocolVersion});
+    pump->on.store(true);
+  }
+};
+
+TEST_CASE("sharepoint session: Wi-Fi drops and the send continues over the internet", "[sharepoint]") {
+  scratch_dir s("sharepoint_handover_internet");
+  internet_pair p(s, true);
+  node& ann = *p.ann;
+  node& bea = *p.bea;
+  const fs::path src = big_file(s / "out", 48ull * 1024 * 1024);
+  ann.eng.set_files({utf8(src)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_count == 1 && !v.peers.empty() && v.peers[0].wifi;
+  }));
+  ann.eng.on_event("peers", 5, "\"" + bea.eng.id() + "\"");
+  confirm_and_accept(ann, bea);
+  CHECK(ann.eng.snapshot().out_via == "Wi-Fi");
+  progress_watch watch(ann, bea);
+  // Bea's places reach Ann over the sealed link while the files go.
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out_handover && bea.eng.snapshot().in_handover; }));
+  CHECK(build_tree_has(ann.eng.snapshot(), "If Wi-Fi drops, this continues over the internet."));
+  REQUIRE(bytes_arrive(ann, bea, 4 * 1024 * 1024));
+
+  // Wi-Fi goes, with no Bluetooth: within 5 s the send is on the internet.
+  p.pump->on.store(false);
+  p.wifi.refuse.store(true);
+  p.wifi.links.cut_all();
+  const auto t0 = clock_type::now();
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out_via == "the internet"; }, 15));
+  const auto moved_ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock_type::now() - t0).count();
+  CHECK(moved_ms <= 5000);
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  INFO(ann.eng.snapshot().out_note);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::done);
+  CHECK_FALSE(watch.went_back.load());
+  CHECK(same_bytes(src, s / "bea_received" / "clip.mov"));
+  CHECK(files_in(s / "bea_received") == std::vector<std::string>{"clip.mov"});  // once
+  CHECK_FALSE(any_temporary(s / "bea_received"));
+  CHECK(eventually([&] { return !bea.eng.snapshot().in_handover; }));  // the way in closed with the transfer
+  std::printf("{\"case\":\"wifi_to_internet\",\"moved_ms\":%lld}\n", static_cast<long long>(moved_ms));
+}
+
+TEST_CASE("sharepoint session: with the handover toggle off, no internet places are offered", "[sharepoint]") {
+  scratch_dir s("sharepoint_handover_off");
+  internet_pair p(s, false);
+  node& ann = *p.ann;
+  node& bea = *p.bea;
+  const fs::path src = big_file(s / "out", 24ull * 1024 * 1024);
+  ann.eng.set_files({utf8(src)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_count == 1 && !v.peers.empty() && v.peers[0].wifi;
+  }));
+  ann.eng.on_event("peers", 5, "\"" + bea.eng.id() + "\"");
+  confirm_and_accept(ann, bea);
+  REQUIRE(bytes_arrive(ann, bea, 6 * 1024 * 1024));
+  CHECK_FALSE(ann.eng.snapshot().out_handover);
+  CHECK_FALSE(bea.eng.snapshot().in_handover);
+  // Only the receiver on: still nothing (the sender's offer did not ask).
+  ann.eng.on_event("out_cancel", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+}
+
+// #472: Wi-Fi goes and so does Bea's network: the places she swapped answer
+// nobody. Both had the DHT up while the files went; they meet there under
+// the session's keys and the send rejoins over the punched path, inside
+// kRejoinMs, with every byte once.
+TEST_CASE("sharepoint session: when both sides move, the send meets the receiver on the DHT", "[sharepoint]") {
+  scratch_dir s("sharepoint_handover_dht");
+  swarm sw(16);
+  internet_pair p(s, true, &sw);
+  node& ann = *p.ann;
+  node& bea = *p.bea;
+  const fs::path src = big_file(s / "out", 48ull * 1024 * 1024);
+  ann.eng.set_files({utf8(src)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_count == 1 && !v.peers.empty() && v.peers[0].wifi;
+  }));
+  ann.eng.on_event("peers", 5, "\"" + bea.eng.id() + "\"");
+  confirm_and_accept(ann, bea);
+  CHECK(ann.eng.snapshot().out_via == "Wi-Fi");
+  progress_watch watch(ann, bea);
+  // Pre-started: both joined the DHT while the files go over Wi-Fi.
+  REQUIRE(eventually([&] {
+    return ann.eng.snapshot().out_handover_dht && bea.eng.snapshot().in_handover_dht &&
+           ann.eng.snapshot().out_handover;
+  }));
+  REQUIRE(bytes_arrive(ann, bea, 4 * 1024 * 1024));
+
+  // Wi-Fi goes, with no Bluetooth, and Bea's way in with it.
+  p.way_in_gone.store(true);
+  p.pump->on.store(false);
+  p.wifi.refuse.store(true);
+  p.wifi.links.cut_all();
+  const auto t0 = clock_type::now();
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out_via == "the internet"; }, 25));
+  const auto moved_ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock_type::now() - t0).count();
+  CHECK(moved_ms < sp::kRejoinMs);
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  INFO(ann.eng.snapshot().out_note);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::done);
+  CHECK(p.way_in_tries.load() > 0);  // the swapped places were tried, and answered nobody
+  CHECK(p.dht_met.load() == 1);      // the move was over the DHT
+  CHECK_FALSE(watch.went_back.load());
+  CHECK(same_bytes(src, s / "bea_received" / "clip.mov"));
+  CHECK(files_in(s / "bea_received") == std::vector<std::string>{"clip.mov"});  // once
+  CHECK_FALSE(any_temporary(s / "bea_received"));
+  CHECK(eventually([&] { return !bea.eng.snapshot().in_handover_dht && !ann.eng.snapshot().out_handover_dht; }));
+  std::printf("{\"case\":\"wifi_to_dht\",\"moved_ms\":%lld}\n", static_cast<long long>(moved_ms));
+}
+
+// #472: a DHT move, then that path drops too: the next drop meets under
+// fresh keys (the rejoins so far), on a fresh stream. Ann sees her cut at
+// once; Bea only as silence (kSuspectMs later), so Ann waits for her.
+TEST_CASE("sharepoint session: after a move over the DHT, a second drop meets there again", "[sharepoint]") {
+  scratch_dir s("sharepoint_handover_dht_twice");
+  swarm sw(16);
+  internet_pair p(s, true, &sw);
+  p.dht_rate = 6 * 1024 * 1024;  // so the files are still going at the second drop
+  node& ann = *p.ann;
+  node& bea = *p.bea;
+  const fs::path src = big_file(s / "out", 96ull * 1024 * 1024);
+  ann.eng.set_files({utf8(src)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_count == 1 && !v.peers.empty() && v.peers[0].wifi;
+  }));
+  ann.eng.on_event("peers", 5, "\"" + bea.eng.id() + "\"");
+  confirm_and_accept(ann, bea);
+  progress_watch watch(ann, bea);
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out_handover_dht && bea.eng.snapshot().in_handover_dht; }));
+  REQUIRE(bytes_arrive(ann, bea, 4 * 1024 * 1024));
+  p.way_in_gone.store(true);
+  p.pump->on.store(false);
+  p.wifi.refuse.store(true);
+  p.wifi.links.cut_all();
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out_via == "the internet" && p.dht_met.load() == 1; }, 25));
+  REQUIRE(bytes_arrive(ann, bea, 2 * 1024 * 1024));
+
+  // The DHT path goes too.
+  p.dht_links.cut_all();
+  const auto t0 = clock_type::now();
+  REQUIRE(eventually([&] { return p.dht_met.load() == 2 && !ann.eng.snapshot().out_reconnecting; }, 25));
+  const auto again_ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock_type::now() - t0).count();
+  CHECK(again_ms < sp::kRejoinMs);
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  INFO(ann.eng.snapshot().out_note);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::done);
+  CHECK_FALSE(watch.went_back.load());
+  CHECK(same_bytes(src, s / "bea_received" / "clip.mov"));
+  CHECK(files_in(s / "bea_received") == std::vector<std::string>{"clip.mov"});
+  CHECK_FALSE(any_temporary(s / "bea_received"));
+  std::printf("{\"case\":\"dht_to_dht\",\"moved_ms\":%lld}\n", static_cast<long long>(again_ms));
+}
+
+namespace {
+// The DHT toggle off on one side: a drop that takes the way in ends the
+// send after kRejoinMs, as before, and nobody joined the DHT for it.
+void dht_off_on_one_side(const char* dir, bool ann_dht, bool bea_dht) {
+  scratch_dir s(dir);
+  swarm sw(8);
+  internet_pair p(s, true, &sw, ann_dht, bea_dht);
+  node& ann = *p.ann;
+  node& bea = *p.bea;
+  const fs::path src = big_file(s / "out", 48ull * 1024 * 1024);
+  ann.eng.set_files({utf8(src)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_count == 1 && !v.peers.empty() && v.peers[0].wifi;
+  }));
+  ann.eng.on_event("peers", 5, "\"" + bea.eng.id() + "\"");
+  confirm_and_accept(ann, bea);
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out_handover && bea.eng.snapshot().in_handover; }));
+  REQUIRE(bytes_arrive(ann, bea, 4 * 1024 * 1024));
+  CHECK_FALSE(ann.eng.snapshot().out_handover_dht);
+  CHECK_FALSE(bea.eng.snapshot().in_handover_dht);
+  p.way_in_gone.store(true);
+  p.pump->on.store(false);
+  p.wifi.refuse.store(true);
+  p.wifi.links.cut_all();
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  CHECK(p.dht_met.load() == 0);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::ended);
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::ended);
+  CHECK(ann.eng.snapshot().out_note.find("The connection to Bea was lost") != std::string::npos);
+  CHECK_FALSE(any_temporary(s / "bea_received"));
+  CHECK(files_in(s / "bea_received").empty());
+}
+}  // namespace
+
+TEST_CASE("sharepoint session: with the receiver's DHT toggle off, a drop that takes the way in ends the send",
+          "[sharepoint]") {
+  dht_off_on_one_side("sharepoint_handover_dht_off_bea", true, false);
+}
+
+TEST_CASE("sharepoint session: with the sender's DHT toggle off, a drop that takes the way in ends the send",
+          "[sharepoint]") {
+  dht_off_on_one_side("sharepoint_handover_dht_off_ann", false, true);
 }
 
 TEST_CASE("sharepoint session: a peer that announces protocol 1 is sent to in protocol 1", "[sharepoint]") {

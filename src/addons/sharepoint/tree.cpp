@@ -119,6 +119,12 @@ bool out_busy(const view& v) {
          v.out == view::out_phase::sending || v.out == view::out_phase::reaching || v.out == view::out_phase::naming;
 }
 
+// #472 relays: the line under a send that goes through one.
+std::string relay_line(const std::string& through) {
+  return "Through " + (through == "your relay server" ? through : through + " (your computer)") +
+         ", sealed end to end: it passes the bytes on and cannot read them.";
+}
+
 // #472 PR 4: under a transfer's result over protocol 2.
 void remember_toggle(writer& w, const view& v) {
   if (!v.remember_offer) return;
@@ -166,6 +172,7 @@ void incoming(writer& w, const view& v) {
     case view::in_phase::asking:
       text(w, "in_title", v.in_peer + " wants to send you " + count_text(v.in_count, v.in_total), "heading");
       text(w, "in_files", names_line(v.in_names, v.in_count), "secondary");
+      if (!v.in_relay.empty()) text(w, "in_relay", "Through " + v.in_relay + ", sealed end to end.", "caption");
       folder_field(w, "destination", "Save to", v.destination, "Choose a folder");
       row(w, "in_actions");
       button(w, "decline", "Decline", "plain");
@@ -314,6 +321,10 @@ void nearby(writer& w, const view& v, bool sending) {
                                : "Sending to " + v.out_peer + (v.out_via.empty() ? "" : " over " + v.out_via) + ": ") +
                moved_text(v.out_files, v.out_count, v.out_bytes, v.out_total),
            "secondary");
+      if (!v.out_relay.empty()) text(w, "out_relay", relay_line(v.out_relay), "caption");
+      if (v.out_handover && v.out_via != "the internet") {
+        text(w, "out_handover", "If Wi-Fi drops, this continues over the internet.", "caption");
+      }
       button(w, "out_cancel", "Cancel", "destructive");
       break;
     case view::out_phase::reaching:
@@ -335,6 +346,7 @@ void nearby(writer& w, const view& v, bool sending) {
     case view::out_phase::naming:
       stack(w, "out_name", 8, "vertical", "card", "center");
       text(w, "out_note", "Connected to " + v.out_peer + " (new device)", "heading");
+      if (!v.out_relay.empty()) text(w, "out_relay", relay_line(v.out_relay), "caption");
       text(w, "out_check", v.out_check, "display");
       text(w, "out_check_note",
            "The same six digits show on their screen. If they differ, someone else has the code: cancel. Nothing has "
@@ -379,6 +391,25 @@ void internet(writer& w, const view& v, bool sending) {
          "cannot read or change what the two computers say.",
          "caption");
   }
+  // #472 PR 5: opt-in, off by default.
+  w.begin_object().key("type").string("toggle").key("id").string("handover");
+  w.key("label").string("Continue over the internet if Wi-Fi drops").key("value").boolean(v.handover).end_object();
+  if (v.handover) {
+    text(w, "handover_note",
+         "While a transfer runs nearby, the receiving computer gives the sender where it can be reached from the "
+         "internet, so a transfer whose Wi-Fi goes carries on there. Both computers need this on.",
+         "caption");
+  }
+  // #472 relays: opt-in, off by default.
+  w.begin_object().key("type").string("toggle").key("id").string("relay");
+  w.key("label").string("Use my other computers to relay").key("value").boolean(v.relay).end_object();
+  if (v.relay) {
+    text(w, "relay_note",
+         "When nothing answers directly, a send goes through another computer of yours that remembers this one "
+         "(marked as yours under Remembered devices, on both), and this computer does the same for "
+         "them. The transfer stays sealed end to end: the computer in between cannot read it.",
+         "caption");
+  }
   // Receive: one code at a time.
   text(w, "code_title", "Receive from anywhere", "heading");
   using phase = internet_receiver::phase;
@@ -399,6 +430,10 @@ void internet(writer& w, const view& v, bool sending) {
   w.begin_object().key("type").string("text_field").key("id").string("forwarded");
   w.key("label").string("Forwarded port (advanced)").key("value").string(v.forwarded);
   w.key("placeholder").string("public address:port").end_object();
+  // #472 relays: the person's own relay server (tools/sharepoint-relay).
+  w.begin_object().key("type").string("text_field").key("id").string("relay_server");
+  w.key("label").string("Relay (your own server, advanced)").key("value").string(v.relay_server);
+  w.key("placeholder").string("address or name:port#key").end_object();
   // Send to a code.
   text(w, "send_code_title", "Send to a code", "heading");
   row(w, "send_code_row");
@@ -432,6 +467,15 @@ void internet(writer& w, const view& v, bool sending) {
       w.key("style").string("plain").end_object();
     }
     end(w);
+    if (v.relay) {
+      // #472 relays: which of them are this person's own (relay for each other).
+      for (std::size_t i = 0; i < v.known.size(); ++i) {
+        const std::string id = "own" + (i < v.known_ids.size() ? v.known_ids[i] : std::string());
+        w.begin_object().key("type").string("toggle").key("id").string(id);
+        w.key("label").string(v.known[i] + " is my computer");
+        w.key("value").boolean(i < v.known_own.size() && v.known_own[i]).end_object();
+      }
+    }
   }
   end(w);
 }
@@ -466,6 +510,16 @@ std::string build_tree(const view& v) {
   }
   end(w);
 
+  if (!v.relaying_for.empty()) {
+    // #472 relays: this computer carries another of the person's own sends.
+    stack(w, "relaying", 8, "vertical", "card", "center");
+    text(w, "relaying_title", "Relaying for " + v.relaying_for, "heading");
+    text(w, "relaying_note",
+         "Its transfer passes through this computer sealed end to end: this computer cannot read or change it.",
+         "secondary");
+    button(w, "in_cancel", "Stop relaying", "destructive");
+    end(w);
+  }
   if (v.in != view::in_phase::none) incoming(w, v);
   const bool sending = out_busy(v);
   files_card(w, v, sending);

@@ -17,6 +17,7 @@ constexpr char kArgonSalt[crypto_pwhash_SALTBYTES + 1] = "MVSP DHT code v1";  //
 constexpr char kSaltContext[] = "MediaViewer Sharepoint DHT salt v1";
 constexpr std::uint8_t kMagic[4] = {'M', 'V', 'S', 'D'};
 constexpr std::uint8_t kKind4 = 4, kKind6 = 6;
+constexpr std::uint8_t kFlagHard = 1;
 
 void put64(std::uint8_t* p, std::uint64_t v) noexcept {
   for (int i = 0; i < 8; ++i) p[i] = static_cast<std::uint8_t>(v >> (8 * i));
@@ -152,6 +153,13 @@ std::string seal(const keys& k, std::string_view salt, const contents& c) {
     ++count;
   }
   plain[14] = count;
+  // After the candidates (#472): flags and the TCP port. Older readers stop
+  // at the count and never look here.
+  if (at + 3 <= kPlainBytes) {
+    plain[at++] = c.hard ? kFlagHard : 0;
+    plain[at++] = static_cast<std::uint8_t>(c.tcp_port >> 8);
+    plain[at++] = static_cast<std::uint8_t>(c.tcp_port);
+  }
   std::string v(crypto_aead_xchacha20poly1305_ietf_NPUBBYTES + kPlainBytes + crypto_aead_xchacha20poly1305_ietf_ABYTES,
                 '\0');
   auto* out = reinterpret_cast<std::uint8_t*>(v.data());
@@ -173,11 +181,18 @@ std::optional<contents> open(const keys& k, std::string_view salt, std::string_v
   if (crypto_aead_xchacha20poly1305_ietf_decrypt(plain, &len, nullptr, in + kNonce, v.size() - kNonce,
                                                  reinterpret_cast<const std::uint8_t*>(salt.data()), salt.size(), in,
                                                  k.box.data()) != 0 ||
-      len != kPlainBytes || std::memcmp(plain, kMagic, 4) != 0 || plain[4] != 1) {
+      len != kPlainBytes) {
     return std::nullopt;
   }
+  auto c = parse_plain(plain, now_ms);
+  sodium_memzero(plain, sizeof plain);
+  return c;
+}
+
+std::optional<contents> parse_plain(std::span<const std::uint8_t> plain, std::int64_t now_ms) {
+  if (plain.size() != kPlainBytes || std::memcmp(plain.data(), kMagic, 4) != 0 || plain[4] != 1) return std::nullopt;
   contents c;
-  c.written_ms = static_cast<std::int64_t>(get64(plain + 5));
+  c.written_ms = static_cast<std::int64_t>(get64(plain.data() + 5));
   // A recording of an old item (or a clock far off) is not taken.
   if (c.written_ms < now_ms - kItemMaxAgeMs || c.written_ms > now_ms + kItemSkewMs) return std::nullopt;
   c.gone = plain[13] != 0;
@@ -191,14 +206,17 @@ std::optional<contents> open(const keys& k, std::string_view salt, std::string_v
     if (alen == 0 || at + alen + 2 > kPlainBytes) return std::nullopt;
     net::address ip;
     ip.v6 = kind == kKind6;
-    std::memcpy(ip.bytes.data(), plain + at, alen);
+    std::memcpy(ip.bytes.data(), plain.data() + at, alen);
     at += alen;
     const std::uint16_t port = static_cast<std::uint16_t>(plain[at] << 8 | plain[at + 1]);
     at += 2;
     if (port == 0) return std::nullopt;
     c.candidates.push_back({net::address_text(ip), port});
   }
-  sodium_memzero(plain, sizeof plain);
+  if (at + 3 <= kPlainBytes) {  // zeros from a writer before #472's trailer: not hard, no TCP
+    c.hard = (plain[at] & kFlagHard) != 0;
+    c.tcp_port = static_cast<std::uint16_t>(plain[at + 1] << 8 | plain[at + 2]);
+  }
   return c;
 }
 

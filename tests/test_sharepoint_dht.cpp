@@ -127,6 +127,16 @@ TEST_CASE("sharepoint dht: an item is sealed to the code, padded, and refused wh
   REQUIRE(back->candidates.size() == 3);
   CHECK(back->candidates[1].address == "2a00:1450:4009:81f::200e");
   CHECK_FALSE(back->gone);
+  CHECK_FALSE(back->hard);
+  CHECK(back->tcp_port == 0);
+  // #472: the hard flag and the TCP port ride after the candidates.
+  c.hard = true;
+  c.tcp_port = 50123;
+  auto flagged = dht::open(*k, salt, dht::seal(*k, salt, c), c.written_ms);
+  REQUIRE(flagged);
+  CHECK(flagged->hard);
+  CHECK(flagged->tcp_port == 50123);
+  CHECK(flagged->candidates.size() == 3);
   // Another code, another salt, one flipped byte, too old or from the future: refused.
   auto other = dht::derive(dht::word_code{12, 345, 678, 1998}, true);
   REQUIRE(other);
@@ -229,7 +239,7 @@ TEST_CASE("sharepoint dht: the hub hands KRPC and probes to their handlers, and 
   hub_pair h;
   std::atomic<int> dht{0}, probes{0};
   h.b->on_dht([&](std::span<const std::uint8_t>, const sp::net::endpoint&) { ++dht; });
-  h.b->on_probe([&](std::span<const std::uint8_t>, const sp::net::endpoint&) { ++probes; });
+  h.b->on_probe([&](std::span<const std::uint8_t>, const sp::net::endpoint&, std::uint32_t) { ++probes; });
   const std::string krpc = "d1:t2:aa1:y1:qe";
   REQUIRE(h.a->send({reinterpret_cast<const std::uint8_t*>(krpc.data()), krpc.size()}, h.at_b()));
   const std::uint8_t probe[] = {sp::kProbe, 1, 2, 3};
@@ -248,133 +258,7 @@ TEST_CASE("sharepoint dht: the hub hands KRPC and probes to their handlers, and 
 
 // ---- the DHT client, against a swarm of stand-in nodes on loopback -----------------------------------
 
-#include "addons/sharepoint/dht.h"
-
-namespace {
-
-// A full DHT node, for the tests only: answers find_node, get and put (BEP 5,
-// 44), checks a put's token and signature, says how it saw the asker (BEP 42
-// "ip"). `forge`: answers every get with an item it signed itself.
-struct swarm_node {
-  std::shared_ptr<sp::udp_hub> hub;
-  dht::node self;
-  std::vector<dht::node>* everyone = nullptr;
-  std::mutex m;
-  struct stored {
-    std::string k, sig, v;
-    std::int64_t seq = 0;
-  };
-  std::map<std::string, stored> items;  // by target
-  bool forge = false;
-  std::atomic<int> gets{0};
-
-  void on(std::span<const std::uint8_t> d, const sp::net::endpoint& from) {
-    auto v = bc::decode({reinterpret_cast<const char*>(d.data()), d.size()});
-    if (!v || !v->str("y") || *v->str("y") != "q" || !v->str("t") || !v->str("q")) return;
-    const bc::value* a = v->get("a");
-    if (!a) return;
-    const std::string q = *v->str("q");
-    bc::value r = bc::value::dict({{"id", bc::value::bytes(std::string(reinterpret_cast<const char*>(self.id.data()), 20))}});
-    const std::string* target = a->str("target");
-    if (q == "find_node" || q == "get") {
-      std::vector<dht::node> close = *everyone;
-      if (target && target->size() == 20) {
-        dht::node_id t;
-        std::memcpy(t.data(), target->data(), 20);
-        std::sort(close.begin(), close.end(), [&](const dht::node& x, const dht::node& y) {
-          dht::node_id dx, dy;
-          for (int i = 0; i < 20; ++i) {
-            dx[i] = x.id[i] ^ t[i];
-            dy[i] = y.id[i] ^ t[i];
-          }
-          return dx < dy;
-        });
-      }
-      if (close.size() > 8) close.resize(8);
-      r.d.emplace_back("nodes", bc::value::bytes(dht::compact_nodes(close)));
-    }
-    if (q == "get" && target) {
-      ++gets;
-      r.d.emplace_back("token", bc::value::bytes("tok" + from.address + std::to_string(from.port)));
-      std::lock_guard lock(m);
-      if (forge) {
-        r.d.emplace_back("k", bc::value::bytes(std::string(32, 'K')));
-        r.d.emplace_back("seq", bc::value::num(999));
-        r.d.emplace_back("sig", bc::value::bytes(std::string(64, 'S')));
-        r.d.emplace_back("v", bc::value::bytes("forged"));
-      } else if (auto it = items.find(*target); it != items.end()) {
-        r.d.emplace_back("k", bc::value::bytes(it->second.k));
-        r.d.emplace_back("seq", bc::value::num(it->second.seq));
-        r.d.emplace_back("sig", bc::value::bytes(it->second.sig));
-        r.d.emplace_back("v", bc::value::bytes(it->second.v));
-      }
-    }
-    if (q == "put") {
-      const std::string* tok = a->str("token");
-      const std::string* k = a->str("k");
-      const std::string* sig = a->str("sig");
-      const auto seq = a->integer("seq");
-      const bc::value* val = a->get("v");
-      const std::string salt = a->str("salt") ? *a->str("salt") : std::string();
-      if (!tok || *tok != "tok" + from.address + std::to_string(from.port) || !k || k->size() != 32 || !sig || !seq || !val) return;
-      std::array<std::uint8_t, 32> key;
-      std::memcpy(key.data(), k->data(), 32);
-      if (!dht::verify(key, salt, *seq, bc::encode(*val), {reinterpret_cast<const std::uint8_t*>(sig->data()), sig->size()})) return;
-      std::string kt = *k + salt;
-      const auto t = mv::sharepoint::sha1({reinterpret_cast<const std::uint8_t*>(kt.data()), kt.size()});
-      std::lock_guard lock(m);
-      auto& s = items[std::string(reinterpret_cast<const char*>(t.data()), 20)];
-      if (*seq >= s.seq) s = {*k, *sig, val->s, *seq};
-    }
-    const auto ip = sp::net::parse_address(from.address);
-    std::string compact(reinterpret_cast<const char*>(ip->bytes.data()), ip->v6 ? 16 : 4);
-    compact.push_back(static_cast<char>(from.port >> 8));
-    compact.push_back(static_cast<char>(from.port & 0xff));
-    const std::string wire = bc::encode(bc::value::dict({{"t", bc::value::bytes(*v->str("t"))},
-                                                        {"y", bc::value::bytes("r")},
-                                                        {"r", std::move(r)},
-                                                        {"ip", bc::value::bytes(compact)}}));
-    (void)hub->send({reinterpret_cast<const std::uint8_t*>(wire.data()), wire.size()}, from);
-  }
-};
-
-struct swarm {
-  std::vector<std::unique_ptr<swarm_node>> nodes;
-  std::vector<dht::node> list;
-  explicit swarm(int n) {
-    for (int i = 0; i < n; ++i) {
-      auto s = std::make_unique<swarm_node>();
-      auto h = sp::udp_hub::open(0, true);
-      REQUIRE(h);
-      s->hub = std::move(*h);
-      randombytes_buf(s->self.id.data(), 20);
-      s->self.at = {"127.0.0.1", s->hub->port()};
-      list.push_back(s->self);
-      nodes.push_back(std::move(s));
-    }
-    for (auto& s : nodes) {
-      s->everyone = &list;
-      swarm_node* raw = s.get();
-      s->hub->on_dht([raw](std::span<const std::uint8_t> d, const sp::net::endpoint& f) { raw->on(d, f); });
-    }
-  }
-  ~swarm() {
-    for (auto& s : nodes) s->hub->on_dht(nullptr);
-  }
-  sp::net::endpoint seed() const { return list.front().at; }
-};
-
-dht::client::options test_options(const swarm& s, std::string table = {}) {
-  dht::client::options o;
-  o.use_routers = false;
-  o.extra = {s.seed()};
-  o.table_path = std::move(table);
-  o.query_ms = 500;
-  o.lookup_ms = 5000;
-  return o;
-}
-
-}  // namespace
+#include "sharepoint_swarm.h"
 
 TEST_CASE("sharepoint dht: BEP 42's node ids check against the BEP's test vectors", "[sharepoint]") {
   struct row {
@@ -572,6 +456,381 @@ TEST_CASE("sharepoint dht: a wrong word code finds nobody", "[sharepoint]") {
   CHECK(at_s.error() == mv::status::timeout);
 }
 
+
+// ---- stand-in NATs: the birthday punch and TCP simultaneous open (#472) ------------------------
+
+#include <set>
+
+namespace {
+
+// A NAT on loopback, for the tests only: every socket a hub opens is wrapped
+// (udp_hub::socket_wrap). A send leaves from one of the NAT's outside sockets,
+// on a port in [lo, lo + 1023]; what comes back to that port from a peer the
+// mapping allows is handed in, with the peer as its sender. Anything reaching
+// the inside socket directly is dropped: behind a NAT nobody can. IPv4 only
+// (an IPv6 send is dropped).
+//   hard: a new outside port for each destination, answered only by it
+//         (endpoint-dependent mapping and filtering: a "symmetric" NAT).
+//   else: one outside port per inside socket, answered only by peers it has
+//         sent to (a port-restricted cone: the easy side).
+struct stand_in_nat {
+  struct mapping {
+    std::shared_ptr<sp::net::udp_socket> out;
+    std::uint16_t inside = 0;
+    std::set<std::string> peers;  // "address|port" that may answer
+  };
+  bool hard;
+  std::uint16_t lo;
+  std::mutex m;
+  std::map<std::string, std::shared_ptr<mapping>> by_key;
+  std::map<std::uint16_t, std::shared_ptr<mapping>> by_out;
+  std::atomic<bool> stop{false};
+  std::thread pump;
+
+  explicit stand_in_nat(bool h) : hard(h), lo(static_cast<std::uint16_t>(20000 + randombytes_uniform(30000))) {
+    pump = std::thread([this] { run(); });
+  }
+  ~stand_in_nat() {
+    stop.store(true);
+    pump.join();
+  }
+  static std::string key(const sp::net::endpoint& e) { return e.address + "|" + std::to_string(e.port); }
+  std::uint16_t hi() const { return static_cast<std::uint16_t>(lo + 1023); }
+  std::size_t outside_ports() {
+    std::lock_guard lock(m);
+    return by_out.size();
+  }
+
+  // Outbound through the NAT.
+  mv::expected send(std::uint16_t inside, std::span<const std::uint8_t> d, const sp::net::endpoint& to) {
+    const auto ip = sp::net::parse_address(to.address);
+    if (!ip || ip->v6) return {};
+    std::shared_ptr<mapping> mp;
+    {
+      std::lock_guard lock(m);
+      const std::string k = hard ? std::to_string(inside) + "|" + key(to) : std::to_string(inside);
+      auto& slot = by_key[k];
+      if (!slot) {
+        for (int tries = 0; tries < 4000 && !slot; ++tries) {
+          const auto port = static_cast<std::uint16_t>(lo + randombytes_uniform(1024));
+          if (by_out.count(port)) continue;
+          auto o = sp::net::open_udp_dual(port, true);
+          if (!o) continue;
+          slot = std::make_shared<mapping>();
+          slot->out = std::move(*o);
+          slot->inside = inside;
+          by_out[port] = slot;
+        }
+        if (!slot) return mv::err(mv::status::io);
+      }
+      slot->peers.insert(key(to));
+      mp = slot;
+    }
+    return mp->out->send_to(d, to);
+  }
+
+  // Inbound: allowed answers go to the inside socket, the peer in front.
+  void run() {
+    std::vector<std::uint8_t> buf(65536);
+    while (!stop.load()) {
+      std::vector<std::shared_ptr<mapping>> all;
+      {
+        std::lock_guard lock(m);
+        for (auto& [p, mp] : by_out) all.push_back(mp);
+      }
+      if (all.empty()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        continue;
+      }
+      std::vector<sp::net::udp_socket*> raw;
+      for (auto& mp : all) raw.push_back(mp->out.get());
+      std::unique_ptr<bool[]> ready(new bool[raw.size()]());
+      if (!sp::net::wait_readable(raw, std::span<bool>(ready.get(), raw.size()), 20)) continue;
+      for (std::size_t i = 0; i < raw.size(); ++i) {
+        if (!ready[i]) continue;
+        sp::net::endpoint from;
+        auto n = raw[i]->receive_from({buf.data() + 6, buf.size() - 6}, 0, from);
+        if (!n) continue;
+        {
+          std::lock_guard lock(m);
+          if (!all[i]->peers.count(key(from))) continue;  // nobody inside asked
+        }
+        const auto ip = sp::net::parse_address(from.address);
+        if (!ip || ip->v6) continue;
+        std::memcpy(buf.data(), ip->bytes.data(), 4);
+        buf[4] = static_cast<std::uint8_t>(from.port >> 8);
+        buf[5] = static_cast<std::uint8_t>(from.port);
+        (void)raw[i]->send_to({buf.data(), *n + 6}, {"127.0.0.1", all[i]->inside});
+      }
+    }
+  }
+
+  bool is_outside(const sp::net::endpoint& e) {
+    std::lock_guard lock(m);
+    return e.address == "127.0.0.1" && by_out.count(e.port);
+  }
+
+  // A socket behind this NAT.
+  class inside_socket final : public sp::net::udp_socket {
+   public:
+    inside_socket(stand_in_nat& nat, std::unique_ptr<sp::net::udp_socket> in) : nat_(nat), in_(std::move(in)) {}
+    mv::expected send_to(std::span<const std::uint8_t> d, const sp::net::endpoint& to) override {
+      return nat_.send(in_->port(), d, to);
+    }
+    mv::result<std::size_t> receive_from(std::span<std::uint8_t> into, int timeout_ms,
+                                         sp::net::endpoint& from) override {
+      std::uint8_t buf[65536];
+      sp::net::endpoint via;
+      auto n = in_->receive_from(buf, timeout_ms, via);
+      if (!n) return n;
+      if (*n < 6 || !nat_.is_outside(via)) return mv::err(mv::status::timeout);  // not through the NAT: dropped
+      sp::net::address ip;
+      std::memcpy(ip.bytes.data(), buf, 4);
+      from = {sp::net::address_text(ip), static_cast<std::uint16_t>(buf[4] << 8 | buf[5])};
+      const std::size_t len = std::min(*n - 6, into.size());
+      std::memcpy(into.data(), buf + 6, len);
+      return len;
+    }
+    void shutdown() noexcept override { in_->shutdown(); }
+    std::uint16_t port() const noexcept override { return in_->port(); }
+    std::intptr_t handle() const noexcept override { return in_->handle(); }
+    void set_buffers(int bytes) noexcept override { in_->set_buffers(bytes); }
+
+   private:
+    stand_in_nat& nat_;
+    std::unique_ptr<sp::net::udp_socket> in_;
+  };
+
+  sp::udp_hub::socket_wrap wrap() {
+    return [this](std::unique_ptr<sp::net::udp_socket> s) -> std::unique_ptr<sp::net::udp_socket> {
+      return std::make_unique<inside_socket>(*this, std::move(s));
+    };
+  }
+};
+
+std::shared_ptr<sp::udp_hub> hub_behind(stand_in_nat* nat) {
+  auto h = sp::udp_hub::open(0, true, nat ? nat->wrap() : sp::udp_hub::socket_wrap{});
+  REQUIRE(h);
+  return std::move(*h);
+}
+
+// The internet handshake and a chunk over a met link, CPace on the code's password.
+void handshake_over(std::unique_ptr<sp::link> r, std::unique_ptr<sp::link> s, const dht::keys& k) {
+  const std::vector<std::uint8_t> pw(k.password.begin(), k.password.end());
+  std::shared_ptr<sp::link> lr(std::move(r)), ls(std::move(s));
+  mv::result<std::unique_ptr<sp::channel>> server = mv::err(mv::status::internal);
+  std::thread t([&] {
+    auto h = sp::channel::read_hello(*lr, std::chrono::steady_clock::now() + std::chrono::seconds(5));
+    if (!h) {
+      server = mv::err(h.error());
+      return;
+    }
+    sp::channel::options so;
+    so.internet_secret = pw;
+    server = sp::channel::open_server(lr, std::move(*h), "bbbbbbbbbbbbbbbb", "Bea", so);
+  });
+  auto client = sp::channel::open_internet(ls, pw, "aaaaaaaaaaaaaaaa", "Ann");
+  t.join();
+  REQUIRE(client);
+  REQUIRE(server);
+  CHECK((*client)->code() == (*server)->code());
+  CHECK((*client)->via() == sp::transport::internet);
+  REQUIRE((*client)->send(sp::msg::data, pattern(sp::kChunkBytes, 3)));
+  sp::message msg;
+  REQUIRE((*server)->receive(msg, 5000));
+  CHECK(msg.body == pattern(sp::kChunkBytes, 3));
+}
+
+struct met_pair {
+  mv::result<std::unique_ptr<sp::link>> r = mv::err(mv::status::internal), s = mv::err(mv::status::internal);
+  std::optional<dht::keys> k;
+};
+
+// Both sides meet on one code: the receiver's hub `hr`, the sender's `hs`.
+met_pair meet_both(swarm& sw, const std::shared_ptr<sp::udp_hub>& hr, const std::shared_ptr<sp::udp_hub>& hs,
+                   dht::meet_options o, bool* r_hard = nullptr, bool* s_hard = nullptr) {
+  dht::client cr(hr, test_options(sw)), cs(hs, test_options(sw));
+  REQUIRE(cr.start({}));
+  REQUIRE(cs.start({}));
+  const dht::word_code code = dht::random_code();
+  auto kr = dht::derive(code, true);
+  auto ks = dht::derive(code, true);
+  REQUIRE(kr);
+  REQUIRE(ks);
+  o.loopback = true;
+  o.wait_ms = 20000;
+  met_pair out;
+  std::thread r([&] { out.r = dht::meet(hr, cr, *kr, dht::role::receiver, o, {}, {}); });
+  out.s = dht::meet(hs, cs, *ks, dht::role::sender, o, {}, {});
+  r.join();
+  // How the DHT saw each side (the meeting's own puts asked many nodes).
+  if (r_hard) *r_hard = dht::seen_hard(cr);
+  if (s_hard) *s_hard = dht::seen_hard(cs);
+  out.k.emplace();
+  *out.k = std::move(*kr);
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("sharepoint nat: a hard NAT meets an easy one by the birthday punch, either side hard",
+          "[sharepoint]") {
+  for (const bool receiver_hard : {true, false}) {
+    INFO("receiver hard: " << receiver_hard);
+    swarm sw(12);
+    stand_in_nat hard_nat(true), easy_nat(false);
+    auto hr = hub_behind(receiver_hard ? &hard_nat : &easy_nat);
+    auto hs = hub_behind(receiver_hard ? &easy_nat : &hard_nat);
+    dht::meet_options o;
+    o.tcp = false;  // UDP only (the default): the birthday punch alone
+    o.birthday_lo = hard_nat.lo;
+    o.birthday_hi = hard_nat.hi();
+    bool r_hard = false, s_hard = false;
+    const auto t0 = std::chrono::steady_clock::now();
+    auto met = meet_both(sw, hr, hs, o, &r_hard, &s_hard);
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    UNSCOPED_INFO("met in " << secs << " s");
+    // The DHT saw the hard side on many ports, the easy side on one.
+    CHECK(r_hard == receiver_hard);
+    CHECK(s_hard == !receiver_hard);
+    REQUIRE(met.r);
+    REQUIRE(met.s);
+    // The hard side's stream runs on the one birthday socket that met; the
+    // other 255 are closed. Its main socket punches the easy side too, so
+    // the easy side's random probes can meet that one instead (about 1 run
+    // in 20 here): then no extra socket is kept.
+    auto& hard_hub = receiver_hard ? hr : hs;
+    CHECK(hard_hub->extra_count() <= 1);
+    CHECK((receiver_hard ? hs : hr)->extra_count() == 0);
+    handshake_over(std::move(*met.r), std::move(*met.s), *met.k);
+    // The links are gone: so is the stream's birthday socket, and the hub is
+    // back to its one socket (and its reader to the idle wait).
+    CHECK(hard_hub->extra_count() == 0);
+  }
+}
+
+TEST_CASE("sharepoint nat: two hard NATs do not meet over UDP, and every extra socket is closed", "[sharepoint]") {
+  swarm sw(12);
+  stand_in_nat a(true), b(true);
+  auto hr = hub_behind(&a);
+  auto hs = hub_behind(&b);
+  dht::meet_options o;
+  o.tcp = false;
+  o.punch_ms = 2500;
+  auto met = meet_both(sw, hr, hs, o);
+  REQUIRE_FALSE(met.r);
+  REQUIRE_FALSE(met.s);
+  CHECK(met.s.error() == mv::status::timeout);
+  // Neither side birthday-punches another hard NAT: it would not meet.
+  CHECK(hr->extra_count() == 0);
+  CHECK(hs->extra_count() == 0);
+}
+
+TEST_CASE("sharepoint nat: TCP simultaneous open connects two ports that each connect to the other",
+          "[sharepoint]") {
+  auto a = sp::net::open_rendezvous(true);
+  auto b = sp::net::open_rendezvous(true);
+  REQUIRE(a);
+  REQUIRE(b);
+  const sp::net::endpoint at_a{"127.0.0.1", (*a)->port()}, at_b{"127.0.0.1", (*b)->port()};
+  mv::result<std::unique_ptr<sp::link>> la = mv::err(mv::status::internal);
+  std::thread t([&] { la = (*a)->next(std::span<const sp::net::endpoint>(&at_b, 1), 5000); });
+  auto lb = (*b)->next(std::span<const sp::net::endpoint>(&at_a, 1), 5000);
+  t.join();
+  REQUIRE(la);
+  REQUIRE(lb);
+  // One connection between the two ports, whoever's SYN got there: bytes both ways.
+  const std::uint8_t ping[] = {1, 2, 3, 4};
+  REQUIRE((*la)->write_all(ping));
+  std::uint8_t got[4] = {};
+  REQUIRE(sp::read_exact_until(**lb, got, std::chrono::steady_clock::now() + std::chrono::seconds(5)));
+  CHECK(std::memcmp(got, ping, 4) == 0);
+  REQUIRE((*lb)->write_all(ping));
+  REQUIRE(sp::read_exact_until(**la, got, std::chrono::steady_clock::now() + std::chrono::seconds(5)));
+  // A port nobody is at: the attempts are tried again until the time is up, then a timeout.
+  auto c = sp::net::open_rendezvous(true);
+  REQUIRE(c);
+  const sp::net::endpoint nobody{"127.0.0.1", 9};
+  const auto t0 = std::chrono::steady_clock::now();
+  auto none = (*c)->next(std::span<const sp::net::endpoint>(&nobody, 1), 700);
+  REQUIRE_FALSE(none);
+  CHECK(none.error() == mv::status::timeout);
+  CHECK(std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(650));
+  (*c)->shutdown();
+  auto after = (*c)->next(std::span<const sp::net::endpoint>(&nobody, 1), 700);
+  REQUIRE_FALSE(after);
+  CHECK(after.error() == mv::status::cancelled);
+}
+
+TEST_CASE("sharepoint nat: two hard NATs meet over TCP simultaneous open when UDP cannot", "[sharepoint]") {
+  swarm sw(12);
+  stand_in_nat a(true), b(true);  // UDP only; the stand-ins leave TCP alone (a NAT that keeps TCP ports)
+  auto hr = hub_behind(&a);
+  auto hs = hub_behind(&b);
+  dht::meet_options o;
+  o.punch_ms = 8000;
+  o.tcp = true;
+  auto met = meet_both(sw, hr, hs, o);
+  REQUIRE(met.r);
+  REQUIRE(met.s);
+  CHECK((*met.r)->via() == sp::transport::internet);
+  handshake_over(std::move(*met.r), std::move(*met.s), *met.k);
+}
+
+TEST_CASE("sharepoint nat: the hub reads extra sockets with its own and runs a stream on one", "[sharepoint]") {
+  hub_pair h;
+  std::atomic<int> on_extra{0};
+  std::atomic<std::uint32_t> last_sock{0};
+  h.b->on_probe([&](std::span<const std::uint8_t>, const sp::net::endpoint&, std::uint32_t sock) {
+    last_sock.store(sock);
+    ++on_extra;
+  });
+  const auto ids = h.b->open_extras(8);
+  REQUIRE(ids.size() == 8);
+  CHECK(h.b->extra_count() == 8);
+  // A probe from b's fifth extra to a, and a's answer back to where it came from.
+  sp::net::endpoint seen;
+  std::atomic<bool> got{false};
+  h.a->on_probe([&](std::span<const std::uint8_t>, const sp::net::endpoint& from, std::uint32_t) {
+    seen = from;
+    got.store(true);
+  });
+  const std::uint8_t probe[] = {sp::kProbe, 9};
+  REQUIRE(h.b->send(probe, h.at_a(), ids[4]));
+  REQUIRE(eventually([&] { return got.load(); }, 5));
+  CHECK(seen.port != h.b->port());
+  REQUIRE(h.a->send(probe, {"127.0.0.1", seen.port}));
+  REQUIRE(eventually([&] { return on_extra.load() == 1; }, 5));
+  CHECK(last_sock.load() == ids[4]);
+  // A stream on that extra, both ways.
+  auto sb = h.b->stream(h.at_a(), 5, false, ids[4]);
+  auto sa = h.a->stream({"127.0.0.1", seen.port}, 5);
+  const auto data = pattern(300 * 1024, 4);
+  std::atomic<bool> wrote{false};  // asserted here, not on the writer's thread (Catch2)
+  std::thread w([&] { wrote.store(static_cast<bool>(sb->write_all(data))); });
+  std::vector<std::uint8_t> back(data.size());
+  const bool read = static_cast<bool>(
+      sp::read_exact_until(*sa, back, std::chrono::steady_clock::now() + std::chrono::seconds(10)));
+  w.join();
+  REQUIRE(wrote.load());
+  REQUIRE(read);
+  CHECK(back == data);
+  // The others closed; a send on a closed one says so, and the stream lives on.
+  std::vector<std::uint32_t> rest(ids.begin(), ids.end());
+  rest.erase(rest.begin() + 4);
+  h.b->close_extras(rest);
+  CHECK(h.b->extra_count() == 1);
+  CHECK(h.b->send(probe, h.at_a(), ids[0]).error() == mv::status::not_found);
+  const std::uint8_t more[] = {7, 7};
+  REQUIRE(sb->write_all(more));
+  std::uint8_t two[2];
+  REQUIRE(sp::read_exact_until(*sa, two, std::chrono::steady_clock::now() + std::chrono::seconds(5)));
+  CHECK(two[0] == 7);
+  // The stream ended: its extra closes with it.
+  sb.reset();
+  CHECK(h.b->extra_count() == 0);
+}
+
 // ---- two engines over four words ----------------------------------------------------------------
 
 namespace {
@@ -579,11 +838,17 @@ struct word_client {
   fake_host host;
   sp::engine eng;
   // `secrets`: a folder for the secret store (#472 PR 4); empty: none.
-  word_client(const fs::path& received, const std::string& name, const swarm& s, const fs::path& secrets = {})
-      : host(received), eng(host, options(name, s, secrets)) {
+  // `tweak` (#472 relays): changes to the options before the engine starts.
+  word_client(const fs::path& received, const std::string& name, const swarm& s, const fs::path& secrets = {},
+              const std::function<void(sp::engine::options&)>& tweak = {})
+      : host(received), eng(host, tweaked(options(name, s, secrets), tweak)) {
     eng.screen_opened("");
     eng.on_event("internet", 2, "true");
     eng.on_event("dht", 2, "true");
+  }
+  static sp::engine::options tweaked(sp::engine::options o, const std::function<void(sp::engine::options&)>& tweak) {
+    if (tweak) tweak(o);
+    return o;
   }
   static sp::engine::options options(const std::string& name, const swarm& s, const fs::path& secrets) {
     sp::engine::options o;
@@ -691,7 +956,9 @@ void send_with_words(word_client& ann, word_client& bea, const fs::path& f) {
   }, 20));
   ann.eng.on_event("send_code", 2, "\"" + words + "\"");
   ann.eng.on_event("send_to_code", 1, "");
-  REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::naming; }, 30));
+  const bool named = eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::naming; }, 30);
+  INFO("out " << static_cast<int>(ann.eng.snapshot().out) << ": " << ann.eng.snapshot().out_note);
+  REQUIRE(named);
   ann.eng.on_event("out_confirm", 1, "");
   REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
   bea.eng.on_event("accept", 1, "");
@@ -858,4 +1125,132 @@ TEST_CASE("sharepoint known: a send to a device that does not answer waits, and 
   ann.eng.on_event("out_cancel", 1, "");
   ann.eng.wait_idle();
   CHECK(ann.eng.snapshot().out_note == "Cancelled. Nothing was sent.");
+}
+
+// ---- relays through the person's own computers (#472, option 9) ------------------------------
+
+namespace {
+// Bea's code, asked for until the receiver of codes is up.
+std::string direct_code(word_client& c) {
+  std::string code;
+  auto asked = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+  REQUIRE(eventually([&] {
+    const auto v = c.eng.snapshot();
+    if (v.code_phase == 0 && std::chrono::steady_clock::now() - asked > std::chrono::milliseconds(300)) {
+      c.eng.on_event("make_code", 1, "");
+      asked = std::chrono::steady_clock::now();
+    }
+    code = v.code_text;
+    return v.code_phase == static_cast<std::uint8_t>(sp::internet_receiver::phase::ready) && !code.empty();
+  }, 20));
+  REQUIRE(std::count(code.begin(), code.end(), ' ') == 0);  // a direct code, not words
+  return code;
+}
+
+// Ann's connects all time out: Bea's places are out of her reach.
+void cut_off(sp::engine::options& o) {
+  o.relay_meet_ms = 60000;
+  o.connect_wifi = [](const sp::net::endpoint&, int) -> mv::result<std::unique_ptr<sp::link>> {
+    return mv::err(mv::status::timeout);
+  };
+}
+
+void direct_codes(sp::engine::options& o) { o.internet_force_words = false; }
+}  // namespace
+
+TEST_CASE("sharepoint relay: a send goes through another of the person's own computers, sealed end to end",
+          "[sharepoint]") {
+  scratch_dir dir("sharepoint_own_relay");
+  swarm s(16);
+  std::mutex m;
+  std::vector<std::uint8_t> seen;
+  word_client rob(dir / "rob_received", "Rob", s, dir / "rob_secrets", [&](sp::engine::options& o) {
+    o.relay_limits.tap = [&](bool, std::span<const std::uint8_t> b) {
+      std::lock_guard lock(m);
+      seen.insert(seen.end(), b.begin(), b.end());
+    };
+  });
+  word_client ann(dir / "ann_received", "Ann", s, dir / "ann_secrets", cut_off);
+  send_with_words(ann, rob, file_of(dir, "first.jpg", 100 * 1024, 30));
+  ann.eng.on_event("remember", 2, "true");
+  rob.eng.on_event("remember", 2, "true");
+  for (word_client* c : {&ann, &rob}) {
+    c->eng.on_event("relay", 2, "true");
+    c->eng.on_event("own" + c->eng.snapshot().known_ids.at(0), 2, "true");
+  }
+  CHECK(ann.eng.snapshot().known_own == std::vector<bool>{true});
+  CHECK(sp::build_tree(ann.eng.snapshot()).find("Rob is my computer") != std::string::npos);
+  rob.eng.on_event("in_dismiss", 1, "");  // the pairing send's result
+
+  // Bea, somewhere else, with a direct code Ann cannot reach.
+  word_client bea(dir / "bea_received", "Bea", s, {}, direct_codes);
+  const std::string code = direct_code(bea);
+  const fs::path f = dir / "out" / "clip.mov";
+  const auto bytes = pattern(1536 * 1024 + 77, 31);
+  write_bytes(f, bytes);
+  ann.eng.set_files({utf8(f)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_names == std::vector<std::string>{"clip.mov"};
+  }));
+  ann.eng.on_event("send_code", 2, "\"" + code + "\"");
+  ann.eng.on_event("send_to_code", 1, "");
+  const bool named = eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::naming; }, 90);
+  INFO(ann.eng.snapshot().out_note);
+  REQUIRE(named);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::connecting; }));
+  CHECK(ann.eng.snapshot().out_relay == "Rob");
+  CHECK(rob.eng.snapshot().relaying_for == "Ann");
+  CHECK(sp::build_tree(rob.eng.snapshot()).find("Relaying for Ann") != std::string::npos);
+  CHECK(sp::build_tree(ann.eng.snapshot()).find("Through Rob (your computer)") != std::string::npos);
+  CHECK(ann.eng.snapshot().out_check == bea.eng.snapshot().in_code);  // one session, A to B
+  CHECK(bea.eng.snapshot().in_peer == "Ann");
+  ann.eng.on_event("out_confirm", 1, "");
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  INFO(ann.eng.snapshot().out_note);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(read_bytes(dir / "bea_received" / "clip.mov") == bytes);
+  REQUIRE(eventually([&] { return rob.eng.snapshot().relaying_for.empty(); }));
+  CHECK(rob.eng.snapshot().relayed == 1);
+  CHECK(rob.eng.snapshot().in == sp::view::in_phase::none);  // it received nothing itself
+  std::lock_guard lock(m);
+  CHECK(seen.size() > bytes.size());
+  for (std::size_t at = 0; at + 32 <= bytes.size(); at += 4096) {
+    CHECK(std::search(seen.begin(), seen.end(), bytes.begin() + at, bytes.begin() + at + 32) == seen.end());
+  }
+}
+
+TEST_CASE("sharepoint relay: a computer not marked as the person's own there does not relay", "[sharepoint]") {
+  scratch_dir dir("sharepoint_own_relay_off");
+  swarm s(12);
+  word_client rob(dir / "rob_received", "Rob", s, dir / "rob_secrets");
+  word_client ann(dir / "ann_received", "Ann", s, dir / "ann_secrets", cut_off);
+  send_with_words(ann, rob, file_of(dir, "first.jpg", 100 * 1024, 32));
+  ann.eng.on_event("remember", 2, "true");
+  rob.eng.on_event("remember", 2, "true");
+  ann.eng.on_event("relay", 2, "true");
+  ann.eng.on_event("own" + ann.eng.snapshot().known_ids.at(0), 2, "true");
+  rob.eng.on_event("relay", 2, "true");  // but Ann is not marked as Rob's person's own there
+  word_client bea(dir / "bea_received", "Bea", s, {}, direct_codes);
+  const std::string code = direct_code(bea);
+  const fs::path f = file_of(dir, "b.jpg", 100 * 1024, 33);
+  ann.eng.set_files({utf8(f)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_names == std::vector<std::string>{"b.jpg"};
+  }));
+  ann.eng.on_event("send_code", 2, "\"" + code + "\"");
+  ann.eng.on_event("send_to_code", 1, "");
+  const bool said =
+      eventually([&] { return ann.eng.snapshot().out_note.find("Rob does not relay") != std::string::npos; }, 90);
+  INFO(ann.eng.snapshot().out_note);
+  CHECK(said);
+  CHECK(rob.eng.snapshot().relayed == 0);
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::none);
+  ann.eng.on_event("out_cancel", 1, "");
+  ann.eng.wait_idle();
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::ended);
 }
