@@ -14,9 +14,13 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <sys/xattr.h>
+#endif
 
 #include <cerrno>
 #include <cstdio>
+#include <ctime>
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -138,6 +142,57 @@ expected remove_tree(std::string_view utf8_dir) {
     }
   }
   return ok && ::rmdir(dir.c_str()) == 0 ? expected{} : err(status::io);
+}
+
+result<std::string> make_directories_beneath(std::string_view base_utf8, std::string_view relative_slash) {
+  if (base_utf8.empty()) return err(status::invalid_arg);
+  std::string path(base_utf8);
+  while (path.size() > 1 && path.back() == '/') path.pop_back();
+  struct stat st{};
+  // The base is the person's own choice (a link there is theirs): followed.
+  if (::stat(path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) return err(status::io);
+  std::string_view rest = relative_slash;
+  while (!rest.empty()) {
+    const auto slash = rest.find('/');
+    const std::string_view part = rest.substr(0, slash);
+    rest = slash == std::string_view::npos ? std::string_view() : rest.substr(slash + 1);
+    if (part.empty() || part == "." || part == "..") return err(status::invalid_arg);
+    path = join_path(path, part);
+    for (int attempt = 0;; ++attempt) {
+      if (::lstat(path.c_str(), &st) == 0) {
+        if (S_ISLNK(st.st_mode)) return err(status::permission_denied);
+        if (!S_ISDIR(st.st_mode)) return err(status::io);
+        break;
+      }
+      if (errno != ENOENT || attempt > 0) return err(status::io);
+      // Made here, or by someone else in between: the lstat above says which.
+      if (::mkdir(path.c_str(), 0755) != 0 && errno != EEXIST) return err(status::io);
+    }
+  }
+  return path;
+}
+
+expected mark_from_elsewhere(std::string_view utf8_path, std::string_view agent) {
+  if (utf8_path.empty()) return err(status::invalid_arg);
+#if defined(__APPLE__)
+  // The format LaunchServices writes for a download: flags (0x0081: from the
+  // network, not yet approved), the time in hex, the agent, no event id.
+  // Gatekeeper checks any file carrying it, and Archive Utility hands it on
+  // to what it extracts.
+  char head[32];
+  std::snprintf(head, sizeof head, "0081;%08llx;", static_cast<unsigned long long>(::time(nullptr)));
+  std::string value(head);
+  for (char c : agent) value.push_back(c == ';' ? ' ' : c);
+  value.push_back(';');
+  const std::string path(utf8_path);
+  if (::setxattr(path.c_str(), "com.apple.quarantine", value.data(), value.size(), 0, XATTR_NOFOLLOW) != 0) {
+    return err(status::io);
+  }
+  return {};
+#else
+  (void)agent;
+  return err(status::unsupported_format);  // the Linux core test build has no such mark
+#endif
 }
 
 result<rename_outcome> rename_no_replace(std::string_view from_utf8, std::string_view to_utf8) {

@@ -52,6 +52,9 @@ struct incoming_offer {
   std::uint64_t bytes = 0;
   bool handover = false;  // #472 PR 5: the sender takes msg::places
   bool dht = false;       // #472: and meets on the DHT if both sides move
+  // #498: the one folder every file is in, or empty when they are files
+  // picked one by one (parse_offer refuses any other shape).
+  std::string folder;
 };
 
 // bytes moved so far (both ends), files finished so far.

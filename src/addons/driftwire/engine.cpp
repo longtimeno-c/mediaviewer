@@ -1188,7 +1188,7 @@ void engine::walk_folder(const std::string& folder, std::uint64_t gen) {
   std::vector<outgoing_file> out;
   std::string top(leaf_name(folder));
   while (!top.empty() && (top.back() == '/' || top.back() == '\\')) top.pop_back();
-  if (!safe_relative(top)) top = "Folder";
+  if (!safe_relative(top)) top = "Folder";  // a hidden folder's own name too (#498)
   (void)io::walk_files(folder, 32, [&](const io::tree_entry& e) {
     if (files_stale(gen)) return false;
     if (e.cloud_only || skipped_relative(e.relative_utf8)) return true;
@@ -2436,6 +2436,7 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
       v_.in_note.clear();
       // Nothing of an earlier offer stays on screen while this one connects.
       v_.in_names.clear();
+      v_.in_folder.clear();
       v_.in_count = 0;
       v_.in_total = 0;
       v_.in_bytes = 0;
@@ -2484,8 +2485,11 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
     v_.in_files = 0;
     v_.in_note.clear();
     v_.in_names.clear();
+    // #498: a folder is shown as the folder (where its files go is the
+    // folder's business), files one by one by name.
+    v_.in_folder = offer->folder;
     for (const auto& f : offer->files) {
-      if (v_.in_names.size() >= kListedNames) break;
+      if (!v_.in_folder.empty() || v_.in_names.size() >= kListedNames) break;
       v_.in_names.emplace_back(leaf_name(f.rel));
     }
   }
