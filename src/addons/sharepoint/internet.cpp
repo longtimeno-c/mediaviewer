@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "addons/sharepoint/meet.h"
+#include "addons/sharepoint/splice.h"
 
 namespace mv::sharepoint {
 
@@ -38,6 +39,35 @@ std::optional<net::endpoint> parse_hostport(const std::string& text) {
 
 }  // namespace
 
+std::optional<net::endpoint> relay_endpoint(const std::string& text) {
+  if (auto e = parse_hostport(text)) return e;
+  const auto colon = text.rfind(':');
+  if (colon == std::string::npos || colon == 0 || text.front() == '[') return std::nullopt;
+  const std::string host = text.substr(0, colon);
+  const auto port = parse_hostport("0.0.0.0" + text.substr(colon));
+  if (!port || host.size() > 253) return std::nullopt;
+  const auto all = net::resolve(host);
+  if (all.empty()) return std::nullopt;
+  // IPv4 first: a sender's network has it more often than IPv6.
+  const auto v4 = std::find_if(all.begin(), all.end(), [](const net::address& a) { return !a.v6; });
+  return net::endpoint{net::address_text(v4 != all.end() ? *v4 : all.front()), port->port};
+}
+
+std::optional<relay_server_field> relay_server_of(const std::string& text, std::string& why) {
+  const auto hash = text.rfind('#');
+  if (hash == std::string::npos || text.size() - hash - 1 < relay::kMinKeyChars) {
+    why = "Your relay server needs its key after the address: <address>:<port>#<key>, as the server prints it.";
+    return std::nullopt;
+  }
+  relay_server_field f{text.substr(0, hash), text.substr(hash + 1)};
+  const auto colon = f.at.rfind(':');
+  if (colon == std::string::npos || colon == 0 || colon + 1 >= f.at.size()) {
+    why = "Your relay server's address is not one (address or name, a colon, the port, then #key).";
+    return std::nullopt;
+  }
+  return f;
+}
+
 internet_receiver::internet_receiver(options o, link_fn on_link, std::function<void()> changed)
     : opts_(std::move(o)), on_link_(std::move(on_link)), changed_(std::move(changed)) {
   thread_ = std::thread([this] { run(); });
@@ -70,6 +100,11 @@ void internet_receiver::set_forwarded(std::string forwarded) {
 void internet_receiver::set_dht(bool on) {
   std::lock_guard lock(m_);
   opts_.dht = on;
+}
+
+void internet_receiver::set_relay(std::string relay) {
+  std::lock_guard lock(m_);
+  opts_.relay = std::move(relay);
 }
 
 void internet_receiver::drop_code() {
@@ -175,6 +210,10 @@ void internet_receiver::release_locked(std::unique_lock<std::mutex>& lock) {
   meet_stop_.store(true);
   if (meet_thread_.joinable()) meet_thread_.join();
   meet_stop_.store(false);
+  relay_stop_.store(true);
+  if (relay_thread_.joinable()) relay_thread_.join();
+  if (relay_setup_thread_.joinable()) relay_setup_thread_.join();  // a slow resolve, abandoned
+  relay_stop_.store(false);
   dht_.reset();
   dht_keys_.reset();
   if (hub_) hub_->stop();
@@ -205,6 +244,7 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
   // over it still runs (then this one waits for it to end: one listener).
   release_locked(lock);  // a code before this one: its listener and mappings go
   const std::string forwarded_text = opts_.forwarded;
+  const std::string relay_text = opts_.relay;
   const bool use_dht = opts_.dht;
   lock.unlock();
   notify();
@@ -218,6 +258,77 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
   std::vector<net::endpoint> places;
   std::unique_ptr<mapping::mapper> mapper;
   std::vector<mapping::mapped> mapped;
+  // #472 relays: the person's relay server, if set: this code waits there
+  // too, under a token of its own (registered now, so the window says at
+  // once whether the relay answered).
+  // Its name is resolved and it is asked on a thread of its own, beside the
+  // router's mapping below; the code waits for it kRelaySetupMs at most.
+  std::optional<invite::relay_place> relay;
+  std::unique_ptr<link> relay_link;
+  std::string relay_note, relay_key;
+  struct relay_setup {
+    std::mutex m;
+    std::condition_variable cv;
+    bool done = false, abandoned = false;
+    std::optional<invite::relay_place> place;
+    std::unique_ptr<link> registered;
+    std::string note;
+  };
+  auto setup = std::make_shared<relay_setup>();
+  bool relay_started = false, relay_awaited = false;
+  if (l && !relay_text.empty() && !(opts_.force_words && use_dht)) {
+    std::string why;
+    if (const auto server = relay_server_of(relay_text, why)) {
+      relay_key = server->key;
+      relay_started = true;
+      relay_setup_thread_ = std::thread([setup, server = *server] {
+        std::optional<invite::relay_place> place;
+        std::unique_ptr<link> registered;
+        std::string note;
+        if (const auto at = relay_endpoint(server.at)) {
+          invite::relay_place r;
+          r.at = *at;
+          r.token = relay::random_token();
+          auto c = net::connect(*at, kReachConnectMs);
+          if (c && relay::register_waiter(**c, r.token, server.key)) {
+            registered = std::move(*c);
+            place = r;
+          } else {
+            note = " Your relay server did not answer, so this code does not use it.";
+          }
+        } else {
+          note = " Your relay server's name did not resolve, so this code does not use it.";
+        }
+        std::lock_guard g(setup->m);
+        if (setup->abandoned) {
+          if (registered) registered->shutdown();
+        } else {
+          setup->place = std::move(place);
+          setup->registered = std::move(registered);
+          setup->note = std::move(note);
+        }
+        setup->done = true;
+        setup->cv.notify_all();
+      });
+    } else {
+      relay_note = " " + why;
+    }
+  }
+  const auto relay_started_at = clock::now();
+  const auto await_relay = [&] {
+    if (!relay_started || relay_awaited) return;
+    relay_awaited = true;
+    std::unique_lock g(setup->m);
+    setup->cv.wait_until(g, relay_started_at + std::chrono::milliseconds(kRelaySetupMs), [&] { return setup->done; });
+    if (!setup->done) {
+      setup->abandoned = true;  // its thread closes what it gets; joined with this code's end
+      relay_note = " Your relay server is slow to answer, so this code does not use it.";
+      return;
+    }
+    relay = std::move(setup->place);
+    relay_link = std::move(setup->registered);
+    relay_note = setup->note;
+  };
   if (!l) {
     s.p = phase::failed;
     s.note = "Could not listen for a sender on this computer.";
@@ -228,6 +339,8 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
     } else if (opts_.loopback_only) {
       places = {{"::1", port}, {"127.0.0.1", port}};
       s.how = {"this computer"};
+      await_relay();
+      if (relay) s.how.emplace_back("your relay");
     } else {
       if (forwarded) {
         places.push_back(*forwarded);
@@ -257,7 +370,9 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
         places.push_back({net::address_text(*v6), port});
         s.how.emplace_back("IPv6");
       }
-      const bool reachable = !places.empty() && !opts_.force_words;
+      await_relay();
+      if (relay) s.how.emplace_back("your relay");
+      const bool reachable = (!places.empty() || relay) && !opts_.force_words;
       // This network's address: a sender on the same network, or behind the
       // same router, comes in this way.
       const auto gw = opts_.mapping && opts_.mapping->gateway ? opts_.mapping->gateway : net::default_gateway();
@@ -280,6 +395,7 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
       }
     }
   }
+  await_relay();  // a branch above that did not ask
   // #472 PR 3: no public place, the DHT on: four words, and a wait on the
   // DHT for the sender (on its own thread) that punches to it.
   std::shared_ptr<udp_hub> hub;
@@ -331,6 +447,7 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
     dht_keys_ = std::move(keys);
     meet_stop_.store(false);
     dht::meet_options mo;
+    mo.tcp = true;  // a word code's meeting, the window open: TCP simultaneous open too
     mo.loopback = opts_.loopback_only;
     mo.wait_ms = opts_.lifetime_ms;
     meet_thread_ = std::thread([this, mo] {
@@ -340,19 +457,28 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
       dht::withdraw(*dht_, *dht_keys_, dht::role::receiver, stopped);
     });
   } else if (l && s.p != phase::failed) {
-    const invite::code c = invite::make(places);
+    const invite::code c = invite::make(places, relay);
     s.p = phase::ready;
     s.text = invite::encode(c);
     s.link = invite::link(c);
-    s.note = "Send this code to the other person. It works once, for 10 minutes.";
+    s.note = "Send this code to the other person. It works once, for 10 minutes." + relay_note;
     secret_ = std::vector<std::uint8_t>(c.secret.begin(), c.secret.end());
     expires_ = clock::now() + std::chrono::milliseconds(opts_.lifetime_ms);
     listener_ = std::move(*l);
     net::listener* raw = listener_.get();
     accept_thread_ = std::thread([this, raw] { accept_loop(raw); });
+    if (c.relay && relay_link) {
+      relay_stop_.store(false);
+      relay_thread_ = std::thread([this, at = c.relay->at, token = c.relay->token, key = relay_key,
+                                   first = std::move(relay_link)]() mutable {
+        relay_loop(std::move(at), token, std::move(key), std::move(first));
+      });
+    }
   } else if (l) {
     (*l)->shutdown();
   }
+  if (relay_link) relay_link->shutdown();  // not used: a word code, or no code
+  if (s.p == phase::failed && !relay_note.empty()) s.note += relay_note;
   mapper_ = std::move(mapper);
   mapped_ = std::move(mapped);
   snap_ = std::move(s);
@@ -424,6 +550,69 @@ std::unique_ptr<way_in> way_in::open(bool loopback_only, const std::optional<map
     }
   });
   return w;
+}
+
+void internet_receiver::relay_loop(net::endpoint at, std::array<std::uint8_t, 16> token, std::string key,
+                                   std::unique_ptr<link> first) {
+  const auto stopped = [this] {
+    if (relay_stop_.load()) return true;
+    std::lock_guard lock(m_);
+    return stop_ || snap_.p != phase::ready;
+  };
+  const auto rest = [&](int ms) {
+    for (int waited = 0; waited < ms && !stopped(); waited += 100) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  };
+  const auto fresh = [&]() -> std::unique_ptr<link> {
+    auto c = net::connect(at, kReachConnectMs);
+    if (!c || !relay::register_waiter(**c, token, key)) return nullptr;
+    return std::move(*c);
+  };
+  // A pair on `l`: on once the sender has spoken (a sender that lost its
+  // race to a direct place closes without a byte).
+  const auto hand_on = [&](std::unique_ptr<link> l) {
+    auto spoke = relay::first_bytes(std::move(l), kConnectMs, stopped, "relay");
+    if (spoke && on_link_) on_link_(std::move(*spoke));  // the internet hello comes over it
+  };
+  std::unique_ptr<link> l = std::move(first);
+  auto registered = clock::now();
+  while (!stopped()) {
+    if (!l) {
+      // The relay let the wait go, or paired it: wait there again, same token.
+      l = fresh();
+      if (!l) {
+        rest(2000);
+        continue;
+      }
+      registered = clock::now();
+    }
+    const int until_again = static_cast<int>(std::max<std::int64_t>(
+        1, relay::kReregisterMs - std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - registered).count()));
+    auto r = relay::wait_paired(*l, until_again, stopped);
+    if (r) {
+      hand_on(std::move(l));
+      continue;
+    }
+    if (r.error() != status::timeout) {
+      l->shutdown();
+      l.reset();
+      rest(500);
+      continue;
+    }
+    // Ahead of a NAT that drops an idle connection: register again (the
+    // server replaces the old wait), new before old.
+    registered = clock::now();
+    auto next = fresh();
+    if (!next) continue;  // the old one may still do; try again in a minute
+    if (relay::wait_paired(*l, 1, stopped)) {
+      hand_on(std::move(l));  // paired just before it was replaced
+    } else {
+      l->shutdown();
+    }
+    l = std::move(next);
+  }
+  if (l) l->shutdown();
 }
 
 int backoff_ms(int attempt) noexcept {

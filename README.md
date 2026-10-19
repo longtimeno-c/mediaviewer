@@ -232,6 +232,7 @@ The optional **Sharepoint** add-on sends photos, video and audio to another Medi
 - **Wi-Fi or Bluetooth, and it keeps going.** A send starts on whichever is there and moves to Wi-Fi the moment both computers are on one network. If Wi-Fi drops or Bluetooth goes out of range, it picks up where it was within seconds, with no new code and nothing sent twice; turn on *Continue over the internet if Wi-Fi drops* and it carries on over the internet instead. No account, no cloud.
 - **Or anywhere, with a code.** Turn on *Send and receive over the internet*, make a code and send it to someone: they paste it and the files come straight to you, no server in between. A code works once, for ten minutes. Behind a router that won't open a port, turn on the public DHT too and the code is just four words to read out.
 - **Remember each other.** After a send, tick *Remember* on both computers and next time it's one click, no code, from anywhere. Each side keeps the other's key in the Keychain or Windows Credential Manager, and refuses loudly if it ever changes.
+- **When nothing gets through directly,** it can go through another computer of yours, or a small relay server you run yourself, and stay sealed end to end: the computer in between passes the bytes on and can't read them.
 - **Encrypted for the long run.** Every send is sealed end to end with a post-quantum handshake, so a recording made today cannot be opened later.
 
 ## Themes and add-ons from anyone

@@ -62,7 +62,9 @@ add_library(mv_sharepoint_engine STATIC
   ${_S}/handover.cpp ${_S}/handover.h
   ${_S}/secrets.h ${_S}/secrets_file.cpp
   ${_S}/known.h ${_S}/known.cpp
-  ${_S}/engine.cpp ${_S}/engine.h
+  ${_S}/splice.cpp ${_S}/splice.h
+  ${_S}/relay.cpp ${_S}/relay.h
+  ${_S}/engine.cpp ${_S}/engine.h ${_S}/engine_relay.cpp
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/tree.cpp
   ${_sharepoint_port}
@@ -121,6 +123,13 @@ elseif(WIN32)
   set_target_properties(mv_sharepoint PROPERTIES PREFIX "")
 endif()
 
+# #472 relays: a relay server of the person's own (tools/sharepoint-relay),
+# portable, built beside the add-on and never shipped with the app. It is the
+# splice alone (splice.cpp and the network port); nothing of the engine runs.
+add_executable(mv_sharepoint_relay "${MV_SOURCE_ROOT}/tools/sharepoint-relay/main.cpp")
+target_link_libraries(mv_sharepoint_relay PRIVATE mv_sharepoint_engine)
+set_target_properties(mv_sharepoint_relay PROPERTIES OUTPUT_NAME "mv-sharepoint-relay")
+
 # The engine over loopback TCP and an in-memory discovery bus, and the add-on
 # itself through the real loader (tests/test_sharepoint.cpp,
 # tests/test_sharepoint_addon.cpp). Called by each build's mv_import_tests
@@ -133,11 +142,12 @@ function(mv_sharepoint_tests target)
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_internet.cpp"
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_dht.cpp"
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_known.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_sharepoint_relay.cpp"
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_addon.cpp"
     "${MV_SOURCE_ROOT}/src/addons/sharepoint/bt_none.cpp")
   target_link_libraries(${target} PRIVATE mv_sharepoint_engine)
   target_compile_definitions(${target} PRIVATE
     MV_SHAREPOINT_MODULE_PATH="$<TARGET_FILE:mv_sharepoint>"
     MV_SHAREPOINT_MANIFEST_JSON="${MV_SOURCE_ROOT}/src/addons/sharepoint/manifest.json")
-  add_dependencies(${target} mv_sharepoint)
+  add_dependencies(${target} mv_sharepoint mv_sharepoint_relay)
 endfunction()

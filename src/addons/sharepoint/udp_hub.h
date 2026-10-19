@@ -23,6 +23,10 @@
 // a burst is at most the congestion window. Packets are not encrypted here:
 // what goes through is the channel's sealed frames (an injected packet fails
 // the channel's AEAD, which ends the link, as a forged TCP segment would).
+// Extra sockets (#472, the birthday punch): open_extras() adds sockets the
+// same reader polls with the main one; a probe says which socket it came in
+// on, and a stream can run on any of them. Only while a hard NAT is being
+// punched; close_extras() lets them go.
 // Portable (D9).
 #pragma once
 
@@ -35,6 +39,7 @@
 #include <mutex>
 #include <span>
 #include <thread>
+#include <vector>
 
 #include "addons/sharepoint/link.h"
 #include "addons/sharepoint/net.h"
@@ -48,24 +53,39 @@ inline constexpr std::size_t kStreamPayload = 1200;
 class udp_hub : public std::enable_shared_from_this<udp_hub> {
  public:
   using datagram_fn = std::function<void(std::span<const std::uint8_t>, const net::endpoint& from)>;
+  // A probe and the socket it came in on (0: the main one).
+  using probe_fn = std::function<void(std::span<const std::uint8_t>, const net::endpoint& from, std::uint32_t sock)>;
+  // The tests: every socket the hub opens goes through this (a stand-in NAT).
+  using socket_wrap = std::function<std::unique_ptr<net::udp_socket>(std::unique_ptr<net::udp_socket>)>;
   // `port` 0: the OS picks.
-  [[nodiscard]] static result<std::shared_ptr<udp_hub>> open(std::uint16_t port, bool loopback_only = false);
+  [[nodiscard]] static result<std::shared_ptr<udp_hub>> open(std::uint16_t port, bool loopback_only = false,
+                                                             socket_wrap wrap = {});
   ~udp_hub();
   udp_hub(const udp_hub&) = delete;
   udp_hub& operator=(const udp_hub&) = delete;
 
   [[nodiscard]] std::uint16_t port() const noexcept { return port_; }
   [[nodiscard]] expected send(std::span<const std::uint8_t> datagram, const net::endpoint& to);
+  // From socket `sock` (0: the main one); status::not_found when it is closed.
+  [[nodiscard]] expected send(std::span<const std::uint8_t> datagram, const net::endpoint& to, std::uint32_t sock);
+  // Up to `n` more sockets on ports the OS picks, read by the same thread;
+  // their ids (fewer when the OS runs out).
+  [[nodiscard]] std::vector<std::uint32_t> open_extras(int n);
+  // Closes these extra sockets (a stream on one fails).
+  void close_extras(std::span<const std::uint32_t> ids);
+  [[nodiscard]] std::size_t extra_count();
   // Handlers, on the hub's reader thread (brief; never blocking, never
   // setting a handler). Setting one waits for a call of the old one that is
   // running: after on_dht(nullptr) returns, the old handler is not called.
   void on_dht(datagram_fn fn);
-  void on_probe(datagram_fn fn);
+  void on_probe(probe_fn fn);
   // A reliable stream to `peer`, both sides with the same `id` (the sender
   // picks it during punching). Packets for it from anyone else are dropped.
   // `learn`: the peer is whoever sends the first packet of this id (the
   // receiver of a punched path: the sender chose which of the paths found).
-  [[nodiscard]] std::unique_ptr<link> stream(const net::endpoint& peer, std::uint32_t id, bool learn = false);
+  // `sock`: the socket it runs on (an extra, after a birthday punch).
+  [[nodiscard]] std::unique_ptr<link> stream(const net::endpoint& peer, std::uint32_t id, bool learn = false,
+                                             std::uint32_t sock = 0);
   // Stops the threads; every stream fails. Idempotent.
   void stop() noexcept;
   // The tests: drop this many in a thousand of the stream packets sent.
@@ -77,12 +97,21 @@ class udp_hub : public std::enable_shared_from_this<udp_hub> {
   udp_hub() = default;
   void read_loop();
   void timer_loop();
+  void take(std::span<const std::uint8_t> d, const net::endpoint& from, std::uint32_t sock_id,
+            const std::shared_ptr<net::udp_socket>& sock);
+  expected send_on(net::udp_socket& sock, std::span<const std::uint8_t> datagram, const net::endpoint& to);
 
-  std::unique_ptr<net::udp_socket> sock_;
+  std::shared_ptr<net::udp_socket> sock_;  // the main socket, id 0
   std::uint16_t port_ = 0;
+  bool loopback_ = false;
+  socket_wrap wrap_;
   std::mutex m_;
   std::mutex calling_m_;                                       // held while a handler runs
-  datagram_fn dht_, probe_;                                    // under m_
+  datagram_fn dht_;                                            // under m_
+  probe_fn probe_;                                             // under m_
+  std::map<std::uint32_t, std::shared_ptr<net::udp_socket>> extras_;  // under m_
+  std::uint32_t next_extra_ = 1;                               // under m_
+  std::atomic<bool> has_extras_{false};
   std::map<std::uint32_t, std::weak_ptr<stream_state>> streams_;  // under m_
   std::atomic<bool> stop_{false};
   std::atomic<int> loss_{0};

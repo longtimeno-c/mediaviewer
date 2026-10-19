@@ -15,6 +15,8 @@ constexpr char kAlphabet[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";  // Crockford
 constexpr char kKeyContext[] = "MediaViewer Sharepoint code places v2";
 constexpr char kCheckContext[] = "MediaViewer Sharepoint code check v2";
 constexpr std::uint8_t kKind4 = 4, kKind6 = 6;
+// #472 relays: a relay server's address, then its 16-byte token.
+constexpr std::uint8_t kRelay4 = 0x24, kRelay6 = 0x26;
 
 int value_of(char c) noexcept {
   if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
@@ -41,10 +43,10 @@ void check(const std::uint8_t* data, std::size_t n, std::uint8_t out[2]) {
   crypto_generichash(out, 2, data, n, reinterpret_cast<const std::uint8_t*>(kCheckContext), sizeof kCheckContext - 1);
 }
 
-bool put_place(std::vector<std::uint8_t>& out, const net::endpoint& e) {
+bool put_place(std::vector<std::uint8_t>& out, const net::endpoint& e, bool relay = false) {
   const auto ip = net::parse_address(e.address);
   if (!ip || e.port == 0) return false;
-  out.push_back(ip->v6 ? kKind6 : kKind4);
+  out.push_back(relay ? (ip->v6 ? kRelay6 : kRelay4) : ip->v6 ? kKind6 : kKind4);
   out.insert(out.end(), ip->bytes.begin(), ip->bytes.begin() + (ip->v6 ? 16 : 4));
   out.push_back(static_cast<std::uint8_t>(e.port >> 8));
   out.push_back(static_cast<std::uint8_t>(e.port));
@@ -53,12 +55,17 @@ bool put_place(std::vector<std::uint8_t>& out, const net::endpoint& e) {
 
 }  // namespace
 
-code make(const std::vector<net::endpoint>& places) {
+code make(const std::vector<net::endpoint>& places, std::optional<relay_place> relay) {
   (void)sodium_init();
   code c;
   randombytes_buf(c.secret.data(), c.secret.size());
+  if (relay) {
+    std::vector<std::uint8_t> probe;
+    if (put_place(probe, relay->at, true)) c.relay = std::move(relay);
+  }
+  const std::size_t room = kMaxPlaces - (c.relay ? 1 : 0);
   for (const auto& p : places) {
-    if (c.places.size() >= kMaxPlaces) break;
+    if (c.places.size() >= room) break;
     std::vector<std::uint8_t> probe;
     if (put_place(probe, p)) c.places.push_back(p);
   }
@@ -68,10 +75,11 @@ code make(const std::vector<net::endpoint>& places) {
 std::string encode(const code& c) {
   // version, count | secret | places (covered) | check
   std::vector<std::uint8_t> b;
-  b.push_back(static_cast<std::uint8_t>(kVersion << 4 | (c.places.size() & 0x0f)));
+  b.push_back(static_cast<std::uint8_t>(kVersion << 4 | ((c.places.size() + (c.relay ? 1 : 0)) & 0x0f)));
   b.insert(b.end(), c.secret.begin(), c.secret.end());
   const std::size_t at = b.size();
   for (const auto& p : c.places) (void)put_place(b, p);
+  if (c.relay && put_place(b, c.relay->at, true)) b.insert(b.end(), c.relay->token.begin(), c.relay->token.end());
   cover(c.secret, b.data() + at, b.size() - at);
   std::uint8_t sum[2];
   check(b.data(), b.size(), sum);
@@ -107,7 +115,7 @@ std::string link(const code& c) {
 }
 
 std::optional<code> decode(std::string_view text) {
-  if (text.size() > 512) return std::nullopt;
+  if (text.size() > 512) return std::nullopt;  // a relay code is about 115 characters
   // A link: the part after "code=".
   if (const auto q = text.find("code="); q != std::string_view::npos) text.remove_prefix(q + 5);
   std::vector<std::uint8_t> b;
@@ -141,16 +149,28 @@ std::optional<code> decode(std::string_view text) {
   for (std::size_t n = 0; n < count; ++n) {
     if (i >= end) return std::nullopt;
     const std::uint8_t kind = b[i++];
-    const std::size_t len = kind == kKind6 ? 16 : kind == kKind4 ? 4 : 0;
-    if (len == 0 || i + len + 2 > end) return std::nullopt;
+    const bool relay = kind == kRelay4 || kind == kRelay6;
+    const bool v6 = kind == kKind6 || kind == kRelay6;
+    const std::size_t len = v6 ? 16 : kind == kKind4 || kind == kRelay4 ? 4 : 0;
+    const std::size_t extra = relay ? 16 : 0;
+    // One relay, and it comes last.
+    if (len == 0 || i + len + 2 + extra > end || c.relay) return std::nullopt;
     net::address ip;
-    ip.v6 = kind == kKind6;
+    ip.v6 = v6;
     std::memcpy(ip.bytes.data(), b.data() + i, len);
     i += len;
     const std::uint16_t port = static_cast<std::uint16_t>(b[i] << 8 | b[i + 1]);
     i += 2;
     if (port == 0) return std::nullopt;
-    c.places.push_back({net::address_text(ip), port});
+    if (relay) {
+      relay_place r;
+      r.at = {net::address_text(ip), port};
+      std::memcpy(r.token.data(), b.data() + i, 16);
+      i += 16;
+      c.relay = std::move(r);
+    } else {
+      c.places.push_back({net::address_text(ip), port});
+    }
   }
   if (i != end) return std::nullopt;
   sodium_memzero(b.data(), b.size());
