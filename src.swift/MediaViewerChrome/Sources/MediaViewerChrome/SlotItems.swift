@@ -432,6 +432,10 @@ struct SlotAddonsSection: View {
       if !sharepoint.installed && !installed.rows.contains(where: { $0.id == SharepointStore.addonID }) {
         SharepointOffer()
       }
+      // #485: AI agents, offered with one click while it is not installed.
+      if installed.known && !installed.rows.contains(where: { $0.id == AgentsOffer.addonID }) {
+        AgentsOffer { installed.reload() }
+      }
       ForEach(installed.rows.filter { $0.id != "places" }) { row in
         VStack(alignment: .leading, spacing: MVTheme.space(6)) {
           Text(row.name).font(MVTheme.font()).foregroundStyle(MVTheme.title)
@@ -634,5 +638,51 @@ private struct SlotAddonUpdate: View {
 
   private func install() {
     offer.install(wasLoaded: row.loaded, installedVersion: row.version, done: done)
+  }
+}
+
+/// #485 (docs/design/29): the AI agents add-on, offered in Settings > Add-ons while
+/// it is not installed. Once installed, its row opens the AI agents window (the
+/// add-on's own view tree), where Claude Code and Claude Desktop are added.
+struct AgentsOffer: View {
+  nonisolated static let addonID = "agent"
+  @ObservedObject private var offer = SlotAddonOffer.channel(id: AgentsOffer.addonID, name: "AI agents")
+  var installed: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: MVTheme.space(6)) {
+      Text("AI agents").font(MVTheme.font()).foregroundStyle(MVTheme.title)
+      note("Let Claude, or any MCP agent, edit the Final Cut Pro project you drag onto the MediaViewer panel, "
+        + "using only that timeline's media and the folders you give. Each pass is a new project beside yours.")
+      if mv_addon2_elsewhere() {
+        note(LocalSearchStore.elsewhereText)
+      } else if offer.busy, let phase = offer.phase {
+        AddonProgressView(phase: phase)
+      } else {
+        switch offer.offer {
+        case .available(let bytes, _, _, _, _):
+          Button("Install AI agents, \(AddonStore.sizeText(bytes))") {
+            offer.install(wasLoaded: false, installedVersion: "") { installed() }
+          }
+          .disabled(offer.busy)
+        case .notPublished:
+          note("AI agents is not published for download yet. It will be offered here once a release carries it.")
+        case .needsNewerApp:
+          note("The published AI agents add-on needs a newer MediaViewer. Update MediaViewer, then install it.")
+        case .unreachable:
+          note("Could not reach the download server.")
+          Button("Try again") { offer.probe() }
+        case nil:
+          note("Checking for AI agents…")
+        }
+      }
+      if !offer.message.isEmpty { note(offer.message) }
+    }
+    .onAppear { if offer.offer == nil { offer.probe() } }
+  }
+
+  private func note(_ text: String) -> some View {
+    Text(text).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+      .fixedSize(horizontal: false, vertical: true)
   }
 }

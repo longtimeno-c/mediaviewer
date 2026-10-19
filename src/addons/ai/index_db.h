@@ -392,6 +392,10 @@ class index_db {
   [[nodiscard]] expected commit_speech(std::int64_t asset, const std::string& spec,
                                        std::span<const speech_in> segments, work_state state,
                                        std::int64_t resume_ms);
+  // #485: one asset's transcript under `spec`, in time order; `done` when its
+  // speech pass finished (a partial pass has the rows so far).
+  [[nodiscard]] expected speech_of(std::int64_t asset, const std::string& spec, std::vector<speech_in>& out,
+                                   bool& done);
   [[nodiscard]] expected each_speech(
       const std::string& spec,
       const std::function<void(std::int64_t asset, std::int64_t start_ms, std::int64_t end_ms,

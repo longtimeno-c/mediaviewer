@@ -117,6 +117,24 @@ result<std::string> search_session::suggest_json(const std::string& query, int t
   return json;
 }
 
+result<std::string> search_session::transcript_json(const std::string& path, int timeout_ms) const {
+  if (!api_ || api_->struct_size < offsetof(mv_ai_api, transcript_json) + sizeof(api_->transcript_json) ||
+      !api_->transcript_json) {
+    return err(status::unsupported_format);
+  }
+  if (!wait_ready(timeout_ms)) return err(status::busy);
+  std::vector<char> buf(256 * 1024);
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    std::uint32_t needed = 0;
+    const mv_status st = api_->transcript_json(api_->ctx, path.c_str(), buf.data(),
+                                               static_cast<std::uint32_t>(buf.size()), &needed);
+    if (st == MV_OK) return std::string(buf.data());
+    if (st != MV_ERR_INVALID_ARG || needed <= buf.size()) return err(static_cast<status>(st));
+    buf.resize(needed + 1);
+  }
+  return err(status::internal);
+}
+
 reply search_session::run(const request& r, const std::string& text, const std::string& scope_dir, int timeout_ms) {
   reply out;
   out.correlation_id = r.correlation_id;

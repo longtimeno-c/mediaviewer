@@ -1479,6 +1479,26 @@ libraries normalise quoting, whitespace and entities on write; this tree keeps s
 writes unchanged nodes and attributes from them (`src/nle/xml.h`). It refuses declared entities.
 The 20-project set comes back byte-identical, and each new version validates against FCP's DTD.
 
+**`MediaViewer --mcp`, stdio only, the server code in the add-on (2026-10-18).** The MCP server
+is the app's own executable in a mode (as `--search-agent` is), so a client is configured with one
+path that updates with the app; the code that serves is the AI agents add-on's (an add-on carries
+its own code, 2026-10-11), loaded verified with host table v3. Stdio, not a socket: an MCP client
+starts the server itself, so nothing listens, and the privacy line stays "no network". The host's
+Local search services refuse the whole-index scope; the add-on filters every answer to the scope
+again, so the scope holds even against a host bug.
+
+**Transcripts are phrases; words are estimates (2026-10-18).** The index stores Whisper's segments
+without word timing. Rather than re-run speech recognition per request, the agent refines phrase
+edges and word boundaries against the file's loudness and finds silences from the sound: the cut
+points a tightening edit needs most are measured, and the tool says word times are estimated.
+Forced alignment is the upgrade if the eval set shows cuts inside words.
+
+**The AI agents window instead of a Settings page (2026-10-18).** The issue asks for Settings >
+AI agents with install buttons. An add-on's Settings page (PR 56) has toggles, choices, numbers and
+text, no buttons; a screen (PR 58) has buttons and is drawn by both hosts. So Settings > Add-ons
+offers the add-on and, installed, opens its AI agents window, where the buttons, the disclosure and
+the frames switch live, with no host chrome of its own on either platform.
+
 **The panel and the agent share the app group's container (2026-10-18).** The panel is sandboxed
 and the agent is not; the group container is the one folder both can use without a new IPC
 channel. A development build without a group container falls back to the extension's own.

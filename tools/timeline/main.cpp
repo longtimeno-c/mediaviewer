@@ -11,6 +11,9 @@
 //       bytes); --write puts each new version in DIR for an import test
 //   mv-timeline version FILE --out OUT [--name NAME] [--project NAME]
 //       writes a new version of the project ("<name> (Claude 1)" by default)
+//   mv-timeline edit FILE --ops JSON --out OUT [--name NAME] [--no-marks]
+//       applies a batch of edits (nle/edit.h parse_ops) and writes the new
+//       version; prints the change list
 //
 // Exit 0 when everything held, 1 when a round trip did not, 2 on a usage or
 // read error.
@@ -21,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "nle/edit.h"
 #include "nle/timeline.h"
 
 namespace {
@@ -53,7 +57,8 @@ int usage() {
   std::fprintf(stderr,
                "mv-timeline describe FILE [--project NAME]\n"
                "mv-timeline roundtrip FILE... [--write DIR]\n"
-               "mv-timeline version FILE --out OUT [--name NAME] [--project NAME]\n");
+               "mv-timeline version FILE --out OUT [--name NAME] [--project NAME]\n"
+               "mv-timeline edit FILE --ops JSON --out OUT [--name NAME] [--no-marks]\n");
   return 2;
 }
 
@@ -114,7 +119,8 @@ int main(int argc, char** argv) {
   if (argc < 3) return usage();
   const std::string verb = argv[1];
   std::vector<std::string> files;
-  std::string project, out, name, write_dir;
+  std::string project, out, name, write_dir, ops_json;
+  bool marks = true;
   for (int i = 2; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : std::string(); };
@@ -126,6 +132,10 @@ int main(int argc, char** argv) {
       name = next();
     } else if (a == "--write") {
       write_dir = next();
+    } else if (a == "--ops") {
+      ops_json = next();
+    } else if (a == "--no-marks") {
+      marks = false;
     } else if (!a.empty() && a[0] == '-') {
       return usage();
     } else {
@@ -155,6 +165,28 @@ int main(int argc, char** argv) {
   }
   if (verb == "version") {
     if (out.empty()) return usage();
+    if (name.empty()) name = mv::nle::next_version_name(t.project().name, t.project_names());
+    if (!write_file(out, t.write_version(name))) {
+      std::fprintf(stderr, "cannot write %s\n", out.c_str());
+      return 2;
+    }
+    return 0;
+  }
+  if (verb == "edit") {
+    if (out.empty() || ops_json.empty()) return usage();
+    std::vector<mv::nle::edit_op> ops;
+    if (!mv::nle::parse_ops(ops_json, ops, &error)) {
+      std::fprintf(stderr, "%s\n", error.c_str());
+      return 2;
+    }
+    mv::nle::edit_options o;
+    o.mark_changes = marks;
+    mv::nle::editor e(t, o);
+    if (!e.apply(ops, {}, &error)) {
+      std::fprintf(stderr, "%s\n", error.c_str());
+      return 1;
+    }
+    for (const mv::nle::change& c : e.changes()) std::printf("%s\n", c.what.c_str());
     if (name.empty()) name = mv::nle::next_version_name(t.project().name, t.project_names());
     if (!write_file(out, t.write_version(name))) {
       std::fprintf(stderr, "cannot write %s\n", out.c_str());

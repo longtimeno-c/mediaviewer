@@ -744,6 +744,9 @@ include("${CMAKE_SOURCE_DIR}/cmake/sharepoint.cmake")
 # docs/design/29: a Final Cut Pro project as a timeline model (mv_nle_timeline,
 # mv-timeline); every architecture.
 include("${CMAKE_SOURCE_DIR}/cmake/timeline.cmake")
+# The AI agents add-on (docs/design/29): `MediaViewer --mcp`, packed and signed
+# separately; never installed with the app.
+include("${CMAKE_SOURCE_DIR}/cmake/agent.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the viewer's
 # still pipeline, the clip sampler and the JPEG-512 cache. In the base app;
@@ -924,6 +927,16 @@ target_link_libraries(mediaviewer_lab PRIVATE
   crashpad::crashpad
 )
 target_compile_definitions(mediaviewer_lab PRIVATE MV_APP_VERSION="${PROJECT_VERSION}")
+# docs/design/29: `MediaViewer --mcp`, the AI agents add-on's MCP server host. It
+# runs before anything of the viewer, over its own add-on store, so it links the
+# add-on host, the viewer's sound and frame readers and (with the AI pack built)
+# the Local search reader statically, as the Mac host does.
+target_sources(mediaviewer_lab PRIVATE src/shell/mcp_host.cpp src/shell/mcp_host.h)
+target_link_libraries(mediaviewer_lab PRIVATE mv_addon mv_addon_media)
+if(TARGET mv_nle)
+  target_link_libraries(mediaviewer_lab PRIVATE mv_nle)
+  target_compile_definitions(mediaviewer_lab PRIVATE MV_MCP_WITH_SEARCH=1)
+endif()
 add_dependencies(mediaviewer_lab MediaViewerClipJob MediaViewerThumbs)
 mv_asan_runtime_beside(mediaviewer_lab)
 # The handler is a separate program (Apache-2.0), not linked. z.dll is its zlib.
@@ -1376,6 +1389,7 @@ if(MV_BUILD_TESTS)
   add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
   mv_places_addon_tests(mv_import_tests)
   mv_sharepoint_tests(mv_import_tests)
+  mv_agent_addon_tests(mv_import_tests)
   mv_asan_runtime_beside(mv_import_tests)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT}
@@ -1397,7 +1411,7 @@ if(MV_BUILD_TESTS)
   # docs/design/29: the FCPXML timeline model and its lossless round trip over
   # the fixture set (tests/data/fcpxml), validated by Final Cut Pro's own DTD
   # when it is installed.
-  add_executable(mv_timeline_tests tests/test_timeline.cpp)
+  add_executable(mv_timeline_tests tests/test_timeline.cpp tests/test_timeline_edit.cpp)
   target_link_libraries(mv_timeline_tests PRIVATE mv_nle_timeline Catch2::Catch2WithMain)
   target_include_directories(mv_timeline_tests PRIVATE src tests)
   target_compile_definitions(mv_timeline_tests PRIVATE
@@ -1405,10 +1419,18 @@ if(MV_BUILD_TESTS)
   mv_asan_runtime_beside(mv_timeline_tests)
   catch_discover_tests(mv_timeline_tests TEST_PREFIX "timeline_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
+  # docs/design/29: the MCP server and its tools over a fake environment.
+  add_executable(mv_agent_tests tests/test_agent.cpp)
+  target_link_libraries(mv_agent_tests PRIVATE mv_agent_engine Catch2::Catch2WithMain)
+  target_include_directories(mv_agent_tests PRIVATE src tests)
+  target_compile_definitions(mv_agent_tests PRIVATE
+    MV_TIMELINE_FIXTURES="${CMAKE_SOURCE_DIR}/tests/data/fcpxml")
+  catch_discover_tests(mv_agent_tests TEST_PREFIX "agent_"
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
     add_test(NAME timeline_roundtrip COMMAND Python3::Interpreter
-             "${CMAKE_SOURCE_DIR}/tools/timeline/check_roundtrip.py" --tool "$<TARGET_FILE:mv-timeline>")
+             "${CMAKE_SOURCE_DIR}/tools/timeline/check_roundtrip.py" --tool "$<TARGET_FILE:mv-timeline>" --edits)
   endif()
 
   # docs/design/25: the add-on SDK (tools/addon-sdk) packs, and the app's own reader

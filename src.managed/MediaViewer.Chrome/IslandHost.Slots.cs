@@ -828,6 +828,7 @@ public static partial class IslandHost
     {
         if (row.Id == PlacesChannel.Id) return PlacesChannel;
         if (row.Id == SharepointId) return SharepointSlot;
+        if (row.Id == AgentsId) return AgentsSlot;
         if (!SlotChannels.TryGetValue(row.Id, out AddonSlot? slot))
         {
             slot = new AddonSlot(row.Id, row.Name, null, null);
@@ -893,6 +894,14 @@ public static partial class IslandHost
             BuildSharepointOffer(body, null, titled: false);
             _slotSettingsPanel.Children.Add(card);
             if (SharepointSlot.Offer.Kind == OfferKind.Unknown) probe.Add(SharepointSlot);
+        }
+        // #485: AI agents, offered with one click while it is not installed.
+        if (_slotAddonsRead && !SlotAddonRows.Exists(r => r.Id == AgentsId))
+        {
+            (Border card, StackPanel body) = AddonCard("AI agents");
+            AddAgentsOffer(body);
+            _slotSettingsPanel.Children.Add(card);
+            if (!_addonsElsewhere && AgentsSlot.Offer.Kind == OfferKind.Unknown) probe.Add(AgentsSlot);
         }
         foreach (SlotAddonRow row in SlotAddonRows)
         {
@@ -1003,6 +1012,59 @@ public static partial class IslandHost
         }
     }
 
+    // #485 (docs/design/29): the AI agents add-on. Once installed, its card opens the
+    // AI agents window (the add-on's own view tree): Claude Code, Claude Desktop,
+    // the timeline file and folders, frames on or off.
+    private const string AgentsId = "agent";
+    private static readonly AddonSlot AgentsSlot = new(AgentsId, "AI agents", null, null);
+
+    private static void AddAgentsOffer(StackPanel into)
+    {
+        into.Children.Add(Note(AgentsSlot.Offer.Description.Length > 0 ? AgentsSlot.Offer.Description :
+            "Let Claude, or any MCP agent, edit a timeline you export as FCPXML (DaVinci Resolve, Premiere Pro, " +
+            "Final Cut Pro), using only that timeline's media and the folders you give. Each pass is a new file beside yours."));
+        if (_addonsElsewhere)
+        {
+            into.Children.Add(Note(AddonsElsewhereText));
+            return;
+        }
+        if (AgentsSlot.Busy && AgentsSlot.Phase is not null)
+        {
+            into.Children.Add(ProgressFor(AgentsSlot, 320));
+            return;
+        }
+        var fresh = new SlotAddonRow(AgentsId, "AI agents", "", "", "", false);
+        switch (AgentsSlot.Offer.Kind)
+        {
+            case OfferKind.Available:
+                Button install = SettingsButton(
+                    $"Install AI agents, {MediaViewer.Shared.ByteSize.Text(AgentsSlot.Offer.ArchiveSize)}",
+                    () => StartSlotAddonInstall(fresh));
+                install.HorizontalAlignment = HorizontalAlignment.Left;
+                install.IsEnabled = !AgentsSlot.Busy;
+                into.Children.Add(install);
+                break;
+            case OfferKind.NotPublished:
+                into.Children.Add(Note(
+                    "AI agents is not published for download yet. It will be offered here once a release carries it."));
+                break;
+            case OfferKind.NeedsNewerApp:
+                into.Children.Add(Note(
+                    "The published AI agents add-on needs a newer MediaViewer. Update MediaViewer, then install it."));
+                break;
+            case OfferKind.Unreachable:
+                into.Children.Add(Note("Could not reach the download server."));
+                Button retry = SettingsButton("Try again", () => ProbeOffer(AgentsSlot));
+                retry.HorizontalAlignment = HorizontalAlignment.Left;
+                into.Children.Add(retry);
+                break;
+            default:
+                into.Children.Add(Note("Checking for AI agents…"));
+                break;
+        }
+        if (SlotUpdateMessages.TryGetValue(AgentsId, out string? said) && said.Length > 0) into.Children.Add(Note(said));
+    }
+
     private static void AddPlacesOffer(StackPanel into)
     {
         if (PlacesChannel.Busy && PlacesChannel.Phase is not null)
@@ -1067,7 +1129,8 @@ public static partial class IslandHost
         AddonSlot channel = SlotChannelFor(row);
         if (channel.Busy || !_slotAddonsRead || _addonsElsewhere || _folderSession is not { } session) return;
         bool wasLoaded = SlotAddonsLoaded.Contains(row.Id);
-        string? update = SlotUpdateVersion(channel, row);
+        bool fresh = row.Version.Length == 0;  // an offer's install (#485), not an update
+        string? update = fresh ? null : SlotUpdateVersion(channel, row);
         string id = row.Id, name = row.Name;
         channel.Busy = true;
         channel.Phase = new AddonPhase(AddonPhaseKind.Downloading);
@@ -1088,7 +1151,7 @@ public static partial class IslandHost
                 }
                 else
                 {
-                    message = update is null ? $"{name} reinstalled." : $"{name} updated to {update}.";
+                    message = fresh ? $"{name} installed." : update is null ? $"{name} reinstalled." : $"{name} updated to {update}.";
                     StartSlotAddons(session);
                 }
             }

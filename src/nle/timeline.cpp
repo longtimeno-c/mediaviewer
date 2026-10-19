@@ -118,6 +118,29 @@ const char* kind_name(item_kind k) {
   return "other";
 }
 
+std::string file_url(std::string_view path) {
+  static const char* const kHex = "0123456789ABCDEF";
+  std::string p(path);
+  std::replace(p.begin(), p.end(), '\\', '/');
+  std::string out = "file://";
+  // C:/x -> file:///C:/x ; //server/share -> file://server/share
+  if (p.size() >= 2 && p[1] == ':') out += '/';
+  if (p.rfind("//", 0) == 0) p.erase(0, 2);
+  for (std::size_t i = 0; i < p.size(); ++i) {
+    const auto c = static_cast<unsigned char>(p[i]);
+    const bool keep = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
+                      c == '.' || c == '_' || c == '~' || c == '/' || (c == ':' && i == 1);
+    if (keep) {
+      out += static_cast<char>(c);
+    } else {
+      out += '%';
+      out += kHex[c >> 4];
+      out += kHex[c & 15];
+    }
+  }
+  return out;
+}
+
 std::string path_of_file_url(std::string_view url) {
   constexpr std::string_view kScheme = "file://";
   if (url.size() < kScheme.size()) return {};
@@ -362,7 +385,14 @@ int timeline::add_item(std::uint32_t node, int parent, int storyline, bool in_st
     it.duration = time("duration", "0s");
   } else if (const auto a = assets_.find(it.ref); a != assets_.end() && it.kind == item_kind::asset_clip) {
     it.duration = a->second.duration;  // an asset-clip may leave its duration to the asset
-  } else if (it.kind != item_kind::storyline && it.kind != item_kind::other && it.kind != item_kind::audition) {
+  } else if (it.kind == item_kind::audition) {
+    // An audition plays its first pick.
+    for (const std::uint32_t c : doc_.elements(node)) {
+      if (const auto d = parse_time(doc_.attr_or(c, "duration", ""))) it.duration = *d;
+      it.start = parse_time(doc_.attr_or(c, "start", "0s")).value_or(rational{});
+      break;
+    }
+  } else if (it.kind != item_kind::storyline && it.kind != item_kind::other) {
     times_ok = false;
   }
   for (const char* r : {"role", "videoRole", "audioRole"}) {

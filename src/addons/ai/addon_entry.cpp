@@ -282,6 +282,12 @@ mv_status MV_CALL t_people_reanalyse(void* ctx) {
     return r ? MV_OK : to_mv(r.error());
   });
 }
+mv_status MV_CALL t_transcript_json(void* ctx, const char* path, char* out, uint32_t cap, uint32_t* needed) {
+  return guard([&] {
+    if (!path) return MV_ERR_INVALID_ARG;
+    return write_out(eng(ctx).transcript_json(path), out, cap, needed);
+  });
+}
 mv_status MV_CALL t_each_location(void* ctx, mv_addon_location_fn visit, void* user) {
   return guard([&] {
     if (!visit) return MV_ERR_INVALID_ARG;
@@ -505,6 +511,7 @@ mv_status make(uint32_t host_api, const mv_host_api* host, mv_addon_api* out, bo
     a.people_reanalyse = &t_people_reanalyse;
     a.each_location = &t_each_location;
     a.root_set_documents = &t_root_documents;  // #354
+    a.transcript_json = &t_transcript_json;    // #485
 
     *out = mv_addon_api{};
     out->struct_size = sizeof(mv_addon_api);

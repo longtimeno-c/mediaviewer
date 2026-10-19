@@ -40,29 +40,6 @@ std::string name_of(std::string_view path) {
 
 }  // namespace
 
-std::string file_url(std::string_view path) {
-  static const char* const kHex = "0123456789ABCDEF";
-  std::string p(path);
-  std::replace(p.begin(), p.end(), '\\', '/');
-  std::string out = "file://";
-  // C:/x -> file:///C:/x ; //server/share -> file://server/share
-  if (p.size() >= 2 && p[1] == ':') out += '/';
-  if (p.rfind("//", 0) == 0) p.erase(0, 2);
-  for (std::size_t i = 0; i < p.size(); ++i) {
-    const auto c = static_cast<unsigned char>(p[i]);
-    const bool keep = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
-                      c == '.' || c == '_' || c == '~' || c == '/' || (c == ':' && i == 1);
-    if (keep) {
-      out += static_cast<char>(c);
-    } else {
-      out += '%';
-      out += kHex[c >> 4];
-      out += kHex[c & 15];
-    }
-  }
-  return out;
-}
-
 clip_range range_around(std::int64_t pts_ms, std::int64_t clip_ms, const fcpxml_options& o) {
   clip_range r;
   const std::int64_t at = std::max<std::int64_t>(0, pts_ms);

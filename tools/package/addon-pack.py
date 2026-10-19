@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Pack and sign an add-on (docs/design/18 "Add-ons: how Import is installed").
 
-    addon-pack.py pack [--addon import|places|sharepoint|ai|ai-audio|ai-docs|ai-faces|ai-cuda] --platform win-x64|macos \
+    addon-pack.py pack [--addon import|places|sharepoint|agent|ai|ai-audio|ai-docs|ai-faces|ai-cuda] --platform win-x64|macos \
         --src build/addons/<addon> --version 1.0.0 --key <ed25519-private-key-hex-file> --out dist/
     addon-pack.py ceiling dist/mediaviewer-addon-ai*-<platform>.json
     addon-pack.py stage-places --src build/addons/places [--downloads <cache> | --blob <places.mvgeo>]
@@ -147,6 +147,24 @@ ADDONS = {
                    "linked in on macOS, the app's own copies on Windows.\n"
                    "Files move only to a MediaViewer the person there accepted, over the local network\n"
                    "or Bluetooth. No account, no cloud, no internet relay.\n"),
+    },
+    # AI agents (docs/design/29, issue #485): `MediaViewer --mcp`, the MCP server an
+    # agent edits the Final Cut Pro timeline through, and the AI agents window. Code
+    # only, no chrome: the hosts render its window. Its description and contributions
+    # live in src/addons/agent/manifest.json, which the tests read too.
+    "agent": {
+        "name": "AI agents",
+        "host_api": {"min": 3, "max": 3},  # table v3: screens and slots
+        "manifest_json": "src/addons/agent/manifest.json",
+        "files": {
+            "win-x64": {"native": "mv_agent.dll", "chrome": "", "include": ["mv_agent.dll"]},
+            "macos": {"native": "libmv_agent.dylib", "chrome": "", "include": ["libmv_agent.dylib"]},
+        },
+        "licences": [],
+        "notice": ("AI agents add-on for MediaViewer. GPL-3.0-or-later.\n"
+                   "An MCP server over stdio: it opens no network connection. What an agent reads (paths,\n"
+                   "timecodes, transcript text of the dragged timeline and the given folders) goes to that\n"
+                   "agent's model, which may be in the cloud.\n"),
     },
     "ai": {
         "name": "AI",

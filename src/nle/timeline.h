@@ -185,6 +185,11 @@ class timeline {
   std::string wanted_project_;
 };
 
+// A file:// URL for a local path: '/' separators, a drive letter as
+// file:///C:/..., and every byte outside RFC 3986's unreserved set and '/'
+// percent-encoded. (Also declared by fcpxml.h, which writes search results.)
+[[nodiscard]] std::string file_url(std::string_view path_utf8);
+
 // A file:// URL's path ("file:///Users/a%20b/x.mov" -> "/Users/a b/x.mov",
 // "file:///C:/x" -> "C:/x", "file://server/share/x" -> "//server/share/x").
 // Empty when it is not a file URL.

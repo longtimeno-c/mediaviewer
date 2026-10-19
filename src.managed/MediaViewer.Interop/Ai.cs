@@ -362,6 +362,9 @@ public unsafe struct MvAiApi
 
     // #354, a folder's Documents choice. Appended: read only when StructSize covers it.
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, MvStatus> RootSetDocuments;
+
+    // #485, a file's transcript: the timeline agent's host serves it; this chrome never calls it.
+    public IntPtr TranscriptJson;
 }
 
 /// <summary>

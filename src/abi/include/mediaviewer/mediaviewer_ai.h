@@ -629,6 +629,17 @@ typedef struct mv_ai_api {
    * page pictures. Appended: read it only when
    * `struct_size` covers it and the pointer is non-NULL. [no-block] */
   mv_status(MV_CALL* root_set_documents)(void* ctx, uint64_t root_id, uint32_t docs);
+
+  /* ---- a file's transcript (#485, docs/design/29 "Transcript") --------------------- */
+  /* What the index heard in a clip or a sound, as Whisper's phrases:
+   * {"indexed":bool,"segments":[{"start_ms":N,"end_ms":N,"text":"..."}]} in
+   * time order, file time. "indexed" false: the file is not in the index, or
+   * its speech has not been transcribed (yet, or the speech piece is not
+   * installed); "segments" is then empty. Reads index.db only. Works through
+   * the reader door. Appended: read it only when `struct_size` covers it and
+   * the pointer is non-NULL. [worker-thread] */
+  mv_status(MV_CALL* transcript_json)(void* ctx, const char* path_utf8, char* out, uint32_t cap,
+                                      uint32_t* needed);
 } mv_ai_api;
 
 #ifdef __cplusplus

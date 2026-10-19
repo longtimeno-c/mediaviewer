@@ -382,6 +382,8 @@ class engine {
   // [worker-thread]
   static constexpr std::size_t kLocationBatch = 512;
   [[nodiscard]] expected each_location(const std::function<bool(const index_db::located&)>& visit);
+  // #485: mv.ai.1 transcript_json for one file (docs/design/29 "Transcript").
+  [[nodiscard]] std::string transcript_json(const std::string& path);
 
   // ---- sharing an index (docs/design/17 "Sharing an index") ---------------------------
   // An export / import runs on the control thread, one at a time (status::busy

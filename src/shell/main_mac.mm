@@ -61,6 +61,7 @@
 #include "io/file_port.h"
 #include "io/in_flight.h"
 #include "io/verified_copy.h"
+#include "shell/mcp_host.h"
 #include "shell/addons_mac.h"
 #include "shell/fcp_mac.h"
 #include "shell/filmstrip_hint.h"
@@ -12158,6 +12159,11 @@ void usage() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // docs/design/29: an MCP client started this executable as its server. Before
+  // anything of the viewer: no window, no crash reporter, no add-on host lock.
+  if (argc >= 2 && std::strcmp(argv[1], "--mcp") == 0) {
+    return mv::shell::run_mcp(std::vector<std::string>(argv + 1, argv + argc));
+  }
 #if defined(MV_WITH_SEARCH_AGENT)
   // docs/design/23: launchd runs this executable as Final Cut Pro's search agent
   // (Contents/Library/LaunchAgents). Before anything of the viewer: no window,

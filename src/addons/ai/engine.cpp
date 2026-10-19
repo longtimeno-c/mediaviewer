@@ -1611,6 +1611,31 @@ expected engine::each_location(const std::function<bool(const index_db::located&
   }
 }
 
+// #485: a file's transcript, as the timeline agent reads it. Only index.db.
+std::string engine::transcript_json(const std::string& path) {
+  std::string spec;
+  {
+    std::lock_guard lock(models_m_);
+    spec = speech_.spec_key;
+  }
+  if (spec.empty()) spec = reader_speech_spec_;
+  std::vector<speech_in> rows;
+  bool done = false;
+  if (db_ && !spec.empty()) {
+    if (auto a = db_->asset_by_path(path)) {
+      if (!db_->speech_of(a->id, spec, rows, done)) rows.clear();
+    }
+  }
+  json::writer w;
+  w.begin_object().key("indexed").boolean(done || !rows.empty()).key("segments").begin_array();
+  for (const speech_in& r : rows) {
+    w.begin_object().key("start_ms").integer(r.start_ms).key("end_ms").integer(r.end_ms).key("text").string(r.text)
+        .end_object();
+  }
+  w.end_array().end_object();
+  return w.take();
+}
+
 // The settle at the end of a re-run. Every face is this model's now, the
 // people are the user's (carried box by box); a full refinement with no
 // focus judges every unpinned face: it may leave a person the new vectors
