@@ -158,6 +158,9 @@ class channel {
   // two ends of this session hold, for "Remember this device".
   [[nodiscard]] const std::optional<std::array<std::uint8_t, 32>>& peer_key() const noexcept { return peer_key_; }
   [[nodiscard]] std::array<std::uint8_t, 32> pairing_secret() const;
+  // #497: the six digits the sender shows and the receiver types to remember
+  // it (remember_check in wire.h). Protocol 2.
+  [[nodiscard]] std::string remember_check() const;
   // Protocol 2: a secret of this session (fixed for its life), apart from
   // pairing_secret(), for meeting on the DHT when both sides lose the local
   // link (dht_handover, #472, which mixes in rejoins() for each drop).

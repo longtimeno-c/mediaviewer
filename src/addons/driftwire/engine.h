@@ -141,6 +141,12 @@ struct view {
   // A protocol 2 transfer just went through: "Remember <peer>" shows under
   // its result, with whether it is remembered.
   bool remember_offer = false;
+  // #497: after a nearby transfer the sender proved the receiver (the code)
+  // but not the other way round. The sender's window shows remember_check;
+  // the receiver remembers only once its person types it.
+  std::string remember_check;          // the sender's: the digits to show
+  bool remember_needs_check = false;   // the receiver's: typing them comes first
+  std::string remember_check_note;     // the receiver's: a wrong entry
   bool remembered = false;
   std::string remember_peer;
   bool out_known = false;  // the send is to a remembered device (reaching: waiting for it)
@@ -385,7 +391,11 @@ class engine {
   void set_own(const std::string& fingerprint, bool on);
   void save_known();
   // A transfer ended well over protocol 2: what Remember would keep.
-  void offer_remember(const channel& ch, const std::string& name);
+  // `sending`: this side typed the code (it proved the peer); the receiver of
+  // a nearby transfer must type the sender's check first (#497).
+  void offer_remember(const channel& ch, const std::string& name, bool sending);
+  // #497: one nearby link that ended with no offer.
+  void note_unconfirmed();
   // #472 PR 3: the DHT client's options (the routers, or the tests' nodes;
   // the table kept beside the prefs).
   [[nodiscard]] dht::client::options dht_options() const;
@@ -499,6 +509,13 @@ class engine {
   // on the control thread; a receive in flight keeps its own reference).
   std::shared_ptr<internet_receiver> internet_;  // under m_
   std::string code_entry_;                       // under m_: what the "send to a code" field holds
+  // #497: nearby links that ended with no offer (a handshake dropped after
+  // this side answered, or a code shown that nobody followed), the last
+  // minute's; a run of them stops new nearby links for a while. Under m_.
+  std::vector<std::chrono::steady_clock::time_point> unconfirmed_;
+  std::string remember_expected_;  // under m_: the sender's check, digits only (#497)
+  int remember_tries_left_ = 0;    // under m_
+  std::chrono::steady_clock::time_point refuse_nearby_until_{};
   std::atomic<bool> cancel_{false};
   std::atomic<bool> stopping_{false};
 
