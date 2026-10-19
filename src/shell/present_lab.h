@@ -390,6 +390,10 @@ class present_lab {
   double item_start_seconds_ = -1.0;
   double first_pixel_seconds_ = -1.0;
   double full_seconds_ = -1.0;
+  // Issue #486: the boot timeline's first_pixel / full_resolution are marked
+  // on the present that shows them, not when the texture lands.
+  bool boot_pixel_due_ = false;
+  bool boot_full_due_ = false;
   double tiles_complete_seconds_ = -1.0;
   double scripted_pan_start_ = -1.0;
   // The last different still that was on screen, for hold `\` (docs/design/16). Kept

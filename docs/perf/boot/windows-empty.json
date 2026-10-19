@@ -1,0 +1,510 @@
+﻿{
+    "open":  "",
+    "runs":  10,
+    "builds":  [
+                   {
+                       "exe":  "C:\\mvbn\\i486base\\bin\\mediaviewer_lab.exe",
+                       "median_ms":  {
+                                         "host_entry":  {
+                                                            "median":  23,
+                                                            "min":  22.2,
+                                                            "max":  23.7
+                                                        },
+                                         "crash_armed":  {
+                                                             "median":  27.7,
+                                                             "min":  26.8,
+                                                             "max":  28.6
+                                                         },
+                                         "settings_loaded":  {
+                                                                 "median":  28.7,
+                                                                 "min":  27.9,
+                                                                 "max":  29.6
+                                                             },
+                                         "session_created":  {
+                                                                 "median":  29.1,
+                                                                 "min":  28.3,
+                                                                 "max":  30
+                                                             },
+                                         "window_created":  {
+                                                                "median":  31.5,
+                                                                "min":  30.6,
+                                                                "max":  33.3
+                                                            },
+                                         "render_started":  {
+                                                                "median":  234.6,
+                                                                "min":  230.8,
+                                                                "max":  264.1
+                                                            },
+                                         "window_shown":  {
+                                                              "median":  246.9,
+                                                              "min":  240.9,
+                                                              "max":  278.6
+                                                          },
+                                         "chrome_runtime":  {
+                                                                "median":  263.4,
+                                                                "min":  257.5,
+                                                                "max":  295.1
+                                                            },
+                                         "chrome_loaded":  {
+                                                               "median":  342.3,
+                                                               "min":  337.5,
+                                                               "max":  374.8
+                                                           },
+                                         "chrome_bar":  {
+                                                            "median":  595.6,
+                                                            "min":  585,
+                                                            "max":  619.8
+                                                        },
+                                         "chrome_islands":  {
+                                                                "median":  658.2,
+                                                                "min":  648.3,
+                                                                "max":  685.4
+                                                            },
+                                         "interactive":  {
+                                                             "median":  662.6,
+                                                             "min":  652.8,
+                                                             "max":  689.9
+                                                         },
+                                         "first_frame":  {
+                                                             "median":  243.2,
+                                                             "min":  238.2,
+                                                             "max":  271.2
+                                                         },
+                                         "first_pixel":  {
+                                                             "median":  -1,
+                                                             "min":  -1,
+                                                             "max":  -1
+                                                         },
+                                         "full_resolution":  {
+                                                                 "median":  -1,
+                                                                 "min":  -1,
+                                                                 "max":  -1
+                                                             }
+                                     },
+                       "runs":  [
+                                    {
+                                        "host_entry":  23.351,
+                                        "crash_armed":  27.921,
+                                        "settings_loaded":  28.972,
+                                        "session_created":  29.359,
+                                        "window_created":  31.685,
+                                        "render_started":  233.367,
+                                        "window_shown":  247.544,
+                                        "chrome_runtime":  263.685,
+                                        "chrome_loaded":  342.905,
+                                        "chrome_bar":  591.685,
+                                        "chrome_islands":  654.278,
+                                        "interactive":  658.984,
+                                        "first_frame":  244.585,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  22.797,
+                                        "crash_armed":  27.588,
+                                        "settings_loaded":  28.537,
+                                        "session_created":  28.881,
+                                        "window_created":  31.219,
+                                        "render_started":  264.087,
+                                        "window_shown":  278.554,
+                                        "chrome_runtime":  295.051,
+                                        "chrome_loaded":  374.807,
+                                        "chrome_bar":  619.790,
+                                        "chrome_islands":  685.409,
+                                        "interactive":  689.933,
+                                        "first_frame":  271.228,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  23.014,
+                                        "crash_armed":  27.738,
+                                        "settings_loaded":  28.744,
+                                        "session_created":  29.088,
+                                        "window_created":  31.411,
+                                        "render_started":  232.238,
+                                        "window_shown":  242.531,
+                                        "chrome_runtime":  259.873,
+                                        "chrome_loaded":  339.339,
+                                        "chrome_bar":  589.978,
+                                        "chrome_islands":  652.484,
+                                        "interactive":  656.825,
+                                        "first_frame":  239.252,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  23.312,
+                                        "crash_armed":  28.045,
+                                        "settings_loaded":  29.093,
+                                        "session_created":  29.468,
+                                        "window_created":  31.936,
+                                        "render_started":  230.766,
+                                        "window_shown":  246.176,
+                                        "chrome_runtime":  263.112,
+                                        "chrome_loaded":  341.940,
+                                        "chrome_bar":  585.004,
+                                        "chrome_islands":  648.311,
+                                        "interactive":  652.847,
+                                        "first_frame":  238.185,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  23.731,
+                                        "crash_armed":  28.595,
+                                        "settings_loaded":  29.610,
+                                        "session_created":  29.975,
+                                        "window_created":  33.335,
+                                        "render_started":  237.509,
+                                        "window_shown":  247.603,
+                                        "chrome_runtime":  263.930,
+                                        "chrome_loaded":  342.612,
+                                        "chrome_bar":  595.551,
+                                        "chrome_islands":  657.524,
+                                        "interactive":  661.910,
+                                        "first_frame":  244.760,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  23.074,
+                                        "crash_armed":  27.954,
+                                        "settings_loaded":  29.012,
+                                        "session_created":  29.573,
+                                        "window_created":  32.178,
+                                        "render_started":  252.465,
+                                        "window_shown":  264.017,
+                                        "chrome_runtime":  281.192,
+                                        "chrome_loaded":  361.416,
+                                        "chrome_bar":  615.294,
+                                        "chrome_islands":  678.581,
+                                        "interactive":  683.677,
+                                        "first_frame":  259.787,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  23.073,
+                                        "crash_armed":  27.704,
+                                        "settings_loaded":  28.723,
+                                        "session_created":  29.068,
+                                        "window_created":  31.881,
+                                        "render_started":  234.677,
+                                        "window_shown":  241.123,
+                                        "chrome_runtime":  258.230,
+                                        "chrome_loaded":  338.585,
+                                        "chrome_bar":  599.465,
+                                        "chrome_islands":  660.414,
+                                        "interactive":  665.506,
+                                        "first_frame":  241.884,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  22.748,
+                                        "crash_armed":  27.401,
+                                        "settings_loaded":  28.394,
+                                        "session_created":  28.760,
+                                        "window_created":  31.207,
+                                        "render_started":  234.477,
+                                        "window_shown":  240.923,
+                                        "chrome_runtime":  257.512,
+                                        "chrome_loaded":  337.546,
+                                        "chrome_bar":  615.709,
+                                        "chrome_islands":  681.343,
+                                        "interactive":  686.400,
+                                        "first_frame":  240.848,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  22.227,
+                                        "crash_armed":  26.847,
+                                        "settings_loaded":  27.910,
+                                        "session_created":  28.269,
+                                        "window_created":  30.571,
+                                        "render_started":  238.915,
+                                        "window_shown":  251.910,
+                                        "chrome_runtime":  269.301,
+                                        "chrome_loaded":  349.719,
+                                        "chrome_bar":  595.571,
+                                        "chrome_islands":  658.813,
+                                        "interactive":  663.308,
+                                        "first_frame":  254.006,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  22.794,
+                                        "crash_armed":  27.430,
+                                        "settings_loaded":  28.378,
+                                        "session_created":  28.788,
+                                        "window_created":  31.346,
+                                        "render_started":  232.594,
+                                        "window_shown":  246.284,
+                                        "chrome_runtime":  262.760,
+                                        "chrome_loaded":  341.998,
+                                        "chrome_bar":  589.902,
+                                        "chrome_islands":  652.144,
+                                        "interactive":  656.526,
+                                        "first_frame":  238.979,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    }
+                                ]
+                   },
+                   {
+                       "exe":  "C:\\mvbn\\i486\\bin\\mediaviewer_lab.exe",
+                       "median_ms":  {
+                                         "host_entry":  {
+                                                            "median":  23,
+                                                            "min":  21.7,
+                                                            "max":  23.6
+                                                        },
+                                         "crash_armed":  {
+                                                             "median":  27.7,
+                                                             "min":  26.4,
+                                                             "max":  28.2
+                                                         },
+                                         "settings_loaded":  {
+                                                                 "median":  28.9,
+                                                                 "min":  27.5,
+                                                                 "max":  29.3
+                                                             },
+                                         "session_created":  {
+                                                                 "median":  29.4,
+                                                                 "min":  27.9,
+                                                                 "max":  29.8
+                                                             },
+                                         "window_created":  {
+                                                                "median":  32.1,
+                                                                "min":  30.5,
+                                                                "max":  32.6
+                                                            },
+                                         "render_started":  {
+                                                                "median":  235.8,
+                                                                "min":  231,
+                                                                "max":  247.6
+                                                            },
+                                         "window_shown":  {
+                                                              "median":  250,
+                                                              "min":  237.9,
+                                                              "max":  259.5
+                                                          },
+                                         "chrome_runtime":  {
+                                                                "median":  45.6,
+                                                                "min":  43.7,
+                                                                "max":  49.6
+                                                            },
+                                         "chrome_loaded":  {
+                                                               "median":  127,
+                                                               "min":  125.5,
+                                                               "max":  133.7
+                                                           },
+                                         "chrome_bar":  {
+                                                            "median":  501.4,
+                                                            "min":  489.8,
+                                                            "max":  537.8
+                                                        },
+                                         "chrome_islands":  {
+                                                                "median":  564.1,
+                                                                "min":  554.3,
+                                                                "max":  603.8
+                                                            },
+                                         "interactive":  {
+                                                             "median":  568.7,
+                                                             "min":  558.7,
+                                                             "max":  608.5
+                                                         },
+                                         "first_frame":  {
+                                                             "median":  243.7,
+                                                             "min":  238.1,
+                                                             "max":  256.2
+                                                         },
+                                         "first_pixel":  {
+                                                             "median":  -1,
+                                                             "min":  -1,
+                                                             "max":  -1
+                                                         },
+                                         "full_resolution":  {
+                                                                 "median":  -1,
+                                                                 "min":  -1,
+                                                                 "max":  -1
+                                                             }
+                                     },
+                       "runs":  [
+                                    {
+                                        "host_entry":  21.724,
+                                        "crash_armed":  26.367,
+                                        "settings_loaded":  27.461,
+                                        "session_created":  27.943,
+                                        "window_created":  30.482,
+                                        "render_started":  230.957,
+                                        "window_shown":  240.456,
+                                        "chrome_runtime":  43.667,
+                                        "chrome_loaded":  125.938,
+                                        "chrome_bar":  489.850,
+                                        "chrome_islands":  554.300,
+                                        "interactive":  558.737,
+                                        "first_frame":  238.087,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  22.946,
+                                        "crash_armed":  27.608,
+                                        "settings_loaded":  28.974,
+                                        "session_created":  29.334,
+                                        "window_created":  31.733,
+                                        "render_started":  237.037,
+                                        "window_shown":  251.541,
+                                        "chrome_runtime":  45.168,
+                                        "chrome_loaded":  125.757,
+                                        "chrome_bar":  503.524,
+                                        "chrome_islands":  566.166,
+                                        "interactive":  570.973,
+                                        "first_frame":  245.390,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  22.894,
+                                        "crash_armed":  27.465,
+                                        "settings_loaded":  28.498,
+                                        "session_created":  28.904,
+                                        "window_created":  31.389,
+                                        "render_started":  237.733,
+                                        "window_shown":  249.113,
+                                        "chrome_runtime":  45.193,
+                                        "chrome_loaded":  126.851,
+                                        "chrome_bar":  501.907,
+                                        "chrome_islands":  568.983,
+                                        "interactive":  573.812,
+                                        "first_frame":  245.405,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  23.196,
+                                        "crash_armed":  28.094,
+                                        "settings_loaded":  29.124,
+                                        "session_created":  29.590,
+                                        "window_created":  32.123,
+                                        "render_started":  247.562,
+                                        "window_shown":  259.499,
+                                        "chrome_runtime":  49.614,
+                                        "chrome_loaded":  133.665,
+                                        "chrome_bar":  517.994,
+                                        "chrome_islands":  588.813,
+                                        "interactive":  593.498,
+                                        "first_frame":  256.179,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  22.309,
+                                        "crash_armed":  27.034,
+                                        "settings_loaded":  28.442,
+                                        "session_created":  28.873,
+                                        "window_created":  32.087,
+                                        "render_started":  240.558,
+                                        "window_shown":  251.918,
+                                        "chrome_runtime":  46.411,
+                                        "chrome_loaded":  131.423,
+                                        "chrome_bar":  537.757,
+                                        "chrome_islands":  603.798,
+                                        "interactive":  608.521,
+                                        "first_frame":  248.456,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  23.114,
+                                        "crash_armed":  27.702,
+                                        "settings_loaded":  29.193,
+                                        "session_created":  29.823,
+                                        "window_created":  32.550,
+                                        "render_started":  235.320,
+                                        "window_shown":  250.191,
+                                        "chrome_runtime":  45.472,
+                                        "chrome_loaded":  127.143,
+                                        "chrome_bar":  503.530,
+                                        "chrome_islands":  566.144,
+                                        "interactive":  570.600,
+                                        "first_frame":  241.969,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  22.300,
+                                        "crash_armed":  26.963,
+                                        "settings_loaded":  28.393,
+                                        "session_created":  28.819,
+                                        "window_created":  31.221,
+                                        "render_started":  231.497,
+                                        "window_shown":  237.932,
+                                        "chrome_runtime":  43.819,
+                                        "chrome_loaded":  127.128,
+                                        "chrome_bar":  496.891,
+                                        "chrome_islands":  558.888,
+                                        "interactive":  563.402,
+                                        "first_frame":  238.593,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  23.628,
+                                        "crash_armed":  28.190,
+                                        "settings_loaded":  29.294,
+                                        "session_created":  29.758,
+                                        "window_created":  32.145,
+                                        "render_started":  234.478,
+                                        "window_shown":  249.788,
+                                        "chrome_runtime":  46.494,
+                                        "chrome_loaded":  128.770,
+                                        "chrome_bar":  498.012,
+                                        "chrome_islands":  562.064,
+                                        "interactive":  566.671,
+                                        "first_frame":  241.676,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  23.009,
+                                        "crash_armed":  27.782,
+                                        "settings_loaded":  28.924,
+                                        "session_created":  29.424,
+                                        "window_created":  32.304,
+                                        "render_started":  234.595,
+                                        "window_shown":  247.472,
+                                        "chrome_runtime":  45.729,
+                                        "chrome_loaded":  126.878,
+                                        "chrome_bar":  496.012,
+                                        "chrome_islands":  559.259,
+                                        "interactive":  563.855,
+                                        "first_frame":  241.069,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    },
+                                    {
+                                        "host_entry":  23.093,
+                                        "crash_armed":  27.788,
+                                        "settings_loaded":  28.931,
+                                        "session_created":  29.511,
+                                        "window_created":  32.120,
+                                        "render_started":  236.194,
+                                        "window_shown":  251.427,
+                                        "chrome_runtime":  45.866,
+                                        "chrome_loaded":  125.478,
+                                        "chrome_bar":  500.945,
+                                        "chrome_islands":  561.942,
+                                        "interactive":  566.850,
+                                        "first_frame":  245.772,
+                                        "first_pixel":  -1.000,
+                                        "full_resolution":  -1.000
+                                    }
+                                ]
+                   }
+               ]
+}

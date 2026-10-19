@@ -26,6 +26,8 @@
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -47,6 +49,7 @@
 
 #include "addon/slots.h"
 #include "canvas/document_scroll.h"
+#include "core/boot_timeline.h"
 #include "core/job_system.h"
 #include "core/json.h"
 #include "core/trace.h"
@@ -197,6 +200,14 @@ bool g_start_compare = false;
 // item appears, once an add-on keeps the process (docs/design/28 "In the background").
 bool g_start_background = false;
 NSPoint g_new_window_from = NSZeroPoint;
+// Issue #486: `--boot-report <path>` writes the boot timeline (core/boot_timeline.h)
+// as JSON once the launch is ready, then quits: a measuring run, repeated by
+// tools/perf/boot.sh. Like the Windows switch it leaves the recent folders alone;
+// like the other measuring runs it shows the window without taking the keyboard.
+std::string g_boot_report;
+// A launch with a file is ready at its full-resolution present; one that never
+// gets there (a document, a clip, an unreadable file) reports after this.
+constexpr double kBootReportGiveUpMs = 15000.0;
 
 // Add-ons -- the AI pack and its indexer, Import's volume watch, Final Cut
 // search -- run in one window's process only, the first to take this lock: two
@@ -2610,6 +2621,9 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::int64_t _shownMoment;
   NSTimer* _browseTimer;
   NSTimer* _pageSoakTimer;  // --page-soak (issue #429)
+  // Issue #486: polls for "ready" until the boot timeline is logged / reported.
+  NSTimer* _bootTimer;
+  BOOL _bootWithPath;
   // Bumped whenever _items is replaced; Swift's name/thumbnail caches key off
   // it (mv_chrome_listing_generation).
   std::uint64_t _listingGeneration;
@@ -2925,6 +2939,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   _siblingIndex = -1;
   (void)notification;
   [self loadSettings];
+  mv::boot::mark(mv::boot::stage::settings_loaded);
   // Milestone G: an installed Import add-on is verified and loaded off the
   // main thread; with none installed this only watches for the card hint.
   MvLabApp* __weak weakApp = self;
@@ -2956,6 +2971,7 @@ static void MvAdoptNewDefaultViewerTypes() {
                           NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
                   backing:NSBackingStoreBuffered
                     defer:NO];
+  mv::boot::mark(mv::boot::stage::window_created);
   self.window.title = @"MediaViewer";
   // self.window holds it: AppKit's release on close would over-release it under ARC.
   self.window.releasedWhenClosed = NO;
@@ -3068,6 +3084,7 @@ static void MvAdoptNewDefaultViewerTypes() {
     [self.commandBar.topAnchor constraintEqualToAnchor:container.topAnchor],
     self.commandBarHeight,
   ]];
+  mv::boot::mark(mv::boot::stage::chrome_bar);
 
   // Filmstrip: a bottom strip, the same "sibling drawn over the canvas's own
   // pixels" shape as the command bar above, not a resize of MvMetalView.
@@ -3327,6 +3344,7 @@ static void MvAdoptNewDefaultViewerTypes() {
     [self.hintHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-8.0],
     self.hintBottom,
   ]];
+  mv::boot::mark(mv::boot::stage::chrome_islands);
 
   [self installMainMenu];
   [self installTextEditKeys];
@@ -3349,6 +3367,8 @@ static void MvAdoptNewDefaultViewerTypes() {
     [NSApp terminate:nil];
     return;
   }
+  // The Mac host has no mv_session: its job workers are the session's twin.
+  mv::boot::mark(mv::boot::stage::session_created);
   _options.jobs = &_jobs;
   _tags = std::make_unique<mv::meta::tag_index>(
       mv::meta::tag_index::cache_fn([] { return &mv::meta::default_meta_cache(); }),
@@ -3393,6 +3413,7 @@ static void MvAdoptNewDefaultViewerTypes() {
     [NSApp terminate:nil];
     return;
   }
+  mv::boot::mark(mv::boot::stage::render_started);
 
   // docs/design/16 "Opening (argv, drop, PR 6)": --open (or a bare positional path,
   // parsed into the same options_.open_path below) resolves through the same
@@ -3490,6 +3511,65 @@ static void MvAdoptNewDefaultViewerTypes() {
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
   }
+  if (!g_start_background) {
+    mv::boot::mark(mv::boot::stage::window_shown);
+    [self markInteractiveWhenIdle];
+  }
+  _bootWithPath = !_options.open_path.empty();
+  _bootTimer = [NSTimer scheduledTimerWithTimeInterval:0.05
+                                                target:self
+                                              selector:@selector(bootReportTick)
+                                              userInfo:nil
+                                               repeats:YES];
+  _bootTimer.tolerance = 0.02;
+}
+
+// Issue #486: interactive is the first time the main thread goes idle waiting
+// for input after launch: the run loop's BeforeWaiting, ordered after Core
+// Animation's commit, so the SwiftUI chrome has been laid out and drawn.
+- (void)markInteractiveWhenIdle {
+  CFRunLoopObserverRef observer = CFRunLoopObserverCreateWithHandler(
+      kCFAllocatorDefault, kCFRunLoopBeforeWaiting, false, INT_MAX, ^(CFRunLoopObserverRef, CFRunLoopActivity) {
+        mv::boot::mark(mv::boot::stage::interactive);
+      });
+  if (observer) {
+    CFRunLoopAddObserver(CFRunLoopGetMain(), observer, kCFRunLoopCommonModes);
+    CFRelease(observer);
+  }
+}
+
+// Issue #486: once the launch is ready, logs the boot timeline and, for
+// --boot-report, writes it on a worker (rule 1) and quits. Ready: the UI is
+// interactive, a frame is on screen and, with a path, its full resolution was
+// presented (or kBootReportGiveUpMs passed). The timer stops once it has run.
+- (void)bootReportTick {
+  const mv::boot::snapshot s = mv::boot::read();
+  const auto at = [&](mv::boot::stage st) { return s.ms[static_cast<std::size_t>(st)]; };
+  if (!g_start_background &&
+      (at(mv::boot::stage::interactive) < 0.0 || at(mv::boot::stage::first_frame) < 0.0)) {
+    return;
+  }
+  if (_bootWithPath && at(mv::boot::stage::full_resolution) < 0.0 && mv::boot::now_ms() < kBootReportGiveUpMs) {
+    return;
+  }
+  [_bootTimer invalidate];
+  _bootTimer = nil;
+  char line[1024];
+  // stderr, not MV_LOG_INFO: the POSIX log keeps only warnings and errors.
+  if (mv::boot::write_line(s, line, sizeof line)) std::fprintf(stderr, "%s\n", line);
+  if (g_boot_report.empty()) return;
+  _jobs.submit_at(mv::background_generation, [s](const mv::job_context&) -> mv::status {
+    char json[4096];
+    const std::size_t n = mv::boot::write_json(s, json, sizeof json);
+    if (FILE* f = n ? std::fopen(g_boot_report.c_str(), "wb") : nullptr) {
+      (void)std::fwrite(json, 1, n, f);
+      (void)std::fclose(f);
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [NSApp terminate:nil];
+    });
+    return mv::status::ok;
+  });
 }
 
 // --- --page-soak (see mac_page_run) --------------------------------------------
@@ -10885,6 +10965,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 - (void)noteRecentFolder:(const std::string&)dir {
   [self refreshWelcomeRecents];  // something is opening: the card's rows go
   if (_options.soak_seconds > 0.0) return;  // a soak's fixture is not a folder the user opened
+  if (!g_boot_report.empty()) return;        // nor a --boot-report's (issue #486)
   std::vector<std::string> next = mv::shell::push_recent_folder(_recentFolders, dir);
   if (next == _recentFolders) return;
   _recentFolders = std::move(next);
@@ -12148,6 +12229,7 @@ void usage() {
                "  --browse-soak --json PATH FOLDER   time arrows and jumps (tools/perf)\n"
                "  --page-soak PATH DOCUMENT          fling the page sidebar, time page jumps\n"
                "  --compare     start with the two-up compare on (`|`)\n"
+               "  --boot-report PATH   write the launch's boot timeline as JSON once ready, then quit\n"
                "  --open PATH   or a bare PATH: a folder opens that folder; a file opens its\n"
                "                folder with that file selected (docs/design/16-commands.md). Wheel to\n"
                "                zoom toward the cursor, drag to pan, 0 fit, 1 one-to-one.\n"
@@ -12158,6 +12240,23 @@ void usage() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // Issue #486: the boot timeline counts from process creation, so dyld, the
+  // static initialisers and the frameworks' load before this line are in it too.
+  {
+    kinfo_proc info{};
+    std::size_t size = sizeof info;
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
+    timespec now{};
+    if (::sysctl(mib, 4, &info, &size, nullptr, 0) == 0 && size == sizeof info &&
+        ::clock_gettime(CLOCK_REALTIME, &now) == 0) {
+      const timeval started = info.kp_proc.p_starttime;
+      const std::int64_t age_ns =
+          (static_cast<std::int64_t>(now.tv_sec) - started.tv_sec) * 1'000'000'000LL +
+          static_cast<std::int64_t>(now.tv_nsec) - static_cast<std::int64_t>(started.tv_usec) * 1000LL;
+      if (age_ns > 0) mv::boot::set_process_age(static_cast<std::uint64_t>(age_ns));
+    }
+    mv::boot::mark(mv::boot::stage::host_entry);
+  }
 #if defined(MV_WITH_SEARCH_AGENT)
   // docs/design/23: launchd runs this executable as Final Cut Pro's search agent
   // (Contents/Library/LaunchAgents). Before anything of the viewer: no window,
@@ -12196,6 +12295,8 @@ int main(int argc, char** argv) {
       g_start_compare = true;
     } else if (std::strcmp(arg, "--background") == 0) {
       g_start_background = true;  // #452: as a login item starts it
+    } else if (std::strcmp(arg, "--boot-report") == 0) {
+      g_boot_report = next();
     } else if (std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0) {
       usage();
       return 0;
@@ -12223,6 +12324,7 @@ int main(int argc, char** argv) {
     }
     options.harness = true;
   }
+  if (!g_boot_report.empty()) options.harness = true;
   if (g_mac_browse.enabled) {
     if (options.soak_seconds > 0.0 || options.json_report_path.empty() || options.open_path.empty()) {
       std::fprintf(stderr, "mediaviewer_lab: --browse-soak needs --json PATH and a folder, not --soak\n");
@@ -12247,6 +12349,7 @@ int main(int argc, char** argv) {
   // PR 11 (docs/design/13): Crashpad out of process, and the NSException capture,
   // before anything else can crash. Never waits on the handler's report scan.
   (void)mv::shell::crash::start();
+  mv::boot::mark(mv::boot::stage::crash_armed);
 
   @autoreleasepool {
     [NSApplication sharedApplication];

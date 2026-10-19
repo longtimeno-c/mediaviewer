@@ -14,6 +14,7 @@
 #include <iterator>
 #include <algorithm>
 #include <string>
+#include <thread>
 
 #include "core/result.h"
 #include "meta/meta.h"
@@ -830,6 +831,13 @@ class chrome_host {
   // an error and leaves the host idle.
   [[nodiscard]] expected load() noexcept;
 
+  // Issue #486: starts load() on its own thread, so the .NET runtime and the
+  // entry points come up while the UI thread makes the session, the window and
+  // waits for the render thread's device. load() (and every call below that
+  // can run before it) joins it and returns its result. Call at most once,
+  // before anything else on this object.
+  void preload() noexcept;
+
   [[nodiscard]] bool loaded() const noexcept { return probe_ != nullptr; }
   [[nodiscard]] bool attached() const noexcept { return attached_; }
 
@@ -1126,6 +1134,11 @@ class chrome_host {
   [[nodiscard]] bool load_hostfxr() noexcept;
   [[nodiscard]] bool load_runtime() noexcept;
   [[nodiscard]] chrome_entry_fn get_entry(const wchar_t* method) noexcept;
+  [[nodiscard]] expected load_now() noexcept;
+  void join_preload() noexcept;
+
+  std::thread preload_thread_;
+  status preload_error_ = status::ok;
 
   HMODULE hostfxr_ = nullptr;
   void* context_ = nullptr;  // hostfxr_handle

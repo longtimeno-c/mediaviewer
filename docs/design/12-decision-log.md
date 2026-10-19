@@ -2118,6 +2118,35 @@ new presents 540 with 1 dropped and 545 decoded on `d3d11va`, and the worst poll
 ~32.7 ms to ~18.6 ms (A/V error p99 ~16–26 ms → ~2 ms on two of three runs). The ~24 fps of the
 screen comparison did not reproduce on this machine; the PR 1 gate and idle are unchanged.
 
+## Launch
+
+**The chrome's .NET runtime loads on its own thread, below normal priority (issue #486,
+2026-10-18).** The boot timeline (`core/boot_timeline.h`, `--boot-report`) showed a warm Windows
+launch spending ~205 ms of its ~665 ms to interactive with the UI thread parked on the render
+thread's device, and the chrome's hostfxr, runtime and ~50 entry points (~100 ms warm, ~260 ms on a
+cold first launch) loading only after that, on the same thread. `chrome_host::preload()` now starts
+that load right after the crash reporter, and `attach_chrome` joins it. At normal priority the
+loader thread delayed the device by a steady 3–5 ms (render start / first frame in every set);
+below normal it does not measurably (first frame 252 vs 252 ms, first pixel of a CR3 295 vs 292 ms,
+12 alternated runs). Interactive: 663 → 569 ms with no file, 735 → 622 ms with a 42 MP ARW,
+763 → 663 ms with a CR3 (RTX 4070 / 5700X3D, warm, `docs/perf/boot/`). Not done, and why: the
+command bar's XAML island (~255 ms warm, the largest stage) still attaches after the device,
+because overlapping it would put XAML start-up beside device creation and in front of the
+`open_paths_early` decode on the one UI thread.
+
+**Mac chrome panes made hidden at launch build their SwiftUI content on first show (issue #486,
+2026-10-19).** The Mac boot timeline showed the window's first order-front taking ~184 ms of a
+~365 ms launch to interactive (no file, M5 MacBook, warm): AppKit lays the window out before it
+shows, and SwiftUI builds and lays out the graph of every `NSHostingView` in it, hidden or not.
+Twelve of the thirteen launch-time views start hidden. `LazyHostingView` (`ChromeHost.swift`)
+hosts an empty root until it is first shown (or laid out while not hidden), then builds its
+content once. Interactive: 365 → 185 ms with no file, 377 → 169 ms with a 42 MP ARW, 372 → 170 ms
+with a CR3; first frame and full resolution unchanged; first pixel's slow mode (waiting for the
+show) moves from ~400 to ~195 ms (`docs/perf/boot/mac-*.json`). The cost moves to the first show
+of each pane, once per launch. The Windows fix does not carry over (no .NET on the Mac), and this
+one does not carry back: the Windows islands are attached, not merely hidden, so not attaching the
+four launch-time islands there is a separate change.
+
 ## Not built
 
 - Voice query add-on (PRs 27–28): no voice add-on or `search_query` host entry exists.

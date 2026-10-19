@@ -27,6 +27,17 @@ public final class MVChromeHost: NSObject {
     return hosting
   }
 
+  // Issue #486: a pane main_mac.mm creates hidden at launch. SwiftUI lays out a
+  // hidden hosting view's graph all the same, and the dozen launch-time panes
+  // cost ~200 ms of the window's first order-front on the main thread. This one
+  // hosts nothing until it is first shown, then builds its content once.
+  static func lazyHost<V: View>(_ make: @escaping () -> V) -> NSView {
+    let hosting = LazyHostingView { AnyView(ThemedRoot(content: make())) }
+    hosting.sizingOptions = []
+    hosting.translatesAutoresizingMaskIntoConstraints = false
+    return hosting
+  }
+
   @objc public static func makeCommandBarView() -> NSView {
     host(CommandBarView())
   }
@@ -36,21 +47,21 @@ public final class MVChromeHost: NSObject {
   // NSView*, never SwiftUI/NSHostingView types (docs/design/14-abi.md's boundary,
   // scoped to this lab).
   @objc public static func makeFilmstripView() -> NSView {
-    host(FilmstripView())
+    lazyHost { FilmstripView() }
   }
 
   @objc public static func makeGalleryView() -> NSView {
-    host(GalleryView())
+    lazyHost { GalleryView() }
   }
 
   @objc public static func makeTransportView() -> NSView {
-    host(TransportView())
+    lazyHost { TransportView() }
   }
 
   /// #345: the AI-generated badge, bottom-right of the canvas. main_mac.mm shows,
   /// hides and places it; `setAIBadge` gives it its text.
   @objc public static func makeAIBadgeView() -> NSView {
-    host(AIBadgeView())
+    lazyHost { AIBadgeView() }
   }
 
   @objc public static var aiBadgeWidth: CGFloat { AIBadgeView.width }
@@ -61,7 +72,7 @@ public final class MVChromeHost: NSObject {
   }
 
   @objc public static func makeHelpView() -> NSView {
-    host(HelpView())
+    lazyHost { HelpView() }
   }
 
   /// `?` opened: the sheet re-reads the live table (Settings may have remapped).
@@ -71,7 +82,7 @@ public final class MVChromeHost: NSObject {
   }
 
   @objc public static func makeSettingsView() -> NSView {
-    host(SettingsView())
+    lazyHost { SettingsView() }
   }
 
   /// docs/design/25: an add-on package handed to the app (a drop, Open With, the
@@ -177,16 +188,16 @@ public final class MVChromeHost: NSObject {
 
   /// PR 9: the metadata pane and folder tree, floating over the canvas.
   @objc public static func makeMetadataView() -> NSView {
-    host(MetadataView())
+    lazyHost { MetadataView() }
   }
 
   @objc public static func makeFolderTreeView() -> NSView {
-    host(FolderTreeView())
+    lazyHost { FolderTreeView() }
   }
 
   /// PR 11: the adjust pane, on the metadata pane's edge.
   @objc public static func makeAdjustView() -> NSView {
-    host(AdjustView())
+    lazyHost { AdjustView() }
   }
 
   /// PR 10: the export sheet, a full-container overlay built fresh per open.
@@ -196,7 +207,7 @@ public final class MVChromeHost: NSObject {
 
   /// PR 13 / 14: the Jobs pane, on the metadata / adjust pane's edge.
   @objc public static func makeJobsView() -> NSView {
-    host(JobsView())
+    lazyHost { JobsView() }
   }
 
   /// PR 14: the clip tools sheet, built fresh per open like the export sheet.
@@ -206,11 +217,11 @@ public final class MVChromeHost: NSObject {
 
   /// PR 29 (docs/design/20): the Edit workspace's strip and its Crop / Trim pane.
   @objc public static func makeEditStripView() -> NSView {
-    host(EditStripView())
+    lazyHost { EditStripView() }
   }
 
   @objc public static func makeEditPaneView() -> NSView {
-    host(EditPaneView())
+    lazyHost { EditPaneView() }
   }
 
   /// PR 30 (docs/design/21): the Video Editor window's timeline, under its preview.
@@ -288,5 +299,40 @@ public final class MVChromeHost: NSObject {
   /// main thread; `direction` is +1 or -1.
   @objc public static func adjustGalleryCellSize(_ direction: Int) {
     MainActor.assumeIsolated { FolderStore.shared.adjustGalleryCellSize(direction: direction) }
+  }
+}
+
+/// Issue #486: hosts an empty root until it is first visible (shown, or laid
+/// out while not hidden), then its real content, built once.
+final class LazyHostingView: NSHostingView<AnyView> {
+  private var make: (() -> AnyView)?
+
+  init(_ make: @escaping () -> AnyView) {
+    self.make = make
+    super.init(rootView: AnyView(EmptyView()))
+  }
+
+  required init(rootView: AnyView) {
+    super.init(rootView: rootView)
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not used")
+  }
+
+  override var isHidden: Bool {
+    didSet { if !isHidden { build() } }
+  }
+
+  override func layout() {
+    if !isHidden { build() }
+    super.layout()
+  }
+
+  private func build() {
+    guard let make else { return }
+    self.make = nil
+    rootView = make()
   }
 }

@@ -43,6 +43,8 @@ add_library(mv_core STATIC
   src/core/job_system.cpp
   src/core/job_system_posix.cpp
   src/core/trace_posix.cpp
+  src/core/boot_timeline.cpp
+  src/core/boot_timeline.h
   src/core/crash_context.cpp
   src/core/crash_context.h
   src/core/job_system.h
@@ -854,6 +856,7 @@ if(MV_BUILD_TESTS)
     tests/test_result.cpp
     tests/test_spsc_ring.cpp
     tests/test_job_system.cpp
+    tests/test_boot_timeline.cpp
     tests/test_input_state.cpp
     tests/test_camera.cpp
     tests/test_document_scroll.cpp

@@ -245,9 +245,6 @@ extension MVChromeHost {
   }
 
   @objc public static func makePageSidebarView() -> NSView {
-    let hosting = NSHostingView(rootView: ThemedRoot(content: PageSidebarView()))
-    hosting.sizingOptions = []
-    hosting.translatesAutoresizingMaskIntoConstraints = false
-    return hosting
+    lazyHost { PageSidebarView() }  // issue #486: hidden until a document opens
   }
 }

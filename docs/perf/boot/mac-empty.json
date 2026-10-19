@@ -1,0 +1,510 @@
+{
+  "open": "",
+  "runs": 10,
+  "builds": [
+    {
+      "exe": "/Users/tristan/Dev/mediaviewer-i486base/build/bin/mediaviewer_lab",
+      "median_ms": {
+        "host_entry": {
+          "median": 21.6,
+          "min": 19.7,
+          "max": 24.0
+        },
+        "crash_armed": {
+          "median": 27.8,
+          "min": 26.3,
+          "max": 29.1
+        },
+        "settings_loaded": {
+          "median": 100.3,
+          "min": 96.5,
+          "max": 104.0
+        },
+        "session_created": {
+          "median": 141.9,
+          "min": 137.1,
+          "max": 147.9
+        },
+        "window_created": {
+          "median": 126.5,
+          "min": 123.3,
+          "max": 131.3
+        },
+        "render_started": {
+          "median": 144.2,
+          "min": 140.5,
+          "max": 150.2
+        },
+        "window_shown": {
+          "median": 328.4,
+          "min": 327.2,
+          "max": 340.4
+        },
+        "chrome_runtime": {
+          "median": -1,
+          "min": -1,
+          "max": -1
+        },
+        "chrome_loaded": {
+          "median": -1,
+          "min": -1,
+          "max": -1
+        },
+        "chrome_bar": {
+          "median": 130.2,
+          "min": 127.0,
+          "max": 135.3
+        },
+        "chrome_islands": {
+          "median": 138.6,
+          "min": 134.6,
+          "max": 145.2
+        },
+        "interactive": {
+          "median": 365.4,
+          "min": 361.9,
+          "max": 377.1
+        },
+        "first_frame": {
+          "median": 154.9,
+          "min": 151.5,
+          "max": 163.0
+        },
+        "first_pixel": {
+          "median": -1,
+          "min": -1,
+          "max": -1
+        },
+        "full_resolution": {
+          "median": -1,
+          "min": -1,
+          "max": -1
+        }
+      },
+      "runs": [
+        {
+          "host_entry": 19.707,
+          "crash_armed": 26.945,
+          "settings_loaded": 96.465,
+          "session_created": 137.061,
+          "window_created": 123.271,
+          "render_started": 140.461,
+          "window_shown": 327.196,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 127.026,
+          "chrome_islands": 134.602,
+          "interactive": 363.904,
+          "first_frame": 151.51,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 24.022,
+          "crash_armed": 28.784,
+          "settings_loaded": 101.813,
+          "session_created": 143.039,
+          "window_created": 127.68,
+          "render_started": 145.308,
+          "window_shown": 328.669,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 131.246,
+          "chrome_islands": 140.534,
+          "interactive": 366.629,
+          "first_frame": 162.976,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 21.905,
+          "crash_armed": 27.835,
+          "settings_loaded": 103.98,
+          "session_created": 147.929,
+          "window_created": 131.329,
+          "render_started": 150.198,
+          "window_shown": 340.383,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 135.347,
+          "chrome_islands": 145.167,
+          "interactive": 377.078,
+          "first_frame": 155.54,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 20.65,
+          "crash_armed": 27.168,
+          "settings_loaded": 100.592,
+          "session_created": 141.966,
+          "window_created": 126.546,
+          "render_started": 144.242,
+          "window_shown": 328.185,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 130.411,
+          "chrome_islands": 138.029,
+          "interactive": 362.36,
+          "first_frame": 154.183,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 21.704,
+          "crash_armed": 29.053,
+          "settings_loaded": 99.64,
+          "session_created": 141.287,
+          "window_created": 125.521,
+          "render_started": 143.559,
+          "window_shown": 327.861,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 129.231,
+          "chrome_islands": 136.836,
+          "interactive": 362.199,
+          "first_frame": 153.664,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 23.047,
+          "crash_armed": 27.817,
+          "settings_loaded": 100.787,
+          "session_created": 141.82,
+          "window_created": 126.54,
+          "render_started": 144.089,
+          "window_shown": 327.83,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 130.048,
+          "chrome_islands": 139.249,
+          "interactive": 365.234,
+          "first_frame": 161.754,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 21.107,
+          "crash_armed": 28.029,
+          "settings_loaded": 99.458,
+          "session_created": 140.855,
+          "window_created": 125.587,
+          "render_started": 143.129,
+          "window_shown": 331.283,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 129.432,
+          "chrome_islands": 137.155,
+          "interactive": 365.576,
+          "first_frame": 152.47,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 21.559,
+          "crash_armed": 26.272,
+          "settings_loaded": 100.096,
+          "session_created": 142.793,
+          "window_created": 128.421,
+          "render_started": 145.066,
+          "window_shown": 338.098,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 132.422,
+          "chrome_islands": 140.281,
+          "interactive": 374.796,
+          "first_frame": 157.851,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 21.853,
+          "crash_armed": 26.384,
+          "settings_loaded": 102.019,
+          "session_created": 143.372,
+          "window_created": 129.317,
+          "render_started": 145.638,
+          "window_shown": 333.456,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 133.079,
+          "chrome_islands": 140.788,
+          "interactive": 368.044,
+          "first_frame": 158.589,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 21.181,
+          "crash_armed": 27.885,
+          "settings_loaded": 98.258,
+          "session_created": 139.722,
+          "window_created": 124.019,
+          "render_started": 141.99,
+          "window_shown": 327.647,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 127.646,
+          "chrome_islands": 135.513,
+          "interactive": 361.936,
+          "first_frame": 152.26,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        }
+      ]
+    },
+    {
+      "exe": "/Users/tristan/Dev/mediaviewer/.claude/worktrees/issue-72-status-25b9eb/build/bin/mediaviewer_lab",
+      "median_ms": {
+        "host_entry": {
+          "median": 22.0,
+          "min": 20.9,
+          "max": 24.7
+        },
+        "crash_armed": {
+          "median": 27.6,
+          "min": 26.5,
+          "max": 29.9
+        },
+        "settings_loaded": {
+          "median": 101.6,
+          "min": 99.5,
+          "max": 106.0
+        },
+        "session_created": {
+          "median": 140.9,
+          "min": 137.1,
+          "max": 144.9
+        },
+        "window_created": {
+          "median": 127.9,
+          "min": 125.8,
+          "max": 131.9
+        },
+        "render_started": {
+          "median": 143.2,
+          "min": 139.4,
+          "max": 147.2
+        },
+        "window_shown": {
+          "median": 169.3,
+          "min": 165.8,
+          "max": 173.0
+        },
+        "chrome_runtime": {
+          "median": -1,
+          "min": -1,
+          "max": -1
+        },
+        "chrome_loaded": {
+          "median": -1,
+          "min": -1,
+          "max": -1
+        },
+        "chrome_bar": {
+          "median": 132.7,
+          "min": 129.5,
+          "max": 136.9
+        },
+        "chrome_islands": {
+          "median": 138.5,
+          "min": 134.6,
+          "max": 142.3
+        },
+        "interactive": {
+          "median": 185.1,
+          "min": 181.1,
+          "max": 188.8
+        },
+        "first_frame": {
+          "median": 155.5,
+          "min": 148.8,
+          "max": 163.3
+        },
+        "first_pixel": {
+          "median": -1,
+          "min": -1,
+          "max": -1
+        },
+        "full_resolution": {
+          "median": -1,
+          "min": -1,
+          "max": -1
+        }
+      },
+      "runs": [
+        {
+          "host_entry": 21.298,
+          "crash_armed": 28.33,
+          "settings_loaded": 101.077,
+          "session_created": 138.268,
+          "window_created": 126.711,
+          "render_started": 140.541,
+          "window_shown": 166.622,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 130.504,
+          "chrome_islands": 135.766,
+          "interactive": 182.121,
+          "first_frame": 154.301,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 23.133,
+          "crash_armed": 28.089,
+          "settings_loaded": 103.852,
+          "session_created": 143.455,
+          "window_created": 130.593,
+          "render_started": 145.725,
+          "window_shown": 173.049,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 135.767,
+          "chrome_islands": 140.957,
+          "interactive": 188.829,
+          "first_frame": 163.287,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 24.656,
+          "crash_armed": 29.846,
+          "settings_loaded": 105.97,
+          "session_created": 144.904,
+          "window_created": 131.883,
+          "render_started": 147.173,
+          "window_shown": 171.503,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 136.903,
+          "chrome_islands": 142.269,
+          "interactive": 186.836,
+          "first_frame": 148.842,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 21.805,
+          "crash_armed": 26.503,
+          "settings_loaded": 101.452,
+          "session_created": 140.337,
+          "window_created": 127.502,
+          "render_started": 142.606,
+          "window_shown": 169.338,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 132.666,
+          "chrome_islands": 137.883,
+          "interactive": 184.532,
+          "first_frame": 158.81,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 20.947,
+          "crash_armed": 26.567,
+          "settings_loaded": 100.415,
+          "session_created": 137.852,
+          "window_created": 126.275,
+          "render_started": 140.124,
+          "window_shown": 166.177,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 130.013,
+          "chrome_islands": 135.429,
+          "interactive": 181.543,
+          "first_frame": 154.041,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 22.577,
+          "crash_armed": 27.205,
+          "settings_loaded": 102.905,
+          "session_created": 142.077,
+          "window_created": 128.915,
+          "render_started": 144.343,
+          "window_shown": 170.96,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 134.148,
+          "chrome_islands": 139.506,
+          "interactive": 186.318,
+          "first_frame": 160.367,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 24.27,
+          "crash_armed": 29.931,
+          "settings_loaded": 101.649,
+          "session_created": 142.067,
+          "window_created": 129.206,
+          "render_started": 144.338,
+          "window_shown": 169.345,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 132.707,
+          "chrome_islands": 139.46,
+          "interactive": 186.589,
+          "first_frame": 150.963,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 21.682,
+          "crash_armed": 27.103,
+          "settings_loaded": 99.458,
+          "session_created": 138.764,
+          "window_created": 127.118,
+          "render_started": 141.037,
+          "window_shown": 167.994,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 130.992,
+          "chrome_islands": 136.239,
+          "interactive": 183.615,
+          "first_frame": 156.603,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 22.23,
+          "crash_armed": 26.915,
+          "settings_loaded": 102.037,
+          "session_created": 141.56,
+          "window_created": 128.369,
+          "render_started": 143.829,
+          "window_shown": 170.456,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 133.604,
+          "chrome_islands": 139.027,
+          "interactive": 185.753,
+          "first_frame": 159.915,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        },
+        {
+          "host_entry": 21.2,
+          "crash_armed": 28.245,
+          "settings_loaded": 100.226,
+          "session_created": 137.09,
+          "window_created": 125.796,
+          "render_started": 139.356,
+          "window_shown": 165.833,
+          "chrome_runtime": -1.0,
+          "chrome_loaded": -1.0,
+          "chrome_bar": 129.478,
+          "chrome_islands": 134.621,
+          "interactive": 181.076,
+          "first_frame": 154.04,
+          "first_pixel": -1.0,
+          "full_resolution": -1.0
+        }
+      ]
+    }
+  ]
+}
