@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 
 #include "addons/sharepoint/wire.h"
@@ -28,6 +29,28 @@ class link {
   // every later one fails.
   virtual void shutdown() noexcept = 0;
   [[nodiscard]] virtual transport via() const noexcept = 0;
+  // #472 relays: what the bytes go through when it is not a straight path
+  // ("relay": the person's own computer or server, splice.h), for the
+  // window; nullptr for a direct link.
+  [[nodiscard]] virtual const char* through() const noexcept { return nullptr; }
+};
+
+// A link that says it is another bearer than its own (#472 PR 2: a TCP link
+// over the internet is not "Wi-Fi" on the window).
+class bearer_as final : public link {
+ public:
+  bearer_as(std::unique_ptr<link> inner, transport via) : inner_(std::move(inner)), via_(via) {}
+  [[nodiscard]] expected write_all(std::span<const std::uint8_t> bytes) override { return inner_->write_all(bytes); }
+  [[nodiscard]] result<std::size_t> read_some(std::span<std::uint8_t> into, int timeout_ms) override {
+    return inner_->read_some(into, timeout_ms);
+  }
+  void shutdown() noexcept override { inner_->shutdown(); }
+  [[nodiscard]] transport via() const noexcept override { return via_; }
+  [[nodiscard]] const char* through() const noexcept override { return inner_->through(); }
+
+ private:
+  std::unique_ptr<link> inner_;
+  transport via_;
 };
 
 // Reads exactly `into.size()` bytes by `deadline` (the whole span, however the

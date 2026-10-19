@@ -6,8 +6,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 
+#include "addons/sharepoint/cpace.h"
 #include "addons/sharepoint/noise.h"
 #include "core/json.h"
 
@@ -21,6 +23,10 @@ constexpr std::uint8_t kHelloMagic[4] = {'M', 'V', 'S', 'P'};
 constexpr std::size_t kHelloBytes = 4 + 1 + crypto_kx_PUBLICKEYBYTES;  // protocol 1
 constexpr std::uint8_t kKindNew = 'N';
 constexpr std::uint8_t kKindRejoin = 'R';
+constexpr std::uint8_t kKindInternet = 'I';
+constexpr char kPrologueInternet[] = "MediaViewer Sharepoint 2 internet";
+constexpr char kCpaceChannel[] = "MediaViewer Sharepoint 2 internet sender-receiver";
+constexpr char kCheckContext[] = "MediaViewer Sharepoint check v2";
 constexpr std::size_t kSealOverhead = crypto_secretstream_xchacha20poly1305_ABYTES;
 constexpr std::size_t kStreamHeaderBytes = crypto_secretstream_xchacha20poly1305_HEADERBYTES;
 // Protocol 2's plaintext header: type, sequence number, acknowledgement.
@@ -180,7 +186,12 @@ std::span<const std::uint8_t> seal_kept(std::vector<std::uint8_t>& buf, crypto_s
 }
 
 bool valid_type(std::uint8_t raw, std::uint32_t version) noexcept {
-  const auto last = version >= 2 ? msg::resume_at : msg::ping;
+  const auto last = version >= 2 ? msg::places : msg::ping;  // places: #472 PR 5
+  // #472 relays (relay.h): their own range, protocol 2 only.
+  if (version >= 2 && raw >= static_cast<std::uint8_t>(msg::relay) &&
+      raw <= static_cast<std::uint8_t>(msg::relay_data)) {
+    return true;
+  }
   return raw >= static_cast<std::uint8_t>(msg::ident) && raw <= static_cast<std::uint8_t>(last);
 }
 
@@ -202,6 +213,14 @@ result<hello> channel::read_hello(link& l, clock::time_point deadline) {
   if (h.version != 2) return err(status::unsupported_format);
   std::uint8_t kind = 0;
   if (auto r = read_exact_until(l, {&kind, 1}, deadline); !r) return err(r.error());
+  if (kind == kKindInternet) {
+    // The CPace session id and the sender's CPace message, nothing else yet.
+    h.internet = true;
+    h.body.resize(cpace::kPointBytes);
+    if (auto r = read_exact_until(l, h.tag, deadline); !r) return err(r.error());
+    if (auto r = read_exact_until(l, h.body, deadline); !r) return err(r.error());
+    return h;
+  }
   if (kind != kKindNew && kind != kKindRejoin) return err(status::corrupt);
   h.rejoin = kind == kKindRejoin;
   if (h.rejoin) {
@@ -250,14 +269,19 @@ result<std::unique_ptr<channel>> channel::open_server(std::shared_ptr<link> l, h
     l->shutdown();
     return err(status::not_found);
   }
+  if (h.internet && !opts.internet_secret) {
+    l->shutdown();
+    return err(status::not_found);  // no code waits here
+  }
   const auto deadline = clock::now() + std::chrono::milliseconds(kConnectMs);
   std::unique_ptr<channel> c(new channel());
   c->via_ = l->via();
   c->link_ = c->write_link_ = c->read_link_ = l;
   c->st_ = std::make_unique<state>();
   c->version_ = h.version >= 2 ? 2 : kProtocol1;
-  auto opened = c->version_ >= 2 ? open_v2(std::move(c), false, &h, opts, deadline)
-                                 : open_v1(std::move(c), false, &h, deadline);
+  auto opened = h.internet   ? open_internet_v2(std::move(c), false, &h, *opts.internet_secret, opts, deadline)
+                : c->version_ >= 2 ? open_v2(std::move(c), false, &h, opts, deadline)
+                                   : open_v1(std::move(c), false, &h, deadline);
   if (!opened) return err(opened.error());
   if (auto r = (*opened)->exchange_ident(my_id, my_name, deadline); !r) {
     l->shutdown();
@@ -376,6 +400,7 @@ result<std::unique_ptr<channel>> channel::open_v2(std::unique_ptr<channel> c, bo
     // The nonce is the one the client committed to before it saw anything of ours.
     if (sodium_memcmp(expect, commit.data(), 32) != 0) return fail(status::corrupt);
   }
+  c->peer_key_ = hs.remote_static();
   auto keys = hs.split();
   if (!keys) return fail(status::internal);
   const auto& tx = client ? keys->initiator_to_responder : keys->responder_to_initiator;
@@ -386,6 +411,128 @@ result<std::unique_ptr<channel>> channel::open_v2(std::unique_ptr<channel> c, bo
   {
     std::lock_guard lock(c->secret_m_);
     c->resume_ = keys->extra;  // the rejoin's psk: in memory only, for this session
+  }
+  c->last_heard_ns_ = now_ns();
+  return c;
+}
+
+result<std::unique_ptr<channel>> channel::open_internet(std::shared_ptr<link> l, std::span<const std::uint8_t> secret,
+                                                        std::string_view my_id, std::string_view my_name,
+                                                        const options& opts) {
+  if (!l || secret.empty()) return err(status::invalid_arg);
+  if (sodium_init() < 0) return err(status::internal);
+  const auto deadline = clock::now() + std::chrono::milliseconds(kConnectMs);
+  std::unique_ptr<channel> c(new channel());
+  c->via_ = l->via();
+  c->link_ = c->write_link_ = c->read_link_ = l;
+  c->st_ = std::make_unique<state>();
+  c->version_ = 2;
+  auto opened = open_internet_v2(std::move(c), true, nullptr, secret, opts, deadline);
+  if (!opened) return err(opened.error());
+  if (auto r = (*opened)->exchange_ident(my_id, my_name, deadline); !r) {
+    l->shutdown();
+    return err(r.error());
+  }
+  return opened;
+}
+
+result<std::unique_ptr<channel>> channel::open_internet_v2(std::unique_ptr<channel> c, bool client, const hello* theirs,
+                                                           std::span<const std::uint8_t> secret, const options& opts,
+                                                           clock::time_point deadline) {
+  link& l = *c->link_;
+  auto fail = [&](status s) -> result<std::unique_ptr<channel>> {
+    l.shutdown();
+    return err(s);
+  };
+  // 1. CPace: the sender's message in the hello, the receiver's in reply.
+  std::array<std::uint8_t, 16> sid{};
+  if (client) {
+    randombytes_buf(sid.data(), sid.size());
+  } else {
+    sid = theirs->tag;
+  }
+  const std::span<const std::uint8_t> ci(reinterpret_cast<const std::uint8_t*>(kCpaceChannel), sizeof kCpaceChannel - 1);
+  cpace::party pake(secret, ci, sid);
+  if (!pake.ok()) return fail(status::internal);
+  std::array<std::uint8_t, cpace::kPointBytes> ya{}, yb{};
+  if (client) {
+    ya = pake.message();
+    std::vector<std::uint8_t> hi = {'M', 'V', 'S', 'P', 2, kKindInternet};
+    hi.insert(hi.end(), sid.begin(), sid.end());
+    hi.insert(hi.end(), ya.begin(), ya.end());
+    if (!l.write_all(hi)) return fail(status::io);
+    if (auto r = read_exact_until(l, yb, deadline); !r) return fail(r.error());
+  } else {
+    if (theirs->body.size() != ya.size()) return fail(status::corrupt);
+    std::memcpy(ya.data(), theirs->body.data(), ya.size());
+    yb = pake.message();
+    if (!l.write_all(yb)) return fail(status::io);
+  }
+  auto isk = pake.finish(client ? std::span<const std::uint8_t>(yb) : std::span<const std::uint8_t>(ya), client, {}, {});
+  if (!isk) return fail(status::corrupt);
+  std::array<std::uint8_t, 32> psk;
+  std::memcpy(psk.data(), isk->data(), psk.size());
+  sodium_memzero(isk->data(), isk->size());
+
+  // 2. Noise_XXhfs+psk0 with the CPace key, its transcript in the prologue.
+  std::vector<std::uint8_t> pro = prologue(kPrologueInternet, kKindInternet, sid);
+  pro.insert(pro.end(), ya.begin(), ya.end());
+  pro.insert(pro.end(), yb.begin(), yb.end());
+  std::optional<std::array<std::uint8_t, 32>> s = opts.static_key;
+  if (!s) {
+    s.emplace();
+    randombytes_buf(s->data(), s->size());
+  }
+  noise::handshake hs(noise::xx_hfs_psk0(), client, pro, s, psk);
+  sodium_memzero(s->data(), s->size());
+  sodium_memzero(psk.data(), psk.size());
+  std::vector<std::uint8_t> out, payload;
+  if (client) {
+    if (!hs.write_message({}, out)) return fail(status::internal);
+    if (!write_noise(l, {}, out)) return fail(status::io);
+    auto m2 = read_noise(l, deadline);
+    if (!m2) return fail(m2.error());  // a wrong or spent code: the receiver hung up
+    if (!hs.read_message(*m2, payload) || !payload.empty()) return fail(status::corrupt);
+    if (!hs.write_message({}, out)) return fail(status::internal);
+    if (!write_noise(l, {}, out)) return fail(status::io);
+  } else {
+    auto m1 = read_noise(l, deadline);
+    if (!m1) return fail(m1.error());
+    // The first message opens only under the right code: nothing of this
+    // side (not even its static key) has gone to a wrong one.
+    if (!hs.read_message(*m1, payload) || !payload.empty()) return fail(status::permission_denied);
+    if (!hs.write_message({}, out)) return fail(status::corrupt);
+    if (!write_noise(l, {}, out)) return fail(status::io);
+    auto m3 = read_noise(l, deadline);
+    if (!m3) return fail(m3.error());
+    if (!hs.read_message(*m3, payload) || !payload.empty()) return fail(status::corrupt);
+  }
+  c->peer_key_ = hs.remote_static();
+  auto keys = hs.split();
+  if (!keys) return fail(status::internal);
+  const auto& tx = client ? keys->initiator_to_responder : keys->responder_to_initiator;
+  const auto& rx = client ? keys->responder_to_initiator : keys->initiator_to_responder;
+  if (auto r = open_streams(l, tx, rx, deadline, c->st_->push, c->st_->pull); !r) return fail(r.error());
+  // 3. The check: six digits from the whole handshake, the same on both
+  // screens unless someone is in the middle (the issue's optional check).
+  {
+    crypto_generichash_state st;
+    std::uint8_t d[16];
+    crypto_generichash_init(&st, nullptr, 0, sizeof d);
+    crypto_generichash_update(&st, reinterpret_cast<const std::uint8_t*>(kCheckContext), sizeof kCheckContext - 1);
+    crypto_generichash_update(&st, keys->h.data(), keys->h.size());
+    crypto_generichash_final(&st, d, sizeof d);
+    std::uint64_t v = 0;
+    for (int i = 0; i < 8; ++i) v = (v << 8) | d[i];
+    const unsigned n = static_cast<unsigned>(v % 1000000u);
+    char text[8];
+    std::snprintf(text, sizeof text, "%03u %03u", n / 1000, n % 1000);
+    c->code_ = text;
+  }
+  c->internet_ = true;
+  {
+    std::lock_guard lock(c->secret_m_);
+    c->resume_ = keys->extra;
   }
   c->last_heard_ns_ = now_ns();
   return c;
@@ -452,6 +599,24 @@ void channel::notify(link_event e) {
     fn(e);
   } catch (...) {
   }
+}
+
+std::array<std::uint8_t, 32> channel::pairing_secret() const {
+  static constexpr char kContext[] = "MediaViewer Sharepoint pairing v1";
+  std::array<std::uint8_t, 32> out{};
+  std::lock_guard lock(secret_m_);
+  crypto_generichash(out.data(), out.size(), reinterpret_cast<const std::uint8_t*>(kContext), sizeof kContext - 1,
+                     resume_.data(), resume_.size());
+  return out;
+}
+
+std::array<std::uint8_t, 32> channel::handover_secret() const {
+  static constexpr char kContext[] = "MediaViewer Sharepoint handover v1";
+  std::array<std::uint8_t, 32> out{};
+  std::lock_guard lock(secret_m_);
+  crypto_generichash(out.data(), out.size(), reinterpret_cast<const std::uint8_t*>(kContext), sizeof kContext - 1,
+                     resume_.data(), resume_.size());
+  return out;
 }
 
 bool channel::link_up() const noexcept {

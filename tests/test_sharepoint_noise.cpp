@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "addons/sharepoint/cpace.h"
 #include "addons/sharepoint/noise.h"
 
 namespace noise = mv::sharepoint::noise;
@@ -154,6 +155,33 @@ TEST_CASE("sharepoint noise: Noise_NNpsk0_25519_ChaChaPoly_BLAKE2b matches the C
              kMessages);
 }
 
+TEST_CASE("sharepoint noise: Noise_XXpsk3_25519_ChaChaPoly_BLAKE2b matches the Cacophony vector", "[sharepoint]") {
+  static constexpr vector_message kMessages[] = {
+      {"4c756477696720766f6e204d69736573",
+       "ca35def5ae56cec33dc2036731ab14896bc4c75dbb07a61f879f8e3afa4c79440aa831d1e3bbd16bd7ffda87e9f7b6eeca25100064"
+       "99a573ac27af3392ed1b69"},
+      {"4d757272617920526f746862617264",
+       "95ebc60d2b1fa672c1f46a8aa265ef51bfe38e7ccb39ec5be34069f14480884381a78489d56c9e2ac962826f25684980b25244dbfd50"
+       "5b7d903a94d4f4fd84004a1c7fbe94d686bc4c1f67259364f6f2a41cb40bf5198b9b3975be2cdd49d3e065a554e12c477d82029fab"
+       "c6555bc1"},
+      {"462e20412e20486179656b",
+       "291dfeff6eff386e29adb0bdbd5a1ae9e09de4449c8695d109adcb63e80e489555792a3e9150eff75d6d45571f824ed231173cb66e31"
+       "e7da914241f86d0cbb678335ffe768a7445d2f5bc1"},
+      {"4361726c204d656e676572", "6579dd60eb5e6a8b29dd60004289f5d3c2f69fcdbf683a869f59a8"},
+      {"4a65616e2d426170746973746520536179", "24715fd39c3c7606e81b26e69e47b54d043d9d87c512f9417bae51ab48ebb17722"},
+      {"457567656e2042f6686d20766f6e2042617765726b",
+       "e49194a013d873712318643acbf0e3851086326bb168c500a766439ff543a7a1e2deb3215c"},
+  };
+  run_vector(noise::xx_psk3(), 3, "4a6f686e2047616c74", "e61ef9919cde45dd5f82166404bd08e38bceb5dfdfded0a34c8df7ed542214d1",
+             "4a3acbfdb163dec651dfa3194dece676d437029c62a408b4c5ea9114246e4893",
+             "54686973206973206d7920417573747269616e20706572737065637469766521",
+             "893e28b9dc6ca8d611ab664754b8ceb7bac5117349a4439a6b0569da977c464a",
+             "bbdb4cdbd309f1a1f2e1456967fe288cadd6f712d65dc7b7793d5e63da6b375b",
+             "46b5997dfa51492ae9be5b611748455e83aebdbc2ea3c47d264ec6dd408cc076e962ff056890c60398fe3e7a430bbe057f34383a"
+             "84df9ff99391266dcfd638b0",
+             kMessages);
+}
+
 namespace {
 
 struct hybrid_run {
@@ -234,6 +262,22 @@ TEST_CASE("sharepoint noise: the hybrid XX handshake agrees, and its keys hold t
         "389c59e032e77d9c3312");
 }
 
+TEST_CASE("sharepoint noise: the internet XX handshake agrees with the same CPace key only", "[sharepoint]") {
+  std::array<std::uint8_t, 32> psk;
+  psk.fill(0x51);
+  const hybrid_run a = run_hybrid(noise::xx_hfs_psk0(), 3, 0x66, true, psk);
+  REQUIRE(a.ok);
+  // Another key on the receiver: the first message does not open there, so
+  // nothing of the receiver (not even its static key) goes to a wrong code.
+  std::array<std::uint8_t, 32> other = psk;
+  other[31] ^= 1;
+  noise::handshake init(noise::xx_hfs_psk0(), true, {}, std::array<std::uint8_t, 32>{1}, psk);
+  noise::handshake resp(noise::xx_hfs_psk0(), false, {}, std::array<std::uint8_t, 32>{2}, other);
+  std::vector<std::uint8_t> m, payload;
+  REQUIRE(init.write_message({}, m));
+  CHECK_FALSE(resp.read_message(m, payload));
+}
+
 TEST_CASE("sharepoint noise: the hybrid psk rejoin agrees only with the same psk", "[sharepoint]") {
   std::array<std::uint8_t, 32> psk;
   psk.fill(0x77);
@@ -303,4 +347,74 @@ TEST_CASE("sharepoint noise: HMAC-BLAKE2b is RFC 2104 over BLAKE2b-512", "[share
   crypto_generichash_update(&st, inner, 64);
   crypto_generichash_final(&st, outer, 64);
   CHECK(std::equal(mac.begin(), mac.end(), outer));
+}
+
+// ---- CPace (#472 PR 2): draft-irtf-cfrg-cpace-18, Appendix B.3 ------------------------------------
+
+namespace {
+std::vector<std::uint8_t> cat(std::initializer_list<const char*> parts) {
+  std::string s;
+  for (const char* p : parts) s += p;
+  return hex(s);
+}
+}  // namespace
+
+TEST_CASE("sharepoint cpace: ristretto255 / SHA-512 matches the draft's vectors", "[sharepoint]") {
+  const std::string prs_text = "Password";
+  const std::vector<std::uint8_t> prs(prs_text.begin(), prs_text.end());
+  const auto ci = hex("6f630b425f726573706f6e6465720b415f696e69746961746f72");
+  const auto sid = hex("7e4b4791d6a8ef019b936c79fb7f2c57");
+  // B.3.1: the generator string and its hash.
+  const auto gs = mv::sharepoint::cpace::generator_string(prs, ci, sid);
+  CHECK(gs.size() == 172);
+  CHECK(to_hex(gs) == to_hex(cat({"11435061636552697374726574746f3235350850617373776f726464",
+                                   "00000000000000000000000000000000000000000000000000000000",
+                                   "00000000000000000000000000000000000000000000000000000000",
+                                   "00000000000000000000000000000000000000000000000000000000",
+                                   "000000000000000000000000000000001a6f630b425f726573706f6e",
+                                   "6465720b415f696e69746961746f72107e4b4791d6a8ef019b936c79", "fb7f2c57"})));
+  std::array<std::uint8_t, 64> h;
+  crypto_hash_sha512(h.data(), gs.data(), gs.size());
+  CHECK(to_hex(h) == to_hex(cat({"c63a5750e2439c17ccd8213be14fde2f87e1bc637001a97f5929c77b",
+                                  "30ea0e08afbc75ace5d3d73b2842a79d01488c5fd7ea30d475ee6095", "45af1bfd1ff77c8e"})));
+  std::array<std::uint8_t, 32> g;
+  REQUIRE(crypto_core_ristretto255_from_hash(g.data(), h.data()) == 0);
+  CHECK(to_hex(g) == "a6fc82c3b8968fbb2e06fee81ca858586dea50d248f0c7ca6a18b0902a30b36b");
+  // B.3.2-B.3.5: both messages, then the ISK each side computes.
+  const auto ya = key32("da3d23700a9e5699258aef94dc060dfda5ebb61f02a5ea77fad53f4ff0976d08");
+  const auto yb = key32("d2316b454718c35362d83d69df6320f38578ed5984651435e2949762d900b80d");
+  mv::sharepoint::cpace::party a(prs, ci, sid, ya), b(prs, ci, sid, yb);
+  REQUIRE(a.ok());
+  REQUIRE(b.ok());
+  CHECK(to_hex(a.message()) == "d40fb265a7abeaee7939d91a585fe59f7053f982c296ec413c624c669308f87a");
+  CHECK(to_hex(b.message()) == "08bcf6e9777a9c313a3db6daa510f2d398403319c2341bd506a92e672eb7e307");
+  const std::vector<std::uint8_t> ada = {'A', 'D', 'a'}, adb = {'A', 'D', 'b'};
+  const auto a_msg = a.message(), b_msg = b.message();
+  auto isk_a = a.finish(b_msg, true, ada, adb);
+  auto isk_b = b.finish(a_msg, false, ada, adb);
+  REQUIRE(isk_a);
+  REQUIRE(isk_b);
+  const std::string want = "4c5469a16b2364c4b944ebc1a79e51d1674ad47db26e8718154f59faebfaa52d8346f30aa58377117eb20d527f2cbc5c"
+                           "76381f7fd372e89df8239f87f2e02ed1";
+  CHECK(to_hex(*isk_a) == want);
+  CHECK(to_hex(*isk_b) == want);
+}
+
+TEST_CASE("sharepoint cpace: another code gives another key; the identity and non-points are refused",
+          "[sharepoint]") {
+  const std::vector<std::uint8_t> right = {'1', '2', '3'}, wrong = {'1', '2', '4'}, ci = {'c'}, sid(16, 7);
+  mv::sharepoint::cpace::party a(right, ci, sid), b(wrong, ci, sid);
+  const auto am = a.message(), bm = b.message();
+  auto ka = a.finish(bm, true, {}, {});
+  auto kb = b.finish(am, false, {}, {});
+  REQUIRE(ka);
+  REQUIRE(kb);
+  CHECK(*ka != *kb);
+  // The identity (all zeros encodes it) and an encoding that is not a point.
+  mv::sharepoint::cpace::party c(right, ci, sid), d(right, ci, sid);
+  const std::array<std::uint8_t, 32> identity{};
+  std::array<std::uint8_t, 32> junk;
+  junk.fill(0xff);
+  CHECK_FALSE(c.finish(identity, true, {}, {}));
+  CHECK_FALSE(d.finish(junk, true, {}, {}));
 }

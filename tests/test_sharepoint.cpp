@@ -258,6 +258,39 @@ TEST_CASE("sharepoint: every state of the window is a tree the hosts accept", "[
     v.destination = "/Users/x/Pictures/MediaViewer/Received";
     states.push_back(v);
   }
+  // #472 PR 2: over the internet, each state of the code and of a send to one.
+  {
+    sp::view i = v;
+    i.in = sp::view::in_phase::none;
+    i.out = sp::view::out_phase::idle;
+    i.internet = true;
+    states.push_back(i);  // on, no code yet
+    using phase = sp::internet_receiver::phase;
+    for (auto p : {phase::preparing, phase::ready, phase::used, phase::expired, phase::failed}) {
+      i.code_phase = static_cast<std::uint8_t>(p);
+      i.code_text = "4FWP-8GZF-AJZX-Z1PX-H4Q0-C30Z";
+      i.code_link = "mediaviewer://sharepoint?code=4FWP8GZFAJZXZ1PXH4Q0C30Z";
+      i.code_note = "Send this code to the other person. It works once, for 10 minutes.";
+      i.code_how = "UPnP, IPv6";
+      states.push_back(i);
+    }
+    i.send_code_note = "That is not a whole code.";
+    for (auto o : {sp::view::out_phase::reaching, sp::view::out_phase::naming}) {
+      i.out = o;
+      i.out_internet = true;
+      i.out_attempt = 3;
+      i.out_peer = "Ann's MacBook";
+      i.out_check = "123 456";
+      i.out_note = "Nothing answered at the addresses in the code.";
+      states.push_back(i);
+    }
+    i.out = sp::view::out_phase::idle;
+    i.in = sp::view::in_phase::connecting;
+    i.in_internet = true;
+    i.in_peer = "Ann's MacBook";
+    i.in_code = "123 456";
+    states.push_back(i);
+  }
   for (const auto& s : states) {
     const std::string tree = sp::build_tree(s);
     mv::addon::screen::tree t;
@@ -327,6 +360,49 @@ TEST_CASE("sharepoint: the prefs file survives a write that stopped half-way", "
   CHECK(sp::load_prefs(path) == p);
   write_text(s / "sharepoint.json", "not json");
   CHECK_FALSE(sp::load_prefs(path).has_value());
+}
+
+// #472: every internet path is opt-in. The defaults, a prefs file written
+// before the toggles existed, and a fresh engine with its window open all
+// have them off, and nothing internet-facing is made (no code, so no
+// listener, mapping, hub or DHT).
+TEST_CASE("sharepoint: every internet path is off until the person turns it on", "[sharepoint]") {
+  const sp::prefs d;
+  CHECK_FALSE(d.internet);
+  CHECK_FALSE(d.dht);
+  CHECK_FALSE(d.handover);
+  CHECK_FALSE(d.relay);
+  CHECK(d.forwarded.empty());
+  CHECK(d.relay_server.empty());
+
+  scratch_dir s("sharepoint_internet_off");
+  fs::create_directories(s / "data");
+  const std::string path = utf8(s / "data" / "sharepoint.json");
+  write_text(s / "data" / "sharepoint.json", "{\"receiving\":true}");  // from before #472
+  const auto old = sp::load_prefs(path);
+  REQUIRE(old);
+  CHECK(old->receiving);
+  CHECK_FALSE(old->internet);
+  CHECK_FALSE(old->dht);
+  CHECK_FALSE(old->handover);
+  CHECK_FALSE(old->relay);
+
+  bus b;
+  fs::create_directories(s / "in");
+  fake_host host(s / "in");
+  sp::engine::options o = client::options(b, "Bea");
+  o.prefs_path = path;
+  sp::engine eng(host, o);
+  eng.screen_opened("");
+  const auto v = eng.snapshot();
+  CHECK_FALSE(v.internet);
+  CHECK_FALSE(v.dht);
+  CHECK_FALSE(v.handover);
+  CHECK_FALSE(v.relay);
+  CHECK(v.code_phase == static_cast<std::uint8_t>(sp::internet_receiver::phase::none));
+  CHECK(v.code_text.empty());
+  CHECK_FALSE(v.out_handover);
+  CHECK_FALSE(v.in_handover);
 }
 
 TEST_CASE("sharepoint: received files go to Downloads unless Save to picked another, which is kept",

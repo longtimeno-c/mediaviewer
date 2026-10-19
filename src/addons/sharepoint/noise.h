@@ -12,12 +12,21 @@
 //                link before it:
 //                  -> psk, e, e1
 //                  <- e, ee, ekem1
+//   XXhfs+psk0   the first link over the internet (#472 PR 2), keyed by the
+//                CPace key from the person's code (cpace.h): a wrong code
+//                fails at the receiver's first read, before it says anything
+//                of itself:
+//                  -> psk, e, e1
+//                  <- e, ee, ekem1, s, es
+//                  -> s, se
 //
 // "hfs": e1 is an ML-KEM-768 key made for this handshake alone, ekem1 the
 // ciphertext encapsulated to it, and its shared secret is mixed into the
 // chaining key beside the X25519 one. Breaking a recorded session needs both
-// X25519 and ML-KEM-768 broken. XX, NN and NNpsk0 (no hfs) are here for the
-// published test vectors (Cacophony), which check this code against others.
+// X25519 and ML-KEM-768 broken. XX, NNpsk0 and XXpsk3 (no hfs) are here for
+// the published test vectors (Cacophony), which check this code against
+// others: the psk at the start of the first message and at the end of a later
+// one, the two places the patterns above use it.
 //
 // Every secret lives in this object and is wiped (sodium_memzero) when it
 // goes. Portable (D9): libsodium only.
@@ -56,6 +65,8 @@ struct pattern {
 [[nodiscard]] const pattern& nn_psk0();      // Noise_NNpsk0_25519_ChaChaPoly_BLAKE2b
 [[nodiscard]] const pattern& xx_hfs();       // Noise_XXhfs_25519+MLKEM768_ChaChaPoly_BLAKE2b
 [[nodiscard]] const pattern& nn_hfs_psk0();  // Noise_NNhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b
+[[nodiscard]] const pattern& xx_psk3();      // Noise_XXpsk3_25519_ChaChaPoly_BLAKE2b
+[[nodiscard]] const pattern& xx_hfs_psk0();  // Noise_XXhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b
 
 // Noise's CipherState: ChaChaPoly (IETF), the nonce a 64-bit counter.
 class cipher_state {

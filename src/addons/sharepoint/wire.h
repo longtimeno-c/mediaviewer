@@ -79,7 +79,8 @@ inline constexpr std::size_t kMaxPartBytes = 240;
 // One file's size, at most (an offer above it is refused whole).
 inline constexpr std::uint64_t kMaxFileBytes = 1ull << 50;
 
-enum class transport : std::uint8_t { wifi, bluetooth };
+// `internet`: a TCP link over the internet with a code (#472 PR 2).
+enum class transport : std::uint8_t { wifi, bluetooth, internet };
 [[nodiscard]] const char* transport_name(transport t) noexcept;
 
 // Sealed message types (the first plaintext byte).
@@ -99,6 +100,17 @@ enum class msg : std::uint8_t {
   // Protocol 2 only: the first sealed message on a rejoined link, either way:
   // 8 bytes, the count of messages received so far (what to re-send from).
   resume_at = 13,
+  // Protocol 2, #472 PR 5: {"places":[{"a","p"},...]} (receiver -> sender),
+  // where the receiver can be reached from the internet, for the sender to
+  // rejoin if the local link goes. Sent only to a sender whose offer had
+  // "handover": a sender before PR 5 would end the link on it.
+  places = 14,
+  // Protocol 2, #472 relays through the person's own computer (relay.h),
+  // only on a link between two of that person's remembered devices, never
+  // to a stranger. 15-19 are left for other work on the stack.
+  relay = 20,         // {"places":[{"a","p"},...]} (A -> R): connect onward to these
+  relay_answer = 21,  // {"ok":bool,"why"} (R -> A); after ok, only relay_data either way
+  relay_data = 22,    // raw bytes of A's link to B, sealed again between A and R
 };
 
 // "123 456": six digits from both public keys (client = the sender).

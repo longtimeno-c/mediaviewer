@@ -6,9 +6,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <set>
 #include <unordered_map>
 
+#include "addons/sharepoint/handover.h"
+#include "addons/sharepoint/meet.h"
+#include "addons/sharepoint/race.h"
 #include "core/json.h"
 #include "io/file_port.h"
 
@@ -87,12 +91,36 @@ std::string digits_of(std::string_view s) {
   return out;
 }
 
+std::int64_t unix_now_ms() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+// #472 PR 4: a remembered device's item is written again this often (an
+// item older than dht::kItemMaxAgeMs is not believed).
+constexpr auto kKnownRepublish = std::chrono::minutes(4);
+
+std::string changed_key_text(const std::string& name, bool sending) {
+  return "This is not the " + name + " you remembered: its security key has changed, so the link was ended. " +
+         (sending ? "Nothing was sent. " : "Nothing was received. ") +
+         "If " + name + " was set up again, forget it here and send once nearby or with a code to remember it "
+         "again. If not, someone may be pretending to be " + name + ".";
+}
+
 }  // namespace
 
 engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(opts)) {
   (void)sodium_init();
   id_ = random_id();
-  randombytes_buf(static_key_.data(), static_key_.size());
+  // #472 PR 4: the identity kept in the secret store, or one for this run.
+  if (opts_.make_secrets) secrets_ = opts_.make_secrets();
+  bool identity_kept = false;
+  static_key_ = known::identity(secrets_.get(), identity_kept);
+  crypto_scalarmult_base(public_key_.data(), static_key_.data());
+  if (!identity_kept) secrets_.reset();  // nothing kept: nothing to remember either
+  v_.can_remember = identity_kept;
+  if (secrets_) devices_ = known::load(*secrets_);
+  publish_known_locked();
   if (opts_.my_name.empty()) opts_.my_name = net::machine_name();
   v_.my_name = clean_name(opts_.my_name);
   // What was kept from the last run (#442). A saved folder that is gone
@@ -100,6 +128,12 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   const prefs kept = opts_.initial ? *opts_.initial : load_prefs(opts_.prefs_path).value_or(prefs{});
   v_.receiving = kept.receiving || kept.background;  // presence starts on the control thread, below
   v_.background = kept.background;
+  v_.internet = kept.internet;  // #472 PR 2: the receiver of codes, made on the control thread
+  v_.dht = kept.dht;
+  v_.handover = kept.handover;
+  v_.forwarded = kept.forwarded;
+  v_.relay = kept.relay;  // #472 relays
+  v_.relay_server = kept.relay_server;
   v_.destination = host_.default_destination();
   if (!kept.destination.empty()) {
     if (auto st = io::stat_path(kept.destination); st && st->is_directory) v_.destination = kept.destination;
@@ -107,7 +141,7 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   control_thread_ = std::thread([this] { control_loop(); });
   // Keep receiving was on at the last launch (#442): presence and the status
   // text come up on the control thread, never the caller's. Off: nothing.
-  if (v_.receiving) request_reconcile();
+  if (v_.receiving || v_.internet) request_reconcile();
 }
 
 engine::~engine() {
@@ -119,13 +153,27 @@ engine::~engine() {
   }
   // The transfer and the busy refusals first, while the bearers they may be
   // using still exist; then the control thread, then presence.
-  {
-    std::lock_guard lock(threads_m_);
-    if (transfer_thread_.joinable()) transfer_thread_.join();
-    for (auto& h : helpers_) {
+  // Joined outside threads_m_: a transfer's way in (#472 PR 5) joins its
+  // accept thread, which may be waiting for threads_m_ in on_incoming. A
+  // link that slipped past stopping_ there is joined on the next round.
+  for (;;) {
+    std::thread transfer;
+    std::vector<helper> helpers;
+    std::vector<std::unique_ptr<dht_handover>> retired;
+    {
+      std::lock_guard lock(threads_m_);
+      transfer = std::move(transfer_thread_);
+      helpers = std::move(helpers_);
+      helpers_.clear();
+      retired = std::move(retired_);
+      retired_.clear();
+    }
+    if (!transfer.joinable() && helpers.empty() && retired.empty()) break;
+    if (transfer.joinable()) transfer.join();
+    for (auto& h : helpers) {
       if (h.thread.joinable()) h.thread.join();
     }
-    helpers_.clear();
+    retired.clear();  // each joins its thread (#472's DHT handovers)
   }
   {
     std::unique_lock lock(files_m_);
@@ -139,6 +187,19 @@ engine::~engine() {
     control_cv_.notify_all();
   }
   if (control_thread_.joinable()) control_thread_.join();
+  // The wait for remembered devices (the control thread has stopped: nothing
+  // starts it again).
+  known_stop_.store(true);
+  if (known_thread_.joinable()) known_thread_.join();
+  {
+    // The code, its listener and every router mapping go (joins its threads).
+    std::shared_ptr<internet_receiver> in;
+    {
+      std::lock_guard lock(m_);
+      in = std::move(internet_);
+    }
+    in.reset();
+  }
   stop_presence();
   if (save_wanted_) save_now();  // a change the control thread had not written yet
   sodium_memzero(static_key_.data(), static_key_.size());
@@ -186,6 +247,12 @@ void engine::save_now() {
     p.receiving = v_.receiving;
     p.background = v_.background;
     p.destination = v_.destination == host_.default_destination() ? std::string() : v_.destination;
+    p.internet = v_.internet;
+    p.forwarded = v_.forwarded;
+    p.dht = v_.dht;
+    p.handover = v_.handover;
+    p.relay = v_.relay;
+    p.relay_server = v_.relay_server;
   }
   {
     std::lock_guard lock(control_m_);
@@ -287,7 +354,82 @@ void engine::reconcile() {
   } else if (!want && presence_on_) {
     stop_presence();
   }
+  sync_internet();
+  sync_known();
   sync_status();
+}
+
+void engine::sync_internet() {
+  std::shared_ptr<internet_receiver> drop;
+  bool make = false;
+  internet_receiver::options o;
+  {
+    std::lock_guard lock(m_);
+    const bool want = v_.internet && !stopping_.load() && !opts_.offline;
+    if (!want && internet_) {
+      drop = std::move(internet_);
+      v_.code_phase = 0;
+      v_.code_text.clear();
+      v_.code_link.clear();
+      v_.code_note.clear();
+      v_.code_how.clear();
+    } else if (want && !internet_) {
+      make = true;
+      o.loopback_only = opts_.internet_loopback;
+      o.forwarded = v_.forwarded;
+      o.mapping = opts_.internet_mapping;
+      o.lifetime_ms = opts_.code_lifetime_ms;
+      o.dht = v_.dht;
+      o.dht_client = dht_options();
+      o.dht_fast_kdf = opts_.dht_fast_kdf;
+      o.force_words = opts_.internet_force_words;
+      o.relay = v_.relay_server;  // #472 relays
+    }
+  }
+  if (drop) {
+    drop.reset();  // its code, listener and mappings go, on this thread
+    post();
+    return;
+  }
+  if (!make) return;
+  auto in = std::make_shared<internet_receiver>(
+      o, [this](std::unique_ptr<link> l) { on_internet_link(std::move(l)); },
+      [this] {
+        // The receiver's state, into the window (never under the engine's lock
+        // while it is asked).
+        std::shared_ptr<internet_receiver> r;
+        {
+          std::lock_guard lock(m_);
+          r = internet_;
+        }
+        if (!r) return;
+        const auto s = r->state();
+        {
+          std::lock_guard lock(m_);
+          v_.code_phase = static_cast<std::uint8_t>(s.p);
+          v_.code_text = s.text;
+          v_.code_link = s.link;
+          v_.code_note = s.note;
+          std::string how;
+          for (const auto& h : s.how) how += (how.empty() ? "" : ", ") + h;
+          v_.code_how = how;
+        }
+        post_throttled();
+      });
+  std::string relay_now, forwarded_now;
+  bool dht_now = false;
+  {
+    std::lock_guard lock(m_);
+    internet_ = in;
+    relay_now = v_.relay_server;
+    forwarded_now = v_.forwarded;
+    dht_now = v_.dht;
+  }
+  // A setting changed while the receiver was made, when there was no
+  // receiver to tell: it hears it now.
+  if (relay_now != o.relay) in->set_relay(std::move(relay_now));
+  if (forwarded_now != o.forwarded) in->set_forwarded(std::move(forwarded_now));
+  if (dht_now != o.dht) in->set_dht(dht_now);
 }
 
 // ---- presence -----------------------------------------------------------------------
@@ -491,7 +633,244 @@ void engine::accept_loop() {
   }
 }
 
-void engine::on_incoming(std::unique_ptr<link> l) {
+// ---- known devices (#472 PR 4) ----------------------------------------------------------
+
+void engine::publish_known_locked() {
+  v_.known.clear();
+  v_.known_own.clear();
+  v_.known_ids.clear();
+  for (const auto& d : devices_) {
+    v_.known.push_back(d.name);
+    v_.known_own.push_back(d.own);
+    v_.known_ids.push_back(relay::fingerprint(d.key));
+  }
+  if (last_pair_) {
+    v_.remembered = std::any_of(devices_.begin(), devices_.end(),
+                                [&](const known::device& d) { return d.key == last_pair_->key; });
+  }
+}
+
+void engine::offer_remember(const channel& ch, const std::string& name) {
+  const auto& key = ch.peer_key();
+  if (!key || ch.version() < 2) return;
+  std::lock_guard lock(m_);
+  if (!v_.can_remember) return;
+  known::device d;
+  d.name = name;
+  d.key = *key;
+  d.secret = ch.pairing_secret();
+  last_pair_ = std::move(d);
+  v_.remember_offer = true;
+  v_.remember_peer = name;
+  publish_known_locked();
+}
+
+void engine::set_remembered(bool on) {
+  {
+    std::lock_guard lock(m_);
+    if (!last_pair_ || !v_.remember_offer) return;
+    std::erase_if(devices_, [&](const known::device& d) { return d.key == last_pair_->key; });
+    if (on) {
+      if (devices_.size() >= known::kMaxDevices) devices_.erase(devices_.begin());  // the oldest goes
+      devices_.push_back(*last_pair_);
+    }
+    publish_known_locked();
+  }
+  // The store on this worker (never the UI thread), one call at a time.
+  {
+    std::vector<known::device> copy;
+    {
+      std::lock_guard lock(m_);
+      copy = devices_;
+    }
+    std::lock_guard s(secrets_m_);
+    if (secrets_ && !known::save(*secrets_, copy)) host_.log(1, "sharepoint: the remembered devices were not kept");
+  }
+  request_reconcile();
+  post();
+}
+
+void engine::forget_known(std::size_t index) {
+  std::vector<known::device> copy;
+  {
+    std::lock_guard lock(m_);
+    if (index >= devices_.size()) return;
+    devices_.erase(devices_.begin() + static_cast<std::ptrdiff_t>(index));
+    publish_known_locked();
+    copy = devices_;
+  }
+  {
+    std::lock_guard s(secrets_m_);
+    if (secrets_ && !known::save(*secrets_, copy)) host_.log(1, "sharepoint: the remembered devices were not kept");
+  }
+  request_reconcile();
+  post();
+}
+
+void engine::sync_known() {
+  bool want = false;
+  {
+    std::lock_guard lock(m_);
+    want = !stopping_.load() && !opts_.offline && v_.internet && v_.dht && !devices_.empty() && visible_locked();
+  }
+  if (want == known_thread_.joinable()) return;
+  if (!want) {
+    known_stop_.store(true);
+    known_thread_.join();
+    return;
+  }
+  known_stop_.store(false);
+  known_thread_ = std::thread([this] {
+    try {
+      run_known_wait();
+    } catch (...) {
+    }
+  });
+}
+
+void engine::run_known_wait() {
+  const auto stopped = [this] { return known_stop_.load() || stopping_.load(); };
+  const auto rest = [&](int ms) {
+    for (int waited = 0; waited < ms && !stopped(); waited += 100) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  };
+  // One socket and one DHT client for every remembered device. A DHT that
+  // does not answer (no connection yet) is tried again.
+  std::shared_ptr<udp_hub> hub;
+  std::unique_ptr<dht::client> client;
+  while (!stopped()) {
+    auto h = udp_hub::open(0, opts_.internet_loopback);
+    if (h) {
+      hub = std::move(*h);
+      client = std::make_unique<dht::client>(hub, dht_options());
+      if (client->start(stopped)) break;
+      client.reset();
+      hub->stop();
+      hub.reset();
+    }
+    rest(30000);
+  }
+  if (!client) return;
+  struct pair_state {
+    std::int64_t hour = -1;
+    std::unique_ptr<dht::keys> k;
+    std::chrono::steady_clock::time_point put_at{};
+    std::int64_t answered_ms = 0;  // the newest sender's item met
+    int salt = 0;
+  };
+  std::map<std::array<std::uint8_t, 32>, pair_state> pairs;
+  while (!stopped()) {
+    std::vector<known::device> devices;
+    bool busy = false;
+    {
+      std::lock_guard lock(m_);
+      devices = devices_;
+      busy = transfer_running_;
+    }
+    std::erase_if(pairs, [&](const auto& p) {
+      return std::none_of(devices.begin(), devices.end(), [&](const known::device& d) { return d.key == p.first; });
+    });
+    const std::int64_t hour = known::hour_of(unix_now_ms());
+    for (const auto& d : devices) {
+      if (stopped()) break;
+      auto& s = pairs[d.key];
+      if (s.hour != hour) {
+        s.k = std::make_unique<dht::keys>(known::presence_keys(d, hour, public_key_));
+        s.hour = hour;
+        s.put_at = {};
+      }
+      // Where this computer can be reached, for this pair this hour.
+      const auto now = std::chrono::steady_clock::now();
+      if (s.put_at == std::chrono::steady_clock::time_point{} || now - s.put_at >= kKnownRepublish) {
+        dht::contents mine;
+        mine.candidates = dht::own_candidates(*hub, *client, opts_.internet_loopback);
+        mine.written_ms = unix_now_ms();
+        for (int i = 0; i < dht::kTargets && !stopped(); ++i) {
+          const std::string salt = dht::salt_of(*s.k, dht::role::receiver, i);
+          (void)client->put(*s.k, salt, mine.written_ms / 1000, dht::seal(*s.k, salt, mine), stopped);
+        }
+        s.put_at = now;
+      }
+      if (busy) continue;  // a sender knocking now is met after this transfer
+      // A sender knocking: one of its salts per look, in turn.
+      const std::string salt = dht::salt_of(*s.k, dht::role::sender, s.salt++ % dht::kTargets);
+      auto got = client->get(s.k->public_key, salt, stopped);
+      if (!got) continue;
+      auto c = dht::open(*s.k, salt, got->v, unix_now_ms());
+      if (!c || c->gone || c->written_ms <= s.answered_ms) continue;
+      s.answered_ms = c->written_ms;
+      dht::meet_options mo;
+      mo.loopback = opts_.internet_loopback;
+      mo.wait_ms = 30000;
+      auto met = dht::meet(hub, *client, *s.k, dht::role::receiver, mo, stopped, {});
+      s.put_at = std::chrono::steady_clock::now();  // the meeting wrote this side's item afresh
+      if (!met) continue;
+      on_incoming(std::make_unique<bearer_as>(std::move(*met), transport::internet), true, d);
+      break;  // one at a time: the next look sees the transfer
+    }
+    rest(opts_.known_poll_ms);
+  }
+  // Stopped: this side's items say "gone" (briefly; they expire anyway).
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  const auto brief = [&] { return stopping_.load() || std::chrono::steady_clock::now() >= until; };
+  for (auto& [key, s] : pairs) {
+    if (s.k) dht::withdraw(*client, *s.k, dht::role::receiver, brief);
+  }
+  hub->stop();
+}
+
+void engine::start_send_known(std::size_t index) {
+  std::optional<known::device> to;
+  std::vector<outgoing_file> files;
+  {
+    std::lock_guard lock(m_);
+    if (index >= devices_.size() || transfer_running_ || out_busy_locked() || v_.reading_folder) return;
+    if (!v_.internet || !v_.dht) {
+      v_.send_code_note = "Turn on \xE2\x80\x9C" "Find each other over the internet\xE2\x80\x9D to send to a remembered device.";
+    } else if (files_.empty()) {
+      v_.send_code_note = "Pick the files to send first.";
+    } else {
+      to = devices_[index];
+      v_.send_code_note.clear();
+      transfer_running_ = true;
+      cancel_.store(false);
+      files = files_;
+      out_decision_ = 0;
+      v_.remember_offer = false;
+      v_.out = view::out_phase::reaching;
+      v_.out_internet = true;
+      v_.out_known = true;
+      v_.out_attempt = 0;
+      v_.out_peer = to->name;
+      v_.out_peer_id.clear();
+      v_.out_note.clear();
+      v_.out_check.clear();
+      v_.out_bytes = 0;
+      v_.out_files = 0;
+      v_.out_count = static_cast<std::uint32_t>(files.size());
+      v_.out_total = v_.file_bytes;
+    }
+  }
+  post();
+  if (!to) return;
+  std::lock_guard threads(threads_m_);
+  if (transfer_thread_.joinable()) transfer_thread_.join();
+  transfer_thread_ = std::thread([this, files = std::move(files), to = std::move(to)]() mutable {
+    try {
+      run_send({}, std::move(files), std::nullopt, std::nullopt, std::move(to));
+    } catch (...) {
+      fail_transfer(true);
+    }
+  });
+}
+
+void engine::on_internet_link(std::unique_ptr<link> l) {
+  if (!l) return;
+  on_incoming(std::make_unique<bearer_as>(std::move(l), transport::internet), true);
+}
+
+void engine::on_incoming(std::unique_ptr<link> l, bool internet, std::optional<known::device> from_known) {
   if (!l || stopping_.load()) return;
   bool busy = false;
   {
@@ -500,6 +879,7 @@ void engine::on_incoming(std::unique_ptr<link> l) {
     if (!busy) {
       transfer_running_ = true;
       cancel_.store(false);
+      v_.remember_offer = false;
     }
   }
   std::lock_guard threads(threads_m_);
@@ -507,9 +887,9 @@ void engine::on_incoming(std::unique_ptr<link> l) {
     reap_helpers();
     if (static_cast<int>(helpers_.size()) >= kMaxHelpers) return;  // the link closes as it goes
     auto done = std::make_shared<std::atomic<bool>>(false);
-    helpers_.push_back({std::thread([this, done, link = std::shared_ptr<sharepoint::link>(std::move(l))]() mutable {
+    helpers_.push_back({std::thread([this, done, internet, link = std::shared_ptr<sharepoint::link>(std::move(l))]() mutable {
                           try {
-                            route_busy(std::move(link));
+                            route_busy(std::move(link), internet);
                           } catch (...) {
                           }
                           done->store(true);
@@ -518,13 +898,21 @@ void engine::on_incoming(std::unique_ptr<link> l) {
     return;
   }
   if (transfer_thread_.joinable()) transfer_thread_.join();  // the last one has ended
-  transfer_thread_ = std::thread([this, link = std::move(l)]() mutable {
+  transfer_thread_ = std::thread([this, internet, link = std::move(l), from_known = std::move(from_known)]() mutable {
     try {
-      run_receive(std::move(link));
+      run_receive(std::move(link), internet, std::move(from_known));
     } catch (...) {
       fail_transfer(false);
     }
   });
+}
+
+void engine::retire(std::unique_ptr<dht_handover> h) {
+  if (!h) return;
+  h->request_stop();
+  std::lock_guard lock(threads_m_);
+  std::erase_if(retired_, [](const std::unique_ptr<dht_handover>& r) { return r->finished(); });
+  retired_.push_back(std::move(h));
 }
 
 void engine::reap_helpers() {
@@ -538,7 +926,7 @@ void engine::reap_helpers() {
   }
 }
 
-void engine::route_busy(std::shared_ptr<link> l) {
+void engine::route_busy(std::shared_ptr<link> l, bool internet) {
   {
     std::lock_guard lock(m_);
     if (stopping_.load()) return;
@@ -567,6 +955,19 @@ void engine::route_busy(std::shared_ptr<link> l) {
     forget_opening(l);
     return;
   }
+  if (h->internet) {
+    // #472 PR 2: a code's sender while a transfer runs here. The code dies
+    // (its first attempt), and the link closes: one transfer at a time.
+    std::shared_ptr<internet_receiver> in;
+    {
+      std::lock_guard lock(m_);
+      in = internet_;
+    }
+    if (internet && in && in->spend()) in->release();
+    l->shutdown();
+    forget_opening(l);
+    return;
+  }
   // At once, after the handshake: the sender learns before its person is
   // asked to check a code that this side will not show.
   auto ch = open_tracked(l, false, kProtocolVersion, &*h);
@@ -577,7 +978,8 @@ void engine::route_busy(std::shared_ptr<link> l) {
 }
 
 result<std::unique_ptr<channel>> engine::open_tracked(std::shared_ptr<link> l, bool client, std::uint32_t version,
-                                                      const hello* read) {
+                                                      const hello* read,
+                                                      const std::vector<std::uint8_t>* internet_secret) {
   {
     std::lock_guard lock(m_);
     if (stopping_.load()) return err(status::cancelled);
@@ -586,6 +988,7 @@ result<std::unique_ptr<channel>> engine::open_tracked(std::shared_ptr<link> l, b
   channel::options o;
   o.version = version;
   o.static_key = static_key_;
+  if (internet_secret) o.internet_secret = *internet_secret;
   auto ch = read ? channel::open_server(l, *read, id_, opts_.my_name, o)
                  : channel::open(l, client, id_, opts_.my_name, o);
   forget_opening(l);
@@ -694,7 +1097,8 @@ void engine::files_loop() {
 
 bool engine::out_busy_locked() const noexcept {
   return v_.out == view::out_phase::waiting_wifi || v_.out == view::out_phase::connecting || v_.out == view::out_phase::confirming ||
-         v_.out == view::out_phase::waiting || v_.out == view::out_phase::sending;
+         v_.out == view::out_phase::waiting || v_.out == view::out_phase::sending || v_.out == view::out_phase::reaching ||
+         v_.out == view::out_phase::naming;
 }
 
 void engine::publish_files(std::vector<outgoing_file> files, std::uint64_t gen) {
@@ -805,6 +1209,121 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
   const std::string* text = value && value->k == json::kind::string ? &value->s : nullptr;
   constexpr std::uint32_t kClick = 1, kChange = 2, kSubmit = 3, kSelect = 4, kActivate = 5;
 
+  if (node == "internet" && kind == kChange && value && value->k == json::kind::boolean) {
+    // #472 PR 2: opt-in, off by default; off drops any code and its mappings.
+    {
+      std::lock_guard lock(m_);
+      v_.internet = value->b;
+    }
+    request_reconcile();
+    request_save();
+    post();
+    return;
+  }
+  if (node == "dht" && kind == kChange && value && value->k == json::kind::boolean) {
+    // #472 PR 3: opt-in, off by default; the DHT runs only while a code waits.
+    std::shared_ptr<internet_receiver> in;
+    {
+      std::lock_guard lock(m_);
+      v_.dht = value->b;
+      in = internet_;
+    }
+    if (in) in->set_dht(value->b);
+    request_save();
+    post();
+    return;
+  }
+  if (node == "handover" && kind == kChange && value && value->k == json::kind::boolean) {
+    // #472 PR 5: opt-in, off by default; for the next transfer.
+    {
+      std::lock_guard lock(m_);
+      v_.handover = value->b;
+    }
+    request_save();
+    post();
+    return;
+  }
+  if (node == "relay" && kind == kChange && value && value->k == json::kind::boolean) {
+    // #472 relays: opt-in, off by default; for the next send, and whether
+    // this computer relays for the person's others.
+    {
+      std::lock_guard lock(m_);
+      v_.relay = value->b;
+    }
+    request_save();
+    post();
+    return;
+  }
+  if (node == "relay_server" && (kind == kChange || kind == kSubmit) && text) {
+    std::shared_ptr<internet_receiver> in;
+    {
+      std::lock_guard lock(m_);
+      v_.relay_server = *text;
+      in = internet_;
+    }
+    if (in) in->set_relay(*text);
+    request_save();
+    return;
+  }
+  if (node.rfind("own", 0) == 0 && node.size() > 3 && kind == kChange && value && value->k == json::kind::boolean) {
+    // Keyed by the device's key, not its place in the list: it grants relaying.
+    set_own(node.substr(3), value->b);
+    return;
+  }
+  if (node == "forwarded" && (kind == kChange || kind == kSubmit) && text) {
+    std::shared_ptr<internet_receiver> in;
+    {
+      std::lock_guard lock(m_);
+      v_.forwarded = *text;
+      in = internet_;
+    }
+    if (in) in->set_forwarded(*text);
+    request_save();
+    return;
+  }
+  if ((node == "make_code" || node == "stop_code") && kind == kClick) {
+    std::shared_ptr<internet_receiver> in;
+    {
+      std::lock_guard lock(m_);
+      in = internet_;
+    }
+    if (in) node == "make_code" ? in->make_code() : in->drop_code();
+    return;
+  }
+  if (node == "send_code" && (kind == kChange || kind == kSubmit) && text) {
+    {
+      std::lock_guard lock(m_);
+      code_entry_ = *text;
+      v_.send_code_note.clear();
+    }
+    if (kind == kSubmit) start_send_code();
+    return;
+  }
+  if (node == "send_to_code" && kind == kClick) {
+    start_send_code();
+    return;
+  }
+  // #472 PR 4: known devices.
+  if (node == "remember" && kind == kChange && value && value->k == json::kind::boolean) {
+    set_remembered(value->b);
+    return;
+  }
+  if (node == "known" && (kind == kActivate || kind == kClick) && text && text->rfind("dev", 0) == 0) {
+    start_send_known(static_cast<std::size_t>(std::strtoul(text->c_str() + 3, nullptr, 10)));
+    return;
+  }
+  if (node.rfind("forget", 0) == 0 && node.size() > 6 && kind == kClick) {
+    forget_known(static_cast<std::size_t>(std::strtoul(node.c_str() + 6, nullptr, 10)));
+    return;
+  }
+  if (node == "out_confirm" && kind == kClick) {
+    std::lock_guard lock(m_);
+    if (v_.out == view::out_phase::naming && out_decision_ == 0) {
+      out_decision_ = 1;
+      decided_.notify_all();
+    }
+    return;
+  }
   if ((node == "receiving" || node == "background") && kind == kChange && value &&
       value->k == json::kind::boolean) {
     bool changed = false;
@@ -1025,6 +1544,8 @@ void engine::start_send() {
       peer_id = v_.selected_peer;
       files = files_;
       out_decision_ = 0;
+      v_.remember_offer = false;
+      v_.out_known = false;
       v_.out = view::out_phase::connecting;
       v_.out_bytes = 0;
       v_.out_files = 0;
@@ -1059,7 +1580,78 @@ void engine::end_transfer() {
   post();
 }
 
-void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
+void engine::start_send_code() {
+  std::optional<invite::code> code;
+  std::optional<dht::word_code> words;
+  std::vector<outgoing_file> files;
+  {
+    std::lock_guard lock(m_);
+    if (!v_.internet || transfer_running_ || out_busy_locked() || v_.reading_folder) return;
+    code = invite::decode(code_entry_);
+    if (!code && v_.dht) words = dht::parse_words(code_entry_);
+    if (!code && !words) {
+      v_.send_code_note = code_entry_.empty()
+                              ? std::string(v_.dht ? "Paste the code or link, or type the four words, the other person "
+                                                     "sent you."
+                                                   : "Paste the code or link the other person sent you.")
+                              : std::string("That is not a whole code: check it against what they sent (a mistyped "
+                                            "code is caught here, before it is spent).");
+    } else if (files_.empty()) {
+      v_.send_code_note = "Pick the files to send first.";
+      code.reset();
+      words.reset();
+    }
+    if ((code || words) && !files_.empty()) {
+      v_.send_code_note.clear();
+      transfer_running_ = true;
+      cancel_.store(false);
+      files = files_;
+      out_decision_ = 0;
+      v_.out = view::out_phase::reaching;
+      v_.remember_offer = false;
+      v_.out_known = false;
+      v_.out_internet = true;
+      v_.out_attempt = 0;
+      v_.out_peer = "the other computer";
+      v_.out_peer_id.clear();
+      v_.out_note.clear();
+      v_.out_check.clear();
+      v_.out_bytes = 0;
+      v_.out_files = 0;
+      v_.out_count = static_cast<std::uint32_t>(files.size());
+      v_.out_total = v_.file_bytes;
+    }
+  }
+  post();
+  if (!code && !words) return;
+  std::lock_guard threads(threads_m_);
+  if (transfer_thread_.joinable()) transfer_thread_.join();
+  transfer_thread_ = std::thread([this, files = std::move(files), code = std::move(code), words]() mutable {
+    try {
+      run_send({}, std::move(files), std::move(code), words);
+    } catch (...) {
+      fail_transfer(true);
+    }
+  });
+}
+
+dht::client::options engine::dht_options() const {
+  dht::client::options o;
+  if (opts_.dht_nodes) {
+    o.use_routers = false;
+    o.extra = *opts_.dht_nodes;
+    o.query_ms = 500;
+    o.lookup_ms = 5000;
+  }
+  if (!opts_.prefs_path.empty()) {
+    o.table_path = std::string(io::parent_of(opts_.prefs_path));
+    o.table_path = o.table_path.empty() ? std::string("sharepoint_dht.dat") : io::join_path(o.table_path, "sharepoint_dht.dat");
+  }
+  return o;
+}
+
+void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std::optional<invite::code> code,
+                      std::optional<dht::word_code> words, std::optional<known::device> to_known) {
   std::optional<net::endpoint> wifi;
   std::string bt_handle, name;
   std::uint32_t protocol = kProtocol1;
@@ -1067,6 +1659,7 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
   for (const auto& f : files) total += f.size;
   {
     std::lock_guard lock(m_);
+    v_.out_relay.clear();
     const auto it = peers_.find(peer_id);
     if (it != peers_.end()) {
       const auto now = std::chrono::steady_clock::now();
@@ -1089,6 +1682,273 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
     }
     end_transfer();
   };
+
+  // #472 PR 2: to a code, over the internet. Every place at once, round
+  // after round, until one connects or Cancel; then CPace proves the code.
+  std::vector<std::unique_ptr<link_race>> races;  // joined when this send ends
+  struct races_guard {
+    std::vector<std::unique_ptr<link_race>>& r;
+    ~races_guard() {
+      for (auto& x : r) x->join();
+    }
+  } join_races{races};
+  std::optional<net::endpoint> internet_place;
+  if (to_known) {
+    // #472 PR 4: a remembered device. Meet on the DHT under this hour's keys
+    // of the pair (known.h), as long as it takes, round after round (each
+    // round's item lives 10 minutes); then the internet handshake keyed by
+    // the pair's secret, and its key must be the one remembered.
+    const std::string& who = to_known->name;
+    const auto stopped = [this] { return cancel_.load() || stopping_.load(); };
+    const std::string waiting = "Waiting for " + who + " to come online\xE2\x80\xA6 It sends as soon as " + who +
+                                " has Sharepoint open with \xE2\x80\x9C" "Find each other over the internet\xE2\x80\x9D on. " +
+                                who + " must remember this computer too.";
+    auto say = [this](const std::string& s) {
+      {
+        std::lock_guard lock(m_);
+        v_.out_note = s;
+      }
+      post_throttled();
+    };
+    say(waiting);
+    auto h = udp_hub::open(0, opts_.internet_loopback);
+    if (!h) return finish("Could not use the internet on this computer. Nothing was sent.");
+    std::shared_ptr<udp_hub> hub = std::move(*h);
+    struct hub_guard {
+      std::shared_ptr<udp_hub>& h;
+      ~hub_guard() { h->stop(); }
+    } stop_hub{hub};
+    dht::client client(hub, dht_options());
+    if (!client.start(stopped)) {
+      if (stopped()) return finish("Cancelled. Nothing was sent.");
+      return finish("The public DHT did not answer: this network may block UDP, or there is no connection. "
+                    "Nothing was sent.");
+    }
+    std::unique_ptr<dht::keys> k;
+    std::unique_ptr<link> met;
+    for (int round = 1; !met; ++round) {
+      if (stopped()) return finish("Cancelled. Nothing was sent.");
+      {
+        std::lock_guard lock(m_);
+        v_.out_attempt = round;
+      }
+      const std::int64_t now = unix_now_ms();
+      const std::int64_t hour = known::hour_of(now);
+      k = std::make_unique<dht::keys>(known::presence_keys(*to_known, hour, to_known->key));
+      dht::meet_options mo;
+      mo.loopback = opts_.internet_loopback;
+      // To the hour's end (both sides change keys then), at most 8 minutes.
+      mo.wait_ms = static_cast<int>(std::clamp<std::int64_t>((hour + 1) * known::kHourMs - now, 5000, 8 * 60 * 1000));
+      mo.punch_ms = dht::kPunchMs + opts_.known_poll_ms + 5000;
+      auto r = dht::meet(hub, client, *k, dht::role::sender, mo, stopped, [&](const std::string& s) {
+        say(s.rfind("Connecting", 0) == 0 ? s : waiting);
+      });
+      if (r) met = std::move(*r);
+      if (!met) say(waiting);
+    }
+    std::shared_ptr<link> l(std::move(met));
+    {
+      std::lock_guard lock(m_);
+      if (stopping_.load()) return finish("Cancelled. Nothing was sent.");
+      opening_.push_back(l);
+    }
+    channel::options o;
+    o.static_key = static_key_;
+    const std::vector<std::uint8_t> pw(k->password.begin(), k->password.end());
+    auto opened = channel::open_internet(l, pw, id_, opts_.my_name, o);
+    forget_opening(l);
+    if (cancel_.load()) return finish("Cancelled. Nothing was sent.");
+    if (!opened) {
+      return finish("The computer that answered could not prove it is " + who + ". Nothing was sent.");
+    }
+    std::thread gone([&client, &k] { dht::withdraw(client, *k, dht::role::sender, {}); });
+    struct join_guard {
+      std::thread& t;
+      ~join_guard() { t.join(); }
+    } join_gone{gone};
+    if ((*opened)->peer_key() != to_known->key) {
+      (*opened)->shutdown();
+      host_.log(1, "sharepoint: a remembered device's key changed");
+      return finish(changed_key_text(who, true));
+    }
+    std::shared_ptr<channel> ich(std::move(*opened));
+    return send_on(std::move(ich), std::move(files), who, total, {}, std::nullopt, true);
+  }
+  if (words) {
+    // #472 PR 3: four words. Meet on the DHT, punch, then the internet
+    // handshake over the punched path, keyed by the words.
+    const auto stopped = [this] { return cancel_.load() || stopping_.load(); };
+    auto say = [this](const std::string& s) {
+      {
+        std::lock_guard lock(m_);
+        v_.out_note = s;
+      }
+      post_throttled();
+    };
+    say("Working out the code\xE2\x80\xA6");
+    auto k = dht::derive(*words, opts_.dht_fast_kdf);
+    auto h = udp_hub::open(0, opts_.internet_loopback);
+    if (!k || !h) return finish("Could not use the code on this computer.");
+    std::shared_ptr<udp_hub> hub = std::move(*h);
+    struct hub_guard {
+      std::shared_ptr<udp_hub>& h;
+      ~hub_guard() { h->stop(); }
+    } stop_hub{hub};
+    dht::client client(hub, dht_options());
+    say("Joining the public DHT\xE2\x80\xA6");
+    if (!client.start(stopped)) {
+      if (stopped()) return finish("Cancelled. Nothing was sent.");
+      return finish("The public DHT did not answer: this network may block UDP, or there is no connection. "
+                    "Nothing was sent.");
+    }
+    dht::meet_options mo;
+    mo.loopback = opts_.internet_loopback;
+    mo.wait_ms = opts_.code_lifetime_ms;
+    mo.tcp = true;  // a word code's meeting, the window open: TCP simultaneous open too
+    auto met = dht::meet(hub, client, *k, dht::role::sender, mo, stopped, say);
+    if (stopped()) return finish("Cancelled. Nothing was sent.");
+    if (!met) {
+      return finish(met.error() == status::timeout
+                        ? "Could not reach the other computer with these words: they may be mistyped, used or "
+                          "expired, or both networks block a direct path (two strict NATs, or no UDP). Check the "
+                          "words, or ask for a code made where the router can open a port. Nothing was sent."
+                        : "Could not reach the other computer. Nothing was sent.");
+    }
+    std::shared_ptr<link> l(std::move(*met));
+    {
+      std::lock_guard lock(m_);
+      if (stopping_.load()) return finish("Cancelled. Nothing was sent.");
+      opening_.push_back(l);
+    }
+    channel::options o;
+    o.static_key = static_key_;
+    const std::vector<std::uint8_t> pw(k->password.begin(), k->password.end());
+    auto opened = channel::open_internet(l, pw, id_, opts_.my_name, o);
+    forget_opening(l);
+    if (cancel_.load()) return finish("Cancelled. Nothing was sent.");
+    if (!opened) {
+      return finish("The words did not work: they were mistyped, used, or have expired. Ask for new ones. "
+                    "Nothing was sent.");
+    }
+    // The link is up: this side's items now say "gone", while the send runs.
+    std::thread gone([&client, &k] { dht::withdraw(client, *k, dht::role::sender, {}); });
+    std::shared_ptr<channel> ich(std::move(*opened));
+    name = ich->peer_name();
+    send_on(std::move(ich), std::move(files), name, total, {}, std::nullopt);
+    gone.join();
+    return;
+  }
+  if (code) {
+    const auto connect = [this](const net::endpoint& to, int ms) -> result<std::unique_ptr<link>> {
+      auto c = opts_.connect_wifi ? opts_.connect_wifi(to, ms) : net::connect(to, ms);
+      if (!c) return err(c.error());
+      return std::unique_ptr<link>(std::make_unique<bearer_as>(std::move(*c), transport::internet));
+    };
+    const auto stopped = [this] { return cancel_.load() || stopping_.load(); };
+    std::unique_ptr<link> reached;
+    std::string relayed_by;  // #472 relays: "" direct
+    std::string relay_why;   // what the person's own computers said, if asked
+    for (int attempt = 1; !reached; ++attempt) {
+      {
+        std::lock_guard lock(m_);
+        v_.out_attempt = attempt;
+      }
+      post();
+      auto race = std::make_unique<link_race>();
+      start_round(*race, code->places, connect);
+      // #472 relays: the receiver's relay server, a moment after the places;
+      // and, beside them, the person's own computers (a meeting over the DHT
+      // takes a while, so it runs in the race, not after it). Given up as
+      // soon as the round is decided.
+      if (code->relay) relay::add_relay(*race, *code->relay, connect, stopped);
+      auto round_over = std::make_shared<std::atomic<bool>>(false);
+      struct own_try {
+        std::mutex m;
+        std::string via, why;
+      };
+      auto own = std::make_shared<own_try>();
+      const int own_at = static_cast<int>(code->places.size()) + (code->relay ? 1 : 0);
+      bool own_tried = false;
+      if (!code->places.empty() && own_relay_possible()) {
+        own_tried = true;
+        race->add(
+            [this, places = code->places, round_over, own]() -> result<std::unique_ptr<link>> {
+              std::string via, why;
+              auto through = reach_through_own(places, via, why, [round_over] { return round_over->load(); });
+              std::lock_guard g(own->m);
+              own->via = std::move(via);
+              own->why = std::move(why);
+              if (!through) return err(status::not_found);
+              return through;
+            },
+            relay::kRelayDelayMs);
+      }
+      reached = race->wait(stopped);
+      round_over->store(true);
+      const int won = race->winner_index();
+      const auto outcomes = race->outcomes();
+      races.push_back(std::move(race));
+      if (stopped()) {
+        if (reached) reached->shutdown();
+        return finish("Cancelled. Nothing was sent.");
+      }
+      if (reached) {
+        if (won >= 0 && static_cast<std::size_t>(won) < code->places.size()) internet_place = code->places[won];
+        if (won == own_at && own_tried) {
+          std::lock_guard g(own->m);
+          relayed_by = own->via;
+        } else if (reached->through()) {
+          relayed_by = "your relay server";
+        }
+        break;
+      }
+      if (own_tried) {
+        std::lock_guard g(own->m);
+        relay_why = own->why;
+      }
+      const auto mine = net::local_addresses();
+      const bool here_v6 =
+          std::any_of(mine.begin(), mine.end(), [](const net::address& a) { return a.v6 && net::is_public(a); });
+      {
+        std::lock_guard lock(m_);
+        v_.out_note = why_unreachable(code->places, outcomes, here_v6);
+        if (!relay_why.empty()) v_.out_note += " " + relay_why;
+      }
+      post();
+      // Then the next round, after 1, 2, 5, 10 and then every 30 seconds.
+      std::unique_lock lock(m_);
+      decided_.wait_for(lock, std::chrono::milliseconds(backoff_ms(attempt)), stopped);
+      if (stopped()) {
+        lock.unlock();
+        return finish("Cancelled. Nothing was sent.");
+      }
+    }
+    std::shared_ptr<link> l(std::move(reached));
+    {
+      std::lock_guard lock(m_);
+      if (stopping_.load()) return finish("Cancelled. Nothing was sent.");
+      opening_.push_back(l);
+    }
+    channel::options o;
+    o.static_key = static_key_;
+    auto opened = channel::open_internet(l, code->secret, id_, opts_.my_name, o);
+    forget_opening(l);
+    if (cancel_.load()) return finish("Cancelled. Nothing was sent.");
+    if (!opened) {
+      return finish("The code did not work: it was mistyped, has been used, or has expired. Ask for a new one. "
+                    "Nothing was sent.");
+    }
+    std::shared_ptr<channel> ich(std::move(*opened));
+    name = ich->peer_name();
+    peer_id.clear();
+    if (!relayed_by.empty()) {
+      // A relayed session does not move: its rejoins would need the relay again.
+      internet_place.reset();
+      std::lock_guard lock(m_);
+      v_.out_relay = relayed_by;
+    }
+    return send_on(std::move(ich), std::move(files), name, total, peer_id, internet_place);
+  }
 
   // Wi-Fi when the peer is on this network; Bluetooth only for a small set.
   result<std::unique_ptr<link>> l = err(status::not_found);
@@ -1124,14 +1984,42 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
     ch->shutdown();
     return finish("Could not reach " + name + ".");
   }
+  send_on(std::move(ch), std::move(files), name, total, peer_id, std::nullopt);
+}
+
+void engine::send_on(std::shared_ptr<channel> ch, std::vector<outgoing_file> files, std::string name,
+                     std::uint64_t total, std::string peer_id, std::optional<net::endpoint> internet_place,
+                     bool trusted) {
+  auto finish = [&](std::string note) {
+    {
+      std::lock_guard lock(m_);
+      v_.out = view::out_phase::ended;
+      v_.out_note = std::move(note);
+      out_expected_.clear();
+    }
+    end_transfer();
+  };
+  const bool internet = ch->internet();
   {
     std::lock_guard lock(m_);
     live_ = ch;
-    v_.out = view::out_phase::confirming;
+    // A code typed here (nearby), or, over the internet, the name confirmed
+    // here: the CPace code already proved the peer, and the check is there
+    // to compare if the two people want (#472).
+    v_.out = internet ? view::out_phase::naming : view::out_phase::confirming;
     v_.out_via = transport_name(ch->via());
     v_.out_reconnecting = false;
     v_.out_protocol = ch->version();
-    out_expected_ = digits_of(ch->code());
+    v_.out_peer = name;
+    if (internet) {
+      v_.out_check = ch->code();
+      v_.out_note.clear();
+    } else {
+      out_expected_ = digits_of(ch->code());
+    }
+    // #472 PR 4: a remembered device proved the pair's secret and its key:
+    // there is nothing to confirm.
+    if (trusted) out_decision_ = 1;
   }
   post();
   // #472: protocol 2 moves between bearers while the send runs (a drop, or
@@ -1154,9 +2042,9 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
   if (ch->resumable()) {
     channel* raw = ch.get();
     ch->set_on_link([this, raw](link_event e) { on_link_event(true, e, *raw); });
-    mover = std::thread([this, ch, peer_id, &mover_stop] {
+    mover = std::thread([this, ch, peer_id, internet_place, &mover_stop] {
       try {
-        run_mover(ch, peer_id, mover_stop);
+        run_mover(ch, peer_id, mover_stop, internet_place);
       } catch (...) {
       }
     });
@@ -1189,7 +2077,8 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
     if (std::chrono::steady_clock::now() - asked > kAskFor) {
       (void)ch->try_send(msg::cancel, "{}");
       ch->shutdown();
-      return finish("Nobody typed the code, so nothing was sent.");
+      return finish(internet ? "Nobody confirmed the name, so nothing was sent."
+                             : "Nobody typed the code, so nothing was sent.");
     }
     message m;
     auto r = ch->receive(m, 0);
@@ -1210,7 +2099,90 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
     out_expected_.clear();
   }
   post();
-  const transfer_result r = send_files(*ch, files, hooks_for(true), [this] {
+  // #472 PR 5: over a local link, with the toggle on, the offer says the
+  // receiver's internet places are welcome; they arrive while the files go.
+  hooks hk = hooks_for(true);
+  {
+    std::lock_guard lock(m_);
+    handover_places_.clear();
+    handover_dht_ = false;
+    v_.out_handover = false;
+    v_.out_handover_dht = false;
+    hk.handover = ch->resumable() && !internet && v_.internet && v_.handover;
+    hk.handover_dht = hk.handover && v_.dht;
+  }
+  // #472: with the DHT toggle on too, once the receiver says it meets on
+  // the DHT (its places, right after Accept): the hub and the DHT up while
+  // the files go, for a drop that takes the receiver's places with it. Both
+  // sides then meet under the session's keys and the send rejoins there.
+  std::mutex meet_m;
+  std::unique_ptr<dht_handover> meet_dht;  // under meet_m
+  auto start_meet = [&] {
+    std::lock_guard lock(meet_m);
+    if (meet_dht) return;
+    dht_handover::options mo;
+    mo.me = dht::role::sender;
+    mo.client = dht_options();
+    mo.loopback = opts_.internet_loopback;
+    meet_dht = std::make_unique<dht_handover>(
+        ch, std::move(mo), [] { return true; },
+        [this, ch](std::unique_ptr<link> l) {
+          // Back some other way since the meeting ended: the link that works stays.
+          if (ch->link_up()) {
+            l->shutdown();
+            return;
+          }
+          if (opts_.wrap_handover_link) l = opts_.wrap_handover_link(std::move(l));
+          if (auto r = ch->rejoin(std::shared_ptr<link>(std::move(l))); !r && r.error() != status::cancelled) {
+            host_.log(1, "sharepoint: a rejoin over the DHT did not complete");
+          }
+        },
+        [this] {
+          {
+            std::lock_guard lock(m_);
+            v_.out_handover_dht = true;
+          }
+          post_throttled();
+        });
+  };
+  if (hk.handover) {
+    hk.on_places = [this, &start_meet, ask_dht = hk.handover_dht](std::string_view text) {
+      auto places = parse_places(text);
+      const bool dht = ask_dht && places_dht(text);  // only if this side asked
+      {
+        std::lock_guard lock(m_);
+        handover_places_ = std::move(places);
+        handover_dht_ = handover_dht_ || dht;
+        v_.out_handover = !handover_places_.empty() || handover_dht_;
+      }
+      if (dht) start_meet();
+      post_throttled();
+    };
+  }
+  struct places_guard {
+    engine& e;
+    ~places_guard() {
+      std::lock_guard lock(e.m_);
+      e.handover_places_.clear();
+      e.handover_dht_ = false;
+      e.v_.out_handover = false;
+      e.v_.out_handover_dht = false;
+    }
+  } forget_places{*this};
+  struct meet_guard {
+    engine& e;
+    std::mutex& m;
+    std::unique_ptr<dht_handover>& h;
+    ~meet_guard() {
+      std::unique_ptr<dht_handover> done;
+      {
+        std::lock_guard lock(m);
+        done = std::move(h);
+      }
+      e.retire(std::move(done));
+    }
+  } retire_meet{*this, meet_m, meet_dht};
+  const transfer_result r = send_files(*ch, files, hk, [this] {
     {
       std::lock_guard lock(m_);
       v_.out = view::out_phase::sending;
@@ -1221,6 +2193,7 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
   const std::string sent = plural(r.done, "file", "files");
   switch (r.how) {
     case outcome::delivered:
+      offer_remember(*ch, name);  // #472 PR 4
       note = "Sent " + sent + " to " + name + ".";
       if (r.skipped) note += " " + plural(r.skipped, "file", "files") + " could not be read and stayed here.";
       break;
@@ -1261,64 +2234,6 @@ void engine::on_link_event(bool sending, link_event e, const channel& ch) {
 
 namespace {
 
-// The first of several connects to finish wins; the others' links close as
-// they arrive. Each connect has its own timeout; their threads are joined
-// before the race's owner goes (no thread of the add-on outlives the engine).
-class link_race {
- public:
-  using connect_fn = std::function<result<std::unique_ptr<link>>()>;
-  ~link_race() { join(); }
-  void add(connect_fn fn) {
-    {
-      std::lock_guard lock(m_);
-      ++pending_;
-    }
-    threads_.emplace_back([this, fn = std::move(fn)] {
-      result<std::unique_ptr<link>> l = err(status::io);
-      try {
-        l = fn();
-      } catch (...) {
-      }
-      std::lock_guard lock(m_);
-      if (l && !winner_ && !taken_) {
-        winner_ = std::move(*l);
-      } else if (l) {
-        (*l)->shutdown();  // a slower bearer: not needed now
-      }
-      --pending_;
-      cv_.notify_all();
-    });
-  }
-  // The winner, once one connects or every connect has failed; nullptr when
-  // none did or `stopped()` turned true.
-  template <typename Stopped>
-  std::unique_ptr<link> wait(const Stopped& stopped) {
-    std::unique_lock lock(m_);
-    while (!winner_ && pending_ > 0 && !stopped()) cv_.wait_for(lock, std::chrono::milliseconds(100));
-    taken_ = true;
-    return std::move(winner_);
-  }
-  // Every connect has returned (their threads end at once).
-  bool settled() {
-    std::lock_guard lock(m_);
-    return pending_ == 0;
-  }
-  void join() {
-    for (auto& t : threads_) {
-      if (t.joinable()) t.join();
-    }
-    threads_.clear();
-  }
-
- private:
-  std::mutex m_;
-  std::condition_variable cv_;
-  int pending_ = 0;
-  bool taken_ = false;
-  std::unique_ptr<link> winner_;
-  std::vector<std::thread> threads_;
-};
-
 // A connect that is not the first of a send is shorter: the bearer that
 // answers at all answers quickly, and a race's slow loser is joined at the end.
 constexpr int kRaceWifiMs = 4000;
@@ -1326,7 +2241,8 @@ constexpr int kRaceBluetoothMs = kConnectMs;
 
 }  // namespace
 
-void engine::run_mover(std::shared_ptr<channel> ch, std::string peer_id, const std::atomic<bool>& stop) {
+void engine::run_mover(std::shared_ptr<channel> ch, std::string peer_id, const std::atomic<bool>& stop,
+                       std::optional<net::endpoint> internet_place) {
   using clock = std::chrono::steady_clock;
   clock::time_point last_move{};  // none yet: the first move for speed may come at once
   std::vector<std::unique_ptr<link_race>> races;
@@ -1334,12 +2250,14 @@ void engine::run_mover(std::shared_ptr<channel> ch, std::string peer_id, const s
   while (!stopped()) {
     std::optional<net::endpoint> wifi;
     std::string bt_handle;
+    std::vector<net::endpoint> handover;  // #472 PR 5: the receiver's internet places
     {
       std::unique_lock lock(m_);
       mover_cv_.wait_for(lock, std::chrono::milliseconds(500), [&] { return mover_kick_ || stopped(); });
       mover_kick_ = false;
       // Ended (done, cancelled, or gone too long): nothing to rescue.
       if (stopped()) break;
+      handover = handover_places_;
       const auto it = peers_.find(peer_id);
       if (it != peers_.end()) {
         const auto now = clock::now();
@@ -1363,7 +2281,9 @@ void engine::run_mover(std::shared_ptr<channel> ch, std::string peer_id, const s
     // on Wi-Fi: Wi-Fi alongside, then the switch (Wi-Fi is always the faster
     // by far, so this is also the "too slow" rule).
     const bool rescue = !up;
-    const bool faster = up && ch->via() == transport::bluetooth && wifi &&
+    // A send over the internet moves to this network too, when the peer
+    // turns up on it (#472 PR 2).
+    const bool faster = up && ch->via() != transport::wifi && wifi &&
                         clock::now() - last_move >= std::chrono::milliseconds(kSwitchHoldMs);
     if (!rescue && !faster) continue;
     std::shared_ptr<bluetooth> bt;
@@ -1371,14 +2291,36 @@ void engine::run_mover(std::shared_ptr<channel> ch, std::string peer_id, const s
       std::lock_guard p(presence_m_);
       bt = bluetooth_;
     }
-    if (!wifi && !bt) continue;  // nowhere to try yet: the next beacon kicks this
+    const bool over_internet = rescue && internet_place.has_value();
+    const bool over_handover = rescue && !handover.empty();
+    if (!wifi && !bt && !over_internet && !over_handover) continue;  // nowhere to try yet: the next beacon kicks this
     auto race = std::make_unique<link_race>();
+    if (over_internet) {
+      // Where the code's sender reached it: the receiver's listener stays up
+      // while the transfer runs.
+      race->add([this, to = *internet_place]() -> result<std::unique_ptr<link>> {
+        auto c = opts_.connect_wifi ? opts_.connect_wifi(to, kRaceWifiMs) : net::connect(to, kRaceWifiMs);
+        if (!c) return err(c.error());
+        return std::unique_ptr<link>(std::make_unique<bearer_as>(std::move(*c), transport::internet));
+      });
+    }
     if (wifi) {
       race->add([this, to = *wifi] {
         return opts_.connect_wifi ? opts_.connect_wifi(to, kRaceWifiMs) : net::connect(to, kRaceWifiMs);
       });
     }
     if (bt) race->add([bt, h = bt_handle] { return bt->connect(h, kRaceBluetoothMs); });
+    if (over_handover) {
+      // #472 PR 5: Wi-Fi went, the toggle is on: the receiver's internet
+      // places (swapped over the local link, no lookup), alongside the rest.
+      for (const auto& to : handover) {
+        race->add([this, to]() -> result<std::unique_ptr<link>> {
+          auto c = opts_.connect_internet ? opts_.connect_internet(to, kRaceWifiMs) : net::connect(to, kRaceWifiMs);
+          if (!c) return err(c.error());
+          return std::unique_ptr<link>(std::make_unique<bearer_as>(std::move(*c), transport::internet));
+        });
+      }
+    }
     std::unique_ptr<link> l = race->wait(stopped);
     races.push_back(std::move(race));
     if (!l) continue;
@@ -1399,11 +2341,85 @@ void engine::run_mover(std::shared_ptr<channel> ch, std::string peer_id, const s
 
 // ---- receiving --------------------------------------------------------------------------
 
-void engine::run_receive(std::unique_ptr<link> l) {
-  auto opened = open_tracked(std::shared_ptr<link>(std::move(l)), false);
+void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::optional<known::device> from_known) {
+  std::shared_ptr<link> l(std::move(incoming));
+  // #472 PR 2: an internet sender spends the code (its first attempt, right
+  // or wrong); the listener and mappings stay until this receive ends.
+  std::shared_ptr<internet_receiver> in;
+  struct release_guard {
+    std::shared_ptr<internet_receiver>& in;
+    bool held = false;
+    ~release_guard() {
+      if (held && in) in->release();
+    }
+  } held{in};
+  result<std::unique_ptr<channel>> opened = err(status::not_found);
+  if (!internet) {
+    opened = open_tracked(l, false);
+  } else {
+    {
+      std::lock_guard lock(m_);
+      if (stopping_.load()) return end_transfer();
+      opening_.push_back(l);
+      in = internet_;
+    }
+    auto h = channel::read_hello(*l, std::chrono::steady_clock::now() + std::chrono::milliseconds(kConnectMs));
+    forget_opening(l);
+    // A rejoin with nothing running here, or not a code's sender: closed.
+    if (!h || !h->internet || (!in && !from_known)) {
+      l->shutdown();
+      return end_transfer();
+    }
+    if (from_known) {
+      // #472 PR 4: met as a remembered device: this hour's password, and the
+      // key it had when it was remembered.
+      const auto k = known::presence_keys(*from_known, known::hour_of(unix_now_ms()), public_key_);
+      std::vector<std::uint8_t> pw(k.password.begin(), k.password.end());
+      opened = open_tracked(l, false, kProtocolVersion, &*h, &pw);
+      sodium_memzero(pw.data(), pw.size());
+      if (opened && (*opened)->peer_key() != from_known->key) {
+        (*opened)->shutdown();
+        {
+          std::lock_guard lock(m_);
+          v_.in = view::in_phase::ended;
+          v_.in_peer = from_known->name;
+          v_.in_via = transport_name(transport::internet);
+          v_.in_note = changed_key_text(from_known->name, false);
+        }
+        host_.log(1, "sharepoint: a remembered device's key changed");
+        post();
+        return end_transfer();
+      }
+    } else {
+      auto secret = in->spend();
+      if (!secret) {
+        l->shutdown();
+        return end_transfer();
+      }
+      held.held = true;
+      opened = open_tracked(l, false, kProtocolVersion, &*h, &*secret);
+      sodium_memzero(secret->data(), secret->size());
+      if (!opened && opened.error() == status::permission_denied) in->wrong_attempt();
+    }
+  }
   if (!opened) return end_transfer();  // not a MediaViewer, or gone: nothing to show
   std::shared_ptr<channel> ch(std::move(*opened));
-  const std::string name = ch->peer_name();
+  // #472 relays: a remembered device's first message may ask this computer
+  // to relay (it sends its offer at once otherwise: nothing to confirm).
+  std::optional<message> first;
+  if (from_known) {
+    // It sends its offer (or the request) as soon as the channel is open:
+    // nothing waits on a person there. kSilenceMs is a dead link's limit.
+    message m;
+    if (auto r = ch->receive(m, kSilenceMs); !r) {
+      ch->shutdown();
+      return end_transfer();
+    }
+    if (maybe_relay(ch, *from_known, m)) return end_transfer();
+    first = std::move(m);
+  }
+  // A remembered device goes by the name it was remembered as.
+  const std::string name = from_known ? from_known->name : ch->peer_name();
   if (ch->resumable()) {
     channel* raw = ch.get();
     ch->set_on_link([this, raw](link_event e) { on_link_event(false, e, *raw); });
@@ -1424,6 +2440,9 @@ void engine::run_receive(std::unique_ptr<link> l) {
       v_.in_via = transport_name(ch->via());
       v_.in_reconnecting = false;
       v_.in_protocol = ch->version();
+      v_.in_internet = ch->internet();
+      v_.in_known = from_known.has_value();
+      v_.in_relay = l->through() ? "your relay server" : "";
       v_.in_note.clear();
       // Nothing of an earlier offer stays on screen while this one connects.
       v_.in_names.clear();
@@ -1447,7 +2466,8 @@ void engine::run_receive(std::unique_ptr<link> l) {
   shown_notice.shown = notice(name, 0, 0);
   if (open_window && !shown_notice.shown) host_.show_screen(true);
   post();
-  auto offer = read_offer(*ch, kAskMs);
+  auto offer = first ? (first->type == msg::offer ? parse_offer(first->text()) : result<incoming_offer>(err(status::corrupt)))
+                     : read_offer(*ch, kAskMs);
   if (!offer) {
     const bool declined = cancel_.load();
     {
@@ -1549,13 +2569,99 @@ void engine::run_receive(std::unique_ptr<link> l) {
   {
     std::lock_guard lock(m_);
     v_.in = view::in_phase::receiving;
+    v_.in_handover = false;
   }
   post();
-  const transfer_result r = receive_files(*ch, *offer, dest, hooks_for(false));
+  // #472 PR 5: over a local link, to a sender that takes them, with the
+  // toggle on: a way in from the internet while the files arrive (on a
+  // worker: the router may take seconds), and its places to the sender. It
+  // closes when the files are in, before this transfer ends: its accept
+  // thread may be waiting for threads_m_, which a next transfer holds while
+  // it joins this thread.
+  transfer_result r;
+  {
+    std::unique_ptr<way_in> way;
+    std::thread way_opener;
+    struct way_guard {
+      engine& e;
+      std::thread& t;
+      std::unique_ptr<way_in>& w;
+      ~way_guard() {
+        if (t.joinable()) t.join();
+        w.reset();  // the listener closes, the mappings go
+        std::lock_guard lock(e.m_);
+        e.v_.in_handover = false;
+      }
+    } close_way{*this, way_opener, way};
+    // #472: and, with the DHT toggle on (here and in the offer), the hub
+    // and the DHT up while the files arrive, for a drop that takes this
+    // side's way in with it. Closed first (declared last).
+    std::unique_ptr<dht_handover> meet_dht;
+    struct meet_guard {
+      engine& e;
+      std::unique_ptr<dht_handover>& m;
+      ~meet_guard() {
+        e.retire(std::move(m));  // stopped, not waited for
+        std::lock_guard lock(e.m_);
+        e.v_.in_handover_dht = false;
+      }
+    } close_meet{*this, meet_dht};
+    {
+      bool want = false, want_dht = false;
+      std::string forwarded;
+      {
+        std::lock_guard lock(m_);
+        want = v_.internet && v_.handover;
+        want_dht = want && v_.dht;
+        forwarded = v_.forwarded;
+        v_.in_handover_dht = false;
+      }
+      if (want && offer->handover && ch->resumable() && !ch->internet()) {
+        const bool dht = want_dht && offer->dht;
+        if (dht) {
+          dht_handover::options mo;
+          mo.me = dht::role::receiver;
+          mo.client = dht_options();
+          mo.loopback = opts_.internet_loopback;
+          meet_dht = std::make_unique<dht_handover>(
+              ch, std::move(mo), [] { return true; },
+              [this](std::unique_ptr<link> l) { on_internet_link(std::move(l)); },
+              [this] {
+                {
+                  std::lock_guard lock(m_);
+                  v_.in_handover_dht = true;
+                }
+                post_throttled();
+              });
+          // The sender learns at once that a drop of both is met on the DHT
+          // (the way in may take seconds to open).
+          if (send_places(*ch, {}, true)) {
+            std::lock_guard lock(m_);
+            v_.in_handover = true;
+          }
+        }
+        way_opener = std::thread([this, ch, &way, forwarded, dht] {
+          try {
+            auto w = way_in::open(opts_.internet_loopback, opts_.internet_mapping, forwarded,
+                                  [this](std::unique_ptr<link> l) { on_internet_link(std::move(l)); });
+            if (!w) return;
+            if (send_places(*ch, w->places(), dht)) {
+              std::lock_guard lock(m_);
+              v_.in_handover = true;
+            }
+            way = std::move(w);
+          } catch (...) {
+          }
+        });
+      }
+    }
+    r = receive_files(*ch, *offer, dest, hooks_for(false));
+  }
   std::string note;
   const std::string got = plural(r.done, "file", "files");
   switch (r.how) {
     case outcome::delivered:
+      offer_remember(*ch, name);  // #472 PR 4
       note = "Received " + got + " from " + name + " into " + dest + ".";
       if (r.skipped) note += " " + plural(r.skipped, "file", "files") + " could not be read on " + name + ".";
       break;
