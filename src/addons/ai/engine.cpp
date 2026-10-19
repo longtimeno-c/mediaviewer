@@ -379,10 +379,17 @@ bool engine::backfill_tags() {
     }
     std::vector<asset_tags> rows;
     rows.reserve(todo.size());
+    bool yielded = false;
     for (const asset_row& a : todo) {
       if (stopping_) return true;
       // The viewer is presenting (panning, playing, loading): it goes first.
-      while (host_.should_yield() && !stopping_) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      // Not by holding this thread, whose turns refresh the status ("waiting
+      // for the viewer") and run the scans: what is read is kept, the rest
+      // waits for a later turn (a release build sat at INDEXING, 2026-10-19).
+      if (host_.should_yield()) {
+        yielded = true;
+        break;
+      }
       asset_tags t;
       t.id = a.id;
       t.mtime = a.mtime;
@@ -432,8 +439,12 @@ bool engine::backfill_tags() {
     // Try again next turn, after the loop's usual wait: "more" here would
     // skip that wait, and an index that cannot take the write (a full disk)
     // would spin the control thread re-reading the same 128 files.
-    if (!db_->commit_tags(rows)) return false;
-    for (const asset_tags& t : rows) adopt_tags(t);
+    if (!rows.empty()) {
+      if (!db_->commit_tags(rows)) return false;
+      for (const asset_tags& t : rows) adopt_tags(t);
+    }
+    // The usual wait, not "more": that would spin this thread while the viewer is busy.
+    if (yielded) return false;
   }
   return true;
 }
