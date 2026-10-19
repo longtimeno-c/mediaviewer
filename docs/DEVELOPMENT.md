@@ -35,6 +35,7 @@ and a verify line on each platform (D9, amended). The order is:
 | #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
 | #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
 | #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
+| #485 | **Editing know-how**, slice 4: the MCP server's editing rules and tool descriptions, five skills (tighten an interview, remove retakes, cut to length, cover jump cuts, assemble selects) with rules adapted from MIT sources under their notices, and an edit eval set of 12 synthesized cases ([docs/design/29 "Editing know-how", "Eval"](design/29-agent-timeline.md#editing-know-how)) | Mac: first scores 0.979 with and without the skills (11 of 12 cases at 1.0; the miss is an index gap, not an edit); the reference cut scores 1.000 and the unedited project 0.592. Windows: the add-on and skills build in CI; the eval is Mac-only (`say`) |
 | #485 | **`analyse`**, slice 3: the agent asks MediaViewer to index the timeline's media and the given folders; with none running, `--mcp` starts `MediaViewer --agent-index` (background, gone when idle, start at login untouched) and follows progress through the reader ([docs/design/29 "Analyse"](design/29-agent-timeline.md#analyse)) | Mac: the full loop ran in a dev build. Windows: C# compiles; native CI only |
 | #485 | **AI agents add-on**, slice 2: `MediaViewer --mcp`, an MCP server over stdio (no socket) whose tools read the dragged timeline, its transcript and silences, search the scope, edit (ripple cuts, trims, B-roll, markers, titles) and commit "<Project> (Claude N)"; scoped to the timeline's media and the given folders, `photos:` refused; the AI agents window adds it to Claude Code / Claude Desktop ([docs/design/29](design/29-agent-timeline.md#the-agent)) | Mac: Claude Code tightened an interview and covered its cuts with B-roll in a dev build; scope refusals, no socket, files unchanged, PR 1 gate with the server answering. Windows: C# compiles; native CI only |
 | #485 | **An agent edits the Final Cut Pro timeline**, slice 1: drag a project from FCP onto the MediaViewer panel and it reads the whole timeline losslessly (FCPXML, `src/nle`); **New Version** imports "<Project> (Claude 1)" beside the original ([docs/design/29](design/29-agent-timeline.md)) | Mac: the model and writer built; the 20-project set round-trips byte for byte and every new version validates against FCP's DTD; the panel builds. Owed: real FCP projects dragged in and imported back in FCP. Windows: the shared model builds in CI |
@@ -951,6 +952,25 @@ starts one as `MediaViewer --agent-index` (background, gone when the pack is idl
 give that start a scratch profile as well: `HOME=<scratch>/home MV_DEV_ADDONS_DIR=… MV_DEV_THUMBS_DIR=…`
 on the `--mcp` command passes to it.
 
+**Editing know-how (slice 4).** The server's instructions, tool descriptions and five skills
+(`src/addons/agent/skills/*/SKILL.md`, notices in `skills/NOTICE.md`) ship in the add-on; the build
+copies the skills beside the module, `prompts/list` serves them, and the AI agents window's
+**Add Editing Skills** copies them to `~/.claude/skills`. The edit eval set (docs/design/29
+"Eval") runs on the Mac (it synthesizes interviews with `say`) against a dev build, in a scratch
+lab, never your own profile:
+
+```
+python3 tools/agent/eval/eval.py build --lab <lab>
+MV_DEV_THUMBS_DIR=<lab>/thumbs python3 tools/agent/eval/eval.py index --lab <lab> \
+  --bench build/bin/ai-bench --addons <lab>/addons     # a dev-signed AI + AI Audio + AI agents
+MV_DEV_THUMBS_DIR=<lab>/thumbs python3 tools/agent/eval/eval.py run --lab <lab> \
+  --app build/bin/MediaViewer --addons <lab>/addons --config skills   # or plain; ~$3, ~15 min
+python3 tools/agent/eval/eval.py score --lab <lab> --timeline-tool build/bin/mv-timeline --config skills
+```
+
+`eval.py reference` writes the reference cuts (they must score 1.0: a scorer check). Re-run it
+whenever the instructions, a skill or a tool changes, and put the scores in docs/design/29.
+
 **The Photos library as a folder, and its backup (Mac; docs/design/26, 2026-10-03).** Once the library
 was added in Local search's Settings, the folder tree (`⌘⇧E`) shows a *Photos Library* row and
 File gains *Open Photos Library*: the host lists the library as **virtual items** (`photos:<id>`,
@@ -1662,6 +1682,28 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Agent timeline editing, slice 4: editing know-how (#485, 2026-10-19)
+
+The issue's slice: "licence review of the sources above, server instructions, skills, the edit eval
+set and its first scores".
+
+- **Sources:** rules from fcp-mcp-server, fcp-mcp, Tella's Cut Video and video-use (all MIT) were
+  adapted with their notices kept (`skills/NOTICE.md`); ButterCut (PolyForm Noncommercial, not
+  GPL-compatible) and Jumper (proprietary) were read for ideas only, and nothing of their text was
+  copied ([docs/design/29](design/29-agent-timeline.md#editing-know-how)).
+- **Spike (the active project without a drag):** Final Cut Pro's scripting dictionary is read-only
+  and exports nothing; the panel's `FCPXTimeline` gives the name and the playhead, never the clips.
+  The drag stays ([docs/design/29](design/29-agent-timeline.md#the-active-project-without-a-drag-spike)).
+- **Eval, Mac (M5), dev build, Claude Code 2.1.296 with Opus, scratch lab:** `plain` 0.979 ($2.86),
+  `skills` 0.979 ($3.29), 11 of 12 cases at 1.0 in both; every cut edge in silence, every kept line
+  whole, B-roll from the folder only. Both miss `two-clips-tighten`'s fillers because its two
+  clips have no transcript in the lab's index (Whisper gave nothing for one and `[BLANK_AUDIO]`
+  for the other); the agent cut the pauses and said it could not find the ums. Scorer checks:
+  reference 1.000, unedited 0.592.
+- **Owed:** harder cases that separate the configs; a real FCP project in the set; why Whisper
+  returned nothing for those two synthesized clips (the other 17 transcribed). Windows: nothing of
+  this slice runs natively there yet beyond CI's build.
 
 ### Agent timeline editing, slice 3: `analyse` (#485, 2026-10-19)
 
