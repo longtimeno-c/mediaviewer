@@ -4,7 +4,8 @@
 // Cut Pro's workflow extension (sandboxed, in FCP's process tree) and the AI
 // pack's reader (in the agent). Everything that crosses is NSData of the
 // search_wire format or a plain string; the agent accepts a connection only
-// from code signed by its own team (agent_mac.mm).
+// from code signed by its own team (the Final Cut Pro add-on's
+// src/addons/fcp/agent_mac.mm).
 #import <Foundation/Foundation.h>
 
 // Info.plist / launchd MachServices name; the extension's app group is its

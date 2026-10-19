@@ -1437,7 +1437,7 @@ no Windows twin. Shared on both platforms: the pack's read-only reader (`mv_ai_r
 engine in read-only mode, so results match the app by construction), the wire format, the
 thumbnail lookup and the FCPXML writer (`src/nle`, `mv-nle-export`).
 
-**Shipped inside MediaViewer.app, off until turned on (2026-09-28).** (No longer the rule for add-ons: 2026-10-11, "An add-on carries its own code and its own data", under Add-on mechanism.) arm64 only: the `.appex`
+**Shipped inside MediaViewer.app, off until turned on (2026-09-28; reversed 2026-10-19, below).** (No longer the rule for add-ons: 2026-10-11, "An add-on carries its own code and its own data", under Add-on mechanism.) arm64 only: the `.appex`
 (~180 KB) and a launchd job running `MediaViewer --search-agent`, handed over in `main()` before
 anything of the viewer starts. A separate agent binary carried ~1.8 MB of copies of code the app
 already links; measured cold and warm query times were within noise of it. **Turn on** registers
@@ -1453,6 +1453,35 @@ shipped. `com.apple.security.cs.disable-library-validation` is on the extension 
 **Panel (2026-09-28).** Scope defaults to the open library's folder and below, read from FCP over
 Apple Events; a read-only file exception lets clips play with sound (Developer ID only). An AppKit
 grid, not SwiftUI, to keep the extension one Objective-C++ build.
+
+**Final Cut Pro search is an add-on (2026-10-19, owner, #485 call 5).** Reverses "Shipped inside
+MediaViewer.app" above. The agent and the extension are the **Final Cut Pro** add-on's
+(`src/addons/fcp`, id `fcp`, arm64, Mac only), installed from Settings > Local search's Final Cut
+Pro row ("Install and turn on"), as the 2026-10-11 rule asks of every optional feature. What stays
+in the app is what only the app can do: `MediaViewer --search-agent` (`shell/fcp_host_mac.mm`),
+which loads the verified add-on and lends it the AI pack's read-only reader through `mv.fcp.1`
+(as `--mcp` lends the AI agents add-on its search), and the agent's ~1 KB launchd job in
+`Contents/Library/LaunchAgents`, because `SMAppService` registers only a job inside the bundle (a
+job written to `~/Library/LaunchAgents` would bypass Login Items and break when the app moves).
+Two findings shaped the add-on's layout:
+
+- **macOS lists an extension only from an app bundle LaunchServices knows.** `pluginkit -a` on a
+  bare `.appex` returns 0 and the extension is never discovered (macOS 26.6, tried from the home
+  folder and from `/private/tmp`, which LaunchServices also skips). So the add-on carries
+  `MediaViewer Search.app`, a background-only container (`LSBackgroundOnly`, an executable that
+  returns 0) around the extension. Turning Final Cut Pro on registers it (`LSRegisterURL`) and the
+  extension (`pluginkit -a`, `-e use`); off elects it out and unregisters both. The owner's
+  2026-09-28 objection was to a second app the user installs or opens ("MediaViewer for Final Cut
+  Pro.app"); this one is neither: install is one add-on in Settings, and nobody opens it.
+- **The store accepts an add-on with no chrome that contributes nothing** (`check_manifest`):
+  until now one with no chrome had to fill slots. No window loads it (`loads_for_slots`); only a
+  host mode does.
+
+The extension's bundle id, Mach service and app group are unchanged, so the AI agents add-on's
+timeline bridge (docs/design/29) and an owner's Final Cut Pro setup carry over. An app updated from
+before this has no extension in its bundle any more, so Final Cut Pro lists none until the add-on
+is installed and turned on; the agent's registration, if it was on, is kept and the launch block
+unregisters it while the add-on is missing.
 
 ---
 

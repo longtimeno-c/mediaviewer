@@ -17,6 +17,7 @@ the same portable pieces (`abi/clip_session`, the add-on host table, `player/pla
 | `mediaviewer_import.h` | The Import add-on's interface (`mv.import.1`) |
 | `mediaviewer_ai.h` | The AI pack's interface (`mv.ai.1`) and the read-only reader entry |
 | `mediaviewer_agent.h` | The AI agents add-on's interface (`mv.agent.1`): `serve` one MCP session over stdio pipes, with the `--mcp` host's Local search services ([29](29-agent-timeline.md)) |
+| `mediaviewer_fcp.h` | The Final Cut Pro add-on's interface (`mv.fcp.1`, Mac): `run_agent` listens on the search agent's Mach service with the `--search-agent` host's Local search services ([23](23-nle-search.md)) |
 
 ## Shape
 
@@ -666,8 +667,8 @@ and inert unless set. The Mac host drives
 | 0.32 | The page sidebar (#429): `mv_folder_page_thumbs`, `mv_folder_page_thumb_path`, `MV_COMPLETION_PAGE_THUMB_READY` (13). Mac bridge: `mv_chrome_request_page_thumbs`, `mv_chrome_select_page`, `kMenuPageSidebar`; `MVChromeHost.setPageSidebar` / `pageThumbReady` the other way. Island wire: `chrome_cmd_select_page` (1082), `chrome_cmd_image_opened` (1083), entries `ShowPageSidebar` / `SetPageSidebar` (`chrome_page_sidebar_args`) |
 | 0.33 | Notices and keep-alive (#452, [28 "In the background"](28-sharepoint.md#in-the-background-452)): host table `notice_post` (an `mv_addon_notice`: screen, title, body, one button), `notice_authorize` and `keep_alive` appended after `place_matches`; `MV_SLOT_EVENT_NOTICE` (13) for the button; `mv_slots_notices_json` (change bit 64) and `mv_slots_notice_action`. Mac bridge: `mv_chrome_slots_notices`, `mv_chrome_slots_notice_action`, `mv_chrome_background_*`. Windows chrome entry `OpenAddonScreen` |
 
-Not an ABI version: `mediaviewer_agent.h` (`mv.agent.1`, #485) is an add-on interface, versioned by
-its own struct sizes; `mv_ai_api` gained `transcript_json`, appended after `root_set_documents`
+Not an ABI version: `mediaviewer_agent.h` (`mv.agent.1`, #485) and `mediaviewer_fcp.h` (`mv.fcp.1`,
+#485 slice 5) are add-on interfaces, versioned by their own struct sizes; `mv_ai_api` gained `transcript_json`, appended after `root_set_documents`
 (read when `struct_size` covers it; `Ai.cs` mirrors the slot).
 
 ## Not built

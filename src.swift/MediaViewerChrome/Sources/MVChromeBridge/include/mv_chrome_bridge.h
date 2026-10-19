@@ -765,12 +765,13 @@ bool mv_addon2_load(const char* id);
 bool mv_addon2_reload(const char* id);                                     // [main-thread]
 // Removing "ai" also removes its pieces; keep_data keeps the search index.
 bool mv_addon2_remove(const char* id, bool keep_data);                     // [main-thread]
-// docs/design/23: Final Cut Pro search, in the bundle and dormant until turned on
-// (src/shell/fcp_mac.mm). States: 0 absent (not in this build, or an Intel
-// Mac), 1 off, 2 on, 3 on but waiting for Login Items approval.
+// docs/design/23: Final Cut Pro search, the Final Cut Pro add-on's (2026-10-19, #485),
+// dormant until turned on (src/shell/fcp_mac.mm). States: 0 absent (not in this
+// build, or an Intel Mac), 1 off, 2 on, 3 on but waiting for Login Items
+// approval, 4 the add-on is not installed.
 int32_t mv_fcp_state(void);                                                 // [worker]
-// Registers (on) or unregisters (off) the search agent with launchd and shows
-// or hides the extension in Final Cut Pro. Returns the state after.
+// Registers (on) or unregisters (off) the search agent with launchd and the
+// add-on's extension with LaunchServices and PlugInKit. Returns the state after.
 int32_t mv_fcp_set_enabled(bool on);                                        // [worker]
 void mv_fcp_open_login_items(void);                                         // [main-thread]
 // A family's installed bytes and ceiling (0 = none); "ai" has 5 GB.

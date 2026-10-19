@@ -28,12 +28,12 @@ from typing import Callable
 
 REQUIRED = frozenset({"arm64", "x86_64"})
 # docs/design/23: Final Cut Pro search needs the AI pack, which is arm64 only (ONNX
-# Runtime ships no x86_64 macOS build), so an Intel build has none of these.
-# They stay arm64 in the universal app, copied as the arm64 build signed them;
-# on an Intel Mac the app never turns them on.
+# Runtime ships no x86_64 macOS build), so an Intel build has no search agent
+# job. It stays in the universal app as the arm64 build made it; on an Intel
+# Mac the app never turns it on. (The extension is the Final Cut Pro add-on's
+# since 2026-10-19, #485: no longer in the app.)
 ARM64_ONLY = (
     "Contents/Library/LaunchAgents/",
-    "Contents/PlugIns/MediaViewerSearch.appex/",
 )
 
 

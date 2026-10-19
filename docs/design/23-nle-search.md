@@ -9,11 +9,12 @@ event or timeline. Nothing is re-indexed and nothing leaves the machine. The FCP
 Mac-only; the layer beneath them (the read-only reader, the wire, FCPXML, `mv-nle-export`) is
 shared and builds on both platforms.
 
-**Delivery.** The agent and the extension ship inside MediaViewer.app, off until Final Cut Pro
-search is turned on in Settings > Local search, which is offered once the Local search Core
-pack is installed. Off, the agent is not registered and the extension is elected out of Final
-Cut Pro, so nothing of it runs. There is no add-on manifest entry or separate packing: the
-pieces are signed and notarised with the app, and a Sparkle update replaces them with it.
+**Delivery.** The agent and the extension are the **Final Cut Pro add-on**'s (`fcp`, arm64,
+Mac only; since 2026-10-19, issue #485, [12](12-decision-log.md) "Final Cut Pro search is an
+add-on"). Settings > Local search offers it in its Final Cut Pro row once the Local search Core
+pack is installed ("Install and turn on"). Not installed, nothing of it exists; installed and
+off, the agent is not registered and the extension is not registered, so nothing runs and Final
+Cut Pro lists nothing. The app keeps `MediaViewer --search-agent` and the agent's launchd job.
 
 ## Shape
 
@@ -23,7 +24,8 @@ Final Cut Pro (sandboxed) ─ Extensions ▸ "MediaViewer Search"
         │ NSXPCConnection, Mach service "<team>.io.github.longtimeno-c.mediaviewer.fcp.search"
   MediaViewer --search-agent (the app's own executable, started by launchd on demand via
                             SMAppService, registered when Final Cut Pro search is on)
-        │ loaded_addon::load(store, "ai", …, MV_AI_READER_ENTRY_SYMBOL)
+        │ loaded_addon::load(store, "fcp")  → mv.fcp.1 run_agent (the add-on's listener)
+        │ loaded_addon::load(store, "ai", …, MV_AI_READER_ENTRY_SYMBOL)  (lent through mv_fcp_services)
   libmv_ai (the installed Local search pack)  engine_options::read_only
         │ SQLITE_OPEN_READONLY
   ~/Library/Application Support/MediaViewer/Add-ons/AI/data/index.db, faces.db
@@ -37,24 +39,39 @@ Final Cut Pro (sandboxed) ─ Extensions ▸ "MediaViewer Search"
 | `loaded_addon::load(…, entry)` | `src/addon` | both |
 | Wire format, `search_session`, `thumb_reader`, FCPXML | `src/nle` (`mv_nle`, `cmake/nle.cmake`) | both |
 | `mv-nle-export` (search → FCPXML file) | `src/nle/export_main.cpp` | both |
-| Agent, test client, extension | `src/nle/mac`, `cmake/darwin-fcp.cmake`, `packaging/macos/fcp` | Mac |
-| In MediaViewer.app, on / off | `tools/mac/macpack.py`, `tools/mac/lipo_merge.py`, `src/shell/fcp_mac.mm`, `LocalSearchView.swift` | Mac |
+| The add-on: agent (`mv.fcp.1`), container + extension | `src/addons/fcp`, `src/nle/mac`, `cmake/darwin-fcp.cmake`, `packaging/macos/fcp`, `tools/package/addon-pack.py` | Mac |
+| The host: `--search-agent`, the launchd job, on / off, install offer | `src/shell/fcp_host_mac.mm`, `tools/mac/macpack.py`, `src/shell/fcp_mac.mm`, `LocalSearchView.swift`, `SlotItems.swift` (`FinalCutOffer`) | Mac |
+| Test client | `src/nle/mac/client_mac.mm` (`mv-search-client`) | Mac |
 
-### In the app, off until turned on
+### The add-on, off until turned on
 
-`macpack.py assemble` puts `MediaViewerSearch.appex` in `Contents/PlugIns` and the agent's
-launchd job in `Contents/Library/LaunchAgents`, arm64 only (the AI pack is arm64 only; a
-universal app keeps them as the arm64 build signed them). The agent is MediaViewer's own
-executable: the job runs `MediaViewer --search-agent`, and `main()` hands over to
-`MvSearchAgentMain` before the viewer starts anything. The app already links everything the
-agent needs except `agent_mac.mm` and `mv_nle` (~49 KB).
+`build/addons/fcp` (arm64; `addon-pack.py pack --addon fcp`) holds:
 
-Settings > Local search shows **Final Cut Pro** once Core is installed (`mv_fcp_state`).
-Turning it on registers the agent (`SMAppService`) and elects the extension in
-(`pluginkit -e use`); turning it off, or removing Core, reverses both. A fresh install elects
-the extension out once, in a background block 10 s after launch. While it is on, the same block
-re-registers the agent, so an update that changes the launchd job is picked up. An agent
-already running when the app updates keeps the old binary until its idle exit; the wire's
+```
+libmv_fcp.dylib                         the agent: the Mach listener, peer checks, idle exit (mv.fcp.1)
+MediaViewer Search.app/                 background-only container (LSBackgroundOnly, an empty main)
+  Contents/PlugIns/MediaViewerSearch.appex   the workflow extension
+```
+
+macOS lists a workflow extension only from an app bundle LaunchServices has registered:
+`pluginkit -a` on a bare `.appex` succeeds and the extension is never discovered. The container is
+that bundle. Nobody opens it, and installing is one add-on in Settings. Its manifest contributes
+nothing, so no window loads the add-on.
+
+The agent is MediaViewer's own executable: `macpack.py assemble` puts its launchd job in
+`Contents/Library/LaunchAgents` (the job runs `MediaViewer --search-agent`; `SMAppService`
+registers only a job inside the bundle). `main()` hands over to `MvSearchAgentMain`
+(`shell/fcp_host_mac.mm`) before the viewer starts anything: it loads the verified `fcp` add-on
+and calls its `run_agent` with `mv_fcp_services`, which open the AI pack's reader at the first
+call and answer searches, roots and completions from it. The add-on links nothing of the core.
+
+Settings > Local search shows **Final Cut Pro** once Core is installed (`mv_fcp_state`):
+**Install and turn on** while the add-on is missing (`FinalCutOffer`), then **Turn on** /
+**Turn off**. On registers the agent (`SMAppService`), the container (`LSRegisterURL`) and the
+extension (`pluginkit -a`, `-e use`); off reverses all three. While it is on, a background block
+10 s after launch registers them again, so an update of the app's launchd job or of the add-on (a
+new version folder) is picked up; if the add-on was removed, the block unregisters the agent. An
+agent already running when either updates keeps the old code until its idle exit; the wire's
 version refuses a reply either side cannot read.
 
 The extension loads `ProExtension.framework` from the installed Final Cut Pro before

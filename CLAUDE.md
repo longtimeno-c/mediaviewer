@@ -280,7 +280,7 @@ src/edit     EditStack, GPU ops, export
 src/canvas   pan/zoom/springs; host publishes a POD input snapshot
 src/abi      C ABI surface
 src/shell    Windows host (Win32 window, islands, CLI) and the Mac host (AppKit + Metal, `*_mac.mm`)
-src/nle      Local search from an editing app (docs/design/23): a read-only host of the AI pack, FCPXML; the FCP agent/extension in `nle/mac`
+src/nle      Local search from an editing app (docs/design/23): a read-only host of the AI pack, FCPXML; the FCP extension in `nle/mac` (packed by the Final Cut Pro add-on, `src/addons/fcp`, with its agent)
 src.swift    SwiftUI chrome for the Mac host
 src.managed  C# WinUI 3 chrome
 tests/

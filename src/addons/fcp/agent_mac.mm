@@ -1,50 +1,40 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The Local search agent (docs/design/23 Phase 1): a launchd agent, started on
-// demand when Final Cut Pro's workflow extension looks up its Mach service,
-// as MediaViewer.app's own executable with `--search-agent` (main_mac.mm
-// calls MvSearchAgentMain before anything of the viewer starts; the app
-// already carries the add-on store, the verifier and SQLite, so the agent adds
-// only this file and mv_nle to it),
-// that hosts the installed AI pack through its read-only door and answers
-// searches over XPC. Not sandboxed (it reads the app's index and the viewer's
-// thumbnail cache, as the app does); hardened runtime and library validation,
-// so only a pack signed by the same team loads into it.
+// The Final Cut Pro search agent (docs/design/23), in the Final Cut Pro add-on since
+// 2026-10-19 (issue #485): a launchd agent, started on demand when the add-on's
+// workflow extension looks up its Mach service, as MediaViewer's own
+// executable with `--search-agent` (shell/fcp_host_mac.mm), which loads this
+// add-on and the AI pack's read-only reader and calls run_agent with its
+// Local search services. Not sandboxed (it reads the app's index and the
+// viewer's thumbnail cache, as the app does); hardened runtime and library
+// validation, so only code signed by the same team loads into it.
 //
 //   - Peers: only code signed by this agent's own team (its signature says
-//     which); an unsigned development agent refuses everyone unless built
-//     with MV_FCP_DEV_ALLOW_UNSIGNED.
+//     which); an unsigned development agent refuses everyone unless the host
+//     says it may accept unsigned peers (a dev-key build).
 //   - Idle: no process sits resident. The agent exits kIdleSeconds after its
 //     last connection closes (or after launch, if nobody connects).
 //   - Privacy (rule 6): nothing here logs a query, a path or a result; the
 //     log carries status names only. No network.
-//   - Cost to the viewer (docs/design/23 "Performance"): the pack loads its text
-//     towers only; searches run at user-initiated QoS, one at a time.
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
 #include <os/log.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <cstdint>
-#include <memory>
-#include <mutex>
+#include <span>
 #include <string>
 #include <vector>
 
-#include <mediaviewer/mediaviewer_addon.h>
+#include <mediaviewer/mediaviewer_fcp.h>
 
-#include "addon/manifest.h"
-#include "addon/store.h"
-#include "nle/search_session.h"
 #include "nle/search_wire.h"
-#include "io/paths.h"
-#include "nle/mac/agent_mac.h"
 #import "nle/mac/agent_protocol.h"
 
 namespace {
 
 constexpr int64_t kIdleSeconds = 50;  // the verify line: gone within 60 s of the last client
-constexpr int kSearchTimeoutMs = 30000;
 
 os_log_t agent_log() {
   static os_log_t log = os_log_create("io.github.longtimeno-c.mediaviewer.fcp", "agent");
@@ -79,61 +69,46 @@ NSData* failure(std::uint64_t correlation, mv::status code) {
   return data_of(mv::nle::encode(r));
 }
 
+void MV_CALL to_data(void* user, const void* bytes, uint64_t size) {
+  *static_cast<NSData* __strong*>(user) = [NSData dataWithBytes:bytes length:size];
+}
+
 }  // namespace
 
 @interface MVAgent : NSObject <NSXPCListenerDelegate, MVSearchAgent>
+- (instancetype)initWithServices:(const mv_fcp_services*)services allowUnsigned:(BOOL)allowUnsigned;
 @end
 
 @implementation MVAgent {
-  dispatch_queue_t _work;  // searches and the pack's load, one at a time
-  std::unique_ptr<mv::addon::store> _store;
-  std::unique_ptr<mv::nle::search_session> _session;
-  mv::status _loadError;
-  std::string _thumbs;  // the viewer's cache folder, with a trailing '/'
+  dispatch_queue_t _work;  // searches, one at a time
+  const mv_fcp_services* _services;
+  std::string _thumbs;     // the viewer's cache folder, with a trailing '/'
   NSString* _team;
+  BOOL _allowUnsigned;
   std::atomic<int> _connections;
   std::atomic<std::uint64_t> _idleGeneration;
 }
 
-- (instancetype)init {
+- (instancetype)initWithServices:(const mv_fcp_services*)services allowUnsigned:(BOOL)allowUnsigned {
   if ((self = [super init])) {
     _work = dispatch_queue_create("mediaviewer.fcp.search",
                                   dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,
                                                                           QOS_CLASS_USER_INITIATED, 0));
-    _loadError = mv::status::ok;
+    _services = services;
     _team = own_team();
+    _allowUnsigned = allowUnsigned;
     _connections = 0;
     _idleGeneration = 0;
-    if (auto thumbs = mv::io::thumb_cache_dir()) _thumbs = *thumbs + "/";
+    if (services->thumbs_dir_utf8 && *services->thumbs_dir_utf8) _thumbs = std::string(services->thumbs_dir_utf8) + "/";
     // The pack loads now, while the editor types the first query: launchd
     // started this agent because the panel opened.
     dispatch_async(_work, ^{
-      [self loadPack];
+      NSData* ignored = nil;
+      (void)self->_services->roots_json(self->_services->ctx, &to_data, &ignored);
     });
     [self armIdle];
   }
   return self;
-}
-
-// [work queue]
-- (void)loadPack {
-  if (_session || _loadError != mv::status::ok) return;
-  auto root = mv::io::addons_dir();
-  if (!root || _thumbs.empty()) {
-    _loadError = mv::status::io;
-    return;
-  }
-  const auto key = mv::addon::pinned_public_key();
-  _store = std::make_unique<mv::addon::store>(*root, std::vector<std::uint8_t>(key.begin(), key.end()),
-                                              MV_ADDON_HOST_API);
-  auto opened = mv::nle::search_session::open(*_store, _thumbs.substr(0, _thumbs.size() - 1));
-  if (!opened) {
-    // unsupported_format: the installed pack predates the reader.
-    _loadError = opened.error();
-    os_log_error(agent_log(), "Local search did not load: %{public}s", mv::status_name(opened.error()));
-    return;
-  }
-  _session = std::move(*opened);
 }
 
 // Exits kIdleSeconds from now unless a connection arrives meanwhile.
@@ -154,11 +129,9 @@ NSData* failure(std::uint64_t correlation, mv::status code) {
     NSString* req = [NSString
         stringWithFormat:@"anchor apple generic and certificate leaf[subject.OU] = \"%@\"", _team];
     [connection setCodeSigningRequirement:req];
-  } else {
-#if !defined(MV_FCP_DEV_ALLOW_UNSIGNED)
+  } else if (!_allowUnsigned) {
     os_log_error(agent_log(), "unsigned agent: refusing connections");
     return NO;
-#endif
   }
   connection.exportedInterface = [NSXPCInterface interfaceWithProtocol:@protocol(MVSearchAgent)];
   connection.exportedObject = self;
@@ -186,38 +159,37 @@ NSData* failure(std::uint64_t correlation, mv::status code) {
     reply(failure(0, req.error()));
     return;
   }
-  const mv::nle::request r = *req;
+  const std::uint64_t correlation = req->correlation_id;
+  NSData* copy = [request copy];
   const std::string q = text ? std::string(text.UTF8String) : std::string();
   const std::string scope = scopeDir ? std::string(scopeDir.UTF8String) : std::string();
   dispatch_async(_work, ^{
-    [self loadPack];
-    if (!self->_session) {
-      reply(failure(r.correlation_id, self->_loadError == mv::status::ok ? mv::status::internal : self->_loadError));
+    NSData* out = nil;
+    const mv_status st = self->_services->run(self->_services->ctx, copy.bytes, copy.length, q.c_str(), scope.c_str(),
+                                              &to_data, &out);
+    if (st != MV_OK || !out) {
+      os_log(agent_log(), "search failed: %d", static_cast<int>(st));
+      reply(failure(correlation, st == MV_OK ? mv::status::internal : static_cast<mv::status>(st)));
       return;
     }
-    const mv::nle::reply out = self->_session->run(r, q, scope, kSearchTimeoutMs);
-    if (out.code != mv::status::ok) {
-      os_log(agent_log(), "search %llu: %{public}s", static_cast<unsigned long long>(r.correlation_id),
-             mv::status_name(out.code));
-    }
-    reply(data_of(mv::nle::encode(out)));
+    reply(out);
   });
 }
 
 - (void)rootsWithReply:(void (^)(NSString*))reply {
   dispatch_async(_work, ^{
-    [self loadPack];
-    auto json = self->_session ? self->_session->roots_json(kSearchTimeoutMs) : mv::result<std::string>(mv::err(mv::status::not_found));
-    reply(json ? [NSString stringWithUTF8String:json->c_str()] : nil);
+    NSData* out = nil;
+    const mv_status st = self->_services->roots_json(self->_services->ctx, &to_data, &out);
+    reply(st == MV_OK && out ? [[NSString alloc] initWithData:out encoding:NSUTF8StringEncoding] : nil);
   });
 }
 
 - (void)suggest:(NSString*)text withReply:(void (^)(NSString*))reply {
   const std::string q = text ? std::string(text.UTF8String) : std::string();
   dispatch_async(_work, ^{
-    [self loadPack];
-    auto json = self->_session ? self->_session->suggest_json(q, 2000) : mv::result<std::string>(mv::err(mv::status::not_found));
-    reply(json ? [NSString stringWithUTF8String:json->c_str()] : nil);
+    NSData* out = nil;
+    const mv_status st = self->_services->suggest_json(self->_services->ctx, q.c_str(), &to_data, &out);
+    reply(st == MV_OK && out ? [[NSString alloc] initWithData:out encoding:NSUTF8StringEncoding] : nil);
   });
 }
 
@@ -240,13 +212,26 @@ NSData* failure(std::uint64_t correlation, mv::status code) {
 
 @end
 
-int MvSearchAgentMain() {
+namespace {
+
+mv_status MV_CALL run_agent(void*, const char* mach_service, const mv_fcp_services* services, uint32_t allow_unsigned) {
+  if (!mach_service || !services || services->struct_size < sizeof(mv_fcp_services) || !services->run ||
+      !services->roots_json || !services->suggest_json) {
+    return MV_ERR_INVALID_ARG;
+  }
   @autoreleasepool {
-    MVAgent* agent = [[MVAgent alloc] init];
-    NSXPCListener* listener = [[NSXPCListener alloc] initWithMachServiceName:@MV_FCP_MACH_SERVICE];
+    MVAgent* agent = [[MVAgent alloc] initWithServices:services allowUnsigned:allow_unsigned != 0];
+    NSXPCListener* listener = [[NSXPCListener alloc] initWithMachServiceName:@(mach_service)];
     listener.delegate = agent;
     [listener resume];
+    os_log(agent_log(), "listening");
     [[NSRunLoop mainRunLoop] run];
   }
-  return 0;
+  return MV_ERR_INTERNAL;  // the run loop never returns; the idle exit ends the process
 }
+
+const mv_fcp_api kApi{sizeof(mv_fcp_api), 0, &run_agent};
+
+}  // namespace
+
+const mv_fcp_api* mv_fcp_agent_api() { return &kApi; }

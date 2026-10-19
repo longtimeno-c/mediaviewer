@@ -599,7 +599,11 @@ decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std
   };
   // An add-on that only fills screens and slots draws nothing of its own: the
   // hosts render its trees (docs/design/25 PRs 58-59), so it may name no chrome.
-  const bool no_chrome = m.chrome.empty() && (!m.slots.empty() || m.slots.api_max != 0);
+  // Nor may one that contributes nothing at all: no window loads it, only a
+  // host mode does (the Final Cut Pro add-on, by `MediaViewer --search-agent`,
+  // docs/design/23).
+  const bool no_chrome =
+      m.chrome.empty() && (!m.slots.empty() || m.slots.api_max != 0 || !doc->find("contributes"));
   if (m.part_of.empty()) {
     if (!safe_relative_path(m.native) || !listed(m.native) ||
         (!no_chrome && (!safe_relative_path(m.chrome) || !listed(m.chrome)))) {
