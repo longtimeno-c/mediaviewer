@@ -5,7 +5,10 @@ two clients find each other, the receiver shows a short code that the sender typ
 moves until the person on the other side accepts. Issues [#410](https://github.com/longtimeno-c/mediaviewer/issues/410)
 (the add-on and its window) and [#413](https://github.com/longtimeno-c/mediaviewer/issues/413)
 (the gallery's range, drag-out and share icon). Built 2026-10-15; where each part stands is in
-[DEVELOPMENT.md](../DEVELOPMENT.md#sharepoint-issues-410-413-2026-10-15).
+[DEVELOPMENT.md](../DEVELOPMENT.md#sharepoint-issues-410-413-2026-10-15). Protocol 2 (issue
+[#472](https://github.com/longtimeno-c/mediaviewer/issues/472) PR 1, 2026-10-18): a Noise handshake
+with a post-quantum hybrid, and a transfer that survives its link, moving between Bluetooth and
+Wi-Fi with no new code and no new Accept ([The wire](#the-wire), [The session](#the-session-protocol-2-472)).
 
 Sharepoint is a first-party add-on (option B of [25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs),
 the same kind as Import and Places). It carries its own code, has no chrome of its own, and
@@ -74,15 +77,20 @@ the engine never touches the canvas.
 | **Wi-Fi** (`presence.cpp`, `net_*`) | A UDP beacon a second, port 47613, to the group 239.255.77.83 and the subnet broadcast, TTL 1 | The same socket, shared with other windows on the machine | One TCP connection to the beacon's address and port; the listener's port is the OS's pick |
 | **Bluetooth** (`bt_mac.mm`, `bt_win.cpp`) | A GATT service advertised connectable | A scan filtered to that service; each new device is read once for its INFO (id, name) | The service as a byte pipe (`bt_pipe.h`): C2P written without response, P2C notifying |
 
-- A **beacon** is `MVSP1` and `{"v","id","name","port"}`: a random session id (16 hex digits, new
-  each run), the machine's name (the Sharing name on the Mac, the computer name on Windows) and a
-  port. Never a path, a name of a file or anything about one.
+- A **beacon** is `MVSP1` and `{"v","p","id","name","port"}`: a random session id (16 hex digits,
+  new each run), the machine's name (the Sharing name on the Mac, the computer name on Windows), a
+  port, and `"p"`, the highest protocol it speaks (#472; `"v"` stays 1, which is what a protocol 1
+  client checks, so old and new still see each other; no `"p"` is protocol 1). Bluetooth's INFO
+  carries the same `"p"`. Never a path, a name of a file or anything about one.
 - A peer leaves the list 4.5 s after its last beacon or advertisement. One heard on both bearers
   is one row.
 - **Bluetooth LE between a Mac and a Windows PC** has one common way to move bytes: GATT. Windows
-  gives apps no connection-oriented LE channel. GATT moves tens of kilobytes a second, so a set
-  over **32 MiB never goes over Bluetooth** ([12](12-decision-log.md#sharepoint)); Wi-Fi carries
-  anything. A peer heard only on Bluetooth, selected with such a set, shows why and what to do:
+  gives apps no connection-oriented LE channel. GATT moves tens of kilobytes a second. To a
+  **protocol 2** peer (#472) a set of any size starts on Bluetooth when that is all there is, and
+  the session moves to Wi-Fi the moment the peer is heard there ([The session](#the-session-protocol-2-472)).
+  To a **protocol 1** peer a set over **32 MiB never goes over Bluetooth**
+  ([12](12-decision-log.md#sharepoint)); Wi-Fi carries anything. A protocol 1 peer heard only on
+  Bluetooth, selected with such a set, shows why and what to do:
   put both computers on the same Wi-Fi network, or, when this computer has no network, turn on
   Wi-Fi here. A click on its tile then waits ("Waiting for … on Wi-Fi", with Cancel); the moment
   that peer's beacon arrives the send starts by itself, code and Accept as always. Presence stays up while it waits, window closed or not.
@@ -152,44 +160,149 @@ process (`keep_alive`), and the hosts do the rest.
 
 ## The wire
 
-`wire.h`, `channel.h`. One session, either bearer; the bearer moves bytes and decides nothing.
+`wire.h`, `noise.h`, `channel.h`. One session, either bearer; the bearer moves bytes and decides
+nothing. A client speaks the protocol the peer's beacon or INFO announces (`"p"`); a receiver
+answers whichever hello arrives, so protocol 1 peers (from before #472) still send and receive on
+the LAN and Bluetooth. They get no rejoin and no move between bearers.
 
-1. **Commit, answer, reveal**, each with an X25519 key made for this link alone: the client (the
-   side that connected, the sender) sends `MVSP`, the version and a BLAKE2b hash of its public
-   key; the server (the receiver) answers `MVSP`, the version and its public key; the client then
-   reveals its key, which must hash to what it sent. The client is bound to its key before it
-   sees the server's, and the server shows its key only after that, so a machine in the middle
-   cannot search for keys that give both people the same digits (the ZRTP / Bluetooth numeric
-   comparison pattern). Another version is refused at the hello.
-2. Both derive one key per direction (libsodium `crypto_kx`) and open an XChaCha20-Poly1305
-   secretstream each way. Every later message is encrypted, authenticated and in order: one
-   altered, dropped, replayed or reordered byte ends the link.
-3. **The code** is six digits from a BLAKE2b hash of both public keys, the client's first. Both
-   sides derive it; only the receiver's window shows it: a machine in the middle has a different
-   one on each link.
-4. The first sealed message on each side is who it is (`ident`: id, name). Names on screen are
+**Protocol 2 (#472)**, `Noise_XXhfs_25519+MLKEM768_ChaChaPoly_BLAKE2b`:
+
+1. The client (the side that connected, the sender) sends `MVSP`, 2, `N` and the first Noise
+   message: an X25519 key and an **ML-KEM-768** key made for this link (the "hfs" modifier), and as
+   its payload a BLAKE2b commitment to a random 32-byte nonce.
+2. The server (the receiver) answers: its X25519 key, `ee`, the ML-KEM ciphertext encapsulated to
+   the client's key (its shared secret mixed into the chaining key beside the X25519 ones), its
+   static key and `es`. A recording of the link needs both X25519 and ML-KEM-768 broken to read.
+3. The client sends its static key, `se`, and reveals the nonce, which must match the commitment.
+   The static is this machine's identity, kept in the OS's secret store (#472 PR 4,
+   [below](#remembered-devices-472-pr-4)); without a store, a key made once a run. Nothing on the
+   LAN or Bluetooth trusts it: only a remembered device's meeting checks it.
+4. **The code** is six digits from a BLAKE2b hash of the handshake hash after message 2 and the
+   nonce. Everything the server contributes is fixed before the client's nonce is seen, and the
+   nonce is fixed before the server speaks, so a machine in the middle cannot search for keys that
+   give both people the same digits (protocol 1's commit-then-reveal, carried into Noise). Only the
+   receiver's window shows it.
+5. Both sides open an XChaCha20-Poly1305 secretstream each way keyed from the handshake's Split, and
+   keep Split's third output as the session's **resume secret** (memory only). Ephemerals are wiped
+   (`sodium_memzero`) as the handshake ends. Every later message is sealed with a sequence number
+   and an acknowledgement ([The session](#the-session-protocol-2-472)).
+
+The Noise core is checked against the published Cacophony vectors (`Noise_XX` and `Noise_NNpsk0`
+over 25519, ChaChaPoly and BLAKE2b); the hybrid patterns have fixed-key regression vectors and
+tests that the ML-KEM secret is in the keys and a tampered key or ciphertext fails
+(`tests/test_sharepoint_noise.cpp`). libsodium 1.0.22 (already pinned) has ML-KEM-768.
+
+**The formal model** (`tools/formal/`, ProVerif 2.05, #472's assurance list) writes both handshakes
+out token by token from `noise.cpp` and `channel.cpp`: h and ck as hash and HKDF chains, the
+commitment, the code, the tag and `resume_at`. The attacker owns the network, replays and crosses
+messages between any number of sessions and rejoins, and for the code holds a **collision oracle**:
+given one side's code inputs and the other side's h2 it gets a nonce that gives both the same six
+digits, the power a real search over 10^6 gives. What it shows:
+
+- **The code.** When the sender's person typed the code the receiver showed, both sides ran the
+  same handshake (same h2, nonce, link keys and resume secret, one for one), and the files and the
+  resume secret stay secret, oracle and all. The oracle never helps because of the order: the
+  server's nonce is bound by its commitment before the server's ephemeral (so its h2) exists, and
+  the client's nonce is secret until its h2 is fixed. So each try of the attacker in the middle
+  matches with probability 10^-6 and three wrong codes end the link: at most 3 × 10^-6 per
+  attempt. On the handshake's skeleton with the commitment check removed, ProVerif finds that
+  attack (the full first link without the check does not finish).
+- **Broken later.** A first link recorded now stays secret if X25519 is broken later (every
+  ephemeral and static handed over), or ML-KEM-768 is; with both broken it is read (the check that
+  the model can lose).
+- **The rejoin.** A link is adopted only by a side holding the session's resume secret, each
+  adoption matches one rejoin the other side really ran (a replayed first message is never adopted,
+  either way round), no two adoptions share link keys, and what a rejoined link carries stays
+  secret even if the resume secret leaks after the session, and then also X25519 or ML-KEM-768
+  is broken.
+
+Simplifications: the primitives are ideal (symbolic hashes, HKDF, AEAD, the Diffie-Hellman
+equation, ML-KEM as an ideal KEM), so this says nothing about side channels or implementation
+bugs (the tests, the vectors and the fuzz harness do). The first link's handshake ciphertexts carry
+a constant associated data instead of h; that only helps the attacker, so what holds there holds for
+the code, and with the real h ProVerif does not finish. The code's 10^-6 is outside the symbolic
+model: the oracle gives the attacker a perfect search, and the model shows no order of messages lets
+it use one. Not modelled: protocol 1, `ident` (sent sealed before the code, so a machine in the
+middle learns the sender's id and name before a code is typed), timeouts and the flapping rule.
+
+**Protocol 1** (a peer from before #472): commit, answer, reveal, each with an X25519 key made for
+this link alone: the client sends `MVSP`, 1 and a BLAKE2b hash of its public key; the server
+answers `MVSP`, 1 and its public key; the client reveals its key, which must hash to what it sent.
+Both derive one key per direction (`crypto_kx`) and open the same secretstreams. The code is six
+digits from a hash of both public keys. Another version is refused at the hello.
+
+Then, on either protocol:
+
+1. The first sealed message on each side is who it is (`ident`: id, name). Names on screen are
    these, not the beacon's.
-5. **The sender's person types the code** the receiver's screen shows (#442, passkey entry rather
+2. **The sender's person types the code** the receiver's screen shows (#442, passkey entry rather
    than numeric comparison: typing makes the person read the other screen). The sender checks it
    on its own machine against the code it derived, digits only, in constant time; a partial entry
    is not a try. A wrong one says so and how many tries are left; the third wrong one sends
    `cancel` and ends the link. Until a right one nothing about the files leaves, not even a name:
    a machine that only claimed the peer's id, or one in the middle, shows the receiver no code or
-   another one, so what the person types cannot match. The wire is unchanged from the comparison
-   (the receiver waits for the offer either way), so the protocol version stays 1.
-6. The sender's **offer**: the count, the total, and each file's relative path and size. No hash
+   another one, so what the person types cannot match.
+3. The sender's **offer**: the count, the total, and each file's relative path and size. No hash
    up front: the sender would have to read every file twice before the first byte moved.
-7. The receiver answers `accept`, or `decline` with `declined`, `busy` or `no_room`. Closing the
+4. The receiver answers `accept`, or `decline` with `declined`, `busy` or `no_room`. Closing the
    window, or three minutes without an answer, declines; a receiver already in a transfer answers
    `busy` straight after the handshake.
-8. Each file: `file_begin` (index, size, mtime), `data` chunks of 256 KiB, `file_end` with the
+5. Each file: `file_begin` (index, size, mtime), `data` chunks of 256 KiB, `file_end` with the
    BLAKE3 of the bytes as read; or `file_skip` for one that is gone or changed since the offer.
    The receiver answers each with `file_done` (verified or not) and the end with `done`.
-9. `cancel` from either side ends it (sent only if the link is free, never behind a chunk). A ping
-   goes out whenever a side has sent nothing for 2 s and 20 s of silence is a dropped link; a
-   frame must arrive whole within 20 s of its first byte. Every wait before Accept is a deadline
-   (the handshake 8 s, typing the code and the answer 3 minutes) that pings never extend, and a
-   handshake still running is ended by Cancel or by the add-on stopping.
+6. `cancel` from either side ends it (sent only if the link is free, never behind a chunk).
+   Protocol 1: a ping goes out whenever a side has sent nothing for 2 s, 20 s of silence is a
+   dropped link, and a frame must arrive whole within 20 s of its first byte. Protocol 2: below.
+   Every wait before Accept is a deadline (the handshake 8 s, typing the code and the answer 3
+   minutes) that pings never extend, and a handshake still running is ended by Cancel or by the
+   add-on stopping.
+
+## The session (protocol 2, #472)
+
+The channel is a session above the link (`channel.h`); `transfer.h` sees none of what follows: a
+send or a receive waits through a rejoin.
+
+- **Nothing lost, nothing twice.** Every sealed message carries its sequence number and the count
+  the sender of it has received (the acknowledgement). A side keeps what the other has not
+  acknowledged, at most **16 MiB** (`kReplayBytes`, a budget: [12](12-decision-log.md#sharepoint));
+  past it a sender waits, as a full socket would. The receiver acknowledges at least every 1 MiB
+  and at once for anything but file bytes; pings (at least every second while a link is idle)
+  carry the acknowledgement too.
+- **Rejoin over any bearer, no second code.** The client opens a new link and sends `MVSP`, 2, `R`,
+  a 16-byte tag (8 random bytes and a keyed hash of them under the resume secret: only the two
+  sides make or recognise one, and no two look alike) and a fresh
+  `Noise_NNhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b` handshake with the resume secret as the psk:
+  new X25519 and ML-KEM keys, new link keys. The receiver routes it by the tag to the session it
+  names (`engine::route_busy`); a tag that names nothing here closes the link. Each side's first
+  sealed message on the new link is **`resume_at`**: how many messages it has received. That
+  proves it holds the keys (a recorded rejoin played again opens its first message and stops
+  there), and the other side sends again, in order, what is past that point. A message that came
+  twice (sent on the old link, and again after the rejoin) is dropped by its sequence number.
+  Messages are chunk-sized, so this is the issue's "resume at a chunk boundary": the receiver
+  keeps its open `.mvtmp`, its BLAKE3 state and its verifier exactly as they were, and nothing
+  that arrived is sent again. Every file is still verified end to end.
+- **When it moves** (the sender's mover thread, `engine::run_mover`):
+  - **Break.** A link that fails, or that is silent for **3 s** (`kSuspectMs`), is suspect: every
+    bearer the peer is heard on is raced (`link_race`: Wi-Fi to its fresh beacon, Bluetooth to its
+    handle) and the session rejoins on the first that connects; the slower ones close. The window
+    says **Reconnecting to …** and the ring holds where it is. **20 s** (`kRejoinMs`) without a
+    link, or without a sign of life, ends the session as a lost link ends it today.
+  - **Make before break.** A send on Bluetooth whose peer appears on Wi-Fi opens Wi-Fi alongside,
+    rejoins there, and closes Bluetooth; the switch loses nothing (what was in flight on Bluetooth
+    is sent again from the replay). Wi-Fi is always the faster by far, so this is also the "too
+    slow" rule; after a move the next move for speed waits **10 s** (`kSwitchHoldMs`).
+  - **Flapping.** Three rejoins in **10 s** end the session.
+  - **Wi-Fi → internet** (#472 PR 5, [below](#wi-fi--internet-472-pr-5)): with the toggle on, the
+    receiver's internet places are raced too; with the DHT toggle on as well, both sides also meet
+    on the DHT under the session's keys when those places are gone.
+- **One bad byte ends the link, not the session**: after the handshake, a frame that does not open
+  is treated as a dropped link, and the rejoin sends it again. A gap in the sequence numbers (never
+  on an ordered link) or an acknowledgement of what was never sent ends the session.
+- **The end.** The receiver answers `done` and waits up to 5 s for it to be acknowledged before it
+  closes, so a link that drops at the last moment is rejoined rather than the sender waiting out a
+  lost `done`.
+- Not here yet: the slower too-slow rule between two fast bearers (over the internet a send
+  moves back to Wi-Fi when the peer is heard there again, as Bluetooth does).
 
 **Who can take what.** Bytes move only from a sender to the peer its person picked, after that
 person typed the code the peer's screen showed and the person at that peer accepted. A sender never answers a request for
@@ -197,6 +310,322 @@ files, so a third machine that hears the beacon learns a name and a port, and no
 peer heard in the last 4.5 s keeps its address and device: a beacon claiming its id from another
 address is ignored, and the list holds at most 64. A receiver already in a transfer answers
 `busy`; at most four such refusals run at once.
+
+## Over the internet (#472 PR 2)
+
+A sender anywhere reaches a receiver with a **code**, and no server of anyone's is involved. One
+toggle, **Send and receive over the internet**, is off by default; with it off nothing below runs or
+shows: no listener, no router mapping, no socket. (`internet.*`, `invite.*`, `mapping.*`,
+`cpace.*`.)
+
+- **The receiver makes a code** (one at a time). It opens a TCP listener on IPv6 and IPv4, then
+  gathers the places a sender could reach, in this order, at most four:
+  - a **port forwarded by hand** (the advanced field "Forwarded port": `public address:port`,
+    listened on at the same port number);
+  - a port the **router maps** (`mapping.h`): PCP (RFC 6887), then NAT-PMP (RFC 6886), then
+    UPnP-IGD (WANIPConnection 1/2, WANPPPConnection), the first that answers; also external
+    **443** when the router allows, for a sender whose network lets only 443 out. A router whose
+    own outside address is not public (double NAT, carrier NAT) is reported, not used;
+  - this machine's **public IPv6** address (with an IGDv2 pinhole on the router when it offers
+    one);
+  - its address on this network, for a sender on the same network or behind the same router.
+
+  With no public place at all, the window says why (no mapping and no IPv6, or the router behind
+  another NAT) and what to try (UPnP / NAT-PMP on the router, a forwarded port, a phone hotspot
+  with IPv6). A UPnP description is fetched only from an address on this network, never a public
+  one, so a stray SSDP answer cannot point it anywhere else.
+- **The code** (`invite.h`) is a 48-bit secret and the places, encrypted under a key from the
+  secret (a link preview shows no address), and a two-byte check that catches a typo on the
+  sender before the code is spent. Crockford base32 in groups of four, case and O/0, I/1 forgiven,
+  or a link (`mediaviewer://sharepoint?code=…`). An IPv4-only code is 26 characters; with IPv6
+  and several places up to about 90. The issue's "about 16 characters" cannot hold an address and
+  a secret: the link carries the long ones.
+- **It works once, for 10 minutes.** It dies at the first internet hello that reaches it, right or
+  wrong, and at 10 minutes; then the listener closes and every mapping is removed (before the
+  window shows it over), unless a transfer over it runs, whose rejoins come back the same way.
+  A wrong attempt is said on the receiver ("Someone tried this code and it was wrong, so it no
+  longer works").
+- **The sender pastes the code** and tries every place at once, IPv6 first and the rest 250 ms
+  later (happy eyeballs, `race.h`). The first TCP connection wins; the others close before a byte
+  goes, so one attempt reaches the receiver. A round with no connection is tried again after 1, 2,
+  5, 10, then every 30 seconds until Cancel, the window saying "Trying to reach the other computer
+  (attempt 4)…" and, from what each place answered, why: nothing answered (a firewall, either
+  side), refused (the code expired or MediaViewer closed), or only IPv6 in the code and none
+  here.
+- **The handshake** (`channel::open_internet`): the hello `MVSP` 2 `I` carries a CPace session id
+  and the sender's CPace message (draft-irtf-cfrg-cpace-18, ristretto255 / SHA-512, checked
+  against the draft's vectors); the receiver answers with its own. Then
+  `Noise_XXhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b` keyed by the CPace key, with the CPace
+  transcript in the prologue: a wrong code fails at the receiver's first read, before it says
+  anything of itself (not even its static key), and a machine in the middle gets one live guess
+  per code and nothing to test guesses against offline.
+- **Both confirm the other's name before any byte moves.** The sender sees "Connected to Bea
+  (new device)" and a six-digit **check** (from the whole handshake hash), and clicks **Send to
+  Bea**; the receiver sees "Ann (new device) wants to send you files" with the same check, and
+  still accepts or declines as always. The check is optional to compare and differs whenever
+  someone else is in the middle. Names are self-declared for a first-time peer: "new device".
+- Then the transfer is protocol 2's session ([above](#the-session-protocol-2-472)) over the TCP
+  link ("over the internet" on the window): a drop rejoins at the place the sender reached, and if
+  the peer turns up on this network the send moves there.
+- **TCP only, in PR 2.** With a direct code only the receiver's addresses are known, so the
+  paths that need both sides to send (UDP hole punching, birthday punch, port prediction, IPv6
+  simultaneous sends) wait for the DHT (#472 PR 3), and with them the QUIC-or-own-UDP transport
+  spike. The keepalive is the session's ping (every second while a link is up).
+
+## Four words over the DHT (#472 PR 3)
+
+When the receiver has no public address of its own (no mapping, no IPv6, no forwarded port), a
+second opt-in toggle, **Find each other over the internet (public DHT)**, off by default, lets the
+code be **four words** instead, and both computers meet on the public BitTorrent DHT. The DHT runs
+only while a code waits or a send looks for its receiver; never at idle. (`dht_item.*`, `dht.*`,
+`meet.*`, `udp_hub.*`, `bencode.*`, `sha1.*`.)
+
+- **The words** are BIP-39's English list (2048 words, MIT; `wordlist.inc`), 44 bits; typed whole
+  or as their first four letters. Argon2id (libsodium, moderate: 256 MiB, about a second) turns
+  them into an Ed25519 key, a key for the items' contents, a salt base and CPace's password.
+- **Each side publishes a BEP 44 mutable item** under four salts of its role (receiver, sender):
+  its addresses (on this network, its public address as the DHT saw it, its public IPv6, all at
+  its one UDP port), XChaCha20-Poly1305-sealed, padded to 512 bytes, the timestamp inside. The
+  target is SHA-1(key ‖ salt): without the words, 20 random bytes nobody can find, read or forge.
+  Each side looks up the other's four targets in parallel; an item is taken only if its key
+  hashes to the target, its signature verifies, it opens under the code and it is under ten
+  minutes old. After the link is up each side overwrites its items with "gone".
+- **The DHT client** (`dht.h`) is the spike's "small KRPC + BEP 44/42 client in the add-on", not
+  libtorrent (Boost, a torrent engine, sockets of its own): read-only (BEP 43, it answers no
+  queries and stays out of others' tables), iterative lookups (three in flight, the eight closest),
+  BEP 42 votes for this machine's public address from every answer (no STUN), nodes whose id
+  matches their address preferred, a routing table kept between runs (`sharepoint_dht.dat` beside
+  the prefs), and the four routers of #472 to start from the first time.
+- **One UDP socket** (`udp_hub.h`) carries the DHT, the punching and the transfer: the hole a probe
+  punches is the one the transfer uses. **Punching**: each side probes every address the other
+  gave, and 16 ports above the other's public one (a NAT that hands ports out in sequence), every
+  100 ms for up to 10 s. A hello from a path the item did not name (a NAT's fresh mapping) is
+  answered and probed back at once. The sender takes the first path a reply came back on and
+  offers it (*choose*) until the receiver answers (*chosen*); the receiver answers only the first
+  path it is offered, so both end on the same one, whichever transport it is on.
+- **Every probe**, of every kind, is at most 200 a second each way (20 a 100 ms tick): the paths
+  learned from hellos first (at most 8), the birthday's share (below), then the item's addresses
+  and predicted ports in turn with what is left.
+- **The birthday punch** (one hard NAT, #472): each item says whether its side's NAT maps each
+  destination apart, from BEP 42 votes: each node's latest answer counts once, for ten minutes,
+  and "hard" needs at least three ports seen for the most-seen address with no port seen by half
+  the voters, so one node's lie (or two's) does not set it. A client with fewer than four voters
+  looks up once more before it decides, and a side the puts show to be hard says so again. When
+  exactly one side is hard, it opens 256 more UDP sockets on the hub (64 KiB buffers; one reader
+  thread polls them all, `net::wait_readable`) and probes the easy side's public address from
+  each, every one a new mapping in its NAT; the easy side probes random ports of the hard side's
+  address. The birthday's probes are at most 100 a second each way, until the punch's deadline.
+  The hard side's mappings open 10 at a time (all 256 by 2.6 s), so the ~1000 random probes of a
+  10 s punch meet about 97 times in 100 on a real NAT (the arithmetic, not a measurement). The
+  stream runs on the socket that met (its buffers grown to the main socket's); every other one is
+  closed when the punch ends, and the stream's own when the stream ends, so the hub is back to its
+  one socket and its idle wait. On POSIX the soft descriptor limit is raised to 1024 + 256 for
+  them, for the rest of the process (lowered again it could fail another part's next open). Two
+  hard NATs do not birthday-punch each other (256 × 256 of 64k ports would not meet in time).
+- **TCP simultaneous open** (#472, `net::tcp_rendezvous`, POSIX and Winsock): each side binds one
+  TCP port (`SO_REUSEADDR`, and `SO_REUSEPORT` where the OS has it), publishes it, and while
+  listening on it connects from it to the other's port at each of its addresses, again every
+  250 ms, so SYNs that cross in two NATs open one connection and one that arrives after ours
+  failed is accepted. It runs beside the UDP punch, only in a word code's meeting (the window is
+  open), never in a remembered device's background meetings, since it listens on every interface
+  (Windows asks its firewall at the first). The sender picks a TCP connection only if no UDP path
+  came back in the first 1.5 s, and the same choose / chosen settles it; once it has offered a TCP
+  connection it waits for the answer there until the punch ends and never falls back to UDP, so
+  the two sides cannot end on different transports. It meets where a NAT keeps a TCP
+  connection's port (most home routers), whatever it does to UDP: two hard UDP NATs can still
+  meet this way. On Windows the port is shared with `SO_REUSEADDR` (there is no `SO_REUSEPORT`),
+  not `SO_EXCLUSIVEADDRUSE`, so another process of the same user could bind it too and take a
+  connection; CPace on the code still refuses it. A connection closed after its choose leaves the
+  4-tuple in TIME_WAIT on this side, which blocks a retry to the same peer from the same port:
+  the sender does not retry that way.
+- **The stream** over it is the spike's third option, "our own simple UDP transport", not QUIC: it
+  must share the socket on both OSes (msquic owns its sockets and has no macOS; ngtcp2 needs TLS
+  beside Noise), and the session above already seals, orders and resumes. 1200-byte packets,
+  cumulative and 256-packet selective acknowledgements, RACK loss detection and a tail-loss probe
+  (RFC 8985, simplified), NewReno growth, the receiver's buffer as the window; no pacing yet.
+  Loopback, Mac (`"[sharepoint]"`'s stream case): about 60 MB/s clean, 17–26 MB/s at 1 % loss each
+  way, 6–10 MB/s at 5 %; no real path measured.
+- Then the **internet handshake** runs over the stream as with a direct code (CPace on the words'
+  password, `Noise_XXhfs+psk0`), the names are confirmed and the check is shown, and the transfer
+  is protocol 2's session ("over the internet").
+- **Measured on loopback only** (Mac, stand-in NATs in the tests: a symmetric one and a
+  port-restricted cone that wrap every socket a hub opens): a hard receiver or a hard sender
+  meets an easy one by the birthday punch, the stream on the one extra socket left open; two hard
+  NATs time out over UDP with no extra socket opened, and meet over TCP when TCP is allowed. On
+  loopback the kernel answers a SYN to a port nobody connects from with a reset, so the test's
+  connection is one side's connect accepted by the other's listener: SYNs crossing in flight (the
+  simultaneous open proper) happen only where a NAT drops the first SYN, which no test here makes.
+  No real NAT, router or public path has been tried (the public DHT and real networks are never
+  contacted by a test).
+- **Not built**: port mapping for the UDP socket, and disjoint lookup paths in the S/Kademlia
+  sense (each item has four targets, looked up apart, which spreads them over the keyspace). Two
+  hard NATs that also rewrite TCP ports, or a network with no UDP, do not meet this way, and the
+  window says what to try.
+
+## Wi-Fi → internet (#472 PR 5)
+
+A third opt-in toggle in the internet section, **Continue over the internet if Wi-Fi drops**, off
+by default, lets a transfer nearby carry on over the internet when its Wi-Fi goes. Both computers
+need it on (and "Send and receive over the internet").
+
+- **Places swapped over the sealed link, no lookup.** A sender with the toggle on says so in its
+  offer (`"handover":true`). A receiver with it on, receiving over Wi-Fi or Bluetooth in protocol 2,
+  then opens a way in for as long as the transfer runs (`way_in`, `internet.h`): a listener, the
+  router asked for a port (PCP, NAT-PMP, UPnP-IGD) and an IPv6 pinhole, as a code's places
+  ([above](#over-the-internet-472-pr-2)) less the LAN address. It sends those places to the sender
+  as `places` (message 14, protocol 2; only to a sender whose offer asked, since a channel before
+  this PR ends the link on a type it does not know). The sender's window says "If Wi-Fi drops,
+  this continues over the internet."
+- **The move.** When the link is suspect or drops, the mover races the receiver's places beside
+  Wi-Fi and Bluetooth; a TCP connection that reaches the way in is a rejoin (`NNhfs+psk0` and
+  `resume_at`, as any), and the window says "over the internet". When the peer is heard on Wi-Fi
+  again, the send moves back there (make before break). On loopback in the tests the move takes
+  10–14 ms after the cut.
+- When the transfer ends the listener closes and every mapping is removed. With the toggle off on
+  either side nothing is offered and a Wi-Fi drop with no Bluetooth ends the transfer as before.
+- What the sender learns: the receiver's public address, which the receiver gives to a peer its
+  person already accepted from.
+- **When both sides move (#472, after PR 5).** The places above go with the receiver's own
+  network (its mapped port, its pinhole; only a public IPv6 on another interface survives). With
+  **Find each other over the internet** (the DHT, [above](#four-words-over-the-dht-472-pr-3)) on as
+  well, on both sides, the two meet on the DHT the way four words do, under keys from the session
+  itself (`dht_handover`, `handover.h`):
+  - The sender's offer says `"dht":true` beside `"handover"`; a receiver with the DHT toggle on
+    answers at once with `places` carrying `"dht":true` (before its way in has opened, which may
+    take the router seconds), and again with its places.
+  - **Pre-started.** The receiver once it has accepted and the offer asked, the sender once those
+    `places` arrive (so a receiver that never says so costs the sender nothing): from then until the
+    files are in, each side keeps its UDP hub open and has joined the DHT (the bootstrap and saved
+    table, as a word code's), so a drop costs no join. With nothing to rescue a side sends nothing
+    more on the DHT than the join; the window shows nothing new. When the transfer ends the engine
+    stops it without waiting (a join may be in a DNS lookup) and joins its thread later.
+  - **The keys.** `channel::handover_secret()`: BLAKE2b over the resume secret under its own context
+    (`"MediaViewer Sharepoint handover v1"`, apart from the pairing secret's), then `crypto_kdf`
+    (context `MVSPhand`) into the four parts of a word code's set (item key, box, salt base, CPace
+    password), at index `4 × rejoins()`: the resume secret is fixed for the session (decision log,
+    2026-10-18), so the count of rejoins both ends have adopted is what makes each drop's targets
+    and stream id new. Only the two ends of the session hold the secret. Should the counts ever
+    differ (a rejoin that completed on one end only), the meeting finds nobody and the session
+    ends after 20 s, as with the toggle off. The sender publishes and looks as the sender, the
+    receiver as the receiver, so neither meets its own item.
+  - **On a drop** (the link suspect or down, looked at every 200 ms): each side asks up to eight
+    known nodes again how they see it (its network may have changed), publishes its candidates,
+    looks up the other's every 500 ms (a word code waits 2 s between looks), and punches. The
+    sender rejoins over the punched stream (`NNhfs+psk0`, `resume_at`, as any rejoin); the receiver
+    hands it to the engine's rejoin path. A meeting stops as soon as the link is up again some
+    other way (Wi-Fi back, the swapped places); the sender drops a stream met after that. Every
+    meeting, met or not, ends with this side's items saying "gone" (at most 2 s, at a sequence
+    number above any it used under those keys). It runs beside the swapped places, not after them,
+    so a drop the places rescue in milliseconds may still cost each side one publish.
+  - **Measured** on the stand-in swarm (16 loopback nodes; 10 runs, 2026-10-18): the stream is up
+    0.14–0.69 s after the drop is seen, the send is over the internet 0.87–1.88 s after the cut.
+    The bimodal tail is the stream's first retransmit (1 s): when the receiver's punch completes
+    ~100 ms after the sender's, the sender's first stream packet arrives before the receiver's
+    stream exists. A second drop after a move over the DHT meets again under the next keys in
+    ~5.5 s: the sender sees its cut at once, the receiver only as silence (`kSuspectMs`, 3 s).
+    Well inside `kRejoinMs` (20 s); the public DHT's publish and lookup during a drop and real NATs
+    are not measured.
+  - With the DHT toggle off on either side (both cases tested), neither joins the DHT, and a drop
+    that takes the receiver's places ends the transfer after 20 s, as before.
+- **Not built** (said so in #472's PR 5): a handover does not go through a relay ([below](#relays-472)); with the DHT toggle off on either side, the receiver's own network going still ends the transfer after 20 s.
+
+## Remembered devices (#472 PR 4)
+
+After a transfer over protocol 2 that went through, either window shows **Remember Bea** under the
+result. Ticked on both computers, a later send needs no code: Bea is a tile under **Remembered
+devices** (in the internet section), and one click sends to it over the internet, whenever both
+are online. The receiver still accepts or declines every transfer. (`secrets.*`, `known.*`.)
+
+- **Identity.** An X25519 key made once and kept in the OS's secret store (`secrets.h`, a port, D9):
+  the login Keychain on the Mac (a generic password under "MediaViewer Sharepoint", this device
+  only, after first unlock), Credential Manager on Windows (generic credentials, this machine only,
+  not roamed). It is the static of every protocol 2 handshake. Where there is no store (or it does
+  not keep what it is given) the key is this run's and nothing can be remembered; the toggle does
+  not show. The tests use a folder (`secrets::file_store`).
+- **What is remembered**: the peer's name, its static key from that session, and a **pairing
+  secret** only the two ends of that session hold (BLAKE2b over the session's resume secret). At
+  most 16 devices, in one value of the store; Forget removes one.
+- **Mutual by construction.** Nothing is sent to say "I remembered you": the meeting is keyed by
+  the pairing secret, so a device is found only when both kept it. One-sided, the sender waits
+  ("Waiting for Bea to come online… Bea must remember this computer too") until Cancel.
+- **Meeting.** Each hour (UTC) the secret gives the pair a fresh set of the four-word code's keys
+  ([above](#four-words-over-the-dht-472-pr-3)) per direction: toward the receiving device's
+  identity, so each side's wait and send are apart and a device never meets its own item. While
+  the window is open (or Keep receiving is on), the internet and DHT toggles are on and something
+  is remembered, one UDP socket and DHT client publish this computer's item for each remembered
+  device (again every 4 minutes; an item is believed for 10) and look for a sender's every 15
+  seconds, one target per look. A sender's item found, the two meet and punch as with four words
+  (the sender punches 15 s longer, as the other side looks only that often). The sender's rounds
+  end on the hour, when both change keys; it keeps going until it meets or Cancel.
+- **Trust on first use.** The handshake is the internet one (CPace on this hour's password, then
+  `Noise_XXhfs+psk0`), so only a holder of the pairing secret gets through; then the peer's static
+  must be the one remembered. Another key ends the link on the side that sees it, loudly: "This is
+  not the Bea you remembered: its security key has changed… If Bea was set up again, forget it
+  here and send once nearby or with a code to remember it again. If not, someone may be pretending
+  to be Bea." Nothing is sent or received. A device set up again with a new key is not found at all
+  (its wait is keyed by its new identity), which is the same advice.
+- What DHT nodes see: this computer's address taking part, and while something is remembered, an
+  item per remembered device each hour under targets that change every hour and mean nothing
+  without the pair's secret.
+- **Not built**: remembered devices are not marked on the nearby tiles (the beacon carries an id, not the identity). Two clocks more than
+  a minute apart around the hour may miss each other for that minute.
+
+## Relays (#472)
+
+When nothing answers directly, a transfer may go **through a computer of the person's own** or
+**through a relay server they run**, never anyone else's. Either way the two MediaViewers' handshake
+(CPace on the code, then Noise XX) and their session run end to end through it: the relay passes
+ciphertext, holds no key of theirs, and cannot read or change what they say; at most it drops the
+link. The tests check that no 32-byte run of the file passes through either relay in the clear.
+
+- **Through your own computer** (option 9; `relay.*`, `engine_relay.cpp`). A toggle in the internet
+  section, **Use my other computers to relay**, off by default; with it on, each remembered device
+  shows **<name> is my computer** (kept in its record, `known.h`, and keyed in the window by a hash
+  of the device's key, not its place in the list; a record with no mark is written as before). A
+  sends to a direct code; beside the code's places, 1.5 s in, each round also meets each computer
+  marked as its own in turn, as any remembered device (the DHT, the pair's hourly keys, its key
+  checked; up to 45 s each, given up as soon as the round is decided), and over that sealed channel
+  sends `relay` (20) with the code's places. R serves only if its toggle is on and it marks A as
+  its own too, now: then it connects onward to those places and only those, and only to public
+  addresses that are not its own and not in an IPv6 /64 it has an address in (R's own public IPv4
+  reached through its router is not known to R; what the router forwards there is open to the
+  whole internet anyway), answers `relay_answer` (21), and from then on the bytes of A's link to B
+  travel as `relay_data` (22), sealed again between A and R. A runs the internet handshake with B
+  through it; B sees R's address as the sender's, and both see the same check. One relay at a time
+  (it is R's one transfer; while R is busy it meets nobody, so A's meeting runs out rather than
+  hearing "busy"); 256 GiB each way at most, no rate cap (it is the person's own line); 120 s of
+  silence ends it. R's window says **Relaying for Ann**, sealed, with **Stop relaying**; A's says
+  **Through R (your computer)**, and when R says no, why (after the round's own reason). Nothing is
+  logged about either peer; R logs one fixed line that it relayed. A relayed send does not move
+  between links (its rejoins would need R again), and R must be reachable over the DHT (Keep
+  receiving on, the internet and DHT toggles on). Word codes and sends to a remembered device are
+  not relayed: R would need the code's DHT meeting. R reads a remembered sender's first message
+  within 20 s (`kSilenceMs`): the request or the offer comes at once, nothing waits on a person.
+- **Through your own relay server** (option 10; `splice.*`, `tools/sharepoint-relay`). An advanced
+  field, **Relay (your own server)**, `<address or name>:<port>#<key>`; the server prints the key
+  (or takes `--key`). The name is the one Sharepoint resolves, because the person typed it; the
+  code carries the address, never the key. With it set, each code also registers at that server as
+  a **waiter** under a fresh random 16-byte token sealed in the code with its places, proving the
+  key (keyed BLAKE2b over the token); this runs beside the router's mapping, and a server slower
+  than 3 s is left out of that code and the window says so. A code with a relay is about 115
+  characters, and only a build with relays opens it. A sender races the code's places as before
+  and the relay 1.5 s later, so a direct path that works wins; it says the token only. The server
+  pairs a sender with the waiter under its token and copies bytes between them; it relays only for
+  key holders' codes, so it is not an open relay. A sender with no waiter is closed at once
+  (senders never wait); a waiter registering again under its token replaces its old wait, which
+  the receiver does every 60 s, new connection before closing the old, ahead of NATs that drop an
+  idle TCP connection. Anything that is not a hello, a waiter whose proof is wrong, or a byte
+  before the pair, is closed. The receiver hands a paired link on only once the sender has spoken,
+  so a sender that lost its race to a direct place costs nothing. The token is not the code's
+  secret and says nothing about it; the server learns two addresses, the time and the size, and
+  prints counts only. Caps: 16 hellos being read at once and 4 from one address; 64 waiters, 4 from
+  one address; 8 splices; per splice 64 GiB each way, an optional rate as a token bucket (a quarter
+  second of burst), 120 s idle. The program is about 300 KB (Mac, Release), the splice alone,
+  portable (D9), no state on disk.
+- **TURN is left out**: allocations, permissions, STUN's message format and long-term credentials
+  are a server of their own for the same job the splice does in a few hundred lines.
+- **Tor** (option 11) was evaluated, not built, and dropped for now
+  ([plan](../plans/sharepoint-tor-spike.md), [12](12-decision-log.md#sharepoint)).
 
 ## What moves, and how it lands
 
@@ -234,7 +663,8 @@ address is ignored, and the list holds at most 64. A receiver already in a trans
   and read-back. A cancel or a dropped link still drops the file being written; files that had
   arrived whole finish their check, as they did when it ran inline.
 - Between chunks both sides wait while the viewer presents (the host table's `should_yield`, as
-  Import does), so a pan keeps its frames.
+  Import does), so a pan keeps its frames. A rejoin changes nothing here (`should_yield` is
+  unchanged).
 
 **Throughput** (`mv_import_tests "[.sharepoint-bench]"`, #442): two engines in one process over
 loopback TCP, timed from Accept to the receiver's `done`, against a plain copy of the same files
@@ -258,12 +688,22 @@ with Import; it would need a host change on both platforms and the PR 1 gate mea
 transfer running). Loopback is not Wi-Fi or Bluetooth: no radio was measured here, so the MB/s a
 person sees between two machines is not in this table.
 
+**Protocol 2 (#472, 2026-10-18)**, the same bench, base (protocol 1) and new alternated three times,
+Mac M-series, Release, warm cache, load average ~4.6: 1 GiB 395.8–397.6 → 392.6–398.2 MB/s, 500 ×
+2 MiB 178.9–183.3 → 178.0–201.1 MB/s. No difference within noise. The first measurement was 3 %
+slower on 1 GiB: the receiver's wait for its `done` to be acknowledged read in 100 ms slices; it
+now returns on the acknowledgement. Kept messages are sealed where they lie and their buffers
+reused (one copy a chunk, as protocol 1 had).
+
 ## Threads
 
 The host calls in on its worker for this add-on (open, close, clicks, commands). The engine
 (`engine.h`) keeps its own threads for what waits on the network: a control thread (the only one
 that starts and stops presence, and sends throttled posts), the listener's accept loop, the
-discovery thread, Bluetooth's queue or handlers, the one transfer, and a folder reader. The folder
+discovery thread, Bluetooth's queue or handlers, the one transfer, a folder reader, and while a
+protocol 2 send runs, its mover (#472) with a connect thread per bearer it races, each with its own
+timeout and joined before the send's thread ends. A channel has its pinger, which also watches the
+session's health (suspect at 3 s, ended at 20 s). The folder
 reader is one thread, made at the first set: a newer set replaces one waiting and stops one being
 read (its generation goes stale), and no caller waits for it, so handing over a large gallery
 selection returns at once (#442; it used to join the previous reader on the caller's thread). On
@@ -278,9 +718,28 @@ second while bytes move; those posts update chrome and never present the canvas.
 - Nothing about a transfer goes to telemetry or a crash report: no path, file name, pixel, EXIF,
   address or peer name is logged (`log` takes ASCII without them) or annotated. The minidump
   scrub ([13](13-updates-and-telemetry.md)) applies unchanged.
-- The beacon carries a random id, the machine's name and a port; the offer travels sealed, to the
-  peer picked. No account, no cloud, no internet relay: the beacon's TTL is 1 and nothing resolves
-  a name.
+- The beacon carries a random id, the machine's name, a port and the protocol it speaks; the offer
+  travels sealed, to the peer picked. No account, no cloud, no server of ours: the beacon's TTL is
+  1 and nothing resolves a name. Protocol 2 (#472 PR 1) opens no new network surface: the same
+  listener, beacon and Bluetooth service carry it.
+- **Over the internet** (#472 PR 2, opt-in, off by default; [12](12-decision-log.md#sharepoint)
+  amends "no internet relay, by design"): a sealed link to the peer the person picked, local or
+  over the internet, with no server of ours. A relay only ever through the person's own devices or
+  one they configure ([Relays](#relays-472)), and it sees only ciphertext. What cannot be hidden: the code gives its holder this machine's
+  public address; the router learns of a mapping (PCP, NAT-PMP, UPnP); a network observer sees
+  encrypted traffic and roughly how much moved. With only the internet toggle on, nothing goes
+  anywhere else: no lookup, no STUN, no name resolution. With **Find each other over the internet**
+  (the DHT) on, the client resolves the four bootstrap routers' names (`dht.h`) unless its saved
+  table answers, and DHT nodes see this machine's address taking part in the DHT (never what it
+  looks up: the targets mean nothing without the code or the pair's secret). A relay server the
+  person typed is resolved too. Codes, addresses and peer names are never logged. While four words meet
+  (a word code, not a remembered device), a TCP port listens on every interface (its number is in
+  the sealed item), and a birthday punch sends its 14-byte probes to random ports of the other
+  side's public address only.
+- Protocol 2's resume secret and keys live in memory only, wiped when the session ends; nothing
+  about a session is written down, except what Remember keeps (#472 PR 4): the peer's name, key
+  and pairing secret, in the OS's secret store (Keychain, Credential Manager), never a plain file,
+  until Forget.
 - Receiving is off until the window opens or the person turns it on. Turned on, it stays on across
   launches until turned off (#442), and the command bar says so (**Sharepoint: receiving**).
 - A notification (#452) names the sender and a count and size; never a file name, a path or the
@@ -325,7 +784,14 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Piece | Code |
 |---|---|
 | Wire, code, path rule, beacon | `src/addons/sharepoint/wire.*` |
-| Sealed channel | `channel.*`, `link.h` |
+| Noise (protocol 2's handshakes, #472) | `noise.*` |
+| CPace, internet codes, port mapping, the code's life and the sender's race (#472 PR 2) | `cpace.*`, `invite.*`, `mapping.*`, `internet.*`, `race.h`, `net_address.cpp` |
+| Word codes, the DHT, one UDP socket and its stream, punching (#472 PR 3) | `dht_item.*`, `wordlist.inc` (BIP-39, MIT), `dht.*`, `bencode.*`, `sha1.*`, `udp_hub.*`, `meet.*` |
+| The way in for Wi-Fi → internet (#472 PR 5) | `internet.*` (`way_in`), `transfer.*` (`places`) |
+| Relays: the splice and rendezvous, the own-device relay, the relay server program (#472) | `splice.*`, `relay.*`, `engine_relay.cpp`, `tools/sharepoint-relay/main.cpp` |
+| The DHT meeting when both sides move (#472) | `handover.*` (`dht_handover`), `channel.*` (`handover_secret`) |
+| The identity, remembered devices and their hourly keys (#472 PR 4) | `secrets.h`, `secrets_mac.cpp` (Keychain), `secrets_win.cpp` (Credential Manager), `secrets_file.cpp`, `known.*` |
+| Sealed channel, and protocol 2's session (replay, rejoin, resume) | `channel.*`, `link.h` |
 | Sending and the verified receive | `transfer.*` |
 | Engine, presence, the window's tree | `engine.*`, `presence.*`, `tree.cpp` |
 | What is kept across launches | `prefs.*` |
@@ -336,10 +802,25 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Windows chrome | `IslandHost.Sharepoint.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
-| Tests | `tests/test_sharepoint.cpp`, `tests/test_sharepoint_addon.cpp` (`mv_import_tests "[sharepoint]"`), `tools/package/test_addon_pack.py` |
+| Tests | `tests/test_sharepoint.cpp`, `tests/test_sharepoint_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_sharepoint_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_sharepoint_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices and an impostor with the pair's secret, #472 PR 3–4), `tests/test_sharepoint_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_sharepoint_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_sharepoint_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_sharepoint_dht.cpp`, #472), `tests/sharepoint_fixture.h`, `tests/sharepoint_swarm.h` (the stand-in DHT swarm), `tests/test_sharepoint_addon.cpp` (`mv_import_tests "[sharepoint]"`), `tools/package/test_addon_pack.py` |
 
 ## Not built
 
-- Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6.
-- A peer that is neither on the LAN nor in Bluetooth range: no relay, by design.
-- Resuming a transfer that dropped: finished files stay, the rest is sent again.
+- Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6 on the LAN.
+- Over the internet, after the relays: Tor (dropped for now, [plan](../plans/sharepoint-tor-spike.md)),
+  TURN, relaying word codes, remembered-device sends and the handover, a relayed send moving.
+- The rest of #472, deferred by the owner (2026-10-18, [12](12-decision-log.md#sharepoint)):
+  re-gathering and republishing on an OS network change; a remembered device's last-known direct
+  addresses; DHT bootstrap from a LAN peer or a remembered device; a 15 s keepalive during a wait;
+  S/Kademlia disjoint lookups; the 2x-faster switch between two fast bearers; port mapping for the
+  UDP socket; per-source rate limits on the add-on's listener and on rejoins; the Wi-Fi Direct
+  soft-AP spike; AES-256-GCM, larger chunks and parallel streams; a word code's failure naming its
+  reason.
+- Resuming a protocol 1 transfer that dropped: finished files stay, the rest is sent again.
+  Protocol 2 rejoins and resumes within 20 s; a session that ends (20 s without a link, three
+  rejoins in 10 s, the app quitting) is not resumed later.
+- A formal model of protocol 1, and of CPace and the internet bearers (#472 PRs 2–5). Protocol 2's
+  handshake and rejoin are modelled ([The wire](#the-wire)). The parsers of what a peer sends before it is authenticated (the beacon, INFO, the hello, the
+  Noise messages, a whole receiver's open) and the offer have a libFuzzer harness
+  (`tools/fuzz/fuzz_sharepoint.cpp`); `resume_at` is parsed only after its frame opens under the
+  rejoin's keys.

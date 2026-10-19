@@ -50,6 +50,7 @@ struct bt_peer {
   std::string handle;
   std::string id;    // its session id (from the advertisement / info read)
   std::string name;
+  std::uint32_t protocol = kProtocol1;  // from its INFO's "p" (#472)
 };
 
 class bluetooth {

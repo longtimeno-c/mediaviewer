@@ -12,19 +12,20 @@ namespace mv::sharepoint::bt {
 
 std::string info_json(const std::string& id, const std::string& name) {
   json::writer w;
-  w.begin_object().key("v").integer(kProtocolVersion).key("id").string(id).key("name").string(clean_name(name));
+  w.begin_object().key("v").integer(kBeaconVersion).key("p").integer(kProtocolVersion).key("id").string(id).key("name").string(clean_name(name));
   w.end_object();
   return w.take();
 }
 
-bool parse_info(std::span<const std::uint8_t> value, std::string& id, std::string& name) {
+bool parse_info(std::span<const std::uint8_t> value, std::string& id, std::string& name, std::uint32_t& protocol) {
   if (value.empty() || value.size() > kMaxBeaconBytes) return false;
   const auto doc = json::parse({reinterpret_cast<const char*>(value.data()), value.size()}, 4);
   if (!doc) return false;
   const auto v = doc->integer("v");
   const std::string* i = doc->str("id");
   const std::string* n = doc->str("name");
-  if (!v || *v != static_cast<std::int64_t>(kProtocolVersion) || !i || !valid_id(*i) || !n) return false;
+  if (!v || *v != static_cast<std::int64_t>(kBeaconVersion) || !i || !valid_id(*i) || !n) return false;
+  protocol = protocol_of(doc->integer("p"));
   id = *i;
   name = clean_name(*n);
   return true;

@@ -6,15 +6,17 @@
 // bytes: GATT. Windows offers apps no connection-oriented LE channel, so the
 // pipe is a GATT service of MediaViewer's own:
 //
-//   INFO  read    {"v":1,"id":"<16 hex>","name":"..."}: who advertises
+//   INFO  read    {"v":1,"p":2,"id":"<16 hex>","name":"..."}: who advertises
+//                 ("p", #472: the protocol it speaks; none is protocol 1)
 //   C2P   write without response: bytes from the sender (the central)
 //   P2C   notify: bytes from the receiver (the peripheral)
 //
 // Every value is one packet: a type byte (0 data, 1 close) and up to the
 // connection's packet size less one. GATT keeps them in order on one
 // connection, and the sealed channel above (channel.h) checks every byte, so
-// the pipe adds no checksum of its own. Small sends only (kBluetoothMaxBytes):
-// LE moves tens of kilobytes a second.
+// the pipe adds no checksum of its own. LE moves tens of kilobytes a second:
+// a protocol 1 peer gets small sends only (kBluetoothMaxBytes); with protocol
+// 2 a send starts here and moves to Wi-Fi as soon as both are on one network.
 //
 // bt_pipe is the link a bearer hands the engine: the bearer feeds it packets
 // from its callbacks (deliver, closed_by_peer: never blocking) and gives it a
@@ -49,7 +51,8 @@ inline constexpr std::size_t kMaxBuffered = 4u * 1024 * 1024;
 
 // The INFO value for (id, name), and back.
 [[nodiscard]] std::string info_json(const std::string& id, const std::string& name);
-[[nodiscard]] bool parse_info(std::span<const std::uint8_t> value, std::string& id, std::string& name);
+[[nodiscard]] bool parse_info(std::span<const std::uint8_t> value, std::string& id, std::string& name,
+                              std::uint32_t& protocol);
 
 class pipe final : public link {
  public:

@@ -95,6 +95,11 @@ linked code:
 | GeoNames `cities1000`, `countryInfo`, `admin1CodesASCII` (place and region names, populations) | **CC-BY 4.0** | Attribution wherever the names are shown: a line in the About box on both hosts, [THIRD-PARTY.md](../../THIRD-PARTY.md), the add-on's notice, and the blob's own `META` |
 | Natural Earth 1:10m admin-0 / admin-1 (borders) | Public domain | None; credited anyway |
 
+The Sharepoint add-on (#472 PR 3) compiles in the BIP 39 English word list (**MIT**, its notice
+kept in `src/addons/sharepoint/wordlist.inc` and [THIRD-PARTY.md](../../THIRD-PARTY.md)) for its
+four-word codes. It adds no library: the DHT client, SHA-1, bencoding and the UDP transport are
+the add-on's own code, and Argon2id, Ed25519, ristretto255 (CPace) and ML-KEM-768 are libsodium's.
+
 CC-BY 4.0 data in a GPL program is fine. The licences cover different works: the data is not a
 derivative of the code, and the attribution is a notice, not an added restriction on the program
 (GPL §7(b) allows "preservation of specified reasonable legal notices or author
