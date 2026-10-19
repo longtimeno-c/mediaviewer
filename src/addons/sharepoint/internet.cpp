@@ -92,11 +92,6 @@ void internet_receiver::make_code() {
   cv_.notify_all();
 }
 
-void internet_receiver::set_forwarded(std::string forwarded) {
-  std::lock_guard lock(m_);
-  opts_.forwarded = std::move(forwarded);
-}
-
 void internet_receiver::set_dht(bool on) {
   std::lock_guard lock(m_);
   opts_.dht = on;
@@ -243,17 +238,13 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
   // A code before this one: its listener and mappings go, unless a transfer
   // over it still runs (then this one waits for it to end: one listener).
   release_locked(lock);  // a code before this one: its listener and mappings go
-  const std::string forwarded_text = opts_.forwarded;
   const std::string relay_text = opts_.relay;
   const bool use_dht = opts_.dht;
   lock.unlock();
   notify();
 
-  // A listener: on the forwarded port if one is set (the router sends it
-  // there), else wherever the OS puts it.
-  const auto forwarded = forwarded_text.empty() ? std::nullopt : parse_hostport(forwarded_text);
-  auto l = net::listen_internet(forwarded ? forwarded->port : 0, opts_.loopback_only);
-  if (!l && forwarded) l = net::listen_internet(0, opts_.loopback_only);
+  // A listener wherever the OS puts it; the router is asked to map it below.
+  auto l = net::listen_internet(0, opts_.loopback_only);
   snapshot s;
   std::vector<net::endpoint> places;
   std::unique_ptr<mapping::mapper> mapper;
@@ -342,10 +333,6 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
       await_relay();
       if (relay) s.how.emplace_back("your relay");
     } else {
-      if (forwarded) {
-        places.push_back(*forwarded);
-        s.how.emplace_back("forwarded port");
-      }
       std::vector<net::address> mine = net::local_addresses();
       const auto v6 = std::find_if(mine.begin(), mine.end(), [](const net::address& a) { return a.v6 && net::is_public(a); });
       if (opts_.mapping) {
@@ -387,11 +374,12 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
         const bool nat = mapper && mapper->behind_another_nat();
         s.note = nat ? "This network has no public address of its own: its router sits behind another NAT (often "
                        "the provider's), so a port it opens is not reachable from outside, and there is no public "
-                       "IPv6. Try another network (a phone hotspot often has IPv6), or forward a port on the outer "
-                       "router (Forwarded port, below)."
+                       "IPv6. Turn on \xE2\x80\x9C" "Find each other over the internet\xE2\x80\x9D, or try another network (a "
+                       "phone hotspot often has IPv6)."
                      : "No way in from the internet was found: the router did not open a port (turn on UPnP or "
-                       "NAT-PMP in its settings), and this computer has no public IPv6 address. Forward a port by "
-                       "hand (Forwarded port, below), or try another network (a phone hotspot often has IPv6).";
+                       "NAT-PMP in its settings), and this computer has no public IPv6 address. Turn on \xE2\x80\x9C"
+                       "Find each other over the internet\xE2\x80\x9D, or try another network (a phone hotspot often "
+                       "has IPv6).";
       }
     }
   }
@@ -414,8 +402,8 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
       client = std::make_unique<dht::client>(hub, opts_.dht_client);
       if (!client->start([this] { return meet_stop_.load() || stop_; })) {
         s.p = phase::failed;
-        s.note = "The public DHT did not answer: this network may block UDP, or there is no connection. Forward a "
-                 "port by hand (Forwarded port, below), or try another network.";
+        s.note = "The public DHT did not answer: this network may block UDP, or there is no connection. Try "
+                 "another network (a phone hotspot often has IPv6).";
         client.reset();
         hub->stop();
         hub.reset();
@@ -509,10 +497,8 @@ way_in::~way_in() {
 }
 
 std::unique_ptr<way_in> way_in::open(bool loopback_only, const std::optional<mapping::options>& mapping,
-                                     const std::string& forwarded_text, link_fn on_link) {
-  const auto forwarded = forwarded_text.empty() ? std::nullopt : parse_hostport(forwarded_text);
-  auto l = net::listen_internet(forwarded ? forwarded->port : 0, loopback_only);
-  if (!l && forwarded) l = net::listen_internet(0, loopback_only);
+                                     link_fn on_link) {
+  auto l = net::listen_internet(0, loopback_only);
   if (!l) return nullptr;
   std::unique_ptr<way_in> w(new way_in());
   w->listener_ = std::move(*l);
@@ -521,7 +507,6 @@ std::unique_ptr<way_in> way_in::open(bool loopback_only, const std::optional<map
     w->places_ = {{"::1", port}, {"127.0.0.1", port}};  // the tests
   } else {
     // As a code's places (internet_receiver::prepare), less the LAN address.
-    if (forwarded) w->places_.push_back(*forwarded);
     const auto mine = net::local_addresses();
     const auto v6 = std::find_if(mine.begin(), mine.end(), [](const net::address& a) { return a.v6 && net::is_public(a); });
     if (mapping) {
@@ -649,8 +634,8 @@ std::string why_unreachable(const std::vector<net::endpoint>& places, const std:
            "or MediaViewer closed. Ask for a new code.";
   }
   return "Nothing answered at the addresses in the code. The other network may block incoming connections, or this "
-         "one may block going out. Ask them to turn on UPnP or NAT-PMP on their router, or forward a port; or try "
-         "from another network.";
+         "one may block going out. Ask them to turn on UPnP or NAT-PMP on their router, or both of you turn on "
+         "\xE2\x80\x9C" "Find each other over the internet\xE2\x80\x9D; or try from another network.";
 }
 
 }  // namespace mv::sharepoint

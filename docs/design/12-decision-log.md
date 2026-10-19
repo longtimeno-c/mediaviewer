@@ -1767,6 +1767,15 @@ issue: it starts with the meeting rather than after paths 1-4 have had 2 s, and 
 review before anything is on by default still stands. [28 "Not built"](28-sharepoint.md#not-built)
 lists them.
 
+**No "Forwarded port" field: the public address is found, never typed (owner, 2026-10-19).** The
+window asked for `public address:port` under "Receive from anywhere", which read as a required step
+to someone who had just turned the internet on. A code already finds its own way in (router
+mapping by PCP, NAT-PMP or UPnP, public IPv6, the LAN address), and with no public place the DHT
+toggle meets without one, so the field, its saved setting and its place in a code are gone. A
+hand-forwarded port now helps only if the router maps it; a `forwarded` key in an old
+`sharepoint.json` is ignored. Reopen only for a network where none of the automatic ways work and
+the DHT is blocked too.
+
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
 no-replace before its `file_done`; the sender's `done` waits for every check. Measured on loopback

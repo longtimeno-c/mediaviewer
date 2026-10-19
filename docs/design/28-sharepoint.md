@@ -320,8 +320,6 @@ shows: no listener, no router mapping, no socket. (`internet.*`, `invite.*`, `ma
 
 - **The receiver makes a code** (one at a time). It opens a TCP listener on IPv6 and IPv4, then
   gathers the places a sender could reach, in this order, at most four:
-  - a **port forwarded by hand** (the advanced field "Forwarded port": `public address:port`,
-    listened on at the same port number);
   - a port the **router maps** (`mapping.h`): PCP (RFC 6887), then NAT-PMP (RFC 6886), then
     UPnP-IGD (WANIPConnection 1/2, WANPPPConnection), the first that answers; also external
     **443** when the router allows, for a sender whose network lets only 443 out. A router whose
@@ -331,7 +329,7 @@ shows: no listener, no router mapping, no socket. (`internet.*`, `invite.*`, `ma
   - its address on this network, for a sender on the same network or behind the same router.
 
   With no public place at all, the window says why (no mapping and no IPv6, or the router behind
-  another NAT) and what to try (UPnP / NAT-PMP on the router, a forwarded port, a phone hotspot
+  another NAT) and what to try (UPnP / NAT-PMP on the router, the DHT toggle, a phone hotspot
   with IPv6). A UPnP description is fetched only from an address on this network, never a public
   one, so a stray SSDP answer cannot point it anywhere else.
 - **The code** (`invite.h`) is a 48-bit secret and the places, encrypted under a key from the
@@ -374,7 +372,7 @@ shows: no listener, no router mapping, no socket. (`internet.*`, `invite.*`, `ma
 
 ## Four words over the DHT (#472 PR 3)
 
-When the receiver has no public address of its own (no mapping, no IPv6, no forwarded port), a
+When the receiver has no public address of its own (no mapping, no IPv6), a
 second opt-in toggle, **Find each other over the internet (public DHT)**, off by default, lets the
 code be **four words** instead, and both computers meet on the public BitTorrent DHT. The DHT runs
 only while a code waits or a send looks for its receiver; never at idle. (`dht_item.*`, `dht.*`,

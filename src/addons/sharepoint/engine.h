@@ -129,7 +129,6 @@ struct view {
   // ---- over the internet (#472 PR 2; the toggle off: none of it shows or runs)
   bool internet = false;
   bool dht = false;          // #472 PR 3: word codes on the public DHT (opt-in)
-  std::string forwarded;     // the advanced "Forwarded port"
   std::uint8_t code_phase = 0;  // internet_receiver::phase
   std::string code_text, code_link, code_note, code_how;
   std::string send_code_note;   // a pasted code that is not one

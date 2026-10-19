@@ -24,11 +24,9 @@ struct prefs {
   // item / tray icon) with every window closed. Implies `receiving`.
   bool background = false;
   std::string destination;  // Save to; "" = the default (Downloads)
-  // #472 PR 2: "Send and receive over the internet" (off by default), and
-  // the advanced "Forwarded port": "<public address>:<port>" the person
-  // forwarded on their router to this machine's same port ("" = none).
+  // #472 PR 2: "Send and receive over the internet" (off by default). The
+  // public address is found, never typed (router mapping, public IPv6).
   bool internet = false;
-  std::string forwarded;
   bool dht = false;  // #472 PR 3: "Find each other over the internet (public DHT)", off by default
   bool handover = false;  // #472 PR 5: "Continue over the internet if Wi-Fi drops", off by default
   // #472 relays: "Use my other computers to relay" (off by default), and the

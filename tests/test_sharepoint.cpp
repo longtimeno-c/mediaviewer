@@ -372,7 +372,6 @@ TEST_CASE("sharepoint: every internet path is off until the person turns it on",
   CHECK_FALSE(d.dht);
   CHECK_FALSE(d.handover);
   CHECK_FALSE(d.relay);
-  CHECK(d.forwarded.empty());
   CHECK(d.relay_server.empty());
 
   scratch_dir s("sharepoint_internet_off");

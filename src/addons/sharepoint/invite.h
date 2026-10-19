@@ -5,7 +5,7 @@
 //
 // It holds a 48-bit secret (CPace's password, cpace.h) and up to four of the
 // receiver's own public addresses: an IPv6 address, a port its router mapped
-// (PCP, NAT-PMP, UPnP), or one the person forwarded by hand. The addresses
+// (PCP, NAT-PMP, UPnP), or its address on that network. The addresses
 // are encrypted under a key from the secret, so a link preview or a glance
 // at a chat shows no address. A two-byte check catches a mistyped code here,
 // before it is spent on the receiver (a code dies at its first attempt).

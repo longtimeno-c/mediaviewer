@@ -131,7 +131,6 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   v_.internet = kept.internet;  // #472 PR 2: the receiver of codes, made on the control thread
   v_.dht = kept.dht;
   v_.handover = kept.handover;
-  v_.forwarded = kept.forwarded;
   v_.relay = kept.relay;  // #472 relays
   v_.relay_server = kept.relay_server;
   v_.destination = host_.default_destination();
@@ -248,7 +247,6 @@ void engine::save_now() {
     p.background = v_.background;
     p.destination = v_.destination == host_.default_destination() ? std::string() : v_.destination;
     p.internet = v_.internet;
-    p.forwarded = v_.forwarded;
     p.dht = v_.dht;
     p.handover = v_.handover;
     p.relay = v_.relay;
@@ -376,7 +374,6 @@ void engine::sync_internet() {
     } else if (want && !internet_) {
       make = true;
       o.loopback_only = opts_.internet_loopback;
-      o.forwarded = v_.forwarded;
       o.mapping = opts_.internet_mapping;
       o.lifetime_ms = opts_.code_lifetime_ms;
       o.dht = v_.dht;
@@ -416,19 +413,17 @@ void engine::sync_internet() {
         }
         post_throttled();
       });
-  std::string relay_now, forwarded_now;
+  std::string relay_now;
   bool dht_now = false;
   {
     std::lock_guard lock(m_);
     internet_ = in;
     relay_now = v_.relay_server;
-    forwarded_now = v_.forwarded;
     dht_now = v_.dht;
   }
   // A setting changed while the receiver was made, when there was no
   // receiver to tell: it hears it now.
   if (relay_now != o.relay) in->set_relay(std::move(relay_now));
-  if (forwarded_now != o.forwarded) in->set_forwarded(std::move(forwarded_now));
   if (dht_now != o.dht) in->set_dht(dht_now);
 }
 
@@ -1268,17 +1263,6 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
   if (node.rfind("own", 0) == 0 && node.size() > 3 && kind == kChange && value && value->k == json::kind::boolean) {
     // Keyed by the device's key, not its place in the list: it grants relaying.
     set_own(node.substr(3), value->b);
-    return;
-  }
-  if (node == "forwarded" && (kind == kChange || kind == kSubmit) && text) {
-    std::shared_ptr<internet_receiver> in;
-    {
-      std::lock_guard lock(m_);
-      v_.forwarded = *text;
-      in = internet_;
-    }
-    if (in) in->set_forwarded(*text);
-    request_save();
     return;
   }
   if ((node == "make_code" || node == "stop_code") && kind == kClick) {
@@ -2608,12 +2592,10 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
     } close_meet{*this, meet_dht};
     {
       bool want = false, want_dht = false;
-      std::string forwarded;
       {
         std::lock_guard lock(m_);
         want = v_.internet && v_.handover;
         want_dht = want && v_.dht;
-        forwarded = v_.forwarded;
         v_.in_handover_dht = false;
       }
       if (want && offer->handover && ch->resumable() && !ch->internet()) {
@@ -2640,9 +2622,9 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
             v_.in_handover = true;
           }
         }
-        way_opener = std::thread([this, ch, &way, forwarded, dht] {
+        way_opener = std::thread([this, ch, &way, dht] {
           try {
-            auto w = way_in::open(opts_.internet_loopback, opts_.internet_mapping, forwarded,
+            auto w = way_in::open(opts_.internet_loopback, opts_.internet_mapping,
                                   [this](std::unique_ptr<link> l) { on_internet_link(std::move(l)); });
             if (!w) return;
             if (send_places(*ch, w->places(), dht)) {

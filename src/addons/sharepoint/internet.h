@@ -7,7 +7,7 @@
 //
 // The receiver (internet_receiver): one code at a time. Making one opens a
 // TCP listener (IPv6 and IPv4) and asks the router for a port (mapping.h),
-// then gathers the places a sender can try: a port forwarded by hand, the
+// then gathers the places a sender can try: the
 // mapped port (and external 443 when the router allows, for a sender whose
 // network lets only 443 out), this machine's public IPv6 address (with a
 // router pinhole when IGDv2 offers one), and its address on this network (a
@@ -68,11 +68,10 @@ class internet_receiver {
     phase p = phase::none;
     std::string text, link;  // ready: the code
     std::string note;        // what the window says under it
-    std::vector<std::string> how;  // "IPv6", "UPnP", "forwarded", ... (the window's line)
+    std::vector<std::string> how;  // "IPv6", "UPnP", ... (the window's line)
   };
   struct options {
     bool loopback_only = false;  // the tests: places are 127.0.0.1 and ::1
-    std::string forwarded;       // "<public address>:<port>" forwarded by hand
     // The router's port mapping; nullopt: none asked (the tests).
     std::optional<mapping::options> mapping = mapping::options{};
     int lifetime_ms = kCodeLifetimeMs;
@@ -100,8 +99,6 @@ class internet_receiver {
   // object's own thread.
   void make_code();
   void drop_code();
-  // The advanced "Forwarded port" for the next code.
-  void set_forwarded(std::string forwarded);
   // The DHT toggle, for the next code.
   void set_dht(bool on);
   // The relay server, for the next code.
@@ -160,7 +157,7 @@ class internet_receiver {
 // #472 PR 5: a way in from the internet while a transfer runs over a local
 // link, for "Continue over the internet if Wi-Fi drops": a listener, the
 // router asked for a port (and an IPv6 pinhole), and the places a sender
-// elsewhere can reach (the forwarded port, the mapped one, the public IPv6;
+// elsewhere can reach (the mapped port, the public IPv6;
 // no LAN address: it is the local link that went). Links that arrive go to
 // `on_link` (the engine's rejoin path). Destroying it closes the listener and
 // removes every mapping.
@@ -173,7 +170,7 @@ class way_in {
   // Blocks while the router answers (a worker's call); nullptr when there is
   // no place a sender elsewhere could reach.
   [[nodiscard]] static std::unique_ptr<way_in> open(bool loopback_only, const std::optional<mapping::options>& mapping,
-                                                    const std::string& forwarded, link_fn on_link);
+                                                    link_fn on_link);
   [[nodiscard]] const std::vector<net::endpoint>& places() const noexcept { return places_; }
 
  private:

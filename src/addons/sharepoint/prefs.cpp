@@ -40,7 +40,6 @@ std::optional<prefs> parse(const std::string& text) {
   p.internet = doc->boolean("internet").value_or(false);
   p.dht = doc->boolean("dht").value_or(false);
   p.handover = doc->boolean("handover").value_or(false);
-  if (const std::string* f = doc->str("forwarded")) p.forwarded = *f;
   p.relay = doc->boolean("relay").value_or(false);
   if (const std::string* r = doc->str("relay_server")) p.relay_server = *r;
   return p;
@@ -62,7 +61,7 @@ bool save_prefs(const std::string& path, const prefs& p) {
   w.begin_object().key("v").integer(1).key("receiving").boolean(p.receiving);
   w.key("background").boolean(p.background);
   w.key("destination").string(p.destination);
-  w.key("internet").boolean(p.internet).key("forwarded").string(p.forwarded);
+  w.key("internet").boolean(p.internet);
   w.key("dht").boolean(p.dht).key("handover").boolean(p.handover);
   w.key("relay").boolean(p.relay).key("relay_server").string(p.relay_server).end_object();
   const std::string text = w.take();

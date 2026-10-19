@@ -427,9 +427,6 @@ void internet(writer& w, const view& v, bool sending) {
     button(w, "make_code", p == phase::preparing ? "Making a code\xE2\x80\xA6" : "Make a code", "primary",
            p == phase::preparing);
   }
-  w.begin_object().key("type").string("text_field").key("id").string("forwarded");
-  w.key("label").string("Forwarded port (advanced)").key("value").string(v.forwarded);
-  w.key("placeholder").string("public address:port").end_object();
   // #472 relays: the person's own relay server (tools/sharepoint-relay).
   w.begin_object().key("type").string("text_field").key("id").string("relay_server");
   w.key("label").string("Relay (your own server, advanced)").key("value").string(v.relay_server);
