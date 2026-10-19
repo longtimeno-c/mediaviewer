@@ -29,6 +29,10 @@ class link {
   // every later one fails.
   virtual void shutdown() noexcept = 0;
   [[nodiscard]] virtual transport via() const noexcept = 0;
+  // #472 relays: what the bytes go through when it is not a straight path
+  // ("relay": the person's own computer or server, splice.h), for the
+  // window; nullptr for a direct link.
+  [[nodiscard]] virtual const char* through() const noexcept { return nullptr; }
 };
 
 // A link that says it is another bearer than its own (#472 PR 2: a TCP link
@@ -42,6 +46,7 @@ class bearer_as final : public link {
   }
   void shutdown() noexcept override { inner_->shutdown(); }
   [[nodiscard]] transport via() const noexcept override { return via_; }
+  [[nodiscard]] const char* through() const noexcept override { return inner_->through(); }
 
  private:
   std::unique_ptr<link> inner_;

@@ -186,7 +186,12 @@ std::span<const std::uint8_t> seal_kept(std::vector<std::uint8_t>& buf, crypto_s
 }
 
 bool valid_type(std::uint8_t raw, std::uint32_t version) noexcept {
-  const auto last = version >= 2 ? msg::resume_at : msg::ping;
+  const auto last = version >= 2 ? msg::places : msg::ping;  // places: #472 PR 5
+  // #472 relays (relay.h): their own range, protocol 2 only.
+  if (version >= 2 && raw >= static_cast<std::uint8_t>(msg::relay) &&
+      raw <= static_cast<std::uint8_t>(msg::relay_data)) {
+    return true;
+  }
   return raw >= static_cast<std::uint8_t>(msg::ident) && raw <= static_cast<std::uint8_t>(last);
 }
 
@@ -395,6 +400,7 @@ result<std::unique_ptr<channel>> channel::open_v2(std::unique_ptr<channel> c, bo
     // The nonce is the one the client committed to before it saw anything of ours.
     if (sodium_memcmp(expect, commit.data(), 32) != 0) return fail(status::corrupt);
   }
+  c->peer_key_ = hs.remote_static();
   auto keys = hs.split();
   if (!keys) return fail(status::internal);
   const auto& tx = client ? keys->initiator_to_responder : keys->responder_to_initiator;
@@ -501,6 +507,7 @@ result<std::unique_ptr<channel>> channel::open_internet_v2(std::unique_ptr<chann
     if (!m3) return fail(m3.error());
     if (!hs.read_message(*m3, payload) || !payload.empty()) return fail(status::corrupt);
   }
+  c->peer_key_ = hs.remote_static();
   auto keys = hs.split();
   if (!keys) return fail(status::internal);
   const auto& tx = client ? keys->initiator_to_responder : keys->responder_to_initiator;
@@ -592,6 +599,24 @@ void channel::notify(link_event e) {
     fn(e);
   } catch (...) {
   }
+}
+
+std::array<std::uint8_t, 32> channel::pairing_secret() const {
+  static constexpr char kContext[] = "MediaViewer Sharepoint pairing v1";
+  std::array<std::uint8_t, 32> out{};
+  std::lock_guard lock(secret_m_);
+  crypto_generichash(out.data(), out.size(), reinterpret_cast<const std::uint8_t*>(kContext), sizeof kContext - 1,
+                     resume_.data(), resume_.size());
+  return out;
+}
+
+std::array<std::uint8_t, 32> channel::handover_secret() const {
+  static constexpr char kContext[] = "MediaViewer Sharepoint handover v1";
+  std::array<std::uint8_t, 32> out{};
+  std::lock_guard lock(secret_m_);
+  crypto_generichash(out.data(), out.size(), reinterpret_cast<const std::uint8_t*>(kContext), sizeof kContext - 1,
+                     resume_.data(), resume_.size());
+  return out;
 }
 
 bool channel::link_up() const noexcept {

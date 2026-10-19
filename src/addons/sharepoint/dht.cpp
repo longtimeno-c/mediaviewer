@@ -169,7 +169,16 @@ std::optional<bencode::value> client::query(const net::endpoint& to, const std::
   bencode::value reply = std::move(*p->reply);
   // BEP 42: how the node saw us, a vote for our public address.
   if (const std::string* ip = reply.str("ip")) {
-    if (const auto e = parse_compact_endpoint(*ip)) ++votes_[e->address + "|" + std::to_string(e->port)];
+    if (const auto e = parse_compact_endpoint(*ip)) {
+      votes_[to.address + "|" + std::to_string(to.port)] = {*e, clock::now()};
+      if (votes_.size() > kMaxVoters) {
+        auto oldest = votes_.begin();
+        for (auto it = votes_.begin(); it != votes_.end(); ++it) {
+          if (it->second.at < oldest->second.at) oldest = it;
+        }
+        votes_.erase(oldest);
+      }
+    }
   }
   if (reply.str("y") && *reply.str("y") == "e") return std::nullopt;
   const bencode::value* r = reply.get("r");
@@ -234,6 +243,37 @@ bool client::start(const std::function<bool()>& stop) {
   }
   for (auto& t : asks) t.join();
   return answered.load() > 0;
+}
+
+bool client::refresh(const std::function<bool()>& stop) {
+  std::vector<net::endpoint> ask;
+  std::map<std::string, vote> before;
+  {
+    std::lock_guard lock(m_);
+    before.swap(votes_);
+    // The secure nodes first: their votes cannot be steered by where they sit.
+    for (int pass = 0; pass < 2; ++pass) {
+      for (const auto& n : table_) {
+        if (ask.size() >= 8) break;
+        if (n.secure == (pass == 0)) ask.push_back(n.at);
+      }
+    }
+  }
+  std::vector<std::thread> asks;
+  std::atomic<int> answered{0};
+  for (const auto& to : ask) {
+    asks.emplace_back([&, to] {
+      if (query(to, "find_node", bencode::value::dict({{"target", bencode::value::bytes(as_string(self_))}}), stop)) {
+        ++answered;
+      }
+    });
+  }
+  for (auto& t : asks) t.join();
+  if (answered.load() > 0) return true;
+  // Nobody answered: what the DHT said before is all there is.
+  std::lock_guard lock(m_);
+  for (const auto& [k, v] : before) votes_.try_emplace(k, v);  // a vote heard since stays
+  return false;
 }
 
 std::vector<client::contact> client::lookup(const node_id& target, const std::string& ask,
@@ -367,29 +407,67 @@ int client::put(const keys& k, std::string_view salt, std::int64_t seq, const st
   return stored.load();
 }
 
+std::vector<const client::vote*> client::recent_votes() const {
+  std::vector<const vote*> out;
+  const auto now = clock::now();
+  for (const auto& [voter, v] : votes_) {
+    if (now - v.at < std::chrono::milliseconds(kVoteMaxAgeMs)) out.push_back(&v);
+  }
+  return out;
+}
+
 std::optional<net::endpoint> client::external() const {
   std::lock_guard lock(m_);
-  const std::string* best = nullptr;
+  std::map<std::string, int> count;
+  std::optional<net::endpoint> best;
   int n = 0;
-  for (const auto& [k, c] : votes_) {
+  for (const vote* v : recent_votes()) {
+    const int c = ++count[v->seen.address + "|" + std::to_string(v->seen.port)];
     if (c > n) {
       n = c;
-      best = &k;
+      best = v->seen;
     }
   }
-  if (!best) return std::nullopt;
-  const auto bar = best->find('|');
-  return net::endpoint{best->substr(0, bar), static_cast<std::uint16_t>(std::stoul(best->substr(bar + 1)))};
+  return best;
 }
 
 std::vector<net::endpoint> client::external_votes() const {
   std::lock_guard lock(m_);
   std::vector<net::endpoint> out;
-  for (const auto& [k, c] : votes_) {
-    const auto bar = k.find('|');
-    out.push_back({k.substr(0, bar), static_cast<std::uint16_t>(std::stoul(k.substr(bar + 1)))});
+  for (const vote* v : recent_votes()) {
+    const bool seen = std::any_of(out.begin(), out.end(), [&](const net::endpoint& e) {
+      return e.port == v->seen.port && e.address == v->seen.address;
+    });
+    if (!seen) out.push_back(v->seen);
   }
   return out;
+}
+
+int client::vote_count() const {
+  std::lock_guard lock(m_);
+  return static_cast<int>(recent_votes().size());
+}
+
+bool client::looks_hard() const {
+  std::lock_guard lock(m_);
+  const auto recent = recent_votes();
+  std::map<std::string, int> by_address;
+  for (const vote* v : recent) ++by_address[v->seen.address];
+  std::string address;
+  int voters = 0;
+  for (const auto& [a, c] : by_address) {
+    if (c > voters) {
+      voters = c;
+      address = a;
+    }
+  }
+  std::map<std::uint16_t, int> by_port;
+  for (const vote* v : recent) {
+    if (v->seen.address == address) ++by_port[v->seen.port];
+  }
+  int most = 0;
+  for (const auto& [p, c] : by_port) most = std::max(most, c);
+  return by_port.size() >= 3 && most * 2 < voters;
 }
 
 std::size_t client::known() const {
