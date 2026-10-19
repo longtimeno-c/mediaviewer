@@ -17,12 +17,12 @@ namespace MediaViewer.Chrome;
 /// change bit 64). A notice is an app notification (AppNotificationManager, registered
 /// for this unpackaged build under the process's AUMID, MediaViewer.Viewer) unless its
 /// screen is the foreground window: clicking it opens that screen, and its one button
-/// (Sharepoint's Decline) goes back to the add-on. When notifications cannot be shown
+/// (Driftwire's Decline) goes back to the add-on. When notifications cannot be shown
 /// (registration refused, or the OS has them off) the screen opens instead, as before
 /// #452. The keep-alive list goes to the native window (kMsgBackgroundChanged), which
 /// owns the notification-area icon and hides rather than closes while it is not empty.
 /// Nothing here registers or shows anything until an add-on posts a notice: with
-/// Sharepoint's toggles off, AppNotificationManager is never touched.
+/// Driftwire's toggles off, AppNotificationManager is never touched.
 /// </remarks>
 public static partial class IslandHost
 {

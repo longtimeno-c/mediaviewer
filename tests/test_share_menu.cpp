@@ -16,7 +16,7 @@
 using namespace mv::shell;
 
 TEST_CASE("a share request survives the island's float", "[shell][share]") {
-  for (share_target t : {share_target::menu, share_target::sharepoint, share_target::system}) {
+  for (share_target t : {share_target::menu, share_target::driftwire, share_target::system}) {
     for (share_from f : {share_from::key, share_from::bar, share_from::gallery, share_from::context}) {
       for (std::int32_t clicked : {-1, 0, 1, 499, 65535, kShareClickedLimit - 1}) {
         const share_request r{t, f, clicked};

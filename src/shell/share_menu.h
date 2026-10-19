@@ -3,7 +3,7 @@
 // Share everywhere (issue #444, docs/design/16 "Share"): one command, `share`,
 // that Ctrl/Cmd+Shift+S, the gallery's share icon, the command bar's share
 // button and the right-click Share ▸ submenu all run. It opens one menu:
-// Sharepoint first (or its one-click install), then the system's own targets
+// Driftwire first (or its one-click install), then the system's own targets
 // (Windows Share; the Mac's NSSharingServicePicker). Picking a target is the
 // only thing that sends anything (rule 6); nothing is read before that.
 //
@@ -24,7 +24,7 @@ namespace mv::shell {
 
 // What a share request asks for. `menu` opens the share menu; the others are
 // an entry of it picked straight from the right-click Share ▸ submenu.
-enum class share_target : std::uint8_t { menu = 0, sharepoint = 1, system = 2 };
+enum class share_target : std::uint8_t { menu = 0, driftwire = 1, system = 2 };
 
 // Where it was asked from: only where the menu is anchored.
 enum class share_from : std::uint8_t { key = 0, bar = 1, gallery = 2, context = 3 };
@@ -71,7 +71,7 @@ inline constexpr std::int32_t kShareClickedLimit = (1 << 20) - 1;
 }
 
 // Each stop followed by its pair's other half (the RAW of a RAW+JPEG, a Live
-// Photo's MOV), as Sharepoint and a drag take them. `pairs` maps a primary to
+// Photo's MOV), as Driftwire and a drag take them. `pairs` maps a primary to
 // its secondary; the host fills it off the UI thread (the listing walk).
 [[nodiscard]] inline std::vector<std::string> share_with_pairs(
     std::vector<std::string> stops, const std::map<std::string, std::string, std::less<>>& pairs) {
@@ -86,7 +86,7 @@ inline constexpr std::int32_t kShareClickedLimit = (1 << 20) - 1;
   return out;
 }
 
-// A sidecar beside a camera file: metadata, never media. Sharepoint carries
+// A sidecar beside a camera file: metadata, never media. Driftwire carries
 // them (it takes a file's XMP with it); the system sheet does not (issue #444).
 [[nodiscard]] inline bool share_is_sidecar(std::string_view path) noexcept {
   const std::size_t slash = path.find_last_of("/\\");

@@ -79,8 +79,8 @@ carrying its pair half and each file's XMP sidecars (`IMG_1234.xmp`, darktable's
 (Windows `file_jobs::submit_rename`, Mac the job pool), never the UI thread. Tests:
 `mv_tests "[rename]"`.
 
-Sending to another MediaViewer (Sharepoint) writes what arrives with the same rules, on bytes
-from a link: [28](28-sharepoint.md#what-moves-and-how-it-lands).
+Sending to another MediaViewer (Driftwire) writes what arrives with the same rules, on bytes
+from a link: [28](28-driftwire.md#what-moves-and-how-it-lands).
 
 ## Not built
 

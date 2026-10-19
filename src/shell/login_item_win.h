@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // #452 (docs/design/28 "In the background"): MediaViewer starts at sign-in while an
-// add-on keeps the process (Sharepoint's Receive when MediaViewer is closed), so a
+// add-on keeps the process (Driftwire's Receive when MediaViewer is closed), so a
 // restart does not leave the machine unreachable until the app is opened by hand.
 //
 // One per-user Run value, HKCU\Software\Microsoft\Windows\CurrentVersion\Run\

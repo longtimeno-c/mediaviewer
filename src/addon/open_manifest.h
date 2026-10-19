@@ -42,7 +42,7 @@ inline constexpr int kOpenManifestSchema = 2;
 //      An open add-on cannot fill screens or slots yet: they are filled by
 //      code, and scripts have no binding for them (code_not_allowed).
 //   6  2026-10-19: the screen vocabulary's `link` node and a button's `copy`
-//      (Sharepoint). No new point: a screen tree that uses them asks for 6,
+//      (Driftwire). No new point: a screen tree that uses them asks for 6,
 //      so an older host says "needs a newer MediaViewer", not a blank window.
 inline constexpr std::uint32_t kContributionApi = 6;
 // The API that introduced code (`scripts`, `permissions`, commands).

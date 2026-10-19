@@ -18,7 +18,7 @@ namespace MediaViewer.Chrome;
 /// table's <c>share</c> id; native picks the files (the range, else the marks,
 /// else the current file, or the right-clicked file when it is not one of
 /// them), walks the pair halves on its pool and hands them back through
-/// <see cref="ShareMenu"/>. The menu is Sharepoint first (or its one-click
+/// <see cref="ShareMenu"/>. The menu is Driftwire first (or its one-click
 /// install), then Windows Share (Mail, Phone Link, Nearby Share, apps). The
 /// sheet is a WinRT object bound to the native window through
 /// <c>IDataTransferManagerInterop</c>, the contract SMTC uses
@@ -28,7 +28,7 @@ namespace MediaViewer.Chrome;
 public static partial class IslandHost
 {
     // shell::share_target and shell::share_from (src/shell/share_menu.h).
-    private const int ShareTargetMenu = 0, ShareTargetSharepoint = 1, ShareTargetSystem = 2;
+    private const int ShareTargetMenu = 0, ShareTargetDriftwire = 1, ShareTargetSystem = 2;
     private const int ShareFromKey = 0, ShareFromBar = 1, ShareFromGallery = 2, ShareFromContext = 3;
 
     private static DataTransferManager? _share;
@@ -89,8 +89,8 @@ public static partial class IslandHost
             _shareAt = null;
             switch (target)
             {
-                case ShareTargetSharepoint:
-                    ShareWithSharepoint(files, anchor, at);
+                case ShareTargetDriftwire:
+                    ShareWithDriftwire(files, anchor, at);
                     return 0;
                 case ShareTargetSystem:
                     return ShowSystemShare(hwnd, media);
@@ -116,14 +116,14 @@ public static partial class IslandHost
         return (_source?.Content as FrameworkElement, null);
     }
 
-    /// <summary>The share menu: Sharepoint (or its install), then Windows Share.</summary>
+    /// <summary>The share menu: Driftwire (or its install), then Windows Share.</summary>
     private static bool ShowShareFlyout(IntPtr hwnd, List<string> files, List<string> media,
                                         FrameworkElement? anchor, Windows.Foundation.Point? at)
     {
         if (anchor?.XamlRoot is null) return false;
         var menu = new MenuFlyout { MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle() };
         foreach (MenuFlyoutItemBase item in ShareEntries(
-                     () => ShareWithSharepoint(files, anchor, at),
+                     () => ShareWithDriftwire(files, anchor, at),
                      () => ShowSystemShare(hwnd, media),
                      media.Count > 0))
         {
@@ -144,13 +144,13 @@ public static partial class IslandHost
     }
 
     /// <summary>The menu's entries, the same for the flyout and the right-click submenu.</summary>
-    private static IEnumerable<MenuFlyoutItemBase> ShareEntries(Action sharepoint, Action system, bool systemEnabled)
+    private static IEnumerable<MenuFlyoutItemBase> ShareEntries(Action driftwire, Action system, bool systemEnabled)
     {
-        bool have = SharepointReady || SharepointInstalled;
-        MenuFlyoutItem nearby = Item(have ? "Sharepoint" : "Install Sharepoint…", null, sharepoint);
-        nearby.Icon = SharepointMenuIcon();
+        bool have = DriftwireReady || DriftwireInstalled;
+        MenuFlyoutItem nearby = Item(have ? "Driftwire" : "Install Driftwire…", null, driftwire);
+        nearby.Icon = DriftwireMenuIcon();
         ToolTipService.SetToolTip(nearby, "Send to a MediaViewer nearby, over Wi-Fi or Bluetooth");
-        AutomationProperties.SetName(nearby, have ? "Send with Sharepoint" : "Install Sharepoint");
+        AutomationProperties.SetName(nearby, have ? "Send with Driftwire" : "Install Driftwire");
         yield return nearby;
         yield return Sep();
         MenuFlyoutItem windows = Item("Windows Share…", null, () => system());
@@ -161,12 +161,12 @@ public static partial class IslandHost
     }
 
     /// <summary>
-    /// Sharepoint's entry wears the MediaViewer icon: the PNG About already
+    /// Driftwire's entry wears the MediaViewer icon: the PNG About already
     /// ships beside the exe (AboutMarkFile), in full colour. A BitmapIcon, not
     /// an ImageIcon, which the island host bans (tools/check-winui-controls.ps1).
     /// The Wi-Fi glyph if the file is missing.
     /// </summary>
-    private static IconElement SharepointMenuIcon()
+    private static IconElement DriftwireMenuIcon()
     {
         try
         {
@@ -195,7 +195,7 @@ public static partial class IslandHost
             Icon = new FontIcon { Glyph = "", FontFamily = SymbolFont },
         };
         foreach (MenuFlyoutItemBase item in ShareEntries(
-                     () => RequestShare(ShareTargetSharepoint, ShareFromContext, clicked, anchor, at),
+                     () => RequestShare(ShareTargetDriftwire, ShareFromContext, clicked, anchor, at),
                      () => RequestShare(ShareTargetSystem, ShareFromContext, clicked, anchor, at),
                      true))
         {
@@ -217,11 +217,11 @@ public static partial class IslandHost
         return menu;
     }
 
-    /// <summary>An add-on context entry the Share submenu already carries: Sharepoint's
-    /// "Send with Sharepoint…" (its manifest's <c>send_files</c>). Left out of the
+    /// <summary>An add-on context entry the Share submenu already carries: Driftwire's
+    /// "Send with Driftwire…" (its manifest's <c>send_files</c>). Left out of the
     /// right-click menus, so sending goes one way, through the share command.</summary>
     private static bool IsShareRoutedSlotItem(SlotItem item) =>
-        item.Addon == SharepointId && item.Id == "send_files";
+        item.Addon == DriftwireId && item.Id == "send_files";
 
     // ---- the command bar's share button (beside Home) -------------------------------------
 
@@ -229,7 +229,7 @@ public static partial class IslandHost
     {
         Button b = PathIconButton("", () => RequestShare(ShareTargetMenu, ShareFromBar, -1, _barShareButton));
         AutomationProperties.SetName(b, "Share");
-        ToolTipService.SetToolTip(b, "Share: Sharepoint, Mail, Phone Link and more" + KeyNote(Command.Share));
+        ToolTipService.SetToolTip(b, "Share: Driftwire, Mail, Phone Link and more" + KeyNote(Command.Share));
         _barShareButton = b;
         UpdateBarShareButton();
         return b;

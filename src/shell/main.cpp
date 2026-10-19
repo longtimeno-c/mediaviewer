@@ -163,7 +163,7 @@ constexpr UINT kMsgShareReady = WM_APP + 0x7F;  // issue #444: a share's files w
 constexpr UINT kMsgTray = WM_APP + 0x80;
 constexpr UINT kMsgBackgroundChanged = WM_APP + 0x81;
 // #452: a --background start (sign-in) that no add-on has kept by now removes its
-// Run entry and quits. Sharepoint asks within ~10 s of its load.
+// Run entry and quits. Driftwire asks within ~10 s of its load.
 constexpr UINT_PTR kBackgroundStartTimerId = 0x7D01;
 constexpr UINT kBackgroundStartGraceMs = 60000;
 // Text in images: the pointer rests on a still this long before it is read.
@@ -510,7 +510,7 @@ struct app_state {
   int thumb_state = -1;
   // PR 15: the single instance. A second start hands its paths over here.
   mv::shell::instance_listener instance;
-  // #452: an add-on keeps the process with every window closed (Sharepoint's
+  // #452: an add-on keeps the process with every window closed (Driftwire's
   // Receive when MediaViewer is closed). Closing hides the window instead;
   // the notification-area icon shows while the add-on asks for it.
   bool in_background = false;
@@ -6720,12 +6720,12 @@ void on_text_read(app_state* app, std::unique_ptr<text_read_result> r) {
 // the marks, else the current file; or the right-clicked file when it is not
 // one of them). The pair halves come from a walk of the whole listing, so that
 // runs on the pool; kMsgShareReady then hands the files to the chrome, which
-// shows the menu (Sharepoint, Windows Share) or runs the entry picked. Nothing
+// shows the menu (Driftwire, Windows Share) or runs the entry picked. Nothing
 // is read from disk and nothing is sent until the person picks a target.
 struct share_gathered {
   std::uint64_t seq = 0;
   mv::shell::share_request request;
-  std::vector<std::string> files;  // stops with their pair halves: Sharepoint's
+  std::vector<std::string> files;  // stops with their pair halves: Driftwire's
 };
 
 // Pool thread: each stop followed by its pair's other half. mv_folder_entries
@@ -9774,7 +9774,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
   if (g_start_background && app.chrome_enabled) {
     // #452: the sign-in start. The window is made but never shown: the chrome
-    // attaches to it and loads the add-ons as on any start; Sharepoint keeps
+    // attaches to it and loads the add-ons as on any start; Driftwire keeps
     // the process (the notification-area icon) or, after the grace, it quits.
     app.in_background = true;
     app.background_start = true;

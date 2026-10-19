@@ -710,7 +710,7 @@ How it works:
   loaded file's removal to the next start, as for any add-on in use). A changed setting re-asks
   only in the window that wrote it; another reads the new value at its next request.
 
-**Added for Sharepoint (2026-10-15, [28](28-sharepoint.md#host-pieces-this-added)):**
+**Added for Driftwire (2026-10-15, [28](28-driftwire.md#host-pieces-this-added)):**
 
 - A `text_field` may carry `"pick": "folder"`: the hosts add **Choose…** beside it, show the
   system folder dialog (`NSOpenPanel`; WinUI's `FolderPicker`, owned by the screen's window) and
@@ -728,10 +728,10 @@ How it works:
   is the front window and opens the screen on a click), `notice_authorize` asks the OS for
   permission when the person turns something on, and `keep_alive` keeps the process, with a
   menu-bar item / notification-area icon, after every window is closed. The registry holds them
-  (`notices_json`); the hosts draw them. Sharepoint is the one user
-  ([28 "In the background"](28-sharepoint.md#in-the-background-452)).
+  (`notices_json`); the hosts draw them. Driftwire is the one user
+  ([28 "In the background"](28-driftwire.md#in-the-background-452)).
 
-**Added for an AirDrop-like Sharepoint (#442, 2026-10-15)**, generic, drawn by both hosts
+**Added for an AirDrop-like Driftwire (#442, 2026-10-15)**, generic, drawn by both hosts
 (`ScreenView.swift`, `IslandHost.Screens.cs`) and checked by the core (`"[screens]"`):
 
 - **`tiles`** (interactive; `label` required): `items` of `{id, text, detail?, initials?,
@@ -750,7 +750,7 @@ How it works:
   field there.
 - **`text` `"style": "display"`**: a large face for a short code read across a room.
 
-Two more (2026-10-19, Sharepoint; contribution API **6**, so an add-on whose tree uses them asks for
+Two more (2026-10-19, Driftwire; contribution API **6**, so an add-on whose tree uses them asks for
 6 and an older host says "needs a newer MediaViewer" rather than refusing the tree and showing a
 blank window):
 

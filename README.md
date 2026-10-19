@@ -222,9 +222,9 @@ The optional **Import** add-on copies a card or folder into your library.
 - **Unplug-proof.** It resumes after an unplug, can back up to a second drive, and ejects the card when it is done.
 - **Find duplicates** anywhere in a folder and its subfolders by content, not name. Open each copy or move extras to the Recycle Bin / Trash; the last copy is always kept.
 
-## Sharepoint: send to the computer next to you
+## Driftwire: send to the computer next to you
 
-The optional **Sharepoint** add-on sends photos, video and audio to another MediaViewer nearby.
+The optional **Driftwire** add-on sends photos, video and audio to another MediaViewer nearby.
 
 - **Pick, then send.** Shift-click a run of photos in the gallery and press *Send*, or drag them straight out of the grid.
 - **Type the code the other screen shows.** Nothing moves until you have typed it and the person on the other side accepts.

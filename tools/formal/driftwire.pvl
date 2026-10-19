@@ -1,0 +1,275 @@
+(* Driftwire protocol 2 (#472): the primitives and both handshakes, shared by
+   the models beside this file. Read with `proverif -lib driftwire <model>.pv`
+   (tools/formal/README.md).
+
+   What is modelled is what src/addons/driftwire/noise.cpp and channel.cpp do,
+   token by token: Noise's SymmetricState is written out (h a hash chain, ck an
+   HKDF chain, the AEAD nonce reset by each MixKey; the rejoin's ciphertexts
+   carry the h of that moment as associated data, the first link's a constant,
+   see "XXhfs" below), so a model that holds is a statement about that order,
+   not about Noise in general.
+
+   Abstractions (the usual symbolic ones): hashes, HKDF and the AEAD are
+   perfect; X25519 is the standard Diffie-Hellman equation; ML-KEM-768 is an
+   IND-CCA KEM (whoever has the secret key, or made the ciphertext, has the
+   shared secret, nobody else); a malformed key or ciphertext ends the run
+   (the code's implicit rejection gives a key nobody has, so the next payload
+   does not open: the same outcome). The secretstream after the handshake is
+   one AEAD per frame under the direction's key, its header in the clear. *)
+
+(* ---- primitives ---------------------------------------------------------------- *)
+
+const g: bitstring.
+fun exp(bitstring, bitstring): bitstring.
+equation forall x: bitstring, y: bitstring; exp(exp(g, x), y) = exp(exp(g, y), x).
+
+(* BLAKE2b, as MixHash uses it, and the hashes channel.cpp / wire.cpp make. *)
+fun hash(bitstring, bitstring): bitstring.
+fun commit(bitstring): bitstring.              (* commitment_v2: H(context, nonce) *)
+fun sas(bitstring, bitstring): bitstring.      (* pairing_code_v2: H(context, h, nonce) mod 10^6 *)
+fun tagmac(bitstring, bitstring): bitstring.   (* tag_mac: keyed BLAKE2b(secret; context, r8) *)
+
+(* Comparing the typed code with one's own. Six digits are short, so the
+   attacker gets a collision oracle: knowing one side's code inputs (y, n) and
+   the other side's h2 (x), coll(y, n, x) is a nonce that makes the other
+   side's code equal (what a real attacker gets from a search over 10^6). It is
+   a destructor, not an equation, so ProVerif's completion stays finite.
+   Nothing stops the attacker using it; what stops it working is the order of
+   the commitment and the reveal (handshake_code.pv). *)
+fun coll(bitstring, bitstring, bitstring): bitstring.
+reduc forall x: bitstring, n: bitstring; codeeq(sas(x, n), sas(x, n)) = true;
+  forall x: bitstring, y: bitstring, n: bitstring; codeeq(sas(x, coll(y, n, x)), sas(y, n)) = true.
+
+(* Noise's HKDF (HMAC-BLAKE2b): its three outputs. *)
+fun hkdf1(bitstring, bitstring): bitstring.
+fun hkdf2(bitstring, bitstring): bitstring.
+fun hkdf3(bitstring, bitstring): bitstring.
+
+(* ChaChaPoly (IETF) with associated data. *)
+fun aead(bitstring, bitstring, bitstring, bitstring): bitstring.
+reduc forall k: bitstring, n: bitstring, ad: bitstring, m: bitstring;
+  aead_open(k, n, ad, aead(k, n, ad, m)) = m.
+
+(* ML-KEM-768: kpk(sk) the public key, kct(pk, r) the ciphertext made with
+   randomness r, kss(pk, r) its shared secret. *)
+fun kpk(bitstring): bitstring.
+fun kct(bitstring, bitstring): bitstring.
+fun kss(bitstring, bitstring): bitstring.
+reduc forall sk: bitstring, r: bitstring; kdec(kct(kpk(sk), r), sk) = kss(kpk(sk), r).
+
+const empty: bitstring.
+const n0: bitstring.  (* the AEAD nonce counter: 0, 1 *)
+const n1: bitstring.
+const NAME_XXHFS: bitstring.      (* "Noise_XXhfs_25519+MLKEM768_ChaChaPoly_BLAKE2b" *)
+const NAME_NNHFSPSK0: bitstring.  (* "Noise_NNhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b" *)
+const PROLOGUE_NEW: bitstring.    (* "MediaViewer Driftwire 2" MVSP 2 'N' *)
+const PROLOGUE_REJOIN: bitstring. (* "MediaViewer Driftwire 2 rejoin" MVSP 2 'R', then the tag *)
+const RESUME_AT: bitstring.       (* msg::resume_at *)
+const OFFER: bitstring.           (* msg::offer and what follows: the files *)
+const AD_XX: bitstring.           (* see "XXhfs" below *)
+
+free c: channel.
+
+(* ---- events -------------------------------------------------------------------- *)
+
+(* The first link. h2 is the handshake hash after message 2, nc the client's nonce. *)
+event ClientAccepts(bitstring, bitstring, bitstring, bitstring, bitstring).  (* h2, nc, k_i2r, k_r2i, resume *)
+event ServerShows(bitstring, bitstring, bitstring, bitstring, bitstring).
+event ClientFixedH2(bitstring, bitstring).  (* h2, nc: the client's last input before the reveal *)
+
+(* A rejoin. rs is the session's resume secret; id is fresh per run. *)
+event ClientResumeAt(bitstring, bitstring, bitstring).          (* rs, k_i2r, k_r2i *)
+event ServerResumeAt(bitstring, bitstring, bitstring).
+event ClientAdopts(bitstring, bitstring, bitstring).
+event ServerAdopts(bitstring, bitstring, bitstring, bitstring). (* rs, k_i2r, k_r2i, id *)
+
+(* ---- XXhfs: the first link (channel::open_v2) -------------------------------- *)
+(* -> e, e1            payload: commit(nc)
+   <- e, ee, ekem1, s, es
+   -> s, se            payload: nc
+   net carries the handshake, tap is where a passive attacker hears it (the same
+   channel when the attacker is active).
+
+   The handshake ciphertexts here carry a constant associated data, not the h of
+   the moment as in the code. That only helps the attacker (a ciphertext opens in
+   any transcript), so what holds here holds for the code; with the real h the
+   models do not finish in reasonable time. h is still computed, for the code. screen is the receiver's window, read
+   by the sender's person. reveal_dh / reveal_kem: in phase 1, this run's X25519
+   or ML-KEM secrets go to the attacker ("broken later"). *)
+
+let XXClient(net: channel, tap: channel, screen: channel, s: bitstring,
+             reveal_dh: bool, reveal_kem: bool, file: bitstring, probe: bitstring) =
+  let h0 = NAME_XXHFS in
+  let ck0 = h0 in
+  let hp = hash(h0, PROLOGUE_NEW) in
+  (* -> e, e1, commit *)
+  new e: bitstring; new e1: bitstring; new nc: bitstring;
+  let epub = exp(g, e) in
+  let ha = hash(hp, epub) in
+  let e1pub = kpk(e1) in
+  let hb = hash(ha, e1pub) in            (* no key yet: in the clear *)
+  let cm = commit(nc) in
+  let hc = hash(hb, cm) in
+  out(net, (epub, e1pub, cm)); out(tap, (epub, e1pub, cm));
+  (* <- e, ee, ekem1, s, es *)
+  in(net, (re: bitstring, ct_enc: bitstring, rs_enc: bitstring, p_enc: bitstring));
+  let hd = hash(hc, re) in
+  let ck1 = hkdf1(ck0, exp(re, e)) in let k1 = hkdf2(ck0, exp(re, e)) in
+  let ct = aead_open(k1, n0, AD_XX, ct_enc) in
+  let he = hash(hd, ct_enc) in
+  let ss = kdec(ct, e1) in
+  let ck2 = hkdf1(ck1, ss) in let k2 = hkdf2(ck1, ss) in
+  let rs = aead_open(k2, n0, AD_XX, rs_enc) in
+  let hf = hash(he, rs_enc) in
+  let ck3 = hkdf1(ck2, exp(rs, e)) in let k3 = hkdf2(ck2, exp(rs, e)) in
+  if aead_open(k3, n0, AD_XX, p_enc) = empty then
+  let h2 = hash(hf, p_enc) in
+  event ClientFixedH2(h2, nc);
+  (* -> s, se, nc *)
+  let s_enc = aead(k3, n1, AD_XX, exp(g, s)) in
+  let hg = hash(h2, s_enc) in
+  let ck4 = hkdf1(ck3, exp(re, s)) in let k4 = hkdf2(ck3, exp(re, s)) in
+  let nc_enc = aead(k4, n0, AD_XX, nc) in
+  out(net, (s_enc, nc_enc)); out(tap, (s_enc, nc_enc));
+  let ki2r = hkdf1(ck4, empty) in let kr2i = hkdf2(ck4, empty) in let resume = hkdf3(ck4, empty) in
+  (* The sender's person types the code the receiver's screen shows; nothing
+     about the files leaves before it matches. *)
+  in(screen, typed: bitstring);
+  if codeeq(typed, sas(h2, nc)) = true then
+  event ClientAccepts(h2, nc, ki2r, kr2i, resume);
+  new hdr: bitstring;
+  out(net, (hdr, aead(ki2r, n0, hdr, (OFFER, file)), aead(resume, n0, empty, probe)));
+  out(tap, (hdr, aead(ki2r, n0, hdr, (OFFER, file)), aead(resume, n0, empty, probe)));
+  phase 1;
+  (if reveal_dh then out(c, (e, s))) |
+  (if reveal_kem then out(c, e1)).
+
+let XXServer(net: channel, tap: channel, screen: channel, s: bitstring,
+             reveal_dh: bool, check_commit: bool) =
+  let h0 = NAME_XXHFS in
+  let ck0 = h0 in
+  let hp = hash(h0, PROLOGUE_NEW) in
+  in(net, (re: bitstring, re1: bitstring, cm: bitstring));
+  let ha = hash(hp, re) in
+  let hb = hash(ha, re1) in
+  let hc = hash(hb, cm) in
+  (* <- e, ee, ekem1, s, es *)
+  new e: bitstring; new r: bitstring;
+  let epub = exp(g, e) in
+  let hd = hash(hc, epub) in
+  let ck1 = hkdf1(ck0, exp(re, e)) in let k1 = hkdf2(ck0, exp(re, e)) in
+  let ct_enc = aead(k1, n0, AD_XX, kct(re1, r)) in
+  let he = hash(hd, ct_enc) in
+  let ck2 = hkdf1(ck1, kss(re1, r)) in let k2 = hkdf2(ck1, kss(re1, r)) in
+  let s_enc = aead(k2, n0, AD_XX, exp(g, s)) in
+  let hf = hash(he, s_enc) in
+  let ck3 = hkdf1(ck2, exp(re, s)) in let k3 = hkdf2(ck2, exp(re, s)) in
+  let p_enc = aead(k3, n0, AD_XX, empty) in
+  let h2 = hash(hf, p_enc) in
+  out(net, (epub, ct_enc, s_enc, p_enc)); out(tap, (epub, ct_enc, s_enc, p_enc));
+  (* -> s, se, nc *)
+  in(net, (rs_enc: bitstring, nc_enc: bitstring));
+  let rs = aead_open(k3, n1, AD_XX, rs_enc) in
+  let hg = hash(h2, rs_enc) in
+  let ck4 = hkdf1(ck3, exp(rs, e)) in let k4 = hkdf2(ck3, exp(rs, e)) in
+  let nc = aead_open(k4, n0, AD_XX, nc_enc) in
+  (* The nonce is the one the client committed to before it saw anything of ours. *)
+  if check_commit = false || commit(nc) = cm then
+  let ki2r = hkdf1(ck4, empty) in let kr2i = hkdf2(ck4, empty) in let resume = hkdf3(ck4, empty) in
+  event ServerShows(h2, nc, ki2r, kr2i, resume);
+  (* Only the receiver's window shows the code; anyone near it may read it too. *)
+  out(screen, sas(h2, nc)); out(c, sas(h2, nc));
+  phase 1;
+  if reveal_dh then out(c, (e, s)).
+
+(* ---- NNhfs+psk0: a rejoin (channel::rejoin / accept_rejoin, finish_rejoin) --- *)
+(* -> psk, e, e1       (after MVSP 2 'R' and the tag)
+   <- e, ee, ekem1
+   then each side's first sealed frame is resume_at; a side adopts the link only
+   once the other's has opened. rs is the session's resume secret (Split's third
+   output of the first link), the same for every rejoin of the session.
+   reveal_rs / reveal_dh / reveal_kem: in phase 1 the attacker gets the resume
+   secret, this run's X25519 or ML-KEM secrets. *)
+
+let RejoinClient(rs: bitstring, reveal_rs: bool, reveal_dh: bool, reveal_kem: bool, probe: bitstring) =
+  new r8: bitstring;
+  let tag = (r8, tagmac(rs, r8)) in
+  let h0 = NAME_NNHFSPSK0 in
+  let ck0 = h0 in
+  let hp = hash(h0, (PROLOGUE_REJOIN, tag)) in
+  (* psk: MixKeyAndHash *)
+  let ck1 = hkdf1(ck0, rs) in let hq = hash(hp, hkdf2(ck0, rs)) in
+  (* e: MixHash, and MixKey (the psk modifier) *)
+  new e: bitstring;
+  let epub = exp(g, e) in
+  let ha = hash(hq, epub) in
+  let ck2 = hkdf1(ck1, epub) in let k2 = hkdf2(ck1, epub) in
+  (* e1 and the empty payload, sealed *)
+  new e1: bitstring;
+  let e1_enc = aead(k2, n0, ha, kpk(e1)) in
+  let hb = hash(ha, e1_enc) in
+  let p_enc = aead(k2, n1, hb, empty) in
+  let hc = hash(hb, p_enc) in
+  out(c, (tag, epub, e1_enc, p_enc));
+  (* <- e, ee, ekem1 *)
+  in(c, (re: bitstring, ct_enc: bitstring, p2_enc: bitstring));
+  let hd = hash(hc, re) in
+  let ck3 = hkdf1(ck2, re) in
+  let ck4 = hkdf1(ck3, exp(re, e)) in let k4 = hkdf2(ck3, exp(re, e)) in
+  let ct = aead_open(k4, n0, hd, ct_enc) in
+  let he = hash(hd, ct_enc) in
+  let ss = kdec(ct, e1) in
+  let ck5 = hkdf1(ck4, ss) in let k5 = hkdf2(ck4, ss) in
+  if aead_open(k5, n0, he, p2_enc) = empty then
+  let ki2r = hkdf1(ck5, empty) in let kr2i = hkdf2(ck5, empty) in
+  (* finish_rejoin: ours out, theirs in *)
+  event ClientResumeAt(rs, ki2r, kr2i);
+  new hdr: bitstring; new seq: bitstring;
+  out(c, (hdr, aead(ki2r, n0, hdr, (RESUME_AT, seq))));
+  in(c, (phdr: bitstring, f: bitstring));
+  let (=RESUME_AT, peer_got: bitstring) = aead_open(kr2i, n0, phdr, f) in
+  event ClientAdopts(rs, ki2r, kr2i);
+  out(c, aead(ki2r, n1, hdr, probe));   (* what the session sends again on the new link *)
+  phase 1;
+  (if reveal_rs then out(c, rs)) |
+  (if reveal_dh then out(c, e)) |
+  (if reveal_kem then out(c, e1)).
+
+let RejoinServer(rs: bitstring, reveal_dh: bool, probe: bitstring) =
+  in(c, (tag: bitstring, re: bitstring, re1_enc: bitstring, p_enc: bitstring));
+  (* names_this: the tag names this session *)
+  let (r8: bitstring, mac: bitstring) = tag in
+  if mac = tagmac(rs, r8) then
+  let h0 = NAME_NNHFSPSK0 in
+  let ck0 = h0 in
+  let hp = hash(h0, (PROLOGUE_REJOIN, tag)) in
+  let ck1 = hkdf1(ck0, rs) in let hq = hash(hp, hkdf2(ck0, rs)) in
+  let ha = hash(hq, re) in
+  let ck2 = hkdf1(ck1, re) in let k2 = hkdf2(ck1, re) in
+  (* A first message made without the secret does not open here. *)
+  let re1 = aead_open(k2, n0, ha, re1_enc) in
+  let hb = hash(ha, re1_enc) in
+  if aead_open(k2, n1, hb, p_enc) = empty then
+  let hc = hash(hb, p_enc) in
+  new e: bitstring; new r: bitstring;
+  let epub = exp(g, e) in
+  let hd = hash(hc, epub) in
+  let ck3 = hkdf1(ck2, epub) in
+  let ck4 = hkdf1(ck3, exp(re, e)) in let k4 = hkdf2(ck3, exp(re, e)) in
+  let ct_enc = aead(k4, n0, hd, kct(re1, r)) in
+  let he = hash(hd, ct_enc) in
+  let ck5 = hkdf1(ck4, kss(re1, r)) in let k5 = hkdf2(ck4, kss(re1, r)) in
+  let p2_enc = aead(k5, n0, he, empty) in
+  out(c, (epub, ct_enc, p2_enc));
+  let ki2r = hkdf1(ck5, empty) in let kr2i = hkdf2(ck5, empty) in
+  (* finish_rejoin: ours out first (a replayed first message gets this far), theirs in *)
+  event ServerResumeAt(rs, ki2r, kr2i);
+  new hdr: bitstring; new seq: bitstring;
+  out(c, (hdr, aead(kr2i, n0, hdr, (RESUME_AT, seq))));
+  in(c, (phdr: bitstring, f: bitstring));
+  let (=RESUME_AT, peer_got: bitstring) = aead_open(ki2r, n0, phdr, f) in
+  new id: bitstring;
+  event ServerAdopts(rs, ki2r, kr2i, id);
+  out(c, aead(kr2i, n1, hdr, probe));
+  phase 1;
+  if reveal_dh then out(c, e).

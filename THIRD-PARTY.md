@@ -80,14 +80,14 @@ ships a place database built by `tools/geo/build_places.py` from:
 | [GeoNames](https://www.geonames.org) `cities1000`, `countryInfo.txt`, `admin1CodesASCII.txt` | Snapshot 2026-10-11 (SHA-256 pinned in the script) | **CC BY 4.0** | Town, region and country names; populations. **Attribution: place names from GeoNames (geonames.org), licensed under CC BY 4.0** (https://creativecommons.org/licenses/by/4.0/). The names are filtered and repacked, not edited. |
 | [Natural Earth](https://www.naturalearthdata.com) 1:10m admin-0 countries and admin-1 states/provinces | v5.1.2 (`nvkelso/natural-earth-vector` commit `f1890d9f`) | Public domain | Country and region borders, simplified to ~1 km on coasts and ~250 m on borders. |
 
-## Data (the Sharepoint add-on)
+## Data (the Driftwire add-on)
 
-Not linked into the app. The Sharepoint add-on ([docs/design/28](docs/design/28-sharepoint.md),
+Not linked into the app. The Driftwire add-on ([docs/design/28](docs/design/28-driftwire.md),
 #472 PR 3) compiles in one word list for its four-word codes:
 
 | Data | Version | Licence | Use |
 |---|---|---|---|
-| [BIP 39](https://github.com/bitcoin/bips/blob/master/bip-0039.mediawiki) English word list (`bip-0039/english.txt`), Marek Palatinus, Pavol Rusnak, Aaron Voisine, Sean Bowe | As published in `bitcoin/bips` (2048 words) | **MIT** ("This BIP falls under the MIT License.") | The words of a DHT code; `src/addons/sharepoint/wordlist.inc`, generated, unedited, with its notice. |
+| [BIP 39](https://github.com/bitcoin/bips/blob/master/bip-0039.mediawiki) English word list (`bip-0039/english.txt`), Marek Palatinus, Pavol Rusnak, Aaron Voisine, Sean Bowe | As published in `bitcoin/bips` (2048 words) | **MIT** ("This BIP falls under the MIT License.") | The words of a DHT code; `src/addons/driftwire/wordlist.inc`, generated, unedited, with its notice. |
 
 ## Planned, with the PR that introduces each
 

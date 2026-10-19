@@ -136,7 +136,7 @@ void MvAppCommandsChanged();
 namespace {
 
 void refresh_contributed_commands();
-// #410: the command rows of the loaded add-ons that fill slots (Sharepoint),
+// #410: the command rows of the loaded add-ons that fill slots (Driftwire),
 // kept as each loads (below, slot_addons_state).
 std::vector<mv::shell::addon_command_row> slot_command_rows();
 bool is_loaded_slot_addon(const std::string& id);
@@ -876,7 +876,7 @@ std::string read_bridge(int32_t (*fn)(char*, int32_t)) {
   state().status = text ? std::string(text.UTF8String ?: "") : std::string();
 }
 - (void)notifyTitle:(NSString*)title body:(NSString*)body {
-  // #452: a notification when the person has allowed them (Sharepoint asks,
+  // #452: a notification when the person has allowed them (Driftwire asks,
   // when one of its toggles is turned on); otherwise the summary in the Import
   // window is the notification, and a beep. Never asked for here. The lab
   // binary has no bundle and no notification centre.

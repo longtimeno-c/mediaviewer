@@ -495,9 +495,9 @@ include("${CMAKE_CURRENT_LIST_DIR}/script.cmake")
 # The Places add-on (docs/design/27): libmv_places.dylib in build/addons/places,
 # packed and signed separately; never in the app bundle.
 include("${CMAKE_CURRENT_LIST_DIR}/places.cmake")
-# The Sharepoint add-on (docs/design/28): libmv_sharepoint.dylib in
-# build/addons/sharepoint, packed and signed separately; never in the app bundle.
-include("${CMAKE_CURRENT_LIST_DIR}/sharepoint.cmake")
+# The Driftwire add-on (docs/design/28): libmv_driftwire.dylib in
+# build/addons/driftwire, packed and signed separately; never in the app bundle.
+include("${CMAKE_CURRENT_LIST_DIR}/driftwire.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the still
 # pipeline, the clip sampler and the JPEG-512 cache. In the app; knows no
@@ -1051,7 +1051,7 @@ if(MV_BUILD_TESTS)
   endif()
   add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
   mv_places_addon_tests(mv_import_tests)
-  mv_sharepoint_tests(mv_import_tests)
+  mv_driftwire_tests(mv_import_tests)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC"
     SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
 

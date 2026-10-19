@@ -291,7 +291,7 @@ error check_props(node& n, std::size_t& items) {
           }
           break;
         case node_type::button:
-          // "copy" (2026-10-19, Sharepoint's code): on a click the host puts
+          // "copy" (2026-10-19, Driftwire's code): on a click the host puts
           // this text on the clipboard itself, then reports the click as usual.
           // Only on a click: an add-on never writes the clipboard by itself.
           ok = (key == "style" && one_of(v, {"plain", "primary", "destructive"})) ||
@@ -316,7 +316,7 @@ error check_props(node& n, std::size_t& items) {
                num_in(v, -1e12, 1e12);
           break;
         case node_type::text_field:
-          // "pick": "folder" (2026-10-15, Sharepoint): the host adds a
+          // "pick": "folder" (2026-10-15, Driftwire): the host adds a
           // Choose... button that shows the system folder dialog and reports
           // the folder as the field's change; typing a path still works.
           // "look": "code" with "digits": n (#442): a large entry for a short

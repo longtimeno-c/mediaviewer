@@ -794,7 +794,7 @@ public static partial class IslandHost
             AddonSlot? slot = Array.Find(AddonSlots, s => s.Id == parts[0]);
             if (slot is null)
             {
-                // #410: an add-on that fills slots (Sharepoint) has no chrome; its
+                // #410: an add-on that fills slots (Driftwire) has no chrome; its
                 // command is an event to the add-on, with the files its payload
                 // names (a JSON array, or "[]" for a payload of none).
                 string paths = parts[2].StartsWith('[') ? parts[2] : "[]";
@@ -897,7 +897,7 @@ public static partial class IslandHost
     private static void RefreshSlotUi(AddonSlot slot)
     {
         if (slot == ImportSlot) RefreshAddonRow();
-        else if (slot == SharepointSlot) RefreshSharepointOffer();  // #410
+        else if (slot == DriftwireSlot) RefreshDriftwireOffer();  // #410
         else if (slot == PlacesChannel || IsSlotChannel(slot)) RefreshSlotSettings();
         else RefreshLocalSearch();
     }

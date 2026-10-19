@@ -222,7 +222,7 @@ bool mv_chrome_is_marked(int32_t index);
 // relist, another folder, or the grid closing (the generation moves).
 void mv_chrome_gallery_set_range(const int32_t* indices, int32_t count);
 // Issue #444 (docs/design/16 "Share"): run the one share command. `target` is
-// shell::share_target (0 the menu, 1 Sharepoint, 2 the system picker), `from`
+// shell::share_target (0 the menu, 1 Driftwire, 2 the system picker), `from`
 // shell::share_from (0 key, 1 bar, 2 gallery icon, 3 right-click), `clicked`
 // the right-clicked item or -1. The host answers through
 // MVChromeHost.presentShare. [main-thread]

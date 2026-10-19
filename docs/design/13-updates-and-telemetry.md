@@ -307,7 +307,7 @@ never a machine id, MAC, SID or anything that survives a reinstall.
 
 Consented events are appended to a local spool (`telemetry\`). There is no upload endpoint.
 
-**Sharepoint** ([28](28-sharepoint.md#privacy-rule-6)) adds no event, tag or crash annotation. A
+**Driftwire** ([28](28-driftwire.md#privacy-rule-6)) adds no event, tag or crash annotation. A
 transfer's paths, names, addresses and the peer's machine name are never logged; the add-on's log
 lines are fixed ASCII. The files a person sends go only to the MediaViewer they picked, after the
 person there accepted, on the local network or Bluetooth.

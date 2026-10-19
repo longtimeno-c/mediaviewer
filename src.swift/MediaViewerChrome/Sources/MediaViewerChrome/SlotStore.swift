@@ -430,7 +430,7 @@ final class SlotStore: ObservableObject {
   }
 
   /// #410: one of the add-on's items, by id, with `paths` (the gallery's share
-  /// icon asks Sharepoint's "send_files" this way). False when it has no such item.
+  /// icon asks Driftwire's "send_files" this way). False when it has no such item.
   @discardableResult
   func invoke(addon: String, item: String, paths: [String]) -> Bool {
     let json = (try? JSONSerialization.data(withJSONObject: paths)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
