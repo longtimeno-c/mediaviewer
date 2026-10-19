@@ -5602,8 +5602,9 @@ TEST_CASE("a model tier is chosen once, then fetched, pictures first", "[ai][eng
 
   // Saved: the next start runs it and fetches what is missing without asking.
   r.start();
-  REQUIRE(wait_for([&] { return fetches == 2; }, kSettleMs));
-  CHECK(std::string(r.status().tier_utf8) == "potato");
+  // The status is a snapshot refreshed off the fetch thread: the second fetch
+  // can be counted before the new engine has published its tier.
+  REQUIRE(wait_for([&] { return fetches == 2 && std::string(r.status().tier_utf8) == "potato"; }, kSettleMs));
   {
     std::lock_guard lock(m);
     CHECK(tiers_set.back() == "potato");

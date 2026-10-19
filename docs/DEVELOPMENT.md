@@ -594,8 +594,9 @@ any automated run.
 
 Command line: `--soak <seconds>`, `--json <path>`, `--gate` (non-zero exit if the verify
 line fails), `--no-overlay`, `--static`, `--no-chrome`, `--open <path>`, `--boot-report <path>`
-(#486, Windows: write the boot timeline as JSON once the launch is ready and close; implies
-`--new-instance`, leaves the recent folders alone; see "Performance suite"), `--background` (#452:
+(#486: write the boot timeline as JSON once the launch is ready and close; leaves the recent
+folders alone; on Windows it implies `--new-instance`, on the Mac it shows the window without
+taking the keyboard, as the soaks do; see "Performance suite"), `--background` (#452:
 the sign-in start: the window is never shown, only the tray / menu-bar icon once Sharepoint keeps
 the process; it quits after 60 s if nothing does),
 `--browse-soak` (with `--json` and a folder: time each arrow to the next still, and jumps
@@ -1187,15 +1188,21 @@ holds the 100 k-row search scan.
 alternate builds with the harness, warm, one file or none:
 
 ```powershell
-powershell -File tools\perfoot.ps1 -Exe C:asein\mediaviewer_lab.exe,C:
-ewin\mediaviewer_lab.exe `
-  -Runs 10 -Open C:\mediarw\sony_ilce7rm3.arw -Out boot.json
+powershell -File tools\perf\boot.ps1 -Exe C:\b\base\bin\mediaviewer_lab.exe,C:\b\new\bin\mediaviewer_lab.exe `
+  -Runs 10 -Open C:\media\raw\sony_ilce7rm3.arw -Out boot.json
+```
+
+On the Mac the line goes to stderr, and the runner is `tools/perf/boot.py` (it
+runs on Windows too); hold the display awake, since the lab shows its window each launch:
+
+```bash
+caffeinate -d -i python3 tools/perf/boot.py --exe ../base/build/bin/mediaviewer_lab --exe build/bin/mediaviewer_lab --runs 10 --open ~/media/arw/sony_ilce7rm3.arw --out boot.json
 ```
 
 It discards one warm-up launch per build, prints min / median / max per stage and writes every run.
 Put the file in a folder of its own so the folder scan is the same each run. The stage list and
 the report shape are `src/core/boot_timeline.h`; the published runs are `docs/perf/boot/`. Not a
-README chart yet. The Mac host does not mark its stages yet (see "Where this actually is").
+README chart yet.
 
 `mv_tests "[.perf-bench]"` is the quick loop for decode work: `MV_BENCH_JSON=path` writes
 its medians, `MV_BENCH_DIR=folder` adds your own files to the decode rows. Its `preview` row is
@@ -1618,9 +1625,9 @@ There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
 
-### Startup time: the boot timeline and the chrome preload (#486, 2026-10-18)
+### Startup time: the boot timeline, the chrome preload, lazy Mac panes (#486, 2026-10-19)
 
-Windows half. A boot timeline in the core (`core/boot_timeline.h`, `mv_tests "[boot]"`) records
+Windows. A boot timeline in the core (`core/boot_timeline.h`, `mv_tests "[boot]"`) records
 each launch stage from process creation; the Windows host marks fifteen stages, logs them once
 ready, and `--boot-report` / `tools/perf/boot.ps1` measure them. Where a warm launch with no file
 spends its time on the RTX 4070 / 5700X3D desktop (median of 10, base):
@@ -1660,9 +1667,53 @@ docs/design/12 "Launch").
 - **Next contributors, not changed:** the command bar's XAML island (~255 ms warm) and the
   device wait (~200 ms) are serial on the UI thread; the four other islands (~60 ms) attach at
   launch though none is shown with no file.
-- **Mac half owed:** marks in `main_mac.mm` / `present_lab_mac.mm` (process age from
-  `kinfo_proc`), `--boot-report` in the Mac lab, a Mac breakdown and its own top costs, the Mac
-  PR 1 gate.
+
+Mac. The host marks the same stages (process age from `kinfo_proc`; no `chrome_runtime` /
+`chrome_loaded`, there is no .NET), `interactive` being the main run loop's first idle wait after
+launch. Where a warm launch with no file spent its time on an M5 MacBook (median of 10, base):
+
+| Stage (gap from the previous) | ms |
+|---|---|
+| process start → `main` (dyld, initialisers) | 22 |
+| crash reporter | 6 |
+| AppKit start-up, run loop start, settings | 72 |
+| add-ons start, window | 26 |
+| command bar and the other chrome views made (not drawn) | 12 |
+| job workers, render thread start | 6 |
+| **show window: SwiftUI lays out every hosting view, hidden or not** | **184** |
+| → interactive | 37 |
+| = interactive | 365 |
+
+The change: the twelve panes created hidden at launch (filmstrip, gallery, transport, badge, help,
+settings, metadata, tree, adjust, jobs, edit strip and pane, page sidebar) host nothing until first
+shown (`LazyHostingView`, docs/design/12 "Launch"). The show now takes ~26 ms.
+
+| Warm, alternated, median [min–max] | Base | New |
+|---|---|---|
+| Interactive, no file (10 runs) | 365 [362–377] | 185 [181–189] |
+| Interactive, 42 MP ARW (10) | 377 [369–384] | 169 [165–172] |
+| Interactive, CR3 (10) | 372 [369–375] | 170 [164–176] |
+| First frame, no file | 155 [152–163] | 156 [149–163] |
+| First pixel, ARW | 176 [168–404] | 193 [170–199] |
+| First pixel, CR3 | 171 [165–398] | 176 [166–200] |
+| Full resolution, ARW / CR3 | 632 / 420 | 624 / 410 |
+
+First pixel is bimodal on both builds: the present lands either before the window is on screen
+(~170 ms) or waits for it. Base waited for its ~330 ms show in 4 of 10 ARW and 2 of 10 CR3 runs
+(~400 ms); new waits for its ~153 ms show (~195 ms). The median rises, the mean falls (ARW ~262 →
+~186 ms) and the worst case drops from ~404 to ~200 ms.
+
+- **Checked (Mac):** Release Ninja build; `mv_tests` and `mv_ai_tests` (full suites); the panes still draw when
+  shown (metadata, settings, help, gallery, tree, filmstrip, transport, driven through
+  `mv_chrome_run_command`); reports `docs/perf/boot/mac-*.json`. Mac PR 1 gate (`--soak 60 --gate`, base / new
+  / base / new) passes on all four: 0 drops in 3,600 frames, p99 16.8 ms, max 16.8–18.1 ms, 0 idle
+  presents, idle CPU 3.7–4.1 % on both builds (`mac-gate-*.json`).
+- **Not measured (Mac):** a cold launch, the bundled `MediaViewer.app` (the runs are the bare lab
+  binary), launch with the AI pack installed, the first-show cost of each lazy pane (one SwiftUI
+  build on the click that opens it).
+- **Next contributors (Mac):** AppKit and the run loop's start (~60 ms) and process start → `main`
+  (~22 ms) are the platform's; settings (~17 ms) and the add-ons' start (~25 ms) run on the main
+  thread before the window exists.
 
 ### Local search model tiers (#482, docs/plans/model-tiers.md, 2026-10-18)
 

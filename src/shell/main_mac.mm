@@ -3555,7 +3555,8 @@ static void MvAdoptNewDefaultViewerTypes() {
   [_bootTimer invalidate];
   _bootTimer = nil;
   char line[1024];
-  if (mv::boot::write_line(s, line, sizeof line)) MV_LOG_INFO("%s", line);
+  // stderr, not MV_LOG_INFO: the POSIX log keeps only warnings and errors.
+  if (mv::boot::write_line(s, line, sizeof line)) std::fprintf(stderr, "%s\n", line);
   if (g_boot_report.empty()) return;
   _jobs.submit_at(mv::background_generation, [s](const mv::job_context&) -> mv::status {
     char json[4096];

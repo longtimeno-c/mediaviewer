@@ -1946,6 +1946,19 @@ command bar's XAML island (~255 ms warm, the largest stage) still attaches after
 because overlapping it would put XAML start-up beside device creation and in front of the
 `open_paths_early` decode on the one UI thread.
 
+**Mac chrome panes made hidden at launch build their SwiftUI content on first show (issue #486,
+2026-10-19).** The Mac boot timeline showed the window's first order-front taking ~184 ms of a
+~365 ms launch to interactive (no file, M5 MacBook, warm): AppKit lays the window out before it
+shows, and SwiftUI builds and lays out the graph of every `NSHostingView` in it, hidden or not.
+Twelve of the thirteen launch-time views start hidden. `LazyHostingView` (`ChromeHost.swift`)
+hosts an empty root until it is first shown (or laid out while not hidden), then builds its
+content once. Interactive: 365 → 185 ms with no file, 377 → 169 ms with a 42 MP ARW, 372 → 170 ms
+with a CR3; first frame and full resolution unchanged; first pixel's slow mode (waiting for the
+show) moves from ~400 to ~195 ms (`docs/perf/boot/mac-*.json`). The cost moves to the first show
+of each pane, once per launch. The Windows fix does not carry over (no .NET on the Mac), and this
+one does not carry back: the Windows islands are attached, not merely hidden, so not attaching the
+four launch-time islands there is a separate change.
+
 ## Not built
 
 - Voice query add-on (PRs 27–28): no voice add-on or `search_query` host entry exists.
