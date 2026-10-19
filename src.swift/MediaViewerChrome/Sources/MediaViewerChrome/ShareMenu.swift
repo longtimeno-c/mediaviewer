@@ -203,6 +203,8 @@ final class ShareMenu {
   }
 }
 
+private struct IconBox: @unchecked Sendable { let image: NSImage }
+
 /// Puts Sharepoint at the top of the system's list, and, when the picker was
 /// shown with one file per kind (`allItems`), hands each target every file
 /// once it is picked (a target that cannot take that many says so).
@@ -238,8 +240,9 @@ final class SharePickerDelegate: NSObject, NSSharingServicePickerDelegate {
       }
     }
     guard let title else { return services }
-    let image = MainActor.assumeIsolated { ShareMenu.appIcon(size: 32) }
     let choose = chooseSharepoint
+    // NSImage is not Sendable: carry it out of the main-actor hop in a box.
+    let image = MainActor.assumeIsolated { IconBox(image: ShareMenu.appIcon(size: 32)) }.image
     let nearby = NSSharingService(title: title, image: image, alternateImage: nil) {
       MainActor.assumeIsolated { choose() }
     }
