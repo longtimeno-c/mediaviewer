@@ -382,4 +382,4 @@ before a skill is judged by them.
 
 ## Not built
 
-The Final Cut Pro add-on and the Script Editor: issue #485 slices 5-6.
+The Script Editor: issue #485 slice 6. (Final Cut Pro search and the panel are the Final Cut Pro add-on since slice 5: [23](23-nle-search.md).)

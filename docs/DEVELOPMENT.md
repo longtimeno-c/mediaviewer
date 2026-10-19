@@ -35,6 +35,7 @@ and a verify line on each platform (D9, amended). The order is:
 | #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
 | #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
 | #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
+| #485 | **Final Cut Pro search is an add-on**, slice 5: the search agent and the panel's extension leave MediaViewer.app for the Final Cut Pro add-on, installed from Settings > Local search ("Install and turn on"); the app keeps `--search-agent` and the agent's launchd job ([docs/design/23](design/23-nle-search.md), [12](design/12-decision-log.md) "Final Cut Pro search is an add-on") | Mac: the add-on loads through the store and answers through launchd (`mv-search-client`), same results and timings as the in-app agent, idle exit 52 s; the extension registers from an add-on folder through its container. Owed: Final Cut Pro listing and showing the panel from the add-on (needs a Developer ID signature), the Settings flow in the app, the Mac PR 1 gate. Mac only (D9 exception) |
 | #485 | **Editing know-how**, slice 4: the MCP server's editing rules and tool descriptions, five skills (tighten an interview, remove retakes, cut to length, cover jump cuts, assemble selects) with rules adapted from MIT sources under their notices, and an edit eval set of 12 synthesized cases ([docs/design/29 "Editing know-how", "Eval"](design/29-agent-timeline.md#editing-know-how)) | Mac: first scores 0.979 with and without the skills (11 of 12 cases at 1.0; the miss is an index gap, not an edit); the reference cut scores 1.000 and the unedited project 0.592. Windows: the add-on and skills build in CI; the eval is Mac-only (`say`) |
 | #485 | **`analyse`**, slice 3: the agent asks MediaViewer to index the timeline's media and the given folders; with none running, `--mcp` starts `MediaViewer --agent-index` (background, gone when idle, start at login untouched) and follows progress through the reader ([docs/design/29 "Analyse"](design/29-agent-timeline.md#analyse)) | Mac: the full loop ran in a dev build. Windows: C# compiles; native CI only |
 | #485 | **AI agents add-on**, slice 2: `MediaViewer --mcp`, an MCP server over stdio (no socket) whose tools read the dragged timeline, its transcript and silences, search the scope, edit (ripple cuts, trims, B-roll, markers, titles) and commit "<Project> (Claude N)"; scoped to the timeline's media and the given folders, `photos:` refused; the AI agents window adds it to Claude Code / Claude Desktop ([docs/design/29](design/29-agent-timeline.md#the-agent)) | Mac: Claude Code tightened an interview and covered its cuts with B-roll in a dev build; scope refusals, no socket, files unchanged, PR 1 gate with the server answering. Windows: C# compiles; native CI only |
@@ -1682,6 +1683,32 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Agent timeline editing, slice 5: Final Cut Pro search becomes an add-on (#485, 2026-10-19)
+
+The issue's slice: "**Final Cut Pro search becomes an add-on** (Mac): move agent + extension out of
+MediaViewer.app; decision-log row; doc 23 updated." Owner call 5: delivered as an add-on, reversing
+doc 23 "Delivery".
+
+- **Built:** `build/addons/fcp` (`libmv_fcp.dylib`, `MediaViewer Search.app` around the extension);
+  `MediaViewer --search-agent` loads it (`shell/fcp_host_mac.mm`, `mv.fcp.1`); the app bundle has
+  no `PlugIns/MediaViewerSearch.appex` any more and keeps the launchd job only; Settings > Local
+  search offers **Install and turn on**; `addon-pack.py pack --addon fcp`.
+- **Mac (M5), dev build, scratch add-ons and thumbs:** the add-on (dev-signed) loaded through the
+  store from a launchd job running `MediaViewer --search-agent`; `mv-search-client lake` answered
+  from the reader; alternating base / new runs give the same cold time, warm p50 / p95 and results
+  (docs/design/23 "Performance": base 8.80 / 8.19 s cold, new 8.27 / 8.10 s; warm p95 base 23.1 /
+  21.1 ms, new 21.3 / 21.5 ms), idle exit 52 s in every run. `mv_import_tests "[fcp],[manifest]"`,
+  `test_macpack.py` pass.
+- **The extension from an add-on folder:** a bare `.appex` given to `pluginkit -a` is never listed
+  (macOS 26.6); inside the container, registered with LaunchServices from a folder in the home
+  directory, it is (tried with a copy under a test bundle id, then removed, so the installed
+  MediaViewer's own registration was not touched). LaunchServices skips `/private/tmp`.
+- **Owed:** Final Cut Pro listing the add-on's extension and showing the panel (it needs the
+  Developer ID-signed add-on and app: an ad hoc extension is refused); the Settings row's install
+  and on / off in the app (`SMAppService` registration with the release bundle id would collide
+  with the installed MediaViewer's, so it was not run here); the Mac PR 1 gate (the screen was
+  locked). Windows: nothing (Final Cut Pro is Mac-only).
 
 ### Agent timeline editing, slice 4: editing know-how (#485, 2026-10-19)
 

@@ -180,6 +180,22 @@ CLIP L/14 index:
 | An ad hoc-signed client | refused |
 | Mac PR 1 present-loop soak with the agent answering 1 query/s | animated cadence held (p99 ≤ 17.1 ms, max ≤ 22.6 ms) |
 
+**The add-on against the in-app agent (2026-10-19, #485 slice 5).** Same M5, Release, a 21-asset
+index (the edit eval lab's), the same 5 queries; base = the in-app agent at slice 4, new = the add-on's
+agent hosted by `--search-agent`; launchd job per run, alternating base, new, base, new:
+
+| Check | base | new |
+|---|---|---|
+| Cold first query (launchd start, the add-on's verify for new, pack load) | 8.80 s, 8.19 s | 8.27 s, 8.10 s |
+| Agent p50 / p95, 5 queries × 60, warm (`--bench 60`) | 17.37 / 23.07 ms, 16.46 / 21.10 ms | 16.35 / 21.25 ms, 17.07 / 21.49 ms |
+| In-process reader p50 / p95, same runs | 17.25 / 21.87 ms, 16.20 / 20.82 ms | 16.11 / 20.25 ms, 16.66 / 20.84 ms |
+| Idle exit after the last client | 52 s, 52 s | 52 s, 52 s |
+| Results identical to the in-process reader | yes | yes |
+
+The runs overlap: the add-on adds one call through a function table and one copy of each reply.
+The app's launch path changed only in the background block 10 s after launch, which now also asks
+the store for the add-on while Final Cut Pro is on (one verify of ~1 MB, at background priority).
+
 Repeated queries hit the text-tower cache; a first-time query adds one text-tower run
 (~10–30 ms). A 100 k-frame library's scan time is [17](17-local-ai-search.md)'s number.
 
