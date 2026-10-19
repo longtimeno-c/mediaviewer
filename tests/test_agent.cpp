@@ -10,6 +10,7 @@
 #include "catch_compat.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -19,6 +20,7 @@
 
 #include "addons/agent/install.h"
 #include "addons/agent/scope.h"
+#include "addons/agent/script.h"
 #include "addons/agent/server.h"
 #include "addons/agent/transcript.h"
 #include "core/json.h"
@@ -224,6 +226,7 @@ TEST_CASE("an MCP client's handshake and tool list", "[agent][mcp]") {
   }
   CHECK(names == std::vector<std::string>{"get_timeline", "transcript", "search", "find_similar", "edit",
                                           "scope_files", "analyse", "preview_changes", "commit", "reset",
+                                          "script", "script_edit", "script_to_timeline", "script_export",
                                           "thumbnail"});
   CHECK(parse(rpc(s, "no/such")).find("error")->integer("code") == -32601);
   CHECK(parse(s.handle("{not json")).find("error")->integer("code") == -32700);
@@ -553,4 +556,184 @@ TEST_CASE("adding the agent to Claude Code and Claude Desktop", "[agent][install
   CHECK_FALSE(desktop_config_has(removed));
   CHECK(removed.find("other") != std::string::npos);
   CHECK(client_config_snippet(exe).find("\"--mcp\"") != std::string::npos);
+}
+
+script_op add_op(const char* path, const char* name, const char* text, std::int64_t from, std::int64_t to,
+                 int index = -1) {
+  script_op op;
+  op.k = script_op::kind::add;
+  op.path = path;
+  op.name = name;
+  op.text = text;
+  op.from_ms = from;
+  op.to_ms = to;
+  op.index = index;
+  return op;
+}
+
+script_op id_op(script_op::kind k, const char* id, int index = -1) {
+  script_op op;
+  op.k = k;
+  op.id = id;
+  op.index = index;
+  return op;
+}
+
+TEST_CASE("the script: lines in play order, all or none, the same file either side reads", "[agent][script]") {
+  script sc;
+  std::vector<std::string> added;
+  REQUIRE(apply(sc,
+                {add_op(kTalk, "A001", "One ticket.", 45200, 50000),
+                 add_op(kTalk, "A001", "Before sunrise.", 39000, 45000, 0)},
+                nullptr, &added));
+  REQUIRE(added == std::vector<std::string>{"l1", "l2"});
+  REQUIRE(sc.lines.size() == 2);
+  CHECK(sc.lines[0].id == "l2");  // inserted at 0
+  CHECK(sc.length_ms() == 4800 + 6000);
+  std::string why;
+  // A batch that fails leaves the list as it was.
+  CHECK_FALSE(apply(sc, {id_op(script_op::kind::remove, "l1"), id_op(script_op::kind::remove, "l9")}, &why));
+  CHECK(why.find("no line l9") != std::string::npos);
+  CHECK(sc.lines.size() == 2);
+  REQUIRE(apply(sc, {id_op(script_op::kind::move, "l2")}, nullptr));
+  CHECK(sc.lines[1].id == "l2");
+  CHECK_FALSE(apply(sc, {add_op(kTalk, "", "", 5000, 5000)}, &why));  // empty range
+
+  // Round trip, and ids never reused after a remove.
+  script back;
+  REQUIRE(from_json(to_json(sc), back, &why));
+  CHECK(back.lines.size() == 2);
+  CHECK(back.lines[0].text == "One ticket.");
+  REQUIRE(apply(back, {id_op(script_op::kind::remove, "l2"), add_op(kBroll, "", "", 0, 1000)},
+                nullptr, &added));
+  CHECK(added == std::vector<std::string>{"l3"});
+  CHECK_FALSE(from_json(R"({"format":"other"})", back, &why));
+  CHECK_FALSE(from_json(R"({"format":"mediaviewer.script.1","lines":[{"id":"l1","path":"a","from_ms":5,"to_ms":2}]})",
+                        back, &why));
+
+  // The tool's ops: seconds, and every mistake named.
+  std::vector<script_op> ops;
+  REQUIRE(parse_script_ops(parse(R"([{"op":"add","path":"/a.mov","from":1.5,"to":2.25},{"op":"move","id":"l1","at":0},{"op":"clear"}])"),
+                           ops, &why));
+  CHECK(ops[0].from_ms == 1500);
+  CHECK(ops[0].to_ms == 2250);
+  CHECK(ops[1].index == 0);
+  CHECK_FALSE(parse_script_ops(parse(R"([{"op":"cut"}])"), ops, &why));
+  CHECK(why.find("unknown op") != std::string::npos);
+  CHECK_FALSE(parse_script_ops(parse(R"([{"op":"add","path":"/a.mov"}])"), ops, &why));
+
+  // Beside a --timeline file, else in the panel's folder.
+  CHECK(script_path("/b", "/x/Cut.fcpxml") == "/x/Cut.fcpxml.script.json");
+  CHECK(fs::path(script_path("/b", "")) == fs::path("/b") / "script.json");
+}
+
+TEST_CASE("the script's documents: TXT, CSV, DOCX, PDF", "[agent][script]") {
+  script sc;
+  sc.project = "Interview simple";
+  REQUIRE(apply(sc,
+                {add_op(kTalk, "A001_C002", "The pricing is simple: one ticket.", 45200, 50000),
+                 add_op(kTalk, "A001_C002", "=HYPERLINK(\"x\") caf\xC3\xA9 \xE2\x80\x9Cquoted\xE2\x80\x9D", 39000, 45000)},
+                nullptr));
+  const std::string txt = export_txt(sc);
+  CHECK(txt.find("Interview simple") == 0);
+  CHECK(txt.find("[A001_C002  0:45.20-0:50.00]\nThe pricing is simple: one ticket.") != std::string::npos);
+  const std::string csv = export_csv(sc);
+  CHECK(csv.find("line,clip,file,in_s,out_s,duration_s,text\r\n") == 0);
+  CHECK(csv.find("1,\"A001_C002\",\"" + std::string(kTalk) + "\",45.200,50.000,4.800,") != std::string::npos);
+  CHECK(csv.find("\"'=HYPERLINK(\"\"x\"\")") != std::string::npos);  // text, never a formula
+
+  const std::vector<std::uint8_t> docx = export_docx(sc);
+  const std::string d(docx.begin(), docx.end());
+  CHECK(d.rfind("PK\x03\x04", 0) == 0);
+  CHECK(d.find("[Content_Types].xml") != std::string::npos);
+  CHECK(d.find("word/document.xml") != std::string::npos);
+  CHECK(d.find("&quot;x&quot;") != std::string::npos);
+  CHECK(d.find("PK\x05\x06") != std::string::npos);
+  CHECK(export_docx(sc) == docx);  // the same script makes the same file
+
+  const std::vector<std::uint8_t> pdf = export_pdf(sc);
+  const std::string f(pdf.begin(), pdf.end());
+  CHECK(f.rfind("%PDF-1.4", 0) == 0);
+  CHECK(f.find("%%EOF") != std::string::npos);
+  // Every xref offset points at its object.
+  const std::size_t xref = f.find("\nxref\n") + 1;
+  const std::size_t start = std::stoul(f.substr(f.find("startxref\n") + 10));
+  CHECK(start == xref);
+  std::size_t at = f.find("0000000000 65535 f \n", xref) + 20;
+  for (int n = 1; f.compare(at, 1, "t") != 0; ++n, at += 20) {
+    const std::size_t off = std::stoul(f.substr(at, 10));
+    CHECK(f.compare(off, std::to_string(n).size() + 6, std::to_string(n) + " 0 obj") == 0);
+  }
+  CHECK(f.find("caf\xE9") != std::string::npos);    // Latin-1 in WinAnsi
+  // A long script runs onto more pages, each line still inside the page.
+  script big;
+  std::vector<script_op> many;
+  for (int i = 0; i < 120; ++i) many.push_back(add_op(kTalk, "A001", "A line long enough to wrap once it passes the margin of an A4 page, which is about eighty-eight characters.", i * 1000, i * 1000 + 900));
+  REQUIRE(apply(big, many, nullptr));
+  const std::vector<std::uint8_t> long_pdf = export_pdf(big);
+  const std::string lp(long_pdf.begin(), long_pdf.end());
+  const std::size_t count_at = lp.find("/Count ");
+  REQUIRE(count_at != std::string::npos);
+  CHECK(std::stoi(lp.substr(count_at + 7)) >= 5);
+  // MV_SCRIPT_SAMPLES=<dir> keeps the four documents, to open in Word, Preview, a spreadsheet.
+  if (const char* keep = std::getenv("MV_SCRIPT_SAMPLES")) {
+    spit(fs::path(keep) / "script.txt", txt);
+    spit(fs::path(keep) / "script.csv", csv);
+    spit(fs::path(keep) / "script.docx", d);
+    spit(fs::path(keep) / "script.pdf", f);
+    spit(fs::path(keep) / "long.pdf", lp);
+  }
+  CHECK(f.find("\x93quoted\x94") != std::string::npos);
+}
+
+TEST_CASE("the script tools: the agent builds the cut list, the timeline follows it", "[agent][script]") {
+  scratch tmp;
+  make_bridge(tmp.dir);
+  const std::string original = slurp(tmp.dir / "project.fcpxml");
+  fake env;
+  server_options o;
+  o.bridge_dir = tmp.dir.string();
+  server s(env, o);
+  CHECK(tool(s, "script").find("lines")->a.empty());
+  CHECK(tool(s, "script_to_timeline", "{}", true).s.find("empty") != std::string::npos);
+  // Text comes from what the index heard in the range.
+  const json::value e = tool(s, "script_edit",
+                             R"({"ops":[{"op":"add","path":"/Users/editor/Footage/Interview/A001_C002.mov","from":45.2,"to":50},
+                                        {"op":"add","path":"/Users/editor/Footage/Interview/A001_C002.mov","from":39,"to":45,"at":0}]})");
+  CHECK(e.find("added")->a.size() == 2);
+  CHECK(*e.find("lines")->a[1].str("text") == "The pricing is simple: one ticket for the whole valley.");
+  CHECK(e.find("length")->d == 10.8);
+  // The window reads the same file.
+  const script on_disk = load_script((tmp.dir / "script.json").string());
+  REQUIRE(on_disk.lines.size() == 2);
+  CHECK(on_disk.project == "Interview simple");
+  // Outside the scope: refused, nothing changed.
+  CHECK(tool(s, "script_edit", R"({"ops":[{"op":"add","path":"/Users/editor/Private/secret.mov","from":0,"to":1}]})", true)
+            .s.find("nothing was changed") != std::string::npos);
+  CHECK(tool(s, "script_edit", R"({"ops":[{"op":"add","path":"photos:ABC-123","from":0,"to":1}]})", true).k ==
+        json::kind::string);
+  CHECK(load_script((tmp.dir / "script.json").string()).lines.size() == 2);
+
+  // The storyline becomes the script; commit writes a version, the original stays.
+  const json::value t = tool(s, "script_to_timeline");
+  CHECK(std::abs(t.find("length")->d - 10.8) < 0.05);
+  const json::value c = tool(s, "commit");
+  nle::timeline v;
+  REQUIRE(v.load(slurp(fs::path(*c.str("file"))), nullptr));
+  std::vector<const nle::item*> story;
+  for (const nle::item& it : v.items()) {
+    if (it.parent == -1 && it.in_storyline && it.storyline == -1) story.push_back(&it);
+  }
+  REQUIRE(story.size() == 2);
+  CHECK(nle::to_ms(story[0]->source_in) == 39000);
+  CHECK(nle::to_ms(story[1]->source_in) == 45200);
+  CHECK(slurp(tmp.dir / "project.fcpxml") == original);
+
+  // Documents beside it, never over one.
+  const json::value x1 = tool(s, "script_export", R"({"format":"docx"})");
+  const json::value x2 = tool(s, "script_export", R"({"format":"docx"})");
+  CHECK(fs::path(*x1.str("file")).filename() == "Interview simple script.docx");
+  CHECK(*x1.str("file") != *x2.str("file"));
+  CHECK(fs::exists(*x2.str("file")));
+  CHECK(tool(s, "script_export", R"({"format":"rtf"})", true).k == json::kind::string);
 }

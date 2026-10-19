@@ -106,6 +106,10 @@ struct host_services {
   // (slot_registry::provider_paths, Places). Tests inject a fake.
   std::function<result<std::vector<std::string>>(const std::string& place, const std::function<bool()>& keep_going)>
       place_matches;
+  // #485: a file's transcript as the index holds it (the host table's
+  // transcript_json). Empty: the process's published source
+  // (addon/index_locations.h index_transcript). Tests inject a fake.
+  std::function<result<std::string>(const std::string& path)> transcript;
   std::string data_dir;         // created by the table
   std::string default_library;  // Pictures\MediaViewer
   // Honour mv_addon_copy_request's fault injection (tests, the verify rig).

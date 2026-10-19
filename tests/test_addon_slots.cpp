@@ -652,6 +652,36 @@ TEST_CASE("locations_of_index streams the index's coordinates, generation-tagged
   }
 }
 
+TEST_CASE("a file's transcript comes from the attached index, and stops when it goes", "[addon][slots]") {
+  // #485, the Script Editor: the host table's transcript_json reads the
+  // process's published source (each host publishes the AI pack's).
+  mv::addon::host_services svc;
+  mv::addon::host_table t(svc);
+  const mv_host_api* api = t.api();
+  REQUIRE(api->struct_size >= offsetof(mv_host_api, transcript_json) + sizeof(api->transcript_json));
+  REQUIRE(api->transcript_json);
+  mv::addon::retract_index_locations();
+  char buf[64];
+  uint32_t need = 0;
+  CHECK(api->transcript_json(api->host, "/a.mov", buf, sizeof buf, &need) == MV_ERR_NOT_FOUND);
+  const std::string body = R"({"indexed":true,"segments":[{"start_ms":0,"end_ms":900,"text":"Long enough to need a second call."}]})";
+  mv::addon::publish_index_transcripts([&](const std::string& path) -> mv::result<std::string> {
+    if (path != "/a.mov") return mv::err(mv::status::not_found);
+    return body;
+  });
+  CHECK(api->transcript_json(api->host, "/a.mov", buf, sizeof buf, &need) == MV_ERR_INVALID_ARG);  // too short
+  REQUIRE(need == body.size() + 1);
+  std::vector<char> big(need);
+  REQUIRE(api->transcript_json(api->host, "/a.mov", big.data(), need, &need) == MV_OK);
+  CHECK(std::string(big.data()) == body);
+  CHECK(api->transcript_json(api->host, "/b.mov", buf, sizeof buf, &need) == MV_ERR_NOT_FOUND);
+  CHECK(api->transcript_json(api->host, nullptr, buf, sizeof buf, &need) == MV_ERR_INVALID_ARG);
+  // The pack going retracts it with the coordinates.
+  mv::addon::retract_index_locations();
+  mv::addon::wait_index_locations_idle();
+  CHECK(api->transcript_json(api->host, "/a.mov", big.data(), need, &need) == MV_ERR_NOT_FOUND);
+}
+
 TEST_CASE("the index's coordinates come from the AI pack while it is published, and stop when it goes",
           "[addon][slots]") {
   slot_registry r;

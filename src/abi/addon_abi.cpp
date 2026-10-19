@@ -718,6 +718,8 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     if (std::string_view(id) == "ai") {
       const auto* ai = static_cast<const mv_ai_api*>(it->second.addon->query(MV_AI_INTERFACE));
       mv::addon::publish_index_locations(mv::addon::ai_index_locations(ai));
+      // #485: and its transcripts serve the host table's transcript_json (the Script Editor).
+      mv::addon::publish_index_transcripts(mv::addon::ai_index_transcripts(ai));
       // docs/design/29: the writer takes the timeline agent's "index these
       // folders" (a reader cannot index).
       if (!reader && ai && ai->index_folder) {

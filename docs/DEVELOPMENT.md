@@ -35,6 +35,7 @@ and a verify line on each platform (D9, amended). The order is:
 | #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
 | #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
 | #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
+| #485 | **Script Editor**, slice 6: the timeline's transcript and a script of its lines in play order, in a window both hosts draw from the AI agents add-on; **New Version from Script**, and TXT / CSV / DOCX / PDF; the agent edits the same list (`script`, `script_edit`, `script_to_timeline`, `script_export`); host table `transcript_json`, ABI 0.35 ([docs/design/29 "Script Editor"](design/29-agent-timeline.md#script-editor)) | Mac: Claude Code built a selects script, exported DOCX and PDF and committed the timeline from it (eval selects checks 1.0, DTD-valid, files unchanged); the window's flow runs through the real loader; DOCX read by textutil, PDF by PDFKit. Owed: the window opened in the app on both platforms, Word / Pages, Windows native (CI) |
 | #485 | **Final Cut Pro search is an add-on**, slice 5: the search agent and the panel's extension leave MediaViewer.app for the Final Cut Pro add-on, installed from Settings > Local search ("Install and turn on"); the app keeps `--search-agent` and the agent's launchd job ([docs/design/23](design/23-nle-search.md), [12](design/12-decision-log.md) "Final Cut Pro search is an add-on") | Mac: the add-on loads through the store and answers through launchd (`mv-search-client`), same results and timings as the in-app agent, idle exit 52 s; the extension registers from an add-on folder through its container. Owed: Final Cut Pro listing and showing the panel from the add-on (needs a Developer ID signature), the Settings flow in the app, the Mac PR 1 gate. Mac only (D9 exception) |
 | #485 | **Editing know-how**, slice 4: the MCP server's editing rules and tool descriptions, five skills (tighten an interview, remove retakes, cut to length, cover jump cuts, assemble selects) with rules adapted from MIT sources under their notices, and an edit eval set of 12 synthesized cases ([docs/design/29 "Editing know-how", "Eval"](design/29-agent-timeline.md#editing-know-how)) | Mac: first scores 0.979 with and without the skills (11 of 12 cases at 1.0; the miss is an index gap, not an edit); the reference cut scores 1.000 and the unedited project 0.592. Windows: the add-on and skills build in CI; the eval is Mac-only (`say`) |
 | #485 | **`analyse`**, slice 3: the agent asks MediaViewer to index the timeline's media and the given folders; with none running, `--mcp` starts `MediaViewer --agent-index` (background, gone when idle, start at login untouched) and follows progress through the reader ([docs/design/29 "Analyse"](design/29-agent-timeline.md#analyse)) | Mac: the full loop ran in a dev build. Windows: C# compiles; native CI only |
@@ -972,6 +973,15 @@ python3 tools/agent/eval/eval.py score --lab <lab> --timeline-tool build/bin/mv-
 `eval.py reference` writes the reference cuts (they must score 1.0: a scorer check). Re-run it
 whenever the instructions, a skill or a tool changes, and put the scores in docs/design/29.
 
+**The Script Editor (slice 6).** The add-on's second window (`Script Editor` command): the
+timeline's transcript and a cut list the agent's `script` tools share
+(`<timeline>.script.json`, or `script.json` in the panel's folder). Its transcript comes from the
+app's attached index (host table `transcript_json`), so in a dev build it needs a sideloaded AI
+pack with the clips indexed. Tests: `mv_agent_tests "[script]"` (the list, its four documents,
+the tools; `MV_SCRIPT_SAMPLES=<dir>` keeps the documents to open by hand),
+`mv_import_tests "[agent]"` (the window through the real loader), `mv_import_tests "[slots]"` (the
+host table's `transcript_json`).
+
 **The Photos library as a folder, and its backup (Mac; docs/design/26, 2026-10-03).** Once the library
 was added in Local search's Settings, the folder tree (`⌘⇧E`) shows a *Photos Library* row and
 File gains *Open Photos Library*: the host lists the library as **virtual items** (`photos:<id>`,
@@ -1683,6 +1693,28 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Agent timeline editing, slice 6: the Script Editor (#485, 2026-10-19)
+
+The issue's slice: "**Script Editor** (both platforms)"; the Jumper row it answers: "Script Editor
+(transcript workspace → timeline, TXT/CSV/DOCX/PDF export) ... Claude drives the same cut list".
+
+- **Built, shared code (both platforms):** `src/addons/agent/script.{h,cpp}` (the list, its batch
+  ops, TXT / CSV / DOCX / PDF, the edit batch to the timeline); four MCP tools; the transcript tool
+  gives each phrase's file range; the window is a view tree in the add-on, which the Mac (SwiftUI)
+  and Windows (WinUI) hosts already draw; the host table's `transcript_json` is shared host code
+  (`addon/host.cpp`, `addon/index_locations.cpp`) with one publish line per host
+  (`shell/addons_mac.mm`, `abi/addon_abi.cpp`).
+- **Mac (M5), dev build, the eval lab:** Claude Code (Opus, only the MediaViewer tools) was asked
+  for a three-line selects script in a given order, DOCX and PDF, and a version from it ($0.21, 12
+  turns): the script file beside the timeline held the three lines in that order, both documents
+  were written beside it, and the committed version's storyline is those three ranges. The version scores 1.0 on the eval's selects checks, validates against FCP's FCPXML 1.13
+  DTD, and the two clips and the project kept their SHA-256. The DOCX read back with `textutil`,
+  the PDF with PDFKit (an 11-page script too). Tests: `mv_agent_tests` (15 cases),
+  `mv_import_tests "[agent],[slots],[fcp],[manifest]"` pass.
+- **Owed:** the window opened and used in the app (the screen was locked during this session) on
+  the Mac and on Windows; Word and Pages opening the DOCX; the PDF for non-Latin text (prints `?`);
+  the Mac PR 1 gate; Windows native (the host's publish line, the window) is CI-compiled only.
 
 ### Agent timeline editing, slice 5: Final Cut Pro search becomes an add-on (#485, 2026-10-19)
 
