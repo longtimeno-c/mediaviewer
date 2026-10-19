@@ -45,6 +45,7 @@ struct server_options {
   std::vector<std::string> folders;    // --folder: added to the panel's
   std::string version = "0.0.0-dev";   // serverInfo
   bool handoff = true;                 // commit asks FCP to open the version
+  std::string skills_dir;              // the add-on's skills (SKILL.md folders), served as MCP prompts
 };
 
 class server {
@@ -68,6 +69,8 @@ class server {
   std::string respond(const json::value& id, const std::string& result_json);
   std::string fail(const json::value* id, int code, std::string_view message);
   std::string tools_list() const;
+  std::string prompts_list() const;
+  std::string prompt_get(const json::value& params, std::string* error) const;
   outcome dispatch(std::string_view tool, const json::value& args);
 
   // The session.

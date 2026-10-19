@@ -173,12 +173,15 @@ const char* server::instructions() {
          "panel. Work only with that timeline's own media and the folders the editor gave; the server refuses "
          "anything else, including the Photos library.\n"
          "How to edit well:\n"
-         "1. Read first: get_timeline, then transcript. Understand the story before cutting.\n"
-         "2. Propose before you change: say what you will cut or add, with times and why, and wait for the "
-         "editor's go-ahead unless they asked you to just do it.\n"
+         "1. Read first: get_timeline, then transcript. Understand the story before cutting. Name only what "
+         "get_timeline lists; never guess a clip.\n"
+         "2. Propose before you change: a short plan (what goes, with times and why; every group of retakes) and "
+         "wait for the editor's yes unless they asked you to just do it. A tweak to the plan is not a yes.\n"
          "3. Cut on boundaries the server gives: a silence's cut_from/cut_to, or the edges of phrases and words. "
-         "Never cut inside a word. Word times inside a phrase are estimates: prefer silences and phrase edges, "
-         "and keep about 80 ms of air at each side of a cut.\n"
+         "Never cut inside a word. Silences of 0.4 s or more are the safest cuts. Word times inside a phrase are "
+         "estimates: prefer silences and phrase edges; the server keeps about 80 ms of air at each side.\n"
+         "   Fillers by default: um, uh, er, erm, ah, hmm only; 'like', 'so', 'you know' only when asked. Never cut "
+         "a laugh, a reaction or the beat before a punchline. End every cut version on a complete sentence.\n"
          "4. Keep what the editor built: J and L cuts, connected B-roll and music, titles, effects and colour are "
          "carried by the server; do not remove them unless asked. Respect roles (dialogue, music, effects).\n"
          "5. Compound, multicam and sync clips are units: trim or move them, never open them. Items marked "
@@ -186,11 +189,14 @@ const char* server::instructions() {
          "6. Never lose a take the brief needs: when unsure, keep it and say so. Do not cut the only copy of a "
          "line the editor asked to keep.\n"
          "7. Send a batch in the timeline's own times (all times in one edit call refer to the timeline before "
-         "that call), check preview_changes, then commit. Each commit is a new project beside the original "
+         "that call), check preview_changes and read transcript of the edited timeline around each cut (no "
+         "word cut in half or repeated across a join; at most three fix passes), then commit. Each commit is a new project beside the original "
          "(\"<Project> (Claude N)\"); the original and every media file stay as they were.\n"
          "8. If get_timeline says the project changed in Final Cut Pro since it was dragged, ask the editor to "
          "drag it onto the panel again before editing.\n"
-         "Times are seconds on the timeline (0 is the start of the project) unless a field says file time.";
+         "Times are seconds on the timeline (0 is the start of the project) unless a field says file time. "
+         "The server's prompts (prompts/list) are step-by-step skills for common edits: tighten an interview, "
+         "remove retakes, cut to a length, cover jump cuts with B-roll, assemble selects from a script.";
 }
 
 std::string server::source_path() const {
@@ -328,7 +334,7 @@ std::string server::handle(std::string_view line) {
     w.begin_object();
     w.key("protocolVersion").string(protocol_);
     w.key("capabilities").begin_object().key("tools").begin_object().key("listChanged").boolean(false).end_object()
-        .end_object();
+        .key("prompts").begin_object().key("listChanged").boolean(false).end_object().end_object();
     w.key("serverInfo").begin_object().key("name").string("mediaviewer").key("title").string("MediaViewer timeline")
         .key("version").string(o_.version).end_object();
     w.key("instructions").string(instructions());
@@ -354,7 +360,12 @@ std::string server::handle(std::string_view line) {
     return respond(*id, w.take());
   }
   if (*method == "resources/list") return respond(*id, R"({"resources":[]})");
-  if (*method == "prompts/list") return respond(*id, R"({"prompts":[]})");
+  if (*method == "prompts/list") return respond(*id, prompts_list());
+  if (*method == "prompts/get") {
+    std::string error;
+    const std::string r = prompt_get(p, &error);
+    return r.empty() ? fail(id, -32602, error) : respond(*id, r);
+  }
   return fail(id, -32601, "method not found");
 }
 
@@ -385,6 +396,71 @@ std::string server::tools_list() const {
 ]})JSON";
   s.erase(std::remove(s.begin(), s.end(), '\n'), s.end());
   return s;
+}
+
+// ---- skills as prompts ----------------------------------------------------------------------
+
+namespace {
+
+struct skill {
+  std::string name, description, body;
+};
+
+// SKILL.md: "---\nname: x\ndescription: y\n---\nbody".
+std::vector<skill> read_skills(const std::string& dir) {
+  std::vector<skill> out;
+  if (dir.empty()) return out;
+  std::error_code ec;
+  for (const auto& e : std::filesystem::directory_iterator(std::filesystem::path(dir), ec)) {
+    if (!e.is_directory(ec)) continue;
+    bool ok = false;
+    const std::string text = read_file((e.path() / "SKILL.md").string(), &ok);
+    if (!ok || text.rfind("---", 0) != 0) continue;
+    const std::size_t end = text.find("\n---", 3);
+    if (end == std::string::npos) continue;
+    skill s;
+    std::size_t from = text.find('\n') + 1;
+    while (from < end) {
+      const std::size_t nl = text.find('\n', from);
+      const std::string line = text.substr(from, (nl == std::string::npos ? end : std::min(nl, end)) - from);
+      if (line.rfind("name: ", 0) == 0) s.name = line.substr(6);
+      if (line.rfind("description: ", 0) == 0) s.description = line.substr(13);
+      if (nl == std::string::npos) break;
+      from = nl + 1;
+    }
+    const std::size_t body = text.find('\n', end + 4);
+    s.body = body == std::string::npos ? std::string() : text.substr(body + 1);
+    if (!s.name.empty() && !s.body.empty()) out.push_back(std::move(s));
+  }
+  std::sort(out.begin(), out.end(), [](const skill& a, const skill& b) { return a.name < b.name; });
+  return out;
+}
+
+}  // namespace
+
+std::string server::prompts_list() const {
+  json::writer w;
+  w.begin_object().key("prompts").begin_array();
+  for (const skill& s : read_skills(o_.skills_dir)) {
+    w.begin_object().key("name").string(s.name).key("description").string(s.description).end_object();
+  }
+  w.end_array().end_object();
+  return w.take();
+}
+
+std::string server::prompt_get(const json::value& params, std::string* error) const {
+  const std::string* name = params.str("name");
+  for (const skill& s : read_skills(o_.skills_dir)) {
+    if (name && s.name == *name) {
+      json::writer w;
+      w.begin_object().key("description").string(s.description).key("messages").begin_array().begin_object()
+          .key("role").string("user").key("content").begin_object().key("type").string("text").key("text")
+          .string(s.body).end_object().end_object().end_array().end_object();
+      return w.take();
+    }
+  }
+  if (error) *error = "no such prompt";
+  return {};
 }
 
 server::outcome server::dispatch(std::string_view tool, const json::value& args) {

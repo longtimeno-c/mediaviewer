@@ -21,6 +21,11 @@ namespace mv::agent::platform {
 [[nodiscard]] bool run(const std::string& exe, const std::vector<std::string>& args, std::string& output,
                        int& exit_code, int timeout_ms);
 
+// The folder this add-on's library is in (its skills sit beside it).
+[[nodiscard]] std::string module_dir();
+// Claude Code's personal skills folder (~/.claude/skills).
+[[nodiscard]] std::string claude_skills_dir();
+
 // The `claude` command line (Claude Code), "" when it is not installed.
 [[nodiscard]] std::string find_claude();
 // Claude Desktop's claude_desktop_config.json, and whether Claude Desktop is installed.

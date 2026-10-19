@@ -492,6 +492,29 @@ TEST_CASE("analyse asks the app to index the scope, and follows it", "[agent][an
   CHECK(env.index_requests.size() == 1);
 }
 
+TEST_CASE("the add-on's skills are the server's prompts", "[agent][mcp]") {
+  fake env;
+  server_options o;
+  o.skills_dir = MV_AGENT_SKILLS_DIR;
+  server s(env, o);
+  const json::value list = parse(rpc(s, "prompts/list"));
+  std::vector<std::string> names;
+  for (const json::value& p : list.find("result")->find("prompts")->a) {
+    names.push_back(*p.str("name"));
+    CHECK(p.str("description")->size() > 40);
+  }
+  CHECK(names == std::vector<std::string>{"mediaviewer-assemble-selects", "mediaviewer-cover-jump-cuts",
+                                          "mediaviewer-cut-to-length", "mediaviewer-remove-retakes",
+                                          "mediaviewer-tighten-interview"});
+  const json::value got =
+      parse(rpc(s, "prompts/get", R"({"name":"mediaviewer-tighten-interview"})"));
+  const std::string text = *got.find("result")->find("messages")->a[0].find("content")->str("text");
+  CHECK(text.find("cut_from") != std::string::npos);
+  CHECK(text.rfind("---", 0) != 0);  // the frontmatter is not the prompt
+  CHECK(parse(rpc(s, "prompts/get", R"({"name":"nope"})")).find("error"));
+  CHECK(parse(rpc(s, "initialize")).find("result")->find("capabilities")->find("prompts"));
+}
+
 TEST_CASE("frames only when the editor allows them", "[agent][thumbnail]") {
   scratch tmp;
   make_bridge(tmp.dir);

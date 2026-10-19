@@ -147,6 +147,21 @@ bool run(const std::string& exe, const std::vector<std::string>& args, std::stri
   return true;
 }
 
+std::string module_dir() {
+  HMODULE self = nullptr;
+  if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&module_dir), &self)) {
+    return {};
+  }
+  std::wstring buf(32768, L'\0');
+  const DWORD n = ::GetModuleFileNameW(self, buf.data(), static_cast<DWORD>(buf.size()));
+  buf.resize(n);
+  const std::size_t cut = buf.find_last_of(L"\\/");
+  return cut == std::wstring::npos ? std::string() : narrow(std::wstring_view(buf).substr(0, cut));
+}
+
+std::string claude_skills_dir() { return known_folder(FOLDERID_Profile) + "\\.claude\\skills"; }
+
 std::string find_claude() {
   const std::string profile = known_folder(FOLDERID_Profile);
   const std::string roaming = known_folder(FOLDERID_RoamingAppData);

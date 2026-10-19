@@ -68,6 +68,10 @@ set_target_properties(mv_agent PROPERTIES
   VISIBILITY_INLINES_HIDDEN ON
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/addons/agent"
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/addons/agent")
+# The skills (SKILL.md folders) beside the library: the package carries them,
+# the server serves them as prompts, the AI agents window copies them to Claude Code.
+add_custom_command(TARGET mv_agent POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory "${_A}/skills" "$<TARGET_FILE_DIR:mv_agent>/skills")
 if(APPLE)
   set_target_properties(mv_agent PROPERTIES PREFIX "lib" SUFFIX ".dylib")
 elseif(WIN32)

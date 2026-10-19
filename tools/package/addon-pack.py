@@ -157,10 +157,11 @@ ADDONS = {
         "host_api": {"min": 3, "max": 3},  # table v3: screens and slots
         "manifest_json": "src/addons/agent/manifest.json",
         "files": {
-            "win-x64": {"native": "mv_agent.dll", "chrome": "", "include": ["mv_agent.dll"]},
-            "macos": {"native": "libmv_agent.dylib", "chrome": "", "include": ["libmv_agent.dylib"]},
+            "win-x64": {"native": "mv_agent.dll", "chrome": "", "include": ["mv_agent.dll", "skills"]},
+            "macos": {"native": "libmv_agent.dylib", "chrome": "", "include": ["libmv_agent.dylib", "skills"]},
         },
         "licences": [],
+        "ship_notices": ["skills/NOTICE.md"],
         "notice": ("AI agents add-on for MediaViewer. GPL-3.0-or-later.\n"
                    "An MCP server over stdio: it opens no network connection. What an agent reads (paths,\n"
                    "timecodes, transcript text of the dragged timeline and the given folders) goes to that\n"

@@ -1096,7 +1096,8 @@ if(MV_BUILD_TESTS)
   target_link_libraries(mv_agent_tests PRIVATE mv_agent_engine Catch2::Catch2WithMain)
   target_include_directories(mv_agent_tests PRIVATE src tests)
   target_compile_definitions(mv_agent_tests PRIVATE
-    MV_TIMELINE_FIXTURES="${CMAKE_SOURCE_DIR}/tests/data/fcpxml")
+    MV_TIMELINE_FIXTURES="${CMAKE_SOURCE_DIR}/tests/data/fcpxml"
+    MV_AGENT_SKILLS_DIR="${CMAKE_SOURCE_DIR}/src/addons/agent/skills")
   catch_discover_tests(mv_agent_tests TEST_PREFIX "agent_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
   find_package(Python3 COMPONENTS Interpreter QUIET)

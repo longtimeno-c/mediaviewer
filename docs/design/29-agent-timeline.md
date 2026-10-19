@@ -298,7 +298,65 @@ card opens the **AI agents** window, a view tree both hosts draw:
 - **The timeline:** on the Mac, which project the panel holds and its folders; on Windows (no FCP), the
   FCPXML file to work on (exported from DaVinci Resolve or Premiere Pro) and folders to give.
 
+## Editing know-how
+
+The tools make editing possible; how well the agent edits comes from what it is told (owner,
+2026-10-18). The sources the issue named were read and their licences checked (2026-10-19; notes in
+the issue's side-session notes, `485-editing-sources.md`):
+
+| Source | Licence | Used as |
+|---|---|---|
+| fcp-mcp-server (DareDev256) | MIT | rules adapted: verify against the media, conservative fillers, repeats across a join |
+| fcp-mcp (dreliq9, Adam Steen) | MIT | rules adapted: list before naming, a plan approved only by an explicit yes |
+| Cut Video (Tella, Louise de Sadeleer) | MIT | rules adapted: pause table by tone, fillers, false starts and retakes, never cut laughs or beats |
+| video-use (Browser Use) | MIT | rules adapted: silences of 0.4 s+ as the safest cuts, air at speaker handoffs, short plan then wait, check every cut, three passes at most |
+| ButterCut (barefootford) | PolyForm Noncommercial 1.0.0 (GPL-incompatible) | ideas only, no text: ask the kind of cut, end on a complete sentence, report missing script lines |
+| Jumper | proprietary | ideas only, no text |
+
+What the agent gets:
+- **The server's `instructions`** (every client): read first; name only what `get_timeline` lists;
+  a short plan and an explicit yes; cut on the server's silences and phrase and word edges, never
+  inside a word; the conservative filler list; never cut laughs, reactions or the beat before a
+  punchline; end on a complete sentence; keep J/L cuts, roles, effects, B-roll and music; units
+  stay units; never lose a take the brief needs; one batch in the timeline's own times; check
+  `preview_changes` and the edited timeline's transcript around every cut, at most three passes;
+  a stale drag means ask for a new one.
+- **Skills** (`src/addons/agent/skills`, `mediaviewer-*`): tighten an interview (with the pause
+  table), remove retakes, cut to a length, cover jump cuts with B-roll, assemble selects from a
+  script. They ship in the add-on beside its library, are the server's MCP **prompts**
+  (`prompts/list`, `prompts/get`: any client), and the AI agents window's **Add Editing Skills**
+  copies them into `~/.claude/skills` for Claude Code. `skills/NOTICE.md` keeps the MIT notices; the
+  package ships it under `LICENSES/`.
+- Not adopted: cloud speech recognition (video-use, an opt-in in fcp-mcp-server) — rule 6; forced
+  alignment (Cut Video) — a model the pack does not carry yet; the eval decides whether it is needed.
+
+### The active project without a drag (spike)
+
+Not possible cleanly. Final Cut Pro's scripting dictionary (`sdef`, FCP 12.4) is read-only: libraries,
+events, projects and sequences with names, durations and frame rates, no clips, no export and no
+"active project". The workflow extension's `FCPXTimeline` gives the active sequence's name, playhead
+and change notifications, not its contents. fcp-mcp's `fcp_export_xml` clicks File > Export XML…
+through System Events (Accessibility, the English menu title, FCP frontmost) and stops at the save
+sheet; finishing it would mean scripting the sheet, stealing focus. fcp-mcp-server says Apple ships no
+programmatic export and waits for the editor's own export. So the drag stays the step, and what
+`FCPXTimeline` does give is used: the panel says when the dragged project changed in FCP, and the
+agent is told to ask for a new drag.
+
+## Eval
+
+`tools/agent/eval` measures editing, so "edits really well" is a number that moves when the
+instructions, a skill or a tool changes (`eval.py`; its header has the commands). 12 cases
+(`cases.json`), each an interview synthesized phrase by phrase with `say` (so every line, filler,
+retake and pause has exact ground-truth times), a brief and checks: tighten (two), short pauses
+only, retakes (two), cut to a length (two), cover jump cuts, a scope trap, selects from a script in a
+new order, a pause to keep, two clips, a trailer. Each run is Claude Code with a strict MCP config in
+a scratch folder, with or without the skills. Scores (0..1): cut edges in silence, kept lines whole,
+fillers and fluffs gone, pauses to the limit, the kept pause, length within tolerance, order, B-roll
+covering every cut and only from the scope.
+
+The scorer is checked both ways: the reference cut (written from the truth where one follows from
+it, 6 cases) scores 1.000; the project left unedited scores 0.592.
+
 ## Not built
 
-`analyse` (the agent asking the app to index), the editing skills and the eval set, the Final Cut
-Pro add-on, the Script Editor: issue #485 slices 3-6.
+The Final Cut Pro add-on and the Script Editor: issue #485 slices 5-6.

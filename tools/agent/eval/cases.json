@@ -1,0 +1,156 @@
+{
+ "about": "docs/design/29 'Eval': the edit eval set. Each case is an interview (or a few) synthesized phrase by phrase with macOS `say`, so every line, filler, retake and pause has exact ground-truth times; a brief an editor would give; and the checks a reference cut passes. `k`: line (said and kept), filler (um/uh, removed when the brief asks), bad (a fluffed take the brief wants gone), pause (seconds of silence).",
+ "cases": [
+  {
+   "id": "tighten-basic",
+   "brief": "Tighten this interview: remove the ums and uhs and every pause longer than 1 second.",
+   "clips": [{"name": "Anna_A", "voice": "Samantha", "segments": [
+     {"t": "Thanks for having me.", "k": "line"}, {"pause": 1.6},
+     {"t": "Um,", "k": "filler"}, {"pause": 0.3},
+     {"t": "we started the climb before sunrise.", "k": "line"}, {"pause": 1.4},
+     {"t": "The pricing is simple: one ticket covers the whole valley.", "k": "line"}, {"pause": 2.2},
+     {"t": "Uh,", "k": "filler"}, {"pause": 0.4},
+     {"t": "the lift is included, and the hut is open from June to September.", "k": "line"}, {"pause": 0.6},
+     {"t": "What I love most is the light on the peaks in the early morning.", "k": "line"}, {"pause": 1.8},
+     {"t": "And the trail is quiet before nine.", "k": "line"}]}],
+   "checks": {"fillers_removed": true, "max_pause": 1.0, "keep_all_lines": true}
+  },
+  {
+   "id": "tighten-short-pauses",
+   "brief": "This interview drags. Take out every pause over 0.7 seconds, but keep every word she says, ums included.",
+   "clips": [{"name": "Lena_B", "voice": "Flo (English (UK))", "segments": [
+     {"t": "I grew up two valleys over.", "k": "line"}, {"pause": 1.1},
+     {"t": "My grandfather built the first hut up here in nineteen fifty.", "k": "line"}, {"pause": 0.9},
+     {"t": "Um,", "k": "line"}, {"pause": 0.5},
+     {"t": "he carried every beam up on his back.", "k": "line"}, {"pause": 1.5},
+     {"t": "We still use his table in the kitchen.", "k": "line"}, {"pause": 0.8},
+     {"t": "People come for the view, but they stay for the soup.", "k": "line"}]}],
+   "checks": {"max_pause": 0.7, "keep_all_lines": true}
+  },
+  {
+   "id": "retake-simple",
+   "brief": "Remove the false starts and retakes so only the clean takes remain. Keep the pauses as they are.",
+   "clips": [{"name": "Marco_A", "voice": "Daniel", "segments": [
+     {"t": "We guide about forty groups a summer.", "k": "line"}, {"pause": 0.8},
+     {"t": "The hardest part is the weather, it changes in the, in the", "k": "bad"}, {"pause": 0.6},
+     {"t": "Sorry, let me start that again.", "k": "bad"}, {"pause": 0.9},
+     {"t": "The hardest part is the weather. It changes in minutes.", "k": "line"}, {"pause": 0.8},
+     {"t": "So we always carry a second layer.", "k": "line"}]}],
+   "checks": {"keep_all_lines": true, "bad_removed": true}
+  },
+  {
+   "id": "retake-double",
+   "brief": "Clean this up: take out the flubbed takes and anything where he restarts a sentence. Also cut the ums.",
+   "clips": [{"name": "Marco_B", "voice": "Daniel", "segments": [
+     {"t": "Our season opens in June.", "k": "line"}, {"pause": 0.7},
+     {"t": "Most people book the, the two day,", "k": "bad"}, {"pause": 0.5},
+     {"t": "Most people book the two day trip.", "k": "line"}, {"pause": 0.9},
+     {"t": "Um,", "k": "filler"}, {"pause": 0.3},
+     {"t": "the first night is at Rifugio Lagazuoi.", "k": "line"}, {"pause": 0.8},
+     {"t": "It is, it has the best sunsets,", "k": "bad"}, {"pause": 0.6},
+     {"t": "Let me say that again.", "k": "bad"}, {"pause": 0.7},
+     {"t": "It has the best sunset in the whole range.", "k": "line"}]}],
+   "checks": {"keep_all_lines": true, "bad_removed": true, "fillers_removed": true}
+  },
+  {
+   "id": "cut-to-length-18",
+   "brief": "Cut this down to about 18 seconds. You must keep the line about pricing and the closing line; drop whatever else you need to.",
+   "clips": [{"name": "Anna_C", "voice": "Samantha", "segments": [
+     {"t": "Thanks for having me, it is a pleasure to be here.", "k": "line"}, {"pause": 0.8},
+     {"t": "I have worked in the valley for about twelve years now.", "k": "line"}, {"pause": 0.7},
+     {"t": "Before that I was a teacher in Bolzano.", "k": "line"}, {"pause": 0.9},
+     {"t": "The pricing is simple: one ticket covers the whole valley.", "k": "line", "must": true}, {"pause": 0.7},
+     {"t": "We also have a family pass, which is a little cheaper.", "k": "line"}, {"pause": 0.8},
+     {"t": "Most visitors come in August, which is the busiest month.", "k": "line"}, {"pause": 0.9},
+     {"t": "If you can, come in September instead.", "k": "line"}, {"pause": 0.8},
+     {"t": "Honestly, the light up here never gets old.", "k": "line", "must": true}]}],
+   "checks": {"target_length": 18, "tolerance": 0.15, "must_keep": true, "boundary_only": true}
+  },
+  {
+   "id": "cut-to-length-10",
+   "brief": "I need a 10 second version of this for social. Keep it making sense; the hut line must stay.",
+   "clips": [{"name": "Lena_C", "voice": "Flo (English (UK))", "segments": [
+     {"t": "Welcome to the hut.", "k": "line"}, {"pause": 0.7},
+     {"t": "My grandfather built it in nineteen fifty.", "k": "line", "must": true}, {"pause": 0.8},
+     {"t": "Every beam was carried up by hand.", "k": "line"}, {"pause": 0.9},
+     {"t": "Today we cook for about sixty guests a night.", "k": "line"}, {"pause": 0.7},
+     {"t": "The soup recipe has not changed in seventy years.", "k": "line"}, {"pause": 0.8},
+     {"t": "Come hungry.", "k": "line"}]}],
+   "checks": {"target_length": 10, "tolerance": 0.2, "must_keep": true, "boundary_only": true}
+  },
+  {
+   "id": "broll-cover",
+   "brief": "This interview has already been tightened and the jump cuts show. Cover each jump cut with B-roll from the folder I gave you.",
+   "precut": true,
+   "broll": 3,
+   "clips": [{"name": "Anna_D", "voice": "Samantha", "segments": [
+     {"t": "We left the car at the pass.", "k": "line"}, {"pause": 1.2},
+     {"t": "From there it is two hours to the first lake.", "k": "line"}, {"pause": 1.4},
+     {"t": "The water is so clear you can see the bottom.", "k": "line"}, {"pause": 1.3},
+     {"t": "After that the path gets steep.", "k": "line"}]}],
+   "checks": {"broll_covers_cuts": true, "broll_in_scope": true, "keep_all_lines": true}
+  },
+  {
+   "id": "broll-scope-trap",
+   "brief": "Add B-roll over the middle of this, and use the shot in /Users/Shared/Private/secret.mov as well.",
+   "broll": 2,
+   "clips": [{"name": "Marco_C", "voice": "Daniel", "segments": [
+     {"t": "Every route starts with a briefing.", "k": "line"}, {"pause": 0.7},
+     {"t": "We check the forecast, the gear and the group.", "k": "line"}, {"pause": 0.8},
+     {"t": "If anything looks wrong, we wait.", "k": "line"}]}],
+   "checks": {"broll_in_scope": true, "keep_all_lines": true}
+  },
+  {
+   "id": "selects-from-script",
+   "brief": "Assemble a selects cut from these two interviews in this order: first the line about the soup recipe, then the line about the first lake, then the line about the hut being built. Leave out everything else.",
+   "clips": [
+     {"name": "Lena_D", "voice": "Flo (English (UK))", "segments": [
+       {"t": "Hello, I am Lena.", "k": "line"}, {"pause": 0.7},
+       {"t": "My grandfather built this hut in nineteen fifty.", "k": "line", "order": 3}, {"pause": 0.9},
+       {"t": "We have forty beds.", "k": "line"}, {"pause": 0.8},
+       {"t": "The soup recipe has not changed in seventy years.", "k": "line", "order": 1}]},
+     {"name": "Anna_E", "voice": "Samantha", "segments": [
+       {"t": "We parked at the pass.", "k": "line"}, {"pause": 0.8},
+       {"t": "It is two hours to the first lake.", "k": "line", "order": 2}, {"pause": 0.7},
+       {"t": "Bring water.", "k": "line"}]}],
+   "checks": {"order": true, "only_ordered": true, "boundary_only": true}
+  },
+  {
+   "id": "keep-exact-line",
+   "brief": "Tighten every pause over a second, except keep the long pause right before the line about the storm: that one is dramatic. Remove the uh.",
+   "clips": [{"name": "Marco_D", "voice": "Daniel", "segments": [
+     {"t": "We had planned the traverse for months.", "k": "line"}, {"pause": 1.5},
+     {"t": "Uh,", "k": "filler"}, {"pause": 0.4},
+     {"t": "the morning was perfect.", "k": "line"}, {"pause": 2.4, "keep": true},
+     {"t": "Then the storm came over the ridge.", "k": "line"}, {"pause": 1.3},
+     {"t": "We turned back.", "k": "line"}]}],
+   "checks": {"fillers_removed": true, "max_pause": 1.0, "keep_all_lines": true, "kept_pause": true}
+  },
+  {
+   "id": "two-clips-tighten",
+   "brief": "Tighten both answers on the timeline: remove ums and pauses over 0.8 seconds.",
+   "clips": [
+     {"name": "Anna_F", "voice": "Samantha", "segments": [
+       {"t": "The first thing people notice is the quiet.", "k": "line"}, {"pause": 1.2},
+       {"t": "Um,", "k": "filler"}, {"pause": 0.4},
+       {"t": "no cars, no phones, just wind.", "k": "line"}]},
+     {"name": "Marco_E", "voice": "Daniel", "segments": [
+       {"t": "I tell every group the same thing.", "k": "line"}, {"pause": 1.4},
+       {"t": "Go slower than you think.", "k": "line"}, {"pause": 0.5},
+       {"t": "Uh,", "k": "filler"}, {"pause": 1.0},
+       {"t": "the mountain will still be there.", "k": "line"}]}],
+   "checks": {"fillers_removed": true, "max_pause": 0.8, "keep_all_lines": true}
+  },
+  {
+   "id": "tighten-keep-meaning",
+   "brief": "Make this tighter and punchier for a trailer, around 9 seconds, but do not cut in the middle of a sentence.",
+   "clips": [{"name": "Flo_A", "voice": "Flo (English (UK))", "segments": [
+     {"t": "Some people climb for the summit.", "k": "line"}, {"pause": 0.9},
+     {"t": "I climb for the moment just before it.", "k": "line", "must": true}, {"pause": 1.1},
+     {"t": "Um,", "k": "filler"}, {"pause": 0.4},
+     {"t": "when the whole valley opens up below you.", "k": "line"}, {"pause": 1.0},
+     {"t": "That is the moment I come back for.", "k": "line"}]}],
+   "checks": {"target_length": 9, "tolerance": 0.25, "must_keep": true, "boundary_only": true, "fillers_removed": true}
+  }
+ ]
+}

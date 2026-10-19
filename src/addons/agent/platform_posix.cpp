@@ -20,6 +20,7 @@
 #include <fstream>
 #include <iterator>
 
+#include <dlfcn.h>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
@@ -103,6 +104,16 @@ bool run(const std::string& exe, const std::vector<std::string>& args, std::stri
   exit_code = WEXITSTATUS(status);
   return true;
 }
+
+std::string module_dir() {
+  Dl_info info{};
+  if (!dladdr(reinterpret_cast<const void*>(&module_dir), &info) || !info.dli_fname) return {};
+  std::string p = info.dli_fname;
+  const std::size_t cut = p.rfind('/');
+  return cut == std::string::npos ? std::string() : p.substr(0, cut);
+}
+
+std::string claude_skills_dir() { return home() + "/.claude/skills"; }
 
 std::string find_claude() {
   const std::string h = home();

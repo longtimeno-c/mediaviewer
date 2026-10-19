@@ -143,7 +143,8 @@ add_test(NAME mv_timeline_tests COMMAND mv_timeline_tests)
 add_executable(mv_agent_tests "${MV_ROOT}/tests/test_agent.cpp")
 target_link_libraries(mv_agent_tests PRIVATE mv_agent_engine ${MV_CATCH2_TARGET})
 target_include_directories(mv_agent_tests PRIVATE "${MV_ROOT}/src" "${MV_ROOT}/tests")
-target_compile_definitions(mv_agent_tests PRIVATE MV_TIMELINE_FIXTURES="${MV_ROOT}/tests/data/fcpxml")
+target_compile_definitions(mv_agent_tests PRIVATE MV_TIMELINE_FIXTURES="${MV_ROOT}/tests/data/fcpxml"
+  MV_AGENT_SKILLS_DIR="${MV_ROOT}/src/addons/agent/skills")
 add_test(NAME mv_agent_tests COMMAND mv_agent_tests)
 # The dateless-file fallback is local wall-clock time; pin the zone.
 set_tests_properties(mv_import_tests PROPERTIES ENVIRONMENT "TZ=UTC")
