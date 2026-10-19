@@ -63,7 +63,10 @@ $allowed = [ordered]@{
     # rules of io::verified_copy), compiled into its own module as Places
     # compiles io/mapped_file: still nothing of the core is linked, and geo,
     # which add-ons already use, sits on io.
-    'addons' = @('addons', 'geo', 'infer', 'io', 'core')
+    # 2026-10-18 (#485): nle too. The AI agents add-on edits FCPXML with the
+    # timeline model (nle/timeline, nle/edit: portable, compiled into its own
+    # module as mv_nle_timeline); nothing of the core is linked.
+    'addons' = @('addons', 'geo', 'infer', 'io', 'nle', 'core')
     'abi'    = @('abi', 'addon', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
     # docs/design/23: the Mac app's main() hands `--search-agent` to nle's agent.
     'shell'  = @('shell', 'abi', 'addon', 'nle', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
