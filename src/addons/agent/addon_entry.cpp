@@ -456,6 +456,37 @@ void check_clients() {
   g->claude_checked = true;
 }
 
+// The add-on's skills (beside its library) and Claude Code's copy of them.
+std::filesystem::path skills_source() { return std::filesystem::path(platform::module_dir()) / "skills"; }
+
+bool skills_installed() {
+  std::error_code ec;
+  return std::filesystem::exists(std::filesystem::path(platform::claude_skills_dir()) / "mediaviewer-tighten-interview",
+                                 ec);
+}
+
+// Copies each mediaviewer-* skill folder into ~/.claude/skills, replacing only
+// those (never another skill).
+bool install_skills(std::string* why) {
+  std::error_code ec;
+  const std::filesystem::path to = platform::claude_skills_dir();
+  std::filesystem::create_directories(to, ec);
+  int n = 0;
+  for (const auto& e : std::filesystem::directory_iterator(skills_source(), ec)) {
+    const std::string name = e.path().filename().string();
+    if (!e.is_directory(ec) || name.rfind("mediaviewer-", 0) != 0) continue;
+    std::filesystem::remove_all(to / name, ec);
+    std::filesystem::copy(e.path(), to / name, std::filesystem::copy_options::recursive, ec);
+    if (ec) {
+      if (why) *why = "a skill could not be copied";
+      return false;
+    }
+    ++n;
+  }
+  if (n == 0 && why) *why = "this add-on carries no skills";
+  return n > 0;
+}
+
 std::string tree() {
   const std::string exe = platform::self_executable();
   const prefs p = load_prefs(prefs_path(g->host));
@@ -522,7 +553,13 @@ std::string tree() {
     } else {
       button("code_add", "Add to Claude Code", "primary");
     }
+    button("skills_add", skills_installed() ? "Update Editing Skills" : "Add Editing Skills");
     end();
+    text("skills_help",
+         "Editing skills teach Claude Code how to tighten an interview, remove retakes, cut to a length, cover "
+         "jump cuts with B-roll and assemble selects. They go into ~/.claude/skills as mediaviewer-*; any other "
+         "MCP client gets them as the server's prompts.",
+         "secondary");
   }
   end();
 
@@ -616,6 +653,11 @@ void post() {
 
 void on_click(const std::string& id) {
   const std::string exe = platform::self_executable();
+  if (id == "skills_add") {
+    std::string why;
+    g->message = install_skills(&why) ? "Editing skills added to Claude Code (~/.claude/skills/mediaviewer-*)." : why;
+    return;
+  }
   if (id == "code_add" || id == "code_remove") {
     if (g->claude.empty()) check_clients();
     std::string out;
@@ -748,6 +790,7 @@ mv_status MV_CALL serve(void*, const mv_agent_serve_args* a) {
     for (const std::string& f : p.folders) o.folders.push_back(f);
     o.version = a->host_version && *a->host_version ? a->host_version : MV_AGENT_VERSION;
     o.handoff = (a->flags & MV_AGENT_SERVE_NO_HANDOFF) == 0;
+    o.skills_dir = (std::filesystem::path(platform::module_dir()) / "skills").string();
     host_env env(g->host, a->services, p.frames);
     server s(env, std::move(o));
     env.log("serving");
