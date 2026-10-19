@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <condition_variable>
 #include <mutex>
+#include <cstring>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1003,6 +1004,23 @@ std::string with(const std::string& replace_from, const std::string& replace_to)
 }
 
 }  // namespace
+
+TEST_CASE("an add-on that names no chrome and contributes nothing is loaded by a host mode only",
+          "[addon][slots][manifest]") {
+  // The Final Cut Pro add-on (docs/design/23): `MediaViewer --search-agent` loads
+  // it; no window does.
+  keypair k;
+  const std::vector<std::uint8_t> bytes{1, 2, 3};
+  std::string m = slots_manifest("lib.bin", bytes, "");
+  const auto at = m.find(R"("chrome":"lib.bin")");
+  REQUIRE(at != std::string::npos);
+  m.replace(at, std::strlen(R"("chrome":"lib.bin")"), R"("chrome":"")");
+  const auto d = mv::addon::check_manifest(bytes_of(m), k.sign(m), k.pub, MV_ADDON_HOST_API);
+  REQUIRE(d.trusted());
+  REQUIRE(d.m.chrome.empty());
+  REQUIRE(d.m.slots.empty());
+  REQUIRE_FALSE(mv::addon::loads_for_slots(d.m));
+}
 
 TEST_CASE("a first-party manifest names its screens and slots under a contribution API range",
           "[addon][slots][manifest]") {

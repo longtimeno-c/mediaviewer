@@ -167,6 +167,22 @@ ADDONS = {
                    "timecodes, transcript text of the dragged timeline and the given folders) goes to that\n"
                    "agent's model, which may be in the cloud.\n"),
     },
+    "fcp": {
+        "name": "Final Cut Pro",
+        "host_api": {"min": 3, "max": 3},
+        "manifest_json": "src/addons/fcp/manifest.json",
+        "files": {
+            # docs/design/23: the search agent (hosted by `MediaViewer --search-agent`)
+            # and the workflow extension in its background-only container. Mac
+            # only (D9 exception: Final Cut Pro), arm64 like Local search.
+            "macos": {"native": "libmv_fcp.dylib", "chrome": "", "arch": "arm64",
+                      "include": ["libmv_fcp.dylib", "MediaViewer Search.app"]},
+        },
+        "licences": [],
+        "notice": ("Final Cut Pro add-on for MediaViewer. GPL-3.0-or-later.\n"
+                   "Searches MediaViewer's Local search index from a panel inside Final Cut Pro. It opens no\n"
+                   "network connection; the panel reads your files, never writes them.\n"),
+    },
     "ai": {
         "name": "AI",
         "host_api": {"min": 2, "max": 2},  # needs host table 2's pixels

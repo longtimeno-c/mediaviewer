@@ -6,10 +6,12 @@
   The Local search agent's launchd job (docs/design/23), in
   MediaViewer.app/Contents/Library/LaunchAgents. MediaViewer registers it with
   SMAppService.agent only while Final Cut Pro is turned on in Settings > Local
-  search, and unregisters it when turned off. launchd starts it when the extension looks up the
+  search and the Final Cut Pro add-on is installed, and unregisters it when
+  turned off. launchd starts it when the extension looks up the
   Mach service (named under the extension's app group, which is what lets a
   sandboxed client reach it) and nothing keeps it alive: it exits when idle.
-  The program is MediaViewer's own executable in agent mode (main_mac.mm).
+  The program is MediaViewer's own executable in agent mode (main_mac.mm,
+  shell/fcp_host_mac.mm), which hosts the add-on's agent (src/addons/fcp).
 -->
 <plist version="1.0">
 <dict>

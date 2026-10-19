@@ -644,6 +644,50 @@ private struct SlotAddonUpdate: View {
 /// #485 (docs/design/29): the AI agents add-on, offered in Settings > Add-ons while
 /// it is not installed. Once installed, its row opens the AI agents window (the
 /// add-on's own view tree), where Claude Code and Claude Desktop are added.
+/// The Final Cut Pro add-on's install offer (docs/design/23, #485): its search
+/// agent and workflow extension, a few MB. Shown in Settings > Local search's
+/// Final Cut Pro row while the add-on is not installed; installed, the row
+/// turns it on.
+struct FinalCutOffer: View {
+  nonisolated static let addonID = "fcp"
+  @ObservedObject private var offer = SlotAddonOffer.channel(id: FinalCutOffer.addonID, name: "Final Cut Pro")
+  var installed: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: MVTheme.space(6)) {
+      if mv_addon2_elsewhere() {
+        note(LocalSearchStore.elsewhereText)
+      } else if offer.busy, let phase = offer.phase {
+        AddonProgressView(phase: phase)
+      } else {
+        switch offer.offer {
+        case .available(let bytes, _, _, _, _):
+          Button("Install and turn on, \(AddonStore.sizeText(bytes))") {
+            offer.install(wasLoaded: false, installedVersion: "") { installed() }
+          }
+          .disabled(offer.busy)
+        case .notPublished:
+          note("The Final Cut Pro add-on is not published for download yet. It will be offered here once a release carries it.")
+        case .needsNewerApp:
+          note("The published Final Cut Pro add-on needs a newer MediaViewer. Update MediaViewer, then install it.")
+        case .unreachable:
+          note("Could not reach the download server.")
+          Button("Try again") { offer.probe() }
+        case nil:
+          note("Checking for the Final Cut Pro add-on…")
+        }
+      }
+      if !offer.message.isEmpty { note(offer.message) }
+    }
+    .onAppear { if offer.offer == nil { offer.probe() } }
+  }
+
+  private func note(_ text: String) -> some View {
+    Text(text).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+      .fixedSize(horizontal: false, vertical: true)
+  }
+}
+
 struct AgentsOffer: View {
   nonisolated static let addonID = "agent"
   @ObservedObject private var offer = SlotAddonOffer.channel(id: AgentsOffer.addonID, name: "AI agents")

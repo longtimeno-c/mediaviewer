@@ -67,7 +67,7 @@
 #include "shell/filmstrip_hint.h"
 #include "shell/share_menu.h"
 #if defined(MV_WITH_SEARCH_AGENT)
-#include "nle/mac/agent_mac.h"
+#include "shell/fcp_host_mac.h"
 #endif
 #include "shell/adjust_pane.h"
 #include "shell/ai_badge.h"
@@ -12183,8 +12183,9 @@ int main(int argc, char** argv) {
   }
 #if defined(MV_WITH_SEARCH_AGENT)
   // docs/design/23: launchd runs this executable as Final Cut Pro's search agent
-  // (Contents/Library/LaunchAgents). Before anything of the viewer: no window,
-  // no crash reporter, no add-ons.
+  // (Contents/Library/LaunchAgents); the agent itself is the Final Cut Pro
+  // add-on's (#485). Before anything of the viewer: no window, no crash
+  // reporter, no add-on host lock.
   if (argc == 2 && std::strcmp(argv[1], "--search-agent") == 0) return MvSearchAgentMain();
 #endif
   mv::trace::provider_register();

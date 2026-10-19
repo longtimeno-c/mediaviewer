@@ -693,7 +693,7 @@ set(MV_MAC_HOST_SOURCES
   src/shell/addons_mac.h
   # docs/design/25 PRs 58-59: screens and slots, the registry behind the bridge.
   src/shell/slots_mac.mm
-  # docs/design/23: Final Cut Pro on / off (the agent and extension in the bundle).
+  # docs/design/23: Final Cut Pro on / off (the agent and extension are the add-on's).
   src/shell/fcp_mac.mm
   src/shell/present_busy.h
   # Text in images: the Vision half of shell/text_in_image.h's port.
@@ -1066,6 +1066,14 @@ if(MV_BUILD_TESTS)
   mv_places_addon_tests(mv_import_tests)
   mv_sharepoint_tests(mv_import_tests)
   mv_agent_addon_tests(mv_import_tests)
+  if(TARGET mv_fcp)
+    # docs/design/23: the Final Cut Pro add-on through the real loader (arm64).
+    target_sources(mv_import_tests PRIVATE tests/test_fcp_addon.cpp)
+    target_compile_definitions(mv_import_tests PRIVATE
+      MV_FCP_MODULE_PATH="$<TARGET_FILE:mv_fcp>"
+      MV_FCP_MANIFEST_JSON="${CMAKE_SOURCE_DIR}/src/addons/fcp/manifest.json")
+    add_dependencies(mv_import_tests mv_fcp)
+  endif()
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC"
     SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
 

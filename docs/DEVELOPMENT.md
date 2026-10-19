@@ -35,6 +35,7 @@ and a verify line on each platform (D9, amended). The order is:
 | #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
 | #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
 | #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
+| #485 | **Final Cut Pro search is an add-on**, slice 5: the search agent and the panel's extension leave MediaViewer.app for the Final Cut Pro add-on, installed from Settings > Local search ("Install and turn on"); the app keeps `--search-agent` and the agent's launchd job ([docs/design/23](design/23-nle-search.md), [12](design/12-decision-log.md) "Final Cut Pro search is an add-on") | Mac: the add-on loads through the store and answers through launchd (`mv-search-client`), same results and timings as the in-app agent, idle exit 52 s; the extension registers from an add-on folder through its container. Owed: Final Cut Pro listing and showing the panel from the add-on (needs a Developer ID signature), the Settings flow in the app, the Mac PR 1 gate. Mac only (D9 exception) |
 | #485 | **Editing know-how**, slice 4: the MCP server's editing rules and tool descriptions, five skills (tighten an interview, remove retakes, cut to length, cover jump cuts, assemble selects) with rules adapted from MIT sources under their notices, and an edit eval set of 12 synthesized cases ([docs/design/29 "Editing know-how", "Eval"](design/29-agent-timeline.md#editing-know-how)) | Mac: first scores 0.979 with and without the skills (11 of 12 cases at 1.0; the miss is an index gap, not an edit); the reference cut scores 1.000 and the unedited project 0.592. Windows: the add-on and skills build in CI; the eval is Mac-only (`say`) |
 | #485 | **`analyse`**, slice 3: the agent asks MediaViewer to index the timeline's media and the given folders; with none running, `--mcp` starts `MediaViewer --agent-index` (background, gone when idle, start at login untouched) and follows progress through the reader ([docs/design/29 "Analyse"](design/29-agent-timeline.md#analyse)) | Mac: the full loop ran in a dev build. Windows: C# compiles; native CI only |
 | #485 | **AI agents add-on**, slice 2: `MediaViewer --mcp`, an MCP server over stdio (no socket) whose tools read the dragged timeline, its transcript and silences, search the scope, edit (ripple cuts, trims, B-roll, markers, titles) and commit "<Project> (Claude N)"; scoped to the timeline's media and the given folders, `photos:` refused; the AI agents window adds it to Claude Code / Claude Desktop ([docs/design/29](design/29-agent-timeline.md#the-agent)) | Mac: Claude Code tightened an interview and covered its cuts with B-roll in a dev build; scope refusals, no socket, files unchanged, PR 1 gate with the server answering. Windows: C# compiles; native CI only |
@@ -855,28 +856,39 @@ agent) is built and measured; Phase 0's hands-on run in Final Cut Pro is owed.
 - **Tests:** `mv_ai_tests "[search-agent],[nle]"`: the reader's top-K against the app engine's on
   the same index, the index byte-identical after a reader session, catch-up, the wire format's
   bounds, the FCPXML, and the thumbnail cache read without a write.
-- **Mac only, in MediaViewer.app:** on an arm64 build, `mediaviewer_app` puts the workflow
-  extension in `Contents/PlugIns/MediaViewerSearch.appex` and the agent's launchd job in
-  `Contents/Library/LaunchAgents`. The agent is the app's own executable run as
-  `MediaViewer --search-agent`.
+- **Mac only, the Final Cut Pro add-on** (since 2026-10-19, #485): an arm64 build makes
+  `build/addons/fcp`: `libmv_fcp.dylib` (the agent) and `MediaViewer Search.app`, a
+  background-only container around `MediaViewerSearch.appex` (macOS discovers an extension only
+  inside an app LaunchServices knows). The app keeps the agent's launchd job
+  (`mediaviewer_app` puts it in `Contents/Library/LaunchAgents`) and `MediaViewer --search-agent`,
+  which loads the add-on and lends it the AI pack's reader. Pack it with
+  `addon-pack.py pack --addon fcp --platform macos --src build/addons/fcp …`; on a dev-key build,
+  sideload it with `/usr/bin/python3 tools/package/agent-sideload.py --id fcp --module
+  build/addons/fcp/libmv_fcp.dylib --key <dev key> --addons <scratch>/addons`.
+  `mv_import_tests "[fcp]"` loads it through the real loader.
   Configure with `-DMV_FCP_TEAM_ID=<team>` (the team the app is signed by; it prefixes the Mach
   service and the extension's app group). A dev-key build's agent accepts unsigned clients, so
-  an ad hoc `mv-search-client` can reach it. `assemble`
-  signs ad hoc, which FCP and the agent's peer check refuse; to try it for real, sign with
+  an ad hoc `mv-search-client` can reach it. Ad hoc signatures are refused by FCP and by the
+  agent's peer check; to try it for real, sign the app with
   `python3 tools/mac/macpack.py release --app build/MediaViewer.app --identity "Developer ID
-  Application: …" --skip-notarize --allow-no-updater`, which keeps the extension's entitlements.
-  To try the agent without turning it on, bootstrap a launchd job whose `Program` is the app's
-  `Contents/MacOS/MediaViewer`, whose `ProgramArguments` are `MediaViewer --search-agent`, whose
-  `MachServices` names `<team>.io.github.longtimeno-c.mediaviewer.fcp.search`, and (dev) whose
-  `EnvironmentVariables` set `MV_DEV_ADDONS_DIR`; then, with `mv-search-client` signed by the same
-  team: `mv-search-client mountain --thumbs`, `mv-search-client --bench 20 mountain beach dog`
-  (agent vs in-process p50/p95, same results) and `mv-search-client --wait-exit 90` (seconds until
-  the idle agent has gone). `launchctl bootout gui/$(id -u)/<label>` removes the job.
+  Application: …" --skip-notarize --allow-no-updater` and re-sign the add-on's container and
+  extension with the same identity, keeping the extension's entitlements
+  (`build/packaging/fcp/Extension.entitlements`).
+  To try the agent without turning it on, bootstrap a launchd job whose `ProgramArguments` are
+  `<build>/bin/MediaViewer --search-agent`, whose `MachServices` names the Mach service
+  (`dev.mediaviewer.fcp.search` on a build without a team), and (dev) whose
+  `EnvironmentVariables` set `MV_DEV_ADDONS_DIR` (the sideloaded add-on and pack) and
+  `MV_DEV_THUMBS_DIR`; then `mv-search-client mountain --thumbs`, `mv-search-client --bench 20
+  mountain beach dog` (agent vs in-process p50/p95, same results) and
+  `mv-search-client --wait-exit 90` (seconds until the idle agent has gone).
+  `launchctl bootout gui/$(id -u)/<label>` removes the job. LaunchServices ignores bundles under
+  `/private/tmp`: try the container's registration from a folder in your home.
 - **In Final Cut Pro:** with Local search Core installed, open Settings ▸ Local search ▸ Final
-  Cut Pro ▸ **Turn on** (it registers the agent with `SMAppService` and elects the extension in
-  with `pluginkit`; allow MediaViewer under Login Items if asked), then Extensions ▸ MediaViewer
-  Search. **Turn off** reverses both. `pluginkit -m -i io.github.longtimeno-c.mediaviewer.finalcut`
-  shows the election (`+` in, `-` out); a fresh install elects it out 10 s after first launch.
+  Cut Pro ▸ **Install and turn on** (or **Turn on** once installed: it registers the agent with
+  `SMAppService`, the container with LaunchServices and the extension with `pluginkit`; allow
+  MediaViewer under Login Items if asked), then Extensions ▸ MediaViewer Search. **Turn off**
+  reverses all three. `pluginkit -m -v -i io.github.longtimeno-c.mediaviewer.finalcut` shows the
+  extension, its path in the add-on and the election (`+` in, `-` out).
   The panel searches the open library's folder by default; the scope picker switches to any
   indexed folder or all of them. Space plays the selected result with sound, N / Shift+N step
   through its matches, and hovering a tile scrubs it. The options menu sets the drag's clip
@@ -1671,6 +1683,32 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Agent timeline editing, slice 5: Final Cut Pro search becomes an add-on (#485, 2026-10-19)
+
+The issue's slice: "**Final Cut Pro search becomes an add-on** (Mac): move agent + extension out of
+MediaViewer.app; decision-log row; doc 23 updated." Owner call 5: delivered as an add-on, reversing
+doc 23 "Delivery".
+
+- **Built:** `build/addons/fcp` (`libmv_fcp.dylib`, `MediaViewer Search.app` around the extension);
+  `MediaViewer --search-agent` loads it (`shell/fcp_host_mac.mm`, `mv.fcp.1`); the app bundle has
+  no `PlugIns/MediaViewerSearch.appex` any more and keeps the launchd job only; Settings > Local
+  search offers **Install and turn on**; `addon-pack.py pack --addon fcp`.
+- **Mac (M5), dev build, scratch add-ons and thumbs:** the add-on (dev-signed) loaded through the
+  store from a launchd job running `MediaViewer --search-agent`; `mv-search-client lake` answered
+  from the reader; alternating base / new runs give the same cold time, warm p50 / p95 and results
+  (docs/design/23 "Performance": base 8.80 / 8.19 s cold, new 8.27 / 8.10 s; warm p95 base 23.1 /
+  21.1 ms, new 21.3 / 21.5 ms), idle exit 52 s in every run. `mv_import_tests "[fcp],[manifest]"`,
+  `test_macpack.py` pass.
+- **The extension from an add-on folder:** a bare `.appex` given to `pluginkit -a` is never listed
+  (macOS 26.6); inside the container, registered with LaunchServices from a folder in the home
+  directory, it is (tried with a copy under a test bundle id, then removed, so the installed
+  MediaViewer's own registration was not touched). LaunchServices skips `/private/tmp`.
+- **Owed:** Final Cut Pro listing the add-on's extension and showing the panel (it needs the
+  Developer ID-signed add-on and app: an ad hoc extension is refused); the Settings row's install
+  and on / off in the app (`SMAppService` registration with the release bundle id would collide
+  with the installed MediaViewer's, so it was not run here); the Mac PR 1 gate (the screen was
+  locked). Windows: nothing (Final Cut Pro is Mac-only).
 
 ### Agent timeline editing, slice 4: editing know-how (#485, 2026-10-19)
 

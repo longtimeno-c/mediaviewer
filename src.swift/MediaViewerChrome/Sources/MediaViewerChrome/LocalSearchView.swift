@@ -109,8 +109,9 @@ final class LocalSearchStore: ObservableObject {
   /// Moves whenever the chrome is (re)attached, so the embedded view is rebuilt.
   @Published private(set) var chromeGeneration = 0
   /// docs/design/23: Final Cut Pro search (mv_fcp_state): 0 not in this app or Mac,
-  /// 1 off, 2 on, 3 on once allowed in Login Items. The agent and extension
-  /// ship in MediaViewer.app; turning this on only registers them.
+  /// 1 off, 2 on, 3 on once allowed in Login Items, 4 the Final Cut Pro add-on
+  /// is not installed. The agent and extension are the add-on's (2026-10-19,
+  /// #485); turning this on registers them.
   @Published private(set) var finalCut: Int32 = 0
   @Published private(set) var finalCutBusy = false
 
@@ -287,8 +288,8 @@ final class LocalSearchStore: ObservableObject {
   }
 
   /// Registers or unregisters the search agent and shows or hides the
-  /// extension in Final Cut Pro. Nothing is downloaded: the pieces are in the
-  /// app, and the bulk (Core) is already installed.
+  /// extension in Final Cut Pro. The add-on is installed first (FinalCutOffer);
+  /// the bulk (Core) already is.
   func setFinalCut(_ on: Bool) {
     guard !finalCutBusy else { return }
     finalCutBusy = true
@@ -771,24 +772,27 @@ struct LocalSearchSection: View {
   }
 
   /// Final Cut Pro search on or off (docs/design/23). Off, nothing of it runs and
-  /// Final Cut Pro lists no MediaViewer extension.
+  /// Final Cut Pro lists no MediaViewer extension. Not installed, the row offers
+  /// the Final Cut Pro add-on and turns it on once installed.
   private var finalCutRow: some View {
     HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(16)) {
       VStack(alignment: .leading, spacing: MVTheme.space(3)) {
         HStack(spacing: MVTheme.space(6)) {
           Text("Final Cut Pro").font(MVTheme.font()).foregroundStyle(MVTheme.title)
-          Text(store.finalCut == 2 ? "On" : store.finalCut == 3 ? "Waiting for approval" : "Off")
-            .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+          Text(finalCutStatus).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
         }
         Text(finalCutDetail).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
           .fixedSize(horizontal: false, vertical: true)
+        if store.finalCut == 4 && !store.finalCutBusy {
+          FinalCutOffer { store.setFinalCut(true) }
+        }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       if store.finalCutBusy {
         ProgressView().controlSize(.small)
       } else if store.finalCut == 1 {
         Button("Turn on") { store.setFinalCut(true) }
-      } else {
+      } else if store.finalCut == 2 || store.finalCut == 3 {
         if store.finalCut == 3 {
           Button("Open Login Items…") { mv_fcp_open_login_items() }
         }
@@ -796,6 +800,15 @@ struct LocalSearchSection: View {
       }
     }
     .padding(MVTheme.space(12))
+  }
+
+  private var finalCutStatus: String {
+    switch store.finalCut {
+    case 2: return "On"
+    case 3: return "Waiting for approval"
+    case 4: return "Not installed"
+    default: return "Off"
+    }
   }
 
   private var finalCutDetail: String {
@@ -806,7 +819,7 @@ struct LocalSearchSection: View {
     case 3:
       return "Allow MediaViewer in System Settings → General → Login Items so Final Cut Pro can reach Local search."
     default:
-      return "Search your footage from a panel inside Final Cut Pro, using this index. Nothing is downloaded."
+      return "Search your footage from a panel inside Final Cut Pro, using this index."
     }
   }
 
