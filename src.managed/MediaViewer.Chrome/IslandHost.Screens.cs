@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using MediaViewer.Interop;
 using Microsoft.UI;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -257,7 +258,16 @@ public static partial class IslandHost
             case "button":
             {
                 string label = JStr(n, "label");
-                Button b = EditButton(label, () => SendScreenEvent(at, id, SlotNative.EventClick, ""));
+                // "copy" (2026-10-19): the click also puts this text on the
+                // clipboard, here, and the label says "Copied" for a moment.
+                string copy = JStr(n, "copy");
+                Button? self = null;
+                Button b = EditButton(label, () =>
+                {
+                    if (copy.Length > 0 && self != null) CopyToClipboard(self, copy, label);
+                    SendScreenEvent(at, id, SlotNative.EventClick, "");
+                });
+                self = b;
                 string symbol = JStr(n, "symbol");
                 if (symbol.Length > 0)
                 {
@@ -364,6 +374,8 @@ public static partial class IslandHost
                 return ScreenRing(JNum(n, "value", -1), JNum(n, "size", 64));
             case "tiles":
                 return BuildTiles(n, at, id);
+            case "link":
+                return BuildLink(n);
             case "progress":
             {
                 double v = JNum(n, "value", -1);
@@ -387,6 +399,266 @@ public static partial class IslandHost
             default:
                 return new Border();
         }
+    }
+
+    // ---- 2026-10-19 additions: a button's copy, the link picture --------------------
+
+    private static void CopyToClipboard(Button b, string text, string label)
+    {
+        try
+        {
+            var package = new Windows.ApplicationModel.DataTransfer.DataPackage();
+            package.SetText(text);
+            Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(package);
+        }
+        catch (Exception)
+        {
+            return;  // the clipboard is busy (another app holds it): the click still counts
+        }
+        object? before = b.Content;
+        b.Content = Text("✓ Copied", Title, UiFontSize - 2);
+        AutomationProperties.SetName(b, "Copied");
+        DispatcherQueueTimer? t = b.DispatcherQueue?.CreateTimer();
+        if (t == null) return;
+        t.Interval = TimeSpan.FromMilliseconds(1500);
+        t.IsRepeating = false;
+        t.Tick += (_, _) =>
+        {
+            b.Content = before;
+            AutomationProperties.SetName(b, label);
+        };
+        t.Start();
+    }
+
+    /// <summary>
+    /// The path a transfer takes (ScreenView.swift's LinkNode is the twin):
+    /// this computer on the left, the other on the right, the bearer's badge
+    /// between them, and dots that travel the way the bytes go. Wi-Fi is a
+    /// straight line, Bluetooth short dashes, the internet an arc, the DHT an
+    /// arc through a few nodes, a relay an arc through the computer in the
+    /// middle. Dots move only while "moving" or "connecting", at 30 fps at
+    /// most, never with Windows' animations off, and stop when it leaves the
+    /// tree; done and failed are still.
+    /// </summary>
+    private static FrameworkElement BuildLink(JsonElement n)
+    {
+        string via = JStr(n, "via"), state = JStr(n, "state");
+        bool sending = JStr(n, "direction") != "receive";
+        double value = JNum(n, "value", -1);
+        Windows.UI.Color tint = via switch
+        {
+            "bluetooth" => Windows.UI.Color.FromArgb(255, 10, 132, 255),
+            "wifi" => Windows.UI.Color.FromArgb(255, 48, 176, 199),
+            "internet" => Windows.UI.Color.FromArgb(255, 94, 92, 230),
+            "dht" => Windows.UI.Color.FromArgb(255, 255, 149, 0),
+            _ => Windows.UI.Color.FromArgb(255, 175, 82, 222),
+        };
+        string glyph = state == "paused" ? "" : via switch
+        {
+            "bluetooth" => "",
+            "wifi" => "",
+            "internet" => "",
+            "dht" => "",
+            "relay" => "",
+            _ => "",
+        };
+        bool reduce = false;
+        try { reduce = !new Windows.UI.ViewManagement.UISettings().AnimationsEnabled; } catch (Exception) { }
+        bool failed = state == "failed";
+        double lift = via is "internet" or "dht" or "relay" or "server" ? 22 : 0;
+        const double H = 64;
+
+        var root = new StackPanel { Spacing = Space(6), HorizontalAlignment = HorizontalAlignment.Stretch };
+        var strip = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch };
+        strip.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(88) });
+        strip.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        strip.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(88) });
+
+        FrameworkElement Device(string? symbol, string name, string mark)
+        {
+            var face = new Grid { Width = 48, Height = 48, HorizontalAlignment = HorizontalAlignment.Center };
+            face.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse { Fill = Brush(ChromeColour.Surface), Stroke = Brush(Hairline), StrokeThickness = 1 });
+            if (symbol != null)
+            {
+                face.Children.Add(new FontIcon { Glyph = symbol, FontFamily = SymbolFont, FontSize = 20, Foreground = Brush(Title) });
+            }
+            else
+            {
+                string ini = string.Concat(name.Split(new[] { ' ', '-', '_', '.' }, StringSplitOptions.RemoveEmptyEntries)
+                                               .Take(2).Select(w => char.ToUpperInvariant(w[0])));
+                TextBlock mono = Text(ini.Length > 0 ? ini : "?", Title, 17, bold: true);
+                mono.HorizontalAlignment = HorizontalAlignment.Center;
+                mono.VerticalAlignment = VerticalAlignment.Center;
+                face.Children.Add(mono);
+            }
+            if (mark.Length > 0)
+            {
+                face.Children.Add(new Border
+                {
+                    Width = 18,
+                    Height = 18,
+                    CornerRadius = new CornerRadius(9),
+                    Background = new SolidColorBrush(mark == "done" ? Windows.UI.Color.FromArgb(255, 52, 168, 83)
+                                                                    : Windows.UI.Color.FromArgb(255, 230, 80, 60)),
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    Child = new FontIcon { Glyph = mark == "done" ? "" : "", FontFamily = SymbolFont, FontSize = 10, Foreground = new SolidColorBrush(Colors.White) },
+                });
+            }
+            var col = new StackPanel { Spacing = 4, Width = 88, VerticalAlignment = VerticalAlignment.Center };
+            col.Children.Add(face);
+            TextBlock label = Text(name, Body, UiFontSize - 3, maxLines: 1);
+            label.HorizontalAlignment = HorizontalAlignment.Center;
+            label.TextTrimming = TextTrimming.CharacterEllipsis;
+            col.Children.Add(label);
+            return col;
+        }
+
+        FrameworkElement left = Device("", JStr(n, "from") is { Length: > 0 } f ? f : "This computer", "");
+        FrameworkElement right = Device(null, JStr(n, "to"), state == "done" ? "done" : failed ? "failed" : "");
+        Grid.SetColumn(right, 2);
+        strip.Children.Add(left);
+        strip.Children.Add(right);
+
+        // The path, drawn on a canvas sized to its column.
+        var canvas = new Microsoft.UI.Xaml.Controls.Canvas { Height = H, HorizontalAlignment = HorizontalAlignment.Stretch };
+        Grid.SetColumn(canvas, 1);
+        strip.Children.Add(canvas);
+        var track = new Microsoft.UI.Xaml.Shapes.Polyline
+        {
+            Stroke = new SolidColorBrush(failed ? Windows.UI.Color.FromArgb(110, 128, 128, 128)
+                                                : Windows.UI.Color.FromArgb(72, tint.R, tint.G, tint.B)),
+            StrokeThickness = 3,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+        };
+        if (via == "bluetooth") track.StrokeDashArray = new DoubleCollection { 1, 1.7 };
+        if (via == "dht") track.StrokeDashArray = new DoubleCollection { 0.3, 2 };
+        var moved = new Microsoft.UI.Xaml.Shapes.Polyline
+        {
+            Stroke = new SolidColorBrush(tint),
+            StrokeThickness = 3,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+        };
+        canvas.Children.Add(track);
+        canvas.Children.Add(moved);
+        var nodes = new List<Microsoft.UI.Xaml.Shapes.Ellipse>();
+        if (via == "dht")
+        {
+            for (int i = 0; i < 4; i++)
+            {
+                var e = new Microsoft.UI.Xaml.Shapes.Ellipse { Width = 5, Height = 5, Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(115, tint.R, tint.G, tint.B)) };
+                nodes.Add(e);
+                canvas.Children.Add(e);
+            }
+        }
+        bool live = state is "moving" or "connecting";
+        bool moving = state == "moving";
+        int count = live ? (moving ? 5 : 3) : 0;
+        var dots = new List<Microsoft.UI.Xaml.Shapes.Ellipse>();
+        double r = moving ? 3.5 : 3;
+        for (int i = 0; i < count; i++)
+        {
+            var d = new Microsoft.UI.Xaml.Shapes.Ellipse { Width = r * 2, Height = r * 2, Fill = new SolidColorBrush(tint) };
+            dots.Add(d);
+            canvas.Children.Add(d);
+        }
+        var badge = new Grid { Width = 34, Height = 34 };
+        badge.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse { Fill = Brush(ChromeColour.Canvas) });
+        badge.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse
+        {
+            Fill = new SolidColorBrush(Windows.UI.Color.FromArgb(failed ? (byte)20 : (byte)41, tint.R, tint.G, tint.B)),
+            Stroke = new SolidColorBrush(Windows.UI.Color.FromArgb(153, tint.R, tint.G, tint.B)),
+            StrokeThickness = 1.5,
+        });
+        badge.Children.Add(new FontIcon { Glyph = glyph, FontFamily = SymbolFont, FontSize = 15, Foreground = failed ? Brush(ChromeColour.Disabled) : new SolidColorBrush(tint) });
+        canvas.Children.Add(badge);
+        // A relay: the computer in between, named under it.
+        TextBlock? through = JStr(n, "through") is { Length: > 0 } th ? Text(th, Body, UiFontSize - 4, maxLines: 1) : null;
+        if (through != null) canvas.Children.Add(through);
+
+        Windows.Foundation.Point At(double s, double w)
+        {
+            double y0 = H / 2 + lift * 0.25;
+            return new Windows.Foundation.Point(6 + (w - 12) * s, y0 - lift * 4 * s * (1 - s));
+        }
+        PointCollection Line(double a, double b, double w)
+        {
+            var pts = new PointCollection();
+            for (int i = 0; i <= 48; i++) pts.Add(At(a + (b - a) * i / 48.0, w));
+            return pts;
+        }
+        double speed = moving ? (via == "bluetooth" ? 0.35 : via == "wifi" ? 0.7 : 0.5) : 0.25;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        void PlaceDots(double w)
+        {
+            double t = clock.Elapsed.TotalSeconds;
+            for (int i = 0; i < dots.Count; i++)
+            {
+                double s = reduce ? (i + 1.0) / (dots.Count + 1) : (t * speed + (double)i / dots.Count) % 1.0;
+                if (!sending) s = 1 - s;
+                Windows.Foundation.Point q = At(s, w);
+                Microsoft.UI.Xaml.Controls.Canvas.SetLeft(dots[i], q.X - r);
+                Microsoft.UI.Xaml.Controls.Canvas.SetTop(dots[i], q.Y - r);
+                dots[i].Opacity = (moving ? 1.0 : 0.55) * Math.Min(1, Math.Min(s, 1 - s) * 6);
+            }
+        }
+        void Layout()
+        {
+            double w = canvas.ActualWidth;
+            if (w <= 12) return;
+            track.Points = Line(0, 1, w);
+            double done = state == "done" ? 1 : Math.Max(0, value);
+            moved.Points = done > 0 && !failed ? (sending ? Line(0, done, w) : Line(1 - done, 1, w)) : new PointCollection();
+            double[] ss = { 0.22, 0.36, 0.64, 0.8 }, dy = { -14, 12, -13, 11 };
+            for (int i = 0; i < nodes.Count; i++)
+            {
+                Windows.Foundation.Point q = At(ss[i], w);
+                Microsoft.UI.Xaml.Controls.Canvas.SetLeft(nodes[i], q.X - 2.5);
+                Microsoft.UI.Xaml.Controls.Canvas.SetTop(nodes[i], q.Y + dy[i] - 2.5);
+            }
+            Windows.Foundation.Point mid = At(0.5, w);
+            Microsoft.UI.Xaml.Controls.Canvas.SetLeft(badge, mid.X - 17);
+            Microsoft.UI.Xaml.Controls.Canvas.SetTop(badge, mid.Y - 17);
+            if (through != null)
+            {
+                through.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
+                Microsoft.UI.Xaml.Controls.Canvas.SetLeft(through, mid.X - through.DesiredSize.Width / 2);
+                Microsoft.UI.Xaml.Controls.Canvas.SetTop(through, mid.Y + 19);
+            }
+            PlaceDots(w);
+        }
+        canvas.SizeChanged += (_, _) => Layout();
+        if (live && !reduce)
+        {
+            DispatcherQueueTimer? timer = null;
+            canvas.Loaded += (_, _) =>
+            {
+                timer ??= canvas.DispatcherQueue.CreateTimer();
+                timer.Interval = TimeSpan.FromMilliseconds(33);
+                timer.Tick += (_, _) => PlaceDots(canvas.ActualWidth);
+                timer.Start();
+            };
+            canvas.Unloaded += (_, _) => timer?.Stop();
+        }
+        root.Children.Add(strip);
+
+        var captionRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6), HorizontalAlignment = HorizontalAlignment.Center };
+        captionRow.Children.Add(Text(JStr(n, "caption"), Body, UiFontSize - 2));
+        if (value >= 0) captionRow.Children.Add(Text($"{Math.Round(value * 100)}%", Title, UiFontSize - 2));
+        root.Children.Add(captionRow);
+
+        AutomationProperties.SetName(root, JStr(n, "label"));
+        AutomationProperties.SetHelpText(root, value >= 0 ? $"{Math.Round(value * 100)} percent" : state switch
+        {
+            "moving" => "Moving",
+            "paused" => "Paused",
+            "done" => "Done",
+            "failed" => "Stopped",
+            _ => "Connecting",
+        });
+        return root;
     }
 
     // ---- #442 additions: card, ring, tiles, code entry ------------------------------

@@ -6,9 +6,15 @@
 //
 // The design (#442) is AirDrop's: what is offered to this computer comes
 // first, in a card of its own (who, the code to type over there, then one
-// Accept / Decline, then a progress ring); then what this computer sends (a
-// strip of thumbnails and the count), and the computers nearby as large round
-// tiles. One click on a tile sends; its ring fills while the bytes move.
+// Accept / Decline, then progress); then what this computer sends (a strip of
+// thumbnails and the count), and the computers nearby as large round tiles.
+// One click on a tile sends; its ring fills while the bytes move.
+//
+// 2026-10-19: a transfer under way is a card at the top with a picture of its
+// path (the `link` node: this computer, the other, the bearer's badge, dots
+// moving while bytes do), so Bluetooth, Wi-Fi and each kind of internet path
+// look different at a glance. The internet part reads in the order a person
+// uses it: receive (a code to copy), send to a code, then the options.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -28,6 +34,12 @@ void text(writer& w, const char* id, const std::string& s, const char* style = "
   w.key("style").string(style).end_object();
 }
 
+// Text a person can select and copy (the code, its link).
+void copyable(writer& w, const char* id, const std::string& s, const char* style) {
+  w.begin_object().key("type").string("text").key("id").string(id).key("text").string(s.empty() ? " " : s);
+  w.key("style").string(style).key("copyable").boolean(true).end_object();
+}
+
 void button(writer& w, const char* id, const std::string& label, const char* style, bool disabled = false) {
   w.begin_object().key("type").string("button").key("id").string(id).key("label").string(label);
   w.key("style").string(style);
@@ -35,10 +47,15 @@ void button(writer& w, const char* id, const std::string& label, const char* sty
   w.end_object();
 }
 
-void ring(writer& w, const char* id, const std::string& label, std::uint64_t done, std::uint64_t total, int size) {
-  const double v = total > 0 ? std::min(1.0, static_cast<double>(done) / static_cast<double>(total)) : -1.0;
-  w.begin_object().key("type").string("progress").key("id").string(id).key("label").string(label);
-  w.key("value").number(v).key("look").string("ring").key("size").integer(size).end_object();
+// A button whose click also puts `copy` on the clipboard (the host does it).
+void copy_button(writer& w, const char* id, const std::string& label, const char* style, const std::string& copy) {
+  w.begin_object().key("type").string("button").key("id").string(id).key("label").string(label);
+  w.key("style").string(style).key("copy").string(copy).end_object();
+}
+
+void toggle(writer& w, const char* id, const std::string& label, bool value) {
+  w.begin_object().key("type").string("toggle").key("id").string(id).key("label").string(label);
+  w.key("value").boolean(value).end_object();
 }
 
 void folder_field(writer& w, const char* id, const char* label, const std::string& value, const char* placeholder) {
@@ -128,26 +145,64 @@ std::string relay_line(const std::string& through) {
 // #472 PR 4: under a transfer's result over protocol 2.
 void remember_toggle(writer& w, const view& v) {
   if (!v.remember_offer) return;
-  w.begin_object().key("type").string("toggle").key("id").string("remember");
-  w.key("label").string("Remember " + v.remember_peer).key("value").boolean(v.remembered).end_object();
+  toggle(w, "remember", "Remember " + v.remember_peer, v.remembered);
   text(w, "remember_note",
        "Send to each other later over the internet, with no code. It works once " + v.remember_peer +
            " remembers this computer too.",
        "caption");
 }
 
+// ---- the path a transfer takes (the `link` node) ----------------------------------------
+
+struct path_kind {
+  const char* via;      // the node's "via"
+  std::string caption;  // what the picture says under it
+  std::string through;  // the computer in between, for "relay"
+};
+
+// From what the engine knows of the link: its bearer, whether it was punched
+// after meeting on the DHT, and the relay it goes through (#472).
+path_kind path_of(const std::string& via, bool punched, const std::string& relay) {
+  if (relay == "your relay server") return {"server", "Internet, through your relay server", ""};
+  if (!relay.empty()) return {"relay", "Internet, through " + relay, relay};
+  if (via == "the internet") {
+    return punched ? path_kind{"dht", "Internet, met through the public DHT", ""}
+                   : path_kind{"internet", "Internet, straight to each other", ""};
+  }
+  if (via == "Bluetooth") return {"bluetooth", "Bluetooth", ""};
+  return {"wifi", "Wi-Fi, on this network", ""};
+}
+
+double fraction(std::uint64_t done, std::uint64_t total) {
+  return total > 0 ? std::min(1.0, static_cast<double>(done) / static_cast<double>(total)) : -1.0;
+}
+
+// state: connecting, moving, paused, done, failed. `value` < 0: none yet.
+void link_picture(writer& w, const char* id, const path_kind& k, const char* state, bool sending,
+                  const std::string& peer, double value) {
+  const std::string other = peer.empty() ? std::string("The other computer") : peer;
+  w.begin_object().key("type").string("link").key("id").string(id);
+  w.key("label").string((sending ? "Sending to " : "Receiving from ") + other + ". " + k.caption + ".");
+  w.key("via").string(k.via).key("state").string(state).key("direction").string(sending ? "send" : "receive");
+  w.key("from").string("This computer").key("to").string(other);
+  if (!k.through.empty()) w.key("through").string(k.through);
+  w.key("caption").string(k.caption);
+  if (value >= 0.0) w.key("value").number(value);
+  w.end_object();
+}
+
 // ---- what is offered to this computer -------------------------------------------------
 
 void incoming(writer& w, const view& v) {
   stack(w, "incoming", 10, "vertical", "card", "center");
-  // Who: the sender's tile, shown not chosen.
-  w.begin_object().key("type").string("tiles").key("id").string("in_from").key("label").string("From " + v.in_peer);
-  w.key("static").boolean(true).key("size").integer(64).key("items").begin_array();
-  w.begin_object().key("id").string("sender").key("text").string(v.in_peer).key("detail").string(v.in_via);
-  w.key("initials").string(initials(v.in_peer));
-  if (v.in == view::in_phase::done) w.key("mark").string("done");
-  if (v.in == view::in_phase::ended) w.key("mark").string("failed");
-  w.end_object().end_array().end_object();
+  {
+    const char* state = v.in == view::in_phase::receiving ? (v.in_reconnecting ? "paused" : "moving")
+                        : v.in == view::in_phase::done    ? "done"
+                        : v.in == view::in_phase::ended   ? "failed"
+                                                          : "connecting";
+    link_picture(w, "in_path", path_of(v.in_via, v.in_punched, v.in_relay), state, false, v.in_peer,
+                 v.in == view::in_phase::receiving ? fraction(v.in_bytes, v.in_total) : -1.0);
+  }
   switch (v.in) {
     case view::in_phase::connecting:
       if (v.in_known) {
@@ -180,10 +235,9 @@ void incoming(writer& w, const view& v) {
       end(w);
       break;
     case view::in_phase::receiving: {
-      // #472: between links the ring holds where it is and says so; it never restarts.
+      // #472: between links the picture pauses where it is and says so; it never restarts.
       const std::string what = v.in_reconnecting ? "Reconnecting to " + v.in_peer + "\xE2\x80\xA6"
                                                  : "Receiving from " + v.in_peer;
-      ring(w, "in_progress", what, v.in_bytes, v.in_total, 88);
       text(w, "in_title", what, "heading");
       text(w, "in_moved", moved_text(v.in_files, static_cast<std::uint32_t>(v.in_count), v.in_bytes, v.in_total),
            "secondary");
@@ -197,6 +251,112 @@ void incoming(writer& w, const view& v) {
       button(w, "in_dismiss", "OK", "plain");
       break;
     case view::in_phase::none:
+      break;
+  }
+  end(w);
+}
+
+// ---- a send under way ---------------------------------------------------------------------
+
+// The path of the send: before its link is open, the bearer it will try.
+path_kind out_path(const view& v) {
+  if (!v.out_via.empty() && v.out != view::out_phase::waiting_wifi) {
+    return path_of(v.out_via, v.out_punched, v.out_relay);
+  }
+  if (v.out_internet || v.out_known || v.out == view::out_phase::reaching) return path_of("the internet", false, "");
+  if (v.out == view::out_phase::waiting_wifi) return path_of("Wi-Fi", false, "");
+  for (const auto& p : v.peers) {
+    if (p.id == v.out_peer_id) return path_of(p.wifi ? "Wi-Fi" : "Bluetooth", false, "");
+  }
+  return path_of("Wi-Fi", false, "");
+}
+
+void outgoing(writer& w, const view& v) {
+  stack(w, "outgoing", 10, "vertical", "card", "center");
+  const char* state = v.out == view::out_phase::sending ? (v.out_reconnecting ? "paused" : "moving")
+                      : v.out == view::out_phase::done  ? "done"
+                      : v.out == view::out_phase::ended ? "failed"
+                      : v.out == view::out_phase::waiting_wifi ? "paused"
+                                                               : "connecting";
+  const std::string peer = v.out == view::out_phase::reaching && v.out_peer.empty() ? std::string() : v.out_peer;
+  link_picture(w, "out_path", out_path(v), state, true, peer,
+               v.out == view::out_phase::sending ? fraction(v.out_bytes, v.out_total) : -1.0);
+  switch (v.out) {
+    case view::out_phase::idle:
+      break;
+    case view::out_phase::waiting_wifi:
+      text(w, "out_note",
+           "Waiting for " + v.out_peer + " on Wi-Fi. " +
+               (v.wifi_up ? "Put both computers on the same network; the send starts as soon as " + v.out_peer +
+                                " is there."
+                          : std::string("This computer is not on a network: turn on Wi-Fi here and join the same "
+                                        "network as ") +
+                                v.out_peer + ". The send starts as soon as it is there."),
+           "secondary");
+      button(w, "out_cancel", "Cancel", "destructive");
+      break;
+    case view::out_phase::connecting:
+      text(w, "out_note", "Connecting to " + v.out_peer + "\xE2\x80\xA6", "heading");
+      button(w, "out_cancel", "Cancel", "destructive");
+      break;
+    case view::out_phase::confirming:
+      // #442: typed, not compared. This screen never shows the code.
+      text(w, "out_note", "Type the code shown on " + v.out_peer, "heading");
+      w.begin_object().key("type").string("text_field").key("id").string("out_code_entry");
+      w.key("label").string("Code shown on " + v.out_peer).key("value").string("");
+      w.key("placeholder").string("000 000").key("look").string("code").key("digits").integer(6).end_object();
+      text(w, "out_entry_note",
+           v.out_entry_note.empty() ? std::string("Nothing has been sent yet.") : v.out_entry_note, "secondary");
+      button(w, "out_cancel", "Cancel", "destructive");
+      break;
+    case view::out_phase::waiting:
+      text(w, "out_note", "Waiting for " + v.out_peer + " to accept\xE2\x80\xA6", "heading");
+      button(w, "out_cancel", "Cancel", "destructive");
+      break;
+    case view::out_phase::sending:
+      text(w, "out_title",
+           v.out_reconnecting ? "Reconnecting to " + v.out_peer + "\xE2\x80\xA6" : "Sending to " + v.out_peer,
+           "heading");
+      text(w, "out_moved", moved_text(v.out_files, v.out_count, v.out_bytes, v.out_total), "secondary");
+      if (!v.out_relay.empty()) text(w, "out_relay", relay_line(v.out_relay), "caption");
+      if (v.out_handover && v.out_via != "the internet") {
+        text(w, "out_handover", "If Wi-Fi drops, this continues over the internet.", "caption");
+      }
+      button(w, "out_cancel", "Cancel", "destructive");
+      break;
+    case view::out_phase::reaching:
+      if (v.out_known) {
+        // #472 PR 4: waiting for a remembered device, as long as it takes.
+        text(w, "out_note", v.out_note, "secondary");
+        button(w, "out_cancel", "Cancel", "destructive");
+        break;
+      }
+      // #472 PR 2: round after round until one place answers, or Cancel.
+      text(w, "out_reaching",
+           "Trying to reach the other computer" +
+               (v.out_attempt > 1 ? " (attempt " + std::to_string(v.out_attempt) + ")" : std::string()) +
+               "\xE2\x80\xA6",
+           "heading");
+      if (!v.out_note.empty()) text(w, "out_note", v.out_note, "secondary");
+      button(w, "out_cancel", "Cancel", "destructive");
+      break;
+    case view::out_phase::naming:
+      text(w, "out_note", "Connected to " + v.out_peer + " (new device)", "heading");
+      if (!v.out_relay.empty()) text(w, "out_relay", relay_line(v.out_relay), "caption");
+      text(w, "out_check", v.out_check, "display");
+      text(w, "out_check_note",
+           "The same six digits show on their screen. If they differ, someone else has the code: cancel. Nothing has "
+           "been sent yet.",
+           "secondary");
+      row(w, "out_name_actions");
+      button(w, "out_cancel", "Cancel", "plain");
+      button(w, "out_confirm", "Send to " + v.out_peer, "primary");
+      end(w);
+      break;
+    case view::out_phase::done:
+    case view::out_phase::ended:
+      text(w, "out_note", v.out_note);
+      if (v.out == view::out_phase::done && v.in == view::in_phase::none) remember_toggle(w, v);
       break;
   }
   end(w);
@@ -233,7 +393,7 @@ void files_card(writer& w, const view& v, bool sending) {
   end(w);
 }
 
-void nearby(writer& w, const view& v, bool sending) {
+void nearby(writer& w, const view& v) {
   stack(w, "nearby", 10, "vertical", nullptr, "fill");
   text(w, "peers_title", "Nearby", "heading");
   if (v.peers.empty()) {
@@ -247,9 +407,7 @@ void nearby(writer& w, const view& v, bool sending) {
       w.key("initials").string(initials(p.name));
       if (p.id == v.out_peer_id) {
         if (v.out == view::out_phase::sending) {
-          w.key("progress").number(v.out_total > 0 ? std::min(1.0, static_cast<double>(v.out_bytes) /
-                                                                       static_cast<double>(v.out_total))
-                                                   : 0.0);
+          w.key("progress").number(std::max(0.0, fraction(v.out_bytes, v.out_total)));
         } else if (v.out == view::out_phase::connecting || v.out == view::out_phase::confirming ||
                    v.out == view::out_phase::waiting || v.out == view::out_phase::waiting_wifi) {
           w.key("progress").number(0.0);
@@ -276,163 +434,47 @@ void nearby(writer& w, const view& v, bool sending) {
   }
   // Too big for Bluetooth and the peer is only in Bluetooth range: say what
   // to do before the click, which then waits for the peer on Wi-Fi.
-  if (needs_wifi(v) && !sending) text(w, "send_hint", wifi_hint(v, target), "secondary");
-
-  switch (v.out) {
-    case view::out_phase::idle:
-      if (!v.peers.empty() && v.file_count > 0 && !v.reading_folder) {
-        text(w, "out_note", "Click a computer to send it these files.", "secondary");
-      }
-      break;
-    case view::out_phase::waiting_wifi:
-      text(w, "out_note",
-           "Waiting for " + v.out_peer + " on Wi-Fi. " +
-               (v.wifi_up ? "Put both computers on the same network; the send starts as soon as " + v.out_peer +
-                                " is there."
-                          : std::string("This computer is not on a network: turn on Wi-Fi here and join the same "
-                                        "network as ") +
-                                v.out_peer + ". The send starts as soon as it is there."),
-           "secondary");
-      button(w, "out_cancel", "Cancel", "destructive");
-      break;
-    case view::out_phase::connecting:
-      text(w, "out_note", "Connecting to " + v.out_peer + "\xE2\x80\xA6", "secondary");
-      button(w, "out_cancel", "Cancel", "destructive");
-      break;
-    case view::out_phase::confirming:
-      // #442: typed, not compared. This screen never shows the code.
-      stack(w, "out_code", 8, "vertical", "card", "center");
-      text(w, "out_note", "Type the code shown on " + v.out_peer, "heading");
-      w.begin_object().key("type").string("text_field").key("id").string("out_code_entry");
-      w.key("label").string("Code shown on " + v.out_peer).key("value").string("");
-      w.key("placeholder").string("000 000").key("look").string("code").key("digits").integer(6).end_object();
-      text(w, "out_entry_note",
-           v.out_entry_note.empty() ? std::string("Nothing has been sent yet.") : v.out_entry_note, "secondary");
-      button(w, "out_cancel", "Cancel", "destructive");
-      end(w);
-      break;
-    case view::out_phase::waiting:
-      text(w, "out_note", "Waiting for " + v.out_peer + " to accept\xE2\x80\xA6", "secondary");
-      button(w, "out_cancel", "Cancel", "destructive");
-      break;
-    case view::out_phase::sending:
-      text(w, "out_moved",
-           (v.out_reconnecting ? "Reconnecting to " + v.out_peer + "\xE2\x80\xA6 "
-                               : "Sending to " + v.out_peer + (v.out_via.empty() ? "" : " over " + v.out_via) + ": ") +
-               moved_text(v.out_files, v.out_count, v.out_bytes, v.out_total),
-           "secondary");
-      if (!v.out_relay.empty()) text(w, "out_relay", relay_line(v.out_relay), "caption");
-      if (v.out_handover && v.out_via != "the internet") {
-        text(w, "out_handover", "If Wi-Fi drops, this continues over the internet.", "caption");
-      }
-      button(w, "out_cancel", "Cancel", "destructive");
-      break;
-    case view::out_phase::reaching:
-      if (v.out_known) {
-        // #472 PR 4: waiting for a remembered device, as long as it takes.
-        text(w, "out_note", v.out_note, "secondary");
-        button(w, "out_cancel", "Cancel", "destructive");
-        break;
-      }
-      // #472 PR 2: round after round until one place answers, or Cancel.
-      text(w, "out_reaching",
-           "Trying to reach the other computer" +
-               (v.out_attempt > 1 ? " (attempt " + std::to_string(v.out_attempt) + ")" : std::string()) +
-               "\xE2\x80\xA6",
-           "secondary");
-      if (!v.out_note.empty()) text(w, "out_note", v.out_note, "secondary");
-      button(w, "out_cancel", "Cancel", "destructive");
-      break;
-    case view::out_phase::naming:
-      stack(w, "out_name", 8, "vertical", "card", "center");
-      text(w, "out_note", "Connected to " + v.out_peer + " (new device)", "heading");
-      if (!v.out_relay.empty()) text(w, "out_relay", relay_line(v.out_relay), "caption");
-      text(w, "out_check", v.out_check, "display");
-      text(w, "out_check_note",
-           "The same six digits show on their screen. If they differ, someone else has the code: cancel. Nothing has "
-           "been sent yet.",
-           "secondary");
-      row(w, "out_name_actions");
-      button(w, "out_cancel", "Cancel", "plain");
-      button(w, "out_confirm", "Send to " + v.out_peer, "primary");
-      end(w);
-      end(w);
-      break;
-    case view::out_phase::done:
-    case view::out_phase::ended:
-      text(w, "out_note", v.out_note);
-      if (v.out == view::out_phase::done && v.in == view::in_phase::none) remember_toggle(w, v);
-      break;
+  if (needs_wifi(v) && !out_busy(v)) text(w, "send_hint", wifi_hint(v, target), "secondary");
+  if (v.out == view::out_phase::idle && !v.peers.empty() && v.file_count > 0 && !v.reading_folder) {
+    text(w, "out_hint", "Click a computer to send it these files.", "secondary");
   }
   end(w);
 }
 
 // ---- over the internet (#472 PR 2) -------------------------------------------------------
 
-void internet(writer& w, const view& v, bool sending) {
-  stack(w, "internet_section", 10, "vertical", nullptr, "fill");
-  w.begin_object().key("type").string("toggle").key("id").string("internet");
-  w.key("label").string("Send and receive over the internet").key("value").boolean(v.internet).end_object();
-  if (!v.internet) {
-    end(w);
-    return;
-  }
-  text(w, "internet_intro",
-       "No server: the other computer connects straight to this one with a code that works once. Your public "
-       "address goes to whoever you give the code to.",
-       "caption");
-  // #472 PR 3: opt-in, off by default.
-  w.begin_object().key("type").string("toggle").key("id").string("dht");
-  w.key("label").string("Find each other over the internet (public DHT)").key("value").boolean(v.dht).end_object();
-  if (v.dht) {
-    text(w, "dht_note",
-         "When this computer has no public address, a code is four words instead, and both computers meet through "
-         "the BitTorrent DHT, only while a code waits. DHT nodes see this computer's address taking part; they "
-         "cannot read or change what the two computers say.",
-         "caption");
-  }
-  // #472 PR 5: opt-in, off by default.
-  w.begin_object().key("type").string("toggle").key("id").string("handover");
-  w.key("label").string("Continue over the internet if Wi-Fi drops").key("value").boolean(v.handover).end_object();
-  if (v.handover) {
-    text(w, "handover_note",
-         "While a transfer runs nearby, the receiving computer gives the sender where it can be reached from the "
-         "internet, so a transfer whose Wi-Fi goes carries on there. Both computers need this on.",
-         "caption");
-  }
-  // #472 relays: opt-in, off by default.
-  w.begin_object().key("type").string("toggle").key("id").string("relay");
-  w.key("label").string("Use my other computers to relay").key("value").boolean(v.relay).end_object();
-  if (v.relay) {
-    text(w, "relay_note",
-         "When nothing answers directly, a send goes through another computer of yours that remembers this one "
-         "(marked as yours under Remembered devices, on both), and this computer does the same for "
-         "them. The transfer stays sealed end to end: the computer in between cannot read it.",
-         "caption");
-  }
-  // Receive: one code at a time.
+void receive_card(writer& w, const view& v) {
+  stack(w, "code_card", 10, "vertical", "card", "center");
   text(w, "code_title", "Receive from anywhere", "heading");
   using phase = internet_receiver::phase;
   const auto p = static_cast<phase>(v.code_phase);
   if (p == phase::ready) {
-    stack(w, "code_card", 8, "vertical", "card", "center");
-    text(w, "code_text", v.code_text, "display");
-    if (!v.code_link.empty()) text(w, "code_link", v.code_link, "caption");
-    if (!v.code_note.empty()) text(w, "code_note", v.code_note, "secondary");
-    if (!v.code_how.empty()) text(w, "code_how", "Ways in: " + v.code_how + ".", "caption");
+    text(w, "code_intro", "Give this code to the person sending. It works once, for 10 minutes.", "secondary");
+    copyable(w, "code_text", v.code_text, "display");
+    row(w, "code_actions");
+    copy_button(w, "copy_code", "Copy code", "primary", v.code_text);
+    if (!v.code_link.empty()) copy_button(w, "copy_link", "Copy link", "plain", v.code_link);
     button(w, "stop_code", "Stop", "plain");
     end(w);
+    if (!v.code_note.empty()) text(w, "code_note", v.code_note, "secondary");
+    if (!v.code_how.empty()) text(w, "code_how", "Ways in: " + v.code_how + ".", "caption");
   } else {
+    text(w, "code_intro", "Make a code, then give it to the person sending. No account and no server.",
+         "secondary");
     if (!v.code_note.empty()) text(w, "code_note", v.code_note, "secondary");
     button(w, "make_code", p == phase::preparing ? "Making a code\xE2\x80\xA6" : "Make a code", "primary",
            p == phase::preparing);
   }
-  // #472 relays: the person's own relay server (tools/sharepoint-relay).
-  w.begin_object().key("type").string("text_field").key("id").string("relay_server");
-  w.key("label").string("Relay (your own server, advanced)").key("value").string(v.relay_server);
-  w.key("placeholder").string("address or name:port#key").end_object();
-  // Send to a code.
+  end(w);
+}
+
+void send_code_card(writer& w, const view& v, bool sending) {
+  stack(w, "send_code_card", 10, "vertical", "card", "fill");
   text(w, "send_code_title", "Send to a code", "heading");
+  text(w, "send_code_intro",
+       v.file_count == 0 ? std::string("Pick what to send above, then paste the code you were given.")
+                         : "Paste the code you were given to send " + count_text(v.file_count, v.file_bytes) + ".",
+       "secondary");
   row(w, "send_code_row");
   w.begin_object().key("type").string("text_field").key("id").string("send_code");
   w.key("label").string("Code or link").key("value").string("");
@@ -441,39 +483,94 @@ void internet(writer& w, const view& v, bool sending) {
   button(w, "send_to_code", "Send", "primary", v.file_count == 0 || v.reading_folder || sending);
   end(w);
   if (!v.send_code_note.empty()) text(w, "send_code_note", v.send_code_note, "secondary");
-  // #472 PR 4: remembered devices; one click sends, no code.
-  if (!v.known.empty()) {
-    text(w, "known_title", "Remembered devices", "heading");
-    w.begin_object().key("type").string("tiles").key("id").string("known").key("label").string("Remembered devices");
-    w.key("size").integer(64).key("items").begin_array();
+  end(w);
+}
+
+void known_devices(writer& w, const view& v, bool sending) {
+  if (v.known.empty()) return;
+  stack(w, "known_section", 8, "vertical", nullptr, "fill");
+  text(w, "known_title", "Remembered devices", "heading");
+  w.begin_object().key("type").string("tiles").key("id").string("known").key("label").string("Remembered devices");
+  w.key("size").integer(64).key("items").begin_array();
+  for (std::size_t i = 0; i < v.known.size(); ++i) {
+    w.begin_object().key("id").string("dev" + std::to_string(i)).key("text").string(v.known[i]);
+    w.key("detail").string("Over the internet").key("initials").string(initials(v.known[i])).end_object();
+  }
+  w.end_array();
+  if (v.file_count == 0 || v.reading_folder || sending || !v.dht) w.key("disabled").boolean(true);
+  w.end_object();
+  text(w, "known_note",
+       v.dht ? std::string("Click one to send it these files. It waits until that computer is online.")
+             : std::string("Turn on \xE2\x80\x9C" "Find each other through the public DHT\xE2\x80\x9D below to send "
+                           "to these."),
+       "caption");
+  row(w, "known_forget");
+  for (std::size_t i = 0; i < v.known.size(); ++i) {
+    const std::string id = "forget" + std::to_string(i);
+    w.begin_object().key("type").string("button").key("id").string(id).key("label").string("Forget " + v.known[i]);
+    w.key("style").string("plain").end_object();
+  }
+  end(w);
+  if (v.relay) {
+    // #472 relays: which of them are this person's own (relay for each other).
     for (std::size_t i = 0; i < v.known.size(); ++i) {
-      w.begin_object().key("id").string("dev" + std::to_string(i)).key("text").string(v.known[i]);
-      w.key("detail").string("Over the internet").key("initials").string(initials(v.known[i])).end_object();
-    }
-    w.end_array();
-    if (v.file_count == 0 || v.reading_folder || sending || !v.dht) w.key("disabled").boolean(true);
-    w.end_object();
-    text(w, "known_note",
-         v.dht ? std::string("Click one to send it these files. It waits until that computer is online.")
-               : std::string("Turn on \xE2\x80\x9C" "Find each other over the internet\xE2\x80\x9D to send to these."),
-         "caption");
-    row(w, "known_forget");
-    for (std::size_t i = 0; i < v.known.size(); ++i) {
-      const std::string id = "forget" + std::to_string(i);
-      w.begin_object().key("type").string("button").key("id").string(id).key("label").string("Forget " + v.known[i]);
-      w.key("style").string("plain").end_object();
-    }
-    end(w);
-    if (v.relay) {
-      // #472 relays: which of them are this person's own (relay for each other).
-      for (std::size_t i = 0; i < v.known.size(); ++i) {
-        const std::string id = "own" + (i < v.known_ids.size() ? v.known_ids[i] : std::string());
-        w.begin_object().key("type").string("toggle").key("id").string(id);
-        w.key("label").string(v.known[i] + " is my computer");
-        w.key("value").boolean(i < v.known_own.size() && v.known_own[i]).end_object();
-      }
+      const std::string id = "own" + (i < v.known_ids.size() ? v.known_ids[i] : std::string());
+      toggle(w, id.c_str(), v.known[i] + " is my computer", i < v.known_own.size() && v.known_own[i]);
     }
   }
+  end(w);
+}
+
+void internet_options(writer& w, const view& v) {
+  stack(w, "internet_options", 8, "vertical", nullptr, "fill");
+  text(w, "options_title", "Internet options", "heading");
+  // #472 PR 3: opt-in, off by default.
+  toggle(w, "dht", "Find each other through the public DHT", v.dht);
+  text(w, "dht_note",
+       v.dht ? "For networks with no public address: a code is four words and both computers meet on the BitTorrent "
+               "DHT while it waits. DHT nodes see that this computer takes part, never what is sent."
+             : "Turn on if Make a code says no way in was found.",
+       "caption");
+  // #472 PR 5: opt-in, off by default.
+  toggle(w, "handover", "Continue over the internet if Wi-Fi drops", v.handover);
+  if (v.handover) {
+    text(w, "handover_note", "A nearby transfer whose Wi-Fi goes carries on over the internet. Both computers need "
+                             "this on.",
+         "caption");
+  }
+  // #472 relays: opt-in, off by default.
+  toggle(w, "relay", "Use my other computers to relay", v.relay);
+  if (v.relay) {
+    text(w, "relay_note",
+         "When nothing answers directly, a send goes through another computer of yours that remembers this one "
+         "(marked as yours under Remembered devices, on both). It stays sealed end to end: the computer in between "
+         "cannot read it.",
+         "caption");
+  }
+  // #472 relays: the person's own relay server (tools/sharepoint-relay).
+  w.begin_object().key("type").string("text_field").key("id").string("relay_server");
+  w.key("label").string("Your own relay server (optional)").key("value").string(v.relay_server);
+  w.key("placeholder").string("Only if you run one: address:port#key").end_object();
+  end(w);
+}
+
+void internet(writer& w, const view& v, bool sending) {
+  stack(w, "internet_section", 12, "vertical", nullptr, "fill");
+  text(w, "internet_title", "Over the internet", "heading");
+  toggle(w, "internet", "Send and receive over the internet", v.internet);
+  if (!v.internet) {
+    text(w, "internet_intro", "For a computer that is not nearby. Off until you turn it on.", "caption");
+    end(w);
+    return;
+  }
+  text(w, "internet_intro",
+       "No server: the two computers connect straight to each other with a code that works once. Whoever has the "
+       "code learns this computer\xE2\x80\x99s address.",
+       "caption");
+  receive_card(w, v);
+  send_code_card(w, v, sending);
+  known_devices(w, v, sending);
+  internet_options(w, v);
   end(w);
 }
 
@@ -492,19 +589,17 @@ std::string build_tree(const view& v) {
            (v.background ? ", and while MediaViewer is closed."
                          : v.receiving ? " and while MediaViewer runs." : "."),
        "secondary");
-  w.begin_object().key("type").string("toggle").key("id").string("receiving");
-  w.key("label").string("Keep receiving when this window is closed").key("value").boolean(v.receiving).end_object();
-  // #452: opt-in, off by default. MediaViewer then stays in the menu bar /
-  // notification area with every window closed, and an offer is a system
-  // notification that opens this window (never the code itself).
-  w.begin_object().key("type").string("toggle").key("id").string("background");
-  w.key("label").string(kBackgroundLabel).key("value").boolean(v.background).end_object();
   {
     std::string where = v.wifi_up ? "Looking on the local network" : "The local network is not available";
     where += v.bluetooth_note.empty() ? (v.wifi_up ? " and Bluetooth." : "; looking on Bluetooth.")
                                       : ". " + v.bluetooth_note;
     text(w, "presence", where, "caption");
   }
+  toggle(w, "receiving", "Keep receiving when this window is closed", v.receiving);
+  // #452: opt-in, off by default. MediaViewer then stays in the menu bar /
+  // notification area with every window closed, and an offer is a system
+  // notification that opens this window (never the code itself).
+  toggle(w, "background", kBackgroundLabel, v.background);
   end(w);
 
   if (!v.relaying_for.empty()) {
@@ -517,10 +612,12 @@ std::string build_tree(const view& v) {
     button(w, "in_cancel", "Stop relaying", "destructive");
     end(w);
   }
+  // What is happening now comes first: an offer or receive, then a send.
   if (v.in != view::in_phase::none) incoming(w, v);
   const bool sending = out_busy(v);
+  if (v.out != view::out_phase::idle) outgoing(w, v);
   files_card(w, v, sending);
-  nearby(w, v, sending);
+  nearby(w, v);
   internet(w, v, sending);
 
   end(w);                      // page

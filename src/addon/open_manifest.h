@@ -41,7 +41,10 @@ inline constexpr int kOpenManifestSchema = 2;
 //   4  screens; 5  chrome slots and search providers (PRs 58-59, 2026-10-11).
 //      An open add-on cannot fill screens or slots yet: they are filled by
 //      code, and scripts have no binding for them (code_not_allowed).
-inline constexpr std::uint32_t kContributionApi = 5;
+//   6  2026-10-19: the screen vocabulary's `link` node and a button's `copy`
+//      (Sharepoint). No new point: a screen tree that uses them asks for 6,
+//      so an older host says "needs a newer MediaViewer", not a blank window.
+inline constexpr std::uint32_t kContributionApi = 6;
 // The API that introduced code (`scripts`, `permissions`, commands).
 inline constexpr std::uint32_t kScriptApi = 3;
 inline constexpr std::uint32_t kContributionApiOldest = 1;

@@ -33,6 +33,9 @@ class link {
   // ("relay": the person's own computer or server, splice.h), for the
   // window; nullptr for a direct link.
   [[nodiscard]] virtual const char* through() const noexcept { return nullptr; }
+  // #472 PR 3: a stream on a hole punched after meeting on the DHT
+  // (udp_hub), for the window's picture of the path.
+  [[nodiscard]] virtual bool punched() const noexcept { return false; }
 };
 
 // A link that says it is another bearer than its own (#472 PR 2: a TCP link
@@ -47,6 +50,7 @@ class bearer_as final : public link {
   void shutdown() noexcept override { inner_->shutdown(); }
   [[nodiscard]] transport via() const noexcept override { return via_; }
   [[nodiscard]] const char* through() const noexcept override { return inner_->through(); }
+  [[nodiscard]] bool punched() const noexcept override { return inner_->punched(); }
 
  private:
   std::unique_ptr<link> inner_;

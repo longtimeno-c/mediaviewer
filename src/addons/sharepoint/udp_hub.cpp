@@ -318,6 +318,7 @@ class udp_stream final : public link {
   }
 
   transport via() const noexcept override { return transport::internet; }
+  bool punched() const noexcept override { return true; }
 
  private:
   // Under s_->m. The birthday socket this stream ran on goes with it: the hub

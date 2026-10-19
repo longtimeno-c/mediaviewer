@@ -130,6 +130,7 @@ class relayed_link final : public link {
   void shutdown() noexcept override { inner_->shutdown(); }
   [[nodiscard]] transport via() const noexcept override { return inner_->via(); }
   [[nodiscard]] const char* through() const noexcept override { return through_; }
+  [[nodiscard]] bool punched() const noexcept override { return inner_->punched(); }
 
  private:
   std::unique_ptr<link> inner_;

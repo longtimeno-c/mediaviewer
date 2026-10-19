@@ -240,6 +240,7 @@ result<std::unique_ptr<channel>> channel::open(std::shared_ptr<link> l, bool cli
     const auto deadline = clock::now() + std::chrono::milliseconds(kConnectMs);
     std::unique_ptr<channel> c(new channel());
     c->via_ = l->via();
+  c->punched_ = l->punched();
     c->link_ = c->write_link_ = c->read_link_ = l;
     c->st_ = std::make_unique<state>();
     c->version_ = opts.version >= 2 ? 2 : kProtocol1;
@@ -276,6 +277,7 @@ result<std::unique_ptr<channel>> channel::open_server(std::shared_ptr<link> l, h
   const auto deadline = clock::now() + std::chrono::milliseconds(kConnectMs);
   std::unique_ptr<channel> c(new channel());
   c->via_ = l->via();
+  c->punched_ = l->punched();
   c->link_ = c->write_link_ = c->read_link_ = l;
   c->st_ = std::make_unique<state>();
   c->version_ = h.version >= 2 ? 2 : kProtocol1;
@@ -424,6 +426,7 @@ result<std::unique_ptr<channel>> channel::open_internet(std::shared_ptr<link> l,
   const auto deadline = clock::now() + std::chrono::milliseconds(kConnectMs);
   std::unique_ptr<channel> c(new channel());
   c->via_ = l->via();
+  c->punched_ = l->punched();
   c->link_ = c->write_link_ = c->read_link_ = l;
   c->st_ = std::make_unique<state>();
   c->version_ = 2;
@@ -1156,6 +1159,7 @@ expected channel::adopt(std::shared_ptr<link> l, std::unique_ptr<stream_keys> ke
       up_ = true;
       next_pull_ = std::move(keys);
       via_ = l->via();
+      punched_ = l->punched();
       last_heard_ns_.store(now_ns());
     }
   }

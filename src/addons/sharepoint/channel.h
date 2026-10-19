@@ -145,6 +145,8 @@ class channel {
   [[nodiscard]] const std::string& peer_id() const noexcept { return peer_id_; }
   [[nodiscard]] const std::string& peer_name() const noexcept { return peer_name_; }
   [[nodiscard]] transport via() const noexcept { return via_.load(); }
+  // The link now carrying it was punched after meeting on the DHT (link::punched).
+  [[nodiscard]] bool punched() const noexcept { return punched_.load(); }
   [[nodiscard]] std::uint32_t version() const noexcept { return version_; }
   // Protocol 2: the session can move to another link.
   [[nodiscard]] bool resumable() const noexcept { return version_ >= 2; }
@@ -256,6 +258,7 @@ class channel {
   bool internet_ = false;
   std::optional<std::array<std::uint8_t, 32>> peer_key_;
   std::atomic<transport> via_{transport::wifi};
+  std::atomic<bool> punched_{false};
   std::string code_, peer_id_, peer_name_;
   std::unique_ptr<state> st_;  // the keys: push under send_m_, pull the reader's
   std::atomic<bool> down_{false};

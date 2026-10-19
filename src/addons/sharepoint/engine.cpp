@@ -1644,6 +1644,7 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std
   {
     std::lock_guard lock(m_);
     v_.out_relay.clear();
+    v_.out_punched = false;
     const auto it = peers_.find(peer_id);
     if (it != peers_.end()) {
       const auto now = std::chrono::steady_clock::now();
@@ -1992,6 +1993,7 @@ void engine::send_on(std::shared_ptr<channel> ch, std::vector<outgoing_file> fil
     // to compare if the two people want (#472).
     v_.out = internet ? view::out_phase::naming : view::out_phase::confirming;
     v_.out_via = transport_name(ch->via());
+    v_.out_punched = ch->punched();
     v_.out_reconnecting = false;
     v_.out_protocol = ch->version();
     v_.out_peer = name;
@@ -2207,7 +2209,10 @@ void engine::on_link_event(bool sending, link_event e, const channel& ch) {
     std::lock_guard lock(m_);
     bool& reconnecting = sending ? v_.out_reconnecting : v_.in_reconnecting;
     reconnecting = e != link_event::up;
-    if (e == link_event::up) (sending ? v_.out_via : v_.in_via) = transport_name(ch.via());
+    if (e == link_event::up) {
+      (sending ? v_.out_via : v_.in_via) = transport_name(ch.via());
+      (sending ? v_.out_punched : v_.in_punched) = ch.punched();
+    }
     if (sending) {
       mover_kick_ = true;
       mover_cv_.notify_all();
@@ -2422,6 +2427,7 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
       v_.in_peer = name;
       v_.in_code = ch->code();
       v_.in_via = transport_name(ch->via());
+      v_.in_punched = ch->punched();
       v_.in_reconnecting = false;
       v_.in_protocol = ch->version();
       v_.in_internet = ch->internet();
@@ -2471,6 +2477,7 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
     v_.in_peer = name;
     v_.in_code = ch->code();
     v_.in_via = transport_name(ch->via());
+    v_.in_punched = ch->punched();
     v_.in_count = offer->files.size();
     v_.in_total = offer->bytes;
     v_.in_bytes = 0;

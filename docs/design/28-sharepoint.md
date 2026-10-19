@@ -27,10 +27,17 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
   - this computer's name as others see it, and **Keep receiving when this window is closed** (kept
     across launches; the command bar shows **Sharepoint: receiving** while it is on), then
     **Receive when MediaViewer is closed** (#452, off by default; [In the background](#in-the-background-452));
-  - **what is offered to this computer**, in a card of its own: the sender's round tile (its
-    monogram, name and how it is connected), "… wants to send you files" and the **code** in large
+  - **what is happening now**, first: a card for what is offered to this computer and one for a
+    send under way, each opening with a **picture of the path** (2026-10-19, the screen `link`
+    node): this computer, the other, and between them the bearer's badge, Wi-Fi, Bluetooth,
+    internet straight to each other, internet met through the public DHT, through one of the
+    person's computers (named), or through their relay server, each its own shape and colour, with
+    the part moved so far and dots that travel the way the bytes go while they do (still with
+    Reduce Motion; paused while it reconnects; a done or failed mark at the end). Whether an
+    internet link was met on the DHT comes from the link (`link::punched`, `udp_hub`'s stream);
+  - **what is offered to this computer**: "… wants to send you files" and the **code** in large
     digits to type over there, **Decline**; then "… wants to send you 24 files, 412 MB", the first
-    names, **Save to** with Choose…, **Decline** / **Accept**; then a progress ring with its
+    names, **Save to** with Choose…, **Decline** / **Accept**; then the path filling with its
     percentage, the count and **Cancel**; then what arrived and **OK**;
   - **Send**, a card: a strip of the first six files' thumbnails (the viewer's cache), the count
     and size, the first names, **Send a folder** (Choose…), **Clear**;
@@ -38,8 +45,13 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
     "Bluetooth" or both). **One click on a tile sends** to it. A card then asks for the code the
     other screen shows, in one large field that takes digits only and goes by itself at the sixth
     (three wrong codes end the link; this screen never shows the code); then "Waiting for … to
-    accept"; then the tile's own ring fills while the bytes move, and it ends with a done or
-    failed mark on the tile and a line saying what happened.
+    accept"; then the tile's own ring fills while the bytes move (and the path card above shows
+    how), and it ends with a done or failed mark on the tile and a line saying what happened;
+  - **Over the internet**, one toggle, then in the order a person uses it: **Receive from
+    anywhere** (Make a code; the code in large type, selectable, with **Copy code** and **Copy
+    link**), **Send to a code**, Remembered devices, and **Internet options** (the DHT, Wi-Fi drops,
+    relaying, and the optional own relay server). Nothing asks for an address: a code finds its
+    own (2026-10-19).
 - **The gallery** ([16](16-commands.md#gallery-range-and-share-413)): Shift-click selects a range,
   dragging a cell drags it out, and one share icon opens the share menu ([16 "Share"](16-commands.md#share-444)),
   whose first entry is Sharepoint with the selection (issue #444: the same menu as `Ctrl+Shift+S`,
@@ -755,6 +767,8 @@ second while bytes move; those posts update chrome and never present the canvas.
   (#442), generic additions drawn by both hosts, not a Sharepoint-only path: a `tiles` node, a
   `stack` `"look": "card"`, a `progress` `"look": "ring"`, a `text_field` `"look": "code"` with
   `"digits"`, and the `text` style `"display"` ([25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)).
+  For the path picture and the code's copy (2026-10-19): a `link` node and a button's `"copy"`,
+  contribution API 6; Sharepoint's manifest asks for 6.
 - **Commands of an add-on that fills slots** become command events to it
   (`slot_registry::run_command`, `mv_slots_command`, ABI 0.29, [14](14-abi.md)): Sharepoint's key-less
   "Sharepoint" row carries the marked or current files.

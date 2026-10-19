@@ -105,6 +105,7 @@ struct view {
   // #472: the bearer the send is on, and whether it is between links
   // (suspect or dropped, a rejoin under way).
   std::string out_via;
+  bool out_punched = false;  // over the internet on a hole punched after meeting on the DHT
   bool out_reconnecting = false;
   std::uint32_t out_protocol = 0;  // the send's protocol, once its link is open (tests, the log)
   bool out_internet = false;       // #472 PR 2: to a code, over the internet
@@ -116,6 +117,7 @@ struct view {
   // once the person there has checked the code.
   enum class in_phase : std::uint8_t { none, connecting, asking, receiving, done, ended } in = in_phase::none;
   std::string in_peer, in_code, in_note, in_via;
+  bool in_punched = false;  // as out_punched
   std::vector<std::string> in_names;
   std::size_t in_count = 0;
   std::uint64_t in_total = 0, in_bytes = 0;

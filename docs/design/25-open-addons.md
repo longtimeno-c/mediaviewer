@@ -750,6 +750,24 @@ How it works:
   field there.
 - **`text` `"style": "display"`**: a large face for a short code read across a room.
 
+Two more (2026-10-19, Sharepoint; contribution API **6**, so an add-on whose tree uses them asks for
+6 and an older host says "needs a newer MediaViewer" rather than refusing the tree and showing a
+blank window):
+
+- **`link`** (a picture, not a control; `label` required): the path a transfer takes. `via`
+  (`bluetooth`, `wifi`, `internet`, `dht`, `relay`, `server`) and `state` (`connecting`, `moving`,
+  `paused`, `done`, `failed`) are required; `direction` (`send` / `receive`), `from`, `to`,
+  `through` (the computer in between, 64 characters), `caption` and `value` (−1–1) are optional.
+  Both hosts draw this computer, the other, the line between them in the bearer's own shape and
+  colour (Wi-Fi straight, Bluetooth dashed, the internet an arc, the DHT a dotted arc through a few
+  nodes, a relay an arc through a named computer), a badge for the bearer, the part moved so far,
+  and dots that travel the way the bytes go. Only `moving` and `connecting` animate, at 30 fps at
+  most, and never with Reduce Motion (Mac) or animations off (Windows); the dots stop when the
+  node leaves the tree. Its VoiceOver / Narrator name is `label`, its value the percentage.
+- **`button` `"copy"`**: a click also puts this text on the clipboard. The host does it, only on
+  the click, then reports the click as usual; an add-on has no clipboard call of its own. The
+  label says "Copied" for 1.5 s.
+
 For a script add-on (PR 57): the registry reaches code through `slot_client`; a script runtime
 implements it on its own worker and calls the same `post_*` functions the v3 rows wrap.
 

@@ -308,6 +308,56 @@ TEST_CASE("sharepoint: every state of the window is a tree the hosts accept", "[
   CHECK(sender.find("654 321") == std::string::npos);
 }
 
+// 2026-10-19: a transfer under way draws its path, one picture per kind of
+// path; the receive code can be selected and copied with one click.
+TEST_CASE("sharepoint: each kind of path has its own picture, and the code copies", "[sharepoint]") {
+  sp::view v;
+  v.my_name = "Studio";
+  v.out = sp::view::out_phase::sending;
+  v.out_peer = "Bea";
+  v.out_total = 100;
+  v.out_bytes = 40;
+  struct want {
+    const char* via;
+    bool punched;
+    const char* relay;
+    const char* shows;
+  };
+  for (const want& c : {want{"Wi-Fi", false, "", R"("via":"wifi")"}, want{"Bluetooth", false, "", R"("via":"bluetooth")"},
+                        want{"the internet", false, "", R"("via":"internet")"},
+                        want{"the internet", true, "", R"("via":"dht")"},
+                        want{"the internet", false, "Rob", R"("through":"Rob")"},
+                        want{"the internet", false, "your relay server", R"("via":"server")"}}) {
+    v.out_via = c.via;
+    v.out_punched = c.punched;
+    v.out_relay = c.relay;
+    const std::string tree = sp::build_tree(v);
+    INFO(tree);
+    CHECK(tree.find(c.shows) != std::string::npos);
+    CHECK(tree.find(R"("state":"moving")") != std::string::npos);
+    CHECK(mv::addon::screen::tree{}.set(tree) == mv::addon::screen::error::none);
+  }
+  v.out_reconnecting = true;
+  CHECK(sp::build_tree(v).find(R"("state":"paused")") != std::string::npos);
+  v.out = sp::view::out_phase::done;
+  CHECK(sp::build_tree(v).find(R"("state":"done")") != std::string::npos);
+  // No transfer: no picture.
+  v.out = sp::view::out_phase::idle;
+  CHECK(sp::build_tree(v).find(R"("type":"link")") == std::string::npos);
+
+  v.internet = true;
+  v.code_phase = static_cast<std::uint8_t>(sp::internet_receiver::phase::ready);
+  v.code_text = "ABCD EFGH JKMN";
+  v.code_link = "mediaviewer://sharepoint?code=ABCDEFGHJKMN";
+  const std::string tree = sp::build_tree(v);
+  INFO(tree);
+  CHECK(tree.find(R"("text":"ABCD EFGH JKMN","style":"display","copyable":true)") != std::string::npos);
+  CHECK(tree.find(R"("copy":"ABCD EFGH JKMN")") != std::string::npos);
+  CHECK(tree.find(R"("copy":"mediaviewer://sharepoint?code=ABCDEFGHJKMN")") != std::string::npos);
+  CHECK(tree.find("public address") == std::string::npos);
+  CHECK(mv::addon::screen::tree{}.set(tree) == mv::addon::screen::error::none);
+}
+
 TEST_CASE("sharepoint: a set too big for Bluetooth says to use Wi-Fi before Send", "[sharepoint]") {
   sp::view v;
   v.my_name = "Studio";

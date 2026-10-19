@@ -54,6 +54,14 @@ enum class node_type : std::uint8_t {
   // caption, initials, a progress ring and a done / failed mark; a click or
   // Return on one is `activate`.
   tiles,
+  // 2026-10-19 (Sharepoint): a picture of a transfer's path. Two computers
+  // and the line between them, a badge for the bearer (Bluetooth, Wi-Fi,
+  // internet direct, internet met on the DHT, through one of the person's
+  // computers, through their relay server), and dots that move along it
+  // while bytes do. The host animates it only in state "moving" or
+  // "connecting", and never with Reduce Motion / animations off. Not
+  // interactive.
+  link,
 };
 
 [[nodiscard]] const char* type_name(node_type t) noexcept;

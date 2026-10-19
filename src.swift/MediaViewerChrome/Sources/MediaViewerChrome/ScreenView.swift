@@ -147,18 +147,7 @@ struct ScreenNodeView: View {
     case "table":
       TableNode(node: node, address: address, revision: revision)
     case "button":
-      Button {
-        SlotStore.shared.send(address, node: node.id, kind: 1, value: nil)
-      } label: {
-        if let symbol = node.string("symbol") {
-          Label(node.label, systemImage: slotSymbol(symbol))
-        } else {
-          Text(node.label)
-        }
-      }
-      .buttonStyle(FlatButtonStyle(selected: node.string("style") == "primary", compact: true))
-      .foregroundStyle(node.string("style") == "destructive" ? Color.red : MVTheme.title)
-      .accessibilityLabel(node.label)
+      ButtonNode(node: node, address: address)
     case "toggle":
       ToggleNode(node: node, address: address, revision: revision)
     case "choice":
@@ -189,6 +178,8 @@ struct ScreenNodeView: View {
       SurfaceNode(node: node, address: address, revision: revision)
     case "tiles":
       TilesNode(node: node, address: address, revision: revision)
+    case "link":
+      LinkNode(node: node)
     default:
       EmptyView()
     }
@@ -1278,5 +1269,243 @@ final class SlotWindows: NSObject, NSWindowDelegate {
     else { return }
     windows[address] = nil
     SlotStore.shared.close(address)
+  }
+}
+
+// MARK: 2026-10-19 additions: a button's copy, the link picture
+
+/// A button. With "copy" its click also puts that text on the pasteboard
+/// (here, never by the add-on) and its label says "Copied" for a moment.
+@MainActor
+private struct ButtonNode: View {
+  let node: ScreenNode
+  let address: ScreenAddress
+  @State private var copied = false
+
+  var body: some View {
+    Button {
+      if let text = node.string("copy") {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copied = true
+        Task { @MainActor in
+          try? await Task.sleep(nanoseconds: 1_500_000_000)
+          copied = false
+        }
+      }
+      SlotStore.shared.send(address, node: node.id, kind: 1, value: nil)
+    } label: {
+      if copied {
+        Label("Copied", systemImage: "checkmark")
+      } else if let symbol = node.string("symbol") {
+        Label(node.label, systemImage: slotSymbol(symbol))
+      } else if node.string("copy") != nil {
+        Label(node.label, systemImage: "doc.on.doc")
+      } else {
+        Text(node.label)
+      }
+    }
+    .buttonStyle(FlatButtonStyle(selected: node.string("style") == "primary", compact: true))
+    .foregroundStyle(node.string("style") == "destructive" ? Color.red : MVTheme.title)
+    .accessibilityLabel(copied ? "Copied" : node.label)
+  }
+}
+
+/// The path a transfer takes: this computer on the left, the other on the
+/// right, the bearer's badge between them (a third computer for a relay), and
+/// dots that travel the way the bytes go. Each bearer has its own shape and
+/// colour: Wi-Fi a straight line, Bluetooth short dashes, the internet an arc,
+/// the DHT an arc through a scatter of nodes, a relay a dip through the middle
+/// computer. It animates only while "moving" or "connecting", at 30 fps at
+/// most, and never with Reduce Motion; done and failed are still.
+@MainActor
+private struct LinkNode: View {
+  let node: ScreenNode
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  private var via: String { node.string("via") ?? "wifi" }
+  private var state: String { node.string("state") ?? "connecting" }
+  private var sending: Bool { node.string("direction") != "receive" }
+  private var value: Double { node.double("value") ?? -1 }
+
+  private var tint: Color {
+    switch via {
+    case "bluetooth": return Color(nsColor: .systemBlue)
+    case "wifi": return Color(nsColor: .systemTeal)
+    case "internet": return Color(nsColor: .systemIndigo)
+    case "dht": return Color(nsColor: .systemOrange)
+    default: return Color(nsColor: .systemPurple)  // relay, server
+    }
+  }
+
+  private var badge: String {
+    switch via {
+    case "bluetooth": return "dot.radiowaves.left.and.right"
+    case "wifi": return "wifi"
+    case "internet": return "globe"
+    case "dht": return "point.3.connected.trianglepath.dotted"
+    case "relay": return "desktopcomputer"
+    default: return "server.rack"
+    }
+  }
+
+  private var animating: Bool { !reduceMotion && (state == "moving" || state == "connecting") }
+
+  var body: some View {
+    VStack(spacing: MVTheme.space(6)) {
+      HStack(spacing: 0) {
+        device(symbol: "laptopcomputer", name: node.string("from") ?? "This computer", mark: nil)
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !animating)) { t in
+          Canvas { ctx, size in
+            draw(ctx, size, phase: t.date.timeIntervalSinceReferenceDate)
+          }
+          .overlay(badgeView)
+        }
+        .frame(height: 64)
+        device(symbol: nil, name: node.string("to") ?? "", mark: state == "done" ? "checkmark.circle.fill"
+               : state == "failed" ? "exclamationmark.circle.fill" : nil)
+      }
+      HStack(spacing: MVTheme.space(6)) {
+        Text(node.string("caption") ?? "")
+          .font(MVTheme.font(12))
+          .foregroundStyle(MVTheme.body)
+        if value >= 0 {
+          Text("\(Int((value * 100).rounded()))%")
+            .font(MVTheme.font(12).monospacedDigit())
+            .foregroundStyle(MVTheme.title)
+        }
+      }
+    }
+    .frame(maxWidth: .infinity)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(node.label)
+    .accessibilityValue(value < 0 ? stateWords : "\(Int((value * 100).rounded())) percent")
+  }
+
+  private var stateWords: String {
+    switch state {
+    case "moving": return "Moving"
+    case "paused": return "Paused"
+    case "done": return "Done"
+    case "failed": return "Stopped"
+    default: return "Connecting"
+    }
+  }
+
+  private func device(symbol: String?, name: String, mark: String?) -> some View {
+    VStack(spacing: 4) {
+      ZStack(alignment: .bottomTrailing) {
+        Circle().fill(MVTheme.surface)
+          .overlay(Circle().stroke(MVTheme.hairline, lineWidth: 1))
+          .frame(width: 48, height: 48)
+          .overlay {
+            if let symbol {
+              Image(systemName: symbol).font(.system(size: 20)).foregroundStyle(MVTheme.title)
+            } else {
+              Text(initials(name)).font(.system(size: 17, weight: .semibold, design: .rounded))
+                .foregroundStyle(MVTheme.title)
+            }
+          }
+        if let mark {
+          Image(systemName: mark)
+            .font(.system(size: 16))
+            .foregroundStyle(state == "done" ? Color(nsColor: .systemGreen) : Color(nsColor: .systemRed))
+            .background(Circle().fill(MVTheme.canvas))
+            .transition(.scale)
+        }
+      }
+      Text(name).font(MVTheme.font(11)).foregroundStyle(MVTheme.body).lineLimit(1)
+        .frame(maxWidth: 88)
+    }
+    .frame(width: 88)
+  }
+
+  private var badgeView: some View {
+    ZStack {
+      Circle().fill(MVTheme.canvas).frame(width: 34, height: 34)
+      Circle().fill(tint.opacity(state == "failed" ? 0.08 : 0.16)).frame(width: 34, height: 34)
+      Circle().stroke(tint.opacity(0.6), lineWidth: 1.5).frame(width: 34, height: 34)
+      Image(systemName: state == "paused" ? "pause.fill" : badge)
+        .font(.system(size: 15, weight: .medium))
+        .foregroundStyle(state == "failed" ? MVTheme.disabled : tint)
+      // A relay: the computer in between, named under it.
+      if let through = node.string("through"), !through.isEmpty {
+        Text(through).font(MVTheme.font(10)).foregroundStyle(MVTheme.body).lineLimit(1)
+          .fixedSize().offset(y: 27)
+      }
+    }
+    .offset(y: arcLift * -0.5)
+    .accessibilityHidden(true)
+  }
+
+  /// How far the path bows up in the middle (an arc for the internet).
+  private var arcLift: CGFloat {
+    switch via {
+    case "internet", "dht", "relay", "server": return 22
+    default: return 0
+    }
+  }
+
+  private func point(_ s: CGFloat, _ size: CGSize) -> CGPoint {
+    let y0 = size.height / 2 + arcLift * 0.25
+    let x = 6 + (size.width - 12) * s
+    let y = y0 - arcLift * 4 * s * (1 - s)
+    return CGPoint(x: x, y: y)
+  }
+
+  private func path(_ size: CGSize, from a: CGFloat = 0, to b: CGFloat = 1) -> Path {
+    var p = Path()
+    let steps = 48
+    for i in 0...steps {
+      let s = a + (b - a) * CGFloat(i) / CGFloat(steps)
+      let q = point(s, size)
+      if i == 0 { p.move(to: q) } else { p.addLine(to: q) }
+    }
+    return p
+  }
+
+  private func draw(_ ctx: GraphicsContext, _ size: CGSize, phase: Double) {
+    let failed = state == "failed"
+    let dash: [CGFloat] = via == "bluetooth" ? [3, 5] : via == "dht" ? [1, 6] : []
+    // The track.
+    ctx.stroke(path(size), with: .color(failed ? MVTheme.disabled.opacity(0.5) : tint.opacity(0.28)),
+               style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: dash))
+    // What has moved, from the sender's end.
+    let done = state == "done" ? 1.0 : max(0, value)
+    if done > 0 && !failed {
+      let p = sending ? path(size, from: 0, to: CGFloat(done)) : path(size, from: 1 - CGFloat(done), to: 1)
+      ctx.stroke(p, with: .color(tint), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+    }
+    // The DHT: a few still nodes off the arc, the ones it met through.
+    if via == "dht" {
+      for (s, dy) in [(0.22, -14.0), (0.36, 12.0), (0.64, -13.0), (0.8, 11.0)] {
+        let q = point(CGFloat(s), size)
+        let r = CGRect(x: q.x - 2.5, y: q.y + CGFloat(dy) - 2.5, width: 5, height: 5)
+        ctx.fill(Path(ellipseIn: r), with: .color(tint.opacity(0.45)))
+      }
+    }
+    // Dots travelling the way the bytes go; slower and fainter while connecting.
+    guard state == "moving" || state == "connecting" || (reduceMotion && state != "done" && !failed) else { return }
+    let moving = state == "moving"
+    let count = moving ? 5 : 3
+    let speed = moving ? (via == "bluetooth" ? 0.35 : via == "wifi" ? 0.7 : 0.5) : 0.25
+    for i in 0..<count {
+      var s = (phase * speed + Double(i) / Double(count)).truncatingRemainder(dividingBy: 1)
+      if reduceMotion { s = Double(i + 1) / Double(count + 1) }
+      if !sending { s = 1 - s }
+      let q = point(CGFloat(s), size)
+      // Fade in and out at the ends so dots do not pop.
+      let edge = min(s, 1 - s) * 6
+      let alpha = (moving ? 1.0 : 0.55) * min(1, edge)
+      let r: CGFloat = moving ? 3.5 : 3
+      ctx.fill(Path(ellipseIn: CGRect(x: q.x - r, y: q.y - r, width: r * 2, height: r * 2)),
+               with: .color(tint.opacity(alpha)))
+    }
+  }
+
+  private func initials(_ name: String) -> String {
+    let words = name.split(whereSeparator: { $0 == " " || $0 == "-" || $0 == "_" || $0 == "." })
+    let s = words.prefix(2).compactMap { $0.first.map { String($0).uppercased() } }.joined()
+    return s.isEmpty ? "?" : s
   }
 }
