@@ -41,6 +41,7 @@
 #include <thread>
 #include <vector>
 
+#include "addons/sharepoint/dht.h"
 #include "addons/sharepoint/invite.h"
 #include "addons/sharepoint/mapping.h"
 #include "addons/sharepoint/net.h"
@@ -75,6 +76,18 @@ class internet_receiver {
     // The router's port mapping; nullopt: none asked (the tests).
     std::optional<mapping::options> mapping = mapping::options{};
     int lifetime_ms = kCodeLifetimeMs;
+    // #472 PR 3: with no public place, a four-word code on the public DHT
+    // (opt-in, "Find each other over the internet"). `dht_fast_kdf` and
+    // `force_words` are the tests'.
+    bool dht = false;
+    dht::client::options dht_client;
+    bool dht_fast_kdf = false;
+    bool force_words = false;
+    // #472 relays: the advanced "Relay (your own server)", "<address or
+    // name>:<port>#<key>" (tools/sharepoint-relay prints it). Set: each code also waits
+    // there under a fresh token the code carries, so a sender whose direct
+    // tries fail meets this computer through it.
+    std::string relay;
   };
   using link_fn = std::function<void(std::unique_ptr<link>)>;
 
@@ -89,10 +102,14 @@ class internet_receiver {
   void drop_code();
   // The advanced "Forwarded port" for the next code.
   void set_forwarded(std::string forwarded);
+  // The DHT toggle, for the next code.
+  void set_dht(bool on);
+  // The relay server, for the next code.
+  void set_relay(std::string relay);
   [[nodiscard]] snapshot state() const;
   // An internet hello arrived: the code's secret, spent now (right or wrong,
   // it never works again); nullopt when no code waits.
-  [[nodiscard]] std::optional<std::array<std::uint8_t, invite::kSecretBytes>> spend();
+  [[nodiscard]] std::optional<std::vector<std::uint8_t>> spend();
   // The attempt was a wrong code: the window says so.
   void wrong_attempt();
   // spend() holds the listener and mappings for the attempt it starts (and
@@ -106,6 +123,9 @@ class internet_receiver {
   void release_locked(std::unique_lock<std::mutex>& lock);
   void accept_loop(net::listener* l);
   void notify();
+  // #472 relays: waits at the relay server while the code does, handing on
+  // each sender it is paired with (once that sender has spoken).
+  void relay_loop(net::endpoint at, std::array<std::uint8_t, 16> token, std::string key, std::unique_ptr<link> first);
 
   options opts_;
   link_fn on_link_;
@@ -114,7 +134,7 @@ class internet_receiver {
   mutable std::mutex m_;
   std::condition_variable cv_;
   snapshot snap_;                                                       // under m_
-  std::optional<std::array<std::uint8_t, invite::kSecretBytes>> secret_;  // under m_: while ready
+  std::optional<std::vector<std::uint8_t>> secret_;  // under m_: while ready (the code's CPace password)
   std::chrono::steady_clock::time_point expires_{};                     // under m_
   bool want_code_ = false;                                              // under m_
   bool want_drop_ = false;                                              // under m_
@@ -124,8 +144,59 @@ class internet_receiver {
   std::thread accept_thread_;                                           // this object's thread only
   std::unique_ptr<mapping::mapper> mapper_;                             // the run thread only
   std::vector<mapping::mapped> mapped_;                                 // the run thread only
+  // A word code (#472 PR 3): its socket, DHT client and keys, and the thread
+  // that waits for the sender on the DHT and punches to it.
+  std::shared_ptr<udp_hub> hub_;                                        // the run thread only
+  std::unique_ptr<dht::client> dht_;                                    // the run thread only
+  std::unique_ptr<dht::keys> dht_keys_;                                 // the run thread only
+  std::thread meet_thread_;                                             // the run thread only
+  std::atomic<bool> meet_stop_{false};
+  std::thread relay_thread_;                                            // the run thread only
+  std::thread relay_setup_thread_;                                      // the run thread only
+  std::atomic<bool> relay_stop_{false};
   std::thread thread_;
 };
+
+// #472 PR 5: a way in from the internet while a transfer runs over a local
+// link, for "Continue over the internet if Wi-Fi drops": a listener, the
+// router asked for a port (and an IPv6 pinhole), and the places a sender
+// elsewhere can reach (the forwarded port, the mapped one, the public IPv6;
+// no LAN address: it is the local link that went). Links that arrive go to
+// `on_link` (the engine's rejoin path). Destroying it closes the listener and
+// removes every mapping.
+class way_in {
+ public:
+  using link_fn = std::function<void(std::unique_ptr<link>)>;
+  ~way_in();
+  way_in(const way_in&) = delete;
+  way_in& operator=(const way_in&) = delete;
+  // Blocks while the router answers (a worker's call); nullptr when there is
+  // no place a sender elsewhere could reach.
+  [[nodiscard]] static std::unique_ptr<way_in> open(bool loopback_only, const std::optional<mapping::options>& mapping,
+                                                    const std::string& forwarded, link_fn on_link);
+  [[nodiscard]] const std::vector<net::endpoint>& places() const noexcept { return places_; }
+
+ private:
+  way_in() = default;
+  std::unique_ptr<net::listener> listener_;
+  std::vector<net::endpoint> places_;
+  std::unique_ptr<mapping::mapper> mapper_;
+  std::vector<mapping::mapped> mapped_;
+  std::thread accept_thread_;
+};
+
+// "<address>:<port>", or "<name>:<port>" resolved (the relay server only:
+// the person typed it). nullopt: neither.
+[[nodiscard]] std::optional<net::endpoint> relay_endpoint(const std::string& text);
+// The relay field, "<address or name>:<port>#<key>", split (not resolved);
+// nullopt with `why` (the window's words) when it is not one.
+struct relay_server_field {
+  std::string at;   // "<address or name>:<port>"
+  std::string key;  // what only a waiter there proves (splice.h)
+};
+[[nodiscard]] std::optional<relay_server_field> relay_server_of(const std::string& text, std::string& why);
+// How long a code waits for its relay server to answer before it is shown without it.
+inline constexpr int kRelaySetupMs = 3000;
 
 // The retry ladder: 1, 2, 5, 10 s, then every 30 s.
 [[nodiscard]] int backoff_ms(int attempt) noexcept;

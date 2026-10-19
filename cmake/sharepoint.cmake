@@ -29,10 +29,10 @@ set(_S "${MV_SOURCE_ROOT}/src/addons/sharepoint")
 # The Bluetooth bearer goes into the module only: the tests run the engine
 # over loopback and link bt_none.cpp (one Objective-C class per process).
 if(WIN32)
-  set(_sharepoint_port ${_S}/net_win.cpp)
+  set(_sharepoint_port ${_S}/net_win.cpp ${_S}/secrets_win.cpp)
   set(_sharepoint_bt ${_S}/bt_win.cpp)
 elseif(APPLE)
-  set(_sharepoint_port ${_S}/net_posix.cpp ${_S}/machine_mac.cpp)
+  set(_sharepoint_port ${_S}/net_posix.cpp ${_S}/machine_mac.cpp ${_S}/secrets_mac.cpp)
   set(_sharepoint_bt ${_S}/bt_mac.mm)
 else()
   set(_sharepoint_port ${_S}/net_posix.cpp)
@@ -53,7 +53,18 @@ add_library(mv_sharepoint_engine STATIC
   ${_S}/mapping.cpp ${_S}/mapping.h
   ${_S}/race.h
   ${_S}/internet.cpp ${_S}/internet.h
-  ${_S}/engine.cpp ${_S}/engine.h
+  ${_S}/bencode.cpp ${_S}/bencode.h
+  ${_S}/sha1.cpp ${_S}/sha1.h
+  ${_S}/dht_item.cpp ${_S}/dht_item.h ${_S}/wordlist.inc
+  ${_S}/udp_hub.cpp ${_S}/udp_hub.h
+  ${_S}/dht.cpp ${_S}/dht.h
+  ${_S}/meet.cpp ${_S}/meet.h
+  ${_S}/handover.cpp ${_S}/handover.h
+  ${_S}/secrets.h ${_S}/secrets_file.cpp
+  ${_S}/known.h ${_S}/known.cpp
+  ${_S}/splice.cpp ${_S}/splice.h
+  ${_S}/relay.cpp ${_S}/relay.h
+  ${_S}/engine.cpp ${_S}/engine.h ${_S}/engine_relay.cpp
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/tree.cpp
   ${_sharepoint_port}
@@ -66,9 +77,12 @@ set_target_properties(mv_sharepoint_engine PROPERTIES POSITION_INDEPENDENT_CODE 
 if(WIN32)
   # shell32 / ole32: the Downloads folder (SHGetKnownFolderPath, CoTaskMemFree).
   # iphlpapi: this machine's addresses and its default route (#472 PR 2).
-  target_link_libraries(mv_sharepoint_engine PUBLIC ws2_32 shell32 ole32 iphlpapi)
+  # advapi32: Credential Manager (#472 PR 4).
+  target_link_libraries(mv_sharepoint_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32)
 elseif(APPLE)
-  target_link_libraries(mv_sharepoint_engine PUBLIC "-framework CoreFoundation" "-framework SystemConfiguration")
+  # Security: the Keychain (#472 PR 4).
+  target_link_libraries(mv_sharepoint_engine PUBLIC "-framework CoreFoundation" "-framework SystemConfiguration"
+    "-framework Security")
 endif()
 
 if(WIN32)
@@ -109,6 +123,13 @@ elseif(WIN32)
   set_target_properties(mv_sharepoint PROPERTIES PREFIX "")
 endif()
 
+# #472 relays: a relay server of the person's own (tools/sharepoint-relay),
+# portable, built beside the add-on and never shipped with the app. It is the
+# splice alone (splice.cpp and the network port); nothing of the engine runs.
+add_executable(mv_sharepoint_relay "${MV_SOURCE_ROOT}/tools/sharepoint-relay/main.cpp")
+target_link_libraries(mv_sharepoint_relay PRIVATE mv_sharepoint_engine)
+set_target_properties(mv_sharepoint_relay PROPERTIES OUTPUT_NAME "mv-sharepoint-relay")
+
 # The engine over loopback TCP and an in-memory discovery bus, and the add-on
 # itself through the real loader (tests/test_sharepoint.cpp,
 # tests/test_sharepoint_addon.cpp). Called by each build's mv_import_tests
@@ -119,11 +140,14 @@ function(mv_sharepoint_tests target)
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_noise.cpp"
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_session.cpp"
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_internet.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_sharepoint_dht.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_sharepoint_known.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_sharepoint_relay.cpp"
     "${MV_SOURCE_ROOT}/tests/test_sharepoint_addon.cpp"
     "${MV_SOURCE_ROOT}/src/addons/sharepoint/bt_none.cpp")
   target_link_libraries(${target} PRIVATE mv_sharepoint_engine)
   target_compile_definitions(${target} PRIVATE
     MV_SHAREPOINT_MODULE_PATH="$<TARGET_FILE:mv_sharepoint>"
     MV_SHAREPOINT_MANIFEST_JSON="${MV_SOURCE_ROOT}/src/addons/sharepoint/manifest.json")
-  add_dependencies(${target} mv_sharepoint)
+  add_dependencies(${target} mv_sharepoint mv_sharepoint_relay)
 endfunction()

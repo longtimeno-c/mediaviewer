@@ -8,11 +8,15 @@
 // local network, IPv4 (the beacon goes out with a TTL of 1). Over the
 // internet (#472 PR 2, opt-in, off by default): a TCP listener on IPv6 and
 // IPv4 while a code waits, connects to the addresses in a code, and the
-// router's port mapping (UDP to the gateway, SSDP and HTTP to it). Nothing
-// here resolves a name. Nothing is logged with an address.
+// router's port mapping (UDP to the gateway, SSDP and HTTP to it). #472 PR 3
+// on: one dual-stack UDP socket and, for the birthday punch, many more read
+// together (wait_readable), and a TCP port that listens and connects at once
+// (tcp_rendezvous). Nothing here resolves a name. Nothing is logged with an
+// address.
 #pragma once
 
 #include <array>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -37,6 +41,7 @@ struct address {
   bool v6 = false;
   std::array<std::uint8_t, 16> bytes{};
   friend bool operator==(const address&, const address&) = default;
+  friend auto operator<=>(const address&, const address&) = default;  // a map key (#472 relays)
 };
 // Dotted IPv4 or IPv6 text (no zone, no brackets). Portable (net_address.cpp).
 [[nodiscard]] std::optional<address> parse_address(std::string_view text) noexcept;
@@ -55,6 +60,12 @@ class listener {
   // The next connection; status::timeout when none came within `timeout_ms`;
   // status::cancelled after shutdown().
   [[nodiscard]] virtual result<std::unique_ptr<link>> accept(int timeout_ms) = 0;
+  // As accept, and the peer's address (#472 relays: the relay server's caps
+  // per source; never logged).
+  [[nodiscard]] virtual result<std::unique_ptr<link>> accept_from(int timeout_ms, address& from) {
+    from = {};
+    return accept(timeout_ms);
+  }
   virtual void shutdown() noexcept = 0;
 };
 [[nodiscard]] result<std::unique_ptr<listener>> listen(bool loopback_only = false);
@@ -86,11 +97,63 @@ class udp_socket {
                                                          endpoint& from) = 0;
   virtual void shutdown() noexcept = 0;
   [[nodiscard]] virtual std::uint16_t port() const noexcept = 0;
+  // The OS's socket (an fd, a SOCKET), for wait_readable only.
+  [[nodiscard]] virtual std::intptr_t handle() const noexcept = 0;
+  // The kernel's send and receive buffers, each `bytes` (best effort).
+  virtual void set_buffers(int bytes) noexcept = 0;
 };
 // IPv4 (or IPv6) on a port the OS picks, bound at once; `multicast_ttl`: the
 // TTL of a multicast send (SSDP asks for 2). `loopback_only`: bound to
 // 127.0.0.1 / ::1 (the tests' stand-in routers).
 [[nodiscard]] result<std::unique_ptr<udp_socket>> open_udp(bool v6, int multicast_ttl = 1, bool loopback_only = false);
+// #472 PR 3: one socket for IPv6 and IPv4 both (IPv4 peers as plain dotted
+// addresses either way), on `port` (0: the OS picks): the DHT, hole punching
+// and the transfer share it, so the hole a probe punches is the one the
+// transfer uses. `loopback_only`: ::1 and 127.0.0.1 (the tests).
+// `buffer_bytes`: the kernel's buffers (a fast transfer's bursts want the
+// default; the birthday punch's 256 extras ask for little, set_buffers()
+// grows the one a stream then runs on).
+inline constexpr int kUdpBuffers = 4 * 1024 * 1024;
+[[nodiscard]] result<std::unique_ptr<udp_socket>> open_udp_dual(std::uint16_t port, bool loopback_only = false,
+                                                              int buffer_bytes = kUdpBuffers);
+// #472: which of `socks` have a datagram waiting, within `timeout_ms`
+// (ready[i] set for each): the hub reads its own socket and the birthday
+// punch's many from one thread. The count; status::timeout when none.
+[[nodiscard]] result<std::size_t> wait_readable(std::span<udp_socket* const> socks, std::span<bool> ready,
+                                                int timeout_ms);
+// #472: room for about `n` more sockets in this process. POSIX raises the
+// soft RLIMIT_NOFILE (the Mac's default of 256 cannot hold the birthday
+// punch's sockets) to 1024 + n, within the hard limit, for the rest of the
+// process's life (lowering it again under descriptors other code may have
+// opened since would make their next open fail); Windows has no such limit.
+// A socket that still does not open is one fewer, not a failure.
+void reserve_sockets(int n) noexcept;
+
+// #472: TCP simultaneous open. One port, bound for listening and connecting
+// at once (SO_REUSEADDR, and SO_REUSEPORT where the OS has it): connect()s go
+// out from it to the peer's candidates while it listens, so a SYN that
+// crosses ours in the two NATs opens one connection (simultaneous open), and
+// one that arrives after ours was refused or dropped is accepted. A refused
+// or failed connect() is tried again, from the same port, every kRetryMs.
+class tcp_rendezvous {
+ public:
+  static constexpr int kRetryMs = 250;
+  virtual ~tcp_rendezvous() = default;
+  [[nodiscard]] virtual std::uint16_t port() const noexcept = 0;
+  // The next connection to or from one of `peers` (one that comes in is
+  // matched by address only: a NAT may change its port), within
+  // `timeout_ms`; status::timeout when none, status::cancelled after
+  // shutdown(). Attempts still under way carry on into the next call.
+  [[nodiscard]] virtual result<std::unique_ptr<link>> next(std::span<const endpoint> peers, int timeout_ms) = 0;
+  virtual void shutdown() noexcept = 0;
+};
+// IPv6 and IPv4 ([::] dual stack; IPv4 alone where there is no IPv6), on a
+// port the OS picks; `loopback_only`: 127.0.0.1 (the tests).
+[[nodiscard]] result<std::unique_ptr<tcp_rendezvous>> open_rendezvous(bool loopback_only = false);
+
+// A name to addresses (the DHT's bootstrap routers only; nothing else in
+// Sharepoint resolves a name).
+[[nodiscard]] std::vector<address> resolve(const std::string& name);
 
 // The discovery socket: UDP on `port`, joined to kMulticastGroup, sharing the
 // port with other MediaViewers on this machine.

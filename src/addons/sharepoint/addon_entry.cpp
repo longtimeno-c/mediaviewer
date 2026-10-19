@@ -26,6 +26,7 @@
 
 #include "addons/sharepoint/engine.h"
 #include "addons/sharepoint/net.h"
+#include "addons/sharepoint/secrets.h"
 #include "core/json.h"
 #include "io/file_port.h"
 
@@ -175,6 +176,9 @@ struct addon_state {
       o.offline = offline && offline[0] == '1';
       o.prefs_path = prefs_path;
       o.initial = std::move(initial);
+      // #472 PR 4: the identity and remembered devices, in the Keychain /
+      // Credential Manager (none on other systems: nothing is remembered).
+      if (!o.offline) o.make_secrets = [] { return mv::sharepoint::secrets::os_store(); };
       eng = std::make_unique<engine>(*bridge, std::move(o));
     }
     return *eng;

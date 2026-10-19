@@ -29,6 +29,12 @@ struct prefs {
   // forwarded on their router to this machine's same port ("" = none).
   bool internet = false;
   std::string forwarded;
+  bool dht = false;  // #472 PR 3: "Find each other over the internet (public DHT)", off by default
+  bool handover = false;  // #472 PR 5: "Continue over the internet if Wi-Fi drops", off by default
+  // #472 relays: "Use my other computers to relay" (off by default), and the
+  // advanced "Relay (your own server)", "<address or name>:<port>" ("" = none).
+  bool relay = false;
+  std::string relay_server;
   bool operator==(const prefs&) const = default;
 };
 

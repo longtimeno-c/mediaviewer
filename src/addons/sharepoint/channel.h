@@ -98,7 +98,7 @@ struct channel_options {
   std::optional<std::array<std::uint8_t, 32>> static_key;
   // #472 PR 2, the receiver: the secret of the code it showed, which an
   // internet hello must know. Empty: an internet hello is refused.
-  std::optional<std::array<std::uint8_t, 6>> internet_secret;
+  std::optional<std::vector<std::uint8_t>> internet_secret;  // a direct code's 6 bytes, a word code's 32
 };
 
 class channel {
@@ -151,6 +151,15 @@ class channel {
   // Opened with an internet code (#472 PR 2): the peer is a new device,
   // known only by the code; code() is the check, not a code to type.
   [[nodiscard]] bool internet() const noexcept { return internet_; }
+  // Protocol 2 (#472 PR 4): the peer's static X25519 key from the XX
+  // handshake (its device identity once it keeps one), and a secret only the
+  // two ends of this session hold, for "Remember this device".
+  [[nodiscard]] const std::optional<std::array<std::uint8_t, 32>>& peer_key() const noexcept { return peer_key_; }
+  [[nodiscard]] std::array<std::uint8_t, 32> pairing_secret() const;
+  // Protocol 2: a secret of this session (fixed for its life), apart from
+  // pairing_secret(), for meeting on the DHT when both sides lose the local
+  // link (dht_handover, #472, which mixes in rejoins() for each drop).
+  [[nodiscard]] std::array<std::uint8_t, 32> handover_secret() const;
 
   // Any thread; serialised. Protocol 2: the message is kept until the peer
   // acknowledges it, so a link that drops under it does not fail the send;
@@ -245,6 +254,7 @@ class channel {
 
   std::uint32_t version_ = kProtocolVersion;
   bool internet_ = false;
+  std::optional<std::array<std::uint8_t, 32>> peer_key_;
   std::atomic<transport> via_{transport::wifi};
   std::string code_, peer_id_, peer_name_;
   std::unique_ptr<state> st_;  // the keys: push under send_m_, pull the reader's
