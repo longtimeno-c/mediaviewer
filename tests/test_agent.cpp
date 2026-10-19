@@ -120,12 +120,28 @@ class fake final : public environment {
     jpeg = {0xFF, 0xD8, 0xFF, 0xD9};
     return true;
   }
+  std::vector<std::vector<std::pair<std::string, bool>>> index_requests;
+  int coverage_calls = 0;
+  std::int64_t clock = 1760000100000;
+  bool request_index(const std::vector<std::pair<std::string, bool>>& folders, std::string& state, bool& launched,
+                     std::string*) override {
+    index_requests.push_back(folders);
+    state = "started";
+    launched = false;
+    return true;
+  }
+  bool coverage(const std::vector<std::string>& folders, std::vector<int>& states, std::string*) override {
+    // Indexing the first time it is asked, done the next.
+    states.assign(folders.size(), coverage_calls++ == 0 ? 1 : 2);
+    return true;
+  }
+  void sleep_ms(int ms) override { clock += ms; }
   bool hand_to_editor(const std::string& path, std::string*) override {
     handed.push_back(path);
     return true;
   }
   bool thumbnails_allowed() override { return frames; }
-  std::int64_t now_ms() override { return 1760000100000; }
+  std::int64_t now_ms() override { return clock; }
   void log(const char*) override {}
 };
 
@@ -207,7 +223,8 @@ TEST_CASE("an MCP client's handshake and tool list", "[agent][mcp]") {
     CHECK(t.str("description")->size() > 40);
   }
   CHECK(names == std::vector<std::string>{"get_timeline", "transcript", "search", "find_similar", "edit",
-                                          "scope_files", "preview_changes", "commit", "reset", "thumbnail"});
+                                          "scope_files", "analyse", "preview_changes", "commit", "reset",
+                                          "thumbnail"});
   CHECK(parse(rpc(s, "no/such")).find("error")->integer("code") == -32601);
   CHECK(parse(s.handle("{not json")).find("error")->integer("code") == -32700);
   CHECK(parse(s.handle("[1]")).k == json::kind::array);
@@ -445,6 +462,34 @@ TEST_CASE("the given folders' media, nothing else", "[agent][scope]") {
   for (const json::value& f : r.find("files")->a) names.push_back(fs::path(*f.str("path")).filename().string());
   CHECK(names == std::vector<std::string>{"a.mov", "c.wav", "b.MP4"});
   CHECK(tool(s, "scope_files", "{\"folder\":\"" + tmp.dir.string() + "\"}", true).s.find("outside") != std::string::npos);
+}
+
+TEST_CASE("analyse asks the app to index the scope, and follows it", "[agent][analyse]") {
+  scratch tmp;
+  make_bridge(tmp.dir);
+  fake env;
+  server_options o;
+  o.bridge_dir = tmp.dir.string();
+  server s(env, o);
+  const json::value r = tool(s, "analyse", R"({"wait_s":10})");
+  CHECK(*r.str("request") == "started");
+  REQUIRE(env.index_requests.size() == 1);
+  // The given folder and below; the timeline's own folder by itself.
+  const auto& asked = env.index_requests[0];
+  REQUIRE(asked.size() == 2);
+  CHECK(asked[0] == std::pair<std::string, bool>{"/Users/editor/Footage/broll", true});
+  CHECK(asked[1] == std::pair<std::string, bool>{"/Users/editor/Footage/Interview", false});
+  CHECK(*r.find("folders")->a[0].str("state") == "indexed");
+  // A2 is transcribed in the fake index, the others not: not done yet.
+  CHECK_FALSE(*r.boolean("done"));
+  bool talk = false;
+  for (const json::value& f : r.find("timeline_files")->a) {
+    if (*f.str("path") == kTalk) talk = *f.boolean("transcribed");
+  }
+  CHECK(talk);
+  // Status only asks nothing more.
+  (void)tool(s, "analyse", R"({"status_only":true,"wait_s":0})");
+  CHECK(env.index_requests.size() == 1);
 }
 
 TEST_CASE("frames only when the editor allows them", "[agent][thumbnail]") {

@@ -29,6 +29,13 @@ namespace mv::shell {
 // pipe's server is not this user); carry on as the first instance.
 [[nodiscard]] bool forward_to_running_instance(const std::vector<std::wstring>& paths) noexcept;
 
+// docs/design/29: a request for the running instance that is not paths (the
+// timeline agent's "index these folders"): kAgentIndexPrefix then UTF-16 JSON,
+// sent as it is. The receiver neither opens anything nor comes forward. True
+// when a running MediaViewer of this user took it.
+inline constexpr std::wstring_view kAgentIndexPrefix = L"\x1Fmv-agent-index\x1F";
+[[nodiscard]] bool forward_message_to_running_instance(const std::wstring& message) noexcept;
+
 // The first instance claims the name as soon as it knows it is one, long
 // before its window exists. A second start in that gap (Explorer starts one
 // process per selected file) then connects, and its paths wait in the pipe's

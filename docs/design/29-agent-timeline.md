@@ -215,6 +215,7 @@ libmv_agent / mv_agent.dll   (src/addons/agent: server, scope, transcript, nle/e
 | `transcript` | per storyline clip (or `item`, `from`/`to`, or a scope `path` in file time): phrases on the timeline, refined against the sound; words with estimated times; silences measured in the sound, with `cut_from`/`cut_to` keeping 80 ms of air; "not transcribed yet" where the index has none |
 | `search` / `find_similar` | Local search over the scope only: each given folder (and below), and each folder the timeline's files sit in (that folder only), every answer filtered to the scope; which timeline items already use a result |
 | `scope_files` | the media files in the given folders (kind, size, length for a short list, whether the timeline uses it); hidden files and packages skipped |
+| `analyse` | asks MediaViewer to index the scope (below); then reports each folder's state (not indexed, indexing, indexed) and which timeline files have a transcript, waiting up to `wait_s`; `status_only` follows it without asking again |
 | `edit` | a batch of `nle/edit.h` ops on the working copy; every path must be in the scope; files are probed through the host table |
 | `preview_changes` | the change list, runtime before and after, what `commit` would name the version |
 | `commit` | writes "<Project> (Claude N)" (the panel's `versions/`, or beside `--timeline`), lists it in the bridge, asks FCP to import it; never the original's name |
@@ -248,6 +249,34 @@ the 10th to the 90th percentile, at least 6 dB over the floor, clamped to -60…
 not depend on the transcript: a clip not transcribed yet still has its pauses. Word times are
 estimates (Whisper's phrases carry no word timing, and Whisper often leaves fillers such as "um"
 out); the tool says so.
+
+## Analyse
+
+The agent may ask the app to index the timeline's media and the given folders (owner,
+2026-10-18). `MediaViewer --mcp` never indexes itself: two indexers writing one index fight over it
+([18](18-import.md) "One host process"), so it asks the window that hosts the add-ons, which hands
+each folder to the AI pack's `index_folder`, exactly as the person's "Index this folder" does. What
+is asked: each given folder and below, and each folder the timeline's files sit in, by itself (the
+scope filters what search answers, not what is indexed).
+
+```
+MediaViewer --mcp ── analyse ──▶ request JSON (addon/index_request.h: absolute paths, no photos:,
+                                  no whole disk, at most 64 folders)
+   Mac:     a distributed notification "<bundle id>.agent.index" (".agent.index.dev" in a
+            dev-key build, so a test never reaches the installed app), acknowledged on ".ack"
+   Windows: the single-instance pipe, a message marked kAgentIndexPrefix (nothing opens,
+            nothing comes forward), into mv_addon_index_request
+         ──▶ the hosting window: deliver_index_request → the pack's index_folder, or kept
+             (the newest 8) until the pack attaches as the writer; a queued request starts
+             Local search on demand (issue #292)
+```
+
+When no MediaViewer answers, `--mcp` starts one with `--agent-index`: in the background (no
+window, no Dock icon), up while the pack loads or indexes (checked every 30 s), then it quits. It is
+not the sign-in start (`--background`, #452): it never registers or removes start at login.
+Progress comes from the read-only reader the agent already holds (`folder_coverage`, and the
+transcript rows per timeline file); the reader catches up with the writer every 5 s. Nothing here
+polls while nobody asks.
 
 ## Install
 

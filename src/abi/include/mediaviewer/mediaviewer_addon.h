@@ -830,6 +830,16 @@ MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
  * MV_ERR_INVALID_ARG if it is loaded the other way. MV_ERR_NOT_FOUND: nothing
  * is indexed yet. MV_ERR_IO (also from mv_addon_load): the add-on verified but
  * the OS would not load its library; mv_last_error_message() says why. */
+/* docs/design/29: the timeline agent's "index these folders" (index_request.h
+ * JSON), as it arrived from another process. *out_state: 0 started (the AI pack
+ * has the folders), 1 queued (kept until the pack attaches as the writer), 2
+ * refused. Windows host; the Mac host calls the core directly. [any-thread] */
+MV_API mv_status MV_CALL mv_addon_index_request(const char* json_utf8, uint32_t* out_state);
+/* docs/design/29: 1 while the loaded AI pack (the writer) is loading or indexing,
+ * else 0: a start made to index for an agent (`--agent-index`) stays up for it.
+ * [any-thread] */
+MV_API mv_status MV_CALL mv_addon_ai_busy(uint32_t* out_busy);
+
 MV_API mv_status MV_CALL mv_addon_load_reader(mv_session_t session, const char* id,
                                               const char* interface_id, const void** out_interface,
                                               char* out_chrome_utf8, uint32_t chrome_cap);

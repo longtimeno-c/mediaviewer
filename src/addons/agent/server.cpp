@@ -377,6 +377,7 @@ std::string server::tools_list() const {
 {"name":"find_similar","title":"Find alternatives","description":"Other takes or similar shots to a timeline item (item, optionally at a timeline time inside it) or to a moment of a scope file (path, at_file), inside the scope only.","inputSchema":{"type":"object","properties":{"item":{"type":"integer"},"at":{"type":["number","string"]},"path":{"type":"string"},"at_file":{"type":["number","string"]},"max":{"type":"integer","default":20,"minimum":1,"maximum":100}}},"annotations":{"readOnlyHint":true,"openWorldHint":false}},
 {"name":"edit","title":"Edit the working copy","description":"Applies a batch of operations to the working copy, all or nothing. Item ids and times refer to the timeline before this call (later times are mapped through earlier cuts). Ops: {op:cut,from,to[,ripple:false]} removes a range (ripple closes the gap; connected B-roll is cut with it, music plays through); {op:trim,item,from,to} or {op:trim,item,head,tail} (seconds off each end, negative lengthens into the media); {op:split,item,at}; {op:remove,item[,ripple:false]}; {op:move,item,before} (reorder; no time ops in the same batch); {op:source,item,source_in[,path]} another take or range; {op:insert,path,source_in,duration[,before]}; {op:connect,path,source_in,duration,at[,lane:1][,with_audio:false]} B-roll; {op:marker,at,text[,todo]}; {op:unmarker,item,marker}; {op:title,item,text}; {op:volume,item,db}; {op:enable,item,on}. Paths must be in the scope. Times snap to frames. Every change leaves a 'Claude:' marker. Returns the change list; item ids change after an edit: call get_timeline before addressing items again.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":2000}},"required":["ops"]},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
 {"name":"scope_files","title":"List the given folders","description":"The media files in the folders the editor gave (B-roll, other takes), with their kind, size and, for a short list, length; and which already play on the timeline. Hidden files and packages (libraries) are skipped. Only these files and the timeline's own can be used.","inputSchema":{"type":"object","properties":{"folder":{"type":"string","description":"one of the given folders (default: all of them)"},"max":{"type":"integer","default":200,"minimum":1,"maximum":2000}}},"annotations":{"readOnlyHint":true,"openWorldHint":false}},
+{"name":"analyse","title":"Index the timeline's media","description":"Asks MediaViewer (started in the background if it is not running) to index the timeline's own media and the given folders for Local search: what is seen, said (transcripts) and heard. Then reports progress: each folder not indexed, indexing or indexed, and which timeline files have a transcript. Call again with status_only to follow it. Indexing runs in MediaViewer, at its own pace, while the editor works.","inputSchema":{"type":"object","properties":{"status_only":{"type":"boolean","description":"only report progress, ask for nothing"},"wait_s":{"type":"integer","default":10,"minimum":0,"maximum":120,"description":"how long to wait for progress before answering"}}},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"preview_changes","title":"Preview the changes","description":"What the working copy changed against the dragged project: each change with where it is, the runtime before and after, and the name commit would write.","inputSchema":{"type":"object","properties":{}},"annotations":{"readOnlyHint":true,"openWorldHint":false}},
 {"name":"commit","title":"Send to Final Cut Pro","description":"Writes the working copy as a new project beside the original, \"<Project> (Claude N)\" in the same event, and asks Final Cut Pro to import it. The original project and every media file stay as they are. Edits stay in the working copy, so a later commit is the next version.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"a name for the new project (default: <Project> (Claude N))"}}},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
 {"name":"reset","title":"Discard the edits","description":"Throws the working copy's edits away and takes the project as last dragged.","inputSchema":{"type":"object","properties":{}},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}},
@@ -394,6 +395,7 @@ server::outcome server::dispatch(std::string_view tool, const json::value& args)
     if (tool == "find_similar") return search(args, true);
     if (tool == "edit") return edit(args);
     if (tool == "scope_files") return scope_files(args);
+    if (tool == "analyse") return analyse(args);
     if (tool == "preview_changes") return preview();
     if (tool == "commit") return commit(args);
     if (tool == "reset") return reset();
@@ -835,6 +837,86 @@ server::outcome server::scope_files(const json::value& args) {
   }
   w.end_array();
   if (more) w.key("note").string("more files than shown: ask for one folder, or a larger max");
+  w.end_object();
+  return {w.take(), false, {}};
+}
+
+// ---- analyse ------------------------------------------------------------------------------
+
+server::outcome server::analyse(const json::value& args) {
+  std::string why;
+  if (!load(&why)) return {why, true, {}};
+  const scope sc = current_scope();
+  // The given folders and below; the folders the timeline's files sit in, by
+  // themselves (the scope filters what search answers, not what is indexed).
+  std::vector<std::pair<std::string, bool>> folders;
+  for (const std::string& f : sc.folders()) folders.emplace_back(f, true);
+  for (const std::string& d : sc.media_dirs()) {
+    if (d.rfind("photos:", 0) == 0) continue;
+    bool covered = false;
+    for (const auto& [f, rec] : folders) covered = covered || comparable(d).rfind(comparable(f) + "/", 0) == 0;
+    if (!covered) folders.emplace_back(d, false);
+  }
+  if (folders.empty()) return {"nothing to index: the timeline has no media files and no folder was given", true, {}};
+  json::writer w;
+  w.begin_object();
+  if (!args.boolean("status_only").value_or(false)) {
+    std::string state;
+    bool launched = false;
+    if (!env_.request_index(folders, state, launched, &why)) return {"MediaViewer was not asked: " + why, true, {}};
+    w.key("request").string(state);
+    if (launched) w.key("launched").string("MediaViewer was started in the background to index");
+    if (state == "no_app") {
+      w.key("note").string("MediaViewer did not answer: ask the editor to open MediaViewer, then call analyse again");
+    } else if (state == "queued") {
+      w.key("note").string("MediaViewer has the request and starts once Local search starts");
+    } else if (state == "refused") {
+      w.key("note").string("MediaViewer refused the request");
+    }
+    env_.log("index requested");
+  }
+  // Progress, through the read-only index (it catches up every few seconds).
+  std::vector<std::string> paths;
+  for (const auto& [f, rec] : folders) paths.push_back(f);
+  const int wait_s = std::clamp(int_arg(args, "wait_s", 10), 0, 120);
+  const std::int64_t until = env_.now_ms() + wait_s * 1000;
+  std::vector<int> states;
+  std::vector<std::pair<std::string, bool>> files;
+  bool done = false;
+  for (;;) {
+    states.clear();
+    std::string cwhy;
+    const bool have = env_.coverage(paths, states, &cwhy);
+    files.clear();
+    bool all_text = true;
+    for (const std::string& m : original_->media_paths()) {
+      if (!sc.allows(m)) continue;
+      std::vector<segment> segs;
+      bool indexed = false;
+      std::string twhy;
+      (void)env_.transcript(m, segs, indexed, &twhy);
+      files.emplace_back(m, indexed);
+      all_text = all_text && indexed;
+    }
+    done = have && all_text && std::all_of(states.begin(), states.end(), [](int s) { return s == 2; });
+    if (done || env_.now_ms() >= until) {
+      if (!have) w.key("progress_note").string("Local search cannot report progress: " + cwhy);
+      break;
+    }
+    env_.sleep_ms(2000);
+  }
+  w.key("folders").begin_array();
+  for (std::size_t i = 0; i < folders.size(); ++i) {
+    const int s = i < states.size() ? states[i] : 0;
+    w.begin_object().key("path").string(folders[i].first).key("recursive").boolean(folders[i].second).key("state")
+        .string(s == 2 ? "indexed" : (s == 1 ? "indexing" : "not indexed")).end_object();
+  }
+  w.end_array();
+  w.key("timeline_files").begin_array();
+  for (const auto& [p, t] : files) w.begin_object().key("path").string(p).key("transcribed").boolean(t).end_object();
+  w.end_array();
+  w.key("done").boolean(done);
+  if (!done) w.key("next").string("call analyse with status_only to follow it; the other tools work meanwhile");
   w.end_object();
   return {w.take(), false, {}};
 }

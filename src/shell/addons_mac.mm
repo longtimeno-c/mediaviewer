@@ -55,6 +55,7 @@
 #include "addon/ai_resume.h"
 #include "addon/host.h"
 #include "addon/index_locations.h"
+#include "addon/index_request.h"
 #include "addon/manifest.h"
 #include "addon/open_json.h"
 #include "addon/script_host.h"
@@ -170,6 +171,7 @@ struct addon_slot {
   // first search or Settings (issue #292, docs/design/17 "Starting on
   // demand"): no runtime, no model sessions, no indexing threads until then.
   bool on_demand = false;
+  bool agent_wants = false;  // docs/design/29: an agent asked to index before the pack was found
   // Issue #299 (docs/design/17 "Unfinished roots wait for Resume"): the roots
   // the pack's resume.json listed at launch, read without loading the pack,
   // for the bottom-right notice. Cleared when it is answered (Resume or
@@ -688,6 +690,7 @@ void unload_ai() {
   }
   s.ai.chrome = nil;
   s.ai.table = nullptr;
+  mv::addon::retract_index_requests();  // docs/design/29: kept until it is back
   // #398: other add-ons' locations_of_index stop reading the pack's index now
   // (a walk in flight stops at its next row). The wait for it to leave the
   // pack runs on addon_queue(), ahead of the retire queued there: never on
@@ -754,6 +757,19 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   // both read index.db), its index's coordinates serve every add-on's
   // locations_of_index (Places' place: over the whole index).
   mv::addon::publish_index_locations(mv::addon::ai_index_locations(static_cast<const mv_ai_api*>(table)));
+  // docs/design/29: the writer takes the timeline agent's "index these folders";
+  // requests that came while the pack waited are handed over now.
+  if (!s.reader) {
+    const auto* ai = static_cast<const mv_ai_api*>(table);
+    if (ai && ai->index_folder) {
+      mv::addon::publish_index_requests([ai](const mv::addon::index_folder_request& f) -> mv::expected {
+        uint64_t root = 0;
+        const mv_status st = ai->index_folder(ai->ctx, f.path.c_str(), f.recursive ? 1u : 0u, &root);
+        if (st != MV_OK) return mv::err(static_cast<mv::status>(st));
+        return {};
+      });
+    }
+  }
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, true);
   register_local_search_provider(true);
   // #355: before anything is searched, whether audio files are.
@@ -1024,10 +1040,51 @@ std::string read_bridge(int32_t (*fn)(char*, int32_t)) {
 }
 @end
 
+NSString* mv_agent_notification_name();
+
+namespace {
+
+bool ai_begin();
+
+// docs/design/29 "analyse": `MediaViewer --mcp` asks this window (it hosts the
+// add-ons, so it alone indexes) to index folders, by a distributed
+// notification whose object is the request's JSON (addon/index_request.h). An
+// acknowledgement goes back the same way. It costs nothing while nobody asks.
+void agent_index_request(CFNotificationCenterRef, void*, CFNotificationName, const void* object, CFDictionaryRef) {
+  @autoreleasepool {
+    NSString* json = (__bridge NSString*)object;
+    if (![json isKindOfClass:[NSString class]]) return;
+    const mv::addon::index_delivery d = mv::addon::deliver_index_request(json.UTF8String ?: "");
+    // Not attached yet: the pack waits for its first search (issue #292); this
+    // is one. Its attach hands the request over. Before the launch checks
+    // have found the pack, they start it (agent_wants).
+    if (d == mv::addon::index_delivery::queued) {
+      state().ai.agent_wants = true;
+      (void)ai_begin();
+    }
+    const auto r = mv::addon::index_request_from_json(json.UTF8String ?: "");
+    NSString* ack = [NSString stringWithFormat:@"{\"id\":\"%s\",\"state\":\"%s\"}", r ? r->id.c_str() : "",
+                                               mv::addon::delivery_name(d)];
+    NSString* name = [mv_agent_notification_name() stringByAppendingString:@".ack"];
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDistributedCenter(), (__bridge CFStringRef)name,
+                                         (__bridge CFStringRef)ack, nullptr, true);
+  }
+}
+
+}  // namespace
+
+NSString* mv_agent_notification_name() {
+  NSString* bundle = NSBundle.mainBundle.bundleIdentifier ?: @"";
+  return [NSString stringWithUTF8String:mv::addon::index_notification_name(bundle.UTF8String ?: "").c_str()];
+}
+
 void MvAddonsStart(MvAddonsOpenPathFn open_path, void* ctx) {
   mac_addons& s = state();
   s.open_path = open_path;
   s.open_path_ctx = ctx;
+  CFNotificationCenterAddObserver(CFNotificationCenterGetDistributedCenter(), nullptr, &agent_index_request,
+                                  (__bridge CFStringRef)mv_agent_notification_name(), nullptr,
+                                  CFNotificationSuspensionBehaviorDeliverImmediately);
   // Verifying hashes every file: not on the main thread (rule 1). The AI pack
   // is only verified here, not loaded (issue #292, docs/design/17 "Starting on
   // demand"): its runtime, models and indexer start the first time search is
@@ -1048,6 +1105,7 @@ void MvAddonsStart(MvAddonsOpenPathFn open_path, void* ctx) {
       if (ai) {
         sm.ai.on_demand = true;
         sm.ai.unfinished = std::move(*unfinished);
+        if (sm.ai.agent_wants) (void)ai_begin();  // docs/design/29: an index request waits for it
       }
       sm.ai.resume_known = true;
     });
@@ -1783,6 +1841,19 @@ extern "C" bool mv_addon2_ai_wake(void) { return state().reader ? reader_begin()
 
 // Installed and verified, not loaded, nothing on its way: the first search
 // (or Settings) starts it. The search icon offers Local search meanwhile.
+// docs/design/29: the pack has work an agent asked for, or is loading for it:
+// an `--agent-index` start stays up for it.
+bool MvAddonsAiBusy() {
+  const mac_addons& s = state();
+  if (s.ai.loading || (s.ai.agent_wants && !s.ai.chrome)) return true;
+  const auto* api = static_cast<const mv_ai_api*>(s.ai.table);
+  if (!api || !api->status) return false;
+  mv_ai_status st{};
+  st.struct_size = sizeof st;
+  if (api->status(api->ctx, &st) != MV_OK) return false;
+  return st.state == MV_AI_STATE_INDEXING || st.state == MV_AI_STATE_LOADING || st.state == MV_AI_STATE_YIELDING;
+}
+
 extern "C" bool mv_addon2_ai_on_demand(void) {
   const mac_addons& s = state();
   return !s.reader && s.ai.on_demand && !s.ai.chrome && !s.ai.loading;

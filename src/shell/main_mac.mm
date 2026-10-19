@@ -197,6 +197,9 @@ bool g_start_compare = false;
 // with `--background`: the viewer window is never shown and only the menu-bar
 // item appears, once an add-on keeps the process (docs/design/28 "In the background").
 bool g_start_background = false;
+// docs/design/29: started by `MediaViewer --mcp` to index what an agent asked for:
+// in the background, up while the pack works, never touching start at login.
+bool g_agent_index = false;
 NSPoint g_new_window_from = NSZeroPoint;
 
 // Add-ons -- the AI pack and its indexer, Import's volume watch, Final Cut
@@ -8499,6 +8502,20 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
 
 - (void)backgroundStartExpired {
   if (!_backgroundStart || !_inBackground) return;
+  if (g_agent_index) {
+    // Up while the pack indexes what was asked; then gone. Start at login is
+    // the person's, not this start's: left as it is.
+    __weak MvLabApp* weakSelf = self;
+    if (MvAddonsAiBusy() || mv::addon::default_slots().keeping_alive()) {
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        [weakSelf backgroundStartExpired];
+      });
+      return;
+    }
+    _backgroundStart = false;
+    [self quitFromBackground];
+    return;
+  }
   _backgroundStart = false;
   if (mv::addon::default_slots().keeping_alive()) return;
 #if MV_APP_BUNDLE
@@ -12202,6 +12219,9 @@ int main(int argc, char** argv) {
       g_start_compare = true;
     } else if (std::strcmp(arg, "--background") == 0) {
       g_start_background = true;  // #452: as a login item starts it
+    } else if (std::strcmp(arg, "--agent-index") == 0) {
+      g_start_background = true;
+      g_agent_index = true;
     } else if (std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0) {
       usage();
       return 0;

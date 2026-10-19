@@ -51,12 +51,20 @@ class environment {
   // The frame at `pts_ms` as JPEG bytes (long edge at most 512).
   virtual bool frame_jpeg(std::string_view path, std::int64_t pts_ms, std::vector<std::uint8_t>& jpeg,
                           std::string* why) = 0;
+  // docs/design/29 "analyse": asks the window that hosts the add-ons to index
+  // these folders (path, recursive). `state`: started, queued, refused or
+  // no_app; `launched`: MediaViewer was started in the background for it.
+  virtual bool request_index(const std::vector<std::pair<std::string, bool>>& folders, std::string& state,
+                             bool& launched, std::string* why) = 0;
+  // How far the index has each folder: 0 not covered, 1 indexing, 2 complete.
+  virtual bool coverage(const std::vector<std::string>& folders, std::vector<int>& states, std::string* why) = 0;
   // Asks Final Cut Pro to import a new version. False with why where there is
   // no FCP to hand it to (Windows: the file is the result).
   virtual bool hand_to_editor(const std::string& fcpxml_path, std::string* why) = 0;
   // Settings > Add-ons > AI agents: "thumbnails" (pixels to the model).
   virtual bool thumbnails_allowed() = 0;
   virtual std::int64_t now_ms() = 0;
+  virtual void sleep_ms(int ms) = 0;
   // Status names only, never a path, a name or a query (rule 6).
   virtual void log(const char* ascii) = 0;
 };

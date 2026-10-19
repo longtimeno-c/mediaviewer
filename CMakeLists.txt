@@ -1372,6 +1372,7 @@ if(MV_BUILD_TESTS)
     tests/test_addon_screens.cpp
     tests/test_addon_slots.cpp
     tests/test_ai_resume.cpp
+    tests/test_index_request.cpp
     tests/test_import_naming.cpp
     tests/test_import_engine.cpp
     tests/test_json.cpp

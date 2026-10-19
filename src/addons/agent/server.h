@@ -13,6 +13,7 @@
 //   search           Local search inside the scope only
 //   find_similar     other takes and similar shots, inside the scope only
 //   scope_files      the media in the given folders (B-roll, other takes)
+//   analyse          asks MediaViewer to index the timeline's media and the folders, and follows it
 //   edit             a batch of operations on the working copy (nle/edit.h)
 //   preview_changes  what changed against the dragged project, the new length
 //   commit           writes "<Project> (Claude N)" and hands it to Final Cut Pro
@@ -80,6 +81,7 @@ class server {
   outcome search(const json::value& args, bool similar);
   outcome edit(const json::value& args);
   outcome scope_files(const json::value& args);
+  outcome analyse(const json::value& args);
   outcome preview();
   outcome commit(const json::value& args);
   outcome reset();

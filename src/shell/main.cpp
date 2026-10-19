@@ -166,6 +166,9 @@ constexpr UINT kMsgBackgroundChanged = WM_APP + 0x81;
 // Run entry and quits. Sharepoint asks within ~10 s of its load.
 constexpr UINT_PTR kBackgroundStartTimerId = 0x7D01;
 constexpr UINT kBackgroundStartGraceMs = 60000;
+// docs/design/29: chrome_host::show_addon's AI kind that starts Local search
+// for an agent's index request (IslandHost.Addons.cs AiStartForAgent).
+constexpr std::int32_t kAiStartForAgent = 100;
 // Text in images: the pointer rests on a still this long before it is read.
 constexpr UINT_PTR kTextDwellTimerId = 0x7C01;
 constexpr UINT kTextDwellMs = 500;
@@ -563,6 +566,10 @@ bool g_new_instance = false;
 // hidden and only the notification-area icon shows, once an add-on keeps the
 // process. Never forwards to a running viewer: one already running is enough.
 bool g_start_background = false;
+// docs/design/29: an `--agent-index` start: in the background while the AI pack
+// indexes what an agent asked for, then gone; sign-in is left alone.
+bool g_agent_index = false;
+bool g_agent_index_wanted = false;  // a request waits for the pack to start
 // `--compare` (issue #208): start with the two-up compare on, as `|` turns it
 // on. A start forwarded to a running viewer hands over its paths only.
 bool g_start_compare = false;
@@ -9071,6 +9078,25 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
       // A second start's paths (docs/design/09): opened here, as a drop would be, and
       // the window comes forward. An empty hand-off only brings it forward.
       std::unique_ptr<std::wstring> paths(reinterpret_cast<std::wstring*>(lparam));
+      // docs/design/29: the timeline agent's "index these folders" is no start:
+      // nothing opens, nothing comes forward; the AI pack takes the folders.
+      if (paths && paths->starts_with(mv::shell::kAgentIndexPrefix)) {
+        const std::wstring_view body = std::wstring_view(*paths).substr(mv::shell::kAgentIndexPrefix.size());
+        const int n = ::WideCharToMultiByte(CP_UTF8, 0, body.data(), static_cast<int>(body.size()), nullptr, 0,
+                                            nullptr, nullptr);
+        std::string json(n > 0 ? static_cast<std::size_t>(n) : 0, '\0');
+        if (n > 0) {
+          ::WideCharToMultiByte(CP_UTF8, 0, body.data(), static_cast<int>(body.size()), json.data(), n, nullptr,
+                                nullptr);
+        }
+        uint32_t state = 0;
+        (void)mv_addon_index_request(json.c_str(), &state);
+        // Queued: the pack waits for its first search (issue #292); this is one.
+        if (state == 1) {
+          g_agent_index_wanted = !app->chrome.show_addon(2, kAiStartForAgent, "");
+        }
+        return 0;
+      }
       leave_background(app);  // #452: a start while hidden brings the window back
       if (paths && !paths->empty()) open_dropped_wide_list(app, *paths);
       if (::IsIconic(hwnd)) ::ShowWindow(hwnd, SW_RESTORE);
@@ -9286,6 +9312,19 @@ std::optional<LRESULT> window_on_timer(HWND hwnd, UINT msg, WPARAM wparam, LPARA
         confirm_update_start_async();
         return 0;
       }
+      if (wparam == kBackgroundStartTimerId && g_agent_index) {
+        // docs/design/29: up while the pack works for the agent, then gone.
+        if (g_agent_index_wanted) g_agent_index_wanted = !app->chrome.show_addon(2, kAiStartForAgent, "");
+        uint32_t busy = 0;
+        (void)mv_addon_ai_busy(&busy);
+        if (busy || g_agent_index_wanted || !kept_alive().empty()) {
+          ::SetTimer(hwnd, kBackgroundStartTimerId, 30000, nullptr);
+          return 0;
+        }
+        ::KillTimer(hwnd, kBackgroundStartTimerId);
+        if (app->in_background) quit_from_background(app);
+        return 0;
+      }
       if (wparam == kBackgroundStartTimerId) {
         // #452: a sign-in start nothing kept (the add-on is gone, or its toggle
         // was turned off where this process could not see it): no entry, no process.
@@ -9450,6 +9489,10 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
       g_new_instance = true;
     } else if (arg == L"--background") {
       g_start_background = true;
+    } else if (arg == L"--agent-index") {
+      // docs/design/29: started by `MediaViewer --mcp` to index for an agent.
+      g_start_background = true;
+      g_agent_index = true;
     } else if (arg == L"--compare") {
       g_start_compare = true;
     } else if (arg == L"--restore-fullscreen") {
