@@ -47,6 +47,7 @@
 #include <imgui.h>
 #include <imgui_impl_metal.h>
 
+#include "core/boot_timeline.h"
 #include "core/crash_context.h"
 #include "core/trace.h"
 #include "gfx/pace_json.h"
@@ -1499,8 +1500,11 @@ void present_lab_mac::render_thread_main() noexcept {
             note_nav_image(*loaded);
             first_pixel_seconds_ = elapsed;
             full_seconds_ = loaded->preview ? -1.0 : elapsed;
+            boot_pixel_due_ = true;
+            boot_full_due_ = !loaded->preview;
           } else if (!loaded->preview && full_seconds_ < 0.0) {
             full_seconds_ = elapsed;
+            boot_full_due_ = true;
           }
           if (!loaded->preview && nav_latched_seq_ != 0 && nav_latched_seq_ <= 64 &&
               loaded->item_id == nav_item_ &&
@@ -2279,6 +2283,11 @@ void present_lab_mac::render_thread_main() noexcept {
 
         if (warmed_up_ && !options_.start_animating) ++idle_stats_.presents;
         ++total_presents_;
+        // Issue #486. First marks win, so these cost a load after launch.
+        mv::boot::mark(mv::boot::stage::first_frame);
+        if (boot_pixel_due_) mv::boot::mark(mv::boot::stage::first_pixel);
+        if (boot_full_due_) mv::boot::mark(mv::boot::stage::full_resolution);
+        boot_pixel_due_ = boot_full_due_ = false;
         pacer_.frame_end(tick);
         if (!decision.live) painted_static_ = true;
         redraw_owed_ = false;

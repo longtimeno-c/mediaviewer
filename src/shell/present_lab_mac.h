@@ -508,6 +508,10 @@ class present_lab_mac {
   // still_first_pixel_s / still_full_s. Render thread only.
   double first_pixel_seconds_ = -1.0;
   double full_seconds_ = -1.0;
+  // Issue #486: the boot timeline's first_pixel / full_resolution are marked
+  // on the present that shows them, not when the texture lands.
+  bool boot_pixel_due_ = false;
+  bool boot_full_due_ = false;
   bool soak_complete_ = false;
   std::uint64_t total_presents_ = 0;
   bool was_presenting_ = false;
