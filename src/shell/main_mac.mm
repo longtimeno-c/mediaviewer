@@ -2502,7 +2502,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   mv::job_system _jobs;
   mv::shell::mac_lab_options _options;
   bool _terminating;
-  // #452: every window closed while an add-on keeps the process (Sharepoint's
+  // #452: every window closed while an add-on keeps the process (Driftwire's
   // Receive when MediaViewer is closed). The viewer window is hidden, not
   // closed, and comes back on reopen, a file open, or the menu-bar item.
   bool _inBackground;
@@ -8512,7 +8512,7 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
 }
 
 // No window left on screen: out of the Dock and the app switcher; the
-// menu-bar item stays. A window still open (Sharepoint's) keeps the Dock icon.
+// menu-bar item stays. A window still open (Driftwire's) keeps the Dock icon.
 - (void)backgroundSettle {
   if (!_inBackground) return;
   for (NSWindow* w in NSApp.windows) {
@@ -8559,7 +8559,7 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
 }
 
 // #452: the login-item start (or --background). The window was made but is
-// never shown; the add-ons load as on any start, and Sharepoint keeps the
+// never shown; the add-ons load as on any start, and Driftwire keeps the
 // process (the menu-bar item) or, after the grace, it quits and takes its
 // login item with it (the add-on is gone, or its toggle was turned off where
 // this process could not see it).
@@ -11287,7 +11287,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 // not one of them. The Mac lists both halves of a pair as items and keeps no
 // pairing, so this is a walk of the in-memory listing with no syscall: no
 // stat, no read (a Photos item without a file yet is left out). The chrome
-// (ShareMenu.swift) shows the menu: Sharepoint, then the system's picker.
+// (ShareMenu.swift) shows the menu: Driftwire, then the system's picker.
 - (std::vector<std::string>)shareFilesForClicked:(NSInteger)clicked {
   std::vector<std::string> selection;
   for (const auto& entry : [self markedOrCurrentEntries]) {
@@ -11302,7 +11302,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   return mv::shell::share_stops(std::move(selection), picked);
 }
 
-// {"files": [...], "media": [...]}: Sharepoint's, and the system picker's
+// {"files": [...], "media": [...]}: Driftwire's, and the system picker's
 // (media only, no sidecars).
 - (std::string)shareFilesJSONForClicked:(NSInteger)clicked {
   const std::vector<std::string> files = [self shareFilesForClicked:clicked];

@@ -18,10 +18,11 @@
 namespace mv::addon {
 
 // The contribution API this host serves (docs/design/25 §7). 4 = screens,
-// 5 = chrome slots and search providers. Points of an API this host knows but
+// 5 = chrome slots and search providers, 6 = the screen vocabulary's `link`
+// node and a button's `copy` (2026-10-19). Points of an API this host knows but
 // has not built (settings pages, keymaps: PR 56; script commands: PR 57) make
 // a manifest that names them "needs a newer MediaViewer", never half-loaded.
-inline constexpr std::uint32_t kSlotsContributionApi = 5;
+inline constexpr std::uint32_t kSlotsContributionApi = 6;
 inline constexpr std::uint32_t kScreensApi = 4;
 inline constexpr std::uint32_t kSlotsApi = 5;
 // The host function table version that carries the screen / slot calls

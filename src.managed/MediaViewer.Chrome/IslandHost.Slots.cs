@@ -73,7 +73,7 @@ public static partial class IslandHost
     private static readonly AddonSlot PlacesChannel = new("places", "Places", null, null);
     private static string _placesMessage = "";
     // Every other installed slot add-on's release channel, so Settings offers
-    // its update as it does Places' (Sharepoint's is SharepointSlot). Keyed by id.
+    // its update as it does Places' (Driftwire's is DriftwireSlot). Keyed by id.
     private static readonly Dictionary<string, AddonSlot> SlotChannels = new(StringComparer.Ordinal);
     private static readonly Dictionary<string, string> SlotUpdateMessages = new(StringComparer.Ordinal);
     private static AddonSettingsPage? _placesPage;
@@ -249,7 +249,7 @@ public static partial class IslandHost
             _slotTileContext = context;
             RemakeGalleryTiles();
         }
-        AfterSlotContributions();  // #410: Settings' Open, a share waiting on Sharepoint
+        AfterSlotContributions();  // #410: Settings' Open, a share waiting on Driftwire
     }
 
     private static bool _slotTileBadges;
@@ -731,7 +731,7 @@ public static partial class IslandHost
     // Null when no add-on contributes any.
     private static MenuFlyout? SlotContextMenuFor(FolderItemVm vm)
     {
-        // Issue #444: Sharepoint's own "Send with Sharepoint…" is the Share
+        // Issue #444: Driftwire's own "Send with Driftwire…" is the Share
         // submenu's first entry, one route through the share command.
         List<SlotItem> entries = _slotItems.Where(i => i.Slot == "context" && !IsShareRoutedSlotItem(i)).ToList();
         if (entries.Count == 0) return null;
@@ -827,7 +827,7 @@ public static partial class IslandHost
     private static AddonSlot SlotChannelFor(SlotAddonRow row)
     {
         if (row.Id == PlacesChannel.Id) return PlacesChannel;
-        if (row.Id == SharepointId) return SharepointSlot;
+        if (row.Id == DriftwireId) return DriftwireSlot;
         if (!SlotChannels.TryGetValue(row.Id, out AddonSlot? slot))
         {
             slot = new AddonSlot(row.Id, row.Name, null, null);
@@ -886,13 +886,13 @@ public static partial class IslandHost
         // Probed once the panel is built: a probe refreshes this panel, so one
         // started inside the loop would rebuild it under the loop.
         var probe = new List<AddonSlot>();
-        // #410: Sharepoint, offered with one click while it is not installed.
-        if (!SharepointInstalled)
+        // #410: Driftwire, offered with one click while it is not installed.
+        if (!DriftwireInstalled)
         {
-            (Border card, StackPanel body) = AddonCard("Sharepoint");
-            BuildSharepointOffer(body, null, titled: false);
+            (Border card, StackPanel body) = AddonCard("Driftwire");
+            BuildDriftwireOffer(body, null, titled: false);
             _slotSettingsPanel.Children.Add(card);
-            if (SharepointSlot.Offer.Kind == OfferKind.Unknown) probe.Add(SharepointSlot);
+            if (DriftwireSlot.Offer.Kind == OfferKind.Unknown) probe.Add(DriftwireSlot);
         }
         foreach (SlotAddonRow row in SlotAddonRows)
         {
@@ -938,7 +938,7 @@ public static partial class IslandHost
                 buttons.Children.Insert(0, open);
             }
             if (buttons.Children.Count > 0) body.Children.Add(buttons);
-            if (row.Id == SharepointId && _sharepointMessage.Length > 0) body.Children.Add(Note(_sharepointMessage));
+            if (row.Id == DriftwireId && _driftwireMessage.Length > 0) body.Children.Add(Note(_driftwireMessage));
             if (SlotUpdateMessages.TryGetValue(row.Id, out string? updated) && updated.Length > 0) body.Children.Add(Note(updated));
             if (_addonsElsewhere) body.Children.Add(Note(AddonsElsewhereText));
             _slotSettingsPanel.Children.Add(card);

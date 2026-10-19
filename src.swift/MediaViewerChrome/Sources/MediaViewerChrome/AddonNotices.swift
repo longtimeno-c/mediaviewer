@@ -6,7 +6,7 @@
 //
 // - a notice is a UNUserNotificationCenter notification, unless its screen is
 //   the front window of the active app (the card is in plain sight). Clicking
-//   it opens that screen; its one button (Sharepoint's Decline) goes back to
+//   it opens that screen; its one button (Driftwire's Decline) goes back to
 //   the add-on. Without permission, or in the unbundled lab binary (which has
 //   no notification centre), the screen opens instead, as it did before #452;
 // - permission is asked when an add-on asks (a toggle turned on), never at
@@ -16,7 +16,7 @@
 //   viewer rather than quitting while the list is not empty.
 //
 // Nothing here runs until the registry has a notice, an ask or a keep: with
-// Sharepoint's toggles off the notification centre is never touched.
+// Driftwire's toggles off the notification centre is never touched.
 // The Windows twin is IslandHost.Notices.cs.
 import AppKit
 import MVChromeBridge

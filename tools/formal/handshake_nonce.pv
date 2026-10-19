@@ -1,4 +1,4 @@
-(* Sharepoint protocol 2, the first link: the client's nonce is secret until
+(* Driftwire protocol 2, the first link: the client's nonce is secret until
    the client's h2 is fixed (the other half of handshake_code.pv's ordering
    argument). Clients here stop right after message 2, where the code fixes
    h2 and before message 3 reveals the nonce; servers are complete, the
@@ -11,7 +11,7 @@ free ncHeld: bitstring [private].
 
 query attacker(ncHeld).
 
-(* XXClient up to h2 (sharepoint.pvl), with ncHeld as every run's nonce, which
+(* XXClient up to h2 (driftwire.pvl), with ncHeld as every run's nonce, which
    only helps the attacker. *)
 let ClientUntilH2 =
   let h0 = NAME_XXHFS in

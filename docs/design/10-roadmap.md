@@ -565,15 +565,15 @@ allocation bomb each stop the add-on, not the viewer, within the watchdog's boun
 `folder.read` the folder API is absent; both present-loop gates hold while a script spins.
 Where each part stands: [25 "Implementation notes (PR 57)"](25-open-addons.md#implementation-notes-pr-57-2026-10-11).
 
-## Sharepoint (issues #410, #413, both platforms)
+## Driftwire (issues #410, #413, both platforms)
 
 Send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth: both screens show
 the same code and nothing moves until the other person accepts; a first-party add-on with a
 window the hosts draw from its view tree. The gallery gains a Shift-click range that copy, `F7` /
 `F8`, `Delete`, copy path, Share and drag-out act on, drag-out from any gallery cell, and one
-share icon that opens Sharepoint with the selection (or installs it in one click). Host pieces:
+share icon that opens Driftwire with the selection (or installs it in one click). Host pieces:
 a folder-pick field, slot add-ons' commands as events, Settings' Open, ABI 0.29
-([28](28-sharepoint.md)).
+([28](28-driftwire.md)).
 
 **Verify (both platforms):** two machines on the same Wi-Fi each see the other on the screen, both
 show the same code, Accept delivers the marked files into the chosen folder with the bytes
@@ -583,8 +583,8 @@ with the add-on installed stays within noise of the app without it. A crash repo
 that has just transferred contains no path, filename or pixel from those files. Shift-click from A
 to B selects A through B and leaves the gallery open; copy copies the range; dragging a gallery
 cell out delivers the files, one cell of a range delivers the range; the share icon opens
-Sharepoint with the gallery selection; both present-loop gates hold. Where each part stands:
-[DEVELOPMENT.md](../DEVELOPMENT.md#sharepoint-issues-410-413-2026-10-15).
+Driftwire with the gallery selection; both present-loop gates hold. Where each part stands:
+[DEVELOPMENT.md](../DEVELOPMENT.md#driftwire-issues-410-413-2026-10-15).
 
 ## Not built
 

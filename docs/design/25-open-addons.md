@@ -710,7 +710,7 @@ How it works:
   loaded file's removal to the next start, as for any add-on in use). A changed setting re-asks
   only in the window that wrote it; another reads the new value at its next request.
 
-**Added for Sharepoint (2026-10-15, [28](28-sharepoint.md#host-pieces-this-added)):**
+**Added for Driftwire (2026-10-15, [28](28-driftwire.md#host-pieces-this-added)):**
 
 - A `text_field` may carry `"pick": "folder"`: the hosts add **Choose…** beside it, show the
   system folder dialog (`NSOpenPanel`; WinUI's `FolderPicker`, owned by the screen's window) and
@@ -728,10 +728,10 @@ How it works:
   is the front window and opens the screen on a click), `notice_authorize` asks the OS for
   permission when the person turns something on, and `keep_alive` keeps the process, with a
   menu-bar item / notification-area icon, after every window is closed. The registry holds them
-  (`notices_json`); the hosts draw them. Sharepoint is the one user
-  ([28 "In the background"](28-sharepoint.md#in-the-background-452)).
+  (`notices_json`); the hosts draw them. Driftwire is the one user
+  ([28 "In the background"](28-driftwire.md#in-the-background-452)).
 
-**Added for an AirDrop-like Sharepoint (#442, 2026-10-15)**, generic, drawn by both hosts
+**Added for an AirDrop-like Driftwire (#442, 2026-10-15)**, generic, drawn by both hosts
 (`ScreenView.swift`, `IslandHost.Screens.cs`) and checked by the core (`"[screens]"`):
 
 - **`tiles`** (interactive; `label` required): `items` of `{id, text, detail?, initials?,
@@ -749,6 +749,24 @@ How it works:
   submits too), then clears for a retry. On Windows it is `FakeInput` with a larger face, as every
   field there.
 - **`text` `"style": "display"`**: a large face for a short code read across a room.
+
+Two more (2026-10-19, Driftwire; contribution API **6**, so an add-on whose tree uses them asks for
+6 and an older host says "needs a newer MediaViewer" rather than refusing the tree and showing a
+blank window):
+
+- **`link`** (a picture, not a control; `label` required): the path a transfer takes. `via`
+  (`bluetooth`, `wifi`, `internet`, `dht`, `relay`, `server`) and `state` (`connecting`, `moving`,
+  `paused`, `done`, `failed`) are required; `direction` (`send` / `receive`), `from`, `to`,
+  `through` (the computer in between, 64 characters), `caption` and `value` (−1–1) are optional.
+  Both hosts draw this computer, the other, the line between them in the bearer's own shape and
+  colour (Wi-Fi straight, Bluetooth dashed, the internet an arc, the DHT a dotted arc through a few
+  nodes, a relay an arc through a named computer), a badge for the bearer, the part moved so far,
+  and dots that travel the way the bytes go. Only `moving` and `connecting` animate, at 30 fps at
+  most, and never with Reduce Motion (Mac) or animations off (Windows); the dots stop when the
+  node leaves the tree. Its VoiceOver / Narrator name is `label`, its value the percentage.
+- **`button` `"copy"`**: a click also puts this text on the clipboard. The host does it, only on
+  the click, then reports the click as usual; an add-on has no clipboard call of its own. The
+  label says "Copied" for 1.5 s.
 
 For a script add-on (PR 57): the registry reaches code through `slot_client`; a script runtime
 implements it on its own worker and calls the same `post_*` functions the v3 rows wrap.

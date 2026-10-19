@@ -142,7 +142,7 @@ struct GalleryView: View {
             .padding(.top, MVTheme.space(8))
         }
         // Issue #413: one share icon for the grid's selection; issue #444: it
-        // opens the share menu (Sharepoint, then the system's targets).
+        // opens the share menu (Driftwire, then the system's targets).
         if !store.names.isEmpty && (store.currentIndex >= 0 || !store.range.isEmpty) {
           HStack {
             if store.range.count > 1 {

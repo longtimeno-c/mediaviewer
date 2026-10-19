@@ -239,9 +239,9 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
   keep or delete its data.
 - **Updates:** Settings offers **Update to X** when the release channel has a newer signed
   version than the installed one; nothing downloads until it is clicked. Every installed add-on
-  has it: Import, the Local search pieces, Places, and each other slot add-on (Sharepoint, …),
+  has it: Import, the Local search pieces, Places, and each other slot add-on (Driftwire, …),
   whose card asks its own channel when Settings opens (until 2026-10-16 only Places' did, so
-  Sharepoint never offered an update). The new version
+  Driftwire never offered an update). The new version
   installs beside the running one and the store removes the old one at the next start
   (`prune.pending`), so a running add-on never loses its files. An update of a running Import or
   Local search Core therefore takes over only at the next start, so the app offers one

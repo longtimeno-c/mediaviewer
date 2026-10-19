@@ -1,13 +1,13 @@
 # Formal models
 
-ProVerif models of Sharepoint's protocol 2 (#472): the first link (`Noise_XXhfs` with ML-KEM-768,
+ProVerif models of Driftwire's protocol 2 (#472): the first link (`Noise_XXhfs` with ML-KEM-768,
 the nonce commitment and the six-digit code) and the rejoin (`Noise_NNhfs+psk0` keyed by the
 resume secret, the tag, `resume_at`). What they show and what they leave out is in
-[docs/design/28 "The wire"](../../docs/design/28-sharepoint.md#the-wire).
+[docs/design/28 "The wire"](../../docs/design/28-driftwire.md#the-wire).
 
 | File | What it checks |
 |---|---|
-| `sharepoint.pvl` | The primitives and both handshakes, token by token from `src/addons/sharepoint/noise.cpp` and `channel.cpp` |
+| `driftwire.pvl` | The primitives and both handshakes, token by token from `src/addons/driftwire/noise.cpp` and `channel.cpp` |
 | `handshake_code.pv` | An attacker in the middle with a collision oracle on the code cannot get matching codes; after a match both sides share keys and the resume secret, and the files stay secret |
 | `handshake_nonce.pv` | The client's nonce is secret until its h2 is fixed (the other half of the ordering argument) |
 | `code_order.pv` | Sanity, on the first link's skeleton: the collision oracle wins without the commitment check (ProVerif finds the attack) and loses with it. The full first link without the check does not finish |

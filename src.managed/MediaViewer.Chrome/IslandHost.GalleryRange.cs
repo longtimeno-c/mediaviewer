@@ -90,9 +90,9 @@ public static partial class IslandHost
             CornerRadius = new CornerRadius(4),
             IsTabStop = true,
         };
-        // Issue #444: the share menu (Sharepoint, then Windows Share) for the
+        // Issue #444: the share menu (Driftwire, then Windows Share) for the
         // selection, through the one share command.
-        ToolTipService.SetToolTip(b, "Share the selection: Sharepoint, Mail, Phone Link and more");
+        ToolTipService.SetToolTip(b, "Share the selection: Driftwire, Mail, Phone Link and more");
         b.Click += (_, _) =>
         {
             try { RequestShare(ShareTargetMenu, ShareFromGallery, -1, b); }

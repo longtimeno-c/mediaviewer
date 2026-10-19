@@ -129,6 +129,47 @@ TEST_CASE("the #442 additions: tiles, a ring, a code field, a card, display text
   }
 }
 
+TEST_CASE("the 2026-10-19 additions: a transfer's path, a button that copies", "[addon][screens]") {
+  using namespace mv::addon::screen;
+  const char* json = R"({"type":"stack","id":"page","children":[
+   {"type":"link","id":"p1","label":"Sending to Bea. Wi-Fi.","via":"wifi","state":"moving","direction":"send",
+    "from":"This computer","to":"Bea","caption":"Wi-Fi, on this network","value":0.4},
+   {"type":"link","id":"p2","label":"Receiving","via":"relay","state":"connecting","through":"Rob"},
+   {"type":"link","id":"p3","label":"Done","via":"dht","state":"done"},
+   {"type":"button","id":"copy","label":"Copy code","copy":"ABCD-EFGH"}]})";
+  tree t;
+  REQUIRE(t.set(json) == error::none);
+  tree again;
+  REQUIRE(again.set(t.json()) == error::none);
+  CHECK(again.json() == t.json());
+  // A picture, not a control; the button still reports its click.
+  CHECK(t.check_event("p1", ev_click, "") == error::not_interactive);
+  CHECK(t.check_event("copy", ev_click, "") == error::none);
+  for (const char* via : {"bluetooth", "wifi", "internet", "dht", "relay", "server"}) {
+    tree x;
+    CHECK(x.set(std::string(R"x({"type":"link","id":"l","label":"L","state":"paused","via":")x") + via + "\"}") ==
+          error::none);
+  }
+  const char* bad[] = {
+      R"({"type":"link","id":"l","via":"wifi","state":"moving"})",                   // no label
+      R"({"type":"link","id":"l","label":"L","state":"moving"})",                    // no via
+      R"({"type":"link","id":"l","label":"L","via":"wifi"})",                        // no state
+      R"({"type":"link","id":"l","label":"L","via":"carrier pigeon","state":"moving"})",
+      R"({"type":"link","id":"l","label":"L","via":"wifi","state":"exploding"})",
+      R"({"type":"link","id":"l","label":"L","via":"wifi","state":"moving","direction":"up"})",
+      R"({"type":"link","id":"l","label":"L","via":"wifi","state":"moving","value":3})",
+      R"({"type":"link","id":"l","label":"L","via":"wifi","state":"moving","colour":"red"})",
+      R"({"type":"button","id":"b","label":"B","copy":""})",
+      R"({"type":"button","id":"b","label":"B","copy":"a\u0007b"})",
+      R"({"type":"button","id":"b","label":"B","copy":7})",
+  };
+  for (const char* b : bad) {
+    INFO(b);
+    tree x;
+    CHECK(x.set(b) != error::none);
+  }
+}
+
 TEST_CASE("a control or picture without a label is refused (VoiceOver / Narrator)", "[addon][screens]") {
   const char* unnamed[] = {
       R"({"type":"button","id":"b"})",

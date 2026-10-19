@@ -1,5 +1,5 @@
 (* The sanity check for handshake_code.pv: the collision oracle (codeeq in
-   sharepoint.pvl) is a real power, and the commitment is what defeats it.
+   driftwire.pvl) is a real power, and the commitment is what defeats it.
 
    The full first link without the server's commitment check does not finish in
    ProVerif (saturation ran past 70 minutes under every setting tried), so this

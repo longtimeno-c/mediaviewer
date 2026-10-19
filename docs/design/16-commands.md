@@ -326,13 +326,13 @@ Share…, and **Share ▸** on the right-click menu of a gallery cell, a filmstr
 - **Which files.** The selection: the gallery's range while it stands, else the marks, else the
   current file. A right-click on a file that is part of the selection shares the selection; on any
   other file, that file alone (`share_stops`). The bar button is off with nothing to share.
-- **The menu.** [Sharepoint](28-sharepoint.md) first (its window with those files, or its
+- **The menu.** [Driftwire](28-driftwire.md) first (its window with those files, or its
   one-click install when it is not there), then the system's targets: **Windows Share** (Mail,
   Phone Link, Nearby Share, apps; `DataTransferManager`) on Windows, `NSSharingServicePicker`
-  (Mail, Messages, AirDrop, Notes…) on the Mac, where Sharepoint is the picker's first entry (its
+  (Mail, Messages, AirDrop, Notes…) on the Mac, where Driftwire is the picker's first entry (its
   delegate puts it there). The right-click **Share ▸** submenu lists the same two entries; picking
   one runs the command with that entry (`share_target`) and the clicked file.
-- **Sidecars.** Sharepoint gets the files with their pair halves and takes each XMP itself; the
+- **Sidecars.** Driftwire gets the files with their pair halves and takes each XMP itself; the
   system sheet gets the media files only, never a sidecar (`share_system_files`).
 - **Nothing is read before a target is asked for**, and nothing is sent until one is picked
   (rule 6). The UI thread only picks the stops. Windows walks the listing for pair halves on the
@@ -344,8 +344,8 @@ Share…, and **Share ▸** on the right-click menu of a gallery cell, a filmstr
   wrapped to receive all the files when picked; a target that will not take that many (Mail and
   Messages cap attachments) says so and sends nothing. 500 files: 65 → 21 ms warm, 139 → 94 ms on
   the first open in a process (the first open's ~90 ms loads the share services, whatever the count).
-- **One route.** Sharepoint's own **Send with Sharepoint…** context entry is left out of the
-  right-click menus on both hosts: Share ▸ Sharepoint is that route.
+- **One route.** Driftwire's own **Send with Driftwire…** context entry is left out of the
+  right-click menus on both hosts: Share ▸ Driftwire is that route.
 - **Wire.** The island's command carries one float: `(clicked + 1) * 16 + from * 4 + target`
   (`pack_share_request`; `from` only says where the menu is anchored). Native answers through the
   chrome's `ShareMenu` entry (`chrome_share_args` + `{"files", "media"}`) on Windows and
@@ -368,7 +368,7 @@ commands below act on it first.
 | `F2` | Viewing | Rename the current file (the gallery's selected cell); also File ▸ Rename… on the Mac |
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
-| `Ctrl+Shift+S` | Viewing | Share: the share menu (Sharepoint, then Windows Share / the macOS picker) |
+| `Ctrl+Shift+S` | Viewing | Share: the share menu (Driftwire, then Windows Share / the macOS picker) |
 
 These are on the mouse too: the Mac's File menu, and on Windows the command bar's **Open** flyout
 (Mark / Unmark, Copy / Move Marked To…, Move to Recycle Bin, Share…, Copy Path, Copy Edited
@@ -512,12 +512,12 @@ pauses / resumes while copying, `Shift+Space` toggles its day, `Ctrl+Tab` / `Ctr
 next / previous source, `Ctrl+J` ejects, `Esc` closes the window and the import carries on
 ([import](18-import.md)).
 
-### Sharepoint (while the add-on is installed)
+### Driftwire (while the add-on is installed)
 
-One row, **Sharepoint**, with no default key (issue #410): it opens Sharepoint's window with the
+One row, **Driftwire**, with no default key (issue #410): it opens Driftwire's window with the
 marked or current files as the ones to send. Settings can give it a key like any row. The row is
 the add-on's manifest command; an add-on that fills slots and has no chrome gets it as a command
-event (`run_command`, [28](28-sharepoint.md#host-pieces-this-added)).
+event (`run_command`, [28](28-driftwire.md#host-pieces-this-added)).
 
 ### Add-on commands (PR 57, from scripts)
 

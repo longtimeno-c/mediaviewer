@@ -1,5 +1,5 @@
 #!/bin/sh
-# Runs the Sharepoint protocol 2 models (all at once, one core each) and checks
+# Runs the Driftwire protocol 2 models (all at once, one core each) and checks
 # each one's RESULT lines against the expected ones (tools/formal/README.md).
 # PROVERIF names the binary; `run.sh rejoin handshake_nonce` runs only those.
 set -u
@@ -24,7 +24,7 @@ expected() {
 models=${*:-"handshake_code handshake_nonce code_order handshake_x25519_later handshake_mlkem_later handshake_both_later rejoin"}
 for m in $models; do
   ( start=$(date +%s)
-    "$PROVERIF" -lib sharepoint "$m.pv" > "$out/$m.log" 2>&1
+    "$PROVERIF" -lib driftwire "$m.pv" > "$out/$m.log" 2>&1
     echo $(( $(date +%s) - start )) > "$out/$m.secs" ) &
 done
 wait

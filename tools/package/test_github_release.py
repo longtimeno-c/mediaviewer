@@ -196,13 +196,13 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
                 release.publish(self.folder)
             cli.assert_not_called()
 
-    def test_stable_needs_the_sharepoint_addon_for_both_platforms(self):
+    def test_stable_needs_the_driftwire_addon_for_both_platforms(self):
         # docs/design/28: packed beside Import, and published with it: a stable
         # release that lost it on the way is refused, not shipped without it.
         self.stable_assets()
-        (self.folder / 'mediaviewer-addon-sharepoint-win-x64.json').unlink()
+        (self.folder / 'mediaviewer-addon-driftwire-win-x64.json').unlink()
         with patch.object(release, 'gh') as cli:
-            with self.assertRaisesRegex(ValueError, 'mediaviewer-addon-sharepoint-win-x64.json'):
+            with self.assertRaisesRegex(ValueError, 'mediaviewer-addon-driftwire-win-x64.json'):
                 release.publish(self.folder)
             cli.assert_not_called()
 

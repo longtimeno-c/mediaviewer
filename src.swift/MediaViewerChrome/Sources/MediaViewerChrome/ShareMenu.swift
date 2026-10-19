@@ -5,7 +5,7 @@
 // share button beside Home and the right-click Share submenu all run the
 // command table's `share`; the host picks the files (shell/share_menu.h: the
 // range, else the marks, else the current file, or the right-clicked file when
-// it is not one of them) and this shows the one menu: Sharepoint first (or its
+// it is not one of them) and this shows the one menu: Driftwire first (or its
 // one-click install), then the system's own targets through
 // NSSharingServicePicker (Mail, Messages, AirDrop, Notes…). Nothing is read
 // or sent until a target is picked (rule 6). The Windows twin is
@@ -20,7 +20,7 @@ final class ShareMenu {
   static let shared = ShareMenu()
 
   // shell::share_target / shell::share_from (src/shell/share_menu.h).
-  enum Target: Int32 { case menu = 0, sharepoint = 1, system = 2 }
+  enum Target: Int32 { case menu = 0, driftwire = 1, system = 2 }
   enum From: Int32 { case key = 0, bar = 1, gallery = 2, context = 3 }
 
   /// The bar's share button and the gallery's icon, where the menu opens.
@@ -36,9 +36,9 @@ final class ShareMenu {
   private var contextAnchor: (view: NSView, rect: NSRect)?
 
   private init() {
-    // The install offer goes once Sharepoint attaches (it then opens its window).
+    // The install offer goes once Driftwire attaches (it then opens its window).
     watch = SlotStore.shared.$windowScreens.sink { [weak self] screens in
-      guard screens[SharepointStore.addonID] != nil else { return }
+      guard screens[DriftwireStore.addonID] != nil else { return }
       Task { @MainActor in self?.offer?.close() }
     }
   }
@@ -53,18 +53,18 @@ final class ShareMenu {
     guard let files = Self.parse(json), !files.files.isEmpty else { return }
     guard let (view, rect) = anchor(for: from) else { return }
     switch target {
-    case .sharepoint:
-      sharepoint(files.files, view: view, rect: rect)
+    case .driftwire:
+      driftwire(files.files, view: view, rect: rect)
     case .menu:
-      showPicker(files, view: view, rect: rect, withSharepoint: true)
+      showPicker(files, view: view, rect: rect, withDriftwire: true)
     case .system:
-      // Picked from the right-click submenu, which listed Sharepoint itself.
-      showPicker(files, view: view, rect: rect, withSharepoint: false)
+      // Picked from the right-click submenu, which listed Driftwire itself.
+      showPicker(files, view: view, rect: rect, withDriftwire: false)
     }
   }
 
   /// The right-click Share submenu for the item at `clicked`, the menu's
-  /// entries as on Windows: Sharepoint (or its install), then the system's
+  /// entries as on Windows: Driftwire (or its install), then the system's
   /// targets. Nothing is gathered here: picking an entry runs the share
   /// command with it, and the host resolves the files then (the selection
   /// when the clicked item is part of it, else that item alone).
@@ -76,8 +76,8 @@ final class ShareMenu {
       contextAnchor = nil
     }
     let sub = NSMenu(title: "Share")
-    let nearby = ShareMenuAction(title: Self.sharepointTitle) {
-      ShareMenu.shared.request(.sharepoint, from: .context, clicked: clicked)
+    let nearby = ShareMenuAction(title: Self.driftwireTitle) {
+      ShareMenu.shared.request(.driftwire, from: .context, clicked: clicked)
     }
     nearby.image = Self.appIcon(size: 16)
     nearby.toolTip = "Send to a MediaViewer nearby, over Wi-Fi or Bluetooth"
@@ -103,15 +103,15 @@ final class ShareMenu {
   /// of them when picked (SharePickerDelegate). Measured, issue #444.
   static let exactLimit = 50
 
-  private func showPicker(_ files: ShareFiles, view: NSView, rect: NSRect, withSharepoint: Bool) {
+  private func showPicker(_ files: ShareFiles, view: NSView, rect: NSRect, withDriftwire: Bool) {
     guard !files.media.isEmpty else { return }
     let urls = files.media.map { URL(fileURLWithPath: $0, isDirectory: false) }
     let exact = urls.count <= Self.exactLimit
     let picker = NSSharingServicePicker(items: exact ? urls : Self.representatives(urls))
     let delegate = SharePickerDelegate(
-      title: withSharepoint ? Self.sharepointTitle : nil,
+      title: withDriftwire ? Self.driftwireTitle : nil,
       allItems: exact ? nil : urls,
-      chooseSharepoint: { [weak self] in self?.sharepoint(files.files, view: view, rect: rect) },
+      chooseDriftwire: { [weak self] in self?.driftwire(files.files, view: view, rect: rect) },
       refused: { title, count in Self.refused(title, count: count, in: view.window) })
     picker.delegate = delegate
     self.picker = picker
@@ -131,7 +131,7 @@ final class ShareMenu {
     NSSound.beep()
     let alert = NSAlert()
     alert.messageText = "\(title) cannot take \(count) files at once."
-    alert.informativeText = "Select fewer files, or send them with Sharepoint or AirDrop."
+    alert.informativeText = "Select fewer files, or send them with Driftwire or AirDrop."
     if let window {
       alert.beginSheetModal(for: window)
     } else {
@@ -139,14 +139,14 @@ final class ShareMenu {
     }
   }
 
-  /// Sharepoint's window with these files, or its one-click install.
-  private func sharepoint(_ files: [String], view: NSView, rect: NSRect) {
-    if SharepointStore.shared.open(paths: files) { return }
+  /// Driftwire's window with these files, or its one-click install.
+  private func driftwire(_ files: [String], view: NSView, rect: NSRect) {
+    if DriftwireStore.shared.open(paths: files) { return }
     offer?.close()
     let popover = NSPopover()
     popover.behavior = .transient
     popover.contentViewController = NSHostingController(
-      rootView: ThemedRoot(content: SharepointOffer(paths: files).padding(14).frame(width: 320)))
+      rootView: ThemedRoot(content: DriftwireOffer(paths: files).padding(14).frame(width: 320)))
     popover.show(relativeTo: rect, of: view, preferredEdge: .minY)
     offer = popover
   }
@@ -169,14 +169,14 @@ final class ShareMenu {
     return (content, NSRect(x: b.midX - 1, y: top, width: 2, height: 1))
   }
 
-  /// An add-on context entry the Share submenu already carries: Sharepoint's
-  /// "Send with Sharepoint…" (its manifest's `send_files`). Left out of the
+  /// An add-on context entry the Share submenu already carries: Driftwire's
+  /// "Send with Driftwire…" (its manifest's `send_files`). Left out of the
   /// right-click menus, so sending goes one way, through the share command.
   nonisolated static func routesThroughShare(_ item: SlotItem) -> Bool {
-    item.addon == SharepointStore.addonID && item.item == "send_files"
+    item.addon == DriftwireStore.addonID && item.item == "send_files"
   }
 
-  /// Sharepoint's entry (and its install) wears the MediaViewer icon, at
+  /// Driftwire's entry (and its install) wears the MediaViewer icon, at
   /// menu size for a menu row and larger for the picker's list.
   static func appIcon(size: CGFloat) -> NSImage {
     let icon = (NSApp.applicationIconImage ?? NSImage()).copy() as? NSImage ?? NSImage()
@@ -184,15 +184,15 @@ final class ShareMenu {
     return icon
   }
 
-  /// Sharepoint's entry: itself, or its one-click install.
-  private static var sharepointTitle: String {
-    SharepointStore.shared.ready || SharepointStore.shared.installed ? "Sharepoint" : "Install Sharepoint\u{2026}"
+  /// Driftwire's entry: itself, or its one-click install.
+  private static var driftwireTitle: String {
+    DriftwireStore.shared.ready || DriftwireStore.shared.installed ? "Driftwire" : "Install Driftwire\u{2026}"
   }
 
   // MARK: - the host's files
 
   struct ShareFiles {
-    var files: [String]  // Sharepoint's: the stops (it takes sidecars itself)
+    var files: [String]  // Driftwire's: the stops (it takes sidecars itself)
     var media: [String]  // the system picker's: media only
   }
 
@@ -205,20 +205,20 @@ final class ShareMenu {
 
 private struct IconBox: @unchecked Sendable { let image: NSImage }
 
-/// Puts Sharepoint at the top of the system's list, and, when the picker was
+/// Puts Driftwire at the top of the system's list, and, when the picker was
 /// shown with one file per kind (`allItems`), hands each target every file
 /// once it is picked (a target that cannot take that many says so).
 final class SharePickerDelegate: NSObject, NSSharingServicePickerDelegate {
   private let title: String?
   private let allItems: [URL]?
-  private let chooseSharepoint: @MainActor () -> Void
+  private let chooseDriftwire: @MainActor () -> Void
   private let refused: @MainActor (String, Int) -> Void
 
-  init(title: String?, allItems: [URL]?, chooseSharepoint: @escaping @MainActor () -> Void,
+  init(title: String?, allItems: [URL]?, chooseDriftwire: @escaping @MainActor () -> Void,
        refused: @escaping @MainActor (String, Int) -> Void) {
     self.title = title
     self.allItems = allItems
-    self.chooseSharepoint = chooseSharepoint
+    self.chooseDriftwire = chooseDriftwire
     self.refused = refused
   }
 
@@ -240,7 +240,7 @@ final class SharePickerDelegate: NSObject, NSSharingServicePickerDelegate {
       }
     }
     guard let title else { return services }
-    let choose = chooseSharepoint
+    let choose = chooseDriftwire
     // NSImage is not Sendable: carry it out of the main-actor hop in a box.
     let image = MainActor.assumeIsolated { IconBox(image: ShareMenu.appIcon(size: 32)) }.image
     let nearby = NSSharingService(title: title, image: image, alternateImage: nil) {
@@ -311,7 +311,7 @@ struct BarShareButton: View {
     .disabled(!enabled)
     .onHover { hover = $0 }
     .background(ShareAnchor(from: .bar))
-    .help("Share: Sharepoint, Mail, Messages, AirDrop and more (⇧⌘S)")
+    .help("Share: Driftwire, Mail, Messages, AirDrop and more (⇧⌘S)")
     .accessibilityLabel("Share")
   }
 }

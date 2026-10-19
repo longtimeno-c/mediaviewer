@@ -1,4 +1,4 @@
-(* Sharepoint protocol 2, a rejoin (NNhfs+psk0 keyed by the resume secret, the
+(* Driftwire protocol 2, a rejoin (NNhfs+psk0 keyed by the resume secret, the
    tag, and the resume_at frame each way before either side adopts the link).
 
    Each session has its own resume secret rs (Split's third output of its first

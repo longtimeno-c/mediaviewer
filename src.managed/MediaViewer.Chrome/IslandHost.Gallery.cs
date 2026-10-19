@@ -530,7 +530,7 @@ public static partial class IslandHost
         _galleryStack.Children.Add(_folderStrip);
         _galleryStack.Children.Add(_folderRepeater);
         // Issue #413: the photos' header, and one share icon for the grid's
-        // selection. Issue #444: it opens the share menu (Sharepoint, then
+        // selection. Issue #444: it opens the share menu (Driftwire, then
         // Windows Share), the one share command's.
         var photosRow = new Grid();
         photosRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });

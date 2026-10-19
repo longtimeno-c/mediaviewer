@@ -18,7 +18,7 @@ struct node_type_info {
   const char* name;
 };
 
-constexpr std::array<node_type_info, 20> kTypes{{
+constexpr std::array<node_type_info, 21> kTypes{{
     {node_type::stack, "stack"},
     {node_type::grid, "grid"},
     {node_type::scroll, "scroll"},
@@ -39,6 +39,7 @@ constexpr std::array<node_type_info, 20> kTypes{{
     {node_type::separator, "separator"},
     {node_type::surface, "surface"},
     {node_type::tiles, "tiles"},
+    {node_type::link, "link"},
 }};
 
 bool container(node_type t) noexcept {
@@ -62,6 +63,7 @@ bool needs_label(node_type t) noexcept {
     case node_type::progress:
     case node_type::surface:
     case node_type::tiles:
+    case node_type::link:
       return true;
     default:
       return false;
@@ -289,8 +291,12 @@ error check_props(node& n, std::size_t& items) {
           }
           break;
         case node_type::button:
+          // "copy" (2026-10-19, Driftwire's code): on a click the host puts
+          // this text on the clipboard itself, then reports the click as usual.
+          // Only on a click: an add-on never writes the clipboard by itself.
           ok = (key == "style" && one_of(v, {"plain", "primary", "destructive"})) ||
-               (key == "symbol" && v.k == json::kind::string && known_symbol(v.s));
+               (key == "symbol" && v.k == json::kind::string && known_symbol(v.s)) ||
+               (key == "copy" && v.k == json::kind::string && !v.s.empty() && plain(v.s, kMaxText));
           break;
         case node_type::toggle:
           ok = key == "value" && v.k == json::kind::boolean;
@@ -310,7 +316,7 @@ error check_props(node& n, std::size_t& items) {
                num_in(v, -1e12, 1e12);
           break;
         case node_type::text_field:
-          // "pick": "folder" (2026-10-15, Sharepoint): the host adds a
+          // "pick": "folder" (2026-10-15, Driftwire): the host adds a
           // Choose... button that shows the system folder dialog and reports
           // the folder as the field's change; typing a path still works.
           // "look": "code" with "digits": n (#442): a large entry for a short
@@ -331,6 +337,13 @@ error check_props(node& n, std::size_t& items) {
           // focus, no events.
           ok = (key == "items" && tile_rows(v, items)) || (key == "selection" && string_array(v, 256, 256)) ||
                (key == "size" && int_in(v, 32, 160)) || (key == "static" && v.k == json::kind::boolean);
+          break;
+        case node_type::link:
+          ok = (key == "via" && one_of(v, {"bluetooth", "wifi", "internet", "dht", "relay", "server"})) ||
+               (key == "state" && one_of(v, {"connecting", "moving", "paused", "done", "failed"})) ||
+               (key == "direction" && one_of(v, {"send", "receive"})) ||
+               ((key == "from" || key == "to" || key == "through") && str_max(v, 64)) ||
+               (key == "caption" && str_max(v, kMaxLabel)) || (key == "value" && num_in(v, -1.0, 1.0));
           break;
         case node_type::separator:
           ok = false;
@@ -405,6 +418,9 @@ error check_props(node& n, std::size_t& items) {
       break;
     case node_type::surface:
       if (!has("surface") || !has("height")) return error::bad_prop;
+      break;
+    case node_type::link:
+      if (!has("via") || !has("state")) return error::bad_prop;
       break;
     default:
       break;

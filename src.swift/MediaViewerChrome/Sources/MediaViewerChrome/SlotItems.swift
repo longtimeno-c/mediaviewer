@@ -186,7 +186,7 @@ enum SlotCanvasMenu {
 
   static func make(tile: Int) -> NSMenu? {
     let store = FolderStore.shared
-    // Issue #444: Sharepoint's own "Send with Sharepoint…" is the Share
+    // Issue #444: Driftwire's own "Send with Driftwire…" is the Share
     // submenu's first entry (TileMenu), one route through the share command.
     let entries = SlotStore.shared.items(in: "context").filter { !ShareMenu.routesThroughShare($0) }
     guard !entries.isEmpty, store.names.indices.contains(tile) else { return nil }
@@ -247,7 +247,7 @@ struct SlotLocalMore: View {
 
 /// A slot add-on's release channel: Places' install (docs/design/27; optional,
 /// preferred, offered whenever it is not installed) and every installed slot
-/// add-on's update (Sharepoint, …), as Import's (docs/design/18 "Updates"). No
+/// add-on's update (Driftwire, …), as Import's (docs/design/18 "Updates"). No
 /// chrome of its own; a fresh install loads through the slot add-ons.
 @MainActor
 final class SlotAddonOffer: ObservableObject {
@@ -420,7 +420,7 @@ struct SlotAddonsSection: View {
   @ObservedObject private var offer = SlotAddonOffer.places
   @ObservedObject private var installed = Installed.shared
   @ObservedObject private var slots = SlotStore.shared
-  @ObservedObject private var sharepoint = SharepointStore.shared
+  @ObservedObject private var driftwire = DriftwireStore.shared
   @State private var confirming: String?
 
   private var places: Row? { installed.rows.first { $0.id == "places" } }
@@ -428,9 +428,9 @@ struct SlotAddonsSection: View {
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       placesRow
-      // #410: Sharepoint, offered with one click while it is not installed.
-      if !sharepoint.installed && !installed.rows.contains(where: { $0.id == SharepointStore.addonID }) {
-        SharepointOffer()
+      // #410: Driftwire, offered with one click while it is not installed.
+      if !driftwire.installed && !installed.rows.contains(where: { $0.id == DriftwireStore.addonID }) {
+        DriftwireOffer()
       }
       ForEach(installed.rows.filter { $0.id != "places" }) { row in
         VStack(alignment: .leading, spacing: MVTheme.space(6)) {
@@ -463,7 +463,7 @@ struct SlotAddonsSection: View {
     .onChange(of: settings.visible) { _, visible in if visible { installed.reload(); probeAll() } }
     // Rows read after Settings opened ask for their updates too.
     .onChange(of: installed.rows.map(\.id)) { _, _ in if settings.visible { probeOthers() } }
-    // An add-on that just attached (Sharepoint after its one-click install).
+    // An add-on that just attached (Driftwire after its one-click install).
     .onChange(of: slots.windowScreens) { _, _ in installed.reload() }
   }
 
@@ -590,7 +590,7 @@ struct SlotAddonsSection: View {
   private func remove(_ id: String, keep: Bool) {
     confirming = nil
     _ = id.withCString { mv_chrome_slot_addon_remove($0, keep) }
-    if id == SharepointStore.addonID { SharepointStore.shared.refresh() }
+    if id == DriftwireStore.addonID { DriftwireStore.shared.refresh() }
     if !keep {
       let forgotten = id
       Task.detached(priority: .utility) { _ = forgotten.withCString { mv_addons_settings_forget($0) } }

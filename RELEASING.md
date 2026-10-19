@@ -26,7 +26,7 @@ bump the version, commit changes, or push them for you.
 |---|---|---|
 | `artifacts` (default) | Unsigned installers in Actions artifacts, retained 30 days | None |
 | `preview` | Both installers and signed update feeds as a **Pre-release**, for the Preview update channel | Same as stable |
-| `stable` | Both installers, signed update feeds, and the Import, Sharepoint, Places and Local search add-ons, marked **Latest** | Windows manifest key + all six Mac secrets; Azure optional |
+| `stable` | Both installers, signed update feeds, and the Import, Driftwire, Places and Local search add-ons, marked **Latest** | Windows manifest key + all six Mac secrets; Azure optional |
 
 After the updated workflow is on `main`, the equivalent commands are:
 
@@ -200,18 +200,18 @@ Whisper) and `mediaviewer-addon-ai-faces-*` (People). About 2.3 GB per platform.
 - `publish` refuses a stable release without all seven (`MV_RELEASE_AI=1`): the three pieces on
   both platforms, plus `ai-cuda` on Windows.
 
-**Sharepoint (docs/design/28)** ships beside Import on every stable release:
-`mediaviewer-addon-sharepoint-win-x64.*` and `-macos.*`. It is code only (no data to stage), so
+**Driftwire (docs/design/28)** ships beside Import on every stable release:
+`mediaviewer-addon-driftwire-win-x64.*` and `-macos.*`. It is code only (no data to stage), so
 it is required like Import: `publish` refuses a stable release without both platforms
 (`MV_RELEASE_ADDONS=1`, `FIRST_PARTY_ADDONS` in `tools/package/github-release.py`). `publish`
 uploads only the add-ons it lists, so a new first-party add-on goes on that list as well as in
 the workflow.
 
-- **Windows:** "Find the Sharepoint add-on build", its signing step and "Pack the Sharepoint
-  add-on" sign `mv_sharepoint.dll` and pack it (`addon-pack.py pack --addon sharepoint
+- **Windows:** "Find the Driftwire add-on build", its signing step and "Pack the Driftwire
+  add-on" sign `mv_driftwire.dll` and pack it (`addon-pack.py pack --addon driftwire
   --require-pinned-key`); the upload loop copies it beside Import.
-- **macOS:** each architecture's `libmv_sharepoint.dylib` is joined with `lipo_merge.py`, signed
-  and notarized with `macpack.py addon`, then packed ("Sharepoint add-on (join, sign, notarize,
+- **macOS:** each architecture's `libmv_driftwire.dylib` is joined with `lipo_merge.py`, signed
+  and notarized with `macpack.py addon`, then packed ("Driftwire add-on (join, sign, notarize,
   pack)").
 
 With the patch applied, a **stable** run of the

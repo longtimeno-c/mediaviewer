@@ -32,17 +32,18 @@ and a verify line on each platform (D9, amended). The order is:
 | 56 | **Declarative contributions** (the second half; contribution API 2): an add-on's settings page drawn from its manifest on both hosts, its values kept per add-on (and on remove unless asked), key layouts (keymap packs) applied once with Reset back to the defaults, theme shape (radius, density, type scale), and Import / Duplicates / Local search on the host's theme tokens ([docs/design/25](design/25-open-addons.md#pr-56-second-half-declarative-contributions-2026-10-11), [ADDONS.md](ADDONS.md)); ABI 0.24 | Mac: Catch2 (schema, values, keymaps over every built-in command, shape), the SDK cross-check, 2.5 M fuzz inputs, the full suite and the rig's PR 56 leg pass in the app; launch and pacing measured against the base on a loaded machine (no difference; the idle CPU clause fails on base too). Windows: every C# project compiles clean; the native half is CI's; nothing run in the app yet |
 | 57 | **Add-on scripts**: other makers' add-ons run Lua 5.4 (vendored, static) in a sandbox per add-on on its own worker, with commands on keys, permissions in the consent sheet (`folder.read`, `thumbnails`, `selection`; no network) and limits (64 MB, 100 M instructions and 1 s per task, a watchdog) that stop the add-on and say why in Settings ([docs/design/25-open-addons.md](design/25-open-addons.md#implementation-notes-pr-57-2026-10-11), [ADDONS.md](ADDONS.md#scripts)); ABI 0.26 | Mac: built, `mv_script_tests` and the SDK cross-check pass, the key walk runs in the app (`MV_SCRIPT_SELFTEST`), the fuzz harness ran ~15 min clean, Mac PR 1 gate and launch timings measured with a script spinning / installed. Windows: compiled in CI only (shell, ABI, chrome); the Windows key walk, the Windows gate with a script spinning and Narrator / VoiceOver on the new Settings lines owed |
 | 58–59 | **Screens and slots**: MediaViewer's own native add-ons add to pages that exist (an info-pane section at the very bottom of the Metadata pane, file search and Local search providers, command-bar / path-bar / status items, gallery tile badges, context-menu entries) and open windows, docked panes and sheets from a view tree both chromes render ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)); host table v3; ABI 0.25 | Mac: the shared suite passes (with a real test add-on through a signed store; also under ASan / UBSan and TSan); the app built and, with the test add-on sideloaded, drew its section at the bottom of the pane and its items. Windows: both C# projects compile; the native side is CI's. Measurements and the keyboard / VoiceOver / Narrator passes are owed ([Where this actually is](#screens-and-slots-prs-58-59-2026-10-11)). Script add-ons wait for PR 57; Places is #344 |
-| #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
-| #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
-| #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
-| #472 PR 1 | **Sharepoint protocol 2 on the local bearers**: a Noise handshake (`XXhfs`, X25519 + ML-KEM-768, the Cacophony vectors pass) whose code still cannot be matched by a machine in the middle; a transfer that survives its link: sequence numbers, a 16 MiB replay, rejoin with a fresh `NNhfs+psk0` handshake and `resume_at`, no new code or Accept; Bluetooth ↔ Wi-Fi moves (make before break, suspect at 3 s, 20 s ends, flapping ends); a big set may start on Bluetooth to a protocol 2 peer; protocol 1 peers still work ([docs/design/28](design/28-sharepoint.md#the-session-protocol-2-472)) | Mac: built; `"[sharepoint]"` 54 cases pass (TSan-clean), with stand-in radios; `[.sharepoint-bench]` alternated, no difference within noise; the fuzz harness ran clean; the ProVerif model of the handshake and rejoin holds (`tools/formal`). Windows 11: `"[sharepoint]"` passes three runs in a row, the PR 1 gate holds with Sharepoint loaded ([Sharepoint on Windows](#sharepoint-on-windows-issue-472-2026-10-18)). Owed: two real machines, real Bluetooth and Wi-Fi on both hosts, the Mac PR 1 gate ([Where this actually is](#sharepoint-protocol-2-issue-472-pr-1-2026-10-18)) |
-| #472 PR 3 | **Sharepoint four-word codes over the public DHT**, opt-in, off by default: with no public address, the code is four BIP-39 words; Argon2id keys; BEP 44 items (sealed, padded, four targets per side) found and checked on the DHT by a small read-only client (BEP 5/42/43/44; BEP 42 own-address votes, saved table); one UDP socket for DHT, punching (+ port prediction) and a reliable stream of our own; then CPace + Noise and the session ([docs/design/28](design/28-sharepoint.md#four-words-over-the-dht-472-pr-3)) | Mac: built; `"[sharepoint]"` passes (TSan-clean) with BEP 44 / 42 / CRC-32C vectors, the stream under 1 % and 5 % loss, a stand-in swarm with a forging node, and two engines over four words; the fuzz harness covers the DHT parsers. Not run: the public DHT (`"[.sharepoint-dht-live]"`, owed), real NATs. Windows 11: `"[sharepoint]"` passes three runs in a row, the PR 1 gate holds with Sharepoint loaded ([Sharepoint on Windows](#sharepoint-on-windows-issue-472-2026-10-18)) ([Where this actually is](#sharepoint-four-word-codes-issue-472-pr-3-2026-10-18)) |
-| #472 relays | **Sharepoint relays**, sealed end to end, no server of ours: **Use my other computers to relay** (off by default; both mark each other "is my computer"): a sender whose code's places do not answer meets its own computer over the DHT, which connects onward to those public places only and splices; and **Relay (your own server)**: `mv-sharepoint-relay` pairs a waiter that proves the server's key with a sender, by a random token carried in the code. TURN left out; Tor evaluated on paper and dropped for now ([docs/design/28](design/28-sharepoint.md#relays-472), [plan](plans/sharepoint-tor-spike.md)) | Mac: built; `"[sharepoint]"` passes (112 cases) with three engines (A, own relay R, B; A cannot reach B) and two engines through an in-process relay server, files byte for byte, no 32-byte run of a file through either relay in the clear; TSan-clean for the new cases; the fuzz harness covers the hello, the request and the answer. Not run: real networks, the Tor harness (needs the live Tor network: the owner's). Windows 11: `"[sharepoint]"` passes three runs in a row, the PR 1 gate holds with Sharepoint loaded ([Sharepoint on Windows](#sharepoint-on-windows-issue-472-2026-10-18)) ([Where this actually is](#sharepoint-relays-issue-472-2026-10-18)) |
-| #472 PR 5 | **Sharepoint Wi-Fi → internet handover**, opt-in (**Continue over the internet if Wi-Fi drops**, off by default, both sides): during a local protocol 2 transfer the receiver opens a way in (listener, router mapping, IPv6 pinhole) and sends its places over the sealed link (`places`, only to a sender whose offer asked); on a drop the mover races them with the local bearers and rejoins over the internet ([docs/design/28](design/28-sharepoint.md#wi-fi--internet-472-pr-5)) | Mac: built; `"[sharepoint]"` passes (97 cases) with a Wi-Fi cut and no Bluetooth moving to the internet in 10–14 ms on loopback, the file whole and once, and the toggle off offering nothing; TSan-clean for the new cases; the fuzz harness covers the places parser. The receiver's network going or both moving: the next row. Relays: the #472 relays row (Tor dropped for now). Windows 11: `"[sharepoint]"` passes three runs in a row, the PR 1 gate holds with Sharepoint loaded ([Sharepoint on Windows](#sharepoint-on-windows-issue-472-2026-10-18)) ([Where this actually is](#sharepoint-wi-fi--internet-issue-472-pr-5-2026-10-18)) |
-| #472 (after PR 5) | **Sharepoint handover when both sides move**: with the handover and DHT toggles on (both sides; the offer and `places` say `"dht"`), each side keeps its UDP hub open and the DHT joined while a local protocol 2 transfer runs; when the link drops and the receiver's swapped places are gone too, both meet on the DHT under keys from the session's resume secret (`handover_secret`, `dht_handover`) and the send rejoins over the punched stream ([docs/design/28](design/28-sharepoint.md#wi-fi--internet-472-pr-5)) | Mac: built; `"[sharepoint]"` passes (102 cases) with a Wi-Fi cut that takes the receiver's way in, moving over the stand-in swarm in 0.81–1.88 s, the file whole and once; a second drop meets again (~5.5–6 s); the DHT toggle off on either side ends the send as before; TSan: 0 reports (one flaky PR 3 case). Not run: the public DHT, real NATs, two machines. Windows 11: `"[sharepoint]"` passes three runs in a row, the PR 1 gate holds with Sharepoint loaded ([Sharepoint on Windows](#sharepoint-on-windows-issue-472-2026-10-18)) ([Where this actually is](#sharepoint-wi-fi--internet-when-both-sides-move-issue-472-2026-10-18)) |
-| #472 NAT | **Sharepoint birthday punch and TCP simultaneous open** (four-word codes): when the DHT's votes show exactly one side behind a NAT that maps each destination apart, that side opens 256 more UDP sockets on the hub (one reader polls them all) and probes the other's public address while the other probes random ports of its address, ≤100 probes/s each way, all extra sockets but the stream's closed after; beside it, both sides connect() from one bound TCP port to the other's while listening on it (`net::tcp_rendezvous`, POSIX and Winsock; word-code meetings only); every probe ≤200/s each way; the sender's pick is now offered and answered (choose / chosen) ([docs/design/28](design/28-sharepoint.md#four-words-over-the-dht-472-pr-3)) | Mac: built; `"[sharepoint]"` passes (103 cases) with stand-in NATs on loopback (a symmetric one and a port-restricted cone): either side hard meets by the birthday punch, two hard NATs time out over UDP and meet over TCP; TSan and the fuzz harness (the item's new trailer) below. Loopback only: no real NAT, and the SYN-crossing case does not occur on loopback. Windows 11: `"[sharepoint]"` passes three runs in a row, the PR 1 gate holds with Sharepoint loaded ([Sharepoint on Windows](#sharepoint-on-windows-issue-472-2026-10-18)) ([Where this actually is](#sharepoint-birthday-punch-and-tcp-simultaneous-open-issue-472-2026-10-18)) |
-| #472 PR 4 | **Sharepoint remembered devices**: an identity key kept in the Keychain / Credential Manager (a secret-store port); after a protocol 2 transfer **Remember** on both sides keeps the peer's name, key and a pairing secret; a later send is one click, met on the DHT under hourly per-direction keys, CPace + Noise on the pair's secret, the remembered key checked (refused loudly if it changed); "Waiting for … to come online" until Cancel; Forget ([docs/design/28](design/28-sharepoint.md#remembered-devices-472-pr-4)) | Mac: built; `"[sharepoint]"` passes (TSan-clean for the new cases) with two engines remembering each other over a stand-in swarm, the list and identity across restarts, an impostor holding the pair's secret refused; the fuzz harness covers the record. Keychain and Credential Manager are not exercised by tests (a folder stands in). Not built: the own-device relay. Windows 11: `"[sharepoint]"` passes three runs in a row, the PR 1 gate holds with Sharepoint loaded ([Sharepoint on Windows](#sharepoint-on-windows-issue-472-2026-10-18)), Credential Manager included ([Where this actually is](#sharepoint-remembered-devices-issue-472-pr-4-2026-10-18)) |
-| #472 PR 2 | **Sharepoint over the internet with a code**, opt-in and off by default: the receiver makes a code (works once, for 10 minutes) carrying its forwarded port, a router-mapped port (PCP, NAT-PMP, UPnP-IGD; external 443 too; an IGDv2 IPv6 pinhole), its public IPv6 and its LAN address; the sender races them, retries 1/2/5/10/30 s with the reason, proves the code with CPace (ristretto255, the draft's vectors pass) keying Noise `XXhfs+psk0`; both confirm the name and may compare a six-digit check; no server ([docs/design/28](design/28-sharepoint.md#over-the-internet-472-pr-2)) | Mac: built; `"[sharepoint]"` passes (TSan-clean) with two engines over a code on loopback and the mapper against stand-in routers; the fuzz harness covers the new parsers. Windows 11: `"[sharepoint]"` passes three runs in a row, the PR 1 gate holds with Sharepoint loaded ([Sharepoint on Windows](#sharepoint-on-windows-issue-472-2026-10-18)). Owed: real routers, two machines over the internet, both platforms ([Where this actually is](#sharepoint-over-the-internet-issue-472-pr-2-2026-10-18)) |
+| #410, #413 | **Driftwire**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-driftwire.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Driftwire; ABI 0.29 | Mac: built; `mv_import_tests "[driftwire]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#driftwire-issues-410-413-2026-10-15)) |
+| #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Driftwire first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
+| #452 | **Driftwire in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-driftwire.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[driftwire]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#driftwire-in-the-background-issue-452-2026-10-16)) |
+| #472 PR 1 | **Driftwire protocol 2 on the local bearers**: a Noise handshake (`XXhfs`, X25519 + ML-KEM-768, the Cacophony vectors pass) whose code still cannot be matched by a machine in the middle; a transfer that survives its link: sequence numbers, a 16 MiB replay, rejoin with a fresh `NNhfs+psk0` handshake and `resume_at`, no new code or Accept; Bluetooth ↔ Wi-Fi moves (make before break, suspect at 3 s, 20 s ends, flapping ends); a big set may start on Bluetooth to a protocol 2 peer; protocol 1 peers still work ([docs/design/28](design/28-driftwire.md#the-session-protocol-2-472)) | Mac: built; `"[driftwire]"` 54 cases pass (TSan-clean), with stand-in radios; `[.driftwire-bench]` alternated, no difference within noise; the fuzz harness ran clean; the ProVerif model of the handshake and rejoin holds (`tools/formal`). Windows 11: `"[driftwire]"` passes three runs in a row, the PR 1 gate holds with Driftwire loaded ([Driftwire on Windows](#driftwire-on-windows-issue-472-2026-10-18)). Owed: two real machines, real Bluetooth and Wi-Fi on both hosts, the Mac PR 1 gate ([Where this actually is](#driftwire-protocol-2-issue-472-pr-1-2026-10-18)) |
+| #472 PR 3 | **Driftwire four-word codes over the public DHT**, opt-in, off by default: with no public address, the code is four BIP-39 words; Argon2id keys; BEP 44 items (sealed, padded, four targets per side) found and checked on the DHT by a small read-only client (BEP 5/42/43/44; BEP 42 own-address votes, saved table); one UDP socket for DHT, punching (+ port prediction) and a reliable stream of our own; then CPace + Noise and the session ([docs/design/28](design/28-driftwire.md#four-words-over-the-dht-472-pr-3)) | Mac: built; `"[driftwire]"` passes (TSan-clean) with BEP 44 / 42 / CRC-32C vectors, the stream under 1 % and 5 % loss, a stand-in swarm with a forging node, and two engines over four words; the fuzz harness covers the DHT parsers. Not run: the public DHT (`"[.driftwire-dht-live]"`, owed), real NATs. Windows 11: `"[driftwire]"` passes three runs in a row, the PR 1 gate holds with Driftwire loaded ([Driftwire on Windows](#driftwire-on-windows-issue-472-2026-10-18)) ([Where this actually is](#driftwire-four-word-codes-issue-472-pr-3-2026-10-18)) |
+| #472 relays | **Driftwire relays**, sealed end to end, no server of ours: **Use my other computers to relay** (off by default; both mark each other "is my computer"): a sender whose code's places do not answer meets its own computer over the DHT, which connects onward to those public places only and splices; and **Relay (your own server)**: `mv-driftwire-relay` pairs a waiter that proves the server's key with a sender, by a random token carried in the code. TURN left out; Tor evaluated on paper and dropped for now ([docs/design/28](design/28-driftwire.md#relays-472), [plan](plans/driftwire-tor-spike.md)) | Mac: built; `"[driftwire]"` passes (112 cases) with three engines (A, own relay R, B; A cannot reach B) and two engines through an in-process relay server, files byte for byte, no 32-byte run of a file through either relay in the clear; TSan-clean for the new cases; the fuzz harness covers the hello, the request and the answer. Not run: real networks, the Tor harness (needs the live Tor network: the owner's). Windows 11: `"[driftwire]"` passes three runs in a row, the PR 1 gate holds with Driftwire loaded ([Driftwire on Windows](#driftwire-on-windows-issue-472-2026-10-18)) ([Where this actually is](#driftwire-relays-issue-472-2026-10-18)) |
+| #472 PR 5 | **Driftwire Wi-Fi → internet handover**, opt-in (**Continue over the internet if Wi-Fi drops**, off by default, both sides): during a local protocol 2 transfer the receiver opens a way in (listener, router mapping, IPv6 pinhole) and sends its places over the sealed link (`places`, only to a sender whose offer asked); on a drop the mover races them with the local bearers and rejoins over the internet ([docs/design/28](design/28-driftwire.md#wi-fi--internet-472-pr-5)) | Mac: built; `"[driftwire]"` passes (97 cases) with a Wi-Fi cut and no Bluetooth moving to the internet in 10–14 ms on loopback, the file whole and once, and the toggle off offering nothing; TSan-clean for the new cases; the fuzz harness covers the places parser. The receiver's network going or both moving: the next row. Relays: the #472 relays row (Tor dropped for now). Windows 11: `"[driftwire]"` passes three runs in a row, the PR 1 gate holds with Driftwire loaded ([Driftwire on Windows](#driftwire-on-windows-issue-472-2026-10-18)) ([Where this actually is](#driftwire-wi-fi--internet-issue-472-pr-5-2026-10-18)) |
+| #472 (after PR 5) | **Driftwire handover when both sides move**: with the handover and DHT toggles on (both sides; the offer and `places` say `"dht"`), each side keeps its UDP hub open and the DHT joined while a local protocol 2 transfer runs; when the link drops and the receiver's swapped places are gone too, both meet on the DHT under keys from the session's resume secret (`handover_secret`, `dht_handover`) and the send rejoins over the punched stream ([docs/design/28](design/28-driftwire.md#wi-fi--internet-472-pr-5)) | Mac: built; `"[driftwire]"` passes (102 cases) with a Wi-Fi cut that takes the receiver's way in, moving over the stand-in swarm in 0.81–1.88 s, the file whole and once; a second drop meets again (~5.5–6 s); the DHT toggle off on either side ends the send as before; TSan: 0 reports (one flaky PR 3 case). Not run: the public DHT, real NATs, two machines. Windows 11: `"[driftwire]"` passes three runs in a row, the PR 1 gate holds with Driftwire loaded ([Driftwire on Windows](#driftwire-on-windows-issue-472-2026-10-18)) ([Where this actually is](#driftwire-wi-fi--internet-when-both-sides-move-issue-472-2026-10-18)) |
+| #472 NAT | **Driftwire birthday punch and TCP simultaneous open** (four-word codes): when the DHT's votes show exactly one side behind a NAT that maps each destination apart, that side opens 256 more UDP sockets on the hub (one reader polls them all) and probes the other's public address while the other probes random ports of its address, ≤100 probes/s each way, all extra sockets but the stream's closed after; beside it, both sides connect() from one bound TCP port to the other's while listening on it (`net::tcp_rendezvous`, POSIX and Winsock; word-code meetings only); every probe ≤200/s each way; the sender's pick is now offered and answered (choose / chosen) ([docs/design/28](design/28-driftwire.md#four-words-over-the-dht-472-pr-3)) | Mac: built; `"[driftwire]"` passes (103 cases) with stand-in NATs on loopback (a symmetric one and a port-restricted cone): either side hard meets by the birthday punch, two hard NATs time out over UDP and meet over TCP; TSan and the fuzz harness (the item's new trailer) below. Loopback only: no real NAT, and the SYN-crossing case does not occur on loopback. Windows 11: `"[driftwire]"` passes three runs in a row, the PR 1 gate holds with Driftwire loaded ([Driftwire on Windows](#driftwire-on-windows-issue-472-2026-10-18)) ([Where this actually is](#driftwire-birthday-punch-and-tcp-simultaneous-open-issue-472-2026-10-18)) |
+| #472 PR 4 | **Driftwire remembered devices**: an identity key kept in the Keychain / Credential Manager (a secret-store port); after a protocol 2 transfer **Remember** on both sides keeps the peer's name, key and a pairing secret; a later send is one click, met on the DHT under hourly per-direction keys, CPace + Noise on the pair's secret, the remembered key checked (refused loudly if it changed); "Waiting for … to come online" until Cancel; Forget ([docs/design/28](design/28-driftwire.md#remembered-devices-472-pr-4)) | Mac: built; `"[driftwire]"` passes (TSan-clean for the new cases) with two engines remembering each other over a stand-in swarm, the list and identity across restarts, an impostor holding the pair's secret refused; the fuzz harness covers the record. Keychain and Credential Manager are not exercised by tests (a folder stands in). Not built: the own-device relay. Windows 11: `"[driftwire]"` passes three runs in a row, the PR 1 gate holds with Driftwire loaded ([Driftwire on Windows](#driftwire-on-windows-issue-472-2026-10-18)), Credential Manager included ([Where this actually is](#driftwire-remembered-devices-issue-472-pr-4-2026-10-18)) |
+| #472 PR 2 | **Driftwire over the internet with a code**, opt-in and off by default: the receiver makes a code (works once, for 10 minutes) carrying a router-mapped port (PCP, NAT-PMP, UPnP-IGD; external 443 too; an IGDv2 IPv6 pinhole), its public IPv6 and its LAN address; the sender races them, retries 1/2/5/10/30 s with the reason, proves the code with CPace (ristretto255, the draft's vectors pass) keying Noise `XXhfs+psk0`; both confirm the name and may compare a six-digit check; no server ([docs/design/28](design/28-driftwire.md#over-the-internet-472-pr-2)) | Mac: built; `"[driftwire]"` passes (TSan-clean) with two engines over a code on loopback and the mapper against stand-in routers; the fuzz harness covers the new parsers. Windows 11: `"[driftwire]"` passes three runs in a row, the PR 1 gate holds with Driftwire loaded ([Driftwire on Windows](#driftwire-on-windows-issue-472-2026-10-18)). Owed: real routers, two machines over the internet, both platforms ([Where this actually is](#driftwire-over-the-internet-issue-472-pr-2-2026-10-18)) |
+| Driftwire window, 2026-10-19 | **Simpler Driftwire window**: no address field (a code finds its own); a transfer under way is a card at the top with a picture of its path, its own shape, colour and badge for Wi-Fi, Bluetooth, internet direct, internet met on the DHT, through one of your computers, or through your relay server, dots moving while bytes do; the receive code is selectable with **Copy code** / **Copy link**; the internet part reads receive, send to a code, then options. New screen vocabulary on both hosts: a `link` node and a button's `copy`, contribution API 6 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11), [28](design/28-driftwire.md#what-a-person-sees)) | Mac: built; `"[driftwire]"` (124 cases) and `"[addon]"` (60) pass; the Swift chrome builds; the link picture rendered offscreen for every bearer and state, light and dark. Windows: the C# compiles. Owed: the window opened in the app on both hosts with a live transfer, the animation's idle cost measured (it runs only while bytes move), Narrator on the picture |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -118,7 +119,7 @@ Then the **PR 12 metadata writes** (Windows and macOS, same core): keypad `0`–
 
 And **PR 13 / 14 clip editing** (Windows and macOS, same core): on a clip, `Ctrl+T` (`⌘T`) arms trim — `[` `]` set in and out, the scrub bar shows the keyframe grid and what will be kept, `P` previews the cut as a loop, `Enter` saves an instant keyframe cut (stream copy, no quality loss) and `Shift+Enter` a frame-accurate re-encode on the GPU's hardware encoder (NVENC / Quick Sync / AMF / Media Foundation, VideoToolbox on Mac; labelled slower). `Ctrl+S` on a clip opens the clip tools: lossless rotate, split, remove in–out, MP4 ↔ MKV remux, save the frame as PNG / JPEG, extract the audio (copy, WAV or FLAC), and GIF / WebP. Every result is a new file beside the clip (`<name>_trimmed.mp4`, …); the original is never touched, and jobs run in a Jobs pane (`Ctrl+J`) where they can be cancelled without leaving a partial file. Anything that decodes or encodes runs in a separate helper process (`MediaViewerClipJob`), so a crash in a GPU driver fails that one job and never the viewer. The shared core is also tested headless on Linux ([tools/portable](../tools/portable/README.md)).
 
-**PR 15 OS integration** (Windows and macOS, same command rows): `Ctrl+Shift+C` (`⌘⇧C`) copies the marked or current file's path as text; `Ctrl+Alt+C` (`⌘⌥C`) copies the photo as you see it, edits applied, as a PNG (both a file and an image, so it pastes into Explorer / Finder and into Word, Keynote or a chat; no EXIF rides along); `Ctrl+Shift+S` (`⌘⇧S`) opens the share menu: Sharepoint, then the system Share sheet (#444). The folders you open show up as **Recent folders** in the taskbar jump list and in the Dock icon's menu, in File ▸ Open Recent on the Mac, and as clickable rows on the empty window's welcome card (up to six, as many as the window has room for; a folder that has gone is dropped when clicked, and the × on a hovered row removes a folder from every recent list without touching it on disk). The card and the host share one layout (`src/shell/welcome_layout.h`), so the row drawn and the row hit are the same. The taskbar thumbnail gains previous / play-pause / next buttons, and on the Mac, Control Centre, the media keys and AirPods drive a clip through Now Playing. Explorer gets MediaViewer's thumbnails (HEIC, AVIF, RAW and the rest) for the file types you make MediaViewer the default for; the handler runs outside Explorer, so a damaged file can't take Explorer down. Explorer's Details-pane properties need a machine-wide install and are deferred. On the Mac, Spotlight learns the length, size and codecs of MKV, WebM, AVI and TS clips (macOS already indexes photos and MP4/MOV itself). `Ctrl+Alt`-drag (`⌘⌥`-drag) drags out the edited copy, and opening a file while MediaViewer is running opens it in the running window instead of starting a second one (`--new-instance` overrides). `Ctrl+N` (`⌘N`, File ▸ New Window) opens another window as its own process. Several windows grouped as tabs come in a later update ([docs/design/10](design/10-roadmap.md) PR 15). The macOS half is built, its tests pass and the Metal present-loop gate holds; the Windows half builds in CI. Neither platform's hands-on verify (Explorer / Finder, installed builds) has been run yet.
+**PR 15 OS integration** (Windows and macOS, same command rows): `Ctrl+Shift+C` (`⌘⇧C`) copies the marked or current file's path as text; `Ctrl+Alt+C` (`⌘⌥C`) copies the photo as you see it, edits applied, as a PNG (both a file and an image, so it pastes into Explorer / Finder and into Word, Keynote or a chat; no EXIF rides along); `Ctrl+Shift+S` (`⌘⇧S`) opens the share menu: Driftwire, then the system Share sheet (#444). The folders you open show up as **Recent folders** in the taskbar jump list and in the Dock icon's menu, in File ▸ Open Recent on the Mac, and as clickable rows on the empty window's welcome card (up to six, as many as the window has room for; a folder that has gone is dropped when clicked, and the × on a hovered row removes a folder from every recent list without touching it on disk). The card and the host share one layout (`src/shell/welcome_layout.h`), so the row drawn and the row hit are the same. The taskbar thumbnail gains previous / play-pause / next buttons, and on the Mac, Control Centre, the media keys and AirPods drive a clip through Now Playing. Explorer gets MediaViewer's thumbnails (HEIC, AVIF, RAW and the rest) for the file types you make MediaViewer the default for; the handler runs outside Explorer, so a damaged file can't take Explorer down. Explorer's Details-pane properties need a machine-wide install and are deferred. On the Mac, Spotlight learns the length, size and codecs of MKV, WebM, AVI and TS clips (macOS already indexes photos and MP4/MOV itself). `Ctrl+Alt`-drag (`⌘⌥`-drag) drags out the edited copy, and opening a file while MediaViewer is running opens it in the running window instead of starting a second one (`--new-instance` overrides). `Ctrl+N` (`⌘N`, File ▸ New Window) opens another window as its own process. Several windows grouped as tabs come in a later update ([docs/design/10](design/10-roadmap.md) PR 15). The macOS half is built, its tests pass and the Metal present-loop gate holds; the Windows half builds in CI. Neither platform's hands-on verify (Explorer / Finder, installed builds) has been run yet.
 Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
@@ -605,7 +606,7 @@ line fails), `--no-overlay`, `--static`, `--no-chrome`, `--open <path>`, `--boot
 (#486: write the boot timeline as JSON once the launch is ready and close; leaves the recent
 folders alone; on Windows it implies `--new-instance`, on the Mac it shows the window without
 taking the keyboard, as the soaks do; see "Performance suite"), `--background` (#452:
-the sign-in start: the window is never shown, only the tray / menu-bar icon once Sharepoint keeps
+the sign-in start: the window is never shown, only the tray / menu-bar icon once Driftwire keeps
 the process; it quits after 60 s if nothing does),
 `--browse-soak` (with `--json` and a folder: time each arrow to the next still, and jumps
 past the prefetched neighbours; 3 s dwell between arrows; the macOS lab has it too. The
@@ -1127,32 +1128,32 @@ python3 tools/package/addon-pack.py stage-places --src build/addons/places --blo
 python3 tools/package/addon-pack.py pack --addon places --platform macos --src build/addons/places \
   --version 1.0.0 --key <key file> --out dist/
 
-# Sharepoint (docs/design/28): build/addons/sharepoint/(lib)mv_sharepoint.(dylib|dll)
-cmake --build build --target mv_sharepoint
-build/bin/mv_import_tests "[sharepoint]"       # wire, Noise (Cacophony vectors), channel, protocol 2's session (rejoin, resume, Bluetooth <-> Wi-Fi), 2-3 engines over loopback TCP, codes, the DHT, remembered devices (a folder stands in for the Keychain), the add-on through the loader
-build/bin/mv_import_tests "[.sharepoint-bench]"   # MB/s against a plain copy over loopback (MV_BENCH_DIR, _BIG_MB, _SMALL, _SMALL_KB, _CASES)
-build/bin/mv_import_tests "[.sharepoint-idle]"    # CPU while Keep receiving is on, window closed (MV_IDLE_SECONDS)
-python3 -m unittest tools/package/test_addon_pack.py   # SharepointPackTest among them
-build/bin/mv_import_tests "[.sharepoint-send]"    # #452: a sender on this machine (MV_SEND_FILE, MV_SEND_CODE_FILE or MV_SEND_HOLD)
+# Driftwire (docs/design/28): build/addons/driftwire/(lib)mv_driftwire.(dylib|dll)
+cmake --build build --target mv_driftwire
+build/bin/mv_import_tests "[driftwire]"       # wire, Noise (Cacophony vectors), channel, protocol 2's session (rejoin, resume, Bluetooth <-> Wi-Fi), 2-3 engines over loopback TCP, codes, the DHT, remembered devices (a folder stands in for the Keychain), the add-on through the loader
+build/bin/mv_import_tests "[.driftwire-bench]"   # MB/s against a plain copy over loopback (MV_BENCH_DIR, _BIG_MB, _SMALL, _SMALL_KB, _CASES)
+build/bin/mv_import_tests "[.driftwire-idle]"    # CPU while Keep receiving is on, window closed (MV_IDLE_SECONDS)
+python3 -m unittest tools/package/test_addon_pack.py   # DriftwirePackTest among them
+build/bin/mv_import_tests "[.driftwire-send]"    # #452: a sender on this machine (MV_SEND_FILE, MV_SEND_CODE_FILE or MV_SEND_HOLD)
 # #472 relays: a relay server of your own (built beside the add-on, never shipped with the app).
 # On a machine both ends reach (a VPS, or a home server with the port forwarded); then type
-# "<address or name>:47614#<key>" (it prints the key) in Sharepoint's "Relay (your own server)" on
+# "<address or name>:47614#<key>" (it prints the key) in Driftwire's "Your own relay server (optional)" on
 # the receiving computer. Only a holder of the key can wait there.
-build/bin/mv-sharepoint-relay --port 47614      # --key K (or MV_RELAY_KEY) --max-pairs 8 --wait-s 600 --max-gb 64 --rate-mbs 0 --idle-s 120
-python3 tools/sharepoint-relay/tor_spike.py --tor /opt/homebrew/bin/tor --mb 64 --runs 3 --live-tor   # owner only: joins the live Tor network
-python3 tools/package/addon-pack.py pack --addon sharepoint --platform macos --src build/addons/sharepoint \
+build/bin/mv-driftwire-relay --port 47614      # --key K (or MV_RELAY_KEY) --max-pairs 8 --wait-s 600 --max-gb 64 --rate-mbs 0 --idle-s 120
+python3 tools/driftwire-relay/tor_spike.py --tor /opt/homebrew/bin/tor --mb 64 --runs 3 --live-tor   # owner only: joins the live Tor network
+python3 tools/package/addon-pack.py pack --addon driftwire --platform macos --src build/addons/driftwire \
   --version 1.0.0 --key <key file> --out dist/
 # #472: the parsers of what a peer sends, fuzzed on the Mac with Homebrew's LLVM (CI builds
-# tools/fuzz/fuzz_sharepoint.cpp with clang-cl in the fuzz job); S=src/addons/sharepoint
+# tools/fuzz/fuzz_driftwire.cpp with clang-cl in the fuzz job); S=src/addons/driftwire
 /opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -O1 -g -fsanitize=fuzzer,address -isysroot $(xcrun --show-sdk-path) \
-  -Isrc -Ibuild/vcpkg_installed/arm64-osx/include tools/fuzz/fuzz_sharepoint.cpp $S/wire.cpp $S/noise.cpp \
+  -Isrc -Ibuild/vcpkg_installed/arm64-osx/include tools/fuzz/fuzz_driftwire.cpp $S/wire.cpp $S/noise.cpp \
   $S/cpace.cpp $S/channel.cpp $S/transfer.cpp $S/bt_pipe.cpp $S/invite.cpp $S/mapping.cpp $S/net_address.cpp \
   $S/net_posix.cpp $S/machine_mac.cpp $S/bencode.cpp $S/sha1.cpp $S/dht_item.cpp $S/dht.cpp $S/udp_hub.cpp \
   $S/known.cpp $S/secrets_file.cpp $S/splice.cpp $S/relay.cpp $S/internet.cpp $S/meet.cpp \
   src/io/file_port.cpp src/io/file_port_mac.cpp src/io/content_hash.cpp \
   build/vcpkg_installed/arm64-osx/lib/libsodium.a build/vcpkg_installed/arm64-osx/lib/libblake3.a \
-  -framework CoreFoundation -framework SystemConfiguration -o build/fuzz_sharepoint
-build/fuzz_sharepoint <corpus dir> -max_total_time=180 -max_len=4096
+  -framework CoreFoundation -framework SystemConfiguration -o build/fuzz_driftwire
+build/fuzz_driftwire <corpus dir> -max_total_time=180 -max_len=4096
 ```
 
 To see it in the app on a developer build (`-DMV_ADDON_DEV_PUBLIC_KEY`): pack with the dev key as
@@ -2328,12 +2329,12 @@ open -n --env HOME=<scratch>/home --env MV_DEV_ADDONS_DIR=<scratch>/addons \
 
 Every name in the test add-on is "Slots test"; nothing in it looks like Places. Quit the dev
 copy when done.
-### Sharepoint (issues #410, #413, 2026-10-15)
+### Driftwire (issues #410, #413, 2026-10-15)
 
-What is built is in [docs/design/28](design/28-sharepoint.md).
+What is built is in [docs/design/28](design/28-driftwire.md).
 
-- **Mac (M-series):** the app, the Swift chrome and `libmv_sharepoint.dylib` build clean.
-  `mv_import_tests` 138 cases pass, 26 of them `"[sharepoint]"`: the path rule, the offer (a
+- **Mac (M-series):** the app, the Swift chrome and `libmv_driftwire.dylib` build clean.
+  `mv_import_tests` 138 cases pass, 26 of them `"[driftwire]"`: the path rule, the offer (a
   wrapping total and an oversized file refused), the beacon, the code, the channel (same code
   both ends, a machine in the middle shows two codes, a key that does not match its commitment
   and an altered byte end it, another version is refused, pings never stretch a deadline), a
@@ -2347,28 +2348,28 @@ What is built is in [docs/design/28](design/28-sharepoint.md).
   finished and leaves no `.mvtmp`; no room; an offer opens a closed window when receiving is on;
   no presence with the window closed), then the add-on through a signed store and the v3 table,
   offline. `mv_tests` 819 cases (808 passed, 11 skipped) and `mv_script_tests` pass;
-  `SharepointPackTest` passes.
-- **ThreadSanitizer (Mac, 2026-10-15):** `"[sharepoint]"` is TSan-clean: 16 runs, 8 one after
+  `DriftwirePackTest` passes.
+- **ThreadSanitizer (Mac, 2026-10-15):** `"[driftwire]"` is TSan-clean: 16 runs, 8 one after
   another and 8 as four at once (load average ~12), every one 23 cases passed, 0 reports. The
   engine, the channel and its pinger, the transfer's reader, the busy refusals and the accept loop
   raised nothing. The first run's 4 reports were all the flood test's own fake discovery
   publishing its callback to the test thread unsynchronised; it now publishes through an atomic.
-  Sharepoint is not in `cmake/portable`, so this is the [macOS](#macos-mac-prs-16) configure in
+  Driftwire is not in `cmake/portable`, so this is the [macOS](#macos-mac-prs-16) configure in
   its own build directory with `-fsanitize=thread -fno-omit-frame-pointer -g` in
   `CMAKE_{C,CXX,OBJC,OBJCXX}_FLAGS` and `-fsanitize=thread` in
   `CMAKE_{EXE,SHARED,MODULE}_LINKER_FLAGS`, then `ninja mv_import_tests` and
-  `TZ=UTC build-tsan/bin/mv_import_tests "[sharepoint]"`. Bluetooth (`bt_mac.mm`, `bt_win.cpp`)
+  `TZ=UTC build-tsan/bin/mv_import_tests "[driftwire]"`. Bluetooth (`bt_mac.mm`, `bt_win.cpp`)
   and the UDP beacon thread (`presence.cpp`) are not exercised by these tests, so TSan says nothing
   about them.
-- **In a dev copy (offline, `MV_SHAREPOINT_OFFLINE=1`, sideloaded with the dev key):** its command
+- **In a dev copy (offline, `MV_DRIFTWIRE_OFFLINE=1`, sideloaded with the dev key):** its command
   opened the window with the two files it was given, on the host's theme; the gallery shows the
   share icon; a range set through the bridge made copy path copy the three files, and Next ended
   it. The Shift-click itself, the range's tint, the drag out of the grid, the Choose… dialog and
   the share icon's install offer need a mouse: owed to a hand check.
 - **Measured, Mac, alternated, warm (load average 5–22):** launch → first pixel of a RAW
-  (`mediaviewer_lab --soak 6 --static`) without / with Sharepoint installed, 15 runs each:
+  (`mediaviewer_lab --soak 6 --static`) without / with Driftwire installed, 15 runs each:
   22–76 ms (median 39) / 23–88 ms (median 33). No difference within noise. The PR 1 gate
-  (`frametime --seconds 60`) passed with Sharepoint installed (3600 frames, max 17.0 ms, idle
+  (`frametime --seconds 60`) passed with Driftwire installed (3600 frames, max 17.0 ms, idle
   0 presents, 0.06 % CPU); the alternated base run failed on a 1.3 s stall on a machine that had
   just woken, so the base's pass is not shown by this run.
 - **Windows:** the C# compiles (warnings are errors). `net_win.cpp`, `bt_win.cpp` (C++/WinRT,
@@ -2381,7 +2382,7 @@ What is built is in [docs/design/28](design/28-sharepoint.md).
   the app, both hosts' first-run prompts (local network and Bluetooth on the Mac, Defender
   Firewall on Windows), VoiceOver and Narrator over the window, the Windows PR 1 gate.
 
-### Sharepoint on Windows (issue #472, 2026-10-18)
+### Driftwire on Windows (issue #472, 2026-10-18)
 
 The Windows half of the #472 stack, run on a Windows 11 desktop (10.0.26200, MSVC Release, Ninja),
 every PR head in its own worktree and build folder.
@@ -2395,30 +2396,30 @@ every PR head in its own worktree and build folder.
   wraps them). POSIX is unchanged. Before it, the DHT meeting's internet handshake took 1.8–3.9 s
   on loopback against `kConnectMs` (8 s), so the DHT, remembered-device and own-relay cases failed
   now and then on Windows CI, and the relay splice stalled; after it, 1.7–2.1 ms on every head.
-- **`mv_import_tests "[sharepoint]"`, three runs in a row per head, all passed** (cases / suite
+- **`mv_import_tests "[driftwire]"`, three runs in a row per head, all passed** (cases / suite
   time): #474 54 / 78 s, #475 72 / 90 s, #476 85 / 119 s (366–399 s before the fix), #477 95 /
   147–151 s, #478 98 / 173 s, #479 102 / 255 s, #481 112 / 212–214 s (the relay test unmodified),
   #483 103 / 196–198 s. After the leaves were chained (#478 → #479 → #481 → #483): #481 116 /
   290–295 s, #483 124 / 315–323 s, the three new cases (the opt-in defaults, the retry ladder,
-  Credential Manager) among them. Only the tag filter was used, so `[.sharepoint-dht-live]` never
+  Credential Manager) among them. Only the tag filter was used, so `[.driftwire-dht-live]` never
   ran.
 - **PR 1 gate** (`mediaviewer_lab --soak 60 --gate`): with no add-ons, 3597 frames, 0 dropped, max
-  17.9 ms, 0 idle presents; with Sharepoint loaded (#483), passed twice, 0 dropped, p99 16.95 ms, 0
+  17.9 ms, 0 idle presents; with Driftwire loaded (#483), passed twice, 0 dropped, p99 16.95 ms, 0
   idle presents. A game was running on the machine during the loaded runs (idle CPU about 15 % with
   and without add-ons), and one no-add-on run missed on a single 66 ms frame, so these are not
   quiet-machine numbers and were not alternated against a base.
 - **Credential Manager** (`secrets_win.cpp`) keeps, replaces, refuses an oversized value and
   forgets, in its own Windows-only case.
-- **Not run on Windows:** `[.sharepoint-idle]` and `[.sharepoint-bench]` (POSIX-only harnesses),
+- **Not run on Windows:** `[.driftwire-idle]` and `[.driftwire-bench]` (POSIX-only harnesses),
   the fuzz harness (CI's smoke builds it), two machines, real Bluetooth, routers and NATs.
 
-### Sharepoint relays (issue #472, 2026-10-18)
+### Driftwire relays (issue #472, 2026-10-18)
 
-What is built is in [docs/design/28 "Relays"](design/28-sharepoint.md#relays-472); why, and Tor's
-keep/drop, in [12](design/12-decision-log.md#sharepoint) and the
-[Tor plan](plans/sharepoint-tor-spike.md).
+What is built is in [docs/design/28 "Relays"](design/28-driftwire.md#relays-472); why, and Tor's
+keep/drop, in [12](design/12-decision-log.md#driftwire) and the
+[Tor plan](plans/driftwire-tor-spike.md).
 
-- **Mac (M-series, Release):** `mv_import_tests "[sharepoint]"` passes (112 cases; 14 new). New:
+- **Mac (M-series, Release):** `mv_import_tests "[driftwire]"` passes (112 cases; 14 new). New:
   the rendezvous hello and the key's proof; a code with a relay place (and one with only the relay);
   the server pairing a waiter and a sender both ways byte for byte, closing a waiter with the wrong
   key, a sender with no waiter (at once), a replaced wait, garbage and a waiter that speaks first;
@@ -2437,7 +2438,7 @@ keep/drop, in [12](design/12-decision-log.md#sharepoint) and the
   address, and its waits killed by NATs; R's "public" check let IPv6 back into its own /64; the own
   relay blocked the round for 45 s; its toggle was keyed by list position; the rate cap let an idle
   pair burst. All fixed, with cases.
-- **ThreadSanitizer:** after the review's fixes, the full `"[sharepoint]"` (112 cases) and the relay
+- **ThreadSanitizer:** after the review's fixes, the full `"[driftwire]"` (112 cases) and the relay
   cases twice more, 0 reports, all passing. Under TSan the own-relay cases first failed every time:
   the engine made its receiver of codes before the DHT toggle reached it (a window of every setting
   copied at that moment: DHT, forwarded port, relay), so the code was direct, not words; each is now
@@ -2445,17 +2446,17 @@ keep/drop, in [12](design/12-decision-log.md#sharepoint) and the
 - **Fuzzing:** the harness adds the rendezvous hello, the relay field as typed, the relay request
   and its answer (a relay code goes through the pasted-code case): 12.9 million inputs in 181 s,
   clean.
-- `mv-sharepoint-relay` is 306 KB (Mac, Release); nothing new is linked (11 unchanged).
+- `mv-driftwire-relay` is 306 KB (Mac, Release); nothing new is linked (11 unchanged).
 - **Not measured, owed:** real networks (a VPS relay, an own relay behind a real router), throughput
   through either relay, the Tor harness (the owner's: it joins the live Tor network), the PR 1
-  gates. Windows: [Sharepoint on Windows](#sharepoint-on-windows-issue-472-2026-10-18) (the relay test needed `net_win.cpp`'s event waits).
-### Sharepoint birthday punch and TCP simultaneous open (issue #472, 2026-10-18)
+  gates. Windows: [Driftwire on Windows](#driftwire-on-windows-issue-472-2026-10-18) (the relay test needed `net_win.cpp`'s event waits).
+### Driftwire birthday punch and TCP simultaneous open (issue #472, 2026-10-18)
 
-What is built is in [docs/design/28 "Four words over the DHT"](design/28-sharepoint.md#four-words-over-the-dht-472-pr-3);
-why in [12](design/12-decision-log.md#sharepoint).
+What is built is in [docs/design/28 "Four words over the DHT"](design/28-driftwire.md#four-words-over-the-dht-472-pr-3);
+why in [12](design/12-decision-log.md#driftwire).
 
-- **Mac (M-series, Release):** `mv_import_tests "[sharepoint]"` passes (103 cases, 2656
-  assertions). New (`tests/test_sharepoint_dht.cpp`, "sharepoint nat:"): stand-in NATs that wrap
+- **Mac (M-series, Release):** `mv_import_tests "[driftwire]"` passes (103 cases, 2656
+  assertions). New (`tests/test_driftwire_dht.cpp`, "driftwire nat:"): stand-in NATs that wrap
   every socket a hub opens (`udp_hub::socket_wrap`), a symmetric one and a port-restricted cone,
   outside ports in a 1024-port window; with a hard receiver and then a hard sender, the DHT's
   votes call the right side hard, both meet by the birthday punch, the hard side keeps at most one
@@ -2476,7 +2477,7 @@ why in [12](design/12-decision-log.md#sharepoint).
   looks up once more first when it has fewer than four votes. The receiver gave up on a TCP
   connection after 2 s while the sender, which started punching later, had not yet picked it; the
   receiver now holds every connection open until the punch ends.
-- **ThreadSanitizer:** `TZ=UTC build-tsan/bin/mv_import_tests "[sharepoint]"`, 0 reports; the new
+- **ThreadSanitizer:** `TZ=UTC build-tsan/bin/mv_import_tests "[driftwire]"`, 0 reports; the new
   cases passed under it. One case failed there twice and passes in Release: "four words send files
   between two engines" got a link code instead of words, in code making (`internet.cpp`), before
   any meeting; this change does not touch that path, and it was not checked against a TSan build
@@ -2490,14 +2491,14 @@ why in [12](design/12-decision-log.md#sharepoint).
   side's connect accepted by the other's listener), Windows anything (`WSAPoll` over 257 sockets,
   `SO_REUSEADDR` sharing a listening port), throughput on an extra socket beyond the 300 KiB case,
   the PR 1 gates. No performance number in this change: the viewer, the canvas and an idle
-  Sharepoint are untouched (the extra sockets exist only while a meeting punches a hard NAT, and the stream's one while it runs; the TCP port only during a word code's meeting).
+  Driftwire are untouched (the extra sockets exist only while a meeting punches a hard NAT, and the stream's one while it runs; the TCP port only during a word code's meeting).
 
-### Sharepoint Wi-Fi → internet (issue #472 PR 5, 2026-10-18)
+### Driftwire Wi-Fi → internet (issue #472 PR 5, 2026-10-18)
 
-What is built is in [docs/design/28 "Wi-Fi → internet"](design/28-sharepoint.md#wi-fi--internet-472-pr-5);
-why in [12](design/12-decision-log.md#sharepoint).
+What is built is in [docs/design/28 "Wi-Fi → internet"](design/28-driftwire.md#wi-fi--internet-472-pr-5);
+why in [12](design/12-decision-log.md#driftwire).
 
-- **Mac (M-series, Release):** `mv_import_tests "[sharepoint]"` passes (97 cases). New: two engines
+- **Mac (M-series, Release):** `mv_import_tests "[driftwire]"` passes (97 cases). New: two engines
   on Wi-Fi with no Bluetooth; the receiver's places reach the sender while the files go; Wi-Fi is
   cut and refused and the send is on the internet within 5 s (10, 11, 14 ms on loopback over three
   runs), done, the file byte for byte, once, nothing temporary left, the way in closed after; with
@@ -2509,15 +2510,15 @@ why in [12](design/12-decision-log.md#sharepoint).
 - **Not measured, owed:** a real router's mapping during a transfer, two machines with Wi-Fi turned
   off on one, the 2 GiB set of #472's verify, the PR 1 gates, Windows anything. Not built: the
   configured relay, Tor. The DHT path (receiver's network gone, both moved) is
-  [the next section](#sharepoint-wi-fi--internet-when-both-sides-move-issue-472-2026-10-18).
+  [the next section](#driftwire-wi-fi--internet-when-both-sides-move-issue-472-2026-10-18).
 
-### Sharepoint Wi-Fi → internet when both sides move (issue #472, 2026-10-18)
+### Driftwire Wi-Fi → internet when both sides move (issue #472, 2026-10-18)
 
-What is built is in [docs/design/28 "Wi-Fi → internet"](design/28-sharepoint.md#wi-fi--internet-472-pr-5)
-("When both sides move"); why in [12](design/12-decision-log.md#sharepoint).
+What is built is in [docs/design/28 "Wi-Fi → internet"](design/28-driftwire.md#wi-fi--internet-472-pr-5)
+("When both sides move"); why in [12](design/12-decision-log.md#driftwire).
 
-- **Mac (M-series, Release):** `mv_import_tests "[sharepoint]"` passes (102 cases). New in
-  `tests/test_sharepoint_session.cpp`, on the stand-in swarm (now `tests/sharepoint_swarm.h`,
+- **Mac (M-series, Release):** `mv_import_tests "[driftwire]"` passes (102 cases). New in
+  `tests/test_driftwire_session.cpp`, on the stand-in swarm (now `tests/driftwire_swarm.h`,
   shared with the DHT tests): two engines on Wi-Fi with the handover and DHT toggles on; both have
   joined the DHT before the cut; Wi-Fi is cut and refused and the receiver's swapped places refuse
   every connect (its network went too); the send meets the receiver on the DHT (one stream met)
@@ -2537,30 +2538,30 @@ What is built is in [docs/design/28 "Wi-Fi → internet"](design/28-sharepoint.m
   review fixes (keys per rejoin count, withdraw after every meeting): 826 and 807 ms in the full
   runs. The second drop (`{"case":"dht_to_dht"}`, cut → rejoined): 5551, 5665, 5962 ms; the
   receiver notices only by silence, `kSuspectMs` (3 s) after the sender.
-- **ThreadSanitizer:** the whole `"[sharepoint]"`: 102 cases, 0 reports. One assertion failure
+- **ThreadSanitizer:** the whole `"[driftwire]"`: 102 cases, 0 reports. One assertion failure
   there, in PR 3's "four words send files between two engines" (Bea made a link code, not words);
   alone it fails 2 runs in 6 under TSan, a timing question about the DHT toggle reaching the
   receiver before `make_code`, in code this change does not touch; the base branch's own TSan build
   fails it too (1 run in 8).
 - **Not measured, owed:** the public DHT's publish and lookup times during a drop
-  (`"[.sharepoint-dht-live]"` measures lookups only), real NATs and a real change of network, two
+  (`"[.driftwire-dht-live]"` measures lookups only), real NATs and a real change of network, two
   machines, a suspect-only drop where the sender is the one that only hears silence, rejoin counts
   that differ, the PR 1 gates, Windows anything. A name filter that matches "DHT" (such as
   `"*DHT*"`) also runs the hidden live harness, which joins the public DHT: filter by tag. The 1 s retransmit tail could go with a hub that
   keeps a stream's first packet for an id it does not know yet (`udp_hub.*`, not changed here).
 
-### Sharepoint remembered devices (issue #472 PR 4, 2026-10-18)
+### Driftwire remembered devices (issue #472 PR 4, 2026-10-18)
 
-What is built is in [docs/design/28 "Remembered devices"](design/28-sharepoint.md#remembered-devices-472-pr-4);
-why in [12](design/12-decision-log.md#sharepoint).
+What is built is in [docs/design/28 "Remembered devices"](design/28-driftwire.md#remembered-devices-472-pr-4);
+why in [12](design/12-decision-log.md#driftwire).
 
-- **Mac (M-series, Release):** `mv_import_tests "[sharepoint]"` passes (95 cases). New in
-  `tests/test_sharepoint_known.cpp`: the file store (keep, replace, forget, too big refused); the
+- **Mac (M-series, Release):** `mv_import_tests "[driftwire]"` passes (95 cases). New in
+  `tests/test_driftwire_known.cpp`: the file store (keep, replace, forget, too big refused); the
   identity made once and kept, or this run's without a store; the records (round trip, every
   truncation refused, long names cut on a character, 16 at most, under Credential Manager's
   2560 bytes); the hourly keys (the same on both sides, new each hour and per direction); a
   protocol 2 session naming each side's key and giving both one pairing secret (protocol 1: none).
-  In `tests/test_sharepoint_dht.cpp`: two engines remember each other after a four-word send, then
+  In `tests/test_driftwire_dht.cpp`: two engines remember each other after a four-word send, then
   send with one click and no code; the list and the identity outlive the engine and Forget
   forgets; an impostor holding the pair's secret but another key is refused with the loud note;
   one-sided remembering waits and Cancel ends it.
@@ -2572,13 +2573,13 @@ why in [12](design/12-decision-log.md#sharepoint).
   app uses the OS store), two machines over the internet, the waiting side's DHT load over hours,
   the PR 1 gates, Windows anything. The own-device relay is not built.
 
-### Sharepoint four-word codes (issue #472 PR 3, 2026-10-18)
+### Driftwire four-word codes (issue #472 PR 3, 2026-10-18)
 
-What is built is in [docs/design/28 "Four words over the DHT"](design/28-sharepoint.md#four-words-over-the-dht-472-pr-3);
-why in [12](design/12-decision-log.md#sharepoint) (the two spikes, decided).
+What is built is in [docs/design/28 "Four words over the DHT"](design/28-driftwire.md#four-words-over-the-dht-472-pr-3);
+why in [12](design/12-decision-log.md#driftwire) (the two spikes, decided).
 
 - **Mac (M-series, Release):** the full `mv_import_tests` passes (207 cases). New in
-  `tests/test_sharepoint_dht.cpp`: bencoding (round trips, sixteen malformed inputs refused);
+  `tests/test_driftwire_dht.cpp`: bencoding (round trips, sixteen malformed inputs refused);
   SHA-1 (FIPS vectors incl. a million `a`), BEP 44's test vectors (the signed buffer, both
   signatures, the targets with and without salt), BEP 42's node-id vectors and CRC-32C's check
   value; the four-word codes (typed any way, four letters enough, junk refused); items sealed,
@@ -2596,7 +2597,7 @@ why in [12](design/12-decision-log.md#sharepoint) (the two spikes, decided).
   meet a late reply); a handler change now waits for a running call.
 - **Fuzzing:** the harness adds bencoding, compact node lists and endpoints, word codes, an item
   opened under a code's key and item signatures: 9.9 million inputs in 180 s, clean.
-- **The public DHT, not run:** `mv_import_tests "[.sharepoint-dht-live]"` joins it from this machine
+- **The public DHT, not run:** `mv_import_tests "[.driftwire-dht-live]"` joins it from this machine
   (read only, nothing put) and prints start time, nodes known, lookup p50 / p95 and how many public
   ports the DHT saw (several: a hard NAT). It was not run for this PR: it shows this machine's
   address to the DHT, which is the owner's call. `MV_DHT_TABLE=<file>` times a warm start.
@@ -2604,15 +2605,15 @@ why in [12](design/12-decision-log.md#sharepoint) (the two spikes, decided).
   NAT (no birthday punch here: it fails, and says so), battery and packets a second while waiting,
   the PR 1 gates, Windows anything.
 
-### Sharepoint over the internet (issue #472 PR 2, 2026-10-18)
+### Driftwire over the internet (issue #472 PR 2, 2026-10-18)
 
-What is built is in [docs/design/28 "Over the internet"](design/28-sharepoint.md#over-the-internet-472-pr-2);
-why in [12](design/12-decision-log.md#sharepoint) (the owner's amendment of "no internet relay", and
+What is built is in [docs/design/28 "Over the internet"](design/28-driftwire.md#over-the-internet-472-pr-2);
+why in [12](design/12-decision-log.md#driftwire) (the owner's amendment of "no internet relay", and
 the code's shape). One shared change in the add-on plus the two socket ports (`net_posix.cpp`,
 `net_win.cpp`); no chrome or ABI change: the new section and phases are in the view tree.
 
-- **Mac (M-series, Release):** `mv_import_tests "[sharepoint]"` passes. New in
-  `tests/test_sharepoint_internet.cpp`: address parsing and printing (RFC 5952) and which are
+- **Mac (M-series, Release):** `mv_import_tests "[driftwire]"` passes. New in
+  `tests/test_driftwire_internet.cpp`: address parsing and printing (RFC 5952) and which are
   public; the code's round trip, link, loose typing, and typos caught; the routers' replies parsed
   (PCP, NAT-PMP, SSDP, an IGD description, chunked HTTP); the mapper against stand-in routers on
   loopback (PCP maps and removes; a NAT-PMP-only router answers after PCP gets nothing; a router
@@ -2622,33 +2623,33 @@ the code's shape). One shared change in the add-on plus the two socket ports (`n
   byte for byte, the same check on both screens, the code spent at the first attempt; a second
   sender with it fails; a wrong code kills it; an expired one is refused and the sender says the
   receiver is not listening and keeps trying until Cancel; junk is caught before anything is
-  tried). In `test_sharepoint_noise.cpp`: CPace against draft-irtf-cfrg-cpace-18's ristretto255
+  tried). In `test_driftwire_noise.cpp`: CPace against draft-irtf-cfrg-cpace-18's ristretto255
   vectors (generator, both messages, ISK), and `Noise_XXpsk3` against Cacophony.
-- **ThreadSanitizer:** `"[sharepoint]~[addon]"`, 70 cases, 0 reports.
-- **Fuzzing:** `tools/fuzz/fuzz_sharepoint.cpp` now also takes a pasted code, an address, PCP /
+- **ThreadSanitizer:** `"[driftwire]~[addon]"`, 70 cases, 0 reports.
+- **Fuzzing:** `tools/fuzz/fuzz_driftwire.cpp` now also takes a pasted code, an address, PCP /
   NAT-PMP / SSDP / HTTP / XML replies, a CPace message, an internet hello and a sender answered by
   the input. Mac, Homebrew LLVM: 9.5 million inputs in 180 s over all sixteen entry points, no
   report, no hang.
 - **Not measured, owed:** a real router for each of PCP, NAT-PMP and UPnP (and an IGDv2 IPv6
   pinhole); two machines on different networks, Mac ↔ Windows both ways, with a 2 GiB set over a
-  direct IPv6 code, a mapped-port code and a forwarded port; an office network that lets only 443
+  direct IPv6 code and a mapped-port code; an office network that lets only 443
   out; a packet capture showing traffic only to the peer and the router; throughput against
   `iperf3` on a real path; the PR 1 gates. No real network was used here: every router and the
   internet are stand-ins on loopback.
 
-### Sharepoint protocol 2 (issue #472 PR 1, 2026-10-18)
+### Driftwire protocol 2 (issue #472 PR 1, 2026-10-18)
 
-What is built is in [docs/design/28 "The wire"](design/28-sharepoint.md#the-wire) and
-["The session"](design/28-sharepoint.md#the-session-protocol-2-472); why in
-[12](design/12-decision-log.md#sharepoint). One shared change in the add-on: no chrome, ABI or host
+What is built is in [docs/design/28 "The wire"](design/28-driftwire.md#the-wire) and
+["The session"](design/28-driftwire.md#the-session-protocol-2-472); why in
+[12](design/12-decision-log.md#driftwire). One shared change in the add-on: no chrome, ABI or host
 table change; the window's new text ("Reconnecting to …", "over Bluetooth") is in the view tree
 both hosts already draw. Bluetooth's bearers changed only to read the INFO's `"p"`.
 
-- **Mac (M-series, Release):** `mv_import_tests "[sharepoint]"` 54 cases pass, 10 runs of 10 on
-  the final code (1492 assertions each). New: `tests/test_sharepoint_noise.cpp` (the
+- **Mac (M-series, Release):** `mv_import_tests "[driftwire]"` 54 cases pass, 10 runs of 10 on
+  the final code (1492 assertions each). New: `tests/test_driftwire_noise.cpp` (the
   Cacophony vectors for `Noise_XX` and `Noise_NNpsk0` byte for byte; the hybrid patterns agree,
   carry the ML-KEM secret in their keys, keep fixed-key transcripts, and refuse a tampered key or
-  ciphertext) and `tests/test_sharepoint_session.cpp`: a dropped link rejoins and 160 messages
+  ciphertext) and `tests/test_driftwire_session.cpp`: a dropped link rejoins and 160 messages
   arrive once, in order; make before break loses and repeats nothing; another session's rejoin
   and a replayed one are refused while the session carries on; three rejoins in 10 s and 20 s
   without a link each end it; a protocol 1 client and a protocol 2 server meet in protocol 1; the
@@ -2660,17 +2661,17 @@ both hosts already draw. Bluetooth's bearers changed only to read the INFO's `"p
     Bluetooth range for 5 s: "Reconnecting to Bea…", and it resumes and finishes;
   - a Wi-Fi link that goes silent with no error: suspect and moved after **3.1–3.2 s**;
   - each time the file arrives once, byte for byte, with no `.mvtmp` left.
-- **ThreadSanitizer:** the same configure as [#410's](#sharepoint-issues-410-413-2026-10-15),
-  `"[sharepoint]~[addon]"` (the loader test loads the uninstrumented module): every report in
+- **ThreadSanitizer:** the same configure as [#410's](#driftwire-issues-410-413-2026-10-15),
+  `"[driftwire]~[addon]"` (the loader test loads the uninstrumented module): every report in
   the first run was the new tests' beacon pump reading the fake discovery without its `ready`
   handshake; fixed, then 3 runs of 3 on the final code: 52 cases, 0 reports.
-- **Fuzzing:** `tools/fuzz/fuzz_sharepoint.cpp` (the beacon, INFO, the offer, the hello, the
+- **Fuzzing:** `tools/fuzz/fuzz_driftwire.cpp` (the beacon, INFO, the offer, the hello, the
   Noise messages each way, a rejoin without the secret, a whole receiver's open fed from the
   input), built on the Mac with Homebrew LLVM (`-fsanitize=fuzzer,address`, command above): 16.4
   million inputs in 180 s, no report, no hang. In CI it joins the non-gating fuzz step until it is
   seen starting on the runner, as each new harness does.
 - **Formal model:** `tools/formal/` (ProVerif 2.05; what each model shows is in
-  [docs/design/28 "The wire"](design/28-sharepoint.md#the-wire)). ProVerif is not in Homebrew and
+  [docs/design/28 "The wire"](design/28-driftwire.md#the-wire)). ProVerif is not in Homebrew and
   opam's package pulls in GTK for the interactive mode, so build the command-line tool from its
   source with opam's OCaml:
 
@@ -2697,7 +2698,7 @@ both hosts already draw. Bluetooth's bearers changed only to read the INFO's `"p
   check does not finish in ProVerif). No attack on protocol 2 was found. Found in passing: `ident` (id and name) goes before
   the code, so a machine in the middle learns them before a code is typed (as docs/design/28
   says, nothing about the files does).
-- **Throughput:** `[.sharepoint-bench]`, base (the #452 branch head, its own worktree and build)
+- **Throughput:** `[.driftwire-bench]`, base (the #452 branch head, its own worktree and build)
   and new alternated three times, warm, load ~4.6: 1 GiB 395.8–397.6 → 392.6–398.2 MB/s; 500 ×
   2 MiB 178.9–183.3 → 178.0–201.1 MB/s: no difference within noise. (The first alternated set
   showed 1 GiB 3 % slower, ranges apart; the cause was the receiver's flush reading in 100 ms
@@ -2711,14 +2712,14 @@ both hosts already draw. Bluetooth's bearers changed only to read the INFO's `"p
   run); the external review before anything internet is
   on by default (#472 PRs 2–5).
 
-### Sharepoint in the background (issue #452, 2026-10-16)
+### Driftwire in the background (issue #452, 2026-10-16)
 
-What changed is in [docs/design/28 "In the background"](design/28-sharepoint.md#in-the-background-452):
+What changed is in [docs/design/28 "In the background"](design/28-driftwire.md#in-the-background-452):
 **Receive when MediaViewer is closed** (off by default, implies Keep receiving) keeps the process
 with a menu-bar item / notification-area icon; offers are system notifications that open the
 window; the host table gains `notice_post`, `notice_authorize` and `keep_alive` (ABI 0.33).
 
-- **Mac (M-series):** the app, the Swift chrome and `libmv_sharepoint.dylib` build. `mv_tests`
+- **Mac (M-series):** the app, the Swift chrome and `libmv_driftwire.dylib` build. `mv_tests`
   (849 passed, 11 skipped) and `mv_import_tests` (154 cases) pass; new cases: the notice names the
   sender and then the count and size, never the file name or the code, is taken back when the
   offer ends, and its Decline declines; the toggle implies Keep receiving, keeps the process, is
@@ -2739,60 +2740,60 @@ window; the host table gains `notice_post`, `notice_authorize` and `keep_alive` 
   its menu, the `----AppNotificationActivated:` argument) and `chrome_host.cpp` meet a compiler in
   CI only. Not run: anything in the app.
 - **Owed:** the issue's verify on two machines per platform (notification within ~2 s, click opens
-  the code, Accept saves); the windowless idle measurement in the app against `"[.sharepoint-idle]"`
+  the code, Accept saves); the windowless idle measurement in the app against `"[.driftwire-idle]"`
   (Keep receiving 0.020 %); note that a hidden viewer window is occluded, and the Mac render loop
   polls occlusion every 200 ms (`k_occlusion_poll_ms`), which is in that number; with it off, no
   process after quitting and no beacon seen by the other machine.
-- **Start at login (2026-10-17):** built on both hosts ([28](design/28-sharepoint.md#in-the-background-452)):
+- **Start at login (2026-10-17):** built on both hosts ([28](design/28-driftwire.md#in-the-background-452)):
   `SMAppService.mainApp` on the Mac, the Run value `MediaViewer` = `"<install>\MediaViewer.exe"
   --background` on Windows (`src/shell/login_item_win.*`), both following the keep-alive list.
   Try the hidden start without signing out: `mediaviewer_lab.exe --background` (Windows; it exits
   at once if a viewer is already running) or `MediaViewer.app/Contents/MacOS/MediaViewer
   --background` (Mac). Installed builds and the bundled app only write the login item.
   Windows, dev build (2026-10-17): with a viewer running, `--background` exits in 195 ms without
-  bringing it forward; with no add-ons it stays hidden and exits 0 at 60 s; with Sharepoint's
+  bringing it forward; with no add-ons it stays hidden and exits 0 at 60 s; with Driftwire's
   toggle kept on it stays hidden and kept (`keep=1`); `mv_tests "[login-item]"` and the hidden
   `"[.login-item]"` (writes and removes the real Run value) pass. Not seen: the tray icon (a
   tool-launched lab is on another desktop), an installed build writing the value, a real sign-in.
   The PR 1 gate failed 3 of 3 runs of the new build on a loaded machine (one with 15 dropped
   frames, one on idle CPU only); the alternating base runs are owed.
   Mac, MediaViewer.app (M-series, 2026-10-18; a copy with its own bundle id, `HOME` and a
-  dev-signed Sharepoint): `--background` with no add-ons has no window and no Dock icon and quits
-  at 60 s; with Receive when closed kept on, Sharepoint listens, the menu-bar item appears and
+  dev-signed Driftwire): `--background` with no add-ons has no window and no Dock icon and quits
+  at 60 s; with Receive when closed kept on, Driftwire listens, the menu-bar item appears and
   nothing else; reopening from Finder or Open MediaViewer shows the window, a Quit event goes
   back to the menu bar, the menu's Quit ends the process. A kept start registers
   `SMAppService.mainApp` (status enabled); the toggle off unregisters it, and closing the
-  Sharepoint window then quits; a login start with the toggle off quits at 60 s and removes a
+  Driftwire window then quits; a login start with the toggle off quits at 60 s and removes a
   registered item. Fixed on the way: a Quit event (Dock, AppleScript) while kept closed the
   menu-bar item's window and then AppKit's last-window check terminated the app. Mac PR 1 gate
   2 × 60 s PASS (p99 16.80 / 16.75 ms, 0 idle presents). The kept windowless app: 0.12 % of one
-  core over 60 s (`ps`, 10 ms resolution) against 0.047 % for `"[.sharepoint-idle]"`'s engine
+  core over 60 s (`ps`, 10 ms resolution) against 0.047 % for `"[.driftwire-idle]"`'s engine
   alone. Not seen on the Mac: a real logout/login (`keyAELaunchedAsLogInItem` on a mainApp
   item), the notification from a second machine.
 
-### Sharepoint, AirDrop-smooth (issue #442, 2026-10-15)
+### Driftwire, AirDrop-smooth (issue #442, 2026-10-15)
 
-What changed is in [docs/design/28](design/28-sharepoint.md): the AirDrop-like window on both
+What changed is in [docs/design/28](design/28-driftwire.md): the AirDrop-like window on both
 hosts and the screen vocabulary it added (`tiles`, card, ring, code field, display text); the
 sender types the code the receiver shows (three wrong codes end the link); received files go to
-Downloads and Save to is kept; Keep receiving is kept across launches with **Sharepoint:
+Downloads and Save to is kept; Keep receiving is kept across launches with **Driftwire:
 receiving** in the command bar; the receiver checks file N while N+1 arrives; the share icon no
 longer waits for an earlier selection; Windows screen windows have the app icon, a size floor and
 an owner, and Settings shows each add-on as one card.
 
-- **Mac (M-series, Mac17,4):** `MediaViewer.app`, the Swift chrome and `libmv_sharepoint.dylib`
+- **Mac (M-series, Mac17,4):** `MediaViewer.app`, the Swift chrome and `libmv_driftwire.dylib`
   build. `mv_import_tests` 150 cases and `mv_tests` 850 (839 passed, 11 skipped) pass;
-  `"[sharepoint]"` 33 cases and `"[screens]"` 13. ThreadSanitizer: `"[sharepoint]"` four runs at
+  `"[driftwire]"` 33 cases and `"[screens]"` 13. ThreadSanitizer: `"[driftwire]"` four runs at
   once, 0 reports; `"[screens]"` 0. `test_addon_pack.py` passes.
-- **Measured (Mac):** `"[.sharepoint-bench]"` (loopback, alternated with the base three times):
-  500 × 2 MiB 124–141 → 158–180 MB/s, 1 GiB unchanged (crypto-bound); `"[.sharepoint-idle]"`
+- **Measured (Mac):** `"[.driftwire-bench]"` (loopback, alternated with the base three times):
+  500 × 2 MiB 124–141 → 158–180 MB/s, 1 GiB unchanged (crypto-bound); `"[.driftwire-idle]"`
   Keep receiving on, window closed: 0.020 % CPU, 6.4 switches a second, no present (off 0.0003 %).
   The PR 1 gate (`frametime --seconds 60`) passed alone (3599 frames, p99 16.8 ms, max 16.9 ms,
-  idle 0 presents, 0.042 %) and with Sharepoint sending over loopback in another process the whole
+  idle 0 presents, 0.042 %) and with Driftwire sending over loopback in another process the whole
   time (p99 16.8 ms, max 16.8 ms, idle 0 presents, 0.037 %).
 - **Seen on the Mac:** every state of the window drawn by the chrome's own `ScreenNodeView` (light
   and dark) in a scratch render harness, and the window opened in a dev copy of the app, offline
-  (`MV_SHAREPOINT_OFFLINE=1`, dev-signed, files handed over through `mv_chrome_slots_invoke`).
+  (`MV_DRIFTWIRE_OFFLINE=1`, dev-signed, files handed over through `mv_chrome_slots_invoke`).
 - **Windows:** the C# compiles (warnings are errors). `net_win.cpp`'s Downloads lookup and lock
   meet a compiler in CI only. Not run: the window's look, its icon, Settings' cards, the stall fix
   in the app.

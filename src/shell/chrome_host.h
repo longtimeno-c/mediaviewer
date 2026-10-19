@@ -1037,7 +1037,7 @@ class chrome_host {
   void show_import(std::int32_t kind, const std::string& paths_json) noexcept;
   // Issue #444 (docs/design/16 "Share"): the one share command's files are
   // gathered. `target` and `from` are shell::share_target / share_from: the
-  // menu (Sharepoint, Windows Share) anchored where it was asked, or the entry
+  // menu (Driftwire, Windows Share) anchored where it was asked, or the entry
   // picked from a right-click Share submenu. `files_json` is
   // {"files": [...stops with pair halves...], "media": [...system sheet's...]}.
   // False when the chrome cannot share.

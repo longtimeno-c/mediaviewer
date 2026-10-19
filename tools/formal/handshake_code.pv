@@ -1,4 +1,4 @@
-(* Sharepoint protocol 2, the first link (XXhfs) under an active attacker in
+(* Driftwire protocol 2, the first link (XXhfs) under an active attacker in
    the middle: what the six-digit code buys.
 
    The code is sas(h2, nc): h2 the handshake hash after message 2, nc the

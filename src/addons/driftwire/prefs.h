@@ -1,0 +1,55 @@
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
+// What Driftwire keeps across launches (issue #442): whether this machine
+// keeps receiving with the window closed (and with MediaViewer closed, #452),
+// and the folder Save to last chose.
+// A small JSON file in the add-on's own data folder (the host table's
+// data_dir), never the app's settings: Remove without keep takes it with the
+// add-on.
+//
+// Written whole on a worker (the engine's control thread), crash-safe without
+// a replacing rename: the new text goes to "<file>.new" (flushed), the old file
+// is removed, then the new one is renamed into place with no-replace; a read
+// that finds no file takes "<file>.new". Portable (D9): the file port only.
+#pragma once
+
+#include <optional>
+#include <string>
+
+namespace mv::driftwire {
+
+struct prefs {
+  bool receiving = false;   // "Keep receiving when this window is closed"
+  // "Receive when MediaViewer is closed" (#452): the process stays (menu-bar
+  // item / tray icon) with every window closed. Implies `receiving`.
+  bool background = false;
+  std::string destination;  // Save to; "" = the default (Downloads)
+  // #472 PR 2: "Send and receive over the internet" (off by default). The
+  // public address is found, never typed (router mapping, public IPv6).
+  bool internet = false;
+  bool dht = false;  // #472 PR 3: "Find each other over the internet (public DHT)", off by default
+  bool handover = false;  // #472 PR 5: "Continue over the internet if Wi-Fi drops", off by default
+  // #472 relays: "Use my other computers to relay" (off by default), and the
+  // advanced "Relay (your own server)", "<address or name>:<port>" ("" = none).
+  bool relay = false;
+  std::string relay_server;
+  bool operator==(const prefs&) const = default;
+};
+
+inline constexpr const char* kPrefsFile = "driftwire.json";
+
+// The prefs at `path`; nullopt when there is none or it does not parse (the
+// defaults then apply). One small read.
+[[nodiscard]] std::optional<prefs> load_prefs(const std::string& path);
+// Writes them; false on any I/O error (the old file stays).
+[[nodiscard]] bool save_prefs(const std::string& path, const prefs& p);
+
+// The add-on was called Sharepoint until 2026-10-19 (id "sharepoint"; the
+// host keeps each add-on's data in <root>/<id>/data). The first time this
+// one starts with no prefs of its own, it takes the old add-on's settings
+// from the sibling folder and saves them as its own. Nothing else carries
+// over: the key-derivation labels changed with the name, so remembered
+// devices pair again. `data_dir` is this add-on's own data folder.
+void adopt_old_prefs(const std::string& data_dir, const std::string& prefs_path);
+
+}  // namespace mv::driftwire

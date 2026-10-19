@@ -982,8 +982,9 @@ MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* ou
 /* The contribution API this host serves (an add-on's manifest declares the
  * range it was written for).  1  themes.  2  settings pages, keymap packs,
  * theme shape (PR 56).  3  scripts, permissions, commands (PR 57).
- * 4  screens; 5  chrome slots and search providers (docs/design/25 §7). */
-#define MV_ADDON_CONTRIBUTION_API 5
+ * 4  screens; 5  chrome slots and search providers (docs/design/25 §7);
+ * 6  the screen `link` node and a button's `copy` (2026-10-19). */
+#define MV_ADDON_CONTRIBUTION_API 6
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:

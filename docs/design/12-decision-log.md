@@ -1506,11 +1506,22 @@ MTU are never changed by the app.
 
 ---
 
-## Sharepoint
+## Driftwire
 
-Issues #410 and #413, [28](28-sharepoint.md).
+Issues #410 and #413, [28](28-driftwire.md).
 
-**A first-party add-on may open a local link the person asked for (owner, 2026-10-14).** Sharepoint
+**Sharepoint is now Driftwire, everywhere (owner, 2026-10-19).** Microsoft already sells a product
+called SharePoint, so the add-on was renamed in full: its name on screen, its id (`driftwire`), its
+files and folders, the release packages (`mediaviewer-addon-driftwire-*`), the relay tool
+(`mv-driftwire-relay`), the code and the docs. The owner chose to rename the key-derivation and
+handshake labels too ("MediaViewer Driftwire …"), so a Driftwire computer cannot talk to one still
+on Sharepoint, and remembered devices pair again; the wire magic `MVSP` stays (it spells nothing a
+person reads). An installed Sharepoint does not update itself into Driftwire (a new id): the share
+menu offers Driftwire's one-click install, and Sharepoint is removed in Settings → Add-ons. Its
+settings carry over once (`adopt_old_prefs` reads `<root>/sharepoint/data/sharepoint.json`, the one
+place the old name stays in the code).
+
+**A first-party add-on may open a local link the person asked for (owner, 2026-10-14).** Driftwire
 listens, beacons and uses Bluetooth only while its window is open, receiving is on or a transfer
 runs; the idle viewer has no socket. Bytes go only to the peer the sender picked, after the person
 there accepted, sealed end to end. Rule 6's line is unchanged: no path, file name, pixel, EXIF,
@@ -1538,12 +1549,12 @@ and a fresh peer keeps its address. Two clicks, one per side, as Bluetooth's num
 
 **Keep receiving is kept across launches (owner, 2026-10-15, #442; reverses "the toggle is for this
 run").** Turned on, it stays on after a relaunch until turned off: the add-on keeps it in its own
-data folder (`sharepoint.json`), and at load, only when it was on, makes the engine, whose control
+data folder (`driftwire.json`), and at load, only when it was on, makes the engine, whose control
 thread starts presence. That is after first pixel and off the foreground queue (slot add-ons load
 on the add-on queue / a worker), and in one window's process at a time (a lock file). Off at load
-is one small read and nothing else. While it is on the command bar shows **Sharepoint: receiving**,
+is one small read and nothing else. While it is on the command bar shows **Driftwire: receiving**,
 so a person knows the machine is discoverable. Measured idle cost with it on, window closed (Mac,
-`[.sharepoint-idle]`, 15 s): 0.020 % CPU, 6.4 context switches a second, no present; off 0.0003 %.
+`[.driftwire-idle]`, 15 s): 0.020 % CPU, 6.4 context switches a second, no present; off 0.0003 %.
 The earlier call kept the idle viewer silent by default; it still is unless the person asked.
 
 **The sender types the code; it is not compared (owner, 2026-10-15, #442; amends "the sender
@@ -1621,7 +1632,7 @@ the sender speaks, and its absence means 1.
 
 **A sealed link to the peer the person picked, over the internet too; no server of ours (owner,
 2026-10-17, #472; amends "A first-party add-on may open a local link the person asked for" and 28's
-"no internet relay, by design").** Sharepoint may reach a peer over the internet, client to client,
+"no internet relay, by design").** Driftwire may reach a peer over the internet, client to client,
 with no MediaViewer server of any kind: no rendezvous, no relay, no account. The public BitTorrent
 DHT is acceptable, opt-in. A relay is allowed only through the person's own devices or a relay they
 configure themselves. Each internet path is opt-in and off by default (find each other over the
@@ -1749,8 +1760,8 @@ key on disk, about 5–10 MB a platform, but an executable to sign in the add-on
 a reachable onion and a few MB/s over six hops. Arti (MIT/Apache-2.0) would bring Rust into the
 build, and its onion-service hosting was still marked incomplete when last checked. The relays
 cover the hard-NAT pair without a third-party network. Nothing was measured: that needs the live
-Tor network, so the harness (`tools/sharepoint-relay/tor_spike.py`) waits for the owner
-([plan](../plans/sharepoint-tor-spike.md)). Reopen for address hiding, or if its numbers surprise.
+Tor network, so the harness (`tools/driftwire-relay/tor_spike.py`) waits for the owner
+([plan](../plans/driftwire-tor-spike.md)). Reopen for address hiding, or if its numbers surprise.
 
 **#472 merges with these asks deferred (owner, 2026-10-18).** The owner chose to land the stack
 with the rest of #472 as follow-ups, not to build more before merge: re-gathering candidates and
@@ -1764,14 +1775,23 @@ spike; AES-256-GCM, larger chunks and parallel streams for throughput; and a wor
 naming its reason (it says one generic thing today). The birthday punch also departs from the
 issue: it starts with the meeting rather than after paths 1-4 have had 2 s, and punches for 10 s
 (about 97 %) rather than up to ~2,048 probes. Everything off by default stays off; the external
-review before anything is on by default still stands. [28 "Not built"](28-sharepoint.md#not-built)
+review before anything is on by default still stands. [28 "Not built"](28-driftwire.md#not-built)
 lists them.
+
+**No "Forwarded port" field: the public address is found, never typed (owner, 2026-10-19).** The
+window asked for `public address:port` under "Receive from anywhere", which read as a required step
+to someone who had just turned the internet on. A code already finds its own way in (router
+mapping by PCP, NAT-PMP or UPnP, public IPv6, the LAN address), and with no public place the DHT
+toggle meets without one, so the field, its saved setting and its place in a code are gone. A
+hand-forwarded port now helps only if the router maps it; a `forwarded` key in an old
+`driftwire.json` is ignored. Reopen only for a network where none of the automatic ways work and
+the DHT is blocked too.
 
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
 no-replace before its `file_done`; the sender's `done` waits for every check. Measured on loopback
 (Mac, alternated): 500 × 2 MiB 124–141 → 158–180 MB/s; one 1 GiB file unchanged (crypto-bound).
-Reading ahead on the sender measured no faster and was not kept. `[.sharepoint-bench]`.
+Reading ahead on the sender measured no faster and was not kept. `[.driftwire-bench]`.
 
 **Each file's hash comes after its bytes, not in the offer (2026-10-15).** A hash list up front
 would make the sender read every file twice before the first byte moved (a large video read

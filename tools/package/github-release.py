@@ -74,7 +74,7 @@ def prepare():
 
 # The optional add-ons, one signed package per add-on and platform. The apps
 # fetch them from releases/latest. MV_RELEASE_ADDONS=1 requires Import
-# (docs/design/18) and Sharepoint (docs/design/28, code only, like Import): a
+# (docs/design/18) and Driftwire (docs/design/28, code only, like Import): a
 # stable release without either is refused. MV_RELEASE_AI=1 requires the Local
 # search pack and its pieces (docs/design/17). Places (docs/design/27) is
 # preferred and not required: a complete pack is published, and a release with
@@ -83,7 +83,7 @@ def prepare():
 # NVIDIA acceleration (ai-cuda) is a Windows-only piece: ONNX Runtime's CUDA
 # build (MIT); the CUDA runtime and cuDNN stay user-supplied (log 2026-10-03).
 ADDON_PLATFORMS = ('win-x64', 'macos')
-FIRST_PARTY_ADDONS = ('import', 'sharepoint')
+FIRST_PARTY_ADDONS = ('import', 'driftwire')
 PREFERRED_ADDONS = ('places',)
 AI_ADDONS = ('ai', 'ai-audio', 'ai-docs', 'ai-faces', 'ai-cuda')
 WINDOWS_ONLY_ADDONS = ('ai-cuda',)

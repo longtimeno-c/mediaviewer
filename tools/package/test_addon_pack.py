@@ -328,8 +328,8 @@ class AiPackTest(unittest.TestCase):
         self.assertTrue(broken(lambda p, d: p.update(pictures={"high": None, "fast": None})))
 
 
-class SharepointPackTest(unittest.TestCase):
-    """docs/design/28: Sharepoint is code only; the hosts render its window."""
+class DriftwirePackTest(unittest.TestCase):
+    """docs/design/28: Driftwire is code only; the hosts render its window."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -339,28 +339,28 @@ class SharepointPackTest(unittest.TestCase):
         self.key_file = self.tmp / "addon.key"
         self.key_file.write_text(seed.hex())
         self.out = self.tmp / "dist"
-        self.src = self.tmp / "sharepoint"
+        self.src = self.tmp / "driftwire"
         self.src.mkdir()
-        (self.src / "mv_sharepoint.dll").write_bytes(b"MZ" + os.urandom(1024))
-        (self.src / "libmv_sharepoint.dylib").write_bytes(b"\xcf\xfa\xed\xfe" + os.urandom(1024))
-        (self.src / "mv_sharepoint.pdb").write_bytes(b"not shipped")
+        (self.src / "mv_driftwire.dll").write_bytes(b"MZ" + os.urandom(1024))
+        (self.src / "libmv_driftwire.dylib").write_bytes(b"\xcf\xfa\xed\xfe" + os.urandom(1024))
+        (self.src / "mv_driftwire.pdb").write_bytes(b"not shipped")
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_the_package_carries_the_code_one_window_and_a_keyless_command(self):
-        for platform, native in (("win-x64", "mv_sharepoint.dll"), ("macos", "libmv_sharepoint.dylib")):
-            addon_pack.main(["pack", "--addon", "sharepoint", "--platform", platform, "--src", str(self.src),
+        for platform, native in (("win-x64", "mv_driftwire.dll"), ("macos", "libmv_driftwire.dylib")):
+            addon_pack.main(["pack", "--addon", "driftwire", "--platform", platform, "--src", str(self.src),
                              "--version", "1.0.0", "--key", str(self.key_file), "--out", str(self.out)])
-            m = json.loads((self.out / f"mediaviewer-addon-sharepoint-{platform}.json").read_bytes())
-            self.assertEqual(m["id"], "sharepoint")
-            self.assertEqual(m["name"], "Sharepoint")
+            m = json.loads((self.out / f"mediaviewer-addon-driftwire-{platform}.json").read_bytes())
+            self.assertEqual(m["id"], "driftwire")
+            self.assertEqual(m["name"], "Driftwire")
             self.assertEqual(m["host_api"], {"min": 3, "max": 3})
             self.assertEqual(m["native"], native)
             self.assertEqual(m["chrome"], "")
             lic = {f["path"]: f["licence"] for f in m["files"]}
             self.assertEqual(lic[native], "GPL-3.0-or-later")
-            self.assertNotIn("mv_sharepoint.pdb", lic)
+            self.assertNotIn("mv_driftwire.pdb", lic)
             c = m["contributes"]
             self.assertEqual(sorted(c), ["api", "commands", "context_menu", "screens", "status_items"])
             self.assertEqual(c["screens"][0]["place"], "window")
@@ -368,7 +368,7 @@ class SharepointPackTest(unittest.TestCase):
             # Issue #410: no new default key until the command table has one.
             self.assertNotIn("windows", c["commands"][0])
             self.assertNotIn("mac", c["commands"][0])
-        with zipfile.ZipFile(self.out / "mediaviewer-addon-sharepoint-macos.zip") as z:
+        with zipfile.ZipFile(self.out / "mediaviewer-addon-driftwire-macos.zip") as z:
             notice = z.read("LICENSES/NOTICE.txt").decode()
         self.assertIn("libsodium", notice)
         self.assertIn("No account, no cloud", notice)
