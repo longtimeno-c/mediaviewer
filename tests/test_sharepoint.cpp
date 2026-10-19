@@ -362,6 +362,49 @@ TEST_CASE("sharepoint: the prefs file survives a write that stopped half-way", "
   CHECK_FALSE(sp::load_prefs(path).has_value());
 }
 
+// #472: every internet path is opt-in. The defaults, a prefs file written
+// before the toggles existed, and a fresh engine with its window open all
+// have them off, and nothing internet-facing is made (no code, so no
+// listener, mapping, hub or DHT).
+TEST_CASE("sharepoint: every internet path is off until the person turns it on", "[sharepoint]") {
+  const sp::prefs d;
+  CHECK_FALSE(d.internet);
+  CHECK_FALSE(d.dht);
+  CHECK_FALSE(d.handover);
+  CHECK_FALSE(d.relay);
+  CHECK(d.forwarded.empty());
+  CHECK(d.relay_server.empty());
+
+  scratch_dir s("sharepoint_internet_off");
+  fs::create_directories(s / "data");
+  const std::string path = utf8(s / "data" / "sharepoint.json");
+  write_text(s / "data" / "sharepoint.json", "{\"receiving\":true}");  // from before #472
+  const auto old = sp::load_prefs(path);
+  REQUIRE(old);
+  CHECK(old->receiving);
+  CHECK_FALSE(old->internet);
+  CHECK_FALSE(old->dht);
+  CHECK_FALSE(old->handover);
+  CHECK_FALSE(old->relay);
+
+  bus b;
+  fs::create_directories(s / "in");
+  fake_host host(s / "in");
+  sp::engine::options o = client::options(b, "Bea");
+  o.prefs_path = path;
+  sp::engine eng(host, o);
+  eng.screen_opened("");
+  const auto v = eng.snapshot();
+  CHECK_FALSE(v.internet);
+  CHECK_FALSE(v.dht);
+  CHECK_FALSE(v.handover);
+  CHECK_FALSE(v.relay);
+  CHECK(v.code_phase == static_cast<std::uint8_t>(sp::internet_receiver::phase::none));
+  CHECK(v.code_text.empty());
+  CHECK_FALSE(v.out_handover);
+  CHECK_FALSE(v.in_handover);
+}
+
 TEST_CASE("sharepoint: received files go to Downloads unless Save to picked another, which is kept",
           "[sharepoint]") {
 #if defined(__APPLE__)
