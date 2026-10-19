@@ -5601,9 +5601,9 @@ TEST_CASE("a model tier is chosen once, then fetched, pictures first", "[ai][eng
   }
 
   // Saved: the next start runs it and fetches what is missing without asking.
+  // The download starts with the engine, before the control loop's first
+  // status refresh copies the saved tier into the snapshot: wait for both.
   r.start();
-  // The status is a snapshot refreshed off the fetch thread: the second fetch
-  // can be counted before the new engine has published its tier.
   REQUIRE(wait_for([&] { return fetches == 2 && std::string(r.status().tier_utf8) == "potato"; }, kSettleMs));
   {
     std::lock_guard lock(m);

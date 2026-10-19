@@ -169,7 +169,7 @@ struct core {
     std::weak_ptr<bt::pipe> pipe;
   };
   std::map<std::wstring, client_state> clients;                         // under m
-  std::map<std::string, std::pair<std::string, std::string>> info;      // under m
+  std::map<std::string, bt_peer> info;  // under m: who each INFO said it is
   std::map<std::string, std::chrono::steady_clock::time_point> reported;  // under m
   std::set<std::string> probing;                                        // under m
   struct worker {
@@ -217,7 +217,7 @@ void on_advertisement(const std::shared_ptr<core>& c, std::uint64_t address) {
     auto& last = c->reported[key];
     if (now - last < std::chrono::seconds(1)) return;
     last = now;
-    const bt_peer peer{key, known->second.first, known->second.second};
+    const bt_peer peer = known->second;
     lock.unlock();
     c->report(peer);
     return;
@@ -227,6 +227,7 @@ void on_advertisement(const std::shared_ptr<core>& c, std::uint64_t address) {
   // Who it is: open it once and read INFO, off the watcher's thread.
   c->spawn_locked([c, address, key] {
     std::string id, name;
+    std::uint32_t protocol = kProtocol1;
     if (auto r = open_remote(address, false)) {
       try {
         auto chars =
@@ -235,7 +236,7 @@ void on_advertisement(const std::shared_ptr<core>& c, std::uint64_t address) {
           auto read = chars.Characteristics().GetAt(0).ReadValueAsync(wdb::BluetoothCacheMode::Uncached).get();
           if (read.Status() == gatt::GattCommunicationStatus::Success) {
             const auto value = bytes_of(read.Value());
-            if (!bt::parse_info(value, id, name)) id.clear();
+            if (!bt::parse_info(value, id, name, protocol)) id.clear();
           }
         }
       } catch (...) {
@@ -247,11 +248,11 @@ void on_advertisement(const std::shared_ptr<core>& c, std::uint64_t address) {
       std::lock_guard l(c->m);
       c->probing.erase(key);
       if (!id.empty()) {
-        c->info[key] = {id, name};
+        c->info[key] = bt_peer{key, id, name, protocol};
         c->reported[key] = std::chrono::steady_clock::now();
       }
     }
-    if (!id.empty()) c->report(bt_peer{key, id, name});
+    if (!id.empty()) c->report(bt_peer{key, id, name, protocol});
   });
 }
 

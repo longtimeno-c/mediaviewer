@@ -93,7 +93,7 @@ NSData* data_of(std::span<const std::uint8_t> b) { return [NSData dataWithBytes:
   // Central role: what each peripheral is, from INFO.
   NSMutableDictionary<NSUUID*, CBPeripheral*>* _known;
   NSMutableSet<NSUUID*>* _probing;
-  std::map<std::string, std::pair<std::string, std::string>> _info_of;  // identifier -> (id, name)
+  std::map<std::string, sp::bt_peer> _info_of;  // identifier -> who its INFO said it is
   std::map<std::string, std::chrono::steady_clock::time_point> _reported;
   // Outgoing links by peripheral identifier.
   NSMutableDictionary<NSUUID*, MVSharepointOutgoing*>* _outgoing;
@@ -319,7 +319,7 @@ NSData* data_of(std::span<const std::uint8_t> b) { return [NSData dataWithBytes:
     auto& last = _reported[key];
     if (now - last < std::chrono::seconds(1)) return;  // a report a second is plenty
     last = now;
-    const sp::bt_peer peer{key, info->second.first, info->second.second};
+    const sp::bt_peer peer = info->second;
     _gate->call([&] {
       if (_onPeer) _onPeer(peer);
     });
@@ -424,10 +424,11 @@ NSData* data_of(std::span<const std::uint8_t> b) { return [NSData dataWithBytes:
   }
   if ([characteristic.UUID isEqual:[CBUUID UUIDWithString:@(sp::bt::kInfoUuid)]]) {
     std::string id, name;
-    if (sp::bt::parse_info(bytes(characteristic.value), id, name)) {
-      _info_of[key] = {id, name};
+    std::uint32_t protocol = sp::kProtocol1;
+    if (sp::bt::parse_info(bytes(characteristic.value), id, name, protocol)) {
+      const sp::bt_peer peer{key, id, name, protocol};
+      _info_of[key] = peer;
       _reported[key] = std::chrono::steady_clock::now();
-      const sp::bt_peer peer{key, id, name};
       _gate->call([&] {
         if (_onPeer) _onPeer(peer);
       });

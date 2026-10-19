@@ -27,9 +27,11 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "addons/sharepoint/channel.h"
+#include "addons/sharepoint/net.h"
 
 namespace mv::sharepoint {
 
@@ -48,6 +50,8 @@ struct incoming_file {
 struct incoming_offer {
   std::vector<incoming_file> files;
   std::uint64_t bytes = 0;
+  bool handover = false;  // #472 PR 5: the sender takes msg::places
+  bool dht = false;       // #472: and meets on the DHT if both sides move
 };
 
 // bytes moved so far (both ends), files finished so far.
@@ -63,6 +67,12 @@ struct hooks {
   // Why a transfer ended, if it was not delivered: fixed ASCII with a source
   // line, for the host's log. May be empty.
   std::function<void(const char*)> note;
+  // #472 PR 5, the sender: say in the offer that msg::places is understood,
+  // and what to do with it (the receiver's places, its JSON). The receiver's
+  // side sends it apart (send_places).
+  bool handover = false;
+  bool handover_dht = false;  // #472: the offer says it meets on the DHT too
+  std::function<void(std::string_view json)> on_places;
 };
 
 enum class outcome : std::uint8_t {
@@ -84,7 +94,8 @@ struct transfer_result {
 
 // ---- sender ------------------------------------------------------------------
 // The offer for `files`, as sealed JSON.
-[[nodiscard]] std::string offer_json(const std::vector<outgoing_file>& files);
+[[nodiscard]] std::string offer_json(const std::vector<outgoing_file>& files, bool handover = false,
+                                     bool dht = false);
 // After the channel is open: offers, waits for the answer, calls
 // `on_accepted`, then sends. The cancel flag is polled between chunks; the
 // engine also shuts the channel down to end a wait.
@@ -97,6 +108,15 @@ struct transfer_result {
 // Waits at most `timeout_ms` (the sender's person confirming the code first).
 [[nodiscard]] result<incoming_offer> read_offer(channel& ch, int timeout_ms);
 [[nodiscard]] result<incoming_offer> parse_offer(std::string_view json);
+// #472 PR 5, the receiver: where it can be reached from the internet, to a
+// sender whose offer had "handover". Any thread (the channel's sends are).
+// `dht`: this side also waits on the DHT if both sides move (the offer had
+// "dht" too; dht_handover).
+[[nodiscard]] expected send_places(channel& ch, const std::vector<net::endpoint>& places, bool dht = false);
+// The sender: msg::places' JSON, read (at most kMaxPlaces, each checked).
+inline constexpr std::size_t kMaxPlaces = 8;
+[[nodiscard]] std::vector<net::endpoint> parse_places(std::string_view json);
+[[nodiscard]] bool places_dht(std::string_view json);
 // After the person accepted (msg::accept already sent): receives into
 // `dest_dir`, which exists.
 [[nodiscard]] transfer_result receive_files(channel& ch, const incoming_offer& offer, const std::string& dest_dir,
