@@ -64,7 +64,13 @@ def load(weights: str, config_path: str, tower: str):
     from safetensors.torch import load_file
     from transformers import CLIPConfig, CLIPTextModelWithProjection, CLIPVisionModelWithProjection
     with open(config_path, encoding="utf-8") as f:
-        cfg = CLIPConfig.from_dict(json.load(f))
+        raw = json.load(f)
+    # Transformers 5 gives each tower config its own projection_dim (default 512) and
+    # no longer takes the top-level one: pass it down, or H/14's 1024 is lost.
+    if "projection_dim" in raw:
+        for sub in ("vision_config", "text_config"):
+            raw.setdefault(sub, {}).setdefault("projection_dim", raw["projection_dim"])
+    cfg = CLIPConfig.from_dict(raw)
     if tower == "image":
         model = CLIPVisionModelWithProjection(cfg.vision_config)
         prefixes = ("vision_model.", "visual_projection.")
