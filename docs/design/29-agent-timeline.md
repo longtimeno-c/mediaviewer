@@ -33,6 +33,7 @@ so FCP makes a new project beside it and the editor compares, keeps or throws aw
 | The round-trip set and its generator; the check | `tests/data/fcpxml`, `tools/timeline/make_fixtures.py`, `check_roundtrip.py` | both (the DTD check needs FCP) |
 | The panel's timeline bar | `src/nle/mac/timeline_bar_mac.mm`, in `MediaViewerSearch.appex` | Mac |
 | Libraries | `mv_nle_timeline`, `mv-timeline` (`cmake/timeline.cmake`, every architecture) | both |
+| The Script Editor's cut list, its documents and its window | `src/addons/agent/script.{h,cpp}`, `addon_entry.cpp` ("script" screen) | both |
 
 ## Lossless
 
@@ -342,6 +343,57 @@ programmatic export and waits for the editor's own export. So the drag stays the
 `FCPXTimeline` does give is used: the panel says when the dragged project changed in FCP, and the
 agent is told to ask for a new drag.
 
+## Script Editor
+
+A transcript workspace for a cut, in the AI agents add-on (#485 slice 6): **Script Editor** in the
+command palette (or the add-on's command list) opens a window both hosts draw from the add-on's
+view tree. Left, the timeline's transcript, phrase by phrase, with where each plays and a word
+filter; right, the **script**: lines of what is said, in the order the cut should play them. Pick
+phrases and **Add to Script** (or double-click one); **Move Up** / **Move Down**, **Remove**,
+**Clear**. **New Version from Script** makes the timeline's storyline the script's lines one after
+another and writes "<Project> (Claude N)" beside the original (and hands it to Final Cut Pro on the
+Mac), as `commit` does. **Export TXT / CSV / DOCX / PDF** writes the script beside the timeline,
+never over a file.
+
+```
+transcript (the app's index, host table transcript_json)
+      │ phrases: file, file range, text
+      ▼
+Script Editor window ──┐                ┌── agent: script, script_edit, script_to_timeline, script_export
+                       ▼                ▼
+            <timeline>.script.json  (one list; each side reads it before a change, writes it whole after)
+                       │
+       script_to_timeline: remove the storyline, insert each line (nle/edit.h), then commit
+       script_export: TXT, CSV, DOCX, PDF
+```
+
+- **One list, two editors.** The window and `MediaViewer --mcp` are two processes over one file,
+  `script.json` in the panel's folder (Mac) or `<file>.script.json` beside an FCPXML file
+  (`script_path`). The window changes it through the same server the agent talks to, in its own
+  process, so the scope check (a line's file must be the timeline's or a given folder's; never
+  `photos:`), the transcript and the version writer are one code path. Each change is a batch,
+  all or none; a line keeps its id while it stays in the list.
+- **Lines are file ranges.** A line is a range of a file (`from` / `to`, file time) and its text;
+  the transcript tool gives each phrase's `file_from` / `file_to` for that. The text is what the
+  documents say; the cut is the range.
+- **To the timeline.** `script_to_timeline` removes every primary storyline item (what is connected
+  to it goes with it) and inserts each line at the end, in order: a selects cut. Effects and
+  roles of the old clips are not carried; the inserted clips are plain asset clips of the ranges.
+- **Documents.** TXT (each line's clip and timecodes, then its text), CSV (line, clip, file, in,
+  out, duration, text; a cell starting `= + - @` is quoted text, never a formula), DOCX (a stored
+  ZIP: three parts, no styles; macOS's own reader, `textutil`, reads it; Word and Pages not tried yet), PDF (A4, Helvetica, wrapped;
+  Latin text only: other scripts print as `?`).
+- **Transcripts in the window** come from the app's own attached index through the host table's
+  `transcript_json` (ABI 0.35); without Local search, or before the clips are indexed, the window
+  says so and **Refresh** reads again.
+
+Measured (Mac, M5, dev build): Claude Code with only the MediaViewer tools built a three-line
+selects script in a given order, exported DOCX and PDF, made the timeline from it and committed:
+the version scores 1.0 on the eval's selects checks (cut edges in silence, the order, nothing
+else), validates against FCP's DTD, and the media and the project kept their hashes ($0.21, 12
+turns). The window's flow (its transcript, Add, a CSV beside the file) runs in `mv_import_tests
+"[agent]"` through the real loader.
+
 ## Eval
 
 `tools/agent/eval` measures editing, so "edits really well" is a number that moves when the
@@ -382,4 +434,8 @@ before a skill is judged by them.
 
 ## Not built
 
-The Script Editor: issue #485 slice 6. (Final Cut Pro search and the panel are the Final Cut Pro add-on since slice 5: [23](23-nle-search.md).)
+- The Script Editor's PDF embeds no font: text outside Latin-1 prints as `?`.
+- Lines carry no effects, roles or audio levels from the clips they came from; transitions between
+  lines are not offered.
+- Words inside a line cannot be struck out yet (a line is a whole phrase, or a range an agent
+  gives).

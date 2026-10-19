@@ -155,17 +155,21 @@ std::string drain(std::intptr_t h) {
 
 }  // namespace
 
-TEST_CASE("agent: the shipped manifest declares one window and one key-less command", "[addon][agent]") {
+TEST_CASE("agent: the shipped manifest declares two windows and their key-less commands", "[addon][agent]") {
   keypair k;
   const std::string m = agent_manifest("libmv_agent.dylib", {1, 2, 3});
   const auto d = mv::addon::check_manifest(bytes_of(m), k.sign(m), k.pub, MV_ADDON_HOST_API);
   REQUIRE(rejection_name(d.why) == std::string("ok"));
-  REQUIRE(d.m.slots.screens.size() == 1);
+  REQUIRE(d.m.slots.screens.size() == 2);
   CHECK(d.m.slots.screens[0].id == "agents");
+  CHECK(d.m.slots.screens[1].id == "script");  // the Script Editor (#485 slice 6)
   CHECK(d.m.slots.screens[0].place == mv::addon::screen_place::window);
-  REQUIRE(d.m.commands.size() == 1);
+  CHECK(d.m.slots.screens[1].place == mv::addon::screen_place::window);
+  REQUIRE(d.m.commands.size() == 2);
   CHECK(d.m.commands[0].id == "open");
+  CHECK(d.m.commands[1].id == "script");
   CHECK(d.m.commands[0].windows.empty());
+  CHECK(d.m.commands[1].windows.empty());
   CHECK(d.m.slots.items.empty());
   CHECK(d.m.chrome.empty());
 }
@@ -190,6 +194,16 @@ TEST_CASE("agent: its window and an MCP session over real pipes", "[addon][agent
   slot_registry reg;
   mv::addon::host_services svc;
   svc.slots = &reg;
+  // The app's index, as the host table's transcript_json serves it: speech every 2 s.
+  svc.transcript = [](const std::string&) -> mv::result<std::string> {
+    std::string j = R"({"indexed":true,"segments":[)";
+    for (int i = 0; i < 300; ++i) {
+      if (i) j += ",";
+      j += "{\"start_ms\":" + std::to_string(i * 2000) + ",\"end_ms\":" + std::to_string(i * 2000 + 1500) +
+           ",\"text\":\"Phrase " + std::to_string(i) + ".\"}";
+    }
+    return j + "]}";
+  };
   auto loaded = mv::addon::loaded_addon::load(st, "agent", svc);
   REQUIRE(loaded);
   REQUIRE((*loaded)->slots_attached());
@@ -207,6 +221,49 @@ TEST_CASE("agent: its window and an MCP session over real pipes", "[addon][agent
   CHECK(tree.find("--mcp") != std::string::npos);
   REQUIRE(reg.close_screen("agent", "agents") == status::ok);
   reg.drain();
+
+  // The Script Editor, on an FCPXML file (as on Windows): the transcript from
+  // the host's index, a line added, a document beside the file.
+  {
+    const fs::path cut = s / "Script Cut.fcpxml";
+    write_bytes(cut, read_bytes(std::string(MV_TIMELINE_FIXTURES) + "/01-interview-simple.fcpxml"));
+    const auto inst = st.find("agent");
+    REQUIRE(inst);
+    fs::create_directories(inst->data_dir);
+    write_text(fs::path(inst->data_dir) / "agent.json",
+               "{\"frames\":false,\"timeline_file\":\"" + utf8(cut) + "\",\"folders\":[]}");
+    REQUIRE(reg.run_command("agent", "script", "[]") == status::ok);
+    const bool shown = eventually([&] {
+      reg.drain();
+      const std::string t = reg.screens_json();
+      return t.find("Script Editor: Interview simple") != std::string::npos && t.find("Phrase ") != std::string::npos;
+    });
+    INFO(reg.screens_json().substr(0, 3000));
+    REQUIRE(shown);
+    CHECK(reg.screens_json().find("\"p0\"") != std::string::npos);
+    REQUIRE(reg.send_event("agent", "script", "phrases", MV_SLOT_EVENT_SELECT, R"(["p0","p1"])") == status::ok);
+    REQUIRE(eventually([&] {  // Add is enabled once a phrase is picked
+      reg.drain();
+      return reg.screens_json().find(R"("selection":["p0","p1"])") != std::string::npos;
+    }));
+    REQUIRE(reg.send_event("agent", "script", "add", MV_SLOT_EVENT_CLICK, "") == status::ok);
+    const fs::path list = fs::path(utf8(cut) + ".script.json");
+    REQUIRE(eventually([&] {
+      reg.drain();
+      return fs::exists(list) && reg.screens_json().find("Script: 2 lines") != std::string::npos;
+    }));
+    REQUIRE(reg.send_event("agent", "script", "export:csv", MV_SLOT_EVENT_CLICK, "") == status::ok);
+    REQUIRE(eventually([&] {
+      reg.drain();
+      return fs::exists(s / "Interview simple script.csv");
+    }));
+    const std::vector<std::uint8_t> csv = read_bytes(s / "Interview simple script.csv");
+    CHECK(std::string(csv.begin(), csv.end()).find("Phrase ") != std::string::npos);
+    REQUIRE(reg.close_screen("agent", "script") == status::ok);
+    reg.drain();
+    std::error_code ec;
+    fs::remove(fs::path(inst->data_dir) / "agent.json", ec);
+  }
 
   // mv.agent.1 over pipes, on a copy of a round-trip project.
   const auto* api = static_cast<const mv_agent_api*>((*loaded)->query(MV_AGENT_INTERFACE));

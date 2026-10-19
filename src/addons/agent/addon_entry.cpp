@@ -9,7 +9,10 @@
 //               here: what the agent sees (the privacy line), Add to Claude
 //               Code, Add to Claude Desktop (asks first), the command for any
 //               other client, frames on or off, and (Windows) the FCPXML file
-//               and folders to work on.
+//               and folders to work on; and the Script Editor window (#485
+//               slice 6): the timeline's transcript, a cut list built from it
+//               (the agent's `script` tools edit the same list), a new version
+//               from it, and TXT / CSV / DOCX / PDF.
 //
 // The add-on writes only its own data folder (agent.json) and, when the
 // editor confirms, Claude Desktop's settings file (the old one kept as .bak).
@@ -18,6 +21,7 @@
 #include <mediaviewer/mediaviewer_addon.h>
 #include <mediaviewer/mediaviewer_agent.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -35,6 +39,7 @@
 #include "addons/agent/environment.h"
 #include "addons/agent/install.h"
 #include "addons/agent/platform.h"
+#include "addons/agent/script.h"
 #include "addons/agent/server.h"
 #include "core/json.h"
 #include "nle/bridge_state.h"
@@ -51,6 +56,7 @@ using namespace mv::agent;
 constexpr uint32_t kHostApiMin = 3;
 constexpr uint32_t kHostApiMax = 3;
 constexpr const char* kScreen = "agents";
+constexpr const char* kScriptScreen = "script";
 constexpr const char* kPrefsFile = "agent.json";
 
 template <typename Fn>
@@ -155,11 +161,19 @@ class host_env final : public environment {
   bool transcript(std::string_view path, std::vector<segment>& out, bool& indexed, std::string* why) override {
     indexed = false;
     out.clear();
-    if (!s_ || !s_->transcript_json) return none(why);
+    // `--mcp` lends the pack's reader; in the app's window (the Script Editor)
+    // the host table reads the app's own attached index (#485).
+    const bool from_host = (!s_ || !s_->transcript_json) &&
+                           h_->struct_size >= offsetof(mv_host_api, transcript_json) + sizeof(h_->transcript_json) &&
+                           h_->transcript_json;
+    if ((!s_ || !s_->transcript_json) && !from_host) return none(why);
     const std::string p(path);
     std::string text;
     const mv_status st = call_json(
-        [&](char* buf, uint32_t cap, uint32_t* need) { return s_->transcript_json(s_->ctx, p.c_str(), buf, cap, need); },
+        [&](char* buf, uint32_t cap, uint32_t* need) {
+          return from_host ? h_->transcript_json(h_->host, p.c_str(), buf, cap, need)
+                           : s_->transcript_json(s_->ctx, p.c_str(), buf, cap, need);
+        },
         text);
     if (st != MV_OK) {
       if (why) {
@@ -441,6 +455,21 @@ struct addon_state {
   bool claude_checked = false;
   bool code_added = false;
   bool serving = false;
+  // The Script Editor window.
+  struct phrase_row {
+    std::string path, name, text;
+    std::int64_t from_ms = 0, to_ms = 0;  // file time
+    double at = 0;                         // timeline seconds
+  };
+  bool script_open = false;
+  std::uint64_t script_generation = 0;
+  bool script_loading = false;
+  std::vector<phrase_row> phrases;
+  std::string phrases_note;     // why there are none
+  std::string project;
+  std::string find;
+  std::vector<std::string> picked_phrases, picked_lines;
+  std::string script_message;
 };
 
 addon_state* g = nullptr;
@@ -718,8 +747,26 @@ void on_change(const std::string& id, const std::string& value_json) {
   if (!save_prefs(prefs_path(g->host), p)) g->message = "The setting could not be saved.";
 }
 
+// The Script Editor window, below.
+void post_script();
+void load_phrases();
+void script_event(const mv_slot_event* e);
+
 mv_status MV_CALL screen_open(void*, const mv_slot_screen_request* r) {
   return guard([&] {
+    if (r && r->screen_id && std::strcmp(r->screen_id, kScriptScreen) == 0) {
+      {
+        std::lock_guard lock(g->m);
+        g->script_generation = r->generation;
+        g->script_open = true;
+        g->script_loading = true;
+        g->script_message.clear();
+      }
+      post_script();  // at once, then with the transcript
+      load_phrases();
+      post_script();
+      return MV_OK;
+    }
     if (!r || !r->screen_id || std::strcmp(r->screen_id, kScreen) != 0) return MV_ERR_INVALID_ARG;
     {
       std::lock_guard lock(g->m);
@@ -739,6 +786,11 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
     if (!e || !e->node_id) return MV_OK;
     if (e->kind == MV_SLOT_EVENT_COMMAND) {
       if (std::strcmp(e->node_id, "open") == 0) (void)g->host->screen_show(g->host->host, kScreen, 1);
+      if (std::strcmp(e->node_id, "script") == 0) (void)g->host->screen_show(g->host->host, kScriptScreen, 1);
+      return MV_OK;
+    }
+    if (e->screen_id && std::strcmp(e->screen_id, kScriptScreen) == 0) {
+      script_event(e);
       return MV_OK;
     }
     if (!e->screen_id || std::strcmp(e->screen_id, kScreen) != 0) return MV_OK;
@@ -756,6 +808,395 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
     post();
     return MV_OK;
   });
+}
+
+
+// ---- the Script Editor window (#485 slice 6, docs/design/29 "Script Editor") ------------
+
+// The same server the agent talks to, in this process: its tools hold the
+// scope, read the transcript (from the app's index: the host table's
+// transcript_json) and write the list where the agent reads it.
+struct local_server {
+  host_env env;
+  server s;
+  explicit local_server(const prefs& p) : env(g->host, nullptr, p.frames), s(env, options(p)) {}
+  static server_options options(const prefs& p) {
+    server_options o;
+    o.bridge_dir = default_bridge_dir(g->host);
+    o.timeline_file = p.timeline_file;
+    o.folders = p.folders;
+    o.version = MV_AGENT_VERSION;
+    o.skills_dir.clear();
+    return o;
+  }
+  json::value call(const char* tool, const std::string& args, bool* error, std::string* text_out = nullptr) {
+    bool e = false;
+    const std::string text = s.call(tool, args, &e);
+    if (error) *error = e;
+    if (text_out) *text_out = text;
+    if (e) return {};
+    return json::parse(text, 64).value_or(json::value{});
+  }
+};
+
+// A table cell: one line, at most 200 bytes, cut at a character.
+std::string cell(std::string_view t) {
+  std::string out;
+  for (const char c : t) out += c == '\n' || c == '\r' || c == '\t' ? ' ' : c;
+  if (out.size() <= 190) return out;
+  std::size_t cut = 187;
+  while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80) --cut;
+  return out.substr(0, cut) + "...";
+}
+
+std::string clock_of(double s) {
+  if (s < 0) s = 0;
+  const auto cs = static_cast<long long>(s * 100 + 0.5);
+  char buf[32];
+  std::snprintf(buf, sizeof buf, "%lld:%02lld.%02lld", cs / 6000, (cs / 100) % 60, cs % 100);
+  return buf;
+}
+
+std::string lower(std::string_view t) {
+  std::string out(t);
+  for (char& c : out) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  return out;
+}
+
+// Reads the timeline's phrases (the transcript tool, without words). [worker]
+void load_phrases() {
+  local_server ls(load_prefs(prefs_path(g->host)));
+  bool error = false;
+  std::string text;
+  const json::value t = ls.call("get_timeline", "{}", &error, &text);
+  std::vector<addon_state::phrase_row> rows;
+  std::string note, project;
+  if (error) {
+    note = text;
+  } else {
+    if (const std::string* p = t.str("project")) project = *p;
+    const json::value tr = ls.call("transcript", R"({"words":false})", &error, &text);
+    if (error) {
+      note = text;
+    } else if (const json::value* clips = tr.find("clips")) {
+      bool any_untranscribed = false;
+      for (const json::value& c : clips->a) {
+        const std::string* file = c.str("file");
+        const std::string* name = c.str("name");
+        if (!c.boolean("transcribed").value_or(false)) any_untranscribed = true;
+        const json::value* ps = c.find("phrases");
+        if (!file || !ps) continue;
+        for (const json::value& p : ps->a) {
+          const json::value* ff = p.find("file_from");
+          const json::value* ft = p.find("file_to");
+          const json::value* at = p.find("at");
+          const std::string* words = p.str("text");
+          if (!ff || !ft || !words) continue;
+          addon_state::phrase_row r;
+          r.path = *file;
+          r.name = name ? *name : std::string();
+          r.text = *words;
+          r.from_ms = static_cast<std::int64_t>(ff->d * 1000.0 + 0.5);
+          r.to_ms = static_cast<std::int64_t>(ft->d * 1000.0 + 0.5);
+          r.at = at ? at->d : 0;
+          if (r.to_ms > r.from_ms) rows.push_back(std::move(r));
+        }
+      }
+      if (rows.empty()) {
+        note = any_untranscribed ? "The timeline's clips have no transcript yet. Index their folder in Local search, "
+                                   "then click Refresh."
+                                 : "Nothing is said on this timeline.";
+      }
+    }
+  }
+  std::lock_guard lock(g->m);
+  g->phrases = std::move(rows);
+  g->phrases_note = std::move(note);
+  g->project = std::move(project);
+  g->script_loading = false;
+}
+
+std::string script_tree() {
+  const prefs p = load_prefs(prefs_path(g->host));
+  const script sc = load_script(script_path(default_bridge_dir(g->host), p.timeline_file));
+  std::lock_guard lock(g->m);
+  json::writer w;
+  auto text = [&](const char* id, const std::string& t, const char* style = "body") {
+    w.begin_object().key("type").string("text").key("id").string(id).key("text").string(t).key("style").string(style)
+        .end_object();
+  };
+  auto button = [&](const char* id, const char* label, bool disabled, const char* style = "plain") {
+    w.begin_object().key("type").string("button").key("id").string(id).key("label").string(label).key("style")
+        .string(style);
+    if (disabled) w.key("disabled").boolean(true);
+    w.end_object();
+  };
+  auto stack = [&](const char* id, bool horizontal, int spacing = 8) {
+    w.begin_object().key("type").string("stack").key("id").string(id);
+    if (horizontal) w.key("axis").string("horizontal");
+    w.key("spacing").integer(spacing).key("children").begin_array();
+  };
+  auto end = [&] { w.end_array().end_object(); };
+  auto selection = [&](const std::vector<std::string>& ids) {
+    w.key("selection").begin_array();
+    for (const std::string& id : ids) w.string(id);
+    w.end_array();
+  };
+
+  stack("root", false, 10);
+  text("title", g->project.empty() ? std::string("Script Editor") : "Script Editor: " + g->project, "title");
+  text("intro",
+       "Pick what is said, put it in order, and make a new version of the timeline from it, or a document. "
+       "An agent with the MediaViewer tools edits the same script.",
+       "secondary");
+  w.begin_object().key("type").string("split").key("id").string("panes").key("axis").string("horizontal")
+      .key("fraction").number(0.5).key("children").begin_array();
+
+  // The transcript.
+  stack("left", false);
+  text("phrases_title", "Transcript", "heading");
+  w.begin_object().key("type").string("text_field").key("id").string("find").key("label")
+      .string("Find in the transcript").key("placeholder").string("Find words").key("value").string(g->find).end_object();
+  if (g->script_loading) {
+    text("phrases_note", "Reading the transcript…", "secondary");
+  } else if (!g->phrases_note.empty()) {
+    text("phrases_note", cell(g->phrases_note), "secondary");
+  }
+  w.begin_object().key("type").string("table").key("id").string("phrases").key("label").string("Transcript")
+      .key("multi").boolean(true);
+  w.key("columns").begin_array();
+  w.begin_object().key("id").string("at").key("title").string("At").end_object();
+  w.begin_object().key("id").string("clip").key("title").string("Clip").end_object();
+  w.begin_object().key("id").string("said").key("title").string("Said").end_object();
+  w.end_array();
+  w.key("rows").begin_array();
+  const std::string needle = lower(g->find);
+  for (std::size_t i = 0; i < g->phrases.size(); ++i) {
+    const auto& r = g->phrases[i];
+    if (!needle.empty() && lower(r.text).find(needle) == std::string::npos) continue;
+    w.begin_object().key("id").string("p" + std::to_string(i)).key("cells").begin_array();
+    w.string(clock_of(r.at)).string(cell(r.name)).string(cell(r.text));
+    w.end_array().end_object();
+  }
+  w.end_array();
+  selection(g->picked_phrases);
+  w.end_object();
+  stack("left_buttons", true);
+  button("add", "Add to Script", g->picked_phrases.empty(), "primary");
+  button("refresh", "Refresh", g->script_loading);
+  end();
+  end();
+
+  // The script.
+  stack("right", false);
+  text("lines_title",
+       "Script: " + std::to_string(sc.lines.size()) + (sc.lines.size() == 1 ? " line, " : " lines, ") +
+           clock_of(static_cast<double>(sc.length_ms()) / 1000.0),
+       "heading");
+  w.begin_object().key("type").string("table").key("id").string("lines").key("label").string("Script")
+      .key("multi").boolean(true);
+  w.key("columns").begin_array();
+  w.begin_object().key("id").string("n").key("title").string("#").end_object();
+  w.begin_object().key("id").string("clip").key("title").string("Clip").end_object();
+  w.begin_object().key("id").string("range").key("title").string("In-Out").end_object();
+  w.begin_object().key("id").string("said").key("title").string("Said").end_object();
+  w.end_array();
+  w.key("rows").begin_array();
+  for (std::size_t i = 0; i < sc.lines.size(); ++i) {
+    const script_line& l = sc.lines[i];
+    w.begin_object().key("id").string(l.id).key("cells").begin_array();
+    w.string(std::to_string(i + 1)).string(cell(l.name.empty() ? std::filesystem::path(l.path).filename().string() : l.name));
+    w.string(clock_of(static_cast<double>(l.from_ms) / 1000.0) + "-" + clock_of(static_cast<double>(l.to_ms) / 1000.0));
+    w.string(cell(l.text));
+    w.end_array().end_object();
+  }
+  w.end_array();
+  selection(g->picked_lines);
+  w.end_object();
+  stack("right_buttons", true);
+  const bool none = g->picked_lines.empty();
+  button("up", "Move Up", none);
+  button("down", "Move Down", none);
+  button("remove", "Remove", none, "destructive");
+  button("clear", "Clear", sc.lines.empty());
+  end();
+  end();
+  end();  // panes
+
+  stack("out", true);
+  button("to_timeline", "New Version from Script", sc.lines.empty(), "primary");
+  button("export:txt", "Export TXT", sc.lines.empty());
+  button("export:csv", "Export CSV", sc.lines.empty());
+  button("export:docx", "Export DOCX", sc.lines.empty());
+  button("export:pdf", "Export PDF", sc.lines.empty());
+  end();
+  if (!g->script_message.empty()) text("script_message", g->script_message, "secondary");
+  end();
+  return w.take();
+}
+
+void post_script() {
+  std::uint64_t gen = 0;
+  {
+    std::lock_guard lock(g->m);
+    if (!g->script_open) return;
+    gen = g->script_generation;
+  }
+  const std::string t = script_tree();
+  (void)g->host->screen_post(g->host->host, kScriptScreen, gen, t.c_str());
+}
+
+std::vector<std::string> ids_of(const std::string& value_json) {
+  std::vector<std::string> out;
+  const auto v = json::parse(value_json, 4);
+  if (v && v->k == json::kind::array) {
+    for (const json::value& x : v->a) {
+      if (x.k == json::kind::string) out.push_back(x.s);
+    }
+  } else if (v && v->k == json::kind::string) {
+    out.push_back(v->s);
+  }
+  return out;
+}
+
+// Runs one script_edit batch through the local server; the window's message says how it went.
+void script_ops(const std::string& ops_json) {
+  local_server ls(load_prefs(prefs_path(g->host)));
+  bool error = false;
+  std::string text;
+  (void)ls.call("script_edit", "{\"ops\":" + ops_json + "}", &error, &text);
+  std::lock_guard lock(g->m);
+  g->script_message = error ? cell(text) : std::string();
+}
+
+void script_click(const std::string& id) {
+  const prefs p = load_prefs(prefs_path(g->host));
+  if (id == "refresh") {
+    {
+      std::lock_guard lock(g->m);
+      g->script_loading = true;
+    }
+    post_script();
+    load_phrases();
+    return;
+  }
+  if (id == "add") {
+    std::vector<addon_state::phrase_row> picked;
+    {
+      std::lock_guard lock(g->m);
+      for (const std::string& pid : g->picked_phrases) {
+        const std::size_t i = pid.size() > 1 ? std::strtoul(pid.c_str() + 1, nullptr, 10) : g->phrases.size();
+        if (i < g->phrases.size()) picked.push_back(g->phrases[i]);
+      }
+      g->picked_phrases.clear();
+    }
+    std::sort(picked.begin(), picked.end(), [](const auto& a, const auto& b) { return a.at < b.at; });
+    if (picked.empty()) return;
+    json::writer w;
+    w.begin_array();
+    for (const auto& r : picked) {
+      w.begin_object().key("op").string("add").key("path").string(r.path).key("name").string(r.name);
+      w.key("from").number(static_cast<double>(r.from_ms) / 1000.0).key("to").number(static_cast<double>(r.to_ms) / 1000.0);
+      w.key("text").string(r.text).end_object();
+    }
+    w.end_array();
+    script_ops(w.take());
+    return;
+  }
+  const script sc = load_script(script_path(default_bridge_dir(g->host), p.timeline_file));
+  if (id == "up" || id == "down" || id == "remove") {
+    std::vector<std::string> picked;
+    {
+      std::lock_guard lock(g->m);
+      picked = g->picked_lines;
+      if (id == "remove") g->picked_lines.clear();
+    }
+    // In script order; moving down goes last first, so the lines keep their order.
+    std::vector<std::pair<int, std::string>> at;
+    for (const std::string& lid : picked) {
+      const int k = sc.find(lid);
+      if (k >= 0) at.emplace_back(k, lid);
+    }
+    std::sort(at.begin(), at.end());
+    if (id == "down") std::reverse(at.begin(), at.end());
+    if (at.empty()) return;
+    const int n = static_cast<int>(sc.lines.size());
+    json::writer w;
+    w.begin_array();
+    for (const auto& [k, lid] : at) {
+      if (id == "remove") {
+        w.begin_object().key("op").string("remove").key("id").string(lid).end_object();
+      } else {
+        const int to = id == "up" ? std::max(0, k - 1) : std::min(n - 1, k + 1);
+        w.begin_object().key("op").string("move").key("id").string(lid).key("at").integer(to).end_object();
+      }
+    }
+    w.end_array();
+    script_ops(w.take());
+    return;
+  }
+  if (id == "clear") {
+    script_ops(R"([{"op":"clear"}])");
+    return;
+  }
+  local_server ls(p);
+  bool error = false;
+  std::string text;
+  if (id.rfind("export:", 0) == 0) {
+    const json::value r = ls.call("script_export", "{\"format\":\"" + id.substr(7) + "\"}", &error, &text);
+    std::lock_guard lock(g->m);
+    const std::string* file = r.str("file");
+    g->script_message = error ? cell(text) : "Saved " + (file ? *file : std::string("the document")) + ".";
+    return;
+  }
+  if (id == "to_timeline") {
+    (void)ls.call("script_to_timeline", "{}", &error, &text);
+    json::value c;
+    if (!error) c = ls.call("commit", "{}", &error, &text);
+    std::lock_guard lock(g->m);
+    if (error) {
+      g->script_message = cell(text);
+    } else {
+      const std::string* v = c.str("version");
+      const bool handed = c.boolean("handed_to_final_cut").value_or(false);
+      const std::string* file = c.str("file");
+      g->script_message = "\"" + (v ? *v : std::string("New version")) + "\" " +
+                          (handed ? std::string("is being imported into Final Cut Pro, beside your project.")
+                                  : "is saved: " + (file ? *file : std::string()) +
+                                        ". Import it into your editor (Final Cut Pro: File > Import > XML).");
+    }
+  }
+}
+
+void script_event(const mv_slot_event* e) {
+  const std::string id = e->node_id;
+  const std::string value = e->value_json ? e->value_json : "";
+  if (e->kind == MV_SLOT_EVENT_CLOSE) {
+    std::lock_guard lock(g->m);
+    g->script_open = false;
+    return;
+  }
+  if (e->kind == MV_SLOT_EVENT_SELECT) {
+    std::lock_guard lock(g->m);
+    if (id == "phrases") g->picked_phrases = ids_of(value);
+    if (id == "lines") g->picked_lines = ids_of(value);
+  } else if (e->kind == MV_SLOT_EVENT_ACTIVATE && id == "phrases") {
+    {
+      std::lock_guard lock(g->m);
+      g->picked_phrases = ids_of(value);
+    }
+    script_click("add");
+  } else if (e->kind == MV_SLOT_EVENT_CLICK) {
+    script_click(id);
+  } else if ((e->kind == MV_SLOT_EVENT_CHANGE || e->kind == MV_SLOT_EVENT_SUBMIT) && id == "find") {
+    const auto v = json::parse(value, 4);
+    std::lock_guard lock(g->m);
+    g->find = v && v->k == json::kind::string ? v->s.substr(0, 200) : std::string();
+    g->picked_phrases.clear();
+  }
+  post_script();
 }
 
 const mv_addon_slots kSlots{sizeof(mv_addon_slots), 0, nullptr, nullptr, &screen_open, nullptr, &on_event};

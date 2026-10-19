@@ -6,6 +6,8 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <string>
 #include <mutex>
 #include <utility>
 
@@ -16,6 +18,7 @@ struct source_state {
   std::mutex m;
   std::condition_variable idle;
   index_location_source source;  // under m
+  index_transcript_source transcripts;  // under m
   std::uint32_t in_flight = 0;   // under m
   // Bumped by every publish and retract; a call in flight compares it per row
   // without the lock.
@@ -59,6 +62,7 @@ void retract_index_locations() noexcept {
     std::lock_guard lock(s.m);
     gone = std::move(s.source);
     s.source = nullptr;
+    s.transcripts = nullptr;
     s.epoch.fetch_add(1, std::memory_order_acq_rel);
   }
 }
@@ -109,6 +113,53 @@ index_location_source ai_index_locations(const mv_ai_api* api) {
     const mv_status st = api->each_location(api->ctx, &visit_thunk, &c);
     if (st == MV_OK) return {};
     return err(static_cast<status>(st));
+  };
+}
+
+void publish_index_transcripts(index_transcript_source source) {
+  source_state& s = state();
+  std::lock_guard lock(s.m);
+  s.transcripts = std::move(source);
+}
+
+result<std::string> index_transcript(const std::string& path) {
+  source_state& s = state();
+  index_transcript_source source;
+  {
+    std::lock_guard lock(s.m);
+    if (!s.transcripts) return err(status::not_found);
+    source = s.transcripts;
+    ++s.in_flight;
+  }
+  struct leave {
+    source_state& s;
+    ~leave() {
+      std::lock_guard lock(s.m);
+      if (--s.in_flight == 0) s.idle.notify_all();
+    }
+  } on_leave{s};
+  return source(path);
+}
+
+index_transcript_source ai_index_transcripts(const mv_ai_api* api) {
+  if (!api || api->struct_size < offsetof(mv_ai_api, transcript_json) + sizeof(api->transcript_json) ||
+      !api->transcript_json) {
+    return nullptr;
+  }
+  return [api](const std::string& path) -> result<std::string> {
+    std::string buf(16 * 1024, '\0');
+    for (int tries = 0; tries < 4; ++tries) {
+      uint32_t need = 0;
+      const mv_status st =
+          api->transcript_json(api->ctx, path.c_str(), buf.data(), static_cast<uint32_t>(buf.size()), &need);
+      if (st == MV_OK) {
+        buf.resize(std::strlen(buf.c_str()));
+        return buf;
+      }
+      if (st != MV_ERR_INVALID_ARG || need <= buf.size() || need > (64u << 20)) return err(static_cast<status>(st));
+      buf.assign(need, '\0');
+    }
+    return err(status::internal);
   };
 }
 

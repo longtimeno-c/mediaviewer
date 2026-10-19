@@ -11,6 +11,7 @@
 #include <set>
 #include <system_error>
 
+#include "addons/agent/script.h"
 #include "addons/agent/transcript.h"
 
 namespace mv::agent {
@@ -383,7 +384,7 @@ std::string server::tools_list() const {
   // message is one line: the layout's newlines go.
   std::string s = R"JSON({"tools":[
 {"name":"get_timeline","title":"Read the timeline","description":"The Final Cut Pro project the editor dragged onto the MediaViewer panel, as the working copy (with your uncommitted edits) or as dragged (original:true). Items in timeline order with ids, kind, times in seconds on the timeline (at, end), lane (0 storyline, >0 above, <0 below), the file each plays and its file range, role, title text, markers, and flags (effects, retimed, split audio, opaque units, not editable with why). Also the playhead, the scope folders, and whether Final Cut Pro changed the project after it was dragged (stale).","inputSchema":{"type":"object","properties":{"original":{"type":"boolean","description":"the project as dragged, without your edits"}}},"annotations":{"readOnlyHint":true,"openWorldHint":false}},
-{"name":"transcript","title":"Transcript and silences","description":"What is said in the timeline's clips, laid on the timeline: phrases (refined against the sound), words with estimated times, and silences measured in the sound with the range to cut (cut_from..cut_to keeps a little air). With no arguments: every storyline clip in order. Narrow with item (an id) or from/to (timeline seconds); path gives a scope file's transcript in file time. Clips not transcribed yet say so: the editor can index them in MediaViewer.","inputSchema":{"type":"object","properties":{"item":{"type":"integer"},"path":{"type":"string"},"from":{"type":["number","string"]},"to":{"type":["number","string"]},"words":{"type":"boolean","default":true},"min_silence_ms":{"type":"integer","default":400,"minimum":100,"maximum":10000}}},"annotations":{"readOnlyHint":true,"openWorldHint":false}},
+{"name":"transcript","title":"Transcript and silences","description":"What is said in the timeline's clips, laid on the timeline: phrases (refined against the sound; at/end timeline seconds, file_from/file_to the same range in the file, for script_edit), words with estimated times, and silences measured in the sound with the range to cut (cut_from..cut_to keeps a little air). With no arguments: every storyline clip in order. Narrow with item (an id) or from/to (timeline seconds); path gives a scope file's transcript in file time. Clips not transcribed yet say so: the editor can index them in MediaViewer.","inputSchema":{"type":"object","properties":{"item":{"type":"integer"},"path":{"type":"string"},"from":{"type":["number","string"]},"to":{"type":["number","string"]},"words":{"type":"boolean","default":true},"min_silence_ms":{"type":"integer","default":400,"minimum":100,"maximum":10000}}},"annotations":{"readOnlyHint":true,"openWorldHint":false}},
 {"name":"search","title":"Search the scope","description":"Local search (what is seen, said, heard; people as @Name; \"quoted words\" must be said) over the timeline's own media and the folders the editor gave, nothing else. Results: file, the moment (file seconds), score, and which timeline items already use it.","inputSchema":{"type":"object","properties":{"query":{"type":"string"},"kinds":{"type":"array","items":{"enum":["video","photo","audio"]}},"max":{"type":"integer","default":20,"minimum":1,"maximum":100}},"required":["query"]},"annotations":{"readOnlyHint":true,"openWorldHint":false}},
 {"name":"find_similar","title":"Find alternatives","description":"Other takes or similar shots to a timeline item (item, optionally at a timeline time inside it) or to a moment of a scope file (path, at_file), inside the scope only.","inputSchema":{"type":"object","properties":{"item":{"type":"integer"},"at":{"type":["number","string"]},"path":{"type":"string"},"at_file":{"type":["number","string"]},"max":{"type":"integer","default":20,"minimum":1,"maximum":100}}},"annotations":{"readOnlyHint":true,"openWorldHint":false}},
 {"name":"edit","title":"Edit the working copy","description":"Applies a batch of operations to the working copy, all or nothing. Item ids and times refer to the timeline before this call (later times are mapped through earlier cuts). Ops: {op:cut,from,to[,ripple:false]} removes a range (ripple closes the gap; connected B-roll is cut with it, music plays through); {op:trim,item,from,to} or {op:trim,item,head,tail} (seconds off each end, negative lengthens into the media); {op:split,item,at}; {op:remove,item[,ripple:false]}; {op:move,item,before} (reorder; no time ops in the same batch); {op:source,item,source_in[,path]} another take or range; {op:insert,path,source_in,duration[,before]}; {op:connect,path,source_in,duration,at[,lane:1][,with_audio:false]} B-roll; {op:marker,at,text[,todo]}; {op:unmarker,item,marker}; {op:title,item,text}; {op:volume,item,db}; {op:enable,item,on}. Paths must be in the scope. Times snap to frames. Every change leaves a 'Claude:' marker. Returns the change list; item ids change after an edit: call get_timeline before addressing items again.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":2000}},"required":["ops"]},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
@@ -392,6 +393,10 @@ std::string server::tools_list() const {
 {"name":"preview_changes","title":"Preview the changes","description":"What the working copy changed against the dragged project: each change with where it is, the runtime before and after, and the name commit would write.","inputSchema":{"type":"object","properties":{}},"annotations":{"readOnlyHint":true,"openWorldHint":false}},
 {"name":"commit","title":"Send to Final Cut Pro","description":"Writes the working copy as a new project beside the original, \"<Project> (Claude N)\" in the same event, and asks Final Cut Pro to import it. The original project and every media file stay as they are. Edits stay in the working copy, so a later commit is the next version.","inputSchema":{"type":"object","properties":{"name":{"type":"string","description":"a name for the new project (default: <Project> (Claude N))"}}},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
 {"name":"reset","title":"Discard the edits","description":"Throws the working copy's edits away and takes the project as last dragged.","inputSchema":{"type":"object","properties":{}},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}},
+{"name":"script","title":"Read the script","description":"The Script Editor's cut list for this timeline (docs: the Script Editor window in MediaViewer shows the same list, and the editor may have changed it there): lines in play order, each an id, the file, its range (file seconds) and what is said. Empty until someone adds a line.","inputSchema":{"type":"object","properties":{}},"annotations":{"readOnlyHint":true,"openWorldHint":false}},
+{"name":"script_edit","title":"Change the script","description":"Changes the Script Editor's cut list, all or nothing, and saves it where the window reads it. Ops: {op:add,path,from,to[,text][,name][,at]} a range of a scope file (file seconds; text defaults to what the transcript says in it; at = 0-based index, default the end); {op:remove,id}; {op:move,id,at}; {op:text,id,text} (what the document says; the cut is the range); {op:clear}. Cut lines on phrase or silence edges from transcript (path: file time). Returns the list.","inputSchema":{"type":"object","properties":{"ops":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":500}},"required":["ops"]},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
+{"name":"script_to_timeline","title":"Make the script the timeline","description":"Replaces the working copy's storyline with the script's lines, one after another, in order (what was connected to the old storyline goes with it). Then preview_changes and commit write it as a new version beside the original.","inputSchema":{"type":"object","properties":{}},"annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":true,"openWorldHint":false}},
+{"name":"script_export","title":"Export the script","description":"Writes the script as a document beside the timeline: txt (text with each line's clip and timecodes), csv (one row a line: clip, file, in, out, duration, text), docx (Word) or pdf. Never over an existing file. Returns the file.","inputSchema":{"type":"object","properties":{"format":{"enum":["txt","csv","docx","pdf"]}},"required":["format"]},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
 {"name":"thumbnail","title":"Look at a frame","description":"A frame of the timeline (at, timeline seconds; the topmost video there) or of an item, as a JPEG. Off unless the editor turned on 'Let the agent see frames' in Settings > Add-ons > AI agents.","inputSchema":{"type":"object","properties":{"at":{"type":["number","string"]},"item":{"type":"integer"}}},"annotations":{"readOnlyHint":true,"openWorldHint":false}}
 ]})JSON";
   s.erase(std::remove(s.begin(), s.end(), '\n'), s.end());
@@ -476,6 +481,10 @@ server::outcome server::dispatch(std::string_view tool, const json::value& args)
     if (tool == "commit") return commit(args);
     if (tool == "reset") return reset();
     if (tool == "thumbnail") return thumbnail(args);
+    if (tool == "script") return script_get();
+    if (tool == "script_edit") return script_edit(args);
+    if (tool == "script_to_timeline") return script_to_timeline();
+    if (tool == "script_export") return script_export(args);
   } catch (const std::bad_alloc&) {
     return {"out of memory", true, {}};
   } catch (...) {
@@ -679,6 +688,9 @@ server::outcome server::transcript(const json::value& args) {
       if (from && p.end <= *from) continue;
       if (to && p.at >= *to) continue;
       w.begin_object().key("at").number(secs(p.at)).key("end").number(secs(p.end)).key("text").string(p.text);
+      // The same range in the file: what script_edit takes.
+      w.key("file_from").number(secs(nle::add(it.source_in, nle::sub(p.at, it.at).value_or(rational{})).value_or(it.source_in)));
+      w.key("file_to").number(secs(nle::add(it.source_in, nle::sub(p.end, it.at).value_or(rational{})).value_or(it.source_in)));
       if (o.words && !p.words.empty()) {
         w.key("words").begin_array();
         for (const word& x : p.words) {
@@ -1006,6 +1018,11 @@ server::outcome server::edit(const json::value& args) {
   if (!ops_v || ops_v->k != json::kind::array) return {"edit needs \"ops\", an array of operations", true, {}};
   std::vector<nle::edit_op> ops;
   if (!nle::parse_ops(to_text(*ops_v), ops, &why)) return {why, true, {}};
+  return apply_ops(ops);
+}
+
+server::outcome server::apply_ops(const std::vector<nle::edit_op>& ops) {
+  std::string why;
   const scope sc = current_scope();
   std::vector<std::pair<std::string, nle::media_probe>> probes;
   for (std::size_t i = 0; i < ops.size(); ++i) {
@@ -1181,6 +1198,141 @@ server::outcome server::thumbnail(const json::value& args) {
   w.begin_object().key("file").string(pick->source).key("at_file").number(static_cast<double>(file_ms) / 1000.0)
       .key("at").number(secs(at)).end_object();
   return {w.take(), false, base64(jpeg)};
+}
+
+// ---- the Script Editor's cut list (script.h) -------------------------------------------
+
+std::string server::script_file() const { return script_path(o_.bridge_dir, o_.timeline_file); }
+
+namespace {
+
+void write_script(json::writer& w, const script& s, const std::string& project) {
+  w.begin_object();
+  w.key("project").string(project);
+  if (!s.project.empty() && s.project != project) w.key("made_for").string(s.project);
+  w.key("lines_count").integer(static_cast<std::int64_t>(s.lines.size()));
+  w.key("length").number(static_cast<double>(s.length_ms()) / 1000.0);
+  w.key("lines").begin_array();
+  for (const script_line& l : s.lines) {
+    w.begin_object().key("id").string(l.id).key("file").string(l.path).key("name").string(l.name);
+    w.key("from").number(static_cast<double>(l.from_ms) / 1000.0).key("to").number(static_cast<double>(l.to_ms) / 1000.0);
+    w.key("text").string(l.text).end_object();
+  }
+  w.end_array();
+  if (s.lines.empty()) w.key("note").string("empty: add lines with script_edit (ranges from transcript), or in the Script Editor window");
+  w.end_object();
+}
+
+}  // namespace
+
+server::outcome server::script_get() {
+  std::string why;
+  if (!load(&why)) return {why, true, {}};
+  const std::string path = script_file();
+  if (path.empty()) return {"no timeline to keep a script for", true, {}};
+  json::writer w;
+  write_script(w, load_script(path), original_->project().name);
+  return {w.take(), false, {}};
+}
+
+server::outcome server::script_edit(const json::value& args) {
+  std::string why;
+  if (!load(&why)) return {why, true, {}};
+  const std::string path = script_file();
+  if (path.empty()) return {"no timeline to keep a script for", true, {}};
+  const json::value* ops_v = args.find("ops");
+  std::vector<script_op> ops;
+  if (!ops_v || !parse_script_ops(*ops_v, ops, &why)) return {why.empty() ? "script_edit needs \"ops\"" : why, true, {}};
+  const scope sc = current_scope();
+  for (std::size_t i = 0; i < ops.size(); ++i) {
+    script_op& op = ops[i];
+    if (op.k != script_op::kind::add) continue;
+    const scope::verdict v = sc.check(op.path);
+    if (v != scope::verdict::inside) {
+      return {"op " + std::to_string(i) + ": " + scope::refusal(v) + " (nothing was changed)", true, {}};
+    }
+    if (op.name.empty()) {
+      for (const nle::item& it : working_->items()) {
+        if (it.source == op.path && !it.name.empty()) {
+          op.name = it.name;
+          break;
+        }
+      }
+    }
+    if (op.text.empty()) {
+      // What the index heard in that range.
+      std::vector<segment> segs;
+      bool indexed = false;
+      std::string twhy;
+      if (env_.transcript(op.path, segs, indexed, &twhy)) {
+        for (const segment& g : segs) {
+          if (g.end_ms <= op.from_ms || g.start_ms >= op.to_ms) continue;
+          if (!op.text.empty()) op.text += ' ';
+          op.text += g.text;
+        }
+      }
+    }
+  }
+  script s = load_script(path);
+  if (s.project.empty()) s.project = original_->project().name;
+  std::vector<std::string> added;
+  if (!apply(s, ops, &why, &added)) return {why, true, {}};
+  if (!save_script(path, s)) return {"the script could not be saved", true, {}};
+  env_.log("script changed");
+  json::writer w;
+  write_script(w, s, original_->project().name);
+  std::string text = w.take();
+  if (!added.empty()) {
+    json::writer a;
+    a.begin_array();
+    for (const std::string& id : added) a.string(id);
+    a.end_array();
+    text.insert(1, "\"added\":" + a.take() + ",");
+  }
+  return {text, false, {}};
+}
+
+server::outcome server::script_to_timeline() {
+  std::string why;
+  if (!load(&why)) return {why, true, {}};
+  const std::string path = script_file();
+  const script s = load_script(path);
+  if (s.lines.empty()) return {"the script is empty: nothing to make a timeline of", true, {}};
+  return apply_ops(to_edit_ops(s, *working_));
+}
+
+server::outcome server::script_export(const json::value& args) {
+  std::string why;
+  if (!load(&why)) return {why, true, {}};
+  const std::string path = script_file();
+  const script s = load_script(path);
+  if (s.lines.empty()) return {"the script is empty: nothing to export", true, {}};
+  const std::string* format = args.str("format");
+  if (!format || (*format != "txt" && *format != "csv" && *format != "docx" && *format != "pdf")) {
+    return {"format is txt, csv, docx or pdf", true, {}};
+  }
+  std::string bytes;
+  if (*format == "txt") {
+    bytes = export_txt(s);
+  } else if (*format == "csv") {
+    bytes = export_csv(s);
+  } else {
+    const std::vector<std::uint8_t> b = *format == "docx" ? export_docx(s) : export_pdf(s);
+    bytes.assign(b.begin(), b.end());
+  }
+  std::string name = (s.project.empty() ? original_->project().name : s.project) + " script." + *format;
+  for (char& c : name) {
+    if (c == '/' || c == '\\' || c == ':' || static_cast<unsigned char>(c) < 0x20) c = '-';
+  }
+  const std::string dir = std::filesystem::path(path).parent_path().string();
+  const std::string out = unique_path(dir, name);
+  if (!write_atomically(out, bytes)) return {"the document could not be written", true, {}};
+  env_.log("script exported");
+  json::writer w;
+  w.begin_object().key("file").string(out).key("format").string(*format).key("lines").integer(
+      static_cast<std::int64_t>(s.lines.size()));
+  w.end_object();
+  return {w.take(), false, {}};
 }
 
 }  // namespace mv::agent

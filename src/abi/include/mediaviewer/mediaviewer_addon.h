@@ -742,6 +742,18 @@ typedef struct mv_host_api {
    * keep_alive: read it only when `struct_size` covers it and the
    * pointer is non-NULL. */
   mv_status(MV_CALL* document_text)(void* host, const char* path_utf8, mv_addon_doc_text_fn visit, void* user);
+  /* #485 (the Script Editor, docs/design/29): what the Local search index heard
+   * in a file, as the AI pack's mv.ai.1 transcript_json has it
+   * ({"indexed":bool,"segments":[{"start_ms","end_ms","text"}...]}, file time),
+   * NUL-terminated into `out`.
+   * `needed` gets the size with the NUL; MV_ERR_INVALID_ARG when `capacity` is
+   * short (call again). MV_ERR_NOT_FOUND while no index is attached;
+   * MV_ERR_UNSUPPORTED_FORMAT when the installed pack predates transcripts.
+   * Reads what the index holds; never transcribes. Appended after
+   * document_text: read it only when `struct_size` covers it and the pointer
+   * is non-NULL. [blocks: a read of the index] */
+  mv_status(MV_CALL* transcript_json)(void* host, const char* path_utf8, char* out_utf8, uint32_t capacity,
+                                      uint32_t* needed);
 } mv_host_api;
 
 typedef struct mv_addon_api {

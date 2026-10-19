@@ -22,6 +22,7 @@
 #pragma once
 
 #include <functional>
+#include <string>
 
 #include <mediaviewer/mediaviewer_addon.h>
 #include <mediaviewer/mediaviewer_ai.h>
@@ -51,5 +52,16 @@ void wait_index_locations_idle() noexcept;
 // The AI pack's mv.ai.1 table as a source: its each_location row. Empty when
 // the table is NULL or predates the row (an older pack).
 [[nodiscard]] index_location_source ai_index_locations(const mv_ai_api* api);
+
+// #485: a file's transcript as the index holds it (the host table's
+// transcript_json, for the Script Editor), served the same way: each host
+// publishes it when the pack attaches; retract_index_locations retracts it
+// too, and wait_index_locations_idle waits for its calls as well.
+using index_transcript_source = std::function<result<std::string>(const std::string& path)>;
+void publish_index_transcripts(index_transcript_source source);
+// status::not_found when none is published.
+[[nodiscard]] result<std::string> index_transcript(const std::string& path);
+// mv.ai.1 transcript_json as a source. Empty when the table predates it.
+[[nodiscard]] index_transcript_source ai_index_transcripts(const mv_ai_api* api);
 
 }  // namespace mv::addon

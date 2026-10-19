@@ -1541,6 +1541,19 @@ name, so a test request cannot reach the installed app's index.
 and the agent is not; the group container is the one folder both can use without a new IPC
 channel. A development build without a group container falls back to the extension's own.
 
+**The Script Editor is the AI agents add-on's window over the agent's own server (2026-10-19).** The
+issue asks for a transcript workspace that builds a cut and exports TXT / CSV / DOCX / PDF, "Claude
+drives the same cut list". So the list is one small file beside the timeline
+(`<file>.script.json`, or `script.json` in the panel's folder), and the window (a view tree both
+hosts draw, so one implementation serves Mac and Windows) changes it by calling the same MCP
+server in process (`server::call`): the scope checks, the transcript and the new-version writer
+are the agent's, not a second copy. A new version from the script goes through the edit engine
+(remove the storyline, insert each line), so it carries the same guarantees as an agent's edit.
+Transcripts reach the window through a new host-table call, `transcript_json` (ABI 0.35), served
+from the app's attached index the way `locations_of_index` is. The documents are written by the
+add-on itself (a stored ZIP for DOCX, Helvetica for PDF: Latin text only, other scripts print as
+`?` until a font is embedded), so no library is added for four small formats.
+
 ---
 
 ## Network copies

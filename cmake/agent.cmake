@@ -30,6 +30,7 @@ add_library(mv_agent_engine STATIC
   ${_A}/environment.h
   ${_A}/scope.cpp ${_A}/scope.h
   ${_A}/transcript.cpp ${_A}/transcript.h
+  ${_A}/script.cpp ${_A}/script.h
   ${_A}/server.cpp ${_A}/server.h
   ${_A}/install.cpp ${_A}/install.h
 )

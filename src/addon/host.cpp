@@ -329,6 +329,20 @@ mv_status MV_CALL t_document_text(void* host, const char* path, mv_addon_doc_tex
   });
 }
 
+mv_status MV_CALL t_transcript_json(void* host, const char* path, char* out, uint32_t capacity, uint32_t* needed) {
+  return guarded([&] {
+    if (!path || !*path) return MV_ERR_INVALID_ARG;
+    const auto& own = self(host).services().transcript;
+    const result<std::string> r = own ? own(path) : index_transcript(path);
+    if (!r) return to_mv(r.error());
+    const auto need = static_cast<uint32_t>(r->size() + 1);
+    if (needed) *needed = need;
+    if (!out || capacity < need) return MV_ERR_INVALID_ARG;
+    std::memcpy(out, r->c_str(), need);
+    return MV_OK;
+  });
+}
+
 mv_status MV_CALL t_pair(void*, const char* const* names, uint32_t count, uint32_t* partner,
                          uint32_t* kind) {
   return guarded([&] {
@@ -931,6 +945,8 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.tag_facts = svc_.tag_facts ? &t_tag_facts : nullptr;
   api_.read_cues = svc_.read_cues ? &t_read_cues : nullptr;
   api_.document_text = svc_.document_text ? &t_document_text : nullptr;
+  // Always set: whether an index is attached changes while the add-on runs.
+  api_.transcript_json = &t_transcript_json;
   // Always set: whether an index is attached changes while the add-on runs
   // (MV_ERR_NOT_FOUND meanwhile).
   api_.locations_of_index = &t_locations_of_index;

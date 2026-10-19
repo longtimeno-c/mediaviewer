@@ -757,6 +757,8 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   // both read index.db), its index's coordinates serve every add-on's
   // locations_of_index (Places' place: over the whole index).
   mv::addon::publish_index_locations(mv::addon::ai_index_locations(static_cast<const mv_ai_api*>(table)));
+  // #485: and its transcripts serve the host table's transcript_json (the Script Editor).
+  mv::addon::publish_index_transcripts(mv::addon::ai_index_transcripts(static_cast<const mv_ai_api*>(table)));
   // docs/design/29: the writer takes the timeline agent's "index these folders";
   // requests that came while the pack waited are handed over now.
   if (!s.reader) {

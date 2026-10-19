@@ -19,6 +19,8 @@
 //   commit           writes "<Project> (Claude N)" and hands it to Final Cut Pro
 //   reset            back to the dragged project
 //   thumbnail        a frame, for a model that looks (off unless Settings turns it on)
+//   script, script_edit, script_to_timeline, script_export
+//                    the Script Editor's cut list (script.h), shared with its window
 //
 // Logs status names only (rule 6). Portable C++.
 #pragma once
@@ -89,6 +91,12 @@ class server {
   outcome commit(const json::value& args);
   outcome reset();
   outcome thumbnail(const json::value& args);
+  outcome apply_ops(const std::vector<nle::edit_op>& ops);
+  outcome script_get();
+  outcome script_edit(const json::value& args);
+  outcome script_to_timeline();
+  outcome script_export(const json::value& args);
+  [[nodiscard]] std::string script_file() const;
 
   environment& env_;
   server_options o_;
