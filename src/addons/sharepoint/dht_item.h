@@ -71,11 +71,19 @@ struct contents {
   std::vector<net::endpoint> candidates;
   std::int64_t written_ms = 0;  // unix time
   bool gone = false;
+  // #472: the DHT saw this side on more than one port (a NAT that maps each
+  // destination apart): the other side birthday-punches it.
+  bool hard = false;
+  // #472: the TCP port this side's simultaneous open uses, at every
+  // candidate's address (0: none).
+  std::uint16_t tcp_port = 0;
 };
 // The item's v (bencoded string's bytes): nonce || sealed padded contents.
 [[nodiscard]] std::string seal(const keys& k, std::string_view salt, const contents& c);
 [[nodiscard]] std::optional<contents> open(const keys& k, std::string_view salt, std::string_view v,
                                            std::int64_t now_ms);
+// The padded plaintext inside (open's second half; the fuzzer's way in).
+[[nodiscard]] std::optional<contents> parse_plain(std::span<const std::uint8_t> plain, std::int64_t now_ms);
 
 // BEP 44's signature over (salt, seq, v): "4:salt<n>:<salt>3:seqi<seq>e1:v<bencoded v>".
 [[nodiscard]] std::string signed_bytes(std::string_view salt, std::int64_t seq, std::string_view bencoded_v);

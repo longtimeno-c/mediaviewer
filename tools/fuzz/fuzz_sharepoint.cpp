@@ -89,7 +89,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   const std::span<const std::uint8_t> in(data + 1, size - 1);
   const std::string_view text(reinterpret_cast<const char*>(in.data()), in.size());
   std::vector<std::uint8_t> out, payload;
-  switch (data[0] % 27) {
+  switch (data[0] % 28) {
     case 0:
       (void)sp::decode_beacon(in);
       break;
@@ -218,6 +218,21 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
       // The relay field as typed (split only: nothing resolves here).
       std::string why;
       (void)sp::relay_server_of(std::string(text), why);
+      break;
+    }
+    case 27: {
+      // #472: an item's plaintext (candidates, the hard flag, the TCP port), as
+      // if it had opened: padded or cut to the item's size, magic in front.
+      std::array<std::uint8_t, mv::sharepoint::dht::kPlainBytes> plain{};
+      plain[0] = 'M';
+      plain[1] = 'V';
+      plain[2] = 'S';
+      plain[3] = 'D';
+      plain[4] = 1;
+      std::memcpy(plain.data() + 5, in.data(), std::min(in.size(), plain.size() - 5));
+      std::uint64_t written = 0;  // "now" is the item's own time, so the age check lets it through
+      for (int i = 7; i >= 0; --i) written = (written << 8) | plain[5 + static_cast<std::size_t>(i)];
+      (void)mv::sharepoint::dht::parse_plain(plain, static_cast<std::int64_t>(written));
       break;
     }
     case 15: {

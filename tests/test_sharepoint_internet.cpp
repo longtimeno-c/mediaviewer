@@ -664,3 +664,15 @@ TEST_CASE("sharepoint internet: the offer asks for places, and places are read w
   CHECK(sp::parse_places("").empty());
   CHECK(sp::parse_places(R"({"places":5})").empty());
 }
+
+// #472 "Retries": failed rounds wait 1 s, 2 s, 5 s, 10 s, then every 30 s.
+TEST_CASE("sharepoint internet: failed rounds back off 1, 2, 5, 10, then 30 s", "[sharepoint]") {
+  CHECK(sp::backoff_ms(0) == 0);
+  CHECK(sp::backoff_ms(-3) == 0);
+  CHECK(sp::backoff_ms(1) == 1000);
+  CHECK(sp::backoff_ms(2) == 2000);
+  CHECK(sp::backoff_ms(3) == 5000);
+  CHECK(sp::backoff_ms(4) == 10000);
+  CHECK(sp::backoff_ms(5) == 30000);
+  CHECK(sp::backoff_ms(1000) == 30000);
+}

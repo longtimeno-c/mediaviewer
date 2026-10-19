@@ -1660,6 +1660,24 @@ can find different working paths (one hears the other's LAN address, the other i
 the sender's choice wins. A stream id comes from the code, so only a holder of the words can be
 that first packet, and what it carries is the channel's AEAD-sealed frames.
 
+**The birthday punch and TCP simultaneous open; the sender's pick is said, not inferred (2026-10-18,
+#472).** Amends the row above. With a birthday socket or a TCP connection in play, "the first
+packet" no longer says which socket the receiver's stream runs on, nor which transport: the sender
+now offers its pick (*choose*, tagged by the code) until the receiver answers (*chosen*), and the
+receiver answers only the first it was offered, UDP or TCP; a sender that offered TCP never falls
+back to UDP. Birthday punch only when exactly one side looks hard: per-node votes for ten minutes,
+three or more ports and no port with half the voters (a single unverified "ip" field must not set
+off 256 sockets and ~1000 probes); two hard NATs would need far more than 256 × 256 probes. 256
+extra sockets (64 KiB buffers) on the hard side, birthday probes at most 100 a second and every
+probe at most 200 a second each way, all extras but the stream's closed at the punch's end and
+the stream's with the stream (an idle hub polls one socket again); on POSIX the soft descriptor
+limit is raised to 1024 + 256 for the rest of the process (the Mac starts processes at 256;
+lowering it again could fail another part's open). TCP runs beside UDP only in a word code's
+meeting, never a remembered device's background one (it listens on every interface, a firewall
+prompt on Windows), and the sender takes it only when no UDP path answered in 1.5 s, so a path
+that works both ways stays on the stream the PR 3 numbers are for. Tested on loopback with stand-in NATs only; not measured on a real NAT, and the SYN-crossing
+case itself does not occur on loopback (a reset answers a SYN there), so it is untested here.
+
 **Wi-Fi → internet: the receiver's places, swapped over the sealed link (2026-10-18, #472 PR 5).**
 "Continue over the internet if Wi-Fi drops", off by default, on both sides. The receiver opens a
 way in (listener, router mapping, IPv6 pinhole) only for the transfer and sends its places as a
@@ -1719,8 +1737,9 @@ address, never in a code) that the waiting side proves; senders never wait; caps
 and on handshakes stop one host filling it; and a waiter re-registers every minute (replacing its
 own wait) because NATs drop idle TCP after a few minutes. A relay
 place joins the sender's race 1.5 s after the direct places, and the receiver hands on a paired
-link only once the sender has spoken, so a lost race costs nothing. The relay field is the one
-name Sharepoint resolves (the person typed it); the code carries the address. TURN is left out:
+link only once the sender has spoken, so a lost race costs nothing. The relay field is resolved
+because the person typed it (the DHT's bootstrap routers are the only other names, and only with
+the DHT on); the code carries the address. TURN is left out:
 it is a server protocol of its own (allocations, permissions, STUN, credentials) for what the
 splice does in a few hundred lines.
 
@@ -1732,6 +1751,21 @@ build, and its onion-service hosting was still marked incomplete when last check
 cover the hard-NAT pair without a third-party network. Nothing was measured: that needs the live
 Tor network, so the harness (`tools/sharepoint-relay/tor_spike.py`) waits for the owner
 ([plan](../plans/sharepoint-tor-spike.md)). Reopen for address hiding, or if its numbers surprise.
+
+**#472 merges with these asks deferred (owner, 2026-10-18).** The owner chose to land the stack
+with the rest of #472 as follow-ups, not to build more before merge: re-gathering candidates and
+republishing the DHT item when the OS reports a network change (needs a network-change port on
+both hosts); remembered devices keeping last-known direct addresses (a remembered device is met on
+the DHT only); bootstrapping the DHT from a LAN peer or a remembered device; a 15 s keepalive while
+a wait (not a link) is up; S/Kademlia disjoint lookup paths; the 2x-faster switch between two fast
+bearers (only Bluetooth to Wi-Fi switches); port mapping for the UDP socket; per-source rate limits
+on the add-on's own listener and on rejoins (the relay server has them); the Wi-Fi Direct soft-AP
+spike; AES-256-GCM, larger chunks and parallel streams for throughput; and a word code's failure
+naming its reason (it says one generic thing today). The birthday punch also departs from the
+issue: it starts with the meeting rather than after paths 1-4 have had 2 s, and punches for 10 s
+(about 97 %) rather than up to ~2,048 probes. Everything off by default stays off; the external
+review before anything is on by default still stands. [28 "Not built"](28-sharepoint.md#not-built)
+lists them.
 
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with

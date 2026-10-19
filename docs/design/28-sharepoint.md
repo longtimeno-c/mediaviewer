@@ -399,8 +399,45 @@ only while a code waits or a send looks for its receiver; never at idle. (`dht_i
 - **One UDP socket** (`udp_hub.h`) carries the DHT, the punching and the transfer: the hole a probe
   punches is the one the transfer uses. **Punching**: each side probes every address the other
   gave, and 16 ports above the other's public one (a NAT that hands ports out in sequence), every
-  100 ms for up to 10 s; the first that answers both ways is the path, and the sender's choice is
-  the one (the receiver takes the peer from the first stream packet).
+  100 ms for up to 10 s. A hello from a path the item did not name (a NAT's fresh mapping) is
+  answered and probed back at once. The sender takes the first path a reply came back on and
+  offers it (*choose*) until the receiver answers (*chosen*); the receiver answers only the first
+  path it is offered, so both end on the same one, whichever transport it is on.
+- **Every probe**, of every kind, is at most 200 a second each way (20 a 100 ms tick): the paths
+  learned from hellos first (at most 8), the birthday's share (below), then the item's addresses
+  and predicted ports in turn with what is left.
+- **The birthday punch** (one hard NAT, #472): each item says whether its side's NAT maps each
+  destination apart, from BEP 42 votes: each node's latest answer counts once, for ten minutes,
+  and "hard" needs at least three ports seen for the most-seen address with no port seen by half
+  the voters, so one node's lie (or two's) does not set it. A client with fewer than four voters
+  looks up once more before it decides, and a side the puts show to be hard says so again. When
+  exactly one side is hard, it opens 256 more UDP sockets on the hub (64 KiB buffers; one reader
+  thread polls them all, `net::wait_readable`) and probes the easy side's public address from
+  each, every one a new mapping in its NAT; the easy side probes random ports of the hard side's
+  address. The birthday's probes are at most 100 a second each way, until the punch's deadline.
+  The hard side's mappings open 10 at a time (all 256 by 2.6 s), so the ~1000 random probes of a
+  10 s punch meet about 97 times in 100 on a real NAT (the arithmetic, not a measurement). The
+  stream runs on the socket that met (its buffers grown to the main socket's); every other one is
+  closed when the punch ends, and the stream's own when the stream ends, so the hub is back to its
+  one socket and its idle wait. On POSIX the soft descriptor limit is raised to 1024 + 256 for
+  them, for the rest of the process (lowered again it could fail another part's next open). Two
+  hard NATs do not birthday-punch each other (256 × 256 of 64k ports would not meet in time).
+- **TCP simultaneous open** (#472, `net::tcp_rendezvous`, POSIX and Winsock): each side binds one
+  TCP port (`SO_REUSEADDR`, and `SO_REUSEPORT` where the OS has it), publishes it, and while
+  listening on it connects from it to the other's port at each of its addresses, again every
+  250 ms, so SYNs that cross in two NATs open one connection and one that arrives after ours
+  failed is accepted. It runs beside the UDP punch, only in a word code's meeting (the window is
+  open), never in a remembered device's background meetings, since it listens on every interface
+  (Windows asks its firewall at the first). The sender picks a TCP connection only if no UDP path
+  came back in the first 1.5 s, and the same choose / chosen settles it; once it has offered a TCP
+  connection it waits for the answer there until the punch ends and never falls back to UDP, so
+  the two sides cannot end on different transports. It meets where a NAT keeps a TCP
+  connection's port (most home routers), whatever it does to UDP: two hard UDP NATs can still
+  meet this way. On Windows the port is shared with `SO_REUSEADDR` (there is no `SO_REUSEPORT`),
+  not `SO_EXCLUSIVEADDRUSE`, so another process of the same user could bind it too and take a
+  connection; CPace on the code still refuses it. A connection closed after its choose leaves the
+  4-tuple in TIME_WAIT on this side, which blocks a retry to the same peer from the same port:
+  the sender does not retry that way.
 - **The stream** over it is the spike's third option, "our own simple UDP transport", not QUIC: it
   must share the socket on both OSes (msquic owns its sockets and has no macOS; ngtcp2 needs TLS
   beside Noise), and the session above already seals, orders and resumes. 1200-byte packets,
@@ -411,10 +448,18 @@ only while a code waits or a send looks for its receiver; never at idle. (`dht_i
 - Then the **internet handshake** runs over the stream as with a direct code (CPace on the words'
   password, `Noise_XXhfs+psk0`), the names are confirmed and the check is shown, and the transfer
   is protocol 2's session ("over the internet").
-- **Not built**: the birthday punch for one hard NAT (256 sockets on the hard side; needs a hub
-  that polls many sockets), TCP simultaneous open, port mapping for the UDP socket, and disjoint
-  lookup paths in the S/Kademlia sense (each item has four targets, looked up apart, which spreads
-  them over the keyspace). Two hard NATs, or a network with no UDP, do not meet this way, and the
+- **Measured on loopback only** (Mac, stand-in NATs in the tests: a symmetric one and a
+  port-restricted cone that wrap every socket a hub opens): a hard receiver or a hard sender
+  meets an easy one by the birthday punch, the stream on the one extra socket left open; two hard
+  NATs time out over UDP with no extra socket opened, and meet over TCP when TCP is allowed. On
+  loopback the kernel answers a SYN to a port nobody connects from with a reset, so the test's
+  connection is one side's connect accepted by the other's listener: SYNs crossing in flight (the
+  simultaneous open proper) happen only where a NAT drops the first SYN, which no test here makes.
+  No real NAT, router or public path has been tried (the public DHT and real networks are never
+  contacted by a test).
+- **Not built**: port mapping for the UDP socket, and disjoint lookup paths in the S/Kademlia
+  sense (each item has four targets, looked up apart, which spreads them over the keyspace). Two
+  hard NATs that also rewrite TCP ports, or a network with no UDP, do not meet this way, and the
   window says what to try.
 
 ## Wi-Fi → internet (#472 PR 5)
@@ -682,8 +727,15 @@ second while bytes move; those posts update chrome and never present the canvas.
   over the internet, with no server of ours. A relay only ever through the person's own devices or
   one they configure ([Relays](#relays-472)), and it sees only ciphertext. What cannot be hidden: the code gives its holder this machine's
   public address; the router learns of a mapping (PCP, NAT-PMP, UPnP); a network observer sees
-  encrypted traffic and roughly how much moved. Nothing goes anywhere else: no lookup, no STUN,
-  no name resolution. Codes, addresses and peer names are never logged.
+  encrypted traffic and roughly how much moved. With only the internet toggle on, nothing goes
+  anywhere else: no lookup, no STUN, no name resolution. With **Find each other over the internet**
+  (the DHT) on, the client resolves the four bootstrap routers' names (`dht.h`) unless its saved
+  table answers, and DHT nodes see this machine's address taking part in the DHT (never what it
+  looks up: the targets mean nothing without the code or the pair's secret). A relay server the
+  person typed is resolved too. Codes, addresses and peer names are never logged. While four words meet
+  (a word code, not a remembered device), a TCP port listens on every interface (its number is in
+  the sealed item), and a birthday punch sends its 14-byte probes to random ports of the other
+  side's public address only.
 - Protocol 2's resume secret and keys live in memory only, wiped when the session ends; nothing
   about a session is written down, except what Remember keeps (#472 PR 4): the peer's name, key
   and pairing secret, in the OS's secret store (Keychain, Credential Manager), never a plain file,
@@ -756,8 +808,14 @@ second while bytes move; those posts update chrome and never present the canvas.
 
 - Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6 on the LAN.
 - Over the internet, after the relays: Tor (dropped for now, [plan](../plans/sharepoint-tor-spike.md)),
-  TURN, relaying word codes, remembered-device sends and the handover, a relayed send moving; the birthday
-  punch and TCP simultaneous open ([above](#four-words-over-the-dht-472-pr-3)).
+  TURN, relaying word codes, remembered-device sends and the handover, a relayed send moving.
+- The rest of #472, deferred by the owner (2026-10-18, [12](12-decision-log.md#sharepoint)):
+  re-gathering and republishing on an OS network change; a remembered device's last-known direct
+  addresses; DHT bootstrap from a LAN peer or a remembered device; a 15 s keepalive during a wait;
+  S/Kademlia disjoint lookups; the 2x-faster switch between two fast bearers; port mapping for the
+  UDP socket; per-source rate limits on the add-on's listener and on rejoins; the Wi-Fi Direct
+  soft-AP spike; AES-256-GCM, larger chunks and parallel streams; a word code's failure naming its
+  reason.
 - Resuming a protocol 1 transfer that dropped: finished files stay, the rest is sent again.
   Protocol 2 rejoins and resumes within 20 s; a session that ends (20 s without a link, three
   rejoins in 10 s, the app quitting) is not resumed later.
