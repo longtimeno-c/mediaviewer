@@ -29,6 +29,8 @@ public static partial class IslandHost
     private static AddonSlot? _addonAlertSlot;
     private static string _addonAlertTitle = "";
     private static string _addonAlertBody = "";
+    // #509: where a failure came from (ExceptionFrames), for a bug report; "" when none.
+    private static string _addonAlertDetails = "";
 
     private static Button BuildAddonAlert()
     {
@@ -40,12 +42,16 @@ public static partial class IslandHost
     /// <summary>Shows <paramref name="slot"/>'s failure in the bar, and opens its
     /// flyout when <paramref name="open"/> (the person just asked for it: Ctrl+F).</summary>
     /// <remarks><paramref name="warn"/> false: a note, not a failure (a later window's
-    /// reader with nothing indexed yet), shown without the warning sign.</remarks>
-    private static void ShowAddonAlert(AddonSlot slot, string title, string body, bool open = false, bool warn = true)
+    /// reader with nothing indexed yet), shown without the warning sign.
+    /// <paramref name="details"/>: the exception's type and methods (ExceptionFrames),
+    /// shown small under the reason; never a message or a path (#509).</remarks>
+    private static void ShowAddonAlert(AddonSlot slot, string title, string body, bool open = false, bool warn = true,
+                                       string details = "")
     {
         _addonAlertSlot = slot;
         _addonAlertTitle = title;
         _addonAlertBody = body;
+        _addonAlertDetails = details;
         if (_addonAlert is null) return;
         if (_addonAlert.Content is TextBlock text)
         {
@@ -117,6 +123,18 @@ public static partial class IslandHost
             TextWrapping = TextWrapping.Wrap,
             IsTextSelectionEnabled = true,  // to copy into a bug report
         });
+        if (_addonAlertDetails.Length > 0)
+        {
+            root.Children.Add(new TextBlock
+            {
+                Text = "Details: " + _addonAlertDetails,
+                FontFamily = UiFont,
+                FontSize = UiFontSize - 2,
+                Foreground = Brush(Body),
+                TextWrapping = TextWrapping.Wrap,
+                IsTextSelectionEnabled = true,
+            });
+        }
         var buttons = new StackPanel
         {
             Orientation = Orientation.Horizontal,

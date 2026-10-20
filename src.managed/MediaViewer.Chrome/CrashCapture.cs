@@ -64,15 +64,49 @@ internal static class CrashCapture
         return s;
     }
 
+    /// <summary>
+    /// An exception the chrome caught and survived, but that should not vanish
+    /// (#509: an add-on whose window would not start). Its type and the methods
+    /// of its frames only (<see cref="MediaViewer.Shared.ExceptionFrames"/>):
+    /// no message, so nothing to scrub.
+    /// </summary>
+    public static void Handled(string source, Exception ex)
+    {
+        try
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("MediaViewer handled exception report");
+            sb.AppendLine($"source: {source}");
+            sb.AppendLine($"utc: {DateTime.UtcNow:O}");
+            sb.AppendLine($"runtime: {RuntimeInformation.FrameworkDescription}");
+            for (Exception? e = ex; e is not null; e = e.InnerException)
+            {
+                sb.AppendLine($"type: {e.GetType().FullName}");
+                sb.AppendLine($"hresult: 0x{e.HResult:X8}");
+                sb.AppendLine($"frames: {MediaViewer.Shared.ExceptionFrames.Methods(e, 16)}");
+            }
+            Save(sb.ToString());
+        }
+        catch
+        {
+            // Reporting must not turn a handled failure into a crash.
+        }
+    }
+
+    private static void Save(string report)
+    {
+        string dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "MediaViewer", "Crashes", "managed");
+        Directory.CreateDirectory(dir);
+        string name = $"{DateTime.UtcNow:yyyyMMdd'T'HHmmss'Z'}-{Environment.ProcessId}.txt";
+        File.WriteAllText(Path.Combine(dir, name), report);
+    }
+
     private static void Write(string source, Exception? ex)
     {
         try
         {
-            string dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "MediaViewer", "Crashes", "managed");
-            Directory.CreateDirectory(dir);
-
             ulong correlation = 0;
             try { correlation = mv_last_error_correlation_id(); } catch { /* core not loaded */ }
 
@@ -90,8 +124,7 @@ internal static class CrashCapture
                 sb.AppendLine("stack:");
                 sb.AppendLine(Scrub(e.StackTrace ?? string.Empty));
             }
-            string name = $"{DateTime.UtcNow:yyyyMMdd'T'HHmmss'Z'}-{Environment.ProcessId}.txt";
-            File.WriteAllText(Path.Combine(dir, name), sb.ToString());
+            Save(sb.ToString());
         }
         catch
         {

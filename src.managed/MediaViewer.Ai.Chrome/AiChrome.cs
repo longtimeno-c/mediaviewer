@@ -496,9 +496,18 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
         // the picker offers itself once, after this read, never over a reader.
         if (!_pickerOffered && !ReadOnly && (_status.Flags & MvAiStatus.FlagTierUnchosen) != 0)
         {
-            _pickerOffered = true;
-            _queue?.TryEnqueue(ShowModelPicker);
+            _queue?.TryEnqueue(OfferModelPicker);
         }
+    }
+
+    // Offered only once it opens: just after a load the pack's settings_json
+    // can still have no tiers (it reads them with its models), and ShowModelPicker
+    // then shows nothing. A later status read tries again (#509).
+    private void OfferModelPicker()
+    {
+        if (_pickerOffered) return;
+        ShowModelPicker();
+        if (_picker is not null) _pickerOffered = true;
     }
 
     // ---- the model picker (#482) ---------------------------------------------------------
