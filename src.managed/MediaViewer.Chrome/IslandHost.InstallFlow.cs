@@ -176,10 +176,11 @@ public static partial class IslandHost
         if (_addonUpdateCheckStarted || _addonsElsewhere || _dispatcher is null) return;
         if (!_addonStatesRead || !_slotAddonsRead) return;
         _addonUpdateCheckStarted = true;
+        bool now = InstallSelfTest();
         try
         {
             _addonUpdateTimer = _dispatcher.DispatcherQueue.CreateTimer();
-            _addonUpdateTimer.Interval = AddonUpdateFirstDelay;
+            _addonUpdateTimer.Interval = now ? TimeSpan.FromSeconds(1) : AddonUpdateFirstDelay;
             _addonUpdateTimer.IsRepeating = false;
             _addonUpdateTimer.Tick += (t, _) => Guarded(() =>
             {
@@ -269,6 +270,43 @@ public static partial class IslandHost
         _showGeneralSettings?.Invoke();
         if (page is not null) OpenAddonPage(page);
         else ShowAddonList();
+    }
+
+    /// <summary>
+    /// MV_ADDON_INSTALL_SELFTEST (docs/DEVELOPMENT.md), for the notice and the
+    /// failure rows without a published update or a broken network:
+    /// "places=update:9.9.9,import=fail:offline;now". <c>update:v</c> makes the
+    /// channel offer v (until a probe asks it for real), <c>fail:kind</c> sets the
+    /// last install's failure (an InstallFailure name), and <c>now</c> runs the
+    /// background check in a second rather than 30 s (it still obeys the switch).
+    /// Returns whether <c>now</c> was asked for.
+    /// </summary>
+    private static bool InstallSelfTest()
+    {
+        string? spec = Environment.GetEnvironmentVariable("MV_ADDON_INSTALL_SELFTEST");
+        if (string.IsNullOrWhiteSpace(spec)) return false;
+        Environment.SetEnvironmentVariable("MV_ADDON_INSTALL_SELFTEST", null);  // not inherited by a restart
+        string[] parts = spec.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        foreach (string pair in parts.Length > 0 ? parts[0].Split(',', StringSplitOptions.TrimEntries) : Array.Empty<string>())
+        {
+            string[] kv = pair.Split('=', 2, StringSplitOptions.TrimEntries);
+            if (kv.Length != 2) continue;
+            AddonSlot? slot = Array.Find(AddonSlots, s => s.Id == kv[0])
+                ?? (kv[0] == PlacesChannel.Id ? PlacesChannel : kv[0] == DriftwireId ? DriftwireSlot
+                    : SlotAddonRows.FirstOrDefault(r => r.Id == kv[0]) is { } row ? SlotChannelFor(row) : null);
+            if (slot is null) continue;
+            if (kv[1].StartsWith("update:", StringComparison.Ordinal))
+                slot.Offer = new AddonOffer(OfferKind.Available, 12_000_000, 30_000_000, kv[1][7..]);
+            else if (kv[1].StartsWith("fail:", StringComparison.Ordinal) &&
+                     Enum.TryParse(kv[1][5..], ignoreCase: true, out InstallFailure f))
+                slot.Failure = f;
+        }
+        RefreshAddonUpdates();
+        RefreshAddonRow();
+        RefreshSlotSettings();
+        RefreshLocalSearch();
+        RefreshDriftwireOffer();
+        return parts.Contains("now");
     }
 
     // The notice asked for the list itself, not a page: scrolled into view when Settings shows.

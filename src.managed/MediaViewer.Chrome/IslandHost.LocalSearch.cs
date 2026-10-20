@@ -962,16 +962,10 @@ public static partial class IslandHost
             AutomationProperties.SetName(removing, $"Removing {title}");
             action = removing;
         }
-        else if (slot.Failure is InstallFailure failure && !slot.Busy)
+        else if (!slot.State.Installed && NextStepButton(slot, title) is Button nextStep)
         {
-            // #525: the failure's one next step; its sentence is the panel's status line.
-            bool broken = slot.State.Installed && slot.State.State != "ok";
-            InstallNext next = InstallWords.Next(failure, broken);
-            Button go = SettingsButton(InstallWords.NextLabel(next),
-                () => { if (next == InstallNext.Reinstall) StartPieceReinstall(slot); else StartPieceInstall(slot); });
-            if (next == InstallNext.Reinstall) ToolTipService.SetToolTip(go, InstallWords.ReinstallTip);
-            AutomationProperties.SetName(go, $"{InstallWords.NextLabel(next)}: {title}");
-            action = go;
+            // #525: the failure's one next step in place of Install; its sentence is the status line.
+            action = nextStep;
         }
         else if (slot.State.Installed)
         {
@@ -996,6 +990,14 @@ public static partial class IslandHost
                 both.Children.Add(update);
                 both.Children.Add(remove);
                 action = both;
+            }
+            // #525: after a failed update or a copy that would not start, its next step first.
+            if (NextStepButton(slot, title) is Button retryStep)
+            {
+                var with = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
+                with.Children.Add(retryStep);
+                with.Children.Add(remove);
+                action = with;
             }
         }
         else if (slot.Parent is not null && !CoreComing())
@@ -1390,6 +1392,19 @@ public static partial class IslandHost
                 DispatcherQueueControllerTryEnqueue(() => AddonRestartNeeded("Local search", update));
             FinishAiChange(slot, message, load: slot == AiSlot, install: true);
         });
+    }
+
+    // #525: Retry, or Remove and install again, after a piece's install failed; null when it did not.
+    private static Button? NextStepButton(AddonSlot slot, string title)
+    {
+        if (slot.Failure is not InstallFailure failure || slot.Busy) return null;
+        bool broken = slot.State.Installed && slot.State.State != "ok";
+        InstallNext next = InstallWords.Next(failure, broken);
+        Button go = SettingsButton(InstallWords.NextLabel(next),
+            () => { if (next == InstallNext.Reinstall) StartPieceReinstall(slot); else StartPieceInstall(slot); });
+        if (next == InstallNext.Reinstall) ToolTipService.SetToolTip(go, InstallWords.ReinstallTip);
+        AutomationProperties.SetName(go, $"{InstallWords.NextLabel(next)}: {title}");
+        return go;
     }
 
     // Local search's pieces by the name a person reads: Core is "Local search".

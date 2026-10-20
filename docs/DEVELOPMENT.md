@@ -1321,6 +1321,25 @@ the same variable:
 MV_ADDON_RESTART_SELFTEST="Import=1.3.0,Local search=0.4.0" build-darwin/MediaViewer.app/Contents/MacOS/MediaViewer tools/testmedia/raw
 ```
 
+### Add-on install failures and the updates notice (#525, Windows)
+
+The failure rows (plain words and one next step) and the command bar's **Add-on update
+available** ([docs/design/18](design/18-import.md) "Installing", "Updates") can be shown without
+a broken network or a published update. `MV_ADDON_INSTALL_SELFTEST` takes `id=update:<version>`
+(the channel offers that version until a probe asks it for real) and `id=fail:<kind>` (an
+`InstallFailure`: `offline`, `damaged`, `notverified`, `nospace`, `notstarted`, `failed`), for
+`import`, `ai` and its pieces, `places`, `driftwire` or another slot add-on's id; `;now` runs the
+background check after a second instead of 30 s (it still obeys "Check for updates
+automatically"):
+
+```powershell
+$env:MV_ADDON_INSTALL_SELFTEST = "places=update:9.9.9,import=fail:offline"
+build\bin\mediaviewer_lab.exe --new-instance tools\testmedia\raw
+```
+
+The words are `src.managed/Shared/InstallWords.cs`; Chrome.Tests checks them and that the Mac's
+`InstallWords.swift` has the same strings and failure kinds.
+
 ### Script add-ons self-test (PR 57, macOS)
 
 `MV_SCRIPT_SELFTEST=<folder>` presses an add-on's keys as a person would (key events through the
