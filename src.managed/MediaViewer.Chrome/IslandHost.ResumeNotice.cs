@@ -187,7 +187,7 @@ public static partial class IslandHost
             HorizontalAlignment = HorizontalAlignment.Right,
         };
         Button dismiss = TextButton("Dismiss", DismissResumeNotice);
-        ToolTipService.SetToolTip(dismiss, "Leave it paused. You can resume it from Settings → Local search.");
+        ToolTipService.SetToolTip(dismiss, "Leave it paused. You can resume it from Settings → Add-ons → Local search.");
         Button resume = TextButton("Resume", ResumeFromNotice);
         foreach (Button b in new[] { dismiss, resume })
         {

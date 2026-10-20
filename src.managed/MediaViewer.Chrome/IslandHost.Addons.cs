@@ -1018,15 +1018,11 @@ public static partial class IslandHost
 
     // ---- Settings → Add-ons -----------------------------------------------------
 
-    private static void AddAddonsSettingsRow(StackPanel view)
+    // #510: Import's page and the slot add-ons' page (the list and its
+    // heading are IslandHost.AddonList.cs).
+    private static void AddAddonsSettingsRow(StackPanel view, StackPanel slots)
     {
         EnsureReaderStarted();  // a later window: what is installed, read now
-        TextBlock heading = Heading("Add-ons");
-        heading.FontSize = TypeHeading;
-        AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
-        view.Children.Add(heading);
-        // #510: "Restart to finish updating …" while an update waits on a restart.
-        view.Children.Add(BuildAddonsRestartRow());
         // #442: Import's card holds everything of Import: its row (name, line,
         // state, buttons or the install bar), its settings page, its status and
         // its restart, as the Mac's AddonsSection does.
@@ -1041,8 +1037,8 @@ public static partial class IslandHost
         importBody.Children.Add(_importRestartButton);
         view.Children.Add(importCard);
         // docs/design/25 PRs 58-59: MediaViewer's own add-ons that fill screens
-        // and slots, a card each (IslandHost.Slots.cs).
-        AddSlotAddonsSettingsRows(view);
+        // and slots, a card each (IslandHost.Slots.cs), one at a time on its page.
+        AddSlotAddonsSettingsRows(slots);
         RefreshAddonRow();
         // Opening Settings asks the channel, whatever the automatic-check
         // switch says: the person is looking at what can be installed, or
@@ -1091,11 +1087,9 @@ public static partial class IslandHost
     private static void RefreshAddonRow()
     {
         if (_addonRow is null) return;
+        RefreshAddonList();  // #510: Import's row in the list
         _addonRow.Children.Clear();
-        // The item's title in the title colour, its notes at 13 (the Mac's).
-        var title = Label("Import");
-        title.Foreground = Brush(Title);
-        _addonRow.Children.Add(title);
+        // The page's heading names it (#510); its notes at 13 (the Mac's).
         // docs/design/25: the line is the manifest's (installed, else the channel's);
         // the built-in one serves a manifest from before it carried any.
         string description = ImportSlot.State.Description.Length > 0 ? ImportSlot.State.Description

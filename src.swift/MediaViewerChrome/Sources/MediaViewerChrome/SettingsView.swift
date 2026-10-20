@@ -233,6 +233,7 @@ struct SettingsView: View {
   @ObservedObject private var theme = ThemeStore.shared
   @ObservedObject private var addons = OpenAddonStore.shared
   @ObservedObject private var photos = PhotosBackupStore.shared
+  @ObservedObject private var addonNav = AddonNav.shared  // #510: an add-on's page
   @State private var filter = ""
   @State private var keyboard = false
 
@@ -260,6 +261,11 @@ struct SettingsView: View {
   private var preferences: some View {
     ScrollViewReader { scroll in
     ScrollView {
+      Group {
+      // #510: an add-on's page in place of the General page (AddonListView.swift).
+      if let page = addonNav.page {
+        AddonPageView(id: page)
+      } else {
       VStack(alignment: .leading, spacing: MVTheme.space(8)) {
         section("Filmstrip")
         SettingsToggle(title: "When opening a folder", detail: "Show thumbnails below the viewer.",
@@ -338,6 +344,8 @@ struct SettingsView: View {
         // Add-ons section; Local search is absent on an Intel Mac.
         AddonsSection().padding(.top, MVTheme.space(20))
       }
+      }
+      }
       .padding(.horizontal, MVTheme.space(24)).padding(.bottom, MVTheme.space(24))
       .frame(maxWidth: 800)
       .frame(maxWidth: .infinity)
@@ -347,6 +355,7 @@ struct SettingsView: View {
     .onChange(of: addons.offer) { _, offer in
       guard offer != nil else { return }
       keyboard = false
+      addonNav.open(AddonNav.othersPage)  // #510: the question is on From other makers' page
       DispatchQueue.main.async {
         withAnimation(nil) { scroll.scrollTo(OpenAddonSheet.anchor, anchor: .center) }
       }
@@ -354,6 +363,7 @@ struct SettingsView: View {
     // docs/design/25 PR 57: the script rig shows From others (a stopped add-on's line).
     .onChange(of: addons.revealRequests) { _, _ in
       keyboard = false
+      addonNav.open(AddonNav.othersPage)
       DispatchQueue.main.async {
         withAnimation(nil) { scroll.scrollTo(OpenAddonStore.sectionAnchor, anchor: .top) }
       }
@@ -367,7 +377,10 @@ struct SettingsView: View {
       }
     }
     .onAppear {
+      // #510: the list, or the page something asked for while Settings was closed.
+      addonNav.settingsShown()
       if addons.offer != nil {
+        addonNav.open(AddonNav.othersPage)
         scroll.scrollTo(OpenAddonSheet.anchor, anchor: .center)
       } else if photos.takeReveal() {
         scroll.scrollTo(PhotosBackupStore.anchor, anchor: .top)
@@ -457,5 +470,7 @@ struct SettingsView: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(ThemeField())
     .onChange(of: keyboard) { _, _ in store.cancelCapture() }
+    // #510: each opening shows the list, or the page something asked for.
+    .onChange(of: store.visible) { _, visible in if visible { addonNav.settingsShown() } }
   }
 }

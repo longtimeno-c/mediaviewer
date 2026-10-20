@@ -34,7 +34,6 @@ public static partial class IslandHost
 
     private static StackPanel? _localSearchPanel;
     private static TextBlock? _localSearchStatus;
-    private static FrameworkElement? _localSearchHeading;
     private static UIElement? _aiSettingsPanel;
     private static bool? _nvidiaPresent;
     private static ulong _aiUsed, _aiCeiling;
@@ -169,10 +168,15 @@ public static partial class IslandHost
     private static void HostShowLocalSearchSettings()
     {
         _settingsKeyboard = false;
-        if (!_settingsVisible) Send(Command.OpenSettings);
-        // After PresentSettings has built and laid out the screen.
-        _dispatcher?.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
-            () => _localSearchHeading?.StartBringIntoView(new BringIntoViewOptions { VerticalAlignmentRatio = 0 }));
+        // #510: Local search's own page (PresentSettings opens it when Settings shows).
+        if (!_settingsVisible)
+        {
+            _addonPageWanted = LocalSearchPageId;
+            Send(Command.OpenSettings);
+            return;
+        }
+        _showGeneralSettings?.Invoke();
+        OpenAddonPage(LocalSearchPageId);
     }
 
     private static uint HostColour(AddonColour role)
@@ -633,11 +637,8 @@ public static partial class IslandHost
 
     private static void AddLocalSearchSettings(StackPanel view)
     {
-        // An item of Settings → Add-ons, titled like Import.
-        TextBlock heading = Label("Local search");
-        heading.Foreground = Brush(Title);
-        _localSearchHeading = heading;
-        view.Children.Add(heading);
+        // #510: the body of Local search's page in Settings → Add-ons, whose
+        // heading names it.
         _localSearchPanel = new StackPanel { Spacing = Space(10) };
         _localSearchStatus = Note("");
         view.Children.Add(_localSearchPanel);
@@ -700,6 +701,7 @@ public static partial class IslandHost
     private static void RefreshLocalSearch()
     {
         if (_localSearchPanel is null) return;
+        RefreshAddonList();  // #510: its row in the list
         _localSearchPanel.Children.Clear();
 
         if (!_addonStatesRead)

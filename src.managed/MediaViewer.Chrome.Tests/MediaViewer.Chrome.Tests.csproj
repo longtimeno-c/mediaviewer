@@ -33,6 +33,7 @@
   <!-- #510: the restart card's words, tested here and against the Swift copy. -->
   <ItemGroup>
     <Compile Include="..\Shared\RestartWords.cs" Link="Shared\RestartWords.cs" />
+    <Compile Include="..\Shared\AddonListWords.cs" Link="Shared\AddonListWords.cs" />
   </ItemGroup>
 
 </Project>

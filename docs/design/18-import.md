@@ -207,7 +207,19 @@ only after the copy is verified, through the same `io::verified_copy`
 Import was the first add-on, and its mechanism is the one every add-on uses: the AI pack
 ([17](17-local-ai-search.md)) installs the same way.
 
-- **Settings → Add-ons** lists each add-on with its size, version and **Install / Remove**.
+- **Settings → Add-ons** is a short list (#510, owner 2026-10-20: "click into it, cleans up
+  Settings"): one row per add-on, in the order Import, Local search, Places, Driftwire, any other
+  installed add-on of MediaViewer's, then **From other makers**. Each row is the name and its
+  state in a few words: *Installed · 1.2.0*, *Update available · 1.3.0*, *Restart to finish
+  updating*, *Not installed*, *Needs an update*, *Couldn't start*, *Installing…*; From other
+  makers says how many are installed. A row opens the add-on's own page in Settings (**All
+  add-ons** or Esc goes back): what it does, Install / Update to X / Open / Remove… / Reinstall,
+  the install bar and its messages, and its settings page. Nothing of an add-on's configuration
+  is on the list itself. Opening Settings shows the list, unless something asked for a page: an
+  add-on's alert opens its page, a package to install opens From other makers, Local search's own
+  Settings link opens Local search. The same on both platforms (`IslandHost.AddonList.cs`,
+  `AddonListView.swift`); the words are `src.managed/Shared/AddonListWords.cs` and their Swift
+  copy, which Chrome.Tests keeps the same.
   Installing is one click, with the size shown ("Install Import, 3 MB"). The first time a card
   appears without Import installed, a **one-time**, dismissible hint offers it; after
   "Not now" it does not return. Settings reads the signed manifest when it opens and offers
@@ -215,8 +227,8 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
   says Import is not published yet, or needs a newer MediaViewer. The card hint appears only
   when there is something to install, and its network check waits on the automatic
   update-check switch ([13](13-updates-and-telemetry.md)).
-  While an update waits on a restart the section starts with "Restart to finish updating
-  Import 1.3.0." and **Restart now** (#510, "Updates" below).
+  While an update waits on a restart the list starts with "Restart to finish updating
+  Import 1.3.0." and **Restart now**, and the add-on's row says so (#510, "Updates" below).
 - **Signed, verified, then loaded.** Downloads are two fixed release assets per platform,
   `mediaviewer-addon-<id>-<platform>.json` (+ `.sig`) and the `.zip` it names, fetched by the
   chrome with a plain GET: no identifier, no query, no cookies. `manifest.json` lists files,

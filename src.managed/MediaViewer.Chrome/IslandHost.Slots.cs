@@ -851,20 +851,10 @@ public static partial class IslandHost
     // its settings page, together, and nothing of it outside the card.
     private static (Border Card, StackPanel Body) AddonCard(string title)
     {
+        // #510: the body of the add-on's page, whose heading names it and
+        // whose card (IslandHost.AddonList.cs) frames it.
         var body = new StackPanel { Spacing = Space(6) };
-        TextBlock name = Label(title);
-        name.Foreground = Brush(Title);
-        AutomationProperties.SetHeadingLevel(name, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level3);
-        body.Children.Add(name);
-        var card = new Border
-        {
-            Child = body,
-            Padding = Pad(14),
-            Background = Brush(ChromeColour.Surface),
-            CornerRadius = Corner(RadiusCard),
-            BorderBrush = Brush(Hairline),
-            BorderThickness = new Thickness(1),
-        };
+        var card = new Border { Child = body };
         AutomationProperties.SetName(card, title);
         return (card, body);
     }
@@ -879,24 +869,38 @@ public static partial class IslandHost
     private static void RefreshSlotSettings()
     {
         if (_slotSettingsPanel is null) return;
+        RefreshAddonList();  // #510: their rows in the list
         _slotSettingsPanel.Children.Clear();
-        (Border places, StackPanel placesBody) = AddonCard("Places");
-        AddPlacesSettingsRow(placesBody);
-        _slotSettingsPanel.Children.Add(places);
+        // #510: only the card of the add-on whose page is open (none while the list is up).
+        string? only = _slotPageId;
+        if (only == PlacesChannel.Id)
+        {
+            (Border places, StackPanel placesBody) = AddonCard("Places");
+            AddPlacesSettingsRow(placesBody);
+            _slotSettingsPanel.Children.Add(places);
+        }
         // Probed once the panel is built: a probe refreshes this panel, so one
         // started inside the loop would rebuild it under the loop.
         var probe = new List<AddonSlot>();
         // #410: Driftwire, offered with one click while it is not installed.
         if (!DriftwireInstalled)
         {
-            (Border card, StackPanel body) = AddonCard("Driftwire");
-            BuildDriftwireOffer(body, null, titled: false);
-            _slotSettingsPanel.Children.Add(card);
             if (DriftwireSlot.Offer.Kind == OfferKind.Unknown) probe.Add(DriftwireSlot);
+            if (only == DriftwireId)
+            {
+                (Border card, StackPanel body) = AddonCard("Driftwire");
+                BuildDriftwireOffer(body, null, titled: false);
+                _slotSettingsPanel.Children.Add(card);
+            }
         }
         foreach (SlotAddonRow row in SlotAddonRows)
         {
             if (row.Id == PlacesChannel.Id) continue;
+            if (row.Id != only)
+            {
+                if (!_addonsElsewhere && SlotChannelFor(row).Offer.Kind == OfferKind.Unknown) probe.Add(SlotChannelFor(row));
+                continue;
+            }
             (Border card, StackPanel body) = AddonCard(row.Name);
             if (row.Description.Length > 0) body.Children.Add(Note(row.Description));
             bool loaded = SlotAddonsLoaded.Contains(row.Id);

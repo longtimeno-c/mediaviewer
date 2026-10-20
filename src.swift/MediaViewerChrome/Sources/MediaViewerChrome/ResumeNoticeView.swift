@@ -105,7 +105,7 @@ struct ResumeNoticeView: View {
       HStack(spacing: MVTheme.space(8)) {
         Spacer(minLength: 0)
         Button("Dismiss") { store.dismiss() }
-          .help("Leave it paused. You can resume it from Settings → Local search.")
+          .help("Leave it paused. You can resume it from Settings → Add-ons → Local search.")
         Button("Resume") { store.resume() }
       }
     }

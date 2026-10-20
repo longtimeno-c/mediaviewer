@@ -61,6 +61,7 @@
     <Compile Include="..\Shared\FakeInput.cs" Link="Shared\FakeInput.cs" />
     <Compile Include="..\Shared\ByteSize.cs" Link="Shared\ByteSize.cs" />
     <Compile Include="..\Shared\RestartWords.cs" Link="Shared\RestartWords.cs" />
+    <Compile Include="..\Shared\AddonListWords.cs" Link="Shared\AddonListWords.cs" />
     <!-- An add-on screen window's icon (#442), as Import's windows have it. -->
     <Compile Include="..\Shared\AppIcon.cs" Link="Shared\AppIcon.cs" />
   </ItemGroup>

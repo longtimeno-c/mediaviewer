@@ -162,18 +162,21 @@ public static partial class IslandHost
         view.Children.Add(SettingsSection("Updates and privacy"));
         AddUpdateSettingsRow(view);
         AddTelemetrySettingsRow(view);
+        // #510: Add-ons is a list of rows; each add-on's install, update,
+        // remove and settings are on its own page (IslandHost.AddonList.cs).
+        // The pages are built here, with the rest, and refreshed in place.
         var addons = new StackPanel { Spacing = Space(8), Margin = Pad(0, 20, 0, 0) };
-        AddAddonsSettingsRow(addons);
-        // Milestone H (IslandHost.LocalSearch.cs): Local search is the second
-        // item of Add-ons, and the one surface the AI pack has while it is not
-        // installed.
-        var localSearch = new StackPanel { Spacing = Space(8), Margin = Pad(0, 16, 0, 0) };
+        var importPage = new StackPanel { Spacing = Space(8) };
+        var slotsPage = new StackPanel { Spacing = Space(8) };
+        AddAddonsSettingsRow(importPage, slotsPage);
+        // Milestone H (IslandHost.LocalSearch.cs): Local search, the one surface
+        // the AI pack has while it is not installed.
+        var localSearch = new StackPanel { Spacing = Space(8) };
         AddLocalSearchSettings(localSearch);
-        addons.Children.Add(localSearch);
-        // docs/design/25: add-ons from other makers, under their own heading.
-        var fromOthers = new StackPanel { Spacing = Space(8), Margin = Pad(0, 16, 0, 0) };
+        // docs/design/25: add-ons from other makers.
+        var fromOthers = new StackPanel { Spacing = Space(8) };
         AddOpenAddonsSettings(fromOthers);
-        addons.Children.Add(fromOthers);
+        BuildAddonsList(addons, importPage, localSearch, slotsPage, fromOthers);
         view.Children.Add(addons);
 
         var keysHeader = new Grid { Margin = Pad(0, 0, 0, 8) };
@@ -241,6 +244,10 @@ public static partial class IslandHost
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
         };
+        _settingsScroll = viewScroll;
+        _settingsMain = view;
+        _addonPage = "";
+        BuildAddonPageView();
         var content = new Grid();
         content.Children.Add(viewScroll);
         content.Children.Add(keysCol);
@@ -435,6 +442,7 @@ public static partial class IslandHost
                 _chromeRoot.Children.Add(_settingsHost);
             }
             RefreshSettingsScreen();
+            ShowWantedAddonPage();  // #510: the list, or the page something asked for
             // docs/design/25: what is installed from others may have changed on disk.
             RefreshOpenAddons();
             // PR 56: the first-party add-ons' settings pages, values re-read.
@@ -449,6 +457,7 @@ public static partial class IslandHost
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine(ex);
+            Console.Error.WriteLine("chrome PresentSettings: {0}", ex);
         }
     }
 
@@ -497,6 +506,13 @@ public static partial class IslandHost
             // .cancelAction), rather than Settings closing under it.
             if (!_settingsKeyboard && CancelSettingsConfirm())
             {
+                e.Handled = true;
+                return;
+            }
+            // #510: on an add-on's page, Esc goes back to the list.
+            if (!_settingsKeyboard && _addonPage.Length > 0)
+            {
+                CloseAddonPage();
                 e.Handled = true;
                 return;
             }

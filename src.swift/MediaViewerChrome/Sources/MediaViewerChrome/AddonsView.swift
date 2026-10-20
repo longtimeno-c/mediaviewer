@@ -468,16 +468,13 @@ final class AddonStore: ObservableObject {
   }
 }
 
-/// The Settings section.
-struct AddonsSection: View {
+/// #510: Import's page in Settings → Add-ons (AddonListView.swift), whose
+/// heading names it.
+struct ImportAddonPage: View {
   @ObservedObject var store = AddonStore.shared
-  @ObservedObject var settings = SettingsStore.shared
 
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
-      Text("Add-ons").font(MVTheme.font(20)).foregroundStyle(MVTheme.title)
-      AddonsRestartMarker()  // #510: "Restart to finish updating …"
-      Text("Import").font(MVTheme.font()).foregroundStyle(MVTheme.title)
       // docs/design/25: the manifest's line; the built-in one for a manifest from
       // before it carried any.
       Text(store.description.isEmpty
@@ -540,19 +537,7 @@ struct AddonsSection: View {
         Text(store.message).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
       }
       AddonRestartButton()
-      // The second add-on: install-only until Core is loaded, then the pack's
-      // own management view (LocalSearchView.swift).
-      LocalSearchSection().padding(.top, MVTheme.space(16))
-      // Places is always here (optional, preferred). Any other installed slot
-      // add-on is listed under it, with Remove.
-      SlotAddonsSection().padding(.top, MVTheme.space(16))
-      // docs/design/25: add-ons from other makers, under their own heading.
-      OpenAddonsSection().padding(.top, MVTheme.space(16)).id(OpenAddonStore.sectionAnchor)
     }
-    // Opening Settings asks the channel, whatever the automatic-check switch
-    // says: the person is looking at what can be installed.
-    .onAppear { if settings.visible { store.probe() } }
-    .onChange(of: settings.visible) { _, visible in if visible { store.probe() } }
   }
 
   private func note(_ text: String) -> some View {
@@ -626,7 +611,8 @@ struct AddonAlertItem: View {
             }
             Button("Open Settings") {
               shown = false
-              if !SettingsStore.shared.visible { mv_chrome_menu(kMenuSettings) }
+              // #510: the add-on's own page in Settings → Add-ons (Import, or Local search for the AI family).
+              AddonNav.shared.show(alert.addon == "import" ? AddonNav.importPage : AddonNav.localSearchPage)
             }
             .keyboardShortcut(.defaultAction)
           }

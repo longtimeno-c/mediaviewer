@@ -50,18 +50,42 @@ public class RestartWordsTests
     }
 
     [Fact]
-    public void TheMacSaysTheSame()
+    public void TheMacSaysTheSame() =>
+        AssertMacHas("RestartWords.cs", "RestartWords", "RestartNoticeView.swift");
+
+    [Fact]
+    public void TheMacListSaysTheSame() =>
+        AssertMacHas("AddonListWords.cs", "AddonListWords", "AddonListView.swift");
+
+    [Fact]
+    public void ARowSaysTheOneThingThatMatters()
     {
-        string cs = SourceText.Block(SourceText.StripComments(Repo.Read("src.managed", "Shared", "RestartWords.cs")),
-                                     @"public\s+static\s+class\s+RestartWords\b");
-        string swiftFile = SourceText.StripComments(Repo.Read("src.swift", "MediaViewerChrome", "Sources", "MediaViewerChrome", "RestartNoticeView.swift"));
-        int start = swiftFile.IndexOf("enum RestartWords", StringComparison.Ordinal);
-        Assert.True(start >= 0, "RestartNoticeView.swift has no enum RestartWords");
-        string swift = SourceText.Block(swiftFile[start..], @"enum\s+RestartWords\b");
+        Assert.Equal("Checking…", AddonListWords.Line(false, true, "1.2.0", "ok", "1.3.0", true, true));
+        Assert.Equal("Installing…", AddonListWords.Line(true, false, "", "", null, false, true));
+        Assert.Equal("Restart to finish updating", AddonListWords.Line(true, true, "1.3.0", "ok", null, true, false));
+        Assert.Equal("Not installed", AddonListWords.Line(true, false, "", "", null, false, false));
+        Assert.Equal("Needs an update", AddonListWords.Line(true, true, "1.0.0", "needs_update", "1.3.0", false, false));
+        Assert.Equal("Couldn't start", AddonListWords.Line(true, true, "1.0.0", "invalid", null, false, false));
+        Assert.Equal("Update available · 1.3.0", AddonListWords.Line(true, true, "1.2.0", "ok", "1.3.0", false, false));
+        Assert.Equal("Installed · 1.2.0", AddonListWords.Line(true, true, "1.2.0", "ok", null, false, false));
+        Assert.Equal("None installed", AddonListWords.Others(0));
+        Assert.Equal("1 installed", AddonListWords.Others(1));
+        Assert.Equal("3 installed", AddonListWords.Others(3));
+    }
+
+    // Every string the C# class has is one of the Swift enum's strings.
+    private static void AssertMacHas(string csFile, string name, string swiftName)
+    {
+        string cs = SourceText.Block(SourceText.StripComments(Repo.Read("src.managed", "Shared", csFile)),
+                                     $@"public\s+static\s+class\s+{name}\b");
+        string swiftFile = SourceText.StripComments(Repo.Read("src.swift", "MediaViewerChrome", "Sources", "MediaViewerChrome", swiftName));
+        int start = swiftFile.IndexOf("enum " + name, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"{swiftName} has no enum {name}");
+        string swift = SourceText.Block(swiftFile[start..], $@"enum\s+{name}\b");
         HashSet<string> mac = Literals(swift, swiftHoles: true);
         foreach (string s in Literals(cs, swiftHoles: false))
         {
-            Assert.True(mac.Contains(s), $"RestartNoticeView.swift's RestartWords lacks \"{s}\" (RestartWords.cs has it)");
+            Assert.True(mac.Contains(s), $"{swiftName}'s {name} lacks \"{s}\" ({csFile} has it)");
         }
     }
 

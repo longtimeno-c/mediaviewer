@@ -249,7 +249,7 @@ public static partial class IslandHost
 
     private static void AddOpenAddonsSettings(StackPanel view)
     {
-        view.Children.Add(Label("From others").WithForeground(Brush(Title)));
+        // #510: the body of From other makers' page, whose heading names it.
         view.Children.Add(Note(
             "Add-ons made by other people, installed from a file or a link. MediaViewer does not check them or who made them. A theme is data. An add-on with a script runs it inside MediaViewer, stopped if it uses too much memory or time, with only the permissions it showed when you installed it. No add-on can use the network."));
         _openRow = new StackPanel { Spacing = Space(8) };
@@ -284,6 +284,7 @@ public static partial class IslandHost
     private static void RefreshOpenAddonRow()
     {
         if (_openRow is null) return;
+        RefreshAddonList();  // #510: its row's count
         _openRow.Children.Clear();
         _openLink = null;
         _openProgressView = null;
@@ -726,6 +727,7 @@ public static partial class IslandHost
 
     private static void InspectOpenAddon(string path, bool temporary, OpenAddon? updating)
     {
+        OpenAddonPage(OthersPageId);  // #510: the question is on From other makers' page
         if (_openBusy) return;
         _openBusy = true;
         _openMessage = "";

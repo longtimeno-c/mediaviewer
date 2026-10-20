@@ -700,8 +700,8 @@ struct LocalSearchSection: View {
 
   private var content: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(10)) {
-      // An item of Settings → Add-ons, titled like Import.
-      Text("Local search").font(MVTheme.font()).foregroundStyle(MVTheme.title)
+      // #510: the body of Local search's page in Settings → Add-ons, whose
+      // heading names it.
       if !store.stateKnown {
         // Quiet, and no button: nothing is offered for download while what
         // is installed is still being read.

@@ -134,6 +134,7 @@ public static partial class IslandHost
     private static Button AddonRestartButton()
     {
         Button b = SettingsButton("Restart now", RequestAddonRestart);
+        b.HorizontalAlignment = HorizontalAlignment.Left;
         b.Visibility = _addonRestartFor.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         return b;
     }
@@ -172,6 +173,7 @@ public static partial class IslandHost
         if (_localSearchRestartButton is not null) _localSearchRestartButton.Visibility = v;
         if (_addonsRestartRow is not null) _addonsRestartRow.Visibility = v;
         if (_addonsRestartText is not null) _addonsRestartText.Text = RestartWords.Marker(_addonRestartFor);
+        RefreshAddonList();  // #510: "Restart to finish updating" on the rows
         ShowUpdateStatus(_lastUpdateStatus ?? _updater?.Status
                          ?? new UpdateStatus(UpdatePhase.Inert, null, UpdateUrgency.Normal, null));
     }

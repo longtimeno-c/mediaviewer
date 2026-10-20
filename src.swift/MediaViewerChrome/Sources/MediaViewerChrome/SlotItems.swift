@@ -430,19 +430,28 @@ struct SlotAddonsSection: View {
   @ObservedObject private var slots = SlotStore.shared
   @ObservedObject private var driftwire = DriftwireStore.shared
   @State private var confirming: String?
+  /// #510: the add-on whose page this is ("places", "driftwire", an id); nil
+  /// lists them all (unused since Settings → Add-ons became a list).
+  var only: String? = nil
+
+  init(only: String? = nil) { self.only = only }
+
+  private func shows(_ id: String) -> Bool { only == nil || only == id }
 
   private var places: Row? { installed.rows.first { $0.id == "places" } }
 
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
-      placesRow
+      if shows("places") { placesRow }
       // #410: Driftwire, offered with one click while it is not installed.
-      if !driftwire.installed && !installed.rows.contains(where: { $0.id == DriftwireStore.addonID }) {
+      if shows(DriftwireStore.addonID) && !driftwire.installed
+          && !installed.rows.contains(where: { $0.id == DriftwireStore.addonID }) {
         DriftwireOffer()
       }
-      ForEach(installed.rows.filter { $0.id != "places" }) { row in
+      ForEach(installed.rows.filter { $0.id != "places" && shows($0.id) }) { row in
         VStack(alignment: .leading, spacing: MVTheme.space(6)) {
-          Text(row.name).font(MVTheme.font()).foregroundStyle(MVTheme.title)
+          // On its page the heading names it (#510).
+          if only == nil { Text(row.name).font(MVTheme.font()).foregroundStyle(MVTheme.title) }
           if !row.description.isEmpty { note(row.description) }
           note(stateText(row))
           if !mv_addon2_elsewhere() && confirming != row.id {
@@ -492,7 +501,7 @@ struct SlotAddonsSection: View {
 
   private var placesRow: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(6)) {
-      Text("Places").font(MVTheme.font()).foregroundStyle(MVTheme.title)
+      if only == nil { Text("Places").font(MVTheme.font()).foregroundStyle(MVTheme.title) }
       note(placesDescription)
       if mv_addon2_elsewhere() {
         note(LocalSearchStore.elsewhereText)
