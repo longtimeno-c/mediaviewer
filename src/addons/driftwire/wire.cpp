@@ -78,6 +78,14 @@ std::string pairing_code(std::span<const std::uint8_t, 32> client_pk, std::span<
   return code_of(st);
 }
 
+std::string remember_check(std::span<const std::uint8_t, 32> session_secret) {
+  static constexpr char kContext[] = "MediaViewer Driftwire remember check v1";
+  crypto_generichash_state st;
+  crypto_generichash_init(&st, session_secret.data(), session_secret.size(), 16);
+  crypto_generichash_update(&st, reinterpret_cast<const unsigned char*>(kContext), sizeof kContext - 1);
+  return code_of(st);
+}
+
 std::string pairing_code_v2(std::span<const std::uint8_t> handshake_hash, std::span<const std::uint8_t, 32> client_nonce) {
   static constexpr char kContext[] = "MediaViewer Driftwire code v2";
   crypto_generichash_state st;
@@ -85,6 +93,18 @@ std::string pairing_code_v2(std::span<const std::uint8_t> handshake_hash, std::s
   crypto_generichash_update(&st, reinterpret_cast<const unsigned char*>(kContext), sizeof kContext - 1);
   crypto_generichash_update(&st, handshake_hash.data(), handshake_hash.size());
   crypto_generichash_update(&st, client_nonce.data(), client_nonce.size());
+  return code_of(st);
+}
+
+std::string pairing_code_v3(std::span<const std::uint8_t> handshake_hash, std::span<const std::uint8_t, 32> client_nonce,
+                            std::span<const std::uint8_t, 32> server_nonce) {
+  static constexpr char kContext[] = "MediaViewer Driftwire code v3";
+  crypto_generichash_state st;
+  crypto_generichash_init(&st, nullptr, 0, 16);
+  crypto_generichash_update(&st, reinterpret_cast<const unsigned char*>(kContext), sizeof kContext - 1);
+  crypto_generichash_update(&st, handshake_hash.data(), handshake_hash.size());
+  crypto_generichash_update(&st, client_nonce.data(), client_nonce.size());
+  crypto_generichash_update(&st, server_nonce.data(), server_nonce.size());
   return code_of(st);
 }
 

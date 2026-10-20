@@ -165,7 +165,7 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
   auto stop = [&](outcome o, int line) {
     note(h, "send", line, o);
     res.how = o;
-    if (o == outcome::cancelled) (void)ch.try_send(msg::cancel, "{}");
+    if (o == outcome::cancelled) (void)ch.cancel(kCancelWaitMs);
     ch.shutdown();
     return res;
   };
@@ -195,7 +195,7 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
   // The receiver's side, read while this thread writes: file_done per file,
   // its final done, or a cancel.
   std::atomic<std::uint32_t> verified{0};
-  std::atomic<bool> finished{false}, remote_cancel{false}, broken{false};
+  std::atomic<bool> finished{false}, remote_cancel{false}, remote_error{false}, broken{false};
   std::thread reader([&] {
     message in;
     for (;;) {
@@ -224,6 +224,15 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
         finished.store(true);
         return;
       } else if (in.type == msg::cancel) {
+        // The receiver ended it: its person cancelled, or {"why":"error"}.
+        bool error = false;
+        try {
+          const auto doc = json::parse(in.text(), 4);
+          const std::string* why = doc ? doc->str("why") : nullptr;
+          error = why && *why == "error";
+        } catch (...) {
+        }
+        remote_error.store(error);
         remote_cancel.store(true);
         ch.shutdown();
         return;
@@ -243,12 +252,16 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
   auto finish = [&](outcome o, int line) {
     note(h, "send", line, o);
     if (o != outcome::delivered) {
-      if (o == outcome::cancelled && !remote_cancel.load()) (void)ch.try_send(msg::cancel, "{}");
+      if (o == outcome::cancelled && !remote_cancel.load()) (void)ch.cancel(kCancelWaitMs);
       ch.shutdown();
     }
     reader.join();
     res.done = verified.load();
     res.how = o;
+    if (o == outcome::cancelled && remote_cancel.load()) {
+      res.by_peer = true;
+      if (remote_error.load()) res.how = outcome::failed;
+    }
     if (o == outcome::delivered && (!finished.load() || res.done + res.skipped != files.size())) {
       res.how = outcome::failed;
     }
@@ -317,8 +330,9 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
   reader.join();
   res.done = verified.load();
   res.how = finished.load() && res.done + res.skipped == files.size() ? outcome::delivered
-            : remote_cancel.load()                                    ? outcome::cancelled
+            : remote_cancel.load() && !remote_error.load()            ? outcome::cancelled
                                                                       : outcome::failed;
+  res.by_peer = res.how != outcome::delivered && remote_cancel.load();
   ch.shutdown();
   return res;
 }
@@ -566,7 +580,9 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
   auto end = [&](outcome o, bool tell, int line) {
     note(h, "receive", line, o);
     if (cur) cur->drop();
-    if (tell) (void)ch.send(msg::cancel, std::string_view("{}"));
+    // Said reliably and final (#511): the sender stops, and takes it for
+    // neither a lost link nor this person's cancel when it is a failure.
+    if (tell) (void)ch.cancel(kCancelWaitMs, o == outcome::cancelled ? std::string_view() : std::string_view("error"));
     ch.shutdown();
     // Files already whole finish their checks: what arrived whole stays,
     // nothing partial does (the one being written was dropped above).
@@ -699,6 +715,7 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         return res;
       }
       case msg::cancel:
+        res.by_peer = true;  // the sender ended it
         return end(outcome::cancelled, false, __LINE__);
       default:
         return end(outcome::failed, true, __LINE__);

@@ -249,7 +249,10 @@ bool read_slot_point(std::string_view key, const json::value& value, contributio
         return false;  // a bar button is an icon with a name
       }
       if (const json::value* opens = e.find("opens")) {
-        if (opens->k != json::kind::string || !slot_id_text(opens->s) || item.slot == item_slot::status) {
+        // A status item names one from contribution API 7 (#512): an add-on that
+        // does asks for 7, and an older host says "needs a newer MediaViewer".
+        if (opens->k != json::kind::string || !slot_id_text(opens->s) ||
+            (item.slot == item_slot::status && c.api_min < kStatusOpensApi)) {
           return false;
         }
         item.opens = opens->s;

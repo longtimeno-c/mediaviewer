@@ -145,7 +145,26 @@ std::string relay_line(const std::string& through) {
 // #472 PR 4: under a transfer's result over protocol 2.
 void remember_toggle(writer& w, const view& v) {
   if (!v.remember_offer) return;
+  if (v.remember_needs_check) {
+    // #497: the receiver of a nearby transfer: the sender proved this screen
+    // with the code; this proves the sender's, the other way round.
+    text(w, "remember_title", "Remember " + v.remember_peer, "title");
+    w.begin_object().key("type").string("text_field").key("id").string("remember_check_entry");
+    w.key("label").string("Code shown on " + v.remember_peer).key("value").string("");
+    w.key("placeholder").string("000 000").key("look").string("code").key("digits").integer(6).end_object();
+    text(w, "remember_note",
+         v.remember_check_note.empty()
+             ? "To remember " + v.remember_peer + ", type the code its window shows now. It proves the computer that "
+                                                  "sent is the one in front of you."
+             : v.remember_check_note,
+         "caption");
+    return;
+  }
   toggle(w, "remember", "Remember " + v.remember_peer, v.remembered);
+  if (!v.remember_check.empty()) {
+    text(w, "remember_check", "Code for " + v.remember_peer + " to remember this computer: " + v.remember_check,
+         "secondary");
+  }
   text(w, "remember_note",
        "Send to each other later over the internet, with no code. It works once " + v.remember_peer +
            " remembers this computer too.",
