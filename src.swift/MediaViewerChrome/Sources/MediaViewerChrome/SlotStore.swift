@@ -148,7 +148,8 @@ final class SlotStore: ObservableObject {
   @Published private(set) var items: [SlotItem] = []
   /// #410: each add-on's first window screen (Settings' Open, the share icon).
   @Published private(set) var windowScreens: [String: String] = [:]
-  @Published private(set) var status: [(id: String, label: String, text: String)] = []
+  /// #512: `opens` is the screen a click opens ("" = plain text).
+  @Published private(set) var status: [(id: String, addon: String, label: String, text: String, opens: String)] = []
   /// True while an add-on answers Local search (the path bar's button opens it).
   @Published private(set) var localSearch = false
   /// The prefixes file-search providers declare ("place:"), folded as the core folds.
@@ -328,7 +329,7 @@ final class SlotStore: ObservableObject {
       guard let a = $0["addon"] as? String, let id = $0["id"] as? String, let text = $0["text"] as? String else {
         return nil
       }
-      return ("\(a)/\(id)", $0["label"] as? String ?? "", text)
+      return ("\(a)/\(id)", a, $0["label"] as? String ?? "", text, $0["opens"] as? String ?? "")
     }
   }
 
