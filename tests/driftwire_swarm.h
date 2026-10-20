@@ -138,6 +138,7 @@ struct swarm {
   o.table_path = std::move(table);
   o.query_ms = 500;
   o.lookup_ms = 5000;
+  o.loopback = true;  // the swarm is on loopback
   return o;
 }
 

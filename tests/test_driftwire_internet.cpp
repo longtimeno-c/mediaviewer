@@ -113,7 +113,10 @@ struct upnp_router {
   std::thread ssdp_thread, http_thread;
   std::mutex m;
   std::vector<std::string> actions;  // SOAPAction values seen
+  std::atomic<int> requests{0};      // every HTTP request, the description's too
   std::string outside = "81.2.69.160";
+  std::string wan_service;           // the description's WAN service type ("": the usual)
+  std::string existing_443;          // a forward of 443 already there, to this client ("": none)
   bool igd2 = true;
   bool chunked = false;
   upnp_router() {
@@ -149,6 +152,7 @@ struct upnp_router {
     http_thread.join();
   }
   void serve(sp::link& l) {
+    ++requests;
     std::string req;
     std::uint8_t buf[4096];
     // The headers, then Content-Length of body.
@@ -165,7 +169,9 @@ struct upnp_router {
     std::string body;
     if (req.rfind("GET /rootDesc.xml", 0) == 0) {
       body = std::string("<?xml version=\"1.0\"?><root><device><deviceList><device><serviceList>") +
-             "<service><serviceType>urn:schemas-upnp-org:service:WANIPConnection:" + (igd2 ? "2" : "1") +
+             "<service><serviceType>" +
+             (wan_service.empty() ? std::string("urn:schemas-upnp-org:service:WANIPConnection:") + (igd2 ? "2" : "1")
+                                  : wan_service) +
              "</serviceType><controlURL>/ctl/IPConn</controlURL></service>" +
              (igd2 ? "<service><serviceType>urn:schemas-upnp-org:service:WANIPv6FirewallControl:1</serviceType>"
                      "<controlURL>ctl/IP6FCtl</controlURL></service>"
@@ -182,6 +188,19 @@ struct upnp_router {
       body = "<?xml version=\"1.0\"?><s:Envelope><s:Body><u:" + op + "Response>";
       if (op == "GetExternalIPAddress") body += "<NewExternalIPAddress>" + outside + "</NewExternalIPAddress>";
       if (op == "AddPinhole") body += "<UniqueID>42</UniqueID>";
+      if (op == "GetSpecificPortMappingEntry") {
+        if (existing_443.empty() || req.find("<NewExternalPort>443<") == std::string::npos) {
+          // UPnP's "no such entry" (714).
+          const std::string fault = "<s:Envelope><s:Body><s:Fault><detail><UPnPError><errorCode>714</errorCode>"
+                                    "</UPnPError></detail></s:Fault></s:Body></s:Envelope>";
+          (void)l.write_all(bytes("HTTP/1.1 500 Internal Server Error\r\nContent-Length: " +
+                                  std::to_string(fault.size()) + "\r\n\r\n" + fault));
+          l.shutdown();
+          return;
+        }
+        body += "<NewInternalPort>443</NewInternalPort><NewInternalClient>" + existing_443 +
+                "</NewInternalClient><NewPortMappingDescription>web</NewPortMappingDescription>";
+      }
       body += "</u:" + op + "Response></s:Body></s:Envelope>";
     }
     std::string out = "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\n";
@@ -304,17 +323,18 @@ TEST_CASE("driftwire internet: a code carries its secret and places, and a typo 
 // ---- the router's replies ------------------------------------------------------------------------
 
 TEST_CASE("driftwire internet: UPnP's answers are read, and only a local gateway is followed", "[driftwire]") {
-  CHECK(mp::parse_ssdp_location("HTTP/1.1 200 OK\r\nLOCATION: http://192.168.1.1:5000/rootDesc.xml\r\n\r\n") ==
+  const auto gw = addr("192.168.1.1");
+  CHECK(mp::parse_ssdp_location("HTTP/1.1 200 OK\r\nLOCATION: http://192.168.1.1:5000/rootDesc.xml\r\n\r\n", gw) ==
         "http://192.168.1.1:5000/rootDesc.xml");
   // A public or named host is not the router on this network: not followed.
-  CHECK_FALSE(mp::parse_ssdp_location("HTTP/1.1 200 OK\r\nLOCATION: http://81.2.69.160/x.xml\r\n\r\n"));
-  CHECK_FALSE(mp::parse_ssdp_location("HTTP/1.1 200 OK\r\nLOCATION: http://router.example/x.xml\r\n\r\n"));
-  CHECK_FALSE(mp::parse_ssdp_location("HTTP/1.1 200 OK\r\nLOCATION: https://192.168.1.1/x.xml\r\n\r\n"));
+  CHECK_FALSE(mp::parse_ssdp_location("HTTP/1.1 200 OK\r\nLOCATION: http://81.2.69.160/x.xml\r\n\r\n", gw));
+  CHECK_FALSE(mp::parse_ssdp_location("HTTP/1.1 200 OK\r\nLOCATION: http://router.example/x.xml\r\n\r\n", gw));
+  CHECK_FALSE(mp::parse_ssdp_location("HTTP/1.1 200 OK\r\nLOCATION: https://192.168.1.1/x.xml\r\n\r\n", gw));
   const std::string xml =
       "<root><URLBase>http://192.168.1.1:5000/</URLBase><service><serviceType>urn:schemas-upnp-org:service:"
       "WANPPPConnection:1</serviceType><controlURL>ctl/PPP</controlURL></service><service><serviceType>urn:"
       "schemas-upnp-org:service:WANIPConnection:2</serviceType><controlURL>/ctl/IP</controlURL></service></root>";
-  const auto d = mp::parse_description(xml, "http://192.168.1.1:5000/rootDesc.xml");
+  const auto d = mp::parse_description(xml, "http://192.168.1.1:5000/rootDesc.xml", gw);
   REQUIRE(d);
   CHECK(d->service == "urn:schemas-upnp-org:service:WANIPConnection:2");
   CHECK(d->control == "http://192.168.1.1:5000/ctl/IP");
@@ -324,6 +344,54 @@ TEST_CASE("driftwire internet: UPnP's answers are read, and only a local gateway
   CHECK(chunked->body == "Wikipedia");
   CHECK(mp::xml_value("<a:B x=\"1\"> v </a:B>", "B") == "v");
   CHECK_FALSE(mp::parse_http("garbage"));
+}
+
+TEST_CASE("driftwire internet: a hostile SSDP answer or device description is refused (#499)", "[driftwire]") {
+  const auto gw = addr("192.168.1.1");
+  auto ssdp = [&](const std::string& location) {
+    return mp::parse_ssdp_location("HTTP/1.1 200 OK\r\nLOCATION: " + location + "\r\n\r\n", gw);
+  };
+  // Another host on the network, this machine, 0/8, link-local, multicast:
+  // only the gateway itself is followed.
+  for (const char* bad : {"http://192.168.1.77:5000/d.xml", "http://127.0.0.1:631/", "http://0.0.0.0:80/",
+                          "http://169.254.1.1/x", "http://224.0.0.1/x", "http://255.255.255.255/x",
+                          "http://192.168.1.1:5000/a b", "http://192.168.1.1:0/"}) {
+    INFO(bad);
+    CHECK_FALSE(ssdp(bad));
+  }
+  // Even with no gateway to compare with (never so in the mapper), loopback
+  // and the rest are not a router.
+  for (const char* bad : {"127.0.0.1", "0.0.0.0", "169.254.0.1", "239.255.255.250"}) {
+    INFO(bad);
+    CHECK_FALSE(mp::parse_ssdp_location("HTTP/1.1 200 OK\r\nLOCATION: http://" + std::string(bad) + "/\r\n\r\n", addr("192.168.1.1")));
+  }
+  CHECK(mp::service_type("urn:schemas-upnp-org:service:WANIPConnection:2"));
+  for (const char* bad : {"", "urn:", "urn:x\r\nHost: evil", "urn:x\"y", "urn:x y", "urn:x#y", "http:x", "urn:x\n"}) {
+    INFO(bad);
+    CHECK_FALSE(mp::service_type(bad));
+  }
+  auto described = [&](const std::string& base, const std::string& type, const std::string& control) {
+    const std::string xml = "<root>" + (base.empty() ? "" : "<URLBase>" + base + "</URLBase>") +
+                            "<service><serviceType>" + type + "</serviceType><controlURL>" + control +
+                            "</controlURL></service></root>";
+    return mp::parse_description(xml, "http://192.168.1.1:5000/rootDesc.xml", gw);
+  };
+  const std::string wan = "urn:schemas-upnp-org:service:WANIPConnection:1";
+  // A CR/LF in the service type was a second HTTP request to the control URL.
+  CHECK_FALSE(described("", wan + "#x\"\r\n\r\nPOST /evil HTTP/1.1\r\nX: \"", "/ctl"));
+  CHECK_FALSE(described("", "urn:schemas-upnp-org:service:WANIPConnection:1 x", "/ctl"));
+  // A control URL anywhere but the gateway.
+  for (const char* bad : {"http://127.0.0.1:8080/", "http://0.0.0.0/c", "http://169.254.169.254/latest", "http://192.168.1.2/c",
+                          "http://81.2.69.160/c"}) {
+    INFO(bad);
+    CHECK_FALSE(described("", wan, bad));
+  }
+  // A URLBase elsewhere is not used: relative URLs stay at the gateway.
+  const auto d = described("http://127.0.0.1:631/", wan, "/ctl");
+  REQUIRE(d);
+  CHECK(d->control == "http://192.168.1.1:5000/ctl");
+  // A location not at the gateway.
+  CHECK_FALSE(mp::parse_description("<root/>", "http://192.168.1.9:5000/d.xml", gw));
 }
 
 // ---- the mapper, against stand-in routers -----------------------------------------------------------
@@ -395,6 +463,68 @@ TEST_CASE("driftwire internet: UPnP-IGD maps a port, opens an IPv6 pinhole, and 
     CHECK(has("#DeletePortMapping"));
     CHECK(has("#DeletePinhole"));
   }
+}
+
+TEST_CASE("driftwire internet: UPnP follows only the gateway's SSDP answer, and refuses a smuggling service type", "[driftwire]") {
+  {
+    // The stand-in answers SSDP from 127.0.0.1; the gateway is elsewhere
+    // (another device answering on the network): not followed.
+    upnp_router upnp;
+    auto quiet = sp::net::open_udp(false, 1, true);
+    REQUIRE(quiet);
+    auto o = on_loopback((*quiet)->port(), upnp.ssdp->port());
+    o.gateway = addr("127.0.0.2");
+    o.timeout_ms = 400;
+    mp::mapper m(o);
+    CHECK_FALSE(m.map_tcp(41000, 0, 120));
+    CHECK(std::find(m.notes().begin(), m.notes().end(), "UPnP: no gateway answered") != m.notes().end());
+    CHECK(upnp.requests.load() == 0);  // not even its description was fetched
+  }
+  {
+    upnp_router upnp;
+    upnp.wan_service = "urn:schemas-upnp-org:service:WANIPConnection:1#X\"\r\nContent-Length: 0\r\n\r\nPOST /x HTTP/1.1\r\nA: \"";
+    auto quiet = sp::net::open_udp(false, 1, true);
+    REQUIRE(quiet);
+    mp::mapper m(on_loopback((*quiet)->port(), upnp.ssdp->port()));
+    CHECK_FALSE(m.map_tcp(41000, 0, 120));
+    CHECK(upnp.seen().empty());  // no SOAP request at all
+  }
+}
+
+TEST_CASE("driftwire internet: a port someone else forwards is not taken over", "[driftwire]") {
+  upnp_router upnp;
+  upnp.igd2 = false;
+  upnp.existing_443 = "192.168.1.50";  // the person's own forward
+  auto quiet = sp::net::open_udp(false, 1, true);
+  REQUIRE(quiet);
+  mp::mapper m(on_loopback((*quiet)->port(), upnp.ssdp->port()));
+  CHECK_FALSE(m.map_tcp(41000, 443, 120));
+  const auto seen = upnp.seen();
+  CHECK(std::none_of(seen.begin(), seen.end(), [](const std::string& s) { return s.find("#AddPortMapping") != std::string::npos; }));
+}
+
+TEST_CASE("driftwire internet: mappings are renewed while held and removed after (#499)", "[driftwire]") {
+  const auto outside = addr("81.2.69.160");
+  std::atomic<int> maps{0}, deletes{0};
+  udp_router router([&](std::span<const std::uint8_t> req) {
+    if (req.size() >= 8 && req[4] == 0 && req[5] == 0 && req[6] == 0 && req[7] == 0) {
+      ++deletes;
+    } else {
+      ++maps;
+    }
+    return pcp_answer(req, outside, 41000);
+  });
+  auto mapper = std::make_unique<mp::mapper>(on_loopback(router.sock->port()));
+  auto got = mapper->map_tcp(41000, 0, 2);
+  REQUIRE(got);
+  CHECK(maps.load() == 1);
+  {
+    mp::keeper k(std::move(mapper), {*got}, 2);  // renewed every second
+    std::this_thread::sleep_for(std::chrono::milliseconds(2600));
+    CHECK(maps.load() >= 3);
+    CHECK(deletes.load() == 0);
+  }
+  CHECK(deletes.load() == 1);
 }
 
 // ---- the internet handshake ------------------------------------------------------------------------

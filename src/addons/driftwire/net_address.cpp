@@ -155,6 +155,11 @@ std::string address_text(const address& a) {
   return out;
 }
 
+bool is_private_v4(const address& a) noexcept {
+  const std::uint8_t* b = a.bytes.data();
+  return !a.v6 && (b[0] == 10 || (b[0] == 172 && (b[1] & 0xf0) == 16) || (b[0] == 192 && b[1] == 168));
+}
+
 bool is_public(const address& a) noexcept {
   const std::uint8_t* b = a.bytes.data();
   if (!a.v6) {

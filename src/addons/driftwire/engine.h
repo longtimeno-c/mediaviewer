@@ -398,10 +398,15 @@ class engine {
   void on_tick();
   void on_bt_peer(const bt_peer& p);
   // `internet`: from the internet listener (#472 PR 2).
-  // `from_known` (#472 PR 4): met on the DHT as a remembered device.
+  // `from_known` (#472 PR 4): met on the DHT as a remembered device, in the
+  // hour `known_hour` (its keys and password are that hour's, #499).
   // `source` (#502): where it came from, for the per-source limits ("": none).
+  // `code`: came by the internet code's own ways in (its listener, its relay,
+  // its word meeting): only such a link may spend the code (#499: not the
+  // handover's way in).
   void on_incoming(std::unique_ptr<link> l, bool internet = false,
-                   std::optional<known::device> from_known = std::nullopt, std::string source = {});
+                   std::optional<known::device> from_known = std::nullopt, std::string source = {},
+                   std::int64_t known_hour = -1, bool code = false);
   void accept_loop();
   // #502: an address on this machine's link (the networks cached, looked up
   // again on a miss at most every 2 s). Any thread.
@@ -454,6 +459,8 @@ class engine {
   // #472 PR 3: the DHT client's options (the routers, or the tests' nodes;
   // the table kept beside the prefs).
   [[nodiscard]] dht::client::options dht_options() const;
+  // A file beside the prefs ("" when there are none: the tests).
+  [[nodiscard]] std::string data_file(const char* name) const;
   void start_send_code();
   // After the link is open and the peer is known: the code typed (nearby) or
   // the name confirmed (internet), then the offer, Accept and the files.
@@ -462,7 +469,7 @@ class engine {
                std::string peer_id, std::optional<net::endpoint> internet_place, bool trusted = false);
   // The control thread: the internet receiver made or dropped with the toggle.
   void sync_internet();
-  void on_internet_link(std::unique_ptr<link> l);
+  void on_internet_link(std::unique_ptr<link> l, bool code = false);
   // #472, the sender's side of a protocol 2 send, on its own thread while
   // the send runs: when the link is suspect or drops, races every bearer the
   // peer is heard on and rejoins over the first that connects; when the send
@@ -475,14 +482,15 @@ class engine {
   // `internet`: the link came to the internet listener (a code's sender, or
   // a rejoin of a transfer over one).
   void run_receive(std::unique_ptr<link> l, bool internet = false,
-                   std::optional<known::device> from_known = std::nullopt, std::string source = {});
+                   std::optional<known::device> from_known = std::nullopt, std::string source = {},
+                   std::int64_t known_hour = -1, bool code = false);
   // The offer's notification (#452), from the receive thread only. False:
   // the host has none (open the window instead).
   bool notice(const std::string& peer, std::size_t count, std::uint64_t bytes);
   void end_transfer();
   // A link while a transfer runs: a rejoin of it goes to it (#472); any
   // other is answered busy.
-  void route_busy(std::shared_ptr<link> l, bool internet = false);
+  void route_busy(std::shared_ptr<link> l, bool internet = false, bool code = false);
   // channel::open with `l` listed in opening_ meanwhile.
   // A handshake the engine can end (cancel, the destructor). The client
   // speaks `version`; the server answers the hello it read.

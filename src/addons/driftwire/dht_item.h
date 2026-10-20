@@ -7,7 +7,10 @@
 //   1. The code is four words of the BIP-39 list (44 bits). Argon2id
 //      (libsodium's crypto_pwhash, moderate) turns it into an Ed25519 seed,
 //      a key for the items' contents, a salt base and CPace's password
-//      (cpace.h; the code is the password of the handshake too).
+//      (cpace.h; the code is the password of the handshake too). Its salt
+//      holds the hour (UTC) the code was made in (#499: a fixed salt let one
+//      table of all 2^44 codes break every code; now it serves one hour), so
+//      a sender tries the hour now and, early in an hour, the one before.
 //   2. Each side publishes a BEP 44 mutable item under kTargets salts of its
 //      role (receiver, sender): its candidate addresses, sealed with
 //      XChaCha20-Poly1305, padded to 512 bytes, its timestamp inside. The
@@ -57,9 +60,11 @@ struct keys {
   std::array<std::uint8_t, 32> password{};     // CPace's PRS
   ~keys();
 };
-// Argon2id over the code: the slow part (moderate: ~0.5-1 s, 256 MiB).
-// `fast` (the tests only): the minimum cost.
-[[nodiscard]] result<keys> derive(const word_code& c, bool fast = false);
+// The hour (UTC, since the epoch) a code made at `unix_ms` belongs to.
+[[nodiscard]] std::int64_t code_hour(std::int64_t unix_ms) noexcept;
+// Argon2id over the code and its hour: the slow part (moderate: ~0.5-1 s,
+// 256 MiB). `fast` (the tests only): the minimum cost. `hour` < 0: now's.
+[[nodiscard]] result<keys> derive(const word_code& c, bool fast = false, std::int64_t hour = -1);
 
 // BEP 44's salt for (role, i), at most 64 bytes, and its target.
 [[nodiscard]] std::string salt_of(const keys& k, role r, int i);

@@ -1521,6 +1521,31 @@ menu offers Driftwire's one-click install, and Sharepoint is removed in Settings
 settings carry over once (`adopt_old_prefs` reads `<root>/sharepoint/data/sharepoint.json`, the one
 place the old name stays in the code).
 
+**Punch probes are authenticated; meetings over the DHT need both sides past v0.1.35 (#499,
+owner, 2026-10-20).** Every probe carried the same tag from the code in the clear, and a reply or choose
+was taken from any address that showed it, so a host that was sent one (at the other side's private
+address on this network, behind the same carrier NAT) could answer first and take the meeting:
+CPace then failed and the transfer was denied. Probes now carry a nonce per side and per meeting
+and a MAC under a key from the code, the stream id comes from both nonces, and private addresses
+are probed only when both sides share a public address ([28](28-driftwire.md#four-words-over-the-dht-472-pr-3)).
+The wire format changed, so a v0.1.35 peer is not met over the DHT (word codes, remembered
+devices); direct codes and Wi-Fi are unaffected. The owner chose the break over a fallback to the
+old probes for old peers: both sides must be on the next release. Reverses "once it has offered a TCP connection it
+never falls back to UDP": a connection whose answer does not verify, or that closes, was not taken
+by the other side, so the sender tries the next path. Leases go from an hour to 120 s, renewed while
+held, and listed in a ledger the next launch cleans up. The rest of #499 in the same change:
+nothing is kept before the handshake (the sender falls back to the next path a reply came back on,
+up to three, under an attempt number the receiver honours for a minute); the word code's Argon2
+salt holds the hour it was made in (a sender tries this hour and the last), so codes made before
+this change do not work after it, which the probe break already implies; BEP 42 votes count one
+per voter network and private nodes are not learned; a receiver's handover places are taken once
+and only if public; a code's private place is tried only behind the same public address; only the
+code's own ways in spend it; a remembered device's receive uses the meeting's hour. The TCP
+rendezvous keeps sharing its port (`SO_REUSEADDR`/`SO_REUSEPORT`): the OSes allow that only within
+one user account, and the authenticated hello makes a taken connection worthless, so an exclusive
+port was not worth losing the listener. Reopen if old peers must still be met: a flag in the
+sealed item could pick the old probes for them (only the code's holders could set or strip it).
+
 **A first-party add-on may open a local link the person asked for (owner, 2026-10-14).** Driftwire
 listens, beacons and uses Bluetooth only while its window is open, receiving is on or a transfer
 runs; the idle viewer has no socket. Bytes go only to the peer the sender picked, after the person
