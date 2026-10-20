@@ -2,7 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // secrets.h over Credential Manager: generic credentials, per user, named
 // "MediaViewer Driftwire/<name>", persisted on this machine only
-// (CRED_PERSIST_LOCAL_MACHINE: not roamed). The blob is the value.
+// (CRED_PERSIST_LOCAL_MACHINE: not roamed).
+//
+// #501: any process of the same user can read or write these with CredRead /
+// CredEnumerate / CredWrite, with no prompt. So the blob is the value sealed
+// with DPAPI (CryptProtectData, this user, CRYPTPROTECT_UI_FORBIDDEN) under
+// Driftwire's own entropy: a value is no longer readable by enumerating the
+// store, and an item another program wrote in plain (or one from before #501)
+// does not open and is refused, not believed. It is not a boundary against a
+// program of the same user that does the same (the entropy is in the source).
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -11,6 +19,7 @@
 #endif
 #include <windows.h>
 #include <wincred.h>
+#include <wincrypt.h>  // CryptProtectData (dpapi.h in newer SDKs, included from here)
 
 #include <string>
 
@@ -19,6 +28,26 @@
 namespace mv::driftwire::secrets {
 
 namespace {
+
+constexpr char kEntropy[] = "MediaViewer Driftwire secrets v1";
+
+DATA_BLOB entropy_blob() {
+  DATA_BLOB e{};
+  e.cbData = static_cast<DWORD>(sizeof kEntropy - 1);
+  e.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(kEntropy));
+  return e;
+}
+
+// DPAPI's output, freed (and wiped) by LocalFree's owner.
+struct local_blob {
+  DATA_BLOB b{};
+  ~local_blob() {
+    if (b.pbData) {
+      ::SecureZeroMemory(b.pbData, b.cbData);
+      ::LocalFree(b.pbData);
+    }
+  }
+};
 
 std::wstring target_of(const std::string& name) {
   const std::string full = "MediaViewer Driftwire/" + name;
@@ -31,13 +60,23 @@ std::wstring target_of(const std::string& name) {
 class credentials final : public store {
  public:
   bool put(const std::string& name, std::span<const std::uint8_t> value) override {
-    if (value.size() > kMaxValue || value.size() > CRED_MAX_CREDENTIAL_BLOB_SIZE) return false;
+    if (value.size() > kMaxValue) return false;
+    DATA_BLOB in{};
+    in.cbData = static_cast<DWORD>(value.size());
+    in.pbData = const_cast<BYTE*>(reinterpret_cast<const BYTE*>(value.data()));
+    DATA_BLOB e = entropy_blob();
+    local_blob sealed;
+    if (!::CryptProtectData(&in, L"MediaViewer Driftwire", &e, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN,
+                            &sealed.b)) {
+      return false;
+    }
+    if (sealed.b.cbData > CRED_MAX_CREDENTIAL_BLOB_SIZE) return false;
     std::wstring target = target_of(name);
     CREDENTIALW c{};
     c.Type = CRED_TYPE_GENERIC;
     c.TargetName = target.data();
-    c.CredentialBlobSize = static_cast<DWORD>(value.size());
-    c.CredentialBlob = const_cast<LPBYTE>(reinterpret_cast<const BYTE*>(value.data()));
+    c.CredentialBlobSize = sealed.b.cbData;
+    c.CredentialBlob = sealed.b.pbData;
     c.Persist = CRED_PERSIST_LOCAL_MACHINE;
     return ::CredWriteW(&c, 0) != FALSE;
   }
@@ -46,8 +85,15 @@ class credentials final : public store {
     PCREDENTIALW c = nullptr;
     if (!::CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &c) || !c) return std::nullopt;
     std::optional<std::vector<std::uint8_t>> out;
-    if (c->CredentialBlobSize <= kMaxValue) {
-      out = std::vector<std::uint8_t>(c->CredentialBlob, c->CredentialBlob + c->CredentialBlobSize);
+    DATA_BLOB in{};
+    in.cbData = c->CredentialBlobSize;
+    in.pbData = c->CredentialBlob;
+    DATA_BLOB e = entropy_blob();
+    local_blob plain;
+    // Not sealed by this user under Driftwire's entropy: refused.
+    if (::CryptUnprotectData(&in, nullptr, &e, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &plain.b) &&
+        plain.b.cbData <= kMaxValue) {
+      out = std::vector<std::uint8_t>(plain.b.pbData, plain.b.pbData + plain.b.cbData);
     }
     ::SecureZeroMemory(c->CredentialBlob, c->CredentialBlobSize);
     ::CredFree(c);

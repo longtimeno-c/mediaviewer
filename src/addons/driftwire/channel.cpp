@@ -562,9 +562,18 @@ expected channel::exchange_ident(std::string_view my_id, std::string_view my_nam
   return {};
 }
 
+channel_options::~channel_options() {
+  if (static_key) sodium_memzero(static_key->data(), static_key->size());
+  if (internet_secret) sodium_memzero(internet_secret->data(), internet_secret->size());
+}
+
 channel::~channel() {
   shutdown();
   if (pinger_.joinable()) pinger_.join();
+  // #501: the resume secret is the root of the rejoin psk and of the pairing
+  // and handover secrets.
+  std::lock_guard lock(secret_m_);
+  sodium_memzero(resume_.data(), resume_.size());
 }
 
 void channel::shutdown() noexcept {

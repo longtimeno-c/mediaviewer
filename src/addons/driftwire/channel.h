@@ -27,7 +27,8 @@
 // is kept (at most kReplayBytes; a sender waits past it). When the link drops,
 // or a faster one appears, the client opens a new link on any bearer and
 // rejoins: a fresh Noise_NNhfs+psk0 handshake keyed by a resume secret the
-// last handshake left (in memory only, replaced at every rejoin). Each side
+// first handshake left (in memory only, the same for the session's life and
+// wiped when the channel goes; each rejoin's own keys are new). Each side
 // then says what it has received (resume_at) and the other re-sends the rest:
 // a message is never lost, never repeated, and never re-sent once it arrived.
 // Callers (transfer.h) see none of this: a send or receive waits through a
@@ -101,6 +102,14 @@ struct channel_options {
   // #472 PR 2, the receiver: the secret of the code it showed, which an
   // internet hello must know. Empty: an internet hello is refused.
   std::optional<std::vector<std::uint8_t>> internet_secret;  // a direct code's 6 bytes, a word code's 32
+
+  // #501: the static's private half and the code are wiped with every copy.
+  channel_options() = default;
+  channel_options(const channel_options&) = default;
+  channel_options(channel_options&&) = default;
+  channel_options& operator=(const channel_options&) = default;
+  channel_options& operator=(channel_options&&) = default;
+  ~channel_options();
 };
 
 class channel {

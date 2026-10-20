@@ -1546,7 +1546,13 @@ Two things break, accepted by the owner:
   leak itself: a receiver cannot tell an old sender from anyone else before message 2.
 - **Mac remembered devices start over.** The login-keychain items are removed, not migrated: one
   may have been planted, and the app cannot tell. v0.1.35 shipped Remember a day earlier.
-Reopen the migration only with a way to prove an old item was the app's own.
+- **Windows remembered devices start over too**, by the same rule: Credential Manager's values are
+  now sealed with DPAPI under Driftwire's entropy (any same-user process can read or plant the
+  items, so a plain one is refused), and the plain ones from before do not open. They are
+  overwritten, not deleted.
+Reopen the migration only with a way to prove an old item was the app's own. The DPAPI seal is not
+a boundary against a same-user program that calls DPAPI the same way; Windows has no per-app store
+for an unpackaged app, and packaging the app (to get one) is a different decision.
 
 **A first-party add-on may open a local link the person asked for (owner, 2026-10-14).** Driftwire
 listens, beacons and uses Bluetooth only while its window is open, receiving is on or a transfer

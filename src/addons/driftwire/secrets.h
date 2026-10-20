@@ -9,8 +9,10 @@
 //                    service "MediaViewer Driftwire"; #501). None without
 //                    the access-group entitlement.
 //   secrets_win.cpp  Credential Manager (CredWrite, per user, generic
-//                    credentials "MediaViewer Driftwire/<name>"). Any
-//                    process of the same user can read or plant these.
+//                    credentials "MediaViewer Driftwire/<name>"), each
+//                    value sealed with DPAPI (#501): any process of the
+//                    same user can read or plant the items, but one not
+//                    sealed by Driftwire is refused.
 //   secrets_file.cpp a file per name in a folder, for the tests and the
 //                    portable build (it says so; it is not a secret store)
 //
@@ -27,7 +29,7 @@
 
 namespace mv::driftwire::secrets {
 
-inline constexpr std::size_t kMaxValue = 2560;
+inline constexpr std::size_t kMaxValue = 2560;  // the devices value is at most 2,082 (DPAPI adds ~200 on Windows)
 
 class store {
  public:

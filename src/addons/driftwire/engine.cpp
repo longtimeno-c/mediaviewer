@@ -1836,8 +1836,9 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std
     }
     channel::options o;
     o.static_key = static_key_;
-    const std::vector<std::uint8_t> pw(k->password.begin(), k->password.end());
+    std::vector<std::uint8_t> pw(k->password.begin(), k->password.end());
     auto opened = channel::open_internet(l, pw, id(), opts_.my_name, o);
+    sodium_memzero(pw.data(), pw.size());  // #501
     forget_opening(l);
     if (cancel_.load()) return finish("Cancelled. Nothing was sent.");
     if (!opened) {
@@ -1904,8 +1905,9 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std
     }
     channel::options o;
     o.static_key = static_key_;
-    const std::vector<std::uint8_t> pw(k->password.begin(), k->password.end());
+    std::vector<std::uint8_t> pw(k->password.begin(), k->password.end());
     auto opened = channel::open_internet(l, pw, id(), opts_.my_name, o);
+    sodium_memzero(pw.data(), pw.size());  // #501
     forget_opening(l);
     if (cancel_.load()) return finish("Cancelled. Nothing was sent.");
     if (!opened) {

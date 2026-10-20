@@ -77,8 +77,8 @@ set_target_properties(mv_driftwire_engine PROPERTIES POSITION_INDEPENDENT_CODE O
 if(WIN32)
   # shell32 / ole32: the Downloads folder (SHGetKnownFolderPath, CoTaskMemFree).
   # iphlpapi: this machine's addresses and its default route (#472 PR 2).
-  # advapi32: Credential Manager (#472 PR 4).
-  target_link_libraries(mv_driftwire_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32)
+  # advapi32: Credential Manager (#472 PR 4). crypt32: DPAPI around its values (#501).
+  target_link_libraries(mv_driftwire_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32 crypt32)
 elseif(APPLE)
   # Security: the Keychain (#472 PR 4).
   target_link_libraries(mv_driftwire_engine PUBLIC "-framework CoreFoundation" "-framework SystemConfiguration"

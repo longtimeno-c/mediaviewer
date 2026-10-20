@@ -219,7 +219,10 @@ the LAN and Bluetooth. They get no rejoin and no move between bearers.
 The Noise core is checked against the published Cacophony vectors (`Noise_XX` and `Noise_NNpsk0`
 over 25519, ChaChaPoly and BLAKE2b); the hybrid patterns have fixed-key regression vectors and
 tests that the ML-KEM secret is in the keys and a tampered key or ciphertext fails
-(`tests/test_driftwire_noise.cpp`). libsodium 1.0.22 (already pinned) has ML-KEM-768.
+(`tests/test_driftwire_noise.cpp`). Those are our own: no other implementation of the `hfs`
+patterns with ML-KEM-768 publishes vectors, so the hybrid half is checked against Cacophony only
+where it shares code with plain XX, and against itself (#501 names the gap; it closes when one
+does). libsodium 1.0.22 (already pinned) has ML-KEM-768.
 
 **The formal model** (`tools/formal/`, ProVerif 2.05, #472's assurance list) writes both handshakes
 out token by token from `noise.cpp` and `channel.cpp`: h and ck as hash and HKDF chains, the
@@ -239,6 +242,14 @@ digits, the power a real search over 10^6 gives. What it shows:
 - **Broken later.** A first link recorded now stays secret if X25519 is broken later (every
   ephemeral and static handed over), or ML-KEM-768 is; with both broken it is read (the check that
   the model can lose).
+- **Over the internet** (#501, `internet.pv`): CPace on the code (or a remembered pair's hourly
+  password), then `XXhfs+psk0` keyed by it. The password resists offline guessing from any number
+  of recorded and active runs (`weaksecret`: a 48-bit code or a word code is not given away by a
+  transcript; online, one try per code, which then dies). Neither side's identity, the statics
+  here, reaches anyone without the password, and what is sent after the handshake stays secret. A
+  sender that finished, its pin checked, met a receiver holding the identity it pinned that answered
+  its message 1, one for one; a receiver that finished shares its keys with a sender that saw its
+  identity, one for one.
 - **The rejoin.** A link is adopted only by a side holding the session's resume secret, each
   adoption matches one rejoin the other side really ran (a replayed first message is never adopted,
   either way round), no two adoptions share link keys, and what a rejoined link carries stays
@@ -252,8 +263,12 @@ a constant associated data instead of h; that only helps the attacker, so what h
 the code, and with the real h ProVerif does not finish. The code's 10^-6 is outside the symbolic
 model: the oracle gives the attacker a perfect search, and the model shows no order of messages lets
 it use one. The statics are modelled as fixed keys; since #501 a nearby static is a key of that link,
-which only shrinks what a recording or a stolen key gives. Not modelled: the identity said in the
-offer and the accept (#501), protocol 1, `ident` (sent sealed before the code, so a machine in the
+which only shrinks what a recording or a stolen key gives. The identity the sender says in its offer
+is part of what goes after the code (`OFFER` in the model), so it is secret against a machine in the
+middle; the receiver's in its accept goes to whoever its person accepted, which no code can prove
+(see "Who can take what"). CPace's generator is an abstract group element with the Diffie-Hellman
+equation, and the internet handshake's ciphertexts carry a constant associated data too. Not
+modelled: protocol 1, `ident` (sent sealed before the code, so a machine in the
 middle learns the sender's id and name before a code is typed), timeouts and the flapping rule.
 
 **Protocol 1** (a peer from before #472): commit, answer, reveal, each with an X25519 key made for
@@ -581,8 +596,14 @@ are online. The receiver still accepts or declines every transfer. (`secrets.*`,
     the accessibility attribute is ignored, and a same-user app could have planted one) are
     removed without a prompt and never read: a Mac remembers its devices again after the update.
   - **Windows:** Credential Manager (generic credentials, this machine only, not roamed). Any
-    process of the same user can read or plant these with `CredRead` / `CredWrite`, without a prompt;
-    the store keeps them off the disk in plain form and out of roaming, no more.
+    process of the same user can read, enumerate or plant these with `CredRead` / `CredEnumerate` /
+    `CredWrite`, without a prompt. So since #501 each value is sealed with DPAPI first
+    (`CryptProtectData` for this user, Driftwire's own entropy, no UI): enumerating the store no
+    longer shows the key or the pairing secrets, and an item written in plain (by another program,
+    or by a version before #501) does not open and is refused, never believed. That is not a
+    boundary against a program of the same user that calls DPAPI the same way (the entropy is in
+    the source). Items from before #501 are refused, so a PC also remembers its devices again after
+    the update, as a Mac does; the new ones overwrite them.
 
   It is the static of the handshakes behind CPace (an internet code, a remembered device's
   meeting); nearby it is said sealed after the code and Accept ([The wire](#the-wire)). Where there is no store (or it does
@@ -796,7 +817,10 @@ second while bytes move; those posts update chrome and never present the canvas.
   about a session is written down, except what Remember keeps (#472 PR 4): the peer's name, key
   and pairing secret, in the OS's secret store, never a plain file, until Forget. On the Mac that is
   the data protection keychain in the app's own access group, this device only (#501); on Windows
-  Credential Manager, which any process of the same user can read ([Remembered devices](#remembered-devices-472-pr-4)).
+  Credential Manager, each value sealed with DPAPI ([Remembered devices](#remembered-devices-472-pr-4)).
+  Key material in memory is wiped when it goes (#501): the session's resume secret with the
+  channel, the identity and the code with every copy of a channel's options, and CPace's buffers
+  are sized once, so no reallocation leaves a copy of the code or its key behind.
 - Receiving is off until the window opens or the person turns it on. Turned on, it stays on across
   launches until turned off (#442), and the command bar says so (**Driftwire: receiving**).
 - A notification (#452) names the sender and a count and size; never a file name, a path or the
