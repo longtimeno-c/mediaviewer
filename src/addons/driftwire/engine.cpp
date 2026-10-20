@@ -96,10 +96,6 @@ std::int64_t unix_now_ms() {
       .count();
 }
 
-// #472 PR 4: a remembered device's item is written again this often (an
-// item older than dht::kItemMaxAgeMs is not believed).
-constexpr auto kKnownRepublish = std::chrono::minutes(4);
-
 std::string changed_key_text(const std::string& name, bool sending) {
   return "This is not the " + name + " you remembered: its security key has changed, so the link was ended. " +
          (sending ? "Nothing was sent. " : "Nothing was received. ") +
@@ -735,7 +731,7 @@ void engine::run_known_wait() {
   std::shared_ptr<udp_hub> hub;
   std::unique_ptr<dht::client> client;
   while (!stopped()) {
-    auto h = udp_hub::open(0, opts_.internet_loopback);
+    auto h = udp_hub::open(0, opts_.internet_loopback, opts_.wrap_udp);
     if (h) {
       hub = std::move(*h);
       client = std::make_unique<dht::client>(hub, dht_options());
@@ -750,11 +746,18 @@ void engine::run_known_wait() {
   struct pair_state {
     std::int64_t hour = -1;
     std::unique_ptr<dht::keys> k;
-    std::chrono::steady_clock::time_point put_at{};
     std::int64_t answered_ms = 0;  // the newest sender's item met
+    std::int64_t seq = 0;          // the last withdraw's (a meeting after it publishes above it)
+    bool live = false;             // a meeting's item may still be up
     int salt = 0;
   };
   std::map<std::array<std::uint8_t, 32>, pair_state> pairs;
+  // A meeting's item says "gone" once it is over, met or not: a send later
+  // this hour must not punch toward a meeting that has ended.
+  const auto withdraw = [&](pair_state& s, const std::function<bool()>& stop) {
+    s.seq = dht::withdraw(*client, *s.k, dht::role::receiver, stop, s.seq);
+    s.live = false;
+  };
   while (!stopped()) {
     std::vector<known::device> devices;
     bool busy = false;
@@ -773,22 +776,12 @@ void engine::run_known_wait() {
       if (s.hour != hour) {
         s.k = std::make_unique<dht::keys>(known::presence_keys(d, hour, public_key_));
         s.hour = hour;
-        s.put_at = {};
-      }
-      // Where this computer can be reached, for this pair this hour.
-      const auto now = std::chrono::steady_clock::now();
-      if (s.put_at == std::chrono::steady_clock::time_point{} || now - s.put_at >= kKnownRepublish) {
-        dht::contents mine;
-        mine.candidates = dht::own_candidates(*hub, *client, opts_.internet_loopback);
-        mine.written_ms = unix_now_ms();
-        for (int i = 0; i < dht::kTargets && !stopped(); ++i) {
-          const std::string salt = dht::salt_of(*s.k, dht::role::receiver, i);
-          (void)client->put(*s.k, salt, mine.written_ms / 1000, dht::seal(*s.k, salt, mine), stopped);
-        }
-        s.put_at = now;
+        s.seq = 0;
       }
       if (busy) continue;  // a sender knocking now is met after this transfer
-      // A sender knocking: one of its salts per look, in turn.
+      // A sender knocking: one of its salts per look, in turn. Nothing of
+      // this side is published until one does: the meeting's item, with its
+      // TCP port, is the first the sender finds, so both punch at once.
       const std::string salt = dht::salt_of(*s.k, dht::role::sender, s.salt++ % dht::kTargets);
       auto got = client->get(s.k->public_key, salt, stopped);
       if (!got) continue;
@@ -798,19 +791,22 @@ void engine::run_known_wait() {
       dht::meet_options mo;
       mo.loopback = opts_.internet_loopback;
       mo.wait_ms = 30000;
+      mo.punch_ms = known::kPunchMs;
+      mo.tcp = true;  // as four words: where UDP cannot be punched, TCP often can
+      mo.seq_floor = s.seq + 1;
+      s.live = true;
       auto met = dht::meet(hub, *client, *s.k, dht::role::receiver, mo, stopped, {});
-      s.put_at = std::chrono::steady_clock::now();  // the meeting wrote this side's item afresh
-      if (!met) continue;
-      on_incoming(std::make_unique<bearer_as>(std::move(*met), transport::internet), true, d);
-      break;  // one at a time: the next look sees the transfer
+      if (met) on_incoming(std::make_unique<bearer_as>(std::move(*met), transport::internet), true, d);
+      withdraw(s, stopped);
+      if (met) break;  // one at a time: the next look sees the transfer
     }
     rest(opts_.known_poll_ms);
   }
-  // Stopped: this side's items say "gone" (briefly; they expire anyway).
+  // Stopped during a meeting: its item says "gone" (briefly; it expires anyway).
   const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(3);
   const auto brief = [&] { return stopping_.load() || std::chrono::steady_clock::now() >= until; };
   for (auto& [key, s] : pairs) {
-    if (s.k) dht::withdraw(*client, *s.k, dht::role::receiver, brief);
+    if (s.live) withdraw(s, brief);
   }
   hub->stop();
 }
@@ -1679,8 +1675,9 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std
   } join_races{races};
   std::optional<net::endpoint> internet_place;
   if (to_known) {
-    // #472 PR 4: a remembered device. Meet on the DHT under this hour's keys
-    // of the pair (known.h), as long as it takes, round after round (each
+    // #472 PR 4: a remembered device. Knock on the DHT under this hour's keys
+    // of the pair (known.h) and meet once it answers (it publishes only
+    // then), UDP and TCP, as long as it takes, round after round (each
     // round's item lives 10 minutes); then the internet handshake keyed by
     // the pair's secret, and its key must be the one remembered.
     const std::string& who = to_known->name;
@@ -1696,7 +1693,7 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std
       post_throttled();
     };
     say(waiting);
-    auto h = udp_hub::open(0, opts_.internet_loopback);
+    auto h = udp_hub::open(0, opts_.internet_loopback, opts_.wrap_udp);
     if (!h) return finish("Could not use the internet on this computer. Nothing was sent.");
     std::shared_ptr<udp_hub> hub = std::move(*h);
     struct hub_guard {
@@ -1724,7 +1721,8 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std
       mo.loopback = opts_.internet_loopback;
       // To the hour's end (both sides change keys then), at most 8 minutes.
       mo.wait_ms = static_cast<int>(std::clamp<std::int64_t>((hour + 1) * known::kHourMs - now, 5000, 8 * 60 * 1000));
-      mo.punch_ms = dht::kPunchMs + opts_.known_poll_ms + 5000;
+      mo.punch_ms = known::kPunchMs;
+      mo.tcp = true;  // as four words: where UDP cannot be punched, TCP often can
       auto r = dht::meet(hub, client, *k, dht::role::sender, mo, stopped, [&](const std::string& s) {
         say(s.rfind("Connecting", 0) == 0 ? s : waiting);
       });
@@ -1772,7 +1770,7 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std
     };
     say("Working out the code\xE2\x80\xA6");
     auto k = dht::derive(*words, opts_.dht_fast_kdf);
-    auto h = udp_hub::open(0, opts_.internet_loopback);
+    auto h = udp_hub::open(0, opts_.internet_loopback, opts_.wrap_udp);
     if (!k || !h) return finish("Could not use the code on this computer.");
     std::shared_ptr<udp_hub> hub = std::move(*h);
     struct hub_guard {

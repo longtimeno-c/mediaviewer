@@ -437,8 +437,8 @@ only while a code waits or a send looks for its receiver; never at idle. (`dht_i
   listening on it connects from it to the other's port at each of its addresses, again every
   250 ms, so SYNs that cross in two NATs open one connection and one that arrives after ours
   failed is accepted. It runs beside the UDP punch, only in a word code's meeting (the window is
-  open), never in a remembered device's background meetings, since it listens on every interface
-  (Windows asks its firewall at the first). The sender picks a TCP connection only if no UDP path
+  open) and in a remembered device's once a sender has knocked, never while it waits, since it
+  listens on every interface (Windows asks its firewall at the first). The sender picks a TCP connection only if no UDP path
   came back in the first 1.5 s, and the same choose / chosen settles it; once it has offered a TCP
   connection it waits for the answer there until the punch ends and never falls back to UDP, so
   the two sides cannot end on different transports. It meets where a NAT keeps a TCP
@@ -562,11 +562,14 @@ are online. The receiver still accepts or declines every transfer. (`secrets.*`,
   ([above](#four-words-over-the-dht-472-pr-3)) per direction: toward the receiving device's
   identity, so each side's wait and send are apart and a device never meets its own item. While
   the window is open (or Keep receiving is on), the internet and DHT toggles are on and something
-  is remembered, one UDP socket and DHT client publish this computer's item for each remembered
-  device (again every 4 minutes; an item is believed for 10) and look for a sender's every 15
-  seconds, one target per look. A sender's item found, the two meet and punch as with four words
-  (the sender punches 15 s longer, as the other side looks only that often). The sender's rounds
-  end on the hour, when both change keys; it keeps going until it meets or Cancel.
+  is remembered, one UDP socket and DHT client look for a sender's item (its knock) every 15
+  seconds, one target per look, and publish nothing. A knock found, the waiting side publishes its
+  item and the two meet and punch as with four words, UDP and TCP simultaneous open together, 15 s
+  each; the first item the sender finds is that meeting's, with its live TCP port, so both punch at
+  once. When the meeting ends, met or not, its item says "gone", so a later send does not punch
+  toward it. (Until 2026-10-20 the waiting side kept an item up and met over UDP only: two
+  computers that had met on four words over TCP never met again, [12](12-decision-log.md).) The
+  sender's rounds end on the hour, when both change keys; it keeps going until it meets or Cancel.
 - **Trust on first use.** The handshake is the internet one (CPace on this hour's password, then
   `Noise_XXhfs+psk0`), so only a holder of the pairing secret gets through; then the peer's static
   must be the one remembered. Another key ends the link on the side that sees it, loudly: "This is
@@ -574,9 +577,9 @@ are online. The receiver still accepts or declines every transfer. (`secrets.*`,
   here and send once nearby or with a code to remember it again. If not, someone may be pretending
   to be Bea." Nothing is sent or received. A device set up again with a new key is not found at all
   (its wait is keyed by its new identity), which is the same advice.
-- What DHT nodes see: this computer's address taking part, and while something is remembered, an
-  item per remembered device each hour under targets that change every hour and mean nothing
-  without the pair's secret.
+- What DHT nodes see: this computer's address taking part and looking up targets that change every
+  hour and mean nothing without the pair's secret, and an item under them only while a remembered
+  device is sending to it (the knock, then the meeting's item).
 - **Not built**: remembered devices are not marked on the nearby tiles (the beacon carries an id, not the identity). Two clocks more than
   a minute apart around the hour may miss each other for that minute.
 
@@ -743,7 +746,7 @@ second while bytes move; those posts update chrome and never present the canvas.
   table answers, and DHT nodes see this machine's address taking part in the DHT (never what it
   looks up: the targets mean nothing without the code or the pair's secret). A relay server the
   person typed is resolved too. Codes, addresses and peer names are never logged. While four words meet
-  (a word code, not a remembered device), a TCP port listens on every interface (its number is in
+  (a word code, or a remembered device once it is sent to), a TCP port listens on every interface (its number is in
   the sealed item), and a birthday punch sends its 14-byte probes to random ports of the other
   side's public address only.
 - Protocol 2's resume secret and keys live in memory only, wiped when the session ends; nothing
@@ -814,7 +817,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
-| Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py` |
+| Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices, behind hard NATs too, and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py` |
 
 ## Not built
 
