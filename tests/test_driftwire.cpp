@@ -1270,10 +1270,16 @@ TEST_CASE("driftwire: one source gets a few notifications a minute, then a few r
   bea.eng.screen_closed();
   write_text(s / "out" / "a.jpg", "a");
   ann.pick({s / "out" / "a.jpg"});
-  // Connect, idle, give up, again: what a sender holding the slot all night does.
+  // Connect, idle, give up, again: what a sender holding the slot all night
+  // does. Past the notices it offers before giving up: five nearby links with
+  // no offer would stop every nearby link for a while (#497), and this is
+  // about the one source's own limit.
   for (int i = 0; i < sp::kReceivesPerMinute; ++i) {
-    ann.send_to(bea, false);
-    REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::connecting; }));
+    const bool offers = i >= sp::kNoticesPerMinute;
+    ann.send_to(bea, offers);
+    REQUIRE(eventually([&] {
+      return bea.eng.snapshot().in == (offers ? sp::view::in_phase::asking : sp::view::in_phase::connecting);
+    }));
     ann.eng.on_event("out_cancel", 1, "");
     ann.eng.wait_idle();
     bea.eng.wait_idle();

@@ -1216,7 +1216,7 @@ TEST_CASE("driftwire known: two devices behind hard NATs send again over TCP as 
     const auto v = ann.eng.snapshot();
     return !v.reading_folder && v.file_names == std::vector<std::string>{"second.mov"};
   }));
-  ann.eng.on_event("known", 5, "\"dev0\"");
+  ann.eng.on_event("known", 5, "\"dev" + ann.eng.snapshot().known_ids.at(0) + "\"");
   const bool asked = eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }, 45);
   INFO("Ann: " << ann.eng.snapshot().out_note);
   if (!asked) ann.eng.on_event("out_cancel", 1, "");
