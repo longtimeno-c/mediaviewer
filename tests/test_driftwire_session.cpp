@@ -1179,10 +1179,11 @@ struct wifi_send {
     confirm_and_accept(*ann, *bea);
   }
   ~wifi_send() {
-    // Engines first (their threads use the worlds), the pump with them.
+    // The pump first (it calls into Ann's discovery), then the engines
+    // (their threads use the worlds), as the tests above declare them.
+    pump.reset();
     ann.reset();
     bea.reset();
-    pump.reset();
   }
 };
 
