@@ -586,7 +586,7 @@ final class LocalSearchStore: ObservableObject {
           // picked up by the loaded pack at once ("reload").
           if id == "ai" && coreRunning, let v = update {
             text = "Local search \(v) is installed. Restart MediaViewer to use it."
-            AddonRestart.shared.needed("Local search \(v)")
+            AddonRestart.shared.needed("Local search", v)
           } else if id == "ai" {
             if !mv_addon2_load("ai") { text = "Local search is installed but could not be started." }
           } else if self.loaded || self.loading {
@@ -700,8 +700,8 @@ struct LocalSearchSection: View {
 
   private var content: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(10)) {
-      // An item of Settings → Add-ons, titled like Import.
-      Text("Local search").font(MVTheme.font()).foregroundStyle(MVTheme.title)
+      // #510: the body of Local search's page in Settings → Add-ons, whose
+      // heading names it.
       if !store.stateKnown {
         // Quiet, and no button: nothing is offered for download while what
         // is installed is still being read.

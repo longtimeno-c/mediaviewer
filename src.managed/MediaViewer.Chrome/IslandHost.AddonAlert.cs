@@ -152,7 +152,16 @@ public static partial class IslandHost
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
             if (slot == ImportSlot)
             {
-                if (!_settingsVisible) Send(Command.OpenSettings);
+                // #510: Import's own page in Settings → Add-ons.
+                if (!_settingsVisible)
+                {
+                    _addonPageWanted = ImportPageId;
+                    Send(Command.OpenSettings);
+                }
+                else
+                {
+                    OpenAddonPage(ImportPageId);
+                }
             }
             else
             {

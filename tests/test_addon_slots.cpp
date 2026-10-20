@@ -936,12 +936,30 @@ TEST_CASE("notices and keep-alive are tables the hosts read; a notice's button r
   REQUIRE(r.keep_alive("slotstest", false, "", "") == status::ok);
   CHECK_FALSE(r.keeping_alive());
 
-  // Detach takes both with it.
+  // #510: busy, for Restart now and a live reload to wait on.
+  bits = 0;
+  REQUIRE(r.post_busy("slotstest", "a Slots transfer") == status::ok);
+  CHECK((bits & mv::addon::slot_changed_notices) != 0);
+  doc = mv::json::parse(r.notices_json());
+  REQUIRE(doc->find("busy")->a.size() == 1);
+  CHECK(*doc->find("busy")->a[0].str("addon") == "slotstest");
+  CHECK(*doc->find("busy")->a[0].str("what") == "a Slots transfer");
+  bits = 0;
+  REQUIRE(r.post_busy("slotstest", "a Slots transfer") == status::ok);
+  CHECK(bits == 0);  // unchanged: no wake
+  CHECK(r.post_busy("slotstest", std::string(121, 'x')) == status::invalid_arg);
+  CHECK(r.post_busy("nobody", "x") == status::not_found);
+  REQUIRE(r.post_busy("slotstest", "") == status::ok);
+  CHECK(mv::json::parse(r.notices_json())->find("busy")->a.empty());
+
+  // Detach takes them all with it.
   REQUIRE(r.keep_alive("slotstest", true, "explorer", "Slots: on") == status::ok);
   REQUIRE(r.post_notice("slotstest", "offer", n) == status::ok);
+  REQUIRE(r.post_busy("slotstest", "a Slots transfer") == status::ok);
   r.detach("slotstest");
   CHECK_FALSE(r.keeping_alive());
   CHECK(mv::json::parse(r.notices_json())->find("notices")->a.empty());
+  CHECK(mv::json::parse(r.notices_json())->find("busy")->a.empty());
 }
 
 TEST_CASE("surfaces are copied, bounded, and go with their tree", "[addon][slots][screens]") {

@@ -4,6 +4,7 @@ using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using MediaViewer.Interop;
+using MediaViewer.Shared;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -249,7 +250,7 @@ public static partial class IslandHost
 
     private static void AddOpenAddonsSettings(StackPanel view)
     {
-        view.Children.Add(Label("From others").WithForeground(Brush(Title)));
+        // #510: the body of From other makers' page, whose heading names it.
         view.Children.Add(Note(
             "Add-ons made by other people, installed from a file or a link. MediaViewer does not check them or who made them. A theme is data. An add-on with a script runs it inside MediaViewer, stopped if it uses too much memory or time, with only the permissions it showed when you installed it. No add-on can use the network."));
         _openRow = new StackPanel { Spacing = Space(8) };
@@ -284,6 +285,7 @@ public static partial class IslandHost
     private static void RefreshOpenAddonRow()
     {
         if (_openRow is null) return;
+        RefreshAddonList();  // #510: its row's count
         _openRow.Children.Clear();
         _openLink = null;
         _openProgressView = null;
@@ -607,7 +609,7 @@ public static partial class IslandHost
         _openBusy = true;
         _openEnteringLink = false;
         _openMessage = "";
-        _openProgress = "Connecting…";
+        _openProgress = InstallWords.Connecting;  // #525: the same steps as MediaViewer's own
         _openFraction = null;
         RefreshOpenAddonRow();
         string target = Path.Combine(Path.GetTempPath(), $"mediaviewer-addon-{Guid.NewGuid():N}.mvaddon");
@@ -617,7 +619,7 @@ public static partial class IslandHost
             // "1.2 MB of 3.4 MB" with a bar once the server sent a length; the
             // running size over a sweeping bar when it did not.
             _openFraction = p.Total > 0 ? Math.Min(1.0, (double)p.Done / p.Total) : null;
-            _openProgress = p.Total > 0 ? $"{MediaViewer.Shared.ByteSize.Text(p.Done)} of {MediaViewer.Shared.ByteSize.Text(p.Total)}"
+            _openProgress = p.Total > 0 ? InstallWords.Downloaded(MediaViewer.Shared.ByteSize.Text(p.Done), MediaViewer.Shared.ByteSize.Text(p.Total))
                                         : $"Downloading… {MediaViewer.Shared.ByteSize.Text(p.Done)}";
             if (_openProgressView is not null) _openProgressView.Show(_openFraction, _openProgress);
             else RefreshOpenAddonRow();
@@ -726,10 +728,11 @@ public static partial class IslandHost
 
     private static void InspectOpenAddon(string path, bool temporary, OpenAddon? updating)
     {
+        OpenAddonPage(OthersPageId);  // #510: the question is on From other makers' page
         if (_openBusy) return;
         _openBusy = true;
         _openMessage = "";
-        _openProgress = "Checking…";
+        _openProgress = temporary ? InstallWords.Verifying : InstallWords.VerifyingFile;
         _openFraction = null;
         DiscardOpenOffer();
         RefreshOpenAddonRow();
@@ -780,7 +783,7 @@ public static partial class IslandHost
     {
         if (_openOffer is not { Ok: true } offer || _openBusy) return;
         _openBusy = true;
-        _openProgress = "Installing…";
+        _openProgress = InstallWords.Installing;
         _openFraction = null;
         RefreshOpenAddonRow();
         _ = Task.Run(() =>
@@ -806,14 +809,14 @@ public static partial class IslandHost
                 string version = offer.Addon?.Version ?? "";
                 if (ok)
                 {
-                    _openMessage = offer.Relation == "update" ? $"{name} updated to {version}."
-                        : $"{name} {version} installed.";
+                    _openMessage = offer.Relation == "update" ? InstallWords.Updated(name, version)
+                        : InstallWords.Installed($"{name} {version}");
                     if (offer.Relation == "fresh" && offer.Addon is { Themes.Count: > 0 })
                         _openMessage += " Choose its theme under Appearance.";
                 }
                 else
                 {
-                    _openMessage = why.Length == 0 ? $"{name} could not be installed." : why;
+                    _openMessage = why.Length == 0 ? InstallWords.Failure(InstallFailure.Failed, name) : why;
                 }
                 DiscardOpenOffer();
                 RefreshOpenAddonRow();

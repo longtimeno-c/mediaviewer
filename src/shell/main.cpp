@@ -5235,8 +5235,10 @@ bool chrome_session_command(app_state* app, int command, float arg) {
       return true;
     }
     case mv::shell::chrome_cmd_update_restart: {
-      if (arg != 0.0f) {
+      if (arg == 1.0f) {
         // Update.exe is armed and waiting for this pid: leave the ordinary way.
+        // Only 1: 2 is an add-on restart (#510: `arg != 0` took it here too, so
+        // Restart now closed MediaViewer and never started it again).
         app->quit_for_real = true;  // #452: never kept in the background
         if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
         return true;

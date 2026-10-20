@@ -660,6 +660,10 @@ TEST_CASE("driftwire: Accept delivers the files with their bytes, keeping both o
   ann.send_to(bea, false);
   REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::confirming; }));
   REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::connecting; }));
+  // #510: both ends tell the host a transfer runs (its Restart now waits).
+  REQUIRE(eventually([&] { return !ann.host.busy_posts().empty() && !bea.host.busy_posts().empty(); }));
+  CHECK(ann.host.busy_posts().front() == sp::kBusyWhat);
+  CHECK(bea.host.busy_posts().front() == sp::kBusyWhat);
   const std::string code = bea.eng.snapshot().in_code;
   CHECK(code.size() == 7);
   CHECK(bea.tree().find(code) != std::string::npos);
@@ -688,6 +692,10 @@ TEST_CASE("driftwire: Accept delivers the files with their bytes, keeping both o
   CHECK_FALSE(any_temporary(dest));
   // The originals are untouched (rule 5).
   CHECK(read_bytes(s / "out" / "big.mov") == big);
+  // #510: and that it has ended, once each.
+  REQUIRE(eventually([&] { return ann.host.busy_posts().size() == 2 && bea.host.busy_posts().size() == 2; }));
+  CHECK(ann.host.busy_posts().back().empty());
+  CHECK(bea.host.busy_posts().back().empty());
 #if defined(__APPLE__)
   // #498: marked as from another computer, so Gatekeeper checks it before it runs.
   char mark[128] = {};

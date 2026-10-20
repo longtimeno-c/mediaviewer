@@ -212,12 +212,20 @@ engine::~engine() {
 void engine::post() {
   std::lock_guard serial(post_m_);
   std::string tree;
+  bool busy = false;
   {
     std::lock_guard lock(m_);
     tree = build_tree(v_);
+    busy = transfer_running_ && !stopping_.load();
   }
   last_post_ = std::chrono::steady_clock::now();
   host_.post_tree(tree);
+  // #510: every transfer's start and end posts the window, open or not
+  // (end_transfer posts too), so the host hears of it here.
+  if (busy != busy_shown_) {
+    busy_shown_ = busy;
+    host_.post_busy(busy ? kBusyWhat : "");
+  }
 }
 
 void engine::post_throttled() {
@@ -1149,6 +1157,7 @@ void engine::on_incoming(std::unique_ptr<link> l, bool internet, std::optional<k
       fail_transfer(false);
     }
   });
+  post_throttled();  // #510: the host hears that a transfer runs (post's post_busy)
 }
 
 void engine::retire(std::unique_ptr<dht_handover> h) {

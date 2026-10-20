@@ -2223,6 +2223,33 @@ extern "C" bool mv_chrome_slot_addon_remove(const char* id, bool keep_data) {
   return true;
 }
 
+// [main-thread][no-block] #510: a loaded slot add-on's update installed beside
+// it. Unloaded on addon_queue (its registry items go before its shutdown, as
+// Remove), then load_slot_addons_now loads the newest version that verifies.
+// No restart; the changed callback runs once it has loaded.
+extern "C" bool mv_chrome_slot_addon_reload(const char* id) {
+  if (!id || state().reader) return false;
+  const std::string s(id);
+  if (s == "import" || is_ai_family(s)) return false;
+  dispatch_async(addon_queue(), ^{
+    slot_addons_state& sa = slot_addons();
+    auto it = sa.loaded.find(s);
+    if (it != sa.loaded.end()) {
+      std::unique_ptr<mv::addon::loaded_addon> gone = std::move(it->second);
+      sa.loaded.erase(it);
+      gone.reset();  // detach, shutdown, unload
+    }
+    {
+      std::lock_guard<std::mutex> lock(sa.m);
+      sa.loaded_ids.erase(s);
+      sa.errors.erase(s);
+    }
+    load_slot_addons_now();  // the newest version, re-verified
+    note_slot_addons_changed();
+  });
+  return true;
+}
+
 std::string MvAddonsThumbnailPath(const std::string& path) {
   auto made = thumbnail(path);
   return made ? *made : std::string();

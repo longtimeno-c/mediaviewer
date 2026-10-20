@@ -249,6 +249,8 @@ class slot_registry {
                      std::optional<notice_fields> notice);
   status ask_notice_permission(const std::string& addon_id);
   status keep_alive(const std::string& addon_id, bool on, const std::string& screen_id, std::string label);
+  // #510 (host table busy_post): "" ends it. In notices_json's "busy".
+  status post_busy(const std::string& addon_id, std::string what);
 
   // ---- for tests and the PR 59 verify --------------------------------------
   // Every call made into any add-on's client since construction.
@@ -328,6 +330,7 @@ class slot_registry {
   };
   std::map<std::pair<std::string, std::string>, notice_state> notices_;  // (addon, notice)
   std::map<std::string, std::pair<std::string, std::string>> keep_;    // addon -> (screen, label)
+  std::map<std::string, std::string> busy_;                            // addon -> what (#510)
   std::uint64_t notice_asks_ = 0;
   std::uint64_t notice_revision_ = 0;
   mv_slot_theme last_theme_{};

@@ -1919,6 +1919,9 @@ extern "C" void mv_chrome_restart_to_update(void) {
 extern "C" void mv_chrome_restart_for_addons(void) {
   if (g_chrome_app) [g_chrome_app restartForAddons];
 }
+extern "C" void mv_chrome_corner_changed(void) {
+  if (g_chrome_app) [g_chrome_app layoutHintNotice];
+}
 
 // NSEvent -> host key + modifiers, at the edge (commands.h): letters are
 // upper-case, a symbol is the character the layout produced with no Shift, and
@@ -6651,10 +6654,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   if (k == key::none) return NO;
   if ([self handleFolderFind:event key:k mods:mods]) return YES;
   // Settings owns the keyboard (the router agrees: settings_open routes
-  // nothing); Esc closes it when no capture is pending.
+  // nothing); Esc closes it when no capture is pending, or first goes back
+  // from an add-on's page to the list (#510, as on Windows).
   if (_settingsVisible) {
     if (!up && k == key::escape && mods == mod_none && _captureRow < 0) {
-      [self setSettingsVisible:NO];
+      if (![MVChromeHost settingsBack]) [self setSettingsVisible:NO];
       return YES;
     }
     return NO;
@@ -11946,7 +11950,8 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   if (!mv::shell::strip_hint_learned_by_toggle(subject, [self filmstripVisible] == YES)) return;
   [self stripHintLearn];
 }
-// Above the filmstrip when it is up, and above the resume notice while that shows.
+// Above the filmstrip when it is up, and above the resume notice and the
+// restart card (#510, the same hosting view) while either shows.
 - (void)layoutHintNotice {
   CGFloat bottom = -([self filmstripVisible] ? kFilmstripHeightPoints : 0.0) - 8.0;
   if (self.resumeHost != nil && !self.resumeHost.hidden) bottom -= self.resumeHost.fittingSize.height;

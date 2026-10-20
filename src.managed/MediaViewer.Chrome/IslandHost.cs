@@ -424,6 +424,7 @@ public static partial class IslandHost
             EnsureFocusHook();
             StartUpdater();
             ShowWaitingResumeNotice();  // issue #443: a launch read that came first
+            RestartNoticeSelfTest();  // #510: MV_ADDON_RESTART_SELFTEST only
             return 0;
         }
         catch (Exception ex)
@@ -579,8 +580,7 @@ public static partial class IslandHost
             ChromeResizeArgs args = Marshal.PtrToStructure<ChromeResizeArgs>(arg);
             Move(_source, args.Width, args.Height, args.Y);
             _barTop = Math.Max(0, args.Y);
-            PlaceResumeNotice();  // the bottom-right corner moved (issue #299)
-            PlaceHintNotice();
+            PlaceCornerCards();  // the bottom-right corner moved (issues #299, #510)
             return 0;
         }
         catch (Exception ex)
@@ -618,6 +618,7 @@ public static partial class IslandHost
             UnhookFocus();
             DropResumeNotice();  // its island is a child of this window
             DropHintNotice();  // so is the hint card's
+            DropRestartNotice();  // and the restart card's (#510)
             if (_source is not null) _source.TakeFocusRequested -= OnTakeFocusRequested;
             DisposeSource(ref _source);
             _onCommand = null;

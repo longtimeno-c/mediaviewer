@@ -500,7 +500,7 @@ struct OpenAddonsSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
-      Text("From others").font(MVTheme.font()).foregroundStyle(MVTheme.title)
+      // #510: the body of From other makers' page, whose heading names it.
       note("Add-ons made by other people, installed from a file or a link. MediaViewer does not check them or who made them. A theme is data. An add-on with a script runs it inside MediaViewer, stopped if it uses too much memory or time, with only the permissions it showed when you installed it. No add-on can use the network.")
 
       if let offer = store.offer {

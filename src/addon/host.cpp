@@ -871,6 +871,13 @@ mv_status MV_CALL t_keep_alive(void* host, uint32_t on, const char* screen, cons
   });
 }
 
+mv_status MV_CALL t_busy_post(void* host, const char* what) {
+  return guarded([&] {
+    host_table& t = self(host);
+    return to_mv(t.slots().post_busy(t.addon_id(), str_of(what)));
+  });
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -939,6 +946,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.notice_post = &t_notice_post;
   api_.notice_authorize = &t_notice_authorize;
   api_.keep_alive = &t_keep_alive;
+  api_.busy_post = &t_busy_post;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

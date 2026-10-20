@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 using System.Text.Json;
 using MediaViewer.Interop;
+using MediaViewer.Shared;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
@@ -144,6 +145,7 @@ public static partial class IslandHost
             foreach (string id in loaded) SlotAddonsLoaded.Add(id);
             _slotAddonsRead = true;
             EnsureSlotListener();
+            StartAddonUpdateCheck();  // #525: once both reads have landed
             RefreshSlotSettings();
         });
     }
@@ -884,20 +886,10 @@ public static partial class IslandHost
     // its settings page, together, and nothing of it outside the card.
     private static (Border Card, StackPanel Body) AddonCard(string title)
     {
+        // #510: the body of the add-on's page, whose heading names it and
+        // whose card (IslandHost.AddonList.cs) frames it.
         var body = new StackPanel { Spacing = Space(6) };
-        TextBlock name = Label(title);
-        name.Foreground = Brush(Title);
-        AutomationProperties.SetHeadingLevel(name, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level3);
-        body.Children.Add(name);
-        var card = new Border
-        {
-            Child = body,
-            Padding = Pad(14),
-            Background = Brush(ChromeColour.Surface),
-            CornerRadius = Corner(RadiusCard),
-            BorderBrush = Brush(Hairline),
-            BorderThickness = new Thickness(1),
-        };
+        var card = new Border { Child = body };
         AutomationProperties.SetName(card, title);
         return (card, body);
     }
@@ -912,24 +904,38 @@ public static partial class IslandHost
     private static void RefreshSlotSettings()
     {
         if (_slotSettingsPanel is null) return;
+        RefreshAddonList();  // #510: their rows in the list
         _slotSettingsPanel.Children.Clear();
-        (Border places, StackPanel placesBody) = AddonCard("Places");
-        AddPlacesSettingsRow(placesBody);
-        _slotSettingsPanel.Children.Add(places);
+        // #510: only the card of the add-on whose page is open (none while the list is up).
+        string? only = _slotPageId;
+        if (only == PlacesChannel.Id)
+        {
+            (Border places, StackPanel placesBody) = AddonCard("Places");
+            AddPlacesSettingsRow(placesBody);
+            _slotSettingsPanel.Children.Add(places);
+        }
         // Probed once the panel is built: a probe refreshes this panel, so one
         // started inside the loop would rebuild it under the loop.
         var probe = new List<AddonSlot>();
         // #410: Driftwire, offered with one click while it is not installed.
         if (!DriftwireInstalled)
         {
-            (Border card, StackPanel body) = AddonCard("Driftwire");
-            BuildDriftwireOffer(body, null, titled: false);
-            _slotSettingsPanel.Children.Add(card);
             if (DriftwireSlot.Offer.Kind == OfferKind.Unknown) probe.Add(DriftwireSlot);
+            if (only == DriftwireId)
+            {
+                (Border card, StackPanel body) = AddonCard("Driftwire");
+                BuildDriftwireOffer(body, null, titled: false);
+                _slotSettingsPanel.Children.Add(card);
+            }
         }
         foreach (SlotAddonRow row in SlotAddonRows)
         {
             if (row.Id == PlacesChannel.Id) continue;
+            if (row.Id != only)
+            {
+                if (!_addonsElsewhere && SlotChannelFor(row).Offer.Kind == OfferKind.Unknown) probe.Add(SlotChannelFor(row));
+                continue;
+            }
             (Border card, StackPanel body) = AddonCard(row.Name);
             if (row.Description.Length > 0) body.Children.Add(Note(row.Description));
             bool loaded = SlotAddonsLoaded.Contains(row.Id);
@@ -950,13 +956,15 @@ public static partial class IslandHost
             if (!_addonsElsewhere && _slotConfirming != row.Id)
             {
                 SlotAddonRow target = row;
-                if (row.State != "ok")
+                if (row.State != "ok" && channel.Failure is null)
                 {
-                    buttons.Children.Insert(0, SettingsButton("Reinstall", () => StartSlotAddonInstall(target)));
+                    Button again = SettingsButton(InstallWords.Reinstall, () => StartSlotAddonInstall(target, reinstall: true));
+                    ToolTipService.SetToolTip(again, InstallWords.ReinstallTip);
+                    buttons.Children.Insert(0, again);
                 }
                 if (SlotUpdateVersion(channel, row) is { } v)
                 {
-                    buttons.Children.Insert(0, SettingsButton($"Update to {v}, {MediaViewer.Shared.ByteSize.Text(channel.Offer.ArchiveSize)}",
+                    buttons.Children.Insert(0, SettingsButton(InstallWords.UpdateTo(v, MediaViewer.Shared.ByteSize.Text(channel.Offer.ArchiveSize)),
                                                               () => StartSlotAddonInstall(target)));
                 }
             }
@@ -972,6 +980,15 @@ public static partial class IslandHost
             if (buttons.Children.Count > 0) body.Children.Add(buttons);
             if (row.Id == DriftwireId && _driftwireMessage.Length > 0) body.Children.Add(Note(_driftwireMessage));
             if (SlotUpdateMessages.TryGetValue(row.Id, out string? updated) && updated.Length > 0) body.Children.Add(Note(updated));
+            if (!_addonsElsewhere && _slotConfirming != row.Id)
+            {
+                SlotAddonRow failed = row;
+                if (InstallFailureRow(channel, row.Name, row.State != "ok", () => StartSlotAddonInstall(failed),
+                                      () => StartSlotAddonInstall(failed, reinstall: true)) is FrameworkElement failure)
+                {
+                    body.Children.Add(failure);
+                }
+            }
             if (_addonsElsewhere) body.Children.Add(Note(AddonsElsewhereText));
             _slotSettingsPanel.Children.Add(card);
         }
@@ -1021,13 +1038,24 @@ public static partial class IslandHost
                 IsNewer(PlacesChannel.Offer.Version, installed.Version))
             {
                 buttons.Children.Insert(0, SettingsButton(
-                    $"Update to {PlacesChannel.Offer.Version}, {MediaViewer.Shared.ByteSize.Text(PlacesChannel.Offer.ArchiveSize)}",
-                    StartPlacesInstall));
+                    InstallWords.UpdateTo(PlacesChannel.Offer.Version, MediaViewer.Shared.ByteSize.Text(PlacesChannel.Offer.ArchiveSize)),
+                    () => StartPlacesInstall()));
             }
-            if (installed.State != "ok") buttons.Children.Insert(0, SettingsButton("Reinstall", StartPlacesInstall));
+            if (installed.State != "ok" && PlacesChannel.Failure is null)
+            {
+                Button again = SettingsButton(InstallWords.Reinstall, () => StartPlacesInstall(reinstall: true));
+                ToolTipService.SetToolTip(again, InstallWords.ReinstallTip);
+                buttons.Children.Insert(0, again);
+            }
             into.Children.Add(buttons);
         }
         if (_placesMessage.Length > 0) into.Children.Add(Note(_placesMessage));
+        if (_slotConfirming != installed.Id &&
+            InstallFailureRow(PlacesChannel, "Places", installed.State != "ok", () => StartPlacesInstall(),
+                              () => StartPlacesInstall(reinstall: true)) is FrameworkElement failure)
+        {
+            into.Children.Add(failure);
+        }
         if (installed.State == "ok")
         {
             EnsurePlacesPage(installed.Version);
@@ -1042,32 +1070,22 @@ public static partial class IslandHost
             into.Children.Add(ProgressFor(PlacesChannel, 320));
             return;
         }
-        switch (PlacesChannel.Offer.Kind)
+        if (InstallFailureRow(PlacesChannel, "Places", false, () => StartPlacesInstall(), () => StartPlacesInstall(reinstall: true))
+            is FrameworkElement failed)
         {
-            case OfferKind.Available:
-                Button install = SettingsButton(
-                    $"Install Places, {MediaViewer.Shared.ByteSize.Text(PlacesChannel.Offer.ArchiveSize)}", StartPlacesInstall);
-                install.HorizontalAlignment = HorizontalAlignment.Left;
-                install.IsEnabled = !PlacesChannel.Busy;
-                into.Children.Add(install);
-                break;
-            case OfferKind.NotPublished:
-                into.Children.Add(Note(
-                    "Places is not published for download yet. It will be offered here once a release carries it."));
-                break;
-            case OfferKind.NeedsNewerApp:
-                into.Children.Add(Note(
-                    "The published Places add-on needs a newer MediaViewer. Update MediaViewer, then install it."));
-                break;
-            case OfferKind.Unreachable:
-                into.Children.Add(Note("Could not reach the download server."));
-                Button retry = SettingsButton("Try again", () => ProbeOffer(PlacesChannel));
-                retry.HorizontalAlignment = HorizontalAlignment.Left;
-                into.Children.Add(retry);
-                break;
-            default:
-                into.Children.Add(Note("Checking for Places…"));
-                break;
+            into.Children.Add(failed);
+        }
+        else if (PlacesChannel.Offer.Kind == OfferKind.Available)
+        {
+            Button install = SettingsButton(
+                InstallWords.Install("Places", MediaViewer.Shared.ByteSize.Text(PlacesChannel.Offer.ArchiveSize)), () => StartPlacesInstall());
+            install.HorizontalAlignment = HorizontalAlignment.Left;
+            install.IsEnabled = !PlacesChannel.Busy;
+            into.Children.Add(install);
+        }
+        else
+        {
+            AddOfferNote(into, PlacesChannel, "Places");
         }
         if (_placesMessage.Length > 0) into.Children.Add(Note(_placesMessage));
     }
@@ -1092,65 +1110,33 @@ public static partial class IslandHost
     }
 
     // Update (or reinstall) an installed slot add-on other than Places, as
-    // Places does: a loaded copy is not replaced underneath itself, so a newer
-    // version waits for the restart Settings offers (docs/design/18 "Updates").
-    private static void StartSlotAddonInstall(SlotAddonRow row)
+    // Places does. #510: a loaded copy is reloaded on the new version at once,
+    // with no restart, or once the transfer it reports has ended
+    // (ReloadUpdatedSlotAddon; docs/design/18 "Updates").
+    private static void StartSlotAddonInstall(SlotAddonRow row, bool reinstall = false)
     {
         AddonSlot channel = SlotChannelFor(row);
         if (channel.Busy || !_slotAddonsRead || _addonsElsewhere || _folderSession is not { } session) return;
         bool wasLoaded = SlotAddonsLoaded.Contains(row.Id);
-        string? update = SlotUpdateVersion(channel, row);
+        string? update = reinstall ? null : SlotUpdateVersion(channel, row);
         string id = row.Id, name = row.Name;
-        channel.Busy = true;
-        channel.Phase = new AddonPhase(AddonPhaseKind.Downloading);
         SlotUpdateMessages.Remove(id);
-        IProgress<AddonPhase> progress = PhaseReporter(channel);
+        IProgress<AddonPhase> progress = BeginInstall(channel);
         RefreshSlotSettings();
         _ = Task.Run(async () =>
         {
-            string message;
-            bool restart = false;
-            try
-            {
-                await DownloadAndInstall(channel, null, progress).ConfigureAwait(false);
-                if (wasLoaded && update is not null)
-                {
-                    message = $"{name} {update} is installed. Restart MediaViewer to use it.";
-                    restart = true;
-                }
-                else
-                {
-                    message = update is null ? $"{name} reinstalled." : $"{name} updated to {update}.";
-                    StartSlotAddons(session);
-                }
-            }
-            catch (AddonNotPublishedException)
-            {
-                message = "";
-                DispatcherQueueControllerTryEnqueue(() => channel.Offer = new AddonOffer(OfferKind.NotPublished, 0));
-            }
-            catch (Exception ex) when (ex is HttpRequestException or IOException or MediaViewerException
-                                           or InvalidDataException or TaskCanceledException or JsonException)
-            {
-                System.Diagnostics.Debug.WriteLine(ex);
-                message = ex is MediaViewerException or InvalidDataException
-                    ? "The download did not verify, so nothing was installed."
-                    : $"{name} could not be downloaded. Check the connection and try again.";
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine(ex);
-                message = $"{name} could not be installed.";
-            }
+            // #525: the shared flow (IslandHost.InstallFlow.cs).
+            InstallOutcome outcome = await RunInstall(channel, progress, reinstall).ConfigureAwait(false);
+            bool reload = outcome.Ok && wasLoaded && update is not null;
+            string message = !outcome.Ok || reload ? ""  // a failure is its own row; a reload says its own
+                : update is null ? InstallWords.Reinstalled(name) : InstallWords.Updated(name, update);
+            if (outcome.Ok && !reload) StartSlotAddons(session);
             DispatcherQueueControllerTryEnqueue(() =>
             {
-                channel.Busy = false;
-                channel.Phase = null;
-                channel.Progress = null;
-                SlotUpdateMessages[id] = message;
-                if (restart && update is not null)
+                EndInstall(channel, outcome);
+                SlotUpdateMessages[id] = reload && update is not null ? ReloadUpdatedSlotAddon(id, name, update) : message;
+                if (reload && update is not null)
                 {
-                    AddonRestartNeeded($"{name} {update}");
                     for (int i = 0; i < SlotAddonRows.Count; ++i)
                     {
                         if (SlotAddonRows[i].Id == id) SlotAddonRows[i] = SlotAddonRows[i] with { Version = update };
@@ -1161,70 +1147,41 @@ public static partial class IslandHost
         });
     }
 
-    private static void StartPlacesInstall()
+    private static void StartPlacesInstall(bool reinstall = false)
     {
         if (PlacesChannel.Busy || !_slotAddonsRead || _addonsElsewhere || _folderSession is null) return;
         bool wasLoaded = SlotAddonsLoaded.Contains(PlacesChannel.Id);
+        bool installed = false;
         string? update = null;
         foreach (SlotAddonRow row in SlotAddonRows)
         {
-            if (row.Id == PlacesChannel.Id && PlacesChannel.Offer.Kind == OfferKind.Available &&
-                IsNewer(PlacesChannel.Offer.Version, row.Version))
-            {
+            if (row.Id != PlacesChannel.Id) continue;
+            installed = true;
+            if (!reinstall && PlacesChannel.Offer.Kind == OfferKind.Available && IsNewer(PlacesChannel.Offer.Version, row.Version))
                 update = PlacesChannel.Offer.Version;
-            }
         }
-        PlacesChannel.Busy = true;
-        PlacesChannel.Phase = new AddonPhase(AddonPhaseKind.Downloading);
         _placesMessage = "";
-        IProgress<AddonPhase> progress = PhaseReporter(PlacesChannel);
+        IProgress<AddonPhase> progress = BeginInstall(PlacesChannel);
         RefreshSlotSettings();
         MediaViewerSession session = _folderSession;
         _ = Task.Run(async () =>
         {
-            string message;
-            bool restart = false;
-            try
-            {
-                await DownloadAndInstall(PlacesChannel, null, progress).ConfigureAwait(false);
-                if (wasLoaded && update is not null)
-                {
-                    message = $"Places {update} is installed. Restart MediaViewer to use it.";
-                    restart = true;
-                }
-                else
-                {
-                    message = update is null ? "Places installed." : $"Places updated to {update}.";
-                    StartSlotAddons(session);
-                }
-            }
-            catch (AddonNotPublishedException)
-            {
-                message = "";
-                DispatcherQueueControllerTryEnqueue(() => PlacesChannel.Offer = new AddonOffer(OfferKind.NotPublished, 0));
-            }
-            catch (Exception ex) when (ex is HttpRequestException or IOException or MediaViewerException
-                                           or InvalidDataException or TaskCanceledException or JsonException)
-            {
-                System.Diagnostics.Debug.WriteLine(ex);
-                message = ex is MediaViewerException or InvalidDataException
-                    ? "The download did not verify, so nothing was installed."
-                    : "Places could not be downloaded. Check the connection and try again.";
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine(ex);
-                message = "Places could not be installed.";
-            }
+            // #525: the shared flow (IslandHost.InstallFlow.cs).
+            InstallOutcome outcome = await RunInstall(PlacesChannel, progress, reinstall).ConfigureAwait(false);
+            bool reload = outcome.Ok && wasLoaded && update is not null;
+            string message = !outcome.Ok || reload ? ""  // a failure is its own row; a reload says its own
+                : update is not null ? InstallWords.Updated("Places", update)
+                : installed ? InstallWords.Reinstalled("Places") : InstallWords.Installed("Places");
+            if (outcome.Ok && !reload) StartSlotAddons(session);
             string? installedVersion = update;
             DispatcherQueueControllerTryEnqueue(() =>
             {
-                PlacesChannel.Busy = false;
-                PlacesChannel.Phase = null;
-                _placesMessage = message;
-                if (restart && installedVersion is not null)
+                EndInstall(PlacesChannel, outcome);
+                _placesMessage = reload && installedVersion is not null
+                    ? ReloadUpdatedSlotAddon(PlacesChannel.Id, "Places", installedVersion)
+                    : message;
+                if (reload && installedVersion is not null)
                 {
-                    AddonRestartNeeded($"Places {installedVersion}");
                     for (int i = 0; i < SlotAddonRows.Count; ++i)
                     {
                         if (SlotAddonRows[i].Id != PlacesChannel.Id) continue;
@@ -1244,9 +1201,17 @@ public static partial class IslandHost
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
         if (_slotConfirming == row.Id)
         {
+            // #510 / #507: say exactly what each choice deletes (the Mac's words).
+            var confirm = new StackPanel { Spacing = Space(6) };
+            TextBlock q = Note($"Remove {row.Name}? \"Remove everything\" also deletes its data folder and its settings. \"Remove, keep its data\" leaves both for a reinstall.");
+            q.Foreground = Brush(Title);
+            confirm.Children.Add(q);
+            confirm.Children.Add(buttons);
             buttons.Children.Add(EditButton("Remove, keep its data", () => { _slotConfirming = null; RemoveSlotAddon(row.Id, true); }));
             buttons.Children.Add(EditButton("Remove everything", () => { _slotConfirming = null; RemoveSlotAddon(row.Id, false); }));
             buttons.Children.Add(EditButton("Cancel", () => { _slotConfirming = null; RefreshSlotSettings(); }));
+            FocusableButtons(buttons);
+            return confirm;
         }
         else
         {
@@ -1254,6 +1219,12 @@ public static partial class IslandHost
             AutomationProperties.SetName(remove, $"Remove {row.Name}");
             buttons.Children.Add(remove);
         }
+        FocusableButtons(buttons);
+        return buttons;
+    }
+
+    private static void FocusableButtons(StackPanel buttons)
+    {
         foreach (UIElement child in buttons.Children)
         {
             if (child is Button b)
@@ -1262,6 +1233,5 @@ public static partial class IslandHost
                 b.IsTabStop = true;
             }
         }
-        return buttons;
     }
 }

@@ -85,6 +85,9 @@ public static partial class IslandHost
         // every 1 %. A row rebuilt for a state change makes a new bar.
         public AddonPhase? Phase { get; set; }
         public AddonProgressView? Progress { get; set; }
+        // #525: why the last install did not finish (null: it did, or none ran),
+        // drawn with its next step until the next install starts.
+        public MediaViewer.Shared.InstallFailure? Failure { get; set; }
         public IAddonChrome? Chrome { get; set; }
         public AddonLoadContext? Alc { get; set; }
         public bool Usable => State.Installed && State.State == "ok";
@@ -117,10 +120,13 @@ public static partial class IslandHost
 
         public string Text => Kind switch
         {
-            AddonPhaseKind.Downloading when Done <= 0 => "Connecting…",
-            AddonPhaseKind.Downloading => Total > 0 ? $"{MediaViewer.Shared.ByteSize.Text(Done)} of {MediaViewer.Shared.ByteSize.Text(Total)}" : MediaViewer.Shared.ByteSize.Text(Done),
-            AddonPhaseKind.Checking => "Checking the download…",
-            _ => "Installing…",
+            // #525: the steps' words are shared with the Mac (InstallWords).
+            AddonPhaseKind.Downloading when Done <= 0 => MediaViewer.Shared.InstallWords.Connecting,
+            AddonPhaseKind.Downloading => Total > 0
+                ? MediaViewer.Shared.InstallWords.Downloaded(MediaViewer.Shared.ByteSize.Text(Done), MediaViewer.Shared.ByteSize.Text(Total))
+                : MediaViewer.Shared.ByteSize.Text(Done),
+            AddonPhaseKind.Checking => MediaViewer.Shared.InstallWords.Verifying,
+            _ => MediaViewer.Shared.InstallWords.Installing,
         };
     }
 
@@ -393,6 +399,8 @@ public static partial class IslandHost
             slot.State = next with { Loaded = slot.Chrome is not null };
         }
         _addonStatesRead = true;
+        StartAddonUpdateCheck();  // #525
+        RefreshAddonUpdates();
         // PR 56: what is installed changed, so may the settings pages shown.
         if (_settingsHost is not null) RefreshFirstPartyPages();
     }
@@ -556,10 +564,13 @@ public static partial class IslandHost
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine(ex);
-            // The kind of failure, not its message: a .NET message can carry a path (rule 6).
-            // #509: and the methods it came from, so a report names where it threw.
-            string why = $"Its window could not start ({ex.GetType().Name}). Restart MediaViewer; if it happens again, remove it and install it again in Settings → {SettingsSection(slot)}.";
+            // #509 / #525: plain words on screen; the type goes to the log only
+            // (never the message, which can carry a path: rule 6), and the
+            // methods it came from to a handled report, so it names where it threw.
+            LogInstall(slot, "start", ex);
             CrashCapture.Handled($"addon attach ({slot.Id})", ex);
+            slot.Failure = MediaViewer.Shared.InstallFailure.NotStarted;
+            string why = $"Its window could not start. Restart MediaViewer; if it happens again, use {MediaViewer.Shared.InstallWords.Reinstall} in Settings → {SettingsSection(slot)}.";
             SetSlotStatus(slot, $"{AddonFailTitle(slot)}. {why}");
             ShowAddonAlert(slot, AddonFailTitle(slot), why, open: slot == AiSlot && _searchOpenPending,
                            details: MediaViewer.Shared.ExceptionFrames.Describe(ex));
@@ -613,7 +624,9 @@ public static partial class IslandHost
         public void SetStatus(string? text) => DispatcherQueueControllerTryEnqueue(() =>
         {
             // Import's progress line; the AI pack has its own pill.
-            if (slot != ImportSlot || _importProgressLabel is null) return;
+            if (slot != ImportSlot) return;
+            NoteImportJob(text is not null);  // #510: Restart now waits for it
+            if (_importProgressLabel is null) return;
             _importProgressLabel.Text = text ?? "";
             _importProgressLabel.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
         });
@@ -898,6 +911,7 @@ public static partial class IslandHost
                     }
                 }
                 RefreshSlotUi(slot);
+                RefreshAddonUpdates();  // #525: the bar's notice
             });
         });
     }
@@ -1024,13 +1038,11 @@ public static partial class IslandHost
 
     // ---- Settings → Add-ons -----------------------------------------------------
 
-    private static void AddAddonsSettingsRow(StackPanel view)
+    // #510: Import's page and the slot add-ons' page (the list and its
+    // heading are IslandHost.AddonList.cs).
+    private static void AddAddonsSettingsRow(StackPanel view, StackPanel slots)
     {
         EnsureReaderStarted();  // a later window: what is installed, read now
-        TextBlock heading = Heading("Add-ons");
-        heading.FontSize = TypeHeading;
-        AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
-        view.Children.Add(heading);
         // #442: Import's card holds everything of Import: its row (name, line,
         // state, buttons or the install bar), its settings page, its status and
         // its restart, as the Mac's AddonsSection does.
@@ -1045,8 +1057,8 @@ public static partial class IslandHost
         importBody.Children.Add(_importRestartButton);
         view.Children.Add(importCard);
         // docs/design/25 PRs 58-59: MediaViewer's own add-ons that fill screens
-        // and slots, a card each (IslandHost.Slots.cs).
-        AddSlotAddonsSettingsRows(view);
+        // and slots, a card each (IslandHost.Slots.cs), one at a time on its page.
+        AddSlotAddonsSettingsRows(slots);
         RefreshAddonRow();
         // Opening Settings asks the channel, whatever the automatic-check
         // switch says: the person is looking at what can be installed, or
@@ -1095,11 +1107,9 @@ public static partial class IslandHost
     private static void RefreshAddonRow()
     {
         if (_addonRow is null) return;
+        RefreshAddonList();  // #510: Import's row in the list
         _addonRow.Children.Clear();
-        // The item's title in the title colour, its notes at 13 (the Mac's).
-        var title = Label("Import");
-        title.Foreground = Brush(Title);
-        _addonRow.Children.Add(title);
+        // The page's heading names it (#510); its notes at 13 (the Mac's).
         // docs/design/25: the line is the manifest's (installed, else the channel's);
         // the built-in one serves a manifest from before it carried any.
         string description = ImportSlot.State.Description.Length > 0 ? ImportSlot.State.Description
@@ -1126,30 +1136,23 @@ public static partial class IslandHost
         }
         if (!state.Installed)
         {
-            switch (ImportSlot.Offer.Kind)
+            if (InstallFailureRow(ImportSlot, "Import", false, () => StartImportInstall(), () => StartImportInstall(true))
+                is FrameworkElement failed)
             {
-                case OfferKind.Available:
-                    Button install = SettingsButton($"Install Import, {MediaViewer.Shared.ByteSize.Text(ImportSlot.Offer.ArchiveSize)}",
-                        StartImportInstall);
-                    install.HorizontalAlignment = HorizontalAlignment.Left;
-                    install.IsEnabled = !ImportSlot.Busy;
-                    _addonRow.Children.Add(install);
-                    break;
-                case OfferKind.NotPublished:
-                    _addonRow.Children.Add(Note("Import is not published for download yet. It will be offered here once a release carries it."));
-                    break;
-                case OfferKind.NeedsNewerApp:
-                    _addonRow.Children.Add(Note("The published Import needs a newer MediaViewer. Update MediaViewer, then install it."));
-                    break;
-                case OfferKind.Unreachable:
-                    _addonRow.Children.Add(Note("Could not reach the download server."));
-                    Button retry = SettingsButton("Try again", () => ProbeOffer(ImportSlot));
-                    retry.HorizontalAlignment = HorizontalAlignment.Left;
-                    _addonRow.Children.Add(retry);
-                    break;
-                default:
-                    _addonRow.Children.Add(Note("Checking for Import…"));
-                    break;
+                _addonRow.Children.Add(failed);
+            }
+            else if (ImportSlot.Offer.Kind == OfferKind.Available)
+            {
+                Button install = SettingsButton(
+                    MediaViewer.Shared.InstallWords.Install("Import", MediaViewer.Shared.ByteSize.Text(ImportSlot.Offer.ArchiveSize)),
+                    () => StartImportInstall());
+                install.HorizontalAlignment = HorizontalAlignment.Left;
+                install.IsEnabled = !ImportSlot.Busy;
+                _addonRow.Children.Add(install);
+            }
+            else
+            {
+                AddOfferNote(_addonRow, ImportSlot, "Import");
             }
             return;
         }
@@ -1170,10 +1173,17 @@ public static partial class IslandHost
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
         if (UpdateVersion(ImportSlot) is string newer)
         {
-            buttons.Children.Add(SettingsButton($"Update to {newer}, {MediaViewer.Shared.ByteSize.Text(ImportSlot.Offer.ArchiveSize)}",
-                StartImportInstall));
+            buttons.Children.Add(SettingsButton(
+                MediaViewer.Shared.InstallWords.UpdateTo(newer, MediaViewer.Shared.ByteSize.Text(ImportSlot.Offer.ArchiveSize)),
+                () => StartImportInstall()));
         }
-        if (state.State != "ok") buttons.Children.Add(SettingsButton("Reinstall", StartImportInstall));
+        bool broken = state.State != "ok";
+        if (broken && ImportSlot.Failure is null)
+        {
+            Button again = SettingsButton(MediaViewer.Shared.InstallWords.Reinstall, () => StartImportInstall(true));
+            ToolTipService.SetToolTip(again, MediaViewer.Shared.InstallWords.ReinstallTip);
+            buttons.Children.Add(again);
+        }
         if (ImportSlot.Chrome is not null) buttons.Children.Add(SettingsButton("Open Import", () => ImportSlot.Chrome?.Open(null)));
         buttons.Children.Add(SettingsButton("Remove…", ConfirmImportRemove));
         foreach (UIElement b in buttons.Children)
@@ -1181,6 +1191,11 @@ public static partial class IslandHost
             if (b is Button button) button.IsEnabled = !ImportSlot.Busy;
         }
         _addonRow.Children.Add(buttons);
+        if (InstallFailureRow(ImportSlot, "Import", broken, () => StartImportInstall(), () => StartImportInstall(true))
+            is FrameworkElement failure)
+        {
+            _addonRow.Children.Add(failure);
+        }
     }
 
     private static void ConfirmImportRemove()
@@ -1192,7 +1207,7 @@ public static partial class IslandHost
     private static void AddImportRemoveConfirm()
     {
         if (_addonRow is null) return;
-        TextBlock q = Note("Remove Import? Its library index and import history (import.db) can stay, so a reinstall still knows what was imported.");
+        TextBlock q = Note("Remove Import? Its library index and import history (import.db) can stay, so a reinstall still knows what was imported. \"Remove everything\" deletes them and its settings.");
         q.Foreground = Brush(Title);
         _addonRow.Children.Add(q);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
@@ -1244,59 +1259,35 @@ public static partial class IslandHost
         });
     }
 
-    private static void StartImportInstall()
+    // #525: the shared flow (IslandHost.InstallFlow.cs). `reinstall`: Remove
+    // and install again, for a copy that did not verify or would not start.
+    private static void StartImportInstall(bool reinstall = false)
     {
         if (ImportSlot.Busy || !_addonStatesRead) return;
-        ImportSlot.Busy = true;
         // An update of a running Import installs beside it and takes over at
         // the next start (the store keeps the running copy until then), so a
         // restart is offered once it has landed.
-        string? update = UpdateVersion(ImportSlot);
+        string? update = reinstall ? null : UpdateVersion(ImportSlot);
+        if (reinstall) UnloadAddonChrome(ImportSlot);
         bool running = ImportSlot.Chrome is not null;
-        bool restart = false;
-        SetAddonStatus(update is null ? "Downloading Import…" : $"Downloading Import {update}…");
-        ImportSlot.Phase = new AddonPhase(AddonPhaseKind.Downloading);
-        IProgress<AddonPhase> progress = PhaseReporter(ImportSlot);
+        SetAddonStatus(MediaViewer.Shared.InstallWords.Downloading("Import", update));
+        IProgress<AddonPhase> progress = BeginInstall(ImportSlot);
         RefreshAddonRow();
         _ = Task.Run(async () =>
         {
-            string message;
-            try
-            {
-                await DownloadAndInstall(ImportSlot, null, progress).ConfigureAwait(false);
-                message = update is null ? "Import installed."
-                    : running ? $"Import {update} is installed. Restart MediaViewer to use it."
-                    : $"Import updated to {update}.";
-                restart = update is not null && running;
-            }
-            catch (AddonNotPublishedException)
-            {
-                message = "";
-                DispatcherQueueControllerTryEnqueue(() => ImportSlot.Offer = new AddonOffer(OfferKind.NotPublished, 0));
-            }
-            catch (Exception ex) when (ex is HttpRequestException or IOException or MediaViewerException
-                                           or InvalidDataException or TaskCanceledException or JsonException)
-            {
-                System.Diagnostics.Debug.WriteLine(ex);
-                message = ex is MediaViewerException or InvalidDataException
-                    ? "The download did not verify, so nothing was installed."
-                    : "Import could not be downloaded. Check the connection and try again.";
-            }
-            catch (Exception ex)
-            {
-                // Anything else still finishes the install, so Busy clears (as the
-                // AI pack's path); before, the row stayed "Downloading" for the session.
-                System.Diagnostics.Debug.WriteLine(ex);
-                message = "Import could not be installed.";
-            }
+            InstallOutcome outcome = await RunInstall(ImportSlot, progress, reinstall).ConfigureAwait(false);
             Dictionary<string, AddonState> states = ReadAddonStates();
             DispatcherQueueControllerTryEnqueue(() =>
             {
-                ImportSlot.Busy = false;
-                ImportSlot.Phase = null;
                 ApplyAddonStates(states);
-                SetAddonStatus(message);
-                if (restart) AddonRestartNeeded($"Import {update}");
+                EndInstall(ImportSlot, outcome);
+                bool restart = outcome.Ok && update is not null && running;
+                // A failure is the row's own line, with its next step; a restart is the corner card's.
+                SetAddonStatus(!outcome.Ok || restart ? ""
+                    : reinstall ? MediaViewer.Shared.InstallWords.Reinstalled("Import")
+                    : update is null ? MediaViewer.Shared.InstallWords.Installed("Import")
+                    : MediaViewer.Shared.InstallWords.Updated("Import", update));
+                if (restart) AddonRestartNeeded("Import", update!);
                 RefreshAddonRow();
                 if (ImportSlot.Usable && ImportSlot.Chrome is null) LoadAddon(ImportSlot);
             });

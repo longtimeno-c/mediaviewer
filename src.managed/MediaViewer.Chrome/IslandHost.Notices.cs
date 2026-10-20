@@ -52,6 +52,7 @@ public static partial class IslandHost
         string json = SlotNative.NoticesJson();
         if (json.Length == 0) return;
         var now = new Dictionary<string, AddonNotice>(StringComparer.Ordinal);
+        var busy = new Dictionary<string, string>(StringComparer.Ordinal);
         long asks = 0;
         string keep = "";
         try
@@ -60,6 +61,10 @@ public static partial class IslandHost
             JsonElement r = doc.RootElement;
             asks = (long)JNum(r, "ask", 0);
             if (r.TryGetProperty("keep", out JsonElement k)) keep = k.GetRawText();
+            foreach (JsonElement b in JArr(r, "busy"))
+            {
+                if (JStr(b, "addon") is { Length: > 0 } addon) busy[addon] = JStr(b, "what");
+            }
             foreach (JsonElement n in JArr(r, "notices"))
             {
                 var notice = new AddonNotice(JStr(n, "addon"), JStr(n, "id"), JStr(n, "screen"), JStr(n, "title"),
@@ -72,6 +77,7 @@ public static partial class IslandHost
         {
             return;
         }
+        NoteSlotBusy(busy);  // #510 (IslandHost.RestartNotice.cs)
         // Windows asks nothing up front: registering is the only step, made on
         // the first ask (a toggle turned on) or the first notice.
         if (asks > _noticeAsks)

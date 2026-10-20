@@ -163,6 +163,15 @@ class fake_host final : public sp::engine_host {
     keep = on;
     return true;
   }
+  // #510: every post_busy, in order ("" = ended).
+  void post_busy(const std::string& what) override {
+    std::lock_guard lock(m);
+    busy.push_back(what);
+  }
+  std::vector<std::string> busy_posts() {
+    std::lock_guard lock(m);
+    return busy;
+  }
   std::string last_notice() {
     std::lock_guard lock(m);
     return notices.empty() ? std::string("(none)") : notices.back();
@@ -173,6 +182,7 @@ class fake_host final : public sp::engine_host {
   std::atomic<bool> notify{false};
   std::atomic<int> asks{0};
   std::atomic<bool> keep{false};
+  std::vector<std::string> busy;
   std::string last_tree;
   std::string status;
   int posts = 0;

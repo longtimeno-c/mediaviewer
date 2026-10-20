@@ -1302,6 +1302,61 @@ The settings / keymap / theme parsers have a libFuzzer harness, `tools/fuzz/fuzz
 in the Windows clang-cl fuzz build (`mv_fuzzers`, seeds in `tests/data/seeds/addon`); its header
 has the one-line Homebrew LLVM build for a quick run on a Mac.
 
+### Add-on restart card (#510, both hosts)
+
+The card that asks for a restart after an add-on update ([docs/design/18](design/18-import.md)
+"Updates") can be shown without publishing an update. `MV_ADDON_RESTART_SELFTEST` lists the
+updates as `Name=version`; `;busy=<what>` makes something run that Restart now waits for, and
+`;wait` presses Restart now (the card then says "Waiting for … to finish"; nothing restarts):
+
+```powershell
+$env:MV_ADDON_RESTART_SELFTEST = "Import=1.3.0,Local search=0.4.0;busy=a Driftwire transfer;wait"
+build\bin\mediaviewer_lab.exe --new-instance tools\testmedia\raw
+```
+
+Leave it set for `--soak 60 --gate` to measure the present loop with the card up. The words
+are `src.managed/Shared/RestartWords.cs`; `dotnet test src.managed/MediaViewer.Chrome.Tests`
+checks them and that the Mac's copy (`RestartNoticeView.swift`) says the same. The Mac reads
+the same variable:
+
+```sh
+MV_ADDON_RESTART_SELFTEST="Import=1.3.0,Local search=0.4.0" build-darwin/MediaViewer.app/Contents/MacOS/MediaViewer tools/testmedia/raw
+```
+
+**Mac, built and run (2026-10-20, M-series, Release):** the Mac half compiles with no
+fixes needed. `mv_import_tests "[slots]"` 21 and `"[driftwire]"` 125 cases pass; `mv_tests` 899
+passed, 11 skipped. In a copy of the app with its own bundle id and `HOME`: the two-update card
+in the corner, **Later** hiding it while the bar keeps **Add-on updated — restart**, the
+Settings marker and **Restart now** above the list, the rows and their states, a row's page and
+back; with `;busy=a Driftwire transfer;wait`, the waiting card, and **Cancel** back to the
+update card. Two fixes, to match Windows: Esc on an add-on's page now goes back to the list
+(the host took Esc and closed Settings; `MVChromeHost.settingsBack`), and the list comes back
+scrolled to the row it left. Mac PR 1 gate (`--soak 60 --gate`, `IMG_2.JPG`), card off / on
+alternated in the same build: off 0 / 17.19 ms max, on 0 / 17.10, off 0 / 17.03, on 0 / 17.00
+(dropped / max), p99 16.85–16.9 ms, 0 idle presents, all pass. Not run on the Mac: **Restart
+now**'s relaunch (an installed MediaViewer was running and would take the hand-off), live
+reload of a newer signed add-on, VoiceOver. While the card is up it sits above Settings, as
+the resume notice does, and covers Settings' **Done** (Esc still closes it).
+
+### Add-on install failures and the updates notice (#525, Windows)
+
+The failure rows (plain words and one next step) and the command bar's **Add-on update
+available** ([docs/design/18](design/18-import.md) "Installing", "Updates") can be shown without
+a broken network or a published update. `MV_ADDON_INSTALL_SELFTEST` takes `id=update:<version>`
+(the channel offers that version until a probe asks it for real) and `id=fail:<kind>` (an
+`InstallFailure`: `offline`, `damaged`, `notverified`, `nospace`, `notstarted`, `failed`), for
+`import`, `ai` and its pieces, `places`, `driftwire` or another slot add-on's id; `;now` runs the
+background check after a second instead of 30 s (it still obeys "Check for updates
+automatically"):
+
+```powershell
+$env:MV_ADDON_INSTALL_SELFTEST = "places=update:9.9.9,import=fail:offline"
+build\bin\mediaviewer_lab.exe --new-instance tools\testmedia\raw
+```
+
+The words are `src.managed/Shared/InstallWords.cs`; Chrome.Tests checks them and that the Mac's
+`InstallWords.swift` has the same strings and failure kinds.
+
 ### Script add-ons self-test (PR 57, macOS)
 
 `MV_SCRIPT_SELFTEST=<folder>` presses an add-on's keys as a person would (key events through the
