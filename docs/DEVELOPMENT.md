@@ -2382,6 +2382,40 @@ What is built is in [docs/design/28](design/28-driftwire.md).
   the app, both hosts' first-run prompts (local network and Bluetooth on the Mac, Defender
   Firewall on Windows), VoiceOver and Narrator over the window, the Windows PR 1 gate.
 
+### Driftwire window on Windows (issue #508, 2026-10-20)
+
+How Windows draws an add-on's window now is in [25 §10](design/25-open-addons.md); the tree's
+grouping and empty state in [28](design/28-driftwire.md#what-a-person-sees). Run on a Windows 11
+desktop (MSVC Release, Ninja), one machine.
+
+- **Screen self-test:** `MV_SCREEN_SELFTEST=<folder>` (with `MV_SCREEN_SELFTEST_FILES=<folder of
+  files>`, `MV_SCREEN_SELFTEST_CYCLES=<n>`, default 20) opens Driftwire's window with up to three
+  of those files, turns the internet on, makes a code, sends to it, scrolls to the bottom and
+  flips two switches back to back, then closes; `log.txt` says what each step saw, and the first
+  and last cycles are captured with PrintWindow (`.bmp`). Needs a folder argument (add-ons start
+  with a folder session), a launch on the interactive desktop (captures are black on the tools'
+  desktop) and a dev-signed Driftwire in `MV_DEV_ADDONS_DIR` (`addon-pack.py pack --addon
+  driftwire`). Environment variables must reach the process (`ProcessStartInfo`, not
+  `Start-Process` through Windows-MCP).
+- **20 cycles: 20 opened and closed, no crash.** The place was kept across back-to-back
+  revisions in 18; in the other two the probe could not read the scroller (it returned -1). One
+  engine cannot send to its own code ("The code did not work … has been used"), so no file moved;
+  and **Make a code** did not finish within 30 s in 15 of the 20 back-to-back cycles (it did in
+  every cycle that followed a fresh toggle): the engine's internet receiver under rapid on / off,
+  not looked into here.
+- **Crash dumps:** Crashpad's folder was empty; WER's `LocalDumps` held two (2026-10-15), both
+  an access violation reading `0x18` in `Microsoft.UI.Xaml.dll` on the UI thread during
+  window-message handling, Driftwire loaded. Not symbolicated (no XAML symbols here). Why
+  Crashpad missed them and what now records them: [12](design/12-decision-log.md#crash-reporting-and-privacy).
+- **`mv_import_tests "[driftwire]"`:** 126 cases pass.
+- **PR 1 gate** (`--soak 60 --gate --json`), base (`f476b29c`) / new / base / new, each in its
+  own build: all four pass, 3597 frames, 0 dropped, p99 16.9 ms, max 17.0 / 16.9 / 17.5 / 17.1 ms,
+  0 idle presents, idle CPU 3.05 / 2.42 / 2.66 / 2.37 %. Two earlier new-only runs: one passed,
+  one missed on a single 33.5 ms frame (0 dropped). In this sequence every lab, base and new,
+  wrote its report and then did not exit (stopped by hand); earlier runs on the same build exited.
+- **Not run:** the Mac side by side, two machines (nearby send and receive, offers, the
+  receiving and remembered-device states), Narrator over the new rows.
+
 ### Driftwire on Windows (issue #472, 2026-10-18)
 
 The Windows half of the #472 stack, run on a Windows 11 desktop (10.0.26200, MSVC Release, Ninja),
