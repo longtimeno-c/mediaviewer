@@ -613,9 +613,18 @@ expected channel::exchange_ident(std::string_view my_id, std::string_view my_nam
   return {};
 }
 
+channel_options::~channel_options() {
+  if (static_key) sodium_memzero(static_key->data(), static_key->size());
+  if (internet_secret) sodium_memzero(internet_secret->data(), internet_secret->size());
+}
+
 channel::~channel() {
   shutdown();
   if (pinger_.joinable()) pinger_.join();
+  // #501: the resume secret is the root of the rejoin psk and of the pairing
+  // and handover secrets.
+  std::lock_guard lock(secret_m_);
+  sodium_memzero(resume_.data(), resume_.size());
 }
 
 void channel::shutdown() noexcept {
@@ -1128,12 +1137,18 @@ bool channel::names_this(const hello& h) const noexcept {
 }
 
 expected channel::finish_rejoin(link& l, std::span<const std::uint8_t, 32> tx, std::span<const std::uint8_t, 32> rx,
-                                 clock::time_point deadline, std::uint64_t& peer_got, stream_keys& keys) {
+                                 clock::time_point deadline, std::uint64_t& peer_got, std::uint32_t& index,
+                                 stream_keys& keys) {
   // The secretstreams, then each side's resume_at, sealed: proof the other
-  // side holds the keys, and where to re-send from.
+  // side holds the keys, and where to re-send from. Its sequence field (0
+  // before #502, ignored by a peer from then) says which rejoin this is to
+  // this side, so a rejoin one side adopted and the other did not (an
+  // on-path cut between the two resume_ats) does not leave the DHT
+  // handover's keys out of step.
   if (auto r = open_streams(l, tx, rx, deadline, keys.push, keys.pull); !r) return r;
+  const std::uint32_t mine = rejoins_.load() + 1;
   std::vector<std::uint8_t> buf;
-  if (auto r = l.write_all(seal2(buf, keys.push, msg::resume_at, 0, recv_seq_.load(), {})); !r) return r;
+  if (auto r = l.write_all(seal2(buf, keys.push, msg::resume_at, mine, recv_seq_.load(), {})); !r) return r;
   std::uint8_t len_bytes[4];
   if (auto r = read_exact_until(l, len_bytes, deadline); !r) return r;
   const std::uint32_t len = get_u32(len_bytes);
@@ -1149,22 +1164,38 @@ expected channel::finish_rejoin(link& l, std::span<const std::uint8_t, 32> tx, s
   }
   peer_got = get_u64(plain.data() + 9);
   if (peer_got > sent_seq_.load()) return err(status::corrupt);
+  // The larger of the two (sealed: only the peer can have written it); a
+  // peer from before #502 says 0.
+  const std::uint64_t theirs = get_u64(plain.data() + 1);
+  index = theirs > mine && theirs <= UINT32_MAX ? static_cast<std::uint32_t>(theirs) : mine;
   return {};
 }
 
 expected channel::rejoin(std::shared_ptr<link> l) {
+  auto p = begin_rejoin(std::move(l), kConnectMs);
+  if (!p) return err(p.error());
+  return complete_rejoin(std::move(*p));
+}
+
+struct channel::pending_rejoin {
+  std::shared_ptr<link> l;  // closed when dropped unfinished
+  noise::split_keys keys;   // wiped by its own destructor
+  ~pending_rejoin() {
+    if (l) l->shutdown();
+  }
+};
+
+void channel::pending_deleter::operator()(pending_rejoin* p) const noexcept { delete p; }
+
+result<channel::pending_ptr> channel::begin_rejoin(std::shared_ptr<link> l, int answer_ms) {
   if (!l) return err(status::invalid_arg);
   if (version_ < 2) return err(status::unsupported_format);
-  std::lock_guard one(rejoin_m_);
-  if (down_.load() || cancelled_.load()) {
-    l->shutdown();
-    return err(status::cancelled);
-  }
-  const auto deadline = clock::now() + std::chrono::milliseconds(kConnectMs);
-  auto fail = [&](status s) -> expected {
+  auto fail = [&](status s) -> result<pending_ptr> {
     l->shutdown();
     return err(down_.load() ? status::cancelled : s);
   };
+  if (down_.load() || cancelled_.load()) return fail(status::cancelled);  // #511: ended on purpose
+  const auto deadline = clock::now() + std::chrono::milliseconds(answer_ms);
   std::array<std::uint8_t, 32> psk;
   std::array<std::uint8_t, 16> tag;
   randombytes_buf(tag.data(), 8);
@@ -1185,13 +1216,25 @@ expected channel::rejoin(std::shared_ptr<link> l) {
   if (!hs.read_message(*m2, payload) || !payload.empty()) return fail(status::corrupt);
   auto keys = hs.split();
   if (!keys) return fail(status::internal);
+  pending_ptr p(new pending_rejoin{std::move(l), *keys});
+  return p;
+}
+
+expected channel::complete_rejoin(pending_ptr p) {
+  if (!p || !p->l) return err(status::invalid_arg);
+  std::lock_guard one(rejoin_m_);
+  if (down_.load() || cancelled_.load()) return err(status::cancelled);  // p closes its link
+  const auto deadline = clock::now() + std::chrono::milliseconds(kConnectMs);
   auto streams = std::make_unique<stream_keys>();
   std::uint64_t peer_got = 0;
-  if (auto r = finish_rejoin(*l, keys->initiator_to_responder, keys->responder_to_initiator, deadline, peer_got, *streams);
+  std::uint32_t index = 0;
+  if (auto r = finish_rejoin(*p->l, p->keys.initiator_to_responder, p->keys.responder_to_initiator, deadline, peer_got,
+                             index, *streams);
       !r) {
-    return fail(r.error());
+    return err(down_.load() ? status::cancelled : r.error());
   }
-  return adopt(std::move(l), std::move(streams), peer_got);
+  std::shared_ptr<link> l = std::move(p->l);
+  return adopt(std::move(l), std::move(streams), peer_got, index);
 }
 
 expected channel::accept_rejoin(std::shared_ptr<link> l, const hello& h) {
@@ -1220,15 +1263,18 @@ expected channel::accept_rejoin(std::shared_ptr<link> l, const hello& h) {
   if (!keys) return fail(status::internal);
   auto streams = std::make_unique<stream_keys>();
   std::uint64_t peer_got = 0;
+  std::uint32_t index = 0;
   // A replayed first message gets this far, and no further: it has no keys.
-  if (auto r = finish_rejoin(*l, keys->responder_to_initiator, keys->initiator_to_responder, deadline, peer_got, *streams);
+  if (auto r = finish_rejoin(*l, keys->responder_to_initiator, keys->initiator_to_responder, deadline, peer_got, index,
+                             *streams);
       !r) {
     return fail(r.error());
   }
-  return adopt(std::move(l), std::move(streams), peer_got);
+  return adopt(std::move(l), std::move(streams), peer_got, index);
 }
 
-expected channel::adopt(std::shared_ptr<link> l, std::unique_ptr<stream_keys> keys, std::uint64_t peer_got) {
+expected channel::adopt(std::shared_ptr<link> l, std::unique_ptr<stream_keys> keys, std::uint64_t peer_got,
+                        std::uint32_t index) {
   const auto now = clock::now();
   std::shared_ptr<link> old;
   std::uint64_t gen = 0;
@@ -1266,7 +1312,7 @@ expected channel::adopt(std::shared_ptr<link> l, std::unique_ptr<stream_keys> ke
   }
   link_cv_.notify_all();
   if (old && old != l) old->shutdown();  // a writer or the reader blocked on it returns
-  rejoins_.fetch_add(1);
+  rejoins_.store(index);  // as both sides agreed in resume_at (#502)
   // Up now: the window says where the transfer is before what the peer
   // missed is sent again (up to kReplayBytes, as fast as the peer takes it;
   // a slow receiver made the move look seconds long).

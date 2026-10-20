@@ -111,7 +111,7 @@ Add these under **Settings → Secrets and variables → Actions → Repository 
 | `MV_MAC_CERT_P12_BASE64` | Base64 of exported **Developer ID Application** certificate **and private key** (`.p12`) |
 | `MV_MAC_CERT_PASSWORD` | Nonempty password used when exporting the `.p12` |
 | `APPLE_ID` | Apple account used for notarization |
-| `APPLE_TEAM_ID` | Apple Developer Team ID |
+| `APPLE_TEAM_ID` | Apple Developer Team ID (also names Driftwire's keychain app group, `<team>.<bundle id>.driftwire`, added to the app's entitlements at signing: `macpack.py release --team-id`; #501) |
 | `APPLE_APP_PASSWORD` | App-specific password for notarization |
 | `MV_SPARKLE_PRIVATE_KEY` | Existing Sparkle private key, exported with `generate_keys -x <file>` |
 

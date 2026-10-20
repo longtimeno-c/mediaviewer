@@ -45,6 +45,8 @@ std::int64_t unix_from_filetime(const FILETIME& ft) noexcept {
 }
 
 FILETIME filetime_from_unix(std::int64_t s) noexcept {
+  // 1601 to the year 30000: what FILETIME holds, and no signed overflow below.
+  s = std::clamp<std::int64_t>(s, -kEpochDelta / 10000000LL, 884541340800LL);
   const std::int64_t t = s * 10000000LL + kEpochDelta;
   FILETIME ft;
   ft.dwLowDateTime = static_cast<DWORD>(t & 0xFFFFFFFF);
@@ -164,6 +166,57 @@ expected remove_tree(std::string_view utf8_dir) {
   if (dir.empty()) return err(status::invalid_arg);
   while (dir.size() > 3 && (dir.back() == L'\\' || dir.back() == L'/')) dir.pop_back();
   return remove_tree_w(dir) ? expected{} : err(status::io);
+}
+
+result<std::string> make_directories_beneath(std::string_view base_utf8, std::string_view relative_slash) {
+  std::wstring base = wide(base_utf8);
+  if (base.empty()) return err(status::invalid_arg);
+  while (base.size() > 3 && (base.back() == L'\\' || base.back() == L'/')) base.pop_back();
+  // The base is the person's own choice (a link there is theirs): followed.
+  const DWORD base_attr = ::GetFileAttributesW(base.c_str());
+  if (base_attr == INVALID_FILE_ATTRIBUTES || !(base_attr & FILE_ATTRIBUTE_DIRECTORY)) return err(status::io);
+  std::string path = narrow(base);
+  std::string_view rest = relative_slash;
+  while (!rest.empty()) {
+    const auto slash = rest.find('/');
+    const std::string_view part = rest.substr(0, slash);
+    rest = slash == std::string_view::npos ? std::string_view() : rest.substr(slash + 1);
+    if (part.empty() || part == "." || part == "..") return err(status::invalid_arg);
+    path = join_path(path, part);
+    const std::wstring w = wide(path);
+    if (w.empty()) return err(status::invalid_arg);
+    for (int attempt = 0;; ++attempt) {
+      const DWORD attr = ::GetFileAttributesW(w.c_str());
+      if (attr != INVALID_FILE_ATTRIBUTES) {
+        // A symlink or a junction (both reparse points) leads out of the folder.
+        if (attr & FILE_ATTRIBUTE_REPARSE_POINT) return err(status::permission_denied);
+        if (!(attr & FILE_ATTRIBUTE_DIRECTORY)) return err(status::io);
+        break;
+      }
+      const DWORD e = ::GetLastError();
+      if ((e != ERROR_FILE_NOT_FOUND && e != ERROR_PATH_NOT_FOUND) || attempt > 0) return err(status::io);
+      if (!::CreateDirectoryW(w.c_str(), nullptr) && ::GetLastError() != ERROR_ALREADY_EXISTS) return err(status::io);
+    }
+  }
+  return path;
+}
+
+expected mark_from_elsewhere(std::string_view utf8_path, std::string_view agent) {
+  (void)agent;
+  const std::wstring path = wide(utf8_path);
+  if (path.empty()) return err(status::invalid_arg);
+  // The Mark of the Web: a Zone.Identifier stream, zone 3 (the internet),
+  // as a browser writes for a download. It travels with the file through
+  // MoveFileExW on the same volume. FAT and exFAT keep no streams.
+  const std::wstring stream = path + L":Zone.Identifier";
+  HANDLE h = ::CreateFileW(stream.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return err(status::io);
+  static constexpr char kMark[] = "[ZoneTransfer]\r\nZoneId=3\r\n";
+  DWORD wrote = 0;
+  const BOOL ok = ::WriteFile(h, kMark, static_cast<DWORD>(sizeof kMark - 1), &wrote, nullptr);
+  ::CloseHandle(h);
+  if (!ok || wrote != sizeof kMark - 1) return err(status::io);
+  return {};
 }
 
 result<rename_outcome> rename_no_replace(std::string_view from_utf8, std::string_view to_utf8) {

@@ -47,7 +47,11 @@ std::vector<std::uint8_t> generator_string(std::span<const std::uint8_t> prs, st
   const std::size_t dsi = std::strlen(kDsi);
   const std::size_t used = len_of_len(dsi) + dsi + len_of_len(prs.size()) + prs.size() + 1;
   const std::size_t zpad = used < kHashBlock ? kHashBlock - used : 0;
+  // #501: sized once, so no reallocation leaves an unwiped copy of the PRS
+  // (the code) behind in freed memory.
   std::vector<std::uint8_t> out;
+  out.reserve(used + len_of_len(zpad) + zpad + len_of_len(ci.size()) + ci.size() + len_of_len(sid.size()) +
+              sid.size());
   lv(out, bytes(kDsi));
   lv(out, prs);
   const std::vector<std::uint8_t> zeros(zpad, 0);
@@ -99,7 +103,11 @@ result<std::array<std::uint8_t, kIskBytes>> party::finish(std::span<const std::u
   // ISK = H(lv_cat(DSI_ISK, sid, K) || transcript_ir(Ya, ADa, Yb, ADb)).
   const std::span<const std::uint8_t> ya = initiator ? std::span<const std::uint8_t>(y_pub_) : peer_message;
   const std::span<const std::uint8_t> yb = initiator ? peer_message : std::span<const std::uint8_t>(y_pub_);
+  // #501: sized once, so no reallocation leaves an unwiped copy of K behind.
+  const auto lv_size = [](std::size_t n) { return len_of_len(n) + n; };
   std::vector<std::uint8_t> in;
+  in.reserve(lv_size(std::strlen(kDsiIsk)) + lv_size(sid_.size()) + lv_size(sizeof k) + lv_size(ya.size()) +
+             lv_size(ad_initiator.size()) + lv_size(yb.size()) + lv_size(ad_responder.size()));
   lv(in, bytes(kDsiIsk));
   lv(in, sid_);
   lv(in, {k, sizeof k});

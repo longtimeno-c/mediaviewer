@@ -22,6 +22,8 @@ constexpr std::size_t kTable = 512;
 constexpr std::size_t kK = 8;     // the closest nodes a lookup settles on
 constexpr int kAlpha = 3;         // queries in flight
 constexpr std::size_t kMaxV = 1000;  // BEP 44
+constexpr std::size_t kSavedNodes = 200;  // the table kept between runs, at most
+constexpr std::size_t kMinSecureVoters = 4;  // enough BEP 42-secure voters to go by them alone
 
 node_id distance(const node_id& a, const node_id& b) noexcept {
   node_id d;
@@ -71,10 +73,10 @@ bool id_matches(const node_id& id, const net::address& ip) noexcept {
          (id[2] & 0xf8) == (static_cast<std::uint8_t>(c >> 8) & 0xf8);
 }
 
-std::vector<node> parse_nodes(std::string_view compact, bool v6) {
+std::vector<node> parse_nodes(std::string_view compact, bool v6, std::size_t max_nodes) {
   const std::size_t each = v6 ? 38 : 26;
   std::vector<node> out;
-  if (compact.size() % each != 0 || compact.size() > each * 64) return out;
+  if (compact.size() % each != 0 || compact.size() > each * max_nodes) return out;
   for (std::size_t at = 0; at < compact.size(); at += each) {
     node n;
     std::memcpy(n.id.data(), compact.data() + at, 20);
@@ -167,10 +169,19 @@ std::optional<bencode::value> client::query(const net::endpoint& to, const std::
   pending_.erase(tid);
   if (!p->reply) return std::nullopt;
   bencode::value reply = std::move(*p->reply);
-  // BEP 42: how the node saw us, a vote for our public address.
+  // BEP 42: how the node saw us, a vote for our public address; one per
+  // voter's network, marked when the voter's id matches its address.
   if (const std::string* ip = reply.str("ip")) {
     if (const auto e = parse_compact_endpoint(*ip)) {
-      votes_[to.address + "|" + std::to_string(to.port)] = {*e, clock::now()};
+      bool secure = false;
+      if (const bencode::value* r = reply.get("r"); r && r->k == bencode::value::kind::dict) {
+        if (const std::string* id = r->str("id"); id && id->size() == 20) {
+          node_id nid;
+          std::memcpy(nid.data(), id->data(), 20);
+          if (const auto a = net::parse_address(to.address)) secure = id_matches(nid, *a);
+        }
+      }
+      votes_[voter_key(to)] = {*e, clock::now(), secure};
       if (votes_.size() > kMaxVoters) {
         auto oldest = votes_.begin();
         for (auto it = votes_.begin(); it != votes_.end(); ++it) {
@@ -186,9 +197,24 @@ std::optional<bencode::value> client::query(const net::endpoint& to, const std::
   return *r;
 }
 
+std::string client::voter_key(const net::endpoint& voter) const {
+  if (opts_.loopback) return voter.address + "|" + std::to_string(voter.port);
+  const auto a = net::parse_address(voter.address);
+  if (!a) return voter.address;
+  // An IPv4 /24 or an IPv6 /48: one host's many ports, or a block of
+  // addresses one party holds, is one voter.
+  return std::string(reinterpret_cast<const char*>(a->bytes.data()), a->v6 ? 6 : 3) + (a->v6 ? "6" : "4");
+}
+
 void client::learn(const std::vector<node>& nodes) {
   std::lock_guard lock(m_);
   for (const auto& n : nodes) {
+    // Only nodes on the internet (#499): never this network, loopback or
+    // multicast, which would be asked and then kept in the saved table.
+    if (!opts_.loopback) {
+      const auto a = net::parse_address(n.at.address);
+      if (!a || !net::is_public(*a)) continue;
+    }
     if (std::any_of(table_.begin(), table_.end(),
                     [&](const node& o) { return o.id == n.id || (o.at.address == n.at.address && o.at.port == n.at.port); })) {
       continue;
@@ -408,11 +434,16 @@ int client::put(const keys& k, std::string_view salt, std::int64_t seq, const st
 }
 
 std::vector<const client::vote*> client::recent_votes() const {
-  std::vector<const vote*> out;
+  std::vector<const vote*> out, secure;
   const auto now = clock::now();
   for (const auto& [voter, v] : votes_) {
-    if (now - v.at < std::chrono::milliseconds(kVoteMaxAgeMs)) out.push_back(&v);
+    if (now - v.at >= std::chrono::milliseconds(kVoteMaxAgeMs)) continue;
+    out.push_back(&v);
+    if (v.secure) secure.push_back(&v);
   }
+  // Enough voters whose ids match their addresses (who cannot pick their
+  // place or number freely): theirs alone.
+  if (secure.size() >= kMinSecureVoters) return secure;
   return out;
 }
 
@@ -482,8 +513,10 @@ void client::load_table() {
   if (data.size() > 64 * 1024) return;
   auto v = bencode::decode(data);
   if (!v) return;
-  if (const std::string* n4 = v->str("nodes")) learn(parse_nodes(*n4, false));
-  if (const std::string* n6 = v->str("nodes6")) learn(parse_nodes(*n6, true));
+  // As many as save_table() keeps (#499: a list longer than a node's answer
+  // was refused, so the table never loaded).
+  if (const std::string* n4 = v->str("nodes")) learn(parse_nodes(*n4, false, kSavedNodes));
+  if (const std::string* n6 = v->str("nodes6")) learn(parse_nodes(*n6, true, kSavedNodes));
 }
 
 void client::save_table() {
@@ -495,7 +528,7 @@ void client::save_table() {
       const auto ip = net::parse_address(n.at.address);
       if (!ip) continue;
       (ip->v6 ? v6 : v4).push_back(n);
-      if (v4.size() + v6.size() >= 200) break;
+      if (v4.size() + v6.size() >= kSavedNodes) break;
     }
   }
   const std::string text = bencode::encode(bencode::value::dict(

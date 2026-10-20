@@ -27,7 +27,8 @@
 // is kept (at most kReplayBytes; a sender waits past it). When the link drops,
 // or a faster one appears, the client opens a new link on any bearer and
 // rejoins: a fresh Noise_NNhfs+psk0 handshake keyed by a resume secret the
-// last handshake left (in memory only, replaced at every rejoin). Each side
+// first handshake left (in memory only, the same for the session's life and
+// wiped when the channel goes; each rejoin's own keys are new). Each side
 // then says what it has received (resume_at) and the other re-sends the rest:
 // a message is never lost, never repeated, and never re-sent once it arrived.
 // Callers (transfer.h) see none of this: a send or receive waits through a
@@ -93,12 +94,22 @@ struct channel_options {
   // Client: the protocol to speak (the peer's beacon or INFO says which it
   // has). The server answers whichever the hello is.
   std::uint32_t version = kProtocolVersion;
-  // Protocol 2: this side's X25519 key in the XX handshake (the engine's,
-  // made once a run). Empty: one is made for this link.
+  // Protocol 2: this side's X25519 key in the XX handshake. Empty: one is
+  // made for this link. The engine gives its identity (known.h) only behind
+  // CPace (an internet code, a remembered device's meeting): a plain XX
+  // handshake hands the responder's static to whoever connects (#501).
   std::optional<std::array<std::uint8_t, 32>> static_key;
   // #472 PR 2, the receiver: the secret of the code it showed, which an
   // internet hello must know. Empty: an internet hello is refused.
   std::optional<std::vector<std::uint8_t>> internet_secret;  // a direct code's 6 bytes, a word code's 32
+
+  // #501: the static's private half and the code are wiped with every copy.
+  channel_options() = default;
+  channel_options(const channel_options&) = default;
+  channel_options(channel_options&&) = default;
+  channel_options& operator=(const channel_options&) = default;
+  channel_options& operator=(channel_options&&) = default;
+  ~channel_options();
 };
 
 class channel {
@@ -154,8 +165,9 @@ class channel {
   // known only by the code; code() is the check, not a code to type.
   [[nodiscard]] bool internet() const noexcept { return internet_; }
   // Protocol 2 (#472 PR 4): the peer's static X25519 key from the XX
-  // handshake (its device identity once it keeps one), and a secret only the
-  // two ends of this session hold, for "Remember this device".
+  // handshake (its device identity over the internet; nearby, from #501, a
+  // key for that link alone), and a secret only the two ends of this
+  // session hold, for "Remember this device".
   [[nodiscard]] const std::optional<std::array<std::uint8_t, 32>>& peer_key() const noexcept { return peer_key_; }
   [[nodiscard]] std::array<std::uint8_t, 32> pairing_secret() const;
   // #497: the six digits the sender shows and the receiver types to remember
@@ -208,6 +220,21 @@ class channel {
   // the peer does not hold this session's secret, status::busy after three
   // rejoins in kFlapMs (which ends the session).
   [[nodiscard]] expected rejoin(std::shared_ptr<link> l);
+  // #502: the client's rejoin in two steps, so the mover can race it over
+  // every bearer at once. begin_rejoin() sends the first message and reads
+  // the peer's answer within `answer_ms`: proof the peer holds this session's
+  // secret (a machine that only claimed the peer's id, or answers nothing,
+  // fails here). Nothing is adopted on either side yet: a pending rejoin
+  // dropped unfinished closes its link, and the peer's half ends with it.
+  // complete_rejoin() sends resume_at both ways and moves the session (as
+  // rejoin(), which is the two in turn).
+  struct pending_rejoin;
+  struct pending_deleter {
+    void operator()(pending_rejoin* p) const noexcept;
+  };
+  using pending_ptr = std::unique_ptr<pending_rejoin, pending_deleter>;
+  [[nodiscard]] result<pending_ptr> begin_rejoin(std::shared_ptr<link> l, int answer_ms);
+  [[nodiscard]] expected complete_rejoin(pending_ptr p);
   // The server: `h` (from read_hello) names this session.
   [[nodiscard]] bool names_this(const hello& h) const noexcept;
   // The server: the rest of a rejoin that names_this().
@@ -260,11 +287,15 @@ class channel {
   [[nodiscard]] bool rejoin_expired() const noexcept;
   void mark_down(std::uint64_t gen) noexcept;
   void trim(std::uint64_t acked);
-  [[nodiscard]] expected adopt(std::shared_ptr<link> l, std::unique_ptr<stream_keys> keys, std::uint64_t peer_got);
+  // `index`: what rejoins() becomes (#502: both sides agree on it).
+  [[nodiscard]] expected adopt(std::shared_ptr<link> l, std::unique_ptr<stream_keys> keys, std::uint64_t peer_got,
+                               std::uint32_t index);
+  // `index`: the rejoin's number, as both sides now agree (each says its own
+  // in resume_at; the larger is taken).
   [[nodiscard]] expected finish_rejoin(link& l, std::span<const std::uint8_t, 32> tx,
                                        std::span<const std::uint8_t, 32> rx,
                                        std::chrono::steady_clock::time_point deadline, std::uint64_t& peer_got,
-                                       stream_keys& keys);
+                                       std::uint32_t& index, stream_keys& keys);
   void notify(link_event e);
 
   std::uint32_t version_ = kProtocolVersion;

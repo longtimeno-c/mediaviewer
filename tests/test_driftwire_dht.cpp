@@ -256,6 +256,101 @@ TEST_CASE("driftwire dht: the hub hands KRPC and probes to their handlers, and d
   CHECK(n.error() == mv::status::timeout);
 }
 
+namespace {
+// A stream packet as the hub writes it (little-endian id and sequence).
+std::vector<std::uint8_t> stream_packet(std::uint8_t type, std::uint32_t id, std::uint32_t seq, std::size_t payload) {
+  std::vector<std::uint8_t> p(10 + payload, 0x5a);
+  p[0] = sp::kStream;
+  p[1] = type;
+  for (int i = 0; i < 4; ++i) {
+    p[2 + i] = static_cast<std::uint8_t>(id >> (8 * i));
+    p[6 + i] = static_cast<std::uint8_t>(seq >> (8 * i));
+  }
+  return p;
+}
+std::uint32_t le32(const std::uint8_t* p) {
+  return static_cast<std::uint32_t>(p[0]) | static_cast<std::uint32_t>(p[1]) << 8 |
+         static_cast<std::uint32_t>(p[2]) << 16 | static_cast<std::uint32_t>(p[3]) << 24;
+}
+}  // namespace
+
+TEST_CASE("driftwire dht: a stream drops oversized and far-ahead packets, and holds at most its window (#499)",
+          "[driftwire]") {
+  hub_pair h;
+  auto raw = sp::net::open_udp(false, 1, true);
+  REQUIRE(raw);
+  constexpr std::uint32_t kId = 7;
+  auto sb = h.b->stream({"127.0.0.1", (*raw)->port()}, kId);
+  // Larger than a stream packet carries: not taken.
+  REQUIRE((*raw)->send_to(stream_packet(1, kId, 0, sp::kStreamPayload + 800), h.at_b()));
+  std::uint8_t buf[64 * 1024];
+  auto none = sb->read_some(std::span(buf, sizeof buf), 300);
+  REQUIRE_FALSE(none);
+  CHECK(none.error() == mv::status::timeout);
+  // Out-of-order packets past the window: each is acknowledged (a gap), and
+  // the window the acks advertise closes instead of the memory growing.
+  constexpr std::uint32_t kSent = sp::kStreamMaxRx / sp::kStreamPayload + 500;
+  std::uint32_t window = 0xffffffffu;
+  int acks = 0;
+  std::uint8_t ack[128];
+  for (std::uint32_t seq = 1; seq <= kSent; ++seq) {
+    REQUIRE((*raw)->send_to(stream_packet(1, kId, seq, sp::kStreamPayload), h.at_b()));
+    sp::net::endpoint from;
+    auto n = (*raw)->receive_from(ack, 2000, from);
+    REQUIRE(n);
+    REQUIRE(*n >= 46);
+    REQUIRE(ack[1] == 2);
+    CHECK(le32(ack + 6) == 0);  // nothing in order yet
+    window = le32(ack + 42);
+    ++acks;
+  }
+  CHECK(acks == static_cast<int>(kSent));
+  CHECK(window < sp::kStreamPayload);
+  // The missing first packet: what was held drains, and it is no more than
+  // the window (and one packet).
+  REQUIRE((*raw)->send_to(stream_packet(1, kId, 0, sp::kStreamPayload), h.at_b()));
+  std::size_t got = 0;
+  for (;;) {
+    auto n = sb->read_some(std::span(buf, sizeof buf), 300);
+    if (!n || *n == 0) break;
+    got += *n;
+  }
+  CHECK(got > sp::kStreamMaxRx - 2 * sp::kStreamPayload);
+  CHECK(got <= sp::kStreamMaxRx + sp::kStreamPayload);
+  CHECK(got < static_cast<std::size_t>(kSent) * sp::kStreamPayload);
+}
+
+TEST_CASE("driftwire dht: an ack of packets never sent is ignored (#499)", "[driftwire]") {
+  hub_pair h;
+  auto raw = sp::net::open_udp(false, 1, true);
+  REQUIRE(raw);
+  constexpr std::uint32_t kId = 8;
+  auto sa = h.a->stream({"127.0.0.1", (*raw)->port()}, kId);
+  const std::uint8_t hi[] = {1, 2, 3, 4};
+  REQUIRE(sa->write_all(hi));
+  std::uint8_t buf[2048];
+  sp::net::endpoint from;
+  auto n = (*raw)->receive_from(buf, 2000, from);
+  REQUIRE(n);
+  REQUIRE(*n == 10 + sizeof hi);
+  // "Everything up to 1000 arrived": only one packet was sent. Taken, it
+  // would drop that packet from flight for good; ignored, it is sent again.
+  std::vector<std::uint8_t> bogus(46, 0);
+  bogus[0] = sp::kStream;
+  bogus[1] = 2;
+  bogus[2] = kId;
+  bogus[6] = 1000 & 0xff;
+  bogus[7] = 1000 >> 8;
+  bogus[42] = bogus[43] = bogus[44] = bogus[45] = 0xff;
+  REQUIRE((*raw)->send_to(bogus, h.at_a()));
+  bool again = false;
+  for (int i = 0; i < 10 && !again; ++i) {
+    auto m = (*raw)->receive_from(buf, 500, from);
+    again = m && *m == 10 + sizeof hi && buf[1] == 1 && le32(buf + 6) == 0;
+  }
+  CHECK(again);
+}
+
 // ---- the DHT client, against a swarm of stand-in nodes on loopback -----------------------------------
 
 #include "driftwire_swarm.h"
@@ -429,6 +524,82 @@ TEST_CASE("driftwire dht: two sides meet on four words, punch, and open the inte
   const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
                        std::chrono::system_clock::now().time_since_epoch()).count();
   CHECK(dht::open(*ks, dht::salt_of(*ks, dht::role::sender, 0), left->v, now)->gone);
+}
+
+TEST_CASE("driftwire dht: forged replies and chooses carrying the punch tag are ignored (#499)", "[driftwire]") {
+  swarm s(16);
+  auto hr = sp::udp_hub::open(0, true);
+  auto hs = sp::udp_hub::open(0, true);
+  REQUIRE(hr);
+  REQUIRE(hs);
+  dht::client cr(*hr, test_options(s)), cs(*hs, test_options(s));
+  REQUIRE(cr.start({}));
+  REQUIRE(cs.start({}));
+  const dht::word_code code = dht::random_code();
+  auto kr = dht::derive(code, true);
+  auto ks = dht::derive(code, true);
+  REQUIRE(kr);
+  REQUIRE(ks);
+  // The tag every probe shows in the clear (as a host that was sent one
+  // sees it): v0.1.35 took any reply or choose that carried it.
+  std::array<std::uint8_t, 12> tag{};
+  static constexpr char kTagContext[] = "MediaViewer Driftwire punch v1";
+  crypto_generichash(tag.data(), tag.size(), reinterpret_cast<const std::uint8_t*>(kTagContext), sizeof kTagContext - 1,
+                     kr->salt_base.data(), kr->salt_base.size());
+  auto forged = [&](std::uint8_t kind, std::size_t size) {
+    std::vector<std::uint8_t> p(size);
+    randombytes_buf(p.data(), p.size());  // nonces and MAC nobody without the code can make
+    p[0] = sp::kProbe;
+    p[1] = kind;
+    std::memcpy(p.data() + 2, tag.data(), tag.size());
+    return p;
+  };
+  // A stranger answering first, from the start: to the receiver a choose
+  // (it would take the meeting), to the sender a reply and a chosen; and a
+  // hello each way, which must not be answered.
+  auto attacker = sp::net::open_udp(false, 1, true);
+  REQUIRE(attacker);
+  std::atomic<bool> stop{false};
+  std::atomic<int> answered{0};
+  std::thread flood([&] {
+    const sp::net::endpoint r{"127.0.0.1", (*hr)->port()}, snd{"127.0.0.1", (*hs)->port()};
+    std::uint8_t buf[2048];
+    while (!stop.load()) {
+      for (const std::size_t size : {std::size_t{14}, std::size_t{62}}) {
+        (void)(*attacker)->send_to(forged(3, size), r);
+        (void)(*attacker)->send_to(forged(2, size), snd);
+        (void)(*attacker)->send_to(forged(4, size), snd);
+      }
+      (void)(*attacker)->send_to(forged(1, 46), r);
+      (void)(*attacker)->send_to(forged(1, 46), snd);
+      sp::net::endpoint from;
+      if (auto n = (*attacker)->receive_from(buf, 5, from); n && *n > 0) ++answered;
+    }
+  });
+  dht::meet_options o;
+  o.loopback = true;
+  o.wait_ms = 20000;
+  mv::result<std::unique_ptr<sp::link>> at_r = mv::err(mv::status::internal);
+  std::thread r([&] { at_r = dht::meet(*hr, cr, *kr, dht::role::receiver, o, {}, {}); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  auto at_s = dht::meet(*hs, cs, *ks, dht::role::sender, o, {}, {});
+  r.join();
+  stop.store(true);
+  flood.join();
+  REQUIRE(at_r);
+  REQUIRE(at_s);
+  CHECK(answered.load() == 0);
+  // The stream joins the two real sides, not the stranger.
+  std::shared_ptr<sp::link> lr(std::move(*at_r)), ls(std::move(*at_s));
+  const auto there = pattern(3000, 6);
+  REQUIRE(ls->write_all(there));
+  std::vector<std::uint8_t> got, buf(4096);
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (got.size() < there.size() && std::chrono::steady_clock::now() < until) {
+    auto n = lr->read_some(buf, 500);
+    if (n) got.insert(got.end(), buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(*n));
+  }
+  CHECK(got == there);
 }
 
 TEST_CASE("driftwire dht: a wrong word code finds nobody", "[driftwire]") {
@@ -1002,7 +1173,7 @@ TEST_CASE("driftwire known: two devices that remember each other send again with
     const auto v = ann.eng.snapshot();
     return !v.reading_folder && v.file_names == std::vector<std::string>{"second.mov"};
   }));
-  ann.eng.on_event("known", 5, "\"dev0\"");
+  ann.eng.on_event("known", 5, "\"dev" + ann.eng.snapshot().known_ids.at(0) + "\"");
   CHECK(ann.eng.snapshot().out_known);
   REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }, 60));
   CHECK(bea.eng.snapshot().in_known);
@@ -1045,7 +1216,7 @@ TEST_CASE("driftwire known: two devices behind hard NATs send again over TCP as 
     const auto v = ann.eng.snapshot();
     return !v.reading_folder && v.file_names == std::vector<std::string>{"second.mov"};
   }));
-  ann.eng.on_event("known", 5, "\"dev0\"");
+  ann.eng.on_event("known", 5, "\"dev" + ann.eng.snapshot().known_ids.at(0) + "\"");
   const bool asked = eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }, 45);
   INFO("Ann: " << ann.eng.snapshot().out_note);
   if (!asked) ann.eng.on_event("out_cancel", 1, "");
@@ -1072,7 +1243,7 @@ TEST_CASE("driftwire known: the list and the identity outlive the engine, and Fo
   const std::string tree = sp::build_tree(ann.eng.snapshot());
   CHECK(tree.find("Remembered devices") != std::string::npos);
   CHECK(tree.find("Forget Bea") != std::string::npos);
-  ann.eng.on_event("forget0", 1, "");
+  ann.eng.on_event("forget" + ann.eng.snapshot().known_ids.at(0), 1, "");
   CHECK(ann.eng.snapshot().known.empty());
   word_client again(dir / "ann_received", "Ann", s, dir / "ann_secrets");
   CHECK(again.eng.snapshot().known.empty());
@@ -1132,7 +1303,7 @@ TEST_CASE("driftwire known: a remembered device with another key is refused, lou
   const fs::path f = file_of(dir, "b.jpg", 100 * 1024, 7);
   ann.eng.set_files({utf8(f)});
   REQUIRE(eventually([&] { return ann.eng.snapshot().file_count == 1; }));
-  ann.eng.on_event("known", 5, "\"dev0\"");
+  ann.eng.on_event("known", 5, "\"dev" + ann.eng.snapshot().known_ids.at(0) + "\"");
   const bool ended = eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::ended; }, 60);
   done.store(true);
   impostor.join();
@@ -1156,7 +1327,7 @@ TEST_CASE("driftwire known: a send to a device that does not answer waits, and C
   const fs::path f = file_of(dir, "b.jpg", 100 * 1024, 9);
   ann.eng.set_files({utf8(f)});
   REQUIRE(eventually([&] { return ann.eng.snapshot().file_count == 1; }));
-  ann.eng.on_event("known", 5, "\"dev0\"");
+  ann.eng.on_event("known", 5, "\"dev" + ann.eng.snapshot().known_ids.at(0) + "\"");
   const bool waits =
       eventually([&] { return ann.eng.snapshot().out_note.find("Waiting for Bea to come online") == 0; }, 20);
   INFO(ann.eng.snapshot().out_note << " / " << ann.eng.snapshot().send_code_note << " / "

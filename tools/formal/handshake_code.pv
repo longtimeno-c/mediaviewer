@@ -15,8 +15,8 @@
 
    The person reading the receiver's screen is an authentic channel (`screen`);
    the code is also public once shown. Statics are one key per machine for the
-   whole run (the engine makes one at start), as in the code; nothing trusts
-   them. Expected: every query true (about 5 minutes on an M-series Mac). *)
+   whole run here; the code makes one per link since #501, and a static shared
+   by every run gives the attacker no less. Nothing trusts them. Expected: every query true (about 5 minutes on an M-series Mac). *)
 
 free fileA, probeA: bitstring [private].
 

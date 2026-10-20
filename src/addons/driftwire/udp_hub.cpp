@@ -26,8 +26,8 @@ constexpr std::size_t kSackWords = 4;                    // 256 packets past the
 constexpr std::size_t kAckPacket = kHead + 8 * kSackWords + 4;  // + sack bitmap, window
 constexpr double kMss = static_cast<double>(kStreamPayload);
 constexpr double kMaxCwnd = 8.0 * 1024 * 1024;
-constexpr std::size_t kMaxRx = 16u * 1024 * 1024;       // the receiver's buffer, at most
-constexpr std::uint32_t kMaxAhead = 16384;               // packets held out of order, at most
+constexpr std::size_t kMaxRx = kStreamMaxRx;           // the receiver's buffer, at most
+constexpr std::uint32_t kMaxAhead = kMaxRx / kStreamPayload + 1;  // packets held out of order, at most
 constexpr int kInitialRtoMs = 1000, kMinRtoMs = 200, kMaxRtoMs = 8000;
 constexpr int kExtraBuffers = 64 * 1024;  // a birthday socket carries probes only, until a stream adopts it
 
@@ -93,6 +93,7 @@ struct udp_hub::stream_state {
     bool fin = false;
   };
   std::map<std::uint32_t, held> ahead;
+  std::size_t ahead_bytes = 0;  // the payloads in `ahead`
   std::deque<std::uint8_t> rx;
   bool fin_in = false;
   int unacked = 0;
@@ -109,13 +110,26 @@ struct udp_hub::stream_state {
     a[1] = kAck;
     put32(a + 2, id);
     put32(a + 6, rcv_next);
+    // Only the packets the bitmap covers are visited (#499: not every packet
+    // held, on every gap). The map is ordered by the raw number, so a window
+    // that wraps past 2^32 is read in two pieces.
     std::uint64_t sack[kSackWords] = {};
-    for (const auto& [seq, unused] : ahead) {
-      const std::uint32_t off = seq - rcv_next - 1;
-      if (off < 64 * kSackWords) sack[off / 64] |= std::uint64_t{1} << (off % 64);
-    }
+    constexpr std::uint32_t kSpan = 64 * kSackWords;
+    const std::uint32_t first = rcv_next + 1;
+    auto mark = [&](std::map<std::uint32_t, held>::const_iterator it) {
+      for (; it != ahead.end(); ++it) {
+        const std::uint32_t off = it->first - first;
+        if (off >= kSpan) return;
+        sack[off / 64] |= std::uint64_t{1} << (off % 64);
+      }
+    };
+    mark(ahead.lower_bound(first));
+    if (first + kSpan < first) mark(ahead.begin());  // wrapped
     for (std::size_t w = 0; w < kSackWords; ++w) put64(a + 10 + 8 * w, sack[w]);
-    const std::size_t room = rx.size() >= kMaxRx ? 0 : kMaxRx - rx.size();
+    // What may still arrive: the buffer less what waits to be read and what
+    // is held out of order (a sender forgets a packet once it is SACKed).
+    const std::size_t used = rx.size() + ahead_bytes;
+    const std::size_t room = used >= kMaxRx ? 0 : kMaxRx - used;
     put32(a + 10 + 8 * kSackWords, static_cast<std::uint32_t>(std::min<std::size_t>(room, 0xffffffffu)));
     unacked = 0;
     ack_due = {};
@@ -127,9 +141,18 @@ struct udp_hub::stream_state {
       send_ack();  // a copy of one already here: its ack was lost
       return;
     }
+    // Past the window this side advertised: dropped (an honest sender never
+    // sends it; it is sent again once the window opens). The next packet in
+    // order may use one packet more, so held packets can always drain.
+    const std::size_t limit = kMaxRx + (seq == rcv_next ? kStreamPayload : 0);
+    if (rx.size() + ahead_bytes + payload.size() > limit) {
+      send_ack();
+      return;
+    }
     if (seq != rcv_next) {
       if (seq - rcv_next < kMaxAhead && !ahead.count(seq)) {
         ahead.emplace(seq, held{std::vector<std::uint8_t>(payload.begin(), payload.end()), fin});
+        ahead_bytes += payload.size();
       }
       send_ack();  // a gap: say so at once (fast retransmit)
       return;
@@ -146,6 +169,7 @@ struct udp_hub::stream_state {
     for (auto it = ahead.find(rcv_next); it != ahead.end(); it = ahead.find(rcv_next)) {
       held h = std::move(it->second);
       ahead.erase(it);
+      ahead_bytes -= h.bytes.size();
       take(h.bytes, h.fin);
     }
     cv.notify_all();
@@ -158,6 +182,9 @@ struct udp_hub::stream_state {
   }
 
   void on_ack(std::uint32_t cum, const std::uint64_t (&sack)[kSackWords], std::uint32_t window) {
+    // An ack of packets never sent is not this stream's peer speaking (#499:
+    // it would drop every packet in flight for good).
+    if (before(next_seq, cum)) return;
     peer_window = window;
     const auto now = clock::now();
     last_ack = now;
@@ -289,11 +316,11 @@ class udp_stream final : public link {
       return err(status::timeout);
     }
     if (!s_->rx.empty()) {
-      const bool was_full = s_->rx.size() >= kMaxRx / 2;
+      const bool was_full = s_->rx.size() + s_->ahead_bytes >= kMaxRx / 2;
       const std::size_t n = std::min(into.size(), s_->rx.size());
       std::copy_n(s_->rx.begin(), n, into.begin());
       s_->rx.erase(s_->rx.begin(), s_->rx.begin() + static_cast<std::ptrdiff_t>(n));
-      if (was_full && s_->rx.size() < kMaxRx / 2) s_->send_ack();  // the window opened
+      if (was_full && s_->rx.size() + s_->ahead_bytes < kMaxRx / 2) s_->send_ack();  // the window opened
       return n;
     }
     if (s_->down) return err(status::cancelled);
@@ -546,7 +573,7 @@ void udp_hub::take(std::span<const std::uint8_t> d, const net::endpoint& from, s
   }
   if (s->down || s->sock != sock || s->peer.address != from.address || s->peer.port != from.port) return;
   const std::uint8_t type = d[1];
-  if (type == kData) {
+  if (type == kData && d.size() <= kHead + kStreamPayload) {
     s->on_data(get32(d.data() + 6), d.subspan(kHead), false);
   } else if (type == kFin) {
     s->on_data(get32(d.data() + 6), {}, true);

@@ -11,17 +11,25 @@
 //
 // Opt-in (the "Receive over the internet" toggle), only while a code waits
 // or a transfer over it runs, and every mapping is removed when that ends.
-// It talks to the gateway only: a UPnP description is fetched only from an
-// address on this network (never a public one), so a stray SSDP answer
-// cannot send it anywhere else. Worker threads only; nothing logged with an
-// address. Portable (D9).
+// Leases are short and renewed while held (keeper, #499), so a crash leaves
+// a forward or pinhole open for minutes, not an hour.
+// It talks to the gateway only (#499): only the gateway's own SSDP answer is
+// read, and its description, URLBase and control URLs must name the gateway
+// itself (never loopback, 0/8, link-local or a public address); a service
+// type is "urn:" and [A-Za-z0-9.:-] only, as it goes into a header. A port
+// someone else forwards (the person's own 443) is not taken over. Worker
+// threads only; nothing logged with an address. Portable (D9).
 #pragma once
 
 #include <array>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "addons/driftwire/net.h"
@@ -62,8 +70,20 @@ class mapper {
   // An IPv6 pinhole for `local` (one of this machine's public IPv6
   // addresses), UPnP IGDv2 only.
   [[nodiscard]] std::optional<mapped> pinhole_v6(const net::address& local, std::uint16_t port, int lifetime_s);
+  // The lease asked again for `lifetime_s` (the same ports); false when the
+  // router did not take it.
+  [[nodiscard]] bool renew(const mapped& m, int lifetime_s);
   // Best effort: the router is asked to drop it.
   void remove(const mapped& m);
+  // The router's outside IPv4 address, if NAT-PMP or UPnP says it (#499: a
+  // sender tries a code's address on the receiver's own network only when
+  // this network faces the internet from the code's public address).
+  [[nodiscard]] std::optional<net::address> outside_v4();
+  // The gateway asked (none: no router found).
+  [[nodiscard]] const std::optional<net::address>& gateway() const noexcept { return gateway_; }
+  // A UPnP port mapping the router still lists for this machine and this
+  // app (clean_leftovers: never another's forward).
+  [[nodiscard]] bool ours(const mapped& m);
 
   // What each protocol answered, plain ASCII without addresses (the window's
   // "why", and the log).
@@ -93,6 +113,38 @@ class mapper {
   std::vector<std::string> notes_;
 };
 
+// What a code or a way in holds (#499): each mapping renewed at half its
+// lease on a thread of its own, and every one removed when this goes.
+// `ledger` (may be empty): a file in the app's data folder listing them
+// while held, so a launch after a crash removes them (clean_leftovers).
+class keeper {
+ public:
+  keeper(std::unique_ptr<mapper> m, std::vector<mapped> held, int lifetime_s, std::string ledger = {});
+  ~keeper();
+  keeper(const keeper&) = delete;
+  keeper& operator=(const keeper&) = delete;
+
+ private:
+  void run();
+  std::unique_ptr<mapper> mapper_;
+  std::vector<mapped> held_;
+  int lifetime_s_;
+  std::string ledger_;
+  std::mutex m_;
+  std::condition_variable cv_;
+  bool stop_ = false;  // under m_
+  std::thread thread_;
+};
+
+// A keeper's ledger left by a run that ended without removing its mappings
+// (a crash, a force-quit): each one still on this gateway is removed (a
+// UPnP forward only if the router still names this machine and this app),
+// then the ledger goes. Blocks while the router answers (a worker's call).
+void clean_leftovers(const std::string& ledger, const options& o);
+// The ledger's text, both ways (the tests).
+[[nodiscard]] std::string ledger_text(const net::address& gateway, const std::vector<mapped>& held);
+[[nodiscard]] std::optional<std::pair<net::address, std::vector<mapped>>> parse_ledger(std::string_view text);
+
 // The pieces, exposed for the tests and the fuzzer: parse a gateway's reply
 // (nullopt for anything malformed or unsuccessful).
 struct pcp_answer {
@@ -110,14 +162,18 @@ struct nat_pmp_answer {
 };
 [[nodiscard]] std::optional<nat_pmp_answer> parse_nat_pmp_map(std::span<const std::uint8_t> reply);
 [[nodiscard]] std::optional<net::address> parse_nat_pmp_address(std::span<const std::uint8_t> reply);
-// SSDP: the LOCATION of an answer, if it is an http URL on a local address.
-[[nodiscard]] std::optional<std::string> parse_ssdp_location(std::string_view reply);
+// SSDP: the LOCATION of an answer, if it is an http URL at `gateway`.
+[[nodiscard]] std::optional<std::string> parse_ssdp_location(std::string_view reply, const net::address& gateway);
 // A device description: the WAN connection's (service type, control URL),
 // resolved against `location`; and IGDv2's IPv6 firewall service if listed.
+// Every URL must be at `gateway`, every service type service_type().
 struct described {
   std::string service, control, fw_service, fw_control;
 };
-[[nodiscard]] std::optional<described> parse_description(std::string_view xml, std::string_view location);
+[[nodiscard]] std::optional<described> parse_description(std::string_view xml, std::string_view location,
+                                                         const net::address& gateway);
+// "urn:" then [A-Za-z0-9.:-] only, at most 256 bytes.
+[[nodiscard]] bool service_type(std::string_view s);
 // An HTTP response: its status and body (chunked decoded); nullopt if malformed.
 struct http_reply {
   int status = 0;

@@ -128,6 +128,23 @@ TEST_CASE("driftwire known: the list is kept in the store, and an empty one leav
   CHECK_FALSE(store->get(known::kDevicesName));
 }
 
+TEST_CASE("driftwire known: Remove everything forgets the devices and the identity (#507)", "[driftwire]") {
+  scratch_dir s("driftwire_known_forget");
+  auto store = secrets::file_store(utf8(s.root()));
+  bool kept = false;
+  const auto before = known::identity(store.get(), kept);
+  REQUIRE(kept);
+  REQUIRE(known::save(*store, {device("Ann", 3), device("Bea", 5)}));
+  CHECK(known::forget(*store));
+  CHECK(known::load(*store).empty());
+  CHECK_FALSE(store->get(known::kIdentityName));
+  // Installed again: a new identity, and nobody remembered.
+  CHECK(known::identity(store.get(), kept) != before);
+  // Nothing to forget is fine.
+  CHECK(known::forget(*store));
+  CHECK(known::forget(*store));
+}
+
 TEST_CASE("driftwire known: each hour and each direction the pair gets new DHT keys, the same on both sides", "[driftwire]") {
   const auto d = device("Ann", 4);
   const auto now = known::hour_of(1'800'000'000'000);

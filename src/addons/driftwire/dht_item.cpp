@@ -4,6 +4,7 @@
 
 #include <sodium.h>
 
+#include <chrono>
 #include <cstring>
 
 #include "addons/driftwire/sha1.h"
@@ -13,7 +14,7 @@ namespace mv::driftwire::dht {
 
 namespace {
 
-constexpr char kArgonSalt[crypto_pwhash_SALTBYTES + 1] = "MVSP DHT code v1";  // 16 bytes
+constexpr char kArgonContext[] = "MediaViewer Driftwire DHT code v2";
 constexpr char kSaltContext[] = "MediaViewer Driftwire DHT salt v1";
 constexpr std::uint8_t kMagic[4] = {'M', 'V', 'S', 'D'};
 constexpr std::uint8_t kKind4 = 4, kKind6 = 6;
@@ -95,14 +96,30 @@ std::optional<word_code> parse_words(std::string_view text) {
   return c;
 }
 
-result<keys> derive(const word_code& c, bool fast) {
+std::int64_t code_hour(std::int64_t unix_ms) noexcept { return unix_ms / (60 * 60 * 1000); }
+
+result<keys> derive(const word_code& c, bool fast, std::int64_t hour) {
   if (sodium_init() < 0) return err(status::internal);
+  if (hour < 0) {
+    hour = code_hour(std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count());
+  }
+  // Argon2's salt: the context and the hour, hashed to its 16 bytes.
+  std::uint8_t salt[crypto_pwhash_SALTBYTES];
+  std::uint8_t h[8];
+  for (int i = 0; i < 8; ++i) h[i] = static_cast<std::uint8_t>(static_cast<std::uint64_t>(hour) >> (8 * i));
+  crypto_generichash_state st;
+  crypto_generichash_init(&st, nullptr, 0, sizeof salt);
+  crypto_generichash_update(&st, reinterpret_cast<const std::uint8_t*>(kArgonContext), sizeof kArgonContext - 1);
+  crypto_generichash_update(&st, h, sizeof h);
+  crypto_generichash_final(&st, salt, sizeof salt);
   // The code as text, lower case, single spaces: the same for any way it was typed.
   const std::string text = words_text(c);
   std::uint8_t out[32 * 4];
   const unsigned long long ops = fast ? crypto_pwhash_OPSLIMIT_MIN : crypto_pwhash_OPSLIMIT_MODERATE;
   const std::size_t mem = fast ? crypto_pwhash_MEMLIMIT_MIN : crypto_pwhash_MEMLIMIT_MODERATE;
-  if (crypto_pwhash(out, sizeof out, text.data(), text.size(), reinterpret_cast<const std::uint8_t*>(kArgonSalt), ops, mem,
+  if (crypto_pwhash(out, sizeof out, text.data(), text.size(), salt, ops, mem,
                     crypto_pwhash_ALG_ARGON2ID13) != 0) {
     return err(status::out_of_memory);  // libsodium's only failure here
   }

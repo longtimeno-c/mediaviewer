@@ -58,6 +58,13 @@ inline constexpr int kConnectMs = 8000;
 // How long a person has to confirm the code (sender) or answer an offer
 // (receiver) before it is called off.
 inline constexpr int kAskMs = 180000;
+// How long the sender's person has to type the code (or confirm the name)
+// before the link ends. Shorter (#502): until then the receiver's one slot is
+// held, under a name the sender chose.
+inline constexpr int kConfirmMs = 60000;
+// After Accept, a receive that moves nothing this long ends (#502): pings
+// alone do not hold the slot. A file being read back counts as moving.
+inline constexpr int kReceiveIdleMs = 60000;
 // Protocol 2's session (#472). Nothing heard for kSuspectMs and the link is
 // suspect: the sender races the other bearers. kRejoinMs without a link ends
 // the session, and so do kFlapRejoins rejoins in kFlapMs. A ping at least
@@ -73,6 +80,10 @@ inline constexpr std::size_t kReplayBytes = 16u * 1024 * 1024;
 // After a move to another link, the sender stays at least this long before
 // moving for speed (a dropped link moves at once).
 inline constexpr int kSwitchHoldMs = 10000;
+// #501: with the window closed and nothing under way, the session id the
+// beacon and Bluetooth INFO carry is replaced this often (and whenever the
+// window opens or closes), so a listener cannot follow one machine for weeks.
+inline constexpr int kIdRotateMs = 10 * 60 * 1000;
 // One offer, at most.
 inline constexpr std::size_t kMaxFiles = 100000;
 inline constexpr std::size_t kMaxRelativeBytes = 1024;
@@ -144,6 +155,8 @@ enum class msg : std::uint8_t {
 [[nodiscard]] bool safe_relative(std::string_view rel) noexcept;
 // The last part of a path, either separator.
 [[nodiscard]] std::string_view leaf_name(std::string_view path) noexcept;
+// The first part of a '/'-separated path: "Trip" for "Trip/a.jpg", the whole of "a.jpg".
+[[nodiscard]] std::string_view top_part(std::string_view rel) noexcept;
 
 struct beacon {
   std::string id;    // 16 lowercase hex digits, random per session

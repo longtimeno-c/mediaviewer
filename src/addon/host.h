@@ -206,6 +206,13 @@ class loaded_addon {
   mv_addon_api api_{};
 };
 
+// Remove without keep (#507): loads `id`'s verified library on its own (not
+// through mv_addon_get) and calls its MV_ADDON_FORGET_SYMBOL, so it deletes
+// what it keeps outside its data folder. Call after it is unloaded and before
+// store::remove. Nothing to do (not installed, does not verify, no export) is
+// a no-op; a failing forget never blocks the removal.
+void forget_outside_data(const store& s, const std::string& id) noexcept;
+
 // ---- Quit (not Remove) --------------------------------------------------------
 //
 // Quit must not wait on a pack: its shutdown joins threads that cannot be
