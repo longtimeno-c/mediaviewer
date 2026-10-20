@@ -151,6 +151,8 @@ enum class msg : std::uint8_t {
 [[nodiscard]] bool safe_relative(std::string_view rel) noexcept;
 // The last part of a path, either separator.
 [[nodiscard]] std::string_view leaf_name(std::string_view path) noexcept;
+// The first part of a '/'-separated path: "Trip" for "Trip/a.jpg", the whole of "a.jpg".
+[[nodiscard]] std::string_view top_part(std::string_view rel) noexcept;
 
 struct beacon {
   std::string id;    // 16 lowercase hex digits, random per session

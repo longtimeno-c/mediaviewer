@@ -15,11 +15,16 @@
 #if !defined(_WIN32)
 #include <sys/resource.h>
 #endif
+#if defined(__APPLE__)
+#include <sys/xattr.h>
+#endif
 
 // ---- the wire -------------------------------------------------------------------------------
 
 TEST_CASE("driftwire: a sender's path never leaves the receiver's folder", "[driftwire]") {
-  for (const char* ok : {"IMG_1.JPG", "Trip/IMG_1.JPG", "Trip/Day 2/clip.mov", "caf\xC3\xA9.heic", ".hidden"}) {
+  // ZWJ (an emoji family) and ZWNJ (Persian) are letters' business, not spoofing.
+  for (const char* ok : {"IMG_1.JPG", "Trip/IMG_1.JPG", "Trip/Day 2/clip.mov", "caf\xC3\xA9.heic",
+                         "\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7.jpg", "\xD9\x85\xE2\x80\x8C\xD9\x8A.jpg"}) {
     INFO(ok);
     CHECK(sp::safe_relative(ok));
   }
@@ -28,7 +33,11 @@ TEST_CASE("driftwire: a sender's path never leaves the receiver's folder", "[dri
   for (const char* bad : {"", "/etc/passwd", "../x.jpg", "a/../../b", "a/./b", "a//b", "a/", "C:x.jpg", "a\\b.jpg",
                           "CON", "con.txt", "Trip/NUL.jpg", "COM1", "lpt9.log", "a.", "a ", "x?y", "x*y", "a\x01"
                           "b",
-                          "\xFF\xFE"}) {
+                          "\xFF\xFE",
+                          // #498: hidden files and folders, and text that reads as something else.
+                          ".hidden", ".ssh/authorized_keys", "Trip/.zshenv", "invoice\xE2\x80\xAEgpj.exe",
+                          "a\xE2\x80\xA8" "b.jpg", "a\xC2\x85" "b.jpg", "a\xE2\x81\xA6" "b\xE2\x81\xA9.jpg",
+                          "a\xE2\x80\x8B" "b.jpg"}) {
     INFO(bad);
     CHECK_FALSE(sp::safe_relative(bad));
   }
@@ -36,7 +45,7 @@ TEST_CASE("driftwire: a sender's path never leaves the receiver's folder", "[dri
 }
 
 TEST_CASE("driftwire: an offer is refused whole for one bad path or wrong sums", "[driftwire]") {
-  CHECK(sp::parse_offer(R"({"count":2,"bytes":5,"files":[{"rel":"a.jpg","size":2},{"rel":"T/b.jpg","size":3}]})"));
+  CHECK(sp::parse_offer(R"({"count":2,"bytes":5,"files":[{"rel":"a.jpg","size":2},{"rel":"b.jpg","size":3}]})"));
   CHECK_FALSE(sp::parse_offer(R"({"count":2,"bytes":5,"files":[{"rel":"a.jpg","size":2},{"rel":"../b.jpg","size":3}]})"));
   CHECK_FALSE(sp::parse_offer(R"({"count":2,"bytes":6,"files":[{"rel":"a.jpg","size":2},{"rel":"b.jpg","size":3}]})"));
   CHECK_FALSE(sp::parse_offer(R"({"count":3,"bytes":5,"files":[{"rel":"a.jpg","size":2},{"rel":"b.jpg","size":3}]})"));
@@ -47,6 +56,52 @@ TEST_CASE("driftwire: an offer is refused whole for one bad path or wrong sums",
                               R"({"rel":"b.mov","size":9223372036854775807}]})"));
   CHECK_FALSE(sp::parse_offer(R"({"count":1,"bytes":1125899906842625,"files":[{"rel":"a.mov","size":1125899906842625}]})"));
 }
+
+TEST_CASE("driftwire: an offer is files picked one by one or one folder, nothing else (#498)", "[driftwire]") {
+  const auto bare = sp::parse_offer(R"({"count":2,"bytes":5,"files":[{"rel":"a.jpg","size":2},{"rel":"b.jpg","size":3}]})");
+  REQUIRE(bare);
+  CHECK(bare->folder.empty());
+  const auto folder =
+      sp::parse_offer(R"({"count":2,"bytes":5,"files":[{"rel":"Trip/a.jpg","size":2},{"rel":"Trip/D/b.jpg","size":3}]})");
+  REQUIRE(folder);
+  CHECK(folder->folder == "Trip");
+  // Photos beside a login item, two folders, a folder beside a file: refused whole.
+  CHECK_FALSE(sp::parse_offer(
+      R"({"count":2,"bytes":5,"files":[{"rel":"a.jpg","size":2},{"rel":"Library/LaunchAgents/x.plist","size":3}]})"));
+  CHECK_FALSE(sp::parse_offer(R"({"count":2,"bytes":5,"files":[{"rel":"A/a.jpg","size":2},{"rel":"B/b.jpg","size":3}]})"));
+  CHECK_FALSE(sp::parse_offer(R"({"count":2,"bytes":5,"files":[{"rel":"A/a.jpg","size":2},{"rel":"A","size":3}]})"));
+  // 16384 files of 2^50 bytes total 2^64: wrapped, that is 0, which must not pass for the sum.
+  std::string wrap = R"({"count":16384,"bytes":0,"files":[)";
+  for (int i = 0; i < 16384; ++i) {
+    wrap += (i ? ",{" : "{");
+    wrap += R"("rel":"f)" + std::to_string(i) + R"(","size":1125899906842624})";
+  }
+  wrap += "]}";
+  CHECK_FALSE(sp::parse_offer(wrap));
+}
+
+TEST_CASE("driftwire: names lose the controls that would make them read as something else (#498)", "[driftwire]") {
+  CHECK(sp::clean_name("Ann\xE2\x80\xAE koobcaM") == "Ann koobcaM");
+  CHECK(sp::clean_name("Ann\xE2\x80\xA8(remembered)") == "Ann(remembered)");
+  CHECK(sp::clean_name("\xE2\x81\xA6" "Bea\xE2\x81\xA9\xC2\x85") == "Bea");
+  CHECK(sp::clean_name("Studio \xF0\x9F\x8E\xA8 Mac") == "Studio \xF0\x9F\x8E\xA8 Mac");
+}
+
+#if !defined(_WIN32)
+TEST_CASE("driftwire: received folders are made beneath Save to, never through a link (#498)", "[driftwire]") {
+  scratch_dir s("driftwire_beneath");
+  fs::create_directories(s / "dest");
+  fs::create_directories(s / "elsewhere");
+  fs::create_directory_symlink(s / "elsewhere", s / "dest" / "Trip");
+  const auto made = mv::io::make_directories_beneath(utf8(s / "dest"), "New/Day 2");
+  REQUIRE(made);
+  CHECK(fs::is_directory(s / "dest" / "New" / "Day 2"));
+  const auto through = mv::io::make_directories_beneath(utf8(s / "dest"), "Trip/Day 2");
+  REQUIRE_FALSE(through);
+  CHECK(through.error() == mv::status::permission_denied);
+  CHECK(fs::is_empty(s / "elsewhere"));
+}
+#endif
 
 TEST_CASE("driftwire: the beacon carries an id, a name and a port, nothing else", "[driftwire]") {
   sp::beacon b{"0123456789abcdef", "Tristan\xE2\x80\x99s MacBook", 50123};
@@ -633,6 +688,14 @@ TEST_CASE("driftwire: Accept delivers the files with their bytes, keeping both o
   CHECK_FALSE(any_temporary(dest));
   // The originals are untouched (rule 5).
   CHECK(read_bytes(s / "out" / "big.mov") == big);
+#if defined(__APPLE__)
+  // #498: marked as from another computer, so Gatekeeper checks it before it runs.
+  char mark[128] = {};
+  const ssize_t n = ::getxattr(utf8(dest / "big.mov").c_str(), "com.apple.quarantine", mark, sizeof mark, 0, 0);
+  REQUIRE(n > 0);
+  CHECK(std::string(mark, static_cast<std::size_t>(n)).find(";MediaViewer Driftwire;") != std::string::npos);
+  CHECK(::getxattr(utf8(s / "out" / "big.mov").c_str(), "com.apple.quarantine", nullptr, 0, 0, 0) < 0);
+#endif
 }
 
 TEST_CASE("driftwire: a new set to send never waits for the one still being read", "[driftwire]") {
@@ -800,6 +863,17 @@ TEST_CASE("driftwire: a pair half and a sidecar ride along; a folder keeps its s
   bea.eng.wait_idle();
   ann.eng.wait_idle();
   CHECK(files_in(s / "bea_received") == std::vector<std::string>{"Trip/Day 2/b.jpg", "Trip/a.jpg"});
+
+  // #498: sent again, the folder lands beside the first, never merged into it.
+  ann.send_to(bea);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  CHECK(bea.eng.snapshot().in_folder == "Trip");
+  CHECK(bea.tree().find("In the folder Trip") != std::string::npos);
+  bea.eng.on_event("accept", 1, "");
+  bea.eng.wait_idle();
+  ann.eng.wait_idle();
+  CHECK(files_in(s / "bea_received") == std::vector<std::string>{"Trip (2)/Day 2/b.jpg", "Trip (2)/a.jpg",
+                                                                   "Trip/Day 2/b.jpg", "Trip/a.jpg"});
 }
 
 TEST_CASE("driftwire: Decline, closing the window, and a third client receive nothing", "[driftwire]") {

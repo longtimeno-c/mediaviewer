@@ -85,6 +85,21 @@ enum class rename_outcome : std::uint8_t { renamed, name_taken };
 [[nodiscard]] result<rename_outcome> rename_no_replace(std::string_view from_utf8,
                                                        std::string_view to_utf8);
 
+// #498: creates `relative_slash` ('/'-separated) under `base_utf8`, which must
+// already be a directory, one part at a time, and never through a link: a
+// symlink, junction or other reparse point at any part below the base is
+// status::permission_denied (a link already in the folder would otherwise
+// carry the files out of it). Returns the directory made or found.
+[[nodiscard]] result<std::string> make_directories_beneath(std::string_view base_utf8,
+                                                           std::string_view relative_slash);
+
+// #498: marks a file as come from another computer, so the OS checks it
+// before it opens or runs (the quarantine attribute on the Mac, which
+// Gatekeeper reads; the Mark of the Web on Windows, which SmartScreen and
+// Office read). It survives rename_no_replace. `agent` names who received
+// it. status::io where the volume keeps no such mark (FAT on Windows).
+[[nodiscard]] expected mark_from_elsewhere(std::string_view utf8_path, std::string_view agent);
+
 enum class read_mode : std::uint8_t {
   sequential,  // the source read: the OS may read ahead
   uncached,    // the verify read-back: from the device, never the page cache

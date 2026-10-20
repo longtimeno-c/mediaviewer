@@ -749,14 +749,32 @@ link. The tests check that no 32-byte run of the file passes through either rela
   until another is picked. Until #442 the default was `<the default photo folder>/Received`.
   Every relative path passes
   `safe_relative` (`/` only, no `..`, no root, no drive or stream, no device name, no trailing dot
-  or space, valid UTF-8, at most 1024 bytes and 32 levels): one bad path refuses the whole offer.
+  or space, valid UTF-8, at most 1024 bytes and 32 levels; since #498 also no part starting with
+  `.` and none of the characters that make text read as something else: C0 and C1 controls, the
+  bidirectional overrides, embeddings, isolates and marks, line and paragraph separators, the zero
+  width space and byte order mark; ZWJ and ZWNJ stay): one bad path refuses the whole offer.
+- **Only the shapes a sender makes** (#498): files picked one by one (every path a bare name), or
+  one folder and what is in it (every path under the same first part). Anything else (photos
+  beside `Library/LaunchAgents/…`) is refused whole, so a sender cannot plant files around the
+  ones the card names. The card names the files, or says "In the folder Trip".
+- **Never through a link, never merged** (#498): the destination is the person's choice and is
+  followed; every folder below it is made one part at a time by `io::make_directories_beneath`,
+  which refuses a symlink or junction already there. A sent folder whose name is taken lands
+  beside it as `Trip (2)`, never inside the one already there.
+- **Marked as from another computer** (#498): each temporary gets the OS's download mark before
+  its first byte, `com.apple.quarantine` on the Mac and the Mark of the Web (`Zone.Identifier`,
+  zone 3) on Windows (`io::mark_from_elsewhere`), so Gatekeeper, SmartScreen and Office check it
+  before it opens or runs, and an app inside a received zip inherits it when extracted. Best
+  effort, as a browser's: a FAT or exFAT card on Windows keeps no stream. Received files are
+  written 0644 (no execute bit).
   A free-space check (the volume's free bytes less 64 MiB) answers `no_room` before any byte moves.
 - **The write follows `io::verified_copy`'s rules** ([24](24-transfer.md)) on bytes that come from
   a link: a sibling `<final>.mvtmp` created exclusively, hashed as written; at `file_end` the hash
   must be the sender's, the file is flushed to stable storage, read back uncached and hashed
   again; only then is it renamed into place with no-replace. A taken name keeps both
   (`name (2).ext`, `io::unique_name`). A mismatch, an error, a cancel or a dropped link removes the
-  temporary. Files that finished stay; nothing partial is left. The file's mtime is kept.
+  temporary. Files that finished stay; nothing partial is left. The file's mtime is kept,
+  clamped to between 1970 and tomorrow (#498).
 - **The next file arrives while the last one is checked** (#442). The thread reading the link
   writes and hashes each file; at `file_end`, once the streamed hash is the sender's, the file
   goes to a verifier (two threads, in order, at most four files waiting, each an open

@@ -245,7 +245,8 @@ void incoming(writer& w, const view& v) {
       break;
     case view::in_phase::asking:
       text(w, "in_title", v.in_peer + " wants to send you " + count_text(v.in_count, v.in_total), "heading");
-      text(w, "in_files", names_line(v.in_names, v.in_count), "secondary");
+      text(w, "in_files", v.in_folder.empty() ? names_line(v.in_names, v.in_count) : "In the folder " + v.in_folder,
+           "secondary");
       if (!v.in_relay.empty()) text(w, "in_relay", "Through " + v.in_relay + ", sealed end to end.", "caption");
       folder_field(w, "destination", "Save to", v.destination, "Choose a folder");
       row(w, "in_actions");

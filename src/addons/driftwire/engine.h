@@ -131,6 +131,7 @@ struct view {
   std::string in_peer, in_code, in_note, in_via;
   bool in_punched = false;  // as out_punched
   std::vector<std::string> in_names;
+  std::string in_folder;  // #498: the offer is this one folder (in_names then empty)
   std::size_t in_count = 0;
   std::uint64_t in_total = 0, in_bytes = 0;
   std::uint32_t in_files = 0;
