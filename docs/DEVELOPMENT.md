@@ -2439,6 +2439,71 @@ What is built is in [docs/design/28](design/28-driftwire.md).
   the app, both hosts' first-run prompts (local network and Bluetooth on the Mac, Defender
   Firewall on Windows), VoiceOver and Narrator over the window, the Windows PR 1 gate.
 
+### Driftwire window on Windows (issue #508, 2026-10-20)
+
+How Windows draws an add-on's window now is in [25 §10](design/25-open-addons.md); the tree's
+grouping and empty state in [28](design/28-driftwire.md#what-a-person-sees). Run on a Windows 11
+desktop (MSVC Release, Ninja), one machine.
+
+- **The path picture was squashed on Windows** (owner, after the first round): a centred card
+  centred the `link` node too, so its path column shrank to nothing and the two computers sat
+  against the badge. It now fills the card, as on the Mac; names wrap to two lines and Nearby's
+  circles are top-aligned. Seen in the self-test's captures (`docs/review/508/send-ended.png`,
+  `nearby.png`; the thumbnails are empty there because only `mediaviewer_lab` was built).
+  PR 1 gate, base (`60f0ca1f`) / new / base / new (same native build, each Chrome published from
+  its own source): 0 dropped, p99 16.9 ms, idle presents 0 in all four; all four, base included,
+  miss on one 33.4 ms frame (this machine's ambient miss, with other sessions' labs running).
+- **Screen self-test:** `MV_SCREEN_SELFTEST=<folder>` (with `MV_SCREEN_SELFTEST_FILES=<folder of
+  files>`, `MV_SCREEN_SELFTEST_CYCLES=<n>`, default 20) opens Driftwire's window with up to three
+  of those files, turns the internet on, makes a code, sends to it, scrolls to the bottom and
+  flips two switches back to back, then closes; `log.txt` says what each step saw, and the first
+  and last cycles are captured with PrintWindow (`.bmp`). Needs a folder argument (add-ons start
+  with a folder session), a launch on the interactive desktop (captures are black on the tools'
+  desktop) and a dev-signed Driftwire in `MV_DEV_ADDONS_DIR` (`addon-pack.py pack --addon
+  driftwire`). Environment variables must reach the process (`ProcessStartInfo`, not
+  `Start-Process` through Windows-MCP).
+- **20 cycles: 20 opened and closed, no crash.** The place was kept across back-to-back
+  revisions in 18; in the other two the probe could not read the scroller (it returned -1). One
+  engine cannot send to its own code ("The code did not work … has been used"), so no file moved;
+  and **Make a code** did not finish within 30 s in 15 of the 20 back-to-back cycles (it did in
+  every cycle that followed a fresh toggle): the engine's internet receiver under rapid on / off,
+  not looked into here.
+- **Crash dumps:** Crashpad's folder was empty; WER's `LocalDumps` held two (2026-10-15), both
+  an access violation reading `0x18` in `Microsoft.UI.Xaml.dll` on the UI thread during
+  window-message handling, Driftwire loaded. Not symbolicated (no XAML symbols here). Why
+  Crashpad missed them and what now records them: [12](design/12-decision-log.md#crash-reporting-and-privacy).
+- **`mv_import_tests "[driftwire]"`:** 126 cases pass.
+- **PR 1 gate** (`--soak 60 --gate --json`), base (`f476b29c`) / new / base / new, each in its
+  own build: all four pass, 3597 frames, 0 dropped, p99 16.9 ms, max 17.0 / 16.9 / 17.5 / 17.1 ms,
+  0 idle presents, idle CPU 3.05 / 2.42 / 2.66 / 2.37 %. Two earlier new-only runs: one passed,
+  one missed on a single 33.5 ms frame (0 dropped). In this sequence every lab, base and new,
+  wrote its report and then did not exit (stopped by hand); earlier runs on the same build exited.
+- **Not run:** two machines (nearby send and receive, offers, the receiving and
+  remembered-device states), Narrator over the new rows.
+
+### Driftwire window on the Mac (issue #508, 2026-10-20)
+
+The Mac half of the above (`ScreenView.swift`; [25 §10](design/25-open-addons.md)), on an
+M-series MacBook Air, Release, one machine.
+
+- **Seen in the app** (a dev-signed Driftwire sideloaded into a copy with its own bundle id,
+  `HOME`, `MV_DEV_ADDONS_DIR` and `MV_DRIFTWIRE_OFFLINE=1`, opened from Settings → Driftwire →
+  Open Driftwire): the system face, every group a card, switches on the right (a click on the
+  words flips them), Choose… / Clear filled on one row, "No one nearby yet", the offline line
+  under Nearby, the scroll bar on the window's edge. The window opened at 720 × 520 asked and
+  shrank to its content (712 → 602 pt). Scrolled to Internet options and flipped a switch twice
+  back to back: the place was kept. Screenshots: `docs/review/508/mac-*.png`.
+- Without `MV_DRIFTWIRE_OFFLINE` a fresh ad-hoc-signed copy waits on the Keychain (the engine's
+  identity, `secrets::keychain::put`) until its prompt is answered, so the window shows the
+  spinner; started from a shell rather than `open`, TCC ends it (no usage strings in the
+  shell's identity). Both are the test setup, not the product.
+- **`mv_import_tests "[driftwire]"`:** 136 cases pass, `"[slots]"` 22 (rebased on 22d9c8e9). The Swift chrome builds with no new
+  warnings.
+- **Mac PR 1 gate** (`mediaviewer_lab --soak 60 --gate`): 3599 frames, 0 dropped, p99 17.0 ms,
+  max 17.1 ms, 0 idle presents. One run, new build only (the change is the add-on window's
+  SwiftUI, which a soak does not open).
+- **Not run:** two machines; VoiceOver over the new rows.
+
 ### Driftwire on Windows (issue #472, 2026-10-18)
 
 The Windows half of the #472 stack, run on a Windows 11 desktop (10.0.26200, MSVC Release, Ninja),

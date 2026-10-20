@@ -147,6 +147,7 @@ public static partial class IslandHost
             EnsureSlotListener();
             StartAddonUpdateCheck();  // #525: once both reads have landed
             RefreshSlotSettings();
+            MaybeStartScreenSelfTest();
         });
     }
 
@@ -190,6 +191,7 @@ public static partial class IslandHost
         if (bits.HasFlag(SlotChange.Badges)) ReadSlotBadges();
         if (bits.HasFlag(SlotChange.Status)) ReadSlotStatus();
         if (bits.HasFlag(SlotChange.Notices)) ReadSlotNotices();  // IslandHost.Notices.cs
+        MaybeStartScreenSelfTest();  // MV_SCREEN_SELFTEST only (IslandHost.ScreenSelfTest.cs)
     }
 
     private static void ReadSlotContributions()

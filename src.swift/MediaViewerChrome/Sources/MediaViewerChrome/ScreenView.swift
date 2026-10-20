@@ -11,6 +11,13 @@
 // add-on's worker hears of it; the control keeps its new value until the
 // add-on answers with a diff. A text field reports on Return and when it loses
 // focus, never per key; a slider when it is let go.
+//
+// An add-on's own window, pane or sheet (#508) draws in the system face (the
+// theme's when it names one) on the ramp Windows uses, with filled buttons and
+// a switch on the right of its label; a section in the info pane keeps the
+// chrome's face, among the chrome's own text. A new revision keeps each
+// scroller's offset and the focused control by itself: every node is built
+// under its id (ForEach over ScreenNode.id), so SwiftUI keeps their state.
 import AppKit
 import MVChromeBridge
 import SwiftUI
@@ -63,6 +70,7 @@ private struct SlotThumbnail: View {
   let size: CGFloat
   let label: String
   @ObservedObject private var thumbs = SlotThumbs.shared
+  @Environment(\.screenWindow) private var window
 
   var body: some View {
     Color.clear
@@ -71,7 +79,9 @@ private struct SlotThumbnail: View {
         if let image = thumbs.images[path] {
           Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
         } else {
-          Rectangle().fill(MVTheme.surface)
+          // #508: on a card (itself the surface colour) an empty or loading
+          // tile still shows as a tile.
+          Rectangle().fill(window ? MVTheme.hairline : MVTheme.surface)
         }
       }
       .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(6)))
@@ -127,11 +137,7 @@ struct ScreenNodeView: View {
         ForEach(node.children) { child($0) }
       }
     case "scroll":
-      let height = node.int("height") ?? 0
-      ScrollView(node.string("axis") == "horizontal" ? .horizontal : .vertical) {
-        VStack(alignment: .leading, spacing: MVTheme.space(8)) { ForEach(node.children) { child($0) } }.padding(MVTheme.space(2))
-      }
-      .frame(maxHeight: height > 0 ? CGFloat(height) : .infinity)
+      ScrollNode(node: node, address: address, revision: revision)
     case "split":
       SplitNode(node: node, address: address, revision: revision)
     case "text":
@@ -228,17 +234,81 @@ private struct ScreenCenteredKey: EnvironmentKey {
   static let defaultValue = false
 }
 
+private struct ScreenWindowKey: EnvironmentKey {
+  static let defaultValue = false
+}
+
+private struct ScreenRootInsetKey: EnvironmentKey {
+  static let defaultValue: EdgeInsets? = nil
+}
+
 extension EnvironmentValues {
   /// Inside a vertical stack with "align": "center".
   var screenCentered: Bool {
     get { self[ScreenCenteredKey.self] }
     set { self[ScreenCenteredKey.self] = newValue }
   }
+
+  /// #508: drawn in an add-on's own window, pane or sheet, not the info pane.
+  var screenWindow: Bool {
+    get { self[ScreenWindowKey.self] }
+    set { self[ScreenWindowKey.self] = newValue }
+  }
+
+  /// #508: the window's margin, for a tree whose root is a scroller to put
+  /// inside it (so the bar sits on the window's edge); nil below the root.
+  var screenRootInset: EdgeInsets? {
+    get { self[ScreenRootInsetKey.self] }
+    set { self[ScreenRootInsetKey.self] = newValue }
+  }
 }
 
+/// #508: a screen's face. In a window, the system's (the theme's `font` when it
+/// names one installed here) at `size`; in the info pane, the chrome's face, as
+/// before, without a weight.
+@MainActor
+func screenFont(_ size: CGFloat, _ weight: Font.Weight = .regular, window: Bool) -> Font {
+  guard window else { return MVTheme.font(size) }
+  if MVTheme.family != nil { return MVTheme.font(size).weight(weight) }
+  return .system(size: size * MVTheme.typeScale, weight: weight)
+}
+
+/// How tall a root scroller's content is, for a window to open no taller.
+private struct ScreenContentHeight: PreferenceKey {
+  static let defaultValue: CGFloat = 0
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct ScrollNode: View {
+  let node: ScreenNode
+  let address: ScreenAddress
+  let revision: Int
+  @Environment(\.screenRootInset) private var rootInset
+
+  var body: some View {
+    let height = node.int("height") ?? 0
+    ScrollView(node.string("axis") == "horizontal" ? .horizontal : .vertical) {
+      VStack(alignment: .leading, spacing: MVTheme.space(8)) {
+        ForEach(node.children) { ScreenNodeView(node: $0, address: address, revision: revision) }
+      }
+      .padding(rootInset ?? EdgeInsets(top: MVTheme.space(2), leading: MVTheme.space(2),
+                                       bottom: MVTheme.space(2), trailing: MVTheme.space(2)))
+      .background {
+        if rootInset != nil {
+          GeometryReader { g in Color.clear.preference(key: ScreenContentHeight.self, value: g.size.height) }
+        }
+      }
+      .environment(\.screenRootInset, nil)
+    }
+    .frame(maxHeight: height > 0 ? CGFloat(height) : .infinity)
+  }
+}
+
+@MainActor
 private struct TextNode: View {
   let node: ScreenNode
   @Environment(\.screenCentered) private var centered
+  @Environment(\.screenWindow) private var window
 
   var body: some View {
     let style = node.string("style") ?? "body"
@@ -249,6 +319,7 @@ private struct TextNode: View {
       .lineLimit(lines > 0 ? lines : nil)
       .multilineTextAlignment(centered ? .center : .leading)
       .frame(maxWidth: .infinity, alignment: centered ? .center : .leading)
+      .accessibilityAddTraits(style == "heading" ? .isHeader : [])
     if node.bool("copyable") {
       text.textSelection(.enabled)
     } else {
@@ -258,14 +329,67 @@ private struct TextNode: View {
 
   private func font(_ style: String) -> Font {
     switch style {
+    case "mono": return .system(.caption, design: .monospaced)
+    // #442: a short code read off the screen across a room.
+    case "display": return .system(size: 34, weight: .semibold, design: .rounded).monospacedDigit()
+    default: break
+    }
+    // #508: in a window, the ramp Windows uses (IslandHost.ScreenLook.cs):
+    // body 14, title 14 semibold, heading 17 semibold, secondary 13, caption 12.
+    if window {
+      switch style {
+      case "title": return screenFont(14, .semibold, window: true)
+      case "heading": return screenFont(17, .semibold, window: true)
+      case "secondary": return screenFont(13, window: true)
+      case "caption": return screenFont(12, window: true)
+      default: return screenFont(14, window: true)
+      }
+    }
+    switch style {
     case "title": return MVTheme.font(15)
     case "heading": return MVTheme.font(17)
     case "secondary": return MVTheme.font(12)
     case "caption": return MVTheme.font(11)
-    case "mono": return .system(.caption, design: .monospaced)
-    // #442: a short code read off the screen across a room.
-    case "display": return .system(size: 34, weight: .semibold, design: .rounded).monospacedDigit()
     default: return MVTheme.font(14)
+    }
+  }
+}
+
+/// #508: a screen window's button, filled as Settings' are (the accent with
+/// white ink for "primary", red text for "destructive"); in the info pane, the
+/// chrome's flat button.
+struct ScreenButtonStyle: ButtonStyle {
+  var style = "plain"
+  var window = true
+
+  @ViewBuilder func makeBody(configuration: Configuration) -> some View {
+    if window {
+      ScreenButtonBody(configuration: configuration, style: style)
+    } else {
+      FlatButtonStyle(selected: style == "primary", compact: true).makeBody(configuration: configuration)
+        .foregroundStyle(style == "destructive" ? Color.red : MVTheme.title)
+    }
+  }
+
+  private struct ScreenButtonBody: View {
+    let configuration: Configuration
+    let style: String
+    @State private var hover = false
+    @Environment(\.isEnabled) private var enabled
+
+    var body: some View {
+      let primary = style == "primary"
+      let wash = configuration.isPressed ? 0.16 : (hover && enabled ? 0.11 : 0.08)
+      configuration.label
+        .font(screenFont(14, window: true))
+        .foregroundStyle(primary ? Color.white : style == "destructive" ? Color(nsColor: .systemRed) : MVTheme.title)
+        .padding(.horizontal, MVTheme.space(12)).padding(.vertical, MVTheme.space(6))
+        .background(RoundedRectangle(cornerRadius: MVTheme.radius(6)).fill(
+          primary ? AnyShapeStyle(MVTheme.accent.opacity(configuration.isPressed ? 0.8 : 1))
+                  : AnyShapeStyle(Color.primary.opacity(wash))))
+        .opacity(enabled ? 1 : 0.5)
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
     }
   }
 }
@@ -370,6 +494,7 @@ private struct TilePress: ButtonStyle {
 }
 
 private struct Tile: View {
+  @Environment(\.screenWindow) private var window
   let item: [String: Any]
   let size: CGFloat
   let selected: Bool
@@ -414,10 +539,10 @@ private struct Tile: View {
       .frame(width: size, height: size)
       .padding(6)
       Text(item["text"] as? String ?? "")
-        .font(MVTheme.font(13)).foregroundStyle(MVTheme.title)
+        .font(screenFont(13, window: window)).foregroundStyle(MVTheme.title)
         .lineLimit(2).multilineTextAlignment(.center)
       if let detail = item["detail"] as? String, !detail.isEmpty {
-        Text(detail).font(MVTheme.font(11)).foregroundStyle(MVTheme.body).lineLimit(1)
+        Text(detail).font(screenFont(11, window: window)).foregroundStyle(MVTheme.body).lineLimit(1)
       }
     }
     .frame(width: size + 40)
@@ -670,21 +795,38 @@ private struct ToggleNode: View {
   let address: ScreenAddress
   let revision: Int
   @State private var on = false
+  @Environment(\.screenWindow) private var window
+  @Environment(\.isEnabled) private var enabled
 
   var body: some View {
-    Toggle(node.label, isOn: Binding(get: { on }, set: { value in
+    let binding = Binding(get: { on }, set: { value in
       on = value
       SlotStore.shared.send(address, node: node.id, kind: 2, value: value)
-    }))
-    .toggleStyle(.switch)
-    .tint(MVTheme.accent)
-    .font(MVTheme.font(14))
+    })
+    // #508: the switch on the right of its label, as Settings' rows and the
+    // Windows twin; clicking the words flips it too. The switch is the one
+    // element VoiceOver sees, named by the label.
+    HStack(spacing: MVTheme.space(16)) {
+      Text(node.label)
+        .font(screenFont(14, window: window))
+        .foregroundStyle(enabled ? MVTheme.title : MVTheme.disabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture { if enabled { binding.wrappedValue.toggle() } }
+        .accessibilityHidden(true)
+      Toggle(node.label, isOn: binding)
+        .labelsHidden()
+        .toggleStyle(.switch)
+        .tint(MVTheme.accent)
+    }
+    .frame(minHeight: 24)
     .onAppear { on = node.bool("value") }
     .onChange(of: revision) { _, _ in on = node.bool("value") }
   }
 }
 
 private struct ChoiceNode: View {
+  @Environment(\.screenWindow) private var window
   let node: ScreenNode
   let address: ScreenAddress
   let revision: Int
@@ -699,13 +841,14 @@ private struct ChoiceNode: View {
         Text(node.rows("options").first { ($0["id"] as? String) == id }?["text"] as? String ?? id).tag(id)
       }
     }
-    .font(MVTheme.font(14))
+    .font(screenFont(14, window: window))
     .onAppear { value = node.string("value") ?? "" }
     .onChange(of: revision) { _, _ in value = node.string("value") ?? "" }
   }
 }
 
 private struct SliderNode: View {
+  @Environment(\.screenWindow) private var window
   let node: ScreenNode
   let address: ScreenAddress
   let revision: Int
@@ -715,7 +858,7 @@ private struct SliderNode: View {
     let lo = node.double("min") ?? 0
     let hi = max(lo + 1e-9, node.double("max") ?? 1)
     VStack(alignment: .leading, spacing: MVTheme.space(2)) {
-      Text("\(node.label): \(format(value))").font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+      Text("\(node.label): \(format(value))").font(screenFont(13, window: window)).foregroundStyle(MVTheme.body)
       Group {
         if let step = node.double("step"), step > 0 {
           Slider(value: $value, in: lo...hi, step: step) { Text(node.label) } onEditingChanged: { editing in
@@ -740,6 +883,7 @@ private struct SliderNode: View {
 }
 
 private struct NumberNode: View {
+  @Environment(\.screenWindow) private var window
   let node: ScreenNode
   let address: ScreenAddress
   let revision: Int
@@ -754,7 +898,7 @@ private struct NumberNode: View {
       SlotStore.shared.send(address, node: node.id, kind: 2, value: value)
     }), in: lo...hi, step: step) {
       Text("\(node.label): \(value == value.rounded() ? String(Int(value)) : String(value))")
-        .font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
+        .font(screenFont(14, window: window)).foregroundStyle(MVTheme.title)
     }
     .accessibilityLabel(node.label)
     .accessibilityValue(String(value))
@@ -767,6 +911,7 @@ private struct NumberNode: View {
 // from outside `body`, which older compilers do not treat as isolated.
 @MainActor
 private struct TextFieldNode: View {
+  @Environment(\.screenWindow) private var window
   let node: ScreenNode
   let address: ScreenAddress
   let revision: Int
@@ -777,12 +922,12 @@ private struct TextFieldNode: View {
     if node.string("look") == "code" {
       codeField
     } else {
-      HStack(spacing: 6) {
+      HStack(spacing: MVTheme.space(8)) {
         field
         // "pick": "folder" (#410): the system folder dialog, reported as the field's change.
       if node.string("pick") == "folder" {
         Button("Choose\u{2026}") { chooseFolder() }
-          .buttonStyle(FlatButtonStyle(selected: false, compact: true))
+          .buttonStyle(ScreenButtonStyle(window: window))
           .accessibilityLabel("Choose a folder for \(node.label)")
         }
       }
@@ -855,7 +1000,7 @@ private struct TextFieldNode: View {
       }
     }
     .textFieldStyle(.roundedBorder)
-    .font(MVTheme.font(14))
+    .font(screenFont(14, window: window))
     .focused($focused)
     .onSubmit { SlotStore.shared.send(address, node: node.id, kind: 3, value: text) }
     .onChange(of: focused) { _, now in
@@ -870,6 +1015,7 @@ private struct TextFieldNode: View {
 }
 
 private struct ListNode: View {
+  @Environment(\.screenWindow) private var window
   let node: ScreenNode
   let address: ScreenAddress
   let revision: Int
@@ -884,9 +1030,9 @@ private struct ListNode: View {
       ForEach(rows.indices, id: \.self) { i in
         let id = rows[i]["id"] as? String ?? ""
         VStack(alignment: .leading, spacing: MVTheme.space(2)) {
-          Text(rows[i]["text"] as? String ?? "").font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
+          Text(rows[i]["text"] as? String ?? "").font(screenFont(14, window: window)).foregroundStyle(MVTheme.title)
           if let detail = rows[i]["detail"] as? String {
-            Text(detail).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+            Text(detail).font(screenFont(12, window: window)).foregroundStyle(MVTheme.body)
           }
         }
         .tag(id)
@@ -909,6 +1055,7 @@ private struct ListNode: View {
 }
 
 private struct TableNode: View {
+  @Environment(\.screenWindow) private var window
   let node: ScreenNode
   let address: ScreenAddress
   let revision: Int
@@ -920,7 +1067,7 @@ private struct TableNode: View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: MVTheme.space(8)) {
         ForEach(columns.indices, id: \.self) { c in
-          Text(columns[c]["title"] as? String ?? "").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+          Text(columns[c]["title"] as? String ?? "").font(screenFont(12, window: window)).foregroundStyle(MVTheme.body)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
       }
@@ -937,7 +1084,7 @@ private struct TableNode: View {
           let cells = rows[r]["cells"] as? [String] ?? []
           HStack(spacing: MVTheme.space(8)) {
             ForEach(columns.indices, id: \.self) { c in
-              Text(c < cells.count ? cells[c] : "").font(MVTheme.font(13)).foregroundStyle(MVTheme.title)
+              Text(c < cells.count ? cells[c] : "").font(screenFont(13, window: window)).foregroundStyle(MVTheme.title)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
           }
@@ -1078,24 +1225,37 @@ struct SlotScreenRoot: View {
     VStack(alignment: .leading, spacing: 0) {
       if place != "window" {
         HStack {
-          Text(screen?.title ?? "").font(MVTheme.font(15)).foregroundStyle(MVTheme.title)
+          Text(screen?.title ?? "").font(screenFont(17, .semibold, window: true)).foregroundStyle(MVTheme.title)
             .accessibilityAddTraits(.isHeader)
           Spacer()
           Button("Done") { slots.close(address) }
-            .buttonStyle(FlatButtonStyle(compact: true))
+            .buttonStyle(ScreenButtonStyle())
             .keyboardShortcut(.cancelAction)
         }
-        .padding(MVTheme.space(12))
+        .padding(.horizontal, MVTheme.space(16)).padding(.vertical, MVTheme.space(12))
         Rectangle().fill(MVTheme.hairline).frame(height: 1)
       }
       if let tree = screen?.tree {
+        // #508: a scrolling tree's margin is inside the scroller, so its bar
+        // sits on the window's edge, not over the cards (the Windows twin's
+        // 16 / 14 / 16 / 18); any other tree keeps it outside.
+        let scrolls = tree.type == "scroll" && tree.string("axis") != "horizontal"
         ScreenNodeView(node: tree, address: address, revision: screen?.revision ?? 0)
-          .padding(MVTheme.space(12))
+          .environment(\.screenRootInset, scrolls ? EdgeInsets(
+            top: MVTheme.space(place == "window" ? 14 : 12), leading: MVTheme.space(16),
+            bottom: MVTheme.space(18), trailing: MVTheme.space(16)) : nil)
+          .padding(scrolls ? EdgeInsets() : EdgeInsets(top: MVTheme.space(12), leading: MVTheme.space(16),
+                                                        bottom: MVTheme.space(16), trailing: MVTheme.space(16)))
           .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+          .onPreferenceChange(ScreenContentHeight.self) { height in
+            guard place == "window" else { return }
+            SlotWindows.shared.fit(address, content: height, asked: screen?.height ?? 0)
+          }
       } else {
         ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
       }
     }
+    .environment(\.screenWindow, true)
     .background(MVTheme.canvas)
     .onExitCommand { slots.close(address) }
   }
@@ -1107,6 +1267,26 @@ final class SlotWindows: NSObject, NSWindowDelegate {
   static let shared = SlotWindows()
   private var windows: [ScreenAddress: NSWindow] = [:]
   private var closingFromCore: Set<ScreenAddress> = []
+  private var fitted: Set<ScreenAddress> = []
+
+  /// #508, once per window, when its first tree has laid out: a window taller
+  /// than what it shows shrinks to its content (never below a floor), keeping
+  /// its top edge, so it opens without an empty band at the bottom. One whose
+  /// content is taller keeps its height and scrolls. The Windows twin is
+  /// FitScreenWindow.
+  func fit(_ address: ScreenAddress, content height: CGFloat, asked: CGFloat) {
+    guard height > 0, !fitted.contains(address), let w = windows[address], w.sheetParent == nil else { return }
+    fitted.insert(address)
+    let shown = w.contentLayoutRect.height
+    guard shown - height >= 8 else { return }
+    let floor = min(asked > 0 ? asked : 480, 360)
+    let target = max(floor, height.rounded(.up))
+    guard target < shown else { return }
+    var frame = w.frame
+    frame.origin.y += shown - target
+    frame.size.height -= shown - target
+    w.setFrame(frame, display: true)
+  }
 
   func sync(_ screens: [SlotScreen]) {
     let wanted = Set(screens.map { ScreenAddress(addon: $0.addon, screen: $0.screen) })
@@ -1115,6 +1295,7 @@ final class SlotWindows: NSObject, NSWindowDelegate {
       close(window)
       windows[address] = nil
       closingFromCore.remove(address)
+      fitted.remove(address)
     }
     for s in screens {
       let address = ScreenAddress(addon: s.addon, screen: s.screen)
@@ -1268,6 +1449,7 @@ final class SlotWindows: NSObject, NSWindowDelegate {
           !closingFromCore.contains(address)
     else { return }
     windows[address] = nil
+    fitted.remove(address)
     SlotStore.shared.close(address)
   }
 }
@@ -1281,6 +1463,7 @@ private struct ButtonNode: View {
   let node: ScreenNode
   let address: ScreenAddress
   @State private var copied = false
+  @Environment(\.screenWindow) private var window
 
   var body: some View {
     Button {
@@ -1305,8 +1488,7 @@ private struct ButtonNode: View {
         Text(node.label)
       }
     }
-    .buttonStyle(FlatButtonStyle(selected: node.string("style") == "primary", compact: true))
-    .foregroundStyle(node.string("style") == "destructive" ? Color.red : MVTheme.title)
+    .buttonStyle(ScreenButtonStyle(style: node.string("style") ?? "plain", window: window))
     .accessibilityLabel(copied ? "Copied" : node.label)
   }
 }
@@ -1320,6 +1502,7 @@ private struct ButtonNode: View {
 /// most, and never with Reduce Motion; done and failed are still.
 @MainActor
 private struct LinkNode: View {
+  @Environment(\.screenWindow) private var window
   let node: ScreenNode
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1353,7 +1536,9 @@ private struct LinkNode: View {
 
   var body: some View {
     VStack(spacing: MVTheme.space(6)) {
-      HStack(spacing: 0) {
+      // Top-aligned (a two-line name grows downward); the path's middle is lifted to the
+      // circles' middle (24), so it meets each computer at its centre.
+      HStack(alignment: .top, spacing: 0) {
         device(symbol: "laptopcomputer", name: node.string("from") ?? "This computer", mark: nil)
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !animating)) { t in
           Canvas { ctx, size in
@@ -1362,16 +1547,17 @@ private struct LinkNode: View {
           .overlay(badgeView)
         }
         .frame(height: 64)
+        .padding(.top, 24 - 32)
         device(symbol: nil, name: node.string("to") ?? "", mark: state == "done" ? "checkmark.circle.fill"
                : state == "failed" ? "exclamationmark.circle.fill" : nil)
       }
       HStack(spacing: MVTheme.space(6)) {
         Text(node.string("caption") ?? "")
-          .font(MVTheme.font(12))
+          .font(screenFont(12, window: window))
           .foregroundStyle(MVTheme.body)
         if value >= 0 {
           Text("\(Int((value * 100).rounded()))%")
-            .font(MVTheme.font(12).monospacedDigit())
+            .font(screenFont(12, window: window).monospacedDigit())
             .foregroundStyle(MVTheme.title)
         }
       }
@@ -1414,8 +1600,8 @@ private struct LinkNode: View {
             .transition(.scale)
         }
       }
-      Text(name).font(MVTheme.font(11)).foregroundStyle(MVTheme.body).lineLimit(1)
-        .frame(maxWidth: 88)
+      Text(name).font(screenFont(11, window: window)).foregroundStyle(MVTheme.body).lineLimit(2)
+        .multilineTextAlignment(.center).frame(maxWidth: 88)
     }
     .frame(width: 88)
   }
@@ -1430,7 +1616,7 @@ private struct LinkNode: View {
         .foregroundStyle(state == "failed" ? MVTheme.disabled : tint)
       // A relay: the computer in between, named under it.
       if let through = node.string("through"), !through.isEmpty {
-        Text(through).font(MVTheme.font(10)).foregroundStyle(MVTheme.body).lineLimit(1)
+        Text(through).font(screenFont(10, window: window)).foregroundStyle(MVTheme.body).lineLimit(1)
           .fixedSize().offset(y: 27)
       }
     }

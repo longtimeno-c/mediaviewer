@@ -442,8 +442,9 @@ public static partial class IslandHost
     {
         // `bare`: no box of its own, for a field whose container draws one
         // (file search).
-        public FakeInput(string placeholder, double width = 0, bool bare = false)
-            : base(ChromeInputLook, placeholder, width, bare)
+        public FakeInput(string placeholder, double width = 0, bool bare = false,
+                         MediaViewer.Shared.FakeInputLook? look = null)
+            : base(look ?? ChromeInputLook, placeholder, width, bare)
         {
             OwnsEnterAndDown = true;
         }

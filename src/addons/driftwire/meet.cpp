@@ -702,10 +702,10 @@ result<std::unique_ptr<link>> meet(const std::shared_ptr<udp_hub>& hub, client& 
     // The next path: one a reply came back on and not yet tried, with fresh
     // hellos meanwhile (they keep the mappings open and draw replies).
     path_out.reset();
-    const auto until = clock::now() + std::chrono::milliseconds(kFallbackMs);
+    const auto next_until = clock::now() + std::chrono::milliseconds(kFallbackMs);
     std::optional<std::pair<punch_path, nonce>> next;
     std::optional<std::array<std::uint8_t, kAnswerBytes>> again;
-    while (clock::now() < until && !stopped()) {
+    while (clock::now() < next_until && !stopped()) {
       std::vector<std::pair<punch_path, nonce>> replies;
       std::vector<punch_path> learned;
       {

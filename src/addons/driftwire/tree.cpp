@@ -413,11 +413,26 @@ void files_card(writer& w, const view& v, bool sending) {
   end(w);
 }
 
+// #508: what this computer cannot search, said once, quietly, under Nearby;
+// nothing when Wi-Fi and Bluetooth both work.
+std::string reach_note(const view& v) {
+  const std::string& bt = v.bluetooth_note;
+  const bool bt_ok = bt.empty() || bt == "Bluetooth is not used.";
+  if (bt == "Offline.") return "Offline: nothing nearby can be found.";
+  if (v.wifi_up) return bt_ok ? std::string() : "Searching this network only. " + bt;
+  if (bt.empty()) return "Not on a network: searching Bluetooth only.";
+  return bt_ok ? std::string("Not on a network, so nothing nearby can be found.")
+               : "Not on a network, so nothing nearby can be found. " + bt;
+}
+
 void nearby(writer& w, const view& v) {
-  stack(w, "nearby", 10, "vertical", nullptr, "fill");
+  stack(w, "nearby", 10, "vertical", "card", "fill");
   text(w, "peers_title", "Nearby", "heading");
   if (v.peers.empty()) {
-    text(w, "peers_none", "Looking for MediaViewers nearby\xE2\x80\xA6 Open Driftwire on the other computer too.",
+    // #508: an empty state, not a status line.
+    text(w, "peers_none", "No one nearby yet", "title");
+    text(w, "peers_how",
+         "Open Driftwire on the other computer. It shows up here when it is on this network or in Bluetooth range.",
          "secondary");
   } else {
     w.begin_object().key("type").string("tiles").key("id").string("peers").key("label").string("Nearby MediaViewers");
@@ -458,6 +473,7 @@ void nearby(writer& w, const view& v) {
   if (v.out == view::out_phase::idle && !v.peers.empty() && v.file_count > 0 && !v.reading_folder) {
     text(w, "out_hint", "Click a computer to send it these files.", "secondary");
   }
+  if (const std::string reach = reach_note(v); !reach.empty()) text(w, "presence", reach, "caption");
   end(w);
 }
 
@@ -508,7 +524,7 @@ void send_code_card(writer& w, const view& v, bool sending) {
 
 void known_devices(writer& w, const view& v, bool sending) {
   if (v.known.empty()) return;
-  stack(w, "known_section", 8, "vertical", nullptr, "fill");
+  stack(w, "known_section", 10, "vertical", "card", "fill");
   text(w, "known_title", "Remembered devices", "heading");
   w.begin_object().key("type").string("tiles").key("id").string("known").key("label").string("Remembered devices");
   w.key("size").integer(64).key("items").begin_array();
@@ -545,7 +561,7 @@ void known_devices(writer& w, const view& v, bool sending) {
 }
 
 void internet_options(writer& w, const view& v) {
-  stack(w, "internet_options", 8, "vertical", nullptr, "fill");
+  stack(w, "internet_options", 10, "vertical", "card", "fill");
   text(w, "options_title", "Internet options", "heading");
   // #472 PR 3: opt-in, off by default.
   toggle(w, "dht", "Find each other through the public DHT", v.dht);
@@ -578,18 +594,22 @@ void internet_options(writer& w, const view& v) {
 }
 
 void internet(writer& w, const view& v, bool sending) {
-  stack(w, "internet_section", 12, "vertical", nullptr, "fill");
+  // #508: the switch and what it means in a card; the rest, when on, are
+  // cards of their own at the page's spacing (never a card in a card).
+  stack(w, "internet_section", 16, "vertical", nullptr, "fill");
+  stack(w, "internet_card", 10, "vertical", "card", "fill");
   text(w, "internet_title", "Over the internet", "heading");
   toggle(w, "internet", "Send and receive over the internet", v.internet);
+  text(w, "internet_intro",
+       v.internet ? "No server: the two computers connect straight to each other with a code that works once. "
+                    "Whoever has the code learns this computer\xE2\x80\x99s address."
+                  : "For a computer that is not nearby. Off until you turn it on.",
+       "caption");
+  end(w);
   if (!v.internet) {
-    text(w, "internet_intro", "For a computer that is not nearby. Off until you turn it on.", "caption");
     end(w);
     return;
   }
-  text(w, "internet_intro",
-       "No server: the two computers connect straight to each other with a code that works once. Whoever has the "
-       "code learns this computer\xE2\x80\x99s address.",
-       "caption");
   receive_card(w, v);
   send_code_card(w, v, sending);
   known_devices(w, v, sending);
@@ -604,20 +624,15 @@ std::string build_tree(const view& v) {
   w.begin_object().key("type").string("scroll").key("id").string("root").key("children").begin_array();
   stack(w, "page", 16, "vertical", nullptr, "fill");
 
-  // Who this computer is, and whether it stays discoverable.
-  stack(w, "me", 6, "vertical", nullptr, "fill");
+  // Who this computer is, and whether it stays discoverable. #508: a card,
+  // as every group here; what it cannot search is said under Nearby.
+  stack(w, "me", 10, "vertical", "card", "fill");
   text(w, "intro",
        "Nearby MediaViewers see this computer as \xE2\x80\x9C" + v.my_name +
            "\xE2\x80\x9D while this window is open" +
            (v.background ? ", and while MediaViewer is closed."
                          : v.receiving ? " and while MediaViewer runs." : "."),
        "secondary");
-  {
-    std::string where = v.wifi_up ? "Looking on the local network" : "The local network is not available";
-    where += v.bluetooth_note.empty() ? (v.wifi_up ? " and Bluetooth." : "; looking on Bluetooth.")
-                                      : ". " + v.bluetooth_note;
-    text(w, "presence", where, "caption");
-  }
   toggle(w, "receiving", "Keep receiving when this window is closed", v.receiving);
   // #452: opt-in, off by default. MediaViewer then stays in the menu bar /
   // notification area with every window closed, and an offer is a system

@@ -355,6 +355,21 @@ small vocabulary both hosts render with their own controls.
   high contrast, text size, VoiceOver and Narrator without the add-on doing anything.
 - **Windows control limits apply** (`tools/check-winui-controls.ps1`): the vocabulary maps only
   to controls that load in the islands, with the existing stand-ins for the rest.
+- **How Windows draws a screen window** (#508, 2026-10-20; `IslandHost.ScreenLook.cs`): the
+  system face, Segoe UI Variable (the theme's `font` when it names one), on the Fluent ramp
+  (heading 17 semibold, body 14, secondary 13, caption 12); a toggle on the right of its label,
+  as the Mac's `Toggle`; filled buttons as Settings' (accent for `primary`, red text for
+  `destructive`); a text field takes the width its row leaves; a scrolling tree's margin sits
+  inside the scroller, so the bar is on the window's edge; the title bar follows light / dark; a
+  window opens no taller than its content. A new revision rebuilds the content but keeps each
+  scroller's offset and the focused control, by node id (two revisions back to back keep it
+  too). A section in the info pane keeps the chrome's face, among the chrome's own text.
+  **The Mac draws it the same way** (`ScreenView.swift`, #508): the system face (SF, or the
+  theme's `font`) on the same ramp, the switch on the right of its label (clicking the words
+  flips it), filled buttons, a field as wide as its row, a root scroller's margin inside it, and
+  a window that shrinks to its content once, keeping its top edge (floor 360 pt). SwiftUI keeps
+  each scroller's offset and the focus across a revision by itself, since every node is built
+  under its id. The title bar already follows the theme's light or dark (`NSApp.appearance`).
 
 ## 11. Performance
 
@@ -781,6 +796,9 @@ blank window):
   and dots that travel the way the bytes go. Only `moving` and `connecting` animate, at 30 fps at
   most, and never with Reduce Motion (Mac) or animations off (Windows); the dots stop when the
   node leaves the tree. Its VoiceOver / Narrator name is `label`, its value the percentage.
+  It always takes the full width, even in a centred stack (a text field, a progress bar and a
+  separator do too, as on the Mac); the two computers are top-aligned, each name on up to two
+  lines, and the path meets them at the circles' middle.
 - **`button` `"copy"`**: a click also puts this text on the clipboard. The host does it, only on
   the click, then reports the click as usual; an add-on has no clipboard call of its own. The
   label says "Copied" for 1.5 s.

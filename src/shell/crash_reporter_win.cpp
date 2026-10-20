@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <shlobj.h>
 
+#include <atomic>
 #include <map>
 #include <mutex>
 #include <string>
@@ -81,6 +82,42 @@ void register_annotations() {
                                         "mv_last_call_cid",
                                         const_cast<std::uint64_t*>(info.last_call_correlation_id));
   last->SetSize(sizeof(std::uint64_t));
+}
+
+// #508: the WinUI DLLs whose access violations .NET turns into a fail-fast
+// that only WER sees. Looked up when a fault happens (they load after start).
+bool in_winui(const void* address) noexcept {
+  static constexpr const wchar_t* kModules[] = {
+      L"Microsoft.UI.Xaml.dll", L"Microsoft.UI.Windowing.Core.dll", L"Microsoft.UI.Windowing.dll",
+      L"Microsoft.UI.Input.dll", L"Microsoft.UI.Xaml.Controls.dll"};
+  HMODULE at = nullptr;
+  if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            static_cast<LPCWSTR>(address), &at) ||
+      at == nullptr) {
+    return false;
+  }
+  for (const wchar_t* name : kModules) {
+    if (::GetModuleHandleW(name) == at) return true;
+  }
+  return false;
+}
+
+LONG CALLBACK winui_fault_watch(EXCEPTION_POINTERS* ep) noexcept {
+  static std::atomic<bool> recorded{false};
+  if (ep == nullptr || ep->ExceptionRecord == nullptr || ep->ContextRecord == nullptr) {
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+  // A managed NullReferenceException is an access violation in JIT code: not
+  // in a WinUI module, so it costs one module lookup and nothing else.
+  if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || g_client == nullptr ||
+      recorded.load(std::memory_order_relaxed) || !in_winui(ep->ExceptionRecord->ExceptionAddress)) {
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+  if (recorded.exchange(true)) return EXCEPTION_CONTINUE_SEARCH;
+  // The faulting thread's own context: the report's stack is the crash's.
+  // Nothing else changes: the exception goes on as it would have.
+  crashpad::CrashpadClient::DumpWithoutCrash(*ep->ContextRecord);
+  return EXCEPTION_CONTINUE_SEARCH;
 }
 
 bool read_file(const std::wstring& path, std::vector<std::uint8_t>& out) {
@@ -217,8 +254,12 @@ start_result start() noexcept {
       result.started = client.StartHandler(base::FilePath(handler), base::FilePath(db),
                                            base::FilePath(), std::string(), annotations,
                                            {"--no-rate-limit"}, false, true);
-      if (result.started) g_client = &client;
-      else MV_LOG_WARN("crash: handler did not start; crash reporting is off");
+      if (result.started) {
+        g_client = &client;
+        ::AddVectoredExceptionHandler(0, &winui_fault_watch);
+      } else {
+        MV_LOG_WARN("crash: handler did not start; crash reporting is off");
+      }
 
       const crash_settings cs = load_crash_settings();
       const bool url = !cs.upload_url.empty();
