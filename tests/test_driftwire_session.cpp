@@ -12,6 +12,9 @@
 // is one) and moves to Wi-Fi when the peer's beacon appears; a Wi-Fi link
 // that drops moves to Bluetooth, which goes out of range and comes back.
 // Radios are stand-ins: no real Bluetooth or Wi-Fi is measured here.
+#include <functional>
+#include <future>
+
 #include "driftwire_fixture.h"
 #include "driftwire_swarm.h"
 
@@ -771,6 +774,7 @@ struct internet_pair {
   std::atomic<std::size_t> dht_rate{0};
   std::atomic<int> dht_met{0};
   std::atomic<inject_discovery*> ann_wifi{nullptr};
+  std::function<void()> ann_after_end;  // set before a send starts (#502)
   std::optional<node> bea, ann;
   std::optional<beacon_pump> pump;
   internet_pair(const scratch_dir& s, bool handover, const swarm* dht_swarm = nullptr, bool ann_dht = true,
@@ -809,6 +813,9 @@ struct internet_pair {
       std::shared_ptr<sp::link> inner(std::move(l));
       dht_links.keep(inner);
       return std::make_unique<bearer_link>(inner, sp::transport::internet, &dht_rate);
+    };
+    ao.after_end_transfer = [this] {
+      if (ann_after_end) ann_after_end();
     };
     ann.emplace(s / "ann_received", ao);
     for (node* n : {&*ann, &*bea}) {
@@ -934,6 +941,49 @@ TEST_CASE("driftwire session: when both sides move, the send meets the receiver 
   CHECK_FALSE(any_temporary(s / "bea_received"));
   CHECK(eventually([&] { return !bea.eng.snapshot().in_handover_dht && !ann.eng.snapshot().out_handover_dht; }));
   std::printf("{\"case\":\"wifi_to_dht\",\"moved_ms\":%lld}\n", static_cast<long long>(moved_ms));
+}
+
+// #502: a send with a DHT handover ends while the next transfer starts.
+// Its meeting was retired after end_transfer, taking threads_m_, which the
+// next transfer held while it joined the ending thread: both hung. The hook
+// holds the ending thread there while Send is clicked again.
+TEST_CASE("driftwire session: a send with a DHT handover ends while the next one starts, and nothing hangs",
+          "[driftwire]") {
+  scratch_dir s("driftwire_handover_dht_end_race");
+  swarm sw(8);
+  internet_pair p(s, true, &sw);
+  node& ann = *p.ann;
+  node& bea = *p.bea;
+  std::atomic<int> ends{0};
+  p.ann_after_end = [&] {
+    if (ends.fetch_add(1) == 0) std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  };
+  const fs::path src = big_file(s / "out", 24ull * 1024 * 1024);
+  ann.eng.set_files({utf8(src)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_count == 1 && !v.peers.empty() && v.peers[0].wifi;
+  }));
+  ann.eng.on_event("peers", 5, "\"" + bea.eng.id() + "\"");
+  confirm_and_accept(ann, bea);
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out_handover_dht && bea.eng.snapshot().in_handover_dht; }));
+  REQUIRE(eventually([&] { return ends.load() == 1; }, 40));  // the send ended; its thread is in the hook
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::done);
+  // Send again, at once. Hung, nothing can join the engine's threads: end
+  // here rather than hang the run.
+  const auto or_abort = [](std::future<void>& f) {
+    if (f.wait_for(std::chrono::seconds(20)) == std::future_status::ready) return;
+    std::fprintf(stderr, "driftwire: the end of a send and the next send hung (#502)\n");
+    std::abort();
+  };
+  auto again = std::async(std::launch::async, [&] { ann.eng.on_event("peers", 5, "\"" + bea.eng.id() + "\""); });
+  or_abort(again);
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::confirming; }, 20));
+  ann.eng.on_event("out_cancel", 1, "");
+  auto idle = std::async(std::launch::async, [&] { ann.eng.wait_idle(); });
+  or_abort(idle);
+  bea.eng.wait_idle();
+  CHECK(same_bytes(src, s / "bea_received" / "clip.mov"));
 }
 
 // #472: a DHT move, then that path drops too: the next drop meets under

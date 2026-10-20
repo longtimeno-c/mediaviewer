@@ -38,6 +38,7 @@
 #include <thread>
 #include <vector>
 
+#include "addons/driftwire/admission.h"
 #include "addons/driftwire/channel.h"
 #include "addons/driftwire/handover.h"
 #include "addons/driftwire/internet.h"
@@ -57,7 +58,17 @@ inline constexpr std::uint64_t kBluetoothMaxBytes = 32ull * 1024 * 1024;
 // A peer not heard for this long leaves the list.
 inline constexpr int kPeerForgetMs = 4500;
 // Peers listed at most (a flood of made-up beacons costs nothing past it).
+// #502: a new one takes the place of the one heard from longest ago, one
+// address lists at most kMaxIdsPerAddress (a few MediaViewers on one
+// computer), and kBluetoothRoom places are kept for peers heard only there.
 inline constexpr std::size_t kMaxPeers = 64;
+inline constexpr std::size_t kMaxIdsPerAddress = 4;
+inline constexpr std::size_t kBluetoothRoom = 16;
+// #502: what one source (a LAN address, Bluetooth) may start here in a
+// minute: receives (a link past that closes at once), and notifications or
+// the window brought forward (past that, the offer waits in the window).
+inline constexpr int kReceivesPerMinute = 6;
+inline constexpr int kNoticesPerMinute = 3;
 // Names listed under "Files to send" / in an offer, at most.
 inline constexpr std::size_t kListedNames = 200;
 // Thumbnails shown of the files to send (the window's strip).
@@ -221,6 +232,13 @@ class engine_host {
     (void)body;
     return false;
   }
+  // #502: as post_notice, about offer `offer`. A host that tags the button
+  // with it hands it back (engine::decline_notice), so a stale
+  // notification's Decline reaches only the offer it was about.
+  virtual bool post_offer_notice(const std::string& title, const std::string& body, std::uint64_t offer) {
+    (void)offer;
+    return post_notice(title, body);
+  }
   // #452: ask the person to allow notifications (a toggle turned on; the OS
   // asks once). Never at launch.
   virtual void ask_to_notify() {}
@@ -300,6 +318,17 @@ class engine {
     // #472, the tests: the sender's stream met on the DHT, before it rejoins
     // (wrapped to cut or slow it).
     std::function<std::unique_ptr<link>(std::unique_ptr<link>)> wrap_handover_link;
+    // #502, the tests: on the transfer thread, right after a transfer ends
+    // (another may start from then on), before the thread's way out.
+    std::function<void()> after_end_transfer;
+    // #502, the tests: how long a sender's person has to confirm the code,
+    // and how long a receive may move nothing after Accept.
+    int confirm_ms = kConfirmMs;
+    int receive_idle_ms = kReceiveIdleMs;
+    // #502: the networks this machine is on, for what the LAN listener and
+    // the beacon take (net::local_subnets() when empty). With loopback_only
+    // and none given, every source is taken (the tests' made-up addresses).
+    std::optional<std::vector<net::subnet>> local_subnets;
     // #511: how long a transfer's end ("Cancelled", "lost") stays on screen
     // before the window goes back to its default view (OK clears it sooner).
     int ended_show_ms = 6000;
@@ -320,6 +349,10 @@ class engine {
   void set_files(const std::vector<std::string>& paths);
   // A control in the window (screen::event_kind, the value as JSON).
   void on_event(const std::string& node, std::uint32_t kind, const std::string& value_json);
+  // A notification's Decline (#502): declines only while `offer` (from
+  // post_offer_notice) is the offer here; 0 (a host that did not tag it) as
+  // the window's Decline.
+  void decline_notice(std::uint64_t offer);
 
   // ---- for tests ------------------------------------------------------------------
   [[nodiscard]] view snapshot() const;
@@ -356,14 +389,22 @@ class engine {
   void start_presence();
   void stop_presence();
   void refresh_peers_locked();
+  // #502: room for a new peer heard on Wi-Fi at `address`, or on Bluetooth
+  // (empty address): the least recently heard peer goes, never one a send
+  // is for. False when nothing could go.
+  [[nodiscard]] bool make_room_locked(const std::string& address);
   void on_beacon(const beacon& b, const std::string& address);
   void on_tick();
   void on_bt_peer(const bt_peer& p);
   // `internet`: from the internet listener (#472 PR 2).
   // `from_known` (#472 PR 4): met on the DHT as a remembered device.
+  // `source` (#502): where it came from, for the per-source limits ("": none).
   void on_incoming(std::unique_ptr<link> l, bool internet = false,
-                   std::optional<known::device> from_known = std::nullopt);
+                   std::optional<known::device> from_known = std::nullopt, std::string source = {});
   void accept_loop();
+  // #502: an address on this machine's link (the networks cached, looked up
+  // again on a miss at most every 2 s). Any thread.
+  [[nodiscard]] bool on_link_source(const net::address& a);
   void start_send();
   // The peer the send waited for is on Wi-Fi now: go.
   void start_waiting_send();
@@ -374,11 +415,16 @@ class engine {
                 std::optional<dht::word_code> words = std::nullopt,
                 std::optional<known::device> to_known = std::nullopt);
   // #472 PR 4: known devices. Sending to one; the toggle under a transfer's
-  // result; Forget.
-  void start_send_known(std::size_t index);
+  // result; Forget. #502: a tile or Forget names its device by
+  // relay::fingerprint, never by its place in the list, so a click queued
+  // against an older window after a Forget or an eviction does nothing
+  // rather than reach another device.
+  void start_send_known(const std::string& fingerprint);
   void set_remembered(bool on);
-  void forget_known(std::size_t index);
+  void forget_known(const std::string& fingerprint);
   void publish_known_locked();
+  // The device with this fingerprint in devices_, or devices_.size().
+  [[nodiscard]] std::size_t known_index_locked(const std::string& fingerprint) const;
   // The control thread: the wait for remembered devices, started and
   // stopped with the window or Keep receiving, the internet and DHT
   // toggles, and whether any device is remembered.
@@ -428,7 +474,7 @@ class engine {
   // `internet`: the link came to the internet listener (a code's sender, or
   // a rejoin of a transfer over one).
   void run_receive(std::unique_ptr<link> l, bool internet = false,
-                   std::optional<known::device> from_known = std::nullopt);
+                   std::optional<known::device> from_known = std::nullopt, std::string source = {});
   // The offer's notification (#452), from the receive thread only. False:
   // the host has none (open the window instead).
   bool notice(const std::string& peer, std::size_t count, std::uint64_t bytes);
@@ -465,6 +511,30 @@ class engine {
   void clear_ended_later();
   void clear_ended();  // the control thread
   void reap_helpers();  // under threads_m_
+  // Runs `body` as the transfer thread once the last one is joined. The
+  // caller has set transfer_running_, so nobody installs a thread meanwhile.
+  // #502: never joined under threads_m_: the last one's way out may take it
+  // (retire, after end_transfer), and a join under it hung both threads.
+  template <class F>
+  void launch_transfer(F body) {
+    std::thread last;
+    {
+      std::lock_guard threads(threads_m_);
+      last = std::move(transfer_thread_);
+    }
+    if (last.joinable()) last.join();  // it has ended (transfer_running_ was false)
+    {
+      std::lock_guard threads(threads_m_);
+      // Stopping: the destructor may already have looked for the thread
+      // (it takes them under this lock after setting stopping_). Start none.
+      if (!stopping_.load()) {
+        transfer_thread_ = std::thread(std::move(body));
+        return;
+      }
+    }
+    { F dropped = std::move(body); }  // its link closes
+    end_transfer();
+  }
   // #472: a transfer's DHT handover, stopped and joined later (its thread
   // may be in a DNS lookup or a withdraw): never on the transfer's way out.
   void retire(std::unique_ptr<dht_handover> h);
@@ -520,6 +590,13 @@ class engine {
   // on the control thread; a receive in flight keeps its own reference).
   std::shared_ptr<internet_receiver> internet_;  // under m_
   std::string code_entry_;                       // under m_: what the "send to a code" field holds
+  std::uint64_t offer_seq_ = 0;                  // under m_: the receive now (or last), for its notices (#502)
+  // #502: receives started and notifications shown, per source.
+  source_limit receive_limit_{kReceivesPerMinute, std::chrono::minutes(1)};  // under m_
+  source_limit notice_limit_{kNoticesPerMinute, std::chrono::minutes(1)};   // under m_
+  std::mutex subnets_m_;
+  std::vector<net::subnet> subnets_;                  // under subnets_m_
+  std::chrono::steady_clock::time_point subnets_at_{};  // under subnets_m_
   // #497: nearby links that ended with no offer (a handshake dropped after
   // this side answered, or a code shown that nobody followed), the last
   // minute's; a run of them stops new nearby links for a while. Under m_.

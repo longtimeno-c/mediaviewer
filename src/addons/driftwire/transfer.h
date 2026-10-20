@@ -75,6 +75,9 @@ struct hooks {
   bool handover = false;
   bool handover_dht = false;  // #472: the offer says it meets on the DHT too
   std::function<void(std::string_view json)> on_places;
+  // #502, the receiver: nothing of the files for this long (and no file
+  // being read back) ends the receive as failed. 0: no limit.
+  int idle_ms = 0;
 };
 
 enum class outcome : std::uint8_t {

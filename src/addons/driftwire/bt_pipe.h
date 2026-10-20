@@ -48,6 +48,15 @@ inline constexpr std::uint8_t kPacketClose = 1;
 // Received bytes held for a reader that is behind; past it the link fails
 // (a peer that ignores flow control).
 inline constexpr std::size_t kMaxBuffered = 4u * 1024 * 1024;
+// #502: finding who is near. A probe (connect, read INFO) that takes longer
+// than kProbeMs gives its place up, so advertisers that stall GATT cannot
+// stop new peers being learned: kMaxProbes at a time, at most
+// kMaxProbeThreads probe threads alive (Windows: a stalled one waits for the
+// OS), and kMaxKnown devices remembered.
+inline constexpr int kProbeMs = 5000;
+inline constexpr std::size_t kMaxProbes = 8;
+inline constexpr std::size_t kMaxProbeThreads = 32;
+inline constexpr std::size_t kMaxKnown = 256;
 
 // The INFO value for (id, name), and back.
 [[nodiscard]] std::string info_json(const std::string& id, const std::string& name);

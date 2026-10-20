@@ -208,6 +208,21 @@ class channel {
   // the peer does not hold this session's secret, status::busy after three
   // rejoins in kFlapMs (which ends the session).
   [[nodiscard]] expected rejoin(std::shared_ptr<link> l);
+  // #502: the client's rejoin in two steps, so the mover can race it over
+  // every bearer at once. begin_rejoin() sends the first message and reads
+  // the peer's answer within `answer_ms`: proof the peer holds this session's
+  // secret (a machine that only claimed the peer's id, or answers nothing,
+  // fails here). Nothing is adopted on either side yet: a pending rejoin
+  // dropped unfinished closes its link, and the peer's half ends with it.
+  // complete_rejoin() sends resume_at both ways and moves the session (as
+  // rejoin(), which is the two in turn).
+  struct pending_rejoin;
+  struct pending_deleter {
+    void operator()(pending_rejoin* p) const noexcept;
+  };
+  using pending_ptr = std::unique_ptr<pending_rejoin, pending_deleter>;
+  [[nodiscard]] result<pending_ptr> begin_rejoin(std::shared_ptr<link> l, int answer_ms);
+  [[nodiscard]] expected complete_rejoin(pending_ptr p);
   // The server: `h` (from read_hello) names this session.
   [[nodiscard]] bool names_this(const hello& h) const noexcept;
   // The server: the rest of a rejoin that names_this().
@@ -260,11 +275,15 @@ class channel {
   [[nodiscard]] bool rejoin_expired() const noexcept;
   void mark_down(std::uint64_t gen) noexcept;
   void trim(std::uint64_t acked);
-  [[nodiscard]] expected adopt(std::shared_ptr<link> l, std::unique_ptr<stream_keys> keys, std::uint64_t peer_got);
+  // `index`: what rejoins() becomes (#502: both sides agree on it).
+  [[nodiscard]] expected adopt(std::shared_ptr<link> l, std::unique_ptr<stream_keys> keys, std::uint64_t peer_got,
+                               std::uint32_t index);
+  // `index`: the rejoin's number, as both sides now agree (each says its own
+  // in resume_at; the larger is taken).
   [[nodiscard]] expected finish_rejoin(link& l, std::span<const std::uint8_t, 32> tx,
                                        std::span<const std::uint8_t, 32> rx,
                                        std::chrono::steady_clock::time_point deadline, std::uint64_t& peer_got,
-                                       stream_keys& keys);
+                                       std::uint32_t& index, stream_keys& keys);
   void notify(link_event e);
 
   std::uint32_t version_ = kProtocolVersion;

@@ -1797,6 +1797,31 @@ issue: it starts with the meeting rather than after paths 1-4 have had 2 s, and 
 review before anything is on by default still stands. [28 "Not built"](28-driftwire.md#not-built)
 lists them.
 
+**The mover races whole rejoins, and resume_at carries the rejoin's number (owner, 2026-10-20,
+#502).** The mover took the first bearer to *connect*, so a machine beaconing the peer's id won
+every rescue and then stalled it up to 8 s. Now each bearer connects and begins the rejoin, and
+wins only with the peer's answer under the session's secret (within 3 s); only the winner sends
+`resume_at`, so nothing is adopted on a loser. The owner kept #472's move to a Wi-Fi place first
+heard mid-session (a send that starts on Bluetooth moves to Wi-Fi when the beacon appears), now
+taken only once its rejoin has answered, rather than refusing such places as the review proposed.
+Protocol: `resume_at`'s sequence field, 0 until now, carries the sender's rejoin number and both
+take the larger, so an on-path cut between the two `resume_at`s cannot put the DHT handover's keys
+out of step; a peer from before reads it as before and keeps its own count. Also: a
+notification's Decline names its offer, and remembered tiles and Forget name a device by its
+fingerprint, not its place in the list.
+
+**Nearby is on-link, and one source is held to a few a minute (2026-10-20, #502).** A code review
+found a sender could hold the one receive slot and post a notification per connect all night, the
+listener and beacon took any routable source, and 64 made-up beacon ids hid every real peer. Now:
+the LAN listener and the beacon take on-link sources only (an interface's subnet, link-local,
+loopback); one source starts at most 6 receives and gets at most 3 notifications (or window raises)
+a minute; the sender's person has 60 s to type the code, not 3 minutes (the answer keeps its 3
+minutes); after Accept, 60 s with nothing of the files moving ends the receive; the peer list
+evicts the least recently heard, caps one address at 4 ids and keeps 16 places for Bluetooth;
+Bluetooth probes give up after 5 s. Reopen the 60 s if people on slow connections report a code
+that timed out while they typed, or the on-link rule if a network with a single-host prefix
+(a /32 Wi-Fi) cannot see its peers.
+
 **No "Forwarded port" field: the public address is found, never typed (owner, 2026-10-19).** The
 window asked for `public address:port` under "Receive from anywhere", which read as a required step
 to someone who had just turned the internet on. A code already finds its own way in (router

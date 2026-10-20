@@ -511,8 +511,11 @@ void known_devices(writer& w, const view& v, bool sending) {
   text(w, "known_title", "Remembered devices", "heading");
   w.begin_object().key("type").string("tiles").key("id").string("known").key("label").string("Remembered devices");
   w.key("size").integer(64).key("items").begin_array();
+  // #502: by fingerprint, not by place, as the "own" toggles: a click from an
+  // older window reaches the device it showed or nothing.
+  const auto fp = [&](std::size_t i) { return i < v.known_ids.size() ? v.known_ids[i] : std::string(); };
   for (std::size_t i = 0; i < v.known.size(); ++i) {
-    w.begin_object().key("id").string("dev" + std::to_string(i)).key("text").string(v.known[i]);
+    w.begin_object().key("id").string("dev" + fp(i)).key("text").string(v.known[i]);
     w.key("detail").string("Over the internet").key("initials").string(initials(v.known[i])).end_object();
   }
   w.end_array();
@@ -525,7 +528,7 @@ void known_devices(writer& w, const view& v, bool sending) {
        "caption");
   row(w, "known_forget");
   for (std::size_t i = 0; i < v.known.size(); ++i) {
-    const std::string id = "forget" + std::to_string(i);
+    const std::string id = "forget" + fp(i);
     w.begin_object().key("type").string("button").key("id").string(id).key("label").string("Forget " + v.known[i]);
     w.key("style").string("plain").end_object();
   }
@@ -533,7 +536,7 @@ void known_devices(writer& w, const view& v, bool sending) {
   if (v.relay) {
     // #472 relays: which of them are this person's own (relay for each other).
     for (std::size_t i = 0; i < v.known.size(); ++i) {
-      const std::string id = "own" + (i < v.known_ids.size() ? v.known_ids[i] : std::string());
+      const std::string id = "own" + fp(i);
       toggle(w, id.c_str(), v.known[i] + " is my computer", i < v.known_own.size() && v.known_own[i]);
     }
   }

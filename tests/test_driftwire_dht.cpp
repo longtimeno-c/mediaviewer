@@ -1002,7 +1002,7 @@ TEST_CASE("driftwire known: two devices that remember each other send again with
     const auto v = ann.eng.snapshot();
     return !v.reading_folder && v.file_names == std::vector<std::string>{"second.mov"};
   }));
-  ann.eng.on_event("known", 5, "\"dev0\"");
+  ann.eng.on_event("known", 5, "\"dev" + ann.eng.snapshot().known_ids.at(0) + "\"");
   CHECK(ann.eng.snapshot().out_known);
   REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }, 60));
   CHECK(bea.eng.snapshot().in_known);
@@ -1072,7 +1072,7 @@ TEST_CASE("driftwire known: the list and the identity outlive the engine, and Fo
   const std::string tree = sp::build_tree(ann.eng.snapshot());
   CHECK(tree.find("Remembered devices") != std::string::npos);
   CHECK(tree.find("Forget Bea") != std::string::npos);
-  ann.eng.on_event("forget0", 1, "");
+  ann.eng.on_event("forget" + ann.eng.snapshot().known_ids.at(0), 1, "");
   CHECK(ann.eng.snapshot().known.empty());
   word_client again(dir / "ann_received", "Ann", s, dir / "ann_secrets");
   CHECK(again.eng.snapshot().known.empty());
@@ -1132,7 +1132,7 @@ TEST_CASE("driftwire known: a remembered device with another key is refused, lou
   const fs::path f = file_of(dir, "b.jpg", 100 * 1024, 7);
   ann.eng.set_files({utf8(f)});
   REQUIRE(eventually([&] { return ann.eng.snapshot().file_count == 1; }));
-  ann.eng.on_event("known", 5, "\"dev0\"");
+  ann.eng.on_event("known", 5, "\"dev" + ann.eng.snapshot().known_ids.at(0) + "\"");
   const bool ended = eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::ended; }, 60);
   done.store(true);
   impostor.join();
@@ -1156,7 +1156,7 @@ TEST_CASE("driftwire known: a send to a device that does not answer waits, and C
   const fs::path f = file_of(dir, "b.jpg", 100 * 1024, 9);
   ann.eng.set_files({utf8(f)});
   REQUIRE(eventually([&] { return ann.eng.snapshot().file_count == 1; }));
-  ann.eng.on_event("known", 5, "\"dev0\"");
+  ann.eng.on_event("known", 5, "\"dev" + ann.eng.snapshot().known_ids.at(0) + "\"");
   const bool waits =
       eventually([&] { return ann.eng.snapshot().out_note.find("Waiting for Bea to come online") == 0; }, 20);
   INFO(ann.eng.snapshot().out_note << " / " << ann.eng.snapshot().send_code_note << " / "
