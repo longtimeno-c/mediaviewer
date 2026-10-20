@@ -89,11 +89,22 @@ the engine never touches the canvas.
 | **Wi-Fi** (`presence.cpp`, `net_*`) | A UDP beacon a second, port 47613, to the group 239.255.77.83 and the subnet broadcast, TTL 1 | The same socket, shared with other windows on the machine | One TCP connection to the beacon's address and port; the listener's port is the OS's pick |
 | **Bluetooth** (`bt_mac.mm`, `bt_win.cpp`) | A GATT service advertised connectable | A scan filtered to that service; each new device is read once for its INFO (id, name) | The service as a byte pipe (`bt_pipe.h`): C2P written without response, P2C notifying |
 
-- A **beacon** is `MVSP1` and `{"v","p","id","name","port"}`: a random session id (16 hex digits,
-  new each run), the machine's name (the Sharing name on the Mac, the computer name on Windows), a
-  port, and `"p"`, the highest protocol it speaks (#472; `"v"` stays 1, which is what a protocol 1
-  client checks, so old and new still see each other; no `"p"` is protocol 1). Bluetooth's INFO
-  carries the same `"p"`. Never a path, a name of a file or anything about one.
+- A **beacon** is `MVSP1` and `{"v","p","id","name","port"}`: a random session id (16 hex digits),
+  the machine's name (the Sharing name on the Mac, the computer name on Windows) **only while the
+  window is open**, a port, and `"p"`, the highest protocol it speaks (#472; `"v"` stays 1, which is
+  what a protocol 1 client checks, so old and new still see each other; no `"p"` is protocol 1).
+  Bluetooth's INFO carries the same id, name and `"p"`. Never a path, a name of a file or anything
+  about one.
+- **The id and the name change (#501).** With the window closed (Keep receiving, or Receive when
+  MediaViewer is closed) the name field says `MediaViewer`, which every version reads, and the id is
+  replaced every 10 minutes (`kIdRotateMs`) while nothing is under way; it is replaced too whenever
+  presence starts and whenever the window opens or closes, so the named and unnamed ids are not one
+  machine. With the window open the id holds, so a tile does not change under the pointer. Nothing
+  changes while a transfer, a handshake or a wait for a peer runs (the peer knows this side by the
+  id `ident` gave); the change waits for the end. A sender learns a background receiver's name from
+  `ident`, sealed, once it connects (and the receiver posts its notification), and shows that name,
+  not the beacon's. A protocol 1 send waiting to hear its peer on Wi-Fi follows the id, so a
+  receiver that changes its id meanwhile is lost to that wait.
 - A peer leaves the list 4.5 s after its last beacon or advertisement. One heard on both bearers
   is one row.
 - **Bluetooth LE between a Mac and a Windows PC** has one common way to move bytes: GATT. Windows
@@ -186,9 +197,15 @@ the LAN and Bluetooth. They get no rejoin and no move between bearers.
    the client's key (its shared secret mixed into the chaining key beside the X25519 ones), its
    static key and `es`. A recording of the link needs both X25519 and ML-KEM-768 broken to read.
 3. The client sends its static key, `se`, and reveals the nonce, which must match the commitment.
-   The static is this machine's identity, kept in the OS's secret store (#472 PR 4,
-   [below](#remembered-devices-472-pr-4)); without a store, a key made once a run. Nothing on the
-   LAN or Bluetooth trusts it: only a remembered device's meeting checks it.
+   **Both statics are keys made for this link alone (#501).** Anyone in range can connect and read
+   message 2, and a sender sends message 3 to whatever answers, before any code is typed, so the
+   machine's long-term identity ([below](#remembered-devices-472-pr-4)) is never a nearby static.
+   It goes sealed instead, once the link is authenticated: the sender's in its **offer** (`"key"`,
+   sent only after its person typed the right code, so only to the receiver that code names), the
+   receiver's in its **accept** (only after its person accepted). Remember keeps those. A handshake
+   behind CPace (an internet code, a remembered device's meeting) carries the identity as its
+   static, where the CPace key hides it from anyone without the code or the pairing secret and the
+   meeting checks it.
 4. **The code** is six digits from a BLAKE2b hash of the handshake hash after message 2 and the
    nonce. Everything the server contributes is fixed before the client's nonce is seen, and the
    nonce is fixed before the server speaks, so a machine in the middle cannot search for keys that
@@ -234,7 +251,9 @@ bugs (the tests, the vectors and the fuzz harness do). The first link's handshak
 a constant associated data instead of h; that only helps the attacker, so what holds there holds for
 the code, and with the real h ProVerif does not finish. The code's 10^-6 is outside the symbolic
 model: the oracle gives the attacker a perfect search, and the model shows no order of messages lets
-it use one. Not modelled: protocol 1, `ident` (sent sealed before the code, so a machine in the
+it use one. The statics are modelled as fixed keys; since #501 a nearby static is a key of that link,
+which only shrinks what a recording or a stolen key gives. Not modelled: the identity said in the
+offer and the accept (#501), protocol 1, `ident` (sent sealed before the code, so a machine in the
 middle learns the sender's id and name before a code is typed), timeouts and the flapping rule.
 
 **Protocol 1** (a peer from before #472): commit, answer, reveal, each with an X25519 key made for
@@ -318,7 +337,8 @@ send or a receive waits through a rejoin.
 
 **Who can take what.** Bytes move only from a sender to the peer its person picked, after that
 person typed the code the peer's screen showed and the person at that peer accepted. A sender never answers a request for
-files, so a third machine that hears the beacon learns a name and a port, and nothing else. A
+files, so a third machine that hears the beacon learns a port (and a name, while the window is open),
+and nothing else. A
 peer heard in the last 4.5 s keeps its address and device: a beacon claiming its id from another
 address is ignored, and the list holds at most 64. A receiver already in a transfer answers
 `busy`; at most four such refusals run at once.
@@ -542,17 +562,31 @@ need it on (and "Send and receive over the internet").
 ## Remembered devices (#472 PR 4)
 
 After a transfer over protocol 2 that went through, either window shows **Remember Bea** under the
-result. Ticked on both computers, a later send needs no code: Bea is a tile under **Remembered
+result (nearby, only when Bea said its identity after the code: a MediaViewer from before #501 says
+none, and would remember this side by the link's key, so Remember waits until it updates). Ticked on both computers, a later send needs no code: Bea is a tile under **Remembered
 devices** (in the internet section), and one click sends to it over the internet, whenever both
 are online. The receiver still accepts or declines every transfer. (`secrets.*`, `known.*`.)
 
 - **Identity.** An X25519 key made once and kept in the OS's secret store (`secrets.h`, a port, D9):
-  the login Keychain on the Mac (a generic password under "MediaViewer Driftwire", this device
-  only, after first unlock), Credential Manager on Windows (generic credentials, this machine only,
-  not roamed). It is the static of every protocol 2 handshake. Where there is no store (or it does
+  - **Mac (#501):** the *data protection* keychain, in the app's own keychain access group (a
+    generic password under "MediaViewer Driftwire", `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`,
+    not synchronised). There "this device only" holds: it is never in a backup or a migration to
+    another Mac. Every query names the group, so another app of the same user can neither read
+    these items nor plant one before Driftwire's first use (the OS lets only apps signed with the
+    group touch it). The group is read from the app's own entitlements; a build signed without one
+    (a dev build, the lab binary) has no store. Items in the login keychain from before #501 (where
+    the accessibility attribute is ignored, and a same-user app could have planted one) are
+    removed without a prompt and never read: a Mac remembers its devices again after the update.
+  - **Windows:** Credential Manager (generic credentials, this machine only, not roamed). Any
+    process of the same user can read or plant these with `CredRead` / `CredWrite`, without a prompt;
+    the store keeps them off the disk in plain form and out of roaming, no more.
+
+  It is the static of the handshakes behind CPace (an internet code, a remembered device's
+  meeting); nearby it is said sealed after the code and Accept ([The wire](#the-wire)). Where there is no store (or it does
   not keep what it is given) the key is this run's and nothing can be remembered; the toggle does
   not show. The tests use a folder (`secrets::file_store`).
-- **What is remembered**: the peer's name, its static key from that session, and a **pairing
+- **What is remembered**: the peer's name, its identity (the static of an internet session; the
+  `"key"` of its offer or accept nearby, #501), and a **pairing
   secret** only the two ends of that session hold (BLAKE2b over the session's resume secret). At
   most 16 devices, in one value of the store; Forget removes one.
 - **Mutual by construction.** Nothing is sent to say "I remembered you": the meeting is keyed by
@@ -728,8 +762,17 @@ second while bytes move; those posts update chrome and never present the canvas.
 - Nothing about a transfer goes to telemetry or a crash report: no path, file name, pixel, EXIF,
   address or peer name is logged (`log` takes ASCII without them) or annotated. The minidump
   scrub ([13](13-updates-and-telemetry.md)) applies unchanged.
-- The beacon carries a random id, the machine's name, a port and the protocol it speaks; the offer
-  travels sealed, to the peer picked. No account, no cloud, no server of ours: the beacon's TTL is
+- The beacon and Bluetooth INFO carry a random id, a port, the protocol spoken, and the machine's
+  name only while the Driftwire window is open (#501). A machine receiving in the background, maybe
+  for weeks, says `MediaViewer` and changes its id every 10 minutes while idle and whenever the
+  window opens or closes, so a listener on a café network or a Bluetooth observer cannot follow it
+  or read its owner's name off the air (on the Mac this keeps Bluetooth's private-address rotation
+  meaningful). What stays: a machine that connects learns the name from `ident` (sealed, before any
+  code), and that connection shows the receiver's notification; and the port and protocol are
+  constant while presence runs. The offer travels sealed, to the peer picked.
+- The long-term identity key is never in a nearby handshake (#501): each link has keys of its own,
+  and the identity goes sealed, the sender's after the right code, the receiver's after Accept. A
+  connector that reads message 2 and hangs up learns a key that is never used again. No account, no cloud, no server of ours: the beacon's TTL is
   1 and nothing resolves a name. Protocol 2 (#472 PR 1) opens no new network surface: the same
   listener, beacon and Bluetooth service carry it.
 - **Over the internet** (#472 PR 2, opt-in, off by default; [12](12-decision-log.md#driftwire)
@@ -748,8 +791,9 @@ second while bytes move; those posts update chrome and never present the canvas.
   side's public address only.
 - Protocol 2's resume secret and keys live in memory only, wiped when the session ends; nothing
   about a session is written down, except what Remember keeps (#472 PR 4): the peer's name, key
-  and pairing secret, in the OS's secret store (Keychain, Credential Manager), never a plain file,
-  until Forget.
+  and pairing secret, in the OS's secret store, never a plain file, until Forget. On the Mac that is
+  the data protection keychain in the app's own access group, this device only (#501); on Windows
+  Credential Manager, which any process of the same user can read ([Remembered devices](#remembered-devices-472-pr-4)).
 - Receiving is off until the window opens or the person turns it on. Turned on, it stays on across
   launches until turned off (#442), and the command bar says so (**Driftwire: receiving**).
 - A notification (#452) names the sender and a count and size; never a file name, a path or the

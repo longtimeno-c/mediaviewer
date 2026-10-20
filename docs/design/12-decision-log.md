@@ -1521,6 +1521,27 @@ menu offers Driftwire's one-click install, and Sharepoint is removed in Settings
 settings carry over once (`adopt_old_prefs` reads `<root>/sharepoint/data/sharepoint.json`, the one
 place the old name stays in the code).
 
+**Nearby handshakes carry no long-term key; the name is off the air with the window closed; the Mac
+keeps secrets in the data protection keychain (2026-10-20, #501; the owner's call on the two
+breaks below is pending in the PR).** Protocol 2 used the machine's identity as the static of every
+XX handshake, so anyone in range could connect, read message 2 and leave with a key that followed
+the machine for months; the beacon and Bluetooth INFO gave out the owner's name and a per-process id
+for as long as background receiving ran; and the Keychain items were in the login keychain, where
+"this device only" is ignored and a same-user app can plant one first. Now a nearby static is the
+link's own, and the identity goes sealed in the offer (after the code) and the accept (after
+Accept); the name goes out only while the window is open, and the id changes while idle and at
+every open and close; the Mac store is the data protection keychain in the app's access group, or
+none. Two things break, on purpose:
+- **Remember with v0.1.34/35.** Transfers both ways are unchanged (the wire is the same; old peers
+  ignore the new `"key"`). But an old peer remembers this side by the link's key and would never
+  meet it, so this version does not offer Remember to a peer that said no identity; the person
+  updates the other side, sends once more, and ticks it. Pairs remembered before the update keep
+  working (their meetings are unchanged). The other way, sending the identity to old peers, is the
+  leak itself: a receiver cannot tell an old sender from anyone else before message 2.
+- **Mac remembered devices start over.** The login-keychain items are removed, not migrated: one
+  may have been planted, and the app cannot tell. v0.1.35 shipped Remember a day earlier.
+Reopen the migration only with a way to prove an old item was the app's own.
+
 **A first-party add-on may open a local link the person asked for (owner, 2026-10-14).** Driftwire
 listens, beacons and uses Bluetooth only while its window is open, receiving is on or a transfer
 runs; the idle viewer has no socket. Bytes go only to the peer the sender picked, after the person

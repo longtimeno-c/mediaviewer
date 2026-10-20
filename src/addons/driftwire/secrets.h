@@ -4,10 +4,13 @@
 // identity key and what it remembers of each known device (its key and the
 // pairwise secret) never sit in a plain file.
 //
-//   secrets_mac.cpp  the login Keychain (Security.framework, generic passwords
-//                    under the service "MediaViewer Driftwire")
+//   secrets_mac.cpp  the data protection keychain, in the app's own access
+//                    group (Security.framework, generic passwords under the
+//                    service "MediaViewer Driftwire"; #501). None without
+//                    the access-group entitlement.
 //   secrets_win.cpp  Credential Manager (CredWrite, per user, generic
-//                    credentials "MediaViewer Driftwire/<name>")
+//                    credentials "MediaViewer Driftwire/<name>"). Any
+//                    process of the same user can read or plant these.
 //   secrets_file.cpp a file per name in a folder, for the tests and the
 //                    portable build (it says so; it is not a secret store)
 //
@@ -38,5 +41,10 @@ class store {
 [[nodiscard]] std::unique_ptr<store> os_store();
 // A folder of files (the tests; the portable build).
 [[nodiscard]] std::unique_ptr<store> file_store(const std::string& folder);
+#if defined(__APPLE__)
+// os_store() under another service name (the tests). Removes that service's
+// items from the login keychain first; nullptr without the entitlement.
+[[nodiscard]] std::unique_ptr<store> keychain_store(const std::string& service);
+#endif
 
 }  // namespace mv::driftwire::secrets

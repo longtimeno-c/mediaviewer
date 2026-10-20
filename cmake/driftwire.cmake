@@ -142,6 +142,7 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_internet.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_dht.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_known.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_privacy.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_relay.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_addon.cpp"
     "${MV_SOURCE_ROOT}/src/addons/driftwire/bt_none.cpp")

@@ -93,8 +93,10 @@ struct channel_options {
   // Client: the protocol to speak (the peer's beacon or INFO says which it
   // has). The server answers whichever the hello is.
   std::uint32_t version = kProtocolVersion;
-  // Protocol 2: this side's X25519 key in the XX handshake (the engine's,
-  // made once a run). Empty: one is made for this link.
+  // Protocol 2: this side's X25519 key in the XX handshake. Empty: one is
+  // made for this link. The engine gives its identity (known.h) only behind
+  // CPace (an internet code, a remembered device's meeting): a plain XX
+  // handshake hands the responder's static to whoever connects (#501).
   std::optional<std::array<std::uint8_t, 32>> static_key;
   // #472 PR 2, the receiver: the secret of the code it showed, which an
   // internet hello must know. Empty: an internet hello is refused.
@@ -154,8 +156,9 @@ class channel {
   // known only by the code; code() is the check, not a code to type.
   [[nodiscard]] bool internet() const noexcept { return internet_; }
   // Protocol 2 (#472 PR 4): the peer's static X25519 key from the XX
-  // handshake (its device identity once it keeps one), and a secret only the
-  // two ends of this session hold, for "Remember this device".
+  // handshake (its device identity over the internet; nearby, from #501, a
+  // key for that link alone), and a secret only the two ends of this
+  // session hold, for "Remember this device".
   [[nodiscard]] const std::optional<std::array<std::uint8_t, 32>>& peer_key() const noexcept { return peer_key_; }
   [[nodiscard]] std::array<std::uint8_t, 32> pairing_secret() const;
   // Protocol 2: a secret of this session (fixed for its life), apart from
