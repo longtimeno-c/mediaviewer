@@ -554,7 +554,9 @@ are online. The receiver still accepts or declines every transfer. (`secrets.*`,
   not show. The tests use a folder (`secrets::file_store`).
 - **What is remembered**: the peer's name, its static key from that session, and a **pairing
   secret** only the two ends of that session hold (BLAKE2b over the session's resume secret). At
-  most 16 devices, in one value of the store; Forget removes one.
+  most 16 devices, in one value of the store; Forget removes one. Removing Driftwire without
+  keeping its data (**Remove everything**) erases the identity and every remembered device from
+  the store too (`mv_addon_forget`, #507): installed again, it is a new device nobody remembers.
 - **Mutual by construction.** Nothing is sent to say "I remembered you": the meeting is keyed by
   the pairing secret, so a device is found only when both kept it. One-sided, the sender waits
   ("Waiting for Bea to come online… Bea must remember this computer too") until Cancel.

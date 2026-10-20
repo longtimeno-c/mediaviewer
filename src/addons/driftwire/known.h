@@ -59,6 +59,9 @@ struct device {
 [[nodiscard]] std::optional<std::vector<device>> decode(std::span<const std::uint8_t> bytes);
 [[nodiscard]] std::vector<device> load(secrets::store& store);
 [[nodiscard]] bool save(secrets::store& store, const std::vector<device>& devices);
+// Remove everything (#507): the remembered devices and this machine's
+// identity go from the store. True when neither is left.
+bool forget(secrets::store& store);
 
 // The hour (UTC) a unix time is in, and the pair's DHT keys for it in one
 // direction: toward `receiver`, the identity key of the one that waits (its

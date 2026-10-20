@@ -1242,6 +1242,42 @@ TEST_CASE("a native add-on fills every slot and screen through the v3 host table
   mv::addon::reset_settings_cache_for_tests();
 }
 
+TEST_CASE("remove without keep calls the add-on's forget before its files go; keep does not",
+          "[addon][slots]") {
+  keypair k;
+  scratch_dir s("addons_forget");
+  mv::addon::store st(utf8(s.root() / "addons"), k.pub, MV_ADDON_HOST_API);
+  fs::create_directories(s / "addons");
+  const std::vector<std::uint8_t> module = read_bytes(MV_SLOTS_TEST_MODULE_PATH);
+  const std::string native = utf8(fs::path(MV_SLOTS_TEST_MODULE_PATH).filename());
+  const std::string m = slots_manifest(native, module, kContributes);
+  const auto install = [&] {
+    auto staged = st.make_staging();
+    REQUIRE(staged);
+    write_bytes(fs::path(*staged) / fs::path(native), module);
+    write_text(fs::path(*staged) / "manifest.json", m);
+    write_bytes(fs::path(*staged) / "manifest.json.sig", k.sign(m));
+    auto done = st.install(*staged);
+    REQUIRE(done);
+    return done->data_dir;
+  };
+  const std::string data_dir = install();
+  const fs::path marker = fs::path(data_dir).concat(".forgotten");
+
+  // Keep data: the add-on is not asked to forget anything.
+  REQUIRE(st.remove("slots-test", true));
+  CHECK_FALSE(fs::exists(marker));
+
+  REQUIRE(install() == data_dir);
+  mv::addon::forget_outside_data(st, "slots-test");
+  CHECK(fs::exists(marker));
+  REQUIRE(st.remove("slots-test", false));
+  // Not installed: nothing to load, nothing to call.
+  fs::remove(marker);
+  mv::addon::forget_outside_data(st, "slots-test");
+  CHECK_FALSE(fs::exists(marker));
+}
+
 TEST_CASE("a changed setting re-asks the add-on once, and settings_get serves the new value",
           "[addon][slots][settings]") {
   keypair k;
