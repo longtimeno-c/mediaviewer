@@ -2299,6 +2299,11 @@ namespace {
 // answers at all answers quickly, and a race's slow loser is joined at the end.
 constexpr int kRaceWifiMs = 4000;
 constexpr int kRaceBluetoothMs = kConnectMs;
+// #502: the peer's answer to a rejoin, once connected. Two short messages:
+// a bearer that connects and then says nothing (a machine beaconing the
+// peer's id) loses within this, while the others race on.
+constexpr int kRejoinAnswerMs = 3000;
+using rejoin_race = basic_race<channel::pending_ptr>;
 
 }  // namespace
 
@@ -2306,7 +2311,7 @@ void engine::run_mover(std::shared_ptr<channel> ch, std::string peer_id, const s
                        std::optional<net::endpoint> internet_place) {
   using clock = std::chrono::steady_clock;
   clock::time_point last_move{};  // none yet: the first move for speed may come at once
-  std::vector<std::unique_ptr<link_race>> races;
+  std::vector<std::unique_ptr<rejoin_race>> races;
   auto stopped = [&] { return stop.load() || stopping_.load() || cancel_.load() || ch->closed(); };
   while (!stopped()) {
     std::optional<net::endpoint> wifi;
@@ -2332,7 +2337,7 @@ void engine::run_mover(std::shared_ptr<channel> ch, std::string peer_id, const s
     }
     // Races whose connects have all returned are joined as they go (never
     // waiting on a slow one here); the rest at the end.
-    std::erase_if(races, [](const std::unique_ptr<link_race>& r) {
+    std::erase_if(races, [](const std::unique_ptr<rejoin_race>& r) {
       if (!r->settled()) return false;
       r->join();
       return true;
@@ -2355,41 +2360,47 @@ void engine::run_mover(std::shared_ptr<channel> ch, std::string peer_id, const s
     const bool over_internet = rescue && internet_place.has_value();
     const bool over_handover = rescue && !handover.empty();
     if (!wifi && !bt && !over_internet && !over_handover) continue;  // nowhere to try yet: the next beacon kicks this
-    auto race = std::make_unique<link_race>();
+    // #502: each bearer connects and begins the rejoin; the first whose
+    // answer proves it holds the session's secret wins, and only it goes on
+    // to resume_at. A bearer that only connects fast (a machine beaconing the
+    // peer's id, a Wi-Fi place first heard mid-session) cannot win, so the
+    // others' rescue is not held back, and nothing is adopted on a loser.
+    const auto begin = [ch](result<std::unique_ptr<link>> c) -> result<channel::pending_ptr> {
+      if (!c) return err(c.error());
+      return ch->begin_rejoin(std::shared_ptr<link>(std::move(*c)), kRejoinAnswerMs);
+    };
+    auto race = std::make_unique<rejoin_race>();
     if (over_internet) {
       // Where the code's sender reached it: the receiver's listener stays up
       // while the transfer runs.
-      race->add([this, to = *internet_place]() -> result<std::unique_ptr<link>> {
+      race->add([this, begin, to = *internet_place] {
         auto c = opts_.connect_wifi ? opts_.connect_wifi(to, kRaceWifiMs) : net::connect(to, kRaceWifiMs);
-        if (!c) return err(c.error());
-        return std::unique_ptr<link>(std::make_unique<bearer_as>(std::move(*c), transport::internet));
+        if (!c) return begin(err(c.error()));
+        return begin(std::unique_ptr<link>(std::make_unique<bearer_as>(std::move(*c), transport::internet)));
       });
     }
     if (wifi) {
-      race->add([this, to = *wifi] {
-        return opts_.connect_wifi ? opts_.connect_wifi(to, kRaceWifiMs) : net::connect(to, kRaceWifiMs);
+      race->add([this, begin, to = *wifi] {
+        return begin(opts_.connect_wifi ? opts_.connect_wifi(to, kRaceWifiMs) : net::connect(to, kRaceWifiMs));
       });
     }
-    if (bt) race->add([bt, h = bt_handle] { return bt->connect(h, kRaceBluetoothMs); });
+    if (bt) race->add([begin, bt, h = bt_handle] { return begin(bt->connect(h, kRaceBluetoothMs)); });
     if (over_handover) {
       // #472 PR 5: Wi-Fi went, the toggle is on: the receiver's internet
       // places (swapped over the local link, no lookup), alongside the rest.
       for (const auto& to : handover) {
-        race->add([this, to]() -> result<std::unique_ptr<link>> {
+        race->add([this, begin, to] {
           auto c = opts_.connect_internet ? opts_.connect_internet(to, kRaceWifiMs) : net::connect(to, kRaceWifiMs);
-          if (!c) return err(c.error());
-          return std::unique_ptr<link>(std::make_unique<bearer_as>(std::move(*c), transport::internet));
+          if (!c) return begin(err(c.error()));
+          return begin(std::unique_ptr<link>(std::make_unique<bearer_as>(std::move(*c), transport::internet)));
         });
       }
     }
-    std::unique_ptr<link> l = race->wait(stopped);
+    channel::pending_ptr p = race->wait(stopped);
     races.push_back(std::move(race));
-    if (!l) continue;
-    if (stopped()) {
-      l->shutdown();
-      break;
-    }
-    if (auto r = ch->rejoin(std::shared_ptr<link>(std::move(l))); r) {
+    if (!p) continue;
+    if (stopped()) break;  // p closes its link
+    if (auto r = ch->complete_rejoin(std::move(p)); r) {
       last_move = clock::now();
     } else if (r.error() == status::cancelled || r.error() == status::busy) {
       break;  // the session ended (or flapped and ended)
