@@ -289,6 +289,9 @@ class engine {
     // #472, the tests: the sender's stream met on the DHT, before it rejoins
     // (wrapped to cut or slow it).
     std::function<std::unique_ptr<link>(std::unique_ptr<link>)> wrap_handover_link;
+    // #502, the tests: on the transfer thread, right after a transfer ends
+    // (another may start from then on), before the thread's way out.
+    std::function<void()> after_end_transfer;
   };
 
   engine(engine_host& host, options opts);
@@ -444,6 +447,30 @@ class engine {
   void read_folder(std::string folder);
   void cancel_transfer();
   void reap_helpers();  // under threads_m_
+  // Runs `body` as the transfer thread once the last one is joined. The
+  // caller has set transfer_running_, so nobody installs a thread meanwhile.
+  // #502: never joined under threads_m_: the last one's way out may take it
+  // (retire, after end_transfer), and a join under it hung both threads.
+  template <class F>
+  void launch_transfer(F body) {
+    std::thread last;
+    {
+      std::lock_guard threads(threads_m_);
+      last = std::move(transfer_thread_);
+    }
+    if (last.joinable()) last.join();  // it has ended (transfer_running_ was false)
+    {
+      std::lock_guard threads(threads_m_);
+      // Stopping: the destructor may already have looked for the thread
+      // (it takes them under this lock after setting stopping_). Start none.
+      if (!stopping_.load()) {
+        transfer_thread_ = std::thread(std::move(body));
+        return;
+      }
+    }
+    { F dropped = std::move(body); }  // its link closes
+    end_transfer();
+  }
   // #472: a transfer's DHT handover, stopped and joined later (its thread
   // may be in a DNS lookup or a withdraw): never on the transfer's way out.
   void retire(std::unique_ptr<dht_handover> h);

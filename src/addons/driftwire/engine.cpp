@@ -849,9 +849,7 @@ void engine::start_send_known(std::size_t index) {
   }
   post();
   if (!to) return;
-  std::lock_guard threads(threads_m_);
-  if (transfer_thread_.joinable()) transfer_thread_.join();
-  transfer_thread_ = std::thread([this, files = std::move(files), to = std::move(to)]() mutable {
+  launch_transfer([this, files = std::move(files), to = std::move(to)]() mutable {
     try {
       run_send({}, std::move(files), std::nullopt, std::nullopt, std::move(to));
     } catch (...) {
@@ -877,8 +875,8 @@ void engine::on_incoming(std::unique_ptr<link> l, bool internet, std::optional<k
       v_.remember_offer = false;
     }
   }
-  std::lock_guard threads(threads_m_);
   if (busy) {
+    std::lock_guard threads(threads_m_);
     reap_helpers();
     if (static_cast<int>(helpers_.size()) >= kMaxHelpers) return;  // the link closes as it goes
     auto done = std::make_shared<std::atomic<bool>>(false);
@@ -892,8 +890,7 @@ void engine::on_incoming(std::unique_ptr<link> l, bool internet, std::optional<k
                         done});
     return;
   }
-  if (transfer_thread_.joinable()) transfer_thread_.join();  // the last one has ended
-  transfer_thread_ = std::thread([this, internet, link = std::move(l), from_known = std::move(from_known)]() mutable {
+  launch_transfer([this, internet, link = std::move(l), from_known = std::move(from_known)]() mutable {
     try {
       run_receive(std::move(link), internet, std::move(from_known));
     } catch (...) {
@@ -1542,9 +1539,7 @@ void engine::start_send() {
     request_reconcile();
     return;
   }
-  std::lock_guard threads(threads_m_);
-  if (transfer_thread_.joinable()) transfer_thread_.join();
-  transfer_thread_ = std::thread([this, peer_id, files = std::move(files)]() mutable {
+  launch_transfer([this, peer_id, files = std::move(files)]() mutable {
     try {
       run_send(std::move(peer_id), std::move(files));
     } catch (...) {
@@ -1562,6 +1557,7 @@ void engine::end_transfer() {
   }
   request_reconcile();
   post();
+  if (opts_.after_end_transfer) opts_.after_end_transfer();
 }
 
 void engine::start_send_code() {
@@ -1608,9 +1604,7 @@ void engine::start_send_code() {
   }
   post();
   if (!code && !words) return;
-  std::lock_guard threads(threads_m_);
-  if (transfer_thread_.joinable()) transfer_thread_.join();
-  transfer_thread_ = std::thread([this, files = std::move(files), code = std::move(code), words]() mutable {
+  launch_transfer([this, files = std::move(files), code = std::move(code), words]() mutable {
     try {
       run_send({}, std::move(files), std::move(code), words);
     } catch (...) {
@@ -2155,26 +2149,31 @@ void engine::send_on(std::shared_ptr<channel> ch, std::vector<outgoing_file> fil
       e.v_.out_handover_dht = false;
     }
   } forget_places{*this};
-  struct meet_guard {
-    engine& e;
-    std::mutex& m;
-    std::unique_ptr<dht_handover>& h;
-    ~meet_guard() {
-      std::unique_ptr<dht_handover> done;
-      {
-        std::lock_guard lock(m);
-        done = std::move(h);
+  transfer_result r;
+  {
+    // #502: retired before end_transfer, as run_receive's is: retire takes
+    // threads_m_, which a next transfer may take as soon as this one ends.
+    struct meet_guard {
+      engine& e;
+      std::mutex& m;
+      std::unique_ptr<dht_handover>& h;
+      ~meet_guard() {
+        std::unique_ptr<dht_handover> done;
+        {
+          std::lock_guard lock(m);
+          done = std::move(h);
+        }
+        e.retire(std::move(done));
       }
-      e.retire(std::move(done));
-    }
-  } retire_meet{*this, meet_m, meet_dht};
-  const transfer_result r = send_files(*ch, files, hk, [this] {
-    {
-      std::lock_guard lock(m_);
-      v_.out = view::out_phase::sending;
-    }
-    post();
-  });
+    } retire_meet{*this, meet_m, meet_dht};
+    r = send_files(*ch, files, hk, [this] {
+      {
+        std::lock_guard lock(m_);
+        v_.out = view::out_phase::sending;
+      }
+      post();
+    });
+  }
   std::string note;
   const std::string sent = plural(r.done, "file", "files");
   switch (r.how) {
