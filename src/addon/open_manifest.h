@@ -44,7 +44,9 @@ inline constexpr int kOpenManifestSchema = 2;
 //   6  2026-10-19: the screen vocabulary's `link` node and a button's `copy`
 //      (Driftwire). No new point: a screen tree that uses them asks for 6,
 //      so an older host says "needs a newer MediaViewer", not a blank window.
-inline constexpr std::uint32_t kContributionApi = 6;
+//   7  2026-10-20 (#512): `opens` on a status item. An add-on that names one
+//      asks for 7; an older host refused it as malformed.
+inline constexpr std::uint32_t kContributionApi = 7;
 // The API that introduced code (`scripts`, `permissions`, commands).
 inline constexpr std::uint32_t kScriptApi = 3;
 inline constexpr std::uint32_t kContributionApiOldest = 1;

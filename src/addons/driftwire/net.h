@@ -82,6 +82,17 @@ class listener {
 
 // This machine's unicast addresses, every interface that is up.
 [[nodiscard]] std::vector<address> local_addresses();
+// #502: an interface's network, its address and prefix length.
+struct subnet {
+  address base;
+  int prefix = 0;
+};
+// The networks of every interface that is up (loopback's too).
+[[nodiscard]] std::vector<subnet> local_subnets();
+// Whether `a` is on one of `nets` (on this machine's link), or loopback, or
+// link-local (169.254/16, fe80::/10): what the LAN listener and the beacon
+// take (#502). Portable (net_address.cpp).
+[[nodiscard]] bool on_link(const address& a, std::span<const subnet> nets) noexcept;
 // The IPv4 default gateway (the router a port mapping asks), if any.
 [[nodiscard]] std::optional<address> default_gateway();
 // This machine's address on the route to `peer` (a UDP socket connected to

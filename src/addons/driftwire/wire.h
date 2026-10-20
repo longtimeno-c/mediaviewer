@@ -31,7 +31,10 @@ namespace mv::driftwire {
 // The protocol a client speaks when the peer has it (#472: Noise, hybrid
 // post-quantum, a session that rejoins over any bearer). A peer that announces
 // none speaks protocol 1, which still works on the LAN and Bluetooth.
-inline constexpr std::uint32_t kProtocolVersion = 2;
+// #497: 3 is 2 with the server's commitment (pairing_code_v3); a peer that
+// announces 2 (v0.1.34, v0.1.35) is still spoken to in 2.
+inline constexpr std::uint32_t kProtocolVersion = 3;
+inline constexpr std::uint32_t kProtocol2 = 2;
 inline constexpr std::uint32_t kProtocol1 = 1;
 // The beacon's and the Bluetooth INFO's own "v": protocol 1 clients ignore a
 // beacon with any other, so it stays 1 and "p" says the protocol.
@@ -55,6 +58,13 @@ inline constexpr int kConnectMs = 8000;
 // How long a person has to confirm the code (sender) or answer an offer
 // (receiver) before it is called off.
 inline constexpr int kAskMs = 180000;
+// How long the sender's person has to type the code (or confirm the name)
+// before the link ends. Shorter (#502): until then the receiver's one slot is
+// held, under a name the sender chose.
+inline constexpr int kConfirmMs = 60000;
+// After Accept, a receive that moves nothing this long ends (#502): pings
+// alone do not hold the slot. A file being read back counts as moving.
+inline constexpr int kReceiveIdleMs = 60000;
 // Protocol 2's session (#472). Nothing heard for kSuspectMs and the link is
 // suspect: the sender races the other bearers. kRejoinMs without a link ends
 // the session, and so do kFlapRejoins rejoins in kFlapMs. A ping at least
@@ -111,6 +121,9 @@ enum class msg : std::uint8_t {
   relay = 20,         // {"places":[{"a","p"},...]} (A -> R): connect onward to these
   relay_answer = 21,  // {"ok":bool,"why"} (R -> A); after ok, only relay_data either way
   relay_data = 22,    // raw bytes of A's link to B, sealed again between A and R
+  // Protocol 3, #497: the server's nonce, its first sealed message on a new
+  // link (unnumbered, like resume_at), revealed after the client's.
+  code_nonce = 23,
 };
 
 // "123 456": six digits from both public keys (client = the sender).
@@ -121,6 +134,16 @@ enum class msg : std::uint8_t {
 // message and the client's revealed nonce.
 [[nodiscard]] std::string pairing_code_v2(std::span<const std::uint8_t> handshake_hash,
                                           std::span<const std::uint8_t, 32> client_nonce);
+// Protocol 3 (#497): and the server's nonce, committed in message 2 and
+// revealed last, so neither side knows the code before the other is done.
+[[nodiscard]] std::string pairing_code_v3(std::span<const std::uint8_t> handshake_hash,
+                                          std::span<const std::uint8_t, 32> client_nonce,
+                                          std::span<const std::uint8_t, 32> server_nonce);
+// #497: "123 456", six digits only the two ends of a session can make (keyed
+// by a secret of it): the sender's window shows it after a nearby transfer,
+// and the receiver types it to remember the sender, proving the sender's
+// screen is the one in front of it, as the code proved the receiver's.
+[[nodiscard]] std::string remember_check(std::span<const std::uint8_t, 32> session_secret);
 
 // A sender's relative path ("Trip/IMG_1.JPG"): '/'-separated, every part a
 // name any of the two OSes can hold, nothing that climbs out, no device name,

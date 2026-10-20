@@ -83,6 +83,9 @@ rejected (R@10 0.822). MobileCLIP waits for its weights licence to clear `ai-mod
   (`machine.h`) recommends one: Potato on ≤ 2 cores or ≤ 8 GB, Intel on an x86_64 Mac or a PC
   with no accelerator, Maxxed with an accelerator and ≥ 32 GB, else Default. It is shown in the
   picker and never sent anywhere. An index made before tiers keeps Default without asking.
+  The control thread reads `tiers.json` and runs the check first, before the models wait for
+  a quiet viewer, and posts `MV_ADDON_EVENT_AI_STATUS`: the first status read has the tiers,
+  and each chrome counts the offer as made only once the picker opened (#509).
 - **Changing** tier fetches the new models, then re-indexes with the new towers while the old
   index answers (the old tier's tower still opens by its spec key, `open_clip_spec`); once the
   new one covers the folders the old vectors and the old tier's fetched files go.

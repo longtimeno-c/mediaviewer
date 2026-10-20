@@ -26,6 +26,8 @@ namespace {
 constexpr int kTempAttempts = 16;
 // The receiver waits at most this for its "done" to be acknowledged.
 constexpr int kFlushMs = 5000;
+// How often a receive with an idle limit looks at the clock (#502).
+constexpr int kIdlePollMs = 1000;
 constexpr int kRenameAttempts = 32;
 // The uncached read-back's buffer (aligned, a kIoAlign multiple).
 constexpr std::size_t kReadBackBytes = 4u * 1024 * 1024;
@@ -163,7 +165,7 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
   auto stop = [&](outcome o, int line) {
     note(h, "send", line, o);
     res.how = o;
-    if (o == outcome::cancelled) (void)ch.try_send(msg::cancel, "{}");
+    if (o == outcome::cancelled) (void)ch.cancel(kCancelWaitMs);
     ch.shutdown();
     return res;
   };
@@ -193,7 +195,7 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
   // The receiver's side, read while this thread writes: file_done per file,
   // its final done, or a cancel.
   std::atomic<std::uint32_t> verified{0};
-  std::atomic<bool> finished{false}, remote_cancel{false}, broken{false};
+  std::atomic<bool> finished{false}, remote_cancel{false}, remote_error{false}, broken{false};
   std::thread reader([&] {
     message in;
     for (;;) {
@@ -222,6 +224,15 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
         finished.store(true);
         return;
       } else if (in.type == msg::cancel) {
+        // The receiver ended it: its person cancelled, or {"why":"error"}.
+        bool error = false;
+        try {
+          const auto doc = json::parse(in.text(), 4);
+          const std::string* why = doc ? doc->str("why") : nullptr;
+          error = why && *why == "error";
+        } catch (...) {
+        }
+        remote_error.store(error);
         remote_cancel.store(true);
         ch.shutdown();
         return;
@@ -241,12 +252,16 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
   auto finish = [&](outcome o, int line) {
     note(h, "send", line, o);
     if (o != outcome::delivered) {
-      if (o == outcome::cancelled && !remote_cancel.load()) (void)ch.try_send(msg::cancel, "{}");
+      if (o == outcome::cancelled && !remote_cancel.load()) (void)ch.cancel(kCancelWaitMs);
       ch.shutdown();
     }
     reader.join();
     res.done = verified.load();
     res.how = o;
+    if (o == outcome::cancelled && remote_cancel.load()) {
+      res.by_peer = true;
+      if (remote_error.load()) res.how = outcome::failed;
+    }
     if (o == outcome::delivered && (!finished.load() || res.done + res.skipped != files.size())) {
       res.how = outcome::failed;
     }
@@ -315,8 +330,9 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
   reader.join();
   res.done = verified.load();
   res.how = finished.load() && res.done + res.skipped == files.size() ? outcome::delivered
-            : remote_cancel.load()                                    ? outcome::cancelled
+            : remote_cancel.load() && !remote_error.load()            ? outcome::cancelled
                                                                       : outcome::failed;
+  res.by_peer = res.how != outcome::delivered && remote_cancel.load();
   ch.shutdown();
   return res;
 }
@@ -424,6 +440,7 @@ class verifier {
     std::unique_lock lock(m_);
     room_.wait(lock, [&] { return queue_.size() < kVerifyAhead || broken_; });
     if (broken_) return false;
+    pending_.fetch_add(1);
     queue_.push_back({std::move(f), sent});
     work_.notify_one();
     return true;
@@ -439,6 +456,8 @@ class verifier {
     for (auto& t : threads_) t.join();
   }
   [[nodiscard]] std::uint32_t done() const { return done_.load(); }
+  // A file queued or being read back (#502: the receive is not idle).
+  [[nodiscard]] bool checking() const { return pending_.load() != 0; }
   [[nodiscard]] std::uint32_t failed() const { return failed_.load(); }
   [[nodiscard]] bool broken() {
     std::lock_guard lock(m_);
@@ -494,6 +513,7 @@ class verifier {
         broken_ = true;
         room_.notify_all();
       }
+      pending_.fetch_sub(1);
     }
   }
 
@@ -531,6 +551,7 @@ class verifier {
   bool broken_ = false;
   std::vector<std::pair<std::uint32_t, std::string>> written_;
   std::atomic<std::uint32_t> done_{0}, failed_{0};
+  std::atomic<int> pending_{0};
   std::vector<std::thread> threads_;
 };
 
@@ -552,7 +573,9 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
   auto end = [&](outcome o, bool tell, int line) {
     note(h, "receive", line, o);
     if (cur) cur->drop();
-    if (tell) (void)ch.send(msg::cancel, std::string_view("{}"));
+    // Said reliably and final (#511): the sender stops, and takes it for
+    // neither a lost link nor this person's cancel when it is a failure.
+    if (tell) (void)ch.cancel(kCancelWaitMs, o == outcome::cancelled ? std::string_view() : std::string_view("error"));
     ch.shutdown();
     // Files already whole finish their checks: what arrived whole stays,
     // nothing partial does (the one being written was dropped above).
@@ -562,13 +585,22 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
   };
 
   message m;
+  // #502: the last time the files moved (a message, or a file read back).
+  auto moving = std::chrono::steady_clock::now();
   for (;;) {
     if (cancelled(h)) return end(outcome::cancelled, true, __LINE__);
     if (checks.broken()) return end(cancelled(h) ? outcome::cancelled : outcome::failed, false, __LINE__);
-    if (auto r = ch.receive(m); !r) {
+    if (auto r = ch.receive(m, h.idle_ms > 0 ? kIdlePollMs : -1); !r) {
+      if (r.error() == status::timeout && h.idle_ms > 0) {
+        const auto now = std::chrono::steady_clock::now();
+        if (checks.checking()) moving = now;
+        if (now - moving < std::chrono::milliseconds(h.idle_ms)) continue;
+        return end(outcome::failed, true, __LINE__);  // a sender that holds the slot and sends nothing
+      }
       note_status(h, "receive: link", __LINE__, r.error());
       return end(cancelled(h) ? outcome::cancelled : outcome::failed, false, __LINE__);
     }
+    moving = std::chrono::steady_clock::now();
     switch (m.type) {
       case msg::file_begin: {
         const auto doc = json::parse(m.text(), 4);
@@ -661,6 +693,7 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         return res;
       }
       case msg::cancel:
+        res.by_peer = true;  // the sender ended it
         return end(outcome::cancelled, false, __LINE__);
       default:
         return end(outcome::failed, true, __LINE__);
