@@ -332,6 +332,11 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
       std::vector<net::address> mine = net::local_addresses();
       const auto v6 = std::find_if(mine.begin(), mine.end(), [](const net::address& a) { return a.v6 && net::is_public(a); });
       if (opts_.mapping) {
+        if (!cleaned_) {
+          // A launch after a crash: what the last run left on the router goes first.
+          cleaned_ = true;
+          for (const auto& path : opts_.leftovers) mapping::clean_leftovers(path, *opts_.mapping);
+        }
         mapper = std::make_unique<mapping::mapper>(*opts_.mapping);
         auto m = mapper->map_tcp(port, port, kMapLifetimeS);
         if (m) {
@@ -438,6 +443,11 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
     mo.tcp = true;  // a word code's meeting, the window open: TCP simultaneous open too
     mo.loopback = opts_.loopback_only;
     mo.wait_ms = opts_.lifetime_ms;
+    // A path the sender agrees on after its handshake over the first failed
+    // (#499): handed on the same way.
+    mo.later = [this](std::unique_ptr<link> l) {
+      if (on_link_) on_link_(std::move(l));
+    };
     meet_thread_ = std::thread([this, mo] {
       const auto stopped = [this] { return meet_stop_.load(); };
       auto l2 = dht::meet(hub_, *dht_, *dht_keys_, dht::role::receiver, mo, stopped, {});
@@ -467,7 +477,9 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
   }
   if (relay_link) relay_link->shutdown();  // not used: a word code, or no code
   if (s.p == phase::failed && !relay_note.empty()) s.note += relay_note;
-  if (mapper) mapped_ = std::make_unique<mapping::keeper>(std::move(mapper), std::move(mapped), kMapLifetimeS);
+  if (mapper) {
+    mapped_ = std::make_unique<mapping::keeper>(std::move(mapper), std::move(mapped), kMapLifetimeS, opts_.ledger);
+  }
   snap_ = std::move(s);
   lock.unlock();
   notify();
@@ -494,7 +506,7 @@ way_in::~way_in() {
 }
 
 std::unique_ptr<way_in> way_in::open(bool loopback_only, const std::optional<mapping::options>& mapping,
-                                     link_fn on_link) {
+                                     link_fn on_link, const std::string& ledger) {
   auto l = net::listen_internet(0, loopback_only);
   if (!l) return nullptr;
   std::unique_ptr<way_in> w(new way_in());
@@ -517,7 +529,7 @@ std::unique_ptr<way_in> way_in::open(bool loopback_only, const std::optional<map
       if (v6 != mine.end() && !(m && m->how == mapping::method::pcp)) {
         if (auto hole = mapper->pinhole_v6(*v6, port, kMapLifetimeS)) mapped.push_back(*hole);
       }
-      w->mapped_ = std::make_unique<mapping::keeper>(std::move(mapper), std::move(mapped), kMapLifetimeS);
+      w->mapped_ = std::make_unique<mapping::keeper>(std::move(mapper), std::move(mapped), kMapLifetimeS, ledger);
     }
     if (v6 != mine.end()) w->places_.push_back({net::address_text(*v6), port});
   }

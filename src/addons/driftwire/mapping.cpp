@@ -6,7 +6,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 
 namespace mv::driftwire::mapping {
 
@@ -611,6 +614,35 @@ std::optional<mapped> mapper::pinhole_v6(const net::address& local, std::uint16_
   return m;
 }
 
+std::optional<net::address> mapper::outside_v4() {
+  if (!gateway_ || !me_) return std::nullopt;
+  const net::endpoint gw{net::address_text(*gateway_), opts_.gateway_port};
+  std::optional<net::address> outside;
+  const std::uint8_t ask_address[2] = {0, 0};
+  (void)ask_gateway(gw, ask_address, opts_.timeout_ms, opts_.cancelled, [&](std::span<const std::uint8_t> r) {
+    outside = parse_nat_pmp_address(r);
+    return outside.has_value();
+  });
+  if (outside) return outside;
+  if (cancelled()) return std::nullopt;
+  const auto dev = find_upnp();
+  if (!dev) return std::nullopt;
+  auto ip = soap(*gateway_, dev->control, dev->service, "GetExternalIPAddress", {}, opts_.timeout_ms);
+  const auto text = ip && ip->status == 200 ? xml_value(ip->body, "NewExternalIPAddress") : std::nullopt;
+  outside = text ? net::parse_address(*text) : std::nullopt;
+  if (outside && outside->v6) outside.reset();
+  return outside;
+}
+
+bool mapper::ours(const mapped& m) {
+  if (!gateway_ || !me_ || m.how != method::upnp || m.pinhole) return false;
+  auto e = soap(*gateway_, m.upnp_control, m.upnp_service, "GetSpecificPortMappingEntry",
+                {{"NewRemoteHost", ""}, {"NewExternalPort", std::to_string(m.external.port)}, {"NewProtocol", "TCP"}},
+                opts_.timeout_ms);
+  return e && e->status == 200 && xml_value(e->body, "NewInternalClient") == net::address_text(*me_) &&
+         xml_value(e->body, "NewPortMappingDescription") == kDescription;
+}
+
 bool mapper::renew(const mapped& m, int lifetime_s) {
   if (!gateway_ || !me_) return false;
   const net::endpoint gw{net::address_text(*gateway_), opts_.gateway_port};
@@ -716,9 +748,20 @@ void mapper::remove(const mapped& m) {
 
 // ---- the keeper -------------------------------------------------------------------------------
 
-keeper::keeper(std::unique_ptr<mapper> m, std::vector<mapped> held, int lifetime_s)
-    : mapper_(std::move(m)), held_(std::move(held)), lifetime_s_(std::max(1, lifetime_s)) {
-  if (mapper_ && !held_.empty()) thread_ = std::thread([this] { run(); });
+keeper::keeper(std::unique_ptr<mapper> m, std::vector<mapped> held, int lifetime_s, std::string ledger)
+    : mapper_(std::move(m)), held_(std::move(held)), lifetime_s_(std::max(1, lifetime_s)), ledger_(std::move(ledger)) {
+  if (!mapper_ || held_.empty()) return;
+  if (!ledger_.empty() && mapper_->gateway()) {
+    // Written before anything can crash with them open; replaced atomically.
+    const std::string tmp = ledger_ + ".new";
+    {
+      std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+      f << ledger_text(*mapper_->gateway(), held_);
+    }
+    std::remove(ledger_.c_str());
+    (void)std::rename(tmp.c_str(), ledger_.c_str());
+  }
+  thread_ = std::thread([this] { run(); });
 }
 
 keeper::~keeper() {
@@ -731,6 +774,117 @@ keeper::~keeper() {
   if (mapper_) {
     for (const auto& m : held_) mapper_->remove(m);
   }
+  if (!ledger_.empty() && !held_.empty()) std::remove(ledger_.c_str());
+}
+
+// ---- leftovers --------------------------------------------------------------------------------
+
+namespace {
+
+std::string hex_of(std::span<const std::uint8_t> b) {
+  static constexpr char k[] = "0123456789abcdef";
+  std::string s;
+  for (const auto x : b) {
+    s.push_back(k[x >> 4]);
+    s.push_back(k[x & 15]);
+  }
+  return s;
+}
+
+bool unhex(std::string_view s, std::span<std::uint8_t> out) {
+  if (s.size() != out.size() * 2) return false;
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    int v = 0;
+    for (int j = 0; j < 2; ++j) {
+      const char c = s[2 * i + static_cast<std::size_t>(j)];
+      const int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+      if (d < 0) return false;
+      v = v * 16 + d;
+    }
+    out[i] = static_cast<std::uint8_t>(v);
+  }
+  return true;
+}
+
+bool digits(std::string_view s) {
+  return !s.empty() && s.size() <= 5 && std::all_of(s.begin(), s.end(), [](char c) { return c >= '0' && c <= '9'; });
+}
+
+}  // namespace
+
+std::string ledger_text(const net::address& gateway, const std::vector<mapped>& held) {
+  // "gw <address>", then a line a mapping: how, internal port, external
+  // address and port, pinhole, PCP nonce, UPnP control, service, pinhole id
+  // ("-" for none). Nothing in it has a space (the control URL and service
+  // type were checked when they were read).
+  std::string s = "gw " + net::address_text(gateway) + "\n";
+  for (const auto& m : held) {
+    s += "m " + std::to_string(static_cast<int>(m.how)) + " " + std::to_string(m.internal_port) + " " +
+         m.external.address + " " + std::to_string(m.external.port) + " " + (m.pinhole ? "1" : "0") + " " +
+         hex_of(m.pcp_nonce) + " " + (m.upnp_control.empty() ? "-" : m.upnp_control) + " " +
+         (m.upnp_service.empty() ? "-" : m.upnp_service) + " " + (m.pinhole_id.empty() ? "-" : m.pinhole_id) + "\n";
+  }
+  return s;
+}
+
+std::optional<std::pair<net::address, std::vector<mapped>>> parse_ledger(std::string_view text) {
+  if (text.size() > 16 * 1024) return std::nullopt;
+  std::istringstream in{std::string(text)};
+  std::string word, gw_text;
+  if (!(in >> word >> gw_text) || word != "gw") return std::nullopt;
+  const auto gw = net::parse_address(gw_text);
+  if (!gw) return std::nullopt;
+  std::vector<mapped> out;
+  while (in >> word) {
+    if (word != "m" || out.size() >= 16) return std::nullopt;
+    std::string how, internal, ext_addr, ext_port, hole, nonce, control, service, id;
+    if (!(in >> how >> internal >> ext_addr >> ext_port >> hole >> nonce >> control >> service >> id)) return std::nullopt;
+    mapped m;
+    if (how.size() != 1 || how[0] < '1' || how[0] > '3' || !digits(internal) || !digits(ext_port) ||
+        (hole != "0" && hole != "1") || !unhex(nonce, m.pcp_nonce) || !net::parse_address(ext_addr)) {
+      return std::nullopt;
+    }
+    m.how = static_cast<method>(how[0] - '0');
+    const unsigned long ip = std::strtoul(internal.c_str(), nullptr, 10), ep = std::strtoul(ext_port.c_str(), nullptr, 10);
+    if (ip == 0 || ip > 65535 || ep == 0 || ep > 65535) return std::nullopt;
+    m.internal_port = static_cast<std::uint16_t>(ip);
+    m.external = {ext_addr, static_cast<std::uint16_t>(ep)};
+    m.pinhole = hole == "1";
+    if (control != "-") m.upnp_control = control;
+    if (service != "-") {
+      if (!service_type(service)) return std::nullopt;
+      m.upnp_service = service;
+    }
+    if (id != "-") {
+      if (!digits(id)) return std::nullopt;
+      m.pinhole_id = id;
+    }
+    out.push_back(std::move(m));
+  }
+  return std::make_pair(*gw, std::move(out));
+}
+
+void clean_leftovers(const std::string& ledger, const options& o) {
+  if (ledger.empty()) return;
+  std::string text;
+  {
+    std::ifstream f(ledger, std::ios::binary);
+    if (!f) return;
+    text.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+  }
+  const auto parsed = parse_ledger(text);
+  if (parsed) {
+    mapper m(o);
+    // Only on the network they were made on: elsewhere the same port may be
+    // someone else's forward.
+    if (m.gateway() && *m.gateway() == parsed->first) {
+      for (const auto& x : parsed->second) {
+        if (x.how == method::upnp && !x.pinhole && !m.ours(x)) continue;
+        m.remove(x);
+      }
+    }
+  }
+  std::remove(ledger.c_str());
 }
 
 void keeper::run() {

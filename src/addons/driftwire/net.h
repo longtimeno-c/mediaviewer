@@ -50,6 +50,8 @@ struct address {
 // private (RFC 1918), shared (CGNAT, RFC 6598), link-local, unique local
 // (fc00::/7), multicast, documentation or unspecified.
 [[nodiscard]] bool is_public(const address& a) noexcept;
+// An IPv4 address of a private network (RFC 1918: 10/8, 172.16/12, 192.168/16).
+[[nodiscard]] bool is_private_v4(const address& a) noexcept;
 
 // A TCP listener on a port the OS picks: on every interface, or on loopback
 // only (the tests).
@@ -135,6 +137,9 @@ void reserve_sockets(int n) noexcept;
 // crosses ours in the two NATs opens one connection (simultaneous open), and
 // one that arrives after ours was refused or dropped is accepted. A refused
 // or failed connect() is tried again, from the same port, every kRetryMs.
+// The OSes share the port only within one user account; a process of the
+// same user that takes a connection fails the meeting's authenticated hello
+// (meet.cpp, #499) and is passed over.
 class tcp_rendezvous {
  public:
   static constexpr int kRetryMs = 250;

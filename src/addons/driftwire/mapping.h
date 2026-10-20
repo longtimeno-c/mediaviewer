@@ -75,6 +75,15 @@ class mapper {
   [[nodiscard]] bool renew(const mapped& m, int lifetime_s);
   // Best effort: the router is asked to drop it.
   void remove(const mapped& m);
+  // The router's outside IPv4 address, if NAT-PMP or UPnP says it (#499: a
+  // sender tries a code's address on the receiver's own network only when
+  // this network faces the internet from the code's public address).
+  [[nodiscard]] std::optional<net::address> outside_v4();
+  // The gateway asked (none: no router found).
+  [[nodiscard]] const std::optional<net::address>& gateway() const noexcept { return gateway_; }
+  // A UPnP port mapping the router still lists for this machine and this
+  // app (clean_leftovers: never another's forward).
+  [[nodiscard]] bool ours(const mapped& m);
 
   // What each protocol answered, plain ASCII without addresses (the window's
   // "why", and the log).
@@ -106,9 +115,11 @@ class mapper {
 
 // What a code or a way in holds (#499): each mapping renewed at half its
 // lease on a thread of its own, and every one removed when this goes.
+// `ledger` (may be empty): a file in the app's data folder listing them
+// while held, so a launch after a crash removes them (clean_leftovers).
 class keeper {
  public:
-  keeper(std::unique_ptr<mapper> m, std::vector<mapped> held, int lifetime_s);
+  keeper(std::unique_ptr<mapper> m, std::vector<mapped> held, int lifetime_s, std::string ledger = {});
   ~keeper();
   keeper(const keeper&) = delete;
   keeper& operator=(const keeper&) = delete;
@@ -118,11 +129,21 @@ class keeper {
   std::unique_ptr<mapper> mapper_;
   std::vector<mapped> held_;
   int lifetime_s_;
+  std::string ledger_;
   std::mutex m_;
   std::condition_variable cv_;
   bool stop_ = false;  // under m_
   std::thread thread_;
 };
+
+// A keeper's ledger left by a run that ended without removing its mappings
+// (a crash, a force-quit): each one still on this gateway is removed (a
+// UPnP forward only if the router still names this machine and this app),
+// then the ledger goes. Blocks while the router answers (a worker's call).
+void clean_leftovers(const std::string& ledger, const options& o);
+// The ledger's text, both ways (the tests).
+[[nodiscard]] std::string ledger_text(const net::address& gateway, const std::vector<mapped>& held);
+[[nodiscard]] std::optional<std::pair<net::address, std::vector<mapped>>> parse_ledger(std::string_view text);
 
 // The pieces, exposed for the tests and the fuzzer: parse a gateway's reply
 // (nullopt for anything malformed or unsuccessful).

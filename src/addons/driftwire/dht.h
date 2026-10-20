@@ -17,7 +17,13 @@
 //     item (dht_item.h seals what is in it).
 //   - BEP 42: every answer's "ip" (how the node saw us) is a vote for this
 //     machine's public address, so no STUN server is needed; nodes whose id
-//     matches their address are preferred when a lookup starts.
+//     matches their address are preferred when a lookup starts. One vote per
+//     voter's network (an IPv4 /24, an IPv6 /48), and the secure voters' alone
+//     once there are enough of them (#499: one host on many ports, or many
+//     addresses, cannot set this side's address or call its NAT hard).
+//   - Only public nodes are learned, asked or kept (#499: a node list naming
+//     this network or loopback was a way to make this machine send there,
+//     even after a restart).
 //   - Bootstrap: a few well-known routers, a routing table saved between
 //     runs (after the first run the routers are rarely needed), or a node
 //     the caller names (a LAN peer, a remembered device).
@@ -55,7 +61,7 @@ struct node {
 [[nodiscard]] bool id_matches(const node_id& id, const net::address& ip) noexcept;
 [[nodiscard]] std::uint32_t crc32c(std::span<const std::uint8_t> data) noexcept;
 // Compact node lists: 26 bytes each (IPv4), 38 each (IPv6).
-[[nodiscard]] std::vector<node> parse_nodes(std::string_view compact, bool v6);
+[[nodiscard]] std::vector<node> parse_nodes(std::string_view compact, bool v6, std::size_t max_nodes = 64);
 [[nodiscard]] std::string compact_nodes(const std::vector<node>& nodes);  // both kinds, as BEP 5 / 32 write them
 [[nodiscard]] std::optional<net::endpoint> parse_compact_endpoint(std::string_view compact);
 
@@ -76,6 +82,9 @@ class client {
     std::string table_path;  // "" keeps nothing between runs
     int query_ms = 1500;
     int lookup_ms = 15000;
+    // The tests' stand-in nodes on loopback: learned and kept, and each port
+    // a voter of its own.
+    bool loopback = false;
   };
   client(std::shared_ptr<udp_hub> hub, options o);
   ~client();  // saves the table
@@ -136,6 +145,8 @@ class client {
   std::vector<contact> lookup(const node_id& target, const std::string& ask, const std::function<bool()>& stop,
                               const std::function<void(const contact&, const bencode::value&)>& on_reply);
   void learn(const std::vector<node>& nodes);
+  // Under m_: whose vote a voter's is (its network; the tests: its port too).
+  [[nodiscard]] std::string voter_key(const net::endpoint& voter) const;
   void load_table();
   void save_table();
 
@@ -150,8 +161,9 @@ class client {
   struct vote {
     net::endpoint seen;
     std::chrono::steady_clock::time_point at;
+    bool secure = false;  // BEP 42: the voter's id matches its address
   };
-  std::map<std::string, vote> votes_;  // under m_: by the voter's "address|port"
+  std::map<std::string, vote> votes_;  // under m_: by voter_key()
   [[nodiscard]] std::vector<const vote*> recent_votes() const;  // under m_
 };
 

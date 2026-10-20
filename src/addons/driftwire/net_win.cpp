@@ -814,8 +814,10 @@ result<std::unique_ptr<tcp_rendezvous>> open_rendezvous(bool loopback_only) {
   }
   // Windows has no SO_REUSEPORT: SO_REUSEADDR on the listener and on every
   // connecting socket lets them share the port.
-  // Without SO_EXCLUSIVEADDRUSE another process of the same user could bind
-  // the port too and take a connection; CPace on the code still refuses it.
+  // Without SO_EXCLUSIVEADDRUSE another process of the same user (no other
+  // user: Windows refuses a shared bind across accounts) could bind the port
+  // too and take a connection. It gains nothing (#499): its hello fails the
+  // code's MAC, so the sender moves on, and CPace would refuse it after.
   BOOL one = TRUE;
   (void)::setsockopt(s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof one);
   // Non-blocking: a connection that resets between WSAPoll and accept must

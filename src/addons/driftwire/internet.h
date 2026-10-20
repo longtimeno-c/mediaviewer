@@ -89,6 +89,11 @@ class internet_receiver {
     // there under a fresh token the code carries, so a sender whose direct
     // tries fail meets this computer through it.
     std::string relay;
+    // #499: where the router mappings a code holds are listed while held
+    // (mapping::keeper's ledger), and the folder's other ledgers that a
+    // crash may have left, removed before the first code asks the router.
+    std::string ledger;
+    std::vector<std::string> leftovers;
   };
   using link_fn = std::function<void(std::unique_ptr<link>)>;
 
@@ -152,6 +157,7 @@ class internet_receiver {
   std::thread relay_thread_;                                            // the run thread only
   std::thread relay_setup_thread_;                                      // the run thread only
   std::atomic<bool> relay_stop_{false};
+  bool cleaned_ = false;  // the run thread only: leftovers removed
   std::thread thread_;
 };
 
@@ -170,8 +176,9 @@ class way_in {
   way_in& operator=(const way_in&) = delete;
   // Blocks while the router answers (a worker's call); nullptr when there is
   // no place a sender elsewhere could reach.
+  // `ledger`: where its mappings are listed while held (#499, mapping::keeper).
   [[nodiscard]] static std::unique_ptr<way_in> open(bool loopback_only, const std::optional<mapping::options>& mapping,
-                                                    link_fn on_link);
+                                                    link_fn on_link, const std::string& ledger = {});
   [[nodiscard]] const std::vector<net::endpoint>& places() const noexcept { return places_; }
 
  private:

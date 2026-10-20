@@ -355,7 +355,11 @@ shows: no listener, no router mapping, no socket. (`internet.*`, `invite.*`, `ma
   code or transfer holds them (`mapping::keeper`: PCP and NAT-PMP ask again with the same nonce
   and ports, UPnP repeats `AddPortMapping`, a pinhole `UpdatePinhole`; one the router refuses is
   asked again within 10 s). A crash or force-quit leaves a forward or pinhole open two minutes at
-  most, and a transfer longer than an hour keeps its way back in.
+  most, and a transfer longer than an hour keeps its way back in. While held they are listed in
+  a ledger beside the prefs (`driftwire_mappings.dat`, the handover's way in
+  `driftwire_way_in.dat`; deleted once removed): the next launch's first code removes what a crash
+  left, on the same gateway only, a UPnP forward only if the router still names this machine and
+  this app (`mapping::clean_leftovers`).
 - **The code** (`invite.h`) is a 48-bit secret and the places, encrypted under a key from the
   secret (a link preview shows no address), and a two-byte check that catches a typo on the
   sender before the code is spent. Crockford base32 in groups of four, case and O/0, I/1 forgiven,
@@ -373,7 +377,13 @@ shows: no listener, no router mapping, no socket. (`internet.*`, `invite.*`, `ma
   5, 10, then every 30 seconds until Cancel, the window saying "Trying to reach the other computer
   (attempt 4)…" and, from what each place answered, why: nothing answered (a firewall, either
   side), refused (the code expired or MediaViewer closed), or only IPv6 in the code and none
-  here.
+  here. **#499:** only public places that are not this machine's own are tried (never loopback,
+  multicast or 0.0.0.0); the receiver's address on its own network only after this network's
+  router (NAT-PMP or UPnP) says it faces the internet from the code's public address, so a host
+  at that private address on the sender's network cannot answer for the receiver.
+- **The code is spent only by its own ways in** (#499): its listener, its relay and its word
+  meeting. A code's hello over the Wi-Fi → internet way in (or any other internet link) is closed
+  without spending the code shown.
 - **The handshake** (`channel::open_internet`): the hello `MVSP` 2 `I` carries a CPace session id
   and the sender's CPace message (draft-irtf-cfrg-cpace-18, ristretto255 / SHA-512, checked
   against the draft's vectors); the receiver answers with its own. Then
@@ -404,20 +414,30 @@ only while a code waits or a send looks for its receiver; never at idle. (`dht_i
 
 - **The words** are BIP-39's English list (2048 words, MIT; `wordlist.inc`), 44 bits; typed whole
   or as their first four letters. Argon2id (libsodium, moderate: 256 MiB, about a second) turns
-  them into an Ed25519 key, a key for the items' contents, a salt base and CPace's password.
+  them into an Ed25519 key, a key for the items' contents, a salt base and CPace's password. Its
+  salt holds the hour (UTC) the code was made in (#499: with a fixed salt one table of all 2^44
+  codes, a one-off cost, broke every code; now such a table serves one hour). The receiver's keys
+  are its hour's; a sender whose code may have been made last hour (the first ten minutes of an
+  hour) works out both and meets under the one the receiver's item is found under.
 - **Each side publishes a BEP 44 mutable item** under four salts of its role (receiver, sender):
   its addresses (on this network, its public address as the DHT saw it, its public IPv6, all at
   its one UDP port), XChaCha20-Poly1305-sealed, padded to 512 bytes, the timestamp inside. The
   target is SHA-1(key ‖ salt): without the words, 20 random bytes nobody can find, read or forge.
   Each side looks up the other's four targets in parallel; an item is taken only if its key
   hashes to the target, its signature verifies, it opens under the code and it is under ten
-  minutes old. After the link is up each side overwrites its items with "gone".
+  minutes old. After the link is up each side overwrites its items with "gone", and a sender of
+  words does so too when its meeting or handshake fails (#499).
 - **The DHT client** (`dht.h`) is the spike's "small KRPC + BEP 44/42 client in the add-on", not
   libtorrent (Boost, a torrent engine, sockets of its own): read-only (BEP 43, it answers no
   queries and stays out of others' tables), iterative lookups (three in flight, the eight closest),
   BEP 42 votes for this machine's public address from every answer (no STUN), nodes whose id
   matches their address preferred, a routing table kept between runs (`driftwire_dht.dat` beside
-  the prefs), and the four routers of #472 to start from the first time.
+  the prefs, up to 200 nodes, all of which load again), and the four routers of #472 to start from
+  the first time. **#499:** one vote per voter's network (an IPv4 /24, an IPv6 /48), and with at
+  least four BEP 42-secure voters theirs alone, so one host on many ports or addresses cannot set
+  this side's public address (which its item publishes) or call its NAT hard (256 sockets). Only
+  public nodes are learned, asked or kept: a node list naming this network, loopback or multicast
+  no longer makes this machine send there, nor survives in the saved table.
 - **One UDP socket** (`udp_hub.h`) carries the DHT, the punching and the transfer: the hole a probe
   punches is the one the transfer uses. **Punching**: each side probes every address the other
   gave, and 16 ports above the other's public one (a NAT that hands ports out in sequence), every
@@ -435,9 +455,19 @@ only while a code waits or a send looks for its receiver; never at idle. (`dht_i
   the tag (a host at the other side's private address on this network, a carrier-NAT neighbour)
   cannot answer a hello, fill the 8 learned-path slots, pick the path or take it, and an answer
   recorded in one meeting fails in the next (new nonces). The stream's id comes from both nonces
-  under the same key, not from the tag. Hellos are 46 bytes, the rest 62; v0.1.35's 14-byte
+  under the same key, not from the tag. Hellos are 46 bytes, the rest 63; v0.1.35's 14-byte
   tag-only probes are ignored, so **this side cannot meet a v0.1.35 peer over the DHT** (words or
   a remembered device; direct codes and Wi-Fi are unchanged).
+- **Nothing is kept before the handshake** (#499, `meet_options::open` / `later`). A choose and
+  its chosen carry an attempt number. The sender runs the internet handshake (CPace, Noise) over
+  the path agreed on before it keeps it; when that fails on a path that did not carry it, it
+  agrees on the next path a reply came back on under the next attempt (fresh hellos meanwhile,
+  8 s at most to agree), up to three, and the receiver, whose meeting has already handed on the
+  first link, hands each later pick on the same way for a minute (`later`, on the hub's reader
+  thread). The stream id holds the attempt. Wrong words, or a key that is not the one
+  remembered, end it at once: no other path mends those. A word code is still spent by the first
+  hello that reaches the receiver, so a later pick after a handshake that got that far fails
+  too; the fallback mends paths that answered probes but did not carry the stream.
 - **Every probe**, of every kind, is at most 200 a second each way (20 a 100 ms tick): the paths
   learned from hellos first (at most 8), the birthday's share (below), then the item's addresses
   and predicted ports in turn with what is left.
@@ -473,8 +503,10 @@ only while a code waits or a send looks for its receiver; never at idle. (`dht_i
   transports. It meets where a NAT keeps a TCP
   connection's port (most home routers), whatever it does to UDP: two hard UDP NATs can still
   meet this way. On Windows the port is shared with `SO_REUSEADDR` (there is no `SO_REUSEPORT`),
-  not `SO_EXCLUSIVEADDRUSE`, so another process of the same user could bind it too and take a
-  connection; CPace on the code still refuses it. A connection closed after its choose leaves the
+  not `SO_EXCLUSIVEADDRUSE`. Each OS shares a bound port only within one user account (Windows'
+  socket security, the BSD and Linux uid check), so only a process of the same user, which can
+  read Driftwire's keys anyway, could bind it and take a connection. It gains nothing (#499):
+  its hello fails the code's MAC and the sender passes it over, and CPace would refuse it after. A connection closed after its choose leaves the
   4-tuple in TIME_WAIT on this side, which blocks a retry to the same peer from the same port:
   the sender does not retry that way.
 - **The stream** over it is the spike's third option, "our own simple UDP transport", not QUIC: it
@@ -519,7 +551,9 @@ need it on (and "Send and receive over the internet").
   ([above](#over-the-internet-472-pr-2)) less the LAN address. It sends those places to the sender
   as `places` (message 14, protocol 2; only to a sender whose offer asked, since a channel before
   this PR ends the link on a type it does not know). The sender's window says "If Wi-Fi drops,
-  this continues over the internet."
+  this continues over the internet." **#499:** the sender takes the first list that names any
+  place and no later one, and keeps only public places that are not its own (the relay's
+  `may_reach`), so a receiver cannot make it connect to loopback or its network on every rescue.
 - **The move.** When the link is suspect or drops, the mover races the receiver's places beside
   Wi-Fi and Bluetooth; a TCP connection that reaches the way in is a rejoin (`NNhfs+psk0` and
   `resume_at`, as any), and the window says "over the internet". When the peer is heard on Wi-Fi
@@ -601,7 +635,8 @@ are online. The receiver still accepts or declines every transfer. (`secrets.*`,
   seconds, one target per look. A sender's item found, the two meet and punch as with four words
   (the sender punches 15 s longer, as the other side looks only that often). The sender's rounds
   end on the hour, when both change keys; it keeps going until it meets or Cancel.
-- **Trust on first use.** The handshake is the internet one (CPace on this hour's password, then
+- **Trust on first use.** The handshake is the internet one (CPace on the password of the hour the
+  two met in, #499: not the hour the receiver's handshake starts in, which may have turned; then
   `Noise_XXhfs+psk0`), so only a holder of the pairing secret gets through; then the peer's static
   must be the one remembered. Another key ends the link on the side that sees it, loudly: "This is
   not the Bea you remembered: its security key has changed… If Bea was set up again, forget it
