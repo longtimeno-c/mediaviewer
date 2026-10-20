@@ -2389,6 +2389,14 @@ How Windows draws an add-on's window now is in [25 §10](design/25-open-addons.m
 grouping and empty state in [28](design/28-driftwire.md#what-a-person-sees). Run on a Windows 11
 desktop (MSVC Release, Ninja), one machine.
 
+- **The path picture was squashed on Windows** (owner, after the first round): a centred card
+  centred the `link` node too, so its path column shrank to nothing and the two computers sat
+  against the badge. It now fills the card, as on the Mac; names wrap to two lines and Nearby's
+  circles are top-aligned. Seen in the self-test's captures (`docs/review/508/send-ended.png`,
+  `nearby.png`; the thumbnails are empty there because only `mediaviewer_lab` was built).
+  PR 1 gate, base (`60f0ca1f`) / new / base / new (same native build, each Chrome published from
+  its own source): 0 dropped, p99 16.9 ms, idle presents 0 in all four; all four, base included,
+  miss on one 33.4 ms frame (this machine's ambient miss, with other sessions' labs running).
 - **Screen self-test:** `MV_SCREEN_SELFTEST=<folder>` (with `MV_SCREEN_SELFTEST_FILES=<folder of
   files>`, `MV_SCREEN_SELFTEST_CYCLES=<n>`, default 20) opens Driftwire's window with up to three
   of those files, turns the internet on, makes a code, sends to it, scrolls to the bottom and

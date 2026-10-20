@@ -790,6 +790,9 @@ blank window):
   and dots that travel the way the bytes go. Only `moving` and `connecting` animate, at 30 fps at
   most, and never with Reduce Motion (Mac) or animations off (Windows); the dots stop when the
   node leaves the tree. Its VoiceOver / Narrator name is `label`, its value the percentage.
+  It always takes the full width, even in a centred stack (a text field, a progress bar and a
+  separator do too, as on the Mac); the two computers are top-aligned, each name on up to two
+  lines, and the path meets them at the circles' middle.
 - **`button` `"copy"`**: a click also puts this text on the clipboard. The host does it, only on
   the click, then reports the click as usual; an add-on has no clipboard call of its own. The
   label says "Copied" for 1.5 s.

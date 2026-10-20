@@ -156,8 +156,14 @@ public static partial class IslandHost
                     }
                     if (child is FrameworkElement fe && panel.Orientation == Orientation.Vertical)
                     {
+                        // A node that fills its width on the Mac (`maxWidth: .infinity`, a
+                        // TextField, a ProgressView) still fills in a centred stack: centring a
+                        // link picture shrank its path column to nothing, so the picture was
+                        // two circles squashed against the badge.
+                        bool fills = JStr(c, "type") is "link" or "progress" or "separator" or "text_field";
                         fe.HorizontalAlignment = JStr(n, "align") switch
                         {
+                            _ when fills => HorizontalAlignment.Stretch,
                             "center" => HorizontalAlignment.Center,
                             "end" => HorizontalAlignment.Right,
                             "fill" => HorizontalAlignment.Stretch,
@@ -535,10 +541,13 @@ public static partial class IslandHost
                     Child = new FontIcon { Glyph = mark == "done" ? "" : "", FontFamily = SymbolFont, FontSize = 10, Foreground = new SolidColorBrush(Colors.White) },
                 });
             }
-            var col = new StackPanel { Spacing = 4, Width = 88, VerticalAlignment = VerticalAlignment.Center };
+            var col = new StackPanel { Spacing = 4, Width = 88, VerticalAlignment = VerticalAlignment.Top };
             col.Children.Add(face);
-            TextBlock label = SText(name, Body, UiFontSize - 3, maxLines: 1);
+            // Two lines, as a Nearby tile's name: "The other computer" fits, a long name
+            // ends in an ellipsis on the second line instead of the first.
+            TextBlock label = SText(name, Body, UiFontSize - 3, maxLines: 2);
             label.HorizontalAlignment = HorizontalAlignment.Center;
+            label.TextAlignment = TextAlignment.Center;
             label.TextTrimming = TextTrimming.CharacterEllipsis;
             col.Children.Add(label);
             return col;
@@ -550,8 +559,16 @@ public static partial class IslandHost
         strip.Children.Add(left);
         strip.Children.Add(right);
 
-        // The path, drawn on a canvas sized to its column.
-        var canvas = new Microsoft.UI.Xaml.Controls.Canvas { Height = H, HorizontalAlignment = HorizontalAlignment.Stretch };
+        // The path, drawn on a canvas sized to its column. The devices are top-aligned (a
+        // two-line name grows downward), so the canvas's middle is lifted to the circles'
+        // middle (24): the path meets each computer at its centre.
+        var canvas = new Microsoft.UI.Xaml.Controls.Canvas
+        {
+            Height = H,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 24 - H / 2, 0, 0),
+        };
         Grid.SetColumn(canvas, 1);
         strip.Children.Add(canvas);
         var track = new Microsoft.UI.Xaml.Shapes.Polyline
@@ -849,6 +866,10 @@ public static partial class IslandHost
             Button b = EditButton("", () => SendScreenEvent(at, id, SlotNative.EventActivate, JsonString(itemId)));
             b.Content = tile;
             b.Padding = Pad(4);
+            // Top-aligned, as the Mac's grid (`alignment: .top`): a name that wraps to a
+            // second line must not push its circle below its neighbours'.
+            b.VerticalAlignment = VerticalAlignment.Top;
+            b.VerticalContentAlignment = VerticalAlignment.Top;
             b.AllowFocusOnInteraction = true;
             b.IsTabStop = true;
             AutomationProperties.SetName(b, spoken);

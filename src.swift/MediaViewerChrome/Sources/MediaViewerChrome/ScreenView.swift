@@ -1353,7 +1353,9 @@ private struct LinkNode: View {
 
   var body: some View {
     VStack(spacing: MVTheme.space(6)) {
-      HStack(spacing: 0) {
+      // Top-aligned (a two-line name grows downward); the path's middle is lifted to the
+      // circles' middle (24), so it meets each computer at its centre.
+      HStack(alignment: .top, spacing: 0) {
         device(symbol: "laptopcomputer", name: node.string("from") ?? "This computer", mark: nil)
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !animating)) { t in
           Canvas { ctx, size in
@@ -1362,6 +1364,7 @@ private struct LinkNode: View {
           .overlay(badgeView)
         }
         .frame(height: 64)
+        .padding(.top, 24 - 32)
         device(symbol: nil, name: node.string("to") ?? "", mark: state == "done" ? "checkmark.circle.fill"
                : state == "failed" ? "exclamationmark.circle.fill" : nil)
       }
@@ -1414,8 +1417,8 @@ private struct LinkNode: View {
             .transition(.scale)
         }
       }
-      Text(name).font(MVTheme.font(11)).foregroundStyle(MVTheme.body).lineLimit(1)
-        .frame(maxWidth: 88)
+      Text(name).font(MVTheme.font(11)).foregroundStyle(MVTheme.body).lineLimit(2)
+        .multilineTextAlignment(.center).frame(maxWidth: 88)
     }
     .frame(width: 88)
   }
