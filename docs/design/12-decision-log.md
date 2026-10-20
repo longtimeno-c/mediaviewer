@@ -1741,6 +1741,25 @@ item. The waiting side looks for a sender every 15 s rather than every 2 s, to k
 load on the DHT low; the sender punches 15 s longer to cover that. A key that differs from the
 remembered one ends the link loudly (TOFU); the own-device relay is not built in this PR.
 
+**A remembered device publishes only when a sender knocks, and meets over TCP too (2026-10-20).**
+Amends the two rows above. The owner's Mac and Windows PC met on four words, remembered each
+other, and a send between them then never connected: the sender found the waiting side's standing
+item, said "Connecting through both networks…", punched UDP alone, and went back to waiting. The
+four-word transfer had arrived over TCP simultaneous open (its window said "Internet, straight to
+each other", the caption of a link that was not a UDP punch), so UDP could not be punched between
+those two networks, and the remembered meeting never tried TCP. TCP could not simply be switched
+on there: a rendezvous port is bound per meeting, and the sender read the waiting side's standing
+item, published before any meeting had a port. The waiting side now publishes nothing while it
+waits; it looks for a sender's knock every 15 s as before, and only then publishes and meets, with
+TCP beside UDP, so the first item the sender finds carries a live TCP port and both punch at once
+(15 s each, `known::kPunchMs`, rather than the sender's 30 s against an item that may be 4 minutes
+old). The meeting's item says "gone" when it ends, met or not, so a later send that hour does not
+punch toward it. The firewall reason for keeping TCP out still holds for the wait (nothing listens
+then); the port is open only for a meeting a holder of the pair's secret started, and the app
+already listens for nearby sends. DHT nodes now see nothing of a waiting device's own until it is
+sent to. Tested with two engines behind stand-in hard NATs ("driftwire known: two devices behind
+hard NATs…", which failed before the change); no real NAT tried here.
+
 **Relays: through the person's own computer, or a splice server of their own; TURN left out
 (2026-10-18, #472).** Both relay paths carry the two ends' handshake and session end to end, so a
 relay holds no key and sees ciphertext only. The own-device relay reuses the remembered-device

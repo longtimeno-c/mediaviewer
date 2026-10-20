@@ -192,7 +192,9 @@ overflow and heap corruption (what a decoder fed a malformed file produces) stil
 
 - Native crash in the core (decoder, GPU, FFmpeg) → Crashpad minidump.
 - **Windows chrome:** unhandled managed exceptions (`CrashCapture.cs`) write a scrubbed text
-  report to `Crashes\managed\`.
+  report to `Crashes\managed\`. An add-on that loads but whose window will not start (#509) is
+  caught, not a crash, and writes a report there too: the exception's type and its frames'
+  `Type.Method` only, no message. The same frames are the alert's "Details" line.
 - **macOS chrome:** an uncaught `NSException` or a Swift runtime trap (below).
 - Nothing throws across the C ABI; every core call has a **correlation id**, and the id of the
   last call (`mv_last_call_cid`) is in both the native and the chrome report.

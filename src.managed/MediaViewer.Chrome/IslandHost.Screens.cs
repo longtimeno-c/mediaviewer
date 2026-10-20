@@ -1570,6 +1570,12 @@ public static partial class IslandHost
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SlotGetWindowRect(IntPtr hwnd, out SlotRect rect);
 
+    // #511: screens with a pointer down in them. A window rebuilt between a
+    // press and its release loses the click (a transfer's progress moves the
+    // tree ten times a second, and Cancel did nothing); while a pointer is down
+    // the tree waits, and the release brings it up to date.
+    private static readonly HashSet<ScreenAt> ScreenPressed = new();
+
     // UI thread: the open screens as the core lists them; a window per screen,
     // built from its tree and rebuilt when the tree's revision moves.
     private static void SyncScreenWindows(JsonElement list)
@@ -1589,7 +1595,7 @@ public static partial class IslandHost
                 w.Content = content;
                 if (place == "window") FitScreenWindow(w, content, (int)JNum(s, "height", 0));
             }
-            else if (open.Revision != revision)
+            else if (open.Revision != revision && !ScreenPressed.Contains(at))
             {
                 // #508: the new tree keeps the old one's scroll and focus.
                 ScreenPlace? kept = NoteScreenPlace(open.Window.Content);
@@ -1607,6 +1613,7 @@ public static partial class IslandHost
         }
         foreach (ScreenAt gone in ScreenWindows.Keys.Where(k => !wanted.Contains(k)).ToList())
         {
+            ScreenPressed.Remove(gone);
             ForgetSurfaces(gone);
             ClosingFromCore.Add(gone);
             try { ScreenWindows[gone].Window.Close(); }
@@ -1629,6 +1636,7 @@ public static partial class IslandHost
             ForgetSurfaces(at);
         }
         ScreenWindows.Clear();
+        ScreenPressed.Clear();
         ClosingFromCore.Clear();
         LiveSurfaces.Clear();
     }
@@ -1686,6 +1694,17 @@ public static partial class IslandHost
             }
         }
         ScreenIdsOf.AddOrUpdate(root, ids);
+        // #511: no rebuild between a press and its release (ScreenPressed).
+        // Handled events too: a Button marks its own press handled. The
+        // release's catch-up runs after the click, from the queue.
+        root.AddHandler(UIElement.PointerPressedEvent, new PointerEventHandler((_, _) => ScreenPressed.Add(at)), true);
+        var released = new PointerEventHandler((_, _) =>
+        {
+            if (ScreenPressed.Remove(at)) DispatcherQueueControllerTryEnqueue(ReadSlotScreens);
+        });
+        root.AddHandler(UIElement.PointerReleasedEvent, released, true);
+        root.AddHandler(UIElement.PointerCanceledEvent, released, true);
+        root.AddHandler(UIElement.PointerCaptureLostEvent, released, true);
         // Esc closes a pane or a sheet, as the Done button does.
         root.KeyDown += (_, e) =>
         {

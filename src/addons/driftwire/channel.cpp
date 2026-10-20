@@ -32,8 +32,11 @@ constexpr std::size_t kStreamHeaderBytes = crypto_secretstream_xchacha20poly1305
 // Protocol 2's plaintext header: type, sequence number, acknowledgement.
 constexpr std::size_t kHeader2 = 1 + 8 + 8;
 constexpr char kPrologue2[] = "MediaViewer Driftwire 2";
+constexpr char kPrologue3[] = "MediaViewer Driftwire 3";  // #497: the version bound into the handshake
 constexpr char kPrologueRejoin[] = "MediaViewer Driftwire 2 rejoin";
 constexpr char kCommitContext[] = "MediaViewer Driftwire commit v2";
+// #497: the server's commitment to its own nonce, revealed only after the client's.
+constexpr char kServerCommitContext[] = "MediaViewer Driftwire server commit v2";
 constexpr char kTagContext[] = "MediaViewer Driftwire tag v2";
 // A rejoin's first sealed message arrives within this (it proves the client
 // holds the keys, so a replayed first message cannot take the session over).
@@ -102,10 +105,11 @@ void commitment_v1(const std::uint8_t* pk, std::uint8_t out[32]) noexcept {
   crypto_generichash_final(&st, out, 32);
 }
 
-void commitment_v2(std::span<const std::uint8_t, 32> nonce, std::uint8_t out[32]) noexcept {
+void commitment_v2(std::span<const std::uint8_t, 32> nonce, std::uint8_t out[32], bool server = false) noexcept {
+  const std::string_view context = server ? std::string_view(kServerCommitContext) : std::string_view(kCommitContext);
   crypto_generichash_state st;
   crypto_generichash_init(&st, nullptr, 0, 32);
-  crypto_generichash_update(&st, reinterpret_cast<const unsigned char*>(kCommitContext), sizeof kCommitContext - 1);
+  crypto_generichash_update(&st, reinterpret_cast<const unsigned char*>(context.data()), context.size());
   crypto_generichash_update(&st, nonce.data(), nonce.size());
   crypto_generichash_final(&st, out, 32);
 }
@@ -210,9 +214,12 @@ result<hello> channel::read_hello(link& l, clock::time_point deadline) {
     if (auto r = read_exact_until(l, h.body, deadline); !r) return err(r.error());
     return h;
   }
-  if (h.version != 2) return err(status::unsupported_format);
+  if (h.version != kProtocol2 && h.version != kProtocolVersion) return err(status::unsupported_format);
   std::uint8_t kind = 0;
   if (auto r = read_exact_until(l, {&kind, 1}, deadline); !r) return err(r.error());
+  // Protocol 3 changed only the first link's handshake: a rejoin and an
+  // internet hello still say 2.
+  if (h.version == kProtocolVersion && kind != kKindNew) return err(status::corrupt);
   if (kind == kKindInternet) {
     // The CPace session id and the sender's CPace message, nothing else yet.
     h.internet = true;
@@ -243,7 +250,7 @@ result<std::unique_ptr<channel>> channel::open(std::shared_ptr<link> l, bool cli
   c->punched_ = l->punched();
     c->link_ = c->write_link_ = c->read_link_ = l;
     c->st_ = std::make_unique<state>();
-    c->version_ = opts.version >= 2 ? 2 : kProtocol1;
+    c->version_ = std::clamp(opts.version, kProtocol1, kProtocolVersion);
     auto opened = c->version_ >= 2 ? open_v2(std::move(c), true, nullptr, opts, deadline)
                                    : open_v1(std::move(c), true, nullptr, deadline);
     if (!opened) return err(opened.error());
@@ -280,7 +287,7 @@ result<std::unique_ptr<channel>> channel::open_server(std::shared_ptr<link> l, h
   c->punched_ = l->punched();
   c->link_ = c->write_link_ = c->read_link_ = l;
   c->st_ = std::make_unique<state>();
-  c->version_ = h.version >= 2 ? 2 : kProtocol1;
+  c->version_ = std::clamp(h.version, kProtocol1, kProtocolVersion);
   auto opened = h.internet   ? open_internet_v2(std::move(c), false, &h, *opts.internet_secret, opts, deadline)
                 : c->version_ >= 2 ? open_v2(std::move(c), false, &h, opts, deadline)
                                    : open_v1(std::move(c), false, &h, deadline);
@@ -364,23 +371,28 @@ result<std::unique_ptr<channel>> channel::open_v2(std::unique_ptr<channel> c, bo
     s.emplace();
     randombytes_buf(s->data(), s->size());
   }
-  noise::handshake hs(noise::xx_hfs(), client, prologue(kPrologue2, kKindNew), s);
+  // #497: protocol 3 adds the server's commitment; the prologue binds which.
+  const bool server_commits = c->version_ >= kProtocolVersion;
+  noise::handshake hs(noise::xx_hfs(), client, prologue(server_commits ? kPrologue3 : kPrologue2, kKindNew), s);
   sodium_memzero(s->data(), s->size());
   std::vector<std::uint8_t> out, payload;
   std::array<std::uint8_t, noise::kHashBytes> h2{};
-  std::array<std::uint8_t, 32> nonce{};
+  std::array<std::uint8_t, 32> nonce{}, server_nonce{}, server_commit{};
   if (client) {
     // -> e, e1: and a commitment to a nonce revealed only in the last message.
     randombytes_buf(nonce.data(), nonce.size());
     std::uint8_t commit[32];
     commitment_v2(nonce, commit);
     if (!hs.write_message(commit, out)) return fail(status::internal);
-    const std::uint8_t prefix[] = {'M', 'V', 'S', 'P', 2, kKindNew};
+    const std::uint8_t prefix[] = {'M', 'V', 'S', 'P', static_cast<std::uint8_t>(c->version_), kKindNew};
     if (!write_noise(l, prefix, out)) return fail(status::io);
-    // <- e, ee, ekem1, s, es
+    // <- e, ee, ekem1, s, es: and the server's commitment to its own nonce
+    // (#497), revealed only after ours, so neither side knows the code
+    // before the other has fixed its part of it.
     auto m2 = read_noise(l, deadline);
     if (!m2) return fail(m2.error());
-    if (!hs.read_message(*m2, payload) || !payload.empty()) return fail(status::corrupt);
+    if (!hs.read_message(*m2, payload) || payload.size() != (server_commits ? 32u : 0u)) return fail(status::corrupt);
+    if (server_commits) std::memcpy(server_commit.data(), payload.data(), 32);
     h2 = hs.hash();
     // -> s, se: and the nonce.
     if (!hs.write_message(nonce, out)) return fail(status::internal);
@@ -389,7 +401,13 @@ result<std::unique_ptr<channel>> channel::open_v2(std::unique_ptr<channel> c, bo
     if (!hs.read_message(theirs->body, payload) || payload.size() != 32) return fail(status::corrupt);
     std::array<std::uint8_t, 32> commit;
     std::memcpy(commit.data(), payload.data(), 32);
-    if (!hs.write_message({}, out)) return fail(status::corrupt);  // e.g. a KEM key that is not well formed
+    if (server_commits) {
+      randombytes_buf(server_nonce.data(), server_nonce.size());
+      commitment_v2(server_nonce, server_commit.data(), true);
+    }
+    const std::span<const std::uint8_t> m2_payload =
+        server_commits ? std::span<const std::uint8_t>(server_commit) : std::span<const std::uint8_t>();
+    if (!hs.write_message(m2_payload, out)) return fail(status::corrupt);  // e.g. a KEM key that is not well formed
     h2 = hs.hash();
     if (!write_noise(l, {}, out)) return fail(status::io);
     auto m3 = read_noise(l, deadline);
@@ -408,8 +426,41 @@ result<std::unique_ptr<channel>> channel::open_v2(std::unique_ptr<channel> c, bo
   const auto& tx = client ? keys->initiator_to_responder : keys->responder_to_initiator;
   const auto& rx = client ? keys->responder_to_initiator : keys->initiator_to_responder;
   if (auto r = open_streams(l, tx, rx, deadline, c->st_->push, c->st_->pull); !r) return fail(r.error());
-  c->code_ = pairing_code_v2(h2, nonce);
+  // #497: the server's nonce, sealed, now that the client's is fixed. A
+  // client in the middle learns the code only here, after the server has
+  // finished the handshake and shows the code: it cannot drop and reconnect
+  // until a code matches unseen (each try is a code on the server's screen,
+  // and the engine stops answering a run of them).
+  std::vector<std::uint8_t> buf;
+  if (!server_commits) {
+    // Protocol 2 (v0.1.34, v0.1.35): its code as it was; only the engine's
+    // limit on links that never offer stands between it and a search (#497).
+  } else if (!client) {
+    if (auto r = l.write_all(seal2(buf, c->st_->push, msg::code_nonce, 0, 0, server_nonce)); !r) {
+      return fail(r.error());
+    }
+  } else {
+    std::uint8_t len_bytes[4];
+    if (auto r = read_exact_until(l, len_bytes, deadline); !r) return fail(r.error());
+    if (get_u32(len_bytes) != kSealOverhead + kHeader2 + 32) return fail(status::corrupt);
+    std::vector<std::uint8_t> sealed(kSealOverhead + kHeader2 + 32), plain(kHeader2 + 32);
+    if (auto r = read_exact_until(l, sealed, deadline); !r) return fail(r.error());
+    unsigned long long n = 0;
+    unsigned char tag = 0;
+    if (crypto_secretstream_xchacha20poly1305_pull(&c->st_->pull, plain.data(), &n, &tag, sealed.data(), sealed.size(),
+                                                   nullptr, 0) != 0 ||
+        n != plain.size() || plain[0] != static_cast<std::uint8_t>(msg::code_nonce)) {
+      return fail(status::corrupt);
+    }
+    std::memcpy(server_nonce.data(), plain.data() + kHeader2, 32);
+    sodium_memzero(plain.data(), plain.size());
+    std::uint8_t expect[32];
+    commitment_v2(server_nonce, expect, true);
+    if (sodium_memcmp(expect, server_commit.data(), 32) != 0) return fail(status::corrupt);
+  }
+  c->code_ = server_commits ? pairing_code_v3(h2, nonce, server_nonce) : pairing_code_v2(h2, nonce);
   sodium_memzero(nonce.data(), nonce.size());
+  sodium_memzero(server_nonce.data(), server_nonce.size());
   {
     std::lock_guard lock(c->secret_m_);
     c->resume_ = keys->extra;  // the rejoin's psk: in memory only, for this session
@@ -604,6 +655,17 @@ void channel::notify(link_event e) {
   }
 }
 
+std::string channel::remember_check() const {
+  std::array<std::uint8_t, 32> secret;
+  {
+    std::lock_guard lock(secret_m_);
+    secret = resume_;
+  }
+  std::string out = driftwire::remember_check(secret);
+  sodium_memzero(secret.data(), secret.size());
+  return out;
+}
+
 std::array<std::uint8_t, 32> channel::pairing_secret() const {
   static constexpr char kContext[] = "MediaViewer Driftwire pairing v1";
   std::array<std::uint8_t, 32> out{};
@@ -632,10 +694,12 @@ bool channel::link_up() const noexcept {
 // ---- sending ------------------------------------------------------------------------------
 
 expected channel::send(msg type, std::span<const std::uint8_t> body) {
-  if (down_.load()) return err(status::cancelled);
+  // #511: nothing follows a cancel (either side's) onto the link.
+  if (down_.load() || cancelled_.load()) return err(status::cancelled);
   if (body.size() + kHeader2 > kMaxMessageBytes) return err(status::invalid_arg);
   if (version_ >= 2) return send_v2(type, body);
   std::lock_guard lock(send_m_);
+  if (cancelled_.load()) return err(status::cancelled);
   return send_locked(type, body);
 }
 
@@ -694,6 +758,7 @@ expected channel::send_v2(msg type, std::span<const std::uint8_t> body) {
   }
   if (down_.load()) return err(status::cancelled);
   std::lock_guard lock(send_m_);
+  if (cancelled_.load()) return err(status::cancelled);  // cancel() wrote while this waited
   (void)keep_and_write(type, body);
   // A link that failed under it is not this send's failure: the message is
   // kept, and a rejoin sends it again.
@@ -739,18 +804,40 @@ expected channel::keep_and_write(msg type, std::span<const std::uint8_t> body) {
   return {};
 }
 
-bool channel::try_send(msg type, std::string_view text) noexcept {
-  if (down_.load()) return false;
-  std::unique_lock lock(send_m_, std::try_to_lock);
-  if (!lock.owns_lock()) return false;
-  try {
-    const std::span<const std::uint8_t> body(reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
-    if (version_ < 2) return send_locked(type, body).has_value();
-    // Said if the link is free now, never waited for (kept, like any other).
-    return keep_and_write(type, body).has_value();
-  } catch (...) {
-    return false;
+bool channel::cancel(int wait_ms, std::string_view why) noexcept {
+  const auto until = clock::now() + std::chrono::milliseconds(std::max(0, wait_ms));
+  cancelled_.store(true);  // from here a dropped link ends the session (mark_down)
+  bool said = false;
+  std::uint64_t seq = 0;
+  {
+    // After the frame being written, if any: frames never interleave, and the
+    // sender's loop sends no further chunk once the person cancelled.
+    std::unique_lock lock(send_m_, until);
+    if (lock.owns_lock() && !down_.load() && !cancel_said_) {
+      try {
+        std::string text = "{}";
+        if (!why.empty()) {
+          json::writer w;
+          w.begin_object().key("why").string(why).end_object();
+          text = w.take();
+        }
+        const std::span<const std::uint8_t> body(reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
+        said = version_ < 2 ? send_locked(msg::cancel, body).has_value() : keep_and_write(msg::cancel, body).has_value();
+      } catch (...) {
+        said = false;
+      }
+      cancel_said_ = said;
+      seq = send_seq_;
+    }
   }
+  if (said && version_ >= 2) {
+    // Protocol 2: until the peer acknowledges it (its pinger answers at once,
+    // a reader here trims), so it is read before this side closes the link.
+    std::unique_lock lock(replay_m_);
+    replay_cv_.wait_until(lock, until, [&] { return down_.load() || peer_acked_ >= seq; });
+  }
+  shutdown();
+  return said;
 }
 
 void channel::flush(int timeout_ms) {
@@ -825,6 +912,7 @@ expected channel::receive_v1(message& out, int timeout_ms) {
     out.type = static_cast<msg>(raw);
     out.body.erase(out.body.begin());
     out.body.resize(static_cast<std::size_t>(plain) - 1);
+    if (out.type == msg::cancel) cancelled_.store(true);
     if (out.type != msg::ping) return {};
     if (limited && clock::now() >= deadline) return err(status::timeout);
   }
@@ -942,6 +1030,8 @@ expected channel::receive_v2(message& out, int timeout_ms, bool until_acked) {
     out.body.erase(out.body.begin(), out.body.begin() + kHeader2);
     out.body.resize(static_cast<std::size_t>(plain) - kHeader2);
     recv_seq_.store(seq);
+    // #511: the peer ended it on purpose; the link that drops next is not a loss.
+    if (out.type == msg::cancel) cancelled_.store(true);
     if (out.type == msg::done) {
       // The last message of a transfer: acknowledged now, from here, before
       // the caller shuts the channel down (the peer flushes until it has this).
@@ -994,7 +1084,7 @@ void channel::ping_loop() {
         gen = gen_;
         up = up_;
       }
-      if (up && now_ns() - last_heard_ns_.load() >= std::int64_t{kSuspectMs} * 1000000 &&
+      if (up && !cancelled_.load() && now_ns() - last_heard_ns_.load() >= std::int64_t{kSuspectMs} * 1000000 &&
           suspect_gen_.exchange(gen) != gen) {
         notify(link_event::suspect);
       }
@@ -1019,6 +1109,10 @@ void channel::mark_down(std::uint64_t gen) noexcept {
   }
   link_cv_.notify_all();
   if (old) old->shutdown();
+  if (cancelled_.load()) {
+    shutdown();  // #511: ended on purpose; nothing to rejoin
+    return;
+  }
   if (!opened_.load()) return;
   notify(link_event::down);
 }
@@ -1062,7 +1156,7 @@ expected channel::rejoin(std::shared_ptr<link> l) {
   if (!l) return err(status::invalid_arg);
   if (version_ < 2) return err(status::unsupported_format);
   std::lock_guard one(rejoin_m_);
-  if (down_.load()) {
+  if (down_.load() || cancelled_.load()) {
     l->shutdown();
     return err(status::cancelled);
   }
@@ -1107,7 +1201,7 @@ expected channel::accept_rejoin(std::shared_ptr<link> l, const hello& h) {
     l->shutdown();
     return err(down_.load() ? status::cancelled : s);
   };
-  if (down_.load()) return fail(status::cancelled);
+  if (down_.load() || cancelled_.load()) return fail(status::cancelled);
   if (!names_this(h)) return fail(status::not_found);
   const auto deadline = clock::now() + std::chrono::milliseconds(kRejoinConfirmMs);
   std::array<std::uint8_t, 32> psk;

@@ -416,10 +416,20 @@ public sealed unsafe class AiApi
         _api = (MvAiApi*)table;
         // Every entry up to people_reanalyse is required; the ones after it
         // are appended and each is checked where it is used (HasRootSetDocuments).
-        MvAiApi* layout = null;
-        uint required = (uint)((byte*)&layout->EachLocation - (byte*)layout);
-        if (_api->StructSize < required)
+        if (_api->StructSize < RequiredSize)
             throw new InvalidOperationException("AI add-on table is older than this chrome");
+    }
+
+    // The offset of each_location, the first appended entry. Measured on a real
+    // (default) table, never as &((MvAiApi*)null)->EachLocation: that is a field
+    // address through a null pointer, which the JIT may check, and on Windows
+    // did — a NullReferenceException on every attach (issue #509).
+    private static readonly uint RequiredSize = OffsetOfEachLocation();
+
+    private static uint OffsetOfEachLocation()
+    {
+        MvAiApi table = default;
+        return (uint)((byte*)&table.EachLocation - (byte*)&table);
     }
 
     private IntPtr Ctx => _api->Ctx;
