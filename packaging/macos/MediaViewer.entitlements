@@ -21,7 +21,7 @@
   Not in this file: com.apple.security.application-groups =
   "<team>.<bundle id>.driftwire", Driftwire's keychain access group (#501,
   docs/design/28 "Remembered devices"). The team is the signing secret
-  (APPLE_TEAM_ID), so `macpack.py release --team-id` adds it when it signs.
+  (APPLE_TEAM_ID), so macpack.py release adds it (its team-id option) when it signs.
   A team-prefixed app group needs no provisioning profile.
 -->
 <plist version="1.0">
