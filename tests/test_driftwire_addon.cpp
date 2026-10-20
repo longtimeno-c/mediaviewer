@@ -175,7 +175,9 @@ TEST_CASE("driftwire: the window opens from a command with its files, offline", 
   const std::string tree = reg.screens_json();
   CHECK(tree.find("IMG_1.JPG") != std::string::npos);
   CHECK(tree.find("\"pick\":\"folder\"") != std::string::npos);
-  CHECK(tree.find("Offline.") != std::string::npos);
+  // #508: said once, quietly, under Nearby.
+  CHECK(tree.find("Offline: nothing nearby can be found.") != std::string::npos);
+  CHECK(tree.find("No one nearby yet") != std::string::npos);
 
   // Closing it is the person's Done.
   REQUIRE(reg.close_screen("driftwire", "driftwire") == status::ok);

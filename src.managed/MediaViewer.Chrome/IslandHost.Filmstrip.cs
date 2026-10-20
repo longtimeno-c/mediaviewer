@@ -117,6 +117,7 @@ public static partial class IslandHost
         _completionWait = null;
         if (_folderSession is null) return;
         StartAddons();  // Milestone G: needs the session (IslandHost.Addons.cs)
+        MaybeStartScreenSelfTest();  // MV_SCREEN_SELFTEST only (IslandHost.ScreenSelfTest.cs)
         ArmCompletionWait();
     }
 

@@ -101,12 +101,16 @@ public static partial class IslandHost
     private static UIElement BuildScreenNode(JsonElement n, ScreenAt at)
     {
         UIElement e = BuildScreenNodeInner(n, at);
+        // A row built around a control (#508: a toggle beside its label): the
+        // control carries the name, the help and the enabled state.
+        UIElement named = e is FrameworkElement { Tag: ScreenInline inline } ? inline.Control : e;
         string label = JStr(n, "label");
-        if (label.Length > 0) AutomationProperties.SetName(e, label);
+        if (label.Length > 0) AutomationProperties.SetName(named, label);
         string help = JStr(n, "help");
-        if (help.Length > 0) ToolTipService.SetToolTip(e, help);
+        if (help.Length > 0) ToolTipService.SetToolTip(named, help);
         if (JFlag(n, "hidden")) e.Visibility = Visibility.Collapsed;
-        if (JFlag(n, "disabled") && e is Control c) c.IsEnabled = false;
+        if (JFlag(n, "disabled") && named is Control c) c.IsEnabled = false;
+        if (e is FrameworkElement fe) RegisterScreenId(JStr(n, "id"), fe);
         return e;
     }
 
@@ -115,6 +119,27 @@ public static partial class IslandHost
         string id = JStr(n, "id");
         switch (JStr(n, "type"))
         {
+            case "stack" when JStr(n, "axis") == "horizontal" &&
+                              JArr(n, "children").Any(c => JStr(c, "type") == "text_field"):
+            {
+                // #508: a field and its buttons on one row, as the Mac's HStack:
+                // the field takes the width the buttons leave.
+                var row = new Grid { ColumnSpacing = JNum(n, "spacing", 8) };
+                int col = 0;
+                foreach (JsonElement c in JArr(n, "children"))
+                {
+                    bool field = JStr(c, "type") == "text_field";
+                    row.ColumnDefinitions.Add(new ColumnDefinition
+                    {
+                        Width = field ? new GridLength(1, GridUnitType.Star) : GridLength.Auto,
+                    });
+                    var child = (FrameworkElement)BuildScreenNode(c, at);
+                    child.VerticalAlignment = VerticalAlignment.Center;
+                    Grid.SetColumn(child, col++);
+                    row.Children.Add(child);
+                }
+                return JStr(n, "look") == "card" ? ScreenCard(row) : row;
+            }
             case "stack":
             {
                 var panel = new StackPanel
@@ -125,6 +150,10 @@ public static partial class IslandHost
                 foreach (JsonElement c in JArr(n, "children"))
                 {
                     UIElement child = BuildScreenNode(c, at);
+                    if (child is FrameworkElement hfe && panel.Orientation == Orientation.Horizontal)
+                    {
+                        hfe.VerticalAlignment = VerticalAlignment.Center;
+                    }
                     if (child is FrameworkElement fe && panel.Orientation == Orientation.Vertical)
                     {
                         fe.HorizontalAlignment = JStr(n, "align") switch
@@ -209,18 +238,17 @@ public static partial class IslandHost
             case "text":
             {
                 string style = JStr(n, "style");
-                TextBlock t = Text(JStr(n, "text"),
+                (double size, bool bold) = ScreenTextStyle(style);
+                TextBlock t = SText(JStr(n, "text"),
                     style is "secondary" or "caption" ? Body : Title,
-                    style switch
-                    {
-                        "title" => UiFontSize - 1,
-                        "heading" => UiFontSize + 1,
-                        "secondary" => UiFontSize - 3,
-                        "caption" => UiFontSize - 4,
-                        _ => UiFontSize - 2,
-                    },
-                    bold: style is "title" or "heading",
-                    maxLines: (int)JNum(n, "lines", 0));
+                    size,
+                    bold: bold,
+                    maxLines: (int)JNum(n, "lines", 0),
+                    display: style == "heading");
+                if (style == "heading")
+                {
+                    AutomationProperties.SetHeadingLevel(t, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
+                }
                 if (style == "mono") t.FontFamily = new FontFamily("Cascadia Mono,Consolas");
                 if (style == "display")
                 {
@@ -262,42 +290,38 @@ public static partial class IslandHost
                 // clipboard, here, and the label says "Copied" for a moment.
                 string copy = JStr(n, "copy");
                 Button? self = null;
-                Button b = EditButton(label, () =>
+                Button b = ScreenButton(label, () =>
                 {
                     if (copy.Length > 0 && self != null) CopyToClipboard(self, copy, label);
                     SendScreenEvent(at, id, SlotNative.EventClick, "");
-                });
+                }, JStr(n, "style"));
                 self = b;
                 string symbol = JStr(n, "symbol");
                 if (symbol.Length > 0)
                 {
                     var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
-                    row.Children.Add(new FontIcon { Glyph = SlotGlyph(symbol), FontFamily = SymbolFont, FontSize = 12, Foreground = Brush(Title) });
-                    row.Children.Add(Text(label, Title, UiFontSize - 2));
+                    row.Children.Add(new FontIcon { Glyph = SlotGlyph(symbol), FontFamily = SymbolFont, FontSize = 12, Foreground = b.Foreground });
+                    TextBlock words = SText(label, Title, UiFontSize - 2);
+                    words.Foreground = b.Foreground;
+                    row.Children.Add(words);
                     b.Content = row;
                 }
-                if (JStr(n, "style") == "primary") b.Background = Brush(Hairline);
-                // Reached by Tab like every control here (EditButton's default keeps
-                // focus off the canvas; a screen is a window of its own).
-                b.AllowFocusOnInteraction = true;
-                b.IsTabStop = true;
                 return b;
             }
             case "toggle":
             {
                 var t = new ToggleSwitch
                 {
-                    Header = Text(JStr(n, "label"), Title, UiFontSize - 2),
                     IsOn = JFlag(n, "value"),
                     OnContent = "",
                     OffContent = "",
                 };
                 t.Toggled += (_, _) => SendScreenEvent(at, id, SlotNative.EventChange, t.IsOn ? "true" : "false");
-                return t;
+                return InlineToggle(JStr(n, "label"), t);
             }
             case "choice":
             {
-                var box = new ComboBox { Header = Text(JStr(n, "label"), Title, UiFontSize - 2), MinWidth = 160 };
+                var box = new ComboBox { Header = SText(JStr(n, "label"), Title, UiFontSize - 2), MinWidth = 160 };
                 string value = JStr(n, "value");
                 var ids = new List<string>();
                 foreach (JsonElement o in JArr(n, "options"))
@@ -342,9 +366,13 @@ public static partial class IslandHost
                 return BuildCodeField(n, at, id);
             case "text_field":
             {
-                var field = new FakeInput(JStr(n, "placeholder").Length > 0 ? JStr(n, "placeholder") : JStr(n, "label"), 220)
+                // #508: as wide as its row allows (the Mac's TextField), never
+                // narrower than a short path.
+                var field = new FakeInput(JStr(n, "placeholder").Length > 0 ? JStr(n, "placeholder") : JStr(n, "label"),
+                                          look: InScreenWindow ? ScreenInputLook(_screenFace!) : null)
                 {
                     Text = JStr(n, "value"),
+                    MinWidth = 180,
                 };
                 string last = field.Text;
                 field.Submitted += () =>
@@ -361,12 +389,14 @@ public static partial class IslandHost
                 if (JStr(n, "pick") != "folder") return field;
                 // "pick": "folder" (#410): the system folder dialog, reported as the
                 // field's change; typing a path still works.
-                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+                var row = new Grid { ColumnSpacing = Space(8) };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                 row.Children.Add(field);
-                Button choose = EditButton("Choose\u2026", () => PickScreenFolder(at, id, field, v => last = v));
-                choose.AllowFocusOnInteraction = true;
-                choose.IsTabStop = true;
+                Button choose = ScreenButton("Choose\u2026", () => PickScreenFolder(at, id, field, v => last = v));
+                choose.VerticalAlignment = VerticalAlignment.Center;
                 AutomationProperties.SetName(choose, "Choose a folder for " + JStr(n, "label"));
+                Grid.SetColumn(choose, 1);
                 row.Children.Add(choose);
                 return row;
             }
@@ -416,7 +446,7 @@ public static partial class IslandHost
             return;  // the clipboard is busy (another app holds it): the click still counts
         }
         object? before = b.Content;
-        b.Content = Text("✓ Copied", Title, UiFontSize - 2);
+        b.Content = SText("✓ Copied", Title, UiFontSize - 2);
         AutomationProperties.SetName(b, "Copied");
         DispatcherQueueTimer? t = b.DispatcherQueue?.CreateTimer();
         if (t == null) return;
@@ -486,7 +516,7 @@ public static partial class IslandHost
             {
                 string ini = string.Concat(name.Split(new[] { ' ', '-', '_', '.' }, StringSplitOptions.RemoveEmptyEntries)
                                                .Take(2).Select(w => char.ToUpperInvariant(w[0])));
-                TextBlock mono = Text(ini.Length > 0 ? ini : "?", Title, 17, bold: true);
+                TextBlock mono = SText(ini.Length > 0 ? ini : "?", Title, 17, bold: true);
                 mono.HorizontalAlignment = HorizontalAlignment.Center;
                 mono.VerticalAlignment = VerticalAlignment.Center;
                 face.Children.Add(mono);
@@ -507,7 +537,7 @@ public static partial class IslandHost
             }
             var col = new StackPanel { Spacing = 4, Width = 88, VerticalAlignment = VerticalAlignment.Center };
             col.Children.Add(face);
-            TextBlock label = Text(name, Body, UiFontSize - 3, maxLines: 1);
+            TextBlock label = SText(name, Body, UiFontSize - 3, maxLines: 1);
             label.HorizontalAlignment = HorizontalAlignment.Center;
             label.TextTrimming = TextTrimming.CharacterEllipsis;
             col.Children.Add(label);
@@ -575,7 +605,7 @@ public static partial class IslandHost
         badge.Children.Add(new FontIcon { Glyph = glyph, FontFamily = SymbolFont, FontSize = 15, Foreground = failed ? Brush(ChromeColour.Disabled) : new SolidColorBrush(tint) });
         canvas.Children.Add(badge);
         // A relay: the computer in between, named under it.
-        TextBlock? through = JStr(n, "through") is { Length: > 0 } th ? Text(th, Body, UiFontSize - 4, maxLines: 1) : null;
+        TextBlock? through = JStr(n, "through") is { Length: > 0 } th ? SText(th, Body, UiFontSize - 4, maxLines: 1) : null;
         if (through != null) canvas.Children.Add(through);
 
         Windows.Foundation.Point At(double s, double w)
@@ -645,8 +675,8 @@ public static partial class IslandHost
         root.Children.Add(strip);
 
         var captionRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6), HorizontalAlignment = HorizontalAlignment.Center };
-        captionRow.Children.Add(Text(JStr(n, "caption"), Body, UiFontSize - 2));
-        if (value >= 0) captionRow.Children.Add(Text($"{Math.Round(value * 100)}%", Title, UiFontSize - 2));
+        captionRow.Children.Add(SText(JStr(n, "caption"), Body, UiFontSize - 2));
+        if (value >= 0) captionRow.Children.Add(SText($"{Math.Round(value * 100)}%", Title, UiFontSize - 2));
         root.Children.Add(captionRow);
 
         AutomationProperties.SetName(root, JStr(n, "label"));
@@ -721,7 +751,7 @@ public static partial class IslandHost
         });
         if (value >= 0 && size >= 40)
         {
-            TextBlock pct = Text($"{Math.Round(value * 100)}%", Title, size / 4.5, bold: true);
+            TextBlock pct = SText($"{Math.Round(value * 100)}%", Title, size / 4.5, bold: true);
             pct.HorizontalAlignment = HorizontalAlignment.Center;
             pct.VerticalAlignment = VerticalAlignment.Center;
             root.Children.Add(pct);
@@ -756,7 +786,7 @@ public static partial class IslandHost
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
             });
-            TextBlock mono = Text(JStr(item, "initials") is { Length: > 0 } ini ? ini : "?", Title, size * 0.36, bold: true);
+            TextBlock mono = SText(JStr(item, "initials") is { Length: > 0 } ini ? ini : "?", Title, size * 0.36, bold: true);
             mono.Foreground = new SolidColorBrush(Colors.White);
             mono.HorizontalAlignment = HorizontalAlignment.Center;
             mono.VerticalAlignment = VerticalAlignment.Center;
@@ -799,13 +829,13 @@ public static partial class IslandHost
             }
             var tile = new StackPanel { Spacing = Space(4), Width = size + 40 };
             tile.Children.Add(face);
-            TextBlock title = Text(name, Title, UiFontSize - 2, maxLines: 2);
+            TextBlock title = SText(name, Title, UiFontSize - 2, maxLines: 2);
             title.TextAlignment = TextAlignment.Center;
             title.HorizontalAlignment = HorizontalAlignment.Center;
             tile.Children.Add(title);
             if (detail.Length > 0)
             {
-                TextBlock caption = Text(detail, Body, UiFontSize - 4, maxLines: 1);
+                TextBlock caption = SText(detail, Body, UiFontSize - 4, maxLines: 1);
                 caption.HorizontalAlignment = HorizontalAlignment.Center;
                 tile.Children.Add(caption);
             }
@@ -908,7 +938,7 @@ public static partial class IslandHost
         double value = JNum(n, "value", Math.Max(lo, 0));
         string label = JStr(n, "label");
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
-        TextBlock shown = Text($"{label}: {ScreenNumberJson(value)}", Title, UiFontSize - 2);
+        TextBlock shown = SText($"{label}: {ScreenNumberJson(value)}", Title, UiFontSize - 2);
         shown.VerticalAlignment = VerticalAlignment.Center;
         void Step(double by)
         {
@@ -916,8 +946,8 @@ public static partial class IslandHost
             shown.Text = $"{label}: {ScreenNumberJson(value)}";
             SendScreenEvent(at, id, SlotNative.EventChange, ScreenNumberJson(value));
         }
-        Button minus = EditButton("−", () => Step(-step));
-        Button plus = EditButton("+", () => Step(step));
+        Button minus = ScreenButton("−", () => Step(-step));
+        Button plus = ScreenButton("+", () => Step(step));
         foreach (Button b in new[] { minus, plus })
         {
             b.AllowFocusOnInteraction = true;
@@ -952,7 +982,7 @@ public static partial class IslandHost
             for (int c = 0; c < columns.Length; ++c)
             {
                 header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                TextBlock h = Text(JStr(columns[c], "title"), Body, UiFontSize - 4, bold: true);
+                TextBlock h = SText(JStr(columns[c], "title"), Body, UiFontSize - 4, bold: true);
                 Grid.SetColumn(h, c);
                 header.Children.Add(h);
             }
@@ -971,7 +1001,7 @@ public static partial class IslandHost
                 for (int c = 0; c < columns.Length; ++c)
                 {
                     g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                    TextBlock cell = Text(c < cells.Length ? cells[c] : "", Title, UiFontSize - 3, maxLines: 1);
+                    TextBlock cell = SText(c < cells.Length ? cells[c] : "", Title, UiFontSize - 3, maxLines: 1);
                     Grid.SetColumn(cell, c);
                     g.Children.Add(cell);
                 }
@@ -981,9 +1011,9 @@ public static partial class IslandHost
             else
             {
                 var col = new StackPanel { Spacing = Space(1) };
-                col.Children.Add(Text(JStr(r, "text"), Title, UiFontSize - 2));
+                col.Children.Add(SText(JStr(r, "text"), Title, UiFontSize - 2));
                 string detail = JStr(r, "detail");
-                if (detail.Length > 0) col.Children.Add(Text(detail, Body, UiFontSize - 4));
+                if (detail.Length > 0) col.Children.Add(SText(detail, Body, UiFontSize - 4));
                 content = col;
                 name = detail.Length > 0 ? $"{JStr(r, "text")}, {detail}" : JStr(r, "text");
             }
@@ -1061,7 +1091,9 @@ public static partial class IslandHost
             Width = size,
             Height = size,
             CornerRadius = Corner(6),
-            Background = Brush(ChromeColour.Surface),
+            // #508: on a card (itself the surface colour) an empty or loading
+            // tile still shows as a tile.
+            Background = Brush(InScreenWindow ? ChromeColour.Placeholder : ChromeColour.Surface),
             Child = img,
         };
         AutomationProperties.SetName(box, label.Length > 0 ? label : Path.GetFileName(path));
@@ -1094,6 +1126,13 @@ public static partial class IslandHost
             try
             {
                 jpeg = SlotNative.ThumbnailPath(path);
+            }
+            catch (Exception ex)
+            {
+                // A clip (no poster here) or a file that cannot be read: an empty
+                // tile, and the path leaves the pending list (#508: an escaped
+                // throw left it there, so no later tile of it ever painted).
+                System.Diagnostics.Debug.WriteLine(ex.GetType().Name);
             }
             finally
             {
@@ -1546,11 +1585,17 @@ public static partial class IslandHost
             {
                 Window w = OpenScreenWindow(s, at, place);
                 ScreenWindows[at] = (w, revision);
-                w.Content = BuildScreenRoot(s, at, place);
+                FrameworkElement content = BuildScreenRoot(s, at, place);
+                w.Content = content;
+                if (place == "window") FitScreenWindow(w, content, (int)JNum(s, "height", 0));
             }
             else if (open.Revision != revision)
             {
-                open.Window.Content = BuildScreenRoot(s, at, place);
+                // #508: the new tree keeps the old one's scroll and focus.
+                ScreenPlace? kept = NoteScreenPlace(open.Window.Content);
+                FrameworkElement content = BuildScreenRoot(s, at, place);
+                if (kept is { } k) RestoreScreenPlace(content, k);
+                open.Window.Content = content;
                 ScreenWindows[at] = (open.Window, revision);
             }
             else
@@ -1588,9 +1633,27 @@ public static partial class IslandHost
         LiveSurfaces.Clear();
     }
 
-    private static UIElement BuildScreenRoot(JsonElement s, ScreenAt at, string place)
+    private static FrameworkElement BuildScreenRoot(JsonElement s, ScreenAt at, string place)
     {
-        var root = new Grid { Background = Brush(Canvas), RequestedTheme = IslandTheme, Padding = Pad(12) };
+        // #508: the window's face and the ids of what is built, for this build only.
+        var ids = new Dictionary<string, FrameworkElement>(StringComparer.Ordinal);
+        _screenFace = ScreenWindowFace();
+        _screenIds = ids;
+        try
+        {
+            return BuildScreenRootInner(s, at, place, ids);
+        }
+        finally
+        {
+            _screenFace = null;
+            _screenIds = null;
+        }
+    }
+
+    private static FrameworkElement BuildScreenRootInner(JsonElement s, ScreenAt at, string place,
+                                                         Dictionary<string, FrameworkElement> ids)
+    {
+        var root = new Grid { Background = Brush(Canvas), RequestedTheme = IslandTheme, Padding = Pad(16, 12, 16, 16) };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         if (place != "window")
@@ -1598,10 +1661,10 @@ public static partial class IslandHost
             var head = new Grid { Margin = Pad(0, 0, 0, 8) };
             head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            head.Children.Add(Text(JStr(s, "title"), Title, UiFontSize, bold: true));
-            Button done = EditButton("Done", () => SlotNative.CloseScreen(at.Addon, at.Screen));
-            done.AllowFocusOnInteraction = true;
-            done.IsTabStop = true;
+            TextBlock title = SText(JStr(s, "title"), Title, TypeSize(17), bold: true, display: true);
+            title.VerticalAlignment = VerticalAlignment.Center;
+            head.Children.Add(title);
+            Button done = ScreenButton("Done", () => SlotNative.CloseScreen(at.Addon, at.Screen));
             Grid.SetColumn(done, 1);
             head.Children.Add(done);
             root.Children.Add(head);
@@ -1611,7 +1674,18 @@ public static partial class IslandHost
             var body = (FrameworkElement)BuildScreenNode(tree, at);
             Grid.SetRow(body, 1);
             root.Children.Add(body);
+            if (body is ScrollViewer { Content: FrameworkElement inner } scroll &&
+                scroll.VerticalScrollBarVisibility != ScrollBarVisibility.Disabled)
+            {
+                // #508: a scrolling tree's margin is inside the scroller, so its bar
+                // sits on the window's edge, not over the cards, and shows only
+                // when there is more to see.
+                root.Padding = new Thickness(0, place != "window" ? Space(12) : 0, 0, 0);
+                if (place != "window") ((FrameworkElement)root.Children[0]).Margin = Pad(16, 0, 16, 8);
+                inner.Margin = Pad(16, place != "window" ? 0 : 14, 16, 18);
+            }
         }
+        ScreenIdsOf.AddOrUpdate(root, ids);
         // Esc closes a pane or a sheet, as the Done button does.
         root.KeyDown += (_, e) =>
         {
@@ -1661,6 +1735,9 @@ public static partial class IslandHost
     private static extern bool SlotSetProp(IntPtr hwnd, string name, IntPtr data);
 
     private const int SlotGwlpHwndParent = -8;
+
+    [DllImport("dwmapi.dll", EntryPoint = "DwmSetWindowAttribute")]
+    private static extern int SlotDwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 
     // #442: an add-on's window is a MediaViewer window. The app's icon in the
     // title bar, the taskbar and Alt+Tab (AppIcon, as Import's windows); sized in
@@ -1729,6 +1806,12 @@ public static partial class IslandHost
                 op.PreferredMinimumHeight = minH;
                 op.IsMinimizable = place == "pane";  // an owned window minimises with the viewer
             }
+            // #508: the title bar in the window's own light or dark, not a light
+            // bar over a dark page.
+            // Dark when the window's canvas is (DWMWA_USE_IMMERSIVE_DARK_MODE).
+            Windows.UI.Color bg = Brush(Canvas).Color;
+            int dark = 0.2126 * bg.R + 0.7152 * bg.G + 0.0722 * bg.B < 128 ? 1 : 0;
+            _ = SlotDwmSetWindowAttribute(hwnd, 20, ref dark, sizeof(int));
             if (place != "pane" && _themeWindow != IntPtr.Zero) SlotSetWindowLongPtr(hwnd, SlotGwlpHwndParent, _themeWindow);
             SlotSetProp(hwnd, "MediaViewer.AddonWindow", 1);
         }

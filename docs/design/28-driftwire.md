@@ -23,8 +23,9 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
   entry ([16 "Share"](16-commands.md#share-444)): the gallery's share icon, the bar's share button,
   `Ctrl+Shift+S` and right-click Share ▸. Its manifest's own **Send with Driftwire…** context
   entry is left out of the hosts' right-click menus (#444), so there is one route. Its design is
-  AirDrop's (#442), the same on both hosts, top to bottom:
-  - this computer's name as others see it, and **Keep receiving when this window is closed** (kept
+  AirDrop's (#442), the same on both hosts, top to bottom. Every group is a card of its own
+  (#508, 2026-10-20), never a card in a card:
+  - a card with this computer's name as others see it, and **Keep receiving when this window is closed** (kept
     across launches; the command bar shows **Driftwire: receiving** while it is on), then
     **Receive when MediaViewer is closed** (#452, off by default; [In the background](#in-the-background-452));
   - **what is happening now**, first: a card for what is offered to this computer and one for a
@@ -46,8 +47,11 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
     other screen shows, in one large field that takes digits only and goes by itself at the sixth
     (three wrong codes end the link; this screen never shows the code); then "Waiting for … to
     accept"; then the tile's own ring fills while the bytes move (and the path card above shows
-    how), and it ends with a done or failed mark on the tile and a line saying what happened;
-  - **Over the internet**, one toggle, then in the order a person uses it: **Receive from
+    how), and it ends with a done or failed mark on the tile and a line saying what happened.
+    With no one in sight it says **No one nearby yet** and how to fix that, not a status line;
+    what this computer cannot search (no network, Bluetooth off or missing) is one quiet line at
+    the card's foot, and nothing when Wi-Fi and Bluetooth both work (#508);
+  - **Over the internet**, a card with one toggle, then, each a card, in the order a person uses it: **Receive from
     anywhere** (Make a code; the code in large type, selectable, with **Copy code** and **Copy
     link**), **Send to a code**, Remembered devices, and **Internet options** (the DHT, Wi-Fi drops,
     relaying, and the optional own relay server). Nothing asks for an address: a code finds its

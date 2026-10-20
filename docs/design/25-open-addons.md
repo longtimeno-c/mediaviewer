@@ -355,6 +355,15 @@ small vocabulary both hosts render with their own controls.
   high contrast, text size, VoiceOver and Narrator without the add-on doing anything.
 - **Windows control limits apply** (`tools/check-winui-controls.ps1`): the vocabulary maps only
   to controls that load in the islands, with the existing stand-ins for the rest.
+- **How Windows draws a screen window** (#508, 2026-10-20; `IslandHost.ScreenLook.cs`): the
+  system face, Segoe UI Variable (the theme's `font` when it names one), on the Fluent ramp
+  (heading 17 semibold, body 14, secondary 13, caption 12); a toggle on the right of its label,
+  as the Mac's `Toggle`; filled buttons as Settings' (accent for `primary`, red text for
+  `destructive`); a text field takes the width its row leaves; a scrolling tree's margin sits
+  inside the scroller, so the bar is on the window's edge; the title bar follows light / dark; a
+  window opens no taller than its content. A new revision rebuilds the content but keeps each
+  scroller's offset and the focused control, by node id (two revisions back to back keep it
+  too). A section in the info pane keeps the chrome's face, among the chrome's own text.
 
 ## 11. Performance
 

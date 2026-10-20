@@ -844,6 +844,17 @@ Core takes over at the next start.
 
 ## Crash reporting and privacy
 
+**WinUI access violations are recorded by Crashpad too (2026-10-20, issue #508).** Two Windows
+crash dumps (WER `LocalDumps`, Driftwire loaded) were access violations inside
+`Microsoft.UI.Xaml.dll` on the UI thread, during window-message handling, and Crashpad's report
+folder was empty: with managed frames on the stack .NET ends such a fault with its own fail-fast,
+which goes to WER and skips the unhandled-exception filter. A vectored handler now asks Crashpad
+for a dump (`DumpWithoutCrash` on the faulting context) on the first access violation per run
+whose address is in a WinUI DLL, then lets the exception go on unchanged; the dump is scrubbed
+like every other. Not covered: a XAML fail-fast (`0xC000027B`, `RaiseFailFastException`) never
+reaches any handler; Crashpad's WER module (`crashpad_wer.dll`) would, and the vcpkg port does
+not build it.
+
 **A post-crash scrub, not an arena-tagged heap filter (2026-09-14).** Crashpad's handler has no
 filter hook. Indirect memory gathering is off, WER forwarding off, no extra ranges, so heap pixels
 are excluded structurally. The app rewrites every finished dump on its next launch, before any send
@@ -2118,6 +2129,18 @@ other apps, so a window left behind another app rests a minute after you leave i
 ever while visible was the alternative, at a steady cost with nobody using the app. A tick
 behind another app may present (`present_request::ground_tick`); nothing else does. Known gap: the home's
 marks do not line up with the panes' (own seed, own rect, own clock).
+
+---
+
+**A screen window on Windows is drawn in the system face (2026-10-20, issue #508).** The owner
+compared Driftwire on a MacBook Air and a Windows PC: the Mac's window read as a native window,
+Windows' as a terminal (CozetteVector, toggles stacked under their labels, loose rows). An add-on's
+own window on Windows now uses Segoe UI Variable on the Fluent ramp, inline toggles and filled
+buttons (25 §10); a theme that names a face still wins, and a section in the info pane keeps the
+chrome's face. Grouping is the add-on's to say with `"look": "card"` (Driftwire's tree now puts
+every group in one), not a Windows-only rule, so both hosts draw the same groups. Not changed:
+ScreenView.swift still sets `MVTheme.font` (CozetteVector unless themed); if the Mac's windows
+were seen in the system face, that is worth checking there, not assumed.
 
 ---
 

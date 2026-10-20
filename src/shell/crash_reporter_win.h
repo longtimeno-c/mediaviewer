@@ -15,6 +15,11 @@
 //    geometry / correlation id) and the last ABI call id. Nothing else.
 //  - A background thread scrubs every finished, unscrubbed report in the
 //    database — before any send is offered.
+//  - #508: an access violation inside WinUI's own DLLs on a thread with
+//    managed frames ends in .NET's fail-fast, which goes to WER and never
+//    reaches Crashpad's filter (two such dumps, no Crashpad report). A
+//    vectored handler records the first one per run as a Crashpad report
+//    (DumpWithoutCrash on the faulting context) and lets it carry on.
 //
 // Handler missing → the app runs without crash reporting and logs once.
 #pragma once
