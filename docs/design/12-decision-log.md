@@ -1522,14 +1522,15 @@ settings carry over once (`adopt_old_prefs` reads `<root>/sharepoint/data/sharep
 place the old name stays in the code).
 
 **Punch probes are authenticated; meetings over the DHT need both sides past v0.1.35 (#499,
-2026-10-20).** Every probe carried the same tag from the code in the clear, and a reply or choose
+owner, 2026-10-20).** Every probe carried the same tag from the code in the clear, and a reply or choose
 was taken from any address that showed it, so a host that was sent one (at the other side's private
 address on this network, behind the same carrier NAT) could answer first and take the meeting:
 CPace then failed and the transfer was denied. Probes now carry a nonce per side and per meeting
 and a MAC under a key from the code, the stream id comes from both nonces, and private addresses
 are probed only when both sides share a public address ([28](28-driftwire.md#four-words-over-the-dht-472-pr-3)).
 The wire format changed, so a v0.1.35 peer is not met over the DHT (word codes, remembered
-devices); direct codes and Wi-Fi are unaffected. Reverses "once it has offered a TCP connection it
+devices); direct codes and Wi-Fi are unaffected. The owner chose the break over a fallback to the
+old probes for old peers: both sides must be on the next release. Reverses "once it has offered a TCP connection it
 never falls back to UDP": a connection whose answer does not verify, or that closes, was not taken
 by the other side, so the sender tries the next path. Leases go from an hour to 120 s, renewed while
 held. Reopen if old peers must still be met: a flag in the sealed item could pick the old probes
