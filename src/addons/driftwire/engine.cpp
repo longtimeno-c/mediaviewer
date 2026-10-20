@@ -302,9 +302,10 @@ void engine::control_loop() {
   std::unique_lock lock(control_m_);
   while (!stopping_.load()) {
     const auto none = std::chrono::steady_clock::time_point{};
-    const auto due = post_pending_ && status_due_ != none ? std::min(post_due_, status_due_)
-                     : post_pending_                     ? post_due_
-                                                         : status_due_;
+    auto due = post_pending_ && status_due_ != none ? std::min(post_due_, status_due_)
+               : post_pending_                     ? post_due_
+                                                   : status_due_;
+    if (clear_due_ != none && (due == none || clear_due_ < due)) due = clear_due_;
     const auto woken = [&] { return stopping_.load() || reconcile_wanted_ || save_wanted_; };
     if (due != none) {
       control_cv_.wait_until(lock, due, woken);
@@ -316,6 +317,12 @@ void engine::control_loop() {
       status_due_ = none;
       lock.unlock();
       sync_status();
+      lock.lock();
+    }
+    if (clear_due_ != none && std::chrono::steady_clock::now() >= clear_due_) {
+      clear_due_ = none;
+      lock.unlock();
+      clear_ended();
       lock.lock();
     }
     if (save_wanted_) {
@@ -1440,13 +1447,14 @@ void engine::cancel_transfer() {
     }
   }
   if (was_waiting) {
+    clear_ended_later();
     request_reconcile();
     post();
   }
   if (ch) {
-    // Said if the link is free now; never waits behind a chunk being sent.
-    (void)ch->try_send(msg::cancel, "{}");
-    ch->shutdown();
+    // #511: said reliably (after the chunk being written, at most
+    // kCancelWaitMs), and final: no rejoin or mover starts on either side.
+    (void)ch->cancel(kCancelWaitMs);
   }
 }
 
@@ -1560,8 +1568,32 @@ void engine::end_transfer() {
     transfer_running_ = false;
     idle_.notify_all();
   }
+  clear_ended_later();
   request_reconcile();
   post();
+}
+
+void engine::clear_ended_later() {
+  std::lock_guard lock(control_m_);
+  clear_due_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(1, opts_.ended_show_ms));
+  control_cv_.notify_all();
+}
+
+void engine::clear_ended() {
+  bool changed = false;
+  {
+    std::lock_guard lock(m_);
+    // Only an end still on screen: a transfer since then has its own phase.
+    if (v_.in == view::in_phase::ended) {
+      v_.in = view::in_phase::none;
+      changed = true;
+    }
+    if (v_.out == view::out_phase::ended) {
+      v_.out = view::out_phase::idle;
+      changed = true;
+    }
+  }
+  if (changed) post();
 }
 
 void engine::start_send_code() {
@@ -2049,20 +2081,17 @@ void engine::send_on(std::shared_ptr<channel> ch, std::vector<outgoing_file> fil
       confirmed = out_decision_;
     }
     if (cancel_.load() || stopping_.load() || confirmed == 2) {
-      (void)ch->try_send(msg::cancel, "{}");
-      ch->shutdown();
+      (void)ch->cancel(kCancelWaitMs);
       return finish("Cancelled. Nothing was sent.");
     }
     if (confirmed == 3) {
-      (void)ch->try_send(msg::cancel, "{}");
-      ch->shutdown();
+      (void)ch->cancel(kCancelWaitMs);
       return finish("The code was wrong " + std::to_string(kCodeTries) +
                     " times, so the link to " + name + " ended. Nothing was sent.");
     }
     if (confirmed == 1) break;
     if (std::chrono::steady_clock::now() - asked > kAskFor) {
-      (void)ch->try_send(msg::cancel, "{}");
-      ch->shutdown();
+      (void)ch->cancel(kCancelWaitMs);
       return finish(internet ? "Nobody confirmed the name, so nothing was sent."
                              : "Nobody typed the code, so nothing was sent.");
     }
@@ -2186,12 +2215,21 @@ void engine::send_on(std::shared_ptr<channel> ch, std::vector<outgoing_file> fil
     case outcome::declined: note = name + " declined."; break;
     case outcome::busy: note = name + " is receiving from someone else. Try again in a moment."; break;
     case outcome::no_room: note = name + " does not have room for " + size_text(total) + "."; break;
-    case outcome::cancelled:
-      note = r.done ? "Cancelled after " + sent + ". Those arrived whole; nothing partial was left."
-                    : "Cancelled. Nothing was sent.";
+    case outcome::cancelled: {
+      // #511: who cancelled, and what of it arrived whole there.
+      const std::string whole = std::to_string(r.done) + " of " + plural(static_cast<std::uint32_t>(files.size()), "file", "files");
+      if (r.by_peer) {
+        note = name + " cancelled. " +
+               (r.done ? whole + " arrived whole there; nothing partial was kept." : std::string("Nothing was kept there."));
+      } else {
+        note = r.done ? "Cancelled. " + whole + " arrived whole on " + name + "."
+                      : "Cancelled. Nothing was kept on " + name + ".";
+      }
       break;
+    }
     case outcome::failed:
-      note = "The connection to " + name + " was lost. " +
+      note = (r.by_peer ? "Something went wrong on " + name + ", so the transfer stopped. "
+                        : "The connection to " + name + " was lost. ") +
              (r.done ? sent + " arrived whole; nothing partial was left." : std::string("Nothing was sent."));
       break;
   }
@@ -2655,8 +2693,9 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
       if (r.skipped) note += " " + plural(r.skipped, "file", "files") + " could not be read on " + name + ".";
       break;
     case outcome::cancelled:
-      note = r.done ? "Cancelled. " + got + " arrived whole in " + dest + "; nothing partial was kept."
-                    : "Cancelled. Nothing was received.";
+      // #511: who cancelled; what arrived whole stays, nothing partial does.
+      note = (r.by_peer ? name + " cancelled. " : std::string("You cancelled. ")) +
+             (r.done ? got + " arrived whole; nothing partial was kept." : std::string("Nothing was received."));
       break;
     default:
       note = "The transfer from " + name + " stopped. " +
