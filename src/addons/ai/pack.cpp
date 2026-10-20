@@ -101,15 +101,19 @@ struct pack_state {
     return tier_;
   }
 
+  // models/tiers.json, once: the control thread's (read_tiers, refresh_locked).
+  void read_tiers_locked() {
+    if (tiers_read) return;
+    tiers = read_tier_set(core_dir);
+    std::ifstream in(fs_path(join(join(core_dir, "models"), "tiers.json")), std::ios::binary);
+    std::ostringstream text;
+    if (in) text << in.rdbuf();
+    tiers_text = text.str();
+    tiers_read = true;
+  }
+
   void refresh_locked() {
-    if (!tiers_read) {
-      tiers = read_tier_set(core_dir);
-      std::ifstream in(fs_path(join(join(core_dir, "models"), "tiers.json")), std::ios::binary);
-      std::ostringstream text;
-      if (in) text << in.rdbuf();
-      tiers_text = text.str();
-      tiers_read = true;
-    }
+    read_tiers_locked();
     if (!tier_stale) return;
     tier_stale = false;
     const std::string want = tier_id.empty() ? tiers.default_id : tier_id;
@@ -1005,8 +1009,12 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
   };
   // ---- model tiers and downloads (#482) ----
   d.set_tier = [p](const std::string& tier) { p->set_tier(tier); };
+  d.read_tiers = [p] {
+    std::lock_guard lock(p->tier_m);
+    p->read_tiers_locked();
+  };
   d.tiers_json = [p]() -> std::string {
-    // What the control thread read (refresh_locked): Settings asks from the UI thread.
+    // What the control thread read (read_tiers): Settings asks from the UI thread.
     std::lock_guard lock(p->tier_m);
     return p->tiers_text.empty() ? std::string("{}") : p->tiers_text;
   };

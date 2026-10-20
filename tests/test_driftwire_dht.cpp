@@ -1015,6 +1015,49 @@ TEST_CASE("driftwire known: two devices that remember each other send again with
   CHECK(read_bytes(dir / "bea_received" / "second.mov") == read_bytes(second));
 }
 
+// #507's sibling: two networks where UDP cannot be punched (two hard NATs
+// that keep TCP ports) met on four words over TCP, and both remembered each
+// other; a send to the remembered device then found the other's item, punched
+// UDP alone, and waited forever. Its meeting must try TCP as the words' did.
+TEST_CASE("driftwire known: two devices behind hard NATs send again over TCP as words do", "[driftwire]") {
+  scratch_dir dir("driftwire_known_hard_nats");
+  swarm s(16);
+  {
+    word_client bea(dir / "bea_received", "Bea", s, dir / "bea_secrets");
+    word_client ann(dir / "ann_received", "Ann", s, dir / "ann_secrets");
+    send_with_words(ann, bea, file_of(dir, "first.jpg", 100 * 1024, 31));
+    ann.eng.on_event("remember", 2, "true");
+    bea.eng.on_event("remember", 2, "true");
+  }
+  // The same two computers, each now behind a NAT that maps every
+  // destination apart (UDP never meets) and leaves TCP alone.
+  stand_in_nat bea_nat(true), ann_nat(true);
+  const auto behind = [](stand_in_nat& nat) {
+    return [&nat](sp::engine::options& o) { o.wrap_udp = nat.wrap(); };
+  };
+  word_client bea(dir / "bea_received", "Bea", s, dir / "bea_secrets", behind(bea_nat));
+  word_client ann(dir / "ann_received", "Ann", s, dir / "ann_secrets", behind(ann_nat));
+  REQUIRE(ann.eng.snapshot().known == std::vector<std::string>{"Bea"});
+  REQUIRE(bea.eng.snapshot().known == std::vector<std::string>{"Ann"});
+  const fs::path second = file_of(dir, "second.mov", 512 * 1024 + 3, 32);
+  ann.eng.set_files({utf8(second)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_names == std::vector<std::string>{"second.mov"};
+  }));
+  ann.eng.on_event("known", 5, "\"dev0\"");
+  const bool asked = eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }, 45);
+  INFO("Ann: " << ann.eng.snapshot().out_note);
+  if (!asked) ann.eng.on_event("out_cancel", 1, "");
+  REQUIRE(asked);
+  CHECK(bea.eng.snapshot().in_known);
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(read_bytes(dir / "bea_received" / "second.mov") == read_bytes(second));
+}
+
 TEST_CASE("driftwire known: the list and the identity outlive the engine, and Forget forgets", "[driftwire]") {
   scratch_dir dir("driftwire_known_kept");
   swarm s(12);

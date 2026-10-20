@@ -1206,6 +1206,24 @@ std::vector<std::string> slot_registry::badges_for(const std::string& path) cons
   return out;
 }
 
+namespace {
+
+// #512: what clicking a status item opens. The screen it names, else the
+// add-on's one window, pane or sheet when it has exactly one; else nothing
+// (the item stays text).
+std::string status_opens(const contributions& c, const item_contrib& item) {
+  if (!item.opens.empty()) return item.opens;
+  const screen_contrib* only = nullptr;
+  for (const screen_contrib& s : c.screens) {
+    if (s.place == screen_place::info_section) continue;
+    if (only) return {};
+    only = &s;
+  }
+  return only ? only->id : std::string();
+}
+
+}  // namespace
+
 std::string slot_registry::status_json() const {
   std::lock_guard lock(m_);
   json::writer w;
@@ -1214,14 +1232,16 @@ std::string slot_registry::status_json() const {
     if (text.empty()) continue;
     auto it = addons_.find(key.first);
     if (it == addons_.end()) continue;
-    for (const auto& i : it->second->c.items) {
+    const contributions& c = it->second->c;
+    for (const auto& i : c.items) {
       if (i.slot == item_slot::status && i.id == key.second) {
         w.begin_object()
             .key("addon").string(key.first)
             .key("id").string(key.second)
             .key("label").string(i.label)
-            .key("text").string(text)
-            .end_object();
+            .key("text").string(text);
+        if (const std::string opens = status_opens(c, i); !opens.empty()) w.key("opens").string(opens);
+        w.end_object();
       }
     }
   }

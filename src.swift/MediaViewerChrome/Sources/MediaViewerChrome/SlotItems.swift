@@ -75,14 +75,53 @@ struct SlotBarItems: View {
         .accessibilityLabel(item.label)
       }
       ForEach(slots.status, id: \.id) { status in
-        Text(status.text)
-          .font(MVTheme.font(13))
-          .foregroundStyle(MVTheme.body)
-          .lineLimit(1)
-          .padding(.horizontal, MVTheme.space(6))
-          .help(status.label)
+        if status.opens.isEmpty {
+          Text(status.text)
+            .font(MVTheme.font(13))
+            .foregroundStyle(MVTheme.body)
+            .lineLimit(1)
+            .padding(.horizontal, MVTheme.space(6))
+            .help(status.label)
+            .accessibilityLabel("\(status.label): \(status.text)")
+        } else {
+          // #512: its add-on has a screen: the same text, a flat button that
+          // opens it (or brings it forward).
+          Button {
+            slots.openScreen(addon: status.addon, screen: status.opens)
+          } label: {
+            Text(status.text).lineLimit(1)
+          }
+          .buttonStyle(StatusButtonStyle())
+          .help("Open \(status.label)")
           .accessibilityLabel("\(status.label): \(status.text)")
+        }
       }
+    }
+  }
+}
+
+/// A status item that opens its add-on's screen (#512): the status text's look,
+/// with the bar's hover and pressed washes and the pointing hand.
+private struct StatusButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View { StatusButtonBody(configuration: configuration) }
+  private struct StatusButtonBody: View {
+    let configuration: Configuration
+    @State private var hover = false
+    var body: some View {
+      configuration.label
+        .font(MVTheme.font(13))
+        .foregroundStyle(MVTheme.body)
+        .padding(.horizontal, MVTheme.space(6)).padding(.vertical, MVTheme.space(3))
+        .background(
+          RoundedRectangle(cornerRadius: MVTheme.radius(4)).fill(Color.primary.opacity(
+            configuration.isPressed ? 0.11 : (hover ? 0.06 : 0))))
+        .contentShape(Rectangle())
+        .onHover { inside in
+          guard inside != hover else { return }
+          hover = inside
+          if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+        .onDisappear { if hover { NSCursor.pop() } }
     }
   }
 }
