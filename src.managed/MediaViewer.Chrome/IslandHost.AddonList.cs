@@ -285,6 +285,7 @@ public static partial class IslandHost
         string? wanted = _addonPageWanted;
         _addonPageWanted = null;
         if (wanted is not null) OpenAddonPage(wanted);
+        else if (_addonListWanted) ShowAddonList();  // #525: the updates notice
         else if (_addonPage.Length > 0) CloseAddonPage();
     }
 }

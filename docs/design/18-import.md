@@ -213,7 +213,7 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
   state in a few words: *Installed · 1.2.0*, *Update available · 1.3.0*, *Restart to finish
   updating*, *Not installed*, *Needs an update*, *Couldn't start*, *Installing…*; From other
   makers says how many are installed. A row opens the add-on's own page in Settings (**All
-  add-ons** or Esc goes back): what it does, Install / Update to X / Open / Remove… / Reinstall,
+  add-ons** or Esc goes back): what it does, Install / Update to X / Open / Remove… / Remove and install again,
   the install bar and its messages, and its settings page. Nothing of an add-on's configuration
   is on the list itself. Opening Settings shows the list, unless something asked for a page: an
   add-on's alert opens its page, a package to install opens From other makers, Local search's own
@@ -229,6 +229,28 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
   update-check switch ([13](13-updates-and-telemetry.md)).
   While an update waits on a restart the list starts with "Restart to finish updating
   Import 1.3.0." and **Restart now**, and the add-on's row says so (#510, "Updates" below).
+- **Installing: one flow (#525).** Every add-on of MediaViewer's own, Import, the Local search
+  pieces, Places, Driftwire and any other slot add-on, installs the same way on both platforms:
+  **check** (the channel's signed manifest, when its page opens) → **download** (a bar, "Connecting…",
+  then "412 MB of 1.08 GB" and the percentage) → **verify** ("Checking the download…": size and
+  SHA-256) → **install** ("Installing…": unpacked, then every file checked by the store) →
+  **attach live** (a slot add-on, Import or Core not yet running, a piece) or the **restart card**
+  (a running Import or Core, "Updates" below). Windows: one helper, `RunInstall` in
+  `IslandHost.InstallFlow.cs`; each add-on keeps only its own line, Local search its 5 GB rule, and
+  how it attaches. An add-on from another maker adds its question between verify and install
+  ([25](25-open-addons.md)) and uses the same step words.
+  **A failure** says what happened in plain words, the same text on both platforms, with one next
+  step: "Places could not be downloaded. Check the connection, then retry." (no connection), "The
+  download of Import was damaged, so nothing was installed." (size, SHA-256 or manifest), "… did
+  not pass verification, so nothing was installed." (the store refused a file), "There is not
+  enough free space to install …", "… is installed but could not start.", "… could not be
+  installed." The next step is **Retry**, or **Remove and install again** when the copy on disk is
+  itself unusable (it did not verify, or it would not start): that removes it keeping its data
+  and settings, then installs. A working copy whose update failed is never removed; it keeps
+  running and Retry downloads the update again. The exception's type and the core's status and
+  reference go to the log, never on screen (#509), and never its message, which can hold a path
+  (rule 6). The words are `src.managed/Shared/InstallWords.cs` and `InstallWords.swift`;
+  Chrome.Tests fails when a string or a failure kind differs.
 - **Signed, verified, then loaded.** Downloads are two fixed release assets per platform,
   `mediaviewer-addon-<id>-<platform>.json` (+ `.sig`) and the `.zip` it names, fetched by the
   chrome with a plain GET: no identifier, no query, no cookies. `manifest.json` lists files,
@@ -255,7 +277,16 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
   version than the installed one; nothing downloads until it is clicked. Every installed add-on
   has it: Import, the Local search pieces, Places, and each other slot add-on (Driftwire, …),
   whose card asks its own channel when Settings opens (until 2026-10-16 only Places' did, so
-  Driftwire never offered an update). The new version
+  Driftwire never offered an update). **Updates available without opening Settings (#525):**
+  while "Check for updates automatically" is on ([13](13-updates-and-telemetry.md)), the channels
+  of what is installed are also asked in the background, 30 s after a window's add-ons have been
+  read and then once a day: two small GETs each on a worker, never before the first pixel, never
+  in a later window (the first one owns the store), nothing drawn per frame. With the switch off
+  only Settings opening asks. A newer version shows one quiet item in the command bar, in the
+  app-update button's place and only when that has nothing to say: **Add-on update available**
+  (or "2 add-on updates available"), its tooltip naming them ("Places 1.1.0 is available. Open
+  Settings → Add-ons to update it."). It opens that add-on's page, or the list when there are
+  several; it goes when the update is installed or waits on a restart. The new version
   installs beside the running one and the store removes the old one at the next start
   (`prune.pending`), so a running add-on never loses its files. What happens next depends on
   what kind of add-on it is, the same on both platforms (#510, 2026-10-20):

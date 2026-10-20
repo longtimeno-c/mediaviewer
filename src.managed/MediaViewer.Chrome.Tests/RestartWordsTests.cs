@@ -74,7 +74,7 @@ public class RestartWordsTests
     }
 
     // Every string the C# class has is one of the Swift enum's strings.
-    private static void AssertMacHas(string csFile, string name, string swiftName)
+    internal static void AssertMacHas(string csFile, string name, string swiftName)
     {
         string cs = SourceText.Block(SourceText.StripComments(Repo.Read("src.managed", "Shared", csFile)),
                                      $@"public\s+static\s+class\s+{name}\b");
