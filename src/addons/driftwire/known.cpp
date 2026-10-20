@@ -114,6 +114,12 @@ bool save(secrets::store& store, const std::vector<device>& devices) {
   return ok;
 }
 
+bool forget(secrets::store& store) {
+  (void)store.erase(kDevicesName);
+  (void)store.erase(kIdentityName);
+  return !store.get(kDevicesName) && !store.get(kIdentityName);
+}
+
 std::int64_t hour_of(std::int64_t unix_ms) noexcept {
   return unix_ms >= 0 ? unix_ms / kHourMs : (unix_ms - kHourMs + 1) / kHourMs;
 }

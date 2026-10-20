@@ -95,7 +95,7 @@ std::unique_ptr<link> engine::reach_through_own(const std::vector<net::endpoint>
   for (const auto& r : own) {
     if (stopped()) return nullptr;
     say("Trying through " + r.name + ", your computer, too\xE2\x80\xA6");
-    auto h = udp_hub::open(0, opts_.internet_loopback);
+    auto h = udp_hub::open(0, opts_.internet_loopback, opts_.wrap_udp);
     if (!h) continue;
     auto keep = std::make_shared<met_over_dht>();
     keep->hub = std::move(*h);
@@ -117,7 +117,8 @@ std::unique_ptr<link> engine::reach_through_own(const std::vector<net::endpoint>
       mo.wait_ms = static_cast<int>(
           std::clamp<std::int64_t>(std::min<std::int64_t>((hour + 1) * known::kHourMs - now, left.count()), 1000,
                                    8 * 60 * 1000));
-      mo.punch_ms = dht::kPunchMs + opts_.known_poll_ms + 5000;
+      mo.punch_ms = known::kPunchMs;
+      mo.tcp = true;  // as a send to a remembered device
       auto m = dht::meet(keep->hub, *keep->client, *k, dht::role::sender, mo, out_of_time, {});
       if (m) met = std::move(*m);
     }
@@ -139,7 +140,7 @@ std::unique_ptr<link> engine::reach_through_own(const std::vector<net::endpoint>
     channel::options o;
     o.static_key = static_key_;
     std::vector<std::uint8_t> pw(k->password.begin(), k->password.end());
-    auto opened = channel::open_internet(l, pw, id_, opts_.my_name, o);
+    auto opened = channel::open_internet(l, pw, id(), opts_.my_name, o);
     sodium_memzero(pw.data(), pw.size());
     {
       const auto brief_until = std::chrono::steady_clock::now() + std::chrono::seconds(2);

@@ -775,6 +775,15 @@ typedef mv_status(MV_CALL* mv_addon_get_fn)(uint32_t host_api, const mv_host_api
                                             mv_addon_api* out);
 #define MV_ADDON_ENTRY_SYMBOL "mv_addon_get"
 
+/* Optional second export (#507). The host calls it when the add-on is removed
+ * without keeping its data, after its shutdown and before its files go, on
+ * the remover's worker; the add-on is not loaded (mv_addon_get was not
+ * called for it). It deletes whatever the add-on keeps outside `data_dir`
+ * (the folder about to be deleted), e.g. secrets in the OS's store. An
+ * add-on with nothing outside its data folder leaves it out. */
+typedef mv_status(MV_CALL* mv_addon_forget_fn)(const char* data_dir_utf8);
+#define MV_ADDON_FORGET_SYMBOL "mv_addon_forget"
+
 /* ---------------------------------------------------------------------------
  * Host-side management, exported by the Windows core DLL for the C# chrome
  * (the Mac host calls src/addon directly). [worker-thread] unless noted:
@@ -820,7 +829,8 @@ MV_API mv_status MV_CALL mv_addon_family_usage(const char* family, uint64_t* out
                                                uint64_t* out_ceiling);
 
 /* Unloads if loaded, then removes every version; keep_data = 0 also deletes
- * the add-on's data (import.db). Locked files are removed at next start. */
+ * the add-on's data (import.db) and first calls its MV_ADDON_FORGET_SYMBOL,
+ * if it has one. Locked files are removed at next start. */
 MV_API mv_status MV_CALL mv_addon_remove(const char* id, uint32_t keep_data);
 
 /* Re-verifies, loads the native library, and returns the named interface
@@ -993,8 +1003,9 @@ MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* ou
  * range it was written for).  1  themes.  2  settings pages, keymap packs,
  * theme shape (PR 56).  3  scripts, permissions, commands (PR 57).
  * 4  screens; 5  chrome slots and search providers (docs/design/25 §7);
- * 6  the screen `link` node and a button's `copy` (2026-10-19). */
-#define MV_ADDON_CONTRIBUTION_API 6
+ * 6  the screen `link` node and a button's `copy` (2026-10-19);
+ * 7  `opens` on a status item (#512, 2026-10-20). */
+#define MV_ADDON_CONTRIBUTION_API 7
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:

@@ -62,7 +62,8 @@ public static partial class IslandHost
     private static HashSet<string> _slotFileHits = new(StringComparer.Ordinal);
     private static string _slotFileNote = "";
     private static List<(string Path, string Why)> _slotLocalRows = new();
-    private static List<(string Label, string Text)> _slotStatus = new();
+    // #512: Opens is the screen a click opens ("" = plain text).
+    private static List<(string Addon, string Label, string Text, string Opens)> _slotStatus = new();
     private static string _slotListTitle = "";
     private static readonly List<SlotAddonRow> SlotAddonRows = new();
     private static readonly HashSet<string> SlotAddonsLoaded = new(StringComparer.Ordinal);
@@ -630,6 +631,22 @@ public static partial class IslandHost
         }
     }
 
+    // Opens an add-on's screen, or brings it forward when it is already open
+    // (the core keeps the one open; the window is the chrome's to raise).
+    private static void OpenSlotScreen(string addon, string screen)
+    {
+        SlotNative.OpenScreen(addon, screen, "", SlotTheme(), 0, 0, (float)SlotScale());
+        if (ScreenWindows.TryGetValue(new ScreenAt(addon, screen), out var open)) open.Window.Activate();
+    }
+
+    /// A grid that shows the hand cursor (ProtectedCursor is only settable
+    /// from a subclass): a status item that opens a screen (#512).
+    private sealed class HandCursorPanel : Grid
+    {
+        public HandCursorPanel() =>
+            ProtectedCursor = Microsoft.UI.Input.InputSystemCursor.Create(Microsoft.UI.Input.InputSystemCursorShape.Hand);
+    }
+
     private static void InvokeSlotItem(SlotItem item, FolderItemVm? tile = null) =>
         SlotNative.Invoke(item.Addon, item.Id, JsonList(SlotTargetPaths(item, tile)));
 
@@ -653,27 +670,43 @@ public static partial class IslandHost
             ToolTipService.SetToolTip(b, item.Label);
             _slotBarPanel.Children.Add(b);
         }
-        foreach ((string label, string text) in _slotStatus)
+        foreach ((string addon, string label, string text, string opens) in _slotStatus)
         {
             TextBlock t = Text(text, Body, UiFontSize - 3, maxLines: 1);
             t.VerticalAlignment = VerticalAlignment.Center;
-            t.Margin = Pad(6, 0, 6, 0);
-            ToolTipService.SetToolTip(t, label);
-            AutomationProperties.SetName(t, $"{label}: {text}");
-            _slotBarPanel.Children.Add(t);
+            if (opens.Length == 0)
+            {
+                t.Margin = Pad(6, 0, 6, 0);
+                ToolTipService.SetToolTip(t, label);
+                AutomationProperties.SetName(t, $"{label}: {text}");
+                _slotBarPanel.Children.Add(t);
+                continue;
+            }
+            // #512: a status item whose add-on has a screen opens it: the same
+            // text, a flat button (hover wash, hand cursor, a tab stop, read as
+            // "Driftwire: receiving, button").
+            var face = new HandCursorPanel { Padding = Pad(6, 3, 6, 3) };
+            face.Children.Add(t);
+            Button b = FlatButton(face, Pad(0));
+            b.VerticalAlignment = VerticalAlignment.Center;
+            b.Click += (_, _) => Guarded(() => OpenSlotScreen(addon, opens));
+            ToolTipService.SetToolTip(b, $"Open {label}");
+            AutomationProperties.SetName(b, $"{label}: {text}");
+            _slotBarPanel.Children.Add(b);
         }
     }
 
     private static void ReadSlotStatus()
     {
-        _slotStatus = new List<(string, string)>();
+        _slotStatus = new List<(string, string, string, string)>();
         string json = SlotNative.StatusJson();
         if (json.Length > 0)
         {
             try
             {
                 using JsonDocument doc = JsonDocument.Parse(json);
-                foreach (JsonElement s in doc.RootElement.EnumerateArray()) _slotStatus.Add((JStr(s, "label"), JStr(s, "text")));
+                foreach (JsonElement s in doc.RootElement.EnumerateArray())
+                    _slotStatus.Add((JStr(s, "addon"), JStr(s, "label"), JStr(s, "text"), JStr(s, "opens")));
             }
             catch (JsonException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
         }
@@ -940,8 +973,7 @@ public static partial class IslandHost
             if (_slotConfirming != row.Id && loaded && SlotWindowScreens.TryGetValue(row.Id, out string? screen))
             {
                 string id = row.Id;
-                Button open = SettingsButton($"Open {row.Name}", () => SlotNative.OpenScreen(
-                    id, screen, "", SlotTheme(), 0, 0, (float)SlotScale()));
+                Button open = SettingsButton($"Open {row.Name}", () => OpenSlotScreen(id, screen));
                 open.IsTabStop = true;
                 buttons.Children.Insert(0, open);
             }

@@ -462,13 +462,14 @@ public static partial class IslandHost
                 (IntPtr table, string chromePath) = AddonNative.Load(session, slot.Id, slot.Interface, reader);
                 DispatcherQueueControllerTryEnqueue(() => AttachAddonChrome(slot, table, chromePath));
             }
-            catch (MediaViewerException ex)
+            catch (Exception ex)
             {
+                // #509: anything else thrown here left the slot busy for good, with no word.
                 DispatcherQueueControllerTryEnqueue(() =>
                 {
                     slot.Busy = false;
                     bool asked = slot == AiSlot && _searchOpenPending;
-                    if (reader && ex.Status == MvStatus.NotFound)
+                    if (reader && ex is MediaViewerException { Status: MvStatus.NotFound })
                     {
                         // Not a failure: the first window has indexed nothing yet.
                         _aiReaderEmptyAt = Environment.TickCount64;
@@ -478,9 +479,13 @@ public static partial class IslandHost
                     }
                     else
                     {
-                        string why = AddonLoadReason(slot, ex);
+                        string why = ex is MediaViewerException mv
+                            ? AddonLoadReason(slot, mv)
+                            : $"It could not be loaded ({ex.GetType().Name}). Restart MediaViewer; if it happens again, remove it and install it again in Settings → {SettingsSection(slot)}.";
+                        if (ex is not MediaViewerException) CrashCapture.Handled($"addon load ({slot.Id})", ex);
                         SetSlotStatus(slot, $"{AddonFailTitle(slot)}. {why}");
-                        ShowAddonAlert(slot, AddonFailTitle(slot), why, open: asked);
+                        ShowAddonAlert(slot, AddonFailTitle(slot), why, open: asked,
+                                       details: MediaViewer.Shared.ExceptionFrames.Describe(ex));
                     }
                     if (slot == AiSlot)
                     {
@@ -560,12 +565,15 @@ public static partial class IslandHost
         {
             System.Diagnostics.Debug.WriteLine(ex);
             // #509 / #525: plain words on screen; the type goes to the log only
-            // (never the message, which can carry a path: rule 6).
+            // (never the message, which can carry a path: rule 6), and the
+            // methods it came from to a handled report, so it names where it threw.
             LogInstall(slot, "start", ex);
+            CrashCapture.Handled($"addon attach ({slot.Id})", ex);
             slot.Failure = MediaViewer.Shared.InstallFailure.NotStarted;
             string why = $"Its window could not start. Restart MediaViewer; if it happens again, use {MediaViewer.Shared.InstallWords.Reinstall} in Settings → {SettingsSection(slot)}.";
             SetSlotStatus(slot, $"{AddonFailTitle(slot)}. {why}");
-            ShowAddonAlert(slot, AddonFailTitle(slot), why, open: slot == AiSlot && _searchOpenPending);
+            ShowAddonAlert(slot, AddonFailTitle(slot), why, open: slot == AiSlot && _searchOpenPending,
+                           details: MediaViewer.Shared.ExceptionFrames.Describe(ex));
             if (slot == AiSlot) _searchOpenPending = false;
             UnloadAddonChrome(slot);
             try { AddonNative.Unload(slot.Id); } catch (MediaViewerException) { }

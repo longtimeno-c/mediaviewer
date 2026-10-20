@@ -477,6 +477,12 @@ version, dimensions, bit depth and correlation id — never a path, filename, by
 library exporting `mv_addon_get(host_api, const mv_host_api*, mv_addon_api* out)`. It links
 nothing of the core and reaches it only through the host function table.
 
+- **Forget** (#507). An optional second export, `mv_addon_forget(const char* data_dir)`: on
+  Remove without keeping data, after the add-on's shutdown and before its files go, the host
+  loads the verified library on its own (no `mv_addon_get`) and calls it, so the add-on deletes
+  what it keeps outside the data folder (Driftwire's Keychain / Credential Manager entries).
+  Absent is fine; a failure never blocks the removal (`addon::forget_outside_data`).
+
 - **Host API version** `MV_ADDON_HOST_API 2`, oldest served `MV_ADDON_HOST_API_OLDEST 1`.
   Versions only append; `struct_size` lets an older add-on read a newer table. An add-on loads
   when its manifest range meets `[OLDEST, HOST_API]` and receives `min(HOST_API, its max)`;

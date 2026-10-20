@@ -30,11 +30,13 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
-  <!-- #510: the restart card's words, tested here and against the Swift copy. -->
+  <!-- #510: the restart card's words, tested here and against the Swift copy;
+       #509: ExceptionFrames, plain .NET, shared with the chrome. -->
   <ItemGroup>
     <Compile Include="..\Shared\RestartWords.cs" Link="Shared\RestartWords.cs" />
     <Compile Include="..\Shared\AddonListWords.cs" Link="Shared\AddonListWords.cs" />
     <Compile Include="..\Shared\InstallWords.cs" Link="Shared\InstallWords.cs" />
+    <Compile Include="..\Shared\ExceptionFrames.cs" Link="Shared\ExceptionFrames.cs" />
   </ItemGroup>
 
 </Project>

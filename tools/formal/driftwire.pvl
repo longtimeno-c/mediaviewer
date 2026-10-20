@@ -273,3 +273,120 @@ let RejoinServer(rs: bitstring, reveal_dh: bool, probe: bitstring) =
   out(c, aead(kr2i, n1, hdr, probe));
   phase 1;
   if reveal_dh then out(c, e).
+
+(* ---- CPace, then XXhfs+psk0: over the internet (channel::open_internet_v2) ---- *)
+(* #501: the internet handshake, which carries the long-term identities as its
+   statics (a code's, or a remembered device's meeting, keyed by the hour's
+   password from the pair's secret).
+
+   CPace (cpace.cpp, draft-irtf-cfrg-cpace): the generator is a hash of the
+   password and the session id; each side sends its generator to a random
+   scalar; ISK = H(DSI_ISK, sid, K, Ya, Yb). The generator is modelled as an
+   abstract group element gen(pw, sid) with the same Diffie-Hellman equation
+   as g: what CPace's proofs give (no offline guess from a transcript) is
+   what `weaksecret` asks of ProVerif here, so it is checked, not assumed.
+
+   Then Noise_XXhfs+psk0 with psk = the first half of ISK and the CPace
+   transcript in the prologue:
+     -> psk, e, e1             (empty payload, sealed under the psk)
+     <- e, ee, ekem1, s, es
+     -> s, se
+   As in XXhfs above, the handshake ciphertexts carry a constant associated
+   data instead of h (only helps the attacker). `pin_peer`: a remembered
+   device's meeting checks the peer's static is the one remembered
+   (engine.cpp); a code's first contact passes the peer's own (no check). *)
+
+fun gen(bitstring, bitstring): bitstring.
+equation forall p: bitstring, s: bitstring, x: bitstring, y: bitstring;
+  exp(exp(gen(p, s), x), y) = exp(exp(gen(p, s), y), x).
+fun isk(bitstring, bitstring, bitstring, bitstring): bitstring.  (* H(DSI_ISK, sid, K, Ya, Yb), cut to 32 *)
+
+const NAME_XXHFSPSK0: bitstring.  (* "Noise_XXhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b" *)
+const PROLOGUE_INET: bitstring.   (* "MediaViewer Driftwire 2 internet" MVSP 2 'I', then sid, Ya, Yb *)
+
+(* The server sent message 2: the client's ephemeral, its own, its static. *)
+event InetServerRunning(bitstring, bitstring, bitstring).
+(* The client finished (the pin checked): both ephemerals, the keys, the server's static. *)
+event InetClientDone(bitstring, bitstring, bitstring, bitstring, bitstring, bitstring).
+(* The client sent message 3: the keys, the server's static it saw. *)
+event InetClientSent(bitstring, bitstring, bitstring, bitstring).
+(* The server finished (the pin checked): the keys, the client's static. *)
+event InetServerDone(bitstring, bitstring, bitstring, bitstring).
+
+let InetClient(pw: bitstring, s: bitstring, pin_peer: bitstring, check_pin: bool, file: bitstring) =
+  (* 1. CPace: the sender's message in the hello, the receiver's in reply *)
+  new sid: bitstring; new ya: bitstring;
+  let bya = exp(gen(pw, sid), ya) in
+  out(c, (sid, bya));
+  in(c, byb: bitstring);
+  let psk = isk(sid, exp(byb, ya), bya, byb) in
+  (* 2. -> psk, e, e1 *)
+  let h0 = NAME_XXHFSPSK0 in
+  let ck0 = h0 in
+  let hp = hash(h0, (PROLOGUE_INET, sid, bya, byb)) in
+  let ck1 = hkdf1(ck0, psk) in let hq = hash(hp, hkdf2(ck0, psk)) in
+  new e: bitstring; new e1: bitstring;
+  let epub = exp(g, e) in
+  let ha = hash(hq, epub) in
+  let ck2 = hkdf1(ck1, epub) in let k2 = hkdf2(ck1, epub) in
+  let e1_enc = aead(k2, n0, AD_XX, kpk(e1)) in
+  let hb = hash(ha, e1_enc) in
+  let p1_enc = aead(k2, n1, AD_XX, empty) in
+  out(c, (epub, e1_enc, p1_enc));
+  (* <- e, ee, ekem1, s, es *)
+  in(c, (re: bitstring, ct_enc: bitstring, rs_enc: bitstring, p2_enc: bitstring));
+  let ck3 = hkdf1(ck2, re) in
+  let ck4 = hkdf1(ck3, exp(re, e)) in let k4 = hkdf2(ck3, exp(re, e)) in
+  let ct = aead_open(k4, n0, AD_XX, ct_enc) in
+  let ss = kdec(ct, e1) in
+  let ck5 = hkdf1(ck4, ss) in let k5 = hkdf2(ck4, ss) in
+  let rs = aead_open(k5, n0, AD_XX, rs_enc) in
+  let ck6 = hkdf1(ck5, exp(rs, e)) in let k6 = hkdf2(ck5, exp(rs, e)) in
+  if aead_open(k6, n0, AD_XX, p2_enc) = empty then
+  (* -> s, se *)
+  let s_enc = aead(k6, n1, AD_XX, exp(g, s)) in
+  let ck7 = hkdf1(ck6, exp(re, s)) in let k7 = hkdf2(ck6, exp(re, s)) in
+  let p3_enc = aead(k7, n0, AD_XX, empty) in
+  let ki2r = hkdf1(ck7, empty) in let kr2i = hkdf2(ck7, empty) in let resume = hkdf3(ck7, empty) in
+  event InetClientSent(ki2r, kr2i, resume, rs);
+  out(c, (s_enc, p3_enc));
+  (* engine.cpp: a remembered device's key is checked once the channel is open *)
+  if check_pin = false || rs = pin_peer then
+  event InetClientDone(epub, re, ki2r, kr2i, resume, rs);
+  new hdr: bitstring;
+  out(c, (hdr, aead(ki2r, n0, hdr, (OFFER, file)))).
+
+let InetServer(pw: bitstring, s: bitstring, pin_peer: bitstring, check_pin: bool) =
+  in(c, (sid: bitstring, bya: bitstring));
+  new yb: bitstring;
+  let byb = exp(gen(pw, sid), yb) in
+  out(c, byb);
+  let psk = isk(sid, exp(bya, yb), bya, byb) in
+  let h0 = NAME_XXHFSPSK0 in
+  let ck0 = h0 in
+  let hp = hash(h0, (PROLOGUE_INET, sid, bya, byb)) in
+  let ck1 = hkdf1(ck0, psk) in let hq = hash(hp, hkdf2(ck0, psk)) in
+  in(c, (re: bitstring, re1_enc: bitstring, p1_enc: bitstring));
+  let ck2 = hkdf1(ck1, re) in let k2 = hkdf2(ck1, re) in
+  (* The first message opens only under the right code: nothing of this side
+     (not even its static) has gone to a wrong one. *)
+  let re1 = aead_open(k2, n0, AD_XX, re1_enc) in
+  if aead_open(k2, n1, AD_XX, p1_enc) = empty then
+  new e: bitstring; new r: bitstring;
+  let epub = exp(g, e) in
+  let ck3 = hkdf1(ck2, epub) in
+  let ck4 = hkdf1(ck3, exp(re, e)) in let k4 = hkdf2(ck3, exp(re, e)) in
+  let ct_enc = aead(k4, n0, AD_XX, kct(re1, r)) in
+  let ck5 = hkdf1(ck4, kss(re1, r)) in let k5 = hkdf2(ck4, kss(re1, r)) in
+  let s_enc = aead(k5, n0, AD_XX, exp(g, s)) in
+  let ck6 = hkdf1(ck5, exp(re, s)) in let k6 = hkdf2(ck5, exp(re, s)) in
+  let p2_enc = aead(k6, n0, AD_XX, empty) in
+  event InetServerRunning(re, epub, exp(g, s));
+  out(c, (epub, ct_enc, s_enc, p2_enc));
+  in(c, (rs_enc: bitstring, p3_enc: bitstring));
+  let rs = aead_open(k6, n1, AD_XX, rs_enc) in
+  let ck7 = hkdf1(ck6, exp(rs, e)) in let k7 = hkdf2(ck6, exp(rs, e)) in
+  if aead_open(k7, n0, AD_XX, p3_enc) = empty then
+  let ki2r = hkdf1(ck7, empty) in let kr2i = hkdf2(ck7, empty) in let resume = hkdf3(ck7, empty) in
+  if check_pin = false || rs = pin_peer then
+  event InetServerDone(ki2r, kr2i, resume, rs).

@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <fstream>
 #include <vector>
 #include <cerrno>
@@ -361,6 +362,36 @@ std::vector<address> local_addresses() {
     bool seen = false;
     for (const auto& o : out) seen = seen || o == a;
     if (!seen) out.push_back(a);
+  }
+  ::freeifaddrs(list);
+  return out;
+}
+
+std::vector<subnet> local_subnets() {
+  std::vector<subnet> out;
+  ifaddrs* list = nullptr;
+  if (::getifaddrs(&list) != 0) return out;
+  const auto prefix_of = [](const std::uint8_t* mask, std::size_t n) {
+    int bits = 0;
+    for (std::size_t i = 0; i < n; ++i) bits += std::popcount(static_cast<unsigned>(mask[i]));
+    return bits;
+  };
+  for (ifaddrs* i = list; i; i = i->ifa_next) {
+    if (!i->ifa_addr || !i->ifa_netmask || !(i->ifa_flags & IFF_UP)) continue;
+    subnet n;
+    if (i->ifa_addr->sa_family == AF_INET) {
+      std::memcpy(n.base.bytes.data(), &reinterpret_cast<const sockaddr_in*>(i->ifa_addr)->sin_addr, 4);
+      n.prefix = prefix_of(reinterpret_cast<const std::uint8_t*>(
+                               &reinterpret_cast<const sockaddr_in*>(i->ifa_netmask)->sin_addr), 4);
+    } else if (i->ifa_addr->sa_family == AF_INET6) {
+      n.base.v6 = true;
+      std::memcpy(n.base.bytes.data(), &reinterpret_cast<const sockaddr_in6*>(i->ifa_addr)->sin6_addr, 16);
+      n.prefix = prefix_of(reinterpret_cast<const std::uint8_t*>(
+                               &reinterpret_cast<const sockaddr_in6*>(i->ifa_netmask)->sin6_addr), 16);
+    } else {
+      continue;
+    }
+    out.push_back(n);
   }
   ::freeifaddrs(list);
   return out;

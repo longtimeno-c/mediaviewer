@@ -272,7 +272,8 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
   `~/Library/Application Support/MediaViewer/Add-ons/Import/<version>` on Mac; the add-on's own
   data (`import.db`) is in `<addon>/data`, and downloads verify in `<addons>/.staging/<n>`
   (`src/addon/store.h`). Uninstalling the app removes add-ons; removing the add-on offers to
-  keep or delete its data.
+  keep or delete its data. Delete also calls the add-on's optional `mv_addon_forget` first, for
+  anything it keeps outside that folder, such as an OS secret store (#507, [14](14-abi.md)).
 - **Updates:** Settings offers **Update to X** when the release channel has a newer signed
   version than the installed one; nothing downloads until it is clicked. Every installed add-on
   has it: Import, the Local search pieces, Places, and each other slot add-on (Driftwire, …),

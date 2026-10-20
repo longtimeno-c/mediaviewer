@@ -27,6 +27,7 @@
 #include "addons/driftwire/engine.h"
 #include "addons/driftwire/net.h"
 #include "addons/driftwire/prefs.h"
+#include "addons/driftwire/secrets.h"
 #include "addons/driftwire/transfer.h"
 #include "addons/driftwire/wire.h"
 #include "import_fixture.h"
@@ -199,12 +200,17 @@ class fake_host final : public sp::engine_host {
 struct client {
   fake_host host;
   sp::engine eng;
-  client(bus& b, const fs::path& received, const std::string& name)
-      : host(received), eng(host, options(b, name)) {
+  // `secrets`: a folder for the secret store (Remember, #472 PR 4); empty: none.
+  client(bus& b, const fs::path& received, const std::string& name, const fs::path& secrets = {})
+      : host(received), eng(host, options(b, name, secrets)) {
     eng.screen_opened("");
   }
-  static sp::engine::options options(bus& b, const std::string& name) {
+  static sp::engine::options options(bus& b, const std::string& name, const fs::path& secrets = {}) {
     sp::engine::options o;
+    if (!secrets.empty()) {
+      fs::create_directories(secrets);
+      o.make_secrets = [dir = utf8(secrets)] { return sp::secrets::file_store(dir); };
+    }
     o.my_name = name;
     o.use_bluetooth = false;
     o.loopback_only = true;

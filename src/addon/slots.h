@@ -203,7 +203,9 @@ class slot_registry {
   [[nodiscard]] std::string badges_json() const;
   // The badge keys of one file, from the table (what a tile asks: never the add-on).
   [[nodiscard]] std::vector<std::string> badges_for(const std::string& path) const;
-  // [{"addon","id","label","text"}] for the status items with text.
+  // [{"addon","id","label","text","opens"?}] for the status items with text. "opens"
+  // (#512): the screen a click opens, the item's own or the add-on's only
+  // window / pane / sheet; absent when there is none (the item stays text).
   [[nodiscard]] std::string status_json() const;
   // #452: {"ask": n, "keep": [{"addon","screen","title","label"}],
   //  "notices": [{"addon","id","screen","title","body","action","action_label","revision"}]}.

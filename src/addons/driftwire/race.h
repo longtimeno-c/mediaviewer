@@ -6,6 +6,11 @@
 // on them. Each connect has its own timeout; their threads are joined before
 // the race's owner goes (no thread of the add-on outlives the engine).
 // Portable (D9).
+//
+// #502: the mover races whole rejoin beginnings the same way (basic_race of
+// channel::pending_rejoin): a bearer wins by answering under the session's
+// secret, not by connecting first, so a machine that beacons the peer's id
+// and connects at once cannot hold a rescue back.
 #pragma once
 
 #include <chrono>
@@ -20,16 +25,28 @@
 
 namespace mv::driftwire {
 
-class link_race {
+// A result that lost (or came after the race was taken): a link closes before
+// a byte is sent on it; anything else is dropped (its destructor closes it).
+inline void discard_loser(std::unique_ptr<link>& l) noexcept {
+  if (l) l->shutdown();
+}
+template <typename T>
+void discard_loser(T& v) noexcept {
+  v = T{};
+}
+
+// `T` is nullable and move-only (a unique_ptr): null is "no winner".
+template <typename T>
+class basic_race {
  public:
-  using connect_fn = std::function<result<std::unique_ptr<link>>()>;
+  using connect_fn = std::function<result<T>()>;
   // What each connect gave, in the order they were added (status::ok for one
   // that connected, the winner or not).
   struct outcome {
     status how = status::timeout;
     bool done = false;
   };
-  ~link_race() { join(); }
+  ~basic_race() { join(); }
   // `delay_ms`: start this one that much later (happy eyeballs), unless the
   // race is already won or stopped.
   void add(connect_fn fn, int delay_ms = 0) {
@@ -41,7 +58,7 @@ class link_race {
       outcomes_.emplace_back();
     }
     threads_.emplace_back([this, fn = std::move(fn), delay_ms, at] {
-      result<std::unique_ptr<link>> l = err(status::cancelled);
+      result<T> l = err(status::cancelled);
       bool go = true;
       if (delay_ms > 0) {
         std::unique_lock lock(m_);
@@ -60,7 +77,7 @@ class link_race {
         winner_ = std::move(*l);
         winner_at_ = static_cast<int>(at);
       } else if (l) {
-        (*l)->shutdown();  // a slower one: not needed now
+        discard_loser(*l);  // a slower one: not needed now
       }
       --pending_;
       cv_.notify_all();
@@ -69,7 +86,7 @@ class link_race {
   // The winner, once one connects or every connect has failed; nullptr when
   // none did or `stopped()` turned true.
   template <typename Stopped>
-  std::unique_ptr<link> wait(const Stopped& stopped) {
+  T wait(const Stopped& stopped) {
     std::unique_lock lock(m_);
     while (!winner_ && pending_ > 0 && !stopped()) cv_.wait_for(lock, std::chrono::milliseconds(100));
     taken_ = true;
@@ -102,10 +119,12 @@ class link_race {
   std::condition_variable cv_;
   int pending_ = 0;
   bool taken_ = false;
-  std::unique_ptr<link> winner_;
+  T winner_{};
   int winner_at_ = -1;
   std::vector<outcome> outcomes_;
   std::vector<std::thread> threads_;
 };
+
+using link_race = basic_race<std::unique_ptr<link>>;
 
 }  // namespace mv::driftwire

@@ -519,8 +519,11 @@ jobs:
         # the PDF sweep's ~160 s; no test hung), so Debug gets 25. ASan outgrew 30
         # by 2026-10-17 (main and #463 alike: 1408 of 1423 tests at 30 min, the
         # broken corpus's PDF sweep alone 417 s, PPTX next; no test hung), so it
-        # gets 45, and its job 70 (the build before it takes ~13).
-        timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 45 || matrix.config == 'Debug' && 25 || 15 }}
+        # gets 45, and its job 70 (the build before it takes ~13). The Release
+        # legs outgrew 15 by 2026-10-20 (clang-cl: 12-14 min on every branch,
+        # #511 and #517 timed out with 1566 of 1582 done, the PDF sweep 162 s;
+        # no test hung), so they get 20.
+        timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 45 || matrix.config == 'Debug' && 25 || 20 }}
         env:
           MV_BROKEN_DUMP: ${{ github.workspace }}/broken-dump
           # A missing clip or sample FAILS here instead of skipping

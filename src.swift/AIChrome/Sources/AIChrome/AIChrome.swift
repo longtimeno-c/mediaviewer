@@ -53,12 +53,13 @@ public final class MVAIChrome: NSObject {
 
   /// The picker over the viewer, once per process start, while the pack says
   /// no tier is chosen (MV_AI_STATUS_TIER_UNCHOSEN). A later window's reader
-  /// chooses nothing.
+  /// chooses nothing. Offered only once it opens: an older pack's settings
+  /// can have no tiers until its models load, and the next status tries again (#509).
   @MainActor private func offerTiersIfUnchosen() {
     guard !Self.tiersOffered, let table, !table.readOnly, let s = table.status(),
           s.flags & MV_AI_STATUS_TIER_UNCHOSEN != 0 else { return }
-    Self.tiersOffered = true
     showTierPicker(over: settingsHost?.window ?? viewerWindow())
+    if tierPicker?.isOpen == true { Self.tiersOffered = true }
   }
 
   /// "Choose your Local search models": Settings' Change… and the first-run offer.

@@ -1,0 +1,40 @@
+(* Driftwire protocol 2 over the internet (#472 PR 2, modelled for #501):
+   CPace on the code (or a remembered pair's hourly password), then
+   Noise_XXhfs+psk0 keyed by it, carrying each side's long-term identity as
+   its static.
+
+   The attacker owns the network and runs any number of sessions with either
+   side, all under the same password (a code is spent at its first hello in
+   the code, which only helps here). The identities' public halves are never
+   published: nearby they go only sealed (#501), so what is asked is whether
+   this handshake gives them to someone without the password.
+
+   Expected: every query true. *)
+
+free pw: bitstring [private].
+free sC, sS: bitstring [private].   (* the two identities (known::identity) *)
+free fileI: bitstring [private].
+
+(* The password resists offline guessing from any number of transcripts and
+   active runs (a 48-bit code, a word code after Argon2id). *)
+weaksecret pw.
+(* Neither identity reaches anyone without the password. *)
+query attacker(exp(g, sC)).
+query attacker(exp(g, sS)).
+(* What the sender sends after the handshake (the offer, the files) is secret. *)
+query attacker(fileI).
+(* A sender that finished (the receiver's identity checked against the pin)
+   met a receiver holding that identity, which answered this run's message 1:
+   one for one. *)
+query ec: bitstring, es: bitstring, k1: bitstring, k2: bitstring, r: bitstring, ks: bitstring;
+  inj-event(InetClientDone(ec, es, k1, k2, r, ks)) ==> inj-event(InetServerRunning(ec, es, exp(g, sS))).
+(* A receiver that finished (the sender's identity checked) shares its keys with
+   a sender that saw this receiver's identity. Not asked one for one: the keys
+   include this run's fresh ephemeral, so no two runs share them, and the
+   injective form does not finish in 25 minutes. *)
+query k1: bitstring, k2: bitstring, r: bitstring, kc: bitstring;
+  event(InetServerDone(k1, k2, r, kc)) ==> event(InetClientSent(k1, k2, r, exp(g, sS))).
+
+process
+  ( !InetClient(pw, sC, exp(g, sS), true, fileI)
+  | !InetServer(pw, sS, exp(g, sC), true) )
