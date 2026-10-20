@@ -1104,3 +1104,231 @@ TEST_CASE("driftwire session: a link that goes silent is suspect at 3 s and the 
   CHECK_FALSE(any_temporary(s / "bea_received"));
   std::printf("{\"case\":\"silent_link\",\"suspect_ms\":%lld}\n", static_cast<long long>(suspect_ms));
 }
+
+// ---- a cancel is said, and final (#511) ---------------------------------------------------------
+
+namespace {
+
+// A channel pair whose client writes through a slowed link, so a chunk is
+// still being written when the test cancels.
+session_pair open_slow_session(const std::atomic<std::size_t>& rate) {
+  auto pair = try_loopback_pair();
+  REQUIRE(pair);
+  session_pair s;
+  s.socket = pair->first;
+  auto slowed = std::make_shared<bearer_link>(pair->first, sp::transport::wifi, &rate);
+  mv::result<std::unique_ptr<sp::channel>> server = mv::err(mv::status::internal);
+  std::thread t([&] { server = sp::channel::open(pair->second, false, "bbbbbbbbbbbbbbbb", "Bea"); });
+  auto client = sp::channel::open(slowed, true, "aaaaaaaaaaaaaaaa", "Ann");
+  t.join();
+  REQUIRE(client);
+  REQUIRE(server);
+  s.a = std::move(*client);
+  s.b = std::move(*server);
+  return s;
+}
+
+// The link events a channel reported.
+struct link_events {
+  std::atomic<int> down{0}, suspect{0};
+  void watch(sp::channel& ch) {
+    ch.set_on_link([this](sp::link_event e) {
+      if (e == sp::link_event::down) ++down;
+      if (e == sp::link_event::suspect) ++suspect;
+    });
+  }
+};
+
+// Two engines on one "Wi-Fi" (a slowed, cuttable loopback), Ann sending a
+// file of `bytes` to Bea, the code typed and the offer accepted.
+struct wifi_send {
+  bt_world bt;  // nobody uses it: Wi-Fi only
+  bus b;
+  wifi_world wifi;
+  std::atomic<inject_discovery*> ann_wifi{nullptr};
+  std::unique_ptr<node> bea, ann;
+  std::unique_ptr<beacon_pump> pump;
+  fs::path src;
+  wifi_send(const scratch_dir& s, std::size_t rate, std::uint64_t bytes, int ended_show_ms = 6000) {
+    wifi.rate = rate;
+    sp::engine::options bo = node_options("Bea", bt);
+    bo.use_bluetooth = false;
+    bo.ended_show_ms = ended_show_ms;
+    bo.make_discovery = [this] { return std::make_unique<bus_discovery>(b); };
+    bea = std::make_unique<node>(s / "bea_received", bo);
+    const std::uint16_t port = port_on(b);
+    sp::engine::options ao = node_options("Ann", bt);
+    ao.use_bluetooth = false;
+    ao.ended_show_ms = ended_show_ms;
+    ao.make_discovery = [this] {
+      auto d = std::make_unique<inject_discovery>();
+      ann_wifi.store(d.get());
+      return std::unique_ptr<sp::discovery>(std::move(d));
+    };
+    ao.connect_wifi = wifi.connector();
+    ann = std::make_unique<node>(s / "ann_received", ao);
+    pump = std::make_unique<beacon_pump>(ann_wifi, sp::beacon{bea->eng.id(), "Bea", port, sp::kProtocolVersion});
+    pump->on.store(true);
+    src = big_file(s / "out", bytes);
+    ann->eng.set_files({utf8(src)});
+    REQUIRE(eventually([&] {
+      const auto v = ann->eng.snapshot();
+      return !v.reading_folder && v.file_count == 1 && !v.peers.empty();
+    }));
+    ann->eng.on_event("peers", 5, "\"" + bea->eng.id() + "\"");
+    confirm_and_accept(*ann, *bea);
+  }
+  ~wifi_send() {
+    // The pump first (it calls into Ann's discovery), then the engines
+    // (their threads use the worlds), as the tests above declare them.
+    pump.reset();
+    ann.reset();
+    bea.reset();
+  }
+};
+
+long long ms_since(clock_type::time_point t0) {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(clock_type::now() - t0).count();
+}
+
+}  // namespace
+
+TEST_CASE("driftwire session: a cancel during a chunk is said after it, and the peer does not wait for a rejoin",
+          "[driftwire]") {
+  std::atomic<std::size_t> rate{2 * 1024 * 1024};  // a 256 KB chunk takes ~125 ms to write
+  session_pair s = open_slow_session(rate);
+  link_events a_events, b_events;
+  a_events.watch(*s.a);
+  b_events.watch(*s.b);
+  producer out(*s.a, 1000, sp::kChunkBytes);
+  sp::message m;
+  for (int i = 0; i < 3; ++i) {
+    REQUIRE(s.b->receive(m, 5000));
+    REQUIRE(m.type == sp::msg::data);
+  }
+  // Mid-chunk: the producer is in its next write.
+  std::this_thread::sleep_for(std::chrono::milliseconds(40));
+  const auto t0 = clock_type::now();
+  std::thread canceller([&] { CHECK(s.a->cancel(sp::kCancelWaitMs)); });
+  bool cancelled = false;
+  for (;;) {
+    auto r = s.b->receive(m, 2000);
+    REQUIRE(r);
+    if (m.type == sp::msg::cancel) {
+      cancelled = true;
+      break;
+    }
+    REQUIRE(m.type == sp::msg::data);  // the chunk it was writing, whole, then the cancel
+  }
+  const long long heard_ms = ms_since(t0);
+  canceller.join();
+  CHECK(cancelled);
+  CHECK(heard_ms <= sp::kCancelWaitMs + 200);
+  CHECK(s.a->cancelled());
+  CHECK(s.b->cancelled());
+  CHECK(s.a->closed());
+  // The link drops now: the peer ends at once, not after kRejoinMs.
+  const auto t1 = clock_type::now();
+  CHECK_FALSE(s.b->receive(m));
+  CHECK(ms_since(t1) < 1000);
+  CHECK(eventually([&] { return s.b->closed(); }, 2));
+  CHECK(a_events.down.load() == 0);
+  CHECK(b_events.down.load() == 0);
+  // And a rejoin of a cancelled session is refused.
+  auto pair = try_loopback_pair();
+  REQUIRE(pair);
+  CHECK_FALSE(s.a->rejoin(pair->first));
+  std::printf("{\"case\":\"cancel_mid_chunk_channel\",\"heard_ms\":%lld}\n", heard_ms);
+}
+
+TEST_CASE("driftwire session: a link killed without a cancel still waits for a rejoin", "[driftwire]") {
+  session_pair s = open_session();
+  link_events b_events;
+  b_events.watch(*s.b);
+  s.socket->shutdown();  // no cancel: Wi-Fi went
+  sp::message m;
+  CHECK(s.b->receive(m, 1500).error() == mv::status::timeout);  // still waiting for a link, not ended
+  CHECK_FALSE(s.b->closed());
+  CHECK_FALSE(s.b->cancelled());
+  CHECK(b_events.down.load() == 1);
+  REQUIRE(rejoin_pair(*s.a, *s.b));
+  REQUIRE(s.a->send(sp::msg::file_done, std::string_view("{\"i\":0,\"ok\":true}")));
+  REQUIRE(s.b->receive(m, 5000));
+  CHECK(m.type == sp::msg::file_done);
+  CHECK(s.b->rejoins() == 1);
+}
+
+TEST_CASE("driftwire session: the sender cancels mid-chunk and the receiver ends at once, cancelled",
+          "[driftwire]") {
+  scratch_dir s("driftwire_cancel_sender_511");
+  // A 256 KB chunk takes ~100 ms on this "Wi-Fi": a cancel lands inside one.
+  wifi_send w(s, 2500 * 1024, 64ull * 1024 * 1024, 1500);
+  progress_watch watch(*w.ann, *w.bea);
+  REQUIRE(bytes_arrive(*w.ann, *w.bea, 1024 * 1024));
+  const int connects = w.wifi.connects.load();
+  const auto t0 = clock_type::now();
+  w.ann->eng.on_event("out_cancel", 1, "");
+  REQUIRE(eventually([&] { return w.bea->eng.snapshot().in == sp::view::in_phase::ended; }, 5));
+  const long long ended_ms = ms_since(t0);
+  w.ann->eng.wait_idle();
+  w.bea->eng.wait_idle();
+  const auto a = w.ann->eng.snapshot();
+  const auto b = w.bea->eng.snapshot();
+  INFO(a.out_note << " | " << b.in_note);
+  CHECK(ended_ms <= 1000);
+  CHECK(a.out == sp::view::out_phase::ended);
+  CHECK(a.out_note == "Cancelled. Nothing was kept on Bea.");
+  CHECK(b.in_note == "Ann cancelled. Nothing was received.");
+  CHECK_FALSE(watch.saw_reconnecting.load());   // neither side took it for a lost link
+  CHECK(w.wifi.connects.load() == connects);    // and no mover raced for another
+  CHECK(files_in(s / "bea_received").empty());  // nothing partial
+  // Then each window goes back to its default view by itself.
+  CHECK(eventually([&] { return w.bea->eng.snapshot().in == sp::view::in_phase::none; }, 5));
+  CHECK(eventually([&] { return w.ann->eng.snapshot().out == sp::view::out_phase::idle; }, 5));
+  std::printf("{\"case\":\"sender_cancels_mid_chunk\",\"receiver_ended_ms\":%lld}\n", ended_ms);
+}
+
+TEST_CASE("driftwire session: the receiver cancels mid-transfer and both end, the sender naming it",
+          "[driftwire]") {
+  scratch_dir s("driftwire_cancel_receiver_511");
+  wifi_send w(s, 2500 * 1024, 64ull * 1024 * 1024);
+  progress_watch watch(*w.ann, *w.bea);
+  REQUIRE(bytes_arrive(*w.ann, *w.bea, 1024 * 1024));
+  const int connects = w.wifi.connects.load();
+  const auto t0 = clock_type::now();
+  w.bea->eng.on_event("in_cancel", 1, "");
+  REQUIRE(eventually([&] { return w.bea->eng.snapshot().in == sp::view::in_phase::ended; }, 5));
+  const long long receiver_ms = ms_since(t0);
+  REQUIRE(eventually([&] { return w.ann->eng.snapshot().out == sp::view::out_phase::ended; }, 5));
+  const long long sender_ms = ms_since(t0);
+  w.ann->eng.wait_idle();
+  w.bea->eng.wait_idle();
+  const auto a = w.ann->eng.snapshot();
+  const auto b = w.bea->eng.snapshot();
+  INFO(a.out_note << " | " << b.in_note);
+  CHECK(receiver_ms <= 1000);
+  CHECK(sender_ms <= 1000);
+  CHECK(b.in_note == "You cancelled. Nothing was received.");
+  CHECK(a.out_note == "Bea cancelled. Nothing was kept there.");
+  CHECK_FALSE(watch.saw_reconnecting.load());
+  CHECK(w.wifi.connects.load() == connects);
+  CHECK(files_in(s / "bea_received").empty());
+  std::printf("{\"case\":\"receiver_cancels\",\"receiver_ms\":%lld,\"sender_ms\":%lld}\n", receiver_ms, sender_ms);
+}
+
+TEST_CASE("driftwire session: a cut link with no cancel still rejoins and the send completes", "[driftwire]") {
+  scratch_dir s("driftwire_cut_rejoins_511");
+  wifi_send w(s, 16 * 1024 * 1024, 24ull * 1024 * 1024);
+  progress_watch watch(*w.ann, *w.bea);
+  REQUIRE(bytes_arrive(*w.ann, *w.bea, 2 * 1024 * 1024));
+  const int connects = w.wifi.connects.load();
+  w.wifi.links.cut_all();  // the socket fails under the transfer; nobody cancelled
+  w.ann->eng.wait_idle();
+  w.bea->eng.wait_idle();
+  INFO(w.ann->eng.snapshot().out_note);
+  CHECK(w.wifi.connects.load() > connects);  // the mover found another link
+  CHECK(w.ann->eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(w.bea->eng.snapshot().in == sp::view::in_phase::done);
+  CHECK(same_bytes(w.src, s / "bea_received" / "clip.mov"));
+  CHECK_FALSE(any_temporary(s / "bea_received"));
+}

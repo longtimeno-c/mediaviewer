@@ -632,10 +632,12 @@ bool channel::link_up() const noexcept {
 // ---- sending ------------------------------------------------------------------------------
 
 expected channel::send(msg type, std::span<const std::uint8_t> body) {
-  if (down_.load()) return err(status::cancelled);
+  // #511: nothing follows a cancel (either side's) onto the link.
+  if (down_.load() || cancelled_.load()) return err(status::cancelled);
   if (body.size() + kHeader2 > kMaxMessageBytes) return err(status::invalid_arg);
   if (version_ >= 2) return send_v2(type, body);
   std::lock_guard lock(send_m_);
+  if (cancelled_.load()) return err(status::cancelled);
   return send_locked(type, body);
 }
 
@@ -694,6 +696,7 @@ expected channel::send_v2(msg type, std::span<const std::uint8_t> body) {
   }
   if (down_.load()) return err(status::cancelled);
   std::lock_guard lock(send_m_);
+  if (cancelled_.load()) return err(status::cancelled);  // cancel() wrote while this waited
   (void)keep_and_write(type, body);
   // A link that failed under it is not this send's failure: the message is
   // kept, and a rejoin sends it again.
@@ -739,18 +742,40 @@ expected channel::keep_and_write(msg type, std::span<const std::uint8_t> body) {
   return {};
 }
 
-bool channel::try_send(msg type, std::string_view text) noexcept {
-  if (down_.load()) return false;
-  std::unique_lock lock(send_m_, std::try_to_lock);
-  if (!lock.owns_lock()) return false;
-  try {
-    const std::span<const std::uint8_t> body(reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
-    if (version_ < 2) return send_locked(type, body).has_value();
-    // Said if the link is free now, never waited for (kept, like any other).
-    return keep_and_write(type, body).has_value();
-  } catch (...) {
-    return false;
+bool channel::cancel(int wait_ms, std::string_view why) noexcept {
+  const auto until = clock::now() + std::chrono::milliseconds(std::max(0, wait_ms));
+  cancelled_.store(true);  // from here a dropped link ends the session (mark_down)
+  bool said = false;
+  std::uint64_t seq = 0;
+  {
+    // After the frame being written, if any: frames never interleave, and the
+    // sender's loop sends no further chunk once the person cancelled.
+    std::unique_lock lock(send_m_, until);
+    if (lock.owns_lock() && !down_.load() && !cancel_said_) {
+      try {
+        std::string text = "{}";
+        if (!why.empty()) {
+          json::writer w;
+          w.begin_object().key("why").string(why).end_object();
+          text = w.take();
+        }
+        const std::span<const std::uint8_t> body(reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
+        said = version_ < 2 ? send_locked(msg::cancel, body).has_value() : keep_and_write(msg::cancel, body).has_value();
+      } catch (...) {
+        said = false;
+      }
+      cancel_said_ = said;
+      seq = send_seq_;
+    }
   }
+  if (said && version_ >= 2) {
+    // Protocol 2: until the peer acknowledges it (its pinger answers at once,
+    // a reader here trims), so it is read before this side closes the link.
+    std::unique_lock lock(replay_m_);
+    replay_cv_.wait_until(lock, until, [&] { return down_.load() || peer_acked_ >= seq; });
+  }
+  shutdown();
+  return said;
 }
 
 void channel::flush(int timeout_ms) {
@@ -825,6 +850,7 @@ expected channel::receive_v1(message& out, int timeout_ms) {
     out.type = static_cast<msg>(raw);
     out.body.erase(out.body.begin());
     out.body.resize(static_cast<std::size_t>(plain) - 1);
+    if (out.type == msg::cancel) cancelled_.store(true);
     if (out.type != msg::ping) return {};
     if (limited && clock::now() >= deadline) return err(status::timeout);
   }
@@ -942,6 +968,8 @@ expected channel::receive_v2(message& out, int timeout_ms, bool until_acked) {
     out.body.erase(out.body.begin(), out.body.begin() + kHeader2);
     out.body.resize(static_cast<std::size_t>(plain) - kHeader2);
     recv_seq_.store(seq);
+    // #511: the peer ended it on purpose; the link that drops next is not a loss.
+    if (out.type == msg::cancel) cancelled_.store(true);
     if (out.type == msg::done) {
       // The last message of a transfer: acknowledged now, from here, before
       // the caller shuts the channel down (the peer flushes until it has this).
@@ -994,7 +1022,7 @@ void channel::ping_loop() {
         gen = gen_;
         up = up_;
       }
-      if (up && now_ns() - last_heard_ns_.load() >= std::int64_t{kSuspectMs} * 1000000 &&
+      if (up && !cancelled_.load() && now_ns() - last_heard_ns_.load() >= std::int64_t{kSuspectMs} * 1000000 &&
           suspect_gen_.exchange(gen) != gen) {
         notify(link_event::suspect);
       }
@@ -1019,6 +1047,10 @@ void channel::mark_down(std::uint64_t gen) noexcept {
   }
   link_cv_.notify_all();
   if (old) old->shutdown();
+  if (cancelled_.load()) {
+    shutdown();  // #511: ended on purpose; nothing to rejoin
+    return;
+  }
   if (!opened_.load()) return;
   notify(link_event::down);
 }
@@ -1062,7 +1094,7 @@ expected channel::rejoin(std::shared_ptr<link> l) {
   if (!l) return err(status::invalid_arg);
   if (version_ < 2) return err(status::unsupported_format);
   std::lock_guard one(rejoin_m_);
-  if (down_.load()) {
+  if (down_.load() || cancelled_.load()) {
     l->shutdown();
     return err(status::cancelled);
   }
@@ -1107,7 +1139,7 @@ expected channel::accept_rejoin(std::shared_ptr<link> l, const hello& h) {
     l->shutdown();
     return err(down_.load() ? status::cancelled : s);
   };
-  if (down_.load()) return fail(status::cancelled);
+  if (down_.load() || cancelled_.load()) return fail(status::cancelled);
   if (!names_this(h)) return fail(status::not_found);
   const auto deadline = clock::now() + std::chrono::milliseconds(kRejoinConfirmMs);
   std::array<std::uint8_t, 32> psk;

@@ -38,7 +38,10 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
   - **what is offered to this computer**: "… wants to send you files" and the **code** in large
     digits to type over there, **Decline**; then "… wants to send you 24 files, 412 MB", the first
     names, **Save to** with Choose…, **Decline** / **Accept**; then the path filling with its
-    percentage, the count and **Cancel**; then what arrived and **OK**;
+    percentage, the count and **Cancel**; then what arrived and **OK**. A transfer that ended
+    without arriving (cancelled, lost) says so for 6 s (`engine::options::ended_show_ms`) and the
+    window goes back to its default view by itself (#511); a delivered one keeps its line and
+    Remember until OK;
   - **Send**, a card: a strip of the first six files' thumbnails (the viewer's cache), the count
     and size, the first names, **Send a folder** (Choose…), **Clear**;
   - **Nearby**: the MediaViewers it can see as large round tiles (a monogram, the name, "Wi-Fi",
@@ -262,7 +265,10 @@ Then, on either protocol:
 5. Each file: `file_begin` (index, size, mtime), `data` chunks of 256 KiB, `file_end` with the
    BLAKE3 of the bytes as read; or `file_skip` for one that is gone or changed since the offer.
    The receiver answers each with `file_done` (verified or not) and the end with `done`.
-6. `cancel` from either side ends it (sent only if the link is free, never behind a chunk).
+6. `cancel` from either side ends it (`channel::cancel`, [The session](#the-session-protocol-2-472)
+   has the details): it goes out after the chunk being written, waiting at most 250 ms
+   (`kCancelWaitMs`) in all, then the link closes. A receiver that stops on an error sends it with
+   `{"why":"error"}`, so the sender does not say the person there cancelled.
    Protocol 1: a ping goes out whenever a side has sent nothing for 2 s, 20 s of silence is a
    dropped link, and a frame must arrive whole within 20 s of its first byte. Protocol 2: below.
    Every wait before Accept is a deadline (the handshake 8 s, typing the code and the answer 3
@@ -313,6 +319,22 @@ send or a receive waits through a rejoin.
 - **The end.** The receiver answers `done` and waits up to 5 s for it to be acknowledged before it
   closes, so a link that drops at the last moment is rejoined rather than the sender waiting out a
   lost `done`.
+- **A cancel is final** (#511). `channel::cancel` marks the session cancelled first, then writes
+  `cancel` as soon as the frame being written (if any) is done (the send lock is a timed mutex),
+  waits for the peer to acknowledge it so it is read before the link closes, and shuts down: 250 ms
+  at most in all. Nothing is sent after it. The side that reads `cancel` marks its session
+  cancelled too. From then on, on either side, a link that drops is not a loss: no
+  `link_event::down`, no suspect, no "Reconnecting", no mover race, no wait for `kRejoinMs`, and
+  a rejoin of the session is refused. The window then says who cancelled: "Cancelled. 2 of 5
+  files arrived whole on Bea." on the side that cancelled, "Ann cancelled. 2 files arrived whole;
+  nothing partial was kept." on the other ("You cancelled. …" and "Bea cancelled. …" when the
+  receiver did). A link lost with no cancel is unchanged: "Reconnecting to …", then "The
+  connection to … was lost". If the frame being written cannot finish within 250 ms (a slow
+  Bluetooth link), the cancel is not said, and the other side sees a lost link.
+  On Windows a screen window is rebuilt whenever its tree moves, ten times a second during a
+  transfer, and a rebuild between a press and its release lost the click, so Cancel there could
+  do nothing. `IslandHost.Screens.cs` now holds a window's rebuild while a pointer is down in it
+  and catches up on release ([25](25-open-addons.md)).
 - Not here yet: the slower too-slow rule between two fast bearers (over the internet a send
   moves back to Wi-Fi when the peer is heard there again, as Bluetooth does).
 

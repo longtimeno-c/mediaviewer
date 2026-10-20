@@ -289,6 +289,9 @@ class engine {
     // #472, the tests: the sender's stream met on the DHT, before it rejoins
     // (wrapped to cut or slow it).
     std::function<std::unique_ptr<link>(std::unique_ptr<link>)> wrap_handover_link;
+    // #511: how long a transfer's end ("Cancelled", "lost") stays on screen
+    // before the window goes back to its default view (OK clears it sooner).
+    int ended_show_ms = 6000;
   };
 
   engine(engine_host& host, options opts);
@@ -443,6 +446,9 @@ class engine {
   void publish_files(std::vector<outgoing_file> files, std::uint64_t gen);
   void read_folder(std::string folder);
   void cancel_transfer();
+  // #511: an ended transfer's note clears itself after ended_show_ms.
+  void clear_ended_later();
+  void clear_ended();  // the control thread
   void reap_helpers();  // under threads_m_
   // #472: a transfer's DHT handover, stopped and joined later (its thread
   // may be in a DNS lookup or a withdraw): never on the transfer's way out.
@@ -516,6 +522,7 @@ class engine {
   int status_tries_ = 0;                              // control thread
   std::chrono::steady_clock::time_point status_due_{};  // under control_m_; {} = none
   std::chrono::steady_clock::time_point post_due_{};  // under control_m_
+  std::chrono::steady_clock::time_point clear_due_{};  // under control_m_; {} = none
   std::thread control_thread_;
 
   // Presence: changed only by the control thread (and the destructor after it).

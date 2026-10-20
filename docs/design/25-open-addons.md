@@ -731,6 +731,10 @@ How it works:
   (`notices_json`); the hosts draw them. Driftwire is the one user
   ([28 "In the background"](28-driftwire.md#in-the-background-452)).
 
+**Windows rebuilds a screen window when its tree's revision moves**; while a pointer is down in
+the window the rebuild waits, and the release catches up (#511: a tree that moved between press
+and release lost the click).
+
 **Added for an AirDrop-like Driftwire (#442, 2026-10-15)**, generic, drawn by both hosts
 (`ScreenView.swift`, `IslandHost.Screens.cs`) and checked by the core (`"[screens]"`):
 

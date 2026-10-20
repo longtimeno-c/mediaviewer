@@ -170,9 +170,19 @@ class channel {
   [[nodiscard]] expected send(msg type, std::string_view text) {
     return send(type, std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text.data()), text.size()));
   }
-  // Sends only if no other send is under way (a cancel must never wait behind
-  // a chunk on a slow link); false when it could not.
-  bool try_send(msg type, std::string_view text) noexcept;
+  // Any thread (#511): ends the session on purpose. From the first call no
+  // rejoin is waited for and no link_event::down is reported; msg::cancel
+  // goes out after the frame being written (if any) as soon as it is done,
+  // waiting at most `wait_ms` in all (for that frame, then for the peer's
+  // acknowledgement, so it is read before the link closes); then shutdown().
+  // A second caller only waits for the first. False when it could not be said.
+  // `why` non-empty: said in the message ({"why":"error"}: not a person's
+  // cancel but a failure on this side).
+  bool cancel(int wait_ms, std::string_view why = {}) noexcept;
+  // The session was ended on purpose (#511): cancel() here, or msg::cancel
+  // read from the peer (receive() returns it like any message). A link that
+  // drops after this is not a loss: the session ends at once.
+  [[nodiscard]] bool cancelled() const noexcept { return cancelled_.load(); }
   // One reader thread. The next message that is not a ping. `timeout_ms` < 0:
   // no deadline of its own, the link only has to stay alive (protocol 2: or
   // be replaced within kRejoinMs). >= 0: status::timeout once that long has
@@ -262,16 +272,18 @@ class channel {
   std::string code_, peer_id_, peer_name_;
   std::unique_ptr<state> st_;  // the keys: push under send_m_, pull the reader's
   std::atomic<bool> down_{false};
+  std::atomic<bool> cancelled_{false};  // cancel() called, or the peer's msg::cancel read
   std::atomic<bool> opened_{false};  // the handshake and ident are done
 
   // Writing: one sender at a time (send_m_), never waiting on a lock the
   // reader holds. Lock order: send_m_, then link_m_ or replay_m_.
-  std::mutex send_m_;
+  std::timed_mutex send_m_;  // timed: cancel() waits a bounded time for a frame being written
   std::shared_ptr<link> write_link_;                 // under send_m_
   std::uint64_t write_gen_ = 1;                      // under send_m_
   std::vector<std::uint8_t> seal_buf_;               // under send_m_
   std::chrono::steady_clock::time_point last_send_;  // under send_m_
   std::uint64_t send_seq_ = 0;                       // under send_m_
+  bool cancel_said_ = false;                         // under send_m_: cancel() wrote msg::cancel
   std::atomic<std::uint64_t> sent_seq_{0};           // the last sequence number given out
 
   // Kept until acknowledged (protocol 2). Short holds only, never across I/O.
