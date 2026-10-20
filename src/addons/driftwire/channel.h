@@ -27,7 +27,8 @@
 // is kept (at most kReplayBytes; a sender waits past it). When the link drops,
 // or a faster one appears, the client opens a new link on any bearer and
 // rejoins: a fresh Noise_NNhfs+psk0 handshake keyed by a resume secret the
-// last handshake left (in memory only, replaced at every rejoin). Each side
+// first handshake left (in memory only, the same for the session's life and
+// wiped when the channel goes; each rejoin's own keys are new). Each side
 // then says what it has received (resume_at) and the other re-sends the rest:
 // a message is never lost, never repeated, and never re-sent once it arrived.
 // Callers (transfer.h) see none of this: a send or receive waits through a
@@ -93,12 +94,22 @@ struct channel_options {
   // Client: the protocol to speak (the peer's beacon or INFO says which it
   // has). The server answers whichever the hello is.
   std::uint32_t version = kProtocolVersion;
-  // Protocol 2: this side's X25519 key in the XX handshake (the engine's,
-  // made once a run). Empty: one is made for this link.
+  // Protocol 2: this side's X25519 key in the XX handshake. Empty: one is
+  // made for this link. The engine gives its identity (known.h) only behind
+  // CPace (an internet code, a remembered device's meeting): a plain XX
+  // handshake hands the responder's static to whoever connects (#501).
   std::optional<std::array<std::uint8_t, 32>> static_key;
   // #472 PR 2, the receiver: the secret of the code it showed, which an
   // internet hello must know. Empty: an internet hello is refused.
   std::optional<std::vector<std::uint8_t>> internet_secret;  // a direct code's 6 bytes, a word code's 32
+
+  // #501: the static's private half and the code are wiped with every copy.
+  channel_options() = default;
+  channel_options(const channel_options&) = default;
+  channel_options(channel_options&&) = default;
+  channel_options& operator=(const channel_options&) = default;
+  channel_options& operator=(channel_options&&) = default;
+  ~channel_options();
 };
 
 class channel {
@@ -154,8 +165,9 @@ class channel {
   // known only by the code; code() is the check, not a code to type.
   [[nodiscard]] bool internet() const noexcept { return internet_; }
   // Protocol 2 (#472 PR 4): the peer's static X25519 key from the XX
-  // handshake (its device identity once it keeps one), and a secret only the
-  // two ends of this session hold, for "Remember this device".
+  // handshake (its device identity over the internet; nearby, from #501, a
+  // key for that link alone), and a secret only the two ends of this
+  // session hold, for "Remember this device".
   [[nodiscard]] const std::optional<std::array<std::uint8_t, 32>>& peer_key() const noexcept { return peer_key_; }
   [[nodiscard]] std::array<std::uint8_t, 32> pairing_secret() const;
   // #497: the six digits the sender shows and the receiver types to remember

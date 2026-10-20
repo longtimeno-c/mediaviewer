@@ -1521,6 +1521,39 @@ menu offers Driftwire's one-click install, and Sharepoint is removed in Settings
 settings carry over once (`adopt_old_prefs` reads `<root>/sharepoint/data/sharepoint.json`, the one
 place the old name stays in the code).
 
+**Nearby handshakes carry no long-term key; the name is off the air with the window closed; the Mac
+keeps secrets in the data protection keychain (owner, 2026-10-20, #501).** Protocol 2 used the
+machine's identity as the static of every XX handshake, so anyone in range could connect, read message 2 and leave with a key that followed
+the machine for months; the beacon and Bluetooth INFO gave out the owner's name and a per-process id
+for as long as background receiving ran; and the Keychain items were in the login keychain, where
+"this device only" is ignored and a same-user app can plant one first. Now a nearby static is the
+link's own, and the identity goes sealed in the offer (after the code) and the accept (after
+Accept); the name goes out only while the window is open, and the id changes while idle and at
+every open and close; the Mac store is the data protection keychain in the app group
+`<team>.<bundle id>.driftwire`, or none. The owner's calls:
+- **The access group is a team-prefixed app group**, which needs no provisioning profile under
+  Developer ID (`keychain-access-groups` would need one). The team is not written in the repo: it is
+  the signing secret `APPLE_TEAM_ID`, and `macpack.py release --team-id` adds the group to the app's
+  entitlements when it signs (a Developer ID release without it stops). Dev builds have no group and
+  no store, so Remember does not show there.
+
+Two things break, accepted by the owner:
+- **Remember with v0.1.34/35.** Transfers both ways are unchanged (the wire is the same; old peers
+  ignore the new `"key"`). But an old peer remembers this side by the link's key and would never
+  meet it, so this version does not offer Remember to a peer that said no identity; the person
+  updates the other side, sends once more, and ticks it. Pairs remembered before the update keep
+  working (their meetings are unchanged). The other way, sending the identity to old peers, is the
+  leak itself: a receiver cannot tell an old sender from anyone else before message 2.
+- **Mac remembered devices start over.** The login-keychain items are removed, not migrated: one
+  may have been planted, and the app cannot tell. v0.1.35 shipped Remember a day earlier.
+- **Windows remembered devices start over too**, by the same rule: Credential Manager's values are
+  now sealed with DPAPI under Driftwire's entropy (any same-user process can read or plant the
+  items, so a plain one is refused), and the plain ones from before do not open. They are
+  overwritten, not deleted.
+Reopen the migration only with a way to prove an old item was the app's own. The DPAPI seal is not
+a boundary against a same-user program that calls DPAPI the same way; Windows has no per-app store
+for an unpackaged app, and packaging the app (to get one) is a different decision.
+
 **Punch probes are authenticated; meetings over the DHT need both sides past v0.1.35 (#499,
 owner, 2026-10-20).** Every probe carried the same tag from the code in the clear, and a reply or choose
 was taken from any address that showed it, so a host that was sent one (at the other side's private

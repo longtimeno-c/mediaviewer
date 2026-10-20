@@ -316,6 +316,8 @@ class engine {
       return l;
     }();
     int relay_meet_ms = 45000;
+    // #501: how often an idle, windowless machine takes a new session id.
+    int id_rotate_ms = kIdRotateMs;
     // #472, the tests: the sender's stream met on the DHT, before it rejoins
     // (wrapped to cut or slow it).
     std::function<std::unique_ptr<link>(std::unique_ptr<link>)> wrap_handover_link;
@@ -357,7 +359,8 @@ class engine {
 
   // ---- for tests ------------------------------------------------------------------
   [[nodiscard]] view snapshot() const;
-  [[nodiscard]] const std::string& id() const noexcept { return id_; }
+  // The session id announced now (#501: it changes while idle).
+  [[nodiscard]] std::string id() const;
   // Blocks until the current transfer (if any) has ended.
   void wait_idle();
 
@@ -389,6 +392,13 @@ class engine {
   void post_throttled();  // within ~100 ms, coalesced
   void start_presence();
   void stop_presence();
+  // #501, the control thread: a new session id, and the name only while the
+  // window is open, on the beacon and Bluetooth (presence_m_ held).
+  void announce_locked();
+  // #501, the control thread: announces again when the window opened or
+  // closed, or the id is due to change, once nothing is under way.
+  void sync_announce();
+  [[nodiscard]] bool quiet_locked() const noexcept;
   void refresh_peers_locked();
   // #502: room for a new peer heard on Wi-Fi at `address`, or on Bluetooth
   // (empty address): the least recently heard peer goes, never one a send
@@ -453,7 +463,14 @@ class engine {
   // A transfer ended well over protocol 2: what Remember would keep.
   // `sending`: this side typed the code (it proved the peer); the receiver of
   // a nearby transfer must type the sender's check first (#497).
-  void offer_remember(const channel& ch, const std::string& name, bool sending);
+  // `presented` (#501): the identity the peer said in its offer or accept.
+  // Nearby that is the only identity there is (the handshake's static is the
+  // link's own); over the internet the handshake's static is the identity.
+  void offer_remember(const channel& ch, const std::string& name, bool sending,
+                      const std::optional<std::array<std::uint8_t, 32>>& presented);
+  // #501: this machine's identity, to say once a link is authenticated
+  // (empty when nothing can be remembered: a key of this run means nothing).
+  [[nodiscard]] std::optional<std::array<std::uint8_t, 32>> identity_to_present() const;
   // #497: one nearby link that ended with no offer.
   void note_unconfirmed();
   // #472 PR 3: the DHT client's options (the routers, or the tests' nodes;
@@ -493,7 +510,10 @@ class engine {
   void route_busy(std::shared_ptr<link> l, bool internet = false, bool code = false);
   // channel::open with `l` listed in opening_ meanwhile.
   // A handshake the engine can end (cancel, the destructor). The client
-  // speaks `version`; the server answers the hello it read.
+  // speaks `version`; the server answers the hello it read. #501: the static
+  // is this machine's identity only behind a code's CPace (`internet_secret`);
+  // a nearby handshake gets a key made for that link, since anyone in range
+  // can start one and read message 2.
   [[nodiscard]] result<std::unique_ptr<channel>> open_tracked(
       std::shared_ptr<link> l, bool client, std::uint32_t version = kProtocolVersion, const hello* read = nullptr,
       const std::vector<std::uint8_t>* internet_secret = nullptr);
@@ -553,9 +573,11 @@ class engine {
 
   engine_host& host_;
   options opts_;
-  std::string id_;
 
   mutable std::mutex m_;
+  // The session id on the beacon, Bluetooth INFO and ident (under m_), and
+  // the one before it (its beacons may still loop back).
+  std::string id_, old_id_;
   view v_;                                // under m_
   std::map<std::string, peer> peers_;     // under m_
   bool peers_changed_ = false;            // under m_
@@ -630,6 +652,7 @@ class engine {
   int status_tries_ = 0;                              // control thread
   std::chrono::steady_clock::time_point status_due_{};  // under control_m_; {} = none
   std::chrono::steady_clock::time_point post_due_{};  // under control_m_
+  std::chrono::steady_clock::time_point announce_due_{};  // under control_m_: sync_announce then; {} = none
   std::chrono::steady_clock::time_point clear_due_{};  // under control_m_; {} = none
   std::thread control_thread_;
 
@@ -639,6 +662,8 @@ class engine {
   std::unique_ptr<net::listener> listener_;
   std::unique_ptr<discovery> discovery_;
   std::shared_ptr<bluetooth> bluetooth_;  // a sender holds a reference while it connects
+  bool announced_named_ = false;          // #501: the name is on the beacon and INFO now
+  std::chrono::steady_clock::time_point rotate_at_{};  // #501: when the id is next due
   std::thread accept_thread_;
 
   std::mutex threads_m_;

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/driftwire/transfer.h"
 
+#include <sodium.h>
+
 #include <algorithm>
 #include <condition_variable>
 #include <cstdio>
@@ -144,7 +146,24 @@ std::string temp_name(const std::string& final_path, int attempt) {
 
 // ---- sender ----------------------------------------------------------------------
 
-std::string offer_json(const std::vector<outgoing_file>& files, bool handover, bool dht) {
+std::string key_hex(const std::array<std::uint8_t, 32>& key) {
+  char hex[65];
+  sodium_bin2hex(hex, sizeof hex, key.data(), key.size());
+  return std::string(hex, 64);
+}
+
+std::optional<std::array<std::uint8_t, 32>> parse_key_hex(std::string_view hex) {
+  if (hex.size() != 64) return std::nullopt;
+  std::array<std::uint8_t, 32> key{};
+  std::size_t n = 0;
+  if (sodium_hex2bin(key.data(), key.size(), hex.data(), hex.size(), nullptr, &n, nullptr) != 0 || n != key.size()) {
+    return std::nullopt;
+  }
+  return key;
+}
+
+std::string offer_json(const std::vector<outgoing_file>& files, bool handover, bool dht,
+                       const std::optional<std::array<std::uint8_t, 32>>& identity) {
   std::uint64_t bytes = 0;
   for (const auto& f : files) bytes += f.size;
   json::writer w;
@@ -157,6 +176,7 @@ std::string offer_json(const std::vector<outgoing_file>& files, bool handover, b
   w.end_array();
   if (handover) w.key("handover").boolean(true);
   if (handover && dht) w.key("dht").boolean(true);
+  if (identity) w.key("key").string(key_hex(*identity));
   w.end_object();
   return w.take();
 }
@@ -172,7 +192,7 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
     return res;
   };
   if (files.empty() || files.size() > kMaxFiles) return stop(outcome::failed, __LINE__);
-  if (!ch.send(msg::offer, offer_json(files, h.handover, h.handover_dht))) return stop(cancelled(h) ? outcome::cancelled : outcome::failed, __LINE__);
+  if (!ch.send(msg::offer, offer_json(files, h.handover, h.handover_dht, h.identity))) return stop(cancelled(h) ? outcome::cancelled : outcome::failed, __LINE__);
 
   // The answer, while the person there decides (it declines by itself after
   // kAskMs; this waits a little longer, then gives up).
@@ -181,7 +201,11 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
     if (auto r = ch.receive(m, kAskMs + 30000); !r) {
       return stop(cancelled(h) || r.error() == status::cancelled ? outcome::cancelled : outcome::failed, __LINE__);
     }
-    if (m.type == msg::accept) break;
+    if (m.type == msg::accept) {
+      const auto doc = json::parse(m.text(), 4);
+      if (const std::string* key = doc ? doc->str("key") : nullptr) res.peer_key = parse_key_hex(*key);
+      break;
+    }
     if (m.type == msg::decline) {
       const auto doc = json::parse(m.text(), 4);
       const std::string* why = doc ? doc->str("why") : nullptr;
@@ -381,6 +405,7 @@ result<incoming_offer> parse_offer(std::string_view text) {
   o.bytes = sum;
   o.handover = doc->boolean("handover").value_or(false);
   o.dht = o.handover && doc->boolean("dht").value_or(false);
+  if (const std::string* key = doc->str("key")) o.key = parse_key_hex(*key);
   return o;
 }
 
@@ -422,7 +447,10 @@ result<incoming_offer> read_offer(channel& ch, int timeout_ms) {
   return parse_offer(m.text());
 }
 
-expected send_accept(channel& ch) { return ch.send(msg::accept, std::string_view("{}")); }
+expected send_accept(channel& ch, const std::optional<std::array<std::uint8_t, 32>>& identity) {
+  if (!identity) return ch.send(msg::accept, std::string_view("{}"));
+  return ch.send(msg::accept, json_of([&](json::writer& w) { w.key("key").string(key_hex(*identity)); }));
+}
 
 expected send_decline(channel& ch, outcome why) {
   const char* text = why == outcome::busy ? "busy" : why == outcome::no_room ? "no_room" : "declined";

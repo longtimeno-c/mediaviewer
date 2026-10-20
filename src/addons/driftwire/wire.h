@@ -80,6 +80,10 @@ inline constexpr std::size_t kReplayBytes = 16u * 1024 * 1024;
 // After a move to another link, the sender stays at least this long before
 // moving for speed (a dropped link moves at once).
 inline constexpr int kSwitchHoldMs = 10000;
+// #501: with the window closed and nothing under way, the session id the
+// beacon and Bluetooth INFO carry is replaced this often (and whenever the
+// window opens or closes), so a listener cannot follow one machine for weeks.
+inline constexpr int kIdRotateMs = 10 * 60 * 1000;
 // One offer, at most.
 inline constexpr std::size_t kMaxFiles = 100000;
 inline constexpr std::size_t kMaxRelativeBytes = 1024;

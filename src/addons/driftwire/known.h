@@ -4,9 +4,11 @@
 // it remembers, so a later send needs no code.
 //
 //   - Identity: an X25519 key, made once and kept in the OS's secret store
-//     (secrets.h). Protocol 2's XX handshakes carry it, so a peer sees the
-//     same key every time. Without a store (or when it fails) each run makes
-//     its own, as before PR 4, and nothing can be remembered.
+//     (secrets.h). The handshakes behind CPace carry it (an internet code, a
+//     remembered device's meeting); a nearby one never does (#501: anyone in
+//     range could read it there), and it is said sealed in the offer and the
+//     accept instead. Without a store (or when it fails) each run makes its
+//     own, as before PR 4, and nothing can be remembered.
 //   - Remembering: after a transfer over protocol 2, either person may tick
 //     "Remember this device". The record is the peer's name and key, and a
 //     secret only the two ends of that session hold (channel::pairing_secret).

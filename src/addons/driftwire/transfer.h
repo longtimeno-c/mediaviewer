@@ -25,9 +25,11 @@
 // with a path or a name (rule 6).
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -54,10 +56,20 @@ struct incoming_offer {
   std::uint64_t bytes = 0;
   bool handover = false;  // #472 PR 5: the sender takes msg::places
   bool dht = false;       // #472: and meets on the DHT if both sides move
+  // #501: the sender's long-term identity (known.h), for Remember. Nearby it
+  // is not the handshake's static (a key for that link alone): it travels
+  // here, sealed, once the sender's person has typed the right code. Absent
+  // from a sender before #501, or one with nothing to remember with.
+  std::optional<std::array<std::uint8_t, 32>> key;
   // #498: the one folder every file is in, or empty when they are files
   // picked one by one (parse_offer refuses any other shape).
   std::string folder;
 };
+
+// An identity key as the offer and the accept carry it ("key": 64 hex
+// digits), and back (nullopt for anything else).
+[[nodiscard]] std::string key_hex(const std::array<std::uint8_t, 32>& key);
+[[nodiscard]] std::optional<std::array<std::uint8_t, 32>> parse_key_hex(std::string_view hex);
 
 // bytes moved so far (both ends), files finished so far.
 using progress_fn = std::function<void(std::uint64_t bytes, std::uint32_t files)>;
@@ -78,6 +90,9 @@ struct hooks {
   bool handover = false;
   bool handover_dht = false;  // #472: the offer says it meets on the DHT too
   std::function<void(std::string_view json)> on_places;
+  // #501, the sender: this machine's identity, said in the offer (after the
+  // code), so the receiver can remember it. Empty: not said.
+  std::optional<std::array<std::uint8_t, 32>> identity;
   // #502, the receiver: nothing of the files for this long (and no file
   // being read back) ends the receive as failed. 0: no limit.
   int idle_ms = 0;
@@ -103,12 +118,15 @@ struct transfer_result {
   std::uint32_t done = 0;     // files verified on the receiver
   std::uint32_t skipped = 0;  // files the sender could not read whole
   std::vector<std::string> written;  // receiver: final paths, in order (tests, the summary)
+  // #501, the sender: the identity the receiver said in its accept.
+  std::optional<std::array<std::uint8_t, 32>> peer_key;
 };
 
 // ---- sender ------------------------------------------------------------------
 // The offer for `files`, as sealed JSON.
 [[nodiscard]] std::string offer_json(const std::vector<outgoing_file>& files, bool handover = false,
-                                     bool dht = false);
+                                     bool dht = false,
+                                     const std::optional<std::array<std::uint8_t, 32>>& identity = std::nullopt);
 // After the channel is open: offers, waits for the answer, calls
 // `on_accepted`, then sends. The cancel flag is polled between chunks; the
 // engine also shuts the channel down to end a wait.
@@ -134,8 +152,10 @@ inline constexpr std::size_t kMaxPlaces = 8;
 // `dest_dir`, which exists.
 [[nodiscard]] transfer_result receive_files(channel& ch, const incoming_offer& offer, const std::string& dest_dir,
                                             const hooks& h);
-// The answers the receiver sends before any byte moves.
-[[nodiscard]] expected send_accept(channel& ch);
+// The answers the receiver sends before any byte moves. `identity` (#501):
+// this machine's, said only now that its person has accepted.
+[[nodiscard]] expected send_accept(channel& ch,
+                                   const std::optional<std::array<std::uint8_t, 32>>& identity = std::nullopt);
 [[nodiscard]] expected send_decline(channel& ch, outcome why);  // declined, busy or no_room
 
 // "<final>.mvtmp", "<final>.mvtmp2" ... (the temporary io::verified_copy uses).

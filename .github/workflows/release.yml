@@ -724,10 +724,14 @@ jobs:
 
       - name: Disk image
         timeout-minutes: 30
+        env:
+          # #501: Driftwire's keychain app group is "<team>.<bundle id>.driftwire".
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           args=(--app build/universal/MediaViewer.app --out-dir build/release)
           if [ "$MODE" != "artifacts" ]; then
             args+=(--identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
+                   --team-id "$APPLE_TEAM_ID"
                    --sparkle-bin "$RUNNER_TEMP/sparkle/bin"
                    --sparkle-key-file "$RUNNER_TEMP/sparkle.key"
                    --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/")

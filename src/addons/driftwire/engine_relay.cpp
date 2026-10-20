@@ -140,7 +140,7 @@ std::unique_ptr<link> engine::reach_through_own(const std::vector<net::endpoint>
     channel::options o;
     o.static_key = static_key_;
     std::vector<std::uint8_t> pw(k->password.begin(), k->password.end());
-    auto opened = channel::open_internet(l, pw, id_, opts_.my_name, o);
+    auto opened = channel::open_internet(l, pw, id(), opts_.my_name, o);
     sodium_memzero(pw.data(), pw.size());
     {
       const auto brief_until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
