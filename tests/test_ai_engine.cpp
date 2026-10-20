@@ -5611,6 +5611,55 @@ TEST_CASE("a model tier is chosen once, then fetched, pictures first", "[ai][eng
   }
 }
 
+// #509: a fresh profile's picker offer needs the tiers in the first status
+// reads, not after the models open (they wait for a quiet viewer and the
+// runtime). The control thread reads them first and posts a status.
+TEST_CASE("the tiers reach settings_json before the models open, with a status event", "[ai][engine][tiers]") {
+  rig r;
+  std::atomic<bool> read{false};
+  std::atomic<bool> hold{true};
+  std::atomic<bool> held{false};
+  std::atomic<std::size_t> events_at_read{0};
+  struct release {
+    std::atomic<bool>& hold;
+    ~release() { hold = false; }  // before the rig stops the engine, even on a failed REQUIRE
+  } const released{hold};
+  r.tweak = [&](mv::ai::engine_deps& d) {
+    d.read_tiers = [&] {
+      {
+        std::lock_guard lock(r.events_m);
+        events_at_read = r.events.size();
+      }
+      read = true;
+    };
+    d.tiers_json = [&] {
+      return read ? std::string(R"({"default":"default","profiles":{"default":{"name":"Default"}}})")
+                  : std::string("{}");
+    };
+    // The step after: held, so nothing later on the control thread (the
+    // models' wait for the viewer, their load) can be what posts the status.
+    auto text = d.text;
+    d.text = [&, text]() -> std::unique_ptr<mv::ai::text_reader> {
+      held = true;
+      while (hold) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      return text ? text() : nullptr;
+    };
+  };
+  r.start();
+  REQUIRE(wait_for([&] { return held.load(); }, kSettleMs));
+  CHECK(read);
+  CHECK(r.eng->settings_json().find(R"("profiles":{"default")") != std::string::npos);
+  CHECK((r.status().flags & MV_AI_STATUS_TIER_UNCHOSEN) != 0);
+  {
+    std::lock_guard lock(r.events_m);
+    const auto after = r.events.begin() + static_cast<std::ptrdiff_t>(events_at_read.load());
+    CHECK(std::any_of(after, r.events.end(), [](const mv_addon_event& e) { return e.kind == MV_ADDON_EVENT_AI_STATUS; }));
+  }
+  CHECK(r.stills_decoded.load() == 0);
+  hold = false;
+  REQUIRE(r.idle());
+}
+
 // An index made before tiers came from the Default tier's towers: that
 // install has chosen, and is not asked again.
 TEST_CASE("an index from before tiers keeps the Default tier without asking", "[ai][engine][tiers]") {

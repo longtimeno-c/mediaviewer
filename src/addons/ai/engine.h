@@ -229,7 +229,10 @@ struct engine_deps {
   // Switches the pack to a tier ("" = its default): which folders fill each
   // role. Cheap and any thread: the pack re-reads on the next open.
   std::function<void(const std::string& tier)> set_tier;
-  // The pack's tiers (models/tiers.json) for the picker; "{}" before `prepare`.
+  // Reads the pack's tiers (models/tiers.json; blocks: I/O). The control
+  // thread calls it first, before the models wait for a quiet viewer (#509).
+  std::function<void()> read_tiers;
+  // The pack's tiers for the picker; "{}" before `read_tiers`. Never blocks.
   std::function<std::string()> tiers_json;
   // Blocks: fetches what the tier in force needs for the installed pieces,
   // the picture towers first (`pictures` is called once they are verified).
