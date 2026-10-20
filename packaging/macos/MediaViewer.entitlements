@@ -17,6 +17,12 @@
   it (its `spotlight` command; docs/design/26). The hardened runtime refuses
   every Apple Event without it. macOS still asks the user, once, before the
   first event reaches Photos; nothing else is sent to any app.
+
+  Not in this file: com.apple.security.application-groups =
+  "<team>.<bundle id>.driftwire", Driftwire's keychain access group (#501,
+  docs/design/28 "Remembered devices"). The team is the signing secret
+  (APPLE_TEAM_ID), so `macpack.py release --team-id` adds it when it signs.
+  A team-prefixed app group needs no provisioning profile.
 -->
 <plist version="1.0">
 <dict>

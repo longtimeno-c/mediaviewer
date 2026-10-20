@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -397,10 +398,34 @@ def codesign(path: Path, identity: str, hardened: bool, entitlements: Path | Non
 # The app's own entitlements (hardened runtime): Photos library access for
 # Local search (issue #72). The file says why.
 APP_ENTITLEMENTS = REPO_ROOT / "packaging" / "macos" / "MediaViewer.entitlements"
+# Driftwire keeps this Mac's identity and its remembered devices in the data
+# protection keychain, under an app group of the signing team (#501, owner
+# 2026-10-20): "<team>.<bundle id>.driftwire". A team-prefixed app group needs
+# no provisioning profile; it is added at signing, since the team is CI's
+# secret (APPLE_TEAM_ID), not the repo's.
+DRIFTWIRE_GROUP_SUFFIX = ".driftwire"
+APP_GROUPS = "com.apple.security.application-groups"
+
+
+def app_entitlements(app: Path, team_id: str | None, into: Path) -> Path:
+    """The app's entitlements file to sign with: APP_ENTITLEMENTS, plus
+    Driftwire's app group when the team is known (written to `into`)."""
+    if not team_id:
+        return APP_ENTITLEMENTS
+    if not re.fullmatch(r"[A-Z0-9]{10}", team_id):
+        raise SystemExit(f"macpack: {team_id!r} is not an Apple Team ID (ten letters and digits)")
+    with open(app / "Contents" / "Info.plist", "rb") as f:
+        bundle_id = plistlib.load(f)["CFBundleIdentifier"]
+    with open(APP_ENTITLEMENTS, "rb") as f:
+        ent = plistlib.load(f)
+    ent[APP_GROUPS] = [f"{team_id}.{bundle_id}{DRIFTWIRE_GROUP_SUFFIX}"]
+    with open(into, "wb") as f:
+        plistlib.dump(ent, f)
+    return into
 
 
 def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool,
-             fcp_appex_entitlements: Path | None = None) -> None:
+             fcp_appex_entitlements: Path | None = None, team_id: str | None = None) -> None:
     """Inside out: every nested binary before the bundle that seals it. No
     --deep: it signs everything with one set of options, which is wrong for
     the sandboxed extension.
@@ -409,7 +434,8 @@ def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool,
     at assemble (its app group names the team); a release, which gets no path,
     keeps the ones it already carries. lipo_merge copies it untouched (arm64
     only), so the assemble signature and its entitlements survive to the
-    release. The search agent is the app's own executable, signed with it."""
+    release. The search agent is the app's own executable, signed with it.
+    `team_id`: the app also gets Driftwire's app group (app_entitlements)."""
     frameworks = app / "Contents" / "Frameworks"
     for dylib in sorted(frameworks.glob("*.dylib")):
         codesign(dylib, identity, hardened)
@@ -434,7 +460,9 @@ def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool,
                  preserve_entitlements=fcp_appex_entitlements is None)
     appex = app / "Contents" / "PlugIns" / f"{APPEX_NAME}.appex"
     codesign(appex, identity, hardened, entitlements=appex_entitlements)
-    codesign(app, identity, hardened, entitlements=APP_ENTITLEMENTS)
+    with tempfile.TemporaryDirectory() as tmp:
+        codesign(app, identity, hardened,
+                 entitlements=app_entitlements(app, team_id, Path(tmp) / "MediaViewer.entitlements"))
     run(["codesign", "--verify", "--strict", "--deep", "--verbose=2", str(app)])
 
 
@@ -510,6 +538,10 @@ def make_dmg(app: Path, out: Path, volume_name: str) -> None:
 def cmd_release(args: argparse.Namespace) -> None:
     if args.sparkle_key_file and not Path(args.sparkle_key_file).is_file():
         raise SystemExit("macpack: Sparkle key file not found")
+    team_id = getattr(args, "team_id", None)
+    if args.identity != "-" and not team_id:
+        raise SystemExit("macpack: a Developer ID build needs --team-id (or $APPLE_TEAM_ID): without "
+                         "Driftwire's app group it has no keychain, and cannot remember devices (#501)")
     app = Path(args.app)
     if not app.exists():
         raise SystemExit(f"macpack: {app} not found; build the mediaviewer_app target first")
@@ -528,7 +560,7 @@ def cmd_release(args: argparse.Namespace) -> None:
     entitlements = REPO_ROOT / "packaging" / "macos" / "QuickLook.entitlements"
 
     # 1. Developer ID + hardened runtime, inside out.
-    sign_app(app, identity=args.identity, appex_entitlements=entitlements, hardened=True)
+    sign_app(app, identity=args.identity, appex_entitlements=entitlements, hardened=True, team_id=team_id)
 
     # 2. Notarize and staple the app itself, so a copy dragged out of the image
     #    opens offline too.
@@ -618,6 +650,8 @@ def main(argv: list[str]) -> None:
                    help='"Developer ID Application: …" (or $MV_SIGN_IDENTITY)')
     r.add_argument("--notary-profile", default=os.environ.get("MV_NOTARY_PROFILE"),
                    help="`xcrun notarytool store-credentials` profile (or $MV_NOTARY_PROFILE)")
+    r.add_argument("--team-id", default=os.environ.get("APPLE_TEAM_ID") or None,
+                   help="the signing team (or $APPLE_TEAM_ID): prefixes Driftwire's app group")
     r.add_argument("--out-dir", default="build/release")
     r.add_argument("--skip-notarize", action="store_true", help="local dry run only")
     r.add_argument("--allow-no-updater", action="store_true")

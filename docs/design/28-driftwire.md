@@ -573,8 +573,11 @@ are online. The receiver still accepts or declines every transfer. (`secrets.*`,
     not synchronised). There "this device only" holds: it is never in a backup or a migration to
     another Mac. Every query names the group, so another app of the same user can neither read
     these items nor plant one before Driftwire's first use (the OS lets only apps signed with the
-    group touch it). The group is read from the app's own entitlements; a build signed without one
-    (a dev build, the lab binary) has no store. Items in the login keychain from before #501 (where
+    group touch it). The group is the app group `<team>.io.github.longtimeno-c.mediaviewer.driftwire`
+    (owner, 2026-10-20: a team-prefixed app group needs no provisioning profile), added to the app's
+    entitlements when the release is signed (`macpack.py release --team-id`, from the `APPLE_TEAM_ID`
+    secret). The store reads it from the app's own entitlements; a build signed without it (a dev
+    build, the lab binary) has no store. Items in the login keychain from before #501 (where
     the accessibility attribute is ignored, and a same-user app could have planted one) are
     removed without a prompt and never read: a Mac remembers its devices again after the update.
   - **Windows:** Credential Manager (generic credentials, this machine only, not roamed). Any

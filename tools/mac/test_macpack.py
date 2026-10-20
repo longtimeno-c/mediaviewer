@@ -68,7 +68,8 @@ class ReleaseSigningTests(unittest.TestCase):
             app=str(app), out_dir=str(root / "release"), sparkle_key_file=str(key),
             sparkle_bin=str(root / "sparkle/bin"), identity="test-identity",
             allow_no_updater=False, skip_notarize=True, notary_profile=None,
-            download_url_prefix="https://example.test/v0.1.1/", phased_rollout_seconds=0)
+            download_url_prefix="https://example.test/v0.1.1/", phased_rollout_seconds=0,
+            team_id="ABCDE12345")
 
     def release_with_feed(self, feed):
         def fake_run(cmd, **kwargs):
@@ -88,6 +89,15 @@ class ReleaseSigningTests(unittest.TestCase):
 
     def test_ci_key_file_signs_feed_without_keychain(self):
         self.release_with_feed("<!-- sparkle-signatures -->\n<rss/>")
+
+    def test_developer_id_release_without_a_team_fails_before_signing(self):
+        """#501: without the team there is no Driftwire app group, so no keychain."""
+        self.args.team_id = None
+        with patch.object(macpack, "run") as runner, patch.object(macpack, "sign_app") as signer, \
+             self.assertRaisesRegex(SystemExit, "team-id"):
+            macpack.cmd_release(self.args)
+        runner.assert_not_called()
+        signer.assert_not_called()
 
     def test_unsigned_feed_is_still_rejected(self):
         with self.assertRaisesRegex(SystemExit, "no feed signature"):
@@ -296,6 +306,23 @@ class CrashpadHandlerTests(unittest.TestCase):
             self.assertEqual(calls[app], macpack.APP_ENTITLEMENTS)
             appex = app / "Contents" / "PlugIns" / f"{macpack.APPEX_NAME}.appex"
             self.assertEqual(calls[appex], Path("QuickLook.entitlements"))
+
+    def test_a_team_adds_driftwires_app_group_from_the_bundle_id(self):
+        """#501: "<team>.<bundle id>.driftwire", on top of the file's own."""
+        import plistlib
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp) / "MediaViewer.app"
+            (app / "Contents").mkdir(parents=True)
+            with open(app / "Contents" / "Info.plist", "wb") as f:
+                plistlib.dump({"CFBundleIdentifier": "io.github.longtimeno-c.mediaviewer"}, f)
+            self.assertEqual(macpack.app_entitlements(app, None, Path(tmp) / "e.plist"), macpack.APP_ENTITLEMENTS)
+            out = macpack.app_entitlements(app, "ABCDE12345", Path(tmp) / "e.plist")
+            with open(out, "rb") as f:
+                ent = plistlib.load(f)
+            self.assertEqual(ent[macpack.APP_GROUPS], ["ABCDE12345.io.github.longtimeno-c.mediaviewer.driftwire"])
+            self.assertIs(ent.get("com.apple.security.personal-information.photos-library"), True)
+            with self.assertRaisesRegex(SystemExit, "Team ID"):
+                macpack.app_entitlements(app, "not a team", Path(tmp) / "e.plist")
 
     def test_app_entitlements_grant_photos_and_no_sandbox(self):
         import plistlib
