@@ -38,7 +38,10 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
   - **what is offered to this computer**: "… wants to send you files" and the **code** in large
     digits to type over there, **Decline**; then "… wants to send you 24 files, 412 MB", the first
     names, **Save to** with Choose…, **Decline** / **Accept**; then the path filling with its
-    percentage, the count and **Cancel**; then what arrived and **OK**;
+    percentage, the count and **Cancel**; then what arrived and **OK**. A transfer that ended
+    without arriving (cancelled, lost) says so for 6 s (`engine::options::ended_show_ms`) and the
+    window goes back to its default view by itself (#511); a delivered one keeps its line and
+    Remember until OK;
   - **Send**, a card: a strip of the first six files' thumbnails (the viewer's cache), the count
     and size, the first names, **Send a folder** (Choose…), **Clear**;
   - **Nearby**: the MediaViewers it can see as large round tiles (a monogram, the name, "Wi-Fi",
@@ -75,7 +78,8 @@ or on the foreground queue. Each window is its own process ([18](18-import.md) "
 process"): only the one holding `driftwire.json.lock` (`net::try_lock_instance`: `flock` on the
 Mac, an unshared handle on Windows) starts receiving at load, so one machine shows up once. While
 the toggle is on, the command bar shows **Driftwire: receiving** (a status item, both hosts), so
-a person can see this machine is discoverable after a relaunch. Off at load: the read, and nothing
+a person can see this machine is discoverable after a relaunch. Clicking it opens the Driftwire
+window, or brings it forward (#512: Driftwire's one screen, [25](25-open-addons.md)). Off at load: the read, and nothing
 else (no engine, thread, socket or lock).
 
 Idle cost with it on and the window closed (`mv_import_tests "[.driftwire-idle]"`, Mac M-series,
@@ -93,7 +97,10 @@ the engine never touches the canvas.
   new each run), the machine's name (the Sharing name on the Mac, the computer name on Windows), a
   port, and `"p"`, the highest protocol it speaks (#472; `"v"` stays 1, which is what a protocol 1
   client checks, so old and new still see each other; no `"p"` is protocol 1). Bluetooth's INFO
-  carries the same `"p"`. Never a path, a name of a file or anything about one.
+  carries the same `"p"`. Never a path, a name of a file or anything about one. A peer's `"p"` is
+  never lowered while it is listed (#497): anyone on the network can send a beacon in its name, and
+  one with no `"p"` would talk a send down to protocol 1. The name a send shows and remembers is
+  the one the peer gives inside the sealed channel (`ident`), not the beacon's.
 - A peer leaves the list 4.5 s after its last beacon or advertisement. One heard on both bearers
   is one row.
 - **Bluetooth LE between a Mac and a Windows PC** has one common way to move bytes: GATT. Windows
@@ -177,24 +184,33 @@ nothing. A client speaks the protocol the peer's beacon or INFO announces (`"p"`
 answers whichever hello arrives, so protocol 1 peers (from before #472) still send and receive on
 the LAN and Bluetooth. They get no rejoin and no move between bearers.
 
-**Protocol 2 (#472)**, `Noise_XXhfs_25519+MLKEM768_ChaChaPoly_BLAKE2b`:
+**Protocol 2 (#472) and 3 (#497)**, `Noise_XXhfs_25519+MLKEM768_ChaChaPoly_BLAKE2b`. Protocol 3 is
+protocol 2 with the server's commitment (steps 2 and 4, and its own prologue, so the version is
+bound into the handshake); a peer that announces 2 (v0.1.34, v0.1.35) is spoken to in 2, a
+receiver answers either, and rejoins and internet hellos are the same in both:
 
 1. The client (the side that connected, the sender) sends `MVSP`, 2, `N` and the first Noise
    message: an X25519 key and an **ML-KEM-768** key made for this link (the "hfs" modifier), and as
    its payload a BLAKE2b commitment to a random 32-byte nonce.
 2. The server (the receiver) answers: its X25519 key, `ee`, the ML-KEM ciphertext encapsulated to
    the client's key (its shared secret mixed into the chaining key beside the X25519 ones), its
-   static key and `es`. A recording of the link needs both X25519 and ML-KEM-768 broken to read.
+   static key and `es`, and (protocol 3) as its payload its own commitment to a random 32-byte
+   nonce. A
+   recording of the link needs both X25519 and ML-KEM-768 broken to read.
 3. The client sends its static key, `se`, and reveals the nonce, which must match the commitment.
    The static is this machine's identity, kept in the OS's secret store (#472 PR 4,
    [below](#remembered-devices-472-pr-4)); without a store, a key made once a run. Nothing on the
    LAN or Bluetooth trusts it: only a remembered device's meeting checks it.
-4. **The code** is six digits from a BLAKE2b hash of the handshake hash after message 2 and the
-   nonce. Everything the server contributes is fixed before the client's nonce is seen, and the
-   nonce is fixed before the server speaks, so a machine in the middle cannot search for keys that
-   give both people the same digits (protocol 1's commit-then-reveal, carried into Noise). Only the
-   receiver's window shows it.
-5. Both sides open an XChaCha20-Poly1305 secretstream each way keyed from the handshake's Split, and
+4. Protocol 3: the server's first sealed message (`code_nonce`, unnumbered, like `resume_at`)
+   reveals its nonce, which must match its commitment.
+5. **The code** is six digits from a BLAKE2b hash of the handshake hash after message 2 and both
+   nonces (protocol 2: the client's only). Each side's part is fixed before it sees the other's, and the server reveals last, so
+   neither side knows the code before the other has finished its part: a machine in the middle can
+   neither search for keys that give both people the same digits nor learn the server's code and
+   drop the link before the server shows it (#497; before it, a client learned the server's code
+   from message 2 and could reconnect until one matched, unseen). Only the receiver's window shows
+   it.
+6. Both sides open an XChaCha20-Poly1305 secretstream each way keyed from the handshake's Split, and
    keep Split's third output as the session's **resume secret** (memory only). Ephemerals are wiped
    (`sodium_memzero`) as the handshake ends. Every later message is sealed with a sequence number
    and an acknowledgement ([The session](#the-session-protocol-2-472)).
@@ -215,9 +231,7 @@ digits, the power a real search over 10^6 gives. What it shows:
   same handshake (same h2, nonce, link keys and resume secret, one for one), and the files and the
   resume secret stay secret, oracle and all. The oracle never helps because of the order: the
   server's nonce is bound by its commitment before the server's ephemeral (so its h2) exists, and
-  the client's nonce is secret until its h2 is fixed. So each try of the attacker in the middle
-  matches with probability 10^-6 and three wrong codes end the link: at most 3 × 10^-6 per
-  attempt. On the handshake's skeleton with the commitment check removed, ProVerif finds that
+  the client's nonce is secret until its h2 is fixed. On the handshake's skeleton with the commitment check removed, ProVerif finds that
   attack (the full first link without the check does not finish).
 - **Broken later.** A first link recorded now stays secret if X25519 is broken later (every
   ephemeral and static handed over), or ML-KEM-768 is; with both broken it is read (the check that
@@ -234,7 +248,20 @@ bugs (the tests, the vectors and the fuzz harness do). The first link's handshak
 a constant associated data instead of h; that only helps the attacker, so what holds there holds for
 the code, and with the real h ProVerif does not finish. The code's 10^-6 is outside the symbolic
 model: the oracle gives the attacker a perfect search, and the model shows no order of messages lets
-it use one. Not modelled: protocol 1, `ident` (sent sealed before the code, so a machine in the
+it use one.
+
+**Tries, not people** (#497). The symbolic model cannot count: an attacker in the middle can run
+the server's half many times, and each run is a try at matching the code its victim will type.
+Before #497 the client learned the server's code from message 2 and could drop the link there,
+unseen and unlimited (about 10^5 tries in the three minutes a person has to type). Now the server's
+nonce comes after the client's, so a client learns the code only once the server has finished and
+shows it; and a nearby link that ends with no offer counts toward a limit: five in a minute, and
+new nearby links are not answered for 30 s (`note_unconfirmed`). So a machine in the middle gets
+about ten tries in those three minutes, 10^-5, and the receiver's window shows each as a code
+nobody used. Protocols 1 and 2 have no server nonce (their code is fixed by the server's answer),
+so to a peer from before #497 the limit is all that holds; a receiver still answers them, so an
+attacker can choose 2, and the limit is what bounds it. The model's skeleton is unchanged; the server's commitment adds
+a check it does not need. Not modelled: protocol 1, `ident` (sent sealed before the code, so a machine in the
 middle learns the sender's id and name before a code is typed), timeouts and the flapping rule.
 
 **Protocol 1** (a peer from before #472): commit, answer, reveal, each with an X25519 key made for
@@ -262,7 +289,10 @@ Then, on either protocol:
 5. Each file: `file_begin` (index, size, mtime), `data` chunks of 256 KiB, `file_end` with the
    BLAKE3 of the bytes as read; or `file_skip` for one that is gone or changed since the offer.
    The receiver answers each with `file_done` (verified or not) and the end with `done`.
-6. `cancel` from either side ends it (sent only if the link is free, never behind a chunk).
+6. `cancel` from either side ends it (`channel::cancel`, [The session](#the-session-protocol-2-472)
+   has the details): it goes out after the chunk being written, waiting at most 250 ms
+   (`kCancelWaitMs`) in all, then the link closes. A receiver that stops on an error sends it with
+   `{"why":"error"}`, so the sender does not say the person there cancelled.
    Protocol 1: a ping goes out whenever a side has sent nothing for 2 s, 20 s of silence is a
    dropped link, and a frame must arrive whole within 20 s of its first byte. Protocol 2: below.
    Every wait before Accept is a deadline (the handshake 8 s, typing the code and the answer 3
@@ -313,6 +343,22 @@ send or a receive waits through a rejoin.
 - **The end.** The receiver answers `done` and waits up to 5 s for it to be acknowledged before it
   closes, so a link that drops at the last moment is rejoined rather than the sender waiting out a
   lost `done`.
+- **A cancel is final** (#511). `channel::cancel` marks the session cancelled first, then writes
+  `cancel` as soon as the frame being written (if any) is done (the send lock is a timed mutex),
+  waits for the peer to acknowledge it so it is read before the link closes, and shuts down: 250 ms
+  at most in all. Nothing is sent after it. The side that reads `cancel` marks its session
+  cancelled too. From then on, on either side, a link that drops is not a loss: no
+  `link_event::down`, no suspect, no "Reconnecting", no mover race, no wait for `kRejoinMs`, and
+  a rejoin of the session is refused. The window then says who cancelled: "Cancelled. 2 of 5
+  files arrived whole on Bea." on the side that cancelled, "Ann cancelled. 2 files arrived whole;
+  nothing partial was kept." on the other ("You cancelled. …" and "Bea cancelled. …" when the
+  receiver did). A link lost with no cancel is unchanged: "Reconnecting to …", then "The
+  connection to … was lost". If the frame being written cannot finish within 250 ms (a slow
+  Bluetooth link), the cancel is not said, and the other side sees a lost link.
+  On Windows a screen window is rebuilt whenever its tree moves, ten times a second during a
+  transfer, and a rebuild between a press and its release lost the click, so Cancel there could
+  do nothing. `IslandHost.Screens.cs` now holds a window's rebuild while a pointer is down in it
+  and catches up on release ([25](25-open-addons.md)).
 - Not here yet: the slower too-slow rule between two fast bearers (over the internet a send
   moves back to Wi-Fi when the peer is heard there again, as Bluetooth does).
 
@@ -557,6 +603,13 @@ are online. The receiver still accepts or declines every transfer. (`secrets.*`,
   most 16 devices, in one value of the store; Forget removes one. Removing Driftwire without
   keeping its data (**Remove everything**) erases the identity and every remembered device from
   the store too (`mv_addon_forget`, #507): installed again, it is a new device nobody remembers.
+- **Who proved whom** (#497). A nearby code proves the receiver to the sender (its person typed
+  what the receiver shows), not the sender to the receiver: the sender's name is what it says it
+  is. So after a nearby transfer the sender's window shows a six-digit check
+  (`remember_check`, keyed by the session's secret), and the receiver keeps the sender only once
+  its person types that check ("Code shown on Ann"); ticking is not enough. Three wrong ones and
+  Remember is not offered again for that transfer. Over the internet the receiver made the code
+  and gave it to one person (CPace), so both sides are proved and Remember is a tick on both.
 - **Mutual by construction.** Nothing is sent to say "I remembered you": the meeting is keyed by
   the pairing secret, so a device is found only when both kept it. One-sided, the sender waits
   ("Waiting for Bea to come online… Bea must remember this computer too") until Cancel.

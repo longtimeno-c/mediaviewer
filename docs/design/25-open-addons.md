@@ -606,7 +606,7 @@ How it works:
 - **Manifest (schema 1).** `contributes.api {min, max}` names the contribution API range; then
   `screens`, `info_sections`, `search_providers`, `bar_items`, `path_items`, `context_menu`,
   `status_items`, `tile_badges`, each an array of at most 16. A point outside the range is
-  malformed; a range starting past this host (5) is "needs a newer MediaViewer". Naming any of
+  malformed; a range starting past this host (7 since #512) is "needs a newer MediaViewer". Naming any of
   them needs `host_api.min` 3, and an add-on that only fills slots may name no `chrome`. A
   stranger's schema 2 add-on naming one is `code_not_allowed` until PR 57.
 - **One worker per add-on.** Every call into an add-on (`info_section`, `search`, `screen_open`,
@@ -676,6 +676,19 @@ How it works:
   chrome's optional `ShowCanvasMenu` (a `MenuFlyout` at the pointer). The canvas menu has no
   keyboard way in yet (a tile's is Shift+F10 / the menu key on Windows, VoiceOver's Show Menu on
   the Mac). Status items are text in the command bar.
+- **A status item that opens a screen** (#512, 2026-10-20). `status_json` gives a status item
+  `"opens"`: the screen the item names, else its add-on's one window, pane or sheet when it has
+  exactly one (Driftwire's "Driftwire: receiving" opens the Driftwire window with no manifest
+  change); with none, or several and no name, there is no `opens` and the item stays text. Both
+  hosts draw an item with `opens` as a flat button with the text's own look (status colour and
+  size), the bar's hover and pressed washes, the pointing hand, the tooltip "Open *label*", a
+  place in the bar's keyboard order, and the name "*label*: *text*" read as a button. A click
+  is Settings' Open: `open_screen` (the core keeps one already open) and the host raises its
+  window (`OpenSlotScreen` on Windows, `SlotStore.openScreen` on the Mac). A manifest may name
+  the screen (`"opens"` on a `status_items` entry) only from contribution API **7**, so an
+  add-on that does asks for 7 and an app older than this says "needs a newer MediaViewer"
+  instead of refusing the manifest as malformed (it did before 7). No first-party manifest
+  names one yet.
 - **Screens** open as a window, a docked pane or a sheet, each with Done and Esc. The docked pane
   is not an island in the viewer's layout ([12](12-decision-log.md)): it lies **over** the right
   side of the canvas, which does not reflow around it. On the Mac it is a child panel held to the
@@ -730,6 +743,10 @@ How it works:
   menu-bar item / notification-area icon, after every window is closed. The registry holds them
   (`notices_json`); the hosts draw them. Driftwire is the one user
   ([28 "In the background"](28-driftwire.md#in-the-background-452)).
+
+**Windows rebuilds a screen window when its tree's revision moves**; while a pointer is down in
+the window the rebuild waits, and the release catches up (#511: a tree that moved between press
+and release lost the click).
 
 **Added for an AirDrop-like Driftwire (#442, 2026-10-15)**, generic, drawn by both hosts
 (`ScreenView.swift`, `IslandHost.Screens.cs`) and checked by the core (`"[screens]"`):

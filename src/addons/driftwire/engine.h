@@ -141,6 +141,12 @@ struct view {
   // A protocol 2 transfer just went through: "Remember <peer>" shows under
   // its result, with whether it is remembered.
   bool remember_offer = false;
+  // #497: after a nearby transfer the sender proved the receiver (the code)
+  // but not the other way round. The sender's window shows remember_check;
+  // the receiver remembers only once its person types it.
+  std::string remember_check;          // the sender's: the digits to show
+  bool remember_needs_check = false;   // the receiver's: typing them comes first
+  std::string remember_check_note;     // the receiver's: a wrong entry
   bool remembered = false;
   std::string remember_peer;
   bool out_known = false;  // the send is to a remembered device (reaching: waiting for it)
@@ -289,6 +295,9 @@ class engine {
     // #472, the tests: the sender's stream met on the DHT, before it rejoins
     // (wrapped to cut or slow it).
     std::function<std::unique_ptr<link>(std::unique_ptr<link>)> wrap_handover_link;
+    // #511: how long a transfer's end ("Cancelled", "lost") stays on screen
+    // before the window goes back to its default view (OK clears it sooner).
+    int ended_show_ms = 6000;
   };
 
   engine(engine_host& host, options opts);
@@ -385,7 +394,11 @@ class engine {
   void set_own(const std::string& fingerprint, bool on);
   void save_known();
   // A transfer ended well over protocol 2: what Remember would keep.
-  void offer_remember(const channel& ch, const std::string& name);
+  // `sending`: this side typed the code (it proved the peer); the receiver of
+  // a nearby transfer must type the sender's check first (#497).
+  void offer_remember(const channel& ch, const std::string& name, bool sending);
+  // #497: one nearby link that ended with no offer.
+  void note_unconfirmed();
   // #472 PR 3: the DHT client's options (the routers, or the tests' nodes;
   // the table kept beside the prefs).
   [[nodiscard]] dht::client::options dht_options() const;
@@ -443,6 +456,9 @@ class engine {
   void publish_files(std::vector<outgoing_file> files, std::uint64_t gen);
   void read_folder(std::string folder);
   void cancel_transfer();
+  // #511: an ended transfer's note clears itself after ended_show_ms.
+  void clear_ended_later();
+  void clear_ended();  // the control thread
   void reap_helpers();  // under threads_m_
   // #472: a transfer's DHT handover, stopped and joined later (its thread
   // may be in a DNS lookup or a withdraw): never on the transfer's way out.
@@ -499,6 +515,13 @@ class engine {
   // on the control thread; a receive in flight keeps its own reference).
   std::shared_ptr<internet_receiver> internet_;  // under m_
   std::string code_entry_;                       // under m_: what the "send to a code" field holds
+  // #497: nearby links that ended with no offer (a handshake dropped after
+  // this side answered, or a code shown that nobody followed), the last
+  // minute's; a run of them stops new nearby links for a while. Under m_.
+  std::vector<std::chrono::steady_clock::time_point> unconfirmed_;
+  std::string remember_expected_;  // under m_: the sender's check, digits only (#497)
+  int remember_tries_left_ = 0;    // under m_
+  std::chrono::steady_clock::time_point refuse_nearby_until_{};
   std::atomic<bool> cancel_{false};
   std::atomic<bool> stopping_{false};
 
@@ -516,6 +539,7 @@ class engine {
   int status_tries_ = 0;                              // control thread
   std::chrono::steady_clock::time_point status_due_{};  // under control_m_; {} = none
   std::chrono::steady_clock::time_point post_due_{};  // under control_m_
+  std::chrono::steady_clock::time_point clear_due_{};  // under control_m_; {} = none
   std::thread control_thread_;
 
   // Presence: changed only by the control thread (and the destructor after it).

@@ -243,6 +243,57 @@ TEST_CASE("contributions are tables resolved once at attach; detach removes ever
   r.detach("slotstest");  // idempotent
 }
 
+TEST_CASE("a status item opens its add-on's only screen, or the one it names (#512)", "[addon][slots]") {
+  using namespace mv::addon;
+  const auto opens_of = [](const slot_registry& r) -> std::string {
+    const auto doc = mv::json::parse(r.status_json());
+    REQUIRE(doc);
+    REQUIRE(doc->a.size() == 1);
+    const std::string* o = doc->a[0].str("opens");
+    return o ? *o : std::string("(none)");
+  };
+  const auto status_only = [] {
+    contributions c;
+    c.api_min = 5;
+    c.api_max = 5;
+    c.items.push_back({item_slot::status, "count", "Slots test", "", "", item_target::none});
+    return c;
+  };
+
+  // One window: a click opens it, with no manifest change.
+  {
+    slot_registry r;
+    contributions c = every_point();
+    REQUIRE(r.attach("slotstest", "Slots test", c, std::make_unique<fake_client>(r, "slotstest")) == status::ok);
+    REQUIRE(r.post_status("slotstest", "count", "3 chosen") == status::ok);
+    REQUIRE(opens_of(r) == "explorer");
+  }
+  // No screen: the item stays text.
+  {
+    slot_registry r;
+    REQUIRE(r.attach("plain", "Plain", status_only(), std::make_unique<fake_client>(r, "plain")) == status::ok);
+    REQUIRE(r.post_status("plain", "count", "3 chosen") == status::ok);
+    REQUIRE(opens_of(r) == "(none)");
+  }
+  // Two screens: none is guessed, unless the item names one.
+  contributions two = status_only();
+  two.screens.push_back({"explorer", "Explorer", screen_place::window, 0, 0});
+  two.screens.push_back({"side", "Side", screen_place::pane, 0, 0});
+  {
+    slot_registry r;
+    REQUIRE(r.attach("two", "Two", two, std::make_unique<fake_client>(r, "two")) == status::ok);
+    REQUIRE(r.post_status("two", "count", "3 chosen") == status::ok);
+    REQUIRE(opens_of(r) == "(none)");
+  }
+  two.items[0].opens = "side";
+  {
+    slot_registry r;
+    REQUIRE(r.attach("two", "Two", two, std::make_unique<fake_client>(r, "two")) == status::ok);
+    REQUIRE(r.post_status("two", "count", "3 chosen") == status::ok);
+    REQUIRE(opens_of(r) == "side");
+  }
+}
+
 TEST_CASE("an info section that needs a location is never asked for a file without one",
           "[addon][slots]") {
   slot_registry r;
@@ -1024,7 +1075,7 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
   REQUIRE(c.badges[0].symbol == "check");
 
   // Outside the range: "needs a newer MediaViewer", never half-loaded.
-  REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 7, "max": 8)")) == rejection::needs_update);
+  REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 8, "max": 9)")) == rejection::needs_update);
   // Malformed, each a mistake an author should hear about.
   REQUIRE(check(k, kContributes, 2, 3) == rejection::malformed);                       // table v3 needed
   REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 4, "max": 4)")) == rejection::malformed);  // slots are 5
@@ -1041,6 +1092,18 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
           rejection::malformed);  // a bar button needs its icon
   REQUIRE(check(k, R"({"api": {"min": 5, "max": 5}})") == rejection::malformed);  // a range over nothing
   REQUIRE(check(k, with(R"("tile_badges")", R"("tile_badgez")")) == rejection::malformed);
+  // #512: a status item names the screen it opens from contribution API 7; an
+  // add-on written for less cannot.
+  const std::string status_opens = R"({"id": "count", "label": "Slots test", "opens": "explorer"})";
+  REQUIRE(check(k, with(R"({"id": "count", "label": "Slots test"})", status_opens)) == rejection::malformed);
+  {
+    std::string s = with(R"({"id": "count", "label": "Slots test"})", status_opens);
+    s.replace(s.find(R"("min": 4, "max": 5)"), 18, R"("min": 7, "max": 7)");
+    const std::string m7 = slots_manifest("lib.bin", bytes, s);
+    const auto d7 = mv::addon::check_manifest(bytes_of(m7), k.sign(m7), k.pub, MV_ADDON_HOST_API);
+    REQUIRE(d7.trusted());
+    REQUIRE(d7.m.slots.items[3].opens == "explorer");
+  }
   // An add-on with no screens or slots is unaffected.
   REQUIRE(check(k, "", 1, 1) == rejection::none);
 }
@@ -1048,7 +1111,7 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
 TEST_CASE("an open add-on cannot fill screens or slots until scripts can (PR 57)",
           "[addon][slots][manifest]") {
   // The contribution API this host serves names them...
-  REQUIRE(mv::addon::kContributionApi == 6);
+  REQUIRE(mv::addon::kContributionApi == 7);
   REQUIRE(MV_ADDON_CONTRIBUTION_API == mv::addon::kContributionApi);
   REQUIRE(mv::addon::contribution_api("info_sections") == 5);
   REQUIRE(mv::addon::contribution_api("screens") == 4);

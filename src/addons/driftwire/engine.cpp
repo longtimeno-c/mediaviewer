@@ -26,6 +26,13 @@ constexpr auto kPostEvery = std::chrono::milliseconds(100);
 constexpr auto kAskFor = std::chrono::milliseconds(kAskMs);
 // Busy refusals in flight at once, at most; past it a link is just closed.
 constexpr int kMaxHelpers = 4;
+// #497: a sender that knows the code but never sends (a machine in the middle
+// trying for a code that matches the one it shows its victim, or a flood of
+// notifications). Five such links in a minute stop new nearby links for 30 s:
+// at most about ten tries in the 3 minutes a person has to type a code.
+constexpr std::size_t kUnconfirmedMax = 5;
+constexpr auto kUnconfirmedWindow = std::chrono::seconds(60);
+constexpr auto kRefuseNearbyFor = std::chrono::seconds(30);
 // A receive keeps this much free beside the files.
 constexpr std::uint64_t kRoomMargin = 64ull * 1024 * 1024;
 
@@ -302,9 +309,10 @@ void engine::control_loop() {
   std::unique_lock lock(control_m_);
   while (!stopping_.load()) {
     const auto none = std::chrono::steady_clock::time_point{};
-    const auto due = post_pending_ && status_due_ != none ? std::min(post_due_, status_due_)
-                     : post_pending_                     ? post_due_
-                                                         : status_due_;
+    auto due = post_pending_ && status_due_ != none ? std::min(post_due_, status_due_)
+               : post_pending_                     ? post_due_
+                                                   : status_due_;
+    if (clear_due_ != none && (due == none || clear_due_ < due)) due = clear_due_;
     const auto woken = [&] { return stopping_.load() || reconcile_wanted_ || save_wanted_; };
     if (due != none) {
       control_cv_.wait_until(lock, due, woken);
@@ -316,6 +324,12 @@ void engine::control_loop() {
       status_due_ = none;
       lock.unlock();
       sync_status();
+      lock.lock();
+    }
+    if (clear_due_ != none && std::chrono::steady_clock::now() >= clear_due_) {
+      clear_due_ = none;
+      lock.unlock();
+      clear_ended();
       lock.lock();
     }
     if (save_wanted_) {
@@ -555,7 +569,9 @@ void engine::on_beacon(const beacon& b, const std::string& address) {
     const bool was_fresh = p.wifi && now - p.wifi_seen < std::chrono::milliseconds(kPeerForgetMs);
     p.wifi = net::endpoint{address, b.port};
     p.wifi_seen = std::chrono::steady_clock::now();
-    p.wifi_protocol = b.protocol;
+    // #497: never lowered. A beacon sent in its name with no "p" would
+    // otherwise talk this side down to protocol 1 (no ML-KEM, no rejoin).
+    p.wifi_protocol = std::max(p.wifi_protocol, b.protocol);
     refresh_peers_locked();
     changed = std::exchange(peers_changed_, false);
     ready = b.id == waiting_peer_ && !transfer_running_;
@@ -607,7 +623,7 @@ void engine::on_bt_peer(const bt_peer& b) {
     if (p.name.empty() || !p.wifi) p.name = clean_name(b.name);
     p.bt_handle = b.handle;
     p.bt_seen = std::chrono::steady_clock::now();
-    p.bt_protocol = b.protocol;
+    p.bt_protocol = std::max(p.bt_protocol, b.protocol);  // never lowered (#497)
     refresh_peers_locked();
     changed = std::exchange(peers_changed_, false);
   }
@@ -645,7 +661,7 @@ void engine::publish_known_locked() {
   }
 }
 
-void engine::offer_remember(const channel& ch, const std::string& name) {
+void engine::offer_remember(const channel& ch, const std::string& name, bool sending) {
   const auto& key = ch.peer_key();
   if (!key || ch.version() < 2) return;
   std::lock_guard lock(m_);
@@ -657,6 +673,16 @@ void engine::offer_remember(const channel& ch, const std::string& name) {
   last_pair_ = std::move(d);
   v_.remember_offer = true;
   v_.remember_peer = name;
+  // #497: a nearby code proves the receiver to the sender only. The receiver
+  // keeps the sender once its person types the check the sender's window
+  // shows; over the internet the receiver made the code itself (CPace), so
+  // the sender is proved both ways and nothing more is asked.
+  const bool nearby = !ch.internet();
+  v_.remember_check = sending && nearby ? ch.remember_check() : std::string();
+  v_.remember_needs_check = !sending && nearby;
+  v_.remember_check_note.clear();
+  remember_expected_ = v_.remember_needs_check ? digits_of(ch.remember_check()) : std::string();
+  remember_tries_left_ = kCodeTries;
   publish_known_locked();
 }
 
@@ -664,6 +690,7 @@ void engine::set_remembered(bool on) {
   {
     std::lock_guard lock(m_);
     if (!last_pair_ || !v_.remember_offer) return;
+    if (on && v_.remember_needs_check) return;  // the sender's check comes first (#497)
     std::erase_if(devices_, [&](const known::device& d) { return d.key == last_pair_->key; });
     if (on) {
       if (devices_.size() >= known::kMaxDevices) devices_.erase(devices_.begin());  // the oldest goes
@@ -833,6 +860,8 @@ void engine::start_send_known(std::size_t index) {
       files = files_;
       out_decision_ = 0;
       v_.remember_offer = false;
+      v_.remember_needs_check = false;
+      v_.remember_check.clear();
       v_.out = view::out_phase::reaching;
       v_.out_internet = true;
       v_.out_known = true;
@@ -865,16 +894,36 @@ void engine::on_internet_link(std::unique_ptr<link> l) {
   on_incoming(std::make_unique<bearer_as>(std::move(l), transport::internet), true);
 }
 
+void engine::note_unconfirmed() {
+  std::lock_guard lock(m_);
+  const auto now = std::chrono::steady_clock::now();
+  std::erase_if(unconfirmed_, [&](const auto& t) { return now - t > kUnconfirmedWindow; });
+  unconfirmed_.push_back(now);
+  if (unconfirmed_.size() >= kUnconfirmedMax) {
+    refuse_nearby_until_ = now + kRefuseNearbyFor;
+    unconfirmed_.clear();
+    host_.log(1, "driftwire: too many nearby links with no offer; refusing new ones for a while");
+  }
+}
+
 void engine::on_incoming(std::unique_ptr<link> l, bool internet, std::optional<known::device> from_known) {
   if (!l || stopping_.load()) return;
   bool busy = false;
   {
     std::lock_guard lock(m_);
     busy = transfer_running_;
+    // #497: a run of nearby links that never offered: new ones wait (a
+    // rejoin of the transfer under way comes while busy, and is not held).
+    if (!busy && !internet && !from_known && std::chrono::steady_clock::now() < refuse_nearby_until_) {
+      l->shutdown();
+      return;
+    }
     if (!busy) {
       transfer_running_ = true;
       cancel_.store(false);
       v_.remember_offer = false;
+      v_.remember_needs_check = false;
+      v_.remember_check.clear();
     }
   }
   std::lock_guard threads(threads_m_);
@@ -1380,6 +1429,34 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
       connecting = node == "decline" && v_.in == view::in_phase::connecting;
     }
     if (connecting) cancel_transfer();
+  } else if (node == "remember_check_entry" && (kind == kChange || kind == kSubmit) && text) {
+    // #497: the check the sender's window shows, typed here to remember it.
+    const std::string typed = digits_of(*text);
+    bool keep = false;
+    {
+      std::lock_guard lock(m_);
+      if (!v_.remember_offer || !v_.remember_needs_check || remember_expected_.empty()) return;
+      if (typed.size() < remember_expected_.size()) {
+        if (kind == kSubmit && !typed.empty()) v_.remember_check_note = "The code has 6 digits.";
+      } else if (typed.size() == remember_expected_.size() &&
+                 sodium_memcmp(typed.data(), remember_expected_.data(), typed.size()) == 0) {
+        v_.remember_needs_check = false;
+        v_.remember_check_note.clear();
+        keep = true;
+      } else if (--remember_tries_left_ <= 0) {
+        v_.remember_offer = false;  // not offered again for this transfer
+        v_.remember_needs_check = false;
+        remember_expected_.clear();
+      } else {
+        v_.remember_check_note = "That is not the code on " + v_.remember_peer + ". " +
+                                 plural(static_cast<std::uint32_t>(remember_tries_left_), "try", "tries") + " left.";
+      }
+    }
+    if (keep) {
+      set_remembered(true);
+      return;
+    }
+    post();
   } else if (node == "out_code_entry" && (kind == kChange || kind == kSubmit) && text) {
     // The code the receiver's screen shows, typed here (#442). Checked on this
     // machine against the code this link derived; a partial entry is not a try.
@@ -1440,13 +1517,14 @@ void engine::cancel_transfer() {
     }
   }
   if (was_waiting) {
+    clear_ended_later();
     request_reconcile();
     post();
   }
   if (ch) {
-    // Said if the link is free now; never waits behind a chunk being sent.
-    (void)ch->try_send(msg::cancel, "{}");
-    ch->shutdown();
+    // #511: said reliably (after the chunk being written, at most
+    // kCancelWaitMs), and final: no rejoin or mover starts on either side.
+    (void)ch->cancel(kCancelWaitMs);
   }
 }
 
@@ -1529,6 +1607,8 @@ void engine::start_send() {
       files = files_;
       out_decision_ = 0;
       v_.remember_offer = false;
+      v_.remember_needs_check = false;
+      v_.remember_check.clear();
       v_.out_known = false;
       v_.out = view::out_phase::connecting;
       v_.out_bytes = 0;
@@ -1560,8 +1640,32 @@ void engine::end_transfer() {
     transfer_running_ = false;
     idle_.notify_all();
   }
+  clear_ended_later();
   request_reconcile();
   post();
+}
+
+void engine::clear_ended_later() {
+  std::lock_guard lock(control_m_);
+  clear_due_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(1, opts_.ended_show_ms));
+  control_cv_.notify_all();
+}
+
+void engine::clear_ended() {
+  bool changed = false;
+  {
+    std::lock_guard lock(m_);
+    // Only an end still on screen: a transfer since then has its own phase.
+    if (v_.in == view::in_phase::ended) {
+      v_.in = view::in_phase::none;
+      changed = true;
+    }
+    if (v_.out == view::out_phase::ended) {
+      v_.out = view::out_phase::idle;
+      changed = true;
+    }
+  }
+  if (changed) post();
 }
 
 void engine::start_send_code() {
@@ -1593,6 +1697,8 @@ void engine::start_send_code() {
       out_decision_ = 0;
       v_.out = view::out_phase::reaching;
       v_.remember_offer = false;
+      v_.remember_needs_check = false;
+      v_.remember_check.clear();
       v_.out_known = false;
       v_.out_internet = true;
       v_.out_attempt = 0;
@@ -1655,7 +1761,8 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std
       name = it->second.name;
       // #472: protocol 2 when the peer announced it (a peer from before
       // speaks protocol 1, on the LAN and Bluetooth, without moving).
-      protocol = std::max(it->second.wifi_protocol, it->second.bt_protocol) >= 2 ? kProtocolVersion : kProtocol1;
+      // The highest both speak (#497: 3; 2 to v0.1.34 and v0.1.35; 1 before #472).
+      protocol = std::clamp(std::max(it->second.wifi_protocol, it->second.bt_protocol), kProtocol1, kProtocolVersion);
     }
   }
   auto finish = [&](std::string note) {
@@ -1969,6 +2076,9 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std
     ch->shutdown();
     return finish("Could not reach " + name + ".");
   }
+  // #497: the name it gave inside the sealed channel, not the beacon's (which
+  // anyone on the network can send in its place).
+  if (!ch->peer_name().empty()) name = ch->peer_name();
   send_on(std::move(ch), std::move(files), name, total, peer_id, std::nullopt);
 }
 
@@ -2049,20 +2159,17 @@ void engine::send_on(std::shared_ptr<channel> ch, std::vector<outgoing_file> fil
       confirmed = out_decision_;
     }
     if (cancel_.load() || stopping_.load() || confirmed == 2) {
-      (void)ch->try_send(msg::cancel, "{}");
-      ch->shutdown();
+      (void)ch->cancel(kCancelWaitMs);
       return finish("Cancelled. Nothing was sent.");
     }
     if (confirmed == 3) {
-      (void)ch->try_send(msg::cancel, "{}");
-      ch->shutdown();
+      (void)ch->cancel(kCancelWaitMs);
       return finish("The code was wrong " + std::to_string(kCodeTries) +
                     " times, so the link to " + name + " ended. Nothing was sent.");
     }
     if (confirmed == 1) break;
     if (std::chrono::steady_clock::now() - asked > kAskFor) {
-      (void)ch->try_send(msg::cancel, "{}");
-      ch->shutdown();
+      (void)ch->cancel(kCancelWaitMs);
       return finish(internet ? "Nobody confirmed the name, so nothing was sent."
                              : "Nobody typed the code, so nothing was sent.");
     }
@@ -2179,19 +2286,28 @@ void engine::send_on(std::shared_ptr<channel> ch, std::vector<outgoing_file> fil
   const std::string sent = plural(r.done, "file", "files");
   switch (r.how) {
     case outcome::delivered:
-      offer_remember(*ch, name);  // #472 PR 4
+      offer_remember(*ch, name, true);  // #472 PR 4
       note = "Sent " + sent + " to " + name + ".";
       if (r.skipped) note += " " + plural(r.skipped, "file", "files") + " could not be read and stayed here.";
       break;
     case outcome::declined: note = name + " declined."; break;
     case outcome::busy: note = name + " is receiving from someone else. Try again in a moment."; break;
     case outcome::no_room: note = name + " does not have room for " + size_text(total) + "."; break;
-    case outcome::cancelled:
-      note = r.done ? "Cancelled after " + sent + ". Those arrived whole; nothing partial was left."
-                    : "Cancelled. Nothing was sent.";
+    case outcome::cancelled: {
+      // #511: who cancelled, and what of it arrived whole there.
+      const std::string whole = std::to_string(r.done) + " of " + plural(static_cast<std::uint32_t>(files.size()), "file", "files");
+      if (r.by_peer) {
+        note = name + " cancelled. " +
+               (r.done ? whole + " arrived whole there; nothing partial was kept." : std::string("Nothing was kept there."));
+      } else {
+        note = r.done ? "Cancelled. " + whole + " arrived whole on " + name + "."
+                      : "Cancelled. Nothing was kept on " + name + ".";
+      }
       break;
+    }
     case outcome::failed:
-      note = "The connection to " + name + " was lost. " +
+      note = (r.by_peer ? "Something went wrong on " + name + ", so the transfer stopped. "
+                        : "The connection to " + name + " was lost. ") +
              (r.done ? sent + " arrived whole; nothing partial was left." : std::string("Nothing was sent."));
       break;
   }
@@ -2391,7 +2507,12 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
       if (!opened && opened.error() == status::permission_denied) in->wrong_attempt();
     }
   }
-  if (!opened) return end_transfer();  // not a MediaViewer, or gone: nothing to show
+  if (!opened) {
+    // Not a MediaViewer, or gone: nothing to show. A nearby handshake
+    // dropped after this side answered counts toward the limit (#497).
+    if (!internet) note_unconfirmed();
+    return end_transfer();
+  }
   std::shared_ptr<channel> ch(std::move(*opened));
   // #472 relays: a remembered device's first message may ask this computer
   // to relay (it sends its offer at once otherwise: nothing to confirm).
@@ -2460,6 +2581,7 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
                      : read_offer(*ch, kAskMs);
   if (!offer) {
     const bool declined = cancel_.load();
+    if (!declined && !from_known && !ch->internet()) note_unconfirmed();  // #497
     {
       std::lock_guard lock(m_);
       if (v_.in == view::in_phase::connecting) {
@@ -2650,13 +2772,14 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
   const std::string got = plural(r.done, "file", "files");
   switch (r.how) {
     case outcome::delivered:
-      offer_remember(*ch, name);  // #472 PR 4
+      offer_remember(*ch, name, false);  // #472 PR 4
       note = "Received " + got + " from " + name + " into " + dest + ".";
       if (r.skipped) note += " " + plural(r.skipped, "file", "files") + " could not be read on " + name + ".";
       break;
     case outcome::cancelled:
-      note = r.done ? "Cancelled. " + got + " arrived whole in " + dest + "; nothing partial was kept."
-                    : "Cancelled. Nothing was received.";
+      // #511: who cancelled; what arrived whole stays, nothing partial does.
+      note = (r.by_peer ? name + " cancelled. " : std::string("You cancelled. ")) +
+             (r.done ? got + " arrived whole; nothing partial was kept." : std::string("Nothing was received."));
       break;
     default:
       note = "The transfer from " + name + " stopped. " +
