@@ -38,6 +38,7 @@
 #include <thread>
 #include <vector>
 
+#include "addons/driftwire/admission.h"
 #include "addons/driftwire/channel.h"
 #include "addons/driftwire/handover.h"
 #include "addons/driftwire/internet.h"
@@ -56,7 +57,17 @@ inline constexpr std::uint64_t kBluetoothMaxBytes = 32ull * 1024 * 1024;
 // A peer not heard for this long leaves the list.
 inline constexpr int kPeerForgetMs = 4500;
 // Peers listed at most (a flood of made-up beacons costs nothing past it).
+// #502: a new one takes the place of the one heard from longest ago, one
+// address lists at most kMaxIdsPerAddress (a few MediaViewers on one
+// computer), and kBluetoothRoom places are kept for peers heard only there.
 inline constexpr std::size_t kMaxPeers = 64;
+inline constexpr std::size_t kMaxIdsPerAddress = 4;
+inline constexpr std::size_t kBluetoothRoom = 16;
+// #502: what one source (a LAN address, Bluetooth) may start here in a
+// minute: receives (a link past that closes at once), and notifications or
+// the window brought forward (past that, the offer waits in the window).
+inline constexpr int kReceivesPerMinute = 6;
+inline constexpr int kNoticesPerMinute = 3;
 // Names listed under "Files to send" / in an offer, at most.
 inline constexpr std::size_t kListedNames = 200;
 // Thumbnails shown of the files to send (the window's strip).
@@ -292,6 +303,14 @@ class engine {
     // #502, the tests: on the transfer thread, right after a transfer ends
     // (another may start from then on), before the thread's way out.
     std::function<void()> after_end_transfer;
+    // #502, the tests: how long a sender's person has to confirm the code,
+    // and how long a receive may move nothing after Accept.
+    int confirm_ms = kConfirmMs;
+    int receive_idle_ms = kReceiveIdleMs;
+    // #502: the networks this machine is on, for what the LAN listener and
+    // the beacon take (net::local_subnets() when empty). With loopback_only
+    // and none given, every source is taken (the tests' made-up addresses).
+    std::optional<std::vector<net::subnet>> local_subnets;
   };
 
   engine(engine_host& host, options opts);
@@ -345,14 +364,22 @@ class engine {
   void start_presence();
   void stop_presence();
   void refresh_peers_locked();
+  // #502: room for a new peer heard on Wi-Fi at `address`, or on Bluetooth
+  // (empty address): the least recently heard peer goes, never one a send
+  // is for. False when nothing could go.
+  [[nodiscard]] bool make_room_locked(const std::string& address);
   void on_beacon(const beacon& b, const std::string& address);
   void on_tick();
   void on_bt_peer(const bt_peer& p);
   // `internet`: from the internet listener (#472 PR 2).
   // `from_known` (#472 PR 4): met on the DHT as a remembered device.
+  // `source` (#502): where it came from, for the per-source limits ("": none).
   void on_incoming(std::unique_ptr<link> l, bool internet = false,
-                   std::optional<known::device> from_known = std::nullopt);
+                   std::optional<known::device> from_known = std::nullopt, std::string source = {});
   void accept_loop();
+  // #502: an address on this machine's link (the networks cached, looked up
+  // again on a miss at most every 2 s). Any thread.
+  [[nodiscard]] bool on_link_source(const net::address& a);
   void start_send();
   // The peer the send waited for is on Wi-Fi now: go.
   void start_waiting_send();
@@ -413,7 +440,7 @@ class engine {
   // `internet`: the link came to the internet listener (a code's sender, or
   // a rejoin of a transfer over one).
   void run_receive(std::unique_ptr<link> l, bool internet = false,
-                   std::optional<known::device> from_known = std::nullopt);
+                   std::optional<known::device> from_known = std::nullopt, std::string source = {});
   // The offer's notification (#452), from the receive thread only. False:
   // the host has none (open the window instead).
   bool notice(const std::string& peer, std::size_t count, std::uint64_t bytes);
@@ -526,6 +553,12 @@ class engine {
   // on the control thread; a receive in flight keeps its own reference).
   std::shared_ptr<internet_receiver> internet_;  // under m_
   std::string code_entry_;                       // under m_: what the "send to a code" field holds
+  // #502: receives started and notifications shown, per source.
+  source_limit receive_limit_{kReceivesPerMinute, std::chrono::minutes(1)};  // under m_
+  source_limit notice_limit_{kNoticesPerMinute, std::chrono::minutes(1)};   // under m_
+  std::mutex subnets_m_;
+  std::vector<net::subnet> subnets_;                  // under subnets_m_
+  std::chrono::steady_clock::time_point subnets_at_{};  // under subnets_m_
   std::atomic<bool> cancel_{false};
   std::atomic<bool> stopping_{false};
 

@@ -26,6 +26,8 @@ namespace {
 constexpr int kTempAttempts = 16;
 // The receiver waits at most this for its "done" to be acknowledged.
 constexpr int kFlushMs = 5000;
+// How often a receive with an idle limit looks at the clock (#502).
+constexpr int kIdlePollMs = 1000;
 constexpr int kRenameAttempts = 32;
 // The uncached read-back's buffer (aligned, a kIoAlign multiple).
 constexpr std::size_t kReadBackBytes = 4u * 1024 * 1024;
@@ -424,6 +426,7 @@ class verifier {
     std::unique_lock lock(m_);
     room_.wait(lock, [&] { return queue_.size() < kVerifyAhead || broken_; });
     if (broken_) return false;
+    pending_.fetch_add(1);
     queue_.push_back({std::move(f), sent});
     work_.notify_one();
     return true;
@@ -439,6 +442,8 @@ class verifier {
     for (auto& t : threads_) t.join();
   }
   [[nodiscard]] std::uint32_t done() const { return done_.load(); }
+  // A file queued or being read back (#502: the receive is not idle).
+  [[nodiscard]] bool checking() const { return pending_.load() != 0; }
   [[nodiscard]] std::uint32_t failed() const { return failed_.load(); }
   [[nodiscard]] bool broken() {
     std::lock_guard lock(m_);
@@ -494,6 +499,7 @@ class verifier {
         broken_ = true;
         room_.notify_all();
       }
+      pending_.fetch_sub(1);
     }
   }
 
@@ -531,6 +537,7 @@ class verifier {
   bool broken_ = false;
   std::vector<std::pair<std::uint32_t, std::string>> written_;
   std::atomic<std::uint32_t> done_{0}, failed_{0};
+  std::atomic<int> pending_{0};
   std::vector<std::thread> threads_;
 };
 
@@ -562,13 +569,22 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
   };
 
   message m;
+  // #502: the last time the files moved (a message, or a file read back).
+  auto moving = std::chrono::steady_clock::now();
   for (;;) {
     if (cancelled(h)) return end(outcome::cancelled, true, __LINE__);
     if (checks.broken()) return end(cancelled(h) ? outcome::cancelled : outcome::failed, false, __LINE__);
-    if (auto r = ch.receive(m); !r) {
+    if (auto r = ch.receive(m, h.idle_ms > 0 ? kIdlePollMs : -1); !r) {
+      if (r.error() == status::timeout && h.idle_ms > 0) {
+        const auto now = std::chrono::steady_clock::now();
+        if (checks.checking()) moving = now;
+        if (now - moving < std::chrono::milliseconds(h.idle_ms)) continue;
+        return end(outcome::failed, true, __LINE__);  // a sender that holds the slot and sends nothing
+      }
       note_status(h, "receive: link", __LINE__, r.error());
       return end(cancelled(h) ? outcome::cancelled : outcome::failed, false, __LINE__);
     }
+    moving = std::chrono::steady_clock::now();
     switch (m.type) {
       case msg::file_begin: {
         const auto doc = json::parse(m.text(), 4);

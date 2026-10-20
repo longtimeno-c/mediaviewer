@@ -96,6 +96,17 @@ the engine never touches the canvas.
   carries the same `"p"`. Never a path, a name of a file or anything about one.
 - A peer leaves the list 4.5 s after its last beacon or advertisement. One heard on both bearers
   is one row.
+- **Nearby is this machine's link** (#502). The listener and the beacon take a source only when it
+  is on one of this machine's networks (an interface's subnet, `net::local_subnets`), link-local
+  or loopback: not another subnet, a VPN's far side or anything routable that reaches the port.
+  The networks are cached and looked up again on a miss (at most every 2 s) or after 30 s.
+- **The list cannot be filled or starved** (#502). It holds 64 peers; a new one takes the place
+  of the one heard from longest ago (never the picked peer, nor the one a send is for), one
+  address lists at most 4 ids (loopback, this computer's own windows, is not capped), and Wi-Fi
+  fills at most 48 places, so 16 stay for peers heard only on Bluetooth. A Bluetooth probe
+  (connect, read INFO) gives its place up after 5 s, at most 8 run at a time, and at most 256
+  devices are remembered (`bt_pipe.h`); on Windows at most 32 probe threads may still be waiting
+  on the OS, and none start past that.
 - **Bluetooth LE between a Mac and a Windows PC** has one common way to move bytes: GATT. Windows
   gives apps no connection-oriented LE channel. GATT moves tens of kilobytes a second. To a
   **protocol 2** peer (#472) a set of any size starts on Bluetooth when that is all there is, and
@@ -134,6 +145,9 @@ process (`keep_alive`), and the hosts do the rest.
   count and the size. **Clicking it opens the Driftwire window** with the card and its code;
   its one button is **Decline** (the window's own Decline). Accept is only in the window, after
   the code: nothing is accepted from a notification. It is taken back however the offer ends.
+  One source (a LAN address, or Bluetooth) gets at most three notifications a minute, the window
+  brought forward counted with them; past that its offers wait in the window unannounced (#502:
+  a sender that connects as "IT Support", idles and connects again all night).
 - The host skips the notification when the Driftwire window is the front window of the active
   app (the card is in plain sight), and shows it when the window is closed, behind another window
   or the app is in the background: the Keep receiving case gets it too.
@@ -251,7 +265,8 @@ Then, on either protocol:
    than numeric comparison: typing makes the person read the other screen). The sender checks it
    on its own machine against the code it derived, digits only, in constant time; a partial entry
    is not a try. A wrong one says so and how many tries are left; the third wrong one sends
-   `cancel` and ends the link. Until a right one nothing about the files leaves, not even a name:
+   `cancel` and ends the link. Nobody typing it for 60 s ends the link on both sides (#502: the
+   receiver's one slot is held meanwhile, under a name the sender chose). Until a right one nothing about the files leaves, not even a name:
    a machine that only claimed the peer's id, or one in the middle, shows the receiver no code or
    another one, so what the person types cannot match.
 3. The sender's **offer**: the count, the total, and each file's relative path and size. No hash
@@ -265,9 +280,10 @@ Then, on either protocol:
 6. `cancel` from either side ends it (sent only if the link is free, never behind a chunk).
    Protocol 1: a ping goes out whenever a side has sent nothing for 2 s, 20 s of silence is a
    dropped link, and a frame must arrive whole within 20 s of its first byte. Protocol 2: below.
-   Every wait before Accept is a deadline (the handshake 8 s, typing the code and the answer 3
+   Every wait before Accept is a deadline (the handshake 8 s, typing the code 60 s, the answer 3
    minutes) that pings never extend, and a handshake still running is ended by Cancel or by the
-   add-on stopping.
+   add-on stopping. After Accept, a receive where nothing of the files moves for 60 s (no message,
+   and no file being read back) ends as failed (#502): pings alone do not hold the slot.
 
 ## The session (protocol 2, #472)
 
@@ -320,8 +336,9 @@ send or a receive waits through a rejoin.
 person typed the code the peer's screen showed and the person at that peer accepted. A sender never answers a request for
 files, so a third machine that hears the beacon learns a name and a port, and nothing else. A
 peer heard in the last 4.5 s keeps its address and device: a beacon claiming its id from another
-address is ignored, and the list holds at most 64. A receiver already in a transfer answers
-`busy`; at most four such refusals run at once.
+address is ignored, and the list holds at most 64 ([Finding each other](#finding-each-other)).
+A receiver already in a transfer answers `busy`; at most four such refusals run at once. One
+source starts at most six receives a minute (#502); a link past that closes before its handshake.
 
 ## Over the internet (#472 PR 2)
 
@@ -753,7 +770,11 @@ second while bytes move; those posts update chrome and never present the canvas.
 - Receiving is off until the window opens or the person turns it on. Turned on, it stays on across
   launches until turned off (#442), and the command bar says so (**Driftwire: receiving**).
 - A notification (#452) names the sender and a count and size; never a file name, a path or the
-  code. It is shown by the OS on this machine only; nothing about it leaves the machine.
+  code. It is shown by the OS on this machine only; nothing about it leaves the machine. At most
+  three a minute from one source (#502).
+- "Nearby" is this machine's link (#502): the LAN listener and the beacon ignore sources that are
+  not on one of its networks, so a public address with the firewall off, or a VPN's far side, is
+  not taken for a computer in the room.
 
 ## Host pieces this added
 

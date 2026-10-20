@@ -468,7 +468,8 @@ void engine::start_presence() {
       std::string why;
       if (bt->start(
               id_, opts_.my_name, [this](const bt_peer& peer) { on_bt_peer(peer); },
-              [this](std::unique_ptr<link> l) { on_incoming(std::move(l)); }, why)) {
+              [this](std::unique_ptr<link> l) { on_incoming(std::move(l), false, std::nullopt, "bluetooth"); },
+              why)) {
         bluetooth_ = std::shared_ptr<bluetooth>(std::move(bt));
       } else {
         bt_note = why.empty() ? std::string("Bluetooth is off.") : why;
@@ -534,8 +535,52 @@ void engine::refresh_peers_locked() {
   peers_changed_ = true;
 }
 
+bool engine::make_room_locked(const std::string& address) {
+  const auto now = std::chrono::steady_clock::now();
+  const auto fresh = [&](std::chrono::steady_clock::time_point t) {
+    return t.time_since_epoch().count() != 0 && now - t < std::chrono::milliseconds(kPeerForgetMs);
+  };
+  const auto heard = [](const peer& p) { return std::max(p.wifi_seen, p.bt_seen); };
+  const auto wifi_only = [&](const peer& p) { return p.wifi && !(!p.bt_handle.empty() && fresh(p.bt_seen)); };
+  // The least recently heard of those `which` takes, never the peer a send
+  // is for (or waits for, or is picked).
+  const auto evict = [&](auto which) {
+    auto oldest = peers_.end();
+    for (auto it = peers_.begin(); it != peers_.end(); ++it) {
+      const std::string& id = it->first;
+      if (id == v_.selected_peer || id == waiting_peer_ || (transfer_running_ && id == v_.out_peer_id)) continue;
+      if (!which(it->second)) continue;
+      if (oldest == peers_.end() || heard(it->second) < heard(oldest->second)) oldest = it;
+    }
+    if (oldest == peers_.end()) return false;
+    peers_.erase(oldest);
+    return true;
+  };
+  if (!address.empty()) {
+    // One address, a few ids (loopback is this computer: its windows).
+    const bool loopback = address.rfind("127.", 0) == 0;
+    const auto same = [&](const peer& p) { return p.wifi && p.wifi->address == address; };
+    if (!loopback && static_cast<std::size_t>(std::count_if(peers_.begin(), peers_.end(), [&](const auto& kv) {
+                       return same(kv.second);
+                     })) >= kMaxIdsPerAddress &&
+        !evict(same)) {
+      return false;
+    }
+    if (static_cast<std::size_t>(std::count_if(peers_.begin(), peers_.end(), [&](const auto& kv) {
+          return wifi_only(kv.second);
+        })) >= kMaxPeers - kBluetoothRoom &&
+        !evict(wifi_only)) {
+      return false;
+    }
+  }
+  if (peers_.size() >= kMaxPeers && !evict([](const peer&) { return true; })) return false;
+  return true;
+}
+
 void engine::on_beacon(const beacon& b, const std::string& address) {
   if (b.id == id_) return;  // our own, looped back
+  // #502: a beacon from off this machine's link is not nearby.
+  if (const auto ip = net::parse_address(address); !ip || !on_link_source(*ip)) return;
   bool changed = false;
   bool ready = false;
   {
@@ -543,7 +588,7 @@ void engine::on_beacon(const beacon& b, const std::string& address) {
     const auto now = std::chrono::steady_clock::now();
     auto it = peers_.find(b.id);
     if (it == peers_.end()) {
-      if (peers_.size() >= kMaxPeers) return;
+      if (!make_room_locked(address)) return;
       it = peers_.emplace(b.id, peer{}).first;
     } else if (it->second.wifi && now - it->second.wifi_seen < std::chrono::milliseconds(kPeerForgetMs) &&
                (it->second.wifi->address != address || it->second.wifi->port != b.port)) {
@@ -596,7 +641,7 @@ void engine::on_bt_peer(const bt_peer& b) {
     const auto now = std::chrono::steady_clock::now();
     auto it = peers_.find(b.id);
     if (it == peers_.end()) {
-      if (peers_.size() >= kMaxPeers) return;
+      if (!make_room_locked({})) return;
       it = peers_.emplace(b.id, peer{}).first;
     } else if (!it->second.bt_handle.empty() && it->second.bt_handle != b.handle &&
                now - it->second.bt_seen < std::chrono::milliseconds(kPeerForgetMs)) {
@@ -614,13 +659,32 @@ void engine::on_bt_peer(const bt_peer& b) {
   if (changed) post_throttled();
 }
 
+bool engine::on_link_source(const net::address& a) {
+  if (opts_.local_subnets) return net::on_link(a, *opts_.local_subnets);
+  if (opts_.loopback_only) return true;  // the tests' made-up addresses
+  const auto now = std::chrono::steady_clock::now();
+  std::lock_guard lock(subnets_m_);
+  const bool stale = now - subnets_at_ > std::chrono::seconds(30);  // a network change
+  if (!stale && net::on_link(a, subnets_)) return true;
+  if (!stale && now - subnets_at_ < std::chrono::seconds(2)) return false;
+  subnets_ = net::local_subnets();
+  subnets_at_ = now;
+  return net::on_link(a, subnets_);
+}
+
 void engine::accept_loop() {
   for (;;) {
     net::listener* l = listener_.get();
     if (!l || stopping_.load()) return;
-    auto c = l->accept(500);
+    net::address from;
+    auto c = l->accept_from(500, from);
     if (c) {
-      on_incoming(std::move(*c));
+      // #502: nearby means on this machine's link, not anything routable.
+      if (!on_link_source(from)) {
+        (*c)->shutdown();
+        continue;
+      }
+      on_incoming(std::move(*c), false, std::nullopt, net::address_text(from));
       continue;
     }
     if (c.error() == status::cancelled) return;
@@ -863,12 +927,19 @@ void engine::on_internet_link(std::unique_ptr<link> l) {
   on_incoming(std::make_unique<bearer_as>(std::move(l), transport::internet), true);
 }
 
-void engine::on_incoming(std::unique_ptr<link> l, bool internet, std::optional<known::device> from_known) {
+void engine::on_incoming(std::unique_ptr<link> l, bool internet, std::optional<known::device> from_known,
+                         std::string source) {
   if (!l || stopping_.load()) return;
   bool busy = false;
   {
     std::lock_guard lock(m_);
     busy = transfer_running_;
+    // #502: a source that started kReceivesPerMinute receives this minute
+    // starts none (a busy answer or a rejoin is not one).
+    if (!busy && !receive_limit_.allow(source, std::chrono::steady_clock::now())) {
+      l->shutdown();
+      return;
+    }
     if (!busy) {
       transfer_running_ = true;
       cancel_.store(false);
@@ -890,9 +961,10 @@ void engine::on_incoming(std::unique_ptr<link> l, bool internet, std::optional<k
                         done});
     return;
   }
-  launch_transfer([this, internet, link = std::move(l), from_known = std::move(from_known)]() mutable {
+  launch_transfer([this, internet, link = std::move(l), from_known = std::move(from_known),
+                   source = std::move(source)]() mutable {
     try {
-      run_receive(std::move(link), internet, std::move(from_known));
+      run_receive(std::move(link), internet, std::move(from_known), std::move(source));
     } catch (...) {
       fail_transfer(false);
     }
@@ -1450,6 +1522,7 @@ void engine::cancel_transfer() {
 hooks engine::hooks_for(bool sending) {
   hooks h;
   h.cancel = &cancel_;
+  if (!sending) h.idle_ms = opts_.receive_idle_ms;  // #502
   h.note = [this](const char* text) { host_.log(1, text); };
   h.yield = [this] {
     // While the viewer presents, wait between chunks (as Import does); the
@@ -2054,7 +2127,7 @@ void engine::send_on(std::shared_ptr<channel> ch, std::vector<outgoing_file> fil
                     " times, so the link to " + name + " ended. Nothing was sent.");
     }
     if (confirmed == 1) break;
-    if (std::chrono::steady_clock::now() - asked > kAskFor) {
+    if (std::chrono::steady_clock::now() - asked > std::chrono::milliseconds(opts_.confirm_ms)) {
       (void)ch->try_send(msg::cancel, "{}");
       ch->shutdown();
       return finish(internet ? "Nobody confirmed the name, so nothing was sent."
@@ -2329,7 +2402,8 @@ void engine::run_mover(std::shared_ptr<channel> ch, std::string peer_id, const s
 
 // ---- receiving --------------------------------------------------------------------------
 
-void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::optional<known::device> from_known) {
+void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::optional<known::device> from_known,
+                         std::string source) {
   std::shared_ptr<link> l(std::move(incoming));
   // #472 PR 2: an internet sender spends the code (its first attempt, right
   // or wrong); the listener and mappings stay until this receive ends.
@@ -2415,8 +2489,11 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
   // The code shows now: the person there checks it against this screen
   // before anything about the files is sent.
   bool open_window = false;
+  bool may_notify = false;
   {
     std::lock_guard lock(m_);
+    // #502: a source past kNoticesPerMinute waits in the window, unannounced.
+    may_notify = notice_limit_.allow(source, std::chrono::steady_clock::now());
     if (cancel_.load() || stopping_.load()) {
       ch->shutdown();
     } else {
@@ -2452,11 +2529,11 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
       if (shown) (void)e.host_.post_notice("", "");
     }
   } shown_notice{*this};
-  shown_notice.shown = notice(name, 0, 0);
-  if (open_window && !shown_notice.shown) host_.show_screen(true);
+  shown_notice.shown = may_notify && notice(name, 0, 0);
+  if (open_window && may_notify && !shown_notice.shown) host_.show_screen(true);
   post();
   auto offer = first ? (first->type == msg::offer ? parse_offer(first->text()) : result<incoming_offer>(err(status::corrupt)))
-                     : read_offer(*ch, kAskMs);
+                     : read_offer(*ch, opts_.confirm_ms);
   if (!offer) {
     const bool declined = cancel_.load();
     {
