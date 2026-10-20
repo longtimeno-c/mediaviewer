@@ -304,6 +304,7 @@ private struct ScrollNode: View {
   }
 }
 
+@MainActor
 private struct TextNode: View {
   let node: ScreenNode
   @Environment(\.screenCentered) private var centered
