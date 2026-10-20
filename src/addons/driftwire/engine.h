@@ -46,6 +46,7 @@
 #include "addons/driftwire/relay.h"
 #include "addons/driftwire/presence.h"
 #include "addons/driftwire/transfer.h"
+#include "addons/driftwire/udp_hub.h"
 
 namespace mv::driftwire {
 
@@ -280,6 +281,10 @@ class engine {
     std::function<std::unique_ptr<secrets::store>()> make_secrets;
     // How often a remembered device's wait looks for a sender on the DHT.
     int known_poll_ms = 15000;
+    // The tests: every UDP socket of the engine's own DHT meetings (four
+    // words sent, remembered devices, relays) goes through this (a stand-in
+    // NAT). Empty: the sockets as opened.
+    udp_hub::socket_wrap wrap_udp;
     // #472 PR 5: a TCP connection to a receiver's internet place, for the
     // Wi-Fi -> internet handover (net::connect when empty; the tests').
     std::function<result<std::unique_ptr<link>>(const net::endpoint&, int timeout_ms)> connect_internet;
