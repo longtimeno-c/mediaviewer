@@ -718,6 +718,13 @@ void engine::offer_remember(const channel& ch, const std::string& name) {
   d.name = name;
   d.key = *key;
   d.secret = ch.pairing_secret();
+  // #502: already remembered, it keeps the secret both sides hold (and its
+  // mark): ticking Remember again must not replace it here alone.
+  if (const auto it = std::find_if(devices_.begin(), devices_.end(), [&](const known::device& k) { return k.key == *key; });
+      it != devices_.end()) {
+    d.secret = it->secret;
+    d.own = it->own;
+  }
   last_pair_ = std::move(d);
   v_.remember_offer = true;
   v_.remember_peer = name;
@@ -725,15 +732,41 @@ void engine::offer_remember(const channel& ch, const std::string& name) {
 }
 
 void engine::set_remembered(bool on) {
+  bool full = false;
   {
     std::lock_guard lock(m_);
     if (!last_pair_ || !v_.remember_offer) return;
-    std::erase_if(devices_, [&](const known::device& d) { return d.key == last_pair_->key; });
-    if (on) {
-      if (devices_.size() >= known::kMaxDevices) devices_.erase(devices_.begin());  // the oldest goes
-      devices_.push_back(*last_pair_);
+    const auto it = std::find_if(devices_.begin(), devices_.end(),
+                                 [&](const known::device& d) { return d.key == last_pair_->key; });
+    if (it != devices_.end()) {
+      // #502: unticked and ticked again, it comes back with the secret and
+      // mark it had, not this session's alone.
+      last_pair_->secret = it->secret;
+      last_pair_->own = it->own;
+    }
+    if (on && it != devices_.end()) {
+      it->name = last_pair_->name;  // already remembered: as it was
+    } else if (on) {
+      if (devices_.size() >= known::kMaxDevices) {
+        // The oldest goes, never one marked as this person's own (#502).
+        const auto old = std::find_if(devices_.begin(), devices_.end(), [](const known::device& d) { return !d.own; });
+        if (old == devices_.end()) {
+          full = true;
+          v_.out_note += " Not remembered: forget one of your " + std::to_string(known::kMaxDevices) +
+                         " remembered computers first.";
+        } else {
+          devices_.erase(old);
+        }
+      }
+      if (!full) devices_.push_back(*last_pair_);
+    } else if (it != devices_.end()) {
+      devices_.erase(it);
     }
     publish_known_locked();
+  }
+  if (full) {
+    post();
+    return;
   }
   // The store on this worker (never the UI thread), one call at a time.
   {
@@ -749,10 +782,11 @@ void engine::set_remembered(bool on) {
   post();
 }
 
-void engine::forget_known(std::size_t index) {
+void engine::forget_known(const std::string& fingerprint) {
   std::vector<known::device> copy;
   {
     std::lock_guard lock(m_);
+    const std::size_t index = known_index_locked(fingerprint);
     if (index >= devices_.size()) return;
     devices_.erase(devices_.begin() + static_cast<std::ptrdiff_t>(index));
     publish_known_locked();
@@ -879,11 +913,19 @@ void engine::run_known_wait() {
   hub->stop();
 }
 
-void engine::start_send_known(std::size_t index) {
+std::size_t engine::known_index_locked(const std::string& fingerprint) const {
+  for (std::size_t i = 0; i < devices_.size(); ++i) {
+    if (relay::fingerprint(devices_[i].key) == fingerprint) return i;
+  }
+  return devices_.size();
+}
+
+void engine::start_send_known(const std::string& fingerprint) {
   std::optional<known::device> to;
   std::vector<outgoing_file> files;
   {
     std::lock_guard lock(m_);
+    const std::size_t index = known_index_locked(fingerprint);
     if (index >= devices_.size() || transfer_running_ || out_busy_locked() || v_.reading_folder) return;
     if (!v_.internet || !v_.dht) {
       v_.send_code_note = "Turn on \xE2\x80\x9C" "Find each other over the internet\xE2\x80\x9D to send to a remembered device.";
@@ -1362,11 +1404,11 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
     return;
   }
   if (node == "known" && (kind == kActivate || kind == kClick) && text && text->rfind("dev", 0) == 0) {
-    start_send_known(static_cast<std::size_t>(std::strtoul(text->c_str() + 3, nullptr, 10)));
+    start_send_known(text->substr(3));  // its fingerprint (#502)
     return;
   }
   if (node.rfind("forget", 0) == 0 && node.size() > 6 && kind == kClick) {
-    forget_known(static_cast<std::size_t>(std::strtoul(node.c_str() + 6, nullptr, 10)));
+    forget_known(node.substr(6));
     return;
   }
   if (node == "out_confirm" && kind == kClick) {
@@ -1884,10 +1926,15 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std
     }
     // The link is up: this side's items now say "gone", while the send runs.
     std::thread gone([&client, &k] { dht::withdraw(client, *k, dht::role::sender, {}); });
+    // Joined however send_on leaves (#502: an exception from it with the
+    // thread unjoined would have ended the app).
+    struct join_guard {
+      std::thread& t;
+      ~join_guard() { t.join(); }
+    } join_gone{gone};
     std::shared_ptr<channel> ich(std::move(*opened));
     name = ich->peer_name();
     send_on(std::move(ich), std::move(files), name, total, {}, std::nullopt);
-    gone.join();
     return;
   }
   if (code) {
@@ -2463,6 +2510,20 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
         post();
         return end_transfer();
       }
+      if (opened) {
+        // #502: forgotten while it was meeting: not received from as
+        // remembered (or at all: the person said to forget it).
+        bool still = false;
+        {
+          std::lock_guard lock(m_);
+          still = std::any_of(devices_.begin(), devices_.end(),
+                              [&](const known::device& d) { return d.key == from_known->key; });
+        }
+        if (!still) {
+          (*opened)->shutdown();
+          return end_transfer();
+        }
+      }
     } else {
       auto secret = in->spend();
       if (!secret) {
@@ -2505,6 +2566,7 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
     std::lock_guard lock(m_);
     // #502: a source past kNoticesPerMinute waits in the window, unannounced.
     may_notify = notice_limit_.allow(source, std::chrono::steady_clock::now());
+    ++offer_seq_;  // its notices say which offer they are about
     if (cancel_.load() || stopping_.load()) {
       ch->shutdown();
     } else {
@@ -2762,7 +2824,20 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
 }
 
 bool engine::notice(const std::string& peer, std::size_t count, std::uint64_t bytes) {
-  return host_.post_notice(kNoticeTitle, notice_body(peer, count, bytes));
+  std::uint64_t offer = 0;
+  {
+    std::lock_guard lock(m_);
+    offer = offer_seq_;
+  }
+  return host_.post_offer_notice(kNoticeTitle, notice_body(peer, count, bytes), offer);
+}
+
+void engine::decline_notice(std::uint64_t offer) {
+  {
+    std::lock_guard lock(m_);
+    if (offer != 0 && offer != offer_seq_) return;  // about an offer that has gone
+  }
+  on_event("decline", 1, "");  // a click
 }
 
 std::string notice_body(const std::string& peer, std::size_t count, std::uint64_t bytes) {

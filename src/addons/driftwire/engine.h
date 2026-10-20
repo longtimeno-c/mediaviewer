@@ -225,6 +225,13 @@ class engine_host {
     (void)body;
     return false;
   }
+  // #502: as post_notice, about offer `offer`. A host that tags the button
+  // with it hands it back (engine::decline_notice), so a stale
+  // notification's Decline reaches only the offer it was about.
+  virtual bool post_offer_notice(const std::string& title, const std::string& body, std::uint64_t offer) {
+    (void)offer;
+    return post_notice(title, body);
+  }
   // #452: ask the person to allow notifications (a toggle turned on; the OS
   // asks once). Never at launch.
   virtual void ask_to_notify() {}
@@ -328,6 +335,10 @@ class engine {
   void set_files(const std::vector<std::string>& paths);
   // A control in the window (screen::event_kind, the value as JSON).
   void on_event(const std::string& node, std::uint32_t kind, const std::string& value_json);
+  // A notification's Decline (#502): declines only while `offer` (from
+  // post_offer_notice) is the offer here; 0 (a host that did not tag it) as
+  // the window's Decline.
+  void decline_notice(std::uint64_t offer);
 
   // ---- for tests ------------------------------------------------------------------
   [[nodiscard]] view snapshot() const;
@@ -390,11 +401,16 @@ class engine {
                 std::optional<dht::word_code> words = std::nullopt,
                 std::optional<known::device> to_known = std::nullopt);
   // #472 PR 4: known devices. Sending to one; the toggle under a transfer's
-  // result; Forget.
-  void start_send_known(std::size_t index);
+  // result; Forget. #502: a tile or Forget names its device by
+  // relay::fingerprint, never by its place in the list, so a click queued
+  // against an older window after a Forget or an eviction does nothing
+  // rather than reach another device.
+  void start_send_known(const std::string& fingerprint);
   void set_remembered(bool on);
-  void forget_known(std::size_t index);
+  void forget_known(const std::string& fingerprint);
   void publish_known_locked();
+  // The device with this fingerprint in devices_, or devices_.size().
+  [[nodiscard]] std::size_t known_index_locked(const std::string& fingerprint) const;
   // The control thread: the wait for remembered devices, started and
   // stopped with the window or Keep receiving, the internet and DHT
   // toggles, and whether any device is remembered.
@@ -553,6 +569,7 @@ class engine {
   // on the control thread; a receive in flight keeps its own reference).
   std::shared_ptr<internet_receiver> internet_;  // under m_
   std::string code_entry_;                       // under m_: what the "send to a code" field holds
+  std::uint64_t offer_seq_ = 0;                  // under m_: the receive now (or last), for its notices (#502)
   // #502: receives started and notifications shown, per source.
   source_limit receive_limit_{kReceivesPerMinute, std::chrono::minutes(1)};  // under m_
   source_limit notice_limit_{kNoticesPerMinute, std::chrono::minutes(1)};   // under m_
