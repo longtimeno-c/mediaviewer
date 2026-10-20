@@ -33,7 +33,7 @@
 //     the paths learned from hellos first, then the item's addresses and
 //     predicted ports in turn.
 //   - TCP simultaneous open (net::tcp_rendezvous, meet_options::tcp: a word
-//     code's meeting, never a remembered device's in the background), beside the UDP punch: each
+//     code's meeting, and a remembered device's once a sender knocks), beside the UDP punch: each
 //     side publishes its TCP port, and both connect() from it to the other's
 //     at each of its addresses while listening on it. Works where a NAT
 //     keeps a TCP connection's port (most home routers), whatever it does to
@@ -71,13 +71,12 @@ struct meet_options {
   // The tests: publish loopback addresses only.
   bool loopback = false;
   int wait_ms = 10 * 60 * 1000;  // how long to look for the other side
-  // How long to punch once the other side's item is found. A remembered
-  // device (#472 PR 4) notices a sender only at its next look, so the
-  // sender punches that much longer.
+  // How long to punch once the other side's item is found.
   int punch_ms = kPunchMs;
   // Try TCP simultaneous open beside the UDP punch. Off unless asked: it
-  // listens on every interface while it runs (a firewall prompt on Windows),
-  // so a remembered device's background meetings leave it off.
+  // listens on every interface while it runs (a firewall prompt on Windows).
+  // A word code's meeting and a remembered device's ask (the latter only
+  // once a sender knocks, never while it waits).
   bool tcp = false;
   // The ports the easy side's birthday probes pick from (the tests: the
   // stand-in NAT's window).

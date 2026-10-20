@@ -93,6 +93,7 @@ NSData* data_of(std::span<const std::uint8_t> b) { return [NSData dataWithBytes:
   // Central role: what each peripheral is, from INFO.
   NSMutableDictionary<NSUUID*, CBPeripheral*>* _known;
   NSMutableSet<NSUUID*>* _probing;
+  std::map<std::string, std::uint64_t> _probe_turn;  // #502: which probe a timeout is for
   std::map<std::string, sp::bt_peer> _info_of;  // identifier -> who its INFO said it is
   std::map<std::string, std::chrono::steady_clock::time_point> _reported;
   // Outgoing links by peripheral identifier.
@@ -283,7 +284,10 @@ NSData* data_of(std::span<const std::uint8_t> b) { return [NSData dataWithBytes:
   BOOL respond = NO;
   for (CBATTRequest* r in requests) {
     if (![r.characteristic.UUID isEqual:_c2p.UUID] || !r.value) continue;
-    if (auto p = _incoming[text(r.central.identifier.UUIDString)].lock()) p->deliver(bytes(r.value));
+    // find(), not []: a central that writes unsubscribed adds no entry (#502).
+    if (const auto it = _incoming.find(text(r.central.identifier.UUIDString)); it != _incoming.end()) {
+      if (auto p = it->second.lock()) p->deliver(bytes(r.value));
+    }
     respond = YES;
   }
   // Only a write with response waits for one; answering the first answers all.
@@ -305,7 +309,7 @@ NSData* data_of(std::span<const std::uint8_t> b) { return [NSData dataWithBytes:
   if (_stopped) return;
   const std::string key = text(peripheral.identifier.UUIDString);
   // Bounded, however many devices advertise around us: forget the old ones.
-  if (_info_of.size() > 256 || _known.count > 256) {
+  if (_info_of.size() > sp::bt::kMaxKnown || _known.count > sp::bt::kMaxKnown) {
     _info_of.clear();
     _reported.clear();
     for (NSUUID* k in _known.allKeys) {
@@ -326,9 +330,31 @@ NSData* data_of(std::span<const std::uint8_t> b) { return [NSData dataWithBytes:
     return;
   }
   if ([_probing containsObject:peripheral.identifier] || _outgoing[peripheral.identifier]) return;
+  if (_probing.count >= sp::bt::kMaxProbes) return;  // a few at a time (#502)
   [_probing addObject:peripheral.identifier];
   peripheral.delegate = self;
   [central connectPeripheral:peripheral options:nil];
+  // #502: a peripheral that stalls (never connects, or never answers GATT)
+  // gives its place up after kProbeMs, and its LE connection goes.
+  static std::uint64_t turns = 0;
+  const std::uint64_t turn = ++turns;
+  _probe_turn[key] = turn;
+  __weak MVDriftwireBluetooth* weakSelf = self;
+  const auto after = dispatch_time(DISPATCH_TIME_NOW, static_cast<std::int64_t>(sp::bt::kProbeMs) * NSEC_PER_MSEC);
+  dispatch_after(after, _queue, ^{
+    MVDriftwireBluetooth* me = weakSelf;
+    if (!me) return;
+    [me probeExpired:peripheral key:key turn:turn];
+  });
+}
+
+- (void)probeExpired:(CBPeripheral*)peripheral key:(std::string)key turn:(std::uint64_t)turn {
+  const auto it = _probe_turn.find(key);
+  if (it == _probe_turn.end() || it->second != turn) return;  // a later probe of it, or none
+  _probe_turn.erase(it);
+  if (![_probing containsObject:peripheral.identifier]) return;  // it answered
+  [_probing removeObject:peripheral.identifier];
+  if (!_stopped && !_outgoing[peripheral.identifier]) [_central cancelPeripheralConnection:peripheral];
 }
 
 - (void)centralManager:(CBCentralManager*)central didConnectPeripheral:(CBPeripheral*)peripheral {

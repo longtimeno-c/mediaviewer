@@ -129,6 +129,9 @@ class host_bridge final : public mv::driftwire::engine_host {
   (h_->struct_size >= offsetof(mv_host_api, field) + sizeof(h_->field) && h_->field != nullptr)
 
   bool post_notice(const std::string& title, const std::string& body) override {
+    return post_offer_notice(title, body, 0);
+  }
+  bool post_offer_notice(const std::string& title, const std::string& body, std::uint64_t offer) override {
     if (!MV_SP_HAS(notice_post)) return false;
     if (title.empty()) return h_->notice_post(h_->host, kNotice, nullptr) == MV_OK;
     mv_addon_notice n{};
@@ -136,7 +139,11 @@ class host_bridge final : public mv::driftwire::engine_host {
     n.screen_id = kScreen;
     n.title_utf8 = title.c_str();
     n.body_utf8 = body.c_str();
-    n.action_id = "decline";  // the window's own Decline (engine::on_event)
+    // The window's own Decline, for this offer only (#502: the host hands
+    // the id back, and a notification left over from an earlier offer must
+    // not decline the next).
+    const std::string action = "decline:" + std::to_string(offer);
+    n.action_id = action.c_str();
     n.action_label = "Decline";
     return h_->notice_post(h_->host, kNotice, &n) == MV_OK;
   }
@@ -241,7 +248,16 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
     if (!e->screen_id || std::strcmp(e->screen_id, kScreen) != 0) return MV_OK;
     if (e->kind == MV_SLOT_EVENT_NOTICE) {
       // #452: Decline in the system notification is the window's Decline.
-      if (g->eng && std::strcmp(e->node_id, "decline") == 0) g->eng->on_event("decline", MV_SLOT_EVENT_CLICK, "");
+      // "decline:<offer>" (#502) reaches only that offer; a bare "decline"
+      // (posted before) any.
+      if (g->eng && std::strncmp(e->node_id, "decline", 7) == 0) {
+        const char* rest = e->node_id + 7;
+        if (*rest == '\0') {
+          g->eng->decline_notice(0);
+        } else if (*rest == ':') {
+          g->eng->decline_notice(std::strtoull(rest + 1, nullptr, 10));
+        }
+      }
       return MV_OK;
     }
     g->get().on_event(e->node_id, e->kind, e->value_json ? e->value_json : "");

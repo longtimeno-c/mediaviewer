@@ -58,6 +58,13 @@ inline constexpr int kConnectMs = 8000;
 // How long a person has to confirm the code (sender) or answer an offer
 // (receiver) before it is called off.
 inline constexpr int kAskMs = 180000;
+// How long the sender's person has to type the code (or confirm the name)
+// before the link ends. Shorter (#502): until then the receiver's one slot is
+// held, under a name the sender chose.
+inline constexpr int kConfirmMs = 60000;
+// After Accept, a receive that moves nothing this long ends (#502): pings
+// alone do not hold the slot. A file being read back counts as moving.
+inline constexpr int kReceiveIdleMs = 60000;
 // Protocol 2's session (#472). Nothing heard for kSuspectMs and the link is
 // suspect: the sender races the other bearers. kRejoinMs without a link ends
 // the session, and so do kFlapRejoins rejoins in kFlapMs. A ping at least

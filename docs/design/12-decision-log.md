@@ -1730,6 +1730,25 @@ item. The waiting side looks for a sender every 15 s rather than every 2 s, to k
 load on the DHT low; the sender punches 15 s longer to cover that. A key that differs from the
 remembered one ends the link loudly (TOFU); the own-device relay is not built in this PR.
 
+**A remembered device publishes only when a sender knocks, and meets over TCP too (2026-10-20).**
+Amends the two rows above. The owner's Mac and Windows PC met on four words, remembered each
+other, and a send between them then never connected: the sender found the waiting side's standing
+item, said "Connecting through both networks…", punched UDP alone, and went back to waiting. The
+four-word transfer had arrived over TCP simultaneous open (its window said "Internet, straight to
+each other", the caption of a link that was not a UDP punch), so UDP could not be punched between
+those two networks, and the remembered meeting never tried TCP. TCP could not simply be switched
+on there: a rendezvous port is bound per meeting, and the sender read the waiting side's standing
+item, published before any meeting had a port. The waiting side now publishes nothing while it
+waits; it looks for a sender's knock every 15 s as before, and only then publishes and meets, with
+TCP beside UDP, so the first item the sender finds carries a live TCP port and both punch at once
+(15 s each, `known::kPunchMs`, rather than the sender's 30 s against an item that may be 4 minutes
+old). The meeting's item says "gone" when it ends, met or not, so a later send that hour does not
+punch toward it. The firewall reason for keeping TCP out still holds for the wait (nothing listens
+then); the port is open only for a meeting a holder of the pair's secret started, and the app
+already listens for nearby sends. DHT nodes now see nothing of a waiting device's own until it is
+sent to. Tested with two engines behind stand-in hard NATs ("driftwire known: two devices behind
+hard NATs…", which failed before the change); no real NAT tried here.
+
 **Relays: through the person's own computer, or a splice server of their own; TURN left out
 (2026-10-18, #472).** Both relay paths carry the two ends' handshake and session end to end, so a
 relay holds no key and sees ciphertext only. The own-device relay reuses the remembered-device
@@ -1777,6 +1796,31 @@ issue: it starts with the meeting rather than after paths 1-4 have had 2 s, and 
 (about 97 %) rather than up to ~2,048 probes. Everything off by default stays off; the external
 review before anything is on by default still stands. [28 "Not built"](28-driftwire.md#not-built)
 lists them.
+
+**The mover races whole rejoins, and resume_at carries the rejoin's number (owner, 2026-10-20,
+#502).** The mover took the first bearer to *connect*, so a machine beaconing the peer's id won
+every rescue and then stalled it up to 8 s. Now each bearer connects and begins the rejoin, and
+wins only with the peer's answer under the session's secret (within 3 s); only the winner sends
+`resume_at`, so nothing is adopted on a loser. The owner kept #472's move to a Wi-Fi place first
+heard mid-session (a send that starts on Bluetooth moves to Wi-Fi when the beacon appears), now
+taken only once its rejoin has answered, rather than refusing such places as the review proposed.
+Protocol: `resume_at`'s sequence field, 0 until now, carries the sender's rejoin number and both
+take the larger, so an on-path cut between the two `resume_at`s cannot put the DHT handover's keys
+out of step; a peer from before reads it as before and keeps its own count. Also: a
+notification's Decline names its offer, and remembered tiles and Forget name a device by its
+fingerprint, not its place in the list.
+
+**Nearby is on-link, and one source is held to a few a minute (2026-10-20, #502).** A code review
+found a sender could hold the one receive slot and post a notification per connect all night, the
+listener and beacon took any routable source, and 64 made-up beacon ids hid every real peer. Now:
+the LAN listener and the beacon take on-link sources only (an interface's subnet, link-local,
+loopback); one source starts at most 6 receives and gets at most 3 notifications (or window raises)
+a minute; the sender's person has 60 s to type the code, not 3 minutes (the answer keeps its 3
+minutes); after Accept, 60 s with nothing of the files moving ends the receive; the peer list
+evicts the least recently heard, caps one address at 4 ids and keeps 16 places for Bluetooth;
+Bluetooth probes give up after 5 s. Reopen the 60 s if people on slow connections report a code
+that timed out while they typed, or the on-link rule if a network with a single-host prefix
+(a /32 Wi-Fi) cannot see its peers.
 
 **No "Forwarded port" field: the public address is found, never typed (owner, 2026-10-19).** The
 window asked for `public address:port` under "Receive from anywhere", which read as a required step

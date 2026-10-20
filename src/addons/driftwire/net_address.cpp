@@ -3,7 +3,9 @@
 // net.h's addresses (#472 PR 2): text to bytes and back, and which are public.
 // Written here rather than with inet_pton/inet_ntop so both hosts parse and
 // print the same, and the fuzzer reaches it. Portable (D9).
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 
 #include "addons/driftwire/net.h"
 
@@ -172,6 +174,30 @@ bool is_public(const address& a) noexcept {
   if (b[0] == 0x20 && b[1] == 0x01 && b[2] == 0x0d && b[3] == 0xb8) return false;  // 2001:db8::/32 documentation
   if (b[0] == 0x20 && b[1] == 0x02) return false;                                // 6to4: a relay, not a peer
   return true;
+}
+
+bool on_link(const address& a, std::span<const subnet> nets) noexcept {
+  const std::uint8_t* b = a.bytes.data();
+  if (!a.v6 && (b[0] == 127 || (b[0] == 169 && b[1] == 254))) return true;  // loopback, link-local
+  if (a.v6) {
+    static constexpr std::uint8_t kLoopback[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+    if (std::memcmp(b, kLoopback, 16) == 0) return true;
+    if (b[0] == 0xfe && (b[1] & 0xc0) == 0x80) return true;  // fe80::/10
+  }
+  for (const auto& n : nets) {
+    if (n.base.v6 != a.v6) continue;
+    const int bits = std::min(n.prefix, a.v6 ? 128 : 32);
+    if (bits <= 0) continue;  // a default route's "network" is everything: never on-link
+    const int whole = bits / 8;
+    if (std::memcmp(b, n.base.bytes.data(), static_cast<std::size_t>(whole)) != 0) continue;
+    const int rest = bits % 8;
+    if (rest != 0) {
+      const auto mask = static_cast<std::uint8_t>(0xff << (8 - rest));
+      if ((b[whole] & mask) != (n.base.bytes[whole] & mask)) continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 }  // namespace mv::driftwire::net

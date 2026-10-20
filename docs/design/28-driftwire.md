@@ -103,6 +103,17 @@ the engine never touches the canvas.
   the one the peer gives inside the sealed channel (`ident`), not the beacon's.
 - A peer leaves the list 4.5 s after its last beacon or advertisement. One heard on both bearers
   is one row.
+- **Nearby is this machine's link** (#502). The listener and the beacon take a source only when it
+  is on one of this machine's networks (an interface's subnet, `net::local_subnets`), link-local
+  or loopback: not another subnet, a VPN's far side or anything routable that reaches the port.
+  The networks are cached and looked up again on a miss (at most every 2 s) or after 30 s.
+- **The list cannot be filled or starved** (#502). It holds 64 peers; a new one takes the place
+  of the one heard from longest ago (never the picked peer, nor the one a send is for), one
+  address lists at most 4 ids (loopback, this computer's own windows, is not capped), and Wi-Fi
+  fills at most 48 places, so 16 stay for peers heard only on Bluetooth. A Bluetooth probe
+  (connect, read INFO) gives its place up after 5 s, at most 8 run at a time, and at most 256
+  devices are remembered (`bt_pipe.h`); on Windows at most 32 probe threads may still be waiting
+  on the OS, and none start past that.
 - **Bluetooth LE between a Mac and a Windows PC** has one common way to move bytes: GATT. Windows
   gives apps no connection-oriented LE channel. GATT moves tens of kilobytes a second. To a
   **protocol 2** peer (#472) a set of any size starts on Bluetooth when that is all there is, and
@@ -139,8 +150,13 @@ process (`keep_alive`), and the hosts do the rest.
   and the offer arrives: "… wants to send you 24 files, 412 MB. Open Driftwire to accept." It
   never shows the code or a file name (rule 6: a lock screen shows it), only the sender's name, the
   count and the size. **Clicking it opens the Driftwire window** with the card and its code;
-  its one button is **Decline** (the window's own Decline). Accept is only in the window, after
-  the code: nothing is accepted from a notification. It is taken back however the offer ends.
+  its one button is **Decline** (the window's own Decline), tagged with the offer it is about, so a
+  notification left from an earlier offer declines nothing newer (#502). Accept is only in the
+  window, after the code: nothing is accepted from a notification. It is taken back however the
+  offer ends.
+  One source (a LAN address, or Bluetooth) gets at most three notifications a minute, the window
+  brought forward counted with them; past that its offers wait in the window unannounced (#502:
+  a sender that connects as "IT Support", idles and connects again all night).
 - The host skips the notification when the Driftwire window is the front window of the active
   app (the card is in plain sight), and shows it when the window is closed, behind another window
   or the app is in the background: the Keep receiving case gets it too.
@@ -278,7 +294,8 @@ Then, on either protocol:
    than numeric comparison: typing makes the person read the other screen). The sender checks it
    on its own machine against the code it derived, digits only, in constant time; a partial entry
    is not a try. A wrong one says so and how many tries are left; the third wrong one sends
-   `cancel` and ends the link. Until a right one nothing about the files leaves, not even a name:
+   `cancel` and ends the link. Nobody typing it for 60 s ends the link on both sides (#502: the
+   receiver's one slot is held meanwhile, under a name the sender chose). Until a right one nothing about the files leaves, not even a name:
    a machine that only claimed the peer's id, or one in the middle, shows the receiver no code or
    another one, so what the person types cannot match.
 3. The sender's **offer**: the count, the total, and each file's relative path and size. No hash
@@ -295,9 +312,10 @@ Then, on either protocol:
    `{"why":"error"}`, so the sender does not say the person there cancelled.
    Protocol 1: a ping goes out whenever a side has sent nothing for 2 s, 20 s of silence is a
    dropped link, and a frame must arrive whole within 20 s of its first byte. Protocol 2: below.
-   Every wait before Accept is a deadline (the handshake 8 s, typing the code and the answer 3
+   Every wait before Accept is a deadline (the handshake 8 s, typing the code 60 s, the answer 3
    minutes) that pings never extend, and a handshake still running is ended by Cancel or by the
-   add-on stopping.
+   add-on stopping. After Accept, a receive where nothing of the files moves for 60 s (no message,
+   and no file being read back) ends as failed (#502): pings alone do not hold the slot.
 
 ## The session (protocol 2, #472)
 
@@ -318,15 +336,25 @@ send or a receive waits through a rejoin.
   names (`engine::route_busy`); a tag that names nothing here closes the link. Each side's first
   sealed message on the new link is **`resume_at`**: how many messages it has received. That
   proves it holds the keys (a recorded rejoin played again opens its first message and stops
-  there), and the other side sends again, in order, what is past that point. A message that came
+  there), and the other side sends again, in order, what is past that point. Its sequence field
+  (0 before #502, ignored by older peers) says which rejoin this is to that side, and both take
+  the larger: a rejoin one side adopted and the other did not (an on-path cut between the two
+  `resume_at`s) cannot leave the DHT handover's keys, which mix in the rejoin count, out of step.
+  A message that came
   twice (sent on the old link, and again after the rejoin) is dropped by its sequence number.
   Messages are chunk-sized, so this is the issue's "resume at a chunk boundary": the receiver
   keeps its open `.mvtmp`, its BLAKE3 state and its verifier exactly as they were, and nothing
   that arrived is sent again. Every file is still verified end to end.
 - **When it moves** (the sender's mover thread, `engine::run_mover`):
   - **Break.** A link that fails, or that is silent for **3 s** (`kSuspectMs`), is suspect: every
-    bearer the peer is heard on is raced (`link_race`: Wi-Fi to its fresh beacon, Bluetooth to its
-    handle) and the session rejoins on the first that connects; the slower ones close. The window
+    bearer the peer is heard on is raced (Wi-Fi to its fresh beacon, Bluetooth to its handle).
+    **The race is of whole rejoins, not connects** (#502, `channel::begin_rejoin`): each bearer
+    connects and sends the rejoin's first message, and wins only with the answer, proof the other
+    end holds the session's secret, within **3 s** of connecting. Only the winner goes on to
+    `resume_at` and moves the session; the others close before anything is adopted on either side.
+    A machine that beacons the peer's id and connects at once (when the peer's Wi-Fi is stale, or
+    it is on Bluetooth only) cannot win or stall the rescue, and a Wi-Fi place first heard during
+    the session is used only once it has answered so (owner, 2026-10-20). The window
     says **Reconnecting to …** and the ring holds where it is. **20 s** (`kRejoinMs`) without a
     link, or without a sign of life, ends the session as a lost link ends it today.
   - **Make before break.** A send on Bluetooth whose peer appears on Wi-Fi opens Wi-Fi alongside,
@@ -366,8 +394,9 @@ send or a receive waits through a rejoin.
 person typed the code the peer's screen showed and the person at that peer accepted. A sender never answers a request for
 files, so a third machine that hears the beacon learns a name and a port, and nothing else. A
 peer heard in the last 4.5 s keeps its address and device: a beacon claiming its id from another
-address is ignored, and the list holds at most 64. A receiver already in a transfer answers
-`busy`; at most four such refusals run at once.
+address is ignored, and the list holds at most 64 ([Finding each other](#finding-each-other)).
+A receiver already in a transfer answers `busy`; at most four such refusals run at once. One
+source starts at most six receives a minute (#502); a link past that closes before its handshake.
 
 ## Over the internet (#472 PR 2)
 
@@ -483,8 +512,8 @@ only while a code waits or a send looks for its receiver; never at idle. (`dht_i
   listening on it connects from it to the other's port at each of its addresses, again every
   250 ms, so SYNs that cross in two NATs open one connection and one that arrives after ours
   failed is accepted. It runs beside the UDP punch, only in a word code's meeting (the window is
-  open), never in a remembered device's background meetings, since it listens on every interface
-  (Windows asks its firewall at the first). The sender picks a TCP connection only if no UDP path
+  open) and in a remembered device's once a sender has knocked, never while it waits, since it
+  listens on every interface (Windows asks its firewall at the first). The sender picks a TCP connection only if no UDP path
   came back in the first 1.5 s, and the same choose / chosen settles it; once it has offered a TCP
   connection it waits for the answer there until the punch ends and never falls back to UDP, so
   the two sides cannot end on different transports. It meets where a NAT keeps a TCP
@@ -603,6 +632,14 @@ are online. The receiver still accepts or declines every transfer. (`secrets.*`,
   most 16 devices, in one value of the store; Forget removes one. Removing Driftwire without
   keeping its data (**Remove everything**) erases the identity and every remembered device from
   the store too (`mv_addon_forget`, #507): installed again, it is a new device nobody remembers.
+  The 17th takes the oldest's place, never one marked as this person's own; with all 16 so marked it is not remembered and
+  the result says why (#502). Ticking Remember again for a device already remembered (or
+  unticking and ticking it) keeps the secret it had: this session's would be on one side only,
+  and the pair would stop meeting.
+- **Tiles and Forget name a device by its fingerprint** (`relay::fingerprint` of its key, as the
+  "own" toggles), never its place in the list (#502): a click from a window drawn before a Forget
+  reaches the device it showed, or nothing. A device forgotten while it was meeting is not
+  received from.
 - **Who proved whom** (#497). A nearby code proves the receiver to the sender (its person typed
   what the receiver shows), not the sender to the receiver: the sender's name is what it says it
   is. So after a nearby transfer the sender's window shows a six-digit check
@@ -617,11 +654,14 @@ are online. The receiver still accepts or declines every transfer. (`secrets.*`,
   ([above](#four-words-over-the-dht-472-pr-3)) per direction: toward the receiving device's
   identity, so each side's wait and send are apart and a device never meets its own item. While
   the window is open (or Keep receiving is on), the internet and DHT toggles are on and something
-  is remembered, one UDP socket and DHT client publish this computer's item for each remembered
-  device (again every 4 minutes; an item is believed for 10) and look for a sender's every 15
-  seconds, one target per look. A sender's item found, the two meet and punch as with four words
-  (the sender punches 15 s longer, as the other side looks only that often). The sender's rounds
-  end on the hour, when both change keys; it keeps going until it meets or Cancel.
+  is remembered, one UDP socket and DHT client look for a sender's item (its knock) every 15
+  seconds, one target per look, and publish nothing. A knock found, the waiting side publishes its
+  item and the two meet and punch as with four words, UDP and TCP simultaneous open together, 15 s
+  each; the first item the sender finds is that meeting's, with its live TCP port, so both punch at
+  once. When the meeting ends, met or not, its item says "gone", so a later send does not punch
+  toward it. (Until 2026-10-20 the waiting side kept an item up and met over UDP only: two
+  computers that had met on four words over TCP never met again, [12](12-decision-log.md).) The
+  sender's rounds end on the hour, when both change keys; it keeps going until it meets or Cancel.
 - **Trust on first use.** The handshake is the internet one (CPace on this hour's password, then
   `Noise_XXhfs+psk0`), so only a holder of the pairing secret gets through; then the peer's static
   must be the one remembered. Another key ends the link on the side that sees it, loudly: "This is
@@ -629,9 +669,9 @@ are online. The receiver still accepts or declines every transfer. (`secrets.*`,
   here and send once nearby or with a code to remember it again. If not, someone may be pretending
   to be Bea." Nothing is sent or received. A device set up again with a new key is not found at all
   (its wait is keyed by its new identity), which is the same advice.
-- What DHT nodes see: this computer's address taking part, and while something is remembered, an
-  item per remembered device each hour under targets that change every hour and mean nothing
-  without the pair's secret.
+- What DHT nodes see: this computer's address taking part and looking up targets that change every
+  hour and mean nothing without the pair's secret, and an item under them only while a remembered
+  device is sending to it (the knock, then the meeting's item).
 - **Not built**: remembered devices are not marked on the nearby tiles (the beacon carries an id, not the identity). Two clocks more than
   a minute apart around the hour may miss each other for that minute.
 
@@ -798,7 +838,7 @@ second while bytes move; those posts update chrome and never present the canvas.
   table answers, and DHT nodes see this machine's address taking part in the DHT (never what it
   looks up: the targets mean nothing without the code or the pair's secret). A relay server the
   person typed is resolved too. Codes, addresses and peer names are never logged. While four words meet
-  (a word code, not a remembered device), a TCP port listens on every interface (its number is in
+  (a word code, or a remembered device once it is sent to), a TCP port listens on every interface (its number is in
   the sealed item), and a birthday punch sends its 14-byte probes to random ports of the other
   side's public address only.
 - Protocol 2's resume secret and keys live in memory only, wiped when the session ends; nothing
@@ -808,7 +848,11 @@ second while bytes move; those posts update chrome and never present the canvas.
 - Receiving is off until the window opens or the person turns it on. Turned on, it stays on across
   launches until turned off (#442), and the command bar says so (**Driftwire: receiving**).
 - A notification (#452) names the sender and a count and size; never a file name, a path or the
-  code. It is shown by the OS on this machine only; nothing about it leaves the machine.
+  code. It is shown by the OS on this machine only; nothing about it leaves the machine. At most
+  three a minute from one source (#502).
+- "Nearby" is this machine's link (#502): the LAN listener and the beacon ignore sources that are
+  not on one of its networks, so a public address with the firewall off, or a VPN's far side, is
+  not taken for a computer in the room.
 
 ## Host pieces this added
 
@@ -869,7 +913,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
-| Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py` |
+| Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices, behind hard NATs too, and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py` |
 
 ## Not built
 
