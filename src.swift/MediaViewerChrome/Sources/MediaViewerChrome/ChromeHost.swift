@@ -238,6 +238,8 @@ public final class MVChromeHost: NSObject {
     hosting.translatesAutoresizingMaskIntoConstraints = false
     hosting.isHidden = true
     ResumeNoticeStore.shared.host = hosting
+    // #510: MV_ADDON_RESTART_SELFTEST shows the restart card (this hosting view holds it).
+    Task { @MainActor in RestartNoticeStore.shared.selfTest() }
     return hosting
   }
 

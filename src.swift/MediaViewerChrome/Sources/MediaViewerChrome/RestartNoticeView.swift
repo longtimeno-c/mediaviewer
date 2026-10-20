@@ -91,6 +91,8 @@ final class RestartNoticeStore: ObservableObject {
   /// A slot add-on updated while it was busy: reloaded once it is not.
   private var pendingReloads: [String: AddonUpdated] = [:]
   private var timer: Timer?
+  /// MV_ADDON_RESTART_SELFTEST's made-up work ("" none).
+  private var selfTestBusy = ""
 
   private init() {}
 
@@ -124,6 +126,7 @@ final class RestartNoticeStore: ObservableObject {
     for w in slotBusy.keys.sorted().compactMap({ slotBusy[$0] }) where !what.contains(w) { what.append(w) }
     let search = LocalSearchStore.shared
     if search.pillVisible && search.pillSpinning { what.append(RestartWords.indexing) }
+    if !selfTestBusy.isEmpty && !what.contains(selfTestBusy) { what.append(selfTestBusy) }
     if AddonStore.shared.phase != nil || search.busyPiece != nil || SlotAddonOffer.anyBusy || DriftwireStore.shared.busy {
       what.append(RestartWords.download)
     }
@@ -166,6 +169,26 @@ final class RestartNoticeStore: ObservableObject {
   }
 
   func cancelWait() { stopWaiting() }
+
+  /// The card's verify without publishing an update, as on Windows
+  /// (IslandHost.RestartNotice.cs RestartNoticeSelfTest; DEVELOPMENT "Add-on
+  /// restart card"). MV_ADDON_RESTART_SELFTEST="Import=1.3.0,Places=1.1.0"
+  /// shows the card for those; ";busy=a Driftwire transfer" makes something
+  /// run, and ";wait" presses Restart now, which then waits. Read once: the
+  /// MediaViewer a Restart now opens again does not inherit it.
+  func selfTest() {
+    guard let spec = ProcessInfo.processInfo.environment["MV_ADDON_RESTART_SELFTEST"], !spec.isEmpty,
+          AddonRestart.shared.pending.isEmpty else { return }
+    unsetenv("MV_ADDON_RESTART_SELFTEST")
+    let parts = spec.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    guard let first = parts.first else { return }
+    for pair in first.split(separator: ",") {
+      let kv = pair.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+      if kv.count == 2, !kv[0].isEmpty, !kv[1].isEmpty { AddonRestart.shared.needed(kv[0], kv[1]) }
+    }
+    for p in parts.dropFirst() where p.hasPrefix("busy=") { selfTestBusy = String(p.dropFirst(5)) }
+    if parts.contains("wait") { restartWhenIdle() }
+  }
 
   func restartAnyway() {
     stopWaiting()
