@@ -78,7 +78,8 @@ or on the foreground queue. Each window is its own process ([18](18-import.md) "
 process"): only the one holding `driftwire.json.lock` (`net::try_lock_instance`: `flock` on the
 Mac, an unshared handle on Windows) starts receiving at load, so one machine shows up once. While
 the toggle is on, the command bar shows **Driftwire: receiving** (a status item, both hosts), so
-a person can see this machine is discoverable after a relaunch. Off at load: the read, and nothing
+a person can see this machine is discoverable after a relaunch. Clicking it opens the Driftwire
+window, or brings it forward (#512: Driftwire's one screen, [25](25-open-addons.md)). Off at load: the read, and nothing
 else (no engine, thread, socket or lock).
 
 Idle cost with it on and the window closed (`mv_import_tests "[.driftwire-idle]"`, Mac M-series,
