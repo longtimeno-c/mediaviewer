@@ -1059,6 +1059,19 @@ result<std::unique_ptr<loaded_addon>> loaded_addon::load(const store& s, const s
   return out;
 }
 
+void forget_outside_data(const store& s, const std::string& id) noexcept {
+  try {
+    auto info = s.find(id);
+    // Verify before load, as load() does: never run a changed library.
+    if (!info || info->state != install_state::ok || info->m.native.empty()) return;
+    auto lib = shared_library::open(io::join_path(info->dir, io::native_relative(info->m.native)));
+    if (!lib) return;
+    auto forget = reinterpret_cast<mv_addon_forget_fn>(lib->symbol(MV_ADDON_FORGET_SYMBOL));
+    if (forget) (void)forget(info->data_dir.c_str());
+  } catch (...) {
+  }
+}
+
 // ---- Quit ------------------------------------------------------------------------
 
 namespace {

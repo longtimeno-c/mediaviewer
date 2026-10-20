@@ -328,3 +328,13 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
   out->query = &query;
   return MV_OK;
 }
+
+// #507: removed without its data. Leaves "<data_dir>.forgotten" beside the
+// folder the host is about to delete, so the test sees the call and its path.
+extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_forget(const char* data_dir_utf8) {
+  if (!data_dir_utf8) return MV_ERR_INVALID_ARG;
+  std::FILE* f = std::fopen((std::string(data_dir_utf8) + ".forgotten").c_str(), "wb");
+  if (!f) return MV_ERR_IO;
+  std::fclose(f);
+  return MV_OK;
+}

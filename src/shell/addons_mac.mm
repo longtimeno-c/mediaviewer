@@ -2215,6 +2215,7 @@ extern "C" bool mv_chrome_slot_addon_remove(const char* id, bool keep_data) {
     if (ensure_store()) {
       mac_addons& st = state();
       std::lock_guard<std::mutex> lock(st.store_writes);
+      if (!keep_data) mv::addon::forget_outside_data(*st.store, s);
       (void)st.store->remove(s, keep_data);
     }
     note_slot_addons_changed();

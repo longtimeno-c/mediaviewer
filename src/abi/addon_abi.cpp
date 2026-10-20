@@ -610,6 +610,7 @@ MV_API mv_status MV_CALL mv_addon_remove(const char* id, uint32_t keep_data) {
     MV_REQUIRE(id, "id is required");
     auto s = open_store();
     if (!s) return s.error();
+    if (keep_data == 0) mv::addon::forget_outside_data(*s, id);
     auto removed = s->remove(id, keep_data != 0);
     return removed ? status::ok : removed.error();
   }));

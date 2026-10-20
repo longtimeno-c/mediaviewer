@@ -755,8 +755,10 @@ are online. The receiver still accepts or declines every transfer. (`secrets.*`,
 - **What is remembered**: the peer's name, its identity (the static of an internet session; the
   `"key"` of its offer or accept nearby, #501), and a **pairing
   secret** only the two ends of that session hold (BLAKE2b over the session's resume secret). At
-  most 16 devices, in one value of the store; Forget removes one. The 17th takes the oldest's
-  place, never one marked as this person's own; with all 16 so marked it is not remembered and
+  most 16 devices, in one value of the store; Forget removes one. Removing Driftwire without
+  keeping its data (**Remove everything**) erases the identity and every remembered device from
+  the store too (`mv_addon_forget`, #507): installed again, it is a new device nobody remembers.
+  The 17th takes the oldest's place, never one marked as this person's own; with all 16 so marked it is not remembered and
   the result says why (#502). Ticking Remember again for a device already remembered (or
   unticking and ticking it) keeps the secret it had: this session's would be on one side only,
   and the pair would stop meeting.
