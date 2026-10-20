@@ -278,7 +278,8 @@ digits, the power a real search over 10^6 gives. What it shows:
   here, reaches anyone without the password, and what is sent after the handshake stays secret. A
   sender that finished, its pin checked, met a receiver holding the identity it pinned that answered
   its message 1, one for one; a receiver that finished shares its keys with a sender that saw its
-  identity, one for one.
+  identity (asked without "one for one", which does not finish; the keys hold a fresh ephemeral of
+  each run, so no two runs share them). About 9 minutes.
 - **The rejoin.** A link is adopted only by a side holding the session's resume secret, each
   adoption matches one rejoin the other side really ran (a replayed first message is never adopted,
   either way round), no two adoptions share link keys, and what a rejoined link carries stays

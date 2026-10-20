@@ -13,7 +13,7 @@ resume secret, the tag, `resume_at`), and the internet handshake (CPace, then `N
 | `code_order.pv` | Sanity, on the first link's skeleton: the collision oracle wins without the commitment check (ProVerif finds the attack) and loses with it. The full first link without the check does not finish |
 | `handshake_x25519_later.pv`, `handshake_mlkem_later.pv` | A recorded first link stays secret when X25519, or ML-KEM-768, is broken later |
 | `handshake_both_later.pv` | Sanity: with both broken later, ProVerif reads it |
-| `internet.pv` | Over the internet (#501): CPace on the password, then `XXhfs+psk0`. The password resists offline guessing, neither identity (the statics) reaches anyone without it, what follows stays secret, and each finished side met the identity it pinned, one for one |
+| `internet.pv` | Over the internet (#501): CPace on the password, then `XXhfs+psk0`. The password resists offline guessing, neither identity (the statics) reaches anyone without it, what follows stays secret, and each finished side met the identity it pinned (the sender one for one) |
 | `rejoin.pv` | Only a holder of the resume secret gets a rejoin adopted, a replay never is, link keys are fresh per rejoin, and a rejoined link stays secret when the resume secret and one of X25519 / ML-KEM-768 leak later |
 
 Run (ProVerif 2.05; build it from source with OCaml, see docs/DEVELOPMENT.md):
@@ -24,4 +24,4 @@ tools/formal/run.sh
 
 `run.sh` runs the models in parallel (one core each) and checks every `RESULT` line against the
 expected one, exiting non-zero on a difference; `run.sh rejoin` runs one. All of them take about
-5.5 minutes on an M-series Mac (`handshake_code` is the longest).
+5.5 minutes on an M-series Mac (`handshake_code` is the longest); `internet` alone about 9.
