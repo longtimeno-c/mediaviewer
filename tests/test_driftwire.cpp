@@ -1235,6 +1235,138 @@ long wakeups() {
 }
 }  // namespace
 
+TEST_CASE("driftwire: a nearby receiver remembers the sender only with the code on the sender's screen (#497)",
+          "[driftwire]") {
+  scratch_dir s("driftwire_remember_check");
+  bus b;
+  client ann(b, s / "ann_received", "Ann", s / "ann_secrets");
+  client bea(b, s / "bea_received", "Bea", s / "bea_secrets");
+  write_text(s / "out" / "a.jpg", "a");
+  ann.pick({s / "out" / "a.jpg"});
+  bea.save_into(s / "bea_received");
+  ann.send_to(bea);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  const auto av = ann.eng.snapshot();
+  const auto bv = bea.eng.snapshot();
+  REQUIRE(av.remember_offer);
+  REQUIRE(bv.remember_offer);
+  // Ann typed Bea's code: Bea is proved, and Ann's window shows its own check.
+  CHECK(av.remember_check.size() == 7);
+  CHECK_FALSE(av.remember_needs_check);
+  CHECK(ann.tree().find(av.remember_check) != std::string::npos);
+  // Bea only saw a name Ann gave: ticking is not enough.
+  CHECK(bv.remember_needs_check);
+  CHECK(bv.remember_check.empty());
+  CHECK(bea.tree().find("remember_check_entry") != std::string::npos);
+  bea.eng.on_event("remember", 2, "true");
+  CHECK(bea.eng.snapshot().known.empty());
+  const std::string wrong = av.remember_check == "000 000" ? "111 111" : "000 000";
+  bea.eng.on_event("remember_check_entry", 3, "\"" + wrong + "\"");
+  CHECK(bea.eng.snapshot().known.empty());
+  CHECK(bea.eng.snapshot().remember_check_note.find("not the code") != std::string::npos);
+  // The code on Ann's screen: Bea keeps Ann, and Ann keeps Bea with a tick.
+  bea.eng.on_event("remember_check_entry", 3, "\"" + av.remember_check + "\"");
+  CHECK(bea.eng.snapshot().known == std::vector<std::string>{"Ann"});
+  CHECK(bea.eng.snapshot().remembered);
+  ann.eng.on_event("remember", 2, "true");
+  CHECK(ann.eng.snapshot().known == std::vector<std::string>{"Bea"});
+}
+
+TEST_CASE("driftwire: a run of nearby links that never offer stops new ones for a while (#497)", "[driftwire]") {
+  scratch_dir s("driftwire_unconfirmed");
+  bus b;
+  client ann(b, s / "ann_received", "Ann");
+  client bea(b, s / "bea_received", "Bea");
+  REQUIRE(eventually([&] { return ann.sees(bea); }));
+  std::uint16_t port = 0;
+  {
+    std::lock_guard lock(b.m);
+    for (const auto& [k, m] : b.members) {
+      if (m.self.id == bea.eng.id()) port = m.self.port;
+    }
+  }
+  REQUIRE(port != 0);
+  // A machine in the middle trying for a code: it connects, learns what it
+  // can, and leaves before any offer. Five of those in a minute...
+  for (int i = 0; i < 5; ++i) {
+    auto c = sp::net::connect({"127.0.0.1", port}, 2000);
+    REQUIRE(c);
+    (*c)->shutdown();
+    bea.eng.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    bea.eng.wait_idle();
+  }
+  // ...and the next nearby sender is not answered, so no code shows there.
+  write_text(s / "out" / "a.jpg", "a");
+  ann.pick({s / "out" / "a.jpg"});
+  ann.send_to(bea, false);
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::ended; }, 15));
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::none);
+}
+
+TEST_CASE("driftwire: a peer that announces protocol 2 (v0.1.34, v0.1.35) is sent to in protocol 2 (#497)",
+          "[driftwire]") {
+  scratch_dir s("driftwire_protocol2_peer");
+  bus b;
+  b.force_protocol.store(sp::kProtocol2);
+  client ann(b, s / "ann_received", "Ann");
+  client bea(b, s / "bea_received", "Bea");
+  write_text(s / "out" / "a.jpg", "a");
+  ann.pick({s / "out" / "a.jpg"});
+  bea.save_into(s / "bea_received");
+  ann.send_to(bea);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  CHECK(ann.eng.snapshot().out_protocol == sp::kProtocol2);
+  CHECK(bea.eng.snapshot().in_protocol == sp::kProtocol2);
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  CHECK(files_in(s / "bea_received") == std::vector<std::string>{"a.jpg"});
+}
+
+TEST_CASE("driftwire: protocol 3's code is the same on both ends, and the server reveals last (#497)",
+          "[driftwire]") {
+  for (const std::uint32_t version : {sp::kProtocol2, sp::kProtocolVersion}) {
+    INFO(version);
+    auto [a, b] = loopback_pair();
+    sp::channel::options o;
+    o.version = version;
+    mv::result<std::unique_ptr<sp::channel>> server = mv::err(mv::status::internal);
+    std::thread t([&, l = std::move(b)]() mutable { server = sp::channel::open(std::move(l), false, "bbbbbbbbbbbbbbbb", "Bea"); });
+    auto client = sp::channel::open(std::move(a), true, "aaaaaaaaaaaaaaaa", "Ann", o);
+    t.join();
+    REQUIRE(client);
+    REQUIRE(server);
+    CHECK((*client)->version() == version);
+    CHECK((*server)->version() == version);
+    CHECK((*client)->code() == (*server)->code());
+    CHECK((*client)->code().size() == 7);
+  }
+}
+
+TEST_CASE("driftwire: a beacon cannot talk a peer down to protocol 1 (#497)", "[driftwire]") {
+  scratch_dir s("driftwire_no_downgrade");
+  bus b;
+  client ann(b, s / "ann_received", "Ann");
+  client bea(b, s / "bea_received", "Bea");
+  REQUIRE(eventually([&] { return ann.sees(bea); }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(700));  // heard at protocol 2
+  b.force_protocol.store(sp::kProtocol1);  // now every beacon in Bea's name says 1
+  std::this_thread::sleep_for(std::chrono::milliseconds(700));
+  write_text(s / "out" / "a.jpg", "a");
+  ann.pick({s / "out" / "a.jpg"});
+  ann.send_to(bea);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  CHECK(ann.eng.snapshot().out_protocol == sp::kProtocolVersion);
+  CHECK(bea.eng.snapshot().in_protocol == sp::kProtocolVersion);
+  bea.eng.on_event("decline", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+}
+
 TEST_CASE("driftwire: idle cost of Keep receiving", "[.driftwire-idle]") {
   const char* env = std::getenv("MV_IDLE_SECONDS");
   const int seconds = env ? std::max(1, std::atoi(env)) : 20;

@@ -458,15 +458,15 @@ TEST_CASE("driftwire session: a protocol 1 client and a protocol 2 server speak 
   CHECK(s.a->rejoin(pair->first).error() == mv::status::unsupported_format);
 }
 
-TEST_CASE("driftwire session: the beacon and Bluetooth INFO say protocol 2 where protocol 1 still reads them",
+TEST_CASE("driftwire session: the beacon and Bluetooth INFO say protocol 3 where protocol 1 still reads them",
           "[driftwire]") {
   sp::beacon b{"0123456789abcdef", "Ann", 4000, sp::kProtocolVersion};
   const std::string wire = sp::encode_beacon(b);
   CHECK(wire.find("\"v\":1") != std::string::npos);  // what a protocol 1 client checks
-  CHECK(wire.find("\"p\":2") != std::string::npos);
+  CHECK(wire.find("\"p\":3") != std::string::npos);
   auto back = sp::decode_beacon({reinterpret_cast<const std::uint8_t*>(wire.data()), wire.size()});
   REQUIRE(back);
-  CHECK(back->protocol == 2u);
+  CHECK(back->protocol == 3u);
   // A beacon from before #472 has no "p": protocol 1.
   const std::string old = "MVSP1{\"v\":1,\"id\":\"0123456789abcdef\",\"name\":\"Bea\",\"port\":4000}";
   auto older = sp::decode_beacon({reinterpret_cast<const std::uint8_t*>(old.data()), old.size()});
@@ -642,7 +642,7 @@ TEST_CASE("driftwire session: a big set starts on Bluetooth and moves to Wi-Fi w
   ann.eng.on_event("peers", 5, "\"" + bea.eng.id() + "\"");
   confirm_and_accept(ann, bea);
   CHECK(ann.eng.snapshot().out_via == "Bluetooth");
-  CHECK(ann.eng.snapshot().out_protocol == 2u);
+  CHECK(ann.eng.snapshot().out_protocol == sp::kProtocolVersion);
   progress_watch watch(ann, bea);
   REQUIRE(bytes_arrive(ann, bea, 2 * 1024 * 1024));
 
