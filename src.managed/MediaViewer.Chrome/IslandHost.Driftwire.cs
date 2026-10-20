@@ -8,6 +8,7 @@
 // and only when the person asks. The Mac twin is Driftwire.swift.
 using System.Text.Json;
 using MediaViewer.Interop;
+using MediaViewer.Shared;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -130,36 +131,24 @@ public static partial class IslandHost
             return;
         }
         AddonOffer offer = DriftwireSlot.Offer;
-        switch (offer.Kind)
+        // #525: a failed install says why and offers its next step.
+        if (InstallFailureRow(DriftwireSlot, "Driftwire", false, () => StartDriftwireInstall(thenOpen),
+                              () => StartDriftwireInstall(thenOpen, reinstall: true)) is FrameworkElement failed)
         {
-            case OfferKind.Available:
-            {
-                Button install = SettingsButton($"Install Driftwire, {SizeText(offer.ArchiveSize)}",
-                                                () => StartDriftwireInstall(thenOpen));
-                install.IsTabStop = true;
-                install.HorizontalAlignment = HorizontalAlignment.Left;
-                install.IsEnabled = !DriftwireSlot.Busy;
-                panel.Children.Add(install);
-                break;
-            }
-            case OfferKind.NotPublished:
-                panel.Children.Add(Note("Driftwire is not published for download yet. It will be offered here once a release carries it."));
-                break;
-            case OfferKind.NeedsNewerApp:
-                panel.Children.Add(Note("The published Driftwire needs a newer MediaViewer. Update MediaViewer, then install it."));
-                break;
-            case OfferKind.Unreachable:
-            {
-                panel.Children.Add(Note("Could not reach the download server."));
-                Button retry = SettingsButton("Try again", () => ProbeOffer(DriftwireSlot));
-                retry.IsTabStop = true;
-                retry.HorizontalAlignment = HorizontalAlignment.Left;
-                panel.Children.Add(retry);
-                break;
-            }
-            default:
-                panel.Children.Add(Note("Checking for Driftwire…"));
-                break;
+            panel.Children.Add(failed);
+        }
+        else if (offer.Kind == OfferKind.Available)
+        {
+            Button install = SettingsButton(InstallWords.Install("Driftwire", SizeText(offer.ArchiveSize)),
+                                            () => StartDriftwireInstall(thenOpen));
+            install.IsTabStop = true;
+            install.HorizontalAlignment = HorizontalAlignment.Left;
+            install.IsEnabled = !DriftwireSlot.Busy;
+            panel.Children.Add(install);
+        }
+        else
+        {
+            AddOfferNote(panel, DriftwireSlot, "Driftwire");
         }
         if (_driftwireMessage.Length > 0) panel.Children.Add(Note(_driftwireMessage));
     }
@@ -174,51 +163,38 @@ public static partial class IslandHost
         }
     }
 
-    private static void StartDriftwireInstall(List<string>? thenOpen)
+    private static void StartDriftwireInstall(List<string>? thenOpen, bool reinstall = false)
     {
         if (DriftwireSlot.Busy || _addonsElsewhere || _folderSession is not { } session) return;
-        DriftwireSlot.Busy = true;
         _driftwirePending = thenOpen;
         _driftwireMessage = "";
-        DriftwireSlot.Phase = new AddonPhase(AddonPhaseKind.Downloading);
-        IProgress<AddonPhase> progress = PhaseReporter(DriftwireSlot);
+        IProgress<AddonPhase> progress = BeginInstall(DriftwireSlot);
         RefreshDriftwireOffer();
         _ = Task.Run(async () =>
         {
-            string message = "";
+            // #525: the shared flow (IslandHost.InstallFlow.cs), then attached live.
+            InstallOutcome outcome = await RunInstall(DriftwireSlot, progress, reinstall).ConfigureAwait(false);
             bool loaded = false;
-            try
+            if (outcome.Ok)
             {
-                await DownloadAndInstall(DriftwireSlot, null, progress).ConfigureAwait(false);
-                // Re-verifies, loads, and attaches its window; the registry's
-                // listener then reads its contributions (AfterSlotContributions).
-                _ = AddonNative.Load(session, DriftwireId, SlotNative.Interface);
-                loaded = true;
-            }
-            catch (AddonNotPublishedException)
-            {
-                DispatcherQueueControllerTryEnqueue(() => DriftwireSlot.Offer = new AddonOffer(OfferKind.NotPublished, 0));
-            }
-            catch (Exception ex) when (ex is HttpRequestException or IOException or MediaViewerException
-                                           or InvalidDataException or TaskCanceledException or JsonException)
-            {
-                System.Diagnostics.Debug.WriteLine(ex);
-                message = ex is MediaViewerException or InvalidDataException
-                    ? "The download did not verify, so nothing was installed."
-                    : "Driftwire could not be downloaded. Check the connection and try again.";
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine(ex);
-                message = "Driftwire could not be installed.";
+                try
+                {
+                    // Re-verifies, loads, and attaches its window; the registry's
+                    // listener then reads its contributions (AfterSlotContributions).
+                    _ = AddonNative.Load(session, DriftwireId, SlotNative.Interface);
+                    loaded = true;
+                }
+                catch (MediaViewerException ex)
+                {
+                    LogInstall(DriftwireSlot, "start", ex);
+                    outcome = outcome with { Failure = InstallFailure.NotStarted };
+                }
             }
             List<SlotAddonRow> rows = ReadSlotAddonRows();
             DispatcherQueueControllerTryEnqueue(() =>
             {
-                DriftwireSlot.Busy = false;
-                DriftwireSlot.Phase = null;
-                DriftwireSlot.Progress = null;
-                _driftwireMessage = message;
+                EndInstall(DriftwireSlot, outcome);
+                _driftwireMessage = loaded ? InstallWords.Installed("Driftwire") : "";
                 SlotAddonRows.Clear();
                 SlotAddonRows.AddRange(rows);
                 if (loaded) SlotAddonsLoaded.Add(DriftwireId);

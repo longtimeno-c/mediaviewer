@@ -154,6 +154,7 @@ public static partial class IslandHost
     /// </summary>
     private static void RefreshAddonList()
     {
+        RefreshAddonUpdates();  // #525: the bar's notice follows the same states
         if (_addonListPanel is null) return;
         List<AddonListEntry> entries = AddonListEntries();
         string key = string.Join("\n", entries.Select(e => e.Id + "\t" + e.Name));
@@ -285,6 +286,7 @@ public static partial class IslandHost
         string? wanted = _addonPageWanted;
         _addonPageWanted = null;
         if (wanted is not null) OpenAddonPage(wanted);
+        else if (_addonListWanted) ShowAddonList();  // #525: the updates notice
         else if (_addonPage.Length > 0) CloseAddonPage();
     }
 }

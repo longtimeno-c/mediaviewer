@@ -3,6 +3,7 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using MediaViewer.Interop;
+using MediaViewer.Shared;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
@@ -737,7 +738,14 @@ public static partial class IslandHost
         what.Foreground = Brush(Title);
         intro.Children.Add(what);
         intro.Children.Add(Note("It runs entirely on this computer. Nothing about your files, and no search, ever leaves it."));
-        if (!AiSlot.State.Installed)
+        if (!AiSlot.State.Installed && !AiQueuedOrInstalling(AiSlot) &&
+            InstallFailureRow(AiSlot, "Local search", false, () => StartPieceInstall(AiSlot), () => StartPieceReinstall(AiSlot))
+                is FrameworkElement coreFailed)
+        {
+            intro.Children.Add(coreFailed);
+            _localSearchPanel.Children.Add(card);
+        }
+        else if (!AiSlot.State.Installed)
         {
             AddonOffer offer = AiSlot.Offer;
             switch (offer.Kind)
@@ -771,20 +779,8 @@ public static partial class IslandHost
                     }
                     intro.Children.Add(Small("Nothing downloads until you click Install. The download carries no identifier."));
                     break;
-                case OfferKind.NotPublished:
-                    intro.Children.Add(Note("Local search is not published for download yet. It will be offered here once a release carries it."));
-                    break;
-                case OfferKind.NeedsNewerApp:
-                    intro.Children.Add(Note("The published local search needs a newer MediaViewer. Update MediaViewer, then install it."));
-                    break;
-                case OfferKind.Unreachable:
-                    intro.Children.Add(Note("Could not reach the download server."));
-                    Button retry = SettingsButton("Try again", () => ProbeOffer(AiSlot));
-                    retry.HorizontalAlignment = HorizontalAlignment.Left;
-                    intro.Children.Add(retry);
-                    break;
                 default:
-                    intro.Children.Add(Note("Checking for local search…"));
+                    AddOfferNote(intro, AiSlot, "Local search");
                     break;
             }
             _localSearchPanel.Children.Add(card);
@@ -850,10 +846,15 @@ public static partial class IslandHost
         {
             _localSearchPanel.Children.Add(Note(AiSlot.State.State == "needs_update"
                 ? $"Local search {AiSlot.State.Version} needs an update to work with this MediaViewer."
-                : "The installed local search did not pass verification and is not loaded. Reinstall it."));
-            Button reinstall = SettingsButton("Reinstall", () => StartPieceInstall(AiSlot));
-            reinstall.HorizontalAlignment = HorizontalAlignment.Left;
-            _localSearchPanel.Children.Add(reinstall);
+                : "The installed local search did not pass verification and is not loaded."));
+            // #525: the one next step, unless Core's row already offers it after a failure.
+            if (AiSlot.Failure is null && !AiQueuedOrInstalling(AiSlot))
+            {
+                Button reinstall = SettingsButton(InstallWords.Reinstall, () => StartPieceReinstall(AiSlot));
+                ToolTipService.SetToolTip(reinstall, InstallWords.ReinstallTip);
+                reinstall.HorizontalAlignment = HorizontalAlignment.Left;
+                _localSearchPanel.Children.Add(reinstall);
+            }
         }
 
         AddAiSettingsPanel();
@@ -961,6 +962,11 @@ public static partial class IslandHost
             AutomationProperties.SetName(removing, $"Removing {title}");
             action = removing;
         }
+        else if (!slot.State.Installed && NextStepButton(slot, title) is Button nextStep)
+        {
+            // #525: the failure's one next step in place of Install; its sentence is the status line.
+            action = nextStep;
+        }
         else if (slot.State.Installed)
         {
             // Every piece asks first (the Mac's "Remove…").
@@ -984,6 +990,14 @@ public static partial class IslandHost
                 both.Children.Add(update);
                 both.Children.Add(remove);
                 action = both;
+            }
+            // #525: after a failed update or a copy that would not start, its next step first.
+            if (NextStepButton(slot, title) is Button retryStep)
+            {
+                var with = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
+                with.Children.Add(retryStep);
+                with.Children.Add(remove);
+                action = with;
             }
         }
         else if (slot.Parent is not null && !CoreComing())
@@ -1336,67 +1350,76 @@ public static partial class IslandHost
     private static void BeginPieceInstall(AddonSlot slot)
     {
         _aiInstalling = slot;
-        slot.Busy = true;
         string what = slot == AiSlot ? "local search" : slot.Name;
+        string name = PieceName(slot);
+        bool reinstall = _aiReinstall.Remove(slot);
         // An update installs beside the running copy (the store keeps it until
         // the next start). A new Core takes over then; a new piece at once.
-        string? update = UpdateVersion(slot);
+        string? update = reinstall ? null : UpdateVersion(slot);
         bool coreRunning = slot == AiSlot && AiSlot.Chrome is not null;
-        SetLocalSearchStatus(string.Join(" ", _aiBatchNotes.Append(
-            update is null ? $"Downloading {what}…" : $"Downloading {what} {update}…")));
-        slot.Phase = new AddonPhase(AddonPhaseKind.Downloading);
-        IProgress<AddonPhase> progress = PhaseReporter(slot);
+        SetLocalSearchStatus(string.Join(" ", _aiBatchNotes.Append(InstallWords.Downloading(what, update))));
+        IProgress<AddonPhase> progress = BeginInstall(slot);
         RefreshLocalSearch();
         long ceiling = (long)_aiCeiling;
         _ = Task.Run(async () =>
         {
-            string message;
-            try
+            // #525: the shared flow (IslandHost.InstallFlow.cs), with Local
+            // search's own rule: the family's room, checked again on the
+            // signed size before the archive is requested.
+            InstallOutcome outcome = await RunInstall(slot, progress, reinstall, manifest =>
             {
-                await DownloadAndInstall(slot, manifest =>
-                {
-                    // The signed size, checked again before the archive is
-                    // requested; mv_addon_install refuses it a third time.
-                    long size = manifest.TryGetProperty("installed_size", out JsonElement s) ? s.GetInt64() : 0;
-                    (ulong used, ulong cap) = AddonNative.FamilyUsage(AiFamily);
-                    _aiUsed = used;
-                    _aiCeiling = cap;
-                    if (BudgetRefusal(slot, size) is string no) throw new OverBudgetException(no);
-                }, progress).ConfigureAwait(false);
-                string capital = $"{char.ToUpperInvariant(what[0])}{what[1..]}";
-                message = update is null ? $"{capital} installed."
-                    : coreRunning ? $"Local search {update} is installed. Restart MediaViewer to use it."
-                    : $"{capital} updated to {update}.";
-                if (update is not null && coreRunning)
-                    DispatcherQueueControllerTryEnqueue(() => AddonRestartNeeded("Local search", update));
-            }
-            catch (OverBudgetException ex)
+                long size = manifest.TryGetProperty("installed_size", out JsonElement s) ? s.GetInt64() : 0;
+                (ulong used, ulong cap) = AddonNative.FamilyUsage(AiFamily);
+                _aiUsed = used;
+                _aiCeiling = cap;
+                if (BudgetRefusal(slot, size) is string no) throw new OverBudgetException(no);
+            }, ex => ex switch
             {
-                message = ex.Message;
-            }
-            catch (AddonNotPublishedException)
-            {
-                message = "";
-                DispatcherQueueControllerTryEnqueue(() => slot.Offer = new AddonOffer(OfferKind.NotPublished, 0));
-            }
-            catch (Exception ex) when (ex is HttpRequestException or IOException or MediaViewerException
-                                           or InvalidDataException or TaskCanceledException or JsonException)
-            {
-                System.Diagnostics.Debug.WriteLine(ex.Message);
-                message = ex is MediaViewerException { Status: MvStatus.UnsupportedFormat } && ceiling > 0
-                    ? $"This piece would take local search over its {MediaViewer.Shared.ByteSize.Text(ceiling)}, so it was not installed."
-                    : ex is MediaViewerException or InvalidDataException
-                        ? "The download did not verify, so nothing was installed."
-                        : $"{char.ToUpperInvariant(what[0])}{what[1..]} could not be downloaded. Check the connection and try again.";
-            }
-            catch (Exception ex)
-            {
-                // Anything else still finishes this install, so the queue moves on.
-                System.Diagnostics.Debug.WriteLine(ex);
-                message = $"{char.ToUpperInvariant(what[0])}{what[1..]} could not be installed.";
-            }
+                OverBudgetException over => over.Message,
+                // mv_addon_install refuses it a third time.
+                MediaViewerException { Status: MvStatus.UnsupportedFormat } when ceiling > 0 =>
+                    $"This piece would take local search over its {MediaViewer.Shared.ByteSize.Text(ceiling)}, so it was not installed.",
+                _ => null,
+            }).ConfigureAwait(false);
+            DispatcherQueueControllerTryEnqueue(() => EndInstall(slot, outcome));
+            string message = outcome.Refused ?? (!outcome.Ok ? InstallWords.Failure(outcome.Failure ?? InstallFailure.Failed, name)
+                : reinstall ? InstallWords.Reinstalled(name)
+                : update is null ? InstallWords.Installed(name)
+                : coreRunning ? ""  // the restart card says it
+                : InstallWords.Updated(name, update));
+            if (outcome.NotPublished) message = "";
+            if (outcome.Ok && update is not null && coreRunning)
+                DispatcherQueueControllerTryEnqueue(() => AddonRestartNeeded("Local search", update));
             FinishAiChange(slot, message, load: slot == AiSlot, install: true);
         });
+    }
+
+    // #525: Retry, or Remove and install again, after a piece's install failed; null when it did not.
+    private static Button? NextStepButton(AddonSlot slot, string title)
+    {
+        if (slot.Failure is not InstallFailure failure || slot.Busy) return null;
+        bool broken = slot.State.Installed && slot.State.State != "ok";
+        InstallNext next = InstallWords.Next(failure, broken);
+        Button go = SettingsButton(InstallWords.NextLabel(next),
+            () => { if (next == InstallNext.Reinstall) StartPieceReinstall(slot); else StartPieceInstall(slot); });
+        if (next == InstallNext.Reinstall) ToolTipService.SetToolTip(go, InstallWords.ReinstallTip);
+        AutomationProperties.SetName(go, $"{InstallWords.NextLabel(next)}: {title}");
+        return go;
+    }
+
+    // Local search's pieces by the name a person reads: Core is "Local search".
+    private static string PieceName(AddonSlot slot) => slot == AiSlot ? "Local search" : slot.Name;
+
+    // #525: queued with Remove and install again (BeginPieceInstall takes it out).
+    private static readonly HashSet<AddonSlot> _aiReinstall = new();
+
+    private static void StartPieceReinstall(AddonSlot slot)
+    {
+        if (!_addonStatesRead || slot.Removing || AiQueuedOrInstalling(slot)) return;
+        if (slot == AiSlot) UnloadAddonChrome(AiSlot);
+        _aiReinstall.Add(slot);
+        StartPieceInstall(slot);
+        if (!AiQueuedOrInstalling(slot)) _aiReinstall.Remove(slot);  // refused (room, Core first)
     }
 
     // ---- NVIDIA detection -----------------------------------------------------------------

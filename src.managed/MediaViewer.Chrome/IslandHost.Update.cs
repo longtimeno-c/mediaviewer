@@ -49,6 +49,8 @@ public static partial class IslandHost
     // here, the corner card (IslandHost.RestartNotice.cs) and the bar offer a
     // restart, and Settings → Add-ons says "Restart to finish updating".
     private static readonly List<AddonUpdated> _addonRestartFor = new();
+    // The bar button's Tag while it shows the add-on updates notice (#525).
+    private const int AddonUpdatesArg = 3;
     private static Button? _importRestartButton;
     private static Button? _localSearchRestartButton;
     private static FrameworkElement? _addonsRestartRow;
@@ -91,8 +93,13 @@ public static partial class IslandHost
     private static StackPanel BuildUpdateButton()
     {
         // Tag 2: the button is offering an add-on restart (RequestAddonRestart).
-        _updateButton = TextButton("Update ready — restart",
-            () => Send(Command.UpdateRestart, _updateButton?.Tag is int arg ? arg : 0));
+        // Tag 3: it is #525's "Add-on update available", which opens Settings → Add-ons.
+        _updateButton = TextButton("Update ready — restart", () =>
+        {
+            int arg = _updateButton?.Tag is int t ? t : 0;
+            if (arg == AddonUpdatesArg) OpenAddonUpdates();
+            else Send(Command.UpdateRestart, arg);
+        });
         _updateButton.Visibility = Visibility.Collapsed;
         // Not clickable, it is a status line (the Mac's plain Body text), not a
         // dimmed button: undo FlattenButton's disabled dim, which runs first.
@@ -125,6 +132,7 @@ public static partial class IslandHost
         _addonRestartFor.RemoveAll(u => u.Name == name);
         _addonRestartFor.Add(what);
         RefreshRestartPrompts();
+        RefreshAddonUpdates();  // #525: no longer "available", it waits on the restart
         ShowRestartNotice();  // #510: the corner card
     }
 
@@ -260,6 +268,14 @@ public static partial class IslandHost
                 text = "Update undone";
                 tip = $"Version {s.RolledBackFrom} did not start, so the previous version was restored.";
             }
+            if (text is null && _addonUpdates.Count > 0)
+            {
+                // #525: the quietest of them, and only when nothing else is said.
+                text = InstallWords.UpdatesBadge(_addonUpdates.Count);
+                tip = InstallWords.UpdatesTip(_addonUpdates);
+                clickable = true;
+                restartArg = AddonUpdatesArg;
+            }
             bool downloading = text is not null && s.Phase == UpdatePhase.Downloading;
             if (_updateProgress is not null)
             {
@@ -277,7 +293,8 @@ public static partial class IslandHost
             if (_updateButton.Content is TextBlock label)
             {
                 label.FontSize = clickable ? UiFontSize : UpdateStatusFontSize;
-                label.Foreground = Brush(clickable ? Title : Body);
+                // The add-on updates notice is clickable but quiet: body colour.
+                label.Foreground = Brush(clickable && restartArg != AddonUpdatesArg ? Title : Body);
             }
             ToolTipService.SetToolTip(_updateButton, tip);
             _updateButton.IsEnabled = clickable;
