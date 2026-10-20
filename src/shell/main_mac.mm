@@ -1919,6 +1919,9 @@ extern "C" void mv_chrome_restart_to_update(void) {
 extern "C" void mv_chrome_restart_for_addons(void) {
   if (g_chrome_app) [g_chrome_app restartForAddons];
 }
+extern "C" void mv_chrome_corner_changed(void) {
+  if (g_chrome_app) [g_chrome_app layoutHintNotice];
+}
 
 // NSEvent -> host key + modifiers, at the edge (commands.h): letters are
 // upper-case, a symbol is the character the layout produced with no Shift, and
@@ -11946,7 +11949,8 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   if (!mv::shell::strip_hint_learned_by_toggle(subject, [self filmstripVisible] == YES)) return;
   [self stripHintLearn];
 }
-// Above the filmstrip when it is up, and above the resume notice while that shows.
+// Above the filmstrip when it is up, and above the resume notice and the
+// restart card (#510, the same hosting view) while either shows.
 - (void)layoutHintNotice {
   CGFloat bottom = -([self filmstripVisible] ? kFilmstripHeightPoints : 0.0) - 8.0;
   if (self.resumeHost != nil && !self.resumeHost.hidden) bottom -= self.resumeHost.fittingSize.height;

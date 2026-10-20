@@ -201,29 +201,29 @@ struct AddonChannel: Sendable {
 }
 
 /// Add-on updates that installed beside a running copy and take over only at
-/// the next start ("Import 0.2.0", "Local search 0.3.1"): a loaded bundle
-/// cannot be replaced in the running app. While any is here the command bar
-/// and Settings offer a restart (owner, 2026-10-05). Never a forced restart
-/// (docs/design/13 "Never interrupt"). The Mac twin of IslandHost.Update.cs.
+/// the next start (Import 0.2.0, Local search 0.3.1): a loaded bundle cannot
+/// be replaced in the running app. While any is here the corner card (#510,
+/// RestartNoticeView.swift), the command bar and Settings offer a restart
+/// (owner, 2026-10-05). Never a forced restart (docs/design/13 "Never
+/// interrupt"). The Mac twin of IslandHost.Update.cs.
 @MainActor
 final class AddonRestart: ObservableObject {
   static let shared = AddonRestart()
-  @Published private(set) var pending: [String] = []
+  @Published private(set) var pending: [AddonUpdated] = []
 
-  func needed(_ what: String) {
-    if !pending.contains(what) { pending.append(what) }
+  func needed(_ name: String, _ version: String) {
+    // A second update of the same add-on replaces its line: one card, one line each.
+    pending.removeAll { $0.name == name }
+    pending.append(AddonUpdated(name: name, version: version))
+    RestartNoticeStore.shared.show()
   }
 
-  var text: String {
-    let one = pending.count == 1
-    return "\(pending.joined(separator: " and ")) \(one ? "is" : "are") installed. "
-      + "Restart MediaViewer to use \(one ? "it" : "them")."
-  }
+  var text: String { RestartWords.tooltip(pending) }
 
-  /// Onto the same folder and file: through Sparkle when an app update is
-  /// staged too (it installs both), else MediaViewer opens again once this
-  /// process has exited.
-  func restart() { mv_chrome_restart_for_addons() }
+  /// Onto the same folder and file, once nothing is running (the card says
+  /// what it waits for): through Sparkle when an app update is staged too (it
+  /// installs both), else MediaViewer opens again once this process has exited.
+  func restart() { RestartNoticeStore.shared.restartWhenIdle() }
 }
 
 /// Settings' "Restart now", under an add-on's line, while an update waits on it.
@@ -444,7 +444,7 @@ final class AddonStore: ObservableObject {
         if result == "Import installed." {
           if let v = update, running {
             self.message = "Import \(v) is installed. Restart MediaViewer to use it."
-            AddonRestart.shared.needed("Import \(v)")
+            AddonRestart.shared.needed("Import", v)
           } else if !mv_addons_load() {
             self.message = "Import is installed but did not pass verification, so it was not loaded."
           } else if let v = update {
@@ -476,6 +476,7 @@ struct AddonsSection: View {
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       Text("Add-ons").font(MVTheme.font(20)).foregroundStyle(MVTheme.title)
+      AddonsRestartMarker()  // #510: "Restart to finish updating …"
       Text("Import").font(MVTheme.font()).foregroundStyle(MVTheme.title)
       // docs/design/25: the manifest's line; the built-in one for a manifest from
       // before it carried any.
@@ -505,7 +506,7 @@ struct AddonsSection: View {
           note("Checking for Import…")
         }
       } else if store.confirmingRemove {
-        Text("Remove Import? Its library index and import history can stay, so a reinstall still knows what was imported.")
+        Text("Remove Import? Its library index and import history (import.db) can stay, so a reinstall still knows what was imported. \"Remove everything\" deletes them and its settings.")
           .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
           .fixedSize(horizontal: false, vertical: true)
         HStack {

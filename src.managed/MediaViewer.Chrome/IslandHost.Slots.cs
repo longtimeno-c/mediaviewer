@@ -1060,8 +1060,9 @@ public static partial class IslandHost
     }
 
     // Update (or reinstall) an installed slot add-on other than Places, as
-    // Places does: a loaded copy is not replaced underneath itself, so a newer
-    // version waits for the restart Settings offers (docs/design/18 "Updates").
+    // Places does. #510: a loaded copy is reloaded on the new version at once,
+    // with no restart, or once the transfer it reports has ended
+    // (ReloadUpdatedSlotAddon; docs/design/18 "Updates").
     private static void StartSlotAddonInstall(SlotAddonRow row)
     {
         AddonSlot channel = SlotChannelFor(row);
@@ -1077,14 +1078,14 @@ public static partial class IslandHost
         _ = Task.Run(async () =>
         {
             string message;
-            bool restart = false;
+            bool reload = false;
             try
             {
                 await DownloadAndInstall(channel, null, progress).ConfigureAwait(false);
                 if (wasLoaded && update is not null)
                 {
-                    message = $"{name} {update} is installed. Restart MediaViewer to use it.";
-                    restart = true;
+                    message = "";  // ReloadUpdatedSlotAddon's, on the UI thread
+                    reload = true;
                 }
                 else
                 {
@@ -1115,10 +1116,9 @@ public static partial class IslandHost
                 channel.Busy = false;
                 channel.Phase = null;
                 channel.Progress = null;
-                SlotUpdateMessages[id] = message;
-                if (restart && update is not null)
+                SlotUpdateMessages[id] = reload && update is not null ? ReloadUpdatedSlotAddon(id, name, update) : message;
+                if (reload && update is not null)
                 {
-                    AddonRestartNeeded($"{name} {update}");
                     for (int i = 0; i < SlotAddonRows.Count; ++i)
                     {
                         if (SlotAddonRows[i].Id == id) SlotAddonRows[i] = SlotAddonRows[i] with { Version = update };
@@ -1151,14 +1151,14 @@ public static partial class IslandHost
         _ = Task.Run(async () =>
         {
             string message;
-            bool restart = false;
+            bool reload = false;
             try
             {
                 await DownloadAndInstall(PlacesChannel, null, progress).ConfigureAwait(false);
                 if (wasLoaded && update is not null)
                 {
-                    message = $"Places {update} is installed. Restart MediaViewer to use it.";
-                    restart = true;
+                    message = "";  // ReloadUpdatedSlotAddon's, on the UI thread
+                    reload = true;
                 }
                 else
                 {
@@ -1189,10 +1189,11 @@ public static partial class IslandHost
             {
                 PlacesChannel.Busy = false;
                 PlacesChannel.Phase = null;
-                _placesMessage = message;
-                if (restart && installedVersion is not null)
+                _placesMessage = reload && installedVersion is not null
+                    ? ReloadUpdatedSlotAddon(PlacesChannel.Id, "Places", installedVersion)
+                    : message;
+                if (reload && installedVersion is not null)
                 {
-                    AddonRestartNeeded($"Places {installedVersion}");
                     for (int i = 0; i < SlotAddonRows.Count; ++i)
                     {
                         if (SlotAddonRows[i].Id != PlacesChannel.Id) continue;
@@ -1212,9 +1213,17 @@ public static partial class IslandHost
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
         if (_slotConfirming == row.Id)
         {
+            // #510 / #507: say exactly what each choice deletes (the Mac's words).
+            var confirm = new StackPanel { Spacing = Space(6) };
+            TextBlock q = Note($"Remove {row.Name}? \"Remove everything\" also deletes its data folder and its settings. \"Remove, keep its data\" leaves both for a reinstall.");
+            q.Foreground = Brush(Title);
+            confirm.Children.Add(q);
+            confirm.Children.Add(buttons);
             buttons.Children.Add(EditButton("Remove, keep its data", () => { _slotConfirming = null; RemoveSlotAddon(row.Id, true); }));
             buttons.Children.Add(EditButton("Remove everything", () => { _slotConfirming = null; RemoveSlotAddon(row.Id, false); }));
             buttons.Children.Add(EditButton("Cancel", () => { _slotConfirming = null; RefreshSlotSettings(); }));
+            FocusableButtons(buttons);
+            return confirm;
         }
         else
         {
@@ -1222,6 +1231,12 @@ public static partial class IslandHost
             AutomationProperties.SetName(remove, $"Remove {row.Name}");
             buttons.Children.Add(remove);
         }
+        FocusableButtons(buttons);
+        return buttons;
+    }
+
+    private static void FocusableButtons(StackPanel buttons)
+    {
         foreach (UIElement child in buttons.Children)
         {
             if (child is Button b)
@@ -1230,6 +1245,5 @@ public static partial class IslandHost
                 b.IsTabStop = true;
             }
         }
-        return buttons;
     }
 }

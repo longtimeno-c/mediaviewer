@@ -51,12 +51,21 @@ final class ResumeNoticeStore: ObservableObject {
 
   private func show(_ text: String) {
     if text != question { question = text }
-    host?.isHidden = text.isEmpty
+    syncHost()
     if !text.isEmpty {
       // Said once as it appears, not only when focused.
       NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
                            userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
     }
+  }
+
+  /// The hosting view holds this card and the restart card (#510) above it:
+  /// shown while either is, so it never takes a click otherwise. The hint card
+  /// above them is laid out again for the corner's new height.
+  func syncHost() {
+    let hidden = question.isEmpty && !RestartNoticeStore.shared.shown
+    if host?.isHidden != hidden { host?.isHidden = hidden }
+    DispatchQueue.main.async { mv_chrome_corner_changed() }
   }
 
   func resume() {
@@ -71,10 +80,21 @@ final class ResumeNoticeStore: ObservableObject {
   }
 }
 
+/// The corner's hosting view: the restart card (#510, RestartNoticeView.swift)
+/// above the resume notice, each shown while it has something to say.
 struct ResumeNoticeView: View {
   @ObservedObject private var store = ResumeNoticeStore.shared
+  @ObservedObject private var restart = RestartNoticeStore.shared
 
   var body: some View {
+    VStack(alignment: .trailing, spacing: 0) {
+      if restart.shown { RestartNoticeCard() }
+      if !store.question.isEmpty { resumeCard }
+    }
+    .fixedSize()
+  }
+
+  private var resumeCard: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       Text(store.question)
         .font(MVTheme.font(14)).foregroundStyle(MVTheme.title)

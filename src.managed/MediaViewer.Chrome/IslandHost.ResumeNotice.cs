@@ -139,10 +139,10 @@ public static partial class IslandHost
             MoveAt(_resumeNotice, 0, ClientHeightPx(), 1, 1);
             _resumeNoticeCard = BuildResumeNoticeCard(question);
             // Measured for real once it is in the island's live tree: placed again then.
-            _resumeNoticeCard.Loaded += (_, _) => Guarded(PlaceResumeNotice);
+            _resumeNoticeCard.Loaded += (_, _) => Guarded(PlaceCornerCards);
             // Behind the card's rounded corners, the canvas colour (the AI badge's).
             _resumeNotice.Content = new Grid { Background = Brush(Canvas), Children = { _resumeNoticeCard } };
-            PlaceResumeNotice();
+            PlaceCornerCards();  // the restart and hint cards stack above it (#510)
             // Said once as it appears, not only when focused.
             FrameworkElementAutomationPeer.FromElement(_resumeNoticeCard)?.RaiseNotificationEvent(
                 AutomationNotificationKind.ActionCompleted, AutomationNotificationProcessing.ImportantMostRecent,
@@ -241,8 +241,7 @@ public static partial class IslandHost
     private static void NoteFilmstripTop(bool visible, int y)
     {
         _filmstripTop = visible ? Math.Max(0, y) : 0;
-        PlaceResumeNotice();
-        PlaceHintNotice();
+        PlaceCornerCards();
     }
 
     private static void ResumeFromNotice()
@@ -279,7 +278,8 @@ public static partial class IslandHost
             DesktopWindowXamlSource? gone = island;
             DisposeSource(ref gone);
         });
-        PlaceHintNotice();  // the hint card stacked above it comes down
+        PlaceRestartNotice();  // the cards stacked above it come down
+        PlaceHintNotice();
     }
 
     /// <summary>Detach (the window is going): no island outlives it.</summary>

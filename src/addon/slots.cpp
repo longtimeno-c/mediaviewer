@@ -390,6 +390,7 @@ void slot_registry::detach(const std::string& addon_id) {
       i = i->first.first == addon_id ? notices_.erase(i) : std::next(i);
     }
     keep_.erase(addon_id);
+    busy_.erase(addon_id);
     private_cv_.notify_all();  // a provider_paths waiting on it returns not_found
   }
   {
@@ -1526,6 +1527,23 @@ status slot_registry::keep_alive(const std::string& addon_id, bool on, const std
   return status::ok;
 }
 
+status slot_registry::post_busy(const std::string& addon_id, std::string what) {
+  if (!what.empty() && !notice_text_ok(what, 120)) return status::invalid_arg;
+  {
+    std::lock_guard lock(m_);
+    if (addons_.find(addon_id) == addons_.end()) return status::not_found;
+    if (what.empty()) {
+      if (busy_.erase(addon_id) == 0) return status::ok;
+    } else {
+      auto b = busy_.find(addon_id);
+      if (b != busy_.end() && b->second == what) return status::ok;
+      busy_[addon_id] = std::move(what);
+    }
+  }
+  notify(slot_changed_notices);
+  return status::ok;
+}
+
 bool slot_registry::keeping_alive() const {
   std::lock_guard lock(m_);
   return !keep_.empty();
@@ -1545,6 +1563,8 @@ std::string slot_registry::notices_json() const {
     w.begin_object().key("addon").string(addon).key("screen").string(k.first).key("title").string(title);
     w.key("label").string(k.second).end_object();
   }
+  w.end_array().key("busy").begin_array();
+  for (const auto& [addon, what] : busy_) w.begin_object().key("addon").string(addon).key("what").string(what).end_object();
   w.end_array().key("notices").begin_array();
   for (const auto& [key, n] : notices_) {
     w.begin_object()

@@ -448,6 +448,9 @@ int32_t mv_chrome_notice_text(char* buf, int32_t size);
 // The "Press T" filmstrip hint card's "Got it" (shell/filmstrip_hint.h): the
 // hint is learned for good, as T hiding the strip over a document teaches it.
 void mv_chrome_hint_learned(void);
+// #510: the bottom-right cards changed height (the restart card came or went):
+// the hint card is laid out above them again. Implemented in main_mac.mm.
+void mv_chrome_corner_changed(void);
 
 // Folder tree. `mv_chrome_list_subdirectories` does a directory read, so call it
 // from a background task, never from the main actor. [any-thread] Writes
@@ -628,6 +631,10 @@ void mv_chrome_slot_addons_refresh(void);
 typedef void (*mv_chrome_slot_addons_changed_fn)(void);
 void mv_chrome_slot_addons_set_changed(mv_chrome_slot_addons_changed_fn fn);
 bool mv_chrome_slot_addon_remove(const char* id, bool keep_data);
+// #510: a loaded slot add-on's update has installed: it is unloaded (its items
+// and windows go) and the newest verified version loads, with no restart.
+// [main-thread][no-block]; the changed callback runs once it has loaded.
+bool mv_chrome_slot_addon_reload(const char* id);
 
 // Milestone G add-ons (docs/design/18 "Add-ons"), implemented in src/shell/addons_mac.mm.
 // Strings follow mv_chrome_command_table's rule: returns the length needed,

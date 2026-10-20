@@ -215,6 +215,8 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
   says Import is not published yet, or needs a newer MediaViewer. The card hint appears only
   when there is something to install, and its network check waits on the automatic
   update-check switch ([13](13-updates-and-telemetry.md)).
+  While an update waits on a restart the section starts with "Restart to finish updating
+  Import 1.3.0." and **Restart now** (#510, "Updates" below).
 - **Signed, verified, then loaded.** Downloads are two fixed release assets per platform,
   `mediaviewer-addon-<id>-<platform>.json` (+ `.sig`) and the `.zip` it names, fetched by the
   chrome with a plain GET: no identifier, no query, no cookies. `manifest.json` lists files,
@@ -243,16 +245,46 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
   whose card asks its own channel when Settings opens (until 2026-10-16 only Places' did, so
   Driftwire never offered an update). The new version
   installs beside the running one and the store removes the old one at the next start
-  (`prune.pending`), so a running add-on never loses its files. An update of a running Import or
-  Local search Core therefore takes over only at the next start, so the app offers one
-  (2026-10-05, owner): Settings says "Restart MediaViewer to use it" with **Restart now**, and the
-  command bar shows **Add-on updated — restart** until then. Never a forced restart. The restart
-  puts back the folder and file (as an app update's does); with an app update also staged it is
-  that update's restart, which loads the new add-on too. Otherwise Windows starts the exe again
-  with `--relaunch-after <pid>`, which waits for the old process to exit before claiming the
-  single instance (`update_guard.h`), and the Mac opens the app again from a small waiter once
-  the old process is gone (`-restartForAddons`). A People or Sound piece needs none: the loaded
-  pack reloads it. The manifest declares the host
+  (`prune.pending`), so a running add-on never loses its files. What happens next depends on
+  what kind of add-on it is, the same on both platforms (#510, 2026-10-20):
+  - **Reloaded live, no restart.** A slot add-on (Places, Driftwire) is unloaded (its items,
+    commands, pill and windows go, as at Remove) and the newest verified version loads at once;
+    Settings says "Driftwire updated to 1.4.2." A script add-on from another maker is replaced
+    by the store's reload as it installs ([25](25-open-addons.md)). A People or Sound piece is
+    picked up by the loaded pack ("reload"). If the add-on says work is under way (host row
+    `busy_post`, below: a Driftwire transfer), the reload waits for it to end ("Driftwire 1.4.2
+    is installed. It takes over when a Driftwire transfer has finished.").
+  - **Restart card.** A running Import or Local search Core takes over only at the next start,
+    so the app offers one (owner, 2026-10-05; the card #510). A card in the bottom-right corner,
+    the place and look of the "Resume indexing" notice and the filmstrip hint (stacked: resume,
+    restart, hint, from the bottom), says "Import was updated to 1.3.0. Restart MediaViewer to
+    use it. It opens again on this folder and file." with **Later** and **Restart now**. Several
+    updates make one card ("Import and Local search were updated."), one line per add-on.
+    **Later** hides it; Settings → Add-ons then shows "Restart to finish updating Import 1.3.0."
+    with Restart now, and the command bar **Add-on updated — restart**, until the next start.
+    Never a forced restart.
+  - **Restart now never cuts work off.** It restarts at once only when nothing runs; otherwise
+    the card says "Waiting for an import and a Driftwire transfer to finish", restarts by itself
+    when they have, and offers **Cancel** and **Restart anyway** (whose tooltip says what it
+    stops). It waits for an import (Import's status line is up), anything an add-on reports
+    through `busy_post`, Local search indexing (its pill is busy) and an add-on download. An
+    F7 / F8 copy or move needs no wait: the file worker finishes it before the process exits
+    (`shell/file_jobs.h`), and the new process waits for that exit. The host still refuses
+    under a playing clip. The card's words are `src.managed/Shared/RestartWords.cs` and their
+    Swift copy in `RestartNoticeView.swift`; Chrome.Tests fails when the two differ.
+    `MV_ADDON_RESTART_SELFTEST` shows the card without an update (DEVELOPMENT).
+
+  The restart puts back the folder and file (as an app update's does); with an app update also
+  staged it is that update's restart, which loads the new add-on too. Otherwise Windows starts
+  the exe again with `--relaunch-after <pid>`, which waits for the old process to exit before
+  claiming the single instance (`update_guard.h`), and the Mac opens the app again from a small
+  waiter once the old process is gone (`-restartForAddons`).
+
+  `busy_post(host, what)` (host table, appended after `document_text`, #510) is how an add-on
+  says it is doing something the person would not want cut off; `what` (≤ 120 bytes, never a
+  path or a name) completes "Waiting for … to finish"; "" ends it. The registry keeps one per
+  add-on, drops it at detach, and lists it in `mv_slots_notices_json`'s `busy`. Driftwire posts
+  "a Driftwire transfer" while a send or receive runs. The manifest declares the host
   API range it supports; an add-on outside that range is not loaded and the app says "Import
   needs an update". **No downgrades:** install refuses a signed manifest older than a working
   installed version; the same version again is a repair. Offline sideloading works: a folder

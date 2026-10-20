@@ -224,10 +224,15 @@ class engine_host {
     (void)on;
     return true;
   }
+  // #510: a transfer is running ("" once it has ended), so the host's Restart
+  // now and an update's reload wait for it rather than cut it off.
+  virtual void post_busy(const std::string& what) { (void)what; }
 };
 
 // The status text while Keep receiving is on.
 inline constexpr const char* kReceivingStatus = "Driftwire: receiving";
+// #510: what a running transfer is called while the host waits for it.
+inline constexpr const char* kBusyWhat = "a Driftwire transfer";
 // The toggle that keeps MediaViewer running with every window closed (#452),
 // and the menu-bar / tray item's first line while it is on.
 inline constexpr const char* kBackgroundLabel = "Receive when MediaViewer is closed";
@@ -503,6 +508,7 @@ class engine {
   std::atomic<bool> stopping_{false};
 
   std::mutex post_m_;  // one post at a time, so trees arrive in order
+  bool busy_shown_ = false;  // under post_m_: post_busy said a transfer runs (#510)
   std::atomic<std::chrono::steady_clock::time_point> last_post_{};
   std::mutex control_m_;
   std::condition_variable control_cv_;

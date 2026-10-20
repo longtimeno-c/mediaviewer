@@ -263,6 +263,9 @@ final class SlotAddonOffer: ObservableObject {
     return made
   }
 
+  /// #510: a slot add-on's download or install is running (Restart now waits).
+  static var anyBusy: Bool { places.busy || others.values.contains { $0.busy } }
+
   let id: String
   let name: String
 
@@ -302,8 +305,9 @@ final class SlotAddonOffer: ObservableObject {
     }
   }
 
-  /// `wasLoaded`: this process is already running it, so a newer copy waits
-  /// for a restart (a loaded library is not replaced underneath it).
+  /// `wasLoaded`: this process is already running it, so a newer copy reloads
+  /// it at once (#510: unload, then the new version loads; no restart), or
+  /// once the transfer it reports has ended (RestartNoticeStore).
   func install(wasLoaded: Bool, installedVersion: String, done: @escaping @MainActor () -> Void) {
     guard !busy else { return }
     let update = offer?.version.flatMap { v in
@@ -313,16 +317,16 @@ final class SlotAddonOffer: ObservableObject {
     message = ""
     let channel = channel, name = name, reinstall = !installedVersion.isEmpty
     Task.detached {
-      // `restart` is the version that has to wait for the next launch; `load`,
-      // that the new copy loads now. Lets, so the hop back to the main actor
-      // does not capture a mutable flag.
-      let outcome: (message: String, restart: String?, load: Bool)
+      // `reload` is the version that replaces the loaded copy; `load`, that the
+      // new copy loads now. Lets, so the hop back to the main actor does not
+      // capture a mutable flag.
+      let outcome: (message: String, reload: String?, load: Bool)
       do {
         try await channel.downloadAndInstall { p in
           Task { @MainActor in self.phase = p }
         }
         if wasLoaded, let update {
-          outcome = ("\(name) \(update) is installed. Restart MediaViewer to use it.", update, false)
+          outcome = ("", update, false)  // reloadUpdatedSlotAddon's line, on the main actor
         } else if let update {
           outcome = ("\(name) updated to \(update).", nil, true)
         } else {
@@ -337,18 +341,22 @@ final class SlotAddonOffer: ObservableObject {
         outcome = ("\(name) could not be downloaded. Check the connection and try again.", nil, false)
       }
       let result = outcome.message
-      let restart = outcome.restart
+      let reload = outcome.reload
       let load = outcome.load
       await MainActor.run {
         self.busy = false
         self.phase = nil
         self.message = result
-        if let restart { AddonRestart.shared.needed("\(name) \(restart)") }
-        else if load { mv_chrome_slot_addons_refresh() }
+        if let reload {
+          self.message = RestartNoticeStore.shared.reloadUpdatedSlotAddon(id: self.id, name: name, version: reload)
+        } else if load { mv_chrome_slot_addons_refresh() }
         done()
       }
     }
   }
+
+  /// #510: an update that waited on a transfer has reloaded now.
+  func reloaded(_ line: String) { message = line }
 }
 
 /// Settings -> Add-ons: MediaViewer's own add-ons that fill screens and slots.
@@ -577,6 +585,10 @@ struct SlotAddonsSection: View {
 
   @ViewBuilder private func removeButtons(_ row: Row) -> some View {
     if confirming == row.id {
+      // #510 / #507: say exactly what each choice deletes (the Windows words).
+      Text("Remove \(row.name)? \"Remove everything\" also deletes its data folder and its settings. \"Remove, keep its data\" leaves both for a reinstall.")
+        .font(MVTheme.font(13)).foregroundStyle(MVTheme.title)
+        .fixedSize(horizontal: false, vertical: true)
       HStack {
         Button("Remove, keep its data") { remove(row.id, keep: true) }
         Button("Remove everything") { remove(row.id, keep: false) }

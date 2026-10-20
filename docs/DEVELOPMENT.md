@@ -1300,6 +1300,23 @@ The settings / keymap / theme parsers have a libFuzzer harness, `tools/fuzz/fuzz
 in the Windows clang-cl fuzz build (`mv_fuzzers`, seeds in `tests/data/seeds/addon`); its header
 has the one-line Homebrew LLVM build for a quick run on a Mac.
 
+### Add-on restart card (#510, Windows)
+
+The card that asks for a restart after an add-on update ([docs/design/18](design/18-import.md)
+"Updates") can be shown without publishing an update. `MV_ADDON_RESTART_SELFTEST` lists the
+updates as `Name=version`; `;busy=<what>` makes something run that Restart now waits for, and
+`;wait` presses Restart now (the card then says "Waiting for … to finish"; nothing restarts):
+
+```powershell
+$env:MV_ADDON_RESTART_SELFTEST = "Import=1.3.0,Local search=0.4.0;busy=a Driftwire transfer;wait"
+build\bin\mediaviewer_lab.exe --new-instance tools\testmedia\raw
+```
+
+Leave it set for `--soak 60 --gate` to measure the present loop with the card up. The words
+are `src.managed/Shared/RestartWords.cs`; `dotnet test src.managed/MediaViewer.Chrome.Tests`
+checks them and that the Mac's copy (`RestartNoticeView.swift`) says the same. The Mac host
+has no such variable yet.
+
 ### Script add-ons self-test (PR 57, macOS)
 
 `MV_SCRIPT_SELFTEST=<folder>` presses an add-on's keys as a person would (key events through the

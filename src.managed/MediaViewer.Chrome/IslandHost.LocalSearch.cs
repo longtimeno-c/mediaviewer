@@ -337,6 +337,7 @@ public static partial class IslandHost
     /// that sends none (IAddonHost2.SetIndexingStatus), which draws no arc.</param>
     private static void HostSetIndexingPill(string? text, bool busy, double fraction, bool onBattery)
     {
+        NoteIndexingBusy(text is not null && busy);  // #510: Restart now waits for it
         if (_indexingPill is null || _indexingText is null || _indexingRing is null) return;
         _indexingOnBattery = text is not null && onBattery;
         if (text is not null && text != _indexingText.Text)
@@ -1365,7 +1366,7 @@ public static partial class IslandHost
                     : coreRunning ? $"Local search {update} is installed. Restart MediaViewer to use it."
                     : $"{capital} updated to {update}.";
                 if (update is not null && coreRunning)
-                    DispatcherQueueControllerTryEnqueue(() => AddonRestartNeeded($"Local search {update}"));
+                    DispatcherQueueControllerTryEnqueue(() => AddonRestartNeeded("Local search", update));
             }
             catch (OverBudgetException ex)
             {

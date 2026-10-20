@@ -71,6 +71,13 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate {
       syncStatusItem()
       mv_chrome_background_changed()
     }
+    // #510: what each add-on said it is doing (busy_post), for Restart now and
+    // an update's reload to wait on (RestartNoticeStore).
+    var busy: [String: String] = [:]
+    for b in doc["busy"] as? [[String: Any]] ?? [] {
+      if let a = b["addon"] as? String, !a.isEmpty { busy[a] = b["what"] as? String ?? "" }
+    }
+    RestartNoticeStore.shared.noteSlotBusy(busy)
     let list: [Notice] = (doc["notices"] as? [[String: Any]] ?? []).compactMap {
       guard let a = $0["addon"] as? String, let id = $0["id"] as? String, let s = $0["screen"] as? String else {
         return nil

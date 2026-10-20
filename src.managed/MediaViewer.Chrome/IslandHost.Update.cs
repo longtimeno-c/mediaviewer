@@ -1,6 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 using System.Runtime.InteropServices;
+using MediaViewer.Shared;
 using MediaViewer.Updater;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
@@ -44,11 +45,14 @@ public static partial class IslandHost
     // status changes can redraw the bar button.
     private static UpdateStatus? _lastUpdateStatus;
     // Add-on updates that installed beside a running copy and take over only
-    // at the next start ("Import 0.2.0", "Local search 0.3.1"). While any is
-    // here, the bar offers a restart and each Settings row a Restart now.
-    private static readonly List<string> _addonRestartFor = new();
+    // at the next start (Import 0.2.0, Local search 0.3.1). While any is
+    // here, the corner card (IslandHost.RestartNotice.cs) and the bar offer a
+    // restart, and Settings → Add-ons says "Restart to finish updating".
+    private static readonly List<AddonUpdated> _addonRestartFor = new();
     private static Button? _importRestartButton;
     private static Button? _localSearchRestartButton;
+    private static FrameworkElement? _addonsRestartRow;
+    private static TextBlock? _addonsRestartText;
 
     private static void StartUpdater()
     {
@@ -114,14 +118,17 @@ public static partial class IslandHost
     /// next start, so the bar and Settings offer a restart (owner, 2026-10-05:
     /// "prompt an app restart"). Never a forced restart (docs/design/13).
     /// </summary>
-    private static void AddonRestartNeeded(string what)
+    private static void AddonRestartNeeded(string name, string version)
     {
-        if (!_addonRestartFor.Contains(what)) _addonRestartFor.Add(what);
+        var what = new AddonUpdated(name, version);
+        // A second update of the same add-on replaces its line: one card, one line each.
+        _addonRestartFor.RemoveAll(u => u.Name == name);
+        _addonRestartFor.Add(what);
         RefreshRestartPrompts();
+        ShowRestartNotice();  // #510: the corner card
     }
 
-    private static string AddonRestartText() =>
-        $"{string.Join(" and ", _addonRestartFor)} {(_addonRestartFor.Count == 1 ? "is" : "are")} installed. Restart MediaViewer to use {(_addonRestartFor.Count == 1 ? "it" : "them")}.";
+    private static string AddonRestartText() => RestartWords.Tooltip(_addonRestartFor);
 
     /// <summary>A Settings row's "Restart now", hidden until an add-on update waits on a restart.</summary>
     private static Button AddonRestartButton()
@@ -136,13 +143,35 @@ public static partial class IslandHost
     /// through Update.exe when an app update is staged too (it applies both),
     /// else by starting MediaViewer again once this process has exited.
     /// </summary>
-    private static void RequestAddonRestart() => Send(Command.UpdateRestart, 2);
+    private static void RequestAddonRestart() => RestartWhenIdle();
+
+    /// <summary>
+    /// #510: Settings → Add-ons' quiet marker while an update waits on a
+    /// restart (the card's Later leaves it): "Restart to finish updating" with
+    /// the add-ons and their versions, and Restart now. Hidden otherwise.
+    /// </summary>
+    private static FrameworkElement BuildAddonsRestartRow()
+    {
+        _addonsRestartText = Note(RestartWords.Marker(_addonRestartFor));
+        _addonsRestartText.Foreground = Brush(Title);
+        _addonsRestartText.VerticalAlignment = VerticalAlignment.Center;
+        Button restart = SettingsButton("Restart now", RequestAddonRestart, accent: true);
+        ToolTipService.SetToolTip(restart, "MediaViewer opens again on this folder and file. Anything still running finishes first.");
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(12) };
+        row.Children.Add(_addonsRestartText);
+        row.Children.Add(restart);
+        row.Visibility = _addonRestartFor.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        _addonsRestartRow = row;
+        return row;
+    }
 
     private static void RefreshRestartPrompts()
     {
         Visibility v = _addonRestartFor.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         if (_importRestartButton is not null) _importRestartButton.Visibility = v;
         if (_localSearchRestartButton is not null) _localSearchRestartButton.Visibility = v;
+        if (_addonsRestartRow is not null) _addonsRestartRow.Visibility = v;
+        if (_addonsRestartText is not null) _addonsRestartText.Text = RestartWords.Marker(_addonRestartFor);
         ShowUpdateStatus(_lastUpdateStatus ?? _updater?.Status
                          ?? new UpdateStatus(UpdatePhase.Inert, null, UpdateUrgency.Normal, null));
     }

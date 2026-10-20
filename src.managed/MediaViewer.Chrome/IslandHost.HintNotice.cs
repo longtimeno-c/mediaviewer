@@ -165,6 +165,7 @@ public static partial class IslandHost
         {
             bottom -= (int)Math.Ceiling(_resumeNoticeCard.DesiredSize.Height * scale) + margin;
         }
+        bottom -= RestartNoticeTakesPx(scale, margin);  // #510: above the restart card too
         MoveAt(_hintNotice, Math.Max(0, clientWidth - width - margin), Math.Max(0, bottom - tall), width, tall);
         // Above the gallery and the panes, as the resume notice is.
         try { _hintNotice.SiteBridge?.MoveInZOrderAtTop(); }

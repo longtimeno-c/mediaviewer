@@ -742,6 +742,16 @@ typedef struct mv_host_api {
    * keep_alive: read it only when `struct_size` covers it and the
    * pointer is non-NULL. */
   mv_status(MV_CALL* document_text)(void* host, const char* path_utf8, mv_addon_doc_text_fn visit, void* user);
+  /* ---- busy (#510, docs/design/18 "Updates") ---------------------------------- */
+  /* [any-thread][no-block] Work the person would not want cut off is running
+   * (a Driftwire transfer): `what_utf8` (<= 120 bytes) names it for "Waiting
+   * for … to finish" ("a Driftwire transfer"); "" or NULL says it has ended.
+   * The host's Restart now waits for it, and an update of this add-on does
+   * not reload it under it. Never a path or a file name (rule 6).
+   * MV_ERR_NOT_FOUND before the add-on is attached (retry). Appended after
+   * document_text: read it only when `struct_size` covers it and the pointer
+   * is non-NULL. */
+  mv_status(MV_CALL* busy_post)(void* host, const char* what_utf8);
 } mv_host_api;
 
 typedef struct mv_addon_api {

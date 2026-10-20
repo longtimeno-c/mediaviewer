@@ -605,7 +605,9 @@ public static partial class IslandHost
         public void SetStatus(string? text) => DispatcherQueueControllerTryEnqueue(() =>
         {
             // Import's progress line; the AI pack has its own pill.
-            if (slot != ImportSlot || _importProgressLabel is null) return;
+            if (slot != ImportSlot) return;
+            NoteImportJob(text is not null);  // #510: Restart now waits for it
+            if (_importProgressLabel is null) return;
             _importProgressLabel.Text = text ?? "";
             _importProgressLabel.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
         });
@@ -1023,6 +1025,8 @@ public static partial class IslandHost
         heading.FontSize = TypeHeading;
         AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
         view.Children.Add(heading);
+        // #510: "Restart to finish updating …" while an update waits on a restart.
+        view.Children.Add(BuildAddonsRestartRow());
         // #442: Import's card holds everything of Import: its row (name, line,
         // state, buttons or the install bar), its settings page, its status and
         // its restart, as the Mac's AddonsSection does.
@@ -1184,7 +1188,7 @@ public static partial class IslandHost
     private static void AddImportRemoveConfirm()
     {
         if (_addonRow is null) return;
-        TextBlock q = Note("Remove Import? Its library index and import history (import.db) can stay, so a reinstall still knows what was imported.");
+        TextBlock q = Note("Remove Import? Its library index and import history (import.db) can stay, so a reinstall still knows what was imported. \"Remove everything\" deletes them and its settings.");
         q.Foreground = Brush(Title);
         _addonRow.Children.Add(q);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
@@ -1288,7 +1292,7 @@ public static partial class IslandHost
                 ImportSlot.Phase = null;
                 ApplyAddonStates(states);
                 SetAddonStatus(message);
-                if (restart) AddonRestartNeeded($"Import {update}");
+                if (restart && update is not null) AddonRestartNeeded("Import", update);
                 RefreshAddonRow();
                 if (ImportSlot.Usable && ImportSlot.Chrome is null) LoadAddon(ImportSlot);
             });

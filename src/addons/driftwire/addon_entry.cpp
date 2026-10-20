@@ -148,6 +148,10 @@ class host_bridge final : public mv::driftwire::engine_host {
     if (!MV_SP_HAS(keep_alive)) return true;  // an older host: nothing to keep
     return h_->keep_alive(h_->host, on ? 1 : 0, kScreen, mv::driftwire::kReceivingStatus) == MV_OK;
   }
+
+  void post_busy(const std::string& what) override {
+    if (MV_SP_HAS(busy_post)) (void)h_->busy_post(h_->host, what.c_str());  // an older host: nothing waits
+  }
 #undef MV_SP_HAS
 
  private:
