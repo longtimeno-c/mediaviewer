@@ -2422,8 +2422,31 @@ desktop (MSVC Release, Ninja), one machine.
   0 idle presents, idle CPU 3.05 / 2.42 / 2.66 / 2.37 %. Two earlier new-only runs: one passed,
   one missed on a single 33.5 ms frame (0 dropped). In this sequence every lab, base and new,
   wrote its report and then did not exit (stopped by hand); earlier runs on the same build exited.
-- **Not run:** the Mac side by side, two machines (nearby send and receive, offers, the
-  receiving and remembered-device states), Narrator over the new rows.
+- **Not run:** two machines (nearby send and receive, offers, the receiving and
+  remembered-device states), Narrator over the new rows.
+
+### Driftwire window on the Mac (issue #508, 2026-10-20)
+
+The Mac half of the above (`ScreenView.swift`; [25 §10](design/25-open-addons.md)), on an
+M-series MacBook Air, Release, one machine.
+
+- **Seen in the app** (a dev-signed Driftwire sideloaded into a copy with its own bundle id,
+  `HOME`, `MV_DEV_ADDONS_DIR` and `MV_DRIFTWIRE_OFFLINE=1`, opened from Settings → Driftwire →
+  Open Driftwire): the system face, every group a card, switches on the right (a click on the
+  words flips them), Choose… / Clear filled on one row, "No one nearby yet", the offline line
+  under Nearby, the scroll bar on the window's edge. The window opened at 720 × 520 asked and
+  shrank to its content (712 → 602 pt). Scrolled to Internet options and flipped a switch twice
+  back to back: the place was kept. Screenshots: `docs/review/508/mac-*.png`.
+- Without `MV_DRIFTWIRE_OFFLINE` a fresh ad-hoc-signed copy waits on the Keychain (the engine's
+  identity, `secrets::keychain::put`) until its prompt is answered, so the window shows the
+  spinner; started from a shell rather than `open`, TCC ends it (no usage strings in the
+  shell's identity). Both are the test setup, not the product.
+- **`mv_import_tests "[driftwire]"`:** 136 cases pass, `"[slots]"` 22 (rebased on 22d9c8e9). The Swift chrome builds with no new
+  warnings.
+- **Mac PR 1 gate** (`mediaviewer_lab --soak 60 --gate`): 3599 frames, 0 dropped, p99 17.0 ms,
+  max 17.1 ms, 0 idle presents. One run, new build only (the change is the add-on window's
+  SwiftUI, which a soak does not open).
+- **Not run:** two machines; VoiceOver over the new rows.
 
 ### Driftwire on Windows (issue #472, 2026-10-18)
 

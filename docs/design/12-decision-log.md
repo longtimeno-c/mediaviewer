@@ -2157,9 +2157,12 @@ Windows' as a terminal (CozetteVector, toggles stacked under their labels, loose
 own window on Windows now uses Segoe UI Variable on the Fluent ramp, inline toggles and filled
 buttons (25 §10); a theme that names a face still wins, and a section in the info pane keeps the
 chrome's face. Grouping is the add-on's to say with `"look": "card"` (Driftwire's tree now puts
-every group in one), not a Windows-only rule, so both hosts draw the same groups. Not changed:
-ScreenView.swift still sets `MVTheme.font` (CozetteVector unless themed); if the Mac's windows
-were seen in the system face, that is worth checking there, not assumed.
+every group in one), not a Windows-only rule, so both hosts draw the same groups. The Mac follows
+in the same PR (owner, 2026-10-20: "make sure mac follow the same layout"): ScreenView.swift drew
+its windows in `MVTheme.font`, CozetteVector unless themed, with the switch beside a hugging label
+and flat text buttons; a screen's window, pane or sheet there now takes the same face, ramp,
+inline switch, filled buttons, inner scroll margin and fit-to-content. The info pane's sections
+keep the chrome's face on both hosts.
 
 ---
 

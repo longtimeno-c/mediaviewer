@@ -364,6 +364,12 @@ small vocabulary both hosts render with their own controls.
   window opens no taller than its content. A new revision rebuilds the content but keeps each
   scroller's offset and the focused control, by node id (two revisions back to back keep it
   too). A section in the info pane keeps the chrome's face, among the chrome's own text.
+  **The Mac draws it the same way** (`ScreenView.swift`, #508): the system face (SF, or the
+  theme's `font`) on the same ramp, the switch on the right of its label (clicking the words
+  flips it), filled buttons, a field as wide as its row, a root scroller's margin inside it, and
+  a window that shrinks to its content once, keeping its top edge (floor 360 pt). SwiftUI keeps
+  each scroller's offset and the focus across a revision by itself, since every node is built
+  under its id. The title bar already follows the theme's light or dark (`NSApp.appearance`).
 
 ## 11. Performance
 
