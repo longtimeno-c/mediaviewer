@@ -171,7 +171,9 @@ struct core {
   std::map<std::wstring, client_state> clients;                         // under m
   std::map<std::string, bt_peer> info;  // under m: who each INFO said it is
   std::map<std::string, std::chrono::steady_clock::time_point> reported;  // under m
-  std::set<std::string> probing;                                        // under m
+  // Under m: probes under way, by when each started (#502: one that stalls
+  // past kProbeMs no longer holds a place).
+  std::map<std::string, std::chrono::steady_clock::time_point> probing;
   struct worker {
     std::thread thread;
     std::shared_ptr<std::atomic<bool>> done;
@@ -222,10 +224,22 @@ void on_advertisement(const std::shared_ptr<core>& c, std::uint64_t address) {
     c->report(peer);
     return;
   }
-  if (c->probing.count(key) || c->probing.size() >= 8) return;  // a few at a time
-  c->probing.insert(key);
+  // #502: a probe that stalls (an advertiser that never answers GATT) gives
+  // its place up after kProbeMs; its thread ends when Windows lets go.
+  const auto now = std::chrono::steady_clock::now();
+  std::erase_if(c->probing, [&](const auto& kv) { return now - kv.second > std::chrono::milliseconds(bt::kProbeMs); });
+  if (c->probing.count(key) || c->probing.size() >= bt::kMaxProbes) return;  // a few at a time
+  std::size_t alive = 0;
+  for (const auto& w : c->threads) alive += w.done->load() ? 0 : 1;
+  if (alive >= bt::kMaxProbeThreads) return;  // stalled ones still waiting: no more
+  // Bounded, however many devices advertise around us: forget the old ones.
+  if (c->info.size() > bt::kMaxKnown || c->reported.size() > bt::kMaxKnown) {
+    c->info.clear();
+    c->reported.clear();
+  }
+  c->probing[key] = now;
   // Who it is: open it once and read INFO, off the watcher's thread.
-  c->spawn_locked([c, address, key] {
+  c->spawn_locked([c, address, key, started = now] {
     std::string id, name;
     std::uint32_t protocol = kProtocol1;
     if (auto r = open_remote(address, false)) {
@@ -246,7 +260,7 @@ void on_advertisement(const std::shared_ptr<core>& c, std::uint64_t address) {
     }
     {
       std::lock_guard l(c->m);
-      c->probing.erase(key);
+      if (const auto it = c->probing.find(key); it != c->probing.end() && it->second == started) c->probing.erase(it);
       if (!id.empty()) {
         c->info[key] = bt_peer{key, id, name, protocol};
         c->reported[key] = std::chrono::steady_clock::now();

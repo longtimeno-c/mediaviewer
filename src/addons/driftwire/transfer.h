@@ -18,6 +18,8 @@
 //   - a cancel, a dropped link, a mismatch or any error removes the
 //     temporary, so nothing partial is ever left. Files already verified
 //     stay.
+// A cancel from either side goes through channel::cancel (#511): said
+// reliably, and final, so neither end takes it for a lost link.
 // Every path the sender names passes wire::safe_relative and stays inside the
 // folder the person picked. Worker threads only (rule 1); nothing is logged
 // with a path or a name (rule 6).
@@ -59,6 +61,9 @@ struct incoming_offer {
   // here, sealed, once the sender's person has typed the right code. Absent
   // from a sender before #501, or one with nothing to remember with.
   std::optional<std::array<std::uint8_t, 32>> key;
+  // #498: the one folder every file is in, or empty when they are files
+  // picked one by one (parse_offer refuses any other shape).
+  std::string folder;
 };
 
 // An identity key as the offer and the accept carry it ("key": 64 hex
@@ -88,6 +93,9 @@ struct hooks {
   // #501, the sender: this machine's identity, said in the offer (after the
   // code), so the receiver can remember it. Empty: not said.
   std::optional<std::array<std::uint8_t, 32>> identity;
+  // #502, the receiver: nothing of the files for this long (and no file
+  // being read back) ends the receive as failed. 0: no limit.
+  int idle_ms = 0;
 };
 
 enum class outcome : std::uint8_t {
@@ -100,8 +108,13 @@ enum class outcome : std::uint8_t {
 };
 [[nodiscard]] const char* outcome_name(outcome o) noexcept;
 
+// The longest a cancel waits to be said before the link closes (#511): for
+// the frame being written, then for the peer to acknowledge it.
+inline constexpr int kCancelWaitMs = 250;
+
 struct transfer_result {
   outcome how = outcome::failed;
+  bool by_peer = false;       // cancelled (or failed) by the other side's msg::cancel
   std::uint32_t done = 0;     // files verified on the receiver
   std::uint32_t skipped = 0;  // files the sender could not read whole
   std::vector<std::string> written;  // receiver: final paths, in order (tests, the summary)

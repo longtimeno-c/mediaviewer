@@ -187,7 +187,8 @@ TEST_CASE("driftwire privacy: after a nearby send each side remembers the other'
   REQUIRE(ann.eng.snapshot().remember_offer);
   REQUIRE(bea.eng.snapshot().remember_offer);
   ann.eng.on_event("remember", 2, "true");
-  bea.eng.on_event("remember", 2, "true");
+  // #497: the receiver keeps the sender once its person types the check on the sender's screen.
+  bea.eng.on_event("remember_check_entry", 3, "\"" + ann.eng.snapshot().remember_check + "\"");
   // The keys kept are the identities (which later meetings check), not the
   // keys of the link that carried the files.
   CHECK(ann.eng.snapshot().known_ids == std::vector<std::string>{sp::relay::fingerprint(identity_of(s / "bea_secrets"))});

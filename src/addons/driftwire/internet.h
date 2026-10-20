@@ -50,7 +50,9 @@
 namespace mv::driftwire {
 
 inline constexpr int kCodeLifetimeMs = 10 * 60 * 1000;
-inline constexpr int kMapLifetimeS = 3600;
+// A router lease (#499): short, renewed while held (mapping::keeper), so a
+// crash leaves a forward or pinhole open two minutes at most.
+inline constexpr int kMapLifetimeS = 120;
 inline constexpr int kReachConnectMs = 5000;  // each TCP connect of a round
 inline constexpr int kHappyEyeballsMs = 250;
 
@@ -87,6 +89,11 @@ class internet_receiver {
     // there under a fresh token the code carries, so a sender whose direct
     // tries fail meets this computer through it.
     std::string relay;
+    // #499: where the router mappings a code holds are listed while held
+    // (mapping::keeper's ledger), and the folder's other ledgers that a
+    // crash may have left, removed before the first code asks the router.
+    std::string ledger;
+    std::vector<std::string> leftovers;
   };
   using link_fn = std::function<void(std::unique_ptr<link>)>;
 
@@ -139,8 +146,7 @@ class internet_receiver {
   bool stop_ = false;                                                   // under m_
   std::unique_ptr<net::listener> listener_;                             // under m_
   std::thread accept_thread_;                                           // this object's thread only
-  std::unique_ptr<mapping::mapper> mapper_;                             // the run thread only
-  std::vector<mapping::mapped> mapped_;                                 // the run thread only
+  std::unique_ptr<mapping::keeper> mapped_;                             // the run thread only
   // A word code (#472 PR 3): its socket, DHT client and keys, and the thread
   // that waits for the sender on the DHT and punches to it.
   std::shared_ptr<udp_hub> hub_;                                        // the run thread only
@@ -151,6 +157,7 @@ class internet_receiver {
   std::thread relay_thread_;                                            // the run thread only
   std::thread relay_setup_thread_;                                      // the run thread only
   std::atomic<bool> relay_stop_{false};
+  bool cleaned_ = false;  // the run thread only: leftovers removed
   std::thread thread_;
 };
 
@@ -169,16 +176,16 @@ class way_in {
   way_in& operator=(const way_in&) = delete;
   // Blocks while the router answers (a worker's call); nullptr when there is
   // no place a sender elsewhere could reach.
+  // `ledger`: where its mappings are listed while held (#499, mapping::keeper).
   [[nodiscard]] static std::unique_ptr<way_in> open(bool loopback_only, const std::optional<mapping::options>& mapping,
-                                                    link_fn on_link);
+                                                    link_fn on_link, const std::string& ledger = {});
   [[nodiscard]] const std::vector<net::endpoint>& places() const noexcept { return places_; }
 
  private:
   way_in() = default;
   std::unique_ptr<net::listener> listener_;
   std::vector<net::endpoint> places_;
-  std::unique_ptr<mapping::mapper> mapper_;
-  std::vector<mapping::mapped> mapped_;
+  std::unique_ptr<mapping::keeper> mapped_;
   std::thread accept_thread_;
 };
 

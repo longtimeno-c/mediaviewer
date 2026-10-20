@@ -466,6 +466,28 @@ std::vector<address> local_addresses() {
   return out;
 }
 
+std::vector<subnet> local_subnets() {
+  std::vector<subnet> out;
+  ULONG size = 16 * 1024;
+  std::vector<unsigned char> buf;
+  ULONG r = ERROR_BUFFER_OVERFLOW;
+  for (int tries = 0; tries < 3 && r == ERROR_BUFFER_OVERFLOW; ++tries) {
+    buf.resize(size);
+    r = ::GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+                               nullptr, reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data()), &size);
+  }
+  if (r != NO_ERROR) return out;
+  for (auto* ad = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.data()); ad; ad = ad->Next) {
+    if (ad->OperStatus != IfOperStatusUp) continue;
+    for (auto* u = ad->FirstUnicastAddress; u; u = u->Next) {
+      const sockaddr* sa = u->Address.lpSockaddr;
+      if (!sa || (sa->sa_family != AF_INET && sa->sa_family != AF_INET6)) continue;
+      out.push_back({address_of(sa), static_cast<int>(u->OnLinkPrefixLength)});
+    }
+  }
+  return out;
+}
+
 std::optional<address> default_gateway() {
   // The best IPv4 route to anywhere public: its next hop is the router.
   SOCKADDR_INET dest{};
@@ -814,8 +836,10 @@ result<std::unique_ptr<tcp_rendezvous>> open_rendezvous(bool loopback_only) {
   }
   // Windows has no SO_REUSEPORT: SO_REUSEADDR on the listener and on every
   // connecting socket lets them share the port.
-  // Without SO_EXCLUSIVEADDRUSE another process of the same user could bind
-  // the port too and take a connection; CPace on the code still refuses it.
+  // Without SO_EXCLUSIVEADDRUSE another process of the same user (no other
+  // user: Windows refuses a shared bind across accounts) could bind the port
+  // too and take a connection. It gains nothing (#499): its hello fails the
+  // code's MAC, so the sender moves on, and CPace would refuse it after.
   BOOL one = TRUE;
   (void)::setsockopt(s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof one);
   // Non-blocking: a connection that resets between WSAPoll and accept must

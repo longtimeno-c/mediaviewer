@@ -8,16 +8,23 @@
 // delivers the files with matching bytes, Decline and a third client receive
 // nothing, Cancel mid-way leaves nothing partial, a machine in the middle
 // shows two different codes, and no sender path climbs out of the folder.
+#include <functional>
+
 #include "driftwire_fixture.h"
 
 #if !defined(_WIN32)
 #include <sys/resource.h>
 #endif
+#if defined(__APPLE__)
+#include <sys/xattr.h>
+#endif
 
 // ---- the wire -------------------------------------------------------------------------------
 
 TEST_CASE("driftwire: a sender's path never leaves the receiver's folder", "[driftwire]") {
-  for (const char* ok : {"IMG_1.JPG", "Trip/IMG_1.JPG", "Trip/Day 2/clip.mov", "caf\xC3\xA9.heic", ".hidden"}) {
+  // ZWJ (an emoji family) and ZWNJ (Persian) are letters' business, not spoofing.
+  for (const char* ok : {"IMG_1.JPG", "Trip/IMG_1.JPG", "Trip/Day 2/clip.mov", "caf\xC3\xA9.heic",
+                         "\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7.jpg", "\xD9\x85\xE2\x80\x8C\xD9\x8A.jpg"}) {
     INFO(ok);
     CHECK(sp::safe_relative(ok));
   }
@@ -26,7 +33,11 @@ TEST_CASE("driftwire: a sender's path never leaves the receiver's folder", "[dri
   for (const char* bad : {"", "/etc/passwd", "../x.jpg", "a/../../b", "a/./b", "a//b", "a/", "C:x.jpg", "a\\b.jpg",
                           "CON", "con.txt", "Trip/NUL.jpg", "COM1", "lpt9.log", "a.", "a ", "x?y", "x*y", "a\x01"
                           "b",
-                          "\xFF\xFE"}) {
+                          "\xFF\xFE",
+                          // #498: hidden files and folders, and text that reads as something else.
+                          ".hidden", ".ssh/authorized_keys", "Trip/.zshenv", "invoice\xE2\x80\xAEgpj.exe",
+                          "a\xE2\x80\xA8" "b.jpg", "a\xC2\x85" "b.jpg", "a\xE2\x81\xA6" "b\xE2\x81\xA9.jpg",
+                          "a\xE2\x80\x8B" "b.jpg"}) {
     INFO(bad);
     CHECK_FALSE(sp::safe_relative(bad));
   }
@@ -34,7 +45,7 @@ TEST_CASE("driftwire: a sender's path never leaves the receiver's folder", "[dri
 }
 
 TEST_CASE("driftwire: an offer is refused whole for one bad path or wrong sums", "[driftwire]") {
-  CHECK(sp::parse_offer(R"({"count":2,"bytes":5,"files":[{"rel":"a.jpg","size":2},{"rel":"T/b.jpg","size":3}]})"));
+  CHECK(sp::parse_offer(R"({"count":2,"bytes":5,"files":[{"rel":"a.jpg","size":2},{"rel":"b.jpg","size":3}]})"));
   CHECK_FALSE(sp::parse_offer(R"({"count":2,"bytes":5,"files":[{"rel":"a.jpg","size":2},{"rel":"../b.jpg","size":3}]})"));
   CHECK_FALSE(sp::parse_offer(R"({"count":2,"bytes":6,"files":[{"rel":"a.jpg","size":2},{"rel":"b.jpg","size":3}]})"));
   CHECK_FALSE(sp::parse_offer(R"({"count":3,"bytes":5,"files":[{"rel":"a.jpg","size":2},{"rel":"b.jpg","size":3}]})"));
@@ -45,6 +56,52 @@ TEST_CASE("driftwire: an offer is refused whole for one bad path or wrong sums",
                               R"({"rel":"b.mov","size":9223372036854775807}]})"));
   CHECK_FALSE(sp::parse_offer(R"({"count":1,"bytes":1125899906842625,"files":[{"rel":"a.mov","size":1125899906842625}]})"));
 }
+
+TEST_CASE("driftwire: an offer is files picked one by one or one folder, nothing else (#498)", "[driftwire]") {
+  const auto bare = sp::parse_offer(R"({"count":2,"bytes":5,"files":[{"rel":"a.jpg","size":2},{"rel":"b.jpg","size":3}]})");
+  REQUIRE(bare);
+  CHECK(bare->folder.empty());
+  const auto folder =
+      sp::parse_offer(R"({"count":2,"bytes":5,"files":[{"rel":"Trip/a.jpg","size":2},{"rel":"Trip/D/b.jpg","size":3}]})");
+  REQUIRE(folder);
+  CHECK(folder->folder == "Trip");
+  // Photos beside a login item, two folders, a folder beside a file: refused whole.
+  CHECK_FALSE(sp::parse_offer(
+      R"({"count":2,"bytes":5,"files":[{"rel":"a.jpg","size":2},{"rel":"Library/LaunchAgents/x.plist","size":3}]})"));
+  CHECK_FALSE(sp::parse_offer(R"({"count":2,"bytes":5,"files":[{"rel":"A/a.jpg","size":2},{"rel":"B/b.jpg","size":3}]})"));
+  CHECK_FALSE(sp::parse_offer(R"({"count":2,"bytes":5,"files":[{"rel":"A/a.jpg","size":2},{"rel":"A","size":3}]})"));
+  // 16384 files of 2^50 bytes total 2^64: wrapped, that is 0, which must not pass for the sum.
+  std::string wrap = R"({"count":16384,"bytes":0,"files":[)";
+  for (int i = 0; i < 16384; ++i) {
+    wrap += (i ? ",{" : "{");
+    wrap += R"("rel":"f)" + std::to_string(i) + R"(","size":1125899906842624})";
+  }
+  wrap += "]}";
+  CHECK_FALSE(sp::parse_offer(wrap));
+}
+
+TEST_CASE("driftwire: names lose the controls that would make them read as something else (#498)", "[driftwire]") {
+  CHECK(sp::clean_name("Ann\xE2\x80\xAE koobcaM") == "Ann koobcaM");
+  CHECK(sp::clean_name("Ann\xE2\x80\xA8(remembered)") == "Ann(remembered)");
+  CHECK(sp::clean_name("\xE2\x81\xA6" "Bea\xE2\x81\xA9\xC2\x85") == "Bea");
+  CHECK(sp::clean_name("Studio \xF0\x9F\x8E\xA8 Mac") == "Studio \xF0\x9F\x8E\xA8 Mac");
+}
+
+#if !defined(_WIN32)
+TEST_CASE("driftwire: received folders are made beneath Save to, never through a link (#498)", "[driftwire]") {
+  scratch_dir s("driftwire_beneath");
+  fs::create_directories(s / "dest");
+  fs::create_directories(s / "elsewhere");
+  fs::create_directory_symlink(s / "elsewhere", s / "dest" / "Trip");
+  const auto made = mv::io::make_directories_beneath(utf8(s / "dest"), "New/Day 2");
+  REQUIRE(made);
+  CHECK(fs::is_directory(s / "dest" / "New" / "Day 2"));
+  const auto through = mv::io::make_directories_beneath(utf8(s / "dest"), "Trip/Day 2");
+  REQUIRE_FALSE(through);
+  CHECK(through.error() == mv::status::permission_denied);
+  CHECK(fs::is_empty(s / "elsewhere"));
+}
+#endif
 
 TEST_CASE("driftwire: the beacon carries an id, a name and a port, nothing else", "[driftwire]") {
   sp::beacon b{"0123456789abcdef", "Tristan\xE2\x80\x99s MacBook", 50123};
@@ -631,6 +688,14 @@ TEST_CASE("driftwire: Accept delivers the files with their bytes, keeping both o
   CHECK_FALSE(any_temporary(dest));
   // The originals are untouched (rule 5).
   CHECK(read_bytes(s / "out" / "big.mov") == big);
+#if defined(__APPLE__)
+  // #498: marked as from another computer, so Gatekeeper checks it before it runs.
+  char mark[128] = {};
+  const ssize_t n = ::getxattr(utf8(dest / "big.mov").c_str(), "com.apple.quarantine", mark, sizeof mark, 0, 0);
+  REQUIRE(n > 0);
+  CHECK(std::string(mark, static_cast<std::size_t>(n)).find(";MediaViewer Driftwire;") != std::string::npos);
+  CHECK(::getxattr(utf8(s / "out" / "big.mov").c_str(), "com.apple.quarantine", nullptr, 0, 0, 0) < 0);
+#endif
 }
 
 TEST_CASE("driftwire: a new set to send never waits for the one still being read", "[driftwire]") {
@@ -798,6 +863,17 @@ TEST_CASE("driftwire: a pair half and a sidecar ride along; a folder keeps its s
   bea.eng.wait_idle();
   ann.eng.wait_idle();
   CHECK(files_in(s / "bea_received") == std::vector<std::string>{"Trip/Day 2/b.jpg", "Trip/a.jpg"});
+
+  // #498: sent again, the folder lands beside the first, never merged into it.
+  ann.send_to(bea);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  CHECK(bea.eng.snapshot().in_folder == "Trip");
+  CHECK(bea.tree().find("In the folder Trip") != std::string::npos);
+  bea.eng.on_event("accept", 1, "");
+  bea.eng.wait_idle();
+  ann.eng.wait_idle();
+  CHECK(files_in(s / "bea_received") == std::vector<std::string>{"Trip (2)/Day 2/b.jpg", "Trip (2)/a.jpg",
+                                                                   "Trip/Day 2/b.jpg", "Trip/a.jpg"});
 }
 
 TEST_CASE("driftwire: Decline, closing the window, and a third client receive nothing", "[driftwire]") {
@@ -1056,7 +1132,7 @@ TEST_CASE("driftwire: a peer that connects and stalls cannot hold the receiver o
 }
 
 
-TEST_CASE("driftwire: made-up beacons cannot flood the list or take a peer's address", "[driftwire]") {
+TEST_CASE("driftwire: made-up beacons cannot flood the list, hide a real peer or take its address", "[driftwire]") {
   scratch_dir s("driftwire_flood");
   std::atomic<inject_discovery*> inject{nullptr};
   fake_host host(s / "received");
@@ -1075,20 +1151,224 @@ TEST_CASE("driftwire: made-up beacons cannot flood the list or take a peer's add
     const inject_discovery* d = inject.load();
     return d && d->ready.load();
   }));
-  for (int i = 0; i < 500; ++i) {
+  const auto flood_id = [](int i) {
     char id[17];
     std::snprintf(id, sizeof id, "%016x", 0x1000 + i);
-    inject.load()->seen(sp::beacon{id, "Flood " + std::to_string(i), 40000}, "10.0.0.9");
+    return std::string(id);
+  };
+  // #502: one address lists a few ids, however many it makes up.
+  for (int i = 0; i < 500; ++i) {
+    inject.load()->seen(sp::beacon{flood_id(i), "Flood " + std::to_string(i), 40000}, "10.0.0.9");
   }
-  REQUIRE(eventually([&] { return eng.snapshot().peers.size() == sp::kMaxPeers; }));
-  CHECK(eng.snapshot().peers.size() == sp::kMaxPeers);
+  REQUIRE(eventually([&] { return eng.snapshot().peers.size() == sp::kMaxIdsPerAddress; }));
+  // From many addresses, the list fills to what Wi-Fi may take (room is kept
+  // for Bluetooth), and a real peer heard after the flood is still listed:
+  // the least recently heard made-up one gives way.
+  for (int i = 0; i < 200; ++i) {
+    const std::string from = "10.0." + std::to_string(1 + i / 200) + "." + std::to_string(1 + i % 200);
+    inject.load()->seen(sp::beacon{flood_id(1000 + i), "Flood", 40000}, from);
+  }
+  REQUIRE(eventually([&] { return eng.snapshot().peers.size() == sp::kMaxPeers - sp::kBluetoothRoom; }));
+  inject.load()->seen(sp::beacon{"00000000000000ee", "Real", 40000}, "10.0.9.1");
+  const auto listed = [&](const char* name) {
+    const auto v = eng.snapshot();
+    return std::any_of(v.peers.begin(), v.peers.end(), [&](const auto& p) { return p.name == name; });
+  };
+  REQUIRE(eventually([&] { return listed("Real"); }));
+  CHECK(eng.snapshot().peers.size() <= sp::kMaxPeers - sp::kBluetoothRoom);
   // A fresh peer keeps its address: a second machine claiming its id is ignored.
-  inject.load()->seen(sp::beacon{"0000000000001000", "Somebody else", 50000}, "10.0.0.66");
+  inject.load()->seen(sp::beacon{"00000000000000ee", "Somebody else", 50000}, "10.0.0.66");
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  CHECK(listed("Real"));
+  CHECK_FALSE(listed("Somebody else"));
+}
+
+// ---- #502: what one source can hold or spam ------------------------------------------------------
+
+TEST_CASE("driftwire: nearby is this machine's link, not anything routable (#502)", "[driftwire]") {
+  const auto ip = [](const char* text) { return *sp::net::parse_address(text); };
+  const std::vector<sp::net::subnet> nets = {{ip("192.168.1.20"), 24}, {ip("10.8.0.2"), 30}, {ip("2001:db8:1::5"), 64}};
+  CHECK(sp::net::on_link(ip("192.168.1.77"), nets));
+  CHECK_FALSE(sp::net::on_link(ip("192.168.2.77"), nets));  // another subnet
+  CHECK(sp::net::on_link(ip("10.8.0.1"), nets));
+  CHECK_FALSE(sp::net::on_link(ip("10.8.0.4"), nets));      // past the /30
+  CHECK_FALSE(sp::net::on_link(ip("8.8.8.8"), nets));       // the internet
+  CHECK(sp::net::on_link(ip("2001:db8:1::99"), nets));
+  CHECK_FALSE(sp::net::on_link(ip("2001:db8:2::99"), nets));
+  // Loopback and link-local are always on the link; a /0 never makes everything so.
+  CHECK(sp::net::on_link(ip("127.0.0.1"), {}));
+  CHECK(sp::net::on_link(ip("169.254.3.4"), {}));
+  CHECK(sp::net::on_link(ip("fe80::1"), {}));
+  CHECK(sp::net::on_link(ip("::1"), {}));
+  const std::vector<sp::net::subnet> any = {{ip("0.0.0.0"), 0}};
+  CHECK_FALSE(sp::net::on_link(ip("8.8.8.8"), any));
+  // This machine's own networks include loopback.
+  const auto mine = sp::net::local_subnets();
+  CHECK(std::any_of(mine.begin(), mine.end(), [&](const auto& n) { return sp::net::on_link(ip("127.0.0.1"), {&n, 1}); }));
+}
+
+TEST_CASE("driftwire: a source is held to a few a minute, others are not (#502)", "[driftwire]") {
+  using clk = sp::source_limit::clock;
+  sp::source_limit limit(3, std::chrono::minutes(1), 4);
+  const auto t0 = clk::now();
+  for (int i = 0; i < 3; ++i) CHECK(limit.allow("10.0.0.9", t0 + std::chrono::seconds(i)));
+  CHECK_FALSE(limit.allow("10.0.0.9", t0 + std::chrono::seconds(10)));
+  CHECK(limit.allow("10.0.0.10", t0 + std::chrono::seconds(10)));  // another source
+  CHECK(limit.allow("", t0));                                       // none: not limited
+  CHECK(limit.allow("10.0.0.9", t0 + std::chrono::seconds(61)));   // a minute on
+  // The table holds 4 sources; a fifth drops the one heard from longest ago.
+  for (int i = 0; i < 8; ++i) (void)limit.allow("s" + std::to_string(i), t0 + std::chrono::seconds(70 + i));
+  CHECK(limit.allow("10.0.0.9", t0 + std::chrono::seconds(80)));
+}
+
+namespace {
+// A client whose engine options the test adjusts.
+struct tuned_client {
+  fake_host host;
+  sp::engine eng;
+  tuned_client(bus& b, const fs::path& received, const std::string& name,
+               const std::function<void(sp::engine::options&)>& tune)
+      : host(received), eng(host, [&] {
+          auto o = client::options(b, name);
+          tune(o);
+          return o;
+        }()) {
+    eng.screen_opened("");
+  }
+};
+
+std::uint16_t port_of_member(bus& b, const std::string& id) {
+  std::uint16_t port = 0;
+  REQUIRE(eventually([&] {
+    std::lock_guard lock(b.m);
+    for (const auto& [k, m] : b.members) {
+      if (m.self.id == id) port = m.self.port;
+    }
+    return port != 0;
+  }));
+  return port;
+}
+
+std::size_t shown_notices(fake_host& h) {
+  std::lock_guard lock(h.m);
+  return static_cast<std::size_t>(
+      std::count_if(h.notices.begin(), h.notices.end(), [](const std::string& n) { return !n.empty(); }));
+}
+}  // namespace
+
+TEST_CASE("driftwire: one source gets a few notifications a minute, then a few receives, then none (#502)",
+          "[driftwire]") {
+  scratch_dir s("driftwire_notice_flood");
+  bus b;
+  // Protocol 1: a sender's Cancel closes the link at once. (Protocol 2 may
+  // take it for a drop and wait kRejoinMs, #511: this is about the limits.)
+  b.force_protocol.store(sp::kProtocol1);
+  client ann(b, s / "ann_received", "IT Support");
+  client bea(b, s / "bea_received", "Bea");
+  bea.host.notify = true;
+  bea.eng.on_event("receiving", 2, "true");
+  bea.eng.screen_closed();
+  write_text(s / "out" / "a.jpg", "a");
+  ann.pick({s / "out" / "a.jpg"});
+  // Connect, idle, give up, again: what a sender holding the slot all night does.
+  for (int i = 0; i < sp::kReceivesPerMinute; ++i) {
+    ann.send_to(bea, false);
+    REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::connecting; }));
+    ann.eng.on_event("out_cancel", 1, "");
+    ann.eng.wait_idle();
+    bea.eng.wait_idle();
+  }
+  CHECK(shown_notices(bea.host) == static_cast<std::size_t>(sp::kNoticesPerMinute));
+  {
+    std::lock_guard lock(bea.host.m);
+    CHECK(bea.host.shown == 0);  // nor was the window brought forward instead
+  }
+  // Past kReceivesPerMinute the link closes at once: no receive starts.
+  ann.send_to(bea, false);
+  ann.eng.wait_idle();
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::ended);
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::ended);  // the last one's end, nothing newer
+  CHECK(shown_notices(bea.host) == static_cast<std::size_t>(sp::kNoticesPerMinute));
+}
+
+TEST_CASE("driftwire: a sender nobody confirms frees the receiver sooner (#502)", "[driftwire]") {
+  scratch_dir s("driftwire_unconfirmed");
+  bus b;
+  client ann(b, s / "ann_received", "Ann");
+  tuned_client bea(b, s / "bea_received", "Bea", [](sp::engine::options& o) { o.confirm_ms = 1500; });
+  write_text(s / "out" / "a.jpg", "a");
+  ann.pick({s / "out" / "a.jpg"});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return std::any_of(v.peers.begin(), v.peers.end(), [&](const auto& p) { return p.id == bea.eng.id(); });
+  }));
+  ann.eng.on_event("peers", 5, "\"" + bea.eng.id() + "\"");
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::connecting; }));
+  const auto t0 = std::chrono::steady_clock::now();
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::ended; }, 10));
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+  CHECK(ms < 5000);
+  CHECK(bea.eng.snapshot().in_note == "Ann did not send anything. Nothing was received.");
+  ann.eng.on_event("out_cancel", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+}
+
+TEST_CASE("driftwire: after Accept, a sender that sends nothing does not hold the receiver (#502)", "[driftwire]") {
+  scratch_dir s("driftwire_idle_after_accept");
+  bus b;
+  tuned_client bea(b, s / "bea_received", "Bea", [](sp::engine::options& o) { o.receive_idle_ms = 1500; });
+  fs::create_directories(s / "bea_received");
+  // A sender of its own: an offer, then nothing (its pings keep the link up).
+  auto l = sp::net::connect({"127.0.0.1", port_of_member(b, bea.eng.id())}, 5000);
+  REQUIRE(l);
+  auto ch = sp::channel::open(std::shared_ptr<sp::link>(std::move(*l)), true, "aaaaaaaaaaaaaaaa", "Mallory");
+  REQUIRE(ch);
+  const std::vector<sp::outgoing_file> files = {{"", "big.mov", 1ull << 30, 0}};
+  REQUIRE((*ch)->send(sp::msg::offer, sp::offer_json(files)));
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  bea.eng.on_event("accept", 1, "");
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::receiving; }));
+  const auto t0 = std::chrono::steady_clock::now();
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::ended; }, 15));
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+  CHECK(ms < 6000);
+  bea.eng.wait_idle();
+  CHECK_FALSE(any_temporary(s / "bea_received"));
+  (*ch)->shutdown();
+}
+
+TEST_CASE("driftwire: a beacon from off this machine's link is not listed (#502)", "[driftwire]") {
+  scratch_dir s("driftwire_off_link");
+  std::atomic<inject_discovery*> inject{nullptr};
+  fake_host host(s / "received");
+  sp::engine::options o;
+  o.my_name = "Ann";
+  o.use_bluetooth = false;
+  o.loopback_only = true;
+  o.local_subnets = std::vector<sp::net::subnet>{{*sp::net::parse_address("10.0.0.2"), 24}};
+  o.make_discovery = [&inject] {
+    auto d = std::make_unique<inject_discovery>();
+    inject = d.get();
+    return std::unique_ptr<sp::discovery>(std::move(d));
+  };
+  sp::engine eng(host, o);
+  eng.screen_opened("");
+  REQUIRE(eventually([&] {
+    const inject_discovery* d = inject.load();
+    return d && d->ready.load();
+  }));
+  for (int i = 0; i < 20; ++i) {
+    inject.load()->seen(sp::beacon{"00000000000000a1", "Far away", 40000}, "203.0.113.7");
+    inject.load()->seen(sp::beacon{"00000000000000a2", "Other subnet", 40000}, "10.0.1.7");
+    inject.load()->seen(sp::beacon{"00000000000000b1", "Nearby", 40000}, "10.0.0.9");
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(eventually([&] { return !eng.snapshot().peers.empty(); }));
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   const auto v = eng.snapshot();
-  const auto it = std::find_if(v.peers.begin(), v.peers.end(), [](const auto& p) { return p.id == "0000000000001000"; });
-  REQUIRE(it != v.peers.end());
-  CHECK(it->name == "Flood 0");
+  REQUIRE(v.peers.size() == 1);
+  CHECK(v.peers[0].name == "Nearby");
 }
 
 namespace {
@@ -1234,6 +1514,138 @@ long wakeups() {
   return u.ru_nvcsw + u.ru_nivcsw;
 }
 }  // namespace
+
+TEST_CASE("driftwire: a nearby receiver remembers the sender only with the code on the sender's screen (#497)",
+          "[driftwire]") {
+  scratch_dir s("driftwire_remember_check");
+  bus b;
+  client ann(b, s / "ann_received", "Ann", s / "ann_secrets");
+  client bea(b, s / "bea_received", "Bea", s / "bea_secrets");
+  write_text(s / "out" / "a.jpg", "a");
+  ann.pick({s / "out" / "a.jpg"});
+  bea.save_into(s / "bea_received");
+  ann.send_to(bea);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  const auto av = ann.eng.snapshot();
+  const auto bv = bea.eng.snapshot();
+  REQUIRE(av.remember_offer);
+  REQUIRE(bv.remember_offer);
+  // Ann typed Bea's code: Bea is proved, and Ann's window shows its own check.
+  CHECK(av.remember_check.size() == 7);
+  CHECK_FALSE(av.remember_needs_check);
+  CHECK(ann.tree().find(av.remember_check) != std::string::npos);
+  // Bea only saw a name Ann gave: ticking is not enough.
+  CHECK(bv.remember_needs_check);
+  CHECK(bv.remember_check.empty());
+  CHECK(bea.tree().find("remember_check_entry") != std::string::npos);
+  bea.eng.on_event("remember", 2, "true");
+  CHECK(bea.eng.snapshot().known.empty());
+  const std::string wrong = av.remember_check == "000 000" ? "111 111" : "000 000";
+  bea.eng.on_event("remember_check_entry", 3, "\"" + wrong + "\"");
+  CHECK(bea.eng.snapshot().known.empty());
+  CHECK(bea.eng.snapshot().remember_check_note.find("not the code") != std::string::npos);
+  // The code on Ann's screen: Bea keeps Ann, and Ann keeps Bea with a tick.
+  bea.eng.on_event("remember_check_entry", 3, "\"" + av.remember_check + "\"");
+  CHECK(bea.eng.snapshot().known == std::vector<std::string>{"Ann"});
+  CHECK(bea.eng.snapshot().remembered);
+  ann.eng.on_event("remember", 2, "true");
+  CHECK(ann.eng.snapshot().known == std::vector<std::string>{"Bea"});
+}
+
+TEST_CASE("driftwire: a run of nearby links that never offer stops new ones for a while (#497)", "[driftwire]") {
+  scratch_dir s("driftwire_unconfirmed");
+  bus b;
+  client ann(b, s / "ann_received", "Ann");
+  client bea(b, s / "bea_received", "Bea");
+  REQUIRE(eventually([&] { return ann.sees(bea); }));
+  std::uint16_t port = 0;
+  {
+    std::lock_guard lock(b.m);
+    for (const auto& [k, m] : b.members) {
+      if (m.self.id == bea.eng.id()) port = m.self.port;
+    }
+  }
+  REQUIRE(port != 0);
+  // A machine in the middle trying for a code: it connects, learns what it
+  // can, and leaves before any offer. Five of those in a minute...
+  for (int i = 0; i < 5; ++i) {
+    auto c = sp::net::connect({"127.0.0.1", port}, 2000);
+    REQUIRE(c);
+    (*c)->shutdown();
+    bea.eng.wait_idle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    bea.eng.wait_idle();
+  }
+  // ...and the next nearby sender is not answered, so no code shows there.
+  write_text(s / "out" / "a.jpg", "a");
+  ann.pick({s / "out" / "a.jpg"});
+  ann.send_to(bea, false);
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::ended; }, 15));
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::none);
+}
+
+TEST_CASE("driftwire: a peer that announces protocol 2 (v0.1.34, v0.1.35) is sent to in protocol 2 (#497)",
+          "[driftwire]") {
+  scratch_dir s("driftwire_protocol2_peer");
+  bus b;
+  b.force_protocol.store(sp::kProtocol2);
+  client ann(b, s / "ann_received", "Ann");
+  client bea(b, s / "bea_received", "Bea");
+  write_text(s / "out" / "a.jpg", "a");
+  ann.pick({s / "out" / "a.jpg"});
+  bea.save_into(s / "bea_received");
+  ann.send_to(bea);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  CHECK(ann.eng.snapshot().out_protocol == sp::kProtocol2);
+  CHECK(bea.eng.snapshot().in_protocol == sp::kProtocol2);
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  CHECK(files_in(s / "bea_received") == std::vector<std::string>{"a.jpg"});
+}
+
+TEST_CASE("driftwire: protocol 3's code is the same on both ends, and the server reveals last (#497)",
+          "[driftwire]") {
+  for (const std::uint32_t version : {sp::kProtocol2, sp::kProtocolVersion}) {
+    INFO(version);
+    auto [a, b] = loopback_pair();
+    sp::channel::options o;
+    o.version = version;
+    mv::result<std::unique_ptr<sp::channel>> server = mv::err(mv::status::internal);
+    std::thread t([&, l = std::move(b)]() mutable { server = sp::channel::open(std::move(l), false, "bbbbbbbbbbbbbbbb", "Bea"); });
+    auto client = sp::channel::open(std::move(a), true, "aaaaaaaaaaaaaaaa", "Ann", o);
+    t.join();
+    REQUIRE(client);
+    REQUIRE(server);
+    CHECK((*client)->version() == version);
+    CHECK((*server)->version() == version);
+    CHECK((*client)->code() == (*server)->code());
+    CHECK((*client)->code().size() == 7);
+  }
+}
+
+TEST_CASE("driftwire: a beacon cannot talk a peer down to protocol 1 (#497)", "[driftwire]") {
+  scratch_dir s("driftwire_no_downgrade");
+  bus b;
+  client ann(b, s / "ann_received", "Ann");
+  client bea(b, s / "bea_received", "Bea");
+  REQUIRE(eventually([&] { return ann.sees(bea); }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(700));  // heard at protocol 2
+  b.force_protocol.store(sp::kProtocol1);  // now every beacon in Bea's name says 1
+  std::this_thread::sleep_for(std::chrono::milliseconds(700));
+  write_text(s / "out" / "a.jpg", "a");
+  ann.pick({s / "out" / "a.jpg"});
+  ann.send_to(bea);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  CHECK(ann.eng.snapshot().out_protocol == sp::kProtocolVersion);
+  CHECK(bea.eng.snapshot().in_protocol == sp::kProtocolVersion);
+  bea.eng.on_event("decline", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+}
 
 TEST_CASE("driftwire: idle cost of Keep receiving", "[.driftwire-idle]") {
   const char* env = std::getenv("MV_IDLE_SECONDS");

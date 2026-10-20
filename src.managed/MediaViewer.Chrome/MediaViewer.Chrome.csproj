@@ -62,6 +62,8 @@
     <Compile Include="..\Shared\ByteSize.cs" Link="Shared\ByteSize.cs" />
     <!-- An add-on screen window's icon (#442), as Import's windows have it. -->
     <Compile Include="..\Shared\AppIcon.cs" Link="Shared\AppIcon.cs" />
+    <!-- #509: a failed add-on attach names its throwing methods, never a path. -->
+    <Compile Include="..\Shared\ExceptionFrames.cs" Link="Shared\ExceptionFrames.cs" />
   </ItemGroup>
 
   <ItemGroup>

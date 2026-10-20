@@ -157,10 +157,11 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
       break;
     }
     case 11:
-      (void)mv::driftwire::mapping::parse_ssdp_location(text);
+      (void)mv::driftwire::mapping::parse_ssdp_location(text, mv::driftwire::net::address{false, {192, 168, 1, 1}});
       break;
     case 12:
-      (void)mv::driftwire::mapping::parse_description(text, "http://192.168.1.1:5000/rootDesc.xml");
+      (void)mv::driftwire::mapping::parse_description(text, "http://192.168.1.1:5000/rootDesc.xml",
+                                                      mv::driftwire::net::address{false, {192, 168, 1, 1}});
       break;
     case 13:
       if (auto r = mv::driftwire::mapping::parse_http(text)) (void)mv::driftwire::mapping::xml_value(r->body, "NewExternalIPAddress");

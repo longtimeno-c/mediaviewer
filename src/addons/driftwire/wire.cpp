@@ -78,6 +78,14 @@ std::string pairing_code(std::span<const std::uint8_t, 32> client_pk, std::span<
   return code_of(st);
 }
 
+std::string remember_check(std::span<const std::uint8_t, 32> session_secret) {
+  static constexpr char kContext[] = "MediaViewer Driftwire remember check v1";
+  crypto_generichash_state st;
+  crypto_generichash_init(&st, session_secret.data(), session_secret.size(), 16);
+  crypto_generichash_update(&st, reinterpret_cast<const unsigned char*>(kContext), sizeof kContext - 1);
+  return code_of(st);
+}
+
 std::string pairing_code_v2(std::span<const std::uint8_t> handshake_hash, std::span<const std::uint8_t, 32> client_nonce) {
   static constexpr char kContext[] = "MediaViewer Driftwire code v2";
   crypto_generichash_state st;
@@ -88,20 +96,81 @@ std::string pairing_code_v2(std::span<const std::uint8_t> handshake_hash, std::s
   return code_of(st);
 }
 
+std::string pairing_code_v3(std::span<const std::uint8_t> handshake_hash, std::span<const std::uint8_t, 32> client_nonce,
+                            std::span<const std::uint8_t, 32> server_nonce) {
+  static constexpr char kContext[] = "MediaViewer Driftwire code v3";
+  crypto_generichash_state st;
+  crypto_generichash_init(&st, nullptr, 0, 16);
+  crypto_generichash_update(&st, reinterpret_cast<const unsigned char*>(kContext), sizeof kContext - 1);
+  crypto_generichash_update(&st, handshake_hash.data(), handshake_hash.size());
+  crypto_generichash_update(&st, client_nonce.data(), client_nonce.size());
+  crypto_generichash_update(&st, server_nonce.data(), server_nonce.size());
+  return code_of(st);
+}
+
+namespace {
+
+// The code point at the front of valid UTF-8, and its length in bytes.
+char32_t front_code_point(std::string_view s, std::size_t& len) noexcept {
+  const auto b = [&](std::size_t i) { return static_cast<char32_t>(static_cast<unsigned char>(s[i])); };
+  const char32_t c = b(0);
+  if (c < 0x80) {
+    len = 1;
+    return c;
+  }
+  if (c < 0xE0 && s.size() >= 2) {
+    len = 2;
+    return (c & 0x1F) << 6 | (b(1) & 0x3F);
+  }
+  if (c < 0xF0 && s.size() >= 3) {
+    len = 3;
+    return (c & 0x0F) << 12 | (b(1) & 0x3F) << 6 | (b(2) & 0x3F);
+  }
+  if (s.size() >= 4) {
+    len = 4;
+    return (c & 0x07) << 18 | (b(1) & 0x3F) << 12 | (b(2) & 0x3F) << 6 | (b(3) & 0x3F);
+  }
+  len = s.size();
+  return 0xFFFD;
+}
+
+// #498: what makes text read differently from what it is: C0 and C1 controls,
+// the bidirectional overrides, embeddings, isolates and marks ("invoice" RLO
+// "gpj.exe" shows as "invoiceexe.jpg"), line and paragraph separators (a
+// second line in a name), and the invisible zero width space, byte order mark
+// and word joiners. ZWJ and ZWNJ stay: emoji and Persian and Indic text need them.
+bool hidden_control(char32_t c) noexcept {
+  return c < 0x20 || (c >= 0x7F && c <= 0x9F) || c == 0x061C || c == 0x200B || c == 0x200E || c == 0x200F ||
+         (c >= 0x2028 && c <= 0x202E) || (c >= 0x2060 && c <= 0x2064) || (c >= 0x2066 && c <= 0x2069) ||
+         c == 0xFEFF;
+}
+
+bool has_hidden_control(std::string_view s) noexcept {
+  while (!s.empty()) {
+    std::size_t len = 1;
+    if (hidden_control(front_code_point(s, len))) return true;
+    s.remove_prefix(len);
+  }
+  return false;
+}
+
+}  // namespace
+
 bool safe_relative(std::string_view rel) noexcept {
   if (rel.empty() || rel.size() > kMaxRelativeBytes || !json::detail::valid_utf8(rel)) return false;
   if (rel.front() == '/') return false;
   // '/' only, on every OS; no drive letter, no stream name, no wildcard.
   if (rel.find_first_of("\\:<>\"|?*") != std::string_view::npos) return false;
-  for (char c : rel) {
-    if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F) return false;
-  }
+  if (has_hidden_control(rel)) return false;
   std::string_view rest = rel;
   int depth = 0;
   while (!rest.empty()) {
     const auto slash = rest.find('/');
     const std::string_view part = rest.substr(0, slash);
     if (part.empty() || part == "." || part == ".." || part.size() > kMaxPartBytes) return false;
+    // #498: no hidden file or folder (".zshenv", ".ssh/authorized_keys"); a
+    // sender's own walk never offers one.
+    if (part.front() == '.') return false;
     // Windows drops a trailing dot or space ("a." is "a"), and a device name
     // is a device in every folder.
     if (part.back() == '.' || part.back() == ' ' || windows_device(part)) return false;
@@ -118,6 +187,8 @@ std::string_view leaf_name(std::string_view path) noexcept {
   return cut == std::string_view::npos ? path : path.substr(cut + 1);
 }
 
+std::string_view top_part(std::string_view rel) noexcept { return rel.substr(0, rel.find('/')); }
+
 bool valid_id(std::string_view id) noexcept {
   return id.size() == 16 && std::all_of(id.begin(), id.end(), [](char c) {
            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
@@ -127,10 +198,13 @@ bool valid_id(std::string_view id) noexcept {
 std::string clean_name(std::string_view raw) {
   std::string out;
   out.reserve(raw.size());
-  for (char c : raw) {
-    if (static_cast<unsigned char>(c) >= 0x20 && c != 0x7F) out.push_back(c);
+  if (json::detail::valid_utf8(raw)) {
+    while (!raw.empty()) {
+      std::size_t len = 1;
+      if (!hidden_control(front_code_point(raw, len))) out.append(raw.substr(0, len));
+      raw.remove_prefix(len);
+    }
   }
-  if (!json::detail::valid_utf8(out)) out.clear();
   while (!out.empty() && out.back() == ' ') out.pop_back();
   while (!out.empty() && out.front() == ' ') out.erase(out.begin());
   out = std::string(cut_utf8(out, kMaxNameBytes));

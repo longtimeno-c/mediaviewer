@@ -2167,6 +2167,12 @@ void engine::control_loop() {
     std::lock_guard lock(machine_m_);
     machine_json_ = std::move(m);
   }
+  // #509: the tiers too, now, not with the models: those wait for a quiet
+  // viewer and the runtime, and until then the picker had nothing to offer.
+  // The chromes re-read on this status.
+  if (deps_.read_tiers) deps_.read_tiers();
+  refresh_counts();
+  post(MV_ADDON_EVENT_AI_STATUS);
   {
     // #403: the OS text reader, on this thread (not a host's UI thread).
     auto reader = deps_.text ? deps_.text() : make_text_reader();

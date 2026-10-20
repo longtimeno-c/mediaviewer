@@ -8,7 +8,9 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <deque>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -28,6 +30,8 @@ namespace {
 constexpr int kTempAttempts = 16;
 // The receiver waits at most this for its "done" to be acknowledged.
 constexpr int kFlushMs = 5000;
+// How often a receive with an idle limit looks at the clock (#502).
+constexpr int kIdlePollMs = 1000;
 constexpr int kRenameAttempts = 32;
 // The uncached read-back's buffer (aligned, a kIoAlign multiple).
 constexpr std::size_t kReadBackBytes = 4u * 1024 * 1024;
@@ -183,7 +187,7 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
   auto stop = [&](outcome o, int line) {
     note(h, "send", line, o);
     res.how = o;
-    if (o == outcome::cancelled) (void)ch.try_send(msg::cancel, "{}");
+    if (o == outcome::cancelled) (void)ch.cancel(kCancelWaitMs);
     ch.shutdown();
     return res;
   };
@@ -217,7 +221,7 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
   // The receiver's side, read while this thread writes: file_done per file,
   // its final done, or a cancel.
   std::atomic<std::uint32_t> verified{0};
-  std::atomic<bool> finished{false}, remote_cancel{false}, broken{false};
+  std::atomic<bool> finished{false}, remote_cancel{false}, remote_error{false}, broken{false};
   std::thread reader([&] {
     message in;
     for (;;) {
@@ -246,6 +250,15 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
         finished.store(true);
         return;
       } else if (in.type == msg::cancel) {
+        // The receiver ended it: its person cancelled, or {"why":"error"}.
+        bool error = false;
+        try {
+          const auto doc = json::parse(in.text(), 4);
+          const std::string* why = doc ? doc->str("why") : nullptr;
+          error = why && *why == "error";
+        } catch (...) {
+        }
+        remote_error.store(error);
         remote_cancel.store(true);
         ch.shutdown();
         return;
@@ -265,12 +278,16 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
   auto finish = [&](outcome o, int line) {
     note(h, "send", line, o);
     if (o != outcome::delivered) {
-      if (o == outcome::cancelled && !remote_cancel.load()) (void)ch.try_send(msg::cancel, "{}");
+      if (o == outcome::cancelled && !remote_cancel.load()) (void)ch.cancel(kCancelWaitMs);
       ch.shutdown();
     }
     reader.join();
     res.done = verified.load();
     res.how = o;
+    if (o == outcome::cancelled && remote_cancel.load()) {
+      res.by_peer = true;
+      if (remote_error.load()) res.how = outcome::failed;
+    }
     if (o == outcome::delivered && (!finished.load() || res.done + res.skipped != files.size())) {
       res.how = outcome::failed;
     }
@@ -339,8 +356,9 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
   reader.join();
   res.done = verified.load();
   res.how = finished.load() && res.done + res.skipped == files.size() ? outcome::delivered
-            : remote_cancel.load()                                    ? outcome::cancelled
+            : remote_cancel.load() && !remote_error.load()            ? outcome::cancelled
                                                                       : outcome::failed;
+  res.by_peer = res.how != outcome::delivered && remote_cancel.load();
   ch.shutdown();
   return res;
 }
@@ -366,12 +384,24 @@ result<incoming_offer> parse_offer(std::string_view text) {
     if (!rel || !safe_relative(*rel) || !size || *size < 0 || static_cast<std::uint64_t>(*size) > kMaxFileBytes) {
       return err(status::corrupt);
     }
-    // Each size is at most 2^50 and there are at most 10^5: the sum cannot
-    // wrap, and it must equal what the offer says it totals.
+    // It must equal what the offer says it totals, and never wrap on the way.
+    if (sum > std::numeric_limits<std::uint64_t>::max() - static_cast<std::uint64_t>(*size)) {
+      return err(status::corrupt);
+    }
     sum += static_cast<std::uint64_t>(*size);
     o.files.push_back({*rel, static_cast<std::uint64_t>(*size)});
   }
   if (sum != static_cast<std::uint64_t>(*bytes)) return err(status::corrupt);
+  // #498: the shapes a sender makes: files picked one by one (bare names), or
+  // one folder and what is in it. Anything else (photos beside a
+  // "Library/LaunchAgents/…") is refused whole.
+  o.folder = std::string(top_part(o.files.front().rel));
+  if (o.folder.size() == o.files.front().rel.size()) o.folder.clear();
+  for (const auto& f : o.files) {
+    const std::string_view top = top_part(f.rel);
+    const bool bare = top.size() == f.rel.size();
+    if (o.folder.empty() ? !bare : (bare || top != o.folder)) return err(status::corrupt);
+  }
   o.bytes = sum;
   o.handover = doc->boolean("handover").value_or(false);
   o.dht = o.handover && doc->boolean("dht").value_or(false);
@@ -452,6 +482,7 @@ class verifier {
     std::unique_lock lock(m_);
     room_.wait(lock, [&] { return queue_.size() < kVerifyAhead || broken_; });
     if (broken_) return false;
+    pending_.fetch_add(1);
     queue_.push_back({std::move(f), sent});
     work_.notify_one();
     return true;
@@ -467,6 +498,8 @@ class verifier {
     for (auto& t : threads_) t.join();
   }
   [[nodiscard]] std::uint32_t done() const { return done_.load(); }
+  // A file queued or being read back (#502: the receive is not idle).
+  [[nodiscard]] bool checking() const { return pending_.load() != 0; }
   [[nodiscard]] std::uint32_t failed() const { return failed_.load(); }
   [[nodiscard]] bool broken() {
     std::lock_guard lock(m_);
@@ -522,6 +555,7 @@ class verifier {
         broken_ = true;
         room_.notify_all();
       }
+      pending_.fetch_sub(1);
     }
   }
 
@@ -559,6 +593,7 @@ class verifier {
   bool broken_ = false;
   std::vector<std::pair<std::uint32_t, std::string>> written_;
   std::atomic<std::uint32_t> done_{0}, failed_{0};
+  std::atomic<int> pending_{0};
   std::vector<std::thread> threads_;
 };
 
@@ -580,7 +615,9 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
   auto end = [&](outcome o, bool tell, int line) {
     note(h, "receive", line, o);
     if (cur) cur->drop();
-    if (tell) (void)ch.send(msg::cancel, std::string_view("{}"));
+    // Said reliably and final (#511): the sender stops, and takes it for
+    // neither a lost link nor this person's cancel when it is a failure.
+    if (tell) (void)ch.cancel(kCancelWaitMs, o == outcome::cancelled ? std::string_view() : std::string_view("error"));
     ch.shutdown();
     // Files already whole finish their checks: what arrived whole stays,
     // nothing partial does (the one being written was dropped above).
@@ -589,14 +626,36 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
     return res;
   };
 
+  // #498: the destination is the person's own choice; below it nothing goes
+  // through a link, and a sent folder never merges into one already there
+  // ("Trip" beside an existing "Trip" lands as "Trip (2)").
+  if (!io::make_directories(dest_dir)) return end(outcome::failed, true, __LINE__);
+  std::string landed;  // the sent folder's name here, when the offer is one folder
+  if (!offer.folder.empty()) {
+    landed = std::string(io::file_name_of(free_name(dest_dir, offer.folder)));
+    if (landed.empty() || !io::make_directories_beneath(dest_dir, landed)) {
+      return end(outcome::failed, true, __LINE__);
+    }
+  }
+  const auto latest_mtime = static_cast<std::int64_t>(std::time(nullptr)) + 24 * 60 * 60;
+
   message m;
+  // #502: the last time the files moved (a message, or a file read back).
+  auto moving = std::chrono::steady_clock::now();
   for (;;) {
     if (cancelled(h)) return end(outcome::cancelled, true, __LINE__);
     if (checks.broken()) return end(cancelled(h) ? outcome::cancelled : outcome::failed, false, __LINE__);
-    if (auto r = ch.receive(m); !r) {
+    if (auto r = ch.receive(m, h.idle_ms > 0 ? kIdlePollMs : -1); !r) {
+      if (r.error() == status::timeout && h.idle_ms > 0) {
+        const auto now = std::chrono::steady_clock::now();
+        if (checks.checking()) moving = now;
+        if (now - moving < std::chrono::milliseconds(h.idle_ms)) continue;
+        return end(outcome::failed, true, __LINE__);  // a sender that holds the slot and sends nothing
+      }
       note_status(h, "receive: link", __LINE__, r.error());
       return end(cancelled(h) ? outcome::cancelled : outcome::failed, false, __LINE__);
     }
+    moving = std::chrono::steady_clock::now();
     switch (m.type) {
       case msg::file_begin: {
         const auto doc = json::parse(m.text(), 4);
@@ -608,13 +667,20 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
           return end(outcome::failed, true, __LINE__);
         }
         const std::string& rel = offer.files[next].rel;
-        const std::string target = io::join_path(dest_dir, io::native_relative(rel));
-        const std::string dir(io::parent_of(target));
-        if (!io::make_directories(dir)) return end(outcome::failed, true, __LINE__);
+        const auto slash = rel.rfind('/');
+        std::string rel_dir = slash == std::string::npos ? std::string() : rel.substr(0, slash);
+        if (!landed.empty() && top_part(rel) == offer.folder) rel_dir = landed + rel_dir.substr(offer.folder.size());
+        auto made_dir = rel_dir.empty() ? result<std::string>(dest_dir) : io::make_directories_beneath(dest_dir, rel_dir);
+        if (!made_dir) {
+          note_status(h, "receive: folder", __LINE__, made_dir.error());
+          return end(outcome::failed, true, __LINE__);
+        }
+        const std::string& dir = *made_dir;
         cur = std::make_unique<incoming>();
         cur->index = next;
         cur->size = static_cast<std::uint64_t>(*size);
-        cur->mtime = mtime.value_or(0);
+        // The sender's clock says when it was made: never before 1970 or after tomorrow.
+        cur->mtime = std::clamp<std::int64_t>(mtime.value_or(0), 0, latest_mtime);
         cur->final_path = free_name(dir, leaf_name(rel));
         if (cur->final_path.empty()) return end(outcome::failed, true, __LINE__);
         bool made = false;
@@ -625,6 +691,10 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
           made = *c == io::rename_outcome::renamed;
         }
         if (!made) return end(outcome::failed, true, __LINE__);
+        // #498: from another computer, so Gatekeeper / SmartScreen check it
+        // before it runs (an app in a zip inherits the mark when extracted).
+        // Best effort, as a browser's: a FAT card keeps no mark.
+        (void)io::mark_from_elsewhere(cur->temp_path, "MediaViewer Driftwire");
         cur->open = true;
         break;
       }
@@ -689,6 +759,7 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         return res;
       }
       case msg::cancel:
+        res.by_peer = true;  // the sender ended it
         return end(outcome::cancelled, false, __LINE__);
       default:
         return end(outcome::failed, true, __LINE__);

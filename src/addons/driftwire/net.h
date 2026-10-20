@@ -50,6 +50,8 @@ struct address {
 // private (RFC 1918), shared (CGNAT, RFC 6598), link-local, unique local
 // (fc00::/7), multicast, documentation or unspecified.
 [[nodiscard]] bool is_public(const address& a) noexcept;
+// An IPv4 address of a private network (RFC 1918: 10/8, 172.16/12, 192.168/16).
+[[nodiscard]] bool is_private_v4(const address& a) noexcept;
 
 // A TCP listener on a port the OS picks: on every interface, or on loopback
 // only (the tests).
@@ -80,6 +82,17 @@ class listener {
 
 // This machine's unicast addresses, every interface that is up.
 [[nodiscard]] std::vector<address> local_addresses();
+// #502: an interface's network, its address and prefix length.
+struct subnet {
+  address base;
+  int prefix = 0;
+};
+// The networks of every interface that is up (loopback's too).
+[[nodiscard]] std::vector<subnet> local_subnets();
+// Whether `a` is on one of `nets` (on this machine's link), or loopback, or
+// link-local (169.254/16, fe80::/10): what the LAN listener and the beacon
+// take (#502). Portable (net_address.cpp).
+[[nodiscard]] bool on_link(const address& a, std::span<const subnet> nets) noexcept;
 // The IPv4 default gateway (the router a port mapping asks), if any.
 [[nodiscard]] std::optional<address> default_gateway();
 // This machine's address on the route to `peer` (a UDP socket connected to
@@ -135,6 +148,9 @@ void reserve_sockets(int n) noexcept;
 // crosses ours in the two NATs opens one connection (simultaneous open), and
 // one that arrives after ours was refused or dropped is accepted. A refused
 // or failed connect() is tried again, from the same port, every kRetryMs.
+// The OSes share the port only within one user account; a process of the
+// same user that takes a connection fails the meeting's authenticated hello
+// (meet.cpp, #499) and is passed over.
 class tcp_rendezvous {
  public:
   static constexpr int kRetryMs = 250;
