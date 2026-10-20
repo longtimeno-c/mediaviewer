@@ -6654,10 +6654,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   if (k == key::none) return NO;
   if ([self handleFolderFind:event key:k mods:mods]) return YES;
   // Settings owns the keyboard (the router agrees: settings_open routes
-  // nothing); Esc closes it when no capture is pending.
+  // nothing); Esc closes it when no capture is pending, or first goes back
+  // from an add-on's page to the list (#510, as on Windows).
   if (_settingsVisible) {
     if (!up && k == key::escape && mods == mod_none && _captureRow < 0) {
-      [self setSettingsVisible:NO];
+      if (![MVChromeHost settingsBack]) [self setSettingsVisible:NO];
       return YES;
     }
     return NO;

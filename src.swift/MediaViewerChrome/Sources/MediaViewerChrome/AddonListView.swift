@@ -80,6 +80,10 @@ final class AddonNav: ObservableObject {
 
   func back() { page = nil }
 
+  /// A row's scroll id: back from a page, the list comes back at that row,
+  /// as on Windows.
+  static func rowAnchor(_ id: String) -> String { "addon-row-" + id }
+
   /// Settings opened: the page something asked for, else the list.
   func settingsShown() {
     page = wanted
@@ -171,6 +175,7 @@ struct AddonsSection: View {
           }
           .buttonStyle(.plain)
           .accessibilityLabel("\(e.name), \(e.line)")
+          .id(AddonNav.rowAnchor(e.id))
         }
       }
     }

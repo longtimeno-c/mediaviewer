@@ -104,6 +104,14 @@ public final class MVChromeHost: NSObject {
     OpenAddonStore.shared.reveal()
   }
 
+  /// Esc while Settings shows an add-on's page (#510): back to the list, as
+  /// on Windows. False on the list itself, so the host closes Settings.
+  @MainActor @objc public static func settingsBack() -> Bool {
+    guard AddonNav.shared.page != nil else { return false }
+    AddonNav.shared.back()
+    return true
+  }
+
   /// The host's MV_ADDON_SELFTEST rig (main_mac.mm): the same calls the
   /// buttons make, and one line of state for its log. Inert otherwise.
   @MainActor @objc public static func addonSelfTest(_ action: String, argument: String) -> String {

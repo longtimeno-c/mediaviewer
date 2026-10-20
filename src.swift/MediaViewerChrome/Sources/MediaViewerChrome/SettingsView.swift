@@ -368,6 +368,13 @@ struct SettingsView: View {
         withAnimation(nil) { scroll.scrollTo(OpenAddonStore.sectionAnchor, anchor: .top) }
       }
     }
+    // #510: back from an add-on's page, the list where it was (at that row).
+    .onChange(of: addonNav.page) { old, now in
+      guard now == nil, let old else { return }
+      DispatchQueue.main.async {
+        withAnimation(nil) { scroll.scrollTo(AddonNav.rowAnchor(old), anchor: .center) }
+      }
+    }
     // docs/design/26: the welcome card's iCloud Photos row opens Settings here.
     .onChange(of: photos.revealRequests) { _, _ in
       guard photos.takeReveal() else { return }

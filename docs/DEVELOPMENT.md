@@ -1321,6 +1321,21 @@ the same variable:
 MV_ADDON_RESTART_SELFTEST="Import=1.3.0,Local search=0.4.0" build-darwin/MediaViewer.app/Contents/MacOS/MediaViewer tools/testmedia/raw
 ```
 
+**Mac, built and run (2026-10-20, M-series, Release):** the Mac half compiles with no
+fixes needed. `mv_import_tests "[slots]"` 21 and `"[driftwire]"` 125 cases pass; `mv_tests` 899
+passed, 11 skipped. In a copy of the app with its own bundle id and `HOME`: the two-update card
+in the corner, **Later** hiding it while the bar keeps **Add-on updated — restart**, the
+Settings marker and **Restart now** above the list, the rows and their states, a row's page and
+back; with `;busy=a Driftwire transfer;wait`, the waiting card, and **Cancel** back to the
+update card. Two fixes, to match Windows: Esc on an add-on's page now goes back to the list
+(the host took Esc and closed Settings; `MVChromeHost.settingsBack`), and the list comes back
+scrolled to the row it left. Mac PR 1 gate (`--soak 60 --gate`, `IMG_2.JPG`), card off / on
+alternated in the same build: off 0 / 17.19 ms max, on 0 / 17.10, off 0 / 17.03, on 0 / 17.00
+(dropped / max), p99 16.85–16.9 ms, 0 idle presents, all pass. Not run on the Mac: **Restart
+now**'s relaunch (an installed MediaViewer was running and would take the hand-off), live
+reload of a newer signed add-on, VoiceOver. While the card is up it sits above Settings, as
+the resume notice does, and covers Settings' **Done** (Esc still closes it).
+
 ### Add-on install failures and the updates notice (#525, Windows)
 
 The failure rows (plain words and one next step) and the command bar's **Add-on update
