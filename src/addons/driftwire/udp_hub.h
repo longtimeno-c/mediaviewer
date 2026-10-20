@@ -49,6 +49,11 @@ namespace mv::driftwire {
 inline constexpr std::uint8_t kProbe = 0xA6;
 inline constexpr std::uint8_t kStream = 0xB7;
 inline constexpr std::size_t kStreamPayload = 1200;
+// A stream's receive buffer, at most: the bytes waiting to be read and the
+// packets held out of order together (#499: the peer is not yet
+// authenticated while the handshake runs over it, so it cannot make this
+// side hold more).
+inline constexpr std::size_t kStreamMaxRx = 16u * 1024 * 1024;
 
 class udp_hub : public std::enable_shared_from_this<udp_hub> {
  public:

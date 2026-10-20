@@ -50,7 +50,9 @@
 namespace mv::driftwire {
 
 inline constexpr int kCodeLifetimeMs = 10 * 60 * 1000;
-inline constexpr int kMapLifetimeS = 3600;
+// A router lease (#499): short, renewed while held (mapping::keeper), so a
+// crash leaves a forward or pinhole open two minutes at most.
+inline constexpr int kMapLifetimeS = 120;
 inline constexpr int kReachConnectMs = 5000;  // each TCP connect of a round
 inline constexpr int kHappyEyeballsMs = 250;
 
@@ -139,8 +141,7 @@ class internet_receiver {
   bool stop_ = false;                                                   // under m_
   std::unique_ptr<net::listener> listener_;                             // under m_
   std::thread accept_thread_;                                           // this object's thread only
-  std::unique_ptr<mapping::mapper> mapper_;                             // the run thread only
-  std::vector<mapping::mapped> mapped_;                                 // the run thread only
+  std::unique_ptr<mapping::keeper> mapped_;                             // the run thread only
   // A word code (#472 PR 3): its socket, DHT client and keys, and the thread
   // that waits for the sender on the DHT and punches to it.
   std::shared_ptr<udp_hub> hub_;                                        // the run thread only
@@ -177,8 +178,7 @@ class way_in {
   way_in() = default;
   std::unique_ptr<net::listener> listener_;
   std::vector<net::endpoint> places_;
-  std::unique_ptr<mapping::mapper> mapper_;
-  std::vector<mapping::mapped> mapped_;
+  std::unique_ptr<mapping::keeper> mapped_;
   std::thread accept_thread_;
 };
 

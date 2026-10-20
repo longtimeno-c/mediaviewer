@@ -154,7 +154,7 @@ void internet_receiver::run() {
       cv_.wait_until(lock, expires_, [&] { return stop_ || want_code_ || want_drop_ || snap_.p != phase::ready; });
     } else {
       cv_.wait(lock, [&] {
-        return stop_ || want_code_ || want_drop_ || (holding_ == 0 && (listener_ || !mapped_.empty()));
+        return stop_ || want_code_ || want_drop_ || (holding_ == 0 && (listener_ || mapped_));
       });
     }
     if (stop_) break;
@@ -213,11 +213,7 @@ void internet_receiver::release_locked(std::unique_lock<std::mutex>& lock) {
   dht_keys_.reset();
   if (hub_) hub_->stop();
   hub_.reset();
-  if (mapper_) {
-    for (const auto& m : mapped_) mapper_->remove(m);
-  }
-  mapped_.clear();
-  mapper_.reset();
+  mapped_.reset();  // every mapping removed
   lock.lock();
 }
 
@@ -337,19 +333,25 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
       const auto v6 = std::find_if(mine.begin(), mine.end(), [](const net::address& a) { return a.v6 && net::is_public(a); });
       if (opts_.mapping) {
         mapper = std::make_unique<mapping::mapper>(*opts_.mapping);
-        if (auto m = mapper->map_tcp(port, port, kMapLifetimeS)) {
+        auto m = mapper->map_tcp(port, port, kMapLifetimeS);
+        if (m) {
           places.push_back(m->external);
           s.how.emplace_back(mapping::method_name(m->how));
           mapped.push_back(*m);
           // For a sender whose network lets only 443 out (an office).
           if (m->external.port != 443) {
-            if (auto m443 = mapper->map_tcp(port, 443, kMapLifetimeS); m443 && m443->external.port == 443) {
-              places.push_back(m443->external);
-              mapped.push_back(*m443);
+            if (auto m443 = mapper->map_tcp(port, 443, kMapLifetimeS)) {
+              if (m443->external.port == 443) {
+                places.push_back(m443->external);
+                mapped.push_back(*m443);
+              } else {
+                mapper->remove(*m443);  // another port the router chose (#499: never left behind)
+              }
             }
           }
         }
-        if (v6 != mine.end()) {
+        // PCP answered: UPnP is not searched for a pinhole besides (#499).
+        if (v6 != mine.end() && !(m && m->how == mapping::method::pcp)) {
           if (auto hole = mapper->pinhole_v6(*v6, port, kMapLifetimeS)) mapped.push_back(*hole);
         }
       }
@@ -421,9 +423,7 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
   lock.lock();
   if (stop_) {
     lock.unlock();
-    if (mapper) {
-      for (const auto& m : mapped) mapper->remove(m);
-    }
+    mapping::keeper(std::move(mapper), std::move(mapped), kMapLifetimeS);  // removes them
     lock.lock();
     return;
   }
@@ -467,8 +467,7 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
   }
   if (relay_link) relay_link->shutdown();  // not used: a word code, or no code
   if (s.p == phase::failed && !relay_note.empty()) s.note += relay_note;
-  mapper_ = std::move(mapper);
-  mapped_ = std::move(mapped);
+  if (mapper) mapped_ = std::make_unique<mapping::keeper>(std::move(mapper), std::move(mapped), kMapLifetimeS);
   snap_ = std::move(s);
   lock.unlock();
   notify();
@@ -491,9 +490,7 @@ way_in::~way_in() {
   if (listener_) listener_->shutdown();
   if (accept_thread_.joinable()) accept_thread_.join();
   listener_.reset();
-  if (mapper_) {
-    for (const auto& m : mapped_) mapper_->remove(m);
-  }
+  mapped_.reset();  // every mapping removed
 }
 
 std::unique_ptr<way_in> way_in::open(bool loopback_only, const std::optional<mapping::options>& mapping,
@@ -510,14 +507,17 @@ std::unique_ptr<way_in> way_in::open(bool loopback_only, const std::optional<map
     const auto mine = net::local_addresses();
     const auto v6 = std::find_if(mine.begin(), mine.end(), [](const net::address& a) { return a.v6 && net::is_public(a); });
     if (mapping) {
-      w->mapper_ = std::make_unique<mapping::mapper>(*mapping);
-      if (auto m = w->mapper_->map_tcp(port, port, kMapLifetimeS)) {
+      auto mapper = std::make_unique<mapping::mapper>(*mapping);
+      std::vector<mapping::mapped> mapped;
+      auto m = mapper->map_tcp(port, port, kMapLifetimeS);
+      if (m) {
         w->places_.push_back(m->external);
-        w->mapped_.push_back(*m);
+        mapped.push_back(*m);
       }
-      if (v6 != mine.end()) {
-        if (auto hole = w->mapper_->pinhole_v6(*v6, port, kMapLifetimeS)) w->mapped_.push_back(*hole);
+      if (v6 != mine.end() && !(m && m->how == mapping::method::pcp)) {
+        if (auto hole = mapper->pinhole_v6(*v6, port, kMapLifetimeS)) mapped.push_back(*hole);
       }
+      w->mapped_ = std::make_unique<mapping::keeper>(std::move(mapper), std::move(mapped), kMapLifetimeS);
     }
     if (v6 != mine.end()) w->places_.push_back({net::address_text(*v6), port});
   }

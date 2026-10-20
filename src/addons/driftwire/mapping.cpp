@@ -94,13 +94,37 @@ bool ask_gateway(const net::endpoint& gw, std::span<const std::uint8_t> request,
   return false;
 }
 
-// "http://192.168.1.1:5000/path" into its parts; only an IPv4 literal host
-// that is not public (the router is on this network).
+// Where a router on this network can be (#499): an IPv4 literal that is
+// neither public nor this machine (loopback), nor 0/8, link-local, multicast
+// or broadcast. Loopback only as the gateway itself (the tests' stand-in
+// router); with `gateway`, that address and no other.
+bool router_address(const net::address& a, const net::address* gateway) {
+  if (gateway && a != *gateway) return false;
+  if (a.v6 || net::is_public(a)) return false;
+  const std::uint8_t b0 = a.bytes[0], b1 = a.bytes[1];
+  return b0 != 0 && (b0 != 127 || gateway) && !(b0 == 169 && b1 == 254) && b0 < 224;
+}
+
+}  // namespace
+
+bool service_type(std::string_view s) {
+  constexpr std::string_view kUrn = "urn:";
+  if (s.size() <= kUrn.size() || s.size() > 256 || s.substr(0, kUrn.size()) != kUrn) return false;
+  return std::all_of(s.begin(), s.end(), [](char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == ':' ||
+           c == '-';
+  });
+}
+
+namespace {
+
+// "http://192.168.1.1:5000/path" into its parts; only a host
+// router_address() takes.
 struct url {
   net::endpoint host;
   std::string path;
 };
-std::optional<url> parse_url(std::string_view u) {
+std::optional<url> parse_url(std::string_view u, const net::address* gateway) {
   constexpr std::string_view kScheme = "http://";
   if (u.size() > 1024 || lower(u.substr(0, kScheme.size())) != kScheme) return std::nullopt;
   u.remove_prefix(kScheme.size());
@@ -121,7 +145,7 @@ std::optional<url> parse_url(std::string_view u) {
     }
   }
   const auto ip = net::parse_address(host);
-  if (!ip || ip->v6 || net::is_public(*ip) || port == 0 || port > 65535) return std::nullopt;
+  if (!ip || ip->v6 || !router_address(*ip, gateway) || port == 0 || port > 65535) return std::nullopt;
   out.host = {std::string(host), static_cast<std::uint16_t>(port)};
   for (const char c : out.path) {
     if (static_cast<unsigned char>(c) < 0x21 || c == 0x7f) return std::nullopt;  // no spaces or controls in a request line
@@ -164,10 +188,13 @@ std::string soap_body(const std::string& service, std::string_view action,
   return b;
 }
 
-std::optional<http_reply> soap(const std::string& control, const std::string& service, std::string_view action,
-                               const std::vector<std::pair<std::string, std::string>>& args, int timeout_ms) {
-  const auto u = parse_url(control);
-  if (!u) return std::nullopt;
+std::optional<http_reply> soap(const net::address& gateway, const std::string& control, const std::string& service,
+                               std::string_view action, const std::vector<std::pair<std::string, std::string>>& args,
+                               int timeout_ms) {
+  // Checked again where it goes into a header (#499: a CR/LF in a service
+  // type was a second request).
+  const auto u = parse_url(control, &gateway);
+  if (!u || !service_type(service)) return std::nullopt;
   const std::string headers = "Content-Type: text/xml; charset=\"utf-8\"\r\nSOAPAction: \"" + service + "#" +
                               std::string(action) + "\"\r\n";
   return http(*u, "POST", headers, soap_body(service, action, args), timeout_ms);
@@ -282,7 +309,7 @@ std::optional<std::string> xml_value(std::string_view xml, std::string_view tag)
   return std::nullopt;
 }
 
-std::optional<std::string> parse_ssdp_location(std::string_view reply) {
+std::optional<std::string> parse_ssdp_location(std::string_view reply, const net::address& gateway) {
   if (reply.size() > 4096 || reply.substr(0, 5) != "HTTP/") return std::nullopt;
   for (std::size_t at = 0; at < reply.size();) {
     const auto eol = reply.find("\r\n", at);
@@ -292,23 +319,25 @@ std::optional<std::string> parse_ssdp_location(std::string_view reply) {
     std::string_view v = line.substr(9);
     while (!v.empty() && v.front() == ' ') v.remove_prefix(1);
     while (!v.empty() && v.back() == ' ') v.remove_suffix(1);
-    if (!parse_url(v)) return std::nullopt;
+    if (!parse_url(v, &gateway)) return std::nullopt;
     return std::string(v);
   }
   return std::nullopt;
 }
 
-std::optional<described> parse_description(std::string_view xml, std::string_view location) {
-  const auto loc = parse_url(location);
+std::optional<described> parse_description(std::string_view xml, std::string_view location,
+                                           const net::address& gateway) {
+  const auto loc = parse_url(location, &gateway);
   if (!loc) return std::nullopt;
   std::string base = "http://" + loc->host.address + ":" + std::to_string(loc->host.port);
-  if (const auto b = xml_value(xml, "URLBase"); b && parse_url(*b)) {
+  if (const auto b = xml_value(xml, "URLBase"); b && parse_url(*b, &gateway)) {
     base = *b;
     while (!base.empty() && base.back() == '/') base.pop_back();
   }
   auto resolve = [&](const std::string& c) -> std::string {
-    if (lower(c.substr(0, 7)) == "http://") return parse_url(c) ? c : std::string();
-    return base + (c.empty() || c[0] != '/' ? "/" : "") + c;
+    if (lower(c.substr(0, 7)) == "http://") return parse_url(c, &gateway) ? c : std::string();
+    const std::string full = base + (c.empty() || c[0] != '/' ? "/" : "") + c;
+    return parse_url(full, &gateway) ? full : std::string();  // a space or control in the path: not a request line
   };
   described out;
   for (std::size_t at = 0;;) {
@@ -320,7 +349,7 @@ std::optional<described> parse_description(std::string_view xml, std::string_vie
     at = e + 10;
     const auto type = xml_value(block, "serviceType");
     const auto control = xml_value(block, "controlURL");
-    if (!type || !control) continue;
+    if (!type || !control || !service_type(*type)) continue;
     const std::string full = resolve(*control);
     if (full.empty()) continue;
     const bool wan = type->find(":service:WANIPConnection:") != std::string::npos ||
@@ -457,13 +486,16 @@ std::optional<mapper::upnp_device> mapper::find_upnp() {
     net::endpoint from;
     auto n = (*sock)->receive_from(buf, static_cast<int>(std::max<long long>(1, left)), from);
     if (!n) continue;
-    const auto location = parse_ssdp_location({reinterpret_cast<const char*>(buf), *n});
+    // Only the gateway's own answer (#499: any device on the network could
+    // answer first and point this machine anywhere).
+    if (net::parse_address(from.address) != gateway_) continue;
+    const auto location = parse_ssdp_location({reinterpret_cast<const char*>(buf), *n}, *gateway_);
     if (!location) continue;
-    const auto u = parse_url(*location);
+    const auto u = parse_url(*location, &*gateway_);
     if (!u) continue;
     auto desc = http(*u, "GET", "", "", opts_.timeout_ms);
     if (!desc || desc->status != 200) continue;
-    const auto d = parse_description(desc->body, *location);
+    const auto d = parse_description(desc->body, *location, *gateway_);
     if (!d) continue;
     upnp_ = upnp_device{d->control, d->service, d->fw_control, d->fw_service};
     return upnp_;
@@ -477,7 +509,7 @@ std::optional<mapped> mapper::try_upnp(std::uint16_t internal_port, std::uint16_
     notes_.emplace_back("UPnP: no gateway answered");
     return std::nullopt;
   }
-  auto ip = soap(dev->control, dev->service, "GetExternalIPAddress", {}, opts_.timeout_ms);
+  auto ip = soap(*gateway_, dev->control, dev->service, "GetExternalIPAddress", {}, opts_.timeout_ms);
   const auto outside_text = ip && ip->status == 200 ? xml_value(ip->body, "NewExternalIPAddress") : std::nullopt;
   const auto outside = outside_text ? net::parse_address(*outside_text) : std::nullopt;
   if (!outside) {
@@ -490,7 +522,18 @@ std::optional<mapped> mapper::try_upnp(std::uint16_t internal_port, std::uint16_
     return std::nullopt;
   }
   const std::uint16_t want = external_port ? external_port : internal_port;
-  auto r = soap(dev->control, dev->service, "AddPortMapping",
+  // A port already forwarded, unless to this machine by an earlier run of
+  // this app (a crash), is someone's (#499: AddPortMapping would overwrite
+  // the person's own forward, and remove() then delete it).
+  bool taken = false;
+  if (auto e = soap(*gateway_, dev->control, dev->service, "GetSpecificPortMappingEntry",
+                    {{"NewRemoteHost", ""}, {"NewExternalPort", std::to_string(want)}, {"NewProtocol", "TCP"}},
+                    opts_.timeout_ms);
+      e && e->status == 200) {
+    taken = xml_value(e->body, "NewInternalClient") != net::address_text(*me_) ||
+            xml_value(e->body, "NewPortMappingDescription") != kDescription;
+  }
+  auto r = taken ? std::nullopt : soap(*gateway_, dev->control, dev->service, "AddPortMapping",
                 {{"NewRemoteHost", ""},
                  {"NewExternalPort", std::to_string(want)},
                  {"NewProtocol", "TCP"},
@@ -503,7 +546,7 @@ std::optional<mapped> mapper::try_upnp(std::uint16_t internal_port, std::uint16_
   std::uint16_t got = r && r->status == 200 ? want : 0;
   if (!got && dev->service.find("WANIPConnection:2") != std::string::npos) {
     // IGDv2: the router picks a free port.
-    auto any = soap(dev->control, dev->service, "AddAnyPortMapping",
+    auto any = soap(*gateway_, dev->control, dev->service, "AddAnyPortMapping",
                     {{"NewRemoteHost", ""},
                      {"NewExternalPort", std::to_string(want)},
                      {"NewProtocol", "TCP"},
@@ -541,7 +584,7 @@ std::optional<mapped> mapper::pinhole_v6(const net::address& local, std::uint16_
     notes_.emplace_back("IPv6: no router firewall to open (IGDv2)");
     return std::nullopt;
   }
-  auto r = soap(dev->fw_control, dev->fw_service, "AddPinhole",
+  auto r = soap(*gateway_, dev->fw_control, dev->fw_service, "AddPinhole",
                 {{"RemoteHost", ""},
                  {"RemotePort", "0"},
                  {"InternalClient", net::address_text(local)},
@@ -550,7 +593,9 @@ std::optional<mapped> mapper::pinhole_v6(const net::address& local, std::uint16_
                  {"LeaseTime", std::to_string(lifetime_s)}},
                 opts_.timeout_ms);
   const auto id = r && r->status == 200 ? xml_value(r->body, "UniqueID") : std::nullopt;
-  if (!id || id->empty() || id->size() > 16) {
+  // A number (ui2), as it goes back into the delete's body.
+  if (!id || id->empty() || id->size() > 5 ||
+      !std::all_of(id->begin(), id->end(), [](char c) { return c >= '0' && c <= '9'; })) {
     notes_.emplace_back("IPv6: the router refused a pinhole");
     return std::nullopt;
   }
@@ -564,6 +609,66 @@ std::optional<mapped> mapper::pinhole_v6(const net::address& local, std::uint16_
   m.pinhole_id = *id;
   notes_.emplace_back("IPv6: pinhole opened");
   return m;
+}
+
+bool mapper::renew(const mapped& m, int lifetime_s) {
+  if (!gateway_ || !me_) return false;
+  const net::endpoint gw{net::address_text(*gateway_), opts_.gateway_port};
+  switch (m.how) {
+    case method::pcp: {
+      // The same nonce and ports: the router extends the mapping it has.
+      std::vector<std::uint8_t> req = {kPcpVersion, kPcpMap, 0, 0};
+      put32(req, static_cast<std::uint32_t>(lifetime_s));
+      put_mapped(req, *me_);
+      req.insert(req.end(), m.pcp_nonce.begin(), m.pcp_nonce.end());
+      req.push_back(kTcp);
+      req.insert(req.end(), 3, 0);
+      put16(req, m.internal_port);
+      put16(req, m.external.port);
+      put_mapped(req, net::address{});
+      std::optional<pcp_answer> got;
+      (void)ask_gateway(gw, req, opts_.timeout_ms, opts_.cancelled, [&](std::span<const std::uint8_t> r) {
+        got = parse_pcp_map(r, m.pcp_nonce);
+        return got.has_value();
+      });
+      return got && got->result == 0 && got->external_port == m.external.port;
+    }
+    case method::nat_pmp: {
+      std::vector<std::uint8_t> req = {0, 2, 0, 0};
+      put16(req, m.internal_port);
+      put16(req, m.external.port);
+      put32(req, static_cast<std::uint32_t>(lifetime_s));
+      std::optional<nat_pmp_answer> got;
+      (void)ask_gateway(gw, req, opts_.timeout_ms, opts_.cancelled, [&](std::span<const std::uint8_t> r) {
+        got = parse_nat_pmp_map(r);
+        return got.has_value();
+      });
+      return got && got->result == 0 && got->external_port == m.external.port;
+    }
+    case method::upnp: {
+      std::optional<http_reply> r;
+      if (m.pinhole) {
+        r = soap(*gateway_, m.upnp_control, m.upnp_service, "UpdatePinhole",
+                 {{"UniqueID", m.pinhole_id}, {"NewLeaseTime", std::to_string(lifetime_s)}}, opts_.timeout_ms);
+      } else {
+        // AddPortMapping again for the same client and port extends it.
+        r = soap(*gateway_, m.upnp_control, m.upnp_service, "AddPortMapping",
+                 {{"NewRemoteHost", ""},
+                  {"NewExternalPort", std::to_string(m.external.port)},
+                  {"NewProtocol", "TCP"},
+                  {"NewInternalPort", std::to_string(m.internal_port)},
+                  {"NewInternalClient", net::address_text(*me_)},
+                  {"NewEnabled", "1"},
+                  {"NewPortMappingDescription", kDescription},
+                  {"NewLeaseDuration", std::to_string(lifetime_s)}},
+                 opts_.timeout_ms);
+      }
+      return r && r->status == 200;
+    }
+    case method::none:
+      break;
+  }
+  return false;
 }
 
 void mapper::remove(const mapped& m) {
@@ -597,15 +702,56 @@ void mapper::remove(const mapped& m) {
     }
     case method::upnp:
       if (m.pinhole) {
-        (void)soap(m.upnp_control, m.upnp_service, "DeletePinhole", {{"UniqueID", m.pinhole_id}}, quick);
+        (void)soap(*gateway_, m.upnp_control, m.upnp_service, "DeletePinhole", {{"UniqueID", m.pinhole_id}}, quick);
       } else {
-        (void)soap(m.upnp_control, m.upnp_service, "DeletePortMapping",
+        (void)soap(*gateway_, m.upnp_control, m.upnp_service, "DeletePortMapping",
                    {{"NewRemoteHost", ""}, {"NewExternalPort", std::to_string(m.external.port)}, {"NewProtocol", "TCP"}},
                    quick);
       }
       break;
     case method::none:
       break;
+  }
+}
+
+// ---- the keeper -------------------------------------------------------------------------------
+
+keeper::keeper(std::unique_ptr<mapper> m, std::vector<mapped> held, int lifetime_s)
+    : mapper_(std::move(m)), held_(std::move(held)), lifetime_s_(std::max(1, lifetime_s)) {
+  if (mapper_ && !held_.empty()) thread_ = std::thread([this] { run(); });
+}
+
+keeper::~keeper() {
+  {
+    std::lock_guard lock(m_);
+    stop_ = true;
+  }
+  cv_.notify_all();
+  if (thread_.joinable()) thread_.join();
+  if (mapper_) {
+    for (const auto& m : held_) mapper_->remove(m);
+  }
+}
+
+void keeper::run() {
+  // At half the lease; one the router did not take is asked again soon (it
+  // may have been busy), while the rest of its lease runs.
+  const auto half = std::chrono::milliseconds(lifetime_s_ * 500);
+  const auto soon = std::min(half, std::chrono::milliseconds(10000));
+  std::vector<clock::time_point> due(held_.size(), clock::now() + half);
+  std::unique_lock lock(m_);
+  while (!stop_) {
+    const auto next = *std::min_element(due.begin(), due.end());
+    if (cv_.wait_until(lock, next, [&] { return stop_; })) return;
+    const auto now = clock::now();
+    for (std::size_t i = 0; i < held_.size(); ++i) {
+      if (due[i] > now) continue;
+      lock.unlock();
+      const bool ok = mapper_->renew(held_[i], lifetime_s_);
+      lock.lock();
+      if (stop_) return;
+      due[i] = clock::now() + (ok ? half : soon);
+    }
   }
 }
 

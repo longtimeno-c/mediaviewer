@@ -342,8 +342,20 @@ shows: no listener, no router mapping, no socket. (`internet.*`, `invite.*`, `ma
 
   With no public place at all, the window says why (no mapping and no IPv6, or the router behind
   another NAT) and what to try (UPnP / NAT-PMP on the router, the DHT toggle, a phone hotspot
-  with IPv6). A UPnP description is fetched only from an address on this network, never a public
-  one, so a stray SSDP answer cannot point it anywhere else.
+  with IPv6). **UPnP talks to the gateway only** (#499): only an SSDP answer from the default
+  gateway is read, and the description's LOCATION, URLBase and every control URL must name the
+  gateway itself (never loopback, 0/8, link-local, multicast or a public address); a service type
+  must be `urn:` and `[A-Za-z0-9.:-]` only, since it goes into the `SOAPAction` header (a CR/LF
+  there was a second, attacker-written request to whatever the control URL named). A port the
+  router already forwards (`GetSpecificPortMappingEntry`), unless to this machine by an earlier
+  run of this app, is not taken over, so the person's own 443 forward survives; a 443 mapping the
+  router put on another port is removed at once. When PCP mapped the port, UPnP is not searched
+  for an IPv6 pinhole besides.
+- **Leases are 120 s** (`kMapLifetimeS`, #499; was an hour), renewed at half their life while the
+  code or transfer holds them (`mapping::keeper`: PCP and NAT-PMP ask again with the same nonce
+  and ports, UPnP repeats `AddPortMapping`, a pinhole `UpdatePinhole`; one the router refuses is
+  asked again within 10 s). A crash or force-quit leaves a forward or pinhole open two minutes at
+  most, and a transfer longer than an hour keeps its way back in.
 - **The code** (`invite.h`) is a 48-bit secret and the places, encrypted under a key from the
   secret (a link preview shows no address), and a two-byte check that catches a typo on the
   sender before the code is spent. Crockford base32 in groups of four, case and O/0, I/1 forgiven,
@@ -409,10 +421,23 @@ only while a code waits or a send looks for its receiver; never at idle. (`dht_i
 - **One UDP socket** (`udp_hub.h`) carries the DHT, the punching and the transfer: the hole a probe
   punches is the one the transfer uses. **Punching**: each side probes every address the other
   gave, and 16 ports above the other's public one (a NAT that hands ports out in sequence), every
-  100 ms for up to 10 s. A hello from a path the item did not name (a NAT's fresh mapping) is
-  answered and probed back at once. The sender takes the first path a reply came back on and
-  offers it (*choose*) until the receiver answers (*chosen*); the receiver answers only the first
-  path it is offered, so both end on the same one, whichever transport it is on.
+  100 ms for up to 10 s. Its addresses on its own network (RFC 1918) are probed only when both
+  sides' public addresses are the same (behind one router, #499): elsewhere such an address is a
+  stranger's on this side's network. A hello from a path the item did not name (a NAT's fresh
+  mapping) is answered and probed back at once. The sender takes the first path a reply came back
+  on and offers it (*choose*) until the receiver answers (*chosen*); the receiver answers only the
+  first path it is offered, so both end on the same one, whichever transport it is on.
+- **Probes are authenticated** (#499). Each carries a tag from the code (a quick filter, shown in
+  the clear) and this side's random 16-byte nonce for the meeting; a hello adds a 16-byte MAC
+  over (kind, nonce), and a reply, choose and chosen add the nonce of the side they answer and a
+  MAC over (kind, nonce, that nonce), keyed BLAKE2b under a key from the code (`prober`,
+  `meet.cpp`). A probe that does not verify is dropped before anything else, so a stranger who saw
+  the tag (a host at the other side's private address on this network, a carrier-NAT neighbour)
+  cannot answer a hello, fill the 8 learned-path slots, pick the path or take it, and an answer
+  recorded in one meeting fails in the next (new nonces). The stream's id comes from both nonces
+  under the same key, not from the tag. Hellos are 46 bytes, the rest 62; v0.1.35's 14-byte
+  tag-only probes are ignored, so **this side cannot meet a v0.1.35 peer over the DHT** (words or
+  a remembered device; direct codes and Wi-Fi are unchanged).
 - **Every probe**, of every kind, is at most 200 a second each way (20 a 100 ms tick): the paths
   learned from hellos first (at most 8), the birthday's share (below), then the item's addresses
   and predicted ports in turn with what is left.
@@ -439,9 +464,13 @@ only while a code waits or a send looks for its receiver; never at idle. (`dht_i
   failed is accepted. It runs beside the UDP punch, only in a word code's meeting (the window is
   open), never in a remembered device's background meetings, since it listens on every interface
   (Windows asks its firewall at the first). The sender picks a TCP connection only if no UDP path
-  came back in the first 1.5 s, and the same choose / chosen settles it; once it has offered a TCP
-  connection it waits for the answer there until the punch ends and never falls back to UDP, so
-  the two sides cannot end on different transports. It meets where a NAT keeps a TCP
+  came back in the first 1.5 s, and the same choose / chosen settles it. On each connection both
+  sides first write a hello (an answer to it within 2 s or the connection is dropped), and the
+  sender offers its choose only on a connection whose hello verifies (#499). Once it has offered a
+  TCP connection it waits for the verified chosen there until the punch ends; a connection that
+  closes or answers with anything else was not taken by the other side (TCP loses nothing), so
+  the sender falls back to the next path that answers. The two sides cannot end on different
+  transports. It meets where a NAT keeps a TCP
   connection's port (most home routers), whatever it does to UDP: two hard UDP NATs can still
   meet this way. On Windows the port is shared with `SO_REUSEADDR` (there is no `SO_REUSEPORT`),
   not `SO_EXCLUSIVEADDRUSE`, so another process of the same user could bind it too and take a
@@ -453,6 +482,11 @@ only while a code waits or a send looks for its receiver; never at idle. (`dht_i
   beside Noise), and the session above already seals, orders and resumes. 1200-byte packets,
   cumulative and 256-packet selective acknowledgements, RACK loss detection and a tail-loss probe
   (RFC 8985, simplified), NewReno growth, the receiver's buffer as the window; no pacing yet.
+  The stream exists before CPace, so its peer is not yet trusted (#499): a data packet over
+  1200 bytes is dropped, what waits to be read and what is held out of order together stay within
+  the 16 MiB window it advertises (`kStreamMaxRx`; the advertised window subtracts both, so an
+  honest sender never hits the bound), an ack of a packet never sent is ignored, and an ack visits
+  only the 256 packets its bitmap covers.
   Loopback, Mac (`"[driftwire]"`'s stream case): about 60 MB/s clean, 17–26 MB/s at 1 % loss each
   way, 6–10 MB/s at 5 %; no real path measured.
 - Then the **internet handshake** runs over the stream as with a direct code (CPace on the words'
@@ -745,7 +779,7 @@ second while bytes move; those posts update chrome and never present the canvas.
   person typed is resolved too. Codes, addresses and peer names are never logged. While four words meet
   (a word code, not a remembered device), a TCP port listens on every interface (its number is in
   the sealed item), and a birthday punch sends its 14-byte probes to random ports of the other
-  side's public address only.
+  side's public address only (46-byte hellos, #499).
 - Protocol 2's resume secret and keys live in memory only, wiped when the session ends; nothing
   about a session is written down, except what Remember keeps (#472 PR 4): the peer's name, key
   and pairing secret, in the OS's secret store (Keychain, Credential Manager), never a plain file,
