@@ -30,4 +30,9 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- #509: plain .NET, shared with the chrome. -->
+    <Compile Include="..\Shared\ExceptionFrames.cs" Link="Shared\ExceptionFrames.cs" />
+  </ItemGroup>
+
 </Project>
