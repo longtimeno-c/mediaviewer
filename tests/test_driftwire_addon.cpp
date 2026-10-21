@@ -168,7 +168,9 @@ TEST_CASE("driftwire: the window opens from a command with its files, offline", 
   REQUIRE(eventually([&] {
     reg.drain();
     const std::string screens = reg.screens_json();
-    return screens.find("2 files") != std::string::npos;
+    // Presence posts the offline note on its own, after the files: wait for both.
+    return screens.find("2 files") != std::string::npos &&
+           screens.find("Offline: nothing nearby can be found.") != std::string::npos;
   }));
   const auto screens = mv::json::parse(reg.screens_json());
   REQUIRE(screens);
