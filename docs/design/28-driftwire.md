@@ -39,10 +39,9 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
   - **what is offered to this computer**: "… wants to send you files" and the **code** in large
     digits to type over there, **Decline**; then "… wants to send you 24 files, 412 MB", the first
     names, **Save to** with Choose…, **Decline** / **Accept**; then the path filling with its
-    percentage, the count and **Cancel**; then what arrived and **OK**. A transfer that ended
-    without arriving (cancelled, lost) says so for 6 s (`engine::options::ended_show_ms`) and the
-    window goes back to its default view by itself (#511); a delivered one keeps its line and
-    Remember until OK;
+    percentage, the count and **Cancel**; then what arrived and **OK**. Every end, delivered,
+    cancelled or lost, stays on screen until **OK** on both sides, and nothing clears itself on a
+    timer (#531, reversing #511's 6 s); a delivered one keeps Remember with its line;
   - **Send**, a card: a strip of the first six files' thumbnails (the viewer's cache), the count
     and size, the first names, **Send a folder** (Choose…), **Clear**;
   - **Nearby**: the MediaViewers it can see as large round tiles (a monogram, the name, "Wi-Fi",
@@ -50,7 +49,8 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
     other screen shows, in one large field that takes digits only and goes by itself at the sixth
     (three wrong codes end the link; this screen never shows the code); then "Waiting for … to
     accept"; then the tile's own ring fills while the bytes move (and the path card above shows
-    how), and it ends with a done or failed mark on the tile and a line saying what happened.
+    how), and it ends with a done or failed mark on the tile and a line saying what happened, with
+    **OK** to go back (#531).
     With no one in sight it says **No one nearby yet** and how to fix that, not a status line;
     what this computer cannot search (no network, Bluetooth off or missing) is one quiet line at
     the card's foot, and nothing when Wi-Fi and Bluetooth both work (#508);

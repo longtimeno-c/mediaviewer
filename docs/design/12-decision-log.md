@@ -1900,6 +1900,13 @@ hand-forwarded port now helps only if the router maps it; a `forwarded` key in a
 `driftwire.json` is ignored. Reopen only for a network where none of the automatic ways work and
 the DHT is blocked too.
 
+**Every transfer end stays until OK (2026-10-21, #531).** Reverses #511, where an end that did
+not arrive (cancelled, lost) cleared itself after 6 s (`ended_show_ms`, `clear_ended_later()`):
+looking away for a moment lost the reason before it was read. Delivered, cancelled and failed
+ends now stay on both sides until **OK** (`in_dismiss`, and `out_dismiss` on the sender's card,
+which had none). An ended card blocks nothing: a new send or offer replaces it. Reopen only with
+a reason a person needs the window to clear itself.
+
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
 no-replace before its `file_done`; the sender's `done` waits for every check. Measured on loopback

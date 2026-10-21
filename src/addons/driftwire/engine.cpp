@@ -317,7 +317,6 @@ void engine::control_loop() {
                : post_pending_                     ? post_due_
                                                    : status_due_;
     if (announce_due_ != none) due = due == none ? announce_due_ : std::min(due, announce_due_);
-    if (clear_due_ != none && (due == none || clear_due_ < due)) due = clear_due_;
     const auto woken = [&] { return stopping_.load() || reconcile_wanted_ || save_wanted_; };
     if (due != none) {
       control_cv_.wait_until(lock, due, woken);
@@ -329,12 +328,6 @@ void engine::control_loop() {
       status_due_ = none;
       lock.unlock();
       sync_status();
-      lock.lock();
-    }
-    if (clear_due_ != none && std::chrono::steady_clock::now() >= clear_due_) {
-      clear_due_ = none;
-      lock.unlock();
-      clear_ended();
       lock.lock();
     }
     if (save_wanted_) {
@@ -1705,6 +1698,13 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
       if (v_.in == view::in_phase::done || v_.in == view::in_phase::ended) v_.in = view::in_phase::none;
     }
     post();
+  } else if (node == "out_dismiss" && kind == kClick) {
+    // #531: every end stays until OK; nothing clears itself on a timer.
+    {
+      std::lock_guard lock(m_);
+      if (v_.out == view::out_phase::done || v_.out == view::out_phase::ended) v_.out = view::out_phase::idle;
+    }
+    post();
   }
 }
 
@@ -1734,7 +1734,6 @@ void engine::cancel_transfer() {
     }
   }
   if (was_waiting) {
-    clear_ended_later();
     request_reconcile();
     post();
   }
@@ -1856,33 +1855,9 @@ void engine::end_transfer() {
     transfer_running_ = false;
     idle_.notify_all();
   }
-  clear_ended_later();
   request_reconcile();
   post();
   if (opts_.after_end_transfer) opts_.after_end_transfer();
-}
-
-void engine::clear_ended_later() {
-  std::lock_guard lock(control_m_);
-  clear_due_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(1, opts_.ended_show_ms));
-  control_cv_.notify_all();
-}
-
-void engine::clear_ended() {
-  bool changed = false;
-  {
-    std::lock_guard lock(m_);
-    // Only an end still on screen: a transfer since then has its own phase.
-    if (v_.in == view::in_phase::ended) {
-      v_.in = view::in_phase::none;
-      changed = true;
-    }
-    if (v_.out == view::out_phase::ended) {
-      v_.out = view::out_phase::idle;
-      changed = true;
-    }
-  }
-  if (changed) post();
 }
 
 void engine::start_send_code() {

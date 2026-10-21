@@ -377,6 +377,7 @@ void outgoing(writer& w, const view& v) {
     case view::out_phase::ended:
       text(w, "out_note", v.out_note);
       if (v.out == view::out_phase::done && v.in == view::in_phase::none) remember_toggle(w, v);
+      button(w, "out_dismiss", "OK", "plain");
       break;
   }
   end(w);

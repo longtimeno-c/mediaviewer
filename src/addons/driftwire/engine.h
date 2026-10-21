@@ -337,9 +337,6 @@ class engine {
     // the beacon take (net::local_subnets() when empty). With loopback_only
     // and none given, every source is taken (the tests' made-up addresses).
     std::optional<std::vector<net::subnet>> local_subnets;
-    // #511: how long a transfer's end ("Cancelled", "lost") stays on screen
-    // before the window goes back to its default view (OK clears it sooner).
-    int ended_show_ms = 6000;
   };
 
   engine(engine_host& host, options opts);
@@ -541,9 +538,6 @@ class engine {
   void publish_files(std::vector<outgoing_file> files, std::uint64_t gen);
   void read_folder(std::string folder);
   void cancel_transfer();
-  // #511: an ended transfer's note clears itself after ended_show_ms.
-  void clear_ended_later();
-  void clear_ended();  // the control thread
   void reap_helpers();  // under threads_m_
   // Runs `body` as the transfer thread once the last one is joined. The
   // caller has set transfer_running_, so nobody installs a thread meanwhile.
@@ -659,7 +653,6 @@ class engine {
   std::chrono::steady_clock::time_point status_due_{};  // under control_m_; {} = none
   std::chrono::steady_clock::time_point post_due_{};  // under control_m_
   std::chrono::steady_clock::time_point announce_due_{};  // under control_m_: sync_announce then; {} = none
-  std::chrono::steady_clock::time_point clear_due_{};  // under control_m_; {} = none
   std::thread control_thread_;
 
   // Presence: changed only by the control thread (and the destructor after it).
