@@ -171,6 +171,10 @@ constexpr UINT kBackgroundStartGraceMs = 60000;
 // starts again in the background.
 constexpr UINT_PTR kBackgroundUpdateTimerId = 0x7D02;
 constexpr UINT kBackgroundUpdateMs = 60000;
+// #532: another MediaViewer's "Update ready — restart" asked this one to quit
+// (MediaViewer.Updater/OtherInstances.cs): it does once no add-on is busy.
+constexpr UINT_PTR kQuitForUpdateTimerId = 0x7D03;
+constexpr UINT kQuitForUpdateMs = 1000;
 // Text in images: the pointer rests on a still this long before it is read.
 constexpr UINT_PTR kTextDwellTimerId = 0x7C01;
 constexpr UINT kTextDwellMs = 500;
@@ -527,6 +531,7 @@ struct app_state {
   int login_item_kept = -1;  // the keep list last seen: -1 not yet, 0 empty, 1 not
   bool remove_login_item_at_exit = false;  // a sign-in start nothing kept
   UINT taskbar_restart_msg = 0;  // "TaskbarCreated": Explorer restarted, add the icon again
+  UINT quit_for_update_msg = 0;  // #532: "MediaViewer.QuitForUpdate", wParam the asking pid
   // An add-on update's restart with no app update staged: MediaViewer starts
   // again with these arguments once this process has exited.
   std::optional<std::vector<std::wstring>> relaunch;
@@ -8709,9 +8714,25 @@ void apply_update_in_background(app_state* app) {
   if (other_window_shown(app->window)) return;
   const std::vector<std::wstring> args{L"--background"};
   if (app->chrome.request_update_restart(mv::shell::update::join_arguments(args))) {
-    // The chrome arms Update.exe, then UpdateRestart(1) closes this process.
-    MV_LOG_INFO("background: applying the staged update; starting again in the background");
+    // The chrome arms Update.exe (not while another MediaViewer runs), then
+    // UpdateRestart(1) closes this process.
+    MV_LOG_INFO("background: an update is staged; applying it and starting again in the background");
   }
+}
+
+// #532: another MediaViewer is updating and Update.exe would kill this one.
+// Quit the ordinary way once nothing is under way; this process applies
+// nothing on its way out (the asker is still running: UpdateService refuses).
+void quit_for_update_when_idle(app_state* app) {
+  if (app->closing || app->quit_for_real) return;
+  if (addons_busy()) {
+    ::SetTimer(app->window, kQuitForUpdateTimerId, kQuitForUpdateMs, nullptr);
+    return;
+  }
+  ::KillTimer(app->window, kQuitForUpdateTimerId);
+  MV_LOG_INFO("update: another MediaViewer is installing an update; quitting");
+  app->quit_for_real = true;  // #452: never kept in the background
+  ::PostMessageW(app->window, WM_CLOSE, 0, 0);
 }
 
 void enter_background(app_state* app) {
@@ -9391,6 +9412,10 @@ std::optional<LRESULT> window_on_timer(HWND hwnd, UINT msg, WPARAM wparam, LPARA
         confirm_update_start_async();
         return 0;
       }
+      if (wparam == kQuitForUpdateTimerId) {
+        quit_for_update_when_idle(app);
+        return 0;
+      }
       if (wparam == kBackgroundUpdateTimerId) {
         apply_update_in_background(app);
         return 0;
@@ -9471,6 +9496,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     // #452: Explorer restarted; its notification area lost the icon.
     app->tray_shown = false;
     sync_tray(app, kept_alive());
+    return 0;
+  }
+  if (app->quit_for_update_msg != 0 && msg == app->quit_for_update_msg) {
+    if (wparam != ::GetCurrentProcessId()) quit_for_update_when_idle(app);
     return 0;
   }
 
@@ -9740,6 +9769,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // The toolbar is added when Explorer reports the button, not before.
   app.taskbar_created_msg = ::RegisterWindowMessageW(L"TaskbarButtonCreated");
   app.taskbar_restart_msg = ::RegisterWindowMessageW(L"TaskbarCreated");  // #452
+  app.quit_for_update_msg = ::RegisterWindowMessageW(L"MediaViewer.QuitForUpdate");  // #532
   mv::shell::apply_key_remaps(mv::shell::load_key_remaps());
   app.router.rebuild(mv::shell::live_bindings());
   mv::boot::mark(mv::boot::stage::settings_loaded);

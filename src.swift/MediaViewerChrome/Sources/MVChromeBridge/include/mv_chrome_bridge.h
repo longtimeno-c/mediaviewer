@@ -248,6 +248,11 @@ void mv_chrome_set_gallery_columns(int32_t columns);
 int32_t mv_chrome_update_phase(void);
 bool mv_chrome_update_version(char* out, int32_t cap);
 void mv_chrome_restart_to_update(void);
+// #532: other running copies of this app, and asking them to quit once idle
+// (each finishes a Driftwire transfer first). Restart waits until none is
+// left. [main-thread]
+int32_t mv_chrome_update_others_running(void);
+void mv_chrome_update_ask_others_to_quit(void);
 // An add-on update installed beside a running copy and waits on a restart.
 // With an app update staged this is mv_chrome_restart_to_update (Sparkle
 // installs it, and the new add-on loads on the way back up); else MediaViewer

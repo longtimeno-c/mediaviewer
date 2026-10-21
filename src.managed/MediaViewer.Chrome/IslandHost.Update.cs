@@ -3,6 +3,7 @@
 using System.Runtime.InteropServices;
 using MediaViewer.Shared;
 using MediaViewer.Updater;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -91,30 +92,55 @@ public static partial class IslandHost
     }
 
     // #532: "Update ready — restart" clicked while an add-on reports work under
-    // way (busy_post: a Driftwire transfer). The restart goes once it has ended
-    // (NoteSlotBusy).
+    // way (busy_post: a Driftwire transfer), or while another MediaViewer runs
+    // (Update.exe would kill it, perhaps mid-transfer). The others are asked to
+    // quit once idle; the restart goes when this process is idle and alone.
     private static bool _updateWaitingForTransfer;
+    private static DispatcherQueueTimer? _updateWaitTimer;
+    private static int _updateWaitTicks;
     internal const string UpdateWaitingText = "The update will install when the transfer finishes";
+
+    private static bool UpdateMustWait()
+    {
+        if (SlotBusy.Count > 0) return true;
+        if (OtherInstances.Running().Count == 0) return false;
+        // Asked again every few seconds: a window opened meanwhile hears it too.
+        if (_updateWaitTicks++ % 5 == 0) OtherInstances.AskToQuit();
+        return true;
+    }
 
     private static void RestartToUpdateWhenIdle()
     {
-        if (SlotBusy.Count == 0)
+        _updateWaitTicks = 0;
+        if (!UpdateMustWait())
         {
-            _updateWaitingForTransfer = false;
+            StopUpdateWait();
             Send(Command.UpdateRestart, 0);
             return;
         }
         _updateWaitingForTransfer = true;
         if (_lastUpdateStatus is { } s) ShowUpdateStatus(s);
+        if (_dispatcher is null) return;
+        _updateWaitTimer ??= _dispatcher.DispatcherQueue.CreateTimer();
+        _updateWaitTimer.Interval = TimeSpan.FromSeconds(1);
+        _updateWaitTimer.IsRepeating = true;
+        _updateWaitTimer.Tick -= OnUpdateWaitTick;
+        _updateWaitTimer.Tick += OnUpdateWaitTick;
+        _updateWaitTimer.Start();
     }
 
-    /// <summary>NoteSlotBusy: the work an app update waited on has ended.</summary>
-    private static void UpdateWaitSlotBusyChanged()
+    private static void OnUpdateWaitTick(DispatcherQueueTimer sender, object args) => Guarded(() =>
     {
-        if (!_updateWaitingForTransfer || SlotBusy.Count > 0) return;
-        _updateWaitingForTransfer = false;
+        if (UpdateMustWait()) return;
+        StopUpdateWait();
         if (_lastUpdateStatus is { } s) ShowUpdateStatus(s);
         Send(Command.UpdateRestart, 0);
+    });
+
+    private static void StopUpdateWait()
+    {
+        _updateWaitTimer?.Stop();
+        _updateWaitingForTransfer = false;
     }
 
     private static StackPanel BuildUpdateButton()
@@ -420,6 +446,10 @@ public static partial class IslandHost
         {
             UpdateService? updater = _updater;
             if (updater is null || updater.Status.Phase != UpdatePhase.Ready) return 1;
+            // #532: no apply while another MediaViewer runs (Update.exe kills it).
+            // An add-on restart then starts again without it; a hidden process
+            // tries again later.
+            if (OtherInstances.Running().Count > 0) return 1;
             string[] args = arg == IntPtr.Zero || sizeBytes < 2
                 ? Array.Empty<string>()
                 : (Marshal.PtrToStringUni(arg, sizeBytes / 2) ?? "").Split('\0', StringSplitOptions.RemoveEmptyEntries);

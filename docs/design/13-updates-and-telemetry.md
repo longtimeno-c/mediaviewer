@@ -144,6 +144,18 @@ installed from Settings → Add-ons, never part of the base installer or its upd
   minute; Mac: `applyUpdateInBackground` with Sparkle's install block) and starts again in the
   background (`--background` on Windows; the `MVBackgroundAfterUpdate` default on the Mac, since
   Sparkle's relaunch takes no arguments). Driftwire takes its receiving back from its kept toggle.
+- **Never under another copy (#532).** Update.exe's apply kills every other process running from
+  the install folder (Velopack's `force_stop_package`), so no apply is launched while another
+  MediaViewer runs (`OtherInstances`, `UpdateService.LaunchApply`), on exit included: the last
+  copy out applies it, and a hidden one applies it itself (above). "Update ready — restart" asks
+  the others to quit, a registered window message `MediaViewer.QuitForUpdate` (Windows) or the
+  distributed notification `<bundle id>.QuitForUpdate` (Mac), and waits with the same line
+  until none is left. Each quits once none of its add-ons is busy. `tools/package/e2e-update.ps1`
+  covers a second copy (`--new-instance`). On the Mac Sparkle's installer sends every copy a quit
+  event, which a copy kept by Driftwire took for ⌘Q and hid (the update then never installed):
+  the restart sets `_quitForReal`; an asked copy holding Sparkle's installer installs from there;
+  an asker quit by another copy's install reopens once the new version is in place
+  (`relaunchAfterUpdateInstalls`).
 - **State across the restart** (Windows, `shell/update_guard.h`): the restart relaunches with
   the open path, `--restore-zoom N`, `--restore-fullscreen` and `--restore-gallery`. Playback
   position is not an argument: the player saves its resume point when a clip closes.

@@ -1905,9 +1905,28 @@ the DHT is blocked too.
 you close MediaViewer" never came, idle or not. Hidden, with an update staged and no add-on busy
 (`busy_post`), the process now applies it and starts again in the background (`--background`;
 on the Mac a default read at launch, as Sparkle relaunches without arguments). "Update ready —
-restart" clicked during a transfer waits for it to end and says so. Not covered: a second
-window's process (Ctrl+N / ⌘N) still knows nothing of another process's transfer; there is no
-message between processes.
+restart" clicked during a transfer waits for it to end and says so.
+
+**No update is applied while another MediaViewer runs (2026-10-21, #532).** Velopack's apply
+kills every other process running from the install folder (`force_stop_package` in Update.exe
+1.2.0), so a second window's process (Ctrl+N), or the one Driftwire keeps in the background,
+lost a transfer under way. `UpdateService.LaunchApply` refuses while another copy runs, on exit
+too: the last one out applies it. "Update ready — restart" asks the others to quit
+(`MediaViewer.QuitForUpdate`, a registered window message on Windows, a distributed
+notification on the Mac) and restarts once none is left; each quits the ordinary way once none
+of its add-ons is busy, applying nothing on its way out. Sparkle 2.9.6 also ends every running
+copy: its installer sends each a quit event (`InstallerProgressAppController sendTerminationSignal`),
+measured on the Mac. Other windows' processes close for the update rather than being killed by
+it; their view is not restored.
+
+**On the Mac the restart quits for real (2026-10-21, #532).** With Keep receiving on, Sparkle's
+quit event read as the person's ⌘Q and hid the window (#452), so "Update ready — restart"
+installed nothing, idle or not: reproduced on this Mac (the copy went to the menu bar and
+stayed on the old build). `restartToUpdate` now sets `_quitForReal` first. Sparkle keeps one
+installer per app and installs whenever the copy holding it quits, relaunching nothing when
+several copies run: an asked copy with the update staged installs it itself (falling back to a
+plain quit after 5 s when its installer is not the live one), and a copy that asked and is then
+quit by another's install opens the app again once the bundle's version has changed.
 
 **Every transfer end stays until OK (2026-10-21, #531).** Reverses #511, where an end that did
 not arrive (cancelled, lost) cleared itself after 6 s (`ended_show_ms`, `clear_ended_later()`):

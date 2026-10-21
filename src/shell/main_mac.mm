@@ -707,6 +707,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)restartToUpdate;
 // An add-on update waits on a restart (mv_chrome_restart_for_addons).
 - (void)restartForAddons;
+- (void)relaunchAfterUpdateInstalls;
 // PR 9
 - (BOOL)metaPaneVisible;
 - (BOOL)metaLoading;
@@ -830,6 +831,8 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)quitFromMenu:(id)sender;
 - (void)enterBackground;
 - (void)applyUpdateInBackground;
+- (void)quitForUpdateWhenIdle;
+- (void)noteUpdateAsked;
 - (void)leaveBackground;
 - (void)quitFromBackground;
 - (void)backgroundChanged;
@@ -850,6 +853,38 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 // rather than beside mv_chrome_fit/mv_chrome_one_to_one above, which predate
 // MvLabApp's declaration in this file. [main-thread] -- see the header's
 // doc comment; every one of these just forwards to g_chrome_app.
+// #532: the other running copies of this app (another ⌘N window's process, or
+// the one Driftwire keeps in the background). An update installed under one
+// leaves it on the old version, holding Driftwire's receiving.
+static NSArray<NSRunningApplication*>* MvOtherInstances() {
+  NSString* bundle = NSBundle.mainBundle.bundleIdentifier;
+  if (bundle.length == 0) return @[];
+  const pid_t self = ::getpid();
+  NSMutableArray<NSRunningApplication*>* out = [NSMutableArray array];
+  for (NSRunningApplication* a in [NSRunningApplication runningApplicationsWithBundleIdentifier:bundle]) {
+    if (a.processIdentifier != self && !a.terminated) [out addObject:a];
+  }
+  return out;
+}
+
+static NSString* MvQuitForUpdateName() {
+  NSString* bundle = NSBundle.mainBundle.bundleIdentifier;
+  return [(bundle.length > 0 ? bundle : @"MediaViewer") stringByAppendingString:@".QuitForUpdate"];
+}
+
+extern "C" int32_t mv_chrome_update_others_running(void) {
+  return static_cast<int32_t>(MvOtherInstances().count);
+}
+extern "C" void mv_chrome_update_ask_others_to_quit(void) {
+  if (MvLabApp* app = (MvLabApp*)NSApp.delegate; [app isKindOfClass:[MvLabApp class]]) [app noteUpdateAsked];
+  // Every copy hears it; each quits once nothing in it is busy (-quitForUpdateWhenIdle).
+  [NSDistributedNotificationCenter.defaultCenter
+      postNotificationName:MvQuitForUpdateName()
+                    object:[NSString stringWithFormat:@"%d", static_cast<int>(::getpid())]
+                  userInfo:nil
+        deliverImmediately:YES];
+}
+
 // #452: the menu-bar item and the notices (AddonNotices.swift). [main-thread]
 extern "C" void mv_chrome_background_show_viewer(void) {
   if (MvLabApp* app = (MvLabApp*)NSApp.delegate; [app isKindOfClass:[MvLabApp class]]) [app leaveBackground];
@@ -2510,6 +2545,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   // Receive when MediaViewer is closed). The viewer window is hidden, not
   // closed, and comes back on reopen, a file open, or the menu-bar item.
   bool _inBackground;
+  bool _updateAsked;  // #532: this copy asked the others to quit for its update
   bool _quitForReal;
   id _backgroundCloseWatch;
   // A login-item start not yet kept by an add-on: an empty keep list means
@@ -2897,6 +2933,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   SPUStandardUpdaterController* _updater;
   // Sparkle's "install now and relaunch" block, held while an update waits.
   void (^_installUpdateNow)(void);
+  bool _backgroundUpdateRetry;  // #532: -applyUpdateInBackground tries again in a minute
   // What the command bar shows (-updatePhase): checking / downloading only
   // while Sparkle is in that step; ready while _installUpdateNow is held.
   int32_t _updateActivity;  // 0 idle, 1 checking, 2 downloading
@@ -2937,6 +2974,18 @@ static void MvAdoptNewDefaultViewerTypes() {
     }
     if (_options.soak_seconds > 0.0 || _options.harness || !_options.open_path.empty()) g_start_background = false;
     if (g_start_background) [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+  }
+  // #532: another copy's "Update ready — restart" asks this one to quit.
+  {
+    __weak MvLabApp* weakSelf = self;
+    NSString* me = [NSString stringWithFormat:@"%d", static_cast<int>(::getpid())];
+    [NSDistributedNotificationCenter.defaultCenter addObserverForName:MvQuitForUpdateName()
+                                                               object:nil
+                                                                queue:NSOperationQueue.mainQueue
+                                                           usingBlock:^(NSNotification* n) {
+                                                             if ([n.object isEqual:me]) return;
+                                                             [weakSelf quitForUpdateWhenIdle];
+                                                           }];
   }
   // docs/design/25 PR 57 verify rigs: open add-ons from a scratch store, never the
   // profile's. Before anything lists the store.
@@ -6362,6 +6411,10 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   }
   void (^install)(void) = _installUpdateNow;
   _installUpdateNow = nil;
+  // #532: Sparkle quits every copy with a quit event; with Driftwire keeping
+  // the process (#452) that event hid the window instead, and the update
+  // never installed, transfer or not.
+  _quitForReal = true;
   install();  // Sparkle quits, installs, and relaunches
 #endif
 }
@@ -6407,6 +6460,36 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     return;
   }
   [NSApp terminate:nil];
+}
+
+// #532: open MediaViewer again once this process has exited and the bundle's
+// version has changed (another copy's install has finished), or after two
+// minutes whatever happened. The selection comes back as after an update.
+- (void)relaunchAfterUpdateInstalls {
+  NSBundle* bundle = NSBundle.mainBundle;
+  if (![bundle.bundlePath.pathExtension isEqualToString:@"app"]) return;
+  if (!_wantSelectedPath.empty()) {
+    [NSUserDefaults.standardUserDefaults
+        setObject:[NSString stringWithUTF8String:_wantSelectedPath.c_str()]
+           forKey:@"MVResumeAfterUpdate"];
+  }
+  NSString* version = [bundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"";
+  NSTask* waiter = [[NSTask alloc] init];
+  waiter.executableURL = [NSURL fileURLWithPath:@"/bin/sh"];
+  NSString* script =
+      @"i=0; while /bin/kill -0 \"$1\" 2>/dev/null; do i=$((i+1)); [ $i -gt 600 ] && exit 0; /bin/sleep 0.1; done; "
+      @"j=0; while :; do v=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \"$2/Contents/Info.plist\" 2>/dev/null); "
+      @"[ -n \"$v\" ] && [ \"$v\" != \"$3\" ] && break; j=$((j+1)); [ $j -gt 1200 ] && break; /bin/sleep 0.1; done; "
+      @"/bin/sleep 1; exec /usr/bin/open \"$2\"";
+  waiter.arguments = @[
+    @"-c", script, @"mv-relaunch", [NSString stringWithFormat:@"%d", static_cast<int>(::getpid())], bundle.bundlePath,
+    version
+  ];
+  waiter.standardInput = NSFileHandle.fileHandleWithNullDevice;
+  waiter.standardOutput = NSFileHandle.fileHandleWithNullDevice;
+  waiter.standardError = NSFileHandle.fileHandleWithNullDevice;
+  NSError* error = nil;
+  if (![waiter launchAndReturnError:&error]) MV_LOG_WARN("update: could not start the relaunch waiter");
 }
 
 #if MV_WITH_SPARKLE
@@ -8563,6 +8646,45 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   [NSApp terminate:nil];
 }
 
+- (void)noteUpdateAsked {
+  _updateAsked = true;
+}
+
+// #532: another copy is installing an update. Quit the ordinary way once no
+// add-on is busy (a Driftwire transfer finishes first).
+- (void)quitForUpdateWhenIdle {
+  if (_quitForReal) return;
+  if (mv::addon::default_slots().busy()) {
+    __weak MvLabApp* weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+      [weakSelf quitForUpdateWhenIdle];
+    });
+    return;
+  }
+#if MV_WITH_SPARKLE
+  if (_installUpdateNow) {
+    // This copy has the update staged too. Sparkle installs it whenever this
+    // copy quits, quitting every other copy (the one that asked included)
+    // and relaunching none; installing it from here relaunches the app once.
+    // Sparkle keeps one installer per app: when the asker staged after this
+    // copy, this block does nothing, so quit the ordinary way after a moment
+    // and the asker installs.
+    MV_LOG_INFO("update: another MediaViewer asked; installing the staged update from here");
+    void (^install)(void) = _installUpdateNow;
+    _installUpdateNow = nil;
+    _quitForReal = true;
+    install();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+      [NSApp terminate:nil];
+    });
+    return;
+  }
+#endif
+  MV_LOG_INFO("update: another MediaViewer is installing an update; quitting");
+  _quitForReal = true;
+  [NSApp terminate:nil];
+}
+
 // #532: a hidden process is never quit, so "installs when you quit" never
 // came. In the background with an update staged and no add-on busy (a
 // Driftwire transfer waits for the next minute), install it now and come back
@@ -8574,10 +8696,16 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   for (NSWindow* w in NSApp.windows) {
     if (w.isVisible && w != self.window && ![w isKindOfClass:NSClassFromString(@"NSStatusBarWindow")]) shown = true;
   }
-  if (shown || mv::addon::default_slots().busy()) {
+  // Another copy still running would stay on the old version: the last one goes.
+  if (shown || mv::addon::default_slots().busy() || MvOtherInstances().count > 0) {
+    if (_backgroundUpdateRetry) return;  // one minute's retry at a time
+    _backgroundUpdateRetry = true;
     __weak MvLabApp* weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-      [weakSelf applyUpdateInBackground];
+      MvLabApp* app = weakSelf;
+      if (!app) return;
+      app->_backgroundUpdateRetry = false;
+      [app applyUpdateInBackground];
     });
     return;
   }
@@ -12048,6 +12176,13 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
   (void)sender;
+  // #532: this copy asked the others to quit for its update, and something
+  // quits it first: another copy's install (Sparkle quits every copy and may
+  // relaunch none). It comes back once the new version is in place.
+  if (_updateAsked && !_quitForReal && !_terminating) {
+    _quitForReal = true;
+    [self relaunchAfterUpdateInstalls];
+  }
   // #452: a Quit the person asked for (the Dock's, or another app's quit
   // event) goes to the background while an add-on keeps the process, as ⌘Q
   // does. Logout, restart and shut down carry a reason and quit; the app's own

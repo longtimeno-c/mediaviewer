@@ -1687,10 +1687,12 @@ package (`UninstallDisplaySize`, passed in by `build-release.ps1`); add-ons are 
 .\tools\package\e2e-update.ps1 -Payload .\build\bin\Release
 ```
 
-It packs three versions into a temp feed, installs one, proves a **tampered manifest
+It packs four versions into a temp feed, installs one, proves a **tampered manifest
 stages nothing**, proves a signed one downloads in the background and applies on exit
-without showing the wizard, and proves a build that fails to start twice **rolls back** to
-its predecessor on the third try.
+without showing the wizard, proves nothing is applied while **a second copy** runs (#532:
+Update.exe would kill it) and that the copy, asked to quit for the update, quits and applies
+it, and proves a build that fails to start twice **rolls back** to its predecessor on the
+third try.
 
 ### Telemetry
 
@@ -2480,6 +2482,37 @@ desktop (MSVC Release, Ninja), one machine.
   wrote its report and then did not exit (stopped by hand); earlier runs on the same build exited.
 - **Not run:** two machines (nearby send and receive, offers, the receiving and
   remembered-device states), Narrator over the new rows.
+
+### Updates with Driftwire running (issue #532, 2026-10-21)
+
+What is built is in [13](design/13-updates-and-telemetry.md) and [12](design/12-decision-log.md#driftwire).
+Run on an M-series MacBook Air, Release, one machine.
+
+- **Mac end to end, on a local Sparkle feed.** `build-sparkle` was configured with a throwaway
+  `MV_SPARKLE_PUBLIC_ED_KEY` and the dev add-on key. A copy of the app has its own bundle id, with
+  `HOME`, `MV_DEV_ADDONS_DIR`, `MV_DEV_THUMBS_DIR` and `MV_DRIFTWIRE_OFFLINE` in its
+  `LSEnvironment`, so Sparkle's relaunch keeps them. A dev-signed Driftwire has background
+  receiving on. Version 2 of the same build is signed with `sign_update --ed-key-file` and served
+  from 127.0.0.1 (the copy's `SUFeedURL` default). Bridge calls were made from lldb, since computer
+  use was not granted.
+  - **Reproduced** (before the fix): "Update ready — restart" with background receiving on and
+    idle sent the copy to the menu bar on version 1; nothing installed.
+  - **Fixed:** the same restart installed version 2 in under 5 s and relaunched as a window.
+  - A background-only copy, kept by Driftwire, installed version 2 itself and came back in the
+    background. It was still kept past the 60 s grace.
+  - A background copy holding the receive lock with a second window open: neither installed for
+    over 2 min. The window's restart asked the other copy to quit, it quit within 3 s, and version
+    2 installed with one window back. This held whether the asked copy also had the update staged
+    or not.
+  - Sparkle's install from one copy ended the other running copy (no crash report). That is why
+    the restart waits for them.
+- **`mv_import_tests "[driftwire]"`:** 159 cases pass, `"[slots]"` 23.
+- **Windows:** the chrome and updater C# compile (`msbuild -t:Compile`). `main.cpp` is compiled
+  only by CI. `tools/package/e2e-update.ps1` has the second-copy case, not run here (needs
+  Windows).
+- **Not run:** a transfer under way during the update (the busy wait is the same `busy_post`
+  state as the add-on restart's), both PR 1 gates (the screen was locked), and #532's Windows
+  reproduction with logs.
 
 ### Driftwire window on the Mac (issue #508, 2026-10-20)
 

@@ -89,8 +89,11 @@ final class RestartNoticeStore: ObservableObject {
   /// busy_post: add-on id -> what it is doing (AddonNotices.read).
   private(set) var slotBusy: [String: String] = [:]
   /// #532: "Update ready — restart" was clicked while an add-on had work under
-  /// way (a Driftwire transfer); the restart goes once it has ended.
+  /// way (a Driftwire transfer) or another copy of the app ran; the restart
+  /// goes once this one is idle and alone.
   @Published private(set) var updateWaiting = false
+  private var updateTimer: Timer?
+  private var updateTicks = 0
   /// A slot add-on updated while it was busy: reloaded once it is not.
   private var pendingReloads: [String: AddonUpdated] = [:]
   private var timer: Timer?
@@ -200,15 +203,42 @@ final class RestartNoticeStore: ObservableObject {
 
   // ---- the app update (#532) ---------------------------------------------------
 
-  /// "Update ready — restart": at once, or once no add-on has work under way.
-  /// A transfer is never cut by an update.
+  /// "Update ready — restart": at once, or once no add-on has work under way
+  /// and the other copies have quit (each finishes its transfer first). A
+  /// transfer is never cut by an update.
   func restartToUpdateWhenIdle() {
-    if slotBusy.isEmpty {
-      updateWaiting = false
+    updateTicks = 0
+    guard updateMustWait() else {
+      stopUpdateWait()
       mv_chrome_restart_to_update()
-    } else {
-      updateWaiting = true
+      return
     }
+    updateWaiting = true
+    updateTimer?.invalidate()
+    updateTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+      MainActor.assumeIsolated { self?.updateTick() }
+    }
+  }
+
+  private func updateTick() {
+    guard !updateMustWait() else { return }
+    stopUpdateWait()
+    mv_chrome_restart_to_update()
+  }
+
+  private func updateMustWait() -> Bool {
+    if !slotBusy.isEmpty { return true }
+    if mv_chrome_update_others_running() == 0 { return false }
+    // Asked again every few seconds: a window opened meanwhile hears it too.
+    if updateTicks % 5 == 0 { mv_chrome_update_ask_others_to_quit() }
+    updateTicks += 1
+    return true
+  }
+
+  private func stopUpdateWait() {
+    updateTimer?.invalidate()
+    updateTimer = nil
+    updateWaiting = false
   }
 
   // ---- slot add-ons ------------------------------------------------------------
@@ -218,10 +248,6 @@ final class RestartNoticeStore: ObservableObject {
   func noteSlotBusy(_ now: [String: String]) {
     guard now != slotBusy else { return }
     slotBusy = now
-    if updateWaiting && now.isEmpty {
-      updateWaiting = false
-      mv_chrome_restart_to_update()
-    }
     for (id, u) in pendingReloads where now[id] == nil {
       pendingReloads[id] = nil
       reloadNow(id)

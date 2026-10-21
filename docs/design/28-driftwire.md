@@ -159,7 +159,8 @@ process (`keep_alive`), and the hosts do the rest.
   down, and an update's restart, quit as before. Only the process that holds
   `driftwire.json.lock` keeps itself; another window's process quits as usual. Hidden, a staged
   app update installs once no transfer is under way and the process comes back in the
-  background; "Update ready — restart" clicked during a transfer waits for it to end (#532,
+  background; "Update ready — restart" clicked during a transfer waits for it to end, and a
+  copy asked to quit for another's update finishes its transfer first (#532,
   [13](13-updates-and-telemetry.md)).
 - **A notification when someone sends** (both hosts, background or not). The engine posts a
   notice (`notice_post`) the moment a sender's link is up, while its code shows: "Ann's MacBook
