@@ -1928,12 +1928,29 @@ several copies run: an asked copy with the update staged installs it itself (fal
 plain quit after 5 s when its installer is not the live one), and a copy that asked and is then
 quit by another's install opens the app again once the bundle's version has changed.
 
-**Every transfer end stays until OK (2026-10-21, #531).** Reverses #511, where an end that did
-not arrive (cancelled, lost) cleared itself after 6 s (`ended_show_ms`, `clear_ended_later()`):
-looking away for a moment lost the reason before it was read. Delivered, cancelled and failed
-ends now stay on both sides until **OK** (`in_dismiss`, and `out_dismiss` on the sender's card,
-which had none). An ended card blocks nothing: a new send or offer replaces it. Reopen only with
-a reason a person needs the window to clear itself.
+**A receive that stops keeps what arrived, to resume (owner, 2026-10-21, #530).** Reverses "nothing
+partial stays" (#410, 2026-10-15). A laptop that went off mid-transfer lost the file and the next
+send started over, re-sending what had arrived. Now a failed receive (not a cancel or a decline)
+keeps the file it was writing, hidden under its `.mvtmp` name, flushed, with a record, and the
+same sender's next offer of the same files (path, size, time) resumes it; the read-back of the
+whole file before the rename is unchanged, so a wrong partial is refused, never kept as the
+file. A record goes after 7 days. Reopen only with a reason the read-back does not cover.
+[28](28-driftwire.md#resuming-a-receive-that-stopped-530).
+
+**Transfers keep the machine awake (2026-10-21, #530).** A power request (Windows) or an IOKit
+assertion (Mac) against idle sleep, from the accept to the end. Not against a closed lid.
+
+**A transfer's end stays until it is dismissed (owner, 2026-10-21, #531).** Reverses #511's 6 s
+self-clearing of a cancelled or lost transfer (`ended_show_ms`, removed): an error or a cancel
+vanished before it was read. Both sides now show **OK**.
+
+**The DHT stream follows a model of the path, not NewReno (2026-10-21, #529).** BBR v1 simplified,
+with v2's loss exit from startup and its inflight cap, pacing, lost packets sent again as the pace
+allows, and ack runs past the bitmap. Measured on emulated paths (alternated, three runs each):
+cross-country 0.83 → 5.5 MB/s, intercontinental 0.24 → 3.0, Wi-Fi with jitter and 0.5 % loss
+0.42 → 9.2, bufferbloat's queue 500 → 82 ms, no profile worse; no real path yet. Kept: our own
+stream over the hub (it must share the punched socket). BBR is not fair to a loss-based flow in a
+shallow queue; accepted for a person's own transfer. [28](28-driftwire.md#four-words-over-the-dht-472-pr-3).
 
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with

@@ -1330,8 +1330,9 @@ TEST_CASE("driftwire session: the sender cancels mid-chunk and the receiver ends
   CHECK_FALSE(watch.saw_reconnecting.load());   // neither side took it for a lost link
   CHECK(w.wifi.connects.load() == connects);    // and no mover raced for another
   CHECK(files_in(s / "bea_received").empty());  // nothing partial
-  // #531: both ends stay on screen past #511's old 6 s timeout, until OK.
-  std::this_thread::sleep_for(std::chrono::milliseconds(6500));
+  // Each end stays on screen until it is dismissed, then the window goes
+  // back to its default view.
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
   CHECK(w.bea->eng.snapshot().in == sp::view::in_phase::ended);
   CHECK(w.ann->eng.snapshot().out == sp::view::out_phase::ended);
   w.bea->eng.on_event("in_dismiss", 1, "");

@@ -219,6 +219,17 @@ expected mark_from_elsewhere(std::string_view utf8_path, std::string_view agent)
   return {};
 }
 
+expected set_hidden(std::string_view utf8_path, bool hidden) {
+  const std::wstring path = wide(utf8_path);
+  if (path.empty()) return err(status::invalid_arg);
+  const DWORD attrs = ::GetFileAttributesW(path.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES) return err(status::io);
+  DWORD next = hidden ? (attrs | FILE_ATTRIBUTE_HIDDEN) : (attrs & ~static_cast<DWORD>(FILE_ATTRIBUTE_HIDDEN));
+  if (next == attrs) return {};
+  if (next == 0) next = FILE_ATTRIBUTE_NORMAL;  // 0 is not an attribute set SetFileAttributesW takes
+  return ::SetFileAttributesW(path.c_str(), next) ? expected{} : err(status::io);
+}
+
 result<rename_outcome> rename_no_replace(std::string_view from_utf8, std::string_view to_utf8) {
   detail::simulated_round_trip();
   const std::wstring from = wide(from_utf8);
@@ -361,6 +372,42 @@ result<rename_outcome> file_writer::create_new(std::string_view utf8_path, bool 
   impl_->h = h;
   impl_->overlapped = concurrent;
   return rename_outcome::renamed;
+}
+
+expected file_writer::open_resume(std::string_view utf8_path, std::uint64_t offset) {
+  detail::simulated_round_trip();
+  impl_.reset();
+  const std::wstring path = wide(utf8_path);
+  if (path.empty()) return err(status::invalid_arg);
+  // FILE_FLAG_OPEN_REPARSE_POINT: a link or junction is opened as itself,
+  // and refused below, never followed.
+  HANDLE h = ::CreateFileW(path.c_str(), GENERIC_WRITE | FILE_READ_ATTRIBUTES, 0, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    const DWORD e = ::GetLastError();
+    return err(e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? status::not_found : status::io);
+  }
+  BY_HANDLE_FILE_INFORMATION info{};
+  LARGE_INTEGER size{};
+  if (!::GetFileInformationByHandle(h, &info) || !::GetFileSizeEx(h, &size) ||
+      (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+      static_cast<std::uint64_t>(size.QuadPart) < offset) {
+    ::CloseHandle(h);
+    return err(status::corrupt);
+  }
+  FILE_END_OF_FILE_INFO eof{};
+  eof.EndOfFile.QuadPart = static_cast<LONGLONG>(offset);
+  LARGE_INTEGER at{};
+  at.QuadPart = static_cast<LONGLONG>(offset);
+  if (!::SetFileInformationByHandle(h, FileEndOfFileInfo, &eof, sizeof(eof)) ||
+      !::SetFilePointerEx(h, at, nullptr, FILE_BEGIN)) {
+    ::CloseHandle(h);
+    return err(status::io);
+  }
+  impl_ = std::make_unique<impl>();
+  impl_->h = h;
+  impl_->pos = offset;
+  return {};
 }
 
 expected file_writer::write(std::span<const std::uint8_t> bytes) {

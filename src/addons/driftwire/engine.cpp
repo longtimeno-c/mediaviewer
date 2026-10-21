@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <ctime>
 #include <set>
 #include <unordered_map>
 
@@ -310,6 +311,7 @@ void engine::sync_status() {
 }
 
 void engine::control_loop() {
+  load_unfinished();  // #530: off the caller's thread, before any receive
   std::unique_lock lock(control_m_);
   while (!stopping_.load()) {
     const auto none = std::chrono::steady_clock::time_point{};
@@ -913,6 +915,114 @@ void engine::forget_known(const std::string& fingerprint) {
     if (secrets_ && !known::save(*secrets_, copy)) host_.log(1, "driftwire: the remembered devices were not kept");
   }
   request_reconcile();
+  post();
+}
+
+// ---- unfinished receives (#530) -------------------------------------------------------
+
+void engine::load_unfinished() {
+  const std::string path = data_file(kResumeFile);
+  if (path.empty()) return;
+  auto records = load_resume(path);
+  const auto now = static_cast<std::int64_t>(std::time(nullptr));
+  const std::size_t before = records.size();
+  std::erase_if(records, [&](const resume_record& r) {
+    if (now - r.saved <= kResumeKeepS) return false;
+    discard_partials(r);  // a week old: it goes, with what it kept
+    return true;
+  });
+  const bool expired = records.size() != before;
+  {
+    std::lock_guard lock(m_);
+    unfinished_ = std::move(records);
+    publish_unfinished_locked();
+  }
+  if (expired) save_unfinished();
+  post();
+}
+
+void engine::publish_unfinished_locked() {
+  v_.unfinished.clear();
+  for (const auto& r : unfinished_) {
+    view::unfinished_row row;
+    row.id = r.sender.substr(0, 16);
+    row.peer = r.peer.empty() ? std::string("a computer") : r.peer;
+    row.count = r.count;
+    row.bytes = r.bytes;
+    row.bytes_here = r.bytes_here();
+    v_.unfinished.push_back(std::move(row));
+  }
+}
+
+void engine::save_unfinished() {
+  const std::string path = data_file(kResumeFile);
+  if (path.empty()) return;
+  std::lock_guard io(unfinished_io_m_);
+  std::vector<resume_record> copy;
+  {
+    std::lock_guard lock(m_);
+    copy = unfinished_;
+  }
+  if (!save_resume(path, copy)) host_.log(1, "driftwire: could not keep the unfinished transfers");
+}
+
+void engine::discard_unfinished(const std::string& id) {
+  resume_record gone;
+  {
+    std::lock_guard lock(m_);
+    const auto it = std::find_if(unfinished_.begin(), unfinished_.end(),
+                                 [&](const resume_record& r) { return r.sender.rfind(id, 0) == 0 && id.size() == 16; });
+    if (it == unfinished_.end()) return;
+    gone = std::move(*it);
+    unfinished_.erase(it);
+    publish_unfinished_locked();
+  }
+  discard_partials(gone);  // outside m_: file I/O
+  save_unfinished();
+  post();
+}
+
+void engine::keep_unfinished(resume_record record) {
+  std::vector<resume_record> gone;
+  {
+    std::lock_guard lock(m_);
+    const auto it = std::find_if(unfinished_.begin(), unfinished_.end(),
+                                 [&](const resume_record& r) { return r.sender == record.sender; });
+    if (it != unfinished_.end()) {
+      // What the old record kept and this one does not use goes now.
+      resume_record old = std::move(*it);
+      unfinished_.erase(it);
+      std::erase_if(old.files, [&](const resume_file& f) {
+        return f.whole || std::any_of(record.files.begin(), record.files.end(),
+                                      [&](const resume_file& g) { return g.temp_path == f.temp_path; });
+      });
+      gone.push_back(std::move(old));
+    }
+    unfinished_.insert(unfinished_.begin(), std::move(record));
+    while (unfinished_.size() > kMaxResumeRecords) {
+      gone.push_back(std::move(unfinished_.back()));
+      unfinished_.pop_back();
+    }
+    publish_unfinished_locked();
+  }
+  for (const auto& r : gone) discard_partials(r);  // outside m_: file I/O
+  save_unfinished();
+  post_throttled();
+}
+
+void engine::drop_unfinished(const std::string& sender) {
+  resume_record gone;
+  {
+    std::lock_guard lock(m_);
+    const auto it = std::find_if(unfinished_.begin(), unfinished_.end(),
+                                 [&](const resume_record& r) { return r.sender == sender; });
+    if (it == unfinished_.end()) return;
+    gone = std::move(*it);
+    unfinished_.erase(it);
+    publish_unfinished_locked();
+  }
+  discard_partials(gone);  // a partial this receive took up is already renamed or dropped
+  save_unfinished();
   post();
 }
 
@@ -1559,6 +1669,10 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
     forget_known(node.substr(6));
     return;
   }
+  if (node.rfind("discard", 0) == 0 && node.size() > 7 && kind == kClick) {
+    discard_unfinished(node.substr(7));  // #530
+    return;
+  }
   if (node == "out_confirm" && kind == kClick) {
     std::lock_guard lock(m_);
     if (v_.out == view::out_phase::naming && out_decision_ == 0) {
@@ -1699,7 +1813,8 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
     }
     post();
   } else if (node == "out_dismiss" && kind == kClick) {
-    // #531: every end stays until OK; nothing clears itself on a timer.
+    // An end stays until it is dismissed: an error or a cancel is never
+    // gone before the person has read it.
     {
       std::lock_guard lock(m_);
       if (v_.out == view::out_phase::done || v_.out == view::out_phase::ended) v_.out = view::out_phase::idle;
@@ -1747,6 +1862,7 @@ void engine::cancel_transfer() {
 hooks engine::hooks_for(bool sending) {
   hooks h;
   h.cancel = &cancel_;
+  h.quitting = &stopping_;  // #530
   if (!sending) h.idle_ms = opts_.receive_idle_ms;  // #502
   h.note = [this](const char* text) { host_.log(1, text); };
   h.yield = [this] {
@@ -1768,6 +1884,11 @@ hooks engine::hooks_for(bool sending) {
       }
       // #472: a link that was suspect and is heard again (no rejoin needed).
       if (live_ && live_->link_up()) (sending ? v_.out_reconnecting : v_.in_reconnecting) = false;
+      // #529: the speed and the time left, from the bytes moved over time.
+      auto& meter = sending ? out_meter_ : in_meter_;
+      meter.add(std::chrono::steady_clock::now(), bytes);
+      (sending ? v_.out_rate : v_.in_rate) = meter.rate();
+      (sending ? v_.out_left_s : v_.in_left_s) = meter.seconds_left(sending ? v_.out_total : v_.in_total);
     }
     post_throttled();
   };
@@ -1848,11 +1969,24 @@ void engine::start_send() {
   });
 }
 
+void engine::stay_awake(bool receiving) {
+  auto held = power::hold(receiving);  // outside m_: a call into the OS
+  if (!held) host_.log(1, "driftwire: the system did not agree to stay awake during the transfer");
+  std::lock_guard lock(m_);
+  awake_ = std::move(held);
+}
+
 void engine::end_transfer() {
+  std::unique_ptr<power::stay_awake> awake;  // released outside m_
   {
     std::lock_guard lock(m_);
+    awake = std::move(awake_);
     live_.reset();
     transfer_running_ = false;
+    out_meter_.restart();  // the next transfer measures from its own start (#529)
+    in_meter_.restart();
+    v_.out_rate = v_.in_rate = 0;
+    v_.out_left_s = v_.in_left_s = -1;
     idle_.notify_all();
   }
   request_reconcile();
@@ -2589,6 +2723,7 @@ void engine::send_on(std::shared_ptr<channel> ch, std::vector<outgoing_file> fil
       }
     } retire_meet{*this, meet_m, meet_dht};
     r = send_files(*ch, files, hk, [this] {
+      stay_awake(false);  // #530: neither machine sleeps from idleness while bytes move
       {
         std::lock_guard lock(m_);
         v_.out = view::out_phase::sending;
@@ -2639,6 +2774,10 @@ void engine::on_link_event(bool sending, link_event e, const channel& ch) {
     std::lock_guard lock(m_);
     bool& reconnecting = sending ? v_.out_reconnecting : v_.in_reconnecting;
     reconnecting = e != link_event::up;
+    // #529: a rate from before the link changed says nothing about the next.
+    (sending ? out_meter_ : in_meter_).restart();
+    (sending ? v_.out_rate : v_.in_rate) = 0;
+    (sending ? v_.out_left_s : v_.in_left_s) = -1;
     if (e == link_event::up) {
       (sending ? v_.out_via : v_.in_via) = transport_name(ch.via());
       (sending ? v_.out_punched : v_.in_punched) = ch.punched();
@@ -3026,11 +3165,31 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
     (void)send_decline(*ch, outcome::declined);
     return ended("The folder to save into is not there. Nothing was received.");
   }
-  if (const auto room = host_.free_bytes(dest); room && *room < offer->bytes + kRoomMargin) {
-    (void)send_decline(*ch, outcome::no_room);
-    return ended("Not enough space for " + size_text(offer->bytes) + " in that folder. Nothing was received.");
+  // #530: what a receive from this sender that stopped left here, said in
+  // the accept so it is not sent again. Only a sender that says who it is
+  // (its identity, #501) and takes "have" and "at".
+  const std::string sender = offer->key ? key_hex(*offer->key) : std::string();
+  const bool may_resume = offer->resume && !sender.empty() && !data_file(kResumeFile).empty();
+  resume_plan plan;
+  if (may_resume) {
+    std::optional<resume_record> record;
+    {
+      std::lock_guard lock(m_);
+      for (const auto& rec : unfinished_)
+        if (rec.sender == sender) record = rec;
+    }
+    if (record) plan = plan_resume(*record, *offer, dest);  // outside m_: it looks at the files
   }
-  if (!send_accept(*ch, identity_to_present())) return ended("The connection to " + name + " was lost. Nothing was received.");
+  std::uint64_t here = plan.partial ? plan.partial->at : 0;
+  for (const auto& f : plan.have) here += offer->files[f.index].size;
+  if (const auto room = host_.free_bytes(dest); room && *room < offer->bytes - here + kRoomMargin) {
+    (void)send_decline(*ch, outcome::no_room);
+    return ended("Not enough space for " + size_text(offer->bytes - here) + " in that folder. Nothing was received.");
+  }
+  if (!send_accept(*ch, identity_to_present(), may_resume ? &plan : nullptr)) {
+    return ended("The connection to " + name + " was lost. Nothing was received.");
+  }
+  stay_awake(true);  // #530: released by end_transfer
   {
     std::lock_guard lock(m_);
     v_.in = view::in_phase::receiving;
@@ -3119,7 +3278,28 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
         });
       }
     }
-    r = receive_files(*ch, *offer, dest, hooks_for(false));
+    hooks h = hooks_for(false);
+    if (may_resume) {
+      // #530: what this receive holds, kept as it goes, so a power cut or a
+      // lost link leaves a record the next send from this sender resumes from.
+      h.keep = [&](const kept_state& k) {
+        auto rec = record_of(k, *offer, plan, sender, name, dest, static_cast<std::int64_t>(std::time(nullptr)));
+        if (rec.files.empty()) {
+          drop_unfinished(sender);
+        } else {
+          keep_unfinished(std::move(rec));
+        }
+      };
+    }
+    r = receive_files(*ch, *offer, dest, h, may_resume ? &plan : nullptr);
+  }
+  // #530: delivered, cancelled or declined, nothing is waiting any more
+  // (MediaViewer quitting is not a cancel: what arrived waits to resume).
+  if (may_resume && r.how != outcome::failed && !stopping_.load()) drop_unfinished(sender);
+  bool kept = false;
+  if (may_resume && r.how == outcome::failed) {
+    std::lock_guard lock(m_);
+    kept = std::any_of(unfinished_.begin(), unfinished_.end(), [&](const resume_record& rec) { return rec.sender == sender; });
   }
   std::string note;
   const std::string got = plural(r.done, "file", "files");
@@ -3127,6 +3307,7 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
     case outcome::delivered:
       offer_remember(*ch, name, false, offer->key);  // #472 PR 4
       note = "Received " + got + " from " + name + " into " + dest + ".";
+      if (r.resumed_bytes) note += " It picked up where the last transfer stopped.";  // #530
       if (r.skipped) note += " " + plural(r.skipped, "file", "files") + " could not be read on " + name + ".";
       break;
     case outcome::cancelled:
@@ -3135,9 +3316,15 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
              (r.done ? got + " arrived whole; nothing partial was kept." : std::string("Nothing was received."));
       break;
     default:
-      note = "The transfer from " + name + " stopped. " +
-             (r.done ? got + " arrived whole in " + dest + "; nothing partial was kept."
-                     : std::string("Nothing partial was kept."));
+      if (kept) {
+        // #530: what arrived stays, the file that was arriving too (hidden).
+        note = "The transfer from " + name + " stopped. " + (r.done ? got + " arrived whole in " + dest + ". " : "") +
+               "What arrived is kept: when " + name + " sends these files again, it picks up where it stopped.";
+      } else {
+        note = "The transfer from " + name + " stopped. " +
+               (r.done ? got + " arrived whole in " + dest + "; nothing partial was kept."
+                       : std::string("Nothing partial was kept."));
+      }
       break;
   }
   {
