@@ -588,7 +588,10 @@ TEST_CASE("the OS codec is only offered HEIC stills it can render identically",
   // seeds/heic/10bit.heic): chroma still says 10, so it is bundled too.
   {
     auto lying = fixture("heif/gradient_10bit.heic");
-    auto hvcc = std::search(lying.begin(), lying.end(), std::begin("hvcC"), std::end("hvcC") - 1);
+    // One array for both ends: two "hvcC" literals are two objects when a Debug
+    // build does not pool strings, and the range between them is transposed.
+    static constexpr char tag[] = "hvcC";
+    auto hvcc = std::search(lying.begin(), lying.end(), std::begin(tag), std::end(tag) - 1);
     REQUIRE(hvcc + 4 + 18 <= lying.end());
     hvcc[4 + 17] &= 0xF8;  // bitDepthLumaMinus8 = 0, after box type and 17 config bytes
     auto info = inspect_heic(lying);
