@@ -29,13 +29,13 @@ set(_S "${MV_SOURCE_ROOT}/src/addons/driftwire")
 # The Bluetooth bearer goes into the module only: the tests run the engine
 # over loopback and link bt_none.cpp (one Objective-C class per process).
 if(WIN32)
-  set(_driftwire_port ${_S}/net_win.cpp ${_S}/secrets_win.cpp)
+  set(_driftwire_port ${_S}/net_win.cpp ${_S}/secrets_win.cpp ${_S}/power_win.cpp)
   set(_driftwire_bt ${_S}/bt_win.cpp)
 elseif(APPLE)
-  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/machine_mac.cpp ${_S}/secrets_mac.cpp)
+  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/machine_mac.cpp ${_S}/secrets_mac.cpp ${_S}/power_mac.cpp)
   set(_driftwire_bt ${_S}/bt_mac.mm)
 else()
-  set(_driftwire_port ${_S}/net_posix.cpp)
+  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/power_none.cpp)
   set(_driftwire_bt ${_S}/bt_none.cpp)
 endif()
 
@@ -67,6 +67,7 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/engine.cpp ${_S}/engine.h ${_S}/engine_relay.cpp
   ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/resume.cpp ${_S}/resume.h ${_S}/eta.h
+  ${_S}/power.h
   ${_S}/tree.cpp
   ${_driftwire_port}
 )
@@ -79,11 +80,12 @@ if(WIN32)
   # shell32 / ole32: the Downloads folder (SHGetKnownFolderPath, CoTaskMemFree).
   # iphlpapi: this machine's addresses and its default route (#472 PR 2).
   # advapi32: Credential Manager (#472 PR 4). crypt32: DPAPI around its values (#501).
+  # PowerCreateRequest is kernel32's (#530), linked by default.
   target_link_libraries(mv_driftwire_engine PUBLIC ws2_32 shell32 ole32 iphlpapi advapi32 crypt32)
 elseif(APPLE)
-  # Security: the Keychain (#472 PR 4).
+  # Security: the Keychain (#472 PR 4). IOKit: staying awake during a transfer (#530).
   target_link_libraries(mv_driftwire_engine PUBLIC "-framework CoreFoundation" "-framework SystemConfiguration"
-    "-framework Security")
+    "-framework Security" "-framework IOKit")
 endif()
 
 if(WIN32)

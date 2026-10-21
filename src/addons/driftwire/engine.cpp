@@ -1969,9 +1969,18 @@ void engine::start_send() {
   });
 }
 
+void engine::stay_awake(bool receiving) {
+  auto held = power::hold(receiving);  // outside m_: a call into the OS
+  if (!held) host_.log(1, "driftwire: the system did not agree to stay awake during the transfer");
+  std::lock_guard lock(m_);
+  awake_ = std::move(held);
+}
+
 void engine::end_transfer() {
+  std::unique_ptr<power::stay_awake> awake;  // released outside m_
   {
     std::lock_guard lock(m_);
+    awake = std::move(awake_);
     live_.reset();
     transfer_running_ = false;
     out_meter_.restart();  // the next transfer measures from its own start (#529)
@@ -2738,6 +2747,7 @@ void engine::send_on(std::shared_ptr<channel> ch, std::vector<outgoing_file> fil
       }
     } retire_meet{*this, meet_m, meet_dht};
     r = send_files(*ch, files, hk, [this] {
+      stay_awake(false);  // #530: neither machine sleeps from idleness while bytes move
       {
         std::lock_guard lock(m_);
         v_.out = view::out_phase::sending;
@@ -3203,6 +3213,7 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
   if (!send_accept(*ch, identity_to_present(), may_resume ? &plan : nullptr)) {
     return ended("The connection to " + name + " was lost. Nothing was received.");
   }
+  stay_awake(true);  // #530: released by end_transfer
   {
     std::lock_guard lock(m_);
     v_.in = view::in_phase::receiving;
