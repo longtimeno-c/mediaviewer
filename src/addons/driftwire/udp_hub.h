@@ -100,11 +100,13 @@ class udp_hub : public std::enable_shared_from_this<udp_hub> {
   // it is gone.
   struct stream_stats {
     std::uint64_t packets = 0;      // data packets sent, first copies
-    std::uint64_t retransmits = 0;  // copies sent again (RACK, RTO, probe)
+    std::uint64_t retransmits = 0;  // copies sent again (lost, timed out, probed)
     std::uint64_t rtos = 0;         // retransmission timeouts
     std::uint64_t probes = 0;       // tail loss probes
-    std::uint64_t episodes = 0;     // loss episodes (cwnd cut once each)
-    double srtt_ms = 0, cwnd = 0, ssthresh = 0, max_cwnd = 0;
+    std::uint64_t lost = 0;         // packets taken for lost
+    double srtt_ms = 0, min_rtt_ms = 0, cwnd = 0, max_cwnd = 0, inflight = 0;
+    double bandwidth = 0, pacing_rate = 0;  // bytes per second: the model's, what it paces at
+    int mode = 0;                           // 0 startup, 1 drain, 2 probe bandwidth, 3 probe RTT
   };
   [[nodiscard]] std::optional<stream_stats> stats(std::uint32_t id);
 

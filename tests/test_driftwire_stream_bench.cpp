@@ -7,6 +7,7 @@
 //     MV_STREAM_BENCH_S         seconds per profile (default 15)
 //     MV_STREAM_BENCH_PROFILES  comma-separated names (default all)
 //     MV_STREAM_BENCH_SEED      the paths' seed (default 1)
+//     MV_STREAM_BENCH_TRACE     1: the sender's state every 100 ms
 //
 // "util" is goodput over the bottleneck's payload rate (1200 of 1238 bytes
 // per packet on the wire). Loopback, so the machine's own load shows: run
@@ -80,6 +81,7 @@ struct emulated_pair {
 TEST_CASE("driftwire: the UDP stream over emulated internet paths", "[.driftwire-stream-bench]") {
   const double seconds = env_num("MV_STREAM_BENCH_S", 15);
   const auto seed = static_cast<std::uint32_t>(env_num("MV_STREAM_BENCH_SEED", 1));
+  const bool trace = env_num("MV_STREAM_BENCH_TRACE", 0) != 0;  // a line every 100 ms
   for (const auto& p : kProfiles) {
     if (!wanted(p.name)) continue;
     emulated_pair h(p, seed);
@@ -113,6 +115,14 @@ TEST_CASE("driftwire: the UDP stream over emulated internet paths", "[.driftwire
         if (auto st = h.a->stats(529)) {
           cwnd_sum += st->cwnd;
           ++cwnd_n;
+          if (trace) {
+            std::printf("  t=%5.1f got=%7.1fMB mode=%d cwnd=%6.0fK infl=%6.0fK srtt=%5.1f minrtt=%5.1f bw=%6.2fMB/s "
+                        "pace=%6.2fMB/s lost=%llu rto=%llu rtx=%llu\n",
+                        std::chrono::duration<double>(now - t0).count(), static_cast<double>(got) / 1e6, st->mode,
+                        st->cwnd / 1024, st->inflight / 1024, st->srtt_ms, st->min_rtt_ms, st->bandwidth / 1e6,
+                        st->pacing_rate / 1e6, static_cast<unsigned long long>(st->lost),
+                        static_cast<unsigned long long>(st->rtos), static_cast<unsigned long long>(st->retransmits));
+          }
         }
         next_sample = now + std::chrono::milliseconds(100);
       }
@@ -129,12 +139,12 @@ TEST_CASE("driftwire: the UDP stream over emulated internet paths", "[.driftwire
     std::printf(
         "{\"case\":\"stream_path\",\"profile\":\"%s\",\"rtt_ms\":%.0f,\"mbit\":%.0f,\"queue_ms\":%.0f,\"loss\":%.4f,"
         "\"jitter_ms\":%.0f,\"seconds\":%.1f,\"mb_s\":%.2f,\"mb_s_after_5s\":%.2f,\"util\":%.2f,\"util_after_5s\":%.2f,"
-        "\"packets\":%llu,\"retransmits\":%llu,\"rtos\":%llu,\"probes\":%llu,\"episodes\":%llu,\"srtt_ms\":%.1f,"
+        "\"packets\":%llu,\"retransmits\":%llu,\"rtos\":%llu,\"probes\":%llu,\"lost\":%llu,\"srtt_ms\":%.1f,"
         "\"mean_cwnd_kb\":%.0f,\"max_cwnd_kb\":%.0f,\"queue_drops\":%llu,\"random_drops\":%llu,\"max_queue_ms\":%.1f}\n",
         p.name, p.rtt_ms, p.mbit, p.queue_ms, p.loss, p.jitter_ms, took, mb_s, steady, mb_s / payload_rate,
         steady / payload_rate, static_cast<unsigned long long>(st.packets),
         static_cast<unsigned long long>(st.retransmits), static_cast<unsigned long long>(st.rtos),
-        static_cast<unsigned long long>(st.probes), static_cast<unsigned long long>(st.episodes), st.srtt_ms,
+        static_cast<unsigned long long>(st.probes), static_cast<unsigned long long>(st.lost), st.srtt_ms,
         cwnd_n ? cwnd_sum / cwnd_n / 1024 : 0, st.max_cwnd / 1024,
         static_cast<unsigned long long>(h.ca.queue_drops.load()), static_cast<unsigned long long>(h.ca.random_drops.load()),
         static_cast<double>(h.ca.max_queue_us.load()) / 1000.0);
