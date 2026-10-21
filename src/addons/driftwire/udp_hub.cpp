@@ -86,6 +86,7 @@ struct udp_hub::stream_state {
   clock::time_point last_ack{};
   bool probed = false;
   std::size_t peer_window = kMaxRx;
+  udp_hub::stream_stats stats;  // under m (#529)
   // Receiving.
   std::uint32_t rcv_next = 0;
   struct held {
@@ -230,9 +231,11 @@ struct udp_hub::stream_state {
         cwnd = ssthresh;
         in_recovery = true;
         recover = next_seq;
+        ++stats.episodes;
       }
       p.sent = now;
       ++p.tries;
+      ++stats.retransmits;
       send_wire(p.wire);
     }
     cv.notify_all();
@@ -249,6 +252,8 @@ struct udp_hub::stream_state {
       auto& newest = inflight.rbegin()->second;
       newest.sent = now;
       ++newest.tries;
+      ++stats.probes;
+      ++stats.retransmits;
       send_wire(newest.wire);
       return;
     }
@@ -259,8 +264,11 @@ struct udp_hub::stream_state {
     rto_ms = std::min(rto_ms * 2, kMaxRtoMs);
     in_recovery = true;
     recover = next_seq;
+    ++stats.rtos;
+    ++stats.episodes;
     p.sent = now;
     ++p.tries;
+    ++stats.retransmits;
     send_wire(p.wire);
   }
 };
@@ -300,6 +308,8 @@ class udp_stream final : public link {
       p.tries = 1;
       if (s_->inflight.empty()) s_->last_ack = p.sent;  // the probe's clock starts with the flight
       s_->inflight_bytes += n;
+      ++s_->stats.packets;
+      s_->stats.max_cwnd = std::max(s_->stats.max_cwnd, s_->cwnd);
       s_->send_wire(p.wire);
       s_->inflight.emplace(seq, std::move(p));
       at += n;
@@ -493,6 +503,21 @@ std::unique_ptr<link> udp_hub::stream(const net::endpoint& peer, std::uint32_t i
     s->down = true;
   }
   return std::make_unique<udp_stream>(std::move(s));
+}
+
+std::optional<udp_hub::stream_stats> udp_hub::stats(std::uint32_t id) {
+  std::shared_ptr<stream_state> s;
+  {
+    std::lock_guard lock(m_);
+    if (auto it = streams_.find(id); it != streams_.end()) s = it->second.lock();
+  }
+  if (!s) return std::nullopt;
+  std::lock_guard l(s->m);
+  stream_stats out = s->stats;
+  out.srtt_ms = s->srtt;
+  out.cwnd = s->cwnd;
+  out.ssthresh = s->ssthresh;
+  return out;
 }
 
 void udp_hub::read_loop() {

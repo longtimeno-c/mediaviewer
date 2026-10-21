@@ -747,6 +747,28 @@ result<std::unique_ptr<tcp_rendezvous>> open_rendezvous(bool loopback_only) {
 
 result<std::unique_ptr<udp_socket>> open_udp_dual(std::uint16_t port, bool loopback_only, int buffer_bytes) {
   const int fd = ::socket(AF_INET6, SOCK_DGRAM, 0);
+  if (fd < 0 && errno == EAFNOSUPPORT) {
+    // A machine with IPv6 switched off (a container, a locked-down laptop):
+    // an IPv4 socket, so the DHT and the stream still run over IPv4.
+    const int v4 = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (v4 < 0) return err(status::io);
+    close_on_exec(v4);
+    no_sigpipe(v4);
+    int buf = buffer_bytes;
+    (void)::setsockopt(v4, SOL_SOCKET, SO_RCVBUF, &buf, sizeof buf);
+    (void)::setsockopt(v4, SOL_SOCKET, SO_SNDBUF, &buf, sizeof buf);
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(port);
+    a.sin_addr.s_addr = htonl(loopback_only ? INADDR_LOOPBACK : INADDR_ANY);
+    socklen_t len = sizeof a;
+    if (::bind(v4, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 ||
+        ::getsockname(v4, reinterpret_cast<sockaddr*>(&a), &len) != 0) {
+      ::close(v4);
+      return err(status::io);
+    }
+    return std::unique_ptr<udp_socket>(std::make_unique<udp_port>(v4, ntohs(a.sin_port)));
+  }
   if (fd < 0) return err(status::io);
   close_on_exec(fd);
   no_sigpipe(fd);
