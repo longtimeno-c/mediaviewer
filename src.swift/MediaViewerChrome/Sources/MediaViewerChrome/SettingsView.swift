@@ -258,9 +258,13 @@ struct SettingsView: View {
       .foregroundStyle(MVTheme.title).padding(.top, MVTheme.space(12))
   }
 
+  private static let topAnchor = "settings.top"
+
   private var preferences: some View {
     ScrollViewReader { scroll in
     ScrollView {
+      VStack(spacing: 0) {
+      Color.clear.frame(height: 0).id(Self.topAnchor)
       Group {
       // #510: an add-on's page in place of the General page (AddonListView.swift).
       if let page = addonNav.page {
@@ -346,6 +350,7 @@ struct SettingsView: View {
       }
       }
       }
+      }
       .padding(.horizontal, MVTheme.space(24)).padding(.bottom, MVTheme.space(24))
       .frame(maxWidth: 800)
       .frame(maxWidth: .infinity)
@@ -370,7 +375,13 @@ struct SettingsView: View {
     }
     // #510: back from an add-on's page, the list where it was (at that row).
     .onChange(of: addonNav.page) { old, now in
-      guard now == nil, let old else { return }
+      // An add-on's page opens at its top, not where the list was scrolled to.
+      // Synchronous, so a jump to an anchor on the page (a package offer) still wins.
+      if now != nil {
+        withAnimation(nil) { scroll.scrollTo(Self.topAnchor, anchor: .top) }
+        return
+      }
+      guard let old else { return }
       DispatchQueue.main.async {
         withAnimation(nil) { scroll.scrollTo(AddonNav.rowAnchor(old), anchor: .center) }
       }
