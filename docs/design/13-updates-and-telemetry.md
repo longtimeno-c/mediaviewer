@@ -136,6 +136,31 @@ installed from Settings → Add-ons, never part of the base installer or its upd
 - **Never interrupt.** No modal, no forced restart. The command bar shows "Checking for
   updates…" / "Downloading update…" quietly, then **"Update ready — restart"**. Ignored, a staged
   update applies on exit (Windows) or is held for the user (macOS delegate).
+- **Never under a transfer, and from the background too** (#532). An add-on that has work an
+  update would cut says so through the host table's `busy_post` (Driftwire: "a Driftwire
+  transfer", from the start of a send or receive to its end). Every update restart waits on it:
+  the command bar shows **"The update will install when the transfer finishes"** (help: what it
+  waits for), and the restart goes when nothing is busy. When the viewer window is hidden in the
+  background ([28 "In the background"](28-driftwire.md#in-the-background-452)) with an update
+  staged and no add-on window open, the app restarts by itself, once idle, into the background:
+  Windows passes `--background` to Update.exe's restart; the Mac stamps `MVBackgroundAfterUpdate`
+  (counted for 2 minutes) and the relaunch Sparkle makes starts hidden. Before this a kept process
+  never exited, so nothing applied (Windows) or Sparkle's quit was taken for the Dock's Quit and
+  hidden, so the installer waited for ever (Mac).
+  - **Other MediaViewers** (each window is its own process): Update.exe kills whatever still
+    runs from the install, and Sparkle's installer sends every running copy a quit event. So on
+    Windows the restarting process, once idle, posts `kMsgUpdateQuit` (its pid in `wparam`) to the
+    other windows of its class that run from the same install and waits for them to exit; each
+    quits cleanly once its own transfers are done and applies nothing itself (a second Update.exe
+    would kill the first). Two that restart at once settle on the lower pid. On the Mac the quit
+    event's sender is Sparkle's agent (`org.sparkle-project.*`), which the app quits for, busy
+    or not: busy, it cancels and quits when the transfer ends (Sparkle's installer waits).
+  - **Coming back.** The process that applied the update restarts; Driftwire's toggles are kept
+    in `driftwire.json`, so whichever MediaViewer loads it next takes the lock and keeps the
+    process, and a window closed later hides again. A quit-for-update copy does not restart
+    itself.
+  - Only `busy_post` is waited on, on both platforms: an Import job or Local search indexing is
+    not (as before #532); the add-on restart card (#510) waits on those.
 - **State across the restart** (Windows, `shell/update_guard.h`): the restart relaunches with
   the open path, `--restore-zoom N`, `--restore-fullscreen` and `--restore-gallery`. Playback
   position is not an argument: the player saves its resume point when a clip closes.

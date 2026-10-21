@@ -352,6 +352,7 @@ expected chrome_host::load_now() noexcept {
   // Optional: a chrome without the updater still loads.
   update_restart_ = get_entry(L"UpdateRestart");
   updater_exit_ = get_entry(L"UpdaterExit");
+  updater_state_ = get_entry(L"UpdaterState");  // #532
 
   mv::boot::mark(mv::boot::stage::chrome_loaded);
   MV_LOG_INFO("chrome: runtime loaded from %ls", chrome_dll_);
@@ -368,6 +369,12 @@ void chrome_host::updater_exit() noexcept {
   join_preload();
   if (!updater_exit_) return;
   (void)updater_exit_(nullptr, 0);
+}
+
+bool chrome_host::set_updater_state(updater_state state, std::uint32_t from_pid) noexcept {
+  if (!attached_ || !updater_state_) return false;
+  std::int32_t args[] = {static_cast<std::int32_t>(state), static_cast<std::int32_t>(from_pid)};
+  return updater_state_(args, static_cast<std::int32_t>(sizeof(args))) == 0;
 }
 
 int chrome_host::probe() const noexcept {

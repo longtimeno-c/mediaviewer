@@ -1122,6 +1122,17 @@ class chrome_host {
   // process exits. No restart. No-op in a dev build.
   void updater_exit() noexcept;
 
+  // #532: what the managed updater must know about this process. `background`:
+  // the viewer window is hidden while an add-on keeps the process, so a staged
+  // update can apply (and come back with --background) once no transfer runs.
+  // `quit_for_update`: another MediaViewer is applying an update; quit cleanly
+  // once no transfer runs, without applying anything here. False when the
+  // chrome is not attached or has no such entry (then the caller decides).
+  // `from_pid`: the process that asked (quit_for_update only; two that update
+  // at once agree on one of them).
+  enum class updater_state : std::int32_t { window = 0, background = 1, quit_for_update = 2 };
+  bool set_updater_state(updater_state state, std::uint32_t from_pid = 0) noexcept;
+
   void detach() noexcept;
 
   // Process exit only, after detach(): disposes the XAML runtime for this
@@ -1216,6 +1227,7 @@ class chrome_host {
   chrome_entry_fn apply_browse_ = nullptr;
   chrome_entry_fn update_restart_ = nullptr;
   chrome_entry_fn updater_exit_ = nullptr;
+  chrome_entry_fn updater_state_ = nullptr;  // #532, optional
   bool transport_attached_ = false;
   bool transport_visible_ = false;
   bool transport_parked_ = false;  // issue #38: auto-hidden, content kept

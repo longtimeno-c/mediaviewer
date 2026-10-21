@@ -1632,7 +1632,8 @@ public static partial class IslandHost
                 RefreshSurfaces(at);
             }
         }
-        foreach (ScreenAt gone in ScreenWindows.Keys.Where(k => !wanted.Contains(k)).ToList())
+        List<ScreenAt> closed = ScreenWindows.Keys.Where(k => !wanted.Contains(k)).ToList();
+        foreach (ScreenAt gone in closed)
         {
             ScreenPressed.Remove(gone);
             ForgetSurfaces(gone);
@@ -1642,6 +1643,7 @@ public static partial class IslandHost
             ScreenWindows.Remove(gone);
             ClosingFromCore.Remove(gone);
         }
+        if (closed.Count > 0) MaybeUpdateInBackground();  // #532
     }
 
     // UI thread, at XAML shutdown: every screen window closes while its runtime is
@@ -1866,6 +1868,7 @@ public static partial class IslandHost
             ScreenWindows.Remove(at);
             ForgetSurfaces(at);
             SlotNative.CloseScreen(at.Addon, at.Screen);
+            MaybeUpdateInBackground();  // #532: an update held while it was open
         };
         w.Activate();
         return w;

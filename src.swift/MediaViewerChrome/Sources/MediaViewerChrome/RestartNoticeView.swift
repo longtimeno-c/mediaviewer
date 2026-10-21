@@ -76,6 +76,14 @@ enum RestartWords {
   static func waitingTitle(_ what: [String]) -> String { "Waiting for \(join(what)) to finish" }
 
   static func anywayTip(_ what: [String]) -> String { "Restart now. This stops \(join(what))." }
+
+  // #532: an app update never cuts a transfer off.
+  static let updateWaiting = "The update will install when the transfer finishes"
+  static let otherWindow = "another MediaViewer window"
+
+  static func updateWaitingTip(_ what: [String]) -> String {
+    "MediaViewer restarts to install it when nothing is running. Waiting for \(join(what))."
+  }
 }
 
 @MainActor

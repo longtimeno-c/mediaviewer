@@ -162,6 +162,11 @@ constexpr UINT kMsgShareReady = WM_APP + 0x7F;  // issue #444: a share's files w
 // (IslandHost.Notices.cs posts it).
 constexpr UINT kMsgTray = WM_APP + 0x80;
 constexpr UINT kMsgBackgroundChanged = WM_APP + 0x81;
+// #532 (docs/design/13 "Staging and restart"): another MediaViewer is applying an
+// app update and asks this one to quit cleanly first (Update.exe would kill it).
+// Posted by that process's managed updater to every window of kWindowClass;
+// wparam is its pid.
+constexpr UINT kMsgUpdateQuit = WM_APP + 0x82;
 // #452: a --background start (sign-in) that no add-on has kept by now removes its
 // Run entry and quits. Driftwire asks within ~10 s of its load.
 constexpr UINT_PTR kBackgroundStartTimerId = 0x7D01;
@@ -8670,11 +8675,14 @@ void enter_background(app_state* app) {
   publish(app);
   ::ShowWindow(app->window, SW_HIDE);
   sync_tray(app, kept_alive());
+  // #532: a staged update may apply now, once no transfer runs.
+  (void)app->chrome.set_updater_state(mv::shell::chrome_host::updater_state::background);
 }
 
 void leave_background(app_state* app) {
   if (!app->in_background) return;
   app->in_background = false;
+  (void)app->chrome.set_updater_state(mv::shell::chrome_host::updater_state::window);  // #532
   ::ShowWindow(app->window, SW_SHOW);
   if (::IsIconic(app->window)) ::ShowWindow(app->window, SW_RESTORE);
   app->input.window_visible = !::IsIconic(app->window);
@@ -9213,6 +9221,17 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
       }
       return 0;
     }
+
+    case kMsgUpdateQuit:
+      // #532: another MediaViewer applies an update. The chrome quits this one
+      // once no transfer runs (and applies nothing itself); without a chrome
+      // there is nothing to wait on.
+      if (!app->closing && !app->chrome.set_updater_state(mv::shell::chrome_host::updater_state::quit_for_update,
+                                                           static_cast<std::uint32_t>(wparam))) {
+        MV_LOG_INFO("update: another MediaViewer is updating; quitting");
+        quit_from_background(app);
+      }
+      return 0;
 
     case WM_CLOSE: {
       // #452: an add-on keeps the process: hide, do not close.
@@ -9793,6 +9812,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     MV_LOG_WARN("chrome: island did not attach; command bar is unavailable");
     app.chrome_on_screen = false;
   }
+  // #532: a sign-in start (or an update's restart with --background) is in the
+  // background from its first moment; the updater hears it as enter_background says it.
+  if (app.in_background) (void)app.chrome.set_updater_state(mv::shell::chrome_host::updater_state::background);
   if (app.chrome_enabled) {
     update_client_metrics(&app, hwnd);
     ++app.input.resize_seq;

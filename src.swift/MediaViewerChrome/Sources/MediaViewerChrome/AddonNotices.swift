@@ -77,7 +77,10 @@ final class AddonNotices: NSObject, UNUserNotificationCenterDelegate {
     for b in doc["busy"] as? [[String: Any]] ?? [] {
       if let a = b["addon"] as? String, !a.isEmpty { busy[a] = b["what"] as? String ?? "" }
     }
+    // #532: an app update waits on a transfer; the host hears it end here.
+    let busyChanged = busy != RestartNoticeStore.shared.slotBusy
     RestartNoticeStore.shared.noteSlotBusy(busy)
+    if busyChanged { mv_chrome_background_changed() }
     let list: [Notice] = (doc["notices"] as? [[String: Any]] ?? []).compactMap {
       guard let a = $0["addon"] as? String, let id = $0["id"] as? String, let s = $0["screen"] as? String else {
         return nil

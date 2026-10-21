@@ -1564,6 +1564,11 @@ status slot_registry::post_busy(const std::string& addon_id, std::string what) {
   return status::ok;
 }
 
+std::string slot_registry::busy_what() const {
+  std::lock_guard lock(m_);
+  return busy_.empty() ? std::string() : busy_.begin()->second;
+}
+
 bool slot_registry::keeping_alive() const {
   std::lock_guard lock(m_);
   return !keep_.empty();

@@ -241,7 +241,8 @@ bool mv_chrome_item_is_video(int32_t index);
 void mv_chrome_set_gallery_columns(int32_t columns);
 
 // PR 20 updates (docs/design/13). Phase: 0 idle, 1 checking, 2 downloading, 3 a
-// verified update is staged and waiting for the user; always 0 in the bare
+// verified update is staged and waiting for the user, 4 its restart (or
+// Sparkle's quit) waits for a transfer to finish (#532); always 0 in the bare
 // lab. The version is the one being downloaded or staged (false if none yet).
 // Restart installs a staged update and relaunches onto the same folder and
 // file. [main-thread]

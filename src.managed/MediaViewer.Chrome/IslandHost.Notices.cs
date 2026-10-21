@@ -32,6 +32,8 @@ public static partial class IslandHost
     private static readonly Dictionary<string, AddonNotice> NoticesShown = new(StringComparer.Ordinal);
     private static long _noticeAsks;
     private static string _noticeKeep = "";
+    // #532: an add-on keeps the process (the keep list is not empty).
+    private static bool _noticeKeeping;
     private static bool _notifyRegistered;
     private static bool _notifyFailed;
     private const string NoticeGroup = "mv-notices";
@@ -55,12 +57,17 @@ public static partial class IslandHost
         var busy = new Dictionary<string, string>(StringComparer.Ordinal);
         long asks = 0;
         string keep = "";
+        bool keeping = false;
         try
         {
             using JsonDocument doc = JsonDocument.Parse(json);
             JsonElement r = doc.RootElement;
             asks = (long)JNum(r, "ask", 0);
-            if (r.TryGetProperty("keep", out JsonElement k)) keep = k.GetRawText();
+            if (r.TryGetProperty("keep", out JsonElement k))
+            {
+                keep = k.GetRawText();
+                keeping = k.ValueKind == JsonValueKind.Array && k.GetArrayLength() > 0;
+            }
             foreach (JsonElement b in JArr(r, "busy"))
             {
                 if (JStr(b, "addon") is { Length: > 0 } addon) busy[addon] = JStr(b, "what");
@@ -88,7 +95,9 @@ public static partial class IslandHost
         if (keep != _noticeKeep)
         {
             _noticeKeep = keep;
+            _noticeKeeping = keeping;
             if (_themeWindow != IntPtr.Zero) NoticePostMessage(_themeWindow, MsgBackgroundChanged, IntPtr.Zero, IntPtr.Zero);
+            MaybeUpdateInBackground();  // #532: a sign-in start is kept now
         }
         foreach (string gone in NoticesShown.Keys.Where(key => !now.ContainsKey(key)).ToList())
         {

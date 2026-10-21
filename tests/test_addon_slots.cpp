@@ -944,6 +944,7 @@ TEST_CASE("notices and keep-alive are tables the hosts read; a notice's button r
   REQUIRE(doc->find("busy")->a.size() == 1);
   CHECK(*doc->find("busy")->a[0].str("addon") == "slotstest");
   CHECK(*doc->find("busy")->a[0].str("what") == "a Slots transfer");
+  CHECK(r.busy_what() == "a Slots transfer");  // #532: what an app update waits on
   bits = 0;
   REQUIRE(r.post_busy("slotstest", "a Slots transfer") == status::ok);
   CHECK(bits == 0);  // unchanged: no wake
@@ -951,6 +952,7 @@ TEST_CASE("notices and keep-alive are tables the hosts read; a notice's button r
   CHECK(r.post_busy("nobody", "x") == status::not_found);
   REQUIRE(r.post_busy("slotstest", "") == status::ok);
   CHECK(mv::json::parse(r.notices_json())->find("busy")->a.empty());
+  CHECK(r.busy_what().empty());
 
   // Detach takes them all with it.
   REQUIRE(r.keep_alive("slotstest", true, "explorer", "Slots: on") == status::ok);

@@ -156,7 +156,9 @@ process (`keep_alive`), and the hosts do the rest.
   stays; on Windows a **notification-area icon**. Both menus: "Driftwire: receiving", **Open
   Driftwire**, **Open MediaViewer**, **Quit MediaViewer** (which really quits). Opening the app
   again (Finder, Spotlight, Start, a file) brings the hidden window back. Logout, restart and shut
-  down, and an update's restart, quit as before. Only the process that holds
+  down quit as before. An app update quits the process too, but never under a send or receive
+  (`busy_post`), and one staged while the window is hidden installs by itself once idle and
+  comes back in the background (#532, [13 "Staging and restart"](13-updates-and-telemetry.md#staging-and-restart)). Only the process that holds
   `driftwire.json.lock` keeps itself; another window's process quits as usual.
 - **A notification when someone sends** (both hosts, background or not). The engine posts a
   notice (`notice_post`) the moment a sender's link is up, while its code shows: "Ann's MacBook

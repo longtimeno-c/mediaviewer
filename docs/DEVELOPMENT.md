@@ -35,6 +35,7 @@ and a verify line on each platform (D9, amended). The order is:
 | #410, #413 | **Driftwire**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-driftwire.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Driftwire; ABI 0.29 | Mac: built; `mv_import_tests "[driftwire]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#driftwire-issues-410-413-2026-10-15)) |
 | #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Driftwire first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
 | #452 | **Driftwire in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-driftwire.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[driftwire]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#driftwire-in-the-background-issue-452-2026-10-16)) |
+| #532 | **Updates with Driftwire running**: an app update never cuts a send or receive (it waits on `busy_post`; the bar says "The update will install when the transfer finishes"), installs by itself once idle when the window is hidden in the background and comes back in the background, and asks the other MediaViewer processes to quit cleanly first ([docs/design/13](design/13-updates-and-telemetry.md#staging-and-restart)) | Both halves written. Linux: the slot registry suite and the chrome tests pass; the WinUI chrome's C# compiles; `main.cpp` passes a MinGW syntax check. Not built: the Mac host and Swift chrome. Owed: the issue's three cases with an installed build on each platform ([Where this actually is](#updates-with-driftwire-running-issue-532-2026-10-21)) |
 | #472 PR 1 | **Driftwire protocol 2 on the local bearers**: a Noise handshake (`XXhfs`, X25519 + ML-KEM-768, the Cacophony vectors pass) whose code still cannot be matched by a machine in the middle; a transfer that survives its link: sequence numbers, a 16 MiB replay, rejoin with a fresh `NNhfs+psk0` handshake and `resume_at`, no new code or Accept; Bluetooth ↔ Wi-Fi moves (make before break, suspect at 3 s, 20 s ends, flapping ends); a big set may start on Bluetooth to a protocol 2 peer; protocol 1 peers still work ([docs/design/28](design/28-driftwire.md#the-session-protocol-2-472)) | Mac: built; `"[driftwire]"` 54 cases pass (TSan-clean), with stand-in radios; `[.driftwire-bench]` alternated, no difference within noise; the fuzz harness ran clean; the ProVerif model of the handshake and rejoin holds (`tools/formal`). Windows 11: `"[driftwire]"` passes three runs in a row, the PR 1 gate holds with Driftwire loaded ([Driftwire on Windows](#driftwire-on-windows-issue-472-2026-10-18)). Owed: two real machines, real Bluetooth and Wi-Fi on both hosts, the Mac PR 1 gate ([Where this actually is](#driftwire-protocol-2-issue-472-pr-1-2026-10-18)) |
 | #472 PR 3 | **Driftwire four-word codes over the public DHT**, opt-in, off by default: with no public address, the code is four BIP-39 words; Argon2id keys; BEP 44 items (sealed, padded, four targets per side) found and checked on the DHT by a small read-only client (BEP 5/42/43/44; BEP 42 own-address votes, saved table); one UDP socket for DHT, punching (+ port prediction) and a reliable stream of our own; then CPace + Noise and the session ([docs/design/28](design/28-driftwire.md#four-words-over-the-dht-472-pr-3)) | Mac: built; `"[driftwire]"` passes (TSan-clean) with BEP 44 / 42 / CRC-32C vectors, the stream under 1 % and 5 % loss, a stand-in swarm with a forging node, and two engines over four words; the fuzz harness covers the DHT parsers. Not run: the public DHT (`"[.driftwire-dht-live]"`, owed), real NATs. Windows 11: `"[driftwire]"` passes three runs in a row, the PR 1 gate holds with Driftwire loaded ([Driftwire on Windows](#driftwire-on-windows-issue-472-2026-10-18)) ([Where this actually is](#driftwire-four-word-codes-issue-472-pr-3-2026-10-18)) |
 | #472 relays | **Driftwire relays**, sealed end to end, no server of ours: **Use my other computers to relay** (off by default; both mark each other "is my computer"): a sender whose code's places do not answer meets its own computer over the DHT, which connects onward to those public places only and splices; and **Relay (your own server)**: `mv-driftwire-relay` pairs a waiter that proves the server's key with a sender, by a random token carried in the code. TURN left out; Tor evaluated on paper and dropped for now ([docs/design/28](design/28-driftwire.md#relays-472), [plan](plans/driftwire-tor-spike.md)) | Mac: built; `"[driftwire]"` passes (112 cases) with three engines (A, own relay R, B; A cannot reach B) and two engines through an in-process relay server, files byte for byte, no 32-byte run of a file through either relay in the clear; TSan-clean for the new cases; the fuzz harness covers the hello, the request and the answer. Not run: real networks, the Tor harness (needs the live Tor network: the owner's). Windows 11: `"[driftwire]"` passes three runs in a row, the PR 1 gate holds with Driftwire loaded ([Driftwire on Windows](#driftwire-on-windows-issue-472-2026-10-18)) ([Where this actually is](#driftwire-relays-issue-472-2026-10-18)) |
@@ -2833,6 +2834,44 @@ both hosts already draw. Bluetooth's bearers changed only to read the INFO's `"p
   platforms with a transfer running (the screen was locked when this ran: no frames, so not
   run); the external review before anything internet is
   on by default (#472 PRs 2–5).
+
+### Updates with Driftwire running (issue #532, 2026-10-21)
+
+What changed is in [docs/design/13 "Staging and restart"](design/13-updates-and-telemetry.md#staging-and-restart).
+The cause, found by reading the code and the pinned updaters' sources (Velopack 1.2.0, Sparkle
+2.9.6), not reproduced on a machine:
+
+- **Mac:** Sparkle's installer quits the app with an Apple quit event from its agent and no quit
+  reason (`InstallerProgressAppController sendTerminationSignal`). With Receive when MediaViewer
+  is closed on, `applicationShouldTerminate:` took it for the Dock's Quit, hid the window and
+  cancelled, so the installer waited for ever. Idle or not.
+- **Windows:** closing the window of a kept process hides it, so "applies on exit" never came, and
+  nobody sees "Update ready — restart" on a hidden window. Update.exe waits 60 s for the process
+  that armed it, then kills every process still running from the install (`force_stop_package`),
+  which would cut a receive in another window's process.
+
+How to try it (installed builds, two versions on a local feed, Windows `MV_UPDATE_FEED_DIR` in a
+`MV_UPDATER_DEV` build; Mac a dev appcast):
+
+1. Driftwire installed, window closed, background receiving off: the update applies on exit
+   (Windows) or on quit (Mac), as before.
+2. Receive when MediaViewer is closed on, window closed, idle: once the update is staged the
+   process restarts by itself into the background (tray / menu-bar icon back, no window); the log
+   says `restarting into the background`.
+3. The same with a send or receive running: the bar (when shown) says "The update will install
+   when the transfer finishes"; the restart happens after the transfer ends, never during it.
+   With a second window open (`Ctrl+N`), that window closes cleanly first (Windows log:
+   `waiting for 1 other MediaViewer process(es) to quit`).
+
+- **Run here (Linux, 2026-10-21):** the slot registry suite (`tests/test_addon_slots.cpp` against
+  the portable `mv_addon`, 17 cases, including `busy_what`) passes; `dotnet test
+  src.managed/MediaViewer.Chrome.Tests` passes (38, including the words and their Swift copy);
+  `MediaViewer.Chrome` compiles with warnings as errors (`-p:WindowsAppSDKSelfContained=false`;
+  the packaging tools after the compile are Windows-only); `main.cpp` and `chrome_host.cpp` pass
+  MinGW `-fsyntax-only -Wall -Wextra`.
+- **Not run:** any build of the Mac host or the Swift chrome; anything in the app on either
+  platform; the three cases above; the PR 1 gates and `[.driftwire-idle]`. Nothing here runs per
+  frame or while idle: the only timer is a one-second check while a restart waits.
 
 ### Driftwire in the background (issue #452, 2026-10-16)
 

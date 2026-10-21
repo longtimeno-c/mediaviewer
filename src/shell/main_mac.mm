@@ -225,6 +225,27 @@ bool MvClaimAddonHost() {
   return false;
 }
 
+// #532 (docs/design/13 "Staging and restart"): an update installed while the
+// app was in the background relaunches into the background. Sparkle reopens
+// the app plainly, so the relaunch finds this stamp; it counts only briefly, so
+// an install that never got that far cannot hide a later, ordinary launch.
+NSString* const kMvBackgroundAfterUpdate = @"MVBackgroundAfterUpdate";
+constexpr NSTimeInterval kMvBackgroundAfterUpdateSeconds = 120;
+
+#if MV_WITH_SPARKLE
+// #532: Sparkle's installer quits every running copy with an Apple quit event
+// from its progress agent (org.sparkle-project.Sparkle.Updater) and no quit
+// reason: the Dock's Quit has the same shape, and the background (#452) answers
+// that by hiding, so the install waited for ever. The sender tells them apart.
+bool MvQuitFromSparkle(NSAppleEventDescriptor* event) {
+  if (event.eventClass != kCoreEventClass || event.eventID != kAEQuitApplication) return false;
+  NSAppleEventDescriptor* pid = [event attributeDescriptorForKeyword:keySenderPIDAttr];
+  if (pid == nil) return false;
+  NSRunningApplication* sender = [NSRunningApplication runningApplicationWithProcessIdentifier:pid.int32Value];
+  return [sender.bundleIdentifier hasPrefix:@"org.sparkle-project."];
+}
+#endif
+
 constexpr std::int64_t kShownStampUnknown = INT64_MIN;
 // view_fitted is the render thread's last pass; a `1` then ↓ inside one frame
 // would read the old fit. Zoom commands open this window so the first ↓ after
@@ -2896,6 +2917,14 @@ static void MvAdoptNewDefaultViewerTypes() {
   SPUStandardUpdaterController* _updater;
   // Sparkle's "install now and relaunch" block, held while an update waits.
   void (^_installUpdateNow)(void);
+  // #532: an update never cuts a transfer off (busy_post). Restart was asked
+  // for (the bar, or the background's own) and waits; Sparkle asked this
+  // process to quit and it waits; this process asked Sparkle to install, so
+  // the quit that follows is the update's.
+  BOOL _updateRestartWanted;
+  BOOL _updateRestartInBackground;
+  BOOL _updateQuitWanted;
+  BOOL _updateQuitting;
   // What the command bar shows (-updatePhase): checking / downloading only
   // while Sparkle is in that step; ready while _installUpdateNow is held.
   int32_t _updateActivity;  // 0 idle, 1 checking, 2 downloading
@@ -2927,6 +2956,12 @@ static void MvAdoptNewDefaultViewerTypes() {
     if (e.eventClass == kCoreEventClass && e.eventID == kAEOpenApplication &&
         [e paramDescriptorForKeyword:keyAEPropData].enumCodeValue == keyAELaunchedAsLogInItem) {
       g_start_background = true;
+    }
+    // #532: relaunched by an update that installed from the background.
+    NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+    if (NSDate* at = [defaults objectForKey:kMvBackgroundAfterUpdate]; [at isKindOfClass:[NSDate class]]) {
+      [defaults removeObjectForKey:kMvBackgroundAfterUpdate];
+      if (std::fabs(at.timeIntervalSinceNow) < kMvBackgroundAfterUpdateSeconds) g_start_background = true;
     }
     if (_options.soak_seconds > 0.0 || _options.harness || !_options.open_path.empty()) g_start_background = false;
     if (g_start_background) [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
@@ -6331,6 +6366,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
 
 - (int32_t)updatePhase {
 #if MV_WITH_SPARKLE
+  if (_updateRestartWanted || _updateQuitWanted) return 4;  // #532: waits on a transfer
   return _installUpdateNow != nil ? 3 : _updateActivity;
 #else
   return 0;
@@ -6348,6 +6384,13 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
 - (void)restartToUpdate {
 #if MV_WITH_SPARKLE
   if (!_installUpdateNow) return;
+  if (!mv::addon::default_slots().busy_what().empty()) {
+    // #532: after the transfer (-updateAfterTransfer); the bar says so.
+    _updateRestartWanted = YES;
+    MV_LOG_INFO("update: restart waits for a transfer to finish");
+    return;
+  }
+  _updateRestartWanted = NO;
   if (!_wantSelectedPath.empty()) {
     [NSUserDefaults.standardUserDefaults
         setObject:[NSString stringWithUTF8String:_wantSelectedPath.c_str()]
@@ -6355,6 +6398,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   }
   void (^install)(void) = _installUpdateNow;
   _installUpdateNow = nil;
+  _updateQuitting = YES;  // #532: the quit Sparkle sends next is this update's
   install();  // Sparkle quits, installs, and relaunches
 #endif
 }
@@ -6414,7 +6458,59 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   _installUpdateNow = [immediateInstallHandler copy];
   _updateActivity = 0;
   _updateVersionShown = [item.displayVersionString copy];
+  // #532: staged while nobody looks (in the background): install now, after
+  // this delegate call has returned to Sparkle.
+  __weak MvLabApp* weakSelf = self;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [weakSelf maybeUpdateInBackground];
+  });
   return YES;
+}
+
+// #532: in the background (#452) with an update staged and no add-on window on
+// screen, restart to install it and come back in the background
+// (kMvBackgroundAfterUpdate), so a Mac that only receives still updates. Waits
+// on a transfer like any restart (-restartToUpdate).
+- (void)maybeUpdateInBackground {
+  if (!_inBackground || _backgroundStart || !_installUpdateNow) return;
+  if (_updateRestartWanted || _updateQuitWanted || _updateQuitting) return;
+  if (!mv::addon::default_slots().keeping_alive()) return;
+  for (NSWindow* w in NSApp.windows) {
+    // The person is in Driftwire's window: its close asks again (-backgroundSettle).
+    if (w.isVisible && w != self.window && ![w isKindOfClass:NSClassFromString(@"NSStatusBarWindow")]) return;
+  }
+  MV_LOG_INFO("update: staged while in the background; restarting into the background");
+  [NSUserDefaults.standardUserDefaults setObject:[NSDate date] forKey:kMvBackgroundAfterUpdate];
+  _updateRestartInBackground = YES;
+  [self restartToUpdate];
+}
+
+// #532: the transfer an update waited on has ended (-backgroundChanged: the
+// busy list changed). Quit for Sparkle's installer, or restart as was asked.
+- (void)updateAfterTransfer {
+  if (!mv::addon::default_slots().busy_what().empty()) return;
+  if (_updateQuitWanted) {
+    _updateQuitWanted = NO;
+    MV_LOG_INFO("update: the transfer finished; quitting for the update");
+    _quitForReal = true;
+    [NSApp terminate:nil];
+    return;
+  }
+  if (_updateRestartWanted) {
+    _updateRestartWanted = NO;
+    [self restartToUpdate];
+    return;
+  }
+  [self maybeUpdateInBackground];
+}
+
+// #532: the window came back while the background's own restart waited: the
+// bar offers it again, nothing restarts under the person.
+- (void)cancelBackgroundUpdate {
+  if (!_updateRestartInBackground) return;
+  _updateRestartInBackground = NO;
+  _updateRestartWanted = NO;
+  [NSUserDefaults.standardUserDefaults removeObjectForKey:kMvBackgroundAfterUpdate];
 }
 
 // The steps before that, for the command bar's quiet status (docs/design/13 "never
@@ -6448,6 +6544,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   (void)updater;
   (void)error;
   _updateActivity = 0;
+  _updateQuitting = NO;  // #532: a later Quit is the person's again
 }
 
 - (void)toggleAutomaticUpdateChecks:(NSMenuItem*)item {
@@ -8532,6 +8629,9 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   if (NSApp.activationPolicy != NSApplicationActivationPolicyAccessory) {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
   }
+#if MV_WITH_SPARKLE
+  [self maybeUpdateInBackground];  // #532: nothing on screen now
+#endif
 }
 
 - (void)leaveBackground {
@@ -8540,6 +8640,9 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   }
   if (!_inBackground) return;
   _inBackground = false;
+#if MV_WITH_SPARKLE
+  [self cancelBackgroundUpdate];  // #532
+#endif
   // Shown: the login-item grace no longer applies, and turning the toggle off
   // after a later hide must quit (-backgroundSettle).
   _backgroundStart = false;
@@ -8560,6 +8663,9 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   if (kept) _backgroundStart = false;
   [self syncLoginItem:kept];
   if (_inBackground) [self backgroundSettle];
+#if MV_WITH_SPARKLE
+  [self updateAfterTransfer];  // #532: also called when the busy list changes
+#endif
 }
 
 // #452: the login-item start (or --background). The window was made but is
@@ -12010,6 +12116,21 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
   (void)sender;
+#if MV_WITH_SPARKLE
+  // #532: an update's quit (this process asked Sparkle to install, or its
+  // installer quits every copy) is not the person's Quit: it quits, in the
+  // background too, but never under a transfer. Busy, it waits and quits when
+  // the transfer ends (-updateAfterTransfer); Sparkle's installer waits for it.
+  if (!_terminating && !_quitForReal &&
+      (_updateQuitting || MvQuitFromSparkle(NSAppleEventManager.sharedAppleEventManager.currentAppleEvent))) {
+    if (!mv::addon::default_slots().busy_what().empty()) {
+      _updateQuitWanted = YES;
+      MV_LOG_INFO("update: quit waits for a transfer to finish");
+      return NSTerminateCancel;
+    }
+    _quitForReal = true;
+  }
+#endif
   // #452: a Quit the person asked for (the Dock's, or another app's quit
   // event) goes to the background while an add-on keeps the process, as ⌘Q
   // does. Logout, restart and shut down carry a reason and quit; the app's own

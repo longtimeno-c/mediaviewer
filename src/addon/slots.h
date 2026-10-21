@@ -251,6 +251,9 @@ class slot_registry {
   status keep_alive(const std::string& addon_id, bool on, const std::string& screen_id, std::string label);
   // #510 (host table busy_post): "" ends it. In notices_json's "busy".
   status post_busy(const std::string& addon_id, std::string what);
+  // #532: what the first busy add-on said it is doing ("a Driftwire transfer"),
+  // or "" when none is. An app update waits on it before it quits the process.
+  [[nodiscard]] std::string busy_what() const;
 
   // ---- for tests and the PR 59 verify --------------------------------------
   // Every call made into any add-on's client since construction.

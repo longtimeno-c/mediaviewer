@@ -329,7 +329,7 @@ private struct UpdateBarItem: View {
     let version = store.updateVersion
     // An add-on update waiting on a restart is an action, so it wins over a
     // quiet check or download of the app; a staged app update restarts both.
-    switch addons.pending.isEmpty || store.updatePhase == 3 ? store.updatePhase : -1 {
+    switch addons.pending.isEmpty || store.updatePhase >= 3 ? store.updatePhase : -1 {
     case -1:
       Button("Add-on updated — restart") { addons.restart() }
         .buttonStyle(FlatButtonStyle())
@@ -349,6 +349,10 @@ private struct UpdateBarItem: View {
           .padding(.trailing, MVTheme.space(10))
           .accessibilityLabel("Update download progress")
       }
+    case 4:
+      // #532: the restart (or Sparkle's quit) waits for a transfer to finish.
+      status(RestartWords.updateWaiting,
+             help: RestartWords.updateWaitingTip(Array(Set(RestartNoticeStore.shared.slotBusy.values)).sorted()))
     case 3:
       Button("Update ready — restart") { mv_chrome_restart_to_update() }
         .buttonStyle(FlatButtonStyle())

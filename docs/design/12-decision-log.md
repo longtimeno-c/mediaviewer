@@ -834,6 +834,21 @@ ignored. Previews are signed exactly like stable. `github-release.py` refuses a 
 not exceed every published one, so switching back to Stable never downgrades. Add-ons ship on stable
 releases only.
 
+**App updates wait for transfers and install from the background (2026-10-21, #532).** With
+Driftwire's Receive when MediaViewer is closed on, updates never applied: on Windows the kept
+process never exits (closing hides it), so "applies on exit" never came and nobody saw "Update
+ready — restart"; on the Mac Sparkle's installer quits the app with a quit event from its agent
+with no reason, which `applicationShouldTerminate:` took for the Dock's Quit and hid, so the
+install waited for ever. And Update.exe kills every process left in the install, which would cut
+a receive running in another window's process. Now an update's restart waits while any add-on
+reports `busy_post` (the bar says "The update will install when the transfer finishes"), the
+Windows updater asks the other MediaViewers of the install to quit cleanly first, the Mac quits
+for Sparkle's agent (after the transfer), and a hidden background process with an update staged
+restarts by itself, once idle, into the background. This is the one restart nobody clicks: it is
+taken only while nothing is on screen (no viewer window, no add-on window), so docs/design/13's
+"never interrupt" holds. Rejected: a timeout that cuts a long transfer (the owner's rule: never
+cut one), and waiting for logout (a machine that only receives would never update).
+
 **Add-on updates are offered, not silent (2026-09-27).** Opening Settings probes the channel for
 installed add-ons; a newer signed manifest shows **Update to X**. Nothing is fetched without a
 click (up to ~1.2 GB). The store writes `prune.pending` naming the new version and removes the rest
