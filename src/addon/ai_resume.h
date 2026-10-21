@@ -7,7 +7,8 @@
 //
 //   {"version":1,"roots":[{"id","path","kind":"photos"|"folder","done","total","held"}]}
 //
-// the enabled roots whose pictures are not all indexed. A host reads it at
+// the enabled roots with work left on any pass (pictures, documents, clip
+// text, sounds, speech, People). A host reads it at
 // launch, off the UI thread, WITHOUT loading the pack (no runtime, no model
 // sessions), and asks "Resume indexing Photos?" in a bottom-right notice. The
 // pack itself holds those roots when it starts until the user resumes them

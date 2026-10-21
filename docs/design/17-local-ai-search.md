@@ -349,7 +349,10 @@ the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model
 - **Unfinished roots wait for Resume (issue #299, 2026-10-11).** A quit or a kill while a root
   is unfinished does not resume on the next open, and unfinished work is not a reason to load the
   pack. The shipped pack runs with `engine_options::hold_unfinished` (`addon_entry.cpp`):
-  - **Held.** A root whose pictures were not all indexed when the engine started is *held*: not
+  - **Held.** A root with work left when the engine started is *held*: its pictures not all
+    indexed, or listed in the last session's `resume.json` (any pass left: documents' words or
+    pages, a clip's text, the text in photos, sounds, speech, People; until 2026-10-21 only the
+    pictures counted, so those passes carried on unasked at the next load). Held means not
     walked, not queued on any track, not fetched from iCloud or a cloud drive, and left out of
     the status counts, until `set_setting("resume_root", <id>)` (0: every held root), a Rescan,
     re-enabling it or Index this folder on it. Search answers from what it committed meanwhile;
@@ -358,7 +361,8 @@ the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model
   - **`data/resume.json`.** The control thread keeps it current (after each walk, and at most
     every 5 s otherwise, written only when it changed, through a `.tmp` and a rename):
     `{"version":1,"roots":[{"id","path","kind","done","total","held"}]}`, the enabled roots
-    with pictures still to index. It holds local paths beside `index.db`, which holds them
+    with work left on any pass that is on (`engine::work_left_in_root`, claim's passes and
+    filters), and every held root; `done`/`total` are still the pictures'. It holds local paths beside `index.db`, which holds them
     already; nothing is sent anywhere (rule 6).
   - **The launch notice, both hosts.** The worker that verifies the installed pack at launch
     also reads `resume.json` (Mac: `addons_mac.mm` through `addon/ai_resume.h`; Windows:
