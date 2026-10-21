@@ -351,7 +351,7 @@ struct udp_hub::stream_state {
   }
 
   void on_ack(std::uint32_t cum, const std::uint64_t (&sack)[kSackWords], std::uint32_t window,
-              std::span<const std::uint8_t> extra) {
+              std::span<const std::uint8_t> ack_runs) {
     // An ack of packets never sent is not this stream's peer speaking (#499:
     // it would drop every packet in flight for good).
     if (before(next_seq, cum)) return;
@@ -416,10 +416,10 @@ struct udp_hub::stream_state {
     }
     // The runs past the bitmap: only packets still in flight are visited, and
     // each visit forgets one, so no ack costs more than what was sent (#499).
-    if (!extra.empty()) {
-      const std::size_t count = std::min<std::size_t>(extra[0], kMaxRuns);
-      for (std::size_t r = 0; r < count && extra.size() >= 1 + 8 * (r + 1); ++r) {
-        const std::uint32_t a = get32(extra.data() + 1 + 8 * r), b = get32(extra.data() + 5 + 8 * r);
+    if (!ack_runs.empty()) {
+      const std::size_t count = std::min<std::size_t>(ack_runs[0], kMaxRuns);
+      for (std::size_t r = 0; r < count && ack_runs.size() >= 1 + 8 * (r + 1); ++r) {
+        const std::uint32_t a = get32(ack_runs.data() + 1 + 8 * r), b = get32(ack_runs.data() + 5 + 8 * r);
         if (!before(a, b) || before(next_seq, b) || !before(cum, a)) continue;  // not a run of packets sent
         for (auto it = inflight.lower_bound(a); it != inflight.end() && before(it->first, b);) it = acked(it);
       }
