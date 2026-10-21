@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "codec/cicp.h"
@@ -588,7 +589,10 @@ TEST_CASE("the OS codec is only offered HEIC stills it can render identically",
   // seeds/heic/10bit.heic): chroma still says 10, so it is bundled too.
   {
     auto lying = fixture("heif/gradient_10bit.heic");
-    auto hvcc = std::search(lying.begin(), lying.end(), std::begin("hvcC"), std::end("hvcC") - 1);
+    // One literal: begin("hvcC") and end("hvcC") are two arrays unless the
+    // compiler pools them (MSVC Debug does not: a transposed range).
+    const std::string_view tag = "hvcC";
+    auto hvcc = std::search(lying.begin(), lying.end(), tag.begin(), tag.end());
     REQUIRE(hvcc + 4 + 18 <= lying.end());
     hvcc[4 + 17] &= 0xF8;  // bitDepthLumaMinus8 = 0, after box type and 17 config bytes
     auto info = inspect_heic(lying);

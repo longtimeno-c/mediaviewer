@@ -165,10 +165,13 @@ TEST_CASE("driftwire: the window opens from a command with its files, offline", 
   const std::string paths = "[\"" + json_path(s / "photos" / "IMG_1.JPG") + "\",\"" +
                             json_path(s / "photos" / "IMG_2.JPG") + "\"]";
   REQUIRE(reg.invoke_item("driftwire", "send_files", paths) == status::ok);
+  // The offline note comes when presence starts on the control thread, which
+  // can be after the files are shown (ASan: msvc-asan Debug missed it).
   REQUIRE(eventually([&] {
     reg.drain();
     const std::string screens = reg.screens_json();
-    return screens.find("2 files") != std::string::npos;
+    return screens.find("2 files") != std::string::npos &&
+           screens.find("Offline: nothing nearby can be found.") != std::string::npos;
   }));
   const auto screens = mv::json::parse(reg.screens_json());
   REQUIRE(screens);
