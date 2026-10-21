@@ -239,7 +239,9 @@ TEST_CASE("driftwire resume: the receiver quits mid-way; started again, the next
   ann.send_to(*bea);
   REQUIRE(eventually([&] { return bea->eng.snapshot().in == sp::view::in_phase::asking; }));
   bea->eng.on_event("accept", 1, "");
-  REQUIRE(eventually([&] { return bea->eng.snapshot().in_bytes > 8 * sp::kChunkBytes; }));
+  // A few chunks of b_big.mov are enough: each waits up to 1 s on both sides,
+  // and a loaded runner's 5 ms sleeps overshoot, so 8 chunks missed the 15 s.
+  REQUIRE(eventually([&] { return bea->eng.snapshot().in_bytes > 2 * sp::kChunkBytes; }));
   bea.reset();  // MediaViewer quits there
   ann.eng.wait_idle();
   CHECK(ann.eng.snapshot().out == sp::view::out_phase::ended);
@@ -250,7 +252,7 @@ TEST_CASE("driftwire resume: the receiver quits mid-way; started again, the next
   bea->save_into(dest);
   REQUIRE(eventually([&] { return bea->eng.snapshot().unfinished.size() == 1; }));
   CHECK(bea->eng.snapshot().unfinished[0].peer == "Ann");
-  CHECK(bea->eng.snapshot().unfinished[0].bytes_here > 8 * sp::kChunkBytes);
+  CHECK(bea->eng.snapshot().unfinished[0].bytes_here > 2 * sp::kChunkBytes);
   REQUIRE(eventually([&] { return bea->tree().find("Unfinished transfers") != std::string::npos; }));
 
   SECTION("Discard: the record and the hidden temporary go") {
