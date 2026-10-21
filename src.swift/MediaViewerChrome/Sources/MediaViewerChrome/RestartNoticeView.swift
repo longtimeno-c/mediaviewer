@@ -88,6 +88,9 @@ final class RestartNoticeStore: ObservableObject {
   @Published private(set) var waitingFor: [String] = []
   /// busy_post: add-on id -> what it is doing (AddonNotices.read).
   private(set) var slotBusy: [String: String] = [:]
+  /// #532: "Update ready — restart" was clicked while an add-on had work under
+  /// way (a Driftwire transfer); the restart goes once it has ended.
+  @Published private(set) var updateWaiting = false
   /// A slot add-on updated while it was busy: reloaded once it is not.
   private var pendingReloads: [String: AddonUpdated] = [:]
   private var timer: Timer?
@@ -195,6 +198,19 @@ final class RestartNoticeStore: ObservableObject {
     mv_chrome_restart_for_addons()
   }
 
+  // ---- the app update (#532) ---------------------------------------------------
+
+  /// "Update ready — restart": at once, or once no add-on has work under way.
+  /// A transfer is never cut by an update.
+  func restartToUpdateWhenIdle() {
+    if slotBusy.isEmpty {
+      updateWaiting = false
+      mv_chrome_restart_to_update()
+    } else {
+      updateWaiting = true
+    }
+  }
+
   // ---- slot add-ons ------------------------------------------------------------
 
   /// AddonNotices.read: what each add-on said it is doing (busy_post). An
@@ -202,6 +218,10 @@ final class RestartNoticeStore: ObservableObject {
   func noteSlotBusy(_ now: [String: String]) {
     guard now != slotBusy else { return }
     slotBusy = now
+    if updateWaiting && now.isEmpty {
+      updateWaiting = false
+      mv_chrome_restart_to_update()
+    }
     for (id, u) in pendingReloads where now[id] == nil {
       pendingReloads[id] = nil
       reloadNow(id)

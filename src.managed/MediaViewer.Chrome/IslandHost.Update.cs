@@ -90,6 +90,33 @@ public static partial class IslandHost
         try { Console.Error.WriteLine(message); } catch (IOException) { }
     }
 
+    // #532: "Update ready — restart" clicked while an add-on reports work under
+    // way (busy_post: a Driftwire transfer). The restart goes once it has ended
+    // (NoteSlotBusy).
+    private static bool _updateWaitingForTransfer;
+    internal const string UpdateWaitingText = "The update will install when the transfer finishes";
+
+    private static void RestartToUpdateWhenIdle()
+    {
+        if (SlotBusy.Count == 0)
+        {
+            _updateWaitingForTransfer = false;
+            Send(Command.UpdateRestart, 0);
+            return;
+        }
+        _updateWaitingForTransfer = true;
+        if (_lastUpdateStatus is { } s) ShowUpdateStatus(s);
+    }
+
+    /// <summary>NoteSlotBusy: the work an app update waited on has ended.</summary>
+    private static void UpdateWaitSlotBusyChanged()
+    {
+        if (!_updateWaitingForTransfer || SlotBusy.Count > 0) return;
+        _updateWaitingForTransfer = false;
+        if (_lastUpdateStatus is { } s) ShowUpdateStatus(s);
+        Send(Command.UpdateRestart, 0);
+    }
+
     private static StackPanel BuildUpdateButton()
     {
         // Tag 2: the button is offering an add-on restart (RequestAddonRestart).
@@ -98,6 +125,7 @@ public static partial class IslandHost
         {
             int arg = _updateButton?.Tag is int t ? t : 0;
             if (arg == AddonUpdatesArg) OpenAddonUpdates();
+            else if (arg == 0) RestartToUpdateWhenIdle();
             else Send(Command.UpdateRestart, arg);
         });
         _updateButton.Visibility = Visibility.Collapsed;
@@ -223,7 +251,13 @@ public static partial class IslandHost
             string tip = "";
             bool clickable = false;
             int restartArg = 0;
-            if (s.Phase == UpdatePhase.Ready)
+            if (s.Phase == UpdatePhase.Ready && _updateWaitingForTransfer)
+            {
+                // #532: a transfer under way is never cut; the restart follows it.
+                text = UpdateWaitingText;
+                tip = $"Version {s.Version} is downloaded. MediaViewer restarts to install it once nothing is being sent or received.";
+            }
+            else if (s.Phase == UpdatePhase.Ready)
             {
                 text = s.Urgency == UpdateUrgency.Normal ? "Update ready — restart" : "Important update — restart";
                 tip = s.Urgency switch

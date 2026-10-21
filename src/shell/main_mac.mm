@@ -829,6 +829,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 // #452 (docs/design/28 "In the background"): an add-on keeps the process.
 - (void)quitFromMenu:(id)sender;
 - (void)enterBackground;
+- (void)applyUpdateInBackground;
 - (void)leaveBackground;
 - (void)quitFromBackground;
 - (void)backgroundChanged;
@@ -2926,6 +2927,12 @@ static void MvAdoptNewDefaultViewerTypes() {
     NSAppleEventDescriptor* e = NSAppleEventManager.sharedAppleEventManager.currentAppleEvent;
     if (e.eventClass == kCoreEventClass && e.eventID == kAEOpenApplication &&
         [e paramDescriptorForKeyword:keyAEPropData].enumCodeValue == keyAELaunchedAsLogInItem) {
+      g_start_background = true;
+    }
+    // #532: Sparkle relaunched an update applied in the background; it comes
+    // back there (Sparkle's relaunch takes no arguments).
+    if ([NSUserDefaults.standardUserDefaults boolForKey:@"MVBackgroundAfterUpdate"]) {
+      [NSUserDefaults.standardUserDefaults removeObjectForKey:@"MVBackgroundAfterUpdate"];
       g_start_background = true;
     }
     if (_options.soak_seconds > 0.0 || _options.harness || !_options.open_path.empty()) g_start_background = false;
@@ -6414,6 +6421,9 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   _installUpdateNow = [immediateInstallHandler copy];
   _updateActivity = 0;
   _updateVersionShown = [item.displayVersionString copy];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [self applyUpdateInBackground];
+  });
   return YES;
 }
 
@@ -8495,6 +8505,7 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   [self.window orderOut:nil];
   [self backgroundSettle];
   [self watchBackgroundCloses];
+  [self applyUpdateInBackground];
 }
 
 // After every window close while in the background: settle (the Dock icon goes
@@ -8550,6 +8561,33 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
 - (void)quitFromBackground {
   _quitForReal = true;
   [NSApp terminate:nil];
+}
+
+// #532: a hidden process is never quit, so "installs when you quit" never
+// came. In the background with an update staged and no add-on busy (a
+// Driftwire transfer waits for the next minute), install it now and come back
+// in the background; the add-on takes its receiving back from the kept toggle.
+- (void)applyUpdateInBackground {
+#if MV_WITH_SPARKLE
+  if (!_inBackground || !_installUpdateNow) return;
+  bool shown = false;  // Driftwire's window, opened from the menu-bar item: the person is in it
+  for (NSWindow* w in NSApp.windows) {
+    if (w.isVisible && w != self.window && ![w isKindOfClass:NSClassFromString(@"NSStatusBarWindow")]) shown = true;
+  }
+  if (shown || mv::addon::default_slots().busy()) {
+    __weak MvLabApp* weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+      [weakSelf applyUpdateInBackground];
+    });
+    return;
+  }
+  MV_LOG_INFO("background: installing the staged update; starting again in the background");
+  [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"MVBackgroundAfterUpdate"];
+  void (^install)(void) = _installUpdateNow;
+  _installUpdateNow = nil;
+  _quitForReal = true;
+  install();  // Sparkle quits, installs, and relaunches
+#endif
 }
 
 // The keep-alive list changed (the chrome's notice reader): off while hidden

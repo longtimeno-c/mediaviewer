@@ -1900,6 +1900,15 @@ hand-forwarded port now helps only if the router maps it; a `forwarded` key in a
 `driftwire.json` is ignored. Reopen only for a network where none of the automatic ways work and
 the DHT is blocked too.
 
+**A background process applies a staged update itself; no update cuts a transfer (2026-10-21,
+#532).** With Keep receiving on, closing or quitting only hides the process, so "it installs when
+you close MediaViewer" never came, idle or not. Hidden, with an update staged and no add-on busy
+(`busy_post`), the process now applies it and starts again in the background (`--background`;
+on the Mac a default read at launch, as Sparkle relaunches without arguments). "Update ready —
+restart" clicked during a transfer waits for it to end and says so. Not covered: a second
+window's process (Ctrl+N / ⌘N) still knows nothing of another process's transfer; there is no
+message between processes.
+
 **Every transfer end stays until OK (2026-10-21, #531).** Reverses #511, where an end that did
 not arrive (cancelled, lost) cleared itself after 6 s (`ended_show_ms`, `clear_ended_later()`):
 looking away for a moment lost the reason before it was read. Delivered, cancelled and failed

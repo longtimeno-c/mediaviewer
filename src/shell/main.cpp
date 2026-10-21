@@ -166,6 +166,11 @@ constexpr UINT kMsgBackgroundChanged = WM_APP + 0x81;
 // Run entry and quits. Driftwire asks within ~10 s of its load.
 constexpr UINT_PTR kBackgroundStartTimerId = 0x7D01;
 constexpr UINT kBackgroundStartGraceMs = 60000;
+// #532: a hidden process never reaches the exit path that applies a staged
+// update; while hidden it applies one itself once no add-on is busy, and
+// starts again in the background.
+constexpr UINT_PTR kBackgroundUpdateTimerId = 0x7D02;
+constexpr UINT kBackgroundUpdateMs = 60000;
 // Text in images: the pointer rests on a still this long before it is read.
 constexpr UINT_PTR kTextDwellTimerId = 0x7C01;
 constexpr UINT kTextDwellMs = 500;
@@ -8607,8 +8612,7 @@ struct kept_alive_entry {
   std::string addon, screen, title, label;
 };
 
-std::vector<kept_alive_entry> kept_alive() {
-  std::vector<kept_alive_entry> out;
+std::string slot_notices() {
   std::string json(4096, '\0');
   uint32_t needed = 0;
   mv_status status = mv_slots_notices_json(json.data(), static_cast<uint32_t>(json.size()), &needed);
@@ -8616,8 +8620,15 @@ std::vector<kept_alive_entry> kept_alive() {
     json.assign(needed, '\0');
     status = mv_slots_notices_json(json.data(), static_cast<uint32_t>(json.size()), &needed);
   }
-  if (status != MV_OK || needed == 0) return out;
+  if (status != MV_OK || needed == 0) return {};
   json.resize(needed - 1);
+  return json;
+}
+
+std::vector<kept_alive_entry> kept_alive() {
+  std::vector<kept_alive_entry> out;
+  const std::string json = slot_notices();
+  if (json.empty()) return out;
   const auto doc = mv::json::parse(json, 4);
   if (!doc || doc->k != mv::json::kind::object) return out;
   const mv::json::value* keep = doc->find("keep");
@@ -8631,6 +8642,17 @@ std::vector<kept_alive_entry> kept_alive() {
     out.push_back({*addon, *screen, title ? *title : *screen, label ? *label : std::string()});
   }
   return out;
+}
+
+// #532: an add-on says it has work under way (busy_post: a Driftwire transfer).
+// Unreadable counts as busy: an update never cuts what it cannot see.
+bool addons_busy() {
+  const std::string json = slot_notices();
+  if (json.empty()) return true;
+  const auto doc = mv::json::parse(json, 4);
+  if (!doc || doc->k != mv::json::kind::object) return true;
+  const mv::json::value* busy = doc->find("busy");
+  return busy && busy->k == mv::json::kind::array && !busy->a.empty();
 }
 
 void sync_tray(app_state* app, const std::vector<kept_alive_entry>& keep) {
@@ -8659,6 +8681,39 @@ void sync_tray(app_state* app, const std::vector<kept_alive_entry>& keep) {
   if (nid.hIcon) ::DestroyIcon(nid.hIcon);  // the shell keeps its own copy
 }
 
+// #532: hidden, a staged update and nothing under way: apply it now and start
+// again with --background (the Driftwire add-on takes its receiving back from
+// the kept toggle). A transfer running waits for the next tick.
+// A window of this thread still on screen (Driftwire's, opened from the icon)
+// waits too: the person is in it.
+bool other_window_shown(HWND main) {
+  struct find {
+    HWND main;
+    bool shown = false;
+  } f{main};
+  ::EnumThreadWindows(
+      ::GetCurrentThreadId(),
+      [](HWND h, LPARAM p) -> BOOL {
+        auto* f = reinterpret_cast<find*>(p);
+        if (h == f->main || !::IsWindowVisible(h) || ::GetWindow(h, GW_OWNER) != nullptr) return TRUE;
+        if ((::GetWindowLongPtrW(h, GWL_STYLE) & WS_CAPTION) != WS_CAPTION) return TRUE;
+        f->shown = true;
+        return FALSE;
+      },
+      reinterpret_cast<LPARAM>(&f));
+  return f.shown;
+}
+
+void apply_update_in_background(app_state* app) {
+  if (!app->in_background || app->closing || app->quit_for_real || addons_busy()) return;
+  if (other_window_shown(app->window)) return;
+  const std::vector<std::wstring> args{L"--background"};
+  if (app->chrome.request_update_restart(mv::shell::update::join_arguments(args))) {
+    // The chrome arms Update.exe, then UpdateRestart(1) closes this process.
+    MV_LOG_INFO("background: applying the staged update; starting again in the background");
+  }
+}
+
 void enter_background(app_state* app) {
   if (app->in_background) return;
   if (app->editor.open) set_editor_open(app, false);  // PR 30: the canvas comes home first
@@ -8670,11 +8725,14 @@ void enter_background(app_state* app) {
   publish(app);
   ::ShowWindow(app->window, SW_HIDE);
   sync_tray(app, kept_alive());
+  ::SetTimer(app->window, kBackgroundUpdateTimerId, kBackgroundUpdateMs, nullptr);
+  apply_update_in_background(app);
 }
 
 void leave_background(app_state* app) {
   if (!app->in_background) return;
   app->in_background = false;
+  ::KillTimer(app->window, kBackgroundUpdateTimerId);
   ::ShowWindow(app->window, SW_SHOW);
   if (::IsIconic(app->window)) ::ShowWindow(app->window, SW_RESTORE);
   app->input.window_visible = !::IsIconic(app->window);
@@ -9333,6 +9391,10 @@ std::optional<LRESULT> window_on_timer(HWND hwnd, UINT msg, WPARAM wparam, LPARA
         confirm_update_start_async();
         return 0;
       }
+      if (wparam == kBackgroundUpdateTimerId) {
+        apply_update_in_background(app);
+        return 0;
+      }
       if (wparam == kBackgroundStartTimerId) {
         // #452: a sign-in start nothing kept (the add-on is gone, or its toggle
         // was turned off where this process could not see it): no entry, no process.
@@ -9783,6 +9845,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     app.input.window_visible = false;
     publish(&app);
     ::SetTimer(hwnd, kBackgroundStartTimerId, kBackgroundStartGraceMs, nullptr);
+    ::SetTimer(hwnd, kBackgroundUpdateTimerId, kBackgroundUpdateMs, nullptr);
   } else {
     ::ShowWindow(hwnd, show_command);
     ::UpdateWindow(hwnd);

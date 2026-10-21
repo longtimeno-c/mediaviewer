@@ -136,6 +136,14 @@ installed from Settings → Add-ons, never part of the base installer or its upd
 - **Never interrupt.** No modal, no forced restart. The command bar shows "Checking for
   updates…" / "Downloading update…" quietly, then **"Update ready — restart"**. Ignored, a staged
   update applies on exit (Windows) or is held for the user (macOS delegate).
+- **An update never cuts a transfer (#532).** Clicked while an add-on reports work under way
+  (`busy_post`: a Driftwire transfer), the bar says "The update will install when the transfer
+  finishes" and restarts once it has ended. A process kept in the background (#452) never exits,
+  so it never reached the apply on exit: hidden, with an update staged and no add-on busy, it
+  applies the update itself (Windows: `apply_update_in_background`, checked on hiding and every
+  minute; Mac: `applyUpdateInBackground` with Sparkle's install block) and starts again in the
+  background (`--background` on Windows; the `MVBackgroundAfterUpdate` default on the Mac, since
+  Sparkle's relaunch takes no arguments). Driftwire takes its receiving back from its kept toggle.
 - **State across the restart** (Windows, `shell/update_guard.h`): the restart relaunches with
   the open path, `--restore-zoom N`, `--restore-fullscreen` and `--restore-gallery`. Playback
   position is not an argument: the player saves its resume point when a clip closes.

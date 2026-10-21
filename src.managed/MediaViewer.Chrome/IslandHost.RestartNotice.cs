@@ -359,6 +359,7 @@ public static partial class IslandHost
         if (now.Count == SlotBusy.Count && now.All(kv => SlotBusy.TryGetValue(kv.Key, out string? w) && w == kv.Value)) return;
         SlotBusy.Clear();
         foreach ((string id, string what) in now) SlotBusy[id] = what;
+        UpdateWaitSlotBusyChanged();  // #532 (IslandHost.Update.cs)
         bool changed = false;
         foreach ((string id, AddonUpdated u) in PendingSlotReloads.Where(p => !SlotBusy.ContainsKey(p.Key)).ToList())
         {
