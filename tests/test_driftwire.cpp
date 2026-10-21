@@ -1245,9 +1245,13 @@ struct tuned_client {
   }
 };
 
-std::uint16_t port_of_member(bus& b, const std::string& id) {
+// The engine's listening port, from its beacon on the bus. The id is read on
+// each try: presence starts on the engine's worker and takes a new id as it
+// does (#501), so one read before that would match no beacon.
+std::uint16_t port_of_member(bus& b, const sp::engine& eng) {
   std::uint16_t port = 0;
   REQUIRE(eventually([&] {
+    const std::string id = eng.id();
     std::lock_guard lock(b.m);
     for (const auto& [k, m] : b.members) {
       if (m.self.id == id) port = m.self.port;
@@ -1334,7 +1338,7 @@ TEST_CASE("driftwire: after Accept, a sender that sends nothing does not hold th
   tuned_client bea(b, s / "bea_received", "Bea", [](sp::engine::options& o) { o.receive_idle_ms = 1500; });
   fs::create_directories(s / "bea_received");
   // A sender of its own: an offer, then nothing (its pings keep the link up).
-  auto l = sp::net::connect({"127.0.0.1", port_of_member(b, bea.eng.id())}, 5000);
+  auto l = sp::net::connect({"127.0.0.1", port_of_member(b, bea.eng)}, 5000);
   REQUIRE(l);
   auto ch = sp::channel::open(std::shared_ptr<sp::link>(std::move(*l)), true, "aaaaaaaaaaaaaaaa", "Mallory");
   REQUIRE(ch);
@@ -1550,11 +1554,12 @@ TEST_CASE("driftwire: a nearby receiver remembers the sender only with the code 
   // Ann typed Bea's code: Bea is proved, and Ann's window shows its own check.
   CHECK(av.remember_check.size() == 7);
   CHECK_FALSE(av.remember_needs_check);
-  CHECK(ann.tree().find(av.remember_check) != std::string::npos);
+  // The window is posted after the transfer ends, not before wait_idle returns.
+  CHECK(eventually([&] { return ann.tree().find(av.remember_check) != std::string::npos; }, 5));
   // Bea only saw a name Ann gave: ticking is not enough.
   CHECK(bv.remember_needs_check);
   CHECK(bv.remember_check.empty());
-  CHECK(bea.tree().find("remember_check_entry") != std::string::npos);
+  CHECK(eventually([&] { return bea.tree().find("remember_check_entry") != std::string::npos; }, 5));
   bea.eng.on_event("remember", 2, "true");
   CHECK(bea.eng.snapshot().known.empty());
   const std::string wrong = av.remember_check == "000 000" ? "111 111" : "000 000";

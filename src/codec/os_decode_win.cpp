@@ -128,10 +128,12 @@ result<raster> try_os_decode(std::span<const std::uint8_t> bytes, const job_cont
   if (bytes.size() > 0xFFFFFFFFull) return err(kFallThrough);
 
   // Only files whose WIC rendering is the same as libheif's (os_decode.h).
+  // Chroma as well as luma: a 10-bit file whose hvcC luma depth reads 8 (one
+  // altered byte) hung WIC's HEVC decode on the nightly broken corpus.
   auto inspected = inspect_heic(bytes);
   if (!inspected) return err(kFallThrough);
   const heic_still_info& info = inspected.value();
-  if (!info.hevc || info.sequence || info.hdr || info.has_alpha || info.luma_bits != 8 ||
+  if (!info.hevc || info.sequence || info.hdr || info.has_alpha || info.luma_bits != 8 || info.chroma_bits != 8 ||
       (!info.has_icc && !info.srgb_in_effect)) {
     return err(kFallThrough);
   }
