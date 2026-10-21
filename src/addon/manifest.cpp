@@ -158,13 +158,21 @@ bool read_slot_point(std::string_view key, const json::value& value, contributio
       if (!only_keys(e, {"id", "title", "place", "width", "height"})) return false;
       const std::string* title = required_text(e, "title", 48);
       const std::string* place = e.str("place");
-      if (!title || !place || !one_of(*place, {"window", "pane", "sheet"})) return false;
+      if (!title || !place || !one_of(*place, {"window", "pane", "sheet", "settings"})) return false;
       screen_contrib s;
       s.id = *id;
       s.title = *title;
-      s.place = *place == "window" ? screen_place::window
-                : *place == "pane" ? screen_place::pane
-                                   : screen_place::sheet;
+      s.place = *place == "window"   ? screen_place::window
+                : *place == "pane"   ? screen_place::pane
+                : *place == "sheet"  ? screen_place::sheet
+                                     : screen_place::settings;
+      // A settings page asks for contribution API 8, and an add-on has one.
+      if (s.place == screen_place::settings &&
+          (c.api_min < kSettingsScreenApi ||
+           std::any_of(c.screens.begin(), c.screens.end(),
+                       [](const screen_contrib& o) { return o.place == screen_place::settings; }))) {
+        return false;
+      }
       std::int64_t w = 0;
       std::int64_t h = 0;
       if (!small_uint(e, "width", 0, 4096, w) || !small_uint(e, "height", 0, 4096, h)) return false;
@@ -363,10 +371,12 @@ bool read_contributions(const json::value& doc, manifest& m) {
     if (!read_slot_point(key, value, m.slots, screen_ids, item_ids)) return false;
   }
   if (m.slots.api_max != 0 && !any) return false;  // a range with nothing under it is a typo
-  // An item that opens a screen names one of this add-on's own.
+  // An item that opens a screen names one of this add-on's own, never its
+  // settings page (only Settings opens that).
   for (const item_contrib& i : m.slots.items) {
-    if (!i.opens.empty() && std::none_of(m.slots.screens.begin(), m.slots.screens.end(),
-                                         [&](const screen_contrib& s) { return s.id == i.opens; })) {
+    if (!i.opens.empty() && std::none_of(m.slots.screens.begin(), m.slots.screens.end(), [&](const screen_contrib& s) {
+          return s.id == i.opens && s.place != screen_place::settings;
+        })) {
       return false;
     }
   }

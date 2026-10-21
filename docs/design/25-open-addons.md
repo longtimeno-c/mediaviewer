@@ -341,7 +341,8 @@ B stays what it is: MediaViewer's own add-ons, under our key and Team ID. C is n
 "Add new screens" without shipping WinUI and SwiftUI code twice: a screen is a **view tree**, a
 small vocabulary both hosts render with their own controls.
 
-- **Places:** a window of its own (like Import's), a docked pane, a sheet over the viewer.
+- **Places:** a window of its own (like Import's), a docked pane, a sheet over the viewer, and
+  (contribution API 8, 2026-10-21) `settings`: the add-on's own page in Settings → Add-ons.
 - **Vocabulary (PR 58):** stack, grid, scroll, split, text, image, thumbnail (a file's, from
   the viewer's cache), thumbnail grid (virtualised by the host), list, table, button, toggle,
   choice, slider, number, text field, progress, separator, and `surface` (pixels the add-on
@@ -704,6 +705,17 @@ How it works:
   add-on that does asks for 7 and an app older than this says "needs a newer MediaViewer"
   instead of refusing the manifest as malformed (it did before 7). No first-party manifest
   names one yet.
+- **A settings page as a screen** (2026-10-21, contribution API **8**; `MV_SLOT_PLACE_SETTINGS`):
+  a screen in place `"settings"` is drawn on the add-on's own page in Settings → Add-ons, under
+  its card, by the same renderer as a window (its cards are siblings of that card, never inside
+  it). The chrome opens it when that page shows with Settings up and closes it when the page or
+  Settings goes; an add-on loaded again while it shows is asked again. Nothing else opens one:
+  `screen_show` refuses it, an item's `"opens"` may not name it, and a status item's "only
+  screen" skips it. At most one per add-on. Its tree sits in Settings' own scroller, so its root
+  is a stack, not a scroll. For state the add-on keeps itself (Driftwire's prefs file, its
+  remembered devices) where a manifest `settings` page (contribution API 2, values kept by the
+  host) would keep a second copy. Schema 1 manifests only; other makers' scripts do not have it.
+  Mac `AddonSettingsScreen` (`AddonListView.swift`), Windows `IslandHost.AddonSettingsScreen.cs`.
 - **Screens** open as a window, a docked pane or a sheet, each with Done and Esc. The docked pane
   is not an island in the viewer's layout ([12](12-decision-log.md)): it lies **over** the right
   side of the canvas, which does not reflow around it. On the Mac it is a child panel held to the

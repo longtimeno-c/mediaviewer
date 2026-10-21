@@ -114,6 +114,8 @@ public static partial class IslandHost
             BorderThickness = new Thickness(1),
         };
         view.Children.Add(_addonPageBody);
+        // The add-on's own settings (place "settings"), its cards under the page's.
+        view.Children.Add(BuildAddonPageSettings());
         _addonPageView = view;
         return view;
     }
@@ -257,6 +259,7 @@ public static partial class IslandHost
         _settingsScroll.Content = _addonPageView;
         RefreshAddonList();  // the title
         _settingsScroll.ChangeView(null, 0, null, disableAnimation: true);
+        SyncAddonSettingsScreen();
         _dispatcher?.DispatcherQueue.TryEnqueue(() => _addonPageBack?.Focus(FocusState.Programmatic));
     }
 
@@ -271,6 +274,7 @@ public static partial class IslandHost
         if (_addonPageBody is not null) _addonPageBody.Child = null;
         _settingsScroll.Content = _settingsMain;
         RefreshSlotSettings();  // draws no card while the list is up
+        SyncAddonSettingsScreen();
         // Laid out first: before that the list's extent is 0 and the offset clamps to the top.
         _settingsScroll.UpdateLayout();
         _settingsScroll.ChangeView(null, _settingsListOffset, null, disableAnimation: true);

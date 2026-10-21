@@ -2347,6 +2347,17 @@ of each pane, once per launch. The Windows fix does not carry over (no .NET on t
 one does not carry back: the Windows islands are attached, not merely hidden, so not attaching the
 four launch-time islands there is a separate change.
 
+**An add-on's settings page can be a screen it draws: contribution API 8 (2026-10-21).** The
+owner asked for Driftwire's page in Settings → Add-ons to carry all of its settings, matching its
+window. Driftwire keeps them itself (a prefs file in its data folder, remembered devices in the
+OS's secret store), so a manifest `settings` page (contribution API 2) would have kept a second
+copy in the host with no change notice to the engine, and could not offer a folder picker. A
+screen in a new place, `"settings"`, draws the add-on's own tree on its page with the screens'
+renderer, opened only while that page shows; one engine answers both. The cost, accepted by the
+owner: the Driftwire that asks for 8 needs this MediaViewer or later ("needs a newer
+MediaViewer" on an older one), and a new place in the core and both hosts. Not opened to other
+makers' scripts.
+
 ## Not built
 
 - Voice query add-on (PRs 27–28): no voice add-on or `search_query` host entry exists.

@@ -1,8 +1,9 @@
 {
  "description": "Send photos, video and audio to a MediaViewer nearby, over Wi-Fi or Bluetooth. You type the code the other screen shows, and nothing moves until the other person accepts. No account, no cloud.",
  "contributes": {
-  "api": {"min": 6, "max": 6},
-  "screens": [{"id": "driftwire", "title": "Driftwire", "place": "window", "width": 560, "height": 680}],
+  "api": {"min": 8, "max": 8},
+  "screens": [{"id": "driftwire", "title": "Driftwire", "place": "window", "width": 560, "height": 680},
+              {"id": "settings", "title": "Driftwire", "place": "settings"}],
   "context_menu": [{"id": "send_files", "label": "Send with Driftwire…", "target": "files"}],
   "status_items": [{"id": "receiving", "label": "Driftwire"}],
   "commands": [{"id": "open", "name": "Driftwire", "modes": "all", "payload": "marked_or_current"}]

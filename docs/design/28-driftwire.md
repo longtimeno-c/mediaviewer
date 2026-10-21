@@ -1124,7 +1124,18 @@ second while bytes move; those posts update chrome and never present the canvas.
   "Driftwire" row carries the marked or current files.
 - **Settings → Add-ons**: an add-on that fills slots and has a window gets **Open …**; Driftwire
   is offered with one click while it is not installed (its release channel,
-  `mediaviewer-addon-driftwire-<platform>`).
+  `mediaviewer-addon-driftwire-<platform>`). **Driftwire's page there carries its settings**
+  (2026-10-21; a screen in place `"settings"`, contribution API 8, so Driftwire's manifest asks
+  for 8 and an older app says it needs a newer MediaViewer): under its card, in the window's
+  cards and controls, **Nearby** (Keep receiving when the Driftwire window is closed, Receive when
+  MediaViewer is closed), **Received files** (Save to, the folder an offer's Save to starts at),
+  **Over the internet**, and while that is on, **Remembered devices** (Forget, "is my computer")
+  and **Internet options** (DHT, handover, relays, your own relay server). The same node ids as
+  the window, so one engine answers both and the two never disagree (`build_settings_tree`).
+  Nothing that sends, makes a code or lists who is nearby. Opening it makes the engine (its
+  control thread) but is not the window: no presence, beacon or Bluetooth starts unless Keep
+  receiving is on, as at launch. Its tree is posted only when it changed, not with every
+  progress post.
   On Windows each add-on there is one card (#442): its name, what it does, its state, the install
   bar while it installs, its buttons (**Open …**, **Update**, **Remove…**), its message and its
   settings page together, Import's status and restart inside Import's card; the Mac's
