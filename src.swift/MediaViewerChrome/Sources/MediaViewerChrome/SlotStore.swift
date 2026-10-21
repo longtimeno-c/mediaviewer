@@ -148,6 +148,9 @@ final class SlotStore: ObservableObject {
   @Published private(set) var items: [SlotItem] = []
   /// #410: each add-on's first window screen (Settings' Open, the share icon).
   @Published private(set) var windowScreens: [String: String] = [:]
+  /// Each add-on's settings page (place "settings", contribution API 8): drawn
+  /// on its page in Settings -> Add-ons, never in a window.
+  @Published private(set) var settingsScreens: [String: String] = [:]
   /// #512: `opens` is the screen a click opens ("" = plain text).
   @Published private(set) var status: [(id: String, addon: String, label: String, text: String, opens: String)] = []
   /// True while an add-on answers Local search (the path bar's button opens it).
@@ -235,12 +238,17 @@ final class SlotStore: ObservableObject {
                       opens: $0["opens"] as? String ?? "")
     }
     var windows: [String: String] = [:]
+    var settings: [String: String] = [:]
     for sc in doc["screens"] as? [[String: Any]] ?? [] {
-      guard let a = sc["addon"] as? String, let id = sc["id"] as? String, sc["place"] as? String == "window",
-            windows[a] == nil else { continue }
-      windows[a] = id
+      guard let a = sc["addon"] as? String, let id = sc["id"] as? String else { continue }
+      switch sc["place"] as? String {
+      case "window": if windows[a] == nil { windows[a] = id }
+      case "settings": if settings[a] == nil { settings[a] = id }
+      default: break
+      }
     }
     if windows != windowScreens { windowScreens = windows }
+    if settings != settingsScreens { settingsScreens = settings }
     badgeDefs = [:]
     for b in doc["badges"] as? [[String: Any]] ?? [] {
       guard let key = b["key"] as? String else { continue }
@@ -436,6 +444,14 @@ final class SlotStore: ObservableObject {
   func invoke(addon: String, item: String, paths: [String]) -> Bool {
     let json = (try? JSONSerialization.data(withJSONObject: paths)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
     return addon.withCString { a in item.withCString { i in json.withCString { mv_chrome_slots_invoke(a, i, $0) } } }
+  }
+
+  /// An add-on's settings page: opened while its page in Settings shows.
+  func openSettingsScreen(_ at: ScreenAddress) {
+    var theme = Self.theme()
+    _ = at.addon.withCString { a in
+      at.screen.withCString { s in "".withCString { p in mv_chrome_slots_open_screen(a, s, p, &theme, 0, 0, Self.scale) } }
+    }
   }
 
   func close(_ at: ScreenAddress) {

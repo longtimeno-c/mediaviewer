@@ -369,8 +369,11 @@ typedef struct mv_slot_search_row {
 #define MV_SLOT_PLACE_WINDOW 1u
 #define MV_SLOT_PLACE_PANE 2u
 #define MV_SLOT_PLACE_SHEET 3u
+/* Contribution API 8: on the add-on's own page in Settings -> Add-ons, opened
+ * while that page shows (never by screen_show: MV_ERR_INVALID_ARG). */
+#define MV_SLOT_PLACE_SETTINGS 4u
 
-/* A window, pane or sheet of the add-on's opened (manifest screens[]). */
+/* A window, pane, sheet or settings page of the add-on's opened (manifest screens[]). */
 typedef struct mv_slot_screen_request {
   uint32_t struct_size;
   uint32_t place;               /* MV_SLOT_PLACE_* */
@@ -1004,8 +1007,9 @@ MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* ou
  * theme shape (PR 56).  3  scripts, permissions, commands (PR 57).
  * 4  screens; 5  chrome slots and search providers (docs/design/25 §7);
  * 6  the screen `link` node and a button's `copy` (2026-10-19);
- * 7  `opens` on a status item (#512, 2026-10-20). */
-#define MV_ADDON_CONTRIBUTION_API 7
+ * 7  `opens` on a status item (#512, 2026-10-20);
+ * 8  a screen in place "settings", MV_SLOT_PLACE_SETTINGS (2026-10-21). */
+#define MV_ADDON_CONTRIBUTION_API 8
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:

@@ -51,6 +51,7 @@ public static partial class IslandHost
     // From ReadSlotContributions: the window screens, and a pending share.
     private static void NoteSlotWindowScreens(JsonElement root)
     {
+        NoteSlotSettingsScreens(root);
         SlotWindowScreens.Clear();
         foreach (JsonElement s in JArr(root, "screens"))
         {
@@ -69,6 +70,7 @@ public static partial class IslandHost
             OpenDriftwire(paths);
         }
         RefreshSlotSettings();
+        SyncAddonSettingsScreen(reopen: true);
     }
 
     // ---- the share menu's Driftwire entry (#413, #444) ----------------------------------

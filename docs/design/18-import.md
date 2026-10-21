@@ -214,7 +214,9 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
   updating*, *Not installed*, *Needs an update*, *Couldn't start*, *Installing…*; From other
   makers says how many are installed. A row opens the add-on's own page in Settings (**All
   add-ons** or Esc goes back): what it does, Install / Update to X / Open / Remove… / Remove and install again,
-  the install bar and its messages, and its settings page. Nothing of an add-on's configuration
+  the install bar and its messages, and its settings page (from its manifest, or, from
+  contribution API 8, a screen the add-on draws under the card: Driftwire's,
+  [25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)). Nothing of an add-on's configuration
   is on the list itself. Opening Settings shows the list, unless something asked for a page: an
   add-on's alert opens its page, a package to install opens From other makers, Local search's own
   Settings link opens Local search. The same on both platforms (`IslandHost.AddonList.cs`,
