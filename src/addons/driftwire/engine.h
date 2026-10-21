@@ -40,6 +40,7 @@
 
 #include "addons/driftwire/admission.h"
 #include "addons/driftwire/channel.h"
+#include "addons/driftwire/eta.h"
 #include "addons/driftwire/handover.h"
 #include "addons/driftwire/internet.h"
 #include "addons/driftwire/known.h"
@@ -114,6 +115,7 @@ struct view {
   int out_tries_left = kCodeTries;
   std::uint64_t out_bytes = 0, out_total = 0;
   std::uint32_t out_files = 0, out_count = 0;
+  double out_rate = 0, out_left_s = -1;  // #529: bytes a second and seconds left (0, -1: not yet known)
   // #472: the bearer the send is on, and whether it is between links
   // (suspect or dropped, a rejoin under way).
   std::string out_via;
@@ -135,6 +137,7 @@ struct view {
   std::size_t in_count = 0;
   std::uint64_t in_total = 0, in_bytes = 0;
   std::uint32_t in_files = 0;
+  double in_rate = 0, in_left_s = -1;  // #529: as out_rate, out_left_s
   bool in_reconnecting = false;  // #472, as out_reconnecting
   std::uint32_t in_protocol = 0;  // as out_protocol
   bool in_internet = false;       // #472 PR 2: from a code; in_code is the check, not a code to type
@@ -584,6 +587,7 @@ class engine {
   // the one before it (its beacons may still loop back).
   std::string id_, old_id_;
   view v_;                                // under m_
+  transfer_meter out_meter_, in_meter_;   // under m_ (#529): v_'s rate and time left
   std::map<std::string, peer> peers_;     // under m_
   bool peers_changed_ = false;            // under m_
   std::vector<outgoing_file> files_;      // under m_

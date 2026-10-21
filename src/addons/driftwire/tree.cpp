@@ -125,9 +125,16 @@ std::string wifi_hint(const view& v, const std::string& peer) {
          peer + " to send over Wi-Fi; it waits, and starts as soon as " + peer + " is there.";
 }
 
-std::string moved_text(std::uint32_t files, std::uint32_t count, std::uint64_t bytes, std::uint64_t total) {
-  return std::to_string(files) + " of " + std::to_string(count) + " files, " + size_text(bytes) + " of " +
-         size_text(total);
+// #529: then the speed and the time left once the meter has them; between
+// links neither shows (the title says it is reconnecting).
+std::string moved_text(std::uint32_t files, std::uint32_t count, std::uint64_t bytes, std::uint64_t total,
+                       double rate = 0, double left_s = -1, bool reconnecting = false) {
+  std::string out = std::to_string(files) + " of " + std::to_string(count) + " files, " + size_text(bytes) + " of " +
+                    size_text(total);
+  if (reconnecting) return out;
+  if (rate > 0) out += " \xC2\xB7 " + size_text(static_cast<std::uint64_t>(rate)) + "/s";
+  if (const std::string left = time_left_text(left_s); !left.empty()) out += " \xC2\xB7 " + left;
+  return out;
 }
 
 bool out_busy(const view& v) {
@@ -259,7 +266,9 @@ void incoming(writer& w, const view& v) {
       const std::string what = v.in_reconnecting ? "Reconnecting to " + v.in_peer + "\xE2\x80\xA6"
                                                  : "Receiving from " + v.in_peer;
       text(w, "in_title", what, "heading");
-      text(w, "in_moved", moved_text(v.in_files, static_cast<std::uint32_t>(v.in_count), v.in_bytes, v.in_total),
+      text(w, "in_moved",
+           moved_text(v.in_files, static_cast<std::uint32_t>(v.in_count), v.in_bytes, v.in_total, v.in_rate,
+                      v.in_left_s, v.in_reconnecting),
            "secondary");
       button(w, "in_cancel", "Cancel", "destructive");
       break;
@@ -337,7 +346,10 @@ void outgoing(writer& w, const view& v) {
       text(w, "out_title",
            v.out_reconnecting ? "Reconnecting to " + v.out_peer + "\xE2\x80\xA6" : "Sending to " + v.out_peer,
            "heading");
-      text(w, "out_moved", moved_text(v.out_files, v.out_count, v.out_bytes, v.out_total), "secondary");
+      text(w, "out_moved",
+           moved_text(v.out_files, v.out_count, v.out_bytes, v.out_total, v.out_rate, v.out_left_s,
+                      v.out_reconnecting),
+           "secondary");
       if (!v.out_relay.empty()) text(w, "out_relay", relay_line(v.out_relay), "caption");
       if (v.out_handover && v.out_via != "the internet") {
         text(w, "out_handover", "If Wi-Fi drops, this continues over the internet.", "caption");

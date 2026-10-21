@@ -1769,6 +1769,11 @@ hooks engine::hooks_for(bool sending) {
       }
       // #472: a link that was suspect and is heard again (no rejoin needed).
       if (live_ && live_->link_up()) (sending ? v_.out_reconnecting : v_.in_reconnecting) = false;
+      // #529: the speed and the time left, from the bytes moved over time.
+      auto& meter = sending ? out_meter_ : in_meter_;
+      meter.add(std::chrono::steady_clock::now(), bytes);
+      (sending ? v_.out_rate : v_.in_rate) = meter.rate();
+      (sending ? v_.out_left_s : v_.in_left_s) = meter.seconds_left(sending ? v_.out_total : v_.in_total);
     }
     post_throttled();
   };
@@ -1854,6 +1859,10 @@ void engine::end_transfer() {
     std::lock_guard lock(m_);
     live_.reset();
     transfer_running_ = false;
+    out_meter_.restart();  // the next transfer measures from its own start (#529)
+    in_meter_.restart();
+    v_.out_rate = v_.in_rate = 0;
+    v_.out_left_s = v_.in_left_s = -1;
     idle_.notify_all();
   }
   clear_ended_later();
@@ -2664,6 +2673,10 @@ void engine::on_link_event(bool sending, link_event e, const channel& ch) {
     std::lock_guard lock(m_);
     bool& reconnecting = sending ? v_.out_reconnecting : v_.in_reconnecting;
     reconnecting = e != link_event::up;
+    // #529: a rate from before the link changed says nothing about the next.
+    (sending ? out_meter_ : in_meter_).restart();
+    (sending ? v_.out_rate : v_.in_rate) = 0;
+    (sending ? v_.out_left_s : v_.in_left_s) = -1;
     if (e == link_event::up) {
       (sending ? v_.out_via : v_.in_via) = transport_name(ch.via());
       (sending ? v_.out_punched : v_.in_punched) = ch.punched();
