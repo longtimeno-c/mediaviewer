@@ -16,7 +16,7 @@
 //   secrets_file.cpp a file per name in a folder, for the tests and the
 //                    portable build (it says so; it is not a secret store)
 //
-// Values are small (at most kMaxValue bytes: Credential Manager's limit).
+// Values are small (at most kMaxValue bytes: Credential Manager's limit, less DPAPI).
 // Every call is on a worker; none is on the UI or render thread.
 #pragma once
 
@@ -29,7 +29,10 @@
 
 namespace mv::driftwire::secrets {
 
-inline constexpr std::size_t kMaxValue = 2560;  // the devices value is at most 2,082 (DPAPI adds ~200 on Windows)
+// Credential Manager holds 2,560 bytes, and on Windows the value goes in
+// sealed by DPAPI, which adds ~300 (its header, salt, two SHA-512 HMACs and
+// the AES padding). The devices value is at most 2,082.
+inline constexpr std::size_t kMaxValue = 2144;
 
 class store {
  public:

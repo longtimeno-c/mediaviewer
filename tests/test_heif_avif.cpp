@@ -584,6 +584,21 @@ TEST_CASE("the OS codec is only offered HEIC stills it can render identically",
     REQUIRE_FALSE(os);
     CHECK(os.error() == mv::status::unsupported_format);
   }
+  // A 10-bit file whose hvcC says luma 8 (the broken corpus's stomp@197=0 of
+  // seeds/heic/10bit.heic): chroma still says 10, so it is bundled too.
+  {
+    auto lying = fixture("heif/gradient_10bit.heic");
+    auto hvcc = std::search(lying.begin(), lying.end(), std::begin("hvcC"), std::end("hvcC") - 1);
+    REQUIRE(hvcc + 4 + 18 <= lying.end());
+    hvcc[4 + 17] &= 0xF8;  // bitDepthLumaMinus8 = 0, after box type and 17 config bytes
+    auto info = inspect_heic(lying);
+    REQUIRE(info);
+    CHECK(info->luma_bits == 8);
+    CHECK(info->chroma_bits == 10);
+    auto os = try_os_decode(lying);
+    REQUIRE_FALSE(os);
+    CHECK(os.error() == mv::status::unsupported_format);
+  }
   // MV_OS_CODEC=0 stands in for a clean VM.
   {
     env_override off("MV_OS_CODEC", "0");

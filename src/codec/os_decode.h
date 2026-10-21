@@ -38,6 +38,7 @@ struct heic_still_info {
   std::uint32_t width = 0;   // displayed (after irot)
   std::uint32_t height = 0;
   std::uint32_t luma_bits = 0;
+  std::uint32_t chroma_bits = 0;  // hvcC's own; 8 with luma 8, or the depths disagree
   bool hevc = false;          // primary item is hvc1, or a grid (tiles are checked by the decoder)
   bool has_alpha = false;
   bool has_icc = false;       // prof / rICC

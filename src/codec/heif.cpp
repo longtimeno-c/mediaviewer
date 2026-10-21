@@ -611,6 +611,8 @@ result<heic_still_info> inspect_heic(std::span<const std::uint8_t> bytes) {
     info.height = static_cast<std::uint32_t>(std::max(0, heif_image_handle_get_height(handle.get())));
     info.luma_bits = static_cast<std::uint32_t>(
         std::max(0, heif_image_handle_get_luma_bits_per_pixel(handle.get())));
+    info.chroma_bits = static_cast<std::uint32_t>(
+        std::max(0, heif_image_handle_get_chroma_bits_per_pixel(handle.get())));
     info.has_alpha = heif_image_handle_has_alpha_channel(handle.get()) != 0;
     auto colour = handle_colour(handle.get());
     if (!colour) return err(colour.error());
