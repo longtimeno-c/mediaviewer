@@ -572,6 +572,25 @@ void known_devices(writer& w, const view& v, bool sending) {
   end(w);
 }
 
+// #530: receives that stopped, kept to resume; each can be discarded.
+void unfinished(writer& w, const view& v) {
+  if (v.unfinished.empty()) return;
+  stack(w, "unfinished", 10, "vertical", "card", "fill");
+  text(w, "unfinished_title", "Unfinished transfers", "heading");
+  for (const auto& u : v.unfinished) {
+    const std::string line = "From " + u.peer + ": " + size_text(u.bytes_here) + " of " + size_text(u.bytes) +
+                             " is here. It picks up where it stopped when " + u.peer + " sends " +
+                             (u.count == 1 ? std::string("that file") : std::string("these files")) + " again.";
+    text(w, ("unfinished_" + u.id).c_str(), line, "secondary");
+    button(w, ("discard" + u.id).c_str(), "Discard", "plain");
+  }
+  text(w, "unfinished_note",
+       "The unfinished file is kept hidden under a temporary name, so it is never taken for the finished one. "
+       "It goes by itself after 7 days.",
+       "caption");
+  end(w);
+}
+
 void internet_options(writer& w, const view& v) {
   stack(w, "internet_options", 10, "vertical", "card", "fill");
   text(w, "options_title", "Internet options", "heading");
@@ -664,6 +683,7 @@ std::string build_tree(const view& v) {
   }
   // What is happening now comes first: an offer or receive, then a send.
   if (v.in != view::in_phase::none) incoming(w, v);
+  unfinished(w, v);
   const bool sending = out_busy(v);
   if (v.out != view::out_phase::idle) outgoing(w, v);
   files_card(w, v, sending);

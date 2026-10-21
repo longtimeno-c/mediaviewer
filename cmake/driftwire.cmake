@@ -66,6 +66,7 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/relay.cpp ${_S}/relay.h
   ${_S}/engine.cpp ${_S}/engine.h ${_S}/engine_relay.cpp
   ${_S}/prefs.cpp ${_S}/prefs.h
+  ${_S}/resume.cpp ${_S}/resume.h ${_S}/eta.h
   ${_S}/tree.cpp
   ${_driftwire_port}
 )
@@ -143,6 +144,7 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_dht.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_stream_bench.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_eta.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_resume.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_known.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_privacy.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_relay.cpp"

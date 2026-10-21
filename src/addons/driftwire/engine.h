@@ -46,6 +46,7 @@
 #include "addons/driftwire/known.h"
 #include "addons/driftwire/prefs.h"
 #include "addons/driftwire/relay.h"
+#include "addons/driftwire/resume.h"
 #include "addons/driftwire/presence.h"
 #include "addons/driftwire/transfer.h"
 #include "addons/driftwire/udp_hub.h"
@@ -177,6 +178,13 @@ struct view {
   std::string relay_server;      // the advanced "Relay (your own server)"
   std::vector<bool> known_own;   // beside `known`: marked "This is my computer"
   std::vector<std::string> known_ids;  // beside `known`: each key's fingerprint (relay::fingerprint), for its controls
+  // #530: receives that stopped and resume when that sender sends again (resume.h).
+  struct unfinished_row {
+    std::string id;    // the record's: its sender's first 16 hex digits
+    std::string peer;  // the sender's name then
+    std::uint64_t count = 0, bytes = 0, bytes_here = 0;
+  };
+  std::vector<unfinished_row> unfinished;
   // The send goes (or the receive came) through a relay: the own computer's
   // name, or "your relay server". "" for a direct path.
   std::string out_relay, in_relay;
@@ -447,6 +455,15 @@ class engine {
   void set_remembered(bool on);
   void forget_known(const std::string& fingerprint);
   void publish_known_locked();
+  // #530: the receives kept to resume (resume.h): read and expired once on
+  // the control thread, shown under "Unfinished transfers", kept or dropped
+  // as each receive ends.
+  void load_unfinished();
+  void publish_unfinished_locked();
+  void discard_unfinished(const std::string& id);
+  void keep_unfinished(resume_record record);       // replaces its sender's
+  void drop_unfinished(const std::string& sender);  // and what it kept that is not in use
+  void save_unfinished();
   // The device with this fingerprint in devices_, or devices_.size().
   [[nodiscard]] std::size_t known_index_locked(const std::string& fingerprint) const;
   // The control thread: the wait for remembered devices, started and
@@ -617,6 +634,8 @@ class engine {
   std::mutex secrets_m_;
   std::unique_ptr<secrets::store> secrets_;  // under secrets_m_
   std::vector<known::device> devices_;       // under m_
+  std::vector<resume_record> unfinished_;    // under m_ (#530)
+  std::mutex unfinished_io_m_;               // one write of the records at a time, outside m_
   std::optional<known::device> last_pair_;   // under m_
   // The wait for remembered devices (the control thread starts and stops it).
   std::thread known_thread_;

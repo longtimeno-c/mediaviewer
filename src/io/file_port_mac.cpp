@@ -195,6 +195,21 @@ expected mark_from_elsewhere(std::string_view utf8_path, std::string_view agent)
 #endif
 }
 
+expected set_hidden(std::string_view utf8_path, bool hidden) {
+  if (utf8_path.empty()) return err(status::invalid_arg);
+#if defined(__APPLE__)
+  const std::string path(utf8_path);
+  struct stat st {};
+  if (::lstat(path.c_str(), &st) != 0) return err(status::io);
+  const auto flags = hidden ? (st.st_flags | UF_HIDDEN) : (st.st_flags & ~static_cast<decltype(st.st_flags)>(UF_HIDDEN));
+  if (flags == st.st_flags) return {};
+  return ::lchflags(path.c_str(), flags) == 0 ? expected{} : err(status::io);
+#else
+  (void)hidden;
+  return err(status::unsupported_format);  // no hidden flag: dot names only
+#endif
+}
+
 result<rename_outcome> rename_no_replace(std::string_view from_utf8, std::string_view to_utf8) {
   detail::simulated_round_trip();
   if (from_utf8.empty() || to_utf8.empty()) return err(status::invalid_arg);
@@ -349,6 +364,30 @@ result<rename_outcome> file_writer::create_new(std::string_view utf8_path, bool 
   impl_ = std::make_unique<impl>();
   impl_->fd = fd;
   return rename_outcome::renamed;
+}
+
+expected file_writer::open_resume(std::string_view utf8_path, std::uint64_t offset) {
+  detail::simulated_round_trip();
+  impl_.reset();
+  if (utf8_path.empty()) return err(status::invalid_arg);
+  const std::string path(utf8_path);
+  const int fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0) return err(errno == ENOENT ? status::not_found : errno == ELOOP ? status::corrupt : status::io);
+  struct stat st {};
+  if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || static_cast<std::uint64_t>(st.st_size) < offset) {
+    ::close(fd);
+    return err(status::corrupt);
+  }
+  if (::ftruncate(fd, static_cast<off_t>(offset)) != 0 || ::lseek(fd, static_cast<off_t>(offset), SEEK_SET) < 0) {
+    ::close(fd);
+    return err(status::io);
+  }
+#if defined(__APPLE__)
+  (void)::fcntl(fd, F_NOCACHE, 1);  // as create_new: the read-back comes from the device
+#endif
+  impl_ = std::make_unique<impl>();
+  impl_->fd = fd;
+  return {};
 }
 
 expected file_writer::write(std::span<const std::uint8_t> bytes) {
