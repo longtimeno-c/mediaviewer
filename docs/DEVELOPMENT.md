@@ -2388,6 +2388,24 @@ open -n --env HOME=<scratch>/home --env MV_DEV_ADDONS_DIR=<scratch>/addons \
 
 Every name in the test add-on is "Slots test"; nothing in it looks like Places. Quit the dev
 copy when done.
+### Add-on log lines (2026-10-21)
+
+An add-on's `log` lines (Driftwire's say where a send or receive ended: `driftwire: send ended
+failed (transfer.cpp:N)`) go to the OS's log on that machine, never a file
+([12](design/12-decision-log.md#crash-reporting-and-privacy)). Watch one add-on live while you
+retry (in zsh use `/usr/bin/log`, `log` is a builtin):
+
+```bash
+/usr/bin/log stream --level info --predicate 'subsystem == "org.mediaviewer" AND category == "driftwire"'
+```
+
+or look back: `/usr/bin/log show --last 30m --predicate '…same…'`. On Windows the lines are the
+MediaViewer provider's `AddonLog` events ({6f4d1b2e-9c3a-4f57-9d21-0a7c4f8e2b16}) and
+`OutputDebugString` (`[addon driftwire] …`): watch with Sysinternals DebugView (Capture Win32), or
+record with `logman start mvaddon -p {6f4d1b2e-9c3a-4f57-9d21-0a7c4f8e2b16} -o mvaddon.etl -ets`,
+`logman stop mvaddon -ets`, then `tracerpt mvaddon.etl -of CSV -o mvaddon.csv`. A build from before
+this change logs nothing.
+
 ### Driftwire speed, time left and resume (issues #529, #530, 2026-10-21)
 
 What is built is in [docs/design/28](design/28-driftwire.md) ("The stream", "Resuming a receive

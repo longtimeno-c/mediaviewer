@@ -311,7 +311,8 @@ Consented events are appended to a local spool (`telemetry\`). There is no uploa
 
 **Driftwire** ([28](28-driftwire.md#privacy-rule-6)) adds no event, tag or crash annotation. A
 transfer's paths, names, addresses and the peer's machine name are never logged; the add-on's log
-lines are fixed ASCII. The files a person sends go only to the MediaViewer they picked, after the
+lines are fixed ASCII and stay in the OS's log on that machine (the Mac's unified log, Windows
+ETW / `OutputDebugString`; [12](12-decision-log.md#crash-reporting-and-privacy)). The files a person sends go only to the MediaViewer they picked, after the
 person there accepted, on the local network or Bluetooth.
 
 ---

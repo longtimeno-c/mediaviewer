@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "addon/settings_values.h"
+#include "core/trace.h"
 #include "io/content_hash.h"
 #include "io/file_port.h"
 #include "io/pairing.h"
@@ -23,6 +24,9 @@ namespace mv::addon {
 namespace {
 
 host_table& self(void* host) { return *static_cast<host_table*>(host); }
+
+// The longest add-on log line kept; the rest is cut.
+constexpr std::size_t kLogChars = 240;
 
 mv_status to_mv(status s) noexcept { return static_cast<mv_status>(s); }
 
@@ -878,9 +882,19 @@ mv_status MV_CALL t_busy_post(void* host, const char* what) {
   });
 }
 
-void MV_CALL t_log(void*, int32_t, const char*) {
-  // Deliberately nowhere yet: an add-on's messages are for a developer's
-  // debugger, and the app has no log file that could leak a name (rule 6).
+void MV_CALL t_log(void* host, int32_t level, const char* message) {
+  // The OS's own log on this machine, never a file of ours or a crash report
+  // (rule 6; the ABI already forbids a path, a name or a hash in it). Cut to
+  // printable ASCII, so a stray byte cannot forge a second line.
+  if (!host || !message) return;
+  char line[kLogChars + 1];
+  std::size_t n = 0;
+  for (; n < kLogChars && message[n]; ++n) {
+    const auto c = static_cast<unsigned char>(message[n]);
+    line[n] = c >= 0x20 && c < 0x7f ? static_cast<char>(c) : '?';
+  }
+  line[n] = '\0';
+  trace::addon_log(self(host).addon_id().c_str(), level, line);
 }
 
 }  // namespace

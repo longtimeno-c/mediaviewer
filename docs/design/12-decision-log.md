@@ -889,6 +889,17 @@ and was already zeroed. A copy that landed on a Windows stack is covered by the 
 There is no separate cwd stream on either host. The Mac process cwd is not a Crashpad stream;
 `PWD`, when a shell put it in the environment, goes with the block.
 
+**An add-on's log lines go to the OS's own log (2026-10-21).** `mv_host_api::log` had gone
+nowhere, so a Driftwire send that stopped before the receiver's accept left no trace of why: the
+add-on records the line it ended on (`driftwire: send ended failed (transfer.cpp:N)`), and the
+host dropped it. The host now passes each line to the OS log on that machine: on the Mac the
+unified log (subsystem `org.mediaviewer`, the add-on's id as the category, public), on Windows the
+MediaViewer ETW provider's `AddonLog` event and `OutputDebugString`. Never a file of ours, a crash
+report or telemetry. The ABI already forbids a path, a file name or a hash in a line (Driftwire's
+are fixed text: side, outcome, source line); the host also cuts each to 240 printable ASCII
+characters, so a stray byte cannot forge a second line. A line is public because a private one
+shows as `<private>` and helps nobody.
+
 ---
 
 ## Licensing

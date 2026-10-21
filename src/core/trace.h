@@ -47,6 +47,14 @@ void abi_call(const char* function_literal, std::uint64_t correlation_id) noexce
 void abi_fault(const char* function_literal, std::uint64_t correlation_id,
                std::int32_t status_code) noexcept;
 
+// --- Add-ons ------------------------------------------------------------
+// One line an add-on passed to mv_host_api::log (level 0 info, 1 warn, 2
+// error). The ABI forbids a path, a file name or a hash in it (rule 6) and the
+// host has already cut it to printable ASCII. Mac: the unified log, subsystem
+// org.mediaviewer, the add-on's id as the category. Windows: this provider's
+// AddonLog event and OutputDebugString. It stays on this machine.
+void addon_log(const char* addon_id, std::int32_t level, const char* message) noexcept;
+
 }  // namespace mv::trace
 
 namespace mv::log {
