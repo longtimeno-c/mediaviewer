@@ -230,6 +230,7 @@ public static partial class IslandHost
         else
         {
             SlotWindowScreens.Clear();
+            SlotSettingsScreens.Clear();
         }
         // A new add-on may want the file on screen and the folder.
         _slotInfoKey = "";

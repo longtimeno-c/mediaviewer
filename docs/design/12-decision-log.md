@@ -1915,6 +1915,30 @@ hand-forwarded port now helps only if the router maps it; a `forwarded` key in a
 `driftwire.json` is ignored. Reopen only for a network where none of the automatic ways work and
 the DHT is blocked too.
 
+**A receive that stops keeps what arrived, to resume (owner, 2026-10-21, #530).** Reverses "nothing
+partial stays" (#410, 2026-10-15). A laptop that went off mid-transfer lost the file and the next
+send started over, re-sending what had arrived. Now a failed receive (not a cancel or a decline)
+keeps the file it was writing, hidden under its `.mvtmp` name, flushed, with a record, and the
+same sender's next offer of the same files (path, size, time) resumes it; the read-back of the
+whole file before the rename is unchanged, so a wrong partial is refused, never kept as the
+file. A record goes after 7 days. Reopen only with a reason the read-back does not cover.
+[28](28-driftwire.md#resuming-a-receive-that-stopped-530).
+
+**Transfers keep the machine awake (2026-10-21, #530).** A power request (Windows) or an IOKit
+assertion (Mac) against idle sleep, from the accept to the end. Not against a closed lid.
+
+**A transfer's end stays until it is dismissed (owner, 2026-10-21, #531).** Reverses #511's 6 s
+self-clearing of a cancelled or lost transfer (`ended_show_ms`, removed): an error or a cancel
+vanished before it was read. Both sides now show **OK**.
+
+**The DHT stream follows a model of the path, not NewReno (2026-10-21, #529).** BBR v1 simplified,
+with v2's loss exit from startup and its inflight cap, pacing, lost packets sent again as the pace
+allows, and ack runs past the bitmap. Measured on emulated paths (alternated, three runs each):
+cross-country 0.83 → 5.5 MB/s, intercontinental 0.24 → 3.0, Wi-Fi with jitter and 0.5 % loss
+0.42 → 9.2, bufferbloat's queue 500 → 82 ms, no profile worse; no real path yet. Kept: our own
+stream over the hub (it must share the punched socket). BBR is not fair to a loss-based flow in a
+shallow queue; accepted for a person's own transfer. [28](28-driftwire.md#four-words-over-the-dht-472-pr-3).
+
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
 no-replace before its `file_done`; the sender's `done` waits for every check. Measured on loopback
@@ -2309,6 +2333,17 @@ show) moves from ~400 to ~195 ms (`docs/perf/boot/mac-*.json`). The cost moves t
 of each pane, once per launch. The Windows fix does not carry over (no .NET on the Mac), and this
 one does not carry back: the Windows islands are attached, not merely hidden, so not attaching the
 four launch-time islands there is a separate change.
+
+**An add-on's settings page can be a screen it draws: contribution API 8 (2026-10-21).** The
+owner asked for Driftwire's page in Settings → Add-ons to carry all of its settings, matching its
+window. Driftwire keeps them itself (a prefs file in its data folder, remembered devices in the
+OS's secret store), so a manifest `settings` page (contribution API 2) would have kept a second
+copy in the host with no change notice to the engine, and could not offer a folder picker. A
+screen in a new place, `"settings"`, draws the add-on's own tree on its page with the screens'
+renderer, opened only while that page shows; one engine answers both. The cost, accepted by the
+owner: the Driftwire that asks for 8 needs this MediaViewer or later ("needs a newer
+MediaViewer" on an older one), and a new place in the core and both hosts. Not opened to other
+makers' scripts.
 
 ## Not built
 

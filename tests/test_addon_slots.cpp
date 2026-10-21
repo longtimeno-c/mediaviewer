@@ -292,6 +292,50 @@ TEST_CASE("a status item opens its add-on's only screen, or the one it names (#5
     REQUIRE(r.post_status("two", "count", "3 chosen") == status::ok);
     REQUIRE(opens_of(r) == "side");
   }
+  // A settings page is not one of them: one window and a settings page opens the window.
+  contributions with_page = status_only();
+  with_page.api_min = with_page.api_max = 8;
+  with_page.screens.push_back({"explorer", "Explorer", screen_place::window, 0, 0});
+  with_page.screens.push_back({"settings", "Explorer", screen_place::settings, 0, 0});
+  {
+    slot_registry r;
+    REQUIRE(r.attach("paged", "Paged", with_page, std::make_unique<fake_client>(r, "paged")) == status::ok);
+    REQUIRE(r.post_status("paged", "count", "3 chosen") == status::ok);
+    REQUIRE(opens_of(r) == "explorer");
+  }
+}
+
+TEST_CASE("a settings page opens only from Settings, and is listed as place settings", "[addon][slots]") {
+  using namespace mv::addon;
+  contributions c;
+  c.api_min = c.api_max = 8;
+  c.screens.push_back({"explorer", "Explorer", screen_place::window, 0, 0});
+  c.screens.push_back({"settings", "Explorer", screen_place::settings, 0, 0});
+  slot_registry r;
+  auto client = std::make_unique<fake_client>(r, "paged");
+  fake_client* fc = client.get();
+  REQUIRE(r.attach("paged", "Paged", c, std::move(client)) == status::ok);
+  const auto contrib = mv::json::parse(r.contributions_json());
+  REQUIRE(contrib);
+  bool listed = false;
+  for (const auto& s : contrib->find("screens")->a) listed = listed || (*s.str("place") == "settings");
+  CHECK(listed);
+  // The add-on cannot put it up (only the page in Settings does); it can its window.
+  CHECK(r.show_screen("paged", "settings", true) == status::invalid_arg);
+  CHECK(mv::json::parse(r.screens_json())->a.empty());
+  // Settings opens it: asked with MV_SLOT_PLACE_SETTINGS, its tree listed.
+  mv_slot_theme theme{};
+  REQUIRE(r.open_screen("paged", "settings", "", theme, 0, 0, 2) == status::ok);
+  r.drain();
+  CHECK(fc->opens == 1);
+  const auto open = mv::json::parse(r.screens_json());
+  REQUIRE(open->a.size() == 1);
+  CHECK(*open->a[0].str("place") == "settings");
+  // Its controls answer as a window's do.
+  REQUIRE(r.send_event("paged", "settings", "sw", MV_SLOT_EVENT_CHANGE, "true") == status::ok);
+  REQUIRE(r.close_screen("paged", "settings") == status::ok);
+  r.drain();
+  CHECK(mv::json::parse(r.screens_json())->a.empty());
 }
 
 TEST_CASE("an info section that needs a location is never asked for a file without one",
@@ -1095,7 +1139,7 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
   REQUIRE(c.badges[0].symbol == "check");
 
   // Outside the range: "needs a newer MediaViewer", never half-loaded.
-  REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 8, "max": 9)")) == rejection::needs_update);
+  REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 9, "max": 10)")) == rejection::needs_update);
   // Malformed, each a mistake an author should hear about.
   REQUIRE(check(k, kContributes, 2, 3) == rejection::malformed);                       // table v3 needed
   REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 4, "max": 4)")) == rejection::malformed);  // slots are 5
@@ -1124,6 +1168,30 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
     REQUIRE(d7.trusted());
     REQUIRE(d7.m.slots.items[3].opens == "explorer");
   }
+  // A settings page (contribution API 8): one, never opened by an item, never
+  // asked for by an add-on written for less.
+  const std::string page = R"({"id": "explorer", "title": "Explorer", "place": "window", "width": 640, "height": 480},
+    {"id": "prefs", "title": "Explorer", "place": "settings"})";
+  const std::string screen = R"({"id": "explorer", "title": "Explorer", "place": "window", "width": 640, "height": 480})";
+  REQUIRE(check(k, with(screen, page)) == rejection::malformed);  // API 4-5
+  const auto at8 = [&](std::string s) {
+    s.replace(s.find(R"("min": 4, "max": 5)"), 18, R"("min": 8, "max": 8)");
+    return s;
+  };
+  {
+    const std::string m8 = slots_manifest("lib.bin", bytes, at8(with(screen, page)));
+    const auto d8 = mv::addon::check_manifest(bytes_of(m8), k.sign(m8), k.pub, MV_ADDON_HOST_API);
+    REQUIRE(d8.trusted());
+    REQUIRE(d8.m.slots.screens.size() == 2);
+    CHECK(d8.m.slots.screens[1].place == mv::addon::screen_place::settings);
+  }
+  const std::string two_pages = page + R"(, {"id": "more", "title": "More", "place": "settings"})";
+  CHECK(check(k, at8(with(screen, two_pages))) == rejection::malformed);
+  {
+    std::string s = at8(with(screen, page));
+    s.replace(s.find(R"("opens": "explorer")"), 19, R"("opens": "prefs")");
+    CHECK(check(k, s) == rejection::malformed);
+  }
   // An add-on with no screens or slots is unaffected.
   REQUIRE(check(k, "", 1, 1) == rejection::none);
 }
@@ -1131,7 +1199,7 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
 TEST_CASE("an open add-on cannot fill screens or slots until scripts can (PR 57)",
           "[addon][slots][manifest]") {
   // The contribution API this host serves names them...
-  REQUIRE(mv::addon::kContributionApi == 7);
+  REQUIRE(mv::addon::kContributionApi == 8);
   REQUIRE(MV_ADDON_CONTRIBUTION_API == mv::addon::kContributionApi);
   REQUIRE(mv::addon::contribution_api("info_sections") == 5);
   REQUIRE(mv::addon::contribution_api("screens") == 4);

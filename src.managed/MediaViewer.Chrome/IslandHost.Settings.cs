@@ -467,6 +467,7 @@ public static partial class IslandHost
         CancelKeyCapture(restoreFocus: false);
         _consumedCaptureKey = null;
         SetKeyFilter("");
+        SyncAddonSettingsScreen();  // an add-on's settings page closes with Settings
         if (_chromeRoot is null || _settingsHost is null) return;
         _settingsHost.Visibility = Visibility.Collapsed;
     }

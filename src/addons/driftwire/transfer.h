@@ -49,6 +49,7 @@ struct outgoing_file {
 struct incoming_file {
   std::string rel;
   std::uint64_t size = 0;
+  std::int64_t mtime = 0;  // #530: the sender's, as offered (0: not said)
 };
 
 struct incoming_offer {
@@ -64,6 +65,40 @@ struct incoming_offer {
   // #498: the one folder every file is in, or empty when they are files
   // picked one by one (parse_offer refuses any other shape).
   std::string folder;
+  // #530: the sender takes the accept's "have" and "at" (resume_plan), and
+  // said each file's time, so a receive that stopped can be taken up again.
+  bool resume = false;
+};
+
+// #530, the receiver: what it already has of an offer, from a receive by
+// the same sender that stopped (resume.h). Said in its accept: the sender
+// sends nothing of the files it has, and the partial one from `at` on.
+struct resume_plan {
+  struct whole_file {
+    std::uint32_t index = 0;
+    std::string final_path;
+  };
+  struct partial_file {
+    std::uint32_t index = 0;
+    std::uint64_t at = 0;  // the bytes kept; the sender sends from here
+    std::string temp_path, final_path;
+  };
+  std::vector<whole_file> have;  // by index, ascending
+  std::optional<partial_file> partial;
+  std::string landed;  // a folder offer: the folder's name here, as last time
+  [[nodiscard]] bool empty() const noexcept { return have.empty() && !partial; }
+};
+
+// The accept says `have` as runs of indexes; at most this many (a message's
+// room, whatever the offer's shape).
+inline constexpr std::size_t kMaxHaveRuns = 8192;
+
+// #530, the receiver: what it holds of a receive so far, for a record a
+// later transfer can resume from (hooks::keep).
+struct kept_state {
+  std::string landed;
+  std::vector<resume_plan::whole_file> whole;  // the plan's, and every file verified since
+  std::optional<resume_plan::partial_file> partial;  // `at`: its bytes on stable storage
 };
 
 // An identity key as the offer and the accept carry it ("key": 64 hex
@@ -96,6 +131,15 @@ struct hooks {
   // #502, the receiver: nothing of the files for this long (and no file
   // being read back) ends the receive as failed. 0: no limit.
   int idle_ms = 0;
+  // #530, the receiver: set, a receive that fails (not one cancelled) keeps
+  // the file it was writing, hidden, flushed, for a later resume, and says
+  // what it holds: at most every second while files arrive (the partial
+  // checkpointed to stable storage every few seconds), and once at the end.
+  // Unset: nothing partial stays, as before.
+  std::function<void(const kept_state&)> keep;
+  // #530: set with `cancel` when MediaViewer quits: that stop is kept to
+  // resume as a failure is, not dropped as a person's cancel.
+  const std::atomic<bool>* quitting = nullptr;
 };
 
 enum class outcome : std::uint8_t {
@@ -118,6 +162,10 @@ struct transfer_result {
   std::uint32_t done = 0;     // files verified on the receiver
   std::uint32_t skipped = 0;  // files the sender could not read whole
   std::vector<std::string> written;  // receiver: final paths, in order (tests, the summary)
+  // #530: files that were already here whole, and bytes not sent again
+  // (theirs and the partial file's), both ends.
+  std::uint32_t resumed_files = 0;
+  std::uint64_t resumed_bytes = 0;
   // #501, the sender: the identity the receiver said in its accept.
   std::optional<std::array<std::uint8_t, 32>> peer_key;
 };
@@ -150,12 +198,15 @@ inline constexpr std::size_t kMaxPlaces = 8;
 [[nodiscard]] bool places_dht(std::string_view json);
 // After the person accepted (msg::accept already sent): receives into
 // `dest_dir`, which exists.
+// `plan` (#530): what is here already, as said in the accept.
 [[nodiscard]] transfer_result receive_files(channel& ch, const incoming_offer& offer, const std::string& dest_dir,
-                                            const hooks& h);
+                                            const hooks& h, const resume_plan* plan = nullptr);
 // The answers the receiver sends before any byte moves. `identity` (#501):
-// this machine's, said only now that its person has accepted.
+// this machine's, said only now that its person has accepted. `plan`
+// (#530): to a sender whose offer had "resume", what it need not send.
 [[nodiscard]] expected send_accept(channel& ch,
-                                   const std::optional<std::array<std::uint8_t, 32>>& identity = std::nullopt);
+                                   const std::optional<std::array<std::uint8_t, 32>>& identity = std::nullopt,
+                                   const resume_plan* plan = nullptr);
 [[nodiscard]] expected send_decline(channel& ch, outcome why);  // declined, busy or no_room
 
 // "<final>.mvtmp", "<final>.mvtmp2" ... (the temporary io::verified_copy uses).

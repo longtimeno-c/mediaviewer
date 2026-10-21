@@ -445,6 +445,48 @@ TEST_CASE("driftwire: a set too big for Bluetooth says to use Wi-Fi before Send"
 
 // ---- what is kept across launches (#442) ------------------------------------------------------------
 
+TEST_CASE("driftwire: the settings page is the window's settings, with the window's ids", "[driftwire]") {
+  sp::view v;
+  v.my_name = "Studio";
+  v.destination = "/Users/a/Downloads";
+  v.file_count = 3;  // what is being sent never shows in Settings
+  v.file_names = {"IMG_1.JPG"};
+  v.peers = {{"0123456789abcdef", "Laptop", "Wi-Fi", true, false}};
+  std::string tree = sp::build_settings_tree(v);
+  INFO(tree);
+  CHECK(mv::addon::screen::tree{}.set(tree) == mv::addon::screen::error::none);
+  // Laid out in Settings' own scroller: no scroller of its own.
+  CHECK(tree.rfind(R"({"type":"stack","id":"root")", 0) == 0);
+  for (const char* id : {R"("id":"receiving")", R"("id":"background")", R"("id":"destination")",
+                         R"("id":"internet")"}) {
+    CHECK(tree.find(id) != std::string::npos);
+  }
+  CHECK(tree.find("Keep receiving when the Driftwire window is closed") != std::string::npos);
+  CHECK(tree.find("/Users/a/Downloads") != std::string::npos);
+  CHECK(tree.find("\"pick\":\"folder\"") != std::string::npos);
+  CHECK(tree.find("IMG_1.JPG") == std::string::npos);
+  CHECK(tree.find("Laptop") == std::string::npos);
+  CHECK(tree.find(R"("type":"tiles")") == std::string::npos);
+  // The internet's options only once it is on, as in the window.
+  CHECK(tree.find(R"("id":"dht")") == std::string::npos);
+  v.internet = true;
+  v.relay = true;
+  v.known = {"Laptop"};
+  v.known_ids = {"ab12"};
+  v.known_own = {true};
+  tree = sp::build_settings_tree(v);
+  CHECK(mv::addon::screen::tree{}.set(tree) == mv::addon::screen::error::none);
+  for (const char* id : {R"("id":"dht")", R"("id":"handover")", R"("id":"relay")", R"("id":"relay_server")",
+                         R"("id":"forgetab12")", R"("id":"ownab12")"}) {
+    CHECK(tree.find(id) != std::string::npos);
+  }
+  // Nothing that sends or makes a code.
+  CHECK(tree.find(R"("id":"make_code")") == std::string::npos);
+  CHECK(tree.find(R"("id":"send_code")") == std::string::npos);
+  // The window still says "this window".
+  CHECK(sp::build_tree(v).find("Keep receiving when this window is closed") != std::string::npos);
+}
+
 TEST_CASE("driftwire: the prefs file survives a write that stopped half-way", "[driftwire]") {
   scratch_dir s("driftwire_prefs_file");
   const std::string path = utf8(s / "driftwire.json");

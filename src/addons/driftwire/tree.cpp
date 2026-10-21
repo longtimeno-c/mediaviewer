@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // build_tree: the Driftwire window as a view tree (docs/design/25 §10). Both
 // hosts draw it with their own controls, so it follows the theme, text size,
-// VoiceOver and Narrator; every control carries a label.
+// VoiceOver and Narrator; every control carries a label. build_settings_tree:
+// its settings alone, for Driftwire's page in Settings -> Add-ons, with the
+// window's own controls and ids (one engine answers both).
 //
 // The design (#442) is AirDrop's: what is offered to this computer comes
 // first, in a card of its own (who, the code to type over there, then one
@@ -125,9 +127,16 @@ std::string wifi_hint(const view& v, const std::string& peer) {
          peer + " to send over Wi-Fi; it waits, and starts as soon as " + peer + " is there.";
 }
 
-std::string moved_text(std::uint32_t files, std::uint32_t count, std::uint64_t bytes, std::uint64_t total) {
-  return std::to_string(files) + " of " + std::to_string(count) + " files, " + size_text(bytes) + " of " +
-         size_text(total);
+// #529: then the speed and the time left once the meter has them; between
+// links neither shows (the title says it is reconnecting).
+std::string moved_text(std::uint32_t files, std::uint32_t count, std::uint64_t bytes, std::uint64_t total,
+                       double rate = 0, double left_s = -1, bool reconnecting = false) {
+  std::string out = std::to_string(files) + " of " + std::to_string(count) + " files, " + size_text(bytes) + " of " +
+                    size_text(total);
+  if (reconnecting) return out;
+  if (rate > 0) out += " \xC2\xB7 " + size_text(static_cast<std::uint64_t>(rate)) + "/s";
+  if (const std::string left = time_left_text(left_s); !left.empty()) out += " \xC2\xB7 " + left;
+  return out;
 }
 
 bool out_busy(const view& v) {
@@ -259,7 +268,9 @@ void incoming(writer& w, const view& v) {
       const std::string what = v.in_reconnecting ? "Reconnecting to " + v.in_peer + "\xE2\x80\xA6"
                                                  : "Receiving from " + v.in_peer;
       text(w, "in_title", what, "heading");
-      text(w, "in_moved", moved_text(v.in_files, static_cast<std::uint32_t>(v.in_count), v.in_bytes, v.in_total),
+      text(w, "in_moved",
+           moved_text(v.in_files, static_cast<std::uint32_t>(v.in_count), v.in_bytes, v.in_total, v.in_rate,
+                      v.in_left_s, v.in_reconnecting),
            "secondary");
       button(w, "in_cancel", "Cancel", "destructive");
       break;
@@ -337,7 +348,10 @@ void outgoing(writer& w, const view& v) {
       text(w, "out_title",
            v.out_reconnecting ? "Reconnecting to " + v.out_peer + "\xE2\x80\xA6" : "Sending to " + v.out_peer,
            "heading");
-      text(w, "out_moved", moved_text(v.out_files, v.out_count, v.out_bytes, v.out_total), "secondary");
+      text(w, "out_moved",
+           moved_text(v.out_files, v.out_count, v.out_bytes, v.out_total, v.out_rate, v.out_left_s,
+                      v.out_reconnecting),
+           "secondary");
       if (!v.out_relay.empty()) text(w, "out_relay", relay_line(v.out_relay), "caption");
       if (v.out_handover && v.out_via != "the internet") {
         text(w, "out_handover", "If Wi-Fi drops, this continues over the internet.", "caption");
@@ -377,6 +391,7 @@ void outgoing(writer& w, const view& v) {
     case view::out_phase::ended:
       text(w, "out_note", v.out_note);
       if (v.out == view::out_phase::done && v.in == view::in_phase::none) remember_toggle(w, v);
+      button(w, "out_dismiss", "OK", "plain");  // it stays until dismissed
       break;
   }
   end(w);
@@ -560,6 +575,25 @@ void known_devices(writer& w, const view& v, bool sending) {
   end(w);
 }
 
+// #530: receives that stopped, kept to resume; each can be discarded.
+void unfinished(writer& w, const view& v) {
+  if (v.unfinished.empty()) return;
+  stack(w, "unfinished", 10, "vertical", "card", "fill");
+  text(w, "unfinished_title", "Unfinished transfers", "heading");
+  for (const auto& u : v.unfinished) {
+    const std::string line = "From " + u.peer + ": " + size_text(u.bytes_here) + " of " + size_text(u.bytes) +
+                             " is here. It picks up where it stopped when " + u.peer + " sends " +
+                             (u.count == 1 ? std::string("that file") : std::string("these files")) + " again.";
+    text(w, ("unfinished_" + u.id).c_str(), line, "secondary");
+    button(w, ("discard" + u.id).c_str(), "Discard", "plain");
+  }
+  text(w, "unfinished_note",
+       "The unfinished file is kept hidden under a temporary name, so it is never taken for the finished one. "
+       "It goes by itself after 7 days.",
+       "caption");
+  end(w);
+}
+
 void internet_options(writer& w, const view& v) {
   stack(w, "internet_options", 10, "vertical", "card", "fill");
   text(w, "options_title", "Internet options", "heading");
@@ -593,10 +627,8 @@ void internet_options(writer& w, const view& v) {
   end(w);
 }
 
-void internet(writer& w, const view& v, bool sending) {
-  // #508: the switch and what it means in a card; the rest, when on, are
-  // cards of their own at the page's spacing (never a card in a card).
-  stack(w, "internet_section", 16, "vertical", nullptr, "fill");
+// The switch and what it means (the window's and the settings page's).
+void internet_card(writer& w, const view& v) {
   stack(w, "internet_card", 10, "vertical", "card", "fill");
   text(w, "internet_title", "Over the internet", "heading");
   toggle(w, "internet", "Send and receive over the internet", v.internet);
@@ -606,6 +638,13 @@ void internet(writer& w, const view& v, bool sending) {
                   : "For a computer that is not nearby. Off until you turn it on.",
        "caption");
   end(w);
+}
+
+void internet(writer& w, const view& v, bool sending) {
+  // #508: the switch and what it means in a card; the rest, when on, are
+  // cards of their own at the page's spacing (never a card in a card).
+  stack(w, "internet_section", 16, "vertical", nullptr, "fill");
+  internet_card(w, v);
   if (!v.internet) {
     end(w);
     return;
@@ -617,7 +656,72 @@ void internet(writer& w, const view& v, bool sending) {
   end(w);
 }
 
+// ---- the settings page (Settings -> Add-ons -> Driftwire) --------------------------------
+
+// What this computer is seen as, and whether it stays discoverable.
+void me_card(writer& w, const view& v, const char* window, const char* heading = nullptr) {
+  stack(w, "me", 10, "vertical", "card", "fill");
+  if (heading) text(w, "me_title", heading, "heading");
+  text(w, "intro",
+       "Nearby MediaViewers see this computer as \xE2\x80\x9C" + v.my_name + "\xE2\x80\x9D while " + window +
+           " is open" +
+           (v.background ? ", and while MediaViewer is closed."
+                         : v.receiving ? " and while MediaViewer runs." : "."),
+       "secondary");
+  toggle(w, "receiving", std::string("Keep receiving when ") + window + " is closed", v.receiving);
+  // #452: opt-in, off by default. MediaViewer then stays in the menu bar /
+  // notification area with every window closed, and an offer is a system
+  // notification that opens this window (never the code itself).
+  toggle(w, "background", kBackgroundLabel, v.background);
+  end(w);
+}
+
+// The remembered devices without the window's tiles: nothing is sent from
+// Settings, so each is its name, Forget and (with relays on) "is my computer".
+void known_settings(writer& w, const view& v) {
+  if (v.known.empty()) return;
+  stack(w, "known_section", 10, "vertical", "card", "fill");
+  text(w, "known_title", "Remembered devices", "heading");
+  text(w, "known_intro", "Computers you can send to over the internet with no code. Forget one to pair again.",
+       "caption");
+  const auto fp = [&](std::size_t i) { return i < v.known_ids.size() ? v.known_ids[i] : std::string(); };
+  for (std::size_t i = 0; i < v.known.size(); ++i) {
+    const std::string row_id = "known_row" + fp(i);
+    stack(w, row_id.c_str(), 8, "horizontal");
+    text(w, ("known_name" + fp(i)).c_str(), v.known[i], "title");
+    w.begin_object().key("type").string("button").key("id").string("forget" + fp(i));
+    w.key("label").string("Forget " + v.known[i]).key("style").string("plain").end_object();
+    end(w);
+    if (v.relay) {
+      const std::string id = "own" + fp(i);
+      toggle(w, id.c_str(), v.known[i] + " is my computer", i < v.known_own.size() && v.known_own[i]);
+    }
+  }
+  end(w);
+}
+
 }  // namespace
+
+std::string build_settings_tree(const view& v) {
+  writer w;
+  w.begin_object().key("type").string("stack").key("id").string("root").key("axis").string("vertical");
+  w.key("spacing").integer(16).key("align").string("fill").key("children").begin_array();
+  me_card(w, v, "the Driftwire window", "Nearby");
+  // Where accepted files go: the folder an offer's Save to starts at.
+  stack(w, "receive", 10, "vertical", "card", "fill");
+  text(w, "receive_title", "Received files", "heading");
+  folder_field(w, "destination", "Save to", v.destination, "Choose a folder");
+  text(w, "receive_note", "Where files you accept are saved. Choosing a folder when a transfer arrives changes it too.",
+       "caption");
+  end(w);
+  internet_card(w, v);
+  if (v.internet) {
+    known_settings(w, v);
+    internet_options(w, v);
+  }
+  w.end_array().end_object();
+  return w.take();
+}
 
 std::string build_tree(const view& v) {
   writer w;
@@ -626,19 +730,7 @@ std::string build_tree(const view& v) {
 
   // Who this computer is, and whether it stays discoverable. #508: a card,
   // as every group here; what it cannot search is said under Nearby.
-  stack(w, "me", 10, "vertical", "card", "fill");
-  text(w, "intro",
-       "Nearby MediaViewers see this computer as \xE2\x80\x9C" + v.my_name +
-           "\xE2\x80\x9D while this window is open" +
-           (v.background ? ", and while MediaViewer is closed."
-                         : v.receiving ? " and while MediaViewer runs." : "."),
-       "secondary");
-  toggle(w, "receiving", "Keep receiving when this window is closed", v.receiving);
-  // #452: opt-in, off by default. MediaViewer then stays in the menu bar /
-  // notification area with every window closed, and an offer is a system
-  // notification that opens this window (never the code itself).
-  toggle(w, "background", kBackgroundLabel, v.background);
-  end(w);
+  me_card(w, v, "this window");
 
   if (!v.relaying_for.empty()) {
     // #472 relays: this computer carries another of the person's own sends.
@@ -652,6 +744,7 @@ std::string build_tree(const view& v) {
   }
   // What is happening now comes first: an offer or receive, then a send.
   if (v.in != view::in_phase::none) incoming(w, v);
+  unfinished(w, v);
   const bool sending = out_busy(v);
   if (v.out != view::out_phase::idle) outgoing(w, v);
   files_card(w, v, sending);

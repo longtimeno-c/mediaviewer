@@ -27,6 +27,7 @@ const char* place_name(screen_place p) noexcept {
     case screen_place::window: return "window";
     case screen_place::pane: return "pane";
     case screen_place::sheet: return "sheet";
+    case screen_place::settings: return "settings";
   }
   return "window";
 }
@@ -37,6 +38,7 @@ std::uint32_t place_code(screen_place p) noexcept {
     case screen_place::window: return MV_SLOT_PLACE_WINDOW;
     case screen_place::pane: return MV_SLOT_PLACE_PANE;
     case screen_place::sheet: return MV_SLOT_PLACE_SHEET;
+    case screen_place::settings: return MV_SLOT_PLACE_SETTINGS;
   }
   return MV_SLOT_PLACE_WINDOW;
 }
@@ -1211,12 +1213,12 @@ namespace {
 
 // #512: what clicking a status item opens. The screen it names, else the
 // add-on's one window, pane or sheet when it has exactly one; else nothing
-// (the item stays text).
+// (the item stays text). A settings page is not one: Settings opens it.
 std::string status_opens(const contributions& c, const item_contrib& item) {
   if (!item.opens.empty()) return item.opens;
   const screen_contrib* only = nullptr;
   for (const screen_contrib& s : c.screens) {
-    if (s.place == screen_place::info_section) continue;
+    if (s.place == screen_place::info_section || s.place == screen_place::settings) continue;
     if (only) return {};
     only = &s;
   }
@@ -1474,6 +1476,8 @@ status slot_registry::show_screen(const std::string& addon_id, const std::string
     auto it = addons_.find(addon_id);
     if (it == addons_.end()) return status::not_found;
     for (const screen_contrib& s : it->second->c.screens) {
+      // A settings page shows only while its page in Settings does.
+      if (s.id == screen_id && s.place == screen_place::settings) return status::invalid_arg;
       if (s.id == screen_id) {
         st = open_screen_locked(*it->second, s, info_path_, last_theme_, 0, 0, last_scale_);
       }

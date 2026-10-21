@@ -40,11 +40,14 @@
 
 #include "addons/driftwire/admission.h"
 #include "addons/driftwire/channel.h"
+#include "addons/driftwire/eta.h"
 #include "addons/driftwire/handover.h"
 #include "addons/driftwire/internet.h"
 #include "addons/driftwire/known.h"
+#include "addons/driftwire/power.h"
 #include "addons/driftwire/prefs.h"
 #include "addons/driftwire/relay.h"
+#include "addons/driftwire/resume.h"
 #include "addons/driftwire/presence.h"
 #include "addons/driftwire/transfer.h"
 #include "addons/driftwire/udp_hub.h"
@@ -114,6 +117,7 @@ struct view {
   int out_tries_left = kCodeTries;
   std::uint64_t out_bytes = 0, out_total = 0;
   std::uint32_t out_files = 0, out_count = 0;
+  double out_rate = 0, out_left_s = -1;  // #529: bytes a second and seconds left (0, -1: not yet known)
   // #472: the bearer the send is on, and whether it is between links
   // (suspect or dropped, a rejoin under way).
   std::string out_via;
@@ -135,6 +139,7 @@ struct view {
   std::size_t in_count = 0;
   std::uint64_t in_total = 0, in_bytes = 0;
   std::uint32_t in_files = 0;
+  double in_rate = 0, in_left_s = -1;  // #529: as out_rate, out_left_s
   bool in_reconnecting = false;  // #472, as out_reconnecting
   std::uint32_t in_protocol = 0;  // as out_protocol
   bool in_internet = false;       // #472 PR 2: from a code; in_code is the check, not a code to type
@@ -174,6 +179,13 @@ struct view {
   std::string relay_server;      // the advanced "Relay (your own server)"
   std::vector<bool> known_own;   // beside `known`: marked "This is my computer"
   std::vector<std::string> known_ids;  // beside `known`: each key's fingerprint (relay::fingerprint), for its controls
+  // #530: receives that stopped and resume when that sender sends again (resume.h).
+  struct unfinished_row {
+    std::string id;    // the record's: its sender's first 16 hex digits
+    std::string peer;  // the sender's name then
+    std::uint64_t count = 0, bytes = 0, bytes_here = 0;
+  };
+  std::vector<unfinished_row> unfinished;
   // The send goes (or the receive came) through a relay: the own computer's
   // name, or "your relay server". "" for a direct path.
   std::string out_relay, in_relay;
@@ -193,6 +205,9 @@ struct view {
 
 // The view tree (docs/design/25 §10 vocabulary) for `v`. Pure; tested.
 [[nodiscard]] std::string build_tree(const view& v);
+// The settings page's tree (contribution API 8, place "settings"): the
+// window's settings with the same node ids, no transfer and no tiles. Pure; tested.
+[[nodiscard]] std::string build_settings_tree(const view& v);
 
 // What the engine needs from the host.
 class engine_host {
@@ -200,6 +215,10 @@ class engine_host {
   virtual ~engine_host() = default;
   // The whole tree for the open window; a no-op when it is closed.
   virtual void post_tree(const std::string& tree_json) = 0;
+  // Driftwire's page in Settings -> Add-ons shows: its tree is posted with
+  // every window post (build_settings_tree). Never built while it is not.
+  [[nodiscard]] virtual bool settings_shown() { return false; }
+  virtual void post_settings(const std::string& tree_json) { (void)tree_json; }
   // Opens (an offer arrived while receiving with the window closed) or
   // closes the window.
   virtual void show_screen(bool show) = 0;
@@ -337,9 +356,6 @@ class engine {
     // the beacon take (net::local_subnets() when empty). With loopback_only
     // and none given, every source is taken (the tests' made-up addresses).
     std::optional<std::vector<net::subnet>> local_subnets;
-    // #511: how long a transfer's end ("Cancelled", "lost") stays on screen
-    // before the window goes back to its default view (OK clears it sooner).
-    int ended_show_ms = 6000;
   };
 
   engine(engine_host& host, options opts);
@@ -352,6 +368,9 @@ class engine {
   // else is) or closed.
   void screen_opened(const std::string& path);
   void screen_closed();
+  // The settings page opened (host_.settings_shown() is true): posts it. Not
+  // the window: nothing starts on the network.
+  void settings_opened();
   // Files a command, a context item or the gallery's share icon handed over:
   // these and their pair halves and sidecars become the set to send.
   void set_files(const std::vector<std::string>& paths);
@@ -444,6 +463,15 @@ class engine {
   void set_remembered(bool on);
   void forget_known(const std::string& fingerprint);
   void publish_known_locked();
+  // #530: the receives kept to resume (resume.h): read and expired once on
+  // the control thread, shown under "Unfinished transfers", kept or dropped
+  // as each receive ends.
+  void load_unfinished();
+  void publish_unfinished_locked();
+  void discard_unfinished(const std::string& id);
+  void keep_unfinished(resume_record record);       // replaces its sender's
+  void drop_unfinished(const std::string& sender);  // and what it kept that is not in use
+  void save_unfinished();
   // The device with this fingerprint in devices_, or devices_.size().
   [[nodiscard]] std::size_t known_index_locked(const std::string& fingerprint) const;
   // The control thread: the wait for remembered devices, started and
@@ -541,9 +569,6 @@ class engine {
   void publish_files(std::vector<outgoing_file> files, std::uint64_t gen);
   void read_folder(std::string folder);
   void cancel_transfer();
-  // #511: an ended transfer's note clears itself after ended_show_ms.
-  void clear_ended_later();
-  void clear_ended();  // the control thread
   void reap_helpers();  // under threads_m_
   // Runs `body` as the transfer thread once the last one is joined. The
   // caller has set transfer_running_, so nobody installs a thread meanwhile.
@@ -584,6 +609,7 @@ class engine {
   // the one before it (its beacons may still loop back).
   std::string id_, old_id_;
   view v_;                                // under m_
+  transfer_meter out_meter_, in_meter_;   // under m_ (#529): v_'s rate and time left
   std::map<std::string, peer> peers_;     // under m_
   bool peers_changed_ = false;            // under m_
   std::vector<outgoing_file> files_;      // under m_
@@ -613,6 +639,10 @@ class engine {
   std::mutex secrets_m_;
   std::unique_ptr<secrets::store> secrets_;  // under secrets_m_
   std::vector<known::device> devices_;       // under m_
+  std::vector<resume_record> unfinished_;    // under m_ (#530)
+  std::unique_ptr<power::stay_awake> awake_;  // under m_ (#530): held while bytes move, both ways
+  void stay_awake(bool receiving);            // taken outside m_, kept under it
+  std::mutex unfinished_io_m_;               // one write of the records at a time, outside m_
   std::optional<known::device> last_pair_;   // under m_
   // The wait for remembered devices (the control thread starts and stops it).
   std::thread known_thread_;
@@ -659,7 +689,6 @@ class engine {
   std::chrono::steady_clock::time_point status_due_{};  // under control_m_; {} = none
   std::chrono::steady_clock::time_point post_due_{};  // under control_m_
   std::chrono::steady_clock::time_point announce_due_{};  // under control_m_: sync_announce then; {} = none
-  std::chrono::steady_clock::time_point clear_due_{};  // under control_m_; {} = none
   std::thread control_thread_;
 
   // Presence: changed only by the control thread (and the destructor after it).

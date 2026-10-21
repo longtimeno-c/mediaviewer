@@ -5,7 +5,9 @@
 //
 // Driftwire is a window of its own ("driftwire"), opened from its row in
 // Settings -> Add-ons, from its command, from the gallery's share icon and
-// from the "Send with Driftwire..." context entry. The host renders the view
+// from the "Send with Driftwire..." context entry. Its page in Settings ->
+// Add-ons shows its settings ("settings", place "settings": the window's
+// controls, the same engine), open while that page shows. The host renders the view
 // tree the engine posts; the host's worker for this add-on brings every open,
 // close, click and command here. The engine is made at the first of those,
 // never at load: until then the add-on has no thread and no socket.
@@ -42,6 +44,7 @@ using mv::driftwire::engine;
 constexpr uint32_t kHostApiMin = 3;
 constexpr uint32_t kHostApiMax = 3;
 constexpr const char* kScreen = "driftwire";
+constexpr const char* kSettingsScreen = "settings";  // manifest.json, place "settings"
 constexpr const char* kStatusItem = "receiving";  // manifest.json status_items
 constexpr const char* kNotice = "offer";          // the one notice (#452): an offer waiting here
 
@@ -70,6 +73,16 @@ class host_bridge final : public mv::driftwire::engine_host {
     std::lock_guard lock(m_);
     open_ = false;
   }
+  void settings_opened(uint64_t generation) {
+    std::lock_guard lock(m_);
+    settings_generation_ = generation;
+    settings_open_ = true;
+    settings_last_.clear();
+  }
+  void settings_closed() {
+    std::lock_guard lock(m_);
+    settings_open_ = false;
+  }
 
   void post_tree(const std::string& tree_json) override {
     uint64_t g = 0;
@@ -79,6 +92,24 @@ class host_bridge final : public mv::driftwire::engine_host {
       g = generation_;
     }
     (void)h_->screen_post(h_->host, kScreen, g, tree_json.c_str());
+  }
+
+  bool settings_shown() override {
+    std::lock_guard lock(m_);
+    return settings_open_;
+  }
+
+  // Posted only when it changed: a transfer's progress moves the window ten
+  // times a second and the settings not at all.
+  void post_settings(const std::string& tree_json) override {
+    uint64_t g = 0;
+    {
+      std::lock_guard lock(m_);
+      if (!settings_open_ || tree_json == settings_last_) return;
+      settings_last_ = tree_json;
+      g = settings_generation_;
+    }
+    (void)h_->screen_post(h_->host, kSettingsScreen, g, tree_json.c_str());
   }
 
   void show_screen(bool show) override { (void)h_->screen_show(h_->host, kScreen, show ? 1 : 0); }
@@ -167,6 +198,9 @@ class host_bridge final : public mv::driftwire::engine_host {
   std::mutex m_;
   uint64_t generation_ = 0;
   bool open_ = false;
+  uint64_t settings_generation_ = 0;
+  bool settings_open_ = false;
+  std::string settings_last_;
 };
 
 struct addon_state {
@@ -224,6 +258,11 @@ std::vector<std::string> paths_of(const char* value_json) {
 
 mv_status MV_CALL screen_open(void*, const mv_slot_screen_request* r) {
   return guard([&] {
+    if (r && r->screen_id && std::strcmp(r->screen_id, kSettingsScreen) == 0) {
+      g->bridge->settings_opened(r->generation);
+      g->get().settings_opened();
+      return MV_OK;
+    }
     if (!r || !r->screen_id || std::strcmp(r->screen_id, kScreen) != 0) return MV_ERR_INVALID_ARG;
     g->bridge->opened(r->generation);
     g->get().screen_opened(r->path_utf8 ? r->path_utf8 : "");
@@ -234,6 +273,11 @@ mv_status MV_CALL screen_open(void*, const mv_slot_screen_request* r) {
 void MV_CALL on_event(void*, const mv_slot_event* e) {
   (void)guard([&] {
     if (!e || !e->node_id) return MV_OK;
+    const bool settings = e->screen_id && std::strcmp(e->screen_id, kSettingsScreen) == 0;
+    if (e->kind == MV_SLOT_EVENT_CLOSE && settings) {
+      g->bridge->settings_closed();
+      return MV_OK;
+    }
     if (e->kind == MV_SLOT_EVENT_CLOSE) {
       g->bridge->closed();
       if (g->eng) g->eng->screen_closed();
@@ -247,6 +291,11 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
       const auto paths = paths_of(e->value_json);
       if (!paths.empty()) g->get().set_files(paths);
       (void)g->host->screen_show(g->host->host, kScreen, 1);
+      return MV_OK;
+    }
+    if (settings) {
+      // The settings page's controls are the window's (the same ids).
+      g->get().on_event(e->node_id, e->kind, e->value_json ? e->value_json : "");
       return MV_OK;
     }
     if (!e->screen_id || std::strcmp(e->screen_id, kScreen) != 0) return MV_OK;

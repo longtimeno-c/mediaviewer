@@ -1602,12 +1602,14 @@ public static partial class IslandHost
     private static void SyncScreenWindows(JsonElement list)
     {
         var wanted = new HashSet<ScreenAt>();
+        SyncSettingsScreen(list);  // a settings page is drawn in Settings, never a window
         foreach (JsonElement s in list.EnumerateArray())
         {
+            string place = JStr(s, "place");
+            if (place == "settings") continue;
             var at = new ScreenAt(JStr(s, "addon"), JStr(s, "id"));
             wanted.Add(at);
             long revision = (long)JNum(s, "revision", 0);
-            string place = JStr(s, "place");
             if (!ScreenWindows.TryGetValue(at, out var open))
             {
                 Window w = OpenScreenWindow(s, at, place);

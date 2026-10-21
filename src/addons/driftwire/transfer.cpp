@@ -5,6 +5,7 @@
 #include <sodium.h>
 
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
@@ -35,6 +36,12 @@ constexpr int kIdlePollMs = 1000;
 constexpr int kRenameAttempts = 32;
 // The uncached read-back's buffer (aligned, a kIoAlign multiple).
 constexpr std::size_t kReadBackBytes = 4u * 1024 * 1024;
+// #530: a receive that may be resumed puts the file it is writing on stable
+// storage this often at most, and only once this much more has arrived (a
+// power cut then costs at most that much again, never a wrong byte: the
+// read-back checks the whole file).
+constexpr auto kCheckpointEvery = std::chrono::seconds(5);
+constexpr std::uint64_t kCheckpointBytes = 32u * 1024 * 1024;
 
 // Where a transfer ended, if not delivered: the source line and the outcome,
 // for the host's log (no path, no name).
@@ -94,15 +101,31 @@ struct incoming {
   io::file_writer out;
   io::hasher hash;
   bool open = false;
+  bool hidden = false;   // #530: kept to resume, so hidden until renamed
+  bool resumed = false;  // #530: written on from a kept temporary; `hash` has only the new bytes
+  std::uint64_t durable = 0;  // #530: bytes on stable storage (the last checkpoint)
 
   // Removes the temporary: nothing partial stays (docs/design/28), on an
-  // error path and on any unwinding alike.
+  // error path and on any unwinding alike, unless kept (#530: keep()).
   ~incoming() { drop(); }
   void drop() noexcept {
     if (!open) return;
     (void)out.close();
     (void)io::remove_file(temp_path);
     open = false;
+  }
+  // #530: the bytes so far to stable storage, the temporary closed and left
+  // for a later resume. False (and dropped) when it cannot be made durable.
+  bool keep() noexcept {
+    if (!open) return false;
+    const bool ok = out.flush_durable() && out.close();
+    open = false;
+    if (!ok) {
+      (void)io::remove_file(temp_path);
+      return false;
+    }
+    durable = got;
+    return true;
   }
 };
 
@@ -171,9 +194,11 @@ std::string offer_json(const std::vector<outgoing_file>& files, bool handover, b
   w.key("bytes").integer(static_cast<std::int64_t>(bytes));
   w.key("files").begin_array();
   for (const auto& f : files) {
-    w.begin_object().key("rel").string(f.rel).key("size").integer(static_cast<std::int64_t>(f.size)).end_object();
+    w.begin_object().key("rel").string(f.rel).key("size").integer(static_cast<std::int64_t>(f.size));
+    w.key("mtime").integer(f.mtime).end_object();
   }
   w.end_array();
+  w.key("resume").boolean(true);  // #530: this sender takes "have" and "at"
   if (handover) w.key("handover").boolean(true);
   if (handover && dht) w.key("dht").boolean(true);
   if (identity) w.key("key").string(key_hex(*identity));
@@ -197,6 +222,10 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
   // The answer, while the person there decides (it declines by itself after
   // kAskMs; this waits a little longer, then gives up).
   message m;
+  // #530: what the receiver has already: files whole (not sent) and how far
+  // into a file it kept (sent from there).
+  std::vector<bool> already(files.size(), false);
+  std::vector<std::uint64_t> start_at(files.size(), 0);
   for (;;) {
     if (auto r = ch.receive(m, kAskMs + 30000); !r) {
       return stop(cancelled(h) || r.error() == status::cancelled ? outcome::cancelled : outcome::failed, __LINE__);
@@ -204,6 +233,36 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
     if (m.type == msg::accept) {
       const auto doc = json::parse(m.text(), 4);
       if (const std::string* key = doc ? doc->str("key") : nullptr) res.peer_key = parse_key_hex(*key);
+      const json::value* have = doc ? doc->find("have") : nullptr;
+      if (have && have->k == json::kind::array) {
+        // [first, end): runs of indexes, ascending and apart (any other is
+        // passed over, so no accept costs more than one look at each file).
+        std::int64_t past = 0;
+        for (const json::value& run : have->a) {
+          if (run.k != json::kind::array || run.a.size() != 2 || !run.a[0].is_integer || !run.a[1].is_integer) continue;
+          const std::int64_t a = run.a[0].i, b = std::min<std::int64_t>(run.a[1].i, static_cast<std::int64_t>(files.size()));
+          if (a < past || a >= b) continue;
+          past = b;
+          for (std::int64_t i = a; i < b; ++i) {
+            const auto idx = static_cast<std::size_t>(i);
+            already[idx] = true;
+            ++res.resumed_files;
+            res.resumed_bytes += files[idx].size;
+          }
+        }
+      }
+      const json::value* at = doc ? doc->find("at") : nullptr;
+      if (at && at->k == json::kind::array) {
+        for (const json::value& v : at->a) {
+          const auto i = v.integer("i");
+          const auto off = v.integer("at");
+          if (!i || !off || *i < 0 || static_cast<std::uint64_t>(*i) >= files.size() || *off <= 0) continue;
+          const auto idx = static_cast<std::size_t>(*i);
+          if (already[idx] || start_at[idx] != 0 || static_cast<std::uint64_t>(*off) >= files[idx].size) continue;
+          start_at[idx] = static_cast<std::uint64_t>(*off);
+          res.resumed_bytes += start_at[idx];
+        }
+      }
       break;
     }
     if (m.type == msg::decline) {
@@ -282,7 +341,7 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
       ch.shutdown();
     }
     reader.join();
-    res.done = verified.load();
+    res.done = verified.load() + res.resumed_files;
     res.how = o;
     if (o == outcome::cancelled && remote_cancel.load()) {
       res.by_peer = true;
@@ -296,10 +355,12 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
   };
 
   std::vector<std::uint8_t> chunk(kChunkBytes);
-  std::uint64_t moved = 0;
-  std::uint32_t sent_files = 0;
+  std::uint64_t moved = res.resumed_bytes;  // what is there already counts as moved (#530)
+  std::uint32_t sent_files = res.resumed_files;
+  if (moved > 0 && h.progress) h.progress(moved, sent_files);
   for (std::uint32_t i = 0; i < files.size(); ++i) {
     const outgoing_file& f = files[i];
+    if (already[i]) continue;  // whole on the receiver: nothing is said of it
     const std::string idx = json_of([&](json::writer& w) { w.key("i").integer(i); });
     io::file_reader in;
     if (!in.open(f.path, io::read_mode::sequential) || in.size() != f.size) {
@@ -310,10 +371,14 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
     }
     const std::string begin = json_of([&](json::writer& w) {
       w.key("i").integer(i).key("size").integer(static_cast<std::int64_t>(f.size)).key("mtime").integer(f.mtime);
+      if (start_at[i] != 0) w.key("at").integer(static_cast<std::int64_t>(start_at[i]));
     });
     if (!ch.send(msg::file_begin, begin)) return finish(cancelled(h) ? outcome::cancelled : outcome::failed, __LINE__);
     io::hasher hs;
     std::uint64_t got = 0;
+    // #530: the bytes the receiver kept are read and hashed here, not sent:
+    // the hash that ends the file is the whole file's, as always.
+    std::uint64_t skip = start_at[i];
     bool readable = true;
     for (;;) {
       if (cancelled(h)) return finish(outcome::cancelled, __LINE__);
@@ -331,11 +396,15 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
         break;
       }
       hs.update({chunk.data(), *n});
-      if (auto sent = ch.send(msg::data, std::span<const std::uint8_t>(chunk.data(), *n)); !sent) {
+      const std::size_t kept = static_cast<std::size_t>(std::min<std::uint64_t>(skip, *n));
+      skip -= kept;
+      if (kept == *n) continue;
+      const std::span<const std::uint8_t> part(chunk.data() + kept, *n - kept);
+      if (auto sent = ch.send(msg::data, part); !sent) {
         note_status(h, "send: data", __LINE__, sent.error());
         return finish(cancelled(h) || remote_cancel.load() ? outcome::cancelled : outcome::failed, __LINE__);
       }
-      moved += *n;
+      moved += part.size();
       if (h.progress) h.progress(moved, sent_files);
       if (h.yield) h.yield();
     }
@@ -354,7 +423,7 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
   if (!ch.send(msg::done, std::string_view("{}"))) return finish(outcome::failed, __LINE__);
   // The receiver's done comes after its last read-back and rename.
   reader.join();
-  res.done = verified.load();
+  res.done = verified.load() + res.resumed_files;
   res.how = finished.load() && res.done + res.skipped == files.size() ? outcome::delivered
             : remote_cancel.load() && !remote_error.load()            ? outcome::cancelled
                                                                       : outcome::failed;
@@ -389,7 +458,7 @@ result<incoming_offer> parse_offer(std::string_view text) {
       return err(status::corrupt);
     }
     sum += static_cast<std::uint64_t>(*size);
-    o.files.push_back({*rel, static_cast<std::uint64_t>(*size)});
+    o.files.push_back({*rel, static_cast<std::uint64_t>(*size), f.integer("mtime").value_or(0)});
   }
   if (sum != static_cast<std::uint64_t>(*bytes)) return err(status::corrupt);
   // #498: the shapes a sender makes: files picked one by one (bare names), or
@@ -406,6 +475,7 @@ result<incoming_offer> parse_offer(std::string_view text) {
   o.handover = doc->boolean("handover").value_or(false);
   o.dht = o.handover && doc->boolean("dht").value_or(false);
   if (const std::string* key = doc->str("key")) o.key = parse_key_hex(*key);
+  o.resume = doc->boolean("resume").value_or(false);
   return o;
 }
 
@@ -447,9 +517,29 @@ result<incoming_offer> read_offer(channel& ch, int timeout_ms) {
   return parse_offer(m.text());
 }
 
-expected send_accept(channel& ch, const std::optional<std::array<std::uint8_t, 32>>& identity) {
-  if (!identity) return ch.send(msg::accept, std::string_view("{}"));
-  return ch.send(msg::accept, json_of([&](json::writer& w) { w.key("key").string(key_hex(*identity)); }));
+expected send_accept(channel& ch, const std::optional<std::array<std::uint8_t, 32>>& identity,
+                     const resume_plan* plan) {
+  return ch.send(msg::accept, json_of([&](json::writer& w) {
+    if (identity) w.key("key").string(key_hex(*identity));
+    if (!plan || plan->empty()) return;
+    // #530: "have", the files already here whole, as runs [first, end) of
+    // indexes (plan_resume keeps them within kMaxHaveRuns); "at", how far
+    // into one.
+    w.key("have").begin_array();
+    for (std::size_t k = 0; k < plan->have.size();) {
+      std::size_t e = k + 1;
+      while (e < plan->have.size() && plan->have[e].index == plan->have[e - 1].index + 1) ++e;
+      w.begin_array().integer(plan->have[k].index).integer(plan->have[e - 1].index + 1).end_array();
+      k = e;
+    }
+    w.end_array();
+    if (plan->partial) {
+      w.key("at").begin_array();
+      w.begin_object().key("i").integer(plan->partial->index);
+      w.key("at").integer(static_cast<std::int64_t>(plan->partial->at)).end_object();
+      w.end_array();
+    }
+  }));
 }
 
 expected send_decline(channel& ch, outcome why) {
@@ -505,12 +595,27 @@ class verifier {
     std::lock_guard lock(m_);
     return broken_;
   }
-  std::vector<std::string> take_written() {
+  // In index order, with the files that were here already (#530).
+  std::vector<std::string> take_written(const std::vector<resume_plan::whole_file>& already) {
     std::lock_guard lock(m_);
+    if (!already_added_) {
+      for (const auto& f : already) written_.emplace_back(f.index, f.final_path);
+      already_added_ = true;
+    }
     std::sort(written_.begin(), written_.end());
     std::vector<std::string> out;
     out.reserve(written_.size());
-    for (auto& [i, path] : written_) out.push_back(std::move(path));
+    for (const auto& [i, path] : written_) out.push_back(path);  // copied: a record of what is kept may follow (#530)
+    return out;
+  }
+  // #530: the files verified here so far (not those that were here before),
+  // for a record to resume from.
+  std::vector<resume_plan::whole_file> written_now(const std::vector<bool>& had) {
+    std::lock_guard lock(m_);
+    std::vector<resume_plan::whole_file> out;
+    out.reserve(written_.size());
+    for (const auto& [i, path] : written_)
+      if (i >= had.size() || !had[i]) out.push_back({i, path});
     return out;
   }
 
@@ -566,6 +671,8 @@ class verifier {
     if (!f.out.close()) return false;
     const auto back = read_back(f.temp_path, h_);
     if (!back || !(*back == sent)) return false;
+    // #530: shown again before its rename (the flag travels with it).
+    if (f.hidden) (void)io::set_hidden(f.temp_path, false);
     const std::string dir(io::parent_of(f.final_path));
     const std::string leaf(io::file_name_of(f.final_path));
     for (int a = 0; a < kRenameAttempts; ++a) {
@@ -591,6 +698,7 @@ class verifier {
   std::deque<job> queue_;
   bool closing_ = false;
   bool broken_ = false;
+  bool already_added_ = false;
   std::vector<std::pair<std::uint32_t, std::string>> written_;
   std::atomic<std::uint32_t> done_{0}, failed_{0};
   std::atomic<int> pending_{0};
@@ -599,45 +707,119 @@ class verifier {
 
 }  // namespace
 
-transfer_result receive_files(channel& ch, const incoming_offer& offer, const std::string& dest_dir, const hooks& h) {
+transfer_result receive_files(channel& ch, const incoming_offer& offer, const std::string& dest_dir, const hooks& h,
+                              const resume_plan* plan) {
   transfer_result res;
   std::unique_ptr<incoming> cur;  // the file being written, if any
   std::uint32_t next = 0;
   std::uint32_t failed = 0;  // files whose streamed hash did not match
   std::uint64_t moved = 0;
   verifier checks(ch, h);
+  // #530: what is here already (said in the accept), and keeping what a
+  // receive that fails holds, for a later one to take up.
+  static const std::vector<resume_plan::whole_file> kNone;
+  const std::vector<resume_plan::whole_file>& already = plan ? plan->have : kNone;
+  std::vector<bool> have(offer.files.size(), false);
+  for (const auto& f : already) {
+    if (f.index < have.size() && !have[f.index]) {
+      have[f.index] = true;
+      ++res.resumed_files;
+      res.resumed_bytes += offer.files[f.index].size;
+    }
+  }
+  const std::optional<resume_plan::partial_file> partial =
+      plan && plan->partial && plan->partial->index < offer.files.size() && !have[plan->partial->index]
+          ? plan->partial
+          : std::nullopt;
+  if (partial) res.resumed_bytes += partial->at;
+  moved = res.resumed_bytes;
+  const bool keeping = static_cast<bool>(h.keep);
+  std::string landed;  // the sent folder's name here, when the offer is one folder
+  auto skip_had = [&] {
+    while (next < offer.files.size() && have[next]) ++next;
+  };
+  auto kept_now = [&](bool with_partial) {
+    kept_state k;
+    k.landed = landed;
+    k.whole = already;
+    for (auto& w : checks.written_now(have)) k.whole.push_back(std::move(w));
+    if (with_partial && cur && cur->durable > 0) {
+      k.partial = resume_plan::partial_file{cur->index, cur->durable, cur->temp_path, cur->final_path};
+    }
+    return k;
+  };
+  // At most every second while files arrive; the partial checkpointed (to
+  // stable storage) at most every few seconds and only once 32 MB more is in.
+  auto last_kept = std::chrono::steady_clock::now();
+  auto last_flush = last_kept;
+  std::uint32_t kept_done = 0;
+  auto keep_as_we_go = [&] {
+    if (!keeping) return;
+    const auto now = std::chrono::steady_clock::now();
+    bool changed = checks.done() != kept_done;
+    if (cur && cur->open && cur->got - cur->durable >= kCheckpointBytes && now - last_flush >= kCheckpointEvery) {
+      last_flush = now;
+      if (cur->out.flush_durable()) {
+        cur->durable = cur->got;
+        changed = true;
+      }
+    }
+    if (!changed || now - last_kept < std::chrono::seconds(1)) return;
+    last_kept = now;
+    kept_done = checks.done();
+    try {
+      h.keep(kept_now(true));
+    } catch (...) {
+    }
+  };
   auto settle = [&] {
     checks.finish();
-    res.done = checks.done();
-    res.written = checks.take_written();
+    res.done = checks.done() + res.resumed_files;
+    res.written = checks.take_written(already);
     failed += checks.failed();
   };
   auto end = [&](outcome o, bool tell, int line) {
     note(h, "receive", line, o);
-    if (cur) cur->drop();
+    // #530: a receive that failed (not one a person cancelled; MediaViewer
+    // quitting is not that) keeps the file it was writing for a later
+    // resume; otherwise nothing partial stays.
+    const bool stopped = o == outcome::failed || (o == outcome::cancelled && h.quitting && h.quitting->load());
+    const bool keep = keeping && stopped && cur && cur->keep();
+    if (cur && !keep) cur->drop();
     // Said reliably and final (#511): the sender stops, and takes it for
     // neither a lost link nor this person's cancel when it is a failure.
     if (tell) (void)ch.cancel(kCancelWaitMs, o == outcome::cancelled ? std::string_view() : std::string_view("error"));
     ch.shutdown();
-    // Files already whole finish their checks: what arrived whole stays,
-    // nothing partial does (the one being written was dropped above).
+    // Files already whole finish their checks: what arrived whole stays.
     settle();
+    if (keeping && stopped) {
+      try {
+        h.keep(kept_now(keep));
+      } catch (...) {
+      }
+    }
     res.how = o;
     return res;
   };
 
   // #498: the destination is the person's own choice; below it nothing goes
   // through a link, and a sent folder never merges into one already there
-  // ("Trip" beside an existing "Trip" lands as "Trip (2)").
+  // ("Trip" beside an existing "Trip" lands as "Trip (2)") but the one a
+  // resumed receive of it made (#530).
   if (!io::make_directories(dest_dir)) return end(outcome::failed, true, __LINE__);
-  std::string landed;  // the sent folder's name here, when the offer is one folder
   if (!offer.folder.empty()) {
-    landed = std::string(io::file_name_of(free_name(dest_dir, offer.folder)));
+    if (plan && !plan->landed.empty() && top_part(plan->landed).size() == plan->landed.size() &&
+        safe_relative(plan->landed)) {
+      const auto st = io::stat_path(io::join_path(dest_dir, plan->landed));
+      if (st && st->is_directory) landed = plan->landed;
+    }
+    if (landed.empty()) landed = std::string(io::file_name_of(free_name(dest_dir, offer.folder)));
     if (landed.empty() || !io::make_directories_beneath(dest_dir, landed)) {
       return end(outcome::failed, true, __LINE__);
     }
   }
   const auto latest_mtime = static_cast<std::int64_t>(std::time(nullptr)) + 24 * 60 * 60;
+  if (moved > 0 && h.progress) h.progress(moved, res.resumed_files);
 
   message m;
   // #502: the last time the files moved (a message, or a file read back).
@@ -658,14 +840,19 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
     moving = std::chrono::steady_clock::now();
     switch (m.type) {
       case msg::file_begin: {
+        skip_had();  // the files said to be here already never come
         const auto doc = json::parse(m.text(), 4);
         const auto i = doc ? doc->integer("i") : std::nullopt;
         const auto size = doc ? doc->integer("size") : std::nullopt;
         const auto mtime = doc ? doc->integer("mtime") : std::nullopt;
+        const std::int64_t at = doc ? doc->integer("at").value_or(0) : 0;
         if ((cur && cur->open) || !i || *i != static_cast<std::int64_t>(next) || next >= offer.files.size() || !size ||
             static_cast<std::uint64_t>(*size) != offer.files[next].size) {
           return end(outcome::failed, true, __LINE__);
         }
+        // #530: from part way only where this side said so, and exactly there.
+        const bool resuming = partial && partial->index == next;
+        if (at != (resuming ? static_cast<std::int64_t>(partial->at) : 0)) return end(outcome::failed, true, __LINE__);
         const std::string& rel = offer.files[next].rel;
         const auto slash = rel.rfind('/');
         std::string rel_dir = slash == std::string::npos ? std::string() : rel.substr(0, slash);
@@ -681,6 +868,22 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         cur->size = static_cast<std::uint64_t>(*size);
         // The sender's clock says when it was made: never before 1970 or after tomorrow.
         cur->mtime = std::clamp<std::int64_t>(mtime.value_or(0), 0, latest_mtime);
+        if (resuming) {
+          // The kept temporary, cut to the bytes known durable and written on
+          // from there; the read-back after file_end checks the whole file.
+          // Its final name is chosen again then if it has been taken since.
+          cur->final_path = partial->final_path;
+          cur->temp_path = partial->temp_path;
+          if (io::parent_of(cur->temp_path) != dir || io::parent_of(cur->final_path) != dir ||
+              !cur->out.open_resume(cur->temp_path, partial->at)) {
+            return end(outcome::failed, true, __LINE__);
+          }
+          cur->got = cur->durable = partial->at;
+          cur->resumed = true;
+          cur->hidden = true;
+          cur->open = true;
+          break;
+        }
         cur->final_path = free_name(dir, leaf_name(rel));
         if (cur->final_path.empty()) return end(outcome::failed, true, __LINE__);
         bool made = false;
@@ -695,6 +898,9 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         // before it runs (an app in a zip inherits the mark when extracted).
         // Best effort, as a browser's: a FAT card keeps no mark.
         (void)io::mark_from_elsewhere(cur->temp_path, "MediaViewer Driftwire");
+        // #530: a temporary that may be kept is hidden, so a half-received
+        // file is not taken for the finished one.
+        if (keeping) cur->hidden = io::set_hidden(cur->temp_path, true).has_value();
         cur->open = true;
         break;
       }
@@ -705,7 +911,8 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         cur->got += m.body.size();
         moved += m.body.size();
         checks.moved_hint_.store(moved);
-        if (h.progress) h.progress(moved, checks.done());
+        if (h.progress) h.progress(moved, checks.done() + res.resumed_files);
+        keep_as_we_go();
         if (h.yield) h.yield();
         break;
       }
@@ -714,7 +921,9 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         io::content_hash sent;
         std::memcpy(sent.bytes.data(), m.body.data(), 32);
         ++next;
-        if (cur->hash.finish() == sent) {
+        // A resumed file's streamed hash has only the bytes sent this time:
+        // its read-back is the check (as for every file).
+        if (cur->resumed || cur->hash.finish() == sent) {
           // Flushed, read back and renamed on the verifier while the next
           // file arrives; its file_done goes from there.
           if (!checks.push(std::move(cur), sent)) {
@@ -729,9 +938,11 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
             return end(cancelled(h) ? outcome::cancelled : outcome::failed, false, __LINE__);
           }
         }
+        keep_as_we_go();
         break;
       }
       case msg::file_skip: {
+        skip_had();
         const auto i = int_field(m.text(), "i");
         if (!i || *i != static_cast<std::int64_t>(next)) return end(outcome::failed, true, __LINE__);
         if (cur) cur->drop();
@@ -740,6 +951,7 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         break;
       }
       case msg::done: {
+        skip_had();
         if ((cur && cur->open) || next != offer.files.size()) return end(outcome::failed, true, __LINE__);
         // The last files' checks finish before done: the sender's done means
         // every file is in place or reported.
