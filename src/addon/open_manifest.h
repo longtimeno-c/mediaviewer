@@ -46,7 +46,9 @@ inline constexpr int kOpenManifestSchema = 2;
 //      so an older host says "needs a newer MediaViewer", not a blank window.
 //   7  2026-10-20 (#512): `opens` on a status item. An add-on that names one
 //      asks for 7; an older host refused it as malformed.
-inline constexpr std::uint32_t kContributionApi = 7;
+//   8  2026-10-21: a screen in place "settings", drawn on the add-on's page in
+//      Settings -> Add-ons (Driftwire's settings). Schema 1 only, as screens.
+inline constexpr std::uint32_t kContributionApi = 8;
 // The API that introduced code (`scripts`, `permissions`, commands).
 inline constexpr std::uint32_t kScriptApi = 3;
 inline constexpr std::uint32_t kContributionApiOldest = 1;
