@@ -201,15 +201,22 @@ struct client {
   fake_host host;
   sp::engine eng;
   // `secrets`: a folder for the secret store (Remember, #472 PR 4); empty: none.
-  client(bus& b, const fs::path& received, const std::string& name, const fs::path& secrets = {})
-      : host(received), eng(host, options(b, name, secrets)) {
+  // `data`: the add-on's data folder (prefs, #530's unfinished receives); empty: none.
+  client(bus& b, const fs::path& received, const std::string& name, const fs::path& secrets = {},
+         const fs::path& data = {})
+      : host(received), eng(host, options(b, name, secrets, data)) {
     eng.screen_opened("");
   }
-  static sp::engine::options options(bus& b, const std::string& name, const fs::path& secrets = {}) {
+  static sp::engine::options options(bus& b, const std::string& name, const fs::path& secrets = {},
+                                     const fs::path& data = {}) {
     sp::engine::options o;
     if (!secrets.empty()) {
       fs::create_directories(secrets);
       o.make_secrets = [dir = utf8(secrets)] { return sp::secrets::file_store(dir); };
+    }
+    if (!data.empty()) {
+      fs::create_directories(data);
+      o.prefs_path = utf8(data / sp::kPrefsFile);
     }
     o.my_name = name;
     o.use_bluetooth = false;

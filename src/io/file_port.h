@@ -100,6 +100,13 @@ enum class rename_outcome : std::uint8_t { renamed, name_taken };
 // it. status::io where the volume keeps no such mark (FAT on Windows).
 [[nodiscard]] expected mark_from_elsewhere(std::string_view utf8_path, std::string_view agent);
 
+// #530: hides a file from Explorer and Finder (FILE_ATTRIBUTE_HIDDEN,
+// UF_HIDDEN), or shows it again. A transfer's kept temporary is hidden so
+// nobody takes it for the finished file; it is shown again before its rename,
+// since the flag travels with a rename. status::unsupported_format where the
+// OS has no such flag (the Linux core test build).
+[[nodiscard]] expected set_hidden(std::string_view utf8_path, bool hidden);
+
 enum class read_mode : std::uint8_t {
   sequential,  // the source read: the OS may read ahead
   uncached,    // the verify read-back: from the device, never the page cache
@@ -147,6 +154,11 @@ class file_writer {
   // `concurrent` as for file_reader::open.
   [[nodiscard]] result<rename_outcome> create_new(std::string_view utf8_path,
                                                   bool concurrent = false);
+  // #530: a file already there (a transfer's temporary, kept to resume), cut
+  // to `offset` and written on from it. status::not_found when it is gone;
+  // status::corrupt when it is shorter than `offset` or not a regular file
+  // (a link is never followed).
+  [[nodiscard]] expected open_resume(std::string_view utf8_path, std::uint64_t offset);
   [[nodiscard]] expected write(std::span<const std::uint8_t> bytes);
   // Positional, as file_reader::read_at.
   [[nodiscard]] expected write_at(std::uint64_t offset, std::span<const std::uint8_t> bytes);

@@ -39,10 +39,13 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
   - **what is offered to this computer**: "… wants to send you files" and the **code** in large
     digits to type over there, **Decline**; then "… wants to send you 24 files, 412 MB", the first
     names, **Save to** with Choose…, **Decline** / **Accept**; then the path filling with its
-    percentage, the count and **Cancel**; then what arrived and **OK**. A transfer that ended
-    without arriving (cancelled, lost) says so for 6 s (`engine::options::ended_show_ms`) and the
-    window goes back to its default view by itself (#511); a delivered one keeps its line and
-    Remember until OK;
+    percentage, the count, the speed and the time left ("1.2 GB of 4.8 GB · 14 MB/s · about 4 min
+    left", #529, both sides: `eta.h`, shown after 3 s and half a megabyte, hidden while it
+    reconnects) and **Cancel**; then what arrived and **OK**. Every end, delivered, cancelled or
+    lost, stays on screen with **OK** on both sides until it is dismissed (#531; until 2026-10-21 a
+    cancel or a loss cleared itself after 6 s, #511);
+  - **Unfinished transfers** (#530), a card while any is kept: from whom, how much is here, and
+    **Discard** for each ([Resuming a receive that stopped](#resuming-a-receive-that-stopped-530));
   - **Send**, a card: a strip of the first six files' thumbnails (the viewer's cache), the count
     and size, the first names, **Send a folder** (Choose…), **Clear**;
   - **Nearby**: the MediaViewers it can see as large round tiles (a monogram, the name, "Wi-Fi",
@@ -627,14 +630,47 @@ only while a code waits or a send looks for its receiver; never at idle. (`dht_i
   must share the socket on both OSes (msquic owns its sockets and has no macOS; ngtcp2 needs TLS
   beside Noise), and the session above already seals, orders and resumes. 1200-byte packets,
   cumulative and 256-packet selective acknowledgements, RACK loss detection and a tail-loss probe
-  (RFC 8985, simplified), NewReno growth, the receiver's buffer as the window; no pacing yet.
+  (RFC 8985, simplified), the receiver's buffer as the window. Since #529 (2026-10-21) the sender
+  follows a model of the path, BBR v1 simplified (draft-cardwell-iccrg-bbr-congestion-control),
+  rather than NewReno: it paces at the bandwidth it measures (per-packet delivery-rate samples,
+  draft-cheng-iccrg-delivery-rate-estimation; a max filter over 10 round trips), keeps two
+  bandwidth-delay products in flight, starts up at 2.885 × until three round trips stop growing
+  the rate by a quarter, drains, then cycles its pace 1.25 / 0.75 / 1 × six, and probes the
+  smallest RTT again after 10 s without one. Two pieces come from BBR v2: startup also ends on a
+  round that loses more than 2 %, and such a round caps the packets in flight near what it held
+  (raised 2 % a clean round), so a router queue shallower than one bandwidth-delay product is not
+  overrun round after round. Lost packets are marked and sent again as the pace and window allow,
+  never in one burst; a sample the sender itself limited (a paused writer, a repair, a pipe still
+  refilling) may raise the estimate, never lower it; the RTO floor (200 ms) sits under the
+  variance, not the sum, so a steady long path does not time out on a little queue. Past the
+  256-packet bitmap an ack adds up to 16 runs `[start, end)` of packets held (`kMaxRuns`),
+  appended after the fixed part, so an older peer reads what it always did and ignores them; the
+  sender visits only packets still in flight for them, each visit forgetting one.
   The stream exists before CPace, so its peer is not yet trusted (#499): a data packet over
   1200 bytes is dropped, what waits to be read and what is held out of order together stay within
   the 16 MiB window it advertises (`kStreamMaxRx`; the advertised window subtracts both, so an
   honest sender never hits the bound), an ack of a packet never sent is ignored, and an ack visits
-  only the 256 packets its bitmap covers.
-  Loopback, Mac (`"[driftwire]"`'s stream case): about 60 MB/s clean, 17–26 MB/s at 1 % loss each
-  way, 6–10 MB/s at 5 %; no real path measured.
+  only the 256 packets its bitmap covers (and the runs past it only touch packets in flight).
+  Loopback, Mac (`"[driftwire]"`'s stream case, before #529): about 60 MB/s clean, 17–26 MB/s at
+  1 % loss each way, 6–10 MB/s at 5 %.
+  **Emulated paths** (#529, `mv_import_tests "[.driftwire-stream-bench]"`, `tests/driftwire_path.h`:
+  a bottleneck with a drop-tail queue, delay, in-order jitter and random loss behind the hub's
+  `socket_wrap`), base and new alternated three times, 15 s each, Linux container (4 vCPU),
+  RelWithDebInfo (`docs/perf/driftwire-stream.jsonl`):
+
+  | Profile (RTT, bottleneck, queue, loss) | Before | After | Share of the line, before → after |
+  |---|---|---|---|
+  | lan-ish (4 ms, 300 Mbit, 20 ms) | 33.6–34.9 MB/s | 35.7–36.2 MB/s | 0.95 → 0.99 |
+  | home-fibre (25 ms, 100 Mbit, 50 ms) | 10.4–10.8 | 11.8 | 0.87 → 0.98 |
+  | cross-country (80 ms, 50 Mbit, 40 ms, 0.1 %) | 0.82–0.84 | 5.39–5.59 | 0.14 → 0.91 |
+  | intercontinental (160 ms, 30 Mbit, 30 ms, 0.3 %) | 0.23–0.25 | 2.89–3.23 | 0.07 → 0.84 |
+  | wifi-jitter (30 ms ± 15, 80 Mbit, 60 ms, 0.5 %) | 0.42 | 9.12–9.22 | 0.04 → 0.95 |
+  | bufferbloat (40 ms, 20 Mbit, 500 ms) | 2.05–2.12 | 2.36–2.39 | 0.87 → 0.98; queue 500 → 82 ms |
+
+  Timeouts in the three runs fell from 7, 9, 7, 22, 0, 13 to 0, 0, 1, 0, 0, 0. No real path has
+  been measured: what a person sees between two machines is also bounded by the sender's upload
+  and the receiver's download. BBR is not fair to a loss-based flow sharing a shallow queue; on
+  a person's own uplink the other flow is usually their own.
 - Then the **internet handshake** runs over the stream as with a direct code (CPace on the words'
   password, `Noise_XXhfs+psk0`), the names are confirmed and the check is shown, and the transfer
   is protocol 2's session ("over the internet").
@@ -914,8 +950,56 @@ link. The tests check that no 32-byte run of the file passes through either rela
   temporary) that flushes it, reads it back uncached, hashes again, renames it with no-replace
   and sends its `file_done`; the sender's `done` is answered only after every check. Every rule
   above holds for each file exactly as before; only file N+1 no longer waits for file N's flush
-  and read-back. A cancel or a dropped link still drops the file being written; files that had
-  arrived whole finish their check, as they did when it ran inline.
+  and read-back. A cancel drops the file being written; a dropped link keeps it to resume
+  (below); files that had arrived whole finish their check, as they did when it ran inline.
+- **Staying awake** (#530). From the accept to the end, each side holds a request that the system
+  not sleep from idleness (`power.h`: `PowerCreateRequest` / `PowerSetRequest(
+  PowerRequestSystemRequired)` with a reason on Windows, `powercfg /requests`; an IOKit
+  `PreventUserIdleSystemSleep` assertion on the Mac, `pmset -g assertions`; nothing in the Linux
+  test build). The display may turn off and the screen lock. A closed lid, a shutdown or a flat
+  battery is not held off: resume is for those.
+
+## Resuming a receive that stopped (#530)
+
+Until 2026-10-21 nothing partial stayed: a receive that lost its link deleted the file being
+written, and the next send started from zero (and sent again what had arrived, landing as
+`name (2).ext`). Now (`resume.h`, `transfer.h`'s `resume_plan`, decision log 2026-10-21):
+
+- **What is kept.** A receive that fails (the link lost, either machine asleep or off, MediaViewer
+  quitting) keeps the file it was writing as its temporary, flushed to stable storage, and a
+  record in the add-on's data folder (`driftwire_resume.json`, written whole and crash-safe as
+  the prefs are): the sender's identity (#501), the destination, the folder's landed name, the
+  files that arrived whole (the sender's path, size and time; where it landed and the time it was
+  stamped with) and the partial (its temporary and the bytes known durable). While a receive
+  runs, the record is rewritten at most once a second, and the partial is flushed at most every
+  5 s once 32 MiB more has arrived, so a power cut costs at most that much again. A cancel or a
+  decline keeps nothing, as before. One record per sender, at most 8; one unused for 7 days goes
+  with its temporary (on the control thread at start); **Discard** removes one.
+- **Never taken for the finished file.** The temporary keeps its `.mvtmp` name (never the final
+  name or extension), is hidden (`io::set_hidden`: `FILE_ATTRIBUTE_HIDDEN`, `UF_HIDDEN`; the Linux
+  test build has no such flag), and is shown again just before its rename, since the flag travels
+  with it. MediaViewer's own folder listing never lists `.mvtmp`.
+- **The same sender, the same files.** The offer now says each file's time and `"resume": true`.
+  When an offer comes from a sender that says its identity and has a record into the same
+  folder, a file with the same path, size and time is matched: one whole and still there at its
+  size and stamped time is **had**; the partial, still at least its kept length, is **taken up**.
+  The accept says them: `"have"`, runs `[first, end)` of indexes (at most 8192 runs, so the accept
+  fits a message whatever the offer; what does not fit is sent again), and `"at"`, `[{"i","at"}]`.
+  The free-space check counts only what is still to come.
+- **The sender** sends nothing of a had file, and for the partial a `file_begin` with `"at"`: it
+  reads and hashes the kept bytes locally, so `file_end` is still the whole file's BLAKE3, and
+  sends the rest. Both sides count what was there as moved (the progress and the time left are
+  of what remains). The receiver accepts `"at"` only where it said so, exactly there, reopens the
+  temporary (`io::file_writer::open_resume`: cut to that length, never through a link) and writes
+  on. **The read-back after `file_end` checks the whole file**, as for every file: a damaged
+  partial is refused and dropped, never renamed into place, and the next send sends it whole.
+- **Older peers.** An offer without `"resume"` gets no `"have"` or `"at"`, and the receive is as
+  before. A sender without an identity (no secret store) cannot be told apart from another, so
+  nothing is kept for it.
+- **Trust.** The identity in the offer is the sender's claim inside the sealed channel. A sender
+  that claims another's key gains nothing: it can only skip files (nothing is written) or write
+  on a partial whose earlier bytes it would have to know for the read-back to pass, and the
+  person accepted that transfer anyway. Records and temporaries never leave the machine (rule 6).
 - Between chunks both sides wait while the viewer presents (the host table's `should_yield`, as
   Import does), so a pan keeps its frames. A rejoin changes nothing here (`should_yield` is
   unchanged).

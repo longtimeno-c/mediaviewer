@@ -1199,17 +1199,15 @@ struct wifi_send {
   std::unique_ptr<node> bea, ann;
   std::unique_ptr<beacon_pump> pump;
   fs::path src;
-  wifi_send(const scratch_dir& s, std::size_t rate, std::uint64_t bytes, int ended_show_ms = 6000) {
+  wifi_send(const scratch_dir& s, std::size_t rate, std::uint64_t bytes) {
     wifi.rate = rate;
     sp::engine::options bo = node_options("Bea", bt);
     bo.use_bluetooth = false;
-    bo.ended_show_ms = ended_show_ms;
     bo.make_discovery = [this] { return std::make_unique<bus_discovery>(b); };
     bea = std::make_unique<node>(s / "bea_received", bo);
     const std::uint16_t port = port_on(b);
     sp::engine::options ao = node_options("Ann", bt);
     ao.use_bluetooth = false;
-    ao.ended_show_ms = ended_show_ms;
     ao.make_discovery = [this] {
       auto d = std::make_unique<inject_discovery>();
       ann_wifi.store(d.get());
@@ -1312,7 +1310,7 @@ TEST_CASE("driftwire session: the sender cancels mid-chunk and the receiver ends
           "[driftwire]") {
   scratch_dir s("driftwire_cancel_sender_511");
   // A 256 KB chunk takes ~100 ms on this "Wi-Fi": a cancel lands inside one.
-  wifi_send w(s, 2500 * 1024, 64ull * 1024 * 1024, 1500);
+  wifi_send w(s, 2500 * 1024, 64ull * 1024 * 1024);
   progress_watch watch(*w.ann, *w.bea);
   REQUIRE(bytes_arrive(*w.ann, *w.bea, 1024 * 1024));
   const int connects = w.wifi.connects.load();
@@ -1332,7 +1330,13 @@ TEST_CASE("driftwire session: the sender cancels mid-chunk and the receiver ends
   CHECK_FALSE(watch.saw_reconnecting.load());   // neither side took it for a lost link
   CHECK(w.wifi.connects.load() == connects);    // and no mover raced for another
   CHECK(files_in(s / "bea_received").empty());  // nothing partial
-  // Then each window goes back to its default view by itself.
+  // Each end stays on screen until it is dismissed, then the window goes
+  // back to its default view.
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  CHECK(w.bea->eng.snapshot().in == sp::view::in_phase::ended);
+  CHECK(w.ann->eng.snapshot().out == sp::view::out_phase::ended);
+  w.bea->eng.on_event("in_dismiss", 1, "");
+  w.ann->eng.on_event("out_dismiss", 1, "");
   CHECK(eventually([&] { return w.bea->eng.snapshot().in == sp::view::in_phase::none; }, 5));
   CHECK(eventually([&] { return w.ann->eng.snapshot().out == sp::view::out_phase::idle; }, 5));
   std::printf("{\"case\":\"sender_cancels_mid_chunk\",\"receiver_ended_ms\":%lld}\n", ended_ms);

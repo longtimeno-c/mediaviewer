@@ -46,6 +46,7 @@ and a verify line on each platform (D9, amended). The order is:
 | Driftwire window, 2026-10-19 | **Simpler Driftwire window**: no address field (a code finds its own); a transfer under way is a card at the top with a picture of its path, its own shape, colour and badge for Wi-Fi, Bluetooth, internet direct, internet met on the DHT, through one of your computers, or through your relay server, dots moving while bytes do; the receive code is selectable with **Copy code** / **Copy link**; the internet part reads receive, send to a code, then options. New screen vocabulary on both hosts: a `link` node and a button's `copy`, contribution API 6 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11), [28](design/28-driftwire.md#what-a-person-sees)) | Mac: built; `"[driftwire]"` (124 cases) and `"[addon]"` (60) pass; the Swift chrome builds; the link picture rendered offscreen for every bearer and state, light and dark. Windows: the C# compiles. Owed: the window opened in the app on both hosts with a live transfer, the animation's idle cost measured (it runs only while bytes move), Narrator on the picture |
 | #501 | **Driftwire privacy**: a nearby handshake's static is a key of that link; the identity goes sealed in the offer (after the code) and the accept (after Accept); the beacon and Bluetooth INFO carry the name only while the window is open and a new id while idle (10 min) and at every open and close; the Mac keeps the identity and remembered devices in the data protection keychain in the app's access group, or nowhere; Windows seals each Credential Manager value with DPAPI; key material is wiped when it goes; a ProVerif model of the internet handshake (`tools/formal/internet.pv`) ([docs/design/28](design/28-driftwire.md#privacy-rule-6), [12](design/12-decision-log.md#driftwire)) | Mac: built; `"[driftwire]~[.driftwire-dht-live]"` passes (130 cases) with new ones: a connector never sees the receiver's identity, the sender's goes only in the offer after the right code, both sides remember the other's identity after a nearby send, the id rotates and the name is off the air, a planted login-keychain item is removed and never read. Windows: portable C++ only, CI's. The release adds Driftwire's app group `<team>.<bundle id>.driftwire` when it signs (`macpack.py release --team-id`, `APPLE_TEAM_ID`; `test_macpack.py` covers it); dev builds have no store. Owed: a signed build's Keychain path, two machines, v0.1.35 interop by hand |
 | #512 | **A status item opens its add-on's screen**: "Driftwire: receiving" in the command bar is a flat button that opens the Driftwire window (or brings it forward), on both hosts; any add-on whose status item names a screen, or that has exactly one window / pane / sheet, gets the same; a manifest may name it on a status item from contribution API 7 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)) | Mac: `mv_import_tests` passes (a new `[slots]` case for `status_json`'s `opens`); the Mac app builds. Windows: the C# compiles; the native side is CI's. Owed: the click, hover, hand cursor, keyboard and VoiceOver / Narrator checked in the running app on both hosts |
+| #529, #530, #531 | **Driftwire faster over the DHT, with the time left, and resumable**: the UDP stream paces and follows a model of the path (BBR, simplified) instead of halving on every loss, and acks name the runs past the 256-packet bitmap; both windows show the speed and the time left; a receive that stops keeps what arrived (the partial hidden under `.mvtmp`) and the same sender's next send of the same files resumes it, the whole-file read-back unchanged; "Unfinished transfers" with Discard, gone after 7 days; neither machine sleeps from idleness while bytes move; a transfer's end stays until OK ([docs/design/28](design/28-driftwire.md#resuming-a-receive-that-stopped-530)) | Linux container only: `"[driftwire]"` 166 cases pass (the IPv6 step of the stream case cannot run without IPv6, as on the base); `[.driftwire-stream-bench]` alternated 3 × 15 s, every profile better ([docs/design/28](design/28-driftwire.md#four-words-over-the-dht-472-pr-3)). Not built on either host: the Windows and Mac power requests, the file port's `open_resume` / `set_hidden` on Windows and macOS. Owed: both hosts' builds and suites, both PR 1 gates, a real DHT transfer between two machines, sleep held off (`powercfg /requests`, `pmset -g assertions`), a resume after a real power-off ([Where this actually is](#driftwire-speed-time-left-and-resume-issues-529-530-2026-10-21)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -1134,6 +1135,7 @@ python3 tools/package/addon-pack.py pack --addon places --platform macos --src b
 cmake --build build --target mv_driftwire
 build/bin/mv_import_tests "[driftwire]"       # wire, Noise (Cacophony vectors), channel, protocol 2's session (rejoin, resume, Bluetooth <-> Wi-Fi), 2-3 engines over loopback TCP, codes, the DHT, remembered devices (a folder stands in for the Keychain), privacy (#501), the add-on through the loader
 build/bin/mv_import_tests "[.driftwire-bench]"   # MB/s against a plain copy over loopback (MV_BENCH_DIR, _BIG_MB, _SMALL, _SMALL_KB, _CASES)
+build/bin/mv_import_tests "[.driftwire-stream-bench]"   # #529: the DHT stream over emulated internet paths, a JSON line per profile (MV_STREAM_BENCH_S, _PROFILES, _SEED, _TRACE=1 for the sender's state every 100 ms)
 build/bin/mv_import_tests "[.driftwire-idle]"    # CPU while Keep receiving is on, window closed (MV_IDLE_SECONDS)
 python3 -m unittest tools/package/test_addon_pack.py   # DriftwirePackTest among them
 build/bin/mv_import_tests "[.driftwire-send]"    # #452: a sender on this machine (MV_SEND_FILE, MV_SEND_CODE_FILE or MV_SEND_HOLD)
@@ -2386,6 +2388,26 @@ open -n --env HOME=<scratch>/home --env MV_DEV_ADDONS_DIR=<scratch>/addons \
 
 Every name in the test add-on is "Slots test"; nothing in it looks like Places. Quit the dev
 copy when done.
+### Driftwire speed, time left and resume (issues #529, #530, 2026-10-21)
+
+What is built is in [docs/design/28](design/28-driftwire.md) ("The stream", "Resuming a receive
+that stopped", "Staying awake").
+
+- **Measured, in a Linux cloud container only** (4 vCPU, RelWithDebInfo, libsodium built from
+  source, a scratch CMake project around `cmake/driftwire.cmake`): `"[driftwire]"` passes, 166
+  cases, with the stream case's IPv6 step failing as it does on the base (the container has no
+  IPv6; `open_udp_dual` now falls back to IPv4 there). `[.driftwire-stream-bench]` base and new
+  alternated, three runs of 15 s per profile, `docs/perf/driftwire-stream.jsonl`.
+- **Not measured:** any real path; Wi-Fi, Bluetooth or the internet between two machines; the
+  loopback `[.driftwire-bench]` (the receive gained a checkpoint flush every 5 s / 32 MiB while
+  a resumable receive runs, not measured for its cost); the PR 1 gates on either host.
+- **Not built:** `power_win.cpp`, `power_mac.cpp`, and the Windows and macOS halves of
+  `file_writer::open_resume` and `set_hidden` (POSIX `open_resume` is tested here; `UF_HIDDEN`
+  is Apple-only code).
+- **Owed by hand:** a transfer with the receiver's screen locked past its sleep timer; a resume
+  after powering the receiver off; the Unfinished card and Discard, the OK on a sender's end, and
+  the speed and time left in both windows.
+
 ### Driftwire (issues #410, #413, 2026-10-15)
 
 What is built is in [docs/design/28](design/28-driftwire.md).
