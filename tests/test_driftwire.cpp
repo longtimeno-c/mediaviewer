@@ -254,6 +254,38 @@ TEST_CASE("driftwire: pings keep a link alive but never stretch a deadline", "[d
   CHECK(m.type == sp::msg::offer);
 }
 
+TEST_CASE("driftwire: stage timers count the seal, the send, the receive and the open (#540)", "[driftwire]") {
+  auto [a, b] = channel_pair();
+  sp::stage_times tx, rx;
+  a->set_stages(&tx);
+  b->set_stages(&rx);
+  const std::vector<std::uint8_t> chunk(sp::kChunkBytes, 0x5a);
+  REQUIRE(a->send(sp::msg::data, chunk));
+  sp::message m;
+  REQUIRE(b->receive(m, 2000));
+  REQUIRE(m.type == sp::msg::data);
+  auto at = [](sp::stage s, const std::atomic<std::uint64_t>* field) {
+    return field[static_cast<int>(s)].load();
+  };
+  CHECK(at(sp::stage::seal, tx.calls) == 1);
+  CHECK(at(sp::stage::seal, tx.bytes) == sp::kChunkBytes);
+  CHECK(at(sp::stage::send, tx.calls) == 1);
+  CHECK(at(sp::stage::send, tx.bytes) > sp::kChunkBytes);  // the sealed frame, its header and tag
+  CHECK(at(sp::stage::open, rx.bytes) >= sp::kChunkBytes);
+  CHECK(at(sp::stage::recv, rx.calls) >= 1);
+  const std::string j = rx.json(1.0);
+  CHECK(j.find("\"open\":{") != std::string::npos);
+  CHECK(j.find("\"share\":") != std::string::npos);
+  CHECK(j.find("\"read\"") == std::string::npos);  // a stage that never ran is left out
+  // Unset, nothing more is counted.
+  a->set_stages(nullptr);
+  REQUIRE(a->send(sp::msg::data, chunk));
+  REQUIRE(b->receive(m, 2000));
+  CHECK(at(sp::stage::seal, tx.calls) == 1);
+  tx.reset();
+  CHECK(tx.json() == "{}");
+}
+
 TEST_CASE("driftwire: a receive that does not wait still reads what has arrived", "[driftwire]") {
   // The sender polls with receive(m, 0) while its person types the code; a
   // deadline under 1 ms away must still read, or a busy refusal waits out kAskMs.
@@ -1819,6 +1851,8 @@ TEST_CASE("driftwire: send to the MediaViewer nearby (harness)", "[.driftwire-se
 //   MV_BENCH_SMALL      count of small files (default 500)
 //   MV_BENCH_SMALL_KB   each small file (default 2048)
 //   MV_BENCH_CASES      "big", "small" or "big,small" (default both)
+//   MV_BENCH_STAGES     0: no stage timers (#540), as the app runs; the
+//                       stage lines are then not printed
 // Prints one JSON line per case and mode.
 namespace {
 
@@ -1908,16 +1942,22 @@ double plain_copy(const std::vector<fs::path>& files, const fs::path& dest) {
   return s;
 }
 
-// A Driftwire send of `files` from Ann to Bea, timed from Accept to done.
-double driftwire_send(const std::vector<fs::path>& files, const fs::path& dest, const fs::path& work) {
+// A Driftwire send of `files` from Ann to Bea, timed from Accept to done;
+// each side's stages (#540) into `tx` and `rx`.
+double driftwire_send(const std::vector<fs::path>& files, const fs::path& dest, const fs::path& work,
+                      sp::stage_times& tx, sp::stage_times& rx) {
   bus b;
-  client ann(b, work / "ann_in", "Ann");
-  client bea(b, work / "bea_in", "Bea");
+  const bool timed = env_size("MV_BENCH_STAGES", 1) != 0;
+  client ann(b, work / "ann_in", "Ann", {}, {}, [&](sp::engine::options& o) { o.send_stages = timed ? &tx : nullptr; });
+  client bea(b, work / "bea_in", "Bea", {}, {},
+             [&](sp::engine::options& o) { o.receive_stages = timed ? &rx : nullptr; });
   fs::create_directories(dest);
   ann.pick(files);
   bea.save_into(dest);
   ann.send_to(bea);
   REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }, 60));
+  tx.reset();  // the offer's frames are not the transfer's
+  rx.reset();
   const auto t0 = std::chrono::steady_clock::now();
   bea.eng.on_event("accept", 1, "");
   ann.eng.wait_idle();
@@ -1974,7 +2014,16 @@ TEST_CASE("driftwire: transfer throughput against a plain copy", "[.driftwire-be
     fs::remove_all(out);
     print_case(c.name, "plain", bytes, c.files.size(), plain_copy(c.files, out / "plain"));
     fs::remove_all(out);
-    print_case(c.name, "driftwire", bytes, c.files.size(), driftwire_send(c.files, out / "driftwire", out / "work"));
+    sp::stage_times tx, rx;
+    const double s = driftwire_send(c.files, out / "driftwire", out / "work", tx, rx);
+    print_case(c.name, "driftwire", bytes, c.files.size(), s);
+    // #540: where each side's time went (stages.h): "share" is the stage's
+    // thread time over the wall time; the receiver's verifiers are two threads.
+    if (env_size("MV_BENCH_STAGES", 1) != 0) std::printf("{\"case\":\"%s\",\"mode\":\"driftwire\",\"side\":\"send\",\"stages\":%s}\n", c.name,
+                tx.json(s).c_str());
+    if (env_size("MV_BENCH_STAGES", 1) != 0) std::printf("{\"case\":\"%s\",\"mode\":\"driftwire\",\"side\":\"receive\",\"stages\":%s}\n", c.name,
+                rx.json(s).c_str());
+    std::fflush(stdout);
     fs::remove_all(out);
   }
 }
