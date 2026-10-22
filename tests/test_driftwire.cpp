@@ -18,6 +18,67 @@
 #if defined(__APPLE__)
 #include <sys/xattr.h>
 #endif
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <winioctl.h>
+#endif
+
+namespace {
+
+// #498: a link to the folder `target` at `link`: a symlink on POSIX, a
+// junction on Windows (which needs no privilege, so it is what an attacker
+// there would use).
+bool link_folder(const fs::path& link, const fs::path& target) {
+#if defined(_WIN32)
+  if (!::CreateDirectoryW(link.c_str(), nullptr)) return false;
+  HANDLE h = ::CreateFileW(link.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                           FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  // REPARSE_DATA_BUFFER's mount point form (the struct is a DDK one).
+  struct mount_point {
+    DWORD tag;
+    WORD length, reserved, subst_offset, subst_length, print_offset, print_length;
+  };
+  const std::wstring print = fs::absolute(target).wstring();
+  const std::wstring subst = L"\\??\\" + print;
+  std::vector<std::uint8_t> buf(sizeof(mount_point) + (subst.size() + print.size() + 2) * sizeof(wchar_t));
+  auto* head = reinterpret_cast<mount_point*>(buf.data());
+  head->tag = IO_REPARSE_TAG_MOUNT_POINT;
+  head->length = static_cast<WORD>(buf.size() - 8);
+  head->reserved = 0;
+  head->subst_offset = 0;
+  head->subst_length = static_cast<WORD>(subst.size() * sizeof(wchar_t));
+  head->print_offset = static_cast<WORD>((subst.size() + 1) * sizeof(wchar_t));
+  head->print_length = static_cast<WORD>(print.size() * sizeof(wchar_t));
+  auto* names = reinterpret_cast<wchar_t*>(buf.data() + sizeof(mount_point));
+  std::memcpy(names, subst.c_str(), (subst.size() + 1) * sizeof(wchar_t));
+  std::memcpy(names + subst.size() + 1, print.c_str(), (print.size() + 1) * sizeof(wchar_t));
+  DWORD n = 0;
+  const BOOL ok = ::DeviceIoControl(h, FSCTL_SET_REPARSE_POINT, buf.data(), static_cast<DWORD>(buf.size()), nullptr, 0,
+                                    &n, nullptr);
+  ::CloseHandle(h);
+  return ok != FALSE;
+#else
+  std::error_code ec;
+  fs::create_directory_symlink(target, link, ec);
+  return !ec;
+#endif
+}
+
+// Takes a link_folder link away again, never what it points at.
+void unlink_folder(const fs::path& link) {
+#if defined(_WIN32)
+  ::RemoveDirectoryW(link.c_str());
+#else
+  std::error_code ec;
+  fs::remove(link, ec);
+#endif
+}
+
+}  // namespace
 
 // ---- the wire -------------------------------------------------------------------------------
 
@@ -87,12 +148,11 @@ TEST_CASE("driftwire: names lose the controls that would make them read as somet
   CHECK(sp::clean_name("Studio \xF0\x9F\x8E\xA8 Mac") == "Studio \xF0\x9F\x8E\xA8 Mac");
 }
 
-#if !defined(_WIN32)
 TEST_CASE("driftwire: received folders are made beneath Save to, never through a link (#498)", "[driftwire]") {
   scratch_dir s("driftwire_beneath");
   fs::create_directories(s / "dest");
   fs::create_directories(s / "elsewhere");
-  fs::create_directory_symlink(s / "elsewhere", s / "dest" / "Trip");
+  REQUIRE(link_folder(s / "dest" / "Trip", s / "elsewhere"));
   const auto made = mv::io::make_directories_beneath(utf8(s / "dest"), "New/Day 2");
   REQUIRE(made);
   CHECK(fs::is_directory(s / "dest" / "New" / "Day 2"));
@@ -100,8 +160,152 @@ TEST_CASE("driftwire: received folders are made beneath Save to, never through a
   REQUIRE_FALSE(through);
   CHECK(through.error() == mv::status::permission_denied);
   CHECK(fs::is_empty(s / "elsewhere"));
+  unlink_folder(s / "dest" / "Trip");
 }
-#endif
+
+TEST_CASE("driftwire: the sender reads only the file it picked, never one put in its place (#498)", "[driftwire]") {
+  scratch_dir s("driftwire_same_file");
+  write_text(s / "pick" / "Trip" / "a.jpg", "photo one");
+  write_text(s / "secret" / "Trip" / "a.jpg", "SECRET!!!");  // the same size
+  const std::string a = utf8(s / "pick" / "Trip" / "a.jpg");
+  const auto picked = mv::io::identify(a);
+  REQUIRE(picked);
+  CHECK(picked->known());
+  mv::io::file_reader in;
+  REQUIRE(in.open_same(a, picked.value()));
+  CHECK(in.size() == 9);
+  in.close();
+
+  // Another file put at the path, the same size: not the one picked.
+  write_text(s / "pick" / "other", "photo two");
+  fs::rename(s / "pick" / "other", s / "pick" / "Trip" / "a.jpg");
+  auto r = in.open_same(a, picked.value());
+  REQUIRE_FALSE(r);
+  CHECK(r.error() == mv::status::corrupt);
+
+  // The folder above swapped for a link to where a same-named file waits:
+  // the path still opens, but onto another file.
+  const auto now = mv::io::identify(a);
+  REQUIRE(now);
+  fs::rename(s / "pick" / "Trip", s / "pick" / "Trip moved");
+  REQUIRE(link_folder(s / "pick" / "Trip", s / "secret" / "Trip"));
+  r = in.open_same(a, now.value());
+  REQUIRE_FALSE(r);
+  CHECK(r.error() == mv::status::corrupt);
+  // The link itself is never taken for a file to send.
+  const auto link_id = mv::io::identify(utf8(s / "pick" / "Trip"));
+  REQUIRE_FALSE(link_id);
+  CHECK(link_id.error() == mv::status::permission_denied);
+  unlink_folder(s / "pick" / "Trip");
+
+  // A link at the file's own name is never read through, even with no id to
+  // compare (Windows makes a file symlink only with Developer Mode on).
+  std::error_code ec;
+  fs::create_symlink(s / "secret" / "Trip" / "a.jpg", s / "pick" / "b.jpg", ec);
+  if (!ec) {
+    const auto b_id = mv::io::identify(utf8(s / "pick" / "b.jpg"));
+    REQUIRE_FALSE(b_id);
+    CHECK(b_id.error() == mv::status::permission_denied);
+    r = in.open_same(utf8(s / "pick" / "b.jpg"), {});
+    REQUIRE_FALSE(r);
+    CHECK(r.error() == mv::status::permission_denied);
+  } else {
+    WARN("no file symlink here: the last-part link check was not run");
+  }
+}
+
+TEST_CASE("driftwire: a file swapped after the pick is said skipped, and its stand-in never sent (#498)",
+          "[driftwire]") {
+  scratch_dir s("driftwire_swap_send");
+  const fs::path src = s / "src", dest = s / "dest";
+  fs::create_directories(dest);
+  write_text(src / "a.jpg", "photo one");
+  write_text(src / "b.jpg", "photo two");
+  std::vector<sp::outgoing_file> files;
+  for (const char* name : {"a.jpg", "b.jpg"}) {
+    const auto id = mv::io::identify(utf8(src / name));
+    REQUIRE(id);
+    files.push_back({utf8(src / name), name, 9, 0, id.value()});
+  }
+  // Between the pick and the send, a.jpg becomes another file of its size.
+  write_text(s / "stand-in", "SECRET!!!");
+  fs::rename(s / "stand-in", src / "a.jpg");
+
+  auto [a, b] = channel_pair();
+  sp::transfer_result got;
+  std::thread receiver([&, &b = b] {
+    auto offer = sp::read_offer(*b, 10000);
+    if (!offer || !sp::send_accept(*b, std::nullopt)) return;
+    got = sp::receive_files(*b, *offer, utf8(dest), {});
+  });
+  const auto sent = sp::send_files(*a, files, {}, {});
+  receiver.join();
+  CHECK(sent.how == sp::outcome::delivered);
+  CHECK(sent.skipped == 1);
+  CHECK(sent.done == 1);
+  CHECK(files_in(dest) == std::vector<std::string>{"b.jpg"});
+}
+
+TEST_CASE("driftwire: an offer too big for one message goes as several (#498)", "[driftwire]") {
+  // Thousands of files with long names: well past one message (~260 KB).
+  std::vector<sp::outgoing_file> files;
+  std::uint64_t bytes = 0;
+  for (int i = 0; i < 6000; ++i) {
+    files.push_back({"", "Trip/" + std::string(150, 'x') + "/" + std::to_string(i) + ".jpg",
+                     static_cast<std::uint64_t>(i), 1'700'000'000});
+    bytes += static_cast<std::uint64_t>(i);
+  }
+  const auto parts = sp::offer_messages(files, true);
+  REQUIRE(parts.size() > 2);
+  for (const auto& p : parts) CHECK(p.size() < sp::kMaxMessageBytes - 17);
+  const std::span<const std::string> more = std::span<const std::string>(parts).subspan(1);
+  const auto back = sp::parse_offer(parts[0], more);
+  REQUIRE(back);
+  REQUIRE(back->files.size() == files.size());
+  for (std::size_t i = 0; i < files.size(); ++i) {
+    INFO(i);
+    REQUIRE(back->files[i].rel == files[i].rel);
+    REQUIRE(back->files[i].size == files[i].size);
+  }
+  CHECK(back->bytes == bytes);
+  CHECK(back->folder == "Trip");
+  CHECK(back->handover);
+  // A part missing, one more than said, or the first alone: refused whole.
+  CHECK_FALSE(sp::parse_offer(parts[0], more.first(more.size() - 1)));
+  std::vector<std::string> extra(more.begin(), more.end());
+  extra.push_back(parts.back());
+  CHECK_FALSE(sp::parse_offer(parts[0], extra));
+  CHECK_FALSE(sp::parse_offer(parts[0]));
+  // A small offer is still the one message every receiver reads.
+  const std::vector<sp::outgoing_file> few(files.begin(), files.begin() + 3);
+  CHECK(sp::offer_messages(few) == std::vector<std::string>{sp::offer_json(few)});
+
+  // Over a real channel: the receiver reads every part, then declines.
+  auto [a, b] = channel_pair();
+  std::optional<sp::incoming_offer> offered;
+  std::thread receiver([&, &b = b] {
+    if (auto o = sp::read_offer(*b, 10000)) {
+      offered = std::move(*o);
+      (void)sp::send_decline(*b, sp::outcome::declined);
+    }
+  });
+  const auto sent = sp::send_files(*a, files, {}, {});
+  receiver.join();
+  CHECK(sent.how == sp::outcome::declined);
+  REQUIRE(offered);
+  CHECK(offered->files.size() == files.size());
+  CHECK(offered->bytes == bytes);
+}
+
+TEST_CASE("driftwire: an offer past the most messages one may take is not sent (#498)", "[driftwire]") {
+  // kMaxFiles files of 600-byte names: some 65 MB of offer, past kMaxOfferParts.
+  const std::string deep = "Trip/" + std::string(190, 'a') + "/" + std::string(190, 'b') + "/" +
+                           std::string(190, 'c') + "/";
+  std::vector<sp::outgoing_file> files;
+  files.reserve(sp::kMaxFiles);
+  for (std::size_t i = 0; i < sp::kMaxFiles; ++i) files.push_back({"", deep + std::to_string(i), 1, 0});
+  CHECK(sp::offer_messages(files).empty());
+}
 
 TEST_CASE("driftwire: the beacon carries an id, a name and a port, nothing else", "[driftwire]") {
   sp::beacon b{"0123456789abcdef", "Tristan\xE2\x80\x99s MacBook", 50123};
@@ -745,6 +949,11 @@ TEST_CASE("driftwire: Accept delivers the files with their bytes, keeping both o
   REQUIRE(n > 0);
   CHECK(std::string(mark, static_cast<std::size_t>(n)).find(";MediaViewer Driftwire;") != std::string::npos);
   CHECK(::getxattr(utf8(s / "out" / "big.mov").c_str(), "com.apple.quarantine", nullptr, 0, 0, 0) < 0);
+#elif defined(_WIN32)
+  // #498: the Mark of the Web, so SmartScreen and Office check it first.
+  const std::vector<std::uint8_t> zone = read_bytes(fs::path((dest / "big.mov").wstring() + L":Zone.Identifier"));
+  CHECK(std::string(zone.begin(), zone.end()) == "[ZoneTransfer]\r\nZoneId=3\r\n");
+  CHECK_FALSE(fs::exists(fs::path((s / "out" / "big.mov").wstring() + L":Zone.Identifier")));
 #endif
 }
 

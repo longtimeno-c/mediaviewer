@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -85,7 +86,59 @@ result<DWORD> positional(HANDLE h, bool overlapped, bool write, std::uint64_t of
   return n;
 }
 
+// #498: the 128-bit id where the filesystem has one (NTFS, ReFS), else the
+// 64-bit index (FAT, some shares). Unknown (zero) when neither answers.
+file_id id_of(HANDLE h) noexcept {
+  FILE_ID_INFO info{};
+  if (::GetFileInformationByHandleEx(h, FileIdInfo, &info, sizeof info)) {
+    file_id id;
+    id.volume = info.VolumeSerialNumber;
+    static_assert(sizeof info.FileId.Identifier == 2 * sizeof(std::uint64_t));
+    std::memcpy(&id.low, info.FileId.Identifier, sizeof id.low);
+    std::memcpy(&id.high, info.FileId.Identifier + sizeof id.low, sizeof id.high);
+    if (id.known()) return id;
+  }
+  BY_HANDLE_FILE_INFORMATION bh{};
+  if (::GetFileInformationByHandle(h, &bh)) {
+    return {bh.dwVolumeSerialNumber, 0, (static_cast<std::uint64_t>(bh.nFileIndexHigh) << 32) | bh.nFileIndexLow};
+  }
+  return {};
+}
+
+// #498: the entry at `path` itself, opened for its attributes only (nothing
+// read, so a cloud placeholder stays one). A symlink or junction is
+// status::permission_denied; a directory status::io. OneDrive's own reparse
+// points are not links and pass, as in walk_dir.
+result<file_id> identify_w(const std::wstring& path) {
+  HANDLE h = ::CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return err(status::io);
+  FILE_ATTRIBUTE_TAG_INFO tag{};
+  if (!::GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof tag)) {
+    ::CloseHandle(h);
+    return err(status::io);
+  }
+  if ((tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && IsReparseTagNameSurrogate(tag.ReparseTag)) {
+    ::CloseHandle(h);
+    return err(status::permission_denied);
+  }
+  if (tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+    ::CloseHandle(h);
+    return err(status::io);
+  }
+  const file_id id = id_of(h);
+  ::CloseHandle(h);
+  return id;
+}
+
 }  // namespace
+
+result<file_id> identify(std::string_view utf8_path) {
+  detail::simulated_round_trip();
+  const std::wstring path = wide(utf8_path);
+  if (path.empty()) return err(status::invalid_arg);
+  return identify_w(path);
+}
 
 result<file_stat> stat_path(std::string_view utf8_path) {
   detail::simulated_round_trip();
@@ -297,6 +350,36 @@ expected file_reader::open(std::string_view utf8_path, read_mode mode, bool conc
   impl_->h = h;
   impl_->size = static_cast<std::uint64_t>(size.QuadPart);
   impl_->overlapped = concurrent;
+  return {};
+}
+
+expected file_reader::open_same(std::string_view utf8_path, const file_id& expect) {
+  detail::simulated_round_trip();
+  close();
+  const std::wstring path = wide(utf8_path);
+  if (path.empty()) return err(status::invalid_arg);
+  // The entry itself first: a link there is refused, never read through.
+  MV_TRY(const file_id seen, identify_w(path));
+  // Then opened to read as any reader is (a OneDrive file must be reached
+  // through its provider's reparse point). Whatever it reaches must be the
+  // file just seen, and the one walked: a link swapped in between, or a
+  // folder above swapped for a junction, reaches another.
+  HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                           FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return err(status::io);
+  const file_id got = id_of(h);
+  LARGE_INTEGER size{};
+  if (!::GetFileSizeEx(h, &size) || size.QuadPart < 0) {
+    ::CloseHandle(h);
+    return err(status::io);
+  }
+  if ((seen.known() && got != seen) || (expect.known() && got != expect)) {
+    ::CloseHandle(h);
+    return err(status::corrupt);
+  }
+  impl_ = std::make_unique<impl>();
+  impl_->h = h;
+  impl_->size = static_cast<std::uint64_t>(size.QuadPart);
   return {};
 }
 

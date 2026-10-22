@@ -15,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -185,18 +186,35 @@ std::optional<std::array<std::uint8_t, 32>> parse_key_hex(std::string_view hex) 
   return key;
 }
 
-std::string offer_json(const std::vector<outgoing_file>& files, bool handover, bool dht,
+namespace {
+
+// #498: one offer message's body, at most: what channel::send takes, less
+// room for its own header.
+constexpr std::size_t kOfferPartBytes = kMaxMessageBytes - 64;
+// The first part's fields besides its files ("count", "bytes", "parts",
+// "resume", "handover", "dht", "key"), at most.
+constexpr std::size_t kOfferHeadBytes = 512;
+
+std::string offer_entry(const outgoing_file& f) {
+  json::writer w;
+  w.begin_object().key("rel").string(f.rel).key("size").integer(static_cast<std::int64_t>(f.size));
+  w.key("mtime").integer(f.mtime).end_object();
+  return w.take();
+}
+
+// The offer's first (or only) message: `parts` 1 is the one-message offer
+// every receiver reads, unchanged by #498.
+std::string offer_head(const std::vector<outgoing_file>& files, std::span<const std::string> entries,
+                       std::size_t parts, bool handover, bool dht,
                        const std::optional<std::array<std::uint8_t, 32>>& identity) {
   std::uint64_t bytes = 0;
   for (const auto& f : files) bytes += f.size;
   json::writer w;
   w.begin_object().key("count").integer(static_cast<std::int64_t>(files.size()));
   w.key("bytes").integer(static_cast<std::int64_t>(bytes));
+  if (parts > 1) w.key("parts").integer(static_cast<std::int64_t>(parts));
   w.key("files").begin_array();
-  for (const auto& f : files) {
-    w.begin_object().key("rel").string(f.rel).key("size").integer(static_cast<std::int64_t>(f.size));
-    w.key("mtime").integer(f.mtime).end_object();
-  }
+  for (const auto& e : entries) w.raw(e);
   w.end_array();
   w.key("resume").boolean(true);  // #530: this sender takes "have" and "at"
   if (handover) w.key("handover").boolean(true);
@@ -204,6 +222,55 @@ std::string offer_json(const std::vector<outgoing_file>& files, bool handover, b
   if (identity) w.key("key").string(key_hex(*identity));
   w.end_object();
   return w.take();
+}
+
+}  // namespace
+
+std::string offer_json(const std::vector<outgoing_file>& files, bool handover, bool dht,
+                       const std::optional<std::array<std::uint8_t, 32>>& identity) {
+  std::vector<std::string> entries;
+  entries.reserve(files.size());
+  for (const auto& f : files) entries.push_back(offer_entry(f));
+  return offer_head(files, entries, 1, handover, dht, identity);
+}
+
+std::vector<std::string> offer_messages(const std::vector<outgoing_file>& files, bool handover, bool dht,
+                                        const std::optional<std::array<std::uint8_t, 32>>& identity) {
+  std::vector<std::string> entries;
+  entries.reserve(files.size());
+  std::size_t total = 0;
+  for (const auto& f : files) {
+    entries.push_back(offer_entry(f));
+    total += entries.back().size() + 1;
+  }
+  if (total + kOfferHeadBytes <= kOfferPartBytes) return {offer_head(files, entries, 1, handover, dht, identity)};
+  // [first, end) of `entries` per message, each filled to what one carries.
+  std::vector<std::pair<std::size_t, std::size_t>> runs;
+  std::size_t room = kOfferPartBytes - kOfferHeadBytes, used = 0, first = 0;
+  for (std::size_t i = 0; i < entries.size(); ++i) {
+    if (used + entries[i].size() + 1 > room && i > first) {
+      runs.emplace_back(first, i);
+      first = i;
+      used = 0;
+      room = kOfferPartBytes - 16;  // {"files":[ ... ]}
+    }
+    used += entries[i].size() + 1;
+  }
+  runs.emplace_back(first, entries.size());
+  if (runs.size() > kMaxOfferParts) return {};
+  std::vector<std::string> out;
+  out.reserve(runs.size());
+  const std::span<const std::string> all(entries);
+  out.push_back(offer_head(files, all.subspan(runs[0].first, runs[0].second - runs[0].first), runs.size(), handover,
+                           dht, identity));
+  for (std::size_t r = 1; r < runs.size(); ++r) {
+    json::writer w;
+    w.begin_object().key("files").begin_array();
+    for (std::size_t i = runs[r].first; i < runs[r].second; ++i) w.raw(entries[i]);
+    w.end_array().end_object();
+    out.push_back(w.take());
+  }
+  return out;
 }
 
 transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files, const hooks& h,
@@ -217,7 +284,15 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
     return res;
   };
   if (files.empty() || files.size() > kMaxFiles) return stop(outcome::failed, __LINE__);
-  if (!ch.send(msg::offer, offer_json(files, h.handover, h.handover_dht, h.identity))) return stop(cancelled(h) ? outcome::cancelled : outcome::failed, __LINE__);
+  // #498: one message when it fits; a folder of thousands of files takes
+  // several.
+  const std::vector<std::string> offer = offer_messages(files, h.handover, h.handover_dht, h.identity);
+  if (offer.empty()) return stop(outcome::failed, __LINE__);  // past kMaxOfferParts
+  for (std::size_t p = 0; p < offer.size(); ++p) {
+    if (!ch.send(p == 0 ? msg::offer : msg::offer_more, offer[p])) {
+      return stop(cancelled(h) ? outcome::cancelled : outcome::failed, __LINE__);
+    }
+  }
 
   // The answer, while the person there decides (it declines by itself after
   // kAskMs; this waits a little longer, then gives up).
@@ -363,7 +438,9 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
     if (already[i]) continue;  // whole on the receiver: nothing is said of it
     const std::string idx = json_of([&](json::writer& w) { w.key("i").integer(i); });
     io::file_reader in;
-    if (!in.open(f.path, io::read_mode::sequential) || in.size() != f.size) {
+    // #498: exactly the file picked, never a link put in its place since (or
+    // a folder above it swapped for one).
+    if (!in.open_same(f.path, f.id) || in.size() != f.size) {
       // Gone, unreadable or changed since the offer: said, not sent.
       if (!ch.send(msg::file_skip, idx)) return finish(cancelled(h) ? outcome::cancelled : outcome::failed, __LINE__);
       ++res.skipped;
@@ -434,33 +511,46 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
 
 // ---- receiver ---------------------------------------------------------------------
 
-result<incoming_offer> parse_offer(std::string_view text) {
+result<incoming_offer> parse_offer(std::string_view text, std::span<const std::string> more) {
   const auto doc = json::parse(text, 6);
   if (!doc || doc->k != json::kind::object) return err(status::corrupt);
   const auto count = doc->integer("count");
   const auto bytes = doc->integer("bytes");
-  const json::value* files = doc->find("files");
-  if (!count || !bytes || *count <= 0 || *bytes < 0 || static_cast<std::uint64_t>(*count) > kMaxFiles || !files ||
-      files->k != json::kind::array || files->a.size() != static_cast<std::size_t>(*count)) {
+  // #498: "parts" says how many messages carry the files (none: one).
+  const auto parts = doc->integer("parts").value_or(1);
+  if (!count || !bytes || *count <= 0 || *bytes < 0 || static_cast<std::uint64_t>(*count) > kMaxFiles ||
+      parts < 1 || static_cast<std::uint64_t>(parts) > kMaxOfferParts ||
+      static_cast<std::size_t>(parts) != more.size() + 1) {
     return err(status::corrupt);
   }
   incoming_offer o;
-  o.files.reserve(files->a.size());
+  o.files.reserve(static_cast<std::size_t>(*count));
   std::uint64_t sum = 0;
-  for (const json::value& f : files->a) {
-    const std::string* rel = f.str("rel");
-    const auto size = f.integer("size");
-    if (!rel || !safe_relative(*rel) || !size || *size < 0 || static_cast<std::uint64_t>(*size) > kMaxFileBytes) {
-      return err(status::corrupt);
+  auto take = [&](const json::value* files) {
+    if (!files || files->k != json::kind::array || files->a.size() > static_cast<std::size_t>(*count) - o.files.size()) {
+      return false;
     }
-    // It must equal what the offer says it totals, and never wrap on the way.
-    if (sum > std::numeric_limits<std::uint64_t>::max() - static_cast<std::uint64_t>(*size)) {
-      return err(status::corrupt);
+    for (const json::value& f : files->a) {
+      const std::string* rel = f.str("rel");
+      const auto size = f.integer("size");
+      if (!rel || !safe_relative(*rel) || !size || *size < 0 || static_cast<std::uint64_t>(*size) > kMaxFileBytes) {
+        return false;
+      }
+      // It must equal what the offer says it totals, and never wrap on the way.
+      if (sum > std::numeric_limits<std::uint64_t>::max() - static_cast<std::uint64_t>(*size)) return false;
+      sum += static_cast<std::uint64_t>(*size);
+      o.files.push_back({*rel, static_cast<std::uint64_t>(*size), f.integer("mtime").value_or(0)});
     }
-    sum += static_cast<std::uint64_t>(*size);
-    o.files.push_back({*rel, static_cast<std::uint64_t>(*size), f.integer("mtime").value_or(0)});
+    return true;
+  };
+  if (!take(doc->find("files"))) return err(status::corrupt);
+  for (const std::string& part : more) {
+    const auto rest = json::parse(part, 4);
+    if (!rest || rest->k != json::kind::object || !take(rest->find("files"))) return err(status::corrupt);
   }
-  if (sum != static_cast<std::uint64_t>(*bytes)) return err(status::corrupt);
+  if (o.files.size() != static_cast<std::size_t>(*count) || sum != static_cast<std::uint64_t>(*bytes)) {
+    return err(status::corrupt);
+  }
   // #498: the shapes a sender makes: files picked one by one (bare names), or
   // one folder and what is in it. Anything else (photos beside a
   // "Library/LaunchAgents/…") is refused whole.
@@ -514,7 +604,24 @@ result<incoming_offer> read_offer(channel& ch, int timeout_ms) {
   message m;
   if (auto r = ch.receive(m, timeout_ms); !r) return err(r.error());
   if (m.type != msg::offer) return err(status::corrupt);
-  return parse_offer(m.text());
+  return read_offer_after(ch, m.text(), timeout_ms);
+}
+
+result<incoming_offer> read_offer_after(channel& ch, std::string_view first, int timeout_ms) {
+  // #498: the parts after the first come straight after it. "parts" is
+  // looked at alone here; parse_offer checks it again with everything else.
+  std::int64_t parts = 1;
+  if (const auto doc = json::parse(first, 6)) parts = doc->integer("parts").value_or(1);
+  if (parts < 1 || static_cast<std::uint64_t>(parts) > kMaxOfferParts) return err(status::corrupt);
+  std::vector<std::string> more;
+  more.reserve(static_cast<std::size_t>(parts - 1));
+  message m;
+  for (std::int64_t p = 1; p < parts; ++p) {
+    if (auto r = ch.receive(m, timeout_ms); !r) return err(r.error());
+    if (m.type != msg::offer_more) return err(status::corrupt);
+    more.emplace_back(m.text());
+  }
+  return parse_offer(first, more);
 }
 
 expected send_accept(channel& ch, const std::optional<std::array<std::uint8_t, 32>>& identity,
