@@ -225,6 +225,20 @@ bool MvClaimAddonHost() {
   return false;
 }
 
+#if MV_WITH_SPARKLE
+// #532: Sparkle's installer quits every running copy with an Apple quit event
+// from its progress agent (org.sparkle-project.Sparkle.Updater) and no quit
+// reason: the Dock's Quit has the same shape, and the background (#452) answers
+// that by hiding, so the install waited for ever. The sender tells them apart.
+bool MvQuitFromSparkle(NSAppleEventDescriptor* event) {
+  if (event.eventClass != kCoreEventClass || event.eventID != kAEQuitApplication) return false;
+  NSAppleEventDescriptor* pid = [event attributeDescriptorForKeyword:keySenderPIDAttr];
+  if (pid == nil) return false;
+  NSRunningApplication* sender = [NSRunningApplication runningApplicationWithProcessIdentifier:pid.int32Value];
+  return [sender.bundleIdentifier hasPrefix:@"org.sparkle-project."];
+}
+#endif
+
 constexpr std::int64_t kShownStampUnknown = INT64_MIN;
 // view_fitted is the render thread's last pass; a `1` then ↓ inside one frame
 // would read the old fit. Zoom commands open this window so the first ↓ after
@@ -8654,7 +8668,7 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
 // add-on is busy (a Driftwire transfer finishes first).
 - (void)quitForUpdateWhenIdle {
   if (_quitForReal) return;
-  if (mv::addon::default_slots().busy()) {
+  if (!mv::addon::default_slots().busy_what().empty()) {
     __weak MvLabApp* weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
       [weakSelf quitForUpdateWhenIdle];
@@ -8697,7 +8711,7 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
     if (w.isVisible && w != self.window && ![w isKindOfClass:NSClassFromString(@"NSStatusBarWindow")]) shown = true;
   }
   // Another copy still running would stay on the old version: the last one goes.
-  if (shown || mv::addon::default_slots().busy() || MvOtherInstances().count > 0) {
+  if (shown || !mv::addon::default_slots().busy_what().empty() || MvOtherInstances().count > 0) {
     if (_backgroundUpdateRetry) return;  // one minute's retry at a time
     _backgroundUpdateRetry = true;
     __weak MvLabApp* weakSelf = self;
@@ -12183,6 +12197,20 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
     _quitForReal = true;
     [self relaunchAfterUpdateInstalls];
   }
+#if MV_WITH_SPARKLE
+  // #532: Sparkle's installer quits this copy for an install started elsewhere
+  // (another copy's restart, or its quit). It is not the person's Quit: it
+  // quits, in the background too, but never under a transfer. Busy, it waits
+  // and quits once the transfer ends; Sparkle's installer waits for it.
+  if (!_terminating && !_quitForReal && MvQuitFromSparkle(NSAppleEventManager.sharedAppleEventManager.currentAppleEvent)) {
+    if (!mv::addon::default_slots().busy_what().empty()) {
+      MV_LOG_INFO("update: Sparkle's quit waits for a transfer to finish");
+      [self quitForUpdateWhenIdle];
+      return NSTerminateCancel;
+    }
+    _quitForReal = true;
+  }
+#endif
   // #452: a Quit the person asked for (the Dock's, or another app's quit
   // event) goes to the background while an add-on keeps the process, as ⌘Q
   // does. Logout, restart and shut down carry a reason and quit; the app's own

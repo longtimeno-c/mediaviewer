@@ -95,31 +95,48 @@ public static partial class IslandHost
     // way (busy_post: a Driftwire transfer), or while another MediaViewer runs
     // (Update.exe would kill it, perhaps mid-transfer). The others are asked to
     // quit once idle; the restart goes when this process is idle and alone.
-    private static bool _updateWaitingForTransfer;
+    // The wait is here, before native is asked (Send(Command.UpdateRestart, 0)),
+    // so native's checks (no playing clip) and the view it restores are those of
+    // the moment the restart goes, not of the click.
+    // What it waits for, in words for the help; empty while it does not wait.
+    private static List<string> _updateWaitingFor = new();
     private static DispatcherQueueTimer? _updateWaitTimer;
     private static int _updateWaitTicks;
-    internal const string UpdateWaitingText = "The update will install when the transfer finishes";
 
-    private static bool UpdateMustWait()
+    private static List<string> UpdateBlockers()
     {
-        if (SlotBusy.Count > 0) return true;
-        if (OtherInstances.Running().Count == 0) return false;
+        var what = new List<string>();
+        foreach (string w in SlotBusy.Values)
+        {
+            if (!what.Contains(w)) what.Add(w);
+        }
+        // The others are asked only once this process is idle, so a person's
+        // other windows do not close while this one still waits on its own transfer.
+        if (what.Count > 0 || OtherInstances.Running().Count == 0) return what;
         // Asked again every few seconds: a window opened meanwhile hears it too.
         if (_updateWaitTicks++ % 5 == 0) OtherInstances.AskToQuit();
-        return true;
+        what.Add(RestartWords.OtherWindow);
+        return what;
+    }
+
+    private static void NoteUpdateWaiting(List<string> waiting)
+    {
+        if (waiting.SequenceEqual(_updateWaitingFor)) return;
+        _updateWaitingFor = waiting;
+        if (_lastUpdateStatus is { } s) ShowUpdateStatus(s);
     }
 
     private static void RestartToUpdateWhenIdle()
     {
         _updateWaitTicks = 0;
-        if (!UpdateMustWait())
+        List<string> waiting = UpdateBlockers();
+        if (waiting.Count == 0)
         {
             StopUpdateWait();
             Send(Command.UpdateRestart, 0);
             return;
         }
-        _updateWaitingForTransfer = true;
-        if (_lastUpdateStatus is { } s) ShowUpdateStatus(s);
+        NoteUpdateWaiting(waiting);
         if (_dispatcher is null) return;
         _updateWaitTimer ??= _dispatcher.DispatcherQueue.CreateTimer();
         _updateWaitTimer.Interval = TimeSpan.FromSeconds(1);
@@ -131,16 +148,20 @@ public static partial class IslandHost
 
     private static void OnUpdateWaitTick(DispatcherQueueTimer sender, object args) => Guarded(() =>
     {
-        if (UpdateMustWait()) return;
+        List<string> waiting = UpdateBlockers();
+        if (waiting.Count > 0)
+        {
+            NoteUpdateWaiting(waiting);
+            return;
+        }
         StopUpdateWait();
-        if (_lastUpdateStatus is { } s) ShowUpdateStatus(s);
         Send(Command.UpdateRestart, 0);
     });
 
     private static void StopUpdateWait()
     {
         _updateWaitTimer?.Stop();
-        _updateWaitingForTransfer = false;
+        NoteUpdateWaiting(new List<string>());
     }
 
     private static StackPanel BuildUpdateButton()
@@ -277,11 +298,11 @@ public static partial class IslandHost
             string tip = "";
             bool clickable = false;
             int restartArg = 0;
-            if (s.Phase == UpdatePhase.Ready && _updateWaitingForTransfer)
+            if (s.Phase == UpdatePhase.Ready && _updateWaitingFor.Count > 0)
             {
                 // #532: a transfer under way is never cut; the restart follows it.
-                text = UpdateWaitingText;
-                tip = $"Version {s.Version} is downloaded. MediaViewer restarts to install it once nothing is being sent or received.";
+                text = RestartWords.UpdateWaiting;
+                tip = RestartWords.UpdateWaitingTip(_updateWaitingFor);
             }
             else if (s.Phase == UpdatePhase.Ready)
             {

@@ -351,8 +351,7 @@ private struct UpdateBarItem: View {
           .accessibilityLabel("Update download progress")
       }
     case 3 where restart.updateWaiting:
-      status("The update will install when the transfer finishes",
-             help: "The update is downloaded. MediaViewer restarts to install it once nothing is being sent or received.")
+      status(RestartWords.updateWaiting, help: RestartWords.updateWaitingTip(restart.updateWaitingFor))
     case 3:
       Button("Update ready — restart") { restart.restartToUpdateWhenIdle() }
         .buttonStyle(FlatButtonStyle())

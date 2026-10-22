@@ -153,9 +153,11 @@ installed from Settings → Add-ons, never part of the base installer or its upd
   until none is left. Each quits once none of its add-ons is busy. `tools/package/e2e-update.ps1`
   covers a second copy (`--new-instance`). On the Mac Sparkle's installer sends every copy a quit
   event, which a copy kept by Driftwire took for ⌘Q and hid (the update then never installed):
-  the restart sets `_quitForReal`; an asked copy holding Sparkle's installer installs from there;
-  an asker quit by another copy's install reopens once the new version is in place
-  (`relaunchAfterUpdateInstalls`).
+  the restart sets `_quitForReal`; a quit event whose sender is Sparkle's agent
+  (`keySenderPIDAttr` → `org.sparkle-project.*`) quits too, after any transfer under way; an
+  asked copy holding Sparkle's installer installs from there; an asker quit by another copy's
+  install reopens once the new version is in place (`relaunchAfterUpdateInstalls`). While it
+  waits, the bar's help names what for (`slot_registry::busy_what`, `RestartWords.UpdateWaitingTip`).
 - **State across the restart** (Windows, `shell/update_guard.h`): the restart relaunches with
   the open path, `--restore-zoom N`, `--restore-fullscreen` and `--restore-gallery`. Playback
   position is not an argument: the player saves its resume point when a clip closes.

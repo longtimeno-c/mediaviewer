@@ -59,4 +59,12 @@ public static class RestartWords
     public static string AnywayTip(IReadOnlyList<string> what) => $"Restart now. This stops {Join(what)}.";
 
     public const string CancelTip = "Don't restart now. The update waits for the next start.";
+
+    // #532: an app update never cuts a transfer off. The bar says so while the
+    // restart waits; the help names what it waits for.
+    public const string UpdateWaiting = "The update will install when the transfer finishes";
+    public const string OtherWindow = "another MediaViewer window";
+
+    public static string UpdateWaitingTip(IReadOnlyList<string> what) =>
+        $"MediaViewer restarts to install it when nothing is running. Waiting for {Join(what)}.";
 }

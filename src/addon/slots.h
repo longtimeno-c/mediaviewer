@@ -212,8 +212,9 @@ class slot_registry {
   [[nodiscard]] std::string notices_json() const;
   // #452: some add-on asks to keep the process with every window closed.
   [[nodiscard]] bool keeping_alive() const;
-  // #532: an add-on has posted work under way (busy_post).
-  [[nodiscard]] bool busy() const;
+  // #532: what the first busy add-on said it is doing ("a Driftwire transfer"),
+  // or "" when none is. An app update waits on it before it quits the process.
+  [[nodiscard]] std::string busy_what() const;
   // #452: a notice's button was clicked: MV_SLOT_EVENT_NOTICE to its add-on.
   status notice_action(const std::string& addon_id, const std::string& notice_id, const std::string& action_id);
 

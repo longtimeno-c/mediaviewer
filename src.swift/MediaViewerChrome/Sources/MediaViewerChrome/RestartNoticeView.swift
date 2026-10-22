@@ -76,6 +76,14 @@ enum RestartWords {
   static func waitingTitle(_ what: [String]) -> String { "Waiting for \(join(what)) to finish" }
 
   static func anywayTip(_ what: [String]) -> String { "Restart now. This stops \(join(what))." }
+
+  // #532: an app update never cuts a transfer off.
+  static let updateWaiting = "The update will install when the transfer finishes"
+  static let otherWindow = "another MediaViewer window"
+
+  static func updateWaitingTip(_ what: [String]) -> String {
+    "MediaViewer restarts to install it when nothing is running. Waiting for \(join(what))."
+  }
 }
 
 @MainActor
@@ -92,6 +100,8 @@ final class RestartNoticeStore: ObservableObject {
   /// way (a Driftwire transfer) or another copy of the app ran; the restart
   /// goes once this one is idle and alone.
   @Published private(set) var updateWaiting = false
+  /// What it waits for, in words for the help (RestartWords.updateWaitingTip).
+  @Published private(set) var updateWaitingFor: [String] = []
   private var updateTimer: Timer?
   private var updateTicks = 0
   /// A slot add-on updated while it was busy: reloaded once it is not.
@@ -208,12 +218,13 @@ final class RestartNoticeStore: ObservableObject {
   /// transfer is never cut by an update.
   func restartToUpdateWhenIdle() {
     updateTicks = 0
-    guard updateMustWait() else {
+    let waiting = updateBlockers()
+    guard !waiting.isEmpty else {
       stopUpdateWait()
       mv_chrome_restart_to_update()
       return
     }
-    updateWaiting = true
+    noteUpdateWaiting(waiting)
     updateTimer?.invalidate()
     updateTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
       MainActor.assumeIsolated { self?.updateTick() }
@@ -221,24 +232,38 @@ final class RestartNoticeStore: ObservableObject {
   }
 
   private func updateTick() {
-    guard !updateMustWait() else { return }
+    let waiting = updateBlockers()
+    guard waiting.isEmpty else {
+      noteUpdateWaiting(waiting)
+      return
+    }
     stopUpdateWait()
     mv_chrome_restart_to_update()
   }
 
-  private func updateMustWait() -> Bool {
-    if !slotBusy.isEmpty { return true }
-    if mv_chrome_update_others_running() == 0 { return false }
+  private func updateBlockers() -> [String] {
+    var what: [String] = []
+    for w in slotBusy.values.sorted() where !what.contains(w) { what.append(w) }
+    // The others are asked only once this copy is idle, so a person's other
+    // windows do not close while this one still waits on its own transfer.
+    if !what.isEmpty || mv_chrome_update_others_running() == 0 { return what }
     // Asked again every few seconds: a window opened meanwhile hears it too.
     if updateTicks % 5 == 0 { mv_chrome_update_ask_others_to_quit() }
     updateTicks += 1
-    return true
+    what.append(RestartWords.otherWindow)
+    return what
+  }
+
+  private func noteUpdateWaiting(_ waiting: [String]) {
+    if waiting != updateWaitingFor { updateWaitingFor = waiting }
+    if !updateWaiting { updateWaiting = true }
   }
 
   private func stopUpdateWait() {
     updateTimer?.invalidate()
     updateTimer = nil
     updateWaiting = false
+    updateWaitingFor = []
   }
 
   // ---- slot add-ons ------------------------------------------------------------
