@@ -165,10 +165,11 @@ TEST_CASE("driftwire: the window opens from a command with its files, offline", 
   const std::string paths = "[\"" + json_path(s / "photos" / "IMG_1.JPG") + "\",\"" +
                             json_path(s / "photos" / "IMG_2.JPG") + "\"]";
   REQUIRE(reg.invoke_item("driftwire", "send_files", paths) == status::ok);
+  // The files post at once; the offline note follows from the control thread's
+  // reconcile (start_presence), so wait for both.
   REQUIRE(eventually([&] {
     reg.drain();
     const std::string screens = reg.screens_json();
-    // Presence posts the offline note on its own, after the files: wait for both.
     return screens.find("2 files") != std::string::npos &&
            screens.find("Offline: nothing nearby can be found.") != std::string::npos;
   }));

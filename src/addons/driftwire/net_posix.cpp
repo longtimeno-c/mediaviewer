@@ -229,7 +229,7 @@ result<std::unique_ptr<listener>> listen(bool loopback_only) {
   a.sin_addr.s_addr = htonl(loopback_only ? INADDR_LOOPBACK : INADDR_ANY);
   a.sin_port = 0;
   socklen_t len = sizeof a;
-  if (::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 || ::listen(fd, 4) != 0 ||
+  if (::bind(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 || ::listen(fd, 16) != 0 ||
       ::getsockname(fd, reinterpret_cast<sockaddr*>(&a), &len) != 0) {
     ::close(fd);
     return err(status::io);
