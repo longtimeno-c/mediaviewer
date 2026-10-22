@@ -212,15 +212,18 @@ engine::~engine() {
 
 void engine::post() {
   std::lock_guard serial(post_m_);
-  std::string tree;
+  std::string tree, settings;
   bool busy = false;
+  const bool with_settings = host_.settings_shown();
   {
     std::lock_guard lock(m_);
     tree = build_tree(v_);
+    if (with_settings) settings = build_settings_tree(v_);
     busy = transfer_running_ && !stopping_.load();
   }
   last_post_ = std::chrono::steady_clock::now();
   host_.post_tree(tree);
+  if (with_settings) host_.post_settings(settings);
   // #510: every transfer's start and end posts the window, open or not
   // (end_transfer posts too), so the host hears of it here.
   if (busy != busy_shown_) {
@@ -1394,6 +1397,8 @@ void engine::screen_opened(const std::string& path) {
   request_reconcile();
   post();
 }
+
+void engine::settings_opened() { post(); }
 
 void engine::screen_closed() {
   bool closing_connecting = false;

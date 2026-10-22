@@ -1289,6 +1289,8 @@ final class SlotWindows: NSObject, NSWindowDelegate {
   }
 
   func sync(_ screens: [SlotScreen]) {
+    // A settings page is drawn in Settings (AddonSettingsScreen), not here.
+    let screens = screens.filter { $0.place != "settings" }
     let wanted = Set(screens.map { ScreenAddress(addon: $0.addon, screen: $0.screen) })
     for (address, window) in windows where !wanted.contains(address) {
       closingFromCore.insert(address)
