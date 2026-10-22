@@ -383,6 +383,25 @@ send or a receive waits through a rejoin.
   `resume_at`s) cannot leave the DHT handover's keys, which mix in the rejoin count, out of step.
   A message that came
   twice (sent on the old link, and again after the rejoin) is dropped by its sequence number.
+- **While a transfer runs, other links (#496).** Every link that reaches this side then
+  (`engine::route_busy`) is the transfer's rejoin or is turned away, and a stranger cannot keep
+  the rejoin out:
+  - **Over the internet, a rejoin or nothing.** On a code's listener, the way in or any other
+    internet link, a hello that is not a rejoin (a nearby `N` in protocol 1, 2 or 3, a code's `I`)
+    is closed before any handshake: no message 2, no `ident`, not even `busy`. Only a nearby link
+    is answered `busy` after its handshake, as before.
+  - **Each tag opens once.** The receiver remembers the tags of the rejoins it has taken (the last
+    256 per session; only the peer can make one), so a recorded rejoin played again is closed
+    before a byte is read or written. Only adopting the new link is one at a time: a rejoin that
+    never proves `resume_at` (a bearer that died under it) does not hold up the next, and of two
+    that both prove, the later rejoin count wins.
+  - **Room for the rescue.** Links in their hello have a short wait over the internet (2 s; a
+    sender writes it as it connects), and their own pool there (8; nearby keeps its 4). Each
+    source (an address, or an IPv6 /64) holds at most 4 of them. When a pool or a source's share
+    is full, a new link closes a random one still in its hello, of that source or of the source
+    with the most, so idle connections cannot fill the slots a rejoin needs; past its hello a
+    link is never closed to make room. The way in and a code's listener say where each link came
+    from (`source_of`, `internet.h`).
   Messages are chunk-sized, so this is the issue's "resume at a chunk boundary": the receiver
   keeps its open `.mvtmp`, its BLAKE3 state and its verifier exactly as they were, and nothing
   that arrived is sent again. Every file is still verified end to end.
@@ -507,7 +526,10 @@ shows: no listener, no router mapping, no socket. (`internet.*`, `invite.*`, `ma
   `Noise_XXhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b` keyed by the CPace key, with the CPace
   transcript in the prologue: a wrong code fails at the receiver's first read, before it says
   anything of itself (not even its static key), and a machine in the middle gets one live guess
-  per code and nothing to test guesses against offline.
+  per code and nothing to test guesses against offline. A hello that is not a code's on these
+  listeners (a nearby one) is closed before any handshake, with or without a transfer running
+  (#496, [above](#the-session-protocol-2-472)): nothing of this machine goes to whoever found the
+  port.
 - **Both confirm the other's name before any byte moves.** The sender sees "Connected to Bea
   (new device)" and a six-digit **check** (from the whole handshake hash), and clicks **Send to
   Bea**; the receiver sees "Ann (new device) wants to send you files" with the same check, and
@@ -706,7 +728,9 @@ need it on (and "Send and receive over the internet").
   `may_reach`), so a receiver cannot make it connect to loopback or its network on every rescue.
 - **The move.** When the link is suspect or drops, the mover races the receiver's places beside
   Wi-Fi and Bluetooth; a TCP connection that reaches the way in is a rejoin (`NNhfs+psk0` and
-  `resume_at`, as any), and the window says "over the internet". When the peer is heard on Wi-Fi
+  `resume_at`, as any), and the window says "over the internet". Anything else that reaches the
+  way in is closed unanswered, and idle connections there cannot keep the rejoin out (#496,
+  [The session](#the-session-protocol-2-472)). When the peer is heard on Wi-Fi
   again, the send moves back there (make before break). On loopback in the tests the move takes
   10–14 ms after the cut.
 - When the transfer ends the listener closes and every mapping is removed. With the toggle off on

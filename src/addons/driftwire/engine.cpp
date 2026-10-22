@@ -25,8 +25,17 @@ constexpr auto kPostEvery = std::chrono::milliseconds(100);
 // The person has this long to answer an offer (or confirm the code); then it
 // is called off.
 constexpr auto kAskFor = std::chrono::milliseconds(kAskMs);
-// Busy refusals in flight at once, at most; past it a link is just closed.
+// Busy refusals in flight at once, at most; past it a link is just closed
+// (#496: or one still in its hello is, to make room).
 constexpr int kMaxHelpers = 4;
+// #496: links from the internet while a transfer runs (its rejoins, and
+// whoever found the way in): their own pool, a share of it per source, and a
+// short wait for the hello (a sender writes it as it connects). Threads in
+// all, counting those closed to make room and not yet gone.
+constexpr int kMaxInternetHelpers = 8;
+constexpr int kUnreadPerSource = 4;
+constexpr int kInternetHelloMs = 2000;
+constexpr std::size_t kMaxHelperThreads = 32;
 // #497: a sender that knows the code but never sends (a machine in the middle
 // trying for a code that matches the one it shows its victim, or a flood of
 // notifications). Five such links in a minute stop new nearby links for 30 s:
@@ -417,7 +426,10 @@ void engine::sync_internet() {
   }
   if (!make) return;
   auto in = std::make_shared<internet_receiver>(
-      o, [this](std::unique_ptr<link> l) { on_internet_link(std::move(l), true); },
+      o,
+      [this](std::unique_ptr<link> l, std::string source) {
+        on_internet_link(std::move(l), true, std::move(source));
+      },
       [this] {
         // The receiver's state, into the window (never under the engine's lock
         // while it is asked).
@@ -1199,9 +1211,10 @@ void engine::start_send_known(const std::string& fingerprint) {
   });
 }
 
-void engine::on_internet_link(std::unique_ptr<link> l, bool code) {
+void engine::on_internet_link(std::unique_ptr<link> l, bool code, std::string source) {
   if (!l) return;
-  on_incoming(std::make_unique<bearer_as>(std::move(l), transport::internet), true, std::nullopt, {}, -1, code);
+  on_incoming(std::make_unique<bearer_as>(std::move(l), transport::internet), true, std::nullopt, std::move(source),
+              -1, code);
 }
 
 void engine::note_unconfirmed() {
@@ -1241,18 +1254,28 @@ void engine::on_incoming(std::unique_ptr<link> l, bool internet, std::optional<k
     }
   }
   if (busy) {
-    std::lock_guard threads(threads_m_);
-    reap_helpers();
-    if (static_cast<int>(helpers_.size()) >= kMaxHelpers) return;  // the link closes as it goes
-    auto done = std::make_shared<std::atomic<bool>>(false);
-    helpers_.push_back({std::thread([this, done, internet, code, link = std::shared_ptr<driftwire::link>(std::move(l))]() mutable {
-                          try {
-                            route_busy(std::move(link), internet, code);
-                          } catch (...) {
-                          }
-                          done->store(true);
-                        }),
-                        done});
+    std::shared_ptr<driftwire::link> shared(std::move(l));
+    {
+      std::lock_guard threads(threads_m_);
+      reap_helpers();
+      if (make_helper_room_locked(internet, source)) {
+        auto st = std::make_shared<helper_state>();
+        st->unread = shared;
+        st->internet = internet;
+        st->source = std::move(source);
+        helpers_.push_back({std::thread([this, st, internet, code, link = std::move(shared)]() mutable {
+                              try {
+                                route_busy(std::move(link), *st, internet, code);
+                              } catch (...) {
+                              }
+                              st->done.store(true);
+                            }),
+                            st});
+        return;
+      }
+    }
+    // No room: closed outside threads_m_ (a close may wait a moment to drain).
+    shared->shutdown();
     return;
   }
   launch_transfer([this, internet, code, known_hour, link = std::move(l), from_known = std::move(from_known),
@@ -1276,7 +1299,7 @@ void engine::retire(std::unique_ptr<dht_handover> h) {
 
 void engine::reap_helpers() {
   for (auto it = helpers_.begin(); it != helpers_.end();) {
-    if (it->done->load()) {
+    if (it->s->done.load()) {
       it->thread.join();
       it = helpers_.erase(it);
     } else {
@@ -1285,13 +1308,58 @@ void engine::reap_helpers() {
   }
 }
 
-void engine::route_busy(std::shared_ptr<link> l, bool internet, bool code) {
+bool engine::make_helper_room_locked(bool internet, const std::string& source) {
+  if (helpers_.size() >= kMaxHelperThreads) return false;
+  int live = 0;
+  std::map<std::string, std::vector<helper_state*>> unread;  // per source
+  for (auto& h : helpers_) {
+    helper_state& s = *h.s;
+    if (s.done.load() || s.evicted || s.internet != internet) continue;
+    ++live;
+    if (s.unread) unread[s.source].push_back(&s);
+  }
+  // Which may go: a random one, so a rejoin whose hello is on its way (one
+  // round trip) is unlikely to be the one, even from the same address (a
+  // cafe's NAT) as someone opening connections as fast as they can.
+  std::vector<helper_state*> may;
+  const auto mine = unread.find(source);
+  if (internet && !source.empty() && mine != unread.end() &&
+      static_cast<int>(mine->second.size()) >= kUnreadPerSource) {
+    may = mine->second;  // its own share is full: one of its own goes
+  } else if (live >= (internet ? kMaxInternetHelpers : kMaxHelpers)) {
+    // One of the source with the most links in their hello.
+    std::size_t most = 0;
+    for (const auto& [from, links] : unread) {
+      if (links.size() > most) {
+        most = links.size();
+        may.clear();
+      }
+      if (links.size() == most) may.insert(may.end(), links.begin(), links.end());
+    }
+    if (may.empty()) return false;  // every one is past its hello
+  }
+  if (!may.empty()) {
+    helper_state* victim = may[randombytes_uniform(static_cast<std::uint32_t>(may.size()))];
+    victim->evicted = true;
+    victim->unread->shutdown();  // its read_hello returns now
+    victim->unread.reset();
+  }
+  return true;
+}
+
+void engine::route_busy(std::shared_ptr<link> l, helper_state& st, bool internet, bool code) {
   {
     std::lock_guard lock(m_);
     if (stopping_.load()) return;
     opening_.push_back(l);
   }
-  auto h = channel::read_hello(*l, std::chrono::steady_clock::now() + std::chrono::milliseconds(kConnectMs));
+  auto h = channel::read_hello(
+      *l, std::chrono::steady_clock::now() + std::chrono::milliseconds(internet ? kInternetHelloMs : kConnectMs));
+  {
+    std::lock_guard threads(threads_m_);
+    if (st.evicted) h = err(status::cancelled);  // closed to make room
+    st.unread.reset();
+  }
   if (h && h->rejoin) {
     // #472: the sender of the transfer under way, back on another link (or
     // the same bearer, after a drop). It goes to the session it names; a
@@ -1323,6 +1391,15 @@ void engine::route_busy(std::shared_ptr<link> l, bool internet, bool code) {
       in = internet_;
     }
     if (internet && code && in && in->spend()) in->release();
+    l->shutdown();
+    forget_opening(l);
+    return;
+  }
+  if (internet) {
+    // #496: a nearby hello (protocol 1, 2 or 3) has no business on the
+    // internet: closed before any handshake, so whoever found the way in or
+    // the code's port learns nothing of this machine (no static, no id, no
+    // name), busy or not (run_receive closes it when idle).
     l->shutdown();
     forget_opening(l);
     return;
@@ -3269,10 +3346,14 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
         }
         way_opener = std::thread([this, ch, &way, dht] {
           try {
-            auto w = way_in::open(opts_.internet_loopback, opts_.internet_mapping,
-                                  [this](std::unique_ptr<link> l) { on_internet_link(std::move(l)); },
-                                  data_file("driftwire_way_in.dat"));
+            auto w = way_in::open(
+                opts_.internet_loopback, opts_.internet_mapping,
+                [this](std::unique_ptr<link> l, std::string source) {
+                  on_internet_link(std::move(l), false, std::move(source));
+                },
+                data_file("driftwire_way_in.dat"));
             if (!w) return;
+            if (opts_.on_way_in) opts_.on_way_in(w->places());
             if (send_places(*ch, w->places(), dht)) {
               std::lock_guard lock(m_);
               v_.in_handover = true;

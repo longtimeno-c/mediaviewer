@@ -338,6 +338,51 @@ class tamper_link final : public sp::link {
   std::size_t written_ = 0;
 };
 
+// #496: a stranger who found an internet port says a nearby hello there
+// (protocol `version`, as a real client would): what came back before the
+// far side closed (bytes: a handshake's message 2, ident, busy), and how long
+// it took. `reached`: false when nothing listens there (the tests' way in
+// listens on ::1 only).
+struct probe_result {
+  bool reached = false;
+  bool opened = false;
+  std::size_t bytes = 0;
+  long long ms = 0;
+};
+inline probe_result probe_nearby(const sp::net::endpoint& at, std::uint32_t version) {
+  class counting final : public sp::link {
+   public:
+    explicit counting(std::unique_ptr<sp::link> in) : in_(std::move(in)) {}
+    mv::expected write_all(std::span<const std::uint8_t> b) override { return in_->write_all(b); }
+    mv::result<std::size_t> read_some(std::span<std::uint8_t> into, int ms) override {
+      auto n = in_->read_some(into, ms);
+      if (n) read.fetch_add(*n);
+      return n;
+    }
+    void shutdown() noexcept override { in_->shutdown(); }
+    sp::transport via() const noexcept override { return in_->via(); }
+    std::atomic<std::size_t> read{0};
+
+   private:
+    std::unique_ptr<sp::link> in_;
+  };
+  probe_result r;
+  auto c = sp::net::connect(at, 5000);
+  if (!c) return r;
+  r.reached = true;
+  auto l = std::make_shared<counting>(std::move(*c));
+  sp::channel::options o;
+  o.version = version;
+  const auto t0 = std::chrono::steady_clock::now();
+  auto ch = sp::channel::open(l, true, "mmmmmmmmmmmmmmmm", "Mallory", o);
+  r.ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+  r.opened = static_cast<bool>(ch);
+  if (ch) (*ch)->shutdown();
+  l->shutdown();
+  r.bytes = l->read.load();
+  return r;
+}
+
 
 // Beacons the test makes up, as a flood or a spoof would.
 // The engine starts it on its control thread; `ready` publishes `seen` to the

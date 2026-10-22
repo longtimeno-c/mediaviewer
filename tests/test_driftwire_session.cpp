@@ -421,6 +421,31 @@ TEST_CASE("driftwire session: a rejoin without the session's secret, or a replay
   CHECK(m.text() == "{\"still\":true}");
 }
 
+// #496: a rejoin whose sender got the answer but went quiet (its bearer
+// died under it) does not hold up the next one: only adopting is one at a
+// time, and the first to prove resume_at wins.
+TEST_CASE("driftwire session: a rejoin that never proves itself does not hold up the next", "[driftwire]") {
+  session_pair s = open_session();
+  auto stalled = try_loopback_pair();
+  REQUIRE(stalled);
+  mv::expected first = mv::err(mv::status::internal);
+  std::thread t([&] { first = accept_on(*s.b, stalled->second); });
+  auto pending = s.a->begin_rejoin(stalled->first, 5000);  // the receiver now waits for resume_at
+  REQUIRE(pending);
+  const auto t0 = clock_type::now();
+  CHECK(rejoin_pair(*s.a, *s.b));
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock_type::now() - t0).count();
+  CHECK(ms < 2000);  // not behind the stalled one's 4 s
+  pending->reset();  // closes its link: the receiver's half ends
+  t.join();
+  CHECK_FALSE(first);
+  CHECK(s.b->rejoins() == 1);
+  REQUIRE(s.a->send(sp::msg::offer, std::string_view("{\"still\":true}")));
+  sp::message m;
+  REQUIRE(s.b->receive(m, 5000));
+  CHECK(m.text() == "{\"still\":true}");
+}
+
 TEST_CASE("driftwire session: three rejoins in 10 s end the session", "[driftwire]") {
   session_pair s = open_session();
   CHECK(rejoin_pair(*s.a, *s.b));
@@ -757,6 +782,37 @@ TEST_CASE("driftwire session: Wi-Fi drops to Bluetooth, which goes out of range 
   std::printf("{\"case\":\"wifi_to_bluetooth\",\"to_bluetooth_ms\":%lld}\n", static_cast<long long>(to_bt_ms));
 }
 
+namespace {
+
+// #496: a link that keeps the first 4 KB written to it (a rejoin to replay).
+class write_recorder final : public sp::link {
+ public:
+  explicit write_recorder(std::shared_ptr<sp::link> in) : in_(std::move(in)) {}
+  mv::expected write_all(std::span<const std::uint8_t> b) override {
+    {
+      std::lock_guard lock(m_);
+      const std::size_t room = kKeep - std::min(bytes_.size(), kKeep);
+      bytes_.insert(bytes_.end(), b.begin(), b.begin() + static_cast<std::ptrdiff_t>(std::min(b.size(), room)));
+    }
+    return in_->write_all(b);
+  }
+  mv::result<std::size_t> read_some(std::span<std::uint8_t> into, int ms) override { return in_->read_some(into, ms); }
+  void shutdown() noexcept override { in_->shutdown(); }
+  sp::transport via() const noexcept override { return in_->via(); }
+  std::vector<std::uint8_t> bytes() {
+    std::lock_guard lock(m_);
+    return bytes_;
+  }
+
+ private:
+  static constexpr std::size_t kKeep = 4096;
+  std::shared_ptr<sp::link> in_;
+  std::mutex m_;
+  std::vector<std::uint8_t> bytes_;
+};
+
+}  // namespace
+
 // #472 PR 5: Ann sends to Bea over Wi-Fi, both with the internet on and
 // (unless `handover` is false) "Continue over the internet if Wi-Fi drops".
 // With a swarm, both also have "Find each other over the internet" (the DHT)
@@ -775,6 +831,11 @@ struct internet_pair {
   std::atomic<int> dht_met{0};
   std::atomic<inject_discovery*> ann_wifi{nullptr};
   std::function<void()> ann_after_end;  // set before a send starts (#502)
+  // #496: Bea's way in, once open; and how each link Ann made to it began.
+  std::mutex way_in_m;
+  std::vector<sp::net::endpoint> way_in_places;
+  std::vector<std::shared_ptr<write_recorder>> way_in_links;
+  std::atomic<std::size_t> way_in_rate{0};  // Ann's links to the way in (0: not slowed)
   std::optional<node> bea, ann;
   std::optional<beacon_pump> pump;
   internet_pair(const scratch_dir& s, bool handover, const swarm* dht_swarm = nullptr, bool ann_dht = true,
@@ -786,6 +847,10 @@ struct internet_pair {
     bo.internet_loopback = true;
     bo.internet_mapping = std::nullopt;
     if (dht_swarm) bo.dht_nodes = std::vector<sp::net::endpoint>{dht_swarm->seed()};
+    bo.on_way_in = [this](const std::vector<sp::net::endpoint>& places) {
+      std::lock_guard lock(way_in_m);
+      way_in_places = places;
+    };
     bea.emplace(s / "bea_received", bo);
     const std::uint16_t port = port_on(b);
     sp::engine::options ao = node_options("Ann", bt);
@@ -806,7 +871,12 @@ struct internet_pair {
       }
       auto c = sp::net::connect(to, ms);
       if (!c) return mv::err(c.error());
-      return std::move(*c);
+      auto rec = std::make_shared<write_recorder>(std::shared_ptr<sp::link>(std::move(*c)));
+      {
+        std::lock_guard lock(way_in_m);
+        way_in_links.push_back(rec);
+      }
+      return std::unique_ptr<sp::link>(std::make_unique<bearer_link>(rec, sp::transport::internet, &way_in_rate));
     };
     ao.wrap_handover_link = [this](std::unique_ptr<sp::link> l) -> std::unique_ptr<sp::link> {
       ++dht_met;
@@ -869,6 +939,176 @@ TEST_CASE("driftwire session: Wi-Fi drops and the send continues over the intern
   CHECK(eventually([&] { return !bea.eng.snapshot().in_handover; }));  // the way in closed with the transfer
   std::printf("{\"case\":\"wifi_to_internet\",\"moved_ms\":%lld}\n", static_cast<long long>(moved_ms));
 }
+
+// #496: the start of a nearby send with the handover on, the way in open.
+std::vector<sp::net::endpoint> way_in_open(internet_pair& p, const fs::path& src) {
+  node& ann = *p.ann;
+  node& bea = *p.bea;
+  ann.eng.set_files({utf8(src)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_count == 1 && !v.peers.empty() && v.peers[0].wifi;
+  }));
+  ann.eng.on_event("peers", 5, "\"" + bea.eng.id() + "\"");
+  confirm_and_accept(ann, bea);
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out_handover && bea.eng.snapshot().in_handover; }));
+  std::vector<sp::net::endpoint> places;
+  REQUIRE(eventually([&] {
+    std::lock_guard lock(p.way_in_m);
+    places = p.way_in_places;
+    return !places.empty();
+  }));
+  return places;
+}
+
+// Wi-Fi goes, with no Bluetooth: the send moves to the internet.
+void wifi_drops(internet_pair& p) {
+  p.pump->on.store(false);
+  p.wifi.refuse.store(true);
+  p.wifi.links.cut_all();
+  REQUIRE(eventually([&] { return p.ann->eng.snapshot().out_via == "the internet"; }, 15));
+}
+
+// #496: whoever finds the way in (the router's port, the public IPv6) while
+// a send runs. A nearby hello there, any protocol, is closed before any
+// handshake: no message 2 (no static key), no ident (no id, no name), not
+// even "busy". Connections held idle there, opened again as soon as they
+// close, do not keep the send's move out.
+TEST_CASE("driftwire session: the way in says nothing to a nearby hello, and idle connections do not stop the move (#496)",
+          "[driftwire]") {
+  scratch_dir s("driftwire_way_in_strangers");
+  internet_pair p(s, true);
+  p.wifi.rate.store(2 * 1024 * 1024);  // still sending over Wi-Fi when the jam is up
+  const fs::path src = big_file(s / "out", 48ull * 1024 * 1024);
+  auto places = way_in_open(p, src);
+  // The places something listens at (the tests' way in: ::1 only).
+  std::erase_if(places, [](const sp::net::endpoint& at) {
+    auto c = sp::net::connect(at, 2000);
+    if (c) (*c)->shutdown();
+    return !c;
+  });
+  REQUIRE_FALSE(places.empty());
+  for (const auto& at : places) {
+    for (const std::uint32_t v : {sp::kProtocol1, sp::kProtocol2, sp::kProtocolVersion}) {
+      INFO("protocol " << v << " at " << at.address);
+      const auto r = probe_nearby(at, v);
+      REQUIRE(r.reached);
+      CHECK_FALSE(r.opened);
+      CHECK(r.bytes == 0);
+      CHECK(r.ms < 1500);
+    }
+  }
+  CHECK(p.bea->eng.snapshot().in == sp::view::in_phase::receiving);  // the send never noticed
+
+  // More idle connections than the busy path ever had room for, on every
+  // place, each opened again the moment it closes.
+  std::atomic<bool> stop{false};
+  std::atomic<int> held{0};
+  std::atomic<int> made{0};
+  std::thread jam([&] {
+    std::vector<std::unique_ptr<sp::link>> idle(4 * places.size());
+    std::uint8_t buf[64];
+    while (!stop.load()) {
+      int up = 0;
+      for (std::size_t i = 0; i < idle.size() && !stop.load(); ++i) {
+        auto& l = idle[i];
+        if (l) {
+          auto n = l->read_some(buf, 2);
+          if (!n && n.error() == mv::status::timeout) {
+            ++up;
+            continue;
+          }
+          l->shutdown();
+          l.reset();
+        }
+        auto c = sp::net::connect(places[i % places.size()], 2000);
+        if (c) {
+          l = std::move(*c);
+          ++made;
+          ++up;
+        }
+      }
+      held.store(up);
+    }
+    for (auto& l : idle) {
+      if (l) l->shutdown();
+    }
+  });
+  struct joiner {
+    std::atomic<bool>& stop;
+    std::thread& t;
+    ~joiner() {
+      stop.store(true);
+      if (t.joinable()) t.join();
+    }
+  } join_jam{stop, jam};
+  REQUIRE(eventually([&] { return held.load() == static_cast<int>(4 * places.size()); }));
+  CHECK(p.bea->eng.snapshot().in == sp::view::in_phase::receiving);
+
+  const auto t0 = clock_type::now();
+  wifi_drops(p);
+  const auto moved_ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock_type::now() - t0).count();
+  CHECK(moved_ms <= 5000);
+  p.ann->eng.wait_idle();
+  p.bea->eng.wait_idle();
+  INFO(p.ann->eng.snapshot().out_note);
+  CHECK(p.ann->eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(p.bea->eng.snapshot().in == sp::view::in_phase::done);
+  CHECK(same_bytes(src, s / "bea_received" / "clip.mov"));
+  std::printf("{\"case\":\"way_in_jammed\",\"moved_ms\":%lld,\"idle_opened\":%d}\n", static_cast<long long>(moved_ms),
+              made.load());
+}
+
+// #496: someone on the path (the cafe's Wi-Fi) saw the send's rejoin to the
+// way in, and plays it back. Each tag opens once: the copy is closed before
+// a byte is answered, and it holds nothing up.
+TEST_CASE("driftwire session: a rejoin played back to the way in is closed at once, and the send goes on (#496)",
+          "[driftwire]") {
+  scratch_dir s("driftwire_way_in_replay");
+  internet_pair p(s, true);
+  p.way_in_rate.store(3 * 1024 * 1024);  // the rest takes seconds over the internet: time to replay
+  const fs::path src = big_file(s / "out", 32ull * 1024 * 1024);
+  const auto places = way_in_open(p, src);
+  REQUIRE(bytes_arrive(*p.ann, *p.bea, 4 * 1024 * 1024));
+  wifi_drops(p);
+  std::vector<std::uint8_t> replay;
+  {
+    std::lock_guard lock(p.way_in_m);
+    for (const auto& rec : p.way_in_links) {
+      auto bytes = rec->bytes();
+      if (bytes.size() > replay.size() && bytes.size() >= 6 && std::memcmp(bytes.data(), "MVSP\x02R", 6) == 0) {
+        replay = std::move(bytes);
+      }
+    }
+  }
+  REQUIRE(replay.size() > 6 + 16);  // the hello, its first message, resume_at and more
+  for (int i = 0; i < 3; ++i) {
+    INFO("replay " << i);
+    auto c = sp::net::connect(places[0], 5000);
+    REQUIRE(c);
+    const auto t0 = clock_type::now();
+    (void)(*c)->write_all(replay);
+    std::size_t answered = 0;
+    std::uint8_t buf[256];
+    for (;;) {
+      auto n = (*c)->read_some(buf, 6000);
+      if (!n || *n == 0) break;
+      answered += *n;
+    }
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(clock_type::now() - t0).count();
+    (*c)->shutdown();
+    CHECK(answered == 0);
+    CHECK(ms < 1000);
+  }
+  CHECK(p.ann->eng.snapshot().out_via == "the internet");
+  p.ann->eng.wait_idle();
+  p.bea->eng.wait_idle();
+  INFO(p.ann->eng.snapshot().out_note);
+  CHECK(p.ann->eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(p.bea->eng.snapshot().in == sp::view::in_phase::done);
+  CHECK(same_bytes(src, s / "bea_received" / "clip.mov"));
+}
+
 
 TEST_CASE("driftwire session: with the handover toggle off, no internet places are offered", "[driftwire]") {
   scratch_dir s("driftwire_handover_off");
