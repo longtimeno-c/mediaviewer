@@ -424,7 +424,7 @@ jobs:
     runs-on: windows-latest
     # ASan runs the same suite several times slower; its leg gets the room
     # below, the others keep the tighter budget that catches a hang early.
-    timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 70 || 40 }}
+    timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 85 || 50 }}
     strategy:
       fail-fast: false
       matrix:
@@ -522,8 +522,10 @@ jobs:
         # gets 45, and its job 70 (the build before it takes ~13). The Release
         # legs outgrew 15 by 2026-10-20 (clang-cl: 12-14 min on every branch,
         # #511 and #517 timed out with 1566 of 1582 done, the PDF sweep 162 s;
-        # no test hung), so they get 20.
-        timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 45 || matrix.config == 'Debug' && 25 || 20 }}
+        # no test hung), so they get 20. By 2026-10-22 main's msvc Debug took
+        # 24.4 of its 25 min and ASan 44.5 of its 45 (#543 timed out at 25 with
+        # no test hung), so Debug gets 35 (job 50) and ASan 60 (job 85).
+        timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 60 || matrix.config == 'Debug' && 35 || 20 }}
         env:
           MV_BROKEN_DUMP: ${{ github.workspace }}/broken-dump
           # A missing clip or sample FAILS here instead of skipping
