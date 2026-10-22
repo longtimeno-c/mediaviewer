@@ -204,7 +204,8 @@ struct AddonPageView: View {
   @ObservedObject private var nav = AddonNav.shared
 
   init(id: String) { self.id = id }
-  @ObservedObject private var slots = SlotAddonsSection.Installed.shared
+  @ObservedObject private var installed = SlotAddonsSection.Installed.shared
+  @ObservedObject private var slots = SlotStore.shared
 
   private var title: String {
     switch id {
@@ -213,7 +214,7 @@ struct AddonPageView: View {
     case AddonNav.othersPage: return AddonListWords.fromOthers
     case "places": return "Places"
     case DriftwireStore.addonID: return "Driftwire"
-    default: return slots.rows.first { $0.id == id }?.name ?? id
+    default: return installed.rows.first { $0.id == id }?.name ?? id
     }
   }
 
@@ -243,8 +244,44 @@ struct AddonPageView: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
       .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
+      // The add-on's own settings (place "settings"), its cards under this one:
+      // never a card in a card.
+      if let screen = slots.settingsScreens[id] {
+        AddonSettingsScreen(address: ScreenAddress(addon: id, screen: screen))
+          .padding(.top, MVTheme.space(4))
+      }
     }
     .padding(.top, MVTheme.space(12))
     .onExitCommand { nav.back() }
+  }
+}
+
+/// An add-on's settings page (contribution API 8, place "settings"): its view
+/// tree drawn in Settings with the window's renderer, open while the page shows
+/// and Settings is up. The Windows twin is IslandHost.AddonList.cs.
+struct AddonSettingsScreen: View {
+  let address: ScreenAddress
+  @ObservedObject private var slots = SlotStore.shared
+  @ObservedObject private var settings = SettingsStore.shared
+
+  var body: some View {
+    // A stack that is there before the tree is: an empty Group never appears,
+    // so it would never ask for the screen.
+    VStack(alignment: .leading, spacing: 0) {
+      Color.clear.frame(height: 0)
+      if let screen = slots.screens.first(where: { $0.addon == address.addon && $0.screen == address.screen }),
+         let tree = screen.tree {
+        ScreenNodeView(node: tree, address: address, revision: screen.revision)
+          .environment(\.screenWindow, true)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .onAppear { if settings.visible { slots.openSettingsScreen(address) } }
+    .onDisappear { slots.close(address) }
+    .onChange(of: settings.visible) { _, visible in
+      if visible { slots.openSettingsScreen(address) } else { slots.close(address) }
+    }
+    // The add-on loaded again (an update): ask again, a no-op while still open.
+    .onChange(of: slots.settingsScreens) { _, _ in if settings.visible { slots.openSettingsScreen(address) } }
   }
 }

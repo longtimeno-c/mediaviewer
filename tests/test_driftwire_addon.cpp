@@ -100,10 +100,14 @@ TEST_CASE("driftwire: the shipped manifest declares one window, one context entr
   const auto d = mv::addon::check_manifest(bytes_of(m), k.sign(m), k.pub, MV_ADDON_HOST_API);
   REQUIRE(rejection_name(d.why) == std::string("ok"));
   const auto& c = d.m.slots;
-  REQUIRE(c.screens.size() == 1);
+  REQUIRE(c.screens.size() == 2);
   CHECK(c.screens[0].id == "driftwire");
   CHECK(c.screens[0].title == "Driftwire");
   CHECK(c.screens[0].place == mv::addon::screen_place::window);
+  // Its page in Settings -> Add-ons (contribution API 8).
+  CHECK(c.screens[1].id == "settings");
+  CHECK(c.screens[1].place == mv::addon::screen_place::settings);
+  CHECK(c.api_min == 8);
   REQUIRE(c.items.size() == 2);
   CHECK(c.items[0].id == "send_files");
   CHECK(c.items[0].slot == mv::addon::item_slot::context);
@@ -201,6 +205,35 @@ TEST_CASE("driftwire: the window opens from a command with its files, offline", 
   CHECK(reg.run_command("driftwire", "open", R"({"no":1})") == status::invalid_arg);
   REQUIRE(reg.close_screen("driftwire", "driftwire") == status::ok);
   reg.drain();
+
+  // Its page in Settings: the window's settings, and the same engine behind them.
+  // Opening it is not the window: no presence starts and nothing is listed open
+  // but the page.
+  mv_slot_theme theme{};
+  REQUIRE(reg.open_screen("driftwire", "settings", "", theme, 0, 0, 2) == status::ok);
+  REQUIRE(eventually([&] {
+    reg.drain();
+    return reg.screens_json().find("Keep receiving when the Driftwire window is closed") != std::string::npos;
+  }));
+  {
+    const auto open = mv::json::parse(reg.screens_json());
+    REQUIRE(open->a.size() == 1);
+    CHECK(*open->a[0].str("place") == "settings");
+    CHECK(reg.screens_json().find("Offline: nothing nearby") == std::string::npos);
+  }
+  REQUIRE(reg.send_event("driftwire", "settings", "internet", 2, "true") == status::ok);
+  REQUIRE(eventually([&] {
+    reg.drain();
+    return reg.screens_json().find("Find each other through the public DHT") != std::string::npos;
+  }));
+  REQUIRE(reg.send_event("driftwire", "settings", "internet", 2, "false") == status::ok);
+  REQUIRE(eventually([&] {
+    reg.drain();
+    return reg.screens_json().find("Find each other through the public DHT") == std::string::npos;
+  }));
+  REQUIRE(reg.close_screen("driftwire", "settings") == status::ok);
+  reg.drain();
+  CHECK(mv::json::parse(reg.screens_json())->a.empty());
 
   // Keep receiving: the toggle is kept in the add-on's data folder.
   REQUIRE(reg.invoke_item("driftwire", "send_files", one) == status::ok);
