@@ -49,6 +49,10 @@
 
 namespace mv::driftwire {
 
+namespace relay {
+class waiting;
+}
+
 inline constexpr int kCodeLifetimeMs = 10 * 60 * 1000;
 // A router lease (#499): short, renewed while held (mapping::keeper), so a
 // crash leaves a forward or pinhole open two minutes at most.
@@ -129,7 +133,8 @@ class internet_receiver {
   void notify();
   // #472 relays: waits at the relay server while the code does, handing on
   // each sender it is paired with (once that sender has spoken).
-  void relay_loop(net::endpoint at, std::array<std::uint8_t, 16> token, std::string key, std::unique_ptr<link> first);
+  void relay_loop(net::endpoint at, std::array<std::uint8_t, 16> token, std::string key,
+                  std::unique_ptr<relay::waiting> first);
 
   options opts_;
   link_fn on_link_;
