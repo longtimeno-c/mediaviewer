@@ -9,8 +9,9 @@
 //
 // Receiver: the same rule as io::verified_copy (docs/design/24), on bytes
 // that arrive from a link instead of a file:
-//   - each file goes to a sibling temporary ("<final>.mvtmp") created
-//     exclusively, hashed as it is written;
+//   - each file goes to a sibling temporary ("<final>.mvtmp"; on Linux,
+//     which has no hidden flag, ".<leaf>.mvtmp") created exclusively, hashed
+//     as it is written;
 //   - at file_end the hash must match the sender's, the temporary is flushed
 //     to stable storage, read back uncached and hashed again;
 //   - only then is it renamed into place, never over anything: a taken name
@@ -209,7 +210,9 @@ inline constexpr std::size_t kMaxPlaces = 8;
                                    const resume_plan* plan = nullptr);
 [[nodiscard]] expected send_decline(channel& ch, outcome why);  // declined, busy or no_room
 
-// "<final>.mvtmp", "<final>.mvtmp2" ... (the temporary io::verified_copy uses).
+// "<final>.mvtmp", "<final>.mvtmp2" ... (the temporary io::verified_copy
+// uses). Where the OS has no hidden flag (io::kHasHiddenFlag: Linux) the leaf
+// starts with a dot as well: "<dir>/.<leaf>.mvtmp".
 [[nodiscard]] std::string temp_name(const std::string& final_path, int attempt);
 
 }  // namespace mv::driftwire

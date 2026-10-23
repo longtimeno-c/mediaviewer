@@ -13,8 +13,12 @@
 //                    value sealed with DPAPI (#501): any process of the
 //                    same user can read or plant the items, but one not
 //                    sealed by Driftwire is refused.
-//   secrets_file.cpp a file per name in a folder, for the tests and the
-//                    portable build (it says so; it is not a secret store)
+//   secrets_linux.cpp the freedesktop Secret Service (GNOME Keyring,
+//                    KWallet, KeePassXC) through libsecret loaded at run
+//                    time, items "<service>" / <name>, each value sealed as
+//                    on Windows. None without a session bus or a keyring.
+//   secrets_file.cpp a file per name in a folder, for the tests (it says so;
+//                    it is not a secret store)
 //
 // Values are small (at most kMaxValue bytes: Credential Manager's limit, less DPAPI).
 // Every call is on a worker; none is on the UI or render thread.
@@ -52,7 +56,7 @@ inline constexpr const char* kCliService = "Driftwire CLI";
 [[nodiscard]] std::unique_ptr<store> os_store(const std::string& service);
 // The add-on's: os_store(kAppService).
 [[nodiscard]] std::unique_ptr<store> os_store();
-// A folder of files (the tests; the portable build).
+// A folder of files (the tests).
 [[nodiscard]] std::unique_ptr<store> file_store(const std::string& folder);
 #if defined(__APPLE__)
 // os_store() under another service name (the tests). Removes that service's

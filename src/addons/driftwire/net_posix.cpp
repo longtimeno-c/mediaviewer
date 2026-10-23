@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// net.h over BSD sockets (macOS, and the portable build).
+// net.h over BSD sockets (macOS and Linux).
 #include "addons/driftwire/net.h"
 
 #include <arpa/inet.h>
@@ -25,7 +25,6 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
-#include <fstream>
 #include <vector>
 #include <cerrno>
 #include <chrono>
@@ -55,6 +54,33 @@ void no_sigpipe(int fd) noexcept {
 }
 
 void close_on_exec(int fd) noexcept { (void)::fcntl(fd, F_SETFD, FD_CLOEXEC); }
+
+#if !defined(__APPLE__)
+// A small settings file's text, at most `cap` bytes; "" when it cannot be
+// read: /proc, /etc and the user's ~/.config. (A /proc file says its size is
+// 0, so it is read to its end.)
+std::string read_text(const char* path, std::size_t cap) {
+  std::string out;
+  const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return out;
+  char buf[4096];
+  while (out.size() < cap) {
+    const ssize_t n = ::read(fd, buf, sizeof buf);
+    if (n < 0 && errno == EINTR) continue;
+    if (n <= 0) break;
+    out.append(buf, static_cast<std::size_t>(n));
+  }
+  ::close(fd);
+  if (out.size() > cap) out.resize(cap);
+  return out;
+}
+
+std::string_view trim_spaces(std::string_view s) noexcept {
+  while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.remove_prefix(1);
+  while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.remove_suffix(1);
+  return s;
+}
+#endif
 
 // Waits for `events` on `fd`, or a timeout (< 0: forever). Retries EINTR.
 int wait_for(int fd, short events, int timeout_ms) noexcept {
@@ -428,20 +454,8 @@ std::optional<address> default_gateway() {
   }
   return std::nullopt;
 #else
-  // Linux: /proc/net/route, the line whose destination is 0.
-  std::ifstream f("/proc/net/route");
-  std::string iface, dest, gw;
-  std::string line;
-  std::getline(f, line);
-  while (f >> iface >> dest >> gw) {
-    std::getline(f, line);
-    if (dest != "00000000") continue;
-    const unsigned long v = std::strtoul(gw.c_str(), nullptr, 16);
-    address a;
-    std::memcpy(a.bytes.data(), &v, 4);  // little-endian text of a network-order word
-    return a;
-  }
-  return std::nullopt;
+  // Linux: the routing table as the kernel prints it (parse_default_route).
+  return parse_default_route(read_text("/proc/net/route", 1 << 20));
 #endif
 }
 
@@ -903,11 +917,29 @@ std::string downloads_folder() {
   }
   if (home.empty()) return {};
   while (home.size() > 1 && home.back() == '/') home.pop_back();
+#if !defined(__APPLE__)
+  // The folder xdg-user-dirs names (what Files shows as Downloads, in the
+  // desktop's language), from $XDG_CONFIG_HOME (an absolute path, else
+  // ignored) or ~/.config.
+  std::string config = home + "/.config";
+  if (const char* x = std::getenv("XDG_CONFIG_HOME"); x && *x == '/') config = x;
+  if (std::string d = parse_user_dirs_download(read_text((config + "/user-dirs.dirs").c_str(), 64 * 1024), home);
+      !d.empty()) {
+    return d;
+  }
+#endif
   return home + "/Downloads";
 }
 
 #if !defined(__APPLE__)
 std::string machine_name() {
+  // The name the desktop's Settings give the machine ("Tristan's ThinkPad";
+  // hostnamed keeps it in /etc/machine-info), then the host name up to its
+  // first dot. Both local reads: nothing is looked up.
+  if (const std::string pretty = parse_pretty_hostname(read_text("/etc/machine-info", 64 * 1024));
+      !trim_spaces(pretty).empty()) {
+    return clean_name(pretty);
+  }
   char host[256] = {};
   if (::gethostname(host, sizeof host - 1) != 0) return clean_name("");
   std::string s(host);

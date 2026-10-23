@@ -162,7 +162,15 @@ const char* outcome_name(outcome o) noexcept {
 }
 
 std::string temp_name(const std::string& final_path, int attempt) {
-  std::string out = final_path + ".mvtmp";
+  std::string out;
+  if constexpr (io::kHasHiddenFlag) {
+    out = final_path;
+  } else {
+    // Linux has no hidden flag: a leading dot is what file managers and ls
+    // leave out, so the half-received file is not taken for the finished one.
+    out = io::join_path(io::parent_of(final_path), "." + std::string(io::file_name_of(final_path)));
+  }
+  out += ".mvtmp";
   if (attempt > 0) out += std::to_string(attempt + 1);
   return out;
 }

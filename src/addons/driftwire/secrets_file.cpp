@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// secrets.h over a folder of files: the tests, and the portable build where
-// there is no OS store. Names are hex-encoded into file names.
+// secrets.h over a folder of files: the tests (it says so; it is not a secret
+// store). Names are hex-encoded into file names.
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -46,10 +46,5 @@ class folder_store final : public store {
 }  // namespace
 
 std::unique_ptr<store> file_store(const std::string& folder) { return std::make_unique<folder_store>(folder); }
-
-#if !defined(__APPLE__) && !defined(_WIN32)
-std::unique_ptr<store> os_store(const std::string&) { return nullptr; }
-std::unique_ptr<store> os_store() { return os_store(kAppService); }
-#endif
 
 }  // namespace mv::driftwire::secrets

@@ -57,7 +57,10 @@ elseif(APPLE)
   set(_driftwire_port ${_S}/net_posix.cpp ${_S}/machine_mac.cpp ${_S}/secrets_mac.cpp ${_S}/power_mac.cpp)
   set(_driftwire_bt ${_S}/bt_mac.mm)
 else()
-  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/power_none.cpp)
+  # Linux: the Secret Service (libsecret) and logind (libsystemd / libelogind)
+  # are loaded at run time, so there is nothing to build against; no
+  # Bluetooth bearer yet (bt_none.cpp: Wi-Fi and the internet only).
+  set(_driftwire_port ${_S}/net_posix.cpp ${_S}/secrets_linux.cpp ${_S}/power_linux.cpp)
   set(_driftwire_bt ${_S}/bt_none.cpp)
 endif()
 
@@ -108,6 +111,9 @@ elseif(APPLE)
   # Security: the Keychain (#472 PR 4). IOKit: staying awake during a transfer (#530).
   target_link_libraries(mv_driftwire_engine PUBLIC "-framework CoreFoundation" "-framework SystemConfiguration"
     "-framework Security" "-framework IOKit")
+else()
+  # dlopen: libsecret (secrets_linux.cpp), libsystemd (power_linux.cpp).
+  target_link_libraries(mv_driftwire_engine PUBLIC ${CMAKE_DL_LIBS})
 endif()
 
 if(WIN32)

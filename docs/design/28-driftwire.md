@@ -792,6 +792,16 @@ are online. The receiver still accepts or declines every transfer. (`secrets.*`,
     boundary against a program of the same user that calls DPAPI the same way (the entropy is in
     the source). Items from before #501 are refused, so a PC also remembers its devices again after
     the update, as a Mac does; the new ones overwrite them.
+  - **Linux:** the freedesktop Secret Service (GNOME Keyring, KWallet, KeePassXC), through
+    libsecret loaded at run time (`secrets_linux.cpp`; nothing to build against). Items have the
+    schema `io.github.longtimeno_c.Driftwire`, a `service` ("MediaViewer Driftwire", or the
+    command line's "Driftwire CLI") and a `name`, in the default collection (the login keyring,
+    which the login unlocks). The Secret Service has no per-app access: any process of the same
+    user on the session bus can read, list or plant an item. So each value goes in sealed
+    (`crypto_secretbox`, a key from "<service> secrets v1"), and one that does not open is
+    refused, as on Windows; it is no boundary against a program of the same user that does the
+    same. Without a session bus nothing is loaded; a service that does not answer a probe within
+    10 s, or a call that does not end in 10 s (an unlock prompt nobody answers), is no store.
 
   It is the static of the handshakes behind CPace (an internet code, a remembered device's
   meeting); nearby it is said sealed after the code and Accept ([The wire](#the-wire)). Where there is no store (or it does
@@ -960,9 +970,13 @@ link. The tests check that no 32-byte run of the file passes through either rela
 - **Staying awake** (#530). From the accept to the end, each side holds a request that the system
   not sleep from idleness (`power.h`: `PowerCreateRequest` / `PowerSetRequest(
   PowerRequestSystemRequired)` with a reason on Windows, `powercfg /requests`; an IOKit
-  `PreventUserIdleSystemSleep` assertion on the Mac, `pmset -g assertions`; nothing in the Linux
-  test build). The display may turn off and the screen lock. A closed lid, a shutdown or a flat
-  battery is not held off: resume is for those.
+  `PreventUserIdleSystemSleep` assertion on the Mac, `pmset -g assertions`; a systemd-logind
+  `sleep` inhibitor in `block` mode on Linux, `systemd-inhibit --list`, through libsystemd or
+  libelogind loaded at run time, none without a system bus or when polkit refuses; asking takes
+  at most 2 s, even of a bus that never answers). The reason names the app ("MediaViewer is
+  receiving files (Driftwire)"; the command line's, "Driftwire is receiving files":
+  `power::set_owner`). The display may turn off and the screen lock. A closed lid, a shutdown or a
+  flat battery is not held off: resume is for those.
 
 ## Resuming a receive that stopped (#530)
 
@@ -981,9 +995,11 @@ written, and the next send started from zero (and sent again what had arrived, l
   decline keeps nothing, as before. One record per sender, at most 8; one unused for 7 days goes
   with its temporary (on the control thread at start); **Discard** removes one.
 - **Never taken for the finished file.** The temporary keeps its `.mvtmp` name (never the final
-  name or extension), is hidden (`io::set_hidden`: `FILE_ATTRIBUTE_HIDDEN`, `UF_HIDDEN`; the Linux
-  test build has no such flag), and is shown again just before its rename, since the flag travels
-  with it. MediaViewer's own folder listing never lists `.mvtmp`.
+  name or extension), is hidden (`io::set_hidden`: `FILE_ATTRIBUTE_HIDDEN`, `UF_HIDDEN`), and is
+  shown again just before its rename, since the flag travels with it. Linux has no such flag, so
+  there the temporary's name starts with a dot (`.IMG_1.JPG.mvtmp`), which Files, Dolphin and
+  `ls` leave out (`io::kHasHiddenFlag`, `transfer.h`'s `temp_name`). MediaViewer's own folder
+  listing never lists `.mvtmp`.
 - **The same sender, the same files.** The offer now says each file's time and `"resume": true`.
   When an offer comes from a sender that says its identity and has a record into the same
   folder, a file with the same path, size and time is matched: one whole and still there at its
@@ -1092,7 +1108,8 @@ second while bytes move; those posts update chrome and never present the canvas.
   about a session is written down, except what Remember keeps (#472 PR 4): the peer's name, key
   and pairing secret, in the OS's secret store, never a plain file, until Forget. On the Mac that is
   the data protection keychain in the app's own access group, this device only (#501); on Windows
-  Credential Manager, each value sealed with DPAPI ([Remembered devices](#remembered-devices-472-pr-4)).
+  Credential Manager, each value sealed with DPAPI; on Linux the Secret Service, each value sealed
+  the same way ([Remembered devices](#remembered-devices-472-pr-4)).
   Key material in memory is wiped when it goes (#501): the session's resume secret with the
   channel, the identity and the code with every copy of a channel's options, and CPace's buffers
   are sized once, so no reallocation leaves a copy of the code or its key behind.
@@ -1163,7 +1180,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 | The way in for Wi-Fi → internet (#472 PR 5) | `internet.*` (`way_in`), `transfer.*` (`places`) |
 | Relays: the splice and rendezvous, the own-device relay, the relay server program (#472) | `splice.*`, `relay.*`, `engine_relay.cpp`, `tools/driftwire-relay/main.cpp` |
 | The DHT meeting when both sides move (#472) | `handover.*` (`dht_handover`), `channel.*` (`handover_secret`) |
-| The identity, remembered devices and their hourly keys (#472 PR 4) | `secrets.h`, `secrets_mac.cpp` (Keychain), `secrets_win.cpp` (Credential Manager), `secrets_file.cpp`, `known.*` |
+| The identity, remembered devices and their hourly keys (#472 PR 4) | `secrets.h`, `secrets_mac.cpp` (Keychain), `secrets_win.cpp` (Credential Manager), `secrets_linux.cpp` (Secret Service), `secrets_file.cpp`, `known.*` |
 | Sealed channel, and protocol 2's session (replay, rejoin, resume) | `channel.*`, `link.h` |
 | Sending and the verified receive | `transfer.*` |
 | Engine, presence, the window's tree | `engine.*`, `presence.*`, `tree.cpp` |
@@ -1180,6 +1197,8 @@ second while bytes move; those posts update chrome and never present the canvas.
 ## Not built
 
 - Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6 on the LAN.
+- Bluetooth on Linux: there is no BlueZ bearer (`bt_none.cpp`), so Linux sends over Wi-Fi and the
+  internet only.
 - Over the internet, after the relays: Tor (dropped for now, [plan](../plans/driftwire-tor-spike.md)),
   TURN, relaying word codes, remembered-device sends and the handover, a relayed send moving.
 - The rest of #472, deferred by the owner (2026-10-18, [12](12-decision-log.md#driftwire)):

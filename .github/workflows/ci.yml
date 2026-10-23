@@ -212,7 +212,7 @@ jobs:
   # same test files the Windows and Mac mv_tests build.
   # ---------------------------------------------------------------------------
   portable-core:
-    name: Portable core (Import engine, clip editing; Linux, ASan)
+    name: Portable core (Import engine, clip editing, Driftwire; Linux, ASan)
     if: ${{ github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
     defaults:
@@ -246,13 +246,16 @@ jobs:
       # libjpeg for the clip core's suite (mv_clip_tests, mv_trim_tests). The
       # distro FFmpeg is a test dependency only; the product FFmpeg is the
       # pinned LGPL vcpkg port (tools/licence-check.ps1), and the clip tests
-      # write their fixtures with FFmpeg's own MPEG-4 / MP2 encoders.
+      # write their fixtures with FFmpeg's own MPEG-4 / MP2 encoders. dbus,
+      # gnome-keyring and libsecret: a Secret Service for Driftwire's Linux
+      # secret store (secrets_linux.cpp loads libsecret-1.so.0 at run time;
+      # secret-tool checks the keyring before the tests, see Tests).
       - name: Build tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends autoconf autoconf-archive automake libtool pkg-config python3-cryptography \
             libavformat-dev libavcodec-dev libavfilter-dev libavutil-dev libswscale-dev libswresample-dev \
-            libspng-dev libjpeg-turbo8-dev
+            libspng-dev libjpeg-turbo8-dev dbus gnome-keyring libsecret-1-0 libsecret-tools
 
       - name: Configure
         run: |
@@ -264,9 +267,41 @@ jobs:
       - name: Build
         run: cmake --build build-portable
 
+      # A session bus of the job's own with gnome-keyring's login keyring made
+      # and unlocked (a throwaway password: the runner and its keyring go with
+      # the job), so Driftwire's Secret Service case runs. gnome-keyring-daemon
+      # exits 0 even when it made no keyring, so secret-tool stores and reads
+      # back an item first; only then is the case required to run
+      # (MV_SECRET_SERVICE=required). If any of it fails, the case skips with
+      # a warning here and the rest runs as before. 30 minutes, not 15: with
+      # Driftwire's suite in it, mv_import_tests took 623 s (10.4 min) in this
+      # Debug + ASan configuration on a 4-vCPU Linux container (2026-10-23),
+      # most of it the suite waiting out its 20 s session and rejoin
+      # deadlines; the clip suites come on top.
       - name: Tests
-        timeout-minutes: 15
-        run: ctest --test-dir build-portable --output-on-failure
+        timeout-minutes: 30
+        run: |
+          if addr=$(dbus-daemon --session --fork --print-address=1 2>/dev/null) && [ -n "$addr" ]; then
+            export DBUS_SESSION_BUS_ADDRESS="$addr"
+            printf 'driftwire-ci' | timeout 20 gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1 || true
+            # Until it holds the service's name: a call before that would start a
+            # second daemon through D-Bus activation, one with no keyring unlocked.
+            for _ in $(seq 50); do
+              dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+                org.freedesktop.DBus.NameHasOwner string:org.freedesktop.secrets 2>/dev/null | grep -q 'boolean true' && break
+              sleep 0.1
+            done
+            if printf 'probe' | timeout 20 secret-tool store --label='CI probe' mv-ci probe 2>/dev/null &&
+              [ "$(timeout 20 secret-tool lookup mv-ci probe 2>/dev/null)" = probe ]; then
+              timeout 20 secret-tool clear mv-ci probe 2>/dev/null || true
+              export MV_SECRET_SERVICE=required
+            else
+              echo "::warning::gnome-keyring took no item: Driftwire's Secret Service case skips"
+            fi
+          else
+            echo "::warning::no D-Bus session: Driftwire's Secret Service case skips"
+          fi
+          ctest --test-dir build-portable --output-on-failure
 
   # ---------------------------------------------------------------------------
   # One install of the manifest. FFmpeg alone is about 22 minutes from source,

@@ -12,6 +12,8 @@
 #endif
 #include <windows.h>
 
+#include <string>
+
 namespace mv::driftwire::power {
 
 namespace {
@@ -31,12 +33,17 @@ class request final : public stay_awake {
 }  // namespace
 
 std::unique_ptr<stay_awake> hold(bool receiving) noexcept {
+  std::wstring text;
+  try {
+    // ASCII: the owner is a literal of ours.
+    for (const char c : reason(receiving)) text.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
+  } catch (...) {
+    return nullptr;
+  }
   REASON_CONTEXT why{};
   why.Version = POWER_REQUEST_CONTEXT_VERSION;
   why.Flags = POWER_REQUEST_CONTEXT_SIMPLE_STRING;
-  wchar_t receiving_text[] = L"MediaViewer is receiving files (Driftwire)";
-  wchar_t sending_text[] = L"MediaViewer is sending files (Driftwire)";
-  why.Reason.SimpleReasonString = receiving ? receiving_text : sending_text;
+  why.Reason.SimpleReasonString = text.data();
   HANDLE h = ::PowerCreateRequest(&why);
   if (h == INVALID_HANDLE_VALUE) return nullptr;
   if (!::PowerSetRequest(h, PowerRequestSystemRequired)) {
