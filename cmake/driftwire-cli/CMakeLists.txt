@@ -68,7 +68,9 @@ if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   message(WARNING "The driftwire packages are built and tested with GCC; ${CMAKE_CXX_COMPILER_ID} is not")
 endif()
 
-# ---- hardening (every target: the libraries are linked into the program) ---
+# ---- hardening: every target of this project (the engine and the command
+# line's libraries are linked into the program); vcpkg builds its ports with
+# its own flags ------------------------------------------------------------
 include(CheckPIESupported)
 check_pie_supported(LANGUAGES C CXX)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -77,8 +79,12 @@ add_compile_options(-fstack-protector-strong -fstack-clash-protection
   # stated, and only with optimisation (glibc warns, -Werror fails, without).
   "$<$<NOT:$<CONFIG:Debug>>:-U_FORTIFY_SOURCE;-D_FORTIFY_SOURCE=2>"
   "$<$<CONFIG:Debug>:-D_GLIBCXX_ASSERTIONS>")
+# Control-flow protection: CET on x86-64, PAC and BTI on arm64 (both what
+# Debian's and Fedora's own flags use).
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
   add_compile_options(-fcf-protection)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+  add_compile_options(-mbranch-protection=standard)
 endif()
 add_link_options(-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -Wl,--as-needed)
 
