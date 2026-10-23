@@ -252,7 +252,7 @@ TEST_CASE("driftwire: an offer too big for one message goes as several (#498)", 
   std::uint64_t bytes = 0;
   for (int i = 0; i < 6000; ++i) {
     files.push_back({"", "Trip/" + std::string(150, 'x') + "/" + std::to_string(i) + ".jpg",
-                     static_cast<std::uint64_t>(i), 1'700'000'000});
+                     static_cast<std::uint64_t>(i), 1'700'000'000, {}});
     bytes += static_cast<std::uint64_t>(i);
   }
   const auto parts = sp::offer_messages(files, true);
@@ -303,7 +303,7 @@ TEST_CASE("driftwire: an offer past the most messages one may take is not sent (
                            std::string(190, 'c') + "/";
   std::vector<sp::outgoing_file> files;
   files.reserve(sp::kMaxFiles);
-  for (std::size_t i = 0; i < sp::kMaxFiles; ++i) files.push_back({"", deep + std::to_string(i), 1, 0});
+  for (std::size_t i = 0; i < sp::kMaxFiles; ++i) files.push_back({"", deep + std::to_string(i), 1, 0, {}});
   CHECK(sp::offer_messages(files).empty());
 }
 
@@ -1593,7 +1593,7 @@ TEST_CASE("driftwire: after Accept, a sender that sends nothing does not hold th
   REQUIRE(l);
   auto ch = sp::channel::open(std::shared_ptr<sp::link>(std::move(*l)), true, "aaaaaaaaaaaaaaaa", "Mallory");
   REQUIRE(ch);
-  const std::vector<sp::outgoing_file> files = {{"", "big.mov", 1ull << 30, 0}};
+  const std::vector<sp::outgoing_file> files = {{"", "big.mov", 1ull << 30, 0, {}}};
   REQUIRE((*ch)->send(sp::msg::offer, sp::offer_json(files)));
   REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
   bea.eng.on_event("accept", 1, "");
