@@ -231,7 +231,9 @@ struct handshake::state {
     const auto c = in.first(sealed);
     if (auto r = cs.decrypt(h, c, tmp); !r) return r;
     if (tmp.size() != len) return err(status::corrupt);
-    std::memcpy(plain.data(), tmp.data(), len);
+    // An empty payload has no buffer on either side, and memcpy's pointers
+    // must not be null even for no bytes (UBSan).
+    if (len != 0) std::memcpy(plain.data(), tmp.data(), len);
     sodium_memzero(tmp.data(), tmp.size());
     mix_hash(c);
     in = in.subspan(sealed);
