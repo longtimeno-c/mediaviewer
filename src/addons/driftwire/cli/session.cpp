@@ -1378,12 +1378,16 @@ struct session::impl {
 
   enum class focus : std::uint8_t { prompt, field, question, offer, naming, code_entry, remember };
 
+  // What the keys go to. What the engine waits on with a clock running (an
+  // offer, the code, the name) comes before a question or a field this
+  // person opened, which wait their turn and come back after.
   focus focused() const {
-    if (field != field_kind::none) return focus::field;
-    if (asked) return focus::question;
+    if (field == field_kind::save_elsewhere) return focus::field;  // the offer's own
     if (v.in == in_phase::asking) return focus::offer;
     if (v.out == out_phase::naming) return focus::naming;
     if (v.out == out_phase::confirming) return focus::code_entry;
+    if (field != field_kind::none) return focus::field;
+    if (asked) return focus::question;
     if (rem.at == remember_ui::step::ask || rem.at == remember_ui::step::type_check) return focus::remember;
     return focus::prompt;
   }
@@ -2230,23 +2234,22 @@ struct session::impl {
         plain_reprompt();
         return;
       }
-      if (field != field_kind::none) {
-        close_field();
-      } else if (asked) {
-        auto answer = std::move(asked->answer);
-        asked.reset();
-        if (answer) answer(-1);
-      } else if (v.in == in_phase::asking) {
-        answer_offer(2);
-      } else if (v.out == out_phase::naming) {
-        answer_naming(false);
-      } else if (v.out == out_phase::confirming) {
-        cancelled_here = true;
-        ev("out_cancel", 1, "");
-      } else if (rem.at != remember_ui::step::none) {
-        rem = {};
-      } else {
-        on_escape();
+      switch (focused()) {
+        case focus::field: close_field(); break;
+        case focus::question: {
+          auto answer = std::move(asked->answer);
+          asked.reset();
+          if (answer) answer(-1);
+          break;
+        }
+        case focus::offer: answer_offer(2); break;
+        case focus::naming: answer_naming(false); break;
+        case focus::code_entry:
+          cancelled_here = true;
+          ev("out_cancel", 1, "");
+          break;
+        case focus::remember: rem = {}; break;
+        case focus::prompt: on_escape(); break;
       }
       return;
     }
