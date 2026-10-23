@@ -174,12 +174,18 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_relay.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_addon.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_ui.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_cli.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_e2e.cpp"
     "${MV_SOURCE_ROOT}/src/addons/driftwire/bt_none.cpp")
   target_link_libraries(${target} PRIVATE mv_driftwire_engine mv_driftwire_cli_core)
   target_compile_definitions(${target} PRIVATE
     MV_DRIFTWIRE_MODULE_PATH="$<TARGET_FILE:mv_driftwire>"
-    MV_DRIFTWIRE_MANIFEST_JSON="${MV_SOURCE_ROOT}/src/addons/driftwire/manifest.json")
-  add_dependencies(${target} mv_driftwire mv_driftwire_relay)
+    MV_DRIFTWIRE_MANIFEST_JSON="${MV_SOURCE_ROOT}/src/addons/driftwire/manifest.json"
+    # The command line, run by its tests: the program (it refuses a pipe) and
+    # the test build (two of them talk in the end-to-end test).
+    MV_DRIFTWIRE_CLI_PATH="$<TARGET_FILE:mv_driftwire_cli>"
+    MV_DRIFTWIRE_CLI_TEST_PATH="$<TARGET_FILE:mv_driftwire_cli_test>")
+  add_dependencies(${target} mv_driftwire mv_driftwire_relay mv_driftwire_cli mv_driftwire_cli_test)
 endfunction()
 
 # ---- the driftwire command line (docs/design/28 "From a terminal") ----------
@@ -191,10 +197,21 @@ endfunction()
 #
 #   mv_driftwire_cli_core     everything of the command line but main(): the
 #                             terminal port, keys, the line editor, paths, the
-#                             look. No io sources (the tests bring mv_io; the
-#                             program compiles the file port in, as the module).
+#                             look, the arguments, the host and the session.
+#                             No io sources (the tests bring mv_io; the
+#                             programs compile the file port in, as the module).
+#   mv_driftwire_cli          the program, `driftwire` (OUTPUT_NAME): main(),
+#                             no Bluetooth bearer (bt_none.cpp), the file port.
+#                             Refuses to run without a terminal.
+#   mv_driftwire_cli_test     the same with MV_DRIFTWIRE_CLI_TEST_HOOKS: runs
+#                             without a terminal, loopback-only networking and
+#                             machine-readable lines on request (args.h), for
+#                             the end-to-end test. Never packaged.
 #   mv_driftwire_cli_gallery  a test tool, never packaged: every card and state
 #                             with made-up data, to review and screenshot the look.
+#
+# The version: MV_DRIFTWIRE_CLI_VERSION, else the top-level project's (the
+# app's, or a packaging project's), else the add-on's.
 if(NOT TARGET ftxui::dom)
   find_package(ftxui CONFIG QUIET)
 endif()
@@ -214,9 +231,10 @@ endif()
 
 set(_C "${_S}/cli")
 if(WIN32)
-  set(_driftwire_cli_port ${_C}/term_win.cpp)  # *_win.cpp: may include <windows.h>
+  # *_win.cpp: may include <windows.h>
+  set(_driftwire_cli_port ${_C}/term_win.cpp ${_C}/data_dir_win.cpp)
 else()
-  set(_driftwire_cli_port ${_C}/term_posix.cpp)
+  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp)
 endif()
 add_library(mv_driftwire_cli_core STATIC
   ${_C}/theme.h
@@ -227,9 +245,41 @@ add_library(mv_driftwire_cli_core STATIC
   ${_C}/complete.cpp ${_C}/complete.h
   ${_C}/render.cpp ${_C}/render.h
   ${_C}/inline_view.cpp ${_C}/inline_view.h
-  ${_C}/term.h ${_driftwire_cli_port}
+  ${_C}/args.cpp ${_C}/args.h
+  ${_C}/host.cpp ${_C}/host.h
+  ${_C}/session.cpp ${_C}/session.h
+  ${_C}/term.h ${_C}/data_dir.h ${_driftwire_cli_port}
 )
 target_link_libraries(mv_driftwire_cli_core PUBLIC mv_driftwire_engine ftxui::dom ftxui::screen)
+
+if(NOT DEFINED MV_DRIFTWIRE_CLI_VERSION OR MV_DRIFTWIRE_CLI_VERSION STREQUAL "")
+  if(CMAKE_PROJECT_VERSION)
+    set(MV_DRIFTWIRE_CLI_VERSION "${CMAKE_PROJECT_VERSION}")
+  else()
+    set(MV_DRIFTWIRE_CLI_VERSION "${MV_DRIFTWIRE_VERSION}")
+  endif()
+endif()
+
+function(_mv_driftwire_cli_program target)
+  add_executable(${target}
+    ${_C}/main.cpp
+    ${_S}/bt_none.cpp
+    # The file port and BLAKE3 hashing, compiled in (as the module does).
+    ${MV_SOURCE_ROOT}/src/io/file_port.cpp
+    ${MV_SOURCE_ROOT}/src/io/content_hash.cpp
+    ${_driftwire_io})
+  target_link_libraries(${target} PRIVATE mv_driftwire_cli_core)
+  target_compile_definitions(${target} PRIVATE MV_DRIFTWIRE_CLI_VERSION="${MV_DRIFTWIRE_CLI_VERSION}")
+  # The Windows ASan leg: a spawned program needs the runtime beside it
+  # (the helper exists only in the Windows root build).
+  if(COMMAND mv_asan_runtime_beside)
+    mv_asan_runtime_beside(${target})
+  endif()
+endfunction()
+_mv_driftwire_cli_program(mv_driftwire_cli)
+set_target_properties(mv_driftwire_cli PROPERTIES OUTPUT_NAME "driftwire")
+_mv_driftwire_cli_program(mv_driftwire_cli_test)
+target_compile_definitions(mv_driftwire_cli_test PRIVATE MV_DRIFTWIRE_CLI_TEST_HOOKS=1)
 
 add_executable(mv_driftwire_cli_gallery "${MV_SOURCE_ROOT}/tools/driftwire-cli-gallery/main.cpp")
 target_link_libraries(mv_driftwire_cli_gallery PRIVATE mv_driftwire_cli_core)

@@ -54,6 +54,9 @@ class terminal : public output {
   // Any thread, any time, also from inside an engine callback: the wait
   // returns with `woken`. Never blocks.
   virtual void wake() noexcept = 0;
+  // Ctrl+Z: hand the terminal back and stop until continued (console);
+  // nothing where there is no job control.
+  virtual void suspend_self() {}
 };
 
 class console final : public terminal {
@@ -85,7 +88,7 @@ class console final : public terminal {
   // process; returns once it is continued, in raw mode again. The caller
   // erases its live region before and draws it again after. Windows has no
   // job control: nothing happens.
-  void suspend_self();
+  void suspend_self() override;
 
   [[nodiscard]] term_size size() const override;
   void wait(term_input& in, int timeout_ms) override;
