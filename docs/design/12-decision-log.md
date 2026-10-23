@@ -1937,6 +1937,17 @@ whole file before the rename is unchanged, so a wrong partial is refused, never 
 file. A record goes after 7 days. Reopen only with a reason the read-back does not cover.
 [28](28-driftwire.md#resuming-a-receive-that-stopped-530).
 
+**An internet link takes only a rejoin while a transfer runs; the busy path makes room (2026-10-22,
+#496).** The way in and a code's listener ran a nearby XX handshake and sent `ident` (id and
+machine name) to anyone who connected while a transfer ran, and four idle connections (the
+busy path's whole budget, 8 s each) kept a Wi-Fi rescue out. Now a non-rejoin hello over the
+internet is closed before any handshake; internet links get their own pool of 8 with a 2 s hello
+and at most 4 per source (an address or IPv6 /64); a full pool closes a random link still in its
+hello rather than refusing the new one (nearby keeps its 4 and its 8 s); rejoin tags are spent
+once (256 kept per session); only adopting a rejoin is serialised. A rejoin from behind the same
+NAT as someone flooding the way in can still lose a race, with odds that fall with the flood's
+size; the sender tries again until `kRejoinMs`. [28](28-driftwire.md#the-session-protocol-2-472).
+
 **Transfers keep the machine awake (2026-10-21, #530).** A power request (Windows) or an IOKit
 assertion (Mac) against idle sleep, from the accept to the end. Not against a closed lid.
 

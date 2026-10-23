@@ -348,6 +348,8 @@ class engine {
     // #502, the tests: on the transfer thread, right after a transfer ends
     // (another may start from then on), before the thread's way out.
     std::function<void()> after_end_transfer;
+    // #496, the tests: the receiver's way in opened at these places.
+    std::function<void(const std::vector<net::endpoint>&)> on_way_in;
     // #502, the tests: how long a sender's person has to confirm the code,
     // and how long a receive may move nothing after Accept.
     int confirm_ms = kConfirmMs;
@@ -396,9 +398,19 @@ class engine {
     std::chrono::steady_clock::time_point wifi_seen{}, bt_seen{};
     std::uint32_t wifi_protocol = kProtocol1, bt_protocol = kProtocol1;  // what each announced
   };
+  // A link while a transfer runs, on its own thread (route_busy).
+  struct helper_state {
+    std::atomic<bool> done{false};
+    // #496: the link until its hello is read; closed (and `evicted`) to make
+    // room for a newer link, so idle connections cannot keep a rejoin out.
+    std::shared_ptr<link> unread;  // under threads_m_
+    bool evicted = false;          // under threads_m_
+    bool internet = false;
+    std::string source;
+  };
   struct helper {
     std::thread thread;
-    std::shared_ptr<std::atomic<bool>> done;
+    std::shared_ptr<helper_state> s;
   };
 
   // The control thread: starts and stops presence (the only thread that
@@ -519,7 +531,8 @@ class engine {
                std::string peer_id, std::optional<net::endpoint> internet_place, bool trusted = false);
   // The control thread: the internet receiver made or dropped with the toggle.
   void sync_internet();
-  void on_internet_link(std::unique_ptr<link> l, bool code = false);
+  // `source`: where it came from (source_of; "": not known).
+  void on_internet_link(std::unique_ptr<link> l, bool code = false, std::string source = {});
   // #472, the sender's side of a protocol 2 send, on its own thread while
   // the send runs: when the link is suspect or drops, races every bearer the
   // peer is heard on and rejoins over the first that connects; when the send
@@ -539,8 +552,14 @@ class engine {
   bool notice(const std::string& peer, std::size_t count, std::uint64_t bytes);
   void end_transfer();
   // A link while a transfer runs: a rejoin of it goes to it (#472); any
-  // other is answered busy.
-  void route_busy(std::shared_ptr<link> l, bool internet = false, bool code = false);
+  // other nearby is answered busy. #496: over the internet, anything but a
+  // rejoin is closed before a handshake (nothing of this machine is said).
+  void route_busy(std::shared_ptr<link> l, helper_state& st, bool internet = false, bool code = false);
+  // #496: room for one more busy link in its pool (nearby, or the
+  // internet's), closing a link still in its hello if need be (a random one:
+  // of `source`'s when it has its share, else of the source with the most).
+  // False: every link there is past its hello (this one is closed).
+  [[nodiscard]] bool make_helper_room_locked(bool internet, const std::string& source);
   // channel::open with `l` listed in opening_ meanwhile.
   // A handshake the engine can end (cancel, the destructor). The client
   // speaks `version`; the server answers the hello it read. #501: the static

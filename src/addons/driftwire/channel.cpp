@@ -41,6 +41,9 @@ constexpr char kTagContext[] = "MediaViewer Driftwire tag v2";
 // A rejoin's first sealed message arrives within this (it proves the client
 // holds the keys, so a replayed first message cannot take the session over).
 constexpr int kRejoinConfirmMs = 4000;
+// #496: rejoin tags remembered as spent, per session (16 bytes each; a
+// sender makes one per try, and kFlapRejoins in kFlapMs end the session).
+constexpr std::size_t kSpentTags = 256;
 // Spare message buffers kept for reuse: a whole replay window's worth, so a
 // steady send allocates nothing (a chunk is too big for the small-block heap).
 constexpr std::size_t kSpareBodies = kReplayBytes / kChunkBytes + 4;
@@ -1239,7 +1242,6 @@ expected channel::complete_rejoin(pending_ptr p) {
 
 expected channel::accept_rejoin(std::shared_ptr<link> l, const hello& h) {
   if (!l) return err(status::invalid_arg);
-  std::lock_guard one(rejoin_m_);
   auto fail = [&](status s) -> expected {
     l->shutdown();
     return err(down_.load() ? status::cancelled : s);
@@ -1249,7 +1251,15 @@ expected channel::accept_rejoin(std::shared_ptr<link> l, const hello& h) {
   const auto deadline = clock::now() + std::chrono::milliseconds(kRejoinConfirmMs);
   std::array<std::uint8_t, 32> psk;
   {
+    // #496: a tag opens once. A recording of a rejoin (the tag is right and
+    // its first message opens) is closed here, before a byte is read or
+    // written; the sender makes a fresh tag for every try.
     std::lock_guard lock(secret_m_);
+    if (std::find(spent_tags_.begin(), spent_tags_.end(), h.tag) != spent_tags_.end()) {
+      return fail(status::corrupt);
+    }
+    spent_tags_.push_back(h.tag);
+    if (spent_tags_.size() > kSpentTags) spent_tags_.pop_front();
     psk = resume_;
   }
   noise::handshake hs(noise::nn_hfs_psk0(), false, prologue(kPrologueRejoin, kKindRejoin, h.tag), std::nullopt, psk);
@@ -1264,12 +1274,20 @@ expected channel::accept_rejoin(std::shared_ptr<link> l, const hello& h) {
   auto streams = std::make_unique<stream_keys>();
   std::uint64_t peer_got = 0;
   std::uint32_t index = 0;
-  // A replayed first message gets this far, and no further: it has no keys.
+  // A first message made with the secret but replayed (from before #496's
+  // spent tags, or evicted from them) gets this far, and no further: it has
+  // no keys. #496: nothing is held while it waits, so a rejoin on another
+  // link is not kept behind it.
   if (auto r = finish_rejoin(*l, keys->responder_to_initiator, keys->initiator_to_responder, deadline, peer_got, index,
                              *streams);
       !r) {
     return fail(r.error());
   }
+  std::lock_guard one(rejoin_m_);
+  if (down_.load() || cancelled_.load()) return fail(status::cancelled);
+  // Two that proved at once (a sender's rejoins are one at a time, so only
+  // its older one, finishing late): the newer link stays.
+  if (index <= rejoins_.load()) return fail(status::not_found);
   return adopt(std::move(l), std::move(streams), peer_got, index);
 }
 

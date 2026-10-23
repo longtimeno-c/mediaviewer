@@ -680,6 +680,48 @@ TEST_CASE("driftwire internet: a code sends files, with the name confirmed and t
   CHECK(bea.eng.snapshot().in != sp::view::in_phase::asking);
 }
 
+// #496: a code's listener stays up while the transfer it carries runs (the
+// way its rejoins come back). Whoever finds its port then (the code was seen,
+// or the port scanned) and says a nearby hello gets nothing: no handshake, so
+// no static key, id or name, and not even "busy".
+TEST_CASE("driftwire internet: a spent code's listener says nothing to a nearby hello while its transfer runs (#496)",
+          "[driftwire]") {
+  scratch_dir s("driftwire_code_listener_strangers");
+  far_client bea(s / "bea_received", "Bea");
+  far_client ann(s / "ann_received", "Ann");
+  const fs::path f = s / "out" / "clip.mov";
+  write_bytes(f, pattern(1024 * 1024 + 5, 4));
+  ann.pick({f});
+  const std::string code = bea.make_code();
+  const auto c = sp::invite::decode(code);
+  REQUIRE(c);
+  REQUIRE_FALSE(c->places.empty());
+  ann.send_to(code);
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::naming; }));
+  ann.eng.on_event("out_confirm", 1, "");
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  int reached = 0;
+  for (const auto& at : c->places) {
+    for (const std::uint32_t v : {sp::kProtocol1, sp::kProtocol2, sp::kProtocolVersion}) {
+      INFO("protocol " << v << " at " << at.address);
+      const auto r = probe_nearby(at, v);
+      if (!r.reached) continue;
+      ++reached;
+      CHECK_FALSE(r.opened);
+      CHECK(r.bytes == 0);
+      CHECK(r.ms < 1500);
+    }
+  }
+  REQUIRE(reached > 0);
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::asking);  // the transfer never noticed
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  INFO(ann.eng.snapshot().out_note);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(read_bytes(s / "bea_received" / "clip.mov") == read_bytes(f));
+}
+
 TEST_CASE("driftwire internet: a wrong code is refused, and the code it guessed at dies", "[driftwire]") {
   scratch_dir s("driftwire_code_wrong");
   far_client bea(s / "bea_received", "Bea");

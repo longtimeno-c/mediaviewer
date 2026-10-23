@@ -446,12 +446,12 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
     // A path the sender agrees on after its handshake over the first failed
     // (#499): handed on the same way.
     mo.later = [this](std::unique_ptr<link> l) {
-      if (on_link_) on_link_(std::move(l));
+      if (on_link_) on_link_(std::move(l), {});
     };
     meet_thread_ = std::thread([this, mo] {
       const auto stopped = [this] { return meet_stop_.load(); };
       auto l2 = dht::meet(hub_, *dht_, *dht_keys_, dht::role::receiver, mo, stopped, {});
-      if (l2 && on_link_) on_link_(std::move(*l2));  // the internet hello comes over it
+      if (l2 && on_link_) on_link_(std::move(*l2), {});  // the internet hello comes over it
       dht::withdraw(*dht_, *dht_keys_, dht::role::receiver, stopped);
     });
   } else if (l && s.p != phase::failed) {
@@ -488,14 +488,22 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
 
 void internet_receiver::accept_loop(net::listener* l) {
   for (;;) {
-    auto c = l->accept(500);
+    net::address from;
+    auto c = l->accept_from(500, from);
     if (c) {
-      if (on_link_) on_link_(std::move(*c));
+      if (on_link_) on_link_(std::move(*c), source_of(from));
       continue;
     }
     if (c.error() == status::cancelled) return;
     if (c.error() != status::timeout) std::this_thread::sleep_for(std::chrono::milliseconds(200));
   }
+}
+
+std::string source_of(const net::address& a) {
+  if (!a.v6) return net::address_text(a);
+  net::address prefix = a;
+  std::fill(prefix.bytes.begin() + 8, prefix.bytes.end(), std::uint8_t{0});
+  return net::address_text(prefix) + "/64";
 }
 
 way_in::~way_in() {
@@ -537,9 +545,10 @@ std::unique_ptr<way_in> way_in::open(bool loopback_only, const std::optional<map
   net::listener* raw = w->listener_.get();
   w->accept_thread_ = std::thread([raw, on_link = std::move(on_link)] {
     for (;;) {
-      auto c = raw->accept(500);
+      net::address from;
+      auto c = raw->accept_from(500, from);
       if (c) {
-        on_link(std::move(*c));
+        on_link(std::move(*c), source_of(from));
         continue;
       }
       if (c.error() == status::cancelled) return;
@@ -570,7 +579,7 @@ void internet_receiver::relay_loop(net::endpoint at, std::array<std::uint8_t, 16
   // race to a direct place closes without a byte).
   const auto hand_on = [&](std::unique_ptr<link> l) {
     auto spoke = relay::first_bytes(std::move(l), kConnectMs, stopped, "relay");
-    if (spoke && on_link_) on_link_(std::move(*spoke));  // the internet hello comes over it
+    if (spoke && on_link_) on_link_(std::move(*spoke), {});  // the internet hello comes over it
   };
   std::unique_ptr<link> l = std::move(first);
   auto registered = clock::now();
