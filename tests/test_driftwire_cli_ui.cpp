@@ -744,7 +744,7 @@ TEST_CASE("driftwire cli paths: a typed line is the absolute paths it names", "[
 
   CHECK(paths("a.jpg") == std::vector{at("a.jpg")});
   CHECK(paths("./sub/../a.jpg") == std::vector{at("a.jpg")});
-  CHECK(paths("'My File.jpg' \"b.jpg\"") == std::vector{at("My File.jpg"), at("b.jpg")});
+  CHECK(paths("\"My File.jpg\" b.jpg") == std::vector{at("My File.jpg"), at("b.jpg")});
   // Repeats once, in the order typed.
   CHECK(paths("b.jpg a.jpg ./b.jpg b.jpg") == std::vector{at("b.jpg"), at("a.jpg")});
   // Globs: sorted, never a hidden name unless the dot is typed, through folders.
@@ -776,7 +776,7 @@ TEST_CASE("driftwire cli paths: a typed line is the absolute paths it names", "[
   CHECK(paths("My File.jpg") == std::vector{at("My File.jpg")});
   CHECK(paths("  My File.jpg  ") == std::vector{at("My File.jpg")});
   // An unclosed quote is closed at the end, and said.
-  const cli::parsed_paths q = cli::parse_paths("'My File.jpg", o);
+  const cli::parsed_paths q = cli::parse_paths("\"My File.jpg", o);
   CHECK(q.unterminated);
   CHECK(q.paths == std::vector{at("My File.jpg")});
 }
@@ -790,6 +790,7 @@ TEST_CASE("driftwire cli paths: a backslash escapes on POSIX", "[driftwire][cli]
   cli::path_options o = cli::default_path_options();
   o.cwd = mv::test::utf8(s.root());
   CHECK(cli::parse_paths("My\\ File.jpg", o).paths == std::vector{mv::test::utf8(s / "My File.jpg")});
+  CHECK(cli::parse_paths("'My File.jpg' 'My'' File.jpg'", o).paths == std::vector{mv::test::utf8(s / "My File.jpg")});
   CHECK(cli::parse_paths("star\\*.jpg", o).paths == std::vector{mv::test::utf8(s / "star*.jpg")});
   CHECK(cli::parse_paths("star*.jpg", o).paths ==
         std::vector{mv::test::utf8(s / "star*.jpg"), mv::test::utf8(s / "starry.jpg")});
@@ -856,8 +857,12 @@ TEST_CASE("driftwire cli completion: Tab completes paths and keeps the quoting",
   CHECK(c.line == "Pictures" + sep + "in.jpg ");
   c = complete("My");  // a file: the word closed
   CHECK(c.line == (o.windows ? "\"My File.jpg\" " : "My\\ File.jpg "));
-  c = complete("'My");
-  CHECK(c.line == "'My File.jpg' ");
+  c = complete("\"My");
+  CHECK(c.line == "\"My File.jpg\" ");
+  if (!o.windows) {  // on Windows an apostrophe is a letter, not a quote
+    c = complete("'My");
+    CHECK(c.line == "'My File.jpg' ");
+  }
   c = complete(".s");  // hidden names when the dot is typed
   CHECK(c.line == ".secret ");
   c = complete("s");
@@ -1072,11 +1077,23 @@ TEST_CASE("driftwire cli look: progress at 0, 42 and 100 per cent", "[driftwire]
                  "  3 of 3 files · 4.8 GB of 4.8 GB · esc to cancel",
              });
   // 40 columns: the file count, the hint and the speed give way; the bytes and the time left stay.
+  check_rows(rows_of(cli::progress(th, moving(0), 40, 0), 40),
+             {
+                 "  ThinkPad ●━━  Wi-Fi  ━━━ Ann's MacBook",
+                 "  ─────────────────────────────    0 %",
+                 "  0 bytes of 4.8 GB · about 6 min left",
+             });
   check_rows(rows_of(cli::progress(th, moving(0.42), 40, 0), 40),
              {
                  "  ThinkPad ●━━  Wi-Fi  ━━━ Ann's MacBook",
                  "  ████████████▏────────────────   42 %",
                  "  2.0 GB of 4.8 GB · about 3 min left",
+             });
+  check_rows(rows_of(cli::progress(th, moving(1.0), 40, 0), 40),
+             {
+                 "  ThinkPad ●━━  Wi-Fi  ━━━ Ann's MacBook",
+                 "  █████████████████████████████  100 %",
+                 "  4.8 GB of 4.8 GB · esc to cancel",
              });
   // An eighth block for part of a cell: 4.5 of 8 cells is four full and a half.
   check_rows(rows_of(cli::bar(th, 4.5 / 8, 19), 19), {"  ████▌───   56 %"});
@@ -1296,8 +1313,8 @@ TEST_CASE("driftwire cli look: Nearby, empty, full and narrow, with a CJK and em
              {
                  "  Nearby",
                  "  ○ No one nearby yet",
-                 "    Open Driftwire on the other computer, on the same Wi-Fi network. It shows up",
-                 "    here.",
+                 "    Open Driftwire on the other computer. It shows up here when it is on this",
+                 "    network.",
              });
   check_rows(rows_of(cli::nearby(th, nearby_two(), 40), 40),
              {

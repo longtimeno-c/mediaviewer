@@ -107,8 +107,10 @@ struct nearby_model {
   std::vector<nearby_row> known;
   int selected = -1;          // into peers, then known; -1: none
   bool show_pointer = true;   // ↑↓ moves it (the prompt has no palette open)
+  // The window's words (tree.cpp "Nearby"), less "or in Bluetooth range": the
+  // command line has no Bluetooth bearer.
   std::string empty_title = "No one nearby yet";
-  std::string empty_how = "Open Driftwire on the other computer, on the same Wi-Fi network. It shows up here.";
+  std::string empty_how = "Open Driftwire on the other computer. It shows up here when it is on this network.";
   std::string note;           // what this computer cannot search (the window's reach note)
   int max_rows = 0;           // rows of computers at most (the height cap); 0: all
 };
