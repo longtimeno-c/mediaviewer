@@ -53,10 +53,10 @@ v1 shipped on Windows first; the core was kept hostable from PR 4 so the Mac app
 backends instead of a rewrite. The Mac halves of PRs 1–8 followed, and both platforms move together
 from PR 9.
 
-Linux is the third host (owner, 2026-10-23): OpenGL via EGL, Wayland first, Qt 6 chrome, built as
-the Linux halves of PRs 1–8 and then of everything since ([plan](../plans/linux.md)). Until it has
-caught up, the tables on this page are Windows and macOS only, and the hostable-core rule below
-applies to the Linux host as well.
+Linux is the third host (owner, 2026-10-23): OpenGL via EGL, Wayland first, Qt 6 chrome. The plan
+recommends building it as the Linux halves of PRs 1–8 and then of everything since; the order is
+an open call ([plan](../plans/linux.md) §10). Until it has caught up, the tables on this page are
+Windows and macOS only, and the hostable-core rule below applies to the Linux host as well.
 
 ## Floors
 
@@ -132,8 +132,9 @@ The Mac host was built as the Mac halves of PRs 1–8 (formerly Milestone F, PRs
 
 ## The Linux host, so far
 
-Linux's halves of PRs 1–8 come first ([plan](../plans/linux.md)); the tables above and below gain a
-Linux column as they land.
+The plan builds Linux's halves of PRs 1–8 first (its recommended order, open call 8 in
+[§10](../plans/linux.md#10-open-owner-calls)); the tables above and below gain a Linux column as
+they land.
 
 | Linux PR | What the Linux host has |
 |---|---|

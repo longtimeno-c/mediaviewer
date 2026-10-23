@@ -174,10 +174,11 @@ and Apple-only APIs live only in the hosts and in `*_win` / `*_mac` backends beh
 
 **Amended 2026-10-23 (owner): Linux is a third host.** OpenGL via EGL on a surface C++ owns,
 Wayland first (X11 runs, ungated); Qt 6 / QML chrome; GLSL the third shader twin; FFmpeg with
-VA-API; no Vulkan on any OS. The Linux halves of PRs 1–8 come first, then the Linux halves of what
-has landed since, then every PR on all three. Until then PRs stay dual-track and shared code must
-stay hostable on Linux too. Nothing of the viewer runs on Linux yet; Driftwire's command line is
-the first thing that ships there ([plan](../plans/linux.md), [12](12-decision-log.md#platforms)).
+VA-API; no Vulkan on any OS. The order of the Linux halves is not the owner's call yet (the plan's
+open call 8): it recommends the Linux halves of PRs 1–8 first, then of what has landed since, then
+every PR on all three. Until it is settled PRs stay dual-track, and shared code must stay hostable
+on Linux too. Nothing of the viewer runs on Linux yet; Driftwire's command line (its own change)
+is planned to ship there first ([plan](../plans/linux.md), [12](12-decision-log.md#platforms)).
 
 ---
 

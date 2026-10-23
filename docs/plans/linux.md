@@ -23,12 +23,14 @@ move what it built into the matching `docs/design/` doc and strike the slice her
 
 - **D9** now names three hosts. The owner's calls: OpenGL via EGL, Wayland first; X11 runs but is
   not gated; Qt 6 / QML chrome with the canvas a child surface C++ presents into on its own render
-  thread; GLSL the third hand-written shader twin; "No Vulkan" stands on every OS; the Linux halves
-  of PRs 1–8 first, then the Linux halves of what has landed since, then every PR on all three.
+  thread; GLSL the third hand-written shader twin; FFmpeg with VA-API; "No Vulkan" stands on every
+  OS.
+- **The order is not decided** (open call 8, §10). Recommended: the Linux halves of PRs 1–8 first,
+  then the Linux halves of what has landed since, then every PR on all three.
 - **D1** gains the Linux chrome (Qt 6 / QML). The present lab and the F3 overlay stay ImGui
   (OpenGL 3 binding), never shipped chrome.
-- Until the Linux host has caught up, a PR stays dual-track (Windows and macOS halves, both
-  present-loop gates), and its shared code must not take a dependency a Linux host could not
+- Until the order is settled, a PR stays dual-track (Windows and macOS halves, both present-loop
+  gates) as D9 already says, and its shared code must not take a dependency a Linux host could not
   replace. That is D9's hostable-core rule, applied to a third host now rather than later.
 
 ## 1. What is shared, what Linux owns
@@ -165,7 +167,7 @@ Each Linux slice is one PR; each also re-runs the Windows PR 1 and Mac PR 1 gate
 | **Linux PR 3 + 4 + 6 — Qt chrome, folder, browse** | Qt 6 chrome in the window, the canvas a child surface, folder / filmstrip / gallery over the shared model and the `jpg512.1` cache, inotify, keyboard-complete browse, Trash | As Mac PR 3 + 4 + 6: zero dropped frames panning with chrome on screen; focus crosses the Qt / canvas boundary; a popup over the canvas does not clip; 2000 JPEGs scroll without a hitch; keyboard-only browse; a dropped file appears; animation timing matches a browser |
 | **Linux PR 5 — video** | FFmpeg + VA-API (and NVDEC) into our ring, NV12/P010, the GLSL video twin with HDR→SDR, the PipeWire clock, transport | 4K 10-bit HEVC at full rate with hardware decode on Intel/AMD and NVIDIA, no extra package; an iPhone HLG clip looks right; A/V drift flat over 30 minutes; photo → video → photo leaks no textures |
 | **Linux PR 8 — packages and the desktop** | Signed apt/dnf repositories, `.desktop` + MIME, the out-of-process thumbnailer, Crashpad | On clean Ubuntu LTS and Fedora: install from the repository, open a real camera dump; N → N+1 through the package manager and an unsigned repository refused; Open With lists MediaViewer without making it the default; a corrupt HEIC in a browsed folder leaves Files running; removing the package leaves nothing |
-| **Linux halves of PRs 9–60** | In roadmap order: metadata, edits, trim, OS integration, Import, Local search, folder tiles, Edit workspace and Video Editor, copies, duplicates, open add-ons (screens drawn by Qt), Driftwire's window and a BlueZ bearer, Places | Each PR's own verify line, on Linux |
+| **Linux halves of PRs 9–60** (if open call 8 takes the recommended order) | In roadmap order: metadata, edits, trim, OS integration, Import, Local search, folder tiles, Edit workspace and Video Editor, copies, duplicates, open add-ons (screens drawn by Qt), Driftwire's window and a BlueZ bearer, Places | Each PR's own verify line, on Linux |
 | **Tri-track** | From the PR after the catch-up, every PR has a Linux half | Every PR's verify on all three, plus all three PR 1 gates |
 
 ## 10. Open owner calls
@@ -183,6 +185,10 @@ Each Linux slice is one PR; each also re-runs the Windows PR 1 and Mac PR 1 gate
 6. **Crash reports**: Crashpad on Linux with the same scrub (recommended) or none until PR 8.
 7. **Bluetooth for Driftwire**: a BlueZ GATT bearer in its Linux half, or Wi-Fi and the internet
    only.
+8. **Order of the catch-up**: the Linux halves of PRs 1–8, then of PRs 9–60 in roadmap order, then
+   tri-track (recommended); or PRs 1–8 and then tri-track at once, with 9–60's Linux halves filled
+   in beside new work. And the rule for PRs until then (recommended: D9's dual-track rule
+   unchanged, shared code kept hostable on Linux).
 
 ## Not in this plan
 

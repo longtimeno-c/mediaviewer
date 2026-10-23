@@ -8,8 +8,9 @@ kept hostable; macOS is a second host of the same core (`docs/design/15-platform
 UI-only port. **One PR number per feature on both platforms:** the Mac host (built as old
 PRs 16–20) is the Mac halves of PRs 1–8, both platforms are at PR 9, and every PR from 9 lands
 on Windows and macOS together (D9 amended 2026-09-24). **Linux is a third host** (D9 amended
-2026-10-23, `docs/plans/linux.md`): its halves of PRs 1–8 come first, then the halves of what has
-landed since, then every PR on all three. 16–19 is the Import add-on, 20–24 AI search, 27–28 Voice query.
+2026-10-23, `docs/plans/linux.md`); the order of its halves is still open (the plan recommends its
+halves of PRs 1–8 first, then of what has landed since, then every PR on all three).
+16–19 is the Import add-on, 20–24 AI search, 27–28 Voice query.
 
 **v1 is the PR 1–7 viewer, on the camera-dump format set, packaged in PR 8.**
 Light editing and trim follow in future updates. Not a develop module.
@@ -128,7 +129,7 @@ numbers say otherwise.
 | **D6** | Linear FP16 *working space* (non-negotiable). 8-bit sRGB *swapchain* in v1. Untagged JPEG → sRGB. Treating a tagged image as sRGB is a bug. |
 | **D7** | Trim is post-v1 (PR 13): keyframe stream-copy **or** full re-encode, both labelled. Smart cut follows later. |
 | **D8** | AppContainer decode process is post-v1. Fuzz from PR 6/7. |
-| **D9** | v1 ships Windows. From PR 4, new native code does not take a Windows-only dependency a Metal / AppKit / SwiftUI host cannot replace. Mac is the Mac halves of PRs 1–8 (built as Milestone F, old PRs 16–20): Metal present lab, SwiftUI in AppKit, VideoToolbox, Core Audio — **not** a UI-only port. **Amended 2026-09-24: from PR 9 every PR is dual-track** — one shared core change, a WinUI half and a SwiftUI half, HLSL + MSL twins, a verify line per platform; done only when both hold. No Vulkan. **Amended 2026-10-23 (owner): Linux is a third host** — OpenGL via EGL, Wayland first (X11 runs, ungated); Qt 6 / QML chrome; GLSL the third twin; FFmpeg + VA-API. The Linux halves of PRs 1–8 first, then of what has landed since, then every PR on all three; until then PRs stay dual-track and shared code stays hostable on Linux. No Vulkan on any OS (`docs/plans/linux.md`). |
+| **D9** | v1 ships Windows. From PR 4, new native code does not take a Windows-only dependency a Metal / AppKit / SwiftUI host cannot replace. Mac is the Mac halves of PRs 1–8 (built as Milestone F, old PRs 16–20): Metal present lab, SwiftUI in AppKit, VideoToolbox, Core Audio — **not** a UI-only port. **Amended 2026-09-24: from PR 9 every PR is dual-track** — one shared core change, a WinUI half and a SwiftUI half, HLSL + MSL twins, a verify line per platform; done only when both hold. No Vulkan. **Amended 2026-10-23 (owner): Linux is a third host** — OpenGL via EGL, Wayland first (X11 runs, ungated); Qt 6 / QML chrome; GLSL the third twin; FFmpeg + VA-API. No Vulkan on any OS (`docs/plans/linux.md`). The order of the Linux halves is not decided (plan §10, call 8); until it is, PRs stay dual-track as above, and shared code stays hostable on Linux (the hostable-core rule, applied to the third host). |
 
 Do not introduce Electron, Tauri, Node, D3D12, Vulkan, or a second present path **on one OS**.
 
@@ -141,7 +142,8 @@ Do not introduce Electron, Tauri, Node, D3D12, Vulkan, or a second present path 
   `SwapChainPanel` and an accepted composed frame.
 - **Linux's open calls** — video decode on NVIDIA, the audio clock API, the OS floor and
   architectures, the update channel and its signing, bundling Qt, crash reports, Bluetooth for
-  Driftwire: `docs/plans/linux.md` §10. Do not settle them in code.
+  Driftwire, and the order of the Linux catch-up (PRs 1–8, then 9–60, or 1–8 and then tri-track
+  at once) with the rule for PRs until then: `docs/plans/linux.md` §10. Do not settle them in code.
 
 ## How to implement
 

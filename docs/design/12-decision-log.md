@@ -842,16 +842,17 @@ host plus backends behind the same narrow ports, not a port of either app
   on the UI thread, which puts the UI thread in the present path (rules 1 and 2).
 - **Shaders: GLSL**, the third hand-written twin, compiled from source by the driver at startup as
   MSL is. No SPIR-V, no cross-compiler.
-- **Order: the Linux halves of PRs 1–8 first** (as the Mac's were), then the Linux halves of what
-  has landed since, then every PR on all three. Until then a PR stays dual-track, and shared code
-  takes no dependency a Linux host could not replace.
+Not the owner's call: the order. The plan recommends the Linux halves of PRs 1–8 first (as the
+Mac's were), then the Linux halves of what has landed since, then every PR on all three; that, and
+the rule for PRs until then, is its open call 8. Until it is settled a PR stays dual-track (D9 as
+amended 2026-09-24), and shared code takes no dependency a Linux host could not replace.
 
 Cost: a third half for every feature once Linux has caught up; Qt's QPA native interface is
-private API (Qt ≥ 6.5) and Qt is bundled where the LTS distributions are older (22.04 ships 6.2,
-24.04 ships 6.4); QML cannot overlap the canvas ("airspace"), so whatever sits over it is its own
+private API (Qt ≥ 6.5) and Qt may have to be bundled where the LTS distributions are older (22.04
+ships 6.2, 24.04 ships 6.4); QML cannot overlap the canvas ("airspace"), so whatever sits over it is its own
 child window; the swap chain's buffer count is the driver's, not ours. Open calls (video decode on
 NVIDIA, the audio clock, floor and architectures, channel and signing, Qt bundling, crash reports,
-Bluetooth) are in the plan's §10. Reopen only if the Linux PR 1 gate cannot hold on Mutter and KWin,
+Bluetooth, the catch-up order) are in the plan's §10. Reopen only if the Linux PR 1 gate cannot hold on Mutter and KWin,
 or Qt's subsurface cannot hold the PR 3 gate (then rule 2's island fallback applies, as on Windows).
 
 ---
