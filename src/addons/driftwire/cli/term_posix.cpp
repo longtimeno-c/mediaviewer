@@ -118,6 +118,7 @@ struct console::impl {
   int wake[2] = {-1, -1};
   int sig[2] = {-1, -1};
   termios before{};
+  termios raw_state{};  // what enter_raw set, to set again after a stop from outside
   bool raw = false;
   struct sigaction old[std::size(kSignals)]{};
   struct sigaction old_pipe{};
@@ -196,6 +197,7 @@ bool console::enter_raw() {
   t.c_cc[VTIME] = 0;
   // Output processing stays on: a stray "\n" from anywhere still starts a line.
   if (::tcsetattr(p_->in, TCSANOW, &t) != 0) return false;
+  p_->raw_state = t;
   p_->raw = true;
   static bool hooked = false;
   if (!hooked) {
@@ -294,6 +296,14 @@ void console::wait(term_input& in, int timeout_ms) {
           case 'i': in.interrupt = true; break;
           default: break;
         }
+      }
+      // Continued after a stop this program did not make (SIGSTOP, SIGTTIN,
+      // SIGTTOU from outside, then `fg`): the shell put its own modes back
+      // while it had the terminal (echo, lines, bracketed paste off), so raw
+      // mode is set again. After Ctrl+Z it already is (suspend_self).
+      if (in.resumed && p_->raw) {
+        ::tcsetattr(p_->in, TCSANOW, &p_->raw_state);
+        if (p_->sequences) write_all(p_->out, "\x1B[?2004h");
       }
     }
     if (FD_ISSET(p_->in, &r)) {

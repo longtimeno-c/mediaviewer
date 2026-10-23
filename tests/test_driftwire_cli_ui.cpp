@@ -1688,6 +1688,25 @@ TEST_CASE("driftwire cli terminal: signals arrive as input; the other end closin
     ::raise(SIGHUP);
     con.wait(in, 1000);
     CHECK(in.quit);
+
+    // Stopped from outside (SIGSTOP, then `fg`): the shell put its own modes
+    // back meanwhile. SIGCONT sets raw mode and bracketed paste again.
+    termios cooked{};
+    REQUIRE(::tcgetattr(pty.slave, &cooked) == 0);
+    REQUIRE(con.enter_raw());
+    (void)pty.drain();
+    REQUIRE(::tcsetattr(pty.slave, TCSANOW, &cooked) == 0);
+    ::raise(SIGCONT);
+    con.wait(in, 1000);
+    CHECK(in.resumed);
+    termios now{};
+    REQUIRE(::tcgetattr(pty.slave, &now) == 0);
+    CHECK((now.c_lflag & ICANON) == 0);
+    CHECK((now.c_lflag & ECHO) == 0);
+    CHECK((now.c_lflag & ISIG) == 0);
+    CHECK(pty.drain().find("\x1B[?2004h") != std::string::npos);
+    con.leave_raw();
+    (void)pty.drain();
   }
   // The handlers are the ones from before: SIGWINCH's default is to ignore it.
   ::raise(SIGWINCH);
