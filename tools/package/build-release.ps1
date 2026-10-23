@@ -131,8 +131,8 @@ New-Item -ItemType Directory -Force $payload, $releases | Out-Null
 # Programs built beside the app that it does not ship: the test binaries
 # (mv_*), the Driftwire relay server (mv-driftwire-relay, docs/design/28
 # "Relays": the person's own, never the app's) and the driftwire command line
-# (driftwire.exe, docs/design/28 "From a terminal": a program of its own, not
-# part of MediaViewer; owner, 2026-10-23).
+# (driftwire.exe, docs/design/28 "From a terminal": a program of its own,
+# never in the app's payload).
 $skipFile = '^(mv_.*|mv-driftwire-relay\.exe|driftwire\.exe|.*_tests?|frametime.*|mediaviewer_lab\.exe)$'
 
 # docs/design/13, "Delta patches earn their keep here": "Do not ship Windows App SDK

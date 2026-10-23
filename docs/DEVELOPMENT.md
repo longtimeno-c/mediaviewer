@@ -1713,11 +1713,13 @@ Both platforms use the exact `x.y.z` from `CMakeLists.txt`.
 | Mode | Result |
 |---|---|
 | `artifacts` | Unsigned installers in Actions artifacts; no GitHub Release |
-| `preview` | Both unsigned test installers on GitHub Releases as a prerelease, with the driftwire Linux packages |
-| `stable` | Windows installer, notarized Mac image, both signed update feeds, the driftwire Linux packages and checksums on Latest |
+| `preview` | Both unsigned test installers on GitHub Releases as a prerelease |
+| `stable` | Windows installer, notarized Mac image, both signed update feeds and checksums on Latest |
 
-Windows, macOS and the Linux packages (`linux-cli`, x64 and arm64) build independently; a final
-job publishes only after all of them succeed.
+Windows and macOS build independently; a final job publishes only after both succeed. The
+driftwire Linux packages (`linux-cli`, x64 and arm64) build and are tested beside them on every
+run and stay the run's artefacts until the owner rules on how Linux is updated
+([RELEASING.md](../RELEASING.md), `MV_RELEASE_LINUX_CLI`).
 Stable needs the Windows manifest key and six Mac signing/notarization secrets.
 Windows Authenticode remains optional. Preview needs no signing secrets; its Mac app
 must be replaced manually with a stable build later.

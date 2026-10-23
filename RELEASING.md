@@ -162,9 +162,9 @@ publishing still works with a signed update manifest; Windows may warn at instal
 | `MediaViewer-<version>.dmg` | Mac first install |
 | `MediaViewer-<version>.zip` | Stapled Mac app archive for Sparkle |
 | `appcast.xml` | Signed Sparkle feed |
-| `driftwire_<version>_amd64.deb`, `driftwire_<version>_arm64.deb` | The driftwire command line for Debian and Ubuntu |
-| `driftwire-<version>-1.x86_64.rpm`, `driftwire-<version>-1.aarch64.rpm` | The same for Fedora and other RPM systems |
-| `driftwire-<version>-linux-x86_64.tar.gz`, `driftwire-<version>-linux-aarch64.tar.gz` | The same, unpacked anywhere (`bin/driftwire`, `share/`) |
+| `driftwire_<version>_amd64.deb`, `driftwire_<version>_arm64.deb` | The driftwire command line for Debian and Ubuntu (not published yet, below) |
+| `driftwire-<version>-1.x86_64.rpm`, `driftwire-<version>-1.aarch64.rpm` | The same for Fedora and other RPM systems (not published yet) |
+| `driftwire-<version>-linux-x86_64.tar.gz`, `driftwire-<version>-linux-aarch64.tar.gz` | The same, unpacked anywhere (`bin/driftwire`, `share/`; not published yet) |
 | `SHA256SUMS.txt` | Download checksums |
 
 **The driftwire Linux packages (docs/design/28 "From a terminal")** are built on every run, preview
@@ -172,10 +172,15 @@ and stable included, by the `linux-cli` job: x64 on `ubuntu-22.04` and arm64 on 
 GCC 12 and the pinned vcpkg, so they run from glibc 2.35 up. The job runs the `"[cli]"` suites and
 the `NEEDED` gate (the program needs only libc, libm and the loader), makes the three packages with
 CPack (`cmake/driftwire-cli`), installs the `.deb` and checks it reports the release's version.
-`publish` refuses a release without all six (`linux_cli_asset_names` in
-`tools/package/github-release.py`), and the notes link them. They are not signed and there is no
-package repository: `SHA256SUMS.txt` is how a download is checked. The command line's Windows and
-macOS builds are not released (the owner chose Linux packages only); CI uploads them as artefacts.
+For now they stay the run's artefacts and `publish` does not wait for the job: CLAUDE.md asks for
+an updater before a build leaves this machine, and how Linux gets updates (a package repository,
+signing) is the owner's call, still open ([12](docs/design/12-decision-log.md#platforms),
+2026-10-23). Once the owner makes it, `MV_RELEASE_LINUX_CLI: '1'` in release.yml's publish step,
+and `linux-cli` in that job's `needs`, attach them: `publish` then refuses a release without all
+six (`linux_cli_asset_names` in `tools/package/github-release.py`), and the notes link them.
+Without a repository they are unsigned, and `SHA256SUMS.txt` is how a download is checked. The
+command line's Windows and macOS builds are not released either: the owner asked for Linux
+packages, and releases for Windows and macOS are not decided. CI uploads them as artefacts.
 
 Add-ons (Milestone G, [docs/design/18](docs/design/18-import.md)) publish beside the app on the same release,
 one set per platform, signed with the **same** Ed25519 key as the update manifest:

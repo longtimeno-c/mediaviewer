@@ -737,18 +737,19 @@ under ASan / UBSan / TSan. It is a test build, not a product platform.
 **Linux packages make Linux a product platform for the command line (owner, 2026-10-23; amends "A
 headless Linux build of the shared core").** The `driftwire` command line ships for Linux as a
 `.deb`, an `.rpm` and a tarball, x86_64 and arm64, built by `cmake/driftwire-cli` on Ubuntu 22.04
-with GCC 12 and published with every release beside the installers. The program needs only
+with GCC 12 on every release run. The program needs only
 glibc, 2.35 or newer: libsodium 1.0.22 (protocol 2's ML-KEM-768; Ubuntu 24.04's 1.0.18 cannot
 build it), BLAKE3, FTXUI and the C++ runtime (`-static-libstdc++ -static-libgcc`, under the GCC
 Runtime Library Exception) are linked in, and the build fails if `readelf -d` shows anything
 `NEEDED` but libc, libm and the loader. libsecret and libsystemd are opened at run time, so a
 server or a container without them still runs it; the packages only recommend libsecret.
 MediaViewer itself is still Windows and macOS: `cmake/portable` stays the shared core's test
-build, and this decides nothing for a Linux app. Cost: no glibc older than 2.35 (RHEL 8 and 9,
-Debian 11); no package repository, so no updates but the release page and the packages are
-unsigned (SHA256SUMS.txt covers them), while CLAUDE.md asks for an updater before a build leaves
-this machine (open, for the owner); Linux joins Windows and macOS in what a Driftwire change must
-keep working. Measured here only (Ubuntu 24.04 container, GCC 13 and GCC 12): built, `"[cli]"`
+build, and this decides nothing for a Linux app. Open, for the owner: how the packages are
+updated (a package repository, signing). CLAUDE.md asks for an updater before a build leaves this
+machine, so until that call the release workflow builds and tests them and keeps them as the
+run's artefacts, off the release page (`MV_RELEASE_LINUX_CLI`, `RELEASING.md`). Cost: no glibc
+older than 2.35 (RHEL 8 and 9, Debian 11); unsigned without a repository (SHA256SUMS.txt covers
+them); Linux joins Windows and macOS in what a Driftwire change must keep working. Measured here only (Ubuntu 24.04 container, GCC 13 and GCC 12): built, `"[cli]"`
 green, the `.deb` installed and run; CI's Ubuntu 22.04 legs are the first to build the shipped
 ones. Reopen if a distribution wants its own package built from source (then libsodium 1.0.21+
 comes from the distribution, and the gate changes).
@@ -1982,9 +1983,10 @@ refuses to run the session without a terminal (exit 2). Its look is built in C++
 dom and screen parts only; Node is out by CLAUDE.md), an inline UI after Claude Code's terminal UI
 with Driftwire's colours: a transcript that stays in the scrollback over a live region at the
 bottom. No Bluetooth in it on any OS: CoreBluetooth needs a bundle's usage string, the WinRT GATT
-server in an unpackaged console is unverified, Linux has no bearer. Linux ships packages; the
+server in an unpackaged console is unverified, Linux has no bearer. Linux gets packages; the
 Windows and macOS programs are built and tested with the app and uploaded by CI, unsigned, and are
-not released (owner: Linux packages only) nor in the app's payload. Cost: a second face for every
+not released (the owner asked for Linux packages; Windows and macOS releases are not decided) nor
+in the app's payload. Cost: a second face for every
 flow; one session controller that makes only the window's `on_event` calls keeps it to what the
 window does, and the session tests drive two engines through it.
 

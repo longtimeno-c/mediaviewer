@@ -862,9 +862,11 @@ jobs:
   # The driftwire command line's Linux packages (docs/design/28 "From a
   # terminal"), x64 and arm64, built and tested as CI's driftwire-cli-linux
   # job builds them (.github/actions/driftwire-cli-linux): Ubuntu 22.04 and
-  # GCC 12, so glibc 2.35 up. Each must carry the release's version. The
-  # packages are not signed (there is no package repository yet,
-  # docs/design/12 2026-10-23); SHA256SUMS.txt covers them.
+  # GCC 12, so glibc 2.35 up. Each must carry the release's version. They are
+  # this run's artefacts and not on the release yet: an updater comes before
+  # a build leaves this machine (CLAUDE.md), and the Linux channel and its
+  # signing are the owner's call, still open (docs/design/12, 2026-10-23).
+  # Publish does not wait for this job, so it never holds up the installers.
   linux-cli:
     name: driftwire Linux ${{ matrix.arch }} packages
     needs: prepare
@@ -903,8 +905,8 @@ jobs:
           retention-days: 30
 
   publish:
-    name: Publish both installers and the Linux packages together
-    needs: [prepare, windows, macos, linux-cli]
+    name: Publish both installers together
+    needs: [prepare, windows, macos]
     if: inputs.mode != 'artifacts'
     runs-on: ubuntu-latest
     permissions:
@@ -928,8 +930,12 @@ jobs:
           # ...and the Local search pack with its Sound and People pieces (and,
           # on Windows, NVIDIA acceleration).
           MV_RELEASE_AI: '1'
-          # The driftwire Linux packages (linux-cli) are required in every
-          # published release, preview or stable (github-release.py).
+          # The driftwire Linux packages (linux-cli) wait for the owner's call
+          # on their channel and updater (docs/design/12, 2026-10-23). To
+          # publish them, with every preview and stable release requiring all
+          # six (github-release.py), set this to '1' and add linux-cli to
+          # this job's needs.
+          MV_RELEASE_LINUX_CLI: '0'
           VERSION: ${{ needs.prepare.outputs.version }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: python3 tools/package/github-release.py publish release-assets

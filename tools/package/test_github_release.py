@@ -165,7 +165,7 @@ class ReleaseTests(unittest.TestCase):
             cli.assert_not_called()
 
     def stable_assets(self):
-        os.environ.update(MODE='stable', TAG='v0.1.1', MV_RELEASE_ADDONS='1')
+        os.environ.update(MODE='stable', TAG='v0.1.1', MV_RELEASE_ADDONS='1', MV_RELEASE_LINUX_CLI='1')
         for name in ('MediaViewer-0.1.1-full.nupkg', 'RELEASES', 'releases.win.json',
                      'assets.win.json', 'MediaViewer-0.1.1.zip'):
             (self.folder / name).write_bytes(b'payload')
@@ -211,8 +211,8 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
 
     def test_every_release_needs_each_driftwire_linux_package(self):
         # docs/design/28 "From a terminal": the linux-cli job's .deb, .rpm and
-        # tarball for x86_64 and arm64; a release that lost one is refused,
-        # preview or stable, before GitHub hears of it.
+        # tarball for x86_64 and arm64; once they are published, a release that
+        # lost one is refused, preview or stable, before GitHub hears of it.
         self.stable_assets()
         for mode in ('preview', 'stable'):
             os.environ['MODE'] = mode
@@ -254,7 +254,26 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
                             .replace('${_deb_arch}', deb_arch).replace('${_rpm_arch}', rpm_arch) + suffix)
         self.assertEqual(made, release.linux_cli_asset_names('0.1.1'))
 
+    def test_linux_packages_wait_for_the_owner(self):
+        # A build that leaves this machine needs an updater first (CLAUDE.md),
+        # and the Linux channel is the owner's call (docs/design/12,
+        # 2026-10-23): until MV_RELEASE_LINUX_CLI=1 the packages are neither
+        # required nor uploaded, even when the run made them, nor in the notes.
+        self.stable_assets()
+        os.environ.pop('MV_RELEASE_LINUX_CLI')
+        for mode in ('preview', 'stable'):
+            names = [p.name for p in release.validate_assets(self.folder, '0.1.1', mode, 'owner/repo', 'v0.1.1')]
+            for name in release.linux_cli_asset_names('0.1.1'):
+                self.assertNotIn(name, names)
+            notes = release.release_notes('0.1.1', mode, 'owner/repo', 'v0.1.1', 'abc123')
+            self.assertNotIn('driftwire', notes)
+            self.assertIn('MediaViewer-0.1.1.dmg', notes)
+        for name in release.linux_cli_asset_names('0.1.1'):
+            (self.folder / name).unlink()
+        release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')
+
     def test_release_notes_link_every_driftwire_linux_package(self):
+        os.environ['MV_RELEASE_LINUX_CLI'] = '1'
         for mode in ('preview', 'stable'):
             notes = release.release_notes('0.1.1', mode, 'owner/repo', 'v0.1.1', 'abc123')
             for name in release.linux_cli_asset_names('0.1.1'):

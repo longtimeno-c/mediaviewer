@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Preflight and publish a complete release: both installers and the driftwire Linux packages.
-No build secrets are logged."""
+"""Preflight and publish a complete release: both installers (and the driftwire Linux packages,
+once they are turned on). No build secrets are logged."""
 import hashlib
 import json
 import os
@@ -92,11 +92,20 @@ WINDOWS_ONLY_ADDONS = ('ai-cuda',)
 
 # The driftwire command line's Linux packages (docs/design/28 "From a
 # terminal", cmake/driftwire-cli): a .deb, an .rpm and a tarball for each
-# architecture, (Debian name, RPM and tarball name), built by release.yml's
-# linux-cli job. Required in every published release, preview or stable: they
-# are downloads, not an update feed. The command line's Windows and macOS
-# builds are CI artefacts only (owner, 2026-10-23: Linux packages only).
+# architecture, (Debian name, RPM and tarball name), built and tested by
+# release.yml's linux-cli job on every run. Published only with
+# MV_RELEASE_LINUX_CLI=1: a build that leaves this machine needs an updater
+# first (CLAUDE.md), and how Linux gets updates (a package repository,
+# signing) is the owner's call, still open (docs/design/12, 2026-10-23).
+# Until then they are the run's artefacts; once on, every published release,
+# preview or stable, needs all six. The command line's Windows and macOS
+# builds are CI artefacts only: the owner asked for Linux packages, and
+# releases for those two are not decided.
 LINUX_CLI_ARCHES = (('amd64', 'x86_64'), ('arm64', 'aarch64'))
+
+
+def linux_cli_published():
+    return os.environ.get('MV_RELEASE_LINUX_CLI') == '1'
 
 
 def linux_cli_asset_names(version):
@@ -198,7 +207,8 @@ def validate_assets(folder, version, mode, repo, tag):
             for platform in addon_platforms(addon):
                 names += addon_asset_names(platform, addon)
         names += preferred_asset_names(folder, version, mode)
-    names += linux_cli_asset_names(version)
+    if linux_cli_published():
+        names += linux_cli_asset_names(version)
     for name in names:
         path = folder / name
         if not path.is_file() or path.stat().st_size == 0:
@@ -267,15 +277,17 @@ def release_notes(version, mode, repo, tag, sha):
             f'- **[Download for Windows (x64)]({base}/MediaViewer-{version}-Setup.exe)** '
             '- run the installer.\n'
             f'- **[Download for Mac (Apple Silicon and Intel, macOS 14+)]({base}/MediaViewer-{version}.dmg)** '
-            '- open the disk image and drag MediaViewer to Applications.\n'
-            '- **driftwire for Linux**, the command line that sends files to and from MediaViewer\'s '
-            f'Driftwire: x86_64 [.deb]({base}/driftwire_{version}_amd64.deb), '
-            f'[.rpm]({base}/driftwire-{version}-1.x86_64.rpm) or '
-            f'[tarball]({base}/driftwire-{version}-linux-x86_64.tar.gz); '
-            f'arm64 [.deb]({base}/driftwire_{version}_arm64.deb), '
-            f'[.rpm]({base}/driftwire-{version}-1.aarch64.rpm) or '
-            f'[tarball]({base}/driftwire-{version}-linux-aarch64.tar.gz) '
-            '- install the package with your package manager (glibc 2.35 or newer).\n\n')
+            '- open the disk image and drag MediaViewer to Applications.\n')
+    if linux_cli_published():
+        text += ('- **driftwire for Linux**, the command line that sends files to and from MediaViewer\'s '
+                 f'Driftwire: x86_64 [.deb]({base}/driftwire_{version}_amd64.deb), '
+                 f'[.rpm]({base}/driftwire-{version}-1.x86_64.rpm) or '
+                 f'[tarball]({base}/driftwire-{version}-linux-x86_64.tar.gz); '
+                 f'arm64 [.deb]({base}/driftwire_{version}_arm64.deb), '
+                 f'[.rpm]({base}/driftwire-{version}-1.aarch64.rpm) or '
+                 f'[tarball]({base}/driftwire-{version}-linux-aarch64.tar.gz) '
+                 '- install the package with your package manager (glibc 2.35 or newer).\n')
+    text += '\n'
     if mode == 'preview':
         text += ('Preview build: signed like a stable release, but not marked Latest. Apps with '
                  '**Settings > Update channel** set to Preview update to it automatically; the '
@@ -337,8 +349,8 @@ def publish(folder):
     print(url)
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
-            summary.write(f'Published [{tag}]({url}) with both installers, the driftwire Linux packages '
-                          'and SHA256SUMS.txt.\n')
+            linux = ', the driftwire Linux packages' if linux_cli_published() else ''
+            summary.write(f'Published [{tag}]({url}) with both installers{linux} and SHA256SUMS.txt.\n')
 
 
 if __name__ == '__main__':

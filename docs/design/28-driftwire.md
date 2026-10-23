@@ -76,9 +76,11 @@ macOS (owner, 2026-10-23; [From a terminal](#from-a-terminal-driftwire)).
 `driftwire` is a terminal host of the same engine (owner, 2026-10-23,
 [12](12-decision-log.md#driftwire)): a program of its own, outside MediaViewer, on Linux, Windows
 and macOS. It speaks the same wire, so it sends to and receives from the add-on and another
-`driftwire`. Linux ships it as a `.deb`, an `.rpm` and a tarball; on Windows and macOS it is built
-and tested with the app and kept out of the app's payload, a CI artefact only (the owner chose
-Linux packages). Its manual page is `packaging/linux/driftwire.1`.
+`driftwire`. Linux gets it as a `.deb`, an `.rpm` and a tarball, built with every release and on
+the release page once the owner rules on how Linux is updated ([12](12-decision-log.md#platforms));
+on Windows and macOS it is built and tested with the app and kept out of the app's payload, a CI
+artefact only (the owner asked for Linux packages; releases for Windows and macOS are not
+decided). Its manual page is `packaging/linux/driftwire.1`.
 
 ```
 driftwire                        the session: visible nearby while it runs; send and receive

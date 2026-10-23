@@ -234,7 +234,7 @@ The optional **Driftwire** add-on sends photos, video and audio to another Media
 - **Remember each other.** After a send, tick *Remember* on both computers and next time it's one click, no code, from anywhere. Each side keeps the other's key in the Keychain or Windows Credential Manager, and refuses loudly if it ever changes.
 - **When nothing gets through directly,** it can go through another computer of yours, or a small relay server you run yourself, and stay sealed end to end: the computer in between passes the bytes on and can't read them.
 - **Encrypted for the long run.** Every send is sealed end to end with a post-quantum handshake, so a recording made today cannot be opened later.
-- **From a Linux terminal, too.** *driftwire* brings the same sends to a terminal and talks to Driftwire in MediaViewer: the code shows in big digits, nothing is saved until you answer, and what happened stays in your scrollback. It installs as a .deb, an .rpm or a tarball.
+- **From a Linux terminal, too.** *driftwire* brings the same sends to a terminal and talks to Driftwire in MediaViewer: the code shows in big digits, nothing is saved until you answer, and what happened stays in your scrollback. Packages for it (.deb, .rpm and a tarball) are coming.
 
 ## Themes and add-ons from anyone
 
