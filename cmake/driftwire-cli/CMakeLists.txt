@@ -273,11 +273,12 @@ set(CPACK_RPM_COMPRESSION_TYPE xz)
 # happens to carry the same binary, and nothing here ships debug symbols.
 # CPack (3.28) writes Suggests but not Recommends, so it goes in by hand.
 set(CPACK_RPM_SPEC_MORE_DEFINE "%define _build_id_links none\nRecommends: libsecret")
-# Folders the system owns: the package lists only its own files.
+# Folders the base system owns (Fedora's `filesystem`): listed as its own,
+# rpm would claim them. The completion and firewalld folders are left in:
+# their packages (zsh, bash-completion, firewalld) may not be installed, and
+# zsh's vendor-completions is Debian's, which nothing else owns on Fedora, so
+# the package co-owns them and rpm takes them away, when empty, on erase.
 set(CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION
-  /usr/lib/firewalld /usr/lib/firewalld/services
-  /usr/share/bash-completion /usr/share/bash-completion/completions
-  /usr/share/zsh /usr/share/zsh/site-functions /usr/share/zsh/vendor-completions
   /usr/share/licenses /usr/share/man /usr/share/man/man1 /usr/share/doc)
 
 # driftwire-<version>-linux-<x86_64|aarch64>.tar.gz (CPACK_PACKAGE_FILE_NAME).
