@@ -132,8 +132,9 @@ network at all it says so and waits, as the window does: a network can come up.
   gets six boxes that take digits only and send by themselves at the sixth, with the engine's note
   and the tries left (three wrong entries end the link, as in the window). Over the internet the
   check is shown to compare ("Make sure Ann's MacBook shows 482 917"), never as a code to type.
-  `/code`'s card shows the code large with its link and life; `c` copies the code and `l` the link
-  (OSC 52, where the terminal allows it).
+  `/code`'s card shows the code large with its link and life; `/copy` copies the code and
+  `/copy link` the link (OSC 52, where the terminal allows it): commands, not keys, since any
+  letter at the prompt may begin a path.
 - **Accept is typed** (owner, [12](12-decision-log.md#driftwire)): the offer is a numbered choice
   under the card, **1** Accept and save to the folder shown, **2** save somewhere else (a folder
   typed, Tab completing), **3** Decline; `y` accepts, `n` or Esc declines. A card that says yes to
@@ -146,7 +147,7 @@ network at all it says so and waits, as the window does: a network can come up.
   backslash escapes, `~`, `file://` and the globs `* ? [...]`, expanded by the program, not a
   shell. A folder alone is a folder send. Nearby is the engine's list; ↑↓ choose and Enter on an
   empty prompt sends. The commands are the window's: `/send`, `/folder`, `/files`, `/clear`,
-  `/code`, `/to-code`, `/devices`, `/forget N`, `/mine N on|off`, `/unfinished`, `/discard N`,
+  `/code`, `/copy`, `/to-code`, `/devices`, `/forget N`, `/mine N on|off`, `/unfinished`, `/discard N`,
   `/save-to`, `/internet`, `/dht`, `/handover`, `/relay`, `/relay-server`, `/settings`, `/help`,
   `/quit`. An internet option says what it means the first time it is turned on in a session (the
   window's words).

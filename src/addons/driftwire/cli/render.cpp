@@ -849,8 +849,8 @@ Element internet_code_card(const theme& th, const internet_code_model& m, int wi
   if (!m.link.empty()) body.push_back(hbox({text("  "), dimmed(th, fit("Link: " + m.link, cw - 2, th))}));
   if (!m.how.empty()) body.push_back(lines(th, "Ways in: " + m.how + ".", cw, tone::dim, 2));
   if (!m.note.empty()) body.push_back(lines(th, m.note, cw, tone::warning, 2));
-  std::vector<std::string> keys{"c copy code"};
-  if (!m.link.empty()) keys.emplace_back("l copy link");
+  std::vector<std::string> keys{"/copy copies it"};
+  if (!m.link.empty()) keys.emplace_back("/copy link");
   keys.emplace_back("esc stop");
   body.push_back(say_and_keys(th, m.copied, tone::success, keys, cw));
   return card(th, width, "Receive from anywhere", std::move(body), tone::accent);

@@ -168,9 +168,9 @@ under way.
 .SS From anywhere
 .B /code
 makes a code to give someone: four words, or groups of letters, and a link.
-.B c
+.B /copy
 copies the code and
-.B l
+.B /copy link
 the link (through the terminal, OSC 52, where it allows it). The person
 sending pastes it into
 .BR /to\-code ,
@@ -201,6 +201,9 @@ Clear them.
 .TP
 .B /code
 Receive from anywhere: make a code to give someone.
+.TP
+.BR /copy " [" link ]
+Copy the code, or its link, to the clipboard.
 .TP
 .B /to\-code
 Send to a code someone gave you (pasted, never an argument).

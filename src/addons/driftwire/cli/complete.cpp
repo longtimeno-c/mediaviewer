@@ -20,6 +20,7 @@ constexpr std::array kCommands{
     command_info{"/files", "", "List the files ready to send", ""},
     command_info{"/clear", "", "Clear the files ready to send", ""},
     command_info{"/code", "", "Receive from anywhere: make a code to give someone", ""},
+    command_info{"/copy", "[link]", "Copy the code (or its link) to the clipboard", ""},
     command_info{"/to-code", "", "Send these files to a code someone gave you", ""},
     command_info{"/devices", "", "List remembered devices", ""},
     command_info{"/forget", "N", "Forget a remembered device", ""},

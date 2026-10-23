@@ -1161,6 +1161,8 @@ struct session::impl {
       clear_files();
     } else if (name == "/code") {
       make_code();
+    } else if (name == "/copy") {
+      copy_code(rest);
     } else if (name == "/to-code") {
       open_to_code();
     } else if (name == "/devices") {
@@ -1542,6 +1544,31 @@ struct session::impl {
   std::string copied_text;
   std::int64_t copied_until = 0;
 
+  // /copy, /copy link: the code card's code or link onto the clipboard. A
+  // command, not a key: any letter typed at the prompt may begin a path.
+  void copy_code(std::string_view what) {
+    const std::string arg = lower_ascii(trim(what));
+    if (!arg.empty() && arg != "link") {
+      flash("/copy copies the code; /copy link copies its link.");
+      return;
+    }
+    const bool the_link = arg == "link";
+    if (static_cast<code_phase>(v.code_phase) != code_phase::ready) {
+      flash("No code to copy: /code makes one.");
+      return;
+    }
+    if (the_link && v.code_link.empty()) {
+      flash("This code has no link.");
+      return;
+    }
+    if (o.plain) {
+      // Lines only, never a terminal sequence: the code is in a line above.
+      say(tone::info, "Plain mode does not copy: copy the code from the line above.");
+      return;
+    }
+    copy(the_link ? v.code_link : v.code_text, the_link ? "Link copied" : "Code copied");
+  }
+
   // A choice list's keys: ↑↓, 1–n, Enter, y / n, Esc. -1: nothing chosen yet;
   // -2: no (n, Esc).
   int choose(const key_event& e, int& selected, int n, int yes_index = 0) {
@@ -1741,17 +1768,6 @@ struct session::impl {
         quitting = true;
       }
       return;
-    }
-    // The code card's keys, while nothing is typed.
-    if (editor.empty() && e.is(key::text) && static_cast<code_phase>(v.code_phase) == code_phase::ready) {
-      if (e.text == "c") {
-        copy(v.code_text, "Code copied");
-        return;
-      }
-      if (e.text == "l" && !v.code_link.empty()) {
-        copy(v.code_link, "Link copied");
-        return;
-      }
     }
     const std::string before = editor.text();
     if (editor.handle(e) && editor.text() != before) palette_sel = 0;

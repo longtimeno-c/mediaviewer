@@ -692,8 +692,8 @@ TEST_CASE("driftwire cli palette: commands filter by what is typed after the sla
     return out;
   };
   CHECK(cli::filter_commands("/").size() == cli::commands().size());
-  CHECK(names(cli::filter_commands("/co")) == std::vector<std::string>{"/code", "/to-code"});
-  CHECK(names(cli::filter_commands("/CO")) == std::vector<std::string>{"/code", "/to-code"});
+  CHECK(names(cli::filter_commands("/co")) == std::vector<std::string>{"/code", "/copy", "/to-code"});
+  CHECK(names(cli::filter_commands("/CO")) == std::vector<std::string>{"/code", "/copy", "/to-code"});
   CHECK(names(cli::filter_commands("/ex")) == std::vector<std::string>{"/quit"});  // its alias /exit
   CHECK(names(cli::filter_commands("/mine 2 on")) == std::vector<std::string>{"/mine"});
   CHECK(cli::filter_commands("/zzz").empty());
@@ -1171,11 +1171,13 @@ TEST_CASE("driftwire cli look: the start banner, the prompt and the slash palett
   check_rows(rows_of(cli::command_palette(th, pal, 80), 80),
              {
                  "  ❯ /code          Receive from anywhere: make a code to give someone",
+                 "    /copy [link]   Copy the code (or its link) to the clipboard",
                  "    /to-code       Send these files to a code someone gave you",
              });
-  pal.selected = 1;
+  pal.selected = 2;
   const auto sel = rows_of(cli::command_palette(th, pal, 40), 40);
-  check_rows(sel, {"    /code          Receive from anywher…", "  ❯ /to-code       Send these files to…"});
+  check_rows(sel, {"    /code          Receive from anywher…", "    /copy [link]   Copy the code (or it…",
+                   "  ❯ /to-code       Send these files to…"});
   check_rows(rows_of(cli::command_palette(th, cli::palette_model{}, 80), 80), {"    No command matches"});
   // Under the height cap the palette keeps the selection in sight.
   cli::palette_model all;
@@ -1267,10 +1269,10 @@ TEST_CASE("driftwire cli look: the internet code, the check to compare, remember
   CHECK(r[0].find("Receive from anywhere") != std::string::npos);
   CHECK(any_row_has(r, "│      amber river quiet falcon"));
   CHECK(any_row_has(r, "It works once, 9 min left."));
-  CHECK(any_row_has(r, "c copy code · l copy link · esc stop │"));
+  CHECK(any_row_has(r, "/copy copies it · /copy link · esc stop │"));
   // At 40 columns the keys go under, as many whole ones as fit.
   const auto n = rows_of(cli::internet_code_card(th, c, 40), 40);
-  CHECK(any_row_has(n, "c copy code · esc stop │"));
+  CHECK(any_row_has(n, "/copy copies it · esc stop │"));
   CHECK(widest(n) == 40);
   c.copied = "Code copied";
   CHECK(any_row_has(rows_of(cli::internet_code_card(th, c, 80), 80), "│   Code copied"));

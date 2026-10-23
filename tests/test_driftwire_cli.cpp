@@ -871,8 +871,9 @@ TEST_CASE("driftwire cli session: a code over the internet (loopback), the check
   // The card shows the code itself (its first group, at least).
   CHECK(bea.screen_shows(code->substr(0, 4)));
   CHECK(bea.text().find("Send and receive over the internet") != std::string::npos);  // what it means, once
-  // c copies the code (OSC 52: the terminal's clipboard), and says so.
-  bea.con.type("c");
+  // /copy copies the code (OSC 52: the terminal's clipboard), and says so.
+  // A command, not a key: a letter at the prompt may begin a path.
+  type_line(bea, "/copy");
   REQUIRE(bea.screen_shows("Code copied"));
   const auto osc = bea.con.osc();
   CHECK(std::any_of(osc.begin(), osc.end(), [](const std::string& o) { return o.rfind("52;c;", 0) == 0 && o.size() > 5; }));
