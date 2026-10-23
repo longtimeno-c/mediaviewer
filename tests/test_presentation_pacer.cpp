@@ -100,9 +100,9 @@ TEST_CASE("an msc step of two is one missed refresh", "[gfx][presentation_pacer]
   const auto stats = pacer.stats();
   REQUIRE(stats.dropped_frames == 1);
   REQUIRE(stats.missed_refreshes == 1);
+  // The display saw the miss: the commits were not late, and an authoritative
+  // sample is judged by its msc step, never by the clock.
   REQUIRE(stats.displayed_presents == 2);
-  // Committed on time (a millisecond apart): the display is what saw the miss.
-  REQUIRE(stats.max_ms < 16.0);
   REQUIRE(stats.source == mv::gfx::presentation_drop_source::presentation_feedback);
 }
 

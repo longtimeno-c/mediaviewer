@@ -17,14 +17,27 @@
 # Allowed only in the Mac port files: *_mac.* and *_metal.*, plus *_posix.*,
 # the POSIX ports that guard their Apple-only lines with __APPLE__.
 #
-# Both apply in:
+# Linux (D9 amended 2026-10-23, docs/plans/linux.md). #include of EGL / GL /
+# GLES / KHR / epoxy, the Wayland and xkbcommon headers, X11 / xcb, the DRM,
+# GBM, VA-API and VDPAU headers, PipeWire / SPA / PulseAudio / ALSA, udev,
+# systemd, D-Bus, GLib / GIO / GTK / GDK, Qt, BlueZ, Linux's own <linux/...>
+# and the Linux-only <sys/...> interfaces (inotify, epoll, eventfd, signalfd,
+# timerfd, sendfile), or an FFmpeg hwcontext header for VA-API / VDPAU / DRM.
+# Allowed only in the Linux port files: *_linux.*, *_posix.*, and the OpenGL
+# backend's *_gl.*, *_egl.*, *_wayland.*.
+#
+# The three apply in:
 #   core/, codec/, canvas/, image/, meta/, player/, edit/, addon/, addons/,
 #   geo/, infer/, and io/*.h
 # and to .h, .hpp, .cpp, .mm and .m files.
 #
-# Platform I/O stays in io/*_win.cpp / io/*_mac.cpp (and the existing
-# io/file.cpp). gfx/ is the D3D11 / Metal backend and is allowed. shell/ holds
-# both hosts. nle/mac is the Mac-only Final Cut Pro agent (docs/design/23).
+# Vulkan (D9: no Vulkan on any OS). <vulkan/...>, volk, VMA or FFmpeg's Vulkan
+# hwcontext, anywhere under src/ (shell/ and gfx/ too), with no exempt file.
+#
+# Platform I/O stays in io/*_win.cpp / io/*_mac.cpp / io/*_linux.cpp (and the
+# existing io/file.cpp). gfx/ is the D3D11 / Metal / OpenGL backend and is
+# allowed. shell/ holds the hosts. nle/mac is the Mac-only Final Cut Pro agent
+# (docs/design/23).
 #
 # Exit 0 clean, 1 on a violation.
 
@@ -53,17 +66,30 @@ $rules = @(
         Name    = 'Cocoa/Metal'
         Pattern = '^\s*#\s*(include|import)\s*[<"](Foundation|AppKit|Cocoa|UIKit|SwiftUI|Metal|MetalKit|MetalPerformanceShaders|QuartzCore|CoreVideo|CoreMedia|CoreImage|VideoToolbox|IOSurface|AVFoundation|AVKit|AudioToolbox|CoreAudio)/'
         Exempt  = '_(mac|metal|posix)\.[A-Za-z]+$'
+    },
+    [pscustomobject]@{
+        Name    = 'Linux (GL/EGL/Wayland/Qt)'
+        Pattern = '^\s*#\s*(include|import)\s*[<"](EGL/|GL/|GLES[0-9]*/|KHR/|epoxy/|wayland-[^">]*\.h|xkbcommon/|X11/|xcb/|gbm\.h|xf86drm|drm/|libdrm/|va/|vdpau/|pipewire/|spa/|pulse/|alsa/|asoundlib\.h|libudev\.h|systemd/|dbus/|gio/|glib\.h|glib-object\.h|gtk/|gdk/|Qt[A-Za-z0-9]*/|bluetooth/|sys/inotify\.h|sys/epoll\.h|sys/eventfd\.h|sys/signalfd\.h|sys/timerfd\.h|sys/sendfile\.h|linux/|libavutil/hwcontext_(vaapi|vdpau|drm)\.h)'
+        Exempt  = '_(linux|posix|gl|egl|wayland)\.[A-Za-z]+$'
     }
 )
 
+# No exempt file: D9 has no Vulkan on any OS, so this one is checked across
+# all of src/, the hosts and gfx/ included.
+$vulkanRule = [pscustomobject]@{
+    Name    = 'Vulkan (D9)'
+    Pattern = '^\s*#\s*(include|import)\s*[<"](vulkan/|volk\.h|vk_mem_alloc\.h|libavutil/hwcontext_vulkan\.h)'
+    Exempt  = '^$'
+}
+
 $violations = @()
 
-function Test-File([System.IO.FileInfo]$file) {
+function Test-File([System.IO.FileInfo]$file, [object[]]$ruleSet = $rules) {
     $found = @()
     $lineNumber = 0
     foreach ($line in (Get-Content -LiteralPath $file.FullName)) {
         $lineNumber++
-        foreach ($rule in $rules) {
+        foreach ($rule in $ruleSet) {
             if ($file.Name -match $rule.Exempt) { continue }
             if ($line -match $rule.Pattern) {
                 $found += [pscustomobject]@{
@@ -95,13 +121,18 @@ if (Test-Path $ioDir) {
     }
 }
 
+$allFiles = Get-ChildItem -Path $SourceRoot -Recurse -Include *.h, *.hpp, *.cpp, *.mm, *.m, *.c -File
+foreach ($file in $allFiles) {
+    $violations += @(Test-File $file @($vulkanRule))
+}
+
 if ($violations.Count -eq 0) {
-    Write-Host "hostable core: clean (no Windows or Cocoa/Metal headers above gfx/ outside the port files)"
+    Write-Host "hostable core: clean (no Windows, Cocoa/Metal or Linux headers above gfx/ outside the port files; no Vulkan anywhere)"
     exit 0
 }
 
 Write-Host ''
-Write-Host 'HOSTABLE-CORE VIOLATIONS: HWND / D3D11 / wchar paths stay in shell/ and *_win.cpp; Cocoa / Metal stay in shell/, gfx/ and *_mac.*.' -ForegroundColor Red
+Write-Host 'HOSTABLE-CORE VIOLATIONS: HWND / D3D11 / wchar paths stay in shell/ and *_win.cpp; Cocoa / Metal stay in shell/, gfx/ and *_mac.*; Wayland / EGL / GL / Qt stay in shell/, gfx/ and *_linux.* / *_gl.* / *_wayland.*; Vulkan nowhere.' -ForegroundColor Red
 Write-Host 'docs/design/15-platforms.md (D9).'
 Write-Host ''
 foreach ($v in $violations) {
