@@ -37,8 +37,11 @@ inline constexpr const char* kLinkPrefix = "mediaviewer://driftwire?code=";
 
 // #472 relays: the receiver's relay server (the advanced "Relay (your own
 // server)") and the token it waits under there (splice.h). Covered with the
-// places, so only someone with the code learns either. It counts as one of
-// the kMaxPlaces; a code with one is opened only by a build with relays.
+// places, so only someone with the code learns either, besides that server:
+// the receiver tells it the token, and a sender names it by a hash, only
+// inside a sealed handshake (protocol 3, #500), never in the clear. It counts
+// as one of the kMaxPlaces; a code with one is opened only by a build with
+// relays.
 struct relay_place {
   net::endpoint at;
   std::array<std::uint8_t, 16> token{};

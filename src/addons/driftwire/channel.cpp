@@ -201,6 +201,11 @@ bool valid_type(std::uint8_t raw, std::uint32_t version) noexcept {
 
 }  // namespace
 
+bool is_internet_hello(std::span<const std::uint8_t> first) noexcept {
+  return first.size() >= kInternetHelloBytes && std::memcmp(first.data(), kHelloMagic, 4) == 0 &&
+         first[4] == kProtocol2 && first[5] == kKindInternet;
+}
+
 // ---- opening ---------------------------------------------------------------------------
 
 result<hello> channel::read_hello(link& l, clock::time_point deadline) {
