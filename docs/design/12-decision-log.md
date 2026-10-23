@@ -732,7 +732,35 @@ triplets; `tools/mac/lipo_merge.py` joins the trees, then `macpack release` sign
 packages once. Pacing on Intel has not been measured. Windows ARM64 is not built.
 
 **A headless Linux build of the shared core (2026-09-24).** `cmake/portable` runs the shared suites
-under ASan / UBSan / TSan. It is a test build, not a product platform.
+under ASan / UBSan / TSan. It is a test build, not a product platform. Amended by the row below.
+
+**Linux is a third host of the shared core (owner, 2026-10-23; amends "macOS is a host of the shared
+core" and the row above).** The owner asked for a Linux version. It is built as the Mac host was: a
+host plus backends behind the same narrow ports, not a port of either app
+([plan](../plans/linux.md)). The owner's calls:
+- **Present: OpenGL via EGL, Wayland first.** The canvas's own EGL surface, `eglSwapInterval(0)`,
+  and a wait for the previous commit's `wl_surface.frame` callback before recording (the
+  waitable-object analogue); `wp_presentation` feedback is the gate's truth. X11 runs through EGL
+  but is not gated: it has no wait before recording. "No Vulkan" stands on every OS; GL keeps D9 as
+  written, its immutable-texture model maps onto D3D11's, and VA-API frames import as dma-buf
+  through `EGL_EXT_image_dma_buf_import`.
+- **Chrome: Qt 6 / QML** (D1 amended). The canvas is a child `QWindow`: Qt makes it a desync
+  `wl_subsurface` (a child X window on X11), and C++ presents into it on its own render thread;
+  Qt never draws it. GTK 4 was refused: it owns every surface and commits through its frame clock
+  on the UI thread, which puts the UI thread in the present path (rules 1 and 2).
+- **Shaders: GLSL**, the third hand-written twin, compiled from source by the driver at startup as
+  MSL is. No SPIR-V, no cross-compiler.
+- **Order: the Linux halves of PRs 1–8 first** (as the Mac's were), then the Linux halves of what
+  has landed since, then every PR on all three. Until then a PR stays dual-track, and shared code
+  takes no dependency a Linux host could not replace.
+
+Cost: a third half for every feature once Linux has caught up; Qt's QPA native interface is
+private API (Qt ≥ 6.5) and Qt is bundled where the LTS distributions are older (22.04 ships 6.2,
+24.04 ships 6.4); QML cannot overlap the canvas ("airspace"), so whatever sits over it is its own
+child window; the swap chain's buffer count is the driver's, not ours. Open calls (video decode on
+NVIDIA, the audio clock, floor and architectures, channel and signing, Qt bundling, crash reports,
+Bluetooth) are in the plan's §10. Reopen only if the Linux PR 1 gate cannot hold on Mutter and KWin,
+or Qt's subsurface cannot hold the PR 3 gate (then rule 2's island fallback applies, as on Windows).
 
 ---
 

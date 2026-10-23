@@ -7,7 +7,9 @@ Windows integration follow in future updates. **v1 is Windows.** From PR 4 the n
 kept hostable; macOS is a second host of the same core (`docs/design/15-platforms.md`, D9), not a
 UI-only port. **One PR number per feature on both platforms:** the Mac host (built as old
 PRs 16–20) is the Mac halves of PRs 1–8, both platforms are at PR 9, and every PR from 9 lands
-on Windows and macOS together (D9 amended 2026-09-24). 16–19 is the Import add-on, 20–24 AI search, 27–28 Voice query.
+on Windows and macOS together (D9 amended 2026-09-24). **Linux is a third host** (D9 amended
+2026-10-23, `docs/plans/linux.md`): its halves of PRs 1–8 come first, then the halves of what has
+landed since, then every PR on all three. 16–19 is the Import add-on, 20–24 AI search, 27–28 Voice query.
 
 **v1 is the PR 1–7 viewer, on the camera-dump format set, packaged in PR 8.**
 Light editing and trim follow in future updates. Not a develop module.
@@ -41,7 +43,7 @@ Read `docs/design/README.md` first, then the doc for the area you are touching:
 | `docs/design/12-decision-log.md` | Why current behaviour is the way it is — do not re-reverse quietly |
 | `docs/design/13-updates-and-telemetry.md` | Updater, crash reports, privacy line |
 | `docs/design/14-abi.md` | C ABI between host and core |
-| `docs/design/15-platforms.md` | One core, two hosts — **D9**. Read before any new Win32/D3D11 or Cocoa/Metal leak out of the hosts / `gfx/` |
+| `docs/design/15-platforms.md` | One core, two hosts and a third coming (Linux) — **D9**. Read before any new Win32/D3D11, Cocoa/Metal or Wayland/EGL/Qt leak out of the hosts / `gfx/` |
 | `docs/design/16-commands.md` | Command table, key router, default keys. Read before adding a key, overlay, or chrome command |
 | `docs/design/17-local-ai-search.md` | Local AI search add-on |
 | `docs/design/18-import.md` | Import add-on; the add-on mechanism |
@@ -55,7 +57,7 @@ Read `docs/design/README.md` first, then the doc for the area you are touching:
 | `docs/design/27-places.md` | Places: offline reverse geocoding (`src/geo`, `tools/geo`), the place database, the label rule, the Places add-on. Read before touching GPS → place names, place search or the map |
 | `docs/design/28-driftwire.md` | Driftwire (#410, #413): sending files to a MediaViewer nearby (beacon, sealed link, code, verified receive, Bluetooth), the gallery's Shift-click range, drag-out and share icon. Read before touching the add-on, the network or Bluetooth ports, or the gallery's selection |
 | `docs/design/25-open-addons.md` | PRs 55–60 (PR 55 built; owner calls made 2026-10-03: script sandbox, no network, any add-on licence): add-ons from anyone, installed from a file or a link and signed by their publisher; the contribution model (themes first). Read before any third-party add-on, theme or contribution-point work |
-| `docs/plans/` | Forward plans not yet built (e.g. `audio-and-documents.md`) |
+| `docs/plans/` | Forward plans not yet built (e.g. `audio-and-documents.md`, `linux.md`) |
 
 If a change would contradict a **D1–D9** decision, stop and say so. Do not “just this once.”
 If you reverse a decision, add a dated row to `docs/design/12-decision-log.md` with the reason.
@@ -66,7 +68,8 @@ If you reverse a decision, add a dated row to `docs/design/12-decision-log.md` w
 2. **The canvas is a native swapchain C++ owns**, never a XAML `Image` or `MediaPlayerElement`.
    On Windows that swapchain is D3D11. If `SwapChainPanel` cannot hold the pacing gate, drop
    to a native HWND/DComp island. Never silently degrade the canvas to XAML. One present path
-   per OS — Metal is the macOS sequel, not a second Windows path.
+   per OS — Metal is the macOS sequel, not a second Windows path; on Linux it is OpenGL via EGL
+   on a surface C++ owns, never a Qt item and never a toolkit's frame clock.
 3. **First pixel is never the full decode**: memory cache → disk thumb → embedded RAW
    preview → downscaled decode. Full resolution is a refinement.
 4. **Zero dropped frames while panning a cached image at display refresh** — measured, not
@@ -117,7 +120,7 @@ numbers say otherwise.
 
 | # | Call |
 |---|---|
-| **D1** | C# WinUI 3 chrome + C++ core. ImGui is the PR 1 present lab and the F3 overlay, never shipped chrome. |
+| **D1** | C# WinUI 3 chrome + C++ core. ImGui is the PR 1 present lab and the F3 overlay, never shipped chrome. **Amended 2026-10-23 (owner): Linux chrome is Qt 6 / QML**, the canvas a child `QWindow` C++ presents into. |
 | **D2** | FFmpeg + D3D11VA on *your* `ID3D11Device`, presented on the same swapchain as photos. Not libmpv. Not MF as the primary path. `IMFMediaEngine` is an escape hatch behind `IVideoSource` if the A/V clock overruns PR 5. |
 | **D3** | Bundle decoders. Never require a Store pack. |
 | **D4** | v1 ships the PR 1–7 viewer in PR 8. Photo editing/export waits for PR 10–11; metadata tools and further Windows integration are future updates. |
@@ -125,7 +128,7 @@ numbers say otherwise.
 | **D6** | Linear FP16 *working space* (non-negotiable). 8-bit sRGB *swapchain* in v1. Untagged JPEG → sRGB. Treating a tagged image as sRGB is a bug. |
 | **D7** | Trim is post-v1 (PR 13): keyframe stream-copy **or** full re-encode, both labelled. Smart cut follows later. |
 | **D8** | AppContainer decode process is post-v1. Fuzz from PR 6/7. |
-| **D9** | v1 ships Windows. From PR 4, new native code does not take a Windows-only dependency a Metal / AppKit / SwiftUI host cannot replace. Mac is the Mac halves of PRs 1–8 (built as Milestone F, old PRs 16–20): Metal present lab, SwiftUI in AppKit, VideoToolbox, Core Audio — **not** a UI-only port. **Amended 2026-09-24: from PR 9 every PR is dual-track** — one shared core change, a WinUI half and a SwiftUI half, HLSL + MSL twins, a verify line per platform; done only when both hold. No Vulkan. |
+| **D9** | v1 ships Windows. From PR 4, new native code does not take a Windows-only dependency a Metal / AppKit / SwiftUI host cannot replace. Mac is the Mac halves of PRs 1–8 (built as Milestone F, old PRs 16–20): Metal present lab, SwiftUI in AppKit, VideoToolbox, Core Audio — **not** a UI-only port. **Amended 2026-09-24: from PR 9 every PR is dual-track** — one shared core change, a WinUI half and a SwiftUI half, HLSL + MSL twins, a verify line per platform; done only when both hold. No Vulkan. **Amended 2026-10-23 (owner): Linux is a third host** — OpenGL via EGL, Wayland first (X11 runs, ungated); Qt 6 / QML chrome; GLSL the third twin; FFmpeg + VA-API. The Linux halves of PRs 1–8 first, then of what has landed since, then every PR on all three; until then PRs stay dual-track and shared code stays hostable on Linux. No Vulkan on any OS (`docs/plans/linux.md`). |
 
 Do not introduce Electron, Tauri, Node, D3D12, Vulkan, or a second present path **on one OS**.
 
@@ -136,6 +139,9 @@ Do not introduce Electron, Tauri, Node, D3D12, Vulkan, or a second present path 
 - **Whether WinUI 3 XAML islands hold up** is answered by PR 3, not by preference.
   The canvas is already native (D1 amendment). Fallback: a WinUI app with
   `SwapChainPanel` and an accepted composed frame.
+- **Linux's open calls** — video decode on NVIDIA, the audio clock API, the OS floor and
+  architectures, the update channel and its signing, bundling Qt, crash reports, Bluetooth for
+  Driftwire: `docs/plans/linux.md` §10. Do not settle them in code.
 
 ## How to implement
 
@@ -155,7 +161,7 @@ holds on both platforms **and** both present-loop verifies (Windows PR 1, Mac PR
   different one.
 - Do not implement v1.1 ops, formats, smart cut, HDR swapchain, or AppContainer “while you're here.”
   The stack is designed to take them later; adding them now is scope. Do not skip a D9 port in
-  order to call Win32 **or Cocoa/Metal** from `image/`, `player/`, `edit/`, or `meta/`.
+  order to call Win32, **Cocoa/Metal or Wayland/EGL/Qt** from `image/`, `player/`, `edit/`, or `meta/`.
 - From PR 9 a slice has two host halves. Build both, and run the verify line on both
   platforms plus both present-loop gates (PR 1 on Windows, Mac PR 1 on Mac). A slice green on one
   platform only is not done, and PR N+1 does not merge until it is (a host half may start ahead
@@ -278,10 +284,11 @@ src/meta     Exiv2 / libavformat, property model, writers
 src/edit     EditStack, GPU ops, export
 src/canvas   pan/zoom/springs; host publishes a POD input snapshot
 src/abi      C ABI surface
-src/shell    Windows host (Win32 window, islands, CLI) and the Mac host (AppKit + Metal, `*_mac.mm`)
+src/shell    Windows host (Win32 window, islands, CLI), the Mac host (AppKit + Metal, `*_mac.mm`) and the Linux host (Wayland + EGL, `*_linux.cpp`)
 src/nle      Local search from an editing app (docs/design/23): a read-only host of the AI pack, FCPXML; the FCP agent/extension in `nle/mac`
 src.swift    SwiftUI chrome for the Mac host
 src.managed  C# WinUI 3 chrome
+src.qt       Qt 6 / QML chrome for the Linux host (from Linux PR 3)
 tests/
 tools/       frametime harness, golden-image runner, fuzzers
 docs/design  how it works; docs/plans  forward plans

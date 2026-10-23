@@ -278,6 +278,7 @@ All add-ons install from **Settings → Add-ons**, are verified at every start, 
 | **Video Editor, several clips** | Several clips on one timeline, zoom and dissolves ([docs/design/21](docs/design/21-video-editor.md)) |
 | **Editor add-on** (optional) | Colour grading, multi-track editing, titles and captions, an audio mixer and delivery presets ([docs/design/22](docs/design/22-editor-addon.md)) |
 | **Explorer details** | Explorer's Details-pane properties and tab-grouped windows |
+| **Linux** | MediaViewer on Linux, with the same speed: its own GPU surface on Wayland, hardware video decode and a native desktop app ([plan](docs/plans/linux.md)) |
 
 ## From source
 

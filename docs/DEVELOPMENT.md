@@ -11,7 +11,9 @@ port — see [docs/design/15-platforms.md](design/15-platforms.md).
 
 **One PR number per feature, on both platforms (2026-09-24).** The Mac host, first built as
 PRs 16–20, is now filed as the Mac halves of PRs 1–8, and from PR 9 every PR lands on both, with one shared core change, a WinUI half and a SwiftUI half,
-and a verify line on each platform (D9, amended). The order is:
+and a verify line on each platform (D9, amended). **Linux is a third host (D9 amended 2026-10-23):**
+its halves of PRs 1–8 come first, then the halves of what has landed since, then every PR on all
+three ([docs/plans/linux.md](plans/linux.md)). The order is:
 
 | PR | What | State |
 |---|---|---|
