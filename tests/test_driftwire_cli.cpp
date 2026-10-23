@@ -865,9 +865,10 @@ TEST_CASE("driftwire cli session: a short terminal shrinks Nearby first", "[drif
   REQUIRE(ann.screen_shows("Type or drop files to send"));
   const auto shown = ann.con.visible();
   CHECK(shown.size() <= 8);
-  // ↓ moves the pointer to the one not shown: the window follows it.
+  // The pointer moves to the one not shown (Bea sorts first, Cy second, but
+  // the pointer stays on whichever was heard first): the window follows it.
   const bool bea_shown = ann.con.wait_screen([](const std::string& t) { return has(t, "Bea"); }, 1);
-  ann.con.type("\x1B[B");
+  ann.con.type(bea_shown ? "\x1B[B" : "\x1B[A");
   REQUIRE(ann.screen_shows(bea_shown ? "Cy" : "Bea"));
   type_line(ann, "/quit");
   CHECK(ann.wait_exit() == 0);
