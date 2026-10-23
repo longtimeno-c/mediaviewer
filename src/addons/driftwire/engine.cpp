@@ -1498,9 +1498,13 @@ void engine::build_files(std::vector<std::string> paths, std::uint64_t gen) {
     if (files_stale(gen)) return;  // a newer set replaced this one
     auto st = io::stat_path(path);
     if (!st || st->is_directory) return;
+    // #498: the file itself, never a link (a folder's walk skips them too):
+    // what is sent is this file, whatever is put at its path later.
+    auto id = io::identify(path);
+    if (!id) return;
     std::string rel(leaf_name(path));
     if (!safe_relative(rel) || housekeeping(rel)) return;
-    out.push_back({path, std::move(rel), st->size, st->mtime_unix});
+    out.push_back({path, std::move(rel), st->size, st->mtime_unix, id.value()});
   };
   for (const auto& p : paths) {
     if (files_stale(gen)) return;
@@ -1567,7 +1571,16 @@ void engine::walk_folder(const std::string& folder, std::uint64_t gen) {
     if (files_stale(gen)) return false;
     if (e.cloud_only || skipped_relative(e.relative_utf8)) return true;
     std::string rel = top + "/" + e.relative_utf8;
-    if (safe_relative(rel)) out.push_back({e.path_utf8, std::move(rel), e.size, e.mtime_unix});
+    if (!safe_relative(rel)) return true;
+    // #498: the walk's own id where it has one (POSIX); Windows' listing
+    // gives none, so the file is looked at once (its attributes only).
+    io::file_id id = e.id;
+    if (!id.known()) {
+      auto got = io::identify(e.path_utf8);
+      if (!got) return true;
+      id = got.value();
+    }
+    out.push_back({e.path_utf8, std::move(rel), e.size, e.mtime_unix, id});
     return out.size() < kMaxFiles;
   });
   publish_files(std::move(out), gen);
@@ -3070,7 +3083,8 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
   shown_notice.shown = may_notify && notice(name, 0, 0);
   if (open_window && may_notify && !shown_notice.shown) host_.show_screen(true);
   post();
-  auto offer = first ? (first->type == msg::offer ? parse_offer(first->text()) : result<incoming_offer>(err(status::corrupt)))
+  auto offer = first ? (first->type == msg::offer ? read_offer_after(*ch, first->text(), opts_.confirm_ms)
+                                                 : result<incoming_offer>(err(status::corrupt)))
                      : read_offer(*ch, opts_.confirm_ms);
   if (!offer) {
     const bool declined = cancel_.load();

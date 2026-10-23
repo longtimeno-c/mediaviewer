@@ -345,7 +345,12 @@ Then, on either protocol:
    a machine that only claimed the peer's id, or one in the middle, shows the receiver no code or
    another one, so what the person types cannot match.
 3. The sender's **offer**: the count, the total, and each file's relative path and size. No hash
-   up front: the sender would have to read every file twice before the first byte moved.
+   up front: the sender would have to read every file twice before the first byte moved. An offer
+   that does not fit one message (a folder of more than a few thousand files) says `"parts"` and
+   sends the rest of its files in `offer_more` messages straight after (#498), at most 128 in all
+   (some 33 MB of offer; with paths of ~330 bytes that is `kMaxFiles`, 100 000). One that fits is
+   sent exactly as before; a receiver before #498 ends the link on `offer_more`, as it ended it on
+   the oversized offer.
 4. The receiver answers `accept`, or `decline` with `declined`, `busy` or `no_room`. Closing the
    window, or three minutes without an answer, declines; a receiver already in a transfer answers
    `busy` straight after the handshake.
@@ -915,6 +920,15 @@ link. The tests check that no 32-byte run of the file passes through either rela
   shape under its own name, without housekeeping (`@eaDir`, `#recycle`, `$RECYCLE.BIN`, `System
   Volume Information`, `lost+found`, `__MACOSX`, `Thumbs.db`, `desktop.ini`, dot files, our own
   `.mvtmp`).
+- **Only the file picked is read** (#498): the pick and the walk note each file's identity (its
+  volume and file number: `st_dev`/`st_ino` from the walk's own `lstat` on the Mac; on Windows,
+  whose listing has none, `io::identify` opens each for its attributes only, never following a
+  link and never downloading a cloud placeholder). The send opens it with `file_reader::open_same`:
+  `O_NOFOLLOW` (on Windows a link or junction at the last part is refused before the read handle
+  opens), then the identity of what opened must be the one noted. A file swapped for a link (to
+  `~/.ssh/…`, say) or for another file, or reached through a folder swapped for a link or
+  junction, is `file_skip`, never sent. A picked file that is itself a link is not offered, as a
+  walk never offered one.
 - **Where it lands**: the system **Downloads** folder, as AirDrop (`FOLDERID_Downloads` on Windows,
   `~/Downloads` on the Mac; `net::downloads_folder`, #442), made on Accept if it is missing. A sent
   folder keeps its own name inside it. **Save to** picks another folder, and that choice is kept
