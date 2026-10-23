@@ -12,11 +12,12 @@
 #   cmake -S cmake/portable -B build-portable
 #   cmake --build build-portable && ctest --test-dir build-portable
 #
-# Dependencies: SQLite, libsodium, BLAKE3 and Catch2 v3, from vcpkg
-# (tools/portable/vcpkg.json, the root manifest's baseline) or the system.
-# Without an installed BLAKE3 / Catch2 package, point MV_BLAKE3_SOURCE_DIR at
-# BLAKE3's c/ directory and MV_CATCH2_AMALGAMATED_DIR at Catch2's
-# extras/ directory.
+# Dependencies: SQLite, libsodium, BLAKE3, Catch2 v3 and FTXUI (the driftwire
+# command line's terminal UI), from vcpkg (tools/portable/vcpkg.json, the
+# root manifest's baseline) or the system. Without an installed BLAKE3 /
+# Catch2 / FTXUI package, point MV_BLAKE3_SOURCE_DIR at BLAKE3's c/
+# directory, MV_CATCH2_AMALGAMATED_DIR at Catch2's extras/ directory and
+# MV_FTXUI_SOURCE_DIR at a checkout of FTXUI's pinned release.
 
 cmake_minimum_required(VERSION 3.28)
 project(mediaviewer_portable LANGUAGES C CXX)
