@@ -322,7 +322,7 @@ cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DMV_IMGUI_SOURCE_DIR=$HOME/src/imgui -DCMAKE_PREFIX_PATH=$HOME/.local
 cmake --build build-linux
-ctest --test-dir build-linux --output-on-failure   # mv_tests, and linux_lab_smoke when weston exists
+ctest --test-dir build-linux --output-on-failure   # mv_tests, frametime_harness, and linux_lab_smoke when weston exists
 ```
 
 `-DMV_ASAN=ON` with `-DCMAKE_BUILD_TYPE=Debug` is the ASan + UBSan configuration. The lab runs
@@ -1776,7 +1776,8 @@ Linux container with no GPU and no display (Ubuntu 24.04, GCC 13.3, Mesa 25.2 ll
 
 - **Checked (Linux container):** the root CMake build on Linux (RelWithDebInfo, and Debug with
   ASan + UBSan; imgui from `MV_IMGUI_SOURCE_DIR`, Catch2 from a prefix); `mv_tests` in both (the
-  portable suites, the new presentation-pacer and Linux report cases); `linux_lab_smoke` with
+  portable suites, the new presentation-pacer and Linux report cases); `frametime_harness` (the
+  Linux harness against synthetic reports: pass, baseline, every failing shape); `linux_lab_smoke` with
   Weston's GL renderer and once with pixman; the lab's soaks under ASan + UBSan, leak detection
   on, with no report. Under headless Weston the lab maps its window, makes an OpenGL 4.5 core context on
   llvmpipe through EGL and an sRGB surface, presents, draws F3, and writes reports `frametime` parses:
