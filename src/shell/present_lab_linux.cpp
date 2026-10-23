@@ -365,7 +365,10 @@ void present_lab_linux::render_thread_main() noexcept {
 
     gfx::present_request req;
     req.window_visible = snapshot.window_visible;
-    req.window_active = snapshot.window_active;
+    // A Wayland surface with no buffer is not on screen at all: its first
+    // commit maps it, and compositors activate a toplevel only once it is
+    // mapped. That one frame is presented whatever the activation says.
+    req.window_active = snapshot.window_active || total_presents_ == 0;
     req.occluded = occluded_;
     req.soak = soak || options_.harness;
     req.animating = animating_;

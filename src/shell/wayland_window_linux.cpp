@@ -153,8 +153,10 @@ struct wayland_window_linux::impl {
   }
 
   // Logical size and scale -> the snapshot's physical size, and the config
-  // the render thread will commit against. A resize bumps resize_seq.
-  void publish_size() noexcept {
+  // the render thread will commit against. A configure, or a size or scale
+  // that changed, bumps resize_seq: the render thread then commits a frame,
+  // which carries the ack. A scale event that changes nothing is no frame.
+  void publish_size(bool configure) noexcept {
     const double s = scale();
     surface_config c;
     c.serial = last_serial;
@@ -173,12 +175,15 @@ struct wayland_window_linux::impl {
     }
     if (c.physical_w == 0) c.physical_w = 1;
     if (c.physical_h == 0) c.physical_h = 1;
+    const bool moved = c.physical_w != snap.width || c.physical_h != snap.height ||
+                       static_cast<float>(s) != snap.dpi_scale;
+    if (!configure && !moved) return;
     config.publish(c);
     snap.width = c.physical_w;
     snap.height = c.physical_h;
     snap.dpi_scale = static_cast<float>(s);
-    // Every configure is a frame: the size, the scale and its ack ride on the
-    // next commit, and an idle lab has none coming otherwise.
+    // The size, the scale and the ack ride on the next commit, and an idle lab
+    // has none coming otherwise.
     ++snap.resize_seq;
     changed = true;
   }
@@ -279,7 +284,7 @@ void xdg_configure(void* data, xdg_surface* surface, std::uint32_t serial) {
   } else {
     w->last_serial = serial;
   }
-  w->publish_size();
+  w->publish_size(true);
 }
 const xdg_surface_listener k_xdg_surface_listener = {xdg_configure};
 
@@ -292,7 +297,7 @@ void fractional_preferred(void* data, wp_fractional_scale_v1*, std::uint32_t sca
   auto* w = static_cast<impl*>(data);
   if (scale == w->scale_120) return;
   w->scale_120 = scale;
-  if (w->configured) w->publish_size();
+  if (w->configured) w->publish_size(false);
 }
 const wp_fractional_scale_v1_listener k_fractional_listener = {fractional_preferred};
 
@@ -300,20 +305,20 @@ void surface_enter(void* data, wl_surface*, wl_output* output) {
   auto* w = static_cast<impl*>(data);
   if (auto* o = w->output_for(output)) o->entered = true;
   w->update_refresh();
-  if (w->configured && w->scale_120 == 0 && w->preferred_scale == 0) w->publish_size();
+  if (w->configured && w->scale_120 == 0 && w->preferred_scale == 0) w->publish_size(false);
 }
 void surface_leave(void* data, wl_surface*, wl_output* output) {
   auto* w = static_cast<impl*>(data);
   if (auto* o = w->output_for(output)) o->entered = false;
   w->update_refresh();
-  if (w->configured && w->scale_120 == 0 && w->preferred_scale == 0) w->publish_size();
+  if (w->configured && w->scale_120 == 0 && w->preferred_scale == 0) w->publish_size(false);
 }
 #if defined(WL_SURFACE_PREFERRED_BUFFER_SCALE_SINCE_VERSION)
 void surface_preferred_scale(void* data, wl_surface*, std::int32_t factor) {
   auto* w = static_cast<impl*>(data);
   if (factor == w->preferred_scale) return;
   w->preferred_scale = factor;
-  if (w->configured && w->scale_120 == 0) w->publish_size();
+  if (w->configured && w->scale_120 == 0) w->publish_size(false);
 }
 void surface_preferred_transform(void*, wl_surface*, std::uint32_t) {}
 #endif
