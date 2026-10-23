@@ -192,6 +192,7 @@ class presentation_pacer {
   // The refresh the compositor last predicted in a presented sample, ns; 0
   // until one arrives or when the output has no constant rate.
   [[nodiscard]] std::uint32_t feedback_refresh_ns() const noexcept { return feedback_refresh_ns_; }
+  [[nodiscard]] double refresh_seconds() const noexcept { return refresh_seconds_; }
 
   static constexpr std::size_t history_size = 240;
   [[nodiscard]] const std::array<float, history_size>& history() const noexcept {

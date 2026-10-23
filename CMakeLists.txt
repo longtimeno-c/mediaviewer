@@ -34,7 +34,11 @@ foreach(candidate IN ITEMS "$ENV{VCPKG_ROOT}" "$ENV{VCPKG_INSTALLATION_ROOT}"
   endif()
 endforeach()
 
-if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+# Linux PR 1 needs two packages (imgui, Catch2) and builds without vcpkg too:
+# cmake/linux.cmake finds them as CONFIG packages first (vcpkg, CI) and falls
+# back to a source tree (MV_IMGUI_SOURCE_DIR) and the system. Windows and
+# macOS need the manifest.
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
   message(FATAL_ERROR
     "No vcpkg toolchain found. Set VCPKG_ROOT, or pass "
     "-DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake. See README.md.")
@@ -60,10 +64,16 @@ if(APPLE)
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/darwin.cmake")
   return()
 endif()
+# Linux PR 1: the OpenGL/EGL present lab on Wayland (docs/plans/linux.md). Only
+# the lab, frametime and the portable tests so far; the viewer is later slices.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/linux.cmake")
+  return()
+endif()
 if(NOT WIN32)
   message(FATAL_ERROR
-    "MediaViewer v1 is a Windows application; macOS is Milestone F "
-    "(docs/design/15-platforms.md).")
+    "MediaViewer builds on Windows, macOS and Linux (docs/design/15-platforms.md, "
+    "docs/plans/linux.md); ${CMAKE_SYSTEM_NAME} is none of them.")
 endif()
 
 # ---------------------------------------------------------------------------

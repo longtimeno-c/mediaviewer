@@ -33,6 +33,12 @@
       "platform": "osx"
     },
     {
+      "$comment": "Linux PR 1 (docs/plans/linux.md): the present lab and the F3 overlay on OpenGL 3 via EGL. No platform backend, as on the other two; the binding's own loader finds glvnd's libOpenGL.so.0 through EGL, so no GLX. With catch2, the only packages a Linux build of this manifest installs.",
+      "name": "imgui",
+      "features": ["opengl3-binding"],
+      "platform": "linux"
+    },
+    {
       "name": "libjpeg-turbo",
       "platform": "osx"
     },
