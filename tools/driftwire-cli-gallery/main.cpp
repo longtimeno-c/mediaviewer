@@ -255,11 +255,13 @@ int animate(cli::console& con, cli::output& out, const cli::theme& th, int w, in
   std::int64_t frozen_at = -1;
   while (true) {
     const std::int64_t ms = ms_since();
-    if (ms >= total_ms) break;
+    if (static_cast<double>(ms) >= total_ms) break;
     const double f = std::min(1.0, static_cast<double>(ms) / total_ms);
     Element live;
     if (a.animate == "waiting") {
-      live = cli::waiting(th, {"Waiting for Ann's MacBook to accept" + std::string(th.g->ellipsis), ms / 1000.0}, w, ms);
+      live = cli::waiting(th, {"Waiting for Ann's MacBook to accept" + std::string(th.g->ellipsis),
+                               static_cast<double>(ms) / 1000.0},
+                          w, ms);
     } else if (a.animate == "code") {
       live = cli::code_card(th, {"Ann's MacBook", "342 917"}, w);
     } else {

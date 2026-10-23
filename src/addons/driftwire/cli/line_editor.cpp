@@ -79,17 +79,31 @@ void line_editor::clear() {
 }
 
 void line_editor::insert(std::string_view utf8) {
-  std::string clean;
-  clean.reserve(utf8.size());
-  std::size_t glyphs = max_glyphs_ ? glyph_spans(text_).size() : 0;
-  for (const auto& g : glyph_spans(utf8)) {
-    const std::string_view piece = utf8.substr(g.at, g.len);
+  // Code point by code point first: a control has no width, so as a glyph it
+  // would ride along with the character before it.
+  std::string kept;
+  kept.reserve(utf8.size());
+  for (std::size_t i = 0; i < utf8.size();) {
+    const auto c = static_cast<unsigned char>(utf8[i]);
+    std::size_t n = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 1;
+    if (i + n > utf8.size()) n = 1;
+    const std::string_view piece = utf8.substr(i, n);
+    i += n;
     const char32_t cp = first_code_point(piece);
     if (cp < 0x20 || cp == 0x7F || (cp >= 0x80 && cp < 0xA0)) continue;  // controls
     if (filter_ && !filter_(cp)) continue;
-    if (max_glyphs_ && glyphs >= max_glyphs_) break;
-    clean.append(piece);
-    ++glyphs;
+    kept.append(piece);
+  }
+  std::string clean;
+  if (max_glyphs_) {
+    std::size_t glyphs = glyph_spans(text_).size();
+    for (const auto& g : glyph_spans(kept)) {
+      if (glyphs >= max_glyphs_) break;
+      clean.append(kept, g.at, g.len);
+      ++glyphs;
+    }
+  } else {
+    clean = std::move(kept);
   }
   text_.insert(cursor_, clean);
   cursor_ += clean.size();
@@ -304,11 +318,17 @@ line_editor::window line_editor::view(int columns) {
     w.cursor_col = cur;
     return w;
   }
-  // Too long: keep the cursor in sight, moving the view as little as possible.
-  const int room = std::max(1, columns - 1);  // one column for the ellipsis on the right
-  scroll_ = std::clamp(scroll_, 0, std::max(0, total + end_cell - room));
-  if (cur < scroll_) scroll_ = cur;
-  if (cur >= scroll_ + room) scroll_ = cur - room + 1;
+  // Too long: keep the cursor in sight, moving the view as little as
+  // possible. All the columns are the text's unless more of it follows on
+  // the right: then the last one is the ellipsis's.
+  const int most = std::max(0, total + end_cell - columns);  // never further than shows the end
+  scroll_ = std::clamp(scroll_, 0, most);
+  const auto follow = [&](int room) {
+    if (cur < scroll_) scroll_ = cur;
+    if (cur >= scroll_ + room) scroll_ = cur - room + 1;
+  };
+  follow(columns);
+  if (total + end_cell - scroll_ > columns) follow(std::max(1, columns - 1));
   // Start on a glyph: one cut by the left edge is not shown.
   std::size_t first = 0;
   int first_col = 0, col = 0;

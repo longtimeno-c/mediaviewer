@@ -29,6 +29,14 @@ Element dimmed(const theme& th, std::string s) { return paint(th, text(std::move
 
 Element blank() { return text(""); }
 
+// A colour `t` of the way from `a` to `b`, the ends exactly `a` and `b`
+// (FTXUI's gamma-correct blend rounds 64 to 63 on the way back).
+ftxui::Color mix(float t, const ftxui::Color& a, const ftxui::Color& b) {
+  if (t <= 0.0f) return a;
+  if (t >= 1.0f) return b;
+  return ftxui::Color::Interpolate(t, a, b);
+}
+
 // Each glyph of `s` coloured along a gradient from `a` to `b`.
 Element gradient(const theme& th, std::string_view s, ftxui::Color a, ftxui::Color b) {
   if (!th.colour()) return text(std::string(s));
@@ -37,7 +45,7 @@ Element gradient(const theme& th, std::string_view s, ftxui::Color a, ftxui::Col
   const auto n = static_cast<float>(spans.size() > 1 ? spans.size() - 1 : 1);
   for (std::size_t i = 0; i < spans.size(); ++i) {
     parts.push_back(text(std::string(s.substr(spans[i].at, spans[i].len))) |
-                    ftxui::color(ftxui::Color::Interpolate(static_cast<float>(i) / n, a, b)));
+                    ftxui::color(mix(static_cast<float>(i) / n, a, b)));
   }
   return hbox(std::move(parts));
 }
@@ -148,21 +156,38 @@ Element boxes_row(const theme& th, std::string_view typed, int cw) {
   return hbox({text(spaces(pad)), code_boxes(th, typed, cw - pad)});
 }
 
+// `parts` joined by " · " in at most `room` columns: whole parts drop, from
+// the second-last backwards (the first says how to begin, the last how to
+// finish), then the last. "" when not even the first fits.
+std::string fit_parts(const theme& th, const std::vector<std::string>& parts, int room) {
+  const std::string glue = sep(th);
+  std::vector<std::size_t> keep;
+  for (std::size_t i = 0; i < parts.size(); ++i) keep.push_back(i);
+  while (!keep.empty()) {
+    std::string s;
+    for (const std::size_t i : keep) s += (s.empty() ? "" : glue) + parts[i];
+    if (display_width(s) <= room) return s;
+    keep.erase(keep.size() > 2 ? keep.end() - 2 : keep.end() - 1);
+  }
+  return {};
+}
+
 // A card's last row: what to do on the left, the keys flush right; when the
-// two do not share a row, the words wrap and the keys go under them.
-Element say_and_keys(const theme& th, std::string_view say, tone say_tone, std::string_view keys, int cw) {
+// two do not share a row, the words wrap and the keys go under them (as
+// many whole keys as fit).
+Element say_and_keys(const theme& th, std::string_view say, tone say_tone, const std::vector<std::string>& keys,
+                     int cw) {
   const int room = cw - 2;
-  if (display_width(say) + 2 + display_width(keys) <= room || keys.empty()) {
-    return hbox({text("  "), spread(th, say, say_tone, keys, tone::dim, room)});
+  const std::string every = fit_parts(th, keys, 1 << 20);
+  const auto keys_row = [&](const std::string& k) {
+    return hbox({text(spaces(2 + std::max(0, room - display_width(k)))), dimmed(th, k)});
+  };
+  if (say.empty()) return keys_row(fit_parts(th, keys, room));
+  if (every.empty()) return lines(th, say, cw, say_tone, 2);
+  if (display_width(say) + 2 + display_width(every) <= room) {
+    return hbox({text("  "), spread(th, say, say_tone, every, tone::dim, room)});
   }
-  Elements rows;
-  if (!say.empty()) rows.push_back(lines(th, say, cw, say_tone, 2));
-  if (display_width(keys) <= room) {
-    rows.push_back(hbox({text(spaces(2 + room - display_width(keys))), dimmed(th, std::string(keys))}));
-  } else {
-    rows.push_back(lines(th, keys, cw, tone::dim, 2));
-  }
-  return vbox(std::move(rows));
+  return vbox({lines(th, say, cw, say_tone, 2), keys_row(fit_parts(th, keys, room))});
 }
 
 }  // namespace
@@ -493,32 +518,18 @@ Element prompt(const theme& th, const prompt_model& m, int width) {
 }
 
 Element hints(const theme& th, const hint_model& m, int width) {
-  // Whole parts drop when narrow, never half of one: from the second-last
-  // backwards (the first says how to begin, the last how to finish), then
-  // the last; `right` stays while any part fits beside it.
+  // `right` stays while any part fits beside it (fit_parts says which).
   const int room = std::max(1, width - 4);
-  const std::string glue = sep(th);
-  const auto joined = [&](const std::vector<std::size_t>& keep) {
-    std::string s;
-    for (const std::size_t i : keep) s += (s.empty() ? "" : glue) + m.parts[i];
-    return s;
-  };
-  for (const bool with_right : {true, false}) {
-    if (with_right && m.right.empty()) continue;
-    const int right_w = with_right ? display_width(m.right) + 2 : 0;
-    std::vector<std::size_t> keep;
-    for (std::size_t i = 0; i < m.parts.size(); ++i) keep.push_back(i);
-    while (true) {
-      const std::string left = joined(keep);
-      if (display_width(left) + right_w <= room) {
-        return hbox({text("  "), spread(th, left, m.left_tone, with_right ? m.right : "", tone::dim, room)});
-      }
-      if (keep.size() <= 1) break;
-      keep.erase(keep.size() > 2 ? keep.end() - 2 : keep.end() - 1);
+  if (!m.right.empty()) {
+    if (const std::string left = fit_parts(th, m.parts, room - display_width(m.right) - 2); !left.empty()) {
+      return hbox({text("  "), spread(th, left, m.left_tone, m.right, tone::dim, room)});
     }
   }
+  if (const std::string left = fit_parts(th, m.parts, room); !left.empty() || m.parts.empty()) {
+    return hbox({text("  "), paint(th, text(left), m.left_tone)});
+  }
   // Not even one part fits: the first, cut.
-  return hbox({text("  "), paint(th, text(fit(m.parts.empty() ? std::string() : m.parts[0], room, th)), m.left_tone)});
+  return hbox({text("  "), paint(th, text(fit(m.parts[0], room, th)), m.left_tone)});
 }
 
 Element command_palette(const theme& th, const palette_model& m, int width) {
@@ -591,7 +602,7 @@ Element waiting(const theme& th, const wait_model& m, int width, std::int64_t ms
     for (std::size_t i = 0; i < spans.size(); ++i) {
       const double k = std::max(0.0, 1.0 - std::abs(static_cast<double>(i) - centre) / band);
       cells.push_back(text(body.substr(spans[i].at, spans[i].len)) |
-                      ftxui::color(ftxui::Color::Interpolate(static_cast<float>(k), th.accent, th.shine)));
+                      ftxui::color(mix(static_cast<float>(k), th.accent, th.shine)));
     }
   } else {
     cells.push_back(paint(th, text(body), m.t));
@@ -690,8 +701,7 @@ Element bar(const theme& th, double fraction, int width) {
   const int eighth = g.partial_cells ? static_cast<int>(std::floor((cells - full) * 8)) : 0;
   Elements row{text("  ")};
   const auto colour_at = [&](int i) {
-    return ftxui::Color::Interpolate(bw > 1 ? static_cast<float>(i) / static_cast<float>(bw - 1) : 0.0f, th.accent,
-                                     th.gradient_end);
+    return mix(bw > 1 ? static_cast<float>(i) / static_cast<float>(bw - 1) : 0.0f, th.accent, th.gradient_end);
   };
   for (int i = 0; i < full; ++i) {
     Element e = text(std::string(g.eighths[7]));
@@ -712,7 +722,7 @@ Element bar(const theme& th, double fraction, int width) {
 
 Element stats(const theme& th, const progress_model& m, int width) {
   // Shown in this order; dropped when narrow from the least needed: the
-  // file count, the hint, the time left, the speed. The bytes always stay.
+  // file count, the hint, the speed, the time left. The bytes always stay.
   struct item {
     std::string s;
     int drop;  // lower goes first; -1 never
@@ -721,8 +731,8 @@ Element stats(const theme& th, const progress_model& m, int width) {
   if (m.count > 1) items.push_back({std::to_string(m.files) + " of " + std::to_string(m.count) + " files", 0});
   items.push_back({size_text(m.bytes) + " of " + size_text(m.total), -1});
   if (!m.link.reconnecting) {
-    if (m.rate > 0) items.push_back({rate_text(m.rate), 3});
-    if (std::string left = time_left_text(m.left_s); !left.empty()) items.push_back({std::move(left), 2});
+    if (m.rate > 0) items.push_back({rate_text(m.rate), 2});
+    if (std::string left = time_left_text(m.left_s); !left.empty()) items.push_back({std::move(left), 3});
   }
   if (!m.hint.empty()) items.push_back({m.hint, 1});
   const std::string glue = sep(th);
@@ -774,7 +784,7 @@ Element code_card(const theme& th, const code_card_model& m, int width) {
     body.push_back(blank());
   }
   const std::string say = m.known || m.internet ? std::string() : "Type this code on " + m.peer + ".";
-  body.push_back(say_and_keys(th, say, tone::normal, m.hint, cw));
+  body.push_back(say_and_keys(th, say, tone::normal, {m.hint}, cw));
   return card(th, width, title, std::move(body), tone::accent);
 }
 
@@ -838,8 +848,9 @@ Element internet_code_card(const theme& th, const internet_code_model& m, int wi
   if (!m.link.empty()) body.push_back(hbox({text("  "), dimmed(th, fit("Link: " + m.link, cw - 2, th))}));
   if (!m.how.empty()) body.push_back(lines(th, "Ways in: " + m.how + ".", cw, tone::dim, 2));
   if (!m.note.empty()) body.push_back(lines(th, m.note, cw, tone::warning, 2));
-  const std::string s = sep(th);
-  const std::string keys = "c copy code" + (m.link.empty() ? std::string() : s + "l copy link") + s + "esc stop";
+  std::vector<std::string> keys{"c copy code"};
+  if (!m.link.empty()) keys.emplace_back("l copy link");
+  keys.emplace_back("esc stop");
   body.push_back(say_and_keys(th, m.copied, tone::success, keys, cw));
   return card(th, width, "Receive from anywhere", std::move(body), tone::accent);
 }

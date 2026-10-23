@@ -178,7 +178,9 @@ struct path_model {
 };
 // "ThinkPad ━━━●━━━━●━━━━●━━━  Wi-Fi  ━━━━━━ Ann's MacBook": the line in the
 // bearer's tint, dots travelling toward the receiver at 12 a second. When
-// narrow the line shrinks first, then the names are cut.
+// narrow the line shrinks first, then the names are cut. The dots stand
+// where `ms` puts them: while nothing moves (or it reconnects) the caller
+// holds its clock still, and the picture is dimmed here.
 [[nodiscard]] ftxui::Element path(const theme& th, const path_model& m, int width, std::int64_t ms);
 
 // A gradient bar with eighth blocks for the part of a cell, and the percent.
