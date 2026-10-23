@@ -48,7 +48,7 @@ and a verify line on each platform (D9, amended). The order is:
 | #512 | **A status item opens its add-on's screen**: "Driftwire: receiving" in the command bar is a flat button that opens the Driftwire window (or brings it forward), on both hosts; any add-on whose status item names a screen, or that has exactly one window / pane / sheet, gets the same; a manifest may name it on a status item from contribution API 7 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)) | Mac: `mv_import_tests` passes (a new `[slots]` case for `status_json`'s `opens`); the Mac app builds. Windows: the C# compiles; the native side is CI's. Owed: the click, hover, hand cursor, keyboard and VoiceOver / Narrator checked in the running app on both hosts |
 | #529, #530, #531 | **Driftwire faster over the DHT, with the time left, and resumable**: the UDP stream paces and follows a model of the path (BBR, simplified) instead of halving on every loss, and acks name the runs past the 256-packet bitmap; both windows show the speed and the time left; a receive that stops keeps what arrived (the partial hidden under `.mvtmp`) and the same sender's next send of the same files resumes it, the whole-file read-back unchanged; "Unfinished transfers" with Discard, gone after 7 days; neither machine sleeps from idleness while bytes move; a transfer's end stays until OK ([docs/design/28](design/28-driftwire.md#resuming-a-receive-that-stopped-530)) | Linux container only: `"[driftwire]"` 166 cases passed (2026-10-21), 174 with the Linux ports (2026-10-23: the Secret Service, logind; the stream case's IPv6 step runs only where `::1` binds) in RelWithDebInfo and Debug + ASan / UBSan; `[.driftwire-stream-bench]` alternated 3 × 15 s, every profile better ([docs/design/28](design/28-driftwire.md#four-words-over-the-dht-472-pr-3)). Not built on either host: the Windows and Mac power requests, the file port's `open_resume` / `set_hidden` on Windows and macOS. Owed: both hosts' builds and suites, both PR 1 gates, a real DHT transfer between two machines, sleep held off (`powercfg /requests`, `pmset -g assertions`), a resume after a real power-off ([Where this actually is](#driftwire-speed-time-left-and-resume-issues-529-530-2026-10-21)) |
 | Driftwire settings page, 2026-10-21 | **Driftwire's settings in Settings → Add-ons → Driftwire**, in the window's cards and controls: Nearby (Keep receiving, Receive when MediaViewer is closed), Received files (Save to), Over the internet and, while on, Remembered devices and Internet options. A new screen place, `settings` (contribution API 8, `MV_SLOT_PLACE_SETTINGS`): an add-on's own tree drawn on its page, opened only while that page shows; Driftwire's manifest asks for 8 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11), [28](design/28-driftwire.md), [12](design/12-decision-log.md)) | Mac: `mv_import_tests` passes (296 cases, new `[slots]` and `[driftwire]` cases); the app built and run with a dev-signed Driftwire: the page shows its settings, a switch there changes the window and back, the screen closes when the page does. Windows: the C# compiles; the native side is CI's. Owed: the Windows page seen in the app, Narrator / VoiceOver on the page; no perf run (Settings chrome and the add-on only, nothing on the present or decode path) |
-| `driftwire`, 2026-10-23 | **The `driftwire` command line**: Driftwire in a terminal on Linux, Windows and macOS, a host of the same engine: send nearby (the code typed off the other screen) or to a code, receive with a typed Accept, remember devices, the window's internet options; interactive only, no secret on the command line, its own identity and data folder, a look after Claude Code's terminal UI. Linux packages: `.deb`, `.rpm` and a tarball, x86_64 and arm64 ([docs/design/28](design/28-driftwire.md#from-a-terminal-driftwire), [12](design/12-decision-log.md#driftwire)) | Linux container only: `"[cli]"` passes (60 cases) in RelWithDebInfo, Debug + ASan / UBSan and the packaging build (GCC 13 and GCC 12), the whole `"[driftwire]"` (234 cases) in both configurations, idle measured; the three packages built here, the `.deb` installed and run. Windows and macOS: compiled by CI only. Owed: a real two-machine transfer over Wi-Fi with the command line on Linux and the app on a Mac or a PC; CI's Ubuntu 22.04 and arm64 legs ([Where this actually is](#the-driftwire-command-line-2026-10-23)) |
+| `driftwire`, 2026-10-23 | **The `driftwire` command line**: Driftwire in a terminal on Linux, Windows and macOS, a host of the same engine: send nearby (the code typed off the other screen) or to a code, receive with a typed Accept, remember devices, the window's internet options; interactive only, no secret on the command line, its own identity and data folder, a look after Claude Code's terminal UI. Linux packages: `.deb`, `.rpm` and a tarball, x86_64 and arm64 ([docs/design/28](design/28-driftwire.md#from-a-terminal-driftwire), [12](design/12-decision-log.md#driftwire)) | Linux container only: `"[cli]"` passes (63 cases) in RelWithDebInfo, Debug + ASan / UBSan and the packaging build (GCC 13 and GCC 12), the whole `"[driftwire]"` (237 cases) in RelWithDebInfo (234 in Debug + ASan / UBSan, before the review fixes), idle measured; the three packages built here, the `.deb` installed and run. Windows and macOS: compiled by CI only. Owed: a real two-machine transfer over Wi-Fi with the command line on Linux and the app on a Mac or a PC; CI's Ubuntu 22.04 and arm64 legs ([Where this actually is](#the-driftwire-command-line-2026-10-23)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -1805,15 +1805,19 @@ What is built is in [docs/design/28](design/28-driftwire.md#from-a-terminal-drif
 terminal"); the decisions are in [docs/design/12](design/12-decision-log.md#driftwire) (2026-10-23).
 
 - **Measured, Linux container only** (Ubuntu 24.04, 4 vCPU shared with another build, GCC 13):
-  - `mv_import_tests "[cli]"`: 60 cases, 1166 assertions, pass in RelWithDebInfo (three runs in a
-    row) and Debug + ASan / UBSan; in the packaging build (`cmake/driftwire-cli`, Release,
-    hardened) with GCC 13 and with GCC 12 (CI's compiler).
-  - The whole `"[driftwire]"` after the Linux ports merged: 234 cases (174 of the engine and the
-    add-on, 60 of the command line), 78123 assertions, all pass with a gnome-keyring of the run's
-    own and `MV_SECRET_SERVICE=required` (as CI's `portable-core`): RelWithDebInfo 468 s,
+  - `mv_import_tests "[cli]"` after the review fixes: 63 cases, 1299 assertions, pass in
+    RelWithDebInfo (three runs in a row) and Debug + ASan / UBSan, and in the packaging build
+    (`cmake/driftwire-cli`, Release, hardened) with GCC 13 and with GCC 12 (CI's compiler). Each
+    consent card a test answers waits out the 750 ms settle.
+  - The whole `"[driftwire]"` after the review fixes: 237 cases (174 of the engine and the
+    add-on, 63 of the command line), 78256 assertions, all pass with a gnome-keyring of the run's
+    own and `MV_SECRET_SERVICE=required` (as CI's `portable-core`), RelWithDebInfo, 480 s. Before
+    them, after the Linux ports merged (234 cases, 78123 assertions): RelWithDebInfo 468 s,
     Debug + ASan / UBSan 582 s with no sanitizer report (UBSan's null `memcpy` at `noise.cpp:234`,
     in every earlier run, is fixed).
-  - The packaging build's `ctest` (`"[cli]"`) takes 10.7 s; `lintian` 2.117 reports nothing on
+  - The packaging build's `ctest` (`"[cli]"`) takes 31 s (10.7 s before the settle waits); the
+    RPM installed into a scratch root and erased leaves only the base system's folders;
+    `lintian` 2.117 reports nothing on
     the `.deb`; the bash completion completes commands, options and folders, the zsh one commands
     with their descriptions and each command's options.
   - The packaging build's `driftwire` needs `libm.so.6`, `libc.so.6` and `ld-linux-x86-64.so.2`
@@ -1830,7 +1834,7 @@ terminal"); the decisions are in [docs/design/12](design/12-decision-log.md#drif
   and console print, the Windows branches of the tests; the end-to-end test is POSIX only) and the
   macOS build; the `driftwire-cli-linux` job (Ubuntu 22.04 x64 and arm64, GCC 12, vcpkg) and the
   artefact steps; the release's `linux-cli` job. `tools/package/test_github_release.py` passes here
-  (44 tests); the PowerShell change to `build-release.ps1` was not run (no `pwsh` here).
+  (45 tests); the PowerShell change to `build-release.ps1` was not run (no `pwsh` here).
 - **Not built:** Bluetooth in the command line; Remember on macOS (no keychain identity for a bare
   program); signing and a package repository for the Linux packages, and the Windows and macOS
   programs as releases.
