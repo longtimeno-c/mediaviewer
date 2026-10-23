@@ -139,7 +139,7 @@ void gallery(cli::output& out, const cli::theme& th, int w) {
     cli::palette_model pal;
     pal.rows = {{"/code", "", "Receive from anywhere: make a code to give someone"},
                 {"/to-code", "", "Send these files to a code someone gave you"}};
-    show(out, th, w, "the slash palette", ftxui::vbox({cli::prompt(th, p, w), cli::palette(th, pal, w)}));
+    show(out, th, w, "the slash palette", ftxui::vbox({cli::prompt(th, p, w), cli::command_palette(th, pal, w)}));
   }
   {
     cli::code_card_model m{"Ann's MacBook", "342 917"};
@@ -172,7 +172,8 @@ void gallery(cli::output& out, const cli::theme& th, int w) {
     show(out, th, w, "the offer over the internet, through a relay", cli::offer_card(th, m, w));
   }
   {
-    cli::code_entry_model m{"Ann's MacBook", ""};
+    cli::code_entry_model m;
+    m.peer = "Ann's MacBook";
     show(out, th, w, "send: type the code (empty)",
          ftxui::vbox({cli::code_entry_card(th, m, w), cli::hints(th, {cli::code_entry_hint(th), ""}, w)}));
     m.typed = "4829";
@@ -204,8 +205,11 @@ void gallery(cli::output& out, const cli::theme& th, int w) {
     show(out, th, w, "sending: 100 %", cli::progress(th, m, w, 700));
   }
   {
-    cli::internet_code_model m{"amber river quiet falcon", "driftwire://c/amber-river-quiet-falcon", 540,
-                               "router mapping, IPv6"};
+    cli::internet_code_model m;
+    m.code = "amber river quiet falcon";
+    m.link = "driftwire://c/amber-river-quiet-falcon";
+    m.left_s = 540;
+    m.how = "router mapping, IPv6";
     show(out, th, w, "/code: four words", cli::internet_code_card(th, m, w));
     m.code = "KX7P 2M9Q 4TND 8WBA";
     m.copied = "Code copied";

@@ -452,7 +452,7 @@ Element hints(const theme& th, const hint_model& m, int width) {
   return hbox({text("  "), spread(th, m.left, m.left_tone, m.right, tone::dim, std::max(1, width - 4))});
 }
 
-Element palette(const theme& th, const palette_model& m, int width) {
+Element command_palette(const theme& th, const palette_model& m, int width) {
   const glyph_set& g = *th.g;
   Elements rows;
   if (m.rows.empty()) {

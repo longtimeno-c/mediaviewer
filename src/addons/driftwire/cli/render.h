@@ -148,7 +148,7 @@ struct palette_model {
   int max_rows = 8;
   std::string empty = "No command matches";
 };
-[[nodiscard]] ftxui::Element palette(const theme& th, const palette_model& m, int width);
+[[nodiscard]] ftxui::Element command_palette(const theme& th, const palette_model& m, int width);
 
 // ---- waiting and moving ------------------------------------------------------------------------
 

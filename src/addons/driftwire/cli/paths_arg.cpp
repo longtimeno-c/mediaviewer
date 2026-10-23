@@ -37,7 +37,7 @@ fs::path absolute_of(std::string_view literal, const path_options& o) {
   return p;
 }
 
-bool exists(const fs::path& p) {
+bool path_exists(const fs::path& p) {
   std::error_code ec;
   return fs::exists(p, ec);
 }
@@ -126,7 +126,7 @@ void expand(const fs::path& dir, const std::vector<component>& rest, std::size_t
             std::vector<fs::path>& out) {
   if (out.size() >= kMaxMatches) return;
   if (at == rest.size()) {
-    if (exists(dir)) out.push_back(dir);
+    if (path_exists(dir)) out.push_back(dir);
     return;
   }
   const component& c = rest[at];
@@ -339,7 +339,7 @@ parsed_paths parse_paths(std::string_view line, const path_options& o) {
       // No match: perhaps a name with a [ in it, typed as it is.
     }
     const fs::path p = absolute_of(literal, o);
-    if (exists(p)) {
+    if (path_exists(p)) {
       add(p);
     } else {
       r.missing.push_back(literal);
