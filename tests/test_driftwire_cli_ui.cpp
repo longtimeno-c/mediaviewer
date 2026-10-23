@@ -8,12 +8,24 @@
 #include "catch_compat.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <sys/select.h>
+#include <termios.h>
+#include <unistd.h>
+
+#include <csignal>
+#endif
 
 #include "addons/driftwire/cli/complete.h"
 #include "addons/driftwire/cli/inline_view.h"
@@ -21,6 +33,7 @@
 #include "addons/driftwire/cli/line_editor.h"
 #include "addons/driftwire/cli/paths_arg.h"
 #include "addons/driftwire/cli/render.h"
+#include "addons/driftwire/cli/term.h"
 #include "addons/driftwire/cli/text.h"
 #include "addons/driftwire/cli/theme.h"
 #include "addons/driftwire/wire.h"
@@ -1561,3 +1574,182 @@ TEST_CASE("driftwire cli inline view: never taller than the terminal less one ro
   REQUIRE(v.present(rows_doc(tall)));
   CHECK(t.visible() == std::vector<std::string>{"row 7", "row 8"});
 }
+
+TEST_CASE("driftwire cli inline view: a narrower terminal counts the way up at its new width", "[driftwire][cli]") {
+  fake_terminal t(40, 12);
+  cli::inline_view v(t, 40, 12);
+  const cli::theme th = colour_theme();
+  cli::prompt_model p;
+  p.text = "abc";
+  p.cursor_col = 3;
+  const auto doc = [&] {
+    return ftxui::vbox({rows_doc({std::string(40, 'x'), std::string(25, 'y')}), cli::prompt(th, p, v.width())});
+  };
+  REQUIRE(v.present(doc()));
+  CHECK(t.y() == 3);  // the prompt's line, under two rows and the box's top
+  // Every row at 40 columns takes two at 20 (the 25 too): 2 + 2 + 2 rows up,
+  // the cursor's own row not rewrapped past its column.
+  // (The frame's first move up is the way to its top; a second one puts the
+  // cursor back into the prompt.)
+  v.resize(20, 12);
+  std::size_t from = t.ups.size();
+  REQUIRE(v.present(doc()));
+  REQUIRE(t.ups.size() > from);
+  CHECK(t.ups[from] == 6);
+  // Wider again: no rewrap to count, the region's own rows.
+  v.resize(40, 12);
+  from = t.ups.size();
+  REQUIRE(v.present(doc()));
+  REQUIRE(t.ups.size() > from);
+  CHECK(t.ups[from] == 3);
+}
+
+#if !defined(_WIN32)
+namespace {
+
+// A pseudo-terminal: the test holds the master, the console the other side.
+struct pty_pair {
+  int master = -1, slave = -1;
+  pty_pair() {
+    master = ::posix_openpt(O_RDWR | O_NOCTTY);
+    REQUIRE(master >= 0);
+    REQUIRE(::grantpt(master) == 0);
+    REQUIRE(::unlockpt(master) == 0);
+    slave = ::open(::ptsname(master), O_RDWR | O_NOCTTY);
+    REQUIRE(slave >= 0);
+    winsize ws{};
+    ws.ws_col = 97;
+    ws.ws_row = 31;
+    ::ioctl(master, TIOCSWINSZ, &ws);
+  }
+  ~pty_pair() {
+    if (slave >= 0) ::close(slave);
+    if (master >= 0) ::close(master);
+  }
+  pty_pair(const pty_pair&) = delete;
+  pty_pair& operator=(const pty_pair&) = delete;
+
+  void type(std::string_view s) const { REQUIRE(::write(master, s.data(), s.size()) == static_cast<ssize_t>(s.size())); }
+  // What the console wrote, waiting up to `ms` for the first of it.
+  [[nodiscard]] std::string drain(int ms = 500) const {
+    std::string out;
+    while (true) {
+      fd_set r;
+      FD_ZERO(&r);
+      FD_SET(master, &r);
+      timeval tv{ms / 1000, (ms % 1000) * 1000};
+      if (::select(master + 1, &r, nullptr, nullptr, &tv) <= 0) break;
+      char buf[256];
+      const ssize_t n = ::read(master, buf, sizeof buf);
+      if (n <= 0) break;
+      out.append(buf, static_cast<std::size_t>(n));
+      ms = 20;  // the rest follows at once
+    }
+    return out;
+  }
+};
+
+}  // namespace
+
+TEST_CASE("driftwire cli terminal: raw mode, reads, the wake, the size, restored after", "[driftwire][cli]") {
+  pty_pair pty;
+  termios before{};
+  REQUIRE(::tcgetattr(pty.slave, &before) == 0);
+  {
+    cli::console con(pty.slave, pty.slave, cli::console::options{false});
+    CHECK_FALSE(con.raw());
+    REQUIRE(con.enter_raw());
+    CHECK(con.raw());
+    CHECK(pty.drain().find("\x1B[?2004h") != std::string::npos);  // bracketed paste on
+    termios raw{};
+    REQUIRE(::tcgetattr(pty.slave, &raw) == 0);
+    CHECK((raw.c_lflag & ICANON) == 0);
+    CHECK((raw.c_lflag & ECHO) == 0);
+    CHECK((raw.c_lflag & ISIG) == 0);  // Ctrl+C is a key
+    CHECK((raw.c_iflag & ICRNL) == 0);
+
+    const cli::term_size size = con.size();
+    CHECK(size.columns == 97);
+    CHECK(size.rows == 31);
+
+    // Bytes as typed: Ctrl+C and Enter among them, untranslated.
+    pty.type("a\x03\r");
+    cli::term_input in;
+    con.wait(in, 2000);
+    CHECK(in.bytes == "a\x03\r");
+    CHECK_FALSE(in.timed_out);
+
+    // Nothing comes: the wait ends at its time.
+    const auto t0 = std::chrono::steady_clock::now();
+    con.wait(in, 60);
+    CHECK(in.timed_out);
+    CHECK(in.bytes.empty());
+    CHECK(std::chrono::steady_clock::now() - t0 >= std::chrono::milliseconds(50));
+
+    // Another thread wakes it, with no time limit set.
+    std::thread waker([&] {
+      std::this_thread::sleep_for(std::chrono::milliseconds(30));
+      con.wake();
+    });
+    con.wait(in, -1);
+    waker.join();
+    CHECK(in.woken);
+    CHECK_FALSE(in.timed_out);
+    // Many wakes before one wait: one wake-up, then the wait blocks again.
+    for (int i = 0; i < 1000; ++i) con.wake();
+    con.wait(in, 0);
+    CHECK(in.woken);
+    con.wait(in, 20);
+    CHECK(in.timed_out);
+
+    con.write("drawn");
+    CHECK(pty.drain() == "drawn");
+
+    con.leave_raw();
+    CHECK_FALSE(con.raw());
+    const std::string restore = pty.drain();
+    CHECK(restore.find("\x1B[?25h") != std::string::npos);    // the cursor shown
+    CHECK(restore.find("\x1B[?2004l") != std::string::npos);  // bracketed paste off
+    CHECK(restore.find("\x1B[0m") != std::string::npos);
+    termios after{};
+    REQUIRE(::tcgetattr(pty.slave, &after) == 0);
+    CHECK(after.c_lflag == before.c_lflag);
+    CHECK(after.c_iflag == before.c_iflag);
+
+    // Raw again, then the console goes: restored by the destructor too.
+    REQUIRE(con.enter_raw());
+    (void)pty.drain();
+  }
+  termios after{};
+  REQUIRE(::tcgetattr(pty.slave, &after) == 0);
+  CHECK(after.c_lflag == before.c_lflag);
+  CHECK(pty.drain().find("\x1B[?2004l") != std::string::npos);
+}
+
+TEST_CASE("driftwire cli terminal: signals arrive as input; the other end closing is the end", "[driftwire][cli]") {
+  pty_pair pty;
+  {
+    cli::console con(pty.slave, pty.slave, cli::console::options{true});
+    cli::term_input in;
+    ::raise(SIGWINCH);
+    con.wait(in, 1000);
+    CHECK(in.resized);
+    ::raise(SIGTERM);  // ours while the console lives: an orderly quit, not the end of the tests
+    con.wait(in, 1000);
+    CHECK(in.quit);
+    ::raise(SIGHUP);
+    con.wait(in, 1000);
+    CHECK(in.quit);
+  }
+  // The handlers are the ones from before: SIGWINCH's default is to ignore it.
+  ::raise(SIGWINCH);
+
+  pty_pair gone;
+  cli::console con(gone.slave, gone.slave, cli::console::options{false});
+  ::close(gone.master);
+  gone.master = -1;
+  cli::term_input in;
+  con.wait(in, 1000);
+  CHECK(in.eof);
+}
+#endif
