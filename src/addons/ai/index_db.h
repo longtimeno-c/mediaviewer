@@ -465,9 +465,10 @@ class index_db {
   [[nodiscard]] std::uint64_t kind_in_root(std::int64_t root, asset_kind kind);
   [[nodiscard]] std::uint64_t done_in_root(std::int64_t root, const std::string& spec);
   // How many assets of `root` pending() would still return for `spec` (the
-  // filter's held roots aside): 0 when the root's indexing is finished.
+  // filter's held roots aside; `after` as pending's): 0 when that pass of the
+  // root is finished.
   [[nodiscard]] std::uint64_t pending_in_root(std::int64_t root, const std::string& spec, std::int32_t max_tries,
-                                              const track_filter& filter = {});
+                                              const track_filter& filter = {}, const std::string& after = {});
   [[nodiscard]] std::uint64_t unavailable_in_root(std::int64_t root, const std::string& spec);
   // Every stored frame of `spec` with an id above `after_id`, streamed in id
   // order (a reader catching up takes only what was committed since).

@@ -212,13 +212,19 @@ expected engine::start() {
   }
   if (options_.hold_unfinished && !options_.read_only) {
     // Issue #299: what a quit or a kill left part-way waits for Resume. Read
-    // from the index alone, before any walk or model load.
+    // before any walk or model load: the roots with pictures left, and every
+    // root the last session's resume.json listed. That file counts every pass
+    // (documents, clip text, sounds, speech, People), whose specs need models
+    // this start has not loaded; without it those passes carried on unasked.
     const std::string spec = db_->meta("active_spec");
-    if (!spec.empty()) {
-      std::lock_guard lock(held_m_);
-      for (const root_row& r : roots_cache_) {
-        const track_filter pictures{true, MV_AI_MEDIA_PICTURES, default_media(), 0, {}};
-        if (r.enabled && db_->pending_in_root(r.id, spec, kMaxTries, pictures) > 0) held_roots_.insert(r.id);
+    const std::vector<std::int64_t> listed = read_resume();
+    const track_filter pictures{true, MV_AI_MEDIA_PICTURES, default_media(), 0, {}};
+    std::lock_guard lock(held_m_);
+    for (const root_row& r : roots_cache_) {
+      if (!r.enabled) continue;
+      if (std::find(listed.begin(), listed.end(), r.id) != listed.end() ||
+          (!spec.empty() && db_->pending_in_root(r.id, spec, kMaxTries, pictures) > 0)) {
+        held_roots_.insert(r.id);
       }
     }
   }
@@ -874,11 +880,11 @@ void engine::write_resume(const std::string& spec, const std::vector<root_row>& 
   w.key("version").integer(1);
   w.key("roots");
   w.begin_array();
-  const track_filter pictures{true, MV_AI_MEDIA_PICTURES, default_media(), 0, {}};
   for (const root_row& r : roots) {
     if (!r.enabled) continue;
-    const std::uint64_t left = db_->pending_in_root(r.id, spec, kMaxTries, pictures);
-    if (left == 0) continue;
+    // A held root stays listed until Resume: its passes cannot all be counted
+    // before the models load, and the next launch must still ask.
+    if (!held(r.id) && !work_left_in_root(r.id, spec)) continue;
     const std::uint64_t total = db_->assets_in_root(r.id);
     w.begin_object();
     w.key("id").integer(r.id);
@@ -903,6 +909,58 @@ void engine::write_resume(const std::string& spec, const std::vector<root_row>& 
   std::error_code ec;
   std::filesystem::rename(fs_path(tmp), fs_path(join(data_dir_, "resume.json")), ec);
   if (!ec) resume_written_ = std::move(text);
+}
+
+bool engine::work_left_in_root(std::int64_t root, const std::string& spec) {
+  const std::uint32_t media = default_media();
+  const auto left = [&](const std::string& pass, const track_filter& f, const std::string& after = {}) {
+    return !pass.empty() && db_->pending_in_root(root, pass, kMaxTries, f, after) > 0;
+  };
+  // claim's passes, in its order; most roots with work left stop at the first.
+  if (left(spec, track_filter{true, MV_AI_MEDIA_PICTURES, media, 0, {}})) return true;
+  const bool docs = document_files_.load();
+  if (docs && left(kDocTextSpec, docs_filter(media, 0, {}))) return true;
+  if (docs && left(doc_page_spec(spec), pages_filter(media, 0, {}), kDocTextSpec)) return true;
+  std::string sound_spec, speech_spec, meaning_spec;
+  {
+    std::lock_guard lock(models_m_);
+    if (sound_.model) sound_spec = sound_.spec_key;
+    if (speech_.model) speech_spec = speech_.spec_key;
+    if (docs && docs_.model) meaning_spec = docs_.spec_key;
+  }
+  if (left(meaning_spec, docs_filter(media, 0, {}), meaning_after())) return true;
+  if (host_.has_cues() && left(kCueSpec, track_filter{false, MV_AI_MEDIA_BOTH, media, 0, {}})) return true;
+  if (left(text_spec(), track_filter{true, 0, media, 0, {}})) return true;
+  if (left(text_moments_spec(), track_filter{false, MV_AI_MEDIA_PICTURES, media, 0, {}}, spec)) return true;
+  if (left(sound_spec, track_filter{false, MV_AI_MEDIA_SOUND, media, 0, {}})) return true;
+  if (left(speech_spec, track_filter{false, MV_AI_MEDIA_SOUND, media, 0, {}})) return true;
+  if (left(scan_spec(), docs_filter(media, 0, {}), kDocTextSpec)) return true;
+  // The People pass (claim's rule): a still or a clip of the root not yet scanned.
+  std::lock_guard ml(models_m_);
+  if (faces_ == nullptr) return false;
+  std::lock_guard al(assets_m_);
+  for (const auto& [id, m] : assets_) {
+    if (m.root != root || m.cloud || faces_scanned_.count(id)) continue;
+    if (m.kind == asset_kind::audio || m.kind == asset_kind::document) continue;
+    return true;
+  }
+  return false;
+}
+
+std::vector<std::int64_t> engine::read_resume() const {
+  std::vector<std::int64_t> out;
+  std::ifstream in(fs_path(join(data_dir_, "resume.json")), std::ios::binary);
+  if (!in) return out;
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  const auto doc = json::parse(ss.str(), 4);
+  if (!doc || doc->integer("version").value_or(0) != 1) return out;
+  const json::value* roots = doc->find("roots");
+  if (!roots || roots->k != json::kind::array) return out;
+  for (const json::value& r : roots->a) {
+    if (const auto id = r.integer("id"); id && *id > 0) out.push_back(*id);
+  }
+  return out;
 }
 
 // ---- status ------------------------------------------------------------------------------
