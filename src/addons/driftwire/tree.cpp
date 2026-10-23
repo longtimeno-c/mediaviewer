@@ -411,7 +411,7 @@ void files_card(writer& w, const view& v, bool sending) {
     // A strip of the first files, from the viewer's thumbnail cache.
     row(w, "files_strip");
     for (std::size_t i = 0; i < v.file_paths.size(); ++i) {
-      char id[24];
+      char id[32];  // "thumb" and any size_t
       std::snprintf(id, sizeof id, "thumb%zu", i);
       const std::string label = i < v.file_names.size() ? v.file_names[i] : std::string("File");
       w.begin_object().key("type").string("thumbnail").key("id").string(id).key("path").string(v.file_paths[i]);

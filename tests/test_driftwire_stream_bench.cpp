@@ -12,7 +12,7 @@
 // "util" is goodput over the bottleneck's payload rate (1200 of 1238 bytes
 // per packet on the wire). Loopback, so the machine's own load shows: run
 // base and new alternated, as docs/DEVELOPMENT.md's performance suite says.
-#include <catch2/catch_test_macros.hpp>
+#include "catch_compat.h"
 
 #include <atomic>
 #include <chrono>

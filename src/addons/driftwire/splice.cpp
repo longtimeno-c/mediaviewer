@@ -24,14 +24,14 @@ std::int64_t now_ns() {
 }  // namespace
 
 token random_token() {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   token t;
   randombytes_buf(t.data(), t.size());
   return t;
 }
 
 std::string random_key() {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   static constexpr char kAlphabet[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";  // Crockford
   std::array<std::uint8_t, 17> b{};
   randombytes_buf(b.data(), b.size());
@@ -51,7 +51,7 @@ std::string random_key() {
 }
 
 proof prove(const std::string& key, const token& t) {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   std::uint8_t k[32];
   crypto_generichash(k, sizeof k, reinterpret_cast<const std::uint8_t*>(key.data()), key.size(), nullptr, 0);
   static constexpr char kContext[] = "MediaViewer Driftwire relay waiter v2";

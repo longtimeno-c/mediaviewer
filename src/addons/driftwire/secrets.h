@@ -42,7 +42,15 @@ class store {
   virtual bool erase(const std::string& name) = 0;
 };
 
-// The platform's store; nullptr where there is none.
+// Who the items belong to: the add-on in MediaViewer, and the driftwire
+// command line, which keeps an identity and remembered devices of its own
+// (docs/design/28 "From a terminal"): the two never share a key.
+inline constexpr const char* kAppService = "MediaViewer Driftwire";
+inline constexpr const char* kCliService = "Driftwire CLI";
+
+// The platform's store for `service`; nullptr where there is none.
+[[nodiscard]] std::unique_ptr<store> os_store(const std::string& service);
+// The add-on's: os_store(kAppService).
 [[nodiscard]] std::unique_ptr<store> os_store();
 // A folder of files (the tests; the portable build).
 [[nodiscard]] std::unique_ptr<store> file_store(const std::string& folder);

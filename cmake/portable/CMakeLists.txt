@@ -32,7 +32,11 @@ option(MV_ASAN "Build with AddressSanitizer + UBSan" OFF)
 
 add_library(mv_project_options INTERFACE)
 target_compile_options(mv_project_options INTERFACE
-  $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Werror -fno-rtti>)
+  $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Werror -fno-rtti>
+  # GCC's -O2 flow analysis reports std::optional members read only behind
+  # has_value() as "may be used uninitialized" (transfer.cpp, mapping.cpp);
+  # clang and MSVC do not. Off for GCC only.
+  $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU>>:-Wno-maybe-uninitialized>)
 if(MV_ASAN)
   target_compile_options(mv_project_options INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
   target_link_options(mv_project_options INTERFACE -fsanitize=address,undefined)
@@ -96,6 +100,9 @@ set(MV_SOURCE_ROOT "${MV_ROOT}")
 include("${MV_ROOT}/cmake/import.cmake")
 # Milestone H: the AI pack (cmake/ai.cmake); its engine tests run here too.
 include("${MV_ROOT}/cmake/ai.cmake")
+# Driftwire (docs/design/28): the engine, the add-on and the relay tool, and
+# their suites, on Linux.
+include("${MV_ROOT}/cmake/driftwire.cmake")
 
 # ---- tests ----------------------------------------------------------------------
 enable_testing()
@@ -127,6 +134,7 @@ target_include_directories(mv_import_tests PRIVATE "${MV_ROOT}/src" "${MV_ROOT}/
 target_compile_definitions(mv_import_tests PRIVATE
   MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>")
 add_dependencies(mv_import_tests mv_import)
+mv_driftwire_tests(mv_import_tests)
 add_test(NAME mv_import_tests COMMAND mv_import_tests)
 # The dateless-file fallback is local wall-clock time; pin the zone.
 set_tests_properties(mv_import_tests PROPERTIES ENVIRONMENT "TZ=UTC")

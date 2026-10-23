@@ -251,7 +251,7 @@ handshake::handshake(const pattern& p, bool initiator, std::span<const std::uint
                      std::optional<std::array<std::uint8_t, 32>> s, std::optional<std::array<std::uint8_t, 32>> psk,
                      test_keys fixed)
     : st_(std::make_unique<state>()) {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   st_->p = &p;
   st_->initiator = initiator;
   st_->fixed = std::move(fixed);

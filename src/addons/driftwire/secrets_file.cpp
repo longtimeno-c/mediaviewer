@@ -48,7 +48,8 @@ class folder_store final : public store {
 std::unique_ptr<store> file_store(const std::string& folder) { return std::make_unique<folder_store>(folder); }
 
 #if !defined(__APPLE__) && !defined(_WIN32)
-std::unique_ptr<store> os_store() { return nullptr; }
+std::unique_ptr<store> os_store(const std::string&) { return nullptr; }
+std::unique_ptr<store> os_store() { return os_store(kAppService); }
 #endif
 
 }  // namespace mv::driftwire::secrets
