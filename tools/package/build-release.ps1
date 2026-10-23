@@ -128,7 +128,12 @@ if (-not (Test-Path (Join-Path $bin "MediaViewer.Chrome.dll"))) { Fail "chrome n
 if (Test-Path $payload) { Remove-Item -Recurse -Force $payload }
 New-Item -ItemType Directory -Force $payload, $releases | Out-Null
 
-$skipFile = '^(mv_.*|.*_tests?|frametime.*|mediaviewer_lab\.exe)$'
+# Programs built beside the app that it does not ship: the test binaries
+# (mv_*), the Driftwire relay server (mv-driftwire-relay, docs/design/28
+# "Relays": the person's own, never the app's) and the driftwire command line
+# (driftwire.exe, docs/design/28 "From a terminal": a program of its own, not
+# part of MediaViewer; owner, 2026-10-23).
+$skipFile = '^(mv_.*|mv-driftwire-relay\.exe|driftwire\.exe|.*_tests?|frametime.*|mediaviewer_lab\.exe)$'
 
 # docs/design/13, "Delta patches earn their keep here": "Do not ship Windows App SDK
 # AI / ONNX / DirectML / WebView2: they are not a dependency, and they are
@@ -161,6 +166,10 @@ foreach ($required in "MediaViewer.exe", "MediaViewer.Chrome.dll", "crashpad_han
 $bloat = Get-ChildItem $payload -Recurse -File | Where-Object { $_.Name -match $forbiddenBloat }
 if ($bloat) {
     Fail ("docs/design/13 forbids shipping these: " + (($bloat | Select-Object -Expand Name) -join ", "))
+}
+$notOurs = Get-ChildItem $payload -Recurse -File | Where-Object { $_.Name -match '^(mv-driftwire-relay|driftwire|mv_driftwire_cli.*)\.exe$' }
+if ($notOurs) {
+    Fail ("the app does not ship these programs: " + (($notOurs | Select-Object -Expand Name) -join ", "))
 }
 
 # ---- the private .NET runtime ----------------------------------------------

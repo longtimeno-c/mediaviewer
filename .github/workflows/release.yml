@@ -859,9 +859,52 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/mv-signing.keychain-db" || true
           rm -f "$RUNNER_TEMP/id.p12" "$RUNNER_TEMP/sparkle.key" "$RUNNER_TEMP/release.key"
 
+  # The driftwire command line's Linux packages (docs/design/28 "From a
+  # terminal"), x64 and arm64, built and tested as CI's driftwire-cli-linux
+  # job builds them (.github/actions/driftwire-cli-linux): Ubuntu 22.04 and
+  # GCC 12, so glibc 2.35 up. Each must carry the release's version. The
+  # packages are not signed (there is no package repository yet,
+  # docs/design/12 2026-10-23); SHA256SUMS.txt covers them.
+  linux-cli:
+    name: driftwire Linux ${{ matrix.arch }} packages
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    defaults:
+      run:
+        shell: bash
+    env:
+      CC: gcc-12
+      CXX: g++-12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build, test and package
+        uses: ./.github/actions/driftwire-cli-linux
+        with:
+          arch: ${{ matrix.arch }}
+          version: ${{ needs.prepare.outputs.version }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: driftwire-linux-${{ matrix.arch }}-${{ needs.prepare.outputs.version }}
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
   publish:
-    name: Publish both installers together
-    needs: [prepare, windows, macos]
+    name: Publish both installers and the Linux packages together
+    needs: [prepare, windows, macos, linux-cli]
     if: inputs.mode != 'artifacts'
     runs-on: ubuntu-latest
     permissions:
@@ -885,6 +928,8 @@ jobs:
           # ...and the Local search pack with its Sound and People pieces (and,
           # on Windows, NVIDIA acceleration).
           MV_RELEASE_AI: '1'
+          # The driftwire Linux packages (linux-cli) are required in every
+          # published release, preview or stable (github-release.py).
           VERSION: ${{ needs.prepare.outputs.version }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: python3 tools/package/github-release.py publish release-assets

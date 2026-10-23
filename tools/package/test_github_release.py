@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -175,6 +176,8 @@ class ReleaseTests(unittest.TestCase):
         (self.folder / 'mediaviewer-manifest.json.sig').write_bytes(b'x' * 64)
         for addon in release.FIRST_PARTY_ADDONS:
             self.write_addon(addon)
+        for name in release.linux_cli_asset_names('0.1.1'):
+            (self.folder / name).write_bytes(b'package')
         (self.folder / 'appcast.xml').write_text('''<!-- sparkle-signatures: fixture -->
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item>
 <enclosure url="https://github.com/owner/repo/releases/download/v0.1.1/MediaViewer-0.1.1.zip"
@@ -205,6 +208,57 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
             with self.assertRaisesRegex(ValueError, 'mediaviewer-addon-driftwire-win-x64.json'):
                 release.publish(self.folder)
             cli.assert_not_called()
+
+    def test_every_release_needs_each_driftwire_linux_package(self):
+        # docs/design/28 "From a terminal": the linux-cli job's .deb, .rpm and
+        # tarball for x86_64 and arm64; a release that lost one is refused,
+        # preview or stable, before GitHub hears of it.
+        self.stable_assets()
+        for mode in ('preview', 'stable'):
+            os.environ['MODE'] = mode
+            for name in release.linux_cli_asset_names('0.1.1'):
+                path = self.folder / name
+                path.unlink()
+                with patch.object(release, 'gh') as cli:
+                    with self.assertRaisesRegex(ValueError, 'Missing or empty release asset: ' + re.escape(name)):
+                        release.publish(self.folder)
+                    cli.assert_not_called()
+                path.write_bytes(b'')
+                with self.assertRaisesRegex(ValueError, 'Missing or empty'):
+                    release.validate_assets(self.folder, '0.1.1', mode, 'owner/repo', 'v0.1.1')
+                path.write_bytes(b'package')
+
+    def test_preview_and_stable_upload_the_driftwire_linux_packages(self):
+        self.stable_assets()
+        for mode in ('preview', 'stable'):
+            names = [p.name for p in release.validate_assets(self.folder, '0.1.1', mode, 'owner/repo', 'v0.1.1')]
+            for name in release.linux_cli_asset_names('0.1.1'):
+                self.assertIn(name, names)
+        self.assertEqual(len(release.linux_cli_asset_names('0.1.1')), 6)
+
+    def test_linux_package_names_are_the_ones_cpack_writes(self):
+        # cmake/driftwire-cli/CMakeLists.txt names the files; the release must
+        # ask for exactly those, or a release would wait for files never made.
+        text = (Path(__file__).resolve().parents[2] / 'cmake' / 'driftwire-cli' / 'CMakeLists.txt').read_text()
+        def setting(name):
+            match = re.search(r'set\(' + name + r' "([^"]+)"\)', text)
+            self.assertIsNotNone(match, name)
+            return match[1]
+        arches = re.findall(r'set\(_deb_arch (\w+)\)\s+set\(_rpm_arch (\w+)\)', text)
+        self.assertEqual(tuple(arches), release.LINUX_CLI_ARCHES)
+        made = []
+        for deb_arch, rpm_arch in arches:
+            for name, suffix in (('CPACK_DEBIAN_FILE_NAME', ''), ('CPACK_RPM_FILE_NAME', ''),
+                                 ('CPACK_PACKAGE_FILE_NAME', '.tar.gz')):
+                made.append(setting(name).replace('${PROJECT_VERSION}', '0.1.1')
+                            .replace('${_deb_arch}', deb_arch).replace('${_rpm_arch}', rpm_arch) + suffix)
+        self.assertEqual(made, release.linux_cli_asset_names('0.1.1'))
+
+    def test_release_notes_link_every_driftwire_linux_package(self):
+        for mode in ('preview', 'stable'):
+            notes = release.release_notes('0.1.1', mode, 'owner/repo', 'v0.1.1', 'abc123')
+            for name in release.linux_cli_asset_names('0.1.1'):
+                self.assertIn(f'(https://github.com/owner/repo/releases/download/v0.1.1/{name})', notes)
 
     def test_addons_are_not_required_until_the_workflow_packs_them(self):
         self.stable_assets()

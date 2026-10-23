@@ -173,6 +173,25 @@ jobs:
         # one case that measures real playback time is left to a Mac with audio.
         run: ctest --test-dir build -C Release --output-on-failure --no-tests=error -E "An audio-only clip seeks, pauses in place"
 
+      # The driftwire command line (docs/design/28 "From a terminal"), built
+      # and tested above: one program, its libraries static (arm64-osx), in a
+      # tar.gz (an artefact's zip drops the executable bit). Unsigned and not
+      # released: the owner chose Linux packages only (12, 2026-10-23).
+      - name: driftwire command line (artefact)
+        run: |
+          out=driftwire-macos-arm64
+          mkdir -p "$out"
+          cp build/bin/driftwire LICENSE NOTICE THIRD-PARTY.md "$out/"
+          otool -L "$out/driftwire"
+          "$out/driftwire" --version
+          tar -czf "$out.tar.gz" "$out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: driftwire-macos-arm64
+          path: driftwire-macos-arm64.tar.gz
+          if-no-files-found: error
+
   windows-chrome:
     name: WinUI chrome
     if: github.event_name != 'schedule'
@@ -302,6 +321,51 @@ jobs:
             echo "::warning::no D-Bus session: Driftwire's Secret Service case skips"
           fi
           ctest --test-dir build-portable --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # The driftwire command line's Linux packages (docs/design/28 "From a
+  # terminal", cmake/driftwire-cli), x64 and arm64: built on Ubuntu 22.04 with
+  # GCC 12, so they run from glibc 2.35 up (Ubuntu 22.04, Debian 12, Fedora).
+  # The "[cli]" suites, the NEEDED gate, the .deb, .rpm and tarball, and the
+  # .deb installed and run (.github/actions/driftwire-cli-linux, which
+  # release.yml's linux-cli job runs too). The packages are this run's
+  # artefact.
+  # ---------------------------------------------------------------------------
+  driftwire-cli-linux:
+    name: driftwire command line (Linux ${{ matrix.arch }}, packages)
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    defaults:
+      run:
+        shell: bash
+    env:
+      CC: gcc-12
+      CXX: g++-12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build, test and package
+        uses: ./.github/actions/driftwire-cli-linux
+        with:
+          arch: ${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: driftwire-linux-${{ matrix.arch }}
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
+          if-no-files-found: error
 
   # ---------------------------------------------------------------------------
   # One install of the manifest. FFmpeg alone is about 22 minutes from source,
@@ -581,6 +645,33 @@ jobs:
           TMP: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
         run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
+
+      # The driftwire command line (docs/design/28 "From a terminal"), built
+      # and tested above with the app: the program and the two DLLs it loads
+      # (x64-windows is a dynamic triplet), as a plain artefact. Unsigned and
+      # not released: the owner chose Linux packages only (12, 2026-10-23).
+      # Not in the app's payload (tools/package/build-release.ps1).
+      - name: driftwire command line (artefact)
+        if: matrix.toolchain == 'msvc' && matrix.config == 'Release'
+        run: |
+          $bin = "build/bin/${{ matrix.config }}"
+          $out = "driftwire-windows-x64"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          foreach ($file in 'driftwire.exe', 'libsodium.dll', 'blake3.dll') {
+            if (-not (Test-Path "$bin/$file")) { throw "no $file in $bin" }
+            Copy-Item "$bin/$file" $out
+          }
+          Copy-Item LICENSE, NOTICE, THIRD-PARTY.md $out
+          $version = & "$out/driftwire.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw 'driftwire --version failed' }
+          Write-Host $version
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.toolchain == 'msvc' && matrix.config == 'Release'
+        with:
+          name: driftwire-windows-x64
+          path: driftwire-windows-x64/
+          if-no-files-found: error
 
       - name: Upload broken-corpus reproducers
         if: failure()
