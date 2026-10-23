@@ -249,7 +249,8 @@ std::vector<word> split_words(std::string_view line, bool windows) {
       in_word = true;
       cur.begin = i;
       // ~ alone or before a separator; "~ann" is a name, not ann's home.
-      cur.tilde = c == '~' && (i + 1 == line.size() || line[i + 1] == ' ' || separator(line[i + 1], windows));
+      cur.tilde = c == '~' && (i + 1 == line.size() || line[i + 1] == ' ' || line[i + 1] == '\t' ||
+                               line[i + 1] == '\n' || line[i + 1] == '\r' || separator(line[i + 1], windows));
     }
     if (c == '\'' && !windows) {  // on Windows an apostrophe is a letter ("Ann's photos")
       quote = '\'';
@@ -306,7 +307,53 @@ bool glob_match(std::string_view name, std::string_view pattern, const std::vect
   return match_impl(name, pattern, live, false);
 }
 
+namespace {
+
+bool file_scheme(std::string_view s) {
+  if (s.size() <= 5) return false;
+  for (std::size_t i = 0; i < 5; ++i) {
+    const char c = s[i] >= 'A' && s[i] <= 'Z' ? static_cast<char>(s[i] - 'A' + 'a') : s[i];
+    if (c != "file:"[i]) return false;
+  }
+  return true;
+}
+
+std::string_view trimmed(std::string_view s) {
+  while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r' || s.front() == '\n')) {
+    s.remove_prefix(1);
+  }
+  while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r' || s.back() == '\n')) {
+    s.remove_suffix(1);
+  }
+  return s;
+}
+
+}  // namespace
+
 parsed_paths parse_paths(std::string_view line, const path_options& o) {
+  // One path with spaces in it, pasted as it is (a file manager's copy, a
+  // terminal that does not quote what is dropped on it): when the words
+  // name something missing but the whole line names a file, it is that file.
+  if (const std::string_view whole = trimmed(line);
+      whole.find_first_of(o.windows ? "\"*?[" : "'\"\\*?[") == std::string_view::npos &&
+      whole.find(' ') != std::string_view::npos) {
+    std::string literal(whole);
+    if (!o.home.empty() && literal.size() > 1 && literal[0] == '~' && separator(literal[1], o.windows)) {
+      literal = o.home + literal.substr(1);
+    }
+    const fs::path p = absolute_of(literal, o);
+    if (path_exists(p)) {
+      parsed_paths split;
+      bool all_there = true;
+      for (const word& w : split_words(line, o.windows)) {
+        if (!path_exists(absolute_of(w.text, o))) all_there = false;
+      }
+      if (!all_there) {
+        split.paths.push_back(to_utf8(p));
+        return split;
+      }
+    }
+  }
   parsed_paths r;
   std::unordered_set<std::string> seen;
   const auto add = [&](const fs::path& p) {
@@ -318,7 +365,7 @@ parsed_paths parse_paths(std::string_view line, const path_options& o) {
     if (w.text.empty()) continue;
     std::string literal = w.text;
     std::vector<bool> live = w.glob;
-    if (literal.size() > 5 && (literal.compare(0, 5, "file:") == 0 || literal.compare(0, 5, "FILE:") == 0)) {
+    if (file_scheme(literal)) {
       literal = file_uri_path(w.text, o.windows);
       if (literal.empty()) {
         r.missing.push_back(w.text);
@@ -342,7 +389,7 @@ parsed_paths parse_paths(std::string_view line, const path_options& o) {
     if (path_exists(p)) {
       add(p);
     } else {
-      r.missing.push_back(literal);
+      r.missing.push_back(file_scheme(w.text) ? literal : w.text);  // as typed; a URI decoded
     }
   }
   return r;

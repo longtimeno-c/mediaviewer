@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <utility>
 
 #include "addons/driftwire/cli/text.h"
@@ -129,6 +130,41 @@ std::string life_text(double s) {
   return std::to_string(std::max(1L, std::lround(s / 60))) + " min left";
 }
 
+// Six boxes of five columns, a column between them and three between the groups.
+constexpr int kBoxesWidth = 6 * 5 + 4 + 3;
+constexpr int kDigitsWidth = 6 * 5 - 1 + 3;  // big_digits' "123 456"
+
+// The code under a card's title, indented as the mock-ups show it: big
+// digits from 40 columns (the card's `cw` is the terminal's less four),
+// plain bold digits below.
+Element code_row(const theme& th, std::string_view code, int cw) {
+  const int pad = std::min(5, std::max(2, cw - kDigitsWidth));
+  return hbox({text(spaces(pad)), big_digits(th, code, cw + 4 >= 40 ? cw - pad : 0)});
+}
+
+// The six boxes the same way; one row of brackets where they do not fit.
+Element boxes_row(const theme& th, std::string_view typed, int cw) {
+  const int pad = std::min(5, std::max(2, cw - kBoxesWidth));
+  return hbox({text(spaces(pad)), code_boxes(th, typed, cw - pad)});
+}
+
+// A card's last row: what to do on the left, the keys flush right; when the
+// two do not share a row, the words wrap and the keys go under them.
+Element say_and_keys(const theme& th, std::string_view say, tone say_tone, std::string_view keys, int cw) {
+  const int room = cw - 2;
+  if (display_width(say) + 2 + display_width(keys) <= room || keys.empty()) {
+    return hbox({text("  "), spread(th, say, say_tone, keys, tone::dim, room)});
+  }
+  Elements rows;
+  if (!say.empty()) rows.push_back(lines(th, say, cw, say_tone, 2));
+  if (display_width(keys) <= room) {
+    rows.push_back(hbox({text(spaces(2 + room - display_width(keys))), dimmed(th, std::string(keys))}));
+  } else {
+    rows.push_back(lines(th, keys, cw, tone::dim, 2));
+  }
+  return vbox(std::move(rows));
+}
+
 }  // namespace
 
 // ---- words --------------------------------------------------------------------------
@@ -211,12 +247,20 @@ Element paint(const theme& th, Element e, tone t) {
 Element card(const theme& th, int width, std::string_view title, Elements body, tone border) {
   const glyph_set& g = *th.g;
   if (width < 8) return vbox(std::move(body));
+  if (!title.empty() && display_width(title) > width - 6) {
+    // Too long for the border (a long name, a narrow terminal): the title
+    // goes inside, whole and wrapped, rather than lose its end to a cut.
+    Elements head;
+    for (auto& l : wrap(title, width - 4)) head.push_back(text(std::move(l)) | ftxui::bold);
+    body.insert(body.begin(), vbox(std::move(head)));
+    title = {};
+  }
   Element top;
   if (title.empty()) {
     top = paint(th, text(std::string(g.tl) + repeat(g.h, width - 2) + std::string(g.tr)), border);
   } else {
     // "╭─ Title ───╮": 1 + 1 + 1 + title + 1 + rest + 1 columns.
-    std::string t = fit(title, width - 6, th);
+    std::string t(title);
     const int rest = width - 5 - display_width(t);
     top = hbox({paint(th, text(std::string(g.tl) + std::string(g.h) + " "), border), text(std::move(t)) | ftxui::bold,
                 paint(th, text(" " + repeat(g.h, rest) + std::string(g.tr)), border)});
@@ -235,7 +279,7 @@ Element big_digits(const theme& th, std::string_view digits, int width) {
   const std::string d = digits_of(digits);
   const bool grouped = d.size() == 6;
   const int need = static_cast<int>(d.size()) * 5 - 1 + (grouped ? 3 : 0);
-  if (d.empty() || !th.g->big_digits || width < 40 || need > width) {
+  if (d.empty() || !th.g->big_digits || need > width) {
     std::string plain = grouped ? d.substr(0, 3) + " " + d.substr(3) : d;
     return paint(th, text(std::move(plain)) | ftxui::bold, tone::accent);
   }
@@ -263,7 +307,7 @@ Element code_boxes(const theme& th, std::string_view typed, int width) {
     return text(" ");
   };
   Elements boxes;
-  if (!g.big_digits || width < 37) {
+  if (!g.big_digits || width < kBoxesWidth) {
     // [4][8][2] [9][_][ ]
     for (std::size_t i = 0; i < 6; ++i) {
       if (i == 3) boxes.push_back(text(" "));
@@ -449,7 +493,32 @@ Element prompt(const theme& th, const prompt_model& m, int width) {
 }
 
 Element hints(const theme& th, const hint_model& m, int width) {
-  return hbox({text("  "), spread(th, m.left, m.left_tone, m.right, tone::dim, std::max(1, width - 4))});
+  // Whole parts drop when narrow, never half of one: from the second-last
+  // backwards (the first says how to begin, the last how to finish), then
+  // the last; `right` stays while any part fits beside it.
+  const int room = std::max(1, width - 4);
+  const std::string glue = sep(th);
+  const auto joined = [&](const std::vector<std::size_t>& keep) {
+    std::string s;
+    for (const std::size_t i : keep) s += (s.empty() ? "" : glue) + m.parts[i];
+    return s;
+  };
+  for (const bool with_right : {true, false}) {
+    if (with_right && m.right.empty()) continue;
+    const int right_w = with_right ? display_width(m.right) + 2 : 0;
+    std::vector<std::size_t> keep;
+    for (std::size_t i = 0; i < m.parts.size(); ++i) keep.push_back(i);
+    while (true) {
+      const std::string left = joined(keep);
+      if (display_width(left) + right_w <= room) {
+        return hbox({text("  "), spread(th, left, m.left_tone, with_right ? m.right : "", tone::dim, room)});
+      }
+      if (keep.size() <= 1) break;
+      keep.erase(keep.size() > 2 ? keep.end() - 2 : keep.end() - 1);
+    }
+  }
+  // Not even one part fits: the first, cut.
+  return hbox({text("  "), paint(th, text(fit(m.parts.empty() ? std::string() : m.parts[0], room, th)), m.left_tone)});
 }
 
 Element command_palette(const theme& th, const palette_model& m, int width) {
@@ -701,18 +770,17 @@ Element code_card(const theme& th, const code_card_model& m, int width) {
     // #442: the code shows here only; the person at the sender types it.
     title = m.peer + " wants to send you files";
     body.push_back(blank());
-    body.push_back(hbox({text(spaces(std::min(5, std::max(2, cw - 32)))), big_digits(th, m.code, cw - 5)}));
+    body.push_back(code_row(th, m.code, cw));
     body.push_back(blank());
   }
   const std::string say = m.known || m.internet ? std::string() : "Type this code on " + m.peer + ".";
-  body.push_back(hbox({text("  "), spread(th, say, tone::normal, m.hint, tone::dim, cw - 2)}));
+  body.push_back(say_and_keys(th, say, tone::normal, m.hint, cw));
   return card(th, width, title, std::move(body), tone::accent);
 }
 
-std::string offer_hint(const theme& th) {
-  const std::string s = sep(th);
-  return std::string(th.g->arrows) + " or 1" + std::string(th.g->dash) + "3" + s + "enter to choose" + s +
-         "y accept" + s + "n or esc decline";
+std::vector<std::string> offer_hint(const theme& th) {
+  return {std::string(th.g->arrows) + " or 1" + std::string(th.g->dash) + "3", "enter to choose", "y accept",
+          "n or esc decline"};
 }
 
 Element offer_card(const theme& th, const offer_model& m, int width) {
@@ -733,16 +801,13 @@ Element offer_card(const theme& th, const offer_model& m, int width) {
   return card(th, width, title, std::move(body), tone::accent);
 }
 
-std::string code_entry_hint(const theme& th) {
-  const std::string s = sep(th);
-  return "digits only" + s + "it goes by itself at the sixth" + s + "esc to cancel";
-}
+std::vector<std::string> code_entry_hint() { return {"digits only", "it goes by itself at the sixth", "esc to cancel"}; }
 
 Element code_entry_card(const theme& th, const code_entry_model& m, int width) {
   const int cw = width - 4;
   Elements body;
   body.push_back(blank());
-  body.push_back(hbox({text(spaces(std::min(5, std::max(2, cw - 37)))), code_boxes(th, m.typed, cw - 5)}));
+  body.push_back(boxes_row(th, m.typed, cw));
   body.push_back(blank());
   // #442: typed, not compared; this screen never shows the code.
   body.push_back(lines(th, m.note.empty() ? std::string("Nothing has been sent yet.") : m.note, cw,
@@ -756,7 +821,7 @@ Element internet_code_card(const theme& th, const internet_code_model& m, int wi
   body.push_back(blank());
   if (!m.code.empty() && digits_of(m.code).size() == 6 &&
       m.code.find_first_not_of("0123456789 ") == std::string::npos) {
-    body.push_back(hbox({text(spaces(std::min(5, std::max(2, cw - 32)))), big_digits(th, m.code, cw - 5)}));
+    body.push_back(code_row(th, m.code, cw));
   } else {
     // Four words or base32 groups: large is bold and spaced.
     Elements rows;
@@ -775,7 +840,7 @@ Element internet_code_card(const theme& th, const internet_code_model& m, int wi
   if (!m.note.empty()) body.push_back(lines(th, m.note, cw, tone::warning, 2));
   const std::string s = sep(th);
   const std::string keys = "c copy code" + (m.link.empty() ? std::string() : s + "l copy link") + s + "esc stop";
-  body.push_back(hbox({text("  "), spread(th, m.copied, tone::success, keys, tone::dim, cw - 2)}));
+  body.push_back(say_and_keys(th, m.copied, tone::success, keys, cw));
   return card(th, width, "Receive from anywhere", std::move(body), tone::accent);
 }
 
@@ -791,7 +856,7 @@ Element naming_card(const theme& th, const naming_model& m, int width) {
   body.push_back(blank());
   body.push_back(lines(th, "Check that " + m.peer + "'s screen shows", cw, tone::normal, 2));
   body.push_back(blank());
-  body.push_back(hbox({text(spaces(std::min(5, std::max(2, cw - 32)))), big_digits(th, m.check, cw - 5)}));
+  body.push_back(code_row(th, m.check, cw));
   body.push_back(blank());
   body.push_back(lines(th, "If they differ, someone else has the code: cancel. Nothing has been sent yet.", cw,
                        tone::dim, 2));
@@ -814,14 +879,14 @@ Element remember_card(const theme& th, const remember_model& m, int width) {
       return card(th, width, "Remember " + m.peer + "?", std::move(body), tone::accent);
     case remember_model::step::show_check:
       body.push_back(blank());
-      body.push_back(hbox({text(spaces(std::min(5, std::max(2, cw - 32)))), big_digits(th, m.check, cw - 5)}));
+      body.push_back(code_row(th, m.check, cw));
       body.push_back(blank());
       body.push_back(lines(th, "Type this code on " + m.peer + " so it remembers this computer.", cw,
                            tone::normal, 2));
       break;
     case remember_model::step::type_check:
       body.push_back(blank());
-      body.push_back(hbox({text(spaces(std::min(5, std::max(2, cw - 37)))), code_boxes(th, m.typed, cw - 5)}));
+      body.push_back(boxes_row(th, m.typed, cw));
       body.push_back(blank());
       // #497: the receiver remembers only once its person types the sender's code.
       body.push_back(lines(th,

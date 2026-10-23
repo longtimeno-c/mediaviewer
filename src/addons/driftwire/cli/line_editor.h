@@ -21,6 +21,12 @@
 // A paste is inserted whole; its newlines (and tabs) become spaces, so it
 // never submits the line. Other control characters are dropped. A filter can
 // limit what is typed (the code field takes digits only).
+//
+// The prompt takes paths, and a paste of several lines is most often a list
+// of them as a file manager copies them, one a line and not quoted for a
+// shell: with set_paste_quote(), each such line that has a space or a quote
+// in it goes in quoted, so it stays one path. (A terminal that is dropped
+// files pastes one line, already quoted or escaped: left as it is.)
 #pragma once
 
 #include <cstddef>
@@ -50,6 +56,8 @@ class line_editor {
   // Characters a filter refuses are not inserted (nullptr: everything printable).
   void set_filter(filter_fn f) noexcept { filter_ = f; }
   void set_max_glyphs(std::size_t n) noexcept { max_glyphs_ = n; }
+  // '\'' (POSIX shell rules) or '"' (Windows); 0, the default: no quoting.
+  void set_paste_quote(char q) noexcept { paste_quote_ = q; }
 
   // Typed text at the cursor; control characters are dropped.
   void insert(std::string_view utf8);
@@ -104,6 +112,7 @@ class line_editor {
   std::size_t cursor_ = 0;
   filter_fn filter_ = nullptr;
   std::size_t max_glyphs_ = 0;  // 0: no limit
+  char paste_quote_ = 0;
   std::vector<std::string> history_;
   std::size_t history_at_ = 0;  // == history_.size(): not walking
   std::string draft_;           // the line being typed when the walk began

@@ -77,11 +77,26 @@ key letter_key(unsigned char f) {
   }
 }
 
+// Where `bytes` stops being whole UTF-8: before a last character cut by the
+// read (its lead byte and fewer continuation bytes than it announces).
+std::size_t whole_utf8(std::string_view bytes) {
+  for (std::size_t back = 1; back <= 3 && back <= bytes.size(); ++back) {
+    const auto c = static_cast<unsigned char>(bytes[bytes.size() - back]);
+    if ((c & 0xC0) == 0x80) continue;  // a continuation byte: look further back
+    const std::size_t n = utf8_length(c);
+    return n > back ? bytes.size() - back : bytes.size();
+  }
+  return bytes.size();
+}
+
 }  // namespace
 
 void key_decoder::feed(std::string_view bytes, std::vector<key_event>& out) {
   if (buf_.empty() && !in_paste_ && looks_pasted(bytes)) {
-    out.push_back(text_of(bytes, key::paste));
+    // A character the read cut waits for the rest, as typed text does.
+    const std::size_t whole = whole_utf8(bytes);
+    out.push_back(text_of(bytes.substr(0, whole), key::paste));
+    buf_.assign(bytes.substr(whole));
     return;
   }
   buf_.append(bytes);

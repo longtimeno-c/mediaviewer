@@ -19,7 +19,11 @@
 // Relative paths are taken from the current folder, every path is made
 // absolute (lexically: links are kept as typed), and repeats are dropped, in
 // the order typed. Only paths that exist come back as paths; the rest are
-// named as missing (the prompt says so in red and adds the others).
+// named as missing, as typed (the prompt says so in red and adds the others).
+//
+// One exception to the shell: a line with spaces and no quotes, escapes or
+// globs whose words do not all exist, but which as a whole names a file, is
+// that one file (a path pasted from somewhere that does not quote it).
 #pragma once
 
 #include <string>
@@ -54,7 +58,7 @@ struct word {
 
 struct parsed_paths {
   std::vector<std::string> paths;    // absolute, existing, in order, once each
-  std::vector<std::string> missing;  // as typed
+  std::vector<std::string> missing;  // as typed (a file:// URI decoded)
   bool unterminated = false;         // a quote was left open (closed at the end)
 };
 

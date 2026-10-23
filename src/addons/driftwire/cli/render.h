@@ -56,13 +56,15 @@ namespace mv::driftwire::cli {
 // Colour and weight for a tone (dim is grey, or the dim attribute with no colour).
 [[nodiscard]] ftxui::Element paint(const theme& th, ftxui::Element e, tone t);
 
-// A rounded frame `width` columns wide with `title` in its top border. Body
-// rows get width - 4 columns (one space each side inside the bars).
+// A rounded frame `width` columns wide with `title` in its top border (a
+// title too long for it goes inside, wrapped, as the first rows). Body rows
+// get width - 4 columns (one space each side inside the bars).
 [[nodiscard]] ftxui::Element card(const theme& th, int width, std::string_view title, ftxui::Elements body,
                                   tone border = tone::dim);
 // The code a person types on the other computer, three rows of rounded
-// digits ("123 456" as two groups), bold, in the accent. Plain bold digits in
-// fewer than 40 columns or with ASCII glyphs.
+// digits ("123 456" as two groups), bold, in the accent. Plain bold digits
+// where the 32 columns are not there or with ASCII glyphs (the cards pass
+// no room below a 40-column terminal).
 [[nodiscard]] ftxui::Element big_digits(const theme& th, std::string_view digits, int width);
 // Six boxes for typing a code; `typed` holds the digits so far, the next box
 // shows the caret. One row ("[4][8][2] [9][_][ ]") where the boxes do not fit.
@@ -131,10 +133,13 @@ struct prompt_model {
 [[nodiscard]] int prompt_columns(int width);
 
 struct hint_model {
-  std::string left;   // "/ for commands · ↑↓ choose a computer · enter to send"
-  std::string right;  // "3 files · 1.2 GB"
-  tone left_tone = tone::dim;  // warning for "Press Ctrl+C again to quit"
+  std::vector<std::string> parts;  // "/ for commands", "↑↓ choose a computer", "enter to send"
+  std::string right;               // "3 files · 1.2 GB"
+  tone left_tone = tone::dim;      // warning for "Press Ctrl+C again to quit"
 };
+// The hint line under the prompt or a card: the parts joined by " · ", the
+// right flush right. Narrow, whole parts drop (the middle ones first), never
+// half of one.
 [[nodiscard]] ftxui::Element hints(const theme& th, const hint_model& m, int width);
 
 struct palette_row {
@@ -220,7 +225,7 @@ struct offer_model {
   int selected = 0;
 };
 [[nodiscard]] ftxui::Element offer_card(const theme& th, const offer_model& m, int width);
-[[nodiscard]] std::string offer_hint(const theme& th);
+[[nodiscard]] std::vector<std::string> offer_hint(const theme& th);
 
 // The sender, `out = confirming`.
 struct code_entry_model {
@@ -230,7 +235,7 @@ struct code_entry_model {
   bool wrong = false; // `note` says a try was wrong
 };
 [[nodiscard]] ftxui::Element code_entry_card(const theme& th, const code_entry_model& m, int width);
-[[nodiscard]] std::string code_entry_hint(const theme& th);
+[[nodiscard]] std::vector<std::string> code_entry_hint();
 
 // /code: receive from anywhere.
 struct internet_code_model {

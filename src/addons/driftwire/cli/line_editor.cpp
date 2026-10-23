@@ -34,6 +34,22 @@ bool word_glyph(std::string_view g) {
 
 bool space_glyph(std::string_view g) { return g == " "; }
 
+// One line of a pasted list, as one shell word (see line_editor.h).
+std::string quoted_line(std::string_view line, char q) {
+  if (line.size() >= 2 && (line.front() == '\'' || line.front() == '"') && line.back() == line.front()) {
+    return std::string(line);  // quoted already
+  }
+  if (q == '"') {
+    // Windows: a backslash separates and an apostrophe is a letter; a path holds no '"'.
+    if (line.find_first_of(" \t") == std::string_view::npos) return std::string(line);
+    return "\"" + std::string(line) + "\"";
+  }
+  if (line.find_first_of(" \t'\"\\") == std::string_view::npos) return std::string(line);
+  std::string out = "'";
+  for (const char c : line) out += c == '\'' ? std::string("'\\''") : std::string(1, c);
+  return out + "'";
+}
+
 }  // namespace
 
 int line_editor::cursor_column() const { return display_width(std::string_view(text_).substr(0, cursor_)); }
@@ -80,13 +96,24 @@ void line_editor::insert(std::string_view utf8) {
 }
 
 void line_editor::paste(std::string_view utf8) {
-  std::string flat;
-  flat.reserve(utf8.size());
-  for (std::size_t i = 0; i < utf8.size(); ++i) {
-    const char c = utf8[i];
-    if (c == '\r' && i + 1 < utf8.size() && utf8[i + 1] == '\n') continue;  // CRLF: one separator
-    flat += c == '\r' || c == '\n' || c == '\t' ? ' ' : c;
+  // The lines (CRLF, CR or LF), without the empty ones.
+  std::vector<std::string_view> rows;
+  for (std::size_t at = 0; at <= utf8.size();) {
+    const std::size_t end = std::min(utf8.find_first_of("\r\n", at), utf8.size());
+    if (end > at) rows.push_back(utf8.substr(at, end - at));
+    at = end + (end + 1 < utf8.size() && utf8[end] == '\r' && utf8[end + 1] == '\n' ? 2 : 1);
   }
+  const bool list = paste_quote_ != 0 && rows.size() > 1;
+  std::string flat;
+  flat.reserve(utf8.size() + 2 * rows.size());
+  for (const std::string_view row : rows) {
+    if (!flat.empty()) flat += ' ';
+    std::string r = list ? quoted_line(row, paste_quote_) : std::string(row);
+    std::replace(r.begin(), r.end(), '\t', ' ');
+    flat += r;
+  }
+  // A paste that ended in a newline still ends in a separator, as typed text would.
+  if (!utf8.empty() && (utf8.back() == '\n' || utf8.back() == '\r') && !flat.empty()) flat += ' ';
   insert(flat);
 }
 

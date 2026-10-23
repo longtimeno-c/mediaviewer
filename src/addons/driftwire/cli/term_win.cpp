@@ -223,7 +223,8 @@ void console::wait(term_input& in, int timeout_ms) {
     DWORD wait_ms = INFINITE;
     if (timeout_ms >= 0) {
       const ULONGLONG spent = ::GetTickCount64() - start;
-      wait_ms = spent >= static_cast<ULONGLONG>(timeout_ms) ? 0 : static_cast<DWORD>(timeout_ms - spent);
+      const auto limit = static_cast<ULONGLONG>(timeout_ms);
+      wait_ms = spent >= limit ? 0 : static_cast<DWORD>(limit - spent);
     }
     HANDLE handles[2] = {p_->in, g_wake};
     const DWORD rc = ::WaitForMultipleObjects(2, handles, FALSE, wait_ms);

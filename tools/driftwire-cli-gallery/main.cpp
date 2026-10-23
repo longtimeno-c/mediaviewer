@@ -11,12 +11,13 @@
 //   mv_driftwire_cli_gallery --animate STATE [--seconds S] [...]
 //     STATE: waiting, sending, receiving, bluetooth, internet, dht, relay,
 //            reconnecting, code
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "addons/driftwire/cli/inline_view.h"
@@ -46,15 +47,6 @@ int usage() {
   return 2;
 }
 
-std::string hints_left(const cli::theme& th, std::initializer_list<std::string_view> parts) {
-  std::string s;
-  for (const auto p : parts) {
-    if (!s.empty()) s += " " + std::string(th.g->sep) + " ";
-    s += p;
-  }
-  return s;
-}
-
 cli::nearby_model nearby_full() {
   cli::nearby_model m;
   m.peers = {{"Ann's MacBook", "Wi-Fi"}, {"Living-room PC", "Wi-Fi \xC2\xB7 Bluetooth"}};
@@ -66,7 +58,7 @@ Element idle_prompt(const cli::theme& th, int w, std::string_view right) {
   cli::prompt_model p;
   p.placeholder = "Type or drop files to send";
   cli::hint_model h;
-  h.left = hints_left(th, {"/ for commands", std::string(th.g->arrows) + " choose a computer", "enter to send"});
+  h.parts = {"/ for commands", std::string(th.g->arrows) + " choose a computer", "enter to send"};
   h.right = std::string(right);
   return ftxui::vbox({cli::prompt(th, p, w), cli::hints(th, h, w)});
 }
@@ -116,7 +108,6 @@ void show(cli::output& out, const cli::theme& th, int w, std::string_view label,
 }
 
 void gallery(cli::output& out, const cli::theme& th, int w) {
-  const std::string arrows(th.g->arrows);
   cli::banner_model b{"1.0.0", "Tristan's ThinkPad", "visible on Wi-Fi", "internet off", "~/Downloads"};
   show(out, th, w, "start banner (printed once)", cli::banner(th, b, w));
 
@@ -175,7 +166,7 @@ void gallery(cli::output& out, const cli::theme& th, int w) {
     cli::code_entry_model m;
     m.peer = "Ann's MacBook";
     show(out, th, w, "send: type the code (empty)",
-         ftxui::vbox({cli::code_entry_card(th, m, w), cli::hints(th, {cli::code_entry_hint(th), ""}, w)}));
+         ftxui::vbox({cli::code_entry_card(th, m, w), cli::hints(th, {cli::code_entry_hint(), ""}, w)}));
     m.typed = "4829";
     m.note = "That is not the code on Ann's MacBook's screen. 2 tries left.";
     m.wrong = true;
@@ -234,7 +225,7 @@ void gallery(cli::output& out, const cli::theme& th, int w) {
     p.border = cli::tone::accent;
     show(out, th, w, "a field: /to-code",
          ftxui::vbox({cli::prompt(th, p, w),
-                      cli::hints(th, {hints_left(th, {"enter to send", "esc to cancel"}), ""}, w)}));
+                      cli::hints(th, {{"enter to send", "esc to cancel"}, ""}, w)}));
     p.title = "Save somewhere else";
     p.text = "~/Pictures/Trip 2026/";
     p.cursor_col = cli::display_width(p.text);
@@ -250,7 +241,7 @@ void gallery(cli::output& out, const cli::theme& th, int w) {
                     cli::entry(th, {cli::tone::error, "The code was wrong 3 times, so nothing was sent.", {}}, w),
                     cli::entry(th, {cli::tone::info, "2 receives stopped part way", {"/unfinished to see them"}}, w)}));
   show(out, th, w, "a hint that asks",
-       cli::hints(th, {"Press Ctrl+C again to quit", "3 files", cli::tone::warning}, w));
+       cli::hints(th, {{"Press Ctrl+C again to quit"}, "3 files", cli::tone::warning}, w));
 }
 
 int animate(cli::console& con, cli::output& out, const cli::theme& th, int w, int h, const args& a) {
@@ -289,7 +280,7 @@ int animate(cli::console& con, cli::output& out, const cli::theme& th, int w, in
     }
     view.present(cli::region({live, idle_prompt(th, w, "")}));
     con.wait(in, 1000 / 12);
-    if (in.interrupt || in.quit || in.eof) break;
+    if (in.interrupt || in.quit || in.eof || !in.bytes.empty()) break;
     if (in.resized) {
       const cli::term_size s = con.size();
       w = a.width > 0 ? a.width : s.columns;
@@ -337,6 +328,9 @@ int main(int argc, char** argv) {
 #if defined(_WIN32)
   // VT sequences and UTF-8 in the Windows console.
   if (tty) con.enter_raw();
+#else
+  // An animation stops at any key; typed keys do not echo into it.
+  if (tty && !a.animate.empty()) con.enter_raw();
 #endif
   const cli::term_size size = tty ? con.size() : cli::term_size{};
   const int w = a.width > 0 ? a.width : size.columns;

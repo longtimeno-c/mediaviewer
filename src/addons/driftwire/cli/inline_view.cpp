@@ -22,10 +22,6 @@ constexpr std::string_view kShowCursor = "\x1B[?25h";
 struct style {
   bool bold = false, dim = false, italic = false, underline = false, inverted = false, strike = false;
   ftxui::Color fg, bg;
-  bool operator==(const style& o) const {
-    return bold == o.bold && dim == o.dim && italic == o.italic && underline == o.underline &&
-           inverted == o.inverted && strike == o.strike && fg == o.fg && bg == o.bg;
-  }
 };
 
 style style_of(const ftxui::Cell& c) {
@@ -86,14 +82,17 @@ raster rasterize(const ftxui::Element& doc, int width) {
     r.cursor_row = cur.y;
     r.cursor_col = cur.x;
   }
-  const style plain_style;
+  std::string plain_sgr;
+  sgr(plain_sgr, style{});
   for (int y = 0; y < h; ++y) {
     int last = -1;
     for (int x = 0; x < width; ++x) {
       if (!blank(screen.CellAt(x, y))) last = x;
     }
     std::string row, chars;
-    style now = plain_style;
+    // Compared as written, not as styles: two colours FTXUI keeps apart
+    // (a gradient's) are often one in 256 or 16 colours.
+    std::string now = plain_sgr, next;
     bool second_half = false;  // the cell after a wide character belongs to it
     for (int x = 0; x <= last; ++x) {
       const ftxui::Cell& c = screen.CellAt(x, y);
@@ -101,16 +100,18 @@ raster rasterize(const ftxui::Element& doc, int width) {
         second_half = false;
         continue;
       }
-      if (const style s = style_of(c); !(s == now)) {
-        sgr(row, s);
-        now = s;
+      next.clear();
+      sgr(next, style_of(c));
+      if (next != now) {
+        row += next;
+        now.swap(next);
       }
       const std::string_view g = c.character.empty() ? std::string_view(" ") : std::string_view(c.character);
       row += g;
       chars += g;
       second_half = g.size() > 1 && ftxui::string_width(g) == 2;
     }
-    if (!(now == plain_style)) row += "\x1B[0m";
+    if (now != plain_sgr) row += "\x1B[0m";
     r.rows.push_back(std::move(row));
     r.plain.push_back(std::move(chars));
   }
