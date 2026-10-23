@@ -85,8 +85,9 @@ inline std::vector<std::uint8_t> pattern(std::size_t size, std::uint32_t seed) {
 
 inline void set_mtime(const fs::path& p, std::int64_t unix_seconds) {
   const auto sys = std::chrono::system_clock::time_point(std::chrono::seconds(unix_seconds));
-  // Apple's libc++ has no clock_cast; MSVC's file_clock has no from_sys.
-#if defined(_LIBCPP_VERSION)
+  // Apple's libc++ and GCC 12's libstdc++ have no clock_cast; MSVC's
+  // file_clock has no from_sys.
+#if defined(_LIBCPP_VERSION) || defined(__GLIBCXX__)
   const auto ft = std::chrono::file_clock::from_sys(sys);
 #else
   const auto ft = std::chrono::clock_cast<std::chrono::file_clock>(sys);
