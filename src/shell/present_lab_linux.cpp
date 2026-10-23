@@ -318,7 +318,6 @@ void present_lab_linux::render_thread_main() noexcept {
     if (warmed_up_ && soak && !snapshot.window_visible) measurement_valid_ = false;
 
     const bool input_activity = input_cursor_.consume_activity(snapshot);
-    const float wheel = input_cursor_.consume_wheel(snapshot);
     if (input_activity && warmed_up_ && !options_.start_animating) ++idle_stats_.input_events;
     bool redraw = input_activity;
 
@@ -421,12 +420,18 @@ void present_lab_linux::render_thread_main() noexcept {
       exit_code_.store(2, std::memory_order_release);
       break;
     }
+    // A pass that goes round again without drawing owes its redraw (a
+    // configure's new size, a toggle) to the next one, as the idle branch does.
     if (waited == gfx::wayland_frame_clock::wait_result::timeout) {
       occluded_ = true;
+      redraw_owed_ = req.redraw;
       if (warmed_up_ && soak) measurement_valid_ = false;
       continue;
     }
-    if (waited == gfx::wayland_frame_clock::wait_result::woken) continue;  // newer input first
+    if (waited == gfx::wayland_frame_clock::wait_result::woken) {  // newer input first
+      redraw_owed_ = req.redraw;
+      continue;
+    }
     absorb_feedback();
 
     pacer_.frame_begin();
@@ -434,6 +439,9 @@ void present_lab_linux::render_thread_main() noexcept {
     const auto delta = static_cast<float>(now - last_frame);
     last_frame = now;
 
+    // Taken only for a frame that draws it: a pass that waited and went round
+    // again leaves it in the snapshot's total for the next one.
+    const float wheel = input_cursor_.consume_wheel(snapshot);
     draw_frame(snapshot, elapsed, delta, wheel);
 
     if (options_.before_commit) options_.before_commit(gl_surface_.width(), gl_surface_.height());
@@ -444,6 +452,7 @@ void present_lab_linux::render_thread_main() noexcept {
       clock_.abandon(id);
       if (presented.error() == status::device_lost && rebuild_device()) {
         measurement_valid_ = false;
+        redraw_owed_ = req.redraw;  // drawn, never shown
         continue;
       }
       exit_code_.store(2, std::memory_order_release);
