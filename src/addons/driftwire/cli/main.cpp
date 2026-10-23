@@ -32,6 +32,7 @@
 #include "addons/driftwire/engine.h"
 #include "addons/driftwire/known.h"
 #include "addons/driftwire/net.h"
+#include "addons/driftwire/power.h"
 #include "addons/driftwire/prefs.h"
 #include "addons/driftwire/secrets.h"
 
@@ -108,8 +109,11 @@ int list_devices() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // The reason the OS shows while a transfer keeps the machine awake
+  // ("Driftwire is receiving files"): this process is Driftwire, not the app.
+  dw::power::set_owner("Driftwire");
   const std::vector<std::string> argv8 = cli::utf8_args(argc, argv);
-  #if defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
+#if defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
   const cli::parsed_args parsed = cli::parse_args(argv8, true);
 #else
   const cli::parsed_args parsed = cli::parse_args(argv8, false);
