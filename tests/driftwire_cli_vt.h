@@ -287,6 +287,13 @@ class fake_console final : public mv::driftwire::cli::terminal {
     std::lock_guard lock(m_);
     return vt_.errors;
   }
+  // Everything written, as written, in one string.
+  [[nodiscard]] std::string written() const {
+    std::lock_guard lock(m_);
+    std::string all;
+    for (const auto& w : vt_.writes) all += w;
+    return all;
+  }
   [[nodiscard]] std::vector<std::string> osc() const {
     std::lock_guard lock(m_);
     return vt_.osc;

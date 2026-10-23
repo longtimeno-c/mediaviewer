@@ -677,8 +677,9 @@ TEST_CASE("driftwire cli session: plain mode asks in lines", "[driftwire][cli]")
   type_line(bea, "/quit");
   CHECK(ann.wait_exit() == 0);
   CHECK(bea.wait_exit() == 0);
-  // Plain mode moves no cursor: nothing but text, CR, LF, BS and colour resets.
-  for (const auto& osc : ann.con.osc()) CHECK(osc.empty());
+  // Plain mode moves no cursor and sets no colour: no escape sequence at all.
+  CHECK(ann.con.written().find('\x1B') == std::string::npos);
+  CHECK(bea.con.written().find('\x1B') == std::string::npos);
   CHECK(ann.con.errors().empty());
 }
 
@@ -724,6 +725,11 @@ TEST_CASE("driftwire cli session: a code over the internet (loopback), the check
   // The card shows the code itself (its first group, at least).
   CHECK(bea.screen_shows(code->substr(0, 4)));
   CHECK(bea.text().find("Send and receive over the internet") != std::string::npos);  // what it means, once
+  // c copies the code (OSC 52: the terminal's clipboard), and says so.
+  bea.con.type("c");
+  REQUIRE(bea.screen_shows("Code copied"));
+  const auto osc = bea.con.osc();
+  CHECK(std::any_of(osc.begin(), osc.end(), [](const std::string& o) { return o.rfind("52;c;", 0) == 0 && o.size() > 5; }));
 
   type_line(ann, utf8(f));
   REQUIRE(ann.screen_shows("1 file"));
