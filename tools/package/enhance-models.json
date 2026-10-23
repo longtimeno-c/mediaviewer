@@ -1,0 +1,24 @@
+{
+ "comment": "The Enhance add-on's models (docs/plans/enhance.md 'How a model is chosen'): per kind, the models it offers from the largest to the smallest, and per model what it needs (run_bytes, cache_bytes, accelerators, cpu_unit_ms), its knobs and its files pinned by Hugging Face revision and SHA-256. No model is pinned yet: each kind's weights are chosen, and their figures filled in by measurement, when that kind's slice is built (E3 photos, E4 audio, E5 video). tools/package/enhance-models.py check refuses a file over the 5 GB per-file cap (docs/design/12, 2026-10-13) or with a licence outside ai-models.py's ALLOWED_LICENCES; stage writes models/enhance.json, a model.json per model and the remote.json addon-pack.py signs.",
+ "kinds": {
+  "still": {
+   "name": "Photos",
+   "unit": "a 12 MP photo",
+   "cpu_budget_ms": 60000,
+   "models": []
+  },
+  "video": {
+   "name": "Video",
+   "unit": "a second of 1080p video",
+   "cpu_budget_ms": 30000,
+   "models": []
+  },
+  "audio": {
+   "name": "Audio",
+   "unit": "a minute of sound",
+   "cpu_budget_ms": 20000,
+   "models": []
+  }
+ },
+ "models": {}
+}

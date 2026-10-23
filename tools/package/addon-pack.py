@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Pack and sign an add-on (docs/design/18 "Add-ons: how Import is installed").
 
-    addon-pack.py pack [--addon import|places|driftwire|ai|ai-audio|ai-docs|ai-faces|ai-cuda] --platform win-x64|macos \
+    addon-pack.py pack [--addon import|places|driftwire|enhance|ai|ai-audio|ai-docs|ai-faces|ai-cuda] --platform win-x64|macos \
         --src build/addons/<addon> --version 1.0.0 --key <ed25519-private-key-hex-file> --out dist/
     addon-pack.py ceiling dist/mediaviewer-addon-ai*-<platform>.json
     addon-pack.py stage-places --src build/addons/places [--downloads <cache> | --blob <places.mvgeo>]
@@ -21,6 +21,11 @@ entry, no chrome). Model files carry the licence tools/package/ai-models.py
 recorded in the staged `licences.json`; a licence outside the allowed set
 fails the pack (the weights-licence gate). `ceiling` refuses a family whose
 supported installed combination exceeds 5 GB (docs/design/17).
+
+Enhance (docs/plans/enhance.md) ships its code and the catalogue
+tools/package/enhance-models.py staged; its weights are all `remote`, and a
+pin over its 5 GB per-file cap (`remote_file_cap`, docs/design/12 2026-10-13)
+fails the pack before anything is written. No other add-on has a cap.
 
 The manifest lists every file with its SHA-256, size and licence, the host API
 range the add-on supports, and the archive's own name, size and SHA-256. It
@@ -150,6 +155,29 @@ ADDONS = {
                    "linked in on macOS, the app's own copies on Windows.\n"
                    "Files move only to a MediaViewer the person there accepted, over the local network\n"
                    "or Bluetooth. No account, no cloud, no internet relay.\n"),
+    },
+    # Enhance (docs/plans/enhance.md, issue #297): restored copies of photos, video
+    # and audio. Code and the catalogue (models/enhance.json and a model.json per
+    # model, tools/package/enhance-models.py); no chrome: the hosts render its
+    # Models page. Every weights file is `remote`, fetched only when a model is
+    # chosen, and none may pass the 5 GB per-file cap (docs/design/12 2026-10-13).
+    # Its description and contributions live in src/addons/enhance/manifest.json.
+    "enhance": {
+        "name": "Enhance",
+        "host_api": {"min": 3, "max": 3},  # table v3: screens and slots
+        "manifest_json": "src/addons/enhance/manifest.json",
+        "files": {
+            "win-x64": {"native": "mv_enhance.dll", "chrome": "", "include": ["mv_enhance.dll", "models"]},
+            "macos": {"native": "libmv_enhance.dylib", "chrome": "", "arch": "arm64",  # as the AI pack's ORT
+                      "include": ["libmv_enhance.dylib", "models"]},
+        },
+        "licences": [],
+        "remote_file_cap": 5_000_000_000,
+        "notice": ("Enhance add-on for MediaViewer. GPL-3.0-or-later.\n"
+                   "Its models are not in this package: the one you choose for a kind is downloaded from\n"
+                   "Hugging Face at a pinned revision, checked against this package's signed list, and keeps\n"
+                   "its own licence, which Settings names. Runs on this computer; nothing about your\n"
+                   "photos, video or sound is sent anywhere.\n"),
     },
     "ai": {
         "name": "AI",
@@ -394,9 +422,10 @@ def make_archive(stage: Path, archive: Path, platform: str):
                 z.write(p, p.relative_to(stage).as_posix())
 
 
-def read_remote(src: Path) -> list:
+def read_remote(src: Path, cap: int = 0) -> list:
     """ai-models.py --upstream remote's list: files the add-on fetches on install
-    (docs/plans/model-tiers.md T3). Signed into the manifest, never shipped."""
+    (docs/plans/model-tiers.md T3). Signed into the manifest, never shipped.
+    `cap`, when set, is the add-on's largest fetched file (Enhance's 5 GB)."""
     path = src / "remote.json"
     if not path.exists():
         return []
@@ -409,6 +438,8 @@ def read_remote(src: Path) -> list:
             raise ValueError(f"{r['path']}: only plain Hugging Face URLs are fetched")
         if not re.fullmatch(r"[0-9a-f]{64}", r["sha256"]) or not isinstance(r["size"], int) or r["size"] <= 0:
             raise ValueError(f"{r['path']}: needs a size and a SHA-256")
+        if cap and r["size"] > cap:
+            raise ValueError(f"{r['path']}: {r['size']} bytes is over the {cap / 1e9:g} GB per-file cap")
         if not licence_allowed(r["licence"]):
             raise ValueError(f"{r['path']} is licensed {r['licence']}: not one the pack may point to")
         if r["path"].startswith("/") or ".." in r["path"].split("/") or "\\" in r["path"] or r["path"].lower() in seen:
@@ -456,6 +487,8 @@ def pack(args) -> Path:
     addon_id = getattr(args, "addon", None) or "import"
     if args.platform not in ADDONS[addon_id]["files"]:
         raise ValueError(f"{addon_id} is not built for {args.platform}")
+    # Before anything is written: a bad pin (or one over the cap) leaves no output.
+    remote = read_remote(Path(args.src), ADDONS[addon_id].get("remote_file_cap", 0))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     base = f"mediaviewer-addon-{addon_id}-{args.platform}"
@@ -463,7 +496,6 @@ def pack(args) -> Path:
     if stage.exists():
         shutil.rmtree(stage)
     files = collect(Path(args.src), args.platform, stage, addon_id)
-    remote = read_remote(Path(args.src))
     shipped = {f["path"].lower() for f in files}
     clash = [r["path"] for r in remote if r["path"].lower() in shipped]
     if clash:

@@ -3,10 +3,13 @@
 // #482 T3: the model downloader (src/addons/ai/fetch.h) against a fake
 // transport: resume after a cut, wait out an outage by itself, a 404 is final,
 // a file that misses its hash is fetched again and never kept, a server that
-// ignores Range, stop, and prune. Plus SHA-256's FIPS vectors.
+// ignores Range, stop, and prune. Plus SHA-256's FIPS vectors, and for
+// Enhance (docs/plans/enhance.md, E1) the per-file cap and adoption of a file
+// already at its pinned path.
 #include "catch_compat.h"
 
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -100,6 +103,13 @@ mv::ai::remote_file file_of(fake_net& net, const std::string& name, std::vector<
   f.size = data.size();
   net.files[f.url] = std::move(data);
   return f;
+}
+
+// Writes `data` at a UTF-8 path, making its folder: a file put there by hand.
+void put(const std::string& path, const std::vector<std::uint8_t>& data) {
+  fs::create_directories(native(path).parent_path());
+  std::ofstream(native(path), std::ios::binary)
+      .write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
 }
 
 std::vector<double> waits;
@@ -276,4 +286,102 @@ TEST_CASE("stop keeps the part; prune keeps only what is wanted", "[ai][fetch]")
   f.prune(keep);
   CHECK_FALSE(f.ready(a));
   CHECK(f.ready(b));
+}
+
+TEST_CASE("a pin over max_file_bytes is refused before any request", "[ai][fetch]") {
+  scratch s;
+  fake_net net;
+  const auto a = file_of(net, "a.onnx", bytes(100, 10));
+  const auto b = file_of(net, "b.onnx", bytes(1000, 11));
+  const fs::path root = s.root / "cache";  // not made yet
+  auto o = quick();
+  o.max_file_bytes = 999;
+  mv::ai::fetcher f(utf8(root), net, o);
+  std::atomic<bool> stop{false};
+  bool reported = false;
+  // The small file first: it is not fetched either, the list is refused whole.
+  const std::vector<mv::ai::remote_file> both{a, b};
+  auto r = f.run(both, stop, [&](const mv::ai::fetch_progress&) { reported = true; });
+  REQUIRE_FALSE(r);
+  CHECK(r.error() == mv::status::invalid_arg);
+  CHECK(net.calls.empty());
+  CHECK_FALSE(reported);
+  CHECK_FALSE(fs::exists(root));
+  CHECK(fs::is_empty(s.root));
+  // The same list under a cap it fits: fetched.
+  o.max_file_bytes = 1000;
+  mv::ai::fetcher g(utf8(root), net, o);
+  REQUIRE(g.run(both, stop, {}));
+  CHECK(net.calls.size() == 2);
+  CHECK(g.ready(a));
+  CHECK(g.ready(b));
+}
+
+TEST_CASE("a file dropped at its pinned path is adopted by its hash", "[ai][fetch]") {
+  scratch s;
+  fake_net net;
+  const auto data = bytes(800, 12);
+  const auto a = file_of(net, "a.onnx", data);
+  mv::ai::fetcher f(utf8(s.root), net, quick());
+  const std::string at = f.local_path(a);
+  put(at, data);
+  CHECK_FALSE(f.ready(a));  // no .ok yet
+  const std::vector<mv::ai::remote_file> one{a};
+  // Stopped: nothing is hashed or recorded.
+  std::atomic<bool> stop{true};
+  auto r = f.run(one, stop, {});
+  REQUIRE_FALSE(r);
+  CHECK(r.error() == mv::status::cancelled);
+  CHECK_FALSE(fs::exists(native(at + ".ok")));
+  stop = false;
+  std::vector<mv::ai::fetch_progress> seen;
+  REQUIRE(f.run(one, stop, [&](const mv::ai::fetch_progress& p) { seen.push_back(p); }));
+  CHECK(net.calls.empty());
+  CHECK(fs::exists(native(at + ".ok")));
+  CHECK(f.ready(a));
+  REQUIRE_FALSE(seen.empty());
+  CHECK(seen.back().state == mv::ai::fetch_state::done);
+  CHECK(seen.back().files_done == 1);
+  CHECK(seen.back().done_bytes == 800);
+  // Ready from then on: the next run stats it.
+  REQUIRE(f.run(one, stop, {}));
+  CHECK(net.calls.empty());
+}
+
+TEST_CASE("wrong bytes of the right size at the pinned path are replaced by a download", "[ai][fetch]") {
+  scratch s;
+  fake_net net;
+  const auto data = bytes(500, 13);
+  const auto a = file_of(net, "a.onnx", data);
+  mv::ai::fetcher f(utf8(s.root), net, quick());
+  auto wrong = data;
+  wrong[100] ^= 0xFF;
+  put(f.local_path(a), wrong);
+  std::atomic<bool> stop{false};
+  const std::vector<mv::ai::remote_file> one{a};
+  REQUIRE(f.run(one, stop, {}));
+  REQUIRE(net.calls.size() == 1);
+  CHECK(net.calls[0].from == 0);
+  CHECK(f.ready(a));
+  const auto hash = mv::ai::sha256_file_hex(f.local_path(a));
+  REQUIRE(hash);
+  CHECK(*hash == a.sha256);
+}
+
+TEST_CASE("a verified file whose mtime changed is hashed again and kept", "[ai][fetch]") {
+  scratch s;
+  fake_net net;
+  const auto a = file_of(net, "a.onnx", bytes(600, 14));
+  mv::ai::fetcher f(utf8(s.root), net, quick());
+  std::atomic<bool> stop{false};
+  const std::vector<mv::ai::remote_file> one{a};
+  REQUIRE(f.run(one, stop, {}));
+  REQUIRE(net.calls.size() == 1);
+  // Copied back from a backup: the same bytes, a day older.
+  const fs::path at = native(f.local_path(a));
+  fs::last_write_time(at, fs::last_write_time(at) - std::chrono::hours(24));
+  CHECK_FALSE(f.ready(a));  // the .ok no longer agrees
+  REQUIRE(f.run(one, stop, {}));
+  CHECK(net.calls.size() == 1);  // kept, not fetched again
+  CHECK(f.ready(a));
 }

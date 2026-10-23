@@ -96,6 +96,8 @@ set(MV_SOURCE_ROOT "${MV_ROOT}")
 include("${MV_ROOT}/cmake/import.cmake")
 # Milestone H: the AI pack (cmake/ai.cmake); its engine tests run here too.
 include("${MV_ROOT}/cmake/ai.cmake")
+# Enhance (#297, cmake/enhance.cmake): after ai.cmake, for mv_model_fetch.
+include("${MV_ROOT}/cmake/enhance.cmake")
 
 # ---- tests ----------------------------------------------------------------------
 enable_testing()
@@ -120,13 +122,17 @@ add_executable(mv_import_tests
   "${MV_ROOT}/tests/test_import_naming.cpp"
   "${MV_ROOT}/tests/test_import_engine.cpp"
   "${MV_ROOT}/tests/test_json.cpp"
+  # The model downloader (mv_model_fetch, cmake/ai.cmake): here because the
+  # portable build has no mv_ai_tests; Windows and macOS run it there.
+  "${MV_ROOT}/tests/test_ai_fetch.cpp"
 )
-target_link_libraries(mv_import_tests PRIVATE mv_io mv_addon mv_import_engine
+target_link_libraries(mv_import_tests PRIVATE mv_io mv_addon mv_import_engine mv_model_fetch
   ${MV_SODIUM_TARGET} ${MV_CATCH2_TARGET})
 target_include_directories(mv_import_tests PRIVATE "${MV_ROOT}/src" "${MV_ROOT}/tests")
 target_compile_definitions(mv_import_tests PRIVATE
   MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>")
 add_dependencies(mv_import_tests mv_import)
+mv_enhance_addon_tests(mv_import_tests)
 add_test(NAME mv_import_tests COMMAND mv_import_tests)
 # The dateless-file fallback is local wall-clock time; pin the zone.
 set_tests_properties(mv_import_tests PROPERTIES ENVIRONMENT "TZ=UTC")

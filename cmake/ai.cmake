@@ -8,6 +8,8 @@
 #   mv_infer       src/infer: ONNX Runtime behind our interface, loaded at run
 #                  time (never linked), the CLIP tokenizer and preprocessing,
 #                  the model wrappers. Needs ORT's C header only.
+#   mv_model_fetch src/addons/ai/fetch.h: the model downloader and SHA-256,
+#                  shared by the AI pack and Enhance (docs/plans/enhance.md).
 #   mv_ai_engine   src/addons/ai: index.db, roots and scans, the indexer and
 #                  its yield policy, the search matrix, people.
 #   mv_ai          the add-on: ONE shared library whose only export is
@@ -147,16 +149,6 @@ else()
   list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/cloud_none.cpp)
 endif()
 
-# The model downloader's transport (#482 T3, src/addons/ai/fetch.h): WinHTTP on
-# Windows, NSURLSession on the Mac.
-if(WIN32)
-  list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/fetch_win.cpp)
-elseif(APPLE)
-  list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/fetch_mac.mm)
-else()
-  list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/fetch_none.cpp)
-endif()
-
 # Text in pictures (#403, src/addons/ai/text_reader.h): Apple Vision on the
 # Mac, Windows.Media.Ocr (C++/WinRT from the Windows SDK) on Windows.
 if(WIN32)
@@ -197,6 +189,38 @@ endif()
 set_target_properties(mv_infer PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 
+# ---- mv_model_fetch -------------------------------------------------------------
+# The model downloader and its SHA-256 (#482 T3, src/addons/ai/fetch.h), shared
+# by the AI pack and Enhance (docs/plans/enhance.md), so Enhance does not link
+# mv_ai_engine. Its transport: WinHTTP on Windows, NSURLSession on the Mac, none
+# elsewhere. The sources stay in src/addons/ai, in mv::ai.
+if(WIN32)
+  set(MV_MODEL_FETCH_TRANSPORT ${R}/src/addons/ai/fetch_win.cpp)
+elseif(APPLE)
+  set(MV_MODEL_FETCH_TRANSPORT ${R}/src/addons/ai/fetch_mac.mm)
+else()
+  set(MV_MODEL_FETCH_TRANSPORT ${R}/src/addons/ai/fetch_none.cpp)
+endif()
+add_library(mv_model_fetch STATIC
+  ${R}/src/addons/ai/fetch.cpp
+  ${R}/src/addons/ai/fetch.h
+  ${R}/src/addons/ai/sha256.cpp
+  ${R}/src/addons/ai/sha256.h
+  ${MV_MODEL_FETCH_TRANSPORT}
+)
+target_include_directories(mv_model_fetch PUBLIC "${R}/src")
+find_package(Threads REQUIRED)
+target_link_libraries(mv_model_fetch PUBLIC mv_project_options Threads::Threads)
+if(WIN32)
+  target_link_libraries(mv_model_fetch PRIVATE winhttp)
+elseif(APPLE)
+  # fetch_mac.mm takes -fobjc-arc from mv_project_options (cmake/darwin.cmake).
+  target_link_libraries(mv_model_fetch PRIVATE "-framework Foundation")
+  set_target_properties(mv_model_fetch PROPERTIES OSX_ARCHITECTURES "arm64")
+endif()
+set_target_properties(mv_model_fetch PROPERTIES POSITION_INDEPENDENT_CODE ON
+  CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+
 # ---- mv_ai_engine ---------------------------------------------------------------
 add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/host.cpp
@@ -220,12 +244,8 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/pack.cpp
   ${R}/src/addons/ai/pack.h
   ${R}/src/addons/ai/tiers.cpp
-  ${R}/src/addons/ai/fetch.cpp
   ${R}/src/addons/ai/machine.cpp
   ${R}/src/addons/ai/machine.h
-  ${R}/src/addons/ai/fetch.h
-  ${R}/src/addons/ai/sha256.cpp
-  ${R}/src/addons/ai/sha256.h
   ${R}/src/addons/ai/tiers.h
   ${R}/src/addons/ai/platform.h
   ${R}/src/addons/ai/photos_source.h
@@ -240,8 +260,7 @@ add_library(mv_ai_engine STATIC
 target_include_directories(mv_ai_engine PUBLIC "${R}/src" "${R}/src/abi/include")
 # PDFium's C headers for pdf_pdfium.cpp alone (the library is loaded at run time).
 set_source_files_properties(${R}/src/addons/ai/pdf_pdfium.cpp PROPERTIES INCLUDE_DIRECTORIES "${MV_PDFIUM_INCLUDE}")
-target_link_libraries(mv_ai_engine PUBLIC mv_infer mv_project_options PRIVATE ${MV_SQLITE_TARGET})
-find_package(Threads REQUIRED)
+target_link_libraries(mv_ai_engine PUBLIC mv_infer mv_model_fetch mv_project_options PRIVATE ${MV_SQLITE_TARGET})
 target_link_libraries(mv_ai_engine PUBLIC Threads::Threads)
 if(APPLE)
   target_link_libraries(mv_ai_engine PRIVATE "-framework CoreFoundation" "-framework IOKit"
@@ -250,7 +269,7 @@ if(APPLE)
                         "-framework CoreGraphics")
 endif()
 if(WIN32)
-  target_link_libraries(mv_ai_engine PRIVATE winhttp dxgi)  # fetch_win.cpp, machine() (#482)
+  target_link_libraries(mv_ai_engine PRIVATE dxgi)  # machine() (#482)
 endif()
 set_target_properties(mv_ai_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)

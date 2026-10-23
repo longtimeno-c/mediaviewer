@@ -91,8 +91,9 @@ Apple silicon the GPU shares RAM), and free space on the add-on's data volume.
 3. Provider: the machine's accelerator when the model lists it; else the CPU when
    `cpu_unit_ms ≤ cpu_budget_ms`; else *needs a GPU*.
 4. Memory, to **offer**: `run_bytes` within the accelerator's memory (CUDA: VRAM; Core ML and
-   CPU: total RAM). To **run** (E3, before the first tile): within free VRAM / free RAM, or the
-   command states the shortfall and does not start.
+   CPU: total RAM). A graphics card too small for a model that rule 3 would also allow on the CPU
+   hands it to the CPU when RAM holds it. To **run** (E3, before the first tile): within free
+   VRAM / free RAM, or the command states the shortfall and does not start.
 5. Disk: the bytes still to fetch plus `cache_bytes` within free space.
 
 The **recommended** model of a kind is the first, largest to smallest, that passes all five. The

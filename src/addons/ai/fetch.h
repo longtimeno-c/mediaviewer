@@ -17,10 +17,17 @@
 //   does not is deleted and fetched again, never loaded. A verified file gets a
 //   <path>.ok record (sha256, size, mtime), so later starts stat it rather
 //   than hash gigabytes.
+// - Capped: with fetch_options::max_file_bytes set, a list naming any file
+//   over it is refused whole (status::invalid_arg) before a request is made
+//   or a folder created (Enhance: 5 GB a weights file).
+// - Adopting: a file already at its path with the pinned size but no .ok that
+//   agrees (dropped there by hand, or copied back with a new mtime) is hashed
+//   once, kept with a .ok when it matches and deleted and fetched when not.
 //
 // Transport-free and blocking: the engine runs it on a thread of its own;
 // tests drive it with a fake transport. Nothing here knows about tiers or
-// models, so another add-on (Enhance, #297) can use it as it is.
+// models: the AI pack and Enhance (#297, docs/plans/enhance.md) both link it
+// as mv_model_fetch (cmake/ai.cmake), so Enhance does not link the AI engine.
 #pragma once
 
 #include <atomic>
@@ -84,6 +91,7 @@ struct fetch_options {
   double first_backoff_s = 2;
   double max_backoff_s = 300;
   int hash_attempts = 3;  // fetches of one file that may miss its hash before it fails
+  std::uint64_t max_file_bytes = 0;  // 0 = none (Enhance: 5 GB a weights file)
   // Waits up to `seconds` or until `stop`; true if it waited the whole time.
   // Tests replace it.
   std::function<bool(double seconds, const std::atomic<bool>& stop)> wait;
@@ -96,11 +104,12 @@ class fetcher {
   [[nodiscard]] std::string local_path(const remote_file& f) const;
   // Here and verified: the right size, and a .ok record that agrees.
   [[nodiscard]] bool ready(const remote_file& f) const;
-  // Every file, in order. ok when all are ready; status::cancelled when
-  // `stop` was set (partial files are kept for the next run);
-  // status::not_found when one is gone; status::corrupt when one never
-  // matched its hash. `progress` is called on each change of state and about
-  // every quarter second while bytes arrive.
+  // Every file, in order. ok when all are ready; status::invalid_arg, with
+  // nothing requested, made or reported, when one is over max_file_bytes;
+  // status::cancelled when `stop` was set (partial files are kept for the
+  // next run); status::not_found when one is gone; status::corrupt when one
+  // never matched its hash. `progress` is called on each change of state and
+  // about every quarter second while bytes arrive.
   [[nodiscard]] expected run(std::span<const remote_file> files, const std::atomic<bool>& stop,
                              const std::function<void(const fetch_progress&)>& progress);
   // Deletes what is under the root and not one of `keep` (the models of a

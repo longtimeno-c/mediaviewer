@@ -7,15 +7,20 @@ With MV_ADDON_VERIFY pointing at tools/addon-verify's binary (the portable
 build sets it), every package is also checked by the app's own C++ verifier,
 so the signer and the verifier cannot drift apart unnoticed.
 """
+import contextlib
+import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -484,6 +489,295 @@ class PlacesPackTest(unittest.TestCase):
             shutil.copy(str(manifest) + ".sig", staged / "manifest.json.sig")
             r = subprocess.run([tool, str(staged), raw_public(self.key), "win-x64"], capture_output=True, text=True)
             self.assertEqual(r.stdout.strip().splitlines()[0] if r.stdout.strip() else r.stdout, "ok")
+
+
+def load_tool(name: str, file: str):
+    gate = importlib.util.spec_from_file_location(name, Path(__file__).with_name(file))
+    mod = importlib.util.module_from_spec(gate)
+    gate.loader.exec_module(mod)
+    return mod
+
+
+def no_network(*_args, **_kwargs):
+    raise AssertionError("no request may be made")
+
+
+class EnhancePackTest(unittest.TestCase):
+    """docs/plans/enhance.md E1: the catalogue's gate, its staging and the pack.
+    Nothing here touches the network: the weights are `remote`."""
+
+    FIXTURE = ROOT / "tests/data/enhance/fixture-models.json"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.models = load_tool("enhance_models", "enhance-models.py")
+        cls.real_fetch = staticmethod(cls.models.ai_models.fetch)
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.key = Ed25519PrivateKey.generate()
+        seed = self.key.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw,
+                                      serialization.NoEncryption())
+        self.key_file = self.tmp / "addon.key"
+        self.key_file.write_text(seed.hex())
+        self.out = self.tmp / "dist"
+        self.src = self.tmp / "enhance"
+        self.src.mkdir()
+        (self.src / "mv_enhance.dll").write_bytes(b"MZ" + os.urandom(1024))
+        (self.src / "libmv_enhance.dylib").write_bytes(b"\xcf\xfa\xed\xfe" + os.urandom(1024))
+        (self.src / "mv_enhance.pdb").write_bytes(b"not shipped")
+        offline = mock.patch("urllib.request.urlopen", side_effect=no_network)
+        offline.start()
+        self.addCleanup(offline.stop)
+        fetch = mock.patch.object(self.models.ai_models, "fetch", side_effect=no_network)
+        fetch.start()
+        self.addCleanup(fetch.stop)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_models(self, *argv):
+        """enhance-models.py in process: (exit code, stdout, stderr)."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = self.models.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def fixture(self) -> dict:
+        return json.loads(self.FIXTURE.read_text(encoding="utf-8"))
+
+    def stage(self, *extra):
+        code, _, err = self.run_models("stage", "--models", str(self.FIXTURE), "--out", str(self.src), *extra)
+        self.assertEqual(code, 0, err)
+
+    def pack(self, platform="win-x64"):
+        addon_pack.main(["pack", "--addon", "enhance", "--platform", platform, "--src", str(self.src),
+                         "--version", "1.0.0", "--key", str(self.key_file), "--out", str(self.out)])
+        return self.out / f"mediaviewer-addon-enhance-{platform}.json"
+
+    def test_the_real_catalogue_passes_the_gate(self):
+        code, out, err = self.run_models("check")
+        self.assertEqual(code, 0, err)
+        self.assertRegex(out, r"^ok: \d+ models")
+        data = json.loads(self.models.MODELS.read_text(encoding="utf-8"))
+        self.assertEqual(sorted(data["kinds"]), ["audio", "still", "video"])
+        # As CI runs it: the command line, isolated.
+        r = subprocess.run([sys.executable, "-I", str(Path(__file__).with_name("enhance-models.py")), "check"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_the_fixture_passes_the_gate(self):
+        self.assertEqual(self.run_models("check", "--models", str(self.FIXTURE))[:2], (0, "ok: 3 models\n"))
+        # Its pins are Local search's, already verified there (ai-models.json).
+        ai = json.loads((ROOT / "tools/package/ai-models.json").read_text(encoding="utf-8"))
+        pinned = {(f["repo"], f["revision"], f["file"], f["size"], f["sha256"])
+                  for piece in ai["pieces"].values() for folder in piece["folders"].values() for f in folder["files"]}
+        for folder in self.fixture()["models"].values():
+            for f in folder["files"]:
+                self.assertIn((f["repo"], f["revision"], f["file"], f["size"], f["sha256"]), pinned)
+
+    def refusal(self, change) -> str:
+        """check's complaint about the fixture after `change(data)`, or '' if it passes."""
+        data = self.fixture()
+        change(data)
+        path = self.tmp / "broken.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        code, _, err = self.run_models("check", "--models", str(path))
+        self.assertEqual(code != 0, bool(err))
+        return err
+
+    def test_the_gate_refuses_what_the_rule_cannot_take(self):
+        m = "models/fixture-standard"
+        cases = {
+            "is CC-BY-NC-4.0": lambda d: d["models"][m]["files"][0].update(licence="CC-BY-NC-4.0"),
+            "over the 5 GB per-file cap": lambda d: d["models"][m]["files"][0].update(size=5_000_000_001),
+            "is not pinned": lambda d: d["models"][m]["files"][0].update(revision="a" * 39),
+            "unknown kind": lambda d: d["kinds"].update(animation=d["kinds"]["video"]),
+            "kinds.video: missing": lambda d: d["kinds"].pop("video"),
+            "fixture-standard does not serve audio": lambda d: d["kinds"]["audio"]["models"].append("fixture-standard"),
+            "'photo-x' is not a model": lambda d: d["kinds"]["still"]["models"].append("photo-x"),
+            "kinds.audio does not list it": lambda d: d["kinds"]["audio"].update(models=[]),
+            "outside 0..1": lambda d: d["models"][m]["model"]["knobs"][1].update(default=1.5),
+            "not one of its options": lambda d: d["models"][m]["model"]["knobs"][0].update(default="8"),
+            "some of the model's own": lambda d: d["models"][m]["model"]["knobs"][0].update(kinds=["audio"]),
+            "toggle's default": lambda d: d["models"]["models/fixture-small"]["model"]["knobs"][1].update(default=1),
+            "not a safe relative path": lambda d: d["models"][m]["files"][0].update(**{"as": "../model.onnx"}),
+            "a model folder is models/<id>": lambda d: d["models"].update({"photo": d["models"].pop(m)}),
+            "runs nowhere": lambda d: d["models"][m]["model"].update(accelerators=[]) or
+            d["models"][m]["model"].pop("cpu_unit_ms"),
+            "not a plain Hugging Face URL": lambda d: d["models"][m]["files"][0].update(file="x.onnx?download=1"),
+        }
+        for want, change in cases.items():
+            with self.subTest(want=want):
+                self.assertIn(want, self.refusal(change))
+        self.assertEqual(self.refusal(lambda d: None), "")
+        # json would keep the last of two same-named models; the gate does not.
+        text = self.FIXTURE.read_text(encoding="utf-8")
+        dup = json.dumps({m: self.fixture()["models"][m]})[1:-1]
+        twice = self.tmp / "twice.json"
+        twice.write_text(text.replace('"models": {\n', '"models": {\n' + dup + ",\n", 1), encoding="utf-8")
+        code, _, err = self.run_models("check", "--models", str(twice))
+        self.assertEqual(code, 1)
+        self.assertIn(f"{m}: duplicate model id", err)
+
+    def test_remote_staging_writes_the_catalogue_and_fetches_nothing(self):
+        # A copy from an earlier bundle and a model since removed are not packed.
+        (self.src / "models/fixture-small").mkdir(parents=True)
+        (self.src / "models/fixture-small/model.onnx").write_bytes(b"stale")
+        (self.src / "models/gone").mkdir()
+        (self.src / "models/gone/model.json").write_text("{}")
+        self.stage()  # --upstream remote is the default
+        data = self.fixture()
+        index = json.loads((self.src / "models/enhance.json").read_text())
+        self.assertEqual(index["schema"], 1)
+        self.assertEqual(index["kinds"]["still"]["models"], ["fixture-large", "fixture-standard", "fixture-small"])
+        self.assertEqual(index["kinds"]["audio"], {"name": "Audio", "unit": "a minute of sound",
+                                                   "cpu_budget_ms": 20000, "models": ["fixture-small"]})
+        for folder, entry in data["models"].items():
+            text = (self.src / folder / "model.json").read_text(encoding="utf-8")
+            self.assertEqual(json.loads(text), entry["model"])
+            self.assertEqual(list(json.loads(text)), list(entry["model"]))  # as written, in order
+        self.assertFalse((self.src / "models/fixture-small/model.onnx").exists())
+        self.assertFalse((self.src / "models/gone").exists())
+        remote = json.loads((self.src / "remote.json").read_text())
+        self.assertEqual(len(remote), 3)
+        for r in remote:
+            self.assertEqual(set(r), {"url", "path", "size", "sha256", "licence"})
+            self.assertRegex(r["url"], r"^https://huggingface\.co/[^?#]+/resolve/[0-9a-f]{40}/[^?#]+$")
+            self.assertRegex(r["path"], r"^models/fixture-[a-z]+/model\.onnx$")
+        self.assertEqual(sum(r["size"] for r in remote), 1274342603 + 38696353 + 232589)
+        lic = json.loads((self.src / "licences.json").read_text())
+        self.assertEqual(lic, {p: "GPL-3.0-or-later" for p in
+                               ["models/enhance.json"] + [f"{f}/model.json" for f in data["models"]]})
+        # The real catalogue stages no model and lists nothing to fetch.
+        code, _, err = self.run_models("stage", "--out", str(self.src))
+        self.assertEqual(code, 0, err)
+        self.assertFalse((self.src / "remote.json").exists())
+        self.assertEqual(sorted(p.name for p in (self.src / "models").iterdir()), ["enhance.json"])
+
+    def test_bundle_staging_puts_the_weights_in_the_pack(self):
+        # An offline dev pack: the weights come from the cache (a file of the
+        # pinned size and hash is never fetched again), and nothing is remote.
+        blob = os.urandom(4096)
+        sha = hashlib.sha256(blob).hexdigest()
+        data = self.fixture()
+        small = data["models"]["models/fixture-small"]
+        small["files"][0].update(size=len(blob), sha256=sha)
+        data["models"] = {"models/fixture-small": small}
+        data["kinds"]["still"]["models"] = ["fixture-small"]
+        catalogue = self.tmp / "small.json"
+        catalogue.write_text(json.dumps(data), encoding="utf-8")
+        cache = self.tmp / "cache"
+        cache.mkdir()
+        (cache / f"{sha}-face_detection_yunet_2023mar.onnx").write_bytes(blob)
+        (self.src / "remote.json").write_text("[]")  # stale, from a remote stage
+        with mock.patch.object(self.models.ai_models, "fetch", self.real_fetch):
+            code, _, err = self.run_models("stage", "--models", str(catalogue), "--out", str(self.src),
+                                           "--upstream", "bundle", "--cache", str(cache))
+        self.assertEqual(code, 0, err)
+        self.assertEqual((self.src / "models/fixture-small/model.onnx").read_bytes(), blob)
+        self.assertFalse((self.src / "remote.json").exists())
+        lic = json.loads((self.src / "licences.json").read_text())
+        self.assertEqual(lic["models/fixture-small/model.onnx"], "MIT")
+        m = json.loads(self.pack().read_bytes())
+        self.assertNotIn("remote", m)
+        self.assertIn({"path": "models/fixture-small/model.onnx", "sha256": sha, "size": len(blob), "licence": "MIT"},
+                      m["files"])
+
+    def test_staging_refuses_a_catalogue_the_gate_refuses(self):
+        data = self.fixture()
+        data["models"]["models/fixture-small"]["files"][0]["licence"] = "CC-BY-NC-4.0"
+        bad = self.tmp / "bad.json"
+        bad.write_text(json.dumps(data), encoding="utf-8")
+        code, _, err = self.run_models("stage", "--models", str(bad), "--out", str(self.src))
+        self.assertEqual(code, 1)
+        self.assertIn("CC-BY-NC-4.0", err)
+        self.assertFalse((self.src / "models").exists())
+
+    def test_the_package_carries_code_and_catalogue_and_signs_the_pins(self):
+        self.stage()
+        remote = json.loads((self.src / "remote.json").read_text())
+        doc = json.loads((ROOT / "src/addons/enhance/manifest.json").read_text(encoding="utf-8"))
+        for platform, native in (("win-x64", "mv_enhance.dll"), ("macos", "libmv_enhance.dylib")):
+            m = json.loads(self.pack(platform).read_bytes())
+            self.assertEqual(m["id"], "enhance")
+            self.assertEqual(m["name"], "Enhance")
+            self.assertEqual(m["host_api"], {"min": 3, "max": 3})
+            self.assertEqual(m["native"], native)
+            self.assertEqual(m["chrome"], "")  # the hosts render its Models page
+            self.assertNotIn("part_of", m)
+            self.assertEqual(m["remote"], remote)
+            self.assertEqual(m["download_size"], sum(r["size"] for r in remote))
+            lic = {f["path"]: f["licence"] for f in m["files"]}
+            self.assertEqual(lic[native], "GPL-3.0-or-later")
+            self.assertEqual(lic["models/enhance.json"], "GPL-3.0-or-later")
+            self.assertEqual(lic["models/fixture-large/model.json"], "GPL-3.0-or-later")
+            self.assertIn("LICENSES/NOTICE.txt", lic)
+            for gone in ["mv_enhance.pdb", "remote.json", "licences.json"] + [r["path"] for r in remote]:
+                self.assertNotIn(gone, lic)
+            self.assertEqual(m["installed_size"], sum(f["size"] for f in m["files"]))
+            self.assertEqual(m["description"], doc["description"])
+            self.assertEqual(m["contributes"], doc["contributes"])
+            self.assertEqual(m["contributes"]["screens"], [{"id": "models", "title": "Enhance", "place": "settings"}])
+            self.assertEqual(m.get("arch"), "arm64" if platform == "macos" else None)
+        with zipfile.ZipFile(self.out / "mediaviewer-addon-enhance-win-x64.zip") as z:
+            notice = z.read("LICENSES/NOTICE.txt").decode()
+            self.assertFalse(any(n.endswith(".onnx") for n in z.namelist()))
+        self.assertIn("Hugging Face", notice)
+
+    def test_the_pack_refuses_a_pin_over_the_cap_before_writing(self):
+        self.stage()
+        remote = json.loads((self.src / "remote.json").read_text())
+        remote[0]["size"] = 5_000_000_000  # at the cap: taken
+        (self.src / "remote.json").write_text(json.dumps(remote))
+        self.pack()
+        shutil.rmtree(self.out)
+        remote[0]["size"] = 5_000_000_001
+        (self.src / "remote.json").write_text(json.dumps(remote))
+        with self.assertRaisesRegex(ValueError, "over the 5 GB per-file cap"):
+            self.pack()
+        self.assertFalse(self.out.exists())
+        # Enhance's alone: Local search has none since 2026-10-18.
+        self.assertEqual([a for a, s in addon_pack.ADDONS.items() if s.get("remote_file_cap")], ["enhance"])
+
+    def verdict(self, folder: Path) -> str:
+        tool = os.environ.get("MV_ADDON_VERIFY")
+        if not tool:
+            self.skipTest("MV_ADDON_VERIFY not set (the portable build sets it)")
+        r = subprocess.run([tool, str(folder), raw_public(self.key), "win-x64"], capture_output=True, text=True)
+        return r.stdout.strip().splitlines()[0] if r.stdout.strip() else r.stdout
+
+    def test_cpp_verifier_accepts_the_package(self):
+        self.stage()
+        manifest = self.pack()
+        m = json.loads(manifest.read_bytes())
+        staged = self.tmp / "staged"
+        with zipfile.ZipFile(manifest.parent / m["archive"]["path"]) as z:
+            z.extractall(staged)
+        shutil.copy(manifest, staged / "manifest.json")
+        shutil.copy(str(manifest) + ".sig", staged / "manifest.json.sig")
+        self.assertEqual(self.verdict(staged), "ok")
+
+    def test_the_dev_sideload_unpacks_the_fixture_build(self):
+        sideload = load_tool("enhance_sideload", "enhance-sideload.py")
+        build = self.tmp / "build"
+        (build / "addons").mkdir(parents=True)
+        shutil.copytree(self.src, build / "addons/enhance")
+        addons = self.tmp / "addons"
+        with mock.patch.object(sideload.enhance_models.ai_models, "fetch", side_effect=no_network), \
+                contextlib.redirect_stdout(io.StringIO()):
+            code = sideload.main(["--build", str(build), "--key", str(self.key_file), "--addons", str(addons),
+                                  "--platform", "win-x64"])
+        self.assertEqual(code, 0)
+        target = addons / "enhance/1.0.0"
+        m = json.loads((target / "manifest.json").read_bytes())
+        self.assertEqual(len(m["remote"]), 3)
+        self.assertTrue((target / "mv_enhance.dll").is_file())
+        self.assertTrue((target / "models/enhance.json").is_file())
+        self.assertFalse((target / "remote.json").exists())
+        self.assertEqual(sorted(p.name for p in addons.parent.iterdir() if p.name.startswith(".mv-")), [])
+        if os.environ.get("MV_ADDON_VERIFY"):  # as the app verifies it on load
+            self.assertEqual(self.verdict(target), "ok")
 
 
 if __name__ == "__main__":

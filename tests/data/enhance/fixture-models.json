@@ -1,0 +1,111 @@
+{
+ "comment": "A FIXTURE catalogue for the Enhance add-on (docs/plans/enhance.md, E1), in the schema of tools/package/enhance-models.json. These files are not restoration models: they exist so download, verification and the spec rule run end to end against real Hugging Face files that are already pinned and verified in tools/package/ai-models.json (YuNet, SFace and Whisper large-v3-turbo's encoder: 0.2 MB, 39 MB and 1.27 GB). The figures (run_bytes, cpu_unit_ms) are chosen to give the rule a large GPU-only, a standard and a small CPU model, not measured. Never released.",
+ "kinds": {
+  "still": {
+   "name": "Photos",
+   "unit": "a 12 MP photo",
+   "cpu_budget_ms": 60000,
+   "models": ["fixture-large", "fixture-standard", "fixture-small"]
+  },
+  "video": {
+   "name": "Video",
+   "unit": "a second of 1080p video",
+   "cpu_budget_ms": 30000,
+   "models": []
+  },
+  "audio": {
+   "name": "Audio",
+   "unit": "a minute of sound",
+   "cpu_budget_ms": 20000,
+   "models": ["fixture-small"]
+  }
+ },
+ "models": {
+  "models/fixture-large": {
+   "model": {
+    "id": "fixture-large",
+    "name": "Large",
+    "model": "Fixture (Whisper turbo encoder, 1.27 GB)",
+    "kinds": ["still"],
+    "run_bytes": 6442450944,
+    "cache_bytes": 0,
+    "accelerators": ["cuda", "coreml"],
+    "licence": "MIT",
+    "knobs": [
+     {"id": "scale", "label": "Scale", "type": "choice", "default": "2",
+      "options": [{"id": "2", "text": "2×"}, {"id": "4", "text": "4×"}], "kinds": ["still"]}
+    ]
+   },
+   "files": [
+    {
+     "repo": "onnx-community/whisper-large-v3-turbo",
+     "revision": "360ebcde2559d60bb474678be3c1de9ef347d01a",
+     "file": "onnx/encoder_model_fp16.onnx",
+     "as": "model.onnx",
+     "size": 1274342603,
+     "sha256": "fdadc70836e6b028fd5e580417c312208dad073d2d01e509e2d127c1373399d8",
+     "licence": "MIT"
+    }
+   ]
+  },
+  "models/fixture-standard": {
+   "model": {
+    "id": "fixture-standard",
+    "name": "Standard",
+    "model": "Fixture (SFace, 39 MB)",
+    "kinds": ["still"],
+    "run_bytes": 2147483648,
+    "cache_bytes": 0,
+    "accelerators": ["cuda", "coreml"],
+    "cpu_unit_ms": 45000,
+    "licence": "Apache-2.0",
+    "knobs": [
+     {"id": "scale", "label": "Scale", "type": "choice", "default": "4",
+      "options": [{"id": "2", "text": "2×"}, {"id": "4", "text": "4×"}], "kinds": ["still"]},
+     {"id": "denoise", "label": "Denoise", "type": "slider", "min": 0, "max": 1, "step": 0.05,
+      "default": 0.5, "kinds": ["still"]}
+    ]
+   },
+   "files": [
+    {
+     "repo": "opencv/face_recognition_sface",
+     "revision": "3d7082438a6e4551e840c9b2bb60b71e8da4b524",
+     "file": "face_recognition_sface_2021dec.onnx",
+     "as": "model.onnx",
+     "size": 38696353,
+     "sha256": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
+     "licence": "Apache-2.0"
+    }
+   ]
+  },
+  "models/fixture-small": {
+   "model": {
+    "id": "fixture-small",
+    "name": "Small",
+    "model": "Fixture (YuNet, 0.2 MB)",
+    "kinds": ["still", "audio"],
+    "run_bytes": 268435456,
+    "cache_bytes": 0,
+    "accelerators": [],
+    "cpu_unit_ms": 5000,
+    "licence": "MIT",
+    "knobs": [
+     {"id": "denoise", "label": "Denoise", "type": "slider", "min": 0, "max": 1, "step": 0.05,
+      "default": 0.5, "kinds": ["still"]},
+     {"id": "voice", "label": "Keep voices clear", "type": "toggle", "default": true, "kinds": ["audio"]}
+    ]
+   },
+   "files": [
+    {
+     "repo": "opencv/face_detection_yunet",
+     "revision": "3cc26e7f1014a5ee5d74a42acee58bafc9d0a310",
+     "file": "face_detection_yunet_2023mar.onnx",
+     "as": "model.onnx",
+     "size": 232589,
+     "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+     "licence": "MIT"
+    }
+   ]
+  }
+ }
+}

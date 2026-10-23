@@ -50,6 +50,20 @@ std::string ok_record(const remote_file& f, long long mtime) {
   return f.sha256 + " " + std::to_string(f.size) + " " + std::to_string(mtime) + "\n";
 }
 
+// Records `path` as verified against `f` (its .ok, as of its mtime now).
+bool write_ok(const remote_file& f, const std::string& path) {
+  std::ofstream ok(fs_path(path + ".ok"), std::ios::binary | std::ios::trunc);
+  ok << ok_record(f, mtime_of(path));
+  ok.close();
+  return !ok.fail();
+}
+
+// A regular file (not a link or folder) of exactly `size` bytes at `path`.
+bool sits_at(const std::string& path, std::uint64_t size) {
+  std::error_code ec;
+  return fs::is_regular_file(fs::symlink_status(fs_path(path), ec)) && size_of(path) == size;
+}
+
 }  // namespace
 
 fetcher::fetcher(std::string root, http_transport& net, fetch_options options)
@@ -74,6 +88,12 @@ bool fetcher::ready(const remote_file& f) const {
 
 expected fetcher::run(std::span<const remote_file> files, const std::atomic<bool>& stop,
                       const std::function<void(const fetch_progress&)>& progress) {
+  // Over the cap: the whole list is refused before anything is asked or made.
+  if (opt_.max_file_bytes) {
+    for (const remote_file& f : files) {
+      if (f.size > opt_.max_file_bytes) return err(status::invalid_arg);
+    }
+  }
   fetch_progress p;
   p.files_total = static_cast<std::uint32_t>(files.size());
   for (const remote_file& f : files) p.total_bytes += f.size;
@@ -94,6 +114,21 @@ expected fetcher::run(std::span<const remote_file> files, const std::atomic<bool
       p.done_bytes = finished_bytes;
       ++p.files_done;
       continue;
+    }
+    // Already here with no .ok that agrees (dropped in by hand, or copied
+    // back with a new mtime): hashed once and adopted if it is the pinned one.
+    if (sits_at(path, f.size)) {
+      if (stop.load()) return err(status::cancelled);
+      const auto hash = sha256_file_hex(path);
+      if (hash && *hash == f.sha256) {
+        if (!write_ok(f, path)) return err(status::io);
+        remove_file(path + ".part");
+        finished_bytes += f.size;
+        p.done_bytes = finished_bytes;
+        ++p.files_done;
+        continue;
+      }
+      remove_file(path);
     }
     std::error_code ec;
     fs::create_directories(fs_path(path).parent_path(), ec);
@@ -167,10 +202,7 @@ expected fetcher::run(std::span<const remote_file> files, const std::atomic<bool
       if (hash && *hash == f.sha256) {
         remove_file(path);
         fs::rename(fs_path(part), fs_path(path), ec);
-        if (ec) return err(status::io);
-        std::ofstream ok(fs_path(path + ".ok"), std::ios::binary | std::ios::trunc);
-        ok << ok_record(f, mtime_of(path));
-        if (!ok) return err(status::io);
+        if (ec || !write_ok(f, path)) return err(status::io);
         break;
       }
       remove_file(part);

@@ -1,0 +1,7 @@
+{
+ "description": "Writes a restored copy of a photo, video or audio file; the original is never changed. The model for each kind downloads from Hugging Face when you choose it, and runs on this computer.",
+ "contributes": {
+  "api": {"min": 8, "max": 8},
+  "screens": [{"id": "models", "title": "Enhance", "place": "settings"}]
+ }
+}
