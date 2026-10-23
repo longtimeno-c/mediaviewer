@@ -242,9 +242,9 @@ was committed on time and its answer comes later, so that rule would hide every 
 Here the msc steps count unless the *presentation* timestamps say only one refresh passed (a
 counter that ran on or changed output), and the timestamps overrule an msc that counted fewer
 refreshes than they did: Mutter steps a surface's counter by 1 whenever the driver gives it no
-vblank sequence, so a frame shown a refresh late could otherwise arrive one clean step on. An idle gap never reaches a delta: the lab resets the
-window on each idle → live edge outside a soak, a soak never idles, and the first answer after a
-reset only seeds the counter.
+vblank sequence, so a frame shown a refresh late could otherwise arrive one clean step on. An
+idle gap never reaches a delta: the lab resets the window on each idle → live edge outside a
+soak, a soak never idles, and the first answer after a reset only seeds the counter.
 
 **Linux occlusion: a frame callback that does not come (2026-10-23, Linux PR 1).** A compositor
 sends no callbacks to a hidden surface, so a wait that times out after `k_occlusion_poll_ms`
@@ -849,11 +849,12 @@ amended 2026-09-24), and shared code takes no dependency a Linux host could not 
 
 Cost: a third half for every feature once Linux has caught up; Qt's QPA native interface is
 private API (Qt ≥ 6.5) and Qt may have to be bundled where the LTS distributions are older (22.04
-ships 6.2, 24.04 ships 6.4); QML cannot overlap the canvas ("airspace"), so whatever sits over it is its own
-child window; the swap chain's buffer count is the driver's, not ours. Open calls (video decode on
-NVIDIA, the audio clock, floor and architectures, channel and signing, Qt bundling, crash reports,
-Bluetooth, the catch-up order) are in the plan's §10. Reopen only if the Linux PR 1 gate cannot hold on Mutter and KWin,
-or Qt's subsurface cannot hold the PR 3 gate (then rule 2's island fallback applies, as on Windows).
+ships 6.2, 24.04 ships 6.4); QML cannot overlap the canvas ("airspace"), so whatever sits over it
+is its own child window; the swap chain's buffer count is the driver's, not ours. Open calls
+(video decode on NVIDIA, the audio clock, floor and architectures, channel and signing, Qt
+bundling, crash reports, Bluetooth, the catch-up order) are in the plan's §10. Reopen only if the
+Linux PR 1 gate cannot hold on Mutter and KWin, or Qt's subsurface cannot hold the PR 3 gate (then
+rule 2's island fallback applies, as on Windows).
 
 ---
 

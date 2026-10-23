@@ -1779,10 +1779,12 @@ Linux container with no GPU and no display (Ubuntu 24.04, GCC 13.3, Mesa 25.2 ll
 
 - **Checked (Linux container):** the root CMake build on Linux (RelWithDebInfo, and Debug with
   ASan + UBSan; imgui from `MV_IMGUI_SOURCE_DIR`, Catch2 from a prefix); `mv_tests` in both (the
-  portable suites, the new presentation-pacer and Linux report cases); `frametime_harness` (the
-  Linux harness against synthetic reports: pass, baseline, every failing shape); `linux_lab_smoke` with
-  Weston's GL renderer and once with pixman; the lab's soaks under ASan + UBSan, leak detection
-  on, with no report. Under headless Weston the lab maps its window, makes an OpenGL 4.5 core context on
+  portable suites, the new presentation-pacer and Linux report cases, KWin's seq-0 feedback and
+  Mutter's fallback counter among them); `frametime_harness` (the Linux harness against synthetic
+  reports: pass, baseline, every failing shape); `linux_lab_smoke` with Weston's GL renderer and
+  once with pixman, its swap-fault step included (one `eglSwapBuffers` failed mid-soak: 108–114
+  frames over 3.1 s against about 119, where the lab froze at 15 before the fix); the lab's soaks
+  under ASan + UBSan, leak detection on, with no report. Under headless Weston the lab maps its window, makes an OpenGL 4.5 core context on
   llvmpipe through EGL and an sRGB surface, presents, draws F3, and writes reports `frametime` parses:
   - animated 10 s (GL renderer): 387 frames, mean 25.8 ms, p99 43.4 ms, max 62.1 ms against an
     advertised 16.67 ms; feedback flags 0 and seq 0 on every frame, so `drop_source` "clock
