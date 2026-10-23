@@ -189,6 +189,21 @@ install(FILES "${_pkg}/completions/_driftwire" DESTINATION ${CMAKE_INSTALL_DATAD
 # firewalld's service for the beacon (firewall-cmd --add-service=driftwire).
 install(FILES "${_pkg}/firewalld/driftwire.xml" DESTINATION lib/firewalld/services)
 
+# A Debian-format changelog that points at the release page (Debian's policy
+# asks every package for one). Its date is SOURCE_DATE_EPOCH's when set, so a
+# rebuild of one commit is the same package.
+set(CPACK_PACKAGE_CONTACT "longtimeno-c <longtimeno-c@users.noreply.github.com>")
+string(TIMESTAMP MV_CHANGELOG_DATE "%a, %d %b %Y %H:%M:%S +0000" UTC)
+configure_file("${_pkg}/changelog.in" "${CMAKE_BINARY_DIR}/changelog" @ONLY)
+set(_changelog_gz "${CMAKE_BINARY_DIR}/changelog.gz")
+add_custom_command(OUTPUT "${_changelog_gz}"
+  COMMAND ${MV_GZIP} -9 -n -c "${CMAKE_BINARY_DIR}/changelog" > "${_changelog_gz}"
+  DEPENDS "${CMAKE_BINARY_DIR}/changelog"
+  COMMENT "changelog.gz"
+  VERBATIM)
+add_custom_target(driftwire_changelog ALL DEPENDS "${_changelog_gz}")
+install(FILES "${_changelog_gz}" DESTINATION ${CMAKE_INSTALL_DOCDIR})
+
 # The licences: the Debian copyright file (DEP-5: every component and its
 # notice), and the GPL text and NOTICE beside it for the rpm and the tarball.
 install(FILES "${_pkg}/copyright" DESTINATION ${CMAKE_INSTALL_DOCDIR})
@@ -209,7 +224,6 @@ set(CPACK_GENERATOR "DEB;RPM;TGZ")
 set(CPACK_PACKAGE_NAME driftwire)
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_VENDOR "longtimeno-c")
-set(CPACK_PACKAGE_CONTACT "longtimeno-c <longtimeno-c@users.noreply.github.com>")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
 # Wrapped by hand: a .deb's extended description is shown as written.
 set(CPACK_PACKAGE_DESCRIPTION
