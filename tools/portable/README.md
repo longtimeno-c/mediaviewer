@@ -12,9 +12,10 @@ clips with FFmpeg's own MPEG-4 and MP2 encoders; a headless build has no
 hardware encoder (`hwencode_none.cpp`), so Path 2 is driven through a test
 hook there. `mv_clip_tests "[bench]"` times a keyframe trim of a ~1 GB MP4
 (or `MV_CLIP_BENCH_FILE`). It is the shared core's test build, not a
-product build: MediaViewer ships on Windows and macOS (docs/design/12,
-2026-09-24). Linux's one product, the `driftwire` command line, is packaged by
-its own project, `cmake/driftwire-cli` (docs/design/12, 2026-10-23;
+product build: MediaViewer ships on Windows and macOS today (docs/design/12,
+2026-09-24), and Linux is to be a third host (D9 as the owner amended it on
+2026-10-23). Linux's first product, the `driftwire` command line, is packaged
+by its own project, `cmake/driftwire-cli` (docs/design/12, 2026-10-23;
 docs/DEVELOPMENT.md "Linux packages").
 
 ```

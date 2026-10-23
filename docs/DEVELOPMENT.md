@@ -1181,12 +1181,18 @@ python3 -m unittest tools/package/test_addon_pack.py   # DriftwirePackTest among
 build/bin/mv_import_tests "[.driftwire-send]"    # #452: a sender on this machine (MV_SEND_FILE, MV_SEND_CODE_FILE or MV_SEND_HOLD)
 build/bin/mv_import_tests "[cli]"             # the driftwire command line: keys, the line editor, paths, render goldens, the live region, args, sessions over two engines, the program refusing a pipe
 build/bin/mv_import_tests "[cli][e2e]"        # POSIX: two mv_driftwire_cli_test programs in ptys, a code typed across
-# Linux: the Secret Service case runs against a keyring of its own (as CI's portable-core job):
-# a session bus, gnome-keyring unlocked with a NON-EMPTY password (an empty one makes no login
-# keyring), then MV_SECRET_SERVICE=required makes a skip a failure.
-export DBUS_SESSION_BUS_ADDRESS=$(dbus-daemon --session --fork --print-address=1)
-printf 'any-password' | gnome-keyring-daemon --unlock --components=secrets   # then wait until it owns org.freedesktop.secrets (ci.yml)
-MV_SECRET_SERVICE=required build-portable/bin/mv_import_tests "[driftwire]"
+# Linux: the Secret Service case runs against a keyring of its own (as CI's portable-core job),
+# in a throwaway home: --unlock makes the login keyring of $HOME with that password, or unlocks
+# the one there, so never run it in your own. A session bus, gnome-keyring unlocked with a
+# NON-EMPTY password (an empty one makes no login keyring), then MV_SECRET_SERVICE=required makes
+# a skip a failure. The subshell keeps your environment; the two daemons outlive it (kill them).
+(
+  export HOME=$(mktemp -d) XDG_RUNTIME_DIR=$(mktemp -d)
+  export XDG_DATA_HOME=$HOME/.local/share
+  export DBUS_SESSION_BUS_ADDRESS=$(dbus-daemon --session --fork --print-address=1)
+  printf 'any-password' | gnome-keyring-daemon --unlock --components=secrets   # then wait until it owns org.freedesktop.secrets (ci.yml)
+  MV_SECRET_SERVICE=required build-portable/bin/mv_import_tests "[driftwire]"
+)
 # #472 relays: a relay server of your own (built beside the add-on, never shipped with the app).
 # On a machine both ends reach (a VPS, or a home server with the port forwarded); then type
 # "<address or name>:47614#<key>" (it prints the key) in Driftwire's "Your own relay server (optional)" on
@@ -1816,8 +1822,8 @@ terminal"); the decisions are in [docs/design/12](design/12-decision-log.md#drif
     a terminal (exit 2) behaved, the session ran in a pty and closed on `/quit` (exit 0), `dpkg -r`
     removed it. `rpm -qpR` lists glibc's sonames only, `--recommends` libsecret. Built on glibc
     2.39 here, so these packages need 2.38; CI's Ubuntu 22.04 legs make the 2.35 ones.
-  - Idle (B2's measurement, `driftwire` in a pty, alternated with the engine's own
-    `[.driftwire-idle]`): 60 s idle, 10 ms of CPU (0.017 %), 6.0 context switches a second, 0
+  - Idle (measured 2026-10-23 at `2f9992c`, before the Linux ports merged: the RelWithDebInfo
+    `driftwire` in a pty, alternated with the engine's own `[.driftwire-idle]`): 60 s idle, 10 ms of CPU (0.017 %), 6.0 context switches a second, 0
     bytes written; the engine alone 7.4–8.2 ms in 20 s, 6.0–6.1 a second. No cost above the
     engine's.
 - **Compiled by CI only:** the Windows halves (`term_win.cpp`, `data_dir_win.cpp`, the UTF-8 argv

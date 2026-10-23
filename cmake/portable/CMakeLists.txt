@@ -7,9 +7,10 @@
 # command line), built and tested on Linux. It exists so CI proves the shared
 # engine on every pull request without a Windows or Mac runner, and so a
 # contributor on any POSIX machine can run the Import tests. It is not a
-# product build: MediaViewer ships on Windows and macOS only (D9), and the one
-# Linux product, the driftwire command line, is packaged by
-# cmake/driftwire-cli (docs/design/12, 2026-10-23).
+# product build: MediaViewer ships on Windows and macOS today (Linux is to be
+# a third host, D9 as the owner amended it on 2026-10-23), and Linux's first
+# product, the driftwire command line, is packaged by cmake/driftwire-cli
+# (docs/design/12, 2026-10-23).
 #
 #   cmake -S cmake/portable -B build-portable
 #   cmake --build build-portable && ctest --test-dir build-portable
