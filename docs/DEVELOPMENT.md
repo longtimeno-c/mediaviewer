@@ -336,7 +336,8 @@ in a Wayland session only; it exits 2 without `WAYLAND_DISPLAY` (X11 is not buil
 ```
 
 `frametime` on Linux requires `drop_source` `Wayland presentation feedback`, which only feedback
-with `VSYNC` and `HW_CLOCK` and a moving vblank counter earns; headless Weston's is labelled
+with `VSYNC` and `HW_CLOCK` and a refresh count (an msc, or KWin's hardware timestamps over a
+constant refresh) earns; headless Weston's is labelled
 `clock intervals (weaker)` and fails, as it must. `--baseline` / `--update-baseline` work as on
 Windows. For the gate, run it in a real session on a quiet machine with the display awake
 (`systemd-inhibit --what=idle:sleep:handle-lid-switch ./build-linux/bin/frametime --seconds 60`)

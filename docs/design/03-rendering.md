@@ -132,8 +132,9 @@ on a `wl_surface` C++ owns; never a toolkit's frame clock. No GLES fallback, no 
   `suspended` state makes the window not visible in the snapshot.
 - **The gate's truth** ([`src/gfx/presentation_pacer.cpp`](../../src/gfx/presentation_pacer.cpp)).
   Each feedback answer is joined to the frame it is for. Authoritative only with `VSYNC` and
-  `HW_CLOCK` and a vblank counter (msc): an msc step of n is n − 1 missed refreshes, `discarded` is a
-  dropped frame. Timestamps stay in the compositor's `clock_id` domain and are only differenced;
+  `HW_CLOCK` and a way to count refreshes: a step of n refreshes is n − 1 missed, counted by the
+  vblank counter (msc) or, where the compositor sends seq 0 with both flags (KWin always does), by
+  the hardware timestamps over the constant refresh; `discarded` is a dropped frame. Timestamps stay in the compositor's `clock_id` domain and are only differenced;
   intervals and springs are on `CLOCK_MONOTONIC`. The report is labelled "Wayland presentation
   feedback"; anything weaker is "clock intervals (weaker)" and cannot pass. Headless Weston gives
   flags 0 and seq 0, so it proves the plumbing, never pacing.

@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Linux frame-time harness (Linux PR 1). Same schema-2 JSON as Windows and the
 // Mac; the gate requires drop_source "Wayland presentation feedback", which
-// only feedback with VSYNC and HW_CLOCK and a moving vblank counter earns. A
-// DXGI or Metal report cannot pass, and neither can headless Weston's.
+// only feedback with VSYNC and HW_CLOCK and a refresh count (a vblank counter,
+// or KWin's hardware timestamps over a constant refresh) earns. A DXGI or
+// Metal report cannot pass, and neither can headless Weston's.
 
 #include <fcntl.h>
 #include <signal.h>

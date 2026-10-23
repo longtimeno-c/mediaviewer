@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Linux PR 1's pacer arithmetic. No compositor: the Linux lab feeds it
 // wp_presentation feedback; this file checks the counters a 60 s soak is judged
-// by, including what headless Weston's flags-0, seq-0 feedback must come to.
+// by, including what headless Weston's flags-0, seq-0 feedback must come to and
+// what KWin's seq-0 feedback with both flags counts as.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -30,6 +31,14 @@ mv::gfx::presentation_sample presented(std::uint64_t id, std::uint64_t msc,
   s.flags = flags;
   s.refresh_ns = k60_ns;
   s.timestamp_ns = 1'000'000'000ull + msc * k60_ns;
+  return s;
+}
+
+// KWin's answer (Plasma 6): VSYNC, HW_CLOCK and HW_COMPLETION, the refresh, a
+// hardware timestamp at refresh `index`, and seq 0 on every one.
+mv::gfx::presentation_sample kwin(std::uint64_t id, std::uint64_t index) {
+  auto s = presented(id, index);
+  s.msc = 0;
   return s;
 }
 
@@ -139,13 +148,70 @@ TEST_CASE("feedback without VSYNC, HW_CLOCK or a vblank counter is weaker and ca
     REQUIRE(std::string(mv::gfx::presentation_drop_source_label(stats.source)) ==
             "clock intervals (weaker)");
   }
-  // Both flags, but seq 0: no vblank counter, nothing to count steps with.
+  // Both flags and seq 0, but refresh 0 (a variable-rate output under v1):
+  // neither a counter nor a constant refresh to count steps with.
   mv::gfx::presentation_pacer pacer;
   pacer.begin_session(k60);
   commit(pacer, 1, 3);
-  for (std::uint64_t id = 1; id <= 3; ++id) pacer.on_feedback(presented(id, 0));
+  for (std::uint64_t id = 1; id <= 3; ++id) {
+    auto s = kwin(id, 7 + id);
+    s.refresh_ns = 0;
+    pacer.on_feedback(s);
+  }
   REQUIRE(pacer.stats().source == mv::gfx::presentation_drop_source::interval_heuristic);
   REQUIRE(pacer.stats().displayed_presents == 0);
+}
+
+TEST_CASE("KWin's seq 0 feedback is counted by its hardware clock and can pass",
+          "[gfx][presentation_pacer]") {
+  // Every answer from KWin: both flags, the refresh, and seq_hi = seq_lo = 0.
+  mv::gfx::presentation_pacer pacer;
+  pacer.begin_session(k60);
+  for (std::uint64_t id = 1; id <= 120; ++id) {
+    commit(pacer, id, 1);
+    auto s = kwin(id, 500 + id);
+    // A few microseconds of scanout jitter round away.
+    s.timestamp_ns += (id % 3) * 4'000;
+    pacer.on_feedback(s);
+  }
+  auto stats = pacer.stats();
+  REQUIRE(stats.frames == 119);
+  REQUIRE(stats.displayed_presents == 119);
+  REQUIRE(stats.dropped_frames == 0);
+  REQUIRE(stats.missed_refreshes == 0);
+  REQUIRE(stats.statistics_unavailable_frames == 0);
+  REQUIRE(stats.statistics_discontinuities == 0);
+  REQUIRE(stats.source == mv::gfx::presentation_drop_source::presentation_feedback);
+
+  // Frame 3 was shown two refreshes after frame 2: one miss.
+  mv::gfx::presentation_pacer gap;
+  gap.begin_session(k60);
+  commit(gap, 1, 5);
+  const std::uint64_t index[] = {10, 11, 13, 14, 15};
+  for (std::uint64_t id = 1; id <= 5; ++id) gap.on_feedback(kwin(id, index[id - 1]));
+  stats = gap.stats();
+  REQUIRE(stats.displayed_presents == 4);
+  REQUIRE(stats.dropped_frames == 1);
+  REQUIRE(stats.missed_refreshes == 1);
+  REQUIRE(stats.source == mv::gfx::presentation_drop_source::presentation_feedback);
+}
+
+TEST_CASE("with no msc, two presents in one refresh or a counter that comes and goes is a "
+          "discontinuity",
+          "[gfx][presentation_pacer]") {
+  mv::gfx::presentation_statistics tracker;
+  REQUIRE(tracker.observe(kwin(1, 10)).baseline);
+  REQUIRE(tracker.observe(kwin(2, 11)).valid);
+  auto same = kwin(3, 11);
+  same.timestamp_ns += 2'000'000;  // 2 ms on: under half a refresh
+  REQUIRE(tracker.observe(same).discontinuity);
+  REQUIRE(tracker.observe(kwin(4, 13)).valid);
+
+  // An msc where there was none, then none again: the source changed.
+  REQUIRE(tracker.observe(presented(5, 14)).discontinuity);
+  REQUIRE(tracker.observe(presented(6, 15)).valid);
+  REQUIRE(tracker.observe(kwin(7, 16)).discontinuity);
+  REQUIRE(tracker.observe(kwin(8, 17)).valid);
 }
 
 TEST_CASE("a weaker source fails the gate whatever its numbers", "[gfx][presentation_pacer]") {

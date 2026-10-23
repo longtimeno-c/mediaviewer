@@ -595,8 +595,8 @@ void present_lab_linux::draw_overlay(const input_snapshot& snapshot) noexcept {
               static_cast<unsigned long long>(stats.statistics_unavailable_frames));
   if (stats.source == gfx::presentation_drop_source::interval_heuristic) {
     ImGui::TextColored(ImVec4(1.0f, 0.62f, 0.2f, 1.0f),
-                       "weaker: the compositor's feedback has no VSYNC + HW_CLOCK and vblank "
-                       "count; pacing cannot be judged here");
+                       "weaker: some frames had no VSYNC + HW_CLOCK answer to count refreshes "
+                       "from; pacing cannot be judged here");
   }
   if (device_rebuilds_ > 0) {
     ImGui::Text("device    rebuilt %llu time(s) after a GPU reset",

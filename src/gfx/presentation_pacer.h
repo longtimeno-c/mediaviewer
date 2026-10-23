@@ -32,7 +32,7 @@ namespace mv::gfx {
 
 enum class presentation_drop_source : std::uint8_t {
   none,
-  presentation_feedback,  // authoritative: wp_presentation, VSYNC + HW_CLOCK, a moving msc
+  presentation_feedback,  // authoritative: wp_presentation, VSYNC + HW_CLOCK, refreshes counted
   interval_heuristic,     // inferred from clock intervals; weaker, and labelled so
 };
 
@@ -57,24 +57,32 @@ struct presentation_sample {
 struct presentation_display_sample {
   bool valid = false;          // authoritative and a delta from the previous present
   bool baseline = false;       // authoritative, but the first of the window
-  bool discontinuity = false;  // msc went backwards, stood still or jumped > 1000
+  bool discontinuity = false;  // the refresh count went backwards, stood still or jumped > 1000
   bool discarded = false;
   std::uint32_t presents = 0;
-  std::uint32_t missed_refreshes = 0;  // Δmsc − 1
+  std::uint32_t missed_refreshes = 0;  // refreshes since the previous present − 1
   double presented_interval_ms = 0.0;  // this present − the previous, presentation clock
 };
 
 // True when a sample can count: the compositor says the timestamp is the
-// vblank (VSYNC) taken from the hardware (HW_CLOCK) and it has a vblank
-// counter. Headless Weston reports flags 0 and seq 0: never authoritative.
+// vblank (VSYNC) taken from the hardware (HW_CLOCK), and the refreshes between
+// two presents can be counted, by its vblank counter (msc) or, with none, by
+// those hardware timestamps over a constant refresh. KWin sends seq 0 on every
+// answer, with both flags and the refresh (Plasma 6, presentationtime.cpp).
+// Headless Weston reports flags 0 and seq 0: never authoritative. Nor is seq 0
+// with refresh 0 (a variable-rate output under presentation v1).
 [[nodiscard]] inline bool presentation_authoritative(const presentation_sample& s) noexcept {
   const std::uint32_t need = k_presentation_vsync | k_presentation_hw_clock;
-  return s.presented && (s.flags & need) == need && s.msc != 0;
+  return s.presented && (s.flags & need) == need && (s.msc != 0 || s.refresh_ns != 0);
 }
 
 // Consecutive presented msc values are the Wayland analog of DXGI's
 // PresentRefreshCount: a step of 1 is a clean present, 2 is one miss. A rewind,
 // a repeat or a > 1000-refresh jump is a discontinuity, not a drop.
+//
+// Where the compositor sends no msc (KWin), the hardware timestamps count the
+// refreshes instead: round(Δt / refresh). A counter that appears or goes away
+// mid-window is a discontinuity.
 class presentation_statistics {
  public:
   presentation_display_sample observe(const presentation_sample& sample) noexcept;
@@ -82,6 +90,7 @@ class presentation_statistics {
 
  private:
   bool have_previous_ = false;
+  bool last_had_msc_ = false;
   std::uint64_t last_msc_ = 0;
   std::uint64_t last_timestamp_ns_ = 0;
 };

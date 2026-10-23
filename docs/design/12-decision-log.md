@@ -230,7 +230,11 @@ is only the first guess.
 **Linux: the msc counts misses, the presentation clock reconciles (2026-10-23, Linux PR 1).** A
 presented answer with `VSYNC` and `HW_CLOCK` and a vblank counter is authoritative: an msc step of
 n is n − 1 missed refreshes, a `discarded` commit is a dropped frame, a rewind or a jump over 1000
-is a discontinuity. Anything else (headless Weston's flags 0 and seq 0) is judged by the clock and
+is a discontinuity. KWin sends seq 0 on every answer, with both flags and the refresh (Plasma 6.0
+to 6.4 and master, `presentationtime.cpp`); there the hardware timestamps count the refreshes,
+round(Δt / refresh), or the verify line's second compositor could never pass. Seq 0 with refresh 0
+counts nothing, and a counter that comes or goes mid-window is a discontinuity. Anything else
+(headless Weston's flags 0 and seq 0) is judged by the clock and
 labelled weaker, and so is a frame whose answer never came (counted when the window closes, after
 a bounded 100 ms wait). The idle-gap rule differs from DXGI's and the display link's: they zero
 misses when the *application's* interval is under 1.5 refreshes, but a Wayland frame shown late

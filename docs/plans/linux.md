@@ -68,7 +68,8 @@ Shared, unchanged: `codec/`, `image/` colour, `edit/` op graph, `meta/`, `canvas
   sampling input and stepping springs, with a timeout. Idle: commit nothing (0 presents, ~0 % CPU).
   `eglSwapInterval(1)` would block inside the swap, after recording, so it is never used.
 - **The gate's truth**: `wp_presentation_feedback.presented` (timestamp in its `clock_id` domain,
-  refresh, msc, flags). Authoritative only with `VSYNC` and `HW_CLOCK` and a moving msc; a
+  refresh, msc, flags). Authoritative only with `VSYNC` and `HW_CLOCK` and a refresh count: the
+  msc, or the hardware timestamps over a constant refresh where the msc is 0 (KWin); a
   `discarded` frame is dropped. Headless Weston reports neither flag, so it can prove plumbing,
   never pacing.
 - **Uploads from workers**: each decode worker has a surfaceless EGL context shared with the

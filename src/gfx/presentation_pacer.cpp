@@ -61,22 +61,29 @@ presentation_display_sample presentation_statistics::observe(
     have_previous_ = false;
     return out;
   }
+  const bool has_msc = sample.msc != 0;
   if (!have_previous_) {
     out.baseline = true;
-  } else if (sample.msc <= last_msc_ || sample.timestamp_ns < last_timestamp_ns_) {
+  } else if (has_msc != last_had_msc_ || (has_msc && sample.msc <= last_msc_) ||
+             sample.timestamp_ns < last_timestamp_ns_) {
     out.discontinuity = true;
   } else {
-    const std::uint64_t steps = sample.msc - last_msc_;
-    if (steps > 1000) {
+    const std::uint64_t elapsed_ns = sample.timestamp_ns - last_timestamp_ns_;
+    // Refreshes by the hardware clock, rounded; 0 with no constant refresh.
+    const std::uint64_t clock_steps =
+        sample.refresh_ns > 0 ? (elapsed_ns + sample.refresh_ns / 2) / sample.refresh_ns : 0;
+    const std::uint64_t steps = has_msc ? sample.msc - last_msc_ : clock_steps;
+    if (steps == 0 || steps > 1000) {
+      // Two presents in one refresh (no msc to say otherwise), or a jump.
       out.discontinuity = true;
     } else {
       out.valid = true;
       out.presents = 1;
       out.missed_refreshes = static_cast<std::uint32_t>(steps - 1);
-      out.presented_interval_ms =
-          static_cast<double>(sample.timestamp_ns - last_timestamp_ns_) / 1.0e6;
+      out.presented_interval_ms = static_cast<double>(elapsed_ns) / 1.0e6;
     }
   }
+  last_had_msc_ = has_msc;
   last_msc_ = sample.msc;
   last_timestamp_ns_ = sample.timestamp_ns;
   have_previous_ = true;
@@ -247,7 +254,7 @@ void presentation_pacer::on_feedback(const presentation_sample& sample) noexcept
                                            display.presented_interval_ms,
                                            refresh_seconds_ * 1000.0));
   } else {
-    // Not authoritative (no VSYNC / HW_CLOCK, no vblank counter), a
+    // Not authoritative (no VSYNC / HW_CLOCK, no way to count refreshes), a
     // discontinuity, or the first authoritative present after one: the
     // display cannot judge this frame, so the clock does, and says so.
     count_unavailable(frame);
