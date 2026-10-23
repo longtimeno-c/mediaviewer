@@ -899,3 +899,55 @@ TEST_CASE("driftwire cli session: --save-to is for this run; the kept folder com
   CHECK(after->internet);
   CHECK(after->destination == utf8(s / "kept"));
 }
+
+TEST_CASE("driftwire cli session: closed mid-receive, the next session says what stopped part way",
+          "[driftwire][cli]") {
+  scratch_dir s("driftwire_cli_unfinished");
+  bus b;
+  const fs::path f = s / "out" / "big.mov";
+  write_bytes(f, pattern(24 * 1024 * 1024, 7));
+  // Both keep an identity and a data folder: a receive cut off by closing
+  // is kept to resume (#530) only from a sender that says who it is.
+  auto ao = bus_opts(b, "Ann", s / "ann");
+  ao.connect_wifi = [](const sp::net::endpoint& to, int ms) -> mv::result<std::unique_ptr<sp::link>> {
+    auto l = sp::net::connect(to, ms);
+    if (!l) return mv::err(l.error());
+    return std::unique_ptr<sp::link>(std::make_unique<slow_link>(std::move(*l)));
+  };
+  cli_side ann(s / "ann_received");
+  ann.start(std::move(ao), session_opts(s.root()));
+  {
+    cli_side bea(s / "bea_received");
+    bea.start(bus_opts(b, "Bea", s / "bea"), session_opts(s.root()));
+    REQUIRE(ann.screen_shows("Bea"));
+    type_line(ann, utf8(f));
+    REQUIRE(ann.screen_shows("1 file"));
+    ann.con.type("\r");
+    const std::string code = code_on(bea);
+    REQUIRE(code.size() == 6);
+    ann.con.type_keys(code);
+    REQUIRE(bea.screen_shows("wants to send you 1 file"));
+    bea.con.type("y");
+    // A megabyte or more arrived ("3 MB of 25 MB", not "512 KB of ..."): something to keep.
+    REQUIRE(bea.screen_shows(" MB of 25 MB"));
+    // SIGTERM / the console closing while bytes move: the engine stops on
+    // the session's thread; what arrived waits to resume.
+    bea.con.quit();
+    CHECK(bea.wait_exit() == 0);
+    CHECK(has(bea.text(), "Closed during a transfer: it was cancelled."));
+  }
+  REQUIRE(ann.shows("Bea"));
+  cli_side bea2(s / "bea_received");
+  bea2.start(bus_opts(b, "Bea", s / "bea"), session_opts(s.root()));
+  REQUIRE(bea2.shows("1 receive stopped part way"));
+  type_line(bea2, "/unfinished");
+  REQUIRE(bea2.shows("1. From Ann: "));
+  type_line(bea2, "/discard 1");
+  REQUIRE(bea2.shows("Discarded what arrived from Ann"));
+  type_line(bea2, "/unfinished");
+  REQUIRE(bea2.shows("Nothing stopped part way."));
+  type_line(bea2, "/quit");
+  type_line(ann, "/quit");
+  CHECK(bea2.wait_exit() == 0);
+  CHECK(ann.wait_exit() == 0);
+}
