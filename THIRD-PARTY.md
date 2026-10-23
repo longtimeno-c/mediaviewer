@@ -99,14 +99,16 @@ packages on Linux, a CI artefact on Windows and macOS. It links:
 | Component | Version | Licence | Linkage | Notes |
 |---|---|---|---|---|
 | [FTXUI](https://github.com/ArthurSonzogni/FTXUI) | 7.0.3 | **MIT** | Static (vcpkg; its port builds static libraries only), all three platforms | Lays out and colours what the command line draws: the `dom` and `screen` libraries only, not `component`. Copyright (c) 2019 Arthur Sonzogni. |
-| [libsodium](https://libsodium.org) | 1.0.22 | ISC | Static on Linux and macOS; `libsodium.dll` beside `driftwire.exe` on Windows | The engine's cryptography (Noise, ML-KEM-768, CPace, the sealed channel), as in the add-on. Copyright (c) 2013-2026 Frank Denis; the ISC notice ships with it. |
+| [libsodium](https://libsodium.org) | 1.0.22 | ISC | Static on Linux and macOS; `libsodium.dll` beside `driftwire.exe` on Windows | The engine's cryptography (Noise, ML-KEM-768, CPace, the sealed channel), as in the add-on. Copyright (c) 2013-2026 Frank Denis; the ISC notice ships with every build (below). |
 | [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) | 1.8.7 | **CC0-1.0** (taken under CC0) | Static on Linux and macOS; `blake3.dll` on Windows | Each file's hash, as in the add-on. |
 | BIP 39 English word list | (above) | **MIT** | Compiled in (`src/addons/driftwire/wordlist.inc`) | Four-word codes, as in the add-on. |
 | GCC's `libstdc++` and `libgcc` | the build's GCC (12 in the packages) | GPL-3.0 with the GCC Runtime Library Exception 3.1 | Static on Linux (`-static-libstdc++ -static-libgcc`) | The exception covers it; nothing to ship. The program then needs only glibc. |
 
 The Linux packages carry every notice above in `/usr/share/doc/driftwire/copyright` (DEP-5,
 `packaging/linux/copyright`) and the GPL text and NOTICE in `/usr/share/licenses/driftwire/`; the
-Windows and macOS artefacts carry LICENSE, NOTICE and this file. Catch2 builds only its tests.
+Windows and macOS artefacts carry LICENSE, NOTICE, this file and the same notices as
+`COPYRIGHT.txt` (a copy of `packaging/linux/copyright`: the MIT, ISC and CC0 texts in full).
+Catch2 builds only its tests.
 
 ## Planned, with the PR that introduces each
 
