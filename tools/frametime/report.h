@@ -1,8 +1,9 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Schema-2 frame-time report parser. No DXGI, no Metal — both present labs
-// write the same keys. Unit tests cover Metal drop_source strings so a Darwin
-// report cannot fail to parse on a Windows box.
+// Schema-2 frame-time report parser. No DXGI, no Metal, no Wayland — the three
+// present labs write the same keys. Unit tests cover the Metal and Wayland
+// drop_source strings so a Darwin or Linux report cannot fail to parse on a
+// Windows box.
 #pragma once
 
 #include <cmath>
@@ -89,7 +90,7 @@ inline bool boolean(const std::string& json, const char* key, bool& out) {
 inline bool known_drop_source(const std::string& quoted) {
   return quoted == "\"DXGI frame statistics\"" || quoted == "\"QPC intervals (weaker)\"" ||
          quoted == "\"Metal display-link\"" || quoted == "\"clock intervals (weaker)\"" ||
-         quoted == "\"no data\"";
+         quoted == "\"Wayland presentation feedback\"" || quoted == "\"no data\"";
 }
 
 inline std::optional<report> parse(const std::string& json) {
@@ -190,6 +191,15 @@ inline bool passes_pr16(const report& r, bool static_run, double seconds) {
   return r.complete && r.meets_gate && r.static_run == static_run &&
          (static_run ? r.idle_elapsed_seconds : r.elapsed_seconds) >= seconds &&
          (static_run ? idle_gate(r) : cadence_gate(r, "Metal display-link"));
+}
+
+// Linux PR 1: the same gates, judged from wp_presentation feedback with VSYNC
+// and HW_CLOCK (gfx/presentation_pacer.h). Headless Weston's flags-0 feedback
+// is labelled "clock intervals (weaker)" and cannot pass.
+inline bool passes_linux_pr1(const report& r, bool static_run, double seconds) {
+  return r.complete && r.meets_gate && r.static_run == static_run &&
+         (static_run ? r.idle_elapsed_seconds : r.elapsed_seconds) >= seconds &&
+         (static_run ? idle_gate(r) : cadence_gate(r, "Wayland presentation feedback"));
 }
 
 }  // namespace mv::frametime

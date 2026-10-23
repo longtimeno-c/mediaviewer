@@ -1,10 +1,13 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Schema-2 frame-time JSON used by both present labs and by frametime.
+// Schema-2 frame-time JSON used by the present labs and by frametime.
 //
 // The Windows lab writes this from DXGI statistics; the Metal lab writes the
-// same keys with drop_source "Metal display-link". A parser that requires
-// DXGI-only source strings cannot certify PR 16.
+// same keys with drop_source "Metal display-link", and the Linux lab with
+// "Wayland presentation feedback". A parser that requires DXGI-only source
+// strings cannot certify Mac PR 1 or Linux PR 1. The writer is one template over
+// the pacer's stats, so the key list cannot drift between the two portable
+// labs; drop_source_label() is the only thing a pacer adds.
 #pragma once
 
 #include <cstddef>
@@ -13,13 +16,22 @@
 #include <string>
 
 #include "gfx/metal_pacer.h"
+#include "gfx/presentation_pacer.h"
 #include "gfx/present_policy.h"
 
 namespace mv::gfx {
 
-struct pace_json {
-  metal_pace_stats pace;
-  metal_idle_stats idle;
+[[nodiscard]] inline const char* drop_source_label(metal_drop_source s) noexcept {
+  return metal_drop_source_label(s);
+}
+[[nodiscard]] inline const char* drop_source_label(presentation_drop_source s) noexcept {
+  return presentation_drop_source_label(s);
+}
+
+template <class PaceStats, class IdleStats>
+struct basic_pace_json {
+  PaceStats pace;
+  IdleStats idle;
   bool static_run = false;
   bool measurement_complete = false;
   bool meets_gate = false;
@@ -31,7 +43,12 @@ struct pace_json {
   double still_full_s = -1.0;
 };
 
-inline std::string format_pace_json(const pace_json& r) {
+// The Metal lab's report (Mac PR 1) and the Linux lab's (Linux PR 1).
+using pace_json = basic_pace_json<metal_pace_stats, metal_idle_stats>;
+using presentation_pace_json = basic_pace_json<presentation_pace_stats, presentation_idle_stats>;
+
+template <class PaceStats, class IdleStats>
+inline std::string format_pace_json(const basic_pace_json<PaceStats, IdleStats>& r) {
   char buf[2048];
   const int n = std::snprintf(
       buf, sizeof(buf),
@@ -73,7 +90,7 @@ inline std::string format_pace_json(const pace_json& r) {
                static_cast<unsigned long long>(r.pace.statistics_discontinuities),
                r.pace.mean_ms, r.pace.p50_ms, r.pace.p99_ms, r.pace.max_ms,
                r.pace.cpu_mean_ms, r.pace.cpu_p99_ms, r.pace.cpu_max_ms,
-               metal_drop_source_label(r.pace.source),
+               drop_source_label(r.pace.source),
                static_cast<unsigned long long>(r.pace.statistics_unavailable_frames),
                static_cast<unsigned long long>(r.pace.displayed_presents),
                r.static_run ? "true" : "false",
@@ -87,7 +104,8 @@ inline std::string format_pace_json(const pace_json& r) {
   return std::string(buf, static_cast<std::size_t>(n));
 }
 
-inline bool write_pace_json(FILE* f, const pace_json& r) noexcept {
+template <class PaceStats, class IdleStats>
+inline bool write_pace_json(FILE* f, const basic_pace_json<PaceStats, IdleStats>& r) noexcept {
   if (!f) return false;
   const auto json = format_pace_json(r);
   if (json.empty()) return false;

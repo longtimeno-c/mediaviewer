@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Schema-2 JSON: the Metal lab must write a report frametime will accept, and
-// a DXGI report must not pass the PR 16 gate.
+// Schema-2 JSON: the Metal and Linux labs must write reports frametime will
+// accept, and no platform's report may pass another platform's gate.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -249,4 +249,148 @@ TEST_CASE("a half-written or impossible refinement block is malformed, not a pas
       mv::frametime::parse(windows_report_with(refine_block("1", "1", "1", "0", "5", "0", "-1.0", "1.0"))));
   REQUIRE_FALSE(
       mv::frametime::parse(windows_report_with(refine_block("1", "1", "1", "0", "5", "0", "0.0", "0.5"))));
+}
+
+// --- Linux PR 1: the Wayland presentation-feedback source -------------------
+
+namespace {
+
+mv::gfx::presentation_pace_json passing_linux_animated() {
+  mv::gfx::presentation_pace_json r;
+  r.pace.elapsed_seconds = 60.0;
+  r.pace.refresh_interval_ms = 16.666667;
+  r.pace.frames = 3600;
+  r.pace.displayed_presents = 3600;
+  r.pace.mean_ms = 16.666667;
+  r.pace.p50_ms = 16.666667;
+  r.pace.p99_ms = 16.7;
+  r.pace.max_ms = 16.7;
+  r.pace.source = mv::gfx::presentation_drop_source::presentation_feedback;
+  r.idle.elapsed_seconds = 60.0;
+  r.idle.cpu_percent = 0.2;
+  r.static_run = false;
+  r.measurement_complete = true;
+  r.meets_gate = true;
+  return r;
+}
+
+}  // namespace
+
+TEST_CASE("Linux schema-2 JSON round-trips and passes Linux PR 1 only",
+          "[frametime][linux_pr1]") {
+  const auto parsed = mv::frametime::parse(mv::gfx::format_pace_json(passing_linux_animated()));
+  REQUIRE(parsed);
+  REQUIRE(parsed->drop_source == "Wayland presentation feedback");
+  REQUIRE(parsed->frames == 3600);
+  REQUIRE(mv::frametime::passes_linux_pr1(*parsed, false, 60.0));
+  REQUIRE_FALSE(mv::frametime::passes(*parsed, false, 60.0));       // DXGI required
+  REQUIRE_FALSE(mv::frametime::passes_pr16(*parsed, false, 60.0));  // display link required
+  // And the other platforms' authoritative reports cannot pass Linux PR 1.
+  const auto metal = mv::frametime::parse(write_to_string(passing_metal_animated()));
+  REQUIRE(metal);
+  REQUIRE_FALSE(mv::frametime::passes_linux_pr1(*metal, false, 60.0));
+}
+
+TEST_CASE("headless Weston's report parses, is labelled weaker and fails Linux PR 1",
+          "[frametime][linux_pr1]") {
+  // What the smoke job under headless Weston sees: flags 0, seq 0, and a
+  // cadence slower than the advertised 60 Hz.
+  auto r = passing_linux_animated();
+  r.pace.source = mv::gfx::presentation_drop_source::interval_heuristic;
+  r.pace.displayed_presents = 0;
+  r.pace.statistics_unavailable_frames = 3600;
+  r.pace.mean_ms = 25.7;
+  r.meets_gate = false;
+  const auto parsed = mv::frametime::parse(mv::gfx::format_pace_json(r));
+  REQUIRE(parsed);
+  REQUIRE(parsed->drop_source == "clock intervals (weaker)");
+  REQUIRE_FALSE(parsed->meets_gate);
+  REQUIRE_FALSE(mv::frametime::passes_linux_pr1(*parsed, false, 60.0));
+  // Even if the lab had claimed a pass, the source decides.
+  r.meets_gate = true;
+  r.pace.mean_ms = 16.666667;
+  r.pace.displayed_presents = 3600;
+  r.pace.statistics_unavailable_frames = 0;
+  const auto claimed = mv::frametime::parse(mv::gfx::format_pace_json(r));
+  REQUIRE(claimed);
+  REQUIRE_FALSE(mv::frametime::passes_linux_pr1(*claimed, false, 60.0));
+}
+
+TEST_CASE("the Linux idle report is judged by the idle gate", "[frametime][linux_pr1]") {
+  mv::gfx::presentation_pace_json r;
+  r.static_run = true;
+  r.measurement_complete = true;
+  r.meets_gate = true;
+  r.idle.elapsed_seconds = 60.0;
+  r.idle.cpu_percent = 0.05;
+  const auto parsed = mv::frametime::parse(mv::gfx::format_pace_json(r));
+  REQUIRE(parsed);
+  REQUIRE(parsed->drop_source == "no data");
+  REQUIRE(mv::frametime::passes_linux_pr1(*parsed, true, 60.0));
+  r.idle.presents = 1;
+  const auto presented = mv::frametime::parse(mv::gfx::format_pace_json(r));
+  REQUIRE(presented);
+  REQUIRE_FALSE(mv::frametime::passes_linux_pr1(*presented, true, 60.0));
+}
+
+TEST_CASE("the Metal lab's report bytes do not move", "[frametime][pr16]") {
+  // pace_json.h became one writer for the Metal and Linux labs (2026-10-23).
+  // The Metal report is pinned to the bytes the Metal-only writer produced.
+  mv::gfx::pace_json r;
+  r.pace.elapsed_seconds = 60.25;
+  r.pace.refresh_interval_ms = 16.666667;
+  r.pace.frames = 3615;
+  r.pace.displayed_presents = 3614;
+  r.pace.dropped_frames = 1;
+  r.pace.missed_refreshes = 2;
+  r.pace.statistics_discontinuities = 3;
+  r.pace.statistics_unavailable_frames = 4;
+  r.pace.mean_ms = 16.7;
+  r.pace.p50_ms = 16.65;
+  r.pace.p99_ms = 17.25;
+  r.pace.max_ms = 33.4;
+  r.pace.cpu_mean_ms = 0.5;
+  r.pace.cpu_p99_ms = 0.95;
+  r.pace.cpu_max_ms = 1.25;
+  r.pace.source = mv::gfx::metal_drop_source::display_link;
+  r.idle.elapsed_seconds = 60.5;
+  r.idle.cpu_percent = 0.125;
+  r.idle.presents = 5;
+  r.idle.input_events = 6;
+  r.static_run = true;
+  r.measurement_complete = true;
+  r.meets_gate = false;
+  r.still_first_pixel_s = 0.25;
+  r.still_full_s = 0.5;
+  const char* expected =
+      "{\n"
+      "  \"schema\": 2,\n"
+      "  \"warmup_seconds_discarded\": 1.000,\n"
+      "  \"frames\": 3615,\n"
+      "  \"elapsed_seconds\": 60.250000,\n"
+      "  \"refresh_interval_ms\": 16.666667,\n"
+      "  \"dropped_frames\": 1,\n"
+      "  \"missed_refreshes\": 2,\n"
+      "  \"statistics_discontinuities\": 3,\n"
+      "  \"mean_ms\": 16.700000,\n"
+      "  \"p50_ms\": 16.650000,\n"
+      "  \"p99_ms\": 17.250000,\n"
+      "  \"max_ms\": 33.400000,\n"
+      "  \"cpu_mean_ms\": 0.500000,\n"
+      "  \"cpu_p99_ms\": 0.950000,\n"
+      "  \"cpu_max_ms\": 1.250000,\n"
+      "  \"drop_source\": \"Metal display-link\",\n"
+      "  \"statistics_unavailable_frames\": 4,\n"
+      "  \"displayed_presents\": 3614,\n"
+      "  \"static\": true,\n"
+      "  \"measurement_complete\": true,\n"
+      "  \"idle_elapsed_seconds\": 60.500000,\n"
+      "  \"idle_cpu_percent\": 0.125000,\n"
+      "  \"idle_presents\": 5,\n"
+      "  \"idle_input_events\": 6,\n"
+      "  \"still_first_pixel_s\": 0.250,\n"
+      "  \"still_full_s\": 0.500,\n"
+      "  \"meets_pr1_gate\": false\n"
+      "}\n";
+  REQUIRE(mv::gfx::format_pace_json(r) == expected);
 }
