@@ -650,8 +650,9 @@ struct session::impl {
            " remembers this computer too."});
       if (rem.at != remember_ui::step::show_check) rem = {};
     }
-    if (!v.remember_offer && prev.remember_offer && rem.at != remember_ui::step::none &&
-        rem.at != remember_ui::step::show_check) {
+    // The offer goes with the next transfer, and with it the sender's shown
+    // code (the engine clears it): the card goes too, Esc or not.
+    if (!v.remember_offer && prev.remember_offer && rem.at != remember_ui::step::none) {
       if (rem.at == remember_ui::step::type_check && !v.remembered) {
         say(tone::warning, rem.peer + " is not remembered: the code was wrong 3 times.");
       }

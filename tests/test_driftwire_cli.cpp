@@ -452,7 +452,15 @@ TEST_CASE("driftwire cli session: a send nearby, the code typed off the other sc
   REQUIRE(bea.screen_shows("type the code its window shows now"));
   bea.con.type_keys(check);
   REQUIRE(bea.shows("Remembered Ann."));
-  press_esc(ann);  // the shown code goes
+  // The shown code stays until Esc, or until the next transfer, which takes
+  // the engine's offer to remember (and the code) with it.
+  REQUIRE(ann.screen_shows("so it remembers this computer"));
+  ann.con.type("\r");  // the same file again
+  REQUIRE(ann.screen_shows("Type the code on Bea's screen"));
+  CHECK_FALSE(has(ann.con.screen(), "so it remembers this computer"));
+  press_esc(ann);  // and that send is cancelled
+  REQUIRE(ann.event("out ended"));
+  REQUIRE(bea.event("in ended"));
 
   type_line(ann, "/devices");
   REQUIRE(ann.shows("1. Bea"));
