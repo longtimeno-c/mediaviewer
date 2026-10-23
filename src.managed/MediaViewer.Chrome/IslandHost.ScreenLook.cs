@@ -289,12 +289,30 @@ public static partial class IslandHost
     {
         if (!ScreenIdsOf.TryGetValue(content, out var ids)) return;
         PendingPlaces.AddOrUpdate(content, new PendingPlace(place));
+        // Focusing a control scrolls it into view: the focus put back on a toggle
+        // near the bottom pulled a person who had scrolled up to the transfer back
+        // down on every state change. The refocused control does not ask to be
+        // brought into view (handled at its source, before any ScrollViewer on the
+        // way up acts on it); the kept offsets are the place.
+        var stay = new Windows.Foundation.TypedEventHandler<UIElement, BringIntoViewRequestedEventArgs>((_, args) => args.Handled = true);
         void Apply(object sender, RoutedEventArgs e)
         {
             content.Loaded -= Apply;
             PendingPlaces.Remove(content);
+            Control? refocused = null;
             try
             {
+                if (place.FocusId is { } fid && ids.TryGetValue(fid, out FrameworkElement? target))
+                {
+                    Control? c = ScreenControls(target).Skip(Math.Max(0, place.FocusIndex)).FirstOrDefault()
+                                 ?? ScreenControls(target).FirstOrDefault();
+                    if (c is { IsEnabled: true })
+                    {
+                        refocused = c;
+                        c.BringIntoViewRequested += stay;
+                        c.Focus(place.FocusHow);
+                    }
+                }
                 foreach ((string id, double offset) in place.Offsets)
                 {
                     if (ids.TryGetValue(id, out FrameworkElement? el) && el is ScrollViewer sv)
@@ -303,16 +321,19 @@ public static partial class IslandHost
                         sv.ChangeView(null, offset, null, disableAnimation: true);
                     }
                 }
-                if (place.FocusId is { } fid && ids.TryGetValue(fid, out FrameworkElement? target))
-                {
-                    Control? c = ScreenControls(target).Skip(Math.Max(0, place.FocusIndex)).FirstOrDefault()
-                                 ?? ScreenControls(target).FirstOrDefault();
-                    if (c is { IsEnabled: true }) c.Focus(place.FocusHow);
-                }
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine(ex.Message);
+            }
+            // A request the focus raised from the next layout pass is still the
+            // restore's; one from the person after that scrolls as usual.
+            if (refocused is null) return;
+            if (refocused.DispatcherQueue is not { } queue ||
+                !queue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+                                  () => refocused.BringIntoViewRequested -= stay))
+            {
+                refocused.BringIntoViewRequested -= stay;
             }
         }
         content.Loaded += Apply;

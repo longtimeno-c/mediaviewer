@@ -1573,6 +1573,11 @@ bool slot_registry::keeping_alive() const {
   return !keep_.empty();
 }
 
+std::string slot_registry::busy_what() const {
+  std::lock_guard lock(m_);
+  return busy_.empty() ? std::string() : busy_.begin()->second;
+}
+
 std::string slot_registry::notices_json() const {
   std::lock_guard lock(m_);
   json::writer w;
