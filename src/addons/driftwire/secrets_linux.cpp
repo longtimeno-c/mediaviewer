@@ -204,12 +204,16 @@ class secret_service final : public store {
                           key_);
     std::string text(sodium_base64_ENCODED_LEN(sealed.size(), sodium_base64_VARIANT_ORIGINAL), '\0');
     sodium_bin2base64(text.data(), text.size(), sealed.data(), sealed.size(), sodium_base64_VARIANT_ORIGINAL);
+    // The key is no secret (it comes from a constant), so the sealed bytes
+    // are wiped as the value would be (#501), as DPAPI's are on Windows.
+    sodium_memzero(sealed.data(), sealed.size());
     const std::string label = service_ + " " + name;
     int stored = 0;
     const bool ok = bounded(a_, [&](void* c, g_error** e) {
       stored = a_.store(&kSchema, "default", label.c_str(), text.c_str(), c, e, "service", service_.c_str(), "name",
                         name.c_str(), static_cast<const char*>(nullptr));
     });
+    sodium_memzero(text.data(), text.size());
     return ok && stored != 0;
   }
 
@@ -248,10 +252,10 @@ class secret_service final : public store {
       return std::nullopt;
     }
     std::vector<std::uint8_t> plain(n - crypto_secretbox_NONCEBYTES - crypto_secretbox_MACBYTES);
-    if (crypto_secretbox_open_easy(plain.data(), sealed.data() + crypto_secretbox_NONCEBYTES,
-                                   n - crypto_secretbox_NONCEBYTES, sealed.data(), key_) != 0) {
-      return std::nullopt;  // not sealed by Driftwire under this service: refused
-    }
+    const bool opened = crypto_secretbox_open_easy(plain.data(), sealed.data() + crypto_secretbox_NONCEBYTES,
+                                                   n - crypto_secretbox_NONCEBYTES, sealed.data(), key_) == 0;
+    sodium_memzero(sealed.data(), sealed.size());
+    if (!opened) return std::nullopt;  // not sealed by Driftwire under this service: refused
     return plain;
   }
 

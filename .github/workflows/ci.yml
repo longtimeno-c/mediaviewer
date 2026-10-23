@@ -280,6 +280,13 @@ jobs:
           if addr=$(dbus-daemon --session --fork --print-address=1 2>/dev/null) && [ -n "$addr" ]; then
             export DBUS_SESSION_BUS_ADDRESS="$addr"
             printf 'driftwire-ci' | timeout 20 gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1 || true
+            # Until it holds the service's name: a call before that would start a
+            # second daemon through D-Bus activation, one with no keyring unlocked.
+            for _ in $(seq 50); do
+              dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+                org.freedesktop.DBus.NameHasOwner string:org.freedesktop.secrets 2>/dev/null | grep -q 'boolean true' && break
+              sleep 0.1
+            done
             if printf 'probe' | timeout 20 secret-tool store --label='CI probe' mv-ci probe 2>/dev/null &&
               [ "$(timeout 20 secret-tool lookup mv-ci probe 2>/dev/null)" = probe ]; then
               timeout 20 secret-tool clear mv-ci probe 2>/dev/null || true
