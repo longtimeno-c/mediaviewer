@@ -202,10 +202,15 @@ struct client {
   sp::engine eng;
   // `secrets`: a folder for the secret store (Remember, #472 PR 4); empty: none.
   // `data`: the add-on's data folder (prefs, #530's unfinished receives); empty: none.
+  // `tweak`: changes the engine's options last (#540: the bench's stage timers).
   client(bus& b, const fs::path& received, const std::string& name, const fs::path& secrets = {},
-         const fs::path& data = {})
-      : host(received), eng(host, options(b, name, secrets, data)) {
+         const fs::path& data = {}, const std::function<void(sp::engine::options&)>& tweak = {})
+      : host(received), eng(host, tweaked(options(b, name, secrets, data), tweak)) {
     eng.screen_opened("");
+  }
+  static sp::engine::options tweaked(sp::engine::options o, const std::function<void(sp::engine::options&)>& tweak) {
+    if (tweak) tweak(o);
+    return o;
   }
   static sp::engine::options options(bus& b, const std::string& name, const fs::path& secrets = {},
                                      const fs::path& data = {}) {

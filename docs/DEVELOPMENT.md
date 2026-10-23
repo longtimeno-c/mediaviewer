@@ -1135,7 +1135,14 @@ python3 tools/package/addon-pack.py pack --addon places --platform macos --src b
 # Driftwire (docs/design/28): build/addons/driftwire/(lib)mv_driftwire.(dylib|dll)
 cmake --build build --target mv_driftwire
 build/bin/mv_import_tests "[driftwire]"       # wire, Noise (Cacophony vectors), channel, protocol 2's session (rejoin, resume, Bluetooth <-> Wi-Fi), 2-3 engines over loopback TCP, codes, the DHT, remembered devices (a folder stands in for the Keychain), privacy (#501), the add-on through the loader
-build/bin/mv_import_tests "[.driftwire-bench]"   # MB/s against a plain copy over loopback (MV_BENCH_DIR, _BIG_MB, _SMALL, _SMALL_KB, _CASES)
+build/bin/mv_import_tests "[.driftwire-bench]"   # MB/s against a plain copy over loopback, and each side's stages (MV_BENCH_DIR, _BIG_MB, _SMALL, _SMALL_KB, _CASES, _STAGES=0 for no timers)
+# #540: a transfer between two machines, no app (built beside the add-on, never shipped). The receiver
+# measures its disk, prints a secret, and removes what it received after each run (--keep leaves it).
+build/bin/mv-driftwire-bench receive --runs 6 --json driftwire-lan.jsonl --label gige    # --port 54540 --dir D --disk-check-mb 1024
+iperf3 -s                                                                                # on the receiver too, for --iperf3
+build/bin/mv-driftwire-bench send <receiver IP> 54540 <secret> --set big --iperf3 --runs 2 --json driftwire-lan.jsonl --label gige
+#   --set big (1 x --big-mb, default 8192) | small (500 x 2 MiB) | tiny (5,000 x 200 KiB) | <a folder>; --fixture D keeps the set
+#   --iperf3-streams N (default 4), or --line-mb-s X for a reference measured some other way
 build/bin/mv_import_tests "[.driftwire-stream-bench]"   # #529: the DHT stream over emulated internet paths, a JSON line per profile (MV_STREAM_BENCH_S, _PROFILES, _SEED, _TRACE=1 for the sender's state every 100 ms)
 build/bin/mv_import_tests "[.driftwire-idle]"    # CPU while Keep receiving is on, window closed (MV_IDLE_SECONDS)
 python3 -m unittest tools/package/test_addon_pack.py   # DriftwirePackTest among them
@@ -2391,6 +2398,31 @@ open -n --env HOME=<scratch>/home --env MV_DEV_ADDONS_DIR=<scratch>/addons \
 
 Every name in the test add-on is "Slots test"; nothing in it looks like Places. Quit the dev
 copy when done.
+### Driftwire speed harness (issue #540 step 1, part 1, 2026-10-22)
+
+What is built is in [docs/design/28](design/28-driftwire.md) ("Where the time goes"): per-stage
+timers on each side of a transfer (`stages.h`), printed by `[.driftwire-bench]`, and
+`mv-driftwire-bench` (`tools/driftwire-bench`) for two machines.
+
+- **Measured, Windows only** (one laptop, Release, Ninja/MSVC): `"[driftwire]"` passes, 164
+  cases, the new stage-timer case among them. `mv-driftwire-bench` between two processes over
+  loopback, 1 GiB / 500 × 2 MiB / 5,000 × 200 KiB, two runs each:
+  `docs/perf/driftwire-lan.jsonl` (label `loopback-2proc`; the sender's `run` counts within one
+  invocation, the receiver's across them). 264–299, 113–124 and 29–31 MB/s. The receiver's
+  verification is the limit on many files (5,000 files: the link loop waits for a verifier 67 %
+  of the time; ~3.5 ms flush, ~1.3 ms read-back and ~1 ms rename a file). A wrong secret is
+  refused at the handshake and the receiver goes on.
+- **No regression, as far as this machine shows:** `[.driftwire-bench]` base and new alternated
+  with the order rotated, 6 rounds of 1 GiB (base 122–314 MB/s, new without timers 146–310, new
+  with timers 144–262) and 4 of 500 × 2 MiB (base 129–145, new without timers 103–143). The ranges
+  overlap; the 1 GiB case is bound by the receiver's flush and swings 2.5× run to run on this SSD,
+  so a few-percent cost would not show. The app never sets the timers.
+- **Not measured:** two real machines (Wi-Fi, Ethernet, Thunderbolt, an internet path), iperf3
+  (not installed here), the 8 GiB set (the disk here had ~6 GB free), the Mac (the tool and the
+  timers are portable code, not built on a Mac in this change), the PR 1 gates.
+- **Not built yet (rest of step 1):** the emulated internet paths for TCP with 1, 2, 4 and 8
+  connections (`tests/driftwire_path.h` is UDP only), and a real long path.
+
 ### Driftwire speed, time left and resume (issues #529, #530, 2026-10-21)
 
 What is built is in [docs/design/28](design/28-driftwire.md) ("The stream", "Resuming a receive
