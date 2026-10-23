@@ -120,7 +120,7 @@ network at all it says so and waits, as the window does: a network can come up.
   characters, its dots travelling toward the receiver while bytes move and frozen with
   "reconnecting…", over a gradient bar in eighth blocks and the window's stats line (`eta.h`, the
   bytes and times formatted as `tree.cpp` does). It animates only while something waits or moves
-  (at most 15 frames a second); idle, its loop blocks. Names are cut by display width with `…`;
+  (about 12 frames a second); idle, its loop blocks. Names are cut by display width with `…`;
   under 40 columns the code is plain digits. `NO_COLOR` or `--no-color` drops colour; `--plain`,
   or `TERM=dumb`, is lines only with no escape sequence at all and questions as lines ("Accept 24
   files (412 MB) from Ann's MacBook? [y/N/s]"), for screen readers and dumb terminals.
