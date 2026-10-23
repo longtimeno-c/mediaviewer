@@ -860,6 +860,32 @@ A local app build that should try the library in Settings needs the new `Info.pl
 with `-DMV_MAC_BUNDLE_ID=io.github.longtimeno-c.mediaviewer.dev`, so that the dev app's Photos
 permission and preferences stay apart from an installed MediaViewer.
 
+### Enhance from a source build (E1)
+
+Developer builds only; a release build refuses a dev-signed add-on. What E1 is and what it owes:
+[docs/plans/enhance.md](plans/enhance.md) and "Where this actually is" below.
+
+1. Build `mv_enhance` with the app (Windows root build, or the Mac build on arm64: like the AI
+   pack, Enhance has no Intel Mac build), configured with
+   `-DMV_ADDON_DEV_PUBLIC_KEY=<your key's public half>`. It lands in `build/addons/enhance`.
+   The portable Linux build (`cmake/portable`) builds it too, for the tests.
+2. Stage, pack, sign and install it into a scratch folder:
+   `python3 tools/package/enhance-sideload.py --build <build> --key <key file> --addons <folder>
+   --platform win-x64|macos`. By default it stages the **fixture** catalogue,
+   `tests/data/enhance/fixture-models.json`: three real Hugging Face files already pinned and
+   verified for Local search (YuNet 0.2 MB, SFace 39 MB, Whisper turbo's encoder 1.27 GB),
+   standing in for restoration models so that the page, the spec rule and the download run end
+   to end. The real catalogue, `tools/package/enhance-models.json`, pins no model yet.
+3. Run the app with `MV_DEV_ADDONS_DIR=<folder>` and open Settings → Add-ons → Enhance: this
+   machine's facts, a model per kind with the recommended one first, and Download. Nothing is
+   requested before Download. The weights land in the add-on's `data/cache/models/<id>/`, the
+   choices in `data/enhance.json`; Remove deletes the weights.
+4. A weights file can be placed by hand at `data/cache/models/<id>/<file>`: the next Download or
+   Resume hashes it and keeps it when it matches its pin.
+5. The catalogue gate, no network: `python3 -I tools/package/enhance-models.py check` (and
+   `--models tests/data/enhance/fixture-models.json`). It shares `ai-models.py`'s licence
+   allow-list and refuses a pin over 5 GB; `addon-pack.py` refuses one too.
+
 ### Local search from Final Cut Pro and FCPXML export
 
 Status and verify lines: [docs/design/23](design/23-nle-search.md) (issue #71). Phase 1 (the search
@@ -1712,6 +1738,30 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Enhance, slice E1 (#297, docs/plans/enhance.md, 2026-10-23)
+
+Built: the Enhance add-on (`src/addons/enhance`, a slot add-on with no chrome) and its Models
+page; the catalogue and its check (`tools/package/enhance-models.{json,py}`); the spec rule
+(`choose.h`); downloads through the shared `mv_model_fetch` (the AI pack's `fetch.*` and
+`sha256.*` as a library), with the new per-file cap and adoption by hash; packing
+(`addon-pack.py`, 5 GB per file for `enhance` only) and `enhance-sideload.py`.
+
+Tests: `mv_import_tests "[enhance]"` (the catalogue, the rule on six machine classes, the store's
+gates and downloads over a fake Hugging Face, the page's view tree) and `"[enhance][addon]"`
+(the real module through a signed store: nothing made at load, the page, a saved choice after a
+restart waiting for Resume), `"[ai][fetch]"` (now also in the portable build), and
+`python3 -m unittest test_addon_pack` (`EnhancePackTest`, no network). All pass in the portable
+Linux build (Debug, ASan) in the PR's session.
+
+Owed: the Windows (MSVC) and macOS builds and their CI runs, which this session could not make;
+the Windows files were only syntax-checked with MinGW and `machine_mac.cpp` is uncompiled. On
+hardware, both platforms: the sideloaded fixture build's page, a download from Hugging Face, a
+network cut and resume, Remove leaving no weights, and both present-loop gates. No model is
+pinned (Hugging Face was unreachable from the session): the first photo models are chosen by
+measurement in E3. Not released: no release job and no host offer until a command ships. Owner
+calls 1–6 in the plan are open; E1 is built on call 1's recommendation (one add-on, not three
+pieces).
 
 ### Startup time: the boot timeline, the chrome preload, lazy Mac panes (#486, 2026-10-19)
 

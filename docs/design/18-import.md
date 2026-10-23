@@ -269,7 +269,12 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
   [17](17-local-ai-search.md) "The AI pack"). They are not in the version folder, so the
   install and every load verify without them; the core checks the list's shape (only plain
   Hugging Face URLs, safe paths, never a shipped path). Third-party add-ons get no network
-  ([25](25-open-addons.md)).
+  ([25](25-open-addons.md)). The downloader is one library, `mv_model_fetch`, which the AI pack
+  and Enhance ([plan](../plans/enhance.md)) link. A file already at its pinned path with no
+  `.ok` record is hashed and adopted when it matches, so a weights file can be placed by hand
+  and a restored copy is not fetched again; one that does not match is replaced. A fetcher may
+  cap the size of one file (`max_file_bytes`; Enhance: 5 GB), refused before any request.
+  Enhance keeps its fetched files in `data/cache/models`, which every Remove deletes.
 - **Location:** `%LocalAppData%\MediaViewer\addons\import\<version>` on Windows and
   `~/Library/Application Support/MediaViewer/Add-ons/Import/<version>` on Mac; the add-on's own
   data (`import.db`) is in `<addon>/data`, and downloads verify in `<addons>/.staging/<n>`

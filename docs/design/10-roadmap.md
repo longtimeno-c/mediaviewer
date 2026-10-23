@@ -586,6 +586,24 @@ cell out delivers the files, one cell of a range delivers the range; the share i
 Driftwire with the gallery selection; both present-loop gates hold. Where each part stands:
 [DEVELOPMENT.md](../DEVELOPMENT.md#driftwire-issues-410-413-2026-10-15).
 
+## Enhance (issues #297, #298, both platforms)
+
+A first-party add-on that writes a restored copy of the photo, clip or audio file on screen and
+never changes the original, with models from Hugging Face chosen by this machine's spec
+([plan](../plans/enhance.md), slices E1–E5). **E1 is built** (2026-10-23): the add-on and its
+Models page in Settings → Add-ons, a catalogue of models per kind with what each needs, a local
+check and one rule that recommends the largest that fits, weights fetched on Download into
+`data/cache/models` (5 GB a file at most, the free disk checked first, a file placed by hand
+adopted by its hash), and the AI pack's downloader as a library both add-ons link
+(`mv_model_fetch`). No model is pinned yet and nothing is released; the command and the sheet
+(E2) and the first run on a still (E3) come next.
+
+**Verify (E1, both platforms):** the plan's E1 line: `mv_import_tests "[enhance]"` and
+`"[ai][fetch]"` on Linux, macOS and Windows CI, `EnhancePackTest`, and on a Mac and a PC the
+sideloaded fixture build's Models page recommends by this machine, downloads from Hugging Face,
+survives a network cut, and leaves no weights after Remove. Where it stands:
+[DEVELOPMENT.md](../DEVELOPMENT.md#enhance-slice-e1-297-docsplansenhancemd-2026-10-23).
+
 ## Not built
 
 - **PR 31** — Video Editor: several clips, zoom, dissolves ([21](21-video-editor.md)).

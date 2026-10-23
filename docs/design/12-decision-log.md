@@ -1984,6 +1984,69 @@ press on a hovered cell that moves 4 pt into the file drag.
 
 ---
 
+## Enhance (add-on)
+
+Issues #297 and #298, [plan](../plans/enhance.md). Slice E1 (2026-10-23): the add-on, its Models
+page and its weights from Hugging Face; no command yet.
+
+**Enhance is its own add-on, and one add-on (2026-10-23, #297).** Enhance writes a restored copy of
+the item on screen; it is not part of Local search (its own id `enhance`, its own data folder; it
+never shares the render device and nothing of it runs at launch beyond the slot add-on load). The
+issue's separate photo, video and audio pieces became one add-on whose Models page offers a model
+per kind: the weights are pins in its signed manifest, and only the model chosen for one kind is
+fetched, so a photo model still never pulls a video model. Pieces would have added three code-free
+GitHub assets, a piece-install hook for an add-on with no chrome, and a parent-and-piece removal
+cascade that slot add-ons do not have. **Owner call open** ([plan](../plans/enhance.md) owner call
+1); going back to pieces is a packaging change (the catalogue, the rule, the fetcher and the gates
+stay).
+
+**Enhance may use the network for its models (2026-10-23, #297).** Through the AI pack's
+transports, now the `mv_model_fetch` library both link, to the `https://huggingface.co/` URLs its
+signed manifest's `remote` lists, and nothing else: a plain GET of the pinned revision with no
+token, query, cookie or identifier. Nothing is requested until Download is clicked in that
+process. A model left part-way is resumed after a restart only by Resume (an outage within a
+session still waits and resumes by itself, as Local search's does). One process downloads at a
+time (a lock file; every window loads slot add-ons). The Models page says what Hugging Face sees:
+this computer's network address and which public files it sent. Extends the 2026-10-18 grant
+(the AI pack) to this add-on; third-party code still has no network.
+
+**5 GB a weights file, enforced (2026-10-23).** Restates the 2026-10-13 row's Enhance cap, which no
+code enforced: `tools/package/enhance-models.py check` and `addon-pack.py` (`remote_file_cap`)
+refuse a pin over 5,000,000,000 bytes, and the add-on refuses one before any GET (the fetcher's
+`max_file_bytes`). There is no budget across files or kinds. Free disk is the download gate: the
+bytes still to fetch plus the model's `cache_bytes` (the issue's "plus the staging copy" does not
+apply: the `.part` is renamed in place). Free memory is the run gate, from E3. Local search keeps
+no cap.
+
+**Enhance's weights live in `data/cache/models` (2026-10-23).** `store::remove` deletes
+`data/cache` even when the rest of the data is kept, so every Remove deletes the weights (the
+issue's "Remove deletes the weights") and an update never does. Choosing another model for a kind
+deletes the old one's files once the new one verifies; Delete removes a kind's model.
+
+**A model is chosen by its spec, as data (2026-10-23).** Each kind lists its models largest first,
+and each `model.json` states `run_bytes`, `cache_bytes`, the accelerators it passed on and
+`cpu_unit_ms`. A local check (total and free memory, the accelerator and its memory, free disk;
+shown on the page, never sent anywhere) and one rule decide, in order: a file over 5 GB is refused;
+an x86_64 Mac gets nothing (no ONNX Runtime build); the provider is the accelerator when the model
+lists it, else the CPU when one unit fits the kind's `cpu_budget_ms`, else "needs a graphics card";
+`run_bytes` must fit the accelerator's memory (VRAM with CUDA; RAM with Core ML or the CPU); the
+download must fit the free disk. The first model that passes is recommended. A model that does not
+fit cannot be downloaded, and its card says why. Unlike Local search's four tier ids, no model or
+threshold is named in code.
+
+**A fetched file already at its pinned path is adopted by its hash (2026-10-23).** The shared
+fetcher hashes a file of the right size that has no matching `.ok` record and keeps it when it
+matches, instead of fetching it again; one that does not match is replaced. That is how a weights
+file is sideloaded (the issue), and it also stops a restored or copied file (a new mtime) from being
+fetched again. It applies to Local search too, and amends the 2026-10-18 row's "no offline path": a
+file can be placed by hand, and is still used only when it matches its signed hash.
+
+**The model downloader is a library (2026-10-23).** `fetch.*`, `sha256.*` and the two transports
+build as `mv_model_fetch`, which `mv_ai_engine` and `mv_enhance_engine` link, so Enhance does not
+link the AI engine. The sources stay in `src/addons/ai`, in their namespace.
+
+---
+
 ## Open add-ons
 
 **Anyone can make an add-on; a contribution model (2026-09-29, owner, issue #79).** "Add-ons can

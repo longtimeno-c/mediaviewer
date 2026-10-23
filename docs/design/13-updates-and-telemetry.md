@@ -336,6 +336,12 @@ transfer's paths, names, addresses and the peer's machine name are never logged;
 lines are fixed ASCII. The files a person sends go only to the MediaViewer they picked, after the
 person there accepted, on the local network or Bluetooth.
 
+**Enhance** ([plan](../plans/enhance.md), not released yet) adds no event, tag or crash
+annotation either. It downloads a model from Hugging Face only when the person clicks Download on
+its Models page: a plain GET of the pinned file, no cookie, token or identifier. Hugging Face sees
+the network address and which public model files were sent, as the page says. The machine facts
+the page shows (memory, the graphics card, free disk) are read locally and never sent.
+
 ---
 
 ## Not built
