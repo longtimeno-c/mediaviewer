@@ -1801,8 +1801,13 @@ terminal"); the decisions are in [docs/design/12](design/12-decision-log.md#drif
     row) and Debug + ASan / UBSan; in the packaging build (`cmake/driftwire-cli`, Release,
     hardened) with GCC 13 and with GCC 12 (CI's compiler).
   - The whole `"[driftwire]"` after the Linux ports merged: 234 cases (174 of the engine and the
-    add-on, 60 of the command line). RelWithDebInfo with no session bus: 233 pass and the Secret
-    Service case skips, 7.7 min.
+    add-on, 60 of the command line), 78123 assertions, all pass with a gnome-keyring of the run's
+    own and `MV_SECRET_SERVICE=required` (as CI's `portable-core`): RelWithDebInfo 468 s,
+    Debug + ASan / UBSan 582 s with no sanitizer report (UBSan's null `memcpy` at `noise.cpp:234`,
+    in every earlier run, is fixed).
+  - The packaging build's `ctest` (`"[cli]"`) takes 10.7 s; `lintian` 2.117 reports nothing on
+    the `.deb`; the bash completion completes commands, options and folders, the zsh one commands
+    with their descriptions and each command's options.
   - The packaging build's `driftwire` needs `libm.so.6`, `libc.so.6` and `ld-linux-x86-64.so.2`
     only; PIE, `BIND_NOW`, RELRO, a non-executable stack. The `.deb`, `.rpm` and tarball were
     built; the `.deb` installed with `dpkg -i`, `driftwire --version`, `--help` and a run without
