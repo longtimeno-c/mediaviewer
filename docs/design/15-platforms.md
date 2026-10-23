@@ -138,7 +138,7 @@ they land.
 
 | Linux PR | What the Linux host has |
 |---|---|
-| 1 — OpenGL present lab | A raw Wayland xdg toplevel (no toolkit; xkbcommon keys, pointer, fractional scale, `suspended`), EGL desktop GL 3.3 core on an ARGB8888 sRGB surface, `eglSwapInterval(0)` with the frame-callback wait before recording, `wp_presentation` statistics, idle → stop presenting, F3 (ImGui OpenGL 3), `frametime` on Linux ([03](03-rendering.md#the-linux-present-path)); workers named and niced in `core/job_system_posix.cpp`. Built and smoke-tested under headless Weston in CI; its gate is owed on a real session |
+| 1 — OpenGL present lab | A raw Wayland xdg toplevel (no toolkit; xkbcommon keys, pointer, fractional scale, `suspended`), EGL desktop GL 3.3 core on an ARGB8888 sRGB surface, `eglSwapInterval(0)` with the frame-callback wait before recording, `wp_presentation` statistics, idle → stop presenting, F3 (ImGui OpenGL 3), `frametime` on Linux ([03](03-rendering.md#the-linux-present-path)); workers named and niced in `core/job_system_posix.cpp`. Built and smoke-tested locally under headless Weston (the `linux-lab-smoke` CI job is written but has not run yet); its gate is owed on a real session |
 
 ## Feature homes per platform
 

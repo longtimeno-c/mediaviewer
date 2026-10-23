@@ -9,13 +9,15 @@ move what it built into the matching `docs/design/` doc and strike the slice her
 ## Status (2026-10-23)
 
 - The shared core already builds headless on Linux: `cmake/portable` runs the Import, add-on,
-  AI and clip suites in CI ([09](../design/09-build-and-test.md)), and from 2026-10-23 Driftwire's
-  too.
-- The first Linux product is Driftwire's command line (`driftwire`, .deb / .rpm / tarball), a
-  terminal host of the Driftwire engine ([28](../design/28-driftwire.md)). It needs no window and
-  ships ahead of the app.
-- Linux PR 1 (below) is the first slice of the app: built (2026-10-23) and smoke-tested under
-  headless Weston only; its gate is owed on real hardware
+  AI and clip suites in CI ([09](../design/09-build-and-test.md)), and, with the Driftwire ports
+  branch (its own change), Driftwire's.
+- The first Linux product is planned to be Driftwire's command line (`driftwire`, .deb / .rpm /
+  tarball), a terminal host of the Driftwire engine ([28](../design/28-driftwire.md)), built on the
+  Driftwire command-line branches, not this one. It needs no window and would ship ahead of the
+  app.
+- Linux PR 1 (below) is the first slice of the app: built (2026-10-23) and smoke-tested locally
+  under headless Weston only (the `linux-lab-smoke` CI job is written but has not run yet); its
+  gate is owed on real hardware
   ([10](../design/10-roadmap.md#linux-pr-1--opengl-present-lab)). Nothing of the viewer runs on
   Linux yet.
 
@@ -138,7 +140,10 @@ Recommended: **signed `.deb` and `.rpm` from our own apt and dnf repositories**,
 `/usr/lib/mediaviewer/` with Qt and FFmpeg bundled (dynamic). The package manager is the updater,
 which meets "the updater exists before the first build that leaves this machine" only with a
 signed repository; a loose `.deb` never updates. It is the one channel where the thumbnailer runs
-and Open With works, and it is the channel Driftwire's command line uses too. AppImage with
+and Open With works. Driftwire's command line is planned as loose `.deb` / `.rpm` / tarball (the
+owner's choice for it; on its branch they are unsigned and come from the release page, with no
+repository); a repository would give it updates too.
+AppImage with
 Velopack is the runner-up (same updater family as Windows; no thumbnailer, no associations).
 Flatpak is not: its sandbox fights a viewer that opens any folder and a LAN and Bluetooth tool, and
 it exports no thumbnailer.

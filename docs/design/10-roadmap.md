@@ -272,7 +272,7 @@ real Wayland session (Mutter or KWin) with Mesa on Intel or AMD, measured from `
 feedback (VSYNC and HW_CLOCK). Under headless Weston it runs, reports, and labels its source weaker.
 
 **State (2026-10-23):** built, unit-tested and smoke-tested under headless Weston only (the CI
-smoke and a local run, with the GL and pixman renderers). The verify line's gate is owed on real
+smoke script, run locally, with the GL and pixman renderers; the CI job has not run yet). The verify line's gate is owed on real
 hardware; no Linux GPU runner exists yet.
 
 ## Milestone D — Viewer and editing updates (PR 9–12, both platforms)
