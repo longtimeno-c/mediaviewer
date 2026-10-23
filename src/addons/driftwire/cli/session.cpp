@@ -438,7 +438,7 @@ struct session::impl {
     note = {std::move(text), t, now + ms};
   }
 
-  std::string home_short_of(const std::string& p) const { return home_short(p, o.paths.home); }
+  std::string home_short_of(const std::string& p) const { return home_short(p, o.paths.home, o.paths.windows); }
 
   // =========================================================================================
   // the view: what changed, into the transcript

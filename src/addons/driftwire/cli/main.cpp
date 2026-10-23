@@ -147,7 +147,7 @@ int main(int argc, char** argv) {
 #endif
 
   const cli::path_options paths = cli::default_path_options();
-  const std::string home = paths.home.empty() ? cli::home_dir() : paths.home;
+  const std::string& home = paths.home;  // UTF-8 (home_dir())
 
   // The files to send: each there; a folder alone.
   std::vector<std::string> send;
@@ -247,7 +247,6 @@ int main(int argc, char** argv) {
   so.data_dir = data;
   if (!a.name.empty()) so.name_note = "this run";
   so.paths = paths;
-  if (so.paths.home.empty()) so.paths.home = home;
 #if defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
   if (a.test_events) {
     so.events = [](const std::string& line) { cli::print("@driftwire " + line + "\n", true); };
@@ -255,9 +254,15 @@ int main(int argc, char** argv) {
 #endif
 
   int code = 0;
-  {
+  try {
     cli::session s(con, host, std::move(eo), std::move(so), th);
     code = s.run();  // the engine is gone when it returns
+  } catch (...) {
+    // A bug, never a way out (std::filesystem throws on a path it cannot
+    // convert, for one): not an abort that leaves the terminal raw and a
+    // transfer unwound by nobody. Unwinding has stopped the engine.
+    con.leave_raw();
+    return fail("something went wrong and the session closed.");
   }
   con.leave_raw();
   return code;

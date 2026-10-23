@@ -221,11 +221,20 @@ std::string wait_text(double seconds) {
   return buf;
 }
 
-std::string home_short(std::string_view path, std::string_view home) {
+std::string home_short(std::string_view path, std::string_view home, bool windows) {
+  const auto is_separator = [&](char c) { return c == '/' || (windows && c == '\\'); };
+  const auto folded = [&](char c) {
+    if (!windows) return c;
+    if (c == '\\') return '/';
+    return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+  };
   while (home.size() > 1 && (home.back() == '/' || home.back() == '\\')) home.remove_suffix(1);
-  if (home.empty() || path.size() < home.size() || path.substr(0, home.size()) != home) return std::string(path);
+  if (home.empty() || path.size() < home.size()) return std::string(path);
+  for (std::size_t i = 0; i < home.size(); ++i) {
+    if (folded(path[i]) != folded(home[i])) return std::string(path);
+  }
   if (path.size() == home.size()) return "~";
-  if (path[home.size()] != '/') return std::string(path);
+  if (!is_separator(path[home.size()])) return std::string(path);
   return "~" + std::string(path.substr(home.size()));
 }
 

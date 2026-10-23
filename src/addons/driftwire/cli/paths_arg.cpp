@@ -8,6 +8,8 @@
 #include <system_error>
 #include <unordered_set>
 
+#include "addons/driftwire/cli/data_dir.h"
+
 namespace mv::driftwire::cli {
 
 namespace fs = std::filesystem;
@@ -195,11 +197,10 @@ path_options default_path_options() {
   path_options o;
 #if defined(_WIN32)
   o.windows = true;
-  const char* home = std::getenv("USERPROFILE");  // NOLINT
-#else
-  const char* home = std::getenv("HOME");  // NOLINT
 #endif
-  if (home) o.home = home;
+  // UTF-8 on every OS (data_dir.h): on Windows the CRT's getenv("USERPROFILE")
+  // is in the ANSI code page, which a user name like "José" is not UTF-8 in.
+  o.home = home_dir();
   std::error_code ec;
   const fs::path cwd = fs::current_path(ec);
   if (!ec) o.cwd = to_utf8(cwd);

@@ -38,8 +38,8 @@ struct path_options {
   bool windows = false;  // the Windows rules: backslash separates, quotes are "..."
 };
 
-// The process's own: its current folder, the home folder (HOME, or
-// USERPROFILE on Windows), the platform's rules.
+// The process's own: its current folder, the home folder (home_dir(): HOME,
+// or the profile folder on Windows), the platform's rules.
 [[nodiscard]] path_options default_path_options();
 
 // One word of a line: its text with the quotes and escapes resolved, which

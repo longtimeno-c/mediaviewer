@@ -44,8 +44,9 @@ namespace mv::driftwire::cli {
 // How long a wait has run, for the waiting line: "12s", "1m 05s", "1h 02m".
 [[nodiscard]] std::string wait_text(double seconds);
 // `path` with the home folder as "~" ("~/Downloads"); unchanged when `home`
-// is empty or not a prefix.
-[[nodiscard]] std::string home_short(std::string_view path, std::string_view home);
+// is empty or not a prefix. `windows`: a backslash separates too, and the
+// prefix is compared in any (ASCII) case, as Windows names folders.
+[[nodiscard]] std::string home_short(std::string_view path, std::string_view home, bool windows = false);
 // "IMG_1.HEIC, IMG_2.HEIC and 21 more" in at most `width` columns: as many
 // names as fit, the rest counted (the window's names_line, by width).
 [[nodiscard]] std::string names_text(const std::vector<std::string>& names, std::size_t count, int width,

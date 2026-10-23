@@ -816,6 +816,14 @@ TEST_CASE("driftwire cli words: sizes, speeds and times as the window says them"
   CHECK(cli::home_short("/home/ann", "/home/ann/") == "~");
   CHECK(cli::home_short("/home/anna/x", "/home/ann") == "/home/anna/x");
   CHECK(cli::home_short("/srv/x", "") == "/srv/x");
+  CHECK(cli::home_short("/home/ann\\x", "/home/ann") == "/home/ann\\x");  // POSIX: a backslash is a letter
+  // Windows: either separator, and the folder names in any case.
+  const std::string jose = "C:\\Users\\Jos\xC3\xA9";
+  CHECK(cli::home_short(jose + "\\Downloads", jose, true) == "~\\Downloads");
+  CHECK(cli::home_short("c:\\users\\Jos\xC3\xA9\\Pictures", jose, true) == "~\\Pictures");
+  CHECK(cli::home_short(jose + "/Pictures", jose + "\\", true) == "~/Pictures");
+  CHECK(cli::home_short(jose, jose, true) == "~");
+  CHECK(cli::home_short("C:\\Users\\Josef\\x", "C:\\Users\\Jos", true) == "C:\\Users\\Josef\\x");
   const cli::theme th = colour_theme();
   const std::vector<std::string> names{"IMG_4471.HEIC", "IMG_4472.HEIC", "IMG_4473.MOV"};
   CHECK(cli::names_text(names, 24, 80, th) == "IMG_4471.HEIC, IMG_4472.HEIC, IMG_4473.MOV and 21 more");
