@@ -179,7 +179,7 @@ Run on every push by the `policy` CI job:
 | Script | Fails when |
 |---|---|
 | `tools/check-module-graph.ps1` | A dependency points upward or sideways in `shell → abi → {canvas, edit, player, image, meta, addon} → {codec, gfx, io} → core`, or `addons → infer → core` ([architecture](02-architecture.md)); `.mm` / `#import` included |
-| `tools/check-hostable-core.ps1` | `windows.h` / `d3d11.h` appear above `gfx/` and the hosts outside `*_win.cpp`, Foundation / AppKit / Metal / CoreVideo / AVFoundation outside the `*_mac.*` ports, or Wayland / EGL / GL / X11 / Qt / PipeWire and Linux's own headers outside the `*_linux.*`, `*_posix.*`, `*_gl.*` and `*_wayland.*` ports; a Vulkan header anywhere under `src/` ([platforms](15-platforms.md)) |
+| `tools/check-hostable-core.ps1` | `windows.h` / `d3d11.h` appear above `gfx/` and the hosts outside `*_win.cpp`, Foundation / AppKit / Metal / CoreVideo / AVFoundation outside the `*_mac.*` ports, or Wayland / EGL / GL / X11 / Qt / PipeWire and Linux's own headers outside the `*_linux.*`, `*_posix.*`, `*_gl.*`, `*_egl.*` and `*_wayland.*` ports (Qt's `<QString>` style matched case-sensitively); a Vulkan header anywhere under `src/` ([platforms](15-platforms.md)) |
 | `tools/check-vcpkg-baseline.ps1` | The vcpkg baseline differs between `vcpkg.json`, `tools/mac/dependencies/vcpkg.json`, `tools/portable/vcpkg.json` and `VCPKG_COMMIT` in `ci.yml` / `release.yml` |
 | `tools/check-winui-controls.ps1` | The chrome uses a WinUI control that fail-fasts in the island host (`ProgressBar`, `ProgressRing`, `DropDownButton`, `InfoBar`, `TextBox`, …) |
 | `tools/licence-check.ps1` | FFmpeg was configured with `--enable-gpl` / `--enable-nonfree`, or a software HEVC/H.264/AAC encoder is present ([licensing](11-licensing.md)) |

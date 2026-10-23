@@ -24,7 +24,9 @@
 # and the Linux-only <sys/...> interfaces (inotify, epoll, eventfd, signalfd,
 # timerfd, sendfile), or an FFmpeg hwcontext header for VA-API / VDPAU / DRM.
 # Allowed only in the Linux port files: *_linux.*, *_posix.*, and the OpenGL
-# backend's *_gl.*, *_egl.*, *_wayland.*.
+# backend's *_gl.*, *_egl.*, *_wayland.*. Qt's own include style, <QString>,
+# <QWindow> (and the QPA headers, <qpa/...>), is a second rule matched case-
+# sensitively, so it never catches <queue>; <QtGui/QWindow> is in the first.
 #
 # The three apply in:
 #   core/, codec/, canvas/, image/, meta/, player/, edit/, addon/, addons/,
@@ -58,28 +60,38 @@ $bannedModules = @('core', 'codec', 'canvas', 'image', 'meta', 'player', 'edit',
 
 $rules = @(
     [pscustomobject]@{
-        Name    = 'Windows'
-        Pattern = '^\s*#\s*(include|import)\s*[<"](d3d11[^"]*|dxgi[^"]*|windows\.h|atlbase\.h|winuser\.h|audioclient\.h|audiopolicy\.h|mmdeviceapi\.h|mmreg\.h|mmsystem\.h|avrt\.h|endpointvolume\.h|functiondiscoverykeys[^"]*|combaseapi\.h|objbase\.h|wrl/[^"]*|d3d12[^"]*|libavutil/hwcontext_d3d11va\.h|libavutil/hwcontext_dxva2\.h)'
-        Exempt  = '_win\.cpp$'
+        Name          = 'Windows'
+        CaseSensitive = $false
+        Pattern       = '^\s*#\s*(include|import)\s*[<"](d3d11[^"]*|dxgi[^"]*|windows\.h|atlbase\.h|winuser\.h|audioclient\.h|audiopolicy\.h|mmdeviceapi\.h|mmreg\.h|mmsystem\.h|avrt\.h|endpointvolume\.h|functiondiscoverykeys[^"]*|combaseapi\.h|objbase\.h|wrl/[^"]*|d3d12[^"]*|libavutil/hwcontext_d3d11va\.h|libavutil/hwcontext_dxva2\.h)'
+        Exempt        = '_win\.cpp$'
     },
     [pscustomobject]@{
-        Name    = 'Cocoa/Metal'
-        Pattern = '^\s*#\s*(include|import)\s*[<"](Foundation|AppKit|Cocoa|UIKit|SwiftUI|Metal|MetalKit|MetalPerformanceShaders|QuartzCore|CoreVideo|CoreMedia|CoreImage|VideoToolbox|IOSurface|AVFoundation|AVKit|AudioToolbox|CoreAudio)/'
-        Exempt  = '_(mac|metal|posix)\.[A-Za-z]+$'
+        Name          = 'Cocoa/Metal'
+        CaseSensitive = $false
+        Pattern       = '^\s*#\s*(include|import)\s*[<"](Foundation|AppKit|Cocoa|UIKit|SwiftUI|Metal|MetalKit|MetalPerformanceShaders|QuartzCore|CoreVideo|CoreMedia|CoreImage|VideoToolbox|IOSurface|AVFoundation|AVKit|AudioToolbox|CoreAudio)/'
+        Exempt        = '_(mac|metal|posix)\.[A-Za-z]+$'
     },
     [pscustomobject]@{
-        Name    = 'Linux (GL/EGL/Wayland/Qt)'
-        Pattern = '^\s*#\s*(include|import)\s*[<"](EGL/|GL/|GLES[0-9]*/|KHR/|epoxy/|wayland-[^">]*\.h|xkbcommon/|X11/|xcb/|gbm\.h|xf86drm|drm/|libdrm/|va/|vdpau/|pipewire/|spa/|pulse/|alsa/|asoundlib\.h|libudev\.h|systemd/|dbus/|gio/|glib\.h|glib-object\.h|gtk/|gdk/|Qt[A-Za-z0-9]*/|bluetooth/|sys/inotify\.h|sys/epoll\.h|sys/eventfd\.h|sys/signalfd\.h|sys/timerfd\.h|sys/sendfile\.h|linux/|libavutil/hwcontext_(vaapi|vdpau|drm)\.h)'
-        Exempt  = '_(linux|posix|gl|egl|wayland)\.[A-Za-z]+$'
+        Name          = 'Linux (GL/EGL/Wayland/Qt)'
+        CaseSensitive = $false
+        Pattern       = '^\s*#\s*(include|import)\s*[<"](EGL/|GL/|GLES[0-9]*/|KHR/|epoxy/|wayland-[^">]*\.h|xkbcommon/|X11/|xcb/|gbm\.h|xf86drm|drm/|libdrm/|va/|vdpau/|pipewire/|spa/|pulse/|alsa/|asoundlib\.h|libudev\.h|systemd/|dbus/|gio/|glib\.h|glib-object\.h|gtk/|gdk/|Qt[A-Za-z0-9]*/|bluetooth/|sys/inotify\.h|sys/epoll\.h|sys/eventfd\.h|sys/signalfd\.h|sys/timerfd\.h|sys/sendfile\.h|linux/|libavutil/hwcontext_(vaapi|vdpau|drm)\.h)'
+        Exempt        = '_(linux|posix|gl|egl|wayland)\.[A-Za-z]+$'
+    },
+    [pscustomobject]@{
+        Name          = 'Linux (Qt class headers)'
+        CaseSensitive = $true
+        Pattern       = '^\s*#\s*(include|import)\s*[<"](Q[A-Z][A-Za-z0-9]*[>"/]|qpa/)'
+        Exempt        = '_(linux|posix|gl|egl|wayland)\.[A-Za-z]+$'
     }
 )
 
 # No exempt file: D9 has no Vulkan on any OS, so this one is checked across
 # all of src/, the hosts and gfx/ included.
 $vulkanRule = [pscustomobject]@{
-    Name    = 'Vulkan (D9)'
-    Pattern = '^\s*#\s*(include|import)\s*[<"](vulkan/|volk\.h|vk_mem_alloc\.h|libavutil/hwcontext_vulkan\.h)'
-    Exempt  = '^$'
+    Name          = 'Vulkan (D9)'
+    CaseSensitive = $false
+    Pattern       = '^\s*#\s*(include|import)\s*[<"](vulkan/|volk\.h|vk_mem_alloc\.h|libavutil/hwcontext_vulkan\.h)'
+    Exempt        = '^$'
 }
 
 $violations = @()
@@ -91,7 +103,9 @@ function Test-File([System.IO.FileInfo]$file, [object[]]$ruleSet = $rules) {
         $lineNumber++
         foreach ($rule in $ruleSet) {
             if ($file.Name -match $rule.Exempt) { continue }
-            if ($line -match $rule.Pattern) {
+            # -match ignores case; the Qt class-header rule must not.
+            $hit = if ($rule.CaseSensitive) { $line -cmatch $rule.Pattern } else { $line -match $rule.Pattern }
+            if ($hit) {
                 $found += [pscustomobject]@{
                     File = $file.FullName.Substring($SourceRoot.Length + 1)
                     Line = $lineNumber
@@ -132,7 +146,7 @@ if ($violations.Count -eq 0) {
 }
 
 Write-Host ''
-Write-Host 'HOSTABLE-CORE VIOLATIONS: HWND / D3D11 / wchar paths stay in shell/ and *_win.cpp; Cocoa / Metal stay in shell/, gfx/ and *_mac.*; Wayland / EGL / GL / Qt stay in shell/, gfx/ and *_linux.* / *_gl.* / *_wayland.*; Vulkan nowhere.' -ForegroundColor Red
+Write-Host 'HOSTABLE-CORE VIOLATIONS: HWND / D3D11 / wchar paths stay in shell/ and *_win.cpp; Cocoa / Metal stay in shell/, gfx/ and *_mac.*; Wayland / EGL / GL / Qt stay in shell/, gfx/ and *_linux.* / *_gl.* / *_egl.* / *_wayland.*; Vulkan nowhere.' -ForegroundColor Red
 Write-Host 'docs/design/15-platforms.md (D9).'
 Write-Host ''
 foreach ($v in $violations) {
