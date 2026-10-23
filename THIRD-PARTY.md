@@ -70,6 +70,18 @@ This file and `LICENSE` are copied into `Contents/Resources`. Mac-only additions
 | [dmgbuild](https://github.com/dmgbuild/dmgbuild) | 1.6.7 | MIT | Build tool only | Builds the first-install disk image. Not in a shipped binary. |
 | [LLVM OpenMP runtime](https://openmp.llvm.org/) | LLVM 19.1.7 release sources, built by `tools/mac/build_libomp.py` for macOS 14.0 | Apache-2.0 WITH LLVM-exception; legacy notices included | Dynamic, macOS | Bounded parallel LibRaw processing. Bundled in Frameworks; full notices in `llvm-openmp.txt` in Resources (source: `assets/licenses/llvm-openmp.txt`). |
 
+## Linux (the present lab, Linux PR 1)
+
+The Linux lab (docs/plans/linux.md) links the same Dear ImGui (its OpenGL 3 backend) and the
+system's display libraries; it ships no codec yet. Linux-only additions:
+
+| Component | Version | Licence | Linkage | Notes |
+|---|---|---|---|---|
+| [wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols) (xdg-shell, presentation-time, viewporter, fractional-scale-v1, xdg-decoration-unstable-v1) | 1.45 | MIT | Static: XML vendored in `tools/linux/protocols`, compiled from `wayland-scanner` output | Each file keeps its copyright notice. |
+| [libwayland](https://gitlab.freedesktop.org/wayland/wayland) (client, egl) | the system's (1.20+) | MIT | Dynamic, system library | Not shipped. |
+| [libxkbcommon](https://xkbcommon.org) | the system's | MIT | Dynamic, system library | Keyboard maps for the lab's window. Not shipped. |
+| [libglvnd](https://gitlab.freedesktop.org/glvnd/libglvnd) (libEGL, libOpenGL) | the system's | MIT-style (libglvnd's own) | Dynamic, system library | Dispatches to the GPU driver's EGL and OpenGL (Mesa, NVIDIA), which are loaded at run time and never shipped. |
+
 ## Data (the Places add-on)
 
 Not linked into the app. The Places add-on ([docs/design/27](docs/design/27-places.md))

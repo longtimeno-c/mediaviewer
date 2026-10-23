@@ -14,7 +14,10 @@ move what it built into the matching `docs/design/` doc and strike the slice her
 - The first Linux product is Driftwire's command line (`driftwire`, .deb / .rpm / tarball), a
   terminal host of the Driftwire engine ([28](../design/28-driftwire.md)). It needs no window and
   ships ahead of the app.
-- Linux PR 1 (below) is the first slice of the app. Nothing of the viewer runs on Linux yet.
+- Linux PR 1 (below) is the first slice of the app: built (2026-10-23) and smoke-tested under
+  headless Weston only; its gate is owed on real hardware
+  ([10](../design/10-roadmap.md#linux-pr-1--opengl-present-lab)). Nothing of the viewer runs on
+  Linux yet.
 
 ## 0. The scope change (done in this slice)
 

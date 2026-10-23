@@ -50,6 +50,7 @@ three ([docs/plans/linux.md](plans/linux.md)). The order is:
 | #512 | **A status item opens its add-on's screen**: "Driftwire: receiving" in the command bar is a flat button that opens the Driftwire window (or brings it forward), on both hosts; any add-on whose status item names a screen, or that has exactly one window / pane / sheet, gets the same; a manifest may name it on a status item from contribution API 7 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)) | Mac: `mv_import_tests` passes (a new `[slots]` case for `status_json`'s `opens`); the Mac app builds. Windows: the C# compiles; the native side is CI's. Owed: the click, hover, hand cursor, keyboard and VoiceOver / Narrator checked in the running app on both hosts |
 | #529, #530, #531 | **Driftwire faster over the DHT, with the time left, and resumable**: the UDP stream paces and follows a model of the path (BBR, simplified) instead of halving on every loss, and acks name the runs past the 256-packet bitmap; both windows show the speed and the time left; a receive that stops keeps what arrived (the partial hidden under `.mvtmp`) and the same sender's next send of the same files resumes it, the whole-file read-back unchanged; "Unfinished transfers" with Discard, gone after 7 days; neither machine sleeps from idleness while bytes move; a transfer's end stays until OK ([docs/design/28](design/28-driftwire.md#resuming-a-receive-that-stopped-530)) | Linux container only: `"[driftwire]"` 166 cases pass (the IPv6 step of the stream case cannot run without IPv6, as on the base); `[.driftwire-stream-bench]` alternated 3 × 15 s, every profile better ([docs/design/28](design/28-driftwire.md#four-words-over-the-dht-472-pr-3)). Not built on either host: the Windows and Mac power requests, the file port's `open_resume` / `set_hidden` on Windows and macOS. Owed: both hosts' builds and suites, both PR 1 gates, a real DHT transfer between two machines, sleep held off (`powercfg /requests`, `pmset -g assertions`), a resume after a real power-off ([Where this actually is](#driftwire-speed-time-left-and-resume-issues-529-530-2026-10-21)) |
 | Driftwire settings page, 2026-10-21 | **Driftwire's settings in Settings → Add-ons → Driftwire**, in the window's cards and controls: Nearby (Keep receiving, Receive when MediaViewer is closed), Received files (Save to), Over the internet and, while on, Remembered devices and Internet options. A new screen place, `settings` (contribution API 8, `MV_SLOT_PLACE_SETTINGS`): an add-on's own tree drawn on its page, opened only while that page shows; Driftwire's manifest asks for 8 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11), [28](design/28-driftwire.md), [12](design/12-decision-log.md)) | Mac: `mv_import_tests` passes (296 cases, new `[slots]` and `[driftwire]` cases); the app built and run with a dev-signed Driftwire: the page shows its settings, a switch there changes the window and back, the screen closes when the page does. Windows: the C# compiles; the native side is CI's. Owed: the Windows page seen in the app, Narrator / VoiceOver on the page; no perf run (Settings chrome and the add-on only, nothing on the present or decode path) |
+| Linux PR 1 | **OpenGL present lab on Wayland**: a raw xdg toplevel, EGL desktop GL on an sRGB surface, frame-callback pacing at `eglSwapInterval(0)`, `wp_presentation` statistics, idle → stop presenting, F3, `frametime` on Linux ([docs/design/10](design/10-roadmap.md#linux-pr-1--opengl-present-lab), [03](design/03-rendering.md#the-linux-present-path)) | Draft. Built and run in a Linux container under headless Weston only (GL and pixman renderers): `mv_tests` and the smoke pass, the report is labelled weaker and fails the gate as it must. The Windows and Mac builds now also compile the Linux pacer and its tests: CI's. Owed: the gate on a real session (Mutter or KWin, Mesa on Intel or AMD), a Linux GPU runner, both other PR 1 gates ([Where this actually is](#linux-pr-1-the-opengl-present-lab-on-wayland-2026-10-23)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -158,6 +159,7 @@ moves behind the welcome card. Build and interactive checks are documented in
 | **`MediaViewer.Chrome.dll`** | C# WinUI 3 chrome, loaded by the lab through hostfxr. Open (image or folder), View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About, `ItemsRepeater` filmstrip, load indicator. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
 | **`mediaviewer_lab` (Darwin)** | Mac PRs 1–6 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 2 — Metal's minimum, see docs/design/12 — 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets, `+`/`-`, keyboard pan when zoomed, hold `Z` loupe, hold `\` previous, `C` clipping blinkies. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Home`/`End`/`PageUp`/`PageDown` navigate it (every key goes through the same command table and key router as Windows, with `⌘` standing for `Ctrl` and the Mac Delete key for `Delete`), an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a Windows-style command bar (Open / View / Settings / About, `?` at the right), a Settings screen (`⌘,`: filmstrip/wrap/sticky-zoom preferences and remappable keys, persisted in `NSUserDefaults`), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. **Nested folders (PR 26):** child folders show as tiles. A folder of only folders uses big tiles; one that also holds photos keeps a short folder row above them. A tile says when photos were found further down, when it is only more folders, and when that look stopped early. The path stays on screen while a photo is open. `⌘↑` goes up and returns to the folder you left; `⌘←` / `⌘→` open the folder beside it; `/` on the folder row finds a tile by name. The Windows host matches that chrome. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`; `.` blackout, `R` shuffle), and drag-out (`⌘`+drag on the canvas; a plain drag from a gallery, filmstrip or search-result cell, the marks when that cell is marked, as the original files). **Video (Mac PR 5):** FFmpeg + VideoToolbox decode, copied out of the decoder pool into a presentation ring of our own Metal textures, an MSL twin of the video shader (NV12/P010, the stream's matrix/range/transfer, HLG/PQ tone-mapped to SDR), Core Audio as the master A/V clock (no `AVPlayer`), a SwiftUI transport strip and the docs/design/16 video keys, and poster thumbnails for clips. Metadata read (PR 9, see above); no rating/metadata writes or RAW-pairing UI yet. Not on the Mac yet: `⌘G` go to, `;` Live Photo motion, Open RAW / Open JPEG of a pair ([docs/design/16](design/16-commands.md) "Not built"). Builds on Apple Silicon and Intel, macOS 14+ (Intel: unverified for frame pacing). |
+| **`mediaviewer_lab` (Linux)** | Linux PR 1's OpenGL present lab: a raw Wayland xdg toplevel (no toolkit), EGL desktop GL 3.3 core on an ARGB8888 sRGB surface, `eglSwapInterval(0)` and the wait for the previous commit's frame callback before recording, `wp_presentation` feedback scoring the run, idle → stop presenting, the judder sweep and the F3 overlay. No decode, no chrome yet. With `frametime`, the Linux gate's harness. |
 | **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. The filmstrip island borrows the session and drains folder/thumb completions. |
 | **Import add-on** (Milestone G) | An optional add-on installed from Settings → Add-ons ([docs/design/18](design/18-import.md)): copy a card or folder into a library, skip what is already there by content (size, then BLAKE3), verify every copy by reading it back, sort into dated folders with RAW+JPEG / Live Photo pairs and camera sidecars kept together, resume after an unplug, back up to a second drive from one read, verify an old folder for silent corruption, and **find duplicates** in a folder tree (every file, grouped by identical bytes; PR 54), where one copy at a time can be moved to the Recycle Bin / Trash, never the last. Apart from that, never deletes from, formats or overwrites anything. `mv_import.dll` / `libmv_import.dylib` plus its chrome (`MediaViewer.Import.Chrome.dll` / `Import.bundle`) are built beside the app in `build/addons/import` and shipped as a separate signed download that a stable run of the release workflow packs beside the app (RELEASING.md); the base install does not contain them. Settings → Add-ons offers Install only when that download exists and verifies for the running app. With it absent, `Ctrl+Shift+I` / `Ctrl+Shift+F7` do not exist. The shared engine is tested; the Windows and Mac hosts are written but their first platform builds and every hardware verify line are owed (docs/design/10). Also from this work, in the base app: `F8` across drives now deletes the source only after a verified copy. |
 
@@ -301,6 +303,57 @@ Windows DXGI JSON report over is a failed gate, not a pass.
 slideshow / quits, `0`–`4` are the zoom presets, `T`/`G` toggle the filmstrip/gallery,
 `F11`/`F` fullscreen, `F5` starts a stills slideshow. Idle (`--static`) must park the
 cursor off the window.
+
+### Linux (Linux PR 1)
+
+The present lab, `frametime` and the portable tests, from the root `CMakeLists.txt` (it includes
+`cmake/linux.cmake`). GCC 13 or newer, CMake ≥ 3.28, Ninja, pkg-config, and the Wayland, xkbcommon
+and glvnd development packages; Weston and Mesa to run the smoke headless. The protocol XML is
+vendored (`tools/linux/protocols/`), so the distribution's wayland-protocols is not needed.
+
+```sh
+# Ubuntu 24.04 / Debian 12
+sudo apt-get install ninja-build pkg-config libwayland-dev libxkbcommon-dev \
+  libegl-dev libgl-dev libopengl-dev weston libegl-mesa0 libgl1-mesa-dri
+
+# with vcpkg (as CI): the root manifest installs catch2 and imgui[opengl3-binding] only
+cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+# or without vcpkg: an imgui 1.92.8 checkout and an installed Catch2 3
+cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DMV_IMGUI_SOURCE_DIR=$HOME/src/imgui -DCMAKE_PREFIX_PATH=$HOME/.local
+cmake --build build-linux
+ctest --test-dir build-linux --output-on-failure   # mv_tests, and linux_lab_smoke when weston exists
+```
+
+`-DMV_ASAN=ON` with `-DCMAKE_BUILD_TYPE=Debug` is the ASan + UBSan configuration. The lab runs
+in a Wayland session only; it exits 2 without `WAYLAND_DISPLAY` (X11 is not built yet).
+
+```sh
+./build-linux/bin/mediaviewer_lab                    # Space sweep, F3 or F overlay, R reset, Esc quit
+./build-linux/bin/mediaviewer_lab --soak 60 --json report.json --gate
+./build-linux/bin/mediaviewer_lab --soak 60 --static --json idle.json --gate
+./build-linux/bin/frametime --seconds 60             # both soaks, the gate, the baseline check
+```
+
+`frametime` on Linux requires `drop_source` `Wayland presentation feedback`, which only feedback
+with `VSYNC` and `HW_CLOCK` and a moving vblank counter earns; headless Weston's is labelled
+`clock intervals (weaker)` and fails, as it must. `--baseline` / `--update-baseline` work as on
+Windows. For the gate, run it in a real session on a quiet machine with the display awake
+(`systemd-inhibit --what=idle:sleep:handle-lid-switch ./build-linux/bin/frametime --seconds 60`)
+and the pointer off the window for the idle soak.
+
+The headless smoke by hand (what CI's `linux-lab-smoke` runs; `MV_WESTON_RENDERER=pixman` for
+the other renderer):
+
+```sh
+bash tools/linux/lab_smoke.sh build-linux/bin/mediaviewer_lab build-linux/bin/frametime
+# or by hand:
+export XDG_RUNTIME_DIR=$(mktemp -d); chmod 700 "$XDG_RUNTIME_DIR"
+weston --backend=headless --renderer=gl --socket=wl-test --idle-time=0 &
+WAYLAND_DISPLAY=wl-test ./build-linux/bin/mediaviewer_lab --soak 10 --json /tmp/r.json
+```
+
+Start Weston with `--debug` to take a picture of it with `weston-screenshooter`.
 
 ### MediaViewer.app and a shippable Mac build (Mac PR 8)
 
@@ -1714,6 +1767,38 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Linux PR 1: the OpenGL present lab on Wayland (2026-10-23)
+
+A draft slice: its verify line needs a real compositor on real hardware, and it was built in a
+Linux container with no GPU and no display (Ubuntu 24.04, GCC 13.3, Mesa 25.2 llvmpipe, Weston
+13).
+
+- **Checked (Linux container):** the root CMake build on Linux (RelWithDebInfo, and Debug with
+  ASan + UBSan; imgui from `MV_IMGUI_SOURCE_DIR`, Catch2 from a prefix); `mv_tests` in both (the
+  portable suites, the new presentation-pacer and Linux report cases); `linux_lab_smoke` with
+  Weston's GL renderer and once with pixman; the lab's soaks under ASan + UBSan, leak detection
+  on, with no report. Under headless Weston the lab maps its window, makes an OpenGL 4.5 core context on
+  llvmpipe through EGL and an sRGB surface, presents, draws F3, and writes reports `frametime` parses:
+  - animated 10 s (GL renderer): 387 frames, mean 25.8 ms, p99 43.4 ms, max 62.1 ms against an
+    advertised 16.67 ms; feedback flags 0 and seq 0 on every frame, so `drop_source` "clock
+    intervals (weaker)", `displayed_presents` 0, `meets_pr1_gate` false, `--gate` exit 1;
+  - pixman renderer: 380–386 frames, mean 25.9–26.3 ms, max 60–85 ms, the same labels;
+  - static 10 s: 0 presents after warm-up, 0.0004–0.0006 % of a core;
+  - a screenshot through `weston-screenshooter` shows the sweep and F3, and the theme's canvas
+    colour reads back as `#21232A` from a linear clear (the sRGB encode holds, GL and pixman).
+- **Not measured:** pacing. Headless Weston cannot show it (docs/design/12, "Headless Weston
+  proves plumbing, never pacing"). Owed: the 60 s gate on Mutter and KWin with Mesa on Intel and
+  AMD (and Weston on DRM as the quiet machine), NVIDIA (egl-wayland's sRGB colour space is
+  unverified), fractional scale, occlusion and `suspended` on a real compositor, a GPU reset.
+- **Not built:** X11, Qt chrome, decode, video (Linux PRs 2–8); a Linux GPU runner, so
+  `frametime-linux` is skipped and its skip is a warning (docs/design/12).
+- **CI only:** the Windows and Mac builds now compile `gfx/presentation_pacer.cpp` and run its
+  tests, and `pace_json.h` became one template for the Metal and Linux reports (the Metal report's
+  bytes are pinned by a test, checked identical here against the old writer). Neither build ran
+  here; `pwsh` is not installed either, so the new hostable-core rule was checked with an
+  equivalent `grep -P` over the tree (clean).
+
 
 ### Startup time: the boot timeline, the chrome preload, lazy Mac panes (#486, 2026-10-19)
 

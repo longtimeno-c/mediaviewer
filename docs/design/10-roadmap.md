@@ -252,6 +252,29 @@ drag to Applications → open a real camera dump, with no Gatekeeper block and n
 Sparkle takes N → N+1 silently and refuses an appcast signed with any other key; dragging the
 app to the Trash removes the Quick Look extension.
 
+## Linux halves of PRs 1–8
+
+Linux is a third host of the same core (D9 amended 2026-10-23): its own present path, pacing gate,
+hardware decode, audio clock, I/O, chrome and packages, built as the Mac host was
+([plan](../plans/linux.md), [Platforms](15-platforms.md)). The slices are the plan's §9; what has
+landed is below.
+
+### Linux PR 1 — OpenGL present lab
+A raw Wayland xdg toplevel (no toolkit), EGL desktop GL 3.3 core on an ARGB8888 sRGB surface,
+`eglSwapInterval(0)` and the wait for the previous commit's frame callback before recording,
+`wp_presentation` feedback for the statistics, idle → stop presenting, the F3 overlay (ImGui OpenGL
+3), `frametime` on Linux, a headless-Weston smoke in CI (`linux-lab-smoke`) and a gated job for a
+self-hosted Linux GPU runner (`frametime-linux`). Kept as the Linux debug harness
+([03](03-rendering.md#the-linux-present-path)).
+
+**Verify:** presents at exactly display refresh, 0 dropped frames over 60 s, ~0 % CPU idle, on a
+real Wayland session (Mutter or KWin) with Mesa on Intel or AMD, measured from `wp_presentation`
+feedback (VSYNC and HW_CLOCK). Under headless Weston it runs, reports, and labels its source weaker.
+
+**State (2026-10-23):** built, unit-tested and smoke-tested under headless Weston only (the CI
+smoke and a local run, with the GL and pixman renderers). The verify line's gate is owed on real
+hardware; no Linux GPU runner exists yet.
+
 ## Milestone D — Viewer and editing updates (PR 9–12, both platforms)
 
 ### PR 9 — Metadata (read)

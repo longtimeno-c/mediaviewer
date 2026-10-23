@@ -76,6 +76,8 @@ Platform APIs stay out of the shared modules.
 - **`HWND`, `ID3D11*`, `IDXGI*`, `wchar_t` paths, `OVERLAPPED`, WASAPI, `ReplaceFileW`** live in
   `shell/` and the Windows backends under `gfx/`, `io/*_win.cpp`, `player/*_win.cpp`, `edit/*_win.cpp`.
   Cocoa, Metal and CoreFoundation live in the Mac host and `*_mac.mm` / `*_mac.cpp` backends.
+  Wayland, EGL, GL and xkbcommon live in the Linux host (`shell/*_linux.cpp`) and the OpenGL backend
+  (`gfx/*_gl.cpp`, `gfx/*_wayland.cpp`); their headers name no EGL, GL or Wayland type.
 - Headers consumed above `gfx/` do not include `d3d11.h`. GPU resources above `gfx/` are opaque
   (`gpu_image.h` / `gpu_image_mac.h`, `native.h` accessors). `image/gpu_image.h` still reaches D3D11
   transitively through `gfx/device.h`.
@@ -97,7 +99,11 @@ FFmpeg's D3D11VA/DXVA2 hwcontext headers from `core/`, `codec/`, `canvas/`, `ima
 `player/`, `edit/`, `addon/`, `addons/`, `infer/` and `io/*.h` outside `*_win.cpp`, and the mirror on the
 Mac side: Foundation, AppKit, Metal, QuartzCore, CoreVideo, CoreMedia, VideoToolbox, AVFoundation and
 Core Audio headers (`#include` or `#import`) in the same places outside the `*_mac.*`, `*_metal.*` and
-`*_posix.*` port files.
+`*_posix.*` port files, and the third for Linux: EGL / GL / GLES, the Wayland, xkbcommon and X11
+headers, DRM / GBM / VA-API, PipeWire / PulseAudio / ALSA, D-Bus, GLib / GTK, Qt, BlueZ and the
+Linux-only `<linux/…>` and `<sys/…>` interfaces outside the `*_linux.*`, `*_posix.*`, `*_gl.*`,
+`*_egl.*` and `*_wayland.*` files. `<vulkan/…>` is refused everywhere under `src/`, with no exempt
+file (no Vulkan on any OS).
 
 ## Shaders
 
@@ -123,6 +129,15 @@ The Mac host was built as the Mac halves of PRs 1–8 (formerly Milestone F, PRs
 | 3 + 4 + 6 — chrome and browse | SwiftUI command bar, filmstrip and gallery over the shared folder model and JPEG-512 thumbnail cache (`jpg512.1`); FSEvents watch; keyboard-complete browse with the Mac default map, `?` overlay, marks, copy-to / move-to, Trash with confirm, drag in and out, argv, fullscreen, slideshow, animated GIF/APNG/WebP on the display-link clock |
 | 5 — video | FFmpeg + VideoToolbox on our `MTLDevice`, copy into our presentation ring, NV12/P010, YUV→RGB and HDR→SDR in MSL, Core Audio master clock, no-audio fallback to host time |
 | 8 — ship | UTIs for the still set with one "Open with" registration, Quick Look in a separate process, notarized drag-install disk image, Sparkle updates |
+
+## The Linux host, so far
+
+Linux's halves of PRs 1–8 come first ([plan](../plans/linux.md)); the tables above and below gain a
+Linux column as they land.
+
+| Linux PR | What the Linux host has |
+|---|---|
+| 1 — OpenGL present lab | A raw Wayland xdg toplevel (no toolkit; xkbcommon keys, pointer, fractional scale, `suspended`), EGL desktop GL 3.3 core on an ARGB8888 sRGB surface, `eglSwapInterval(0)` with the frame-callback wait before recording, `wp_presentation` statistics, idle → stop presenting, F3 (ImGui OpenGL 3), `frametime` on Linux ([03](03-rendering.md#the-linux-present-path)); workers named and niced in `core/job_system_posix.cpp`. Built and smoke-tested under headless Weston in CI; its gate is owed on a real session |
 
 ## Feature homes per platform
 
@@ -168,3 +183,5 @@ The privacy line is the same on both: nothing about a user's files leaves the ma
 - The ImageIO HEIC fast path on macOS (the OS-codec hook always declines).
 - The Voice query add-on (PRs 27–28, [19-voice.md](19-voice.md)).
 - Frame-pacing measurement on Intel Macs.
+- Linux past PR 1: decode, chrome, video, packages ([plan](../plans/linux.md)); X11; the Linux PR 1
+  gate on real hardware.
