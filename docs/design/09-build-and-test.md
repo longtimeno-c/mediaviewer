@@ -186,21 +186,21 @@ it replaces.
 |---|---|---|
 | `policy` | windows-latest | The policy gates above |
 | `windows-deps` | windows-latest | Installs the vcpkg manifest once and caches it (≈45 min after a manifest/baseline change, mostly FFmpeg) |
-| `build` | windows-latest | MSVC Release, MSVC Debug, clang-cl, ASan; full `ctest`; uploads broken-corpus reproducers |
+| `build` | windows-latest | MSVC Release, MSVC Debug, clang-cl, ASan; full `ctest`; uploads broken-corpus reproducers; the MSVC Release leg uploads `driftwire.exe` with `libsodium.dll` and `blake3.dll` (an artefact, unsigned) |
 | `abi-smoke` | windows-latest | The C# ABI smoke test |
 | `windows-chrome`, `mac-chrome` | windows-latest, macos-14 | WinUI and SwiftUI chrome compile; the chrome contract tests (`dotnet test`, `swift test`) |
-| `mac-build` | macos-15 | The native core on macOS (arm64): vcpkg trees cached under release.yml's key, the licence gate over both Mac trees, the full build and `ctest --no-tests=error` (`mv_tests`, `mv_import_tests`, `mv_ai_tests`, the Mac-only Metal pacer / AVFoundation / PDFKit / Photos-folder / write-guard tests) |
+| `mac-build` | macos-15 | The native core on macOS (arm64): vcpkg trees cached under release.yml's key, the licence gate over both Mac trees, the full build and `ctest --no-tests=error` (`mv_tests`, `mv_import_tests`, `mv_ai_tests`, the Mac-only Metal pacer / AVFoundation / PDFKit / Photos-folder / write-guard tests); uploads the macOS `driftwire` (an artefact, unsigned) |
 | `mac-packaging` | ubuntu-latest | Release tooling tests and macOS bundle policy (`tools/mac/*`) |
-| `portable-core` | ubuntu-latest | `cmake/portable` under ASan + UBSan: the Import engine, add-on host and verified copy (`mv_import_tests`), the add-on packer and SDK cross-checks against the C++ verifier, and the clip and trim suites against the distro FFmpeg |
+| `portable-core` | ubuntu-latest | `cmake/portable` under ASan + UBSan: the Import engine, add-on host and verified copy (`mv_import_tests`), Driftwire's suite with the command line's (`"[driftwire]"`, a Secret Service of the job's own), the add-on packer and SDK cross-checks against the C++ verifier, and the clip and trim suites against the distro FFmpeg |
+| `driftwire-cli-linux` | ubuntu-22.04 (x64), ubuntu-22.04-arm (arm64) | The `driftwire` command line's Linux packages ([28](28-driftwire.md#from-a-terminal-driftwire)): `cmake/driftwire-cli` with GCC 12 and the pinned vcpkg, the `"[cli]"` suites, the `NEEDED` gate (libc, libm and the loader only), CPack's `.deb`, `.rpm` and tarball, the `.deb` installed and run; uploads the packages. The same steps (`.github/actions/driftwire-cli-linux`) build the released ones |
 | `frametime` | self-hosted `[windows, gpu]` | Swapchain recovery, then the 60 s animated + idle gates against the rolling baseline (cached per runner; updated only on `main`). Runs only when `MV_GPU_RUNNER_ENABLED` is set and never for fork PRs; hosted runners have no usable GPU, so a skip is not a pass |
 | `frametime-mac` | self-hosted `[macOS, ARM64, gpu]` | Mac PR 1: the 60 s animated + idle gates on Metal (`frametime --seconds 60`, under `caffeinate`). Runs only when `MV_MAC_GPU_RUNNER_ENABLED` is set and never for fork PRs |
 | `present-gates` | ubuntu-latest | Always runs. Fails if either frame-time gate failed or was cancelled; a skipped gate is a warning annotation and a line in the run summary, or a failure on this repository's own branches when `MV_REQUIRE_PRESENT_GATES` is set. This is the check to require in branch protection, since GitHub treats a skipped job as passing |
 | `fuzz` | windows-latest | 60 s per harness on PRs; 20 min per harness nightly. Uploads crash / timeout / OOM inputs |
 | `broken-corpus-full` | windows-latest | Nightly / dispatch: the exhaustive broken-corpus sweep |
 
-There is no macOS native job: CI on macOS compiles the SwiftUI chrome packages only. The Mac
-core, its `ctest` suites and the Metal present-loop gate run on a developer Mac
-([DEVELOPMENT](../DEVELOPMENT.md)).
+The Mac core and its `ctest` suites run on a hosted Mac (`mac-build`); the Metal present-loop gate
+needs the self-hosted Mac (`frametime-mac`) or a developer Mac ([DEVELOPMENT](../DEVELOPMENT.md)).
 
 Release packaging is a separate manual workflow (`release.yml`; see
 [RELEASING.md](../../RELEASING.md)).
@@ -289,6 +289,9 @@ Direct download only; the app is GPL-3.0-or-later and has no Store channel
   (Windows App SDK AI / ONNX / DirectML / WebView2).
 - **macOS:** a notarized `MediaViewer.app` in a disk image, built by `tools/mac/macpack.py`,
   with a signed appcast feed.
+- **Linux (the `driftwire` command line only):** a `.deb`, an `.rpm` and a tarball per
+  architecture from `cmake/driftwire-cli` (CPack), published with each release; unsigned, no
+  package repository and no updater ([12](12-decision-log.md#platforms), 2026-10-23).
 
 Code signing, the update manifest, staged rollout, crash reports and telemetry are in
 [13](13-updates-and-telemetry.md); release mechanics in [RELEASING.md](../../RELEASING.md).

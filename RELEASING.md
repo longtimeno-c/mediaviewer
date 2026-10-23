@@ -2,7 +2,8 @@
 
 Downloads belong on [GitHub Releases](https://github.com/longtimeno-c/mediaviewer/releases):
 a Windows x64 installer wizard (`Setup.exe`) and a macOS 14+ universal (Apple Silicon and
-Intel) disk image (`.dmg`, drag to Applications).
+Intel) disk image (`.dmg`, drag to Applications), and the `driftwire` command line's Linux
+packages (`.deb`, `.rpm`, tarball; x86_64 and arm64).
 
 **You can build test installers without signing certificates.** Use `artifacts`.
 Both `preview` and `stable` publish signed update feeds, so both need Developer ID, Apple
@@ -25,8 +26,8 @@ bump the version, commit changes, or push them for you.
 | Mode | Result | Credentials |
 |---|---|---|
 | `artifacts` (default) | Unsigned installers in Actions artifacts, retained 30 days | None |
-| `preview` | Both installers and signed update feeds as a **Pre-release**, for the Preview update channel | Same as stable |
-| `stable` | Both installers, signed update feeds, and the Import, Driftwire, Places and Local search add-ons, marked **Latest** | Windows manifest key + all six Mac secrets; Azure optional |
+| `preview` | Both installers, signed update feeds and the driftwire Linux packages as a **Pre-release**, for the Preview update channel | Same as stable |
+| `stable` | Both installers, signed update feeds, the driftwire Linux packages, and the Import, Driftwire, Places and Local search add-ons, marked **Latest** | Windows manifest key + all six Mac secrets; Azure optional |
 
 After the updated workflow is on `main`, the equivalent commands are:
 
@@ -43,8 +44,8 @@ Leave `min_version=0.0.0` and `blocklist` empty normally. These are Windows upda
 withdrawal controls. A blocklist is comma-separated strict versions without spaces;
 it must not contain the release being published.
 
-Required secrets are checked before the expensive builds. Windows and Mac build
-independently; a final job validates both asset sets, uploads into a draft, checks the
+Required secrets are checked before the expensive builds. Windows, Mac and the Linux packages
+(`linux-cli`) build independently; a final job validates every asset set, uploads into a draft, checks the
 uploaded names and sizes, and only then publishes. A failed platform leaves the previous
 Latest release intact. Only the publishing job has release-write permission.
 
@@ -161,7 +162,20 @@ publishing still works with a signed update manifest; Windows may warn at instal
 | `MediaViewer-<version>.dmg` | Mac first install |
 | `MediaViewer-<version>.zip` | Stapled Mac app archive for Sparkle |
 | `appcast.xml` | Signed Sparkle feed |
+| `driftwire_<version>_amd64.deb`, `driftwire_<version>_arm64.deb` | The driftwire command line for Debian and Ubuntu |
+| `driftwire-<version>-1.x86_64.rpm`, `driftwire-<version>-1.aarch64.rpm` | The same for Fedora and other RPM systems |
+| `driftwire-<version>-linux-x86_64.tar.gz`, `driftwire-<version>-linux-aarch64.tar.gz` | The same, unpacked anywhere (`bin/driftwire`, `share/`) |
 | `SHA256SUMS.txt` | Download checksums |
+
+**The driftwire Linux packages (docs/design/28 "From a terminal")** are built on every run, preview
+and stable included, by the `linux-cli` job: x64 on `ubuntu-22.04` and arm64 on `ubuntu-22.04-arm`,
+GCC 12 and the pinned vcpkg, so they run from glibc 2.35 up. The job runs the `"[cli]"` suites and
+the `NEEDED` gate (the program needs only libc, libm and the loader), makes the three packages with
+CPack (`cmake/driftwire-cli`), installs the `.deb` and checks it reports the release's version.
+`publish` refuses a release without all six (`linux_cli_asset_names` in
+`tools/package/github-release.py`), and the notes link them. They are not signed and there is no
+package repository: `SHA256SUMS.txt` is how a download is checked. The command line's Windows and
+macOS builds are not released (the owner chose Linux packages only); CI uploads them as artefacts.
 
 Add-ons (Milestone G, [docs/design/18](docs/design/18-import.md)) publish beside the app on the same release,
 one set per platform, signed with the **same** Ed25519 key as the update manifest:
