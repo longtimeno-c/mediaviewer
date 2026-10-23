@@ -1433,10 +1433,15 @@ public static partial class IslandHost
         viewFlyout.Opening += (_, _) => RefreshViewMenu(viewFlyout, sortMenu, kindMenu);
         RefreshViewMenu(viewFlyout, sortMenu, kindMenu);
 
+        // The presenter scrolls both ways by default; About wraps, so it never
+        // shows a horizontal bar.
+        Style aboutPresenter = FlyoutPresenterStyle();
+        aboutPresenter.Setters.Add(new Setter(ScrollViewer.HorizontalScrollModeProperty, ScrollMode.Disabled));
+        aboutPresenter.Setters.Add(new Setter(ScrollViewer.HorizontalScrollBarVisibilityProperty, ScrollBarVisibility.Disabled));
         var aboutFlyout = new Flyout
         {
             ShouldConstrainToRootBounds = false,
-            FlyoutPresenterStyle = FlyoutPresenterStyle(),
+            FlyoutPresenterStyle = aboutPresenter,
         };
         aboutFlyout.Content = BuildAboutContent();  // IslandHost.About.cs (PR 8)
 

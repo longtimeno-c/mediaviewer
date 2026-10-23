@@ -322,7 +322,10 @@ result<std::unique_ptr<listener>> listen(bool loopback_only) {
   a.sin_addr.s_addr = ::htonl(loopback_only ? INADDR_LOOPBACK : INADDR_ANY);
   a.sin_port = 0;
   int len = sizeof a;
-  if (::bind(s, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 || ::listen(s, 4) != 0 ||
+  // A backlog of 4 refused a fifth connect outright (WSAECONNREFUSED) while a
+  // busy accept thread had not yet taken the first four; the caps that matter
+  // apply after accept.
+  if (::bind(s, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 || ::listen(s, 16) != 0 ||
       ::getsockname(s, reinterpret_cast<sockaddr*>(&a), &len) != 0) {
     ::closesocket(s);
     return err(status::io);

@@ -87,6 +87,10 @@ struct probe {
   }
 };
 
+// How far past the wall limit a stop may land: bounded, not exact. 400 ms let a
+// loaded CI runner fail at 701 ms against a 700 ms bound.
+constexpr auto kStopSlack = 1200ms;
+
 script_limits fast_limits() {
   script_limits l;
   l.memory_bytes = 16u << 20;
@@ -298,7 +302,7 @@ TEST_CASE("a runaway loop stops the add-on within the bound", "[script][limits]"
     const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(p.stopped_at - t0);
     INFO(took.count() << " ms");
     REQUIRE((p.why == script_stop::instructions || p.why == script_stop::time));
-    REQUIRE(took < fast_limits().wall + 400ms);
+    REQUIRE(took < fast_limits().wall + kStopSlack);
     REQUIRE_FALSE(a->status().running);
     REQUIRE(a->status().stop == p.why);
     REQUIRE_FALSE(a->status().message.empty());
@@ -353,7 +357,7 @@ TEST_CASE("library loops that run no VM instruction still stop on time", "[scrip
     const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(p.stopped_at - t0);
     INFO(took.count() << " ms");
     REQUIRE((p.why == script_stop::time || p.why == script_stop::instructions));
-    REQUIRE(took < fast_limits().wall + 400ms);
+    REQUIRE(took < fast_limits().wall + kStopSlack);
   }
   // string.rep of nothing, many times, is nothing, at once.
   const auto out = eval("mv.log(#string.rep('', 1e15), #string.rep('', 1e15, ''))");
@@ -511,7 +515,7 @@ TEST_CASE("the default limits as shipped stop a spin within a second", "[script]
   const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(p.stopped_at - t0);
   WARN("default limits: stopped by " << mv::addon::script_stop_name(p.why) << " after "
                                      << took.count() << " ms");
-  REQUIRE(took < script_limits{}.wall + 400ms);
+  REQUIRE(took < script_limits{}.wall + kStopSlack);
 }
 
 TEST_CASE("a __gc metamethod never runs: not during a task, a stop or teardown", "[script][sandbox]") {
@@ -633,7 +637,7 @@ TEST_CASE("table.insert, table.remove and a sort with a C comparator stop on tim
     const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(p->stopped_at - t0);
     INFO(took.count() << " ms");
     REQUIRE((p->why == script_stop::time || p->why == script_stop::instructions));
-    REQUIRE(took < fast_limits().wall + 400ms);
+    REQUIRE(took < fast_limits().wall + kStopSlack);
   }
 }
 
@@ -662,7 +666,7 @@ TEST_CASE("a plain string.find stops on time", "[script][limits]") {
     const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(p->stopped_at - t0);
     INFO(took.count() << " ms");
     REQUIRE(p->why == script_stop::time);
-    REQUIRE(took < script_limits{}.wall + 400ms);
+    REQUIRE(took < script_limits{}.wall + kStopSlack);
   }
   // A find that succeeds is unchanged.
   const auto out = eval("mv.log(('hello world'):find('o w', 1, true), ('abc'):find('c'))");

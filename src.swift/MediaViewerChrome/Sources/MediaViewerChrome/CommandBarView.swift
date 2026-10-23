@@ -324,6 +324,7 @@ public struct CommandBarView: View {
 private struct UpdateBarItem: View {
   @ObservedObject private var store = FolderStore.shared
   @ObservedObject private var addons = AddonRestart.shared
+  @ObservedObject private var restart = RestartNoticeStore.shared
 
   var body: some View {
     let version = store.updateVersion
@@ -349,8 +350,10 @@ private struct UpdateBarItem: View {
           .padding(.trailing, MVTheme.space(10))
           .accessibilityLabel("Update download progress")
       }
+    case 3 where restart.updateWaiting:
+      status(RestartWords.updateWaiting, help: RestartWords.updateWaitingTip(restart.updateWaitingFor))
     case 3:
-      Button("Update ready — restart") { mv_chrome_restart_to_update() }
+      Button("Update ready — restart") { restart.restartToUpdateWhenIdle() }
         .buttonStyle(FlatButtonStyle())
         .help((version.map { "Version \($0) is downloaded. Restart to use it, or it installs when you quit MediaViewer." }
                ?? "A new version is downloaded. Restart to use it, or it installs when you quit MediaViewer.")

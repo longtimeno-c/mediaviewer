@@ -9,8 +9,12 @@
 #   3. Publish 0.1.1 with a dev-signed manifest; a TAMPERED manifest first must
 #      be rejected (nothing staged); then the signed one stages 0.1.1 and keeps
 #      0.1.0's package for rollback. Closing the viewer applies it (no wizard).
-#   4. Publish 0.1.2 whose chrome is corrupt (never finishes starting). It is
-#      applied, fails to start twice, and the third start rolls back to 0.1.1.
+#   4. #532: publish 0.1.2 and run a second copy (--new-instance). Closing the
+#      first applies nothing (Update.exe would kill the second); asked to quit
+#      for an update (MediaViewer.QuitForUpdate), the idle second copy quits
+#      and, the last one out, applies 0.1.2.
+#   5. Publish 0.1.3 whose chrome is corrupt (never finishes starting). It is
+#      applied, fails to start twice, and the third start rolls back to 0.1.2.
 #
 # Needs: a Release build (build-pr8d), vpk 1.2.0, dotnet. Uses a dev build of
 # the chrome (-p:MvUpdaterDev=true) so MV_UPDATE_FEED_DIR / MV_UPDATE_DEV_PUBKEY
@@ -101,7 +105,20 @@ function Publish-Manifest($version, [switch]$Tamper) {
     }
 }
 
-function Start-Viewer { Start-Process (Join-Path $root "current\MediaViewer.exe") -PassThru }
+function Start-Viewer([string[]]$Arguments = @()) {
+    if ($Arguments.Count) { Start-Process (Join-Path $root "current\MediaViewer.exe") -ArgumentList $Arguments -PassThru }
+    else { Start-Process (Join-Path $root "current\MediaViewer.exe") -PassThru }
+}
+
+# #532: what another copy's "Update ready - restart" sends (MediaViewer.Updater/OtherInstances.cs).
+Add-Type -Namespace MvE2E -Name User32 -MemberDefinition @'
+[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern uint RegisterWindowMessageW(string name);
+[DllImport("user32.dll")] public static extern bool PostMessageW(System.IntPtr hwnd, uint msg, System.UIntPtr w, System.IntPtr l);
+'@
+function Ask-QuitForUpdate {
+    $msg = [MvE2E.User32]::RegisterWindowMessageW("MediaViewer.QuitForUpdate")
+    [void][MvE2E.User32]::PostMessageW([IntPtr]0xFFFF, $msg, [UIntPtr][uint32]$PID, [IntPtr]::Zero)
+}
 
 function Close-Viewer($p, [int]$after = 6) {
     Start-Sleep -Seconds $after
@@ -160,15 +177,34 @@ try {
     Close-Viewer $p 14   # past the 10 s confirm timer
     Step "0.1.1 start confirmed (trial cleared)" ((Trial "trial" "version") -eq "")
 
-    # --- broken 0.1.2: two failed starts, third rolls back -----------------
-    Stage-Payload "0.1.2" -Broken
+    # --- #532: 0.1.2 with a second copy running ----------------------------
+    Stage-Payload "0.1.2"
     Publish-Manifest "0.1.2"
     $p = Start-Viewer
     $staged = Wait-Until { Test-Path (Join-Path $root "packages\$packId-0.1.2-full.nupkg") } 90
     Step "0.1.2 staged" $staged
+    $second = Start-Viewer @("--new-instance")
+    [void](Wait-Until { $second.Refresh(); $second.MainWindowHandle -ne 0 -or $second.HasExited } 30)
     Close-Viewer $p 2
-    Step "0.1.2 applied after exit" (Wait-Until { (Installed-Version) -eq "0.1.2" } 120)
-    Step "trial armed for 0.1.2" ((Trial "trial" "version") -eq "0.1.2")
+    Start-Sleep -Seconds 15
+    Step "another copy running: closing one applies nothing" ((Installed-Version) -eq "0.1.1")
+    Step "another copy running: it is not killed" (-not $second.HasExited)
+    Ask-QuitForUpdate
+    Step "asked to quit for an update, the idle copy quits" ($second.WaitForExit(30000))
+    Step "the last copy out applies 0.1.2" (Wait-Until { (Installed-Version) -eq "0.1.2" } 120)
+    $p = Start-Viewer
+    Close-Viewer $p 14   # past the 10 s confirm timer
+    Step "0.1.2 start confirmed (trial cleared)" ((Trial "trial" "version") -eq "")
+
+    # --- broken 0.1.3: two failed starts, third rolls back -----------------
+    Stage-Payload "0.1.3" -Broken
+    Publish-Manifest "0.1.3"
+    $p = Start-Viewer
+    $staged = Wait-Until { Test-Path (Join-Path $root "packages\$packId-0.1.3-full.nupkg") } 90
+    Step "0.1.3 staged" $staged
+    Close-Viewer $p 2
+    Step "0.1.3 applied after exit" (Wait-Until { (Installed-Version) -eq "0.1.3" } 120)
+    Step "trial armed for 0.1.3" ((Trial "trial" "version") -eq "0.1.3")
     for ($i = 1; $i -le 2; $i++) {
         $p = Start-Viewer
         Close-Viewer $p 6
@@ -177,12 +213,12 @@ try {
     $p = Start-Viewer
     $quick = $p.WaitForExit(15000)
     Step "third start hands off to rollback and exits" $quick
-    Step "rolled back to 0.1.1" (Wait-Until { (Installed-Version) -eq "0.1.1" } 120)
-    Step "0.1.2 recorded as failed" ((Trial "failed" "versions") -match '0\.1\.2')
-    # Update.exe restarts the prior version; it must refuse 0.1.2 again.
+    Step "rolled back to 0.1.2" (Wait-Until { (Installed-Version) -eq "0.1.2" } 120)
+    Step "0.1.3 recorded as failed" ((Trial "failed" "versions") -match '0\.1\.3')
+    # Update.exe restarts the prior version; it must refuse 0.1.3 again.
     Start-Sleep -Seconds 8
-    Step "0.1.2 not re-staged after rollback" (-not (Test-Path (Join-Path $root "packages\$packId-0.1.2-full.nupkg")) -or
-        ((Installed-Version) -eq "0.1.1"))
+    Step "0.1.3 not re-staged after rollback" (-not (Test-Path (Join-Path $root "packages\$packId-0.1.3-full.nupkg")) -or
+        ((Installed-Version) -eq "0.1.2"))
     Get-Process MediaViewer -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$root*" } |
         ForEach-Object { Close-Viewer $_ 0 }
 }

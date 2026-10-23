@@ -290,6 +290,17 @@ public sealed class UpdateService
         {
             staged = _staged;
             if (staged is null || _manager is null || _applyLaunched) return false;
+        }
+        // #532: Update.exe would kill the others mid-transfer. The last one to
+        // go applies it (on exit, or hidden in the background).
+        if (OtherInstances.Running().Count > 0)
+        {
+            _log("updater: another MediaViewer is running; not applying now");
+            return false;
+        }
+        lock (_gate)
+        {
+            if (_applyLaunched) return false;
             _applyLaunched = true;
         }
         try
