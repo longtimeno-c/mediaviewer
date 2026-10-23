@@ -955,11 +955,19 @@ class engine {
   // Lets `root` (0: every root) index again: walked first, then queued.
   // True when one was held.
   bool unhold(std::int64_t root);
-  // data/resume.json, the roots whose pictures are not all indexed, for the
-  // host to read at launch without loading the pack (issue #299). Written by
-  // refresh_counts when that set changes. The last text written, control thread.
+  // data/resume.json, the roots with work left on any pass that is on (not
+  // only their pictures), for the host to read at launch without loading the
+  // pack (issue #299). Written by the control loop when that set changes. The
+  // last text written, control thread.
   std::string resume_written_;
   void write_resume(const std::string& spec, const std::vector<root_row>& roots);
+  // True while `root` has work left that claim would take: the picture pass
+  // under `spec`, then every other pass that is on (claim's specs, filters and
+  // `after`s), with no root held or skipped.
+  [[nodiscard]] bool work_left_in_root(std::int64_t root, const std::string& spec);
+  // The roots data/resume.json listed when this engine started: what the last
+  // session left unfinished on any pass. start() holds them.
+  [[nodiscard]] std::vector<std::int64_t> read_resume() const;
   std::mutex control_m_;
   std::condition_variable control_cv_;
   std::set<std::int64_t> rescan_roots_;

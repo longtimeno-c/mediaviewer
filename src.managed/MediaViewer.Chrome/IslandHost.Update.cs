@@ -3,6 +3,7 @@
 using System.Runtime.InteropServices;
 using MediaViewer.Shared;
 using MediaViewer.Updater;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -90,6 +91,79 @@ public static partial class IslandHost
         try { Console.Error.WriteLine(message); } catch (IOException) { }
     }
 
+    // #532: "Update ready — restart" clicked while an add-on reports work under
+    // way (busy_post: a Driftwire transfer), or while another MediaViewer runs
+    // (Update.exe would kill it, perhaps mid-transfer). The others are asked to
+    // quit once idle; the restart goes when this process is idle and alone.
+    // The wait is here, before native is asked (Send(Command.UpdateRestart, 0)),
+    // so native's checks (no playing clip) and the view it restores are those of
+    // the moment the restart goes, not of the click.
+    // What it waits for, in words for the help; empty while it does not wait.
+    private static List<string> _updateWaitingFor = new();
+    private static DispatcherQueueTimer? _updateWaitTimer;
+    private static int _updateWaitTicks;
+
+    private static List<string> UpdateBlockers()
+    {
+        var what = new List<string>();
+        foreach (string w in SlotBusy.Values)
+        {
+            if (!what.Contains(w)) what.Add(w);
+        }
+        // The others are asked only once this process is idle, so a person's
+        // other windows do not close while this one still waits on its own transfer.
+        if (what.Count > 0 || OtherInstances.Running().Count == 0) return what;
+        // Asked again every few seconds: a window opened meanwhile hears it too.
+        if (_updateWaitTicks++ % 5 == 0) OtherInstances.AskToQuit();
+        what.Add(RestartWords.OtherWindow);
+        return what;
+    }
+
+    private static void NoteUpdateWaiting(List<string> waiting)
+    {
+        if (waiting.SequenceEqual(_updateWaitingFor)) return;
+        _updateWaitingFor = waiting;
+        if (_lastUpdateStatus is { } s) ShowUpdateStatus(s);
+    }
+
+    private static void RestartToUpdateWhenIdle()
+    {
+        _updateWaitTicks = 0;
+        List<string> waiting = UpdateBlockers();
+        if (waiting.Count == 0)
+        {
+            StopUpdateWait();
+            Send(Command.UpdateRestart, 0);
+            return;
+        }
+        NoteUpdateWaiting(waiting);
+        if (_dispatcher is null) return;
+        _updateWaitTimer ??= _dispatcher.DispatcherQueue.CreateTimer();
+        _updateWaitTimer.Interval = TimeSpan.FromSeconds(1);
+        _updateWaitTimer.IsRepeating = true;
+        _updateWaitTimer.Tick -= OnUpdateWaitTick;
+        _updateWaitTimer.Tick += OnUpdateWaitTick;
+        _updateWaitTimer.Start();
+    }
+
+    private static void OnUpdateWaitTick(DispatcherQueueTimer sender, object args) => Guarded(() =>
+    {
+        List<string> waiting = UpdateBlockers();
+        if (waiting.Count > 0)
+        {
+            NoteUpdateWaiting(waiting);
+            return;
+        }
+        StopUpdateWait();
+        Send(Command.UpdateRestart, 0);
+    });
+
+    private static void StopUpdateWait()
+    {
+        _updateWaitTimer?.Stop();
+        NoteUpdateWaiting(new List<string>());
+    }
+
     private static StackPanel BuildUpdateButton()
     {
         // Tag 2: the button is offering an add-on restart (RequestAddonRestart).
@@ -98,6 +172,7 @@ public static partial class IslandHost
         {
             int arg = _updateButton?.Tag is int t ? t : 0;
             if (arg == AddonUpdatesArg) OpenAddonUpdates();
+            else if (arg == 0) RestartToUpdateWhenIdle();
             else Send(Command.UpdateRestart, arg);
         });
         _updateButton.Visibility = Visibility.Collapsed;
@@ -223,7 +298,13 @@ public static partial class IslandHost
             string tip = "";
             bool clickable = false;
             int restartArg = 0;
-            if (s.Phase == UpdatePhase.Ready)
+            if (s.Phase == UpdatePhase.Ready && _updateWaitingFor.Count > 0)
+            {
+                // #532: a transfer under way is never cut; the restart follows it.
+                text = RestartWords.UpdateWaiting;
+                tip = RestartWords.UpdateWaitingTip(_updateWaitingFor);
+            }
+            else if (s.Phase == UpdatePhase.Ready)
             {
                 text = s.Urgency == UpdateUrgency.Normal ? "Update ready — restart" : "Important update — restart";
                 tip = s.Urgency switch
@@ -386,6 +467,10 @@ public static partial class IslandHost
         {
             UpdateService? updater = _updater;
             if (updater is null || updater.Status.Phase != UpdatePhase.Ready) return 1;
+            // #532: no apply while another MediaViewer runs (Update.exe kills it).
+            // An add-on restart then starts again without it; a hidden process
+            // tries again later.
+            if (OtherInstances.Running().Count > 0) return 1;
             string[] args = arg == IntPtr.Zero || sizeBytes < 2
                 ? Array.Empty<string>()
                 : (Marshal.PtrToStringUni(arg, sizeBytes / 2) ?? "").Split('\0', StringSplitOptions.RemoveEmptyEntries);
