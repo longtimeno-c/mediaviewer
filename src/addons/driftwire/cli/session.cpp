@@ -824,6 +824,7 @@ struct session::impl {
         return;
       }
       set_option("internet", true, false);
+      refresh_view();  // the toggle is in the view at once; what follows reads it
       if (then) then();
     };
     asked = std::move(q);
@@ -1291,28 +1292,50 @@ struct session::impl {
   }
 
   void list_help() {
-    std::vector<std::string> details;
+    std::vector<std::pair<std::string, std::string>> rows;
     for (const auto& c : commands()) {
       std::string head(c.name);
       if (!c.args.empty()) head += " " + std::string(c.args);
-      details.push_back(pad(head, 22) + std::string(c.description));
+      rows.emplace_back(std::move(head), std::string(c.description));
     }
-    say(tone::info, "Commands", std::move(details));
+    say_table("Commands", rows);
     if (o.plain) {
       say(tone::info, "Keys",
           {"Enter on an empty line sends the files to a computer nearby.",
            "Esc cancels what is under way; Ctrl+C twice closes Driftwire."});
       return;
     }
-    say(tone::info, "Keys",
-        {"Type or drop files, then pick a computer with " + std::string(th.g->arrows) + " and press Enter to send.",
-         "Tab completes a path or a command; Ctrl+P and Ctrl+N walk what was typed before.",
-         "Esc closes the palette, clears the line, then cancels what is under way.",
-         "Ctrl+C clears the line; twice, it closes Driftwire. Ctrl+D on an empty line closes it too.",
-         "Ctrl+L draws everything again; Ctrl+Z suspends (fg to come back)."});
+    say_table("Keys", {{"enter", "send to the computer picked with " + std::string(th.g->arrows) + " (an empty line)"},
+                       {"tab", "complete a path, or a command in the palette"},
+                       {"ctrl+p  ctrl+n", "what was typed before"},
+                       {"esc", "close the palette, clear the line, then cancel what is under way"},
+                       {"ctrl+c", "clear the line; twice, close Driftwire"},
+                       {"ctrl+d", "close Driftwire (an empty line)"},
+                       {"ctrl+l", "draw everything again"},
+                       {"ctrl+z", "suspend (fg comes back)"}});
   }
 
-  // The line typed at the editor.
+  // A titled list of two columns in the transcript: "/send PATH...  Add files ...".
+  void say_table(const std::string& title, const std::vector<std::pair<std::string, std::string>>& rows) {
+    int left = 0;
+    for (const auto& [l, r] : rows) left = std::max(left, display_width(l));
+    left = std::min(left + 2, std::max(8, w() / 2));
+    if (o.plain) {
+      std::vector<std::string> ls{title};
+      for (const auto& [l, r] : rows) ls.push_back("  " + pad(l, left) + r);
+      plain_write_lines(ls);
+      return;
+    }
+    Elements e{entry(th, {tone::info, title, {}}, w())};
+    const int room = std::max(1, w() - 2 - left);
+    for (const auto& [l, r] : rows) {
+      e.push_back(ftxui::hbox({ftxui::text("  "), paint(th, ftxui::text(pad(fit(l, left - 1, th), left)), tone::accent),
+                               paint(th, ftxui::text(fit(r, room, th)), tone::dim)}));
+    }
+    live.print(ftxui::vbox(std::move(e)));
+  }
+
+  // The line typed at the prompt.
   void submit_prompt(std::string line) {
     const std::string_view t = trim(line);
     if (t.empty()) {

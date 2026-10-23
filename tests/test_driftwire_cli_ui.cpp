@@ -37,6 +37,7 @@
 #include "addons/driftwire/cli/text.h"
 #include "addons/driftwire/cli/theme.h"
 #include "addons/driftwire/wire.h"
+#include "driftwire_cli_vt.h"
 #include "import_fixture.h"
 
 namespace cli = mv::driftwire::cli;
@@ -167,144 +168,29 @@ cli::nearby_model nearby_two() {
 
 // ---- a terminal, as far as inline_view uses one ---------------------------------------------
 
-// A screen `rows` high over a scrollback: printable UTF-8 (two cells for a
-// wide character), CR, LF (scrolling at the bottom row), CSI n A / n C, CSI J,
-// SGR and private modes (recorded, not drawn), xterm's pending wrap at the
-// last column. Everything inline_view writes, and nothing it does not: an
-// unknown sequence fails the test.
+// The live region drawn into a small terminal emulator (driftwire_cli_vt.h);
+// anything it does not know fails the test at once.
 class fake_terminal final : public cli::output {
  public:
-  fake_terminal(int columns, int rows) : columns_(columns), rows_(rows), screen_(static_cast<std::size_t>(rows)) {
-    for (auto& r : screen_) r.assign(static_cast<std::size_t>(columns_), " ");
-  }
+  fake_terminal(int columns, int rows) : vt_(columns, rows), writes(vt_.writes), ups(vt_.ups) {}
 
   void write(std::string_view b) override {
-    writes.emplace_back(b);
-    for (std::size_t i = 0; i < b.size();) {
-      const char c = b[i];
-      if (c == '\x1B') {
-        REQUIRE(i + 1 < b.size());
-        REQUIRE(b[i + 1] == '[');
-        std::size_t j = i + 2;
-        while (j < b.size() && ((b[j] >= '0' && b[j] <= '9') || b[j] == ';' || b[j] == '?')) ++j;
-        REQUIRE(j < b.size());
-        csi(b.substr(i + 2, j - i - 2), b[j]);
-        i = j + 1;
-        continue;
-      }
-      if (c == '\r') {
-        x_ = 0;
-        ++i;
-        continue;
-      }
-      if (c == '\n') {
-        line_feed();
-        if (x_ >= columns_) x_ = columns_ - 1;
-        ++i;
-        continue;
-      }
-      std::size_t n = 1;
-      const auto u = static_cast<unsigned char>(c);
-      if (u >= 0xF0) {
-        n = 4;
-      } else if (u >= 0xE0) {
-        n = 3;
-      } else if (u >= 0xC0) {
-        n = 2;
-      }
-      put(b.substr(i, n));
-      i += n;
-    }
+    vt_.write(b);
+    REQUIRE(vt_.errors.empty());
   }
-
-  // Every row ever shown, scrolled off first, trailing blanks and blank rows at the end dropped.
-  [[nodiscard]] std::vector<std::string> lines() const {
-    std::vector<std::string> out = scrolled_;
-    for (const auto& r : screen_) out.push_back(row_text(r));
-    while (!out.empty() && out.back().empty()) out.pop_back();
-    return out;
-  }
-  // The visible rows only.
-  [[nodiscard]] std::vector<std::string> visible() const {
-    std::vector<std::string> out;
-    for (const auto& r : screen_) out.push_back(row_text(r));
-    while (!out.empty() && out.back().empty()) out.pop_back();
-    return out;
-  }
-  [[nodiscard]] int x() const noexcept { return x_; }
-  [[nodiscard]] int y() const noexcept { return y_; }
-  [[nodiscard]] bool cursor_shown() const noexcept { return cursor_shown_; }
-  [[nodiscard]] bool synchronized() const noexcept { return sync_; }
-
-  std::vector<std::string> writes;
-  std::vector<int> ups;  // every CSI n A, in order
+  [[nodiscard]] std::vector<std::string> lines() const { return vt_.lines(); }
+  [[nodiscard]] std::vector<std::string> visible() const { return vt_.visible(); }
+  [[nodiscard]] int x() const noexcept { return vt_.x(); }
+  [[nodiscard]] int y() const noexcept { return vt_.y(); }
+  [[nodiscard]] bool cursor_shown() const noexcept { return vt_.cursor_shown(); }
+  [[nodiscard]] bool synchronized() const noexcept { return vt_.synchronized(); }
 
  private:
-  static std::string row_text(const std::vector<std::string>& r) {
-    std::string s;
-    for (const auto& cell : r) s += cell;
-    while (!s.empty() && s.back() == ' ') s.pop_back();
-    return s;
-  }
+  mv::test::vt_screen vt_;
 
-  void line_feed() {
-    if (y_ + 1 < rows_) {
-      ++y_;
-      return;
-    }
-    scrolled_.push_back(row_text(screen_.front()));
-    screen_.erase(screen_.begin());
-    screen_.emplace_back(static_cast<std::size_t>(columns_), " ");
-  }
-
-  void put(std::string_view glyph) {
-    const int w = std::max(1, cli::display_width(glyph));
-    if (x_ + w > columns_) {  // the pending wrap, or a wide character at the edge
-      x_ = 0;
-      line_feed();
-    }
-    auto& row = screen_[static_cast<std::size_t>(y_)];
-    row[static_cast<std::size_t>(x_)] = std::string(glyph);
-    if (w == 2) row[static_cast<std::size_t>(x_) + 1] = "";
-    x_ += w;  // == columns_: the pending wrap
-  }
-
-  void csi(std::string_view params, char f) {
-    const bool priv = !params.empty() && params[0] == '?';
-    const int n = params.empty() || priv ? 1 : std::max(1, std::atoi(std::string(params).c_str()));
-    switch (f) {
-      case 'A':
-        ups.push_back(n);
-        y_ = std::max(0, y_ - n);
-        if (x_ >= columns_) x_ = columns_ - 1;
-        break;
-      case 'C': x_ = std::min(columns_ - 1, x_ + n); break;
-      case 'J': {
-        REQUIRE((params.empty() || params == "0"));
-        auto& row = screen_[static_cast<std::size_t>(y_)];
-        for (int i = std::min(x_, columns_); i < columns_; ++i) row[static_cast<std::size_t>(i)] = " ";
-        for (int r = y_ + 1; r < rows_; ++r) {
-          screen_[static_cast<std::size_t>(r)].assign(static_cast<std::size_t>(columns_), " ");
-        }
-        break;
-      }
-      case 'm': break;
-      case 'h':
-      case 'l':
-        REQUIRE(priv);
-        if (params == "?25") cursor_shown_ = f == 'h';
-        if (params == "?2026") sync_ = f == 'h';
-        break;
-      default: FAIL("a sequence inline_view does not write: CSI " << params << f);
-    }
-  }
-
-  int columns_, rows_;
-  std::vector<std::vector<std::string>> screen_;
-  std::vector<std::string> scrolled_;
-  int x_ = 0, y_ = 0;
-  bool cursor_shown_ = true;
-  bool sync_ = false;
+ public:
+  std::vector<std::string>& writes;
+  std::vector<int>& ups;  // every CSI n A, in order
 };
 
 ftxui::Element rows_doc(const std::vector<std::string>& rows) {
