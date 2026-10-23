@@ -33,7 +33,9 @@ move what it built into the matching `docs/design/` doc and strike the slice her
   (OpenGL 3 binding), never shipped chrome.
 - Until the order is settled, a PR stays dual-track (Windows and macOS halves, both present-loop
   gates) as D9 already says, and its shared code must not take a dependency a Linux host could not
-  replace. That is D9's hostable-core rule, applied to a third host now rather than later.
+  replace. That is D9's hostable-core rule, applied to a third host now rather than later. Once
+  CI's Linux GPU runner is enabled (`MV_LINUX_GPU_RUNNER_ENABLED`), every PR also keeps the Linux
+  PR 1 gate: `present-gates` fails a PR on it, as it does on the Windows and Mac gates.
 
 ## 1. What is shared, what Linux owns
 
@@ -99,8 +101,9 @@ Shared, unchanged: `codec/`, `image/` colour, `edit/` op graph, `meta/`, `canvas
 - `src.qt/` beside `src.swift/` and `src.managed/`; C++ and QML against the C ABI only (the chrome
   never sees `src/` internals), stores that read the bridge when the event loop has done work (the
   Mac's `ChromePulse` pattern, no timers on a still).
-- Qt is LGPL-3 and dynamic, bundled at a pinned version (≥ 6.8 for `WindowContainer`): Ubuntu
-  22.04 ships 6.2 and 24.04 ships 6.4. Accessibility over AT-SPI, IME, Wayland and X11.
+- Qt is LGPL-3 and dynamic; bundled at a pinned version (≥ 6.8 for `WindowContainer`) if open
+  call 5 goes that way: Ubuntu 22.04 ships 6.2 and 24.04 ships 6.4. Accessibility over AT-SPI,
+  IME, Wayland and X11.
 - The key map uses Ctrl where Windows does (the Mac uses ⌘); key repeat is synthesised on
   Wayland (it sends none). Same command ids ([16](../design/16-commands.md)).
 
@@ -111,8 +114,9 @@ Shared, unchanged: `codec/`, `image/` colour, `edit/` op graph, `meta/`, `canvas
   NV12 as R8 + RG88 and P010 as R16 + RG1616, copy on the GPU into our presentation ring (never
   bind the decoder's pool as the source), YUV→RGB and HDR→SDR in the GLSL video twin (never
   assume BT.709 limited range).
-- NVIDIA: NVDEC through FFmpeg's CUDA hwaccel and `cuGraphicsGLRegisterImage` copies into our
-  textures. `nvidia-vaapi-driver` is not a product path (its own README says so).
+- NVIDIA (if open call 1 takes NVDEC): NVDEC through FFmpeg's CUDA hwaccel and
+  `cuGraphicsGLRegisterImage` copies into our textures. `nvidia-vaapi-driver` is not a product
+  path (its own README says so).
 - The audio master clock: a PipeWire stream with `pw_stream_get_time_n` (PipeWire ≥ 0.3.50), or
   libpulse with interpolated timing. Both are shared-mode streams into the mixing server, the
   WASAPI-shared analogue. No-audio clips fall back to `CLOCK_MONOTONIC`.
@@ -162,7 +166,8 @@ it exports no thumbnailer.
 
 ## 9. Slices
 
-Each Linux slice is one PR; each also re-runs the Windows PR 1 and Mac PR 1 gates.
+Each Linux slice is one PR; each also re-runs the Windows PR 1 and Mac PR 1 gates and, from Linux
+PR 2, the Linux PR 1 gate.
 
 | Slice | Delivers | Verify |
 |---|---|---|
@@ -170,8 +175,8 @@ Each Linux slice is one PR; each also re-runs the Windows PR 1 and Mac PR 1 gate
 | **Linux PR 1 — OpenGL present lab** | A Wayland toplevel (xdg-shell), EGL, the frame-callback pacer and `wp_presentation` statistics, idle → stop presenting, F3 overlay (ImGui OpenGL 3), `frametime` on Linux, a headless-Weston smoke job in CI, a gated job on a self-hosted Linux GPU runner | Presents at exactly display refresh, 0 dropped frames over 60 s, ~0 % CPU idle, on a real Wayland session (Mutter or KWin) with Mesa on Intel or AMD, measured from `wp_presentation` feedback (VSYNC and HW_CLOCK). Under headless Weston it runs, reports, and labels its source weaker |
 | **Linux PR 2 + 7 — stills and formats** | Worker uploads on shared contexts, the GLSL blit twin, fit / wheel-zoom / drag-pan, the D5 still set, RAW preview first pixel, pairing | As Mac PR 2 + 7: a 12 MP JPEG pans at refresh with zero decode on mouse move; tagged AdobeRGB correct, untagged sRGB, no tone-map; iPhone HEIC opens with no extra install; a CR2/NEF/ARW previews in JPEG-comparable time and refines without a pop; originals unchanged; the broken corpus neither crashes nor hangs |
 | **Linux PR 3 + 4 + 6 — Qt chrome, folder, browse** | Qt 6 chrome in the window, the canvas a child surface, folder / filmstrip / gallery over the shared model and the `jpg512.1` cache, inotify, keyboard-complete browse, Trash | As Mac PR 3 + 4 + 6: zero dropped frames panning with chrome on screen; focus crosses the Qt / canvas boundary; a popup over the canvas does not clip; 2000 JPEGs scroll without a hitch; keyboard-only browse; a dropped file appears; animation timing matches a browser |
-| **Linux PR 5 — video** | FFmpeg + VA-API (and NVDEC) into our ring, NV12/P010, the GLSL video twin with HDR→SDR, the PipeWire clock, transport | 4K 10-bit HEVC at full rate with hardware decode on Intel/AMD and NVIDIA, no extra package; an iPhone HLG clip looks right; A/V drift flat over 30 minutes; photo → video → photo leaks no textures |
-| **Linux PR 8 — packages and the desktop** | Signed apt/dnf repositories, `.desktop` + MIME, the out-of-process thumbnailer, Crashpad | On clean Ubuntu LTS and Fedora: install from the repository, open a real camera dump; N → N+1 through the package manager and an unsigned repository refused; Open With lists MediaViewer without making it the default; a corrupt HEIC in a browsed folder leaves Files running; removing the package leaves nothing |
+| **Linux PR 5 — video** | FFmpeg + VA-API (and NVDEC, if open call 1 takes it) into our ring, NV12/P010, the GLSL video twin with HDR→SDR, the audio clock open call 2 picks, transport | 4K 10-bit HEVC at full rate with hardware decode on Intel/AMD (and on NVIDIA if open call 1 takes NVDEC), no extra package; an iPhone HLG clip looks right; A/V drift flat over 30 minutes; photo → video → photo leaks no textures |
+| **Linux PR 8 — packages and the desktop** | Packages on the channel open call 4 picks, `.desktop` + MIME, the out-of-process thumbnailer, crash reports as open call 6 decides | On clean installs of the floor open call 3 sets: install through that channel, open a real camera dump; N → N+1 through its updater and an update not signed with our key refused; Open With lists MediaViewer without making it the default; a corrupt HEIC in a browsed folder leaves Files running; removing the package leaves nothing |
 | **Linux halves of PRs 9–60** (if open call 8 takes the recommended order) | In roadmap order: metadata, edits, trim, OS integration, Import, Local search, folder tiles, Edit workspace and Video Editor, copies, duplicates, open add-ons (screens drawn by Qt), Driftwire's window and a BlueZ bearer, Places | Each PR's own verify line, on Linux |
 | **Tri-track** | From the PR after the catch-up, every PR has a Linux half | Every PR's verify on all three, plus all three PR 1 gates |
 

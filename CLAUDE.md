@@ -167,7 +167,8 @@ holds on both platforms **and** both present-loop verifies (Windows PR 1, Mac PR
 - From PR 9 a slice has two host halves. Build both, and run the verify line on both
   platforms plus both present-loop gates (PR 1 on Windows, Mac PR 1 on Mac). A slice green on one
   platform only is not done, and PR N+1 does not merge until it is (a host half may start ahead
-  on a branch).
+  on a branch). Once CI's Linux GPU runner is enabled, every PR also keeps Linux PR 1's gate
+  (`present-gates` fails on it).
 - **A PR whose task is not complete opens as a draft** (`gh pr create --draft`): a partial
   slice ("Part of #N"), a feature left switched off, or a host half still missing. Only whether
   the task it was given is done decides this — not CI results or performance numbers.
