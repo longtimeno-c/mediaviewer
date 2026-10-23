@@ -397,13 +397,27 @@ struct session::impl {
     say(entry_model{t, std::move(text), std::move(details)});
   }
 
-  // A dim line in the transcript: the line typed, a log line.
+  // A dim line in the transcript: the line typed, a log line. Cut into
+  // rows of the terminal's width as they come (a path has no spaces to wrap at).
   void say_dim(const std::string& s) {
     if (o.plain) {
       plain_write_lines({s});
       return;
     }
-    live.print(lines(th, s, w(), tone::dim, 0));
+    Elements rows;
+    std::string row;
+    int cols = 0;
+    for (const glyph_span& g : glyph_spans(s)) {
+      if (cols + g.width > w() && !row.empty()) {
+        rows.push_back(paint(th, ftxui::text(std::move(row)), tone::dim));
+        row.clear();
+        cols = 0;
+      }
+      row.append(s, g.at, g.len);
+      cols += g.width;
+    }
+    if (!row.empty() || rows.empty()) rows.push_back(paint(th, ftxui::text(std::move(row)), tone::dim));
+    live.print(ftxui::vbox(std::move(rows)));
   }
 
   void flash(std::string text, tone t = tone::warning, int ms = kNoteMs) {
