@@ -301,6 +301,9 @@ struct session::impl {
 
   // Choices on the cards.
   int offer_sel = 0, naming_sel = 0;
+  // Which offer, check and Remember question this is (each new one counts
+  // up): a key answers only the one drawn.
+  std::uint64_t offer_serial = 0, naming_serial = 0, rem_serial = 0;
   std::string code_typed;      // the sender's code entry
   bool code_submitted = false; // six digits went: the engine answers
   std::string code_note_seen;  // out_entry_note when they went
@@ -481,6 +484,7 @@ struct session::impl {
 
   void on_out(const view& prev) {
     const out_phase was = prev.out, is = v.out;
+    if (is == out_phase::naming && (was != is || v.out_check != prev.out_check)) ++naming_serial;
     if (was == is && was != out_phase::idle) {
       if (is == out_phase::confirming && code_submitted &&
           (v.out_entry_note != code_note_seen || v.out_tries_left != code_tries_seen)) {
@@ -527,6 +531,12 @@ struct session::impl {
 
   void on_in(const view& prev) {
     const in_phase was = prev.in, is = v.in;
+    // Another offer in place of the one drawn (seen only after the fact,
+    // when this thread was busy) is another card.
+    if (is == in_phase::asking && (was != is || v.in_code != prev.in_code || v.in_peer != prev.in_peer)) {
+      ++offer_serial;
+      offer_sel = 0;
+    }
     if (was == is) {
       if (is == in_phase::receiving && in_moving_since < 0) in_moving_since = now;
       return;
@@ -621,6 +631,7 @@ struct session::impl {
       rem = {};
       rem.at = remember_ui::step::ask;
       rem.peer = v.remember_peer;
+      ++rem_serial;
     }
     if (rem.at == remember_ui::step::type_check && rem.submitted && v.remember_check_note != rem.note_seen) {
       rem.submitted = false;
@@ -1392,6 +1403,37 @@ struct session::impl {
     return focus::prompt;
   }
 
+  // What has the keys, and which offer, check or question it is.
+  struct card_ref {
+    focus f = focus::prompt;
+    std::uint64_t serial = 0;
+    bool operator==(const card_ref&) const = default;
+  };
+  card_ref drawn;                  // what the last frame showed
+  std::int64_t answerable_at = 0;  // a consent card takes answers from then (kAnswerSettleMs)
+
+  card_ref card_now() const {
+    const focus f = focused();
+    if (f == focus::offer) return {f, offer_serial};
+    if (f == focus::naming) return {f, naming_serial};
+    if (f == focus::remember) return {f, rem_serial};
+    return {f, 0};
+  }
+
+  // The cards that come unasked and say yes to someone else: accept these
+  // files, send to this device, remember it.
+  bool asks_consent(focus f) const {
+    return f == focus::offer || f == focus::naming || (f == focus::remember && rem.at == remember_ui::step::ask);
+  }
+
+  // After a frame is drawn (rich or plain): a new card on screen starts its settle.
+  void mark_drawn() {
+    const card_ref c = card_now();
+    if (c == drawn) return;
+    drawn = c;
+    answerable_at = now_ms() + kAnswerSettleMs;
+  }
+
   bool transfer_running() const { return out_busy(v) || in_busy(v); }
 
   bool palette_open() const {
@@ -1541,6 +1583,16 @@ struct session::impl {
     }
     if (e.is_ctrl('l')) {
       live.invalidate();
+      return;
+    }
+    // A key answers the card on screen: one the engine posted in the same
+    // wake has not been seen (what a key of this person's opened has: loop()).
+    if (card_now() != drawn) return;
+    // A card that asks for consent takes no answer from typing that was
+    // under way as it appeared: keys go nowhere until they have stopped for
+    // kAnswerSettleMs with it on screen. Esc (no) always counts.
+    if (asks_consent(drawn.f) && !e.is(key::esc) && now < answerable_at) {
+      answerable_at = now + kAnswerSettleMs;
       return;
     }
     if (o.plain) {
@@ -2056,6 +2108,7 @@ struct session::impl {
       if (over > 0) doc = document(std::max(1, n - over - 1));
     }
     live.present(doc);
+    mark_drawn();
   }
 
   // =========================================================================================
@@ -2197,6 +2250,7 @@ struct session::impl {
       plain_prompt = f.prompt;
     }
     if (changed || !prompt_on_line) plain_reprompt();
+    mark_drawn();
   }
 
   void plain_nearby_update() {
@@ -2421,11 +2475,19 @@ struct session::impl {
       if (in.suspend) suspend();
       if (in.interrupt) on_ctrl_c();
       if (in.quit || in.eof) quitting = true;
-      // The view first: a key answers what is on screen now.
+      // The view first, so each key is checked against what the engine asks
+      // now: a card that is not the one last drawn takes no key (on_key).
       refresh_view();
       for (const auto& e : evs) {
         if (quitting) break;
+        const card_ref before = card_now();
         on_key(e);
+        // What this person's own key opened (a field, a question) takes the
+        // keys typed after it at once, even in the same read; a card that
+        // asks for consent waits to be drawn.
+        if (before == drawn) {
+          if (const card_ref c = card_now(); c != drawn && !asks_consent(c.f)) drawn = c;
+        }
       }
       if (note.until && note.until <= now) note = {};
       if (armed != armed_key::none && armed_until <= now) armed = armed_key::none;

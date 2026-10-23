@@ -8,7 +8,9 @@
 // into the sender's, as the two people would.
 #include "catch_compat.h"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <span>
 #include <string>
@@ -167,6 +169,15 @@ void type_line(cli_side& s, const std::string& line) {
 void press_esc(cli_side& s) {
   s.con.type("\x1B");
   std::this_thread::sleep_for(std::chrono::milliseconds(150));
+}
+
+// A card that asks for consent (an offer, the check to compare, Remember)
+// takes an answer once it has been on screen a moment with no key typed
+// (session.h): a person reads it first, and so does the test.
+void settle() { std::this_thread::sleep_for(std::chrono::milliseconds(cli::kAnswerSettleMs + 150)); }
+void answer(cli_side& s, std::string_view keys) {
+  settle();
+  s.con.type(keys);
 }
 
 // The receiver's screen shows the code: read it off, type it on the sender.
@@ -423,7 +434,7 @@ TEST_CASE("driftwire cli session: a send nearby, the code typed off the other sc
   REQUIRE(bea.screen_shows("Ann wants to send you 1 file"));
   CHECK(bea.screen_shows("IMG_0001.HEIC"));
   CHECK(bea.screen_shows("1. Accept"));
-  bea.con.type("1");
+  answer(bea, "1");
   REQUIRE(ann.shows("Sent 1 file to Bea."));
   REQUIRE(bea.shows("Received 1 file from Ann."));
   CHECK(has(bea.text(), "every file checked"));
@@ -433,11 +444,11 @@ TEST_CASE("driftwire cli session: a send nearby, the code typed off the other sc
   // the sender shows a code and the receiver types it (#497).
   REQUIRE(ann.screen_shows("Remember Bea?"));
   REQUIRE(bea.screen_shows("Remember Ann?"));
-  ann.con.type("1");
+  answer(ann, "1");
   REQUIRE(ann.shows("Remembered Bea."));
   const std::string check = code_on(ann);
   REQUIRE(check.size() == 6);
-  bea.con.type("1");
+  answer(bea, "1");
   REQUIRE(bea.screen_shows("type the code its window shows now"));
   bea.con.type_keys(check);
   REQUIRE(bea.shows("Remembered Ann."));
@@ -480,9 +491,11 @@ TEST_CASE("driftwire cli session: declined, and three wrong codes", "[driftwire]
     ann.con.type("\r");
     const std::string code = code_on(bea);
     REQUIRE(code.size() == 6);
+    // The sender types it once its own card is up (a key answers what is drawn).
+    REQUIRE(ann.screen_shows("Type the code on Bea's screen"));
     ann.con.type_keys(code);
     REQUIRE(bea.screen_shows("wants to send you 1 file"));
-    bea.con.type("n");
+    answer(bea, "n");
     REQUIRE(ann.shows("Bea declined."));
     REQUIRE(bea.shows("Declined. Nothing was received."));
     CHECK(files_in(s / "bea_received").empty());
@@ -492,6 +505,8 @@ TEST_CASE("driftwire cli session: declined, and three wrong codes", "[driftwire]
     const std::string code = code_on(bea);
     REQUIRE(code.size() == 6);
     const std::string wrong = code == "000000" ? "111111" : "000000";
+    // The sender types it once its own card is up (a key answers what is drawn).
+    REQUIRE(ann.screen_shows("Type the code on Bea's screen"));
     ann.con.type_keys(wrong);
     REQUIRE(ann.screen_shows("2 tries left"));
     ann.con.type_keys(wrong);
@@ -528,9 +543,11 @@ TEST_CASE("driftwire cli session: esc twice cancels a send under way; the folder
     ann.con.type("\r");
     const std::string code = code_on(bea);
     REQUIRE(code.size() == 6);
+    // The sender types it once its own card is up (a key answers what is drawn).
+    REQUIRE(ann.screen_shows("Type the code on Bea's screen"));
     ann.con.type_keys(code);
     REQUIRE(bea.screen_shows("wants to send you 1 file"));
-    bea.con.type("\r");  // Enter on the first choice: Accept
+    answer(bea, "\r");  // Enter on the first choice: Accept
     REQUIRE(ann.screen_shows("esc to cancel"));
     REQUIRE(ann.screen_shows(" of 25 MB"));
     press_esc(ann);
@@ -555,9 +572,11 @@ TEST_CASE("driftwire cli session: esc twice cancels a send under way; the folder
     ann.con.type("\r");
     const std::string code = code_on(bea);
     REQUIRE(code.size() == 6);
+    // The sender types it once its own card is up (a key answers what is drawn).
+    REQUIRE(ann.screen_shows("Type the code on Bea's screen"));
     ann.con.type_keys(code);
     REQUIRE(bea.screen_shows("the folder \"Trip\""));
-    bea.con.type("y");
+    answer(bea, "y");
     REQUIRE(ann.shows("Sent 2 files to Bea."));
     REQUIRE(bea.shows("Received 2 files from Ann."));
     CHECK(files_in(s / "bea_received") == std::vector<std::string>{"Trip/day 2/two.jpg", "Trip/one.jpg"});
@@ -590,7 +609,7 @@ TEST_CASE("driftwire cli session: send --to finds the name; receive --once ends 
   REQUIRE(code.size() == 6);
   ann.con.type_keys(code);
   REQUIRE(bea.screen_shows("wants to send you 1 file"));
-  bea.con.type("y");
+  answer(bea, "y");
   // Both are one-shots: they close by themselves, 0 for a transfer that went through.
   CHECK(ann.wait_exit() == 0);
   CHECK(bea.wait_exit() == 0);
@@ -617,6 +636,8 @@ TEST_CASE("driftwire cli session: receive --once declined is exit 1; Ctrl+C twic
   ann.con.type("\r");
   const std::string code = code_on(bea);
   REQUIRE(code.size() == 6);
+  // The sender types it once its own card is up (a key answers what is drawn).
+  REQUIRE(ann.screen_shows("Type the code on Bea's screen"));
   ann.con.type_keys(code);
   REQUIRE(bea.screen_shows("wants to send you 1 file"));
   press_esc(bea);  // esc declines an offer
@@ -640,6 +661,84 @@ TEST_CASE("driftwire cli session: receive --once declined is exit 1; Ctrl+C twic
   cy.con.quit();
   CHECK(cy.wait_exit() == 0);
   CHECK(has(cy.con.lines().back(), "Driftwire closed"));
+}
+
+TEST_CASE("driftwire cli session: keys typed as an offer appears are not answers", "[driftwire][cli]") {
+  scratch_dir s("driftwire_cli_stray");
+  bus b;
+  const fs::path f = s / "out" / "IMG_0042.HEIC";
+  write_bytes(f, pattern(9000, 2));
+  cli_side ann(s / "ann_received"), bea(s / "bea_received");
+  auto bo = session_opts(s.root());
+  bool plain = false, field = false;
+  SECTION("typing at the prompt") {}
+  SECTION("typing in a field") { field = true; }
+  SECTION("plain mode") { plain = true; }
+  bo.plain = plain;
+  ann.start(client::options(b, "Ann"), session_opts(s.root()));
+  bea.start(client::options(b, "Bea"), bo);
+  REQUIRE(ann.screen_shows("Bea"));
+  REQUIRE(bea.shows("Ann"));
+  type_line(ann, utf8(f));
+  REQUIRE(ann.screen_shows("1 file"));
+
+  // Bea is typing (a path at the prompt, or an address into a field) when
+  // Ann's send comes in; the code shows, and Bea goes on typing.
+  if (field) {
+    type_line(bea, "/relay-server");
+    REQUIRE(bea.screen_shows("Your own relay server"));
+    bea.con.type_keys("203.0.113.");
+    REQUIRE(bea.screen_shows("203.0.113."));
+  } else {
+    bea.con.type_keys("~/m");
+    if (!plain) REQUIRE(bea.screen_shows("> ~/m"));
+  }
+  ann.con.type("\r");
+  std::string code;
+  if (plain) {
+    REQUIRE(bea.con.wait_for([&](const std::string& t) {
+      const auto at = t.find("Type this code on Ann: ");
+      if (at == std::string::npos) return false;
+      code = t.substr(at + 23, 7);
+      return true;
+    }));
+    code.erase(std::remove(code.begin(), code.end(), ' '), code.end());
+  } else {
+    code = code_on(bea);
+  }
+  REQUIRE(code.size() == 6);
+  // The sender types it once its own card is up (a key answers what is drawn).
+  REQUIRE(ann.screen_shows("Type the code on Bea's screen"));
+  ann.con.type_keys(code);
+  REQUIRE(bea.event("in asking"));
+  REQUIRE(bea.shows(plain ? "Accept 1 file" : "wants to send you 1 file"));
+  // The next keys of what was being typed: "y" of "~/my-trip" (then Enter,
+  // in plain mode), "1" of the address. Not answers.
+  if (plain) {
+    type_line(bea, "y");
+  } else {
+    bea.con.type_keys(field ? "1" : "y-trip");
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(cli::kAnswerSettleMs / 2));
+  CHECK_FALSE(bea.event("in receiving", 0));
+  CHECK_FALSE(bea.event("in ended", 0));
+  CHECK(files_in(s / "bea_received").empty());
+  if (!plain) CHECK(bea.screen_shows("wants to send you 1 file", 1));
+
+  // Once the card has been there a moment with nothing typed, a key is an answer.
+  settle();
+  if (plain) {
+    type_line(bea, "y");
+  } else {
+    bea.con.type("y");
+  }
+  REQUIRE(bea.shows("Received 1 file from Ann."));
+  CHECK(files_in(s / "bea_received") == std::vector<std::string>{"IMG_0042.HEIC"});
+  // What was being typed is still there, to finish.
+  if (!plain) CHECK(bea.screen_shows(field ? "203.0.113." : "> ~/m"));
+  type_line(ann, "/quit");
+  CHECK(ann.wait_exit() == 0);
+  bea.stop();
 }
 
 TEST_CASE("driftwire cli session: plain mode asks in lines", "[driftwire][cli]") {
@@ -670,6 +769,7 @@ TEST_CASE("driftwire cli session: plain mode asks in lines", "[driftwire][cli]")
   }));
   type_line(ann, code);
   REQUIRE(bea.shows("Accept 1 file (5 KB) from Ann? [y/N/s]"));
+  settle();
   type_line(bea, "y");
   REQUIRE(ann.shows("Sent 1 file to Bea."));
   REQUIRE(bea.shows("Received 1 file from Ann."));
@@ -746,9 +846,9 @@ TEST_CASE("driftwire cli session: a code over the internet (loopback), the check
   REQUIRE(check);
   REQUIRE(bea.screen_shows("Ann (new device) wants to send you files"));
   CHECK(bea.screen_shows(*check));
-  ann.con.type("y");
+  answer(ann, "y");
   REQUIRE(bea.screen_shows("wants to send you 1 file"));
-  bea.con.type("y");
+  answer(bea, "y");
   REQUIRE(ann.shows("Sent 1 file to Bea."));
   REQUIRE(bea.shows("Received 1 file from Ann."));
   CHECK(has(bea.text(), "internet"));
@@ -757,6 +857,7 @@ TEST_CASE("driftwire cli session: a code over the internet (loopback), the check
   REQUIRE(bea.screen_shows("Remember Ann?"));
   REQUIRE(ann.screen_shows("Remember Bea?"));
   CHECK_FALSE(bea.done.load());
+  settle();
   bea.con.type("1");
   ann.con.type("1");
   REQUIRE(bea.shows("Remembered Ann."));
@@ -932,9 +1033,11 @@ TEST_CASE("driftwire cli session: closed mid-receive, the next session says what
     ann.con.type("\r");
     const std::string code = code_on(bea);
     REQUIRE(code.size() == 6);
+    // The sender types it once its own card is up (a key answers what is drawn).
+    REQUIRE(ann.screen_shows("Type the code on Bea's screen"));
     ann.con.type_keys(code);
     REQUIRE(bea.screen_shows("wants to send you 1 file"));
-    bea.con.type("y");
+    answer(bea, "y");
     // A megabyte or more arrived ("3 MB of 25 MB", not "512 KB of ..."): something to keep.
     REQUIRE(bea.screen_shows(" MB of 25 MB"));
     // SIGTERM / the console closing while bytes move: the engine stops on

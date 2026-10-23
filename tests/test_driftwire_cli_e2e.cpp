@@ -35,6 +35,7 @@ extern char** environ;
 #include <thread>
 #include <vector>
 
+#include "addons/driftwire/cli/session.h"
 #include "import_fixture.h"
 
 using namespace mv::test;
@@ -62,6 +63,12 @@ std::string strip_vt(std::string_view s) {
     }
   }
   return out;
+}
+
+// A card that asks for consent takes an answer once it has been on screen a
+// moment with no key typed (session.h): a person reads it first.
+void settle() {
+  std::this_thread::sleep_for(std::chrono::milliseconds(mv::driftwire::cli::kAnswerSettleMs + 150));
 }
 
 // One driftwire in a pty: the test holds the master (what the person's
@@ -274,9 +281,11 @@ TEST_CASE("driftwire cli e2e: two programs in ptys, a code over loopback, typed 
   REQUIRE(ann.shows("Connected to Bea (new device)"));
   // Bea's screen shows the same check, to compare.
   REQUIRE(bea.shows("Ann (new device) wants to send you files"));
+  settle();
   ann.type("y");
   REQUIRE(bea.event("in asking"));
   REQUIRE(bea.shows("wants to send you 1 file"));
+  settle();
   bea.type("y");
 
   // Both are one-shots: they close by themselves when it went through.

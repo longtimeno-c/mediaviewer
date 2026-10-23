@@ -40,6 +40,13 @@ namespace mv::driftwire::cli {
 class terminal;
 class cli_host;
 
+// A card that asks for consent (an offer, the check to compare, Remember)
+// takes an answer only once keys have stopped for this long with it on
+// screen: what was being typed at the prompt or into a field as it appeared
+// ("y" of "~/my-trip", "1" of an address) is not an answer. Esc, the safe
+// answer, always counts.
+inline constexpr int kAnswerSettleMs = 750;
+
 struct session_options {
   command cmd = command::session;     // send / receive / code are one-shots (receive with --once)
   bool once = false;

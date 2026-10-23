@@ -133,8 +133,11 @@ network at all it says so and waits, as the window does: a network can come up.
   (OSC 52, where the terminal allows it).
 - **Accept is typed** (owner, [12](12-decision-log.md#driftwire)): the offer is a numbered choice
   under the card, **1** Accept and save to the folder shown, **2** save somewhere else (a folder
-  typed, Tab completing), **3** Decline; `y` accepts, `n` or Esc declines. Three minutes with no
-  answer, the engine declines, as in the window. Esc twice cancels a transfer under way; Ctrl+C
+  typed, Tab completing), **3** Decline; `y` accepts, `n` or Esc declines. A card that says yes to
+  someone else (the offer, the check to compare, Remember) answers only the card drawn, and only
+  once keys have stopped for 750 ms with it on screen (`kAnswerSettleMs`), so typing under way at
+  the prompt or in a field as it appears ("y" of "~/my-trip") is not an answer; Esc always is.
+  Three minutes with no answer, the engine declines, as in the window. Esc twice cancels a transfer under way; Ctrl+C
   twice closes Driftwire (during a transfer it says it will cancel it first).
 - **Files** are typed, pasted or dropped (a terminal pastes a dropped file as its path): quotes,
   backslash escapes, `~`, `file://` and the globs `* ? [...]`, expanded by the program, not a
