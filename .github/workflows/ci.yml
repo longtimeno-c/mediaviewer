@@ -273,7 +273,11 @@ jobs:
       # exits 0 even when it made no keyring, so secret-tool stores and reads
       # back an item first; only then is the case required to run
       # (MV_SECRET_SERVICE=required). If any of it fails, the case skips with
-      # a warning here and the rest runs as before.
+      # a warning here and the rest runs as before. 30 minutes, not 15: with
+      # Driftwire's suite in it, mv_import_tests took 623 s (10.4 min) in this
+      # Debug + ASan configuration on a 4-vCPU Linux container (2026-10-23),
+      # most of it the suite waiting out its 20 s session and rejoin
+      # deadlines; the clip suites come on top.
       - name: Tests
         timeout-minutes: 30
         run: |
