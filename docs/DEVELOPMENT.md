@@ -46,8 +46,9 @@ and a verify line on each platform (D9, amended). The order is:
 | Driftwire window, 2026-10-19 | **Simpler Driftwire window**: no address field (a code finds its own); a transfer under way is a card at the top with a picture of its path, its own shape, colour and badge for Wi-Fi, Bluetooth, internet direct, internet met on the DHT, through one of your computers, or through your relay server, dots moving while bytes do; the receive code is selectable with **Copy code** / **Copy link**; the internet part reads receive, send to a code, then options. New screen vocabulary on both hosts: a `link` node and a button's `copy`, contribution API 6 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11), [28](design/28-driftwire.md#what-a-person-sees)) | Mac: built; `"[driftwire]"` (124 cases) and `"[addon]"` (60) pass; the Swift chrome builds; the link picture rendered offscreen for every bearer and state, light and dark. Windows: the C# compiles. Owed: the window opened in the app on both hosts with a live transfer, the animation's idle cost measured (it runs only while bytes move), Narrator on the picture |
 | #501 | **Driftwire privacy**: a nearby handshake's static is a key of that link; the identity goes sealed in the offer (after the code) and the accept (after Accept); the beacon and Bluetooth INFO carry the name only while the window is open and a new id while idle (10 min) and at every open and close; the Mac keeps the identity and remembered devices in the data protection keychain in the app's access group, or nowhere; Windows seals each Credential Manager value with DPAPI; key material is wiped when it goes; a ProVerif model of the internet handshake (`tools/formal/internet.pv`) ([docs/design/28](design/28-driftwire.md#privacy-rule-6), [12](design/12-decision-log.md#driftwire)) | Mac: built; `"[driftwire]~[.driftwire-dht-live]"` passes (130 cases) with new ones: a connector never sees the receiver's identity, the sender's goes only in the offer after the right code, both sides remember the other's identity after a nearby send, the id rotates and the name is off the air, a planted login-keychain item is removed and never read. Windows: portable C++ only, CI's. The release adds Driftwire's app group `<team>.<bundle id>.driftwire` when it signs (`macpack.py release --team-id`, `APPLE_TEAM_ID`; `test_macpack.py` covers it); dev builds have no store. Owed: a signed build's Keychain path, two machines, v0.1.35 interop by hand |
 | #512 | **A status item opens its add-on's screen**: "Driftwire: receiving" in the command bar is a flat button that opens the Driftwire window (or brings it forward), on both hosts; any add-on whose status item names a screen, or that has exactly one window / pane / sheet, gets the same; a manifest may name it on a status item from contribution API 7 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)) | Mac: `mv_import_tests` passes (a new `[slots]` case for `status_json`'s `opens`); the Mac app builds. Windows: the C# compiles; the native side is CI's. Owed: the click, hover, hand cursor, keyboard and VoiceOver / Narrator checked in the running app on both hosts |
-| #529, #530, #531 | **Driftwire faster over the DHT, with the time left, and resumable**: the UDP stream paces and follows a model of the path (BBR, simplified) instead of halving on every loss, and acks name the runs past the 256-packet bitmap; both windows show the speed and the time left; a receive that stops keeps what arrived (the partial hidden under `.mvtmp`) and the same sender's next send of the same files resumes it, the whole-file read-back unchanged; "Unfinished transfers" with Discard, gone after 7 days; neither machine sleeps from idleness while bytes move; a transfer's end stays until OK ([docs/design/28](design/28-driftwire.md#resuming-a-receive-that-stopped-530)) | Linux container only: `"[driftwire]"` 166 cases pass (the IPv6 step of the stream case cannot run without IPv6, as on the base); `[.driftwire-stream-bench]` alternated 3 × 15 s, every profile better ([docs/design/28](design/28-driftwire.md#four-words-over-the-dht-472-pr-3)). Not built on either host: the Windows and Mac power requests, the file port's `open_resume` / `set_hidden` on Windows and macOS. Owed: both hosts' builds and suites, both PR 1 gates, a real DHT transfer between two machines, sleep held off (`powercfg /requests`, `pmset -g assertions`), a resume after a real power-off ([Where this actually is](#driftwire-speed-time-left-and-resume-issues-529-530-2026-10-21)) |
+| #529, #530, #531 | **Driftwire faster over the DHT, with the time left, and resumable**: the UDP stream paces and follows a model of the path (BBR, simplified) instead of halving on every loss, and acks name the runs past the 256-packet bitmap; both windows show the speed and the time left; a receive that stops keeps what arrived (the partial hidden under `.mvtmp`) and the same sender's next send of the same files resumes it, the whole-file read-back unchanged; "Unfinished transfers" with Discard, gone after 7 days; neither machine sleeps from idleness while bytes move; a transfer's end stays until OK ([docs/design/28](design/28-driftwire.md#resuming-a-receive-that-stopped-530)) | Linux container only: `"[driftwire]"` 166 cases passed (2026-10-21), 174 with the Linux ports (2026-10-23: the Secret Service, logind; the stream case's IPv6 step runs only where `::1` binds) in RelWithDebInfo and Debug + ASan / UBSan; `[.driftwire-stream-bench]` alternated 3 × 15 s, every profile better ([docs/design/28](design/28-driftwire.md#four-words-over-the-dht-472-pr-3)). Not built on either host: the Windows and Mac power requests, the file port's `open_resume` / `set_hidden` on Windows and macOS. Owed: both hosts' builds and suites, both PR 1 gates, a real DHT transfer between two machines, sleep held off (`powercfg /requests`, `pmset -g assertions`), a resume after a real power-off ([Where this actually is](#driftwire-speed-time-left-and-resume-issues-529-530-2026-10-21)) |
 | Driftwire settings page, 2026-10-21 | **Driftwire's settings in Settings → Add-ons → Driftwire**, in the window's cards and controls: Nearby (Keep receiving, Receive when MediaViewer is closed), Received files (Save to), Over the internet and, while on, Remembered devices and Internet options. A new screen place, `settings` (contribution API 8, `MV_SLOT_PLACE_SETTINGS`): an add-on's own tree drawn on its page, opened only while that page shows; Driftwire's manifest asks for 8 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11), [28](design/28-driftwire.md), [12](design/12-decision-log.md)) | Mac: `mv_import_tests` passes (296 cases, new `[slots]` and `[driftwire]` cases); the app built and run with a dev-signed Driftwire: the page shows its settings, a switch there changes the window and back, the screen closes when the page does. Windows: the C# compiles; the native side is CI's. Owed: the Windows page seen in the app, Narrator / VoiceOver on the page; no perf run (Settings chrome and the add-on only, nothing on the present or decode path) |
+| `driftwire`, 2026-10-23 | **The `driftwire` command line**: Driftwire in a terminal on Linux, Windows and macOS, a host of the same engine: send nearby (the code typed off the other screen) or to a code, receive with a typed Accept, remember devices, the window's internet options; interactive only, no secret on the command line, its own identity and data folder, a look after Claude Code's terminal UI. Linux packages: `.deb`, `.rpm` and a tarball, x86_64 and arm64 ([docs/design/28](design/28-driftwire.md#from-a-terminal-driftwire), [12](design/12-decision-log.md#driftwire)) | Linux container only: `"[cli]"` passes (60 cases) in RelWithDebInfo, Debug + ASan / UBSan and the packaging build (GCC 13 and GCC 12), the whole `"[driftwire]"` (234 cases) in both configurations, idle measured; the three packages built here, the `.deb` installed and run. Windows and macOS: compiled by CI only. Owed: a real two-machine transfer over Wi-Fi with the command line on Linux and the app on a Mac or a PC; CI's Ubuntu 22.04 and arm64 legs ([Where this actually is](#the-driftwire-command-line-2026-10-23)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -158,6 +159,7 @@ moves behind the welcome card. Build and interactive checks are documented in
 | **`mediaviewer_lab` (Darwin)** | Mac PRs 1–6 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 2 — Metal's minimum, see docs/design/12 — 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets, `+`/`-`, keyboard pan when zoomed, hold `Z` loupe, hold `\` previous, `C` clipping blinkies. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Home`/`End`/`PageUp`/`PageDown` navigate it (every key goes through the same command table and key router as Windows, with `⌘` standing for `Ctrl` and the Mac Delete key for `Delete`), an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a Windows-style command bar (Open / View / Settings / About, `?` at the right), a Settings screen (`⌘,`: filmstrip/wrap/sticky-zoom preferences and remappable keys, persisted in `NSUserDefaults`), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. **Nested folders (PR 26):** child folders show as tiles. A folder of only folders uses big tiles; one that also holds photos keeps a short folder row above them. A tile says when photos were found further down, when it is only more folders, and when that look stopped early. The path stays on screen while a photo is open. `⌘↑` goes up and returns to the folder you left; `⌘←` / `⌘→` open the folder beside it; `/` on the folder row finds a tile by name. The Windows host matches that chrome. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`; `.` blackout, `R` shuffle), and drag-out (`⌘`+drag on the canvas; a plain drag from a gallery, filmstrip or search-result cell, the marks when that cell is marked, as the original files). **Video (Mac PR 5):** FFmpeg + VideoToolbox decode, copied out of the decoder pool into a presentation ring of our own Metal textures, an MSL twin of the video shader (NV12/P010, the stream's matrix/range/transfer, HLG/PQ tone-mapped to SDR), Core Audio as the master A/V clock (no `AVPlayer`), a SwiftUI transport strip and the docs/design/16 video keys, and poster thumbnails for clips. Metadata read (PR 9, see above); no rating/metadata writes or RAW-pairing UI yet. Not on the Mac yet: `⌘G` go to, `;` Live Photo motion, Open RAW / Open JPEG of a pair ([docs/design/16](design/16-commands.md) "Not built"). Builds on Apple Silicon and Intel, macOS 14+ (Intel: unverified for frame pacing). |
 | **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. The filmstrip island borrows the session and drains folder/thumb completions. |
 | **Import add-on** (Milestone G) | An optional add-on installed from Settings → Add-ons ([docs/design/18](design/18-import.md)): copy a card or folder into a library, skip what is already there by content (size, then BLAKE3), verify every copy by reading it back, sort into dated folders with RAW+JPEG / Live Photo pairs and camera sidecars kept together, resume after an unplug, back up to a second drive from one read, verify an old folder for silent corruption, and **find duplicates** in a folder tree (every file, grouped by identical bytes; PR 54), where one copy at a time can be moved to the Recycle Bin / Trash, never the last. Apart from that, never deletes from, formats or overwrites anything. `mv_import.dll` / `libmv_import.dylib` plus its chrome (`MediaViewer.Import.Chrome.dll` / `Import.bundle`) are built beside the app in `build/addons/import` and shipped as a separate signed download that a stable run of the release workflow packs beside the app (RELEASING.md); the base install does not contain them. Settings → Add-ons offers Install only when that download exists and verifies for the running app. With it absent, `Ctrl+Shift+I` / `Ctrl+Shift+F7` do not exist. The shared engine is tested; the Windows and Mac hosts are written but their first platform builds and every hardware verify line are owed (docs/design/10). Also from this work, in the base app: `F8` across drives now deletes the source only after a verified copy. |
+| **`driftwire`** (the command line) | Driftwire in a terminal ([docs/design/28](design/28-driftwire.md#from-a-terminal-driftwire)), a program of its own beside the app: `build/bin/<cfg>/driftwire.exe`, `build/bin/driftwire` (Mac), `build-portable/bin/driftwire` or `build-cli/bin/driftwire` (Linux). The same engine as the add-on, so it sends to and receives from MediaViewer. Linux ships it as packages; on Windows and macOS it is a CI artefact and never in the app's payload. |
 
 ## Build
 
@@ -466,6 +468,43 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
    on **Update ready — restart** or on quit.
 
 `python3 tools/mac/check_plists.py` and `python3 tools/mac/test_macpack.py` need no Mac and run anywhere.
+
+### The `driftwire` command line (docs/design/28)
+
+Every build that includes `cmake/driftwire.cmake` builds it: the Windows root, the Mac build and
+`cmake/portable`. FTXUI (MIT) comes from vcpkg (`vcpkg.json` for Windows and macOS,
+`tools/portable/vcpkg.json` for Linux), or from a checkout of its pinned release with
+`-DMV_FTXUI_SOURCE_DIR`.
+
+```sh
+cmake --build build --target mv_driftwire_cli        # Windows / macOS: build/bin/<cfg>/driftwire.exe, build/bin/driftwire
+cmake --build build-portable --target mv_driftwire_cli   # Linux, with the rest of cmake/portable
+build/bin/driftwire --help
+build/bin/driftwire                       # the session; Ctrl+C twice or /quit closes it
+build/bin/driftwire send ~/Pictures/a.heic --to "Ann's MacBook"
+build/bin/driftwire receive --once --save-to /tmp/in --plain
+build/bin/mv_driftwire_cli_gallery --width 80          # every card and state, made-up data (never packaged)
+build/bin/mv_driftwire_cli_gallery --animate sending   # waiting, sending, receiving, bluetooth, internet, dht, relay, reconnecting, code
+```
+
+Its own data folder is `${XDG_STATE_HOME:-~/.local/state}/driftwire` (Linux), `~/Library/Application
+Support/Driftwire` (macOS) or `%LOCALAPPDATA%\Driftwire` (Windows): settings, the resume file, the
+DHT's table and the session lock. Its identity and remembered devices are not there but under
+"Driftwire CLI" in the Secret Service (Linux) or Credential Manager (Windows); macOS keeps none.
+`mv_driftwire_cli_test` is the same program with `MV_DRIFTWIRE_CLI_TEST_HOOKS` (it runs from a
+pipe, `--test-loopback`, `--test-data DIR`, `--test-events`), for the end-to-end test only.
+
+On Linux the packaged program is built by its own small project, `cmake/driftwire-cli`
+([Linux packages](#linux-packages-driftwire)). Without vcpkg (as in a container that cannot
+download), a prefix with libsodium 1.0.21+ built `--disable-shared`, BLAKE3, Catch2 and FTXUI works:
+
+```sh
+PKG_CONFIG_PATH=$PREFIX/lib/pkgconfig cmake -S cmake/driftwire-cli -B build-cli -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$PREFIX -DMV_DRIFTWIRE_CLI_TESTS=ON
+cmake --build build-cli && ctest --test-dir build-cli --output-on-failure
+```
+
+Use GCC there (12 or newer): clang with libstdc++ rejects `core/json.h`.
 
 ## Run
 
@@ -1140,6 +1179,14 @@ build/bin/mv_import_tests "[.driftwire-stream-bench]"   # #529: the DHT stream o
 build/bin/mv_import_tests "[.driftwire-idle]"    # CPU while Keep receiving is on, window closed (MV_IDLE_SECONDS)
 python3 -m unittest tools/package/test_addon_pack.py   # DriftwirePackTest among them
 build/bin/mv_import_tests "[.driftwire-send]"    # #452: a sender on this machine (MV_SEND_FILE, MV_SEND_CODE_FILE or MV_SEND_HOLD)
+build/bin/mv_import_tests "[cli]"             # the driftwire command line: keys, the line editor, paths, render goldens, the live region, args, sessions over two engines, the program refusing a pipe
+build/bin/mv_import_tests "[cli][e2e]"        # POSIX: two mv_driftwire_cli_test programs in ptys, a code typed across
+# Linux: the Secret Service case runs against a keyring of its own (as CI's portable-core job):
+# a session bus, gnome-keyring unlocked with a NON-EMPTY password (an empty one makes no login
+# keyring), then MV_SECRET_SERVICE=required makes a skip a failure.
+export DBUS_SESSION_BUS_ADDRESS=$(dbus-daemon --session --fork --print-address=1)
+printf 'any-password' | gnome-keyring-daemon --unlock --components=secrets   # then wait until it owns org.freedesktop.secrets (ci.yml)
+MV_SECRET_SERVICE=required build-portable/bin/mv_import_tests "[driftwire]"
 # #472 relays: a relay server of your own (built beside the add-on, never shipped with the app).
 # On a machine both ends reach (a VPS, or a home server with the port forwarded); then type
 # "<address or name>:47614#<key>" (it prints the key) in Driftwire's "Your own relay server (optional)" on
@@ -1624,9 +1671,39 @@ Without Authenticode, Windows SmartScreen may warn. Without a correctly signed u
 manifest, clients reject updates. The production public key is already pinned in
 `src.managed/MediaViewer.Updater/UpdateKeys.cs`; preserve its matching private key.
 
+### Linux packages (driftwire)
+
+The `driftwire` command line's packages come from `cmake/driftwire-cli`
+([docs/design/28](design/28-driftwire.md#from-a-terminal-driftwire)); CI and the release build them
+on Ubuntu 22.04 with GCC 12 (`.github/actions/driftwire-cli-linux`), so they run from glibc 2.35 up.
+
+```sh
+cmake -S cmake/driftwire-cli -B build-cli -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DVCPKG_MANIFEST_DIR=tools/portable
+cmake --build build-cli                 # fails if driftwire NEEDs more than libc, libm and the loader
+(cd build-cli && cpack -G "DEB;RPM;TGZ" -B "$PWD/../dist")
+# dist/driftwire_<ver>_amd64.deb, driftwire-<ver>-1.x86_64.rpm, driftwire-<ver>-linux-x86_64.tar.gz
+# (arm64 / aarch64 on an arm64 machine; cpack needs rpmbuild, Ubuntu's `rpm` package)
+```
+
+Install and remove:
+
+```sh
+sudo apt install ./driftwire_<ver>_amd64.deb      # Debian, Ubuntu; sudo apt remove driftwire
+sudo dnf install ./driftwire-<ver>-1.x86_64.rpm   # Fedora; sudo dnf remove driftwire
+tar -xzf driftwire-<ver>-linux-x86_64.tar.gz --strip-components=1 -C ~/.local   # no root: ~/.local/bin/driftwire
+```
+
+They hold `/usr/bin/driftwire`, `driftwire(1)`, bash and zsh completions, a firewalld service
+(`sudo firewall-cmd --permanent --add-service=driftwire`, the beacon's 47613/udp; the manual page
+has the ufw lines and the TCP a receiver needs) and `/usr/share/doc/driftwire/copyright` with every
+notice. They recommend libsecret (remembered devices need a Secret Service). Not signed, and no
+package repository yet: an update is the next release's package. The tarball is relative (`bin/`,
+`share/`), so it runs where it is unpacked.
+
 ### Continuous integration
 
-Pushes to `main` and pull requests build four Windows variants (MSVC Release, MSVC Debug, clang-cl, ASan), run the C# ABI smoke test, and fuzz each decoder for a minute. On macOS they build the native core on macos-15 (arm64) and run the full `ctest` suite (`mv_tests`, `mv_import_tests`, `mv_ai_tests` and the Mac-only tests), build the three SwiftPM chrome packages, and run `swift test` on `src.swift/AIChrome`. The Mac job shares its vcpkg cache key with the release workflow's arm64 leg, so a cold cache costs the whole Mac manifest once. A newer push to the same branch cancels the run it replaces. Dependencies are installed by one job and reused. The first run after `vcpkg.json` or the pinned vcpkg baseline changes spends about 45 minutes there, mostly building FFmpeg. Later runs restore that cache. The nightly schedule is the long fuzz run, separate from pull requests.
+Pushes to `main` and pull requests build four Windows variants (MSVC Release, MSVC Debug, clang-cl, ASan), run the C# ABI smoke test, and fuzz each decoder for a minute. On macOS they build the native core on macos-15 (arm64) and run the full `ctest` suite (`mv_tests`, `mv_import_tests`, `mv_ai_tests` and the Mac-only tests), build the three SwiftPM chrome packages, and run `swift test` on `src.swift/AIChrome`. The Mac job shares its vcpkg cache key with the release workflow's arm64 leg, so a cold cache costs the whole Mac manifest once. On Linux, `portable-core` runs the shared suites under ASan / UBSan (Driftwire's among them, with a Secret Service of the job's own), and `driftwire-cli-linux` builds the command line's packages on x64 and arm64 (Ubuntu 22.04, GCC 12), runs `"[cli]"`, installs the `.deb` and uploads the three packages. The Windows MSVC Release leg and the Mac job upload the `driftwire` program as an artefact (unsigned, not released). A newer push to the same branch cancels the run it replaces. Dependencies are installed by one job and reused. The first run after `vcpkg.json` or the pinned vcpkg baseline changes spends about 45 minutes there, mostly building FFmpeg. Later runs restore that cache. The nightly schedule is the long fuzz run, separate from pull requests.
 
 ### Releasing from CI
 
@@ -1636,10 +1713,11 @@ Both platforms use the exact `x.y.z` from `CMakeLists.txt`.
 | Mode | Result |
 |---|---|
 | `artifacts` | Unsigned installers in Actions artifacts; no GitHub Release |
-| `preview` | Both unsigned test installers on GitHub Releases as a prerelease |
-| `stable` | Windows installer, notarized Mac image, both signed update feeds and checksums on Latest |
+| `preview` | Both unsigned test installers on GitHub Releases as a prerelease, with the driftwire Linux packages |
+| `stable` | Windows installer, notarized Mac image, both signed update feeds, the driftwire Linux packages and checksums on Latest |
 
-Windows and macOS build independently; a final job publishes only after both succeed.
+Windows, macOS and the Linux packages (`linux-cli`, x64 and arm64) build independently; a final
+job publishes only after all of them succeed.
 Stable needs the Windows manifest key and six Mac signing/notarization secrets.
 Windows Authenticode remains optional. Preview needs no signing secrets; its Mac app
 must be replaced manually with a stable build later.
@@ -1712,6 +1790,43 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### The driftwire command line (2026-10-23)
+
+What is built is in [docs/design/28](design/28-driftwire.md#from-a-terminal-driftwire) ("From a
+terminal"); the decisions are in [docs/design/12](design/12-decision-log.md#driftwire) (2026-10-23).
+
+- **Measured, Linux container only** (Ubuntu 24.04, 4 vCPU shared with another build, GCC 13):
+  - `mv_import_tests "[cli]"`: 60 cases, 1166 assertions, pass in RelWithDebInfo (three runs in a
+    row) and Debug + ASan / UBSan; in the packaging build (`cmake/driftwire-cli`, Release,
+    hardened) with GCC 13 and with GCC 12 (CI's compiler).
+  - The whole `"[driftwire]"` after the Linux ports merged: 234 cases (174 of the engine and the
+    add-on, 60 of the command line). RelWithDebInfo with no session bus: 233 pass and the Secret
+    Service case skips, 7.7 min.
+  - The packaging build's `driftwire` needs `libm.so.6`, `libc.so.6` and `ld-linux-x86-64.so.2`
+    only; PIE, `BIND_NOW`, RELRO, a non-executable stack. The `.deb`, `.rpm` and tarball were
+    built; the `.deb` installed with `dpkg -i`, `driftwire --version`, `--help` and a run without
+    a terminal (exit 2) behaved, the session ran in a pty and closed on `/quit` (exit 0), `dpkg -r`
+    removed it. `rpm -qpR` lists glibc's sonames only, `--recommends` libsecret. Built on glibc
+    2.39 here, so these packages need 2.38; CI's Ubuntu 22.04 legs make the 2.35 ones.
+  - Idle (B2's measurement, `driftwire` in a pty, alternated with the engine's own
+    `[.driftwire-idle]`): 60 s idle, 10 ms of CPU (0.017 %), 6.0 context switches a second, 0
+    bytes written; the engine alone 7.4–8.2 ms in 20 s, 6.0–6.1 a second. No cost above the
+    engine's.
+- **Compiled by CI only:** the Windows halves (`term_win.cpp`, `data_dir_win.cpp`, the UTF-8 argv
+  and console print, the Windows branches of the tests; the end-to-end test is POSIX only) and the
+  macOS build; the `driftwire-cli-linux` job (Ubuntu 22.04 x64 and arm64, GCC 12, vcpkg) and the
+  artefact steps; the release's `linux-cli` job. `tools/package/test_github_release.py` passes here
+  (44 tests); the PowerShell change to `build-release.ps1` was not run (no `pwsh` here).
+- **Not built:** Bluetooth in the command line; Remember on macOS (no keychain identity for a bare
+  program); signing and a package repository for the Linux packages, and the Windows and macOS
+  programs as releases.
+- **Owed by hand:** a real two-machine transfer over Wi-Fi with the command line on Linux and the
+  app on a Mac or a PC (both ways, a code typed, Accept typed); an internet code between two
+  networks; the look in a real terminal emulator on each OS (Windows Terminal and conhost,
+  Terminal.app and iTerm2, GNOME Terminal and Konsole), with a screen reader in `--plain`; a desktop
+  Secret Service (GNOME Keyring, KWallet) remembering a device; firewalld and ufw with the
+  manual page's rules.
 
 ### Startup time: the boot timeline, the chrome preload, lazy Mac panes (#486, 2026-10-19)
 
@@ -3498,6 +3613,10 @@ src/addon       the add-on host: MediaViewer's own add-ons (signed manifests, st
                 script sandbox, its limits and commands, script_*; docs/design/25)
 third_party/lua Lua 5.4.8, vendored, static (MIT); without io/os/package/debug
                 (third_party/lua/VENDOR.txt)
+src/addons/driftwire/cli
+                the driftwire command line: terminal port (term_posix / term_win),
+                keys, line editor, paths, the look (FTXUI), the live region, the
+                session over the engine, main() (docs/design/28)
 src/abi         the flat C ABI — the top of the native graph; animation session
 src/shell       Win32 window, render thread, present lab, hostfxr island host,
                 key router and live command table, marks, slideshow, file jobs,
@@ -3511,6 +3630,8 @@ tools/          frametime harness, module-graph, hostable-core, and licence gate
                 addon-sdk (MIT): the tool people make add-ons with; geo/build_places.py
                 (the place database from pinned Natural Earth + GeoNames data)
 examples/       an add-on that packs and installs as it is (MIT)
+cmake/driftwire-cli  the driftwire Linux packages (CPack, the NEEDED gate)
+packaging/linux the driftwire manual page, completions, firewalld service, copyright
 docs/design/    how each subsystem works (design reference)
 docs/plans/     forward plans not built yet
 ```
