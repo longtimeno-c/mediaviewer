@@ -49,6 +49,8 @@ runs:
         if [ "${{ inputs.arch }}" = arm64 ]; then
           echo "VCPKG_FORCE_SYSTEM_BINARIES=1" >> "$GITHUB_ENV"
         fi
+        # The packages' changelog date: the commit's, so one commit packs the same.
+        echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
 
     - name: Bootstrap vcpkg
       shell: bash
