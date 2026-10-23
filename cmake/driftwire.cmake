@@ -173,10 +173,64 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_privacy.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_relay.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_addon.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_ui.cpp"
     "${MV_SOURCE_ROOT}/src/addons/driftwire/bt_none.cpp")
-  target_link_libraries(${target} PRIVATE mv_driftwire_engine)
+  target_link_libraries(${target} PRIVATE mv_driftwire_engine mv_driftwire_cli_core)
   target_compile_definitions(${target} PRIVATE
     MV_DRIFTWIRE_MODULE_PATH="$<TARGET_FILE:mv_driftwire>"
     MV_DRIFTWIRE_MANIFEST_JSON="${MV_SOURCE_ROOT}/src/addons/driftwire/manifest.json")
   add_dependencies(${target} mv_driftwire mv_driftwire_relay)
 endfunction()
+
+# ---- the driftwire command line (docs/design/28 "From a terminal") ----------
+# A terminal host of the engine on Linux, Windows and macOS. FTXUI (MIT) lays
+# out and colours what it draws: vcpkg's port where the build uses vcpkg
+# (the root manifest, tools/portable/vcpkg.json), else a checkout of the
+# pinned release named by MV_FTXUI_SOURCE_DIR (a bare machine, as
+# MV_BLAKE3_SOURCE_DIR). Only its dom and screen parts are linked.
+#
+#   mv_driftwire_cli_core     everything of the command line but main(): the
+#                             terminal port, keys, the line editor, paths, the
+#                             look. No io sources (the tests bring mv_io; the
+#                             program compiles the file port in, as the module).
+#   mv_driftwire_cli_gallery  a test tool, never packaged: every card and state
+#                             with made-up data, to review and screenshot the look.
+if(NOT TARGET ftxui::dom)
+  find_package(ftxui CONFIG QUIET)
+endif()
+if(NOT TARGET ftxui::dom)
+  if(MV_FTXUI_SOURCE_DIR)
+    set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(FTXUI_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    set(FTXUI_QUIET ON CACHE BOOL "" FORCE)
+    add_subdirectory("${MV_FTXUI_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/_deps/ftxui" EXCLUDE_FROM_ALL SYSTEM)
+  else()
+    message(FATAL_ERROR "The driftwire command line needs FTXUI: install it (vcpkg `ftxui`) or set "
+                        "MV_FTXUI_SOURCE_DIR to a checkout of its pinned release")
+  endif()
+endif()
+
+set(_C "${_S}/cli")
+if(WIN32)
+  set(_driftwire_cli_port ${_C}/term_win.cpp)  # *_win.cpp: may include <windows.h>
+else()
+  set(_driftwire_cli_port ${_C}/term_posix.cpp)
+endif()
+add_library(mv_driftwire_cli_core STATIC
+  ${_C}/theme.h
+  ${_C}/text.cpp ${_C}/text.h
+  ${_C}/keys.cpp ${_C}/keys.h
+  ${_C}/line_editor.cpp ${_C}/line_editor.h
+  ${_C}/paths_arg.cpp ${_C}/paths_arg.h
+  ${_C}/complete.cpp ${_C}/complete.h
+  ${_C}/render.cpp ${_C}/render.h
+  ${_C}/inline_view.cpp ${_C}/inline_view.h
+  ${_C}/term.h ${_driftwire_cli_port}
+)
+target_link_libraries(mv_driftwire_cli_core PUBLIC mv_driftwire_engine ftxui::dom ftxui::screen)
+
+add_executable(mv_driftwire_cli_gallery "${MV_SOURCE_ROOT}/tools/driftwire-cli-gallery/main.cpp")
+target_link_libraries(mv_driftwire_cli_gallery PRIVATE mv_driftwire_cli_core)
+

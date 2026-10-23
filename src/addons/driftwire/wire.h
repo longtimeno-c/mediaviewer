@@ -177,5 +177,8 @@ struct beacon {
 
 // "340 MB", "1.2 GB", "12 KB".
 [[nodiscard]] std::string size_text(std::uint64_t bytes);
+// "14 MB/s": a transfer's speed under its progress, in the window and the
+// command line alike.
+[[nodiscard]] std::string rate_text(double bytes_per_second);
 
 }  // namespace mv::driftwire

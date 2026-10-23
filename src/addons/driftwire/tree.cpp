@@ -134,7 +134,7 @@ std::string moved_text(std::uint32_t files, std::uint32_t count, std::uint64_t b
   std::string out = std::to_string(files) + " of " + std::to_string(count) + " files, " + size_text(bytes) + " of " +
                     size_text(total);
   if (reconnecting) return out;
-  if (rate > 0) out += " \xC2\xB7 " + size_text(static_cast<std::uint64_t>(rate)) + "/s";
+  if (rate > 0) out += " \xC2\xB7 " + rate_text(rate);
   if (const std::string left = time_left_text(left_s); !left.empty()) out += " \xC2\xB7 " + left;
   return out;
 }
