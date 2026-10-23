@@ -191,6 +191,14 @@ if(MV_BUILD_TESTS)
   catch_discover_tests(mv_tests
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
 
+  # The harness against synthetic reports (tests/test_frametime.ps1's twin).
+  add_executable(mv_frametime_fixture tests/frametime_fixture_posix.cpp)
+  target_link_libraries(mv_frametime_fixture PRIVATE mv_project_options)
+  add_test(NAME frametime_harness COMMAND bash "${CMAKE_SOURCE_DIR}/tests/test_frametime.sh"
+    "$<TARGET_FILE:mv_frametime>" "$<TARGET_FILE:mv_frametime_fixture>"
+    "${CMAKE_BINARY_DIR}/frametime-tests")
+  set_tests_properties(frametime_harness PROPERTIES TIMEOUT 60)
+
   # The headless-Weston smoke (tools/linux/lab_smoke.sh): runs only where a
   # weston binary exists, and proves plumbing, never pacing.
   find_program(MV_WESTON weston)
