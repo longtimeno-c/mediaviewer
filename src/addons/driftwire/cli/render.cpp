@@ -146,14 +146,14 @@ constexpr int kDigitsWidth = 6 * 5 - 1 + 3;  // big_digits' "123 456"
 // digits from 40 columns (the card's `cw` is the terminal's less four),
 // plain bold digits below.
 Element code_row(const theme& th, std::string_view code, int cw) {
-  const int pad = std::min(5, std::max(2, cw - kDigitsWidth));
-  return hbox({text(spaces(pad)), big_digits(th, code, cw + 4 >= 40 ? cw - pad : 0)});
+  const int indent = std::min(5, std::max(2, cw - kDigitsWidth));
+  return hbox({text(spaces(indent)), big_digits(th, code, cw + 4 >= 40 ? cw - indent : 0)});
 }
 
 // The six boxes the same way; one row of brackets where they do not fit.
 Element boxes_row(const theme& th, std::string_view typed, int cw) {
-  const int pad = std::min(5, std::max(2, cw - kBoxesWidth));
-  return hbox({text(spaces(pad)), code_boxes(th, typed, cw - pad)});
+  const int indent = std::min(5, std::max(2, cw - kBoxesWidth));
+  return hbox({text(spaces(indent)), code_boxes(th, typed, cw - indent)});
 }
 
 // `parts` joined by " · " in at most `room` columns: whole parts drop, from
@@ -521,7 +521,8 @@ Element hints(const theme& th, const hint_model& m, int width) {
   // `right` stays while any part fits beside it (fit_parts says which).
   const int room = std::max(1, width - 4);
   if (!m.right.empty()) {
-    if (const std::string left = fit_parts(th, m.parts, room - display_width(m.right) - 2); !left.empty()) {
+    if (const std::string left = fit_parts(th, m.parts, room - display_width(m.right) - 2);
+        !left.empty() || m.parts.empty()) {
       return hbox({text("  "), spread(th, left, m.left_tone, m.right, tone::dim, room)});
     }
   }

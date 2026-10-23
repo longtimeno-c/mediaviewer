@@ -352,11 +352,11 @@ TEST_CASE("driftwire cli keys: the control keys", "[driftwire][cli]") {
 }
 
 TEST_CASE("driftwire cli keys: arrows, Home/End, Delete, Page, Shift+Tab in every form", "[driftwire][cli]") {
-  struct row {
+  struct key_case {
     std::string_view bytes;
     key k;
   };
-  const row rows[] = {
+  const key_case rows[] = {
       {"\x1B[A", key::up},        {"\x1B[B", key::down},      {"\x1B[C", key::right},   {"\x1B[D", key::left},
       {"\x1BOA", key::up},        {"\x1BOB", key::down},      {"\x1BOC", key::right},   {"\x1BOD", key::left},
       {"\x1B[H", key::home},      {"\x1B[F", key::end},       {"\x1BOH", key::home},    {"\x1BOF", key::end},
@@ -1113,13 +1113,13 @@ TEST_CASE("driftwire cli look: progress at 0, 42 and 100 per cent", "[driftwire]
 
 TEST_CASE("driftwire cli look: the path in each bearer's tint, and reconnecting", "[driftwire][cli]") {
   const cli::theme th = colour_theme();
-  struct row {
+  struct bearer_case {
     cli::bearer via;
     std::string badge;
     cli::rgb tint;
     std::string_view label;
   };
-  const row rows[] = {
+  const bearer_case rows[] = {
       {cli::bearer::wifi, "", cli::palette::kTeal, "Wi-Fi"},
       {cli::bearer::bluetooth, "", cli::palette::kBlue, "Bluetooth"},
       {cli::bearer::internet, "", cli::palette::kIndigo, "internet"},
@@ -1365,6 +1365,7 @@ TEST_CASE("driftwire cli look: the hint line keeps whole parts and the count on 
   check_rows(rows_of(cli::hints(th, h, 51), 51), {"  / for commands                 3 files · 1.2 GB"});
   check_rows(rows_of(cli::hints(th, h, 40), 40), {"  / for commands      3 files · 1.2 GB"});
   check_rows(rows_of(cli::hints(th, h, 20), 20), {"  / for commands"});
+  check_rows(rows_of(cli::hints(th, {{}, "3 files"}, 40), 40), {std::string(31, ' ') + "3 files"});  // to column 38
   const cli::hint_model ask{{"Press Ctrl+C again to quit"}, "", cli::tone::warning};
   CHECK(cli::rasterize(cli::hints(th, ask, 80), 80).rows[0].find(fg(cli::palette::kYellow)) != std::string::npos);
 }
