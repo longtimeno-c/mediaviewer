@@ -1,0 +1,54 @@
+#compdef driftwire
+# Copyright (C) 2026 longtimeno-c
+# SPDX-License-Identifier: GPL-3.0-or-later
+# zsh completion for driftwire(1). Installed in zsh's vendor-completions
+# (Debian, Ubuntu) and site-functions (Fedora, openSUSE) folders.
+
+local -a common
+common=(
+  '--save-to=[save received files in DIR (this run only)]:folder:_directories'
+  '--name=[the name other computers see (this run only)]:name: '
+  '--plain[lines only: no colour, no cursor movement]'
+  '(--no-colour)--no-color[no colour]'
+  '(--no-color)--no-colour[no colour]'
+  '--verbose[show what Driftwire logs]'
+  '(- *)'{-h,--help}'[print the usage]'
+  '(- *)'{-V,--version}'[print the version]'
+)
+
+local curcontext="$curcontext" state line
+typeset -A opt_args
+
+_arguments -C $common \
+  '1:command:->command' \
+  '*::argument:->argument' && return
+
+case $state in
+  command)
+    local -a commands
+    commands=(
+      'send:open Driftwire with these files (or one folder) ready to send'
+      'receive:open Driftwire to receive'
+      'code:open Driftwire with a code to receive from anywhere'
+      'devices:list the devices this computer remembers'
+      'help:print the usage'
+    )
+    _describe -t commands 'driftwire command' commands
+    ;;
+  argument)
+    case $line[1] in
+      send)
+        _arguments $common \
+          '--to=[send to NAME as soon as it is heard]:name: ' \
+          '*:file:_files'
+        ;;
+      receive)
+        _arguments $common '--once[close after one transfer]'
+        ;;
+      code)
+        # Never a code: it is pasted into /to-code, not typed here.
+        _arguments $common
+        ;;
+    esac
+    ;;
+esac

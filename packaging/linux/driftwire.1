@@ -1,0 +1,419 @@
+.\" Copyright (C) 2026 longtimeno-c
+.\" SPDX-License-Identifier: GPL-3.0-or-later
+.\" The driftwire manual page (docs/design/28 "From a terminal"). Hand-written
+.\" roff; cmake/driftwire-cli installs it gzipped. Check it with
+.\"   man -l packaging/linux/driftwire.1
+.TH DRIFTWIRE 1 2026-10-23 "Driftwire" "User Commands"
+.SH NAME
+driftwire \- send files to a computer nearby, or anywhere with a code
+.SH SYNOPSIS
+.B driftwire
+.RI [ options ]
+.br
+.B driftwire send
+.IR PATH ...
+.RB [ \-\-to
+.IR NAME ]
+.RI [ options ]
+.br
+.B driftwire receive
+.RB [ \-\-once ]
+.RI [ options ]
+.br
+.B driftwire code
+.RI [ options ]
+.br
+.B driftwire devices
+.br
+.B driftwire
+.BR \-\-help " | " \-\-version
+.SH DESCRIPTION
+.B driftwire
+is Driftwire in a terminal: it sends files to another computer on the same
+network, or to anyone, anywhere, who gives you a code. The other computer runs
+.B driftwire
+too, or MediaViewer with its Driftwire add-on (Windows and macOS).
+.PP
+It is interactive only. Nothing is sent and nothing is saved until the person
+at the terminal answers: a receiver types its answer to every offer, a sender
+types the code the receiver shows. There is no option to accept by itself, and
+.B driftwire
+refuses to start the session when its input or output is not a terminal.
+.PP
+While the session runs, this computer is visible to Driftwire nearby, by its
+name, and can be sent to. When the session closes, it is not: there is no
+receiving in the background.
+.PP
+Each transfer is sealed end to end. Every file is checked when it arrives;
+a file that does not match what was sent is not kept. A receive that stops
+part way (the network went, the sender closed) keeps what arrived and resumes
+when the same sender sends the same files again.
+.SH COMMANDS
+.TP
+.B driftwire
+Opens the session: the computers nearby, a prompt for files, and the
+commands below.
+.TP
+.BI "driftwire send " PATH ...
+Opens the session with these files, or one folder, ready to send. Pick a
+computer with the arrow keys and press Enter.
+.TP
+.BI "driftwire send " PATH "... \-\-to " NAME
+Sends to the first computer nearby called
+.I NAME
+as soon as it is heard (an exact name, ignoring case, then a unique
+beginning of one). The code is still typed.
+.TP
+.B driftwire receive
+Opens the session to receive.
+.TP
+.B driftwire receive \-\-once
+Closes after one transfer.
+.TP
+.B driftwire code
+Opens the session with a code to receive from anywhere (this needs
+.BR "Over the internet" ;
+it asks before turning it on).
+.TP
+.B driftwire devices
+Lists the devices this computer remembers, and exits. It needs no terminal.
+.TP
+.BR \-\-help ", " \-h
+Prints the usage and exits.
+.TP
+.BR \-\-version ", " \-V
+Prints the version and exits.
+.SH OPTIONS
+.TP
+.BI \-\-save\-to " DIR"
+Saves received files in
+.I DIR
+for this run only. The folder kept for later is set with
+.B /save\-to
+in the session.
+.TP
+.BI \-\-name " NAME"
+The name other computers see, for this run only. Without it, the name is
+the computer's pretty hostname
+.RB ( PRETTY_HOSTNAME
+in
+.IR /etc/machine\-info ,
+as
+.B hostnamectl
+sets it), else its hostname.
+.TP
+.B \-\-plain
+Lines only: no colour, no cursor movement, and questions as plain lines,
+for screen readers and dumb terminals. Also when
+.B TERM
+is
+.BR dumb .
+.TP
+.BR \-\-no\-color ", " \-\-no\-colour
+No colour. Also when
+.B NO_COLOR
+is set.
+.TP
+.B \-\-verbose
+Shows what Driftwire logs. Its log never holds a file name, a path, an
+address or a code.
+.PP
+No code, check digits or relay key is ever an argument: they would stay in
+the shell's history and be visible to other users in
+.BR ps (1).
+They are typed or pasted in the session, and
+.B "driftwire code 123456"
+is an error.
+.SH THE SESSION
+.SS Sending
+Type or paste paths and press Enter to add them; a terminal pastes files
+dropped onto it as paths. Quotes, backslash escapes,
+.BR ~ ,
+.B file://
+links and the wildcards
+.BR * ,
+.B ?
+and
+.B [...]
+work as in a shell; relative paths start in the current folder. A send is
+either files or one folder.
+.PP
+.B Nearby
+lists the computers that have Driftwire open on the same network. Choose one
+with the arrow keys and press Enter on an empty prompt. Its screen shows a
+six-digit code; type it. It goes by itself at the sixth digit. Three wrong
+codes end the attempt.
+.SS Receiving
+When someone nearby sends, the session shows a code in large digits: they
+type it on their screen. Then the offer: who, how many files, how large, and
+where they will be saved.
+.TP
+.BR 1 ", " y " or Enter"
+Accept, and save to the folder shown.
+.TP
+.B 2
+Accept and save somewhere else (a folder you type; Tab completes).
+.TP
+.BR 3 ", " n " or Esc"
+Decline.
+.PP
+An offer with no answer for three minutes is declined. Press Esc twice to
+cancel a transfer under way.
+.SS From anywhere
+.B /code
+makes a code to give someone: four words, or groups of letters, and a link.
+.B c
+copies the code and
+.B l
+the link (through the terminal, OSC 52, where it allows it). The person
+sending pastes it into
+.BR /to\-code ,
+and both screens show the same six digits: check them before sending or
+accepting.
+.SS Remembering
+After a transfer,
+.B driftwire
+may offer to remember the other computer, so the two can send to each other
+later over the internet with no code. Nearby, the one remembering types a
+code the other shows.
+.SS Commands
+Type
+.B /
+for the list, filtered as you type.
+.TP
+.BI /send " PATH..."
+Add files to send.
+.TP
+.BI /folder " DIR"
+Send a folder.
+.TP
+.B /files
+List the files ready to send.
+.TP
+.B /clear
+Clear them.
+.TP
+.B /code
+Receive from anywhere: make a code to give someone.
+.TP
+.B /to\-code
+Send to a code someone gave you (pasted, never an argument).
+.TP
+.B /devices
+List remembered devices, numbered.
+.TP
+.BI /forget " N"
+Forget device
+.I N
+(it asks first).
+.TP
+.BI /mine " N " on|off
+This is my computer: it may relay for me.
+.TP
+.B /unfinished
+List receives that stopped part way;
+.BI /discard " N"
+drops one.
+.TP
+.BI /save\-to " DIR"
+Where received files go, kept for later.
+.TP
+.BR /internet ", " /dht ", " /handover ", " /relay " on|off"
+Send and receive over the internet; find each other through the public DHT;
+continue over the internet when Wi-Fi drops; use your other computers to
+relay. Each is off until turned on, and says what it means the first time.
+.TP
+.B /relay\-server
+Your own relay server (its key is typed, never an argument).
+.TP
+.B /settings
+Show the current settings.
+.TP
+.B /help
+Commands and keys.
+.TP
+.BR /quit ", " /exit
+Close Driftwire.
+.SS Keys
+.TP
+.B Enter
+Add what was typed, run a command, or (on an empty prompt) send to the
+computer chosen.
+.TP
+.B Tab
+Complete a path, or a command in the list.
+.TP
+.BR Up ", " Down
+Move in the command list or in Nearby.
+.TP
+.BR Ctrl+P ", " Ctrl+N
+What was typed before.
+.TP
+.B Esc
+Close the command list, clear the prompt, then decline or cancel what is
+under way.
+.TP
+.B Ctrl+C
+Clear the prompt; twice, close Driftwire (during a transfer, cancel it and
+close).
+.TP
+.B Ctrl+D
+Close Driftwire (on an empty prompt).
+.TP
+.B Ctrl+L
+Draw everything again.
+.TP
+.B Ctrl+Z
+Suspend;
+.BR fg (1)
+brings it back.
+.PP
+The line keys of a shell work in the prompt: Home, End, Ctrl+A, Ctrl+E,
+Ctrl+U, Ctrl+K, Ctrl+W and Alt+Left/Right.
+.SH EXIT STATUS
+.TP
+.B 0
+It ended normally (and with
+.BR send ,
+.B receive \-\-once
+or
+.BR code ,
+the transfer went through).
+.TP
+.B 1
+The transfer of
+.BR send ,
+.B receive \-\-once
+or
+.B code
+did not go through: declined, cancelled or failed.
+.TP
+.B 2
+A usage error, no terminal, or it could not start (Driftwire is already open
+in another terminal of the same user).
+.SH ENVIRONMENT
+.TP
+.B NO_COLOR
+When set, no colour.
+.TP
+.B TERM
+.B dumb
+means plain lines (as
+.BR \-\-plain ).
+.TP
+.B XDG_STATE_HOME
+Where the data folder is (see
+.BR FILES ).
+.TP
+.B XDG_CONFIG_HOME
+Where
+.I user\-dirs.dirs
+is read for the Downloads folder
+.RB ( XDG_DOWNLOAD_DIR ,
+as
+.BR xdg\-user\-dirs\-update (1)
+writes it); else
+.IR ~/Downloads .
+.TP
+.B DBUS_SESSION_BUS_ADDRESS
+The session bus, for the Secret Service.
+.SH FILES
+.TP
+.I ${XDG_STATE_HOME:\-~/.local/state}/driftwire/
+The data folder, made readable by its owner only.
+.TP
+.I .../driftwire/driftwire.json
+The settings: the folder received files go to, the internet options.
+.TP
+.I .../driftwire/driftwire.json.lock
+Held while a session runs: one session per user at a time.
+.TP
+.I ~/Downloads
+Where received files go unless
+.B /save\-to
+or
+.B \-\-save\-to
+says otherwise. A file that is still arriving is a hidden
+.I .NAME.mvtmp
+beside it.
+.PP
+This computer's identity and the devices it remembers are kept in the
+freedesktop Secret Service (GNOME Keyring, KWallet, KeePassXC), under the
+service
+.BR "Driftwire CLI" ,
+apart from MediaViewer's. Without a Secret Service, or with the keyring
+locked (an SSH login, for one), each run has an identity of its own and
+nothing is remembered. The Secret Service lets any program of the same user
+read its items; each value is sealed so that one not written by Driftwire is
+refused.
+.SH FIREWALL
+Driftwire nearby sends a beacon on UDP port 47613 (to 239.255.77.83 and the
+subnet broadcast) and lists the computers whose beacons it hears; a sender
+then connects to the receiver over TCP, on a port the receiver's system
+picks. So seeing who is nearby needs the beacon let in, and receiving needs
+that connection let in. Neither is needed to be seen.
+.PP
+With firewalld, let the beacon in with the service this package installs:
+.PP
+.RS
+.nf
+sudo firewall\-cmd \-\-permanent \-\-add\-service=driftwire
+sudo firewall\-cmd \-\-reload
+.fi
+.RE
+.PP
+Fedora Workstation's default zone already lets in ports 1025 and above, TCP
+and UDP. In a zone that does not (public, on most other systems), receiving
+nearby also needs TCP from the local network, for example:
+.PP
+.RS
+.nf
+sudo firewall\-cmd \-\-permanent \-\-add\-rich\-rule=\(aqrule family=ipv4 \e
+  source address=192.168.1.0/24 port port=1024\-65535 protocol=tcp accept\(aq
+.fi
+.RE
+.PP
+With ufw (off by default on Ubuntu), the same two:
+.PP
+.RS
+.nf
+sudo ufw allow 47613/udp
+sudo ufw allow from 192.168.1.0/24 proto tcp
+.fi
+.RE
+.PP
+where 192.168.1.0/24 is the network you receive on.
+.SH PRIVACY
+Nothing about your files leaves the computer except to the one you send them
+to, sealed. The beacon carries a random id, the name other computers see
+(only while the session runs), a port and the protocol version: never a file
+name or anything about a file. What the session prints stays in the
+terminal.
+.SH EXAMPLES
+.TP
+.B driftwire send ~/Pictures/trip/*.heic
+Send some photos: choose the computer, type its code.
+.TP
+.B driftwire receive \-\-once \-\-save\-to /tmp/in
+Receive one transfer into
+.IR /tmp/in ,
+then close.
+.TP
+.B driftwire code
+Make a code to give someone far away.
+.SH SEE ALSO
+.BR firewall\-cmd (1),
+.BR ufw (8),
+.BR secret\-tool (1),
+.BR hostnamectl (1),
+.BR xdg\-user\-dirs\-update (1)
+.PP
+.UR https://github.com/longtimeno-c/mediaviewer
+.UE
+.SH COPYRIGHT
+Copyright \(co 2026 longtimeno-c. GPL-3.0-or-later: you may redistribute and
+change it under the GNU General Public License, version 3 or later. It comes
+with no warranty. It includes libsodium (ISC), BLAKE3 (CC0), FTXUI (MIT) and
+the BIP-39 English word list (MIT);
+.I /usr/share/doc/driftwire/copyright
+has each notice.
