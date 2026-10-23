@@ -50,6 +50,13 @@ class wayland_frame_clock {
   // the next frame callback and its presentation feedback, both pending state
   // the commit applies.
   void request(std::uint64_t frame_id) noexcept;
+  // [render thread] The swap for `frame_id` failed, so no commit carried what
+  // request() asked for and nothing answers it until another commit does:
+  // forget its callback and feedback, or wait_frame() would wait on that
+  // callback for ever and the loop never commit again. The compositor still
+  // holds both as pending state; the next commit fires them into proxies
+  // already destroyed, which libwayland drops.
+  void abandon(std::uint64_t frame_id) noexcept;
 
   // [render thread] Waits for the outstanding frame callback, dispatching the
   // private queue. `timeout_ms` < 0 waits for ever; `wake_fd` (an eventfd,
@@ -97,6 +104,7 @@ class wayland_frame_clock {
   void* registry_ = nullptr;
   void* presentation_ = nullptr;  // wp_presentation*, ours
   void* callback_ = nullptr;      // the outstanding wl_callback*, or null
+  std::uint64_t callback_frame_id_ = 0;  // the request() that made callback_
   int clock_id_ = -1;
   std::uint32_t last_flags_ = 0;
 

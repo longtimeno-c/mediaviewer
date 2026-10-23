@@ -440,6 +440,8 @@ void present_lab_linux::render_thread_main() noexcept {
     const std::uint64_t id = ++frame_id_;
     clock_.request(id);  // pending state the swap's commit applies
     if (auto presented = gl_surface_.present(); !presented) {
+      // No commit carried that request, so its callback would never come.
+      clock_.abandon(id);
       if (presented.error() == status::device_lost && rebuild_device()) {
         measurement_valid_ = false;
         continue;

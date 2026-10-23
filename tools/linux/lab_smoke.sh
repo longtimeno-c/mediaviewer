@@ -8,8 +8,11 @@
 # 26 ms against an advertised 16.67, so the lab must run, report, label its
 # source weaker and fail the gate; a pass here would be the bug.
 #
-#   tools/linux/lab_smoke.sh BUILD/bin/mediaviewer_lab BUILD/bin/frametime
+#   tools/linux/lab_smoke.sh BUILD/bin/mediaviewer_lab BUILD/bin/frametime \
+#     [BUILD/libmv_egl_swap_fault.so]
 #
+# With the third argument (tests/linux/egl_swap_fault.cpp) it also fails one
+# eglSwapBuffers mid-soak and checks the lab rebuilds and goes on presenting.
 # MV_WESTON_RENDERER (gl | pixman, default gl) and MV_SMOKE_SECONDS (default
 # 10) tune it. Exit 0 when every check holds, 1 when one fails, 77 (ctest's
 # skip) when there is no weston.
@@ -17,6 +20,7 @@ set -euo pipefail
 
 lab=${1:?usage: lab_smoke.sh MEDIAVIEWER_LAB FRAMETIME}
 frametime=${2:?usage: lab_smoke.sh MEDIAVIEWER_LAB FRAMETIME}
+swap_fault=${3:-}
 renderer=${MV_WESTON_RENDERER:-gl}
 seconds=${MV_SMOKE_SECONDS:-10}
 
@@ -96,6 +100,44 @@ print("animated: %d frames, mean %.2f ms, p99 %.2f ms, source %s; idle: %d prese
          idle["idle_presents"], idle["idle_cpu_percent"]))
 sys.exit(1 if problems else 0)
 EOF
+
+# A swap that fails as a lost surface does, half a second into the measured
+# window: the lab rebuilds the device and goes on presenting. The request that
+# swap never committed must be forgotten, or the loop waits for ever on a frame
+# callback nothing will send. The rate to expect is the animated soak's.
+if [ -n "$swap_fault" ]; then
+  read -r rate fail_at < <(python3 -I -c '
+import json, sys
+r = json.load(open(sys.argv[1]))
+rate = r["frames"] / r["elapsed_seconds"] if r["elapsed_seconds"] > 0 else 0.0
+print("%.3f %d" % (rate, max(2, int(rate * 1.5))))' "$dir/frametime-report.json")
+  set +e
+  MV_FAIL_SWAP_AT="$fail_at" LD_PRELOAD="$swap_fault" \
+    ASAN_OPTIONS="${ASAN_OPTIONS:+$ASAN_OPTIONS:}verify_asan_link_order=0" \
+    "$lab" --soak 3 --json "$runtime/swap-fault.json" >"$runtime/swap-fault.log" 2>&1
+  code=$?
+  set -e
+  [ "$code" -eq 0 ] || { fail "the swap-fault soak exited $code; expected 0"; cat "$runtime/swap-fault.log"; }
+  grep -q "egl_swap_fault: failing swap $fail_at" "$runtime/swap-fault.log" ||
+    fail "the swap-fault module never failed a swap (not preloaded?)"
+  python3 -I - "$runtime/swap-fault.json" "$rate" <<'EOF' || status=1
+import json, sys
+r = json.load(open(sys.argv[1]))
+rate = float(sys.argv[2])
+expected = rate * r["elapsed_seconds"]
+problems = []
+if r["frames"] < expected * 0.5:
+    problems.append("after a failed swap the lab presented %d frames of about %.0f"
+                    % (r["frames"], expected))
+if r["measurement_complete"] is not False:
+    problems.append("a soak with a device rebuild counted as complete")
+for p in problems:
+    print("FAIL:", p)
+print("swap fault: %d frames over %.1f s after one failed swap (about %.0f expected)"
+      % (r["frames"], r["elapsed_seconds"], expected))
+sys.exit(1 if problems else 0)
+EOF
+fi
 
 # The lab refuses to run without a Wayland session rather than guessing.
 set +e

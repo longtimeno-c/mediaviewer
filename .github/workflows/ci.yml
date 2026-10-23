@@ -329,7 +329,8 @@ jobs:
         timeout-minutes: 5
         run: |
           MV_WESTON_RENDERER=pixman bash tools/linux/lab_smoke.sh \
-            build-linux/bin/mediaviewer_lab build-linux/bin/frametime
+            build-linux/bin/mediaviewer_lab build-linux/bin/frametime \
+            build-linux/bin/libmv_egl_swap_fault.so
 
   # ---------------------------------------------------------------------------
   # One install of the manifest. FFmpeg alone is about 22 minutes from source,

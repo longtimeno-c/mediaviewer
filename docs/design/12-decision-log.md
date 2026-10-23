@@ -277,7 +277,9 @@ a mean of 25.8 ms with the GL renderer and llvmpipe (max 62 ms over a 10 s soak)
 with pixman (max 85 ms). The
 CI smoke (`linux-lab-smoke`, `tools/linux/lab_smoke.sh`) therefore asserts that the lab runs,
 reports in the shape `frametime` parses, labels its source "clock intervals (weaker)", fails the
-gate, and presents nothing in the static soak at ~0 % CPU. It must never count as a pass: Linux
+gate, presents nothing in the static soak at ~0 % CPU, and goes on presenting after one failed
+`eglSwapBuffers` (a swap that fails commits nothing, so the frame callback and feedback it asked
+for are dropped; waiting on that callback froze the lab). It must never count as a pass: Linux
 PR 1's verify is owed on a real session (Mutter or KWin, Mesa on Intel or AMD), in
 `frametime-linux`.
 

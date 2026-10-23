@@ -203,9 +203,15 @@ if(MV_BUILD_TESTS)
   # weston binary exists, and proves plumbing, never pacing.
   find_program(MV_WESTON weston)
   if(MV_WESTON)
+    # Fails one eglSwapBuffers for the smoke's swap-failure step. Not built
+    # with the sanitizers: it only forwards to the real EGL.
+    add_library(mv_egl_swap_fault MODULE tests/linux/egl_swap_fault.cpp)
+    target_compile_options(mv_egl_swap_fault PRIVATE -Wall -Wextra -Werror -fno-rtti)
+    target_link_libraries(mv_egl_swap_fault PRIVATE OpenGL::EGL ${CMAKE_DL_LIBS})
     add_test(NAME linux_lab_smoke
       COMMAND bash "${CMAKE_SOURCE_DIR}/tools/linux/lab_smoke.sh"
-              "$<TARGET_FILE:mediaviewer_lab>" "$<TARGET_FILE:mv_frametime>")
+              "$<TARGET_FILE:mediaviewer_lab>" "$<TARGET_FILE:mv_frametime>"
+              "$<TARGET_FILE:mv_egl_swap_fault>")
     set_tests_properties(linux_lab_smoke PROPERTIES TIMEOUT 240 SKIP_RETURN_CODE 77)
   endif()
 endif()

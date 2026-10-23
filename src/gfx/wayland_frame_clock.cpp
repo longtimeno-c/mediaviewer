@@ -119,6 +119,7 @@ void wayland_frame_clock::request(std::uint64_t frame_id) noexcept {
     if (callback) {
       wl_callback_add_listener(callback, &k_frame_listener, this);
       callback_ = callback;
+      callback_frame_id_ = frame_id;
     }
   }
   if (!presentation_) return;
@@ -145,6 +146,18 @@ void wayland_frame_clock::request(std::uint64_t frame_id) noexcept {
   wp_presentation_feedback_add_listener(feedback, &k_feedback_listener, this);
   slot->feedback = feedback;
   slot->frame_id = frame_id;
+}
+
+void wayland_frame_clock::abandon(std::uint64_t frame_id) noexcept {
+  if (callback_ && callback_frame_id_ == frame_id) {
+    wl_callback_destroy(static_cast<wl_callback*>(callback_));
+    callback_ = nullptr;
+  }
+  for (auto& f : in_flight_) {
+    if (!f.feedback || f.frame_id != frame_id) continue;
+    wp_presentation_feedback_destroy(static_cast<struct wp_presentation_feedback*>(f.feedback));
+    f = {};
+  }
 }
 
 void wayland_frame_clock::on_frame_done(void* callback) noexcept {
@@ -268,6 +281,7 @@ void wayland_frame_clock::destroy() noexcept {
   }
   if (callback_) wl_callback_destroy(static_cast<wl_callback*>(callback_));
   callback_ = nullptr;
+  callback_frame_id_ = 0;
   if (presentation_) wp_presentation_destroy(static_cast<wp_presentation*>(presentation_));
   presentation_ = nullptr;
   if (registry_) wl_registry_destroy(static_cast<wl_registry*>(registry_));

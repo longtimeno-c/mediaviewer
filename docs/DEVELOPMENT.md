@@ -347,7 +347,8 @@ The headless smoke by hand (what CI's `linux-lab-smoke` runs; `MV_WESTON_RENDERE
 the other renderer):
 
 ```sh
-bash tools/linux/lab_smoke.sh build-linux/bin/mediaviewer_lab build-linux/bin/frametime
+bash tools/linux/lab_smoke.sh build-linux/bin/mediaviewer_lab build-linux/bin/frametime \
+  build-linux/bin/libmv_egl_swap_fault.so   # optional: one failed swap, the lab must go on
 # or by hand:
 export XDG_RUNTIME_DIR=$(mktemp -d); chmod 700 "$XDG_RUNTIME_DIR"
 weston --backend=headless --renderer=gl --socket=wl-test --idle-time=0 &
