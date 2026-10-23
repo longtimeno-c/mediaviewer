@@ -400,7 +400,7 @@ TEST_CASE("driftwire cli session: a send nearby, the code typed off the other sc
   // A path typed (as a terminal pastes a dropped file): the set, in the hint.
   type_line(ann, utf8(f));
   REQUIRE(ann.screen_shows("1 file"));
-  CHECK(has(ann.text(), "> " + utf8(f)));  // the line typed, in the transcript
+  CHECK(has(ann.text(), "> " + utf8(f).substr(0, 24)));  // the line typed, in the transcript (wrapped)
 
   // Enter on an empty prompt sends to the computer the pointer is on.
   ann.con.type("\r");
@@ -531,8 +531,8 @@ TEST_CASE("driftwire cli session: esc twice cancels a send under way; the folder
     ann.start(client::options(b, "Ann"), session_opts(s.root()));
     bea.start(client::options(b, "Bea"), session_opts(s.root()));
     REQUIRE(ann.screen_shows("Bea"));
-    // Relative to the current folder, quoted as a shell would.
-    type_line(ann, "'Trip'");
+    // Relative to the current folder, quoted as a shell would ("..." on every OS).
+    type_line(ann, "\"Trip\"");
     REQUIRE(ann.screen_shows("the folder \"Trip\""));
     // A file on top of a folder: a send is one or the other.
     type_line(ann, utf8(dir / "one.jpg"));

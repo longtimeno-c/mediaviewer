@@ -251,7 +251,6 @@ struct session::impl {
   std::unique_ptr<engine> eng;
 
   view v;  // the last snapshot
-  std::uint64_t seen_posts = 0;
   std::int64_t now = 0, started = 0;
   bool quitting = false;
   int width = 80, height = 24;
@@ -346,7 +345,6 @@ struct session::impl {
   line_editor plain_line;
   bool prompt_on_line = false;
   std::string plain_nearby;  // the last Nearby line said
-  int plain_percent = -1;
 
   // =========================================================================================
   // engine calls: all here, on this thread
@@ -358,7 +356,6 @@ struct session::impl {
   void refresh_view() {
     if (!eng) return;
     view next = eng->snapshot();
-    seen_posts = host.posts();
     on_view(next);
   }
 
@@ -371,8 +368,9 @@ struct session::impl {
     if (o.events) o.events(line);
   }
 
-  std::string sep() const { return " " + std::string(th.g->sep) + " "; }
-  std::string ell() const { return std::string(th.g->ellipsis); }
+  // " · " and "…" (or their ASCII), between and after words.
+  std::string glue() const { return " " + std::string(th.g->sep) + " "; }
+  std::string dots() const { return std::string(th.g->ellipsis); }
 
   void plain_write_lines(const std::vector<std::string>& ls) {
     std::string s;
@@ -435,7 +433,7 @@ struct session::impl {
     // #530: receives that stopped, once.
     if (!unfinished_said && !v.unfinished.empty()) {
       unfinished_said = true;
-      say(tone::info, plural(v.unfinished.size(), "receive", "receives") + " stopped part way" + sep() + "/unfinished",
+      say(tone::info, plural(v.unfinished.size(), "receive", "receives") + " stopped part way" + glue() + "/unfinished",
           {"Each picks up where it stopped when its sender sends again."});
     }
 
@@ -459,8 +457,8 @@ struct session::impl {
     b.internet = v.internet ? "internet on" : "internet off";
     b.saves_to = home_short_of(v.destination);
     if (o.plain) {
-      plain_write_lines({"Driftwire " + b.version + sep() + b.name + sep() + b.presence + sep() + b.internet,
-                         "Saves to " + b.saves_to + sep() + "/help for commands"});
+      plain_write_lines({"Driftwire " + b.version + glue() + b.name + glue() + b.presence + glue() + b.internet,
+                         "Saves to " + b.saves_to + glue() + "/help for commands"});
     } else {
       live.print(banner(th, b, w()));
     }
@@ -498,7 +496,7 @@ struct session::impl {
       if (is == out_phase::done) {
         std::string d = size_text(v.out_total);
         if (out_moving_since >= 0) d += " in " + elapsed_text(static_cast<double>(now - out_moving_since) / 1000.0);
-        if (const std::string via = via_words(v.out_via, v.out_punched, v.out_relay); !via.empty()) d += sep() + via;
+        if (const std::string via = via_words(v.out_via, v.out_punched, v.out_relay); !via.empty()) d += glue() + via;
         details.push_back(std::move(d));
       }
       say(is == out_phase::done ? tone::success : cancelled_here ? tone::warning : ended_tone(v.out_note),
@@ -541,8 +539,8 @@ struct session::impl {
         }
         std::string d = size_text(v.in_total);
         if (in_moving_since >= 0) d += " in " + elapsed_text(static_cast<double>(now - in_moving_since) / 1000.0);
-        if (const std::string via = via_words(v.in_via, v.in_punched, v.in_relay); !via.empty()) d += sep() + via;
-        d += sep() + "every file checked" + sep() + home_short_of(v.destination);
+        if (const std::string via = via_words(v.in_via, v.in_punched, v.in_relay); !via.empty()) d += glue() + via;
+        d += glue() + "every file checked" + glue() + home_short_of(v.destination);
         details.push_back(std::move(d));
       } else if (prev.in == in_phase::asking && !in_answered && contains(text, "Declined")) {
         details.emplace_back("Nobody answered for 3 minutes, so it was declined.");
@@ -639,7 +637,7 @@ struct session::impl {
 
   bool known_shown() const { return v.internet && v.dht && !v.known.empty(); }
 
-  std::vector<row_ref> rows() const {
+  std::vector<row_ref> computers() const {
     std::vector<row_ref> out;
     for (const auto& p : v.peers) out.push_back({p.id, p.name, false});
     if (known_shown()) {
@@ -651,7 +649,7 @@ struct session::impl {
   }
 
   void keep_selection(const view&) {
-    const auto r = rows();
+    const auto r = computers();
     if (r.empty()) {
       sel_id.clear();
       sel_index = 0;
@@ -668,7 +666,7 @@ struct session::impl {
   }
 
   void move_selection(int by) {
-    const auto r = rows();
+    const auto r = computers();
     if (r.empty()) return;
     sel_index = std::clamp(sel_index + by, 0, static_cast<int>(r.size()) - 1);
     sel_id = r[static_cast<std::size_t>(sel_index)].id;
@@ -683,7 +681,7 @@ struct session::impl {
   std::string why_not_send(const row_ref* to) const {
     if (out_busy(v) || in_busy(v)) return "A transfer is under way. Send again when it ends.";
     if (v.reading_folder) return "Still reading the files" + std::string(th.g->ellipsis);
-    if (v.file_count == 0) return "Pick files first: type or drop them at the editor.";
+    if (v.file_count == 0) return "Pick files first: type or drop them at the prompt.";
     if (!to) return "No one nearby yet: open Driftwire on the other computer, on this network.";
     if (to->known && (!v.internet || !v.dht)) return "Turn on /internet and /dht to send to a remembered device.";
     return {};
@@ -707,7 +705,7 @@ struct session::impl {
   }
 
   void send_selected() {
-    const auto r = rows();
+    const auto r = computers();
     if (r.empty() || sel_index < 0 || sel_index >= static_cast<int>(r.size())) {
       flash(why_not_send(nullptr));
       return;
@@ -801,8 +799,8 @@ struct session::impl {
   std::string files_summary() const {
     if (v.reading_folder) return "Reading the files" + std::string(th.g->ellipsis);
     if (v.file_count == 0) return {};
-    if (!folder.empty()) return "the folder \"" + leaf_of(folder) + "\"" + sep() + size_text(v.file_bytes);
-    return plural(v.file_count, "file", "files") + sep() + size_text(v.file_bytes);
+    if (!folder.empty()) return "the folder \"" + leaf_of(folder) + "\"" + glue() + size_text(v.file_bytes);
+    return plural(v.file_count, "file", "files") + glue() + size_text(v.file_bytes);
   }
 
   // =========================================================================================
@@ -1254,7 +1252,7 @@ struct session::impl {
     std::vector<std::string> details;
     for (std::size_t i = 0; i < v.known.size(); ++i) {
       const bool own = i < v.known_own.size() && v.known_own[i];
-      details.push_back(std::to_string(i + 1) + ". " + v.known[i] + (own ? sep() + "my computer" : std::string()));
+      details.push_back(std::to_string(i + 1) + ". " + v.known[i] + (own ? glue() + "my computer" : std::string()));
     }
     details.emplace_back("/forget N forgets one; /mine N on|off marks one as yours.");
     say(tone::info, "Remembered devices", std::move(details));
@@ -1318,7 +1316,7 @@ struct session::impl {
   // A titled list of two columns in the transcript: "/send PATH...  Add files ...".
   void say_table(const std::string& title, const std::vector<std::pair<std::string, std::string>>& rows) {
     int left = 0;
-    for (const auto& [l, r] : rows) left = std::max(left, display_width(l));
+    for (const auto& row : rows) left = std::max(left, display_width(row.first));
     left = std::min(left + 2, std::max(8, w() / 2));
     if (o.plain) {
       std::vector<std::string> ls{title};
@@ -1681,14 +1679,14 @@ struct session::impl {
     if (editor.handle(e) && editor.text() != before) palette_sel = 0;
   }
 
+  // Ctrl+Z, or SIGTSTP from outside (POSIX job control; Windows has none).
   void suspend() {
-    if (o.plain) {
-      term.suspend_self();
-      return;
-    }
-    live.erase();
+#if !defined(_WIN32)
+    if (!o.plain) live.erase();
     term.suspend_self();
-    live.invalidate();
+    if (!o.plain) live.invalidate();
+    prompt_on_line = false;  // plain: the prompt again, on a line of its own
+#endif
   }
 
   // =========================================================================================
@@ -1933,7 +1931,7 @@ struct session::impl {
       pm.selected = palette_sel;
       // A path pasted or dropped begins with "/" too: then no command matches,
       // and Enter adds it.
-      pm.empty = "No command matches " + fit(editor.text(), std::max(8, w() / 2), th) + " \xC2\xB7 enter adds it as a path";
+      pm.empty = "No command matches " + fit(editor.text(), std::max(8, w() / 2), th) + glue() + "enter adds it as a path";
       rows.push_back(command_palette(th, pm, w()));
       return ftxui::vbox(std::move(rows));
     }
@@ -1953,7 +1951,7 @@ struct session::impl {
     for (const auto& p : v.peers) {
       nearby_row r;
       r.name = p.name;
-      r.detail = p.wifi && p.bt ? "Wi-Fi \xC2\xB7 Bluetooth" : p.via;
+      r.detail = p.wifi && p.bt ? "Wi-Fi" + glue() + "Bluetooth" : p.via;
       r.dot = p.wifi || !p.bt ? bearer::wifi : bearer::bluetooth;
       if (p.id == v.out_peer_id && out_busy(v)) {
         r.detail = v.out == out_phase::sending ? "sending" + std::string(th.g->ellipsis) : "connecting" + std::string(th.g->ellipsis);
@@ -2106,8 +2104,8 @@ struct session::impl {
       case focus::prompt: break;
     }
     // Statuses, said once each (progress at every tenth).
-    const std::string ell = this->ell();
-    const std::string sep = this->sep();
+    const std::string ell = dots();
+    const std::string sep = glue();
     if (v.in == in_phase::connecting) {
       f.key = "in" + v.in_code;
       if (v.in_known) {
@@ -2186,7 +2184,7 @@ struct session::impl {
   void plain_nearby_update() {
     if (!banner_done) return;
     std::string s;
-    const auto r = rows();
+    const auto r = computers();
     if (r.empty()) {
       s = "No one nearby yet. Open Driftwire on the other computer; it shows up when it is on this network.";
     } else {
@@ -2432,16 +2430,14 @@ struct session::impl {
       refresh_view();
       if (transfer_running()) {
         say(tone::warning, "Closed during a transfer: it was cancelled.",
-            {v.in == in_phase::receiving ? "What arrived whole stays; a sender that sends again picks up where it stopped."
-                                         : "The other computer is told."});
+            {v.in == in_phase::receiving ? "What arrived whole stays here." : "The other computer is told."});
       }
     }
     if (!o.plain) live.erase();
     // The engine stops on this thread, before the terminal is handed back (#530).
     eng.reset();
     put_back_destination();
-    const std::string last = "Driftwire closed " + std::string(o.plain ? "-" : th.g->sep) +
-                             " this computer is no longer visible";
+    const std::string last = "Driftwire closed" + glue() + "this computer is no longer visible";
     if (o.plain) {
       plain_write_lines({last});
     } else {
