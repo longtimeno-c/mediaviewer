@@ -9,6 +9,11 @@
 
 #if defined(__APPLE__)
 #include <os/log.h>
+
+#include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
 #endif
 
 namespace mv::trace {
@@ -18,6 +23,23 @@ namespace {
 os_log_t provider() noexcept {
   static os_log_t log = os_log_create("org.mediaviewer", "trace");
   return log;
+}
+
+// One log object per add-on id, made once and kept (a handful at most).
+os_log_t addon_category(const char* addon_id) noexcept {
+  static std::mutex m;
+  static std::vector<std::pair<std::string, os_log_t>> made;
+  try {
+    std::lock_guard lock(m);
+    for (const auto& [id, log] : made) {
+      if (id == addon_id) return log;
+    }
+    os_log_t log = os_log_create("org.mediaviewer", addon_id);
+    made.emplace_back(addon_id, log);
+    return log;
+  } catch (...) {
+    return provider();
+  }
 }
 #endif
 }  // namespace
@@ -117,6 +139,18 @@ void abi_fault(const char* function_literal, std::uint64_t correlation_id,
   (void)function_literal;
   (void)correlation_id;
   (void)status_code;
+#endif
+}
+
+void addon_log(const char* addon_id, std::int32_t level, const char* message) noexcept {
+#if defined(__APPLE__)
+  const os_log_type_t type = level >= 2 ? OS_LOG_TYPE_ERROR : OS_LOG_TYPE_DEFAULT;
+  os_log_with_type(addon_category(addon_id && *addon_id ? addon_id : "addon"), type, "%{public}s",
+                   message ? message : "");
+#else
+  (void)addon_id;
+  (void)level;
+  (void)message;
 #endif
 }
 

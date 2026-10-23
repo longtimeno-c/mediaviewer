@@ -1059,7 +1059,8 @@ second while bytes move; those posts update chrome and never present the canvas.
 ## Privacy (rule 6)
 
 - Nothing about a transfer goes to telemetry or a crash report: no path, file name, pixel, EXIF,
-  address or peer name is logged (`log` takes ASCII without them) or annotated. The minidump
+  address or peer name is logged (`log` takes ASCII without them; the host puts each line in the
+  OS's log on that machine, never a file or report) or annotated. The minidump
   scrub ([13](13-updates-and-telemetry.md)) applies unchanged.
 - The beacon and Bluetooth INFO carry a random id, a port, the protocol spoken, and the machine's
   name only while the Driftwire window is open (#501). A machine receiving in the background, maybe

@@ -80,6 +80,25 @@ void abi_fault(const char* function_literal, std::uint64_t correlation_id,
                     TraceLoggingInt32(status_code, "Status"));
 }
 
+void addon_log(const char* addon_id, std::int32_t level, const char* message) noexcept {
+  if (!addon_id) addon_id = "addon";
+  if (!message) message = "";
+  // TraceLoggingLevel takes a compile-time constant: one write per level.
+  if (level >= 2) {
+    TraceLoggingWrite(g_mv_provider, "AddonLog", TraceLoggingLevel(TRACE_LEVEL_ERROR),
+                      TraceLoggingString(addon_id, "Addon"), TraceLoggingString(message, "Message"));
+  } else if (level == 1) {
+    TraceLoggingWrite(g_mv_provider, "AddonLog", TraceLoggingLevel(TRACE_LEVEL_WARNING),
+                      TraceLoggingString(addon_id, "Addon"), TraceLoggingString(message, "Message"));
+  } else {
+    TraceLoggingWrite(g_mv_provider, "AddonLog", TraceLoggingLevel(TRACE_LEVEL_INFORMATION),
+                      TraceLoggingString(addon_id, "Addon"), TraceLoggingString(message, "Message"));
+  }
+  char buf[320];
+  std::snprintf(buf, sizeof buf, "[addon %s] %s\n", addon_id, message);
+  ::OutputDebugStringA(buf);
+}
+
 }  // namespace mv::trace
 
 namespace mv::log {

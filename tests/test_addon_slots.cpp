@@ -1639,3 +1639,20 @@ TEST_CASE("only add-ons that fill slots, and not Import, the AI family or a piec
   CHECK_FALSE(mv::addon::loads_for_slots(none));
 }
 #endif
+
+TEST_CASE("an add-on's log lines reach the OS log, cut to printable ASCII", "[addon][log]") {
+  // What arrives is the OS's to show (the Mac: `log show --predicate 'subsystem == "org.mediaviewer"
+  // && category == "logtest"'`); here, that no line, however long or odd, upsets the host.
+  mv::addon::host_services svc;
+  mv::addon::host_table t(svc);
+  t.set_addon_id("logtest");
+  const mv_host_api* api = t.api();
+  REQUIRE(api->log != nullptr);
+  api->log(api->host, 0, "logtest: info line");
+  api->log(api->host, 1, "logtest: warn line\nforged: second line\x01\xff");
+  api->log(api->host, 2, std::string(4000, 'x').c_str());
+  api->log(api->host, 2, nullptr);
+  api->log(nullptr, 2, "no host");
+  t.set_addon_id("");
+  api->log(api->host, 0, "logtest: no id");
+}

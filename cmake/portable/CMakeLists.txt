@@ -86,6 +86,9 @@ add_library(mv_io STATIC
   "${MV_ROOT}/src/io/paths_mac.cpp"
   "${MV_ROOT}/src/io/replace_mac.cpp"
   "${MV_ROOT}/src/io/child_process_posix.cpp"
+  # The add-on host's log line (trace::addon_log); a no-op off the Mac. The
+  # product builds take it from mv_core, which this build does not have.
+  "${MV_ROOT}/src/core/trace_posix.cpp"
 )
 target_include_directories(mv_io PUBLIC "${MV_ROOT}/src")
 target_link_libraries(mv_io PUBLIC mv_project_options PRIVATE ${MV_BLAKE3_TARGET})
