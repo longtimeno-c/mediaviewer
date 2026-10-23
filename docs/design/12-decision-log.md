@@ -734,6 +734,25 @@ packages once. Pacing on Intel has not been measured. Windows ARM64 is not built
 **A headless Linux build of the shared core (2026-09-24).** `cmake/portable` runs the shared suites
 under ASan / UBSan / TSan. It is a test build, not a product platform.
 
+**Linux packages make Linux a product platform for the command line (owner, 2026-10-23; amends "A
+headless Linux build of the shared core").** The `driftwire` command line ships for Linux as a
+`.deb`, an `.rpm` and a tarball, x86_64 and arm64, built by `cmake/driftwire-cli` on Ubuntu 22.04
+with GCC 12 and published with every release beside the installers. The program needs only
+glibc, 2.35 or newer: libsodium 1.0.22 (protocol 2's ML-KEM-768; Ubuntu 24.04's 1.0.18 cannot
+build it), BLAKE3, FTXUI and the C++ runtime (`-static-libstdc++ -static-libgcc`, under the GCC
+Runtime Library Exception) are linked in, and the build fails if `readelf -d` shows anything
+`NEEDED` but libc, libm and the loader. libsecret and libsystemd are opened at run time, so a
+server or a container without them still runs it; the packages only recommend libsecret.
+MediaViewer itself is still Windows and macOS: `cmake/portable` stays the shared core's test
+build, and this decides nothing for a Linux app. Cost: no glibc older than 2.35 (RHEL 8 and 9,
+Debian 11); no package repository, so no updates but the release page and the packages are
+unsigned (SHA256SUMS.txt covers them), while CLAUDE.md asks for an updater before a build leaves
+this machine (open, for the owner); Linux joins Windows and macOS in what a Driftwire change must
+keep working. Measured here only (Ubuntu 24.04 container, GCC 13 and GCC 12): built, `"[cli]"`
+green, the `.deb` installed and run; CI's Ubuntu 22.04 legs are the first to build the shipped
+ones. Reopen if a distribution wants its own package built from source (then libsodium 1.0.21+
+comes from the distribution, and the gate changes).
+
 ---
 
 ## Shell integration
@@ -1951,6 +1970,58 @@ cross-country 0.83 → 5.5 MB/s, intercontinental 0.24 → 3.0, Wi-Fi with jitte
 0.42 → 9.2, bufferbloat's queue 500 → 82 ms, no profile worse; no real path yet. Kept: our own
 stream over the hub (it must share the punched socket). BBR is not fair to a loss-based flow in a
 shallow queue; accepted for a person's own transfer. [28](28-driftwire.md#four-words-over-the-dht-472-pr-3).
+
+**Driftwire has a command line (owner, 2026-10-23; amends "there is no second app").** `driftwire`
+is a terminal host of the same engine on Linux, Windows and macOS: a program of its own, outside
+MediaViewer, with the wire, the code, Accept and the verified receive unchanged, so it sends to
+and receives from the add-on and another `driftwire` ([28](28-driftwire.md#from-a-terminal-driftwire)).
+It is not a helper of the app: the app never starts it, and inside MediaViewer the add-on is still
+the only Driftwire, so "there is never a second *app* to install or open" (2026-10-11, #348) still
+holds for MediaViewer itself. Interactive only (owner): no `--yes`, no auto-accept, and the program
+refuses to run the session without a terminal (exit 2). Its look is built in C++ (FTXUI, MIT, its
+dom and screen parts only; Node is out by CLAUDE.md), an inline UI after Claude Code's terminal UI
+with Driftwire's colours: a transcript that stays in the scrollback over a live region at the
+bottom. No Bluetooth in it on any OS: CoreBluetooth needs a bundle's usage string, the WinRT GATT
+server in an unpackaged console is unverified, Linux has no bearer. Linux ships packages; the
+Windows and macOS programs are built and tested with the app and uploaded by CI, unsigned, and are
+not released (owner: Linux packages only) nor in the app's payload. Cost: a second face for every
+flow; one session controller that makes only the window's `on_event` calls keeps it to what the
+window does, and the session tests drive two engines through it.
+
+**Accept in a terminal is typed (owner, 2026-10-23; amends "Accept stays in the window").** In
+`driftwire` the receiver accepts at the terminal where the session runs, after the sender typed
+the code, as in the window: `1`, `y` or Enter on Accept in the offer's numbered list, `2` to save
+somewhere else, `3`, `n` or Esc to decline, or `y` at plain mode's `[y/N/s]`. Nothing else
+accepts: no option, no notification (the command line posts none), no pipe (refused). Nothing
+secret is an argument either: no code, check digits or relay key on the command line, where the
+shell's history and `ps` would keep them; a code someone gave you is pasted into `/to-code`, and
+`send --to NAME` names a computer, never a code. Reopen only with a way to accept that is still a
+person answering at that machine.
+
+**The command line keeps its own identity (2026-10-23).** Its identity key and remembered devices
+are under the secret-store service "Driftwire CLI" (`secrets::kCliService`), its settings, resume
+file, DHT table and lock in a data folder of its own (`${XDG_STATE_HOME:-~/.local/state}/driftwire`,
+`~/Library/Application Support/Driftwire`, `%LOCALAPPDATA%\Driftwire`, made 0700), never the
+add-on's. One key in two programs would race: a remembered device's DHT meeting is answered by
+whichever holds it, and each would rewrite the other's list of devices. Two identities make them
+two devices, each remembered on its own. Cost: a device the app remembers is not remembered by the
+command line on the same computer, and with both open the others would see two computers of the
+same name (not measured). On macOS the command line has no store at all (the data protection keychain needs an access
+group, which a bare program cannot be entitled to): each run has a key of its own and Remember does
+not show. Reopen if the two should be one device (then one of them must hand the other its key).
+
+**Linux Secret Service has no per-app ACL (2026-10-23).** Unlike the Mac's access group, the
+freedesktop Secret Service lets any process of the same user on the session bus read, list or
+plant an item, with no prompt. So `secrets_linux.cpp` seals each value (`crypto_secretbox`, a key
+derived from "<service> secrets v1") and refuses one that does not open, as Windows does with DPAPI
+(#501): listing the keyring (Seahorse, `secret-tool search`) shows only the sealed text, and an item
+another program wrote in plain is not believed. It is not a boundary against a program of the same
+user that does the same (the constant is in the source). libsecret is loaded at run time; with no
+session bus nothing is loaded, and a probe or a call that takes over 10 s (an unlock prompt nobody
+answers, a daemon that does not reply) is no store, so that run's identity is its own and nothing
+is remembered. Over SSH with the keyring locked, saving fails at once and Remember does not show.
+Reopen if the Secret Service gains per-application access (the Secret portal's per-app collection
+inside a Flatpak is one).
 
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
