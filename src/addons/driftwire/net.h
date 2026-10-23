@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Driftwire's network port (D9: a portable header, net_posix.cpp for macOS
-// and the portable build, net_win.cpp over Winsock).
+// and Linux, net_win.cpp over Winsock).
 //
 // Only Driftwire opens these, only while its window is open or receiving is
 // on (docs/design/28 "What stays put"): the idle viewer has no socket. On the
@@ -93,7 +93,8 @@ struct subnet {
 // link-local (169.254/16, fe80::/10): what the LAN listener and the beacon
 // take (#502). Portable (net_address.cpp).
 [[nodiscard]] bool on_link(const address& a, std::span<const subnet> nets) noexcept;
-// The IPv4 default gateway (the router a port mapping asks), if any.
+// The IPv4 default gateway (the router a port mapping asks), if any. Linux:
+// /proc/net/route, parsed by parse_default_route below.
 [[nodiscard]] std::optional<address> default_gateway();
 // This machine's address on the route to `peer` (a UDP socket connected to
 // it, then asked; nothing is sent): what a mapping names as its client.
@@ -186,13 +187,32 @@ class beacon_socket {
 [[nodiscard]] result<std::unique_ptr<beacon_socket>> open_beacon_socket(std::uint16_t port);
 
 // The name people know this machine by ("Tristan's MacBook Air", the
-// computer name on Windows). Never a user name.
+// computer name on Windows; on Linux the "pretty" host name the desktop's
+// Settings set, else the host name up to its first dot). Never a user name.
 [[nodiscard]] std::string machine_name();
 
 // The person's Downloads folder, where received files land unless they pick
 // another (#442, as AirDrop): FOLDERID_Downloads on Windows, ~/Downloads on
-// the Mac. "" when there is none. A local read; never blocks on the network.
+// the Mac, xdg-user-dirs' Download folder on Linux (localised:
+// "~/Téléchargements"), else ~/Downloads. "" when there is none. It reads
+// this user's settings only (on Linux one small file); nothing is looked up.
 [[nodiscard]] std::string downloads_folder();
+
+// Linux's sources for the three above, parsed apart from reading them so
+// every OS's tests run them (net_address.cpp; net_posix.cpp reads the files).
+// XDG_DOWNLOAD_DIR of a user-dirs.dirs text, as xdg-user-dirs' own lookup
+// reads it: "$HOME/yyy" (yyy shell-escaped) with `home` put for $HOME, or an
+// absolute "/yyy"; no other form; the last such line wins. "" when none.
+[[nodiscard]] std::string parse_user_dirs_download(std::string_view user_dirs, std::string_view home);
+// PRETTY_HOSTNAME of an /etc/machine-info text (what hostnamectl --pretty
+// sets), unquoted by os-release(5)'s shell-like rules; the last wins. "" when
+// none.
+[[nodiscard]] std::string parse_pretty_hostname(std::string_view machine_info);
+// The default route of a /proc/net/route text: destination and mask 0, up and
+// through a gateway (RTF_UP | RTF_GATEWAY), the lowest metric; the first of
+// equals. The kernel prints each address as the hex of its network-order
+// word read as a native integer, so the bytes come back in order on any host.
+[[nodiscard]] std::optional<address> parse_default_route(std::string_view proc_net_route);
 
 // One process at a time: each MediaViewer window is its own process
 // (docs/design/18 "One host process"), and only one of them keeps receiving

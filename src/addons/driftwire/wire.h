@@ -87,8 +87,8 @@ inline constexpr int kIdRotateMs = 10 * 60 * 1000;
 // One offer, at most.
 inline constexpr std::size_t kMaxFiles = 100000;
 inline constexpr std::size_t kMaxRelativeBytes = 1024;
-// A part of a relative path, at most: room for ".mvtmp16" under any
-// filesystem's 255-byte name limit.
+// A part of a relative path, at most: room for Linux's leading dot and
+// ".mvtmp16" under any filesystem's 255-byte name limit.
 inline constexpr std::size_t kMaxPartBytes = 240;
 // One file's size, at most (an offer above it is refused whole).
 inline constexpr std::uint64_t kMaxFileBytes = 1ull << 50;

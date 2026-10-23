@@ -960,9 +960,11 @@ link. The tests check that no 32-byte run of the file passes through either rela
 - **Staying awake** (#530). From the accept to the end, each side holds a request that the system
   not sleep from idleness (`power.h`: `PowerCreateRequest` / `PowerSetRequest(
   PowerRequestSystemRequired)` with a reason on Windows, `powercfg /requests`; an IOKit
-  `PreventUserIdleSystemSleep` assertion on the Mac, `pmset -g assertions`; nothing in the Linux
-  test build). The display may turn off and the screen lock. A closed lid, a shutdown or a flat
-  battery is not held off: resume is for those.
+  `PreventUserIdleSystemSleep` assertion on the Mac, `pmset -g assertions`; a systemd-logind
+  `sleep` inhibitor in `block` mode on Linux, `systemd-inhibit --list`, through libsystemd or
+  libelogind loaded at run time, none without a system bus or when polkit refuses). The display
+  may turn off and the screen lock. A closed lid, a shutdown or a flat battery is not held off:
+  resume is for those.
 
 ## Resuming a receive that stopped (#530)
 
@@ -981,9 +983,11 @@ written, and the next send started from zero (and sent again what had arrived, l
   decline keeps nothing, as before. One record per sender, at most 8; one unused for 7 days goes
   with its temporary (on the control thread at start); **Discard** removes one.
 - **Never taken for the finished file.** The temporary keeps its `.mvtmp` name (never the final
-  name or extension), is hidden (`io::set_hidden`: `FILE_ATTRIBUTE_HIDDEN`, `UF_HIDDEN`; the Linux
-  test build has no such flag), and is shown again just before its rename, since the flag travels
-  with it. MediaViewer's own folder listing never lists `.mvtmp`.
+  name or extension), is hidden (`io::set_hidden`: `FILE_ATTRIBUTE_HIDDEN`, `UF_HIDDEN`), and is
+  shown again just before its rename, since the flag travels with it. Linux has no such flag, so
+  there the temporary's name starts with a dot (`.IMG_1.JPG.mvtmp`), which Files, Dolphin and
+  `ls` leave out (`io::kHasHiddenFlag`, `transfer.h`'s `temp_name`). MediaViewer's own folder
+  listing never lists `.mvtmp`.
 - **The same sender, the same files.** The offer now says each file's time and `"resume": true`.
   When an offer comes from a sender that says its identity and has a record into the same
   folder, a file with the same path, size and time is matched: one whole and still there at its
@@ -1180,6 +1184,8 @@ second while bytes move; those posts update chrome and never present the canvas.
 ## Not built
 
 - Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6 on the LAN.
+- Bluetooth on Linux: there is no BlueZ bearer (`bt_none.cpp`), so Linux sends over Wi-Fi and the
+  internet only.
 - Over the internet, after the relays: Tor (dropped for now, [plan](../plans/driftwire-tor-spike.md)),
   TURN, relaying word codes, remembered-device sends and the handover, a relayed send moving.
 - The rest of #472, deferred by the owner (2026-10-18, [12](12-decision-log.md#driftwire)):
