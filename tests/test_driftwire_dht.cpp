@@ -173,13 +173,16 @@ struct hub_pair {
   sp::net::endpoint at_b(const char* ip = "127.0.0.1") const { return {ip, b->port()}; }
 };
 
-// `bytes` through a stream pair; true when every byte arrived in order.
+// `bytes` through a stream pair; true when every byte was written and
+// arrived in order. (The writer's result is checked here, on the test's own
+// thread: an assertion that fails on another thread ends the whole run.)
 bool stream_through(hub_pair& h, std::size_t bytes, double* mb_s = nullptr, const char* ip = "127.0.0.1") {
   auto sa = h.a->stream(h.at_b(ip), 77);
   auto sb = h.b->stream(h.at_a(ip), 77);
   const auto data = pattern(bytes, 11);
   const auto t0 = std::chrono::steady_clock::now();
-  std::thread w([&] { REQUIRE(sa->write_all(data)); });
+  bool wrote = false;
+  std::thread w([&] { wrote = static_cast<bool>(sa->write_all(data)); });
   std::vector<std::uint8_t> got;
   got.reserve(bytes);
   std::vector<std::uint8_t> buf(64 * 1024);
@@ -191,8 +194,13 @@ bool stream_through(hub_pair& h, std::size_t bytes, double* mb_s = nullptr, cons
   w.join();
   const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   if (mb_s) *mb_s = static_cast<double>(bytes) / 1e6 / s;
-  return got == data;
+  return wrote && got == data;
 }
+
+// Whether this machine has IPv6 at all: a kernel built or booted without it
+// (some containers' and CI sandboxes') refuses an AF_INET6 socket, and the
+// hub then runs on IPv4 alone (open_udp_dual), as it would in the product.
+bool has_ipv6_loopback() { return static_cast<bool>(sp::net::open_udp(true, 1, true)); }
 }  // namespace
 
 TEST_CASE("driftwire dht: a stream over the UDP hub delivers every byte in order, lossy or not", "[driftwire]") {
@@ -208,8 +216,12 @@ TEST_CASE("driftwire dht: a stream over the UDP hub delivers every byte in order
   one.a->test_loss(10);
   one.b->test_loss(10);
   CHECK(stream_through(one, 8u * 1024 * 1024, &lossy1));
-  hub_pair v6;
-  CHECK(stream_through(v6, 1024 * 1024, nullptr, "::1"));  // the same socket, IPv6
+  if (has_ipv6_loopback()) {
+    hub_pair v6;
+    CHECK(stream_through(v6, 1024 * 1024, nullptr, "::1"));  // the same socket, IPv6
+  } else {
+    WARN("This machine has no IPv6: the hub's IPv6 stream was not run (its IPv4 fallback carried the rest)");
+  }
   std::printf("{\"case\":\"udp_stream\",\"clean_mb_s\":%.1f,\"lossy_1pct_mb_s\":%.1f,\"lossy_5pct_mb_s\":%.1f}\n", clean,
               lossy1, lossy);
 }
