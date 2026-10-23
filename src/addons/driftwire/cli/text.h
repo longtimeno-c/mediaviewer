@@ -34,5 +34,11 @@ struct glyph_span {
 [[nodiscard]] std::string pad(std::string_view utf8, int width);
 // `s` `n` times.
 [[nodiscard]] std::string repeat(std::string_view s, int n);
+// `utf8` safe to write to a terminal as it is: every control character (C0,
+// DEL, C1) and every byte that is not UTF-8 becomes "?", a tab a space. For
+// what plain mode writes itself (FTXUI drops them in the rich one): a name
+// or a path can hold anything, and a file:// link typed or pasted decodes to
+// any byte, an ESC among them.
+[[nodiscard]] std::string printable(std::string_view utf8);
 
 }  // namespace mv::driftwire::cli

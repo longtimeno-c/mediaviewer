@@ -819,6 +819,10 @@ TEST_CASE("driftwire cli session: plain mode asks in lines", "[driftwire][cli]")
   type_line(bea, "y");
   REQUIRE(ann.shows("Sent 1 file to Bea."));
   REQUIRE(bea.shows("Received 1 file from Ann."));
+  // A file:// link decodes to any byte: what is said of it shows its control
+  // characters as "?", never writes them.
+  type_line(ann, "file:///nowhere/%1B]2;PWNED%07%1B[2J.jpg");
+  REQUIRE(ann.shows("Not found: /nowhere/?]2;PWNED??[2J.jpg"));
   type_line(ann, "/quit");
   type_line(bea, "/quit");
   CHECK(ann.wait_exit() == 0);

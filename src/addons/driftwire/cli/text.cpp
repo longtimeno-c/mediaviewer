@@ -123,6 +123,24 @@ std::string pad(std::string_view utf8, int width) {
   return out;
 }
 
+std::string printable(std::string_view utf8) {
+  std::string out;
+  out.reserve(utf8.size());
+  for (std::size_t i = 0; i < utf8.size();) {
+    const auto c = static_cast<unsigned char>(utf8[i]);
+    const std::size_t n = sequence_at(utf8, i);
+    if (n == 1) {
+      out += c == '\t' ? ' ' : (c < 0x20 || c >= 0x7F) ? '?' : static_cast<char>(c);
+    } else if (c == 0xC2 && static_cast<unsigned char>(utf8[i + 1]) < 0xA0) {
+      out += '?';  // U+0080..U+009F, the C1 controls
+    } else {
+      out.append(utf8.substr(i, n));
+    }
+    i += n;
+  }
+  return out;
+}
+
 std::string repeat(std::string_view s, int n) {
   std::string out;
   if (n <= 0) return out;

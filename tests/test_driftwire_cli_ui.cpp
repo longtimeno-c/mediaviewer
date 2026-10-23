@@ -786,6 +786,15 @@ TEST_CASE("driftwire cli text: names are cut by columns, never inside a characte
   CHECK(cli::wrap("abcdefghij", 4) == std::vector<std::string>{"abcd", "efgh", "ij"});
   CHECK(cli::wrap("a\n\nb", 9) == std::vector<std::string>{"a", "", "b"});
   CHECK(cli::wrap("", 9) == std::vector<std::string>{""});
+
+  // What plain mode writes itself: never a control character, whatever a
+  // name or a decoded file:// link holds.
+  CHECK(cli::printable("/nowhere/\x1B]2;PWNED\x07\x1B[2J.jpg") == "/nowhere/?]2;PWNED??[2J.jpg");
+  CHECK(cli::printable("a\tb\rc\x7F") == "a b?c?");
+  CHECK(cli::printable("\xC2\x9B" "2J \xC2\x85") == "?2J ?");  // C1: CSI, NEL
+  CHECK(cli::printable("\xFF\x80z\xE2\x80") == "??z??");        // not UTF-8
+  CHECK(cli::printable(name) == name);
+  CHECK(cli::printable("caf\xC3\xA9 \xC2\xA0\xC2\xB7") == "caf\xC3\xA9 \xC2\xA0\xC2\xB7");
 }
 
 TEST_CASE("driftwire cli words: sizes, speeds and times as the window says them", "[driftwire][cli]") {

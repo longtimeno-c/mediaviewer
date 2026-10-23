@@ -300,22 +300,35 @@ TEST_CASE("driftwire cli e2e: two programs in ptys, a code over loopback, typed 
   CHECK(fs::file_size(s / "received" / "IMG_0042.HEIC") == 1024 * 1024 + 11);
 }
 
-TEST_CASE("driftwire cli e2e: TERM=dumb is plain mode, with no escape sequence at all", "[driftwire][cli][e2e]") {
+TEST_CASE("driftwire cli e2e: TERM=dumb or --plain is plain mode, with no escape sequence at all",
+          "[driftwire][cli][e2e]") {
   scratch_dir s("driftwire_cli_dumb");
   const std::string exe = MV_DRIFTWIRE_CLI_TEST_PATH;
-  pty_process p(exe, {"--test-loopback", "--test-events", "--test-data", utf8(s / "d"), "--name", "Dee"}, s.root(),
-                "dumb");
+  // TERM=dumb, or --plain on a terminal that would take sequences.
+  bool flag = false;
+  SECTION("TERM=dumb") {}
+  SECTION("--plain") { flag = true; }
+  std::vector<std::string> args{"--test-loopback", "--test-events", "--test-data", utf8(s / "d"), "--name", "Dee"};
+  if (flag) args.emplace_back("--plain");
+  pty_process p(exe, args, s.root(), flag ? "xterm-256color" : "dumb");
   REQUIRE(p.event("ready"));
   REQUIRE(p.shows("driftwire>"));
   p.type("/help");
   p.type("\r");
   REQUIRE(p.shows("/to-code"));
+  // A file:// link decodes to any byte: a missing one is named, its control
+  // characters shown as "?", never written to the terminal.
+  p.type("file:///nowhere/%1B]2;PWNED%07%1B[2J.jpg");
+  p.type("\r");
+  REQUIRE(p.shows("Not found: /nowhere/?]2;PWNED??[2J.jpg"));
   p.type("/quit");
   p.type("\r");
   CHECK(p.wait_exit() == 0);
   CHECK(p.screen().find("Driftwire closed") != std::string::npos);
-  // Lines, a prompt, the person's own typing echoed: nothing a dumb terminal would print as junk.
+  // Lines, a prompt, the person's own typing echoed: nothing a dumb terminal
+  // would print as junk, nothing a screen reader would read out.
   CHECK(p.raw().find('\x1B') == std::string::npos);
+  CHECK(p.raw().find('\x07') == std::string::npos);
 }
 
 #endif

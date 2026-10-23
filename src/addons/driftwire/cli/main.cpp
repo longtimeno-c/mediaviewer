@@ -219,7 +219,10 @@ int main(int argc, char** argv) {
   bool plain = a.plain || dumb;
 
   cli::console::options co;
-  co.sequences = !dumb;  // a dumb terminal would print them
+  // A dumb terminal would print them; --plain promises lines only (a screen
+  // reader, a log), so no bracketed paste either: a paste is then told from
+  // typing by its newlines (keys.cpp).
+  co.sequences = !dumb && !a.plain;
   cli::console con(co);
   const bool raw = con.enter_raw();
   // The live region needs raw mode (and VT on Windows): without, lines.

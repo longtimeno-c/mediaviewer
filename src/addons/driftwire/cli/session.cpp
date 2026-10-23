@@ -375,12 +375,19 @@ struct session::impl {
   std::string glue() const { return " " + std::string(th.g->sep) + " "; }
   std::string dots() const { return std::string(th.g->ellipsis); }
 
+  // Plain mode's lines, each as written (a "\n" in one starts another), and
+  // never a control character: plain mode writes no escape sequence at all.
   void plain_write_lines(const std::vector<std::string>& ls) {
     std::string s;
     if (prompt_on_line) s += "\r\n";
     for (const auto& l : ls) {
-      s += l;
-      s += "\r\n";
+      for (std::size_t at = 0;;) {
+        const std::size_t nl = l.find('\n', at);
+        s += printable(std::string_view(l).substr(at, nl == std::string::npos ? std::string::npos : nl - at));
+        s += "\r\n";
+        if (nl == std::string::npos) break;
+        at = nl + 1;
+      }
     }
     term.write(s);
     prompt_on_line = false;
@@ -2258,7 +2265,7 @@ struct session::impl {
   void plain_reprompt() {
     std::string s;
     if (prompt_on_line) s += "\r\n";
-    s += plain_prompt + plain_line.text();
+    s += printable(plain_prompt + plain_line.text());
     term.write(s);
     prompt_on_line = true;
   }
@@ -2360,7 +2367,7 @@ struct session::impl {
       } else {
         plain_line.insert(e.text);
       }
-      if (o.echo) term.write(plain_line.text().substr(static_cast<std::size_t>(before)));
+      if (o.echo) term.write(printable(std::string_view(plain_line.text()).substr(static_cast<std::size_t>(before))));
     }
   }
 
