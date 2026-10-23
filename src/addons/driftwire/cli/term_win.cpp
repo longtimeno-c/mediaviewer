@@ -24,7 +24,7 @@ namespace mv::driftwire::cli {
 
 namespace {
 
-constexpr std::string_view kRestore = "\x1B[?2026l\x1B[0m\x1B[?25h\x1B[?2004l";
+constexpr std::string_view kRestore = "\x1B[?2026l\x1B[0m\x1B[?7h\x1B[?25h\x1B[?2004l";
 
 HANDLE g_wake = nullptr;  // auto-reset: wake() and the control handler
 HANDLE g_done = nullptr;  // manual-reset: the session is done with the console

@@ -23,8 +23,8 @@ namespace mv::test {
 
 // A screen `rows` high over a scrollback: printable UTF-8 (two cells for a
 // wide character), CR, LF (scrolling at the bottom row), BS, CSI n A / n C,
-// CSI J, SGR and private modes (recorded, not drawn), OSC (recorded),
-// xterm's pending wrap at the last column. Everything the command line
+// CSI J, SGR and private modes (recorded, not drawn; autowrap, ?7, obeyed),
+// OSC (recorded), xterm's pending wrap at the last column. Everything the command line
 // writes, and nothing it does not: an unknown sequence is put in `errors`
 // (no assertion here: a session draws from its own thread).
 class vt_screen {
@@ -119,6 +119,7 @@ class vt_screen {
   [[nodiscard]] int y() const noexcept { return y_; }
   [[nodiscard]] bool cursor_shown() const noexcept { return cursor_shown_; }
   [[nodiscard]] bool synchronized() const noexcept { return sync_; }
+  [[nodiscard]] bool autowrap() const noexcept { return autowrap_; }
   [[nodiscard]] int columns() const noexcept { return columns_; }
   [[nodiscard]] int rows() const noexcept { return rows_; }
 
@@ -127,6 +128,9 @@ class vt_screen {
   std::vector<std::string> osc;
   std::vector<std::string> errors;
   int bells = 0;
+  // The columns a character takes on this terminal: FTXUI's (display_width)
+  // unless set, as for a terminal whose width table is newer than FTXUI's.
+  std::function<int(std::string_view)> measure;
 
  private:
   static std::string row_text(const std::vector<std::string>& r) {
@@ -147,10 +151,14 @@ class vt_screen {
   }
 
   void put(std::string_view glyph) {
-    const int w = std::max(1, mv::driftwire::cli::display_width(glyph));
+    const int w = std::max(1, measure ? measure(glyph) : mv::driftwire::cli::display_width(glyph));
     if (x_ + w > columns_) {  // the pending wrap, or a wide character at the edge
-      x_ = 0;
-      line_feed();
+      if (autowrap_) {
+        x_ = 0;
+        line_feed();
+      } else {
+        x_ = std::max(0, columns_ - w);  // no wrap: the last cells are written over
+      }
     }
     auto& row = screen_[static_cast<std::size_t>(y_)];
     row[static_cast<std::size_t>(x_)] = std::string(glyph);
@@ -186,6 +194,7 @@ class vt_screen {
         }
         if (params == "?25") cursor_shown_ = f == 'h';
         if (params == "?2026") sync_ = f == 'h';
+        if (params == "?7") autowrap_ = f == 'h';
         break;
       default: errors.emplace_back("a sequence the command line does not write: CSI " + std::string(params) + f);
     }
@@ -197,6 +206,7 @@ class vt_screen {
   int x_ = 0, y_ = 0;
   bool cursor_shown_ = true;
   bool sync_ = false;
+  bool autowrap_ = true;
 };
 
 // A terminal for a session running on its own thread: the test types into

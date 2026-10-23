@@ -10,8 +10,12 @@
 // and read back cell by cell (rasterize); if the rows and the cursor are
 // what is already on screen nothing is written. Otherwise one write: begin
 // synchronized output (CSI ?2026h, ignored where unknown), hide the cursor,
-// go up to the region's first row, clear to the end of the screen, the rows,
-// then the cursor back into the prompt, shown, and end synchronized output.
+// autowrap off, go up to the region's first row, clear to the end of the
+// screen, the rows, then the cursor back into the prompt, autowrap on, the
+// cursor shown, and end synchronized output. Without autowrap a row the
+// terminal measures wider than FTXUI did (an emoji newer than FTXUI's width
+// table, in a name any peer chose) is cut at the edge rather than wrapped
+// onto a row the way back up would not count.
 // The region is at most the terminal's height less one (a taller one would
 // scroll its top out of reach of cursor-up); the caller shrinks Nearby first,
 // and what is still too tall loses its top rows.

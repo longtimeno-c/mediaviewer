@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -184,6 +185,8 @@ class fake_terminal final : public cli::output {
   [[nodiscard]] int y() const noexcept { return vt_.y(); }
   [[nodiscard]] bool cursor_shown() const noexcept { return vt_.cursor_shown(); }
   [[nodiscard]] bool synchronized() const noexcept { return vt_.synchronized(); }
+  [[nodiscard]] bool autowrap() const noexcept { return vt_.autowrap(); }
+  void measure_with(std::function<int(std::string_view)> f) { vt_.measure = std::move(f); }
 
  private:
   mv::test::vt_screen vt_;
@@ -1470,6 +1473,36 @@ TEST_CASE("driftwire cli inline view: the cursor goes into the prompt", "[driftw
   CHECK(t.cursor_shown());
   REQUIRE(v.present(doc()));
   CHECK(t.visible().size() == 5);
+}
+
+TEST_CASE("driftwire cli inline view: a row the terminal draws wider than laid out stays one row",
+          "[driftwire][cli]") {
+  // A terminal whose width table is newer than FTXUI's (glibc 2.39, VTE,
+  // kitty, Windows Terminal): U+1FAE0 takes two columns there, one in FTXUI.
+  // Any peer can put sixteen of them in its name.
+  fake_terminal t(40, 10);
+  const std::string melt = "\xF0\x9F\xAB\xA0";
+  t.measure_with([&](std::string_view g) { return g == melt ? 2 : cli::display_width(g); });
+  cli::inline_view v(t, 40, 10);
+  std::string wide = "Ann ";
+  for (int i = 0; i < 16; ++i) wide += melt;
+  wide += std::string(20, '-');  // laid out in 40 columns, drawn in 56
+  REQUIRE(cli::display_width(wide) == 40);
+  for (int frame = 1; frame <= 3; ++frame) {
+    REQUIRE(v.present(rows_doc({"top " + std::to_string(frame), wide, "bottom " + std::to_string(frame)})));
+  }
+  // Each frame went back up to its own first row: nothing of the earlier
+  // ones is left above it, and it is three rows, the wide one cut at the edge.
+  CHECK(t.lines().size() == 3);
+  const auto shown = t.visible();
+  REQUIRE(shown.size() == 3);
+  CHECK(shown[0] == "top 3");
+  CHECK(shown[2] == "bottom 3");
+  // The terminal wraps again between frames (the transcript, the shell after).
+  CHECK(t.autowrap());
+  v.print(rows_doc({"said"}));
+  CHECK(t.autowrap());
+  CHECK(t.lines() == std::vector<std::string>{"said", "top 3", shown[1], "bottom 3"});
 }
 
 TEST_CASE("driftwire cli inline view: never taller than the terminal less one row", "[driftwire][cli]") {

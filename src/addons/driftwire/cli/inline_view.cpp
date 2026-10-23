@@ -18,6 +18,12 @@ constexpr std::string_view kSyncOn = "\x1B[?2026h";
 constexpr std::string_view kSyncOff = "\x1B[?2026l";
 constexpr std::string_view kHideCursor = "\x1B[?25l";
 constexpr std::string_view kShowCursor = "\x1B[?25h";
+// Autowrap (DECAWM) off while the region is drawn: a row the terminal draws
+// wider than FTXUI laid it out (a newer emoji its width table counts as one
+// column, a name any peer chose) is cut at the edge, not wrapped onto a row
+// the way back up does not count. On again for the transcript and after.
+constexpr std::string_view kWrapOff = "\x1B[?7l";
+constexpr std::string_view kWrapOn = "\x1B[?7h";
 
 struct style {
   bool bold = false, dim = false, italic = false, underline = false, inverted = false, strike = false;
@@ -147,9 +153,11 @@ void inline_view::resize(int width, int height) {
 void inline_view::begin(std::string& s) const {
   if (sync_) s += kSyncOn;
   s += kHideCursor;
+  s += kWrapOff;
 }
 
 void inline_view::finish(std::string& s, bool show_cursor) const {
+  s += kWrapOn;
   if (show_cursor) s += kShowCursor;
   if (sync_) s += kSyncOff;
 }
@@ -209,13 +217,18 @@ void inline_view::print(const ftxui::Element& entry) {
   std::string s;
   begin(s);
   if (!closed_) erase_into(s);
+  // The transcript wraps as the terminal likes: nothing counts its rows.
+  s += kWrapOn;
   for (const auto& row : e.rows) {
     s += row;
     s += "\r\n";
   }
   up_ = 0;
   const bool region = !closed_ && drawn_ && !shown_.rows.empty();
-  if (region) draw_into(s, shown_);
+  if (region) {
+    s += kWrapOff;
+    draw_into(s, shown_);
+  }
   finish(s, closed_ || (region && shown_.cursor_row >= 0));
   out_.write(s);
 }
@@ -237,6 +250,7 @@ void inline_view::close(std::string_view last) {
   std::string s;
   begin(s);
   erase_into(s);
+  s += kWrapOn;
   if (!last.empty()) {
     s += "\x1B[0;2m";
     s += last;
