@@ -69,7 +69,8 @@ std::string strip_vt(std::string_view s) {
 // build's machine-readable lines).
 class pty_process {
  public:
-  pty_process(const std::string& exe, const std::vector<std::string>& args, const fs::path& cwd) {
+  pty_process(const std::string& exe, const std::vector<std::string>& args, const fs::path& cwd,
+              const std::string& term = "xterm-256color") {
     master_ = ::posix_openpt(O_RDWR | O_NOCTTY);
     REQUIRE(master_ >= 0);
     REQUIRE(::grantpt(master_) == 0);
@@ -88,7 +89,7 @@ class pty_process {
     std::vector<char*> cargv;
     for (auto& a : argv) cargv.push_back(a.data());
     cargv.push_back(nullptr);
-    std::vector<std::string> env{"TERM=xterm-256color", "COLORTERM=truecolor"};
+    std::vector<std::string> env{"TERM=" + term, "COLORTERM=truecolor"};
     for (char** e = environ; *e; ++e) {
       const std::string_view kv = *e;
       if (kv.rfind("TERM=", 0) == 0 || kv.rfind("COLORTERM=", 0) == 0 || kv.rfind("NO_COLOR=", 0) == 0) continue;
@@ -168,6 +169,11 @@ class pty_process {
   std::string screen() {
     std::lock_guard lock(m_);
     return strip_vt(screen_);
+  }
+  // Everything written to the terminal, as written.
+  std::string raw() {
+    std::lock_guard lock(m_);
+    return screen_;
   }
   // The exit code, or -1 when it did not exit in time (or died of a signal).
   int wait_exit(int seconds = 30) {
@@ -283,6 +289,24 @@ TEST_CASE("driftwire cli e2e: two programs in ptys, a code over loopback, typed 
   CHECK(bea.screen().find("Driftwire closed") != std::string::npos);
   REQUIRE(fs::exists(s / "received" / "IMG_0042.HEIC"));
   CHECK(fs::file_size(s / "received" / "IMG_0042.HEIC") == 1024 * 1024 + 11);
+}
+
+TEST_CASE("driftwire cli e2e: TERM=dumb is plain mode, with no escape sequence at all", "[driftwire][cli][e2e]") {
+  scratch_dir s("driftwire_cli_dumb");
+  const std::string exe = MV_DRIFTWIRE_CLI_TEST_PATH;
+  pty_process p(exe, {"--test-loopback", "--test-events", "--test-data", utf8(s / "d"), "--name", "Dee"}, s.root(),
+                "dumb");
+  REQUIRE(p.event("ready"));
+  REQUIRE(p.shows("driftwire>"));
+  p.type("/help");
+  p.type("\r");
+  REQUIRE(p.shows("/to-code"));
+  p.type("/quit");
+  p.type("\r");
+  CHECK(p.wait_exit() == 0);
+  CHECK(p.screen().find("Driftwire closed") != std::string::npos);
+  // Lines, a prompt, the person's own typing echoed: nothing a dumb terminal would print as junk.
+  CHECK(p.raw().find('\x1B') == std::string::npos);
 }
 
 #endif

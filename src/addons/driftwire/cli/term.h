@@ -63,6 +63,10 @@ class console final : public terminal {
  public:
   struct options {
     bool signals = true;  // install the signal hooks (one console at a time does)
+    // Write terminal sequences of its own (bracketed paste on and off, and
+    // the restore: colours, cursor, synchronized output). Off for a terminal
+    // that shows them as text (TERM=dumb, plain mode).
+    bool sequences = true;
   };
 
   // Standard input and output are both a terminal.

@@ -211,9 +211,12 @@ int main(int argc, char** argv) {
 #endif
 
   const char* term_env = std::getenv("TERM");  // NOLINT(concurrency-mt-unsafe): read at start
-  bool plain = a.plain || (term_env && std::string(term_env) == "dumb");
+  const bool dumb = term_env && std::string(term_env) == "dumb";
+  bool plain = a.plain || dumb;
 
-  cli::console con;
+  cli::console::options co;
+  co.sequences = !dumb;  // a dumb terminal would print them
+  cli::console con(co);
   const bool raw = con.enter_raw();
   // The live region needs raw mode (and VT on Windows): without, lines.
   if (!raw) plain = true;

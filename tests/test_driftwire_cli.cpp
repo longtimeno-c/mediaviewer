@@ -373,6 +373,14 @@ TEST_CASE("driftwire cli program: no terminal, no session (exit 2); help and ver
     CHECK(code == 2);
     CHECK(has(out, "code takes no arguments"));
   }
+#if defined(__linux__)
+  {
+    // `devices` needs no terminal either (here: no keyring, or none remembered).
+    const auto [code, out] = run_piped(exe, "devices");
+    CHECK(code == 0);
+    CHECK((has(out, "remembers no devices") || has(out, "No remembered devices") || has(out, "1. ")));
+  }
+#endif
   {
     // The test build's options are not the program's.
     const auto [code, out] = run_piped(exe, "--test-loopback");
@@ -437,6 +445,13 @@ TEST_CASE("driftwire cli session: a send nearby, the code typed off the other sc
 
   type_line(ann, "/devices");
   REQUIRE(ann.shows("1. Bea"));
+  // Forget asks first; its safe answer is the one under the pointer.
+  type_line(ann, "/forget 1");
+  REQUIRE(ann.screen_shows("Forget Bea?"));
+  ann.con.type("1");
+  REQUIRE(ann.shows("Forgot Bea."));
+  type_line(ann, "/devices");
+  REQUIRE(ann.shows("No remembered devices yet."));
 
   type_line(ann, "/quit");
   type_line(bea, "/quit");
@@ -673,6 +688,8 @@ namespace {
 // over loopback.
 sp::engine::options far_opts(const std::string& name, const fs::path& data) {
   sp::engine::options o;
+  fs::create_directories(data / "secrets");
+  o.make_secrets = [dir = utf8(data / "secrets")] { return sp::secrets::file_store(dir); };
   o.my_name = name;
   o.use_bluetooth = false;
   o.loopback_only = true;
@@ -729,9 +746,156 @@ TEST_CASE("driftwire cli session: a code over the internet (loopback), the check
   REQUIRE(ann.shows("Sent 1 file to Bea."));
   REQUIRE(bea.shows("Received 1 file from Ann."));
   CHECK(has(bea.text(), "internet"));
-  // `code` is a one-shot: it closes with the transfer, 0.
+  // Over the internet both sides are proved by the code: Remember is one
+  // answer each, no digits. `code` is a one-shot, but it waits for that answer.
+  REQUIRE(bea.screen_shows("Remember Ann?"));
+  REQUIRE(ann.screen_shows("Remember Bea?"));
+  CHECK_FALSE(bea.done.load());
+  bea.con.type("1");
+  ann.con.type("1");
+  REQUIRE(bea.shows("Remembered Ann."));
+  REQUIRE(ann.shows("Remembered Bea."));
+  // ... and closes with the transfer, 0.
   CHECK(bea.wait_exit() == 0);
   type_line(ann, "/quit");
   CHECK(ann.wait_exit() == 0);
   CHECK(files_in(s / "bea_received") == std::vector<std::string>{"clip.mov"});
+}
+
+TEST_CASE("driftwire cli session: the commands, the palette, Tab, and what is said for each", "[driftwire][cli]") {
+  scratch_dir s("driftwire_cli_commands");
+  bus b;
+  write_bytes(s / "photos" / "IMG_0001.JPG", pattern(2000, 1));
+  write_bytes(s / "photos" / "IMG_0002.JPG", pattern(3000, 2));
+  fs::create_directories(s / "Pictures" / "Trips");
+  cli_side ann(s / "ann_received", 240);  // wide: the paths said here stay on one line
+  ann.start(bus_opts(b, "Ann", s / "ann"), session_opts(s.root()));
+  REQUIRE(ann.shows("Driftwire  9.9.9"));
+#if defined(_WIN32)
+  const std::string slash = "\\";
+#else
+  const std::string slash = "/";
+#endif
+
+  type_line(ann, "/files");
+  REQUIRE(ann.shows("Nothing to send yet."));
+  // Missing paths are named in red; the rest go in. Globs are ours, not a shell's.
+  type_line(ann, "nope.jpg photos/IMG_*.JPG");
+  REQUIRE(ann.shows("Not found: nope.jpg"));
+  REQUIRE(ann.screen_shows("2 files"));
+  type_line(ann, "/files");
+  REQUIRE(ann.shows("2 files"));
+  REQUIRE(ann.shows("IMG_0002.JPG"));
+  // Enter with files and no one nearby: why nothing happens.
+  ann.con.type("\r");
+  REQUIRE(ann.screen_shows("No one nearby yet: open Driftwire on the other computer"));
+  type_line(ann, "/clear");
+  // The hint line under the prompt (the screen's last) no longer counts them.
+  REQUIRE(ann.con.wait_screen([](const std::string& t) {
+    const auto last = t.find_last_of('\n', t.size() - 2);
+    return !has(t.substr(last == std::string::npos ? 0 : last), "2 files");
+  }));
+
+  // The palette filters as one types; Tab completes the command.
+  ann.con.type("/sa");
+  REQUIRE(ann.screen_shows("/save-to DIR"));
+  ann.con.type("\t");
+  REQUIRE(ann.screen_shows("> /save-to "));
+  // Tab completes folders for it.
+  ann.con.type("Pic");
+  ann.con.type("\t");
+  REQUIRE(ann.screen_shows("> /save-to Pictures" + slash));
+  ann.con.type("\r");
+  REQUIRE(ann.shows("Received files go to " + utf8(s / "Pictures") + " (kept for next time)."));
+  type_line(ann, "/save-to not-a-folder");
+  REQUIRE(ann.screen_shows("That folder is not there."));
+
+  type_line(ann, "/internet");
+  REQUIRE(ann.shows("Send and receive over the internet: off"));
+  type_line(ann, "/dht on");
+  REQUIRE(ann.shows("On: Find each other through the public DHT"));
+  REQUIRE(ann.shows("DHT nodes see that this computer takes part"));  // what it means, the first time
+  REQUIRE(ann.screen_shows("It takes effect with /internet on."));
+  type_line(ann, "/settings");
+  REQUIRE(ann.shows("Public DHT: on"));
+  REQUIRE(ann.shows("Saves to: " + utf8(s / "Pictures")));
+  type_line(ann, "/help");
+  REQUIRE(ann.shows("/to-code"));
+  REQUIRE(ann.shows("Send these files to a code someone gave you"));
+  type_line(ann, "/bogus");
+  REQUIRE(ann.shows("Unknown command /bogus"));
+  type_line(ann, "/unfinished");
+  REQUIRE(ann.shows("Nothing stopped part way."));
+  // The relay server's key is typed in a field, and never echoed.
+  type_line(ann, "/relay-server");
+  REQUIRE(ann.screen_shows("Your own relay server"));
+  ann.con.type("relay.example:47614#SECRETKEY");
+  ann.con.type("\r");
+  REQUIRE(ann.shows("Relay server set."));
+  // Once the field has gone (the next frame), the key is nowhere: not in
+  // the transcript, not in the scrollback.
+  REQUIRE(ann.screen_shows("Type or drop files to send"));
+  CHECK_FALSE(has(ann.text(), "SECRETKEY"));
+  // Esc clears the line; Ctrl+D on an empty line closes.
+  ann.con.type("abc");
+  REQUIRE(ann.screen_shows("> abc"));
+  press_esc(ann);
+  REQUIRE(ann.screen_shows("Type or drop files to send"));
+  ann.con.type("\x04");
+  CHECK(ann.wait_exit() == 0);
+  CHECK(ann.con.errors().empty());
+}
+
+TEST_CASE("driftwire cli session: a short terminal shrinks Nearby first", "[driftwire][cli]") {
+  scratch_dir s("driftwire_cli_short");
+  bus b;
+  cli_side ann(s / "a", 60, 8), bea(s / "b"), cy(s / "c");
+  ann.start(client::options(b, "Ann"), session_opts(s.root()));
+  bea.start(client::options(b, "Bea"), session_opts(s.root()));
+  cy.start(client::options(b, "Cy"), session_opts(s.root()));
+  // Eight rows: the region gets seven; Nearby keeps one computer and says
+  // how many more there are, and the prompt stays whole.
+  REQUIRE(ann.screen_shows("and 1 more"));
+  REQUIRE(ann.screen_shows("Type or drop files to send"));
+  const auto shown = ann.con.visible();
+  CHECK(shown.size() <= 8);
+  // ↓ moves the pointer to the one not shown: the window follows it.
+  const bool bea_shown = ann.con.wait_screen([](const std::string& t) { return has(t, "Bea"); }, 1);
+  ann.con.type("\x1B[B");
+  REQUIRE(ann.screen_shows(bea_shown ? "Cy" : "Bea"));
+  type_line(ann, "/quit");
+  CHECK(ann.wait_exit() == 0);
+}
+
+TEST_CASE("driftwire cli session: --save-to is for this run; the kept folder comes back", "[driftwire][cli]") {
+  scratch_dir s("driftwire_cli_save_to");
+  bus b;
+  fs::create_directories(s / "kept");
+  fs::create_directories(s / "this-run");
+  const fs::path data = s / "ann" / "data";
+  fs::create_directories(data);
+  sp::prefs before;
+  before.destination = utf8(s / "kept");
+  REQUIRE(sp::save_prefs(utf8(data / sp::kPrefsFile), before));
+
+  // As main() makes them for --save-to: the kept folder out of the initial
+  // prefs, this run's folder as the default.
+  cli_side ann(s / "this-run", 240);
+  auto eo = bus_opts(b, "Ann", s / "ann");
+  sp::prefs initial = *sp::load_prefs(eo.prefs_path);
+  auto so = session_opts(s.root());
+  so.restore_destination = initial.destination;
+  initial.destination.clear();
+  eo.initial = initial;
+  ann.start(std::move(eo), so);
+  REQUIRE(ann.shows("Saves to " + utf8(s / "this-run")));
+  // A setting the engine saves writes its whole view: Save to too.
+  type_line(ann, "/internet on");
+  REQUIRE(ann.shows("On: Send and receive over the internet"));
+  type_line(ann, "/quit");
+  CHECK(ann.wait_exit() == 0);
+  const auto after = sp::load_prefs(utf8(data / sp::kPrefsFile));
+  REQUIRE(after);
+  CHECK(after->internet);
+  CHECK(after->destination == utf8(s / "kept"));
 }

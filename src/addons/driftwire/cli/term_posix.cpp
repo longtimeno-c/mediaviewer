@@ -41,6 +41,7 @@ struct saved_terminal {
   int out = -1;
   termios state{};
   bool active = false;
+  bool sequences = true;
 };
 saved_terminal g_saved;
 
@@ -65,7 +66,7 @@ void write_all(int fd, std::string_view s) {
 
 void restore_at_exit() {
   if (!g_saved.active) return;
-  write_all(g_saved.out, kRestore);
+  if (g_saved.sequences) write_all(g_saved.out, kRestore);
   ::tcsetattr(g_saved.fd, TCSANOW, &g_saved.state);
   g_saved.active = false;
 }
@@ -112,6 +113,7 @@ struct console::impl {
   int in = STDIN_FILENO;
   int out = STDOUT_FILENO;
   bool signals = true;
+  bool sequences = true;
   int wake[2] = {-1, -1};
   int sig[2] = {-1, -1};
   termios before{};
@@ -169,6 +171,7 @@ console::console(int in_fd, int out_fd, options o) : p_(std::make_unique<impl>()
   p_->in = in_fd;
   p_->out = out_fd;
   p_->signals = o.signals;
+  p_->sequences = o.sequences;
   make_pipe(p_->wake);
   if (p_->signals) p_->install_signals();
 }
@@ -198,14 +201,14 @@ bool console::enter_raw() {
     std::atexit(restore_at_exit);
     hooked = true;
   }
-  g_saved = {p_->in, p_->out, p_->before, true};
-  write_all(p_->out, "\x1B[?2004h");  // bracketed paste
+  g_saved = {p_->in, p_->out, p_->before, true, p_->sequences};
+  if (p_->sequences) write_all(p_->out, "\x1B[?2004h");  // bracketed paste
   return true;
 }
 
 void console::leave_raw() noexcept {
   if (!p_->raw) return;
-  write_all(p_->out, kRestore);
+  if (p_->sequences) write_all(p_->out, kRestore);
   ::tcsetattr(p_->in, TCSANOW, &p_->before);
   p_->raw = false;
   g_saved.active = false;

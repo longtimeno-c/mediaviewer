@@ -36,6 +36,7 @@ struct saved_console {
   DWORD in_mode = 0, out_mode = 0;
   UINT cp = 0, out_cp = 0;
   bool active = false;
+  bool sequences = true;
 };
 saved_console g_saved;
 
@@ -81,7 +82,7 @@ void write_handle(HANDLE out, bool console, std::string_view bytes) {
 
 void restore(const saved_console& s) {
   DWORD mode = 0;
-  write_handle(s.out, ::GetConsoleMode(s.out, &mode) != 0, kRestore);
+  if (s.sequences) write_handle(s.out, ::GetConsoleMode(s.out, &mode) != 0, kRestore);
   ::SetConsoleMode(s.in, s.in_mode);
   ::SetConsoleMode(s.out, s.out_mode);
   if (s.cp) ::SetConsoleCP(s.cp);
@@ -127,6 +128,7 @@ struct console::impl {
   HANDLE out = nullptr;
   bool out_console = false;
   bool signals = true;
+  bool sequences = true;
   bool raw = false;
   saved_console before;
   wchar_t high = 0;  // a high surrogate whose pair is in the next read
@@ -148,6 +150,7 @@ console::console(options o) : p_(std::make_unique<impl>()) {
   DWORD mode = 0;
   p_->out_console = ::GetConsoleMode(p_->out, &mode) != 0;
   p_->signals = o.signals;
+  p_->sequences = o.sequences;
   if (!g_wake) g_wake = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
   if (p_->signals) {
     if (!g_done) g_done = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -170,6 +173,7 @@ bool console::enter_raw() {
   b.in = p_->in;
   b.out = p_->out;
   if (!::GetConsoleMode(p_->in, &b.in_mode) || !::GetConsoleMode(p_->out, &b.out_mode)) return false;
+  b.sequences = p_->sequences;
   b.cp = ::GetConsoleCP();
   b.out_cp = ::GetConsoleOutputCP();
   const DWORD out_mode =
@@ -191,7 +195,7 @@ bool console::enter_raw() {
   }
   g_saved = b;
   g_saved.active = true;
-  write("\x1B[?2004h");  // bracketed paste (Windows Terminal; the old console ignores it)
+  if (p_->sequences) write("\x1B[?2004h");  // bracketed paste (Windows Terminal; the old console ignores it)
   return true;
 }
 
