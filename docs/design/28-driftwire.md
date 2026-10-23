@@ -15,6 +15,8 @@ the same kind as Import and Places). It carries its own code, has no chrome of i
 fills one window through the screens contribution point ([25 §10](25-open-addons.md#10-screens)):
 both hosts draw it with their own controls, so it follows the theme, text size, VoiceOver and
 Narrator. Other makers' script add-ons still have no network permission (owner, 2026-10-03).
+The same engine also runs in a terminal: `driftwire`, a program of its own on Linux, Windows and
+macOS (owner, 2026-10-23; [From a terminal](#from-a-terminal-driftwire)).
 
 ## What a person sees
 
@@ -68,6 +70,123 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
   whose first entry is Driftwire with the selection (issue #444: the same menu as `Ctrl+Shift+S`,
   the bar's share button and right-click Share ▸).
   Without Driftwire the icon offers the same one-click install as the other add-ons.
+
+## From a terminal (`driftwire`)
+
+`driftwire` is a terminal host of the same engine (owner, 2026-10-23,
+[12](12-decision-log.md#driftwire)): a program of its own, outside MediaViewer, on Linux, Windows
+and macOS. It speaks the same wire, so it sends to and receives from the add-on and another
+`driftwire`. Linux ships it as a `.deb`, an `.rpm` and a tarball; on Windows and macOS it is built
+and tested with the app and kept out of the app's payload, a CI artefact only (the owner chose
+Linux packages). Its manual page is `packaging/linux/driftwire.1`.
+
+```
+driftwire                        the session: visible nearby while it runs; send and receive
+driftwire send PATH... [--to NAME]
+                                 the session with these files (or one folder) ready; --to sends
+                                 to NAME as soon as it is heard (the code is still typed)
+driftwire receive [--once]       the session for receiving; --once closes after one transfer
+driftwire code                   the session, making a code to receive from anywhere
+driftwire devices                the remembered devices (no terminal needed)
+driftwire --help | --version     (no terminal needed)
+  --save-to DIR, --name NAME     this run only
+  --plain, --no-color, --verbose
+```
+
+Exit 0 when it ends normally (for `send`, `receive --once` and `code`, the transfer went through);
+1 when the transfer of one of those did not go through (declined, cancelled, failed); 2 for a
+usage error, no terminal, or a start that fails (another session of the same user). With no
+network at all it says so and waits, as the window does: a network can come up.
+
+- **Interactive only** (owner). Nothing is accepted or sent without the person at that terminal
+  answering: there is no `--yes` and no auto-accept, and the program refuses to start the session
+  when stdin or stdout is not a terminal (`driftwire: this needs a terminal (it asks before
+  anything is sent or saved).`, exit 2). Only the test build, `mv_driftwire_cli_test`
+  (`MV_DRIFTWIRE_CLI_TEST_HOOKS`, never packaged), reads keys from a pipe, keeps to loopback and
+  prints machine-readable lines, for the end-to-end test.
+- **No secret on the command line.** No code, check digits or relay key is ever an argument:
+  it would sit in the shell's history and in `ps`. `driftwire code 123456` is a usage error; a
+  code someone gave you is pasted into `/to-code`, a relay server's key typed into
+  `/relay-server`'s field. `--to NAME` names a computer, never a code.
+- **The look**, after Claude Code's terminal UI, in Driftwire's own colours: an inline UI, never
+  the alternate screen. What finished is printed once, above, as a transcript that stays in the
+  scrollback (`⏺` and the engine's own sentence, `⎿` and the size, the time, the bearer and where
+  it saved), so the terminal keeps a log after it closes. Only a live region at the bottom is
+  redrawn: the card under way (a rounded frame with its title in the border), Nearby, a prompt
+  box with a hint line under it, and the palette of `/` commands, filtered as it is typed. One
+  accent, teal (Wi-Fi's tint); the bearers in the window's colours (Bluetooth blue, internet
+  indigo, the DHT orange, a relay purple). A wait is one shimmering line ("Waiting for Ann's
+  MacBook to accept… (12s · esc to cancel)"); a transfer is the window's path picture in
+  characters, its dots travelling toward the receiver while bytes move and frozen with
+  "reconnecting…", over a gradient bar in eighth blocks and the window's stats line (`eta.h`, the
+  bytes and times formatted as `tree.cpp` does). It animates only while something waits or moves
+  (at most 15 frames a second); idle, its loop blocks. Names are cut by display width with `…`;
+  under 40 columns the code is plain digits. `NO_COLOR` or `--no-color` drops colour; `--plain`,
+  or `TERM=dumb`, is lines only with no escape sequence at all and questions as lines ("Accept 24
+  files (412 MB) from Ann's MacBook? [y/N/s]"), for screen readers and dumb terminals.
+- **The code.** The receiver's card shows the six digits in large box-drawing digits, grouped
+  "123 456" as the window groups them, to type on the other screen; Esc there declines. The sender
+  gets six boxes that take digits only and send by themselves at the sixth, with the engine's note
+  and the tries left (three wrong entries end the link, as in the window). Over the internet the
+  check is shown to compare ("Make sure Ann's MacBook shows 482 917"), never as a code to type.
+  `/code`'s card shows the code large with its link and life; `c` copies the code and `l` the link
+  (OSC 52, where the terminal allows it).
+- **Accept is typed** (owner, [12](12-decision-log.md#driftwire)): the offer is a numbered choice
+  under the card, **1** Accept and save to the folder shown, **2** save somewhere else (a folder
+  typed, Tab completing), **3** Decline; `y` accepts, `n` or Esc declines. Three minutes with no
+  answer, the engine declines, as in the window. Esc twice cancels a transfer under way; Ctrl+C
+  twice closes Driftwire (during a transfer it says it will cancel it first).
+- **Files** are typed, pasted or dropped (a terminal pastes a dropped file as its path): quotes,
+  backslash escapes, `~`, `file://` and the globs `* ? [...]`, expanded by the program, not a
+  shell. A folder alone is a folder send. Nearby is the engine's list; ↑↓ choose and Enter on an
+  empty prompt sends. The commands are the window's: `/send`, `/folder`, `/files`, `/clear`,
+  `/code`, `/to-code`, `/devices`, `/forget N`, `/mine N on|off`, `/unfinished`, `/discard N`,
+  `/save-to`, `/internet`, `/dht`, `/handover`, `/relay`, `/relay-server`, `/settings`, `/help`,
+  `/quit`. An internet option says what it means the first time it is turned on in a session (the
+  window's words).
+- **Its own identity and data folder.** Its settings (`driftwire.json`), what it keeps of a
+  receive that stopped (`driftwire_resume.json`), the DHT's table (`driftwire_dht.dat`) and the
+  session's lock live in a folder of its own, made 0700: `${XDG_STATE_HOME:-~/.local/state}/driftwire` on Linux,
+  `~/Library/Application Support/Driftwire` on macOS, `%LOCALAPPDATA%\Driftwire` on Windows; never
+  the add-on's data folder. Its identity and remembered devices are under the secret-store service
+  "Driftwire CLI" (`secrets::kCliService`), never the app's "MediaViewer Driftwire"
+  ([12](12-decision-log.md#driftwire)): the Secret Service on Linux, Credential Manager on Windows.
+  On macOS there is none (the data protection keychain needs an access group, which a bare program
+  cannot be entitled to), so each run has a key of its own and Remember does not show there.
+  `--save-to` and `--name` apply to this run only: they go to the engine as its starting state and
+  `default_destination`, never as an event (which would save them), and the kept Save to is put
+  back when the session closes, since the engine saves its whole view at any change.
+- **The name on the air while the session runs.** Opening the session is opening the window
+  (`screen_opened("")`): presence starts and this computer's name is in the beacon (#501) until it
+  closes. There is no receiving with the session closed: Keep receiving and Receive when
+  MediaViewer is closed do not exist in a terminal (both are forced off at start).
+- **One session per user**: `net::try_lock_instance` on `<data folder>/driftwire.json.lock`; a
+  second prints "Driftwire is already open in another terminal." and exits 2. The app's lock is in
+  its own folder, so MediaViewer and `driftwire` can be open on one computer at once: two devices
+  to the others, each with its own identity (not measured).
+- **No Bluetooth** on any OS (`use_bluetooth = false`, `bt_none.cpp`): CoreBluetooth needs a
+  bundle's usage string, the WinRT GATT server in an unpackaged console is unverified, and Linux
+  has no bearer. Wi-Fi and the internet only.
+- **Threads.** The session thread owns the engine and the terminal and makes every engine call;
+  the host's `post_tree` only counts and wakes it (`cli_host`, the host table's rest: a free-space
+  check, a log ring shown with `--verbose`, notices taken, no yielding). `~engine` runs on that
+  thread before the terminal is restored, so a receive cut off by closing keeps what arrived (#530)
+  and the next session lists it under `/unfinished`. SIGTERM, SIGHUP and the console closing quit
+  in order; in raw mode Ctrl+C is a key; Ctrl+Z suspends and draws again on resume. While a
+  transfer keeps the machine awake the reason names Driftwire ("Driftwire is receiving files",
+  `power::set_owner`).
+- **Idle cost**, measured 2026-10-23 in a Linux container (a pty, nothing on screen moving):
+  60 s idle took 10 ms of CPU (0.017 %) and 6.0 context switches a second, and wrote 0 bytes to the
+  terminal; the engine's own `[.driftwire-idle]` "on" phase is 7.4–8.2 ms in 20 s at 6.0–6.1 a
+  second. Nothing above the engine's own cost could be measured.
+- **The Linux packages** (`cmake/driftwire-cli`, [12](12-decision-log.md#platforms)): one program,
+  `/usr/bin/driftwire`, that needs only glibc (2.35 or newer, the build machine's): libsodium 1.0.22
+  (a distro's 1.0.18 has no ML-KEM-768), BLAKE3, FTXUI and the C++ runtime are linked in, and the
+  build fails if anything else is `NEEDED`. libsecret and libsystemd are opened at run time when
+  they are there; the `.deb` recommends `libsecret-1-0`, the `.rpm` `libsecret`. With it: the manual
+  page, bash and zsh completions, a firewalld service for the beacon (`driftwire`, 47613/udp; the
+  manual page says what ufw needs, and that receiving nearby also needs incoming TCP from the local
+  network, on a port the system picks) and the DEP-5 copyright file with every notice.
 
 ## Finding each other
 
@@ -1078,7 +1197,7 @@ second while bytes move; those posts update chrome and never present the canvas.
   address or peer name is logged (`log` takes ASCII without them) or annotated. The minidump
   scrub ([13](13-updates-and-telemetry.md)) applies unchanged.
 - The beacon and Bluetooth INFO carry a random id, a port, the protocol spoken, and the machine's
-  name only while the Driftwire window is open (#501). A machine receiving in the background, maybe
+  name only while the Driftwire window is open, or a `driftwire` session runs (#501). A machine receiving in the background, maybe
   for weeks, says `MediaViewer` and changes its id every 10 minutes while idle and whenever the
   window opens or closes, so a listener on a café network or a Bluetooth observer cannot follow it
   or read its owner's name off the air (on the Mac this keeps Bluetooth's private-address rotation
@@ -1114,7 +1233,10 @@ second while bytes move; those posts update chrome and never present the canvas.
   channel, the identity and the code with every copy of a channel's options, and CPace's buffers
   are sized once, so no reallocation leaves a copy of the code or its key behind.
 - Receiving is off until the window opens or the person turns it on. Turned on, it stays on across
-  launches until turned off (#442), and the command bar says so (**Driftwire: receiving**).
+  launches until turned off (#442), and the command bar says so (**Driftwire: receiving**). In a
+  terminal it is on only while the session runs ([From a terminal](#from-a-terminal-driftwire)).
+- What `driftwire` prints stays in that terminal. Its `--verbose` lines are the engine's `log`
+  text, which never holds a path, a file name, an address, a peer's name or a code.
 - A notification (#452) names the sender and a count and size; never a file name, a path or the
   code. It is shown by the OS on this machine only; nothing about it leaves the machine. At most
   three a minute from one source (#502).
@@ -1188,17 +1310,25 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Sockets, machine name, Downloads | `net.h`, `net_posix.cpp`, `net_win.cpp`, `machine_mac.cpp` |
 | Bluetooth | `bt_pipe.*`, `bt_mac.mm` (CoreBluetooth), `bt_win.cpp` (C++/WinRT), `bt_none.cpp` |
 | The add-on's export and manifest | `addon_entry.cpp`, `manifest.json`; `cmake/driftwire.cmake` |
+| The command line, `driftwire` (2026-10-23): the terminal port, keys, the line editor, paths, completion, the look and the live region, the arguments, the host, the session, the data folder, `main()` | `cli/term.h`, `cli/term_posix.cpp`, `cli/term_win.cpp`, `cli/keys.*`, `cli/line_editor.*`, `cli/paths_arg.*`, `cli/complete.*`, `cli/theme.h`, `cli/text.*`, `cli/render.*`, `cli/inline_view.*`, `cli/args.*`, `cli/host.*`, `cli/session.*`, `cli/data_dir.h`, `cli/data_dir_posix.cpp`, `cli/data_dir_win.cpp`, `cli/main.cpp`; `cmake/driftwire.cmake` (`mv_driftwire_cli_core`, `mv_driftwire_cli` with `OUTPUT_NAME driftwire`, the test build `mv_driftwire_cli_test`, the gallery `mv_driftwire_cli_gallery` from `tools/driftwire-cli-gallery`) |
+| Its Linux packages | `cmake/driftwire-cli/` (the project, CPack, the `NEEDED` gate `needed.cmake`), `packaging/linux/` (`driftwire.1`, `completions/`, `firewalld/driftwire.xml`, `copyright`), `.github/actions/driftwire-cli-linux` |
 | Mac chrome | `Driftwire.swift` (offer, share icon), `SlotItems.swift` (Settings), `ScreenView.swift` (Choose…), `GalleryView.swift` / `FolderStore.swift` (range, drag), `AddonNotices.swift` (notifications, the menu-bar item, #452) |
 | Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
-| Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices, behind hard NATs too, and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py` |
+| Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices, behind hard NATs too, and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py`; the command line's `tests/test_driftwire_cli_ui.cpp` (keys, the line editor, paths, completion, render goldens at 80 and 40 columns, the live region against a fake terminal), `tests/test_driftwire_cli.cpp` (arguments, the host, sessions over two engines on the fixture bus, the program refusing a pipe), `tests/test_driftwire_cli_e2e.cpp` (two test programs in ptys, POSIX), `tests/driftwire_cli_vt.h` (`"[cli]"`) |
 
 ## Not built
 
 - Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6 on the LAN.
 - Bluetooth on Linux: there is no BlueZ bearer (`bt_none.cpp`), so Linux sends over Wi-Fi and the
   internet only.
+- In the command line: Bluetooth on any OS; Remember on macOS (no keychain identity for a bare
+  program); a signed program or a package for Windows and macOS (CI artefacts only); an update
+  channel for the Linux packages (a package repository, signed packages); "the first time" an
+  internet option is explained is per session, not per computer; `c` and `l` copy only while the
+  prompt is empty. Not run: a transfer between two machines over Wi-Fi with the command line on
+  one side.
 - Over the internet, after the relays: Tor (dropped for now, [plan](../plans/driftwire-tor-spike.md)),
   TURN, relaying word codes, remembered-device sends and the handover, a relayed send moving.
 - The rest of #472, deferred by the owner (2026-10-18, [12](12-decision-log.md#driftwire)):
