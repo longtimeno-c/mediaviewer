@@ -136,6 +136,28 @@ installed from Settings → Add-ons, never part of the base installer or its upd
 - **Never interrupt.** No modal, no forced restart. The command bar shows "Checking for
   updates…" / "Downloading update…" quietly, then **"Update ready — restart"**. Ignored, a staged
   update applies on exit (Windows) or is held for the user (macOS delegate).
+- **An update never cuts a transfer (#532).** Clicked while an add-on reports work under way
+  (`busy_post`: a Driftwire transfer), the bar says "The update will install when the transfer
+  finishes" and restarts once it has ended. A process kept in the background (#452) never exits,
+  so it never reached the apply on exit: hidden, with an update staged and no add-on busy, it
+  applies the update itself (Windows: `apply_update_in_background`, checked on hiding and every
+  minute; Mac: `applyUpdateInBackground` with Sparkle's install block) and starts again in the
+  background (`--background` on Windows; the `MVBackgroundAfterUpdate` default on the Mac, since
+  Sparkle's relaunch takes no arguments). Driftwire takes its receiving back from its kept toggle.
+- **Never under another copy (#532).** Update.exe's apply kills every other process running from
+  the install folder (Velopack's `force_stop_package`), so no apply is launched while another
+  MediaViewer runs (`OtherInstances`, `UpdateService.LaunchApply`), on exit included: the last
+  copy out applies it, and a hidden one applies it itself (above). "Update ready — restart" asks
+  the others to quit, a registered window message `MediaViewer.QuitForUpdate` (Windows) or the
+  distributed notification `<bundle id>.QuitForUpdate` (Mac), and waits with the same line
+  until none is left. Each quits once none of its add-ons is busy. `tools/package/e2e-update.ps1`
+  covers a second copy (`--new-instance`). On the Mac Sparkle's installer sends every copy a quit
+  event, which a copy kept by Driftwire took for ⌘Q and hid (the update then never installed):
+  the restart sets `_quitForReal`; a quit event whose sender is Sparkle's agent
+  (`keySenderPIDAttr` → `org.sparkle-project.*`) quits too, after any transfer under way; an
+  asked copy holding Sparkle's installer installs from there; an asker quit by another copy's
+  install reopens once the new version is in place (`relaunchAfterUpdateInstalls`). While it
+  waits, the bar's help names what for (`slot_registry::busy_what`, `RestartWords.UpdateWaitingTip`).
 - **State across the restart** (Windows, `shell/update_guard.h`): the restart relaunches with
   the open path, `--restore-zoom N`, `--restore-fullscreen` and `--restore-gallery`. Playback
   position is not an argument: the player saves its resume point when a clip closes.

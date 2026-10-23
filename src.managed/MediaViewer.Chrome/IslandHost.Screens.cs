@@ -476,6 +476,11 @@ public static partial class IslandHost
     /// most, never with Windows' animations off, and stop when it leaves the
     /// tree; done and failed are still.
     /// </summary>
+    // Where each live link's dots are (0..1 along the path) and when, kept across
+    // rebuilds of its window.
+    private static readonly System.Diagnostics.Stopwatch LinkClock = System.Diagnostics.Stopwatch.StartNew();
+    private static readonly Dictionary<string, (double Phase, double At)> LinkPhases = new(StringComparer.Ordinal);
+
     private static FrameworkElement BuildLink(JsonElement n)
     {
         string via = JStr(n, "via"), state = JStr(n, "state");
@@ -637,13 +642,24 @@ public static partial class IslandHost
             return pts;
         }
         double speed = moving ? (via == "bluetooth" ? 0.35 : via == "wifi" ? 0.7 : 0.5) : 0.25;
-        var clock = System.Diagnostics.Stopwatch.StartNew();
+        // The tree is rebuilt with every progress step (ten a second): the dots
+        // carry on from where the last build left them instead of starting over.
+        string key = JStr(n, "id") + "/" + (sending ? "send" : "receive");
+        if (!live) LinkPhases.Remove(key);
+        double Phase()
+        {
+            double now = LinkClock.Elapsed.TotalSeconds;
+            (double phase, double at) = LinkPhases.TryGetValue(key, out var kept) ? kept : (0, now);
+            phase = (phase + (now - at) * speed) % 1.0;
+            LinkPhases[key] = (phase, now);
+            return phase;
+        }
         void PlaceDots(double w)
         {
-            double t = clock.Elapsed.TotalSeconds;
+            double t = live && !reduce ? Phase() : 0;
             for (int i = 0; i < dots.Count; i++)
             {
-                double s = reduce ? (i + 1.0) / (dots.Count + 1) : (t * speed + (double)i / dots.Count) % 1.0;
+                double s = reduce ? (i + 1.0) / (dots.Count + 1) : (t + (double)i / dots.Count) % 1.0;
                 if (!sending) s = 1 - s;
                 Windows.Foundation.Point q = At(s, w);
                 Microsoft.UI.Xaml.Controls.Canvas.SetLeft(dots[i], q.X - r);
@@ -679,15 +695,30 @@ public static partial class IslandHost
         canvas.SizeChanged += (_, _) => Layout();
         if (live && !reduce)
         {
-            DispatcherQueueTimer? timer = null;
+            // On the window's frames, not a free-running 33 ms timer that beats
+            // against the refresh (uneven steps): at most 30 fps, every other
+            // frame at 60 Hz.
+            double lastStep = -1;
+            void Step(object? sender, object e)
+            {
+                double now = LinkClock.Elapsed.TotalSeconds;
+                if (now - lastStep < 0.030) return;
+                lastStep = now;
+                PlaceDots(canvas.ActualWidth);
+            }
+            bool stepping = false;
             canvas.Loaded += (_, _) =>
             {
-                timer ??= canvas.DispatcherQueue.CreateTimer();
-                timer.Interval = TimeSpan.FromMilliseconds(33);
-                timer.Tick += (_, _) => PlaceDots(canvas.ActualWidth);
-                timer.Start();
+                if (stepping) return;
+                stepping = true;
+                Microsoft.UI.Xaml.Media.CompositionTarget.Rendering += Step;
             };
-            canvas.Unloaded += (_, _) => timer?.Stop();
+            canvas.Unloaded += (_, _) =>
+            {
+                if (!stepping) return;
+                stepping = false;
+                Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= Step;
+            };
         }
         root.Children.Add(strip);
 
@@ -1602,12 +1633,14 @@ public static partial class IslandHost
     private static void SyncScreenWindows(JsonElement list)
     {
         var wanted = new HashSet<ScreenAt>();
+        SyncSettingsScreen(list);  // a settings page is drawn in Settings, never a window
         foreach (JsonElement s in list.EnumerateArray())
         {
+            string place = JStr(s, "place");
+            if (place == "settings") continue;
             var at = new ScreenAt(JStr(s, "addon"), JStr(s, "id"));
             wanted.Add(at);
             long revision = (long)JNum(s, "revision", 0);
-            string place = JStr(s, "place");
             if (!ScreenWindows.TryGetValue(at, out var open))
             {
                 Window w = OpenScreenWindow(s, at, place);

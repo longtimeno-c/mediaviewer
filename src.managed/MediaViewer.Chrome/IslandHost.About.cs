@@ -154,16 +154,19 @@ public static partial class IslandHost
         text.Children.Add(links);
         text.Children.Add(hint);
 
+        // Inside the flyout's own 456 px cap less its padding and border, or the
+        // presenter grows a horizontal scroll bar.
+        const double aboutWidth = 440;
         var root = new StackPanel
         {
             Orientation = Orientation.Horizontal,
             Margin = Pad(12, 10, 12, 10),
-            MaxWidth = 460,
+            MaxWidth = aboutWidth,
             TabFocusNavigation = Microsoft.UI.Xaml.Input.KeyboardNavigationMode.Cycle,
         };
         root.Children.Add(mark);
         root.Children.Add(text);
-        text.MaxWidth = 460 - 64 - 14 - 24;
+        text.MaxWidth = aboutWidth - 64 - 14 - 24;
 
         // Reading VERSIONINFO touches the exe on disk: off the UI thread, then
         // marshalled back. The source-offer link waits for the version so it

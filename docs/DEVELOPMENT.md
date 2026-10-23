@@ -47,6 +47,7 @@ and a verify line on each platform (D9, amended). The order is:
 | #501 | **Driftwire privacy**: a nearby handshake's static is a key of that link; the identity goes sealed in the offer (after the code) and the accept (after Accept); the beacon and Bluetooth INFO carry the name only while the window is open and a new id while idle (10 min) and at every open and close; the Mac keeps the identity and remembered devices in the data protection keychain in the app's access group, or nowhere; Windows seals each Credential Manager value with DPAPI; key material is wiped when it goes; a ProVerif model of the internet handshake (`tools/formal/internet.pv`) ([docs/design/28](design/28-driftwire.md#privacy-rule-6), [12](design/12-decision-log.md#driftwire)) | Mac: built; `"[driftwire]~[.driftwire-dht-live]"` passes (130 cases) with new ones: a connector never sees the receiver's identity, the sender's goes only in the offer after the right code, both sides remember the other's identity after a nearby send, the id rotates and the name is off the air, a planted login-keychain item is removed and never read. Windows: portable C++ only, CI's. The release adds Driftwire's app group `<team>.<bundle id>.driftwire` when it signs (`macpack.py release --team-id`, `APPLE_TEAM_ID`; `test_macpack.py` covers it); dev builds have no store. Owed: a signed build's Keychain path, two machines, v0.1.35 interop by hand |
 | #512 | **A status item opens its add-on's screen**: "Driftwire: receiving" in the command bar is a flat button that opens the Driftwire window (or brings it forward), on both hosts; any add-on whose status item names a screen, or that has exactly one window / pane / sheet, gets the same; a manifest may name it on a status item from contribution API 7 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)) | Mac: `mv_import_tests` passes (a new `[slots]` case for `status_json`'s `opens`); the Mac app builds. Windows: the C# compiles; the native side is CI's. Owed: the click, hover, hand cursor, keyboard and VoiceOver / Narrator checked in the running app on both hosts |
 | #529, #530, #531 | **Driftwire faster over the DHT, with the time left, and resumable**: the UDP stream paces and follows a model of the path (BBR, simplified) instead of halving on every loss, and acks name the runs past the 256-packet bitmap; both windows show the speed and the time left; a receive that stops keeps what arrived (the partial hidden under `.mvtmp`) and the same sender's next send of the same files resumes it, the whole-file read-back unchanged; "Unfinished transfers" with Discard, gone after 7 days; neither machine sleeps from idleness while bytes move; a transfer's end stays until OK ([docs/design/28](design/28-driftwire.md#resuming-a-receive-that-stopped-530)) | Linux container only: `"[driftwire]"` 166 cases pass (the IPv6 step of the stream case cannot run without IPv6, as on the base); `[.driftwire-stream-bench]` alternated 3 × 15 s, every profile better ([docs/design/28](design/28-driftwire.md#four-words-over-the-dht-472-pr-3)). Not built on either host: the Windows and Mac power requests, the file port's `open_resume` / `set_hidden` on Windows and macOS. Owed: both hosts' builds and suites, both PR 1 gates, a real DHT transfer between two machines, sleep held off (`powercfg /requests`, `pmset -g assertions`), a resume after a real power-off ([Where this actually is](#driftwire-speed-time-left-and-resume-issues-529-530-2026-10-21)) |
+| Driftwire settings page, 2026-10-21 | **Driftwire's settings in Settings → Add-ons → Driftwire**, in the window's cards and controls: Nearby (Keep receiving, Receive when MediaViewer is closed), Received files (Save to), Over the internet and, while on, Remembered devices and Internet options. A new screen place, `settings` (contribution API 8, `MV_SLOT_PLACE_SETTINGS`): an add-on's own tree drawn on its page, opened only while that page shows; Driftwire's manifest asks for 8 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11), [28](design/28-driftwire.md), [12](design/12-decision-log.md)) | Mac: `mv_import_tests` passes (296 cases, new `[slots]` and `[driftwire]` cases); the app built and run with a dev-signed Driftwire: the page shows its settings, a switch there changes the window and back, the screen closes when the page does. Windows: the C# compiles; the native side is CI's. Owed: the Windows page seen in the app, Narrator / VoiceOver on the page; no perf run (Settings chrome and the add-on only, nothing on the present or decode path) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -1689,10 +1690,12 @@ package (`UninstallDisplaySize`, passed in by `build-release.ps1`); add-ons are 
 .\tools\package\e2e-update.ps1 -Payload .\build\bin\Release
 ```
 
-It packs three versions into a temp feed, installs one, proves a **tampered manifest
+It packs four versions into a temp feed, installs one, proves a **tampered manifest
 stages nothing**, proves a signed one downloads in the background and applies on exit
-without showing the wizard, and proves a build that fails to start twice **rolls back** to
-its predecessor on the third try.
+without showing the wizard, proves nothing is applied while **a second copy** runs (#532:
+Update.exe would kill it) and that the copy, asked to quit for the update, quits and applies
+it, and proves a build that fails to start twice **rolls back** to its predecessor on the
+third try.
 
 ### Telemetry
 
@@ -2520,6 +2523,37 @@ desktop (MSVC Release, Ninja), one machine.
   wrote its report and then did not exit (stopped by hand); earlier runs on the same build exited.
 - **Not run:** two machines (nearby send and receive, offers, the receiving and
   remembered-device states), Narrator over the new rows.
+
+### Updates with Driftwire running (issue #532, 2026-10-21)
+
+What is built is in [13](design/13-updates-and-telemetry.md) and [12](design/12-decision-log.md#driftwire).
+Run on an M-series MacBook Air, Release, one machine.
+
+- **Mac end to end, on a local Sparkle feed.** `build-sparkle` was configured with a throwaway
+  `MV_SPARKLE_PUBLIC_ED_KEY` and the dev add-on key. A copy of the app has its own bundle id, with
+  `HOME`, `MV_DEV_ADDONS_DIR`, `MV_DEV_THUMBS_DIR` and `MV_DRIFTWIRE_OFFLINE` in its
+  `LSEnvironment`, so Sparkle's relaunch keeps them. A dev-signed Driftwire has background
+  receiving on. Version 2 of the same build is signed with `sign_update --ed-key-file` and served
+  from 127.0.0.1 (the copy's `SUFeedURL` default). Bridge calls were made from lldb, since computer
+  use was not granted.
+  - **Reproduced** (before the fix): "Update ready — restart" with background receiving on and
+    idle sent the copy to the menu bar on version 1; nothing installed.
+  - **Fixed:** the same restart installed version 2 in under 5 s and relaunched as a window.
+  - A background-only copy, kept by Driftwire, installed version 2 itself and came back in the
+    background. It was still kept past the 60 s grace.
+  - A background copy holding the receive lock with a second window open: neither installed for
+    over 2 min. The window's restart asked the other copy to quit, it quit within 3 s, and version
+    2 installed with one window back. This held whether the asked copy also had the update staged
+    or not.
+  - Sparkle's install from one copy ended the other running copy (no crash report). That is why
+    the restart waits for them.
+- **`mv_import_tests "[driftwire]"`:** 168 cases pass after merging main (#529, #530), `"[slots]"` 23.
+- **Windows:** the chrome and updater C# compile (`msbuild -t:Compile`). `main.cpp` is compiled
+  only by CI. `tools/package/e2e-update.ps1` has the second-copy case, not run here (needs
+  Windows).
+- **Not run:** a transfer under way during the update (the busy wait is the same `busy_post`
+  state as the add-on restart's), both PR 1 gates (the screen was locked), and #532's Windows
+  reproduction with logs.
 
 ### Driftwire window on the Mac (issue #508, 2026-10-20)
 

@@ -205,6 +205,9 @@ struct view {
 
 // The view tree (docs/design/25 §10 vocabulary) for `v`. Pure; tested.
 [[nodiscard]] std::string build_tree(const view& v);
+// The settings page's tree (contribution API 8, place "settings"): the
+// window's settings with the same node ids, no transfer and no tiles. Pure; tested.
+[[nodiscard]] std::string build_settings_tree(const view& v);
 
 // What the engine needs from the host.
 class engine_host {
@@ -212,6 +215,10 @@ class engine_host {
   virtual ~engine_host() = default;
   // The whole tree for the open window; a no-op when it is closed.
   virtual void post_tree(const std::string& tree_json) = 0;
+  // Driftwire's page in Settings -> Add-ons shows: its tree is posted with
+  // every window post (build_settings_tree). Never built while it is not.
+  [[nodiscard]] virtual bool settings_shown() { return false; }
+  virtual void post_settings(const std::string& tree_json) { (void)tree_json; }
   // Opens (an offer arrived while receiving with the window closed) or
   // closes the window.
   virtual void show_screen(bool show) = 0;
@@ -361,6 +368,9 @@ class engine {
   // else is) or closed.
   void screen_opened(const std::string& path);
   void screen_closed();
+  // The settings page opened (host_.settings_shown() is true): posts it. Not
+  // the window: nothing starts on the network.
+  void settings_opened();
   // Files a command, a context item or the gallery's share icon handed over:
   // these and their pair halves and sidecars become the set to send.
   void set_files(const std::vector<std::string>& paths);

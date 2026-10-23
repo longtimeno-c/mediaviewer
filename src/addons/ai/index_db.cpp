@@ -1275,17 +1275,18 @@ std::uint64_t index_db::unavailable_in_root(std::int64_t root, const std::string
 }
 
 std::uint64_t index_db::pending_in_root(std::int64_t root, const std::string& spec, std::int32_t max_tries,
-                                        const track_filter& filter) {
+                                        const track_filter& filter, const std::string& after) {
   std::lock_guard lock(m_);
   const std::string sql = std::string(
       "SELECT COUNT(*) FROM assets a JOIN roots r ON r.id = a.root_id AND r.enabled = 1"
       " LEFT JOIN progress p ON p.asset_id = a.id AND p.spec = ?1"
-      " WHERE a.root_id = ?3 AND") + kPendingWhere + kTrackWhere;
+      " WHERE a.root_id = ?3 AND") + kPendingWhere + kTrackWhere + after_where(after);
   stmt f(db_, sql.c_str());
   f.bind(1, spec).bind(2, std::int64_t{max_tries}).bind(3, root)
       .bind(4, std::int64_t{filter.photos ? 1 : 0}).bind(5, std::int64_t{filter.default_media})
       .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root)
       .bind(9, std::int64_t{filter.docs_min}).bind(10, std::int64_t{filter.default_docs});
+  if (!after.empty()) f.bind(8, after);
   return f.step_row() ? static_cast<std::uint64_t>(f.i64(0)) : 0;
 }
 

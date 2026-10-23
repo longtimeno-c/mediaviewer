@@ -1436,6 +1436,64 @@ TEST_CASE("an index left unfinished waits for Resume after a restart", "[ai][eng
   CHECK(r.stills_decoded.load() == 6);
 }
 
+// Issue #299, 2026-10-21: a root whose pictures are all indexed but whose
+// other passes are not (here its documents' words) is unfinished too. It went
+// unlisted in resume.json and was not held, so the next load carried on with
+// no notice. Now it is listed, held at the next start, and read on Resume.
+TEST_CASE("a root left part-way through its documents waits for Resume too", "[ai][engine][documents]") {
+  rig r;
+  r.file("red_photo.jpg");
+  r.file("invoice_march.pdf");
+  const mv::ai::engine_options hold{.hold_unfinished = true};
+  r.start(hold);
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));  // root 1
+  REQUIRE(r.idle());  // the photo indexed; documents off, so the PDF is not on the index
+  const auto root = [&] {
+    auto doc = mv::json::parse(r.eng->roots_json());
+    REQUIRE(doc);
+    REQUIRE(doc->a.size() == 1);
+    return doc->a[0];
+  };
+  const auto resume_roots = [&]() -> std::vector<std::int64_t> {
+    std::ifstream in(r.dir / "data" / "resume.json", std::ios::binary);
+    std::stringstream text;
+    text << in.rdbuf();
+    std::vector<std::int64_t> out;
+    if (const auto doc = mv::json::parse(text.str())) {
+      if (const auto* roots = doc->find("roots")) {
+        for (const auto& row : roots->a) out.push_back(row.integer("id").value_or(0));
+      }
+    }
+    return out;
+  };
+
+  // Show documents goes on while indexing is paused, then the app quits:
+  // the PDF is walked but not read, the pictures all done.
+  r.eng->pause(true);
+  REQUIRE(r.eng->set_setting("document_files", "1"));
+  REQUIRE(wait_for([&] { return root().integer("documents").value_or(0) == 1; }, kSettleMs));
+  CHECK(wait_for([&] { return resume_roots() == std::vector<std::int64_t>{1}; }, kSettleMs));
+  CHECK(r.pdf_pages_read == 0);
+
+  r.start(hold);
+  REQUIRE(r.idle());
+  CHECK(root().boolean("held").value_or(false));
+  CHECK(r.pdf_pages_read == 0);  // held: not read without asking
+  CHECK(resume_roots() == std::vector<std::int64_t>{1});
+
+  REQUIRE(r.eng->set_setting("resume_root", "1"));
+  REQUIRE(r.idle());
+  CHECK_FALSE(root().boolean("held").value_or(true));
+  CHECK(root().integer("documents_done").value_or(0) == 1);
+  CHECK(r.pdf_pages_read > 0);
+  CHECK(wait_for([&] { return resume_roots().empty(); }, kSettleMs));
+
+  // Finished on every pass: nothing held at the next start.
+  r.start(hold);
+  REQUIRE(r.idle());
+  CHECK_FALSE(root().boolean("held").value_or(true));
+}
+
 TEST_CASE("scope limits results to the folder or the folder and below", "[ai][engine]") {
   rig r;
   r.file("red_top.jpg");

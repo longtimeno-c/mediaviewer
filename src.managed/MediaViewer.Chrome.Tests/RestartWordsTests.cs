@@ -42,6 +42,17 @@ public class RestartWordsTests
     }
 
     [Fact]
+    public void AnUpdateSaysItWaitsForTheTransfer()
+    {
+        // #532: the owner's words in the bar, what it waits for in the help.
+        Assert.Equal("The update will install when the transfer finishes", RestartWords.UpdateWaiting);
+        Assert.Equal("MediaViewer restarts to install it when nothing is running. Waiting for a Driftwire transfer.",
+                     RestartWords.UpdateWaitingTip(new List<string> { "a Driftwire transfer" }));
+        Assert.Equal("MediaViewer restarts to install it when nothing is running. Waiting for a Driftwire transfer and another MediaViewer window.",
+                     RestartWords.UpdateWaitingTip(new List<string> { "a Driftwire transfer", RestartWords.OtherWindow }));
+    }
+
+    [Fact]
     public void DriftwireNamesItsTransferAsTheCardExpects()
     {
         // The add-on's busy_post text reads inside "Waiting for … to finish".

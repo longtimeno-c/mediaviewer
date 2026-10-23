@@ -53,7 +53,8 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
     other screen shows, in one large field that takes digits only and goes by itself at the sixth
     (three wrong codes end the link; this screen never shows the code); then "Waiting for … to
     accept"; then the tile's own ring fills while the bytes move (and the path card above shows
-    how), and it ends with a done or failed mark on the tile and a line saying what happened.
+    how), and it ends with a done or failed mark on the tile and a line saying what happened, with
+    **OK** to go back (#531).
     With no one in sight it says **No one nearby yet** and how to fix that, not a status line;
     what this computer cannot search (no network, Bluetooth off or missing) is one quiet line at
     the card's foot, and nothing when Wi-Fi and Bluetooth both work (#508);
@@ -160,7 +161,11 @@ process (`keep_alive`), and the hosts do the rest.
   Driftwire**, **Open MediaViewer**, **Quit MediaViewer** (which really quits). Opening the app
   again (Finder, Spotlight, Start, a file) brings the hidden window back. Logout, restart and shut
   down, and an update's restart, quit as before. Only the process that holds
-  `driftwire.json.lock` keeps itself; another window's process quits as usual.
+  `driftwire.json.lock` keeps itself; another window's process quits as usual. Hidden, a staged
+  app update installs once no transfer is under way and the process comes back in the
+  background; "Update ready — restart" clicked during a transfer waits for it to end, and a
+  copy asked to quit for another's update finishes its transfer first (#532,
+  [13](13-updates-and-telemetry.md)).
 - **A notification when someone sends** (both hosts, background or not). The engine posts a
   notice (`notice_post`) the moment a sender's link is up, while its code shows: "Ann's MacBook
   wants to send you files. Open Driftwire to see the code." Once the sender has typed the code
@@ -1120,7 +1125,18 @@ second while bytes move; those posts update chrome and never present the canvas.
   "Driftwire" row carries the marked or current files.
 - **Settings → Add-ons**: an add-on that fills slots and has a window gets **Open …**; Driftwire
   is offered with one click while it is not installed (its release channel,
-  `mediaviewer-addon-driftwire-<platform>`).
+  `mediaviewer-addon-driftwire-<platform>`). **Driftwire's page there carries its settings**
+  (2026-10-21; a screen in place `"settings"`, contribution API 8, so Driftwire's manifest asks
+  for 8 and an older app says it needs a newer MediaViewer): under its card, in the window's
+  cards and controls, **Nearby** (Keep receiving when the Driftwire window is closed, Receive when
+  MediaViewer is closed), **Received files** (Save to, the folder an offer's Save to starts at),
+  **Over the internet**, and while that is on, **Remembered devices** (Forget, "is my computer")
+  and **Internet options** (DHT, handover, relays, your own relay server). The same node ids as
+  the window, so one engine answers both and the two never disagree (`build_settings_tree`).
+  Nothing that sends, makes a code or lists who is nearby. Opening it makes the engine (its
+  control thread) but is not the window: no presence, beacon or Bluetooth starts unless Keep
+  receiving is on, as at launch. Its tree is posted only when it changed, not with every
+  progress post.
   On Windows each add-on there is one card (#442): its name, what it does, its state, the install
   bar while it installs, its buttons (**Open …**, **Update**, **Remove…**), its message and its
   settings page together, Import's status and restart inside Import's card; the Mac's
