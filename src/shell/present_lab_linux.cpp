@@ -589,7 +589,7 @@ void present_lab_linux::draw_overlay(const input_snapshot& snapshot) noexcept {
               gfx::presentation_drop_source_label(stats.source),
               static_cast<unsigned long long>(stats.frames),
               static_cast<unsigned long long>(stats.displayed_presents), stats.elapsed_seconds);
-  ImGui::Text("feedback  %s, last flags 0x%x, %llu waiting, %llu unanswered",
+  ImGui::Text("feedback  %s, last flags 0x%x, %llu waiting, %llu not judged by the display",
               clock_name(clock_.clock_id()), clock_.last_flags(),
               static_cast<unsigned long long>(stats.pending_feedback),
               static_cast<unsigned long long>(stats.statistics_unavailable_frames));
