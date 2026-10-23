@@ -741,6 +741,44 @@ TEST_CASE("driftwire cli session: keys typed as an offer appears are not answers
   bea.stop();
 }
 
+TEST_CASE("driftwire cli session: receive --once outlasts a sender who leaves before offering",
+          "[driftwire][cli]") {
+  scratch_dir s("driftwire_cli_knock");
+  bus b;
+  const fs::path f = s / "out" / "a.jpg";
+  write_bytes(f, pattern(5000, 3));
+  cli_side ann(s / "ann_received"), bea(s / "bea_received");
+  ann.start(client::options(b, "Ann"), session_opts(s.root()));
+  auto bo = session_opts(s.root());
+  bo.cmd = cli::command::receive;
+  bo.once = true;
+  bea.start(client::options(b, "Bea"), bo);
+  REQUIRE(ann.screen_shows("Bea"));
+  type_line(ann, utf8(f));
+  REQUIRE(ann.screen_shows("1 file"));
+  // Ann connects and goes away before the code is typed: nothing was offered.
+  ann.con.type("\r");
+  REQUIRE(code_on(bea).size() == 6);
+  press_esc(ann);
+  REQUIRE(bea.event("in ended"));
+  REQUIRE(bea.con.wait_cells([](const auto& cells) { return read_big_code(cells).empty(); }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  CHECK_FALSE(bea.done.load());
+  // The transfer it waits for still comes, and ends it.
+  ann.con.type("\r");
+  const std::string code = code_on(bea);
+  REQUIRE(code.size() == 6);
+  // The sender types it once its own card is up (a key answers what is drawn).
+  REQUIRE(ann.screen_shows("Type the code on Bea's screen"));
+  ann.con.type_keys(code);
+  REQUIRE(bea.screen_shows("wants to send you 1 file"));
+  answer(bea, "y");
+  CHECK(bea.wait_exit() == 0);
+  CHECK(has(bea.text(), "Received 1 file from Ann."));
+  type_line(ann, "/quit");
+  CHECK(ann.wait_exit() == 0);
+}
+
 TEST_CASE("driftwire cli session: plain mode asks in lines", "[driftwire][cli]") {
   scratch_dir s("driftwire_cli_plain");
   bus b;

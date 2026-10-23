@@ -548,9 +548,16 @@ struct session::impl {
       in_moving_since = -1;
       in_answered = false;
       cancelled_here = false;
-      if (one_shot && (o.cmd == command::receive || o.cmd == command::code) && !shot_over) shot_started = true;
     }
-    if (is == in_phase::asking) offer_sel = 0;
+    // A one-shot's transfer is one that offered something: anyone nearby can
+    // knock and leave (connecting, then ended) without ending someone else's
+    // `receive --once`. For `code`, the connection its code let in is the one
+    // (the code works once).
+    if (one_shot && (o.cmd == command::receive || o.cmd == command::code) && !shot_over && !shot_started &&
+        (is == in_phase::asking || is == in_phase::receiving || is == in_phase::done ||
+         (o.cmd == command::code && is == in_phase::connecting && v.in_internet && !v.in_known))) {
+      shot_started = true;
+    }
     if (is == in_phase::receiving && in_moving_since < 0) in_moving_since = now;
     if (is == in_phase::done || is == in_phase::ended) {
       std::vector<std::string> details;

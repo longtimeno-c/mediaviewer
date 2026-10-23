@@ -83,10 +83,13 @@ Linux packages). Its manual page is `packaging/linux/driftwire.1`.
 ```
 driftwire                        the session: visible nearby while it runs; send and receive
 driftwire send PATH... [--to NAME]
-                                 the session with these files (or one folder) ready; --to sends
-                                 to NAME as soon as it is heard (the code is still typed)
-driftwire receive [--once]       the session for receiving; --once closes after one transfer
-driftwire code                   the session, making a code to receive from anywhere
+                                 the session with these files (or one folder) ready, closing
+                                 when that send ends (sent, declined, cancelled or failed);
+                                 --to sends to NAME as soon as it is heard (the code is typed)
+driftwire receive [--once]       the session for receiving; --once closes after the first offer,
+                                 accepted or declined (a knock that offers nothing does not count)
+driftwire code                   the session, making a code to receive from anywhere, closing
+                                 when the receive it lets in ends, or the code fails or runs out
 driftwire devices                the remembered devices (no terminal needed)
 driftwire --help | --version     (no terminal needed)
   --save-to DIR, --name NAME     this run only

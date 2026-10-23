@@ -56,7 +56,8 @@ commands below.
 .TP
 .BI "driftwire send " PATH ...
 Opens the session with these files, or one folder, ready to send. Pick a
-computer with the arrow keys and press Enter.
+computer with the arrow keys and press Enter. It closes when that send ends:
+sent, declined, cancelled or failed.
 .TP
 .BI "driftwire send " PATH "... \-\-to " NAME
 Sends to the first computer nearby called
@@ -68,12 +69,14 @@ beginning of one). The code is still typed.
 Opens the session to receive.
 .TP
 .B driftwire receive \-\-once
-Closes after one transfer.
+Closes after one transfer: the first offer made to it, accepted or declined.
+A computer that connects and leaves before offering anything does not count.
 .TP
 .B driftwire code
 Opens the session with a code to receive from anywhere (this needs
 .BR "Over the internet" ;
-it asks before turning it on).
+it asks before turning it on). It closes when the receive the code lets in
+ends, or when the code is wrong, runs out or is stopped.
 .TP
 .B driftwire devices
 Lists the devices this computer remembers, and exits. It needs no terminal.

@@ -43,7 +43,7 @@ case $state in
           '*:file:_files'
         ;;
       receive)
-        _arguments $common '--once[close after one transfer]'
+        _arguments $common '--once[close after the first offer]'
         ;;
       code)
         # Never a code: it is pasted into /to-code, not typed here.
