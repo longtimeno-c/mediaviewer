@@ -803,10 +803,11 @@ jobs:
   # Linux PR 1: the same 60 s animated + idle gates on OpenGL via EGL, judged
   # from wp_presentation feedback (frametime main_linux.cpp, drop_source
   # "Wayland presentation feedback"). It needs a real Wayland session on real
-  # hardware: Mutter or KWin (or Weston on DRM, the quiet machine) with Mesa on
-  # Intel or AMD. The runner must run inside that logged-in session (a systemd
-  # user service, say) so WAYLAND_DISPLAY and XDG_RUNTIME_DIR are set; the step
-  # fails at once when they are not. Same opt-in and fork rule as the other
+  # hardware: Mutter or KWin with Mesa on Intel or AMD, as the verify line says
+  # (a Weston-on-DRM run is extra data, not the verify). The runner must run
+  # inside that logged-in session (a systemd user service, say) so
+  # WAYLAND_DISPLAY and XDG_RUNTIME_DIR are set; the step fails at once when
+  # they are not. Same opt-in and fork rule as the other
   # two: set MV_LINUX_GPU_RUNNER_ENABLED only after the runner exists.
   frametime-linux:
     name: Frame-time gate (self-hosted Linux)

@@ -313,8 +313,8 @@ and glvnd development packages; Weston and Mesa to run the smoke headless. The p
 vendored (`tools/linux/protocols/`), so the distribution's wayland-protocols is not needed.
 
 ```sh
-# Ubuntu 24.04 / Debian 12
-sudo apt-get install ninja-build pkg-config libwayland-dev libxkbcommon-dev \
+# Ubuntu 24.04 (Debian 12's CMake 3.25 and GCC 12 are too old)
+sudo apt-get install build-essential cmake ninja-build pkg-config libwayland-dev libxkbcommon-dev \
   libegl-dev libgl-dev libopengl-dev weston libegl-mesa0 libgl1-mesa-dri
 
 # with vcpkg (as CI): the root manifest installs catch2 and imgui[opengl3-binding] only
@@ -1793,8 +1793,9 @@ Linux container with no GPU and no display (Ubuntu 24.04, GCC 13.3, Mesa 25.2 ll
     colour reads back as `#21232A` from a linear clear (the sRGB encode holds, GL and pixman).
 - **Not measured:** pacing. Headless Weston cannot show it (docs/design/12, "Headless Weston
   proves plumbing, never pacing"). Owed: the 60 s gate on Mutter and KWin with Mesa on Intel and
-  AMD (and Weston on DRM as the quiet machine), NVIDIA (egl-wayland's sRGB colour space is
-  unverified), fractional scale, occlusion and `suspended` on a real compositor, a GPU reset.
+  AMD (a Weston-on-DRM run would be extra data, not the verify), NVIDIA (egl-wayland's sRGB
+  colour space is unverified), fractional scale, occlusion and `suspended` on a real compositor, a
+  real GPU reset.
 - **Not built:** X11, Qt chrome, decode, video (Linux PRs 2–8); a Linux GPU runner, so
   `frametime-linux` is skipped and its skip is a warning (docs/design/12).
 - **CI only:** the Windows and Mac builds now compile `gfx/presentation_pacer.cpp` and run its
