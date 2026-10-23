@@ -80,9 +80,13 @@ struct presentation_display_sample {
 // PresentRefreshCount: a step of 1 is a clean present, 2 is one miss. A rewind,
 // a repeat or a > 1000-refresh jump is a discontinuity, not a drop.
 //
-// Where the compositor sends no msc (KWin), the hardware timestamps count the
-// refreshes instead: round(Δt / refresh). A counter that appears or goes away
-// mid-window is a discontinuity.
+// The hardware timestamps count refreshes too: round(Δt / refresh). They are
+// the count where the compositor sends no msc (KWin), and they overrule an msc
+// that counted fewer: Mutter steps its per-surface counter by 1 whenever the
+// driver gives it no vblank sequence, so a frame shown a refresh late can
+// arrive one step after the last. An msc that counted more than the clock is
+// reconcile_feedback_misses()'s case below. A counter that appears or goes
+// away mid-window is a discontinuity.
 class presentation_statistics {
  public:
   presentation_display_sample observe(const presentation_sample& sample) noexcept;

@@ -266,6 +266,34 @@ TEST_CASE("a rewind or a standing msc is a discontinuity, not a drop",
   REQUIRE(stats.source == mv::gfx::presentation_drop_source::interval_heuristic);
 }
 
+TEST_CASE("an msc step of one the hardware clock says took two refreshes is a miss",
+          "[gfx][presentation_pacer]") {
+  // Mutter's fallback: with no vblank sequence from the driver it steps the
+  // surface's counter by 1, whatever the time, and keeps both flags.
+  mv::gfx::presentation_statistics tracker;
+  REQUIRE(tracker.observe(presented(1, 10)).baseline);
+  auto late = presented(2, 11);
+  late.timestamp_ns += k60_ns;  // shown at refresh 12
+  const auto sample = tracker.observe(late);
+  REQUIRE(sample.valid);
+  REQUIRE(sample.missed_refreshes == 1);
+
+  mv::gfx::presentation_pacer pacer;
+  pacer.begin_session(k60);
+  commit(pacer, 1, 9);
+  for (std::uint64_t id = 1; id <= 9; ++id) {
+    auto s = presented(id, 100 + id);
+    if (id >= 5) s.timestamp_ns += k60_ns;  // frame 5 a refresh late; the counter says 1
+    pacer.on_feedback(s);
+  }
+  const auto stats = pacer.stats();
+  REQUIRE(stats.displayed_presents == 8);
+  REQUIRE(stats.dropped_frames == 1);
+  REQUIRE(stats.missed_refreshes == 1);
+  REQUIRE(stats.source == mv::gfx::presentation_drop_source::presentation_feedback);
+  REQUIRE_FALSE(stats.meets_linux_pr1_gate());
+}
+
 TEST_CASE("msc steps count only when the presentation clock agrees",
           "[gfx][presentation_pacer]") {
   // A counter that ran on (or changed output) while the clock moved one refresh.

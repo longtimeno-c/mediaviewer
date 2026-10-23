@@ -72,7 +72,8 @@ presentation_display_sample presentation_statistics::observe(
     // Refreshes by the hardware clock, rounded; 0 with no constant refresh.
     const std::uint64_t clock_steps =
         sample.refresh_ns > 0 ? (elapsed_ns + sample.refresh_ns / 2) / sample.refresh_ns : 0;
-    const std::uint64_t steps = has_msc ? sample.msc - last_msc_ : clock_steps;
+    std::uint64_t steps = has_msc ? sample.msc - last_msc_ : clock_steps;
+    if (clock_steps > steps) steps = clock_steps;  // a counter that counted presents
     if (steps == 0 || steps > 1000) {
       // Two presents in one refresh (no msc to say otherwise), or a jump.
       out.discontinuity = true;

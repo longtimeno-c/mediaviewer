@@ -240,7 +240,9 @@ a bounded 100 ms wait). The idle-gap rule differs from DXGI's and the display li
 misses when the *application's* interval is under 1.5 refreshes, but a Wayland frame shown late
 was committed on time and its answer comes later, so that rule would hide every compositor miss.
 Here the msc steps count unless the *presentation* timestamps say only one refresh passed (a
-counter that ran on or changed output). An idle gap never reaches a delta: the lab resets the
+counter that ran on or changed output), and the timestamps overrule an msc that counted fewer
+refreshes than they did: Mutter steps a surface's counter by 1 whenever the driver gives it no
+vblank sequence, so a frame shown a refresh late could otherwise arrive one clean step on. An idle gap never reaches a delta: the lab resets the
 window on each idle → live edge outside a soak, a soak never idles, and the first answer after a
 reset only seeds the counter.
 
