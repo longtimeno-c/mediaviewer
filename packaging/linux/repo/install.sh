@@ -12,17 +12,21 @@
 # repository. The system's package manager then installs driftwire and updates it
 # with everything else. Anywhere else it unpacks the tarball into ~/.local
 # (/usr/local as root) after checking its SHA-256; that copy does not update
-# itself. It needs no MediaViewer.
+# itself. It needs no MediaViewer. On macOS it installs nothing: the Mac's
+# channel is Homebrew, and it prints the line for that.
 #
-# tools/package/driftwire_repo.py writes the site's address and key into the two
-# lines below when it builds the site; DRIFTWIRE_REPO_URL overrides the address
-# (tests, a fork's site). Everything is in functions and main runs on the last
-# line, so a download cut off part way runs nothing.
+# tools/package/driftwire_repo.py writes the site's address, its key, the
+# Homebrew tap and the release page into the lines below when it builds the
+# site; DRIFTWIRE_REPO_URL overrides the address (tests, a fork's site).
+# Everything is in functions and main runs on the last line, so a download cut
+# off part way runs nothing.
 
 set -eu
 
 DEFAULT_URL='@DRIFTWIRE_REPO_URL@'
 KEY_FINGERPRINTS='@DRIFTWIRE_KEY_FINGERPRINTS@'
+BREW_TAP='@DRIFTWIRE_BREW_TAP@'
+RELEASES_URL='@DRIFTWIRE_RELEASES_URL@'
 
 APT_KEYRING=/etc/apt/keyrings/driftwire.gpg
 APT_SOURCES=/etc/apt/sources.list.d/driftwire.sources
@@ -75,7 +79,30 @@ has() { command -v "$1" >/dev/null 2>&1; }
 
 check_linux() {
   kernel=$(uname -s)
-  [ "$kernel" = Linux ] || die "this installer is for Linux; this system is $kernel."
+  case $kernel in
+    Linux) ;;
+    Darwin) macos_channel ;;
+    *) die "this installer is for Linux; this system is $kernel." ;;
+  esac
+}
+
+# The Mac's channel is a Homebrew tap (docs/design/28 "Installing"): Homebrew
+# installs and updates it there, so this says how and installs nothing.
+macos_channel() {
+  case $BREW_TAP in
+    @*) die "this is the installer's template; on macOS, driftwire comes from Homebrew." ;;
+  esac
+  if [ "$action" = uninstall ]; then
+    say "on macOS, driftwire comes from Homebrew, and this script did not install it. Remove it with:"
+    printf '\n  brew uninstall driftwire\n\n'
+    exit 1
+  fi
+  say "on macOS, driftwire comes from Homebrew, which keeps it up to date (brew upgrade). Install it with:"
+  printf '\n  brew install %s/driftwire\n\n' "$BREW_TAP"
+  if ! has brew; then
+    say "Homebrew is not installed: see https://brew.sh. Or take driftwire-<version>-macos-universal.tar.gz from $RELEASES_URL (it does not update itself)."
+  fi
+  exit 1
 }
 
 check_platform() {
@@ -242,8 +269,9 @@ EOF
     -o "Dir::Etc::SourceList=$APT_SOURCES" -o Dir::Etc::SourceParts=/nonexistent \
     -o APT::Get::List-Cleanup=0; then
     if [ "$apt_new" = 1 ]; then
-      say "apt could not use the repository: taking the source and the key away again."
+      say "apt could not use the repository: taking the source, the key and what apt fetched of it away again."
       run_root rm -f "$APT_SOURCES" "$APT_KEYRING"
+      remove_apt_lists
     fi
     die "apt-get update failed for $URL/apt (above); driftwire is not installed."
   fi
@@ -414,6 +442,18 @@ apt_list_prefix() {
   printf '%s' "$rest/apt/dists/stable" | tr / _
 }
 
+# apt's files of this source and no other: the lists it took, and in partial/
+# what it fetched and refused (an InRelease whose signature is bad stays there)
+# or did not finish.
+remove_apt_lists() {
+  lists=$(apt_list_prefix) || return 0
+  for dir in /var/lib/apt/lists /var/lib/apt/lists/partial; do
+    if [ -d "$dir" ]; then
+      run_root find "$dir" -maxdepth 1 -type f -name "${lists}_*" -delete
+    fi
+  done
+}
+
 uninstall_apt() {
   # shellcheck disable=SC2016 # dpkg-query's own ${Status}, not the shell's
   status=$(dpkg-query -W -f='${Status}' driftwire 2>/dev/null || true)
@@ -425,14 +465,12 @@ uninstall_apt() {
   if [ "$status" = "install ok installed" ]; then
     step "apt-get remove -y driftwire"
   fi
-  step "delete $APT_SOURCES, $APT_KEYRING and apt's lists of that source"
+  step "delete $APT_SOURCES, $APT_KEYRING and apt's lists of that source (partial/ too)"
   if [ "$status" = "install ok installed" ]; then
     run_root apt-get remove -y -o DPkg::Lock::Timeout=120 driftwire
   fi
   run_root rm -f "$APT_SOURCES" "$APT_KEYRING"
-  if lists=$(apt_list_prefix); then
-    run_root find /var/lib/apt/lists -maxdepth 1 -type f -name "${lists}_*" -delete
-  fi
+  remove_apt_lists
   REMOVED=1
 }
 

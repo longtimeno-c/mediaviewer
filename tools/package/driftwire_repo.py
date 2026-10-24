@@ -5,7 +5,7 @@
 repositories, the tarballs with signed checksums and the one-line installer, as a static site.
 
     driftwire_repo.py build --packages DIR --out SITE --base-url URL --key-id ID [--key-id ID]
-                            [--gnupg-home DIR] [--valid-days 365]
+                            [--gnupg-home DIR] [--valid-days 365] [--github-repo OWNER/NAME]
     driftwire_repo.py smoke --site SITE
 
 `build` takes one version's .deb, .rpm and tarball for each architecture (release.yml's
@@ -13,7 +13,8 @@ linux-cli artefacts, from cmake/driftwire-cli) and writes, for URL = <Pages root
 
     SITE/index.html                    links to driftwire/ (the Pages root)
     SITE/driftwire/index.html          what driftwire is and how to install it
-    SITE/driftwire/install.sh          the installer, URL and the key's fingerprint baked in
+    SITE/driftwire/install.sh          the installer, URL and the key's fingerprint baked in (on
+                                       macOS it names the Homebrew tap of --github-repo's owner)
     SITE/driftwire/key.asc, key.gpg    the public key, armored and binary
     SITE/driftwire/apt/                pool/main/d/driftwire/*.deb, dists/stable/{Release,InRelease,
                                        Release.gpg}, dists/stable/main/binary-<arch>/Packages{,.gz}
@@ -66,6 +67,10 @@ RPM_FILE = re.compile(rf'driftwire-(?P<version>{VERSION})-(?P<release>[1-9][0-9]
 TAR_FILE = re.compile(rf'driftwire-(?P<version>{VERSION})-linux-(?P<arch>x86_64|aarch64)\.tar\.gz')
 # install.sh accepts the same: https, or http on this machine for tests.
 URL_CHARS = re.compile(r'[A-Za-z0-9._~:/%+-]+')
+# The GitHub repository whose releases carry the command line; its owner's tap
+# (<owner>/homebrew-tap, `brew install <owner>/tap/driftwire`) is the Mac's channel.
+GITHUB_REPO = 'longtimeno-c/mediaviewer'
+GITHUB_REPO_NAME = re.compile(r'[A-Za-z0-9-]+/[A-Za-z0-9._-]+')
 
 TOOLS = ('apt-ftparchive', 'createrepo_c', 'gpg', 'gpgv', 'rpmsign', 'rpmkeys', 'rpm', 'dpkg-deb')
 
@@ -344,7 +349,13 @@ def grouped(fpr):
     return ' '.join(fpr[i:i + 4] for i in range(0, len(fpr), 4))
 
 
-def build_pages(site, dw, packages, base, signer):
+def check_github_repo(repo):
+    if not GITHUB_REPO_NAME.fullmatch(repo or '') or '..' in repo:
+        raise ValueError(f'Not a GitHub repository (OWNER/NAME): {repo!r}')
+    return repo
+
+
+def build_pages(site, dw, packages, base, signer, github_repo=GITHUB_REPO):
     arch_names = [ARCHES[a] for a in packages.deb_arches]
     tarballs = [packages.tarballs[a].name for a in sorted(packages.tarballs)]
     # Most readers are on x86_64; sorted, aarch64 would come first.
@@ -364,7 +375,9 @@ def build_pages(site, dw, packages, base, signer):
           '<title>driftwire</title>\n<meta http-equiv="refresh" content="0; url=driftwire/">\n</head>\n'
           '<body>\n<p><a href="driftwire/">driftwire</a>: the Driftwire command line for Linux.</p>\n'
           '</body>\n</html>\n')
-    script = fill('install.sh', {'DRIFTWIRE_REPO_URL': base, 'DRIFTWIRE_KEY_FINGERPRINTS': ' '.join(signer.fingerprints)})
+    script = fill('install.sh', {'DRIFTWIRE_REPO_URL': base, 'DRIFTWIRE_KEY_FINGERPRINTS': ' '.join(signer.fingerprints),
+                                 'DRIFTWIRE_BREW_TAP': github_repo.split('/')[0] + '/tap',
+                                 'DRIFTWIRE_RELEASES_URL': f'https://github.com/{github_repo}/releases/latest'})
     write(dw / 'install.sh', script)
 
 
@@ -414,13 +427,14 @@ def verify(dw, signer, work):
             raise ValueError(f'{path.relative_to(dw.parent)} holds private key material')
 
 
-def build(packages_dir, out, base_url, key_ids, gnupg_home=None, valid_days=VALID_DAYS):
+def build(packages_dir, out, base_url, key_ids, gnupg_home=None, valid_days=VALID_DAYS, github_repo=GITHUB_REPO):
     missing = [tool for tool in TOOLS if not shutil.which(tool)]
     if missing:
         raise ValueError('Missing tools: ' + ', '.join(missing))
     if not 1 <= valid_days <= 3650:
         raise ValueError('--valid-days is 1 to 3650')
     base = check_base_url(base_url)
+    check_github_repo(github_repo)
     out = Path(out).resolve()
     check_replaceable(out)
     packages = find_packages(packages_dir)
@@ -438,7 +452,7 @@ def build(packages_dir, out, base_url, key_ids, gnupg_home=None, valid_days=VALI
         build_rpm(dw, packages, signer)
         build_tarballs(dw, packages, signer)
         write(dw / 'driftwire.repo', rpm_repo_text(base))
-        build_pages(site, dw, packages, base, signer)
+        build_pages(site, dw, packages, base, signer, github_repo)
         work = stage / 'verify'
         work.mkdir()
         verify(dw, signer, work)
@@ -487,9 +501,12 @@ def apt_update_ours(sudo):
                check=False, text=True)
 
 
-def apt_lists(url):
+def apt_lists(url, sudo):
+    """apt's files of the source: its lists, and in partial/ (root's only) what it refused."""
     prefix = url.split('://', 1)[1].replace('/', '_') + '_apt_dists_stable_'
-    return sorted(p.name for p in Path('/var/lib/apt/lists').glob(prefix + '*'))
+    found = run([*sudo, 'find', '/var/lib/apt/lists', '/var/lib/apt/lists/partial', '-maxdepth', '1',
+                 '-type', 'f', '-name', prefix + '*'], text=True).stdout
+    return sorted(found.split())
 
 
 def expect(condition, message):
@@ -556,8 +573,8 @@ def smoke(site):
             expect(result.returncode != 0 and 'BADSIG' in result.stdout + result.stderr
                    and not Path('/usr/bin/driftwire').exists(),
                    'a first install refuses an InRelease changed by one byte')
-            expect(not APT_SOURCES.exists() and not APT_KEYRING.exists() and not apt_lists(url),
-                   'and takes the source and the key away again')
+            expect(not APT_SOURCES.exists() and not APT_KEYRING.exists() and not apt_lists(url, sudo),
+                   'and takes the source, the key and the refused index (partial/ too) away again')
             serve_inrelease(good)
 
             installer()
@@ -572,10 +589,17 @@ def smoke(site):
             serve_inrelease(good)
             expect(apt_update_ours(sudo).returncode == 0, 'apt takes the signed InRelease again')
 
+            # Refused once more and left so: apt keeps the refused InRelease in partial/.
+            serve_inrelease(good.replace(b'Label: Driftwire', b'Label: Driftwirf', 1))
+            apt_update_ours(sudo)
+            serve_inrelease(good)
+            refused = [name for name in apt_lists(url, sudo) if name.startswith('/var/lib/apt/lists/partial/')]
+            expect(bool(refused), 'apt keeps a refused InRelease in partial/')
+
             installer('--uninstall')
             expect(not shutil.which('driftwire') and not Path('/usr/bin/driftwire').exists(), 'driftwire removed')
             expect(not APT_SOURCES.exists() and not APT_KEYRING.exists(), 'the source and the key removed')
-            expect(not apt_lists(url), "apt's lists of the source removed")
+            expect(not apt_lists(url, sudo), "apt's lists of the source removed, partial/ too")
 
             # The tarball route: no package manager, a scratch home, an unprivileged user.
             home = tmp / 'home'
@@ -612,11 +636,14 @@ def main(argv=None):
     b.add_argument('--key-id', required=True, action='append', help='a signing key (its fingerprint); twice during a key change')
     b.add_argument('--gnupg-home', help='the GnuPG home that holds the secret key (default GNUPGHOME)')
     b.add_argument('--valid-days', type=int, default=VALID_DAYS, help="the apt Release's Valid-Until, in days")
+    b.add_argument('--github-repo', default=GITHUB_REPO,
+                   help="OWNER/NAME whose releases carry driftwire; its owner's Homebrew tap is the Mac's channel")
     s = commands.add_parser('smoke', help='install from the site on this Debian or Ubuntu machine, and remove it')
     s.add_argument('--site', required=True)
     args = parser.parse_args(argv)
     if args.command == 'build':
-        version = build(args.packages, args.out, args.base_url, args.key_id, args.gnupg_home, args.valid_days)
+        version = build(args.packages, args.out, args.base_url, args.key_id, args.gnupg_home, args.valid_days,
+                        args.github_repo)
         print(f'Built the driftwire {version} repository in {args.out} for {check_base_url(args.base_url)}')
     else:
         smoke(args.site)

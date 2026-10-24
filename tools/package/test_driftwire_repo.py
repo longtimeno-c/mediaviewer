@@ -260,6 +260,8 @@ class DriftwireRepoTest(unittest.TestCase):
         script = (self.dw / 'install.sh').read_text()
         self.assertIn(f"DEFAULT_URL='{BASE}'\n", script)
         self.assertIn(f"KEY_FINGERPRINTS='{self.key}'\n", script)
+        self.assertIn("BREW_TAP='longtimeno-c/tap'\n", script)
+        self.assertIn("RELEASES_URL='https://github.com/longtimeno-c/mediaviewer/releases/latest'\n", script)
         self.assertNotIn('@DRIFTWIRE_', script)
         self.assertTrue(script.rstrip().endswith('\nmain "$@"'))
         run('sh', '-n', self.dw / 'install.sh')
@@ -291,6 +293,44 @@ class DriftwireRepoTest(unittest.TestCase):
                                 env={k: v for k, v in os.environ.items() if k != 'DRIFTWIRE_REPO_URL'})
         self.assertEqual(result.returncode, 1)
         self.assertIn("installer's template", result.stderr)
+
+    def test_install_sh_on_macos_names_homebrew_and_installs_nothing(self):
+        # The Mac's channel is the Homebrew tap: install.sh says so and exits non-zero, with and
+        # without Homebrew, and --uninstall points at brew too. uname is faked; nothing is run as root.
+        bin_dir = self.work / 'bin'
+        bin_dir.mkdir()
+        (bin_dir / 'uname').write_text('#!/bin/sh\n[ "$1" = -s ] && echo Darwin || echo arm64\n')
+        for tool in ('sh', 'cat', 'printf'):
+            if shutil.which(tool):
+                (bin_dir / tool).symlink_to(shutil.which(tool))
+        for path in bin_dir.iterdir():
+            os.chmod(path, 0o755)
+        dw = self.build(github_repo='someone/fork')
+
+        def installer(*args):
+            return subprocess.run([shutil.which('sh'), str(dw / 'install.sh'), *args], capture_output=True,
+                                  text=True, env={'PATH': str(bin_dir), 'HOME': str(self.work)})
+
+        result = installer()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('brew install someone/tap/driftwire', result.stdout)
+        self.assertIn('https://brew.sh', result.stdout)
+        self.assertIn('https://github.com/someone/fork/releases/latest', result.stdout)
+        self.assertNotIn('+ ', result.stdout)   # no command was run
+        (bin_dir / 'brew').write_text('#!/bin/sh\nexit 0\n')
+        os.chmod(bin_dir / 'brew', 0o755)
+        result = installer()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('brew install someone/tap/driftwire', result.stdout)
+        self.assertNotIn('brew.sh', result.stdout)
+        result = installer('--uninstall')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('brew uninstall driftwire', result.stdout)
+
+    def test_refuses_a_bad_github_repo(self):
+        for name in ('', 'noslash', 'a/b/c', 'a b/c', '../x', 'a/..'):
+            with self.assertRaisesRegex(ValueError, 'Not a GitHub repository'):
+                repo.build(self.packages, self.work / 'refused', BASE, [self.key], self.gnupg, github_repo=name)
 
     def test_pages(self):
         page = (self.dw / 'index.html').read_text()
