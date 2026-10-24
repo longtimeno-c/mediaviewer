@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for driftwire_repo.py (docs/design/28 "Installing"): the site's layout, the apt
 Release and its hashes, every signature checked with gpgv and rpmkeys, the .repo file, the
-installer's baked address, the page, and each refusal. The packages are tiny ones made here
-(dpkg-deb, rpmbuild, tarfile) and the keys are throwaway ones in a temporary GnuPG home. Skips
-when the tools are missing (apt-utils, createrepo-c, rpm, gnupg on Debian and Ubuntu).
+installers' baked values, the page, and each refusal; and the Windows installer run end to end
+off Windows (tools/package/check-driftwire-install.ps1 in install.ps1's test mode, with pwsh).
+The packages are tiny ones made here (dpkg-deb, rpmbuild, tarfile, zipfile and pe_fixture.py)
+and the keys are throwaway ones in a temporary GnuPG home. Skips when the tools are missing
+(apt-utils, createrepo-c, rpm, gnupg on Debian and Ubuntu; pwsh for the Windows installer).
 """
 from datetime import timedelta
 import email.utils
@@ -18,13 +20,19 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 
 spec = importlib.util.spec_from_file_location('driftwire_repo', Path(__file__).with_name('driftwire_repo.py'))
 repo = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(repo)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pe_fixture import make_pe  # noqa: E402
+
+PWSH = shutil.which('pwsh')
 
 BASE = 'https://example.github.io/mediaviewer/driftwire'
 MISSING = [tool for tool in (*repo.TOOLS, 'rpmbuild', 'gpgconf', 'sh') if not shutil.which(tool)]
@@ -83,12 +91,29 @@ def make_tarball(folder, version, arch):
     return out
 
 
-def make_set(folder, version, arches=('amd64', 'arm64')):
+def make_zip(folder, version, signed=False, exe=None, extra=()):
+    """driftwire-windows.ps1's zip: one folder, a driftwire.exe that is a PE file (and, run by
+    sh, says its version: install.ps1's test mode), a DLL and the notices."""
+    top = f'driftwire-{version}-windows-x64'
+    out = folder / f'{top}.zip'
+    with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr(f'{top}/driftwire.exe', exe if exe is not None else
+                   make_pe(['KERNEL32.dll', 'libsodium.dll'], signed=signed, says=f'driftwire {version}'))
+        z.writestr(f'{top}/libsodium.dll', make_pe(['KERNEL32.dll'], signed=signed))
+        z.writestr(f'{top}/LICENSE', 'GPL')
+        for name, data in extra:
+            z.writestr(name, data)
+    return out
+
+
+def make_set(folder, version, arches=('amd64', 'arm64'), windows=True):
     folder.mkdir(parents=True, exist_ok=True)
     for arch in arches:
         make_deb(folder, version, arch)
         make_rpm(folder, version, repo.ARCHES[arch])
         make_tarball(folder, version, repo.ARCHES[arch])
+    if windows:
+        make_zip(folder, version)
     return folder
 
 
@@ -166,7 +191,8 @@ class DriftwireRepoTest(unittest.TestCase):
             'driftwire/apt/pool/main/d/driftwire/driftwire_1.2.3_amd64.deb',
             'driftwire/apt/pool/main/d/driftwire/driftwire_1.2.3_arm64.deb',
             'driftwire/driftwire-1.2.3-linux-aarch64.tar.gz', 'driftwire/driftwire-1.2.3-linux-x86_64.tar.gz',
-            'driftwire/driftwire.repo', 'driftwire/index.html', 'driftwire/install.sh',
+            'driftwire/driftwire-1.2.3-windows-x64.zip',
+            'driftwire/driftwire.repo', 'driftwire/index.html', 'driftwire/install.ps1', 'driftwire/install.sh',
             'driftwire/key.asc', 'driftwire/key.gpg',
             'driftwire/rpm/driftwire-1.2.3-1.aarch64.rpm', 'driftwire/rpm/driftwire-1.2.3-1.x86_64.rpm',
             'index.html'])
@@ -177,15 +203,21 @@ class DriftwireRepoTest(unittest.TestCase):
         # Nothing of the build left beside the site.
         self.assertEqual(sorted(p.name for p in self.tmp.iterdir() if p.name.startswith('.driftwire-site-')), [])
 
-    def test_one_architecture_only(self):
-        packages = make_set(self.work / 'one', '1.2.3', ('amd64',))
+    def test_one_architecture_only_and_no_windows_zip(self):
+        packages = make_set(self.work / 'one', '1.2.3', ('amd64',), windows=False)
         dw = self.build(packages)
         self.assertEqual(sorted(p.name for p in (dw / 'apt/dists/stable/main').iterdir()), ['binary-amd64'])
         release = parse_release((dw / 'apt/dists/stable/Release').read_text())
         self.assertEqual(release['Architectures'], 'amd64')
         self.assertEqual(sorted(p.name for p in (dw / 'rpm').glob('*.rpm')), ['driftwire-1.2.3-1.x86_64.rpm'])
-        self.assertIn('x86_64', (dw / 'index.html').read_text())
-        self.assertNotIn('aarch64', (dw / 'index.html').read_text())
+        page = (dw / 'index.html').read_text()
+        self.assertIn('x86_64', page)
+        self.assertNotIn('aarch64', page)
+        # Without the zip: no Windows installer, and the page does not offer one.
+        self.assertFalse((dw / 'install.ps1').exists())
+        self.assertNotIn('install.ps1', page)
+        self.assertNotIn('windows', (dw / 'SHA256SUMS').read_text())
+        self.assertIn('brew install longtimeno-c/tap/driftwire', page)
 
     def test_release(self):
         dist = self.dw / 'apt/dists/stable'
@@ -337,13 +369,126 @@ class DriftwireRepoTest(unittest.TestCase):
         for needle in ('Version 1.2.3', f'curl -fsSL {BASE}/install.sh | sh', f'URIs: {BASE}/apt',
                        f'{BASE}/driftwire.repo', repo.grouped(self.key), 'driftwire-1.2.3-linux-x86_64.tar.gz',
                        'x86_64 and aarch64',
-                       'tar -xzf driftwire-1.2.3-linux-x86_64.tar.gz --strip-components=1 -C ~/.local'):
+                       'tar -xzf driftwire-1.2.3-linux-x86_64.tar.gz --strip-components=1 -C ~/.local',
+                       'brew install longtimeno-c/tap/driftwire', f'irm {BASE}/install.ps1 | iex',
+                       f'&amp; ([scriptblock]::Create((irm {BASE}/install.ps1))) -Uninstall',
+                       'href="driftwire-1.2.3-windows-x64.zip"'):
             self.assertIn(needle, page)
         for banned in ('<script', '<link', '<img', '<iframe', 'src=', '@import', 'url('):
             self.assertNotIn(banned, page.lower())
         for href in re.findall(r'href="([^"]+)"', page):
             self.assertTrue(href == 'https://github.com/longtimeno-c/mediaviewer' or '://' not in href, href)
         self.assertIn('href="driftwire/"', (self.site / 'index.html').read_text())
+
+    # ---- the Windows installer ----
+
+    def test_install_ps1(self):
+        script = (self.dw / 'install.ps1').read_text(encoding='ascii')
+        digest = hashlib.sha256((self.dw / 'driftwire-1.2.3-windows-x64.zip').read_bytes()).hexdigest()
+        for line in (f"$defaultUrl = '{BASE}'", "$version = '1.2.3'", "$zipName = 'driftwire-1.2.3-windows-x64.zip'",
+                     f"$zipSha256 = '{digest}'", "$signed = 'no' -eq 'yes'", "$brewTap = 'longtimeno-c/tap'"):
+            self.assertIn(f'\n    {line}\n', script)
+        self.assertNotIn('@DRIFTWIRE_', script)
+        self.assertTrue(script.rstrip().endswith('\nInstall-Driftwire -Remove:$Uninstall -Base $BaseUrl'))
+        self.assertIn(f'{digest}  driftwire-1.2.3-windows-x64.zip\n', (self.dw / 'SHA256SUMS').read_text())
+        self.assertEqual((self.dw / 'driftwire-1.2.3-windows-x64.zip').read_bytes(),
+                         (self.packages / 'driftwire-1.2.3-windows-x64.zip').read_bytes())
+        if PWSH:
+            errors = subprocess.run([PWSH, '-NoProfile', '-Command',
+                                     '$t = $null; $e = $null; [void][System.Management.Automation.Language.Parser]::'
+                                     f'ParseFile("{self.dw / "install.ps1"}", [ref]$t, [ref]$e); $e.Count'],
+                                    capture_output=True, text=True, check=True).stdout.strip()
+            self.assertEqual(errors, '0')
+
+    def test_a_signed_zip_is_baked_as_signed_and_can_be_required(self):
+        packages = make_set(self.work / 'signed', '1.2.3', ('amd64',), windows=False)
+        make_zip(packages, '1.2.3', signed=True)
+        dw = self.build(packages, require_windows_signature=True)
+        self.assertIn("\n    $signed = 'yes' -eq 'yes'\n", (dw / 'install.ps1').read_text())
+        unsigned = make_set(self.work / 'unsigned', '1.2.3', ('amd64',))
+        with self.assertRaisesRegex(ValueError, 'driftwire.exe is not signed'):
+            self.build(unsigned, out=self.work / 'refused', require_windows_signature=True)
+        none = make_set(self.work / 'none', '1.2.3', ('amd64',), windows=False)
+        with self.assertRaisesRegex(ValueError, 'there is no Windows zip'):
+            self.build(none, out=self.work / 'refused', require_windows_signature=True)
+
+    def test_refuses_a_bad_windows_zip(self):
+        def refused(pattern, **zip_args):
+            packages = make_set(self.work / f'z{len(list(self.work.iterdir()))}', '1.2.3', ('amd64',), windows=False)
+            make_zip(packages, zip_args.pop('version', '1.2.3'), **zip_args)
+            self.assertFalse(self.assertRefuses(pattern, packages).exists())
+        refused('versions disagree: 1.2.3, 1.2.4', version='1.2.4')
+        refused('is not a plain file or folder under', extra=[('driftwire-1.2.3-windows-x64/../evil.exe', 'x')])
+        refused('is not a plain file or folder under', extra=[('other/readme.txt', 'x')])
+        refused('driftwire.exe is not x64', exe=make_pe(['KERNEL32.dll'], machine=0x14C, pe32=True))
+        refused('driftwire.exe is not a PE file', exe=b'#!/bin/sh\necho hi\n')
+        packages = make_set(self.work / 'nozip', '1.2.3', ('amd64',), windows=False)
+        (packages / 'driftwire-1.2.3-windows-x64.zip').write_bytes(b'not a zip')
+        self.assertRefuses('is not a zip', packages)
+
+    def test_install_ps1_must_match_the_zip_beside_it(self):
+        dw = self.build(out=self.work / 'site')
+        repo.check_install_ps1(dw)
+        (dw / 'driftwire-1.2.3-windows-x64.zip').write_bytes(b'changed')
+        with self.assertRaisesRegex(ValueError, "does not have driftwire-1.2.3-windows-x64.zip's SHA-256"):
+            repo.check_install_ps1(dw)
+        (dw / 'driftwire-1.2.3-windows-x64.zip').unlink()
+        with self.assertRaisesRegex(ValueError, 'do not go together'):
+            repo.check_install_ps1(dw)
+
+    def test_windows_site_alone(self):
+        packages = self.work / 'w'
+        packages.mkdir()
+        zip_path = make_zip(packages, '1.2.3')
+        out = self.work / 'wsite'
+        self.assertEqual(repo.windows_site(zip_path, out, 'http://127.0.0.1:8000/driftwire'), ('1.2.3', False))
+        self.assertEqual(sorted(str(p.relative_to(out)) for p in out.rglob('*') if p.is_file()),
+                         ['driftwire/driftwire-1.2.3-windows-x64.zip', 'driftwire/install.ps1'])
+        self.assertIn("$defaultUrl = 'http://127.0.0.1:8000/driftwire'", (out / 'driftwire/install.ps1').read_text())
+        repo.windows_site(zip_path, out, 'http://127.0.0.1:8000/driftwire')   # its own: replaced
+        with self.assertRaisesRegex(ValueError, 'is not signed'):
+            repo.windows_site(zip_path, self.work / 'w2', 'http://127.0.0.1:8000/driftwire', require_signature=True)
+        precious = self.work / 'precious-w'
+        precious.mkdir()
+        (precious / 'notes.txt').write_text('mine')
+        with self.assertRaisesRegex(ValueError, 'not a site this built'):
+            repo.windows_site(zip_path, precious, 'http://127.0.0.1:8000/driftwire')
+
+    @unittest.skipIf(not PWSH, 'needs PowerShell (pwsh)')
+    def test_install_ps1_refuses_off_windows(self):
+        result = subprocess.run([PWSH, '-NoProfile', '-NonInteractive', '-File', str(self.dw / 'install.ps1')],
+                                capture_output=True, text=True,
+                                env={k: v for k, v in os.environ.items() if not k.startswith('DRIFTWIRE_')})
+        self.assertNotEqual(result.returncode, 0)
+        out = result.stdout + result.stderr
+        self.assertIn('this installer is for Windows', out)
+        self.assertIn('brew install longtimeno-c/tap/driftwire', out)
+        self.assertIn(f'curl -fsSL {BASE}/install.sh | sh', out)
+
+    @unittest.skipIf(not PWSH, 'needs PowerShell (pwsh)')
+    def test_install_ps1_end_to_end_in_test_mode(self):
+        # check-driftwire-install.ps1, as CI's Windows leg runs it, in install.ps1's test mode:
+        # installs (irm | iex), runs from a new process's PATH, updates, refuses a changed zip,
+        # does nothing when cut off, uninstalls and keeps the user's other PATH entries.
+        packages = self.work / 'e2e'
+        packages.mkdir()
+        zip_path = make_zip(packages, '1.2.3')
+        newer_zip = make_zip(packages, '1.2.4')
+        signed = self.work / 'e2e-signed'
+        signed.mkdir()
+        signed_zip = make_zip(signed, '1.2.3', signed=True)
+        result = subprocess.run([PWSH, '-NoProfile', '-NonInteractive', '-File',
+                                 str(Path(__file__).with_name('check-driftwire-install.ps1')),
+                                 '-Zip', str(zip_path), '-NewerZip', str(newer_zip), '-SignedZip', str(signed_zip),
+                                 '-Python', sys.executable],
+                                capture_output=True, text=True, timeout=600,
+                                env={k: v for k, v in os.environ.items() if not k.startswith('DRIFTWIRE_')})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        checks = [line for line in result.stdout.splitlines() if line.startswith('check: ') and line.endswith(': yes')]
+        self.assertGreaterEqual(len(checks), 20, result.stdout)
+        self.assertIn("check: the newer site's installer updates it to 1.2.4, still once on the PATH: yes", checks)
+        self.assertIn('check: the signed build installs (test mode: Authenticode): yes', checks)
+        self.assertIn('installs, updates, refuses a changed zip and uninstalls', result.stdout)
 
     def test_no_private_key_material(self):
         for path in self.site.rglob('*'):
@@ -365,7 +510,7 @@ class DriftwireRepoTest(unittest.TestCase):
                 continue
             self.assertEqual(path.read_bytes(), (dw / name).read_bytes(), name)
             compared += 1
-        self.assertEqual(compared, 14)
+        self.assertEqual(compared, 16)
         strip = re.compile(rb'^(Date|Valid-Until): .*\n', re.M)
         self.assertEqual(strip.sub(b'', (self.dw / 'apt/dists/stable/Release').read_bytes()),
                          strip.sub(b'', (dw / 'apt/dists/stable/Release').read_bytes()))

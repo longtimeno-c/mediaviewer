@@ -2,13 +2,14 @@
 <!-- Copyright (C) 2026 longtimeno-c
      SPDX-License-Identifier: GPL-3.0-or-later
      The driftwire package repository's page (docs/design/28 "Installing"),
-     filled in by tools/package/driftwire_repo.py. No external assets, no
-     scripts, nothing that tracks. -->
+     filled in by tools/package/driftwire_repo.py (the Windows part from
+     index-windows.html, when the site has the Windows zip). No external
+     assets, no scripts, nothing that tracks. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>driftwire for Linux</title>
+<title>driftwire</title>
 <style>
 :root {
   --bg: #fbfbfa; --fg: #1d2125; --muted: #5b636b; --rule: #dfe2e5;
@@ -41,15 +42,15 @@ a { color: var(--accent); }
 </head>
 <body>
 <main>
-<h1><span>driftwire</span> for Linux</h1>
+<h1><span>driftwire</span></h1>
 <p class="lead">Send files to a computer nearby over Wi-Fi, or anywhere with a code, from a terminal.</p>
 <p>Each transfer is sealed end to end, and every file is checked when it arrives. Nothing is
 sent or saved until the person at the terminal answers. driftwire talks to MediaViewer's
 Driftwire on Windows and macOS, and to another driftwire. It needs no MediaViewer.</p>
-<p class="small">Version @VERSION@ &middot; @ARCHES@ &middot; glibc 2.35 or newer (Ubuntu 22.04,
-Debian 12, Fedora 36 and later)</p>
+<p class="small">Version @VERSION@ &middot; Linux (@ARCHES@, glibc 2.35 or newer: Ubuntu 22.04,
+Debian 12, Fedora 36 and later), macOS 14 or later, Windows 10 or later</p>
 
-<h2>Install with one line</h2>
+<h2>Linux: one line</h2>
 <pre><code>curl -fsSL @BASE_URL@/install.sh | sh</code></pre>
 <p>It adds this signed repository to apt, dnf or zypper and installs driftwire, so it updates
 with the rest of the system. It shows each step before it runs it, and uses <code>sudo</code>
@@ -72,7 +73,7 @@ sudo zypper install driftwire</code></pre>
 <p>dnf and zypper ask once to trust the repository's key; check it against the fingerprint
 below.</p>
 
-<h2>Anything else: the tarball</h2>
+<h2>Any other Linux: the tarball</h2>
 <ul>
 @TARBALLS@
 </ul>
@@ -80,6 +81,11 @@ below.</p>
 Unpack it where it should live (it does not update itself):</p>
 <pre><code>tar -xzf @TARBALL_EXAMPLE@ --strip-components=1 -C ~/.local</code></pre>
 
+<h2>macOS (Homebrew)</h2>
+<pre><code>brew install @BREW_TAP@/driftwire</code></pre>
+<p><code>brew upgrade</code> keeps it up to date, and <code>brew uninstall driftwire</code> removes it.
+The program is signed and notarized by its publisher.</p>
+@WINDOWS_SECTION@
 <h2>Then</h2>
 <pre><code>driftwire</code></pre>
 <p>It shows this computer to others nearby while it runs; type <code>/help</code> for the
@@ -89,7 +95,7 @@ commands, or see <code>man driftwire</code>. It asks before anything is sent or 
 <p>The apt and rpm indexes, the rpm packages and <code>SHA256SUMS</code> are signed with this
 key: <a href="key.asc">key.asc</a> (armored), <a href="key.gpg">key.gpg</a> (binary).</p>
 <pre><code class="fpr">@FINGERPRINTS@</code></pre>
-<p class="small">driftwire is part of <a href="https://github.com/longtimeno-c/mediaviewer">MediaViewer</a>,
+<p class="small">driftwire is part of <a href="@GITHUB_URL@">MediaViewer</a>,
 GPL-3.0-or-later.</p>
 </main>
 </body>

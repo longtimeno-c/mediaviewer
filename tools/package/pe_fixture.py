@@ -3,11 +3,14 @@
 """Tiny PE files for the tests (test_driftwire_windows.py, test_driftwire_repo.py): a DOS
 stub, the PE and COFF headers, a PE32+ (or PE32) optional header and one section holding
 an import table, a delay-load table and their DLL names; optionally a certificate table, as
-an Authenticode-signed file has. Nothing runs them; they are read."""
+an Authenticode-signed file has. They are read, not run (but see `says`)."""
 import struct
 
 
-def make_pe(imports=(), delay=(), machine=0x8664, pe32=False, signed=False):
+def make_pe(imports=(), delay=(), machine=0x8664, pe32=False, signed=False, says=None):
+    """`says`: a version line the file prints when sh runs it, a stand-in for driftwire.exe off
+    Windows: the DOS header's first line is `MZ=1; echo '<says>'; exit 0` (sh stops at the exit,
+    before the binary part; a PE reader needs only the MZ and the offset at 0x3C)."""
     imports, delay = list(imports), list(delay)
     opt_size = 224 if pe32 else 240
     section_table = 0x40 + 4 + 20 + opt_size
@@ -34,6 +37,11 @@ def make_pe(imports=(), delay=(), machine=0x8664, pe32=False, signed=False):
 
     out = bytearray(raw)
     out[0:2] = b'MZ'
+    if says is not None:
+        line = f"MZ=1; echo '{says}'; exit 0\n".encode('ascii')
+        if len(line) > 0x3C:
+            raise ValueError('the version line does not fit before 0x3C')
+        out[0:len(line)] = line
     struct.pack_into('<I', out, 0x3C, 0x40)
     out[0x40:0x44] = b'PE\0\0'
     struct.pack_into('<HHIIIHH', out, 0x44, machine, 1, 0, 0, 0, opt_size, 0x22)

@@ -2,14 +2,18 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The driftwire package repository (docs/design/28 "Installing"): signed apt and dnf
-repositories, the tarballs with signed checksums and the one-line installer, as a static site.
+repositories, the tarballs with signed checksums, the Windows zip, and the one-line installers
+for Linux and Windows, as a static site.
 
     driftwire_repo.py build --packages DIR --out SITE --base-url URL --key-id ID [--key-id ID]
                             [--gnupg-home DIR] [--valid-days 365] [--github-repo OWNER/NAME]
+                            [--require-windows-signature]
     driftwire_repo.py smoke --site SITE
+    driftwire_repo.py windows-site --zip ZIP --out SITE --base-url URL [--require-windows-signature]
 
 `build` takes one version's .deb, .rpm and tarball for each architecture (release.yml's
-linux-cli artefacts, from cmake/driftwire-cli) and writes, for URL = <Pages root>/driftwire:
+linux-cli artefacts, from cmake/driftwire-cli), and the Windows zip when it is there
+(tools/package/driftwire-windows.ps1), and writes, for URL = <Pages root>/driftwire:
 
     SITE/index.html                    links to driftwire/ (the Pages root)
     SITE/driftwire/index.html          what driftwire is and how to install it
@@ -21,6 +25,14 @@ linux-cli artefacts, from cmake/driftwire-cli) and writes, for URL = <Pages root
     SITE/driftwire/rpm/                the signed .rpm files, repodata/ and repodata/repomd.xml.asc
     SITE/driftwire/driftwire.repo      for dnf, yum and zypper
     SITE/driftwire/driftwire-<version>-linux-<arch>.tar.gz, SHA256SUMS, SHA256SUMS.asc
+    SITE/driftwire/driftwire-<version>-windows-x64.zip (in SHA256SUMS) and install.ps1, the
+                                       Windows installer, with the zip's SHA-256 baked in
+
+install.ps1 takes the zip from the site, not from the release page: the installer, the zip and
+its checksum then go live together in one deployment, and a copy of the site served elsewhere
+(DRIFTWIRE_REPO_URL, the tests) is whole. Whether driftwire.exe carries an Authenticode
+signature is read from the file and baked in, and install.ps1 then insists on valid ones;
+--require-windows-signature refuses an unsigned zip (a release with Trusted Signing).
 
 It signs with the secret keys named by --key-id in the GnuPG home (--gnupg-home or GNUPGHOME).
 A passphrase, when a key has one, comes from DRIFTWIRE_REPO_GPG_PASSPHRASE, never an argument.
@@ -29,6 +41,9 @@ Two keys sign everything twice (a key change, DEVELOPMENT "Linux package reposit
 the exported public key with gpgv and rpmkeys before the new site replaces SITE, so nothing
 unsigned is ever written there, and the tree is checked for private key material. Apart from
 the dates and the signatures, the same packages and key give the same site.
+
+`windows-site` writes only install.ps1 and the zip into SITE/driftwire (no key, no Linux
+packages): what tools/package/check-driftwire-install.ps1 serves on CI's Windows leg.
 
 `smoke` serves SITE on 127.0.0.1 and checks it as a person would get it, on a Debian or Ubuntu
 machine without driftwire: install.sh run as `curl | sh` runs it (DRIFTWIRE_REPO_URL pointing at
@@ -49,14 +64,17 @@ import re
 import shutil
 import subprocess
 import sys
+import struct
 import tarfile
 import tempfile
 import threading
 import urllib.parse
 import urllib.request
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = ROOT / 'packaging' / 'linux' / 'repo'
+WINDOWS_TEMPLATES = ROOT / 'packaging' / 'windows'
 
 # Debian architecture → the RPM's and the tarball's (cmake/driftwire-cli's CPack names).
 ARCHES = {'amd64': 'x86_64', 'arm64': 'aarch64'}
@@ -65,6 +83,7 @@ VERSION = r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)'
 DEB_FILE = re.compile(rf'driftwire_(?P<version>{VERSION})_(?P<arch>amd64|arm64)\.deb')
 RPM_FILE = re.compile(rf'driftwire-(?P<version>{VERSION})-(?P<release>[1-9][0-9]*)\.(?P<arch>x86_64|aarch64)\.rpm')
 TAR_FILE = re.compile(rf'driftwire-(?P<version>{VERSION})-linux-(?P<arch>x86_64|aarch64)\.tar\.gz')
+ZIP_FILE = re.compile(rf'driftwire-(?P<version>{VERSION})-windows-x64\.zip')
 # install.sh accepts the same: https, or http on this machine for tests.
 URL_CHARS = re.compile(r'[A-Za-z0-9._~:/%+-]+')
 # The GitHub repository whose releases carry the command line; its owner's tap
@@ -93,11 +112,13 @@ def run(args, **kwargs):
 # ---- the packages ------------------------------------------------------------------------
 
 class Packages:
-    def __init__(self, version, debs, rpms, tarballs):
+    def __init__(self, version, debs, rpms, tarballs, windows_zip=None, windows_signed=False):
         self.version = version
         self.debs = debs            # Debian arch → path
         self.rpms = rpms            # RPM arch → path
         self.tarballs = tarballs    # RPM arch → path
+        self.windows_zip = windows_zip
+        self.windows_signed = windows_signed
 
     @property
     def deb_arches(self):
@@ -129,11 +150,57 @@ def check_tarball(path, version, arch):
         raise ValueError(f'{path.name} has no {top}/bin/driftwire')
 
 
+def pe_facts(data, name):
+    """(machine, signed) of a PE file: its COFF machine, and whether its certificate table
+    (data directory 4, where Authenticode keeps the signature) holds anything."""
+    def u16(at):
+        return struct.unpack_from('<H', data, at)[0]
+
+    def u32(at):
+        return struct.unpack_from('<I', data, at)[0]
+    try:
+        if data[:2] != b'MZ' or data[u32(0x3C):u32(0x3C) + 4] != b'PE\0\0':
+            raise ValueError
+        pe = u32(0x3C)
+        opt = pe + 24
+        dirs = {0x20B: opt + 112, 0x10B: opt + 96}[u16(opt)]
+        signed = False
+        if u32(dirs - 4) > 4:
+            offset, size = struct.unpack_from('<II', data, dirs + 8 * 4)
+            signed = size > 8 and offset + size <= len(data)
+        return u16(pe + 4), signed
+    except (ValueError, KeyError, struct.error):
+        raise ValueError(f'{name} is not a PE file') from None
+
+
+def check_windows_zip(path, version):
+    """The zip driftwire-windows.ps1 packs: one folder, driftwire.exe (x64) in it. Returns
+    whether driftwire.exe is Authenticode-signed."""
+    top = f'driftwire-{version}-windows-x64'
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+            for name in names:
+                parts = name.rstrip('/').split('/')
+                if parts[0] != top or '..' in parts or name.startswith('/') or '\\' in name or ':' in name:
+                    raise ValueError(f'{path.name}: {name!r} is not a plain file or folder under {top}/')
+            if f'{top}/driftwire.exe' not in names:
+                raise ValueError(f'{path.name} has no {top}/driftwire.exe')
+            exe = z.read(f'{top}/driftwire.exe')
+    except zipfile.BadZipFile:
+        raise ValueError(f'{path.name} is not a zip') from None
+    machine, signed = pe_facts(exe, f'{path.name}: driftwire.exe')
+    if machine != 0x8664:
+        raise ValueError(f'{path.name}: driftwire.exe is not x64 (machine {machine:#06x})')
+    return signed
+
+
 def find_packages(folder):
     folder = Path(folder)
     if not folder.is_dir():
         raise ValueError(f'No packages folder: {folder}')
     debs, rpms, tarballs, versions = {}, {}, {}, set()
+    windows_zip, windows_signed = None, False
 
     def add(kind, arch, path):
         if arch in kind:
@@ -142,7 +209,7 @@ def find_packages(folder):
 
     for path in sorted(folder.iterdir()):
         name = path.name
-        if not path.is_file() or not name.endswith(('.deb', '.rpm', '.tar.gz')):
+        if not path.is_file() or not name.endswith(('.deb', '.rpm', '.tar.gz', '.zip')):
             continue
         if m := DEB_FILE.fullmatch(name):
             want = {'Package': 'driftwire', 'Version': m['version'], 'Architecture': m['arch']}
@@ -156,6 +223,9 @@ def find_packages(folder):
         elif m := TAR_FILE.fullmatch(name):
             check_tarball(path, m['version'], m['arch'])
             add(tarballs, m['arch'], path)
+        elif m := ZIP_FILE.fullmatch(name):
+            windows_signed = check_windows_zip(path, m['version'])
+            windows_zip = path
         else:
             raise ValueError(f'Not a driftwire package: {name}')
         versions.add(m['version'])
@@ -169,7 +239,7 @@ def find_packages(folder):
                                               ('tarball', ARCHES[arch] in tarballs)) if not present]
         if missing:
             raise ValueError(f'{arch} has no {" or ".join(missing)}: each architecture needs all three')
-    return Packages(versions.pop(), debs, rpms, tarballs)
+    return Packages(versions.pop(), debs, rpms, tarballs, windows_zip, windows_signed)
 
 
 def check_base_url(url):
@@ -282,13 +352,41 @@ def copy(src, dst):
 
 
 def fill(template, values):
-    text = (TEMPLATES / template).read_text(encoding='utf-8')
+    path = template if isinstance(template, Path) else TEMPLATES / template
+    text = path.read_text(encoding='utf-8')
     for key, value in values.items():
         text = text.replace(f'@{key}@', value)
     left = sorted(set(re.findall(r'@[A-Z][A-Z_]+@', text)))
     if left:
-        raise ValueError(f'{template}: nothing to fill {", ".join(left)} with')
+        raise ValueError(f'{path.name}: nothing to fill {", ".join(left)} with')
     return text
+
+
+def install_ps1_text(base, version, zip_path, signed, github_repo):
+    """install.ps1 for this zip, served from base. ASCII only (it is read as whatever charset
+    the server names)."""
+    text = fill(WINDOWS_TEMPLATES / 'install.ps1', {
+        'DRIFTWIRE_REPO_URL': base, 'DRIFTWIRE_VERSION': version, 'DRIFTWIRE_WINDOWS_ZIP': zip_path.name,
+        'DRIFTWIRE_WINDOWS_SHA256': hashlib.sha256(zip_path.read_bytes()).hexdigest(),
+        'DRIFTWIRE_WINDOWS_SIGNED': 'yes' if signed else 'no',
+        'DRIFTWIRE_BREW_TAP': github_repo.split('/')[0] + '/tap'})
+    if not text.isascii():
+        raise ValueError('install.ps1 is not ASCII')
+    return text
+
+
+def build_windows(dw, packages, base, github_repo, require_signature):
+    """The zip and install.ps1; the zip's line of SHA256SUMS."""
+    if not packages.windows_zip:
+        if require_signature:
+            raise ValueError('--require-windows-signature, and there is no Windows zip')
+        return []
+    if require_signature and not packages.windows_signed:
+        raise ValueError(f'{packages.windows_zip.name}: driftwire.exe is not signed (--require-windows-signature)')
+    target = dw / packages.windows_zip.name
+    copy(packages.windows_zip, target)
+    write(dw / 'install.ps1', install_ps1_text(base, packages.version, target, packages.windows_signed, github_repo))
+    return [target]
 
 
 def rpm_repo_text(base):
@@ -335,11 +433,13 @@ def build_rpm(dw, packages, signer):
     signer.detach(rpm_dir / 'repodata/repomd.xml', rpm_dir / 'repodata/repomd.xml.asc')
 
 
-def build_tarballs(dw, packages, signer):
+def build_tarballs(dw, packages, signer, more=()):
     lines = []
     for arch in sorted(packages.tarballs):
         path = packages.tarballs[arch]
         copy(path, dw / path.name)
+        lines.append(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n')
+    for path in more:
         lines.append(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n')
     write(dw / 'SHA256SUMS', ''.join(lines))
     signer.detach(dw / 'SHA256SUMS', dw / 'SHA256SUMS.asc')
@@ -360,6 +460,10 @@ def build_pages(site, dw, packages, base, signer, github_repo=GITHUB_REPO):
     tarballs = [packages.tarballs[a].name for a in sorted(packages.tarballs)]
     # Most readers are on x86_64; sorted, aarch64 would come first.
     example = packages.tarballs.get('x86_64', packages.tarballs[sorted(packages.tarballs)[0]]).name
+    windows = ''
+    if packages.windows_zip:
+        windows = fill('index-windows.html', {'BASE_URL': html.escape(base),
+                                              'WINDOWS_ZIP': html.escape(packages.windows_zip.name)})
     values = {
         'BASE_URL': html.escape(base),
         'VERSION': html.escape(packages.version),
@@ -367,13 +471,16 @@ def build_pages(site, dw, packages, base, signer, github_repo=GITHUB_REPO):
         'TARBALLS': '\n'.join(f'<li><a href="{html.escape(n)}">{html.escape(n)}</a></li>' for n in tarballs),
         'TARBALL_EXAMPLE': html.escape(example),
         'FINGERPRINTS': '\n'.join(grouped(f) for f in signer.fingerprints),
+        'BREW_TAP': html.escape(github_repo.split('/')[0] + '/tap'),
+        'GITHUB_URL': html.escape(f'https://github.com/{github_repo}'),
+        'WINDOWS_SECTION': windows,
     }
     write(dw / 'index.html', fill('index.html', values))
     write(site / 'index.html',
           '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
           '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
           '<title>driftwire</title>\n<meta http-equiv="refresh" content="0; url=driftwire/">\n</head>\n'
-          '<body>\n<p><a href="driftwire/">driftwire</a>: the Driftwire command line for Linux.</p>\n'
+          '<body>\n<p><a href="driftwire/">driftwire</a>: the Driftwire command line.</p>\n'
           '</body>\n</html>\n')
     script = fill('install.sh', {'DRIFTWIRE_REPO_URL': base, 'DRIFTWIRE_KEY_FINGERPRINTS': ' '.join(signer.fingerprints),
                                  'DRIFTWIRE_BREW_TAP': github_repo.split('/')[0] + '/tap',
@@ -420,6 +527,7 @@ def verify(dw, signer, work):
         result = run(['rpmkeys', '--dbpath', db, '--checksig', path], check=False, text=True)
         if result.returncode != 0 or not result.stdout.strip().endswith(': digests signatures OK'):
             raise ValueError(f'{path.name} is not signed by the key: {result.stdout.strip()} {result.stderr.strip()}')
+    check_install_ps1(dw)
     for path in sorted(dw.parent.rglob('*')):
         if path.is_symlink() or not (path.is_file() or path.is_dir()):
             raise ValueError(f'{path.name} is not a plain file or folder')
@@ -427,7 +535,23 @@ def verify(dw, signer, work):
             raise ValueError(f'{path.relative_to(dw.parent)} holds private key material')
 
 
-def build(packages_dir, out, base_url, key_ids, gnupg_home=None, valid_days=VALID_DAYS, github_repo=GITHUB_REPO):
+def check_install_ps1(dw):
+    """install.ps1, when there is one, names the zip beside it and that zip's SHA-256."""
+    script = dw / 'install.ps1'
+    zips = sorted(dw.glob('driftwire-*-windows-x64.zip'))
+    if not script.exists() and not zips:
+        return
+    text = script.read_text(encoding='ascii') if script.exists() else ''
+    name = re.search(r"^    \$zipName = '([^']+)'$", text, re.M)
+    digest = re.search(r"^    \$zipSha256 = '([0-9a-f]{64})'$", text, re.M)
+    if len(zips) != 1 or not name or not digest or name[1] != zips[0].name:
+        raise ValueError('install.ps1 and the Windows zip beside it do not go together')
+    if hashlib.sha256(zips[0].read_bytes()).hexdigest() != digest[1]:
+        raise ValueError(f"install.ps1 does not have {zips[0].name}'s SHA-256")
+
+
+def build(packages_dir, out, base_url, key_ids, gnupg_home=None, valid_days=VALID_DAYS, github_repo=GITHUB_REPO,
+          require_windows_signature=False):
     missing = [tool for tool in TOOLS if not shutil.which(tool)]
     if missing:
         raise ValueError('Missing tools: ' + ', '.join(missing))
@@ -438,6 +562,8 @@ def build(packages_dir, out, base_url, key_ids, gnupg_home=None, valid_days=VALI
     out = Path(out).resolve()
     check_replaceable(out)
     packages = find_packages(packages_dir)
+    if not packages.debs:
+        raise ValueError(f'No Linux packages in {packages_dir}')
     out.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix='.driftwire-site-', dir=out.parent))
     private = Path(tempfile.mkdtemp(prefix='driftwire-repo-'))
@@ -450,7 +576,8 @@ def build(packages_dir, out, base_url, key_ids, gnupg_home=None, valid_days=VALI
         write(dw / 'key.gpg', signer.export(armor=False))
         build_apt(dw, packages, signer, valid_days)
         build_rpm(dw, packages, signer)
-        build_tarballs(dw, packages, signer)
+        windows = build_windows(dw, packages, base, github_repo, require_windows_signature)
+        build_tarballs(dw, packages, signer, windows)
         write(dw / 'driftwire.repo', rpm_repo_text(base))
         build_pages(site, dw, packages, base, signer, github_repo)
         work = stage / 'verify'
@@ -470,9 +597,37 @@ def build(packages_dir, out, base_url, key_ids, gnupg_home=None, valid_days=VALI
     return packages.version
 
 
-def check_replaceable(out):
-    if out.exists() and (not out.is_dir() or (any(out.iterdir()) and not (out / 'driftwire/install.sh').is_file())):
+def check_replaceable(out, marker='driftwire/install.sh'):
+    if out.exists() and (not out.is_dir() or (any(out.iterdir()) and not (out / marker).is_file())):
         raise ValueError(f'{out} exists and is not a site this built; not replacing it')
+
+
+def windows_site(zip_path, out, base_url, require_signature=False, github_repo=GITHUB_REPO):
+    """SITE/driftwire/{install.ps1, the zip}: the Windows half alone, unsigned by gpg."""
+    base = check_base_url(base_url)
+    check_github_repo(github_repo)
+    zip_path = Path(zip_path)
+    m = ZIP_FILE.fullmatch(zip_path.name)
+    if not m or not zip_path.is_file():
+        raise ValueError(f'Not a driftwire Windows zip: {zip_path}')
+    signed = check_windows_zip(zip_path, m['version'])
+    packages = Packages(m['version'], {}, {}, {}, zip_path, signed)
+    out = Path(out).resolve()
+    check_replaceable(out, 'driftwire/install.ps1')
+    out.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix='.driftwire-site-', dir=out.parent))
+    try:
+        dw = stage / 'site/driftwire'
+        dw.mkdir(parents=True)
+        build_windows(dw, packages, base, github_repo, require_signature)
+        check_install_ps1(dw)
+        check_replaceable(out, 'driftwire/install.ps1')
+        if out.exists():
+            out.rename(stage / 'old')
+        (stage / 'site').rename(out)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    return m['version'], signed
 
 
 # ---- smoke -----------------------------------------------------------------------------------
@@ -638,13 +793,25 @@ def main(argv=None):
     b.add_argument('--valid-days', type=int, default=VALID_DAYS, help="the apt Release's Valid-Until, in days")
     b.add_argument('--github-repo', default=GITHUB_REPO,
                    help="OWNER/NAME whose releases carry driftwire; its owner's Homebrew tap is the Mac's channel")
+    b.add_argument('--require-windows-signature', action='store_true',
+                   help='refuse a Windows zip whose driftwire.exe is not Authenticode-signed (or none)')
     s = commands.add_parser('smoke', help='install from the site on this Debian or Ubuntu machine, and remove it')
     s.add_argument('--site', required=True)
+    w = commands.add_parser('windows-site', help='install.ps1 and the Windows zip alone (CI\'s Windows leg)')
+    w.add_argument('--zip', required=True, help='driftwire-<version>-windows-x64.zip')
+    w.add_argument('--out', required=True, help='the site folder (replaced when it is one this wrote)')
+    w.add_argument('--base-url', required=True, help='where SITE/driftwire is served')
+    w.add_argument('--github-repo', default=GITHUB_REPO)
+    w.add_argument('--require-windows-signature', action='store_true')
     args = parser.parse_args(argv)
     if args.command == 'build':
         version = build(args.packages, args.out, args.base_url, args.key_id, args.gnupg_home, args.valid_days,
-                        args.github_repo)
+                        args.github_repo, args.require_windows_signature)
         print(f'Built the driftwire {version} repository in {args.out} for {check_base_url(args.base_url)}')
+    elif args.command == 'windows-site':
+        version, signed = windows_site(args.zip, args.out, args.base_url, args.require_windows_signature,
+                                       args.github_repo)
+        print(f'Wrote install.ps1 for driftwire {version} ({"signed" if signed else "unsigned"}) in {args.out}')
     else:
         smoke(args.site)
 
