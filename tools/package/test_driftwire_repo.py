@@ -308,7 +308,7 @@ class DriftwireRepoTest(unittest.TestCase):
         for path in self.site.rglob('*'):
             if path.is_file():
                 self.assertNotIn(b'PRIVATE KEY', path.read_bytes(), path)
-        packets = run('gpg', '--batch', '--list-packets', self.dw / 'key.gpg', text=True).stdout
+        packets = run('gpg', '--homedir', self.gnupg, '--batch', '--list-packets', self.dw / 'key.gpg', text=True).stdout
         self.assertIn(':public key packet:', packets)
         self.assertNotIn('secret', packets.lower())
         self.assertIn('BEGIN PGP PUBLIC KEY BLOCK', (self.dw / 'key.asc').read_text())

@@ -377,11 +377,11 @@ def gpgv_signers(keyring, *files, output=None):
 def verify(dw, signer, work):
     """Everything signed is checked against the published key before the site goes out."""
     keyring = dw / 'key.gpg'
-    shown = run(['gpg', '--batch', '--with-colons', '--show-keys', keyring], text=True).stdout
+    shown = signer.gpg('--with-colons', '--show-keys', keyring, text=True).stdout
     published = [f.split(':')[9] for f in shown.splitlines() if f.startswith('fpr:')]
     if not set(signer.fingerprints) <= set(published):
         raise ValueError('key.gpg does not hold the signing keys')
-    packets = run(['gpg', '--batch', '--list-packets', keyring], text=True).stdout
+    packets = signer.gpg('--list-packets', keyring, text=True).stdout
     if 'secret' in packets.lower():
         raise ValueError('key.gpg holds secret key material')
     want = set(signer.fingerprints)
