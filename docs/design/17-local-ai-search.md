@@ -200,8 +200,10 @@ signed manifest, verify-before-load, per-user versioned folder, explicit updates
   URL (`fetch.h`). Resumable, verified (a mismatch is fetched again, never loaded), patient
   (an outage waits and resumes by itself; a 404 is reported as gone). A file of the right size
   already at its path, with no `.ok` record (placed by hand, or restored with a new mtime), is
-  hashed and kept when it matches rather than fetched again (2026-10-23, the downloader shared
-  with Enhance as `mv_model_fetch`). The picture tower comes
+  hashed and kept when it matches rather than fetched again, and replaced when it does not
+  (2026-10-23, the downloader shared with Enhance as `mv_model_fetch`). The pack opens a model
+  file it finds at its fetched path without waiting for that hash, as it did before. The
+  picture tower comes
   first, so search opens before speech, sounds, faces and documents arrive. Status:
   `fetch_state`, `fetch_done_bytes` / `fetch_total_bytes`. No family ceiling since 2026-10-18
   ([12](12-decision-log.md)); the picker shows each tier's download and disk size.

@@ -134,6 +134,8 @@ noise of an install without Enhance.
 - Downloads through the shared fetcher (`mv_model_fetch`: `fetch.*`, `sha256.*` and the two
   transports, now a library both add-ons link), into `data/cache/models/`, one process at a time
   (a lock file; every window loads slot add-ons), on a thread of its own at background priority.
+  The choices are one file every window shares: a click changes only its own kind's key, under a
+  lock, and a prune keeps what any window chose.
   No request is made before Download is clicked in this process; the URL is the pinned one,
   with no query, and the transports send no cookie, token or identifier.
 - Gates before any GET: the 5 GB cap (also in the packer and the catalogue check), the disk
@@ -153,8 +155,9 @@ noise of an install without Enhance.
   5 GB per-file cap; weights in `data/cache`; nothing before the click; adoption by hash); 18's
   fetched-files paragraph; DEVELOPMENT (build, sideload with the fixture catalogue, tests,
   "Where this actually is"); the roadmap entry.
-- **Verify:** `mv_import_tests "[enhance]"` and `"[ai][fetch]"` pass on Linux (portable core),
-  macOS and Windows CI: a signed fixture add-on loads with no model present and makes no
+- **Verify:** `mv_import_tests "[enhance]"` passes on Linux (portable core), macOS and Windows
+  CI, and `"[ai][fetch]"` with it (in `mv_import_tests` on Linux, `mv_ai_tests` on macOS and
+  Windows): a signed fixture add-on loads with no model present and makes no
   request; Download fetches, verifies and adopts; a cut body resumes with Range; a wrong hash is
   deleted and the model stays unavailable; a pin over 5 GB and a download larger than the free
   disk are refused before any GET; a dropped file is adopted by hash; Remove deletes the

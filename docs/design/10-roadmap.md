@@ -598,8 +598,8 @@ adopted by its hash), and the AI pack's downloader as a library both add-ons lin
 (`mv_model_fetch`). No model is pinned yet and nothing is released; the command and the sheet
 (E2) and the first run on a still (E3) come next.
 
-**Verify (E1, both platforms):** the plan's E1 line: `mv_import_tests "[enhance]"` and
-`"[ai][fetch]"` on Linux, macOS and Windows CI, `EnhancePackTest`, and on a Mac and a PC the
+**Verify (E1, both platforms):** the plan's E1 line: `mv_import_tests "[enhance]"` on Linux,
+macOS and Windows CI and `"[ai][fetch]"` (`mv_ai_tests` on macOS and Windows), `EnhancePackTest`, and on a Mac and a PC the
 sideloaded fixture build's Models page recommends by this machine, downloads from Hugging Face,
 survives a network cut, and leaves no weights after Remove. Where it stands:
 [DEVELOPMENT.md](../DEVELOPMENT.md#enhance-slice-e1-297-docsplansenhancemd-2026-10-23).

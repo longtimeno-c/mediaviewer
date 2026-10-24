@@ -877,9 +877,11 @@ Developer builds only; a release build refuses a dev-signed add-on. What E1 is a
    standing in for restoration models so that the page, the spec rule and the download run end
    to end. The real catalogue, `tools/package/enhance-models.json`, pins no model yet.
 3. Run the app with `MV_DEV_ADDONS_DIR=<folder>` and open Settings → Add-ons → Enhance: this
-   machine's facts, a model per kind with the recommended one first, and Download. Nothing is
-   requested before Download. The weights land in the add-on's `data/cache/models/<id>/`, the
-   choices in `data/enhance.json`; Remove deletes the weights.
+   machine's facts (two lines), then per kind a card per model, largest first, the first that
+   fits marked "Recommended for this PC" (or Mac), each with Download. Nothing is requested
+   before Download. The weights land in the add-on's `data/cache/models/<id>/`, the choices in
+   `data/enhance.json` (shared by every window, under `data/enhance.lock`; one window downloads
+   at a time, under `data/cache/download.lock`); Remove deletes the weights.
 4. A weights file can be placed by hand at `data/cache/models/<id>/<file>`: the next Download or
    Resume hashes it and keeps it when it matches its pin.
 5. The catalogue gate, no network: `python3 -I tools/package/enhance-models.py check` (and
@@ -1750,7 +1752,8 @@ page; the catalogue and its check (`tools/package/enhance-models.{json,py}`); th
 Tests: `mv_import_tests "[enhance]"` (the catalogue, the rule on six machine classes, the store's
 gates and downloads over a fake Hugging Face, the page's view tree) and `"[enhance][addon]"`
 (the real module through a signed store: nothing made at load, the page, a saved choice after a
-restart waiting for Resume), `"[ai][fetch]"` (now also in the portable build), and
+restart waiting for Resume), `"[ai][fetch]"` (`mv_ai_tests` on Windows and macOS; also in the
+portable build's `mv_import_tests`), and
 `python3 -m unittest test_addon_pack` (`EnhancePackTest`, no network). All pass in the portable
 Linux build (Debug, ASan) in the PR's session.
 

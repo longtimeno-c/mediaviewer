@@ -2021,7 +2021,11 @@ no cap.
 **Enhance's weights live in `data/cache/models` (2026-10-23).** `store::remove` deletes
 `data/cache` even when the rest of the data is kept, so every Remove deletes the weights (the
 issue's "Remove deletes the weights") and an update never does. Choosing another model for a kind
-deletes the old one's files once the new one verifies; Delete removes a kind's model.
+deletes the old one's files once the new one verifies; Delete removes a kind's model. Every window
+loads the add-on, so the choices (`data/enhance.json`) are shared: a click rewrites only its own
+kind's key under `data/enhance.lock`, and a prune keeps what any window has chosen (one that cannot
+take the download lock is owed and retried). A model id the catalogue does not know, from another
+version, holds every prune off rather than deleting another version's weights.
 
 **A model is chosen by its spec, as data (2026-10-23).** Each kind lists its models largest first,
 and each `model.json` states `run_bytes`, `cache_bytes`, the accelerators it passed on and
@@ -2039,11 +2043,18 @@ fetcher hashes a file of the right size that has no matching `.ok` record and ke
 matches, instead of fetching it again; one that does not match is replaced. That is how a weights
 file is sideloaded (the issue), and it also stops a restored or copied file (a new mtime) from being
 fetched again. It applies to Local search too, and amends the 2026-10-18 row's "no offline path": a
-file can be placed by hand, and is still used only when it matches its signed hash.
+file can be placed by hand. Enhance counts a model as here only once every file has its `.ok`
+record; Local search, as before, opens a model file it finds at its fetched path, and the next
+download run hashes it and keeps it or replaces it.
 
-**The model downloader is a library (2026-10-23).** `fetch.*`, `sha256.*` and the two transports
-build as `mv_model_fetch`, which `mv_ai_engine` and `mv_enhance_engine` link, so Enhance does not
-link the AI engine. The sources stay in `src/addons/ai`, in their namespace.
+**The model downloader is a library (2026-10-23).** `fetch.*`, `sha256.*` and the Windows
+transport build as `mv_model_fetch`, which `mv_ai_engine` and `mv_enhance_engine` link, so Enhance
+does not link the AI engine. The sources stay in `src/addons/ai`, in their namespace. On the Mac
+the NSURLSession transport is compiled into each engine under its own Objective-C class name
+(`MVAIFetchDelegate`, `MVEnhanceFetchDelegate`): one class name in two loaded dylibs is ambiguous
+to the runtime. So no Mac binary links both engines. The Mac transport sends `Accept-Language: en`
+and `Accept-Encoding: identity`, so the person's languages are not sent and a resumed range is
+never decoded on the way.
 
 ---
 
