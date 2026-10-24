@@ -139,10 +139,16 @@ std::optional<io::content_hash> read_back(const std::string& path, const hooks& 
   io::hasher hs;
   for (;;) {
     if (cancelled(h)) return std::nullopt;
+    stage_timer reading(h.stages, stage::read_back);
     auto n = in.read({buf.data(), buf.size()});
     if (!n) return std::nullopt;
+    reading.set_bytes(*n);
+    reading.done();
     if (*n == 0) break;
-    hs.update({buf.data(), *n});
+    {
+      stage_timer hashing(h.stages, stage::back_hash, *n);
+      hs.update({buf.data(), *n});
+    }
     if (h.yield) h.yield();
   }
   return hs.finish();
@@ -284,6 +290,7 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
     return res;
   };
   if (files.empty() || files.size() > kMaxFiles) return stop(outcome::failed, __LINE__);
+  ch.set_stages(h.stages);  // #540
   // #498: one message when it fits; a folder of thousands of files takes
   // several.
   const std::vector<std::string> offer = offer_messages(files, h.handover, h.handover_dht, h.identity);
@@ -461,18 +468,24 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
       if (cancelled(h)) return finish(outcome::cancelled, __LINE__);
       if (remote_cancel.load()) return finish(outcome::cancelled, __LINE__);
       if (broken.load()) return finish(outcome::failed, __LINE__);
+      stage_timer reading(h.stages, stage::read);
       auto n = in.read(chunk);
       if (!n) {
         readable = false;
         break;
       }
+      reading.set_bytes(*n);
+      reading.done();
       if (*n == 0) break;
       got += *n;
       if (got > f.size) {
         readable = false;  // it grew while we read it
         break;
       }
-      hs.update({chunk.data(), *n});
+      {
+        stage_timer hashing(h.stages, stage::hash, *n);
+        hs.update({chunk.data(), *n});
+      }
       const std::size_t kept = static_cast<std::size_t>(std::min<std::uint64_t>(skip, *n));
       skip -= kept;
       if (kept == *n) continue;
@@ -676,8 +689,10 @@ class verifier {
   // Waits while kVerifyAhead files are queued. False once a file_done could
   // not be sent (the link is gone).
   bool push(std::unique_ptr<incoming> f, const io::content_hash& sent) {
+    stage_timer waited(h_.stages, stage::verify_wait);
     std::unique_lock lock(m_);
     room_.wait(lock, [&] { return queue_.size() < kVerifyAhead || broken_; });
+    waited.done();
     if (broken_) return false;
     pending_.fetch_add(1);
     queue_.push_back({std::move(f), sent});
@@ -773,15 +788,19 @@ class verifier {
 
   // Flushed, read back from the device, renamed never over anything.
   bool verify(incoming& f, const io::content_hash& sent) {
-    if (!f.out.flush_durable()) return false;
-    if (f.mtime != 0) (void)f.out.set_mtime(f.mtime);
-    if (!f.out.close()) return false;
+    {
+      stage_timer flushing(h_.stages, stage::flush, f.size);
+      if (!f.out.flush_durable()) return false;
+      if (f.mtime != 0) (void)f.out.set_mtime(f.mtime);
+      if (!f.out.close()) return false;
+    }
     const auto back = read_back(f.temp_path, h_);
     if (!back || !(*back == sent)) return false;
     // #530: shown again before its rename (the flag travels with it).
     if (f.hidden) (void)io::set_hidden(f.temp_path, false);
     const std::string dir(io::parent_of(f.final_path));
     const std::string leaf(io::file_name_of(f.final_path));
+    stage_timer renaming(h_.stages, stage::rename);
     for (int a = 0; a < kRenameAttempts; ++a) {
       auto r = io::rename_no_replace(f.temp_path, f.final_path);
       if (!r) return false;
@@ -841,6 +860,7 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
   if (partial) res.resumed_bytes += partial->at;
   moved = res.resumed_bytes;
   const bool keeping = static_cast<bool>(h.keep);
+  ch.set_stages(h.stages);  // #540
   std::string landed;  // the sent folder's name here, when the offer is one folder
   auto skip_had = [&] {
     while (next < offer.files.size() && have[next]) ++next;
@@ -1013,8 +1033,14 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
       }
       case msg::data: {
         if (!cur || !cur->open || cur->got + m.body.size() > cur->size) return end(outcome::failed, true, __LINE__);
-        if (!cur->out.write(m.body)) return end(outcome::failed, true, __LINE__);
-        cur->hash.update(m.body);
+        {
+          stage_timer writing(h.stages, stage::write, m.body.size());
+          if (!cur->out.write(m.body)) return end(outcome::failed, true, __LINE__);
+        }
+        {
+          stage_timer hashing(h.stages, stage::hash, m.body.size());
+          cur->hash.update(m.body);
+        }
         cur->got += m.body.size();
         moved += m.body.size();
         checks.moved_hint_.store(moved);

@@ -356,6 +356,10 @@ class engine {
     // the beacon take (net::local_subnets() when empty). With loopback_only
     // and none given, every source is taken (the tests' made-up addresses).
     std::optional<std::vector<net::subnet>> local_subnets;
+    // #540, the benches: where each side's time goes (stages.h). Null:
+    // nothing is timed.
+    stage_times* send_stages = nullptr;
+    stage_times* receive_stages = nullptr;
   };
 
   engine(engine_host& host, options opts);

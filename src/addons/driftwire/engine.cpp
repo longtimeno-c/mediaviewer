@@ -1915,6 +1915,7 @@ hooks engine::hooks_for(bool sending) {
   h.cancel = &cancel_;
   h.quitting = &stopping_;  // #530
   if (!sending) h.idle_ms = opts_.receive_idle_ms;  // #502
+  h.stages = sending ? opts_.send_stages : opts_.receive_stages;  // #540
   h.note = [this](const char* text) { host_.log(1, text); };
   h.yield = [this] {
     // While the viewer presents, wait between chunks (as Import does); the

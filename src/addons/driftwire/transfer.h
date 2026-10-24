@@ -37,6 +37,7 @@
 
 #include "addons/driftwire/channel.h"
 #include "addons/driftwire/net.h"
+#include "addons/driftwire/stages.h"
 #include "io/file_port.h"
 
 namespace mv::driftwire {
@@ -144,6 +145,9 @@ struct hooks {
   // #530: set with `cancel` when MediaViewer quits: that stop is kept to
   // resume as a failure is, not dropped as a person's cancel.
   const std::atomic<bool>* quitting = nullptr;
+  // #540, the benches: where this side's time goes (stages.h), the
+  // channel's seal, send and open included. Null: nothing is timed.
+  stage_times* stages = nullptr;
 };
 
 enum class outcome : std::uint8_t {

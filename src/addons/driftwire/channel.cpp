@@ -761,8 +761,10 @@ expected channel::send_v2(msg type, std::span<const std::uint8_t> body) {
   // Room among what is kept unacknowledged, waited for before send_m_: a
   // rejoin takes send_m_ to move the session, and it is what frees room.
   {
+    std::optional<stage_timer> waited;  // #540: only once it has to wait
     std::unique_lock lock(replay_m_);
     while (!down_.load() && !replay_.empty() && replay_bytes_ + body.size() > kReplayBytes) {
+      if (!waited) waited.emplace(stages_.load(std::memory_order_relaxed), stage::wait_room);
       replay_cv_.wait_for(lock, std::chrono::milliseconds(250));
       if (rejoin_expired()) {
         lock.unlock();
@@ -790,8 +792,10 @@ expected channel::keep_and_write(msg type, std::span<const std::uint8_t> body) {
     current = up_ && write_gen_ == gen_;
   }
   const std::uint64_t seq = ++send_seq_;
+  stage_times* const times = stages_.load(std::memory_order_relaxed);
   std::span<const std::uint8_t> frame;
   {
+    stage_timer sealing(times, stage::seal, body.size());
     std::lock_guard r(replay_m_);
     entry e;
     e.seq = seq;
@@ -811,6 +815,7 @@ expected channel::keep_and_write(msg type, std::span<const std::uint8_t> body) {
   if (!current) return err(status::io);
   const std::uint64_t heard = rx_bytes_.load();
   last_send_ = clock::now();
+  stage_timer sending(times, stage::send, frame.size());
   if (auto r = write_link_->write_all(frame); !r) {
     mark_down(write_gen_);
     return r;
@@ -987,6 +992,8 @@ expected channel::receive_v2(message& out, int timeout_ms, bool until_acked) {
     auto first = clock::now() + std::chrono::milliseconds(1000);
     if (limited && deadline < first) first = std::max(deadline, clock::now() + std::chrono::milliseconds(1));
     link& l = *read_link_;
+    stage_times* const times = stages_.load(std::memory_order_relaxed);
+    stage_timer receiving(times, stage::recv);
     std::uint8_t len_bytes[4];
     auto r = read_alive(l, {len_bytes, 1}, first);
     if (!r && r.error() == status::timeout) {
@@ -1005,6 +1012,9 @@ expected channel::receive_v2(message& out, int timeout_ms, bool until_acked) {
       open_buf_.resize(len);
       r = read_alive(l, open_buf_, alive());
     }
+    receiving.set_bytes(r ? 4 + std::uint64_t{len} : 0);
+    receiving.done();
+    stage_timer opening(times, stage::open, r ? len - kSealOverhead : 0);
     unsigned long long plain = 0;
     if (r) {
       out.body.resize(len - kSealOverhead);
@@ -1044,6 +1054,7 @@ expected channel::receive_v2(message& out, int timeout_ms, bool until_acked) {
     if (seq != have + 1) return err(status::corrupt);  // a gap: never, on an ordered link
     out.body.erase(out.body.begin(), out.body.begin() + kHeader2);
     out.body.resize(static_cast<std::size_t>(plain) - kHeader2);
+    opening.done();
     recv_seq_.store(seq);
     // #511: the peer ended it on purpose; the link that drops next is not a loss.
     if (out.type == msg::cancel) cancelled_.store(true);

@@ -1076,6 +1076,29 @@ slower on 1 GiB: the receiver's wait for its `done` to be acknowledged read in 1
 now returns on the acknowledgement. Kept messages are sealed where they lie and their buffers
 reused (one copy a chunk, as protocol 1 had).
 
+**Where the time goes (#540 step 1, 2026-10-22).** A transfer can time each of its stages on each
+side (`stages.h`): the sender's read, hash, seal (the copy into the replay and the AEAD), send
+and any wait for the replay's room; the receiver's receive, open, write, hash, a wait for room
+among the files being verified, flush, read-back, its hash and the rename. Each stage adds its
+thread time and its bytes, so `bytes / time` is what one thread of that stage sustains: a stage
+far above the transfer's rate has headroom, one near it is the limit. `recv`, `wait_room` and
+`verify_wait` are waits, not work. The app gives no timers (`hooks::stages` null), and a stage
+without one costs a branch. Two harnesses print it: `[.driftwire-bench]` (one line per side after
+each case) and `mv-driftwire-bench` (`tools/driftwire-bench`), the real handshake of a direct
+code (CPace on a random secret the receiver prints, then XXhfs+psk0) and `transfer.h`, between
+two processes or two machines, one JSON line per side with MB/s, files/s, CPU, time to the first
+byte, the stages, the busiest stage that is work, the receiver's disk measured first (write,
+uncached read-back, and the ceiling both together allow: past 90 % of it the line says
+`disk_bound`), and on the sender iperf3's rate on the same path and the share of it the transfer
+got. Results go to `docs/perf/driftwire-lan.jsonl`. The first numbers (Windows, loopback, two
+processes on one laptop SSD: 1 GiB 264–299 MB/s, 500 × 2 MiB 113–124, 5,000 × 200 KiB 29–31)
+put the cost in the receiver's durability work on many files, not in the network or the seal:
+with 5,000 files the link loop waits for one of the two verifiers 67 % of the time (each file
+~3.5 ms of flush, ~1.3 ms of read-back, ~1 ms of rename). One big file is flushed and read back
+only after its last byte, serially; its flush varied from 0.9 to 3.5 s between runs on the same
+disk. Seal and open ran at ~900–1,000 MB/s a thread, the receiver's open its busiest stage on
+1 GiB. No two machines are measured yet.
+
 ## Threads
 
 The host calls in on its worker for this add-on (open, close, clicks, commands). The engine
