@@ -1757,8 +1757,8 @@ leaks.
 the secret is empty; `configure-pages` fails, saying so, when Pages is not set to GitHub Actions. Every secret key in
 `DRIFTWIRE_REPO_GPG_KEY` signs (one passphrase for all, or none). The apt `Release` carries
 `Valid-Until` a year ahead (`--valid-days`), so **a stable release must come within each year**,
-or `apt update` on installed machines reports the repository expired and takes nothing new from
-it until the next one.
+or `apt update` fails on every installed machine ("Release file … is expired", exit 100) and
+takes nothing new from the repository until the next one.
 
 **Changing the key.** Make the new key as above and put both private keys in the secret, the old
 one first (`{ gpg --armor --export-secret-keys OLD; gpg --armor --export-secret-keys NEW; } >
@@ -1930,7 +1930,9 @@ terminal"); the decisions are in [docs/design/12](design/12-decision-log.md#drif
     plugin from its unpacked .deb) fetches it, and `rpmkeys --checksig` says "digests SIGNATURES
     NOT OK" before the key is imported and "digests signatures OK" after.
   - A site signed by two keys: apt with either key alone takes it with no warning; dnf with only
-    the first key trusted (`--assumeno`) takes it.
+    the first key trusted (`--assumeno`) takes it. A `Release` past its `Valid-Until` (re-signed
+    with a 2 s validity): `apt-get update` exits 100, "Release file … is expired (invalid since
+    2s). Updates for this repository will not be applied."
   - The tarball route with apt-get, dnf, yum and zypper hidden: as `nobody` into a scratch home
     (checked against the signed `SHA256SUMS`, run, upgraded 0.1.37 → 0.1.38, removed, nothing left
     in the home) and as root into `/usr/local` (removed, `/usr/local` exactly as before).

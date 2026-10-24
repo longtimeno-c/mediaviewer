@@ -251,8 +251,9 @@ curl -fsSL https://longtimeno-c.github.io/mediaviewer/driftwire/install.sh | sh 
   installer. No external asset or script on the page.
 - **Valid-Until a year ahead.** apt refuses a `Release` past it, so a mirror or a network in the
   way cannot keep serving an old, correctly signed index to hold back a fix for longer than that.
-  The cost: a stable release must come within the year, or `apt update` reports the repository's
-  `Release` as expired and takes nothing new from it until the next release re-signs it.
+  The cost: a stable release must come within the year, or `apt update` on every installed
+  machine fails ("Release file … is expired", exit 100, checked here) and takes nothing new from
+  the repository until the next release re-signs it.
 - **Nothing unsigned goes out.** The builder refuses packages whose versions disagree, an
   architecture without all three packages, anything that is not driftwire, a tarball path outside
   its folder, and a base URL that is not https. It signs with the key named (two during a key

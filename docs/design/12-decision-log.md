@@ -2044,8 +2044,8 @@ keeps (RSA-4096, which every rpm verifies; the private half only in the Actions 
 offline backup), signing `InRelease`, `Release.gpg`, every `.rpm`, `repomd.xml` and `SHA256SUMS`,
 each signature checked against the published key before the site replaces the old one; and
 `Valid-Until` one year ahead in `Release`, so an old signed index cannot be replayed to hold back a
-fix for longer. Cost: a stable release must come within each year or apt reports the repository
-expired; each deploy replaces the whole Pages site, so Pages holds nothing else and the repository
+fix for longer. Cost: a stable release must come within each year, or `apt update` fails on
+every installed machine ("Release file … is expired", exit 100); each deploy replaces the whole Pages site, so Pages holds nothing else and the repository
 holds the newest version only; a new key reaches an apt machine only through the installer (or by
 hand), so a key change overlaps the two across at least one release; no glibc older than 2.35
 (RHEL 9 and older, Debian 11). Measured in a Linux container only (Ubuntu 24.04, apt 2.8, dnf 4.14):

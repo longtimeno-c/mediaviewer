@@ -194,8 +194,8 @@ do not touch it.
 
 Making the key, backing it up, changing it, and testing the site locally are in
 [DEVELOPMENT.md](docs/DEVELOPMENT.md#linux-package-repository). The apt `Release` is valid for a
-year: **a stable release must come within each year**, or installed machines report the
-repository expired. The site holds the newest version only.
+year: **a stable release must come within each year**, or `apt update` fails on every installed
+machine ("Release file … is expired"). The site holds the newest version only.
 
 The packages are not attached to the release (`MV_RELEASE_LINUX_CLI: '0'` in release.yml's
 publish step): a `.deb` from the release page would install without the source that updates it.

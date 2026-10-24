@@ -72,7 +72,8 @@ TOOLS = ('apt-ftparchive', 'createrepo_c', 'gpg', 'gpgv', 'rpmsign', 'rpmkeys', 
 # Valid-Until: an apt client refuses a Release older than this, so a mirror or a network in
 # the way cannot keep serving an old, correctly signed index to hold back an update for longer
 # than a year. The cost: a stable release (which re-signs the site) must come within that year,
-# or `apt update` reports the repository's Release as expired and takes nothing from it.
+# or `apt update` on every installed machine fails ("Release file ... is expired", exit 100)
+# and takes nothing new from the repository until the next release re-signs it.
 VALID_DAYS = 365
 
 PASSPHRASE_ENV = 'DRIFTWIRE_REPO_GPG_PASSPHRASE'
@@ -309,6 +310,8 @@ def build_apt(dw, packages, signer, valid_days):
               'ValidTime': str(valid_days * 86400)}
     options = [arg for key, value in fields.items() for arg in ('-o', f'APT::FTPArchive::Release::{key}={value}')]
     release = run(['apt-ftparchive', *options, 'release', '.'], cwd=dist).stdout
+    if not re.search(rb'^Valid-Until: ', release, re.M):
+        raise ValueError('apt-ftparchive wrote no Valid-Until (APT::FTPArchive::Release::ValidTime)')
     write(dist / 'Release', release)
     signer.clearsign(dist / 'Release', dist / 'InRelease')
     signer.detach(dist / 'Release', dist / 'Release.gpg')
