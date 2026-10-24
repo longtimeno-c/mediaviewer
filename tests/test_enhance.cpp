@@ -4,7 +4,9 @@
 // spec rule on several machine classes, the download store against a fake
 // Hugging Face that records every request (nothing before the click or after
 // a restart, the gates before any GET, resume, wrong hashes, adoption, prune,
-// the lock, no transport), and the Models page through the screen vocabulary.
+// the lock and what waits for it, no transport, two windows over one data
+// folder, a Remove in another window), and the Models page through the screen
+// vocabulary.
 // Inline catalogues shaped like tests/data/enhance/fixture-models.json: a
 // large GPU-only model, a standard GPU-or-CPU one and a small CPU one.
 #include "catch_compat.h"
@@ -18,6 +20,7 @@
 #include <map>
 #include <mutex>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -234,6 +237,7 @@ struct fake_hf {
   std::map<std::string, std::vector<std::uint8_t>> files;  // by URL
   std::vector<call> calls;
   int made = 0;  // transports made
+  std::atomic<int> chunk_ms{0};  // a slow line: this long before each chunk
   // Per request (0-based): the status and how many body bytes to send before
   // cutting; a negative cut sends everything.
   std::function<std::pair<int, long long>(std::size_t n, std::uint64_t from)> script =
@@ -270,6 +274,7 @@ struct proxy final : mv::ai::http_transport {
     std::uint64_t end = data.size();
     if (plan.second >= 0) end = std::min<std::uint64_t>(end, start + static_cast<std::uint64_t>(plan.second));
     for (std::uint64_t at = start; at < end; at += 997) {
+      if (const int ms = hf.chunk_ms.load()) std::this_thread::sleep_for(std::chrono::milliseconds(ms));
       const std::uint64_t k = std::min<std::uint64_t>(997, end - at);
       if (!body(std::span<const std::uint8_t>(data.data() + at, k))) break;
     }
@@ -283,9 +288,14 @@ struct rig {
   scratch s{"store"};
   fake_hf hf;
   std::map<std::string, std::vector<std::uint8_t>> body;  // by model id
+  std::vector<pin> pins;
   en::catalog cat;
   en::machine here = pc(16 * kGiB);  // CPU only: large needs a GPU
   bool no_transport = false;
+  std::atomic<bool> installed{true};  // the add-on, as another window's Remove leaves it
+  std::chrono::milliseconds choices_wait{2000};
+  std::chrono::milliseconds prune_retry{30'000};
+  std::chrono::milliseconds lock_retry{5000};
   std::atomic<int> changes{0};
   // Set while a test holds the fetcher in its wait (an outage).
   std::function<bool(double, const std::atomic<bool>&)> wait = [](double, const std::atomic<bool>& stop) {
@@ -297,22 +307,33 @@ struct rig {
     body["large"] = bytes(7000, 1);
     body["standard"] = bytes(5000, 2);
     body["small"] = bytes(3000, 3);
-    std::vector<pin> pins;
-    for (const auto& [id, b] : body) {
-      const std::string path = "models/" + id + "/model.onnx";
-      pins.push_back({path, b.size(), hex_of(b)});
-      hf.files[url_of(path)] = b;
-    }
-    cat = parse(three(), pins);
+    repin();
   }
   ~rig() { store.reset(); }
 
-  void open() {
+  // The pins and the fake's files from `body` again, and the catalogue.
+  void repin() {
+    pins.clear();
+    for (const auto& [id, b] : body) add("models/" + id + "/model.onnx", b);
+    cat = parse(three(), pins);
+  }
+  void add(const std::string& path, const std::vector<std::uint8_t>& b) {
+    pins.push_back({path, b.size(), hex_of(b)});
+    hf.files[url_of(path)] = b;
+  }
+
+  // A store as a window makes one; a second over the same folder is
+  // another window's (each is its own process).
+  std::unique_ptr<en::model_store> make() {
     en::store_options o;
     o.background = false;  // a test runner shares its CPUs
     o.fetch.first_backoff_s = 1;
     o.fetch.wait = [this](double secs, const std::atomic<bool>& stop) { return wait(secs, stop); };
-    store = std::make_unique<en::model_store>(
+    o.still_installed = [this] { return installed.load(); };
+    o.choices_wait = choices_wait;
+    o.prune_retry = prune_retry;
+    o.lock_retry = lock_retry;
+    return std::make_unique<en::model_store>(
         s.dir(), cat,
         [this]() -> std::unique_ptr<mv::ai::http_transport> {
           std::lock_guard lock(hf.m);
@@ -322,6 +343,7 @@ struct rig {
         },
         [this] { return here; }, [this] { ++changes; }, o);
   }
+  void open() { store = make(); }
 
   [[nodiscard]] fs::path weights(const std::string& id) const {
     return s.root / "cache" / "models" / id / "model.onnx";
@@ -525,6 +547,41 @@ TEST_CASE("the manifest's remote list skips malformed entries", "[enhance]") {
   CHECK(remote[0].size == 5);
   CHECK(remote[0].licence == "MIT");
   CHECK(en::read_remote("[]").empty());
+}
+
+TEST_CASE("a remote URL the host's rule refuses is skipped", "[enhance]") {
+  const auto kept = [](const std::string& url) {
+    mv::json::writer w;
+    w.begin_object().key("remote").begin_array().begin_object().key("url").string(url);
+    w.key("path").string("models/a/model.onnx").key("size").integer(5).key("sha256").string(std::string(64, 'a'));
+    w.key("licence").string("MIT").end_object().end_array().end_object();
+    return en::read_remote(w.take()).size();
+  };
+  const std::string base = "https://huggingface.co/org/repo/resolve/" + std::string(40, 'a') + "/";
+  CHECK(kept(base + "model.onnx") == 1);
+  CHECK(kept(base + std::string(1024 - base.size(), 'm')) == 1);  // 1024 bytes at most
+  const std::vector<std::string> refused = {
+      base + std::string(1025 - base.size(), 'm'),
+      "http://huggingface.co/org/repo/resolve/x/model.onnx",
+      "https://huggingface.co.example.com/org/repo/resolve/x/model.onnx",
+      "https://example.com/org/repo/resolve/x/model.onnx",
+      "https://huggingface.co/",
+      "https://huggingface.co/org/repo/blob/x/model.onnx",  // not a /resolve/ link
+      base + "model.onnx?download=true",
+      base + "model.onnx#top",
+      "https://huggingface.co/org@evil/repo/resolve/x/model.onnx",
+      base + "dir\\model.onnx",
+      base + "model onnx",
+      base + "model\x01.onnx",
+      base + "model\x7f.onnx",
+      base + "mod\xC3\xA9l.onnx",  // not ASCII
+      base + "x/../../../other/model.onnx",
+      "",
+  };
+  for (const std::string& url : refused) {
+    INFO(url);
+    CHECK(kept(url) == 0);
+  }
 }
 
 TEST_CASE("a version folder's catalogue, and one with none", "[enhance]") {
@@ -888,21 +945,25 @@ TEST_CASE("the gates refuse before any request", "[enhance]") {
   }
   SECTION("another window holds the lock") {
     rig r;
+    r.lock_retry = std::chrono::milliseconds(20);
     fs::create_directories(r.s.root / "cache");
     const std::string lock = utf8(r.s.root / "cache" / "download.lock");
+    CHECK(!en::is_held(lock));  // no such file: no one, and the probe makes none
+    CHECK(!fs::exists(lock));
     auto held = en::try_lock(lock);
     REQUIRE(held);
     CHECK(!en::try_lock(lock));  // exclusive, even within one process
+    CHECK(en::is_held(lock));
     r.open();
     REQUIRE(r.store->download(en::kind::still, "standard"));
     r.settle();
     CHECK(r.status(en::kind::still).state == en::download_state::other_window);
+    CHECK(r.status(en::kind::still).lock_wait);
     CHECK(r.hf.seen().empty());
     held.reset();
-    CHECK(en::try_lock(lock));
-    r.store->resume(en::kind::still);
-    r.settle();
-    CHECK(r.store->ready(en::kind::still));
+    // That window let go: this one carries on by itself.
+    REQUIRE(eventually([&r] { return r.store->ready(en::kind::still); }));
+    CHECK(r.hf.seen().size() == 1);
   }
   SECTION("no transport on this platform") {
     rig r;
@@ -915,6 +976,103 @@ TEST_CASE("the gates refuse before any request", "[enhance]") {
   }
 }
 
+TEST_CASE("another window's download reads as such here, and a kind it held off carries on after", "[enhance]") {
+  SECTION("a choice not fetched here, while another window holds the lock") {
+    rig r;
+    put(r.s.root / "enhance.json", std::string(R"({"schema":1,"models":{"still":"standard"}})"));
+    r.open();
+    CHECK(r.status(en::kind::still).state == en::download_state::stopped);
+    CHECK(!fs::exists(r.s.root / "cache"));  // looked at, nothing made
+    fs::create_directories(r.s.root / "cache");
+    {
+      const auto held = en::try_lock(r.store->lock_path());  // another window, downloading
+      REQUIRE(held);
+      const en::kind_status st = r.status(en::kind::still);
+      CHECK(st.state == en::download_state::other_window);
+      CHECK(!st.lock_wait);  // nothing queued here: Resume would queue it
+      CHECK(r.status(en::kind::audio).state == en::download_state::none);
+    }
+    CHECK(r.status(en::kind::still).state == en::download_state::stopped);
+    CHECK(r.hf.made == 0);
+    CHECK(r.store->wait_idle(std::chrono::milliseconds(0)));
+  }
+  SECTION("kinds refused for the lock run once it frees: one the other window fetched, one it did not") {
+    rig r;
+    r.lock_retry = std::chrono::milliseconds(20);
+    fs::create_directories(r.s.root / "cache");
+    auto held = en::try_lock(utf8(r.s.root / "cache" / "download.lock"));
+    REQUIRE(held);
+    r.open();
+    REQUIRE(r.store->download(en::kind::still, "standard"));
+    REQUIRE(r.store->download(en::kind::audio, "small"));
+    r.settle();
+    for (en::kind k : {en::kind::still, en::kind::audio}) {
+      CHECK(r.status(k).state == en::download_state::other_window);
+      CHECK(r.status(k).lock_wait);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));  // a few looks, each held off
+    CHECK(r.status(en::kind::still).state == en::download_state::other_window);
+    CHECK(r.hf.seen().empty());
+    // The other window finishes the photo model, then lets go.
+    put(r.weights("standard"), r.body["standard"]);
+    const int before = r.changes.load();
+    held.reset();
+    REQUIRE(eventually([&r] { return r.store->ready(en::kind::still) && r.store->ready(en::kind::audio); }));
+    r.settle();
+    CHECK(r.status(en::kind::still).state == en::download_state::ready);
+    CHECK(!r.status(en::kind::still).lock_wait);
+    const auto calls = r.hf.seen();
+    REQUIRE(calls.size() == 1);  // the photo model adopted by its hash, the audio one fetched
+    CHECK(calls[0].url == url_of("models/small/model.onnx"));
+    CHECK(r.changes.load() > before);  // the page hears of it
+  }
+  SECTION("Cancel stops the wait, and Resume runs it again") {
+    rig r;
+    r.lock_retry = std::chrono::milliseconds(20);
+    fs::create_directories(r.s.root / "cache");
+    auto held = en::try_lock(utf8(r.s.root / "cache" / "download.lock"));
+    REQUIRE(held);
+    r.open();
+    REQUIRE(r.store->download(en::kind::still, "standard"));
+    r.settle();
+    REQUIRE(r.status(en::kind::still).lock_wait);
+    r.store->cancel(en::kind::still);
+    CHECK(r.status(en::kind::still).state == en::download_state::other_window);  // still held there
+    CHECK(!r.status(en::kind::still).lock_wait);
+    held.reset();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    CHECK(r.status(en::kind::still).state == en::download_state::stopped);
+    CHECK(r.hf.made == 0);
+    r.store->resume(en::kind::still);
+    r.settle();
+    CHECK(r.store->ready(en::kind::still));
+  }
+  SECTION("this store's own run is never another window's, and looking never gets in its way") {
+    rig r;
+    put(r.s.root / "enhance.json", std::string(R"({"schema":1,"models":{"audio":"small"}})"));
+    r.body["standard"] = bytes(40'000, 2);  // 41 chunks
+    r.repin();
+    r.hf.chunk_ms = 5;
+    r.open();
+    std::atomic<bool> done{false};
+    std::atomic<int> other{0};
+    std::thread page([&] {  // a page asking all the while
+      while (!done.load()) {
+        if (r.store->status()[2].state == en::download_state::other_window) ++other;
+      }
+    });
+    for (int round = 0; round < 3; ++round) {
+      REQUIRE(r.store->download(en::kind::still, round % 2 ? "small" : "standard"));
+      r.settle();
+      CHECK(r.status(en::kind::still).state == en::download_state::ready);
+    }
+    done = true;
+    page.join();
+    CHECK(other.load() == 0);
+    CHECK(r.status(en::kind::audio).state != en::download_state::other_window);
+  }
+}
+
 TEST_CASE("a 404 on the pinned file is gone", "[enhance]") {
   rig r;
   r.hf.script = [](std::size_t, std::uint64_t) { return std::pair<int, long long>{404, -1}; };
@@ -923,6 +1081,238 @@ TEST_CASE("a 404 on the pinned file is gone", "[enhance]") {
   r.settle();
   CHECK(r.status(en::kind::still).state == en::download_state::gone);
   CHECK(r.hf.seen().size() == 1);
+}
+
+TEST_CASE("two windows share the choices: neither's click or prune drops the other's model", "[enhance]") {
+  rig r;
+  r.open();             // window A
+  auto b = r.make();    // window B, its store made before A chooses
+  REQUIRE(r.store->download(en::kind::still, "standard"));
+  r.settle();
+  REQUIRE(b->download(en::kind::audio, "small"));
+  REQUIRE(b->wait_idle(std::chrono::seconds(20)));
+  std::string saved = read(r.s.root / "enhance.json");
+  CHECK(saved.find(R"("still":"standard")") != std::string::npos);
+  CHECK(saved.find(R"("audio":"small")") != std::string::npos);
+  CHECK(fs::exists(r.weights("standard")));
+  CHECK(r.store->ready(en::kind::still));
+  CHECK(b->chosen(en::kind::still) == "standard");  // B took A's choice as it saved its own
+  {
+    auto fresh = r.make();  // the next launch
+    CHECK(fresh->chosen(en::kind::still) == "standard");
+    CHECK(fresh->chosen(en::kind::audio) == "small");
+  }
+  // A's page, opened again, shows B's choice.
+  CHECK(r.store->chosen(en::kind::audio).empty());
+  r.store->reload_choices();
+  CHECK(r.store->chosen(en::kind::audio) == "small");
+  CHECK(r.status(en::kind::audio).state == en::download_state::ready);
+
+  // B's Delete of Audio keeps A's Photos, and A's next open clears Audio.
+  REQUIRE(b->remove(en::kind::audio));
+  REQUIRE(b->wait_idle(std::chrono::seconds(20)));
+  CHECK(fs::exists(r.weights("standard")));
+  CHECK(!fs::exists(r.weights("small")));
+  saved = read(r.s.root / "enhance.json");
+  CHECK(saved.find(R"("still":"standard")") != std::string::npos);
+  CHECK(saved.find("audio") == std::string::npos);
+  r.store->reload_choices();
+  CHECK(r.store->chosen(en::kind::audio).empty());
+  CHECK(r.store->chosen(en::kind::still) == "standard");
+
+  // And the other way round: A's new Photos model, then B's click, which
+  // writes back no stale Photos choice of its own.
+  REQUIRE(r.store->download(en::kind::still, "small"));
+  r.settle();
+  CHECK(!fs::exists(r.weights("standard")));  // A's old choice, once the new one is here
+  REQUIRE(b->download(en::kind::audio, "small"));
+  REQUIRE(b->wait_idle(std::chrono::seconds(20)));
+  saved = read(r.s.root / "enhance.json");
+  CHECK(saved.find(R"("still":"small")") != std::string::npos);
+  CHECK(saved.find(R"("audio":"small")") != std::string::npos);
+  CHECK(b->chosen(en::kind::still) == "small");
+  CHECK(r.store->ready(en::kind::still));
+  CHECK(r.hf.seen().size() == 3);  // standard; small for B; small again for A, after B's Delete
+}
+
+TEST_CASE("a click while another window saves its choice, or after its Remove, changes nothing", "[enhance]") {
+  rig r;
+  r.choices_wait = std::chrono::milliseconds(50);
+  r.open();
+  REQUIRE(r.store->download(en::kind::still, "standard"));
+  r.settle();
+  const std::string before = read(r.s.root / "enhance.json");
+  {
+    const auto held = en::try_lock(r.store->choices_lock_path());  // another window, saving
+    REQUIRE(held);
+    const auto d = r.store->download(en::kind::audio, "small");
+    REQUIRE(!d);
+    CHECK(d.error() == mv::status::busy);
+    const auto rm = r.store->remove(en::kind::still);
+    REQUIRE(!rm);
+    CHECK(rm.error() == mv::status::busy);
+    r.store->reload_choices();  // keeps what it has
+  }
+  CHECK(read(r.s.root / "enhance.json") == before);
+  CHECK(r.status(en::kind::audio).state == en::download_state::none);
+  CHECK(r.status(en::kind::still).state == en::download_state::ready);
+  CHECK(r.store->wait_idle(std::chrono::milliseconds(0)));
+
+  // Removed with its data in another window: nothing is saved, nothing
+  // runs, and no folder is made again.
+  fs::remove_all(r.s.root);
+  const auto d = r.store->download(en::kind::audio, "small");
+  REQUIRE(!d);
+  CHECK(d.error() == mv::status::io);
+  CHECK(!r.store->remove(en::kind::still));
+  r.store->resume(en::kind::still);
+  r.settle();
+  CHECK(r.status(en::kind::still).state == en::download_state::stopped);
+  CHECK(r.status(en::kind::audio).state == en::download_state::none);
+  CHECK(r.hf.made == 1);
+  CHECK(!fs::exists(r.s.root));
+}
+
+TEST_CASE("a prune another window's download holds off is owed, and runs once it can", "[enhance]") {
+  rig r;
+  r.open();
+  REQUIRE(r.store->download(en::kind::still, "standard"));
+  r.settle();
+  REQUIRE(r.store->download(en::kind::audio, "small"));
+  r.settle();
+  const auto delete_held_off = [&r] {
+    const auto held = en::try_lock(r.store->lock_path());  // another window, downloading
+    REQUIRE(held);
+    REQUIRE(r.store->remove(en::kind::still));
+    r.settle();
+    CHECK(r.status(en::kind::still).state == en::download_state::none);
+    CHECK(fs::exists(r.weights("standard")));  // owed
+    r.store->reload_choices();
+    r.settle();
+    CHECK(fs::exists(r.weights("standard")));  // still held off
+  };
+  SECTION("at the next page open") {
+    delete_held_off();
+    r.store->reload_choices();
+    r.settle();
+    CHECK(!fs::exists(r.weights("standard")));
+    CHECK(!fs::exists(r.weights("standard").parent_path()));
+    CHECK(fs::exists(r.weights("small")));
+  }
+  SECTION("after the next run here, even one the rule refuses") {
+    delete_held_off();
+    REQUIRE(r.store->download(en::kind::still, "large"));  // needs a graphics card
+    r.settle();
+    CHECK(r.status(en::kind::still).state == en::download_state::unfit);
+    CHECK(!fs::exists(r.weights("standard")));
+    CHECK(fs::exists(r.weights("small")));
+  }
+}
+
+TEST_CASE("an owed prune is tried again on the worker until it runs", "[enhance]") {
+  rig r;
+  r.prune_retry = std::chrono::milliseconds(20);
+  r.open();
+  REQUIRE(r.store->download(en::kind::still, "standard"));
+  r.settle();
+  {
+    const auto held = en::try_lock(r.store->lock_path());
+    REQUIRE(held);
+    REQUIRE(r.store->remove(en::kind::still));
+    r.settle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));  // a few tries, each held off
+    CHECK(fs::exists(r.weights("standard")));
+  }
+  CHECK(eventually([&r] { return !fs::exists(r.weights("standard")); }));
+  CHECK(r.store->wait_idle(std::chrono::seconds(20)));
+}
+
+TEST_CASE("a Remove in another window stops a run here, and nothing makes its folders again", "[enhance]") {
+  SECTION("before the gates") {
+    rig r;
+    r.installed = false;
+    r.open();
+    REQUIRE(r.store->download(en::kind::still, "standard"));
+    r.settle();
+    CHECK(r.status(en::kind::still).state == en::download_state::stopped);
+    CHECK(r.hf.made == 0);
+    CHECK(!fs::exists(r.s.root / "cache"));
+  }
+  SECTION("between files") {
+    rig r;
+    r.add("models/standard/more/extra.bin", bytes(4000, 7));
+    r.cat = parse(three(), r.pins);
+    r.hf.script = [&r](std::size_t, std::uint64_t from) {
+      r.installed = false;  // removed while the first file arrives
+      return std::pair<int, long long>{from ? 206 : 200, -1};
+    };
+    r.open();
+    REQUIRE(r.store->download(en::kind::still, "standard"));
+    r.settle();
+    CHECK(r.status(en::kind::still).state == en::download_state::stopped);
+    CHECK(r.hf.seen().size() == 1);
+    CHECK(!fs::exists(r.s.root / "cache" / "models" / "standard" / "more"));
+  }
+  SECTION("while bytes move") {
+    rig r;
+    r.body["standard"] = bytes(40'000, 2);  // 41 chunks, 0.1 s each
+    r.repin();
+    r.hf.chunk_ms = 100;
+    r.open();
+    REQUIRE(r.store->download(en::kind::still, "standard"));
+    REQUIRE(eventually([&r] { return r.status(en::kind::still).state == en::download_state::downloading; }));
+    r.installed = false;
+#if !defined(_WIN32)
+    fs::remove_all(r.s.root);  // and its data folder (Windows cannot delete the open .part)
+#endif
+    r.settle();
+    CHECK(r.status(en::kind::still).state == en::download_state::stopped);
+    CHECK(!fs::exists(r.weights("standard")));
+#if !defined(_WIN32)
+    CHECK(!fs::exists(r.s.root));
+#endif
+  }
+}
+
+TEST_CASE("prune never follows a link out of the weights folder", "[enhance]") {
+  rig r;
+  scratch elsewhere("elsewhere");  // someone else's folder
+  put(elsewhere.root / "readme.txt", std::string("theirs"));
+  put(elsewhere.root / "other-app" / "weights.bin", std::string("theirs"));
+  fs::create_directories(elsewhere.root / "other-app" / "empty");
+  const auto untouched = [&elsewhere] {
+    CHECK(fs::exists(elsewhere.root / "readme.txt"));
+    CHECK(fs::exists(elsewhere.root / "other-app" / "weights.bin"));
+    CHECK(fs::is_directory(elsewhere.root / "other-app" / "empty"));
+  };
+  const fs::path models = r.s.root / "cache" / "models";
+  std::error_code ec;
+  SECTION("the weights folder is a link") {
+    fs::create_directories(models.parent_path());
+    fs::create_directory_symlink(elsewhere.root, models, ec);
+    if (ec) return;  // no links here (Windows without the privilege)
+    r.open();
+    REQUIRE(r.store->download(en::kind::still, "small"));
+    r.settle();
+    REQUIRE(r.store->remove(en::kind::still));
+    r.settle();
+    untouched();
+    CHECK(fs::is_symlink(fs::symlink_status(models)));
+  }
+  SECTION("a link inside it") {
+    fs::create_directories(models / "old" / "deeper");  // empty: goes
+    fs::create_directory_symlink(elsewhere.root, models / "linked", ec);
+    if (ec) return;
+    r.open();
+    REQUIRE(r.store->download(en::kind::still, "small"));
+    r.settle();
+    REQUIRE(r.store->remove(en::kind::still));
+    r.settle();
+    untouched();
+    CHECK(fs::is_symlink(fs::symlink_status(models / "linked")));
+    CHECK(!fs::exists(models / "old"));
+    CHECK(!fs::exists(models / "small"));
+  }
 }
 
 // ---- the Models page --------------------------------------------------------------------
@@ -990,12 +1380,26 @@ TEST_CASE("sizes read as ByteSize.cs writes them", "[enhance]") {
   CHECK(en::memory_text(17'013'000'000) == "16 GB");  // what a 16 GB PC reports
 }
 
-TEST_CASE("this machine in one line", "[enhance]") {
+TEST_CASE("this machine in two lines", "[enhance]") {
   CHECK(en::machine_line(mac(32 * kGiB)) == "This Mac: Apple M2 Pro, 32 GB of memory.");
   CHECK(en::machine_line(pc(32 * kGiB, "nvidia", 12 * kGiB, "NVIDIA GeForce RTX 4070")) ==
         "This PC: 32 GB of memory, NVIDIA GeForce RTX 4070 with 12 GB.");
   CHECK(en::machine_line(pc(16 * kGiB)) == "This PC: 16 GB of memory and no supported graphics card.");
   CHECK(en::machine_line(intel_mac(16 * kGiB)) == "This Mac: 16 GB of memory and an Intel processor.");
+
+  // The rest of the local check: cores and their architecture, free memory, free disk.
+  CHECK(en::machine_facts(mac(32 * kGiB)) ==
+        "10 Arm cores \xC2\xB7 16 GB of memory free \xC2\xB7 537 GB free on this disk");
+  en::machine m = pc(16 * kGiB);
+  m.free_disk = 1'300'000'000;
+  CHECK(en::machine_facts(m) == "8 x86-64 cores \xC2\xB7 8 GB of memory free \xC2\xB7 1.30 GB free on this disk");
+  m.cores = 1;
+  m.arch = "other";
+  m.ram_total = 0;  // not known: not shown
+  m.free_disk = 0;
+  CHECK(en::machine_facts(m) == "1 core \xC2\xB7 0 bytes free on this disk");
+  m.cores = 0;
+  CHECK(en::machine_facts(m) == "0 bytes free on this disk");
 }
 
 TEST_CASE("the Models page is a valid view tree that says what fits", "[enhance]") {
@@ -1004,24 +1408,31 @@ TEST_CASE("the Models page is a valid view tree that says what fits", "[enhance]
   SECTION("a CPU-only PC: the standard model is recommended, the large one needs a GPU") {
     const scr::tree t = checked(en::models_tree(c, pc(8 * kGiB), statuses()));
     CHECK(text_of(t, "machine") == "This PC: 8 GB of memory and no supported graphics card.");
+    CHECK(text_of(t, "facts") == "8 x86-64 cores \xC2\xB7 4 GB of memory free \xC2\xB7 537 GB free on this disk");
+    CHECK(!t.find("notice"));
     CHECK(text_of(t, "kind.still") == "Photos");
     CHECK(text_of(t, "title.still.standard") == "Standard \xC2\xB7 Real-ESRGAN x4plus");
     CHECK(text_of(t, "detail.still.standard") ==
           "Downloads 38.7 MB from Hugging Face \xC2\xB7 needs 2 GB of memory \xC2\xB7 runs on the processor "
           "\xC2\xB7 BSD-3-Clause");
+    // Nowhere to run here: no "runs on the graphics card" the PC has not got.
     CHECK(text_of(t, "detail.still.large") ==
-          "Downloads 1.27 GB from Hugging Face \xC2\xB7 needs 6 GB of graphics memory \xC2\xB7 runs on the "
-          "graphics card \xC2\xB7 Apache-2.0");
+          "Downloads 1.27 GB from Hugging Face \xC2\xB7 needs 6 GB of graphics memory \xC2\xB7 Apache-2.0");
     CHECK(text_of(t, "state.still.standard") == "Recommended for this PC");
     CHECK(text_of(t, "state.still.small") == "Fits this PC");
     CHECK(text_of(t, "state.still.large") == "Needs a graphics card");
-    const scr::node* dl = node_of(t, "dl.still.standard");
+    const scr::node* dl = node_of(t, "a.still.standard");
+    CHECK(*dl->props.str("label") == "Download Standard");
+    CHECK(*dl->props.str("help") == "Download Standard (Photos), 38.7 MB");
     CHECK(*dl->props.str("style") == "primary");
     CHECK(!dl->props.boolean("disabled"));
-    CHECK(*node_of(t, "dl.still.small")->props.str("style") == "plain");
-    CHECK(node_of(t, "dl.still.large")->props.boolean("disabled") == std::optional<bool>(true));
+    CHECK(*node_of(t, "a.still.small")->props.str("style") == "plain");
+    CHECK(node_of(t, "a.still.large")->props.boolean("disabled") == std::optional<bool>(true));
     CHECK(text_of(t, "none.video") == "No model yet.");
-    CHECK(t.find("dl.audio.small"));
+    // One model under two kinds: its buttons say which.
+    CHECK(*node_of(t, "a.still.small")->props.str("label") == "Download Small for Photos");
+    CHECK(*node_of(t, "a.audio.small")->props.str("label") == "Download Small for Audio");
+    CHECK(*node_of(t, "a.still.large")->props.str("label") == "Download Large");
     CHECK(text_of(t, "footnote").find("only when you click Download") != std::string::npos);
   }
   SECTION("a Mac short of memory, and a disk short of space") {
@@ -1041,7 +1452,7 @@ TEST_CASE("the Models page is a valid view tree that says what fits", "[enhance]
     big.models[0].files[0].size = 5'000'000'001;
     const scr::tree t = checked(en::models_tree(big, pc(64 * kGiB, "nvidia", 24 * kGiB), statuses()));
     CHECK(text_of(t, "state.still.large") == "Too large to download (over 5 GB)");
-    CHECK(node_of(t, "dl.still.large")->props.boolean("disabled") == std::optional<bool>(true));
+    CHECK(node_of(t, "a.still.large")->props.boolean("disabled") == std::optional<bool>(true));
     CHECK(text_of(t, "state.still.standard") == "Recommended for this PC");
     const scr::tree i = checked(en::models_tree(c, intel_mac(16 * kGiB), statuses()));
     CHECK(text_of(i, "state.still.small") == "Needs a Mac with Apple silicon");
@@ -1050,75 +1461,290 @@ TEST_CASE("the Models page is a valid view tree that says what fits", "[enhance]
     struct row {
       en::download_state state;
       std::string line;
-      std::vector<std::string> buttons;
+      std::vector<std::string> labels;  // the card's buttons, in order
+      bool lock_wait = false;
     };
+    // The same two ids whatever the state, so focus stays on the button.
     const std::vector<row> rows = {
-        {en::download_state::ready, "Downloaded", {"delete.still"}},
-        {en::download_state::queued, "Waiting to download", {"cancel.still"}},
-        {en::download_state::downloading, "Downloading 412 MB of 1.08 GB", {"cancel.still"}},
-        {en::download_state::waiting, "Waiting for Hugging Face\xE2\x80\xA6 trying again in 30 s", {"cancel.still"}},
-        {en::download_state::stopped, "The download stopped.", {"resume.still", "delete.still"}},
+        {en::download_state::ready, "Downloaded", {"Delete Standard"}},
+        {en::download_state::queued, "Waiting to download", {"Cancel Standard"}},
+        {en::download_state::downloading, "Downloading 412 MB of 1.08 GB", {"Cancel Standard"}},
+        {en::download_state::waiting, "Waiting for Hugging Face\xE2\x80\xA6 downloads resume automatically",
+         {"Cancel Standard"}},
+        {en::download_state::stopped, "The download stopped.", {"Resume Standard", "Delete Standard"}},
         {en::download_state::gone, "This file is no longer on Hugging Face; an update will replace it.",
-         {"resume.still", "delete.still"}},
-        {en::download_state::failed, "The download did not match its checksum.", {"resume.still", "delete.still"}},
-        {en::download_state::refused, "Too large to download (over 5 GB)", {"delete.still"}},
+         {"Resume Standard", "Delete Standard"}},
+        {en::download_state::failed, "The download did not match its checksum.", {"Resume Standard", "Delete Standard"}},
+        {en::download_state::refused, "Too large to download (over 5 GB)", {"Resume Standard", "Delete Standard"}},
+        {en::download_state::unfit, "Fits this PC now; Resume downloads it.", {"Resume Standard", "Delete Standard"}},
         {en::download_state::no_space, "Needs 4.20 GB free on this disk; 1.30 GB is free",
-         {"resume.still", "delete.still"}},
-        {en::download_state::other_window, "Downloading in another MediaViewer window.",
-         {"resume.still", "delete.still"}},
+         {"Resume Standard", "Delete Standard"}},
+        {en::download_state::other_window,
+         "Another MediaViewer window is downloading a model. Click Resume and this one carries on when it finishes.",
+         {"Resume Standard", "Delete Standard"}},
+        {en::download_state::other_window,
+         "Another MediaViewer window is downloading a model. This one carries on when it finishes.",
+         {"Cancel Standard", "Delete Standard"},
+         true},
         {en::download_state::unsupported, "Downloads are not available on this computer.",
-         {"resume.still", "delete.still"}},
+         {"Resume Standard", "Delete Standard"}},
     };
     for (const row& w : rows) {
-      INFO(en::state_id(w.state));
+      INFO(std::string(en::state_id(w.state)) + (w.lock_wait ? " (queued for the lock)" : ""));
       en::kind_status st;
       st.model = "standard";
       st.state = w.state;
+      st.lock_wait = w.lock_wait;
       st.done_bytes = 412'000'000;
       st.total_bytes = 1'080'000'000;
       st.retry_in_s = 29.2;
       st.need = 4'200'000'000;
       st.have = 1'300'000'000;
-      const scr::tree t = checked(en::models_tree(c, pc(16 * kGiB), statuses(st)));
+      const auto shown = statuses(st);
+      const scr::tree t = checked(en::models_tree(c, pc(16 * kGiB), shown));
       CHECK(text_of(t, "state.still.standard") == w.line);
       std::vector<const scr::node*> card;
       buttons_of(*node_of(t, "buttons.still.standard"), card);
-      std::vector<std::string> ids;
-      for (const scr::node* b : card) ids.push_back(b->id);
-      CHECK(ids == w.buttons);
+      std::vector<std::string> labels;
+      for (const scr::node* b : card) {
+        labels.push_back(*b->props.str("label"));
+        CHECK((b->id == "a.still.standard" || b->id == "d.still.standard"));
+        // The id reads back as what its label says, against this status.
+        const en::action a = en::action_of(b->id, shown);
+        const char* said = a.what == en::verb::download ? "Download " : a.what == en::verb::cancel ? "Cancel "
+                           : a.what == en::verb::resume ? "Resume "   : a.what == en::verb::remove ? "Delete "
+                                                                                                     : "?";
+        CHECK(labels.back().rfind(said, 0) == 0);
+      }
+      CHECK(labels == w.labels);
       const bool moving = w.state == en::download_state::downloading || w.state == en::download_state::waiting;
       CHECK((t.find("progress.still.standard") != nullptr) == moving);
-      CHECK(t.find("dl.still.small"));  // the others can still be chosen
+      CHECK(t.find("a.still.small"));  // the others can still be chosen
     }
   }
-  SECTION("every button's id reads back as its action") {
+  SECTION("a chosen model always has a way out: a button it can press, or the reason it cannot") {
+    for (int i = 0; i <= static_cast<int>(en::download_state::unfit); ++i) {
+      const auto state = static_cast<en::download_state>(i);
+      if (state == en::download_state::none) continue;
+      for (const std::string id : {"standard", "large"}) {  // fits this PC; needs a graphics card
+        INFO(std::string(en::state_id(state)) + " " + id);
+        en::kind_status st;
+        st.model = id;
+        st.state = state;
+        st.total_bytes = 5000;
+        const scr::tree t = checked(en::models_tree(c, pc(16 * kGiB), statuses(st)));
+        CHECK(text_of(t, "state.still." + id) != " ");
+        std::vector<const scr::node*> card;
+        buttons_of(*node_of(t, "buttons.still." + id), card);
+        bool can = false;
+        for (const scr::node* b : card) {
+          if (!b->props.boolean("disabled").value_or(false)) {
+            can = true;
+          } else {
+            CHECK(!b->props.str("help")->empty());
+          }
+        }
+        CHECK(can);
+      }
+    }
+    // Refused by the rule: Resume says why until the model fits, then it can.
+    en::kind_status st;
+    st.model = "large";
+    st.state = en::download_state::unfit;
+    st.reason = en::why::needs_gpu;
+    const scr::tree cpu = checked(en::models_tree(c, pc(16 * kGiB), statuses(st)));
+    CHECK(text_of(cpu, "state.still.large") == "Needs a graphics card");
+    CHECK(node_of(cpu, "a.still.large")->props.boolean("disabled") == std::optional<bool>(true));
+    CHECK(*node_of(cpu, "a.still.large")->props.str("help") == "Needs a graphics card");
+    CHECK(!node_of(cpu, "d.still.large")->props.boolean("disabled"));
+    const scr::tree gpu = checked(en::models_tree(c, pc(32 * kGiB, "nvidia", 12 * kGiB), statuses(st)));
+    CHECK(text_of(gpu, "state.still.large") == "Fits this PC now; Resume downloads it.");
+    CHECK(!node_of(gpu, "a.still.large")->props.boolean("disabled"));
+  }
+  SECTION("a click that could not be saved says so") {
+    const scr::tree t =
+        checked(en::models_tree(c, pc(16 * kGiB), statuses(), {}, "Your choice could not be saved on this computer."));
+    CHECK(text_of(t, "notice") == "Your choice could not be saved on this computer.");
+  }
+  SECTION("every button's id reads back as its action, and no two labels read alike") {
     en::kind_status st;
     st.model = "standard";
     st.state = en::download_state::stopped;
-    const scr::tree t = checked(en::models_tree(c, mac(16 * kGiB), statuses(st)));
+    auto shown = statuses(st);
+    shown[2].model = "small";
+    shown[2].state = en::download_state::ready;
+    const scr::tree t = checked(en::models_tree(c, mac(16 * kGiB), shown));
     std::vector<const scr::node*> all;
     buttons_of(*t.root(), all);
-    REQUIRE(all.size() >= 5);
+    REQUIRE(all.size() == 5);
+    std::set<std::string> labels;
     for (const scr::node* b : all) {
       INFO(b->id);
-      CHECK(b->props.str("label"));
-      const en::action a = en::action_of(b->id);
+      const std::string label = *b->props.str("label");
+      CHECK(labels.insert(label).second);
+      const en::action a = en::action_of(b->id, shown);
       REQUIRE(a.what != en::verb::none);
-      if (a.what == en::verb::download) {
-        CHECK(b->id == std::string("dl.") + en::kind_id(a.k) + "." + a.model);
-        CHECK(c.find(a.model));
-      } else {
-        const char* head = a.what == en::verb::cancel ? "cancel." : a.what == en::verb::resume ? "resume." : "delete.";
-        CHECK(b->id == head + std::string(en::kind_id(a.k)));
-      }
+      const std::string kind_dot_model =
+          std::string(en::kind_id(a.k)) + "." + (a.what == en::verb::download ? a.model : shown[static_cast<std::size_t>(a.k)].model);
+      CHECK(b->id == (a.what == en::verb::remove ? "d." : "a.") + kind_dot_model);
+      const char* said = a.what == en::verb::download ? "Download " : a.what == en::verb::cancel ? "Cancel "
+                         : a.what == en::verb::resume ? "Resume "   : "Delete ";
+      CHECK(label.rfind(said, 0) == 0);
+      if (a.what == en::verb::download) CHECK(c.find(a.model));
     }
-    CHECK(en::action_of("delete.audio").what == en::verb::remove);
-    CHECK(en::action_of("dl.still.standard").model == "standard");
-    CHECK(en::action_of("dl.photo.standard").what == en::verb::none);
-    CHECK(en::action_of("dl.still.").what == en::verb::none);
-    CHECK(en::action_of("dl.still.Bad").what == en::verb::none);
-    CHECK(en::action_of("cancel").what == en::verb::none);
-    CHECK(en::action_of("machine").what == en::verb::none);
+    CHECK(labels.count("Resume Standard"));
+    CHECK(labels.count("Delete Standard"));
+    CHECK(labels.count("Download Small for Photos"));
+    CHECK(labels.count("Delete Small for Audio"));
+
+    // One id, read against the status its tree was drawn from: Download,
+    // then Cancel, then Resume; a click the state changed under does nothing.
+    const auto with = [](en::download_state s) {
+      en::kind_status k;
+      k.model = "standard";
+      k.state = s;
+      return statuses(k);
+    };
+    using en::download_state;
+    using en::verb;
+    CHECK(en::action_of("a.still.standard", statuses()).what == verb::download);
+    CHECK(en::action_of("a.still.standard", statuses()).model == "standard");
+    CHECK(en::action_of("a.still.standard", with(download_state::downloading)).what == verb::cancel);
+    CHECK(en::action_of("a.still.standard", with(download_state::queued)).what == verb::cancel);
+    CHECK(en::action_of("a.still.standard", with(download_state::stopped)).what == verb::resume);
+    CHECK(en::action_of("a.still.standard", with(download_state::other_window)).what == verb::resume);
+    CHECK(en::action_of("a.still.standard", with(download_state::ready)).what == verb::none);
+    CHECK(en::action_of("d.still.standard", with(download_state::ready)).what == verb::remove);
+    CHECK(en::action_of("d.still.standard", with(download_state::stopped)).what == verb::remove);
+    CHECK(en::action_of("d.still.standard", with(download_state::downloading)).what == verb::none);
+    CHECK(en::action_of("d.still.standard", statuses()).what == verb::none);
+    CHECK(en::action_of("a.still.small", with(download_state::downloading)).what == verb::download);
+    CHECK(en::action_of("a.still.small", with(download_state::downloading)).model == "small");
+    CHECK(en::action_of("d.still.small", with(download_state::ready)).what == verb::none);
+    CHECK(en::action_of("a.audio.small", with(download_state::ready)).what == verb::download);
+    CHECK(en::action_of("a.audio.small", with(download_state::ready)).k == en::kind::audio);
+    CHECK(en::action_of("a.still.standard", {}).what == verb::none);  // no tree drawn
+    for (const std::string& id : std::vector<std::string>{"a.photo.standard", "a.still.", "a.still.Bad",
+                                                          "a.still." + std::string(33, 'x'), "a..standard",
+                                                          "x.still.standard", "dl.still.standard", "delete.still", "a",
+                                                          "a.", "machine"}) {
+      INFO(id);
+      CHECK(en::action_of(id, with(download_state::stopped)).what == verb::none);
+    }
+  }
+  SECTION("each button names its model, then its kind, then what it is, cut at 200 bytes") {
+    en::catalog twin = c;
+    twin.models[0].name = "Standard";  // large: two Standards in Photos
+    const scr::tree t = checked(en::models_tree(twin, pc(16 * kGiB), statuses()));
+    CHECK(*node_of(t, "a.still.large")->props.str("label") == "Download Standard (Swin2SR x4) for Photos");
+    CHECK(*node_of(t, "a.still.standard")->props.str("label") == "Download Standard (Real-ESRGAN x4plus) for Photos");
+    CHECK(*node_of(t, "a.still.small")->props.str("label") == "Download Small for Photos");
+    twin.models[1].model_name = twin.models[0].model_name;  // and both are the same thing: their ids
+    const scr::tree same = checked(en::models_tree(twin, pc(16 * kGiB), statuses()));
+    CHECK(*node_of(same, "a.still.large")->props.str("label") == "Download Standard (large) for Photos");
+    CHECK(*node_of(same, "a.still.standard")->props.str("label") == "Download Standard (standard) for Photos");
+
+    std::string long_name;
+    for (int i = 0; i < 150; ++i) long_name += "\xC3\xA9";  // "é", two bytes each
+    twin.models[0].name = long_name;
+    en::kind_status st;
+    st.model = "large";
+    st.state = en::download_state::stopped;
+    const scr::tree cut = checked(en::models_tree(twin, pc(16 * kGiB), statuses(st)));
+    for (const char* id : {"a.still.large", "d.still.large"}) {
+      const std::string label = *node_of(cut, id)->props.str("label");
+      CHECK(label.size() <= 200);
+      CHECK(label.size() >= 198);
+      CHECK(std::string(id[0] == 'a' ? "Resume " : "Delete ").append(long_name).rfind(label, 0) == 0);
+    }
+  }
+  SECTION("ids stay within 64 characters for a model id of 32") {
+    const std::string id(32, 'x');
+    const std::string index =
+        replace_once(kIndex, R"("models":["large","standard","small"])", R"("models":[")" + id + R"("])");
+    const en::catalog one = parse({{id, replace_once(kStandard, R"("id":"standard")", R"("id":")" + id + "\"")}},
+                                  {{"models/" + id + "/model.onnx", 1000, std::string(64, 'a')}}, index);
+    REQUIRE(one.find(id));
+    en::kind_status st;
+    st.model = id;
+    st.state = en::download_state::downloading;
+    st.total_bytes = 1000;
+    const auto shown = statuses(st);
+    const scr::tree t = checked(en::models_tree(one, pc(16 * kGiB), shown));
+    CHECK(t.find("a.still." + id));
+    CHECK(t.find("progress.still." + id));
+    CHECK(t.find("buttons.still." + id));
+    CHECK(en::action_of("a.still." + id, shown).what == en::verb::cancel);
+  }
+}
+
+TEST_CASE("a model that does not fit says what is missing", "[enhance]") {
+  const en::catalog c = spec_catalog();
+  SECTION("memory that rounds alike is written to the tenth, then the hundredth") {
+    en::catalog big = c;
+    big.models[1].run_bytes = 16 * kGiB;  // standard, on the processor here
+    en::machine m = pc(16 * kGiB);
+    m.ram_total = 17'013'000'000;  // what a 16 GB PC reports: "16 GB" too
+    CHECK(text_of(checked(en::models_tree(big, m, statuses())), "state.still.standard") ==
+          "Needs 16.0 GB of memory; this PC has 15.8 GB");
+    big.models[1].run_bytes = 17'017'000'000;  // 15.85: the tenths agree too
+    CHECK(text_of(checked(en::models_tree(big, m, statuses())), "state.still.standard") ==
+          "Needs 15.85 GB of memory; this PC has 15.84 GB");
+    big.models[0].run_bytes = 12 * kGiB;  // large, on the card
+    const scr::tree card = checked(en::models_tree(big, pc(32 * kGiB, "nvidia", 12'700'000'000), statuses()));
+    CHECK(text_of(card, "state.still.large") == "Needs 12.0 GB of graphics memory; this PC has 11.8 GB");
+    big.models[0].run_bytes = 24 * kGiB;  // rounded apart: as before
+    CHECK(text_of(checked(en::models_tree(big, mac(16 * kGiB), statuses())), "state.still.large") ==
+          "Needs 24 GB of memory; this Mac has 16 GB");
+  }
+  SECTION("no graphics card it can use: worded by what is missing") {
+    en::catalog only = c;
+    en::model& large = only.models[0];  // no cpu_unit_ms: a card or nothing
+    const auto line = [&only](const en::machine& here) {
+      return text_of(checked(en::models_tree(only, here, statuses())), "state.still.large");
+    };
+    const auto detail = [&only](const en::machine& here) {
+      return text_of(checked(en::models_tree(only, here, statuses())), "detail.still.large");
+    };
+    CHECK(line(pc(16 * kGiB)) == "Needs a graphics card");  // either card would do
+    large.coreml = false;
+    CHECK(line(pc(16 * kGiB)) == "Needs an NVIDIA graphics card");
+    CHECK(line(mac(16 * kGiB)) == "Does not run on this Mac");
+    CHECK(detail(mac(16 * kGiB)) ==
+          "Downloads 1.27 GB from Hugging Face \xC2\xB7 needs 6 GB of memory \xC2\xB7 Apache-2.0");
+    large.coreml = true;
+    large.cuda = false;
+    CHECK(line(pc(32 * kGiB, "nvidia", 12 * kGiB)) == "Needs a Mac with Apple silicon");
+    CHECK(detail(pc(32 * kGiB, "nvidia", 12 * kGiB)).find("graphics") == std::string::npos);
+    large.coreml = false;  // passed no card's self-test, too slow on the processor
+    CHECK(line(pc(32 * kGiB, "nvidia", 12 * kGiB)) == "Too slow on this PC's processor");
+    CHECK(line(pc(16 * kGiB)) == "Needs a graphics card");
+    CHECK(line(mac(16 * kGiB)) == "Does not run on this Mac");
+    // Where it does run, the detail says so.
+    CHECK(detail(pc(32 * kGiB, "nvidia", 12 * kGiB)).find("graphics card") == std::string::npos);
+    const scr::tree t = checked(en::models_tree(c, pc(32 * kGiB, "nvidia", 12 * kGiB), statuses()));
+    CHECK(text_of(t, "detail.still.large").find("runs on the graphics card") != std::string::npos);
+    CHECK(text_of(t, "detail.still.small").find("runs on the processor") != std::string::npos);
+  }
+  SECTION("a run the rule refused says what the run found, until it fits") {
+    en::kind_status st;
+    st.model = "standard";
+    st.state = en::download_state::unfit;
+    st.reason = en::why::memory;  // as the run found it
+    st.need = 3 * kGiB;
+    st.have = 2 * kGiB;
+    const scr::tree small = checked(en::models_tree(c, pc(1 * kGiB), statuses(st)));
+    CHECK(text_of(small, "state.still.standard") == "Needs 3 GB of memory; this PC has 2 GB");
+    CHECK(*node_of(small, "a.still.standard")->props.str("help") == "Needs 3 GB of memory; this PC has 2 GB");
+    CHECK(node_of(small, "a.still.standard")->props.boolean("disabled") == std::optional<bool>(true));
+    st.reason = en::why::fits;  // nothing recorded: the page's own probe
+    CHECK(text_of(checked(en::models_tree(c, pc(1 * kGiB), statuses(st))), "state.still.standard") ==
+          "Needs 2 GB of memory; this PC has 1 GB");
+    st.reason = en::why::memory;
+    const scr::tree now = checked(en::models_tree(c, pc(16 * kGiB), statuses(st)));
+    CHECK(text_of(now, "state.still.standard") == "Fits this PC now; Resume downloads it.");
+    CHECK(!node_of(now, "a.still.standard")->props.boolean("disabled"));
+    CHECK(*node_of(now, "a.still.standard")->props.str("label") == "Resume Standard");
   }
 }
 
@@ -1151,6 +1777,51 @@ TEST_CASE("a download in progress updates by diff, and no tree holds a path", "[
   en::kind_status c = b;
   c.state = en::download_state::ready;
   CHECK(en::progress_diff(statuses(b), statuses(c)).empty());  // a new shape: post the tree
+  en::kind_status queued_here = b;
+  queued_here.state = en::download_state::other_window;
+  en::kind_status waits = queued_here;
+  waits.lock_wait = true;  // Resume becomes Cancel
+  CHECK(en::progress_diff(statuses(queued_here), statuses(waits)).empty());
+
+  // Bytes no one would see move (the same line, the same whole percent): nothing.
+  en::kind_status d = b;
+  d.done_bytes = 412'100'000;
+  CHECK(en::progress_diff(statuses(b), statuses(d)) == "[]");
+  // The bar by a whole percent with the line unchanged: a diff.
+  en::kind_status e = a;
+  e.total_bytes = 100'000'000'000;
+  e.done_bytes = 41'990'000'000;
+  en::kind_status f = e;
+  f.done_bytes = 42'010'000'000;
+  scr::tree big = checked(en::models_tree(r.cat, r.here, statuses(e)));
+  const std::string bar = en::progress_diff(statuses(e), statuses(f));
+  REQUIRE(bar != "[]");
+  CHECK(big.apply(bar) == scr::error::none);
+  CHECK(text_of(big, "state.still.standard") == "Downloading 42.0 GB of 100 GB");
+  // Waiting has no countdown: a new backoff alone changes nothing shown.
+  en::kind_status w1 = a;
+  w1.state = en::download_state::waiting;
+  w1.retry_in_s = 2;
+  en::kind_status w2 = w1;
+  w2.retry_in_s = 4;
+  CHECK(en::progress_diff(statuses(w1), statuses(w2)) == "[]");
+}
+
+TEST_CASE("the page counts what is already here for every model, chosen or not", "[enhance]") {
+  rig r;
+  put(r.weights("standard"), r.body["standard"]);  // dropped in, not chosen
+  r.here.free_disk = 1000;                         // under its 5000 bytes
+  r.open();
+  const scr::tree t = checked(en::models_tree(r.cat, r.here, r.store->status(), [&r](const en::model& m) {
+    return r.store->still_to_fetch(m);
+  }));
+  CHECK(text_of(t, "state.still.standard") == "Recommended for this PC");
+  CHECK(!node_of(t, "a.still.standard")->props.boolean("disabled"));
+  CHECK(text_of(t, "state.still.small") == "Needs 3.00 KB free on this disk; 1.00 KB is free");
+  // Counted from the catalogue alone, the dropped file would still be to fetch.
+  const scr::tree blind = checked(en::models_tree(r.cat, r.here, r.store->status()));
+  CHECK(text_of(blind, "state.still.standard") == "Needs 5.00 KB free on this disk; 1.00 KB is free");
+  CHECK(r.hf.made == 0);
 }
 
 TEST_CASE("the local check reads this machine", "[enhance]") {

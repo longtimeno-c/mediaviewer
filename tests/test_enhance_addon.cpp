@@ -6,18 +6,21 @@
 // Its manifest (src/addons/enhance/manifest.json, which tools/package/
 // addon-pack.py packs) is accepted and declares exactly its Models page in
 // Settings. Then mv_enhance is installed in a signed store with the fixture
-// catalogue (tests/data/enhance/fixture-models.json) staged as
-// enhance-models.py stage lays it out: models/enhance.json, a
-// models/<id>/model.json per model, and the pins in the manifest's `remote`.
-// It loads with no model present and makes nothing; its page opens, draws
-// the fixture's models and takes a Delete. Only on Linux, where there is no
+// catalogue (tests/data/enhance/fixture-models.json) as enhance-models.py
+// stage writes it, a copy committed in tests/data/enhance/staged:
+// models/enhance.json and a models/<id>/model.json per model go in the
+// version folder, remote.json's pins in the manifest's `remote`. It loads
+// with no model present and makes nothing; its page opens, draws the
+// fixture's models and takes a Delete. Only on Linux, where there is no
 // transport (fetch_none.cpp), is Download clicked: it stops before any
 // request. macOS and Windows would reach Hugging Face, so they never click it
 // here; tests/test_enhance.cpp drives the store against a fake one everywhere.
+// Last, Remove deletes every weight, and keeps the choices only with the data.
 #include "catch_compat.h"
 
 #include <sodium.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -58,8 +61,6 @@ std::span<const std::uint8_t> bytes_of(const std::string& s) {
   return {reinterpret_cast<const std::uint8_t*>(s.data()), s.size()};
 }
 
-std::vector<std::uint8_t> bytes(const std::string& s) { return {s.begin(), s.end()}; }
-
 template <typename F>
 bool eventually(F f) {
   for (int i = 0; i < 1000; ++i) {
@@ -81,52 +82,38 @@ std::string json_text(const mv::json::value& v) {
   return w.take();
 }
 
-// The fixture catalogue as `enhance-models.py stage --upstream remote` writes
-// it: the version folder's files, and the `remote` array for the manifest.
+// The fixture catalogue as `enhance-models.py stage` writes it, read from the
+// committed copy (regenerate: python3 -I tools/package/enhance-models.py stage
+// --models tests/data/enhance/fixture-models.json --out tests/data/enhance/staged):
+// what goes in the version folder (staged/models, each file with its licence
+// from licences.json) and the `remote` array for the manifest.
 struct staged_catalogue {
   std::vector<packed_file> files;
   std::string remote;
 };
 
 staged_catalogue stage_fixture() {
-  const std::vector<std::uint8_t> raw = read_bytes(fs::path(MV_ENHANCE_TEST_DATA) / "fixture-models.json");
-  const auto doc = mv::json::parse(std::string(raw.begin(), raw.end()));
-  REQUIRE(doc);
-  const mv::json::value* kinds = doc->find("kinds");
-  const mv::json::value* models = doc->find("models");
-  REQUIRE(kinds);
-  REQUIRE(models);
+  const fs::path staged = fs::path(MV_ENHANCE_TEST_DATA) / "staged";
+  const std::vector<std::uint8_t> lic = read_bytes(staged / "licences.json");
+  const auto licences = mv::json::parse(std::string(lic.begin(), lic.end()));
+  REQUIRE(licences);
   staged_catalogue out;
-  mv::json::writer index;
-  index.begin_object().key("schema").integer(1).key("kinds").begin_object();
-  for (const char* k : {"still", "video", "audio"}) {
-    const mv::json::value* e = kinds->find(k);
-    REQUIRE(e);
-    index.key(k).begin_object();
-    for (const char* field : {"name", "unit", "cpu_budget_ms", "models"}) {
-      REQUIRE(e->find(field));
-      index.key(field).raw(json_text(*e->find(field)));
-    }
-    index.end_object();
+  for (const auto& e : fs::recursive_directory_iterator(staged / "models")) {
+    if (!e.is_regular_file()) continue;
+    const std::string rel = fs::relative(e.path(), staged).generic_string();
+    const std::string* licence = licences->str(rel);
+    INFO(rel);
+    REQUIRE(licence);
+    out.files.push_back({rel, read_bytes(e.path()), *licence});
   }
-  index.end_object().end_object();
-  out.files.push_back({"models/enhance.json", bytes(index.take()), "GPL-3.0-or-later"});
-  mv::json::writer remote;
-  remote.begin_array();
-  for (const auto& [folder, entry] : models->o) {
-    REQUIRE(entry.find("model"));
-    REQUIRE(entry.find("files"));
-    out.files.push_back({folder + "/model.json", bytes(json_text(*entry.find("model"))), "GPL-3.0-or-later"});
-    for (const mv::json::value& f : entry.find("files")->a) {
-      const std::string url =
-          "https://huggingface.co/" + *f.str("repo") + "/resolve/" + *f.str("revision") + "/" + *f.str("file");
-      remote.begin_object().key("url").string(url).key("path").string(folder + "/" + *f.str("as"));
-      remote.key("size").integer(*f.integer("size")).key("sha256").string(*f.str("sha256"));
-      remote.key("licence").string(*f.str("licence")).end_object();
-    }
-  }
-  remote.end_array();
-  out.remote = remote.take();
+  std::sort(out.files.begin(), out.files.end(),
+            [](const packed_file& a, const packed_file& b) { return a.path < b.path; });
+  REQUIRE(out.files.size() == licences->o.size());  // every staged file, and only those
+  const std::vector<std::uint8_t> raw = read_bytes(staged / "remote.json");
+  const auto remote = mv::json::parse(std::string(raw.begin(), raw.end()));
+  REQUIRE(remote);
+  REQUIRE(remote->k == mv::json::kind::array);
+  out.remote = json_text(*remote);
   return out;
 }
 
@@ -165,6 +152,16 @@ std::string enhance_manifest(const std::string& native, const std::vector<packed
   return w.take();
 }
 
+// Signed and installed in `st` from a staging folder, as the store installs a download.
+void install(mv::addon::store& st, const keypair& k, const std::vector<packed_file>& files, const std::string& m) {
+  auto staged = st.make_staging();
+  REQUIRE(staged);
+  for (const auto& f : files) write_bytes(fs::path(*staged) / fs::path(f.path), f.bytes);
+  write_text(fs::path(*staged) / "manifest.json", m);
+  write_bytes(fs::path(*staged) / "manifest.json.sig", k.sign(m));
+  REQUIRE(st.install(*staged));
+}
+
 // The Models page as the host holds it, read back through the vocabulary.
 scr::tree page(const slot_registry& reg) {
   const auto doc = mv::json::parse(reg.screens_json());
@@ -185,6 +182,12 @@ std::string text_of(const scr::tree& t, const std::string& id) {
 }
 
 bool has(const scr::tree& t, const std::string& id) { return t.find(id) != nullptr; }
+
+std::string label_of(const scr::tree& t, const std::string& id) {
+  const scr::node* n = t.find(id);
+  const std::string* s = n ? n->props.str("label") : nullptr;
+  return s ? *s : std::string();
+}
 
 }  // namespace
 
@@ -230,12 +233,7 @@ TEST_CASE("enhance: the add-on loads with no model, opens its Models page and ta
   REQUIRE(files[0].bytes.size() > 1000);
   files.insert(files.end(), cat.files.begin(), cat.files.end());
   const std::string m = enhance_manifest(native, files, cat.remote);
-  auto staged = st.make_staging();
-  REQUIRE(staged);
-  for (const auto& f : files) write_bytes(fs::path(*staged) / fs::path(f.path), f.bytes);
-  write_text(fs::path(*staged) / "manifest.json", m);
-  write_bytes(fs::path(*staged) / "manifest.json.sig", k.sign(m));
-  REQUIRE(st.install(*staged));
+  install(st, k, files, m);
   auto info = st.find("enhance");
   REQUIRE(info);
   const fs::path data = info->data_dir;
@@ -276,6 +274,9 @@ TEST_CASE("enhance: the add-on loads with no model, opens its Models page and ta
     CHECK(*open->a[0].str("place") == "settings");
     const scr::tree t = page(reg);
     CHECK(text_of(t, "machine").find(" of memory") != std::string::npos);
+    CHECK(text_of(t, "facts").find(" cores \xC2\xB7 ") != std::string::npos);
+    CHECK(text_of(t, "facts").find(" of memory free \xC2\xB7 ") != std::string::npos);
+    CHECK(text_of(t, "facts").find(" free on this disk") != std::string::npos);
     CHECK(text_of(t, "kind.still") == "Photos");
     CHECK(text_of(t, "kind.video") == "Video");
     CHECK(text_of(t, "kind.audio") == "Audio");
@@ -286,8 +287,12 @@ TEST_CASE("enhance: the add-on loads with no model, opens its Models page and ta
     CHECK(text_of(t, "none.video") == "No model yet.");
     CHECK(text_of(t, "detail.still.fixture-small").find("Downloads 233 KB from Hugging Face") == 0);
     CHECK(text_of(t, "footnote").find("Models download from Hugging Face only when you click Download.") == 0);
-    CHECK(has(t, "dl.still.fixture-small"));
-    CHECK_FALSE(has(t, "delete.still"));
+    // Each button names its model, and its kind where the name is on two cards.
+    CHECK(label_of(t, "a.still.fixture-large") == "Download Large");
+    CHECK(label_of(t, "a.still.fixture-standard") == "Download Standard");
+    CHECK(label_of(t, "a.still.fixture-small") == "Download Small for Photos");
+    CHECK(label_of(t, "a.audio.fixture-small") == "Download Small for Audio");
+    CHECK_FALSE(has(t, "d.still.fixture-small"));
     CHECK(reg.screens_json().find(utf8(s.root())) == std::string::npos);  // no path in the page
   }
   CHECK_FALSE(fs::exists(data / "cache"));
@@ -314,17 +319,18 @@ TEST_CASE("enhance: the add-on loads with no model, opens its Models page and ta
   {
     const scr::tree t = page(reg2);
     CHECK(text_of(t, "state.still.fixture-small") == "The download stopped.");
-    CHECK(has(t, "resume.still"));
-    CHECK(has(t, "delete.still"));
-    CHECK(has(t, "dl.audio.fixture-small"));
+    CHECK(label_of(t, "a.still.fixture-small") == "Resume Small for Photos");  // the id Download had
+    CHECK(label_of(t, "d.still.fixture-small") == "Delete Small for Photos");
+    CHECK(label_of(t, "a.audio.fixture-small") == "Download Small for Audio");
   }
-  CHECK(reg2.send_event("enhance", "models", "cancel.still", MV_SLOT_EVENT_CLICK, "") ==
+  CHECK(reg2.send_event("enhance", "models", "d.audio.fixture-small", MV_SLOT_EVENT_CLICK, "") ==
         status::invalid_arg);  // not on the page: the host refuses it
-  REQUIRE(reg2.send_event("enhance", "models", "delete.still", MV_SLOT_EVENT_CLICK, "") == status::ok);
+  REQUIRE(reg2.send_event("enhance", "models", "d.still.fixture-small", MV_SLOT_EVENT_CLICK, "") == status::ok);
   REQUIRE(eventually([&] {
     reg2.drain();
-    return has(page(reg2), "dl.still.fixture-small");
+    return label_of(page(reg2), "a.still.fixture-small") == "Download Small for Photos";
   }));
+  CHECK_FALSE(has(page(reg2), "d.still.fixture-small"));
   {
     const std::vector<std::uint8_t> kept = read_bytes(data / "enhance.json");
     CHECK(std::string(kept.begin(), kept.end()).find("fixture-small") == std::string::npos);
@@ -335,24 +341,24 @@ TEST_CASE("enhance: the add-on loads with no model, opens its Models page and ta
   // No transport on Linux: Download passes the cap, the fit and the lock,
   // stops at the transport, before any request, and leaves no file but the
   // lock's. The choice is kept, with Resume.
-  REQUIRE(reg2.send_event("enhance", "models", "dl.still.fixture-small", MV_SLOT_EVENT_CLICK, "") == status::ok);
+  REQUIRE(reg2.send_event("enhance", "models", "a.still.fixture-small", MV_SLOT_EVENT_CLICK, "") == status::ok);
   REQUIRE(eventually([&] {
     reg2.drain();
     return text_of(page(reg2), "state.still.fixture-small") == "Downloads are not available on this computer.";
   }));
   {
     const scr::tree t = page(reg2);
-    CHECK(has(t, "resume.still"));
-    CHECK(has(t, "delete.still"));
+    CHECK(label_of(t, "a.still.fixture-small") == "Resume Small for Photos");
+    CHECK(has(t, "d.still.fixture-small"));
     const std::vector<std::uint8_t> kept = read_bytes(data / "enhance.json");
     CHECK(std::string(kept.begin(), kept.end()).find(R"("still":"fixture-small")") != std::string::npos);
   }
   CHECK(list_tree(data / "cache") == std::vector<std::string>{"download.lock"});
   CHECK(eventually([&] { return reg2.busy_what().empty(); }));  // nothing runs
-  REQUIRE(reg2.send_event("enhance", "models", "delete.still", MV_SLOT_EVENT_CLICK, "") == status::ok);
+  REQUIRE(reg2.send_event("enhance", "models", "d.still.fixture-small", MV_SLOT_EVENT_CLICK, "") == status::ok);
   REQUIRE(eventually([&] {
     reg2.drain();
-    return has(page(reg2), "dl.still.fixture-small");
+    return label_of(page(reg2), "a.still.fixture-small") == "Download Small for Photos";
   }));
   CHECK(list_tree(data / "cache") == std::vector<std::string>{"download.lock"});
 #endif
@@ -364,5 +370,29 @@ TEST_CASE("enhance: the add-on loads with no model, opens its Models page and ta
   again->reset();
   CHECK_FALSE(reg2.attached("enhance"));
   CHECK(mv::json::parse(reg2.screens_json())->a.empty());
+
+  // Remove deletes every weight where Enhance keeps them (data/cache): a
+  // verified file, its .ok and a .part. Keeping the data keeps the choices;
+  // removing it too leaves no data folder.
+  const auto weights = [&data] {
+    const fs::path at = data / "cache" / "models" / "fixture-small";
+    write_bytes(at / "model.onnx", std::vector<std::uint8_t>(232589, 7));
+    write_text(at / "model.onnx.ok", "a record\n");
+    write_bytes(fs::path(data / "cache" / "models" / "fixture-standard" / "model.onnx.part"),
+                std::vector<std::uint8_t>(1000, 9));
+  };
+  weights();
+  write_text(data / "enhance.json", R"({"schema":1,"models":{"still":"fixture-small"}})");
+  REQUIRE(st.remove("enhance", true));
+  CHECK_FALSE(fs::exists(data / "cache"));
+  CHECK(fs::exists(data / "enhance.json"));
+  CHECK_FALSE(st.find("enhance"));
+  install(st, k, files, m);
+  REQUIRE(st.find("enhance"));
+  CHECK(st.find("enhance")->data_dir == info->data_dir);
+  weights();
+  REQUIRE(st.remove("enhance", false));
+  CHECK_FALSE(fs::exists(data));
+  CHECK_FALSE(st.find("enhance"));
 }
 #endif

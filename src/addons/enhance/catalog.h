@@ -111,8 +111,9 @@ struct catalog {
   [[nodiscard]] const kind_entry& of(kind k) const noexcept { return kinds[static_cast<std::size_t>(k)]; }
 };
 
-// The manifest's `remote` entries; malformed ones (no URL, an unsafe path, a
-// SHA-256 that is not 64 lowercase hex, no size or licence) are skipped.
+// The manifest's `remote` entries; malformed ones (a URL the host's rule
+// refuses, an unsafe path, a SHA-256 that is not 64 lowercase hex, no size
+// or licence) are skipped.
 [[nodiscard]] std::vector<pinned> read_remote(std::string_view manifest_json);
 
 // models/<id>/model.json's text for an id; nullopt when it is missing.

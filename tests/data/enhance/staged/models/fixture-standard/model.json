@@ -1,0 +1,49 @@
+{
+ "id": "fixture-standard",
+ "name": "Standard",
+ "model": "Fixture (SFace, 39 MB)",
+ "kinds": [
+  "still"
+ ],
+ "run_bytes": 2147483648,
+ "cache_bytes": 0,
+ "accelerators": [
+  "cuda",
+  "coreml"
+ ],
+ "cpu_unit_ms": 45000,
+ "licence": "Apache-2.0",
+ "knobs": [
+  {
+   "id": "scale",
+   "label": "Scale",
+   "type": "choice",
+   "default": "4",
+   "options": [
+    {
+     "id": "2",
+     "text": "2\u00d7"
+    },
+    {
+     "id": "4",
+     "text": "4\u00d7"
+    }
+   ],
+   "kinds": [
+    "still"
+   ]
+  },
+  {
+   "id": "denoise",
+   "label": "Denoise",
+   "type": "slider",
+   "min": 0,
+   "max": 1,
+   "step": 0.05,
+   "default": 0.5,
+   "kinds": [
+    "still"
+   ]
+  }
+ ]
+}

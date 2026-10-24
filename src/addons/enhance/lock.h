@@ -30,4 +30,9 @@ class file_lock {
 // The file is created; its folder must exist.
 [[nodiscard]] std::unique_ptr<file_lock> try_lock(const std::string& path_utf8);
 
+// Whether someone holds it now: a probe that never blocks and never makes
+// the file (false when there is none). A holder in this process counts too,
+// so a caller never probes a lock it holds itself.
+[[nodiscard]] bool is_held(const std::string& path_utf8);
+
 }  // namespace mv::enhance

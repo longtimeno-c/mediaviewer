@@ -1,0 +1,6 @@
+{
+ "models/enhance.json": "GPL-3.0-or-later",
+ "models/fixture-large/model.json": "GPL-3.0-or-later",
+ "models/fixture-small/model.json": "GPL-3.0-or-later",
+ "models/fixture-standard/model.json": "GPL-3.0-or-later"
+}

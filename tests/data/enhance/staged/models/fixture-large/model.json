@@ -1,0 +1,36 @@
+{
+ "id": "fixture-large",
+ "name": "Large",
+ "model": "Fixture (Whisper turbo encoder, 1.27 GB)",
+ "kinds": [
+  "still"
+ ],
+ "run_bytes": 6442450944,
+ "cache_bytes": 0,
+ "accelerators": [
+  "cuda",
+  "coreml"
+ ],
+ "licence": "MIT",
+ "knobs": [
+  {
+   "id": "scale",
+   "label": "Scale",
+   "type": "choice",
+   "default": "2",
+   "options": [
+    {
+     "id": "2",
+     "text": "2\u00d7"
+    },
+    {
+     "id": "4",
+     "text": "4\u00d7"
+    }
+   ],
+   "kinds": [
+    "still"
+   ]
+  }
+ ]
+}

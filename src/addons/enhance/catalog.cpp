@@ -104,6 +104,21 @@ bool safe_relative(std::string_view p) noexcept {
   }
 }
 
+// src/addon/manifest.cpp remote_url_ok, rule for rule: the host checked the
+// signed manifest at load, but this reads it again at the page's first open.
+// A pinned Hugging Face file, never a query, a fragment or a user.
+bool remote_url_ok(std::string_view url) noexcept {
+  constexpr std::string_view kHost = "https://huggingface.co/";
+  if (url.size() <= kHost.size() || url.size() > 1024 || url.substr(0, kHost.size()) != kHost) return false;
+  for (const char c : url) {
+    if (c == '?' || c == '#' || c == '@' || c == '\\' || static_cast<unsigned char>(c) <= 0x20 ||
+        static_cast<unsigned char>(c) >= 0x7F) {
+      return false;
+    }
+  }
+  return url.find("/../") == std::string_view::npos && url.find("/resolve/") != std::string_view::npos;
+}
+
 // enhance-models.py knob_problems: a knob that breaks a rule leaves the model out.
 std::optional<knob> read_knob(const json::value& v, const std::vector<kind>& model_kinds,
                               std::set<std::string>& seen) {
@@ -288,7 +303,7 @@ std::vector<pinned> read_remote(std::string_view manifest_json) {
     const std::string* sha = r.str("sha256");
     const std::string* licence = r.str("licence");
     const auto size = r.integer("size");
-    if (!url || url->empty() || !path || !safe_relative(*path) || !sha || !hex64(*sha) || !licence ||
+    if (!url || !remote_url_ok(*url) || !path || !safe_relative(*path) || !sha || !hex64(*sha) || !licence ||
         licence->empty() || !size || *size <= 0) {
       continue;
     }

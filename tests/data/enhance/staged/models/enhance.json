@@ -1,0 +1,29 @@
+{
+ "schema": 1,
+ "kinds": {
+  "still": {
+   "name": "Photos",
+   "unit": "a 12 MP photo",
+   "cpu_budget_ms": 60000,
+   "models": [
+    "fixture-large",
+    "fixture-standard",
+    "fixture-small"
+   ]
+  },
+  "video": {
+   "name": "Video",
+   "unit": "a second of 1080p video",
+   "cpu_budget_ms": 30000,
+   "models": []
+  },
+  "audio": {
+   "name": "Audio",
+   "unit": "a minute of sound",
+   "cpu_budget_ms": 20000,
+   "models": [
+    "fixture-small"
+   ]
+  }
+ }
+}

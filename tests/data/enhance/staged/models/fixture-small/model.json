@@ -1,0 +1,37 @@
+{
+ "id": "fixture-small",
+ "name": "Small",
+ "model": "Fixture (YuNet, 0.2 MB)",
+ "kinds": [
+  "still",
+  "audio"
+ ],
+ "run_bytes": 268435456,
+ "cache_bytes": 0,
+ "accelerators": [],
+ "cpu_unit_ms": 5000,
+ "licence": "MIT",
+ "knobs": [
+  {
+   "id": "denoise",
+   "label": "Denoise",
+   "type": "slider",
+   "min": 0,
+   "max": 1,
+   "step": 0.05,
+   "default": 0.5,
+   "kinds": [
+    "still"
+   ]
+  },
+  {
+   "id": "voice",
+   "label": "Keep voices clear",
+   "type": "toggle",
+   "default": true,
+   "kinds": [
+    "audio"
+   ]
+  }
+ ]
+}
