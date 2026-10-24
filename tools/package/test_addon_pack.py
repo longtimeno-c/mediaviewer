@@ -8,7 +8,6 @@ build sets it), every package is also checked by the app's own C++ verifier,
 so the signer and the verifier cannot drift apart unnoticed.
 """
 import contextlib
-import hashlib
 import importlib.util
 import io
 import json
@@ -302,6 +301,29 @@ class AiPackTest(unittest.TestCase):
         self.assertIn("models/whisper-tiny", potato["folders"]["ai-audio"])
         self.assertIn("models/faces-sface", potato["folders"]["ai-faces"])
 
+    def test_every_piece_staged_remote_meets_the_apps_rules(self):
+        # read_remote and collect apply the app's own path and URL rules
+        # (src/addon/manifest.cpp): every piece, staged as the release stages it, packs.
+        mod = load_tool("ai_models", "ai-models.py")
+        data = mod.load()
+        for piece, spec in data["pieces"].items():
+            with self.subTest(piece=piece):
+                out = self.tmp / f"staged-{piece}"
+                with mock.patch("urllib.request.urlopen", side_effect=no_network), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(mod.main(["stage", "--piece", piece, "--out", str(out), "--upstream", "remote",
+                                               "--skip-exports"]), 0)
+                upstream = [e for f in spec["folders"].values() for e in f["files"] if "export" not in e]
+                remote = addon_pack.read_remote(out)
+                self.assertEqual(len(remote), len(upstream))
+                if piece == "ai":  # the Core's code, beside its models
+                    for name in addon_pack.ADDONS["ai"]["files"]["win-x64"]["include"]:
+                        if name != "models":
+                            shutil.copy2(self.core / name, out / name)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    m = self.pack(piece, out)
+                self.assertEqual(m.get("remote", []), remote)
+
     def test_model_list_passes_the_licence_gate(self):
         gate = importlib.util.spec_from_file_location("ai_models", Path(__file__).with_name("ai-models.py"))
         mod = importlib.util.module_from_spec(gate)
@@ -502,6 +524,15 @@ def no_network(*_args, **_kwargs):
     raise AssertionError("no request may be made")
 
 
+def renamed(data: dict, old: str, new: str) -> None:
+    """The catalogue with model `old` called `new` everywhere."""
+    entry = data["models"].pop(f"models/{old}")
+    entry["model"]["id"] = new
+    data["models"][f"models/{new}"] = entry
+    for spec in data["kinds"].values():
+        spec["models"] = [new if i == old else i for i in spec["models"]]
+
+
 class EnhancePackTest(unittest.TestCase):
     """docs/plans/enhance.md E1: the catalogue's gate, its staging and the pack.
     Nothing here touches the network: the weights are `remote`."""
@@ -511,7 +542,6 @@ class EnhancePackTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.models = load_tool("enhance_models", "enhance-models.py")
-        cls.real_fetch = staticmethod(cls.models.ai_models.fetch)
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -610,6 +640,19 @@ class EnhancePackTest(unittest.TestCase):
         for want, change in cases.items():
             with self.subTest(want=want):
                 self.assertIn(want, self.refusal(change))
+        # The app's own rules (src/addon/manifest.cpp): one name it refuses
+        # refuses the whole signed add-on, so the gate refuses it first.
+        for name in ("aux.onnx", "model.", "a|b.onnx", "COM1", "x/nul.txt", "lpt1.onnx"):
+            with self.subTest(**{"as": name}):
+                self.assertIn("not a path the app takes",
+                              self.refusal(lambda d, n=name: d["models"][m]["files"][0].update(**{"as": n})))
+        for mid in ("con", "aux", "lpt1"):
+            with self.subTest(id=mid):
+                self.assertIn(f"{mid} is a name the app refuses",
+                              self.refusal(lambda d, i=mid: renamed(d, "fixture-standard", i)))
+        self.assertIn("not a plain Hugging Face URL",
+                      self.refusal(lambda d: d["models"][m]["files"][0].update(file="onnx/a@b.onnx")))
+        self.assertEqual(self.refusal(lambda d: renamed(d, "fixture-standard", "aux1")), "")
         self.assertEqual(self.refusal(lambda d: None), "")
         # json would keep the last of two same-named models; the gate does not.
         text = self.FIXTURE.read_text(encoding="utf-8")
@@ -655,34 +698,48 @@ class EnhancePackTest(unittest.TestCase):
         self.assertFalse((self.src / "remote.json").exists())
         self.assertEqual(sorted(p.name for p in (self.src / "models").iterdir()), ["enhance.json"])
 
-    def test_bundle_staging_puts_the_weights_in_the_pack(self):
-        # An offline dev pack: the weights come from the cache (a file of the
-        # pinned size and hash is never fetched again), and nothing is remote.
-        blob = os.urandom(4096)
-        sha = hashlib.sha256(blob).hexdigest()
-        data = self.fixture()
-        small = data["models"]["models/fixture-small"]
-        small["files"][0].update(size=len(blob), sha256=sha)
-        data["models"] = {"models/fixture-small": small}
-        data["kinds"]["still"]["models"] = ["fixture-small"]
-        catalogue = self.tmp / "small.json"
-        catalogue.write_text(json.dumps(data), encoding="utf-8")
-        cache = self.tmp / "cache"
-        cache.mkdir()
-        (cache / f"{sha}-face_detection_yunet_2023mar.onnx").write_bytes(blob)
-        (self.src / "remote.json").write_text("[]")  # stale, from a remote stage
-        with mock.patch.object(self.models.ai_models, "fetch", self.real_fetch):
-            code, _, err = self.run_models("stage", "--models", str(catalogue), "--out", str(self.src),
-                                           "--upstream", "bundle", "--cache", str(cache))
-        self.assertEqual(code, 0, err)
-        self.assertEqual((self.src / "models/fixture-small/model.onnx").read_bytes(), blob)
+    def test_bundle_staging_is_refused(self):
+        # The add-on reads weights only from data/cache/models, never from its
+        # pack: a bundled pack would offer no model at all.
+        code, _, err = self.run_models("stage", "--models", str(self.FIXTURE), "--out", str(self.src),
+                                       "--upstream", "bundle")
+        self.assertEqual(code, 2)
+        self.assertIn("data/cache/models/<id>/<as>", err)
+        self.assertFalse((self.src / "models").exists())
         self.assertFalse((self.src / "remote.json").exists())
-        lic = json.loads((self.src / "licences.json").read_text())
-        self.assertEqual(lic["models/fixture-small/model.onnx"], "MIT")
-        m = json.loads(self.pack().read_bytes())
-        self.assertNotIn("remote", m)
-        self.assertIn({"path": "models/fixture-small/model.onnx", "sha256": sha, "size": len(blob), "licence": "MIT"},
-                      m["files"])
+
+    STAGED = ROOT / "tests/data/enhance/staged"
+    RESTAGE = ("python3 -I tools/package/enhance-models.py stage --models tests/data/enhance/fixture-models.json "
+               "--out tests/data/enhance/staged")
+
+    def test_the_committed_stage_is_what_stage_writes(self):
+        # tests/test_enhance*.cpp read tests/data/enhance/staged as the add-on
+        # reads its pack, so this script and the C++ reader cannot drift apart.
+        out = self.tmp / "staged"
+        code, _, err = self.run_models("stage", "--models", str(self.FIXTURE), "--out", str(out))
+        self.assertEqual(code, 0, err)
+
+        def tree(root):
+            return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+        committed, fresh = tree(self.STAGED), tree(out)
+        self.assertEqual(sorted(committed), sorted(fresh), f"regenerate it: {self.RESTAGE}")
+        for rel, data in fresh.items():
+            self.assertEqual(committed[rel], data, f"{rel} differs; regenerate it: {self.RESTAGE}")
+
+    def test_the_add_on_reads_the_same_licence_allow_list(self):
+        # One allow-list for both add-ons: catalog.cpp's copy drops a model
+        # whose licence it lacks, silently, so the two must be equal.
+        cpp = (ROOT / "src/addons/enhance/catalog.cpp").read_text(encoding="utf-8")
+        block = re.search(r"\bkLicences\b[^{;]*\{(.*?)\}\s*;", cpp, re.S)
+        self.assertIsNotNone(block, "kLicences not found in src/addons/enhance/catalog.cpp")
+        listed = re.findall(r'"([^"\\]*)"', block[1])
+        self.assertEqual(len(listed), len(set(listed)))
+        self.assertEqual(set(listed), self.models.ai_models.ALLOWED_LICENCES)
+        # A std::array larger than its list holds empty names an empty licence would match.
+        size = re.search(r"std::array<std::string_view,\s*(\d+)>\s*kLicences\b", cpp)
+        if size:
+            self.assertEqual(int(size[1]), len(listed))
 
     def test_staging_refuses_a_catalogue_the_gate_refuses(self):
         data = self.fixture()
@@ -739,6 +796,64 @@ class EnhancePackTest(unittest.TestCase):
         self.assertFalse(self.out.exists())
         # Enhance's alone: Local search has none since 2026-10-18.
         self.assertEqual([a for a, s in addon_pack.ADDONS.items() if s.get("remote_file_cap")], ["enhance"])
+
+    def test_the_pack_refuses_what_the_app_refuses(self):
+        self.stage()
+        text = (self.src / "remote.json").read_text()
+        remote = json.loads(text)
+        url = remote[0]["url"]
+        for bad in ({"path": "models/fixture-small/aux.onnx"}, {"path": "models/fixture-small/model."},
+                    {"path": "models/fixture-small/a|b.onnx"}, {"path": "models/con/model.onnx"},
+                    {"url": url[:url.rindex("/")] + "/a@b.onnx"}):
+            with self.subTest(bad=bad):
+                (self.src / "remote.json").write_text(json.dumps([dict(remote[0], **bad)] + remote[1:]))
+                with self.assertRaises(ValueError):
+                    self.pack()
+                self.assertFalse(self.out.exists())
+        (self.src / "remote.json").write_text(text)
+        (self.src / "models/con").mkdir()
+        (self.src / "models/con/model.json").write_text("{}")
+        with self.assertRaisesRegex(ValueError, "models/con/model.json: not a path the app takes"):
+            self.pack()
+
+    # (path under models/fixture-small/, whether the app takes it): the cases
+    # src/addon/manifest.cpp safe_relative_path decides, either way.
+    PATHS = [("model.onnx", True), ("aux.onnx", False), ("AUX", False), ("nul .txt", False), ("com1.onnx", False),
+             ("LPT9", False), ("com0", False), ("com\u00b9.onnx", False), ("lpt\u00b3", False), ("model.", False),
+             ("model ", False), ("a|b", False), ("a<b", False), ("a>b", False), ('a"b', False), ("a?b", False),
+             ("a*b", False), ("a:b", False), ("a\\b", False), ("a\x01b", False), ("a//b", False), ("a/../b", False),
+             ("com10.onnx", True), ("aux1.onnx", True), ("conx", True), (" con", True), ("lpt\u00b4", True),
+             ("com\u2071", True), (".hidden", True), ("\u00e9t\u00e9.onnx", True), ("a b.onnx", True),
+             ("a..b", True), ("x" * 491, True), ("x" * 492, False)]
+    URL = "https://huggingface.co/opencv/face_detection_yunet/resolve/" + "a" * 40 + "/m.onnx"
+    URLS = [(URL, True), (URL.replace("https:", "http:"), False), (URL + "?download=1", False), (URL + "#x", False),
+            (URL[:-6] + "a@b.onnx", False), (URL.replace("/resolve/", "/blob/"), False),
+            (URL.replace("/resolve/", "/resolve/../"), False), (URL[:-6] + "\u00e9.onnx", False),
+            (URL[:-6] + "a\\b.onnx", False), (URL[:-6] + "a b.onnx", False), (URL[:-6] + "a\x7fb.onnx", False),
+            ("https://huggingface.co/", False), ("https://huggingface.co.evil/x/resolve/y", False),
+            (URL[:-6] + "x" * (1024 - len(URL) + 6), True), (URL[:-6] + "x" * (1025 - len(URL) + 6), False)]
+
+    def test_the_path_and_url_rules_are_the_apps(self):
+        for path, taken in self.PATHS:
+            self.assertEqual(addon_pack.safe_relative_path("models/fixture-small/" + path), taken, path)
+        for url, taken in self.URLS:
+            self.assertEqual(addon_pack.remote_url_ok(url), taken, url)
+        # And the app agrees: each case signed unchecked, then judged by its verifier.
+        self.stage()
+        base = json.loads((self.src / "remote.json").read_text())[0]
+        cases = ([({"path": "models/fixture-small/" + p}, "ok" if t else "unsafe_path") for p, t in self.PATHS] +
+                 [({"url": u}, "ok" if t else "malformed") for u, t in self.URLS])
+        for i, (change, want) in enumerate(cases):
+            with self.subTest(change=change):
+                with mock.patch.object(addon_pack, "read_remote", return_value=[dict(base, **change)]):
+                    manifest = self.pack()
+                m = json.loads(manifest.read_bytes())
+                staged = self.tmp / f"case-{i}"
+                with zipfile.ZipFile(manifest.parent / m["archive"]["path"]) as z:
+                    z.extractall(staged)
+                shutil.copy(manifest, staged / "manifest.json")
+                shutil.copy(str(manifest) + ".sig", staged / "manifest.json.sig")
+                self.assertEqual(self.verdict(staged), want)
 
     def verdict(self, folder: Path) -> str:
         tool = os.environ.get("MV_ADDON_VERIFY")

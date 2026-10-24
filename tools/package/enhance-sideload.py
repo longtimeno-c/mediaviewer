@@ -5,17 +5,16 @@
 (docs/plans/enhance.md E1).
 
     enhance-sideload.py --build <build dir> --key <dev key hex file> --addons <add-ons folder> \
-        [--models tests/data/enhance/fixture-models.json] [--upstream remote|bundle] [--cache DIR] \
-        [--platform win-x64|macos] [--version 1.0.0]
+        [--models tests/data/enhance/fixture-models.json] [--platform win-x64|macos] [--version 1.0.0]
 
 Stages the catalogue with enhance-models.py (by default the fixture, whose
-files are real Hugging Face pins already verified for Local search; with
---upstream remote, the default, the add-on itself downloads the model you
-choose), lays it beside the native add-on built in <build>/addons/enhance,
-then packs, signs and unpacks it into <addons>/<folder>/<version>/ with
-ai-sideload.py: exactly what the app's own installer leaves. --upstream
-bundle puts the weights in the pack instead (offline), fetched once into
---cache (default <build>/addons/.model-cache, ai-models.py's own).
+files are real Hugging Face pins already verified for Local search; the
+add-on itself downloads the model you choose), lays it beside the native
+add-on built in <build>/addons/enhance, then packs, signs and unpacks it into
+<addons>/<folder>/<version>/ with ai-sideload.py: exactly what the app's own
+installer leaves. The pack never carries weights. Offline, place a model's
+file at its pinned path under the installed add-on's data/cache/models/; the
+next Download or Resume adopts it when its SHA-256 matches.
 
 As with ai-sideload.py, only a build configured with
 -DMV_ADDON_DEV_PUBLIC_KEY=<the key's public half> trusts it; point that build
@@ -49,8 +48,6 @@ def main(argv=None) -> int:
     ap.add_argument("--key", required=True)
     ap.add_argument("--addons", required=True)
     ap.add_argument("--models", default=str(ROOT / "tests/data/enhance/fixture-models.json"))
-    ap.add_argument("--upstream", choices=["bundle", "remote"], default="remote")
-    ap.add_argument("--cache")
     ap.add_argument("--platform", default="macos" if sys.platform == "darwin" else "win-x64")
     ap.add_argument("--version", default="1.0.0")
     a = ap.parse_args(argv)
@@ -58,9 +55,7 @@ def main(argv=None) -> int:
     addons.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=".mv-enhance-stage-", dir=str(addons.parent)))
     try:
-        cache = a.cache or str(Path(a.build) / "addons" / ".model-cache")
-        if enhance_models.main(["stage", "--models", a.models, "--out", str(work / "enhance"),
-                                "--upstream", a.upstream, "--cache", cache]) != 0:
+        if enhance_models.main(["stage", "--models", a.models, "--out", str(work / "enhance")]) != 0:
             return 1
         return ai_sideload.main(["--build", a.build, "--models", str(work), "--key", a.key, "--addons", a.addons,
                                  "--platform", a.platform, "--pieces", "enhance", "--version", a.version])

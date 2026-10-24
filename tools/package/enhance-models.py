@@ -5,7 +5,7 @@
 "How a model is chosen").
 
     enhance-models.py check [--models PATH]
-    enhance-models.py stage --out build/addons/enhance [--models PATH] [--upstream remote|bundle] [--cache DIR]
+    enhance-models.py stage --out build/addons/enhance [--models PATH]
 
 The catalogue (enhance-models.json beside this script; the fixture is
 tests/data/enhance/fixture-models.json) lists, per kind (still, video,
@@ -19,17 +19,19 @@ must carry a licence from ai-models.py's ALLOWED_LICENCES (one allow-list for
 both add-ons), every file must be a pinned, plain Hugging Face file, and none
 may be over the 5 GB per-file cap (docs/design/12, 2026-10-13). A kind names
 only models that serve it, and a model is named by every kind it serves.
+Model ids, staged paths and URLs meet the app's own rules (addon-pack.py's
+ports of src/addon/manifest.cpp), so no pin can make the app refuse the add-on.
 
 `stage` runs `check`, then writes what src/addons/enhance reads:
 models/enhance.json (the kinds), models/<id>/model.json (each model block as
 written) and licences.json (relative path -> SPDX) for addon-pack.py. It owns
-<out>/models: anything else under it is removed. With `--upstream remote`
-(the default; release builds) no weights are staged: they go in remote.json,
-{url, path, size, sha256, licence} each, which addon-pack.py signs into the
-manifest's `remote`, and the add-on fetches the chosen model's files when
-Download is clicked. `--upstream bundle` fetches them now into
-models/<id>/ (an offline dev pack); a file already in --cache with the right
-hash is not fetched again. The request is a plain GET of the pinned URL.
+<out>/models: anything else under it is removed. No weights are staged: they
+go in remote.json, {url, path, size, sha256, licence} each, which
+addon-pack.py signs into the manifest's `remote`, and the add-on fetches the
+chosen model's files when Download is clicked. The add-on never reads weights
+from its pack, so `--upstream bundle` (ai-models.py's offline mode) is
+refused; offline, a file placed at its pinned path under the add-on's
+data/cache/models/ is adopted by hash instead.
 """
 import argparse
 import importlib.util
@@ -37,7 +39,6 @@ import json
 import math
 from pathlib import Path
 import re
-import shutil
 import sys
 
 HERE = Path(__file__).resolve().parent
@@ -48,6 +49,12 @@ ai_models = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ai_models)
 # The weights-licence gate and the pin's URL are Local search's (docs/design/17).
 ALLOWED_LICENCES = ai_models.ALLOWED_LICENCES
+_spec = importlib.util.spec_from_file_location("addon_pack", HERE / "addon-pack.py")
+addon_pack = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(addon_pack)
+# What the app refuses in a signed manifest refuses the whole add-on.
+host_path_ok = addon_pack.safe_relative_path
+host_url_ok = addon_pack.remote_url_ok
 
 KINDS = ("still", "video", "audio")
 ACCELERATORS = {"cuda", "coreml"}
@@ -98,14 +105,6 @@ def safe_relative(p) -> bool:
     if any(ord(c) <= 0x20 or ord(c) >= 0x7F for c in p):
         return False
     return all(part not in ("", ".", "..") for part in p.split("/"))
-
-
-def plain_hf_url(url: str) -> bool:
-    """What the app fetches (src/addon/manifest.cpp remote_url_ok): Hugging Face over
-    HTTPS, a fixed /resolve/ path, no query, fragment or credentials."""
-    hf = "https://huggingface.co/"
-    return (url.startswith(hf) and len(url) <= 1024 and "/resolve/" in url and "/../" not in url and
-            not any(c in "?#@\\" or ord(c) <= 0x20 or ord(c) >= 0x7F for c in url))
 
 
 def one_of(v, allowed) -> bool:
@@ -223,6 +222,9 @@ def file_problems(folder: str, files) -> list:
             bad.append(f"{where} is {entry['licence']}: not an allowed licence")
         if not safe_relative(entry["as"]) or entry["as"].lower() == "model.json":
             bad.append(f"{where}: 'as' is not a safe relative path beside model.json")
+        elif not host_path_ok(f"{folder}/{entry['as']}"):
+            bad.append(f"{where}: not a path the app takes (a device name such as aux, a trailing dot or "
+                       "space, or one of <>\"|?*)")
         elif entry["as"].lower() in names:
             bad.append(f"{where}: listed twice")
         names.add(str(entry["as"]).lower())
@@ -236,7 +238,7 @@ def file_problems(folder: str, files) -> list:
             bad.append(f"{where} is not pinned (a 40-hex revision and a 64-hex SHA-256)")
         elif not (isinstance(entry["repo"], str) and
                   re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*", entry["repo"]) and
-                  safe_relative(entry["file"]) and plain_hf_url(ai_models.url_of(entry))):
+                  safe_relative(entry["file"]) and host_url_ok(ai_models.url_of(entry))):
             bad.append(f"{where} is not a plain Hugging Face URL")
     return bad
 
@@ -253,6 +255,8 @@ def problems(data, twice: list) -> list:
         if not m:
             bad.append(f"{folder}: a model folder is models/<id>, the id [a-z0-9-]{{1,32}}")
             continue
+        if not host_path_ok(m[1]):
+            bad.append(f"{folder}: {m[1]} is a name the app refuses (a Windows device name)")
         if not isinstance(entry, dict):
             bad.append(f"{folder}: not an object")
             continue
@@ -325,18 +329,23 @@ def prune(out: Path, keep: set) -> None:
 
 
 def write_json(path: Path, value) -> None:
+    """LF line ends on every OS: tests/data/enhance/staged is this output, byte for byte."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=1) + "\n", encoding="utf-8")
+    path.write_bytes((json.dumps(value, indent=1) + "\n").encode("utf-8"))
 
 
 def stage(args) -> int:
+    if args.upstream == "bundle":
+        print("--upstream bundle is refused: the add-on fetches its weights and never reads them from its "
+              "pack. Offline, place a file at its pinned path, data/cache/models/<id>/<as> in the add-on's "
+              "data folder; the next Download or Resume adopts it when its SHA-256 matches.", file=sys.stderr)
+        return 2
     data, bad = read(args)
     if bad:
         for b in bad:
             print(b, file=sys.stderr)
         return 1
     out = Path(args.out)
-    cache = Path(args.cache) if args.cache else out.parent / ".model-cache"
     index = {"schema": 1, "kinds": {k: {"name": data["kinds"][k]["name"], "unit": data["kinds"][k]["unit"],
                                         "cpu_budget_ms": data["kinds"][k]["cpu_budget_ms"],
                                         "models": list(data["kinds"][k]["models"])} for k in KINDS}}
@@ -345,22 +354,9 @@ def stage(args) -> int:
     remote = []
     for folder, entry in data["models"].items():
         for f in entry["files"]:
-            rel = f"{folder}/{f['as']}"
-            if args.upstream == "remote":
-                remote.append({"url": ai_models.url_of(f), "path": rel, "size": f["size"], "sha256": f["sha256"],
-                               "licence": f["licence"]})
-                continue  # a staged copy from an earlier bundle is pruned below
-            try:
-                src = ai_models.fetch(f, cache)
-            except ValueError:
-                print(f"{rel}: size or SHA-256 differs from the catalogue", file=sys.stderr)
-                return 1
-            target = out / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if (not target.is_file() or target.stat().st_size != f["size"] or
-                    ai_models.sha256_file(target) != f["sha256"]):
-                shutil.copyfile(src, target)
-            licences[rel] = f["licence"]
+            # Listed, never staged: a copy left by an older stage is pruned below.
+            remote.append({"url": ai_models.url_of(f), "path": f"{folder}/{f['as']}", "size": f["size"],
+                           "sha256": f["sha256"], "licence": f["licence"]})
         write_json(out / folder / "model.json", entry["model"])
         licences[f"{folder}/model.json"] = GPL
     prune(out, set(licences))
@@ -369,7 +365,7 @@ def stage(args) -> int:
         write_json(remote_path, remote)
     elif remote_path.exists():
         remote_path.unlink()
-    (out / "licences.json").write_text(json.dumps(licences, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    (out / "licences.json").write_bytes((json.dumps(licences, indent=1, sort_keys=True) + "\n").encode("utf-8"))
     fetched = f", {len(remote)} files fetched on install" if remote else ""
     print(f"staged {len(data['models'])} models into {out}{fetched}")
     return 0
@@ -383,9 +379,8 @@ def main(argv=None) -> int:
     s = sub.add_parser("stage")
     s.add_argument("--out", required=True)
     s.add_argument("--models", help="the catalogue (default: enhance-models.json beside this script)")
-    s.add_argument("--cache", help="--upstream bundle's download cache (default: <out>/../.model-cache)")
     s.add_argument("--upstream", choices=["bundle", "remote"], default="remote",
-                   help="remote: list the weights for the add-on to fetch; bundle: fetch them into the pack now")
+                   help="remote (the only one): list the weights for the add-on to fetch; bundle is refused")
     args = ap.parse_args(argv)
     return stage(args) if args.cmd == "stage" else check(args)
 

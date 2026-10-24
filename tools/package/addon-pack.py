@@ -337,6 +337,61 @@ def licence_allowed(spdx: str) -> bool:
     return bool(parts) and all(p in ALLOWED_LICENCES for p in parts)
 
 
+# The app's own rules for a path in the manifest and a fetched file's URL
+# (src/addon/manifest.cpp safe_relative_path and remote_url_ok), ported byte
+# for byte over the UTF-8 the app reads: a pack the app would refuse is refused
+# here, before it is signed. enhance-models.py check applies the same two.
+def _windows_device(part: bytes) -> bool:
+    """CON, PRN, AUX, NUL, COM1-9, LPT1-9 (and COM¹²³, LPT¹²³), in any case,
+    with or without an extension and with spaces before it."""
+    base = part.split(b".", 1)[0].rstrip(b" ")
+    if base.lower() in (b"con", b"prn", b"aux", b"nul"):
+        return True
+    if len(base) < 4 or base[:3].lower() not in (b"com", b"lpt"):
+        return False
+    n = base[3:]
+    return (len(n) == 1 and b"0" <= n <= b"9") or n in (b"\xc2\xb9", b"\xc2\xb2", b"\xc2\xb3")
+
+
+def safe_relative_path(path) -> bool:
+    """'/' only, no root, drive or stream, no empty, . or .. part, none of
+    <>"|?* or a control character, at most 512 bytes."""
+    try:
+        b = path.encode("utf-8")
+    except (AttributeError, UnicodeEncodeError):  # not text, or a lone surrogate the app's reader refuses
+        return False
+    if not b or len(b) > 512 or b[:1] in (b"/", b"\\") or b"\\" in b or b":" in b:
+        return False
+    if any(c in b'<>"|?*' or c < 0x20 for c in b):
+        return False
+    rest = b
+    while rest:
+        slash = rest.find(b"/")
+        part = rest if slash < 0 else rest[:slash]
+        # Win32 drops a trailing dot or space; a device name is one in every folder.
+        if part in (b"", b".", b"..") or part[-1:] in (b".", b" ") or _windows_device(part):
+            return False
+        if slash < 0:
+            break
+        rest = rest[slash + 1:]
+    return True
+
+
+def remote_url_ok(url) -> bool:
+    """Hugging Face over HTTPS, a fixed /resolve/ path, no query, fragment,
+    credentials or other host."""
+    host = b"https://huggingface.co/"
+    try:
+        b = url.encode("utf-8")
+    except (AttributeError, UnicodeEncodeError):
+        return False
+    if len(b) <= len(host) or len(b) > 1024 or not b.startswith(host):
+        return False
+    if any(c in b"?#@\\" or c <= 0x20 or c >= 0x7F for c in b):
+        return False
+    return b"/../" not in b and b"/resolve/" in b
+
+
 def addon_metadata(addon: dict) -> dict:
     """description and contributes, inline or from the add-on's manifest.json."""
     meta = {k: addon[k] for k in ("description", "contributes") if addon.get(k)}
@@ -402,6 +457,9 @@ def collect(src: Path, platform: str, stage: Path, addon_id: str = "import") -> 
             raise ValueError(f"{p.relative_to(stage)} is a symlink; the app never follows links")
         if p.is_file():
             rel = p.relative_to(stage).as_posix()
+            if not safe_relative_path(rel):
+                raise ValueError(f"{rel}: not a path the app takes (a device name, a trailing dot or space, "
+                                 "or one of <>\"|?*)")
             spdx = licence_of(rel, addon, staged)
             if not licence_allowed(spdx):
                 raise ValueError(f"{rel} is licensed {spdx}: not redistributable in the pack")
@@ -425,7 +483,9 @@ def make_archive(stage: Path, archive: Path, platform: str):
 def read_remote(src: Path, cap: int = 0) -> list:
     """ai-models.py --upstream remote's list: files the add-on fetches on install
     (docs/plans/model-tiers.md T3). Signed into the manifest, never shipped.
-    `cap`, when set, is the add-on's largest fetched file (Enhance's 5 GB)."""
+    `cap`, when set, is the add-on's largest fetched file (Enhance's 5 GB).
+    Every entry meets the app's own path and URL rules, or the app would
+    refuse the whole manifest."""
     path = src / "remote.json"
     if not path.exists():
         return []
@@ -434,7 +494,7 @@ def read_remote(src: Path, cap: int = 0) -> list:
     for r in remote:
         if set(r) != {"url", "path", "size", "sha256", "licence"}:
             raise ValueError(f"remote entry {r.get('path')} has unexpected fields")
-        if not r["url"].startswith("https://huggingface.co/") or any(c in r["url"] for c in "?#"):
+        if not remote_url_ok(r["url"]):
             raise ValueError(f"{r['path']}: only plain Hugging Face URLs are fetched")
         if not re.fullmatch(r"[0-9a-f]{64}", r["sha256"]) or not isinstance(r["size"], int) or r["size"] <= 0:
             raise ValueError(f"{r['path']}: needs a size and a SHA-256")
@@ -442,7 +502,7 @@ def read_remote(src: Path, cap: int = 0) -> list:
             raise ValueError(f"{r['path']}: {r['size']} bytes is over the {cap / 1e9:g} GB per-file cap")
         if not licence_allowed(r["licence"]):
             raise ValueError(f"{r['path']} is licensed {r['licence']}: not one the pack may point to")
-        if r["path"].startswith("/") or ".." in r["path"].split("/") or "\\" in r["path"] or r["path"].lower() in seen:
+        if not safe_relative_path(r["path"]) or r["path"].lower() in seen:
             raise ValueError(f"{r['path']}: not a safe relative path, or listed twice")
         seen.add(r["path"].lower())
     return remote
