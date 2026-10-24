@@ -117,7 +117,8 @@ bool save(secrets::store& store, const std::vector<device>& devices) {
 bool forget(secrets::store& store) {
   (void)store.erase(kDevicesName);
   (void)store.erase(kIdentityName);
-  return !store.get(kDevicesName) && !store.get(kIdentityName);
+  (void)store.erase(kRelayKeyName);
+  return !store.get(kDevicesName) && !store.get(kIdentityName) && !store.get(kRelayKeyName);
 }
 
 std::int64_t hour_of(std::int64_t unix_ms) noexcept {

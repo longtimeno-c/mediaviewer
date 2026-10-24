@@ -30,7 +30,7 @@ std::vector<sp::outgoing_file> make_files(const fs::path& src) {
     const fs::path p = src / name;
     write_bytes(p, pattern(size, seed++));
     set_mtime(p, kWhen + seed);
-    files.push_back({utf8(p), name, size, kWhen + seed});
+    files.push_back({utf8(p), name, size, kWhen + seed, {}});
   }
   return files;
 }

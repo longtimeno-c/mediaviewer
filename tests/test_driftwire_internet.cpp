@@ -748,7 +748,7 @@ TEST_CASE("driftwire internet: what is not a code is caught before anything is t
 
 TEST_CASE("driftwire internet: the offer asks for places, and places are read with care", "[driftwire]") {
   // #472 PR 5: only a sender that says so is sent msg::places.
-  const std::vector<sp::outgoing_file> files{{"/x/a.jpg", "a.jpg", 10, 0}};
+  const std::vector<sp::outgoing_file> files{{"/x/a.jpg", "a.jpg", 10, 0, {}}};
   auto plain = sp::parse_offer(sp::offer_json(files));
   auto asks = sp::parse_offer(sp::offer_json(files, true));
   REQUIRE(plain);

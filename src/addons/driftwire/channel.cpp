@@ -196,10 +196,16 @@ bool valid_type(std::uint8_t raw, std::uint32_t version) noexcept {
       raw <= static_cast<std::uint8_t>(msg::relay_data)) {
     return true;
   }
+  if (raw == static_cast<std::uint8_t>(msg::offer_more)) return true;  // #498: any protocol
   return raw >= static_cast<std::uint8_t>(msg::ident) && raw <= static_cast<std::uint8_t>(last);
 }
 
 }  // namespace
+
+bool is_internet_hello(std::span<const std::uint8_t> first) noexcept {
+  return first.size() >= kInternetHelloBytes && std::memcmp(first.data(), kHelloMagic, 4) == 0 &&
+         first[4] == kProtocol2 && first[5] == kKindInternet;
+}
 
 // ---- opening ---------------------------------------------------------------------------
 

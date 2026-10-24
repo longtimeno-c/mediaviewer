@@ -84,6 +84,12 @@ struct hello {
                                        // internet: the sender's CPace message
 };
 
+// #500: an internet hello's fixed start ("MVSP", 2, 'I', CPace's session id
+// and the sender's CPace message), which a relay through the person's own
+// computer must see before it forwards anything.
+inline constexpr std::size_t kInternetHelloBytes = 4 + 1 + 1 + 16 + 32;
+[[nodiscard]] bool is_internet_hello(std::span<const std::uint8_t> first) noexcept;
+
 // What happened to a protocol 2 channel's link (channel::set_on_link).
 enum class link_event : std::uint8_t {
   suspect,  // nothing heard for kSuspectMs: worth racing the other bearers

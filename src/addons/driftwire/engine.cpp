@@ -137,6 +137,15 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   v_.handover = kept.handover;
   v_.relay = kept.relay;  // #472 relays
   v_.relay_server = kept.relay_server;
+  // #500: the relay server's key is kept in the secret store, the address in
+  // the file (one written before kept both there, until the next save).
+  if (secrets_ && !v_.relay_server.empty() && v_.relay_server.find('#') == std::string::npos) {
+    if (auto k = secrets_->get(known::kRelayKeyName)) {
+      v_.relay_server += '#';
+      v_.relay_server.append(k->begin(), k->end());
+      sodium_memzero(k->data(), k->size());
+    }
+  }
   v_.destination = host_.default_destination();
   if (!kept.destination.empty()) {
     if (auto st = io::stat_path(kept.destination); st && st->is_directory) v_.destination = kept.destination;
@@ -270,6 +279,24 @@ void engine::save_now() {
   {
     std::lock_guard lock(control_m_);
     save_wanted_ = false;
+  }
+  // #500: the key after '#' goes to the secret store and the file keeps the
+  // address; with no store (the portable build) the file keeps both.
+  {
+    std::lock_guard s(secrets_m_);
+    if (secrets_) {
+      const auto hash = p.relay_server.rfind('#');
+      if (hash != std::string::npos) {
+        const std::span<const std::uint8_t> key(reinterpret_cast<const std::uint8_t*>(p.relay_server.data()) + hash + 1,
+                                                p.relay_server.size() - hash - 1);
+        auto kept = secrets_->get(known::kRelayKeyName);
+        const bool same = kept && std::equal(kept->begin(), kept->end(), key.begin(), key.end());
+        if (kept) sodium_memzero(kept->data(), kept->size());
+        if (same || secrets_->put(known::kRelayKeyName, key)) p.relay_server.resize(hash);
+      } else {
+        (void)secrets_->erase(known::kRelayKeyName);
+      }
+    }
   }
   if (!save_prefs(opts_.prefs_path, p)) host_.log(1, "driftwire: could not keep the settings");
 }
@@ -1092,10 +1119,16 @@ void engine::run_known_wait() {
   while (!stopped()) {
     std::vector<known::device> devices;
     bool busy = false;
+    std::vector<net::address> outside;
+    for (const auto& v : client->external_votes()) {
+      const auto ip = net::parse_address(v.address);
+      if (ip && !ip->v6 && std::find(outside.begin(), outside.end(), *ip) == outside.end()) outside.push_back(*ip);
+    }
     {
       std::lock_guard lock(m_);
       devices = devices_;
       busy = transfer_running_;
+      outside_seen_ = std::move(outside);
     }
     std::erase_if(pairs, [&](const auto& p) {
       return std::none_of(devices.begin(), devices.end(), [&](const known::device& d) { return d.key == p.first; });
@@ -1498,9 +1531,13 @@ void engine::build_files(std::vector<std::string> paths, std::uint64_t gen) {
     if (files_stale(gen)) return;  // a newer set replaced this one
     auto st = io::stat_path(path);
     if (!st || st->is_directory) return;
+    // #498: the file itself, never a link (a folder's walk skips them too):
+    // what is sent is this file, whatever is put at its path later.
+    auto id = io::identify(path);
+    if (!id) return;
     std::string rel(leaf_name(path));
     if (!safe_relative(rel) || housekeeping(rel)) return;
-    out.push_back({path, std::move(rel), st->size, st->mtime_unix});
+    out.push_back({path, std::move(rel), st->size, st->mtime_unix, id.value()});
   };
   for (const auto& p : paths) {
     if (files_stale(gen)) return;
@@ -1567,7 +1604,16 @@ void engine::walk_folder(const std::string& folder, std::uint64_t gen) {
     if (files_stale(gen)) return false;
     if (e.cloud_only || skipped_relative(e.relative_utf8)) return true;
     std::string rel = top + "/" + e.relative_utf8;
-    if (safe_relative(rel)) out.push_back({e.path_utf8, std::move(rel), e.size, e.mtime_unix});
+    if (!safe_relative(rel)) return true;
+    // #498: the walk's own id where it has one (POSIX); Windows' listing
+    // gives none, so the file is looked at once (its attributes only).
+    io::file_id id = e.id;
+    if (!id.known()) {
+      auto got = io::identify(e.path_utf8);
+      if (!got) return true;
+      id = got.value();
+    }
+    out.push_back({e.path_utf8, std::move(rel), e.size, e.mtime_unix, id});
     return out.size() < kMaxFiles;
   });
   publish_files(std::move(out), gen);
@@ -3071,7 +3117,8 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
   shown_notice.shown = may_notify && notice(name, 0, 0);
   if (open_window && may_notify && !shown_notice.shown) host_.show_screen(true);
   post();
-  auto offer = first ? (first->type == msg::offer ? parse_offer(first->text()) : result<incoming_offer>(err(status::corrupt)))
+  auto offer = first ? (first->type == msg::offer ? read_offer_after(*ch, first->text(), opts_.confirm_ms)
+                                                 : result<incoming_offer>(err(status::corrupt)))
                      : read_offer(*ch, opts_.confirm_ms);
   if (!offer) {
     const bool declined = cancel_.load();
