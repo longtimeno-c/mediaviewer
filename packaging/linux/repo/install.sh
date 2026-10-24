@@ -415,6 +415,7 @@ apt_list_prefix() {
 }
 
 uninstall_apt() {
+  # shellcheck disable=SC2016 # dpkg-query's own ${Status}, not the shell's
   status=$(dpkg-query -W -f='${Status}' driftwire 2>/dev/null || true)
   if [ "$status" != "install ok installed" ] && [ ! -e "$APT_SOURCES" ] && [ ! -e "$APT_KEYRING" ]; then
     return 0
