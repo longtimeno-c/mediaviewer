@@ -248,7 +248,10 @@ class channel {
   [[nodiscard]] expected complete_rejoin(pending_ptr p);
   // The server: `h` (from read_hello) names this session.
   [[nodiscard]] bool names_this(const hello& h) const noexcept;
-  // The server: the rest of a rejoin that names_this().
+  // The server: the rest of a rejoin that names_this(). #496: each tag
+  // opens once (a replayed hello is refused before any read or write), and
+  // only adopting the link is serialised: a rejoin that never proves
+  // resume_at does not hold up another.
   [[nodiscard]] expected accept_rejoin(std::shared_ptr<link> l, const hello& h);
   // The link is up (not suspect, not down).
   [[nodiscard]] bool link_up() const noexcept;
@@ -362,9 +365,12 @@ class channel {
 
   // The resume secret (protocol 2): the psk of every rejoin of this session.
   // From the first handshake's Split; never leaves memory.
-  std::mutex rejoin_m_;  // one rejoin at a time
+  std::mutex rejoin_m_;  // one rejoin adopted at a time
   mutable std::mutex secret_m_;
   std::array<std::uint8_t, 32> resume_{};  // under secret_m_
+  // #496: the tags of the rejoins accept_rejoin has taken (the newest
+  // kSpentTags; only a tag made with resume_ gets in).
+  std::deque<std::array<std::uint8_t, 16>> spent_tags_;  // under secret_m_
   std::atomic<std::uint32_t> rejoins_{0};
 
   std::mutex ping_m_;
