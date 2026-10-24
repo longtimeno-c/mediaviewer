@@ -1922,8 +1922,8 @@ terminal"); the decisions are in [docs/design/12](design/12-decision-log.md#drif
 - **The package repository (2026-10-24), proven in this Linux container only** (Ubuntu 24.04,
   apt 2.8.3, dnf 4.14 run as `python3.12 /usr/bin/dnf`, rpm 4.18.2, createrepo_c 0.17.3, GnuPG
   2.4.4, a throwaway RSA-4096 key), from the 0.1.37 packages built here and a 0.1.38 repacked from
-  them:
-  - `test_driftwire_repo.py`: 23 tests pass (Python 3.13 and 3.11); `shellcheck` 0.9.0 reports
+  them; all of it run again after the review fixes:
+  - `test_driftwire_repo.py`: 25 tests pass (Python 3.13 and 3.11); `shellcheck` 0.9.0 reports
     nothing on `install.sh`, template or built.
   - The site served on 127.0.0.1: `curl … | sh` installed 0.1.37 through apt with the source's
     `Signed-By` key; rebuilt at 0.1.38, `apt-get update && apt-get install --only-upgrade
@@ -1952,7 +1952,8 @@ terminal"); the decisions are in [docs/design/12](design/12-decision-log.md#drif
   (the latter's key and build steps were run here with a passphrase-protected key; Pages has never
   deployed it). Not run anywhere: a real Fedora, RHEL 10 or openSUSE machine, zypper at all, the
   arm64 packages from the repository. `tools/package/test_github_release.py` passes here
-  (46 tests, with the preflight's check of the repository's key); the PowerShell change to `build-release.ps1` was not run (no `pwsh` here).
+  (47 tests, with the preflight's check of the repository's key); the `v*` rule on the
+  `github-pages` environment is untried (no Pages here); the PowerShell change to `build-release.ps1` was not run (no `pwsh` here).
 - **Not built:** Bluetooth in the command line; Remember on macOS (no keychain identity for a bare
   program); the Windows and macOS programs as releases. The Linux package repository is built but
   not live: it waits for the owner's one-time setup ([Linux package repository](#linux-package-repository)).
