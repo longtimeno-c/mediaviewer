@@ -67,6 +67,11 @@ def prepare():
                              + ', '.join(name for name in azure if name not in configured))
         if not configured:
             print('::warning::Windows installers will be unsigned; SmartScreen may warn.')
+    # The driftwire package repository (release.yml's driftwire-repo, after a stable release is
+    # published) signs with this key; without it that job would fail after the release is out.
+    if mode == 'stable' and os.environ.get('MV_DRIFTWIRE_REPO') == '1' and not os.environ.get('DRIFTWIRE_REPO_GPG_KEY'):
+        raise ValueError('MV_DRIFTWIRE_REPO is 1 but the secret DRIFTWIRE_REPO_GPG_KEY is not set: add the '
+                         'signing key (docs/DEVELOPMENT.md, "Linux package repository") or set MV_DRIFTWIRE_REPO to 0.')
     tag = f'v{version}'
     with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
         output.write(f'version={version}\ntag={tag}\n')

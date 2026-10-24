@@ -91,6 +91,23 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Incomplete optional Windows'):
             release.prepare()
 
+    def test_package_repository_needs_its_key_on_stable(self):
+        for name in ('MV_MANIFEST_SIGNING_KEY', 'MV_MAC_CERT_P12_BASE64', 'MV_MAC_CERT_PASSWORD',
+                     'APPLE_ID', 'APPLE_TEAM_ID', 'APPLE_APP_PASSWORD', 'MV_SPARKLE_PRIVATE_KEY'):
+            os.environ[name] = 'test'
+        os.environ['MV_DRIFTWIRE_REPO'] = '1'
+        os.environ['MODE'] = 'stable'
+        with self.assertRaisesRegex(ValueError, 'DRIFTWIRE_REPO_GPG_KEY is not set'):
+            release.prepare()
+        os.environ['MODE'] = 'preview'   # previews leave the repository alone
+        release.prepare()
+        os.environ['MODE'] = 'stable'
+        os.environ['DRIFTWIRE_REPO_GPG_KEY'] = 'test'
+        release.prepare()
+        del os.environ['DRIFTWIRE_REPO_GPG_KEY']
+        os.environ['MV_DRIFTWIRE_REPO'] = '0'
+        release.prepare()
+
     def test_release_cannot_blocklist_itself(self):
         os.environ['BLOCKLIST'] = '0.1.1'
         with self.assertRaisesRegex(ValueError, 'Cannot blocklist'):
