@@ -59,6 +59,7 @@
 #include <vector>
 
 #include "addons/driftwire/link.h"
+#include "addons/driftwire/stages.h"
 #include "addons/driftwire/wire.h"
 #include "core/result.h"
 
@@ -82,6 +83,12 @@ struct hello {
   std::vector<std::uint8_t> body;      // protocol 1: the commitment; 2: the first Noise message;
                                        // internet: the sender's CPace message
 };
+
+// #500: an internet hello's fixed start ("MVSP", 2, 'I', CPace's session id
+// and the sender's CPace message), which a relay through the person's own
+// computer must see before it forwards anything.
+inline constexpr std::size_t kInternetHelloBytes = 4 + 1 + 1 + 16 + 32;
+[[nodiscard]] bool is_internet_hello(std::span<const std::uint8_t> first) noexcept;
 
 // What happened to a protocol 2 channel's link (channel::set_on_link).
 enum class link_event : std::uint8_t {
@@ -209,6 +216,10 @@ class channel {
   void flush(int timeout_ms);
   // Any thread: every blocked call returns; the pinger stops.
   void shutdown() noexcept;
+  // #540, the benches: from now on the seal, the send, a wait for the
+  // replay's room, the receive and the open add to `t` (null: stop).
+  // Protocol 2 only.
+  void set_stages(stage_times* t) noexcept { stages_.store(t, std::memory_order_relaxed); }
 
   // ---- protocol 2: moving the session -------------------------------------------------------
   // Called (any thread, briefly, never with a lock of the channel held) when
@@ -311,6 +322,7 @@ class channel {
   std::atomic<bool> down_{false};
   std::atomic<bool> cancelled_{false};  // cancel() called, or the peer's msg::cancel read
   std::atomic<bool> opened_{false};  // the handshake and ident are done
+  std::atomic<stage_times*> stages_{nullptr};  // #540: set_stages
 
   // Writing: one sender at a time (send_m_), never waiting on a lock the
   // reader holds. Lock order: send_m_, then link_m_ or replay_m_.

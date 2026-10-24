@@ -358,6 +358,10 @@ class engine {
     // the beacon take (net::local_subnets() when empty). With loopback_only
     // and none given, every source is taken (the tests' made-up addresses).
     std::optional<std::vector<net::subnet>> local_subnets;
+    // #540, the benches: where each side's time goes (stages.h). Null:
+    // nothing is timed.
+    stage_times* send_stages = nullptr;
+    stage_times* receive_stages = nullptr;
   };
 
   engine(engine_host& host, options opts);
@@ -669,6 +673,10 @@ class engine {
   // #472 PR 5: the receiver's internet places, as it sent them, for the
   // send running now (the mover races them when the local link goes).
   std::vector<net::endpoint> handover_places_;  // under m_
+  // #500: this network's outside IPv4 as the remembered devices' DHT client
+  // last saw it (its votes): a relay for one of this person's computers never
+  // goes there (the router's own services answer on it from inside).
+  std::vector<net::address> outside_seen_;  // under m_
   // #472: the receiver said it meets on the DHT too, if both sides move.
   bool handover_dht_ = false;  // under m_
   // #472 PR 2: the receiver of codes while the toggle is on (made and dropped

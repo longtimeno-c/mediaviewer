@@ -41,6 +41,9 @@ inline constexpr std::size_t kMaxDevices = 16;
 inline constexpr std::size_t kMaxName = 64;  // bytes of UTF-8 kept
 inline constexpr const char* kIdentityName = "identity";
 inline constexpr const char* kDevicesName = "devices";
+// #500: the relay server's key (what follows '#' in "Relay (your own
+// server)"); the prefs file keeps only the address.
+inline constexpr const char* kRelayKeyName = "relay_key";
 inline constexpr std::int64_t kHourMs = 60 * 60 * 1000;
 // How long both sides of a meeting punch (meet.h's 10 s and 5 s more: the
 // receiver finds the sender's item a moment before the sender finds its).
@@ -65,8 +68,8 @@ struct device {
 [[nodiscard]] std::optional<std::vector<device>> decode(std::span<const std::uint8_t> bytes);
 [[nodiscard]] std::vector<device> load(secrets::store& store);
 [[nodiscard]] bool save(secrets::store& store, const std::vector<device>& devices);
-// Remove everything (#507): the remembered devices and this machine's
-// identity go from the store. True when neither is left.
+// Remove everything (#507): the remembered devices, this machine's identity
+// and the relay server's key (#500) go from the store. True when none is left.
 bool forget(secrets::store& store);
 
 // The hour (UTC) a unix time is in, and the pair's DHT keys for it in one

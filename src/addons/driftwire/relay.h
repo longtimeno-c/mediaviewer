@@ -9,9 +9,11 @@
 //
 //   A -> R  msg::relay {"places":[...]}: B's places, as B's code holds them
 //   R       connects onward to those, and only those, and only to public
-//           addresses (never into R's own network)
+//           addresses outside R's own networks and its router (fence, #500)
 //   R -> A  msg::relay_answer {"ok":true}, or {"ok":false,"why":...}
-//   then    msg::relay_data either way: the bytes of A's TCP-like link to B
+//   then    msg::relay_data either way: the bytes of A's TCP-like link to B,
+//           which R forwards only once they start with an internet hello
+//           (channel.h): R is a pipe for Driftwire, not any TCP
 //
 // A then runs the internet handshake with B (CPace on B's code, then Noise
 // XX) through it, end to end. R sees that handshake and the session only as
@@ -60,13 +62,31 @@ enum class answer : std::uint8_t {
 [[nodiscard]] std::vector<net::endpoint> parse_request(std::string_view json);
 [[nodiscard]] std::string answer_json(answer a);
 [[nodiscard]] std::optional<answer> parse_answer(std::string_view json);
-// R connects onward only to a public address (net::is_public) with a port,
-// and never to one of its own (`own`: net::local_addresses()), nor into an
-// IPv6 /64 it has an address in. `allow_loopback`: and loopback (the tests).
-// (R's own public IPv4, reached through its router, is not known here; what
-// its router forwards there is open to the whole internet anyway.)
+// A sender tries a code's place only at a public address (net::is_public)
+// with a port, never one of its own (`own`: net::local_addresses()), nor in
+// an IPv6 /64 it has an address in. `allow_loopback`: and loopback (the tests).
 [[nodiscard]] bool may_reach(const net::endpoint& to, bool allow_loopback,
                              std::span<const net::address> own = {}) noexcept;
+
+// #500: where R may not relay to, however public. A stranger's code names
+// the places, so R must never be a way into its own networks: not one of its
+// addresses, not on any network an interface of its is on (a LAN of public
+// IPv4 addresses: a university, an office), not in an IPv6 site it has an
+// address in (kSite6Bits: the /56 a router is delegated holds the guest and
+// IoT /64s too), and not its router's outside address (whose admin page,
+// UPnP or DNS often answer from inside).
+inline constexpr int kSite6Bits = 56;
+struct fence {
+  std::vector<net::address> own;      // this machine's addresses
+  std::vector<net::subnet> nets;      // its interfaces' networks
+  std::vector<net::address> outside;  // the router's outside IPv4 (as the DHT or the router saw it)
+  int site6_bits = kSite6Bits;
+  bool allow_loopback = false;        // the tests
+};
+// This machine's own addresses, networks and default gateway (an outside
+// address learnt elsewhere is added by the caller). A worker's call.
+[[nodiscard]] fence local_fence(bool allow_loopback);
+[[nodiscard]] bool may_relay_to(const net::endpoint& to, const fence& f) noexcept;
 
 // ---- a relay server (option 10), the sender's side ----------------------------------
 // A code's relay place joins its round this much after the direct places,
@@ -113,14 +133,17 @@ class channel_link final : public link {
 // `allowed`: R's toggle is on and A is marked as the person's own here.
 struct serve_options {
   bool allow_loopback = false;
-  // R's own addresses (net::local_addresses() when empty and not the tests').
-  std::optional<std::vector<net::address>> own;
+  // Where R may not go (local_fence(allow_loopback) when empty).
+  std::optional<fence> where;
+  // A's first bytes, its internet hello's start, arrive within this.
+  int hello_ms = kConnectMs;
   connect_fn connect;  // net::connect when empty
   limits lim;
   std::function<bool()> stopped;
 };
 struct served {
   answer said = answer::refused;
+  bool forwarded = false;  // A's hello came and went onward (then the splice ran)
   splice_result spliced;
 };
 [[nodiscard]] served serve(const std::shared_ptr<channel>& ch, const message& request, bool allowed,

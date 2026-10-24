@@ -251,14 +251,14 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
   // Its name is resolved and it is asked on a thread of its own, beside the
   // router's mapping below; the code waits for it kRelaySetupMs at most.
   std::optional<invite::relay_place> relay;
-  std::unique_ptr<link> relay_link;
+  std::unique_ptr<relay::waiting> relay_link;
   std::string relay_note, relay_key;
   struct relay_setup {
     std::mutex m;
     std::condition_variable cv;
     bool done = false, abandoned = false;
     std::optional<invite::relay_place> place;
-    std::unique_ptr<link> registered;
+    std::unique_ptr<relay::waiting> registered;
     std::string note;
   };
   auto setup = std::make_shared<relay_setup>();
@@ -270,16 +270,22 @@ void internet_receiver::prepare(std::unique_lock<std::mutex>& lock) {
       relay_started = true;
       relay_setup_thread_ = std::thread([setup, server = *server] {
         std::optional<invite::relay_place> place;
-        std::unique_ptr<link> registered;
+        std::unique_ptr<relay::waiting> registered;
         std::string note;
         if (const auto at = relay_endpoint(server.at)) {
           invite::relay_place r;
           r.at = *at;
           r.token = relay::random_token();
           auto c = net::connect(*at, kReachConnectMs);
-          if (c && relay::register_waiter(**c, r.token, server.key)) {
-            registered = std::move(*c);
+          auto w = c ? relay::register_waiter(std::move(*c), r.token, server.key, relay::kHelloMs)
+                     : result<std::unique_ptr<relay::waiting>>(err(c.error()));
+          if (w) {
+            registered = std::move(*w);
             place = r;
+          } else if (w.error() == status::permission_denied) {
+            // #500: it did not prove the key: the wrong key, or not that server.
+            note = " Your relay server did not take its key (check what follows # in the field), so this code "
+                   "does not use it.";
           } else {
             note = " Your relay server did not answer, so this code does not use it.";
           }
@@ -559,7 +565,7 @@ std::unique_ptr<way_in> way_in::open(bool loopback_only, const std::optional<map
 }
 
 void internet_receiver::relay_loop(net::endpoint at, std::array<std::uint8_t, 16> token, std::string key,
-                                   std::unique_ptr<link> first) {
+                                   std::unique_ptr<relay::waiting> first) {
   const auto stopped = [this] {
     if (relay_stop_.load()) return true;
     std::lock_guard lock(m_);
@@ -570,20 +576,28 @@ void internet_receiver::relay_loop(net::endpoint at, std::array<std::uint8_t, 16
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
   };
-  const auto fresh = [&]() -> std::unique_ptr<link> {
+  // #500: a server that does not prove the key once is not asked again for
+  // this code (it would be one more live guess at the key, each time).
+  bool refused_key = false;
+  const auto fresh = [&]() -> std::unique_ptr<relay::waiting> {
     auto c = net::connect(at, kReachConnectMs);
-    if (!c || !relay::register_waiter(**c, token, key)) return nullptr;
-    return std::move(*c);
+    if (!c) return nullptr;
+    auto w = relay::register_waiter(std::move(*c), token, key, relay::kHelloMs);
+    if (!w) {
+      refused_key = w.error() == status::permission_denied;
+      return nullptr;
+    }
+    return std::move(*w);
   };
-  // A pair on `l`: on once the sender has spoken (a sender that lost its
+  // A pair on `w`: on once the sender has spoken (a sender that lost its
   // race to a direct place closes without a byte).
-  const auto hand_on = [&](std::unique_ptr<link> l) {
-    auto spoke = relay::first_bytes(std::move(l), kConnectMs, stopped, "relay");
+  const auto hand_on = [&](std::unique_ptr<relay::waiting> w) {
+    auto spoke = relay::first_bytes(w->release(), kConnectMs, stopped, "relay");
     if (spoke && on_link_) on_link_(std::move(*spoke), {});  // the internet hello comes over it
   };
-  std::unique_ptr<link> l = std::move(first);
+  std::unique_ptr<relay::waiting> l = std::move(first);
   auto registered = clock::now();
-  while (!stopped()) {
+  while (!stopped() && !refused_key) {
     if (!l) {
       // The relay let the wait go, or paired it: wait there again, same token.
       l = fresh();
@@ -607,7 +621,8 @@ void internet_receiver::relay_loop(net::endpoint at, std::array<std::uint8_t, 16
       continue;
     }
     // Ahead of a NAT that drops an idle connection: register again (the
-    // server replaces the old wait), new before old.
+    // server replaces the old wait), new before old: the old one goes only
+    // once the server said the new one waits (#500).
     registered = clock::now();
     auto next = fresh();
     if (!next) continue;  // the old one may still do; try again in a minute
