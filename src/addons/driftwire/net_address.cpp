@@ -169,6 +169,7 @@ bool is_public(const address& a) noexcept {
     if (b[0] == 172 && (b[1] & 0xf0) == 16) return false;                     // 172.16/12
     if (b[0] == 192 && b[1] == 168) return false;                             // 192.168/16
     if (b[0] == 192 && b[1] == 0 && (b[2] == 0 || b[2] == 2)) return false;   // IETF, TEST-NET-1
+    if (b[0] == 192 && b[1] == 88 && b[2] == 99) return false;                // 6to4 relay anycast (#500)
     if (b[0] == 198 && (b[1] & 0xfe) == 18) return false;                     // 198.18/15 benchmarking
     if (b[0] == 198 && b[1] == 51 && b[2] == 100) return false;               // TEST-NET-2
     if (b[0] == 203 && b[1] == 0 && b[2] == 113) return false;                // TEST-NET-3
@@ -178,6 +179,13 @@ bool is_public(const address& a) noexcept {
   if ((b[0] & 0xe0) != 0x20) return false;
   if (b[0] == 0x20 && b[1] == 0x01 && b[2] == 0x0d && b[3] == 0xb8) return false;  // 2001:db8::/32 documentation
   if (b[0] == 0x20 && b[1] == 0x02) return false;                                // 6to4: a relay, not a peer
+  // #500: 2001::/32 Teredo (a relay, not a peer), 2001:2::/48 benchmarking,
+  // 2001:10::/28 ORCHID and 2001:20::/28 ORCHIDv2 (identifiers, not routed).
+  if (b[0] == 0x20 && b[1] == 0x01 && b[2] == 0x00) {
+    if (b[3] == 0x00) return false;
+    if (b[3] == 0x02 && b[4] == 0x00 && b[5] == 0x00) return false;
+    if ((b[3] & 0xf0) == 0x10 || (b[3] & 0xf0) == 0x20) return false;
+  }
   return true;
 }
 

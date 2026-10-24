@@ -30,7 +30,9 @@ struct prefs {
   bool dht = false;  // #472 PR 3: "Find each other over the internet (public DHT)", off by default
   bool handover = false;  // #472 PR 5: "Continue over the internet if Wi-Fi drops", off by default
   // #472 relays: "Use my other computers to relay" (off by default), and the
-  // advanced "Relay (your own server)", "<address or name>:<port>" ("" = none).
+  // advanced "Relay (your own server)", "<address or name>:<port>#<key>" ("" =
+  // none). #500: with a secret store the engine keeps the key there and this
+  // only the address; a file from before holds both until the next save.
   bool relay = false;
   std::string relay_server;
   bool operator==(const prefs&) const = default;
