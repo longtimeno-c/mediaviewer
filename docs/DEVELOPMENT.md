@@ -1742,8 +1742,14 @@ rm -f driftwire-repo-key.asc; gpgconf --kill gpg-agent; rm -rf "$GNUPGHOME"; uns
 ```
 
 Then in the repository's settings: **Settings → Pages → Build and deployment → Source: GitHub
-Actions** (this makes the `github-pages` environment; its default rule deploys from `main` only,
-where releases run), and **Settings → Secrets and variables → Actions → Variables**:
+Actions**. That makes the `github-pages` environment, whose rule deploys from `main` only; a
+stable release may also run from its `v<version>` tag ([RELEASING.md](../RELEASING.md)), and the
+repository job of such a run would be refused after the release is out ("Tag … is not allowed to
+deploy to github-pages due to environment protection rules"), so allow tags too: **Settings →
+Environments → github-pages → Deployment branches and tags → Add deployment branch or tag rule →
+Ref type: Tag**, pattern `v*` (or `gh api --method POST
+repos/longtimeno-c/mediaviewer/environments/github-pages/deployment-branch-policies -f name='v*' -f
+type=tag`). Last, **Settings → Secrets and variables → Actions → Variables**:
 `MV_DRIFTWIRE_REPO` = `1` (or `gh variable set MV_DRIFTWIRE_REPO --body 1 --repo
 longtimeno-c/mediaviewer`). The next stable release publishes the site; until then the address
 serves nothing, which is why the README offers no download yet. RSA-4096 is what every rpm

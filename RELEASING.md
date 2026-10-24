@@ -191,6 +191,7 @@ do not touch it.
 | Secret `DRIFTWIRE_REPO_GPG_KEY` | The armored OpenPGP private signing key (two during a key change, the old one first). A repository secret, not one of the `github-pages` environment, which the preflight cannot see: with the variable on and this empty, a stable release's preflight fails and says so, before any build. The preflight is told only whether it is set; only the repository job's signing step gets the key |
 | Secret `DRIFTWIRE_REPO_GPG_PASSPHRASE` | Its passphrase, if it has one (one for both keys during a change); a repository secret too |
 | Pages | **Settings → Pages → Source: GitHub Actions**; without it `configure-pages` fails and says so |
+| Environment `github-pages` | A tag rule `v*` beside its default `main` rule (Settings → Environments), so the repository job of a release run from its tag may deploy |
 
 Making the key, backing it up, changing it, and testing the site locally are in
 [DEVELOPMENT.md](docs/DEVELOPMENT.md#linux-package-repository). The apt `Release` is valid for a

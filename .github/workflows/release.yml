@@ -953,9 +953,11 @@ jobs:
   # <Pages URL>/driftwire/ once the release is published. It is the Linux
   # packages' update channel (docs/design/12, 2026-10-24), so it follows
   # stable releases only, and only once the owner has set it up (DEVELOPMENT
-  # "Linux package repository"): Pages with GitHub Actions as its source, the
-  # signing key in the secret DRIFTWIRE_REPO_GPG_KEY (armored; a passphrase,
-  # if any, in DRIFTWIRE_REPO_GPG_PASSPHRASE), and the repository variable
+  # "Linux package repository"): Pages with GitHub Actions as its source, a
+  # v* tag rule on the github-pages environment (its own rule allows main
+  # only, and a release may run from its tag), the signing key in the
+  # repository secret DRIFTWIRE_REPO_GPG_KEY (armored; a passphrase, if any,
+  # in DRIFTWIRE_REPO_GPG_PASSPHRASE), and the repository variable
   # MV_DRIFTWIRE_REPO=1. Each run replaces the whole Pages site. The
   # installers' publish does not wait for it.
   driftwire-repo:
