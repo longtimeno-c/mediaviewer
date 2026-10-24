@@ -1,6 +1,7 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Deliberate releases only. CI validates pushes/PRs; this builds both installers.
+# Deliberate releases only. CI validates pushes/PRs; this builds both installers,
+# and the driftwire command line for all three systems (docs/design/28 "Installing").
 # See RELEASING.md for the three modes and credentials.
 name: Release
 run-name: Release ${{ inputs.mode }} from ${{ github.ref_name }}
@@ -70,9 +71,11 @@ jobs:
           TRUSTED_SIGNING_ACCOUNT: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
           TRUSTED_SIGNING_PROFILE: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
           MV_DRIFTWIRE_REPO: ${{ vars.MV_DRIFTWIRE_REPO }}
-          # Whether the driftwire repository's signing key is set, never the key:
-          # only driftwire-repo's signing step is given that.
+          # Whether the driftwire repository's signing key and the Homebrew tap's
+          # token are set, never what they hold: only driftwire-repo's signing step
+          # is given the key, and only driftwire-homebrew the token.
           DRIFTWIRE_REPO_KEY_SET: ${{ secrets.DRIFTWIRE_REPO_GPG_KEY != '' && '1' || '' }}
+          HOMEBREW_TAP_TOKEN_SET: ${{ secrets.HOMEBREW_TAP_TOKEN != '' && '1' || '' }}
         run: python3 tools/package/github-release.py prepare
 
   windows:
@@ -411,10 +414,44 @@ jobs:
             --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
           if ($LASTEXITCODE) { throw 'packing ai-cuda failed' }
 
+      # The driftwire command line (docs/design/28 "Installing"), in every mode:
+      # driftwire.exe and every DLL it loads (libsodium and BLAKE3 from the
+      # build, the Visual C++ runtime from Visual Studio's redistributable,
+      # found from the import tables), staged by driftwire-windows.ps1; ours
+      # signed like the add-ons' binaries (Microsoft's runtime keeps its own
+      # signature); then zipped. A stable release carries the zip once the
+      # command line is published (MV_DRIFTWIRE_REPO, publish below), and the
+      # package repository's site serves it to the PowerShell one-liner. Never
+      # in the app's payload (build-release.ps1).
+      - name: Stage the driftwire command line
+        run: ./tools/package/driftwire-windows.ps1 -Action Stage -BuildDir build -Config Release -Version $env:VERSION -OutDir dist/driftwire-cli
+
+      - name: Sign the driftwire command line
+        if: steps.sign.outputs.meta != ''
+        uses: azure/artifact-signing-action@v1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}/dist/driftwire-cli/sign
+          files-folder-filter: exe,dll
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Pack the driftwire command line
+        run: ./tools/package/driftwire-windows.ps1 -Action Pack -Version $env:VERSION -OutDir dist/driftwire-cli
+
       - name: Collect release assets
         run: |
           New-Item -ItemType Directory -Force upload | Out-Null
           Copy-Item "dist/MediaViewer-$env:VERSION-Setup.exe" upload
+          # Publish uploads it only when the command line is published.
+          Copy-Item "dist/driftwire-cli/driftwire-$env:VERSION-windows-x64.zip" upload
           if ($env:MODE -ne 'artifacts') {
             Copy-Item dist/releases/*.nupkg upload
             Copy-Item dist/releases/RELEASES, dist/releases/releases.win.json, dist/releases/assets.win.json upload
@@ -608,6 +645,8 @@ jobs:
           tar -C build/addons/places -cf "upload/PlacesAddon-${{ matrix.arch }}.tar" libmv_places.dylib
           # Driftwire (docs/design/28): the dylib, joined and signed in `macos`.
           tar -C build/addons/driftwire -cf "upload/DriftwireAddon-${{ matrix.arch }}.tar" libmv_driftwire.dylib
+          # The driftwire command line (docs/design/28 "Installing"), joined, signed and packed in `macos`.
+          tar -C build/bin -cf "upload/DriftwireCli-${{ matrix.arch }}.tar" driftwire
           # Local search is arm64 only (ORT ships no x86_64 macOS build).
           if [[ -d build/addons/ai ]]; then
             cp build/_ort/*/ThirdPartyNotices.txt build/addons/ai/
@@ -748,6 +787,37 @@ jobs:
           if [ "$MODE" != "artifacts" ]; then
             cp "build/release/updates/MediaViewer-$VERSION.zip" build/release/updates/appcast.xml upload/
           fi
+
+      # The driftwire command line (docs/design/28 "Installing"), in every mode:
+      # the two programs joined, signed by macpack.py cli (Developer ID, the
+      # hardened runtime, a stable identifier, no entitlements: it keeps nothing
+      # in the keychain, #501; ad hoc in artifacts mode), notarized on a stable
+      # release, and packed as driftwire-<version>-macos-universal.tar.gz, or
+      # -arm64 when the Intel leg did not build. A stable release carries it
+      # once the command line is published (MV_DRIFTWIRE_REPO), and the Homebrew
+      # tap's formula installs it from there (driftwire-homebrew below).
+      - name: driftwire command line (join, sign, notarize, pack)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          mkdir -p cli/arm64
+          tar -xf apps/DriftwireCli-arm64.tar -C cli/arm64
+          if [[ -f apps/DriftwireCli-x64.tar ]]; then
+            mkdir -p cli/x86_64
+            tar -xf apps/DriftwireCli-x64.tar -C cli/x86_64
+            python3 tools/mac/lipo_merge.py --arm64 cli/arm64 --x86_64 cli/x86_64 --out build/cli
+          else
+            echo "::warning::No Intel build: the command line's macOS archive is arm64 only."
+            cp -R cli/arm64 build/cli
+          fi
+          args=(--binary build/cli/driftwire --version "$VERSION" --out-dir build/release/cli)
+          case "$MODE" in
+            artifacts) args+=(--identity - --skip-notarize) ;;
+            stable) args+=(--identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary) ;;
+            *) args+=(--identity "$MV_MAC_SIGN_IDENTITY" --skip-notarize) ;;
+          esac
+          python3 tools/mac/macpack.py cli "${args[@]}"
+          cp build/release/cli/driftwire-"$VERSION"-macos-*.tar.gz upload/
 
       - name: Import add-on (join, sign, notarize, pack)
         if: inputs.mode == 'stable'
@@ -934,13 +1004,20 @@ jobs:
           # ...and the Local search pack with its Sound and People pieces (and,
           # on Windows, NVIDIA acceleration).
           MV_RELEASE_AI: '1'
+          # The driftwire command line is published by one repository
+          # variable, MV_DRIFTWIRE_REPO (docs/design/12, 2026-10-24): on a
+          # stable release it makes this job require and upload the macOS
+          # archive and the Windows zip the jobs above packed, and turns on
+          # driftwire-repo (the package repository and both one-line
+          # installers on GitHub Pages) and driftwire-homebrew (the tap's
+          # formula), below. Off, or on a preview, the archives are ignored.
+          MV_RELEASE_CLI: ${{ vars.MV_DRIFTWIRE_REPO == '1' && '1' || '0' }}
           # The driftwire Linux packages (linux-cli) reach people through the
-          # package repository (driftwire-repo, below), their update channel
-          # (docs/design/12, 2026-10-24), and are not attached here: a .deb
-          # from the release page would install without the source that
-          # updates it. '1' attaches them too, with every preview and stable
-          # release then requiring all six (github-release.py); add linux-cli
-          # to this job's needs with it.
+          # package repository (driftwire-repo), their update channel, and are
+          # not attached here: a .deb from the release page would install
+          # without the source that updates it. '1' attaches them too, with
+          # every preview and stable release then requiring all six
+          # (github-release.py); add linux-cli to this job's needs with it.
           MV_RELEASE_LINUX_CLI: '0'
           VERSION: ${{ needs.prepare.outputs.version }}
           TAG: ${{ needs.prepare.outputs.tag }}
@@ -948,20 +1025,22 @@ jobs:
 
   # The driftwire package repository (docs/design/28 "Installing",
   # tools/package/driftwire_repo.py): signed apt and dnf repositories, the
-  # tarballs and the one-line installer, built from this release's linux-cli
-  # packages and deployed to this repository's GitHub Pages under
-  # <Pages URL>/driftwire/ once the release is published. It is the Linux
-  # packages' update channel (docs/design/12, 2026-10-24), so it follows
-  # stable releases only, and only once the owner has set it up (DEVELOPMENT
-  # "Linux package repository"): Pages with GitHub Actions as its source, a
-  # v* tag rule on the github-pages environment (its own rule allows main
+  # tarballs, the Windows zip and the one-line installers for Linux
+  # (install.sh) and Windows (install.ps1), built from this release's
+  # linux-cli packages and the Windows zip as the release published it, and
+  # deployed to this repository's GitHub Pages under <Pages URL>/driftwire/
+  # once the release is published. It is the command line's update channel
+  # on Linux and Windows (docs/design/12, 2026-10-24), so it follows stable
+  # releases only, and only once the owner has set it up (DEVELOPMENT
+  # "Publishing the command line"): Pages with GitHub Actions as its source,
+  # a v* tag rule on the github-pages environment (its own rule allows main
   # only, and a release may run from its tag), the signing key in the
   # repository secret DRIFTWIRE_REPO_GPG_KEY (armored; a passphrase, if any,
   # in DRIFTWIRE_REPO_GPG_PASSPHRASE), and the repository variable
   # MV_DRIFTWIRE_REPO=1. Each run replaces the whole Pages site. The
   # installers' publish does not wait for it.
   driftwire-repo:
-    name: driftwire package repository (GitHub Pages)
+    name: driftwire package repository and installers (GitHub Pages)
     needs: [prepare, linux-cli, publish]
     if: inputs.mode == 'stable' && vars.MV_DRIFTWIRE_REPO == '1'
     runs-on: ubuntu-latest
@@ -984,6 +1063,16 @@ jobs:
           pattern: driftwire-linux-*-${{ needs.prepare.outputs.version }}
           path: driftwire-packages
           merge-multiple: true
+
+      # As published (publish required it): the site serves this very file.
+      - name: The Windows zip from the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "driftwire-$VERSION-windows-x64.zip" --dir driftwire-packages
 
       - name: Tools
         run: |
@@ -1020,15 +1109,20 @@ jobs:
           echo "Signing with: $(tr '\n' ' ' < "$RUNNER_TEMP/driftwire-keys")"
           echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
 
+      # A release signed with Trusted Signing must carry a signed driftwire.exe;
+      # install.ps1 then insists on valid signatures (driftwire_repo.py reads
+      # whether the file is signed). Whether the secret is set, not what it holds.
       - name: Build the site
         env:
           BASE_URL: ${{ steps.pages.outputs.base_url }}
           DRIFTWIRE_REPO_GPG_PASSPHRASE: ${{ secrets.DRIFTWIRE_REPO_GPG_PASSPHRASE }}
+          WINDOWS_SIGNED: ${{ secrets.TRUSTED_SIGNING_ENDPOINT != '' && '1' || '' }}
         run: |
           keys=()
           while read -r fpr; do keys+=(--key-id "$fpr"); done < "$RUNNER_TEMP/driftwire-keys"
+          if [ -n "$WINDOWS_SIGNED" ]; then keys+=(--require-windows-signature); fi
           python3 tools/package/driftwire_repo.py build --packages driftwire-packages --out site \
-            --base-url "${BASE_URL%/}/driftwire" "${keys[@]}"
+            --base-url "${BASE_URL%/}/driftwire" --github-repo "$GITHUB_REPOSITORY" "${keys[@]}"
           shellcheck site/driftwire/install.sh
 
       # The site as it will be served, with the real key, before it goes live:
@@ -1050,3 +1144,80 @@ jobs:
         run: |
           gpgconf --homedir "$RUNNER_TEMP/driftwire-gnupg" --kill all 2>/dev/null || true
           rm -rf "$RUNNER_TEMP/driftwire-gnupg" "$RUNNER_TEMP/driftwire-keys"
+
+  # The Homebrew tap (docs/design/28 "Installing"): `brew install
+  # <owner>/tap/driftwire` reads Formula/driftwire.rb in the public repository
+  # <owner>/homebrew-tap, which this job rewrites for each stable release once
+  # the command line is published (MV_DRIFTWIRE_REPO=1): the formula points at
+  # the macOS archive as the release published it, with that file's SHA-256
+  # (tools/package/homebrew_formula.py). The owner creates the tap repository
+  # and the secret HOMEBREW_TAP_TOKEN, a fine-grained token with Contents:
+  # write on that repository only (DEVELOPMENT "Publishing the command line").
+  # A tap without a README about driftwire gets packaging/macos's. The
+  # installers' publish does not wait for it.
+  driftwire-homebrew:
+    name: driftwire Homebrew tap
+    needs: [prepare, macos, publish]
+    if: inputs.mode == 'stable' && vars.MV_DRIFTWIRE_REPO == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tap's token
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "::error::MV_DRIFTWIRE_REPO is 1 but the secret HOMEBREW_TAP_TOKEN is not set. Add a fine-grained token with Contents: write on ${GITHUB_REPOSITORY_OWNER}/homebrew-tap (docs/DEVELOPMENT.md, Publishing the command line), or set MV_DRIFTWIRE_REPO to 0."
+            exit 1
+          fi
+
+      # As published: the formula's checksum is that of the file people download.
+      - name: The macOS archive from the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p cli
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "driftwire-$VERSION-macos-*.tar.gz" --dir cli
+          ls -l cli
+          if [ "$(ls cli | wc -l)" != 1 ]; then
+            echo "::error::$TAG should carry one macOS archive of driftwire."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Write the formula and push it
+        run: |
+          archive=$(ls cli/*.tar.gz)
+          python3 tools/package/homebrew_formula.py render --version "$VERSION" --archive "$archive" \
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$(basename "$archive")" \
+            --homepage "https://github.com/$GITHUB_REPOSITORY" --out tap/Formula/driftwire.rb
+          ruby -c tap/Formula/driftwire.rb
+          if ! grep -qs driftwire tap/README.md; then
+            python3 tools/package/homebrew_formula.py readme --github-repo "$GITHUB_REPOSITORY" --out tap/README.md
+          fi
+          cd tap
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Formula/driftwire.rb README.md
+          if git diff --cached --quiet; then
+            echo "The tap already has driftwire $VERSION."
+            exit 0
+          fi
+          git commit -q -m "driftwire $VERSION" -m "https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"
+          git push
+          echo "Pushed driftwire $VERSION to ${GITHUB_REPOSITORY_OWNER}/homebrew-tap." >> "$GITHUB_STEP_SUMMARY"
