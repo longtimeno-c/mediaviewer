@@ -296,7 +296,8 @@ class DriftwireRepoTest(unittest.TestCase):
         page = (self.dw / 'index.html').read_text()
         for needle in ('Version 1.2.3', f'curl -fsSL {BASE}/install.sh | sh', f'URIs: {BASE}/apt',
                        f'{BASE}/driftwire.repo', repo.grouped(self.key), 'driftwire-1.2.3-linux-x86_64.tar.gz',
-                       'x86_64 and aarch64'):
+                       'x86_64 and aarch64',
+                       'tar -xzf driftwire-1.2.3-linux-x86_64.tar.gz --strip-components=1 -C ~/.local'):
             self.assertIn(needle, page)
         for banned in ('<script', '<link', '<img', '<iframe', 'src=', '@import', 'url('):
             self.assertNotIn(banned, page.lower())
@@ -422,6 +423,28 @@ class DriftwireRepoTest(unittest.TestCase):
         after = {str(p.relative_to(out)): p.read_bytes() for p in out.rglob('*') if p.is_file()}
         self.assertEqual(before, after)
         self.assertEqual([p.name for p in self.work.iterdir() if p.name.startswith('.driftwire-site-')], [])
+
+
+class PageTarballExampleTest(unittest.TestCase):
+    """The page's tar command names the tarball most readers can run: x86_64 when the site has
+    it (sorted, aarch64 comes first), else the one there is. No tools needed."""
+
+    def page(self, rpm_arches):
+        tmp = Path(tempfile.mkdtemp(prefix='dwpage-'))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        tarballs = {a: tmp / f'driftwire-1.2.3-linux-{a}.tar.gz' for a in rpm_arches}
+        debs = {d: tmp / f'driftwire_1.2.3_{d}.deb' for d, r in repo.ARCHES.items() if r in rpm_arches}
+        packages = repo.Packages('1.2.3', debs, {}, tarballs)
+        signer = type('Signer', (), {'fingerprints': ['0123456789ABCDEF0123456789ABCDEF01234567']})()
+        repo.build_pages(tmp / 'site', tmp / 'site/driftwire', packages, BASE, signer)
+        page = (tmp / 'site/driftwire/index.html').read_text()
+        return re.search(r'tar -xzf (\S+) --strip-components=1', page).group(1)
+
+    def test_x86_64_when_present(self):
+        self.assertEqual(self.page(('aarch64', 'x86_64')), 'driftwire-1.2.3-linux-x86_64.tar.gz')
+
+    def test_the_only_one_otherwise(self):
+        self.assertEqual(self.page(('aarch64',)), 'driftwire-1.2.3-linux-aarch64.tar.gz')
 
 
 if __name__ == '__main__':

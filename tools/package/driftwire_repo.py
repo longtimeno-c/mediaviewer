@@ -347,12 +347,14 @@ def grouped(fpr):
 def build_pages(site, dw, packages, base, signer):
     arch_names = [ARCHES[a] for a in packages.deb_arches]
     tarballs = [packages.tarballs[a].name for a in sorted(packages.tarballs)]
+    # Most readers are on x86_64; sorted, aarch64 would come first.
+    example = packages.tarballs.get('x86_64', packages.tarballs[sorted(packages.tarballs)[0]]).name
     values = {
         'BASE_URL': html.escape(base),
         'VERSION': html.escape(packages.version),
         'ARCHES': ' and '.join(arch_names),
         'TARBALLS': '\n'.join(f'<li><a href="{html.escape(n)}">{html.escape(n)}</a></li>' for n in tarballs),
-        'TARBALL_EXAMPLE': html.escape(tarballs[0]),
+        'TARBALL_EXAMPLE': html.escape(example),
         'FINGERPRINTS': '\n'.join(grouped(f) for f in signer.fingerprints),
     }
     write(dw / 'index.html', fill('index.html', values))
