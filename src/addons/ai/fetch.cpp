@@ -64,6 +64,29 @@ bool sits_at(const std::string& path, std::uint64_t size) {
   return fs::is_regular_file(fs::symlink_status(fs_path(path), ec)) && size_of(path) == size;
 }
 
+// NTFS and APFS are case-insensitive unless made otherwise, so there a file
+// spelt like a kept path but for case IS that file (the pinned spelling
+// opens it). On a volume made case-sensitive such a file is kept too: a
+// leftover, never a wrong delete.
+#if defined(_WIN32) || defined(__APPLE__)
+constexpr bool kFoldCase = true;
+#else
+constexpr bool kFoldCase = false;
+#endif
+
+// fetch_path_key, of a path already in hand.
+std::string key_of(const fs::path& path, bool fold) {
+  const std::u8string g = path.lexically_normal().generic_u8string();
+  std::string key(g.begin(), g.end());
+  if (fold) {
+    // ASCII only: every byte of a multi-byte UTF-8 sequence is over 0x7F.
+    for (char& c : key) {
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+  }
+  return key;
+}
+
 }  // namespace
 
 fetcher::fetcher(std::string root, http_transport& net, fetch_options options)
@@ -119,13 +142,20 @@ expected fetcher::run(std::span<const remote_file> files, const std::atomic<bool
     // back with a new mtime): hashed once and adopted if it is the pinned one.
     if (sits_at(path, f.size)) {
       if (stop.load()) return err(status::cancelled);
-      const auto hash = sha256_file_hex(path);
+      // The run's totals first: the hash of a large file takes a while.
+      p.state = fetch_state::downloading;
+      p.retry_in_s = 0;
+      p.done_bytes = finished_bytes;
+      report(true);
+      const auto hash = sha256_file_hex(path, stop);
+      if (!hash && stop.load()) return err(status::cancelled);  // the file stays, to hash next run
       if (hash && *hash == f.sha256) {
         if (!write_ok(f, path)) return err(status::io);
         remove_file(path + ".part");
         finished_bytes += f.size;
         p.done_bytes = finished_bytes;
         ++p.files_done;
+        report(true);
         continue;
       }
       remove_file(path);
@@ -197,8 +227,15 @@ expected fetcher::run(std::span<const remote_file> files, const std::atomic<bool
           continue;
         }
       }
-      // All the bytes: kept only if they are the right ones.
-      const auto hash = sha256_file_hex(part);
+      // All the bytes: kept only if they are the right ones. Said first, as
+      // the adoption above: a run can start here, with a part an earlier one
+      // finished but was stopped before it was hashed.
+      p.state = fetch_state::downloading;
+      p.retry_in_s = 0;
+      p.done_bytes = finished_bytes + f.size;
+      report(true);
+      const auto hash = sha256_file_hex(part, stop);
+      if (!hash && stop.load()) return err(status::cancelled);  // the part stays, to hash next run
       if (hash && *hash == f.sha256) {
         remove_file(path);
         fs::rename(fs_path(part), fs_path(path), ec);
@@ -239,27 +276,38 @@ bool fetch_ready(const std::string& root, const remote_file& f) {
   return fetcher(root, none).ready(f);
 }
 
+std::string fetch_path_key(const std::string& path, bool fold) { return key_of(fs_path(path), fold); }
+
 void prune_fetched(const std::string& root_, std::span<const remote_file> keep) {
   null_transport none;
   const fetcher at(root_, none);
-  std::set<fs::path> wanted;
+  std::set<std::string> wanted;
   for (const remote_file& f : keep) {
-    const fs::path p = fs_path(at.local_path(f)).lexically_normal();
-    wanted.insert(p);
-    wanted.insert(fs::path(p.native() + fs::path(".ok").native()));
-    wanted.insert(fs::path(p.native() + fs::path(".part").native()));
+    const std::string p = at.local_path(f);
+    wanted.insert(key_of(fs_path(p), kFoldCase));
+    wanted.insert(key_of(fs_path(p + ".ok"), kFoldCase));
+    wanted.insert(key_of(fs_path(p + ".part"), kFoldCase));
   }
   std::error_code ec;
-  const fs::path root = fs_path(root_);
-  if (!fs::is_directory(root, ec)) return;
+  // With no trailing separator (lexically_normal leaves "a/b/"): through
+  // one, the check below would see a link's target rather than the link.
+  fs::path root = fs_path(root_).lexically_normal();
+  while (!root.has_filename() && root.has_relative_path()) root = root.parent_path();
+  // Only a folder of its own: a root that is a link or (on Windows) a
+  // junction is someone else's folder, and nothing in it is the fetcher's.
+  if (fs::symlink_status(root, ec).type() != fs::file_type::directory) return;
   std::vector<fs::path> drop;
   for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
        !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
-    if (it->is_symlink(ec)) {
+    const fs::file_type type = it->symlink_status(ec).type();
+    if (type == fs::file_type::directory) continue;  // walked into
+    if (type != fs::file_type::regular) {
+      // A link, a junction (MSVC's file_type::junction) or anything else:
+      // never followed, never deleted.
       it.disable_recursion_pending();
       continue;
     }
-    if (it->is_regular_file(ec) && !wanted.count(it->path().lexically_normal())) drop.push_back(it->path());
+    if (!wanted.count(key_of(it->path(), kFoldCase))) drop.push_back(it->path());
   }
   for (const fs::path& p : drop) fs::remove(p, ec);
 }

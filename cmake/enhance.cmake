@@ -48,12 +48,19 @@ target_include_directories(mv_enhance_engine PUBLIC "${MV_SOURCE_ROOT}/src" "${M
 find_package(Threads REQUIRED)
 target_link_libraries(mv_enhance_engine PUBLIC mv_project_options mv_model_fetch Threads::Threads)
 set_target_properties(mv_enhance_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
-  CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+  CXX_VISIBILITY_PRESET hidden OBJCXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 if(WIN32)
   # machine_win.cpp: the adapters and their dedicated memory (DXGI).
   target_link_libraries(mv_enhance_engine PUBLIC dxgi)
 elseif(APPLE)
   set_target_properties(mv_enhance_engine PROPERTIES OSX_ARCHITECTURES "arm64")
+  # The model downloader's transport, Enhance's own copy with its own delegate
+  # class (cmake/ai.cmake, mv_model_fetch, says why); -fobjc-arc comes from
+  # mv_project_options (cmake/darwin.cmake). Never link this engine and
+  # mv_ai_engine into one binary: both define mv::ai::make_http_transport.
+  target_sources(mv_enhance_engine PRIVATE "${MV_SOURCE_ROOT}/src/addons/ai/fetch_mac.mm")
+  target_compile_definitions(mv_enhance_engine PRIVATE MV_FETCH_DELEGATE=MVEnhanceFetchDelegate)
+  target_link_libraries(mv_enhance_engine PRIVATE "-framework Foundation")
 endif()
 
 # ---- the add-on module ------------------------------------------------------------

@@ -4,8 +4,9 @@
 // transport: resume after a cut, wait out an outage by itself, a 404 is final,
 // a file that misses its hash is fetched again and never kept, a server that
 // ignores Range, stop, and prune. Plus SHA-256's FIPS vectors, and for
-// Enhance (docs/plans/enhance.md, E1) the per-file cap and adoption of a file
-// already at its pinned path.
+// Enhance (docs/plans/enhance.md, E1) the per-file cap, adoption of a file
+// already at its pinned path, a stop inside a hash, and a prune that follows
+// no link and (Windows, the Mac) matches paths whatever their case.
 #include "catch_compat.h"
 
 #include <atomic>
@@ -14,6 +15,7 @@
 #include <fstream>
 #include <map>
 #include <functional>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -78,7 +80,8 @@ struct fake_net final : mv::ai::http_transport {
 };
 
 struct scratch {
-  fs::path root = fs::temp_directory_path() / "mv_ai_fetch_test";
+  // Its own each time: ctest may run several of these cases at once.
+  fs::path root = fs::temp_directory_path() / ("mv_ai_fetch_test_" + std::to_string(std::random_device{}()));
   scratch() {
     fs::remove_all(root);
     fs::create_directories(root);
@@ -110,6 +113,15 @@ void put(const std::string& path, const std::vector<std::uint8_t>& data) {
   fs::create_directories(native(path).parent_path());
   std::ofstream(native(path), std::ios::binary)
       .write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+}
+
+// A folder link at `link` to `target`; false where none can be made (Windows
+// without Developer Mode).
+bool link_folder(const fs::path& target, const fs::path& link) {
+  std::error_code ec;
+  fs::create_directories(link.parent_path(), ec);
+  fs::create_directory_symlink(target, link, ec);
+  return !ec;
 }
 
 std::vector<double> waits;
@@ -385,3 +397,159 @@ TEST_CASE("a verified file whose mtime changed is hashed again and kept", "[ai][
   CHECK(net.calls.size() == 1);  // kept, not fetched again
   CHECK(f.ready(a));
 }
+
+TEST_CASE("a file's SHA-256 stops when asked", "[ai][fetch]") {
+  scratch s;
+  const std::string at = utf8(s.root / "big.bin");
+  const auto data = bytes((3u << 20) + 5, 15);  // more than one 1 MB block
+  put(at, data);
+  std::atomic<bool> stop{false};
+  const auto whole = mv::ai::sha256_file_hex(at, stop);
+  REQUIRE(whole);
+  CHECK(*whole == hex_of(data));
+  CHECK(mv::ai::sha256_file_hex(at) == whole);
+  CHECK_FALSE(mv::ai::sha256_file_hex(utf8(s.root / "missing.bin"), stop));
+  stop = true;
+  CHECK_FALSE(mv::ai::sha256_file_hex(at, stop));
+}
+
+TEST_CASE("adoption says the run's totals first, and a stop in its hash keeps the file", "[ai][fetch]") {
+  scratch s;
+  fake_net net;
+  const auto data = bytes(800, 16);
+  const auto a = file_of(net, "a.onnx", data);
+  mv::ai::fetcher f(utf8(s.root), net, quick());
+  const std::string at = f.local_path(a);
+  put(at, data);
+  const std::vector<mv::ai::remote_file> one{a};
+  // Cancel as the hash begins: nothing is deleted or recorded.
+  std::atomic<bool> stop{false};
+  std::vector<mv::ai::fetch_progress> seen;
+  auto r = f.run(one, stop, [&](const mv::ai::fetch_progress& p) {
+    seen.push_back(p);
+    stop = true;
+  });
+  REQUIRE_FALSE(r);
+  CHECK(r.error() == mv::status::cancelled);
+  REQUIRE(seen.size() == 1);
+  CHECK(seen[0].state == mv::ai::fetch_state::downloading);
+  CHECK(seen[0].total_bytes == 800);
+  CHECK(seen[0].files_total == 1);
+  CHECK(seen[0].done_bytes == 0);
+  CHECK(fs::file_size(native(at)) == 800);
+  CHECK_FALSE(fs::exists(native(at + ".ok")));
+  // The next run adopts it, saying so before the hash and after it.
+  stop = false;
+  seen.clear();
+  REQUIRE(f.run(one, stop, [&](const mv::ai::fetch_progress& p) { seen.push_back(p); }));
+  CHECK(net.calls.empty());
+  CHECK(f.ready(a));
+  REQUIRE(seen.size() == 3);
+  CHECK(seen[0].state == mv::ai::fetch_state::downloading);
+  CHECK(seen[0].total_bytes == 800);
+  CHECK(seen[0].done_bytes == 0);
+  CHECK(seen[1].state == mv::ai::fetch_state::downloading);
+  CHECK(seen[1].files_done == 1);
+  CHECK(seen[1].done_bytes == 800);
+  CHECK(seen[2].state == mv::ai::fetch_state::done);
+}
+
+TEST_CASE("a stop in the final hash keeps the part for the next run", "[ai][fetch]") {
+  scratch s;
+  fake_net net;
+  const auto data = bytes(900, 17);
+  const auto a = file_of(net, "a.onnx", data);
+  mv::ai::fetcher f(utf8(s.root), net, quick());
+  const std::string at = f.local_path(a);
+  put(at + ".part", data);  // every byte, from a run stopped before its hash
+  const std::vector<mv::ai::remote_file> one{a};
+  std::atomic<bool> stop{false};
+  std::vector<mv::ai::fetch_progress> seen;
+  auto r = f.run(one, stop, [&](const mv::ai::fetch_progress& p) {
+    seen.push_back(p);
+    stop = true;  // as the hash begins
+  });
+  REQUIRE_FALSE(r);
+  CHECK(r.error() == mv::status::cancelled);
+  REQUIRE(seen.size() == 1);
+  CHECK(seen[0].state == mv::ai::fetch_state::downloading);
+  CHECK(seen[0].done_bytes == 900);
+  CHECK(seen[0].total_bytes == 900);
+  CHECK(fs::file_size(native(at + ".part")) == 900);
+  CHECK_FALSE(fs::exists(native(at)));
+  CHECK_FALSE(fs::exists(native(at + ".ok")));
+  // The next run hashes the part and keeps it, with no request.
+  stop = false;
+  REQUIRE(f.run(one, stop, {}));
+  CHECK(net.calls.empty());
+  CHECK(f.ready(a));
+  CHECK_FALSE(fs::exists(native(at + ".part")));
+}
+
+TEST_CASE("prune deletes nothing through a root that is a link", "[ai][fetch]") {
+  scratch s;
+  const fs::path elsewhere = s.root / "elsewhere";  // another app's folder
+  put(utf8(elsewhere / "readme.txt"), bytes(10, 20));
+  put(utf8(elsewhere / "other-app" / "weights.bin"), bytes(10, 21));
+  const fs::path root = s.root / "models";
+  if (!link_folder(elsewhere, root)) SKIP("folder links cannot be made here");
+  mv::ai::prune_fetched(utf8(root), {});
+  mv::ai::prune_fetched(utf8(root) + "/", {});  // a trailing separator reaches the target
+  CHECK(fs::exists(elsewhere / "readme.txt"));
+  CHECK(fs::exists(elsewhere / "other-app" / "weights.bin"));
+  CHECK(fs::is_symlink(root));
+}
+
+TEST_CASE("prune follows no link inside its root", "[ai][fetch]") {
+  scratch s;
+  fake_net net;
+  const auto a = file_of(net, "a.onnx", bytes(100, 22));
+  const fs::path root = s.root / "cache";
+  mv::ai::fetcher f(utf8(root), net, quick());
+  std::atomic<bool> stop{false};
+  const std::vector<mv::ai::remote_file> one{a};
+  REQUIRE(f.run(one, stop, {}));
+  const fs::path elsewhere = s.root / "elsewhere";
+  put(utf8(elsewhere / "readme.txt"), bytes(10, 23));
+  put(utf8(root / "stale.bin"), bytes(10, 24));  // the fetcher's own leftover
+  const fs::path link = root / "models" / "linked";
+  if (!link_folder(elsewhere, link)) SKIP("folder links cannot be made here");
+  f.prune(one);
+  CHECK(f.ready(a));
+  CHECK_FALSE(fs::exists(root / "stale.bin"));
+  CHECK(fs::exists(elsewhere / "readme.txt"));  // not walked into
+  CHECK(fs::is_symlink(link));                  // and not deleted itself
+}
+
+TEST_CASE("prune's path key folds ASCII case only when asked", "[ai][fetch]") {
+  using mv::ai::fetch_path_key;
+  CHECK(fetch_path_key("cache/Models/M/A.onnx", true) == "cache/models/m/a.onnx");
+  CHECK(fetch_path_key("cache/Models/M/A.onnx", false) == "cache/Models/M/A.onnx");
+  CHECK(fetch_path_key("cache//models/./m/a.onnx", false) == "cache/models/m/a.onnx");
+  // Only ASCII: the bytes of a multi-byte UTF-8 letter are left as they are.
+  CHECK(fetch_path_key("cache/\xC3\x89t\xC3\xA9/A", true) == "cache/\xC3\x89t\xC3\xA9/a");
+#if defined(_WIN32)
+  CHECK(fetch_path_key("cache\\Models\\A.onnx", true) == "cache/models/a.onnx");
+#endif
+}
+
+#if defined(_WIN32) || defined(__APPLE__)
+TEST_CASE("prune keeps a file adopted from a folder spelt with other capitals", "[ai][fetch]") {
+  scratch s;
+  fake_net net;
+  const auto data = bytes(300, 25);
+  const auto a = file_of(net, "a.onnx", data);  // pinned at models/m/a.onnx
+  const fs::path root = s.root / "cache";
+  mv::ai::fetcher f(utf8(root), net, quick());
+  const fs::path dropped = root / "Models" / "M" / "A.onnx";
+  put(utf8(dropped), data);
+  if (!fs::exists(native(f.local_path(a)))) SKIP("this volume is case-sensitive");
+  std::atomic<bool> stop{false};
+  const std::vector<mv::ai::remote_file> one{a};
+  REQUIRE(f.run(one, stop, {}));
+  CHECK(net.calls.empty());  // adopted, not fetched
+  f.prune(one);
+  CHECK(fs::exists(dropped));
+  CHECK(f.ready(a));
+}
+#endif

@@ -103,18 +103,30 @@ std::string sha256::finish_hex() {
   return s;
 }
 
-std::optional<std::string> sha256_file_hex(const std::string& path) {
+namespace {
+
+// `stop`, when there is one, is looked at before each block.
+std::optional<std::string> file_hex(const std::string& path, const std::atomic<bool>* stop) {
   std::ifstream in(std::filesystem::path(std::u8string(path.begin(), path.end())), std::ios::binary);
   if (!in) return std::nullopt;
   sha256 h;
   std::vector<char> buf(1 << 20);
   while (in) {
+    if (stop && stop->load()) return std::nullopt;
     in.read(buf.data(), static_cast<std::streamsize>(buf.size()));
     const auto got = static_cast<std::size_t>(in.gcount());
     if (got) h.update(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(buf.data()), got));
   }
   if (in.bad()) return std::nullopt;
   return h.finish_hex();
+}
+
+}  // namespace
+
+std::optional<std::string> sha256_file_hex(const std::string& path) { return file_hex(path, nullptr); }
+
+std::optional<std::string> sha256_file_hex(const std::string& path, const std::atomic<bool>& stop) {
+  return file_hex(path, &stop);
 }
 
 }  // namespace mv::ai

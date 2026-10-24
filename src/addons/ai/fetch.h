@@ -5,8 +5,13 @@
 // path, size, SHA-256); this fetches the ones a tier needs into the add-on's
 // data folder, from Hugging Face at a pinned revision.
 //
-// - A plain GET of a fixed URL: no token, identifier, query or cookies
-//   (the transports, fetch_mac.mm / fetch_win.cpp, send nothing else).
+// - A plain GET of a fixed URL: no token, identifier, query or cookies.
+//   Beyond what the HTTP stack adds (Host, Connection; CFNetwork's Accept:
+//   */*), the transports send User-Agent: MediaViewer and, when resuming,
+//   Range. The Mac's (fetch_mac.mm) also sends Accept-Language: en and
+//   Accept-Encoding: identity, fixed, where NSURLSession would fill in the
+//   user's languages and gzip; WinHTTP (fetch_win.cpp) sends neither unless
+//   asked, and is not asked.
 // - Resumable: bytes land in <path>.part, and the next try asks for the rest
 //   with a Range request, including after a restart.
 // - Patient: no answer, a 5xx or a 429 waits and retries by itself, backing
@@ -23,6 +28,9 @@
 // - Adopting: a file already at its path with the pinned size but no .ok that
 //   agrees (dropped there by hand, or copied back with a new mtime) is hashed
 //   once, kept with a .ok when it matches and deleted and fetched when not.
+// - Stoppable: `stop` is seen between body chunks, in a wait and between
+//   the 1 MB blocks of a hash (not while the transport waits for an answer);
+//   a stopped hash deletes and renames nothing.
 //
 // Transport-free and blocking: the engine runs it on a thread of its own;
 // tests drive it with a fake transport. Nothing here knows about tiers or
@@ -108,12 +116,13 @@ class fetcher {
   // nothing requested, made or reported, when one is over max_file_bytes;
   // status::cancelled when `stop` was set (partial files are kept for the
   // next run); status::not_found when one is gone; status::corrupt when one
-  // never matched its hash. `progress` is called on each change of state and
-  // about every quarter second while bytes arrive.
+  // never matched its hash. `progress` is called on each change of state,
+  // before each hash, and about every quarter second while bytes arrive.
   [[nodiscard]] expected run(std::span<const remote_file> files, const std::atomic<bool>& stop,
                              const std::function<void(const fetch_progress&)>& progress);
-  // Deletes what is under the root and not one of `keep` (the models of a
-  // tier left behind, once the new one answers).
+  // Deletes the regular files under the root that are not one of `keep` (the
+  // models of a tier left behind, once the new one answers). Follows no link
+  // or junction, and does nothing when the root itself is one.
   void prune(std::span<const remote_file> keep) const;
 
  private:
@@ -126,5 +135,9 @@ class fetcher {
 [[nodiscard]] bool fetch_ready(const std::string& root_utf8, const remote_file& f);
 // Deletes what is under `root` and not one of `keep` (fetcher::prune).
 void prune_fetched(const std::string& root_utf8, std::span<const remote_file> keep);
+// How prune matches a path to a kept one: lexically normal, '/'-separated,
+// and with `fold` its ASCII letters lowercased. Prune folds on Windows and
+// the Mac, whose volumes are case-insensitive by default. For the tests.
+[[nodiscard]] std::string fetch_path_key(const std::string& path_utf8, bool fold);
 
 }  // namespace mv::ai

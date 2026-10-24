@@ -2,8 +2,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The model downloader's transport on the Mac (fetch.h): NSURLSession, an
 // ephemeral session (no cookies, no cache, no credentials), streaming each
-// chunk to the fetcher on the calling thread's behalf. Sends a User-Agent
-// and, when resuming, a Range header; nothing else.
+// chunk to the fetcher on the calling thread's behalf. Sends User-Agent:
+// MediaViewer, Accept-Language: en, Accept-Encoding: identity and, when
+// resuming, Range, and what CFNetwork adds for HTTP itself (Host,
+// Connection, Accept: */*). The two Accept- values are fixed so the user's
+// languages are not sent and a ranged body is never decoded on the way (its
+// offsets would no longer be the file's).
+//
+// Built into each add-on that downloads (mv_ai_engine, mv_enhance_engine),
+// not into mv_model_fetch, so that each names the delegate class its own way
+// (MV_FETCH_DELEGATE, cmake/ai.cmake and cmake/enhance.cmake): the
+// Objective-C runtime keeps one class per name for the whole process, and
+// both add-ons load into every window's process.
 #include "addons/ai/fetch.h"
 
 #import <Foundation/Foundation.h>
@@ -30,11 +40,15 @@ struct exchange {
 }  // namespace
 }  // namespace mv::ai
 
-@interface MVFetchDelegate : NSObject <NSURLSessionDataDelegate>
+#ifndef MV_FETCH_DELEGATE
+#define MV_FETCH_DELEGATE MVFetchDelegate
+#endif
+
+@interface MV_FETCH_DELEGATE : NSObject <NSURLSessionDataDelegate>
 @property(nonatomic, assign) mv::ai::exchange* x;
 @end
 
-@implementation MVFetchDelegate
+@implementation MV_FETCH_DELEGATE
 - (void)URLSession:(NSURLSession*)session
               dataTask:(NSURLSessionDataTask*)task
     didReceiveResponse:(NSURLResponse*)response
@@ -93,7 +107,7 @@ class mac_transport final : public http_transport {
       config.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
       config.timeoutIntervalForRequest = 60;
       config.HTTPAdditionalHeaders = @{@"User-Agent" : @"MediaViewer"};
-      MVFetchDelegate* delegate = [MVFetchDelegate new];
+      MV_FETCH_DELEGATE* delegate = [MV_FETCH_DELEGATE new];
       delegate.x = &x;
       NSOperationQueue* queue = [NSOperationQueue new];
       queue.maxConcurrentOperationCount = 1;
@@ -105,6 +119,9 @@ class mac_transport final : public http_transport {
         return reply;
       }
       NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:u];
+      // Set on the request: NSURLSession fills both in itself otherwise.
+      [req setValue:@"en" forHTTPHeaderField:@"Accept-Language"];
+      [req setValue:@"identity" forHTTPHeaderField:@"Accept-Encoding"];
       if (from > 0) {
         [req setValue:[NSString stringWithFormat:@"bytes=%llu-", static_cast<unsigned long long>(from)]
             forHTTPHeaderField:@"Range"];

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -31,5 +32,9 @@ class sha256 {
 
 // The lowercase hex SHA-256 of a whole file; nullopt when it cannot be read.
 [[nodiscard]] std::optional<std::string> sha256_file_hex(const std::string& path_utf8);
+// The same, looking at `stop` before each 1 MB block: nullopt once it is set,
+// so a stop does not wait out a file of gigabytes.
+[[nodiscard]] std::optional<std::string> sha256_file_hex(const std::string& path_utf8,
+                                                         const std::atomic<bool>& stop);
 
 }  // namespace mv::ai
