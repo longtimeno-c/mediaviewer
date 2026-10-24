@@ -3,8 +3,8 @@
      The page's Windows part (index.html), when the site has the Windows zip. -->
 <h2>Windows (PowerShell)</h2>
 <pre><code>irm @BASE_URL@/install.ps1 | iex</code></pre>
-<p>Per user, with no administrator: it checks the download's SHA-256 and signatures, puts
-driftwire in <code>%LOCALAPPDATA%\Programs\Driftwire</code> and adds that folder to your PATH.
+<p>Per user, with no administrator: it checks the download's SHA-256 (and, for a signed build,
+its signatures), puts driftwire in <code>%LOCALAPPDATA%\Programs\Driftwire</code> and adds that folder to your PATH.
 Run it again to update. To remove it:</p>
 <pre><code>&amp; ([scriptblock]::Create((irm @BASE_URL@/install.ps1))) -Uninstall</code></pre>
 <p class="small">x64; Windows on Arm runs it too. Or unpack <a href="@WINDOWS_ZIP@">@WINDOWS_ZIP@</a>

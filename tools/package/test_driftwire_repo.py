@@ -376,6 +376,7 @@ class DriftwireRepoTest(unittest.TestCase):
             self.assertIn(needle, page)
         for banned in ('<script', '<link', '<img', '<iframe', 'src=', '@import', 'url('):
             self.assertNotIn(banned, page.lower())
+        self.assertEqual(page.count('SPDX-License-Identifier'), 1)   # the Windows part's header is not in it
         for href in re.findall(r'href="([^"]+)"', page):
             self.assertTrue(href == 'https://github.com/longtimeno-c/mediaviewer' or '://' not in href, href)
         self.assertIn('href="driftwire/"', (self.site / 'index.html').read_text())

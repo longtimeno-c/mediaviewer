@@ -464,6 +464,7 @@ def build_pages(site, dw, packages, base, signer, github_repo=GITHUB_REPO):
     if packages.windows_zip:
         windows = fill('index-windows.html', {'BASE_URL': html.escape(base),
                                               'WINDOWS_ZIP': html.escape(packages.windows_zip.name)})
+        windows = re.sub(r'\A<!--.*?-->\n', '', windows, flags=re.S)   # its own header stays out of the page
     values = {
         'BASE_URL': html.escape(base),
         'VERSION': html.escape(packages.version),
