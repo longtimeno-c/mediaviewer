@@ -173,26 +173,28 @@ jobs:
         # one case that measures real playback time is left to a Mac with audio.
         run: ctest --test-dir build -C Release --output-on-failure --no-tests=error -E "An audio-only clip seeks, pauses in place"
 
-      # The driftwire command line (docs/design/28 "From a terminal"), built
-      # and tested above: one program, its libraries static (arm64-osx), in a
-      # tar.gz (an artefact's zip drops the executable bit), with the MIT, ISC
-      # and CC0 notices of what it links (the Linux packages' copyright file).
-      # Unsigned and not released: the owner asked for Linux packages, and a
-      # macOS release is not decided (12, 2026-10-23).
+      # The driftwire command line (docs/design/28 "Installing"), built and
+      # tested above: one program, its libraries static (arm64-osx), packed as
+      # a release packs it (tools/mac/macpack.py cli: signed ad hoc with the
+      # hardened runtime and its identifier, run for its version, and put in a
+      # tar.gz with its manual page, LICENSE, NOTICE and the MIT, ISC and CC0
+      # notices of what it links). arm64 only and unsigned here; a stable
+      # release signs, notarizes and publishes the universal one, which the
+      # Homebrew tap's formula installs.
       - name: driftwire command line (artefact)
         run: |
-          out=driftwire-macos-arm64
-          mkdir -p "$out"
-          cp build/bin/driftwire LICENSE NOTICE THIRD-PARTY.md "$out/"
-          cp packaging/linux/copyright "$out/COPYRIGHT.txt"
-          otool -L "$out/driftwire"
-          "$out/driftwire" --version
-          tar -czf "$out.tar.gz" "$out"
+          otool -L build/bin/driftwire
+          version=$(python3 -c "import re; print(re.search(r'project\(\s*mediaviewer\s+VERSION\s+(\S+)', open('CMakeLists.txt').read())[1])")
+          python3 tools/mac/macpack.py cli --binary build/bin/driftwire --version "$version" \
+            --out-dir driftwire-macos --identity - --skip-notarize
+          tar -xzf driftwire-macos/driftwire-*-macos-arm64.tar.gz -C "$RUNNER_TEMP"
+          codesign --display --verbose=2 "$RUNNER_TEMP"/driftwire-*-macos-arm64/driftwire 2>&1 |
+            grep -x 'Identifier=io.github.longtimeno-c.driftwire'
 
       - uses: actions/upload-artifact@v4
         with:
           name: driftwire-macos-arm64
-          path: driftwire-macos-arm64.tar.gz
+          path: driftwire-macos/*.tar.gz
           if-no-files-found: error
 
   windows-chrome:
@@ -223,6 +225,10 @@ jobs:
       - run: python3 tools/mac/test_macpack.py -v
       - run: python3 tools/mac/test_check_minos.py -v
       - run: python3 tools/package/test_github_release.py -v
+      # The driftwire command line's Windows zip (pwsh reads tiny PE files) and
+      # the Homebrew tap's formula (ruby checks and evaluates it).
+      - run: python3 tools/package/test_driftwire_windows.py -v
+      - run: python3 tools/package/test_homebrew_formula.py -v
 
   # ---------------------------------------------------------------------------
   # Milestone G (docs/design/18): the shared Import engine, add-on host and verified
@@ -365,8 +371,11 @@ jobs:
       # "Installing", tools/package/driftwire_repo.py), built from these
       # packages with a throwaway key and got as a person would get it: served
       # on localhost, install.sh run as `curl | sh` runs it, apt refusing an
-      # index changed by one byte, --uninstall leaving nothing, then the
-      # tarball route with no package manager. And the builder's own tests.
+      # index changed by one byte (and its refused files in partial/ removed),
+      # --uninstall leaving nothing, then the tarball route with no package
+      # manager. And the builder's own tests, which also run the Windows
+      # installer in its test mode under pwsh where the runner has it (the
+      # Windows leg of Build runs it for real).
       - name: Package repository and installer
         run: |
           sudo apt-get install -y --no-install-recommends apt-utils createrepo-c gnupg shellcheck
@@ -670,34 +679,42 @@ jobs:
           TEMP: ${{ runner.temp }}
         run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
 
-      # The driftwire command line (docs/design/28 "From a terminal"), built
-      # and tested above with the app: the program and the two DLLs it loads
-      # (x64-windows is a dynamic triplet), as a plain artefact, with the MIT,
-      # ISC and CC0 notices of what it links (the Linux packages' copyright
-      # file). Unsigned and not released: the owner asked for Linux packages,
-      # and a Windows release is not decided (12, 2026-10-23). Not in the
-      # app's payload (tools/package/build-release.ps1).
-      - name: driftwire command line (artefact)
+      # The driftwire command line (docs/design/28 "Installing"), built and
+      # tested above with the app, packed as a release packs it
+      # (tools/package/driftwire-windows.ps1: driftwire.exe and every DLL it
+      # loads, read from the import tables, the Visual C++ runtime beside it,
+      # the notices; unsigned here), then installed as a person would
+      # (tools/package/check-driftwire-install.ps1): the zip and install.ps1
+      # served on localhost, `irm | iex` in Windows PowerShell 5.1 and in
+      # PowerShell 7, `driftwire --version` in a new process with the user's
+      # PATH, again, a changed zip refused, a cut-off script doing nothing,
+      # -Uninstall keeping the user's other PATH entries; and a build signed
+      # with a throwaway certificate this runner trusts, so install.ps1's
+      # Authenticode check runs. Not in the app's payload (build-release.ps1).
+      - name: driftwire command line (zip, and the one-line installer)
         if: matrix.toolchain == 'msvc' && matrix.config == 'Release'
         run: |
-          $bin = "build/bin/${{ matrix.config }}"
-          $out = "driftwire-windows-x64"
-          New-Item -ItemType Directory -Force $out | Out-Null
-          foreach ($file in 'driftwire.exe', 'libsodium.dll', 'blake3.dll') {
-            if (-not (Test-Path "$bin/$file")) { throw "no $file in $bin" }
-            Copy-Item "$bin/$file" $out
+          ./tools/package/driftwire-windows.ps1 -Action Stage -BuildDir build -Config Release -OutDir dist/driftwire-cli
+          ./tools/package/driftwire-windows.ps1 -Action Pack -OutDir dist/driftwire-cli
+          ./tools/package/driftwire-windows.ps1 -Action Stage -BuildDir build -Config Release -OutDir dist/driftwire-cli-signed
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=driftwire CI, O=throwaway' -CertStoreLocation Cert:\CurrentUser\My
+          $cer = Join-Path $env:RUNNER_TEMP 'driftwire-ci.cer'
+          Export-Certificate -Cert $cert -FilePath $cer | Out-Null
+          Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+          foreach ($file in Get-ChildItem dist/driftwire-cli-signed/sign -File) {
+            $result = Set-AuthenticodeSignature -FilePath $file.FullName -Certificate $cert -HashAlgorithm SHA256
+            if ($result.Status -ne 'Valid') { throw "signing $($file.Name): $($result.Status)" }
           }
-          Copy-Item LICENSE, NOTICE, THIRD-PARTY.md $out
-          Copy-Item packaging/linux/copyright (Join-Path $out 'COPYRIGHT.txt')
-          $version = & "$out/driftwire.exe" --version
-          if ($LASTEXITCODE -ne 0) { throw 'driftwire --version failed' }
-          Write-Host $version
+          ./tools/package/driftwire-windows.ps1 -Action Pack -OutDir dist/driftwire-cli-signed
+          $zip = (Get-ChildItem dist/driftwire-cli/driftwire-*-windows-x64.zip).FullName
+          $signed = (Get-ChildItem dist/driftwire-cli-signed/driftwire-*-windows-x64.zip).FullName
+          ./tools/package/check-driftwire-install.ps1 -Zip $zip -SignedZip $signed
 
       - uses: actions/upload-artifact@v4
         if: matrix.toolchain == 'msvc' && matrix.config == 'Release'
         with:
           name: driftwire-windows-x64
-          path: driftwire-windows-x64/
+          path: dist/driftwire-cli/driftwire-*-windows-x64.zip
           if-no-files-found: error
 
       - name: Upload broken-corpus reproducers
