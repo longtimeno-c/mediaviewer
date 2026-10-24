@@ -76,12 +76,12 @@ macOS (owner, 2026-10-23; [From a terminal](#from-a-terminal-driftwire)).
 `driftwire` is a terminal host of the same engine (owner, 2026-10-23,
 [12](12-decision-log.md#driftwire)): a program of its own, outside MediaViewer, on Linux, Windows
 and macOS. It speaks the same wire, so it sends to and receives from the add-on and another
-`driftwire`. Linux gets it as a `.deb`, an `.rpm` and a tarball, installed with one line or with
-apt, dnf or zypper from signed repositories that stable releases publish, and updated with the
-rest of the system ([Installing](#installing), [12](12-decision-log.md#driftwire));
-on Windows and macOS it is built and tested with the app and kept out of the app's payload, a CI
-artefact only (the owner asked for Linux packages; releases for Windows and macOS are not
-decided). Its manual page is `packaging/linux/driftwire.1`.
+`driftwire`, and it installs on its own, with no MediaViewer: on Linux from signed apt and dnf
+repositories (one line, or apt, dnf or zypper), on macOS from a Homebrew tap, on Windows with a
+PowerShell one-liner, each of which also updates it; stable releases publish all three
+([Installing](#installing), [12](12-decision-log.md#driftwire)). It is built and tested with the
+app on Windows and macOS and is never in the app's payload. Its manual page is
+`packaging/linux/driftwire.1`.
 
 ```
 driftwire                        the session: visible nearby while it runs; send and receive
@@ -201,18 +201,29 @@ network at all it says so and waits, as the window does: a network can come up.
 ### Installing
 
 The owner asked (2026-10-24) to install `driftwire` on its own, as `sudo apt install` does, with
-no MediaViewer present ([12](12-decision-log.md#driftwire)). It needs none: it has its own identity
-and data folder, and sends to and receives from MediaViewer's add-on or another `driftwire`. The
-channel is a package repository on this repository's GitHub Pages, at
-`https://longtimeno-c.github.io/mediaviewer/driftwire/` once the owner has set it up
-([DEVELOPMENT](../DEVELOPMENT.md#linux-package-repository)); until then the address serves nothing.
+no MediaViewer present, and then for the macOS and Windows command line, choosing a Homebrew tap
+and a PowerShell one-liner ([12](12-decision-log.md#driftwire)). It needs no MediaViewer: it has
+its own identity and data folder, and sends to and receives from MediaViewer's add-on or another
+`driftwire`. The Linux and Windows installers come from a site on this repository's GitHub Pages,
+`https://longtimeno-c.github.io/mediaviewer/driftwire/`, and the Mac's from the tap
+`longtimeno-c/homebrew-tap`; until the owner has set them up
+([DEVELOPMENT](../DEVELOPMENT.md#publishing-the-command-line)) neither serves anything.
 
 ```
-curl -fsSL https://longtimeno-c.github.io/mediaviewer/driftwire/install.sh | sh                    install, or upgrade
-curl -fsSL https://longtimeno-c.github.io/mediaviewer/driftwire/install.sh | sh -s -- --uninstall
+Linux    curl -fsSL https://longtimeno-c.github.io/mediaviewer/driftwire/install.sh | sh
+macOS    brew install longtimeno-c/tap/driftwire
+Windows  irm https://longtimeno-c.github.io/mediaviewer/driftwire/install.ps1 | iex
 ```
 
-- **The one line** (`packaging/linux/repo/install.sh`, POSIX sh). It checks Linux, x86_64 or
+| | What it writes | Updates | Removing it |
+|---|---|---|---|
+| Linux | the package, through apt, dnf, yum or zypper, with the repository's source and key; with none of them, the tarball's files in `~/.local` (`/usr/local` as root) | the package manager (`apt upgrade`, `dnf upgrade`, `zypper update`); the tarball: the line again | `curl -fsSL <site>/install.sh \| sh -s -- --uninstall` |
+| macOS | Homebrew's copy, `$(brew --prefix)/bin/driftwire` and its manual page | `brew upgrade` | `brew uninstall driftwire` |
+| Windows | `%LOCALAPPDATA%\Programs\Driftwire` (`driftwire.exe`, the DLLs it loads, the notices) and that folder on the user's `Path` | the line again | `& ([scriptblock]::Create((irm <site>/install.ps1))) -Uninstall` |
+
+None of them touches the data folder; none needs an administrator on Windows or macOS.
+
+- **Linux: the one line** (`packaging/linux/repo/install.sh`, POSIX sh). It checks Linux, x86_64 or
   arm64, glibc 2.35 or newer (musl is refused, with Alpine named) and curl or wget, says what it is
   about to do, and prints each command as it runs it, through sudo when it is not root. On apt
   systems (Debian, Ubuntu and their derivatives) it saves the key as
@@ -225,53 +236,119 @@ curl -fsSL https://longtimeno-c.github.io/mediaviewer/driftwire/install.sh | sh 
   `~/.local`, or `/usr/local` as root, after checking it against `SHA256SUMS` (and that file's
   signature when `gpgv` is there), and records what it put where; that copy does not update
   itself, and the installer says so. A source the package manager cannot read or verify is taken
-  away again. Running it again upgrades. `--uninstall` removes the package, the source, the key
-  and apt's lists of that source, or the tarball's files and the folders it made, and nothing
-  else: the data folder stays. Everything is in functions and `main` runs on the last line, so a
-  download cut off part way runs nothing. The site's address and key fingerprints are written in
-  when the site is built; `DRIFTWIRE_REPO_URL` overrides the address (https only, or http on
-  127.0.0.1 or localhost for the tests).
-- **By hand.** The site's page has the same as commands: the keyring and the deb822 source, then
-  `sudo apt install driftwire`; `driftwire.repo` into `/etc/yum.repos.d/` and `sudo dnf install
+  away again, with what apt fetched of it (a refused `InRelease` stays in
+  `/var/lib/apt/lists/partial/` otherwise). Running it again upgrades. `--uninstall` removes the
+  package, the source, the key and apt's files of that source (`partial/` too), or the tarball's
+  files and the folders it made, and nothing else. Everything is in functions and `main` runs on
+  the last line, so a download cut off part way runs nothing. The site's address, key fingerprints,
+  Homebrew tap and release page are written in when the site is built; `DRIFTWIRE_REPO_URL`
+  overrides the address (https only, or http on 127.0.0.1 or localhost for the tests). On macOS it
+  installs nothing: it prints the `brew install` line (and, without Homebrew, brew.sh and the
+  release page) and exits 1.
+- **Linux by hand.** The site's page has the same as commands: the keyring and the deb822 source,
+  then `sudo apt install driftwire`; `driftwire.repo` into `/etc/yum.repos.d/` and `sudo dnf install
   driftwire` (dnf asks once to trust the key; the page shows its fingerprint); `sudo zypper
   addrepo --refresh <site>/driftwire.repo`; or the tarball and its signed checksums.
-- **Updates** come from the package manager with the rest of the system (`apt upgrade`, `dnf
-  upgrade`, `zypper update`): this is the updater a build needs before it leaves this machine
-  (CLAUDE.md). The packages are not attached to the release page (`MV_RELEASE_LINUX_CLI` stays
-  off): a `.deb` from there would install without the source that updates it.
+- **macOS: the Homebrew tap.** `brew install longtimeno-c/tap/driftwire` reads
+  `Formula/driftwire.rb` in the public repository `longtimeno-c/homebrew-tap`, which release.yml's
+  `driftwire-homebrew` job rewrites for each stable release (`tools/package/homebrew_formula.py`
+  from `packaging/macos/driftwire.rb.in`): a binary formula whose `url` is the release asset
+  `driftwire-<version>-macos-universal.tar.gz` and whose `sha256` is that file's as published;
+  macOS 14 or later; the program into `bin`, its manual page into `man1`; a caveat on the
+  firewall's question and on Driftwire being open on the other side; a test of `--version`. The
+  archive (`tools/mac/macpack.py cli`) is one folder holding the program (the arm64 and x86_64
+  builds joined by `lipo_merge.py`), `driftwire.1`, `LICENSE`, `NOTICE` and `COPYRIGHT.txt`. The
+  program is signed with the Developer ID identity, the hardened runtime, a secure timestamp and
+  the identifier `io.github.longtimeno-c.driftwire`, with no entitlements (it keeps nothing in the
+  keychain: Remember does not show on macOS, as above), and notarized in a zip. A bare program
+  cannot be stapled, so Gatekeeper looks the ticket up online the first time a quarantined copy
+  runs; Homebrew does not quarantine what a formula installs. When the release's Intel leg did not
+  build, the archive is `-macos-arm64.tar.gz` and the formula adds `depends_on arch: :arm64`, so an
+  Intel Mac is told instead of given a program it cannot run.
+- **Windows: the one-liner** (`packaging/windows/install.ps1`). Windows PowerShell 5.1 and
+  PowerShell 7; ASCII; one function called on the last line, so a cut-off download runs nothing
+  and only that function stays in the session. It checks 64-bit Windows 10 or later (x64: Windows
+  on Arm runs it too; 32-bit is refused), downloads `driftwire-<version>-windows-x64.zip` from the
+  site to a temporary file, checks it against the SHA-256 written into the script and, when the
+  release was signed, that every `.exe` and `.dll` in it has a valid Authenticode signature, all
+  before anything changes. It unpacks next to `%LOCALAPPDATA%\Programs\Driftwire`, moves the old
+  copy aside (a running `driftwire` stops that, and it says to close it), the new one in and the old
+  one away, then adds the folder to the user's `Path` once. It writes `Path` through the registry
+  so the value keeps its kind and its `%VARIABLES%` (`SetEnvironmentVariable` would write it back
+  expanded, as `REG_SZ`), lets Explorer know so new terminals have it, puts it on this session's
+  `PATH`, and prints `driftwire --version`. `-Uninstall` removes the folder and the `Path` entry
+  only. The zip comes from the site, not the release page, so the installer and the file it checks
+  go live together and a copy of the site served elsewhere is whole; `DRIFTWIRE_REPO_URL` or
+  `-BaseUrl` point it at one (the written SHA-256 must still match). Off Windows it refuses, naming
+  the brew and curl lines; with `DRIFTWIRE_INSTALL_TEST=1` it runs there for the tests, with the
+  user's `Path` in a file and no registry or Authenticode. winget may come later.
+- **The Windows zip** (`tools/package/driftwire-windows.ps1`): `driftwire.exe` and every DLL it
+  loads, found by reading the import and delay-load tables of the program and of each DLL it finds:
+  ours from the build (`libsodium.dll`, `blake3.dll`; x64-windows is a dynamic triplet, FTXUI's
+  port static only) and the Visual C++ runtime (`vcruntime140.dll`, `vcruntime140_1.dll`,
+  `msvcp140.dll`, whichever it imports) from Visual Studio's redistributable folder, never
+  System32: the build uses the dynamic C runtime, a per-user install cannot run `vc_redist`, and a
+  clean Windows lacks it. The Universal CRT and the API sets are Windows'; any other DLL fails the
+  build. Release signing signs ours with Trusted Signing; Microsoft's runtime keeps Microsoft's
+  signature. With `LICENSE`, `NOTICE` and `COPYRIGHT.txt`.
+- **Updates** come through each channel: the package manager on Linux (this is the updater a build
+  needs before it leaves this machine, CLAUDE.md), `brew upgrade` on macOS, the one line again on
+  Windows (it installs the site's version over what is there). The Linux packages are not attached
+  to the release page (`MV_RELEASE_LINUX_CLI` stays off): a `.deb` from there would install without
+  the source that updates it. The macOS archive and the Windows zip are, since the tap and the
+  site take them from the release.
+- **One switch.** The repository variable `MV_DRIFTWIRE_REPO=1` publishes the command line from
+  each stable release: publish then requires and uploads the macOS archive and the Windows zip
+  (`tools/package/github-release.py`), `driftwire-repo` deploys the site (the apt and dnf
+  repositories, `install.sh`, the Windows zip and `install.ps1`), and `driftwire-homebrew` pushes
+  the formula. The preflight refuses to start a stable release with it on and the repository key
+  or the tap's token missing. Previews leave all three alone, and a release with it off is the
+  installers alone, as before.
 - **The repository** (`tools/package/driftwire_repo.py`) is a static tree built by release.yml's
-  `driftwire-repo` job from the release's packages, after the release is published, for stable
-  releases once `MV_DRIFTWIRE_REPO=1`; previews leave it alone. Each run replaces the Pages site,
-  so it holds the newest version only. apt: the pool, `Packages` and `Packages.gz` for each
-  architecture present, a `Release` (Origin and Label `Driftwire`, Suite and Codename `stable`,
-  component `main`) with `InRelease` and `Release.gpg`. rpm: the packages signed with `rpmsign`,
-  `createrepo_c` metadata (gzip and no sqlite, which older dnf and zypper read) with
-  `repomd.xml.asc`, and a `.repo` with `gpgcheck=1` and `repo_gpgcheck=1`. The tarballs with
-  `SHA256SUMS` and `SHA256SUMS.asc`, the public key as `key.asc` and `key.gpg`, the page, and the
-  installer. No external asset or script on the page.
+  `driftwire-repo` job from the release's packages and the Windows zip as published, after the
+  release is published. Each run replaces the Pages site, so it holds the newest version only.
+  apt: the pool, `Packages` and `Packages.gz` for each architecture present, a `Release` (Origin
+  and Label `Driftwire`, Suite and Codename `stable`, component `main`) with `InRelease` and
+  `Release.gpg`. rpm: the packages signed with `rpmsign`, `createrepo_c` metadata (gzip and no
+  sqlite, which older dnf and zypper read) with `repomd.xml.asc`, and a `.repo` with `gpgcheck=1`
+  and `repo_gpgcheck=1`. The tarballs and the Windows zip with `SHA256SUMS` and `SHA256SUMS.asc`,
+  the public key as `key.asc` and `key.gpg`, the page (Linux, macOS and Windows), and both
+  installers; `install.ps1` gets the zip's version, name and SHA-256, and whether `driftwire.exe`
+  carries an Authenticode signature (read from the file; a release with Trusted Signing configured
+  refuses an unsigned one). No external asset or script on the page.
 - **Valid-Until a year ahead.** apt refuses a `Release` past it, so a mirror or a network in the
   way cannot keep serving an old, correctly signed index to hold back a fix for longer than that.
   The cost: a stable release must come within the year, or `apt update` on every installed
   machine fails ("Release file … is expired", exit 100, checked here) and takes nothing new from
   the repository until the next release re-signs it.
 - **Nothing unsigned goes out.** The builder refuses packages whose versions disagree, an
-  architecture without all three packages, anything that is not driftwire, a tarball path outside
-  its folder, and a base URL that is not https. It signs with the key named (two during a key
-  change: every index then carries both signatures and `key.asc` both keys; an `.rpm` carries the
-  first), checks every signature against the exported key with `gpgv` and `rpmkeys`, checks that
-  no private key material is in the tree, and only then replaces the site; a failure leaves the
-  old one. The release job then serves the result on localhost and installs from it before deploying
+  architecture without all three packages, anything that is not driftwire, a tarball or zip path
+  outside its folder, a Windows `driftwire.exe` that is not x64, and a base URL that is not https.
+  It signs with the key named (two during a key change: every index then carries both signatures
+  and `key.asc` both keys; an `.rpm` carries the first), checks every signature against the
+  exported key with `gpgv` and `rpmkeys`, checks that `install.ps1` has the zip's SHA-256 and that
+  no private key material is in the tree, and only then replaces the site; a failure leaves the old
+  one. The release job then serves the result on localhost and installs from it before deploying
   (`driftwire_repo.py smoke`): apt installs, refuses an `InRelease` changed by one byte, and
-  `--uninstall` leaves nothing; then the tarball route with no package manager.
-- **The key** is the owner's: made once, its private half in the Actions secret
-  `DRIFTWIRE_REPO_GPG_KEY` with an offline backup, the passphrase (if any) in
-  `DRIFTWIRE_REPO_GPG_PASSPHRASE`. apt keeps the key the installer saved; a new key reaches an apt
-  machine only when the installer runs again (or the key is fetched by hand), so a key change
-  overlaps the two keys across at least one release.
-- Measured in a Linux container only (2026-10-24, Ubuntu 24.04, apt 2.8, dnf 4.14 with
-  repo_gpgcheck, rpm 4.18): install, upgrade by apt and by running the installer again, refusal of
-  a changed `InRelease` and of a changed `repomd.xml`, uninstall, the tarball route as root and as
-  a user. CI's legs and Pages have not run it; no real Fedora, openSUSE or arm64 machine has.
+  `--uninstall` leaves nothing, `partial/` included; then the tarball route with no package manager.
+- **The keys** are the owner's: the repository's OpenPGP key, made once, its private half in the
+  Actions secret `DRIFTWIRE_REPO_GPG_KEY` with an offline backup, the passphrase (if any) in
+  `DRIFTWIRE_REPO_GPG_PASSPHRASE`; apt keeps the key the installer saved, so a new key reaches an
+  apt machine only when the installer runs again (or the key is fetched by hand), and a key change
+  overlaps the two keys across at least one release. The tap is written with `HOMEBREW_TAP_TOKEN`,
+  a fine-grained token with Contents: write on the tap repository alone. The Apple and Trusted
+  Signing credentials the release already uses sign the Mac and Windows programs.
+- Run here only (2026-10-24, Linux): the Linux repository in an Ubuntu 24.04 container (apt 2.8,
+  dnf 4.14 with repo_gpgcheck, rpm 4.18: install, upgrade by apt and by the installer again,
+  refusal of a changed `InRelease` and of a changed `repomd.xml`, uninstall with `partial/`
+  cleared, the tarball route as root and as a user); `install.ps1` in its test mode under
+  PowerShell 7.6 (`tools/package/check-driftwire-install.ps1`: install, again, an update to a newer
+  version and back, a changed zip refused, a cut-off script doing nothing, uninstall keeping the
+  other `Path` entries); the formula under Ruby 3.3 against a stand-in for Homebrew's `Formula`;
+  `macpack.py cli` and `driftwire-windows.ps1` on tiny stand-in programs. CI's Windows leg runs
+  the one-liner for real in both PowerShells, signed and unsigned, and has not run yet; nor have
+  the release's macOS and Windows jobs, Homebrew, the tap or Pages, nor a real Fedora, openSUSE or
+  arm64 machine.
 
 ## Finding each other
 
@@ -1397,7 +1474,9 @@ second while bytes move; those posts update chrome and never present the canvas.
 | The add-on's export and manifest | `addon_entry.cpp`, `manifest.json`; `cmake/driftwire.cmake` |
 | The command line, `driftwire` (2026-10-23): the terminal port, keys, the line editor, paths, completion, the look and the live region, the arguments, the host, the session, the data folder, `main()` | `cli/term.h`, `cli/term_posix.cpp`, `cli/term_win.cpp`, `cli/keys.*`, `cli/line_editor.*`, `cli/paths_arg.*`, `cli/complete.*`, `cli/theme.h`, `cli/text.*`, `cli/render.*`, `cli/inline_view.*`, `cli/args.*`, `cli/host.*`, `cli/session.*`, `cli/data_dir.h`, `cli/data_dir_posix.cpp`, `cli/data_dir_win.cpp`, `cli/main.cpp`; `cmake/driftwire.cmake` (`mv_driftwire_cli_core`, `mv_driftwire_cli` with `OUTPUT_NAME driftwire`, the test build `mv_driftwire_cli_test`, the gallery `mv_driftwire_cli_gallery` from `tools/driftwire-cli-gallery`) |
 | Its Linux packages | `cmake/driftwire-cli/` (the project, CPack, the `NEEDED` gate `needed.cmake`), `packaging/linux/` (`driftwire.1`, `completions/`, `firewalld/driftwire.xml`, `copyright`), `.github/actions/driftwire-cli-linux` |
-| Its package repository and installer (2026-10-24) | `tools/package/driftwire_repo.py` (`build`: the site, its signatures and checks; `smoke`: installing from it on localhost), `packaging/linux/repo/` (`install.sh`, the page `index.html`), release.yml's `driftwire-repo` job, the repository step of ci.yml's `driftwire-cli-linux`; tests `tools/package/test_driftwire_repo.py` |
+| Its package repository and installers (2026-10-24) | `tools/package/driftwire_repo.py` (`build`: the site, its signatures and checks; `smoke`: installing from it on localhost; `windows-site`: `install.ps1` and the zip alone), `packaging/linux/repo/` (`install.sh`, the page `index.html` and its Windows part `index-windows.html`), `packaging/windows/install.ps1`, release.yml's `driftwire-repo` job, the repository step of ci.yml's `driftwire-cli-linux`; tests `tools/package/test_driftwire_repo.py`, `tools/package/check-driftwire-install.ps1` (the Windows installer end to end, on Build's msvc Release leg) |
+| Its Windows zip and macOS archive (2026-10-24) | `tools/package/driftwire-windows.ps1` (`pe_fixture.py`, `test_driftwire_windows.py`), `tools/mac/macpack.py cli` (`test_macpack.py`), release.yml's `windows` and `macos` jobs, `tools/package/github-release.py` (`MV_RELEASE_CLI`) |
+| Its Homebrew tap (2026-10-24) | `packaging/macos/driftwire.rb.in`, `packaging/macos/homebrew-tap-README.md`, `tools/package/homebrew_formula.py` (`test_homebrew_formula.py`), release.yml's `driftwire-homebrew` job |
 | Mac chrome | `Driftwire.swift` (offer, share icon), `SlotItems.swift` (Settings), `ScreenView.swift` (Choose…), `GalleryView.swift` / `FolderStore.swift` (range, drag), `AddonNotices.swift` (notifications, the menu-bar item, #452) |
 | Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
@@ -1410,10 +1489,10 @@ second while bytes move; those posts update chrome and never present the canvas.
 - Bluetooth on Linux: there is no BlueZ bearer (`bt_none.cpp`), so Linux sends over Wi-Fi and the
   internet only.
 - In the command line: Bluetooth on any OS; Remember on macOS (no keychain identity for a bare
-  program); a signed program or a package for Windows and macOS (CI artefacts only); the Linux
-  package repository live (it waits for the owner's setup: Pages, the key, `MV_DRIFTWIRE_REPO`);
-  "the first time" an internet option is explained is per session, not per computer. Not run: a
-  transfer between two machines over Wi-Fi with the command line on one side.
+  program); winget; the site and the tap live (they wait for the owner's setup: the tap
+  repository and its token, Pages, the key, `MV_DRIFTWIRE_REPO`); "the first time" an internet
+  option is explained is per session, not per computer. Not run: a transfer between two machines
+  over Wi-Fi with the command line on one side.
 - Over the internet, after the relays: Tor (dropped for now, [plan](../plans/driftwire-tor-spike.md)),
   TURN, relaying word codes, remembered-device sends and the handover, a relayed send moving.
 - The rest of #472, deferred by the owner (2026-10-18, [12](12-decision-log.md#driftwire)):

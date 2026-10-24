@@ -1986,7 +1986,9 @@ bottom. No Bluetooth in it on any OS: CoreBluetooth needs a bundle's usage strin
 server in an unpackaged console is unverified, Linux has no bearer. Linux gets packages; the
 Windows and macOS programs are built and tested with the app and uploaded by CI, unsigned, and are
 not released (the owner asked for Linux packages; Windows and macOS releases are not decided) nor
-in the app's payload. Cost: a second face for every
+in the app's payload. Since 2026-10-24 they are released, through a Homebrew tap and a PowerShell
+one-liner (below, "`driftwire` on macOS from a Homebrew tap"), and still never in the app's
+payload. Cost: a second face for every
 flow; one session controller that makes only the window's `on_event` calls keeps it to what the
 window does, and the session tests drive two engines through it.
 
@@ -2052,6 +2054,36 @@ hand), so a key change overlaps the two across at least one release; no glibc ol
 installed, upgraded, a changed `InRelease` and a changed `repomd.xml` refused, removed; CI and Pages
 have not run it. Reopen if a distribution packages `driftwire` itself, or if the site moves off
 GitHub Pages.
+
+**`driftwire` on macOS from a Homebrew tap, on Windows from a PowerShell one-liner (owner,
+2026-10-24; amends "Driftwire has a command line", which left Windows and macOS releases
+undecided, and the row above).** The owner asked for the install instructions on the macOS and
+Windows command line, with the README and the docs, and chose: on macOS a Homebrew tap, `brew
+install longtimeno-c/tap/driftwire`, updated by `brew upgrade`, from a public repository
+`longtimeno-c/homebrew-tap` holding one formula that each release updates, the program universal,
+signed and notarized by the release job; on Windows a PowerShell one-liner, `irm
+https://longtimeno-c.github.io/mediaviewer/driftwire/install.ps1 | iex`, the signed `driftwire.exe`
+in the user's folder and on their `Path`, per user, no admin, running it again to update; winget
+may come later. Both work with no MediaViewer installed, and each stable release publishes both
+([28](28-driftwire.md#installing)). Ours, not the owner's: one switch for the whole command line
+(`MV_DRIFTWIRE_REPO`, which also publishes the Linux repository: the archives then become
+required assets of a stable release, the site gets the zip and `install.ps1`, and a new job
+pushes the formula with a token, `HOMEBREW_TAP_TOKEN`, scoped to the tap); the zip served from the
+Pages site beside `install.ps1` rather than from the release page, so the script and the file it
+checks go live together; its SHA-256 written into the script, and every program in it required to
+carry a valid Authenticode signature when the release is signed; the user's `Path` edited through
+the registry, keeping its kind and `%VARIABLES%`; the Visual C++ runtime carried beside the program
+(the build uses the dynamic C runtime and a per-user install cannot run `vc_redist`); the Mac
+program signed with no entitlements (it has no keychain identity, so Remember stays off on macOS,
+#501) and an `-arm64` archive with `depends_on arch: :arm64` when the release's Intel leg does not
+build. Cost: a bare program cannot be stapled, so Gatekeeper checks its ticket online the first
+time a quarantined copy runs (Homebrew does not quarantine); the runtime beside `driftwire.exe` is
+not serviced by Windows Update between releases; a token to renew before it expires, or the
+formula stays behind; with the switch on, a stable release cannot publish without the two
+archives. Run in a Linux container only: `install.ps1` in a test mode under PowerShell 7.6, the
+formula under Ruby 3.3 against a stand-in for Homebrew; CI's Windows installer check, the
+release's macOS and Windows jobs, Homebrew and Pages have not run. Reopen for winget, if Homebrew
+itself takes the formula, or if the site moves.
 
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with

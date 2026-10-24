@@ -79,6 +79,7 @@ Position: bundle decoders, never bundle a software HEVC or AAC encoder.
 | Sparkle | MIT | Framework in `Contents/Frameworks` (macOS updater) |
 | .NET 8, Windows App SDK / WinUI 3 | MIT | Shipped self-contained with the Windows chrome |
 | Microsoft OpenMP (`vcomp140.dll`), LLVM OpenMP | MS redistributable; Apache-2.0 WITH LLVM-exception | Dynamic, beside LibRaw |
+| Microsoft Visual C++ runtime (`vcruntime140*.dll`, `msvcp140.dll`) | MS redistributable | Dynamic, beside `driftwire.exe` in the command line's Windows zip only |
 | Cozette font | MIT | Bundled TTF |
 | Final Cut Pro's `ProExtension.framework` | Apple, proprietary | **Not shipped.** The Mac FCP extension ([NLE search](23-nle-search.md)) `dlopen`s the copy inside the user's installed Final Cut Pro at run time, because FCP's extension point requires its classes. The copyright holder accepts loading it into the GPL extension |
 
@@ -109,7 +110,13 @@ and the word list's MIT notices go with every copy, so each package carries them
 `libstdc++` / `libgcc` are static under the GCC Runtime Library Exception, which asks for nothing.
 The corresponding source of that binary includes the pinned libsodium, BLAKE3 and FTXUI sources
 (the copyright file names each archive); the release page's source offer covers them as it covers
-the app's (below).
+the app's (below). The macOS archive carries the program (libsodium, BLAKE3 and FTXUI static, the
+system's libc++), its manual page, the GPL text, NOTICE and the same notices as `COPYRIGHT.txt`;
+the Windows zip carries `driftwire.exe`, `libsodium.dll` and `blake3.dll` (x64-windows is a dynamic
+triplet; FTXUI is static), the Visual C++ runtime DLLs it imports (Microsoft's redistributable
+files, beside the program as `vcomp140.dll` is beside LibRaw, since a per-user install cannot run
+`vc_redist`), the GPL text, NOTICE and `COPYRIGHT.txt`. `tools/package/driftwire-windows.ps1`
+fails the zip if the program needs any other DLL that Windows does not have.
 
 CC-BY 4.0 data in a GPL program is fine. The licences cover different works: the data is not a
 derivative of the code, and the attribution is a notice, not an added restriction on the program

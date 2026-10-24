@@ -94,7 +94,8 @@ codes:
 
 Not linked into the app. `driftwire`, Driftwire in a terminal
 ([docs/design/28](docs/design/28-driftwire.md#from-a-terminal-driftwire)), is a program of its own:
-packages on Linux, a CI artefact on Windows and macOS. It links:
+packages on Linux, an archive on macOS (the Homebrew tap installs it) and a zip on Windows (the
+PowerShell one-liner installs it). It links:
 
 | Component | Version | Licence | Linkage | Notes |
 |---|---|---|---|---|
@@ -103,11 +104,16 @@ packages on Linux, a CI artefact on Windows and macOS. It links:
 | [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) | 1.8.7 | **CC0-1.0** (taken under CC0) | Static on Linux and macOS; `blake3.dll` on Windows | Each file's hash, as in the add-on. |
 | BIP 39 English word list | (above) | **MIT** | Compiled in (`src/addons/driftwire/wordlist.inc`) | Four-word codes, as in the add-on. |
 | GCC's `libstdc++` and `libgcc` | the build's GCC (12 in the packages) | GPL-3.0 with the GCC Runtime Library Exception 3.1 | Static on Linux (`-static-libstdc++ -static-libgcc`) | The exception covers it; nothing to ship. The program then needs only glibc. |
+| Microsoft Visual C++ runtime (`vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`: those `driftwire.exe` imports) | the build's MSVC toolset redist | Microsoft redistributable terms | Dynamic, Windows: beside `driftwire.exe` in the zip | Copied from Visual Studio's redistributable folder by `tools/package/driftwire-windows.ps1`, Microsoft-signed, as `vcomp140.dll` is for the app: a per-user install takes no administrator, so it cannot run `vc_redist`. The Universal CRT is part of Windows 10 and later. |
 
 The Linux packages carry every notice above in `/usr/share/doc/driftwire/copyright` (DEP-5,
-`packaging/linux/copyright`) and the GPL text and NOTICE in `/usr/share/licenses/driftwire/`; the
-Windows and macOS artefacts carry LICENSE, NOTICE, this file and the same notices as
-`COPYRIGHT.txt` (a copy of `packaging/linux/copyright`: the MIT, ISC and CC0 texts in full).
+`packaging/linux/copyright`) and the GPL text and NOTICE in `/usr/share/licenses/driftwire/`. The
+macOS archive (`driftwire-<version>-macos-universal.tar.gz`: the program, with libsodium, BLAKE3
+and FTXUI static and the system's libc++, and its manual page) and the Windows zip
+(`driftwire-<version>-windows-x64.zip`: `driftwire.exe`, `libsodium.dll`, `blake3.dll` and the
+Visual C++ runtime DLLs above) each carry `LICENSE`, `NOTICE` and the same notices as
+`COPYRIGHT.txt`, a copy of `packaging/linux/copyright` (the MIT, ISC and CC0 texts in full; its
+opening comment describes the Linux program's linking); CI's artefacts are the same archives.
 Catch2 builds only its tests.
 
 ## Planned, with the PR that introduces each

@@ -2,9 +2,11 @@
 
 Downloads belong on [GitHub Releases](https://github.com/longtimeno-c/mediaviewer/releases):
 a Windows x64 installer wizard (`Setup.exe`) and a macOS 14+ universal (Apple Silicon and
-Intel) disk image (`.dmg`, drag to Applications). The `driftwire` command line's Linux packages
-(`.deb`, `.rpm`, tarball; x86_64 and arm64) are published in a signed apt and dnf repository on
-this repository's GitHub Pages instead, once it is set up ([below](#the-driftwire-package-repository)).
+Intel) disk image (`.dmg`, drag to Applications). The `driftwire` command line is published
+through its own channels once they are set up ([below](#the-driftwire-command-line)): its Linux
+packages (`.deb`, `.rpm`, tarball; x86_64 and arm64) in a signed apt and dnf repository on this
+repository's GitHub Pages, its Windows zip there too for a PowerShell one-liner, and its macOS
+archive on the release page for a Homebrew tap.
 
 **You can build test installers without signing certificates.** Use `artifacts`.
 Both `preview` and `stable` publish signed update feeds, so both need Developer ID, Apple
@@ -163,7 +165,38 @@ publishing still works with a signed update manifest; Windows may warn at instal
 | `MediaViewer-<version>.dmg` | Mac first install |
 | `MediaViewer-<version>.zip` | Stapled Mac app archive for Sparkle |
 | `appcast.xml` | Signed Sparkle feed |
+| `driftwire-<version>-macos-universal.tar.gz` | The `driftwire` command line for macOS (`-arm64` when the Intel leg did not build); the Homebrew tap installs it. Only with `MV_DRIFTWIRE_REPO=1` |
+| `driftwire-<version>-windows-x64.zip` | The `driftwire` command line for Windows; the site's `install.ps1` installs it. Only with `MV_DRIFTWIRE_REPO=1` |
 | `SHA256SUMS.txt` | Download checksums |
+
+### The driftwire command line
+
+One repository variable, `MV_DRIFTWIRE_REPO`, publishes the `driftwire` command line from each
+**stable** release ([docs/design/28 "Installing"](docs/design/28-driftwire.md#installing),
+[12](docs/design/12-decision-log.md#driftwire), 2026-10-24); previews never do, and with it off a
+release is the installers alone, as before.
+
+| Job | Every run | With `MV_DRIFTWIRE_REPO=1`, stable only |
+|---|---|---|
+| `windows` | packs `driftwire-<version>-windows-x64.zip` (`tools/package/driftwire-windows.ps1`: the program, every DLL it loads, the Visual C++ runtime, the notices), signing ours with Trusted Signing when it is configured | |
+| `macos-build`, `macos` | join the two programs and pack `driftwire-<version>-macos-universal.tar.gz` (`macpack.py cli`): ad hoc in artifacts mode, Developer ID on a preview, Developer ID and notarized on a stable release | |
+| `linux-cli` | builds and tests the Linux packages | |
+| `publish` | ignores the archives | requires both archives (checked for their one folder and the program), uploads them, and gives the three install lines in the notes (`MV_RELEASE_CLI`) |
+| `driftwire-repo` | | deploys the package repository: apt, dnf, the tarballs, the Windows zip as published, `install.sh` and `install.ps1` ([below](#the-driftwire-package-repository)) |
+| `driftwire-homebrew` | | downloads the macOS archive as published, writes `Formula/driftwire.rb` with its SHA-256 (`tools/package/homebrew_formula.py`) into `<owner>/homebrew-tap` and pushes it as `github-actions[bot]`; a tap without a README about driftwire gets one |
+
+| Setting | Value |
+|---|---|
+| Variable `MV_DRIFTWIRE_REPO` | `1` publishes the command line; anything else leaves the archives off the release and the site and the tap as they are |
+| Secret `HOMEBREW_TAP_TOKEN` | A fine-grained personal access token with Contents: write on `<owner>/homebrew-tap` alone. A repository secret: with the variable on and this empty, a stable release's preflight fails and says so, before any build. Only `driftwire-homebrew` gets it |
+| Repository `<owner>/homebrew-tap` | Public, with a README (so it is not empty); `brew install <owner>/tap/driftwire` reads its `Formula/driftwire.rb` |
+| The signing secrets | Nothing new: the Apple ones sign and notarize the Mac program, the optional Trusted Signing ones sign `driftwire.exe` and its DLLs (without them `install.ps1` checks the zip's SHA-256 only) |
+
+The owner's whole one-time setup is one checklist in
+[DEVELOPMENT.md](docs/DEVELOPMENT.md#publishing-the-command-line). Neither job after `publish`
+holds up the installers; one that fails (a token that expired, Pages not enabled) can be re-run
+from the run's page once fixed. With the Intel leg missing, the macOS archive is `-arm64` and the
+formula says `depends_on arch: :arm64`.
 
 ### The driftwire package repository
 
@@ -176,14 +209,17 @@ CPack (`cmake/driftwire-cli`), installs the `.deb` and checks it reports the rel
 
 After a **stable** release is published, the `driftwire-repo` job (when the repository variable
 `MV_DRIFTWIRE_REPO` is `1`) builds the package repository from those packages with
-`tools/package/driftwire_repo.py`: signed apt and dnf repositories, the tarballs with signed
-`SHA256SUMS`, the public key, a page and the one-line installer. It installs from the result on
+`tools/package/driftwire_repo.py`: signed apt and dnf repositories, the tarballs and the Windows
+zip (downloaded from the published release) with signed `SHA256SUMS`, the public key, a page, and
+the one-line installers `install.sh` and `install.ps1` (the zip's SHA-256 written in; when Trusted
+Signing is configured, `--require-windows-signature` refuses an unsigned `driftwire.exe`). It installs from the result on
 localhost first (`driftwire_repo.py smoke`), then deploys it to this repository's GitHub Pages at
 `https://longtimeno-c.github.io/mediaviewer/driftwire/`, replacing the whole Pages site. People
 install with `curl -fsSL https://longtimeno-c.github.io/mediaviewer/driftwire/install.sh | sh`
 (or apt, dnf, zypper by hand) and get updates from their package manager; that is the Linux
-updater CLAUDE.md asks for ([12](docs/design/12-decision-log.md#driftwire), 2026-10-24). Previews
-do not touch it.
+updater CLAUDE.md asks for ([12](docs/design/12-decision-log.md#driftwire), 2026-10-24). Windows
+installs with `irm https://longtimeno-c.github.io/mediaviewer/driftwire/install.ps1 | iex` from
+the same site. Previews do not touch it.
 
 | Setting | Value |
 |---|---|
@@ -194,16 +230,15 @@ do not touch it.
 | Environment `github-pages` | A tag rule `v*` beside its default `main` rule (Settings → Environments), so the repository job of a release run from its tag may deploy |
 
 Making the key, backing it up, changing it, and testing the site locally are in
-[DEVELOPMENT.md](docs/DEVELOPMENT.md#linux-package-repository). The apt `Release` is valid for a
+[DEVELOPMENT.md](docs/DEVELOPMENT.md#linux-package-repository) (the whole setup:
+[Publishing the command line](docs/DEVELOPMENT.md#publishing-the-command-line)). The apt `Release` is valid for a
 year: **a stable release must come within each year**, or `apt update` fails on every installed
 machine ("Release file … is expired"). The site holds the newest version only.
 
 The packages are not attached to the release (`MV_RELEASE_LINUX_CLI: '0'` in release.yml's
 publish step): a `.deb` from the release page would install without the source that updates it.
 `'1'`, with `linux-cli` added to publish's `needs`, attaches all six as well, and `publish` then
-refuses a release without them (`linux_cli_asset_names` in `tools/package/github-release.py`). The
-command line's Windows and macOS builds are not released: the owner asked for Linux packages, and
-releases for Windows and macOS are not decided. CI uploads them as artefacts.
+refuses a release without them (`linux_cli_asset_names` in `tools/package/github-release.py`).
 
 Add-ons (Milestone G, [docs/design/18](docs/design/18-import.md)) publish beside the app on the same release,
 one set per platform, signed with the **same** Ed25519 key as the update manifest:
