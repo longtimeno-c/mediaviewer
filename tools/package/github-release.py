@@ -93,14 +93,15 @@ WINDOWS_ONLY_ADDONS = ('ai-cuda',)
 # The driftwire command line's Linux packages (docs/design/28 "From a
 # terminal", cmake/driftwire-cli): a .deb, an .rpm and a tarball for each
 # architecture, (Debian name, RPM and tarball name), built and tested by
-# release.yml's linux-cli job on every run. Published only with
-# MV_RELEASE_LINUX_CLI=1: a build that leaves this machine needs an updater
-# first (CLAUDE.md), and how Linux gets updates (a package repository,
-# signing) is the owner's call, still open (docs/design/12, 2026-10-23).
-# Until then they are the run's artefacts; once on, every published release,
-# preview or stable, needs all six. The command line's Windows and macOS
-# builds are CI artefacts only: the owner asked for Linux packages, and
-# releases for those two are not decided.
+# release.yml's linux-cli job on every run. They reach people through the
+# package repository (tools/package/driftwire_repo.py, release.yml's
+# driftwire-repo job), which is how they are updated (docs/design/12,
+# 2026-10-24), and are attached to the release only with
+# MV_RELEASE_LINUX_CLI=1, which release.yml leaves off: a .deb from the
+# release page would install without the source that updates it. With it
+# on, every published release, preview or stable, needs all six. The command
+# line's Windows and macOS builds are CI artefacts only: the owner asked for
+# Linux packages, and releases for those two are not decided.
 LINUX_CLI_ARCHES = (('amd64', 'x86_64'), ('arm64', 'aarch64'))
 
 

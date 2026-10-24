@@ -862,10 +862,10 @@ jobs:
   # The driftwire command line's Linux packages (docs/design/28 "From a
   # terminal"), x64 and arm64, built and tested as CI's driftwire-cli-linux
   # job builds them (.github/actions/driftwire-cli-linux): Ubuntu 22.04 and
-  # GCC 12, so glibc 2.35 up. Each must carry the release's version. They are
-  # this run's artefacts and not on the release yet: an updater comes before
-  # a build leaves this machine (CLAUDE.md), and the Linux channel and its
-  # signing are the owner's call, still open (docs/design/12, 2026-10-23).
+  # GCC 12, so glibc 2.35 up. Each must carry the release's version. They
+  # leave this machine through the package repository (driftwire-repo, below,
+  # on a stable release once it is turned on), which is how they are updated
+  # (docs/design/12, 2026-10-24); otherwise they are this run's artefacts.
   # Publish does not wait for this job, so it never holds up the installers.
   linux-cli:
     name: driftwire Linux ${{ matrix.arch }} packages
@@ -930,12 +930,117 @@ jobs:
           # ...and the Local search pack with its Sound and People pieces (and,
           # on Windows, NVIDIA acceleration).
           MV_RELEASE_AI: '1'
-          # The driftwire Linux packages (linux-cli) wait for the owner's call
-          # on their channel and updater (docs/design/12, 2026-10-23). To
-          # publish them, with every preview and stable release requiring all
-          # six (github-release.py), set this to '1' and add linux-cli to
-          # this job's needs.
+          # The driftwire Linux packages (linux-cli) reach people through the
+          # package repository (driftwire-repo, below), their update channel
+          # (docs/design/12, 2026-10-24), and are not attached here: a .deb
+          # from the release page would install without the source that
+          # updates it. '1' attaches them too, with every preview and stable
+          # release then requiring all six (github-release.py); add linux-cli
+          # to this job's needs with it.
           MV_RELEASE_LINUX_CLI: '0'
           VERSION: ${{ needs.prepare.outputs.version }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: python3 tools/package/github-release.py publish release-assets
+
+  # The driftwire package repository (docs/design/28 "Installing",
+  # tools/package/driftwire_repo.py): signed apt and dnf repositories, the
+  # tarballs and the one-line installer, built from this release's linux-cli
+  # packages and deployed to this repository's GitHub Pages under
+  # <Pages URL>/driftwire/ once the release is published. It is the Linux
+  # packages' update channel (docs/design/12, 2026-10-24), so it follows
+  # stable releases only, and only once the owner has set it up (DEVELOPMENT
+  # "Linux package repository"): Pages with GitHub Actions as its source, the
+  # signing key in the secret DRIFTWIRE_REPO_GPG_KEY (armored; a passphrase,
+  # if any, in DRIFTWIRE_REPO_GPG_PASSPHRASE), and the repository variable
+  # MV_DRIFTWIRE_REPO=1. Each run replaces the whole Pages site. The
+  # installers' publish does not wait for it.
+  driftwire-repo:
+    name: driftwire package repository (GitHub Pages)
+    needs: [prepare, linux-cli, publish]
+    if: inputs.mode == 'stable' && vars.MV_DRIFTWIRE_REPO == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}driftwire/
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: driftwire-linux-*-${{ needs.prepare.outputs.version }}
+          path: driftwire-packages
+          merge-multiple: true
+
+      - name: Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends apt-utils createrepo-c rpm gnupg shellcheck
+          ls -l driftwire-packages
+
+      # Its base_url output is the site's address. It fails, saying so, when
+      # Pages is not enabled with GitHub Actions as its source.
+      - name: Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      # Into a GnuPG home of this job's own, outside the site; every secret key
+      # in the secret signs (two during a key change, the old one first).
+      - name: Signing key
+        env:
+          DRIFTWIRE_REPO_GPG_KEY: ${{ secrets.DRIFTWIRE_REPO_GPG_KEY }}
+        run: |
+          if [ -z "$DRIFTWIRE_REPO_GPG_KEY" ]; then
+            echo "::error::MV_DRIFTWIRE_REPO is 1 but the secret DRIFTWIRE_REPO_GPG_KEY is not set. Add the armored private signing key (docs/DEVELOPMENT.md, Linux package repository), or set MV_DRIFTWIRE_REPO to 0."
+            exit 1
+          fi
+          export GNUPGHOME="$RUNNER_TEMP/driftwire-gnupg"
+          install -d -m 0700 "$GNUPGHOME"
+          printf '%s\n' "$DRIFTWIRE_REPO_GPG_KEY" | gpg --batch --import
+          gpg --batch --with-colons --list-secret-keys |
+            awk -F: '$1 == "sec" { primary = 1; next } $1 == "fpr" && primary { print $10; primary = 0 }' \
+            > "$RUNNER_TEMP/driftwire-keys"
+          if [ ! -s "$RUNNER_TEMP/driftwire-keys" ]; then
+            echo "::error::The secret DRIFTWIRE_REPO_GPG_KEY holds no secret key."
+            exit 1
+          fi
+          echo "Signing with: $(tr '\n' ' ' < "$RUNNER_TEMP/driftwire-keys")"
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+
+      - name: Build the site
+        env:
+          BASE_URL: ${{ steps.pages.outputs.base_url }}
+          DRIFTWIRE_REPO_GPG_PASSPHRASE: ${{ secrets.DRIFTWIRE_REPO_GPG_PASSPHRASE }}
+        run: |
+          keys=()
+          while read -r fpr; do keys+=(--key-id "$fpr"); done < "$RUNNER_TEMP/driftwire-keys"
+          python3 tools/package/driftwire_repo.py build --packages driftwire-packages --out site \
+            --base-url "${BASE_URL%/}/driftwire" "${keys[@]}"
+          shellcheck site/driftwire/install.sh
+
+      # The site as it will be served, with the real key, before it goes live:
+      # installed with apt from localhost, an index changed by one byte
+      # refused, removed; the tarball route too.
+      - name: Check the site
+        run: python3 tools/package/driftwire_repo.py smoke --site site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+      - name: Forget the signing key
+        if: always()
+        run: |
+          gpgconf --homedir "$RUNNER_TEMP/driftwire-gnupg" --kill all 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP/driftwire-gnupg" "$RUNNER_TEMP/driftwire-keys"

@@ -331,8 +331,8 @@ jobs:
   # GCC 12, so they run from glibc 2.35 up (Ubuntu 22.04, Debian 12, Fedora).
   # The "[cli]" suites, the NEEDED gate, the .deb, .rpm and tarball, and the
   # .deb installed and run (.github/actions/driftwire-cli-linux, which
-  # release.yml's linux-cli job runs too). The packages are this run's
-  # artefact.
+  # release.yml's linux-cli job runs too); then the package repository built
+  # from them and installed from. The packages are this run's artefact.
   # ---------------------------------------------------------------------------
   driftwire-cli-linux:
     name: driftwire command line (Linux ${{ matrix.arch }}, packages)
@@ -360,6 +360,27 @@ jobs:
         uses: ./.github/actions/driftwire-cli-linux
         with:
           arch: ${{ matrix.arch }}
+
+      # The package repository a stable release publishes (docs/design/28
+      # "Installing", tools/package/driftwire_repo.py), built from these
+      # packages with a throwaway key and got as a person would get it: served
+      # on localhost, install.sh run as `curl | sh` runs it, apt refusing an
+      # index changed by one byte, --uninstall leaving nothing, then the
+      # tarball route with no package manager. And the builder's own tests.
+      - name: Package repository and installer
+        run: |
+          sudo apt-get install -y --no-install-recommends apt-utils createrepo-c gnupg shellcheck
+          shellcheck -s sh packaging/linux/repo/install.sh
+          python3 tools/package/test_driftwire_repo.py -v
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          install -d -m 0700 "$GNUPGHOME"
+          gpg --batch --passphrase '' --quick-gen-key 'Driftwire CI <ci@invalid>' rsa3072 sign 1d
+          fpr=$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
+          python3 tools/package/driftwire_repo.py build --packages dist --out "$RUNNER_TEMP/site" \
+            --base-url https://example.invalid/driftwire --key-id "$fpr"
+          shellcheck "$RUNNER_TEMP/site/driftwire/install.sh"
+          python3 tools/package/driftwire_repo.py smoke --site "$RUNNER_TEMP/site"
+          gpgconf --kill all
 
       - uses: actions/upload-artifact@v4
         with:
