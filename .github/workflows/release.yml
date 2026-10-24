@@ -1189,10 +1189,12 @@ jobs:
           mkdir -p cli
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "driftwire-$VERSION-macos-*.tar.gz" --dir cli
           ls -l cli
-          if [ "$(ls cli | wc -l)" != 1 ]; then
+          archives=(cli/driftwire-"$VERSION"-macos-*.tar.gz)
+          if [ "${#archives[@]}" != 1 ] || [ ! -f "${archives[0]}" ]; then
             echo "::error::$TAG should carry one macOS archive of driftwire."
             exit 1
           fi
+          echo "ARCHIVE=${archives[0]}" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v4
         with:
@@ -1202,9 +1204,8 @@ jobs:
 
       - name: Write the formula and push it
         run: |
-          archive=$(ls cli/*.tar.gz)
-          python3 tools/package/homebrew_formula.py render --version "$VERSION" --archive "$archive" \
-            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$(basename "$archive")" \
+          python3 tools/package/homebrew_formula.py render --version "$VERSION" --archive "$ARCHIVE" \
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$(basename "$ARCHIVE")" \
             --homepage "https://github.com/$GITHUB_REPOSITORY" --out tap/Formula/driftwire.rb
           ruby -c tap/Formula/driftwire.rb
           if ! grep -qs driftwire tap/README.md; then
