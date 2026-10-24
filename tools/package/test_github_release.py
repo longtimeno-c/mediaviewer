@@ -285,11 +285,12 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
                             .replace('${_deb_arch}', deb_arch).replace('${_rpm_arch}', rpm_arch) + suffix)
         self.assertEqual(made, release.linux_cli_asset_names('0.1.1'))
 
-    def test_linux_packages_wait_for_the_owner(self):
-        # A build that leaves this machine needs an updater first (CLAUDE.md),
-        # and the Linux channel is the owner's call (docs/design/12,
-        # 2026-10-23): until MV_RELEASE_LINUX_CLI=1 the packages are neither
-        # required nor uploaded, even when the run made them, nor in the notes.
+    def test_linux_packages_stay_off_the_release_page(self):
+        # The Linux packages' channel is the signed package repository
+        # (docs/design/12, 2026-10-24): a .deb from the release page would
+        # install without the source that updates it, so until
+        # MV_RELEASE_LINUX_CLI=1 the packages are neither required nor
+        # uploaded, even when the run made them, nor in the notes.
         self.stable_assets()
         os.environ.pop('MV_RELEASE_LINUX_CLI')
         for mode in ('preview', 'stable'):

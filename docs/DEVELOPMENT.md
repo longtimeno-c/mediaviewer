@@ -1774,7 +1774,7 @@ both.asc`, with the old key imported from its backup): every index is then signe
 `key.asc` and `key.gpg` hold both, and the `.rpm` files carry the old key's signature. dnf and
 zypper ask to import the new key when they first meet it. An apt machine only learns the new key
 when the installer runs again (or by hand: `curl -fsSL <site>/key.gpg | sudo tee
-/etc/apt/keyrings/driftwire.gpg`), so keep both for at least one stable release and say so in its
+/etc/apt/keyrings/driftwire.gpg > /dev/null`), so keep both for at least one stable release and say so in its
 notes; then put only the new key in the secret.
 
 **Testing it here** (Debian or Ubuntu with `apt-utils createrepo-c rpm gnupg`; `smoke` installs
