@@ -102,11 +102,25 @@ class ReleaseTests(unittest.TestCase):
         os.environ['MODE'] = 'preview'   # previews leave the repository alone
         release.prepare()
         os.environ['MODE'] = 'stable'
-        os.environ['DRIFTWIRE_REPO_GPG_KEY'] = 'test'
-        release.prepare()
+        os.environ['DRIFTWIRE_REPO_GPG_KEY'] = 'test'   # the key itself is not what prepare reads
+        with self.assertRaisesRegex(ValueError, 'DRIFTWIRE_REPO_GPG_KEY is not set'):
+            release.prepare()
         del os.environ['DRIFTWIRE_REPO_GPG_KEY']
+        os.environ['DRIFTWIRE_REPO_KEY_SET'] = '1'
+        release.prepare()
+        del os.environ['DRIFTWIRE_REPO_KEY_SET']
         os.environ['MV_DRIFTWIRE_REPO'] = '0'
         release.prepare()
+
+    def test_preflight_is_told_whether_the_repository_key_is_set_not_the_key(self):
+        # release.yml's prepare step: a flag from the secret, never the secret
+        # itself; only driftwire-repo's signing step gets the key.
+        workflow = (Path(__file__).parents[2] / '.github/workflows/release.yml').read_text()
+        prepare_job = workflow.split('\n  prepare:\n', 1)[1].split('\n  windows:\n', 1)[0]
+        self.assertIn("DRIFTWIRE_REPO_KEY_SET: ${{ secrets.DRIFTWIRE_REPO_GPG_KEY != '' && '1' || '' }}",
+                      prepare_job)
+        self.assertNotIn('DRIFTWIRE_REPO_GPG_KEY: ', prepare_job)
+        self.assertEqual(workflow.count('DRIFTWIRE_REPO_GPG_KEY: ${{ secrets.DRIFTWIRE_REPO_GPG_KEY }}'), 1)
 
     def test_release_cannot_blocklist_itself(self):
         os.environ['BLOCKLIST'] = '0.1.1'

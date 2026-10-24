@@ -69,7 +69,8 @@ def prepare():
             print('::warning::Windows installers will be unsigned; SmartScreen may warn.')
     # The driftwire package repository (release.yml's driftwire-repo, after a stable release is
     # published) signs with this key; without it that job would fail after the release is out.
-    if mode == 'stable' and os.environ.get('MV_DRIFTWIRE_REPO') == '1' and not os.environ.get('DRIFTWIRE_REPO_GPG_KEY'):
+    # release.yml says only whether the secret is set (DRIFTWIRE_REPO_KEY_SET), not what it holds.
+    if mode == 'stable' and os.environ.get('MV_DRIFTWIRE_REPO') == '1' and os.environ.get('DRIFTWIRE_REPO_KEY_SET') != '1':
         raise ValueError('MV_DRIFTWIRE_REPO is 1 but the secret DRIFTWIRE_REPO_GPG_KEY is not set: add the '
                          'signing key (docs/DEVELOPMENT.md, "Linux package repository") or set MV_DRIFTWIRE_REPO to 0.')
     tag = f'v{version}'

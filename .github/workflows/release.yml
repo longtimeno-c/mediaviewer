@@ -70,7 +70,9 @@ jobs:
           TRUSTED_SIGNING_ACCOUNT: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
           TRUSTED_SIGNING_PROFILE: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
           MV_DRIFTWIRE_REPO: ${{ vars.MV_DRIFTWIRE_REPO }}
-          DRIFTWIRE_REPO_GPG_KEY: ${{ secrets.DRIFTWIRE_REPO_GPG_KEY }}
+          # Whether the driftwire repository's signing key is set, never the key:
+          # only driftwire-repo's signing step is given that.
+          DRIFTWIRE_REPO_KEY_SET: ${{ secrets.DRIFTWIRE_REPO_GPG_KEY != '' && '1' || '' }}
         run: python3 tools/package/github-release.py prepare
 
   windows:

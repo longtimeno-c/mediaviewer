@@ -1754,8 +1754,10 @@ from a new key without running the installer again); the revocation certificate 
 leaks.
 
 **What a release then does.** Its preflight refuses a stable release when the variable is on and
-the secret is empty; `configure-pages` fails, saying so, when Pages is not set to GitHub Actions. Every secret key in
-`DRIFTWIRE_REPO_GPG_KEY` signs (one passphrase for all, or none). The apt `Release` carries
+the secret is empty. It is told only whether the secret is set, never the key, which only the
+repository job's signing step gets; it cannot see a secret of the `github-pages` environment, so
+both secrets are repository secrets (`gh secret set --repo`, as above). `configure-pages` fails,
+saying so, when Pages is not set to GitHub Actions. Every secret key in `DRIFTWIRE_REPO_GPG_KEY` signs (one passphrase for all, or none). The apt `Release` carries
 `Valid-Until` a year ahead (`--valid-days`), so **a stable release must come within each year**,
 or `apt update` fails on every installed machine ("Release file … is expired", exit 100) and
 takes nothing new from the repository until the next one.
