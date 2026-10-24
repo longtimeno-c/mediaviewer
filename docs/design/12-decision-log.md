@@ -744,12 +744,12 @@ Runtime Library Exception) are linked in, and the build fails if `readelf -d` sh
 `NEEDED` but libc, libm and the loader. libsecret and libsystemd are opened at run time, so a
 server or a container without them still runs it; the packages only recommend libsecret.
 MediaViewer itself is still Windows and macOS: `cmake/portable` stays the shared core's test
-build, and this decides nothing for a Linux app. Open, for the owner: how the packages are
-updated (a package repository, signing). CLAUDE.md asks for an updater before a build leaves this
-machine, so until that call the release workflow builds and tests them and keeps them as the
-run's artefacts, off the release page (`MV_RELEASE_LINUX_CLI`, `RELEASING.md`). Cost: no glibc
-older than 2.35 (RHEL 8 and 9, Debian 11); unsigned without a repository (SHA256SUMS.txt covers
-them); Linux joins Windows and macOS in what a Driftwire change must keep working. Measured here only (Ubuntu 24.04 container, GCC 13 and GCC 12): built, `"[cli]"`
+build, and this decides nothing for a Linux app. How the packages are updated was left open here;
+since 2026-10-24 it is the signed apt and dnf repositories a stable release publishes
+([Driftwire](#driftwire), "`driftwire` installs from signed apt and dnf repositories"), and the
+packages stay off the release page (`MV_RELEASE_LINUX_CLI`, `RELEASING.md`). Cost: no glibc
+older than 2.35 (RHEL 8 and 9, Debian 11); Linux joins Windows and macOS in what a Driftwire
+change must keep working. Measured here only (Ubuntu 24.04 container, GCC 13 and GCC 12): built, `"[cli]"`
 green, the `.deb` installed and run; CI's Ubuntu 22.04 legs are the first to build the shipped
 ones. Reopen if a distribution wants its own package built from source (then libsodium 1.0.21+
 comes from the distribution, and the gate changes).
@@ -2024,6 +2024,34 @@ answers, a daemon that does not reply) is no store, so that run's identity is it
 is remembered. Over SSH with the keyring locked, saving fails at once and Remember does not show.
 Reopen if the Secret Service gains per-application access (the Secret portal's per-app collection
 inside a Flatpak is one).
+
+**`driftwire` installs from signed apt and dnf repositories (2026-10-24; amends "Linux packages
+make Linux a product platform for the command line").** The owner asked to install `driftwire`
+on its own, like `npm i -g` or `sudo apt install`, and to have it work with no MediaViewer
+present. The answer chosen here: signed apt and dnf repositories as a static site on this
+repository's GitHub Pages (`<Pages URL>/driftwire/`), built by `tools/package/driftwire_repo.py`
+and published by release.yml's `driftwire-repo` job after each stable release once the owner turns
+it on (`MV_DRIFTWIRE_REPO=1`, the key in `DRIFTWIRE_REPO_GPG_KEY`, Pages from GitHub Actions), with
+a one-line installer (`curl -fsSL <site>/install.sh | sh`) that adds the source to apt, dnf, yum or
+zypper, or unpacks the checked tarball where there is none ([28](28-driftwire.md#installing)). The
+system's package manager then updates it: this is the updater CLAUDE.md requires before a build
+leaves this machine, so it settles what the 2026-10-23 row left open, and the packages reach people
+this way, not as release attachments (`MV_RELEASE_LINUX_CLI` stays `0`: a `.deb` from the release
+page would install without the source that updates it). npm is refused: a package there needs a
+Node launcher, and Node is ruled out of the project (CLAUDE.md). Ours, not the owner's: GitHub
+Pages (no server to run, served from the release workflow); one OpenPGP key the owner makes and
+keeps (RSA-4096, which every rpm verifies; the private half only in the Actions secret and an
+offline backup), signing `InRelease`, `Release.gpg`, every `.rpm`, `repomd.xml` and `SHA256SUMS`,
+each signature checked against the published key before the site replaces the old one; and
+`Valid-Until` one year ahead in `Release`, so an old signed index cannot be replayed to hold back a
+fix for longer. Cost: a stable release must come within each year or apt reports the repository
+expired; each deploy replaces the whole Pages site, so Pages holds nothing else and the repository
+holds the newest version only; a new key reaches an apt machine only through the installer (or by
+hand), so a key change overlaps the two across at least one release; no glibc older than 2.35
+(RHEL 9 and older, Debian 11). Measured in a Linux container only (Ubuntu 24.04, apt 2.8, dnf 4.14):
+installed, upgraded, a changed `InRelease` and a changed `repomd.xml` refused, removed; CI and Pages
+have not run it. Reopen if a distribution packages `driftwire` itself, or if the site moves off
+GitHub Pages.
 
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with

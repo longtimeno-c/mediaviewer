@@ -26,6 +26,11 @@ channel lets codec fixes ship without a review queue.
 There are two channels, chosen in Settings: **stable** (default) and **preview**, which also
 follows signed prerelease builds.
 
+The `driftwire` command line on Linux has no updater of its own: its packages come from signed apt
+and dnf repositories that stable releases publish on GitHub Pages, so the system's package manager
+updates it with everything else; a tarball install does not update itself
+([28](28-driftwire.md#installing)).
+
 ## Per-user install
 
 Windows installs to `%LocalAppData%\MediaViewer`, never `Program Files`, so neither install

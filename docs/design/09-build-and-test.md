@@ -192,7 +192,7 @@ it replaces.
 | `mac-build` | macos-15 | The native core on macOS (arm64): vcpkg trees cached under release.yml's key, the licence gate over both Mac trees, the full build and `ctest --no-tests=error` (`mv_tests`, `mv_import_tests`, `mv_ai_tests`, the Mac-only Metal pacer / AVFoundation / PDFKit / Photos-folder / write-guard tests); uploads the macOS `driftwire` (an artefact, unsigned) |
 | `mac-packaging` | ubuntu-latest | Release tooling tests and macOS bundle policy (`tools/mac/*`) |
 | `portable-core` | ubuntu-latest | `cmake/portable` under ASan + UBSan: the Import engine, add-on host and verified copy (`mv_import_tests`), Driftwire's suite with the command line's (`"[driftwire]"`, a Secret Service of the job's own), the add-on packer and SDK cross-checks against the C++ verifier, and the clip and trim suites against the distro FFmpeg |
-| `driftwire-cli-linux` | ubuntu-22.04 (x64), ubuntu-22.04-arm (arm64) | The `driftwire` command line's Linux packages ([28](28-driftwire.md#from-a-terminal-driftwire)): `cmake/driftwire-cli` with GCC 12 and the pinned vcpkg, the `"[cli]"` suites, the `NEEDED` gate (libc, libm and the loader only), CPack's `.deb`, `.rpm` and tarball, the `.deb` installed and run; uploads the packages. The same steps (`.github/actions/driftwire-cli-linux`) build the release run's ones |
+| `driftwire-cli-linux` | ubuntu-22.04 (x64), ubuntu-22.04-arm (arm64) | The `driftwire` command line's Linux packages ([28](28-driftwire.md#from-a-terminal-driftwire)): `cmake/driftwire-cli` with GCC 12 and the pinned vcpkg, the `"[cli]"` suites, the `NEEDED` gate (libc, libm and the loader only), CPack's `.deb`, `.rpm` and tarball, the `.deb` installed and run; then the package repository built from them with a throwaway key, `test_driftwire_repo.py`, shellcheck on the installer, and `driftwire_repo.py smoke` (installed from on localhost with apt, a changed index refused, removed, then the tarball route); uploads the packages. The same build steps (`.github/actions/driftwire-cli-linux`) make the release run's packages, and release.yml's `driftwire-repo` publishes the repository on GitHub Pages after a stable release |
 | `frametime` | self-hosted `[windows, gpu]` | Swapchain recovery, then the 60 s animated + idle gates against the rolling baseline (cached per runner; updated only on `main`). Runs only when `MV_GPU_RUNNER_ENABLED` is set and never for fork PRs; hosted runners have no usable GPU, so a skip is not a pass |
 | `frametime-mac` | self-hosted `[macOS, ARM64, gpu]` | Mac PR 1: the 60 s animated + idle gates on Metal (`frametime --seconds 60`, under `caffeinate`). Runs only when `MV_MAC_GPU_RUNNER_ENABLED` is set and never for fork PRs |
 | `present-gates` | ubuntu-latest | Always runs. Fails if either frame-time gate failed or was cancelled; a skipped gate is a warning annotation and a line in the run summary, or a failure on this repository's own branches when `MV_REQUIRE_PRESENT_GATES` is set. This is the check to require in branch protection, since GitHub treats a skipped job as passing |
@@ -290,10 +290,12 @@ Direct download only; the app is GPL-3.0-or-later and has no Store channel
 - **macOS:** a notarized `MediaViewer.app` in a disk image, built by `tools/mac/macpack.py`,
   with a signed appcast feed.
 - **Linux (the `driftwire` command line only):** a `.deb`, an `.rpm` and a tarball per
-  architecture from `cmake/driftwire-cli` (CPack), built and tested with each release and kept as
-  the run's artefacts until the owner rules on the channel and updater
-  ([12](12-decision-log.md#platforms), 2026-10-23; `MV_RELEASE_LINUX_CLI` in RELEASING.md);
-  unsigned, no package repository.
+  architecture from `cmake/driftwire-cli` (CPack), built and tested with each release and
+  published in signed apt and dnf repositories on GitHub Pages after a stable release, with a
+  one-line installer; the system's package manager updates them
+  ([28](28-driftwire.md#installing), [12](12-decision-log.md#driftwire), 2026-10-24). Live once the
+  owner has set up Pages, the key and `MV_DRIFTWIRE_REPO` (RELEASING.md); not attached to the
+  release (`MV_RELEASE_LINUX_CLI`).
 
 Code signing, the update manifest, staged rollout, crash reports and telemetry are in
 [13](13-updates-and-telemetry.md); release mechanics in [RELEASING.md](../../RELEASING.md).

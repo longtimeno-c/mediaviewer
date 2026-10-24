@@ -76,8 +76,9 @@ macOS (owner, 2026-10-23; [From a terminal](#from-a-terminal-driftwire)).
 `driftwire` is a terminal host of the same engine (owner, 2026-10-23,
 [12](12-decision-log.md#driftwire)): a program of its own, outside MediaViewer, on Linux, Windows
 and macOS. It speaks the same wire, so it sends to and receives from the add-on and another
-`driftwire`. Linux gets it as a `.deb`, an `.rpm` and a tarball, built with every release and on
-the release page once the owner rules on how Linux is updated ([12](12-decision-log.md#platforms));
+`driftwire`. Linux gets it as a `.deb`, an `.rpm` and a tarball, installed with one line or with
+apt, dnf or zypper from signed repositories that stable releases publish, and updated with the
+rest of the system ([Installing](#installing), [12](12-decision-log.md#driftwire));
 on Windows and macOS it is built and tested with the app and kept out of the app's payload, a CI
 artefact only (the owner asked for Linux packages; releases for Windows and macOS are not
 decided). Its manual page is `packaging/linux/driftwire.1`.
@@ -196,6 +197,80 @@ network at all it says so and waits, as the window does: a network can come up.
   page, bash and zsh completions, a firewalld service for the beacon (`driftwire`, 47613/udp; the
   manual page says what ufw needs, and that receiving nearby also needs incoming TCP from the local
   network, on a port the system picks) and the DEP-5 copyright file with every notice.
+
+### Installing
+
+The owner asked (2026-10-24) to install `driftwire` on its own, as `sudo apt install` does, with
+no MediaViewer present ([12](12-decision-log.md#driftwire)). It needs none: it has its own identity
+and data folder, and sends to and receives from MediaViewer's add-on or another `driftwire`. The
+channel is a package repository on this repository's GitHub Pages, at
+`https://longtimeno-c.github.io/mediaviewer/driftwire/` once the owner has set it up
+([DEVELOPMENT](../DEVELOPMENT.md#linux-package-repository)); until then the address serves nothing.
+
+```
+curl -fsSL https://longtimeno-c.github.io/mediaviewer/driftwire/install.sh | sh                    install, or upgrade
+curl -fsSL https://longtimeno-c.github.io/mediaviewer/driftwire/install.sh | sh -s -- --uninstall
+```
+
+- **The one line** (`packaging/linux/repo/install.sh`, POSIX sh). It checks Linux, x86_64 or
+  arm64, glibc 2.35 or newer (musl is refused, with Alpine named) and curl or wget, says what it is
+  about to do, and prints each command as it runs it, through sudo when it is not root. On apt
+  systems (Debian, Ubuntu and their derivatives) it saves the key as
+  `/etc/apt/keyrings/driftwire.gpg`, adds `/etc/apt/sources.list.d/driftwire.sources` (deb822:
+  `URIs: <site>/apt`, `Suites: stable`, `Components: main`, the machine's architecture,
+  `Signed-By:` that key), runs `apt-get update` for that source alone and installs. With dnf or yum
+  (Fedora; a RHEL-like system from 10, since 9 has glibc 2.34) it imports the key into rpm, writes
+  `/etc/yum.repos.d/driftwire.repo` and installs or upgrades; with zypper (openSUSE) it adds the
+  same file as the repository `driftwire`. With none of them it unpacks the tarball into
+  `~/.local`, or `/usr/local` as root, after checking it against `SHA256SUMS` (and that file's
+  signature when `gpgv` is there), and records what it put where; that copy does not update
+  itself, and the installer says so. A source the package manager cannot read or verify is taken
+  away again. Running it again upgrades. `--uninstall` removes the package, the source, the key
+  and apt's lists of that source, or the tarball's files and the folders it made, and nothing
+  else: the data folder stays. Everything is in functions and `main` runs on the last line, so a
+  download cut off part way runs nothing. The site's address and key fingerprints are written in
+  when the site is built; `DRIFTWIRE_REPO_URL` overrides the address (https only, or http on
+  127.0.0.1 or localhost for the tests).
+- **By hand.** The site's page has the same as commands: the keyring and the deb822 source, then
+  `sudo apt install driftwire`; `driftwire.repo` into `/etc/yum.repos.d/` and `sudo dnf install
+  driftwire` (dnf asks once to trust the key; the page shows its fingerprint); `sudo zypper
+  addrepo --refresh <site>/driftwire.repo`; or the tarball and its signed checksums.
+- **Updates** come from the package manager with the rest of the system (`apt upgrade`, `dnf
+  upgrade`, `zypper update`): this is the updater a build needs before it leaves this machine
+  (CLAUDE.md). The packages are not attached to the release page (`MV_RELEASE_LINUX_CLI` stays
+  off): a `.deb` from there would install without the source that updates it.
+- **The repository** (`tools/package/driftwire_repo.py`) is a static tree built by release.yml's
+  `driftwire-repo` job from the release's packages, after the release is published, for stable
+  releases once `MV_DRIFTWIRE_REPO=1`; previews leave it alone. Each run replaces the Pages site,
+  so it holds the newest version only. apt: the pool, `Packages` and `Packages.gz` for each
+  architecture present, a `Release` (Origin and Label `Driftwire`, Suite and Codename `stable`,
+  component `main`) with `InRelease` and `Release.gpg`. rpm: the packages signed with `rpmsign`,
+  `createrepo_c` metadata (gzip and no sqlite, which older dnf and zypper read) with
+  `repomd.xml.asc`, and a `.repo` with `gpgcheck=1` and `repo_gpgcheck=1`. The tarballs with
+  `SHA256SUMS` and `SHA256SUMS.asc`, the public key as `key.asc` and `key.gpg`, the page, and the
+  installer. No external asset or script on the page.
+- **Valid-Until a year ahead.** apt refuses a `Release` past it, so a mirror or a network in the
+  way cannot keep serving an old, correctly signed index to hold back a fix for longer than that.
+  The cost: a stable release must come within the year, or `apt update` reports the repository's
+  `Release` as expired and takes nothing new from it until the next release re-signs it.
+- **Nothing unsigned goes out.** The builder refuses packages whose versions disagree, an
+  architecture without all three packages, anything that is not driftwire, a tarball path outside
+  its folder, and a base URL that is not https. It signs with the key named (two during a key
+  change: every index then carries both signatures and `key.asc` both keys; an `.rpm` carries the
+  first), checks every signature against the exported key with `gpgv` and `rpmkeys`, checks that
+  no private key material is in the tree, and only then replaces the site; a failure leaves the
+  old one. The release job then serves the result on localhost and installs from it before deploying
+  (`driftwire_repo.py smoke`): apt installs, refuses an `InRelease` changed by one byte, and
+  `--uninstall` leaves nothing; then the tarball route with no package manager.
+- **The key** is the owner's: made once, its private half in the Actions secret
+  `DRIFTWIRE_REPO_GPG_KEY` with an offline backup, the passphrase (if any) in
+  `DRIFTWIRE_REPO_GPG_PASSPHRASE`. apt keeps the key the installer saved; a new key reaches an apt
+  machine only when the installer runs again (or the key is fetched by hand), so a key change
+  overlaps the two keys across at least one release.
+- Measured in a Linux container only (2026-10-24, Ubuntu 24.04, apt 2.8, dnf 4.14 with
+  repo_gpgcheck, rpm 4.18): install, upgrade by apt and by running the installer again, refusal of
+  a changed `InRelease` and of a changed `repomd.xml`, uninstall, the tarball route as root and as
+  a user. CI's legs and Pages have not run it; no real Fedora, openSUSE or arm64 machine has.
 
 ## Finding each other
 
@@ -1321,6 +1396,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 | The add-on's export and manifest | `addon_entry.cpp`, `manifest.json`; `cmake/driftwire.cmake` |
 | The command line, `driftwire` (2026-10-23): the terminal port, keys, the line editor, paths, completion, the look and the live region, the arguments, the host, the session, the data folder, `main()` | `cli/term.h`, `cli/term_posix.cpp`, `cli/term_win.cpp`, `cli/keys.*`, `cli/line_editor.*`, `cli/paths_arg.*`, `cli/complete.*`, `cli/theme.h`, `cli/text.*`, `cli/render.*`, `cli/inline_view.*`, `cli/args.*`, `cli/host.*`, `cli/session.*`, `cli/data_dir.h`, `cli/data_dir_posix.cpp`, `cli/data_dir_win.cpp`, `cli/main.cpp`; `cmake/driftwire.cmake` (`mv_driftwire_cli_core`, `mv_driftwire_cli` with `OUTPUT_NAME driftwire`, the test build `mv_driftwire_cli_test`, the gallery `mv_driftwire_cli_gallery` from `tools/driftwire-cli-gallery`) |
 | Its Linux packages | `cmake/driftwire-cli/` (the project, CPack, the `NEEDED` gate `needed.cmake`), `packaging/linux/` (`driftwire.1`, `completions/`, `firewalld/driftwire.xml`, `copyright`), `.github/actions/driftwire-cli-linux` |
+| Its package repository and installer (2026-10-24) | `tools/package/driftwire_repo.py` (`build`: the site, its signatures and checks; `smoke`: installing from it on localhost), `packaging/linux/repo/` (`install.sh`, the page `index.html`), release.yml's `driftwire-repo` job, the repository step of ci.yml's `driftwire-cli-linux`; tests `tools/package/test_driftwire_repo.py` |
 | Mac chrome | `Driftwire.swift` (offer, share icon), `SlotItems.swift` (Settings), `ScreenView.swift` (Choose…), `GalleryView.swift` / `FolderStore.swift` (range, drag), `AddonNotices.swift` (notifications, the menu-bar item, #452) |
 | Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
@@ -1333,11 +1409,10 @@ second while bytes move; those posts update chrome and never present the canvas.
 - Bluetooth on Linux: there is no BlueZ bearer (`bt_none.cpp`), so Linux sends over Wi-Fi and the
   internet only.
 - In the command line: Bluetooth on any OS; Remember on macOS (no keychain identity for a bare
-  program); a signed program or a package for Windows and macOS (CI artefacts only); an update
-  channel for the Linux packages (a package repository, signed packages); "the first time" an
-  internet option is explained is per session, not per computer; `c` and `l` copy only while the
-  prompt is empty. Not run: a transfer between two machines over Wi-Fi with the command line on
-  one side.
+  program); a signed program or a package for Windows and macOS (CI artefacts only); the Linux
+  package repository live (it waits for the owner's setup: Pages, the key, `MV_DRIFTWIRE_REPO`);
+  "the first time" an internet option is explained is per session, not per computer. Not run: a
+  transfer between two machines over Wi-Fi with the command line on one side.
 - Over the internet, after the relays: Tor (dropped for now, [plan](../plans/driftwire-tor-spike.md)),
   TURN, relaying word codes, remembered-device sends and the handover, a relayed send moving.
 - The rest of #472, deferred by the owner (2026-10-18, [12](12-decision-log.md#driftwire)):

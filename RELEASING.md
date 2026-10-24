@@ -2,8 +2,9 @@
 
 Downloads belong on [GitHub Releases](https://github.com/longtimeno-c/mediaviewer/releases):
 a Windows x64 installer wizard (`Setup.exe`) and a macOS 14+ universal (Apple Silicon and
-Intel) disk image (`.dmg`, drag to Applications), and the `driftwire` command line's Linux
-packages (`.deb`, `.rpm`, tarball; x86_64 and arm64).
+Intel) disk image (`.dmg`, drag to Applications). The `driftwire` command line's Linux packages
+(`.deb`, `.rpm`, tarball; x86_64 and arm64) are published in a signed apt and dnf repository on
+this repository's GitHub Pages instead, once it is set up ([below](#the-driftwire-package-repository)).
 
 **You can build test installers without signing certificates.** Use `artifacts`.
 Both `preview` and `stable` publish signed update feeds, so both need Developer ID, Apple
@@ -26,8 +27,8 @@ bump the version, commit changes, or push them for you.
 | Mode | Result | Credentials |
 |---|---|---|
 | `artifacts` (default) | Unsigned installers in Actions artifacts, retained 30 days | None |
-| `preview` | Both installers, signed update feeds and the driftwire Linux packages as a **Pre-release**, for the Preview update channel | Same as stable |
-| `stable` | Both installers, signed update feeds, the driftwire Linux packages, and the Import, Driftwire, Places and Local search add-ons, marked **Latest** | Windows manifest key + all six Mac secrets; Azure optional |
+| `preview` | Both installers and signed update feeds as a **Pre-release**, for the Preview update channel | Same as stable |
+| `stable` | Both installers, signed update feeds, and the Import, Driftwire, Places and Local search add-ons, marked **Latest**; then the driftwire package repository on GitHub Pages, when `MV_DRIFTWIRE_REPO` is `1` | Windows manifest key + all six Mac secrets; Azure optional; the repository's key when it is on |
 
 After the updated workflow is on `main`, the equivalent commands are:
 
@@ -162,25 +163,46 @@ publishing still works with a signed update manifest; Windows may warn at instal
 | `MediaViewer-<version>.dmg` | Mac first install |
 | `MediaViewer-<version>.zip` | Stapled Mac app archive for Sparkle |
 | `appcast.xml` | Signed Sparkle feed |
-| `driftwire_<version>_amd64.deb`, `driftwire_<version>_arm64.deb` | The driftwire command line for Debian and Ubuntu (not published yet, below) |
-| `driftwire-<version>-1.x86_64.rpm`, `driftwire-<version>-1.aarch64.rpm` | The same for Fedora and other RPM systems (not published yet) |
-| `driftwire-<version>-linux-x86_64.tar.gz`, `driftwire-<version>-linux-aarch64.tar.gz` | The same, unpacked anywhere (`bin/driftwire`, `share/`; not published yet) |
 | `SHA256SUMS.txt` | Download checksums |
 
-**The driftwire Linux packages (docs/design/28 "From a terminal")** are built on every run, preview
+### The driftwire package repository
+
+**The driftwire Linux packages (docs/design/28 "Installing")** are built on every run, preview
 and stable included, by the `linux-cli` job: x64 on `ubuntu-22.04` and arm64 on `ubuntu-22.04-arm`,
 GCC 12 and the pinned vcpkg, so they run from glibc 2.35 up. The job runs the `"[cli]"` suites and
 the `NEEDED` gate (the program needs only libc, libm and the loader), makes the three packages with
 CPack (`cmake/driftwire-cli`), installs the `.deb` and checks it reports the release's version.
-For now they stay the run's artefacts and `publish` does not wait for the job: CLAUDE.md asks for
-an updater before a build leaves this machine, and how Linux gets updates (a package repository,
-signing) is the owner's call, still open ([12](docs/design/12-decision-log.md#platforms),
-2026-10-23). Once the owner makes it, `MV_RELEASE_LINUX_CLI: '1'` in release.yml's publish step,
-and `linux-cli` in that job's `needs`, attach them: `publish` then refuses a release without all
-six (`linux_cli_asset_names` in `tools/package/github-release.py`), and the notes link them.
-Without a repository they are unsigned, and `SHA256SUMS.txt` is how a download is checked. The
-command line's Windows and macOS builds are not released either: the owner asked for Linux
-packages, and releases for Windows and macOS are not decided. CI uploads them as artefacts.
+`publish` does not wait for it.
+
+After a **stable** release is published, the `driftwire-repo` job (when the repository variable
+`MV_DRIFTWIRE_REPO` is `1`) builds the package repository from those packages with
+`tools/package/driftwire_repo.py`: signed apt and dnf repositories, the tarballs with signed
+`SHA256SUMS`, the public key, a page and the one-line installer. It installs from the result on
+localhost first (`driftwire_repo.py smoke`), then deploys it to this repository's GitHub Pages at
+`https://longtimeno-c.github.io/mediaviewer/driftwire/`, replacing the whole Pages site. People
+install with `curl -fsSL https://longtimeno-c.github.io/mediaviewer/driftwire/install.sh | sh`
+(or apt, dnf, zypper by hand) and get updates from their package manager; that is the Linux
+updater CLAUDE.md asks for ([12](docs/design/12-decision-log.md#driftwire), 2026-10-24). Previews
+do not touch it.
+
+| Setting | Value |
+|---|---|
+| Variable `MV_DRIFTWIRE_REPO` | `1` turns the job on; anything else leaves the repository as it is |
+| Secret `DRIFTWIRE_REPO_GPG_KEY` | The armored OpenPGP private signing key (two during a key change, the old one first); with the variable on and this empty, a stable release's preflight fails and says so, before any build |
+| Secret `DRIFTWIRE_REPO_GPG_PASSPHRASE` | Its passphrase, if it has one (one for both keys during a change) |
+| Pages | **Settings → Pages → Source: GitHub Actions**; without it `configure-pages` fails and says so |
+
+Making the key, backing it up, changing it, and testing the site locally are in
+[DEVELOPMENT.md](docs/DEVELOPMENT.md#linux-package-repository). The apt `Release` is valid for a
+year: **a stable release must come within each year**, or installed machines report the
+repository expired. The site holds the newest version only.
+
+The packages are not attached to the release (`MV_RELEASE_LINUX_CLI: '0'` in release.yml's
+publish step): a `.deb` from the release page would install without the source that updates it.
+`'1'`, with `linux-cli` added to publish's `needs`, attaches all six as well, and `publish` then
+refuses a release without them (`linux_cli_asset_names` in `tools/package/github-release.py`). The
+command line's Windows and macOS builds are not released: the owner asked for Linux packages, and
+releases for Windows and macOS are not decided. CI uploads them as artefacts.
 
 Add-ons (Milestone G, [docs/design/18](docs/design/18-import.md)) publish beside the app on the same release,
 one set per platform, signed with the **same** Ed25519 key as the update manifest:
