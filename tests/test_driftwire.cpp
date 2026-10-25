@@ -8,16 +8,84 @@
 // delivers the files with matching bytes, Decline and a third client receive
 // nothing, Cancel mid-way leaves nothing partial, a machine in the middle
 // shows two different codes, and no sender path climbs out of the folder.
+#include <bit>
 #include <functional>
 
 #include "driftwire_fixture.h"
+#include "addons/driftwire/power.h"
 
 #if !defined(_WIN32)
 #include <sys/resource.h>
 #endif
+#if defined(__linux__)
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#endif
 #if defined(__APPLE__)
 #include <sys/xattr.h>
 #endif
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <winioctl.h>
+#endif
+
+namespace {
+
+// #498: a link to the folder `target` at `link`: a symlink on POSIX, a
+// junction on Windows (which needs no privilege, so it is what an attacker
+// there would use).
+bool link_folder(const fs::path& link, const fs::path& target) {
+#if defined(_WIN32)
+  if (!::CreateDirectoryW(link.c_str(), nullptr)) return false;
+  HANDLE h = ::CreateFileW(link.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                           FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  // REPARSE_DATA_BUFFER's mount point form (the struct is a DDK one).
+  struct mount_point {
+    DWORD tag;
+    WORD length, reserved, subst_offset, subst_length, print_offset, print_length;
+  };
+  const std::wstring print = fs::absolute(target).wstring();
+  const std::wstring subst = L"\\??\\" + print;
+  std::vector<std::uint8_t> buf(sizeof(mount_point) + (subst.size() + print.size() + 2) * sizeof(wchar_t));
+  auto* head = reinterpret_cast<mount_point*>(buf.data());
+  head->tag = IO_REPARSE_TAG_MOUNT_POINT;
+  head->length = static_cast<WORD>(buf.size() - 8);
+  head->reserved = 0;
+  head->subst_offset = 0;
+  head->subst_length = static_cast<WORD>(subst.size() * sizeof(wchar_t));
+  head->print_offset = static_cast<WORD>((subst.size() + 1) * sizeof(wchar_t));
+  head->print_length = static_cast<WORD>(print.size() * sizeof(wchar_t));
+  auto* names = reinterpret_cast<wchar_t*>(buf.data() + sizeof(mount_point));
+  std::memcpy(names, subst.c_str(), (subst.size() + 1) * sizeof(wchar_t));
+  std::memcpy(names + subst.size() + 1, print.c_str(), (print.size() + 1) * sizeof(wchar_t));
+  DWORD n = 0;
+  const BOOL ok = ::DeviceIoControl(h, FSCTL_SET_REPARSE_POINT, buf.data(), static_cast<DWORD>(buf.size()), nullptr, 0,
+                                    &n, nullptr);
+  ::CloseHandle(h);
+  return ok != FALSE;
+#else
+  std::error_code ec;
+  fs::create_directory_symlink(target, link, ec);
+  return !ec;
+#endif
+}
+
+// Takes a link_folder link away again, never what it points at.
+void unlink_folder(const fs::path& link) {
+#if defined(_WIN32)
+  ::RemoveDirectoryW(link.c_str());
+#else
+  std::error_code ec;
+  fs::remove(link, ec);
+#endif
+}
+
+}  // namespace
 
 // ---- the wire -------------------------------------------------------------------------------
 
@@ -87,12 +155,11 @@ TEST_CASE("driftwire: names lose the controls that would make them read as somet
   CHECK(sp::clean_name("Studio \xF0\x9F\x8E\xA8 Mac") == "Studio \xF0\x9F\x8E\xA8 Mac");
 }
 
-#if !defined(_WIN32)
 TEST_CASE("driftwire: received folders are made beneath Save to, never through a link (#498)", "[driftwire]") {
   scratch_dir s("driftwire_beneath");
   fs::create_directories(s / "dest");
   fs::create_directories(s / "elsewhere");
-  fs::create_directory_symlink(s / "elsewhere", s / "dest" / "Trip");
+  REQUIRE(link_folder(s / "dest" / "Trip", s / "elsewhere"));
   const auto made = mv::io::make_directories_beneath(utf8(s / "dest"), "New/Day 2");
   REQUIRE(made);
   CHECK(fs::is_directory(s / "dest" / "New" / "Day 2"));
@@ -100,8 +167,152 @@ TEST_CASE("driftwire: received folders are made beneath Save to, never through a
   REQUIRE_FALSE(through);
   CHECK(through.error() == mv::status::permission_denied);
   CHECK(fs::is_empty(s / "elsewhere"));
+  unlink_folder(s / "dest" / "Trip");
 }
-#endif
+
+TEST_CASE("driftwire: the sender reads only the file it picked, never one put in its place (#498)", "[driftwire]") {
+  scratch_dir s("driftwire_same_file");
+  write_text(s / "pick" / "Trip" / "a.jpg", "photo one");
+  write_text(s / "secret" / "Trip" / "a.jpg", "SECRET!!!");  // the same size
+  const std::string a = utf8(s / "pick" / "Trip" / "a.jpg");
+  const auto picked = mv::io::identify(a);
+  REQUIRE(picked);
+  CHECK(picked->known());
+  mv::io::file_reader in;
+  REQUIRE(in.open_same(a, picked.value()));
+  CHECK(in.size() == 9);
+  in.close();
+
+  // Another file put at the path, the same size: not the one picked.
+  write_text(s / "pick" / "other", "photo two");
+  fs::rename(s / "pick" / "other", s / "pick" / "Trip" / "a.jpg");
+  auto r = in.open_same(a, picked.value());
+  REQUIRE_FALSE(r);
+  CHECK(r.error() == mv::status::corrupt);
+
+  // The folder above swapped for a link to where a same-named file waits:
+  // the path still opens, but onto another file.
+  const auto now = mv::io::identify(a);
+  REQUIRE(now);
+  fs::rename(s / "pick" / "Trip", s / "pick" / "Trip moved");
+  REQUIRE(link_folder(s / "pick" / "Trip", s / "secret" / "Trip"));
+  r = in.open_same(a, now.value());
+  REQUIRE_FALSE(r);
+  CHECK(r.error() == mv::status::corrupt);
+  // The link itself is never taken for a file to send.
+  const auto link_id = mv::io::identify(utf8(s / "pick" / "Trip"));
+  REQUIRE_FALSE(link_id);
+  CHECK(link_id.error() == mv::status::permission_denied);
+  unlink_folder(s / "pick" / "Trip");
+
+  // A link at the file's own name is never read through, even with no id to
+  // compare (Windows makes a file symlink only with Developer Mode on).
+  std::error_code ec;
+  fs::create_symlink(s / "secret" / "Trip" / "a.jpg", s / "pick" / "b.jpg", ec);
+  if (!ec) {
+    const auto b_id = mv::io::identify(utf8(s / "pick" / "b.jpg"));
+    REQUIRE_FALSE(b_id);
+    CHECK(b_id.error() == mv::status::permission_denied);
+    r = in.open_same(utf8(s / "pick" / "b.jpg"), {});
+    REQUIRE_FALSE(r);
+    CHECK(r.error() == mv::status::permission_denied);
+  } else {
+    WARN("no file symlink here: the last-part link check was not run");
+  }
+}
+
+TEST_CASE("driftwire: a file swapped after the pick is said skipped, and its stand-in never sent (#498)",
+          "[driftwire]") {
+  scratch_dir s("driftwire_swap_send");
+  const fs::path src = s / "src", dest = s / "dest";
+  fs::create_directories(dest);
+  write_text(src / "a.jpg", "photo one");
+  write_text(src / "b.jpg", "photo two");
+  std::vector<sp::outgoing_file> files;
+  for (const char* name : {"a.jpg", "b.jpg"}) {
+    const auto id = mv::io::identify(utf8(src / name));
+    REQUIRE(id);
+    files.push_back({utf8(src / name), name, 9, 0, id.value()});
+  }
+  // Between the pick and the send, a.jpg becomes another file of its size.
+  write_text(s / "stand-in", "SECRET!!!");
+  fs::rename(s / "stand-in", src / "a.jpg");
+
+  auto [a, b] = channel_pair();
+  sp::transfer_result got;
+  std::thread receiver([&, &b = b] {
+    auto offer = sp::read_offer(*b, 10000);
+    if (!offer || !sp::send_accept(*b, std::nullopt)) return;
+    got = sp::receive_files(*b, *offer, utf8(dest), {});
+  });
+  const auto sent = sp::send_files(*a, files, {}, {});
+  receiver.join();
+  CHECK(sent.how == sp::outcome::delivered);
+  CHECK(sent.skipped == 1);
+  CHECK(sent.done == 1);
+  CHECK(files_in(dest) == std::vector<std::string>{"b.jpg"});
+}
+
+TEST_CASE("driftwire: an offer too big for one message goes as several (#498)", "[driftwire]") {
+  // Thousands of files with long names: well past one message (~260 KB).
+  std::vector<sp::outgoing_file> files;
+  std::uint64_t bytes = 0;
+  for (int i = 0; i < 6000; ++i) {
+    files.push_back({"", "Trip/" + std::string(150, 'x') + "/" + std::to_string(i) + ".jpg",
+                     static_cast<std::uint64_t>(i), 1'700'000'000, {}});
+    bytes += static_cast<std::uint64_t>(i);
+  }
+  const auto parts = sp::offer_messages(files, true);
+  REQUIRE(parts.size() > 2);
+  for (const auto& p : parts) CHECK(p.size() < sp::kMaxMessageBytes - 17);
+  const std::span<const std::string> more = std::span<const std::string>(parts).subspan(1);
+  const auto back = sp::parse_offer(parts[0], more);
+  REQUIRE(back);
+  REQUIRE(back->files.size() == files.size());
+  for (std::size_t i = 0; i < files.size(); ++i) {
+    INFO(i);
+    REQUIRE(back->files[i].rel == files[i].rel);
+    REQUIRE(back->files[i].size == files[i].size);
+  }
+  CHECK(back->bytes == bytes);
+  CHECK(back->folder == "Trip");
+  CHECK(back->handover);
+  // A part missing, one more than said, or the first alone: refused whole.
+  CHECK_FALSE(sp::parse_offer(parts[0], more.first(more.size() - 1)));
+  std::vector<std::string> extra(more.begin(), more.end());
+  extra.push_back(parts.back());
+  CHECK_FALSE(sp::parse_offer(parts[0], extra));
+  CHECK_FALSE(sp::parse_offer(parts[0]));
+  // A small offer is still the one message every receiver reads.
+  const std::vector<sp::outgoing_file> few(files.begin(), files.begin() + 3);
+  CHECK(sp::offer_messages(few) == std::vector<std::string>{sp::offer_json(few)});
+
+  // Over a real channel: the receiver reads every part, then declines.
+  auto [a, b] = channel_pair();
+  std::optional<sp::incoming_offer> offered;
+  std::thread receiver([&, &b = b] {
+    if (auto o = sp::read_offer(*b, 10000)) {
+      offered = std::move(*o);
+      (void)sp::send_decline(*b, sp::outcome::declined);
+    }
+  });
+  const auto sent = sp::send_files(*a, files, {}, {});
+  receiver.join();
+  CHECK(sent.how == sp::outcome::declined);
+  REQUIRE(offered);
+  CHECK(offered->files.size() == files.size());
+  CHECK(offered->bytes == bytes);
+}
+
+TEST_CASE("driftwire: an offer past the most messages one may take is not sent (#498)", "[driftwire]") {
+  // kMaxFiles files of 600-byte names: some 65 MB of offer, past kMaxOfferParts.
+  const std::string deep = "Trip/" + std::string(190, 'a') + "/" + std::string(190, 'b') + "/" +
+                           std::string(190, 'c') + "/";
+  std::vector<sp::outgoing_file> files;
+  files.reserve(sp::kMaxFiles);
+  for (std::size_t i = 0; i < sp::kMaxFiles; ++i) files.push_back({"", deep + std::to_string(i), 1, 0, {}});
+  CHECK(sp::offer_messages(files).empty());
+}
 
 TEST_CASE("driftwire: the beacon carries an id, a name and a port, nothing else", "[driftwire]") {
   sp::beacon b{"0123456789abcdef", "Tristan\xE2\x80\x99s MacBook", 50123};
@@ -252,6 +463,38 @@ TEST_CASE("driftwire: pings keep a link alive but never stretch a deadline", "[d
   REQUIRE(b->send(sp::msg::offer, std::string_view("{}")));
   REQUIRE(a->receive(m, 2000));
   CHECK(m.type == sp::msg::offer);
+}
+
+TEST_CASE("driftwire: stage timers count the seal, the send, the receive and the open (#540)", "[driftwire]") {
+  auto [a, b] = channel_pair();
+  sp::stage_times tx, rx;
+  a->set_stages(&tx);
+  b->set_stages(&rx);
+  const std::vector<std::uint8_t> chunk(sp::kChunkBytes, 0x5a);
+  REQUIRE(a->send(sp::msg::data, chunk));
+  sp::message m;
+  REQUIRE(b->receive(m, 2000));
+  REQUIRE(m.type == sp::msg::data);
+  auto at = [](sp::stage s, const std::atomic<std::uint64_t>* field) {
+    return field[static_cast<int>(s)].load();
+  };
+  CHECK(at(sp::stage::seal, tx.calls) == 1);
+  CHECK(at(sp::stage::seal, tx.bytes) == sp::kChunkBytes);
+  CHECK(at(sp::stage::send, tx.calls) == 1);
+  CHECK(at(sp::stage::send, tx.bytes) > sp::kChunkBytes);  // the sealed frame, its header and tag
+  CHECK(at(sp::stage::open, rx.bytes) >= sp::kChunkBytes);
+  CHECK(at(sp::stage::recv, rx.calls) >= 1);
+  const std::string j = rx.json(1.0);
+  CHECK(j.find("\"open\":{") != std::string::npos);
+  CHECK(j.find("\"share\":") != std::string::npos);
+  CHECK(j.find("\"read\"") == std::string::npos);  // a stage that never ran is left out
+  // Unset, nothing more is counted.
+  a->set_stages(nullptr);
+  REQUIRE(a->send(sp::msg::data, chunk));
+  REQUIRE(b->receive(m, 2000));
+  CHECK(at(sp::stage::seal, tx.calls) == 1);
+  tx.reset();
+  CHECK(tx.json() == "{}");
 }
 
 TEST_CASE("driftwire: a receive that does not wait still reads what has arrived", "[driftwire]") {
@@ -745,6 +988,11 @@ TEST_CASE("driftwire: Accept delivers the files with their bytes, keeping both o
   REQUIRE(n > 0);
   CHECK(std::string(mark, static_cast<std::size_t>(n)).find(";MediaViewer Driftwire;") != std::string::npos);
   CHECK(::getxattr(utf8(s / "out" / "big.mov").c_str(), "com.apple.quarantine", nullptr, 0, 0, 0) < 0);
+#elif defined(_WIN32)
+  // #498: the Mark of the Web, so SmartScreen and Office check it first.
+  const std::vector<std::uint8_t> zone = read_bytes(fs::path((dest / "big.mov").wstring() + L":Zone.Identifier"));
+  CHECK(std::string(zone.begin(), zone.end()) == "[ZoneTransfer]\r\nZoneId=3\r\n");
+  CHECK_FALSE(fs::exists(fs::path((s / "out" / "big.mov").wstring() + L":Zone.Identifier")));
 #endif
 }
 
@@ -1257,6 +1505,180 @@ TEST_CASE("driftwire: nearby is this machine's link, not anything routable (#502
   CHECK(std::any_of(mine.begin(), mine.end(), [&](const auto& n) { return sp::net::on_link(ip("127.0.0.1"), {&n, 1}); }));
 }
 
+// ---- Linux's text sources, parsed on every OS ---------------------------------------------------
+
+TEST_CASE("driftwire: Linux's Downloads folder is read from user-dirs.dirs as xdg-user-dirs reads it",
+          "[driftwire]") {
+  const auto dl = [](const std::string& text, const char* home = "/home/ann") {
+    return sp::net::parse_user_dirs_download(text, home);
+  };
+  // As xdg-user-dirs-update writes it, in the desktop's language.
+  CHECK(dl("# This file is written by xdg-user-dirs-update\n"
+           "XDG_DESKTOP_DIR=\"$HOME/Bureau\"\n"
+           "XDG_DOWNLOAD_DIR=\"$HOME/T\xC3\xA9l\xC3\xA9" "chargements\"\n"
+           "XDG_MUSIC_DIR=\"$HOME/Musique\"\n") == "/home/ann/T\xC3\xA9l\xC3\xA9" "chargements");
+  CHECK(dl("XDG_DOWNLOAD_DIR=\"/srv/in box/\"\n") == "/srv/in box");                   // absolute
+  CHECK(dl("  XDG_DOWNLOAD_DIR = \"$HOME/My \\\"Files\\\"\"\r\n") == "/home/ann/My \"Files\"");  // escapes
+  CHECK(dl("XDG_DOWNLOAD_DIR=\"$HOME/a\"\nXDG_DOWNLOAD_DIR=\"$HOME/b\"") == "/home/ann/b");      // the last wins
+  CHECK(dl("XDG_DOWNLOAD_DIR=\"$HOME/\"\n") == "/home/ann");  // "disabled": the home folder itself
+  // Anything else is not a form it writes, and is passed over.
+  for (const char* bad : {"", "XDG_DOWNLOAD_DIR=\"Downloads\"", "XDG_DOWNLOAD_DIR=$HOME/Downloads",
+                          "XDG_DOWNLOAD_DIR=\"$HOME/open", "# XDG_DOWNLOAD_DIR=\"/x\"", "XDG_DOWNLOAD_DIRS=\"/x\"",
+                          "XDG_DESKTOP_DIR=\"/x\"", "XDG_DOWNLOAD_DIR=\"$HOMEX/y\"", "XDG_DOWNLOAD_DIR=\"$HOME\""}) {
+    INFO(bad);
+    CHECK(dl(bad).empty());
+  }
+  CHECK(dl("XDG_DOWNLOAD_DIR=\"$HOME/x\"", "").empty());  // no home to put for $HOME
+  CHECK(dl("XDG_DOWNLOAD_DIR=\"/x\"", "") == "/x");
+#if defined(__linux__)
+  // This machine's: the folder $XDG_CONFIG_HOME/user-dirs.dirs names, else ~/Downloads.
+  scratch_dir s("driftwire_xdg");
+  const char* was = std::getenv("XDG_CONFIG_HOME");
+  const std::optional<std::string> saved = was ? std::optional<std::string>(was) : std::nullopt;
+  setenv("XDG_CONFIG_HOME", utf8(s.root()).c_str(), 1);
+  write_text(s / "user-dirs.dirs", "XDG_DOWNLOAD_DIR=\"/srv/drop\"\n");
+  CHECK(sp::net::downloads_folder() == "/srv/drop");
+  write_text(s / "user-dirs.dirs", "XDG_DOWNLOAD_DIR=\"Downloads\"\n");  // not a form it reads
+  const std::string fallback = sp::net::downloads_folder();
+  CHECK(fallback.size() > 10);
+  CHECK(fallback.substr(fallback.size() - 10) == "/Downloads");
+  if (saved) {
+    setenv("XDG_CONFIG_HOME", saved->c_str(), 1);
+  } else {
+    unsetenv("XDG_CONFIG_HOME");
+  }
+#endif
+}
+
+TEST_CASE("driftwire: Linux's machine name is the pretty host name, unquoted as os-release(5) says", "[driftwire]") {
+  const auto pretty = [](const std::string& text) { return sp::net::parse_pretty_hostname(text); };
+  CHECK(pretty("PRETTY_HOSTNAME=\"Tristan's ThinkPad\"\n") == "Tristan's ThinkPad");  // as hostnamed writes it
+  CHECK(pretty("ICON_NAME=computer-laptop\nCHASSIS=laptop\nPRETTY_HOSTNAME=Bea\\'s\\ Desk\n") == "Bea's Desk");
+  CHECK(pretty("PRETTY_HOSTNAME=\"say \\\"hi\\\" \\$5 \\` \\\\ \\n\"") == "say \"hi\" $5 ` \\ \\n");  // \n stays
+  CHECK(pretty("PRETTY_HOSTNAME='a \"b\" \\c'") == "a \"b\" \\c");  // single quotes take nothing
+  CHECK(pretty("  PRETTY_HOSTNAME = \"Spaced\"  \r\n") == "Spaced");
+  CHECK(pretty("PRETTY_HOSTNAME=\"Old\"\nPRETTY_HOSTNAME=\"New\"\n") == "New");  // the last wins
+  CHECK(pretty("PRETTY_HOSTNAME=\"Caf\xC3\xA9\"") == "Caf\xC3\xA9");
+  for (const char* none : {"", "# PRETTY_HOSTNAME=\"x\"", "; PRETTY_HOSTNAME=x", "PRETTY_HOSTNAME=\"open",
+                           "HOSTNAME=x", "PRETTY_HOSTNAMES=x", "PRETTY_HOSTNAME="}) {
+    INFO(none);
+    CHECK(pretty(none).empty());
+  }
+}
+
+TEST_CASE("driftwire: Linux's default gateway is the up route through a gateway with the lowest metric",
+          "[driftwire]") {
+  const auto ip = [](const char* text) { return *sp::net::parse_address(text); };
+  // As the kernel prints /proc/net/route: each address the hex of its
+  // network-order word read as a native integer, so on any host.
+  const auto word = [&](const char* dotted) {
+    const auto a = ip(dotted);
+    std::uint32_t v = 0;
+    std::memcpy(&v, a.bytes.data(), 4);
+    char hex[9];
+    std::snprintf(hex, sizeof hex, "%08X", static_cast<unsigned>(v));
+    return std::string(hex);
+  };
+  const auto row = [&](const char* iface, const char* dest, const char* gw, const char* flags, int metric,
+                       const char* mask) {
+    return std::string(iface) + "\t" + word(dest) + "\t" + word(gw) + "\t" + flags + "\t0\t0\t" +
+           std::to_string(metric) + "\t" + word(mask) + "\t0\t0\t0\n";
+  };
+  const std::string head = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n";
+  const auto gateway = [](const std::string& table) {
+    const auto g = sp::net::parse_default_route(table);
+    return g ? sp::net::address_text(*g) : std::string("none");
+  };
+  const std::string table = head + row("wg0", "0.0.0.0", "0.0.0.0", "0001", 0, "0.0.0.0") +  // a device route
+                            row("eth1", "0.0.0.0", "172.16.0.1", "0002", 0, "0.0.0.0") +    // down
+                            row("tun0", "0.0.0.0", "10.9.0.1", "0003", 0, "128.0.0.0") +    // half the internet
+                            row("eth0", "0.0.0.0", "192.168.1.1", "0003", 600, "0.0.0.0") +
+                            row("wlan0", "0.0.0.0", "10.0.0.1", "0003", 100, "0.0.0.0") +
+                            row("wlan1", "0.0.0.0", "10.0.0.2", "0003", 100, "0.0.0.0") +   // equal: the first
+                            row("eth0", "192.168.1.0", "0.0.0.0", "0001", 600, "255.255.255.0");
+  CHECK(gateway(table) == "10.0.0.1");
+  CHECK(gateway(head + row("eth0", "0.0.0.0", "192.168.1.1", "0003", 600, "0.0.0.0")) == "192.168.1.1");
+  CHECK(gateway(head + row("wg0", "0.0.0.0", "0.0.0.0", "0001", 0, "0.0.0.0")) == "none");
+  CHECK(gateway(head) == "none");
+  CHECK(gateway("") == "none");
+  CHECK(gateway(head + "eth0\t00000000\tnot hex\t0003\t0\t0\t0\t00000000\n") == "none");
+  if constexpr (std::endian::native == std::endian::little) {
+    // This container's own table, verbatim: 192.0.2.1 prints as 010200C0.
+    CHECK(gateway(head + "eth0\t00000000\t010200C0\t0003\t0\t0\t0\t00000000\t0\t0\t0\n") == "192.0.2.1");
+  }
+#if defined(__linux__)
+  // This machine's own: a gateway that is IPv4, or none (a container may have none).
+  if (const auto g = sp::net::default_gateway()) CHECK_FALSE(g->v6);
+#endif
+}
+
+// ---- #530: staying awake ---------------------------------------------------------------------------
+
+TEST_CASE("driftwire: a transfer's stay-awake request names who holds it, and is let go", "[driftwire]") {
+  CHECK(std::string(sp::power::owner()) == "MediaViewer");
+  CHECK(sp::power::reason(true) == "MediaViewer is receiving files (Driftwire)");
+  CHECK(sp::power::reason(false) == "MediaViewer is sending files (Driftwire)");
+  sp::power::set_owner("Driftwire");  // the command line
+  CHECK(sp::power::reason(true) == "Driftwire is receiving files");
+  CHECK(sp::power::reason(false) == "Driftwire is sending files");
+  // The OS's own request, under a name of this run's: quick whether or not
+  // the OS agrees (a container has no logind; a CI runner's polkit may say no).
+  sp::power::set_owner("Driftwire test");
+  const auto t0 = std::chrono::steady_clock::now();
+  auto held = sp::power::hold(true);
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5));
+#if defined(__linux__)
+  // logind lists it while it is held, and not once it is let go.
+  const auto listed = [] {
+    std::string out;
+    if (FILE* p = ::popen("COLUMNS=500 systemd-inhibit --list --no-pager 2>/dev/null", "r")) {
+      char buf[512];
+      while (std::fgets(buf, sizeof buf, p)) out += buf;
+      ::pclose(p);
+    }
+    return out.find("Driftwire test") != std::string::npos;
+  };
+  if (held) {
+    CHECK(listed());
+    held.reset();
+    CHECK(eventually([&] { return !listed(); }, 5));
+  } else {
+    WARN("logind did not grant a sleep inhibitor here (no system bus, no logind, or polkit said no)");
+  }
+  held.reset();
+  // A system bus that takes the connection and never answers (a wedged
+  // dbus-daemon) does not hold the transfer up either: no request, at once.
+  // (sd-bus alone would wait out its 90 s authentication timeout.)
+  {
+    scratch_dir s("dw_bus");
+    const std::string path = utf8(s / "bus");
+    sockaddr_un at{};
+    at.sun_family = AF_UNIX;
+    REQUIRE(path.size() < sizeof at.sun_path);
+    std::memcpy(at.sun_path, path.c_str(), path.size() + 1);
+    const int mute = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    REQUIRE(mute >= 0);
+    REQUIRE(::bind(mute, reinterpret_cast<const sockaddr*>(&at), sizeof at) == 0);
+    REQUIRE(::listen(mute, 4) == 0);  // connects succeed; nothing is ever read or said
+    const char* was = std::getenv("DBUS_SYSTEM_BUS_ADDRESS");
+    const std::optional<std::string> saved = was ? std::optional<std::string>(was) : std::nullopt;
+    setenv("DBUS_SYSTEM_BUS_ADDRESS", ("unix:path=" + path).c_str(), 1);
+    const auto t1 = std::chrono::steady_clock::now();
+    CHECK_FALSE(sp::power::hold(false));
+    CHECK(std::chrono::steady_clock::now() - t1 < std::chrono::seconds(5));
+    if (saved) {
+      setenv("DBUS_SYSTEM_BUS_ADDRESS", saved->c_str(), 1);
+    } else {
+      unsetenv("DBUS_SYSTEM_BUS_ADDRESS");
+    }
+    ::close(mute);
+  }
+#endif
+  held.reset();
+  sp::power::set_owner(nullptr);  // the default again
+  CHECK(std::string(sp::power::owner()) == "MediaViewer");
+}
+
 TEST_CASE("driftwire: a source is held to a few a minute, others are not (#502)", "[driftwire]") {
   using clk = sp::source_limit::clock;
   sp::source_limit limit(3, std::chrono::minutes(1), 4);
@@ -1384,7 +1806,7 @@ TEST_CASE("driftwire: after Accept, a sender that sends nothing does not hold th
   REQUIRE(l);
   auto ch = sp::channel::open(std::shared_ptr<sp::link>(std::move(*l)), true, "aaaaaaaaaaaaaaaa", "Mallory");
   REQUIRE(ch);
-  const std::vector<sp::outgoing_file> files = {{"", "big.mov", 1ull << 30, 0}};
+  const std::vector<sp::outgoing_file> files = {{"", "big.mov", 1ull << 30, 0, {}}};
   REQUIRE((*ch)->send(sp::msg::offer, sp::offer_json(files)));
   REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
   bea.eng.on_event("accept", 1, "");
@@ -1819,6 +2241,8 @@ TEST_CASE("driftwire: send to the MediaViewer nearby (harness)", "[.driftwire-se
 //   MV_BENCH_SMALL      count of small files (default 500)
 //   MV_BENCH_SMALL_KB   each small file (default 2048)
 //   MV_BENCH_CASES      "big", "small" or "big,small" (default both)
+//   MV_BENCH_STAGES     0: no stage timers (#540), as the app runs; the
+//                       stage lines are then not printed
 // Prints one JSON line per case and mode.
 namespace {
 
@@ -1908,16 +2332,22 @@ double plain_copy(const std::vector<fs::path>& files, const fs::path& dest) {
   return s;
 }
 
-// A Driftwire send of `files` from Ann to Bea, timed from Accept to done.
-double driftwire_send(const std::vector<fs::path>& files, const fs::path& dest, const fs::path& work) {
+// A Driftwire send of `files` from Ann to Bea, timed from Accept to done;
+// each side's stages (#540) into `tx` and `rx`.
+double driftwire_send(const std::vector<fs::path>& files, const fs::path& dest, const fs::path& work,
+                      sp::stage_times& tx, sp::stage_times& rx) {
   bus b;
-  client ann(b, work / "ann_in", "Ann");
-  client bea(b, work / "bea_in", "Bea");
+  const bool timed = env_size("MV_BENCH_STAGES", 1) != 0;
+  client ann(b, work / "ann_in", "Ann", {}, {}, [&](sp::engine::options& o) { o.send_stages = timed ? &tx : nullptr; });
+  client bea(b, work / "bea_in", "Bea", {}, {},
+             [&](sp::engine::options& o) { o.receive_stages = timed ? &rx : nullptr; });
   fs::create_directories(dest);
   ann.pick(files);
   bea.save_into(dest);
   ann.send_to(bea);
   REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }, 60));
+  tx.reset();  // the offer's frames are not the transfer's
+  rx.reset();
   const auto t0 = std::chrono::steady_clock::now();
   bea.eng.on_event("accept", 1, "");
   ann.eng.wait_idle();
@@ -1974,7 +2404,16 @@ TEST_CASE("driftwire: transfer throughput against a plain copy", "[.driftwire-be
     fs::remove_all(out);
     print_case(c.name, "plain", bytes, c.files.size(), plain_copy(c.files, out / "plain"));
     fs::remove_all(out);
-    print_case(c.name, "driftwire", bytes, c.files.size(), driftwire_send(c.files, out / "driftwire", out / "work"));
+    sp::stage_times tx, rx;
+    const double s = driftwire_send(c.files, out / "driftwire", out / "work", tx, rx);
+    print_case(c.name, "driftwire", bytes, c.files.size(), s);
+    // #540: where each side's time went (stages.h): "share" is the stage's
+    // thread time over the wall time; the receiver's verifiers are two threads.
+    if (env_size("MV_BENCH_STAGES", 1) != 0) std::printf("{\"case\":\"%s\",\"mode\":\"driftwire\",\"side\":\"send\",\"stages\":%s}\n", c.name,
+                tx.json(s).c_str());
+    if (env_size("MV_BENCH_STAGES", 1) != 0) std::printf("{\"case\":\"%s\",\"mode\":\"driftwire\",\"side\":\"receive\",\"stages\":%s}\n", c.name,
+                rx.json(s).c_str());
+    std::fflush(stdout);
     fs::remove_all(out);
   }
 }

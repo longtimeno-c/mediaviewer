@@ -49,12 +49,24 @@
 
 namespace mv::driftwire {
 
+namespace relay {
+class waiting;
+}
+
 inline constexpr int kCodeLifetimeMs = 10 * 60 * 1000;
 // A router lease (#499): short, renewed while held (mapping::keeper), so a
 // crash leaves a forward or pinhole open two minutes at most.
 inline constexpr int kMapLifetimeS = 120;
 inline constexpr int kReachConnectMs = 5000;  // each TCP connect of a round
 inline constexpr int kHappyEyeballsMs = 250;
+
+// #496: a link from the internet, and where it came from (source_of; "":
+// not known, as through a relay or over a punched path), for the engine's
+// per-source limits.
+using internet_link_fn = std::function<void(std::unique_ptr<link>, std::string source)>;
+// The source a connection from `a` counts against: the address, or for IPv6
+// its /64 (one subscriber's prefix: a machine there has every address in it).
+[[nodiscard]] std::string source_of(const net::address& a);
 
 class internet_receiver {
  public:
@@ -95,7 +107,7 @@ class internet_receiver {
     std::string ledger;
     std::vector<std::string> leftovers;
   };
-  using link_fn = std::function<void(std::unique_ptr<link>)>;
+  using link_fn = internet_link_fn;
 
   internet_receiver(options o, link_fn on_link, std::function<void()> changed);
   ~internet_receiver();  // the code, the listener, every mapping: gone
@@ -129,7 +141,8 @@ class internet_receiver {
   void notify();
   // #472 relays: waits at the relay server while the code does, handing on
   // each sender it is paired with (once that sender has spoken).
-  void relay_loop(net::endpoint at, std::array<std::uint8_t, 16> token, std::string key, std::unique_ptr<link> first);
+  void relay_loop(net::endpoint at, std::array<std::uint8_t, 16> token, std::string key,
+                  std::unique_ptr<relay::waiting> first);
 
   options opts_;
   link_fn on_link_;
@@ -170,7 +183,7 @@ class internet_receiver {
 // removes every mapping.
 class way_in {
  public:
-  using link_fn = std::function<void(std::unique_ptr<link>)>;
+  using link_fn = internet_link_fn;
   ~way_in();
   way_in(const way_in&) = delete;
   way_in& operator=(const way_in&) = delete;

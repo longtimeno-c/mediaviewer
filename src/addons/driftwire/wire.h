@@ -84,11 +84,13 @@ inline constexpr int kSwitchHoldMs = 10000;
 // beacon and Bluetooth INFO carry is replaced this often (and whenever the
 // window opens or closes), so a listener cannot follow one machine for weeks.
 inline constexpr int kIdRotateMs = 10 * 60 * 1000;
-// One offer, at most.
+// One offer, at most. #498: an offer bigger than one message goes as
+// several (msg::offer_more), at most kMaxOfferParts of them in all.
 inline constexpr std::size_t kMaxFiles = 100000;
+inline constexpr std::size_t kMaxOfferParts = 128;
 inline constexpr std::size_t kMaxRelativeBytes = 1024;
-// A part of a relative path, at most: room for ".mvtmp16" under any
-// filesystem's 255-byte name limit.
+// A part of a relative path, at most: room for Linux's leading dot and
+// ".mvtmp16" under any filesystem's 255-byte name limit.
 inline constexpr std::size_t kMaxPartBytes = 240;
 // One file's size, at most (an offer above it is refused whole).
 inline constexpr std::uint64_t kMaxFileBytes = 1ull << 50;
@@ -128,6 +130,11 @@ enum class msg : std::uint8_t {
   // Protocol 3, #497: the server's nonce, its first sealed message on a new
   // link (unnumbered, like resume_at), revealed after the client's.
   code_nonce = 23,
+  // #498: the rest of an offer too big for one message, {"files":[...]}
+  // (sender), sent right after it: as many as its "parts" says, less one.
+  // Any protocol; a receiver before #498 ends the link on it, as it already
+  // did on the one message that would not fit.
+  offer_more = 24,
 };
 
 // "123 456": six digits from both public keys (client = the sender).
@@ -177,5 +184,8 @@ struct beacon {
 
 // "340 MB", "1.2 GB", "12 KB".
 [[nodiscard]] std::string size_text(std::uint64_t bytes);
+// "14 MB/s": a transfer's speed under its progress, in the window and the
+// command line alike.
+[[nodiscard]] std::string rate_text(double bytes_per_second);
 
 }  // namespace mv::driftwire

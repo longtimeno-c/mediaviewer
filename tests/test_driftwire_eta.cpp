@@ -1,8 +1,10 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // #529: the speed and time left under a transfer's progress (eta.h).
+#include "catch_compat.h"
+#if !defined(MV_CATCH2_AMALGAMATED)
 #include <catch2/catch_approx.hpp>
-#include <catch2/catch_test_macros.hpp>
+#endif
 
 #include <chrono>
 #include <cstdint>

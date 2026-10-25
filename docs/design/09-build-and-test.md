@@ -195,13 +195,14 @@ it replaces.
 |---|---|---|
 | `policy` | windows-latest | The policy gates above |
 | `windows-deps` | windows-latest | Installs the vcpkg manifest once and caches it (≈45 min after a manifest/baseline change, mostly FFmpeg) |
-| `build` | windows-latest | MSVC Release, MSVC Debug, clang-cl, ASan; full `ctest`; uploads broken-corpus reproducers |
+| `build` | windows-latest | MSVC Release, MSVC Debug, clang-cl, ASan; full `ctest`; uploads broken-corpus reproducers; the MSVC Release leg packs the `driftwire` zip as a release does (`tools/package/driftwire-windows.ps1`: every DLL the program loads, the Visual C++ runtime beside it) and runs its one-line installer against it on localhost under the Restricted execution policy (a Windows client's default): installs in Windows PowerShell 5.1 and PowerShell 7, unsigned and signed by a throwaway certificate the runner trusts, and uninstalls in both; the re-run, the update and a changed zip in PowerShell 7 (`tools/package/check-driftwire-install.ps1`); and uploads the zip (an artefact) |
 | `abi-smoke` | windows-latest | The C# ABI smoke test |
 | `windows-chrome`, `mac-chrome` | windows-latest, macos-14 | WinUI and SwiftUI chrome compile; the chrome contract tests (`dotnet test`, `swift test`) |
-| `mac-build` | macos-15 | The native core on macOS (arm64): vcpkg trees cached under release.yml's key, the licence gate over both Mac trees, the full build and `ctest --no-tests=error` (`mv_tests`, `mv_import_tests`, `mv_ai_tests`, the Mac-only Metal pacer / AVFoundation / PDFKit / Photos-folder / write-guard tests) |
-| `mac-packaging` | ubuntu-latest | Release tooling tests and macOS bundle policy (`tools/mac/*`) |
-| `portable-core` | ubuntu-latest | `cmake/portable` under ASan + UBSan: the Import engine, add-on host and verified copy (`mv_import_tests`), the add-on packer and SDK cross-checks against the C++ verifier, and the clip and trim suites against the distro FFmpeg |
+| `mac-build` | macos-15 | The native core on macOS (arm64): vcpkg trees cached under release.yml's key, the licence gate over both Mac trees, the full build and `ctest --no-tests=error` (`mv_tests`, `mv_import_tests`, `mv_ai_tests`, the Mac-only Metal pacer / AVFoundation / PDFKit / Photos-folder / write-guard tests); packs the macOS `driftwire` archive as a release does (`macpack.py cli`, ad hoc, arm64) and uploads it (an artefact) |
+| `mac-packaging` | ubuntu-latest | Release tooling tests and macOS bundle policy (`tools/mac/*`), the release publisher's tests, and the `driftwire` Windows packer's (pwsh) and Homebrew formula's (ruby) tests |
+| `portable-core` | ubuntu-latest | `cmake/portable` under ASan + UBSan: the Import engine, add-on host and verified copy (`mv_import_tests`), Driftwire's suite with the command line's (`"[driftwire]"`, a Secret Service of the job's own), the add-on packer and SDK cross-checks against the C++ verifier, and the clip and trim suites against the distro FFmpeg |
 | `linux-lab-smoke` | ubuntu-24.04 | Linux PR 1: the root CMake build on Linux (vcpkg for imgui and Catch2), `ctest` (the portable `mv_tests`, `frametime_harness` against synthetic reports, and `linux_lab_smoke`), and the smoke again with Weston's pixman renderer. The smoke runs the lab under a headless Weston with Mesa llvmpipe and asserts that it presents, writes reports `frametime` parses, labels its source "clock intervals (weaker)", fails the gate, and presents nothing at ~0 % CPU in the static soak, and that it goes on presenting after one `eglSwapBuffers` fails (an `LD_PRELOAD` module, `tests/linux/egl_swap_fault.cpp`): plumbing, never pacing |
+| `driftwire-cli-linux` | ubuntu-22.04 (x64), ubuntu-22.04-arm (arm64) | The `driftwire` command line's Linux packages ([28](28-driftwire.md#from-a-terminal-driftwire)): `cmake/driftwire-cli` with GCC 12 and the pinned vcpkg, the `"[cli]"` suites, the `NEEDED` gate (libc, libm and the loader only), CPack's `.deb`, `.rpm` and tarball, the `.deb` installed and run; then the package repository built from them with a throwaway key, `test_driftwire_repo.py`, shellcheck on the installer, and `driftwire_repo.py smoke` (installed from on localhost with apt, a changed index refused and its leftovers in `partial/` removed, removed, then the tarball route); `test_driftwire_repo.py` also runs the Windows installer in its test mode where the runner has pwsh; uploads the packages. The same build steps (`.github/actions/driftwire-cli-linux`) make the release run's packages, and release.yml's `driftwire-repo` publishes the repository on GitHub Pages after a stable release |
 | `frametime` | self-hosted `[windows, gpu]` | Swapchain recovery, then the 60 s animated + idle gates against the rolling baseline (cached per runner; updated only on `main`). Runs only when `MV_GPU_RUNNER_ENABLED` is set and never for fork PRs; hosted runners have no usable GPU, so a skip is not a pass |
 | `frametime-mac` | self-hosted `[macOS, ARM64, gpu]` | Mac PR 1: the 60 s animated + idle gates on Metal (`frametime --seconds 60`, under `caffeinate`). Runs only when `MV_MAC_GPU_RUNNER_ENABLED` is set and never for fork PRs |
 | `frametime-linux` | self-hosted `[linux, gpu]` | Linux PR 1: the 60 s animated + idle gates on OpenGL/EGL, judged from `wp_presentation` feedback (`frametime --seconds 60`, under `systemd-inhibit`), against a rolling baseline as on Windows. The runner must run inside a real Wayland session (Mutter or KWin, Mesa on Intel or AMD). Runs only when `MV_LINUX_GPU_RUNNER_ENABLED` is set and never for fork PRs; no such runner exists yet |
@@ -209,9 +210,8 @@ it replaces.
 | `fuzz` | windows-latest | 60 s per harness on PRs; 20 min per harness nightly. Uploads crash / timeout / OOM inputs |
 | `broken-corpus-full` | windows-latest | Nightly / dispatch: the exhaustive broken-corpus sweep |
 
-There is no macOS native job: CI on macOS compiles the SwiftUI chrome packages only. The Mac
-core, its `ctest` suites and the Metal present-loop gate run on a developer Mac
-([DEVELOPMENT](../DEVELOPMENT.md)).
+The Mac core and its `ctest` suites run on a hosted Mac (`mac-build`); the Metal present-loop gate
+needs the self-hosted Mac (`frametime-mac`) or a developer Mac ([DEVELOPMENT](../DEVELOPMENT.md)).
 
 Release packaging is a separate manual workflow (`release.yml`; see
 [RELEASING.md](../../RELEASING.md)).
@@ -300,6 +300,18 @@ Direct download only; the app is GPL-3.0-or-later and has no Store channel
   (Windows App SDK AI / ONNX / DirectML / WebView2).
 - **macOS:** a notarized `MediaViewer.app` in a disk image, built by `tools/mac/macpack.py`,
   with a signed appcast feed.
+- **The `driftwire` command line** ([28](28-driftwire.md#installing),
+  [12](12-decision-log.md#driftwire), 2026-10-24), published by each stable release once
+  `MV_DRIFTWIRE_REPO=1` (RELEASING.md) and live once the owner has set it up:
+  - Linux: a `.deb`, an `.rpm` and a tarball per architecture from `cmake/driftwire-cli` (CPack),
+    in signed apt and dnf repositories on GitHub Pages with a one-line installer; the system's
+    package manager updates them. Not attached to the release (`MV_RELEASE_LINUX_CLI`).
+  - macOS: a universal program, signed and notarized (`macpack.py cli`), in
+    `driftwire-<version>-macos-universal.tar.gz` on the release page, installed and updated by the
+    Homebrew tap `longtimeno-c/homebrew-tap`, whose formula the release writes.
+  - Windows: `driftwire-<version>-windows-x64.zip` (`driftwire-windows.ps1`), signed when Trusted
+    Signing is configured, on the release page and on the same site, installed per user by
+    `install.ps1` (`irm <site>/install.ps1 | iex`), which also updates it when run again.
 
 Code signing, the update manifest, staged rollout, crash reports and telemetry are in
 [13](13-updates-and-telemetry.md); release mechanics in [RELEASING.md](../../RELEASING.md).

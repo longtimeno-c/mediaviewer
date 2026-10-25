@@ -231,7 +231,9 @@ struct handshake::state {
     const auto c = in.first(sealed);
     if (auto r = cs.decrypt(h, c, tmp); !r) return r;
     if (tmp.size() != len) return err(status::corrupt);
-    std::memcpy(plain.data(), tmp.data(), len);
+    // An empty payload has no buffer on either side, and memcpy's pointers
+    // must not be null even for no bytes (UBSan).
+    if (len != 0) std::memcpy(plain.data(), tmp.data(), len);
     sodium_memzero(tmp.data(), tmp.size());
     mix_hash(c);
     in = in.subspan(sealed);
@@ -251,7 +253,7 @@ handshake::handshake(const pattern& p, bool initiator, std::span<const std::uint
                      std::optional<std::array<std::uint8_t, 32>> s, std::optional<std::array<std::uint8_t, 32>> psk,
                      test_keys fixed)
     : st_(std::make_unique<state>()) {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   st_->p = &p;
   st_->initiator = initiator;
   st_->fixed = std::move(fixed);

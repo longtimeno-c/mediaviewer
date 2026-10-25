@@ -49,7 +49,7 @@ keys::~keys() {
 }
 
 word_code random_code() {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   word_code c;
   for (auto& w : c) w = static_cast<std::uint16_t>(randombytes_uniform(2048));
   return c;

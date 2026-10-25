@@ -30,7 +30,7 @@ std::string clip(const std::string& name) {
 }  // namespace
 
 std::array<std::uint8_t, 32> identity(secrets::store* store, bool& kept) {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   std::array<std::uint8_t, 32> key{};
   kept = false;
   if (store) {
@@ -117,7 +117,8 @@ bool save(secrets::store& store, const std::vector<device>& devices) {
 bool forget(secrets::store& store) {
   (void)store.erase(kDevicesName);
   (void)store.erase(kIdentityName);
-  return !store.get(kDevicesName) && !store.get(kIdentityName);
+  (void)store.erase(kRelayKeyName);
+  return !store.get(kDevicesName) && !store.get(kIdentityName) && !store.get(kRelayKeyName);
 }
 
 std::int64_t hour_of(std::int64_t unix_ms) noexcept {
@@ -125,7 +126,7 @@ std::int64_t hour_of(std::int64_t unix_ms) noexcept {
 }
 
 dht::keys presence_keys(const device& d, std::int64_t hour, const std::array<std::uint8_t, 32>& receiver) {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   // The direction's key: the pairing secret keyed over the receiver's
   // identity. Then four subkeys of it per hour: the item key's seed, the
   // box, the salt base and CPace's password (as dht::derive's four parts).

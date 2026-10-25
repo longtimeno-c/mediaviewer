@@ -59,6 +59,7 @@
 #include <vector>
 
 #include "addons/driftwire/link.h"
+#include "addons/driftwire/stages.h"
 #include "addons/driftwire/wire.h"
 #include "core/result.h"
 
@@ -82,6 +83,12 @@ struct hello {
   std::vector<std::uint8_t> body;      // protocol 1: the commitment; 2: the first Noise message;
                                        // internet: the sender's CPace message
 };
+
+// #500: an internet hello's fixed start ("MVSP", 2, 'I', CPace's session id
+// and the sender's CPace message), which a relay through the person's own
+// computer must see before it forwards anything.
+inline constexpr std::size_t kInternetHelloBytes = 4 + 1 + 1 + 16 + 32;
+[[nodiscard]] bool is_internet_hello(std::span<const std::uint8_t> first) noexcept;
 
 // What happened to a protocol 2 channel's link (channel::set_on_link).
 enum class link_event : std::uint8_t {
@@ -209,6 +216,10 @@ class channel {
   void flush(int timeout_ms);
   // Any thread: every blocked call returns; the pinger stops.
   void shutdown() noexcept;
+  // #540, the benches: from now on the seal, the send, a wait for the
+  // replay's room, the receive and the open add to `t` (null: stop).
+  // Protocol 2 only.
+  void set_stages(stage_times* t) noexcept { stages_.store(t, std::memory_order_relaxed); }
 
   // ---- protocol 2: moving the session -------------------------------------------------------
   // Called (any thread, briefly, never with a lock of the channel held) when
@@ -237,7 +248,10 @@ class channel {
   [[nodiscard]] expected complete_rejoin(pending_ptr p);
   // The server: `h` (from read_hello) names this session.
   [[nodiscard]] bool names_this(const hello& h) const noexcept;
-  // The server: the rest of a rejoin that names_this().
+  // The server: the rest of a rejoin that names_this(). #496: each tag
+  // opens once (a replayed hello is refused before any read or write), and
+  // only adopting the link is serialised: a rejoin that never proves
+  // resume_at does not hold up another.
   [[nodiscard]] expected accept_rejoin(std::shared_ptr<link> l, const hello& h);
   // The link is up (not suspect, not down).
   [[nodiscard]] bool link_up() const noexcept;
@@ -308,6 +322,7 @@ class channel {
   std::atomic<bool> down_{false};
   std::atomic<bool> cancelled_{false};  // cancel() called, or the peer's msg::cancel read
   std::atomic<bool> opened_{false};  // the handshake and ident are done
+  std::atomic<stage_times*> stages_{nullptr};  // #540: set_stages
 
   // Writing: one sender at a time (send_m_), never waiting on a lock the
   // reader holds. Lock order: send_m_, then link_m_ or replay_m_.
@@ -350,9 +365,12 @@ class channel {
 
   // The resume secret (protocol 2): the psk of every rejoin of this session.
   // From the first handshake's Split; never leaves memory.
-  std::mutex rejoin_m_;  // one rejoin at a time
+  std::mutex rejoin_m_;  // one rejoin adopted at a time
   mutable std::mutex secret_m_;
   std::array<std::uint8_t, 32> resume_{};  // under secret_m_
+  // #496: the tags of the rejoins accept_rejoin has taken (the newest
+  // kSpentTags; only a tag made with resume_ gets in).
+  std::deque<std::array<std::uint8_t, 16>> spent_tags_;  // under secret_m_
   std::atomic<std::uint32_t> rejoins_{0};
 
   std::mutex ping_m_;

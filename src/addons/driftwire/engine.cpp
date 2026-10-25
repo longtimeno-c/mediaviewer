@@ -25,8 +25,17 @@ constexpr auto kPostEvery = std::chrono::milliseconds(100);
 // The person has this long to answer an offer (or confirm the code); then it
 // is called off.
 constexpr auto kAskFor = std::chrono::milliseconds(kAskMs);
-// Busy refusals in flight at once, at most; past it a link is just closed.
+// Busy refusals in flight at once, at most; past it a link is just closed
+// (#496: or one still in its hello is, to make room).
 constexpr int kMaxHelpers = 4;
+// #496: links from the internet while a transfer runs (its rejoins, and
+// whoever found the way in): their own pool, a share of it per source, and a
+// short wait for the hello (a sender writes it as it connects). Threads in
+// all, counting those closed to make room and not yet gone.
+constexpr int kMaxInternetHelpers = 8;
+constexpr int kUnreadPerSource = 4;
+constexpr int kInternetHelloMs = 2000;
+constexpr std::size_t kMaxHelperThreads = 32;
 // #497: a sender that knows the code but never sends (a machine in the middle
 // trying for a code that matches the one it shows its victim, or a flood of
 // notifications). Five such links in a minute stop new nearby links for 30 s:
@@ -114,7 +123,7 @@ std::string changed_key_text(const std::string& name, bool sending) {
 }  // namespace
 
 engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(opts)) {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   id_ = random_id();
   // #472 PR 4: the identity kept in the secret store, or one for this run.
   if (opts_.make_secrets) secrets_ = opts_.make_secrets();
@@ -137,6 +146,15 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   v_.handover = kept.handover;
   v_.relay = kept.relay;  // #472 relays
   v_.relay_server = kept.relay_server;
+  // #500: the relay server's key is kept in the secret store, the address in
+  // the file (one written before kept both there, until the next save).
+  if (secrets_ && !v_.relay_server.empty() && v_.relay_server.find('#') == std::string::npos) {
+    if (auto k = secrets_->get(known::kRelayKeyName)) {
+      v_.relay_server += '#';
+      v_.relay_server.append(k->begin(), k->end());
+      sodium_memzero(k->data(), k->size());
+    }
+  }
   v_.destination = host_.default_destination();
   if (!kept.destination.empty()) {
     if (auto st = io::stat_path(kept.destination); st && st->is_directory) v_.destination = kept.destination;
@@ -270,6 +288,24 @@ void engine::save_now() {
   {
     std::lock_guard lock(control_m_);
     save_wanted_ = false;
+  }
+  // #500: the key after '#' goes to the secret store and the file keeps the
+  // address; with no store (the portable build) the file keeps both.
+  {
+    std::lock_guard s(secrets_m_);
+    if (secrets_) {
+      const auto hash = p.relay_server.rfind('#');
+      if (hash != std::string::npos) {
+        const std::span<const std::uint8_t> key(reinterpret_cast<const std::uint8_t*>(p.relay_server.data()) + hash + 1,
+                                                p.relay_server.size() - hash - 1);
+        auto kept = secrets_->get(known::kRelayKeyName);
+        const bool same = kept && std::equal(kept->begin(), kept->end(), key.begin(), key.end());
+        if (kept) sodium_memzero(kept->data(), kept->size());
+        if (same || secrets_->put(known::kRelayKeyName, key)) p.relay_server.resize(hash);
+      } else {
+        (void)secrets_->erase(known::kRelayKeyName);
+      }
+    }
   }
   if (!save_prefs(opts_.prefs_path, p)) host_.log(1, "driftwire: could not keep the settings");
 }
@@ -417,7 +453,10 @@ void engine::sync_internet() {
   }
   if (!make) return;
   auto in = std::make_shared<internet_receiver>(
-      o, [this](std::unique_ptr<link> l) { on_internet_link(std::move(l), true); },
+      o,
+      [this](std::unique_ptr<link> l, std::string source) {
+        on_internet_link(std::move(l), true, std::move(source));
+      },
       [this] {
         // The receiver's state, into the window (never under the engine's lock
         // while it is asked).
@@ -1092,10 +1131,16 @@ void engine::run_known_wait() {
   while (!stopped()) {
     std::vector<known::device> devices;
     bool busy = false;
+    std::vector<net::address> outside;
+    for (const auto& v : client->external_votes()) {
+      const auto ip = net::parse_address(v.address);
+      if (ip && !ip->v6 && std::find(outside.begin(), outside.end(), *ip) == outside.end()) outside.push_back(*ip);
+    }
     {
       std::lock_guard lock(m_);
       devices = devices_;
       busy = transfer_running_;
+      outside_seen_ = std::move(outside);
     }
     std::erase_if(pairs, [&](const auto& p) {
       return std::none_of(devices.begin(), devices.end(), [&](const known::device& d) { return d.key == p.first; });
@@ -1199,9 +1244,10 @@ void engine::start_send_known(const std::string& fingerprint) {
   });
 }
 
-void engine::on_internet_link(std::unique_ptr<link> l, bool code) {
+void engine::on_internet_link(std::unique_ptr<link> l, bool code, std::string source) {
   if (!l) return;
-  on_incoming(std::make_unique<bearer_as>(std::move(l), transport::internet), true, std::nullopt, {}, -1, code);
+  on_incoming(std::make_unique<bearer_as>(std::move(l), transport::internet), true, std::nullopt, std::move(source),
+              -1, code);
 }
 
 void engine::note_unconfirmed() {
@@ -1241,18 +1287,28 @@ void engine::on_incoming(std::unique_ptr<link> l, bool internet, std::optional<k
     }
   }
   if (busy) {
-    std::lock_guard threads(threads_m_);
-    reap_helpers();
-    if (static_cast<int>(helpers_.size()) >= kMaxHelpers) return;  // the link closes as it goes
-    auto done = std::make_shared<std::atomic<bool>>(false);
-    helpers_.push_back({std::thread([this, done, internet, code, link = std::shared_ptr<driftwire::link>(std::move(l))]() mutable {
-                          try {
-                            route_busy(std::move(link), internet, code);
-                          } catch (...) {
-                          }
-                          done->store(true);
-                        }),
-                        done});
+    std::shared_ptr<driftwire::link> shared(std::move(l));
+    {
+      std::lock_guard threads(threads_m_);
+      reap_helpers();
+      if (make_helper_room_locked(internet, source)) {
+        auto st = std::make_shared<helper_state>();
+        st->unread = shared;
+        st->internet = internet;
+        st->source = std::move(source);
+        helpers_.push_back({std::thread([this, st, internet, code, link = std::move(shared)]() mutable {
+                              try {
+                                route_busy(std::move(link), *st, internet, code);
+                              } catch (...) {
+                              }
+                              st->done.store(true);
+                            }),
+                            st});
+        return;
+      }
+    }
+    // No room: closed outside threads_m_ (a close may wait a moment to drain).
+    shared->shutdown();
     return;
   }
   launch_transfer([this, internet, code, known_hour, link = std::move(l), from_known = std::move(from_known),
@@ -1276,7 +1332,7 @@ void engine::retire(std::unique_ptr<dht_handover> h) {
 
 void engine::reap_helpers() {
   for (auto it = helpers_.begin(); it != helpers_.end();) {
-    if (it->done->load()) {
+    if (it->s->done.load()) {
       it->thread.join();
       it = helpers_.erase(it);
     } else {
@@ -1285,13 +1341,58 @@ void engine::reap_helpers() {
   }
 }
 
-void engine::route_busy(std::shared_ptr<link> l, bool internet, bool code) {
+bool engine::make_helper_room_locked(bool internet, const std::string& source) {
+  if (helpers_.size() >= kMaxHelperThreads) return false;
+  int live = 0;
+  std::map<std::string, std::vector<helper_state*>> unread;  // per source
+  for (auto& h : helpers_) {
+    helper_state& s = *h.s;
+    if (s.done.load() || s.evicted || s.internet != internet) continue;
+    ++live;
+    if (s.unread) unread[s.source].push_back(&s);
+  }
+  // Which may go: a random one, so a rejoin whose hello is on its way (one
+  // round trip) is unlikely to be the one, even from the same address (a
+  // cafe's NAT) as someone opening connections as fast as they can.
+  std::vector<helper_state*> may;
+  const auto mine = unread.find(source);
+  if (internet && !source.empty() && mine != unread.end() &&
+      static_cast<int>(mine->second.size()) >= kUnreadPerSource) {
+    may = mine->second;  // its own share is full: one of its own goes
+  } else if (live >= (internet ? kMaxInternetHelpers : kMaxHelpers)) {
+    // One of the source with the most links in their hello.
+    std::size_t most = 0;
+    for (const auto& [from, links] : unread) {
+      if (links.size() > most) {
+        most = links.size();
+        may.clear();
+      }
+      if (links.size() == most) may.insert(may.end(), links.begin(), links.end());
+    }
+    if (may.empty()) return false;  // every one is past its hello
+  }
+  if (!may.empty()) {
+    helper_state* victim = may[randombytes_uniform(static_cast<std::uint32_t>(may.size()))];
+    victim->evicted = true;
+    victim->unread->shutdown();  // its read_hello returns now
+    victim->unread.reset();
+  }
+  return true;
+}
+
+void engine::route_busy(std::shared_ptr<link> l, helper_state& st, bool internet, bool code) {
   {
     std::lock_guard lock(m_);
     if (stopping_.load()) return;
     opening_.push_back(l);
   }
-  auto h = channel::read_hello(*l, std::chrono::steady_clock::now() + std::chrono::milliseconds(kConnectMs));
+  auto h = channel::read_hello(
+      *l, std::chrono::steady_clock::now() + std::chrono::milliseconds(internet ? kInternetHelloMs : kConnectMs));
+  {
+    std::lock_guard threads(threads_m_);
+    if (st.evicted) h = err(status::cancelled);  // closed to make room
+    st.unread.reset();
+  }
   if (h && h->rejoin) {
     // #472: the sender of the transfer under way, back on another link (or
     // the same bearer, after a drop). It goes to the session it names; a
@@ -1323,6 +1424,15 @@ void engine::route_busy(std::shared_ptr<link> l, bool internet, bool code) {
       in = internet_;
     }
     if (internet && code && in && in->spend()) in->release();
+    l->shutdown();
+    forget_opening(l);
+    return;
+  }
+  if (internet) {
+    // #496: a nearby hello (protocol 1, 2 or 3) has no business on the
+    // internet: closed before any handshake, so whoever found the way in or
+    // the code's port learns nothing of this machine (no static, no id, no
+    // name), busy or not (run_receive closes it when idle).
     l->shutdown();
     forget_opening(l);
     return;
@@ -1498,9 +1608,13 @@ void engine::build_files(std::vector<std::string> paths, std::uint64_t gen) {
     if (files_stale(gen)) return;  // a newer set replaced this one
     auto st = io::stat_path(path);
     if (!st || st->is_directory) return;
+    // #498: the file itself, never a link (a folder's walk skips them too):
+    // what is sent is this file, whatever is put at its path later.
+    auto id = io::identify(path);
+    if (!id) return;
     std::string rel(leaf_name(path));
     if (!safe_relative(rel) || housekeeping(rel)) return;
-    out.push_back({path, std::move(rel), st->size, st->mtime_unix});
+    out.push_back({path, std::move(rel), st->size, st->mtime_unix, id.value()});
   };
   for (const auto& p : paths) {
     if (files_stale(gen)) return;
@@ -1567,7 +1681,16 @@ void engine::walk_folder(const std::string& folder, std::uint64_t gen) {
     if (files_stale(gen)) return false;
     if (e.cloud_only || skipped_relative(e.relative_utf8)) return true;
     std::string rel = top + "/" + e.relative_utf8;
-    if (safe_relative(rel)) out.push_back({e.path_utf8, std::move(rel), e.size, e.mtime_unix});
+    if (!safe_relative(rel)) return true;
+    // #498: the walk's own id where it has one (POSIX); Windows' listing
+    // gives none, so the file is looked at once (its attributes only).
+    io::file_id id = e.id;
+    if (!id.known()) {
+      auto got = io::identify(e.path_utf8);
+      if (!got) return true;
+      id = got.value();
+    }
+    out.push_back({e.path_utf8, std::move(rel), e.size, e.mtime_unix, id});
     return out.size() < kMaxFiles;
   });
   publish_files(std::move(out), gen);
@@ -1869,6 +1992,7 @@ hooks engine::hooks_for(bool sending) {
   h.cancel = &cancel_;
   h.quitting = &stopping_;  // #530
   if (!sending) h.idle_ms = opts_.receive_idle_ms;  // #502
+  h.stages = sending ? opts_.send_stages : opts_.receive_stages;  // #540
   h.note = [this](const char* text) { host_.log(1, text); };
   h.yield = [this] {
     // While the viewer presents, wait between chunks (as Import does); the
@@ -3070,7 +3194,8 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
   shown_notice.shown = may_notify && notice(name, 0, 0);
   if (open_window && may_notify && !shown_notice.shown) host_.show_screen(true);
   post();
-  auto offer = first ? (first->type == msg::offer ? parse_offer(first->text()) : result<incoming_offer>(err(status::corrupt)))
+  auto offer = first ? (first->type == msg::offer ? read_offer_after(*ch, first->text(), opts_.confirm_ms)
+                                                 : result<incoming_offer>(err(status::corrupt)))
                      : read_offer(*ch, opts_.confirm_ms);
   if (!offer) {
     const bool declined = cancel_.load();
@@ -3269,10 +3394,14 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
         }
         way_opener = std::thread([this, ch, &way, dht] {
           try {
-            auto w = way_in::open(opts_.internet_loopback, opts_.internet_mapping,
-                                  [this](std::unique_ptr<link> l) { on_internet_link(std::move(l)); },
-                                  data_file("driftwire_way_in.dat"));
+            auto w = way_in::open(
+                opts_.internet_loopback, opts_.internet_mapping,
+                [this](std::unique_ptr<link> l, std::string source) {
+                  on_internet_link(std::move(l), false, std::move(source));
+                },
+                data_file("driftwire_way_in.dat"));
             if (!w) return;
+            if (opts_.on_way_in) opts_.on_way_in(w->places());
             if (send_places(*ch, w->places(), dht)) {
               std::lock_guard lock(m_);
               v_.in_handover = true;

@@ -15,6 +15,8 @@ the same kind as Import and Places). It carries its own code, has no chrome of i
 fills one window through the screens contribution point ([25 §10](25-open-addons.md#10-screens)):
 both hosts draw it with their own controls, so it follows the theme, text size, VoiceOver and
 Narrator. Other makers' script add-ons still have no network permission (owner, 2026-10-03).
+The same engine also runs in a terminal: `driftwire`, a program of its own on Linux, Windows and
+macOS (owner, 2026-10-23; [From a terminal](#from-a-terminal-driftwire)).
 
 ## What a person sees
 
@@ -68,6 +70,299 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
   whose first entry is Driftwire with the selection (issue #444: the same menu as `Ctrl+Shift+S`,
   the bar's share button and right-click Share ▸).
   Without Driftwire the icon offers the same one-click install as the other add-ons.
+
+## From a terminal (`driftwire`)
+
+`driftwire` is a terminal host of the same engine (owner, 2026-10-23,
+[12](12-decision-log.md#driftwire)): a program of its own, outside MediaViewer, on Linux, Windows
+and macOS. It speaks the same wire, so it sends to and receives from the add-on and another
+`driftwire`, and it installs on its own, with no MediaViewer: on Linux from signed apt and dnf
+repositories (one line, or apt, dnf or zypper), on macOS from a Homebrew tap, on Windows with a
+PowerShell one-liner, each of which also updates it; stable releases publish all three
+([Installing](#installing), [12](12-decision-log.md#driftwire)). It is built and tested with the
+app on Windows and macOS and is never in the app's payload. Its manual page is
+`packaging/linux/driftwire.1`.
+
+```
+driftwire                        the session: visible nearby while it runs; send and receive
+driftwire send PATH... [--to NAME]
+                                 the session with these files (or one folder) ready, closing
+                                 when that send ends (sent, declined, cancelled or failed);
+                                 --to sends to NAME as soon as it is heard (the code is typed)
+driftwire receive [--once]       the session for receiving; --once closes after the first offer,
+                                 accepted or declined (a knock that offers nothing does not count)
+driftwire code                   the session, making a code to receive from anywhere, closing
+                                 when the receive it lets in ends, or the code fails or runs out
+driftwire devices                the remembered devices (no terminal needed)
+driftwire --help | --version     (no terminal needed)
+  --save-to DIR, --name NAME     this run only
+  --plain, --no-color, --verbose
+```
+
+Exit 0 when it ends normally (for `send`, `receive --once` and `code`, the transfer went through);
+1 when the transfer of one of those did not go through (declined, cancelled, failed); 2 for a
+usage error, no terminal, or a start that fails (another session of the same user). With no
+network at all it says so and waits, as the window does: a network can come up.
+
+- **Interactive only** (owner). Nothing is accepted or sent without the person at that terminal
+  answering: there is no `--yes` and no auto-accept, and the program refuses to start the session
+  when stdin or stdout is not a terminal (`driftwire: this needs a terminal (it asks before
+  anything is sent or saved).`, exit 2). Only the test build, `mv_driftwire_cli_test`
+  (`MV_DRIFTWIRE_CLI_TEST_HOOKS`, never packaged), reads keys from a pipe, keeps to loopback and
+  prints machine-readable lines, for the end-to-end test.
+- **No secret on the command line.** No code, check digits or relay key is ever an argument:
+  it would sit in the shell's history and in `ps`. `driftwire code 123456` is a usage error; a
+  code someone gave you is pasted into `/to-code`, a relay server's key typed into
+  `/relay-server`'s field. `--to NAME` names a computer, never a code.
+- **The look**, after Claude Code's terminal UI, in Driftwire's own colours: an inline UI, never
+  the alternate screen. What finished is printed once, above, as a transcript that stays in the
+  scrollback (`⏺` and the engine's own sentence, `⎿` and the size, the time, the bearer and where
+  it saved), so the terminal keeps a log after it closes. Only a live region at the bottom is
+  redrawn: the card under way (a rounded frame with its title in the border), Nearby, a prompt
+  box with a hint line under it, and the palette of `/` commands, filtered as it is typed. One
+  accent, teal (Wi-Fi's tint); the bearers in the window's colours (Bluetooth blue, internet
+  indigo, the DHT orange, a relay purple). A wait is one shimmering line ("Waiting for Ann's
+  MacBook to accept… (12s · esc to cancel)"); a transfer is the window's path picture in
+  characters, its dots travelling toward the receiver while bytes move and frozen with
+  "reconnecting…", over a gradient bar in eighth blocks and the window's stats line (`eta.h`, the
+  bytes and times formatted as `tree.cpp` does). It animates only while something waits or moves
+  (about 12 frames a second); idle, its loop blocks. Names are cut by display width with `…`;
+  under 40 columns the code is plain digits. `NO_COLOR` or `--no-color` drops colour; `--plain`,
+  or `TERM=dumb`, is lines only with no escape sequence at all and questions as lines ("Accept 24
+  files (412 MB) from Ann's MacBook? [y/N/s]"), for screen readers and dumb terminals.
+- **The code.** The receiver's card shows the six digits in large box-drawing digits, grouped
+  "123 456" as the window groups them, to type on the other screen; Esc there declines. The sender
+  gets six boxes that take digits only and send by themselves at the sixth, with the engine's note
+  and the tries left (three wrong entries end the link, as in the window). Over the internet the
+  check is shown to compare ("Make sure Ann's MacBook shows 482 917"), never as a code to type.
+  `/code`'s card shows the code large with its link and life; `/copy` copies the code and
+  `/copy link` the link (OSC 52, where the terminal allows it): commands, not keys, since any
+  letter at the prompt may begin a path.
+- **Accept is typed** (owner, [12](12-decision-log.md#driftwire)): the offer is a numbered choice
+  under the card, **1** Accept and save to the folder shown, **2** save somewhere else (a folder
+  typed, Tab completing), **3** Decline; `y` accepts, `n` or Esc declines. A card that says yes to
+  someone else (the offer, the check to compare, Remember) answers only the card drawn, and only
+  once keys have stopped for 750 ms with it on screen (`kAnswerSettleMs`), so typing under way at
+  the prompt or in a field as it appears ("y" of "~/my-trip") is not an answer; Esc always is.
+  Three minutes with no answer, the engine declines, as in the window. Esc twice cancels a transfer under way; Ctrl+C
+  twice closes Driftwire (during a transfer it says it will cancel it first).
+- **Files** are typed, pasted or dropped (a terminal pastes a dropped file as its path): quotes,
+  backslash escapes, `~`, `file://` and the globs `* ? [...]`, expanded by the program, not a
+  shell. A folder alone is a folder send. Nearby is the engine's list; ↑↓ choose and Enter on an
+  empty prompt sends. The commands are the window's: `/send`, `/folder`, `/files`, `/clear`,
+  `/code`, `/copy`, `/to-code`, `/devices`, `/forget N`, `/mine N on|off`, `/unfinished`, `/discard N`,
+  `/save-to`, `/internet`, `/dht`, `/handover`, `/relay`, `/relay-server`, `/settings`, `/help`,
+  `/quit`. An internet option says what it means the first time it is turned on in a session (the
+  window's words).
+- **Its own identity and data folder.** Its settings (`driftwire.json`), what it keeps of a
+  receive that stopped (`driftwire_resume.json`), the DHT's table (`driftwire_dht.dat`) and the
+  session's lock live in a folder of its own, made 0700: `${XDG_STATE_HOME:-~/.local/state}/driftwire` on Linux,
+  `~/Library/Application Support/Driftwire` on macOS, `%LOCALAPPDATA%\Driftwire` on Windows; never
+  the add-on's data folder. Its identity and remembered devices are under the secret-store service
+  "Driftwire CLI" (`secrets::kCliService`), never the app's "MediaViewer Driftwire"
+  ([12](12-decision-log.md#driftwire)): the Secret Service on Linux, Credential Manager on Windows.
+  On macOS there is none (the data protection keychain needs an access group, which a bare program
+  cannot be entitled to), so each run has a key of its own and Remember does not show there.
+  `--save-to` and `--name` apply to this run only: they go to the engine as its starting state and
+  `default_destination`, never as an event (which would save them), and the kept Save to is put
+  back when the session closes, since the engine saves its whole view at any change.
+- **The name on the air while the session runs.** Opening the session is opening the window
+  (`screen_opened("")`): presence starts and this computer's name is in the beacon (#501) until it
+  closes. There is no receiving with the session closed: Keep receiving and Receive when
+  MediaViewer is closed do not exist in a terminal (both are forced off at start).
+- **One session per user**: `net::try_lock_instance` on `<data folder>/driftwire.json.lock`; a
+  second prints "Driftwire is already open in another terminal." and exits 2. The app's lock is in
+  its own folder, so MediaViewer and `driftwire` can be open on one computer at once: two devices
+  to the others, each with its own identity (not measured).
+- **No Bluetooth** on any OS (`use_bluetooth = false`, `bt_none.cpp`): CoreBluetooth needs a
+  bundle's usage string, the WinRT GATT server in an unpackaged console is unverified, and Linux
+  has no bearer. Wi-Fi and the internet only.
+- **Threads.** The session thread owns the engine and the terminal and makes every engine call;
+  the host's `post_tree` only counts and wakes it (`cli_host`, the host table's rest: a free-space
+  check, a log ring shown with `--verbose`, notices taken, no yielding). `~engine` runs on that
+  thread before the terminal is restored, so a receive cut off by closing keeps what arrived (#530)
+  and the next session lists it under `/unfinished`. SIGTERM, SIGHUP and the console closing quit
+  in order; in raw mode Ctrl+C is a key; Ctrl+Z suspends and draws again on resume. While a
+  transfer keeps the machine awake the reason names Driftwire ("Driftwire is receiving files",
+  `power::set_owner`).
+- **Idle cost**, measured 2026-10-23 in a Linux container (a pty, nothing on screen moving):
+  60 s idle took 10 ms of CPU (0.017 %) and 6.0 context switches a second, and wrote 0 bytes to the
+  terminal; the engine's own `[.driftwire-idle]` "on" phase is 7.4–8.2 ms in 20 s at 6.0–6.1 a
+  second. Nothing above the engine's own cost could be measured.
+- **The Linux packages** (`cmake/driftwire-cli`, [12](12-decision-log.md#platforms)): one program,
+  `/usr/bin/driftwire`, that needs only glibc (2.35 or newer, the build machine's): libsodium 1.0.22
+  (a distro's 1.0.18 has no ML-KEM-768), BLAKE3, FTXUI and the C++ runtime are linked in, and the
+  build fails if anything else is `NEEDED`. libsecret and libsystemd are opened at run time when
+  they are there; the `.deb` recommends `libsecret-1-0`, the `.rpm` `libsecret`. With it: the manual
+  page, bash and zsh completions, a firewalld service for the beacon (`driftwire`, 47613/udp; the
+  manual page says what ufw needs, and that receiving nearby also needs incoming TCP from the local
+  network, on a port the system picks) and the DEP-5 copyright file with every notice.
+
+### Installing
+
+The owner asked (2026-10-24) to install `driftwire` on its own, as `sudo apt install` does, with
+no MediaViewer present, and then for the macOS and Windows command line, choosing a Homebrew tap
+and a PowerShell one-liner ([12](12-decision-log.md#driftwire)). It needs no MediaViewer: it has
+its own identity and data folder, and sends to and receives from MediaViewer's add-on or another
+`driftwire`. The Linux and Windows installers come from a site on this repository's GitHub Pages,
+`https://longtimeno-c.github.io/mediaviewer/driftwire/`, and the Mac's from the tap
+`longtimeno-c/homebrew-tap`; until the owner has set them up
+([DEVELOPMENT](../DEVELOPMENT.md#publishing-the-command-line)) neither serves anything.
+
+```
+Linux    curl -fsSL https://longtimeno-c.github.io/mediaviewer/driftwire/install.sh | sh
+macOS    brew install longtimeno-c/tap/driftwire
+Windows  irm https://longtimeno-c.github.io/mediaviewer/driftwire/install.ps1 | iex
+```
+
+| | What it writes | Updates | Removing it |
+|---|---|---|---|
+| Linux | the package, through apt, dnf, yum or zypper, with the repository's source and key; with none of them, the tarball's files in `~/.local` (`/usr/local` as root) | the package manager (`apt upgrade`, `dnf upgrade`, `zypper update`); the tarball: the line again | `curl -fsSL <site>/install.sh \| sh -s -- --uninstall` |
+| macOS | Homebrew's copy, `$(brew --prefix)/bin/driftwire` and its manual page | `brew upgrade` | `brew uninstall driftwire` |
+| Windows | `%LOCALAPPDATA%\Programs\Driftwire` (`driftwire.exe`, the DLLs it loads, the notices) and that folder on the user's `Path` | the line again | `& ([scriptblock]::Create((irm <site>/install.ps1))) -Uninstall` |
+
+None of them touches the data folder; none needs an administrator on Windows or macOS.
+
+- **Linux: the one line** (`packaging/linux/repo/install.sh`, POSIX sh). It checks Linux, x86_64 or
+  arm64, glibc 2.35 or newer (musl is refused, with Alpine named) and curl or wget, says what it is
+  about to do, and prints each command as it runs it, through sudo when it is not root. On apt
+  systems (Debian, Ubuntu and their derivatives) it saves the key as
+  `/etc/apt/keyrings/driftwire.gpg`, adds `/etc/apt/sources.list.d/driftwire.sources` (deb822:
+  `URIs: <site>/apt`, `Suites: stable`, `Components: main`, the machine's architecture,
+  `Signed-By:` that key), runs `apt-get update` for that source alone and installs. With dnf or yum
+  (Fedora; a RHEL-like system from 10, since 9 has glibc 2.34) it imports the key into rpm, writes
+  `/etc/yum.repos.d/driftwire.repo` and installs or upgrades; with zypper (openSUSE) it adds the
+  same file as the repository `driftwire`. With none of them it unpacks the tarball into
+  `~/.local`, or `/usr/local` as root, after checking it against `SHA256SUMS` (and that file's
+  signature when `gpgv` is there), and records what it put where; that copy does not update
+  itself, and the installer says so. A source the package manager cannot read or verify is taken
+  away again, with what apt fetched of it (a refused `InRelease` stays in
+  `/var/lib/apt/lists/partial/` otherwise). Running it again upgrades. `--uninstall` removes the
+  package, the source, the key and apt's files of that source (`partial/` too), or the tarball's
+  files and the folders it made, and nothing else. Everything is in functions and `main` runs on
+  the last line, so a download cut off part way runs nothing. The site's address, key fingerprints,
+  Homebrew tap and release page are written in when the site is built; `DRIFTWIRE_REPO_URL`
+  overrides the address (https only, or http on 127.0.0.1 or localhost for the tests). On macOS it
+  installs nothing: it prints the `brew install` line (and, without Homebrew, brew.sh and the
+  release page) and exits 1.
+- **Linux by hand.** The site's page has the same as commands: the keyring and the deb822 source,
+  then `sudo apt install driftwire`; `driftwire.repo` into `/etc/yum.repos.d/` and `sudo dnf install
+  driftwire` (dnf asks once to trust the key; the page shows its fingerprint); `sudo zypper
+  addrepo --refresh <site>/driftwire.repo`; or the tarball and its signed checksums.
+- **macOS: the Homebrew tap.** `brew install longtimeno-c/tap/driftwire` reads
+  `Formula/driftwire.rb` in the public repository `longtimeno-c/homebrew-tap`, which release.yml's
+  `driftwire-homebrew` job rewrites for each stable release (`tools/package/homebrew_formula.py`
+  from `packaging/macos/driftwire.rb.in`): a binary formula whose `url` is the release asset
+  `driftwire-<version>-macos-universal.tar.gz` and whose `sha256` is that file's as published;
+  macOS 14 or later; the program into `bin`, its manual page into `man1`; a caveat on the
+  firewall's question and on Driftwire being open on the other side; a test of `--version`. The
+  archive (`tools/mac/macpack.py cli`) is one folder holding the program (the arm64 and x86_64
+  builds joined by `lipo_merge.py`), `driftwire.1`, `LICENSE`, `NOTICE` and `COPYRIGHT.txt`. The
+  program is signed with the Developer ID identity, the hardened runtime, a secure timestamp and
+  the identifier `io.github.longtimeno-c.driftwire`, with no entitlements (it keeps nothing in the
+  keychain: Remember does not show on macOS, as above), and notarized in a zip. A bare program
+  cannot be stapled, so Gatekeeper looks the ticket up online the first time a quarantined copy
+  runs; Homebrew does not quarantine what a formula installs. When the release's Intel leg did not
+  build, the archive is `-macos-arm64.tar.gz` and the formula adds `depends_on arch: :arm64`, so an
+  Intel Mac is told instead of given a program it cannot run.
+- **Windows: the one-liner** (`packaging/windows/install.ps1`). Windows PowerShell 5.1 and
+  PowerShell 7; ASCII; one function called on the last line, so a cut-off download runs nothing
+  and only that function stays in the session. It calls only binary cmdlets and .NET: Windows
+  PowerShell 5.1's `Get-FileHash` and `Expand-Archive` live in script modules, which a Windows
+  client's default execution policy (Restricted) will not load, though it runs `irm | iex`. It
+  checks 64-bit Windows 10 or later (x64: Windows 11 on Arm runs it too; Windows 10 on Arm, which
+  emulates 32-bit x86 only, and 32-bit Windows are refused before anything changes), downloads
+  `driftwire-<version>-windows-x64.zip` from the site to a temporary file, checks it against the
+  SHA-256 written into the script and, when the release was signed, that every `.exe` and `.dll`
+  in it has a valid Authenticode signature, all before anything changes. It unpacks next to
+  `%LOCALAPPDATA%\Programs\Driftwire`, moves the old copy aside (a running `driftwire` stops that,
+  and it says to close it), the new one in and the old one away, then adds the folder to the
+  user's `Path` once. It writes `Path` through the registry so the value keeps its kind and its
+  `%VARIABLES%` (`SetEnvironmentVariable` would write it back expanded, as `REG_SZ`), lets
+  Explorer know so new terminals have it, puts it on this session's `PATH`, and prints
+  `driftwire --version`. `-Uninstall` removes the folder and the `Path` entry. Installing and
+  `-Uninstall` also take away an earlier run's leftovers beside the folder (an old copy that was
+  still running, a download cut off while unpacking), matched by the names it gives them:
+  `Driftwire.old-` or `.driftwire-` and eight hex digits; any other folder there stays.
+  A folder of that name without `driftwire.exe` in it is not its own and is left alone. The zip
+  comes from the site, not the release page, so the installer and the file it checks go live
+  together and a copy of the site served elsewhere is whole; `DRIFTWIRE_REPO_URL` or `-BaseUrl`
+  point it at one (the written SHA-256 must still match). Off Windows it refuses, naming the brew
+  and curl lines; with `DRIFTWIRE_INSTALL_TEST=1` it runs there for the tests, with the user's
+  `Path` in a file and no registry or Authenticode. winget may come later.
+- **The Windows zip** (`tools/package/driftwire-windows.ps1`): `driftwire.exe` and every DLL it
+  loads, found by reading the import and delay-load tables of the program and of each DLL it finds:
+  ours from the build (`libsodium.dll`, `blake3.dll`; x64-windows is a dynamic triplet, FTXUI's
+  port static only) and the Visual C++ runtime (`vcruntime140.dll`, `vcruntime140_1.dll`,
+  `msvcp140.dll`, whichever it imports) from Visual Studio's redistributable folder, never
+  System32: the build uses the dynamic C runtime, a per-user install cannot run `vc_redist`, and a
+  clean Windows lacks it. The Universal CRT and the API sets are Windows'; any other DLL fails the
+  build. Release signing signs ours with Trusted Signing when it is configured (optional, as for
+  the installer; without it the zip is unsigned); Microsoft's runtime keeps Microsoft's
+  signature. With `LICENSE`, `NOTICE` and `COPYRIGHT.txt`.
+- **Updates** come through each channel: the package manager on Linux (this is the updater a build
+  needs before it leaves this machine, CLAUDE.md), `brew upgrade` on macOS, the one line again on
+  Windows (it installs the site's version over what is there). The Linux packages are not attached
+  to the release page (`MV_RELEASE_LINUX_CLI` stays off): a `.deb` from there would install without
+  the source that updates it. The macOS archive and the Windows zip are, since the tap and the
+  site take them from the release.
+- **One switch.** The repository variable `MV_DRIFTWIRE_REPO=1` publishes the command line from
+  each stable release: publish then requires and uploads the macOS archive and the Windows zip
+  (`tools/package/github-release.py`), `driftwire-repo` deploys the site (the apt and dnf
+  repositories, `install.sh`, the Windows zip and `install.ps1`), and `driftwire-homebrew` pushes
+  the formula. The preflight refuses to start a stable release with it on and the repository key
+  or the tap's token missing. Previews leave all three alone, and a release with it off is the
+  installers alone, as before.
+- **The repository** (`tools/package/driftwire_repo.py`) is a static tree built by release.yml's
+  `driftwire-repo` job from the release's packages and the Windows zip as published, after the
+  release is published. Each run replaces the Pages site, so it holds the newest version only.
+  apt: the pool, `Packages` and `Packages.gz` for each architecture present, a `Release` (Origin
+  and Label `Driftwire`, Suite and Codename `stable`, component `main`) with `InRelease` and
+  `Release.gpg`. rpm: the packages signed with `rpmsign`, `createrepo_c` metadata (gzip and no
+  sqlite, which older dnf and zypper read) with `repomd.xml.asc`, and a `.repo` with `gpgcheck=1`
+  and `repo_gpgcheck=1`. The tarballs and the Windows zip with `SHA256SUMS` and `SHA256SUMS.asc`,
+  the public key as `key.asc` and `key.gpg`, the page (Linux, macOS and Windows), and both
+  installers; `install.ps1` gets the zip's version, name and SHA-256, and whether `driftwire.exe`
+  carries an Authenticode signature (read from the file; a release with Trusted Signing configured
+  refuses an unsigned one). No external asset or script on the page.
+- **Valid-Until a year ahead.** apt refuses a `Release` past it, so a mirror or a network in the
+  way cannot keep serving an old, correctly signed index to hold back a fix for longer than that.
+  The cost: a stable release must come within the year, or `apt update` on every installed
+  machine fails ("Release file … is expired", exit 100, checked here) and takes nothing new from
+  the repository until the next release re-signs it.
+- **Nothing unsigned goes out.** The builder refuses packages whose versions disagree, an
+  architecture without all three packages, anything that is not driftwire, a tarball or zip path
+  outside its folder, a Windows `driftwire.exe` that is not x64, and a base URL that is not https.
+  It signs with the key named (two during a key change: every index then carries both signatures
+  and `key.asc` both keys; an `.rpm` carries the first), checks every signature against the
+  exported key with `gpgv` and `rpmkeys`, checks that `install.ps1` has the zip's SHA-256 and that
+  no private key material is in the tree, and only then replaces the site; a failure leaves the old
+  one. The release job then serves the result on localhost and installs from it before deploying
+  (`driftwire_repo.py smoke`): apt installs, refuses an `InRelease` changed by one byte, and
+  `--uninstall` leaves nothing, `partial/` included; then the tarball route with no package manager.
+- **The keys** are the owner's: the repository's OpenPGP key, made once, its private half in the
+  Actions secret `DRIFTWIRE_REPO_GPG_KEY` with an offline backup, the passphrase (if any) in
+  `DRIFTWIRE_REPO_GPG_PASSPHRASE`; apt keeps the key the installer saved, so a new key reaches an
+  apt machine only when the installer runs again (or the key is fetched by hand), and a key change
+  overlaps the two keys across at least one release. The tap is written with `HOMEBREW_TAP_TOKEN`,
+  a fine-grained token with Contents: write on the tap repository alone. The Apple credentials the
+  release already uses sign and notarize the Mac program. The Windows programs are signed only
+  when the release's optional Trusted Signing credentials are set, as the installer is; without
+  them `driftwire.exe` ships unsigned and `install.ps1` checks the zip's SHA-256 alone.
+- Run here only (2026-10-24, Linux): the Linux repository in an Ubuntu 24.04 container (apt 2.8,
+  dnf 4.14 with repo_gpgcheck, rpm 4.18: install, upgrade by apt and by the installer again,
+  refusal of a changed `InRelease` and of a changed `repomd.xml`, uninstall with `partial/`
+  cleared, the tarball route as root and as a user); `install.ps1` in its test mode under
+  PowerShell 7.6 (`tools/package/check-driftwire-install.ps1`: install, again, an update to a newer
+  version and back, a changed zip refused, a cut-off script doing nothing, uninstall keeping the
+  other `Path` entries, only its own leftovers removed, Windows 10 on Arm refused, only binary
+  cmdlets called); the formula under Ruby 3.3 against a stand-in for Homebrew's `Formula`;
+  `macpack.py cli` and `driftwire-windows.ps1` on tiny stand-in programs. CI's Windows leg runs
+  the one-liner for real under the Restricted execution policy (installs in both PowerShells,
+  signed and unsigned, and uninstalls in both; the re-run, the update and a changed zip in
+  PowerShell 7), and has not run yet; nor have
+  the release's macOS and Windows jobs, Homebrew, the tap or Pages, nor a real Fedora, openSUSE or
+  arm64 machine.
 
 ## Finding each other
 
@@ -345,7 +640,12 @@ Then, on either protocol:
    a machine that only claimed the peer's id, or one in the middle, shows the receiver no code or
    another one, so what the person types cannot match.
 3. The sender's **offer**: the count, the total, and each file's relative path and size. No hash
-   up front: the sender would have to read every file twice before the first byte moved.
+   up front: the sender would have to read every file twice before the first byte moved. An offer
+   that does not fit one message (a folder of more than a few thousand files) says `"parts"` and
+   sends the rest of its files in `offer_more` messages straight after (#498), at most 128 in all
+   (some 33 MB of offer; with paths of ~330 bytes that is `kMaxFiles`, 100 000). One that fits is
+   sent exactly as before; a receiver before #498 ends the link on `offer_more`, as it ended it on
+   the oversized offer.
 4. The receiver answers `accept`, or `decline` with `declined`, `busy` or `no_room`. Closing the
    window, or three minutes without an answer, declines; a receiver already in a transfer answers
    `busy` straight after the handshake.
@@ -388,6 +688,25 @@ send or a receive waits through a rejoin.
   `resume_at`s) cannot leave the DHT handover's keys, which mix in the rejoin count, out of step.
   A message that came
   twice (sent on the old link, and again after the rejoin) is dropped by its sequence number.
+- **While a transfer runs, other links (#496).** Every link that reaches this side then
+  (`engine::route_busy`) is the transfer's rejoin or is turned away, and a stranger cannot keep
+  the rejoin out:
+  - **Over the internet, a rejoin or nothing.** On a code's listener, the way in or any other
+    internet link, a hello that is not a rejoin (a nearby `N` in protocol 1, 2 or 3, a code's `I`)
+    is closed before any handshake: no message 2, no `ident`, not even `busy`. Only a nearby link
+    is answered `busy` after its handshake, as before.
+  - **Each tag opens once.** The receiver remembers the tags of the rejoins it has taken (the last
+    256 per session; only the peer can make one), so a recorded rejoin played again is closed
+    before a byte is read or written. Only adopting the new link is one at a time: a rejoin that
+    never proves `resume_at` (a bearer that died under it) does not hold up the next, and of two
+    that both prove, the later rejoin count wins.
+  - **Room for the rescue.** Links in their hello have a short wait over the internet (2 s; a
+    sender writes it as it connects), and their own pool there (8; nearby keeps its 4). Each
+    source (an address, or an IPv6 /64) holds at most 4 of them. When a pool or a source's share
+    is full, a new link closes a random one still in its hello, of that source or of the source
+    with the most, so idle connections cannot fill the slots a rejoin needs; past its hello a
+    link is never closed to make room. The way in and a code's listener say where each link came
+    from (`source_of`, `internet.h`).
   Messages are chunk-sized, so this is the issue's "resume at a chunk boundary": the receiver
   keeps its open `.mvtmp`, its BLAKE3 state and its verifier exactly as they were, and nothing
   that arrived is sent again. Every file is still verified end to end.
@@ -512,7 +831,10 @@ shows: no listener, no router mapping, no socket. (`internet.*`, `invite.*`, `ma
   `Noise_XXhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b` keyed by the CPace key, with the CPace
   transcript in the prologue: a wrong code fails at the receiver's first read, before it says
   anything of itself (not even its static key), and a machine in the middle gets one live guess
-  per code and nothing to test guesses against offline.
+  per code and nothing to test guesses against offline. A hello that is not a code's on these
+  listeners (a nearby one) is closed before any handshake, with or without a transfer running
+  (#496, [above](#the-session-protocol-2-472)): nothing of this machine goes to whoever found the
+  port.
 - **Both confirm the other's name before any byte moves.** The sender sees "Connected to Bea
   (new device)" and a six-digit **check** (from the whole handshake hash), and clicks **Send to
   Bea**; the receiver sees "Ann (new device) wants to send you files" with the same check, and
@@ -711,7 +1033,9 @@ need it on (and "Send and receive over the internet").
   `may_reach`), so a receiver cannot make it connect to loopback or its network on every rescue.
 - **The move.** When the link is suspect or drops, the mover races the receiver's places beside
   Wi-Fi and Bluetooth; a TCP connection that reaches the way in is a rejoin (`NNhfs+psk0` and
-  `resume_at`, as any), and the window says "over the internet". When the peer is heard on Wi-Fi
+  `resume_at`, as any), and the window says "over the internet". Anything else that reaches the
+  way in is closed unanswered, and idle connections there cannot keep the rejoin out (#496,
+  [The session](#the-session-protocol-2-472)). When the peer is heard on Wi-Fi
   again, the send moves back there (make before break). On loopback in the tests the move takes
   10–14 ms after the cut.
 - When the transfer ends the listener closes and every mapping is removed. With the toggle off on
@@ -792,6 +1116,16 @@ are online. The receiver still accepts or declines every transfer. (`secrets.*`,
     boundary against a program of the same user that calls DPAPI the same way (the entropy is in
     the source). Items from before #501 are refused, so a PC also remembers its devices again after
     the update, as a Mac does; the new ones overwrite them.
+  - **Linux:** the freedesktop Secret Service (GNOME Keyring, KWallet, KeePassXC), through
+    libsecret loaded at run time (`secrets_linux.cpp`; nothing to build against). Items have the
+    schema `io.github.longtimeno_c.Driftwire`, a `service` ("MediaViewer Driftwire", or the
+    command line's "Driftwire CLI") and a `name`, in the default collection (the login keyring,
+    which the login unlocks). The Secret Service has no per-app access: any process of the same
+    user on the session bus can read, list or plant an item. So each value goes in sealed
+    (`crypto_secretbox`, a key from "<service> secrets v1"), and one that does not open is
+    refused, as on Windows; it is no boundary against a program of the same user that does the
+    same. Without a session bus nothing is loaded; a service that does not answer a probe within
+    10 s, or a call that does not end in 10 s (an unlock prompt nobody answers), is no store.
 
   It is the static of the handshakes behind CPace (an internet code, a remembered device's
   meeting); nearby it is said sealed after the code and Accept ([The wire](#the-wire)). Where there is no store (or it does
@@ -864,10 +1198,15 @@ link. The tests check that no 32-byte run of the file passes through either rela
   checked; up to 45 s each, given up as soon as the round is decided), and over that sealed channel
   sends `relay` (20) with the code's places. R serves only if its toggle is on and it marks A as
   its own too, now: then it connects onward to those places and only those, and only to public
-  addresses that are not its own and not in an IPv6 /64 it has an address in (R's own public IPv4
-  reached through its router is not known to R; what the router forwards there is open to the
-  whole internet anyway), answers `relay_answer` (21), and from then on the bytes of A's link to B
-  travel as `relay_data` (22), sealed again between A and R. A runs the internet handshake with B
+  addresses outside its own networks (#500, `relay::fence`): never one of its addresses, nothing
+  on a network an interface of its is on (a LAN of public IPv4 addresses: a university, an
+  office), nothing in an IPv6 /56 it has an address in (the /64s a router delegates beside R's:
+  guest, IoT), never its default gateway or its router's outside IPv4 as the DHT last saw it
+  (routers answer admin pages, UPnP and DNS there from inside), and never Teredo, ORCHID,
+  benchmarking or 6to4 relay ranges. It answers `relay_answer` (21), and from then on the bytes of
+  A's link to B travel as `relay_data` (22), sealed again between A and R; R forwards nothing until
+  they start as an internet hello (`MVSP`, 2, `I` and its 48 bytes), so it is a pipe for a
+  MediaViewer's handshake, not any TCP from R's address. A runs the internet handshake with B
   through it; B sees R's address as the sender's, and both see the same check. One relay at a time
   (it is R's one transfer; while R is busy it meets nobody, so A's meeting runs out rather than
   hearing "busy"); 256 GiB each way at most, no rate cap (it is the person's own line); 120 s of
@@ -879,26 +1218,45 @@ link. The tests check that no 32-byte run of the file passes through either rela
   not relayed: R would need the code's DHT meeting. R reads a remembered sender's first message
   within 20 s (`kSilenceMs`): the request or the offer comes at once, nothing waits on a person.
 - **Through your own relay server** (option 10; `splice.*`, `tools/driftwire-relay`). An advanced
-  field, **Relay (your own server)**, `<address or name>:<port>#<key>`; the server prints the key
-  (or takes `--key`). The name is the one Driftwire resolves, because the person typed it; the
-  code carries the address, never the key. With it set, each code also registers at that server as
-  a **waiter** under a fresh random 16-byte token sealed in the code with its places, proving the
-  key (keyed BLAKE2b over the token); this runs beside the router's mapping, and a server slower
-  than 3 s is left out of that code and the window says so. A code with a relay is about 115
-  characters, and only a build with relays opens it. A sender races the code's places as before
-  and the relay 1.5 s later, so a direct path that works wins; it says the token only. The server
-  pairs a sender with the waiter under its token and copies bytes between them; it relays only for
-  key holders' codes, so it is not an open relay. A sender with no waiter is closed at once
-  (senders never wait); a waiter registering again under its token replaces its old wait, which
-  the receiver does every 60 s, new connection before closing the old, ahead of NATs that drop an
-  idle TCP connection. Anything that is not a hello, a waiter whose proof is wrong, or a byte
-  before the pair, is closed. The receiver hands a paired link on only once the sender has spoken,
-  so a sender that lost its race to a direct place costs nothing. The token is not the code's
-  secret and says nothing about it; the server learns two addresses, the time and the size, and
-  prints counts only. Caps: 16 hellos being read at once and 4 from one address; 64 waiters, 4 from
-  one address; 8 splices; per splice 64 GiB each way, an optional rate as a token bucket (a quarter
-  second of burst), 120 s idle. The program is about 300 KB (Mac, Release), the splice alone,
-  portable (D9), no state on disk.
+  field, **Relay (your own server)**, `<address or name>:<port>#<key>`; the server prints a key it
+  made, once (or takes `--key-file`, `MV_RELAY_KEY` or `--key`; a key it was given is never
+  printed, and one under 20 characters is warned about). Driftwire keeps the key in the secret
+  store and only the address in its settings file (#500). The name is the one Driftwire resolves,
+  because the person typed it; the code carries the address, never the key. With it set, each
+  code also registers at that server as a **waiter** under a fresh random 16-byte token sealed in
+  the code with its places; this runs beside the router's mapping, and a server slower than 3 s is
+  left out of that code and the window says so. A code with a relay is about 115 characters, and
+  only a build with relays opens it. A sender races the code's places as before and the relay
+  1.5 s later, so a direct path that works wins. The server pairs a sender with the waiter under
+  its token and copies bytes between them; it relays only for key holders' codes, so it is not an
+  open relay.
+
+  **The hop to the server is sealed** (protocol 3, #500). Every connection runs a handshake before
+  it says anything that matters, so neither the token nor anything about the key is ever on the
+  wire in the clear, and nothing recorded opens again. A waiter says `MVRL`, 3, its role, a random
+  session id and its CPace message on the server key; the server answers with its own, so a
+  machine on the path (or one answering for the server's name) gets one live guess at the key per
+  connection and nothing to test guesses against offline, however short the key. A sender says
+  its token's id (a keyed BLAKE2b of the token, which says nothing of it); a server with no waiter
+  under that id closes it at once (senders never wait). Then Noise NNpsk0, the server first, keyed
+  by the CPace key or by a key from the token, with everything said before it in the prologue:
+  the server's message opens only under the same key, and the client's answer, made against the
+  server's fresh ephemeral key, opens only on that connection. A waiter's answer carries its
+  token, sealed. The server's words are sealed too: **registered** to a waiter once it waits, and
+  **paired** to both; after that the splice copies bytes as they are (the two MediaViewers' own
+  handshake is end to end). A server that does not prove the key is not asked again for that code
+  (the window says to check the key). A waiter registering again under its token replaces its old
+  wait, which the receiver does every 60 s, ahead of NATs that drop an idle TCP connection: it
+  closes the old connection only once the server has said the new one waits. Anything that is not
+  a hello, a handshake that does not open, or a byte before the pair, is closed. The receiver
+  hands a paired link on only once the sender has spoken, so a sender that lost its race to a
+  direct place costs nothing. The hop is not post-quantum (it guards a token that lives 10
+  minutes). The token is not the code's secret and says nothing about it; the server learns two
+  addresses, the time and the size, and prints counts only. Caps: 16 handshakes at once and 4 from
+  one source; 64 waiters, 4 from one source (a source is an IPv6 /64 or an IPv4 /24, #500); 8
+  splices; per splice 64 GiB each way, an optional rate as a token bucket (a quarter second of
+  burst), 120 s idle. The program is about 300 KB (Mac, Release), the splice alone, portable (D9),
+  no state on disk.
 - **TURN is left out**: allocations, permissions, STUN's message format and long-term credentials
   are a server of their own for the same job the splice does in a few hundred lines.
 - **Tor** (option 11) was evaluated, not built, and dropped for now
@@ -915,6 +1273,15 @@ link. The tests check that no 32-byte run of the file passes through either rela
   shape under its own name, without housekeeping (`@eaDir`, `#recycle`, `$RECYCLE.BIN`, `System
   Volume Information`, `lost+found`, `__MACOSX`, `Thumbs.db`, `desktop.ini`, dot files, our own
   `.mvtmp`).
+- **Only the file picked is read** (#498): the pick and the walk note each file's identity (its
+  volume and file number: `st_dev`/`st_ino` from the walk's own `lstat` on the Mac; on Windows,
+  whose listing has none, `io::identify` opens each for its attributes only, never following a
+  link and never downloading a cloud placeholder). The send opens it with `file_reader::open_same`:
+  `O_NOFOLLOW` (on Windows a link or junction at the last part is refused before the read handle
+  opens), then the identity of what opened must be the one noted. A file swapped for a link (to
+  `~/.ssh/…`, say) or for another file, or reached through a folder swapped for a link or
+  junction, is `file_skip`, never sent. A picked file that is itself a link is not offered, as a
+  walk never offered one.
 - **Where it lands**: the system **Downloads** folder, as AirDrop (`FOLDERID_Downloads` on Windows,
   `~/Downloads` on the Mac; `net::downloads_folder`, #442), made on Accept if it is missing. A sent
   folder keeps its own name inside it. **Save to** picks another folder, and that choice is kept
@@ -960,9 +1327,13 @@ link. The tests check that no 32-byte run of the file passes through either rela
 - **Staying awake** (#530). From the accept to the end, each side holds a request that the system
   not sleep from idleness (`power.h`: `PowerCreateRequest` / `PowerSetRequest(
   PowerRequestSystemRequired)` with a reason on Windows, `powercfg /requests`; an IOKit
-  `PreventUserIdleSystemSleep` assertion on the Mac, `pmset -g assertions`; nothing in the Linux
-  test build). The display may turn off and the screen lock. A closed lid, a shutdown or a flat
-  battery is not held off: resume is for those.
+  `PreventUserIdleSystemSleep` assertion on the Mac, `pmset -g assertions`; a systemd-logind
+  `sleep` inhibitor in `block` mode on Linux, `systemd-inhibit --list`, through libsystemd or
+  libelogind loaded at run time, none without a system bus or when polkit refuses; asking takes
+  at most 2 s, even of a bus that never answers). The reason names the app ("MediaViewer is
+  receiving files (Driftwire)"; the command line's, "Driftwire is receiving files":
+  `power::set_owner`). The display may turn off and the screen lock. A closed lid, a shutdown or a
+  flat battery is not held off: resume is for those.
 
 ## Resuming a receive that stopped (#530)
 
@@ -981,9 +1352,11 @@ written, and the next send started from zero (and sent again what had arrived, l
   decline keeps nothing, as before. One record per sender, at most 8; one unused for 7 days goes
   with its temporary (on the control thread at start); **Discard** removes one.
 - **Never taken for the finished file.** The temporary keeps its `.mvtmp` name (never the final
-  name or extension), is hidden (`io::set_hidden`: `FILE_ATTRIBUTE_HIDDEN`, `UF_HIDDEN`; the Linux
-  test build has no such flag), and is shown again just before its rename, since the flag travels
-  with it. MediaViewer's own folder listing never lists `.mvtmp`.
+  name or extension), is hidden (`io::set_hidden`: `FILE_ATTRIBUTE_HIDDEN`, `UF_HIDDEN`), and is
+  shown again just before its rename, since the flag travels with it. Linux has no such flag, so
+  there the temporary's name starts with a dot (`.IMG_1.JPG.mvtmp`), which Files, Dolphin and
+  `ls` leave out (`io::kHasHiddenFlag`, `transfer.h`'s `temp_name`). MediaViewer's own folder
+  listing never lists `.mvtmp`.
 - **The same sender, the same files.** The offer now says each file's time and `"resume": true`.
   When an offer comes from a sender that says its identity and has a record into the same
   folder, a file with the same path, size and time is matched: one whole and still there at its
@@ -1038,6 +1411,29 @@ slower on 1 GiB: the receiver's wait for its `done` to be acknowledged read in 1
 now returns on the acknowledgement. Kept messages are sealed where they lie and their buffers
 reused (one copy a chunk, as protocol 1 had).
 
+**Where the time goes (#540 step 1, 2026-10-22).** A transfer can time each of its stages on each
+side (`stages.h`): the sender's read, hash, seal (the copy into the replay and the AEAD), send
+and any wait for the replay's room; the receiver's receive, open, write, hash, a wait for room
+among the files being verified, flush, read-back, its hash and the rename. Each stage adds its
+thread time and its bytes, so `bytes / time` is what one thread of that stage sustains: a stage
+far above the transfer's rate has headroom, one near it is the limit. `recv`, `wait_room` and
+`verify_wait` are waits, not work. The app gives no timers (`hooks::stages` null), and a stage
+without one costs a branch. Two harnesses print it: `[.driftwire-bench]` (one line per side after
+each case) and `mv-driftwire-bench` (`tools/driftwire-bench`), the real handshake of a direct
+code (CPace on a random secret the receiver prints, then XXhfs+psk0) and `transfer.h`, between
+two processes or two machines, one JSON line per side with MB/s, files/s, CPU, time to the first
+byte, the stages, the busiest stage that is work, the receiver's disk measured first (write,
+uncached read-back, and the ceiling both together allow: past 90 % of it the line says
+`disk_bound`), and on the sender iperf3's rate on the same path and the share of it the transfer
+got. Results go to `docs/perf/driftwire-lan.jsonl`. The first numbers (Windows, loopback, two
+processes on one laptop SSD: 1 GiB 264–299 MB/s, 500 × 2 MiB 113–124, 5,000 × 200 KiB 29–31)
+put the cost in the receiver's durability work on many files, not in the network or the seal:
+with 5,000 files the link loop waits for one of the two verifiers 67 % of the time (each file
+~3.5 ms of flush, ~1.3 ms of read-back, ~1 ms of rename). One big file is flushed and read back
+only after its last byte, serially; its flush varied from 0.9 to 3.5 s between runs on the same
+disk. Seal and open ran at ~900–1,000 MB/s a thread, the receiver's open its busiest stage on
+1 GiB. No two machines are measured yet.
+
 ## Threads
 
 The host calls in on its worker for this add-on (open, close, clicks, commands). The engine
@@ -1062,7 +1458,7 @@ second while bytes move; those posts update chrome and never present the canvas.
   address or peer name is logged (`log` takes ASCII without them) or annotated. The minidump
   scrub ([13](13-updates-and-telemetry.md)) applies unchanged.
 - The beacon and Bluetooth INFO carry a random id, a port, the protocol spoken, and the machine's
-  name only while the Driftwire window is open (#501). A machine receiving in the background, maybe
+  name only while the Driftwire window is open, or a `driftwire` session runs (#501). A machine receiving in the background, maybe
   for weeks, says `MediaViewer` and changes its id every 10 minutes while idle and whenever the
   window opens or closes, so a listener on a café network or a Bluetooth observer cannot follow it
   or read its owner's name off the air (on the Mac this keeps Bluetooth's private-address rotation
@@ -1092,12 +1488,16 @@ second while bytes move; those posts update chrome and never present the canvas.
   about a session is written down, except what Remember keeps (#472 PR 4): the peer's name, key
   and pairing secret, in the OS's secret store, never a plain file, until Forget. On the Mac that is
   the data protection keychain in the app's own access group, this device only (#501); on Windows
-  Credential Manager, each value sealed with DPAPI ([Remembered devices](#remembered-devices-472-pr-4)).
+  Credential Manager, each value sealed with DPAPI; on Linux the Secret Service, each value sealed
+  the same way ([Remembered devices](#remembered-devices-472-pr-4)).
   Key material in memory is wiped when it goes (#501): the session's resume secret with the
   channel, the identity and the code with every copy of a channel's options, and CPace's buffers
   are sized once, so no reallocation leaves a copy of the code or its key behind.
 - Receiving is off until the window opens or the person turns it on. Turned on, it stays on across
-  launches until turned off (#442), and the command bar says so (**Driftwire: receiving**).
+  launches until turned off (#442), and the command bar says so (**Driftwire: receiving**). In a
+  terminal it is on only while the session runs ([From a terminal](#from-a-terminal-driftwire)).
+- What `driftwire` prints stays in that terminal. Its `--verbose` lines are the engine's `log`
+  text, which never holds a path, a file name, an address, a peer's name or a code.
 - A notification (#452) names the sender and a count and size; never a file name, a path or the
   code. It is shown by the OS on this machine only; nothing about it leaves the machine. At most
   three a minute from one source (#502).
@@ -1163,7 +1563,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 | The way in for Wi-Fi → internet (#472 PR 5) | `internet.*` (`way_in`), `transfer.*` (`places`) |
 | Relays: the splice and rendezvous, the own-device relay, the relay server program (#472) | `splice.*`, `relay.*`, `engine_relay.cpp`, `tools/driftwire-relay/main.cpp` |
 | The DHT meeting when both sides move (#472) | `handover.*` (`dht_handover`), `channel.*` (`handover_secret`) |
-| The identity, remembered devices and their hourly keys (#472 PR 4) | `secrets.h`, `secrets_mac.cpp` (Keychain), `secrets_win.cpp` (Credential Manager), `secrets_file.cpp`, `known.*` |
+| The identity, remembered devices and their hourly keys (#472 PR 4) | `secrets.h`, `secrets_mac.cpp` (Keychain), `secrets_win.cpp` (Credential Manager), `secrets_linux.cpp` (Secret Service), `secrets_file.cpp`, `known.*` |
 | Sealed channel, and protocol 2's session (replay, rejoin, resume) | `channel.*`, `link.h` |
 | Sending and the verified receive | `transfer.*` |
 | Engine, presence, the window's tree | `engine.*`, `presence.*`, `tree.cpp` |
@@ -1171,15 +1571,32 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Sockets, machine name, Downloads | `net.h`, `net_posix.cpp`, `net_win.cpp`, `machine_mac.cpp` |
 | Bluetooth | `bt_pipe.*`, `bt_mac.mm` (CoreBluetooth), `bt_win.cpp` (C++/WinRT), `bt_none.cpp` |
 | The add-on's export and manifest | `addon_entry.cpp`, `manifest.json`; `cmake/driftwire.cmake` |
+| The command line, `driftwire` (2026-10-23): the terminal port, keys, the line editor, paths, completion, the look and the live region, the arguments, the host, the session, the data folder, `main()` | `cli/term.h`, `cli/term_posix.cpp`, `cli/term_win.cpp`, `cli/keys.*`, `cli/line_editor.*`, `cli/paths_arg.*`, `cli/complete.*`, `cli/theme.h`, `cli/text.*`, `cli/render.*`, `cli/inline_view.*`, `cli/args.*`, `cli/host.*`, `cli/session.*`, `cli/data_dir.h`, `cli/data_dir_posix.cpp`, `cli/data_dir_win.cpp`, `cli/main.cpp`; `cmake/driftwire.cmake` (`mv_driftwire_cli_core`, `mv_driftwire_cli` with `OUTPUT_NAME driftwire`, the test build `mv_driftwire_cli_test`, the gallery `mv_driftwire_cli_gallery` from `tools/driftwire-cli-gallery`) |
+| Its Linux packages | `cmake/driftwire-cli/` (the project, CPack, the `NEEDED` gate `needed.cmake`), `packaging/linux/` (`driftwire.1`, `completions/`, `firewalld/driftwire.xml`, `copyright`), `.github/actions/driftwire-cli-linux` |
+| Its package repository and installers (2026-10-24) | `tools/package/driftwire_repo.py` (`build`: the site, its signatures and checks; `smoke`: installing from it on localhost; `windows-site`: `install.ps1` and the zip alone), `packaging/linux/repo/` (`install.sh`, the page `index.html` and its Windows part `index-windows.html`), `packaging/windows/install.ps1`, release.yml's `driftwire-repo` job, the repository step of ci.yml's `driftwire-cli-linux`; tests `tools/package/test_driftwire_repo.py`, `tools/package/check-driftwire-install.ps1` (the Windows installer end to end, on Build's msvc Release leg) |
+| Its Windows zip and macOS archive (2026-10-24) | `tools/package/driftwire-windows.ps1` (`pe_fixture.py`, `test_driftwire_windows.py`), `tools/mac/macpack.py cli` (`test_macpack.py`), release.yml's `windows` and `macos` jobs, `tools/package/github-release.py` (`MV_RELEASE_CLI`) |
+| Its Homebrew tap (2026-10-24) | `packaging/macos/driftwire.rb.in`, `packaging/macos/homebrew-tap-README.md`, `tools/package/homebrew_formula.py` (`test_homebrew_formula.py`), release.yml's `driftwire-homebrew` job |
 | Mac chrome | `Driftwire.swift` (offer, share icon), `SlotItems.swift` (Settings), `ScreenView.swift` (Choose…), `GalleryView.swift` / `FolderStore.swift` (range, drag), `AddonNotices.swift` (notifications, the menu-bar item, #452) |
 | Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
-| Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices, behind hard NATs too, and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py` |
+| Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices, behind hard NATs too, and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py`; the command line's `tests/test_driftwire_cli_ui.cpp` (keys, the line editor, paths, completion, render goldens at 80 and 40 columns, the live region against a fake terminal), `tests/test_driftwire_cli.cpp` (arguments, the host, sessions over two engines on the fixture bus, the program refusing a pipe), `tests/test_driftwire_cli_e2e.cpp` (two test programs in ptys, POSIX), `tests/driftwire_cli_vt.h` (`"[cli]"`) |
 
 ## Not built
 
+- **#500's ask before an own relay** (low): A's own computer relays without asking, so a stranger
+  who made the code, by stalling direct connections, learns R's home address. The fix is a
+  question in both hosts' windows ("Try through R? The other side will see R's address"); not
+  built in #500's PR.
+
 - Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6 on the LAN.
+- Bluetooth on Linux: there is no BlueZ bearer (`bt_none.cpp`), so Linux sends over Wi-Fi and the
+  internet only.
+- In the command line: Bluetooth on any OS; Remember on macOS (no keychain identity for a bare
+  program); winget; the site and the tap live (they wait for the owner's setup: the tap
+  repository and its token, Pages, the key, `MV_DRIFTWIRE_REPO`); "the first time" an internet
+  option is explained is per session, not per computer. Not run: a transfer between two machines
+  over Wi-Fi with the command line on one side.
 - Over the internet, after the relays: Tor (dropped for now, [plan](../plans/driftwire-tor-spike.md)),
   TURN, relaying word codes, remembered-device sends and the handover, a relayed send moving.
 - The rest of #472, deferred by the owner (2026-10-18, [12](12-decision-log.md#driftwire)):

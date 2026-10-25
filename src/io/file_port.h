@@ -5,8 +5,9 @@
 // Portable header; io/file_port_win.cpp (CreateFileW, FlushFileBuffers,
 // FILE_FLAG_NO_BUFFERING, MoveFileExW without REPLACE_EXISTING) and
 // io/file_port_mac.cpp (open O_EXCL, F_FULLFSYNC, F_NOCACHE, renamex_np
-// RENAME_EXCL; the Linux core test build uses the same file) implement it. No
-// HANDLE or fd in the interface (D9).
+// RENAME_EXCL; Linux uses the same file, with fsync, renameat2
+// RENAME_NOREPLACE and posix_fadvise where the Mac has its own call)
+// implement it. No HANDLE or fd in the interface (D9).
 //
 // Worker threads only, never the UI or render thread (rule 1). Nothing here
 // logs a path (rule 6). Nothing here overwrites: create is exclusive and the
@@ -64,8 +65,26 @@ struct file_stat {
   std::int64_t created_unix = 0;
 };
 
+// #498: which file a path names: the volume and the file's number on it
+// (st_dev and st_ino on POSIX; the volume serial and the 128-bit file id on
+// Windows). Another file put at the same path, or a link to one, has another.
+// All zero: not known (the filesystem gives none).
+struct file_id {
+  std::uint64_t volume = 0;
+  std::uint64_t high = 0;
+  std::uint64_t low = 0;
+  [[nodiscard]] bool known() const noexcept { return volume != 0 || high != 0 || low != 0; }
+  friend bool operator==(const file_id&, const file_id&) = default;
+};
+
 // status::io when nothing is there or it cannot be read.
 [[nodiscard]] result<file_stat> stat_path(std::string_view utf8_path);
+
+// #498: the file at `utf8_path` itself, never through a link: a symlink,
+// junction or other name-surrogate reparse point there is
+// status::permission_denied, a directory status::io. Does not read the file
+// (a cloud placeholder is not downloaded). The id may be unknown (all zero).
+[[nodiscard]] result<file_id> identify(std::string_view utf8_path);
 
 // Creates `utf8_dir` and any missing parents. Succeeds if it already exists.
 [[nodiscard]] expected make_directories(std::string_view utf8_dir);
@@ -104,8 +123,15 @@ enum class rename_outcome : std::uint8_t { renamed, name_taken };
 // UF_HIDDEN), or shows it again. A transfer's kept temporary is hidden so
 // nobody takes it for the finished file; it is shown again before its rename,
 // since the flag travels with a rename. status::unsupported_format where the
-// OS has no such flag (the Linux core test build).
+// OS has no such flag (Linux: there a name that starts with a dot is what file
+// managers and ls leave out, so a transfer names its temporary that way).
 [[nodiscard]] expected set_hidden(std::string_view utf8_path, bool hidden);
+// Whether set_hidden can hide a file on this OS.
+#if defined(_WIN32) || defined(__APPLE__)
+inline constexpr bool kHasHiddenFlag = true;
+#else
+inline constexpr bool kHasHiddenFlag = false;
+#endif
 
 enum class read_mode : std::uint8_t {
   sequential,  // the source read: the OS may read ahead
@@ -125,6 +151,12 @@ class file_reader {
   // different threads (an overlapped handle on Windows; any fd on POSIX).
   [[nodiscard]] expected open(std::string_view utf8_path, read_mode mode,
                               bool concurrent = false);
+  // #498: a sequential open of exactly the file identify() (or a walk) saw:
+  // a link at the last part is never followed (status::permission_denied),
+  // and a file whose id is not `expect` (swapped since, or reached through a
+  // folder swapped for a link) is status::corrupt. An unknown `expect` checks
+  // only the link.
+  [[nodiscard]] expected open_same(std::string_view utf8_path, const file_id& expect);
   // Fills up to `into.size()` bytes; 0 at end of file. For read_mode::uncached
   // `into` must be an aligned_buffer's memory (aligned, a kIoAlign multiple).
   [[nodiscard]] result<std::size_t> read(std::span<std::uint8_t> into);
@@ -188,6 +220,9 @@ struct tree_entry {
   // Opening it for reading downloads it, so a caller that must not touch the
   // network skips it (docs/plans/document-search.md slice 0, 2026-10-05).
   bool cloud_only = false;
+  // #498: from the walk's own lstat on POSIX; unknown on Windows (its listing
+  // gives none: identify() it when needed).
+  file_id id;
 };
 
 // Every regular file under `utf8_root`, recursively, hidden and system entries

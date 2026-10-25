@@ -207,10 +207,13 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
       (void)sp::parse_places(text);
       break;
     case 23:
-      (void)sp::relay::parse_hello(in);
+      (void)sp::relay::parse_head(in);
       break;
     case 24:
-      for (const auto& p : sp::relay::parse_request(text)) (void)sp::relay::may_reach(p, false);
+      for (const auto& p : sp::relay::parse_request(text)) {
+        (void)sp::relay::may_reach(p, false);
+        (void)sp::relay::may_relay_to(p, sp::relay::fence{});
+      }
       break;
     case 25:
       (void)sp::relay::parse_answer(text);

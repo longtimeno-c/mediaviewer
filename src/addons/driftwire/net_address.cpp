@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // net.h's addresses (#472 PR 2): text to bytes and back, and which are public.
 // Written here rather than with inet_pton/inet_ntop so both hosts parse and
-// print the same, and the fuzzer reaches it. Portable (D9).
+// print the same, and the fuzzer reaches it. Portable (D9). Also the parsers
+// of Linux's text sources (the Downloads folder, the machine's name, the
+// default route), so every OS's tests run them.
 #include <algorithm>
+#include <charconv>
 #include <cstdio>
 #include <cstring>
 
@@ -169,6 +172,7 @@ bool is_public(const address& a) noexcept {
     if (b[0] == 172 && (b[1] & 0xf0) == 16) return false;                     // 172.16/12
     if (b[0] == 192 && b[1] == 168) return false;                             // 192.168/16
     if (b[0] == 192 && b[1] == 0 && (b[2] == 0 || b[2] == 2)) return false;   // IETF, TEST-NET-1
+    if (b[0] == 192 && b[1] == 88 && b[2] == 99) return false;                // 6to4 relay anycast (#500)
     if (b[0] == 198 && (b[1] & 0xfe) == 18) return false;                     // 198.18/15 benchmarking
     if (b[0] == 198 && b[1] == 51 && b[2] == 100) return false;               // TEST-NET-2
     if (b[0] == 203 && b[1] == 0 && b[2] == 113) return false;                // TEST-NET-3
@@ -178,6 +182,13 @@ bool is_public(const address& a) noexcept {
   if ((b[0] & 0xe0) != 0x20) return false;
   if (b[0] == 0x20 && b[1] == 0x01 && b[2] == 0x0d && b[3] == 0xb8) return false;  // 2001:db8::/32 documentation
   if (b[0] == 0x20 && b[1] == 0x02) return false;                                // 6to4: a relay, not a peer
+  // #500: 2001::/32 Teredo (a relay, not a peer), 2001:2::/48 benchmarking,
+  // 2001:10::/28 ORCHID and 2001:20::/28 ORCHIDv2 (identifiers, not routed).
+  if (b[0] == 0x20 && b[1] == 0x01 && b[2] == 0x00) {
+    if (b[3] == 0x00) return false;
+    if (b[3] == 0x02 && b[4] == 0x00 && b[5] == 0x00) return false;
+    if ((b[3] & 0xf0) == 0x10 || (b[3] & 0xf0) == 0x20) return false;
+  }
   return true;
 }
 
@@ -203,6 +214,152 @@ bool on_link(const address& a, std::span<const subnet> nets) noexcept {
     return true;
   }
   return false;
+}
+
+// ---- Linux's text sources -------------------------------------------------------------------
+
+namespace {
+
+bool blank(char c) noexcept { return c == ' ' || c == '\t' || c == '\r'; }
+
+std::string_view trim(std::string_view s) noexcept {
+  while (!s.empty() && blank(s.front())) s.remove_prefix(1);
+  while (!s.empty() && blank(s.back())) s.remove_suffix(1);
+  return s;
+}
+
+// Each line of `text`, without its newline.
+template <class F>
+void each_line(std::string_view text, F&& f) {
+  while (!text.empty()) {
+    const std::size_t nl = text.find('\n');
+    f(text.substr(0, nl));
+    if (nl == std::string_view::npos) break;
+    text.remove_prefix(nl + 1);
+  }
+}
+
+// The next field of a line split on blanks; empty at its end.
+std::string_view next_field(std::string_view& line) noexcept {
+  while (!line.empty() && blank(line.front())) line.remove_prefix(1);
+  std::size_t n = 0;
+  while (n < line.size() && !blank(line[n])) ++n;
+  const std::string_view f = line.substr(0, n);
+  line.remove_prefix(n);
+  return f;
+}
+
+template <class T>
+bool whole_number(std::string_view s, T& out, int base) noexcept {
+  if (s.empty()) return false;
+  const auto r = std::from_chars(s.data(), s.data() + s.size(), out, base);
+  return r.ec == std::errc{} && r.ptr == s.data() + s.size();
+}
+
+constexpr std::uint32_t kRouteUp = 0x0001, kRouteGateway = 0x0002;  // RTF_UP, RTF_GATEWAY (linux/route.h)
+
+}  // namespace
+
+std::string parse_user_dirs_download(std::string_view user_dirs, std::string_view home) {
+  std::string found;
+  each_line(user_dirs, [&](std::string_view line) {
+    constexpr std::string_view kKey = "XDG_DOWNLOAD_DIR";
+    line = trim(line);
+    if (line.substr(0, kKey.size()) != kKey) return;
+    line = trim(line.substr(kKey.size()));
+    if (line.empty() || line.front() != '=') return;
+    line = trim(line.substr(1));
+    if (line.empty() || line.front() != '"') return;
+    line.remove_prefix(1);
+    std::string out;
+    if (line.substr(0, 6) == "$HOME/") {
+      if (home.empty()) return;
+      line.remove_prefix(6);
+      out.assign(home);
+      out.push_back('/');
+    } else if (line.empty() || line.front() != '/') {
+      return;  // "No other format is supported" (user-dirs.dirs(5))
+    }
+    bool closed = false;
+    for (std::size_t i = 0; i < line.size(); ++i) {
+      char c = line[i];
+      if (c == '"') {
+        closed = true;
+        break;
+      }
+      if (c == '\\' && i + 1 < line.size()) c = line[++i];
+      out.push_back(c);
+    }
+    if (!closed) return;
+    while (out.size() > 1 && out.back() == '/') out.pop_back();
+    found = std::move(out);
+  });
+  return found;
+}
+
+std::string parse_pretty_hostname(std::string_view machine_info) {
+  std::string found;
+  each_line(machine_info, [&](std::string_view line) {
+    line = trim(line);
+    if (line.empty() || line.front() == '#' || line.front() == ';') return;
+    const std::size_t eq = line.find('=');
+    if (eq == std::string_view::npos || trim(line.substr(0, eq)) != "PRETTY_HOSTNAME") return;
+    const std::string_view v = trim(line.substr(eq + 1));
+    std::string out;
+    if (!v.empty() && (v.front() == '"' || v.front() == '\'')) {
+      // Double quotes take \" \\ \$ \` as the character (a backslash before
+      // anything else stays); single quotes take nothing. Past the closing
+      // quote, nothing (concatenation is not supported).
+      const char quote = v.front();
+      bool closed = false;
+      for (std::size_t i = 1; i < v.size(); ++i) {
+        char c = v[i];
+        if (c == quote) {
+          closed = true;
+          break;
+        }
+        if (quote == '"' && c == '\\' && i + 1 < v.size() &&
+            std::string_view("\"\\$`").find(v[i + 1]) != std::string_view::npos) {
+          c = v[++i];
+        }
+        out.push_back(c);
+      }
+      if (!closed) return;
+    } else {
+      for (std::size_t i = 0; i < v.size(); ++i) {
+        char c = v[i];
+        if (c == '\\' && i + 1 < v.size()) c = v[++i];
+        out.push_back(c);
+      }
+    }
+    found = std::move(out);
+  });
+  return found;
+}
+
+std::optional<address> parse_default_route(std::string_view proc_net_route) {
+  std::optional<address> best;
+  std::uint64_t best_metric = 0;
+  // Iface Destination Gateway Flags RefCnt Use Metric Mask ...; the header
+  // line's words are not numbers, so it is passed over like any bad line.
+  each_line(proc_net_route, [&](std::string_view line) {
+    std::string_view f[8];
+    for (auto& x : f) x = next_field(line);
+    std::uint32_t dest = 0, gw = 0, flags = 0, mask = 0;
+    std::uint64_t metric = 0;
+    if (f[1].size() != 8 || f[2].size() != 8 || f[7].size() != 8 || !whole_number(f[1], dest, 16) ||
+        !whole_number(f[2], gw, 16) || !whole_number(f[3], flags, 16) || !whole_number(f[6], metric, 10) ||
+        !whole_number(f[7], mask, 16)) {
+      return;
+    }
+    if (dest != 0 || mask != 0 || gw == 0 || (flags & (kRouteUp | kRouteGateway)) != (kRouteUp | kRouteGateway)) return;
+    if (best && metric >= best_metric) return;
+    address a;
+    std::memcpy(a.bytes.data(), &gw, 4);  // the native word's bytes are the address's, in order
+    best = a;
+    best_metric = metric;
+  });
+  return best;
 }
 
 }  // namespace mv::driftwire::net

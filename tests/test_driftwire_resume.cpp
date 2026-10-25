@@ -30,7 +30,7 @@ std::vector<sp::outgoing_file> make_files(const fs::path& src) {
     const fs::path p = src / name;
     write_bytes(p, pattern(size, seed++));
     set_mtime(p, kWhen + seed);
-    files.push_back({utf8(p), name, size, kWhen + seed});
+    files.push_back({utf8(p), name, size, kWhen + seed, {}});
   }
   return files;
 }
@@ -79,7 +79,34 @@ run transfer(const std::vector<sp::outgoing_file>& files, const fs::path& dest, 
 
 bool same_bytes(const fs::path& x, const fs::path& y) { return read_bytes(x) == read_bytes(y); }
 
+// The name this OS gives `leaf`'s temporary in `dir` (transfer.h's temp_name).
+std::string temp_leaf(const fs::path& dir, const std::string& leaf) {
+  const std::string temp = sp::temp_name(utf8(dir / leaf), 0);
+  return std::string(mv::io::file_name_of(temp));
+}
+
+// `names` in files_in's order.
+std::vector<std::string> sorted(std::vector<std::string> names) {
+  std::sort(names.begin(), names.end());
+  return names;
+}
+
 }  // namespace
+
+TEST_CASE("driftwire resume: a temporary is hidden by the OS's flag, or by a dot name where there is none",
+          "[driftwire]") {
+  if constexpr (mv::io::kHasHiddenFlag) {
+    // Windows and the Mac: set_hidden hides it under its plain name.
+    CHECK(sp::temp_name("/d/IMG_1.JPG", 0) == "/d/IMG_1.JPG.mvtmp");
+    CHECK(sp::temp_name("/d/IMG_1.JPG", 2) == "/d/IMG_1.JPG.mvtmp3");
+  } else {
+    // Linux: no hidden flag (set_hidden is unsupported), so a leading dot,
+    // which Files, Dolphin and ls leave out.
+    CHECK_FALSE(mv::io::set_hidden("/d/IMG_1.JPG", true));
+    CHECK(sp::temp_name("/d/IMG_1.JPG", 0) == "/d/.IMG_1.JPG.mvtmp");
+    CHECK(sp::temp_name("/d/IMG_1.JPG", 2) == "/d/.IMG_1.JPG.mvtmp3");
+  }
+}
 
 TEST_CASE("driftwire resume: a receive that stops keeps the file it was writing, and the next send picks it up",
           "[driftwire]") {
@@ -107,7 +134,18 @@ TEST_CASE("driftwire resume: a receive that stops keeps the file it was writing,
   CHECK(part.at < files[1].size);
   CHECK(fs::file_size(part.temp_path) == part.at);
   // Never under its final name: what is there is the finished a.bin and a temporary.
-  CHECK(files_in(dest) == std::vector<std::string>{"a.bin", "b.bin.mvtmp"});
+  CHECK(files_in(dest) == sorted({"a.bin", temp_leaf(dest, "b.bin")}));
+  CHECK(fs::path(part.temp_path).filename() == fs::path(temp_leaf(dest, "b.bin")));
+  if constexpr (!mv::io::kHasHiddenFlag) {
+    // Hidden where only the name can hide it: a walk of the folder (as a
+    // file manager's, or a send of it) does not list it.
+    std::vector<std::string> walked;
+    REQUIRE(mv::io::walk_files(utf8(dest), 4, [&](const mv::io::tree_entry& e) {
+      walked.push_back(e.name_utf8);
+      return true;
+    }));
+    CHECK(walked == std::vector<std::string>{"a.bin"});
+  }
 
   const auto record = sp::record_of(*first.kept, first.offer, first.plan, kSender, "Ann", utf8(dest), kWhen);
   REQUIRE(record.files.size() == 2);
@@ -191,7 +229,7 @@ TEST_CASE("driftwire resume: records are kept across launches, and discarding on
           "[driftwire]") {
   scratch_dir s("dw_resume_store");
   const std::string path = utf8(s / sp::kResumeFile);
-  const fs::path temp = s / "b.bin.mvtmp";
+  const fs::path temp = s / temp_leaf(s.root(), "b.bin");
   write_bytes(temp, pattern(4096, 7));
   sp::resume_record r;
   r.sender = kSender;
@@ -245,7 +283,7 @@ TEST_CASE("driftwire resume: the receiver quits mid-way; started again, the next
   bea.reset();  // MediaViewer quits there
   ann.eng.wait_idle();
   CHECK(ann.eng.snapshot().out == sp::view::out_phase::ended);
-  CHECK(files_in(dest) == std::vector<std::string>{"a_first.jpg", "b_big.mov.mvtmp"});
+  CHECK(files_in(dest) == sorted({"a_first.jpg", temp_leaf(dest, "b_big.mov")}));
 
   // Started again: the unfinished receive is listed, and can be discarded.
   bea = std::make_unique<client>(b, s / "bea_received", "Bea", s / "bea_secrets", s / "bea_data");

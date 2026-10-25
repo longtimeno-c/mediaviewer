@@ -41,6 +41,9 @@ constexpr char kTagContext[] = "MediaViewer Driftwire tag v2";
 // A rejoin's first sealed message arrives within this (it proves the client
 // holds the keys, so a replayed first message cannot take the session over).
 constexpr int kRejoinConfirmMs = 4000;
+// #496: rejoin tags remembered as spent, per session (16 bytes each; a
+// sender makes one per try, and kFlapRejoins in kFlapMs end the session).
+constexpr std::size_t kSpentTags = 256;
 // Spare message buffers kept for reuse: a whole replay window's worth, so a
 // steady send allocates nothing (a chunk is too big for the small-block heap).
 constexpr std::size_t kSpareBodies = kReplayBytes / kChunkBytes + 4;
@@ -196,10 +199,16 @@ bool valid_type(std::uint8_t raw, std::uint32_t version) noexcept {
       raw <= static_cast<std::uint8_t>(msg::relay_data)) {
     return true;
   }
+  if (raw == static_cast<std::uint8_t>(msg::offer_more)) return true;  // #498: any protocol
   return raw >= static_cast<std::uint8_t>(msg::ident) && raw <= static_cast<std::uint8_t>(last);
 }
 
 }  // namespace
+
+bool is_internet_hello(std::span<const std::uint8_t> first) noexcept {
+  return first.size() >= kInternetHelloBytes && std::memcmp(first.data(), kHelloMagic, 4) == 0 &&
+         first[4] == kProtocol2 && first[5] == kKindInternet;
+}
 
 // ---- opening ---------------------------------------------------------------------------
 
@@ -755,8 +764,10 @@ expected channel::send_v2(msg type, std::span<const std::uint8_t> body) {
   // Room among what is kept unacknowledged, waited for before send_m_: a
   // rejoin takes send_m_ to move the session, and it is what frees room.
   {
+    std::optional<stage_timer> waited;  // #540: only once it has to wait
     std::unique_lock lock(replay_m_);
     while (!down_.load() && !replay_.empty() && replay_bytes_ + body.size() > kReplayBytes) {
+      if (!waited) waited.emplace(stages_.load(std::memory_order_relaxed), stage::wait_room);
       replay_cv_.wait_for(lock, std::chrono::milliseconds(250));
       if (rejoin_expired()) {
         lock.unlock();
@@ -784,8 +795,10 @@ expected channel::keep_and_write(msg type, std::span<const std::uint8_t> body) {
     current = up_ && write_gen_ == gen_;
   }
   const std::uint64_t seq = ++send_seq_;
+  stage_times* const times = stages_.load(std::memory_order_relaxed);
   std::span<const std::uint8_t> frame;
   {
+    stage_timer sealing(times, stage::seal, body.size());
     std::lock_guard r(replay_m_);
     entry e;
     e.seq = seq;
@@ -805,6 +818,7 @@ expected channel::keep_and_write(msg type, std::span<const std::uint8_t> body) {
   if (!current) return err(status::io);
   const std::uint64_t heard = rx_bytes_.load();
   last_send_ = clock::now();
+  stage_timer sending(times, stage::send, frame.size());
   if (auto r = write_link_->write_all(frame); !r) {
     mark_down(write_gen_);
     return r;
@@ -981,6 +995,8 @@ expected channel::receive_v2(message& out, int timeout_ms, bool until_acked) {
     auto first = clock::now() + std::chrono::milliseconds(1000);
     if (limited && deadline < first) first = std::max(deadline, clock::now() + std::chrono::milliseconds(1));
     link& l = *read_link_;
+    stage_times* const times = stages_.load(std::memory_order_relaxed);
+    stage_timer receiving(times, stage::recv);
     std::uint8_t len_bytes[4];
     auto r = read_alive(l, {len_bytes, 1}, first);
     if (!r && r.error() == status::timeout) {
@@ -999,6 +1015,9 @@ expected channel::receive_v2(message& out, int timeout_ms, bool until_acked) {
       open_buf_.resize(len);
       r = read_alive(l, open_buf_, alive());
     }
+    receiving.set_bytes(r ? 4 + std::uint64_t{len} : 0);
+    receiving.done();
+    stage_timer opening(times, stage::open, r ? len - kSealOverhead : 0);
     unsigned long long plain = 0;
     if (r) {
       out.body.resize(len - kSealOverhead);
@@ -1038,6 +1057,7 @@ expected channel::receive_v2(message& out, int timeout_ms, bool until_acked) {
     if (seq != have + 1) return err(status::corrupt);  // a gap: never, on an ordered link
     out.body.erase(out.body.begin(), out.body.begin() + kHeader2);
     out.body.resize(static_cast<std::size_t>(plain) - kHeader2);
+    opening.done();
     recv_seq_.store(seq);
     // #511: the peer ended it on purpose; the link that drops next is not a loss.
     if (out.type == msg::cancel) cancelled_.store(true);
@@ -1239,7 +1259,6 @@ expected channel::complete_rejoin(pending_ptr p) {
 
 expected channel::accept_rejoin(std::shared_ptr<link> l, const hello& h) {
   if (!l) return err(status::invalid_arg);
-  std::lock_guard one(rejoin_m_);
   auto fail = [&](status s) -> expected {
     l->shutdown();
     return err(down_.load() ? status::cancelled : s);
@@ -1249,7 +1268,15 @@ expected channel::accept_rejoin(std::shared_ptr<link> l, const hello& h) {
   const auto deadline = clock::now() + std::chrono::milliseconds(kRejoinConfirmMs);
   std::array<std::uint8_t, 32> psk;
   {
+    // #496: a tag opens once. A recording of a rejoin (the tag is right and
+    // its first message opens) is closed here, before a byte is read or
+    // written; the sender makes a fresh tag for every try.
     std::lock_guard lock(secret_m_);
+    if (std::find(spent_tags_.begin(), spent_tags_.end(), h.tag) != spent_tags_.end()) {
+      return fail(status::corrupt);
+    }
+    spent_tags_.push_back(h.tag);
+    if (spent_tags_.size() > kSpentTags) spent_tags_.pop_front();
     psk = resume_;
   }
   noise::handshake hs(noise::nn_hfs_psk0(), false, prologue(kPrologueRejoin, kKindRejoin, h.tag), std::nullopt, psk);
@@ -1264,12 +1291,20 @@ expected channel::accept_rejoin(std::shared_ptr<link> l, const hello& h) {
   auto streams = std::make_unique<stream_keys>();
   std::uint64_t peer_got = 0;
   std::uint32_t index = 0;
-  // A replayed first message gets this far, and no further: it has no keys.
+  // A first message made with the secret but replayed (from before #496's
+  // spent tags, or evicted from them) gets this far, and no further: it has
+  // no keys. #496: nothing is held while it waits, so a rejoin on another
+  // link is not kept behind it.
   if (auto r = finish_rejoin(*l, keys->responder_to_initiator, keys->initiator_to_responder, deadline, peer_got, index,
                              *streams);
       !r) {
     return fail(r.error());
   }
+  std::lock_guard one(rejoin_m_);
+  if (down_.load() || cancelled_.load()) return fail(status::cancelled);
+  // Two that proved at once (a sender's rejoins are one at a time, so only
+  // its older one, finishing late): the newer link stays.
+  if (index <= rejoins_.load()) return fail(status::not_found);
   return adopt(std::move(l), std::move(streams), peer_got, index);
 }
 

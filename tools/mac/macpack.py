@@ -10,6 +10,11 @@
                             notarize + staple the image, the Sparkle update
                             archive, and (given Sparkle's bin/) the signed
                             appcast
+  macpack.py addon ...      sign (and notarize) an add-on folder
+  macpack.py cli ...        the driftwire command line (docs/design/28
+                            "Installing"): sign the bare program, notarize it
+                            in a zip, and pack driftwire-<version>-macos-
+                            <universal|arm64>.tar.gz for the Homebrew tap
 
 Only macOS tools are used (otool, install_name_tool, codesign, sips,
 iconutil, ditto, hdiutil, xcrun notarytool/stapler) plus dmgbuild
@@ -23,6 +28,9 @@ the executable.
 from __future__ import annotations
 
 import argparse
+import gzip
+import hashlib
+import io
 import json
 import os
 import plistlib
@@ -30,7 +38,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
+import time
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -379,7 +389,7 @@ def cmd_assemble(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def codesign(path: Path, identity: str, hardened: bool, entitlements: Path | None = None,
-             preserve_entitlements: bool = False) -> None:
+             preserve_entitlements: bool = False, identifier: str | None = None) -> None:
     cmd = ["codesign", "--force", "--sign", identity]
     if identity == "-":
         cmd.append("--timestamp=none")
@@ -387,6 +397,10 @@ def codesign(path: Path, identity: str, hardened: bool, entitlements: Path | Non
         cmd.append("--timestamp")  # notarization requires a secure timestamp
     if hardened:
         cmd += ["--options", "runtime"]
+    if identifier:
+        # A bare program has no Info.plist to name it; without this codesign
+        # takes the file name, which is no stable identity.
+        cmd += ["--identifier", identifier]
     if entitlements:
         cmd += ["--entitlements", str(entitlements)]
     elif preserve_entitlements:
@@ -524,6 +538,115 @@ def cmd_addon(args: argparse.Namespace) -> None:
         run(["ditto", "-c", "-k", str(addon), str(archive)])
         notarize(archive, args.notary_profile)
     print(f"macpack: add-on signed and notarized: {addon}")
+
+
+# ---------------------------------------------------------------------------
+# cli: the driftwire command line (docs/design/28 "Installing")
+# ---------------------------------------------------------------------------
+
+CLI_NAME = "driftwire"
+# Its code-signing identity: stable across releases, so the system's records
+# of it (the firewall's, for one) follow it from one version to the next.
+CLI_IDENTIFIER = "io.github.longtimeno-c.driftwire"
+_CLI_VERSION = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+
+
+def cli_arch_label(archs: Iterable[str]) -> str:
+    """What the archive's name says the program runs on: universal when it
+    holds both slices, arm64 when the Intel leg of the release did not build
+    (release.yml's macos-build x64 leg may fail without failing the run)."""
+    have = set(archs)
+    if {"arm64", "x86_64"} <= have:
+        return "universal"
+    if have == {"arm64"}:
+        return "arm64"
+    raise SystemExit(f"macpack: the command line holds {sorted(have)}; it needs arm64 (and x86_64 for universal)")
+
+
+def cli_archive_top(version: str, label: str) -> str:
+    return f"{CLI_NAME}-{version}-macos-{label}"
+
+
+def stage_cli(binary: Path, version: str, label: str, into: Path) -> Path:
+    """The archive's one folder: the program, its manual page, the GPL, NOTICE
+    and the notices of what it links (packaging/linux/copyright, as the Linux
+    packages and the Windows zip carry them)."""
+    top = into / cli_archive_top(version, label)
+    if top.exists():
+        shutil.rmtree(top)
+    top.mkdir(parents=True)
+    shutil.copyfile(binary, top / CLI_NAME)
+    (top / CLI_NAME).chmod(0o755)
+    for src, name in ((REPO_ROOT / "LICENSE", "LICENSE"), (REPO_ROOT / "NOTICE", "NOTICE"),
+                      (REPO_ROOT / "packaging" / "linux" / "copyright", "COPYRIGHT.txt"),
+                      (REPO_ROOT / "packaging" / "linux" / "driftwire.1", "driftwire.1")):
+        shutil.copyfile(src, top / name)
+        (top / name).chmod(0o644)
+    return top
+
+
+def pack_cli_archive(top: Path, out: Path, mtime: int | None = None) -> str:
+    """A gzipped tar of `top` (one folder, as Homebrew unpacks and enters it):
+    entries sorted, owned by root, the program 0755 and the rest 0644, so the
+    same files pack the same. The code signature is inside the Mach-O, so a
+    plain tar keeps it. Returns the archive's SHA-256."""
+    if mtime is None:
+        mtime = int(os.environ.get("SOURCE_DATE_EPOCH") or time.time())
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        def add(path: Path, name: str) -> None:
+            info = tarfile.TarInfo(name)
+            info.mtime, info.uid, info.gid, info.uname, info.gname = mtime, 0, 0, "root", "wheel"
+            if path.is_dir():
+                info.type, info.mode = tarfile.DIRTYPE, 0o755
+                tar.addfile(info)
+            else:
+                info.size, info.mode = path.stat().st_size, 0o755 if path.name == CLI_NAME else 0o644
+                with path.open("rb") as f:
+                    tar.addfile(info, f)
+        add(top, top.name)
+        for path in sorted(top.rglob("*")):
+            if path.is_symlink() or not (path.is_file() or path.is_dir()):
+                raise SystemExit(f"macpack: {path} is not a plain file")
+            add(path, f"{top.name}/{path.relative_to(top).as_posix()}")
+    data = gzip.compress(raw.getvalue(), compresslevel=9, mtime=0)
+    out.write_bytes(data)
+    return hashlib.sha256(data).hexdigest()
+
+
+def cmd_cli(args: argparse.Namespace) -> None:
+    """Sign the command line (Developer ID, hardened runtime, a secure
+    timestamp, CLI_IDENTIFIER; ad hoc with --identity -), check it runs and
+    says its version, notarize it in a zip, and pack the archive. No
+    entitlements: it keeps nothing in the keychain (Remember does not show on
+    macOS, #501), so it needs no access group. A bare Mach-O cannot be stapled
+    (stapler takes bundles, disk images and installer packages): Gatekeeper
+    looks its ticket up online the first time a quarantined copy runs, and a
+    copy Homebrew installed is not quarantined."""
+    binary = Path(args.binary)
+    if not binary.is_file():
+        raise SystemExit(f"macpack: {binary} not found; build the driftwire target first")
+    if not _CLI_VERSION.fullmatch(args.version):
+        raise SystemExit(f"macpack: {args.version!r} is not an x.y.z version")
+    label = cli_arch_label(run(["lipo", "-archs", str(binary)], capture=True).split())
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        top = stage_cli(binary, args.version, label, Path(tmp))
+        program = top / CLI_NAME
+        codesign(program, args.identity, hardened=True, identifier=CLI_IDENTIFIER)
+        run(["codesign", "--verify", "--strict", "--verbose=2", str(program)])
+        said = run([str(program), "--version"], capture=True).strip()
+        if said != f"{CLI_NAME} {args.version}":
+            raise SystemExit(f"macpack: the program says {said!r}, not {CLI_NAME} {args.version}")
+        if not args.skip_notarize:
+            zipped = Path(tmp) / f"{top.name}.zip"
+            run(["ditto", "-c", "-k", "--keepParent", str(top), str(zipped)])
+            notarize(zipped, args.notary_profile)
+            print("macpack: notarized (a bare program cannot be stapled; Gatekeeper finds its ticket online)")
+        archive = out / f"{top.name}.tar.gz"
+        digest = pack_cli_archive(top, archive)
+    print(f"macpack: {archive} ({label}) sha256 {digest}")
 
 
 def make_dmg(app: Path, out: Path, volume_name: str) -> None:
@@ -673,8 +796,18 @@ def main(argv: list[str]) -> None:
                    help="a family piece that may carry no code (the AI pack's ai-faces models)")
     d.set_defaults(func=cmd_addon)
 
+    c = sub.add_parser("cli", help="sign, notarize and pack the driftwire command line")
+    c.add_argument("--binary", required=True, help="the (universal) driftwire program")
+    c.add_argument("--version", required=True, help="the release's x.y.z; the program must say it")
+    c.add_argument("--out-dir", default="build/release/cli")
+    c.add_argument("--identity", default=os.environ.get("MV_SIGN_IDENTITY"),
+                   help='"Developer ID Application: …" (or $MV_SIGN_IDENTITY); - signs ad hoc')
+    c.add_argument("--notary-profile", default=os.environ.get("MV_NOTARY_PROFILE"))
+    c.add_argument("--skip-notarize", action="store_true", help="an unsigned (ad hoc) test build")
+    c.set_defaults(func=cmd_cli)
+
     args = parser.parse_args(argv)
-    if args.command in ("release", "addon"):
+    if args.command in ("release", "addon", "cli"):
         if not args.identity:
             parser.error("--identity (or MV_SIGN_IDENTITY) is required")
         if not args.skip_notarize and not args.notary_profile:

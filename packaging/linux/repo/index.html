@@ -1,0 +1,102 @@
+<!doctype html>
+<!-- Copyright (C) 2026 longtimeno-c
+     SPDX-License-Identifier: GPL-3.0-or-later
+     The driftwire package repository's page (docs/design/28 "Installing"),
+     filled in by tools/package/driftwire_repo.py (the Windows part from
+     index-windows.html, when the site has the Windows zip). No external
+     assets, no scripts, nothing that tracks. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>driftwire</title>
+<style>
+:root {
+  --bg: #fbfbfa; --fg: #1d2125; --muted: #5b636b; --rule: #dfe2e5;
+  --code-bg: #f0f2f3; --accent: #0f7f7a;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #15181b; --fg: #e6e8ea; --muted: #9aa3ab; --rule: #2c3237; --code-bg: #1e2327; --accent: #4fc4bc; }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, sans-serif;
+}
+main { max-width: 46rem; margin: 0 auto; padding: 2.5rem 1rem 4rem; }
+h1 { font-size: 2rem; margin: 0 0 .25rem; letter-spacing: -.01em; }
+h1 span { color: var(--accent); }
+h2 { font-size: 1.15rem; margin: 2.25rem 0 .5rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); }
+p, li { max-width: 40rem; }
+.lead { font-size: 1.1rem; color: var(--muted); margin-top: 0; }
+pre {
+  background: var(--code-bg); border-radius: 8px; padding: .8rem 1rem; overflow-x: auto;
+  font: 14px/1.5 ui-monospace, "SFMono-Regular", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+}
+code { font-family: ui-monospace, "SFMono-Regular", "DejaVu Sans Mono", Menlo, Consolas, monospace; font-size: .92em; }
+a { color: var(--accent); }
+.small { color: var(--muted); font-size: .9rem; }
+.fpr { word-spacing: .2em; }
+</style>
+</head>
+<body>
+<main>
+<h1><span>driftwire</span></h1>
+<p class="lead">Send files to a computer nearby over Wi-Fi, or anywhere with a code, from a terminal.</p>
+<p>Each transfer is sealed end to end, and every file is checked when it arrives. Nothing is
+sent or saved until the person at the terminal answers. driftwire talks to MediaViewer's
+Driftwire on Windows and macOS, and to another driftwire. It needs no MediaViewer.</p>
+<p class="small">Version @VERSION@ &middot; Linux (@ARCHES@, glibc 2.35 or newer: Ubuntu 22.04,
+Debian 12, Fedora 36 and later), macOS 14 or later, Windows 10 or later</p>
+
+<h2>Linux: one line</h2>
+<pre><code>curl -fsSL @BASE_URL@/install.sh | sh</code></pre>
+<p>It adds this signed repository to apt, dnf or zypper and installs driftwire, so it updates
+with the rest of the system. It shows each step before it runs it, and uses <code>sudo</code>
+for the system ones. Where there is no apt, dnf or zypper it unpacks the tarball into
+<code>~/.local</code> instead. To remove driftwire and what the line added:</p>
+<pre><code>curl -fsSL @BASE_URL@/install.sh | sh -s -- --uninstall</code></pre>
+
+<h2>Debian, Ubuntu (apt)</h2>
+<pre><code>sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL @BASE_URL@/key.gpg | sudo tee /etc/apt/keyrings/driftwire.gpg &gt; /dev/null
+printf '%s\n' 'Types: deb' 'URIs: @BASE_URL@/apt' 'Suites: stable' 'Components: main' \
+  'Signed-By: /etc/apt/keyrings/driftwire.gpg' | sudo tee /etc/apt/sources.list.d/driftwire.sources &gt; /dev/null
+sudo apt update &amp;&amp; sudo apt install driftwire</code></pre>
+
+<h2>Fedora (dnf), openSUSE (zypper)</h2>
+<pre><code>sudo curl -fsSL -o /etc/yum.repos.d/driftwire.repo @BASE_URL@/driftwire.repo
+sudo dnf install driftwire</code></pre>
+<pre><code>sudo zypper addrepo --refresh @BASE_URL@/driftwire.repo
+sudo zypper install driftwire</code></pre>
+<p>dnf and zypper ask once to trust the repository's key; check it against the fingerprint
+below.</p>
+
+<h2>Any other Linux: the tarball</h2>
+<ul>
+@TARBALLS@
+</ul>
+<p><a href="SHA256SUMS">SHA256SUMS</a>, signed in <a href="SHA256SUMS.asc">SHA256SUMS.asc</a>.
+Unpack it where it should live (it does not update itself):</p>
+<pre><code>tar -xzf @TARBALL_EXAMPLE@ --strip-components=1 -C ~/.local</code></pre>
+
+<h2>macOS (Homebrew)</h2>
+<pre><code>brew install @BREW_TAP@/driftwire</code></pre>
+<p><code>brew upgrade</code> keeps it up to date, and <code>brew uninstall driftwire</code> removes it.
+The program is signed and notarized by its publisher.</p>
+@WINDOWS_SECTION@
+<h2>Then</h2>
+<pre><code>driftwire</code></pre>
+<p>It shows this computer to others nearby while it runs; type <code>/help</code> for the
+commands, or see <code>man driftwire</code>. It asks before anything is sent or saved.</p>
+
+<h2>The signing key</h2>
+<p>The apt and rpm indexes, the rpm packages and <code>SHA256SUMS</code> are signed with this
+key: <a href="key.asc">key.asc</a> (armored), <a href="key.gpg">key.gpg</a> (binary).</p>
+<pre><code class="fpr">@FINGERPRINTS@</code></pre>
+<p class="small">driftwire is part of <a href="@GITHUB_URL@">MediaViewer</a>,
+GPL-3.0-or-later.</p>
+</main>
+</body>
+</html>
