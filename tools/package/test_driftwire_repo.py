@@ -551,7 +551,7 @@ class DriftwireRepoTest(unittest.TestCase):
         checks = [line for line in result.stdout.splitlines() if line.startswith('check: ') and line.endswith(': yes')]
         self.assertGreaterEqual(len(checks), 20, result.stdout)
         self.assertIn("check: the newer site's installer updates it to 1.2.4, still once on the PATH: yes", checks)
-        self.assertIn('check: the signed build installs (test mode: Authenticode): yes', checks)
+        self.assertIn('check: pwsh installs the signed build (test mode: Authenticode): yes', checks)
         self.assertIn('check: folders it did not make are kept (Driftwire.old-mine, .driftwire-cache, '
                       'Driftwire.old-0123abcd9): yes', checks)
         self.assertIn('check: and the folders beside it that it did not make: yes', checks)

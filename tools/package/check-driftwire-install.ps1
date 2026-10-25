@@ -14,8 +14,8 @@
 # serves it on 127.0.0.1 (python -m http.server), and checks that:
 #   - a copy of install.ps1 cut off part way does nothing, and a folder in its
 #     place that is not driftwire's is left alone;
-#   - `irm <site>/install.ps1 | iex` installs (Windows PowerShell 5.1 and
-#     PowerShell 7 on Windows), and a new process with only the user's and the
+#   - `irm <site>/install.ps1 | iex` installs (Windows PowerShell 5.1, then
+#     PowerShell 7 over it), and a new process with only the user's and the
 #     machine's PATH runs `driftwire --version`;
 #   - running it again replaces the copy and leaves one PATH entry; with
 #     -NewerZip, the newer site's installer updates it to that version;
@@ -23,10 +23,12 @@
 #     names that are not its own stay;
 #   - a zip whose SHA-256 is not the one baked in is refused, and the installed
 #     copy stays as it was;
-#   - `& ([scriptblock]::Create((irm <site>/install.ps1))) -Uninstall` takes the
-#     folder and the PATH entry away, and keeps the user's other entries (with
-#     their %VARIABLES%), the Path value's kind and the data folder;
-#   - with -SignedZip, a signed build installs with its signatures checked.
+#   - `& ([scriptblock]::Create((irm <site>/install.ps1))) -Uninstall` (Windows
+#     PowerShell 5.1) takes the folder and the PATH entry away, and keeps the
+#     user's other entries (with their %VARIABLES%), the Path value's kind and
+#     the data folder;
+#   - with -SignedZip, a signed build installs with its signatures checked and
+#     uninstalls, in each PowerShell.
 # Every PowerShell runs under the Restricted execution policy, the default on a
 # Windows client, which loads no script module (`irm | iex` itself is allowed).
 #
@@ -266,8 +268,8 @@ try {
     Check ((Get-FileHash -LiteralPath (Join-Path $installDir 'driftwire.exe')).Hash -eq $before) 'and the installed copy is as it was'
 
     # ---- uninstall ----
-    $run = Invoke-Installer "& ([scriptblock]::Create((irm $url/install.ps1))) -Uninstall"
-    Check ($run.Code -eq 0 -and -not (Test-Path -LiteralPath $installDir)) "-Uninstall deletes $installDir"
+    $run = Invoke-Installer "& ([scriptblock]::Create((irm $url/install.ps1))) -Uninstall" $shells[0]
+    Check ($run.Code -eq 0 -and -not (Test-Path -LiteralPath $installDir)) "$(Split-Path -Leaf $shells[0]) -Uninstall deletes $installDir"
     Check ((Get-InstallCount) -eq 0) 'and takes it off the user PATH'
     $after = Get-RawUserPath
     Check ($after.Value -ceq $startValue) "and keeps the user's other entries as they were ($sentinel unexpanded)"
@@ -278,13 +280,16 @@ try {
     $run = Invoke-Installer "& ([scriptblock]::Create((irm $url/install.ps1))) -Uninstall"
     Check ($run.Code -eq 0 -and $run.Output -match 'nothing of driftwire') 'a second -Uninstall finds nothing to remove'
 
-    # ---- a signed build ----
+    # ---- a signed build, in each PowerShell ----
     if ($SignedZip) {
-        $run = Invoke-Installer "irm $signedUrl/install.ps1 | iex"
         $checked = if ($onWindows) { 'signatures valid' } else { 'test mode: Authenticode' }
-        Check ($run.Code -eq 0 -and $run.Output -match [regex]::Escape($checked)) "the signed build installs ($checked)"
-        $run = Invoke-Installer "& ([scriptblock]::Create((irm $signedUrl/install.ps1))) -Uninstall"
-        Check ($run.Code -eq 0 -and -not (Test-Path -LiteralPath $installDir)) 'and uninstalls'
+        foreach ($shell in $shells) {
+            $leaf = Split-Path -Leaf $shell
+            $run = Invoke-Installer "irm $signedUrl/install.ps1 | iex" $shell
+            Check ($run.Code -eq 0 -and $run.Output -match [regex]::Escape($checked)) "$leaf installs the signed build ($checked)"
+            $run = Invoke-Installer "& ([scriptblock]::Create((irm $signedUrl/install.ps1))) -Uninstall" $shell
+            Check ($run.Code -eq 0 -and -not (Test-Path -LiteralPath $installDir) -and (Get-InstallCount) -eq 0) "$leaf uninstalls it"
+        }
     }
     Write-Host "check: the Windows installer of driftwire $version installs, updates, refuses a changed zip and uninstalls"
 } finally {
