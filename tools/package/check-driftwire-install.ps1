@@ -12,7 +12,8 @@
 #
 # It builds a site of install.ps1 and the zip (driftwire_repo.py windows-site),
 # serves it on 127.0.0.1 (python -m http.server), and checks that:
-#   - a copy of install.ps1 cut off part way does nothing;
+#   - a copy of install.ps1 cut off part way does nothing, and a folder in its
+#     place that is not driftwire's is left alone;
 #   - `irm <site>/install.ps1 | iex` installs (Windows PowerShell 5.1 and
 #     PowerShell 7 on Windows), and a new process with only the user's and the
 #     machine's PATH runs `driftwire --version`;
@@ -193,6 +194,16 @@ try {
         Check (-not (Test-Path -LiteralPath $installDir) -and (Get-InstallCount) -eq 0) `
             "install.ps1 cut off at $($cut.Length) of $($script.Length) characters does nothing"
     }
+
+    # ---- a folder of the same name that is not driftwire's ----
+    New-Item -ItemType Directory -Path $installDir | Out-Null
+    Set-Content -LiteralPath (Join-Path $installDir 'notes.txt') -Value 'mine'
+    $run = Invoke-Installer "irm $url/install.ps1 | iex"
+    $kept = (Get-Content -LiteralPath (Join-Path $installDir 'notes.txt')) -eq 'mine'
+    $run2 = Invoke-Installer "& ([scriptblock]::Create((irm $url/install.ps1))) -Uninstall"
+    Check ($run.Code -ne 0 -and $run2.Code -ne 0 -and $kept -and (Test-Path -LiteralPath (Join-Path $installDir 'notes.txt')) `
+           -and (Get-InstallCount) -eq 0) 'a folder in its place that is not driftwire''s is neither replaced nor removed'
+    Remove-Item -LiteralPath $installDir -Recurse -Force
 
     # ---- install, in each PowerShell, and again ----
     $shells = if ($onWindows) { @((Get-Command powershell).Source, $pwshPath) } else { @($pwshPath, $pwshPath) }

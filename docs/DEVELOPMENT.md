@@ -2068,7 +2068,8 @@ terminal"); the decisions are in [docs/design/12](design/12-decision-log.md#drif
 - **The macOS and Windows channels (2026-10-24), run in this Linux container only:**
   - `install.ps1` under PowerShell 7.6 in its test mode, through `check-driftwire-install.ps1` from
     `test_driftwire_repo.py` (34 tests pass): a copy cut off in the middle and one cut off before
-    its last line do nothing; `irm | iex` installs, a new process with only the user's `Path` runs
+    its last line do nothing; a folder of the same name that is not driftwire's is neither
+    replaced nor removed; `irm | iex` installs, a new process with only the user's `Path` runs
     the program, a second run replaces it with one `Path` entry and nothing left beside it, the
     newer site's installer updates 1.2.3 → 1.2.4 and the older one puts 1.2.3 back, a zip changed
     by one byte is refused with the installed copy untouched, `-Uninstall` removes the folder and

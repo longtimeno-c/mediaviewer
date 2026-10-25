@@ -164,6 +164,10 @@ function Install-Driftwire {
     if (-not $local) { Fail 'LOCALAPPDATA is not set.' }
     $programs = Join-Path $local 'Programs'
     $dir = Join-Path $programs 'Driftwire'
+    # Only a folder this put there is replaced or removed: one with driftwire.exe in it.
+    if ((Test-Path -LiteralPath $dir) -and -not (Test-Path -LiteralPath (Join-Path $dir 'driftwire.exe'))) {
+        Fail "$dir is there and holds no driftwire.exe; it is not this installer's, so it is left alone."
+    }
 
     # ---- removing ---------------------------------------------------------------
 

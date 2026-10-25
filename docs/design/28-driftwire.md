@@ -277,7 +277,7 @@ None of them touches the data folder; none needs an administrator on Windows or 
   so the value keeps its kind and its `%VARIABLES%` (`SetEnvironmentVariable` would write it back
   expanded, as `REG_SZ`), lets Explorer know so new terminals have it, puts it on this session's
   `PATH`, and prints `driftwire --version`. `-Uninstall` removes the folder and the `Path` entry
-  only. The zip comes from the site, not the release page, so the installer and the file it checks
+  only. A folder of that name without `driftwire.exe` in it is not its own and is left alone. The zip comes from the site, not the release page, so the installer and the file it checks
   go live together and a copy of the site served elsewhere is whole; `DRIFTWIRE_REPO_URL` or
   `-BaseUrl` point it at one (the written SHA-256 must still match). Off Windows it refuses, naming
   the brew and curl lines; with `DRIFTWIRE_INSTALL_TEST=1` it runs there for the tests, with the
