@@ -336,8 +336,8 @@ class DriftwireRepoTest(unittest.TestCase):
         for tool in ('sh', 'cat', 'printf'):
             if shutil.which(tool):
                 (bin_dir / tool).symlink_to(shutil.which(tool))
-        for path in bin_dir.iterdir():
-            os.chmod(path, 0o755)
+        # The links are the system's own programs: chmod would follow them (EPERM unless root).
+        os.chmod(bin_dir / 'uname', 0o755)
         dw = self.build(github_repo='someone/fork')
 
         def installer(*args):
@@ -524,7 +524,9 @@ class DriftwireRepoTest(unittest.TestCase):
                                 capture_output=True, text=True,
                                 env={k: v for k, v in os.environ.items() if not k.startswith('DRIFTWIRE_')})
         self.assertNotEqual(result.returncode, 0)
-        out = result.stdout + result.stderr
+        # PowerShell's error view colours the message and wraps it at the console's width.
+        out = re.sub(r'\x1b\[[0-9;]*m', '', result.stdout + result.stderr)
+        out = ' '.join(re.sub(r'^\s*\|\s?', '', out, flags=re.M).split())
         self.assertIn('this installer is for Windows', out)
         self.assertIn('brew install longtimeno-c/tap/driftwire', out)
         self.assertIn(f'curl -fsSL {BASE}/install.sh | sh', out)

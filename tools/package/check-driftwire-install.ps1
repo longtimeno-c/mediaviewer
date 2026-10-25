@@ -119,8 +119,11 @@ if ($onWindows) {
         try {
             $user = ((Get-RawUserPath).Value -split ';' | Where-Object { $_ }) -join [IO.Path]::PathSeparator
             $env:PATH = $user + [IO.Path]::PathSeparator + $before
-            # The stand-in is a shell script under a PE header: sh runs it when exec cannot.
-            (& sh -c $Command | Out-String).Trim()
+            # The stand-in is a shell script under a PE header. Found on the PATH as a new
+            # terminal would, then run by sh by name, as install.ps1's test mode does: exec
+            # would hand an MZ file to binfmt_misc where Wine or Mono registered one.
+            $words = @($Command -split ' ')
+            (& sh -c 'p=$(command -v "$1") || exit 127; shift; exec sh "$p" "$@"' sh @words | Out-String).Trim()
         } finally { $env:PATH = $before }
     }
     # Off Windows the program is the test's stand-in named driftwire.exe; PATHEXT does not apply.
