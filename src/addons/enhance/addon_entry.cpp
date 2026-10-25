@@ -21,16 +21,24 @@
 // four times a second, or, when only bytes moved, a diff at most once a
 // second and only when a line or a bar's whole percent changed (the Windows
 // host rebuilds the page for each), and says busy to the host while a
-// download runs (Restart now and an update of this add-on wait for it). A
-// post for a closed or reopened page is refused by the host and dropped
-// here. A click is read against the status the page was drawn from: its
-// buttons keep their ids across states (view.h), so focus stays put.
+// download runs (Restart now and an update of this add-on wait for it).
+// While a kind's line depends on another window's download (stopped here,
+// or that window's and not queued here), it looks again every kLockLook, as
+// nothing here hears when that window starts or finishes; it posts only
+// what changed. A post for a closed or reopened page is refused by the host
+// and dropped here. A click is read against the status the page was drawn
+// from: a card's main button keeps its id across Download, Cancel and
+// Resume (view.h), so focus stays on it. A click on one whose meaning a post
+// changed under it moments before (kClickSettle) does nothing: the host
+// sends only the id, and the person pressed what the tree before showed
+// (a double click on Cancel is not a Resume).
 //
 // Every thunk is the ABI boundary: no exception crosses it (docs/design/14),
 // and nothing here logs a path or a file name, a model's included (rule 6).
 #include <mediaviewer/mediaviewer_addon.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -70,6 +78,11 @@ constexpr const char* kBusy = "an Enhance model download";
 constexpr auto kPostGap = std::chrono::milliseconds(250);
 // Bytes alone: at most a diff a second.
 constexpr auto kDiffGap = std::chrono::seconds(1);
+// Another window's download, looked at again (the store's lock_retry).
+constexpr auto kLockLook = std::chrono::seconds(5);
+// How long after a post changed what a main button does a click on it is
+// taken for one on the button as it was.
+constexpr auto kClickSettle = std::chrono::milliseconds(500);
 
 template <typename Fn>
 mv_status guard(Fn&& fn) noexcept {
@@ -94,6 +107,27 @@ bool running(const std::vector<en::kind_status>& status) {
   });
 }
 
+// A line that says what another window's download means here: `stopped`
+// (status() says other_window while one holds the lock) and other_window
+// with nothing queued here (the store's own wait looks by itself).
+bool follows_lock(const std::vector<en::kind_status>& status) {
+  return std::any_of(status.begin(), status.end(), [](const en::kind_status& s) {
+    return !s.model.empty() && (s.state == en::download_state::stopped ||
+                                (s.state == en::download_state::other_window && !s.lock_wait));
+  });
+}
+
+// Whether a main button of kind `at` does something else in `b` than in `a`:
+// only the chosen model's card can (every other card's reads Download).
+bool main_changed(const std::vector<en::kind_status>& a, const std::vector<en::kind_status>& b, std::size_t at) {
+  for (const std::string* model : {&a[at].model, &b[at].model}) {
+    if (model->empty()) continue;
+    const std::string id = std::string("a.") + en::kind_id(b[at].k) + "." + *model;
+    if (en::action_of(id, a).what != en::action_of(id, b).what) return true;
+  }
+  return false;
+}
+
 struct addon_state {
   const mv_host_api* host = nullptr;
 
@@ -113,6 +147,9 @@ struct addon_state {
   bool dirty = false;
   bool quit = false;
   std::chrono::steady_clock::time_point last_post{};
+  // When the poster refreshes next with nothing changed: a diff held back,
+  // or another look at another window's download.
+  std::optional<std::chrono::steady_clock::time_point> again;
 
   // One post at a time, in order: `shown` is what the host's tree shows.
   // Taken before `m`, never inside it.
@@ -122,6 +159,10 @@ struct addon_state {
   std::string shown_notice;
   std::chrono::steady_clock::time_point last_diff{};  // or the tree that set the bars
   bool busy = false;
+  // Per kind, when a post last changed what one of its main buttons does,
+  // and the kind as shown before that post (all three kinds, by index).
+  std::array<std::chrono::steady_clock::time_point, 3> changed_at{};
+  std::vector<en::kind_status> shown_before;
 
   // The add-on's data folder (made by the host), or "".
   std::string host_data_dir() const {
@@ -182,11 +223,22 @@ struct addon_state {
     try {
       std::unique_lock lock(m);
       for (;;) {
-        cv.wait(lock, [this] { return quit || dirty; });
+        // A change, or a refresh that is due (`again`, which an open or a
+        // click may bring forward).
+        while (!quit && !dirty) {
+          if (!again) {
+            cv.wait(lock);
+          } else if (std::chrono::steady_clock::now() >= *again) {
+            dirty = true;
+          } else {
+            cv.wait_until(lock, *again);
+          }
+        }
         if (quit) return;
         const auto due = last_post + kPostGap;
         if (std::chrono::steady_clock::now() < due && cv.wait_until(lock, due, [this] { return quit; })) return;
         dirty = false;
+        again.reset();
         lock.unlock();
         std::optional<std::chrono::steady_clock::time_point> later;
         try {
@@ -195,16 +247,28 @@ struct addon_state {
           // Out of memory building a tree: the next change tries again.
         }
         lock.lock();
-        // A diff held back: refreshed when it is due, or at the next change.
-        if (later && !cv.wait_until(lock, *later, [this] { return quit || dirty; })) dirty = true;
+        if (later && (!again || *later < *again)) again = later;
       }
     } catch (...) {
     }
   }
 
+  // A refresh made off the poster (an open, a click): what it says is due
+  // next is the poster's to do.
+  void schedule(std::optional<std::chrono::steady_clock::time_point> later) {
+    if (!later) return;
+    {
+      std::lock_guard lock(m);
+      if (again && *again <= *later) return;
+      again = later;
+    }
+    cv.notify_one();
+  }
+
   // The store's state to the host: busy or not, and the open page's tree
   // (`whole`) or, when only bytes moved since the tree it holds, a diff.
-  // Returns when a diff held back is due.
+  // Returns when to refresh again: a diff held back, or the next look at
+  // another window's download.
   std::optional<std::chrono::steady_clock::time_point> refresh(bool whole) {
     std::lock_guard post(post_m);
     const std::vector<en::kind_status> now = store->status();
@@ -228,6 +292,18 @@ struct addon_state {
       shown.clear();
       return std::nullopt;
     }
+    std::optional<std::chrono::steady_clock::time_point> later = show(whole, now, gen, std::move(note), at);
+    if (follows_lock(now)) {
+      const auto look = std::chrono::steady_clock::now() + kLockLook;
+      if (!later || look < *later) later = look;
+    }
+    return later;
+  }
+
+  // refresh() for the open page, under post_m: the diff or the tree. Returns
+  // when a diff held back is due.
+  std::optional<std::chrono::steady_clock::time_point> show(bool whole, const std::vector<en::kind_status>& now,
+                                                            uint64_t gen, std::string note, const en::machine& at) {
     if (!whole && shown_generation == gen && !shown.empty() && note == shown_notice) {
       const std::string diff = en::progress_diff(shown, now);
       if (diff == "[]") return std::nullopt;
@@ -236,7 +312,7 @@ struct addon_state {
         if (t < last_diff + kDiffGap) return last_diff + kDiffGap;
         const mv_status r = host->screen_diff(host->host, kScreen, gen, diff.c_str());
         if (r == MV_OK) {
-          shown = now;
+          shown = now;  // bytes alone: no button does anything else
           last_diff = t;
         }
         if (r != MV_ERR_INVALID_ARG) return std::nullopt;  // posted, or the page closed or opened again
@@ -246,20 +322,40 @@ struct addon_state {
     const std::string tree =
         en::models_tree(s.models(), at, now, [&s](const en::model& md) { return s.still_to_fetch(md); }, note);
     if (host->screen_post(host->host, kScreen, gen, tree.c_str()) == MV_OK) {
+      const auto t = std::chrono::steady_clock::now();
+      if (shown_generation != gen || shown.size() != now.size()) {
+        shown_before = now;  // a page of its own: nothing it showed before
+        changed_at = {};
+      } else {
+        for (std::size_t i = 0; i < now.size() && i < changed_at.size(); ++i) {
+          if (!main_changed(shown, now, i)) continue;
+          shown_before[i] = shown[i];
+          changed_at[i] = t;
+        }
+      }
       shown = now;
       shown_generation = gen;
       shown_notice = std::move(note);
-      last_diff = std::chrono::steady_clock::now();
+      last_diff = t;
     }
     return std::nullopt;
   }
 
   // A click on the open page, read against the status its tree was drawn
-  // from: verb::none when that page has gone or the id has no action there.
+  // from: verb::none when that page has gone or the id has no action there,
+  // and for a main button a post changed less than kClickSettle ago when the
+  // tree before had it do something else (the person saw that one).
   en::action action_of(const char* node_id, uint64_t generation_clicked) {
     std::lock_guard post(post_m);
     if (shown_generation != generation_clicked || shown.empty()) return {};
-    return en::action_of(node_id, shown);
+    en::action a = en::action_of(node_id, shown);
+    if (a.what == en::verb::none || node_id[0] != 'a') return a;
+    const auto i = static_cast<std::size_t>(a.k);
+    if (i < changed_at.size() && std::chrono::steady_clock::now() - changed_at[i] < kClickSettle &&
+        en::action_of(node_id, shown_before).what != a.what) {
+      return {};
+    }
+    return a;
   }
 
   // A click's outcome: a choice that could not be saved says so on the
@@ -276,7 +372,7 @@ struct addon_state {
       if (notice == line) return;
       notice = std::move(line);
     }
-    (void)refresh(true);
+    schedule(refresh(true));
   }
 
   void stop() noexcept {
@@ -310,7 +406,7 @@ mv_status MV_CALL screen_open(void*, const mv_slot_screen_request* r) {
       g->here = std::move(here);
       g->notice.clear();
     }
-    (void)g->refresh(true);
+    g->schedule(g->refresh(true));
     return MV_OK;
   });
 }

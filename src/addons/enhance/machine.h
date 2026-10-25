@@ -19,7 +19,7 @@ namespace mv::enhance {
 struct machine {
   std::string os;    // "macos" | "windows" | "other"
   std::string arch;  // "arm64" | "x86_64" | "other"
-  std::uint32_t cores = 0;
+  std::uint32_t cores = 0;  // logical processors (hardware_concurrency): threads, not cores, with SMT
   std::uint64_t ram_total = 0;
   std::uint64_t ram_free = 0;
   std::string accelerator;  // "apple" | "nvidia" (an adapter with its CUDA driver) | ""

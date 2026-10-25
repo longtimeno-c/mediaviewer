@@ -94,16 +94,17 @@ std::string clean(std::string s) {
   return s;
 }
 
-// A label or help line: at most 200 bytes (screen.h kMaxLabel), cut between
-// two UTF-8 characters.
-std::string clip(std::string s) {
-  constexpr std::size_t kMax = 200;
-  if (s.size() <= kMax) return s;
-  std::size_t cut = kMax;
+// At most `most` bytes, cut between two UTF-8 characters.
+std::string cut_at(std::string s, std::size_t most) {
+  if (s.size() <= most) return s;
+  std::size_t cut = most;
   while (cut > 0 && (static_cast<unsigned char>(s[cut]) & 0xC0) == 0x80) --cut;
   s.resize(cut);
   return s;
 }
+
+// A label or help line: at most 200 bytes (screen.h kMaxLabel).
+std::string clip(std::string s) { return cut_at(std::move(s), 200); }
 
 const kind_status* status_of(std::span<const kind_status> status, kind k) {
   for (const kind_status& s : status) {
@@ -134,17 +135,16 @@ std::string gb_text(std::uint64_t bytes, int places) {
   return std::to_string(n / scale) + "." + part + " GB";
 }
 
-// Rule 3 failed: worded by what is missing. A Mac whose chip the model has
-// no Core ML path for; a PC without the NVIDIA card a CUDA-only model needs,
-// or the Mac a Core ML-only one does; a PC with no card it can use, for a
-// model either card runs or none does; and a card here that the model has
-// passed no self-test on, too slow on the processor.
+// Rule 3 failed: worded by what is missing. A model that passed no card's
+// self-test is too slow on the processor, whatever card is here. Otherwise
+// it lists a card this machine has not got: on a Mac, an NVIDIA one; on a
+// PC, the NVIDIA card it lists (one with Core ML too: only NVIDIA can be had
+// on a PC), or else the Mac its Core ML path needs.
 std::string needs_gpu_line(const model& m, const machine& here) {
+  if (!m.cuda && !m.coreml) return "Too slow on this " + place(here) + "'s processor";
   if (here.accelerator == "apple") return "Does not run on this Mac";
-  if (m.cuda && !m.coreml) return "Needs an NVIDIA graphics card";
-  if (m.coreml && !m.cuda) return "Needs a Mac with Apple silicon";
-  if (here.accelerator.empty()) return "Needs a graphics card";
-  return "Too slow on this " + place(here) + "'s processor";
+  if (m.cuda) return "Needs an NVIDIA graphics card";
+  return "Needs a Mac with Apple silicon";
 }
 
 std::string fit_line(const fit& f, const model& m, bool recommended, const machine& here) {
@@ -306,13 +306,16 @@ struct card_ref {
 // What one card's buttons name. A label is the control's accessible name
 // (screen.h), so no two read alike: the model's name; with its kind when
 // another card shows that name; with what it is, then its id, when two of
-// one kind's models share a name too.
+// one kind's models share a name too. Each part is cut at kPart bytes
+// first, so the longest ("Downloading " and all three) fits the 200 bytes of
+// a label and what tells two apart is never clipped away.
 std::string who_of(const std::vector<card_ref>& cards, std::size_t at) {
+  constexpr std::size_t kPart = 60;
   const auto named = [&cards](std::size_t i, int tier) {
     const card_ref& c = cards[i];
-    std::string s = clean(c.m->name);
-    if (tier >= 2) s += " (" + clean(tier == 2 ? c.m->model_name : c.m->id) + ")";
-    if (tier >= 1) s += " for " + clean(c.e->name);
+    std::string s = cut_at(clean(c.m->name), kPart);
+    if (tier >= 2) s += " (" + cut_at(clean(tier == 2 ? c.m->model_name : c.m->id), kPart) + ")";
+    if (tier >= 1) s += " for " + cut_at(clean(c.e->name), kPart);
     return s;
   };
   for (int tier = 0; tier < 3; ++tier) {
@@ -425,10 +428,12 @@ std::string machine_line(const machine& here) {
 std::string machine_facts(const machine& here) {
   std::string out;
   if (here.cores) {
-    const char* arch = here.arch == "arm64" ? " Arm" : here.arch == "x86_64" ? " x86-64" : "";
-    out = std::to_string(here.cores) + arch + (here.cores == 1 ? " core" : " cores") + kDot;
+    // What the OS counts: logical processors, two a core where a core runs
+    // two threads.
+    const char* arch = here.arch == "arm64" ? " (Arm)" : here.arch == "x86_64" ? " (x86-64)" : "";
+    out = std::to_string(here.cores) + (here.cores == 1 ? " processor thread" : " processor threads") + arch + kDot;
   }
-  if (here.ram_total) out += memory_text(here.ram_free) + " of memory free" + kDot;
+  if (here.ram_free) out += memory_text(here.ram_free) + " of memory free" + kDot;  // 0: not known
   return out + size_text(here.free_disk) + " free on this disk";
 }
 

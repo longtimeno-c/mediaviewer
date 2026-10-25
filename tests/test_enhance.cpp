@@ -297,6 +297,8 @@ struct rig {
   std::chrono::milliseconds prune_retry{30'000};
   std::chrono::milliseconds lock_retry{5000};
   std::atomic<int> changes{0};
+  std::atomic<int> probes{0};          // runs that reached the fit gate
+  std::function<void()> on_probe;     // set before open(): called at each of them
   // Set while a test holds the fetcher in its wait (an outage).
   std::function<bool(double, const std::atomic<bool>&)> wait = [](double, const std::atomic<bool>& stop) {
     return !stop.load();
@@ -341,7 +343,12 @@ struct rig {
           if (no_transport) return nullptr;
           return std::make_unique<proxy>(hf);
         },
-        [this] { return here; }, [this] { ++changes; }, o);
+        [this] {
+          ++probes;
+          if (on_probe) on_probe();
+          return here;
+        },
+        [this] { ++changes; }, o);
   }
   void open() { store = make(); }
 
@@ -953,6 +960,9 @@ TEST_CASE("the gates refuse before any request", "[enhance]") {
     auto held = en::try_lock(lock);
     REQUIRE(held);
     CHECK(!en::try_lock(lock));  // exclusive, even within one process
+    bool holder = false;
+    CHECK(!en::try_lock(lock, &holder));
+    CHECK(holder);  // someone holds it, as against a file that cannot be opened
     CHECK(en::is_held(lock));
     r.open();
     REQUIRE(r.store->download(en::kind::still, "standard"));
@@ -1315,6 +1325,144 @@ TEST_CASE("prune never follows a link out of the weights folder", "[enhance]") {
   }
 }
 
+TEST_CASE("a choice this version does not know keeps its folder, and every other prune goes on", "[enhance]") {
+  rig r;
+  // Audio chose a model this catalogue does not list (another version's, or
+  // one an update dropped), with its files here; "." names no model's folder.
+  put(r.s.root / "enhance.json", std::string(R"({"schema":1,"models":{"audio":"retired-v1","video":"."}})"));
+  const fs::path models = r.s.root / "cache" / "models";
+  put(models / "retired-v1" / "model.onnx", std::string("another version's"));
+  put(models / "retired-v1" / "model.onnx.ok", std::string("its record\n"));
+  put(models / "retired-v1" / "more" / "next.bin.part", std::string("half of it"));
+  fs::create_directories(models / "retired-v1" / "empty");
+  put(models / "stray" / "old.bin", std::string("no one's"));
+  r.open();
+  CHECK(r.status(en::kind::audio).state == en::download_state::none);  // not one it offers
+  REQUIRE(r.store->download(en::kind::still, "standard"));
+  r.settle();
+  CHECK(!fs::exists(models / "stray"));  // what no one chose goes
+  REQUIRE(r.store->download(en::kind::still, "small"));
+  r.settle();
+  CHECK(r.store->ready(en::kind::still));
+  CHECK(!fs::exists(r.weights("standard").parent_path()));  // the old choice's files go
+  REQUIRE(r.store->remove(en::kind::still));
+  r.settle();
+  CHECK(!fs::exists(r.weights("small").parent_path()));  // and Delete deletes
+  // The unknown choice's folder stays whole, and nothing else does.
+  CHECK(read(models / "retired-v1" / "model.onnx") == "another version's");
+  CHECK(read(models / "retired-v1" / "model.onnx.ok") == "its record\n");
+  CHECK(read(models / "retired-v1" / "more" / "next.bin.part") == "half of it");
+  CHECK(fs::is_directory(models / "retired-v1" / "empty"));
+  CHECK(files_under(models) == 3);
+  const std::string saved = read(r.s.root / "enhance.json");
+  CHECK(saved.find(R"("audio":"retired-v1")") != std::string::npos);  // the file keeps it for its window
+  CHECK(saved.find("still") == std::string::npos);
+}
+
+TEST_CASE("a look at the lock from another window does not turn a run away", "[enhance]") {
+  rig r;  // lock_retry 5 s: a run refused for the lock would wait that long
+  fs::create_directories(r.s.root / "cache");
+  // Another window's status() holds the lock for an instant while it looks;
+  // here that instant is the moment the run takes it.
+  std::unique_ptr<en::file_lock> look = en::try_lock(utf8(r.s.root / "cache" / "download.lock"));
+  REQUIRE(look);
+  std::thread let_go;
+  r.on_probe = [&] {  // the fit gate, just before the run takes the lock
+    if (!let_go.joinable()) {
+      let_go = std::thread([&look] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        look.reset();
+      });
+    }
+  };
+  r.open();
+  REQUIRE(r.store->download(en::kind::still, "standard"));
+  r.settle();
+  REQUIRE(let_go.joinable());
+  let_go.join();
+  const en::kind_status st = r.status(en::kind::still);
+  CHECK(st.state == en::download_state::ready);
+  CHECK(!st.lock_wait);
+  CHECK(r.hf.seen().size() == 1);
+}
+
+TEST_CASE("a lock file that cannot be opened stops the run, and nothing waits for it", "[enhance]") {
+  rig r;
+  r.lock_retry = std::chrono::milliseconds(20);
+  const fs::path lock = r.s.root / "cache" / "download.lock";
+  fs::create_directories(lock);  // a folder at its name
+  bool holder = true;
+  CHECK(!en::try_lock(utf8(lock), &holder));
+  CHECK(!holder);  // no one holds it: it cannot be opened
+  CHECK(!en::is_held(utf8(lock)));
+  r.open();
+  REQUIRE(r.store->download(en::kind::still, "standard"));
+  r.settle();
+  en::kind_status st = r.status(en::kind::still);
+  CHECK(st.state == en::download_state::stopped);  // not another window's
+  CHECK(!st.lock_wait);
+  CHECK(r.probes.load() == 1);
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));  // ten lock_retry
+  CHECK(r.probes.load() == 1);  // never run again
+  CHECK(r.status(en::kind::still).state == en::download_state::stopped);
+  CHECK(r.store->wait_idle(std::chrono::milliseconds(0)));
+  CHECK(r.hf.made == 0);
+  // Mended: Resume runs it.
+  fs::remove(lock);
+  r.store->resume(en::kind::still);
+  r.settle();
+  CHECK(r.store->ready(en::kind::still));
+  CHECK(r.hf.seen().size() == 1);
+
+  // enhance.lock as well: a click says at once that it could not be saved,
+  // not that another window was saving.
+  fs::remove(r.s.root / "enhance.lock");
+  fs::create_directories(r.s.root / "enhance.lock");
+  const auto t = std::chrono::steady_clock::now();
+  const auto d = r.store->download(en::kind::audio, "small");
+  REQUIRE(!d);
+  CHECK(d.error() == mv::status::io);
+  CHECK(std::chrono::steady_clock::now() - t < r.choices_wait);
+  st = r.status(en::kind::audio);
+  CHECK(st.state == en::download_state::none);
+}
+
+TEST_CASE("a run's bytes never go back: a later file already here counts from the start", "[enhance]") {
+  rig r;
+  r.body["standard"] = bytes(40'000, 2);  // 41 chunks
+  r.repin();
+  r.add("models/standard/more/extra.bin", bytes(4000, 7));  // its second file...
+  r.cat = parse(three(), r.pins);
+  put(r.s.root / "cache" / "models" / "standard" / "more" / "extra.bin", bytes(4000, 7));  // ...dropped in
+  r.hf.chunk_ms = 3;
+  r.open();
+  std::vector<std::uint64_t> seen;  // done_bytes while queued or under way, as a page asking all the while saw it
+  bool moved = false;
+  std::atomic<bool> done{false};
+  std::thread page([&] {
+    while (!done.load()) {
+      const en::kind_status st = r.store->status()[0];
+      if (st.model != "standard") continue;
+      if (st.state == en::download_state::queued || st.state == en::download_state::downloading ||
+          st.state == en::download_state::waiting) {
+        seen.push_back(st.done_bytes);
+        moved = moved || st.state == en::download_state::downloading;
+      }
+    }
+  });
+  REQUIRE(r.store->download(en::kind::still, "standard"));
+  r.settle();
+  done = true;
+  page.join();
+  CHECK(r.store->ready(en::kind::still));
+  CHECK(r.status(en::kind::still).done_bytes == 44'000);
+  CHECK(r.hf.seen().size() == 1);  // the second file adopted by its hash
+  REQUIRE(!seen.empty());
+  CHECK(moved);
+  CHECK(seen.front() >= 4000);
+  CHECK(std::is_sorted(seen.begin(), seen.end()));
+}
+
 // ---- the Models page --------------------------------------------------------------------
 
 namespace {
@@ -1387,18 +1535,27 @@ TEST_CASE("this machine in two lines", "[enhance]") {
   CHECK(en::machine_line(pc(16 * kGiB)) == "This PC: 16 GB of memory and no supported graphics card.");
   CHECK(en::machine_line(intel_mac(16 * kGiB)) == "This Mac: 16 GB of memory and an Intel processor.");
 
-  // The rest of the local check: cores and their architecture, free memory, free disk.
+  // The rest of the local check: the processor threads the OS counts (an
+  // 8-core PC with two threads a core has 16), their architecture, free
+  // memory, free disk.
   CHECK(en::machine_facts(mac(32 * kGiB)) ==
-        "10 Arm cores \xC2\xB7 16 GB of memory free \xC2\xB7 537 GB free on this disk");
+        "10 processor threads (Arm) \xC2\xB7 16 GB of memory free \xC2\xB7 537 GB free on this disk");
   en::machine m = pc(16 * kGiB);
   m.free_disk = 1'300'000'000;
-  CHECK(en::machine_facts(m) == "8 x86-64 cores \xC2\xB7 8 GB of memory free \xC2\xB7 1.30 GB free on this disk");
+  CHECK(en::machine_facts(m) ==
+        "8 processor threads (x86-64) \xC2\xB7 8 GB of memory free \xC2\xB7 1.30 GB free on this disk");
+  m.cores = 16;
+  m.ram_free = 0;  // not known (the total is): not shown, never "1 MB"
+  CHECK(en::machine_facts(m) == "16 processor threads (x86-64) \xC2\xB7 1.30 GB free on this disk");
   m.cores = 1;
   m.arch = "other";
-  m.ram_total = 0;  // not known: not shown
+  m.ram_total = 0;
   m.free_disk = 0;
-  CHECK(en::machine_facts(m) == "1 core \xC2\xB7 0 bytes free on this disk");
+  CHECK(en::machine_facts(m) == "1 processor thread \xC2\xB7 0 bytes free on this disk");
   m.cores = 0;
+  m.ram_free = 1 * kGiB;
+  CHECK(en::machine_facts(m) == "1 GB of memory free \xC2\xB7 0 bytes free on this disk");
+  m.ram_free = 0;
   CHECK(en::machine_facts(m) == "0 bytes free on this disk");
 }
 
@@ -1408,7 +1565,8 @@ TEST_CASE("the Models page is a valid view tree that says what fits", "[enhance]
   SECTION("a CPU-only PC: the standard model is recommended, the large one needs a GPU") {
     const scr::tree t = checked(en::models_tree(c, pc(8 * kGiB), statuses()));
     CHECK(text_of(t, "machine") == "This PC: 8 GB of memory and no supported graphics card.");
-    CHECK(text_of(t, "facts") == "8 x86-64 cores \xC2\xB7 4 GB of memory free \xC2\xB7 537 GB free on this disk");
+    CHECK(text_of(t, "facts") ==
+          "8 processor threads (x86-64) \xC2\xB7 4 GB of memory free \xC2\xB7 537 GB free on this disk");
     CHECK(!t.find("notice"));
     CHECK(text_of(t, "kind.still") == "Photos");
     CHECK(text_of(t, "title.still.standard") == "Standard \xC2\xB7 Real-ESRGAN x4plus");
@@ -1420,7 +1578,7 @@ TEST_CASE("the Models page is a valid view tree that says what fits", "[enhance]
           "Downloads 1.27 GB from Hugging Face \xC2\xB7 needs 6 GB of graphics memory \xC2\xB7 Apache-2.0");
     CHECK(text_of(t, "state.still.standard") == "Recommended for this PC");
     CHECK(text_of(t, "state.still.small") == "Fits this PC");
-    CHECK(text_of(t, "state.still.large") == "Needs a graphics card");
+    CHECK(text_of(t, "state.still.large") == "Needs an NVIDIA graphics card");  // a PC: only NVIDIA would do
     const scr::node* dl = node_of(t, "a.still.standard");
     CHECK(*dl->props.str("label") == "Download Standard");
     CHECK(*dl->props.str("help") == "Download Standard (Photos), 38.7 MB");
@@ -1464,7 +1622,7 @@ TEST_CASE("the Models page is a valid view tree that says what fits", "[enhance]
       std::vector<std::string> labels;  // the card's buttons, in order
       bool lock_wait = false;
     };
-    // The same two ids whatever the state, so focus stays on the button.
+    // The main button keeps one id whatever it reads; Delete has its own.
     const std::vector<row> rows = {
         {en::download_state::ready, "Downloaded", {"Delete Standard"}},
         {en::download_state::queued, "Waiting to download", {"Cancel Standard"}},
@@ -1553,9 +1711,9 @@ TEST_CASE("the Models page is a valid view tree that says what fits", "[enhance]
     st.state = en::download_state::unfit;
     st.reason = en::why::needs_gpu;
     const scr::tree cpu = checked(en::models_tree(c, pc(16 * kGiB), statuses(st)));
-    CHECK(text_of(cpu, "state.still.large") == "Needs a graphics card");
+    CHECK(text_of(cpu, "state.still.large") == "Needs an NVIDIA graphics card");
     CHECK(node_of(cpu, "a.still.large")->props.boolean("disabled") == std::optional<bool>(true));
-    CHECK(*node_of(cpu, "a.still.large")->props.str("help") == "Needs a graphics card");
+    CHECK(*node_of(cpu, "a.still.large")->props.str("help") == "Needs an NVIDIA graphics card");
     CHECK(!node_of(cpu, "d.still.large")->props.boolean("disabled"));
     const scr::tree gpu = checked(en::models_tree(c, pc(32 * kGiB, "nvidia", 12 * kGiB), statuses(st)));
     CHECK(text_of(gpu, "state.still.large") == "Fits this PC now; Resume downloads it.");
@@ -1632,7 +1790,7 @@ TEST_CASE("the Models page is a valid view tree that says what fits", "[enhance]
       CHECK(en::action_of(id, with(download_state::stopped)).what == verb::none);
     }
   }
-  SECTION("each button names its model, then its kind, then what it is, cut at 200 bytes") {
+  SECTION("each button names its model, then its kind, then what it is, each part cut to fit 200 bytes") {
     en::catalog twin = c;
     twin.models[0].name = "Standard";  // large: two Standards in Photos
     const scr::tree t = checked(en::models_tree(twin, pc(16 * kGiB), statuses()));
@@ -1644,18 +1802,64 @@ TEST_CASE("the Models page is a valid view tree that says what fits", "[enhance]
     CHECK(*node_of(same, "a.still.large")->props.str("label") == "Download Standard (large) for Photos");
     CHECK(*node_of(same, "a.still.standard")->props.str("label") == "Download Standard (standard) for Photos");
 
+    // A long name is cut at 60 bytes, between two characters; the help
+    // keeps the whole of it, to 200 bytes.
     std::string long_name;
     for (int i = 0; i < 150; ++i) long_name += "\xC3\xA9";  // "é", two bytes each
-    twin.models[0].name = long_name;
+    twin.models[0].name = "x" + long_name;                   // so byte 60 falls inside an "é"
     en::kind_status st;
     st.model = "large";
     st.state = en::download_state::stopped;
     const scr::tree cut = checked(en::models_tree(twin, pc(16 * kGiB), statuses(st)));
     for (const char* id : {"a.still.large", "d.still.large"}) {
       const std::string label = *node_of(cut, id)->props.str("label");
-      CHECK(label.size() <= 200);
-      CHECK(label.size() >= 198);
-      CHECK(std::string(id[0] == 'a' ? "Resume " : "Delete ").append(long_name).rfind(label, 0) == 0);
+      CHECK(label == std::string(id[0] == 'a' ? "Resume " : "Delete ") + "x" + long_name.substr(0, 58));
+      CHECK(node_of(cut, id)->props.str("help")->size() >= 199);
+    }
+
+    // Names, and what they are, alike for longer than a label holds: what
+    // tells two apart survives in every label, at every state.
+    std::string dashes;
+    for (int i = 0; i < 100; ++i) dashes += "\xE2\x80\x94";  // "—", three bytes each
+    en::catalog alike = c;
+    alike.kinds[0].name = "Photos " + dashes;
+    alike.kinds[2].name = "Audio " + dashes;
+    for (en::model& m : alike.models) {
+      m.name = dashes + m.id;
+      m.model_name = dashes + "x4";
+    }
+    for (const en::download_state state : {en::download_state::none, en::download_state::downloading,
+                                           en::download_state::stopped}) {
+      INFO(en::state_id(state));
+      en::kind_status on;
+      on.model = state == en::download_state::none ? std::string() : "small";
+      on.state = state;
+      on.total_bytes = 3000;
+      auto shown = statuses(on);
+      shown[2] = on;
+      shown[2].k = en::kind::audio;
+      const scr::tree drawn = checked(en::models_tree(alike, pc(16 * kGiB), shown));
+      std::vector<const scr::node*> all;
+      buttons_of(*drawn.root(), all);
+      std::set<std::string> labels;
+      for (const scr::node* b : all) {
+        const std::string label = *b->props.str("label");
+        INFO(b->id + ": " + label);
+        CHECK(label.size() <= 200);
+        CHECK(labels.insert(label).second);
+        // What tells it apart: among the photo models their ids; the audio
+        // card, alone in its kind, by its kind.
+        const std::string model = b->id.substr(b->id.rfind('.') + 1);
+        const bool photos = b->id.find(".still.") != std::string::npos;
+        CHECK(label.find(photos ? " (" + model + ") for Photos " : std::string(" for Audio ")) != std::string::npos);
+      }
+      CHECK(all.size() >= 4);
+      if (const scr::node* bar = drawn.find("progress.still.small")) {
+        const std::string label = *bar->props.str("label");
+        CHECK(label.size() <= 200);
+        CHECK(label.find(" (small) for Photos ") != std::string::npos);
+        CHECK(label != *node_of(drawn, "progress.audio.small")->props.str("label"));
+      }
     }
   }
   SECTION("ids stay within 64 characters for a model id of 32") {
@@ -1706,7 +1910,9 @@ TEST_CASE("a model that does not fit says what is missing", "[enhance]") {
     const auto detail = [&only](const en::machine& here) {
       return text_of(checked(en::models_tree(only, here, statuses())), "detail.still.large");
     };
-    CHECK(line(pc(16 * kGiB)) == "Needs a graphics card");  // either card would do
+    // Either card: on a PC with an Intel or AMD card only an NVIDIA one would do.
+    CHECK(line(pc(16 * kGiB, "", 0, "AMD Radeon")) == "Needs an NVIDIA graphics card");
+    CHECK(line(pc(16 * kGiB)) == "Needs an NVIDIA graphics card");
     large.coreml = false;
     CHECK(line(pc(16 * kGiB)) == "Needs an NVIDIA graphics card");
     CHECK(line(mac(16 * kGiB)) == "Does not run on this Mac");
@@ -1715,11 +1921,14 @@ TEST_CASE("a model that does not fit says what is missing", "[enhance]") {
     large.coreml = true;
     large.cuda = false;
     CHECK(line(pc(32 * kGiB, "nvidia", 12 * kGiB)) == "Needs a Mac with Apple silicon");
+    CHECK(line(pc(16 * kGiB)) == "Needs a Mac with Apple silicon");
     CHECK(detail(pc(32 * kGiB, "nvidia", 12 * kGiB)).find("graphics") == std::string::npos);
-    large.coreml = false;  // passed no card's self-test, too slow on the processor
+    // Passed no card's self-test: too slow on the processor, on any machine;
+    // no card would help.
+    large.coreml = false;
     CHECK(line(pc(32 * kGiB, "nvidia", 12 * kGiB)) == "Too slow on this PC's processor");
-    CHECK(line(pc(16 * kGiB)) == "Needs a graphics card");
-    CHECK(line(mac(16 * kGiB)) == "Does not run on this Mac");
+    CHECK(line(pc(16 * kGiB)) == "Too slow on this PC's processor");
+    CHECK(line(mac(16 * kGiB)) == "Too slow on this Mac's processor");
     // Where it does run, the detail says so.
     CHECK(detail(pc(32 * kGiB, "nvidia", 12 * kGiB)).find("graphics card") == std::string::npos);
     const scr::tree t = checked(en::models_tree(c, pc(32 * kGiB, "nvidia", 12 * kGiB), statuses()));

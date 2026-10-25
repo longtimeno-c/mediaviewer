@@ -69,13 +69,6 @@ std::optional<std::vector<kind>> kind_list(const json::value* v) {
   return out;
 }
 
-// A model folder's id: [a-z0-9-]{1,32} (it names a folder and node ids).
-bool model_id_ok(std::string_view id) noexcept {
-  return !id.empty() && id.size() <= 32 && std::all_of(id.begin(), id.end(), [](char c) {
-    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
-  });
-}
-
 bool knob_id_ok(std::string_view id) noexcept {
   return !id.empty() && id.size() <= 32 && std::all_of(id.begin(), id.end(), [](char c) {
     return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
@@ -275,6 +268,12 @@ std::optional<kind> kind_from(std::string_view id) noexcept {
     if (id == kind_id(k)) return k;
   }
   return std::nullopt;
+}
+
+bool model_id_ok(std::string_view id) noexcept {
+  return !id.empty() && id.size() <= 32 && std::all_of(id.begin(), id.end(), [](char c) {
+    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
+  });
 }
 
 std::uint64_t model::download_bytes() const noexcept {

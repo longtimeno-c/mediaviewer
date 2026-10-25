@@ -35,18 +35,22 @@
 // before each file and about once a second while bytes move, so a Remove in
 // another window ends the run and nothing makes its folders again), the 5 GB
 // cap (`refused`), the model fitting this machine (choose.h offer(): `unfit`,
-// or `no_space` with need / have), the lock (`other_window`) and a transport
-// (`unsupported`). A kind refused for the lock alone waits for it: the
-// worker looks every lock_retry whether the other window let go, then runs
-// it (which may find its files all there, and make no request). A chosen
-// model this store is not fetching reads `other_window` too while another
-// window holds the lock. A finished run deletes what no kind's chosen model
-// needs: what enhance.json names now, this store's choices and the model
-// just fetched. A prune that cannot have the download lock (another window is
-// downloading) is owed, and tried again after the next run, at
-// reload_choices() and every prune_retry until it runs. Within a run the
-// fetcher waits out an outage by itself (`waiting`); a 404 is `gone`, three
-// wrong hashes `failed` (the file deleted).
+// or `no_space` with need / have), the lock (`other_window`; `stopped` when
+// its file cannot be opened) and a transport (`unsupported`). A holder is
+// tried again for about 50 ms first, since another window's look at the
+// lock holds it for an instant. A kind refused for the lock alone waits for
+// it: the worker looks every lock_retry whether the other window let go,
+// then runs it (which may find its files all there, and make no request).
+// A chosen model this store is not fetching reads `other_window` too while
+// another window holds the lock. A finished run deletes what no kind's
+// chosen model needs: what enhance.json names now, this store's choices and
+// the model just fetched; a choice this version does not know keeps its
+// whole models/<id>/ folder. A prune that cannot have the download lock
+// (another window is downloading) is owed, and tried again after the next
+// run, at reload_choices() and every prune_retry until it runs. Within a run
+// the fetcher waits out an outage by itself (`waiting`); a 404 is `gone`,
+// three wrong hashes `failed` (the file deleted). A run's bytes never go
+// back: what was here as it began counts until the fetcher passes it.
 //
 // Threads. Every call is safe from any thread and never waits on the network;
 // download(), remove() and reload_choices() may wait up to choices_wait for
@@ -218,7 +222,10 @@ class model_store {
 
   void work();
   run_end run_one(kind k, const std::string& id);
-  void on_progress(kind k, const ai::fetch_progress& p, std::uint64_t before, std::uint64_t total);
+  // `others`: the bytes of the run's other files, through or already here;
+  // `start`: what was here of this one as the run began.
+  void on_progress(kind k, const ai::fetch_progress& p, std::uint64_t others, std::uint64_t start,
+                   std::uint64_t total);
   void prune_unchosen(bool lock_held, const std::string& fetched = {});
   [[nodiscard]] bool prune_now(bool lock_held, const std::string& fetched);
   void start_worker_locked();

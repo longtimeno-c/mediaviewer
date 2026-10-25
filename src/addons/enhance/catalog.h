@@ -39,6 +39,9 @@ inline constexpr std::array<kind, 3> kKinds{kind::still, kind::video, kind::audi
 // "still", "video", "audio".
 [[nodiscard]] const char* kind_id(kind k) noexcept;
 [[nodiscard]] std::optional<kind> kind_from(std::string_view id) noexcept;
+// A model folder's id: [a-z0-9-]{1,32} (it names a folder and node ids),
+// in every version's catalogue.
+[[nodiscard]] bool model_id_ok(std::string_view id) noexcept;
 
 // Enhance's cap, per weights file (docs/design/12, 2026-10-13): a pin over it
 // is refused and never requested. The packer and the catalogue check refuse

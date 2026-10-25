@@ -13,9 +13,12 @@
 // with no model present and makes nothing; its page opens, draws the
 // fixture's models and takes a Delete. Only on Linux, where there is no
 // transport (fetch_none.cpp), is Download clicked: it stops before any
-// request. macOS and Windows would reach Hugging Face, so they never click it
-// here; tests/test_enhance.cpp drives the store against a fake one everywhere.
-// Last, Remove deletes every weight, and keeps the choices only with the data.
+// request, and a double click on Cancel is not taken for a Resume. macOS and
+// Windows would reach Hugging Face, so they never click it here;
+// tests/test_enhance.cpp drives the store against a fake one everywhere.
+// Last, Remove deletes every weight, and keeps the choices only with the
+// data. An open page follows another window's download as it starts and
+// finishes, and posts nothing when nothing changed.
 #include "catch_compat.h"
 
 #include <sodium.h>
@@ -32,6 +35,7 @@
 #include "addon/screen.h"
 #include "addon/slots.h"
 #include "addon/store.h"
+#include "addons/enhance/lock.h"
 #include "core/json.h"
 #include "import_fixture.h"
 
@@ -62,13 +66,23 @@ std::span<const std::uint8_t> bytes_of(const std::string& s) {
 }
 
 template <typename F>
-bool eventually(F f) {
-  for (int i = 0; i < 1000; ++i) {
+bool eventually(F f, std::chrono::milliseconds within = std::chrono::seconds(5)) {
+  const auto until = std::chrono::steady_clock::now() + within;
+  while (std::chrono::steady_clock::now() < until) {
     if (f()) return true;
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   return f();
 }
+
+// How long after a post changed what a main button does a click on it is
+// taken for one on the button as it was (addon_entry.cpp kClickSettle), and
+// a wait safely past it.
+constexpr auto kPastSettle = std::chrono::milliseconds(700);
+// How often an open page looks at another window's download (kLockLook),
+// and a wait for a look to have happened.
+constexpr auto kLook = std::chrono::seconds(5);
+constexpr auto kPastLook = std::chrono::milliseconds(12'000);
 
 struct packed_file {
   std::string path;
@@ -189,6 +203,35 @@ std::string label_of(const scr::tree& t, const std::string& id) {
   return s ? *s : std::string();
 }
 
+// The page's tree revision: it moves on every post.
+std::int64_t revision_of(const slot_registry& reg) {
+  const auto doc = mv::json::parse(reg.screens_json());
+  REQUIRE(doc);
+  REQUIRE(doc->a.size() == 1);
+  const auto r = doc->a[0].integer("revision");
+  REQUIRE(r);
+  return *r;
+}
+
+#if defined(MV_ENHANCE_MODULE_PATH)
+// mv_enhance as the packer ships it, with the fixture catalogue.
+struct package {
+  std::vector<packed_file> files;
+  std::string manifest;
+};
+
+package enhance_package() {
+  const std::string native = utf8(fs::path(MV_ENHANCE_MODULE_PATH).filename());
+  const staged_catalogue cat = stage_fixture();
+  package p;
+  p.files = {{native, read_bytes(MV_ENHANCE_MODULE_PATH), "GPL-3.0-or-later"}};
+  REQUIRE(p.files[0].bytes.size() > 1000);
+  p.files.insert(p.files.end(), cat.files.begin(), cat.files.end());
+  p.manifest = enhance_manifest(native, p.files, cat.remote);
+  return p;
+}
+#endif
+
 }  // namespace
 
 TEST_CASE("enhance: the shipped manifest declares its Models page in Settings and nothing else",
@@ -274,7 +317,7 @@ TEST_CASE("enhance: the add-on loads with no model, opens its Models page and ta
     CHECK(*open->a[0].str("place") == "settings");
     const scr::tree t = page(reg);
     CHECK(text_of(t, "machine").find(" of memory") != std::string::npos);
-    CHECK(text_of(t, "facts").find(" cores \xC2\xB7 ") != std::string::npos);
+    CHECK(text_of(t, "facts").find(" processor thread") != std::string::npos);
     CHECK(text_of(t, "facts").find(" of memory free \xC2\xB7 ") != std::string::npos);
     CHECK(text_of(t, "facts").find(" free on this disk") != std::string::npos);
     CHECK(text_of(t, "kind.still") == "Photos");
@@ -340,7 +383,9 @@ TEST_CASE("enhance: the add-on loads with no model, opens its Models page and ta
 #if defined(__linux__)
   // No transport on Linux: Download passes the cap, the fit and the lock,
   // stops at the transport, before any request, and leaves no file but the
-  // lock's. The choice is kept, with Resume.
+  // lock's. The choice is kept, with Resume. (Clicked past the settle time
+  // of the Delete's tree, which turned this button from Resume to Download.)
+  std::this_thread::sleep_for(kPastSettle);
   REQUIRE(reg2.send_event("enhance", "models", "a.still.fixture-small", MV_SLOT_EVENT_CLICK, "") == status::ok);
   REQUIRE(eventually([&] {
     reg2.drain();
@@ -360,6 +405,44 @@ TEST_CASE("enhance: the add-on loads with no model, opens its Models page and ta
     reg2.drain();
     return label_of(page(reg2), "a.still.fixture-small") == "Download Small for Photos";
   }));
+  CHECK(list_tree(data / "cache") == std::vector<std::string>{"download.lock"});
+
+  // A double click on Cancel is not a Resume: its second press, read
+  // against the tree its first brought, does nothing. Another window holds
+  // the lock, so what is queued waits (Cancel) and never runs.
+  {
+    auto other = mv::enhance::try_lock(utf8(data / "cache" / "download.lock"));
+    REQUIRE(other);
+    const auto label = [&reg2] {
+      reg2.drain();
+      return label_of(page(reg2), "a.still.fixture-small");
+    };
+    const auto line = [&reg2] {
+      reg2.drain();
+      return text_of(page(reg2), "state.still.fixture-small");
+    };
+    const auto click = [&reg2] {
+      REQUIRE(reg2.send_event("enhance", "models", "a.still.fixture-small", MV_SLOT_EVENT_CLICK, "") == status::ok);
+      reg2.drain();  // the add-on has read it
+    };
+    const std::string waits = "Another MediaViewer window is downloading a model. This one carries on when it finishes.";
+    std::this_thread::sleep_for(kPastSettle);  // past the Delete's tree
+    click();                                   // Download
+    REQUIRE(eventually([&] { return label() == "Cancel Small for Photos" && line() == waits; }));
+    std::this_thread::sleep_for(kPastSettle);
+    click();  // Cancel
+    REQUIRE(eventually([&] { return label() == "Resume Small for Photos"; }));
+    click();  // the second press, on the Cancel the person saw: nothing
+    std::this_thread::sleep_for(kPastSettle * 2);
+    CHECK(label() == "Resume Small for Photos");
+    CHECK(line() != waits);
+    click();  // a click past the settle time is one: Resume, and it waits again
+    REQUIRE(eventually([&] { return label() == "Cancel Small for Photos" && line() == waits; }));
+    std::this_thread::sleep_for(kPastSettle);
+    click();  // Cancel
+    REQUIRE(eventually([&] { return label() == "Resume Small for Photos"; }));
+    other.reset();
+  }
   CHECK(list_tree(data / "cache") == std::vector<std::string>{"download.lock"});
 #endif
 
@@ -394,5 +477,65 @@ TEST_CASE("enhance: the add-on loads with no model, opens its Models page and ta
   REQUIRE(st.remove("enhance", false));
   CHECK_FALSE(fs::exists(data));
   CHECK_FALSE(st.find("enhance"));
+}
+#endif
+
+#if defined(MV_ENHANCE_MODULE_PATH)
+TEST_CASE("enhance: an open page follows another window's download, and posts only what changed",
+          "[enhance][addon]") {
+  keypair k;
+  scratch_dir s("addons_enhance_look");
+  mv::addon::store st(utf8(s.root() / "addons"), k.pub, MV_ADDON_HOST_API);
+  fs::create_directories(s / "addons");
+  const package pkg = enhance_package();
+  install(st, k, pkg.files, pkg.manifest);
+  auto info = st.find("enhance");
+  REQUIRE(info);
+  const fs::path data = info->data_dir;
+  // A choice from an earlier launch, none of its files here: stopped, and
+  // nothing is asked of Hugging Face (no click here).
+  write_text(data / "enhance.json", R"({"schema":1,"models":{"still":"fixture-small"}})");
+  fs::create_directories(data / "cache");
+  const std::string lock = utf8(data / "cache" / "download.lock");
+
+  slot_registry reg;
+  mv::addon::host_services svc;
+  svc.slots = &reg;
+  mv_slot_theme theme{};
+  auto loaded = mv::addon::loaded_addon::load(st, "enhance", svc);
+  REQUIRE(loaded);
+  REQUIRE(reg.open_screen("enhance", "models", "", theme, 0, 0, 2) == status::ok);
+  const auto line = [&reg] {
+    reg.drain();
+    return text_of(page(reg), "state.still.fixture-small");
+  };
+  const std::string stopped = "The download stopped.";
+  const std::string theirs =
+      "Another MediaViewer window is downloading a model. Click Resume and this one carries on when it finishes.";
+  CHECK(line() == stopped);
+
+  // Another window starts a download: the page says so by its next look.
+  auto other = mv::enhance::try_lock(lock);
+  REQUIRE(other);
+  REQUIRE(eventually([&] { return line() == theirs; }, kPastLook));
+  CHECK(label_of(page(reg), "a.still.fixture-small") == "Resume Small for Photos");
+
+  // A look that finds nothing changed posts nothing.
+  const std::int64_t revision = revision_of(reg);
+  std::this_thread::sleep_for(kLook + std::chrono::milliseconds(500));
+  reg.drain();
+  CHECK(revision_of(reg) == revision);
+  CHECK(line() == theirs);
+
+  // That window finishes: the page follows.
+  other.reset();
+  REQUIRE(eventually([&] { return line() == stopped; }, kPastLook));
+  CHECK(revision_of(reg) == revision + 1);
+  CHECK_FALSE(mv::enhance::is_held(lock));
+
+  REQUIRE(reg.close_screen("enhance", "models") == status::ok);
+  reg.drain();
+  loaded->reset();
+  CHECK_FALSE(reg.attached("enhance"));
 }
 #endif

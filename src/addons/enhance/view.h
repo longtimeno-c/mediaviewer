@@ -3,20 +3,22 @@
 // Enhance's Models page (#297, docs/plans/enhance.md E1) as a view tree
 // (docs/design/25 §10): Settings -> Add-ons -> Enhance, drawn by both hosts with
 // their own controls. This machine in two lines (what it is, then the local
-// check's cores, free memory and free disk), then per kind its models,
-// largest first, each a card: what it is, what it downloads and needs, whether
-// it fits (or how its download stands), and the buttons that apply. Every
-// control carries a label (screen.h). Pure: the caller passes the catalogue,
-// this machine and the store's status; nothing here touches the disk, and no
-// path appears in a tree.
+// check's processor threads, free memory and free disk), then per kind its
+// models, largest first, each a card: what it is, what it downloads and
+// needs, whether it fits (or how its download stands), and the buttons that
+// apply. Every control carries a label (screen.h). Pure: the caller passes
+// the catalogue, this machine and the store's status; nothing here touches
+// the disk, and no path appears in a tree.
 //
-// A card's buttons keep their ids whatever its state, so keyboard, VoiceOver
-// and Narrator focus stays on the one a click changed: "a.<kind>.<model>" is
-// its main button (Download, Cancel or Resume), "d.<kind>.<model>" its
-// Delete. action_of reads one back against the status the tree was drawn
-// from. Each label names the model ("Download Standard"), with its kind when
-// another card shows that name ("Download Small for Audio"), so no two
-// controls read alike.
+// A card's main button is "a.<kind>.<model>" whether it reads Download,
+// Cancel or Resume, so keyboard, VoiceOver and Narrator focus stays on it
+// across those clicks; "d.<kind>.<model>" is its Delete. A ready card has no
+// main button, and a card no longer chosen no Delete, so a download that
+// finishes and every Delete take away the button that had focus: where focus
+// goes then is the host's call. action_of reads an id back against the
+// status the tree was drawn from. Each label names the model ("Download
+// Standard"), with its kind when another card shows that name ("Download
+// Small for Audio"), so no two controls read alike.
 //
 // Sizes: downloads and disk in decimal units, as src.managed/Shared/ByteSize.cs
 // writes them ("412 MB of 1.08 GB"); memory in the binary units it is sold in,
@@ -42,8 +44,9 @@ namespace mv::enhance {
 
 // "This Mac: Apple M2 Pro, 32 GB of memory." and the like.
 [[nodiscard]] std::string machine_line(const machine& here);
-// The rest of the local check: "10 Arm cores · 16 GB of memory free ·
-// 120 GB free on this disk" (the add-on's data volume).
+// The rest of the local check: "10 processor threads (Arm) · 16 GB of
+// memory free · 120 GB free on this disk" (the add-on's data volume); the
+// free memory only when it is known.
 [[nodiscard]] std::string machine_facts(const machine& here);
 
 // The settings screen "models": the canonical tree (a stack at the root).

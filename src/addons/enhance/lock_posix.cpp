@@ -12,11 +12,13 @@ namespace mv::enhance {
 
 file_lock::~file_lock() { ::close(static_cast<int>(handle_)); }
 
-std::unique_ptr<file_lock> try_lock(const std::string& path) {
+std::unique_ptr<file_lock> try_lock(const std::string& path, bool* held) {
+  if (held) *held = false;
   const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
   if (fd < 0) return nullptr;
   // flock belongs to the open file: a second open in this process is refused too.
   if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+    if (held) *held = errno == EWOULDBLOCK;  // otherwise no lock to be had here (ENOLCK)
     ::close(fd);
     return nullptr;
   }

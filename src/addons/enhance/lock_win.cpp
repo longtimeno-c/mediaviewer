@@ -22,14 +22,19 @@ std::wstring wide_of(const std::string& path) {
 
 }  // namespace
 
-std::unique_ptr<file_lock> try_lock(const std::string& path) {
+std::unique_ptr<file_lock> try_lock(const std::string& path, bool* held) {
+  if (held) *held = false;
   const std::wstring wide = wide_of(path);
   if (wide.empty()) return nullptr;
   // No sharing: a second open fails while this handle is open, in this
-  // process or another.
+  // process or another. Any other failure (a read-only file, a folder at its
+  // name) is not a holder.
   HANDLE h = ::CreateFileW(wide.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (h == INVALID_HANDLE_VALUE) return nullptr;
+  if (h == INVALID_HANDLE_VALUE) {
+    if (held) *held = ::GetLastError() == ERROR_SHARING_VIOLATION;
+    return nullptr;
+  }
   return std::make_unique<file_lock>(reinterpret_cast<std::intptr_t>(h));
 }
 

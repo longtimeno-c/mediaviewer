@@ -26,9 +26,11 @@ class file_lock {
 };
 
 // Non-blocking and exclusive across processes (and across two tries in one
-// process). nullptr when someone else holds it or the file cannot be opened.
-// The file is created; its folder must exist.
-[[nodiscard]] std::unique_ptr<file_lock> try_lock(const std::string& path_utf8);
+// process). nullptr when someone else holds it or the file cannot be opened;
+// then `held`, when given, says which: true for a holder, false for a file
+// that cannot be opened or made (a folder at its name, no access, a disk
+// error), which no wait mends. The file is created; its folder must exist.
+[[nodiscard]] std::unique_ptr<file_lock> try_lock(const std::string& path_utf8, bool* held = nullptr);
 
 // Whether someone holds it now: a probe that never blocks and never makes
 // the file (false when there is none). A holder in this process counts too,

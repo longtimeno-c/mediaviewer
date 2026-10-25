@@ -7,6 +7,7 @@
 #include <fstream>
 #include <set>
 #include <sstream>
+#include <system_error>
 #include <thread>
 
 #include "addons/enhance/lock.h"
@@ -32,6 +33,16 @@ std::uint64_t size_of(const fs::path& p) {
 bool sits_at(const fs::path& p, std::uint64_t size) {
   std::error_code ec;
   return fs::is_regular_file(fs::symlink_status(p, ec)) && size_of(p) == size;
+}
+
+// What is here of a file: all of it, verified or to adopt (the fetcher
+// hashes a right-size file rather than fetch it), or what its .part holds.
+std::uint64_t here_of(const std::string& root, const ai::remote_file& f) {
+  const fs::path p = fs_path(root + "/" + f.path);
+  if (ai::fetch_ready(root, f) || sits_at(p, f.size)) return f.size;
+  fs::path part = p;
+  part += ".part";
+  return std::min(size_of(part), f.size);
 }
 
 std::string strip_slash(std::string dir) {
@@ -70,6 +81,41 @@ std::optional<std::array<std::string, 3>> read_choices(const std::string& path) 
 bool plain_folder(const fs::path& p) {
   std::error_code ec;
   return fs::symlink_status(p, ec).type() == fs::file_type::directory;
+}
+
+// The download lock. Another window's status() holds it for an instant while
+// it looks (lock.h is_held()), a download for minutes: a holder is tried
+// again for about 50 ms before it counts as another window's. `held` as
+// try_lock's: false when the file cannot be opened, which is not retried.
+std::unique_ptr<file_lock> take_download_lock(const std::string& path, bool& held) {
+  for (int tries = 1;; ++tries) {
+    auto mine = try_lock(path, &held);
+    if (mine || !held || tries == 6) return mine;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+}
+
+// Every regular file under `dir`, as the fetcher's paths under `root`, for
+// prune_fetched to keep. No link or junction is followed (prune deletes none).
+// False when a name does not convert to UTF-8 (Windows allows names that do
+// not): then not every file can be named, and the caller deletes nothing.
+bool keep_all_under(const fs::path& root, const fs::path& dir, std::vector<ai::remote_file>& keep) {
+  try {
+    std::error_code ec;
+    for (auto it = fs::recursive_directory_iterator(dir, fs::directory_options::skip_permission_denied, ec);
+         !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+      std::error_code e;
+      const fs::file_type type = it->symlink_status(e).type();
+      if (type == fs::file_type::directory) continue;  // walked into
+      it.disable_recursion_pending();
+      if (type != fs::file_type::regular) continue;
+      const std::u8string rel = it->path().lexically_relative(root).generic_u8string();
+      keep.push_back(ai::remote_file{{}, std::string(rel.begin(), rel.end()), {}, 0});
+    }
+    return true;
+  } catch (const std::system_error&) {
+    return false;
+  }
 }
 
 }  // namespace
@@ -131,16 +177,7 @@ std::vector<ai::remote_file> model_store::remote_files(const model& m) {
 std::uint64_t model_store::here_bytes(const model& m) const {
   const std::string root = weights_root();
   std::uint64_t n = 0;
-  for (const ai::remote_file& f : remote_files(m)) {
-    const fs::path p = fs_path(root + "/" + f.path);
-    if (ai::fetch_ready(root, f) || sits_at(p, f.size)) {
-      n += f.size;
-    } else {
-      fs::path part = p;
-      part += ".part";
-      n += std::min(size_of(part), f.size);
-    }
-  }
+  for (const ai::remote_file& f : remote_files(m)) n += here_of(root, f);
   return n;
 }
 
@@ -358,7 +395,8 @@ bool model_store::held_elsewhere() const {
 
 // Retried every 10 ms: another window holds it only while it reads or
 // writes one small file. Never made in a data folder that has gone (the
-// add-on removed with its data in another window): status::io.
+// add-on removed with its data in another window), nor waited for when the
+// file cannot be opened: status::io.
 std::unique_ptr<file_lock> model_store::lock_choices(mv::status& why) const {
   std::error_code ec;
   if (!fs::is_directory(fs_path(data_), ec)) {
@@ -367,7 +405,12 @@ std::unique_ptr<file_lock> model_store::lock_choices(mv::status& why) const {
   }
   const auto until = std::chrono::steady_clock::now() + opt_.choices_wait;
   for (;;) {
-    if (auto held = try_lock(choices_lock_path())) return held;
+    bool held = false;
+    if (auto mine = try_lock(choices_lock_path(), &held)) return mine;
+    if (!held) {
+      why = status::io;
+      return nullptr;
+    }
     if (std::chrono::steady_clock::now() >= until) {
       why = status::busy;
       return nullptr;
@@ -586,12 +629,15 @@ model_store::run_end model_store::run_one(kind k, const std::string& id) {
     return e;
   }
   // 3. One process at a time; status() does not probe the lock meanwhile.
+  // A lock file that cannot be opened is no other window's: stopped, and
+  // nothing waits for it.
   std::error_code ec;
   fs::create_directories(fs_path(data_ + "/cache"), ec);
   const std::lock_guard own(own_m_);
-  const auto held = try_lock(lock_path());
-  if (!held) {
-    e.state = download_state::other_window;
+  bool held = false;
+  const auto mine = take_download_lock(lock_path(), held);
+  if (!mine) {
+    e.state = held ? download_state::other_window : download_state::stopped;
     return e;
   }
   // 4. A transport.
@@ -602,22 +648,37 @@ model_store::run_end model_store::run_one(kind k, const std::string& id) {
   }
   ai::fetch_options fo = opt_.fetch;
   fo.max_file_bytes = kMaxWeightsFile;
-  ai::fetcher fetch(weights_root(), *net, std::move(fo));
+  const std::string root = weights_root();
+  ai::fetcher fetch(root, *net, std::move(fo));
   const std::vector<ai::remote_file> files = remote_files(*m);
   const std::uint64_t total = m->download_bytes();
+  // What was here of each file as the run began, as status() counted it
+  // while queued: it counts until the fetcher's own figure for the file
+  // passes it, and a later file's until the loop reaches it, so the bar
+  // never goes back.
+  std::vector<std::uint64_t> found;
+  std::uint64_t ahead = 0;  // found, of the files not reached yet
+  for (const ai::remote_file& file : files) {
+    found.push_back(here_of(root, file));
+    ahead += found.back();
+  }
   // A file at a time, the add-on checked before each: the fetcher makes the
   // file's folder.
   std::uint64_t before = 0;  // the bytes of the files already through
   expected r{};
-  for (const ai::remote_file& f : files) {
+  for (std::size_t i = 0; i < files.size(); ++i) {
     if (!installed()) {
       r = err(status::cancelled);
       break;
     }
-    r = fetch.run(std::span<const ai::remote_file>(&f, 1), run_stop_,
-                  [this, k, before, total](const ai::fetch_progress& p) { on_progress(k, p, before, total); });
+    ahead -= found[i];
+    const std::uint64_t others = before + ahead;
+    r = fetch.run(std::span<const ai::remote_file>(&files[i], 1), run_stop_,
+                  [this, k, others, start = found[i], total](const ai::fetch_progress& p) {
+                    on_progress(k, p, others, start, total);
+                  });
     if (!r) break;
-    before += f.size;
+    before += files[i].size;
   }
   if (r) {
     e.state = download_state::ready;
@@ -636,7 +697,8 @@ model_store::run_end model_store::run_one(kind k, const std::string& id) {
   return e;
 }
 
-void model_store::on_progress(kind k, const ai::fetch_progress& p, std::uint64_t before, std::uint64_t total) {
+void model_store::on_progress(kind k, const ai::fetch_progress& p, std::uint64_t others, std::uint64_t start,
+                              std::uint64_t total) {
   // While bytes move, at most once a second: removed in another window, the
   // run stops at the fetcher's next chunk.
   const auto t = std::chrono::steady_clock::now();
@@ -648,7 +710,7 @@ void model_store::on_progress(kind k, const ai::fetch_progress& p, std::uint64_t
   {
     std::lock_guard lock(m_);
     slot& s = slots_[at(k)];
-    s.done = before + p.done_bytes;
+    s.done = others + std::max(p.done_bytes, start);
     s.total = total;
     s.retry_in_s = p.retry_in_s;
     // gone / failed / done end the run: run_one reports those.
@@ -671,12 +733,13 @@ void model_store::prune_unchosen(bool lock_held, const std::string& fetched) {
 }
 
 // Deletes what no kind's chosen model needs: what enhance.json names now
-// (every window's choices), this store's and the model just fetched. Only
-// with the download lock (never under another window's download) and
-// enhance.lock (no window chooses meanwhile): false, with nothing deleted,
-// when either is held elsewhere, and the prune is owed. Empty folders go
-// too. A weights folder that is a link or a junction is left alone, and no
-// link or junction in it is followed or removed.
+// (every window's choices), this store's and the model just fetched. A
+// choice this version does not know keeps its folder whole. Only with the
+// download lock (never under another window's download) and enhance.lock
+// (no window chooses meanwhile): false, with nothing deleted, when either
+// cannot be had, and the prune is owed. Empty folders go too. A weights
+// folder that is a link or a junction is left alone, and no link or junction
+// in it is followed or removed.
 bool model_store::prune_now(bool lock_held, const std::string& fetched) {
   const fs::path root = fs_path(weights_root());
   if (!plain_folder(fs_path(data_ + "/cache")) || !plain_folder(root)) return true;
@@ -686,7 +749,8 @@ bool model_store::prune_now(bool lock_held, const std::string& fetched) {
   std::unique_ptr<file_lock> mine;
   if (!lock_held) {
     own.lock();
-    if (!(mine = try_lock(lock_path()))) return false;
+    bool held = false;
+    if (!(mine = take_download_lock(lock_path(), held))) return false;
   }
   mv::status why = status::ok;
   const auto choosing = lock_choices(why);
@@ -701,13 +765,21 @@ bool model_store::prune_now(bool lock_held, const std::string& fetched) {
   }
   ids.erase(std::string());
   std::vector<ai::remote_file> keep;
+  std::vector<fs::path> whole;  // the folders of choices this version does not know
   for (const std::string& id : ids) {
-    // A choice this version does not know (made by a newer one in another
-    // window): its files are not known here, so none go.
-    const model* m = catalog_.find(id);
-    if (!m) return true;
-    auto files = remote_files(*m);
-    keep.insert(keep.end(), files.begin(), files.end());
+    if (const model* m = catalog_.find(id)) {
+      auto files = remote_files(*m);
+      keep.insert(keep.end(), files.begin(), files.end());
+      continue;
+    }
+    // A choice this version does not know (another version's in another
+    // window, or one an update dropped): which of its files it needs is not
+    // known here, so everything under models/<id>/ stays, and nothing else
+    // for it (a catalogue gives a model only the files under its own
+    // folder, and no id it accepts names another).
+    if (!model_id_ok(id) || !plain_folder(root / fs_path(id))) continue;
+    whole.push_back(root / fs_path(id));
+    if (!keep_all_under(root, whole.back(), keep)) return true;  // nothing goes
   }
   ai::prune_fetched(weights_root(), keep);
   std::error_code ec;
@@ -715,10 +787,12 @@ bool model_store::prune_now(bool lock_held, const std::string& fetched) {
   for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
        !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
     std::error_code e;
-    if (it->symlink_status(e).type() == fs::file_type::directory) {
-      dirs.push_back(it->path());
-    } else {
+    if (it->symlink_status(e).type() != fs::file_type::directory) {
       it.disable_recursion_pending();  // a file, or a link or junction: never entered
+    } else if (std::find(whole.begin(), whole.end(), it->path()) != whole.end()) {
+      it.disable_recursion_pending();  // an unknown choice's folder, kept as it is
+    } else {
+      dirs.push_back(it->path());
     }
   }
   // Deepest first; a folder that still holds something is left (remove fails).
