@@ -25,7 +25,7 @@ constexpr int kWithdrawMs = 2000;
 }  // namespace
 
 dht::keys handover_keys(std::span<const std::uint8_t, 32> secret, std::uint32_t rejoins) {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   static_assert(crypto_kdf_KEYBYTES == 32);
   std::uint8_t part[4][32];
   const std::uint64_t base = static_cast<std::uint64_t>(rejoins) * 4;

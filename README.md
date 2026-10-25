@@ -35,6 +35,18 @@ Free and open source. Windows may show a SmartScreen warning the first time: the
 
 Setup's Finish page offers to delete the setup `.exe` once it closes. On a Mac, the first-launch setup sheet offers to eject the MediaViewer disk and move the `.dmg` to the Trash. Both boxes start ticked.
 
+### driftwire, on the command line
+
+Send files to MediaViewer or another driftwire nearby, or anywhere with a code, straight from a terminal. No MediaViewer needed.
+
+```sh
+curl -fsSL https://longtimeno-c.github.io/mediaviewer/driftwire/install.sh | sh     # Linux (or apt and dnf)
+brew install longtimeno-c/tap/driftwire                                              # macOS
+irm https://longtimeno-c.github.io/mediaviewer/driftwire/install.ps1 | iex           # Windows (PowerShell)
+```
+
+Updates come the usual way: your package manager on Linux, `brew upgrade` on a Mac, the same line again on Windows. apt and dnf instructions are on [driftwire's page](https://longtimeno-c.github.io/mediaviewer/driftwire/).
+
 ---
 
 ## Speed you can measure
@@ -234,6 +246,7 @@ The optional **Driftwire** add-on sends photos, video and audio to another Media
 - **Remember each other.** After a send, tick *Remember* on both computers and next time it's one click, no code, from anywhere. Each side keeps the other's key in the Keychain or Windows Credential Manager, and refuses loudly if it ever changes.
 - **When nothing gets through directly,** it can go through another computer of yours, or a small relay server you run yourself, and stay sealed end to end: the computer in between passes the bytes on and can't read them.
 - **Encrypted for the long run.** Every send is sealed end to end with a post-quantum handshake, so a recording made today cannot be opened later.
+- **From a terminal, too.** *driftwire* brings the same sends to a terminal on Linux, macOS and Windows and talks to Driftwire in MediaViewer: the code shows in big digits, nothing is saved until you answer, and what happened stays in your scrollback. [One line installs it](#driftwire-on-the-command-line), with no MediaViewer needed.
 
 ## Themes and add-ons from anyone
 
@@ -278,6 +291,7 @@ All add-ons install from **Settings → Add-ons**, are verified at every start, 
 | **Video Editor, several clips** | Several clips on one timeline, zoom and dissolves ([docs/design/21](docs/design/21-video-editor.md)) |
 | **Editor add-on** (optional) | Colour grading, multi-track editing, titles and captions, an audio mixer and delivery presets ([docs/design/22](docs/design/22-editor-addon.md)) |
 | **Explorer details** | Explorer's Details-pane properties and tab-grouped windows |
+| **Linux** | MediaViewer on Linux: its own GPU surface on Wayland, hardware video decode and a native desktop app ([plan](docs/plans/linux.md)) |
 
 ## From source
 

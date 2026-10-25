@@ -223,7 +223,8 @@ struct addon_state {
       o.prefs_path = prefs_path;
       o.initial = std::move(initial);
       // #472 PR 4: the identity and remembered devices, in the Keychain /
-      // Credential Manager (none on other systems: nothing is remembered).
+      // Credential Manager / the Secret Service (none without one: nothing
+      // is remembered).
       if (!o.offline) o.make_secrets = [] { return mv::driftwire::secrets::os_store(); };
       eng = std::make_unique<engine>(*bridge, std::move(o));
     }

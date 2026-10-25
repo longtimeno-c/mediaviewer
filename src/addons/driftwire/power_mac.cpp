@@ -23,13 +23,18 @@ class assertion final : public stay_awake {
 }  // namespace
 
 std::unique_ptr<stay_awake> hold(bool receiving) noexcept {
-  const CFStringRef why = receiving ? CFSTR("MediaViewer is receiving files (Driftwire)")
-                                    : CFSTR("MediaViewer is sending files (Driftwire)");
-  IOPMAssertionID id = kIOPMNullAssertionID;
-  if (IOPMAssertionCreateWithName(kIOPMAssertPreventUserIdleSystemSleep, kIOPMAssertionLevelOn, why, &id) !=
-      kIOReturnSuccess) {
+  CFStringRef why = nullptr;
+  try {
+    why = CFStringCreateWithCString(kCFAllocatorDefault, reason(receiving).c_str(), kCFStringEncodingUTF8);
+  } catch (...) {
     return nullptr;
   }
+  if (!why) return nullptr;
+  IOPMAssertionID id = kIOPMNullAssertionID;
+  const IOReturn made =
+      IOPMAssertionCreateWithName(kIOPMAssertPreventUserIdleSystemSleep, kIOPMAssertionLevelOn, why, &id);
+  CFRelease(why);  // the assertion keeps its own copy
+  if (made != kIOReturnSuccess) return nullptr;
   try {
     return std::make_unique<assertion>(id);
   } catch (...) {

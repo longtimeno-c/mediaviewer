@@ -30,8 +30,6 @@ namespace mv::driftwire::secrets {
 
 namespace {
 
-constexpr const char* kService = "MediaViewer Driftwire";
-
 struct cf_release {
   void operator()(CFTypeRef r) const noexcept {
     if (r) CFRelease(r);
@@ -150,6 +148,7 @@ std::unique_ptr<store> keychain_store(const std::string& service) {
   return std::make_unique<keychain>(service, std::move(group));
 }
 
-std::unique_ptr<store> os_store() { return keychain_store(kService); }
+std::unique_ptr<store> os_store(const std::string& service) { return keychain_store(service); }
+std::unique_ptr<store> os_store() { return os_store(kAppService); }
 
 }  // namespace mv::driftwire::secrets

@@ -1,8 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// POSIX half of the file port (io/file_port.h). macOS in the product; the
-// Linux core test build (cmake/portable.cmake) uses it too, with the closest
-// Linux equivalents where macOS has its own call.
+// POSIX half of the file port (io/file_port.h). macOS, and Linux (the
+// driftwire tool, the add-on and the portable build), with the closest Linux
+// equivalents where macOS has its own call.
 #if !defined(__APPLE__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE 1  // renameat2 / RENAME_NOREPLACE
 #endif
@@ -45,6 +45,7 @@ bool durable_sync(int fd) noexcept {
   return ::fsync(fd) == 0;
 }
 
+#if defined(__APPLE__)
 bool iequals_tail(std::string_view name, std::string_view ext) noexcept {
   if (name.size() <= ext.size()) return false;
   const std::string_view tail = name.substr(name.size() - ext.size());
@@ -55,6 +56,7 @@ bool iequals_tail(std::string_view name, std::string_view ext) noexcept {
   }
   return true;
 }
+#endif
 
 // The rename itself to stable storage: the directory entry, not only the
 // file's bytes. F8 across volumes deletes the source right after this, so a
@@ -73,10 +75,16 @@ file_id id_of(const struct stat& st) noexcept {
   return {static_cast<std::uint64_t>(st.st_dev), 0, static_cast<std::uint64_t>(st.st_ino)};
 }
 
+// A macOS package (an app, a Photos library): one item in Finder, never
+// walked into. Linux has none: a folder named "x.app" there is a folder.
 bool is_package(std::string_view name) noexcept {
+#if defined(__APPLE__)
   for (const char* ext : {".app", ".photoslibrary", ".bundle", ".framework", ".lrdata"}) {
     if (iequals_tail(name, ext)) return true;
   }
+#else
+  (void)name;
+#endif
   return false;
 }
 
@@ -301,8 +309,8 @@ expected file_reader::open(std::string_view utf8_path, read_mode mode, bool /*co
     (void)::fcntl(fd, F_RDAHEAD, 1);
   }
 #else
-  // Linux (tests): drop the clean pages the writer's fsync left, so the read
-  // comes from the device.
+  // Linux: drop the clean pages the writer's fsync left (flush_durable drops
+  // them too), so the read comes from the device.
   (void)::posix_fadvise(fd, 0, 0,
                         mode == read_mode::uncached ? POSIX_FADV_DONTNEED : POSIX_FADV_SEQUENTIAL);
 #endif
@@ -476,7 +484,14 @@ expected file_writer::set_size(std::uint64_t bytes) {
 expected file_writer::flush_durable() {
   detail::simulated_round_trip();
   if (!impl_) return err(status::invalid_arg);
-  return durable_sync(impl_->fd) ? expected{} : err(status::io);
+  if (!durable_sync(impl_->fd)) return err(status::io);
+#if !defined(__APPLE__)
+  // Linux has no per-file no-cache for buffered writes (the Mac's F_NOCACHE):
+  // the pages just made durable are clean now, so drop them, and the verify
+  // read-back (read_mode::uncached) comes from the device, not from memory.
+  (void)::posix_fadvise(impl_->fd, 0, 0, POSIX_FADV_DONTNEED);
+#endif
+  return {};
 }
 
 expected file_writer::set_mtime(std::int64_t mtime_unix) {

@@ -68,12 +68,14 @@ add_library(mv_gfx STATIC
   src/gfx/colour_desc.cpp
   src/gfx/colour_desc.h
   src/gfx/metal_pacer.cpp
+  src/gfx/presentation_pacer.cpp
   src/gfx/device_mac.mm
   src/gfx/metal_layer.mm
   src/gfx/blit_metal.mm
   src/gfx/video_blit_metal.mm
   src/gfx/video_blit_metal.h
   src/gfx/metal_pacer.h
+  src/gfx/presentation_pacer.h
   src/gfx/frame_histogram.h
   src/gfx/present_policy.h
   src/gfx/pace_json.h
@@ -862,6 +864,7 @@ if(MV_BUILD_TESTS)
     tests/test_document_scroll.cpp
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
+    tests/test_presentation_pacer.cpp
     tests/test_frametime_report.cpp
     tests/test_dino_game.cpp
     tests/test_browse_index.cpp

@@ -33,6 +33,12 @@
       "platform": "osx"
     },
     {
+      "$comment": "Linux PR 1 (docs/plans/linux.md): the present lab and the F3 overlay on OpenGL 3 via EGL. No platform backend, as on the other two; the binding's own loader finds glvnd's libOpenGL.so.0 through EGL, so no GLX. With catch2, the only packages a Linux build of this manifest installs.",
+      "name": "imgui",
+      "features": ["opengl3-binding"],
+      "platform": "linux"
+    },
+    {
       "name": "libjpeg-turbo",
       "platform": "osx"
     },
@@ -129,6 +135,10 @@
     {
       "name": "libsodium",
       "platform": "windows | osx"
+    },
+    {
+      "name": "ftxui",
+      "platform": "windows | osx"
     }
   ],
 
@@ -144,6 +154,7 @@
     "PR 7": "landed: tiff, libheif (default-features OFF — the port's `hevc` feature is x265 encode, forbidden), libavif[dav1d], libraw, crashpad. libde265 is a hard dependency of libheif, not a feature, so HEIC decode does not pull x265. See docs/design/12 2026-09-13.",
     "PR 9": "exiv2[bmff,png,xmp] (windows; built and tested there, docs/design/12 2026-09-24). macOS installs it dynamically from tools/mac/dependencies/vcpkg.json instead.",
     "PR 16 (Import, both platforms)": "blake3 (CC0-1.0 OR Apache-2.0; taken under CC0, docs/design/18) for content hashes in io/ (verified copy, F8 across volumes, Import), libsodium (ISC) for the Ed25519 add-on manifest signature and SHA-256 in src/addon. The Import add-on links SQLite itself and nothing of the core.",
+    "driftwire command line (all three platforms)": "ftxui (MIT) lays out and colours the driftwire terminal UI (src/addons/driftwire/cli, docs/design/28 'From a terminal'). Its dom and screen libraries only; linked into the command line, never into the app or the add-on. Linux takes it from tools/portable/vcpkg.json.",
     "PR 11 (osx)": "crashpad on osx too (docs/design/10 PR 11: Mac crash reporting). Apache-2.0, static, from this manifest's arm64-osx install like the permissive codecs; the handler binary ships in MediaViewer.app/Contents/Helpers (tools/mac/macpack.py).",
     "note-ffmpeg": "LGPL only. No --enable-gpl, no --enable-nonfree, no x264/x265, no LibRaw GPL demosaic pack. tools/licence-check.ps1 fails the build on any of them, and it now reads the configure string embedded in the built avutil/avcodec DLLs rather than a log vcpkg deletes. Verified on the pinned baseline: the port configures --enable-d3d11va --enable-dxva2 --enable-shared with --disable-libx264 --disable-libx265 --disable-libfdk-aac and no --enable-gpl.",
     "note-exiv2": "GPL-2.0, and kept. The app is GPL-3.0-or-later (docs/design/11, settled in PR 1), so this is compliant rather than a trap.",

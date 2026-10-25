@@ -53,8 +53,8 @@ added by the PR that adds the dependency.
 | [HarfBuzz](https://harfbuzz.github.io) | 14.4.0 | MIT ("Old MIT") | vcpkg (Windows DLL, macOS static) | Shapes the text of DOCX pages. No optional features. |
 | [Velopack](https://github.com/velopack/velopack) | 1.2.0 | MIT | Managed assembly + `Update.exe` beside the app | PR 8 updater: versioned folders, delta packages, staging, rollback (docs/design/13 Part 1). |
 | [BouncyCastle.Cryptography](https://github.com/bcgit/bc-csharp) | 2.7.0 | MIT (Bouncy Castle) | Managed assembly | Ed25519 verification of the signed update manifest (PR 8). The signature check runs before anything from the channel is trusted. |
-| [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) | 1.8.7 | **CC0-1.0** (dual CC0-1.0 OR Apache-2.0; taken under CC0) | vcpkg (Windows DLL, macOS static) | Content hashes for verified copies: F8 across volumes and the Import add-on (Milestone G, docs/design/18). CC0 was chosen when the app was GPL-2.0-or-later, where Apache-2.0 alone does not combine; the choice stands. |
-| [libsodium](https://libsodium.org) | 1.0.22 | ISC | vcpkg (Windows DLL, macOS static) | Ed25519 check of signed add-on manifests and SHA-256 of add-on files (docs/design/18 "Signed, verified, then loaded"). |
+| [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) | 1.8.7 | **CC0-1.0** (dual CC0-1.0 OR Apache-2.0; taken under CC0) | vcpkg (Windows DLL, macOS static); static in the Linux `driftwire` | Content hashes for verified copies: F8 across volumes and the Import add-on (Milestone G, docs/design/18). CC0 was chosen when the app was GPL-2.0-or-later, where Apache-2.0 alone does not combine; the choice stands. |
+| [libsodium](https://libsodium.org) | 1.0.22 | ISC | vcpkg (Windows DLL, macOS static); static in the Linux `driftwire` | Ed25519 check of signed add-on manifests and SHA-256 of add-on files (docs/design/18 "Signed, verified, then loaded"). |
 | [Lua](https://www.lua.org) | 5.4.8 | MIT | **Static**, vendored in `third_party/lua` (both platforms) | The sandboxed runtime for add-ons from other makers (docs/design/25 §9 A, PR 57). The interpreter only: no JIT exists in Lua, and the `io`, `os`, `package` and `debug` libraries and the stand-alone tools are not compiled in. Small local changes for the sandbox's limits (the watchdog's checks; no finalizers or weak tables) are listed in `third_party/lua/VENDOR.txt`. Licence: `third_party/lua/LICENSE`. |
 
 ## macOS (MediaViewer.app, PR 20)
@@ -70,6 +70,18 @@ This file and `LICENSE` are copied into `Contents/Resources`. Mac-only additions
 | [dmgbuild](https://github.com/dmgbuild/dmgbuild) | 1.6.7 | MIT | Build tool only | Builds the first-install disk image. Not in a shipped binary. |
 | [LLVM OpenMP runtime](https://openmp.llvm.org/) | LLVM 19.1.7 release sources, built by `tools/mac/build_libomp.py` for macOS 14.0 | Apache-2.0 WITH LLVM-exception; legacy notices included | Dynamic, macOS | Bounded parallel LibRaw processing. Bundled in Frameworks; full notices in `llvm-openmp.txt` in Resources (source: `assets/licenses/llvm-openmp.txt`). |
 
+## Linux (the present lab, Linux PR 1)
+
+The Linux lab (docs/plans/linux.md) links the same Dear ImGui (its OpenGL 3 backend) and the
+system's display libraries; it ships no codec yet. Linux-only additions:
+
+| Component | Version | Licence | Linkage | Notes |
+|---|---|---|---|---|
+| [wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols) (xdg-shell, presentation-time, viewporter, fractional-scale-v1, xdg-decoration-unstable-v1) | 1.45 | MIT | Static: XML vendored in `tools/linux/protocols`, compiled from `wayland-scanner` output | Each file keeps its copyright notice. |
+| [libwayland](https://gitlab.freedesktop.org/wayland/wayland) (client, egl) | the system's (1.20+) | MIT | Dynamic, system library | Not shipped. |
+| [libxkbcommon](https://xkbcommon.org) | the system's | MIT | Dynamic, system library | Keyboard maps for the lab's window. Not shipped. |
+| [libglvnd](https://gitlab.freedesktop.org/glvnd/libglvnd) (libEGL, libOpenGL) | the system's | MIT-style (libglvnd's own) | Dynamic, system library | Dispatches to the GPU driver's EGL and OpenGL (Mesa, NVIDIA), which are loaded at run time and never shipped. |
+
 ## Data (the Places add-on)
 
 Not linked into the app. The Places add-on ([docs/design/27](docs/design/27-places.md))
@@ -83,11 +95,38 @@ ships a place database built by `tools/geo/build_places.py` from:
 ## Data (the Driftwire add-on)
 
 Not linked into the app. The Driftwire add-on ([docs/design/28](docs/design/28-driftwire.md),
-#472 PR 3) compiles in one word list for its four-word codes:
+#472 PR 3), and the `driftwire` command line with it, compile in one word list for its four-word
+codes:
 
 | Data | Version | Licence | Use |
 |---|---|---|---|
 | [BIP 39](https://github.com/bitcoin/bips/blob/master/bip-0039.mediawiki) English word list (`bip-0039/english.txt`), Marek Palatinus, Pavol Rusnak, Aaron Voisine, Sean Bowe | As published in `bitcoin/bips` (2048 words) | **MIT** ("This BIP falls under the MIT License.") | The words of a DHT code; `src/addons/driftwire/wordlist.inc`, generated, unedited, with its notice. |
+
+## The driftwire command line
+
+Not linked into the app. `driftwire`, Driftwire in a terminal
+([docs/design/28](docs/design/28-driftwire.md#from-a-terminal-driftwire)), is a program of its own:
+packages on Linux, an archive on macOS (the Homebrew tap installs it) and a zip on Windows (the
+PowerShell one-liner installs it). It links:
+
+| Component | Version | Licence | Linkage | Notes |
+|---|---|---|---|---|
+| [FTXUI](https://github.com/ArthurSonzogni/FTXUI) | 7.0.3 | **MIT** | Static (vcpkg; its port builds static libraries only), all three platforms | Lays out and colours what the command line draws: the `dom` and `screen` libraries only, not `component`. Copyright (c) 2019 Arthur Sonzogni. |
+| [libsodium](https://libsodium.org) | 1.0.22 | ISC | Static on Linux and macOS; `libsodium.dll` beside `driftwire.exe` on Windows | The engine's cryptography (Noise, ML-KEM-768, CPace, the sealed channel), as in the add-on. Copyright (c) 2013-2026 Frank Denis; the ISC notice ships with every build (below). |
+| [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) | 1.8.7 | **CC0-1.0** (taken under CC0) | Static on Linux and macOS; `blake3.dll` on Windows | Each file's hash, as in the add-on. |
+| BIP 39 English word list | (above) | **MIT** | Compiled in (`src/addons/driftwire/wordlist.inc`) | Four-word codes, as in the add-on. |
+| GCC's `libstdc++` and `libgcc` | the build's GCC (12 in the packages) | GPL-3.0 with the GCC Runtime Library Exception 3.1 | Static on Linux (`-static-libstdc++ -static-libgcc`) | The exception covers it; nothing to ship. The program then needs only glibc. |
+| Microsoft Visual C++ runtime (`vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`: those `driftwire.exe` imports) | the build's MSVC toolset redist | Microsoft redistributable terms | Dynamic, Windows: beside `driftwire.exe` in the zip | Copied from Visual Studio's redistributable folder by `tools/package/driftwire-windows.ps1`, Microsoft-signed, as `vcomp140.dll` is for the app: a per-user install takes no administrator, so it cannot run `vc_redist`. The Universal CRT is part of Windows 10 and later. |
+
+The Linux packages carry every notice above in `/usr/share/doc/driftwire/copyright` (DEP-5,
+`packaging/linux/copyright`) and the GPL text and NOTICE in `/usr/share/licenses/driftwire/`. The
+macOS archive (`driftwire-<version>-macos-universal.tar.gz`: the program, with libsodium, BLAKE3
+and FTXUI static and the system's libc++, and its manual page) and the Windows zip
+(`driftwire-<version>-windows-x64.zip`: `driftwire.exe`, `libsodium.dll`, `blake3.dll` and the
+Visual C++ runtime DLLs above) each carry `LICENSE`, `NOTICE` and the same notices as
+`COPYRIGHT.txt`, a copy of `packaging/linux/copyright` (the MIT, ISC and CC0 texts in full; its
+opening comment describes the Linux program's linking); CI's artefacts are the same archives.
+Catch2 builds only its tests.
 
 ## Planned, with the PR that introduces each
 

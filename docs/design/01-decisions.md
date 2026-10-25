@@ -46,6 +46,8 @@ Each OS gets its own native API (D3D11 on Windows, Metal on macOS); there is no 
 
 Windows chrome is **C# WinUI 3**; macOS chrome is **SwiftUI hosted in AppKit**. Both talk to the same
 core through the same C ABI. ImGui is the present lab and the F3 overlay on both, not shipped chrome.
+**Amended 2026-10-23 (owner):** Linux chrome will be **Qt 6 / QML**, with the canvas a child
+`QWindow` that C++ presents into ([plan](../plans/linux.md), [12](12-decision-log.md#platforms)).
 
 Native chrome gives a virtualizing filmstrip, folder tree, accessibility, IME and system theming without
 hand-writing them; C# is used on Windows because C++/WinRT XAML is slow to develop exactly where the
@@ -169,6 +171,14 @@ and Apple-only APIs live only in the hosts and in `*_win` / `*_mac` backends beh
 |---|---|---|
 | OS floor | Windows 10 21H2+ | macOS 14+ |
 | CPU | x64 | Apple silicon and Intel (one universal app; AI features arm64 only) |
+
+**Amended 2026-10-23 (owner): Linux is a third host.** OpenGL via EGL on a surface C++ owns,
+Wayland first (X11 runs, ungated); Qt 6 / QML chrome; GLSL the third shader twin; FFmpeg with
+VA-API; no Vulkan on any OS. The order of the Linux halves is not the owner's call yet (the plan's
+open call 8): it recommends the Linux halves of PRs 1–8 first, then of what has landed since, then
+every PR on all three. Until it is settled PRs stay dual-track, and shared code must stay hostable
+on Linux too. Nothing of the viewer runs on Linux yet; Driftwire's command line (its own change)
+is planned to ship there first ([plan](../plans/linux.md), [12](12-decision-log.md#platforms)).
 
 ---
 

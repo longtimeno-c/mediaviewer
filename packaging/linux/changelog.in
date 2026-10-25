@@ -1,0 +1,7 @@
+driftwire (@PROJECT_VERSION@) stable; urgency=medium
+
+  * driftwire @PROJECT_VERSION@, built from MediaViewer's v@PROJECT_VERSION@. What
+    changed is on the release page:
+    @PROJECT_HOMEPAGE_URL@/releases/tag/v@PROJECT_VERSION@
+
+ -- @CPACK_PACKAGE_CONTACT@  @MV_CHANGELOG_DATE@

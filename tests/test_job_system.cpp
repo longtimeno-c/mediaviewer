@@ -17,6 +17,13 @@
 #include <pthread/qos.h>
 #elif defined(_WIN32)
 #include <windows.h>
+#elif defined(__linux__)
+#include <pthread.h>
+#include <sys/resource.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <cstring>
 #endif
 
 #include "core/job_system.h"
@@ -322,17 +329,32 @@ TEST_CASE("view-tied work does not queue behind the background sweep",
 TEST_CASE("workers run at the platform's job priority", "[core][jobs][priority]") {
   // Issue #170: name, priority and QoS moved behind core/job_system_platform.h.
   // Apple: a view-tied job runs at USER_INITIATED (the performance cores), a
-  // background one at UTILITY. Windows: every worker is below normal.
+  // background one at UTILITY. Windows: every worker is below normal. Linux:
+  // every worker is named mv.worker and runs five nice levels below the thread
+  // that started the pool (capped at 19).
+#if defined(__linux__)
+  errno = 0;
+  const int starter_nice = ::getpriority(PRIO_PROCESS, static_cast<id_t>(::gettid()));
+  REQUIRE(errno == 0);
+  const int worker_nice = starter_nice + 5 > 19 ? 19 : starter_nice + 5;
+  std::atomic<bool> named{false};
+#endif
   mv::job_system jobs;
   REQUIRE(jobs.start(1) == mv::status::ok);
   std::atomic<int> foreground{-100}, background{-100};
   std::atomic<int> done{0};
-  auto observe = [](std::atomic<int>& into) {
-    return [&into](const mv::job_context&) {
+  auto observe = [&](std::atomic<int>& into) {
+    return [&](const mv::job_context&) {
 #if defined(__APPLE__)
       into.store(static_cast<int>(qos_class_self()));
 #elif defined(_WIN32)
       into.store(::GetThreadPriority(::GetCurrentThread()));
+#elif defined(__linux__)
+      into.store(::getpriority(PRIO_PROCESS, static_cast<id_t>(::gettid())));
+      char name[16] = {};
+      if (pthread_getname_np(pthread_self(), name, sizeof name) == 0 &&
+          std::strcmp(name, "mv.worker") == 0)
+        named.store(true);
 #else
       into.store(0);
 #endif
@@ -356,6 +378,11 @@ TEST_CASE("workers run at the platform's job priority", "[core][jobs][priority]"
   CHECK(first_background == THREAD_PRIORITY_BELOW_NORMAL);
   CHECK(foreground.load() == THREAD_PRIORITY_BELOW_NORMAL);
   CHECK(background.load() == THREAD_PRIORITY_BELOW_NORMAL);
+#elif defined(__linux__)
+  CHECK(first_background == worker_nice);
+  CHECK(foreground.load() == worker_nice);
+  CHECK(background.load() == worker_nice);
+  CHECK(named.load());
 #else
   (void)first_background;
 #endif
@@ -509,20 +536,29 @@ TEST_CASE("foreground start latency under a background sweep", "[.perf-bench]") 
 #if !defined(__APPLE__)
 TEST_CASE("parallel bands run at their caller's thread priority", "[core][parallel]") {
   // A band started at the default NORMAL outranked a below-normal pool worker
-  // and competed with the UI thread. -1 is THREAD_PRIORITY_BELOW_NORMAL.
+  // and competed with the UI thread. One step below the start: from NORMAL
+  // that is THREAD_PRIORITY_BELOW_NORMAL (-1) on Windows, one nice level on
+  // Linux. On a thread of its own: Linux cannot take a thread's nice back down
+  // without privilege, so the test must not leave the thread that runs the
+  // rest of the suite below normal.
   namespace d = mv::core::detail;
-  const int before = d::current_thread_priority();
-  d::set_current_thread_priority(-1);
-  REQUIRE(d::current_thread_priority() == -1);
   std::mutex m;
   std::vector<int> seen;
-  mv::core::parallel_bands(64, 1, [&](std::size_t, std::size_t) {
-    const int p = d::current_thread_priority();
-    std::lock_guard lock(m);
-    seen.push_back(p);
+  int wanted = 0;
+  int lowered = 0;
+  std::thread caller([&] {
+    wanted = d::current_thread_priority() - 1;
+    d::set_current_thread_priority(wanted);
+    lowered = d::current_thread_priority();
+    mv::core::parallel_bands(64, 1, [&](std::size_t, std::size_t) {
+      const int p = d::current_thread_priority();
+      std::lock_guard lock(m);
+      seen.push_back(p);
+    });
   });
-  d::set_current_thread_priority(before);
+  caller.join();
+  REQUIRE(lowered == wanted);
   REQUIRE_FALSE(seen.empty());
-  for (int p : seen) CHECK(p == -1);
+  for (int p : seen) CHECK(p == wanted);
 }
 #endif

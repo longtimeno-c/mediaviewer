@@ -118,7 +118,7 @@ std::optional<net::endpoint> parse_compact_endpoint(std::string_view c) {
 }
 
 client::client(std::shared_ptr<udp_hub> hub, options o) : hub_(std::move(hub)), opts_(std::move(o)) {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   randombytes_buf(self_.data(), self_.size());
   hub_->on_dht([this](std::span<const std::uint8_t> d, const net::endpoint& from) { on_datagram(d, from); });
   load_table();

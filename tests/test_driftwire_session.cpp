@@ -1068,7 +1068,15 @@ TEST_CASE("driftwire session: a rejoin played back to the way in is closed at on
   internet_pair p(s, true);
   p.way_in_rate.store(3 * 1024 * 1024);  // the rest takes seconds over the internet: time to replay
   const fs::path src = big_file(s / "out", 32ull * 1024 * 1024);
-  const auto places = way_in_open(p, src);
+  auto places = way_in_open(p, src);
+  // The places something listens at, as in the case above: the first one
+  // given need not be (with no IPv6, the way in listens on IPv4 only).
+  std::erase_if(places, [](const sp::net::endpoint& at) {
+    auto c = sp::net::connect(at, 2000);
+    if (c) (*c)->shutdown();
+    return !c;
+  });
+  REQUIRE_FALSE(places.empty());
   REQUIRE(bytes_arrive(*p.ann, *p.bea, 4 * 1024 * 1024));
   wifi_drops(p);
   std::vector<std::uint8_t> replay;

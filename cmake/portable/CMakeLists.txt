@@ -3,20 +3,24 @@
 #
 # The headless portable core build: the parts of Milestone G that have no
 # window, no GPU and no codec (io's file / volume / verified-copy ports in
-# their POSIX form, the add-on host, and the Import engine), built and tested
-# on Linux. It exists so CI proves the shared engine on every pull request
-# without a Windows or Mac runner, and so a contributor on any POSIX machine
-# can run the Import tests. It is not a product build: MediaViewer ships on
-# Windows and macOS only (D9).
+# their POSIX form, the add-on host, the Import engine, and Driftwire with its
+# command line), built and tested on Linux. It exists so CI proves the shared
+# engine on every pull request without a Windows or Mac runner, and so a
+# contributor on any POSIX machine can run the Import tests. It is not a
+# product build: MediaViewer ships on Windows and macOS today (Linux is to be
+# a third host, D9 as the owner amended it on 2026-10-23), and Linux's first
+# product, the driftwire command line, is packaged by cmake/driftwire-cli
+# (docs/design/12, 2026-10-23).
 #
 #   cmake -S cmake/portable -B build-portable
 #   cmake --build build-portable && ctest --test-dir build-portable
 #
-# Dependencies: SQLite, libsodium, BLAKE3 and Catch2 v3, from vcpkg
-# (tools/portable/vcpkg.json, the root manifest's baseline) or the system.
-# Without an installed BLAKE3 / Catch2 package, point MV_BLAKE3_SOURCE_DIR at
-# BLAKE3's c/ directory and MV_CATCH2_AMALGAMATED_DIR at Catch2's
-# extras/ directory.
+# Dependencies: SQLite, libsodium, BLAKE3, Catch2 v3 and FTXUI (the driftwire
+# command line's terminal UI), from vcpkg (tools/portable/vcpkg.json, the
+# root manifest's baseline) or the system. Without an installed BLAKE3 /
+# Catch2 / FTXUI package, point MV_BLAKE3_SOURCE_DIR at BLAKE3's c/
+# directory, MV_CATCH2_AMALGAMATED_DIR at Catch2's extras/ directory and
+# MV_FTXUI_SOURCE_DIR at a checkout of FTXUI's pinned release.
 
 cmake_minimum_required(VERSION 3.28)
 project(mediaviewer_portable LANGUAGES C CXX)
@@ -32,7 +36,11 @@ option(MV_ASAN "Build with AddressSanitizer + UBSan" OFF)
 
 add_library(mv_project_options INTERFACE)
 target_compile_options(mv_project_options INTERFACE
-  $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Werror -fno-rtti>)
+  $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Werror -fno-rtti>
+  # GCC's -O2 flow analysis reports std::optional members read only behind
+  # has_value() as "may be used uninitialized" (transfer.cpp, mapping.cpp);
+  # clang and MSVC do not. Off for GCC only.
+  $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU>>:-Wno-maybe-uninitialized>)
 if(MV_ASAN)
   target_compile_options(mv_project_options INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer)
   target_link_options(mv_project_options INTERFACE -fsanitize=address,undefined)
@@ -96,6 +104,9 @@ set(MV_SOURCE_ROOT "${MV_ROOT}")
 include("${MV_ROOT}/cmake/import.cmake")
 # Milestone H: the AI pack (cmake/ai.cmake); its engine tests run here too.
 include("${MV_ROOT}/cmake/ai.cmake")
+# Driftwire (docs/design/28): the engine, the add-on and the relay tool, and
+# their suites, on Linux.
+include("${MV_ROOT}/cmake/driftwire.cmake")
 
 # ---- tests ----------------------------------------------------------------------
 enable_testing()
@@ -127,6 +138,7 @@ target_include_directories(mv_import_tests PRIVATE "${MV_ROOT}/src" "${MV_ROOT}/
 target_compile_definitions(mv_import_tests PRIVATE
   MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>")
 add_dependencies(mv_import_tests mv_import)
+mv_driftwire_tests(mv_import_tests)
 add_test(NAME mv_import_tests COMMAND mv_import_tests)
 # The dateless-file fallback is local wall-clock time; pin the zone.
 set_tests_properties(mv_import_tests PROPERTIES ENVIRONMENT "TZ=UTC")

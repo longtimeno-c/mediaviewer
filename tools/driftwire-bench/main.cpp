@@ -192,8 +192,7 @@ std::optional<std::vector<sp::outgoing_file>> make_set(const std::string& set, c
   std::vector<sp::outgoing_file> files;
   auto add = [&](const fs::path& p, std::string rel) {
     std::error_code ec;
-    auto id = mv::io::identify(utf8(p));
-    files.push_back({utf8(p), std::move(rel), fs::file_size(p, ec), 0, id ? id.value() : mv::io::file_id{}});
+    files.push_back({utf8(p), std::move(rel), fs::file_size(p, ec), 0, {}});
   };
   auto many = [&](const char* name, std::size_t count, std::uint64_t each) {
     for (std::size_t i = 0; i < count; ++i) {
@@ -218,15 +217,7 @@ std::optional<std::vector<sp::outgoing_file>> make_set(const std::string& set, c
     const fs::path dir = from_utf8(set);
     const std::string top = utf8(dir.filename().empty() ? dir.parent_path().filename() : dir.filename());
     auto walked = mv::io::walk_files(utf8(dir), 16, [&](const mv::io::tree_entry& e) {
-      if (e.cloud_only) return files.size() < sp::kMaxFiles;
-      // #498: the walk's own id where it has one (POSIX); identify() it on Windows.
-      mv::io::file_id id = e.id;
-      if (!id.known()) {
-        auto got = mv::io::identify(e.path_utf8);
-        if (!got) return true;
-        id = got.value();
-      }
-      files.push_back({e.path_utf8, top + "/" + e.relative_utf8, e.size, e.mtime_unix, id});
+      if (!e.cloud_only) files.push_back({e.path_utf8, top + "/" + e.relative_utf8, e.size, e.mtime_unix, {}});
       return files.size() < sp::kMaxFiles;
     });
     if (!walked && walked.error() != mv::status::cancelled) return std::nullopt;

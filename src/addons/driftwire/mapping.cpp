@@ -373,7 +373,7 @@ std::optional<described> parse_description(std::string_view xml, std::string_vie
 // ---- the mapper -------------------------------------------------------------------------------
 
 mapper::mapper(options o) : opts_(std::move(o)) {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   gateway_ = opts_.gateway ? opts_.gateway : net::default_gateway();
   if (gateway_) me_ = net::local_address_toward(*gateway_);
 }

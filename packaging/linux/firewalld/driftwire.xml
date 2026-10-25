@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright (C) 2026 longtimeno-c
+     SPDX-License-Identifier: GPL-3.0-or-later
+     The beacon Driftwire hears nearby (docs/design/28 "Finding each other",
+     src/addons/driftwire/wire.h), for firewall-cmd's add-service option. It
+     arrives to the group 239.255.77.83 and to the subnet broadcast, so the
+     service names no destination. The transfer's own TCP connection is on a
+     port the receiver's system picks, so no service can name it (driftwire(1),
+     FIREWALL). -->
+<service>
+  <short>Driftwire</short>
+  <description>Lets this computer hear the Driftwire beacons of computers nearby (UDP 47613), so driftwire and MediaViewer's Driftwire add-on list them. Receiving nearby also needs incoming TCP from the local network, on a port the system picks.</description>
+  <port protocol="udp" port="47613"/>
+</service>

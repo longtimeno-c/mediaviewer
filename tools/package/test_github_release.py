@@ -3,13 +3,17 @@
 """Release safety checks, using temporary assets and a mocked GitHub CLI."""
 import importlib.util
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 spec = importlib.util.spec_from_file_location('release', Path(__file__).with_name('github-release.py'))
 release = importlib.util.module_from_spec(spec)
@@ -90,6 +94,60 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Incomplete optional Windows'):
             release.prepare()
 
+    def test_publishing_the_command_line_needs_its_secrets_on_stable(self):
+        # MV_DRIFTWIRE_REPO=1: driftwire-repo signs with DRIFTWIRE_REPO_GPG_KEY and
+        # driftwire-homebrew pushes with HOMEBREW_TAP_TOKEN, both after publish.
+        for name in ('MV_MANIFEST_SIGNING_KEY', 'MV_MAC_CERT_P12_BASE64', 'MV_MAC_CERT_PASSWORD',
+                     'APPLE_ID', 'APPLE_TEAM_ID', 'APPLE_APP_PASSWORD', 'MV_SPARKLE_PRIVATE_KEY'):
+            os.environ[name] = 'test'
+        os.environ['MV_DRIFTWIRE_REPO'] = '1'
+        os.environ['MODE'] = 'stable'
+        with self.assertRaisesRegex(ValueError, 'secrets DRIFTWIRE_REPO_GPG_KEY and HOMEBREW_TAP_TOKEN are not set'):
+            release.prepare()
+        os.environ['MODE'] = 'preview'   # previews leave the repository and the tap alone
+        release.prepare()
+        os.environ['MODE'] = 'stable'
+        os.environ['DRIFTWIRE_REPO_GPG_KEY'] = 'test'   # the secrets themselves are not what prepare reads
+        os.environ['HOMEBREW_TAP_TOKEN'] = 'test'
+        with self.assertRaisesRegex(ValueError, 'secrets DRIFTWIRE_REPO_GPG_KEY and HOMEBREW_TAP_TOKEN are not set'):
+            release.prepare()
+        del os.environ['DRIFTWIRE_REPO_GPG_KEY'], os.environ['HOMEBREW_TAP_TOKEN']
+        os.environ['DRIFTWIRE_REPO_KEY_SET'] = '1'
+        with self.assertRaisesRegex(ValueError, 'the secret HOMEBREW_TAP_TOKEN is not set'):
+            release.prepare()
+        os.environ['HOMEBREW_TAP_TOKEN_SET'] = '1'
+        release.prepare()
+        del os.environ['DRIFTWIRE_REPO_KEY_SET']
+        with self.assertRaisesRegex(ValueError, 'the secret DRIFTWIRE_REPO_GPG_KEY is not set'):
+            release.prepare()
+        del os.environ['HOMEBREW_TAP_TOKEN_SET']
+        os.environ['MV_DRIFTWIRE_REPO'] = '0'
+        release.prepare()
+
+    def test_preflight_is_told_whether_the_secrets_are_set_not_the_secrets(self):
+        # release.yml's prepare step: a flag from each secret, never the secret
+        # itself; only driftwire-repo's signing step gets the key, and only
+        # driftwire-homebrew gets the tap's token.
+        workflow = (Path(__file__).parents[2] / '.github/workflows/release.yml').read_text()
+        prepare_job = workflow.split('\n  prepare:\n', 1)[1].split('\n  windows:\n', 1)[0]
+        self.assertIn("DRIFTWIRE_REPO_KEY_SET: ${{ secrets.DRIFTWIRE_REPO_GPG_KEY != '' && '1' || '' }}",
+                      prepare_job)
+        self.assertIn("HOMEBREW_TAP_TOKEN_SET: ${{ secrets.HOMEBREW_TAP_TOKEN != '' && '1' || '' }}", prepare_job)
+        self.assertNotIn('DRIFTWIRE_REPO_GPG_KEY: ', prepare_job)
+        self.assertNotIn('HOMEBREW_TAP_TOKEN: ', prepare_job)
+        self.assertEqual(workflow.count('DRIFTWIRE_REPO_GPG_KEY: ${{ secrets.DRIFTWIRE_REPO_GPG_KEY }}'), 1)
+        homebrew_job = workflow.split('\n  driftwire-homebrew:\n', 1)[1]
+        self.assertEqual(workflow.count('secrets.HOMEBREW_TAP_TOKEN }}'), homebrew_job.count('secrets.HOMEBREW_TAP_TOKEN }}'))
+
+    def test_the_command_line_is_published_by_one_switch(self):
+        # MV_DRIFTWIRE_REPO turns on the archives on the release page (publish), the
+        # package repository (driftwire-repo) and the tap (driftwire-homebrew), on stable only.
+        workflow = (Path(__file__).parents[2] / '.github/workflows/release.yml').read_text()
+        self.assertIn("MV_RELEASE_CLI: ${{ vars.MV_DRIFTWIRE_REPO == '1' && '1' || '0' }}", workflow)
+        for job in ('driftwire-repo', 'driftwire-homebrew'):
+            body = workflow.split(f'\n  {job}:\n', 1)[1].split('\n  driftwire-', 1)[0]
+            self.assertIn("if: inputs.mode == 'stable' && vars.MV_DRIFTWIRE_REPO == '1'", body, job)
+
     def test_release_cannot_blocklist_itself(self):
         os.environ['BLOCKLIST'] = '0.1.1'
         with self.assertRaisesRegex(ValueError, 'Cannot blocklist'):
@@ -128,11 +186,14 @@ class ReleaseTests(unittest.TestCase):
     def test_preview_publishes_signed_feeds_without_latest(self):
         self.stable_assets()
         os.environ['MODE'] = 'preview'
-        # Add-ons stay on the stable feed (docs/design/18): a preview carries none.
+        # Add-ons stay on the stable feed (docs/design/18): a preview carries none,
+        # nor the command line's archives (its channels follow stable releases).
         for addon in release.FIRST_PARTY_ADDONS:
             for platform in release.ADDON_PLATFORMS:
                 for name in release.addon_asset_names(platform, addon):
                     (self.folder / name).unlink()
+        for name in release.cli_asset_names(self.folder, '0.1.1'):
+            (self.folder / name).unlink()
         calls = []
         self.lookup.side_effect = lambda *_: self.uploaded_draft() if calls else None
         def cli(*args):
@@ -148,6 +209,7 @@ class ReleaseTests(unittest.TestCase):
         for name in ('mediaviewer-manifest.json', 'appcast.xml', 'releases.win.json'):
             self.assertTrue(any(a.endswith(name) for a in uploaded), name)
         self.assertFalse(any('mediaviewer-addon-' in a for a in uploaded))
+        self.assertFalse(any('-windows-x64.zip' in a or '-macos-' in a for a in uploaded))
 
     def test_preview_cannot_publish_installers_without_feeds(self):
         os.environ['MODE'] = 'preview'
@@ -164,7 +226,9 @@ class ReleaseTests(unittest.TestCase):
             cli.assert_not_called()
 
     def stable_assets(self):
-        os.environ.update(MODE='stable', TAG='v0.1.1', MV_RELEASE_ADDONS='1')
+        os.environ.update(MODE='stable', TAG='v0.1.1', MV_RELEASE_ADDONS='1', MV_RELEASE_LINUX_CLI='1',
+                          MV_RELEASE_CLI='1')
+        self.write_cli()
         for name in ('MediaViewer-0.1.1-full.nupkg', 'RELEASES', 'releases.win.json',
                      'assets.win.json', 'MediaViewer-0.1.1.zip'):
             (self.folder / name).write_bytes(b'payload')
@@ -175,10 +239,96 @@ class ReleaseTests(unittest.TestCase):
         (self.folder / 'mediaviewer-manifest.json.sig').write_bytes(b'x' * 64)
         for addon in release.FIRST_PARTY_ADDONS:
             self.write_addon(addon)
+        for name in release.linux_cli_asset_names('0.1.1'):
+            (self.folder / name).write_bytes(b'package')
         (self.folder / 'appcast.xml').write_text('''<!-- sparkle-signatures: fixture -->
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item>
 <enclosure url="https://github.com/owner/repo/releases/download/v0.1.1/MediaViewer-0.1.1.zip"
 sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
+
+    def write_cli(self, mac='universal', zip_names=None, tar_names=None):
+        """The command line's archives as driftwire-windows.ps1 and macpack.py pack them."""
+        top = 'driftwire-0.1.1-windows-x64'
+        with zipfile.ZipFile(self.folder / f'{top}.zip', 'w') as z:
+            for name in zip_names or (f'{top}/driftwire.exe', f'{top}/libsodium.dll', f'{top}/LICENSE'):
+                z.writestr(name, 'x')
+        top = f'driftwire-0.1.1-macos-{mac}'
+        with tarfile.open(self.folder / f'{top}.tar.gz', 'w:gz') as tar:
+            for name in tar_names or (f'{top}/driftwire', f'{top}/driftwire.1', f'{top}/LICENSE'):
+                info = tarfile.TarInfo(name)
+                info.size = 1
+                tar.addfile(info, io.BytesIO(b'x'))
+
+    def test_stable_publishes_the_command_line_archives(self):
+        self.stable_assets()
+        names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
+        self.assertIn('driftwire-0.1.1-windows-x64.zip', names)
+        self.assertIn('driftwire-0.1.1-macos-universal.tar.gz', names)
+
+    def test_stable_needs_each_command_line_archive_once_it_is_published(self):
+        self.stable_assets()
+        for name in ('driftwire-0.1.1-windows-x64.zip', 'driftwire-0.1.1-macos-universal.tar.gz'):
+            path = self.folder / name
+            data = path.read_bytes()
+            path.unlink()
+            with patch.object(release, 'gh') as cli:
+                with self.assertRaisesRegex(ValueError, 'Missing or empty release asset: ' + re.escape(name)):
+                    release.publish(self.folder)
+                cli.assert_not_called()
+            path.write_bytes(data)
+
+    def test_the_command_line_archives_are_ignored_when_it_is_not_published(self):
+        # A release of the installers alone (MV_DRIFTWIRE_REPO off), and every preview:
+        # the archives the jobs made are neither required nor uploaded nor in the notes.
+        self.stable_assets()
+        os.environ.pop('MV_RELEASE_CLI')
+        names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
+        self.assertFalse(any(n.startswith('driftwire-0.1.1-windows') or '-macos-' in n for n in names))
+        self.assertNotIn('brew install', release.release_notes('0.1.1', 'stable', 'owner/repo', 'v0.1.1', 'abc'))
+        for name in ('driftwire-0.1.1-windows-x64.zip', 'driftwire-0.1.1-macos-universal.tar.gz'):
+            (self.folder / name).unlink()
+        release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')
+        os.environ['MV_RELEASE_CLI'] = '1'
+        names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'preview', 'owner/repo', 'v0.1.1')]
+        self.assertFalse(any('driftwire-0.1.1-windows' in n for n in names))
+        self.assertNotIn('brew install', release.release_notes('0.1.1', 'preview', 'owner/repo', 'v0.1.1', 'abc'))
+
+    def test_an_arm64_macos_archive_stands_in_and_two_are_refused(self):
+        self.stable_assets()
+        (self.folder / 'driftwire-0.1.1-macos-universal.tar.gz').unlink()
+        self.write_cli(mac='arm64')
+        names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
+        self.assertIn('driftwire-0.1.1-macos-arm64.tar.gz', names)
+        self.write_cli(mac='universal')
+        with self.assertRaisesRegex(ValueError, 'Two macOS archives'):
+            release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')
+
+    def test_the_command_line_archives_must_hold_the_program(self):
+        self.stable_assets()
+        self.write_cli(zip_names=['driftwire-0.1.1-windows-x64/LICENSE'])
+        with self.assertRaisesRegex(ValueError, 'has no driftwire-0.1.1-windows-x64/driftwire.exe'):
+            release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')
+        self.write_cli(zip_names=['driftwire-0.1.1-windows-x64/driftwire.exe', 'elsewhere/x.dll'])
+        with self.assertRaisesRegex(ValueError, 'outside driftwire-0.1.1-windows-x64/'):
+            release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')
+        self.write_cli()
+        self.write_cli(tar_names=['driftwire-0.1.1-macos-universal/driftwire'])
+        with self.assertRaisesRegex(ValueError, 'has no driftwire-0.1.1-macos-universal/driftwire.1'):
+            release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')
+        (self.folder / 'driftwire-0.1.1-macos-universal.tar.gz').write_bytes(b'not a tar')
+        with self.assertRaisesRegex(ValueError, 'Not a gzipped tar'):
+            release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')
+
+    def test_release_notes_give_the_three_ways_to_install_the_command_line(self):
+        os.environ['MV_RELEASE_CLI'] = '1'
+        notes = release.release_notes('0.1.1', 'stable', 'Owner/repo', 'v0.1.1', 'abc',
+                                      ['driftwire-0.1.1-windows-x64.zip', 'driftwire-0.1.1-macos-arm64.tar.gz'])
+        self.assertIn('`curl -fsSL https://owner.github.io/repo/driftwire/install.sh | sh`', notes)
+        self.assertIn('`brew install Owner/tap/driftwire`', notes)
+        self.assertIn('`irm https://owner.github.io/repo/driftwire/install.ps1 | iex`', notes)
+        base = 'https://github.com/Owner/repo/releases/download/v0.1.1'
+        self.assertIn(f'({base}/driftwire-0.1.1-macos-arm64.tar.gz)', notes)
+        self.assertIn(f'({base}/driftwire-0.1.1-windows-x64.zip)', notes)
 
     def test_stable_rejects_tampered_package_before_contacting_github(self):
         self.stable_assets()
@@ -205,6 +355,79 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
             with self.assertRaisesRegex(ValueError, 'mediaviewer-addon-driftwire-win-x64.json'):
                 release.publish(self.folder)
             cli.assert_not_called()
+
+    def test_every_release_needs_each_driftwire_linux_package(self):
+        # docs/design/28 "From a terminal": the linux-cli job's .deb, .rpm and
+        # tarball for x86_64 and arm64; once they are published, a release that
+        # lost one is refused, preview or stable, before GitHub hears of it.
+        self.stable_assets()
+        for mode in ('preview', 'stable'):
+            os.environ['MODE'] = mode
+            for name in release.linux_cli_asset_names('0.1.1'):
+                path = self.folder / name
+                path.unlink()
+                with patch.object(release, 'gh') as cli:
+                    with self.assertRaisesRegex(ValueError, 'Missing or empty release asset: ' + re.escape(name)):
+                        release.publish(self.folder)
+                    cli.assert_not_called()
+                path.write_bytes(b'')
+                with self.assertRaisesRegex(ValueError, 'Missing or empty'):
+                    release.validate_assets(self.folder, '0.1.1', mode, 'owner/repo', 'v0.1.1')
+                path.write_bytes(b'package')
+
+    def test_preview_and_stable_upload_the_driftwire_linux_packages(self):
+        self.stable_assets()
+        for mode in ('preview', 'stable'):
+            names = [p.name for p in release.validate_assets(self.folder, '0.1.1', mode, 'owner/repo', 'v0.1.1')]
+            for name in release.linux_cli_asset_names('0.1.1'):
+                self.assertIn(name, names)
+        self.assertEqual(len(release.linux_cli_asset_names('0.1.1')), 6)
+
+    def test_linux_package_names_are_the_ones_cpack_writes(self):
+        # cmake/driftwire-cli/CMakeLists.txt names the files; the release must
+        # ask for exactly those, or a release would wait for files never made.
+        text = (Path(__file__).resolve().parents[2] / 'cmake' / 'driftwire-cli' / 'CMakeLists.txt').read_text()
+        def setting(name):
+            match = re.search(r'set\(' + name + r' "([^"]+)"\)', text)
+            self.assertIsNotNone(match, name)
+            return match[1]
+        arches = re.findall(r'set\(_deb_arch (\w+)\)\s+set\(_rpm_arch (\w+)\)', text)
+        self.assertEqual(tuple(arches), release.LINUX_CLI_ARCHES)
+        made = []
+        for deb_arch, rpm_arch in arches:
+            for name, suffix in (('CPACK_DEBIAN_FILE_NAME', ''), ('CPACK_RPM_FILE_NAME', ''),
+                                 ('CPACK_PACKAGE_FILE_NAME', '.tar.gz')):
+                made.append(setting(name).replace('${PROJECT_VERSION}', '0.1.1')
+                            .replace('${_deb_arch}', deb_arch).replace('${_rpm_arch}', rpm_arch) + suffix)
+        self.assertEqual(made, release.linux_cli_asset_names('0.1.1'))
+
+    def test_linux_packages_stay_off_the_release_page(self):
+        # The Linux packages' channel is the signed package repository
+        # (docs/design/12, 2026-10-24): a .deb from the release page would
+        # install without the source that updates it, so until
+        # MV_RELEASE_LINUX_CLI=1 the packages are neither required nor
+        # uploaded, even when the run made them, nor in the notes.
+        self.stable_assets()
+        os.environ.pop('MV_RELEASE_LINUX_CLI')
+        for mode in ('preview', 'stable'):
+            names = [p.name for p in release.validate_assets(self.folder, '0.1.1', mode, 'owner/repo', 'v0.1.1')]
+            for name in release.linux_cli_asset_names('0.1.1'):
+                self.assertNotIn(name, names)
+            notes = release.release_notes('0.1.1', mode, 'owner/repo', 'v0.1.1', 'abc123')
+            self.assertNotIn('driftwire for Linux', notes)
+            for name in release.linux_cli_asset_names('0.1.1'):
+                self.assertNotIn(name, notes)
+            self.assertIn('MediaViewer-0.1.1.dmg', notes)
+        for name in release.linux_cli_asset_names('0.1.1'):
+            (self.folder / name).unlink()
+        release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')
+
+    def test_release_notes_link_every_driftwire_linux_package(self):
+        os.environ['MV_RELEASE_LINUX_CLI'] = '1'
+        for mode in ('preview', 'stable'):
+            notes = release.release_notes('0.1.1', mode, 'owner/repo', 'v0.1.1', 'abc123')
+            for name in release.linux_cli_asset_names('0.1.1'):
+                self.assertIn(f'(https://github.com/owner/repo/releases/download/v0.1.1/{name})', notes)
 
     def test_addons_are_not_required_until_the_workflow_packs_them(self):
         self.stable_assets()

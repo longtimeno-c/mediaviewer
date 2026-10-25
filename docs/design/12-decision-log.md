@@ -187,9 +187,101 @@ after the CPU mip chain, while the render loop presents a moving camera
   `texture_max_create_ms` and dropped frames, before and after). Until that run, 8 MiB is a
   guess.
 
+**Linux: `eglSwapInterval(0)` and a frame-callback wait before recording (2026-10-23, Linux
+PR 1).** The waitable-object analogue. At interval 1 Mesa and NVIDIA's egl-wayland wait for the
+frame callback *inside* `eglSwapBuffers`, after the frame is recorded, so input and springs would
+be a frame stale. At interval 0 the swap never blocks; the render thread asks for the next
+`wl_surface.frame` callback and a `wp_presentation` feedback before the swap commits, and waits
+for that callback before it reads input for the next frame. It never commits while a callback is
+outstanding: one frame in flight, `SetMaximumFrameLatency(1)`'s rule. The wait runs on a private
+`wl_event_queue` with proxy wrappers, so it never dispatches the host's queue (the lab's UI
+thread now, Qt's from Linux PR 3); `wl_display_prepare_read_queue` / `read_events` share the
+socket with every other reader. `wp_fifo_v1` and `wp_commit_timing_v1` are never created: they
+belong to whoever attaches buffers, which is EGL (egl-wayland2 uses them itself).
+`wp_tearing_control_v1` is never bound.
+
+**Linux sRGB surface: ARGB8888, alpha written 1, an opaque region (2026-10-23, Linux PR 1).**
+D6's `_SRGB` view is `EGL_GL_COLORSPACE_SRGB` on the window surface plus
+`GL_FRAMEBUFFER_SRGB`. Mesa refuses the colour space on a config without alpha (`EGL_BAD_MATCH`
+on llvmpipe, measured), so the config is an exact 8:8:8:8, every frame writes alpha 1 and the
+surface's opaque region covers it, so the compositor never blends it (Windows' swapchain is
+premultiplied for the same reason). The surface is checked on both sides, the EGL colour space
+and the default framebuffer's `GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING`; if either says linear
+the lab exits 2 rather than present linear values as sRGB. Under headless Weston the theme's
+canvas colour, cleared as linear 0.0152 / 0.0168 / 0.0232, reads back from the compositor's
+screenshot as `#21232A`, with the GL renderer and with pixman.
+
+**Linux: the buffer count is the driver's (2026-10-23, Linux PR 1).** EGL on Wayland has no
+`BufferCount` or `maximumDrawableCount`; Mesa allocates up to four buffers at interval 0. The
+frame-callback rule above bounds what is in flight, so the count does not add latency.
+
+**Linux: presentation timestamps stay in the compositor's clock (2026-10-23, Linux PR 1).** The
+feedback's timestamps are in `wp_presentation.clock_id`'s domain, which is not always ours:
+headless Weston uses `CLOCK_MONOTONIC_RAW`, measured 233 ms off this process's
+`CLOCK_MONOTONIC`. They are only ever differenced with each other. The gate's intervals, the
+springs and every deadline stay on `CLOCK_MONOTONIC`, as on the other labs.
+
+**Linux: `wp_presentation` is bound at version 1 (2026-10-23, Linux PR 1).** Under v1 a
+variable-rate output must report `refresh` 0; v2 lets it report its fastest rate, and a VRR run
+would then look paced. A presented answer with refresh 0 invalidates a soak, and a refresh that
+moves more than 0.1 % mid-window does too; the output's mode (`wl_output`, the cloned-output rule)
+is only the first guess.
+
+**Linux: the msc counts misses, the presentation clock reconciles (2026-10-23, Linux PR 1).** A
+presented answer with `VSYNC` and `HW_CLOCK` and a vblank counter is authoritative: an msc step of
+n is n − 1 missed refreshes, a `discarded` commit is a dropped frame, a rewind or a jump over 1000
+is a discontinuity. KWin sends seq 0 on every answer, with both flags and the refresh (Plasma 6.0
+to 6.4 and master, `presentationtime.cpp`); there the hardware timestamps count the refreshes,
+round(Δt / refresh), or the verify line's second compositor could never pass. Seq 0 with refresh 0
+counts nothing, and a counter that comes or goes mid-window is a discontinuity. Anything else
+(headless Weston's flags 0 and seq 0) is judged by the clock and
+labelled weaker, and so is a frame whose answer never came (counted when the window closes, after
+a bounded 100 ms wait). The idle-gap rule differs from DXGI's and the display link's: they zero
+misses when the *application's* interval is under 1.5 refreshes, but a Wayland frame shown late
+was committed on time and its answer comes later, so that rule would hide every compositor miss.
+Here the msc steps count unless the *presentation* timestamps say only one refresh passed (a
+counter that ran on or changed output), and the timestamps overrule an msc that counted fewer
+refreshes than they did: Mutter steps a surface's counter by 1 whenever the driver gives it no
+vblank sequence, so a frame shown a refresh late could otherwise arrive one clean step on. An
+idle gap never reaches a delta: the lab resets the window on each idle → live edge outside a
+soak, a soak never idles, and the first answer after a reset only seeds the counter.
+
+**Linux occlusion: a frame callback that does not come (2026-10-23, Linux PR 1).** A compositor
+sends no callbacks to a hidden surface, so a wait that times out after `k_occlusion_poll_ms`
+(200 ms) marks the surface occluded and the loop stops presenting; the callback still outstanding
+is the probe, and wakes the idle wait when the surface is shown. xdg-shell v6's `suspended`
+state, read on the UI thread, makes the window not visible in the snapshot (the Mac reads its
+occlusion on the render thread; Linux does not). Either one invalidates a soak.
+
+**Linux: the render thread at the default priority, workers below it (2026-10-23, Linux PR 1).**
+There is no unprivileged analogue of MMCSS "Games" or `USER_INTERACTIVE` (rtkit and the portal
+need a session service and a policy), so `mv.render` stays `SCHED_OTHER` at the default nice and
+the pool's workers step five nice levels down (`core/job_system_posix.cpp`), which needs no
+privilege. Revisit with a measured stall.
+
+**Linux: configures are acked by the render thread (2026-10-23, Linux PR 1).** xdg-shell wants
+the ack before the commit that applies the new size. The window publishes each configure's serial
+with its size; right before a commit the render thread acks the newest one whose size it is
+committing and sets the viewport (or buffer scale) for it, so size, scale and ack land in one
+commit, and a configure of another size waits for the frame that has it. The first configure is
+acked by the window before anything is committed. Fractional scale is
+`wp_fractional_scale_v1` with a viewport onto the logical size and buffer scale 1.
+
 ---
 
 ## Measurement and performance gates
+
+**Headless Weston proves plumbing, never pacing (2026-10-23, Linux PR 1).** Weston 13's headless
+backend answers every commit with flags 0 and seq 0 while advertising 16.67 ms, and repaints at
+a mean of 25.8 ms with the GL renderer and llvmpipe (max 62 ms over a 10 s soak) and 26.3 ms
+with pixman (max 85 ms). The
+CI smoke (`linux-lab-smoke`, `tools/linux/lab_smoke.sh`) therefore asserts that the lab runs,
+reports in the shape `frametime` parses, labels its source "clock intervals (weaker)", fails the
+gate, presents nothing in the static soak at ~0 % CPU, and goes on presenting after one failed
+`eglSwapBuffers` (a swap that fails commits nothing, so the frame callback and feedback it asked
+for are dropped; waiting on that callback froze the lab). It must never count as a pass: Linux
+PR 1's verify is owed on a real session (Mutter or KWin, Mesa on Intel or AMD), in
+`frametime-linux`.
 
 **What counts as a dropped frame (2026-09-06, 2026-09-07).** `DXGI_FRAME_STATISTICS`, not QPC
 intervals: a present the compositor held for an extra vblank looks clean from inside the app. The
@@ -732,7 +824,57 @@ triplets; `tools/mac/lipo_merge.py` joins the trees, then `macpack release` sign
 packages once. Pacing on Intel has not been measured. Windows ARM64 is not built.
 
 **A headless Linux build of the shared core (2026-09-24).** `cmake/portable` runs the shared suites
-under ASan / UBSan / TSan. It is a test build, not a product platform.
+under ASan / UBSan / TSan. It is a test build, not a product platform. Amended by the row below.
+
+**Linux is a third host of the shared core (owner, 2026-10-23; amends "macOS is a host of the shared
+core" and the row above).** The owner asked for a Linux version. It is built as the Mac host was: a
+host plus backends behind the same narrow ports, not a port of either app
+([plan](../plans/linux.md)). The owner's calls:
+- **Present: OpenGL via EGL, Wayland first.** The canvas's own EGL surface, `eglSwapInterval(0)`,
+  and a wait for the previous commit's `wl_surface.frame` callback before recording (the
+  waitable-object analogue); `wp_presentation` feedback is the gate's truth. X11 runs through EGL
+  but is not gated: it has no wait before recording. "No Vulkan" stands on every OS; GL keeps D9 as
+  written, its immutable-texture model maps onto D3D11's, and VA-API frames import as dma-buf
+  through `EGL_EXT_image_dma_buf_import`.
+- **Chrome: Qt 6 / QML** (D1 amended). The canvas is a child `QWindow`: Qt makes it a desync
+  `wl_subsurface` (a child X window on X11), and C++ presents into it on its own render thread;
+  Qt never draws it. GTK 4 was refused: it owns every surface and commits through its frame clock
+  on the UI thread, which puts the UI thread in the present path (rules 1 and 2).
+- **Shaders: GLSL**, the third hand-written twin, compiled from source by the driver at startup as
+  MSL is. No SPIR-V, no cross-compiler.
+Not the owner's call: the order. The plan recommends the Linux halves of PRs 1–8 first (as the
+Mac's were), then the Linux halves of what has landed since, then every PR on all three; that, and
+the rule for PRs until then, is its open call 8. Until it is settled a PR stays dual-track (D9 as
+amended 2026-09-24), and shared code takes no dependency a Linux host could not replace.
+
+Cost: a third half for every feature once Linux has caught up; Qt's QPA native interface is
+private API (Qt ≥ 6.5) and Qt may have to be bundled where the LTS distributions are older (22.04
+ships 6.2, 24.04 ships 6.4); QML cannot overlap the canvas ("airspace"), so whatever sits over it
+is its own child window; the swap chain's buffer count is the driver's, not ours. Open calls
+(video decode on NVIDIA, the audio clock, floor and architectures, channel and signing, Qt
+bundling, crash reports, Bluetooth, the catch-up order) are in the plan's §10. Reopen only if the
+Linux PR 1 gate cannot hold on Mutter and KWin, or Qt's subsurface cannot hold the PR 3 gate (then
+rule 2's island fallback applies, as on Windows).
+
+**Linux packages make Linux a product platform for the command line (owner, 2026-10-23; amends "A
+headless Linux build of the shared core").** The `driftwire` command line ships for Linux as a
+`.deb`, an `.rpm` and a tarball, x86_64 and arm64, built by `cmake/driftwire-cli` on Ubuntu 22.04
+with GCC 12 on every release run. The program needs only
+glibc, 2.35 or newer: libsodium 1.0.22 (protocol 2's ML-KEM-768; Ubuntu 24.04's 1.0.18 cannot
+build it), BLAKE3, FTXUI and the C++ runtime (`-static-libstdc++ -static-libgcc`, under the GCC
+Runtime Library Exception) are linked in, and the build fails if `readelf -d` shows anything
+`NEEDED` but libc, libm and the loader. libsecret and libsystemd are opened at run time, so a
+server or a container without them still runs it; the packages only recommend libsecret.
+MediaViewer itself is still Windows and macOS: `cmake/portable` stays the shared core's test
+build, and this decides nothing for a Linux app. How the packages are updated was left open here;
+since 2026-10-24 it is the signed apt and dnf repositories a stable release publishes
+([Driftwire](#driftwire), "`driftwire` installs from signed apt and dnf repositories"), and the
+packages stay off the release page (`MV_RELEASE_LINUX_CLI`, `RELEASING.md`). Cost: no glibc
+older than 2.35 (RHEL 8 and 9, Debian 11); Linux joins Windows and macOS in what a Driftwire
+change must keep working. Measured here only (Ubuntu 24.04 container, GCC 13 and GCC 12): built, `"[cli]"`
+green, the `.deb` installed and run; CI's Ubuntu 22.04 legs are the first to build the shipped
+ones. Reopen if a distribution wants its own package built from source (then libsodium 1.0.21+
+comes from the distribution, and the gate changes).
 
 ---
 
@@ -927,6 +1069,12 @@ Authenticode certificate, as the Mac pack signs every dylib it carries.
 ---
 
 ## CI and fuzzing
+
+**The Linux gate's skip is a warning until its runner exists (2026-10-23, Linux PR 1).**
+`present-gates` reports Windows PR 1, Mac PR 1 and Linux PR 1. `MV_REQUIRE_PRESENT_GATES` makes a
+skip a failure, but for Linux only once `MV_LINUX_GPU_RUNNER_ENABLED` is set: no Linux GPU runner
+exists yet, and requiring its gate before then would fail every pull request for a machine that is
+not there. A skip is still not a pass, and the summary says so.
 
 **`fuzz_decode` and `fuzz_animation` are not in the gating fuzz step (2026-09-23 to 2026-09-25).**
 Both exit `0xC0000142` (`STATUS_DLL_INIT_FAILED`, not a missing DLL) before libFuzzer runs a unit
@@ -1985,6 +2133,121 @@ cross-country 0.83 → 5.5 MB/s, intercontinental 0.24 → 3.0, Wi-Fi with jitte
 0.42 → 9.2, bufferbloat's queue 500 → 82 ms, no profile worse; no real path yet. Kept: our own
 stream over the hub (it must share the punched socket). BBR is not fair to a loss-based flow in a
 shallow queue; accepted for a person's own transfer. [28](28-driftwire.md#four-words-over-the-dht-472-pr-3).
+
+**Driftwire has a command line (owner, 2026-10-23; amends "there is no second app").** `driftwire`
+is a terminal host of the same engine on Linux, Windows and macOS: a program of its own, outside
+MediaViewer, with the wire, the code, Accept and the verified receive unchanged, so it sends to
+and receives from the add-on and another `driftwire` ([28](28-driftwire.md#from-a-terminal-driftwire)).
+It is not a helper of the app: the app never starts it, and inside MediaViewer the add-on is still
+the only Driftwire, so "there is never a second *app* to install or open" (2026-10-11, #348) still
+holds for MediaViewer itself. Interactive only (owner): no `--yes`, no auto-accept, and the program
+refuses to run the session without a terminal (exit 2). Its look is built in C++ (FTXUI, MIT, its
+dom and screen parts only; Node is out by CLAUDE.md), an inline UI after Claude Code's terminal UI
+with Driftwire's colours: a transcript that stays in the scrollback over a live region at the
+bottom. No Bluetooth in it on any OS: CoreBluetooth needs a bundle's usage string, the WinRT GATT
+server in an unpackaged console is unverified, Linux has no bearer. Linux gets packages; the
+Windows and macOS programs are built and tested with the app and uploaded by CI, unsigned, and are
+not released (the owner asked for Linux packages; Windows and macOS releases are not decided) nor
+in the app's payload. Since 2026-10-24 stable releases publish them (once the owner sets
+`MV_DRIFTWIRE_REPO=1`), through a Homebrew tap and a PowerShell one-liner (below, "`driftwire`
+on macOS from a Homebrew tap"), and still never in the app's payload. Cost: a second face for every
+flow; one session controller that makes only the window's `on_event` calls keeps it to what the
+window does, and the session tests drive two engines through it.
+
+**Accept in a terminal is typed (owner, 2026-10-23; amends "Accept stays in the window").** In
+`driftwire` the receiver accepts at the terminal where the session runs, after the sender typed
+the code, as in the window: `1`, `y` or Enter on Accept in the offer's numbered list, `2` to save
+somewhere else, `3`, `n` or Esc to decline, or `y` at plain mode's `[y/N/s]`. Nothing else
+accepts: no option, no notification (the command line posts none), no pipe (refused). Nothing
+secret is an argument either: no code, check digits or relay key on the command line, where the
+shell's history and `ps` would keep them; a code someone gave you is pasted into `/to-code`, and
+`send --to NAME` names a computer, never a code. Reopen only with a way to accept that is still a
+person answering at that machine.
+
+**The command line keeps its own identity (2026-10-23).** Its identity key and remembered devices
+are under the secret-store service "Driftwire CLI" (`secrets::kCliService`), its settings, resume
+file, DHT table and lock in a data folder of its own (`${XDG_STATE_HOME:-~/.local/state}/driftwire`,
+`~/Library/Application Support/Driftwire`, `%LOCALAPPDATA%\Driftwire`, made 0700), never the
+add-on's. One key in two programs would race: a remembered device's DHT meeting is answered by
+whichever holds it, and each would rewrite the other's list of devices. Two identities make them
+two devices, each remembered on its own. Cost: a device the app remembers is not remembered by the
+command line on the same computer, and with both open the others would see two computers of the
+same name (not measured). On macOS the command line has no store at all (the data protection keychain needs an access
+group, which a bare program cannot be entitled to): each run has a key of its own and Remember does
+not show. Reopen if the two should be one device (then one of them must hand the other its key).
+
+**Linux Secret Service has no per-app ACL (2026-10-23).** Unlike the Mac's access group, the
+freedesktop Secret Service lets any process of the same user on the session bus read, list or
+plant an item, with no prompt. So `secrets_linux.cpp` seals each value (`crypto_secretbox`, a key
+derived from "<service> secrets v1") and refuses one that does not open, as Windows does with DPAPI
+(#501): listing the keyring (Seahorse, `secret-tool search`) shows only the sealed text, and an item
+another program wrote in plain is not believed. It is not a boundary against a program of the same
+user that does the same (the constant is in the source). libsecret is loaded at run time; with no
+session bus nothing is loaded, and a probe or a call that takes over 10 s (an unlock prompt nobody
+answers, a daemon that does not reply) is no store, so that run's identity is its own and nothing
+is remembered. Over SSH with the keyring locked, saving fails at once and Remember does not show.
+Reopen if the Secret Service gains per-application access (the Secret portal's per-app collection
+inside a Flatpak is one).
+
+**`driftwire` installs from signed apt and dnf repositories (2026-10-24; amends "Linux packages
+make Linux a product platform for the command line").** The owner asked to install `driftwire`
+on its own, like `npm i -g` or `sudo apt install`, and to have it work with no MediaViewer
+present. The answer chosen here: signed apt and dnf repositories as a static site on this
+repository's GitHub Pages (`<Pages URL>/driftwire/`), built by `tools/package/driftwire_repo.py`
+and published by release.yml's `driftwire-repo` job after each stable release once the owner turns
+it on (`MV_DRIFTWIRE_REPO=1`, the key in `DRIFTWIRE_REPO_GPG_KEY`, Pages from GitHub Actions), with
+a one-line installer (`curl -fsSL <site>/install.sh | sh`) that adds the source to apt, dnf, yum or
+zypper, or unpacks the checked tarball where there is none ([28](28-driftwire.md#installing)). The
+system's package manager then updates it: this is the updater CLAUDE.md requires before a build
+leaves this machine, so it settles what the 2026-10-23 row left open, and the packages reach people
+this way, not as release attachments (`MV_RELEASE_LINUX_CLI` stays `0`: a `.deb` from the release
+page would install without the source that updates it). npm is refused: a package there needs a
+Node launcher, and Node is ruled out of the project (CLAUDE.md). Ours, not the owner's: GitHub
+Pages (no server to run, served from the release workflow); one OpenPGP key the owner makes and
+keeps (RSA-4096, which every rpm verifies; the private half only in the Actions secret and an
+offline backup), signing `InRelease`, `Release.gpg`, every `.rpm`, `repomd.xml` and `SHA256SUMS`,
+each signature checked against the published key before the site replaces the old one; and
+`Valid-Until` one year ahead in `Release`, so an old signed index cannot be replayed to hold back a
+fix for longer. Cost: a stable release must come within each year, or `apt update` fails on
+every installed machine ("Release file … is expired", exit 100); each deploy replaces the whole Pages site, so Pages holds nothing else and the repository
+holds the newest version only; a new key reaches an apt machine only through the installer (or by
+hand), so a key change overlaps the two across at least one release; no glibc older than 2.35
+(RHEL 9 and older, Debian 11). Measured in a Linux container only (Ubuntu 24.04, apt 2.8, dnf 4.14):
+installed, upgraded, a changed `InRelease` and a changed `repomd.xml` refused, removed; CI and Pages
+have not run it. Reopen if a distribution packages `driftwire` itself, or if the site moves off
+GitHub Pages.
+
+**`driftwire` on macOS from a Homebrew tap, on Windows from a PowerShell one-liner (owner,
+2026-10-24; amends "Driftwire has a command line", which left Windows and macOS releases
+undecided, and the row above).** The owner asked for the install instructions on the macOS and
+Windows command line, with the README and the docs, and chose: on macOS a Homebrew tap, `brew
+install longtimeno-c/tap/driftwire`, updated by `brew upgrade`, from a public repository
+`longtimeno-c/homebrew-tap` holding one formula that each release updates, the program universal,
+signed and notarized by the release job; on Windows a PowerShell one-liner, `irm
+https://longtimeno-c.github.io/mediaviewer/driftwire/install.ps1 | iex`, the signed `driftwire.exe`
+in the user's folder and on their `Path`, per user, no admin, running it again to update; winget
+may come later. Both work with no MediaViewer installed, and each stable release publishes both
+([28](28-driftwire.md#installing)). Ours, not the owner's: one switch for the whole command line
+(`MV_DRIFTWIRE_REPO`, which also publishes the Linux repository: the archives then become
+required assets of a stable release, the site gets the zip and `install.ps1`, and a new job
+pushes the formula with a token, `HOMEBREW_TAP_TOKEN`, scoped to the tap); the zip served from the
+Pages site beside `install.ps1` rather than from the release page, so the script and the file it
+checks go live together; its SHA-256 written into the script, and every program in it required to
+carry a valid Authenticode signature when the release is signed; the user's `Path` edited through
+the registry, keeping its kind and `%VARIABLES%`; the Visual C++ runtime carried beside the program
+(the build uses the dynamic C runtime and a per-user install cannot run `vc_redist`); the Mac
+program signed with no entitlements (it has no keychain identity, so Remember stays off on macOS,
+#501) and an `-arm64` archive with `depends_on arch: :arm64` when the release's Intel leg does not
+build. Cost: a bare program cannot be stapled, so Gatekeeper checks its ticket online the first
+time a quarantined copy runs (Homebrew does not quarantine); the runtime beside `driftwire.exe` is
+not serviced by Windows Update between releases; a token to renew before it expires, or the
+formula stays behind; with the switch on, a stable release cannot publish without the two
+archives; the signed `driftwire.exe` needs the optional Trusted Signing secrets, which are not set
+up (the Windows installer is not Authenticode-signed either), so until they are the zip ships
+unsigned and `install.ps1` checks only its SHA-256. Run in a Linux container only: `install.ps1`
+in a test mode under PowerShell 7.6, the formula under Ruby 3.3 against a stand-in for Homebrew; CI's Windows installer check, the
+release's macOS and Windows jobs, Homebrew and Pages have not run. Reopen for winget, if Homebrew
+itself takes the formula, or if the site moves.
 
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with

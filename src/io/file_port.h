@@ -5,8 +5,9 @@
 // Portable header; io/file_port_win.cpp (CreateFileW, FlushFileBuffers,
 // FILE_FLAG_NO_BUFFERING, MoveFileExW without REPLACE_EXISTING) and
 // io/file_port_mac.cpp (open O_EXCL, F_FULLFSYNC, F_NOCACHE, renamex_np
-// RENAME_EXCL; the Linux core test build uses the same file) implement it. No
-// HANDLE or fd in the interface (D9).
+// RENAME_EXCL; Linux uses the same file, with fsync, renameat2
+// RENAME_NOREPLACE and posix_fadvise where the Mac has its own call)
+// implement it. No HANDLE or fd in the interface (D9).
 //
 // Worker threads only, never the UI or render thread (rule 1). Nothing here
 // logs a path (rule 6). Nothing here overwrites: create is exclusive and the
@@ -122,8 +123,15 @@ enum class rename_outcome : std::uint8_t { renamed, name_taken };
 // UF_HIDDEN), or shows it again. A transfer's kept temporary is hidden so
 // nobody takes it for the finished file; it is shown again before its rename,
 // since the flag travels with a rename. status::unsupported_format where the
-// OS has no such flag (the Linux core test build).
+// OS has no such flag (Linux: there a name that starts with a dot is what file
+// managers and ls leave out, so a transfer names its temporary that way).
 [[nodiscard]] expected set_hidden(std::string_view utf8_path, bool hidden);
+// Whether set_hidden can hide a file on this OS.
+#if defined(_WIN32) || defined(__APPLE__)
+inline constexpr bool kHasHiddenFlag = true;
+#else
+inline constexpr bool kHasHiddenFlag = false;
+#endif
 
 enum class read_mode : std::uint8_t {
   sequential,  // the source read: the OS may read ahead

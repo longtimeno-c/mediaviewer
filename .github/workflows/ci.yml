@@ -173,6 +173,30 @@ jobs:
         # one case that measures real playback time is left to a Mac with audio.
         run: ctest --test-dir build -C Release --output-on-failure --no-tests=error -E "An audio-only clip seeks, pauses in place"
 
+      # The driftwire command line (docs/design/28 "Installing"), built and
+      # tested above: one program, its libraries static (arm64-osx), packed as
+      # a release packs it (tools/mac/macpack.py cli: signed ad hoc with the
+      # hardened runtime and its identifier, run for its version, and put in a
+      # tar.gz with its manual page, LICENSE, NOTICE and the MIT, ISC and CC0
+      # notices of what it links). arm64 only and unsigned here; a stable
+      # release signs, notarizes and publishes the universal one, which the
+      # Homebrew tap's formula installs.
+      - name: driftwire command line (artefact)
+        run: |
+          otool -L build/bin/driftwire
+          version=$(python3 -c "import re; print(re.search(r'project\(\s*mediaviewer\s+VERSION\s+(\S+)', open('CMakeLists.txt').read())[1])")
+          python3 tools/mac/macpack.py cli --binary build/bin/driftwire --version "$version" \
+            --out-dir driftwire-macos --identity - --skip-notarize
+          tar -xzf driftwire-macos/driftwire-*-macos-arm64.tar.gz -C "$RUNNER_TEMP"
+          codesign --display --verbose=2 "$RUNNER_TEMP"/driftwire-*-macos-arm64/driftwire 2>&1 |
+            grep -x 'Identifier=io.github.longtimeno-c.driftwire'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: driftwire-macos-arm64
+          path: driftwire-macos/*.tar.gz
+          if-no-files-found: error
+
   windows-chrome:
     name: WinUI chrome
     if: github.event_name != 'schedule'
@@ -201,6 +225,10 @@ jobs:
       - run: python3 tools/mac/test_macpack.py -v
       - run: python3 tools/mac/test_check_minos.py -v
       - run: python3 tools/package/test_github_release.py -v
+      # The driftwire command line's Windows zip (pwsh reads tiny PE files) and
+      # the Homebrew tap's formula (ruby checks and evaluates it).
+      - run: python3 tools/package/test_driftwire_windows.py -v
+      - run: python3 tools/package/test_homebrew_formula.py -v
 
   # ---------------------------------------------------------------------------
   # Milestone G (docs/design/18): the shared Import engine, add-on host and verified
@@ -212,7 +240,7 @@ jobs:
   # same test files the Windows and Mac mv_tests build.
   # ---------------------------------------------------------------------------
   portable-core:
-    name: Portable core (Import engine, clip editing; Linux, ASan)
+    name: Portable core (Import engine, clip editing, Driftwire; Linux, ASan)
     if: ${{ github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
     defaults:
@@ -246,13 +274,16 @@ jobs:
       # libjpeg for the clip core's suite (mv_clip_tests, mv_trim_tests). The
       # distro FFmpeg is a test dependency only; the product FFmpeg is the
       # pinned LGPL vcpkg port (tools/licence-check.ps1), and the clip tests
-      # write their fixtures with FFmpeg's own MPEG-4 / MP2 encoders.
+      # write their fixtures with FFmpeg's own MPEG-4 / MP2 encoders. dbus,
+      # gnome-keyring and libsecret: a Secret Service for Driftwire's Linux
+      # secret store (secrets_linux.cpp loads libsecret-1.so.0 at run time;
+      # secret-tool checks the keyring before the tests, see Tests).
       - name: Build tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends autoconf autoconf-archive automake libtool pkg-config python3-cryptography \
             libavformat-dev libavcodec-dev libavfilter-dev libavutil-dev libswscale-dev libswresample-dev \
-            libspng-dev libjpeg-turbo8-dev
+            libspng-dev libjpeg-turbo8-dev dbus gnome-keyring libsecret-1-0 libsecret-tools
 
       - name: Configure
         run: |
@@ -264,9 +295,174 @@ jobs:
       - name: Build
         run: cmake --build build-portable
 
+      # A session bus of the job's own with gnome-keyring's login keyring made
+      # and unlocked (a throwaway password: the runner and its keyring go with
+      # the job), so Driftwire's Secret Service case runs. gnome-keyring-daemon
+      # exits 0 even when it made no keyring, so secret-tool stores and reads
+      # back an item first; only then is the case required to run
+      # (MV_SECRET_SERVICE=required). If any of it fails, the case skips with
+      # a warning here and the rest runs as before. 30 minutes, not 15: with
+      # Driftwire's suite in it, mv_import_tests took 623 s (10.4 min) in this
+      # Debug + ASan configuration on a 4-vCPU Linux container (2026-10-23),
+      # most of it the suite waiting out its 20 s session and rejoin
+      # deadlines; the clip suites come on top.
       - name: Tests
-        timeout-minutes: 15
-        run: ctest --test-dir build-portable --output-on-failure
+        timeout-minutes: 30
+        run: |
+          if addr=$(dbus-daemon --session --fork --print-address=1 2>/dev/null) && [ -n "$addr" ]; then
+            export DBUS_SESSION_BUS_ADDRESS="$addr"
+            printf 'driftwire-ci' | timeout 20 gnome-keyring-daemon --unlock --components=secrets >/dev/null 2>&1 || true
+            # Until it holds the service's name: a call before that would start a
+            # second daemon through D-Bus activation, one with no keyring unlocked.
+            for _ in $(seq 50); do
+              dbus-send --session --print-reply --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+                org.freedesktop.DBus.NameHasOwner string:org.freedesktop.secrets 2>/dev/null | grep -q 'boolean true' && break
+              sleep 0.1
+            done
+            if printf 'probe' | timeout 20 secret-tool store --label='CI probe' mv-ci probe 2>/dev/null &&
+              [ "$(timeout 20 secret-tool lookup mv-ci probe 2>/dev/null)" = probe ]; then
+              timeout 20 secret-tool clear mv-ci probe 2>/dev/null || true
+              export MV_SECRET_SERVICE=required
+            else
+              echo "::warning::gnome-keyring took no item: Driftwire's Secret Service case skips"
+            fi
+          else
+            echo "::warning::no D-Bus session: Driftwire's Secret Service case skips"
+          fi
+          ctest --test-dir build-portable --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # The driftwire command line's Linux packages (docs/design/28 "From a
+  # terminal", cmake/driftwire-cli), x64 and arm64: built on Ubuntu 22.04 with
+  # GCC 12, so they run from glibc 2.35 up (Ubuntu 22.04, Debian 12, Fedora).
+  # The "[cli]" suites, the NEEDED gate, the .deb, .rpm and tarball, and the
+  # .deb installed and run (.github/actions/driftwire-cli-linux, which
+  # release.yml's linux-cli job runs too); then the package repository built
+  # from them and installed from. The packages are this run's artefact.
+  # ---------------------------------------------------------------------------
+  driftwire-cli-linux:
+    name: driftwire command line (Linux ${{ matrix.arch }}, packages)
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    defaults:
+      run:
+        shell: bash
+    env:
+      CC: gcc-12
+      CXX: g++-12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build, test and package
+        uses: ./.github/actions/driftwire-cli-linux
+        with:
+          arch: ${{ matrix.arch }}
+
+      # The package repository a stable release publishes (docs/design/28
+      # "Installing", tools/package/driftwire_repo.py), built from these
+      # packages with a throwaway key and got as a person would get it: served
+      # on localhost, install.sh run as `curl | sh` runs it, apt refusing an
+      # index changed by one byte (and its refused files in partial/ removed),
+      # --uninstall leaving nothing, then the tarball route with no package
+      # manager. And the builder's own tests, which also run the Windows
+      # installer in its test mode under pwsh where the runner has it (the
+      # Windows leg of Build runs it for real).
+      - name: Package repository and installer
+        run: |
+          sudo apt-get install -y --no-install-recommends apt-utils createrepo-c gnupg shellcheck
+          shellcheck -s sh packaging/linux/repo/install.sh
+          python3 tools/package/test_driftwire_repo.py -v
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          install -d -m 0700 "$GNUPGHOME"
+          gpg --batch --passphrase '' --quick-gen-key 'Driftwire CI <ci@invalid>' rsa3072 sign 1d
+          fpr=$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
+          python3 tools/package/driftwire_repo.py build --packages dist --out "$RUNNER_TEMP/site" \
+            --base-url https://example.invalid/driftwire --key-id "$fpr"
+          shellcheck "$RUNNER_TEMP/site/driftwire/install.sh"
+          python3 tools/package/driftwire_repo.py smoke --site "$RUNNER_TEMP/site"
+          gpgconf --kill all
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: driftwire-linux-${{ matrix.arch }}
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  # Linux PR 1 (docs/plans/linux.md): the OpenGL/EGL present lab, frametime and
+  # the portable tests, built from the root CMakeLists on a hosted runner, then
+  # the lab under a headless Weston with Mesa's software rasteriser, with the GL
+  # renderer (ctest's linux_lab_smoke) and once with pixman. That proves the
+  # plumbing and never pacing: headless Weston's feedback has flags 0 and seq
+  # 0, so the smoke asserts the report is labelled "clock intervals (weaker)"
+  # and fails the gate. The gate itself is frametime-linux, on a real session.
+  linux-lab-smoke:
+    name: Linux present lab (headless Weston smoke)
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
+        run: |
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> "$GITHUB_ENV"
+
+      # The root manifest on Linux installs catch2 and imgui[opengl3-binding] only.
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: build-linux/vcpkg_installed
+          key: vcpkg-linux-lab-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+
+      # Wayland, xkbcommon and glvnd's EGL/OpenGL to build against; Weston and
+      # Mesa (llvmpipe) to run under. The protocol XML is vendored.
+      - name: Build and run dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build pkg-config \
+            libwayland-dev libxkbcommon-dev libegl-dev libgl-dev libopengl-dev \
+            weston libegl-mesa0 libgl1-mesa-dri libopengl0
+
+      - name: Configure
+        run: cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build-linux
+
+      - name: Unit tests and the headless smoke (GL renderer)
+        timeout-minutes: 10
+        run: ctest --test-dir build-linux --output-on-failure
+
+      - name: Headless smoke (pixman renderer)
+        timeout-minutes: 5
+        run: |
+          MV_WESTON_RENDERER=pixman bash tools/linux/lab_smoke.sh \
+            build-linux/bin/mediaviewer_lab build-linux/bin/frametime \
+            build-linux/bin/libmv_egl_swap_fault.so
 
   # ---------------------------------------------------------------------------
   # One install of the manifest. FFmpeg alone is about 22 minutes from source,
@@ -547,6 +743,44 @@ jobs:
           TEMP: ${{ runner.temp }}
         run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
 
+      # The driftwire command line (docs/design/28 "Installing"), built and
+      # tested above with the app, packed as a release packs it
+      # (tools/package/driftwire-windows.ps1: driftwire.exe and every DLL it
+      # loads, read from the import tables, the Visual C++ runtime beside it,
+      # the notices; unsigned here), then installed as a person would
+      # (tools/package/check-driftwire-install.ps1): the zip and install.ps1
+      # served on localhost, `irm | iex` in Windows PowerShell 5.1 and in
+      # PowerShell 7, `driftwire --version` in a new process with the user's
+      # PATH, again, a changed zip refused, a cut-off script doing nothing,
+      # -Uninstall keeping the user's other PATH entries; and a build signed
+      # with a throwaway certificate this runner trusts, so install.ps1's
+      # Authenticode check runs. Not in the app's payload (build-release.ps1).
+      - name: driftwire command line (zip, and the one-line installer)
+        if: matrix.toolchain == 'msvc' && matrix.config == 'Release'
+        run: |
+          ./tools/package/driftwire-windows.ps1 -Action Stage -BuildDir build -Config Release -OutDir dist/driftwire-cli
+          ./tools/package/driftwire-windows.ps1 -Action Pack -OutDir dist/driftwire-cli
+          ./tools/package/driftwire-windows.ps1 -Action Stage -BuildDir build -Config Release -OutDir dist/driftwire-cli-signed
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=driftwire CI, O=throwaway' -CertStoreLocation Cert:\CurrentUser\My
+          $cer = Join-Path $env:RUNNER_TEMP 'driftwire-ci.cer'
+          Export-Certificate -Cert $cert -FilePath $cer | Out-Null
+          Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+          foreach ($file in Get-ChildItem dist/driftwire-cli-signed/sign -File) {
+            $result = Set-AuthenticodeSignature -FilePath $file.FullName -Certificate $cert -HashAlgorithm SHA256
+            if ($result.Status -ne 'Valid') { throw "signing $($file.Name): $($result.Status)" }
+          }
+          ./tools/package/driftwire-windows.ps1 -Action Pack -OutDir dist/driftwire-cli-signed
+          $zip = (Get-ChildItem dist/driftwire-cli/driftwire-*-windows-x64.zip).FullName
+          $signed = (Get-ChildItem dist/driftwire-cli-signed/driftwire-*-windows-x64.zip).FullName
+          ./tools/package/check-driftwire-install.ps1 -Zip $zip -SignedZip $signed
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.toolchain == 'msvc' && matrix.config == 'Release'
+        with:
+          name: driftwire-windows-x64
+          path: dist/driftwire-cli/driftwire-*-windows-x64.zip
+          if-no-files-found: error
+
       - name: Upload broken-corpus reproducers
         if: failure()
         uses: actions/upload-artifact@v4
@@ -736,16 +970,99 @@ jobs:
             build/bin/frametime-idle-report.json
           if-no-files-found: ignore
 
-  # Rule 4: every PR must still pass both present-loop verifies. GitHub counts a
-  # skipped job as a success for branch protection, so neither gate job above
+  # Linux PR 1: the same 60 s animated + idle gates on OpenGL via EGL, judged
+  # from wp_presentation feedback (frametime main_linux.cpp, drop_source
+  # "Wayland presentation feedback"). It needs a real Wayland session on real
+  # hardware: Mutter or KWin with Mesa on Intel or AMD, as the verify line says
+  # (a Weston-on-DRM run is extra data, not the verify). The runner must run
+  # inside that logged-in session (a systemd user service, say) so
+  # WAYLAND_DISPLAY and XDG_RUNTIME_DIR are set; the step fails at once when
+  # they are not. Same opt-in and fork rule as the other
+  # two: set MV_LINUX_GPU_RUNNER_ENABLED only after the runner exists.
+  frametime-linux:
+    name: Frame-time gate (self-hosted Linux)
+    if: ${{ vars.MV_LINUX_GPU_RUNNER_ENABLED == 'true' && github.event_name != 'schedule' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: [self-hosted, linux, gpu]
+    timeout-minutes: 30
+    concurrency:
+      group: frametime-linux-gpu
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
+        run: |
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Configure and build the lab and the harness
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target mv_frametime
+
+      - name: Restore the rolling baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: build/bin/frametime-baseline.json
+          key: frametime-linux-v1-${{ runner.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: frametime-linux-v1-${{ runner.name }}-
+
+      # systemd-inhibit keeps the session awake and unlocked (caffeinate's
+      # role on the Mac): a blanked or suspended output stops the frame
+      # callbacks, which is a failed gate, not a pass.
+      - name: Animated and idle 60-second gates
+        env:
+          UPDATE_BASELINE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        run: |
+          if [ -z "${WAYLAND_DISPLAY:-}" ] || [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+            echo "::error::The Linux GPU runner is not inside a Wayland session (WAYLAND_DISPLAY / XDG_RUNTIME_DIR unset)."
+            exit 1
+          fi
+          args=(--seconds 60 --lab ./build/bin/mediaviewer_lab)
+          if [ "$UPDATE_BASELINE" = "true" ]; then args+=(--update-baseline); fi
+          systemd-inhibit --what=idle:sleep:handle-lid-switch --why="MediaViewer frame-time gate" \
+            ./build/bin/frametime "${args[@]}"
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frametime-linux-report
+          path: |
+            build/bin/frametime-report.json
+            build/bin/frametime-idle-report.json
+          if-no-files-found: ignore
+
+      - uses: actions/cache/save@v4
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          path: build/bin/frametime-baseline.json
+          key: frametime-linux-v1-${{ runner.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  # Rule 4: every PR must still pass the present-loop verifies. GitHub counts a
+  # skipped job as a success for branch protection, so no gate job above
   # protects anything as a required check while it is skipped. This job always
   # runs and is the one to require: it fails when a gate failed or was
   # cancelled, and warns (log annotation + run summary) when a gate was
   # skipped. With MV_REQUIRE_PRESENT_GATES=true a skip on this repository's own
   # branches fails too; fork PRs never reach the persistent runners and warn.
+  # Linux PR 1's gate joins that rule once its runner is enabled
+  # (MV_LINUX_GPU_RUNNER_ENABLED): until a Linux GPU runner exists its skip
+  # stays a warning, so turning the Linux gate on cannot fail every PR.
   present-gates:
-    name: Present-loop gates (Windows PR 1 + Mac PR 1)
-    needs: [frametime, frametime-mac]
+    name: Present-loop gates (Windows PR 1 + Mac PR 1 + Linux PR 1)
+    needs: [frametime, frametime-mac, frametime-linux]
     if: ${{ always() && github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -755,7 +1072,9 @@ jobs:
     env:
       WIN_RESULT: ${{ needs.frametime.result }}
       MAC_RESULT: ${{ needs.frametime-mac.result }}
+      LINUX_RESULT: ${{ needs.frametime-linux.result }}
       REQUIRE: ${{ vars.MV_REQUIRE_PRESENT_GATES == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+      LINUX_RUNNER: ${{ vars.MV_LINUX_GPU_RUNNER_ENABLED == 'true' }}
     steps:
       - name: Report the gates
         run: |
@@ -767,17 +1086,20 @@ jobs:
             echo "|---|---|"
             echo "| Windows PR 1 (D3D11, self-hosted GPU) | $WIN_RESULT |"
             echo "| Mac PR 1 (Metal, self-hosted Mac) | $MAC_RESULT |"
+            echo "| Linux PR 1 (OpenGL/EGL on Wayland, self-hosted Linux) | $LINUX_RESULT |"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
-          for gate in "Windows PR 1:$WIN_RESULT" "Mac PR 1:$MAC_RESULT"; do
+          for gate in "Windows PR 1:$WIN_RESULT" "Mac PR 1:$MAC_RESULT" "Linux PR 1:$LINUX_RESULT"; do
             name="${gate%%:*}"
             result="${gate#*:}"
+            require="$REQUIRE"
+            if [ "$name" = "Linux PR 1" ] && [ "$LINUX_RUNNER" != "true" ]; then require=false; fi
             case "$result" in
               success)
                 echo "$name present-loop gate passed." ;;
               skipped)
                 msg="$name present-loop gate was skipped (no runner enabled for it, or a fork PR). A skip is not a pass: rule 4 was not checked for this change."
-                if [ "$REQUIRE" = "true" ]; then
+                if [ "$require" = "true" ]; then
                   echo "::error title=Present-loop gate skipped::$msg"
                   status=1
                 else

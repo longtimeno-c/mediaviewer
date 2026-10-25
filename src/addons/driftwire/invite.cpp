@@ -56,7 +56,7 @@ bool put_place(std::vector<std::uint8_t>& out, const net::endpoint& e, bool rela
 }  // namespace
 
 code make(const std::vector<net::endpoint>& places, std::optional<relay_place> relay) {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   code c;
   randombytes_buf(c.secret.data(), c.secret.size());
   if (relay) {

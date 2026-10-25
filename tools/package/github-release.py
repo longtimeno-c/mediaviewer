@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Preflight and publish a complete two-platform release. No build secrets are logged."""
+"""Preflight and publish a complete release: both installers, and the driftwire command line's
+macOS and Windows archives once it is published (MV_RELEASE_CLI). No build secrets are logged."""
 import hashlib
 import json
 import os
@@ -9,7 +10,9 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tarfile
 import xml.etree.ElementTree as ET
+import zipfile
 
 
 def version_tuple(value):
@@ -66,6 +69,20 @@ def prepare():
                              + ', '.join(name for name in azure if name not in configured))
         if not configured:
             print('::warning::Windows installers will be unsigned; SmartScreen may warn.')
+    # MV_DRIFTWIRE_REPO=1 publishes the command line from a stable release: after publish,
+    # driftwire-repo signs the package repository with DRIFTWIRE_REPO_GPG_KEY and
+    # driftwire-homebrew pushes the formula with HOMEBREW_TAP_TOKEN. Without either, that job
+    # would fail after the release is out. release.yml says only whether each secret is set
+    # (DRIFTWIRE_REPO_KEY_SET, HOMEBREW_TAP_TOKEN_SET), never what it holds.
+    if mode == 'stable' and os.environ.get('MV_DRIFTWIRE_REPO') == '1':
+        unset = [secret for secret, flag in (('DRIFTWIRE_REPO_GPG_KEY', 'DRIFTWIRE_REPO_KEY_SET'),
+                                             ('HOMEBREW_TAP_TOKEN', 'HOMEBREW_TAP_TOKEN_SET'))
+                 if os.environ.get(flag) != '1']
+        if unset:
+            one = len(unset) == 1
+            raise ValueError(f'MV_DRIFTWIRE_REPO is 1 but the secret{"" if one else "s"} ' + ' and '.join(unset)
+                             + f' {"is" if one else "are"} not set: add {"it" if one else "them"} (docs/DEVELOPMENT.md, '
+                             '"Publishing the command line") or set MV_DRIFTWIRE_REPO to 0.')
     tag = f'v{version}'
     with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
         output.write(f'version={version}\ntag={tag}\n')
@@ -87,6 +104,83 @@ FIRST_PARTY_ADDONS = ('import', 'driftwire')
 PREFERRED_ADDONS = ('places',)
 AI_ADDONS = ('ai', 'ai-audio', 'ai-docs', 'ai-faces', 'ai-cuda')
 WINDOWS_ONLY_ADDONS = ('ai-cuda',)
+
+
+# The driftwire command line's Linux packages (docs/design/28 "From a
+# terminal", cmake/driftwire-cli): a .deb, an .rpm and a tarball for each
+# architecture, (Debian name, RPM and tarball name), built and tested by
+# release.yml's linux-cli job on every run. They reach people through the
+# package repository (tools/package/driftwire_repo.py, release.yml's
+# driftwire-repo job), which is how they are updated (docs/design/12,
+# 2026-10-24), and are attached to the release only with
+# MV_RELEASE_LINUX_CLI=1, which release.yml leaves off: a .deb from the
+# release page would install without the source that updates it. With it
+# on, every published release, preview or stable, needs all six.
+LINUX_CLI_ARCHES = (('amd64', 'x86_64'), ('arm64', 'aarch64'))
+
+
+# The command line's macOS and Windows archives (docs/design/28 "Installing",
+# docs/design/12 2026-10-24): driftwire-<v>-macos-universal.tar.gz, which the
+# Homebrew tap's formula installs from the release page (-arm64 when the
+# release's Intel leg did not build), and driftwire-<v>-windows-x64.zip,
+# which the package repository's site serves to the PowerShell one-liner.
+# MV_RELEASE_CLI=1 (release.yml sets it from the repository variable
+# MV_DRIFTWIRE_REPO, the one switch that publishes the command line) requires
+# both on a stable release; previews, and any release with it off, ignore
+# them, so a release of the installers alone stays whole.
+CLI_MAC_LABELS = ('universal', 'arm64')
+
+
+def cli_published():
+    return os.environ.get('MV_RELEASE_CLI') == '1'
+
+
+def cli_asset_names(folder, version):
+    """The Windows zip, and the one macOS archive there is (universal when there is none)."""
+    mac = [f'driftwire-{version}-macos-{label}.tar.gz' for label in CLI_MAC_LABELS]
+    have = [name for name in mac if (folder / name).is_file()]
+    if len(have) > 1:
+        raise ValueError("Two macOS archives of the command line: " + ', '.join(have))
+    return [f'driftwire-{version}-windows-x64.zip', have[0] if have else mac[0]]
+
+
+def validate_cli(folder, names):
+    """One folder named as the archive, holding the program (and on macOS its manual page)."""
+    for name in names:
+        path = folder / name
+        if name.endswith('.zip'):
+            top, wanted = name[:-len('.zip')], ('driftwire.exe',)
+            try:
+                with zipfile.ZipFile(path) as z:
+                    members = {n.rstrip('/'): not n.endswith('/') for n in z.namelist()}
+            except zipfile.BadZipFile:
+                raise ValueError(f'Not a zip: {name}') from None
+        else:
+            top, wanted = name[:-len('.tar.gz')], ('driftwire', 'driftwire.1')
+            try:
+                with tarfile.open(path, 'r:gz') as tar:
+                    members = {m.name.rstrip('/'): m.isfile() for m in tar.getmembers()}
+            except tarfile.TarError:
+                raise ValueError(f'Not a gzipped tar: {name}') from None
+        for member in members:
+            parts = member.split('/')
+            if parts[0] != top or '..' in parts or member.startswith('/'):
+                raise ValueError(f'{name} holds {member!r}, outside {top}/')
+        for want in wanted:
+            if not members.get(f'{top}/{want}'):
+                raise ValueError(f'{name} has no {top}/{want}')
+
+
+def linux_cli_published():
+    return os.environ.get('MV_RELEASE_LINUX_CLI') == '1'
+
+
+def linux_cli_asset_names(version):
+    names = []
+    for deb_arch, rpm_arch in LINUX_CLI_ARCHES:
+        names += [f'driftwire_{version}_{deb_arch}.deb', f'driftwire-{version}-1.{rpm_arch}.rpm',
+                  f'driftwire-{version}-linux-{rpm_arch}.tar.gz']
+    return names
 
 
 def addon_platforms(addon):
@@ -180,10 +274,15 @@ def validate_assets(folder, version, mode, repo, tag):
             for platform in addon_platforms(addon):
                 names += addon_asset_names(platform, addon)
         names += preferred_asset_names(folder, version, mode)
+    cli = cli_asset_names(folder, version) if mode == 'stable' and cli_published() else []
+    names += cli
+    if linux_cli_published():
+        names += linux_cli_asset_names(version)
     for name in names:
         path = folder / name
         if not path.is_file() or path.stat().st_size == 0:
             raise ValueError('Missing or empty release asset: ' + name)
+    validate_cli(folder, cli)
     if mode in ('preview', 'stable'):
         manifest = json.loads((folder / 'mediaviewer-manifest.json').read_text())
         if manifest['version'] != version or manifest['channel'] != 'win':
@@ -242,13 +341,39 @@ def highest_release_version(repo):
     return max(filter(None, versions), default=None)
 
 
-def release_notes(version, mode, repo, tag, sha):
+def cli_notes(version, repo, base, names):
+    """The command line's three ways in. The site is this repository's GitHub Pages at its usual
+    address (release.yml's driftwire-repo deploys it); the tap is the owner's homebrew-tap."""
+    owner, name = repo.split('/', 1)
+    site = f'https://{owner.lower()}.github.io/{name}/driftwire'
+    windows, mac = names
+    return ('- **driftwire**, the command line that sends files to MediaViewer or another driftwire nearby '
+            '(it needs no MediaViewer): on Linux `curl -fsSL ' + site + '/install.sh | sh` (or apt and dnf, '
+            f'[{site}/]({site}/)), on macOS `brew install {owner}/tap/driftwire`, on Windows '
+            f'`irm {site}/install.ps1 | iex`. The [macOS archive]({base}/{mac}) and the '
+            f'[Windows zip]({base}/{windows}) are below too.\n')
+
+
+def release_notes(version, mode, repo, tag, sha, cli=None):
     base = f'https://github.com/{repo}/releases/download/{tag}'
     text = ('## Downloads\n\n'
             f'- **[Download for Windows (x64)]({base}/MediaViewer-{version}-Setup.exe)** '
             '- run the installer.\n'
             f'- **[Download for Mac (Apple Silicon and Intel, macOS 14+)]({base}/MediaViewer-{version}.dmg)** '
-            '- open the disk image and drag MediaViewer to Applications.\n\n')
+            '- open the disk image and drag MediaViewer to Applications.\n')
+    if linux_cli_published():
+        text += ('- **driftwire for Linux**, the command line that sends files to and from MediaViewer\'s '
+                 f'Driftwire: x86_64 [.deb]({base}/driftwire_{version}_amd64.deb), '
+                 f'[.rpm]({base}/driftwire-{version}-1.x86_64.rpm) or '
+                 f'[tarball]({base}/driftwire-{version}-linux-x86_64.tar.gz); '
+                 f'arm64 [.deb]({base}/driftwire_{version}_arm64.deb), '
+                 f'[.rpm]({base}/driftwire-{version}-1.aarch64.rpm) or '
+                 f'[tarball]({base}/driftwire-{version}-linux-aarch64.tar.gz) '
+                 '- install the package with your package manager (glibc 2.35 or newer).\n')
+    if mode == 'stable' and cli_published():
+        text += cli_notes(version, repo, base, cli or [f'driftwire-{version}-windows-x64.zip',
+                                                      f'driftwire-{version}-macos-universal.tar.gz'])
+    text += '\n'
     if mode == 'preview':
         text += ('Preview build: signed like a stable release, but not marked Latest. Apps with '
                  '**Settings > Update channel** set to Preview update to it automatically; the '
@@ -291,7 +416,8 @@ def publish(folder):
                                  for p in sorted(assets)), encoding='utf-8')
     assets.append(checksums)
     notes = folder / 'release-notes.md'
-    notes.write_text(release_notes(version, mode, repo, tag, sha), encoding='utf-8')
+    cli = cli_asset_names(folder, version) if mode == 'stable' and cli_published() else None
+    notes.write_text(release_notes(version, mode, repo, tag, sha, cli), encoding='utf-8')
     if not existing:
         gh('release', 'create', tag, '--repo', repo, '--target', sha, '--draft',
            '--title', f'MediaViewer {version}' + (' (preview)' if mode == 'preview' else ''),
@@ -310,7 +436,9 @@ def publish(folder):
     print(url)
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
-            summary.write(f'Published [{tag}]({url}) with both installers and SHA256SUMS.txt.\n')
+            linux = ', the driftwire Linux packages' if linux_cli_published() else ''
+            cli_text = ", driftwire's macOS and Windows archives" if mode == 'stable' and cli_published() else ''
+            summary.write(f'Published [{tag}]({url}) with both installers{cli_text}{linux} and SHA256SUMS.txt.\n')
 
 
 if __name__ == '__main__':

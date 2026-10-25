@@ -123,7 +123,7 @@ std::string changed_key_text(const std::string& name, bool sending) {
 }  // namespace
 
 engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(opts)) {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   id_ = random_id();
   // #472 PR 4: the identity kept in the secret store, or one for this run.
   if (opts_.make_secrets) secrets_ = opts_.make_secrets();

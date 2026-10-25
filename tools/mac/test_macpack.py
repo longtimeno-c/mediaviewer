@@ -407,6 +407,12 @@ class LipoMergeTests(unittest.TestCase):
     def _archs_of_bytes(self, data: bytes) -> set[str]:
         return set(data[4:].decode().split())
 
+    def test_a_folder_with_the_command_line_alone_is_joined(self):
+        # release.yml's macos job joins the two driftwire programs this way.
+        warnings, out = self._merge({"driftwire": self._macho("arm64")}, {"driftwire": self._macho("x86_64")})
+        self.assertEqual(warnings, [])
+        self.assertEqual(self._archs_of_bytes(out["driftwire"]), {"arm64", "x86_64"})
+
     def test_layout_mismatch_fails(self):
         with self.assertRaises(SystemExit):
             self._merge({"Contents/a.dylib": self._macho("arm64")}, {})
@@ -493,6 +499,109 @@ class FinalCutProPackTests(unittest.TestCase):
                               "--icon-png", str(t / "c"), "--font", str(t / "f"), "--dylib-dir", tmp,
                               "--fcp-appex-exe", str(t / "appex")])
             self.assertIn("--fcp-agent-plist", str(cm.exception))
+
+class CommandLineTests(unittest.TestCase):
+    """docs/design/28 "Installing": the driftwire program, signed bare (no
+    entitlements: no keychain on macOS, #501), notarized in a zip (it cannot
+    be stapled), and packed for the Homebrew tap."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.binary = self.root / "driftwire"
+        self.binary.write_bytes(b"\xca\xfe\xba\xbe universal program")
+
+    def test_the_archive_says_what_the_program_runs_on(self):
+        self.assertEqual(macpack.cli_arch_label(["x86_64", "arm64"]), "universal")
+        self.assertEqual(macpack.cli_arch_label(["arm64"]), "arm64")
+        for archs in (["x86_64"], [], ["arm64e"]):
+            with self.assertRaises(SystemExit):
+                macpack.cli_arch_label(archs)
+
+    def test_archive_layout_modes_and_repeatability(self):
+        import tarfile
+        top = macpack.stage_cli(self.binary, "1.2.3", "universal", self.root / "stage")
+        self.assertEqual(top.name, "driftwire-1.2.3-macos-universal")
+        out = self.root / "a.tar.gz"
+        digest = macpack.pack_cli_archive(top, out, mtime=1700000000)
+        with tarfile.open(out) as tar:
+            members = {m.name: m for m in tar.getmembers()}
+        top_name = "driftwire-1.2.3-macos-universal"
+        self.assertEqual(sorted(members), [top_name] + sorted(
+            f"{top_name}/{n}" for n in ("COPYRIGHT.txt", "LICENSE", "NOTICE", "driftwire", "driftwire.1")))
+        self.assertEqual(members[f"{top_name}/driftwire"].mode, 0o755)
+        self.assertEqual(members[f"{top_name}/driftwire.1"].mode, 0o644)
+        self.assertTrue(all(m.uid == 0 and m.gid == 0 for m in members.values()))
+        with tarfile.open(out) as tar:
+            self.assertEqual(tar.extractfile(f"{top_name}/driftwire").read(), self.binary.read_bytes())
+            copyright_text = tar.extractfile(f"{top_name}/COPYRIGHT.txt").read().decode()
+        self.assertIn("License: ISC", copyright_text)   # libsodium's notice goes with the program
+        again = self.root / "b.tar.gz"
+        self.assertEqual(macpack.pack_cli_archive(top, again, mtime=1700000000), digest)
+        self.assertEqual(out.read_bytes(), again.read_bytes())
+
+    def cli(self, *extra, archs="x86_64 arm64", says="driftwire 1.2.3"):
+        ran, signed = [], []
+
+        def fake_run(cmd, **kwargs):
+            ran.append(cmd)
+            if cmd[:2] == ["lipo", "-archs"]:
+                return archs
+            if cmd[-1] == "--version":
+                return says + "\n"
+            if cmd[0] == "ditto":
+                Path(cmd[-1]).write_bytes(b"zip")
+            return ""
+        with patch.object(macpack, "run", side_effect=fake_run), \
+             patch.object(macpack, "codesign", side_effect=lambda p, *a, **k: signed.append((p, a, k))), \
+             patch.object(macpack, "notarize") as notarize:
+            macpack.main(["cli", "--binary", str(self.binary), "--version", "1.2.3",
+                          "--out-dir", str(self.root / "out"), *extra])
+        return ran, signed, notarize
+
+    def test_signed_with_a_stable_identifier_and_the_hardened_runtime_then_notarized(self):
+        ran, signed, notarize = self.cli("--identity", "Developer ID Application: T (TEAM)",
+                                         "--notary-profile", "p")
+        (path, args, kwargs), = signed
+        self.assertEqual(path.name, "driftwire")
+        self.assertEqual(args, ("Developer ID Application: T (TEAM)",))
+        self.assertEqual(kwargs, {"hardened": True, "identifier": "io.github.longtimeno-c.driftwire"})
+        self.assertIn(["codesign", "--verify", "--strict", "--verbose=2", str(path)], ran)
+        notarize.assert_called_once()
+        self.assertTrue(str(notarize.call_args.args[0]).endswith("driftwire-1.2.3-macos-universal.zip"))
+        self.assertEqual(notarize.call_args.args[1], "p")
+        self.assertTrue((self.root / "out" / "driftwire-1.2.3-macos-universal.tar.gz").is_file())
+
+    def test_an_ad_hoc_build_is_packed_unnotarized_and_an_arm64_one_says_so(self):
+        _, signed, notarize = self.cli("--identity", "-", "--skip-notarize", archs="arm64")
+        self.assertEqual(signed[0][1], ("-",))
+        notarize.assert_not_called()
+        self.assertTrue((self.root / "out" / "driftwire-1.2.3-macos-arm64.tar.gz").is_file())
+
+    def test_a_program_of_another_version_is_refused_before_notarizing(self):
+        with self.assertRaisesRegex(SystemExit, "driftwire 1.2.2"):
+            self.cli("--identity", "-", "--notary-profile", "p", says="driftwire 1.2.2")
+        self.assertFalse((self.root / "out" / "driftwire-1.2.3-macos-universal.tar.gz").exists())
+
+    def test_codesign_names_the_identifier(self):
+        with patch.object(macpack, "run") as runner:
+            macpack.codesign(Path("driftwire"), "I", hardened=True, identifier="io.example.x")
+        cmd = runner.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--identifier") + 1], "io.example.x")
+        self.assertIn("--timestamp", cmd)
+        self.assertEqual(cmd[cmd.index("--options") + 1], "runtime")
+
+    def test_cli_requires_identity_and_profile(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MV_SIGN_IDENTITY", None)
+            os.environ.pop("MV_NOTARY_PROFILE", None)
+            for argv in (["cli", "--binary", "x", "--version", "1.2.3"],
+                         ["cli", "--binary", "x", "--version", "1.2.3", "--identity", "I"]):
+                with self.assertRaises(SystemExit):
+                    macpack.main(argv)
+
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -89,8 +89,8 @@ inline constexpr int kIdRotateMs = 10 * 60 * 1000;
 inline constexpr std::size_t kMaxFiles = 100000;
 inline constexpr std::size_t kMaxOfferParts = 128;
 inline constexpr std::size_t kMaxRelativeBytes = 1024;
-// A part of a relative path, at most: room for ".mvtmp16" under any
-// filesystem's 255-byte name limit.
+// A part of a relative path, at most: room for Linux's leading dot and
+// ".mvtmp16" under any filesystem's 255-byte name limit.
 inline constexpr std::size_t kMaxPartBytes = 240;
 // One file's size, at most (an offer above it is refused whole).
 inline constexpr std::uint64_t kMaxFileBytes = 1ull << 50;
@@ -184,5 +184,8 @@ struct beacon {
 
 // "340 MB", "1.2 GB", "12 KB".
 [[nodiscard]] std::string size_text(std::uint64_t bytes);
+// "14 MB/s": a transfer's speed under its progress, in the window and the
+// command line alike.
+[[nodiscard]] std::string rate_text(double bytes_per_second);
 
 }  // namespace mv::driftwire

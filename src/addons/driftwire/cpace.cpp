@@ -64,7 +64,7 @@ std::vector<std::uint8_t> generator_string(std::span<const std::uint8_t> prs, st
 party::party(std::span<const std::uint8_t> prs, std::span<const std::uint8_t> ci, std::span<const std::uint8_t> sid,
              std::optional<std::array<std::uint8_t, 32>> fixed_scalar)
     : sid_(sid.begin(), sid.end()) {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   std::vector<std::uint8_t> gs = generator_string(prs, ci, sid);
   std::uint8_t h[crypto_hash_sha512_BYTES];
   crypto_hash_sha512(h, gs.data(), gs.size());
