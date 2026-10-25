@@ -401,6 +401,30 @@ class DriftwireRepoTest(unittest.TestCase):
                                     capture_output=True, text=True, check=True).stdout.strip()
             self.assertEqual(errors, '0')
 
+    # Windows PowerShell 5.1's own commands that live in script modules (Microsoft.PowerShell.Archive,
+    # and Get-FileHash and the like in Microsoft.PowerShell.Utility.psm1) do not load under a Windows
+    # client's default policy, Restricted, which still runs `irm | iex`: install.ps1 calls only these.
+    BINARY_COMMANDS = {'Add-Type', 'Get-AuthenticodeSignature', 'Get-ChildItem', 'Get-Variable', 'Invoke-WebRequest',
+                       'Join-Path', 'Move-Item', 'New-Item', 'Out-Null', 'Remove-Item', 'Set-StrictMode', 'Test-Path',
+                       'Where-Object', 'Write-Host'}
+
+    @unittest.skipIf(not PWSH, 'needs PowerShell (pwsh)')
+    def test_install_ps1_calls_no_script_module(self):
+        listed = subprocess.run(
+            [PWSH, '-NoProfile', '-Command',
+             '$t = $null; $e = $null; $a = [System.Management.Automation.Language.Parser]::'
+             f'ParseFile("{self.dw / "install.ps1"}", [ref]$t, [ref]$e); '
+             '$a.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | '
+             'ForEach-Object { $_.GetCommandName() }; '
+             "'--'; "
+             '$a.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | '
+             'ForEach-Object { $_.Name }'],
+            capture_output=True, text=True, check=True).stdout.split('--\n')
+        called, defined = set(listed[0].split()), set(listed[1].split())
+        self.assertIn('Get-AuthenticodeSignature', called)
+        test_mode_only = {'chmod', 'sh'}
+        self.assertEqual(called - defined - test_mode_only - self.BINARY_COMMANDS, set())
+
     def test_a_signed_zip_is_baked_as_signed_and_can_be_required(self):
         packages = make_set(self.work / 'signed', '1.2.3', ('amd64',), windows=False)
         make_zip(packages, '1.2.3', signed=True)

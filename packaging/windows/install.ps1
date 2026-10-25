@@ -12,6 +12,9 @@
 # Authenticode signature, is checked before anything is replaced; running it
 # again installs the site's version over the old one. It needs no MediaViewer.
 # Windows PowerShell 5.1 and PowerShell 7; x64 (Windows on Arm runs it too).
+# Only binary cmdlets and .NET: Windows PowerShell 5.1's Get-FileHash and
+# Expand-Archive live in script modules, which the default policy on a Windows
+# client (Restricted) will not load, though it runs `irm | iex`.
 #
 # tools/package/driftwire_repo.py writes the site's address and the archive's
 # version, name, SHA-256 and signedness in below when it builds the site.
@@ -139,6 +142,18 @@ function Install-Driftwire {
         }
     }
 
+    # Get-FileHash, from .NET (see the top).
+    function Get-Sha256([string]$Path) {
+        $stream = [IO.File]::OpenRead($Path)
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            return ([BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
+        } finally {
+            $sha.Dispose()
+            $stream.Dispose()
+        }
+    }
+
     # ---- where from, where to -------------------------------------------------
 
     $onWindows = $true
@@ -224,13 +239,14 @@ function Install-Driftwire {
         $zip = Join-Path $tmp $zipName
         Write-Host "+ download $url/$zipName"
         Invoke-WebRequest -Uri "$url/$zipName" -OutFile $zip -UseBasicParsing
-        $got = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+        $got = Get-Sha256 $zip
         if ($got -ne $zipSha256) {
             Fail "$zipName does not match its SHA-256 (it is $got, not $zipSha256); nothing was changed."
         }
         Remove-Leftovers $programs
         New-Item -ItemType Directory -Force -Path $programs | Out-Null
-        Expand-Archive -LiteralPath $zip -DestinationPath $staging
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [IO.Compression.ZipFile]::ExtractToDirectory($zip, $staging)
         $top = Join-Path $staging ([IO.Path]::GetFileNameWithoutExtension($zipName))
         $exe = Join-Path $top 'driftwire.exe'
         if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { Fail "$zipName has no driftwire.exe; nothing was changed." }

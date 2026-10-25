@@ -25,6 +25,8 @@
 #     folder and the PATH entry away, and keeps the user's other entries (with
 #     their %VARIABLES%), the Path value's kind and the data folder;
 #   - with -SignedZip, a signed build installs with its signatures checked.
+# Every PowerShell runs under the Restricted execution policy, the default on a
+# Windows client, which loads no script module (`irm | iex` itself is allowed).
 #
 # On Windows it installs into, and removes from, this user's own profile and
 # PATH: run it on a CI runner or a throwaway account. It refuses to start when
@@ -135,10 +137,14 @@ function Get-InstallCount {
     @(Get-PathEntries | Where-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd($trim).ToLowerInvariant() -eq $want }).Count
 }
 
-# Runs a command in a new PowerShell (each one this machine has), as `irm | iex` runs.
+# Each PowerShell this machine has: Windows PowerShell 5.1 first, then 7.
+$shells = if ($onWindows) { @((Get-Command powershell).Source, $pwshPath) } else { @($pwshPath, $pwshPath) }
+
+# Runs a command in a new PowerShell, as `irm | iex` runs, under a Windows
+# client's default policy (off Windows the switch changes nothing).
 function Invoke-Installer([string]$Command, [string]$Shell = $pwshPath) {
     Write-Host "check: $(Split-Path -Leaf $Shell) -Command `"$Command`""
-    $output = & $Shell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $Command 2>&1 | Out-String
+    $output = & $Shell -NoProfile -NonInteractive -ExecutionPolicy Restricted -Command $Command 2>&1 | Out-String
     Write-Host $output.TrimEnd()
     @{ Code = $LASTEXITCODE; Output = $output }
 }
@@ -185,6 +191,12 @@ try {
     }
     $served = Join-Path $root 'unsigned/driftwire'
     $script = [IO.File]::ReadAllText((Join-Path $served 'install.ps1'))
+    if ($onWindows) {
+        foreach ($shell in $shells) {
+            $policy = (& $shell -NoProfile -NonInteractive -ExecutionPolicy Restricted -Command 'Get-ExecutionPolicy' | Out-String).Trim()
+            Check ($policy -eq 'Restricted') "$(Split-Path -Leaf $shell) runs the installer under the Restricted policy (it is $policy)"
+        }
+    }
 
     # ---- cut off part way: nothing happens ----
     $callAt = $script.LastIndexOf('Install-Driftwire -Remove')
@@ -206,7 +218,6 @@ try {
     Remove-Item -LiteralPath $installDir -Recurse -Force
 
     # ---- install, in each PowerShell, and again ----
-    $shells = if ($onWindows) { @((Get-Command powershell).Source, $pwshPath) } else { @($pwshPath, $pwshPath) }
     foreach ($shell in $shells) {
         $run = Invoke-Installer "irm $url/install.ps1 | iex" $shell
         Check ($run.Code -eq 0 -and $run.Output -match "driftwire $([regex]::Escape($version))") "$(Split-Path -Leaf $shell) installs driftwire $version"
