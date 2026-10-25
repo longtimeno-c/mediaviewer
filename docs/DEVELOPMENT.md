@@ -1785,10 +1785,13 @@ macOS    brew install longtimeno-c/tap/driftwire
 Windows  irm https://longtimeno-c.github.io/mediaviewer/driftwire/install.ps1 | iex
 ```
 
+On a Mac without Homebrew, the Linux line unpacks the signed macOS archive into `~/.local`
+(it does not update itself; `sh -s -- --uninstall` removes it).
+
 One repository variable publishes all three from every **stable** release: with
 `MV_DRIFTWIRE_REPO` = `1`, `publish` requires and attaches the macOS archive and the Windows zip
 that the `macos` and `windows` jobs pack on every run, `driftwire-repo` deploys the site (the apt
-and dnf repositories, `install.sh`, the Windows zip and `install.ps1`) to GitHub Pages, and
+and dnf repositories, `install.sh`, the macOS archive, the Windows zip and `install.ps1`) to GitHub Pages, and
 `driftwire-homebrew` writes the tap's formula. Previews, and any release with it off, leave all
 of that alone; the installers publish as before.
 

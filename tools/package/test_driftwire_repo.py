@@ -11,9 +11,11 @@ and the keys are throwaway ones in a temporary GnuPG home. Skips when the tools 
 """
 from datetime import timedelta
 import email.utils
+import functools
 import gzip
 import hashlib
 import importlib.util
+import http.server
 import io
 import os
 from pathlib import Path
@@ -24,6 +26,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import unittest
 import zipfile
 
@@ -92,6 +95,24 @@ def make_tarball(folder, version, arch):
     return out
 
 
+def make_mac_tarball(folder, version, arch='universal'):
+    """macpack.py cli's archive: one flat folder, the program (here a script saying its
+    version), its manual page and the notices."""
+    top = f'driftwire-{version}-macos-{arch}'
+    out = folder / f'{top}.tar.gz'
+    with tarfile.open(out, 'w:gz') as tar:
+        info = tarfile.TarInfo(top)
+        info.type, info.mode = tarfile.DIRTYPE, 0o755
+        tar.addfile(info)
+        for name, data, mode in (('driftwire', f'#!/bin/sh\necho driftwire {version}\n', 0o755),
+                                 ('driftwire.1', '.TH DRIFTWIRE 1\n', 0o644), ('LICENSE', 'GPL\n', 0o644),
+                                 ('COPYRIGHT.txt', 'notices\n', 0o644)):
+            info = tarfile.TarInfo(f'{top}/{name}')
+            info.size, info.mode = len(data.encode()), mode
+            tar.addfile(info, io.BytesIO(data.encode()))
+    return out
+
+
 def make_zip(folder, version, signed=False, exe=None, extra=()):
     """driftwire-windows.ps1's zip: one folder, a driftwire.exe that is a PE file (and, run by
     sh, says its version: install.ps1's test mode), a DLL and the notices."""
@@ -115,6 +136,7 @@ def make_set(folder, version, arches=('amd64', 'arm64'), windows=True):
         make_tarball(folder, version, repo.ARCHES[arch])
     if windows:
         make_zip(folder, version)
+        make_mac_tarball(folder, version)
     return folder
 
 
@@ -192,7 +214,7 @@ class DriftwireRepoTest(unittest.TestCase):
             'driftwire/apt/pool/main/d/driftwire/driftwire_1.2.3_amd64.deb',
             'driftwire/apt/pool/main/d/driftwire/driftwire_1.2.3_arm64.deb',
             'driftwire/driftwire-1.2.3-linux-aarch64.tar.gz', 'driftwire/driftwire-1.2.3-linux-x86_64.tar.gz',
-            'driftwire/driftwire-1.2.3-windows-x64.zip',
+            'driftwire/driftwire-1.2.3-macos-universal.tar.gz', 'driftwire/driftwire-1.2.3-windows-x64.zip',
             'driftwire/driftwire.repo', 'driftwire/index.html', 'driftwire/install.ps1', 'driftwire/install.sh',
             'driftwire/key.asc', 'driftwire/key.gpg',
             'driftwire/rpm/driftwire-1.2.3-1.aarch64.rpm', 'driftwire/rpm/driftwire-1.2.3-1.x86_64.rpm',
@@ -219,6 +241,9 @@ class DriftwireRepoTest(unittest.TestCase):
         self.assertNotIn('install.ps1', page)
         self.assertNotIn('windows', (dw / 'SHA256SUMS').read_text())
         self.assertIn('brew install longtimeno-c/tap/driftwire', page)
+        # Without the macOS archive, the page offers Homebrew alone.
+        self.assertNotIn('macos', (dw / 'SHA256SUMS').read_text())
+        self.assertNotIn('Without Homebrew', page)
 
     def test_release(self):
         dist = self.dw / 'apt/dists/stable'
@@ -327,38 +352,120 @@ class DriftwireRepoTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("installer's template", result.stderr)
 
-    def test_install_sh_on_macos_names_homebrew_and_installs_nothing(self):
-        # The Mac's channel is the Homebrew tap: install.sh says so and exits non-zero, with and
-        # without Homebrew, and --uninstall points at brew too. uname is faked; nothing is run as root.
-        bin_dir = self.work / 'bin'
-        bin_dir.mkdir()
-        (bin_dir / 'uname').write_text('#!/bin/sh\n[ "$1" = -s ] && echo Darwin || echo arm64\n')
-        for tool in ('sh', 'cat', 'printf'):
-            if shutil.which(tool):
-                (bin_dir / tool).symlink_to(shutil.which(tool))
-        # The links are the system's own programs: chmod would follow them (EPERM unless root).
-        os.chmod(bin_dir / 'uname', 0o755)
+    def fake_mac(self, machine='arm64', macos='15.1', arm64_capable=None, brew=None):
+        """A folder to put first on PATH: uname says Darwin, sw_vers and sysctl answer as a Mac
+        would, and brew is there (saying whether driftwire is installed) only when asked."""
+        bin_dir = Path(tempfile.mkdtemp(dir=self.work))
+        capable = arm64_capable if arm64_capable is not None else machine == 'arm64'
+        scripts = {
+            'uname': f'#!/bin/sh\n[ "$1" = -s ] && echo Darwin || echo {machine}\n',
+            'sw_vers': f'#!/bin/sh\necho {macos}\n',
+            'sysctl': f'#!/bin/sh\necho {1 if capable else 0}\n',
+        }
+        if brew is not None:
+            scripts['brew'] = f'#!/bin/sh\n[ "$1" = list ] && exit {0 if brew else 1}\nexit 0\n'
+        for name, text in scripts.items():
+            (bin_dir / name).write_text(text)
+            os.chmod(bin_dir / name, 0o755)
+        return bin_dir
+
+    def serve(self, folder):
+        server = http.server.ThreadingHTTPServer(
+            ('127.0.0.1', 0), functools.partial(repo.QuietHandler, directory=str(folder)))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f'http://127.0.0.1:{server.server_address[1]}/driftwire'
+
+    def mac_installer(self, dw, bin_dir, home, *args, url=None):
+        env = {'PATH': f'{bin_dir}:{os.environ["PATH"]}', 'HOME': str(home)}
+        if url:
+            env['DRIFTWIRE_REPO_URL'] = url
+        return subprocess.run([shutil.which('sh'), str(dw / 'install.sh'), *args], capture_output=True,
+                              text=True, env=env, timeout=120)
+
+    @unittest.skipIf(os.geteuid() == 0, 'as root it would install into /usr/local')
+    def test_install_sh_on_macos_with_homebrew_names_it_and_installs_nothing(self):
         dw = self.build(github_repo='someone/fork')
-
-        def installer(*args):
-            return subprocess.run([shutil.which('sh'), str(dw / 'install.sh'), *args], capture_output=True,
-                                  text=True, env={'PATH': str(bin_dir), 'HOME': str(self.work)})
-
-        result = installer()
+        home = self.work / 'home'
+        home.mkdir()
+        result = self.mac_installer(dw, self.fake_mac(brew=False), home)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn('brew install someone/tap/driftwire', result.stdout)
-        self.assertIn('https://brew.sh', result.stdout)
-        self.assertIn('https://github.com/someone/fork/releases/latest', result.stdout)
-        self.assertNotIn('+ ', result.stdout)   # no command was run
-        (bin_dir / 'brew').write_text('#!/bin/sh\nexit 0\n')
-        os.chmod(bin_dir / 'brew', 0o755)
-        result = installer()
-        self.assertEqual(result.returncode, 1)
-        self.assertIn('brew install someone/tap/driftwire', result.stdout)
         self.assertNotIn('brew.sh', result.stdout)
-        result = installer('--uninstall')
+        self.assertNotIn('+ ', result.stdout)   # no command was run
+        self.assertEqual(list(home.iterdir()), [])
+        # --uninstall leaves Homebrew's copy to brew, and says how.
+        result = self.mac_installer(dw, self.fake_mac(brew=True), home, '--uninstall')
         self.assertEqual(result.returncode, 1)
         self.assertIn('brew uninstall driftwire', result.stdout)
+        result = self.mac_installer(dw, self.fake_mac(brew=False), home, '--uninstall')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("nothing of driftwire's to remove", result.stdout)
+
+    @unittest.skipIf(os.geteuid() == 0, 'as root it would install into /usr/local')
+    def test_install_sh_on_macos_without_homebrew_installs_the_archive(self):
+        # No brew: the signed archive into ~/.local, laid out as the Linux tarball is, run,
+        # replaced by a newer site's, and removed with nothing left in the home.
+        dw = self.build(github_repo='someone/fork')
+        url = self.serve(dw.parent)
+        home = self.work / 'home'
+        home.mkdir()
+        bin_dir = self.fake_mac()
+        result = self.mac_installer(dw, bin_dir, home, url=url)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for needle in ('Homebrew is not installed', 'https://brew.sh',
+                       'raw.githubusercontent.com/Homebrew/install/HEAD/install.sh',
+                       'brew install someone/tap/driftwire', 'macOS 15.1, arm64',
+                       'does not update itself', 'driftwire 1.2.3', '~/.zprofile'):
+            self.assertIn(needle, result.stdout)
+        local = home / '.local'
+        self.assertEqual(run(local / 'bin/driftwire', text=True).stdout.strip(), 'driftwire 1.2.3')
+        self.assertTrue((local / 'share/man/man1/driftwire.1').is_file())
+        self.assertTrue((local / 'share/doc/driftwire/COPYRIGHT.txt').is_file())
+        self.assertTrue((local / 'share/driftwire/install-manifest').is_file())
+        # With Homebrew now there, the installer points at it and at the copy to remove.
+        result = self.mac_installer(dw, self.fake_mac(brew=False), home, url=url)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('--uninstall', result.stdout)
+        # A newer site's archive replaces it.
+        newer = self.work / 'newer'
+        newer.mkdir()
+        make_set(newer, '1.2.4', ('amd64',))
+        newer_dw = self.build(newer, out=self.work / 'newer-site')
+        result = self.mac_installer(newer_dw, bin_dir, home, url=self.serve(newer_dw.parent))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(run(local / 'bin/driftwire', text=True).stdout.strip(), 'driftwire 1.2.4')
+        result = self.mac_installer(dw, bin_dir, home, '--uninstall', url=url)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Library/Application Support/Driftwire', result.stdout)
+        self.assertEqual(list(home.rglob('*')), [])
+
+    def test_install_sh_on_macos_refuses_what_it_cannot_run(self):
+        dw = self.build()
+        url = self.serve(dw.parent)
+        home = self.work / 'home'
+        home.mkdir()
+        result = self.mac_installer(dw, self.fake_mac(macos='13.6'), home, url=url)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('needs macOS 14 or later; this Mac has 13.6', result.stderr)
+        # An arm64-only archive (no Intel leg): an Intel Mac is told, not given it...
+        arm = self.work / 'arm'
+        arm.mkdir()
+        make_set(arm, '1.2.3', ('amd64',), windows=False)
+        make_mac_tarball(arm, '1.2.3', 'arm64')
+        arm_dw = self.build(arm, out=self.work / 'arm-site')
+        arm_url = self.serve(arm_dw.parent)
+        result = self.mac_installer(arm_dw, self.fake_mac(machine='x86_64'), home, url=arm_url)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('does not name one macOS archive for this Mac (x86_64)', result.stderr)
+        self.assertEqual(list(home.iterdir()), [])
+        # ...while Apple silicon behind Rosetta (uname says x86_64) takes it.
+        if os.geteuid() != 0:
+            result = self.mac_installer(arm_dw, self.fake_mac(machine='x86_64', arm64_capable=True), home,
+                                        url=arm_url)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('macOS 15.1, arm64', result.stdout)
 
     def test_refuses_a_bad_github_repo(self):
         for name in ('', 'noslash', 'a/b/c', 'a b/c', '../x', 'a/..'):
@@ -372,6 +479,7 @@ class DriftwireRepoTest(unittest.TestCase):
                        'x86_64 and aarch64',
                        'tar -xzf driftwire-1.2.3-linux-x86_64.tar.gz --strip-components=1 -C ~/.local',
                        'brew install longtimeno-c/tap/driftwire', f'irm {BASE}/install.ps1 | iex',
+                       'Without Homebrew', 'href="driftwire-1.2.3-macos-universal.tar.gz"',
                        f'&amp; ([scriptblock]::Create((irm {BASE}/install.ps1))) -Uninstall',
                        'href="driftwire-1.2.3-windows-x64.zip"'):
             self.assertIn(needle, page)
