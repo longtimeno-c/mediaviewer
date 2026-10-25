@@ -34,7 +34,11 @@ foreach(candidate IN ITEMS "$ENV{VCPKG_ROOT}" "$ENV{VCPKG_INSTALLATION_ROOT}"
   endif()
 endforeach()
 
-if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+# Linux PR 1 needs two packages (imgui, Catch2) and builds without vcpkg too:
+# cmake/linux.cmake finds them as CONFIG packages first (vcpkg, CI) and falls
+# back to a source tree (MV_IMGUI_SOURCE_DIR) and the system. Windows and
+# macOS need the manifest.
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
   message(FATAL_ERROR
     "No vcpkg toolchain found. Set VCPKG_ROOT, or pass "
     "-DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake. See README.md.")
@@ -60,10 +64,16 @@ if(APPLE)
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/darwin.cmake")
   return()
 endif()
+# Linux PR 1: the OpenGL/EGL present lab on Wayland (docs/plans/linux.md). Only
+# the lab, frametime and the portable tests so far; the viewer is later slices.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/linux.cmake")
+  return()
+endif()
 if(NOT WIN32)
   message(FATAL_ERROR
-    "MediaViewer v1 is a Windows application; macOS is Milestone F "
-    "(docs/design/15-platforms.md).")
+    "MediaViewer builds on Windows, macOS and Linux (docs/design/15-platforms.md, "
+    "docs/plans/linux.md); ${CMAKE_SYSTEM_NAME} is none of them.")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -298,6 +308,8 @@ add_library(mv_gfx STATIC
   src/gfx/colour_desc.h
   src/gfx/metal_pacer.cpp
   src/gfx/metal_pacer.h
+  src/gfx/presentation_pacer.cpp
+  src/gfx/presentation_pacer.h
   src/gfx/frame_histogram.h
   src/gfx/present_policy.h
   src/gfx/pace_json.h
@@ -1228,6 +1240,7 @@ if(MV_BUILD_TESTS)
     tests/test_gesture.cpp
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
+    tests/test_presentation_pacer.cpp
     tests/test_frametime_report.cpp
     tests/test_minidump_scrub.cpp
     tests/test_dino_game.cpp
@@ -1307,12 +1320,13 @@ if(MV_BUILD_TESTS)
   # have to borrow MSBuild's PATH to start.
   mv_asan_runtime_beside(mv_tests)
 
-  # Portable PR 16 arithmetic. Does not link mediaviewer_core.dll, so it can
-  # build while another session holds that file.
+  # Portable Mac PR 1 and Linux PR 1 arithmetic. Does not link
+  # mediaviewer_core.dll, so it can build while another session holds that file.
   add_executable(mv_pr16_tests
     tests/crt_no_dialogs.cpp
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
+    tests/test_presentation_pacer.cpp
     tests/test_frametime_report.cpp
   )
   target_link_libraries(mv_pr16_tests PRIVATE mv_gfx Catch2::Catch2WithMain)

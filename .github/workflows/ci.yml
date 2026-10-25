@@ -400,6 +400,70 @@ jobs:
             dist/*.tar.gz
           if-no-files-found: error
 
+  # Linux PR 1 (docs/plans/linux.md): the OpenGL/EGL present lab, frametime and
+  # the portable tests, built from the root CMakeLists on a hosted runner, then
+  # the lab under a headless Weston with Mesa's software rasteriser, with the GL
+  # renderer (ctest's linux_lab_smoke) and once with pixman. That proves the
+  # plumbing and never pacing: headless Weston's feedback has flags 0 and seq
+  # 0, so the smoke asserts the report is labelled "clock intervals (weaker)"
+  # and fails the gate. The gate itself is frametime-linux, on a real session.
+  linux-lab-smoke:
+    name: Linux present lab (headless Weston smoke)
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
+        run: |
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> "$GITHUB_ENV"
+
+      # The root manifest on Linux installs catch2 and imgui[opengl3-binding] only.
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: build-linux/vcpkg_installed
+          key: vcpkg-linux-lab-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+
+      # Wayland, xkbcommon and glvnd's EGL/OpenGL to build against; Weston and
+      # Mesa (llvmpipe) to run under. The protocol XML is vendored.
+      - name: Build and run dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build pkg-config \
+            libwayland-dev libxkbcommon-dev libegl-dev libgl-dev libopengl-dev \
+            weston libegl-mesa0 libgl1-mesa-dri libopengl0
+
+      - name: Configure
+        run: cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build-linux
+
+      - name: Unit tests and the headless smoke (GL renderer)
+        timeout-minutes: 10
+        run: ctest --test-dir build-linux --output-on-failure
+
+      - name: Headless smoke (pixman renderer)
+        timeout-minutes: 5
+        run: |
+          MV_WESTON_RENDERER=pixman bash tools/linux/lab_smoke.sh \
+            build-linux/bin/mediaviewer_lab build-linux/bin/frametime \
+            build-linux/bin/libmv_egl_swap_fault.so
+
   # ---------------------------------------------------------------------------
   # One install of the manifest. FFmpeg alone is about 22 minutes from source,
   # and a cold configure of the whole manifest is about 45. Every other Windows
@@ -906,16 +970,99 @@ jobs:
             build/bin/frametime-idle-report.json
           if-no-files-found: ignore
 
-  # Rule 4: every PR must still pass both present-loop verifies. GitHub counts a
-  # skipped job as a success for branch protection, so neither gate job above
+  # Linux PR 1: the same 60 s animated + idle gates on OpenGL via EGL, judged
+  # from wp_presentation feedback (frametime main_linux.cpp, drop_source
+  # "Wayland presentation feedback"). It needs a real Wayland session on real
+  # hardware: Mutter or KWin with Mesa on Intel or AMD, as the verify line says
+  # (a Weston-on-DRM run is extra data, not the verify). The runner must run
+  # inside that logged-in session (a systemd user service, say) so
+  # WAYLAND_DISPLAY and XDG_RUNTIME_DIR are set; the step fails at once when
+  # they are not. Same opt-in and fork rule as the other
+  # two: set MV_LINUX_GPU_RUNNER_ENABLED only after the runner exists.
+  frametime-linux:
+    name: Frame-time gate (self-hosted Linux)
+    if: ${{ vars.MV_LINUX_GPU_RUNNER_ENABLED == 'true' && github.event_name != 'schedule' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: [self-hosted, linux, gpu]
+    timeout-minutes: 30
+    concurrency:
+      group: frametime-linux-gpu
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
+        run: |
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Configure and build the lab and the harness
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target mv_frametime
+
+      - name: Restore the rolling baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: build/bin/frametime-baseline.json
+          key: frametime-linux-v1-${{ runner.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: frametime-linux-v1-${{ runner.name }}-
+
+      # systemd-inhibit keeps the session awake and unlocked (caffeinate's
+      # role on the Mac): a blanked or suspended output stops the frame
+      # callbacks, which is a failed gate, not a pass.
+      - name: Animated and idle 60-second gates
+        env:
+          UPDATE_BASELINE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        run: |
+          if [ -z "${WAYLAND_DISPLAY:-}" ] || [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+            echo "::error::The Linux GPU runner is not inside a Wayland session (WAYLAND_DISPLAY / XDG_RUNTIME_DIR unset)."
+            exit 1
+          fi
+          args=(--seconds 60 --lab ./build/bin/mediaviewer_lab)
+          if [ "$UPDATE_BASELINE" = "true" ]; then args+=(--update-baseline); fi
+          systemd-inhibit --what=idle:sleep:handle-lid-switch --why="MediaViewer frame-time gate" \
+            ./build/bin/frametime "${args[@]}"
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frametime-linux-report
+          path: |
+            build/bin/frametime-report.json
+            build/bin/frametime-idle-report.json
+          if-no-files-found: ignore
+
+      - uses: actions/cache/save@v4
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          path: build/bin/frametime-baseline.json
+          key: frametime-linux-v1-${{ runner.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  # Rule 4: every PR must still pass the present-loop verifies. GitHub counts a
+  # skipped job as a success for branch protection, so no gate job above
   # protects anything as a required check while it is skipped. This job always
   # runs and is the one to require: it fails when a gate failed or was
   # cancelled, and warns (log annotation + run summary) when a gate was
   # skipped. With MV_REQUIRE_PRESENT_GATES=true a skip on this repository's own
   # branches fails too; fork PRs never reach the persistent runners and warn.
+  # Linux PR 1's gate joins that rule once its runner is enabled
+  # (MV_LINUX_GPU_RUNNER_ENABLED): until a Linux GPU runner exists its skip
+  # stays a warning, so turning the Linux gate on cannot fail every PR.
   present-gates:
-    name: Present-loop gates (Windows PR 1 + Mac PR 1)
-    needs: [frametime, frametime-mac]
+    name: Present-loop gates (Windows PR 1 + Mac PR 1 + Linux PR 1)
+    needs: [frametime, frametime-mac, frametime-linux]
     if: ${{ always() && github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -925,7 +1072,9 @@ jobs:
     env:
       WIN_RESULT: ${{ needs.frametime.result }}
       MAC_RESULT: ${{ needs.frametime-mac.result }}
+      LINUX_RESULT: ${{ needs.frametime-linux.result }}
       REQUIRE: ${{ vars.MV_REQUIRE_PRESENT_GATES == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+      LINUX_RUNNER: ${{ vars.MV_LINUX_GPU_RUNNER_ENABLED == 'true' }}
     steps:
       - name: Report the gates
         run: |
@@ -937,17 +1086,20 @@ jobs:
             echo "|---|---|"
             echo "| Windows PR 1 (D3D11, self-hosted GPU) | $WIN_RESULT |"
             echo "| Mac PR 1 (Metal, self-hosted Mac) | $MAC_RESULT |"
+            echo "| Linux PR 1 (OpenGL/EGL on Wayland, self-hosted Linux) | $LINUX_RESULT |"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
-          for gate in "Windows PR 1:$WIN_RESULT" "Mac PR 1:$MAC_RESULT"; do
+          for gate in "Windows PR 1:$WIN_RESULT" "Mac PR 1:$MAC_RESULT" "Linux PR 1:$LINUX_RESULT"; do
             name="${gate%%:*}"
             result="${gate#*:}"
+            require="$REQUIRE"
+            if [ "$name" = "Linux PR 1" ] && [ "$LINUX_RUNNER" != "true" ]; then require=false; fi
             case "$result" in
               success)
                 echo "$name present-loop gate passed." ;;
               skipped)
                 msg="$name present-loop gate was skipped (no runner enabled for it, or a fork PR). A skip is not a pass: rule 4 was not checked for this change."
-                if [ "$REQUIRE" = "true" ]; then
+                if [ "$require" = "true" ]; then
                   echo "::error title=Present-loop gate skipped::$msg"
                   status=1
                 else

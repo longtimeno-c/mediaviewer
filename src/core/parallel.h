@@ -22,8 +22,10 @@ namespace mv::core {
 
 #if !defined(__APPLE__)
 namespace detail {
-// Win32 thread priority of the calling thread / set on the calling thread
-// (core/job_system_win.cpp), kept out of this header so it pulls no <windows.h>.
+// The calling thread's priority / set it on the calling thread, kept out of
+// this header so it pulls no <windows.h>: the Win32 thread priority
+// (core/job_system_win.cpp), or on Linux the negated nice value, so below
+// normal is negative on both (core/job_system_posix.cpp).
 [[nodiscard]] int current_thread_priority() noexcept;
 void set_current_thread_priority(int priority) noexcept;
 }  // namespace detail

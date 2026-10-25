@@ -187,9 +187,101 @@ after the CPU mip chain, while the render loop presents a moving camera
   `texture_max_create_ms` and dropped frames, before and after). Until that run, 8 MiB is a
   guess.
 
+**Linux: `eglSwapInterval(0)` and a frame-callback wait before recording (2026-10-23, Linux
+PR 1).** The waitable-object analogue. At interval 1 Mesa and NVIDIA's egl-wayland wait for the
+frame callback *inside* `eglSwapBuffers`, after the frame is recorded, so input and springs would
+be a frame stale. At interval 0 the swap never blocks; the render thread asks for the next
+`wl_surface.frame` callback and a `wp_presentation` feedback before the swap commits, and waits
+for that callback before it reads input for the next frame. It never commits while a callback is
+outstanding: one frame in flight, `SetMaximumFrameLatency(1)`'s rule. The wait runs on a private
+`wl_event_queue` with proxy wrappers, so it never dispatches the host's queue (the lab's UI
+thread now, Qt's from Linux PR 3); `wl_display_prepare_read_queue` / `read_events` share the
+socket with every other reader. `wp_fifo_v1` and `wp_commit_timing_v1` are never created: they
+belong to whoever attaches buffers, which is EGL (egl-wayland2 uses them itself).
+`wp_tearing_control_v1` is never bound.
+
+**Linux sRGB surface: ARGB8888, alpha written 1, an opaque region (2026-10-23, Linux PR 1).**
+D6's `_SRGB` view is `EGL_GL_COLORSPACE_SRGB` on the window surface plus
+`GL_FRAMEBUFFER_SRGB`. Mesa refuses the colour space on a config without alpha (`EGL_BAD_MATCH`
+on llvmpipe, measured), so the config is an exact 8:8:8:8, every frame writes alpha 1 and the
+surface's opaque region covers it, so the compositor never blends it (Windows' swapchain is
+premultiplied for the same reason). The surface is checked on both sides, the EGL colour space
+and the default framebuffer's `GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING`; if either says linear
+the lab exits 2 rather than present linear values as sRGB. Under headless Weston the theme's
+canvas colour, cleared as linear 0.0152 / 0.0168 / 0.0232, reads back from the compositor's
+screenshot as `#21232A`, with the GL renderer and with pixman.
+
+**Linux: the buffer count is the driver's (2026-10-23, Linux PR 1).** EGL on Wayland has no
+`BufferCount` or `maximumDrawableCount`; Mesa allocates up to four buffers at interval 0. The
+frame-callback rule above bounds what is in flight, so the count does not add latency.
+
+**Linux: presentation timestamps stay in the compositor's clock (2026-10-23, Linux PR 1).** The
+feedback's timestamps are in `wp_presentation.clock_id`'s domain, which is not always ours:
+headless Weston uses `CLOCK_MONOTONIC_RAW`, measured 233 ms off this process's
+`CLOCK_MONOTONIC`. They are only ever differenced with each other. The gate's intervals, the
+springs and every deadline stay on `CLOCK_MONOTONIC`, as on the other labs.
+
+**Linux: `wp_presentation` is bound at version 1 (2026-10-23, Linux PR 1).** Under v1 a
+variable-rate output must report `refresh` 0; v2 lets it report its fastest rate, and a VRR run
+would then look paced. A presented answer with refresh 0 invalidates a soak, and a refresh that
+moves more than 0.1 % mid-window does too; the output's mode (`wl_output`, the cloned-output rule)
+is only the first guess.
+
+**Linux: the msc counts misses, the presentation clock reconciles (2026-10-23, Linux PR 1).** A
+presented answer with `VSYNC` and `HW_CLOCK` and a vblank counter is authoritative: an msc step of
+n is n − 1 missed refreshes, a `discarded` commit is a dropped frame, a rewind or a jump over 1000
+is a discontinuity. KWin sends seq 0 on every answer, with both flags and the refresh (Plasma 6.0
+to 6.4 and master, `presentationtime.cpp`); there the hardware timestamps count the refreshes,
+round(Δt / refresh), or the verify line's second compositor could never pass. Seq 0 with refresh 0
+counts nothing, and a counter that comes or goes mid-window is a discontinuity. Anything else
+(headless Weston's flags 0 and seq 0) is judged by the clock and
+labelled weaker, and so is a frame whose answer never came (counted when the window closes, after
+a bounded 100 ms wait). The idle-gap rule differs from DXGI's and the display link's: they zero
+misses when the *application's* interval is under 1.5 refreshes, but a Wayland frame shown late
+was committed on time and its answer comes later, so that rule would hide every compositor miss.
+Here the msc steps count unless the *presentation* timestamps say only one refresh passed (a
+counter that ran on or changed output), and the timestamps overrule an msc that counted fewer
+refreshes than they did: Mutter steps a surface's counter by 1 whenever the driver gives it no
+vblank sequence, so a frame shown a refresh late could otherwise arrive one clean step on. An
+idle gap never reaches a delta: the lab resets the window on each idle → live edge outside a
+soak, a soak never idles, and the first answer after a reset only seeds the counter.
+
+**Linux occlusion: a frame callback that does not come (2026-10-23, Linux PR 1).** A compositor
+sends no callbacks to a hidden surface, so a wait that times out after `k_occlusion_poll_ms`
+(200 ms) marks the surface occluded and the loop stops presenting; the callback still outstanding
+is the probe, and wakes the idle wait when the surface is shown. xdg-shell v6's `suspended`
+state, read on the UI thread, makes the window not visible in the snapshot (the Mac reads its
+occlusion on the render thread; Linux does not). Either one invalidates a soak.
+
+**Linux: the render thread at the default priority, workers below it (2026-10-23, Linux PR 1).**
+There is no unprivileged analogue of MMCSS "Games" or `USER_INTERACTIVE` (rtkit and the portal
+need a session service and a policy), so `mv.render` stays `SCHED_OTHER` at the default nice and
+the pool's workers step five nice levels down (`core/job_system_posix.cpp`), which needs no
+privilege. Revisit with a measured stall.
+
+**Linux: configures are acked by the render thread (2026-10-23, Linux PR 1).** xdg-shell wants
+the ack before the commit that applies the new size. The window publishes each configure's serial
+with its size; right before a commit the render thread acks the newest one whose size it is
+committing and sets the viewport (or buffer scale) for it, so size, scale and ack land in one
+commit, and a configure of another size waits for the frame that has it. The first configure is
+acked by the window before anything is committed. Fractional scale is
+`wp_fractional_scale_v1` with a viewport onto the logical size and buffer scale 1.
+
 ---
 
 ## Measurement and performance gates
+
+**Headless Weston proves plumbing, never pacing (2026-10-23, Linux PR 1).** Weston 13's headless
+backend answers every commit with flags 0 and seq 0 while advertising 16.67 ms, and repaints at
+a mean of 25.8 ms with the GL renderer and llvmpipe (max 62 ms over a 10 s soak) and 26.3 ms
+with pixman (max 85 ms). The
+CI smoke (`linux-lab-smoke`, `tools/linux/lab_smoke.sh`) therefore asserts that the lab runs,
+reports in the shape `frametime` parses, labels its source "clock intervals (weaker)", fails the
+gate, presents nothing in the static soak at ~0 % CPU, and goes on presenting after one failed
+`eglSwapBuffers` (a swap that fails commits nothing, so the frame callback and feedback it asked
+for are dropped; waiting on that callback froze the lab). It must never count as a pass: Linux
+PR 1's verify is owed on a real session (Mutter or KWin, Mesa on Intel or AMD), in
+`frametime-linux`.
 
 **What counts as a dropped frame (2026-09-06, 2026-09-07).** `DXGI_FRAME_STATISTICS`, not QPC
 intervals: a present the compositor held for an extra vblank looks clean from inside the app. The
@@ -732,7 +824,37 @@ triplets; `tools/mac/lipo_merge.py` joins the trees, then `macpack release` sign
 packages once. Pacing on Intel has not been measured. Windows ARM64 is not built.
 
 **A headless Linux build of the shared core (2026-09-24).** `cmake/portable` runs the shared suites
-under ASan / UBSan / TSan. It is a test build, not a product platform.
+under ASan / UBSan / TSan. It is a test build, not a product platform. Amended by the row below.
+
+**Linux is a third host of the shared core (owner, 2026-10-23; amends "macOS is a host of the shared
+core" and the row above).** The owner asked for a Linux version. It is built as the Mac host was: a
+host plus backends behind the same narrow ports, not a port of either app
+([plan](../plans/linux.md)). The owner's calls:
+- **Present: OpenGL via EGL, Wayland first.** The canvas's own EGL surface, `eglSwapInterval(0)`,
+  and a wait for the previous commit's `wl_surface.frame` callback before recording (the
+  waitable-object analogue); `wp_presentation` feedback is the gate's truth. X11 runs through EGL
+  but is not gated: it has no wait before recording. "No Vulkan" stands on every OS; GL keeps D9 as
+  written, its immutable-texture model maps onto D3D11's, and VA-API frames import as dma-buf
+  through `EGL_EXT_image_dma_buf_import`.
+- **Chrome: Qt 6 / QML** (D1 amended). The canvas is a child `QWindow`: Qt makes it a desync
+  `wl_subsurface` (a child X window on X11), and C++ presents into it on its own render thread;
+  Qt never draws it. GTK 4 was refused: it owns every surface and commits through its frame clock
+  on the UI thread, which puts the UI thread in the present path (rules 1 and 2).
+- **Shaders: GLSL**, the third hand-written twin, compiled from source by the driver at startup as
+  MSL is. No SPIR-V, no cross-compiler.
+Not the owner's call: the order. The plan recommends the Linux halves of PRs 1–8 first (as the
+Mac's were), then the Linux halves of what has landed since, then every PR on all three; that, and
+the rule for PRs until then, is its open call 8. Until it is settled a PR stays dual-track (D9 as
+amended 2026-09-24), and shared code takes no dependency a Linux host could not replace.
+
+Cost: a third half for every feature once Linux has caught up; Qt's QPA native interface is
+private API (Qt ≥ 6.5) and Qt may have to be bundled where the LTS distributions are older (22.04
+ships 6.2, 24.04 ships 6.4); QML cannot overlap the canvas ("airspace"), so whatever sits over it
+is its own child window; the swap chain's buffer count is the driver's, not ours. Open calls
+(video decode on NVIDIA, the audio clock, floor and architectures, channel and signing, Qt
+bundling, crash reports, Bluetooth, the catch-up order) are in the plan's §10. Reopen only if the
+Linux PR 1 gate cannot hold on Mutter and KWin, or Qt's subsurface cannot hold the PR 3 gate (then
+rule 2's island fallback applies, as on Windows).
 
 **Linux packages make Linux a product platform for the command line (owner, 2026-10-23; amends "A
 headless Linux build of the shared core").** The `driftwire` command line ships for Linux as a
@@ -947,6 +1069,12 @@ Authenticode certificate, as the Mac pack signs every dylib it carries.
 ---
 
 ## CI and fuzzing
+
+**The Linux gate's skip is a warning until its runner exists (2026-10-23, Linux PR 1).**
+`present-gates` reports Windows PR 1, Mac PR 1 and Linux PR 1. `MV_REQUIRE_PRESENT_GATES` makes a
+skip a failure, but for Linux only once `MV_LINUX_GPU_RUNNER_ENABLED` is set: no Linux GPU runner
+exists yet, and requiring its gate before then would fail every pull request for a machine that is
+not there. A skip is still not a pass, and the summary says so.
 
 **`fuzz_decode` and `fuzz_animation` are not in the gating fuzz step (2026-09-23 to 2026-09-25).**
 Both exit `0xC0000142` (`STATUS_DLL_INIT_FAILED`, not a missing DLL) before libFuzzer runs a unit

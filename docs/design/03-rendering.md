@@ -1,6 +1,6 @@
 # 03 — Rendering & Frame Pacing
 
-How the canvas presents: swapchain setup, DirectComposition hosting, the frame-pacing rules, adapter and display handling, colour, and resampling. The Metal side is in [15-platforms.md](15-platforms.md).
+How the canvas presents: swapchain setup, DirectComposition hosting, the frame-pacing rules, adapter and display handling, colour, and resampling. The Metal side is in [15-platforms.md](15-platforms.md); the Linux side (OpenGL via EGL on Wayland, Linux PR 1) is [below](#the-linux-present-path).
 
 ## Swapchain setup
 
@@ -102,6 +102,55 @@ path's rational `refreshRate` is used. An unknown rate, or a cloned source whose
 **zero** — the frame-time gate cannot pass on a guessed 60 Hz. It is read when the swapchain is created
 or moved to another window, and re-read on display change and window move — never on a resize, which
 cannot change it and would otherwise query the display topology every frame of a drag-resize.
+
+## The Linux present path
+
+Linux PR 1 ([plan](../plans/linux.md)): the OpenGL present lab on Wayland. One present path, EGL
+on a `wl_surface` C++ owns; never a toolkit's frame clock. No GLES fallback, no Vulkan.
+
+- **Device** ([`src/gfx/device_gl.cpp`](../../src/gfx/device_gl.cpp)). `eglGetPlatformDisplay
+  (EGL_PLATFORM_WAYLAND_KHR)` on the host's connection, desktop GL 3.3 core (the driver hands back
+  its newest core version), an exact ARGB8888 config, `EGL_LOSE_CONTEXT_ON_RESET` robustness when
+  the driver offers it. A reset rebuilds device and surface on the same `wl_surface`, as Windows'
+  `rebuild_device()` does. The DRM render node (`EGL_EXT_device_query`) is shown in F3.
+- **Surface** ([`src/gfx/gl_surface_wayland.cpp`](../../src/gfx/gl_surface_wayland.cpp)). A
+  `wl_egl_window` on a *borrowed* surface (Linux PR 3 passes Qt's child surface).
+  `EGL_GL_COLORSPACE_SRGB` and `GL_FRAMEBUFFER_SRGB`, so writes are sRGB-encoded (D6); alpha is
+  written as 1 and the opaque region covers the surface. Both the EGL colour space and the
+  framebuffer's encoding are checked; a surface that is not sRGB on both is refused (exit 2).
+  `eglSwapInterval(0)`.
+- **The wait before recording** ([`src/gfx/wayland_frame_clock.cpp`](../../src/gfx/wayland_frame_clock.cpp)).
+  On a private event queue: before `eglSwapBuffers` the render thread requests the next
+  `wl_surface.frame` callback and a `wp_presentation` (v1) feedback; before it records the next
+  frame it waits for that callback. One frame in flight, never a second commit over an outstanding
+  callback. The wait also wakes on the lab's eventfd (input, stop). The buffer count is the
+  driver's; the callback rule bounds what is in flight.
+- **Idle.** Not live and painted: nothing is committed, so the compositor sends nothing back
+  (0 presents, ~0 % CPU); the idle wait has no timeout outside soaks and occlusion.
+- **Occlusion.** A callback that has not come in 200 ms means the surface is hidden: the loop stops,
+  and the still-outstanding callback wakes it when the surface is shown. `xdg_toplevel`'s
+  `suspended` state makes the window not visible in the snapshot.
+- **The gate's truth** ([`src/gfx/presentation_pacer.cpp`](../../src/gfx/presentation_pacer.cpp)).
+  Each feedback answer is joined to the frame it is for. Authoritative only with `VSYNC` and
+  `HW_CLOCK` and a way to count refreshes: a step of n refreshes is n − 1 missed, counted by the
+  vblank counter (msc) or, where the compositor sends seq 0 with both flags (KWin always does), by
+  the hardware timestamps over the constant refresh, which also overrule an msc that counted fewer
+  (Mutter's fallback counter); `discarded` is a dropped frame. Timestamps stay in the compositor's `clock_id` domain and are only differenced;
+  intervals and springs are on `CLOCK_MONOTONIC`. The report is labelled "Wayland presentation
+  feedback"; anything weaker is "clock intervals (weaker)" and cannot pass. Headless Weston gives
+  flags 0 and seq 0, so it proves the plumbing, never pacing.
+- **Refresh.** The compositor's own prediction in each presented answer, the outputs' current mode
+  until one comes (0 when the outputs the surface is on disagree). Re-read on an output change,
+  never on a resize. A refresh of 0 (a variable-rate output) or a change of more than 0.1 %
+  invalidates a soak.
+- **Size and scale.** The window acks each configure on the render thread's commit of its size;
+  fractional scale is `wp_fractional_scale_v1` with a viewport onto the logical size, buffer
+  scale 1, the buffer `round(logical × scale)`.
+- **Threads.** `mv.render` at the default priority (Linux has no unprivileged MMCSS); the workers
+  run five nice levels below the thread that started the pool.
+
+X11 is not built yet; when it is, it will run through EGL on the child X window and not be gated
+(it has no wait before recording).
 
 ## Color management & HDR
 
