@@ -27,16 +27,21 @@ namespace fs = std::filesystem;
 // The shell's thumbnail handler slot (IThumbnailProvider).
 constexpr wchar_t kThumbnailShellEx[] = L"{e357fccd-a995-4576-b01f-234630154e96}";
 
+// The HKCU string value, or empty when it is missing or too long.
+std::wstring read_reg_string(const std::wstring& subkey, const wchar_t* name) {
+  wchar_t buf[2 * MAX_PATH]{};
+  DWORD bytes = sizeof(buf);
+  if (::RegGetValueW(HKEY_CURRENT_USER, subkey.c_str(), name, RRF_RT_REG_SZ, nullptr, buf, &bytes) !=
+      ERROR_SUCCESS) {
+    return {};
+  }
+  return buf;
+}
+
 // True when the value was written: it was missing or different.
 bool write_reg_string(const std::wstring& subkey, const wchar_t* name, const std::wstring& value,
                       bool& failed) {
-  wchar_t buf[2 * MAX_PATH]{};
-  DWORD bytes = sizeof(buf);
-  if (::RegGetValueW(HKEY_CURRENT_USER, subkey.c_str(), name, RRF_RT_REG_SZ, nullptr, buf, &bytes) ==
-          ERROR_SUCCESS &&
-      value == buf) {
-    return false;
-  }
+  if (read_reg_string(subkey, name) == value) return false;
   const DWORD size = static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
   if (::RegSetKeyValueW(HKEY_CURRENT_USER, subkey.c_str(), name, REG_SZ, value.c_str(), size) !=
       ERROR_SUCCESS) {
@@ -224,7 +229,14 @@ void install_thumbnail_handler(const std::wstring& root, const std::string& vers
     if (changed) ::SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
 
     // Older versions: removed once no surrogate holds them. A folder that is
-    // still in use stays until a later start.
+    // still in use stays until a later start. Only when the registration reads
+    // back as ours: if a write failed, or another MediaViewer (an older one
+    // still running across an update) registered its own version since, the
+    // folder it names stays, and the next start of this version tries again.
+    if (failed || read_reg_string(clsid_key + L"\\InprocServer32", nullptr) != dll) {
+      MV_LOG_WARN("shellext: the registration is not this version's; older folders kept");
+      return;
+    }
     for (const std::string& old : plan.prune) {
       const fs::path dir = base / widen(old);
       if (dir == target) continue;

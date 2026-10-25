@@ -13,7 +13,10 @@
 //     InprocServer32 and a DllSurrogate AppID, and the thumbnail ShellEx on
 //     the MediaViewer.Image ProgId only, so it runs for the types the user
 //     made MediaViewer the default for and never replaces another handler.
-//   * Older version folders are removed when nothing holds them any more.
+//   * Older version folders are removed when nothing holds them any more, and
+//     only once InprocServer32 reads back as this version's DLL: a failed write,
+//     or another MediaViewer registering its own version at the same moment,
+//     must never leave the registered folder deleted.
 //
 // The wizard creates the same keys empty with uninsdeletekey, and deletes
 // <root>\shellext, so uninstall removes all of it (mediaviewer.iss).
