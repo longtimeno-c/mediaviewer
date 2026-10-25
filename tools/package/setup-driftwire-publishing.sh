@@ -39,9 +39,17 @@ run() {
   if [ "$dry" = 1 ]; then printf '  (dry run) %s\n' "$*"; else "$@"; fi
 }
 
-for tool in gh gpg; do
-  command -v "$tool" >/dev/null || { echo "needs $tool on PATH" >&2; exit 2; }
-done
+missing=""
+command -v gh >/dev/null || missing="$missing gh"
+command -v gpg >/dev/null || missing="$missing gnupg"
+if [ -n "$missing" ]; then
+  echo "needs:$missing" >&2
+  if command -v brew >/dev/null; then echo "  brew install$missing" >&2
+  elif command -v apt-get >/dev/null; then echo "  sudo apt-get install$missing" >&2
+  elif command -v dnf >/dev/null; then echo "  sudo dnf install$missing" >&2
+  fi
+  exit 2
+fi
 gh auth status >/dev/null 2>&1 || { echo "sign in first: gh auth login" >&2; exit 2; }
 if [ "$(gh api "repos/$repo" --jq .permissions.admin 2>/dev/null)" != "true" ]; then
   echo "you need admin rights on $repo" >&2
