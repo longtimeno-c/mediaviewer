@@ -109,6 +109,9 @@ int list_devices() {
   return 0;
 }
 
+#if !defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
+// The test build never checks and never updates: these are the product's.
+
 // DRIFTWIRE_NO_UPDATE_CHECK, set to anything: no check (update.h).
 bool update_check_off() {
   const char* off = std::getenv("DRIFTWIRE_NO_UPDATE_CHECK");  // NOLINT(concurrency-mt-unsafe): read at start
@@ -160,6 +163,7 @@ int run_update() {
   cli::print("Done. The next driftwire you start is the new version.\n");
   return 0;
 }
+#endif
 
 }  // namespace
 
