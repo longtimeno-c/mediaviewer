@@ -1,9 +1,11 @@
 .\" Copyright (C) 2026 longtimeno-c
 .\" SPDX-License-Identifier: GPL-3.0-or-later
 .\" The driftwire manual page (docs/design/28 "From a terminal"). Hand-written
-.\" roff; cmake/driftwire-cli installs it gzipped. Check it with
+.\" roff; cmake/driftwire-cli installs it gzipped, and the macOS archive
+.\" (tools/mac/macpack.py cli) carries it for Homebrew, so it says where macOS
+.\" differs. Check it with
 .\"   man -l packaging/linux/driftwire.1
-.TH DRIFTWIRE 1 2026-10-23 "Driftwire" "User Commands"
+.TH DRIFTWIRE 1 2026-10-25 "Driftwire" "User Commands"
 .SH NAME
 driftwire \- send files to a computer nearby, or anywhere with a code
 .SH SYNOPSIS
@@ -103,7 +105,8 @@ in
 .IR /etc/machine\-info ,
 as
 .B hostnamectl
-sets it), else its hostname.
+sets it), else its hostname; on macOS, the computer's name in Sharing
+settings.
 .TP
 .B \-\-plain
 Lines only: no colour, no cursor movement, and questions as plain lines,
@@ -181,7 +184,9 @@ After a transfer,
 .B driftwire
 may offer to remember the other computer, so the two can send to each other
 later over the internet with no code. Nearby, the one remembering types a
-code the other shows.
+code the other shows. Not on macOS, where nothing is kept to remember with
+(see
+.BR FILES ).
 .SS Commands
 Type
 .B /
@@ -311,11 +316,11 @@ means plain lines (as
 .BR \-\-plain ).
 .TP
 .B XDG_STATE_HOME
-Where the data folder is (see
+On Linux, where the data folder is (see
 .BR FILES ).
 .TP
 .B XDG_CONFIG_HOME
-Where
+On Linux, where
 .I user\-dirs.dirs
 is read for the Downloads folder
 .RB ( XDG_DOWNLOAD_DIR ,
@@ -325,11 +330,14 @@ writes it); else
 .IR ~/Downloads .
 .TP
 .B DBUS_SESSION_BUS_ADDRESS
-The session bus, for the Secret Service.
+On Linux, the session bus, for the Secret Service.
 .SH FILES
 .TP
 .I ${XDG_STATE_HOME:\-~/.local/state}/driftwire/
-The data folder, made readable by its owner only.
+The data folder on Linux, made readable by its owner only.
+.TP
+.I "~/Library/Application Support/Driftwire/"
+The data folder on macOS, the same.
 .TP
 .I .../driftwire/driftwire.json
 The settings: the folder received files go to, the internet options.
@@ -353,7 +361,7 @@ says otherwise. A file that is still arriving is a hidden
 .I .NAME.mvtmp
 beside it.
 .PP
-This computer's identity and the devices it remembers are kept in the
+On Linux, this computer's identity and the devices it remembers are kept in the
 freedesktop Secret Service (GNOME Keyring, KWallet, KeePassXC), under the
 service
 .BR "Driftwire CLI" ,
@@ -362,6 +370,11 @@ locked (an SSH login, for one), each run has an identity of its own and
 nothing is remembered. The Secret Service lets any program of the same user
 read its items; each value is sealed so that one not written by Driftwire is
 refused.
+.PP
+On macOS nothing is kept in a key store: each run has an identity of its
+own, nothing is remembered, and
+.B driftwire devices
+lists none.
 .SH FIREWALL
 Driftwire nearby sends a beacon on UDP port 47613 (to 239.255.77.83 and the
 subnet broadcast) and lists the computers whose beacons it hears; a sender
@@ -369,7 +382,13 @@ then connects to the receiver over TCP, on a port the receiver's system
 picks. So seeing who is nearby needs the beacon let in, and receiving needs
 that connection let in. Neither is needed to be seen.
 .PP
-With firewalld, let the beacon in with the service this package installs:
+On macOS, with its firewall on, macOS asks the first time
+.B driftwire
+listens whether to accept incoming connections: allow them, or nothing
+nearby can send to this Mac.
+.PP
+On Linux, with firewalld, let the beacon in with the service the package
+installs:
 .PP
 .RS
 .nf
@@ -432,4 +451,6 @@ change it under the GNU General Public License, version 3 or later. It comes
 with no warranty. It includes libsodium (ISC), BLAKE3 (CC0), FTXUI (MIT) and
 the BIP-39 English word list (MIT);
 .I /usr/share/doc/driftwire/copyright
+(on macOS, the archive's
+.IR COPYRIGHT.txt )
 has each notice.
