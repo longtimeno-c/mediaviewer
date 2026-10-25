@@ -9,6 +9,7 @@ The PE files are tiny ones made here (pe_fixture.py); Windows runs the real thin
 Skips without PowerShell (pwsh)."""
 from pathlib import Path
 import shutil
+import re
 import subprocess
 import sys
 import tempfile
@@ -35,6 +36,15 @@ class DriftwireWindowsTest(unittest.TestCase):
             self.fail(f'driftwire-windows.ps1 {" ".join(map(str, args))} failed:\n{result.stdout}\n{result.stderr}')
         return result
 
+    @staticmethod
+    def said(result):
+        """What the script said, as one line: PowerShell's error view colours it
+        and wraps it at the console's width ('     | ' on each line), which
+        differs between a desktop and a CI runner."""
+        text = re.sub(r'\x1b\[[0-9;]*m', '', result.stdout + result.stderr)
+        text = re.sub(r'^\s*\|\s?', '', text, flags=re.M)
+        return ' '.join(text.split())
+
     def write(self, path, data):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
@@ -53,7 +63,7 @@ class DriftwireWindowsTest(unittest.TestCase):
         bad = self.write(self.tmp / 'x.exe', b'#!/bin/sh\necho hello\n' + b'\0' * 64)
         result = self.ps('-Action', 'Imports', '-Path', bad, check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('not a PE file', result.stderr + result.stdout)
+        self.assertIn('not a PE file', self.said(result))
 
     # ---- staging and packing ----
 
@@ -101,18 +111,18 @@ class DriftwireWindowsTest(unittest.TestCase):
         redist, system = self.tree(['KERNEL32.dll', 'libsodium.dll', 'ftxui-dom.dll'])
         result = self.stage(redist, system, check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('needs ftxui-dom.dll (through driftwire.exe)', result.stderr + result.stdout)
+        self.assertIn('needs ftxui-dom.dll (through driftwire.exe)', self.said(result))
         # Found through a DLL, it names that DLL.
         redist, system = self.tree(['KERNEL32.dll', 'libsodium.dll'],
                                    extra_bin=[('libsodium.dll', make_pe(['KERNEL32.dll', 'zlib1.dll']))])
         result = self.stage(redist, system, check=False)
-        self.assertIn('needs zlib1.dll (through libsodium.dll)', result.stderr + result.stdout)
+        self.assertIn('needs zlib1.dll (through libsodium.dll)', self.said(result))
 
     def test_a_32_bit_program_is_refused(self):
         redist, system = self.tree([], extra_bin=[('driftwire.exe', make_pe(['KERNEL32.dll'], machine=0x14C, pe32=True))])
         result = self.stage(redist, system, check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('driftwire.exe is not x64', result.stderr + result.stdout)
+        self.assertIn('driftwire.exe is not x64', self.said(result))
 
     def test_pack_zips_the_folder_with_the_signed_copies(self):
         redist, system = self.tree(['KERNEL32.dll', 'libsodium.dll', 'blake3.dll', 'VCRUNTIME140.dll'])
@@ -134,7 +144,7 @@ class DriftwireWindowsTest(unittest.TestCase):
         self.write(self.tmp / 'out/sign/other.dll', make_pe([]))
         result = self.ps('-Action', 'Pack', '-Version', '1.2.3', '-OutDir', self.tmp / 'out', '-NoRun', check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('other.dll', result.stderr + result.stdout)
+        self.assertIn('other.dll', self.said(result))
         self.assertFalse((self.tmp / 'out/driftwire-1.2.3-windows-x64.zip').exists())
 
 

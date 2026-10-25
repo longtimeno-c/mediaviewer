@@ -1792,7 +1792,11 @@ and dnf repositories, `install.sh`, the Windows zip and `install.ps1`) to GitHub
 `driftwire-homebrew` writes the tap's formula. Previews, and any release with it off, leave all
 of that alone; the installers publish as before.
 
-**The owner's one-time setup**, all of it (steps 1 and 2 in detail under [Linux package repository](#linux-package-repository) below):
+**The owner's one-time setup**, all of it (steps 1 and 2 in detail under [Linux package repository](#linux-package-repository) below). Steps 1–5 are one script, run on your own machine signed in to `gh` as an admin of the repository; it skips what is done already and stops at step 4 for the one token GitHub offers no API for:
+
+```sh
+tools/package/setup-driftwire-publishing.sh            # --dry-run shows what it would do
+```
 
 1. **The repository's signing key** (OpenPGP, RSA-4096): made in a throwaway GnuPG home, its
    armored private half in the repository secret `DRIFTWIRE_REPO_GPG_KEY` (and a passphrase, if

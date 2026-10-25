@@ -175,7 +175,11 @@ std::string temp_name(const std::string& final_path, int attempt) {
   } else {
     // Linux has no hidden flag: a leading dot is what file managers and ls
     // leave out, so the half-received file is not taken for the finished one.
-    out = io::join_path(io::parent_of(final_path), "." + std::string(io::file_name_of(final_path)));
+    // Built by appending: GCC 12 at -O3 reports '"." + std::string' as a
+    // memcpy that may overlap (-Wrestrict, a false positive).
+    std::string leaf(1, '.');
+    leaf += io::file_name_of(final_path);
+    out = io::join_path(io::parent_of(final_path), leaf);
   }
   out += ".mvtmp";
   if (attempt > 0) out += std::to_string(attempt + 1);

@@ -93,7 +93,10 @@ target_compile_options(mv_project_options INTERFACE
   $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Werror -fno-rtti>
   # As cmake/portable: GCC's -O2 flow analysis reports std::optional members
   # read only behind has_value() as "may be used uninitialized".
-  $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU>>:-Wno-maybe-uninitialized>)
+  $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU>>:-Wno-maybe-uninitialized>
+  # GCC 12's inlined std::string concatenation ("x" + str) reports a false
+  # -Wrestrict overlap (GCC PR 105329, fixed in 13).
+  $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU>,$<VERSION_LESS:$<CXX_COMPILER_VERSION>,13>>:-Wno-restrict>)
 
 # ---- dependencies (vcpkg's static ports; a static prefix on a bare machine) --
 find_package(Threads REQUIRED)

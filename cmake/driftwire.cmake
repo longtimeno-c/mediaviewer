@@ -165,10 +165,13 @@ set_target_properties(mv_driftwire_relay PROPERTIES OUTPUT_NAME "mv-driftwire-re
 # #540 step 1: a transfer between two real machines with no app
 # (tools/driftwire-bench), the real handshake and transfer.h, timed per
 # stage. Built beside the add-on, never shipped. The file port is the core's
-# io, as the tests link it.
-add_executable(mv_driftwire_bench "${MV_SOURCE_ROOT}/tools/driftwire-bench/main.cpp")
-target_link_libraries(mv_driftwire_bench PRIVATE mv_driftwire_engine mv_io)
-set_target_properties(mv_driftwire_bench PROPERTIES OUTPUT_NAME "mv-driftwire-bench")
+# io, as the tests link it; the command line's own package build
+# (cmake/driftwire-cli) has no mv_io, and does not build it.
+if(TARGET mv_io)
+  add_executable(mv_driftwire_bench "${MV_SOURCE_ROOT}/tools/driftwire-bench/main.cpp")
+  target_link_libraries(mv_driftwire_bench PRIVATE mv_driftwire_engine mv_io)
+  set_target_properties(mv_driftwire_bench PROPERTIES OUTPUT_NAME "mv-driftwire-bench")
+endif()
 
 # The engine over loopback TCP and an in-memory discovery bus, and the add-on
 # itself through the real loader (tests/test_driftwire.cpp,

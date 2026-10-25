@@ -1605,6 +1605,16 @@ struct pty_pair {
   }
 };
 
+// The local modes as the program set them. PENDIN ("retype pending input")
+// is state the kernel keeps, not a mode: macOS sets it when a terminal goes
+// back to canonical mode, whatever the program restored.
+tcflag_t set_lflag(tcflag_t f) {
+#if defined(PENDIN)
+  f &= ~static_cast<tcflag_t>(PENDIN);
+#endif
+  return f;
+}
+
 }  // namespace
 
 TEST_CASE("driftwire cli terminal: raw mode, reads, the wake, the size, restored after", "[driftwire][cli]") {
@@ -1669,7 +1679,7 @@ TEST_CASE("driftwire cli terminal: raw mode, reads, the wake, the size, restored
     CHECK(restore.find("\x1B[0m") != std::string::npos);
     termios after{};
     REQUIRE(::tcgetattr(pty.slave, &after) == 0);
-    CHECK(after.c_lflag == before.c_lflag);
+    CHECK(set_lflag(after.c_lflag) == set_lflag(before.c_lflag));
     CHECK(after.c_iflag == before.c_iflag);
 
     // Raw again, then the console goes: restored by the destructor too.
@@ -1678,7 +1688,7 @@ TEST_CASE("driftwire cli terminal: raw mode, reads, the wake, the size, restored
   }
   termios after{};
   REQUIRE(::tcgetattr(pty.slave, &after) == 0);
-  CHECK(after.c_lflag == before.c_lflag);
+  CHECK(set_lflag(after.c_lflag) == set_lflag(before.c_lflag));
   CHECK(pty.drain().find("\x1B[?2004l") != std::string::npos);
 }
 
