@@ -1025,9 +1025,10 @@ jobs:
 
   # The driftwire package repository (docs/design/28 "Installing",
   # tools/package/driftwire_repo.py): signed apt and dnf repositories, the
-  # tarballs, the Windows zip and the one-line installers for Linux
-  # (install.sh) and Windows (install.ps1), built from this release's
-  # linux-cli packages and the Windows zip as the release published it, and
+  # tarballs, the macOS archive, the Windows zip and the one-line installers
+  # for Linux and macOS without Homebrew (install.sh) and Windows
+  # (install.ps1), built from this release's linux-cli packages and the macOS
+  # archive and Windows zip as the release published them, and
   # deployed to this repository's GitHub Pages under <Pages URL>/driftwire/
   # once the release is published. It is the command line's update channel
   # on Linux and Windows (docs/design/12, 2026-10-24), so it follows stable
@@ -1064,15 +1065,17 @@ jobs:
           path: driftwire-packages
           merge-multiple: true
 
-      # As published (publish required it): the site serves this very file.
-      - name: The Windows zip from the release
+      # As published (publish required them): the site serves these very
+      # files, and install.sh takes the macOS archive on a Mac without Homebrew.
+      - name: The Windows zip and the macOS archive from the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare.outputs.tag }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern "driftwire-$VERSION-windows-x64.zip" --dir driftwire-packages
+            --pattern "driftwire-$VERSION-windows-x64.zip" --pattern "driftwire-$VERSION-macos-*.tar.gz" \
+            --dir driftwire-packages
 
       - name: Tools
         run: |

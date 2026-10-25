@@ -2,8 +2,8 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The driftwire package repository (docs/design/28 "Installing"): signed apt and dnf
-repositories, the tarballs with signed checksums, the Windows zip, and the one-line installers
-for Linux and Windows, as a static site.
+repositories, the tarballs with signed checksums, the macOS archive, the Windows zip, and the
+one-line installers for Linux (and macOS without Homebrew) and Windows, as a static site.
 
     driftwire_repo.py build --packages DIR --out SITE --base-url URL --key-id ID [--key-id ID]
                             [--gnupg-home DIR] [--valid-days 365] [--github-repo OWNER/NAME]
@@ -12,19 +12,22 @@ for Linux and Windows, as a static site.
     driftwire_repo.py windows-site --zip ZIP --out SITE --base-url URL [--require-windows-signature]
 
 `build` takes one version's .deb, .rpm and tarball for each architecture (release.yml's
-linux-cli artefacts, from cmake/driftwire-cli), and the Windows zip when it is there
-(tools/package/driftwire-windows.ps1), and writes, for URL = <Pages root>/driftwire:
+linux-cli artefacts, from cmake/driftwire-cli), and the macOS archive (tools/mac/macpack.py cli)
+and the Windows zip (tools/package/driftwire-windows.ps1) when they are there, and writes, for
+URL = <Pages root>/driftwire:
 
     SITE/index.html                    links to driftwire/ (the Pages root)
     SITE/driftwire/index.html          what driftwire is and how to install it
     SITE/driftwire/install.sh          the installer, URL and the key's fingerprint baked in (on
-                                       macOS it names the Homebrew tap of --github-repo's owner)
+                                       macOS it names the Homebrew tap of --github-repo's owner,
+                                       and without Homebrew installs the macOS archive)
     SITE/driftwire/key.asc, key.gpg    the public key, armored and binary
     SITE/driftwire/apt/                pool/main/d/driftwire/*.deb, dists/stable/{Release,InRelease,
                                        Release.gpg}, dists/stable/main/binary-<arch>/Packages{,.gz}
     SITE/driftwire/rpm/                the signed .rpm files, repodata/ and repodata/repomd.xml.asc
     SITE/driftwire/driftwire.repo      for dnf, yum and zypper
     SITE/driftwire/driftwire-<version>-linux-<arch>.tar.gz, SHA256SUMS, SHA256SUMS.asc
+    SITE/driftwire/driftwire-<version>-macos-universal.tar.gz (or -arm64; in SHA256SUMS)
     SITE/driftwire/driftwire-<version>-windows-x64.zip (in SHA256SUMS) and install.ps1, the
                                        Windows installer, with the zip's SHA-256 baked in
     SITE/driftwire/latest.json         {"version": "<version>"}: what `driftwire` asks once a day to
@@ -87,6 +90,7 @@ DEB_FILE = re.compile(rf'driftwire_(?P<version>{VERSION})_(?P<arch>amd64|arm64)\
 RPM_FILE = re.compile(rf'driftwire-(?P<version>{VERSION})-(?P<release>[1-9][0-9]*)\.(?P<arch>x86_64|aarch64)\.rpm')
 TAR_FILE = re.compile(rf'driftwire-(?P<version>{VERSION})-linux-(?P<arch>x86_64|aarch64)\.tar\.gz')
 ZIP_FILE = re.compile(rf'driftwire-(?P<version>{VERSION})-windows-x64\.zip')
+MAC_FILE = re.compile(rf'driftwire-(?P<version>{VERSION})-macos-(?P<arch>universal|arm64)\.tar\.gz')
 # install.sh accepts the same: https, or http on this machine for tests.
 URL_CHARS = re.compile(r'[A-Za-z0-9._~:/%+-]+')
 # The GitHub repository whose releases carry the command line; its owner's tap
@@ -115,13 +119,14 @@ def run(args, **kwargs):
 # ---- the packages ------------------------------------------------------------------------
 
 class Packages:
-    def __init__(self, version, debs, rpms, tarballs, windows_zip=None, windows_signed=False):
+    def __init__(self, version, debs, rpms, tarballs, windows_zip=None, windows_signed=False, mac_tarball=None):
         self.version = version
         self.debs = debs            # Debian arch → path
         self.rpms = rpms            # RPM arch → path
         self.tarballs = tarballs    # RPM arch → path
         self.windows_zip = windows_zip
         self.windows_signed = windows_signed
+        self.mac_tarball = mac_tarball
 
     @property
     def deb_arches(self):
@@ -151,6 +156,25 @@ def check_tarball(path, version, arch):
         names.add(name)
     if f'{top}/bin/driftwire' not in names:
         raise ValueError(f'{path.name} has no {top}/bin/driftwire')
+
+
+def check_mac_tarball(path, version, arch):
+    """macpack.py's archive: one flat folder with the program (executable) and its manual
+    page, as the Homebrew formula and install.sh's macOS route take it."""
+    top = f'driftwire-{version}-macos-{arch}'
+    with tarfile.open(path, 'r:gz') as tar:
+        members = {m.name.rstrip('/'): m for m in tar.getmembers()}
+    for name, member in members.items():
+        parts = name.split('/')
+        if parts[0] != top or '..' in parts or name.startswith('/') or not (member.isfile() or member.isdir()):
+            raise ValueError(f'{path.name}: {name!r} is not a plain file or folder under {top}/')
+        if len(parts) > 2 or (len(parts) == 2 and not member.isfile()):
+            raise ValueError(f'{path.name}: {name!r} is not a file directly in {top}/')
+    for name in ('driftwire', 'driftwire.1'):
+        if f'{top}/{name}' not in members:
+            raise ValueError(f'{path.name} has no {top}/{name}')
+    if not members[f'{top}/driftwire'].mode & 0o100:
+        raise ValueError(f'{path.name}: {top}/driftwire is not executable')
 
 
 def pe_facts(data, name):
@@ -203,7 +227,7 @@ def find_packages(folder):
     if not folder.is_dir():
         raise ValueError(f'No packages folder: {folder}')
     debs, rpms, tarballs, versions = {}, {}, {}, set()
-    windows_zip, windows_signed = None, False
+    windows_zip, windows_signed, mac_tarball = None, False, None
 
     def add(kind, arch, path):
         if arch in kind:
@@ -226,6 +250,11 @@ def find_packages(folder):
         elif m := TAR_FILE.fullmatch(name):
             check_tarball(path, m['version'], m['arch'])
             add(tarballs, m['arch'], path)
+        elif m := MAC_FILE.fullmatch(name):
+            if mac_tarball:
+                raise ValueError(f'Two macOS archives: {mac_tarball.name} and {name}')
+            check_mac_tarball(path, m['version'], m['arch'])
+            mac_tarball = path
         elif m := ZIP_FILE.fullmatch(name):
             windows_signed = check_windows_zip(path, m['version'])
             windows_zip = path
@@ -242,7 +271,7 @@ def find_packages(folder):
                                               ('tarball', ARCHES[arch] in tarballs)) if not present]
         if missing:
             raise ValueError(f'{arch} has no {" or ".join(missing)}: each architecture needs all three')
-    return Packages(versions.pop(), debs, rpms, tarballs, windows_zip, windows_signed)
+    return Packages(versions.pop(), debs, rpms, tarballs, windows_zip, windows_signed, mac_tarball)
 
 
 def check_base_url(url):
@@ -447,8 +476,8 @@ def build_rpm(dw, packages, signer):
 
 def build_tarballs(dw, packages, signer, more=()):
     lines = []
-    for arch in sorted(packages.tarballs):
-        path = packages.tarballs[arch]
+    mac = [packages.mac_tarball] if packages.mac_tarball else []
+    for path in [packages.tarballs[arch] for arch in sorted(packages.tarballs)] + mac:
         copy(path, dw / path.name)
         lines.append(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n')
     for path in more:
@@ -477,6 +506,14 @@ def build_pages(site, dw, packages, base, signer, github_repo=GITHUB_REPO):
         windows = fill('index-windows.html', {'BASE_URL': html.escape(base),
                                               'WINDOWS_ZIP': html.escape(packages.windows_zip.name)})
         windows = re.sub(r'\A<!--.*?-->\n', '', windows, flags=re.S)   # its own header stays out of the page
+    # Without Homebrew, install.sh takes the archive (when the release built one).
+    no_brew = ''
+    if packages.mac_tarball:
+        name = html.escape(packages.mac_tarball.name)
+        no_brew = (f'<p>Without Homebrew, the Linux line above installs <a href="{name}">{name}</a> '
+                   'into <code>~/.local</code> (<code>/usr/local</code> as root), checked against '
+                   '<code>SHA256SUMS</code>; that copy does not update itself, and the same line with '
+                   '<code>sh -s -- --uninstall</code> removes it.</p>\n')
     values = {
         'BASE_URL': html.escape(base),
         'VERSION': html.escape(packages.version),
@@ -487,6 +524,7 @@ def build_pages(site, dw, packages, base, signer, github_repo=GITHUB_REPO):
         'BREW_TAP': html.escape(github_repo.split('/')[0] + '/tap'),
         'GITHUB_URL': html.escape(f'https://github.com/{github_repo}'),
         'WINDOWS_SECTION': windows,
+        'MACOS_NO_BREW': no_brew,
     }
     write(dw / 'index.html', fill('index.html', values))
     write(site / 'index.html',

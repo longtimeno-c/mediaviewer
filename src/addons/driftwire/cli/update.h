@@ -17,7 +17,8 @@
 //                is newer than this one: "driftwire 0.1.40 is available" and
 //                "driftwire update" under it.
 //   update       `driftwire update` runs this copy's own channel: brew upgrade
-//                on macOS, the site's install.sh again on Linux (it upgrades
+//                on macOS (install.sh again for its archive on a Mac
+//                without Homebrew), the site's install.sh again on Linux (it upgrades
 //                the package through apt, dnf or zypper, or the tarball), the
 //                site's install.ps1 again on Windows (it moves a running copy
 //                aside). A copy none of them installed (a build of one's own)
@@ -63,7 +64,7 @@ enum class install_kind : std::uint8_t {
   none,     // a build of one's own, or somewhere no installer puts it
   windows,  // %LOCALAPPDATA%\Programs\Driftwire\driftwire.exe (install.ps1)
   homebrew, // a Homebrew Cellar's (the tap's formula)
-  linux_sh, // /usr/bin (apt, dnf, zypper) or the tarball's PREFIX: install.sh
+  install_sh, // install.sh's: Linux's /usr/bin (apt, dnf, zypper), or the archive's prefix (Linux, a Mac without brew)
 };
 
 struct install_facts {

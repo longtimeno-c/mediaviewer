@@ -2249,6 +2249,19 @@ in a test mode under PowerShell 7.6, the formula under Ruby 3.3 against a stand-
 release's macOS and Windows jobs, Homebrew and Pages have not run. Reopen for winget, if Homebrew
 itself takes the formula, or if the site moves.
 
+**`install.sh` installs the macOS archive on a Mac without Homebrew (owner, 2026-10-25; amends the
+row above).** The owner asked what a Mac without Homebrew gets: `install.sh` used to print brew.sh
+and the release page and stop. Now, with no `brew` on the `PATH`, it takes its tarball route with
+the macOS archive, which the site now carries (as published) in its signed `SHA256SUMS`: macOS 14
+or later, into `~/.local` (`/usr/local` as root), the flat archive laid out as `bin`,
+`share/man/man1` and `share/doc/driftwire`, `--uninstall` from its manifest. Homebrew stays the
+channel: with `brew` there it still installs nothing, and without it it prints Homebrew's install
+line first. Ours: the archive from the site, not the release page, so it is checked against the
+signed checksums like the Linux tarball; `sysctl hw.optional.arm64` so a Rosetta shell gets the
+arm64 archive. Cost: that copy does not update itself. Run on WSL Ubuntu only, against a local
+site with a stand-in Mac (`uname`, `sw_vers`, `sysctl`, `brew` faked; dash and `bash --posix`;
+`shasum` with `sha256sum` hidden); not run on a real Mac.
+
 **`driftwire` says when a newer version is out, and `driftwire update` installs it (owner,
 2026-10-25; amends "Driftwire has a command line", whose only network was Driftwire's own).** The
 owner asked for an upgrade prompt as Claude Code's command line has, and chose a notice plus a

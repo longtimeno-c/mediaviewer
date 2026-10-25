@@ -91,7 +91,10 @@ on Linux it runs the site's
 .I install.sh
 again, which upgrades the package through apt, dnf or zypper (or the tarball);
 on macOS
-.BR "brew upgrade driftwire" ;
+.B brew upgrade driftwire
+(or
+.I install.sh
+again for its archive on a Mac without Homebrew);
 on Windows the site's
 .I install.ps1
 again. It prints the command before running it, and exits 1 if that fails or
@@ -504,6 +507,8 @@ the BIP-39 English word list (MIT);
 .I /usr/share/doc/driftwire/copyright
 (with Homebrew,
 .IR "$(brew --prefix driftwire)/COPYRIGHT.txt" ;
+unpacked by the installer,
+.IR ~/.local/share/doc/driftwire/COPYRIGHT.txt ;
 in the Windows zip,
 .IR COPYRIGHT.txt )
 has each notice.

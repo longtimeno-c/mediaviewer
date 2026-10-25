@@ -556,7 +556,8 @@ pipe, `--test-loopback`, `--test-data DIR`, `--test-events`), for the end-to-end
 
 The update check ([docs/design/28](design/28-driftwire.md#updates-in-the-terminal)) runs only in a
 copy an installer put in place (`%LOCALAPPDATA%\Programs\Driftwire`, a Homebrew Cellar,
-`/usr/bin`, or a tarball prefix with `share/driftwire/install-manifest`), so a build of your own
+`/usr/bin` on Linux, or an `install.sh` archive prefix with `share/driftwire/install-manifest` on
+Linux or macOS), so a build of your own
 never asks the site and `driftwire update` refuses there. It reads `<site>/latest.json`; the site
 is `MV_DRIFTWIRE_SITE_URL` (CMake cache, the Pages address by default) or `DRIFTWIRE_REPO_URL`
 (https, or http on localhost). `DRIFTWIRE_NO_UPDATE_CHECK=1` skips it. Its tests are
@@ -1796,11 +1797,14 @@ macOS    brew install longtimeno-c/tap/driftwire
 Windows  irm https://longtimeno-c.github.io/mediaviewer/driftwire/install.ps1 | iex
 ```
 
+On a Mac without Homebrew, the Linux line unpacks the signed macOS archive into `~/.local`
+(it does not update itself; `sh -s -- --uninstall` removes it).
+
 One repository variable publishes all three from every **stable** release: with
 `MV_DRIFTWIRE_REPO` = `1`, `publish` requires and attaches the macOS archive and the Windows zip
 that the `macos` and `windows` jobs pack on every run, `driftwire-repo` deploys the site (the apt
-and dnf repositories, `install.sh`, the Windows zip, `install.ps1` and `latest.json`, which
-installed copies read to say a newer one is out) to GitHub Pages, and
+and dnf repositories, `install.sh`, the macOS archive, the Windows zip, `install.ps1` and
+`latest.json`, which installed copies read to say a newer one is out) to GitHub Pages, and
 `driftwire-homebrew` writes the tap's formula. Previews, and any release with it off, leave all
 of that alone; the installers publish as before.
 

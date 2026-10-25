@@ -238,9 +238,10 @@ Code's does, and for a command that installs it ([12](12-decision-log.md#driftwi
   when it is, and otherwise (or when the site does not answer) runs this copy's channel, printing
   it first, with the installer's own output: `brew upgrade driftwire` (the program's path, links
   resolved, is in a Homebrew Cellar); the site's `install.sh` again, from a file so a failed
-  download runs nothing (`/usr/bin/driftwire`, or `<prefix>/bin/driftwire` beside the tarball's
-  `share/driftwire/install-manifest`), which upgrades the package through apt, dnf or zypper, or
-  the tarball; the site's `install.ps1` again through `powershell.exe -NoProfile -Command`
+  download runs nothing (`/usr/bin/driftwire` on Linux, or `<prefix>/bin/driftwire` beside the
+  archive's `share/driftwire/install-manifest` on Linux or a Mac without Homebrew), which upgrades
+  the package through apt, dnf or zypper, or the archive (on a Mac that has Homebrew by then it
+  installs nothing and says to use brew); the site's `install.ps1` again through `powershell.exe -NoProfile -Command`
   (`%LOCALAPPDATA%\Programs\Driftwire\driftwire.exe`), which moves the running copy's folder aside,
   so an open session is no obstacle. Exit 1 when the installer fails, or for a copy none of them put
   there (a build of one's own), which is told where the installers are.
@@ -274,7 +275,7 @@ Windows  irm https://longtimeno-c.github.io/mediaviewer/driftwire/install.ps1 | 
 | | What it writes | Updates | Removing it |
 |---|---|---|---|
 | Linux | the package, through apt, dnf, yum or zypper, with the repository's source and key; with none of them, the tarball's files in `~/.local` (`/usr/local` as root) | the package manager (`apt upgrade`, `dnf upgrade`, `zypper update`); the tarball: the line again | `curl -fsSL <site>/install.sh \| sh -s -- --uninstall` |
-| macOS | Homebrew's copy, `$(brew --prefix)/bin/driftwire` and its manual page | `brew upgrade` | `brew uninstall driftwire` |
+| macOS | Homebrew's copy, `$(brew --prefix)/bin/driftwire` and its manual page; without Homebrew, `install.sh` unpacks the macOS archive into `~/.local` (`/usr/local` as root) | `brew upgrade`; the archive: the line again | `brew uninstall driftwire`; the archive: `curl -fsSL <site>/install.sh \| sh -s -- --uninstall` |
 | Windows | `%LOCALAPPDATA%\Programs\Driftwire` (`driftwire.exe`, the DLLs it loads, the notices) and that folder on the user's `Path` | the line again | `& ([scriptblock]::Create((irm <site>/install.ps1))) -Uninstall` |
 
 None of them touches the data folder; none needs an administrator on Windows or macOS.
@@ -298,9 +299,18 @@ None of them touches the data folder; none needs an administrator on Windows or 
   files and the folders it made, and nothing else. Everything is in functions and `main` runs on
   the last line, so a download cut off part way runs nothing. The site's address, key fingerprints,
   Homebrew tap and release page are written in when the site is built; `DRIFTWIRE_REPO_URL`
-  overrides the address (https only, or http on 127.0.0.1 or localhost for the tests). On macOS it
-  installs nothing: it prints the `brew install` line (and, without Homebrew, brew.sh and the
-  release page) and exits 1.
+  overrides the address (https only, or http on 127.0.0.1 or localhost for the tests). On macOS with
+  `brew` on the `PATH` it installs nothing: it prints the `brew install` line and exits 1 (naming
+  `--uninstall` when an archive it unpacked earlier is still there). Without Homebrew (2026-10-25)
+  it checks macOS 14 or later and the Mac's architecture (`sysctl hw.optional.arm64`, so a shell
+  under Rosetta still counts as Apple silicon), prints Homebrew's own install line and that this
+  copy does not update itself, and takes the tarball route with the macOS archive the site carries
+  (the universal one, or `-arm64` on Apple silicon only), checked with `shasum` against the signed
+  `SHA256SUMS`. The archive's flat folder is laid out as the Linux tarball is: the program in
+  `bin`, `driftwire.1` in `share/man/man1`, the notices in `share/doc/driftwire`; `finish` names
+  `~/.zprofile` for the `PATH`. `--uninstall` removes that copy and names `brew uninstall driftwire`
+  for Homebrew's (exit 1 when that is all there is). A copy curl downloaded carries no quarantine,
+  so Gatekeeper does not look up its ticket.
 - **Linux by hand.** The site's page has the same as commands: the keyring and the deb822 source,
   then `sudo apt install driftwire`; `driftwire.repo` into `/etc/yum.repos.d/` and `sudo dnf install
   driftwire` (dnf asks once to trust the key; the page shows its fingerprint); `sudo zypper
@@ -320,7 +330,8 @@ None of them touches the data folder; none needs an administrator on Windows or 
   cannot be stapled, so Gatekeeper looks the ticket up online the first time a quarantined copy
   runs; Homebrew does not quarantine what a formula installs. When the release's Intel leg did not
   build, the archive is `-macos-arm64.tar.gz` and the formula adds `depends_on arch: :arm64`, so an
-  Intel Mac is told instead of given a program it cannot run.
+  Intel Mac is told instead of given a program it cannot run. The same archive, as published, is on
+  the site for `install.sh` on a Mac without Homebrew (the Linux bullet above).
 - **Windows: the one-liner** (`packaging/windows/install.ps1`). Windows PowerShell 5.1 and
   PowerShell 7; ASCII; one function called on the last line, so a cut-off download runs nothing
   and only that function stays in the session. It calls only binary cmdlets and .NET: Windows

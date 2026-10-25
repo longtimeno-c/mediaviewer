@@ -108,17 +108,16 @@ install_kind classify_install(const install_facts& f) {
     want += "/programs/driftwire/driftwire.exe";
     return lower_slashed(f.exe) == want ? install_kind::windows : install_kind::none;
   }
-  if (f.mac) {
-    // The formula's keg: <prefix>/Cellar/driftwire/<version>/bin/driftwire.
-    return f.exe.find("/Cellar/driftwire/") != std::string::npos ? install_kind::homebrew : install_kind::none;
-  }
-  // The packages put it in /usr/bin (/bin is the same folder on a merged /usr).
-  if (f.exe == "/usr/bin/driftwire" || f.exe == "/bin/driftwire") return install_kind::linux_sh;
-  // The tarball: <prefix>/bin/driftwire beside <prefix>/share/driftwire/install-manifest.
+  // The formula's keg: <prefix>/Cellar/driftwire/<version>/bin/driftwire.
+  if (f.mac && f.exe.find("/Cellar/driftwire/") != std::string::npos) return install_kind::homebrew;
+  // The Linux packages put it in /usr/bin (/bin is the same folder on a merged /usr).
+  if (!f.mac && (f.exe == "/usr/bin/driftwire" || f.exe == "/bin/driftwire")) return install_kind::install_sh;
+  // install.sh's archive, on Linux or on a Mac without Homebrew: <prefix>/bin/driftwire
+  // beside <prefix>/share/driftwire/install-manifest.
   constexpr std::string_view tail = "/bin/driftwire";
   if (f.exe.size() > tail.size() && f.exe.compare(f.exe.size() - tail.size(), tail.size(), tail) == 0 && f.exists) {
     const std::string prefix = f.exe.substr(0, f.exe.size() - tail.size());
-    if (f.exists(prefix + "/share/driftwire/install-manifest")) return install_kind::linux_sh;
+    if (f.exists(prefix + "/share/driftwire/install-manifest")) return install_kind::install_sh;
   }
   return install_kind::none;
 }
@@ -128,7 +127,7 @@ std::string update_command_shown(install_kind k, std::string_view site) {
   switch (k) {
     case install_kind::windows: return "irm " + s + "/install.ps1 | iex";
     case install_kind::homebrew: return "brew upgrade driftwire";
-    case install_kind::linux_sh: return "curl -fsSL " + s + "/install.sh | sh";
+    case install_kind::install_sh: return "curl -fsSL " + s + "/install.sh | sh";
     case install_kind::none: break;
   }
   return {};
@@ -143,7 +142,7 @@ std::string update_command_run(install_kind k, std::string_view site) {
       // aside, not in the way (install.ps1).
       return "powershell.exe -NoProfile -Command \"irm '" + s + "/install.ps1' | iex\"";
     case install_kind::homebrew: return "brew upgrade driftwire";
-    case install_kind::linux_sh:
+    case install_kind::install_sh:
       // install.sh again: from a file, not a pipe, so a download that fails
       // is a failure (POSIX sh has no pipefail), with curl or wget as it
       // takes either.

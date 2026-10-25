@@ -123,15 +123,22 @@ TEST_CASE("driftwire cli update: how this copy came to be here", "[driftwire][cl
         cli::install_kind::none);
   CHECK(on_windows(R"(C:\Users\ann\AppData\Local\Programs\Driftwire\driftwire.exe)", "") == cli::install_kind::none);
 
-  const auto on_mac = [](std::string exe) {
+  const auto on_mac = [](std::string exe, std::vector<std::string> files = {}) {
     cli::install_facts f;
     f.exe = std::move(exe);
     f.mac = true;
+    f.exists = [files](const std::string& p) { return std::find(files.begin(), files.end(), p) != files.end(); };
     return cli::classify_install(f);
   };
   CHECK(on_mac("/opt/homebrew/Cellar/driftwire/0.1.38/bin/driftwire") == cli::install_kind::homebrew);
   CHECK(on_mac("/usr/local/Cellar/driftwire/0.1.38/bin/driftwire") == cli::install_kind::homebrew);
   CHECK(on_mac("/Users/ann/src/mediaviewer/build/bin/driftwire") == cli::install_kind::none);
+  // install.sh's archive on a Mac without Homebrew (its record beside it).
+  CHECK(on_mac("/Users/ann/.local/bin/driftwire", {"/Users/ann/.local/share/driftwire/install-manifest"}) ==
+        cli::install_kind::install_sh);
+  CHECK(on_mac("/usr/local/bin/driftwire", {"/usr/local/share/driftwire/install-manifest"}) ==
+        cli::install_kind::install_sh);
+  CHECK(on_mac("/usr/bin/driftwire") == cli::install_kind::none);  // no package puts it there on a Mac
 
   const auto on_linux = [](std::string exe, std::vector<std::string> files = {}) {
     cli::install_facts f;
@@ -139,11 +146,11 @@ TEST_CASE("driftwire cli update: how this copy came to be here", "[driftwire][cl
     f.exists = [files](const std::string& p) { return std::find(files.begin(), files.end(), p) != files.end(); };
     return cli::classify_install(f);
   };
-  CHECK(on_linux("/usr/bin/driftwire") == cli::install_kind::linux_sh);
+  CHECK(on_linux("/usr/bin/driftwire") == cli::install_kind::install_sh);
   CHECK(on_linux("/home/ann/.local/bin/driftwire", {"/home/ann/.local/share/driftwire/install-manifest"}) ==
-        cli::install_kind::linux_sh);
+        cli::install_kind::install_sh);
   CHECK(on_linux("/usr/local/bin/driftwire", {"/usr/local/share/driftwire/install-manifest"}) ==
-        cli::install_kind::linux_sh);
+        cli::install_kind::install_sh);
   CHECK(on_linux("/usr/local/bin/driftwire") == cli::install_kind::none);  // no installer's record
   CHECK(on_linux("/home/ann/build-cli/bin/driftwire") == cli::install_kind::none);
   CHECK(on_linux("") == cli::install_kind::none);
@@ -153,20 +160,20 @@ TEST_CASE("driftwire cli update: each channel's own command, with the site in it
   CHECK(cli::update_command_shown(cli::install_kind::homebrew, kSite) == "brew upgrade driftwire");
   CHECK(cli::update_command_shown(cli::install_kind::windows, kSite) ==
         "irm https://example.invalid/driftwire/install.ps1 | iex");
-  CHECK(cli::update_command_shown(cli::install_kind::linux_sh, kSite) ==
+  CHECK(cli::update_command_shown(cli::install_kind::install_sh, kSite) ==
         "curl -fsSL https://example.invalid/driftwire/install.sh | sh");
   CHECK(cli::update_command_shown(cli::install_kind::none, kSite).empty());
 
   const std::string win = cli::update_command_run(cli::install_kind::windows, kSite);
   CHECK(win == "powershell.exe -NoProfile -Command \"irm 'https://example.invalid/driftwire/install.ps1' | iex\"");
-  const std::string lin = cli::update_command_run(cli::install_kind::linux_sh, kSite);
+  const std::string lin = cli::update_command_run(cli::install_kind::install_sh, kSite);
   CHECK(has(lin, "curl -fsSL 'https://example.invalid/driftwire/install.sh' -o \"$t\""));
   CHECK(has(lin, "wget -qO \"$t\" 'https://example.invalid/driftwire/install.sh'"));
   CHECK(has(lin, "&& sh \"$t\""));  // a download that fails runs nothing
   CHECK(cli::update_command_run(cli::install_kind::homebrew, kSite) == "brew upgrade driftwire");
   CHECK(cli::update_command_run(cli::install_kind::none, kSite).empty());
   // An address a shell would read as more than an address is never put in a command.
-  CHECK(cli::update_command_run(cli::install_kind::linux_sh, "https://x.invalid/a';rm -rf ~;'").empty());
+  CHECK(cli::update_command_run(cli::install_kind::install_sh, "https://x.invalid/a';rm -rf ~;'").empty());
   CHECK(cli::update_command_run(cli::install_kind::windows, "https://x.invalid/a b").empty());
 }
 

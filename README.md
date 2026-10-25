@@ -45,7 +45,7 @@ brew install longtimeno-c/tap/driftwire                                         
 irm https://longtimeno-c.github.io/mediaviewer/driftwire/install.ps1 | iex           # Windows (PowerShell)
 ```
 
-driftwire tells you when a new version is out, and `driftwire update` installs it the way you installed it: your package manager on Linux, `brew upgrade` on a Mac, the same line again on Windows. apt and dnf instructions are on [driftwire's page](https://longtimeno-c.github.io/mediaviewer/driftwire/).
+driftwire tells you when a new version is out, and `driftwire update` installs it the way you installed it: your package manager on Linux, `brew upgrade` on a Mac, the same line again on Windows. No Homebrew on your Mac? The Linux line installs it there too. apt and dnf instructions are on [driftwire's page](https://longtimeno-c.github.io/mediaviewer/driftwire/).
 
 ---
 
