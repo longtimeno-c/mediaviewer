@@ -88,7 +88,9 @@ rejected (R@10 0.822). MobileCLIP waits for its weights licence to clear `ai-mod
   and each chrome counts the offer as made only once the picker opened (#509).
 - **Changing** tier fetches the new models, then re-indexes with the new towers while the old
   index answers (the old tier's tower still opens by its spec key, `open_clip_spec`); once the
-  new one covers the folders the old vectors and the old tier's fetched files go.
+  new one covers the folders the old vectors and the old tier's fetched files go. A
+  `data/fetched` that is itself a link or junction is never pruned (2026-10-23: the prune never
+  deletes through a link), so an old tier's files there stay until removed by hand.
 - **Thresholds** come from `tools/ai-eval/calibrate.py`: the PR 20 eval (COCO-1k R@10 ≥ 0.88,
   labelled-query P@5 ≥ 0.8) and a quantile match against B/32's hand-set thresholds. Results are
   in "Measurements".

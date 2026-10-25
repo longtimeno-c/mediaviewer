@@ -811,6 +811,11 @@ class EnhancePackTest(unittest.TestCase):
                     self.pack()
                 self.assertFalse(self.out.exists())
         (self.src / "remote.json").write_text(text)
+        # A staged file the app refuses, by the rule and, off Windows, on disk:
+        # Windows 10 opens a folder named CON as the console, so none is made there.
+        self.assertFalse(addon_pack.safe_relative_path("models/con/model.json"))
+        if os.name == "nt":
+            return
         (self.src / "models/con").mkdir()
         (self.src / "models/con/model.json").write_text("{}")
         with self.assertRaisesRegex(ValueError, "models/con/model.json: not a path the app takes"):

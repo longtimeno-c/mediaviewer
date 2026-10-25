@@ -1,0 +1,3 @@
+# The Enhance fixture is compared byte for byte with what `enhance-models.py
+# stage` writes (LF, always): no checkout may turn its line endings into CRLF.
+tests/data/enhance/staged/** -text

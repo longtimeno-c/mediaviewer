@@ -80,9 +80,9 @@ figures below are illustrative:
 - A model may serve two kinds (one per-frame upscaler for stills and clips): both lists name it.
 
 **The local check** (`src/addons/enhance/machine*.cpp`; computed here, shown on the page, never
-sent anywhere): OS and CPU architecture, cores, total and free RAM, the accelerator (Apple
-silicon; an NVIDIA adapter with its driver's CUDA library) and its memory (dedicated VRAM; on
-Apple silicon the GPU shares RAM), and free space on the add-on's data volume.
+sent anywhere): OS and CPU architecture, processor threads, total and free RAM, the accelerator
+(Apple silicon; an NVIDIA adapter with its driver's CUDA library) and its memory (dedicated VRAM;
+on Apple silicon the GPU shares RAM), and free space on the add-on's data volume.
 
 **The rule** (`src/addons/enhance/choose.*`), per model, in order:
 
@@ -98,7 +98,7 @@ Apple silicon the GPU shares RAM), and free space on the add-on's data volume.
 
 The **recommended** model of a kind is the first, largest to smallest, that passes all five. The
 page lists every model with its download size, memory, provider, licence and, when it does not
-fit, why ("Needs a graphics card", "Needs 24 GB of memory; this Mac has 16 GB", "Needs 4.2 GB
+fit, why ("Needs an NVIDIA graphics card", "Needs 24 GB of memory; this Mac has 16 GB", "Needs 4.2 GB
 free on this disk; 1.3 GB is free"). A model that does not fit cannot be downloaded.
 
 ## Candidates (not pinned here)

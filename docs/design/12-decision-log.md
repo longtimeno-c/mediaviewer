@@ -2024,8 +2024,9 @@ issue's "Remove deletes the weights") and an update never does. Choosing another
 deletes the old one's files once the new one verifies; Delete removes a kind's model. Every window
 loads the add-on, so the choices (`data/enhance.json`) are shared: a click rewrites only its own
 kind's key under `data/enhance.lock`, and a prune keeps what any window has chosen (one that cannot
-take the download lock is owed and retried). A model id the catalogue does not know, from another
-version, holds every prune off rather than deleting another version's weights.
+take the download lock is owed and retried). A model id the catalogue does not know (another
+version's, or one an update dropped) keeps its whole `cache/models/<id>/` folder; everything else
+is pruned as usual, and choosing a model for that kind again lets the folder go.
 
 **A model is chosen by its spec, as data (2026-10-23).** Each kind lists its models largest first,
 and each `model.json` states `run_bytes`, `cache_bytes`, the accelerators it passed on and
@@ -2046,6 +2047,13 @@ fetched again. It applies to Local search too, and amends the 2026-10-18 row's "
 file can be placed by hand. Enhance counts a model as here only once every file has its `.ok`
 record; Local search, as before, opens a model file it finds at its fetched path, and the next
 download run hashes it and keeps it or replaces it.
+
+**A prune never deletes through a link (2026-10-23, #297 review).** The shared prune does
+nothing when its root is a symlink or a junction, and follows no link inside it; on Windows and
+macOS it compares paths case-folded. A person who points Enhance's `data/cache/models`, or Local
+search's `data/fetched`, at another drive with a link keeps every file there: old models are then
+removed by hand. Before, a linked root was walked, and every file at its target that no model
+needed was deleted.
 
 **The model downloader is a library (2026-10-23).** `fetch.*`, `sha256.*` and the Windows
 transport build as `mv_model_fetch`, which `mv_ai_engine` and `mv_enhance_engine` link, so Enhance

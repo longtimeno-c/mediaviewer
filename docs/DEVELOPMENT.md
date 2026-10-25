@@ -1750,9 +1750,11 @@ page; the catalogue and its check (`tools/package/enhance-models.{json,py}`); th
 (`addon-pack.py`, 5 GB per file for `enhance` only) and `enhance-sideload.py`.
 
 Tests: `mv_import_tests "[enhance]"` (the catalogue, the rule on six machine classes, the store's
-gates and downloads over a fake Hugging Face, the page's view tree) and `"[enhance][addon]"`
-(the real module through a signed store: nothing made at load, the page, a saved choice after a
-restart waiting for Resume), `"[ai][fetch]"` (`mv_ai_tests` on Windows and macOS; also in the
+gates and downloads over a fake Hugging Face, two windows sharing the choices and the download
+lock, the page's view tree) and `"[enhance][addon]"` (the real module through a signed store:
+nothing made at load, the page, a saved choice after a restart waiting for Resume, a page that
+follows another window's download, Remove deleting the weights, and a click within half a second
+of its button changing ignored, so a double click cannot undo itself), `"[ai][fetch]"` (`mv_ai_tests` on Windows and macOS; also in the
 portable build's `mv_import_tests`), and
 `python3 -m unittest test_addon_pack` (`EnhancePackTest`, no network). All pass in the portable
 Linux build (Debug, ASan) in the PR's session.
