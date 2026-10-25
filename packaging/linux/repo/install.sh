@@ -414,7 +414,12 @@ pick_tarball() {
   fi
   case $line in
     '' | *"
-"*) die "SHA256SUMS does not name one $what." ;;
+"*)
+      if [ "$OS" = macos ]; then
+        die "SHA256SUMS does not name one $what. Install Homebrew (https://brew.sh) and run: brew install $BREW_TAP/driftwire; or see $RELEASES_URL"
+      fi
+      die "SHA256SUMS does not name one $what."
+      ;;
   esac
 }
 
