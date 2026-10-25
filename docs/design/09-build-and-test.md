@@ -186,7 +186,7 @@ it replaces.
 |---|---|---|
 | `policy` | windows-latest | The policy gates above |
 | `windows-deps` | windows-latest | Installs the vcpkg manifest once and caches it (≈45 min after a manifest/baseline change, mostly FFmpeg) |
-| `build` | windows-latest | MSVC Release, MSVC Debug, clang-cl, ASan; full `ctest`; uploads broken-corpus reproducers; the MSVC Release leg packs the `driftwire` zip as a release does (`tools/package/driftwire-windows.ps1`: every DLL the program loads, the Visual C++ runtime beside it) and runs its one-line installer against it on localhost in Windows PowerShell 5.1 and PowerShell 7, unsigned and signed by a throwaway certificate the runner trusts (`tools/package/check-driftwire-install.ps1`), and uploads the zip (an artefact) |
+| `build` | windows-latest | MSVC Release, MSVC Debug, clang-cl, ASan; full `ctest`; uploads broken-corpus reproducers; the MSVC Release leg packs the `driftwire` zip as a release does (`tools/package/driftwire-windows.ps1`: every DLL the program loads, the Visual C++ runtime beside it) and runs its one-line installer against it on localhost under the Restricted execution policy (a Windows client's default): installs in Windows PowerShell 5.1 and PowerShell 7, unsigned and signed by a throwaway certificate the runner trusts, and uninstalls in both; the re-run, the update and a changed zip in PowerShell 7 (`tools/package/check-driftwire-install.ps1`); and uploads the zip (an artefact) |
 | `abi-smoke` | windows-latest | The C# ABI smoke test |
 | `windows-chrome`, `mac-chrome` | windows-latest, macos-14 | WinUI and SwiftUI chrome compile; the chrome contract tests (`dotnet test`, `swift test`) |
 | `mac-build` | macos-15 | The native core on macOS (arm64): vcpkg trees cached under release.yml's key, the licence gate over both Mac trees, the full build and `ctest --no-tests=error` (`mv_tests`, `mv_import_tests`, `mv_ai_tests`, the Mac-only Metal pacer / AVFoundation / PDFKit / Photos-folder / write-guard tests); packs the macOS `driftwire` archive as a release does (`macpack.py cli`, ad hoc, arm64) and uploads it (an artefact) |
@@ -298,9 +298,9 @@ Direct download only; the app is GPL-3.0-or-later and has no Store channel
   - macOS: a universal program, signed and notarized (`macpack.py cli`), in
     `driftwire-<version>-macos-universal.tar.gz` on the release page, installed and updated by the
     Homebrew tap `longtimeno-c/homebrew-tap`, whose formula the release writes.
-  - Windows: `driftwire-<version>-windows-x64.zip`, signed (`driftwire-windows.ps1`), on the
-    release page and on the same site, installed per user by `install.ps1`
-    (`irm <site>/install.ps1 | iex`), which also updates it when run again.
+  - Windows: `driftwire-<version>-windows-x64.zip` (`driftwire-windows.ps1`), signed when Trusted
+    Signing is configured, on the release page and on the same site, installed per user by
+    `install.ps1` (`irm <site>/install.ps1 | iex`), which also updates it when run again.
 
 Code signing, the update manifest, staged rollout, crash reports and telemetry are in
 [13](13-updates-and-telemetry.md); release mechanics in [RELEASING.md](../../RELEASING.md).

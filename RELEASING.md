@@ -165,8 +165,8 @@ publishing still works with a signed update manifest; Windows may warn at instal
 | `MediaViewer-<version>.dmg` | Mac first install |
 | `MediaViewer-<version>.zip` | Stapled Mac app archive for Sparkle |
 | `appcast.xml` | Signed Sparkle feed |
-| `driftwire-<version>-macos-universal.tar.gz` | The `driftwire` command line for macOS (`-arm64` when the Intel leg did not build); the Homebrew tap installs it. Only with `MV_DRIFTWIRE_REPO=1` |
-| `driftwire-<version>-windows-x64.zip` | The `driftwire` command line for Windows; the site's `install.ps1` installs it. Only with `MV_DRIFTWIRE_REPO=1` |
+| `driftwire-<version>-macos-universal.tar.gz` | The `driftwire` command line for macOS (`-arm64` when the Intel leg did not build); the Homebrew tap installs it. Only on a stable release with `MV_DRIFTWIRE_REPO=1` |
+| `driftwire-<version>-windows-x64.zip` | The `driftwire` command line for Windows; the site's `install.ps1` installs it. Only on a stable release with `MV_DRIFTWIRE_REPO=1` |
 | `SHA256SUMS.txt` | Download checksums |
 
 ### The driftwire command line

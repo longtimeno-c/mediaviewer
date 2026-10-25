@@ -267,21 +267,29 @@ None of them touches the data folder; none needs an administrator on Windows or 
   Intel Mac is told instead of given a program it cannot run.
 - **Windows: the one-liner** (`packaging/windows/install.ps1`). Windows PowerShell 5.1 and
   PowerShell 7; ASCII; one function called on the last line, so a cut-off download runs nothing
-  and only that function stays in the session. It checks 64-bit Windows 10 or later (x64: Windows
-  on Arm runs it too; 32-bit is refused), downloads `driftwire-<version>-windows-x64.zip` from the
-  site to a temporary file, checks it against the SHA-256 written into the script and, when the
-  release was signed, that every `.exe` and `.dll` in it has a valid Authenticode signature, all
-  before anything changes. It unpacks next to `%LOCALAPPDATA%\Programs\Driftwire`, moves the old
-  copy aside (a running `driftwire` stops that, and it says to close it), the new one in and the old
-  one away, then adds the folder to the user's `Path` once. It writes `Path` through the registry
-  so the value keeps its kind and its `%VARIABLES%` (`SetEnvironmentVariable` would write it back
-  expanded, as `REG_SZ`), lets Explorer know so new terminals have it, puts it on this session's
-  `PATH`, and prints `driftwire --version`. `-Uninstall` removes the folder and the `Path` entry
-  only. A folder of that name without `driftwire.exe` in it is not its own and is left alone. The zip comes from the site, not the release page, so the installer and the file it checks
-  go live together and a copy of the site served elsewhere is whole; `DRIFTWIRE_REPO_URL` or
-  `-BaseUrl` point it at one (the written SHA-256 must still match). Off Windows it refuses, naming
-  the brew and curl lines; with `DRIFTWIRE_INSTALL_TEST=1` it runs there for the tests, with the
-  user's `Path` in a file and no registry or Authenticode. winget may come later.
+  and only that function stays in the session. It calls only binary cmdlets and .NET: Windows
+  PowerShell 5.1's `Get-FileHash` and `Expand-Archive` live in script modules, which a Windows
+  client's default execution policy (Restricted) will not load, though it runs `irm | iex`. It
+  checks 64-bit Windows 10 or later (x64: Windows 11 on Arm runs it too; Windows 10 on Arm, which
+  emulates 32-bit x86 only, and 32-bit Windows are refused before anything changes), downloads
+  `driftwire-<version>-windows-x64.zip` from the site to a temporary file, checks it against the
+  SHA-256 written into the script and, when the release was signed, that every `.exe` and `.dll`
+  in it has a valid Authenticode signature, all before anything changes. It unpacks next to
+  `%LOCALAPPDATA%\Programs\Driftwire`, moves the old copy aside (a running `driftwire` stops that,
+  and it says to close it), the new one in and the old one away, then adds the folder to the
+  user's `Path` once. It writes `Path` through the registry so the value keeps its kind and its
+  `%VARIABLES%` (`SetEnvironmentVariable` would write it back expanded, as `REG_SZ`), lets
+  Explorer know so new terminals have it, puts it on this session's `PATH`, and prints
+  `driftwire --version`. `-Uninstall` removes the folder and the `Path` entry. Installing and
+  `-Uninstall` also take away an earlier run's leftovers beside the folder (an old copy that was
+  still running, a download cut off while unpacking), matched by the names it gives them:
+  `Driftwire.old-` or `.driftwire-` and eight hex digits; any other folder there stays.
+  A folder of that name without `driftwire.exe` in it is not its own and is left alone. The zip
+  comes from the site, not the release page, so the installer and the file it checks go live
+  together and a copy of the site served elsewhere is whole; `DRIFTWIRE_REPO_URL` or `-BaseUrl`
+  point it at one (the written SHA-256 must still match). Off Windows it refuses, naming the brew
+  and curl lines; with `DRIFTWIRE_INSTALL_TEST=1` it runs there for the tests, with the user's
+  `Path` in a file and no registry or Authenticode. winget may come later.
 - **The Windows zip** (`tools/package/driftwire-windows.ps1`): `driftwire.exe` and every DLL it
   loads, found by reading the import and delay-load tables of the program and of each DLL it finds:
   ours from the build (`libsodium.dll`, `blake3.dll`; x64-windows is a dynamic triplet, FTXUI's
@@ -289,7 +297,8 @@ None of them touches the data folder; none needs an administrator on Windows or 
   `msvcp140.dll`, whichever it imports) from Visual Studio's redistributable folder, never
   System32: the build uses the dynamic C runtime, a per-user install cannot run `vc_redist`, and a
   clean Windows lacks it. The Universal CRT and the API sets are Windows'; any other DLL fails the
-  build. Release signing signs ours with Trusted Signing; Microsoft's runtime keeps Microsoft's
+  build. Release signing signs ours with Trusted Signing when it is configured (optional, as for
+  the installer; without it the zip is unsigned); Microsoft's runtime keeps Microsoft's
   signature. With `LICENSE`, `NOTICE` and `COPYRIGHT.txt`.
 - **Updates** come through each channel: the package manager on Linux (this is the updater a build
   needs before it leaves this machine, CLAUDE.md), `brew upgrade` on macOS, the one line again on
@@ -336,17 +345,22 @@ None of them touches the data folder; none needs an administrator on Windows or 
   `DRIFTWIRE_REPO_GPG_PASSPHRASE`; apt keeps the key the installer saved, so a new key reaches an
   apt machine only when the installer runs again (or the key is fetched by hand), and a key change
   overlaps the two keys across at least one release. The tap is written with `HOMEBREW_TAP_TOKEN`,
-  a fine-grained token with Contents: write on the tap repository alone. The Apple and Trusted
-  Signing credentials the release already uses sign the Mac and Windows programs.
+  a fine-grained token with Contents: write on the tap repository alone. The Apple credentials the
+  release already uses sign and notarize the Mac program. The Windows programs are signed only
+  when the release's optional Trusted Signing credentials are set, as the installer is; without
+  them `driftwire.exe` ships unsigned and `install.ps1` checks the zip's SHA-256 alone.
 - Run here only (2026-10-24, Linux): the Linux repository in an Ubuntu 24.04 container (apt 2.8,
   dnf 4.14 with repo_gpgcheck, rpm 4.18: install, upgrade by apt and by the installer again,
   refusal of a changed `InRelease` and of a changed `repomd.xml`, uninstall with `partial/`
   cleared, the tarball route as root and as a user); `install.ps1` in its test mode under
   PowerShell 7.6 (`tools/package/check-driftwire-install.ps1`: install, again, an update to a newer
   version and back, a changed zip refused, a cut-off script doing nothing, uninstall keeping the
-  other `Path` entries); the formula under Ruby 3.3 against a stand-in for Homebrew's `Formula`;
+  other `Path` entries, only its own leftovers removed, Windows 10 on Arm refused, only binary
+  cmdlets called); the formula under Ruby 3.3 against a stand-in for Homebrew's `Formula`;
   `macpack.py cli` and `driftwire-windows.ps1` on tiny stand-in programs. CI's Windows leg runs
-  the one-liner for real in both PowerShells, signed and unsigned, and has not run yet; nor have
+  the one-liner for real under the Restricted execution policy (installs in both PowerShells,
+  signed and unsigned, and uninstalls in both; the re-run, the update and a changed zip in
+  PowerShell 7), and has not run yet; nor have
   the release's macOS and Windows jobs, Homebrew, the tap or Pages, nor a real Fedora, openSUSE or
   arm64 machine.
 

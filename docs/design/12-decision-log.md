@@ -1986,9 +1986,9 @@ bottom. No Bluetooth in it on any OS: CoreBluetooth needs a bundle's usage strin
 server in an unpackaged console is unverified, Linux has no bearer. Linux gets packages; the
 Windows and macOS programs are built and tested with the app and uploaded by CI, unsigned, and are
 not released (the owner asked for Linux packages; Windows and macOS releases are not decided) nor
-in the app's payload. Since 2026-10-24 they are released, through a Homebrew tap and a PowerShell
-one-liner (below, "`driftwire` on macOS from a Homebrew tap"), and still never in the app's
-payload. Cost: a second face for every
+in the app's payload. Since 2026-10-24 stable releases publish them (once the owner sets
+`MV_DRIFTWIRE_REPO=1`), through a Homebrew tap and a PowerShell one-liner (below, "`driftwire`
+on macOS from a Homebrew tap"), and still never in the app's payload. Cost: a second face for every
 flow; one session controller that makes only the window's `on_event` calls keeps it to what the
 window does, and the session tests drive two engines through it.
 
@@ -2080,8 +2080,10 @@ build. Cost: a bare program cannot be stapled, so Gatekeeper checks its ticket o
 time a quarantined copy runs (Homebrew does not quarantine); the runtime beside `driftwire.exe` is
 not serviced by Windows Update between releases; a token to renew before it expires, or the
 formula stays behind; with the switch on, a stable release cannot publish without the two
-archives. Run in a Linux container only: `install.ps1` in a test mode under PowerShell 7.6, the
-formula under Ruby 3.3 against a stand-in for Homebrew; CI's Windows installer check, the
+archives; the signed `driftwire.exe` needs the optional Trusted Signing secrets, which are not set
+up (the Windows installer is not Authenticode-signed either), so until they are the zip ships
+unsigned and `install.ps1` checks only its SHA-256. Run in a Linux container only: `install.ps1`
+in a test mode under PowerShell 7.6, the formula under Ruby 3.3 against a stand-in for Homebrew; CI's Windows installer check, the
 release's macOS and Windows jobs, Homebrew and Pages have not run. Reopen for winget, if Homebrew
 itself takes the formula, or if the site moves.
 
