@@ -689,7 +689,7 @@ class DriftwireRepoTest(unittest.TestCase):
                 continue
             self.assertEqual(path.read_bytes(), (dw / name).read_bytes(), name)
             compared += 1
-        self.assertEqual(compared, 16)
+        self.assertEqual(compared, 17)   # the macOS archive too
         strip = re.compile(rb'^(Date|Valid-Until): .*\n', re.M)
         self.assertEqual(strip.sub(b'', (self.dw / 'apt/dists/stable/Release').read_bytes()),
                          strip.sub(b'', (dw / 'apt/dists/stable/Release').read_bytes()))
