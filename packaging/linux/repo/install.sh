@@ -12,8 +12,9 @@
 # repository. The system's package manager then installs driftwire and updates it
 # with everything else. Anywhere else it unpacks the tarball into ~/.local
 # (/usr/local as root) after checking its SHA-256; that copy does not update
-# itself. It needs no MediaViewer. On macOS it installs nothing: the Mac's
-# channel is Homebrew, and it prints the line for that.
+# itself. It needs no MediaViewer. On macOS the channel is Homebrew: with brew
+# there it prints the line for that and installs nothing; without it, it
+# unpacks the macOS archive the same way, and says how to get Homebrew.
 #
 # tools/package/driftwire_repo.py writes the site's address, its key, the
 # Homebrew tap and the release page into the lines below when it builds the
@@ -44,12 +45,13 @@ die() {
 
 usage() {
   cat <<'EOF'
-Installs driftwire, or upgrades it, from its signed package repository.
+Installs driftwire, or upgrades it, from its signed package repository
+(on macOS without Homebrew, from its signed checksums).
 
   curl -fsSL <site>/install.sh | sh
   curl -fsSL <site>/install.sh | sh -s -- --uninstall
 
-  --uninstall   remove driftwire, and the repository source and key this added
+  --uninstall   remove driftwire, and the repository source and key (or the files) this added
   --help        this text
 
 DRIFTWIRE_REPO_URL=<https address> installs from another copy of the site.
@@ -77,32 +79,58 @@ has() { command -v "$1" >/dev/null 2>&1; }
 
 # ---- checks --------------------------------------------------------------------
 
-check_linux() {
+check_system() {
   kernel=$(uname -s)
   case $kernel in
-    Linux) ;;
-    Darwin) macos_channel ;;
-    *) die "this installer is for Linux; this system is $kernel." ;;
+    Linux) OS=linux ;;
+    Darwin) OS=macos ;;
+    *) die "this installer is for Linux and macOS; this system is $kernel." ;;
   esac
 }
 
-# The Mac's channel is a Homebrew tap (docs/design/28 "Installing"): Homebrew
-# installs and updates it there, so this says how and installs nothing.
-macos_channel() {
+# The Mac's channel is a Homebrew tap (docs/design/28 "Installing"): with brew
+# here, Homebrew installs and updates it, so this says how and installs nothing.
+# Without brew, main goes on to the archive (install_tarball).
+macos_homebrew() {
   case $BREW_TAP in
     @*) die "this is the installer's template; on macOS, driftwire comes from Homebrew." ;;
   esac
-  if [ "$action" = uninstall ]; then
-    say "on macOS, driftwire comes from Homebrew, and this script did not install it. Remove it with:"
-    printf '\n  brew uninstall driftwire\n\n'
-    exit 1
-  fi
+  has brew || return 0
   say "on macOS, driftwire comes from Homebrew, which keeps it up to date (brew upgrade). Install it with:"
   printf '\n  brew install %s/driftwire\n\n' "$BREW_TAP"
-  if ! has brew; then
-    say "Homebrew is not installed: see https://brew.sh. Or take driftwire-<version>-macos-universal.tar.gz from $RELEASES_URL (it does not update itself)."
+  tarball_prefix
+  if [ -f "$PREFIX/$MANIFEST" ]; then
+    say "the copy this installer unpacked into $PREFIX is still there; remove it with this installer's --uninstall."
   fi
   exit 1
+}
+
+homebrew_hint() {
+  say "Homebrew is not installed, so this installs the signed archive instead; it does not update itself."
+  say "To have Homebrew keep driftwire up to date, install Homebrew (https://brew.sh):"
+  # shellcheck disable=SC2016 # printed for the reader to run, not expanded here
+  printf '\n  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"\n\n'
+  say "then remove this copy (--uninstall) and run: brew install $BREW_TAP/driftwire"
+}
+
+check_macos() {
+  machine=$(uname -m)
+  # A shell under Rosetta says x86_64 on an Apple silicon Mac.
+  if [ "$machine" = x86_64 ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then
+    machine=arm64
+  fi
+  case $machine in
+    arm64 | x86_64) ;;
+    *) die "driftwire is built for Apple silicon and Intel Macs; this one is $machine." ;;
+  esac
+  macos=$(sw_vers -productVersion 2>/dev/null || true)
+  macos_major=${macos%%.*}
+  case $macos_major in
+    '' | *[!0-9]*) die "could not tell the macOS version (sw_vers); driftwire needs macOS 14 or later." ;;
+  esac
+  if [ "$macos_major" -lt 14 ]; then
+    die "driftwire needs macOS 14 or later; this Mac has $macos."
+  fi
 }
 
 check_platform() {
@@ -181,6 +209,10 @@ need_root() {
 }
 
 describe_system() {
+  if [ "$OS" = macos ]; then
+    say "macOS $macos, $machine; from $URL"
+    return 0
+  fi
   pretty=
   if [ -r /etc/os-release ]; then
     pretty=$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | tr -d '"')
@@ -193,7 +225,9 @@ suse_like() {
 }
 
 pick_manager() {
-  if has apt-get && has dpkg; then
+  if [ "$OS" = macos ]; then
+    MANAGER=tarball
+  elif has apt-get && has dpkg; then
     MANAGER=apt
   elif has zypper && suse_like; then
     MANAGER=zypper
@@ -363,18 +397,73 @@ tarball_prefix() {
   fi
 }
 
-install_tarball() {
-  tarball_prefix
-  say "no apt, dnf, yum or zypper here. About to:"
-  step "1. download the $RPM_ARCH tarball and check its SHA-256 against the signed SHA256SUMS"
-  step "2. unpack it into $PREFIX (bin/driftwire, its manual page and completions)"
-  step "This copy does not update itself: run this installer again for a newer version."
-  fetch "$URL/SHA256SUMS" "$TMP/SHA256SUMS"
-  line=$(grep -E "^[0-9a-f]{64}  driftwire-[0-9]+\.[0-9]+\.[0-9]+-linux-$RPM_ARCH\.tar\.gz\$" "$TMP/SHA256SUMS" || true)
+# The SHA256SUMS line of this system's tarball: Linux's for this architecture;
+# on a Mac the universal archive, or the arm64 one (a release whose Intel leg
+# did not build) on Apple silicon.
+pick_tarball() {
+  sums='^[0-9a-f]{64}  driftwire-[0-9]+\.[0-9]+\.[0-9]+'
+  if [ "$OS" = linux ]; then
+    line=$(grep -E "$sums-linux-$RPM_ARCH\.tar\.gz\$" "$TMP/SHA256SUMS" || true)
+    what="$RPM_ARCH tarball"
+  else
+    line=$(grep -E "$sums-macos-universal\.tar\.gz\$" "$TMP/SHA256SUMS" || true)
+    if [ -z "$line" ] && [ "$machine" = arm64 ]; then
+      line=$(grep -E "$sums-macos-arm64\.tar\.gz\$" "$TMP/SHA256SUMS" || true)
+    fi
+    what="macOS archive for this Mac ($machine)"
+  fi
   case $line in
     '' | *"
-"*) die "SHA256SUMS does not name one $RPM_ARCH tarball." ;;
+"*)
+      if [ "$OS" = macos ]; then
+        die "SHA256SUMS does not name one $what. Install Homebrew (https://brew.sh) and run: brew install $BREW_TAP/driftwire; or see $RELEASES_URL"
+      fi
+      die "SHA256SUMS does not name one $what."
+      ;;
   esac
+}
+
+# check_sha256 LINE: LINE of SHA256SUMS against its file in $TMP. macOS has
+# shasum, not sha256sum.
+check_sha256() {
+  if has sha256sum; then
+    (cd "$TMP" && printf '%s\n' "$1" | sha256sum -c --status -)
+  else
+    (cd "$TMP" && printf '%s\n' "$1" | shasum -a 256 -c -s)
+  fi
+}
+
+# The macOS archive is one flat folder, as Homebrew's formula takes it
+# (tools/mac/macpack.py stage_cli); laid out here as the Linux tarball is.
+stage_macos() {
+  [ -f "$1/driftwire" ] || die "$name has no driftwire."
+  mkdir -p "$2/bin" "$2/share/man/man1" "$2/share/doc/driftwire"
+  for file in "$1"/* "$1"/.[!.]*; do
+    [ -e "$file" ] || continue
+    [ -f "$file" ] || die "$name holds something other than files in $top/."
+    case ${file##*/} in
+      driftwire) cp -p "$file" "$2/bin/driftwire" ;;
+      driftwire.1) cp -p "$file" "$2/share/man/man1/driftwire.1" ;;
+      *) cp -p "$file" "$2/share/doc/driftwire/" ;;
+    esac
+  done
+}
+
+install_tarball() {
+  tarball_prefix
+  if [ "$OS" = macos ]; then
+    homebrew_hint
+    say "About to:"
+    step "1. download the macOS archive and check its SHA-256 against the signed SHA256SUMS"
+    step "2. unpack it into $PREFIX (bin/driftwire, its manual page and notices)"
+  else
+    say "no apt, dnf, yum or zypper here. About to:"
+    step "1. download the $RPM_ARCH tarball and check its SHA-256 against the signed SHA256SUMS"
+    step "2. unpack it into $PREFIX (bin/driftwire, its manual page and completions)"
+  fi
+  step "This copy does not update itself: run this installer again for a newer version."
+  fetch "$URL/SHA256SUMS" "$TMP/SHA256SUMS"
+  pick_tarball
   name=${line#*  }
   # Checked against the site's own key when gpgv is here; the SHA-256 is checked either way.
   if has gpgv; then
@@ -385,8 +474,7 @@ install_tarball() {
       die "SHA256SUMS is not signed by the repository's key."
   fi
   fetch "$URL/$name" "$TMP/$name"
-  (cd "$TMP" && printf '%s\n' "$line" | sha256sum -c --status -) ||
-    die "$name does not match its SHA-256 in SHA256SUMS."
+  check_sha256 "$line" || die "$name does not match its SHA-256 in SHA256SUMS."
   top=${name%.tar.gz}
   tar -tzf "$TMP/$name" >"$TMP/entries"
   while IFS= read -r entry; do
@@ -401,6 +489,10 @@ install_tarball() {
   mkdir "$TMP/unpacked"
   tar -xzf "$TMP/$name" -C "$TMP/unpacked" --no-same-owner
   src=$TMP/unpacked/$top
+  if [ "$OS" = macos ]; then
+    stage_macos "$src" "$TMP/staged"
+    src=$TMP/staged
+  fi
   [ -f "$src/bin/driftwire" ] || die "$name has no bin/driftwire."
 
   # An upgrade takes the previous copy's files away first.
@@ -414,7 +506,9 @@ install_tarball() {
     printf 'd .\n' >>"$TMP/manifest"
   fi
   (cd "$src" && find . -type d | sed 's|^\./||' | grep -v '^\.$' | sort) >"$TMP/dirs"
-  printf '%s\n' share/driftwire >>"$TMP/dirs"
+  # The manifest's own folder, its parent first: a tarball without share/ would
+  # otherwise leave the share/ that mkdir -p made.
+  printf '%s\n' share share/driftwire >>"$TMP/dirs"
   while IFS= read -r dir; do
     if [ ! -d "$PREFIX/$dir" ]; then
       mkdir -p "$PREFIX/$dir"
@@ -565,6 +659,16 @@ uninstall_tarball() {
   REMOVED=1
 }
 
+# Homebrew's copy is Homebrew's to remove; this says how.
+uninstall_homebrew_note() {
+  if [ "$OS" != macos ] || ! has brew || ! brew list --formula driftwire >/dev/null 2>&1; then
+    return 0
+  fi
+  say "Homebrew's driftwire is installed, and this script did not install it. Remove it with:"
+  printf '\n  brew uninstall driftwire\n\n'
+  [ "$REMOVED" = 1 ] || exit 1
+}
+
 # ---- main ----------------------------------------------------------------------
 
 finish() {
@@ -575,7 +679,11 @@ finish() {
     *:"$(dirname "$BIN")":*) ;;
     *)
       start=$BIN
-      say "$(dirname "$BIN") is not on your PATH; add it (in ~/.profile: PATH=\"$(dirname "$BIN"):\$PATH\") to type just driftwire."
+      profile=.profile
+      if [ "$OS" = macos ]; then
+        profile=.zprofile
+      fi
+      say "$(dirname "$BIN") is not on your PATH; add it (in ~/$profile: PATH=\"$(dirname "$BIN"):\$PATH\") to type just driftwire."
       ;;
   esac
   say "installed. Start it with: $start"
@@ -597,7 +705,10 @@ main() {
     esac
   done
 
-  check_linux
+  check_system
+  if [ "$OS" = macos ] && [ "$action" = install ]; then
+    macos_homebrew
+  fi
   pick_url
   TMP=$(mktemp -d)
   trap 'rm -rf "$TMP"' EXIT
@@ -613,15 +724,24 @@ main() {
     fi
     uninstall_rpm
     uninstall_tarball
+    uninstall_homebrew_note
+    data=.local/state/driftwire
+    if [ "$OS" = macos ]; then
+      data='Library/Application Support/Driftwire'
+    fi
     if [ "$REMOVED" = 0 ]; then
       say "nothing of driftwire's to remove here."
     else
-      say "removed. Its data folder (~/.local/state/driftwire of each user who ran it) is left as it was."
+      say "removed. Its data folder (~/$data of each user who ran it) is left as it was."
     fi
     return 0
   fi
 
-  check_platform
+  if [ "$OS" = macos ]; then
+    check_macos
+  else
+    check_platform
+  fi
   pick_fetcher
   describe_system
   case $MANAGER in

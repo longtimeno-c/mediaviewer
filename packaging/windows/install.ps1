@@ -175,7 +175,7 @@ function Install-Driftwire {
     if ($url -notmatch '^[A-Za-z0-9._~:/%+-]+$') { Fail "the site's address has a character it may not have ($url)." }
 
     if (-not $onWindows -and -not $test) {
-        Fail "this installer is for Windows. On macOS: brew install $brewTap/driftwire. On Linux: curl -fsSL $url/install.sh | sh"
+        Fail "this installer is for Windows. On macOS: brew install $brewTap/driftwire (without Homebrew, the Linux line). On Linux: curl -fsSL $url/install.sh | sh"
     }
     $local = $env:LOCALAPPDATA
     if (-not $local) { Fail 'LOCALAPPDATA is not set.' }
