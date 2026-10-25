@@ -11,7 +11,7 @@
 # once. The archive's SHA-256, and for a signed build every program's
 # Authenticode signature, is checked before anything is replaced; running it
 # again installs the site's version over the old one. It needs no MediaViewer.
-# Windows PowerShell 5.1 and PowerShell 7; x64 (Windows on Arm runs it too).
+# Windows PowerShell 5.1 and PowerShell 7; x64 (Windows 11 on Arm runs it too).
 # Only binary cmdlets and .NET: Windows PowerShell 5.1's Get-FileHash and
 # Expand-Archive live in script modules, which the default policy on a Windows
 # client (Restricted) will not load, though it runs `irm | iex`.
@@ -28,7 +28,8 @@
 # (tools/package/test_driftwire_repo.py): the user's PATH is then the file
 # DRIFTWIRE_TEST_USER_PATH, Authenticode, the registry and the Windows checks
 # are skipped, and the program (the tests' stand-in: a shell script under a PE
-# header) runs through sh. Their real proof is CI's Windows leg
+# header) runs through sh; DRIFTWIRE_TEST_WINDOWS_VERSION pretends to be that
+# Windows for the version and Arm checks. Their real proof is CI's Windows leg
 # (tools/package/check-driftwire-install.ps1).
 param(
     [switch]$Uninstall,
@@ -214,11 +215,24 @@ function Install-Driftwire {
 
     # ---- installing -------------------------------------------------------------
 
+    $windows = $null
     if ($onWindows) {
+        $windows = [Environment]::OSVersion.Version
+    } elseif ($test -and $env:DRIFTWIRE_TEST_WINDOWS_VERSION) {
+        $windows = [version]$env:DRIFTWIRE_TEST_WINDOWS_VERSION
+    }
+    if ($null -ne $windows) {
         if (-not [Environment]::Is64BitOperatingSystem) {
-            Fail 'driftwire is built for 64-bit Windows (x64, which Windows on Arm runs too); this Windows is 32-bit.'
+            Fail 'driftwire is built for 64-bit Windows (x64, which Windows 11 on Arm runs too); this Windows is 32-bit.'
         }
-        if ([Environment]::OSVersion.Version.Major -lt 10) { Fail 'driftwire needs Windows 10 or later.' }
+        if ($windows.Major -lt 10) { Fail 'driftwire needs Windows 10 or later.' }
+        # Windows on Arm runs x64 programs from Windows 11 (build 22000) on;
+        # Windows 10 on Arm runs 32-bit x86 ones only. PowerShell itself may be
+        # Arm or x86 there: either says ARM64 in one of these.
+        $onArm = @($env:PROCESSOR_ARCHITECTURE, $env:PROCESSOR_ARCHITEW6432) -contains 'ARM64'
+        if ($onArm -and $windows.Build -lt 22000) {
+            Fail 'driftwire is an x64 program, which Windows on Arm runs from Windows 11 on; this is Windows 10 on Arm, so nothing was installed.'
+        }
     }
     if ($PSVersionTable.PSVersion.Major -lt 6) {
         # Windows PowerShell 5.1 may still offer TLS 1.0 only; the site needs 1.2.

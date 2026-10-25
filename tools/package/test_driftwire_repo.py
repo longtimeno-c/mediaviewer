@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -424,6 +425,44 @@ class DriftwireRepoTest(unittest.TestCase):
         self.assertIn('Get-AuthenticodeSignature', called)
         test_mode_only = {'chmod', 'sh'}
         self.assertEqual(called - defined - test_mode_only - self.BINARY_COMMANDS, set())
+
+    @unittest.skipIf(not PWSH, 'needs PowerShell (pwsh)')
+    def test_install_ps1_refuses_windows_10_on_arm(self):
+        # x64 programs run on Windows on Arm from Windows 11 (build 22000); Windows 10 on Arm is refused
+        # before anything changes, whether PowerShell runs there as Arm or as x86.
+        with socket.socket() as s:
+            s.bind(('127.0.0.1', 0))
+            closed = s.getsockname()[1]
+
+        def run_as(version, arch, wow=None):
+            local = Path(tempfile.mkdtemp(dir=self.work))
+            env = {k: v for k, v in os.environ.items() if not k.startswith(('DRIFTWIRE_', 'PROCESSOR_'))}
+            env.update(DRIFTWIRE_INSTALL_TEST='1', LOCALAPPDATA=str(local), DRIFTWIRE_TEST_USER_PATH=str(local / 'path'),
+                       DRIFTWIRE_TEST_WINDOWS_VERSION=version, PROCESSOR_ARCHITECTURE=arch,
+                       DRIFTWIRE_REPO_URL=f'http://127.0.0.1:{closed}/driftwire')
+            if wow:
+                env['PROCESSOR_ARCHITEW6432'] = wow
+            result = subprocess.run([PWSH, '-NoProfile', '-NonInteractive', '-File', str(self.dw / 'install.ps1')],
+                                    capture_output=True, text=True, env=env, timeout=120)
+            return result.returncode, result.stdout + result.stderr, sorted(p.name for p in local.iterdir())
+
+        for version, arch, wow in (('10.0.19045', 'ARM64', None), ('10.0.19045', 'x86', 'ARM64')):
+            code, out, made = run_as(version, arch, wow)
+            self.assertNotEqual(code, 0, out)
+            self.assertIn('this is Windows 10 on Arm, so nothing was installed', out)
+            self.assertNotIn('+ download', out)
+            self.assertEqual(made, [], out)
+        code, out, made = run_as('6.3.9600', 'AMD64')
+        self.assertNotEqual(code, 0, out)
+        self.assertIn('driftwire needs Windows 10 or later', out)
+        self.assertEqual(made, [], out)
+        # Windows 11 on Arm and Windows 10 on x64 pass the checks: they get as far as the download,
+        # which fails here (nothing listens).
+        for version, arch in (('10.0.22631', 'ARM64'), ('10.0.19045', 'AMD64')):
+            code, out, _ = run_as(version, arch)
+            self.assertNotEqual(code, 0, out)
+            self.assertNotIn('Windows 10 on Arm', out)
+            self.assertIn(f'+ download http://127.0.0.1:{closed}/driftwire/driftwire-1.2.3-windows-x64.zip', out)
 
     def test_a_signed_zip_is_baked_as_signed_and_can_be_required(self):
         packages = make_set(self.work / 'signed', '1.2.3', ('amd64',), windows=False)
