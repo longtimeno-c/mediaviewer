@@ -513,6 +513,11 @@ class DriftwireRepoTest(unittest.TestCase):
         self.assertGreaterEqual(len(checks), 20, result.stdout)
         self.assertIn("check: the newer site's installer updates it to 1.2.4, still once on the PATH: yes", checks)
         self.assertIn('check: the signed build installs (test mode: Authenticode): yes', checks)
+        self.assertIn('check: folders it did not make are kept (Driftwire.old-mine, .driftwire-cache, '
+                      'Driftwire.old-0123abcd9): yes', checks)
+        self.assertIn('check: and the folders beside it that it did not make: yes', checks)
+        self.assertTrue(any(line.startswith('check: no old copy or unpacked download left beside the install '
+                                            '(Driftwire.old-0123abcd, .driftwire-89abcdef gone)') for line in checks))
         self.assertIn('installs, updates, refuses a changed zip and uninstalls', result.stdout)
 
     def test_no_private_key_material(self):

@@ -133,11 +133,12 @@ function Install-Driftwire {
     }
 
     # Folders an earlier run left: an old copy that was still running, a
-    # download that was cut off.
+    # download that was cut off. Only the names it makes, so nobody else's.
     function Remove-Leftovers([string]$Programs) {
         if (-not (Test-Path -LiteralPath $Programs)) { return }
         foreach ($old in Get-ChildItem -LiteralPath $Programs -Directory -Force |
-                Where-Object { $_.Name -like 'Driftwire.old-*' -or $_.Name -like '.driftwire-*' }) {
+                Where-Object { $_.Name -cmatch '^(Driftwire\.old|\.driftwire)-[0-9a-f]{8}$' }) {
+            Write-Host "+ delete $($old.FullName) (an earlier run's)"
             Remove-Item -LiteralPath $old.FullName -Recurse -Force -ErrorAction SilentlyContinue
         }
     }

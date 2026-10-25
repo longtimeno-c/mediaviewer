@@ -19,6 +19,8 @@
 #     machine's PATH runs `driftwire --version`;
 #   - running it again replaces the copy and leaves one PATH entry; with
 #     -NewerZip, the newer site's installer updates it to that version;
+#   - an earlier run's leftovers beside the install go, folders of similar
+#     names that are not its own stay;
 #   - a zip whose SHA-256 is not the one baked in is refused, and the installed
 #     copy stays as it was;
 #   - `& ([scriptblock]::Create((irm <site>/install.ps1))) -Uninstall` takes the
@@ -217,6 +219,18 @@ try {
            -and (Get-InstallCount) -eq 0) 'a folder in its place that is not driftwire''s is neither replaced nor removed'
     Remove-Item -LiteralPath $installDir -Recurse -Force
 
+    # ---- an earlier run's leftovers, and folders that only look like them ----
+    $programs = Split-Path $installDir
+    $leftovers = @('Driftwire.old-0123abcd', '.driftwire-89abcdef')
+    $notOurs = @('Driftwire.old-mine', '.driftwire-cache', 'Driftwire.old-0123abcd9')
+    foreach ($name in $leftovers + $notOurs) {
+        New-Item -ItemType Directory -Force -Path (Join-Path $programs $name) | Out-Null
+        Set-Content -LiteralPath (Join-Path (Join-Path $programs $name) 'notes.txt') -Value 'mine'
+    }
+    function Test-NotOursKept {
+        @($notOurs | Where-Object { Test-Path -LiteralPath (Join-Path (Join-Path $programs $_) 'notes.txt') }).Count -eq $notOurs.Count
+    }
+
     # ---- install, in each PowerShell, and again ----
     foreach ($shell in $shells) {
         $run = Invoke-Installer "irm $url/install.ps1 | iex" $shell
@@ -226,9 +240,10 @@ try {
         $said = Invoke-NewTerminal "$programName --version"
         Check ($said -eq "driftwire $version") "a new terminal runs '$programName --version' and gets '$said'"
     }
-    $left = @(Get-ChildItem -LiteralPath (Split-Path $installDir) -Force |
-        Where-Object { $_.Name -like 'Driftwire.old-*' -or $_.Name -like '.driftwire-*' })
-    Check ($left.Count -eq 0) 'no old copy or unpacked download left beside the install'
+    $left = @(Get-ChildItem -LiteralPath $programs -Force |
+        Where-Object { $_.Name -cmatch '^(Driftwire\.old|\.driftwire)-[0-9a-f]{8}$' })
+    Check ($left.Count -eq 0) "no old copy or unpacked download left beside the install ($($leftovers -join ', ') gone)"
+    Check (Test-NotOursKept) "folders it did not make are kept ($($notOurs -join ', '))"
 
     # ---- an update to a newer version, then back to this one ----
     if ($NewerZip) {
@@ -258,6 +273,8 @@ try {
     Check ($after.Value -ceq $startValue) "and keeps the user's other entries as they were ($sentinel unexpanded)"
     Check ("$($after.Kind)" -eq "$startKind") "and the Path value's kind ($startKind)"
     Check (Test-Path -LiteralPath (Join-Path $dataDir 'driftwire.json')) 'and leaves the data folder'
+    Check (Test-NotOursKept) 'and the folders beside it that it did not make'
+    foreach ($name in $notOurs) { Remove-Item -LiteralPath (Join-Path $programs $name) -Recurse -Force }
     $run = Invoke-Installer "& ([scriptblock]::Create((irm $url/install.ps1))) -Uninstall"
     Check ($run.Code -eq 0 -and $run.Output -match 'nothing of driftwire') 'a second -Uninstall finds nothing to remove'
 
@@ -273,6 +290,11 @@ try {
 } finally {
     if ($null -ne $server) { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $installDir) { Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Get-Variable -Name notOurs -ErrorAction SilentlyContinue) {
+        foreach ($name in $leftovers + $notOurs) {
+            Remove-Item -LiteralPath (Join-Path $programs $name) -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
     Set-RawUserPath $originalPath
     if ($madeData) { Remove-Item -LiteralPath $dataDir -Recurse -Force -ErrorAction SilentlyContinue }
     foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name]) }
