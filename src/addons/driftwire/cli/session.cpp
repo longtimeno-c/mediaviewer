@@ -27,6 +27,7 @@
 #include "addons/driftwire/cli/render.h"
 #include "addons/driftwire/cli/term.h"
 #include "addons/driftwire/cli/text.h"
+#include "addons/driftwire/cli/update.h"
 #include "addons/driftwire/wire.h"
 #include "core/json.h"
 
@@ -342,6 +343,18 @@ struct session::impl {
 
   bool destination_chosen = false;   // /save-to or "save somewhere else": kept on purpose
 
+  // ---- the mouse: on only while something on screen can be clicked (the
+  // owner's call, docs/design/28 "Clicks"), so selecting and scrolling the
+  // transcript work as ever the rest of the time.
+  hit_boxes hit_choice;   // the focused card's choices (a question, the offer, the check, Remember)
+  hit_boxes hit_nearby;   // Nearby's rows, as computers()
+  hit_boxes hit_palette;  // the palette's rows, as filter_commands()
+  bool mouse_on = false;
+  std::uint64_t asked_writes = 0;  // live.writes() when the cursor was last asked for
+  bool cursor_pending = false;     // CSI 6n sent, its answer not in yet: clicks wait
+  int region_top = -1;             // the region's first row on screen (0-based); -1: not known
+  std::optional<key_event> held_click;  // a press while cursor_pending
+
   // ---- plain mode
   std::string plain_key;     // what the last question / status was about
   std::string plain_prompt;  // what the current line starts with
@@ -449,6 +462,7 @@ struct session::impl {
 
     // The banner, once the network had a moment to come up.
     if (!banner_done && (v.wifi_up || now - started >= kBannerWaitMs)) print_banner();
+    if (banner_done) say_update();
 
     for (const auto& l : host.take_log()) {
       if (o.verbose) say_dim("log: " + l);
@@ -487,6 +501,16 @@ struct session::impl {
       live.print(banner(th, b, w()));
     }
     event("ready");
+  }
+
+  // A newer driftwire, once, under the banner (update.h).
+  void say_update() {
+    if (!o.updates) return;
+    const std::string newer = o.updates->take();
+    if (newer.empty()) return;
+    say(tone::accent, "driftwire " + newer + " is available" + glue() + "this is " + o.version,
+        {"Run driftwire update to update it (/updates off stops these checks)."});
+    event("update " + newer);
   }
 
   void on_out(const view& prev) {
@@ -1255,6 +1279,24 @@ struct session::impl {
       set_option(option, *on, true);
     } else if (name == "/relay-server") {
       open_field(field_kind::relay_server);
+    } else if (name == "/updates") {
+      if (!o.updates) {
+        say(tone::info, "This copy does not check for updates.", {o.no_updates_why});
+        return;
+      }
+      const auto on = on_off(rest);
+      if (!on) {
+        say(tone::info, std::string("Check for a newer driftwire once a day: ") + (o.updates->enabled() ? "on" : "off"),
+            {"/updates on or /updates off changes it (kept for next time)."});
+        return;
+      }
+      if (!o.updates->set_enabled(*on)) {
+        flash("That could not be kept: " + home_short_of(o.data_dir) + " cannot be written.");
+        return;
+      }
+      say(tone::info, *on ? "Driftwire checks once a day for a newer version." : "Driftwire no longer checks for updates.",
+          {*on ? "It asks its site, which sees this computer's address and nothing else."
+               : "driftwire update still updates it when you ask."});
     } else if (name == "/settings") {
       list_settings();
     } else if (name == "/help") {
@@ -1326,6 +1368,7 @@ struct session::impl {
         "Relay through my computers: " + onoff(v.relay),
         "Relay server: " + std::string(v.relay_server.empty() ? "none" : "set"),
         "Remembers devices: " + std::string(v.can_remember ? "yes" : "no (no secret store here)"),
+        "Checks for updates: " + (o.updates ? onoff(o.updates->enabled()) : "no (" + o.no_updates_why + ")"),
     };
     if (!o.data_dir.empty()) details.push_back("Settings kept in " + home_short_of(o.data_dir));
     say(tone::info, "Settings", std::move(details));
@@ -1347,6 +1390,7 @@ struct session::impl {
     }
     say_table("Keys", {{"enter", "send to the computer picked with " + std::string(th.g->arrows) + " (an empty line)"},
                        {"tab", "complete a path, or a command in the palette"},
+                       {"click", "a choice, a command, or a computer (a second click sends)"},
                        {"ctrl+p  ctrl+n", "what was typed before"},
                        {"esc", "close the palette, clear the line, then cancel what is under way"},
                        {"ctrl+c", "clear the line; twice, close Driftwire"},
@@ -1611,6 +1655,14 @@ struct session::impl {
   }
 
   void on_key(const key_event& e) {
+    if (e.is(key::cursor)) {
+      on_cursor_report(e);
+      return;
+    }
+    if (e.is(key::mouse)) {
+      on_mouse(e);
+      return;
+    }
     if (e.is_ctrl('c')) {
       on_ctrl_c();
       return;
@@ -1783,6 +1835,7 @@ struct session::impl {
   // Ctrl+Z, or SIGTSTP from outside (POSIX job control; Windows has none).
   void suspend() {
 #if !defined(_WIN32)
+    mouse_reporting(false);  // the shell gets its mouse back; the next frame asks again
     if (!o.plain) live.erase();
     term.suspend_self();
     if (!o.plain) live.invalidate();
@@ -1936,6 +1989,7 @@ struct session::impl {
     remember_model m;
     m.peer = rem.peer;
     m.selected = rem.selected;
+    if (rem.at == remember_ui::step::ask) m.hits = &hit_choice;
     switch (rem.at) {
       case remember_ui::step::ask: m.at = remember_model::step::ask; break;
       case remember_ui::step::show_check:
@@ -1967,7 +2021,7 @@ struct session::impl {
     const int cw = w() - 4;
     for (const auto& b : asked->body) body.push_back(lines(th, b, cw, tone::dim, 2));
     if (!body.empty()) body.push_back(ftxui::text(""));
-    body.push_back(choices(th, cw, asked->items, asked->selected));
+    body.push_back(choices(th, cw, asked->items, asked->selected, &hit_choice));
     const int n = static_cast<int>(asked->items.size());
     return ftxui::vbox({card(th, w(), asked->title, std::move(body), tone::accent),
                         hints_for({std::string(th.g->arrows) + " or 1" + std::string(th.g->dash) + std::to_string(n),
@@ -2030,6 +2084,7 @@ struct session::impl {
         pm.rows.push_back({std::string(c.name), std::string(c.args), std::string(c.description)});
       }
       pm.selected = palette_sel;
+      pm.hits = &hit_palette;
       // A path pasted or dropped begins with "/" too: then no command matches,
       // and Enter adds it.
       pm.empty = "No command matches " + fit(editor.text(), std::max(8, w() / 2), th) + glue() + "enter adds it as a path";
@@ -2067,10 +2122,15 @@ struct session::impl {
     m.show_pointer = focused() == focus::prompt && !palette_open();
     m.note = reach_note(v);
     m.max_rows = max_rows;
+    m.hits = &hit_nearby;
     return nearby(th, m, w());
   }
 
   Element document(int nearby_rows) {
+    // What is not drawn this time cannot be clicked.
+    hit_choice.clear();
+    hit_nearby.clear();
+    hit_palette.clear();
     Elements blocks;
     blocks.push_back(nearby_block(nearby_rows));
     if (!v.relaying_for.empty()) {
@@ -2099,6 +2159,7 @@ struct session::impl {
         m.check = v.in_internet ? v.in_code : std::string();
         m.save_to = home_short_of(v.destination);
         m.selected = offer_sel;
+        m.hits = &hit_choice;
         blocks.push_back(ftxui::vbox({offer_card(th, m, w()), hints_for(offer_hint(th))}));
         break;
       }
@@ -2108,6 +2169,7 @@ struct session::impl {
         m.check = v.out_check;
         m.relay = v.out_relay;
         m.selected = naming_sel;
+        m.hits = &hit_choice;
         blocks.push_back(ftxui::vbox(
             {naming_card(th, m, w()),
              hints_for({std::string(th.g->arrows) + " or 1" + std::string(th.g->dash) + "2", "enter to choose",
@@ -2140,6 +2202,133 @@ struct session::impl {
     }
     live.present(doc);
     mark_drawn();
+    sync_mouse();
+  }
+
+  // =========================================================================================
+  // the mouse
+
+  bool want_mouse() const {
+    if (o.plain || !o.mouse) return false;
+    switch (focused()) {
+      case focus::question:
+      case focus::offer:
+      case focus::naming: return true;
+      case focus::remember: return rem.at == remember_ui::step::ask;
+      case focus::prompt: return palette_open() || (rows_count() > 0 && files_ready());
+      case focus::field:
+      case focus::code_entry: return false;
+    }
+    return false;
+  }
+
+  void mouse_reporting(bool on) {
+    if (on == mouse_on) return;
+    mouse_on = on;
+    // Presses and releases (and the wheel), in SGR's form.
+    term.write(on ? "\x1B[?1000h\x1B[?1006h" : "\x1B[?1000l\x1B[?1006l");
+    region_top = -1;
+    cursor_pending = false;
+    held_click.reset();
+    asked_writes = live.writes() - 1;  // ask where the region is
+  }
+
+  // After a frame: the mouse on or off, and where the region now is: the
+  // terminal says where the cursor is (CSI 6n), up_from_top() rows below
+  // the region's first row.
+  void sync_mouse() {
+    mouse_reporting(want_mouse() && live.drawn());
+    if (mouse_on && live.writes() != asked_writes) {
+      asked_writes = live.writes();
+      cursor_pending = true;
+      term.write("\x1B[6n");
+    }
+  }
+
+  void on_cursor_report(const key_event& e) {
+    // An answer to a question asked before the last write is out of date:
+    // the next frame asks again.
+    if (!cursor_pending || live.writes() != asked_writes) return;
+    cursor_pending = false;
+    region_top = (e.y - 1) - live.up_from_top();
+    // A click that came while the answer was on its way.
+    if (held_click) {
+      const key_event c = *held_click;
+      held_click.reset();
+      on_mouse(c);
+    }
+  }
+
+  void on_mouse(const key_event& e) {
+    if (!mouse_on || e.motion) return;
+    if (e.button == kMouseWheelUp || e.button == kMouseWheelDown) {
+      // As the arrows: the choices, the palette, Nearby.
+      key_event k;
+      k.k = e.button == kMouseWheelUp ? key::up : key::down;
+      on_key(k);
+      return;
+    }
+    if (e.button != kMouseLeft || !e.press) return;
+    if (cursor_pending) {
+      held_click = e;  // where the region is comes first
+      return;
+    }
+    if (region_top < 0) return;
+    const int x = e.x - 1;
+    const int y = e.y - 1 - region_top + live.cut_rows();
+    switch (focused()) {
+      case focus::question:
+      case focus::offer:
+      case focus::naming:
+      case focus::remember: {
+        // The choice's number, as if typed: the card on screen alone takes
+        // it, and a card that asks for consent only once it has settled.
+        const int i = hit_at(hit_choice, x, y);
+        if (i < 0 || i > 8) return;
+        key_event k;
+        k.k = key::text;
+        k.text = std::string(1, static_cast<char>('1' + i));
+        on_key(k);
+        return;
+      }
+      case focus::prompt: {
+        if (palette_open()) {
+          if (const int i = hit_at(hit_palette, x, y); i >= 0) click_command(i);
+          return;
+        }
+        const int i = hit_at(hit_nearby, x, y);
+        if (i < 0) return;
+        // A click points at a computer; a second one on it sends, as Enter
+        // on an empty line does (the code is still typed, the other side
+        // still accepts).
+        if (i == sel_index && editor.empty()) {
+          send_selected();
+          return;
+        }
+        const auto r = computers();
+        if (i >= static_cast<int>(r.size())) return;
+        sel_index = i;
+        sel_id = r[static_cast<std::size_t>(i)].id;
+        return;
+      }
+      case focus::field:
+      case focus::code_entry: return;
+    }
+  }
+
+  // A palette row clicked: as Enter on it (a command that takes arguments
+  // waits for them at the prompt).
+  void click_command(int row) {
+    const auto hits = filter_commands(std::string_view(editor.text()).substr(1));
+    if (row < 0 || row >= static_cast<int>(hits.size())) return;
+    const command_info& c = commands()[hits[static_cast<std::size_t>(row)]];
+    palette_sel = 0;
+    if (c.args.empty()) {
+      editor.clear();
+      submit_prompt(std::string(c.name));
+      return;
+    }
+    editor.set(std::string(c.name) + " ");
   }
 
   // =========================================================================================
@@ -2541,6 +2730,22 @@ struct session::impl {
       if (transfer_running()) {
         say(tone::warning, "Closed during a transfer: it was cancelled.",
             {v.in == in_phase::receiving ? "What arrived whole stays here." : "The other computer is told."});
+      }
+    }
+    // A cursor report still on its way would land in the shell's input
+    // ("^[[12;1R"): it is read here, for a moment at most.
+    const bool report_due = cursor_pending;
+    mouse_reporting(false);
+    if (report_due) {
+      key_decoder tail;
+      std::vector<key_event> evs;
+      term_input in;
+      for (const std::int64_t until = now_ms() + 200; now_ms() < until;) {
+        term.wait(in, static_cast<int>(std::max<std::int64_t>(1, until - now_ms())));
+        evs.clear();
+        tail.feed(in.bytes, evs);
+        if (std::any_of(evs.begin(), evs.end(), [](const key_event& k) { return k.is(key::cursor); })) break;
+        if (in.quit || in.eof) break;
       }
     }
     if (!o.plain) live.erase();

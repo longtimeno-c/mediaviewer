@@ -33,6 +33,7 @@ constexpr std::array kCommands{
     command_info{"/handover", "on|off", "Continue over the internet if Wi-Fi drops", ""},
     command_info{"/relay", "on|off", "Use my other computers to relay", ""},
     command_info{"/relay-server", "", "Your own relay server (the key is typed, never an argument)", ""},
+    command_info{"/updates", "on|off", "Check once a day for a newer driftwire", ""},
     command_info{"/settings", "", "Show the current settings", ""},
     command_info{"/help", "", "Commands and keys", ""},
     command_info{"/quit", "", "Close Driftwire", "/exit"},

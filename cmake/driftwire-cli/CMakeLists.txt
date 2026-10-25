@@ -20,7 +20,8 @@
 # x64-linux / arm64-linux triplets, and libstdc++ / libgcc (-static-libstdc++
 # -static-libgcc, under the GCC Runtime Library Exception). libsecret and
 # libsystemd are opened at run time when they are there (secrets_linux.cpp,
-# power_linux.cpp), so the packages only recommend libsecret. The gate
+# power_linux.cpp), as libcurl is for the update check (update_net_linux.cpp),
+# so the packages only recommend libsecret and libcurl. The gate
 # (driftwire_needed) fails the build if anything but libc, libm or the dynamic
 # loader is NEEDED.
 #
@@ -154,6 +155,7 @@ if(MV_DRIFTWIRE_CLI_TESTS)
   add_executable(mv_driftwire_cli_tests
     "${MV_ROOT}/tests/test_driftwire_cli_ui.cpp"
     "${MV_ROOT}/tests/test_driftwire_cli.cpp"
+    "${MV_ROOT}/tests/test_driftwire_cli_update.cpp"
     "${MV_ROOT}/tests/test_driftwire_cli_e2e.cpp"
     "${MV_ROOT}/src/addons/driftwire/bt_none.cpp"
     "${MV_ROOT}/src/io/file_port.cpp"
@@ -258,7 +260,7 @@ set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE ${_deb_arch})
 set(CPACK_DEBIAN_PACKAGE_SECTION net)
 set(CPACK_DEBIAN_PACKAGE_PRIORITY optional)
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)  # dpkg-shlibdeps: libc6 (>= the newest symbol used)
-set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "libsecret-1-0")
+set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "libsecret-1-0, libcurl4t64 | libcurl4")
 set(CPACK_DEBIAN_COMPRESSION_TYPE xz)
 
 # driftwire-<version>-1.<x86_64|aarch64>.rpm
@@ -275,7 +277,7 @@ set(CPACK_RPM_COMPRESSION_TYPE xz)
 # No /usr/lib/.build-id links: they would clash with another package that
 # happens to carry the same binary, and nothing here ships debug symbols.
 # CPack (3.28) writes Suggests but not Recommends, so it goes in by hand.
-set(CPACK_RPM_SPEC_MORE_DEFINE "%define _build_id_links none\nRecommends: libsecret")
+set(CPACK_RPM_SPEC_MORE_DEFINE "%define _build_id_links none\nRecommends: libsecret\nRecommends: libcurl")
 # Folders the base system owns (Fedora's `filesystem`): listed as its own,
 # rpm would claim them. The completion and firewalld folders are left in:
 # their packages (zsh, bash-completion, firewalld) may not be installed, and

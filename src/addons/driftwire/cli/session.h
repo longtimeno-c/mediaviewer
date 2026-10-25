@@ -39,6 +39,7 @@ namespace mv::driftwire::cli {
 
 class terminal;
 class cli_host;
+class update_check;
 
 // A card that asks for consent (an offer, the check to compare, Remember)
 // takes an answer only once keys have stopped for this long with it on
@@ -55,6 +56,9 @@ struct session_options {
   bool plain = false;
   bool echo = true;      // plain mode: echo typed characters (the terminal is in raw mode)
   bool verbose = false;
+  // Clicks: mouse reporting while something on screen can be clicked
+  // (rich mode only; the program sets it when the terminal takes sequences).
+  bool mouse = false;
   std::string version;
   std::string data_dir;  // "" : none (shown in /settings)
   std::string name_note; // "this run" when --name was given
@@ -63,6 +67,10 @@ struct session_options {
   // the person chose a folder on purpose (the engine saves its whole view
   // whenever any setting changes).
   std::optional<std::string> restore_destination;
+  // The update check (update.h), or null with the reason there is none
+  // ("this copy was not put here by an installer").
+  update_check* updates = nullptr;
+  std::string no_updates_why = "this copy was not put here by an installer";
   // The tests and the test build: each machine-readable line ("ready",
   // "code <text>", "in connecting 123 456", "out done", "quit 0", ...).
   std::function<void(const std::string& line)> events;

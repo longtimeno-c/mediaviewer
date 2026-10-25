@@ -367,8 +367,12 @@ TEST_CASE("driftwire cli keys: a terminal without bracketed paste: lines in one 
 TEST_CASE("driftwire cli keys: reports, mouse and function keys are not keys", "[driftwire][cli]") {
   CHECK(decode("\x1B[15~q") == std::vector{plain(key::unknown), text_key("q")});        // F5
   CHECK(decode("\x1B[?1;2cq") == std::vector{plain(key::unknown), text_key("q")});      // a DA report
-  CHECK(decode("\x1B[<0;10;5Mq") == std::vector{plain(key::unknown), text_key("q")});   // a mouse click
   CHECK(decode("\x1BOPq") == std::vector{plain(key::unknown), text_key("q")});          // F1
+  // A mouse click is an event of its own (the session's clicks), never text.
+  const auto click = decode("\x1B[<0;10;5Mq");
+  REQUIRE(click.size() == 2);
+  CHECK(click[0].is(key::mouse));
+  CHECK(click[1] == text_key("q"));
 }
 
 // ==== the line editor =================================================================================

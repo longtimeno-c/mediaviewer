@@ -31,6 +31,7 @@ case $state in
       'receive:open Driftwire to receive'
       'code:open Driftwire with a code to receive from anywhere'
       'devices:list the devices this computer remembers'
+      'update:update driftwire the way it was installed'
       'help:print the usage'
     )
     _describe -t commands 'driftwire command' commands

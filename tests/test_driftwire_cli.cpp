@@ -26,8 +26,10 @@
 #include "addons/driftwire/cli/args.h"
 #include "addons/driftwire/cli/data_dir.h"
 #include "addons/driftwire/cli/host.h"
+#include "addons/driftwire/cli/keys.h"
 #include "addons/driftwire/cli/session.h"
 #include "addons/driftwire/cli/theme.h"
+#include "addons/driftwire/cli/update.h"
 #include "driftwire_cli_vt.h"
 #include "driftwire_fixture.h"
 
@@ -1002,6 +1004,213 @@ TEST_CASE("driftwire cli session: the commands, the palette, Tab, and what is sa
   ann.con.type("\x04");
   CHECK(ann.wait_exit() == 0);
   CHECK(ann.con.errors().empty());
+}
+
+TEST_CASE("driftwire cli session: a newer driftwire is said once, and /updates turns the check off",
+          "[driftwire][cli]") {
+  scratch_dir s("driftwire_cli_updates");
+  bus b;
+  fs::create_directories(s / "cli_data");
+  std::atomic<int> asked{0};
+  cli::update_check check;
+  cli_side ann(s / "ann_received", 120);
+  // The site answers after the session has opened: the notice comes when it does.
+  check.start(utf8(s / "cli_data"), "9.9.9", "https://example.invalid/driftwire", [&ann] { ann.con.wake(); },
+              [&](const std::string&) {
+                ++asked;
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                return cli::http_answer{200, R"({"version": "10.0.0"})", {}};
+              });
+  cli::session_options so = session_opts(s.root());
+  so.updates = &check;
+  so.data_dir = utf8(s / "cli_data");
+  ann.start(bus_opts(b, "Ann", s / "ann"), std::move(so));
+  REQUIRE(ann.shows("Driftwire  9.9.9"));
+  REQUIRE(ann.shows("driftwire 10.0.0 is available"));
+  REQUIRE(ann.shows("this is 9.9.9"));
+  REQUIRE(ann.shows("Run driftwire update to update it"));
+  CHECK(ann.event("update ") == "10.0.0");
+  CHECK(asked == 1);
+  type_line(ann, "/settings");
+  REQUIRE(ann.shows("Checks for updates: on"));
+  type_line(ann, "/updates off");
+  REQUIRE(ann.shows("Driftwire no longer checks for updates."));
+  CHECK_FALSE(cli::load_update_state(utf8(s / "cli_data")).check);
+  type_line(ann, "/updates");
+  REQUIRE(ann.shows("Check for a newer driftwire once a day: off"));
+  type_line(ann, "/quit");
+  CHECK(ann.wait_exit() == 0);
+  check.stop();
+  // Said once: the transcript has one notice.
+  const std::string t = ann.text();
+  CHECK(t.find("10.0.0 is available") == t.rfind("10.0.0 is available"));
+
+  // A copy with no check says why.
+  cli_side bea(s / "bea_received", 120);
+  cli::session_options none = session_opts(s.root());
+  none.no_updates_why = "this copy was not put here by an installer";
+  bea.start(bus_opts(b, "Bea", s / "bea"), std::move(none));
+  REQUIRE(bea.shows("Driftwire  9.9.9"));
+  type_line(bea, "/updates on");
+  REQUIRE(bea.shows("This copy does not check for updates."));
+  REQUIRE(bea.shows("this copy was not put here by an installer"));
+  type_line(bea, "/settings");
+  REQUIRE(bea.shows("Checks for updates: no (this copy was not put here by an installer)"));
+  type_line(bea, "/quit");
+  CHECK(bea.wait_exit() == 0);
+  CHECK_FALSE(has(bea.text(), "is available"));
+}
+
+TEST_CASE("driftwire cli session: clicks choose a computer, a command and an answer; the mouse only while they show",
+          "[driftwire][cli]") {
+  scratch_dir s("driftwire_cli_mouse");
+  bus b;
+  const fs::path f = s / "out" / "IMG_0002.HEIC";
+  write_bytes(f, pattern(200 * 1024 + 3, 5));
+  cli_side ann(s / "ann_received", 100), bea(s / "bea_received", 100), cy(s / "cy_received", 100);
+  const auto with_mouse = [&] {
+    cli::session_options so = session_opts(s.root());
+    so.mouse = true;
+    return so;
+  };
+  ann.start(bus_opts(b, "Ann", s / "ann"), with_mouse());
+  bea.start(bus_opts(b, "Bea", s / "bea"), with_mouse());
+  cy.start(bus_opts(b, "Cy", s / "cy"), with_mouse());
+  REQUIRE(ann.screen_shows("Bea"));
+  REQUIRE(ann.screen_shows("Cy"));
+  // Nothing to click yet (no files, no card): the terminal keeps its mouse,
+  // for selecting and scrolling as ever.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  CHECK_FALSE(ann.con.mouse_on());
+
+  type_line(ann, utf8(f));
+  REQUIRE(ann.screen_shows("1 file"));
+  REQUIRE(ann.con.wait_mouse(true));
+  CHECK(ann.con.cursor_asks() > 0);  // where the region is, asked after each frame
+
+  // The row a computer is on: the pointer's glyph before its name.
+  const auto pointed_at = [&](const std::string& name) {
+    return ann.con.wait_screen(
+        [&](const std::string& screen) {
+          for (std::size_t at = 0; at < screen.size();) {
+            const std::size_t nl = screen.find('\n', at);
+            const std::string row = screen.substr(at, nl - at);
+            if (has(row, " " + name) && has(row, test_theme().g->pointer) && !has(row, "Nearby")) return true;
+            if (nl == std::string::npos) break;
+            at = nl + 1;
+          }
+          return false;
+        },
+        2);
+  };
+  // One click points at a computer, and sends nothing.
+  const std::string other = pointed_at("Bea") ? "Cy" : "Bea";
+  REQUIRE(ann.con.click_on(other));
+  REQUIRE(pointed_at(other));
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  CHECK_FALSE(has(ann.con.screen(), "Type the code on"));
+  // The wheel moves it, as the arrows do.
+  ann.con.wheel(other == "Cy");
+  REQUIRE(pointed_at(other == "Cy" ? "Bea" : "Cy"));
+  ann.con.wheel(other != "Cy");
+  REQUIRE(pointed_at(other));
+  // A second click on it sends.
+  REQUIRE(ann.con.click_on(other));
+  REQUIRE(ann.screen_shows("Type the code on " + other + "'s screen"));
+  cli_side& to = other == "Cy" ? cy : bea;
+  const std::string code = code_on(to);
+  REQUIRE(code.size() == 6);
+  ann.con.type_keys(code);
+
+  // The offer: a click as it appears is no answer (as a key is not); one on
+  // the card once it has settled is.
+  REQUIRE(to.screen_shows("Ann wants to send you 1 file"));
+  REQUIRE(to.screen_shows("1. Accept"));
+  REQUIRE(to.con.wait_mouse(true));
+  REQUIRE(to.con.click_on("1. Accept"));
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  CHECK(to.screen_shows("1. Accept", 1));
+  settle();
+  REQUIRE(to.con.click_on("1. Accept"));
+  REQUIRE(to.shows("Received 1 file from Ann."));
+  REQUIRE(ann.shows("Sent 1 file to " + other + "."));
+  CHECK(files_in(s / (other == "Cy" ? "cy_received" : "bea_received")) == std::vector<std::string>{"IMG_0002.HEIC"});
+
+  // Remember: "Not now", clicked, on both.
+  REQUIRE(ann.screen_shows("Remember " + other + "?"));
+  REQUIRE(to.screen_shows("Remember Ann?"));
+  settle();
+  REQUIRE(ann.con.click_on("2. Not now"));
+  REQUIRE(to.con.click_on("2. Not now"));
+  REQUIRE(ann.con.wait_screen([&](const std::string& t) { return !has(t, "Remember " + other + "?"); }, 5));
+  REQUIRE(to.con.wait_screen([](const std::string& t) { return !has(t, "Remember Ann?"); }, 5));
+
+  // The palette: a click on a command runs it (or waits for its arguments).
+  ann.con.type_keys("/se");
+  REQUIRE(ann.screen_shows("/settings"));
+  REQUIRE(ann.con.wait_mouse(true));
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  REQUIRE(ann.con.click_on("/settings"));
+  REQUIRE(ann.shows("Over the internet: off"));
+  ann.con.type_keys("/sa");
+  REQUIRE(ann.screen_shows("/save-to DIR"));
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  REQUIRE(ann.con.click_on("/save-to"));
+  REQUIRE(ann.screen_shows("> /save-to "));
+
+  // Nothing ready, nothing to click: the mouse goes back to the terminal.
+  press_esc(ann);  // the line cleared
+  type_line(ann, "/clear");
+  REQUIRE(ann.con.wait_mouse(false));
+
+  for (cli_side* side : {&ann, &bea, &cy}) type_line(*side, "/quit");
+  CHECK(ann.wait_exit() == 0);
+  CHECK(bea.wait_exit() == 0);
+  CHECK(cy.wait_exit() == 0);
+  for (cli_side* side : {&ann, &bea, &cy}) {
+    CHECK_FALSE(side->con.mouse_on());  // given back on the way out
+    CHECK(side->con.errors().empty());
+  }
+}
+
+TEST_CASE("driftwire cli keys: mouse reports and the cursor position report", "[driftwire][cli]") {
+  cli::key_decoder d;
+  std::vector<cli::key_event> out;
+  d.feed("\x1B[<0;12;5M\x1B[<0;12;5m\x1B[<64;3;4M\x1B[<65;3;4M\x1B[<32;7;8M\x1B[<16;1;2M", out);
+  REQUIRE(out.size() == 6);
+  CHECK(out[0].is(cli::key::mouse));
+  CHECK(out[0].button == cli::kMouseLeft);
+  CHECK(out[0].x == 12);
+  CHECK(out[0].y == 5);
+  CHECK(out[0].press);
+  CHECK_FALSE(out[1].press);
+  CHECK(out[2].button == cli::kMouseWheelUp);
+  CHECK(out[3].button == cli::kMouseWheelDown);
+  CHECK(out[4].motion);
+  CHECK(out[5].ctrl);
+  CHECK(out[5].button == cli::kMouseLeft);
+  out.clear();
+  // Cut across two reads, as a terminal may send it.
+  d.feed("\x1B[<0;4", out);
+  CHECK(out.empty());
+  d.feed("0;9M", out);
+  REQUIRE(out.size() == 1);
+  CHECK(out[0].x == 40);
+  out.clear();
+  d.feed("\x1B[24;80R\x1B[?3;1R", out);
+  REQUIRE(out.size() == 2);
+  CHECK(out[0].is(cli::key::cursor));
+  CHECK(out[0].y == 24);
+  CHECK(out[0].x == 80);
+  CHECK(out[1].y == 3);
+  out.clear();
+  // Not a report: the keys as before.
+  d.feed("\x1B[A\x1B[<0;1M\x1B[1;5D", out);
+  REQUIRE(out.size() == 3);
+  CHECK(out[0].is(cli::key::up));
+  CHECK(out[1].is(cli::key::unknown));  // a mouse report missing its row
+  CHECK(out[2].is(cli::key::left));
+  CHECK(out[2].ctrl);
 }
 
 TEST_CASE("driftwire cli session: a short terminal shrinks Nearby first", "[driftwire][cli]") {

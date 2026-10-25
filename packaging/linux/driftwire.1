@@ -27,6 +27,8 @@ driftwire \- send files to a computer nearby, or anywhere with a code
 .br
 .B driftwire devices
 .br
+.B driftwire update
+.br
 .B driftwire
 .BR \-\-help " | " \-\-version
 .SH DESCRIPTION
@@ -82,6 +84,18 @@ ends, or when the code is wrong, runs out or is stopped.
 .TP
 .B driftwire devices
 Lists the devices this computer remembers, and exits. It needs no terminal.
+.TP
+.B driftwire update
+Updates driftwire the way it was installed, when its site has a newer version:
+on Linux it runs the site's
+.I install.sh
+again, which upgrades the package through apt, dnf or zypper (or the tarball);
+on macOS
+.BR "brew upgrade driftwire" ;
+on Windows the site's
+.I install.ps1
+again. It prints the command before running it, and exits 1 if that fails or
+if no installer put this copy here. It needs no terminal.
 .TP
 .BR \-\-help ", " \-h
 Prints the usage and exits.
@@ -240,6 +254,10 @@ relay. Each is off until turned on, and says what it means the first time.
 .B /relay\-server
 Your own relay server (its key is typed, never an argument).
 .TP
+.BR /updates " [" on | off ]
+Whether driftwire asks its site once a day for a newer version (on unless
+turned off; kept for next time).
+.TP
 .B /settings
 Show the current settings.
 .TP
@@ -284,6 +302,17 @@ brings it back.
 .PP
 The line keys of a shell work in the prompt: Home, End, Ctrl+A, Ctrl+E,
 Ctrl+U, Ctrl+K, Ctrl+W and Alt+Left/Right.
+.SS Mouse
+While something on screen can be clicked (an offer's choices, a question,
+Remember, the command list, or Nearby with files ready), a click chooses it
+and the wheel moves as Up and Down do. A click on a computer in Nearby points
+at it; a second click on it sends. A choice that says yes to someone else
+takes a click only once it has been on screen a moment, as it does a key.
+The rest of the time the terminal keeps its mouse: select and scroll as
+usual. While clicks are taken, most terminals select text with Shift held
+(Option in Terminal on macOS). With
+.B \-\-plain
+there is no mouse.
 .SH EXIT STATUS
 .TP
 .B 0
@@ -331,6 +360,15 @@ writes it); else
 .TP
 .B DBUS_SESSION_BUS_ADDRESS
 On Linux, the session bus, for the Secret Service.
+.TP
+.B DRIFTWIRE_NO_UPDATE_CHECK
+When set to anything, the session does not ask whether a newer driftwire is
+out.
+.TP
+.B DRIFTWIRE_REPO_URL
+Another copy of driftwire's site (https), for the update check and
+.BR "driftwire update" ,
+as the installers read it.
 .SH FILES
 .TP
 .I ${XDG_STATE_HOME:\-~/.local/state}/driftwire/
@@ -351,6 +389,10 @@ The DHT nodes last seen, when finding each other through the DHT is on.
 .TP
 .I .../driftwire/driftwire.json.lock
 Held while a session runs: one session per user at a time.
+.TP
+.I .../driftwire/driftwire_update.json
+Whether to check for a newer driftwire, when it last asked, and what its site
+said.
 .TP
 .I ~/Downloads
 Where received files go unless
@@ -424,6 +466,15 @@ to, sealed. The beacon carries a random id, the name other computers see
 (only while the session runs), a port and the protocol version: never a file
 name or anything about a file. What the session prints stays in the
 terminal.
+.PP
+Once a day, as a session opens, driftwire asks its site (GitHub Pages) for
+.I latest.json
+to say when a newer version is out. The request carries no cookie, identifier
+or version; the site sees the computer's address and the time.
+.B /updates off
+or
+.B DRIFTWIRE_NO_UPDATE_CHECK
+stops it. Without libcurl there is no check on Linux.
 .SH EXAMPLES
 .TP
 .B driftwire send ~/Pictures/trip/*.heic

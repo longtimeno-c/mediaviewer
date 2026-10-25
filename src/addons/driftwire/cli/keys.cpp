@@ -232,9 +232,61 @@ bool key_decoder::decode_escape(std::size_t& pos, std::vector<key_event>& out) {
   return true;
 }
 
+// Up to three numbers of a CSI's parameters ("12;40" -> 12, 40); how many there were.
+static int csi_numbers(std::string_view params, int (&n)[3]) {
+  int count = 0;
+  int value = 0;
+  bool any = false;
+  for (const char c : params) {
+    if (c >= '0' && c <= '9') {
+      value = std::min(value * 10 + (c - '0'), 100000);
+      any = true;
+    } else if (c == ';') {
+      if (count < 3) n[count] = any ? value : 0;
+      ++count;
+      value = 0;
+      any = false;
+    } else {
+      return -1;
+    }
+  }
+  if (count < 3) n[count] = any ? value : 0;
+  return count + 1;
+}
+
 void key_decoder::decode_csi(std::string_view params, char final, std::vector<key_event>& out, bool alt) {
+  // SGR mouse: CSI < button ; x ; y M (pressed, or moved) or m (released).
+  if (!params.empty() && params[0] == '<' && (final == 'M' || final == 'm')) {
+    int n[3] = {0, 0, 0};
+    if (csi_numbers(params.substr(1), n) == 3 && n[1] > 0 && n[2] > 0) {
+      key_event e = of(key::mouse);
+      e.motion = (n[0] & 32) != 0;
+      e.shift = (n[0] & 4) != 0;
+      e.alt = (n[0] & 8) != 0;
+      e.ctrl = (n[0] & 16) != 0;
+      e.button = n[0] & ~(4 | 8 | 16 | 32);
+      e.x = n[1];
+      e.y = n[2];
+      e.press = final == 'M';
+      out.push_back(e);
+      return;
+    }
+  }
+  // The cursor position report: CSI row ; col R (CSI ? row ; col R, DECXCPR).
+  // F3 with a modifier is CSI 1 ; m R as well; the command line uses no F3.
+  if (final == 'R') {
+    int n[3] = {0, 0, 0};
+    const std::string_view nums = !params.empty() && params[0] == '?' ? params.substr(1) : params;
+    if (csi_numbers(nums, n) == 2 && n[0] > 0 && n[1] > 0) {
+      key_event e = of(key::cursor);
+      e.y = n[0];
+      e.x = n[1];
+      out.push_back(e);
+      return;
+    }
+  }
   if (!params.empty() && (params[0] == '?' || params[0] == '<' || params[0] == '>' || params[0] == '=')) {
-    out.push_back(of(key::unknown));  // a report or a mouse event, not a key
+    out.push_back(of(key::unknown));  // another report, not a key
     return;
   }
   int p[2] = {0, 1};
