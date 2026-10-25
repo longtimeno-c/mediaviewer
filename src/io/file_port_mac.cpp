@@ -71,6 +71,10 @@ void sync_parent(const std::string& path) noexcept {
   ::close(fd);
 }
 
+file_id id_of(const struct stat& st) noexcept {
+  return {static_cast<std::uint64_t>(st.st_dev), 0, static_cast<std::uint64_t>(st.st_ino)};
+}
+
 // A macOS package (an app, a Photos library): one item in Finder, never
 // walked into. Linux has none: a folder named "x.app" there is a folder.
 bool is_package(std::string_view name) noexcept {
@@ -103,6 +107,17 @@ result<file_stat> stat_path(std::string_view utf8_path) {
   out.mtime_ns = static_cast<std::int64_t>(st.st_mtim.tv_sec) * 1000000000LL + st.st_mtim.tv_nsec;
 #endif
   return out;
+}
+
+result<file_id> identify(std::string_view utf8_path) {
+  detail::simulated_round_trip();
+  if (utf8_path.empty()) return err(status::invalid_arg);
+  const std::string path(utf8_path);
+  struct stat st{};
+  if (::lstat(path.c_str(), &st) != 0) return err(status::io);
+  if (S_ISLNK(st.st_mode)) return err(status::permission_denied);
+  if (!S_ISREG(st.st_mode)) return err(status::io);
+  return id_of(st);
 }
 
 expected make_directories(std::string_view utf8_dir) {
@@ -305,6 +320,35 @@ expected file_reader::open(std::string_view utf8_path, read_mode mode, bool /*co
   return {};
 }
 
+expected file_reader::open_same(std::string_view utf8_path, const file_id& expect) {
+  detail::simulated_round_trip();
+  close();
+  if (utf8_path.empty()) return err(status::invalid_arg);
+  const std::string path(utf8_path);
+  // O_NOFOLLOW: a link at the last part fails (ELOOP) rather than being read
+  // through; one in a folder above gives another file, which fstat shows.
+  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0) return err(errno == ELOOP ? status::permission_denied : status::io);
+  struct stat st{};
+  if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+    ::close(fd);
+    return err(status::io);
+  }
+  if (expect.known() && id_of(st) != expect) {
+    ::close(fd);
+    return err(status::corrupt);
+  }
+#if defined(__APPLE__)
+  (void)::fcntl(fd, F_RDAHEAD, 1);
+#else
+  (void)::posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
+  impl_ = std::make_unique<impl>();
+  impl_->fd = fd;
+  impl_->size = st.st_size > 0 ? static_cast<std::uint64_t>(st.st_size) : 0;
+  return {};
+}
+
 result<std::size_t> file_reader::read(std::span<std::uint8_t> into) {
   detail::simulated_round_trip();
   if (!impl_) return err(status::invalid_arg);
@@ -495,6 +539,7 @@ bool walk_dir(const std::string& dir, const std::string& rel, int depth, int max
     e.name_utf8 = std::string(name);
     e.size = st.st_size > 0 ? static_cast<std::uint64_t>(st.st_size) : 0;
     e.mtime_unix = mtime_of(st);
+    e.id = id_of(st);
 #ifdef SF_DATALESS
     // Evicted by iCloud Drive (or another File Provider): reading it would
     // download it (2026-10-05).

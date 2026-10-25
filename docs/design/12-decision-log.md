@@ -1862,6 +1862,29 @@ the DHT on); the code carries the address. TURN is left out:
 it is a server protocol of its own (allocations, permissions, STUN, credentials) for what the
 splice does in a few hundred lines.
 
+**The hop to a relay server is sealed; the own-computer relay carries only Driftwire, and never
+into its own networks (2026-10-22, #500).** Changes the relay server's protocol (`MVRL` 2 → 3),
+so a build from before and a server after refuse each other; nothing released spoke 2 (it was on
+`main` only), and codes are unchanged. Review (2026-10-19): the waiter's proof was a keyed hash of
+the token with no nonce, sent in the clear every minute with the token, so anyone on the receiver's
+path could replay it and turn the server into an open relay, read the token to burn the code or
+take the slot, answer for the server's name to collect both, or test guesses at a short key
+offline. Now a waiter runs CPace on the server key (one live guess per connection, nothing to
+test offline) and a sender names its token by a keyed hash and keys the handshake with it; then
+Noise NNpsk0 with the server first, so the client's answer is bound to the server's fresh key and
+the token goes only sealed. Noise NK was not chosen: the code would have to carry the server's
+public key, and the person types a key, not a public key. The server's words (registered,
+paired) are sealed; the receiver drops its old wait only once the new one is acknowledged, and a
+server that fails to prove the key is not asked again for that code. Caps count an IPv6 /64 or an
+IPv4 /24 as one source. The hop is not post-quantum: it guards a token that lives 10 minutes. The
+own-computer relay now refuses any network R is on (interface prefixes; IPv6 by its /56), its
+default gateway and its router's outside IPv4 as the DHT saw it, and Teredo, ORCHID, benchmarking
+and 6to4 relay ranges (`is_public`, so a sender skips them too); it forwards nothing until A's bytes
+start as an internet hello. The server key moved from the prefs file to the secret store (the file
+keeps the address); `mv-driftwire-relay` prints a key only when it made it and takes `--key-file`.
+Not done here (#500's low items): asking before an own relay shows R's address to a stranger.
+[28](28-driftwire.md#relays-472).
+
 **Tor: dropped for #472, on paper (2026-10-18).** C tor as a child process (BSD-3; OpenSSL,
 libevent) is the feasible way on both OSes: mature v3 onion services, ephemeral `ADD_ONION` with no
 key on disk, about 5–10 MB a platform, but an executable to sign in the add-on, tens of seconds to
@@ -1956,6 +1979,17 @@ same sender's next offer of the same files (path, size, time) resumes it; the re
 whole file before the rename is unchanged, so a wrong partial is refused, never kept as the
 file. A record goes after 7 days. Reopen only with a reason the read-back does not cover.
 [28](28-driftwire.md#resuming-a-receive-that-stopped-530).
+
+**An internet link takes only a rejoin while a transfer runs; the busy path makes room (2026-10-22,
+#496).** The way in and a code's listener ran a nearby XX handshake and sent `ident` (id and
+machine name) to anyone who connected while a transfer ran, and four idle connections (the
+busy path's whole budget, 8 s each) kept a Wi-Fi rescue out. Now a non-rejoin hello over the
+internet is closed before any handshake; internet links get their own pool of 8 with a 2 s hello
+and at most 4 per source (an address or IPv6 /64); a full pool closes a random link still in its
+hello rather than refusing the new one (nearby keeps its 4 and its 8 s); rejoin tags are spent
+once (256 kept per session); only adopting a rejoin is serialised. A rejoin from behind the same
+NAT as someone flooding the way in can still lose a race, with odds that fall with the flood's
+size; the sender tries again until `kRejoinMs`. [28](28-driftwire.md#the-session-protocol-2-472).
 
 **Transfers keep the machine awake (2026-10-21, #530).** A power request (Windows) or an IOKit
 assertion (Mac) against idle sleep, from the accept to the end. Not against a closed lid.

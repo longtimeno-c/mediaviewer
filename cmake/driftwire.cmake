@@ -71,6 +71,7 @@ add_library(mv_driftwire_engine STATIC
   ${_S}/cpace.cpp ${_S}/cpace.h
   ${_S}/channel.cpp ${_S}/channel.h
   ${_S}/transfer.cpp ${_S}/transfer.h
+  ${_S}/stages.cpp ${_S}/stages.h
   ${_S}/presence.cpp ${_S}/presence.h
   ${_S}/bt_pipe.cpp ${_S}/bt_pipe.h
   ${_S}/net.h ${_S}/net_address.cpp
@@ -160,6 +161,14 @@ endif()
 add_executable(mv_driftwire_relay "${MV_SOURCE_ROOT}/tools/driftwire-relay/main.cpp")
 target_link_libraries(mv_driftwire_relay PRIVATE mv_driftwire_engine)
 set_target_properties(mv_driftwire_relay PROPERTIES OUTPUT_NAME "mv-driftwire-relay")
+
+# #540 step 1: a transfer between two real machines with no app
+# (tools/driftwire-bench), the real handshake and transfer.h, timed per
+# stage. Built beside the add-on, never shipped. The file port is the core's
+# io, as the tests link it.
+add_executable(mv_driftwire_bench "${MV_SOURCE_ROOT}/tools/driftwire-bench/main.cpp")
+target_link_libraries(mv_driftwire_bench PRIVATE mv_driftwire_engine mv_io)
+set_target_properties(mv_driftwire_bench PROPERTIES OUTPUT_NAME "mv-driftwire-bench")
 
 # The engine over loopback TCP and an in-memory discovery bus, and the add-on
 # itself through the real loader (tests/test_driftwire.cpp,

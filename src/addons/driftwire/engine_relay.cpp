@@ -175,8 +175,10 @@ std::unique_ptr<link> engine::reach_through_own(const std::vector<net::endpoint>
 bool engine::maybe_relay(const std::shared_ptr<channel>& ch, const known::device& from, const message& first) {
   if (first.type != msg::relay) return false;
   bool allowed = false;
+  relay::fence where = relay::local_fence(opts_.internet_loopback);  // a worker's: R's own networks (#500)
   {
     std::lock_guard lock(m_);
+    where.outside.insert(where.outside.end(), outside_seen_.begin(), outside_seen_.end());
     // Marked as the person's own here, now (not only when the meeting began).
     const bool own = std::any_of(devices_.begin(), devices_.end(),
                                  [&](const known::device& d) { return d.key == from.key && d.own; });
@@ -189,6 +191,7 @@ bool engine::maybe_relay(const std::shared_ptr<channel>& ch, const known::device
   if (allowed) post();
   relay::serve_options o;
   o.allow_loopback = opts_.internet_loopback;
+  o.where = std::move(where);
   o.connect = opts_.connect_internet;
   o.lim = opts_.relay_limits;
   o.stopped = [this] { return cancel_.load() || stopping_.load(); };
@@ -210,7 +213,7 @@ bool engine::maybe_relay(const std::shared_ptr<channel>& ch, const known::device
   } guard{*this, ch};
   try {
     const auto r = relay::serve(ch, first, allowed, o);
-    guard.served = r.said == relay::answer::ok;
+    guard.served = r.said == relay::answer::ok && r.forwarded;
   } catch (...) {
     host_.log(1, "driftwire: a relay ended with an error");
   }

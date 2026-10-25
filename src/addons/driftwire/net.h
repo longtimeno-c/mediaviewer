@@ -48,7 +48,8 @@ struct address {
 [[nodiscard]] std::string address_text(const address& a);
 // Reachable from the internet if nothing in between blocks it: not loopback,
 // private (RFC 1918), shared (CGNAT, RFC 6598), link-local, unique local
-// (fc00::/7), multicast, documentation or unspecified.
+// (fc00::/7), multicast, documentation or unspecified, nor a tunnel relay or
+// identifier range (6to4, Teredo, ORCHID, 192.88.99/24; #500).
 [[nodiscard]] bool is_public(const address& a) noexcept;
 // An IPv4 address of a private network (RFC 1918: 10/8, 172.16/12, 192.168/16).
 [[nodiscard]] bool is_private_v4(const address& a) noexcept;

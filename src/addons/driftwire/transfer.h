@@ -31,12 +31,15 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "addons/driftwire/channel.h"
 #include "addons/driftwire/net.h"
+#include "addons/driftwire/stages.h"
+#include "io/file_port.h"
 
 namespace mv::driftwire {
 
@@ -45,6 +48,8 @@ struct outgoing_file {
   std::string rel;   // what the receiver sees: "IMG_1.JPG", "Trip/IMG_1.JPG"
   std::uint64_t size = 0;
   std::int64_t mtime = 0;
+  // #498: the file the walk or the pick saw; the send reads only that file.
+  io::file_id id;
 };
 
 struct incoming_file {
@@ -141,6 +146,9 @@ struct hooks {
   // #530: set with `cancel` when MediaViewer quits: that stop is kept to
   // resume as a failure is, not dropped as a person's cancel.
   const std::atomic<bool>* quitting = nullptr;
+  // #540, the benches: where this side's time goes (stages.h), the
+  // channel's seal, send and open included. Null: nothing is timed.
+  stage_times* stages = nullptr;
 };
 
 enum class outcome : std::uint8_t {
@@ -176,6 +184,12 @@ struct transfer_result {
 [[nodiscard]] std::string offer_json(const std::vector<outgoing_file>& files, bool handover = false,
                                      bool dht = false,
                                      const std::optional<std::array<std::uint8_t, 32>>& identity = std::nullopt);
+// #498: the offer as it is sent: offer_json alone when it fits one message;
+// else a first msg::offer with "parts" and the rest of the files in
+// msg::offer_more, each within a message. Empty past kMaxOfferParts.
+[[nodiscard]] std::vector<std::string> offer_messages(
+    const std::vector<outgoing_file>& files, bool handover = false, bool dht = false,
+    const std::optional<std::array<std::uint8_t, 32>>& identity = std::nullopt);
 // After the channel is open: offers, waits for the answer, calls
 // `on_accepted`, then sends. The cancel flag is polled between chunks; the
 // engine also shuts the channel down to end a wait.
@@ -187,7 +201,11 @@ struct transfer_result {
 // add up or a malformed message refuses it whole (status::corrupt).
 // Waits at most `timeout_ms` (the sender's person confirming the code first).
 [[nodiscard]] result<incoming_offer> read_offer(channel& ch, int timeout_ms);
-[[nodiscard]] result<incoming_offer> parse_offer(std::string_view json);
+// #498: the offer whose first message (msg::offer) is `first`, already read:
+// the rest of its parts (msg::offer_more) are read from `ch`.
+[[nodiscard]] result<incoming_offer> read_offer_after(channel& ch, std::string_view first, int timeout_ms);
+// `more`: the bodies of the msg::offer_more that followed, in order.
+[[nodiscard]] result<incoming_offer> parse_offer(std::string_view json, std::span<const std::string> more = {});
 // #472 PR 5, the receiver: where it can be reached from the internet, to a
 // sender whose offer had "handover". Any thread (the channel's sends are).
 // `dht`: this side also waits on the DHT if both sides move (the offer had

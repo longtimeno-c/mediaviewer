@@ -640,7 +640,12 @@ Then, on either protocol:
    a machine that only claimed the peer's id, or one in the middle, shows the receiver no code or
    another one, so what the person types cannot match.
 3. The sender's **offer**: the count, the total, and each file's relative path and size. No hash
-   up front: the sender would have to read every file twice before the first byte moved.
+   up front: the sender would have to read every file twice before the first byte moved. An offer
+   that does not fit one message (a folder of more than a few thousand files) says `"parts"` and
+   sends the rest of its files in `offer_more` messages straight after (#498), at most 128 in all
+   (some 33 MB of offer; with paths of ~330 bytes that is `kMaxFiles`, 100 000). One that fits is
+   sent exactly as before; a receiver before #498 ends the link on `offer_more`, as it ended it on
+   the oversized offer.
 4. The receiver answers `accept`, or `decline` with `declined`, `busy` or `no_room`. Closing the
    window, or three minutes without an answer, declines; a receiver already in a transfer answers
    `busy` straight after the handshake.
@@ -683,6 +688,25 @@ send or a receive waits through a rejoin.
   `resume_at`s) cannot leave the DHT handover's keys, which mix in the rejoin count, out of step.
   A message that came
   twice (sent on the old link, and again after the rejoin) is dropped by its sequence number.
+- **While a transfer runs, other links (#496).** Every link that reaches this side then
+  (`engine::route_busy`) is the transfer's rejoin or is turned away, and a stranger cannot keep
+  the rejoin out:
+  - **Over the internet, a rejoin or nothing.** On a code's listener, the way in or any other
+    internet link, a hello that is not a rejoin (a nearby `N` in protocol 1, 2 or 3, a code's `I`)
+    is closed before any handshake: no message 2, no `ident`, not even `busy`. Only a nearby link
+    is answered `busy` after its handshake, as before.
+  - **Each tag opens once.** The receiver remembers the tags of the rejoins it has taken (the last
+    256 per session; only the peer can make one), so a recorded rejoin played again is closed
+    before a byte is read or written. Only adopting the new link is one at a time: a rejoin that
+    never proves `resume_at` (a bearer that died under it) does not hold up the next, and of two
+    that both prove, the later rejoin count wins.
+  - **Room for the rescue.** Links in their hello have a short wait over the internet (2 s; a
+    sender writes it as it connects), and their own pool there (8; nearby keeps its 4). Each
+    source (an address, or an IPv6 /64) holds at most 4 of them. When a pool or a source's share
+    is full, a new link closes a random one still in its hello, of that source or of the source
+    with the most, so idle connections cannot fill the slots a rejoin needs; past its hello a
+    link is never closed to make room. The way in and a code's listener say where each link came
+    from (`source_of`, `internet.h`).
   Messages are chunk-sized, so this is the issue's "resume at a chunk boundary": the receiver
   keeps its open `.mvtmp`, its BLAKE3 state and its verifier exactly as they were, and nothing
   that arrived is sent again. Every file is still verified end to end.
@@ -807,7 +831,10 @@ shows: no listener, no router mapping, no socket. (`internet.*`, `invite.*`, `ma
   `Noise_XXhfs+psk0_25519+MLKEM768_ChaChaPoly_BLAKE2b` keyed by the CPace key, with the CPace
   transcript in the prologue: a wrong code fails at the receiver's first read, before it says
   anything of itself (not even its static key), and a machine in the middle gets one live guess
-  per code and nothing to test guesses against offline.
+  per code and nothing to test guesses against offline. A hello that is not a code's on these
+  listeners (a nearby one) is closed before any handshake, with or without a transfer running
+  (#496, [above](#the-session-protocol-2-472)): nothing of this machine goes to whoever found the
+  port.
 - **Both confirm the other's name before any byte moves.** The sender sees "Connected to Bea
   (new device)" and a six-digit **check** (from the whole handshake hash), and clicks **Send to
   Bea**; the receiver sees "Ann (new device) wants to send you files" with the same check, and
@@ -1006,7 +1033,9 @@ need it on (and "Send and receive over the internet").
   `may_reach`), so a receiver cannot make it connect to loopback or its network on every rescue.
 - **The move.** When the link is suspect or drops, the mover races the receiver's places beside
   Wi-Fi and Bluetooth; a TCP connection that reaches the way in is a rejoin (`NNhfs+psk0` and
-  `resume_at`, as any), and the window says "over the internet". When the peer is heard on Wi-Fi
+  `resume_at`, as any), and the window says "over the internet". Anything else that reaches the
+  way in is closed unanswered, and idle connections there cannot keep the rejoin out (#496,
+  [The session](#the-session-protocol-2-472)). When the peer is heard on Wi-Fi
   again, the send moves back there (make before break). On loopback in the tests the move takes
   10–14 ms after the cut.
 - When the transfer ends the listener closes and every mapping is removed. With the toggle off on
@@ -1169,10 +1198,15 @@ link. The tests check that no 32-byte run of the file passes through either rela
   checked; up to 45 s each, given up as soon as the round is decided), and over that sealed channel
   sends `relay` (20) with the code's places. R serves only if its toggle is on and it marks A as
   its own too, now: then it connects onward to those places and only those, and only to public
-  addresses that are not its own and not in an IPv6 /64 it has an address in (R's own public IPv4
-  reached through its router is not known to R; what the router forwards there is open to the
-  whole internet anyway), answers `relay_answer` (21), and from then on the bytes of A's link to B
-  travel as `relay_data` (22), sealed again between A and R. A runs the internet handshake with B
+  addresses outside its own networks (#500, `relay::fence`): never one of its addresses, nothing
+  on a network an interface of its is on (a LAN of public IPv4 addresses: a university, an
+  office), nothing in an IPv6 /56 it has an address in (the /64s a router delegates beside R's:
+  guest, IoT), never its default gateway or its router's outside IPv4 as the DHT last saw it
+  (routers answer admin pages, UPnP and DNS there from inside), and never Teredo, ORCHID,
+  benchmarking or 6to4 relay ranges. It answers `relay_answer` (21), and from then on the bytes of
+  A's link to B travel as `relay_data` (22), sealed again between A and R; R forwards nothing until
+  they start as an internet hello (`MVSP`, 2, `I` and its 48 bytes), so it is a pipe for a
+  MediaViewer's handshake, not any TCP from R's address. A runs the internet handshake with B
   through it; B sees R's address as the sender's, and both see the same check. One relay at a time
   (it is R's one transfer; while R is busy it meets nobody, so A's meeting runs out rather than
   hearing "busy"); 256 GiB each way at most, no rate cap (it is the person's own line); 120 s of
@@ -1184,26 +1218,45 @@ link. The tests check that no 32-byte run of the file passes through either rela
   not relayed: R would need the code's DHT meeting. R reads a remembered sender's first message
   within 20 s (`kSilenceMs`): the request or the offer comes at once, nothing waits on a person.
 - **Through your own relay server** (option 10; `splice.*`, `tools/driftwire-relay`). An advanced
-  field, **Relay (your own server)**, `<address or name>:<port>#<key>`; the server prints the key
-  (or takes `--key`). The name is the one Driftwire resolves, because the person typed it; the
-  code carries the address, never the key. With it set, each code also registers at that server as
-  a **waiter** under a fresh random 16-byte token sealed in the code with its places, proving the
-  key (keyed BLAKE2b over the token); this runs beside the router's mapping, and a server slower
-  than 3 s is left out of that code and the window says so. A code with a relay is about 115
-  characters, and only a build with relays opens it. A sender races the code's places as before
-  and the relay 1.5 s later, so a direct path that works wins; it says the token only. The server
-  pairs a sender with the waiter under its token and copies bytes between them; it relays only for
-  key holders' codes, so it is not an open relay. A sender with no waiter is closed at once
-  (senders never wait); a waiter registering again under its token replaces its old wait, which
-  the receiver does every 60 s, new connection before closing the old, ahead of NATs that drop an
-  idle TCP connection. Anything that is not a hello, a waiter whose proof is wrong, or a byte
-  before the pair, is closed. The receiver hands a paired link on only once the sender has spoken,
-  so a sender that lost its race to a direct place costs nothing. The token is not the code's
-  secret and says nothing about it; the server learns two addresses, the time and the size, and
-  prints counts only. Caps: 16 hellos being read at once and 4 from one address; 64 waiters, 4 from
-  one address; 8 splices; per splice 64 GiB each way, an optional rate as a token bucket (a quarter
-  second of burst), 120 s idle. The program is about 300 KB (Mac, Release), the splice alone,
-  portable (D9), no state on disk.
+  field, **Relay (your own server)**, `<address or name>:<port>#<key>`; the server prints a key it
+  made, once (or takes `--key-file`, `MV_RELAY_KEY` or `--key`; a key it was given is never
+  printed, and one under 20 characters is warned about). Driftwire keeps the key in the secret
+  store and only the address in its settings file (#500). The name is the one Driftwire resolves,
+  because the person typed it; the code carries the address, never the key. With it set, each
+  code also registers at that server as a **waiter** under a fresh random 16-byte token sealed in
+  the code with its places; this runs beside the router's mapping, and a server slower than 3 s is
+  left out of that code and the window says so. A code with a relay is about 115 characters, and
+  only a build with relays opens it. A sender races the code's places as before and the relay
+  1.5 s later, so a direct path that works wins. The server pairs a sender with the waiter under
+  its token and copies bytes between them; it relays only for key holders' codes, so it is not an
+  open relay.
+
+  **The hop to the server is sealed** (protocol 3, #500). Every connection runs a handshake before
+  it says anything that matters, so neither the token nor anything about the key is ever on the
+  wire in the clear, and nothing recorded opens again. A waiter says `MVRL`, 3, its role, a random
+  session id and its CPace message on the server key; the server answers with its own, so a
+  machine on the path (or one answering for the server's name) gets one live guess at the key per
+  connection and nothing to test guesses against offline, however short the key. A sender says
+  its token's id (a keyed BLAKE2b of the token, which says nothing of it); a server with no waiter
+  under that id closes it at once (senders never wait). Then Noise NNpsk0, the server first, keyed
+  by the CPace key or by a key from the token, with everything said before it in the prologue:
+  the server's message opens only under the same key, and the client's answer, made against the
+  server's fresh ephemeral key, opens only on that connection. A waiter's answer carries its
+  token, sealed. The server's words are sealed too: **registered** to a waiter once it waits, and
+  **paired** to both; after that the splice copies bytes as they are (the two MediaViewers' own
+  handshake is end to end). A server that does not prove the key is not asked again for that code
+  (the window says to check the key). A waiter registering again under its token replaces its old
+  wait, which the receiver does every 60 s, ahead of NATs that drop an idle TCP connection: it
+  closes the old connection only once the server has said the new one waits. Anything that is not
+  a hello, a handshake that does not open, or a byte before the pair, is closed. The receiver
+  hands a paired link on only once the sender has spoken, so a sender that lost its race to a
+  direct place costs nothing. The hop is not post-quantum (it guards a token that lives 10
+  minutes). The token is not the code's secret and says nothing about it; the server learns two
+  addresses, the time and the size, and prints counts only. Caps: 16 handshakes at once and 4 from
+  one source; 64 waiters, 4 from one source (a source is an IPv6 /64 or an IPv4 /24, #500); 8
+  splices; per splice 64 GiB each way, an optional rate as a token bucket (a quarter second of
+  burst), 120 s idle. The program is about 300 KB (Mac, Release), the splice alone, portable (D9),
+  no state on disk.
 - **TURN is left out**: allocations, permissions, STUN's message format and long-term credentials
   are a server of their own for the same job the splice does in a few hundred lines.
 - **Tor** (option 11) was evaluated, not built, and dropped for now
@@ -1220,6 +1273,15 @@ link. The tests check that no 32-byte run of the file passes through either rela
   shape under its own name, without housekeeping (`@eaDir`, `#recycle`, `$RECYCLE.BIN`, `System
   Volume Information`, `lost+found`, `__MACOSX`, `Thumbs.db`, `desktop.ini`, dot files, our own
   `.mvtmp`).
+- **Only the file picked is read** (#498): the pick and the walk note each file's identity (its
+  volume and file number: `st_dev`/`st_ino` from the walk's own `lstat` on the Mac; on Windows,
+  whose listing has none, `io::identify` opens each for its attributes only, never following a
+  link and never downloading a cloud placeholder). The send opens it with `file_reader::open_same`:
+  `O_NOFOLLOW` (on Windows a link or junction at the last part is refused before the read handle
+  opens), then the identity of what opened must be the one noted. A file swapped for a link (to
+  `~/.ssh/…`, say) or for another file, or reached through a folder swapped for a link or
+  junction, is `file_skip`, never sent. A picked file that is itself a link is not offered, as a
+  walk never offered one.
 - **Where it lands**: the system **Downloads** folder, as AirDrop (`FOLDERID_Downloads` on Windows,
   `~/Downloads` on the Mac; `net::downloads_folder`, #442), made on Accept if it is missing. A sent
   folder keeps its own name inside it. **Save to** picks another folder, and that choice is kept
@@ -1348,6 +1410,29 @@ Mac M-series, Release, warm cache, load average ~4.6: 1 GiB 395.8–397.6 → 39
 slower on 1 GiB: the receiver's wait for its `done` to be acknowledged read in 100 ms slices; it
 now returns on the acknowledgement. Kept messages are sealed where they lie and their buffers
 reused (one copy a chunk, as protocol 1 had).
+
+**Where the time goes (#540 step 1, 2026-10-22).** A transfer can time each of its stages on each
+side (`stages.h`): the sender's read, hash, seal (the copy into the replay and the AEAD), send
+and any wait for the replay's room; the receiver's receive, open, write, hash, a wait for room
+among the files being verified, flush, read-back, its hash and the rename. Each stage adds its
+thread time and its bytes, so `bytes / time` is what one thread of that stage sustains: a stage
+far above the transfer's rate has headroom, one near it is the limit. `recv`, `wait_room` and
+`verify_wait` are waits, not work. The app gives no timers (`hooks::stages` null), and a stage
+without one costs a branch. Two harnesses print it: `[.driftwire-bench]` (one line per side after
+each case) and `mv-driftwire-bench` (`tools/driftwire-bench`), the real handshake of a direct
+code (CPace on a random secret the receiver prints, then XXhfs+psk0) and `transfer.h`, between
+two processes or two machines, one JSON line per side with MB/s, files/s, CPU, time to the first
+byte, the stages, the busiest stage that is work, the receiver's disk measured first (write,
+uncached read-back, and the ceiling both together allow: past 90 % of it the line says
+`disk_bound`), and on the sender iperf3's rate on the same path and the share of it the transfer
+got. Results go to `docs/perf/driftwire-lan.jsonl`. The first numbers (Windows, loopback, two
+processes on one laptop SSD: 1 GiB 264–299 MB/s, 500 × 2 MiB 113–124, 5,000 × 200 KiB 29–31)
+put the cost in the receiver's durability work on many files, not in the network or the seal:
+with 5,000 files the link loop waits for one of the two verifiers 67 % of the time (each file
+~3.5 ms of flush, ~1.3 ms of read-back, ~1 ms of rename). One big file is flushed and read back
+only after its last byte, serially; its flush varied from 0.9 to 3.5 s between runs on the same
+disk. Seal and open ran at ~900–1,000 MB/s a thread, the receiver's open its busiest stage on
+1 GiB. No two machines are measured yet.
 
 ## Threads
 
@@ -1498,6 +1583,11 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices, behind hard NATs too, and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py`; the command line's `tests/test_driftwire_cli_ui.cpp` (keys, the line editor, paths, completion, render goldens at 80 and 40 columns, the live region against a fake terminal), `tests/test_driftwire_cli.cpp` (arguments, the host, sessions over two engines on the fixture bus, the program refusing a pipe), `tests/test_driftwire_cli_e2e.cpp` (two test programs in ptys, POSIX), `tests/driftwire_cli_vt.h` (`"[cli]"`) |
 
 ## Not built
+
+- **#500's ask before an own relay** (low): A's own computer relays without asking, so a stranger
+  who made the code, by stalling direct connections, learns R's home address. The fix is a
+  question in both hosts' windows ("Try through R? The other side will see R's address"); not
+  built in #500's PR.
 
 - Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6 on the LAN.
 - Bluetooth on Linux: there is no BlueZ bearer (`bt_none.cpp`), so Linux sends over Wi-Fi and the

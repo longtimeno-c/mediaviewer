@@ -89,6 +89,51 @@ bool may_reach(const net::endpoint& to, bool allow_loopback, std::span<const net
   return ip->v6 ? std::memcmp(ip->bytes.data(), kLoop6, 16) == 0 : ip->bytes[0] == 127;
 }
 
+namespace {
+
+// Whether the first `bits` of `a` and `b` agree.
+bool same_prefix(const net::address& a, const net::address& b, int bits) noexcept {
+  const int whole = bits / 8;
+  if (std::memcmp(a.bytes.data(), b.bytes.data(), static_cast<std::size_t>(whole)) != 0) return false;
+  const int rest = bits % 8;
+  if (rest == 0) return true;
+  const auto mask = static_cast<std::uint8_t>(0xff << (8 - rest));
+  return (a.bytes[whole] & mask) == (b.bytes[whole] & mask);
+}
+
+bool is_loopback(const net::address& ip) noexcept {
+  static constexpr std::uint8_t kLoop6[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+  return ip.v6 ? std::memcmp(ip.bytes.data(), kLoop6, 16) == 0 : ip.bytes[0] == 127;
+}
+
+}  // namespace
+
+fence local_fence(bool allow_loopback) {
+  fence f;
+  f.own = net::local_addresses();
+  f.nets = net::local_subnets();
+  if (const auto gw = net::default_gateway()) f.outside.push_back(*gw);
+  f.allow_loopback = allow_loopback;
+  return f;
+}
+
+bool may_relay_to(const net::endpoint& to, const fence& f) noexcept {
+  const auto ip = net::parse_address(to.address);
+  if (!ip || to.port == 0) return false;
+  if (is_loopback(*ip)) return f.allow_loopback;
+  if (!net::is_public(*ip)) return false;
+  if (net::on_link(*ip, f.nets)) return false;
+  const int site = std::clamp(f.site6_bits, 48, 64);
+  for (const auto& mine : f.own) {
+    if (mine.v6 != ip->v6) continue;
+    if (ip->v6 ? same_prefix(mine, *ip, site) : mine == *ip) return false;
+  }
+  for (const auto& out : f.outside) {
+    if (out == *ip) return false;
+  }
+  return true;
+}
+
 void add_relay(link_race& race, const invite::relay_place& r, const connect_fn& connect,
                std::function<bool()> stopped) {
   race.add(
@@ -173,9 +218,9 @@ served serve(const std::shared_ptr<channel>& ch, const message& request, bool al
   }
   std::vector<net::endpoint> to;
   if (request.type == msg::relay) {
-    const std::vector<net::address> own = o.own ? *o.own : net::local_addresses();
+    const fence where = o.where ? *o.where : local_fence(o.allow_loopback);
     for (const auto& p : parse_request(request.text())) {
-      if (may_reach(p, o.allow_loopback, own)) to.push_back(p);
+      if (may_relay_to(p, where)) to.push_back(p);
     }
   }
   if (to.empty()) {
@@ -201,6 +246,15 @@ served serve(const std::shared_ptr<channel>& ch, const message& request, bool al
     return out;
   }
   channel_link from_a(ch, nullptr, "relay");
+  // #500: nothing goes onward until A's bytes start as Driftwire's internet
+  // hello does: R carries a MediaViewer's handshake, not whatever A says.
+  std::array<std::uint8_t, kInternetHelloBytes> hello{};
+  if (!read_exact(from_a, hello, o.hello_ms) || !is_internet_hello(hello) || !onward->write_all(hello)) {
+    onward->shutdown();
+    ch->shutdown();
+    return out;
+  }
+  out.forwarded = true;
   out.spliced = splice(from_a, *onward, o.lim, o.stopped);
   onward->shutdown();
   return out;
