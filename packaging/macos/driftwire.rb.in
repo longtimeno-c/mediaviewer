@@ -17,6 +17,9 @@ class Driftwire < Formula
   def install
     bin.install "driftwire"
     man1.install "driftwire.1"
+    # The notices of what is linked in (libsodium, BLAKE3, FTXUI, the BIP-39
+    # list), where driftwire.1's COPYRIGHT section points.
+    prefix.install "COPYRIGHT.txt"
   end
 
   def caveats
