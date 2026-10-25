@@ -5,5 +5,6 @@
   "license": "GPL-3.0-or-later",
   "$comment": "The headless portable core build (cmake/portable): Milestone G's io ports, add-on host and Import engine, tested on Linux CI. Keep the baseline in sync with the root manifest.",
   "builtin-baseline": "04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4",
-  "dependencies": ["blake3", "libsodium", "sqlite3", "catch2"]
+  "$comment-ftxui": "ftxui (MIT): the driftwire command line's terminal UI (cmake/driftwire.cmake mv_driftwire_cli_core).",
+  "dependencies": ["blake3", "libsodium", "sqlite3", "catch2", "ftxui"]
 }

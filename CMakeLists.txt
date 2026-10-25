@@ -41,7 +41,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.37
+  VERSION 0.1.38
   DESCRIPTION "Media viewer for a real camera dump"
   LANGUAGES CXX)
 

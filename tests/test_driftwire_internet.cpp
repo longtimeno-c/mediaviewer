@@ -207,7 +207,7 @@ struct upnp_router {
     if (chunked) {
       out += "Transfer-Encoding: chunked\r\n\r\n";
       const std::size_t half = body.size() / 2;
-      char line[16];
+      char line[24];  // any size_t in hex, CRLF
       std::snprintf(line, sizeof line, "%zx\r\n", half);
       out += line + body.substr(0, half) + "\r\n";
       std::snprintf(line, sizeof line, "%zx\r\n", body.size() - half);

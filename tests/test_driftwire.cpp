@@ -8,12 +8,19 @@
 // delivers the files with matching bytes, Decline and a third client receive
 // nothing, Cancel mid-way leaves nothing partial, a machine in the middle
 // shows two different codes, and no sender path climbs out of the folder.
+#include <bit>
 #include <functional>
 
 #include "driftwire_fixture.h"
+#include "addons/driftwire/power.h"
 
 #if !defined(_WIN32)
 #include <sys/resource.h>
+#endif
+#if defined(__linux__)
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 #endif
 #if defined(__APPLE__)
 #include <sys/xattr.h>
@@ -1496,6 +1503,180 @@ TEST_CASE("driftwire: nearby is this machine's link, not anything routable (#502
   // This machine's own networks include loopback.
   const auto mine = sp::net::local_subnets();
   CHECK(std::any_of(mine.begin(), mine.end(), [&](const auto& n) { return sp::net::on_link(ip("127.0.0.1"), {&n, 1}); }));
+}
+
+// ---- Linux's text sources, parsed on every OS ---------------------------------------------------
+
+TEST_CASE("driftwire: Linux's Downloads folder is read from user-dirs.dirs as xdg-user-dirs reads it",
+          "[driftwire]") {
+  const auto dl = [](const std::string& text, const char* home = "/home/ann") {
+    return sp::net::parse_user_dirs_download(text, home);
+  };
+  // As xdg-user-dirs-update writes it, in the desktop's language.
+  CHECK(dl("# This file is written by xdg-user-dirs-update\n"
+           "XDG_DESKTOP_DIR=\"$HOME/Bureau\"\n"
+           "XDG_DOWNLOAD_DIR=\"$HOME/T\xC3\xA9l\xC3\xA9" "chargements\"\n"
+           "XDG_MUSIC_DIR=\"$HOME/Musique\"\n") == "/home/ann/T\xC3\xA9l\xC3\xA9" "chargements");
+  CHECK(dl("XDG_DOWNLOAD_DIR=\"/srv/in box/\"\n") == "/srv/in box");                   // absolute
+  CHECK(dl("  XDG_DOWNLOAD_DIR = \"$HOME/My \\\"Files\\\"\"\r\n") == "/home/ann/My \"Files\"");  // escapes
+  CHECK(dl("XDG_DOWNLOAD_DIR=\"$HOME/a\"\nXDG_DOWNLOAD_DIR=\"$HOME/b\"") == "/home/ann/b");      // the last wins
+  CHECK(dl("XDG_DOWNLOAD_DIR=\"$HOME/\"\n") == "/home/ann");  // "disabled": the home folder itself
+  // Anything else is not a form it writes, and is passed over.
+  for (const char* bad : {"", "XDG_DOWNLOAD_DIR=\"Downloads\"", "XDG_DOWNLOAD_DIR=$HOME/Downloads",
+                          "XDG_DOWNLOAD_DIR=\"$HOME/open", "# XDG_DOWNLOAD_DIR=\"/x\"", "XDG_DOWNLOAD_DIRS=\"/x\"",
+                          "XDG_DESKTOP_DIR=\"/x\"", "XDG_DOWNLOAD_DIR=\"$HOMEX/y\"", "XDG_DOWNLOAD_DIR=\"$HOME\""}) {
+    INFO(bad);
+    CHECK(dl(bad).empty());
+  }
+  CHECK(dl("XDG_DOWNLOAD_DIR=\"$HOME/x\"", "").empty());  // no home to put for $HOME
+  CHECK(dl("XDG_DOWNLOAD_DIR=\"/x\"", "") == "/x");
+#if defined(__linux__)
+  // This machine's: the folder $XDG_CONFIG_HOME/user-dirs.dirs names, else ~/Downloads.
+  scratch_dir s("driftwire_xdg");
+  const char* was = std::getenv("XDG_CONFIG_HOME");
+  const std::optional<std::string> saved = was ? std::optional<std::string>(was) : std::nullopt;
+  setenv("XDG_CONFIG_HOME", utf8(s.root()).c_str(), 1);
+  write_text(s / "user-dirs.dirs", "XDG_DOWNLOAD_DIR=\"/srv/drop\"\n");
+  CHECK(sp::net::downloads_folder() == "/srv/drop");
+  write_text(s / "user-dirs.dirs", "XDG_DOWNLOAD_DIR=\"Downloads\"\n");  // not a form it reads
+  const std::string fallback = sp::net::downloads_folder();
+  CHECK(fallback.size() > 10);
+  CHECK(fallback.substr(fallback.size() - 10) == "/Downloads");
+  if (saved) {
+    setenv("XDG_CONFIG_HOME", saved->c_str(), 1);
+  } else {
+    unsetenv("XDG_CONFIG_HOME");
+  }
+#endif
+}
+
+TEST_CASE("driftwire: Linux's machine name is the pretty host name, unquoted as os-release(5) says", "[driftwire]") {
+  const auto pretty = [](const std::string& text) { return sp::net::parse_pretty_hostname(text); };
+  CHECK(pretty("PRETTY_HOSTNAME=\"Tristan's ThinkPad\"\n") == "Tristan's ThinkPad");  // as hostnamed writes it
+  CHECK(pretty("ICON_NAME=computer-laptop\nCHASSIS=laptop\nPRETTY_HOSTNAME=Bea\\'s\\ Desk\n") == "Bea's Desk");
+  CHECK(pretty("PRETTY_HOSTNAME=\"say \\\"hi\\\" \\$5 \\` \\\\ \\n\"") == "say \"hi\" $5 ` \\ \\n");  // \n stays
+  CHECK(pretty("PRETTY_HOSTNAME='a \"b\" \\c'") == "a \"b\" \\c");  // single quotes take nothing
+  CHECK(pretty("  PRETTY_HOSTNAME = \"Spaced\"  \r\n") == "Spaced");
+  CHECK(pretty("PRETTY_HOSTNAME=\"Old\"\nPRETTY_HOSTNAME=\"New\"\n") == "New");  // the last wins
+  CHECK(pretty("PRETTY_HOSTNAME=\"Caf\xC3\xA9\"") == "Caf\xC3\xA9");
+  for (const char* none : {"", "# PRETTY_HOSTNAME=\"x\"", "; PRETTY_HOSTNAME=x", "PRETTY_HOSTNAME=\"open",
+                           "HOSTNAME=x", "PRETTY_HOSTNAMES=x", "PRETTY_HOSTNAME="}) {
+    INFO(none);
+    CHECK(pretty(none).empty());
+  }
+}
+
+TEST_CASE("driftwire: Linux's default gateway is the up route through a gateway with the lowest metric",
+          "[driftwire]") {
+  const auto ip = [](const char* text) { return *sp::net::parse_address(text); };
+  // As the kernel prints /proc/net/route: each address the hex of its
+  // network-order word read as a native integer, so on any host.
+  const auto word = [&](const char* dotted) {
+    const auto a = ip(dotted);
+    std::uint32_t v = 0;
+    std::memcpy(&v, a.bytes.data(), 4);
+    char hex[9];
+    std::snprintf(hex, sizeof hex, "%08X", static_cast<unsigned>(v));
+    return std::string(hex);
+  };
+  const auto row = [&](const char* iface, const char* dest, const char* gw, const char* flags, int metric,
+                       const char* mask) {
+    return std::string(iface) + "\t" + word(dest) + "\t" + word(gw) + "\t" + flags + "\t0\t0\t" +
+           std::to_string(metric) + "\t" + word(mask) + "\t0\t0\t0\n";
+  };
+  const std::string head = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n";
+  const auto gateway = [](const std::string& table) {
+    const auto g = sp::net::parse_default_route(table);
+    return g ? sp::net::address_text(*g) : std::string("none");
+  };
+  const std::string table = head + row("wg0", "0.0.0.0", "0.0.0.0", "0001", 0, "0.0.0.0") +  // a device route
+                            row("eth1", "0.0.0.0", "172.16.0.1", "0002", 0, "0.0.0.0") +    // down
+                            row("tun0", "0.0.0.0", "10.9.0.1", "0003", 0, "128.0.0.0") +    // half the internet
+                            row("eth0", "0.0.0.0", "192.168.1.1", "0003", 600, "0.0.0.0") +
+                            row("wlan0", "0.0.0.0", "10.0.0.1", "0003", 100, "0.0.0.0") +
+                            row("wlan1", "0.0.0.0", "10.0.0.2", "0003", 100, "0.0.0.0") +   // equal: the first
+                            row("eth0", "192.168.1.0", "0.0.0.0", "0001", 600, "255.255.255.0");
+  CHECK(gateway(table) == "10.0.0.1");
+  CHECK(gateway(head + row("eth0", "0.0.0.0", "192.168.1.1", "0003", 600, "0.0.0.0")) == "192.168.1.1");
+  CHECK(gateway(head + row("wg0", "0.0.0.0", "0.0.0.0", "0001", 0, "0.0.0.0")) == "none");
+  CHECK(gateway(head) == "none");
+  CHECK(gateway("") == "none");
+  CHECK(gateway(head + "eth0\t00000000\tnot hex\t0003\t0\t0\t0\t00000000\n") == "none");
+  if constexpr (std::endian::native == std::endian::little) {
+    // This container's own table, verbatim: 192.0.2.1 prints as 010200C0.
+    CHECK(gateway(head + "eth0\t00000000\t010200C0\t0003\t0\t0\t0\t00000000\t0\t0\t0\n") == "192.0.2.1");
+  }
+#if defined(__linux__)
+  // This machine's own: a gateway that is IPv4, or none (a container may have none).
+  if (const auto g = sp::net::default_gateway()) CHECK_FALSE(g->v6);
+#endif
+}
+
+// ---- #530: staying awake ---------------------------------------------------------------------------
+
+TEST_CASE("driftwire: a transfer's stay-awake request names who holds it, and is let go", "[driftwire]") {
+  CHECK(std::string(sp::power::owner()) == "MediaViewer");
+  CHECK(sp::power::reason(true) == "MediaViewer is receiving files (Driftwire)");
+  CHECK(sp::power::reason(false) == "MediaViewer is sending files (Driftwire)");
+  sp::power::set_owner("Driftwire");  // the command line
+  CHECK(sp::power::reason(true) == "Driftwire is receiving files");
+  CHECK(sp::power::reason(false) == "Driftwire is sending files");
+  // The OS's own request, under a name of this run's: quick whether or not
+  // the OS agrees (a container has no logind; a CI runner's polkit may say no).
+  sp::power::set_owner("Driftwire test");
+  const auto t0 = std::chrono::steady_clock::now();
+  auto held = sp::power::hold(true);
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(5));
+#if defined(__linux__)
+  // logind lists it while it is held, and not once it is let go.
+  const auto listed = [] {
+    std::string out;
+    if (FILE* p = ::popen("COLUMNS=500 systemd-inhibit --list --no-pager 2>/dev/null", "r")) {
+      char buf[512];
+      while (std::fgets(buf, sizeof buf, p)) out += buf;
+      ::pclose(p);
+    }
+    return out.find("Driftwire test") != std::string::npos;
+  };
+  if (held) {
+    CHECK(listed());
+    held.reset();
+    CHECK(eventually([&] { return !listed(); }, 5));
+  } else {
+    WARN("logind did not grant a sleep inhibitor here (no system bus, no logind, or polkit said no)");
+  }
+  held.reset();
+  // A system bus that takes the connection and never answers (a wedged
+  // dbus-daemon) does not hold the transfer up either: no request, at once.
+  // (sd-bus alone would wait out its 90 s authentication timeout.)
+  {
+    scratch_dir s("dw_bus");
+    const std::string path = utf8(s / "bus");
+    sockaddr_un at{};
+    at.sun_family = AF_UNIX;
+    REQUIRE(path.size() < sizeof at.sun_path);
+    std::memcpy(at.sun_path, path.c_str(), path.size() + 1);
+    const int mute = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    REQUIRE(mute >= 0);
+    REQUIRE(::bind(mute, reinterpret_cast<const sockaddr*>(&at), sizeof at) == 0);
+    REQUIRE(::listen(mute, 4) == 0);  // connects succeed; nothing is ever read or said
+    const char* was = std::getenv("DBUS_SYSTEM_BUS_ADDRESS");
+    const std::optional<std::string> saved = was ? std::optional<std::string>(was) : std::nullopt;
+    setenv("DBUS_SYSTEM_BUS_ADDRESS", ("unix:path=" + path).c_str(), 1);
+    const auto t1 = std::chrono::steady_clock::now();
+    CHECK_FALSE(sp::power::hold(false));
+    CHECK(std::chrono::steady_clock::now() - t1 < std::chrono::seconds(5));
+    if (saved) {
+      setenv("DBUS_SYSTEM_BUS_ADDRESS", saved->c_str(), 1);
+    } else {
+      unsetenv("DBUS_SYSTEM_BUS_ADDRESS");
+    }
+    ::close(mute);
+  }
+#endif
+  held.reset();
+  sp::power::set_owner(nullptr);  // the default again
+  CHECK(std::string(sp::power::owner()) == "MediaViewer");
 }
 
 TEST_CASE("driftwire: a source is held to a few a minute, others are not (#502)", "[driftwire]") {

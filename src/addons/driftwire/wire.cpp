@@ -266,4 +266,9 @@ std::string size_text(std::uint64_t bytes) {
   return buf;
 }
 
+std::string rate_text(double bytes_per_second) {
+  // A negative or NaN rate is no rate; a cast of one would be undefined.
+  return size_text(bytes_per_second > 0 ? static_cast<std::uint64_t>(bytes_per_second) : 0) + "/s";
+}
+
 }  // namespace mv::driftwire

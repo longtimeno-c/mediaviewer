@@ -3,8 +3,9 @@
 // #530: what a receive that stopped (the link lost, either machine asleep or
 // off) leaves to resume from when the same sender sends again: the files
 // that arrived whole and where, and the one file that was arriving, kept as
-// its hidden temporary ("IMG_1.JPG.mvtmp") with how many of its bytes are on
-// stable storage. A cancel or a decline keeps nothing, as before.
+// its hidden temporary ("IMG_1.JPG.mvtmp"; ".IMG_1.JPG.mvtmp" on Linux,
+// transfer.h's temp_name) with how many of its bytes are on stable storage.
+// A cancel or a decline keeps nothing, as before.
 //
 // One record per sender (its identity key, #501), at most kMaxResumeRecords,
 // in the add-on's data folder (never beside the files, never off the

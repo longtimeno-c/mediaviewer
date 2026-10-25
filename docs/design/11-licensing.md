@@ -69,8 +69,9 @@ Position: bundle decoders, never bundle a software HEVC or AAC encoder.
 | Little CMS (lcms2) | MIT | DLL / static |
 | SQLite | Public domain | DLL / static |
 | Crashpad (+ mini_chromium) | Apache-2.0 (BSD-3) | Client static; `crashpad_handler` a separate program |
-| BLAKE3 | CC0-1.0 (dual CC0 / Apache-2.0, taken under CC0) | DLL / static |
-| libsodium | ISC | DLL / static |
+| BLAKE3 | CC0-1.0 (dual CC0 / Apache-2.0, taken under CC0) | DLL / static; static in the Linux `driftwire` |
+| libsodium | ISC | DLL / static; static in the Linux `driftwire` |
+| FTXUI | MIT | Static (its vcpkg port is static only); the `driftwire` command line's look, its `dom` and `screen` parts. Never in the app or an add-on |
 | Lua 5.4.8 | MIT | **Static, vendored** in `third_party/lua` (both platforms): the add-on script runtime ([25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)). Interpreter only; no JIT exists in Lua, and `io` / `os` / `package` / `debug` are not compiled in. `tools/licence-check.ps1` fails if one of those files, or a `luajit` / `luasocket`-style port, appears |
 | Dear ImGui | MIT | Static; present lab and F3 overlay only |
 | Catch2 | BSL-1.0 | Tests only |
@@ -78,6 +79,7 @@ Position: bundle decoders, never bundle a software HEVC or AAC encoder.
 | Sparkle | MIT | Framework in `Contents/Frameworks` (macOS updater) |
 | .NET 8, Windows App SDK / WinUI 3 | MIT | Shipped self-contained with the Windows chrome |
 | Microsoft OpenMP (`vcomp140.dll`), LLVM OpenMP | MS redistributable; Apache-2.0 WITH LLVM-exception | Dynamic, beside LibRaw |
+| Microsoft Visual C++ runtime (`vcruntime140*.dll`, `msvcp140.dll`) | MS redistributable | Dynamic, beside `driftwire.exe` in the command line's Windows zip only |
 | Cozette font | MIT | Bundled TTF |
 | Final Cut Pro's `ProExtension.framework` | Apple, proprietary | **Not shipped.** The Mac FCP extension ([NLE search](23-nle-search.md)) `dlopen`s the copy inside the user's installed Final Cut Pro at run time, because FCP's extension point requires its classes. The copyright holder accepts loading it into the GPL extension |
 
@@ -99,6 +101,22 @@ The Driftwire add-on (#472 PR 3) compiles in the BIP 39 English word list (**MIT
 kept in `src/addons/driftwire/wordlist.inc` and [THIRD-PARTY.md](../../THIRD-PARTY.md)) for its
 four-word codes. It adds no library: the DHT client, SHA-1, bencoding and the UDP transport are
 the add-on's own code, and Argon2id, Ed25519, ristretto255 (CPace) and ML-KEM-768 are libsodium's.
+
+The `driftwire` command line ([28](28-driftwire.md#from-a-terminal-driftwire)) is a program of its
+own under the same GPL-3.0-or-later, and compiles in the same word list. On Linux it is one binary
+with libsodium, BLAKE3, FTXUI and GCC's C++ runtime linked in: libsodium's ISC notice and FTXUI's
+and the word list's MIT notices go with every copy, so each package carries them in a DEP-5
+`/usr/share/doc/driftwire/copyright` (`packaging/linux/copyright`) beside the GPL text and NOTICE;
+`libstdc++` / `libgcc` are static under the GCC Runtime Library Exception, which asks for nothing.
+The corresponding source of that binary includes the pinned libsodium, BLAKE3 and FTXUI sources
+(the copyright file names each archive); the release page's source offer covers them as it covers
+the app's (below). The macOS archive carries the program (libsodium, BLAKE3 and FTXUI static, the
+system's libc++), its manual page, the GPL text, NOTICE and the same notices as `COPYRIGHT.txt`;
+the Windows zip carries `driftwire.exe`, `libsodium.dll` and `blake3.dll` (x64-windows is a dynamic
+triplet; FTXUI is static), the Visual C++ runtime DLLs it imports (Microsoft's redistributable
+files, beside the program as `vcomp140.dll` is beside LibRaw, since a per-user install cannot run
+`vc_redist`), the GPL text, NOTICE and `COPYRIGHT.txt`. `tools/package/driftwire-windows.ps1`
+fails the zip if the program needs any other DLL that Windows does not have.
 
 CC-BY 4.0 data in a GPL program is fine. The licences cover different works: the data is not a
 derivative of the code, and the attribution is a notice, not an added restriction on the program

@@ -3,11 +3,14 @@
 // Driftwire's known devices (issue #472, PR 4): the secret store's file
 // form, the identity kept in it, the remembered devices' records, the
 // hourly presence keys, and what a protocol 2 session gives Remember. Of the
-// OS stores, only Credential Manager is touched (on Windows, under a name of
-// the run's own); the Keychain is not.
+// OS stores, Credential Manager (on Windows) and the Secret Service (on Linux)
+// are touched, under a name of the run's own; the Keychain is not.
 #include "driftwire_fixture.h"
 
 #include <sodium.h>
+
+#include <cstdlib>
+#include <string_view>
 
 #include "addons/driftwire/known.h"
 #include "addons/driftwire/secrets.h"
@@ -67,6 +70,91 @@ TEST_CASE("driftwire known: Credential Manager keeps, replaces and forgets a val
   CHECK(store->erase(name));
   CHECK_FALSE(store->get(name));
   CHECK_FALSE(store->erase(name));
+}
+#endif
+
+#if defined(__linux__)
+// The Linux half of the port: the Secret Service itself (secrets_linux.cpp,
+// libsecret loaded at run time), under a service of this run's own whose
+// items the test removes again. It needs a session bus, a keyring daemon on
+// it and an unlocked default collection (a desktop login has all three);
+// where one is missing it skips and says which. CI makes all three (a bus of
+// the job's own, gnome-keyring's login keyring unlocked), checks them with
+// secret-tool, and then sets MV_SECRET_SERVICE=required, so there a missing
+// store fails instead of skipping.
+TEST_CASE("driftwire known: the Secret Service keeps, replaces and forgets a value, apart per service",
+          "[driftwire]") {
+  const char* required_env = std::getenv("MV_SECRET_SERVICE");
+  const bool required = required_env && std::string_view(required_env) == "required";
+  std::uint8_t r[8];
+  randombytes_buf(r, sizeof r);
+  std::string service = "Driftwire test ";
+  for (const std::uint8_t b : r) service += "0123456789abcdef"[b & 15];
+  auto store = secrets::os_store(service);
+  if (!store) {
+    if (required) FAIL("MV_SECRET_SERVICE=required, but no Secret Service answered");
+    SKIP("no Secret Service here (no session bus, or no keyring daemon on it)");
+  }
+  auto other = secrets::os_store(service + " other");
+  REQUIRE(other);
+  struct cleanup {
+    secrets::store& a;
+    secrets::store& b;
+    ~cleanup() {
+      for (const char* n : {"value", "planted", known::kIdentityName}) {
+        a.erase(n);
+        b.erase(n);
+      }
+    }
+  } gone{*store, *other};
+  const std::string name = "value";
+  CHECK_FALSE(store->get(name));
+  CHECK_FALSE(store->erase(name));
+  if (!store->put(name, bytes_of("first"))) {
+    // The service answers, but its default collection takes nothing without
+    // an unlock prompt nobody can answer here (gnome-keyring with no login
+    // keyring made, or one locked): in the product that is "not kept", and
+    // the identity is that run's (known::identity reads back).
+    if (required) FAIL("MV_SECRET_SERVICE=required, but the default collection took no item");
+    SKIP("the Secret Service's default collection is locked or missing here (no login keyring unlocked)");
+  }
+  CHECK(store->get(name) == bytes_of("first"));
+  REQUIRE(store->put(name, bytes_of("second")));  // replaced, not a second item
+  CHECK(store->get(name) == bytes_of("second"));
+  const std::vector<std::uint8_t> biggest(secrets::kMaxValue, 9);
+  REQUIRE(store->put(name, biggest));
+  CHECK(store->get(name) == biggest);
+  CHECK_FALSE(store->put(name, std::vector<std::uint8_t>(secrets::kMaxValue + 1, 7)));
+  CHECK(store->get(name) == biggest);  // a refused value leaves the old one
+  // The app's and the command line's items never meet: another service has
+  // nothing under the same name, and keeps its own.
+  CHECK_FALSE(other->get(name));
+  REQUIRE(other->put(name, bytes_of("other's")));
+  CHECK(store->get(name) == biggest);
+  CHECK(other->get(name) == bytes_of("other's"));
+  // The identity is kept there, as in Credential Manager and the Keychain.
+  bool kept = false;
+  const auto id = known::identity(store.get(), kept);
+  CHECK(kept);
+  CHECK(known::identity(store.get(), kept) == id);
+  CHECK(kept);
+  // An item another program wrote in plain where Driftwire looks (the same
+  // schema, service and name) is refused, never believed: values go in
+  // sealed, as with DPAPI on Windows. secret-tool plants it, where installed.
+  if (std::system("command -v secret-tool >/dev/null 2>&1") == 0) {
+    const std::string plant = "printf planted | secret-tool store --label=planted xdg:schema "
+                              "io.github.longtimeno_c.Driftwire service '" +
+                              service + "' name planted >/dev/null 2>&1";
+    REQUIRE(std::system(plant.c_str()) == 0);
+    CHECK_FALSE(store->get("planted"));
+    CHECK(store->erase("planted"));  // it was there, under our schema
+  } else {
+    WARN("secret-tool is not installed: the planted plain item was not tried");
+  }
+  CHECK(store->erase(name));
+  CHECK_FALSE(store->get(name));
+  CHECK_FALSE(store->erase(name));
+  CHECK(other->get(name) == bytes_of("other's"));
 }
 #endif
 

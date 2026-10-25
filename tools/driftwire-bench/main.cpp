@@ -192,7 +192,7 @@ std::optional<std::vector<sp::outgoing_file>> make_set(const std::string& set, c
   std::vector<sp::outgoing_file> files;
   auto add = [&](const fs::path& p, std::string rel) {
     std::error_code ec;
-    files.push_back({utf8(p), std::move(rel), fs::file_size(p, ec), 0});
+    files.push_back({utf8(p), std::move(rel), fs::file_size(p, ec), 0, {}});
   };
   auto many = [&](const char* name, std::size_t count, std::uint64_t each) {
     for (std::size_t i = 0; i < count; ++i) {
@@ -217,7 +217,7 @@ std::optional<std::vector<sp::outgoing_file>> make_set(const std::string& set, c
     const fs::path dir = from_utf8(set);
     const std::string top = utf8(dir.filename().empty() ? dir.parent_path().filename() : dir.filename());
     auto walked = mv::io::walk_files(utf8(dir), 16, [&](const mv::io::tree_entry& e) {
-      if (!e.cloud_only) files.push_back({e.path_utf8, top + "/" + e.relative_utf8, e.size, e.mtime_unix});
+      if (!e.cloud_only) files.push_back({e.path_utf8, top + "/" + e.relative_utf8, e.size, e.mtime_unix, {}});
       return files.size() < sp::kMaxFiles;
     });
     if (!walked && walked.error() != mv::status::cancelled) return std::nullopt;

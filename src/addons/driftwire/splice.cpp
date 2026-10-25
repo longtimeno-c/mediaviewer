@@ -32,14 +32,14 @@ std::int64_t now_ns() {
 }  // namespace
 
 token random_token() {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   token t;
   randombytes_buf(t.data(), t.size());
   return t;
 }
 
 std::string random_key() {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   static constexpr char kAlphabet[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";  // Crockford
   std::array<std::uint8_t, 17> b{};
   randombytes_buf(b.data(), b.size());
@@ -59,7 +59,7 @@ std::string random_key() {
 }
 
 token_id_bytes token_id(const token& t) {
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   token_id_bytes id;
   crypto_generichash(id.data(), id.size(), reinterpret_cast<const std::uint8_t*>(kIdContext), sizeof kIdContext - 1,
                      t.data(), t.size());
@@ -218,7 +218,7 @@ splice_result splice(link& a, link& b, const limits& lim, const std::function<bo
 result<std::unique_ptr<link>> join(std::unique_ptr<link> l, const token& t, int wait_ms,
                                    const std::function<bool()>& stopped) {
   if (!l) return err(status::invalid_arg);
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   const auto deadline = clock::now() + std::chrono::milliseconds(wait_ms);
   const auto fail = [&](status s) -> result<std::unique_ptr<link>> {
     l->shutdown();
@@ -254,7 +254,7 @@ result<std::unique_ptr<link>> join(std::unique_ptr<link> l, const token& t, int 
 result<std::unique_ptr<waiting>> register_waiter(std::unique_ptr<link> l, const token& t, const std::string& key,
                                                  int wait_ms) {
   if (!l) return err(status::invalid_arg);
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   const auto deadline = clock::now() + std::chrono::milliseconds(wait_ms);
   const auto fail = [&](status s) -> result<std::unique_ptr<waiting>> {
     l->shutdown();
@@ -367,7 +367,7 @@ net::address server::source_of(const net::address& a) noexcept {
 
 result<std::unique_ptr<server>> server::start(options o) {
   if (o.key.size() < kMinKeyChars) return err(status::invalid_arg);
-  (void)sodium_init();
+  if (sodium_init() < 0) {}  // safe to repeat; a bare (void) does not quiet GCC
   auto l = o.loopback_only ? net::listen(true) : net::listen_internet(o.port, false);
   if (!l) return err(l.error());
   std::unique_ptr<server> s(new server(std::move(o)));

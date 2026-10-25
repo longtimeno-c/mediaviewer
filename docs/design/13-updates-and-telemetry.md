@@ -26,6 +26,16 @@ channel lets codec fixes ship without a review queue.
 There are two channels, chosen in Settings: **stable** (default) and **preview**, which also
 follows signed prerelease builds.
 
+The `driftwire` command line has no updater of its own; each system's channel updates it
+([28](28-driftwire.md#installing)). On Linux its packages come from signed apt and dnf
+repositories that stable releases publish on GitHub Pages, so the system's package manager updates
+it with everything else (a tarball install does not update itself); on macOS the Homebrew tap's
+formula follows each stable release, so `brew upgrade` updates it; on Windows running the
+PowerShell one-liner again installs the site's version over the old one. Live once the owner has
+set up Pages, the key, the tap and `MV_DRIFTWIRE_REPO`
+([DEVELOPMENT, "Publishing the command line"](../DEVELOPMENT.md#publishing-the-command-line));
+until then nothing is published.
+
 ## Per-user install
 
 Windows installs to `%LocalAppData%\MediaViewer`, never `Program Files`, so neither install
