@@ -117,7 +117,8 @@ class fetcher {
   // status::cancelled when `stop` was set (partial files are kept for the
   // next run); status::not_found when one is gone; status::corrupt when one
   // never matched its hash. `progress` is called on each change of state,
-  // before each hash, and about every quarter second while bytes arrive.
+  // before each hash, and about every quarter second while bytes arrive; a
+  // stop inside a hash says last that only the verified files are done.
   [[nodiscard]] expected run(std::span<const remote_file> files, const std::atomic<bool>& stop,
                              const std::function<void(const fetch_progress&)>& progress);
   // Deletes the regular files under the root that are not one of `keep` (the

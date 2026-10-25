@@ -6,9 +6,11 @@
 // ignores Range, stop, and prune. Plus SHA-256's FIPS vectors, and for
 // Enhance (docs/plans/enhance.md, E1) the per-file cap, adoption of a file
 // already at its pinned path, a stop inside a hash, and a prune that follows
-// no link and (Windows, the Mac) matches paths whatever their case.
+// no link, (Windows, the Mac) matches paths whatever their case and (Windows)
+// converts no name.
 #include "catch_compat.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -17,6 +19,7 @@
 #include <functional>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "addons/ai/fetch.h"
@@ -431,11 +434,14 @@ TEST_CASE("adoption says the run's totals first, and a stop in its hash keeps th
   });
   REQUIRE_FALSE(r);
   CHECK(r.error() == mv::status::cancelled);
-  REQUIRE(seen.size() == 1);
+  REQUIRE(seen.size() == 2);
   CHECK(seen[0].state == mv::ai::fetch_state::downloading);
   CHECK(seen[0].total_bytes == 800);
   CHECK(seen[0].files_total == 1);
   CHECK(seen[0].done_bytes == 0);
+  // Said again as it stops: the unverified file is not done.
+  CHECK(seen[1].done_bytes == 0);
+  CHECK(seen[1].files_done == 0);
   CHECK(fs::file_size(native(at)) == 800);
   CHECK_FALSE(fs::exists(native(at + ".ok")));
   // The next run adopts it, saying so before the hash and after it.
@@ -457,33 +463,96 @@ TEST_CASE("adoption says the run's totals first, and a stop in its hash keeps th
 TEST_CASE("a stop in the final hash keeps the part for the next run", "[ai][fetch]") {
   scratch s;
   fake_net net;
+  const auto a = file_of(net, "a.onnx", bytes(300, 18));
   const auto data = bytes(900, 17);
-  const auto a = file_of(net, "a.onnx", data);
+  const auto b = file_of(net, "b.onnx", data);
   mv::ai::fetcher f(utf8(s.root), net, quick());
-  const std::string at = f.local_path(a);
-  put(at + ".part", data);  // every byte, from a run stopped before its hash
-  const std::vector<mv::ai::remote_file> one{a};
   std::atomic<bool> stop{false};
+  const std::vector<mv::ai::remote_file> first{a};
+  REQUIRE(f.run(first, stop, {}));
+  REQUIRE(net.calls.size() == 1);
+  const std::string at = f.local_path(b);
+  put(at + ".part", data);  // every byte, from a run stopped before its hash
+  const std::vector<mv::ai::remote_file> both{a, b};
   std::vector<mv::ai::fetch_progress> seen;
-  auto r = f.run(one, stop, [&](const mv::ai::fetch_progress& p) {
+  auto r = f.run(both, stop, [&](const mv::ai::fetch_progress& p) {
     seen.push_back(p);
     stop = true;  // as the hash begins
   });
   REQUIRE_FALSE(r);
   CHECK(r.error() == mv::status::cancelled);
-  REQUIRE(seen.size() == 1);
+  REQUIRE(seen.size() == 2);
+  // As the hash begins: every byte of the run is here.
   CHECK(seen[0].state == mv::ai::fetch_state::downloading);
-  CHECK(seen[0].done_bytes == 900);
-  CHECK(seen[0].total_bytes == 900);
+  CHECK(seen[0].done_bytes == 1200);
+  CHECK(seen[0].total_bytes == 1200);
+  // Stopped in it: only the verified file is done, so the run reads as paused
+  // (Look.FetchPaused, FetchLine.from: done < total) and offers Resume.
+  CHECK(seen.back().done_bytes == 300);
+  CHECK(seen.back().done_bytes < seen.back().total_bytes);
+  CHECK(seen.back().total_bytes == 1200);
+  CHECK(seen.back().files_done == 1);
+  CHECK(seen.back().files_total == 2);
   CHECK(fs::file_size(native(at + ".part")) == 900);
   CHECK_FALSE(fs::exists(native(at)));
   CHECK_FALSE(fs::exists(native(at + ".ok")));
   // The next run hashes the part and keeps it, with no request.
   stop = false;
-  REQUIRE(f.run(one, stop, {}));
-  CHECK(net.calls.empty());
+  REQUIRE(f.run(both, stop, {}));
+  CHECK(net.calls.size() == 1);
   CHECK(f.ready(a));
+  CHECK(f.ready(b));
   CHECK_FALSE(fs::exists(native(at + ".part")));
+}
+
+TEST_CASE("a stop after the last byte and before the hash reads as paused", "[ai][fetch]") {
+  scratch s;
+  fake_net net;
+  const auto a = file_of(net, "a.onnx", bytes(300, 22));
+  const auto b = file_of(net, "b.onnx", bytes(900, 23));
+  std::atomic<bool> stop{false};
+  // Every byte of b arrives, then the stop: before its hash begins.
+  struct stop_after final : mv::ai::http_transport {
+    fake_net& inner;
+    std::atomic<bool>& flag;
+    stop_after(fake_net& n, std::atomic<bool>& f) : inner(n), flag(f) {}
+    mv::ai::http_reply get(const std::string& url, std::uint64_t from, const std::function<bool(int)>& head,
+                           const std::function<bool(std::span<const std::uint8_t>)>& body) override {
+      if (url.find("b.onnx") == std::string::npos) return inner.get(url, from, head, body);
+      // The last chunk comes after the progress throttle (250 ms), so the
+      // run has said "every byte here" before the stop.
+      std::uint64_t got = from;
+      mv::ai::http_reply r = inner.get(url, from, head, [&](std::span<const std::uint8_t> chunk) {
+        if (got + chunk.size() >= 900) std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        got += chunk.size();
+        return body(chunk);
+      });
+      flag = true;
+      return r;
+    }
+  } net_then_stop(net, stop);
+  mv::ai::fetcher f(utf8(s.root), net_then_stop, quick());
+  const std::vector<mv::ai::remote_file> both{a, b};
+  std::vector<mv::ai::fetch_progress> seen;
+  auto r = f.run(both, stop, [&](const mv::ai::fetch_progress& p) { seen.push_back(p); });
+  REQUIRE_FALSE(r);
+  CHECK(r.error() == mv::status::cancelled);
+  REQUIRE_FALSE(seen.empty());
+  // The throttled report said every byte was here...
+  CHECK(std::any_of(seen.begin(), seen.end(), [](const mv::ai::fetch_progress& p) { return p.done_bytes == 1200; }));
+  // ...and the stop says only the verified file is done.
+  CHECK(seen.back().done_bytes == 300);
+  CHECK(seen.back().done_bytes < seen.back().total_bytes);
+  CHECK(seen.back().files_done == 1);
+  const std::string at = f.local_path(b);
+  CHECK(fs::file_size(native(at + ".part")) == 900);
+  CHECK_FALSE(fs::exists(native(at)));
+  // The next run hashes the part and keeps it, with no request.
+  stop = false;
+  const std::size_t calls = net.calls.size();
+  REQUIRE(f.run(both, stop, {}));
+  CHECK(net.calls.size() == calls);
+  CHECK(f.ready(b));
 }
 
 TEST_CASE("prune deletes nothing through a root that is a link", "[ai][fetch]") {
@@ -532,6 +601,30 @@ TEST_CASE("prune's path key folds ASCII case only when asked", "[ai][fetch]") {
   CHECK(fetch_path_key("cache\\Models\\A.onnx", true) == "cache/models/a.onnx");
 #endif
 }
+
+#if defined(_WIN32)
+TEST_CASE("prune walks a name that has no UTF-8 spelling without converting it", "[ai][fetch]") {
+  scratch s;
+  fake_net net;
+  const auto a = file_of(net, "a.onnx", bytes(100, 26));
+  const fs::path root = s.root / "cache";
+  mv::ai::fetcher f(utf8(root), net, quick());
+  std::atomic<bool> stop{false};
+  const std::vector<mv::ai::remote_file> one{a};
+  REQUIRE(f.run(one, stop, {}));
+  // An unpaired surrogate: NTFS takes it; UTF-8 cannot say it, and a
+  // conversion of it throws.
+  std::wstring name = L"stale";
+  name.push_back(static_cast<wchar_t>(0xD800));
+  name += L".bin";
+  const fs::path odd = root / "models" / name;
+  std::ofstream(odd, std::ios::binary) << "x";
+  REQUIRE(fs::exists(odd));
+  f.prune(one);
+  CHECK_FALSE(fs::exists(odd));
+  CHECK(f.ready(a));
+}
+#endif
 
 #if defined(_WIN32) || defined(__APPLE__)
 TEST_CASE("prune keeps a file adopted from a folder spelt with other capitals", "[ai][fetch]") {

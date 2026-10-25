@@ -74,14 +74,16 @@ constexpr bool kFoldCase = true;
 constexpr bool kFoldCase = false;
 #endif
 
-// fetch_path_key, of a path already in hand.
-std::string key_of(const fs::path& path, bool fold) {
-  const std::u8string g = path.lexically_normal().generic_u8string();
-  std::string key(g.begin(), g.end());
+// fetch_path_key, of a path already in hand, in the path's own encoding
+// (UTF-16 on Windows): never converted, as a name NTFS allows (one holding an
+// unpaired surrogate) does not convert to UTF-8 and would throw mid-walk.
+using path_key = fs::path::string_type;
+path_key key_of(const fs::path& path, bool fold) {
+  path_key key = path.lexically_normal().generic_string<fs::path::value_type>();
   if (fold) {
-    // ASCII only: every byte of a multi-byte UTF-8 sequence is over 0x7F.
-    for (char& c : key) {
-      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    // ASCII only: every unit of a multi-unit UTF-8 or UTF-16 letter is outside 'A'..'Z'.
+    for (fs::path::value_type& c : key) {
+      if (c >= 'A' && c <= 'Z') c = static_cast<fs::path::value_type>(c - 'A' + 'a');
     }
   }
   return key;
@@ -128,6 +130,14 @@ expected fetcher::run(std::span<const remote_file> files, const std::atomic<bool
     last_report = now;
     if (progress) progress(p);
   };
+  // A stop inside a hash: the file stays for the next run, and only verified
+  // files count as done, so a run stopped at its last file still reads as
+  // paused (done < total) and not as every byte here.
+  const auto stopped_in_hash = [&] {
+    p.done_bytes = finished_bytes;
+    report(true);
+    return err(status::cancelled);
+  };
 
   for (const remote_file& f : files) {
     p.file = f.path;
@@ -148,7 +158,7 @@ expected fetcher::run(std::span<const remote_file> files, const std::atomic<bool
       p.done_bytes = finished_bytes;
       report(true);
       const auto hash = sha256_file_hex(path, stop);
-      if (!hash && stop.load()) return err(status::cancelled);  // the file stays, to hash next run
+      if (!hash && stop.load()) return stopped_in_hash();
       if (hash && *hash == f.sha256) {
         if (!write_ok(f, path)) return err(status::io);
         remove_file(path + ".part");
@@ -206,7 +216,8 @@ expected fetcher::run(std::span<const remote_file> files, const std::atomic<bool
               return true;
             });
         out.close();
-        if (stop.load()) return err(status::cancelled);
+        // A stop after the last byte and before the hash: as one inside it.
+        if (stop.load()) return size_of(part) >= f.size ? stopped_in_hash() : err(status::cancelled);
         if (reply.status == 404 || reply.status == 410) {
           p.state = fetch_state::gone;
           report(true);
@@ -235,7 +246,7 @@ expected fetcher::run(std::span<const remote_file> files, const std::atomic<bool
       p.done_bytes = finished_bytes + f.size;
       report(true);
       const auto hash = sha256_file_hex(part, stop);
-      if (!hash && stop.load()) return err(status::cancelled);  // the part stays, to hash next run
+      if (!hash && stop.load()) return stopped_in_hash();
       if (hash && *hash == f.sha256) {
         remove_file(path);
         fs::rename(fs_path(part), fs_path(path), ec);
@@ -276,12 +287,16 @@ bool fetch_ready(const std::string& root, const remote_file& f) {
   return fetcher(root, none).ready(f);
 }
 
-std::string fetch_path_key(const std::string& path, bool fold) { return key_of(fs_path(path), fold); }
+std::string fetch_path_key(const std::string& path, bool fold) {
+  // The tests' own UTF-8, there and back: this converts, where prune does not.
+  const std::u8string key = fs::path(key_of(fs_path(path), fold)).generic_u8string();
+  return std::string(key.begin(), key.end());
+}
 
 void prune_fetched(const std::string& root_, std::span<const remote_file> keep) {
   null_transport none;
   const fetcher at(root_, none);
-  std::set<std::string> wanted;
+  std::set<path_key> wanted;
   for (const remote_file& f : keep) {
     const std::string p = at.local_path(f);
     wanted.insert(key_of(fs_path(p), kFoldCase));
