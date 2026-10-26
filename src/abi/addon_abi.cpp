@@ -696,6 +696,8 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     svc.open_sound_writer = &mv::addon::media::open_sound_writer;  // #297
     svc.open_frames = &mv::addon::media::open_frames;            // #297 slice 5
     svc.open_clip_writer = &mv::addon::media::open_clip_writer;  // #297 slice 5
+    svc.full_still = &mv::addon::media::full_still;    // #297 slice 3
+    svc.write_still = &mv::addon::media::write_still;  // #297 slice 3
     // Find duplicates (PR 54): the Recycle Bin, refused where there is none.
     svc.recycle = [](const std::string& path) -> mv::result<bool> {
       auto r = mv::io::recycle_file(path);

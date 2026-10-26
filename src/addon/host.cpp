@@ -1115,6 +1115,71 @@ void MV_CALL t_clip_write_close(void*, void* writer) {
   }
 }
 
+// ---- a photo (#297, Enhance slice 3) ------------------------------------------------
+
+struct still_box {
+  rgb_image img;
+};
+
+mv_status MV_CALL t_still_open(void* host, const char* path, mv_addon_still_info* info, void** out) {
+  return guarded([&] {
+    if (!path || !out) return MV_ERR_INVALID_ARG;
+    if (info && info->struct_size < sizeof(mv_addon_still_info)) return MV_ERR_INVALID_ARG;
+    *out = nullptr;
+    const auto& fn = self(host).services().full_still;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto img = fn(path);
+    if (!img) return to_mv(img.error());
+    if (info) {
+      info->width = img->width;
+      info->height = img->height;
+    }
+    auto box = std::make_unique<still_box>();
+    box->img = std::move(*img);
+    *out = box.release();
+    return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_still_pixels(void*, void* still, uint8_t* out, uint64_t cap) {
+  return guarded([&] {
+    auto* box = static_cast<still_box*>(still);
+    if (!box || !out) return MV_ERR_INVALID_ARG;
+    if (cap < box->img.rgb.size()) return MV_ERR_INVALID_ARG;
+    std::memcpy(out, box->img.rgb.data(), box->img.rgb.size());
+    return MV_OK;
+  });
+}
+
+void MV_CALL t_still_close(void*, void* still) {
+  try {
+    delete static_cast<still_box*>(still);
+  } catch (...) {
+  }
+}
+
+mv_status MV_CALL t_still_write(void* host, const char* source, const uint8_t* rgb, uint32_t w, uint32_t h,
+                                uint32_t stride, const char* suffix, char* out, uint32_t cap) {
+  return guarded([&] {
+    if (!source || !rgb || !suffix || w == 0 || h == 0 || w > 65535 || h > 65535 || stride < w * 3) {
+      return MV_ERR_INVALID_ARG;
+    }
+    const auto& fn = self(host).services().write_still;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    rgb_image img;
+    img.width = w;
+    img.height = h;
+    img.rgb.resize(static_cast<std::size_t>(w) * h * 3);
+    for (uint32_t y = 0; y < h; ++y) {
+      std::memcpy(img.rgb.data() + static_cast<std::size_t>(y) * w * 3, rgb + static_cast<std::size_t>(y) * stride,
+                  static_cast<std::size_t>(w) * 3);
+    }
+    auto r = fn(source, img, suffix);
+    if (!r) return to_mv(r.error());
+    return out ? copy_out(*r, out, cap) : MV_OK;
+  });
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -1207,6 +1272,12 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
     api_.clip_write_finish = &t_clip_write_finish;
     api_.clip_write_close = &t_clip_write_close;
   }
+  if (svc_.full_still) {
+    api_.still_open = &t_still_open;
+    api_.still_pixels = &t_still_pixels;
+    api_.still_close = &t_still_close;
+  }
+  if (svc_.write_still) api_.still_write = &t_still_write;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

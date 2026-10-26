@@ -121,12 +121,20 @@ bool job_runner::supports(model_kind k, item_kind item) const {
   if (k == model_kind::video) {
     return item == item_kind::media && port_.open_frames && port_.create_clip && port_.load_tiles;
   }
+  if (k == model_kind::still) {
+    return item == item_kind::still && port_.open_still && port_.write_still && port_.load_tiles;
+  }
   return false;
 }
 
 std::string job_runner::check(const job_request& r) const {
   const job_request::part* video = part_of(r, model_kind::video);
   const job_request::part* audio = part_of(r, model_kind::audio);
+  const job_request::part* still = part_of(r, model_kind::still);
+  if (still) {
+    if (!tile_shape_of(*still->spec)) return "This photo model is not one this version of Enhance can run.";
+    video = still;  // the same runner, and its memory below
+  }
   if (!video && !audio) return "There is nothing for Enhance to run.";
   if (audio && !stream_shape_of(*audio->spec)) return "This audio model is not one this version of Enhance can run.";
   if (video && !tile_shape_of(*video->spec)) return "This video model is not one this version of Enhance can run.";
@@ -163,7 +171,9 @@ void job_runner::cancel() {
 }
 
 void job_runner::run(job_request r, job_events ev) {
-  if (part_of(r, model_kind::video)) {
+  if (part_of(r, model_kind::still)) {
+    run_still(std::move(r), std::move(ev));
+  } else if (part_of(r, model_kind::video)) {
     run_picture(std::move(r), std::move(ev));
   } else {
     run_sound(std::move(r), std::move(ev));
@@ -335,6 +345,59 @@ void job_runner::run_picture(job_request r, job_events ev) {
   if (!sound_ok) return fail("Enhance could not finish this clip's sound. Nothing was written.");
   auto path = writer->finish();
   if (!path) return failed(path.error());
+  if (ev.done) ev.done(true, name_of(*path), "");
+}
+
+}  // namespace mv::enhance
+
+namespace mv::enhance {
+
+void job_runner::run_still(job_request r, job_events ev) {
+  const auto fail = [&](const std::string& message) {
+    if (ev.done) ev.done(false, "", message);
+  };
+  const job_request::part& part = *part_of(r, model_kind::still);
+  const auto shape = tile_shape_of(*part.spec);
+  if (!shape) return fail(why(status::unsupported_format));
+  const std::uint32_t scale = std::min(scale_of(part), shape->scale);
+  if (ev.progress) ev.progress(-1);  // a RAW's develop takes a while, and says nothing
+  auto pic = port_.open_still(r.path);
+  if (!pic) {
+    return fail(pic.error() == status::cancelled ? why(status::cancelled) : "Enhance cannot read this photo.");
+  }
+  if (cancel_.load()) return fail(why(status::cancelled));
+  const std::uint64_t ow = std::uint64_t{pic->width} * scale, oh = std::uint64_t{pic->height} * scale;
+  if (ow * oh > kMaxStillPixels || std::max(ow, oh) > kMaxStillEdge) {
+    return fail("At this size the new photo would be " + std::to_string(ow * oh / 1'000'000) +
+                " megapixels, more than Enhance writes (100). Choose a smaller size.");
+  }
+  // The picture in and out, both whole, on top of the model.
+  const std::uint64_t need = part.spec->run_bytes + std::uint64_t{pic->width} * pic->height * 3 + ow * oh * 3;
+  if (port_.free_memory) {
+    if (const auto free = port_.free_memory(); free && *free < need) {
+      return fail("This photo needs " + size_text(need) + " of free memory at this size; " + size_text(*free) +
+                  " is free. Choose a smaller size, or close something and try again.");
+    }
+  }
+  auto tiles = port_.load_tiles(*part.spec, part.models_dir);
+  if (!tiles) return fail(why(tiles.error() == status::out_of_memory ? status::out_of_memory : status::internal));
+  picture_options po;
+  po.out_scale = scale;
+  po.overlap = shape->overlap;
+  po.strength = strength_of(part);
+  po.cancel = &cancel_;
+  po.progress = [&](double f) {
+    if (ev.progress) ev.progress(std::min(0.99, f));
+  };
+  run_port::still out;
+  out.width = static_cast<std::uint32_t>(ow);
+  out.height = static_cast<std::uint32_t>(oh);
+  const expected ok = enhance_picture(pic->rgb, pic->width, pic->height, **tiles, po, out.rgb);
+  pic->rgb = {};  // the original's pixels go before the encode needs its own
+  if (!ok) return fail(why(ok.error()));
+  if (cancel_.load()) return fail(why(status::cancelled));
+  auto path = port_.write_still(r.path, out);
+  if (!path) return fail(why(path.error()));
   if (ev.done) ev.done(true, name_of(*path), "");
 }
 

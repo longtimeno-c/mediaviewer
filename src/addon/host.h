@@ -120,6 +120,11 @@ struct host_services {
   std::function<result<std::unique_ptr<picture_source>>(const std::string& path)> open_frames;
   std::function<result<std::unique_ptr<picture_sink>>(const std::string& source, const picture_out& out)>
       open_clip_writer;
+  // #297 slice 3: a photo at full resolution, and a new photo beside it
+  // (abi/addon_media.h). Empty leaves the table's still_* rows NULL.
+  std::function<result<rgb_image>(const std::string& path)> full_still;
+  std::function<result<std::string>(const std::string& source, const rgb_image& pixels, const std::string& suffix)>
+      write_still;
   std::string data_dir;         // created by the table
   std::string default_library;  // Pictures\MediaViewer
   // Honour mv_addon_copy_request's fault injection (tests, the verify rig).

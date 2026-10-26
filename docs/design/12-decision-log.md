@@ -2754,6 +2754,17 @@ the frames come from the add-on; at most 4K, and HDR clips are refused until the
 HDR. Windows runs the model on the CPU: Enhance carries ORT's CPU build, and a GPU build is the
 `ai-cuda` piece's question, not this one's.
 
+**Enhance on photos: the export path's decode and metadata, not the viewer's (2026-10-26, #297 slice 3).**
+A photo is decoded as an export decodes it (`edit::full_picture`: a RAW's LibRaw develop, ICC to
+sRGB, upright), not through the add-on table's `decode_still_rgb`, which is the first-pixel path
+and gives a RAW's embedded preview. The new photo carries the source's metadata as an export does
+(`edit::export_pixels`). The model is the video one's file, pinned again under `still/` so each
+kind keeps its own Download and Remove. Capped at 100 megapixels written: the picture in and out
+are held whole (a 12 MP photo at 2× peaked at about 850 MB). **Not done:** #297 asks for a crop or
+colour stack on screen to be baked into the copy; the stack lives in the host's UI-thread edit
+session (`shell/edit_session`), session-only and unpersisted, and handing it to an add-on is a
+host change of its own.
+
 ## Not built
 
 - Voice query add-on (PRs 27–28): no voice add-on or `search_query` host entry exists.
