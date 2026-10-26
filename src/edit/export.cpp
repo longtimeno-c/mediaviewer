@@ -176,6 +176,29 @@ result<export_result> export_image(std::span<const std::uint8_t> source, const g
   return r;
 }
 
+result<codec::raster> full_picture(std::span<const std::uint8_t> source, const job_context* ctx) {
+  MV_TRY(image::linear_image working, image::decode_linear(source, ctx));
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  const placement p = place(geometry{}, size2{working.width, working.height});
+  return bake(working, p, uniforms_of(colour{}), ctx);
+}
+
+result<export_result> export_pixels(std::span<const std::uint8_t> source, const codec::raster& pixels,
+                                    const export_options& opt, const metadata_blobs* carried) {
+  if (pixels.width == 0 || pixels.height == 0 ||
+      pixels.rgba.size() < static_cast<std::size_t>(pixels.width) * pixels.height * 4) {
+    return err(status::invalid_arg);
+  }
+  metadata_blobs meta = source_metadata(source, opt.policy, carried);
+  patch_for_output(meta, pixels.width, pixels.height, true);
+  MV_TRY(std::vector<std::uint8_t> bytes, encode(pixels, opt.encode, meta));
+  export_result r;
+  r.bytes = std::move(bytes);
+  r.width = pixels.width;
+  r.height = pixels.height;
+  return r;
+}
+
 std::string export_file_name(std::string_view source_name, image_format format) {
   std::size_t dot = source_name.rfind('.');
   if (dot == std::string_view::npos || dot == 0) dot = source_name.size();

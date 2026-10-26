@@ -238,6 +238,14 @@ typedef struct mv_addon_clip_out {
   const char* suffix_ascii; /* [a-z0-9_-]{1,32} */
 } mv_addon_clip_out;
 
+/* #297 (Enhance, slice 3): a photo at full resolution, and a new photo. */
+typedef struct mv_addon_still_info {
+  uint32_t struct_size;     /* the caller's sizeof */
+  uint32_t width;           /* upright: what still_pixels returns */
+  uint32_t height;
+  uint32_t reserved;
+} mv_addon_still_info;
+
 /* #406 (docs/design/17 "Cues"): a clip's own text, one cue at a time, in start
  * order: a chapter title or a text subtitle line (mov_text, SubRip, ASS,
  * WebVTT), markup removed. Bitmap subtitles are never sent. */
@@ -852,6 +860,23 @@ typedef struct mv_host_api {
   mv_status(MV_CALL* clip_write_sound)(void* host, void* writer, const float* interleaved, uint32_t frames);
   mv_status(MV_CALL* clip_write_finish)(void* host, void* writer, char* out_path_utf8, uint32_t capacity);
   void(MV_CALL* clip_write_close)(void* host, void* writer);
+  /* ---- a photo (#297, Enhance slice 3) ------------------------------------------- */
+  /* [worker-thread] A still at full resolution as the export path decodes it
+   * (a RAW's own develop, ICC to sRGB, upright), 8-bit sRGB RGB: seconds for
+   * a RAW. Unlike decode_still_rgb, never a preview. Appended after
+   * clip_write_close: read these four only when `struct_size` covers them
+   * and the pointers are non-NULL. */
+  mv_status(MV_CALL* still_open)(void* host, const char* path_utf8, mv_addon_still_info* out_info, void** out_still);
+  /* Its pixels into `out_rgb` (width * height * 3, tightly packed). */
+  mv_status(MV_CALL* still_pixels)(void* host, void* still, uint8_t* out_rgb, uint64_t capacity);
+  void(MV_CALL* still_close)(void* host, void* still);
+  /* [worker-thread] A new photo beside `source_utf8` (rule 5: only read):
+   * "<stem>-<suffix>.jpg" (".png" for a PNG source), JPEG quality 92, with the
+   * source's metadata as an export carries it (Orientation 1, the written
+   * size, no stale thumbnail), under the first free name. Writes its path. */
+  mv_status(MV_CALL* still_write)(void* host, const char* source_utf8, const uint8_t* rgb, uint32_t width,
+                                  uint32_t height, uint32_t stride, const char* suffix_ascii, char* out_path_utf8,
+                                  uint32_t capacity);
 } mv_host_api;
 
 typedef struct mv_addon_api {

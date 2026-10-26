@@ -25,7 +25,10 @@
 #include "addons/enhance/stream_model.h"
 #include "addons/enhance/spec.h"
 #include "clip_fixture.h"
+#include "codec/decode.h"
+#include "codec/exif.h"
 #include "edit/clip_sample.h"
+#include "edit/encode.h"
 #include "edit/picture_io.h"
 #include "infer/ort.h"
 #include "import_fixture.h"
@@ -411,4 +414,168 @@ TEST_CASE("enhance: Real-ESRGAN tiled agrees with one pass, and a clip end to en
   auto frames = mv::edit::clip::frame_reader::open(utf8(s / a.name));
   REQUIRE(frames);
   CHECK((*frames)->facts().width == 1280u);
+}
+
+// ---- slice 3: a photo over the host table -------------------------------------------
+
+namespace {
+
+// A JPEG whose EXIF says Orientation 6 (turn 90 degrees clockwise to view).
+std::vector<std::uint8_t> sideways_jpeg(std::uint32_t w, std::uint32_t h) {
+  mv::codec::raster r;
+  r.width = w;
+  r.height = h;
+  r.rgba.resize(std::size_t{w} * h * 4, 255);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      std::uint8_t* p = &r.rgba[(std::size_t{y} * w + x) * 4];
+      p[0] = static_cast<std::uint8_t>(x * 255 / w);
+      p[1] = static_cast<std::uint8_t>(y * 255 / h);
+      p[2] = 90;
+    }
+  }
+  mv::edit::metadata_blobs meta;
+  meta.exif = {0x4D, 0x4D, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08,              // big-endian TIFF, IFD at 8
+               0x00, 0x01,                                                  // one entry
+               0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x06, 0x00, 0x00,  // Orientation = 6
+               0x00, 0x00, 0x00, 0x00};
+  mv::edit::encode_options o;
+  auto bytes = mv::edit::encode(r, o, meta);
+  REQUIRE(bytes);
+  return *bytes;
+}
+
+mv::addon::host_services still_services() {
+  mv::addon::host_services svc = picture_services();
+  svc.full_still = &mv::addon::media::full_still;
+  svc.write_still = &mv::addon::media::write_still;
+  return svc;
+}
+
+model_spec still_spec() {
+  auto s = parse_spec(R"json({"kind": "still", "name": "Detail", "weights": ["realesr-general-x4v3.onnx"],
+    "run_bytes": 1000, "cpu": true,
+    "knobs": [{"id": "scale", "label": "Size", "type": "choice",
+               "options": [{"id": "1", "text": "Same"}, {"id": "2", "text": "2x"}, {"id": "4", "text": "4x"}], "default": "2"}],
+    "io": {"runner": "tiles", "scale": 4, "tile": 64, "overlap": 16, "dims": ["h", "w"]}})json",
+                      model_kind::still);
+  REQUIRE(s);
+  return *s;
+}
+
+void run_photo(run_port port, const std::string& path, const model_spec& spec, outcome& out) {
+  job_runner r(std::move(port));
+  job_request req;
+  req.path = path;
+  req.item = item_kind::still;
+  job_request::part p;
+  p.kind = model_kind::still;
+  p.spec = &spec;
+  p.models_dir = "unused";
+  p.values["scale"] = *mv::json::parse("\"2\"");
+  req.parts.push_back(p);
+  REQUIRE(r.check(req).empty());
+  job_events ev;
+  ev.done = [&](bool ok, const std::string& name, const std::string& message) {
+    std::lock_guard lock(out.m);
+    out.done = true;
+    out.ok = ok;
+    out.name = name;
+    out.message = message;
+  };
+  r.start(std::move(req), std::move(ev));
+  for (int i = 0; i < 6000; ++i) {
+    {
+      std::lock_guard lock(out.m);
+      if (out.done) break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  std::lock_guard lock(out.m);
+  REQUIRE(out.done);
+}
+
+}  // namespace
+
+TEST_CASE("enhance: a photo at twice the size, upright, with its metadata, beside the original", "[enhance][still]") {
+  scratch_dir s("enhance_still");
+  const fs::path photo = s / "IMG_0001.JPG";
+  mv::test::write_bytes(photo, sideways_jpeg(64, 48));
+  const auto before = mv::test::read_bytes(photo);
+  mv::addon::host_table table(still_services());
+  REQUIRE(has_still_rows(table.api()));
+  run_port port = run_port_of(table.api(), "");
+  port.load_tiles = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<tile_model>> {
+    return std::unique_ptr<tile_model>(new nearest());
+  };
+  const model_spec spec = still_spec();
+
+  outcome a;
+  run_photo(port, utf8(photo), spec, a);
+  INFO(a.message);
+  REQUIRE(a.ok);
+  CHECK(a.name == "IMG_0001-enhance.jpg");
+  CHECK(mv::test::read_bytes(photo) == before);
+  // Upright and twice the size: the source was 64 x 48 stored, 48 x 64 shown.
+  const auto out = mv::test::read_bytes(s / a.name);
+  auto decoded = mv::codec::decode(out);
+  REQUIRE(decoded);
+  CHECK(decoded->width == 96u);
+  CHECK(decoded->height == 128u);
+  // The metadata came along, with Orientation 1 (else the decode above would
+  // have turned it again).
+  CHECK(mv::codec::find_jpeg_exif(out).has_value());
+
+  // A second run takes the next free name.
+  outcome b;
+  run_photo(port, utf8(photo), spec, b);
+  REQUIRE(b.ok);
+  CHECK(b.name != a.name);
+
+  // A PNG stays a PNG.
+  const fs::path png = s / "shot.png";
+  std::vector<std::uint8_t> rgba(32 * 24 * 4, 200);
+  mv::codec::raster r;
+  r.width = 32;
+  r.height = 24;
+  r.rgba = rgba;
+  mv::edit::encode_options po;
+  po.format = mv::edit::image_format::png;
+  auto png_bytes = mv::edit::encode(r, po, {});
+  REQUIRE(png_bytes);
+  mv::test::write_bytes(png, *png_bytes);
+  outcome c;
+  run_photo(port, utf8(png), spec, c);
+  INFO(c.message);
+  REQUIRE(c.ok);
+  CHECK(c.name == "shot-enhance.png");
+}
+
+// A 12-megapixel photo with the real model, to twice the size, timed.
+TEST_CASE("enhance: Real-ESRGAN on a 12 MP photo", "[.enhance-model]") {
+  const char* esr = std::getenv("MV_ENHANCE_ESRGAN");
+  const char* runtime = std::getenv("MV_ENHANCE_RUNTIME_DIR");
+  if (!esr || !runtime) SKIP("MV_ENHANCE_ESRGAN / MV_ENHANCE_RUNTIME_DIR not set");
+  scratch_dir s("enhance_12mp");
+  const fs::path photo = s / "IMG_0002.JPG";
+  mv::test::write_bytes(photo, sideways_jpeg(4032, 3024));
+  mv::addon::host_table table(still_services());
+  run_port port = run_port_of(table.api(), runtime);
+  const std::string dir = utf8(fs::path(esr).parent_path());
+  auto real = port.load_tiles;
+  port.load_tiles = [real, dir](const model_spec& sp, const std::string&) { return real(sp, dir); };
+  auto spec = parse_spec(R"json({"kind": "still", "name": "Detail", "weights": ["realesr-general-x4v3.onnx"],
+    "run_bytes": 600000000, "cpu": true,
+    "knobs": [{"id": "scale", "label": "Size", "type": "choice",
+               "options": [{"id": "1", "text": "Same"}, {"id": "2", "text": "2x"}, {"id": "4", "text": "4x"}], "default": "2"}],
+    "io": {"runner": "tiles", "scale": 4, "tile": 256, "overlap": 16, "dims": ["h", "w"]}})json",
+                         model_kind::still);
+  REQUIRE(spec);
+  const auto t0 = std::chrono::steady_clock::now();
+  outcome a;
+  run_photo(port, utf8(photo), *spec, a);
+  const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  INFO(a.message);
+  REQUIRE(a.ok);
+  WARN("4032 x 3024 to 6048 x 8064 (upright) in " << secs << " s");
 }

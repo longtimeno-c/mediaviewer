@@ -26,13 +26,14 @@ Owner calls: issue #297 (2026-10-10). Decision log: "Enhance is its own add-on" 
 
 1. **Weights outside the zip** — built 2026-10-26.
 2. **The sheet** — built 2026-10-26.
-3. **A still** — not started (not asked for in this round).
+3. **A still** — built 2026-10-26, except baking an on-screen crop or colour change into the copy
+   (the edit stack is the host's UI-thread state; it needs a row of its own).
 4. **Audio** — built 2026-10-26: DeepFilterNet3, the host's sound rows and `edit/sound_writer.h`
    ([29](../design/29-enhance.md)).
 5. **A clip's picture** — built 2026-10-26: Real-ESRGAN general x4v3, the host's frames and
    clip-write rows and `edit/picture_io.h` ([29](../design/29-enhance.md)).
 
-Left: slice 3 (photos), and HDR clips. Needs every frame in display order (the sampler gives
+Left: a still's on-screen edits in its copy, and HDR clips. Needs every frame in display order (the sampler gives
    keyframes and gaps) and a frame sink into the labelled hardware re-encode path
    (`edit/hwencode.h`), in the app process rather than the clip helper, since the frames come
    from the add-on. The first video model is chosen like the audio one.

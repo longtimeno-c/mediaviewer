@@ -16,6 +16,11 @@ bool has_sound_rows(const mv_host_api* h) {
          h->sound_write_finish && h->sound_write_close;
 }
 
+bool has_still_rows(const mv_host_api* h) {
+  return h->struct_size >= offsetof(mv_host_api, still_write) + sizeof(h->still_write) && h->still_open &&
+         h->still_pixels && h->still_close && h->still_write;
+}
+
 bool has_picture_rows(const mv_host_api* h) {
   return h->struct_size >= offsetof(mv_host_api, clip_write_close) + sizeof(h->clip_write_close) &&
          h->frames_open && h->frames_read && h->frames_close && h->clip_write_open && h->clip_write_frame &&
@@ -70,6 +75,32 @@ run_port run_port_of(const mv_host_api* h, const std::string& self_dir) {
     return runtime->open(spec, models_dir);
   };
   p.free_memory = [] { return available_memory(); };
+
+  // Slice 3: a photo, when the host has those rows (and the tiles below).
+  if (has_still_rows(h)) {
+    p.open_still = [h](const std::string& path) -> mv::result<run_port::still> {
+      mv_addon_still_info info{};
+      info.struct_size = sizeof info;
+      void* raw = nullptr;
+      const mv_status st = h->still_open(h->host, path.c_str(), &info, &raw);
+      if (st != MV_OK || !raw) return mv::err(st == MV_ERR_OUT_OF_MEMORY ? mv::status::out_of_memory : mv::status::unsupported_format);
+      std::shared_ptr<void> still(raw, [h](void* s) { h->still_close(h->host, s); });
+      run_port::still out;
+      out.width = info.width;
+      out.height = info.height;
+      out.rgb.resize(std::size_t{info.width} * info.height * 3);
+      const mv_status ps = h->still_pixels(h->host, still.get(), out.rgb.data(), out.rgb.size());
+      if (ps != MV_OK) return mv::err(static_cast<mv::status>(ps));
+      return out;
+    };
+    p.write_still = [h](const std::string& source, const run_port::still& pic) -> mv::result<std::string> {
+      char buf[4096] = {};
+      const mv_status st = h->still_write(h->host, source.c_str(), pic.rgb.data(), pic.width, pic.height,
+                                          pic.width * 3, "enhance", buf, sizeof buf);
+      if (st != MV_OK) return mv::err(static_cast<mv::status>(st));
+      return std::string(buf);
+    };
+  }
 
   // Slice 5: a clip's picture, when the host has those rows too.
   if (has_picture_rows(h)) {
@@ -128,11 +159,12 @@ run_port run_port_of(const mv_host_api* h, const std::string& self_dir) {
       };
       return out;
     };
-    p.load_tiles = [runtime](const model_spec& spec, const std::string& models_dir) {
-      // Core ML's compiled model, kept beside the weights (Remove deletes it).
-      return runtime->open_tiles(spec, models_dir, models_dir + "-cache");
-    };
   }
+  // Photos and a clip's picture: one tiled model runner.
+  p.load_tiles = [runtime](const model_spec& spec, const std::string& models_dir) {
+    // Core ML's compiled model, kept beside the weights (Remove deletes it).
+    return runtime->open_tiles(spec, models_dir, models_dir + "-cache");
+  };
   return p;
 }
 

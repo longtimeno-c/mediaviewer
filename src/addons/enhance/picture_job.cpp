@@ -55,8 +55,12 @@ expected enhance_picture(std::span<const std::uint8_t> rgb, std::uint32_t w, std
     const double bot = px(x0, y0 + 1, c) * (1 - ax) + px(x0 + 1, y0 + 1, c) * ax;
     return static_cast<float>((top * (1 - ay) + bot * ay) / 255.0);
   };
+  const std::uint64_t total = tiles_for(w, h, t, o.overlap);
+  std::uint64_t done = 0;
   for (std::uint32_t y0 = 0; y0 < h; y0 += core) {
     for (std::uint32_t x0 = 0; x0 < w; x0 += core) {
+      if (o.cancel && o.cancel->load()) return err(status::cancelled);
+      if (o.progress) o.progress(static_cast<double>(done++) / static_cast<double>(total));
       // The tile: this centre and `overlap` around it, edges replicated.
       const std::int64_t sx = static_cast<std::int64_t>(x0) - o.overlap;
       const std::int64_t sy = static_cast<std::int64_t>(y0) - o.overlap;

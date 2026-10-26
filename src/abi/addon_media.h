@@ -64,6 +64,13 @@ namespace media {
 // clip beside it from new frames (picture_writer, hardware encoders only).
 [[nodiscard]] result<std::unique_ptr<picture_source>> open_frames(const std::string& path);
 [[nodiscard]] result<std::unique_ptr<picture_sink>> open_clip_writer(const std::string& source, const picture_out& out);
+// #297 slice 3: a photo at full resolution as the export path decodes it
+// (edit::full_picture), and a new photo beside a source with its metadata
+// carried (edit::export_pixels; Exiv2 for HEIC, TIFF, RAW, WebP), named
+// "<stem>-<suffix>.jpg" (".png" for a PNG) under the first free name.
+[[nodiscard]] result<rgb_image> full_still(const std::string& path);
+[[nodiscard]] result<std::string> write_still(const std::string& source, const rgb_image& pixels,
+                                              const std::string& suffix);
 // #354: a document's text in reading order with the page each paragraph
 // starts on: a DOCX through codec::docx_text. unsupported_format for anything
 // else (PDF text is the AI pack's own, through PDFium). `visit` false stops

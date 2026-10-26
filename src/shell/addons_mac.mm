@@ -672,6 +672,8 @@ mv::addon::host_services ai_services() {
   svc.open_sound_writer = &mv::addon::media::open_sound_writer;  // #297
   svc.open_frames = &mv::addon::media::open_frames;            // #297 slice 5
   svc.open_clip_writer = &mv::addon::media::open_clip_writer;  // #297 slice 5
+  svc.full_still = &mv::addon::media::full_still;    // #297 slice 3
+  svc.write_still = &mv::addon::media::write_still;  // #297 slice 3
   // piece_dir is left empty: loaded_addon::load serves the family's own
   // verified pieces from the store.
   return svc;

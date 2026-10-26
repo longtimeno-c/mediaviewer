@@ -14,7 +14,9 @@
 // Portable and model-agnostic: tests drive it with a fake model.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -35,6 +37,9 @@ struct picture_options {
   std::uint32_t out_scale = 2;  // 1, 2 or 4; at most the model's scale, dividing it
   std::uint32_t overlap = 16;   // pixels of context each side of a tile's centre
   double strength = 1.0;
+  // A photo is hundreds of tiles: checked and reported between them.
+  const std::atomic<bool>* cancel = nullptr;
+  std::function<void(double fraction)> progress;
 };
 
 // `rgb`: width x height x 3. `out` becomes (width*out_scale) x (height*out_scale) x 3.

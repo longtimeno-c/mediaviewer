@@ -17,6 +17,9 @@ namespace mv::enhance {
 // before them, and Enhance then installs models but runs none.
 [[nodiscard]] bool has_sound_rows(const mv_host_api* h);
 
+// The photo rows (slice 3), appended after the picture rows.
+[[nodiscard]] bool has_still_rows(const mv_host_api* h);
+
 // The picture rows (slice 5), appended after the sound rows.
 [[nodiscard]] bool has_picture_rows(const mv_host_api* h);
 

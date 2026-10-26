@@ -12,6 +12,7 @@
 
 #include "codec/decode.h"
 #include "edit/clip_sample.h"
+#include "edit/export.h"
 #include "edit/picture_io.h"
 #include "edit/sound_writer.h"
 #include "image/pipeline.h"
@@ -20,6 +21,9 @@
 #include "io/file_port.h"
 #include "io/pairing.h"
 #include "io/paths.h"
+#include "io/collision_name.h"
+#include "io/replace.h"
+#include "meta/meta.h"
 
 namespace mv::addon::media {
 namespace {
@@ -317,6 +321,75 @@ result<std::unique_ptr<picture_sink>> open_clip_writer(const std::string& source
   o.suffix = out.suffix;
   MV_TRY(auto w, edit::clip::picture_writer::open(source, o));
   return std::unique_ptr<picture_sink>(new adapter(std::move(w)));
+}
+
+result<rgb_image> full_still(const std::string& path) {
+  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(path));
+  MV_TRY(codec::raster pic, edit::full_picture(bytes));
+  rgb_image out;
+  out.width = pic.width;
+  out.height = pic.height;
+  const std::size_t px = static_cast<std::size_t>(pic.width) * pic.height;
+  out.rgb.resize(px * 3);
+  for (std::size_t i = 0; i < px; ++i) {
+    out.rgb[i * 3] = pic.rgba[i * 4];
+    out.rgb[i * 3 + 1] = pic.rgba[i * 4 + 1];
+    out.rgb[i * 3 + 2] = pic.rgba[i * 4 + 2];
+  }
+  return out;
+}
+
+result<std::string> write_still(const std::string& source, const rgb_image& pixels, const std::string& suffix) {
+  if (suffix.empty() || suffix.size() > 32 ||
+      !std::all_of(suffix.begin(), suffix.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+      })) {
+    return err(status::invalid_arg);
+  }
+  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(source));
+  const codec::format_family family = codec::probe(bytes);
+  // HEIC, TIFF, RAW, WebP: their metadata from Exiv2 (meta/), as an export does.
+  edit::metadata_blobs carried;
+  if (family != codec::format_family::jpeg && family != codec::format_family::png) {
+    meta::carried_metadata m = meta::read_carried(bytes);
+    carried.exif = std::move(m.exif);
+    carried.xmp = std::move(m.xmp);
+  }
+  codec::raster pic;
+  pic.width = pixels.width;
+  pic.height = pixels.height;
+  pic.tagged_srgb = true;
+  const std::size_t px = static_cast<std::size_t>(pixels.width) * pixels.height;
+  if (pixels.rgb.size() < px * 3) return err(status::invalid_arg);
+  pic.rgba.assign(px * 4, 255);
+  for (std::size_t i = 0; i < px; ++i) {
+    pic.rgba[i * 4] = pixels.rgb[i * 3];
+    pic.rgba[i * 4 + 1] = pixels.rgb[i * 3 + 1];
+    pic.rgba[i * 4 + 2] = pixels.rgb[i * 3 + 2];
+  }
+  edit::export_options opt;
+  opt.encode.format = family == codec::format_family::png ? edit::image_format::png : edit::image_format::jpeg;
+  opt.encode.quality = 92;
+  MV_TRY(edit::export_result r, edit::export_pixels(bytes, pic, opt, &carried));
+  pic = codec::raster{};
+
+  const std::size_t sep = source.find_last_of("/\\");
+  const std::string dir = sep == std::string::npos ? std::string() : source.substr(0, sep + 1);
+  const std::string name = sep == std::string::npos ? source : source.substr(sep + 1);
+  std::size_t dot = name.rfind('.');
+  if (dot == std::string::npos || dot == 0) dot = name.size();
+  const std::string wanted =
+      name.substr(0, dot) + "-" + suffix + (opt.encode.format == edit::image_format::png ? ".png" : ".jpg");
+  // write_new refuses an existing name, so a race moves on to the next number.
+  for (int attempt = 0; attempt < 8; ++attempt) {
+    const std::string file =
+        io::unique_name(wanted, [&](std::string_view candidate) { return io::file_exists(dir + std::string(candidate)); });
+    if (file.empty()) return err(status::io);
+    const std::string out = dir + file;
+    if (io::write_new(out, r.bytes)) return out;
+    if (!io::file_exists(out)) return err(status::io);
+  }
+  return err(status::io);
 }
 
 result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_ms,

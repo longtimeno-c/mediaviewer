@@ -76,6 +76,19 @@ struct export_result {
                                              metadata_policy policy,
                                              const metadata_blobs* carried = nullptr);
 
+// Enhance (#297 slice 3): the picture a file holds at full resolution, as the
+// colour bake sees it — a RAW's own develop, ICC to sRGB, upright — encoded to
+// 8-bit sRGB RGBA with no geometry and no colour applied.
+[[nodiscard]] result<codec::raster> full_picture(std::span<const std::uint8_t> source,
+                                                 const job_context* ctx = nullptr);
+
+// New pixels for `source`, encoded with its metadata under `opt.policy`, as
+// an export carries it: Orientation 1, the written size, the EXIF thumbnail
+// dropped (it would show the old picture). `pixels` is sRGB RGBA8.
+[[nodiscard]] result<export_result> export_pixels(std::span<const std::uint8_t> source, const codec::raster& pixels,
+                                                  const export_options& opt,
+                                                  const metadata_blobs* carried = nullptr);
+
 // "IMG_0001.HEIC" → "IMG_0001-edit.jpg". The host runs it through
 // io::unique_name, so an existing export is never overwritten either.
 [[nodiscard]] std::string export_file_name(std::string_view source_name, image_format format);

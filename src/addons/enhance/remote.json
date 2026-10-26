@@ -4,5 +4,8 @@
   "sha256": "fe5eb64fa2e4154c83f8e4935e82871c850c154387ee892e0ab65fe179e7d8c9", "licence": "MIT"},
  {"url": "https://huggingface.co/jonathanst29/tinier-upscale-models/resolve/899dc1e4b22bbf1955c2f1739c085edc080cb366/realesr-general-x4v3.onnx",
   "path": "video/realesr-general-x4v3.onnx", "size": 4866396,
+  "sha256": "924ebad6532777303582d4ce7811849b88869231a3ae7093e0f21200249df8d5", "licence": "BSD-3-Clause"},
+ {"url": "https://huggingface.co/jonathanst29/tinier-upscale-models/resolve/899dc1e4b22bbf1955c2f1739c085edc080cb366/realesr-general-x4v3.onnx",
+  "path": "still/realesr-general-x4v3.onnx", "size": 4866396,
   "sha256": "924ebad6532777303582d4ce7811849b88869231a3ae7093e0f21200249df8d5", "licence": "BSD-3-Clause"}
 ]

@@ -153,7 +153,8 @@ endfunction()
 # the AI suite is built (it links mv_addon_media).
 function(mv_enhance_media_tests target)
   target_sources(${target} PRIVATE "${MV_SOURCE_ROOT}/tests/test_enhance_media.cpp")
-  target_link_libraries(${target} PRIVATE mv_enhance_engine)
+  # mv_edit: the photo case's JPEG and PNG fixtures (edit::encode).
+  target_link_libraries(${target} PRIVATE mv_enhance_engine mv_edit)
   # FFmpeg itself for the synthetic clips (clip_fixture.h), as mv_clipjob_test.
   target_include_directories(${target} SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
   target_link_directories(${target} PRIVATE ${FFMPEG_LIBRARY_DIRS})

@@ -1017,3 +1017,79 @@ TEST_CASE("enhance: a clip's picture, and its sound too, through the runner", "[
   f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
   REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("larger than 4K") != std::string::npos; }));
 }
+
+// ---- slice 3: a photo --------------------------------------------------------------
+
+TEST_CASE("enhance: a photo through the sheet and the runner, within its limits", "[enhance][still]") {
+  fixture f;
+  const fs::path photo = f.dir / "IMG_0001.JPG";
+  write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  write_text(f.self / "models/still/model.json", R"json({
+    "kind": "still", "name": "Detail", "weights": ["up.onnx"], "run_bytes": 1000, "cpu": true,
+    "knobs": [{"id": "scale", "label": "Size", "type": "choice",
+               "options": [{"id": "1", "text": "Same"}, {"id": "2", "text": "2x"}, {"id": "4", "text": "4x"}],
+               "default": "2"}],
+    "io": {"runner": "tiles", "scale": 4, "tile": 32, "overlap": 4, "dims": ["h", "w"]}})json");
+  // The fixture's manifest pins video/up.onnx; a still model needs its own pin.
+  {
+    const auto text = mv::test::read_bytes(f.self / "manifest.json");
+    std::string m(text.begin(), text.end());
+    const std::string pin = R"json({"url": "https://huggingface.co/mv-test/upscale/resolve/0123abcd/up.onnx",
+      "path": "still/up.onnx", "size": )json" + std::to_string(f.video_weights.size()) + R"json(, "sha256": ")json" +
+                            hex_of(f.video_weights) + R"json(", "licence": "BSD-3-Clause"},)json";
+    m.insert(m.find("[") + 1, pin);
+    write_text(f.self / "manifest.json", m);
+  }
+  f.restart();
+  f.eng->event(kSettingsScreen, "install.still", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::still).state == dl_state::ready; }));
+
+  std::uint32_t w = 40, h = 30;
+  std::uint64_t free = 8ull << 30;
+  std::uint32_t written_w = 0, written_h = 0;
+  run_port port;
+  port.free_memory = [&]() -> std::optional<std::uint64_t> { return free; };
+  port.load_tiles = [](const model_spec&, const std::string& dir) -> mv::result<std::unique_ptr<tile_model>> {
+    CHECK(dir.find("models/still") != std::string::npos);
+    return std::unique_ptr<tile_model>(new nearest4(32));
+  };
+  port.open_still = [&](const std::string& path) -> mv::result<run_port::still> {
+    CHECK(path == utf8(photo));
+    run_port::still s;
+    s.width = w;
+    s.height = h;
+    s.rgb = noise_rgb(w, h);
+    return s;
+  };
+  port.write_still = [&](const std::string&, const run_port::still& pic) -> mv::result<std::string> {
+    written_w = pic.width;
+    written_h = pic.height;
+    CHECK(pic.rgb.size() == std::size_t{pic.width} * pic.height * 3);
+    return utf8(f.dir / "IMG_0001-enhance.jpg");
+  };
+  f.eng->set_runner(std::make_unique<job_runner>(port));
+
+  f.eng->sheet_opened(1, utf8(photo));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    CHECK(t.has("k.still.scale"));
+    CHECK_FALSE(t.node("run")->boolean("disabled").value_or(false));
+  }
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as") != std::string::npos; }));
+  CHECK(parsed(f.host.tree(kSheetScreen)).text("status") == "Saved as IMG_0001-enhance.jpg.");
+  CHECK(written_w == 80u);
+  CHECK(written_h == 60u);
+
+  // Past 100 megapixels at this size: refused before any tile runs.
+  w = 6000;
+  h = 4500;
+  f.eng->event(kSheetScreen, "k.still.scale", MV_SLOT_EVENT_CHANGE, "\"4\"");
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("megapixels") != std::string::npos; }));
+  // Not enough memory for the picture in and out: says so.
+  f.eng->event(kSheetScreen, "k.still.scale", MV_SLOT_EVENT_CHANGE, "\"1\"");
+  free = 50'000'000;
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("free memory") != std::string::npos; }));
+}

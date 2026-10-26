@@ -62,7 +62,22 @@ struct run_port {
       create_clip;
   std::function<result<std::unique_ptr<tile_model>>(const model_spec& spec, const std::string& models_dir)>
       load_tiles;
+
+  // ---- a photo (slice 3) ----
+  struct still {
+    std::uint32_t width = 0, height = 0;
+    std::vector<std::uint8_t> rgb;
+  };
+  // [job thread] At full resolution, upright (seconds for a RAW).
+  std::function<result<still>(const std::string& path)> open_still;
+  // [job thread] The new photo beside `source`; its path.
+  std::function<result<std::string>(const std::string& source, const still& pixels)> write_still;
 };
+
+// The largest photo Enhance writes: 100 megapixels (a 4x of a 25 MP photo is
+// past it), and 16384 on its long edge.
+inline constexpr std::uint64_t kMaxStillPixels = 100'000'000;
+inline constexpr std::uint32_t kMaxStillEdge = 16384;
 
 // The largest clip Enhance writes: 4K UHD (hardware encoders' common limit).
 inline constexpr std::uint32_t kMaxLongEdge = 3840;
@@ -82,6 +97,7 @@ class job_runner final : public runner {
   void run(job_request r, job_events events);
   void run_sound(job_request r, job_events events);
   void run_picture(job_request r, job_events events);
+  void run_still(job_request r, job_events events);
 
   run_port port_;
   std::mutex m_;

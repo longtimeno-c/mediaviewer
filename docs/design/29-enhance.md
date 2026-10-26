@@ -2,12 +2,13 @@
 
 The Enhance add-on (#297): a restored copy of the photo, clip or audio file on screen, made by a
 model that runs on this computer and is downloaded only when the person asks for it. The original
-is never the output (rule 5). Built: model downloads and the sheet (slices 1–2), sound — an audio
-file's, or a clip's (slice 4) — and a clip's picture (slice 5). Not built: photos (slice 3);
-[the plan](../plans/enhance.md) has what is left.
+is never the output (rule 5). Built: model downloads and the sheet (slices 1–2), photos (slice 3),
+sound — an audio file's, or a clip's (slice 4) — and a clip's picture (slice 5). [The
+plan](../plans/enhance.md) has what is left.
 
-Code: `src/addons/enhance` (`cmake/enhance.cmake`), the host's `edit/sound_writer.h` and
-`edit/picture_io.h`, and the sound and picture rows of the host table ([14](14-abi.md)).
+Code: `src/addons/enhance` (`cmake/enhance.cmake`), the host's `edit/sound_writer.h`,
+`edit/picture_io.h` and `edit/export.h`'s `full_picture` / `export_pixels`, and the sound, picture
+and photo rows of the host table ([14](14-abi.md)).
 Decisions: [12](12-decision-log.md), "Enhance is its own add-on", "Enhance's first audio model"
 and "Enhance's first video model" (2026-10-26).
 
@@ -52,6 +53,7 @@ still to come (plus a tenth). `addon-pack.py` refuses a pin over 5 GB too.
 |---|---|---|---|
 | audio | DeepFilterNet3 (Schröter et al.), streaming ONNX export (`kimtos-labs/denoiser-dfn3` @ `888f33c4`) | 16.1 MB | MIT (dual MIT / Apache-2.0) |
 | video | Real-ESRGAN general x4v3 (Wang et al.), ONNX export (`jonathanst29/tinier-upscale-models` @ `899dc1e4`) | 4.9 MB | BSD-3-Clause |
+| still | the same file, pinned again under `still/` (each kind downloads its own) | 4.9 MB | BSD-3-Clause |
 
 ## The sheet
 
@@ -95,6 +97,16 @@ FLAC, lossless and royalty-free: a `.flac`, or a clip in Matroska (`edit/clip_au
 The write runs in the app's process, not the clip helper ([08](08-video-editing.md)): the sound
 comes from the add-on, and its picture is copied, never encoded.
 
+**A photo.** The host decodes it at full resolution as an export does (`edit::full_picture`: a
+RAW's own develop, ICC to sRGB, upright; never the first-pixel preview), the add-on runs it through
+the same tiles as a clip's frame (below), reporting each tile, and the host writes
+`<stem>-enhance.jpg` (quality 92; `.png` for a PNG) with the source's metadata carried as an
+export carries it (`edit::export_pixels`: Orientation 1, the written size, no stale thumbnail;
+Exiv2 for HEIC, TIFF, RAW and WebP), under the first free name. Same size, twice or four times, at
+most 100 megapixels (16384 on the long edge); the run gate adds the picture in and out to the
+model's `run_bytes`. **Not yet:** a crop or colour change made on screen is not in the copy — the
+edit stack lives in the host's UI-thread edit session and is not handed to add-ons.
+
 **A clip's picture.** The host decodes every frame in display order on a decoder of its own
 (`edit/picture_io.h`'s `frame_reader`), to 8-bit sRGB through the same colour path as frame
 export (`clip_pixels.h`); HDR clips are refused for now ("cannot enhance HDR video yet"). Each
@@ -129,13 +141,15 @@ a few percent in.
 | Tiled (4 tiles) against one pass over a 300 × 250 picture, 4×, away from the border | mean 0.02, worst 4 (of 255) |
 | A 640 × 360 clip, 30 frames, to 1280 × 720 with its sound, Core ML + VideoToolbox | 6.2 s (0.21 s a frame) |
 | Peak memory of that run, both models and a reference session | about 330 MB (`run_bytes` 600 MB) |
+| A 4032 × 3024 photo (EXIF-turned) to 6048 × 8064, Core ML, read to written | 8.7 s, about 850 MB peak (`run_bytes` 700 MB + the picture in and out) |
 
 Not measured: Windows, a long file's memory over time, and the viewer's own gates with Enhance
 installed (it loads no runtime until a run, and runs nothing at launch).
 
 ## Not built
 
-- Photos (slice 3): the sheet names them; Run stays greyed.
+- A photo's on-screen crop and colour in its enhanced copy (#297 asks for it): needs the host's
+  edit stack handed to the add-on.
 - HDR clips: the picture would come back SDR; refused for now.
 - A GPU on Windows: the bundled ONNX Runtime is the CPU build, so a clip's picture there runs on
   the CPU (about a quarter of Core ML's speed on this Mac's CPU; not measured on Windows).
