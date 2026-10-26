@@ -1211,6 +1211,30 @@ TEST_CASE("driftwire cli keys: mouse reports and the cursor position report", "[
   CHECK(out[0].x == 80);
   CHECK(out[1].y == 3);
   out.clear();
+  // Esc held for its wait, and the terminal's answer to CSI 6n arriving in
+  // it (the CI's ASan leg, #553): the Esc key, then the report, never
+  // "Alt + a report" that eats the Esc.
+  d.feed("\x1B", out);
+  CHECK(out.empty());
+  d.feed("\x1B[12;1R", out);
+  REQUIRE(out.size() == 2);
+  CHECK(out[0].is(cli::key::esc));
+  CHECK(out[1].is(cli::key::cursor));
+  CHECK(out[1].y == 12);
+  out.clear();
+  d.feed("\x1B", out);
+  d.feed("\x1B[<0;7;3M", out);
+  REQUIRE(out.size() == 2);
+  CHECK(out[0].is(cli::key::esc));
+  CHECK(out[1].is(cli::key::mouse));
+  CHECK_FALSE(out[1].alt);
+  out.clear();
+  // Alt with an arrow (ESC ESC [ A, some terminals) is still Alt+Up.
+  d.feed("\x1B\x1B[A", out);
+  REQUIRE(out.size() == 1);
+  CHECK(out[0].is(cli::key::up));
+  CHECK(out[0].alt);
+  out.clear();
   // Not a report: the keys as before.
   d.feed("\x1B[A\x1B[<0;1M\x1B[1;5D", out);
   REQUIRE(out.size() == 3);

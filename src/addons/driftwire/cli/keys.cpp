@@ -207,7 +207,16 @@ bool key_decoder::decode_escape(std::size_t& pos, std::vector<key_event>& out) {
       pos = p;
       return true;
     }
+    const std::size_t before = out.size();
     decode_csi(std::string_view(buf_).substr(at + 1, params_end - at - 1), static_cast<char>(f), out, alt);
+    // ESC then a report (the cursor's, the mouse's) is the Esc key and then
+    // the report: a terminal's answer can arrive inside Esc's wait, and no
+    // one holds Alt over a report.
+    if (alt && out.size() == before + 1 && (out.back().is(key::cursor) || out.back().is(key::mouse))) {
+      const key_event report = out.back();  // a mouse report's own modifier bits stay
+      out.back() = of(key::esc);
+      out.push_back(report);
+    }
     pos = p + 1;
     return true;
   }
