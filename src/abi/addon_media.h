@@ -60,6 +60,10 @@ namespace media {
                                                                     std::uint32_t sample_rate,
                                                                     std::uint32_t channels,
                                                                     const std::string& suffix);
+// #297 slice 5: a clip's frames (edit/picture_io.h's frame_reader), and a new
+// clip beside it from new frames (picture_writer, hardware encoders only).
+[[nodiscard]] result<std::unique_ptr<picture_source>> open_frames(const std::string& path);
+[[nodiscard]] result<std::unique_ptr<picture_sink>> open_clip_writer(const std::string& source, const picture_out& out);
 // #354: a document's text in reading order with the page each paragraph
 // starts on: a DOCX through codec::docx_text. unsupported_format for anything
 // else (PDF text is the AI pack's own, through PDFium). `visit` false stops

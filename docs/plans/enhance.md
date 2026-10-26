@@ -29,9 +29,10 @@ Owner calls: issue #297 (2026-10-10). Decision log: "Enhance is its own add-on" 
 3. **A still** — not started (not asked for in this round).
 4. **Audio** — built 2026-10-26: DeepFilterNet3, the host's sound rows and `edit/sound_writer.h`
    ([29](../design/29-enhance.md)).
-5. **A clip's picture** — next. The candidate is Real-ESRGAN general x4v3 (BSD-3-Clause, 4.9 MB,
-   `jonathanst29/tinier-upscale-models@899dc1e4`, SHA-256 `924ebad6…d8d5`; input float32 NCHW
-   RGB in [0, 1] with dynamic size, output 4×), downloaded for measurement, not pinned. Needs every frame in display order (the sampler gives
+5. **A clip's picture** — built 2026-10-26: Real-ESRGAN general x4v3, the host's frames and
+   clip-write rows and `edit/picture_io.h` ([29](../design/29-enhance.md)).
+
+Left: slice 3 (photos), and HDR clips. Needs every frame in display order (the sampler gives
    keyframes and gaps) and a frame sink into the labelled hardware re-encode path
    (`edit/hwencode.h`), in the app process rather than the clip helper, since the frames come
    from the add-on. The first video model is chosen like the audio one.

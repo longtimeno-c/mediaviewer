@@ -1,0 +1,17 @@
+{
+ "kind": "video",
+ "name": "Detail",
+ "credit": "Real-ESRGAN general x4v3, Xintao Wang et al. (BSD-3-Clause)",
+ "weights": ["realesr-general-x4v3.onnx"],
+ "run_bytes": 600000000,
+ "cpu": true,
+ "knobs": [
+  {"id": "scale", "label": "Size", "type": "choice",
+   "options": [{"id": "1", "text": "Same size, more detail"}, {"id": "2", "text": "Twice the size"},
+               {"id": "4", "text": "Four times the size"}],
+   "default": "2", "help": "The new clip is at most 4K."},
+  {"id": "strength", "label": "Strength", "type": "slider", "min": 0, "max": 1, "step": 0.05, "default": 1,
+   "help": "How much of the model's picture replaces a plain enlargement."}
+ ],
+ "io": {"runner": "tiles", "scale": 4, "tile": 256, "overlap": 16, "dims": ["h", "w"]}
+}

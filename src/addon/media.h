@@ -96,6 +96,41 @@ class sound_sink {
   [[nodiscard]] virtual result<std::string> finish() = 0;
 };
 
+// #297 (Enhance): a clip's frames, and a new clip from new frames.
+struct picture_facts {
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+  std::uint32_t rotation = 0;
+  bool hdr = false;
+  double fps = 0;
+  std::int64_t duration_ms = 0;
+  std::int64_t frame_count = 0;
+};
+
+class picture_source {
+ public:
+  virtual ~picture_source() = default;
+  [[nodiscard]] virtual const picture_facts& facts() const noexcept = 0;
+  // The next frame (RGB, width x height x 3); false at the end.
+  [[nodiscard]] virtual result<bool> next(std::vector<std::uint8_t>& rgb, std::int64_t& pts_us) = 0;
+};
+
+struct picture_out {
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+  std::uint32_t sound_rate = 0;  // 0: the source's sound, copied
+  std::uint32_t sound_channels = 0;
+  std::string suffix;
+};
+
+class picture_sink {
+ public:
+  virtual ~picture_sink() = default;
+  [[nodiscard]] virtual expected write_frame(const std::uint8_t* rgb, std::uint32_t stride, std::int64_t pts_us) = 0;
+  [[nodiscard]] virtual expected write_sound(std::span<const float> interleaved) = 0;
+  [[nodiscard]] virtual result<std::string> finish() = 0;
+};
+
 // #354: a document's text, one paragraph (or line) at a time, in reading
 // order: the page (0-based) where it starts and the document's page count.
 struct document_line {

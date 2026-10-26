@@ -14,6 +14,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -148,6 +149,8 @@ class engine {
   media_facts facts_;
   bool running_ = false;
   double progress_ = -1;
+  std::chrono::steady_clock::time_point run_started_{};
+  std::string eta_;  // "About 12 minutes left", once a run has gone far enough to say
   std::string status_;
 };
 

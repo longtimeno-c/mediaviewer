@@ -462,6 +462,7 @@ add_library(mv_clip STATIC
   src/edit/clip_sample.cpp
   src/edit/clip_sound_write.cpp
   src/edit/clip_audio_enc.cpp
+  src/edit/clip_picture_io.cpp
   src/edit/clip_sample.h
   src/edit/clip_run.cpp
   src/edit/clip_jobs.cpp
@@ -954,6 +955,7 @@ if(MV_BUILD_TESTS)
     tests/test_clip.cpp
     # #297: Enhance's sound in and out (edit/sound_writer.h).
     tests/test_sound_writer.cpp
+    tests/test_picture_io.cpp
     tests/test_poster.cpp
     tests/test_clip_helper.cpp
     tests/test_clip_session.cpp

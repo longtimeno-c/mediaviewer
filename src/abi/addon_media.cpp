@@ -12,6 +12,7 @@
 
 #include "codec/decode.h"
 #include "edit/clip_sample.h"
+#include "edit/picture_io.h"
 #include "edit/sound_writer.h"
 #include "image/pipeline.h"
 #include "image/thumb.h"
@@ -269,6 +270,53 @@ result<std::unique_ptr<sound_sink>> open_sound_writer(const std::string& source,
   o.suffix = suffix;
   MV_TRY(auto w, edit::clip::sound_writer::open(source, o));
   return std::unique_ptr<sound_sink>(new adapter(std::move(w)));
+}
+
+result<std::unique_ptr<picture_source>> open_frames(const std::string& path) {
+  class adapter final : public picture_source {
+   public:
+    explicit adapter(std::unique_ptr<edit::clip::frame_reader> r) : r_(std::move(r)) {
+      const auto& a = r_->facts();
+      f_.width = a.width;
+      f_.height = a.height;
+      f_.rotation = a.rotation;
+      f_.hdr = a.hdr;
+      f_.fps = a.fps;
+      f_.duration_ms = a.duration_ms;
+      f_.frame_count = a.frame_count;
+    }
+    const picture_facts& facts() const noexcept override { return f_; }
+    result<bool> next(std::vector<std::uint8_t>& rgb, std::int64_t& pts_us) override { return r_->next(rgb, pts_us); }
+
+   private:
+    std::unique_ptr<edit::clip::frame_reader> r_;
+    picture_facts f_;
+  };
+  MV_TRY(auto r, edit::clip::frame_reader::open(path));
+  return std::unique_ptr<picture_source>(new adapter(std::move(r)));
+}
+
+result<std::unique_ptr<picture_sink>> open_clip_writer(const std::string& source, const picture_out& out) {
+  class adapter final : public picture_sink {
+   public:
+    explicit adapter(std::unique_ptr<edit::clip::picture_writer> w) : w_(std::move(w)) {}
+    expected write_frame(const std::uint8_t* rgb, std::uint32_t stride, std::int64_t pts_us) override {
+      return w_->write_frame(rgb, stride, pts_us);
+    }
+    expected write_sound(std::span<const float> pcm) override { return w_->write_sound(pcm); }
+    result<std::string> finish() override { return w_->finish(); }
+
+   private:
+    std::unique_ptr<edit::clip::picture_writer> w_;
+  };
+  edit::clip::picture_out_options o;
+  o.width = out.width;
+  o.height = out.height;
+  o.sound_rate = out.sound_rate;
+  o.sound_channels = out.sound_channels;
+  o.suffix = out.suffix;
+  MV_TRY(auto w, edit::clip::picture_writer::open(source, o));
+  return std::unique_ptr<picture_sink>(new adapter(std::move(w)));
 }
 
 result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_ms,

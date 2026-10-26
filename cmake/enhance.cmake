@@ -48,6 +48,8 @@ add_library(mv_enhance_engine STATIC
   ${_E}/sniff.h
   ${_E}/sound_job.cpp
   ${_E}/sound_job.h
+  ${_E}/picture_job.cpp
+  ${_E}/picture_job.h
   ${_E}/spec.cpp
   ${_E}/spec.h
   ${_E}/runner.cpp

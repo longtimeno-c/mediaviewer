@@ -2093,16 +2093,18 @@ There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
 
-### Enhance, slices 1, 2 and 4: model downloads, the sheet, and sound (#297, docs/design/29-enhance.md, 2026-10-26)
+### Enhance, slices 1, 2, 4 and 5: model downloads, the sheet, sound and a clip's picture (#297, docs/design/29-enhance.md, 2026-10-26)
 
 `src/addons/enhance` (`cmake/enhance.cmake`; arm64-only on the Mac, like the AI pack). Its page in
 Settings → Add-ons offers each kind's model; a click fetches only that kind's weights (pinned in
 `src/addons/enhance/remote.json`, signed into the manifest by `addon-pack.py`) through
 `mv_model_fetch`. The sheet (`Enhance…`, palette and context menu) shows the item's own knobs. The
 audio model (DeepFilterNet3) runs: an audio file gets `<stem>-enhance.m4a`, a clip's sound a copy of
-the clip with its picture stream-copied. New host rows `sound_open` … `sound_write_close`
-(`src/addon/host.cpp`, `abi/addon_media`, `edit/sound_writer.h`). Photos and a clip's picture are
-not built; the sheet says so. The release packs Enhance as a preferred add-on, like Places.
+the clip with its picture stream-copied. The video model (Real-ESRGAN general x4v3) enlarges a clip's
+picture in 256-pixel tiles (Core ML on Apple silicon, CPU elsewhere) and the host encodes it on a
+hardware encoder. New host rows `sound_open` … `sound_write_close` and `frames_open` …
+`clip_write_close` (`src/addon/host.cpp`, `abi/addon_media`, `edit/sound_writer.h`,
+`edit/picture_io.h`). Photos are not built; the sheet says so. The release packs Enhance as a preferred add-on, like Places.
 
 Pack it from a dev build (ONNX Runtime, the models' specs and `remote.json` are staged beside the
 library by the build), then sideload as any slot add-on:
@@ -2113,13 +2115,13 @@ python3 tools/package/addon-pack.py pack --addon enhance --platform macos --src 
 
 Tests: `build/bin/mv_import_tests "[enhance]"` (the engine and runner over fakes: downloads, the
 sheet, the sound pipeline's alignment and mix, the run gate), `build/bin/mv_ai_tests "[enhance]"`
-(end to end through the host table's sound rows and FFmpeg), `build/bin/mv_tests "[sound]"` (the
-reader's channels, `sound_writer`), `python3 -m unittest test_addon_pack.EnhancePackTest
+(end to end through the host table's sound rows and FFmpeg), `build/bin/mv_tests "[sound],[picture]"`
+(the reader's channels, `sound_writer`, `frame_reader`, `picture_writer`), `python3 -m unittest test_addon_pack.EnhancePackTest
 test_github_release` in `tools/package`. With the model downloaded (from its pinned URL), the
 hidden cases run it for real:
 
 ```bash
-MV_ENHANCE_DFN3=<dir>/denoiser_model.onnx MV_ENHANCE_RUNTIME_DIR=build/addons/enhance build/bin/mv_ai_tests "[.enhance-model]"
+MV_ENHANCE_DFN3=<dir>/denoiser_model.onnx MV_ENHANCE_ESRGAN=<dir>/realesr-general-x4v3.onnx MV_ENHANCE_RUNTIME_DIR=build/addons/enhance build/bin/mv_ai_tests "[.enhance-model]"
 ```
 
 ### The driftwire command line (2026-10-23)
