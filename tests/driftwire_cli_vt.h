@@ -12,8 +12,10 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "addons/driftwire/cli/term.h"
@@ -195,6 +197,17 @@ class vt_screen {
         if (params == "?25") cursor_shown_ = f == 'h';
         if (params == "?2026") sync_ = f == 'h';
         if (params == "?7") autowrap_ = f == 'h';
+        if (params == "?1000") mouse_ = f == 'h';
+        if (params == "?1006") sgr_mouse_ = f == 'h';
+        break;
+      case 'n':
+        // The cursor position report, as a terminal answers it, into the input.
+        if (params != "6") {
+          errors.emplace_back("a device status report other than 6");
+          break;
+        }
+        ++cursor_asks;
+        if (reply) reply("\x1B[" + std::to_string(y_ + 1) + ";" + std::to_string(std::min(x_, columns_ - 1) + 1) + "R");
         break;
       default: errors.emplace_back("a sequence the command line does not write: CSI " + std::string(params) + f);
     }
@@ -207,6 +220,14 @@ class vt_screen {
   bool cursor_shown_ = true;
   bool sync_ = false;
   bool autowrap_ = true;
+  bool mouse_ = false, sgr_mouse_ = false;
+
+ public:
+  // Mouse reporting on, in SGR's form (CSI ?1000h and ?1006h).
+  [[nodiscard]] bool mouse() const noexcept { return mouse_ && sgr_mouse_; }
+  int cursor_asks = 0;  // CSI 6n seen
+  // Where a terminal's answers go (the input); none: it does not answer.
+  std::function<void(std::string)> reply;
 };
 
 // A terminal for a session running on its own thread: the test types into
@@ -214,7 +235,10 @@ class vt_screen {
 // and can close it (SIGTERM / the console closing) or end its input.
 class fake_console final : public mv::driftwire::cli::terminal {
  public:
-  fake_console(int columns, int rows) : vt_(columns, rows) {}
+  fake_console(int columns, int rows) : vt_(columns, rows) {
+    // Called from write(), under m_: the answer is the next read.
+    vt_.reply = [this](std::string s) { input_.push_back(std::move(s)); };
+  }
 
   [[nodiscard]] mv::driftwire::cli::term_size size() const override { return {vt_.columns(), vt_.rows()}; }
 
@@ -297,6 +321,60 @@ class fake_console final : public mv::driftwire::cli::terminal {
     std::lock_guard lock(m_);
     return vt_.errors;
   }
+  // ---- the mouse
+  [[nodiscard]] bool mouse_on() const {
+    std::lock_guard lock(m_);
+    return vt_.mouse();
+  }
+  [[nodiscard]] int cursor_asks() const {
+    std::lock_guard lock(m_);
+    return vt_.cursor_asks;
+  }
+  // Waits until mouse reporting is `on` (or off), up to `seconds`.
+  bool wait_mouse(bool on, int seconds = 5) const {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+    std::unique_lock lock(m_);
+    while (vt_.mouse() != on) {
+      if (cv_.wait_until(lock, until) == std::cv_status::timeout) return vt_.mouse() == on;
+    }
+    return true;
+  }
+  // The first visible cell where `text` starts: (column, row), 1-based as a
+  // terminal reports them.
+  [[nodiscard]] std::optional<std::pair<int, int>> find(std::string_view text) const {
+    std::lock_guard lock(m_);
+    const auto& cells = vt_.cells();
+    for (std::size_t r = 0; r < cells.size(); ++r) {
+      std::string row;
+      std::vector<int> col_of;  // the byte offset of each cell's glyph
+      for (const auto& c : cells[r]) {
+        col_of.push_back(static_cast<int>(row.size()));
+        row += c;
+      }
+      const auto at = row.find(text);
+      if (at == std::string::npos) continue;
+      for (std::size_t x = 0; x < col_of.size(); ++x) {
+        if (col_of[x] >= static_cast<int>(at)) return std::pair<int, int>{static_cast<int>(x) + 1, static_cast<int>(r) + 1};
+      }
+    }
+    return std::nullopt;
+  }
+  // A left click (press and release) at a cell, 1-based, as SGR reports it.
+  void click(int x, int y) {
+    type("\x1B[<0;" + std::to_string(x) + ";" + std::to_string(y) + "M");
+    type("\x1B[<0;" + std::to_string(x) + ";" + std::to_string(y) + "m");
+  }
+  // A click on the text, where the screen shows it; false when it does not.
+  bool click_on(std::string_view text) {
+    const auto at = find(text);
+    if (!at) return false;
+    click(at->first, at->second);
+    return true;
+  }
+  void wheel(bool up, int x = 1, int y = 1) {
+    type("\x1B[<" + std::to_string(up ? 64 : 65) + ";" + std::to_string(x) + ";" + std::to_string(y) + "M");
+  }
+
   // Everything written, as written, in one string.
   [[nodiscard]] std::string written() const {
     std::lock_guard lock(m_);

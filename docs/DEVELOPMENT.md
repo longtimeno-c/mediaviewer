@@ -541,16 +541,28 @@ build/bin/driftwire --help
 build/bin/driftwire                       # the session; Ctrl+C twice or /quit closes it
 build/bin/driftwire send ~/Pictures/a.heic --to "Ann's MacBook"
 build/bin/driftwire receive --once --save-to /tmp/in --plain
+build/bin/driftwire update                # a build of your own: says it cannot, exits 1
 build/bin/mv_driftwire_cli_gallery --width 80          # every card and state, made-up data (never packaged)
 build/bin/mv_driftwire_cli_gallery --animate sending   # waiting, sending, receiving, bluetooth, internet, dht, relay, reconnecting, code
 ```
 
 Its own data folder is `${XDG_STATE_HOME:-~/.local/state}/driftwire` (Linux), `~/Library/Application
 Support/Driftwire` (macOS) or `%LOCALAPPDATA%\Driftwire` (Windows): settings, the resume file, the
-DHT's table and the session lock. Its identity and remembered devices are not there but under
+DHT's table, the session lock and `driftwire_update.json` (the update check's switch and last
+answer). Its identity and remembered devices are not there but under
 "Driftwire CLI" in the Secret Service (Linux) or Credential Manager (Windows); macOS keeps none.
 `mv_driftwire_cli_test` is the same program with `MV_DRIFTWIRE_CLI_TEST_HOOKS` (it runs from a
 pipe, `--test-loopback`, `--test-data DIR`, `--test-events`), for the end-to-end test only.
+
+The update check ([docs/design/28](design/28-driftwire.md#updates-in-the-terminal)) runs only in a
+copy an installer put in place (`%LOCALAPPDATA%\Programs\Driftwire`, a Homebrew Cellar,
+`/usr/bin` on Linux, or an `install.sh` archive prefix with `share/driftwire/install-manifest` on
+Linux or macOS), so a build of your own
+never asks the site and `driftwire update` refuses there. It reads `<site>/latest.json`; the site
+is `MV_DRIFTWIRE_SITE_URL` (CMake cache, the Pages address by default) or `DRIFTWIRE_REPO_URL`
+(https, or http on localhost). `DRIFTWIRE_NO_UPDATE_CHECK=1` skips it. Its tests are
+`tests/test_driftwire_cli_update.cpp` and the session case "a newer driftwire is said once" in
+`"[cli]"`, with a stand-in for the network.
 
 On Linux the packaged program is built by its own small project, `cmake/driftwire-cli`
 ([Linux packages](#linux-packages-driftwire)). Without vcpkg (as in a container that cannot
@@ -1791,7 +1803,8 @@ On a Mac without Homebrew, the Linux line unpacks the signed macOS archive into 
 One repository variable publishes all three from every **stable** release: with
 `MV_DRIFTWIRE_REPO` = `1`, `publish` requires and attaches the macOS archive and the Windows zip
 that the `macos` and `windows` jobs pack on every run, `driftwire-repo` deploys the site (the apt
-and dnf repositories, `install.sh`, the macOS archive, the Windows zip and `install.ps1`) to GitHub Pages, and
+and dnf repositories, `install.sh`, the macOS archive, the Windows zip, `install.ps1` and
+`latest.json`, which installed copies read to say a newer one is out) to GitHub Pages, and
 `driftwire-homebrew` writes the tap's formula. Previews, and any release with it off, leave all
 of that alone; the installers publish as before.
 

@@ -30,7 +30,8 @@ namespace {
 // What leaving raw mode writes: end a synchronized frame cut short, reset
 // the colours, autowrap on (the live region draws with it off), show the
 // cursor, bracketed paste off.
-constexpr std::string_view kRestore = "\x1B[?2026l\x1B[0m\x1B[?7h\x1B[?25h\x1B[?2004l";
+// Mouse reporting off too: the session turns it on while something can be clicked.
+constexpr std::string_view kRestore = "\x1B[?2026l\x1B[0m\x1B[?7h\x1B[?25h\x1B[?2004l\x1B[?1000l\x1B[?1006l";
 
 // The signal pipe's write end, for the handler (async-signal-safe: write only).
 volatile std::sig_atomic_t g_signal_fd = -1;

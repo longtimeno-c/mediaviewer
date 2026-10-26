@@ -190,7 +190,9 @@ void inline_view::draw_into(std::string& s, const raster& r) {
 bool inline_view::present(const ftxui::Element& doc) {
   if (closed_) return false;
   raster r = rasterize(doc, width_);
+  cut_ = 0;
   if (const int over = static_cast<int>(r.rows.size()) - max_rows(); over > 0) {
+    cut_ = over;
     r.rows.erase(r.rows.begin(), r.rows.begin() + over);
     r.plain.erase(r.plain.begin(), r.plain.begin() + over);
     r.cursor_row = r.cursor_row >= over ? r.cursor_row - over : -1;
@@ -206,6 +208,7 @@ bool inline_view::present(const ftxui::Element& doc) {
   draw_into(s, r);
   finish(s, r.cursor_row >= 0);
   out_.write(s);
+  ++writes_;
   shown_ = std::move(r);
   drawn_ = true;
   dirty_ = false;
@@ -231,6 +234,7 @@ void inline_view::print(const ftxui::Element& entry) {
   }
   finish(s, closed_ || (region && shown_.cursor_row >= 0));
   out_.write(s);
+  ++writes_;
 }
 
 void inline_view::erase() {

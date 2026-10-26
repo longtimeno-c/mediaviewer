@@ -94,6 +94,7 @@ driftwire receive [--once]       the session for receiving; --once closes after 
 driftwire code                   the session, making a code to receive from anywhere, closing
                                  when the receive it lets in ends, or the code fails or runs out
 driftwire devices                the remembered devices (no terminal needed)
+driftwire update                 update it the way it was installed (no terminal needed)
 driftwire --help | --version     (no terminal needed)
   --save-to DIR, --name NAME     this run only
   --plain, --no-color, --verbose
@@ -146,13 +147,30 @@ network at all it says so and waits, as the window does: a network can come up.
   the prompt or in a field as it appears ("y" of "~/my-trip") is not an answer; Esc always is.
   Three minutes with no answer, the engine declines, as in the window. Esc twice cancels a transfer under way; Ctrl+C
   twice closes Driftwire (during a transfer it says it will cancel it first).
+- **Clicks** (owner, 2026-10-25, [12](12-decision-log.md#driftwire)): choices are also chosen with
+  the mouse, but only while something on screen can be clicked: the offer's three, a question's,
+  the check to compare, Remember's, the `/` palette's rows, and Nearby while files are ready. Only
+  then is mouse reporting on (CSI ?1000h with SGR's ?1006h), so the rest of the time the terminal
+  selects and scrolls its scrollback as ever; while it is on, most select with Shift (Option in
+  macOS Terminal). A click on a choice is its number typed, so it answers only the card drawn and,
+  on a card that says yes to someone else, only once it has settled (`kAnswerSettleMs`); the
+  wheel is ↑↓. A click on a computer in Nearby points at it; a second click on the one pointed at
+  sends, as Enter on an empty prompt does (the code is still typed and the other side still
+  accepts). A palette row clicked is Enter on it. Each clickable row's box comes from the layout
+  (FTXUI `reflect`, `hit_boxes` in `render.h`); where the live region is on screen comes from the
+  terminal: after each write the session asks for the cursor (CSI 6n), which `inline_view` keeps
+  `up_from_top()` rows below the region's first row, and a click that comes before the answer
+  waits for it. Off in plain mode, on suspend and on the way out (the console's restore string
+  turns it off too, and a cursor answer still on its way is read first, so none lands in the
+  shell). Measured in the tests' terminal only; Windows Terminal, conhost, macOS Terminal, iTerm2
+  and the Linux terminals not yet by hand.
 - **Files** are typed, pasted or dropped (a terminal pastes a dropped file as its path): quotes,
   backslash escapes, `~`, `file://` and the globs `* ? [...]`, expanded by the program, not a
   shell. A folder alone is a folder send. Nearby is the engine's list; ↑↓ choose and Enter on an
   empty prompt sends. The commands are the window's: `/send`, `/folder`, `/files`, `/clear`,
   `/code`, `/copy`, `/to-code`, `/devices`, `/forget N`, `/mine N on|off`, `/unfinished`, `/discard N`,
-  `/save-to`, `/internet`, `/dht`, `/handover`, `/relay`, `/relay-server`, `/settings`, `/help`,
-  `/quit`. An internet option says what it means the first time it is turned on in a session (the
+  `/save-to`, `/internet`, `/dht`, `/handover`, `/relay`, `/relay-server`, `/updates`, `/settings`,
+  `/help`, `/quit` (`/updates` is the command line's own, [Updates](#updates-in-the-terminal)). An internet option says what it means the first time it is turned on in a session (the
   window's words).
 - **Its own identity and data folder.** Its settings (`driftwire.json`), what it keeps of a
   receive that stopped (`driftwire_resume.json`), the DHT's table (`driftwire_dht.dat`) and the
@@ -192,11 +210,50 @@ network at all it says so and waits, as the window does: a network can come up.
 - **The Linux packages** (`cmake/driftwire-cli`, [12](12-decision-log.md#platforms)): one program,
   `/usr/bin/driftwire`, that needs only glibc (2.35 or newer, the build machine's): libsodium 1.0.22
   (a distro's 1.0.18 has no ML-KEM-768), BLAKE3, FTXUI and the C++ runtime are linked in, and the
-  build fails if anything else is `NEEDED`. libsecret and libsystemd are opened at run time when
-  they are there; the `.deb` recommends `libsecret-1-0`, the `.rpm` `libsecret`. With it: the manual
+  build fails if anything else is `NEEDED`. libsecret, libsystemd and libcurl (the update check)
+  are opened at run time when they are there; the `.deb` recommends `libsecret-1-0` and
+  `libcurl4t64 | libcurl4`, the `.rpm` `libsecret` and `libcurl`. With it: the manual
   page, bash and zsh completions, a firewalld service for the beacon (`driftwire`, 47613/udp; the
   manual page says what ufw needs, and that receiving nearby also needs incoming TCP from the local
   network, on a port the system picks) and the DEP-5 copyright file with every notice.
+
+### Updates in the terminal
+
+The owner asked (2026-10-25) for the command line to say when a newer version is out, as Claude
+Code's does, and for a command that installs it ([12](12-decision-log.md#driftwire)):
+`src/addons/driftwire/cli/update.h`.
+
+- **The check.** As the session opens, once a day at most and only for a copy one of the
+  installers put there, a detached thread GETs `<site>/latest.json` (`{"version": "0.1.40"}`,
+  written by `driftwire_repo.py` with the rest of the site, so it names what the site installs).
+  The session never waits for it: a version already known to be newer is said under the banner, a
+  fetched one when it arrives (the thread wakes the session's wait and calls nobody once it has
+  closed). The answer is kept in `driftwire_update.json` in the data folder (`check`, `checked`,
+  `latest`); no answer, or one that is not a version, is asked again next run. On by default (the
+  owner's call); `/updates off` keeps it off, `DRIFTWIRE_NO_UPDATE_CHECK` set to anything skips it,
+  and `/settings` says which. The test build never checks.
+- **The notice** is one transcript line, "driftwire 0.1.40 is available · this is 0.1.38", and "Run
+  driftwire update to update it (/updates off stops these checks)." under it, once a session.
+- **`driftwire update`** asks the site again, says "driftwire 0.1.38 is up to date." and exits 0
+  when it is, and otherwise (or when the site does not answer) runs this copy's channel, printing
+  it first, with the installer's own output: `brew upgrade driftwire` (the program's path, links
+  resolved, is in a Homebrew Cellar); the site's `install.sh` again, from a file so a failed
+  download runs nothing (`/usr/bin/driftwire` on Linux, or `<prefix>/bin/driftwire` beside the
+  archive's `share/driftwire/install-manifest` on Linux or a Mac without Homebrew), which upgrades
+  the package through apt, dnf or zypper, or the archive (on a Mac that has Homebrew by then it
+  installs nothing and says to use brew); the site's `install.ps1` again through `powershell.exe -NoProfile -Command`
+  (`%LOCALAPPDATA%\Programs\Driftwire\driftwire.exe`), which moves the running copy's folder aside,
+  so an open session is no obstacle. Exit 1 when the installer fails, or for a copy none of them put
+  there (a build of one's own), which is told where the installers are.
+- **The site** is built in (`MV_DRIFTWIRE_SITE_URL`, the Pages address release.yml deploys to);
+  `DRIFTWIRE_REPO_URL`, as the installers read it, overrides it when it is https (or http on
+  127.0.0.1 or localhost) and holds only URL characters, since it goes into a shell command.
+- **What it sends**: a GET with the User-Agent `driftwire`, no cookie, query, version or
+  identifier, through WinHTTP, NSURLSession (ephemeral) or libcurl (opened at run time; without it
+  Linux has no check). https only, redirects to https only, the answer cut at 4 KiB, 10 s. Only
+  digits and dots from it are a version (at most four parts), so nothing it says reaches the
+  terminal as text. `latest.json` is not signed: it only says that an update exists, and what
+  installs it is checked as before ([Installing](#installing)).
 
 ### Installing
 
@@ -315,7 +372,8 @@ None of them touches the data folder; none needs an administrator on Windows or 
   Windows (it installs the site's version over what is there). The Linux packages are not attached
   to the release page (`MV_RELEASE_LINUX_CLI` stays off): a `.deb` from there would install without
   the source that updates it. The macOS archive and the Windows zip are, since the tap and the
-  site take them from the release.
+  site take them from the release. The program says when one is out, and `driftwire update` runs
+  its channel ([Updates in the terminal](#updates-in-the-terminal)).
 - **One switch.** The repository variable `MV_DRIFTWIRE_REPO=1` publishes the command line from
   each stable release: publish then requires and uploads the macOS archive and the Windows zip
   (`tools/package/github-release.py`), `driftwire-repo` deploys the site (the apt and dnf
@@ -331,8 +389,8 @@ None of them touches the data folder; none needs an administrator on Windows or 
   `Release.gpg`. rpm: the packages signed with `rpmsign`, `createrepo_c` metadata (gzip and no
   sqlite, which older dnf and zypper read) with `repomd.xml.asc`, and a `.repo` with `gpgcheck=1`
   and `repo_gpgcheck=1`. The tarballs and the Windows zip with `SHA256SUMS` and `SHA256SUMS.asc`,
-  the public key as `key.asc` and `key.gpg`, the page (Linux, macOS and Windows), and both
-  installers; `install.ps1` gets the zip's version, name and SHA-256, and whether `driftwire.exe`
+  the public key as `key.asc` and `key.gpg`, the page (Linux, macOS and Windows), both
+  installers, and `latest.json` (the version, for the program's update check); `install.ps1` gets the zip's version, name and SHA-256, and whether `driftwire.exe`
   carries an Authenticode signature (read from the file; a release with Trusted Signing configured
   refuses an unsigned one). No external asset or script on the page.
 - **Valid-Until a year ahead.** apt refuses a `Release` past it, so a mirror or a network in the
@@ -1103,6 +1161,9 @@ result (nearby, only when Bea said its identity after the code: a MediaViewer fr
 none, and would remember this side by the link's key, so Remember waits until it updates). Ticked on both computers, a later send needs no code: Bea is a tile under **Remembered
 devices** (in the internet section), and one click sends to it over the internet, whenever both
 are online. The receiver still accepts or declines every transfer. (`secrets.*`, `known.*`.)
+The question stays until the next transfer: this computer's next send, or the next offer it
+receives. A link that offers nothing (a knock, a sender's rejoin as its send ends) leaves it;
+until #553 any incoming link took it away, sometimes before it was drawn.
 
 - **Identity.** An X25519 key made once and kept in the OS's secret store (`secrets.h`, a port, D9):
   - **Mac (#501):** the *data protection* keychain, in the app's own keychain access group (a
@@ -1508,6 +1569,10 @@ second while bytes move; those posts update chrome and never present the canvas.
   terminal it is on only while the session runs ([From a terminal](#from-a-terminal-driftwire)).
 - What `driftwire` prints stays in that terminal. Its `--verbose` lines are the engine's `log`
   text, which never holds a path, a file name, an address, a peer's name or a code.
+- `driftwire`'s update check (2026-10-25, [Updates](#updates-in-the-terminal)) is one GET a day of
+  `latest.json` from the Pages site: no cookie, identifier, version or anything about a file; the
+  site sees the address and the time. On by default (the owner's call), off with `/updates off`
+  or `DRIFTWIRE_NO_UPDATE_CHECK`; never in the add-on, which the app's updater updates.
 - A notification (#452) names the sender and a count and size; never a file name, a path or the
   code. It is shown by the OS on this machine only; nothing about it leaves the machine. At most
   three a minute from one source (#502).
@@ -1581,7 +1646,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Sockets, machine name, Downloads | `net.h`, `net_posix.cpp`, `net_win.cpp`, `machine_mac.cpp` |
 | Bluetooth | `bt_pipe.*`, `bt_mac.mm` (CoreBluetooth), `bt_win.cpp` (C++/WinRT), `bt_none.cpp` |
 | The add-on's export and manifest | `addon_entry.cpp`, `manifest.json`; `cmake/driftwire.cmake` |
-| The command line, `driftwire` (2026-10-23): the terminal port, keys, the line editor, paths, completion, the look and the live region, the arguments, the host, the session, the data folder, `main()` | `cli/term.h`, `cli/term_posix.cpp`, `cli/term_win.cpp`, `cli/keys.*`, `cli/line_editor.*`, `cli/paths_arg.*`, `cli/complete.*`, `cli/theme.h`, `cli/text.*`, `cli/render.*`, `cli/inline_view.*`, `cli/args.*`, `cli/host.*`, `cli/session.*`, `cli/data_dir.h`, `cli/data_dir_posix.cpp`, `cli/data_dir_win.cpp`, `cli/main.cpp`; `cmake/driftwire.cmake` (`mv_driftwire_cli_core`, `mv_driftwire_cli` with `OUTPUT_NAME driftwire`, the test build `mv_driftwire_cli_test`, the gallery `mv_driftwire_cli_gallery` from `tools/driftwire-cli-gallery`) |
+| The command line, `driftwire` (2026-10-23): the terminal port, keys, the line editor, paths, completion, the look and the live region, the arguments, the host, the session, the data folder, `main()` | `cli/term.h`, `cli/term_posix.cpp`, `cli/term_win.cpp`, `cli/keys.*`, `cli/line_editor.*`, `cli/paths_arg.*`, `cli/complete.*`, `cli/theme.h`, `cli/text.*`, `cli/render.*`, `cli/inline_view.*`, `cli/args.*`, `cli/host.*`, `cli/session.*`, `cli/data_dir.h`, `cli/data_dir_posix.cpp`, `cli/data_dir_win.cpp`, `cli/update.*` and its ports `cli/update_net_win.cpp`, `cli/update_net_mac.mm`, `cli/update_net_linux.cpp` (2026-10-25), `cli/main.cpp`; `cmake/driftwire.cmake` (`mv_driftwire_cli_core`, `mv_driftwire_cli` with `OUTPUT_NAME driftwire`, the test build `mv_driftwire_cli_test`, the gallery `mv_driftwire_cli_gallery` from `tools/driftwire-cli-gallery`) |
 | Its Linux packages | `cmake/driftwire-cli/` (the project, CPack, the `NEEDED` gate `needed.cmake`), `packaging/linux/` (`driftwire.1`, `completions/`, `firewalld/driftwire.xml`, `copyright`), `.github/actions/driftwire-cli-linux` |
 | Its package repository and installers (2026-10-24) | `tools/package/driftwire_repo.py` (`build`: the site, its signatures and checks; `smoke`: installing from it on localhost; `windows-site`: `install.ps1` and the zip alone), `packaging/linux/repo/` (`install.sh`, the page `index.html` and its Windows part `index-windows.html`), `packaging/windows/install.ps1`, release.yml's `driftwire-repo` job, the repository step of ci.yml's `driftwire-cli-linux`; tests `tools/package/test_driftwire_repo.py`, `tools/package/check-driftwire-install.ps1` (the Windows installer end to end, on Build's msvc Release leg) |
 | Its Windows zip and macOS archive (2026-10-24) | `tools/package/driftwire-windows.ps1` (`pe_fixture.py`, `test_driftwire_windows.py`), `tools/mac/macpack.py cli` (`test_macpack.py`), release.yml's `windows` and `macos` jobs, `tools/package/github-release.py` (`MV_RELEASE_CLI`) |
@@ -1590,7 +1655,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Windows chrome | `IslandHost.Driftwire.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
 | Native hosts | `src/shell/main_mac.mm` (the background and the login item, #452), `src/shell/main.cpp` (the background, the notification-area icon and `--background`, #452), `src/shell/login_item_win.*` (the Run value), `src/shell/addons_mac.mm` |
 | Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
-| Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices, behind hard NATs too, and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py`; the command line's `tests/test_driftwire_cli_ui.cpp` (keys, the line editor, paths, completion, render goldens at 80 and 40 columns, the live region against a fake terminal), `tests/test_driftwire_cli.cpp` (arguments, the host, sessions over two engines on the fixture bus, the program refusing a pipe), `tests/test_driftwire_cli_e2e.cpp` (two test programs in ptys, POSIX), `tests/driftwire_cli_vt.h` (`"[cli]"`) |
+| Tests | `tests/test_driftwire.cpp`, `tests/test_driftwire_noise.cpp` (the Cacophony and CPace vectors, #472), `tests/test_driftwire_internet.cpp` (codes, mapping against stand-in routers, two engines over a code, #472 PR 2), `tests/test_driftwire_dht.cpp` (BEP 44 / 42 vectors, the stream under loss, a stand-in DHT swarm, two engines over four words, remembered devices, behind hard NATs too, and an impostor with the pair's secret, #472 PR 3–4), `tests/test_driftwire_known.cpp` (the store's file form, the identity, the records, the hourly keys, #472 PR 4), `tests/test_driftwire_session.cpp` (rejoin, resume, the Bluetooth / Wi-Fi moves, the Wi-Fi → internet handovers, #472), `tests/test_driftwire_relay.cpp` (the rendezvous, the splice's caps, a relay code, R's answers, two engines through a relay server; the three-engine own-device relay is in `test_driftwire_dht.cpp`, #472), `tests/driftwire_fixture.h`, `tests/driftwire_swarm.h` (the stand-in DHT swarm), `tests/test_driftwire_addon.cpp` (`mv_import_tests "[driftwire]"`), `tools/package/test_addon_pack.py`; the command line's `tests/test_driftwire_cli_update.cpp` (versions, `latest.json`, the install channels and their commands, the kept answer, the check's thread), `tests/test_driftwire_cli_ui.cpp` (keys, the line editor, paths, completion, render goldens at 80 and 40 columns, the live region against a fake terminal), `tests/test_driftwire_cli.cpp` (arguments, the host, sessions over two engines on the fixture bus, the program refusing a pipe), `tests/test_driftwire_cli_e2e.cpp` (two test programs in ptys, POSIX), `tests/driftwire_cli_vt.h` (`"[cli]"`) |
 
 ## Not built
 
@@ -1606,7 +1671,8 @@ second while bytes move; those posts update chrome and never present the canvas.
   program); winget; the site and the tap live (they wait for the owner's setup: the tap
   repository and its token, Pages, the key, `MV_DRIFTWIRE_REPO`); "the first time" an internet
   option is explained is per session, not per computer. Not run: a transfer between two machines
-  over Wi-Fi with the command line on one side.
+  over Wi-Fi with the command line on one side; `driftwire update` end to end through a real
+  install on any OS, and the update check's Mac and Linux transports (built in CI only).
 - Over the internet, after the relays: Tor (dropped for now, [plan](../plans/driftwire-tor-spike.md)),
   TURN, relaying word codes, remembered-device sends and the handover, a relayed send moving.
 - The rest of #472, deferred by the owner (2026-10-18, [12](12-decision-log.md#driftwire)):

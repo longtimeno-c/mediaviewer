@@ -30,6 +30,8 @@ URL = <Pages root>/driftwire:
     SITE/driftwire/driftwire-<version>-macos-universal.tar.gz (or -arm64; in SHA256SUMS)
     SITE/driftwire/driftwire-<version>-windows-x64.zip (in SHA256SUMS) and install.ps1, the
                                        Windows installer, with the zip's SHA-256 baked in
+    SITE/driftwire/latest.json         {"version": "<version>"}: what `driftwire` asks once a day to
+                                       say a newer one is out (src/addons/driftwire/cli/update.h)
 
 install.ps1 takes the zip from the site, not from the release page: the installer, the zip and
 its checksum then go live together in one deployment, and a copy of the site served elsewhere
@@ -45,7 +47,7 @@ the exported public key with gpgv and rpmkeys before the new site replaces SITE,
 unsigned is ever written there, and the tree is checked for private key material. Apart from
 the dates and the signatures, the same packages and key give the same site.
 
-`windows-site` writes only install.ps1 and the zip into SITE/driftwire (no key, no Linux
+`windows-site` writes only install.ps1, the zip and latest.json into SITE/driftwire (no key, no Linux
 packages): what tools/package/check-driftwire-install.ps1 serves on CI's Windows leg.
 
 `smoke` serves SITE on 127.0.0.1 and checks it as a person would get it, on a Debian or Ubuntu
@@ -61,6 +63,7 @@ import gzip
 import hashlib
 import html
 import http.server
+import json
 import os
 from pathlib import Path
 import re
@@ -418,6 +421,15 @@ def build_windows(dw, packages, base, github_repo, require_signature):
     return [target]
 
 
+def latest_json_text(version):
+    """latest.json: the site's version, all the command line reads of it (only digits and dots
+    are a version there). Unsigned: it only says that an update exists; what installs it is
+    checked as before."""
+    if not re.fullmatch(r'[0-9]+(\.[0-9]+){0,3}', version):
+        raise ValueError(f'{version} is not a version the command line can read')
+    return json.dumps({'version': version}) + '\n'
+
+
 def rpm_repo_text(base):
     # install.sh writes the same file (rpm_repo_text) for the address it installs from.
     return (f'[driftwire]\nname=Driftwire\nbaseurl={base}/rpm/\nenabled=1\ngpgcheck=1\n'
@@ -618,6 +630,7 @@ def build(packages_dir, out, base_url, key_ids, gnupg_home=None, valid_days=VALI
         windows = build_windows(dw, packages, base, github_repo, require_windows_signature)
         build_tarballs(dw, packages, signer, windows)
         write(dw / 'driftwire.repo', rpm_repo_text(base))
+        write(dw / 'latest.json', latest_json_text(packages.version))
         build_pages(site, dw, packages, base, signer, github_repo)
         work = stage / 'verify'
         work.mkdir()
@@ -659,6 +672,7 @@ def windows_site(zip_path, out, base_url, require_signature=False, github_repo=G
         dw = stage / 'site/driftwire'
         dw.mkdir(parents=True)
         build_windows(dw, packages, base, github_repo, require_signature)
+        write(dw / 'latest.json', latest_json_text(packages.version))
         check_install_ps1(dw)
         check_replaceable(out, 'driftwire/install.ps1')
         if out.exists():

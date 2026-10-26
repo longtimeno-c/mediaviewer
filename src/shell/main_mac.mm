@@ -10713,6 +10713,9 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
   [self selectIndex:0];
   [self updateChromeBarHeight];
   [self refreshWelcomeRecents];
+  // No folder is open now: Local search's People shows everyone again, not
+  // the last folder's people (its scope follows the open folder).
+  MvAddonsFolderOpened("");
 }
 
 - (BOOL)listOpen { return _listOpen; }

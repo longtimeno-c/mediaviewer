@@ -364,15 +364,25 @@ Element code_boxes(const theme& th, std::string_view typed, int width) {
   return hbox(std::move(boxes));
 }
 
-Element choices(const theme& th, int width, const std::vector<std::string>& items, int selected) {
+int hit_at(const hit_boxes& boxes, int x, int y) {
+  for (std::size_t i = 0; i < boxes.size(); ++i) {
+    if (boxes[i].Contain(x, y)) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+Element choices(const theme& th, int width, const std::vector<std::string>& items, int selected, hit_boxes* hits) {
+  if (hits) hits->assign(items.size(), no_hit);
   Elements rows;
   const std::string gap = spaces(display_width(th.g->pointer));
   for (std::size_t i = 0; i < items.size(); ++i) {
     const bool on = static_cast<int>(i) == selected;
     std::string label = fit(std::to_string(i + 1) + ". " + items[i], width - 1 - static_cast<int>(gap.size()), th);
     Element lab = text(std::move(label));
-    rows.push_back(hbox({on ? paint(th, text(std::string(th.g->pointer)), tone::accent) : text(gap), text(" "),
-                         on ? paint(th, std::move(lab), tone::accent) : std::move(lab)}));
+    Element row = hbox({on ? paint(th, text(std::string(th.g->pointer)), tone::accent) : text(gap), text(" "),
+                        on ? paint(th, std::move(lab), tone::accent) : std::move(lab)});
+    if (hits) row = std::move(row) | ftxui::reflect((*hits)[i]);
+    rows.push_back(std::move(row));
   }
   return vbox(std::move(rows));
 }
@@ -427,6 +437,7 @@ Element nearby(const theme& th, const nearby_model& m, int width) {
   Elements rows;
   rows.push_back(hbox({text("  "), text("Nearby") | ftxui::bold}));
   const int total = static_cast<int>(m.peers.size() + m.known.size());
+  if (m.hits) m.hits->assign(static_cast<std::size_t>(total), no_hit);
   // The rows shown: all, or a window around the selection under the height cap.
   int first = 0, last = total;
   if (m.max_rows > 0 && total > m.max_rows) {
@@ -463,7 +474,9 @@ Element nearby(const theme& th, const nearby_model& m, int width) {
       cells.push_back(text(spaces(detail_x - lead - nw)));
       cells.push_back(paint(th, text(fit(r.detail, width - detail_x, th)), r.detail_tone));
     }
-    return hbox(std::move(cells));
+    Element row = hbox(std::move(cells));
+    if (m.hits) row = std::move(row) | ftxui::reflect((*m.hits)[static_cast<std::size_t>(i)]);
+    return row;
   };
 
   if (m.peers.empty()) {
@@ -545,6 +558,7 @@ Element hints(const theme& th, const hint_model& m, int width) {
 Element command_palette(const theme& th, const palette_model& m, int width) {
   const glyph_set& g = *th.g;
   Elements rows;
+  if (m.hits) m.hits->assign(m.rows.size(), no_hit);
   if (m.rows.empty()) {
     rows.push_back(hbox({text("    "), dimmed(th, m.empty)}));
     return vbox(std::move(rows));
@@ -574,7 +588,9 @@ Element command_palette(const theme& th, const palette_model& m, int width) {
       std::string d = fit(r.description, room, th);
       cells.push_back(on ? text(std::move(d)) : dimmed(th, std::move(d)));
     }
-    rows.push_back(hbox(std::move(cells)));
+    Element row = hbox(std::move(cells));
+    if (m.hits) row = std::move(row) | ftxui::reflect((*m.hits)[static_cast<std::size_t>(i)]);
+    rows.push_back(std::move(row));
   }
   return vbox(std::move(rows));
 }
@@ -817,7 +833,7 @@ Element offer_card(const theme& th, const offer_model& m, int width) {
   body.push_back(choices(th, cw,
                          {"Accept" + sep(th) + "save to " + m.save_to,
                           "Accept and save somewhere else" + std::string(th.g->ellipsis), "Decline"},
-                         m.selected));
+                         m.selected, m.hits));
   return card(th, width, title, std::move(body), tone::accent);
 }
 
@@ -882,7 +898,7 @@ Element naming_card(const theme& th, const naming_model& m, int width) {
   body.push_back(lines(th, "If they differ, someone else has the code: cancel. Nothing has been sent yet.", cw,
                        tone::dim, 2));
   body.push_back(blank());
-  body.push_back(choices(th, cw, {"It matches" + sep(th) + "send", "Cancel"}, m.selected));
+  body.push_back(choices(th, cw, {"It matches" + sep(th) + "send", "Cancel"}, m.selected, m.hits));
   return card(th, width, "Connected to " + m.peer + " (new device)", std::move(body), tone::accent);
 }
 
@@ -896,7 +912,7 @@ Element remember_card(const theme& th, const remember_model& m, int width) {
                                " remembers this computer too.",
                            cw, tone::dim, 2));
       body.push_back(blank());
-      body.push_back(choices(th, cw, {"Remember", "Not now"}, m.selected));
+      body.push_back(choices(th, cw, {"Remember", "Not now"}, m.selected, m.hits));
       return card(th, width, "Remember " + m.peer + "?", std::move(body), tone::accent);
     case remember_model::step::show_check:
       body.push_back(blank());

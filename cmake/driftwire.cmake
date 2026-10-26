@@ -193,6 +193,7 @@ function(mv_driftwire_tests target)
     "${MV_SOURCE_ROOT}/tests/test_driftwire_addon.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_ui.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli.cpp"
+    "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_update.cpp"
     "${MV_SOURCE_ROOT}/tests/test_driftwire_cli_e2e.cpp"
     "${MV_SOURCE_ROOT}/src/addons/driftwire/bt_none.cpp")
   target_link_libraries(${target} PRIVATE mv_driftwire_engine mv_driftwire_cli_core)
@@ -250,10 +251,17 @@ endif()
 set(_C "${_S}/cli")
 if(WIN32)
   # *_win.cpp: may include <windows.h>
-  set(_driftwire_cli_port ${_C}/term_win.cpp ${_C}/data_dir_win.cpp)
+  set(_driftwire_cli_port ${_C}/term_win.cpp ${_C}/data_dir_win.cpp ${_C}/update_net_win.cpp)
+elseif(APPLE)
+  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_mac.mm)
+  set_source_files_properties(${_C}/update_net_mac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 else()
-  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp)
+  set(_driftwire_cli_port ${_C}/term_posix.cpp ${_C}/data_dir_posix.cpp ${_C}/update_net_linux.cpp)
 endif()
+# Where `driftwire` asks whether a newer version is out, and whose installers
+# `driftwire update` runs (cli/update.h): the site release.yml deploys.
+set(MV_DRIFTWIRE_SITE_URL "https://longtimeno-c.github.io/mediaviewer/driftwire" CACHE STRING
+  "The driftwire command line's site: latest.json, install.sh, install.ps1")
 add_library(mv_driftwire_cli_core STATIC
   ${_C}/theme.h
   ${_C}/text.cpp ${_C}/text.h
@@ -266,9 +274,18 @@ add_library(mv_driftwire_cli_core STATIC
   ${_C}/args.cpp ${_C}/args.h
   ${_C}/host.cpp ${_C}/host.h
   ${_C}/session.cpp ${_C}/session.h
+  ${_C}/update.cpp ${_C}/update.h
   ${_C}/term.h ${_C}/data_dir.h ${_driftwire_cli_port}
 )
 target_link_libraries(mv_driftwire_cli_core PUBLIC mv_driftwire_engine ftxui::dom ftxui::screen)
+target_compile_definitions(mv_driftwire_cli_core PRIVATE MV_DRIFTWIRE_SITE_URL="${MV_DRIFTWIRE_SITE_URL}")
+if(WIN32)
+  # winhttp: the update check (update_net_win.cpp), Windows' own DLL.
+  target_link_libraries(mv_driftwire_cli_core PUBLIC winhttp)
+elseif(APPLE)
+  # Foundation: NSURLSession for the update check (update_net_mac.mm).
+  target_link_libraries(mv_driftwire_cli_core PUBLIC "-framework Foundation")
+endif()
 
 if(NOT DEFINED MV_DRIFTWIRE_CLI_VERSION OR MV_DRIFTWIRE_CLI_VERSION STREQUAL "")
   if(CMAKE_PROJECT_VERSION)
