@@ -151,6 +151,31 @@ ADDONS = {
                    "Files move only to a MediaViewer the person there accepted, over the local network\n"
                    "or Bluetooth. No account, no cloud, no internet relay.\n"),
     },
+    # Enhance (#297): a restored copy of the photo, clip or audio file on screen. Code
+    # and each kind's models/<kind>/model.json; the weights are never in the zip: the
+    # staged remote.json pins them (Hugging Face URL, size, SHA-256, licence) and the
+    # add-on fetches a kind's on the person's click. No chrome: the hosts render its
+    # sheet and its settings page, from src/addons/enhance/manifest.json.
+    "enhance": {
+        "name": "Enhance",
+        "host_api": {"min": 3, "max": 3},  # table v3: screens and slots
+        "manifest_json": "src/addons/enhance/manifest.json",
+        "files": {
+            "win-x64": {"native": "mv_enhance.dll", "chrome": "", "include": ["mv_enhance.dll"],
+                        "optional": ["models"]},
+            "macos": {"native": "libmv_enhance.dylib", "chrome": "", "include": ["libmv_enhance.dylib"],
+                      "optional": ["models"]},
+        },
+        "licences": [],
+        # One weights file is at most 5 GB (#297, owner 2026-10-10); the add-on
+        # refuses a bigger pin before any request, and so does packing.
+        "max_remote_bytes": 5_000_000_000,
+        "notice": ("Enhance add-on for MediaViewer. GPL-3.0-or-later.\n"
+                   "Its models are not in this package: each is downloaded from Hugging Face, at the\n"
+                   "pinned revision and checked against its SHA-256, only when the person asks for it.\n"
+                   "Each model's licence is listed with it in the signed manifest.\n"
+                   "Files are enhanced on this computer; nothing about them is sent anywhere.\n"),
+    },
     "ai": {
         "name": "AI",
         "host_api": {"min": 2, "max": 2},  # needs host table 2's pixels
@@ -348,7 +373,7 @@ def collect(src: Path, platform: str, stage: Path, addon_id: str = "import") -> 
     addon = ADDONS[addon_id]
     spec = addon["files"][platform]
     stage.mkdir(parents=True, exist_ok=True)
-    for name in spec["include"]:
+    for name in spec["include"] + [o for o in spec.get("optional", []) if (src / o).exists()]:
         item = src / name
         if not item.exists():
             raise FileNotFoundError(f"{name} is missing from {src}")
@@ -394,7 +419,7 @@ def make_archive(stage: Path, archive: Path, platform: str):
                 z.write(p, p.relative_to(stage).as_posix())
 
 
-def read_remote(src: Path) -> list:
+def read_remote(src: Path, max_bytes: int = 0) -> list:
     """ai-models.py --upstream remote's list: files the add-on fetches on install
     (docs/plans/model-tiers.md T3). Signed into the manifest, never shipped."""
     path = src / "remote.json"
@@ -409,6 +434,8 @@ def read_remote(src: Path) -> list:
             raise ValueError(f"{r['path']}: only plain Hugging Face URLs are fetched")
         if not re.fullmatch(r"[0-9a-f]{64}", r["sha256"]) or not isinstance(r["size"], int) or r["size"] <= 0:
             raise ValueError(f"{r['path']}: needs a size and a SHA-256")
+        if max_bytes and r["size"] > max_bytes:
+            raise ValueError(f"{r['path']}: {r['size']} bytes is over the add-on's {max_bytes}-byte cap per file")
         if not licence_allowed(r["licence"]):
             raise ValueError(f"{r['path']} is licensed {r['licence']}: not one the pack may point to")
         if r["path"].startswith("/") or ".." in r["path"].split("/") or "\\" in r["path"] or r["path"].lower() in seen:
@@ -463,7 +490,7 @@ def pack(args) -> Path:
     if stage.exists():
         shutil.rmtree(stage)
     files = collect(Path(args.src), args.platform, stage, addon_id)
-    remote = read_remote(Path(args.src))
+    remote = read_remote(Path(args.src), ADDONS[addon_id].get("max_remote_bytes", 0))
     shipped = {f["path"].lower() for f in files}
     clash = [r["path"] for r in remote if r["path"].lower() in shipped]
     if clash:

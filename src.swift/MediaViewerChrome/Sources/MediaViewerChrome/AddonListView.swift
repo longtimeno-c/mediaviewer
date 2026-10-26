@@ -5,8 +5,8 @@
 // Update available · 1.3.0, Restart to finish updating, Not installed), and
 // each row opens that add-on's own page in Settings: its line, Install /
 // Update / Open / Remove, its progress and messages, and its settings. The
-// order is Import, Local search, Places, Driftwire, any other installed add-on
-// of MediaViewer's, then From other makers.
+// order is Import, Local search, Places, Driftwire, Enhance (Apple silicon), any
+// other installed add-on of MediaViewer's, then From other makers.
 //
 // The pages are the views the add-ons always had (ImportAddonPage,
 // LocalSearchSection, SlotAddonsSection showing one add-on, OpenAddonsSection).
@@ -142,7 +142,15 @@ struct AddonsSection: View {
     list.append(Entry(id: DriftwireStore.addonID, name: "Driftwire",
                       line: slotLine(dw, SlotAddonOffer.channel(id: DriftwireStore.addonID, name: "Driftwire"),
                                      "Driftwire")))
-    let rest = slots.rows.filter { $0.id != "places" && $0.id != DriftwireStore.addonID }
+    if SlotAddonOffer.enhanceSupported {
+      list.append(Entry(id: SlotAddonOffer.enhanceID, name: "Enhance",
+                        line: slotLine(slots.rows.first { $0.id == SlotAddonOffer.enhanceID },
+                                       SlotAddonOffer.channel(id: SlotAddonOffer.enhanceID, name: "Enhance"),
+                                       "Enhance")))
+    }
+    let rest = slots.rows.filter {
+      $0.id != "places" && $0.id != DriftwireStore.addonID && $0.id != SlotAddonOffer.enhanceID
+    }
       .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     for row in rest {
       list.append(Entry(id: row.id, name: row.name,
@@ -192,6 +200,9 @@ struct AddonsSection: View {
     slots.reload()
     places.probe()
     guard !mv_addon2_elsewhere() else { return }
+    if SlotAddonOffer.enhanceSupported && !slots.rows.contains(where: { $0.id == SlotAddonOffer.enhanceID }) {
+      SlotAddonOffer.channel(id: SlotAddonOffer.enhanceID, name: "Enhance").probe()
+    }
     for row in slots.rows where row.id != "places" {
       SlotAddonOffer.channel(id: row.id, name: row.name).probe()
     }
@@ -214,6 +225,7 @@ struct AddonPageView: View {
     case AddonNav.othersPage: return AddonListWords.fromOthers
     case "places": return "Places"
     case DriftwireStore.addonID: return "Driftwire"
+    case SlotAddonOffer.enhanceID: return "Enhance"
     default: return installed.rows.first { $0.id == id }?.name ?? id
     }
   }

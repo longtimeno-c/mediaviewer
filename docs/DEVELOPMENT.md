@@ -2080,6 +2080,32 @@ There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
 
+### Enhance, slices 1–2: its models' downloads and the sheet (#297, docs/plans/enhance.md, 2026-10-26)
+
+A new add-on, `src/addons/enhance` (`cmake/enhance.cmake`; arm64-only on the Mac, like the AI
+pack). Its page in Settings → Add-ons offers each kind's model (photo, video, audio) with its size;
+a click fetches only that kind's weights from Hugging Face through the AI pack's downloader, now the
+`mv_model_fetch` library: pinned under `remote` in the signed manifest, resumable, kept only when
+the SHA-256 matches, refused before any request over 5 GB or without the free disk. The sheet
+(`Enhance…` in the palette and the context menu, no default key) shows only the item's own knobs,
+read from `models/<kind>/model.json`; a clip offers picture, sound or both; values are remembered
+per kind in `enhance.json` in its data folder. **Not built yet:** running a model. This build
+ships no `model.json` and no pins, so its page says it has no model of any kind, and Run stays
+greyed. Enhance is not in the release workflow until a command ships.
+
+Pack it (a dev build, then sideload as any slot add-on):
+
+```bash
+python3 tools/package/addon-pack.py pack --addon enhance --platform macos --src build/addons/enhance --version 0.1.0 --key <dev key> --out dist/addon
+```
+
+Tests: `build/bin/mv_import_tests "[enhance]"` (the engine over a fake transport: no request
+before the click, Range resume, a missed hash never kept, the 5 GB and free-disk refusals, the
+sheet per item kind, values per kind; and the add-on through the real loader),
+`python3 -m unittest test_addon_pack.EnhancePackTest` in `tools/package`, the Windows chrome's C#
+compile. The Mac and Windows rows are the twins `SlotAddonInstallOffer` (SlotItems.swift) and
+`IslandHost.Enhance.cs`; the Windows native build is CI's.
+
 ### The driftwire command line (2026-10-23)
 
 What is built is in [docs/design/28](design/28-driftwire.md#from-a-terminal-driftwire) ("From a

@@ -104,6 +104,8 @@ set(MV_SOURCE_ROOT "${MV_ROOT}")
 include("${MV_ROOT}/cmake/import.cmake")
 # Milestone H: the AI pack (cmake/ai.cmake); its engine tests run here too.
 include("${MV_ROOT}/cmake/ai.cmake")
+# Enhance (#297): the engine and its suite run here too.
+include("${MV_ROOT}/cmake/enhance.cmake")
 # Driftwire (docs/design/28): the engine, the add-on and the relay tool, and
 # their suites, on Linux.
 include("${MV_ROOT}/cmake/driftwire.cmake")
@@ -139,6 +141,7 @@ target_compile_definitions(mv_import_tests PRIVATE
   MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>")
 add_dependencies(mv_import_tests mv_import)
 mv_driftwire_tests(mv_import_tests)
+mv_enhance_tests(mv_import_tests)
 add_test(NAME mv_import_tests COMMAND mv_import_tests)
 # The dateless-file fallback is local wall-clock time; pin the zone.
 set_tests_properties(mv_import_tests PROPERTIES ENVIRONMENT "TZ=UTC")

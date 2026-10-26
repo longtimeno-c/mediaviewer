@@ -866,6 +866,7 @@ public static partial class IslandHost
     {
         if (row.Id == PlacesChannel.Id) return PlacesChannel;
         if (row.Id == DriftwireId) return DriftwireSlot;
+        if (row.Id == EnhanceId) return EnhanceSlot;
         if (!SlotChannels.TryGetValue(row.Id, out AddonSlot? slot))
         {
             slot = new AddonSlot(row.Id, row.Name, null, null);
@@ -931,6 +932,17 @@ public static partial class IslandHost
                 _slotSettingsPanel.Children.Add(card);
             }
         }
+        // #297: Enhance, offered with one click while it is not installed.
+        if (!EnhanceInstalled)
+        {
+            if (EnhanceSlot.Offer.Kind == OfferKind.Unknown) probe.Add(EnhanceSlot);
+            if (only == EnhanceId)
+            {
+                (Border card, StackPanel body) = AddonCard("Enhance");
+                BuildEnhanceOffer(body);
+                _slotSettingsPanel.Children.Add(card);
+            }
+        }
         foreach (SlotAddonRow row in SlotAddonRows)
         {
             if (row.Id == PlacesChannel.Id) continue;
@@ -982,6 +994,7 @@ public static partial class IslandHost
             }
             if (buttons.Children.Count > 0) body.Children.Add(buttons);
             if (row.Id == DriftwireId && _driftwireMessage.Length > 0) body.Children.Add(Note(_driftwireMessage));
+            if (row.Id == EnhanceId && _enhanceMessage.Length > 0) body.Children.Add(Note(_enhanceMessage));
             if (SlotUpdateMessages.TryGetValue(row.Id, out string? updated) && updated.Length > 0) body.Children.Add(Note(updated));
             if (!_addonsElsewhere && _slotConfirming != row.Id)
             {
