@@ -83,13 +83,15 @@ sample for sample. "Noise reduction" mixes the model's output with the time-alig
 measurement. ONNX Runtime is loaded from the add-on's own folder on the first run (CPU, one
 thread: a 10 ms frame is too small for a GPU round trip).
 
-The host writes the result (`edit/sound_writer.h`) beside the original: `<stem>-enhance.m4a`
-(AAC, FFmpeg's own encoder, about 96 kb/s a channel) for an audio file; for a clip, its picture
-stream-copied packet for packet with the new sound in place of its own, in its own MP4 / MOV, else
-Matroska. It is a hidden part file until finished, then published under the first free name
+The host writes the result (`edit/sound_writer.h`) beside the original: `<stem>-enhance.m4a` for
+an audio file; for a clip, its picture stream-copied packet for packet with the new sound in place
+of its own, in its own MP4 / MOV, else Matroska. The sound is AAC from the operating system's own
+encoder (AudioToolbox on the Mac, Media Foundation on Windows; about 96 kb/s a channel), never
+FFmpeg's ([11](11-licensing.md): no software AAC encoder anywhere). Where the OS has none it is
+FLAC, lossless and royalty-free: a `.flac`, or a clip in Matroska (`edit/clip_audio_enc.h`). It is a hidden part file until finished, then published under the first free name
 ("name (2)"); a cancel or a failure leaves nothing. Cover art and other tracks are not carried.
 The write runs in the app's process, not the clip helper ([08](08-video-editing.md)): the sound
-comes from the add-on, and an AAC encode has no driver to crash.
+comes from the add-on, and its picture is copied, never encoded.
 
 ## Measured (2026-10-26, Apple M-series, CPU, one thread)
 

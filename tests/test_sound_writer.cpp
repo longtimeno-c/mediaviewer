@@ -92,16 +92,22 @@ TEST_CASE("sound: an audio file gets a new M4A beside it, the original untouched
   auto w = sound_writer::open(song, o);
   REQUIRE(w);
   CHECK_FALSE((*w)->with_picture());
+  // docs/design/11: the OS's AAC (AudioToolbox, Media Foundation), else FLAC;
+  // never FFmpeg's own AAC.
+  const std::string enc = (*w)->encoder();
+  CHECK(enc != "aac");
+  CHECK((enc == "aac_at" || enc == "aac_mf" || enc == "flac"));
+  const std::string want = enc == "flac" ? "song-enhance.flac" : "song-enhance.m4a";
   const auto pcm = tone(48000);
   for (std::size_t at = 0; at < pcm.size(); at += 9600) {
     const std::size_t n = std::min<std::size_t>(9600, pcm.size() - at);
     REQUIRE((*w)->write(std::span<const float>(pcm.data() + at, n)));
   }
   // Nothing is there until it is finished.
-  CHECK_FALSE(fs::exists(s / "song-enhance.m4a"));
+  CHECK_FALSE(fs::exists(s / want));
   auto out = (*w)->finish();
   REQUIRE(out);
-  CHECK(fs::path(*out).filename() == "song-enhance.m4a");
+  CHECK(fs::path(*out).filename() == want);
   CHECK(mv::test::read_bytes(song) == before);
   CHECK(no_part_files(s.root()));
 
@@ -124,8 +130,8 @@ TEST_CASE("sound: an audio file gets a new M4A beside it, the original untouched
   REQUIRE((*again)->write(std::span<const float>(pcm.data(), 9600)));
   auto second = (*again)->finish();
   REQUIRE(second);
-  CHECK(fs::path(*second).filename() != "song-enhance.m4a");
-  CHECK(fs::exists(s / "song-enhance.m4a"));
+  CHECK(fs::path(*second).filename() != want);
+  CHECK(fs::exists(s / want));
 }
 
 TEST_CASE("sound: a clip keeps its picture packets with the new sound beside them", "[clip][sound]") {
@@ -144,10 +150,11 @@ TEST_CASE("sound: a clip keeps its picture packets with the new sound beside the
   auto w = sound_writer::open(clip, o);
   REQUIRE(w);
   CHECK((*w)->with_picture());
+  const bool flac = std::string((*w)->encoder()) == "flac";
   REQUIRE((*w)->write(src));
   auto out = (*w)->finish();
   REQUIRE(out);
-  CHECK(fs::path(*out).filename() == "clip-enhance.mp4");
+  CHECK(fs::path(*out).filename() == (flac ? "clip-enhance.mkv" : "clip-enhance.mp4"));
   CHECK(mv::test::read_bytes(clip) == before);
   CHECK(mv::test::clipfx::video_packets(*out) == mv::test::clipfx::video_packets(clip));
   mv::test::clipfx::decoded d;
@@ -168,6 +175,7 @@ TEST_CASE("sound: a writer that never finishes leaves nothing", "[clip][sound]")
     REQUIRE((*w)->write(pcm));
   }
   CHECK_FALSE(fs::exists(s / "song-enhance.m4a"));
+  CHECK_FALSE(fs::exists(s / "song-enhance.flac"));
   CHECK(no_part_files(s.root()));
   // Bad options are refused before anything is made.
   sound_out_options bad;

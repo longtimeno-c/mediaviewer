@@ -139,7 +139,7 @@ TEST_CASE("enhance: an audio file and a clip's sound, through the host table", "
   run_one(port, song, item_kind::audio, a);
   INFO(a.message);
   REQUIRE(a.ok);
-  CHECK(a.name == "song-enhance.m4a");
+  CHECK((a.name == "song-enhance.m4a" || a.name == "song-enhance.flac"));
   CHECK(mv::test::read_bytes(song) == song_before);
   // As long as the original, give or take the AAC encoder's own frames.
   CHECK(std::llabs(frames_in(utf8(s / a.name)) - frames_in(song)) < 2048);
@@ -148,7 +148,7 @@ TEST_CASE("enhance: an audio file and a clip's sound, through the host table", "
   run_one(port, clip, item_kind::media, b);
   INFO(b.message);
   REQUIRE(b.ok);
-  CHECK(b.name == "clip-enhance.mp4");
+  CHECK((b.name == "clip-enhance.mp4" || b.name == "clip-enhance.mkv"));
   CHECK(mv::test::read_bytes(clip) == clip_before);
   CHECK(mv::test::clipfx::video_packets(utf8(s / b.name)) == mv::test::clipfx::video_packets(clip));
 }

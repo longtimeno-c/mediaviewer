@@ -182,6 +182,7 @@ if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
     "${MV_ROOT}/src/edit/clip_encode.cpp"
     "${MV_ROOT}/src/edit/clip_sample.cpp"
     "${MV_ROOT}/src/edit/clip_sound_write.cpp"
+    "${MV_ROOT}/src/edit/clip_audio_enc.cpp"
     "${MV_ROOT}/src/edit/clip_run.cpp"
     "${MV_ROOT}/src/edit/clip_jobs.cpp"
     "${MV_ROOT}/src/edit/clip_wire.cpp"

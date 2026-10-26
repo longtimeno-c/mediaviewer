@@ -783,9 +783,10 @@ typedef struct mv_host_api {
   mv_status(MV_CALL* sound_read)(void* host, void* sound, float* out, uint32_t max_frames, uint32_t* out_frames);
   void(MV_CALL* sound_close)(void* host, void* sound);
   /* [worker-thread] A new file beside `source_utf8` (rule 5: the source is
-   * read, never written): "<stem>-<suffix>.m4a" (AAC) for an audio file; for
-   * a clip, its picture stream-copied with this sound in place of its own,
-   * in its own MP4 / MOV, else Matroska. `suffix_ascii` is [a-z0-9_-]{1,32}.
+   * read, never written): "<stem>-<suffix>.m4a" for an audio file; for a
+   * clip, its picture stream-copied with this sound in place of its own, in
+   * its own MP4 / MOV, else Matroska. The sound is the OS's AAC; where the OS
+   * has no AAC encoder, FLAC (a ".flac", or a clip in Matroska). `suffix_ascii` is [a-z0-9_-]{1,32}.
    * Hidden until sound_write_finish publishes it under the first free name;
    * sound_write_close before that leaves nothing. `*out_with_picture` (may
    * be NULL) says whether the source's picture is in it. */

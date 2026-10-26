@@ -2698,9 +2698,11 @@ Runtime, so `run_bytes` is 150 MB and `cpu` is true. Its attenuation-limit input
 monotonically (6 dB scored below the noisy input), so the strength knob mixes the model's output
 with the time-aligned original instead. **The result is written in the app's process**, through new
 host-table rows (`sound_open` … `sound_write_close`, appended, host API not bumped), not the clip
-helper: the sound comes from the add-on, the encode is FFmpeg's own AAC with no GPU driver to
-crash, and the picture of a clip is stream-copied, never decoded. An MP3 comes back as an M4A: the
-LGPL build has no MP3 encoder (docs/design/11). The real-ESRGAN video model
+helper: the sound comes from the add-on, and the picture of a clip is stream-copied, never decoded.
+The sound is the operating system's AAC (AudioToolbox `aac_at`, Media Foundation `aac_mf`), never
+FFmpeg's own: docs/design/11's "no software AAC encoder anywhere" holds. Where the OS has none (a
+Linux build) it is FLAC, lossless and royalty-free (`.flac`, or a clip in Matroska). An MP3 comes
+back as an M4A: the LGPL build has no MP3 encoder. The real-ESRGAN video model
 (`jonathanst29/tinier-upscale-models`, realesr-general-x4v3, BSD-3-Clause, 4.9 MB) is downloaded
 for slice 5's measurement and not yet pinned.
 
