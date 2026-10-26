@@ -1737,6 +1737,8 @@ extern "C" bool mv_addon2_supported(const char* id) {
   const std::string s(id);
   if (s == "import") return true;
   if (s == "ai-cuda") return false;  // a Windows NVIDIA piece; never offered here
+  // Enhance (#297) runs its models on ONNX Runtime too: Apple silicon only.
+  if (s == "enhance") return ai_supported();
   return is_ai_family(s) && ai_supported();
 }
 

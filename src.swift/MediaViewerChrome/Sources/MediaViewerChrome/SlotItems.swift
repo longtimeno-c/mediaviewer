@@ -291,6 +291,10 @@ struct SlotLocalMore: View {
 @MainActor
 final class SlotAddonOffer: ObservableObject {
   static let places = SlotAddonOffer(id: "places", name: "Places")
+  /// Enhance (#297): offered before it is installed, on Apple silicon only
+  /// (its models run on ONNX Runtime, like Local search).
+  static let enhanceID = "enhance"
+  static let enhanceSupported = mv_addon2_supported("enhance")
   private static var others: [String: SlotAddonOffer] = [:]
 
   /// The channel of an installed slot add-on, made once per id.
@@ -487,6 +491,15 @@ struct SlotAddonsSection: View {
           && !installed.rows.contains(where: { $0.id == DriftwireStore.addonID }) {
         DriftwireOffer()
       }
+      // #297: Enhance, offered with one click while it is not installed.
+      if shows(SlotAddonOffer.enhanceID) && SlotAddonOffer.enhanceSupported
+          && !installed.rows.contains(where: { $0.id == SlotAddonOffer.enhanceID }) {
+        SlotAddonInstallOffer(offer: SlotAddonOffer.channel(id: SlotAddonOffer.enhanceID, name: "Enhance"),
+                              fallback: "Writes a restored copy of the photo, clip or audio file on screen. "
+                                + "Each kind's model is downloaded only when you ask for it.") {
+          installed.reload()
+        }
+      }
       ForEach(installed.rows.filter { $0.id != "places" && shows($0.id) }) { row in
         VStack(alignment: .leading, spacing: MVTheme.space(6)) {
           // On its page the heading names it (#510).
@@ -656,6 +669,49 @@ struct SlotAddonsSection: View {
       Task.detached(priority: .utility) { _ = forgotten.withCString { mv_addons_settings_forget($0) } }
     }
     installed.drop(id)
+  }
+}
+
+/// A MediaViewer slot add-on that is not installed yet (Enhance, #297): its
+/// line, then Install with its size, from its own channel. Its models are a
+/// second step, on its own settings page once it is installed.
+struct SlotAddonInstallOffer: View {
+  @ObservedObject var offer: SlotAddonOffer
+  let fallback: String
+  let done: @MainActor () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: MVTheme.space(6)) {
+      note(offer.channelDescription.isEmpty ? fallback : offer.channelDescription)
+      if mv_addon2_elsewhere() {
+        note(LocalSearchStore.elsewhereText)
+      } else if offer.busy, let phase = offer.phase {
+        AddonProgressView(phase: phase)
+      } else {
+        switch offer.offer {
+        case .available(let bytes, _, _, _, _):
+          Button("Install \(offer.name), \(AddonStore.sizeText(bytes))") {
+            offer.install(wasLoaded: false, installedVersion: "", done: done)
+          }
+          .disabled(offer.busy)
+        case .notPublished:
+          note("\(offer.name) is not published for download yet. It will be offered here once a release carries it.")
+        case .needsNewerApp:
+          note("The published \(offer.name) needs a newer MediaViewer. Update MediaViewer, then install it.")
+        case .unreachable:
+          note("Could not reach the download server.")
+          Button("Try again") { offer.probe() }
+        case nil:
+          note("Checking for \(offer.name)\u{2026}")
+        }
+      }
+      if !offer.message.isEmpty { note(offer.message) }
+    }
+    .onAppear { if offer.offer == nil && !offer.checking { offer.probe() } }
+  }
+
+  private func note(_ text: String) -> some View {
+    Text(text).font(MVTheme.font(13)).foregroundStyle(MVTheme.body).fixedSize(horizontal: false, vertical: true)
   }
 }
 

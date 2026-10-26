@@ -374,6 +374,59 @@ class DriftwirePackTest(unittest.TestCase):
         self.assertIn("No account, no cloud", notice)
 
 
+class EnhancePackTest(unittest.TestCase):
+    """#297: Enhance carries its code and each kind's model.json; the weights are
+    pinned in the signed manifest, never shipped, and none is over 5 GB."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        key = Ed25519PrivateKey.generate()
+        seed = key.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw,
+                                 serialization.NoEncryption())
+        self.key_file = self.tmp / "addon.key"
+        self.key_file.write_text(seed.hex())
+        self.out = self.tmp / "dist"
+        self.src = self.tmp / "enhance"
+        (self.src / "models" / "audio").mkdir(parents=True)
+        (self.src / "libmv_enhance.dylib").write_bytes(b"\xcf\xfa\xed\xfe" + os.urandom(1024))
+        (self.src / "models" / "audio" / "model.json").write_text('{"kind": "audio"}')
+        self.pin = {"url": "https://huggingface.co/org/denoise/resolve/0123abcd/denoise.onnx",
+                    "path": "audio/denoise.onnx", "size": 8_000_000, "sha256": "ab" * 32, "licence": "MIT"}
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def pack(self):
+        addon_pack.main(["pack", "--addon", "enhance", "--platform", "macos", "--src", str(self.src),
+                         "--version", "0.1.0", "--key", str(self.key_file), "--out", str(self.out)])
+        return json.loads((self.out / "mediaviewer-addon-enhance-macos.json").read_bytes())
+
+    def test_the_weights_are_pinned_not_shipped(self):
+        (self.src / "remote.json").write_text(json.dumps([self.pin]))
+        m = self.pack()
+        self.assertEqual(m["id"], "enhance")
+        self.assertEqual(m["chrome"], "")
+        shipped = {f["path"] for f in m["files"]}
+        self.assertIn("models/audio/model.json", shipped)
+        self.assertNotIn("audio/denoise.onnx", shipped)
+        self.assertNotIn("remote.json", shipped)
+        self.assertEqual(m["remote"], [self.pin])
+        c = m["contributes"]
+        self.assertEqual([s["place"] for s in c["screens"]], ["sheet", "settings"])
+        self.assertNotIn("windows", c["commands"][0])
+
+    def test_a_pin_over_5_gb_fails_the_pack(self):
+        (self.src / "remote.json").write_text(json.dumps([dict(self.pin, size=5_000_000_001)]))
+        with self.assertRaises(ValueError):
+            self.pack()
+
+    def test_no_models_yet_still_packs_the_code(self):
+        shutil.rmtree(self.src / "models")
+        m = self.pack()
+        self.assertEqual([f["path"] for f in m["files"] if not f["path"].startswith("LICENSES/")],
+                         ["libmv_enhance.dylib"])
+
+
 class PlacesPackTest(unittest.TestCase):
     """docs/design/27: Places carries its own code and its own data."""
 

@@ -514,6 +514,8 @@ target_link_libraries(mv_addon_media PUBLIC mv_core mv_io PRIVATE mv_image mv_cl
 # all (the Intel leg of the universal release links x64 dependencies only).
 if(MV_MAC_VCPKG_ARCH STREQUAL "arm64")
   include("${CMAKE_CURRENT_LIST_DIR}/ai.cmake")
+  # Enhance (#297): its own add-on over the AI pack's model downloader.
+  include("${CMAKE_CURRENT_LIST_DIR}/enhance.cmake")
 endif()
 
 # playprobe -- headless pipeline check (tools/playprobe): decoder actually used,
@@ -1055,6 +1057,10 @@ if(MV_BUILD_TESTS)
   add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
   mv_places_addon_tests(mv_import_tests)
   mv_driftwire_tests(mv_import_tests)
+  if(TARGET mv_enhance)
+    mv_enhance_tests(mv_import_tests)
+    mv_enhance_addon_tests(mv_import_tests)
+  endif()
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC"
     SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
 

@@ -148,13 +148,14 @@ else()
 endif()
 
 # The model downloader's transport (#482 T3, src/addons/ai/fetch.h): WinHTTP on
-# Windows, NSURLSession on the Mac.
+# Windows, NSURLSession on the Mac. Its own library (mv_model_fetch below), so
+# Enhance (#297) fetches its weights with the same code.
 if(WIN32)
-  list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/fetch_win.cpp)
+  set(MV_FETCH_PLATFORM ${R}/src/addons/ai/fetch_win.cpp)
 elseif(APPLE)
-  list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/fetch_mac.mm)
+  set(MV_FETCH_PLATFORM ${R}/src/addons/ai/fetch_mac.mm)
 else()
-  list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/fetch_none.cpp)
+  set(MV_FETCH_PLATFORM ${R}/src/addons/ai/fetch_none.cpp)
 endif()
 
 # Text in pictures (#403, src/addons/ai/text_reader.h): Apple Vision on the
@@ -197,6 +198,27 @@ endif()
 set_target_properties(mv_infer PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 
+# ---- mv_model_fetch ---------------------------------------------------------------
+# The model downloader (#482 T3): a plain, resumable, verified GET of the
+# Hugging Face files an add-on's signed manifest pins (`remote`). Nothing in it
+# knows about tiers or models: the AI pack and Enhance (#297) link it.
+add_library(mv_model_fetch STATIC
+  ${R}/src/addons/ai/fetch.cpp
+  ${R}/src/addons/ai/fetch.h
+  ${R}/src/addons/ai/sha256.cpp
+  ${R}/src/addons/ai/sha256.h
+  ${MV_FETCH_PLATFORM}
+)
+target_include_directories(mv_model_fetch PUBLIC "${R}/src")
+target_link_libraries(mv_model_fetch PUBLIC mv_project_options)
+if(APPLE)
+  target_link_libraries(mv_model_fetch PRIVATE "-framework Foundation")
+elseif(WIN32)
+  target_link_libraries(mv_model_fetch PRIVATE winhttp)
+endif()
+set_target_properties(mv_model_fetch PROPERTIES POSITION_INDEPENDENT_CODE ON
+  CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+
 # ---- mv_ai_engine ---------------------------------------------------------------
 add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/host.cpp
@@ -220,12 +242,8 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/pack.cpp
   ${R}/src/addons/ai/pack.h
   ${R}/src/addons/ai/tiers.cpp
-  ${R}/src/addons/ai/fetch.cpp
   ${R}/src/addons/ai/machine.cpp
   ${R}/src/addons/ai/machine.h
-  ${R}/src/addons/ai/fetch.h
-  ${R}/src/addons/ai/sha256.cpp
-  ${R}/src/addons/ai/sha256.h
   ${R}/src/addons/ai/tiers.h
   ${R}/src/addons/ai/platform.h
   ${R}/src/addons/ai/photos_source.h
@@ -240,7 +258,7 @@ add_library(mv_ai_engine STATIC
 target_include_directories(mv_ai_engine PUBLIC "${R}/src" "${R}/src/abi/include")
 # PDFium's C headers for pdf_pdfium.cpp alone (the library is loaded at run time).
 set_source_files_properties(${R}/src/addons/ai/pdf_pdfium.cpp PROPERTIES INCLUDE_DIRECTORIES "${MV_PDFIUM_INCLUDE}")
-target_link_libraries(mv_ai_engine PUBLIC mv_infer mv_project_options PRIVATE ${MV_SQLITE_TARGET})
+target_link_libraries(mv_ai_engine PUBLIC mv_infer mv_model_fetch mv_project_options PRIVATE ${MV_SQLITE_TARGET})
 find_package(Threads REQUIRED)
 target_link_libraries(mv_ai_engine PUBLIC Threads::Threads)
 if(APPLE)
@@ -250,7 +268,7 @@ if(APPLE)
                         "-framework CoreGraphics")
 endif()
 if(WIN32)
-  target_link_libraries(mv_ai_engine PRIVATE winhttp dxgi)  # fetch_win.cpp, machine() (#482)
+  target_link_libraries(mv_ai_engine PRIVATE dxgi)  # machine() (#482)
 endif()
 set_target_properties(mv_ai_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
@@ -281,7 +299,7 @@ if(APPLE)
   set_target_properties(mv_ai PROPERTIES PREFIX "lib" SUFFIX ".dylib")
   # ORT ships arm64 only: so does the pack (a universal app loads it on Apple
   # silicon; the Mac chrome never offers it on Intel).
-  set_target_properties(mv_ai mv_ai_engine mv_infer PROPERTIES OSX_ARCHITECTURES "arm64")
+  set_target_properties(mv_ai mv_ai_engine mv_infer mv_model_fetch PROPERTIES OSX_ARCHITECTURES "arm64")
 elseif(WIN32)
   set_target_properties(mv_ai PROPERTIES PREFIX "")
 endif()

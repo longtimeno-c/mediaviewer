@@ -2704,6 +2704,27 @@ owner: the Driftwire that asks for 8 needs this MediaViewer or later ("needs a n
 MediaViewer" on an older one), and a new place in the core and both hosts. Not opened to other
 makers' scripts.
 
+**Enhance is its own add-on; its weights are a pinned download, one per kind, on its own page
+(2026-10-26, #297 slices 1–2).** Enhance writes a restored copy of the item on screen; it is not
+part of Local search (search reads pixels and writes an index, Enhance writes a new file), not in
+the `ai` family, and never runs on the view or the render device. Its weights are never in its zip
+or a GitHub asset (a release asset is capped at 2 GB): its signed manifest pins each file under
+`remote` (Hugging Face URL at a fixed revision, size, SHA-256, licence), and the add-on fetches a
+kind's files with the AI pack's downloader (#482 T3, now its own library, `mv_model_fetch`) only
+when the person clicks that kind's Download on Enhance's page in Settings → Add-ons. One weights
+file is at most **5 GB** (owner, 2026-10-10): a bigger pin is refused before any request, and by
+`addon-pack.py`. Free disk is the install gate; free memory against `run_bytes` in `model.json`
+is the run gate. The sheet follows the item: each model's `model.json` lists its knobs and the
+kinds they apply to, and the sheet shows only the item's own; a clip offers picture, sound or
+both; values are remembered per kind. **Changed from the issue's wording:** #297 (written
+2026-10-10) had photo, video and audio as three separately installed pieces of the add-on.
+Since #482 (2026-10-18) a model's weights are a download the add-on makes itself, so what a piece
+was for — a photo model never pulling a video one — is kept without pieces: each kind has its
+own Download, Resume and Remove on the one add-on's page, drawn by the hosts from its view tree.
+That is one GitHub asset per platform, not three, and no per-piece install UI in either host.
+The command is not greyed per kind (manifest commands carry no state); the sheet opens and names
+what is missing instead.
+
 ## Not built
 
 - Voice query add-on (PRs 27–28): no voice add-on or `search_query` host entry exists.
