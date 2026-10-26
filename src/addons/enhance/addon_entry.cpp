@@ -23,6 +23,8 @@
 
 #include "addons/ai/fetch.h"
 #include "addons/enhance/engine.h"
+#include "addons/enhance/host_port.h"
+#include "addons/enhance/runner.h"
 #include "addons/places/self_dir.h"
 #include "core/json.h"
 
@@ -182,7 +184,11 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
     if (g) return MV_ERR_INVALID_ARG;  // one instance per process
     auto state = std::make_unique<addon_state>();
     state->host = host;
-    state->eng = std::make_unique<engine>(make_port(host), mv::places::self_dir(), data_dir(host));
+    const std::string self = mv::places::self_dir();
+    state->eng = std::make_unique<engine>(make_port(host), self, data_dir(host));
+    if (mv::enhance::has_sound_rows(host)) {
+      state->eng->set_runner(std::make_unique<mv::enhance::job_runner>(mv::enhance::run_port_of(host, self)));
+    }
     g = state.release();
     g->eng->resume_wanted();
     std::memset(out, 0, sizeof *out);

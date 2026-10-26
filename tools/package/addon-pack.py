@@ -161,16 +161,20 @@ ADDONS = {
         "host_api": {"min": 3, "max": 3},  # table v3: screens and slots
         "manifest_json": "src/addons/enhance/manifest.json",
         "files": {
-            "win-x64": {"native": "mv_enhance.dll", "chrome": "", "include": ["mv_enhance.dll"],
+            "win-x64": {"native": "mv_enhance.dll", "chrome": "",
+                        "include": ["mv_enhance.dll", "onnxruntime.dll", "onnxruntime_providers_shared.dll"],
                         "optional": ["models"]},
-            "macos": {"native": "libmv_enhance.dylib", "chrome": "", "include": ["libmv_enhance.dylib"],
+            "macos": {"native": "libmv_enhance.dylib", "chrome": "",
+                      "arch": "arm64",  # ONNX Runtime 1.30 ships no x86_64 macOS build
+                      "include": ["libmv_enhance.dylib", "libonnxruntime.dylib"],
                       "optional": ["models"]},
         },
-        "licences": [],
+        "licences": [("onnxruntime", "MIT"), ("libonnxruntime", "MIT")],
+        "ship_notices": ["ThirdPartyNotices.txt"],
         # One weights file is at most 5 GB (#297, owner 2026-10-10); the add-on
         # refuses a bigger pin before any request, and so does packing.
         "max_remote_bytes": 5_000_000_000,
-        "notice": ("Enhance add-on for MediaViewer. GPL-3.0-or-later.\n"
+        "notice": ("Enhance add-on for MediaViewer. GPL-3.0-or-later. ONNX Runtime (MIT, Microsoft).\n"
                    "Its models are not in this package: each is downloaded from Hugging Face, at the\n"
                    "pinned revision and checked against its SHA-256, only when the person asks for it.\n"
                    "Each model's licence is listed with it in the signed manifest.\n"

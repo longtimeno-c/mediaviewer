@@ -287,6 +287,7 @@ struct audio_reader::impl {
   codec_ptr dec;
   SwrContext* swr = nullptr;
   std::uint32_t rate = 16000;
+  std::uint32_t channels = 1;
   std::int64_t start_ms = 0;
   std::int64_t base_ms = -1;       // the time of the first sample kept
   std::uint64_t emitted = 0;       // samples handed out
@@ -302,13 +303,13 @@ struct audio_reader::impl {
   [[nodiscard]] bool convert(const AVFrame* f) {
     const int max_out = swr_get_out_samples(swr, f ? f->nb_samples : 0);
     if (max_out <= 0) return true;
-    std::vector<float> out(static_cast<std::size_t>(max_out));
+    std::vector<float> out(static_cast<std::size_t>(max_out) * channels);
     std::uint8_t* planes[1] = {reinterpret_cast<std::uint8_t*>(out.data())};
     const int got = swr_convert(swr, planes, max_out,
                                 f ? const_cast<const std::uint8_t**>(f->extended_data) : nullptr,
                                 f ? f->nb_samples : 0);
     if (got < 0) return false;
-    out.resize(static_cast<std::size_t>(got));
+    out.resize(static_cast<std::size_t>(got) * channels);
     std::int64_t t_ms = -1;
     if (f && base_ms < 0) {
       const std::int64_t ts = frame_ts(f);
@@ -319,9 +320,10 @@ struct audio_reader::impl {
     if (base_ms < 0) {
       if (t_ms < 0) t_ms = 0;
       if (t_ms < start_ms) {
-        skip = std::min<std::size_t>(out.size(),
-                                     static_cast<std::size_t>((start_ms - t_ms) * rate / 1000));
-        t_ms += static_cast<std::int64_t>(skip) * 1000 / rate;
+        const std::size_t frames = std::min<std::size_t>(out.size() / channels,
+                                                         static_cast<std::size_t>((start_ms - t_ms) * rate / 1000));
+        skip = frames * channels;
+        t_ms += static_cast<std::int64_t>(frames) * 1000 / rate;
       }
       if (skip == out.size()) return true;
       base_ms = t_ms;
@@ -367,13 +369,15 @@ const audio_facts& audio_reader::facts() const noexcept { return p_->facts; }
 result<std::unique_ptr<audio_reader>> audio_reader::open(std::string_view utf8_path,
                                                          std::uint32_t sample_rate,
                                                          std::int64_t start_ms,
-                                                         const std::atomic<bool>* cancel) {
+                                                         const std::atomic<bool>* cancel,
+                                                         std::uint32_t channels) {
   auto p = std::make_unique<impl>();
   p->cancel = cancel ? cancel : &p->never;
   p->rate = sample_rate ? sample_rate : 16000;
   p->start_ms = std::max<std::int64_t>(0, start_ms);
   MV_TRY(source s, open_source(utf8_path, p->cancel));
   if (s.audio < 0) return err(status::unsupported_format);
+  p->facts.has_picture = s.video >= 0;
   p->src = std::move(s);
   p->st = p->src.format->streams[p->src.audio];
   for (unsigned i = 0; i < p->src.format->nb_streams; ++i) {
@@ -381,12 +385,18 @@ result<std::unique_ptr<audio_reader>> audio_reader::open(std::string_view utf8_p
   }
   MV_TRY(codec_ptr dec, open_decoder(p->st, 1));
   p->dec = std::move(dec);
-  AVChannelLayout mono = AV_CHANNEL_LAYOUT_MONO;
-  if (swr_alloc_set_opts2(&p->swr, &mono, AV_SAMPLE_FMT_FLT, static_cast<int>(p->rate), &p->dec->ch_layout,
-                          p->dec->sample_fmt, p->dec->sample_rate, 0, nullptr) < 0 ||
-      !p->swr || swr_init(p->swr) < 0) {
-    return err(status::unsupported_format);
-  }
+  const int src_channels = p->dec->ch_layout.nb_channels;
+  if (src_channels <= 0 || p->dec->sample_rate <= 0) return err(status::unsupported_format);
+  p->channels = channels == 0 ? static_cast<std::uint32_t>(std::min(src_channels, 8)) : std::min<std::uint32_t>(channels, 8);
+  AVChannelLayout out_layout{};
+  av_channel_layout_default(&out_layout, static_cast<int>(p->channels));
+  const int made = swr_alloc_set_opts2(&p->swr, &out_layout, AV_SAMPLE_FMT_FLT, static_cast<int>(p->rate),
+                                       &p->dec->ch_layout, p->dec->sample_fmt, p->dec->sample_rate, 0, nullptr);
+  av_channel_layout_uninit(&out_layout);
+  if (made < 0 || !p->swr || swr_init(p->swr) < 0) return err(status::unsupported_format);
+  p->facts.channels = p->channels;
+  p->facts.source_rate = static_cast<std::uint32_t>(p->dec->sample_rate);
+  p->facts.source_channels = static_cast<std::uint32_t>(src_channels);
   p->pkt.reset(av_packet_alloc());
   p->frame.reset(av_frame_alloc());
   if (!p->pkt || !p->frame) return err(status::out_of_memory);
@@ -401,10 +411,12 @@ result<std::unique_ptr<audio_reader>> audio_reader::open(std::string_view utf8_p
 }
 
 result<std::vector<float>> audio_reader::read(std::size_t max_samples, std::int64_t& start_ms) {
+  const std::size_t ch = p_->channels;
+  max_samples -= max_samples % ch;
   while (p_->pending.size() < max_samples && !p_->eof) MV_TRY_VOID(p_->step());
-  const std::size_t n = std::min(max_samples, p_->pending.size());
+  const std::size_t n = std::min(max_samples, p_->pending.size() - p_->pending.size() % ch);
   start_ms = (p_->base_ms < 0 ? p_->start_ms : p_->base_ms) +
-             static_cast<std::int64_t>(p_->emitted * 1000 / p_->rate);
+             static_cast<std::int64_t>(p_->emitted / ch * 1000 / p_->rate);
   std::vector<float> out(p_->pending.begin(), p_->pending.begin() + static_cast<std::ptrdiff_t>(n));
   p_->pending.erase(p_->pending.begin(), p_->pending.begin() + static_cast<std::ptrdiff_t>(n));
   p_->emitted += n;

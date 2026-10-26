@@ -225,9 +225,19 @@ sheet_view engine::sheet_locked() const {
   }
   if (v.sections.empty()) all_ready = false;
   v.can_run = all_ready && v.note.empty() && !running_;
-  if (!running_ && v.note.empty() && status_.empty() && !v.sections.empty() && !runner_) {
-    bool models = std::all_of(v.sections.begin(), v.sections.end(), [](const sheet_section& s) { return s.spec; });
-    if (models) v.status = "This build of Enhance cannot run its models yet.";
+  if (!running_ && v.note.empty() && status_.empty() && !v.sections.empty()) {
+    const bool models = std::all_of(v.sections.begin(), v.sections.end(), [](const sheet_section& s) { return s.spec; });
+    if (models && !runner_) {
+      v.status = "This build of Enhance cannot run its models yet.";
+    } else if (models) {
+      for (const sheet_section& s : v.sections) {
+        if (runner_->supports(s.kind, item_)) continue;
+        v.status = s.kind == model_kind::video ? "This version of Enhance cannot enhance a clip's picture yet."
+                   : s.kind == model_kind::still ? "This version of Enhance cannot enhance photos yet."
+                                                  : "This version of Enhance cannot run this model.";
+        break;
+      }
+    }
   }
   return v;
 }

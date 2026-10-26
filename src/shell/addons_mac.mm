@@ -668,6 +668,8 @@ mv::addon::host_services ai_services() {
   svc.thumbnail_jpeg = &mv::addon::media::thumbnail_jpeg;
   svc.store_thumbnail_jpeg = &mv::addon::media::store_thumbnail_jpeg;
   svc.document_text = &mv::addon::media::document_text;  // #354
+  svc.open_sound = &mv::addon::media::open_sound;                  // #297
+  svc.open_sound_writer = &mv::addon::media::open_sound_writer;  // #297
   // piece_dir is left empty: loaded_addon::load serves the family's own
   // verified pieces from the store.
   return svc;

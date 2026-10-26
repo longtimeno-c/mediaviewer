@@ -106,6 +106,15 @@ struct host_services {
   // (slot_registry::provider_paths, Places). Tests inject a fake.
   std::function<result<std::vector<std::string>>(const std::string& place, const std::function<bool()>& keep_going)>
       place_matches;
+  // #297: a file's sound at full quality, and a new file beside it with
+  // sound the add-on made (abi/addon_media.h). Empty leaves the table's
+  // sound_* rows NULL.
+  std::function<result<std::unique_ptr<sound_stream>>(const std::string& path, std::uint32_t sample_rate,
+                                                      std::uint32_t channels)>
+      open_sound;
+  std::function<result<std::unique_ptr<sound_sink>>(const std::string& source, std::uint32_t sample_rate,
+                                                    std::uint32_t channels, const std::string& suffix)>
+      open_sound_writer;
   std::string data_dir;         // created by the table
   std::string default_library;  // Pictures\MediaViewer
   // Honour mv_addon_copy_request's fault injection (tests, the verify rig).

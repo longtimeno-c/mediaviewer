@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cmath>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -30,6 +31,9 @@
 
 #include "addons/ai/sha256.h"
 #include "addons/enhance/engine.h"
+#include "addons/enhance/runner.h"
+#include "addons/enhance/sound_job.h"
+#include "addons/enhance/stream_model.h"
 #include "addons/enhance/screens.h"
 #include "addons/enhance/sniff.h"
 #include "addons/enhance/spec.h"
@@ -535,4 +539,251 @@ TEST_CASE("enhance: the sheet shows only the item's own knobs", "[enhance]") {
   f.restart();
   CHECK(near(f.eng->current_prefs().of(model_kind::audio).at("noise").d, 0.35));
   CHECK(f.eng->current_prefs().target == clip_target::both);
+}
+
+// ---- slice 4: sound -------------------------------------------------------------
+
+namespace {
+
+// A model whose output is its input `lag` samples late, times `gain`: what a
+// streaming denoiser looks like to the pipeline, minus the denoising.
+struct lag_model final : frame_model {
+  std::size_t f, lag;
+  float gain;
+  lag_model(std::size_t frame_, std::size_t lag_, float gain_) : f(frame_), lag(lag_), gain(gain_) {}
+  std::size_t frame() const noexcept override { return f; }
+  std::size_t delay() const noexcept override { return lag; }
+  std::vector<float> initial_state() const override { return std::vector<float>(lag, 0.0f); }
+  mv::expected process(std::span<const float> in, std::vector<float>& state, std::span<float> out) override {
+    std::vector<float> line(state);
+    line.insert(line.end(), in.begin(), in.end());
+    for (std::size_t i = 0; i < f; ++i) out[i] = gain * line[i];
+    state.assign(line.end() - static_cast<std::ptrdiff_t>(lag), line.end());
+    return {};
+  }
+};
+
+std::vector<float> ramp(std::size_t frames, std::uint32_t ch) {
+  std::vector<float> v(frames * ch);
+  for (std::size_t i = 0; i < v.size(); ++i) v[i] = static_cast<float>(i % 997) / 997.0f - 0.5f;
+  return v;
+}
+
+sound_source source_of(const std::vector<float>& pcm, std::uint32_t ch, std::size_t* at) {
+  sound_source s;
+  s.channels = ch;
+  s.total_frames = static_cast<std::int64_t>(pcm.size() / ch);
+  s.read = [&pcm, ch, at](std::size_t max_frames) -> mv::result<std::vector<float>> {
+    const std::size_t n = std::min(max_frames * ch, pcm.size() - *at);
+    std::vector<float> out(pcm.begin() + static_cast<std::ptrdiff_t>(*at),
+                           pcm.begin() + static_cast<std::ptrdiff_t>(*at + n));
+    *at += n;
+    return out;
+  };
+  return s;
+}
+
+}  // namespace
+
+TEST_CASE("enhance: the sound lines up with the original, sample for sample", "[enhance][sound]") {
+  for (const std::uint32_t ch : {1u, 2u}) {
+    for (const std::size_t frames : {std::size_t{0}, std::size_t{100}, std::size_t{4801}, std::size_t{48000}}) {
+      const auto pcm = ramp(frames, ch);
+      std::size_t at = 0;
+      lag_model m(480, 1440, 0.5f);
+      std::vector<float> got;
+      sound_sink_port sink;
+      sink.write = [&](std::span<const float> v) -> mv::expected {
+        got.insert(got.end(), v.begin(), v.end());
+        return {};
+      };
+      std::vector<double> progress;
+      sound_job_options o;
+      o.progress = [&](double f) { progress.push_back(f); };
+      REQUIRE(run_sound_job(source_of(pcm, ch, &at), m, sink, o));
+      // The lag is gone: the model's half-level copy of the input, in place.
+      REQUIRE(got.size() == pcm.size());
+      for (std::size_t i = 0; i < pcm.size(); ++i) {
+        if (!near(got[i], 0.5 * pcm[i])) FAIL("sample " << i << " of " << pcm.size() << ", " << ch << " channel(s)");
+      }
+      if (frames > 0) CHECK(near(progress.back(), 1.0));
+    }
+  }
+}
+
+TEST_CASE("enhance: strength mixes the model with the original", "[enhance][sound]") {
+  const auto pcm = ramp(10'000, 2);
+  for (const double strength : {0.0, 0.25, 1.0}) {
+    std::size_t at = 0;
+    lag_model m(480, 1440, 0.0f);  // a model that removes everything
+    std::vector<float> got;
+    sound_sink_port sink;
+    sink.write = [&](std::span<const float> v) -> mv::expected {
+      got.insert(got.end(), v.begin(), v.end());
+      return {};
+    };
+    sound_job_options o;
+    o.strength = strength;
+    REQUIRE(run_sound_job(source_of(pcm, 2, &at), m, sink, o));
+    REQUIRE(got.size() == pcm.size());
+    CHECK(near(got[5001], (1.0 - strength) * pcm[5001]));
+  }
+}
+
+TEST_CASE("enhance: a cancelled sound job stops", "[enhance][sound]") {
+  const auto pcm = ramp(48'000, 1);
+  std::size_t at = 0;
+  lag_model m(480, 0, 1.0f);
+  std::atomic<bool> cancel{false};
+  sound_sink_port sink;
+  sink.write = [&](std::span<const float>) -> mv::expected {
+    cancel = true;  // the person pressed Cancel while it wrote
+    return {};
+  };
+  sound_job_options o;
+  o.cancel = &cancel;
+  const auto r = run_sound_job(source_of(pcm, 1, &at), m, sink, o);
+  REQUIRE_FALSE(r);
+  CHECK(r.error() == mv::status::cancelled);
+}
+
+TEST_CASE("enhance: Enhance on an audio file runs the model and names the new file", "[enhance][sound]") {
+  fixture f;
+  const fs::path song = f.dir / "song.mp3";
+  write_bytes(song, bytes({'I', 'D', '3', 4}));
+  f.eng->event(kSettingsScreen, "install.audio", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::audio).state == dl_state::ready; }));
+
+  // The audio model of the fixture is not a streaming one: give it the io
+  // section the shipped spec has, through a spec the runner can read.
+  const auto pcm = ramp(48'000, 2);
+  std::vector<float> written;
+  std::atomic<bool> finished{false};
+  std::atomic<std::uint64_t> free_memory{8ull << 30};
+  run_port port;
+  port.open_sound = [&](const std::string& path, std::uint32_t rate) -> mv::result<run_port::reader> {
+    CHECK(path == utf8(song));
+    CHECK(rate == 48000u);
+    run_port::reader r;
+    r.channels = 2;
+    r.total_frames = 48'000;
+    auto at = std::make_shared<std::size_t>(0);
+    r.read = [&pcm, at](std::size_t max_frames) -> mv::result<std::vector<float>> {
+      const std::size_t n = std::min(max_frames * 2, pcm.size() - *at);
+      std::vector<float> out(pcm.begin() + static_cast<std::ptrdiff_t>(*at),
+                             pcm.begin() + static_cast<std::ptrdiff_t>(*at + n));
+      *at += n;
+      return out;
+    };
+    return r;
+  };
+  port.create = [&](const std::string& source, std::uint32_t, std::uint32_t channels) -> mv::result<run_port::writer> {
+    CHECK(source == utf8(song));
+    CHECK(channels == 2u);
+    run_port::writer w;
+    w.write = [&](std::span<const float> v) -> mv::expected {
+      written.insert(written.end(), v.begin(), v.end());
+      return {};
+    };
+    w.finish = [&]() -> mv::result<std::string> {
+      finished = true;
+      return utf8(f.dir / "song-enhance.m4a");
+    };
+    return w;
+  };
+  port.load_model = [](const model_spec&, const std::string& dir) -> mv::result<std::unique_ptr<frame_model>> {
+    CHECK(dir.find("models/audio") != std::string::npos);
+    return std::unique_ptr<frame_model>(new lag_model(480, 1440, 1.0f));
+  };
+  port.free_memory = [&]() -> std::optional<std::uint64_t> { return free_memory.load(); };
+
+  // A model.json the runner can run: the fixture's knobs and weights, the
+  // shipped io section.
+  write_text(f.self / "models/audio/model.json", R"json({
+    "kind": "audio", "name": "Speech cleanup", "weights": ["denoise.onnx"], "run_bytes": 150000000, "cpu": true,
+    "knobs": [{"id": "strength", "label": "Noise reduction", "type": "slider", "min": 0, "max": 1, "default": 1}],
+    "io": {"runner": "stream", "rate": 48000, "frame": 480, "state": 45304, "delay": 1440}})json");
+  f.restart();
+  f.eng->set_runner(std::make_unique<job_runner>(port));
+
+  f.eng->sheet_opened(1, utf8(song));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    CHECK(t.has("k.audio.strength"));
+    CHECK_FALSE(*t.node("run")->boolean("disabled"));
+  }
+  // The run gate: too little memory, and it says so without starting.
+  free_memory = 10'000'000;
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  CHECK(parsed(f.host.tree(kSheetScreen)).text("status").find("free memory") != std::string::npos);
+  CHECK(written.empty());
+
+  free_memory = 8ull << 30;
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as") != std::string::npos; }));
+  CHECK(finished);
+  CHECK(parsed(f.host.tree(kSheetScreen)).text("status") == "Saved as song-enhance.m4a.");
+  REQUIRE(written.size() == pcm.size());
+  CHECK(near(written[1234], pcm[1234]));
+  CHECK_FALSE(*parsed(f.host.tree(kSheetScreen)).node("run")->boolean("disabled"));
+
+  // A clip with both: Run is greyed until its picture can be enhanced too.
+  f.eng->event(kSettingsScreen, "install.video", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::video).state == dl_state::ready; }));
+  const fs::path clip = f.dir / "clip.mov";
+  write_bytes(clip, ftyp("qt  ", "qt  "));
+  f.eng->sheet_opened(2, utf8(clip));
+  f.eng->event(kSheetScreen, "target", MV_SLOT_EVENT_CHANGE, "\"both\"");
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    CHECK(*t.node("run")->boolean("disabled"));
+    CHECK(t.text("status").find("clip's picture") != std::string::npos);
+  }
+  // Its sound alone runs.
+  f.eng->event(kSheetScreen, "target", MV_SLOT_EVENT_CHANGE, "\"sound\"");
+  CHECK_FALSE(*parsed(f.host.tree(kSheetScreen)).node("run")->boolean("disabled"));
+}
+
+// The shipped model on ONNX Runtime, when it is here: MV_ENHANCE_DFN3 names the
+// downloaded denoiser_model.onnx; ONNX Runtime is the one staged beside
+// mv_enhance (MV_ENHANCE_RUNTIME_DIR). A tone under noise comes out with less
+// of the noise, in place.
+TEST_CASE("enhance: DeepFilterNet3 cleans a noisy tone", "[.enhance-model]") {
+  const char* model = std::getenv("MV_ENHANCE_DFN3");
+  const char* runtime = std::getenv("MV_ENHANCE_RUNTIME_DIR");
+  if (!model || !runtime) SKIP("MV_ENHANCE_DFN3 / MV_ENHANCE_RUNTIME_DIR not set");
+  const auto text = mv::test::read_bytes(MV_ENHANCE_AUDIO_SPEC);
+  auto spec = parse_spec(std::string(text.begin(), text.end()), model_kind::audio);
+  REQUIRE(spec);
+  const fs::path file(model);
+  runtime_holder rt(runtime);
+  auto m = rt.open(*spec, utf8(file.parent_path()));
+  REQUIRE(m);
+  // Speech-band harmonics under white noise at about 5 dB SNR, 3 s mono.
+  const std::size_t n = 3 * 48000;
+  std::vector<float> clean(n), noisy(n);
+  std::uint32_t seed = 7;
+  for (std::size_t i = 0; i < n; ++i) {
+    const double t = static_cast<double>(i) / 48000;
+    const double env = 0.5 + 0.5 * std::sin(2 * 3.14159265 * 3 * t);
+    clean[i] = static_cast<float>(0.2 * env * (std::sin(2 * 3.14159265 * 220 * t) + 0.5 * std::sin(2 * 3.14159265 * 440 * t)));
+    seed = seed * 1664525u + 1013904223u;
+    noisy[i] = clean[i] + 0.06f * (static_cast<float>(seed >> 8) / 16777216.0f - 0.5f) * 3.46f;
+  }
+  std::size_t at = 0;
+  std::vector<float> out;
+  sound_sink_port sink;
+  sink.write = [&](std::span<const float> v) -> mv::expected {
+    out.insert(out.end(), v.begin(), v.end());
+    return {};
+  };
+  REQUIRE(run_sound_job(source_of(noisy, 1, &at), **m, sink, {}));
+  REQUIRE(out.size() == n);
+  double before = 0, after = 0;
+  for (std::size_t i = 4800; i < n - 4800; ++i) {
+    before += (noisy[i] - clean[i]) * (noisy[i] - clean[i]);
+    after += (out[i] - clean[i]) * (out[i] - clean[i]);
+  }
+  INFO("error energy " << before << " -> " << after);
+  CHECK(after < before);
 }

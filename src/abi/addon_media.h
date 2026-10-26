@@ -51,6 +51,15 @@ namespace media {
 [[nodiscard]] result<std::unique_ptr<audio_stream>> open_audio(const std::string& path,
                                                                std::uint32_t sample_rate,
                                                                std::int64_t start_ms);
+// #297 (Enhance): a file's sound at `sample_rate`, `channels` 1..8 or 0 for the
+// source's own; and a new file beside a source with the add-on's sound
+// (edit/sound_writer.h).
+[[nodiscard]] result<std::unique_ptr<sound_stream>> open_sound(const std::string& path, std::uint32_t sample_rate,
+                                                               std::uint32_t channels);
+[[nodiscard]] result<std::unique_ptr<sound_sink>> open_sound_writer(const std::string& source,
+                                                                    std::uint32_t sample_rate,
+                                                                    std::uint32_t channels,
+                                                                    const std::string& suffix);
 // #354: a document's text in reading order with the page each paragraph
 // starts on: a DOCX through codec::docx_text. unsupported_format for anything
 // else (PDF text is the AI pack's own, through PDFium). `visit` false stops

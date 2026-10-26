@@ -2689,6 +2689,21 @@ That is one GitHub asset per platform, not three, and no per-piece install UI in
 The command is not greyed per kind (manifest commands carry no state); the sheet opens and names
 what is missing instead.
 
+**Enhance's first audio model, and where its sound is written (2026-10-26, #297 slice 4).**
+DeepFilterNet3 (MIT / Apache-2.0), the streaming ONNX export pinned at
+`kimtos-labs/denoiser-dfn3@888f33c4` (16.1 MB, its card's SHA-256 matches the file). Chosen over the
+three-graph export of the same model for being one file with one call per 10 ms frame. Measured on this Mac, CPU, one thread: speech under noise
+at 5 dB SNR from 5.0 to 9.7 dB SI-SDR, at 0.13 × real time a channel; about 58 MB with ONNX
+Runtime, so `run_bytes` is 150 MB and `cpu` is true. Its attenuation-limit input did not behave
+monotonically (6 dB scored below the noisy input), so the strength knob mixes the model's output
+with the time-aligned original instead. **The result is written in the app's process**, through new
+host-table rows (`sound_open` … `sound_write_close`, appended, host API not bumped), not the clip
+helper: the sound comes from the add-on, the encode is FFmpeg's own AAC with no GPU driver to
+crash, and the picture of a clip is stream-copied, never decoded. An MP3 comes back as an M4A: the
+LGPL build has no MP3 encoder (docs/design/11). The real-ESRGAN video model
+(`jonathanst29/tinier-upscale-models`, realesr-general-x4v3, BSD-3-Clause, 4.9 MB) is downloaded
+for slice 5's measurement and not yet pinned.
+
 ## Not built
 
 - Voice query add-on (PRs 27–28): no voice add-on or `search_query` host entry exists.
