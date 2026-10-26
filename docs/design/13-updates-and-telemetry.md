@@ -344,7 +344,10 @@ Consented events are appended to a local spool (`telemetry\`). There is no uploa
 **Driftwire** ([28](28-driftwire.md#privacy-rule-6)) adds no event, tag or crash annotation. A
 transfer's paths, names, addresses and the peer's machine name are never logged; the add-on's log
 lines are fixed ASCII. The files a person sends go only to the MediaViewer they picked, after the
-person there accepted, on the local network or Bluetooth.
+person there accepted, on the local network or Bluetooth. The `driftwire` command line, outside
+the app, checks once a day for a newer version of itself (a plain GET of the Pages site's
+`latest.json`, nothing about the user or their files; off with `/updates off`), and `driftwire
+update` runs the installer it came from ([28](28-driftwire.md#updates-in-the-terminal)).
 
 ---
 

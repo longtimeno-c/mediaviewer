@@ -9,6 +9,7 @@
 //   driftwire receive [--once]
 //   driftwire code
 //   driftwire devices
+//   driftwire update
 //   driftwire --help | --version
 //   common: --save-to DIR, --name NAME (this run only), --plain, --no-color, --verbose
 //
@@ -32,7 +33,7 @@
 
 namespace mv::driftwire::cli {
 
-enum class command : std::uint8_t { session, send, receive, code, devices, help, version };
+enum class command : std::uint8_t { session, send, receive, code, devices, update, help, version };
 
 struct args {
   command cmd = command::session;

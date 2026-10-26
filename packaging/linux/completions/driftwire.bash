@@ -54,7 +54,7 @@ _driftwire() {
             if [[ "$cur" == -* ]]; then
                 COMPREPLY=($(compgen -W "$common" -- "$cur"))
             else
-                COMPREPLY=($(compgen -W "send receive code devices help" -- "$cur"))
+                COMPREPLY=($(compgen -W "send receive code devices update help" -- "$cur"))
             fi
             ;;
         send)
