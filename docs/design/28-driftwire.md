@@ -1161,6 +1161,9 @@ result (nearby, only when Bea said its identity after the code: a MediaViewer fr
 none, and would remember this side by the link's key, so Remember waits until it updates). Ticked on both computers, a later send needs no code: Bea is a tile under **Remembered
 devices** (in the internet section), and one click sends to it over the internet, whenever both
 are online. The receiver still accepts or declines every transfer. (`secrets.*`, `known.*`.)
+The question stays until the next transfer: this computer's next send, or the next offer it
+receives. A link that offers nothing (a knock, a sender's rejoin as its send ends) leaves it;
+until #553 any incoming link took it away, sometimes before it was drawn.
 
 - **Identity.** An X25519 key made once and kept in the OS's secret store (`secrets.h`, a port, D9):
   - **Mac (#501):** the *data protection* keychain, in the app's own keychain access group (a

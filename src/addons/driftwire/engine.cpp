@@ -1278,12 +1278,12 @@ void engine::on_incoming(std::unique_ptr<link> l, bool internet, std::optional<k
       l->shutdown();
       return;
     }
+    // The last transfer's Remember stays: a link that offers nothing (a
+    // knock, a sender's rejoin after its send ended) is not the next
+    // transfer; the offer is (run_receive, `asking`).
     if (!busy) {
       transfer_running_ = true;
       cancel_.store(false);
-      v_.remember_offer = false;
-      v_.remember_needs_check = false;
-      v_.remember_check.clear();
     }
   }
   if (busy) {
@@ -3213,6 +3213,10 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
   }
   {
     std::lock_guard lock(m_);
+    // The next transfer: the last one's Remember goes with it.
+    v_.remember_offer = false;
+    v_.remember_needs_check = false;
+    v_.remember_check.clear();
     v_.in = view::in_phase::asking;
     v_.in_peer = name;
     v_.in_code = ch->code();

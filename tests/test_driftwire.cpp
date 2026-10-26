@@ -1982,6 +1982,46 @@ TEST_CASE("driftwire: Cancel ends a send that waits for Wi-Fi", "[driftwire]") {
 // real UDP beacon socket, the listener on loopback so the run opens no
 // port to the network; Bluetooth is not in the test build). MV_IDLE_SECONDS
 // sets each phase (default 20). Prints one JSON line.
+TEST_CASE("driftwire: a link that offers nothing leaves the last transfer's Remember; the next offer takes it",
+          "[driftwire]") {
+  // #553: a knock, or a sender's rejoin as its send ends, cleared Remember
+  // before anyone saw it (the command line's "Remember Ann?" never came).
+  scratch_dir s("driftwire_remember_knock");
+  bus b;
+  client ann(b, s / "ann_received", "Ann", s / "ann_secrets");
+  client bea(b, s / "bea_received", "Bea", s / "bea_secrets");
+  client cy(b, s / "cy_received", "Cy");
+  write_text(s / "out" / "a.jpg", "a");
+  ann.pick({s / "out" / "a.jpg"});
+  cy.pick({s / "out" / "a.jpg"});
+  bea.save_into(s / "bea_received");
+  ann.send_to(bea);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  REQUIRE(bea.eng.snapshot().remember_offer);
+  REQUIRE(bea.eng.snapshot().remember_peer == "Ann");
+
+  // Cy connects and offers nothing.
+  cy.send_to(bea, false);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::connecting; }));
+  CHECK(bea.eng.snapshot().remember_offer);
+  cy.eng.on_event("out_cancel", 1, "");
+  cy.eng.wait_idle();
+  bea.eng.wait_idle();
+  CHECK(bea.eng.snapshot().remember_offer);
+  CHECK(bea.eng.snapshot().remember_peer == "Ann");
+
+  // Cy's offer is the next transfer: Ann's Remember goes with it.
+  cy.send_to(bea);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  CHECK_FALSE(bea.eng.snapshot().remember_offer);
+  bea.eng.on_event("decline", 1, "");
+  cy.eng.wait_idle();
+  bea.eng.wait_idle();
+}
+
 #if !defined(_WIN32)
 namespace {
 double cpu_seconds() {
