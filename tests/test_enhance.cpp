@@ -829,7 +829,7 @@ std::vector<std::uint8_t> noise_rgb(std::uint32_t w, std::uint32_t h) {
 }  // namespace
 
 TEST_CASE("enhance: tiles join without a seam, at every size", "[enhance][picture]") {
-  for (const auto [w, h] : {std::pair{70u, 45u}, std::pair{32u, 32u}, std::pair{101u, 7u}}) {
+  for (const auto& [w, h] : {std::pair{70u, 45u}, std::pair{32u, 32u}, std::pair{101u, 7u}}) {
     const auto rgb = noise_rgb(w, h);
     for (const std::uint32_t s : {1u, 2u, 4u}) {
       nearest4 m(32);
@@ -979,7 +979,7 @@ TEST_CASE("enhance: a clip's picture, and its sound too, through the runner", "[
   {
     parsed t(f.host.tree(kSheetScreen));
     CHECK(t.has("k.video.scale"));
-    CHECK_FALSE(*t.node("run")->boolean("disabled"));
+    CHECK_FALSE(t.node("run")->boolean("disabled").value_or(false));
   }
   f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
   REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as") != std::string::npos; }));
