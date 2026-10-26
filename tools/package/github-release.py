@@ -101,7 +101,7 @@ def prepare():
 # build (MIT); the CUDA runtime and cuDNN stay user-supplied (log 2026-10-03).
 ADDON_PLATFORMS = ('win-x64', 'macos')
 FIRST_PARTY_ADDONS = ('import', 'driftwire')
-PREFERRED_ADDONS = ('places',)
+PREFERRED_ADDONS = ('places', 'enhance')
 AI_ADDONS = ('ai', 'ai-audio', 'ai-docs', 'ai-faces', 'ai-cuda')
 WINDOWS_ONLY_ADDONS = ('ai-cuda',)
 

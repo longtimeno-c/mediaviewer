@@ -84,13 +84,18 @@ class frame_sampler {
   std::unique_ptr<impl> p_;
 };
 
-// A clip's soundtrack as mono float PCM at `sample_rate` (Milestone H audio
+// A clip's soundtrack as float PCM at `sample_rate` (Milestone H audio
 // index: CLAP wants 48 kHz, Whisper 16 kHz). Its own decoder on the calling
-// worker, never the player's. Channels are averaged; the first audio stream
-// the demuxer calls best is the one read.
+// worker, never the player's. Mono by default, channels averaged; Enhance
+// (#297) asks for the source's own channels, interleaved. The first audio
+// stream the demuxer calls best is the one read.
 struct audio_facts {
   std::int64_t duration_ms = 0;
   bool has_audio = false;
+  std::uint32_t channels = 1;      // in what read() returns
+  std::uint32_t source_rate = 0;   // the stream's own sample rate
+  std::uint32_t source_channels = 0;
+  bool has_picture = false;        // a clip: a picture besides this sound
 };
 
 class audio_reader {
@@ -100,12 +105,14 @@ class audio_reader {
   audio_reader& operator=(const audio_reader&) = delete;
 
   // status::unsupported_format when the file has no audio stream.
+  // `channels`: 1 mixes down to mono; 0 keeps the source's (up to 8).
   [[nodiscard]] static result<std::unique_ptr<audio_reader>> open(
       std::string_view utf8_path, std::uint32_t sample_rate, std::int64_t start_ms,
-      const std::atomic<bool>* cancel = nullptr);
+      const std::atomic<bool>* cancel = nullptr, std::uint32_t channels = 1);
   [[nodiscard]] const audio_facts& facts() const noexcept;
-  // Up to `max_samples` more samples; `start_ms` is the first one's time on
-  // the player's timeline. An empty result is the end of the stream.
+  // Up to `max_samples` more samples (whole frames: every channel of one
+  // instant, interleaved); `start_ms` is the first one's time on the
+  // player's timeline. An empty result is the end of the stream.
   [[nodiscard]] result<std::vector<float>> read(std::size_t max_samples, std::int64_t& start_ms);
 
   struct impl;

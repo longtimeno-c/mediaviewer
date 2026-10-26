@@ -27,6 +27,14 @@ if(NOT DEFINED MV_SOURCE_ROOT)
 endif()
 set(_E "${MV_SOURCE_ROOT}/src/addons/enhance")
 
+if(WIN32)
+  set(_enhance_memory ${_E}/memory_win.cpp)
+elseif(APPLE)
+  set(_enhance_memory ${_E}/memory_mac.cpp)
+else()
+  set(_enhance_memory ${_E}/memory_linux.cpp)
+endif()
+
 add_library(mv_enhance_engine STATIC
   ${_E}/downloads.cpp
   ${_E}/downloads.h
@@ -38,12 +46,24 @@ add_library(mv_enhance_engine STATIC
   ${_E}/screens.h
   ${_E}/sniff.cpp
   ${_E}/sniff.h
+  ${_E}/sound_job.cpp
+  ${_E}/sound_job.h
   ${_E}/spec.cpp
   ${_E}/spec.h
+  ${_E}/runner.cpp
+  ${_E}/runner.h
+  ${_E}/host_port.cpp
+  ${_E}/host_port.h
+  ${_E}/stream_model.cpp
+  ${_E}/stream_model.h
+  ${_E}/memory.h
+  ${_enhance_memory}
 )
 target_include_directories(mv_enhance_engine PUBLIC "${MV_SOURCE_ROOT}/src" "${MV_SOURCE_ROOT}/src/abi/include")
 find_package(Threads REQUIRED)
-target_link_libraries(mv_enhance_engine PUBLIC mv_project_options mv_model_fetch Threads::Threads)
+# mv_infer: ONNX Runtime behind src/infer, loaded at run time from the
+# add-on's own folder (never linked).
+target_link_libraries(mv_enhance_engine PUBLIC mv_project_options mv_model_fetch mv_infer Threads::Threads)
 set_target_properties(mv_enhance_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 
@@ -84,6 +104,30 @@ elseif(WIN32)
   set_target_properties(mv_enhance PROPERTIES PREFIX "")
 endif()
 
+# Laid out as the package is (for tests, sideloading and addon-pack.py): ONNX
+# Runtime and its notices beside the library, each kind's model.json under
+# models/, and remote.json, the weights' pins addon-pack.py signs into the
+# manifest (never a file of the package).
+set(_enhance_out "${CMAKE_BINARY_DIR}/addons/enhance")
+if(WIN32)
+  set(_enhance_ort "${MV_ORT_DIR}/lib/onnxruntime.dll" "${MV_ORT_DIR}/lib/onnxruntime_providers_shared.dll")
+  add_custom_command(TARGET mv_enhance POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_enhance_ort} "${_enhance_out}")
+elseif(APPLE)
+  add_custom_command(TARGET mv_enhance POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MV_ORT_DIR}/lib/libonnxruntime.${MV_ORT_VERSION}.dylib"
+            "${_enhance_out}/libonnxruntime.dylib")
+else()
+  add_custom_command(TARGET mv_enhance POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MV_ORT_DIR}/lib/libonnxruntime.so.${MV_ORT_VERSION}"
+            "${_enhance_out}/libonnxruntime.so")
+endif()
+add_custom_command(TARGET mv_enhance POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MV_ORT_LICENSE}" "${MV_ORT_NOTICES}" "${_enhance_out}"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory "${_E}/models" "${_enhance_out}/models"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_E}/remote.json" "${_enhance_out}/remote.json"
+  COMMENT "Staging ONNX Runtime, the models' specs and their pins beside mv_enhance")
+
 # The engine's own cases (tests/test_enhance.cpp) and the add-on through the
 # real loader (tests/test_enhance_addon.cpp): its manifest accepted, then
 # loaded from a signed store whose manifest pins a fixture weights file,
@@ -91,6 +135,8 @@ endif()
 function(mv_enhance_tests target)
   target_sources(${target} PRIVATE "${MV_SOURCE_ROOT}/tests/test_enhance.cpp")
   target_link_libraries(${target} PRIVATE mv_enhance_engine)
+  target_compile_definitions(${target} PRIVATE
+    MV_ENHANCE_AUDIO_SPEC="${MV_SOURCE_ROOT}/src/addons/enhance/models/audio/model.json")
 endfunction()
 function(mv_enhance_addon_tests target)
   target_sources(${target} PRIVATE "${MV_SOURCE_ROOT}/tests/test_enhance_addon.cpp")
@@ -98,4 +144,18 @@ function(mv_enhance_addon_tests target)
     MV_ENHANCE_MODULE_PATH="$<TARGET_FILE:mv_enhance>"
     MV_ENHANCE_MANIFEST_JSON="${MV_SOURCE_ROOT}/src/addons/enhance/manifest.json")
   add_dependencies(${target} mv_enhance)
+endfunction()
+
+# End to end over the real host table (tests/test_enhance_media.cpp): the
+# sound rows' thunks over the hosts' FFmpeg reader and writer. Called where
+# the AI suite is built (it links mv_addon_media).
+function(mv_enhance_media_tests target)
+  target_sources(${target} PRIVATE "${MV_SOURCE_ROOT}/tests/test_enhance_media.cpp")
+  target_link_libraries(${target} PRIVATE mv_enhance_engine)
+  # FFmpeg itself for the synthetic clips (clip_fixture.h), as mv_clipjob_test.
+  target_include_directories(${target} SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
+  target_link_directories(${target} PRIVATE ${FFMPEG_LIBRARY_DIRS})
+  target_link_libraries(${target} PRIVATE ${FFMPEG_LIBRARIES})
+  target_compile_definitions(${target} PRIVATE
+    MV_ENHANCE_AUDIO_SPEC="${MV_SOURCE_ROOT}/src/addons/enhance/models/audio/model.json")
 endfunction()

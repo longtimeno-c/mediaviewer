@@ -474,6 +474,17 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
         self.assertIn('mediaviewer-addon-places-macos.zip', names)
         self.assertNotIn('mediaviewer-addon-places-win-x64.zip', names)
 
+    def test_stable_carries_enhance_when_packed_and_publishes_without_it(self):
+        # #297: preferred, like Places; a release without it still publishes.
+        self.stable_assets()
+        names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
+        self.assertFalse(any('enhance' in name for name in names))
+        self.write_addon('enhance')
+        names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
+        for platform in release.ADDON_PLATFORMS:
+            for name in release.addon_asset_names(platform, 'enhance'):
+                self.assertIn(name, names)
+
     def test_stable_rejects_a_partial_places_pack(self):
         self.stable_assets()
         (self.folder / 'mediaviewer-addon-places-win-x64.zip').write_bytes(b'addon')

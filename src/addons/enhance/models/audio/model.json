@@ -1,0 +1,13 @@
+{
+ "kind": "audio",
+ "name": "Speech cleanup",
+ "credit": "DeepFilterNet3, Hendrik Schröter et al. (MIT)",
+ "weights": ["denoiser_model.onnx"],
+ "run_bytes": 150000000,
+ "cpu": true,
+ "knobs": [
+  {"id": "strength", "label": "Noise reduction", "type": "slider", "min": 0, "max": 1, "step": 0.05, "default": 1,
+   "help": "How much of the cleaned-up sound replaces the original."}
+ ],
+ "io": {"runner": "stream", "rate": 48000, "frame": 480, "state": 45304, "delay": 1440}
+}

@@ -27,15 +27,11 @@ Owner calls: issue #297 (2026-10-10). Decision log: "Enhance is its own add-on" 
 1. **Weights outside the zip** — built 2026-10-26.
 2. **The sheet** — built 2026-10-26.
 3. **A still** — not started (not asked for in this round).
-4. **Audio** — next. Needs from the host table (appended rows, host API unchanged):
-   - reading a file's sound at its own rate and channel count (today's `audio_open` is mono at a
-     rate the caller picks);
-   - writing a new audio file beside the original: PCM in, AAC in M4A out (FFmpeg's native AAC
-     encoder, LGPL), through the export path's part file and unique name;
-   - for a clip's sound target: the same file with the video stream copied and the new sound.
-   The first audio model is chosen by the licence allow-list and a measurement (time per minute
-   of sound, `run_bytes`, before/after on a noisy speech set), and recorded here.
-5. **A clip's picture** — after 4. Needs every frame in display order (the sampler gives
+4. **Audio** — built 2026-10-26: DeepFilterNet3, the host's sound rows and `edit/sound_writer.h`
+   ([29](../design/29-enhance.md)).
+5. **A clip's picture** — next. The candidate is Real-ESRGAN general x4v3 (BSD-3-Clause, 4.9 MB,
+   `jonathanst29/tinier-upscale-models@899dc1e4`, SHA-256 `924ebad6…d8d5`; input float32 NCHW
+   RGB in [0, 1] with dynamic size, output 4×), downloaded for measurement, not pinned. Needs every frame in display order (the sampler gives
    keyframes and gaps) and a frame sink into the labelled hardware re-encode path
    (`edit/hwencode.h`), in the app process rather than the clip helper, since the frames come
    from the add-on. The first video model is chosen like the audio one.

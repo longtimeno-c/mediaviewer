@@ -202,6 +202,18 @@ typedef struct mv_addon_tag_facts {
 #define MV_ADDON_TAG_FACTS_V1_SIZE ((uint32_t)offsetof(mv_addon_tag_facts, rating))
 #define MV_ADDON_TAG_FACTS_V2_SIZE ((uint32_t)sizeof(mv_addon_tag_facts))
 
+/* #297 (Enhance, slice 4): a file's sound at full quality, and a new file
+ * beside it with sound the add-on made (sound_open ... sound_write_close). */
+typedef struct mv_addon_sound_info {
+  uint32_t struct_size;     /* the caller's sizeof */
+  uint32_t channels;        /* in what sound_read returns, interleaved */
+  uint32_t sample_rate;     /* as asked */
+  uint32_t source_rate;     /* the stream's own */
+  uint32_t source_channels;
+  uint32_t has_picture;     /* 1: a clip, a picture besides its sound */
+  int64_t duration_ms;
+} mv_addon_sound_info;
+
 /* #406 (docs/design/17 "Cues"): a clip's own text, one cue at a time, in start
  * order: a chapter title or a text subtitle line (mov_text, SubRip, ASS,
  * WebVTT), markup removed. Bitmap subtitles are never sent. */
@@ -755,6 +767,38 @@ typedef struct mv_host_api {
    * document_text: read it only when `struct_size` covers it and the pointer
    * is non-NULL. */
   mv_status(MV_CALL* busy_post)(void* host, const char* what_utf8);
+  /* ---- sound (#297, Enhance slice 4) ------------------------------------------- */
+  /* [worker-thread] A file's sound (an audio file's, or a clip's first audio
+   * track) as interleaved float PCM at `sample_rate` (8000..192000), with
+   * `channels` 1..8 (mixed or spread), or 0 for the source's own (up to 8).
+   * Its own decoder, never the player's. MV_ERR_UNSUPPORTED_FORMAT: no sound
+   * (or one that cannot be read, such as FairPlay). `out_info` may be NULL;
+   * its struct_size says how much the caller has. Appended after busy_post:
+   * read these seven only when `struct_size` covers them and the pointers
+   * are non-NULL. */
+  mv_status(MV_CALL* sound_open)(void* host, const char* path_utf8, uint32_t sample_rate, uint32_t channels,
+                                 mv_addon_sound_info* out_info, void** out_sound);
+  /* Up to `max_frames` more frames (every channel of one instant) into `out`
+   * (room for max_frames * channels floats); `*out_frames` 0 is the end. */
+  mv_status(MV_CALL* sound_read)(void* host, void* sound, float* out, uint32_t max_frames, uint32_t* out_frames);
+  void(MV_CALL* sound_close)(void* host, void* sound);
+  /* [worker-thread] A new file beside `source_utf8` (rule 5: the source is
+   * read, never written): "<stem>-<suffix>.m4a" for an audio file; for a
+   * clip, its picture stream-copied with this sound in place of its own, in
+   * its own MP4 / MOV, else Matroska. The sound is the OS's AAC; where the OS
+   * has no AAC encoder, FLAC (a ".flac", or a clip in Matroska). `suffix_ascii` is [a-z0-9_-]{1,32}.
+   * Hidden until sound_write_finish publishes it under the first free name;
+   * sound_write_close before that leaves nothing. `*out_with_picture` (may
+   * be NULL) says whether the source's picture is in it. */
+  mv_status(MV_CALL* sound_write_open)(void* host, const char* source_utf8, uint32_t sample_rate,
+                                       uint32_t channels, const char* suffix_ascii, uint32_t* out_with_picture,
+                                       void** out_writer);
+  /* `frames` whole frames of interleaved float PCM in [-1, 1]. */
+  mv_status(MV_CALL* sound_write)(void* host, void* writer, const float* interleaved, uint32_t frames);
+  /* Finishes and publishes; writes the new file's path (to show its name;
+   * never to log, rule 6). The writer is still closed with sound_write_close. */
+  mv_status(MV_CALL* sound_write_finish)(void* host, void* writer, char* out_path_utf8, uint32_t capacity);
+  void(MV_CALL* sound_write_close)(void* host, void* writer);
 } mv_host_api;
 
 typedef struct mv_addon_api {

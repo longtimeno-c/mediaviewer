@@ -460,6 +460,8 @@ add_library(mv_clip STATIC
   src/edit/clip_encode.cpp
   src/edit/clip_pixels.h
   src/edit/clip_sample.cpp
+  src/edit/clip_sound_write.cpp
+  src/edit/clip_audio_enc.cpp
   src/edit/clip_sample.h
   src/edit/clip_run.cpp
   src/edit/clip_jobs.cpp
@@ -950,6 +952,8 @@ if(MV_BUILD_TESTS)
     src/shell/minidump_scrub.cpp
     # PR 13 / 14: the clip core on synthetic clips, the clip session, trim mode.
     tests/test_clip.cpp
+    # #297: Enhance's sound in and out (edit/sound_writer.h).
+    tests/test_sound_writer.cpp
     tests/test_poster.cpp
     tests/test_clip_helper.cpp
     tests/test_clip_session.cpp
@@ -1113,6 +1117,7 @@ if(MV_BUILD_TESTS)
     target_compile_definitions(mv_ai_tests PRIVATE MV_AI_TEST_DECODE MV_AI_PDFIUM_LIB="${MV_PDFIUM_LIB}"
       MV_AI_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data/ai")
     set_target_properties(mv_ai_tests PROPERTIES OSX_ARCHITECTURES "arm64")
+    mv_enhance_media_tests(mv_ai_tests)  # #297 slice 4
     catch_discover_tests(mv_ai_tests TEST_PREFIX "ai_"
       PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:")
   endif()

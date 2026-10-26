@@ -389,6 +389,7 @@ class EnhancePackTest(unittest.TestCase):
         self.src = self.tmp / "enhance"
         (self.src / "models" / "audio").mkdir(parents=True)
         (self.src / "libmv_enhance.dylib").write_bytes(b"\xcf\xfa\xed\xfe" + os.urandom(1024))
+        (self.src / "libonnxruntime.dylib").write_bytes(b"\xcf\xfa\xed\xfe" + os.urandom(1024))
         (self.src / "models" / "audio" / "model.json").write_text('{"kind": "audio"}')
         self.pin = {"url": "https://huggingface.co/org/denoise/resolve/0123abcd/denoise.onnx",
                     "path": "audio/denoise.onnx", "size": 8_000_000, "sha256": "ab" * 32, "licence": "MIT"}
@@ -424,7 +425,19 @@ class EnhancePackTest(unittest.TestCase):
         shutil.rmtree(self.src / "models")
         m = self.pack()
         self.assertEqual([f["path"] for f in m["files"] if not f["path"].startswith("LICENSES/")],
-                         ["libmv_enhance.dylib"])
+                         ["libmv_enhance.dylib", "libonnxruntime.dylib"])
+
+    def test_the_shipped_pins_pass_the_pack(self):
+        # The committed pins (src/addons/enhance/remote.json) and model specs.
+        shutil.copy(ROOT / "src/addons/enhance/remote.json", self.src / "remote.json")
+        shutil.rmtree(self.src / "models")
+        shutil.copytree(ROOT / "src/addons/enhance/models", self.src / "models")
+        m = self.pack()
+        self.assertEqual(m["arch"], "arm64")
+        for r in m["remote"]:
+            spec = json.loads((ROOT / "src/addons/enhance/models" / r["path"].split("/")[0] / "model.json").read_text())
+            self.assertIn(r["path"].split("/", 1)[1], spec["weights"])
+            self.assertLessEqual(r["size"], 5_000_000_000)
 
 
 class PlacesPackTest(unittest.TestCase):

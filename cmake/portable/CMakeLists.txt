@@ -181,6 +181,8 @@ if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
     "${MV_ROOT}/src/edit/clip_copy.cpp"
     "${MV_ROOT}/src/edit/clip_encode.cpp"
     "${MV_ROOT}/src/edit/clip_sample.cpp"
+    "${MV_ROOT}/src/edit/clip_sound_write.cpp"
+    "${MV_ROOT}/src/edit/clip_audio_enc.cpp"
     "${MV_ROOT}/src/edit/clip_run.cpp"
     "${MV_ROOT}/src/edit/clip_jobs.cpp"
     "${MV_ROOT}/src/edit/clip_wire.cpp"
@@ -204,6 +206,7 @@ if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
   add_executable(mv_clip_tests
     "${MV_ROOT}/tests/test_clip_helper.cpp"
     "${MV_ROOT}/tests/test_clip.cpp"
+    "${MV_ROOT}/tests/test_sound_writer.cpp"
     "${MV_ROOT}/tests/test_clip_session.cpp"
     "${MV_ROOT}/src/abi/clip_session.cpp")
   target_link_libraries(mv_clip_tests PRIVATE mv_clip PkgConfig::MV_SPNG ${MV_CATCH2_TARGET})

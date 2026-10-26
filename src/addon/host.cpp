@@ -878,6 +878,114 @@ mv_status MV_CALL t_busy_post(void* host, const char* what) {
   });
 }
 
+// ---- sound (#297, Enhance slice 4) ----------------------------------------------
+
+struct sound_box {
+  std::unique_ptr<sound_stream> s;
+};
+
+mv_status MV_CALL t_sound_open(void* host, const char* path, uint32_t rate, uint32_t channels,
+                               mv_addon_sound_info* info, void** out) {
+  return guarded([&] {
+    if (!path || !out || rate < 8000 || rate > 192000 || channels > 8) return MV_ERR_INVALID_ARG;
+    if (info && info->struct_size < sizeof(mv_addon_sound_info)) return MV_ERR_INVALID_ARG;
+    *out = nullptr;
+    const auto& fn = self(host).services().open_sound;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto s = fn(path, rate, channels);
+    if (!s) return to_mv(s.error());
+    if (info) {
+      const sound_facts& f = (*s)->facts();
+      const uint32_t size = info->struct_size;
+      std::memset(info, 0, sizeof *info);
+      info->struct_size = size;
+      info->channels = f.channels;
+      info->sample_rate = f.sample_rate;
+      info->source_rate = f.source_rate;
+      info->source_channels = f.source_channels;
+      info->has_picture = f.has_picture ? 1 : 0;
+      info->duration_ms = f.duration_ms;
+    }
+    auto box = std::make_unique<sound_box>();
+    box->s = std::move(*s);
+    *out = box.release();
+    return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_sound_read(void*, void* sound, float* out, uint32_t max_frames, uint32_t* frames) {
+  return guarded([&] {
+    if (!sound || !out || !frames || max_frames == 0) return MV_ERR_INVALID_ARG;
+    auto& s = *static_cast<sound_box*>(sound)->s;
+    auto r = s.read(max_frames);
+    if (!r) return to_mv(r.error());
+    const std::size_t ch = std::max<std::uint32_t>(1, s.facts().channels);
+    if (r->size() > static_cast<std::size_t>(max_frames) * ch) return MV_ERR_INTERNAL;
+    std::memcpy(out, r->data(), r->size() * sizeof(float));
+    *frames = static_cast<uint32_t>(r->size() / ch);
+    return MV_OK;
+  });
+}
+
+void MV_CALL t_sound_close(void*, void* sound) {
+  try {
+    delete static_cast<sound_box*>(sound);
+  } catch (...) {
+  }
+}
+
+struct sound_writer_box {
+  std::unique_ptr<sound_sink> w;
+  std::uint32_t channels = 1;
+  bool finished = false;
+};
+
+mv_status MV_CALL t_sound_write_open(void* host, const char* source, uint32_t rate, uint32_t channels,
+                                     const char* suffix, uint32_t* with_picture, void** out) {
+  return guarded([&] {
+    if (!source || !suffix || !out || channels < 1 || channels > 8) return MV_ERR_INVALID_ARG;
+    *out = nullptr;
+    const auto& fn = self(host).services().open_sound_writer;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto w = fn(source, rate, channels, suffix);
+    if (!w) return to_mv(w.error());
+    if (with_picture) *with_picture = (*w)->with_picture() ? 1 : 0;
+    auto box = std::make_unique<sound_writer_box>();
+    box->w = std::move(*w);
+    box->channels = channels;
+    *out = box.release();
+    return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_sound_write(void*, void* writer, const float* pcm, uint32_t frames) {
+  return guarded([&] {
+    auto* box = static_cast<sound_writer_box*>(writer);
+    if (!box || !pcm || box->finished) return MV_ERR_INVALID_ARG;
+    if (frames == 0) return MV_OK;
+    const auto r = box->w->write(std::span<const float>(pcm, static_cast<std::size_t>(frames) * box->channels));
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+
+mv_status MV_CALL t_sound_write_finish(void*, void* writer, char* out, uint32_t cap) {
+  return guarded([&] {
+    auto* box = static_cast<sound_writer_box*>(writer);
+    if (!box || box->finished) return MV_ERR_INVALID_ARG;
+    box->finished = true;
+    auto r = box->w->finish();
+    if (!r) return to_mv(r.error());
+    return out ? copy_out(*r, out, cap) : MV_OK;
+  });
+}
+
+void MV_CALL t_sound_write_close(void*, void* writer) {
+  try {
+    delete static_cast<sound_writer_box*>(writer);
+  } catch (...) {
+  }
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -947,6 +1055,17 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.notice_authorize = &t_notice_authorize;
   api_.keep_alive = &t_keep_alive;
   api_.busy_post = &t_busy_post;
+  if (svc_.open_sound) {
+    api_.sound_open = &t_sound_open;
+    api_.sound_read = &t_sound_read;
+    api_.sound_close = &t_sound_close;
+  }
+  if (svc_.open_sound_writer) {
+    api_.sound_write_open = &t_sound_write_open;
+    api_.sound_write = &t_sound_write;
+    api_.sound_write_finish = &t_sound_write_finish;
+    api_.sound_write_close = &t_sound_write_close;
+  }
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

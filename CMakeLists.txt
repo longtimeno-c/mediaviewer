@@ -687,6 +687,8 @@ add_library(mv_clip STATIC
   src/edit/clip_encode.cpp
   src/edit/clip_pixels.h
   src/edit/clip_sample.cpp
+  src/edit/clip_sound_write.cpp
+  src/edit/clip_audio_enc.cpp
   src/edit/clip_sample.h
   src/edit/clip_run.cpp
   src/edit/clip_jobs.cpp
@@ -1183,6 +1185,8 @@ if(MV_BUILD_TESTS)
     src/shell/adjust_pane.cpp
     # PR 13 / 14: clip core on synthetic clips, the ABI's clip session, trim mode.
     tests/test_clip.cpp
+    # #297: Enhance's sound in and out (edit/sound_writer.h).
+    tests/test_sound_writer.cpp
     tests/test_poster.cpp
     # docs/design/26: the Photos backup engine, portable; PhotoKit is the Mac host's.
     tests/test_photos_backup.cpp
@@ -1450,6 +1454,7 @@ if(MV_BUILD_TESTS)
   target_compile_definitions(mv_ai_tests PRIVATE MV_AI_TEST_DECODE MV_AI_PDFIUM_LIB="${MV_PDFIUM_LIB}"
     MV_AI_TEST_DATA="${CMAKE_SOURCE_DIR}/tests/data/ai")
   mv_asan_runtime_beside(mv_ai_tests)
+  mv_enhance_media_tests(mv_ai_tests)  # #297 slice 4
   catch_discover_tests(mv_ai_tests TEST_PREFIX "ai_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
   if(TARGET mv_chrome)

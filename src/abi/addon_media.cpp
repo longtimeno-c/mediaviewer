@@ -12,6 +12,7 @@
 
 #include "codec/decode.h"
 #include "edit/clip_sample.h"
+#include "edit/sound_writer.h"
 #include "image/pipeline.h"
 #include "image/thumb.h"
 #include "io/file.h"
@@ -221,6 +222,53 @@ result<std::unique_ptr<audio_stream>> open_audio(const std::string& path, std::u
   };
   MV_TRY(auto r, edit::clip::audio_reader::open(path, sample_rate, start_ms));
   return std::unique_ptr<audio_stream>(new adapter(std::move(r)));
+}
+
+result<std::unique_ptr<sound_stream>> open_sound(const std::string& path, std::uint32_t sample_rate,
+                                                 std::uint32_t channels) {
+  class adapter final : public sound_stream {
+   public:
+    adapter(std::unique_ptr<edit::clip::audio_reader> r, std::uint32_t rate) : r_(std::move(r)) {
+      const auto& a = r_->facts();
+      f_.channels = a.channels;
+      f_.sample_rate = rate;
+      f_.source_rate = a.source_rate;
+      f_.source_channels = a.source_channels;
+      f_.has_picture = a.has_picture;
+      f_.duration_ms = a.duration_ms;
+    }
+    const sound_facts& facts() const noexcept override { return f_; }
+    result<std::vector<float>> read(std::size_t max_frames) override {
+      std::int64_t start_ms = 0;
+      return r_->read(max_frames * f_.channels, start_ms);
+    }
+
+   private:
+    std::unique_ptr<edit::clip::audio_reader> r_;
+    sound_facts f_;
+  };
+  MV_TRY(auto r, edit::clip::audio_reader::open(path, sample_rate, 0, nullptr, channels));
+  return std::unique_ptr<sound_stream>(new adapter(std::move(r), sample_rate));
+}
+
+result<std::unique_ptr<sound_sink>> open_sound_writer(const std::string& source, std::uint32_t sample_rate,
+                                                      std::uint32_t channels, const std::string& suffix) {
+  class adapter final : public sound_sink {
+   public:
+    explicit adapter(std::unique_ptr<edit::clip::sound_writer> w) : w_(std::move(w)) {}
+    bool with_picture() const noexcept override { return w_->with_picture(); }
+    expected write(std::span<const float> pcm) override { return w_->write(pcm); }
+    result<std::string> finish() override { return w_->finish(); }
+
+   private:
+    std::unique_ptr<edit::clip::sound_writer> w_;
+  };
+  edit::clip::sound_out_options o;
+  o.sample_rate = sample_rate;
+  o.channels = channels;
+  o.suffix = suffix;
+  MV_TRY(auto w, edit::clip::sound_writer::open(source, o));
+  return std::unique_ptr<sound_sink>(new adapter(std::move(w)));
 }
 
 result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_ms,

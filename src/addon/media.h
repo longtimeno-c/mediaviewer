@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -65,6 +66,34 @@ class audio_stream {
   // Up to `max_samples`; empty at the end. `start_ms`: the first sample's time.
   [[nodiscard]] virtual result<std::vector<float>> read(std::size_t max_samples,
                                                         std::int64_t& start_ms) = 0;
+};
+
+// #297 (Enhance): a file's sound at full quality, interleaved float PCM.
+struct sound_facts {
+  std::uint32_t channels = 1;
+  std::uint32_t sample_rate = 0;
+  std::uint32_t source_rate = 0;
+  std::uint32_t source_channels = 0;
+  bool has_picture = false;
+  std::int64_t duration_ms = 0;
+};
+
+class sound_stream {
+ public:
+  virtual ~sound_stream() = default;
+  [[nodiscard]] virtual const sound_facts& facts() const noexcept = 0;
+  // Up to `max_frames` frames; empty at the end.
+  [[nodiscard]] virtual result<std::vector<float>> read(std::size_t max_frames) = 0;
+};
+
+// A new file beside a source with sound the add-on made (edit/sound_writer.h).
+class sound_sink {
+ public:
+  virtual ~sound_sink() = default;
+  [[nodiscard]] virtual bool with_picture() const noexcept = 0;
+  [[nodiscard]] virtual expected write(std::span<const float> interleaved) = 0;
+  // Publishes; the new file's path.
+  [[nodiscard]] virtual result<std::string> finish() = 0;
 };
 
 // #354: a document's text, one paragraph (or line) at a time, in reading
