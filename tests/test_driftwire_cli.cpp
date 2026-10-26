@@ -1085,11 +1085,11 @@ TEST_CASE("driftwire cli session: clicks choose a computer, a command and an ans
 
   type_line(ann, utf8(f));
   REQUIRE(ann.screen_shows("1 file"));
-  REQUIRE(ann.con.wait_mouse(true));
+  REQUIRE(ann.con.wait_mouse(true, 15));
   CHECK(ann.con.cursor_asks() > 0);  // where the region is, asked after each frame
 
   // The row a computer is on: the pointer's glyph before its name.
-  const auto pointed_at = [&](const std::string& name) {
+  const auto pointed_at = [&](const std::string& name, int seconds = 10) {
     return ann.con.wait_screen(
         [&](const std::string& screen) {
           for (std::size_t at = 0; at < screen.size();) {
@@ -1101,10 +1101,10 @@ TEST_CASE("driftwire cli session: clicks choose a computer, a command and an ans
           }
           return false;
         },
-        2);
+        seconds);
   };
   // One click points at a computer, and sends nothing.
-  const std::string other = pointed_at("Bea") ? "Cy" : "Bea";
+  const std::string other = pointed_at("Bea", 2) ? "Cy" : "Bea";
   REQUIRE(ann.con.click_on(other));
   REQUIRE(pointed_at(other));
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
@@ -1126,7 +1126,7 @@ TEST_CASE("driftwire cli session: clicks choose a computer, a command and an ans
   // the card once it has settled is.
   REQUIRE(to.screen_shows("Ann wants to send you 1 file"));
   REQUIRE(to.screen_shows("1. Accept"));
-  REQUIRE(to.con.wait_mouse(true));
+  REQUIRE(to.con.wait_mouse(true, 15));
   REQUIRE(to.con.click_on("1. Accept"));
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   CHECK(to.screen_shows("1. Accept", 1));
@@ -1148,7 +1148,7 @@ TEST_CASE("driftwire cli session: clicks choose a computer, a command and an ans
   // The palette: a click on a command runs it (or waits for its arguments).
   ann.con.type_keys("/se");
   REQUIRE(ann.screen_shows("/settings"));
-  REQUIRE(ann.con.wait_mouse(true));
+  REQUIRE(ann.con.wait_mouse(true, 15));
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   REQUIRE(ann.con.click_on("/settings"));
   REQUIRE(ann.shows("Over the internet: off"));
@@ -1159,9 +1159,16 @@ TEST_CASE("driftwire cli session: clicks choose a computer, a command and an ans
   REQUIRE(ann.screen_shows("> /save-to "));
 
   // Nothing ready, nothing to click: the mouse goes back to the terminal.
+  // Each step waits for the screen: an Esc the session has not yet read
+  // when "/" follows is Alt+/ (keys.h), as it is from a person.
   press_esc(ann);  // the line cleared
+  REQUIRE(ann.screen_shows("Type or drop files to send"));
   type_line(ann, "/clear");
-  REQUIRE(ann.con.wait_mouse(false));
+  REQUIRE(ann.con.wait_screen([](const std::string& t) {
+    const auto last = t.find_last_of('\n', t.size() - 2);
+    return !has(t.substr(last == std::string::npos ? 0 : last), "1 file");
+  }));
+  REQUIRE(ann.con.wait_mouse(false, 15));
 
   for (cli_side* side : {&ann, &bea, &cy}) type_line(*side, "/quit");
   CHECK(ann.wait_exit() == 0);
