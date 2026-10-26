@@ -11,6 +11,10 @@ leaves your computer.
 
 ![MediaViewer showing a RAW photo with the filmstrip underneath](docs/img/viewer.png)
 
+[![A 42-megapixel RAW on screen in 51 ms: watch the tour](docs/img/film-mediaviewer.png)](docs/video/mediaviewer.mp4)
+
+**▶ [Watch MediaViewer in under a minute](docs/video/mediaviewer.mp4)**
+
 ### At a glance
 
 | | |
@@ -237,6 +241,10 @@ The optional **Import** add-on copies a card or folder into your library.
 ## Driftwire: send to the computer next to you
 
 The optional **Driftwire** add-on sends photos, video and audio to another MediaViewer nearby.
+
+[![Driftwire carrying a send from Wi-Fi to Bluetooth: watch how it works](docs/img/film-driftwire.png)](docs/video/driftwire.mp4)
+
+**▶ [Watch how Driftwire works](docs/video/driftwire.mp4)** (96 s)
 
 - **Pick, then send.** Shift-click a run of photos in the gallery and press *Send*, or drag them straight out of the grid.
 - **Type the code the other screen shows.** Nothing moves until you have typed it and the person on the other side accepts.

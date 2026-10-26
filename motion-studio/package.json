@@ -1,0 +1,21 @@
+{
+  "name": "mediaviewer-motion-studio",
+  "private": true,
+  "description": "Code-rendered showcase films for MediaViewer. Not part of the app build.",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "stills": "node scripts/stills.mjs"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.250",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.250"
+  },
+  "devDependencies": {
+    "@remotion/bundler": "4.0.250",
+    "@remotion/renderer": "4.0.250",
+    "@types/react": "18.3.12",
+    "typescript": "5.6.3"
+  }
+}

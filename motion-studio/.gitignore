@@ -1,0 +1,7 @@
+node_modules/
+out/
+assets/takes/
+public/takes/
+public/caps/
+# Per-beat stills behind the contact sheets: regenerate with scripts/sheet.mjs
+reviews/gate-4/*/

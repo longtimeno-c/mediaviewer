@@ -4070,6 +4070,9 @@ cmake/driftwire-cli  the driftwire Linux packages (CPack, the NEEDED gate)
 packaging/linux the driftwire manual page, completions, firewalld service, copyright;
                 repo/: the one-line installer and the package repository's page
 tools/package/driftwire_repo.py  the signed apt and dnf repository site, and its smoke check
+motion-studio/  the README's showcase films (docs/video/): Remotion scenes, captures of the
+                app on the CC0 samples, the timeline and synthesized sound; outside the
+                app build. Its README has the render commands
 docs/design/    how each subsystem works (design reference)
 docs/plans/     forward plans not built yet
 ```
