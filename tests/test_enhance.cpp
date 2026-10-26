@@ -455,7 +455,7 @@ TEST_CASE("enhance: the sheet shows only the item's own knobs", "[enhance]") {
     CHECK(t.text("file") == "song.mp3");
     CHECK(t.text("missing.audio").find("not installed") != std::string::npos);
     CHECK_FALSE(t.has("k.audio.noise"));
-    CHECK(*t.node("run")->boolean("disabled"));
+    CHECK(t.node("run")->boolean("disabled").value_or(false));
     CHECK_FALSE(t.has("target"));
   }
 
@@ -504,7 +504,7 @@ TEST_CASE("enhance: the sheet shows only the item's own knobs", "[enhance]") {
     CHECK(t.has("k.video.scale"));
     CHECK(t.has("k.audio.noise"));
     // No runner in this build: the models are there but Run stays greyed.
-    CHECK(*t.node("run")->boolean("disabled"));
+    CHECK(t.node("run")->boolean("disabled").value_or(false));
     CHECK(t.text("status").find("cannot run") != std::string::npos);
   }
   CHECK(f.eng->current_prefs().target == clip_target::both);
@@ -525,7 +525,7 @@ TEST_CASE("enhance: the sheet shows only the item's own knobs", "[enhance]") {
     parsed t(f.host.tree(kSheetScreen));
     CHECK(t.text("missing.still").find("no photo model") != std::string::npos);
     CHECK_FALSE(t.has("k.video.face"));
-    CHECK(*t.node("run")->boolean("disabled"));
+    CHECK(t.node("run")->boolean("disabled").value_or(false));
   }
 
   // A document: always greyed.
@@ -533,7 +533,7 @@ TEST_CASE("enhance: the sheet shows only the item's own knobs", "[enhance]") {
   {
     parsed t(f.host.tree(kSheetScreen));
     CHECK(t.text("note").find("not on documents") != std::string::npos);
-    CHECK(*t.node("run")->boolean("disabled"));
+    CHECK(t.node("run")->boolean("disabled").value_or(false));
   }
 
   // Values survive a restart, per kind.
@@ -711,7 +711,7 @@ TEST_CASE("enhance: Enhance on an audio file runs the model and names the new fi
   {
     parsed t(f.host.tree(kSheetScreen));
     CHECK(t.has("k.audio.strength"));
-    CHECK_FALSE(*t.node("run")->boolean("disabled"));
+    CHECK_FALSE(t.node("run")->boolean("disabled").value_or(false));
   }
   // The run gate: too little memory, and it says so without starting.
   free_memory = 10'000'000;
@@ -726,7 +726,7 @@ TEST_CASE("enhance: Enhance on an audio file runs the model and names the new fi
   CHECK(parsed(f.host.tree(kSheetScreen)).text("status") == "Saved as song-enhance.m4a.");
   REQUIRE(written.size() == pcm.size());
   CHECK(near(written[1234], pcm[1234]));
-  CHECK_FALSE(*parsed(f.host.tree(kSheetScreen)).node("run")->boolean("disabled"));
+  CHECK_FALSE(parsed(f.host.tree(kSheetScreen)).node("run")->boolean("disabled").value_or(false));
 
   // A clip with both: Run is greyed until its picture can be enhanced too.
   f.eng->event(kSettingsScreen, "install.video", MV_SLOT_EVENT_CLICK, "");
@@ -737,12 +737,12 @@ TEST_CASE("enhance: Enhance on an audio file runs the model and names the new fi
   f.eng->event(kSheetScreen, "target", MV_SLOT_EVENT_CHANGE, "\"both\"");
   {
     parsed t(f.host.tree(kSheetScreen));
-    CHECK(*t.node("run")->boolean("disabled"));
+    CHECK(t.node("run")->boolean("disabled").value_or(false));
     CHECK(t.text("status").find("clip's picture") != std::string::npos);
   }
   // Its sound alone runs.
   f.eng->event(kSheetScreen, "target", MV_SLOT_EVENT_CHANGE, "\"sound\"");
-  CHECK_FALSE(*parsed(f.host.tree(kSheetScreen)).node("run")->boolean("disabled"));
+  CHECK_FALSE(parsed(f.host.tree(kSheetScreen)).node("run")->boolean("disabled").value_or(false));
 }
 
 // The shipped model on ONNX Runtime, when it is here: MV_ENHANCE_DFN3 names the

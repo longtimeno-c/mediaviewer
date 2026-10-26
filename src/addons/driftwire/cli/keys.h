@@ -10,7 +10,9 @@
 // Home/End, Insert/Delete, Page Up/Down and Shift+Tab, with xterm's modifier
 // parameter (1;3D is Alt+Left, 1;5D Ctrl+Left); Esc as a prefix for Alt
 // (macOS Terminal's Option+Left is ESC b); bracketed paste (CSI 200~ ...
-// CSI 201~) as one paste event, whatever it holds.
+// CSI 201~) as one paste event, whatever it holds; SGR mouse reports (CSI <
+// b;x;y M or m, which CSI ?1006h asks for) and the cursor position report
+// (CSI row;col R, the answer to CSI 6n) as events of their own.
 //
 // A lone Esc and the start of a sequence begin with the same byte. After a
 // bare ESC at the end of what has arrived, pending_ms() says to wait 30 ms
@@ -51,8 +53,15 @@ enum class key : std::uint8_t {
   page_down,
   esc,
   ctrl,       // `letter`: 'a'..'z' (Ctrl+A, Ctrl+C, ...)
-  unknown,    // a sequence we do not use (a function key, a report)
+  mouse,      // an SGR mouse report (CSI < b ; x ; y M|m): `button`, `x`, `y`, `press`
+  cursor,     // the cursor position report (CSI row ; col R), the answer to CSI 6n: `y`, `x`
+  unknown,    // a sequence we do not use (a function key, another report)
 };
+
+// key::mouse's buttons (SGR's, less the modifier and motion bits).
+inline constexpr int kMouseLeft = 0;
+inline constexpr int kMouseWheelUp = 64;
+inline constexpr int kMouseWheelDown = 65;
 
 struct key_event {
   key k = key::none;
@@ -61,6 +70,11 @@ struct key_event {
   bool alt = false;  // Alt / Option / Meta held
   bool ctrl = false; // Ctrl held on a key that has its own code (Ctrl+Left)
   bool shift = false;
+  // key::mouse and key::cursor: the cell, 1-based as the terminal counts.
+  int x = 0, y = 0;
+  int button = -1;     // key::mouse: kMouseLeft, kMouseWheelUp, ... (others as sent)
+  bool press = false;  // key::mouse: pressed (M), not released (m)
+  bool motion = false; // key::mouse: a move with the button held
 
   [[nodiscard]] bool is(key k2) const noexcept { return k == k2; }
   [[nodiscard]] bool is_ctrl(char c) const noexcept { return k == key::ctrl && letter == c; }

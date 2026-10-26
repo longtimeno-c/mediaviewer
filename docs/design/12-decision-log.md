@@ -2262,6 +2262,42 @@ arm64 archive. Cost: that copy does not update itself. Run on WSL Ubuntu only, a
 site with a stand-in Mac (`uname`, `sw_vers`, `sysctl`, `brew` faked; dash and `bash --posix`;
 `shasum` with `sha256sum` hidden); not run on a real Mac.
 
+**`driftwire` says when a newer version is out, and `driftwire update` installs it (owner,
+2026-10-25; amends "Driftwire has a command line", whose only network was Driftwire's own).** The
+owner asked for an upgrade prompt as Claude Code's command line has, and chose a notice plus a
+command over asking at start, and the check on by default with a way to turn it off, as the app's
+`[update] auto_check`. As the session opens, once a day at most, a thread of its own GETs
+`<site>/latest.json` (`{"version": "x.y.z"}`, written by the release that deploys the site); a
+newer version is one line in the transcript under the banner, "driftwire 0.1.40 is available ·
+this is 0.1.38", with "Run driftwire update". `driftwire update` runs the channel that installed
+this copy, worked out from where it runs: `brew upgrade driftwire` for a Cellar's, `install.sh`
+again for `/usr/bin` or a tarball prefix with the installer's record (it upgrades through apt, dnf
+or zypper), `install.ps1` again for `%LOCALAPPDATA%\Programs\Driftwire` (it moves a running copy
+aside, so the session can stay open). Ours, not the owner's: a copy no installer put there (a build
+of one's own) never checks and is not offered an update; the answer is kept in
+`driftwire_update.json` in the data folder, with the switch (`/updates on|off`) and
+`DRIFTWIRE_NO_UPDATE_CHECK`; the request carries no cookie, identifier or version (the
+User-Agent is `driftwire`), so the site sees the address and the time only; only digits and dots
+from the site are a version, so it cannot write into the terminal; `latest.json` is not signed (it
+only says an update exists; what installs it is checked as before); libcurl is opened at run time
+on Linux so the package still needs only glibc, and without it there is no check (`driftwire
+update` still works: `install.sh` fetches with curl or wget). Cost: one request a day to GitHub
+Pages from every copy that checks, the command line's first network call that is not Driftwire's;
+built and run on Windows only (`[cli]` there), the Mac and Linux ports compile in CI only. Reopen
+if the site moves, or for winget (its own update).
+
+**`driftwire`'s choices take a click, while they show (owner, 2026-10-25).** The owner asked for
+options to be chosen with the mouse as well as the keys, and chose mouse reporting only while
+something on screen can be clicked (over always on, or a `/mouse` switch), so selecting and
+scrolling the transcript keep working the rest of the time; and a click on a computer in Nearby
+that points rather than sends (Enter, or a second click on it, sends). Ours: a click on a choice
+is that choice's number typed, so the 750 ms rule that keeps a stray key from answering a consent
+card holds for a stray click too; the wheel is ↑↓; where the live region is comes from the
+terminal (CSI 6n after each write) rather than from counting rows, which a resize or a scrolled
+terminal would put wrong. Cost: while a card shows, selecting text needs Shift (Option on macOS);
+a terminal that does not answer CSI 6n takes no clicks (the keys still work). Tested in the tests'
+terminal only. Reopen if people want clicks with nothing to click (a `/mouse` switch).
+
 **The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
 at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
 no-replace before its `file_done`; the sender's `done` waits for every check. Measured on loopback

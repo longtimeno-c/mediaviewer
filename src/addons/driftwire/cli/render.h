@@ -70,9 +70,18 @@ namespace mv::driftwire::cli {
 // Six boxes for typing a code; `typed` holds the digits so far, the next box
 // shows the caret. One row ("[4][8][2] [9][_][ ]") where the boxes do not fit.
 [[nodiscard]] ftxui::Element code_boxes(const theme& th, std::string_view typed, int width);
-// A numbered choice list: "❯ 1. Accept", "  2. Decline".
+// Where each clickable row lands once the document is laid out (FTXUI's
+// reflect): one box per row, in the document's cells (the live region's top
+// left is 0, 0). A row not drawn keeps an empty box (no_hit). The vector
+// must stay put, unresized, until the document has been rasterized.
+using hit_boxes = std::vector<ftxui::Box>;
+inline constexpr ftxui::Box no_hit{0, -1, 0, -1};
+// The row of `boxes` holding the cell (x, y), or -1.
+[[nodiscard]] int hit_at(const hit_boxes& boxes, int x, int y);
+
+// A numbered choice list: "❯ 1. Accept", "  2. Decline". `hits`: each item's box.
 [[nodiscard]] ftxui::Element choices(const theme& th, int width, const std::vector<std::string>& items,
-                                     int selected);
+                                     int selected, hit_boxes* hits = nullptr);
 // A line of text in `width` columns: wrapped, each row indented by `indent`.
 [[nodiscard]] ftxui::Element lines(const theme& th, std::string_view text, int width, tone t = tone::normal,
                                    int indent = 0);
@@ -114,6 +123,7 @@ struct nearby_model {
   std::string empty_how = "Open Driftwire on the other computer. It shows up here when it is on this network.";
   std::string note;           // what this computer cannot search (the window's reach note)
   int max_rows = 0;           // rows of computers at most (the height cap); 0: all
+  hit_boxes* hits = nullptr;  // each computer's row (peers, then known); no_hit when not shown
 };
 [[nodiscard]] ftxui::Element nearby(const theme& th, const nearby_model& m, int width);
 
@@ -155,6 +165,7 @@ struct palette_model {
   int selected = 0;
   int max_rows = 8;
   std::string empty = "No command matches";
+  hit_boxes* hits = nullptr;  // each row's box; no_hit when scrolled out
 };
 [[nodiscard]] ftxui::Element command_palette(const theme& th, const palette_model& m, int width);
 
@@ -228,6 +239,7 @@ struct offer_model {
   std::string check;         // an internet offer: the six digits to compare
   std::string save_to;       // "~/Downloads"
   int selected = 0;
+  hit_boxes* hits = nullptr; // the three choices' boxes
 };
 [[nodiscard]] ftxui::Element offer_card(const theme& th, const offer_model& m, int width);
 [[nodiscard]] std::vector<std::string> offer_hint(const theme& th);
@@ -259,6 +271,7 @@ struct naming_model {
   std::string check;
   std::string relay;
   int selected = 0;
+  hit_boxes* hits = nullptr;  // the two choices' boxes
 };
 [[nodiscard]] ftxui::Element naming_card(const theme& th, const naming_model& m, int width);
 
@@ -274,6 +287,7 @@ struct remember_model {
   std::string typed;  // type_check
   std::string note;   // type_check: a wrong entry
   int selected = 0;
+  hit_boxes* hits = nullptr;  // ask: the two choices' boxes
 };
 [[nodiscard]] ftxui::Element remember_card(const theme& th, const remember_model& m, int width);
 

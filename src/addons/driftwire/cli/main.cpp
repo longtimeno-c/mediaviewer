@@ -5,7 +5,7 @@
 // identity, settings and a data folder of its own.
 //
 // The steps, each with its way out: the arguments (2 on a usage error);
-// --help, --version and `devices`, which need no terminal; then a terminal
+// --help, --version, `devices` and `update`, which need no terminal; then a terminal
 // on both ends (2 without one: it asks before anything is sent or saved),
 // the files to send, one session per user (2 when another terminal has it),
 // and the session itself, whose exit code is the program's.
@@ -15,9 +15,11 @@
 // (args.h) for the end-to-end test.
 #include <sodium.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -29,6 +31,7 @@
 #include "addons/driftwire/cli/session.h"
 #include "addons/driftwire/cli/term.h"
 #include "addons/driftwire/cli/theme.h"
+#include "addons/driftwire/cli/update.h"
 #include "addons/driftwire/engine.h"
 #include "addons/driftwire/known.h"
 #include "addons/driftwire/net.h"
@@ -106,6 +109,62 @@ int list_devices() {
   return 0;
 }
 
+#if !defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
+// The test build never checks and never updates: these are the product's.
+
+// DRIFTWIRE_NO_UPDATE_CHECK, set to anything: no check (update.h).
+bool update_check_off() {
+  const char* off = std::getenv("DRIFTWIRE_NO_UPDATE_CHECK");  // NOLINT(concurrency-mt-unsafe): read at start
+  return off && *off;
+}
+
+std::string site() {
+  return cli::site_url(std::getenv("DRIFTWIRE_REPO_URL"));  // NOLINT(concurrency-mt-unsafe): read at start
+}
+
+// `driftwire update`: this copy's own installer again, when the site has a
+// newer version or cannot say. Its output is the installer's own.
+int run_update() {
+  const cli::install_kind kind = cli::this_install();
+  const std::string from = site();
+  const std::string version = MV_DRIFTWIRE_CLI_VERSION;
+  if (kind == cli::install_kind::none) {
+    cli::print("driftwire " + version + " was not installed by one of Driftwire's installers, so it cannot update "
+               "itself.\nInstallers for Linux, macOS and Windows: " + from + "/\n");
+    return 1;
+  }
+  const cli::http_answer a = cli::https_get(from + "/latest.json", 4096, cli::kCheckTimeoutMs);
+  const std::optional<std::string> latest = a.status == 200 ? cli::parse_latest(a.body) : std::nullopt;
+  if (latest) {
+    const std::string data = cli::data_dir();
+    cli::update_state st = cli::load_update_state(data);
+    st.checked = std::chrono::duration_cast<std::chrono::seconds>(
+                     std::chrono::system_clock::now().time_since_epoch()).count();
+    st.latest = *latest;
+    (void)cli::save_update_state(data, st);
+    if (!cli::newer_version(*latest, version)) {
+      cli::print("driftwire " + version + " is up to date.\n");
+      return 0;
+    }
+    cli::print("Updating driftwire " + version + " to " + *latest + ": " + cli::update_command_shown(kind, from) +
+               "\n");
+  } else {
+    // The installer knows better than an answer that did not come.
+    cli::print("Could not ask " + from + " for the newest version; running the installer anyway: " +
+               cli::update_command_shown(kind, from) + "\n");
+  }
+  const std::string cmd = cli::update_command_run(kind, from);
+  if (cmd.empty()) return fail("the site's address cannot be used in a command: " + from);
+  const int r = std::system(cmd.c_str());  // NOLINT(concurrency-mt-unsafe, cert-env33-c): our own fixed command
+  if (r != 0) {
+    cli::print("driftwire: the update did not finish (the installer said why, above).\n", true);
+    return 1;
+  }
+  cli::print("Done. The next driftwire you start is the new version.\n");
+  return 0;
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -130,6 +189,11 @@ int main(int argc, char** argv) {
   }
 
   if (a.cmd == cli::command::devices) return list_devices();
+#if !defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
+  if (a.cmd == cli::command::update) return run_update();
+#else
+  if (a.cmd == cli::command::update) return fail("the test build does not update");
+#endif
 
 #if defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
   std::string data = a.test_data;
@@ -243,10 +307,30 @@ int main(int argc, char** argv) {
   so.echo = raw;   // cooked (a pipe in the test build): the terminal echoes, or nobody
 #endif
   so.verbose = a.verbose;
+  so.mouse = co.sequences && !plain;  // clicks while there is something to click (session.h)
   so.version = MV_DRIFTWIRE_CLI_VERSION;
   so.data_dir = data;
   if (!a.name.empty()) so.name_note = "this run";
   so.paths = paths;
+  // Is a newer driftwire out? Only for a copy an installer put here (a build
+  // of one's own has nothing to update with), never in the test build, and
+  // never once turned off. It never holds the session up (update.h).
+  cli::update_check updates;
+#if !defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
+  const cli::install_kind kind = cli::this_install();
+  if (kind == cli::install_kind::none) {
+    so.no_updates_why = "this copy was not put here by an installer";
+  } else if (update_check_off()) {
+    so.no_updates_why = "DRIFTWIRE_NO_UPDATE_CHECK is set";
+  } else if (data.empty()) {
+    so.no_updates_why = "it has no data folder to keep the answer in";
+  } else {
+    updates.start(data, MV_DRIFTWIRE_CLI_VERSION, site(), [&con] { con.wake(); });
+    so.updates = &updates;
+  }
+#else
+  so.no_updates_why = "the test build never checks";
+#endif
 #if defined(MV_DRIFTWIRE_CLI_TEST_HOOKS)
   if (a.test_events) {
     so.events = [](const std::string& line) { cli::print("@driftwire " + line + "\n", true); };
@@ -261,9 +345,11 @@ int main(int argc, char** argv) {
     // A bug, never a way out (std::filesystem throws on a path it cannot
     // convert, for one): not an abort that leaves the terminal raw and a
     // transfer unwound by nobody. Unwinding has stopped the engine.
+    updates.stop();
     con.leave_raw();
     return fail("something went wrong and the session closed.");
   }
+  updates.stop();  // a check still out calls nobody
   con.leave_raw();
   return code;
 }

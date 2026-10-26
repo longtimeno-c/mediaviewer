@@ -26,6 +26,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -80,6 +81,16 @@ class inline_view {
   // Synchronized output around each write (on by default).
   void set_synchronized(bool on) noexcept { sync_ = on; }
 
+  // For the mouse: where the region is. Each write counts (the session asks
+  // the terminal for the cursor after one, CSI 6n); after it the cursor is
+  // up_from_top() rows below the region's first row; the document's first
+  // cut_rows() rows were left off the top (too tall). So the document row of
+  // a click on screen row R (0-based) is R - (cursor row - up_from_top()) + cut_rows().
+  [[nodiscard]] std::uint64_t writes() const noexcept { return writes_; }
+  [[nodiscard]] int up_from_top() const noexcept { return up_; }
+  [[nodiscard]] int cut_rows() const noexcept { return cut_; }
+  [[nodiscard]] bool drawn() const noexcept { return drawn_ && !closed_; }
+
  private:
   // Up to the region's first row and clear from there down.
   void erase_into(std::string& s) const;
@@ -96,6 +107,8 @@ class inline_view {
   bool dirty_ = false;    // draw at the next present even if unchanged
   bool closed_ = false;
   bool sync_ = true;
+  std::uint64_t writes_ = 0;
+  int cut_ = 0;           // rows of the last document left off the top
 };
 
 }  // namespace mv::driftwire::cli
