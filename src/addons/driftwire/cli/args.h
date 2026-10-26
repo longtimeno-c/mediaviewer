@@ -15,7 +15,7 @@
 //
 // Nothing secret is ever an argument: no code, no check digits, no relay
 // key (they would sit in the shell's history and in `ps`). A code someone
-// gave you is pasted into /to-code. So there is no option that takes one,
+// gave you is pasted into /send-to. So there is no option that takes one,
 // and a command that takes no arguments refuses any (`driftwire code 123456`
 // is an error, not a code). There is no --yes either: nothing is accepted or
 // sent without the person at the terminal answering.

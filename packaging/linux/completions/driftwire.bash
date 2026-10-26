@@ -69,7 +69,7 @@ _driftwire() {
             COMPREPLY=($(compgen -W "--once $common" -- "$cur"))
             ;;
         code)
-            # Never a code: it is pasted into /to-code, not typed here.
+            # Never a code: it is pasted into /send-to, not typed here.
             COMPREPLY=($(compgen -W "$common" -- "$cur"))
             ;;
     esac

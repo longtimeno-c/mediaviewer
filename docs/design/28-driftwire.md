@@ -113,7 +113,7 @@ network at all it says so and waits, as the window does: a network can come up.
   prints machine-readable lines, for the end-to-end test.
 - **No secret on the command line.** No code, check digits or relay key is ever an argument:
   it would sit in the shell's history and in `ps`. `driftwire code 123456` is a usage error; a
-  code someone gave you is pasted into `/to-code`, a relay server's key typed into
+  code someone gave you is pasted into `/send-to`, a relay server's key typed into
   `/relay-server`'s field. `--to NAME` names a computer, never a code.
 - **The look**, after Claude Code's terminal UI, in Driftwire's own colours: an inline UI, never
   the alternate screen. What finished is printed once, above, as a transcript that stays in the
@@ -168,7 +168,7 @@ network at all it says so and waits, as the window does: a network can come up.
   backslash escapes, `~`, `file://` and the globs `* ? [...]`, expanded by the program, not a
   shell. A folder alone is a folder send. Nearby is the engine's list; ↑↓ choose and Enter on an
   empty prompt sends. The commands are the window's: `/send`, `/folder`, `/files`, `/clear`,
-  `/code`, `/copy`, `/to-code`, `/devices`, `/forget N`, `/mine N on|off`, `/unfinished`, `/discard N`,
+  `/code`, `/copy`, `/send-to`, `/devices`, `/forget N`, `/mine N on|off`, `/unfinished`, `/discard N`,
   `/save-to`, `/internet`, `/dht`, `/handover`, `/relay`, `/relay-server`, `/updates`, `/settings`,
   `/help`, `/quit` (`/updates` is the command line's own, [Updates](#updates-in-the-terminal)). An internet option says what it means the first time it is turned on in a session (the
   window's words).
