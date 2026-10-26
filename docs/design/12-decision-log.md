@@ -2706,6 +2706,18 @@ back as an M4A: the LGPL build has no MP3 encoder. The real-ESRGAN video model
 (`jonathanst29/tinier-upscale-models`, realesr-general-x4v3, BSD-3-Clause, 4.9 MB) is downloaded
 for slice 5's measurement and not yet pinned.
 
+**Enhance's first video model, and how a clip's picture is written (2026-10-26, #297 slice 5).**
+Real-ESRGAN general x4v3 (BSD-3-Clause), the ONNX export pinned at
+`jonathanst29/tinier-upscale-models@899dc1e4` (4.9 MB). Chosen over the Qualcomm export of the same
+weights (its own licence) and over RealESRGAN x4plus (64 MB, about ten times the work a pixel).
+Run in fixed 256-pixel tiles overlapping by 16: Core ML refuses the export's unbounded height and
+width, and pinned it runs about 3.5× the 4-thread CPU (0.05 s a tile); tiled output agrees with one
+pass over the picture (mean 0.02 of 255). The new clip's frames are encoded on the hardware encoders
+Path 2 uses (docs/design/11 holds: no software encoder), in the app's process like the sound, since
+the frames come from the add-on; at most 4K, and HDR clips are refused until the picture can stay
+HDR. Windows runs the model on the CPU: Enhance carries ORT's CPU build, and a GPU build is the
+`ai-cuda` piece's question, not this one's.
+
 ## Not built
 
 - Voice query add-on (PRs 27–28): no voice add-on or `search_query` host entry exists.

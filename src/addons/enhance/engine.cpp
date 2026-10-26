@@ -191,6 +191,7 @@ sheet_view engine::sheet_locked() const {
   }
   v.running = running_;
   v.progress = progress_;
+  v.eta = eta_;
   v.status = status_;
   switch (item_) {
     case item_kind::animation: v.note = "Enhance has no model for animations yet."; break;
@@ -358,6 +359,8 @@ void engine::run() {
     }
     running_ = true;
     progress_ = -1;
+    eta_.clear();
+    run_started_ = std::chrono::steady_clock::now();
     status_.clear();
     post_sheet_locked();
     run = runner_.get();
@@ -370,10 +373,15 @@ void engine::run() {
     // stays as it is.
     if (f >= 0 && progress_ >= 0 && std::floor(f * 100) == std::floor(progress_ * 100)) return;
     progress_ = f;
+    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - run_started_).count();
+    eta_ = time_left(f, elapsed);
     if (sheet_gen_ == 0) return;
     json::writer w;
     w.begin_array().begin_object().key("op").string("set").key("id").string("progress");
     w.key("props").begin_object().key("value").number(f < 0 ? -1.0 : std::min(1.0, f)).end_object();
+    w.end_object();
+    w.begin_object().key("op").string("set").key("id").string("eta");
+    w.key("props").begin_object().key("text").string(eta_.empty() ? std::string("Working…") : eta_).end_object();
     w.end_object().end_array();
     if (!port_.diff || !port_.diff(kSheetScreen, sheet_gen_, w.str())) post_sheet_locked();
   };

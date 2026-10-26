@@ -31,6 +31,7 @@
 
 #include "addons/ai/sha256.h"
 #include "addons/enhance/engine.h"
+#include "addons/enhance/picture_job.h"
 #include "addons/enhance/runner.h"
 #include "addons/enhance/sound_job.h"
 #include "addons/enhance/stream_model.h"
@@ -786,4 +787,233 @@ TEST_CASE("enhance: DeepFilterNet3 cleans a noisy tone", "[.enhance-model]") {
   }
   INFO("error energy " << before << " -> " << after);
   CHECK(after < before);
+}
+
+// ---- slice 5: a clip's picture -----------------------------------------------------
+
+namespace {
+
+// Nearest-neighbour 4x: an upscaler with no opinions, so the tiling is all
+// that can be wrong.
+struct nearest4 final : tile_model {
+  std::uint32_t t;
+  int calls = 0;
+  explicit nearest4(std::uint32_t tile_) : t(tile_) {}
+  std::uint32_t tile() const noexcept override { return t; }
+  std::uint32_t scale() const noexcept override { return 4; }
+  mv::expected run(std::span<const float> in, std::vector<float>& out) override {
+    ++calls;
+    const std::uint32_t o = t * 4;
+    out.assign(std::size_t{3} * o * o, 0);
+    for (int c = 0; c < 3; ++c) {
+      for (std::uint32_t y = 0; y < o; ++y) {
+        for (std::uint32_t x = 0; x < o; ++x) {
+          out[std::size_t(c) * o * o + std::size_t{y} * o + x] = in[std::size_t(c) * t * t + std::size_t{y / 4} * t + x / 4];
+        }
+      }
+    }
+    return {};
+  }
+};
+
+std::vector<std::uint8_t> noise_rgb(std::uint32_t w, std::uint32_t h) {
+  std::vector<std::uint8_t> v(std::size_t{w} * h * 3);
+  std::uint32_t s = 99;
+  for (auto& b : v) {
+    s = s * 1664525u + 1013904223u;
+    b = static_cast<std::uint8_t>(s >> 24);
+  }
+  return v;
+}
+
+}  // namespace
+
+TEST_CASE("enhance: tiles join without a seam, at every size", "[enhance][picture]") {
+  for (const auto [w, h] : {std::pair{70u, 45u}, std::pair{32u, 32u}, std::pair{101u, 7u}}) {
+    const auto rgb = noise_rgb(w, h);
+    for (const std::uint32_t s : {1u, 2u, 4u}) {
+      nearest4 m(32);
+      picture_options o;
+      o.out_scale = s;
+      o.overlap = 4;
+      std::vector<std::uint8_t> out;
+      REQUIRE(enhance_picture(rgb, w, h, m, o, out));
+      REQUIRE(out.size() == std::size_t{w} * s * h * s * 3);
+      CHECK(static_cast<std::uint64_t>(m.calls) == tiles_for(w, h, 32, 4));
+      bool same = true;
+      for (std::uint32_t y = 0; y < h * s && same; ++y) {
+        for (std::uint32_t x = 0; x < w * s && same; ++x) {
+          for (int c = 0; c < 3; ++c) {
+            same = same && out[(std::size_t{y} * w * s + x) * 3 + c] == rgb[(std::size_t{y / s} * w + x / s) * 3 + c];
+          }
+        }
+      }
+      INFO(w << "x" << h << " at " << s << "x");
+      CHECK(same);
+    }
+  }
+  // Strength 0 is the original, enlarged; at the same size, untouched.
+  const auto rgb = noise_rgb(40, 30);
+  nearest4 m(32);
+  picture_options o;
+  o.out_scale = 1;
+  o.overlap = 4;
+  o.strength = 0;
+  std::vector<std::uint8_t> out;
+  REQUIRE(enhance_picture(rgb, 40, 30, m, o, out));
+  CHECK(out == rgb);
+  // A scale the model cannot give, or a tile with no centre, is refused.
+  o.out_scale = 3;
+  CHECK_FALSE(enhance_picture(rgb, 40, 30, m, o, out));
+  o.out_scale = 2;
+  o.overlap = 16;
+  CHECK_FALSE(enhance_picture(rgb, 40, 30, m, o, out));
+}
+
+TEST_CASE("enhance: the time left reads as a person would say it", "[enhance][picture]") {
+  CHECK(time_left(0.01, 100).empty());  // too early to say
+  CHECK(time_left(0.5, 20) == "Less than a minute left");
+  CHECK(time_left(0.25, 600) == "About 30 minutes left");
+  CHECK(time_left(0.1, 3600) == "About 9.0 hours left");
+}
+
+TEST_CASE("enhance: a clip's picture, and its sound too, through the runner", "[enhance][picture]") {
+  fixture f;
+  const fs::path clip = f.dir / "clip.mov";
+  write_bytes(clip, ftyp("qt  ", "qt  "));
+  write_text(f.self / "models/audio/model.json", R"json({
+    "kind": "audio", "name": "Speech cleanup", "weights": ["denoise.onnx"], "run_bytes": 1000, "cpu": true,
+    "knobs": [{"id": "strength", "label": "Noise reduction", "type": "slider", "min": 0, "max": 1, "default": 1}],
+    "io": {"runner": "stream", "rate": 48000, "frame": 480, "state": 1440, "delay": 1440}})json");
+  write_text(f.self / "models/video/model.json", R"json({
+    "kind": "video", "name": "Detail", "weights": ["up.onnx"], "run_bytes": 1000, "cpu": true,
+    "knobs": [{"id": "scale", "label": "Size", "type": "choice",
+               "options": [{"id": "1", "text": "Same"}, {"id": "2", "text": "2x"}, {"id": "4", "text": "4x"}],
+               "default": "2"},
+              {"id": "strength", "label": "Strength", "type": "slider", "min": 0, "max": 1, "default": 1}],
+    "io": {"runner": "tiles", "scale": 4, "tile": 32, "overlap": 4, "dims": ["h", "w"]}})json");
+  f.restart();
+  f.eng->event(kSettingsScreen, "install.audio", MV_SLOT_EVENT_CLICK, "");
+  f.eng->event(kSettingsScreen, "install.video", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] {
+    return f.eng->download_status(model_kind::audio).state == dl_state::ready &&
+           f.eng->download_status(model_kind::video).state == dl_state::ready;
+  }));
+
+  // Three 40x30 frames a tenth of a second apart, and 0.3 s of stereo sound.
+  std::uint32_t frame_w = 40, frame_h = 30;
+  bool hdr = false;
+  const auto pcm = ramp(14'400, 2);
+  struct written_frame {
+    std::size_t bytes;
+    std::uint32_t stride;
+    std::int64_t pts;
+    std::uint64_t sound_before;  // sound frames written before it
+  };
+  std::vector<written_frame> frames;
+  std::vector<float> sound;
+  std::uint32_t clip_w = 0, clip_h = 0, clip_rate = 0;
+  run_port port;
+  port.open_sound = [&](const std::string&, std::uint32_t) -> mv::result<run_port::reader> {
+    run_port::reader r;
+    r.channels = 2;
+    r.total_frames = 14'400;
+    auto at = std::make_shared<std::size_t>(0);
+    r.read = [&pcm, at](std::size_t max_frames) -> mv::result<std::vector<float>> {
+      const std::size_t n = std::min(max_frames * 2, pcm.size() - *at);
+      std::vector<float> out(pcm.begin() + static_cast<std::ptrdiff_t>(*at),
+                             pcm.begin() + static_cast<std::ptrdiff_t>(*at + n));
+      *at += n;
+      return out;
+    };
+    return r;
+  };
+  port.create = [](const std::string&, std::uint32_t, std::uint32_t) -> mv::result<run_port::writer> {
+    return mv::err(mv::status::internal);  // a clip's job never writes a sound-only file
+  };
+  port.load_model = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<frame_model>> {
+    return std::unique_ptr<frame_model>(new lag_model(480, 1440, 1.0f));
+  };
+  port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
+  port.open_frames = [&](const std::string&) -> mv::result<run_port::picture_reader> {
+    run_port::picture_reader r;
+    r.width = frame_w;
+    r.height = frame_h;
+    r.hdr = hdr;
+    r.total_frames = 3;
+    auto n = std::make_shared<int>(0);
+    r.next = [n, &frame_w, &frame_h](std::vector<std::uint8_t>& rgb, std::int64_t& pts) -> mv::result<bool> {
+      if (*n == 3) return false;
+      rgb = noise_rgb(frame_w, frame_h);
+      pts = 100'000LL * (*n)++;
+      return true;
+    };
+    return r;
+  };
+  port.create_clip = [&](const std::string&, std::uint32_t w, std::uint32_t h, std::uint32_t rate,
+                         std::uint32_t) -> mv::result<run_port::clip_writer> {
+    clip_w = w;
+    clip_h = h;
+    clip_rate = rate;
+    run_port::clip_writer cw;
+    cw.frame = [&](const std::uint8_t*, std::uint32_t stride, std::int64_t pts) -> mv::expected {
+      frames.push_back({std::size_t{stride} * clip_h, stride, pts, sound.size() / 2});
+      return {};
+    };
+    cw.sound = [&](std::span<const float> v) -> mv::expected {
+      sound.insert(sound.end(), v.begin(), v.end());
+      return {};
+    };
+    cw.finish = [&]() -> mv::result<std::string> { return utf8(f.dir / "clip-enhance.mov"); };
+    return cw;
+  };
+  port.load_tiles = [](const model_spec&, const std::string& dir) -> mv::result<std::unique_ptr<tile_model>> {
+    CHECK(dir.find("models/video") != std::string::npos);
+    return std::unique_ptr<tile_model>(new nearest4(32));
+  };
+  f.eng->set_runner(std::make_unique<job_runner>(port));
+
+  // The picture alone, at twice the size: the source's sound is copied.
+  f.eng->sheet_opened(1, utf8(clip));
+  f.eng->event(kSheetScreen, "target", MV_SLOT_EVENT_CHANGE, "\"picture\"");
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    CHECK(t.has("k.video.scale"));
+    CHECK_FALSE(*t.node("run")->boolean("disabled"));
+  }
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as") != std::string::npos; }));
+  CHECK(parsed(f.host.tree(kSheetScreen)).text("status") == "Saved as clip-enhance.mov.");
+  CHECK(clip_w == 80u);
+  CHECK(clip_h == 60u);
+  CHECK(clip_rate == 0u);
+  REQUIRE(frames.size() == 3u);
+  CHECK(frames[2].pts == 200'000);
+  CHECK(frames[0].stride == 80u * 3);
+  CHECK(sound.empty());
+
+  // Picture and sound: the sound is enhanced too and goes in ahead of each frame.
+  frames.clear();
+  f.eng->event(kSheetScreen, "target", MV_SLOT_EVENT_CHANGE, "\"both\"");
+  f.eng->event(kSheetScreen, "k.video.scale", MV_SLOT_EVENT_CHANGE, "\"1\"");
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as") != std::string::npos; }));
+  CHECK(clip_w == 40u);
+  CHECK(clip_rate == 48000u);
+  REQUIRE(frames.size() == 3u);
+  CHECK(frames[1].sound_before >= 4800u);  // 0.1 s of sound before the frame at 0.1 s
+  CHECK(frames[2].sound_before >= 9600u);
+  REQUIRE(sound.size() == pcm.size());
+  CHECK(near(sound[777], pcm[777]));  // the stand-in model's lag is gone
+
+  // An HDR clip and a 4K-busting size are refused, saying why.
+  hdr = true;
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("HDR") != std::string::npos; }));
+  hdr = false;
+  frame_w = 1920;
+  frame_h = 1080;
+  f.eng->event(kSheetScreen, "k.video.scale", MV_SLOT_EVENT_CHANGE, "\"4\"");
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("larger than 4K") != std::string::npos; }));
 }

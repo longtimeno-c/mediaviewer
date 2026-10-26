@@ -171,6 +171,18 @@ std::string size_text(std::uint64_t bytes) {
   return buf;
 }
 
+std::string time_left(double fraction, double elapsed_s) {
+  if (fraction < 0.02 || fraction >= 1 || elapsed_s < 3) return {};
+  const double left = elapsed_s * (1 - fraction) / fraction;
+  if (left < 60) return "Less than a minute left";
+  const auto minutes = static_cast<long long>(std::lround(left / 60));
+  if (minutes < 90) return "About " + std::to_string(minutes) + (minutes == 1 ? " minute left" : " minutes left");
+  const double hours = left / 3600;
+  char buf[48];
+  std::snprintf(buf, sizeof buf, "About %.1f hours left", hours);
+  return buf;
+}
+
 std::vector<clip_target> targets_for(bool has_picture, bool has_sound) {
   std::vector<clip_target> out;
   if (has_picture) out.push_back(clip_target::picture);
@@ -237,7 +249,10 @@ std::string sheet_tree(const sheet_view& v) {
     end_stack(w);
   }
   if (!v.note.empty()) text(w, "note", v.note, "secondary");
-  if (v.running) progress(w, "progress", "Enhancing", v.progress);
+  if (v.running) {
+    progress(w, "progress", "Enhancing", v.progress);
+    text(w, "eta", v.eta.empty() ? std::string("Working…") : v.eta, "secondary");
+  }
   if (!v.status.empty()) text(w, "status", v.status, "secondary");
   text(w, "where", "Enhance writes a new file beside the original. The original is not changed.", "caption");
   begin_stack(w, "buttons", "horizontal", 8);

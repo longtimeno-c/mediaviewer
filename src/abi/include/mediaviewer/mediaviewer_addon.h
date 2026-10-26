@@ -214,6 +214,30 @@ typedef struct mv_addon_sound_info {
   int64_t duration_ms;
 } mv_addon_sound_info;
 
+/* #297 (Enhance, slice 5): a clip's picture frame by frame, and a new clip
+ * from new frames (frames_open ... clip_write_close). */
+typedef struct mv_addon_frames_info {
+  uint32_t struct_size;     /* the caller's sizeof */
+  uint32_t width;           /* coded size: what frames_read returns */
+  uint32_t height;
+  uint32_t rotation;        /* clockwise display rotation, carried to a new clip */
+  uint32_t hdr;             /* 1 = PQ / HLG */
+  uint32_t reserved;
+  double fps;
+  int64_t duration_ms;
+  int64_t frame_count;      /* an estimate */
+} mv_addon_frames_info;
+
+typedef struct mv_addon_clip_out {
+  uint32_t struct_size;     /* the caller's sizeof */
+  uint32_t width;           /* even, 16..8192 */
+  uint32_t height;
+  uint32_t sound_rate;      /* 0: the source's own sound is copied; else new sound (clip_write_sound) */
+  uint32_t sound_channels;
+  uint32_t reserved;
+  const char* suffix_ascii; /* [a-z0-9_-]{1,32} */
+} mv_addon_clip_out;
+
 /* #406 (docs/design/17 "Cues"): a clip's own text, one cue at a time, in start
  * order: a chapter title or a text subtitle line (mov_text, SubRip, ASS,
  * WebVTT), markup removed. Bitmap subtitles are never sent. */
@@ -799,6 +823,35 @@ typedef struct mv_host_api {
    * never to log, rule 6). The writer is still closed with sound_write_close. */
   mv_status(MV_CALL* sound_write_finish)(void* host, void* writer, char* out_path_utf8, uint32_t capacity);
   void(MV_CALL* sound_write_close)(void* host, void* writer);
+  /* ---- a clip's picture (#297, Enhance slice 5) --------------------------------- */
+  /* [worker-thread] Every frame of a clip in display order, 8-bit sRGB RGB at
+   * its coded size, on a decoder of its own (never the player's).
+   * MV_ERR_UNSUPPORTED_FORMAT: no picture. Appended after sound_write_close:
+   * read these eight only when `struct_size` covers them and the pointers are
+   * non-NULL. */
+  mv_status(MV_CALL* frames_open)(void* host, const char* path_utf8, mv_addon_frames_info* out_info,
+                                  void** out_frames);
+  /* The next frame into `out_rgb` (width * height * 3, tightly packed; a
+   * short `capacity` is MV_ERR_INVALID_ARG). `*out_got` 0 is the end;
+   * `*out_pts_us` is its time on the player's timeline. */
+  mv_status(MV_CALL* frames_read)(void* host, void* frames, uint8_t* out_rgb, uint64_t capacity, int64_t* out_pts_us,
+                                  uint32_t* out_got);
+  void(MV_CALL* frames_close)(void* host, void* frames);
+  /* [worker-thread] A new clip beside `source_utf8` (rule 5: only read):
+   * "<stem>-<suffix>.<ext>", its frames encoded on a hardware encoder
+   * (docs/design/11) at `options` size, BT.709, with the source's frame times
+   * and rotation; its sound the source's (copied) or new (clip_write_sound).
+   * Its own MP4 / MOV, else Matroska. MV_ERR_UNSUPPORTED_FORMAT: no hardware
+   * encoder at that size. Hidden until clip_write_finish publishes it under
+   * the first free name; clip_write_close before that leaves nothing. */
+  mv_status(MV_CALL* clip_write_open)(void* host, const char* source_utf8, const mv_addon_clip_out* options,
+                                      void** out_writer);
+  /* One frame, RGB with `stride` bytes a row, at `pts_us` (frames in order). */
+  mv_status(MV_CALL* clip_write_frame)(void* host, void* writer, const uint8_t* rgb, uint32_t stride, int64_t pts_us);
+  /* New sound, `frames` whole frames interleaved, kept near the frames written. */
+  mv_status(MV_CALL* clip_write_sound)(void* host, void* writer, const float* interleaved, uint32_t frames);
+  mv_status(MV_CALL* clip_write_finish)(void* host, void* writer, char* out_path_utf8, uint32_t capacity);
+  void(MV_CALL* clip_write_close)(void* host, void* writer);
 } mv_host_api;
 
 typedef struct mv_addon_api {

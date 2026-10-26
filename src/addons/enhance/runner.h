@@ -19,6 +19,7 @@
 #include <thread>
 
 #include "addons/enhance/engine.h"
+#include "addons/enhance/picture_job.h"
 #include "addons/enhance/sound_job.h"
 
 namespace mv::enhance {
@@ -41,7 +42,31 @@ struct run_port {
   std::function<result<std::unique_ptr<frame_model>>(const model_spec& spec, const std::string& models_dir)>
       load_model;
   std::function<std::optional<std::uint64_t>()> free_memory;
+
+  // ---- a clip's picture (slice 5) ----
+  struct picture_reader {
+    std::uint32_t width = 0, height = 0;
+    bool hdr = false;
+    std::int64_t total_frames = 0;  // an estimate
+    std::function<result<bool>(std::vector<std::uint8_t>& rgb, std::int64_t& pts_us)> next;
+  };
+  struct clip_writer {
+    std::function<expected(const std::uint8_t* rgb, std::uint32_t stride, std::int64_t pts_us)> frame;
+    std::function<expected(std::span<const float> interleaved)> sound;
+    std::function<result<std::string>()> finish;
+  };
+  std::function<result<picture_reader>(const std::string& path)> open_frames;
+  // `sound_rate` 0: the source's own sound is copied.
+  std::function<result<clip_writer>(const std::string& source, std::uint32_t width, std::uint32_t height,
+                                    std::uint32_t sound_rate, std::uint32_t sound_channels)>
+      create_clip;
+  std::function<result<std::unique_ptr<tile_model>>(const model_spec& spec, const std::string& models_dir)>
+      load_tiles;
 };
+
+// The largest clip Enhance writes: 4K UHD (hardware encoders' common limit).
+inline constexpr std::uint32_t kMaxLongEdge = 3840;
+inline constexpr std::uint32_t kMaxShortEdge = 2160;
 
 class job_runner final : public runner {
  public:
@@ -55,6 +80,8 @@ class job_runner final : public runner {
 
  private:
   void run(job_request r, job_events events);
+  void run_sound(job_request r, job_events events);
+  void run_picture(job_request r, job_events events);
 
   run_port port_;
   std::mutex m_;

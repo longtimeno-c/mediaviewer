@@ -115,6 +115,11 @@ struct host_services {
   std::function<result<std::unique_ptr<sound_sink>>(const std::string& source, std::uint32_t sample_rate,
                                                     std::uint32_t channels, const std::string& suffix)>
       open_sound_writer;
+  // #297 slice 5: a clip's frames, and a new clip beside it (abi/addon_media.h).
+  // Empty leaves the table's frames_* / clip_write_* rows NULL.
+  std::function<result<std::unique_ptr<picture_source>>(const std::string& path)> open_frames;
+  std::function<result<std::unique_ptr<picture_sink>>(const std::string& source, const picture_out& out)>
+      open_clip_writer;
   std::string data_dir;         // created by the table
   std::string default_library;  // Pictures\MediaViewer
   // Honour mv_addon_copy_request's fault injection (tests, the verify rig).

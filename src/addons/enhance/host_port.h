@@ -17,6 +17,9 @@ namespace mv::enhance {
 // before them, and Enhance then installs models but runs none.
 [[nodiscard]] bool has_sound_rows(const mv_host_api* h);
 
+// The picture rows (slice 5), appended after the sound rows.
+[[nodiscard]] bool has_picture_rows(const mv_host_api* h);
+
 // `self_dir` holds ONNX Runtime (beside the add-on's library). The table
 // outlives the port.
 [[nodiscard]] run_port run_port_of(const mv_host_api* h, const std::string& self_dir);

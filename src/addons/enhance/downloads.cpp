@@ -242,6 +242,8 @@ void downloads::remove(model_kind k, const model_files& m) {
     fs::remove(fs_path(path + ".ok"), ec);
     fs::remove(fs_path(path + ".part"), ec);
   }
+  // What a provider compiled from them (Core ML's cache, slice 5).
+  fs::remove_all(fs_path(root_ + "/" + kind_name(k) + "-cache"), ec);
   if (port_.changed) port_.changed(k);
 }
 

@@ -16,6 +16,12 @@ bool has_sound_rows(const mv_host_api* h) {
          h->sound_write_finish && h->sound_write_close;
 }
 
+bool has_picture_rows(const mv_host_api* h) {
+  return h->struct_size >= offsetof(mv_host_api, clip_write_close) + sizeof(h->clip_write_close) &&
+         h->frames_open && h->frames_read && h->frames_close && h->clip_write_open && h->clip_write_frame &&
+         h->clip_write_sound && h->clip_write_finish && h->clip_write_close;
+}
+
 run_port run_port_of(const mv_host_api* h, const std::string& self_dir) {
   run_port p;
   p.open_sound = [h](const std::string& path, uint32_t rate) -> mv::result<run_port::reader> {
@@ -64,6 +70,69 @@ run_port run_port_of(const mv_host_api* h, const std::string& self_dir) {
     return runtime->open(spec, models_dir);
   };
   p.free_memory = [] { return available_memory(); };
+
+  // Slice 5: a clip's picture, when the host has those rows too.
+  if (has_picture_rows(h)) {
+    p.open_frames = [h](const std::string& path) -> mv::result<run_port::picture_reader> {
+      mv_addon_frames_info info{};
+      info.struct_size = sizeof info;
+      void* raw = nullptr;
+      const mv_status st = h->frames_open(h->host, path.c_str(), &info, &raw);
+      if (st != MV_OK || !raw) return mv::err(st == MV_ERR_CANCELLED ? mv::status::cancelled : mv::status::unsupported_format);
+      std::shared_ptr<void> frames(raw, [h](void* f) { h->frames_close(h->host, f); });
+      run_port::picture_reader r;
+      r.width = info.width;
+      r.height = info.height;
+      r.hdr = info.hdr != 0;
+      r.total_frames = info.frame_count;
+      const std::size_t bytes = std::size_t{info.width} * info.height * 3;
+      r.next = [h, frames, bytes](std::vector<std::uint8_t>& rgb, std::int64_t& pts_us) -> mv::result<bool> {
+        rgb.resize(bytes);
+        uint32_t got = 0;
+        int64_t t = 0;
+        const mv_status s = h->frames_read(h->host, frames.get(), rgb.data(), rgb.size(), &t, &got);
+        if (s != MV_OK) return mv::err(static_cast<mv::status>(s));
+        pts_us = t;
+        return got != 0;
+      };
+      return r;
+    };
+    p.create_clip = [h](const std::string& source, uint32_t w, uint32_t ht, uint32_t rate,
+                        uint32_t channels) -> mv::result<run_port::clip_writer> {
+      mv_addon_clip_out o{};
+      o.struct_size = sizeof o;
+      o.width = w;
+      o.height = ht;
+      o.sound_rate = rate;
+      o.sound_channels = channels;
+      o.suffix_ascii = "enhance";
+      void* raw = nullptr;
+      const mv_status st = h->clip_write_open(h->host, source.c_str(), &o, &raw);
+      if (st != MV_OK || !raw) return mv::err(static_cast<mv::status>(st == MV_OK ? MV_ERR_INTERNAL : st));
+      std::shared_ptr<void> wr(raw, [h](void* x) { h->clip_write_close(h->host, x); });
+      run_port::clip_writer out;
+      out.frame = [h, wr](const std::uint8_t* rgb, std::uint32_t stride, std::int64_t pts) -> mv::expected {
+        const mv_status s = h->clip_write_frame(h->host, wr.get(), rgb, stride, pts);
+        return s == MV_OK ? mv::expected{} : mv::expected{mv::err(static_cast<mv::status>(s))};
+      };
+      out.sound = [h, wr, channels](std::span<const float> pcm) -> mv::expected {
+        if (channels == 0) return mv::err(mv::status::invalid_arg);
+        const mv_status s = h->clip_write_sound(h->host, wr.get(), pcm.data(), static_cast<uint32_t>(pcm.size() / channels));
+        return s == MV_OK ? mv::expected{} : mv::expected{mv::err(static_cast<mv::status>(s))};
+      };
+      out.finish = [h, wr]() -> mv::result<std::string> {
+        char buf[4096] = {};
+        const mv_status s = h->clip_write_finish(h->host, wr.get(), buf, sizeof buf);
+        if (s != MV_OK) return mv::err(static_cast<mv::status>(s));
+        return std::string(buf);
+      };
+      return out;
+    };
+    p.load_tiles = [runtime](const model_spec& spec, const std::string& models_dir) {
+      // Core ML's compiled model, kept beside the weights (Remove deletes it).
+      return runtime->open_tiles(spec, models_dir, models_dir + "-cache");
+    };
+  }
   return p;
 }
 

@@ -248,11 +248,12 @@ The optional **Driftwire** add-on sends photos, video and audio to another Media
 - **Encrypted for the long run.** Every send is sealed end to end with a post-quantum handshake, so a recording made today cannot be opened later.
 - **From a terminal, too.** *driftwire* brings the same sends to a terminal on Linux, macOS and Windows and talks to Driftwire in MediaViewer: the code shows in big digits, nothing is saved until you answer, and what happened stays in your scrollback. [One line installs it](#driftwire-on-the-command-line), with no MediaViewer needed.
 
-## Enhance: cleaner sound, on this computer
+## Enhance: sharper video and cleaner sound, on this computer
 
-The optional **Enhance** add-on writes a restored copy of what is on screen. It starts with sound: wind, hiss and room noise taken out of a voice memo, an interview or a clip's soundtrack.
+The optional **Enhance** add-on writes a restored copy of what is on screen: an old phone clip at twice the size with the detail filled in, or the wind, hiss and room noise taken out of a voice memo, an interview or a clip's soundtrack.
 
-- **Never the original.** The result is a new file beside it, `-enhance` in its name; a clip keeps its picture exactly as it was, with the cleaner sound in place of the old.
+- **Never the original.** The result is a new file beside it, `-enhance` in its name. Clean up just a clip's sound and its picture stays exactly as it was.
+- **Up to 4K.** Choose the same size with more detail, twice or four times the size; Enhance tells you how long is left.
 - **Only the model you ask for.** Each kind's model is downloaded when you click for it, checked before it is kept, and runs on this computer. Nothing about your files is sent anywhere.
 - **Settings that fit the file.** The sheet shows what the model can do for the item in front of you, and remembers how you like it.
 
@@ -299,7 +300,7 @@ All add-ons install from **Settings → Add-ons**, are verified at every start, 
 | **Video Editor, several clips** | Several clips on one timeline, zoom and dissolves ([docs/design/21](docs/design/21-video-editor.md)) |
 | **Editor add-on** (optional) | Colour grading, multi-track editing, titles and captions, an audio mixer and delivery presets ([docs/design/22](docs/design/22-editor-addon.md)) |
 | **Explorer details** | Explorer's Details-pane properties and tab-grouped windows |
-| **Enhance for photos and video** | Enhance's next models: more detail and less noise in a photo, and in a clip's picture ([docs/design/29](docs/design/29-enhance.md)) |
+| **Enhance for photos** | Enhance's next model: more detail and less noise in a photo ([docs/design/29](docs/design/29-enhance.md)) |
 | **Linux** | MediaViewer on Linux: its own GPU surface on Wayland, hardware video decode and a native desktop app ([plan](docs/plans/linux.md)) |
 
 ## From source

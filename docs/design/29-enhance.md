@@ -2,13 +2,14 @@
 
 The Enhance add-on (#297): a restored copy of the photo, clip or audio file on screen, made by a
 model that runs on this computer and is downloaded only when the person asks for it. The original
-is never the output (rule 5). Built: model downloads and the sheet (slices 1–2), and sound — an
-audio file's, or a clip's (slice 4). Not built: photos (slice 3) and a clip's picture (slice 5);
+is never the output (rule 5). Built: model downloads and the sheet (slices 1–2), sound — an audio
+file's, or a clip's (slice 4) — and a clip's picture (slice 5). Not built: photos (slice 3);
 [the plan](../plans/enhance.md) has what is left.
 
-Code: `src/addons/enhance` (`cmake/enhance.cmake`), the host's `edit/sound_writer.h` and the
-sound rows of the host table ([14](14-abi.md)). Decisions: [12](12-decision-log.md), "Enhance is
-its own add-on" and "Enhance's first audio model" (2026-10-26).
+Code: `src/addons/enhance` (`cmake/enhance.cmake`), the host's `edit/sound_writer.h` and
+`edit/picture_io.h`, and the sound and picture rows of the host table ([14](14-abi.md)).
+Decisions: [12](12-decision-log.md), "Enhance is its own add-on", "Enhance's first audio model"
+and "Enhance's first video model" (2026-10-26).
 
 ## What it is
 
@@ -36,7 +37,7 @@ Each kind Enhance can run ships `models/<kind>/model.json` in its signed zip:
 | `run_bytes` | free memory a run needs: the run gate |
 | `cpu` | one unit of work finishes inside a measured budget on CPU |
 | `knobs` | `slider` / `choice` / `toggle`, each with the kinds of target it applies to |
-| `io` | the runner's own section (for sound: `runner: stream`, rate, frame, state, delay) |
+| `io` | the runner's own section (sound: `runner: stream`, rate, frame, state, delay; pictures: `runner: tiles`, scale, tile, overlap, the graph's free dims) |
 
 The weights are never in the zip or a release asset. The signed manifest pins each file under
 `remote` (Hugging Face URL at a fixed revision, size, SHA-256, licence; `src/addons/enhance/
@@ -50,6 +51,7 @@ still to come (plus a tenth). `addon-pack.py` refuses a pin over 5 GB too.
 | Kind | Model | Weights | Licence |
 |---|---|---|---|
 | audio | DeepFilterNet3 (Schröter et al.), streaming ONNX export (`kimtos-labs/denoiser-dfn3` @ `888f33c4`) | 16.1 MB | MIT (dual MIT / Apache-2.0) |
+| video | Real-ESRGAN general x4v3 (Wang et al.), ONNX export (`jonathanst29/tinier-upscale-models` @ `899dc1e4`) | 4.9 MB | BSD-3-Clause |
 
 ## The sheet
 
@@ -93,7 +95,28 @@ FLAC, lossless and royalty-free: a `.flac`, or a clip in Matroska (`edit/clip_au
 The write runs in the app's process, not the clip helper ([08](08-video-editing.md)): the sound
 comes from the add-on, and its picture is copied, never encoded.
 
-## Measured (2026-10-26, Apple M-series, CPU, one thread)
+**A clip's picture.** The host decodes every frame in display order on a decoder of its own
+(`edit/picture_io.h`'s `frame_reader`), to 8-bit sRGB through the same colour path as frame
+export (`clip_pixels.h`); HDR clips are refused for now ("cannot enhance HDR video yet"). Each
+frame is cut into 256-pixel tiles overlapping by 16 pixels a side (edges replicated) and run
+through Real-ESRGAN (4×); each tile's centre is averaged down to the size asked for as it is
+placed (`picture_job.h`), so a 4× frame is never held whole. **Size**: the same size (more
+detail), twice or four times, never past 4K (3840 × 2160; the sheet says so before anything
+runs). **Strength** mixes the model's picture with a plain bilinear enlargement. A fixed tile lets
+Core ML compile the graph (it refuses unbounded dimensions): Apple silicon runs it on Core ML,
+compiled once into `models/video-cache` in the add-on's data folder; elsewhere on the CPU with all
+but one core.
+
+The host's `picture_writer` encodes the new frames on a **hardware** encoder, as Path 2 does
+(`edit/hwencode.h`; HEVC first for an HEVC source; docs/design/11: no software encoder), at a
+bitrate scaled with the picture's area, tagged BT.709, with the source's frame times and
+rotation. The sound is the source's, packet-copied — or, for **picture and sound**, the cleaned
+sound, made by the audio model on a thread of its own and fed to the writer ahead of each frame
+through a bounded queue (five seconds), so neither is held whole. With no hardware encoder at
+that size the sheet says so and nothing is written. The sheet shows the time left once a run is
+a few percent in.
+
+## Measured (2026-10-26, Apple M-series; sound on CPU, one thread)
 
 | | |
 |---|---|
@@ -102,13 +125,20 @@ comes from the add-on, and its picture is copied, never encoded.
 | Speed, one channel | 0.13 × real time (1.45 s for 11 s) |
 | Speed, stereo, through the host table (read, model, AAC, write) | 1.5 s for 5 s |
 | Memory: ONNX Runtime + the session + runs | about 18 + 40 MB (`run_bytes` 150 MB) |
+| Real-ESRGAN, 256-px tile, Core ML (Python, pinned dims) vs CPU 4 threads | 0.05 s vs 0.30 s a tile (about 1.3 vs 0.37 Mpx/s in) |
+| Tiled (4 tiles) against one pass over a 300 × 250 picture, 4×, away from the border | mean 0.02, worst 4 (of 255) |
+| A 640 × 360 clip, 30 frames, to 1280 × 720 with its sound, Core ML + VideoToolbox | 6.2 s (0.21 s a frame) |
+| Peak memory of that run, both models and a reference session | about 330 MB (`run_bytes` 600 MB) |
 
 Not measured: Windows, a long file's memory over time, and the viewer's own gates with Enhance
 installed (it loads no runtime until a run, and runs nothing at launch).
 
 ## Not built
 
-- Photos (slice 3) and a clip's picture (slice 5): the sheet names them; Run stays greyed.
+- Photos (slice 3): the sheet names them; Run stays greyed.
+- HDR clips: the picture would come back SDR; refused for now.
+- A GPU on Windows: the bundled ONNX Runtime is the CPU build, so a clip's picture there runs on
+  the CPU (about a quarter of Core ML's speed on this Mac's CPU; not measured on Windows).
 - Loudness: an "even out loudness" knob needs a second pass over the result.
 - Keeping an MP3 an MP3: there is no MP3 encoder in the LGPL build; the result is an M4A.
 - A live preview on the playback clock (not in #297).

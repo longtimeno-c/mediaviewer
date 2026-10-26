@@ -59,11 +59,16 @@ struct sheet_view {
   // A run in progress or just finished.
   bool running = false;
   double progress = -1;      // -1 indeterminate
+  std::string eta;           // "About 12 minutes left", or "" while it cannot tell
   std::string status;        // "Saved as IMG_0001-enhance.m4a", or why it stopped
 };
 [[nodiscard]] std::string sheet_tree(const sheet_view& v);
 
 // The targets a clip offers, from what it holds.
 [[nodiscard]] std::vector<clip_target> targets_for(bool has_picture, bool has_sound);
+
+// "About 12 minutes left" from how far a run is and how long it has taken;
+// "" until a few percent are done (an early guess is a wrong one).
+[[nodiscard]] std::string time_left(double fraction, double elapsed_s);
 
 }  // namespace mv::enhance

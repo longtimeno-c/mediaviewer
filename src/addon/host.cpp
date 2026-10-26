@@ -986,6 +986,135 @@ void MV_CALL t_sound_write_close(void*, void* writer) {
   }
 }
 
+// ---- a clip's picture (#297, Enhance slice 5) -------------------------------------
+
+struct frames_box {
+  std::unique_ptr<picture_source> s;
+  std::vector<std::uint8_t> rgb;
+};
+
+mv_status MV_CALL t_frames_open(void* host, const char* path, mv_addon_frames_info* info, void** out) {
+  return guarded([&] {
+    if (!path || !out) return MV_ERR_INVALID_ARG;
+    if (info && info->struct_size < sizeof(mv_addon_frames_info)) return MV_ERR_INVALID_ARG;
+    *out = nullptr;
+    const auto& fn = self(host).services().open_frames;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto s = fn(path);
+    if (!s) return to_mv(s.error());
+    if (info) {
+      const picture_facts& f = (*s)->facts();
+      const uint32_t size = info->struct_size;
+      std::memset(info, 0, sizeof *info);
+      info->struct_size = size;
+      info->width = f.width;
+      info->height = f.height;
+      info->rotation = f.rotation;
+      info->hdr = f.hdr ? 1 : 0;
+      info->fps = f.fps;
+      info->duration_ms = f.duration_ms;
+      info->frame_count = f.frame_count;
+    }
+    auto box = std::make_unique<frames_box>();
+    box->s = std::move(*s);
+    *out = box.release();
+    return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_frames_read(void*, void* frames, uint8_t* out, uint64_t cap, int64_t* pts_us, uint32_t* got) {
+  return guarded([&] {
+    auto* box = static_cast<frames_box*>(frames);
+    if (!box || !out || !got) return MV_ERR_INVALID_ARG;
+    const picture_facts& f = box->s->facts();
+    if (cap < static_cast<uint64_t>(f.width) * f.height * 3) return MV_ERR_INVALID_ARG;
+    std::int64_t t = 0;
+    auto more = box->s->next(box->rgb, t);
+    if (!more) return to_mv(more.error());
+    *got = *more ? 1 : 0;
+    if (*more) {
+      if (box->rgb.size() > cap) return MV_ERR_INTERNAL;
+      std::memcpy(out, box->rgb.data(), box->rgb.size());
+      if (pts_us) *pts_us = t;
+    }
+    return MV_OK;
+  });
+}
+
+void MV_CALL t_frames_close(void*, void* frames) {
+  try {
+    delete static_cast<frames_box*>(frames);
+  } catch (...) {
+  }
+}
+
+struct clip_writer_box {
+  std::unique_ptr<picture_sink> w;
+  std::uint32_t channels = 0;
+  bool finished = false;
+};
+
+mv_status MV_CALL t_clip_write_open(void* host, const char* source, const mv_addon_clip_out* o, void** out) {
+  return guarded([&] {
+    if (!source || !o || !out || o->struct_size < sizeof(mv_addon_clip_out) || !o->suffix_ascii) {
+      return MV_ERR_INVALID_ARG;
+    }
+    *out = nullptr;
+    const auto& fn = self(host).services().open_clip_writer;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    picture_out po;
+    po.width = o->width;
+    po.height = o->height;
+    po.sound_rate = o->sound_rate;
+    po.sound_channels = o->sound_channels;
+    po.suffix = o->suffix_ascii;
+    auto w = fn(source, po);
+    if (!w) return to_mv(w.error());
+    auto box = std::make_unique<clip_writer_box>();
+    box->w = std::move(*w);
+    box->channels = o->sound_rate ? o->sound_channels : 0;
+    *out = box.release();
+    return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_clip_write_frame(void*, void* writer, const uint8_t* rgb, uint32_t stride, int64_t pts_us) {
+  return guarded([&] {
+    auto* box = static_cast<clip_writer_box*>(writer);
+    if (!box || !rgb || box->finished) return MV_ERR_INVALID_ARG;
+    const auto r = box->w->write_frame(rgb, stride, pts_us);
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+
+mv_status MV_CALL t_clip_write_sound(void*, void* writer, const float* pcm, uint32_t frames) {
+  return guarded([&] {
+    auto* box = static_cast<clip_writer_box*>(writer);
+    if (!box || !pcm || box->finished || box->channels == 0) return MV_ERR_INVALID_ARG;
+    if (frames == 0) return MV_OK;
+    const auto r = box->w->write_sound(std::span<const float>(pcm, static_cast<std::size_t>(frames) * box->channels));
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+
+mv_status MV_CALL t_clip_write_finish(void*, void* writer, char* out, uint32_t cap) {
+  return guarded([&] {
+    auto* box = static_cast<clip_writer_box*>(writer);
+    if (!box || box->finished) return MV_ERR_INVALID_ARG;
+    box->finished = true;
+    auto r = box->w->finish();
+    if (!r) return to_mv(r.error());
+    return out ? copy_out(*r, out, cap) : MV_OK;
+  });
+}
+
+void MV_CALL t_clip_write_close(void*, void* writer) {
+  try {
+    delete static_cast<clip_writer_box*>(writer);
+  } catch (...) {
+  }
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -1065,6 +1194,18 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
     api_.sound_write = &t_sound_write;
     api_.sound_write_finish = &t_sound_write_finish;
     api_.sound_write_close = &t_sound_write_close;
+  }
+  if (svc_.open_frames) {
+    api_.frames_open = &t_frames_open;
+    api_.frames_read = &t_frames_read;
+    api_.frames_close = &t_frames_close;
+  }
+  if (svc_.open_clip_writer) {
+    api_.clip_write_open = &t_clip_write_open;
+    api_.clip_write_frame = &t_clip_write_frame;
+    api_.clip_write_sound = &t_clip_write_sound;
+    api_.clip_write_finish = &t_clip_write_finish;
+    api_.clip_write_close = &t_clip_write_close;
   }
 }
 
