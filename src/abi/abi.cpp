@@ -2167,6 +2167,11 @@ mv_status MV_CALL mv_folder_open_list(mv_session_t session, const char* title_ut
     std::string select = select_index < count ? paths[select_index] : std::string{};
     session->watcher.stop();
     session->folder_generation.fetch_add(1, std::memory_order_relaxed);
+    // A result list is navigation: the clip on screen when the search ran is
+    // retired at the next tick. Without the bump video_session kept it as
+    // current (same generation), so a clip opened from the results stayed
+    // pending behind it until an arrow key bumped the generation.
+    (void)session->jobs.bump_generation();
     {
       std::lock_guard lock(session->folder_mutex);
       session->folder_dir.clear();
