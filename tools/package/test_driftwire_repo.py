@@ -17,6 +17,7 @@ import hashlib
 import importlib.util
 import http.server
 import io
+import json
 import os
 from pathlib import Path
 import re
@@ -216,7 +217,7 @@ class DriftwireRepoTest(unittest.TestCase):
             'driftwire/driftwire-1.2.3-linux-aarch64.tar.gz', 'driftwire/driftwire-1.2.3-linux-x86_64.tar.gz',
             'driftwire/driftwire-1.2.3-macos-universal.tar.gz', 'driftwire/driftwire-1.2.3-windows-x64.zip',
             'driftwire/driftwire.repo', 'driftwire/index.html', 'driftwire/install.ps1', 'driftwire/install.sh',
-            'driftwire/key.asc', 'driftwire/key.gpg',
+            'driftwire/key.asc', 'driftwire/key.gpg', 'driftwire/latest.json',
             'driftwire/rpm/driftwire-1.2.3-1.aarch64.rpm', 'driftwire/rpm/driftwire-1.2.3-1.x86_64.rpm',
             'index.html'])
         self.assertIn('driftwire/rpm/repodata/repomd.xml', repodata)
@@ -308,6 +309,14 @@ class DriftwireRepoTest(unittest.TestCase):
             out = run('rpmkeys', '--dbpath', db, '--checksig', rpm, text=True).stdout
             self.assertTrue(out.strip().endswith(': digests signatures OK'), out)
         self.assertIn('<revision>1.2.3</revision>', (self.dw / 'rpm/repodata/repomd.xml').read_text())
+
+    def test_latest_json(self):
+        # What `driftwire` reads once a day (src/addons/driftwire/cli/update.h).
+        self.assertEqual(json.loads((self.dw / 'latest.json').read_text()), {'version': '1.2.3'})
+        self.assertEqual(repo.latest_json_text('0.1.40'), '{"version": "0.1.40"}\n')
+        for bad in ('1.2.3-rc1', 'v1.2.3', '1.2.3\x1b[2J', ''):
+            with self.assertRaisesRegex(ValueError, 'not a version'):
+                repo.latest_json_text(bad)
 
     def test_repo_file(self):
         self.assertEqual((self.dw / 'driftwire.repo').read_text(), (
@@ -615,7 +624,8 @@ class DriftwireRepoTest(unittest.TestCase):
         out = self.work / 'wsite'
         self.assertEqual(repo.windows_site(zip_path, out, 'http://127.0.0.1:8000/driftwire'), ('1.2.3', False))
         self.assertEqual(sorted(str(p.relative_to(out)) for p in out.rglob('*') if p.is_file()),
-                         ['driftwire/driftwire-1.2.3-windows-x64.zip', 'driftwire/install.ps1'])
+                         ['driftwire/driftwire-1.2.3-windows-x64.zip', 'driftwire/install.ps1',
+                          'driftwire/latest.json'])
         self.assertIn("$defaultUrl = 'http://127.0.0.1:8000/driftwire'", (out / 'driftwire/install.ps1').read_text())
         repo.windows_site(zip_path, out, 'http://127.0.0.1:8000/driftwire')   # its own: replaced
         with self.assertRaisesRegex(ValueError, 'is not signed'):
@@ -689,7 +699,7 @@ class DriftwireRepoTest(unittest.TestCase):
                 continue
             self.assertEqual(path.read_bytes(), (dw / name).read_bytes(), name)
             compared += 1
-        self.assertEqual(compared, 17)   # the macOS archive too
+        self.assertEqual(compared, 18)   # the macOS archive and latest.json too
         strip = re.compile(rb'^(Date|Valid-Until): .*\n', re.M)
         self.assertEqual(strip.sub(b'', (self.dw / 'apt/dists/stable/Release').read_bytes()),
                          strip.sub(b'', (dw / 'apt/dists/stable/Release').read_bytes()))

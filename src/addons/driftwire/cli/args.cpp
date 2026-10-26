@@ -46,6 +46,7 @@ std::string help_text() {
          "  driftwire code               open it with a code to receive from anywhere,\n"
          "                               closing when that receive ends\n"
          "  driftwire devices            list the devices this computer remembers\n"
+         "  driftwire update             update driftwire the way it was installed\n"
          "  driftwire --help | --version\n"
          "\n"
          "Options:\n"
@@ -57,6 +58,9 @@ std::string help_text() {
          "\n"
          "Codes, check digits and relay keys are never arguments: they are typed or pasted\n"
          "in Driftwire, where /help lists its commands and keys.\n"
+         "\n"
+         "Once a day it asks its site whether a newer driftwire is out, and says so; /updates\n"
+         "off, or DRIFTWIRE_NO_UPDATE_CHECK=1, stops that.\n"
          "\n"
          "Exit status: 0 when it ends normally; 1 when the transfer of send, receive --once\n"
          "or code did not go through; 2 for a usage error, no terminal, or when it could\n"
@@ -139,6 +143,8 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
         a.cmd = command::code;
       } else if (s == "devices") {
         a.cmd = command::devices;
+      } else if (s == "update") {
+        a.cmd = command::update;
       } else if (s == "help") {
         help = true;
       } else {
@@ -178,8 +184,12 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
       break;
     case command::receive:
     case command::devices:
+    case command::update:
       if (!words.empty()) {
-        out.error = std::string(a.cmd == command::receive ? "receive" : "devices") + " takes no arguments";
+        out.error = std::string(a.cmd == command::receive  ? "receive"
+                                : a.cmd == command::devices ? "devices"
+                                                            : "update") +
+                    " takes no arguments";
         return out;
       }
       break;
