@@ -172,11 +172,39 @@ internal sealed class Look
 
     private SolidColorBrush? _critical;
 
-    private Color CriticalColour()
+    private Color CriticalColour() =>
+        Dark ? Color.FromArgb(255, 0xFF, 0x99, 0xA4) : Color.FromArgb(255, 0xC4, 0x2B, 0x1C);
+
+    /// <summary>Whether the host's canvas is dark: Windows' own controls and the title bar follow it.</summary>
+    public bool Dark
     {
-        Color c = ToColor(_host.Colour(AddonColour.Canvas));
-        bool dark = 0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B < 128;
-        return dark ? Color.FromArgb(255, 0xFF, 0x99, 0xA4) : Color.FromArgb(255, 0xC4, 0x2B, 0x1C);
+        get
+        {
+            Color c = ToColor(_host.Colour(AddonColour.Canvas));
+            return 0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B < 128;
+        }
+    }
+
+    /// <summary>
+    /// An owned sheet (ModelPicker, PersonSheet) as part of the app, not the
+    /// system: the app mark, the canvas token for its ground, Windows' controls
+    /// and the title bar in the app's light or dark (#508's rule for host
+    /// windows), all following a theme change while it is open. A system
+    /// backdrop would follow the OS theme instead, under the app's colours.
+    /// </summary>
+    public void Dress(Window window, Panel root)
+    {
+        IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(window);
+        MediaViewer.Shared.AppIcon.Apply(window);
+        root.Background = this[AddonColour.Canvas];
+        void Follow()
+        {
+            root.RequestedTheme = HighContrast() ? ElementTheme.Default : Dark ? ElementTheme.Dark : ElementTheme.Light;
+            Native.TitleBar(hwnd, Dark);
+        }
+        Follow();
+        Changed += Follow;
+        window.Closed += (_, _) => Changed -= Follow;
     }
 
     /// <summary>Whether Windows is in a contrast theme: custom fills give way to the system's.</summary>
@@ -614,6 +642,15 @@ internal static class Native
         SetPropW(hwnd, AddonWindowProp, 1);
         int round = DwmwcpRound;
         _ = DwmSetWindowAttribute(hwnd, DwmwaWindowCornerPreference, ref round, sizeof(int));
+    }
+
+    public const int DwmwaUseImmersiveDarkMode = 20;
+
+    /// <summary>The caption bar dark or light, to match the window's ground.</summary>
+    public static void TitleBar(IntPtr hwnd, bool dark)
+    {
+        int on = dark ? 1 : 0;
+        _ = DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkMode, ref on, sizeof(int));
     }
 
     /// <summary>A rectangle of <paramref name="dipW"/>×<paramref name="dipH"/>
