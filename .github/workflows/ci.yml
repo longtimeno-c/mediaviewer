@@ -707,6 +707,16 @@ jobs:
       # Includes mv_broken_tests (PR 7 verify: "nothing in the broken corpus
       # crashes or hangs") in every matrix leg, ASan included. A failing input
       # is written to broken-dump/ and uploaded below.
+      # TEMPORARY (PR 565, revert before it is done): the internet code test
+      # again and again in Debug, to catch its intermittent failure's log.
+      - name: "TEMP: repeat the driftwire code test"
+        if: matrix.config == 'Debug'
+        continue-on-error: true
+        timeout-minutes: 30
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure -R "a code over the internet .loopback" --repeat until-fail:40
       - name: Unit tests
         # The suite under ASan passed 12 of 15 minutes on #121 alone, and the
         # broken corpus's PDF and DOCX sweeps take minutes each there; 15 stays
