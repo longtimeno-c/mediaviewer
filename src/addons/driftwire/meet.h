@@ -76,6 +76,12 @@ inline constexpr int kProbeRate = 200;     // every probe a second, each way (th
 // most of them (client::looks_hard): its NAT maps each destination apart.
 [[nodiscard]] bool seen_hard(const client& dht);
 
+// Whether this side's public address (as the DHT saw it) and any of the other
+// side's public IPv4 ones are one site: the same address (one router), or the
+// same /16 (a campus, an office, whose inside routes to itself). Only then are
+// the other side's addresses on its own network probed (#499).
+[[nodiscard]] bool one_site(const std::string& own_public, const std::vector<net::endpoint>& their_public);
+
 struct meet_options {
   // The tests: publish loopback addresses only.
   bool loopback = false;

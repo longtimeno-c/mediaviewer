@@ -217,6 +217,16 @@ std::vector<net::endpoint> public_v4(const contents& c, bool loopback) {
 
 bool seen_hard(const client& dht) { return dht.looks_hard(); }
 
+bool one_site(const std::string& own_public, const std::vector<net::endpoint>& their_public) {
+  const auto own = net::parse_address(own_public);
+  if (!own || own->v6) return false;
+  for (const auto& e : their_public) {
+    const auto ip = net::parse_address(e.address);
+    if (ip && !ip->v6 && ip->bytes[0] == own->bytes[0] && ip->bytes[1] == own->bytes[1]) return true;
+  }
+  return false;
+}
+
 std::vector<net::endpoint> own_candidates(const udp_hub& hub, const client& dht, bool loopback) {
   std::vector<net::endpoint> out;
   const std::uint16_t port = hub.port();
@@ -318,13 +328,17 @@ result<std::unique_ptr<link>> meet(const std::shared_ptr<udp_hub>& hub, client& 
   // 3. Punch: probes to every address the other gave (and, for its public
   // address, a few ports around it: a NAT that hands ports out in sequence).
   // Its addresses on its own network only when both sides face the internet
-  // from the same public address (#499: behind one router; elsewhere that
-  // address is some stranger's on this side's network).
+  // from one site: the same public address (#499: behind one router;
+  // elsewhere that address is some stranger's on this side's network), or
+  // public addresses in one /16, a campus or an office whose inside routes
+  // to itself without the NAT. There the other side's own address is the only
+  // one its firewall lets this side's packets back through: a lab PC on a
+  // public address whose policy drops all unsolicited inbound sees them come
+  // from this side's address inside, never from its NAT.
   say("Connecting through both networks\xE2\x80\xA6");
   const std::vector<net::endpoint> their_public = public_v4(*theirs, o.loopback);
   const auto own_ext = dht.external();
-  const bool same_router =
-      own_ext && !their_public.empty() && net::parse_address(own_ext->address) == net::parse_address(their_public[0].address);
+  const bool same_router = own_ext && !their_public.empty() && one_site(own_ext->address, their_public);
   std::vector<net::endpoint> addresses;  // the other side's, worth a probe or a connect
   for (const auto& e : theirs->candidates) {
     const auto ip = net::parse_address(e.address);

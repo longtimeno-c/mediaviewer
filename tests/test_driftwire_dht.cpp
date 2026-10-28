@@ -1480,3 +1480,18 @@ TEST_CASE("driftwire relay: a computer not marked as the person's own there does
   ann.eng.wait_idle();
   CHECK(ann.eng.snapshot().out == sp::view::out_phase::ended);
 }
+
+TEST_CASE("driftwire dht: the other side's own-network addresses are probed only from one site", "[driftwire]") {
+  using mv::driftwire::net::endpoint;
+  // One router: the same public address.
+  CHECK(dht::one_site("203.0.113.7", {endpoint{"203.0.113.7", 4000}}));
+  // A campus: one /16, the NAT pool's address and a lab PC's public one,
+  // whose inside routes to itself without the NAT (2026-10-28, a university).
+  CHECK(dht::one_site("203.0.113.10", {endpoint{"203.0.7.149", 64630}}));
+  CHECK(dht::one_site("203.0.113.10", {endpoint{"198.51.100.1", 1}, endpoint{"203.0.0.9", 2}}));
+  // Elsewhere: that address is a stranger's on this side's network.
+  CHECK_FALSE(dht::one_site("203.0.113.10", {endpoint{"203.1.113.10", 4000}}));
+  CHECK_FALSE(dht::one_site("203.0.113.10", {}));
+  CHECK_FALSE(dht::one_site("", {endpoint{"203.0.113.10", 4000}}));
+  CHECK_FALSE(dht::one_site("2001:db8::1", {endpoint{"2001:db8::2", 4000}}));
+}
