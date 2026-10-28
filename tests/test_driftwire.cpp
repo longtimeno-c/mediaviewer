@@ -608,6 +608,51 @@ TEST_CASE("driftwire: every state of the window is a tree the hosts accept", "[d
   CHECK(sender.find("654 321") == std::string::npos);
 }
 
+// 2026-10-28: a transfer card asks to be brought into view at each stage a
+// person must see, and only then: progress alone keeps its token, so the
+// window does not pull at the page ten times a second.
+TEST_CASE("driftwire: a transfer card asks to be shown at each stage, not at each step", "[driftwire]") {
+  const auto reveal_of = [](const sp::view& s, const char* card) {
+    mv::addon::screen::tree t;
+    REQUIRE(t.set(sp::build_tree(s)) == mv::addon::screen::error::none);
+    const std::string tree = sp::build_tree(s);
+    const std::size_t at = tree.find(std::string("\"id\":\"") + card + "\"");
+    REQUIRE(at != std::string::npos);
+    const std::size_t key = tree.find("\"reveal\":\"", at);
+    REQUIRE(key != std::string::npos);
+    REQUIRE(key < tree.find("\"children\"", at));
+    const std::size_t from = key + 10;
+    return tree.substr(from, tree.find('"', from) - from);
+  };
+  sp::view v;
+  v.my_name = "Studio";
+  v.file_count = 2;
+  v.out_peer = "Laptop";
+  v.out_total = 30'000'000;
+  v.out = sp::view::out_phase::reaching;
+  const std::string start = reveal_of(v, "outgoing");
+  v.out = sp::view::out_phase::confirming;
+  CHECK(reveal_of(v, "outgoing") == start);
+  v.out = sp::view::out_phase::sending;
+  v.out_bytes = 1'000'000;
+  const std::string moving = reveal_of(v, "outgoing");
+  CHECK(moving != start);
+  v.out_bytes = 20'000'000;
+  CHECK(reveal_of(v, "outgoing") == moving);
+  v.out = sp::view::out_phase::done;
+  CHECK(reveal_of(v, "outgoing") != moving);
+
+  v.out = sp::view::out_phase::idle;
+  v.in_peer = "Laptop";
+  v.in_code = "654 321";
+  v.in = sp::view::in_phase::connecting;
+  const std::string offer = reveal_of(v, "incoming");
+  v.in = sp::view::in_phase::asking;
+  CHECK(reveal_of(v, "incoming") == offer);
+  v.in = sp::view::in_phase::receiving;
+  CHECK(reveal_of(v, "incoming") != offer);
+}
+
 // 2026-10-19: a transfer under way draws its path, one picture per kind of
 // path; the receive code can be selected and copied with one click.
 TEST_CASE("driftwire: each kind of path has its own picture, and the code copies", "[driftwire]") {

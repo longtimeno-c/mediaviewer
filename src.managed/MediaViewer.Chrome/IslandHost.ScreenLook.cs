@@ -216,8 +216,9 @@ public static partial class IslandHost
 
     // ---- keeping the place across a rebuild --------------------------------------------
 
+    // Aims: where a scroller was gliding to for a "reveal" (IslandHost.ScreenReveal.cs).
     private readonly record struct ScreenPlace(Dictionary<string, double> Offsets, string? FocusId, int FocusIndex,
-                                               FocusState FocusHow);
+                                               FocusState FocusHow, Dictionary<string, double> Aims);
 
     // The ids the last build of each window registered.
     private static readonly ConditionalWeakTable<UIElement, Dictionary<string, FrameworkElement>> ScreenIdsOf = new();
@@ -255,9 +256,12 @@ public static partial class IslandHost
         try
         {
             var offsets = new Dictionary<string, double>(StringComparer.Ordinal);
+            var aims = new Dictionary<string, double>(StringComparer.Ordinal);
             foreach ((string id, FrameworkElement e) in ids)
             {
-                if (e is ScrollViewer sv && sv.VerticalOffset > 0) offsets[id] = sv.VerticalOffset;
+                if (e is not ScrollViewer sv) continue;
+                if (sv.VerticalOffset > 0) offsets[id] = sv.VerticalOffset;
+                if (RevealAimOf(sv) is double aim) aims[id] = aim;
             }
             string? focusId = null;
             int focusIndex = -1;
@@ -275,7 +279,7 @@ public static partial class IslandHost
                     break;
                 }
             }
-            return new ScreenPlace(offsets, focusId, focusIndex, how);
+            return new ScreenPlace(offsets, focusId, focusIndex, how, aims);
         }
         catch (Exception ex)
         {
@@ -319,6 +323,15 @@ public static partial class IslandHost
                     {
                         sv.UpdateLayout();
                         sv.ChangeView(null, offset, null, disableAnimation: true);
+                    }
+                }
+                // A glide a "reveal" started goes on from there to the same place.
+                foreach ((string id, double aim) in place.Aims)
+                {
+                    if (ids.TryGetValue(id, out FrameworkElement? el) && el is ScrollViewer sv)
+                    {
+                        if (!place.Offsets.ContainsKey(id)) sv.UpdateLayout();
+                        ContinueRevealAim(sv, aim);
                     }
                 }
             }

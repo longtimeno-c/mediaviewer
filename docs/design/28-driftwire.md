@@ -36,7 +36,11 @@ macOS (owner, 2026-10-23; [From a terminal](#from-a-terminal-driftwire)).
     internet straight to each other, internet met through the public DHT, through one of the
     person's computers (named), or through their relay server, each its own shape and colour, with
     the part moved so far and dots that travel the way the bytes go while they do (still with
-    Reduce Motion; paused while it reconnects; a done or failed mark at the end). Whether an
+    Reduce Motion; paused while it reconnects; a done or failed mark at the end). Each card
+    **shows itself** (2026-10-28, the screen `reveal` key): when it appears, when the bytes start
+    to move and when it ends, the window glides to it and an accent outline glows on it and fades,
+    so a send begun from a code typed at the foot of the page, or a tile clicked under Nearby, is
+    seen at once rather than found by scrolling up; progress alone never moves the page. Whether an
     internet link was met on the DHT comes from the link (`link::punched`, `udp_hub`'s stream);
   - **what is offered to this computer**: "… wants to send you files" and the **code** in large
     digits to type over there, **Decline**; then "… wants to send you 24 files, 412 MB", the first
