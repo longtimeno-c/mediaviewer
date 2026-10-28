@@ -72,7 +72,8 @@ struct session_options {
   update_check* updates = nullptr;
   std::string no_updates_why = "this copy was not put here by an installer";
   // The tests and the test build: each machine-readable line ("ready",
-  // "code <text>", "in connecting 123 456", "out done", "quit 0", ...).
+  // "code <text>", "in connecting 123 456", "out done", "quit 0", ...), and
+  // "log <line>" for each of the engine's log lines (no path, name or address).
   std::function<void(const std::string& line)> events;
 };
 

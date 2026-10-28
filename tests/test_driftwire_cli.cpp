@@ -118,14 +118,23 @@ struct cli_side {
     });
     return hit;
   }
+  // The engine's log lines so far (the "log " events), a line each.
+  std::string log() {
+    std::lock_guard lock(m);
+    std::string all;
+    for (const auto& e : events) {
+      if (e.rfind("log ", 0) == 0) all += e.substr(4) + "\n";
+    }
+    return all;
+  }
   bool shows(std::string_view part, int seconds = 20) {
     const bool ok = con.wait_for([&](const std::string& s) { return has(s, part); }, seconds);
-    if (!ok) UNSCOPED_INFO("not shown: " << part << "\n" << con.text());
+    if (!ok) UNSCOPED_INFO("not shown: " << part << "\n" << con.text() << "its log:\n" << log());
     return ok;
   }
   bool screen_shows(std::string_view part, int seconds = 20) {
     const bool ok = con.wait_screen([&](const std::string& s) { return has(s, part); }, seconds);
-    if (!ok) UNSCOPED_INFO("not on the screen: " << part << "\n" << con.screen());
+    if (!ok) UNSCOPED_INFO("not on the screen: " << part << "\n" << con.screen() << "its log:\n" << log());
     return ok;
   }
   // Waits for the session to end; its exit code.
@@ -892,7 +901,11 @@ TEST_CASE("driftwire cli session: a code over the internet (loopback), the check
   REQUIRE(ann.screen_shows("to a code"));
   ann.con.type("\x1B[200~" + *code + "\x1B[201~");  // pasted
   ann.con.type("\r");
-  REQUIRE(ann.screen_shows("Connected to Bea (new device)"));
+  // On a failure, what the receiver's engine said too (why it closed the link).
+  if (!ann.screen_shows("Connected to Bea (new device)")) {
+    UNSCOPED_INFO("Bea's log:\n" << bea.log());
+    FAIL("not connected");
+  }
   REQUIRE(ann.screen_shows("It matches"));
   // The check: the same six digits on both screens.
   const auto check = ann.event("out naming ");
@@ -1086,7 +1099,9 @@ TEST_CASE("driftwire cli session: clicks choose a computer, a command and an ans
   type_line(ann, utf8(f));
   REQUIRE(ann.screen_shows("1 file"));
   REQUIRE(ann.con.wait_mouse(true, 15));
-  CHECK(ann.con.cursor_asks() > 0);  // where the region is, asked after each frame
+  // Where the region is, asked after each frame: the ask is its own write
+  // after the mouse turns on, so it is waited for, not read at once.
+  CHECK(ann.con.wait_cursor_ask(5));
 
   // The row a computer is on: the pointer's glyph before its name.
   const auto pointed_at = [&](const std::string& name, int seconds = 10) {

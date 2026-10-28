@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <set>
@@ -1275,6 +1276,7 @@ void engine::on_incoming(std::unique_ptr<link> l, bool internet, std::optional<k
     // transfer under way comes while busy, and is not held).
     if (!busy && ((!internet && !from_known && std::chrono::steady_clock::now() < refuse_nearby_until_) ||
                   !receive_limit_.allow(source, std::chrono::steady_clock::now()))) {
+      host_.log(1, "driftwire: an incoming link refused (too many)");
       l->shutdown();
       return;
     }
@@ -1423,7 +1425,10 @@ void engine::route_busy(std::shared_ptr<link> l, helper_state& st, bool internet
       std::lock_guard lock(m_);
       in = internet_;
     }
-    if (internet && code && in && in->spend()) in->release();
+    if (internet && code && in && in->spend()) {
+      in->release();
+      host_.log(1, "driftwire: a code's sender came while busy; the code is spent");
+    }
     l->shutdown();
     forget_opening(l);
     return;
@@ -1475,6 +1480,12 @@ result<std::unique_ptr<channel>> engine::open_tracked(std::shared_ptr<link> l, b
 void engine::forget_opening(const std::shared_ptr<link>& l) {
   std::lock_guard lock(m_);
   std::erase(opening_, l);
+}
+
+void engine::log_status(const char* what, status s) {
+  char text[160];
+  std::snprintf(text, sizeof text, "driftwire: %s (%s)", what, status_name(s));
+  host_.log(1, text);
 }
 
 void engine::fail_transfer(bool sending) noexcept {
@@ -2586,6 +2597,12 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files, std
     forget_opening(l);
     if (cancel_.load()) return finish("Cancelled. Nothing was sent.");
     if (!opened) {
+      log_status("a code's handshake failed", opened.error());
+      if (internet_place) {
+        const auto ip = net::parse_address(internet_place->address);
+        host_.log(1, ip && ip->v6 ? "driftwire: the code's IPv6 place won the race"
+                                  : "driftwire: the code's IPv4 place won the race");
+      }
       return finish("The code did not work: it was mistyped, has been used, or has expired. Ask for a new one. "
                     "Nothing was sent.");
     }
@@ -3068,6 +3085,12 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
     // code's hello counts only on the code's own ways in (#499: the
     // handover's way in must not burn the code shown).
     if (!h || !h->internet || (!from_known && (!in || !code))) {
+      if (!h) {
+        log_status("an internet link sent no hello", h.error());
+      } else if (h->internet && !from_known) {
+        host_.log(1, in ? "driftwire: a code's hello on a way in that is not the code's"
+                        : "driftwire: a code's hello with no code here");
+      }
       l->shutdown();
       return end_transfer();
     }
@@ -3110,19 +3133,24 @@ void engine::run_receive(std::unique_ptr<link> incoming, bool internet, std::opt
     } else {
       auto secret = in->spend();
       if (!secret) {
+        host_.log(1, "driftwire: a code's hello after the code was spent or expired");
         l->shutdown();
         return end_transfer();
       }
       held.held = true;
       opened = open_tracked(l, false, kProtocolVersion, &*h, &*secret);
       sodium_memzero(secret->data(), secret->size());
+      if (!opened) log_status("a code's handshake failed here", opened.error());
       if (!opened && opened.error() == status::permission_denied) in->wrong_attempt();
     }
   }
   if (!opened) {
     // Not a MediaViewer, or gone: nothing to show. A nearby handshake
     // dropped after this side answered counts toward the limit (#497).
-    if (!internet) note_unconfirmed();
+    if (!internet) {
+      log_status("a nearby link's handshake failed", opened.error());
+      note_unconfirmed();
+    }
     return end_transfer();
   }
   std::shared_ptr<channel> ch(std::move(*opened));

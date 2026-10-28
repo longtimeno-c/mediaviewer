@@ -574,6 +574,9 @@ class engine {
       std::shared_ptr<link> l, bool client, std::uint32_t version = kProtocolVersion, const hello* read = nullptr,
       const std::vector<std::uint8_t>* internet_secret = nullptr);
   void forget_opening(const std::shared_ptr<link>& l);
+  // "driftwire: <what> (<status>)" into the host's log: why a link closed (no
+  // address, name or path in it, rule 6).
+  void log_status(const char* what, status s);
   void fail_transfer(bool sending) noexcept;  // after an exception on a transfer thread
   // The files to send are read on one thread of the engine's (the folder
   // reader), never on the caller's: a set asked for replaces one waiting, and

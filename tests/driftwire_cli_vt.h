@@ -330,6 +330,16 @@ class fake_console final : public mv::driftwire::cli::terminal {
     std::lock_guard lock(m_);
     return vt_.cursor_asks;
   }
+  // Waits until the session has asked where the cursor is (CSI 6n) at least
+  // once, up to `seconds`.
+  bool wait_cursor_ask(int seconds = 5) const {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+    std::unique_lock lock(m_);
+    while (vt_.cursor_asks == 0) {
+      if (cv_.wait_until(lock, until) == std::cv_status::timeout) return vt_.cursor_asks > 0;
+    }
+    return true;
+  }
   // Waits until mouse reporting is `on` (or off), up to `seconds`.
   bool wait_mouse(bool on, int seconds = 5) const {
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
