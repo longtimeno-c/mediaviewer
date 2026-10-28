@@ -172,6 +172,9 @@ struct ScreenNodeView: View {
         if node.string("look") == "ring" {
           // #442: a ring that fills, its percentage in the middle.
           ScreenRing(value: value, size: CGFloat(node.int("size") ?? 64))
+        } else if node.string("look") == "glow" {
+          // Contribution API 10: the glow colours, a shimmer while it moves.
+          GlowBar(value: value)
         } else if value < 0 {
           ProgressView().controlSize(.small)
         } else {
@@ -791,6 +794,7 @@ private struct SurfaceNode: View {
     .frame(maxWidth: width > 0 ? nil : .infinity)
     .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(6)))
     .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(6)).strokeBorder(MVTheme.hairline, lineWidth: 1))
+    .modifier(GlowEdge(state: node.string("glow"), radius: MVTheme.radius(6)))
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(node.label)
     .accessibilityAddTraits(.isImage)
@@ -1791,5 +1795,89 @@ private struct LinkNode: View {
     let words = name.split(whereSeparator: { $0 == " " || $0 == "-" || $0 == "_" || $0 == "." })
     let s = words.prefix(2).compactMap { $0.first.map { String($0).uppercased() } }.joined()
     return s.isEmpty ? "?" : s
+  }
+}
+
+// ---- contribution API 10: the glow (2026-10-28, Enhance) ----------------------------
+
+/// The glow's colours: violet, pink, amber, teal and blue, the same on both
+/// hosts (IslandHost.Screens.cs GlowColors).
+enum GlowPalette {
+  static let colors: [Color] = [
+    Color(red: 0.55, green: 0.36, blue: 0.96), Color(red: 0.98, green: 0.36, blue: 0.62),
+    Color(red: 1.00, green: 0.62, blue: 0.25), Color(red: 0.25, green: 0.78, blue: 0.85),
+    Color(red: 0.36, green: 0.52, blue: 1.00), Color(red: 0.55, green: 0.36, blue: 0.96),
+  ]
+}
+
+/// A soft multicolour edge round a surface ("glow"): a thin ring and a blurred
+/// halo behind it. "moving" turns it once every six seconds, at 30 fps at most,
+/// and never with Reduce Motion; "still" holds it. The canvas is never touched:
+/// this is the sheet's own drawing, and it stops when the node does.
+private struct GlowEdge: ViewModifier {
+  let state: String?
+  let radius: CGFloat
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  func body(content: Content) -> some View {
+    if let state {
+      let moving = state == "moving" && !reduceMotion
+      content.background {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !moving)) { t in
+          let turn = moving ? t.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 6) / 6 : 0
+          let gradient = AngularGradient(colors: GlowPalette.colors, center: .center, angle: .degrees(turn * 360))
+          ZStack {
+            RoundedRectangle(cornerRadius: radius + 3).fill(gradient).blur(radius: 14).opacity(0.55)
+            RoundedRectangle(cornerRadius: radius + 3).fill(gradient)
+          }
+          .padding(-3)
+        }
+        .accessibilityHidden(true)
+      }
+    } else {
+      content
+    }
+  }
+}
+
+/// A progress bar in the glow's colours. A soft highlight sweeps along it
+/// while it moves (never with Reduce Motion); not started (value < 0), the
+/// whole bar shows dimmed.
+private struct GlowBar: View {
+  let value: Double
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  var body: some View {
+    GeometryReader { geo in
+      let filled = value < 0 ? geo.size.width : geo.size.width * min(1, max(0, value))
+      ZStack(alignment: .leading) {
+        Capsule().fill(MVTheme.hairline)
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { t in
+          let phase = reduceMotion ? -1 : t.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2.4) / 2.4
+          Capsule()
+            .fill(LinearGradient(colors: GlowPalette.colors, startPoint: .leading, endPoint: .trailing))
+            .overlay(shimmer(at: phase))
+            .clipShape(Capsule())
+            .frame(width: max(0, filled))
+            .opacity(value < 0 ? 0.55 : 1)
+        }
+      }
+    }
+    .frame(height: 6)
+    .frame(minWidth: 120)
+  }
+
+  @ViewBuilder private func shimmer(at phase: Double) -> some View {
+    if phase >= 0 {
+      // A band 30 % of the bar wide, from just off its left end to just off its right.
+      let centre = -0.15 + phase * 1.3
+      LinearGradient(stops: [
+        .init(color: .clear, location: 0),
+        .init(color: .clear, location: min(1, max(0, centre - 0.15))),
+        .init(color: .white.opacity(0.5), location: min(1, max(0, centre))),
+        .init(color: .clear, location: min(1, max(0, centre + 0.15))),
+        .init(color: .clear, location: 1),
+      ], startPoint: .leading, endPoint: .trailing)
+    }
   }
 }

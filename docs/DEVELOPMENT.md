@@ -2107,7 +2107,10 @@ hardware encoder. New host rows `sound_open` … `sound_write_close` and `frames
 `clip_write_close` (`src/addon/host.cpp`, `abi/addon_media`, `edit/sound_writer.h`,
 `edit/picture_io.h`). Photos use the same tiles: decoded and written through the export path
 (`still_open` … `still_write`, `edit::full_picture`, `edit::export_pixels`); a crop or colour change
-made on screen is not in the copy yet. The release packs Enhance as a preferred add-on, like Places.
+made on screen is not in the copy yet. While a clip's picture or a photo runs, the sheet shows a
+before/after preview with a glowing edge and progress bar (contribution API 10: a `surface`'s
+`"glow"`, `progress` `"look": "glow"`; `src/addons/enhance/preview.h`, Mac `GlowEdge`/`GlowBar`,
+Windows `IslandHost.Glow.cs`). The release packs Enhance as a preferred add-on, like Places.
 
 Pack it from a dev build (ONNX Runtime, the models' specs and `remote.json` are staged beside the
 library by the build), then sideload as any slot add-on:

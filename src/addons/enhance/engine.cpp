@@ -192,6 +192,7 @@ sheet_view engine::sheet_locked() const {
   v.running = running_;
   v.progress = progress_;
   v.eta = eta_;
+  v.preview = preview_;
   v.status = status_;
   switch (item_) {
     case item_kind::animation: v.note = "Enhance has no model for animations yet."; break;
@@ -254,7 +255,7 @@ void engine::settings_opened(std::uint64_t generation) {
   post_settings_locked();
 }
 
-void engine::sheet_opened(std::uint64_t generation, const std::string& request_path) {
+void engine::sheet_opened(std::uint64_t generation, const std::string& request_path, float width_pt, float scale) {
   std::string path;
   {
     std::lock_guard lock(m_);
@@ -268,8 +269,11 @@ void engine::sheet_opened(std::uint64_t generation, const std::string& request_p
   if ((item == item_kind::media || item == item_kind::audio) && port_.probe) facts = port_.probe(path);
   std::lock_guard lock(m_);
   sheet_gen_ = generation;
+  if (width_pt >= 100 && width_pt <= 2000) sheet_width_pt_ = width_pt;
+  if (scale >= 1 && scale <= 4) sheet_scale_ = scale;
   if (!running_) {
     if (path != path_) status_.clear();
+    preview_ = false;  // a preview belongs to the run that drew it
     path_ = path;
     item_ = item;
     facts_ = facts;
@@ -360,6 +364,7 @@ void engine::run() {
     running_ = true;
     progress_ = -1;
     eta_.clear();
+    preview_ = false;
     run_started_ = std::chrono::steady_clock::now();
     status_.clear();
     post_sheet_locked();
@@ -384,6 +389,27 @@ void engine::run() {
     w.key("props").begin_object().key("text").string(eta_.empty() ? std::string("Working…") : eta_).end_object();
     w.end_object().end_array();
     if (!port_.diff || !port_.diff(kSheetScreen, sheet_gen_, w.str())) post_sheet_locked();
+  };
+  ev.preview = [this](preview_image before, preview_image after) {
+    // Composed off the lock: a letterbox at the sheet's pixel size.
+    float w_pt = 420, sc = 2;
+    {
+      std::lock_guard lock(m_);
+      if (!running_ || sheet_gen_ == 0) return;
+      w_pt = sheet_width_pt_;
+      sc = sheet_scale_;
+    }
+    const auto ow = static_cast<std::uint32_t>(std::min(2048.0f, w_pt * sc));
+    const auto oh = static_cast<std::uint32_t>(std::min(1024.0f, static_cast<float>(kPreviewHeight) * sc));
+    const std::vector<std::uint8_t> bgra = compose_preview(before, after, ow, oh);
+    std::lock_guard lock(m_);
+    if (!running_ || sheet_gen_ == 0 || !port_.surface) return;
+    if (!preview_) {
+      // The node first: pixels for a surface the tree does not show are dropped.
+      preview_ = true;
+      post_sheet_locked();
+    }
+    (void)port_.surface(kSheetScreen, "preview", sheet_gen_, bgra, ow, oh);
   };
   ev.done = [this](bool ok, const std::string& output, const std::string& message) {
     std::lock_guard lock(m_);

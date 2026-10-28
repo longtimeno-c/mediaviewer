@@ -409,6 +409,8 @@ public static partial class IslandHost
             }
             case "progress" when JStr(n, "look") == "ring":
                 return ScreenRing(JNum(n, "value", -1), JNum(n, "size", 64));
+            case "progress" when JStr(n, "look") == "glow":
+                return BuildGlowBar(JNum(n, "value", -1));  // contribution API 10 (IslandHost.Glow.cs)
             case "tiles":
                 return BuildTiles(n, at, id);
             case "link":
@@ -432,7 +434,7 @@ public static partial class IslandHost
             case "separator":
                 return new Border { Height = 1, Background = Brush(Hairline), Margin = Pad(0, 4, 0, 4) };
             case "surface":
-                return BuildSurface(n, at);
+                return WithGlow(BuildSurface(n, at), JStr(n, "glow"));
             default:
                 return new Border();
         }

@@ -3,9 +3,11 @@
 #include "addons/enhance/runner.h"
 
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 
+#include "addons/enhance/preview.h"
 #include "addons/enhance/screens.h"
 #include "addons/enhance/stream_model.h"
 
@@ -34,6 +36,9 @@ double strength_of(const job_request::part& p) {
   if (it == p.values.end() || it->second.k != json::kind::number) return 1.0;
   return std::clamp(it->second.is_integer ? static_cast<double>(it->second.i) : it->second.d, 0.0, 1.0);
 }
+
+// The long edge of the small copies handed to the sheet's preview.
+constexpr std::uint32_t kPreviewEdge = 960;
 
 std::uint32_t scale_of(const job_request::part& p) {
   const auto it = p.values.find("scale");
@@ -306,6 +311,7 @@ void job_runner::run_picture(job_request r, job_events ev) {
   po.strength = strength_of(video);
   std::vector<std::uint8_t> frame, big;
   std::int64_t done = 0;
+  auto last_preview = std::chrono::steady_clock::now();
   const std::int64_t total = std::max<std::int64_t>(1, reader->total_frames);
   expected ok;
   while (ok) {
@@ -330,6 +336,14 @@ void job_runner::run_picture(job_request r, job_events ev) {
                     even.data() + std::size_t{y} * ow * 3);
       }
       big.swap(even);
+    }
+    // The sheet's preview: the first frame at once, then about once a second.
+    if (ev.preview) {
+      const auto now = std::chrono::steady_clock::now();
+      if (done == 0 || now - last_preview >= std::chrono::seconds(1)) {
+        last_preview = now;
+        ev.preview(shrink(frame, reader->width, reader->height, kPreviewEdge), shrink(big, ow, oh, kPreviewEdge));
+      }
     }
     ok = feed_sound(pts);
     if (!ok) break;
@@ -366,6 +380,9 @@ void job_runner::run_still(job_request r, job_events ev) {
     return fail(pic.error() == status::cancelled ? why(status::cancelled) : "Enhance cannot read this photo.");
   }
   if (cancel_.load()) return fail(why(status::cancelled));
+  // The photo in the sheet's preview while its tiles run; the split once done.
+  const preview_image before = shrink(pic->rgb, pic->width, pic->height, kPreviewEdge);
+  if (ev.preview) ev.preview(before, {});
   const std::uint64_t ow = std::uint64_t{pic->width} * scale, oh = std::uint64_t{pic->height} * scale;
   if (ow * oh > kMaxStillPixels || std::max(ow, oh) > kMaxStillEdge) {
     return fail("At this size the new photo would be " + std::to_string(ow * oh / 1'000'000) +
@@ -395,6 +412,7 @@ void job_runner::run_still(job_request r, job_events ev) {
   const expected ok = enhance_picture(pic->rgb, pic->width, pic->height, **tiles, po, out.rgb);
   pic->rgb = {};  // the original's pixels go before the encode needs its own
   if (!ok) return fail(why(ok.error()));
+  if (ev.preview) ev.preview(before, shrink(out.rgb, out.width, out.height, kPreviewEdge));
   if (cancel_.load()) return fail(why(status::cancelled));
   auto path = port_.write_still(r.path, out);
   if (!path) return fail(why(path.error()));

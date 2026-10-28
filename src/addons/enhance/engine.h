@@ -27,6 +27,7 @@
 
 #include "addons/enhance/downloads.h"
 #include "addons/enhance/prefs.h"
+#include "addons/enhance/preview.h"
 #include "addons/enhance/screens.h"
 #include "addons/enhance/sniff.h"
 #include "addons/enhance/spec.h"
@@ -42,6 +43,10 @@ struct media_facts {
 struct engine_port {
   // screen_post: false when the generation is stale.
   std::function<bool(const char* screen, std::uint64_t generation, const std::string& tree)> post;
+  // surface_post: BGRA (premultiplied, sRGB) for a surface of a screen.
+  std::function<bool(const char* screen, const char* surface, std::uint64_t generation,
+                     const std::vector<std::uint8_t>& bgra, std::uint32_t width, std::uint32_t height)>
+      surface;
   // screen_diff against the tree last posted (a running job's progress).
   std::function<bool(const char* screen, std::uint64_t generation, const std::string& diff)> diff;
   std::function<void(const char* screen, bool show)> show;
@@ -74,6 +79,9 @@ struct job_events {
   // Finished: `output_name` is the new file's name (shown); `message` says why
   // when it did not finish ("" for a cancel).
   std::function<void(bool ok, const std::string& output_name, const std::string& message)> done;
+  // A picture run's latest frame, small (preview.h): the original and the
+  // enhanced picture. About once a second, from the job's thread.
+  std::function<void(preview_image before, preview_image after)> preview;
 };
 
 class runner {
@@ -105,7 +113,9 @@ class engine {
   void resume_wanted();
 
   void settings_opened(std::uint64_t generation);
-  void sheet_opened(std::uint64_t generation, const std::string& path);
+  // `width_pt` / `scale`: the sheet's content width and backing scale, for
+  // the preview's pixels.
+  void sheet_opened(std::uint64_t generation, const std::string& path, float width_pt = 420, float scale = 2);
   void closed(const std::string& screen);
   // The command or the context entry: these files (the first is enhanced),
   // then the sheet.
@@ -151,6 +161,9 @@ class engine {
   double progress_ = -1;
   std::chrono::steady_clock::time_point run_started_{};
   std::string eta_;  // "About 12 minutes left", once a run has gone far enough to say
+  bool preview_ = false;  // the sheet shows a preview surface
+  float sheet_width_pt_ = 420;
+  float sheet_scale_ = 2;
   std::string status_;
 };
 

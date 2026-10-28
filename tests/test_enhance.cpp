@@ -32,6 +32,7 @@
 #include "addons/ai/sha256.h"
 #include "addons/enhance/engine.h"
 #include "addons/enhance/picture_job.h"
+#include "addons/enhance/preview.h"
 #include "addons/enhance/runner.h"
 #include "addons/enhance/sound_job.h"
 #include "addons/enhance/stream_model.h"
@@ -124,6 +125,9 @@ struct fake_host {
   std::vector<std::string> logs;
   std::uint64_t free = 1ull << 40;
   mv::enhance::media_facts facts{true, true};
+  // The preview's last pixels and how many were posted.
+  std::uint32_t surface_w = 0, surface_h = 0;
+  int surfaces = 0;
 
   std::string tree(const std::string& screen) {
     std::lock_guard lock(m);
@@ -190,6 +194,19 @@ struct fixture {
     p.post = [this](const char* screen, std::uint64_t, const std::string& tree) {
       std::lock_guard lock(host.m);
       host.trees[screen] = tree;
+      return true;
+    };
+    p.surface = [this](const char* screen, const char* surface, std::uint64_t, const std::vector<std::uint8_t>& bgra,
+                       std::uint32_t w, std::uint32_t h) {
+      std::lock_guard lock(host.m);
+      CHECK(std::string(screen) == kSheetScreen);
+      CHECK(std::string(surface) == "preview");
+      CHECK(bgra.size() == std::size_t{w} * h * 4);
+      // The node is in the tree before its pixels (else the host drops them).
+      CHECK(host.trees[screen].find("\"surface\":\"preview\"") != std::string::npos);
+      host.surface_w = w;
+      host.surface_h = h;
+      ++host.surfaces;
       return true;
     };
     p.show = [this](const char* screen, bool show) {
@@ -1092,4 +1109,105 @@ TEST_CASE("enhance: a photo through the sheet and the runner, within its limits"
   free = 50'000'000;
   f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
   REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("free memory") != std::string::npos; }));
+}
+
+// ---- the live preview and its glow (contribution API 10) ------------------------------
+
+TEST_CASE("enhance: the preview is the frame split, letterboxed to the sheet", "[enhance][preview]") {
+  // A 400 x 100 picture, red; its enhanced twin, blue, twice the size.
+  preview_image before = shrink(std::vector<std::uint8_t>(400 * 100 * 3, 0), 400, 100, 200);
+  CHECK(before.width == 200u);
+  CHECK(before.height == 50u);
+  for (std::size_t i = 0; i < before.rgb.size(); i += 3) before.rgb[i] = 220;
+  preview_image after;
+  after.width = 400;
+  after.height = 100;
+  after.rgb.assign(400 * 100 * 3, 0);
+  for (std::size_t i = 2; i < after.rgb.size(); i += 3) after.rgb[i] = 220;
+  const auto px = compose_preview(before, after, 840, 440);
+  REQUIRE(px.size() == 840u * 440u * 4);
+  const auto at = [&](std::uint32_t x, std::uint32_t y) { return &px[(std::size_t{y} * 840 + x) * 4]; };
+  // Letterboxed: 840 x 210 in the middle, the ground above and below.
+  CHECK(at(420, 10)[2] < 40);
+  CHECK(at(420, 10)[3] == 255);
+  CHECK(at(100, 220)[2] == 220);  // left: the original (BGRA: R at 2)
+  CHECK(at(740, 220)[0] == 220);  // right: the enhanced picture (B at 0)
+  CHECK(at(420, 220)[1] > 150);   // the divider, light
+  // One side alone fills the picture.
+  const auto solo = compose_preview(before, {}, 840, 440);
+  CHECK(solo[(std::size_t{220} * 840 + 740) * 4 + 2] == 220);
+  // Shrinking leaves what already fits alone.
+  CHECK(shrink(before.rgb, 200, 50, 960).width == 200u);
+}
+
+TEST_CASE("enhance: a clip's run shows a glowing preview, held still once it ends", "[enhance][preview]") {
+  fixture f;
+  const fs::path clip = f.dir / "clip.mov";
+  write_bytes(clip, ftyp("qt  ", "qt  "));
+  write_text(f.self / "models/video/model.json", R"json({
+    "kind": "video", "name": "Detail", "weights": ["up.onnx"], "run_bytes": 1000, "cpu": true,
+    "knobs": [{"id": "scale", "label": "Size", "type": "choice",
+               "options": [{"id": "1", "text": "Same"}, {"id": "2", "text": "2x"}], "default": "2"}],
+    "io": {"runner": "tiles", "scale": 4, "tile": 32, "overlap": 4, "dims": ["h", "w"]}})json");
+  f.restart();
+  f.eng->event(kSettingsScreen, "install.video", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::video).state == dl_state::ready; }));
+  f.host.facts = {true, false};  // a picture, no sound
+  // The frames wait for the test, so the tree can be read mid-run.
+  std::atomic<int> allowed{1};
+  run_port port;
+  port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
+  port.open_frames = [&](const std::string&) -> mv::result<run_port::picture_reader> {
+    run_port::picture_reader r;
+    r.width = 40;
+    r.height = 30;
+    r.total_frames = 3;
+    auto n = std::make_shared<int>(0);
+    r.next = [n, &allowed](std::vector<std::uint8_t>& rgb, std::int64_t& pts) -> mv::result<bool> {
+      if (*n == 3) return false;
+      for (int i = 0; i < 2500 && *n >= allowed.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      rgb = noise_rgb(40, 30);
+      pts = 100'000LL * (*n)++;
+      return true;
+    };
+    return r;
+  };
+  port.create_clip = [&](const std::string&, std::uint32_t, std::uint32_t, std::uint32_t,
+                         std::uint32_t) -> mv::result<run_port::clip_writer> {
+    run_port::clip_writer cw;
+    cw.frame = [](const std::uint8_t*, std::uint32_t, std::int64_t) -> mv::expected { return {}; };
+    cw.sound = [](std::span<const float>) -> mv::expected { return {}; };
+    cw.finish = [&]() -> mv::result<std::string> { return utf8(f.dir / "clip-enhance.mov"); };
+    return cw;
+  };
+  port.load_tiles = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<tile_model>> {
+    return std::unique_ptr<tile_model>(new nearest4(32));
+  };
+  f.eng->set_runner(std::make_unique<job_runner>(port));
+  f.eng->sheet_opened(1, utf8(clip), 430, 2);
+  CHECK_FALSE(parsed(f.host.tree(kSheetScreen)).has("preview"));  // nothing to show before a run
+
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).has("preview"); }));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    CHECK(*t.node("preview")->str("glow") == "moving");
+    CHECK(*t.node("progress")->str("look") == "glow");
+    CHECK(t.node("preview")->find("marks")->a.size() == 2u);
+  }
+  {
+    std::lock_guard lock(f.host.m);
+    CHECK(f.host.surface_w == 860u);  // the sheet's width at its backing scale
+    CHECK(f.host.surface_h == kPreviewHeight * 2);
+  }
+  allowed = 3;
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as") != std::string::npos; }));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    CHECK(*t.node("preview")->str("glow") == "still");  // the last frame stays, still
+    CHECK_FALSE(t.has("progress"));
+  }
+  // Another item: no preview from a run that was not its own.
+  f.eng->sheet_opened(2, utf8(f.dir / "other.mov"), 430, 2);
+  CHECK_FALSE(parsed(f.host.tree(kSheetScreen)).has("preview"));
 }
