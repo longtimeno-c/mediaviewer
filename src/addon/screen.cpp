@@ -225,11 +225,13 @@ error check_props(node& n, std::size_t& items) {
       switch (n.type) {
         case node_type::stack:
           // "look": "card" (#442): the host draws the stack on a rounded
-          // surface with padding, as its Settings cards.
+          // surface with padding, as its Settings cards. "reveal" (API 9): a
+          // token; when it first shows or changes, the host scrolls the stack
+          // into view and marks it for a moment.
           ok = (key == "axis" && one_of(v, {"vertical", "horizontal"})) ||
                (key == "spacing" && int_in(v, 0, 64)) ||
                (key == "align" && one_of(v, {"start", "center", "end", "fill"})) ||
-               (key == "look" && one_of(v, {"plain", "card"}));
+               (key == "look" && one_of(v, {"plain", "card"})) || (key == "reveal" && str_max(v, 64));
           break;
         case node_type::grid:
           ok = (key == "columns" && int_in(v, 1, 12)) || (key == "spacing" && int_in(v, 0, 64));

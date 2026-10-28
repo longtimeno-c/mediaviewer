@@ -131,6 +131,8 @@ struct ScreenNodeView: View {
       }
       // "look": "card" (#442): a rounded surface, as Settings' cards.
       .modifier(CardLook(on: node.string("look") == "card"))
+      // "reveal" (API 9): brought into view and marked when its token moves.
+      .modifier(RevealLook(id: node.id, token: node.string("reveal"), card: node.string("look") == "card"))
     case "grid":
       LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: max(1, node.int("columns") ?? 2)),
                 alignment: .leading, spacing: CGFloat(node.int("spacing") ?? 8)) {
@@ -242,6 +244,15 @@ private struct ScreenRootInsetKey: EnvironmentKey {
   static let defaultValue: EdgeInsets? = nil
 }
 
+/// The nearest scroller's way to bring a node into view, by its id.
+struct ScreenScrollTo {
+  var go: @MainActor (String) -> Void = { _ in }
+}
+
+private struct ScreenScrollToKey: EnvironmentKey {
+  static let defaultValue = ScreenScrollTo()
+}
+
 extension EnvironmentValues {
   /// Inside a vertical stack with "align": "center".
   var screenCentered: Bool {
@@ -260,6 +271,12 @@ extension EnvironmentValues {
   var screenRootInset: EdgeInsets? {
     get { self[ScreenRootInsetKey.self] }
     set { self[ScreenRootInsetKey.self] = newValue }
+  }
+
+  /// "reveal": the enclosing scroller, to bring a stack into view.
+  var screenScrollTo: ScreenScrollTo {
+    get { self[ScreenScrollToKey.self] }
+    set { self[ScreenScrollToKey.self] = newValue }
   }
 }
 
@@ -284,21 +301,32 @@ private struct ScrollNode: View {
   let address: ScreenAddress
   let revision: Int
   @Environment(\.screenRootInset) private var rootInset
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     let height = node.int("height") ?? 0
-    ScrollView(node.string("axis") == "horizontal" ? .horizontal : .vertical) {
-      VStack(alignment: .leading, spacing: MVTheme.space(8)) {
-        ForEach(node.children) { ScreenNodeView(node: $0, address: address, revision: revision) }
-      }
-      .padding(rootInset ?? EdgeInsets(top: MVTheme.space(2), leading: MVTheme.space(2),
-                                       bottom: MVTheme.space(2), trailing: MVTheme.space(2)))
-      .background {
-        if rootInset != nil {
-          GeometryReader { g in Color.clear.preference(key: ScreenContentHeight.self, value: g.size.height) }
+    let horizontal = node.string("axis") == "horizontal"
+    ScrollViewReader { proxy in
+      ScrollView(horizontal ? .horizontal : .vertical) {
+        VStack(alignment: .leading, spacing: MVTheme.space(8)) {
+          ForEach(node.children) { ScreenNodeView(node: $0, address: address, revision: revision) }
         }
+        .padding(rootInset ?? EdgeInsets(top: MVTheme.space(2), leading: MVTheme.space(2),
+                                         bottom: MVTheme.space(2), trailing: MVTheme.space(2)))
+        .background {
+          if rootInset != nil {
+            GeometryReader { g in Color.clear.preference(key: ScreenContentHeight.self, value: g.size.height) }
+          }
+        }
+        .environment(\.screenRootInset, nil)
+        // "reveal": a glide to the stack's marker (a little above it), a jump
+        // with Reduce Motion.
+        .environment(\.screenScrollTo, ScreenScrollTo { id in
+          withAnimation(reduceMotion ? nil : .spring(response: 0.5, dampingFraction: 1)) {
+            proxy.scrollTo(RevealLook.marker(id), anchor: horizontal ? .leading : .top)
+          }
+        })
       }
-      .environment(\.screenRootInset, nil)
     }
     .frame(maxHeight: height > 0 ? CGFloat(height) : .infinity)
   }
@@ -408,6 +436,74 @@ private struct CardLook: ViewModifier {
         .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(10)).stroke(MVTheme.hairline, lineWidth: 1))
     } else {
       content
+    }
+  }
+}
+
+/// "reveal" on a stack (API 9, 2026-10-28; Driftwire's transfer card): when
+/// its token first shows or changes, the nearest scroller glides it into view
+/// (it may have appeared far above where the person was, as a send started
+/// from a code typed at the foot of the page) and an accent outline glows on
+/// it and fades. A stack that is new also rises into place. With Reduce
+/// Motion the scroll jumps and nothing moves; the outline still fades.
+private struct RevealLook: ViewModifier {
+  let id: String
+  let token: String?
+  let card: Bool
+  @Environment(\.screenScrollTo) private var scrollTo
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var glow = 0.0
+  @State private var risen = false
+  @State private var shown: String?
+  @State private var pulse = 0
+
+  static func marker(_ id: String) -> String { "reveal:" + id }
+
+  func body(content: Content) -> some View {
+    if token == nil {
+      content
+    } else {
+      content
+        .overlay {
+          RoundedRectangle(cornerRadius: MVTheme.radius(card ? 10 : 6))
+            .stroke(MVTheme.accent, lineWidth: 2)
+            .shadow(color: MVTheme.accent.opacity(0.5), radius: 8)
+            .opacity(glow)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+        .opacity(risen ? 1 : 0)
+        .offset(y: risen || reduceMotion ? 0 : 14)
+        .scaleEffect(risen || reduceMotion ? 1 : 0.98)
+        // What the scroller aims at: a point a margin above the stack, so it
+        // does not land flush with the window's edge.
+        .background(alignment: .top) {
+          Color.clear.frame(width: 1, height: 1).offset(y: -MVTheme.space(14)).id(Self.marker(id))
+        }
+        .onAppear { reveal() }
+        .onChange(of: token) { _, _ in reveal() }
+    }
+  }
+
+  private func reveal() {
+    guard let token, token != shown else { return }
+    let first = shown == nil
+    shown = token
+    pulse += 1
+    let mine = pulse
+    Task { @MainActor in
+      // After this layout pass, once the stack has a place to scroll to.
+      await Task.yield()
+      scrollTo.go(id)
+      if first {
+        withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.45, dampingFraction: 0.82)) {
+          risen = true
+        }
+      }
+      withAnimation(.easeOut(duration: 0.25)) { glow = 1 }
+      try? await Task.sleep(for: .milliseconds(first ? 1000 : 800))
+      guard mine == pulse else { return }  // a newer stage glows instead
+      withAnimation(.easeOut(duration: 1.4)) { glow = 0 }
     }
   }
 }

@@ -138,7 +138,7 @@ public static partial class IslandHost
                     Grid.SetColumn(child, col++);
                     row.Children.Add(child);
                 }
-                return JStr(n, "look") == "card" ? ScreenCard(row) : row;
+                return ScreenRevealed(JStr(n, "look") == "card" ? ScreenCard(row) : row, n, at);
             }
             case "stack":
             {
@@ -174,8 +174,9 @@ public static partial class IslandHost
                     }
                     panel.Children.Add(child);
                 }
-                // "look": "card" (#442): a rounded surface, as Settings' cards.
-                return JStr(n, "look") == "card" ? ScreenCard(panel) : panel;
+                // "look": "card" (#442): a rounded surface, as Settings' cards; "reveal"
+                // (API 9): brought into view and marked when its token moves.
+                return ScreenRevealed(JStr(n, "look") == "card" ? ScreenCard(panel) : panel, n, at);
             }
             case "grid":
             {
@@ -1669,6 +1670,7 @@ public static partial class IslandHost
         {
             ScreenPressed.Remove(gone);
             ForgetSurfaces(gone);
+            ForgetReveals(gone);
             ClosingFromCore.Add(gone);
             try { ScreenWindows[gone].Window.Close(); }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
@@ -1688,6 +1690,7 @@ public static partial class IslandHost
             try { ScreenWindows[at].Window.Close(); }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
             ForgetSurfaces(at);
+            ForgetReveals(at);
         }
         ScreenWindows.Clear();
         ScreenPressed.Clear();
@@ -1699,8 +1702,10 @@ public static partial class IslandHost
     {
         // #508: the window's face and the ids of what is built, for this build only.
         var ids = new Dictionary<string, FrameworkElement>(StringComparer.Ordinal);
+        var reveals = new HashSet<string>(StringComparer.Ordinal);
         _screenFace = ScreenWindowFace();
         _screenIds = ids;
+        _revealBuilt = reveals;
         try
         {
             return BuildScreenRootInner(s, at, place, ids);
@@ -1709,6 +1714,8 @@ public static partial class IslandHost
         {
             _screenFace = null;
             _screenIds = null;
+            _revealBuilt = null;
+            PruneReveals(at, reveals);
         }
     }
 
@@ -1898,6 +1905,7 @@ public static partial class IslandHost
             if (ClosingFromCore.Contains(at)) return;
             ScreenWindows.Remove(at);
             ForgetSurfaces(at);
+            ForgetReveals(at);
             SlotNative.CloseScreen(at.Addon, at.Screen);
         };
         w.Activate();

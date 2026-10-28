@@ -107,7 +107,8 @@ TEST_CASE("driftwire: the shipped manifest declares one window, one context entr
   // Its page in Settings -> Add-ons (contribution API 8).
   CHECK(c.screens[1].id == "settings");
   CHECK(c.screens[1].place == mv::addon::screen_place::settings);
-  CHECK(c.api_min == 8);
+  // 9: its transfer card asks to be brought into view (`reveal`, 2026-10-28).
+  CHECK(c.api_min == 9);
   REQUIRE(c.items.size() == 2);
   CHECK(c.items[0].id == "send_files");
   CHECK(c.items[0].slot == mv::addon::item_slot::context);
