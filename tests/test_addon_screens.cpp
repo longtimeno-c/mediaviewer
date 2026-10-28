@@ -411,7 +411,7 @@ TEST_CASE("selecting every tile of a large grid is checked in one pass", "[addon
   REQUIRE(t.check_event("g", ev_select, R"(["/fixtures/tiles/nope.JPG"])") == error::bad_value);
 }
 
-TEST_CASE("contribution API 9: a surface's glow and a glowing progress bar", "[addon][screens]") {
+TEST_CASE("contribution API 10: a surface's glow and a glowing progress bar", "[addon][screens]") {
   using namespace mv::addon::screen;
   const char* json = R"({"type":"stack","id":"sheet","children":[
    {"type":"surface","id":"preview","surface":"preview","label":"Preview","height":220,"glow":"moving"},

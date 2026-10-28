@@ -47,7 +47,7 @@ case $state in
         _arguments $common '--once[close after the first offer]'
         ;;
       code)
-        # Never a code: it is pasted into /to-code, not typed here.
+        # Never a code: it is pasted into /send-to, not typed here.
         _arguments $common
         ;;
     esac

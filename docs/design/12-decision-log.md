@@ -2160,7 +2160,7 @@ the code, as in the window: `1`, `y` or Enter on Accept in the offer's numbered 
 somewhere else, `3`, `n` or Esc to decline, or `y` at plain mode's `[y/N/s]`. Nothing else
 accepts: no option, no notification (the command line posts none), no pipe (refused). Nothing
 secret is an argument either: no code, check digits or relay key on the command line, where the
-shell's history and `ps` would keep them; a code someone gave you is pasted into `/to-code`, and
+shell's history and `ps` would keep them; a code someone gave you is pasted into `/send-to`, and
 `send --to NAME` names a computer, never a code. Reopen only with a way to accept that is still a
 person answering at that machine.
 
@@ -2765,14 +2765,14 @@ colour stack on screen to be baked into the copy; the stack lives in the host's 
 session (`shell/edit_session`), session-only and unpersisted, and handing it to an add-on is a
 host change of its own.
 
-**Enhance's sheet glows while it works: contribution API 9 (2026-10-28).** The owner asked for
+**Enhance's sheet glows while it works: contribution API 10 (2026-10-28).** The owner asked for
 the run to feel like Apple Intelligence's: a live before/after preview with a slow multicolour
 glow round it and a matching progress bar. The glow is a host drawing on two generic nodes (a
 `surface`'s `"glow"`, a `progress` `"look": "glow"`), not pixels the add-on paints, so it stays in
 the chrome's own animation (30 fps at most, only while shown, off with Reduce Motion / animations
 off) and costs the canvas nothing: the viewer's present loop and idle cost are untouched, and the
 preview's copies are made on Enhance's runner thread from frames it already decoded. The cost: an
-Enhance that asks for 9 needs this MediaViewer or later ("needs a newer MediaViewer" on an older
+Enhance that asks for 10 needs this MediaViewer or later ("needs a newer MediaViewer" on an older
 one). Not measured: the glow's own CPU on either chrome.
 
 ## Not built

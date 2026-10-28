@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Contribution API 9 (2026-10-28, Enhance): a surface's "glow" and a progress
+// Contribution API 10 (2026-10-28, Enhance): a surface's "glow" and a progress
 // bar's "glow" look. The Mac twins are GlowEdge and GlowBar in ScreenView.swift;
 // the colours are the same.
 //

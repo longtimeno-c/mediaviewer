@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Contribution API 9's glow (IslandHost.Glow.cs; the Mac's GlowEdge and
+// Contribution API 10's glow (IslandHost.Glow.cs; the Mac's GlowEdge and
 // GlowBar in ScreenView.swift use the same numbers): how far the edge has
 // turned and where the progress bar's highlight is, at a time in seconds.
 namespace MediaViewer.Shared;

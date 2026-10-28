@@ -15,7 +15,9 @@
 // 2026-10-19: a transfer under way is a card at the top with a picture of its
 // path (the `link` node: this computer, the other, the bearer's badge, dots
 // moving while bytes do), so Bluetooth, Wi-Fi and each kind of internet path
-// look different at a glance. The internet part reads in the order a person
+// look different at a glance. 2026-10-28: the card asks to be brought into
+// view (`reveal`) at each stage, so a send started from a code typed at the
+// foot of the page shows itself instead of waiting to be found. The internet part reads in the order a person
 // uses it: receive (a code to copy), send to a code, then the options.
 #include <algorithm>
 #include <cmath>
@@ -66,11 +68,12 @@ void folder_field(writer& w, const char* id, const char* label, const std::strin
 }
 
 void stack(writer& w, const char* id, int spacing, const char* axis = "vertical", const char* look = nullptr,
-           const char* align = nullptr) {
+           const char* align = nullptr, const char* reveal = nullptr) {
   w.begin_object().key("type").string("stack").key("id").string(id).key("axis").string(axis);
   w.key("spacing").integer(spacing);
   if (look) w.key("look").string(look);
   if (align) w.key("align").string(align);
+  if (reveal) w.key("reveal").string(reveal);
   w.key("children").begin_array();
 }
 
@@ -221,8 +224,30 @@ void link_picture(writer& w, const char* id, const path_kind& k, const char* sta
 
 // ---- what is offered to this computer -------------------------------------------------
 
+// A transfer card's `reveal` token: it moves at each stage a person must see
+// (the offer, the bytes moving, the end), so the window scrolls the card into
+// view and marks it then, wherever the person was on the page (the code typed
+// into "Send to a code" sits far below the card).
+const char* in_stage(view::in_phase p) {
+  switch (p) {
+    case view::in_phase::receiving: return "moving";
+    case view::in_phase::done:
+    case view::in_phase::ended: return "end";
+    default: return "offer";
+  }
+}
+
+const char* out_stage(view::out_phase p) {
+  switch (p) {
+    case view::out_phase::sending: return "moving";
+    case view::out_phase::done:
+    case view::out_phase::ended: return "end";
+    default: return "start";
+  }
+}
+
 void incoming(writer& w, const view& v) {
-  stack(w, "incoming", 10, "vertical", "card", "center");
+  stack(w, "incoming", 10, "vertical", "card", "center", in_stage(v.in));
   {
     const char* state = v.in == view::in_phase::receiving ? (v.in_reconnecting ? "paused" : "moving")
                         : v.in == view::in_phase::done    ? "done"
@@ -303,7 +328,7 @@ path_kind out_path(const view& v) {
 }
 
 void outgoing(writer& w, const view& v) {
-  stack(w, "outgoing", 10, "vertical", "card", "center");
+  stack(w, "outgoing", 10, "vertical", "card", "center", out_stage(v.out));
   const char* state = v.out == view::out_phase::sending ? (v.out_reconnecting ? "paused" : "moving")
                       : v.out == view::out_phase::done  ? "done"
                       : v.out == view::out_phase::ended ? "failed"

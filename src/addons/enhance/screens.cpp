@@ -51,7 +51,7 @@ void progress(json::writer& w, const std::string& id, const std::string& label, 
   w.end_object();
 }
 
-// The live preview (contribution API 9): the latest frame, the original left
+// The live preview (contribution API 10): the latest frame, the original left
 // of the split and the enhanced picture right of it, in a surface the host
 // draws a slow glow round while the run goes.
 void preview_node(json::writer& w, bool moving) {

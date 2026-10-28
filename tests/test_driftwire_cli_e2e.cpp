@@ -269,7 +269,7 @@ TEST_CASE("driftwire cli e2e: two programs in ptys, a code over loopback, typed 
     CHECK(again.errors().find("Driftwire is already open in another terminal.") != std::string::npos);
   }
 
-  ann.type("/to-code");
+  ann.type("/send-to");
   ann.type("\r");
   REQUIRE(ann.shows("Sending to a code needs Over the internet."));
   ann.type("y");
@@ -315,7 +315,7 @@ TEST_CASE("driftwire cli e2e: TERM=dumb or --plain is plain mode, with no escape
   REQUIRE(p.shows("driftwire>"));
   p.type("/help");
   p.type("\r");
-  REQUIRE(p.shows("/to-code"));
+  REQUIRE(p.shows("/send-to"));
   // A file:// link decodes to any byte: a missing one is named, its control
   // characters shown as "?", never written to the terminal.
   p.type("file:///nowhere/%1B]2;PWNED%07%1B[2J.jpg");

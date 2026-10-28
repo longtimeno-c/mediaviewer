@@ -178,7 +178,7 @@ parsed_args parse_args(std::span<const std::string> argv, bool test_hooks) {
     case command::code:
       if (!words.empty()) {
         // Never a code on the command line: it would sit in the history and `ps`.
-        out.error = "code takes no arguments (a code someone gave you is pasted into /to-code in Driftwire)";
+        out.error = "code takes no arguments (a code someone gave you is pasted into /send-to in Driftwire)";
         return out;
       }
       break;

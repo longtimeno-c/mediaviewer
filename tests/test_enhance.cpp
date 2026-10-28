@@ -1111,7 +1111,7 @@ TEST_CASE("enhance: a photo through the sheet and the runner, within its limits"
   REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("free memory") != std::string::npos; }));
 }
 
-// ---- the live preview and its glow (contribution API 9) ------------------------------
+// ---- the live preview and its glow (contribution API 10) ------------------------------
 
 TEST_CASE("enhance: the preview is the frame split, letterboxed to the sheet", "[enhance][preview]") {
   // A 400 x 100 picture, red; its enhanced twin, blue, twice the size.

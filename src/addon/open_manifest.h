@@ -48,9 +48,11 @@ inline constexpr int kOpenManifestSchema = 2;
 //      asks for 7; an older host refused it as malformed.
 //   8  2026-10-21: a screen in place "settings", drawn on the add-on's page in
 //      Settings -> Add-ons (Driftwire's settings). Schema 1 only, as screens.
-//   9  2026-10-28: a surface's `glow` and a progress bar's "glow" look
-//      (Enhance's sheet). No new point: a tree that uses them asks for 9.
-inline constexpr std::uint32_t kContributionApi = 9;
+//   9  2026-10-28: `reveal` on a screen stack (Driftwire's transfer card): the
+//      host scrolls it into view and marks it. A tree that uses it asks for 9.
+//  10  2026-10-28: a surface's `glow` and a progress bar's "glow" look
+//      (Enhance's sheet). No new point: a tree that uses them asks for 10.
+inline constexpr std::uint32_t kContributionApi = 10;
 // The API that introduced code (`scripts`, `permissions`, commands).
 inline constexpr std::uint32_t kScriptApi = 3;
 inline constexpr std::uint32_t kContributionApiOldest = 1;

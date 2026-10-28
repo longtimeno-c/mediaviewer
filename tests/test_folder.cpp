@@ -220,6 +220,35 @@ TEST_CASE("mv_folder_open_list shows a result the old folder was prefetching", "
   mv::io::set_thumb_cache_dir_override({});
 }
 
+TEST_CASE("mv_folder_open_list moves the view generation on", "[abi][folder][list]") {
+  // A clip on screen when a search ran stayed current in the video session
+  // (same generation), so a clip opened from the results never replaced it
+  // until an arrow key bumped the generation. The list's open is navigation.
+  const auto dir = temp_dir();
+  write_bmp(dir, L"a.bmp");
+  write_bmp(dir, L"b.bmp");
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  session_guard session;
+  uint64_t job = 0;
+  const std::string first = utf8(dir + L"\\a.bmp");
+  const std::string result = utf8(dir + L"\\b.bmp");
+  REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), first.c_str(), &job) == MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, nullptr));
+  uint32_t before = 0;
+  REQUIRE(mv_session_current_generation(session.handle, &before) == MV_OK);
+
+  const char* paths[] = {result.c_str()};
+  REQUIRE(mv_folder_open_list(session.handle, "b", paths, nullptr, 1, 0, &job) == MV_OK);
+  uint32_t after = 0;
+  REQUIRE(mv_session_current_generation(session.handle, &after) == MV_OK);
+  REQUIRE(static_cast<int32_t>(after - before) > 0);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, nullptr));
+  REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  mv::io::set_thumb_cache_dir_override({});
+}
+
 TEST_CASE("mv_folder_open lists child folders and summarises a tile", "[abi][folder][pr26]") {
   const auto dir = temp_dir();
   REQUIRE(::CreateDirectoryW((dir + L"\\2024").c_str(), nullptr));

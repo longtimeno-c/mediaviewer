@@ -225,11 +225,13 @@ error check_props(node& n, std::size_t& items) {
       switch (n.type) {
         case node_type::stack:
           // "look": "card" (#442): the host draws the stack on a rounded
-          // surface with padding, as its Settings cards.
+          // surface with padding, as its Settings cards. "reveal" (API 9): a
+          // token; when it first shows or changes, the host scrolls the stack
+          // into view and marks it for a moment.
           ok = (key == "axis" && one_of(v, {"vertical", "horizontal"})) ||
                (key == "spacing" && int_in(v, 0, 64)) ||
                (key == "align" && one_of(v, {"start", "center", "end", "fill"})) ||
-               (key == "look" && one_of(v, {"plain", "card"}));
+               (key == "look" && one_of(v, {"plain", "card"})) || (key == "reveal" && str_max(v, 64));
           break;
         case node_type::grid:
           ok = (key == "columns" && int_in(v, 1, 12)) || (key == "spacing" && int_in(v, 0, 64));
@@ -329,7 +331,7 @@ error check_props(node& n, std::size_t& items) {
           break;
         case node_type::progress:
           // "look": "ring" (#442): a circle that fills, `size` points across.
-          // "look": "glow" (contribution API 9, 2026-10-28): a bar in the
+          // "look": "glow" (contribution API 10, 2026-10-28): a bar in the
           // host's glow colours, with a shimmer while it moves.
           ok = (key == "value" && num_in(v, -1.0, 1.0)) || (key == "look" && one_of(v, {"bar", "ring", "glow"})) ||
                (key == "size" && int_in(v, 16, 256));
@@ -376,7 +378,7 @@ error check_props(node& n, std::size_t& items) {
                    num_in(*y, 0.0, 1.0) && plain(*text, 64);
             }
           } else {
-            // "glow" (contribution API 9, 2026-10-28, Enhance): the host draws a
+            // "glow" (contribution API 10, 2026-10-28, Enhance): the host draws a
             // soft multicolour edge round the pixels; "moving" turns it slowly
             // (never with Reduce Motion / animations off), "still" holds it.
             ok = (key == "surface" && v.k == json::kind::string && id_text(v.s)) ||

@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Contribution API 9's glow: the timing the Windows chrome steps by
+// Contribution API 10's glow: the timing the Windows chrome steps by
 // (src.managed/Shared/GlowMath.cs), and the Mac twin (ScreenView.swift's
 // GlowEdge, GlowBar and GlowPalette) read as text for the same numbers.
 using MediaViewer.Shared;

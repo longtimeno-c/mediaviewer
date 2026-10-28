@@ -129,7 +129,7 @@ void gallery(cli::output& out, const cli::theme& th, int w) {
     p.cursor_col = 3;
     cli::palette_model pal;
     pal.rows = {{"/code", "", "Receive from anywhere: make a code to give someone"},
-                {"/to-code", "", "Send these files to a code someone gave you"}};
+                {"/send-to", "", "Send these files to a code someone gave you"}};
     show(out, th, w, "the slash palette", ftxui::vbox({cli::prompt(th, p, w), cli::command_palette(th, pal, w)}));
   }
   {
@@ -223,7 +223,7 @@ void gallery(cli::output& out, const cli::theme& th, int w) {
     p.title = "Send to a code";
     p.placeholder = "Paste the code, or type the four words";
     p.border = cli::tone::accent;
-    show(out, th, w, "a field: /to-code",
+    show(out, th, w, "a field: /send-to",
          ftxui::vbox({cli::prompt(th, p, w),
                       cli::hints(th, {{"enter to send", "esc to cancel"}, ""}, w)}));
     p.title = "Save somewhere else";

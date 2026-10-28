@@ -886,7 +886,7 @@ TEST_CASE("driftwire cli session: a code over the internet (loopback), the check
 
   type_line(ann, utf8(f));
   REQUIRE(ann.screen_shows("1 file"));
-  type_line(ann, "/to-code");
+  type_line(ann, "/send-to");
   REQUIRE(ann.screen_shows("Sending to a code needs Over the internet."));
   ann.con.type("y");
   REQUIRE(ann.screen_shows("to a code"));
@@ -980,7 +980,7 @@ TEST_CASE("driftwire cli session: the commands, the palette, Tab, and what is sa
   REQUIRE(ann.shows("Public DHT: on"));
   REQUIRE(ann.shows("Saves to: " + utf8(s / "Pictures")));
   type_line(ann, "/help");
-  REQUIRE(ann.shows("/to-code"));
+  REQUIRE(ann.shows("/send-to"));
   REQUIRE(ann.shows("Send these files to a code someone gave you"));
   type_line(ann, "/bogus");
   REQUIRE(ann.shows("Unknown command /bogus"));

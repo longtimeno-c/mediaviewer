@@ -36,7 +36,11 @@ macOS (owner, 2026-10-23; [From a terminal](#from-a-terminal-driftwire)).
     internet straight to each other, internet met through the public DHT, through one of the
     person's computers (named), or through their relay server, each its own shape and colour, with
     the part moved so far and dots that travel the way the bytes go while they do (still with
-    Reduce Motion; paused while it reconnects; a done or failed mark at the end). Whether an
+    Reduce Motion; paused while it reconnects; a done or failed mark at the end). Each card
+    **shows itself** (2026-10-28, the screen `reveal` key): when it appears, when the bytes start
+    to move and when it ends, the window glides to it and an accent outline glows on it and fades,
+    so a send begun from a code typed at the foot of the page, or a tile clicked under Nearby, is
+    seen at once rather than found by scrolling up; progress alone never moves the page. Whether an
     internet link was met on the DHT comes from the link (`link::punched`, `udp_hub`'s stream);
   - **what is offered to this computer**: "… wants to send you files" and the **code** in large
     digits to type over there, **Decline**; then "… wants to send you 24 files, 412 MB", the first
@@ -113,7 +117,7 @@ network at all it says so and waits, as the window does: a network can come up.
   prints machine-readable lines, for the end-to-end test.
 - **No secret on the command line.** No code, check digits or relay key is ever an argument:
   it would sit in the shell's history and in `ps`. `driftwire code 123456` is a usage error; a
-  code someone gave you is pasted into `/to-code`, a relay server's key typed into
+  code someone gave you is pasted into `/send-to`, a relay server's key typed into
   `/relay-server`'s field. `--to NAME` names a computer, never a code.
 - **The look**, after Claude Code's terminal UI, in Driftwire's own colours: an inline UI, never
   the alternate screen. What finished is printed once, above, as a transcript that stays in the
@@ -168,7 +172,7 @@ network at all it says so and waits, as the window does: a network can come up.
   backslash escapes, `~`, `file://` and the globs `* ? [...]`, expanded by the program, not a
   shell. A folder alone is a folder send. Nearby is the engine's list; ↑↓ choose and Enter on an
   empty prompt sends. The commands are the window's: `/send`, `/folder`, `/files`, `/clear`,
-  `/code`, `/copy`, `/to-code`, `/devices`, `/forget N`, `/mine N on|off`, `/unfinished`, `/discard N`,
+  `/code`, `/copy`, `/send-to`, `/devices`, `/forget N`, `/mine N on|off`, `/unfinished`, `/discard N`,
   `/save-to`, `/internet`, `/dht`, `/handover`, `/relay`, `/relay-server`, `/updates`, `/settings`,
   `/help`, `/quit` (`/updates` is the command line's own, [Updates](#updates-in-the-terminal)). An internet option says what it means the first time it is turned on in a session (the
   window's words).

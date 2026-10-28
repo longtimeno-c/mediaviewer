@@ -126,7 +126,7 @@ a clip's first frame and then about one a second; a photo's original at the star
 the end. The engine letterboxes them to the sheet's width at its scale (at most 2048 × 1024) and
 posts them to a `surface` with a `"glow"` edge, which turns while the run goes and holds still
 once it ends; the progress bar takes the glow's colours (`"look": "glow"`). Both need
-contribution API 9 ([25](25-open-addons.md)), so this Enhance asks for 9. The copies are made on
+contribution API 10 ([25](25-open-addons.md)), so this Enhance asks for 10. The copies are made on
 the runner's thread from the frame it already has; nothing is decoded twice, and nothing touches
 the canvas or the render device. A sound-only run shows no preview.
 

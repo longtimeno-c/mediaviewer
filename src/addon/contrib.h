@@ -21,11 +21,12 @@ namespace mv::addon {
 // 5 = chrome slots and search providers, 6 = the screen vocabulary's `link`
 // node and a button's `copy` (2026-10-19), 7 = `opens` on a status item
 // (#512, 2026-10-20), 8 = a screen in place "settings" (2026-10-21): drawn on
-// the add-on's own page in Settings -> Add-ons, 9 = a surface's `glow` and a
-// progress bar's "glow" look (2026-10-28, Enhance). Points of an API this host knows but
-// has not built (settings pages, keymaps: PR 56; script commands: PR 57) make
+// the add-on's own page in Settings -> Add-ons, 9 = `reveal` on a screen stack
+// (2026-10-28): the host scrolls it into view and marks it, 10 = a surface's
+// `glow` and a progress bar's "glow" look (2026-10-28, Enhance). Points of an
+// API this host knows but has not built (settings pages, keymaps: PR 56; script commands: PR 57) make
 // a manifest that names them "needs a newer MediaViewer", never half-loaded.
-inline constexpr std::uint32_t kSlotsContributionApi = 9;
+inline constexpr std::uint32_t kSlotsContributionApi = 10;
 // The contribution API from which a status item may name the screen it opens.
 inline constexpr std::uint32_t kStatusOpensApi = 7;
 // The contribution API from which a screen may be in place "settings".

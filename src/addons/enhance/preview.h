@@ -3,7 +3,7 @@
 // Enhance's live preview (2026-10-28): while a clip or photo runs, the sheet
 // shows the latest frame split down the middle, the original on the left and
 // the enhanced picture on the right, inside a surface the host draws a slow
-// glow round (contribution API 9). The runner hands over small copies about
+// glow round (contribution API 10). The runner hands over small copies about
 // once a second; the engine letterboxes them to the surface's size.
 //
 // Pure: no I/O, no host. The surface wants 8-bit BGRA, premultiplied, sRGB;

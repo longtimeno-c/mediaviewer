@@ -815,7 +815,17 @@ blank window):
   the click, then reports the click as usual; an add-on has no clipboard call of its own. The
   label says "Copied" for 1.5 s.
 
-Two more (2026-10-28, Enhance; contribution API **9**):
+One more (2026-10-28, Driftwire; contribution API **9**, for the same reason):
+
+- **`stack` `"reveal"`**: a token (64 characters). When it first shows or changes, the nearest
+  scroller glides the stack into view (a margin above it), an accent outline lights on it and fades
+  over about 2 s, and a stack that is new rises into place. With Reduce Motion (Mac) or animations
+  off (Windows) the scroll jumps and nothing moves; the outline shows and goes. A token that stays
+  the same across revisions does nothing, so an add-on moves it only at a stage the person must see.
+  Windows rebuilds the window at each revision; the outline, the rise and a glide under way carry
+  across the rebuild by node id (`IslandHost.ScreenReveal.cs`; the Mac's is `RevealLook`).
+
+Two more (2026-10-28, Enhance; contribution API **10**):
 
 - **`surface` `"glow": "moving" | "still"`**: a soft multicolour edge round the surface (violet,
   pink, amber, teal, blue), a thin ring and a faint wider halo. `moving` turns the colours once
