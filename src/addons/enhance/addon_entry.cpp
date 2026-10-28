@@ -98,6 +98,10 @@ mv::enhance::engine_port make_port(const mv_host_api* h) {
     return h->screen_diff && h->screen_diff(h->host, screen, gen, diff.c_str()) == MV_OK;
   };
   p.show = [h](const char* screen, bool show) { (void)h->screen_show(h->host, screen, show ? 1 : 0); };
+  p.surface = [h](const char* screen, const char* surface, uint64_t gen, const std::vector<uint8_t>& bgra, uint32_t w,
+                  uint32_t ht) {
+    return h->surface_post(h->host, screen, surface, gen, bgra.data(), w, ht, w * 4) == MV_OK;
+  };
   p.probe = [h](const std::string& path) { return probe(h, path); };
   p.free_disk = [h](const std::string& dir) -> std::optional<uint64_t> {
     if (!h->volume_of) return std::nullopt;
@@ -132,7 +136,7 @@ mv_status MV_CALL screen_open(void*, const mv_slot_screen_request* r) {
       return MV_OK;
     }
     if (std::strcmp(r->screen_id, mv::enhance::kSheetScreen) != 0) return MV_ERR_INVALID_ARG;
-    g->eng->sheet_opened(r->generation, r->path_utf8 ? r->path_utf8 : "");
+    g->eng->sheet_opened(r->generation, r->path_utf8 ? r->path_utf8 : "", r->width_pt, r->scale);
     return MV_OK;
   });
 }

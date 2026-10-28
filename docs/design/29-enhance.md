@@ -119,6 +119,17 @@ Core ML compile the graph (it refuses unbounded dimensions): Apple silicon runs 
 compiled once into `models/video-cache` in the add-on's data folder; elsewhere on the CPU with all
 but one core.
 
+**The preview.** While a clip's picture or a photo runs, the sheet shows the picture split down
+the middle: the original on the left, the enhanced on the right, with a thin light divider
+(`preview.h`). The runner hands over small copies (960 pixels on the long edge, box-averaged):
+a clip's first frame and then about one a second; a photo's original at the start and both at
+the end. The engine letterboxes them to the sheet's width at its scale (at most 2048 × 1024) and
+posts them to a `surface` with a `"glow"` edge, which turns while the run goes and holds still
+once it ends; the progress bar takes the glow's colours (`"look": "glow"`). Both need
+contribution API 9 ([25](25-open-addons.md)), so this Enhance asks for 9. The copies are made on
+the runner's thread from the frame it already has; nothing is decoded twice, and nothing touches
+the canvas or the render device. A sound-only run shows no preview.
+
 The host's `picture_writer` encodes the new frames on a **hardware** encoder, as Path 2 does
 (`edit/hwencode.h`; HEVC first for an HEVC source; docs/design/11: no software encoder), at a
 bitrate scaled with the picture's area, tagged BT.709, with the source's frame times and
@@ -155,4 +166,4 @@ installed (it loads no runtime until a run, and runs nothing at launch).
   the CPU (about a quarter of Core ML's speed on this Mac's CPU; not measured on Windows).
 - Loudness: an "even out loudness" knob needs a second pass over the result.
 - Keeping an MP3 an MP3: there is no MP3 encoder in the LGPL build; the result is an M4A.
-- A live preview on the playback clock (not in #297).
+- A live preview on the playback clock (not in #297); the preview above is the run's own frames.

@@ -1130,8 +1130,9 @@ MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* ou
  * 4  screens; 5  chrome slots and search providers (docs/design/25 §7);
  * 6  the screen `link` node and a button's `copy` (2026-10-19);
  * 7  `opens` on a status item (#512, 2026-10-20);
- * 8  a screen in place "settings", MV_SLOT_PLACE_SETTINGS (2026-10-21). */
-#define MV_ADDON_CONTRIBUTION_API 8
+ * 8  a screen in place "settings", MV_SLOT_PLACE_SETTINGS (2026-10-21);
+ * 9  a surface's "glow" and a progress bar's "glow" look (2026-10-28). */
+#define MV_ADDON_CONTRIBUTION_API 9
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:

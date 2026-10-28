@@ -43,9 +43,26 @@ void button(json::writer& w, const std::string& id, const std::string& label, co
   w.end_object();
 }
 
-void progress(json::writer& w, const std::string& id, const std::string& label, double value) {
+void progress(json::writer& w, const std::string& id, const std::string& label, double value,
+              const char* look = nullptr) {
   w.begin_object().key("type").string("progress").key("id").string(id).key("label").string(label);
   w.key("value").number(value < 0 ? -1.0 : std::min(1.0, value));
+  if (look) w.key("look").string(look);
+  w.end_object();
+}
+
+// The live preview (contribution API 9): the latest frame, the original left
+// of the split and the enhanced picture right of it, in a surface the host
+// draws a slow glow round while the run goes.
+void preview_node(json::writer& w, bool moving) {
+  w.begin_object().key("type").string("surface").key("id").string("preview").key("surface").string("preview");
+  w.key("label").string("Preview: the original on the left, enhanced on the right");
+  w.key("height").integer(kPreviewHeight);
+  w.key("glow").string(moving ? "moving" : "still");
+  w.key("marks").begin_array();
+  w.begin_object().key("x").number(0.12).key("y").number(0.9).key("text").string("Before").end_object();
+  w.begin_object().key("x").number(0.86).key("y").number(0.9).key("text").string("Enhanced").end_object();
+  w.end_array();
   w.end_object();
 }
 
@@ -249,8 +266,9 @@ std::string sheet_tree(const sheet_view& v) {
     end_stack(w);
   }
   if (!v.note.empty()) text(w, "note", v.note, "secondary");
+  if (v.preview) preview_node(w, v.running);
   if (v.running) {
-    progress(w, "progress", "Enhancing", v.progress);
+    progress(w, "progress", "Enhancing", v.progress, "glow");
     text(w, "eta", v.eta.empty() ? std::string("Working…") : v.eta, "secondary");
   }
   if (!v.status.empty()) text(w, "status", v.status, "secondary");

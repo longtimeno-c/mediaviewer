@@ -329,7 +329,9 @@ error check_props(node& n, std::size_t& items) {
           break;
         case node_type::progress:
           // "look": "ring" (#442): a circle that fills, `size` points across.
-          ok = (key == "value" && num_in(v, -1.0, 1.0)) || (key == "look" && one_of(v, {"bar", "ring"})) ||
+          // "look": "glow" (contribution API 9, 2026-10-28): a bar in the
+          // host's glow colours, with a shimmer while it moves.
+          ok = (key == "value" && num_in(v, -1.0, 1.0)) || (key == "look" && one_of(v, {"bar", "ring", "glow"})) ||
                (key == "size" && int_in(v, 16, 256));
           break;
         case node_type::tiles:
@@ -374,9 +376,12 @@ error check_props(node& n, std::size_t& items) {
                    num_in(*y, 0.0, 1.0) && plain(*text, 64);
             }
           } else {
+            // "glow" (contribution API 9, 2026-10-28, Enhance): the host draws a
+            // soft multicolour edge round the pixels; "moving" turns it slowly
+            // (never with Reduce Motion / animations off), "still" holds it.
             ok = (key == "surface" && v.k == json::kind::string && id_text(v.s)) ||
                  (key == "width" && int_in(v, 0, 4096)) || (key == "height" && int_in(v, 16, 1024)) ||
-                 (key == "pin_label" && str_max(v, kMaxLabel));
+                 (key == "pin_label" && str_max(v, kMaxLabel)) || (key == "glow" && one_of(v, {"moving", "still"}));
           }
           break;
       }

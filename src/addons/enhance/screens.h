@@ -26,6 +26,8 @@ namespace mv::enhance {
 
 inline constexpr const char* kSheetScreen = "enhance";
 inline constexpr const char* kSettingsScreen = "settings";
+// The preview surface's height, in points (its width is the sheet's).
+inline constexpr std::uint32_t kPreviewHeight = 220;
 
 // "63 MB", "4.2 GB".
 [[nodiscard]] std::string size_text(std::uint64_t bytes);
@@ -60,6 +62,7 @@ struct sheet_view {
   bool running = false;
   double progress = -1;      // -1 indeterminate
   std::string eta;           // "About 12 minutes left", or "" while it cannot tell
+  bool preview = false;      // a picture run has posted its first preview
   std::string status;        // "Saved as IMG_0001-enhance.m4a", or why it stopped
 };
 [[nodiscard]] std::string sheet_tree(const sheet_view& v);

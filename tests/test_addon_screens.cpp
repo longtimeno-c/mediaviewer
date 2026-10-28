@@ -410,3 +410,29 @@ TEST_CASE("selecting every tile of a large grid is checked in one pass", "[addon
   if constexpr (kTimed) CHECK(ms < 200);
   REQUIRE(t.check_event("g", ev_select, R"(["/fixtures/tiles/nope.JPG"])") == error::bad_value);
 }
+
+TEST_CASE("contribution API 9: a surface's glow and a glowing progress bar", "[addon][screens]") {
+  using namespace mv::addon::screen;
+  const char* json = R"({"type":"stack","id":"sheet","children":[
+   {"type":"surface","id":"preview","surface":"preview","label":"Preview","height":220,"glow":"moving"},
+   {"type":"progress","id":"progress","label":"Enhancing","value":0.4,"look":"glow"}]})";
+  tree t;
+  REQUIRE(t.set(json) == error::none);
+  tree again;
+  REQUIRE(again.set(t.json()) == error::none);
+  CHECK(again.json() == t.json());
+  // The add-on holds it still when the run ends: a diff, not a new tree.
+  CHECK(t.apply(R"([{"op":"set","id":"preview","props":{"glow":"still"}}])") == error::none);
+  CHECK(t.json().find("\"glow\":\"still\"") != std::string::npos);
+  // Glow is display only: it sends nothing.
+  CHECK(t.check_event("progress", ev_click, "") == error::not_interactive);
+  for (const char* bad : {
+           R"({"type":"surface","id":"s","surface":"s","label":"S","height":100,"glow":"spinning"})",
+           R"({"type":"surface","id":"s","surface":"s","label":"S","height":100,"glow":true})",
+           R"({"type":"progress","id":"p","label":"P","value":0.5,"glow":"moving"})",
+           R"({"type":"text","id":"x","text":"x","glow":"moving"})"}) {
+    INFO(bad);
+    tree b;
+    CHECK(b.set(bad) == error::bad_prop);
+  }
+}

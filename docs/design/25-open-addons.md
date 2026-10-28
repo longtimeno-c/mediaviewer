@@ -815,6 +815,19 @@ blank window):
   the click, then reports the click as usual; an add-on has no clipboard call of its own. The
   label says "Copied" for 1.5 s.
 
+Two more (2026-10-28, Enhance; contribution API **9**):
+
+- **`surface` `"glow": "moving" | "still"`**: a soft multicolour edge round the surface (violet,
+  pink, amber, teal, blue), a thin ring and a faint wider halo. `moving` turns the colours once
+  every six seconds; `still` holds them. Mac `GlowEdge`, Windows `WithGlow`
+  (`IslandHost.Glow.cs`); the colours and timings are one table (`GlowMath.cs`, checked against
+  `ScreenView.swift` by the C# tests).
+- **`progress` `"look": "glow"`**: a bar in the same colours with a highlight sweeping along it
+  every 2.4 s (not started: the whole bar, dimmed). Mac `GlowBar`, Windows `BuildGlowBar`.
+
+Both are the window's own drawing, never the canvas: 30 fps at most, only while the node is in the
+tree, and still with Reduce Motion (Mac) or animations off (Windows).
+
 For a script add-on (PR 57): the registry reaches code through `slot_client`; a script runtime
 implements it on its own worker and calls the same `post_*` functions the v3 rows wrap.
 

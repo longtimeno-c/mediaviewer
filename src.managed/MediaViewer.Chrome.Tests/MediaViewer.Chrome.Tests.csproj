@@ -37,6 +37,7 @@
     <Compile Include="..\Shared\AddonListWords.cs" Link="Shared\AddonListWords.cs" />
     <Compile Include="..\Shared\InstallWords.cs" Link="Shared\InstallWords.cs" />
     <Compile Include="..\Shared\ExceptionFrames.cs" Link="Shared\ExceptionFrames.cs" />
+    <Compile Include="..\Shared\GlowMath.cs" Link="Shared\GlowMath.cs" />
   </ItemGroup>
 
 </Project>
