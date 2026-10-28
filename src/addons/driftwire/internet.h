@@ -114,8 +114,8 @@ class internet_receiver {
   internet_receiver(const internet_receiver&) = delete;
   internet_receiver& operator=(const internet_receiver&) = delete;
 
-  // Any thread: a new code (the old one, if any, dies); the work is on this
-  // object's own thread.
+  // Any thread: a new code (the old one, if any, dies) unless one is being
+  // made or waits, which stays; the work is on this object's own thread.
   void make_code();
   void drop_code();
   // The DHT toggle, for the next code.
