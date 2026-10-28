@@ -276,6 +276,9 @@
       "dedupe": 0.97,
       "query_margin": 0.04,
       "result_margin": 0.015,
+      "stand_out": 1.06,
+      "result_z": 3.0,
+      "rank_per_sd": 0.2,
       "generic_prompts": [
        "a sound.",
        "noise.",

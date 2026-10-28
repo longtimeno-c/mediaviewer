@@ -107,6 +107,9 @@ result<clap_spec> read_clap_spec(const std::string& folder, const std::string& f
   s.dedupe = number_or(*doc, "dedupe", s.dedupe);
   s.query_margin = number_or(*doc, "query_margin", s.query_margin);
   s.result_margin = number_or(*doc, "result_margin", s.result_margin);
+  s.stand_out = number_or(*doc, "stand_out", s.stand_out);
+  s.result_z = number_or(*doc, "result_z", s.result_z);
+  s.rank_per_sd = number_or(*doc, "rank_per_sd", s.rank_per_sd);
   if (const json::value* g = doc->find("generic_prompts"); g && g->k == json::kind::array) {
     for (const auto& p : g->a) {
       if (p.k == json::kind::string && !p.s.empty()) s.generic_prompts.push_back(p.s);

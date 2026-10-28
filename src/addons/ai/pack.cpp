@@ -834,6 +834,9 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     s.dedupe = spec.dedupe;
     s.query_margin = spec.query_margin;
     s.result_margin = spec.result_margin;
+    s.stand_out = spec.stand_out;
+    s.result_z = spec.result_z;
+    s.rank_per_sd = spec.rank_per_sd;
     s.generic_prompts = spec.generic_prompts;
     return s;
   };
@@ -973,6 +976,9 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     s.dedupe = spec.dedupe;
     s.query_margin = spec.query_margin;
     s.result_margin = spec.result_margin;
+    s.stand_out = spec.stand_out;
+    s.result_z = spec.result_z;
+    s.rank_per_sd = spec.rank_per_sd;
     s.generic_prompts = spec.generic_prompts;
     return s;
   };
