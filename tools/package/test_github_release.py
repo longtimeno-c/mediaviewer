@@ -485,6 +485,21 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
             for name in release.addon_asset_names(platform, 'enhance'):
                 self.assertIn(name, names)
 
+    def test_stable_carries_enhance_for_macos_alone(self):
+        # The Mac release job packs Enhance on its own runner: a Mac pack with
+        # no Windows one still publishes, and a half Mac pack refuses it.
+        self.stable_assets()
+        self.write_addon('enhance')
+        for name in release.addon_asset_names('win-x64', 'enhance'):
+            (self.folder / name).unlink()
+        names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
+        for name in release.addon_asset_names('macos', 'enhance'):
+            self.assertIn(name, names)
+        self.assertNotIn('mediaviewer-addon-enhance-win-x64.zip', names)
+        (self.folder / 'mediaviewer-addon-enhance-macos.json.sig').unlink()
+        with self.assertRaisesRegex(ValueError, 'Incomplete enhance'):
+            release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')
+
     def test_stable_rejects_a_partial_places_pack(self):
         self.stable_assets()
         (self.folder / 'mediaviewer-addon-places-win-x64.zip').write_bytes(b'addon')
