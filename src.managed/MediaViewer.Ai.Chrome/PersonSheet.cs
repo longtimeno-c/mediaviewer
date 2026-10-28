@@ -66,8 +66,6 @@ internal sealed class PersonSheet : Window
             p.IsMinimizable = false;
         }
         AppWindow.IsShownInSwitchers = false;
-        try { SystemBackdrop = new MicaBackdrop(); }
-        catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
         Native.Adopt(WinRT.Interop.WindowNative.GetWindowHandle(this), chrome.Host.MainWindow);
         Closed += (_, _) => _closed = true;
 
@@ -182,6 +180,7 @@ internal sealed class PersonSheet : Window
         root.Children.Add(foot);
 
         root.KeyDown += OnKeyDown;
+        _look.Dress(this, root);
         Content = root;
         UpdateButtons();
     }
