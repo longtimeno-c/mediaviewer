@@ -465,6 +465,7 @@ struct session::impl {
     if (banner_done) say_update();
 
     for (const auto& l : host.take_log()) {
+      event("log " + l);
       if (o.verbose) say_dim("log: " + l);
     }
 

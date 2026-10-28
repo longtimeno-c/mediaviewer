@@ -883,7 +883,10 @@ shows: no listener, no router mapping, no socket. (`internet.*`, `invite.*`, `ma
   wrong, and at 10 minutes; then the listener closes and every mapping is removed (before the
   window shows it over), unless a transfer over it runs, whose rejoins come back the same way.
   A wrong attempt is said on the receiver ("Someone tried this code and it was wrong, so it no
-  longer works").
+  longer works"). Asked for a code while one is being made or waits, the receiver keeps it: a
+  host asks until its view shows one, and a second code made then replaced the first after it
+  had been given out (on Windows its listener could even take the first one's port, so the first
+  code reached the second's listener, a wrong code there; 2026-10-28).
 - **The sender pastes the code** and tries every place at once, IPv6 first and the rest 250 ms
   later (happy eyeballs, `race.h`). The first TCP connection wins; the others close before a byte
   goes, so one attempt reaches the receiver. A round with no connection is tried again after 1, 2,

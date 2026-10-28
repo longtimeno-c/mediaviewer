@@ -88,6 +88,12 @@ void internet_receiver::notify() {
 
 void internet_receiver::make_code() {
   std::lock_guard lock(m_);
+  // One being made, or one waiting: this is the same request again (a host
+  // asks until its view shows a code, and its view lags this one). A second
+  // code would replace the first after its text was shown and given out,
+  // and on Windows its listener can take the first one's freed port: the
+  // sender typing the first code then reaches the second code's listener.
+  if (snap_.p == phase::preparing || snap_.p == phase::ready) return;
   want_code_ = true;
   cv_.notify_all();
 }

@@ -680,6 +680,34 @@ TEST_CASE("driftwire internet: a code sends files, with the name confirmed and t
   CHECK(bea.eng.snapshot().in != sp::view::in_phase::asking);
 }
 
+// A host asks for a code until its view shows one, and its view lags the
+// engine's: asked again while the code is being made or waits, the code
+// stays. A second one replaced the first after its text was shown, and on
+// Windows took the first one's freed port, so the sender typing the first
+// code reached the second's listener ("The code did not work").
+TEST_CASE("driftwire internet: asking again for a code while one is made or waits keeps it", "[driftwire]") {
+  scratch_dir s("driftwire_code_asked_again");
+  far_client bea(s / "bea_received", "Bea");
+  using phase = sp::internet_receiver::phase;
+  // Asked every few milliseconds until it is ready, as a host might.
+  std::string code;
+  REQUIRE(eventually([&] {
+    bea.eng.on_event("make_code", 1, "");
+    const auto v = bea.eng.snapshot();
+    code = v.code_text;
+    return v.code_phase == static_cast<std::uint8_t>(phase::ready) && !code.empty();
+  }));
+  // ... and while it waits.
+  for (int i = 0; i < 10; ++i) {
+    bea.eng.on_event("make_code", 1, "");
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  const auto v = bea.eng.snapshot();
+  CHECK(v.code_phase == static_cast<std::uint8_t>(phase::ready));
+  CHECK(v.code_text == code);
+}
+
 // #496: a code's listener stays up while the transfer it carries runs (the
 // way its rejoins come back). Whoever finds its port then (the code was seen,
 // or the port scanned) and says a nearby hello gets nothing: no handshake, so
