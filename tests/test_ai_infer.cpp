@@ -499,6 +499,87 @@ TEST_CASE("precision 2 is the calibrated rule, bit for bit; the levels nest", "[
   }
 }
 
+// CLAP's case (2026-10-28): the generic prompts sit far from everything, so
+// any query beats them by a wide margin and the margin rule answers gibberish
+// with hundreds of rows. The stand-out rule answers only a query whose best
+// assets stand out, with the rows that do; below kMinAssets it is the margin
+// rule, as before.
+TEST_CASE("sounds: a query answers only when its best assets stand out", "[ai][infer][vectors]") {
+  constexpr std::uint32_t dim = 32;
+  std::mt19937 rng(20261028);
+  std::normal_distribution<float> normal(0.0f, 1.0f);
+  const auto unit = [&](std::vector<float> v) {
+    mv::infer::l2_normalise(v);
+    return v;
+  };
+  const auto random_unit = [&] {
+    std::vector<float> v(dim);
+    for (float& x : v) x = normal(rng);
+    return unit(v);
+  };
+  const std::vector<float> common = random_unit();
+  const std::vector<float> subject = random_unit();
+  const auto mix = [&](float c, const std::vector<float>& with, float w, float spread) {
+    std::vector<float> v(dim);
+    for (std::uint32_t i = 0; i < dim; ++i) v[i] = c * common[i] + w * with[i] + spread * normal(rng) / 6.0f;
+    return unit(v);
+  };
+  const std::vector<float> generic = random_unit();
+  mv::ai::text_thresholds sound;
+  sound.query_z = 0;
+  sound.result_z = 3.0f;
+  sound.stand_out = 1.06f;
+  mv::ai::text_thresholds margin_only = sound;
+  margin_only.stand_out = 0;
+  margin_only.result_z = 0;
+  const auto fill = [&](mv::ai::vector_store& store, std::size_t assets) {
+    for (std::size_t a = 1; a <= assets; ++a) {
+      // One in twenty holds the subject; the rest only what every clip shares.
+      const auto v = a % 20 == 0 ? mix(0.9f, subject, 0.8f, 0.5f) : mix(0.9f, random_unit(), 0.3f, 1.0f);
+      std::vector<std::int8_t> q;
+      float scale = 0;
+      mv::ai::quantise(v, q, scale);
+      store.add(static_cast<std::int64_t>(a), -1, mv::infer::dot(v, generic), scale, q);
+    }
+  };
+  const auto real = mix(0.9f, subject, 0.8f, 0.0f);
+  const auto gibberish = mix(1.0f, random_unit(), 0.0f, 0.3f);
+  const auto level = mv::ai::precision_scale::at(mv::ai::kPrecisionDefault);
+
+  mv::ai::vector_store store(dim);
+  fill(store, 400);
+  // The margin rule answers both, gibberish with most of the index.
+  CHECK(mv::ai::find_text(store, gibberish, {}, margin_only, level, true, 2000).size() > 100);
+  CHECK_FALSE(mv::ai::find_text(store, real, {}, margin_only, level, true, 2000).empty());
+  // The stand-out rule: gibberish nothing, the subject its own assets.
+  mv::ai::vector_store::scan_stats stats;
+  CHECK(mv::ai::find_text(store, gibberish, {}, sound, level, true, 2000, &stats).empty());
+  CHECK(stats.assets == 400);
+  const auto found = mv::ai::find_text(store, real, {}, sound, level, true, 2000, &stats);
+  REQUIRE_FALSE(found.empty());
+  for (const auto& h : found) {
+    CHECK(h.asset % 20 == 0);
+    CHECK(h.score >= stats.mean + sound.result_z * stats.sd);
+  }
+  // The levels nest.
+  std::vector<std::int64_t> looser;
+  for (std::uint32_t l = 0; l < mv::ai::kPrecisionLevels; ++l) {
+    std::vector<std::int64_t> rows;
+    for (const auto& h : mv::ai::find_text(store, real, {}, sound, mv::ai::precision_scale::at(l), true, 2000)) {
+      rows.push_back(h.asset);
+    }
+    std::sort(rows.begin(), rows.end());
+    if (l > 0) CHECK(std::includes(looser.begin(), looser.end(), rows.begin(), rows.end()));
+    looser = std::move(rows);
+  }
+
+  // Too few assets to say: the margin rule, row for row.
+  mv::ai::vector_store small(dim);
+  fill(small, mv::ai::vector_store::scan_stats::kMinAssets - 1);
+  CHECK(same_hits(mv::ai::find_text(small, gibberish, {}, margin_only, level, true, 2000),
+                  mv::ai::find_text(small, gibberish, {}, sound, level, true, 2000)));
+}
+
 TEST_CASE("YuNet's outputs decode to boxes and landmarks, then NMS", "[ai][infer][faces]") {
   const std::uint32_t side = 640;
   std::vector<mv::infer::tensor_f32> outs(12);

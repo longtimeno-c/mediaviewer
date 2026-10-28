@@ -1299,6 +1299,15 @@ of noise, and a 705-label vocabulary that keeps a row only where the query score
 ninth-best label. At 25 k assets nonsense answered 63 → 23 of 85 (L/14), category precision .60 →
 .87, P@5 unchanged, category recall −.06 to −.08. Sentence-like gibberish still floods on L/14.
 
+**Sounds rank by stand-out, not margin (2026-10-28).** The owner searched "surfing" and got ski
+runs: CLAP heard their wind as surf, and its margin over the generic prompts (+0.17) outranked the
+best surf clip's picture margin (+0.10), because both were ranked as margin / 0.1. CLAP's margins
+are as large for gibberish ("qwzx plorn" +0.31), so the margin rule answered almost any query with
+hundreds of sound rows ("dog", "beach", "a birthday cake" were led by them). From 30 clips up a
+sound query now answers only when its best clips stand out (1.06 × noise), keeps rows 3 SD over
+the mean, and ranks them at z × 0.2 (a picture row's 0.22 per SD). Fitted on one library, 21
+queries; the picture tower is unchanged. [17](17-local-ai-search.md) "Sounds (CLAP)".
+
 **Result order (#412, 2026-10-15).** Best match when the search knows what it is answering;
 newest by date created to oldest when it does not. A description the "nothing found" gate holds
 back used to be an empty page (and, the report said, read as a weak ranking); the owner asked for

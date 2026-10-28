@@ -162,12 +162,19 @@ struct precision_scale {
 };
 
 // A tower's calibrated thresholds (model.json). query_z 0: the margin rule
-// alone, with no noise scaling (CLAP, until it has its own z calibration).
+// alone, with no noise scaling.
 struct text_thresholds {
   float query_margin = 0.04f;
   float result_margin = 0.015f;
   float query_z = 2.5f;
   float result_z = 2.0f;
+  // CLAP (2026-10-28): its margin over the generic prompts is as large for
+  // gibberish as for a match ("qwzx plorn" +0.31, "waves crashing" +0.24 on
+  // the owner's 4,331 clips), so from kMinAssets up the query answers only
+  // when its best assets stand out `stand_out` x noise, and its rows are the
+  // ones result_z SDs over the mean (and over result_margin). 0: the picture
+  // rule above; below kMinAssets, the margin rule.
+  float stand_out = 0.0f;
 };
 
 // A text query's rows from an index, best first (engine::search_text, and the
@@ -175,11 +182,13 @@ struct text_thresholds {
 // generic prompts by result_margin, and once the query stands out from the
 // index (scan_stats) the rows as far above the mean as a match is. None when
 // the query describes nothing here ("nothing found"); `gate` false skips that
-// test (a person's own photos). At most `k` rows per pass.
+// test (a person's own photos). At most `k` rows per pass. `stats`, when
+// given, receives the scan's (the mean and SD a row's z is read against).
 [[nodiscard]] std::vector<vector_store::hit> find_text(const vector_store& store, std::span<const float> query,
                                                        const std::function<bool(std::int64_t)>& allow,
                                                        const text_thresholds& t, const precision_scale& p,
-                                                       bool gate, std::size_t k = 5000);
+                                                       bool gate, std::size_t k = 5000,
+                                                       vector_store::scan_stats* stats_out = nullptr);
 
 // int8 . int8 over `n` (exposed for the benchmark and tests).
 [[nodiscard]] std::int32_t dot_i8(const std::int8_t* a, const std::int8_t* b, std::size_t n) noexcept;

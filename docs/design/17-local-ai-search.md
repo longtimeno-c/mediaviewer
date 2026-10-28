@@ -496,8 +496,32 @@ held-out captions, 85 nonsense strings), default Precision:
 
 Target: at 25 k assets and default Precision, at most 1 in 3 nonsense strings answered on L/14
 and 1 in 8 on B/32 (the fitted rule gives 27 % and 11 %). Placeholder and long-sentence
-gibberish (`lorem ipsum`) can still pass on L/14 at large sizes, with hundreds of rows. CLAP
-keeps the margin rule alone (no z calibration of its own).
+gibberish (`lorem ipsum`) can still pass on L/14 at large sizes, with hundreds of rows.
+
+### Sounds (CLAP)
+
+CLAP's margin over its generic prompts says almost nothing: "qwzx plorn" beats "a sound." by
++0.31 and "waves crashing" by +0.24, and on the owner's 4,331 clips "skiing" put 3,666 sound rows
+over `result_margin`. Sorted in the picture tower's units (a margin of 0.1 = 1), a so-so sound
+then outranked the best picture: "surfing" listed GoPro ski runs (wind roar) above every surf clip
+(2026-10-28). From `kMinAssets` (30) clips up, a sound query therefore follows the **stand-out
+rule alone** (`text_thresholds::stand_out`, CLAP's `model.json`):
+
+- **Answered** only when its ten best clips stand out at `stand_out` (1.06) × noise's top-ten z
+  (the picture tower's 1.18 would silence fireworks, applause and crowds).
+- **Rows** are those `result_z` (3.0) SDs over the mean of every clip's best score, and over
+  `result_margin`.
+- **Rank** among the picture rows is the row's z × `rank_per_sd` (0.2): a picture row's rank per
+  SD is 0.22 median (0.19–0.26) over the owner's top tens, so a sound ties a picture a little
+  lower down. A clip found by both keeps its better rank.
+- Precision scales the factor, the row z and the margin as it does the picture tower's.
+
+Below 30 clips the margin rule alone answers, as before. On the owner's library (21 queries,
+default Precision): sound answered nonsense, "dog", "beach", "music", "skiing" and "surfing" before
+and none of them after; it still answers "waves crashing", "rain", "applause", "crowd cheering",
+"people laughing" and "helicopter", and no longer "fireworks", "a car engine" or "thunder" (their
+pictures still answer). Fitted on one library: the factor sits between "mountain" (1.06 × noise,
+not answered) and "applause" (1.07, answered).
 
 ### Precision scale
 
@@ -518,7 +542,7 @@ margin and the row z, and at 3–4 keeps only rows within Δ SDs of the best row
 "Nothing found" always reads the calibrated rows, so each stricter level answers a subset of the
 looser one. L/14 tells a near-miss category ("helicopter" against COCO's planes) from a real
 subject at level 3; B/32 cannot (its near misses stand out as strongly as real subjects). CLAP
-scales its two margins the same way; spoken-word search needs all the query's words at 3–4 and
+scales its stand-out factor, row z and margins the same way; spoken-word search needs all the query's words at 3–4 and
 half at 0–1.
 
 ### Query syntax
@@ -1534,6 +1558,6 @@ refresh in the fourth, p99 ≤ 17.1 ms.
 - Place names in the index and query language (places are the Places add-on's, answered at query time).
 - Reading a clip's text from the picture pass's own decode: each moment is seeked and decoded
   again, which is most of a moment's cost ("Text in pictures").
-- A "nothing found" z calibration for CLAP.
+- A CLAP stand-out calibration on more than one library (it is fitted on the owner's 4,331 clips).
 - Background (unrequested) People refinement; the incremental refinement path
   (`refine_begin(false)`) exists in faces.db and its tests but has no caller.

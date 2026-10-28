@@ -117,6 +117,9 @@ struct loaded_sound {
   float dedupe = 0.97f;
   float query_margin = 0.04f;
   float result_margin = 0.015f;
+  float stand_out = 1.06f;    // text_thresholds::stand_out
+  float result_z = 3.0f;
+  float rank_per_sd = 0.2f;   // a row's rank among the pictures' per SD of z
   std::vector<std::string> generic_prompts;
   std::vector<std::vector<float>> generic;
 };

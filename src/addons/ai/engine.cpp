@@ -6320,15 +6320,29 @@ void engine::merge_audio(search_state& st, const std::string& query, const std::
   // What it sounds like: CLAP, with its own generic prompts and margins.
   if ((find & MV_AI_FIND_SOUNDS) && sound.model) {
     if (auto v = sound.model->embed_text(query)) {
-      // The margin rule alone (query_z 0: CLAP has no z calibration yet), its
-      // margins scaled by Precision as the picture tower's are.
+      // The stand-out rule (text_thresholds::stand_out); below kMinAssets the
+      // margin rule alone. Both scaled by Precision as the picture tower's are.
       text_thresholds t;
       t.query_margin = sound.query_margin;
       t.result_margin = sound.result_margin;
       t.query_z = 0;
-      t.result_z = 0;
-      const auto hits = find_text(sounds_, *v, allow, t, precision_scale::at(precision), true, 2000);
-      group(st, hits, true, -1.0f, MV_AI_MATCH_SOUND, true);
+      t.result_z = sound.result_z;
+      t.stand_out = sound.stand_out;
+      vector_store::scan_stats stats;
+      const auto hits = find_text(sounds_, *v, allow, t, precision_scale::at(precision), true, 2000, &stats);
+      if (stats.assets >= vector_store::scan_stats::kMinAssets && stats.sd > 0) {
+        // CLAP's margins run two to three times the picture tower's, so in
+        // group()'s margin units a so-so sound beat the best picture: "surfing"
+        // listed ski runs (wind) above every surf clip (2026-10-28). Its z
+        // instead, at about what a picture row ranks per SD (0.22 median of
+        // the owner's top ten over 21 queries), a tie going to the picture.
+        for (const vector_store::hit& h : hits) {
+          add_row(st, h.asset, h.pts_ms, h.score, (h.score - stats.mean) / stats.sd * sound.rank_per_sd,
+                  MV_AI_MATCH_SOUND, {});
+        }
+      } else {
+        group(st, hits, true, -1.0f, MV_AI_MATCH_SOUND, true);
+      }
     }
   }
   // What is said: the transcript's words. A result must hold most of the

@@ -36,6 +36,11 @@ struct clap_spec {
   float dedupe = 0.97f;
   float query_margin = 0.04f;
   float result_margin = 0.015f;
+  // The stand-out rule (ai::text_thresholds::stand_out) and where its rows
+  // sit among the picture tower's: rank = z x rank_per_sd (2026-10-28).
+  float stand_out = 1.06f;
+  float result_z = 3.0f;
+  float rank_per_sd = 0.2f;
   std::vector<std::string> generic_prompts;
   [[nodiscard]] std::string spec_key() const { return id + "/" + precision + "/pre1"; }
 };

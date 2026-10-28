@@ -359,8 +359,10 @@ precision_scale precision_scale::at(std::uint32_t level) noexcept {
 std::vector<vector_store::hit> find_text(const vector_store& store, std::span<const float> query,
                                          const std::function<bool(std::int64_t)>& allow,
                                          const text_thresholds& t, const precision_scale& p, bool gate,
-                                         std::size_t k) {
-  vector_store::scan_stats stats;
+                                         std::size_t k, vector_store::scan_stats* stats_out) {
+  vector_store::scan_stats local;
+  vector_store::scan_stats& stats = stats_out ? *stats_out : local;
+  stats = {};
   // One pass at the lower of the calibrated and the level's row margin: the
   // "nothing found" test below always reads the calibrated rows, so a level
   // moves only its own thresholds, and every stricter answer is a subset of
@@ -368,6 +370,18 @@ std::vector<vector_store::hit> find_text(const vector_store& store, std::span<co
   const float row_margin = t.result_margin * p.result_margin;
   // Rows the query does not beat its labels on are never results (vocabulary.h).
   auto hits = store.scan(query, allow, k, true, std::min(t.result_margin, row_margin), -1.0f, &stats, true);
+  if (t.stand_out > 0 && stats.assets >= vector_store::scan_stats::kMinAssets && stats.sd > 0) {
+    // The stand-out rule alone (text_thresholds::stand_out): margins say
+    // nothing here. The level scales the factor as it scales the picture
+    // tower's, and the row z and margin as well, so the levels still nest.
+    const float factor = t.stand_out * (p.stand_out / vector_store::scan_stats::kStandOutOverNoise);
+    if (gate && stats.top10_z < factor * stats.null_top10_z()) return {};
+    const float floor = stats.mean + t.result_z * p.result_z * stats.sd;
+    hits.erase(std::remove_if(hits.begin(), hits.end(),
+                              [&](const vector_store::hit& h) { return h.score < floor || h.score - h.generic < row_margin; }),
+               hits.end());
+    return hits;
+  }
   float best = -1;  // the best margin among the ten best calibrated rows
   for (std::size_t i = 0, seen = 0; i < hits.size() && seen < 10; ++i) {
     const float margin = hits[i].score - hits[i].generic;
