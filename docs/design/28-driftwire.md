@@ -954,8 +954,12 @@ only while a code waits or a send looks for its receiver; never at idle. (`dht_i
   punches is the one the transfer uses. **Punching**: each side probes every address the other
   gave, and 16 ports above the other's public one (a NAT that hands ports out in sequence), every
   100 ms for up to 10 s. Its addresses on its own network (RFC 1918) are probed only when both
-  sides' public addresses are the same (behind one router, #499): elsewhere such an address is a
-  stranger's on this side's network. A hello from a path the item did not name (a NAT's fresh
+  sides face the internet from one site (`one_site`): the same public address (behind one router,
+  #499) or public IPv4 addresses in one /16 (a campus or an office, 2026-10-28): elsewhere such an
+  address is a stranger's on this side's network. On a campus the inside routes to itself without
+  the NAT, so a laptop's packets reach a lab PC from the laptop's own 10.x address, and a PC whose
+  policy blocks all inbound (Windows' Domain profile with local rules ignored) lets them in only
+  after it has sent there itself. A hello from a path the item did not name (a NAT's fresh
   mapping) is answered and probed back at once. The sender takes the first path a reply came back
   on and offers it (*choose*) until the receiver answers (*chosen*); the receiver answers only the
   first path it is offered, so both end on the same one, whichever transport it is on.

@@ -1738,6 +1738,19 @@ one user account, and the authenticated hello makes a taken connection worthless
 port was not worth losing the listener. Reopen if old peers must still be met: a flag in the
 sealed item could pick the old probes for them (only the code's holders could set or strip it).
 
+**A word code's meeting probes the other side's own-network addresses from one /16 too
+(2026-10-28).** Narrows #499's "only behind the same public address". A Mac on a university's Wi-Fi
+(behind a symmetric NAT pool) and a lab PC on a public address in the same /16
+(Windows Firewall's Domain profile: `BlockInbound`, local rules ignored by policy)
+met on v0.1.35 and stopped meeting from v0.1.36: the campus routes inside without the NAT, so the
+Mac's probes reach the PC from its 10.x address, and the PC's firewall lets them in only once it has sent
+there, which it no longer did (the two public addresses differ). Measured on that network: the Mac's
+packets to the PC take campus routers only, the PC's `tracert` to the Mac's 10.x address answers,
+and the Mac's UDP port differs per destination. #499's reason, a stranger at that address answering
+first, went with the MAC on every probe; what is left is a few authenticated 46-byte probes and TCP
+connects, for 10 s, to an address that may be a stranger's when two unrelated networks share a
+/16 (an ISP's). Reopen if that matters more than campuses and offices.
+
 **A first-party add-on may open a local link the person asked for (owner, 2026-10-14).** Driftwire
 listens, beacons and uses Bluetooth only while its window is open, receiving is on or a transfer
 runs; the idle viewer has no socket. Bytes go only to the peer the sender picked, after the person
