@@ -200,7 +200,7 @@ internal sealed class Look
         void Follow()
         {
             root.RequestedTheme = HighContrast() ? ElementTheme.Default : Dark ? ElementTheme.Dark : ElementTheme.Light;
-            Native.TitleBar(hwnd, Dark);
+            Native.DarkCaption(hwnd, Dark);
         }
         Follow();
         Changed += Follow;
@@ -647,7 +647,7 @@ internal static class Native
     public const int DwmwaUseImmersiveDarkMode = 20;
 
     /// <summary>The caption bar dark or light, to match the window's ground.</summary>
-    public static void TitleBar(IntPtr hwnd, bool dark)
+    public static void DarkCaption(IntPtr hwnd, bool dark)
     {
         int on = dark ? 1 : 0;
         _ = DwmSetWindowAttribute(hwnd, DwmwaUseImmersiveDarkMode, ref on, sizeof(int));
