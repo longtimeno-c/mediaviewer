@@ -699,8 +699,8 @@ TEST_CASE("driftwire cli palette: commands filter by what is typed after the sla
     return out;
   };
   CHECK(cli::filter_commands("/").size() == cli::commands().size());
-  CHECK(names(cli::filter_commands("/co")) == std::vector<std::string>{"/code", "/copy", "/to-code"});
-  CHECK(names(cli::filter_commands("/CO")) == std::vector<std::string>{"/code", "/copy", "/to-code"});
+  CHECK(names(cli::filter_commands("/co")) == std::vector<std::string>{"/code", "/copy"});
+  CHECK(names(cli::filter_commands("/CO")) == std::vector<std::string>{"/code", "/copy"});
   CHECK(names(cli::filter_commands("/ex")) == std::vector<std::string>{"/quit"});  // its alias /exit
   CHECK(names(cli::filter_commands("/mine 2 on")) == std::vector<std::string>{"/mine"});
   CHECK(cli::filter_commands("/zzz").empty());
@@ -1196,12 +1196,10 @@ TEST_CASE("driftwire cli look: the start banner, the prompt and the slash palett
              {
                  "  ❯ /code          Receive from anywhere: make a code to give someone",
                  "    /copy [link]   Copy the code (or its link) to the clipboard",
-                 "    /to-code       Send these files to a code someone gave you",
              });
-  pal.selected = 2;
+  pal.selected = 1;
   const auto sel = rows_of(cli::command_palette(th, pal, 40), 40);
-  check_rows(sel, {"    /code          Receive from anywher…", "    /copy [link]   Copy the code (or it…",
-                   "  ❯ /to-code       Send these files to…"});
+  check_rows(sel, {"    /code          Receive from anywher…", "  ❯ /copy [link]   Copy the code (or it…"});
   check_rows(rows_of(cli::command_palette(th, cli::palette_model{}, 80), 80), {"    No command matches"});
   // Under the height cap the palette keeps the selection in sight.
   cli::palette_model all;

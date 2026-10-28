@@ -283,7 +283,7 @@ struct session::impl {
   std::int64_t armed_until = 0;
 
   // A modal field: a code, a folder, the relay server.
-  enum class field_kind : std::uint8_t { none, to_code, save_elsewhere, relay_server } field = field_kind::none;
+  enum class field_kind : std::uint8_t { none, send_to, save_elsewhere, relay_server } field = field_kind::none;
   line_editor field_ed;
   std::string field_note;
   std::vector<std::string> field_choices;
@@ -930,22 +930,22 @@ struct session::impl {
     ev("stop_code", 1, "");
   }
 
-  void open_to_code() {
+  void open_send_to() {
     if (const std::string why = why_not_code(); !why.empty()) {
       flash(why);
       return;
     }
     if (!v.internet) {
-      ask_internet("Sending to a code needs Over the internet.", [this] { open_field(field_kind::to_code); });
+      ask_internet("Sending to a code needs Over the internet.", [this] { open_field(field_kind::send_to); });
       return;
     }
-    open_field(field_kind::to_code);
+    open_field(field_kind::send_to);
   }
 
   std::string why_not_code() const {
     if (out_busy(v) || in_busy(v)) return "A transfer is under way. Send again when it ends.";
     if (v.reading_folder) return "Still reading the files" + std::string(th.g->ellipsis);
-    if (v.file_count == 0) return "Pick files first: type or drop them at the prompt, then /to-code.";
+    if (v.file_count == 0) return "Pick files first: type or drop them at the prompt, then /send-to.";
     return {};
   }
 
@@ -1037,7 +1037,7 @@ struct session::impl {
   void submit_field() {
     const std::string text(trim(field_ed.text()));
     switch (field) {
-      case field_kind::to_code: {
+      case field_kind::send_to: {
         if (text.empty()) return;
         ev("send_code", 3, json_str(text));
         refresh_view();
@@ -1194,8 +1194,8 @@ struct session::impl {
       make_code();
     } else if (name == "/copy") {
       copy_code(rest);
-    } else if (name == "/to-code") {
-      open_to_code();
+    } else if (name == "/send-to") {
+      open_send_to();
     } else if (name == "/devices") {
       list_devices();
     } else if (name == "/forget") {
@@ -2039,7 +2039,7 @@ struct session::impl {
     std::vector<std::string> parts{"enter to " + std::string(field == field_kind::save_elsewhere ? "accept" : "set"),
                                    "esc to cancel"};
     switch (field) {
-      case field_kind::to_code:
+      case field_kind::send_to:
         p.title = "Send " + files_summary() + " to a code";
         p.placeholder = v.dht ? "Paste the code, or type the four words" : "Paste the code they sent";
         parts[0] = "enter to send";
@@ -2346,7 +2346,7 @@ struct session::impl {
       case focus::field:
         f.key = "field" + std::to_string(static_cast<int>(field)) + field_note;
         if (!field_note.empty()) f.said.push_back(field_note);
-        f.prompt = field == field_kind::to_code        ? "Code or four words (Enter alone to cancel): "
+        f.prompt = field == field_kind::send_to        ? "Code or four words (Enter alone to cancel): "
                    : field == field_kind::save_elsewhere ? "Folder to save into (Enter alone to cancel): "
                                                          : "Relay server, address:port#key (Enter alone for none): ";
         return f;

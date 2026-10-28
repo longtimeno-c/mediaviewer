@@ -503,13 +503,21 @@ TEST_CASE("a track that has played out hands the clock to the host", "[clock]") 
   CHECK(clock.stats().audio_master);
 
   // The decoder has submitted everything. The endpoint now holds at 1 s.
+  const auto ended_at = std::chrono::steady_clock::now();
   clock.audio_ended(0);
   REQUIRE(wait_until([&] { return !clock.stats().audio_master; }));
   CHECK(clock.stats().fallback == clock_fallback_reason::audio_ended);
   const auto silence_before = clock.stats().counters.silence_fills;
 
+  // The host clock picks up at 1 s and runs from the hand-over, so by now it is
+  // ahead of 1 s by at most the time since audio_ended — however late a loaded
+  // machine woke this thread (a fixed margin failed CI at 1.063 s).
   const time_ns handed_over = clock.now_ns();
-  CHECK(static_cast<double>(handed_over) / ns_per_second == Approx(1.0).margin(0.05));
+  const time_ns since_ended =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - ended_at).count();
+  INFO("handed over at " << handed_over << " ns, " << since_ended << " ns after audio_ended");
+  CHECK(handed_over >= ns_per_second);
+  CHECK(handed_over - ns_per_second <= since_ended);
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   const time_ns later = clock.now_ns();
   INFO("clock moved " << (later - handed_over) << " ns after the track ended");

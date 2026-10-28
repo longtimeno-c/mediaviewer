@@ -2160,7 +2160,7 @@ the code, as in the window: `1`, `y` or Enter on Accept in the offer's numbered 
 somewhere else, `3`, `n` or Esc to decline, or `y` at plain mode's `[y/N/s]`. Nothing else
 accepts: no option, no notification (the command line posts none), no pipe (refused). Nothing
 secret is an argument either: no code, check digits or relay key on the command line, where the
-shell's history and `ps` would keep them; a code someone gave you is pasted into `/to-code`, and
+shell's history and `ps` would keep them; a code someone gave you is pasted into `/send-to`, and
 `send --to NAME` names a computer, never a code. Reopen only with a way to accept that is still a
 person answering at that machine.
 
