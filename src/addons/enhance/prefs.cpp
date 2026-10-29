@@ -29,6 +29,8 @@ const char* target_name(clip_target t) noexcept {
   return "picture";
 }
 
+std::string model_key(model_kind k, const std::string& id) { return std::string(kind_name(k)) + "." + id; }
+
 std::string prefs_json(const prefs& p) {
   json::writer w;
   w.begin_object();
@@ -43,10 +45,13 @@ std::string prefs_json(const prefs& p) {
   }
   w.end_object();
   w.key("target").string(target_name(p.target));
-  w.key("wanted").begin_array();
+  w.key("use").begin_object();
   for (const model_kind k : kModelKinds) {
-    if (p.want(k)) w.string(kind_name(k));
+    if (!p.use_of(k).empty()) w.key(kind_name(k)).string(p.use_of(k));
   }
+  w.end_object();
+  w.key("wanted").begin_array();
+  for (const std::string& key : p.wanted) w.string(key);
   w.end_array();
   w.end_object();
   return w.take();
@@ -70,9 +75,23 @@ prefs prefs_from(std::string_view json_text) {
       if (*t == target_name(c)) p.target = c;
     }
   }
+  if (const json::value* use = doc->find("use"); use && use->k == json::kind::object) {
+    for (const auto& [name, v] : use->o) {
+      const auto k = kind_from(name);
+      if (k && v.k == json::kind::string && model_id_of(v.s + ".json")) p.use_of(*k) = v.s;
+    }
+  }
   if (const json::value* wanted = doc->find("wanted"); wanted && wanted->k == json::kind::array) {
     for (const json::value& v : wanted->a) {
-      if (const auto k = v.k == json::kind::string ? kind_from(v.s) : std::nullopt) p.want(*k) = true;
+      if (v.k != json::kind::string) continue;
+      if (const auto k = kind_from(v.s)) {
+        p.wanted.insert(model_key(*k, kDefaultModelId));  // from before models had ids
+        continue;
+      }
+      const std::size_t dot = v.s.find('.');
+      if (dot == std::string::npos) continue;
+      const auto k = kind_from(std::string_view(v.s).substr(0, dot));
+      if (k && model_id_of(v.s.substr(dot + 1) + ".json")) p.wanted.insert(v.s);
     }
   }
   return p;

@@ -61,12 +61,34 @@ std::optional<std::pair<model_kind, std::string>> knob_id(const std::string& nod
   return std::pair{*k, node.substr(dot + 1)};
 }
 
-// "install.<kind>" -> kind, for `what`.
-std::optional<model_kind> action_kind(const std::string& node, std::string_view what) {
+// "install.<kind>" -> (kind, ""), "remove.<kind>.<id>" -> (kind, id), for `what`.
+std::optional<std::pair<model_kind, std::string>> action_of(const std::string& node, std::string_view what) {
   if (node.size() <= what.size() + 1 || node.compare(0, what.size(), what) != 0 || node[what.size()] != '.') {
     return std::nullopt;
   }
-  return kind_from(std::string_view(node).substr(what.size() + 1));
+  const std::string_view rest = std::string_view(node).substr(what.size() + 1);
+  const std::size_t dot = rest.find('.');
+  const auto k = kind_from(rest.substr(0, dot));
+  if (!k) return std::nullopt;
+  return std::pair{*k, dot == std::string_view::npos ? std::string() : std::string(rest.substr(dot + 1))};
+}
+
+// A kind's model files: model.json first, then the others by name. Their
+// ids are their names; a file whose name is not an id is not a model.
+std::vector<std::pair<std::string, std::string>> model_files_in(const std::string& dir) {
+  std::vector<std::pair<std::string, std::string>> out;  // (id, path)
+  std::error_code ec;
+  for (fs::directory_iterator it(fs_path(dir), ec), end; !ec && it != end; it.increment(ec)) {
+    if (!it->is_regular_file(ec)) continue;
+    const std::u8string name = it->path().filename().u8string();
+    const auto id = model_id_of(std::string(name.begin(), name.end()));
+    if (id) out.emplace_back(*id, dir + "/" + *id + ".json");
+  }
+  std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
+    const bool da = a.first == kDefaultModelId, db = b.first == kDefaultModelId;
+    return da != db ? da : a.first < b.first;
+  });
+  return out;
 }
 
 }  // namespace
@@ -76,21 +98,31 @@ engine::engine(engine_port port, std::string self_dir, std::string data_dir, ai:
   std::vector<pin> pins;
   if (auto manifest = read_text(self_dir_ + "/manifest.json", 4u << 20)) pins = read_pins(*manifest);
   for (const model_kind k : kModelKinds) {
-    const auto text = read_text(self_dir_ + "/models/" + kind_name(k) + "/model.json", 256u << 10);
-    if (!text) continue;
-    auto s = parse_spec(*text, k);
-    if (!s) {
-      if (port_.log) port_.log(1, "enhance: a model.json did not parse; that kind is not offered");
-      continue;
+    auto& list = models_[static_cast<int>(k)];
+    for (const auto& [id, file] : model_files_in(self_dir_ + "/models/" + kind_name(k))) {
+      if (list.size() == 8) break;  // a choice, not a catalogue
+      const auto text = read_text(file, 256u << 10);
+      auto s = text ? parse_spec(*text, k) : std::nullopt;
+      if (!s) {
+        if (port_.log) port_.log(1, "enhance: a model file did not parse; that model is not offered");
+        continue;
+      }
+      s->id = id;
+      model_entry e;
+      e.files = files_for(*s, pins);
+      e.key = model_key(k, id);
+      e.spec = std::move(*s);
+      list.push_back(std::move(e));
     }
-    files_[static_cast<int>(k)] = files_for(*s, pins);
-    specs_[static_cast<int>(k)] = std::move(*s);
+    // model.json's stays first (the default); the others, cheapest first.
+    std::stable_sort(list.begin() + (list.empty() || list.front().spec.id != kDefaultModelId ? 0 : 1), list.end(),
+                     [](const model_entry& a, const model_entry& b) { return a.files.bytes < b.files.bytes; });
   }
   if (!data_dir_.empty()) prefs_ = load_prefs(data_dir_ + "/enhance.json");
   downloads::port dp;
   dp.transport = port_.transport;
   dp.free_disk = port_.free_disk;
-  dp.changed = [this](model_kind k) { on_changed(k); };
+  dp.changed = [this](const std::string&) { on_changed(); };
   dl_ = std::make_unique<downloads>(data_dir_ + "/models", std::move(dp), std::move(fetch));
 }
 
@@ -109,30 +141,54 @@ void engine::set_runner(std::unique_ptr<runner> r) {
 void engine::resume_wanted() {
   if (resume_.joinable() || data_dir_.empty()) return;
   resume_ = std::thread([this] {
-    for (const model_kind k : kModelKinds) {
-      bool want = false;
-      {
-        std::lock_guard lock(m_);
-        want = prefs_.want(k) && specs_[static_cast<int>(k)].has_value();
+    for (const auto& list : models_) {
+      for (const model_entry& e : list) {
+        bool want = false;
+        {
+          std::lock_guard lock(m_);
+          want = prefs_.want(e.key);
+        }
+        if (want && !dl_->ready(e.files)) dl_->start(e.key, e.files);
       }
-      if (want && !dl_->ready(files_[static_cast<int>(k)])) dl_->start(k, files_[static_cast<int>(k)]);
     }
   });
 }
 
-const model_spec* engine::spec(model_kind k) const {
-  const auto& s = specs_[static_cast<int>(k)];
-  return s ? &*s : nullptr;
+const engine::model_entry* engine::find_model(model_kind k, const std::string& id) const {
+  for (const model_entry& e : models_[static_cast<int>(k)]) {
+    if (e.spec.id == id) return &e;
+  }
+  return nullptr;
 }
 
-dl_status engine::download_status(model_kind k) const { return dl_->status(k, files_[static_cast<int>(k)]); }
+const engine::model_entry* engine::chosen_locked(model_kind k) const {
+  const auto& list = models_[static_cast<int>(k)];
+  if (list.empty()) return nullptr;
+  if (const model_entry* e = find_model(k, prefs_.use_of(k))) return e;
+  return &list.front();  // model.json's, or the only one there is
+}
+
+const model_spec* engine::spec(model_kind k) const {
+  std::lock_guard lock(m_);
+  const model_entry* e = chosen_locked(k);
+  return e ? &e->spec : nullptr;
+}
+
+dl_status engine::download_status(model_kind k) const {
+  const model_entry* e = nullptr;
+  {
+    std::lock_guard lock(m_);
+    e = chosen_locked(k);
+  }
+  return e ? dl_->status(e->key, e->files) : dl_status{};
+}
 
 prefs engine::current_prefs() const {
   std::lock_guard lock(m_);
   return prefs_;
 }
 
-void engine::on_changed(model_kind) {
+void engine::on_changed() {
   std::lock_guard lock(m_);
   post_settings_locked();
   post_sheet_locked();
@@ -150,11 +206,11 @@ void engine::post_settings_locked() {
   for (const model_kind k : kModelKinds) {
     model_card c;
     c.kind = k;
-    c.spec = spec(k);
-    c.files = files_[static_cast<int>(k)];
-    if (c.spec) c.st = dl_->status(k, c.files);
-    // A kind this build has no model for is named only when it is one the
-    // issue promises (photos): video and audio always are.
+    const model_entry* chosen = chosen_locked(k);
+    for (const model_entry& e : models_[static_cast<int>(k)]) {
+      if (&e == chosen) c.chosen = c.models.size();
+      c.models.push_back({&e.spec, e.files, dl_->status(e.key, e.files)});
+    }
     cards.push_back(std::move(c));
   }
   if (!port_.post(kSettingsScreen, settings_gen_, settings_tree(cards))) settings_gen_ = 0;
@@ -211,16 +267,27 @@ sheet_view engine::sheet_locked() const {
     sheet_section s;
     s.kind = k;
     s.values = prefs_.of(k);
-    const model_spec* sp = spec(k);
-    const dl_status st = sp ? dl_->status(k, files_[static_cast<int>(k)]) : dl_status{};
-    if (sp && st.state == dl_state::ready) {
-      s.spec = sp;
-    } else if (!sp) {
+    const model_entry* e = chosen_locked(k);
+    const dl_status st = e ? dl_->status(e->key, e->files) : dl_status{};
+    if (e) {
+      s.model = e->spec.id;
+      const auto& list = models_[static_cast<int>(k)];
+      if (list.size() > 1) {
+        for (const model_entry& m : list) s.models.push_back({m.spec.id, m.spec.name});
+      }
+    }
+    if (e && st.state == dl_state::ready) {
+      s.spec = &e->spec;
+    } else if (!e) {
       s.missing = "This version of Enhance has no " + std::string(model_noun(k)) + " yet.";
     } else if (st.state == dl_state::downloading || st.state == dl_state::waiting) {
-      s.missing = "The " + std::string(model_noun(k)) + " is still downloading.";
+      s.missing = e->spec.name + " is downloading.";
+      s.downloading = st.total_bytes ? static_cast<double>(st.done_bytes) / static_cast<double>(st.total_bytes) : -1.0;
+    } else if (st.state == dl_state::refused || st.state == dl_state::gone) {
+      s.missing = e->spec.name + " cannot be downloaded. An update of Enhance will name a new one.";
     } else {
-      s.missing = "The " + std::string(model_noun(k)) + " is not installed. Download it in Settings → Add-ons → Enhance.";
+      s.missing = e->spec.name + " is not downloaded yet. It runs on this computer; only the download uses the network.";
+      s.install = (st.state == dl_state::stopped ? "Resume the download (" : "Download (") + size_text(e->files.bytes) + ")";
     }
     all_ready = all_ready && s.spec && runner_ && runner_->supports(k, item_);
     v.sections.push_back(std::move(s));
@@ -230,7 +297,8 @@ sheet_view engine::sheet_locked() const {
   if (!running_ && v.note.empty() && status_.empty() && !v.sections.empty()) {
     const bool models = std::all_of(v.sections.begin(), v.sections.end(), [](const sheet_section& s) { return s.spec; });
     if (models && !runner_) {
-      v.status = "This build of Enhance cannot run its models yet.";
+      // The host has no rows to read and write with (an older MediaViewer).
+      v.status = "This version of MediaViewer cannot run Enhance's models. Update MediaViewer to use them.";
     } else if (models) {
       for (const sheet_section& s : v.sections) {
         if (runner_->supports(s.kind, item_)) continue;
@@ -305,34 +373,51 @@ void engine::command(const std::vector<std::string>& paths) {
   if (port_.show) port_.show(kSheetScreen, true);
 }
 
-void engine::install(model_kind k) {
-  if (!spec(k)) return;
+void engine::install(model_kind k, const std::string& id) {
+  const model_entry* e = nullptr;
   {
     std::lock_guard lock(m_);
-    prefs_.want(k) = true;
+    e = id.empty() ? chosen_locked(k) : find_model(k, id);
+    if (!e) return;
+    prefs_.wanted.insert(e->key);
     save_locked();
   }
-  dl_->start(k, files_[static_cast<int>(k)]);
+  dl_->start(e->key, e->files);
 }
 
-void engine::stop(model_kind k) {
+void engine::stop(model_kind k, const std::string& id) {
+  const model_entry* e = nullptr;
   {
     std::lock_guard lock(m_);
-    prefs_.want(k) = false;  // stopped by hand: not resumed at the next start
+    e = id.empty() ? chosen_locked(k) : find_model(k, id);
+    if (!e) return;
+    prefs_.wanted.erase(e->key);  // stopped by hand: not resumed at the next start
     save_locked();
   }
-  dl_->stop(k);
-  on_changed(k);
+  dl_->stop(e->key);
+  on_changed();
 }
 
-void engine::remove(model_kind k) {
+void engine::remove(model_kind k, const std::string& id) {
+  const model_entry* e = nullptr;
   {
     std::lock_guard lock(m_);
     if (running_) return;  // a run may be reading the weights
-    prefs_.want(k) = false;
+    e = id.empty() ? chosen_locked(k) : find_model(k, id);
+    if (!e) return;
+    prefs_.wanted.erase(e->key);
     save_locked();
   }
-  dl_->remove(k, files_[static_cast<int>(k)]);
+  dl_->remove(e->key, e->files, cache_dir_for(data_dir_ + "/models/" + kind_name(k), e->spec.id));
+}
+
+void engine::choose(model_kind k, const std::string& id) {
+  std::lock_guard lock(m_);
+  if (running_ || !find_model(k, id)) return;  // a run keeps the model it started with
+  prefs_.use_of(k) = id;
+  save_locked();
+  post_settings_locked();
+  post_sheet_locked();
 }
 
 void engine::run() {
@@ -433,16 +518,28 @@ void engine::cancel() {
 
 void engine::event(const std::string& screen, const std::string& node, std::uint32_t kind,
                    const std::string& value_json) {
-  if (screen == kSettingsScreen) {
-    if (kind != MV_SLOT_EVENT_CLICK) return;
-    if (const auto k = action_kind(node, "install")) {
-      install(*k);
-    } else if (const auto k2 = action_kind(node, "stop")) {
-      stop(*k2);
-    } else if (const auto k3 = action_kind(node, "remove")) {
-      remove(*k3);
+  if (screen != kSettingsScreen && screen != kSheetScreen) return;
+  if (kind == MV_SLOT_EVENT_CLICK) {
+    // A model's buttons, on the page and (Download, Stop) on the sheet.
+    if (const auto a = action_of(node, "install")) {
+      install(a->first, a->second);
+      return;
     }
-    return;
+    if (const auto a = action_of(node, "stop")) {
+      stop(a->first, a->second);
+      return;
+    }
+    if (const auto a = action_of(node, "remove"); a && screen == kSettingsScreen) {
+      remove(a->first, a->second);
+      return;
+    }
+  }
+  if (kind == MV_SLOT_EVENT_CHANGE) {
+    if (const auto a = action_of(node, "model"); a && a->second.empty()) {
+      const auto v = json::parse(value_json, 4);
+      if (v && v->k == json::kind::string) choose(a->first, v->s);
+      return;
+    }
   }
   if (screen != kSheetScreen) return;
   if (kind == MV_SLOT_EVENT_CLICK) {
@@ -471,7 +568,8 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
   }
   const auto id = knob_id(node);
   if (!id) return;
-  const model_spec* sp = spec(id->first);
+  const model_entry* e = chosen_locked(id->first);
+  const model_spec* sp = e ? &e->spec : nullptr;
   const knob* kb = sp ? sp->find(id->second) : nullptr;
   if (!kb) return;
   if (auto ok = check_knob_value(*kb, *v)) {

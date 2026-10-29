@@ -2104,6 +2104,15 @@ mv::addon::host_services slot_services() {
   svc.post = [](const mv_addon_event&) {};  // slot add-ons answer through the v3 rows
   svc.location = &read_location;
   if (auto lib = mv::io::default_library_dir()) svc.default_library = *lib;
+  // Enhance (#297) is a slot add-on: its runs read and write through these
+  // rows. Without them it loads, downloads its models and cannot run one.
+  // Windows passes them to every add-on (abi/addon_abi.cpp).
+  svc.open_sound = &mv::addon::media::open_sound;
+  svc.open_sound_writer = &mv::addon::media::open_sound_writer;
+  svc.open_frames = &mv::addon::media::open_frames;
+  svc.open_clip_writer = &mv::addon::media::open_clip_writer;
+  svc.full_still = &mv::addon::media::full_still;
+  svc.write_still = &mv::addon::media::write_still;
   return svc;
 }
 

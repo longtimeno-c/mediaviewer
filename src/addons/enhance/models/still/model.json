@@ -1,6 +1,7 @@
 {
  "kind": "still",
- "name": "Detail",
+ "name": "Detail, fast",
+ "summary": "Quick: about 9 seconds for a 12-megapixel photo on Apple silicon.",
  "credit": "Real-ESRGAN general x4v3, Xintao Wang et al. (BSD-3-Clause)",
  "weights": ["realesr-general-x4v3.onnx"],
  "run_bytes": 700000000,

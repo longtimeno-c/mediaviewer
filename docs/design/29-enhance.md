@@ -19,8 +19,9 @@ screens from its view trees.
 
 - **Its page in Settings → Add-ons** (place `settings`): one card per kind (photos, video,
   audio) with that kind's model, its credit and size, and Download / Stop / Resume / Remove.
-- **The sheet over the viewer** (place `sheet`): `Enhance…` in the palette and the context menu
-  (no default key, [16](16-commands.md)), for the file on screen.
+- **The sheet over the viewer** (place `sheet`): `Enhance…` in the palette and the context menu,
+  and `Ctrl+Shift+R` / `⌘⇧R` ([16](16-commands.md)), for the file on screen. The settings page says
+  so. No button in the viewer's bar: no contribution point puts an add-on there yet.
 
 It is not part of Local search and not in the `ai` family: search reads pixels and writes an
 index, Enhance writes a new file. Settings → Add-ons lists it on Windows and on Apple silicon
@@ -29,11 +30,20 @@ index, Enhance writes a new file. Settings → Add-ons lists it on Windows and o
 
 ## Models
 
-Each kind Enhance can run ships `models/<kind>/model.json` in its signed zip:
+Each kind Enhance can run ships one or more `models/<kind>/<id>.json` in its signed zip (at most
+eight; the id is the file's name, `[a-z0-9_-]{1,32}`). **`model.json` is the one a kind uses until
+the person chooses another**, like Local search's tiers: a `Model` choice on the kind's card in
+Settings and on the sheet's section, shown when the kind has more than one. Each model downloads,
+stops and is removed on its own (keyed `<kind>.<id>` in `enhance.json`, which also keeps the
+choice per kind as `use`; an older file's bare kind means its `model.json`). The page names the
+kind's other models that hold files, each with its own Remove. A run keeps the model it started
+with. Core ML's compiled cache is per model: `models/<kind>-cache` for `model.json`'s, as before,
+`models/<kind>-cache-<id>` for another, removed with it.
 
 | Field | |
 |---|---|
 | `kind`, `name`, `credit` | `audio`, "Speech cleanup", who made the weights and their licence |
+| `summary` | optional: what choosing it means ("Finer detail; about six times as long"), on the page |
 | `weights` | the files it needs, pinned under the manifest's `remote` at `<kind>/<file>` |
 | `run_bytes` | free memory a run needs: the run gate |
 | `cpu` | one unit of work finishes inside a measured budget on CPU |
@@ -52,8 +62,9 @@ still to come (plus a tenth). `addon-pack.py` refuses a pin over 5 GB too.
 | Kind | Model | Weights | Licence |
 |---|---|---|---|
 | audio | DeepFilterNet3 (Schröter et al.), streaming ONNX export (`kimtos-labs/denoiser-dfn3` @ `888f33c4`) | 16.1 MB | MIT (dual MIT / Apache-2.0) |
-| video | Real-ESRGAN general x4v3 (Wang et al.), ONNX export (`jonathanst29/tinier-upscale-models` @ `899dc1e4`) | 4.9 MB | BSD-3-Clause |
-| still | the same file, pinned again under `still/` (each kind downloads its own) | 4.9 MB | BSD-3-Clause |
+| video | "Detail, fast" (`model.json`): Real-ESRGAN general x4v3 (Wang et al.), ONNX export (`jonathanst29/tinier-upscale-models` @ `899dc1e4`) | 4.9 MB | BSD-3-Clause |
+| video | "Detail, best" (`x4plus.json`): Real-ESRGAN x4plus, the same repo and revision; same contract (`input` [1, 3, h, w] → `output` [1, 3, 4h, 4w]) | 67.1 MB | BSD-3-Clause |
+| still | the same two files, pinned again under `still/` (each kind downloads its own) | 4.9 / 67.1 MB | BSD-3-Clause |
 
 ## The sheet
 
@@ -66,8 +77,8 @@ Built from the installed models, never a fixed form. What the item is comes from
 - **A still**: the photo model's (none yet).
 - **A document, an animation, a file it cannot read**: greyed, saying why.
 
-A kind with no installed model is named ("not installed — Download it in Settings → Add-ons →
-Enhance"), never offered. Knob values are remembered per kind of target, and a clip's target
+A kind whose chosen model is not downloaded says so and offers its **Download** (or Resume) and
+then its progress and Stop right on the sheet, never knobs it cannot run yet. Knob values are remembered per kind of target, and a clip's target
 too. Changing a knob starts nothing: Enhance runs on its button. Closing the sheet cancels a run
 (leaving the item); Cancel does too.
 
@@ -153,6 +164,7 @@ a few percent in.
 | A 640 × 360 clip, 30 frames, to 1280 × 720 with its sound, Core ML + VideoToolbox | 6.2 s (0.21 s a frame) |
 | Peak memory of that run, both models and a reference session | about 330 MB (`run_bytes` 600 MB) |
 | A 4032 × 3024 photo (EXIF-turned) to 6048 × 8064, Core ML, read to written | 8.7 s, about 850 MB peak (`run_bytes` 700 MB + the picture in and out) |
+| One 256-px tile, x4plus vs x4v3 (Python, 2026-10-29): Core ML / CPU 7 threads | 0.135 / 3.4 s vs 0.023 / 0.20 s; peak about 470 MB / 1.8 GB vs 220 / 150 MB |
 
 Not measured: Windows, a long file's memory over time, and the viewer's own gates with Enhance
 installed (it loads no runtime until a run, and runs nothing at launch).

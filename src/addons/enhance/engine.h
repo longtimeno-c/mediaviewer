@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Enhance (#297): the add-on's state behind its two screens. It reads the
-// models this build ships (models/<kind>/model.json in its own folder) and
+// models this build ships (models/<kind>/<id>.json in its own folder) and
 // their pins (its signed manifest's `remote`), remembers the person's choices
 // (prefs.h), runs each kind's download (downloads.h), and builds the trees
 // (screens.h). The host function table is reached only through `port`, so
@@ -122,29 +122,41 @@ class engine {
   void command(const std::vector<std::string>& paths);
   void event(const std::string& screen, const std::string& node, std::uint32_t kind, const std::string& value_json);
 
-  // For tests: the specs this build found, and a kind's download status.
+  // For tests: the model each kind uses (its chosen one), and its download
+  // status.
   [[nodiscard]] const model_spec* spec(model_kind k) const;
   [[nodiscard]] dl_status download_status(model_kind k) const;
   [[nodiscard]] prefs current_prefs() const;
 
  private:
-  void on_changed(model_kind k);
+  // One model of a kind: its spec (id set), files and download key.
+  struct model_entry {
+    model_spec spec;
+    model_files files;
+    std::string key;  // "<kind>.<id>"
+  };
+  [[nodiscard]] const model_entry* chosen_locked(model_kind k) const;
+  [[nodiscard]] const model_entry* find_model(model_kind k, const std::string& id) const;
+  void on_changed();
   void post_settings_locked();
   void post_sheet_locked();
   [[nodiscard]] sheet_view sheet_locked() const;
   [[nodiscard]] std::vector<model_kind> kinds_for_locked() const;
   void save_locked();
-  void install(model_kind k);
-  void stop(model_kind k);
-  void remove(model_kind k);
+  // `id` empty: the kind's chosen model.
+  void install(model_kind k, const std::string& id);
+  void stop(model_kind k, const std::string& id);
+  void remove(model_kind k, const std::string& id);
+  void choose(model_kind k, const std::string& id);
   void run();
   void cancel();
 
   engine_port port_;
   std::string self_dir_;
   std::string data_dir_;
-  std::array<std::optional<model_spec>, 3> specs_;
-  std::array<model_files, 3> files_;
+  // Per kind: model.json's first, then the others, smallest download first.
+  // Fixed after construction: read without the lock.
+  std::array<std::vector<model_entry>, 3> models_;
   std::unique_ptr<downloads> dl_;
   std::unique_ptr<runner> runner_;
   std::thread resume_;

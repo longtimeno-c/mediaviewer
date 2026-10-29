@@ -2797,6 +2797,29 @@ preview's copies are made on Enhance's runner thread from frames it already deco
 Enhance that asks for 10 needs this MediaViewer or later ("needs a newer MediaViewer" on an older
 one). Not measured: the glow's own CPU on either chrome.
 
+**Enhance offers a choice of model per kind, and the Mac host can run it (2026-10-29).** The owner
+asked why Enhance said it "cannot run its models yet", why its models were only about 5 MB, and why
+nothing led to it. Three answers. (1) **A Mac host bug:** the Mac loads slot add-ons with
+`slot_services()`, and slices 3–5 had put the sound, frame and photo rows only in the AI pack's
+`ai_services()`, so Enhance on the Mac never got a runner; Windows hands every add-on the rows. Now
+the slot services carry them too. (2) **A choice, like Local search's tiers:** every
+`models/<kind>/<id>.json` in the add-on is a model of that kind; `model.json` is the one used until
+the person picks another (Settings → Add-ons → Enhance, or the sheet), and each model downloads,
+stops and is removed on its own (keyed `<kind>.<id>`). The photo and video kinds gain **Real-ESRGAN
+x4plus** (64 MB, BSD-3-Clause, the same pinned repo and revision as x4v3, the same tensor contract)
+as "Detail, best"; x4v3 stays the default, "Detail, fast". This does not reverse "Enhance's first
+video model": x4plus was turned down as the *only* model for its cost, and it is still not the
+default. Measured with ONNX Runtime (Python) on this Mac, one 256-pixel tile: x4plus 0.135 s on
+Core ML against x4v3's 0.023 s, and 3.4 s against 0.20 s on the CPU (7 threads); peak memory about
+470 MB on Core ML and 1.8 GB on the CPU against 220 / 150 MB, hence its `run_bytes` of 2.0 GB
+(photo) and 2.2 GB (clip). On a CPU-only PC a 12 MP photo at x4plus takes minutes, which its summary
+says. Not measured: x4plus's quality against x4v3 on a set of our own (upstream's comparisons only),
+its end-to-end run times in the app, and Windows at all. (3) **A way in:** Enhance's command gets
+`Ctrl+Shift+R` / `⌘⇧R` (free in the table), the sheet downloads a missing model itself instead of
+pointing at Settings, and the settings page says where Enhance opens from. A visible button in the
+viewer's bar was not added: no contribution point puts an add-on there yet, and one is a host change
+on both chromes of its own.
+
 ## Not built
 
 - Voice query add-on (PRs 27–28): no voice add-on or `search_query` host entry exists.

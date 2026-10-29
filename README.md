@@ -254,7 +254,9 @@ The optional **Enhance** add-on writes a restored copy of what is on screen: a p
 
 - **Never the original.** The result is a new file beside it, `-enhance` in its name. Clean up just a clip's sound and its picture stays exactly as it was.
 - **Up to 4K video and 100-megapixel photos.** Choose the same size with more detail, twice or four times the size; Enhance tells you how long is left. A photo keeps its date, place and camera details.
-- **Only the model you ask for.** Each kind's model is downloaded when you click for it, checked before it is kept, and runs on this computer. Nothing about your files is sent anywhere.
+- **Fast or best.** Photos and video come with a quick model and a slower one that draws finer detail; pick per kind, and switch whenever you like.
+- **Only the model you ask for.** Each model is downloaded when you click for it, checked before it is kept, and runs on this computer. Nothing about your files is sent anywhere.
+- **One key away.** `Ctrl+Shift+R` (`⌘⇧R` on a Mac), the right-click menu or the command palette opens Enhance on the file in front of you.
 - **Settings that fit the file.** The sheet shows what the model can do for the item in front of you, and remembers how you like it.
 
 ## Themes and add-ons from anyone

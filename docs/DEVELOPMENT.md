@@ -2111,6 +2111,10 @@ made on screen is not in the copy yet. While a clip's picture or a photo runs, t
 before/after preview with a glowing edge and progress bar (contribution API 10: a `surface`'s
 `"glow"`, `progress` `"look": "glow"`; `src/addons/enhance/preview.h`, Mac `GlowEdge`/`GlowBar`,
 Windows `IslandHost.Glow.cs`). The release packs Enhance as a preferred add-on, like Places.
+Each kind may ship several models (`models/<kind>/<id>.json`; `model.json` is the default): photos
+and video offer "Detail, fast" (x4v3) and "Detail, best" (x4plus), chosen on the page or the sheet,
+each downloaded and removed on its own. The sheet opens on `Ctrl+Shift+R` / `⌘⇧R` and downloads a
+missing model itself.
 
 Pack it from a dev build (ONNX Runtime, the models' specs and `remote.json` are staged beside the
 library by the build), then sideload as any slot add-on:

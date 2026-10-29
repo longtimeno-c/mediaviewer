@@ -179,7 +179,8 @@ TEST_CASE("enhance: the shipped manifest declares the sheet, its settings page, 
   CHECK(c.items[0].target == mv::addon::item_target::file);
   REQUIRE(d.m.commands.size() == 1);
   CHECK(d.m.commands[0].id == "open");
-  CHECK(d.m.commands[0].windows.empty());  // no default key (docs/design/16)
+  CHECK(d.m.commands[0].windows == "Ctrl+Shift+R");  // docs/design/16
+  CHECK(d.m.commands[0].mac == "Cmd+Shift+R");
   CHECK(d.m.chrome.empty());
   CHECK(mv::addon::loads_for_slots(d.m));
 }
@@ -226,7 +227,7 @@ TEST_CASE("enhance: the add-on answers its settings page and sheet through the v
   const std::string page = screen_tree(reg, "settings");
   INFO(page);
   CHECK(page.find("\"install.audio\"") != std::string::npos);
-  CHECK(page.find("Download the audio model (50 MB)") == std::string::npos);  // 50 kB, shown as 1 MB
+  CHECK(page.find("(50 MB)") == std::string::npos);  // 50 kB, shown as 1 MB
   CHECK(page.find("(1 MB)") != std::string::npos);
   CHECK(page.find("no video model") != std::string::npos);
   CHECK(page.find("no photo model") != std::string::npos);
