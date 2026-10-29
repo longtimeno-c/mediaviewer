@@ -542,6 +542,10 @@ void mv_chrome_set_update_channel(int32_t channel);
 // on checks now. [main-thread]
 int32_t mv_chrome_update_auto_check(void);
 void mv_chrome_set_update_auto_check(bool on);
+// Settings' "Check now": the app menu's "Check for Updates…", one check now
+// whether or not automatic checks are on; Sparkle shows what it found.
+// [main-thread]
+void mv_chrome_check_for_updates(void);
 
 // ---- PR 10: export sheet (docs/design/10 "SwiftUI crop mode and export sheet") -------
 //

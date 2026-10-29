@@ -3536,6 +3536,8 @@ window; the host table gains `notice_post`, `notice_authorize` and `keep_alive` 
   core over 60 s (`ps`, 10 ms resolution) against 0.047 % for `"[.driftwire-idle]"`'s engine
   alone. Not seen on the Mac: a real logout/login (`keyAELaunchedAsLogInItem` on a mainApp
   item), the notification from a second machine.
+  Since 2026-10-29 every Quit on the Mac (⌘Q, the menu's, the Dock's) quits; only closing the
+  viewer window leaves the process in the menu bar ([12](design/12-decision-log.md)).
 
 ### Driftwire, AirDrop-smooth (issue #442, 2026-10-15)
 

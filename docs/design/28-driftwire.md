@@ -520,9 +520,10 @@ process (`keep_alive`), and the hosts do the rest.
 
 - **Off** (the default) changes nothing: the last window closing quits, ⌘Q / Alt+F4 quit, and
   with Keep receiving off there is no process, socket, beacon or Bluetooth after quitting.
-- **On**, closing the last window, ⌘Q or the Dock's Quit on the Mac, and closing the window on
-  Windows, leave the process running. The viewer drops what it showed (no clip plays, the folder
-  and its watch close; `returnToWelcome` / `return_to_welcome`) and its window is hidden, not
+- **On**, closing the last window on the Mac, and closing the window on Windows, leave the
+  process running. ⌘Q, the menu's Quit and the Dock's Quit on the Mac quit (owner, 2026-10-29:
+  a Quit that hid the app kept an old version running past updates). The viewer drops what it
+  showed (no clip plays, the folder and its watch close; `returnToWelcome` / `return_to_welcome`) and its window is hidden, not
   closed. On the Mac the app then leaves the Dock (accessory policy) and a **menu-bar item**
   stays; on Windows a **notification-area icon**. Both menus: "Driftwire: receiving", **Open
   Driftwire**, **Open MediaViewer**, **Quit MediaViewer** (which really quits). Opening the app
