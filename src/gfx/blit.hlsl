@@ -125,10 +125,14 @@ float3 background_at(float2 screen) {
   return theme_background.rgb;
 }
 
+// One return: FXC flags early returns from a function its callers inline as
+// "potentially uninitialized" (X4000) on every release build.
 float4 sample_filtered(float2 uv, float2 tex_size) {
-  if (zoom >= 4.0) return img.SampleLevel(samp_point, uv, 0);
-  if (zoom >= 1.0) return sample_catmull(img, uv, tex_size);
-  return img.Sample(samp_aniso, uv);
+  float4 c;
+  if (zoom >= 4.0) c = img.SampleLevel(samp_point, uv, 0);
+  else if (zoom >= 1.0) c = sample_catmull(img, uv, tex_size);
+  else c = img.Sample(samp_aniso, uv);
+  return c;
 }
 
 float2 image_px_at(float2 screen) {
