@@ -7,5 +7,11 @@
   "sha256": "924ebad6532777303582d4ce7811849b88869231a3ae7093e0f21200249df8d5", "licence": "BSD-3-Clause"},
  {"url": "https://huggingface.co/jonathanst29/tinier-upscale-models/resolve/899dc1e4b22bbf1955c2f1739c085edc080cb366/realesr-general-x4v3.onnx",
   "path": "still/realesr-general-x4v3.onnx", "size": 4866396,
-  "sha256": "924ebad6532777303582d4ce7811849b88869231a3ae7093e0f21200249df8d5", "licence": "BSD-3-Clause"}
+  "sha256": "924ebad6532777303582d4ce7811849b88869231a3ae7093e0f21200249df8d5", "licence": "BSD-3-Clause"},
+ {"url": "https://huggingface.co/jonathanst29/tinier-upscale-models/resolve/899dc1e4b22bbf1955c2f1739c085edc080cb366/realesrgan-x4plus.onnx",
+  "path": "video/realesrgan-x4plus.onnx", "size": 67051618,
+  "sha256": "4ed6a45a8185bde6c8d7c7790a6e80e3c5b9f608946f634021068dd0fd0473c8", "licence": "BSD-3-Clause"},
+ {"url": "https://huggingface.co/jonathanst29/tinier-upscale-models/resolve/899dc1e4b22bbf1955c2f1739c085edc080cb366/realesrgan-x4plus.onnx",
+  "path": "still/realesrgan-x4plus.onnx", "size": 67051618,
+  "sha256": "4ed6a45a8185bde6c8d7c7790a6e80e3c5b9f608946f634021068dd0fd0473c8", "licence": "BSD-3-Clause"}
 ]

@@ -6,8 +6,11 @@
 // viewer, built from the installed models' knobs for the item on screen
 // (slice 2). Pure functions of a view struct, so tests read the trees whole.
 //
-// Node ids: "install.<kind>", "stop.<kind>", "remove.<kind>" on the page;
-// "target", "k.<kind>.<knob>", "run", "cancel", "close" on the sheet.
+// Node ids: "model.<kind>" (the choice of a kind's model, when it has more
+// than one) on both; "install.<kind>", "stop.<kind>", "remove.<kind>" for the
+// kind's chosen model on both, and "remove.<kind>.<id>" / "stop.<kind>.<id>"
+// for one of its others on the page; "target", "k.<kind>.<knob>", "run",
+// "cancel", "close" on the sheet.
 #pragma once
 
 #include <cstdint>
@@ -32,11 +35,17 @@ inline constexpr std::uint32_t kPreviewHeight = 220;
 // "63 MB", "4.2 GB".
 [[nodiscard]] std::string size_text(std::uint64_t bytes);
 
-struct model_card {
-  model_kind kind = model_kind::still;
-  const model_spec* spec = nullptr;  // null: this build of Enhance has no model of that kind
+// One model of a kind, and where its download stands.
+struct model_choice {
+  const model_spec* spec = nullptr;
   model_files files;
   dl_status st;
+};
+
+struct model_card {
+  model_kind kind = model_kind::still;
+  std::vector<model_choice> models;  // empty: this build of Enhance has none of that kind
+  std::size_t chosen = 0;            // the one the kind uses
 };
 [[nodiscard]] std::string settings_tree(std::span<const model_card> cards);
 
@@ -46,6 +55,14 @@ struct sheet_section {
   // Why there is none: the model is not installed, still downloading, or
   // this build has none of that kind.
   std::string missing;
+  // The kind's models to choose from, when it has more than one (id, name),
+  // and the chosen one's id.
+  std::vector<knob_option> models;
+  std::string model;
+  // The chosen model is not installed: its Download button ("Download (64
+  // MB)"), or its progress while it downloads (0-1, -1 unknown).
+  std::string install;
+  std::optional<double> downloading;
   std::map<std::string, json::value> values;  // last-used, per kind of target
 };
 
@@ -63,6 +80,8 @@ struct sheet_view {
   double progress = -1;      // -1 indeterminate
   std::string eta;           // "About 12 minutes left", or "" while it cannot tell
   bool preview = false;      // a picture run has posted its first preview
+  bool preview_split = false;      // ...split before / after (else a photo being redrawn)
+  std::uint32_t preview_height = kPreviewHeight;
   std::string status;        // "Saved as IMG_0001-enhance.m4a", or why it stopped
 };
 [[nodiscard]] std::string sheet_tree(const sheet_view& v);

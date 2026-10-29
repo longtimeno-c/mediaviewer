@@ -771,6 +771,11 @@ How it works:
   (`notices_json`); the hosts draw them. Driftwire is the one user
   ([28 "In the background"](28-driftwire.md#in-the-background-452)).
 
+**Command-bar items show their name beside their icon (2026-10-29, Enhance)**, on both hosts
+(`SlotBarItems`, `IslandHost.Slots.cs`), as the bar's own Open / View / Edit do: an icon alone
+among words was not found. The glow (contribution API 10) is drawn in three layers and its bar
+flows ([29](29-enhance.md#a-run)); the vocabulary is unchanged.
+
 **Windows rebuilds a screen window when its tree's revision moves**; while a pointer is down in
 the window the rebuild waits, and the release catches up (#511: a tree that moved between press
 and release lost the click).

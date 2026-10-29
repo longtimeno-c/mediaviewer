@@ -1810,10 +1810,28 @@ enum GlowPalette {
   ]
 }
 
-/// A soft multicolour edge round a surface ("glow"): a thin ring and a blurred
-/// halo behind it. "moving" turns it once every six seconds, at 30 fps at most,
-/// and never with Reduce Motion; "still" holds it. The canvas is never touched:
-/// this is the sheet's own drawing, and it stops when the node does.
+/// The glow's timing, the same on both hosts (GlowMath.cs): seconds for each
+/// layer of the edge to go once round, for the halo to breathe in and out,
+/// and for the bar's colours to flow one length along it.
+enum GlowTiming {
+  static let turn = 6.0       // the crisp ring
+  static let midTurn = 9.0    // the soft glow, the other way round
+  static let haloTurn = 13.0  // the wide halo
+  static let breath = 2.2
+  static let flow = 3.0
+
+  /// 0 up to 1 over `period` seconds.
+  static func phase(_ t: Double, _ period: Double) -> Double { t.truncatingRemainder(dividingBy: period) / period }
+  /// The halo's breath, 0 to 1 and back, eased.
+  static func breathe(_ t: Double) -> Double { 0.5 - 0.5 * cos(phase(t, breath) * 2 * .pi) }
+}
+
+/// A multicolour edge round a surface ("glow"), after Apple Intelligence's:
+/// a crisp ring, a soft glow and a wide halo, each turning at its own pace
+/// (the middle one the other way), the halo breathing. "moving" animates it,
+/// at 30 fps at most and never with Reduce Motion; "still" holds one quiet
+/// ring. The canvas is never touched: this is the sheet's own drawing, and it
+/// stops when the node does.
 private struct GlowEdge: ViewModifier {
   let state: String?
   let radius: CGFloat
@@ -1823,12 +1841,22 @@ private struct GlowEdge: ViewModifier {
     if let state {
       let moving = state == "moving" && !reduceMotion
       content.background {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !moving)) { t in
-          let turn = moving ? t.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 6) / 6 : 0
-          let gradient = AngularGradient(colors: GlowPalette.colors, center: .center, angle: .degrees(turn * 360))
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !moving)) { tl in
+          let t = moving ? tl.date.timeIntervalSinceReferenceDate : 0
+          let shape = RoundedRectangle(cornerRadius: radius + 3)
           ZStack {
-            RoundedRectangle(cornerRadius: radius + 3).fill(gradient).blur(radius: 14).opacity(0.55)
-            RoundedRectangle(cornerRadius: radius + 3).fill(gradient)
+            if moving {
+              let breath = GlowTiming.breathe(t)
+              shape.fill(ring(GlowTiming.phase(t, GlowTiming.haloTurn)))
+                .blur(radius: 18 + 8 * breath).opacity(0.35 + 0.25 * breath)
+                .padding(-4 - 3 * breath)
+              shape.fill(ring(-GlowTiming.phase(t, GlowTiming.midTurn)))
+                .blur(radius: 6).opacity(0.75)
+                .padding(-2)
+            } else {
+              shape.fill(ring(0)).blur(radius: 10).opacity(0.3)
+            }
+            shape.fill(ring(GlowTiming.phase(t, GlowTiming.turn)))
           }
           .padding(-3)
         }
@@ -1838,11 +1866,16 @@ private struct GlowEdge: ViewModifier {
       content
     }
   }
+
+  private func ring(_ turn: Double) -> AngularGradient {
+    AngularGradient(colors: GlowPalette.colors, center: .center, angle: .degrees(turn * 360))
+  }
 }
 
-/// A progress bar in the glow's colours. A soft highlight sweeps along it
-/// while it moves (never with Reduce Motion); not started (value < 0), the
-/// whole bar shows dimmed.
+/// A progress bar in the glow's colours, after Apple Intelligence's: the
+/// colours flow along it, a soft highlight sweeps across and a blurred copy
+/// glows beneath it while it moves (never with Reduce Motion). Not started
+/// (value < 0), the whole bar flows, dimmed.
 private struct GlowBar: View {
   let value: Double
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1852,19 +1885,35 @@ private struct GlowBar: View {
       let filled = value < 0 ? geo.size.width : geo.size.width * min(1, max(0, value))
       ZStack(alignment: .leading) {
         Capsule().fill(MVTheme.hairline)
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { t in
-          let phase = reduceMotion ? -1 : t.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2.4) / 2.4
-          Capsule()
-            .fill(LinearGradient(colors: GlowPalette.colors, startPoint: .leading, endPoint: .trailing))
-            .overlay(shimmer(at: phase))
-            .clipShape(Capsule())
-            .frame(width: max(0, filled))
-            .opacity(value < 0 ? 0.55 : 1)
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { tl in
+          let t = reduceMotion ? 0 : tl.date.timeIntervalSinceReferenceDate
+          let flow = GlowTiming.phase(t, GlowTiming.flow)
+          let sweep = reduceMotion ? -1 : GlowTiming.phase(t, 2.4)
+          let fill = Capsule().fill(flowing(flow, bar: geo.size.width, filled: filled))
+          ZStack {
+            fill.blur(radius: 5).opacity(value < 0 ? 0.25 : 0.55 + 0.2 * GlowTiming.breathe(t))
+            fill.overlay(shimmer(at: sweep)).clipShape(Capsule())
+          }
+          .frame(width: max(0, filled))
+          .opacity(value < 0 ? 0.6 : 1)
         }
       }
     }
-    .frame(height: 6)
+    .frame(height: 8)
     .frame(minWidth: 120)
+    .padding(.vertical, 3)
+  }
+
+  /// The palette twice over across twice the bar's width, slid along by
+  /// `flow` of that: the colours travel left to right and wrap without a
+  /// seam, at the same scale however far the bar is filled.
+  private func flowing(_ flow: Double, bar: CGFloat, filled: CGFloat) -> LinearGradient {
+    let colors = GlowPalette.colors + GlowPalette.colors.dropFirst()
+    let span = max(1, bar) * 2
+    let start = -span / 2 + CGFloat(flow) * span / 2
+    let w = max(1, filled)
+    return LinearGradient(colors: Array(colors), startPoint: UnitPoint(x: start / w, y: 0.5),
+                          endPoint: UnitPoint(x: (start + span) / w, y: 0.5))
   }
 
   @ViewBuilder private func shimmer(at phase: Double) -> some View {
@@ -1874,7 +1923,7 @@ private struct GlowBar: View {
       LinearGradient(stops: [
         .init(color: .clear, location: 0),
         .init(color: .clear, location: min(1, max(0, centre - 0.15))),
-        .init(color: .white.opacity(0.5), location: min(1, max(0, centre))),
+        .init(color: .white.opacity(0.55), location: min(1, max(0, centre))),
         .init(color: .clear, location: min(1, max(0, centre + 0.15))),
         .init(color: .clear, location: 1),
       ], startPoint: .leading, endPoint: .trailing)

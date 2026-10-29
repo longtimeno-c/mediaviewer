@@ -19,6 +19,22 @@ public class GlowMathTests
     }
 
     [Fact]
+    public void TheLayersTurnAtTheirOwnPaceAndTheHaloBreathes()
+    {
+        Assert.Equal(180, GlowMath.Turn(4.5, GlowMath.MidTurnSeconds), 6);
+        Assert.Equal(0, GlowMath.Turn(13, GlowMath.HaloTurnSeconds), 6);
+        Assert.Equal(0, GlowMath.Breathe(0), 6);
+        Assert.Equal(1, GlowMath.Breathe(GlowMath.BreathSeconds / 2), 6);
+        Assert.Equal(0, GlowMath.Breathe(GlowMath.BreathSeconds), 6);
+        Assert.Equal(0.5, GlowMath.Flow(1.5), 6);
+        for (double t = 0; t < 10; t += 0.13)
+        {
+            Assert.InRange(GlowMath.Breathe(t), 0, 1);
+            Assert.InRange(GlowMath.Flow(t), 0, 1);
+        }
+    }
+
+    [Fact]
     public void TheHighlightCrossesTheBarFromOffItsLeftToOffItsRight()
     {
         var start = GlowMath.Band(0);
@@ -41,9 +57,13 @@ public class GlowMathTests
     {
         string swift = File.ReadAllText(Path.Combine(Repo(), "src.swift", "MediaViewerChrome", "Sources",
                                                      "MediaViewerChrome", "ScreenView.swift"));
-        // Seconds per turn and per sweep, and the band's half width.
-        Assert.Contains("truncatingRemainder(dividingBy: 6) / 6", swift);
-        Assert.Contains("truncatingRemainder(dividingBy: 2.4) / 2.4", swift);
+        // Seconds per turn of each layer, per breath, per flow and per sweep, and the band's half width.
+        Assert.Contains("static let turn = 6.0", swift);
+        Assert.Contains("static let midTurn = 9.0", swift);
+        Assert.Contains("static let haloTurn = 13.0", swift);
+        Assert.Contains("static let breath = 2.2", swift);
+        Assert.Contains("static let flow = 3.0", swift);
+        Assert.Contains("GlowTiming.phase(t, 2.4)", swift);
         Assert.Contains("let centre = -0.15 + phase * 1.3", swift);
         // The palette: violet, pink, amber, teal, blue (0..255 on Windows, 0..1 on the Mac).
         foreach (string rgb in new[] { "0.55, green: 0.36, blue: 0.96", "0.98, green: 0.36, blue: 0.62",

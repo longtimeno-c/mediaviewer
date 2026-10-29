@@ -5,7 +5,7 @@
 // Enhance opens two screens the hosts render from its trees: its page in
 // Settings -> Add-ons (place "settings"), where each kind's model is
 // downloaded or removed, and the sheet over the viewer (place "sheet"),
-// opened by the "Enhance…" command or the context entry for the file on
+// opened by the "Enhance…" command, the command bar's button or the context entry for the file on
 // screen. Both run on the host's worker for this add-on, never the UI or
 // render thread (rule 1). The add-on links nothing of the core: the host
 // function table is its only way in.
@@ -150,10 +150,10 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
       return MV_OK;
     }
     if (e->kind == MV_SLOT_EVENT_COMMAND) {
-      // The command ("open") or the context entry ("enhance"): this file,
-      // then the sheet.
+      // The command ("open"), the context entry ("enhance") or the command
+      // bar's button ("button"): this file, then the sheet.
       const std::string node = e->node_id;
-      if (node == "open" || node == "enhance") g->eng->command(paths_of(e->value_json));
+      if (node == "open" || node == "enhance" || node == "button") g->eng->command(paths_of(e->value_json));
       return MV_OK;
     }
     g->eng->event(screen, e->node_id, e->kind, e->value_json ? e->value_json : "");

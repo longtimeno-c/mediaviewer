@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Enhance (#297): what an installed model is and which knobs it has.
 //
-// Each model Enhance can run ships as models/<kind>/model.json in the add-on's
-// signed folder; its weights are not in the zip. They are files the add-on's
+// Each model Enhance can run ships as models/<kind>/<id>.json in the add-on's
+// signed folder: model.json is the one a kind uses until the person chooses
+// another of its kind (Settings -> Add-ons -> Enhance, or the sheet). Its
+// weights are not in the zip. They are files the add-on's
 // signed manifest pins under `remote` (Hugging Face URL, size, SHA-256,
 // licence) at "<kind>/<file>", fetched on the person's click into the
 // add-on's data folder (downloads.h). The sheet is built from the model, not
@@ -60,8 +62,12 @@ struct knob {
 
 struct model_spec {
   model_kind kind = model_kind::still;
+  // Its file's name without ".json" ("model" for model.json): unique in its
+  // kind, set by whoever read the file (the file itself does not name it).
+  std::string id;
   std::string name;     // "Speech cleanup"
   std::string credit;   // "DeepFilterNet3 (MIT)": who made the weights, and their licence
+  std::string summary;  // what choosing it means ("Slower, more detail"); may be empty
   // The remote paths this model needs, relative to its kind ("denoise.onnx"
   // is the manifest's remote "audio/denoise.onnx").
   std::vector<std::string> weights;
@@ -79,7 +85,19 @@ struct model_spec {
   [[nodiscard]] const knob* find(std::string_view id) const noexcept;
 };
 
-// Parses and checks models/<kind>/model.json. Refused (nullopt) when it is not
+// The id model.json gets: the model a kind uses until the person chooses.
+inline constexpr const char* kDefaultModelId = "model";
+
+// Where a provider keeps what it compiled from a model's weights (Core ML's
+// cache) beside `models_dir`, the kind's weights folder: "<dir>-cache" for
+// model.json's, as before kinds had more than one, else "<dir>-cache-<id>".
+[[nodiscard]] std::string cache_dir_for(const std::string& models_dir, const std::string& id);
+
+// A model file's id from its name ("x4plus.json" -> "x4plus"); nullopt for a
+// name that is not [a-z0-9_-]{1,32} followed by ".json".
+[[nodiscard]] std::optional<std::string> model_id_of(std::string_view file_name);
+
+// Parses and checks models/<kind>/<id>.json (id is left empty). Refused (nullopt) when it is not
 // that kind's, names no weights, or any knob is malformed: an add-on whose
 // model.json does not parse offers that kind as not installed.
 [[nodiscard]] std::optional<model_spec> parse_spec(std::string_view json_text, model_kind expected);

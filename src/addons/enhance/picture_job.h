@@ -40,6 +40,10 @@ struct picture_options {
   // A photo is hundreds of tiles: checked and reported between them.
   const std::atomic<bool>* cancel = nullptr;
   std::function<void(double fraction)> progress;
+  // After each tile is written, on the same thread (so `out` may be read):
+  // in output pixels, every row above `rows_done` is final, and the band
+  // from there to `band_end` is final left of `x_end`. Tiles go row by row.
+  std::function<void(std::uint32_t rows_done, std::uint32_t band_end, std::uint32_t x_end)> placed;
 };
 
 // `rgb`: width x height x 3. `out` becomes (width*out_scale) x (height*out_scale) x 3.

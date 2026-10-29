@@ -303,6 +303,16 @@ TEST_CASE("enhance: model.json is read and checked", "[enhance]") {
     "knobs":[{"id":"n","label":"N","type":"choice","options":[{"id":"a","text":"A"}],"default":"b"}]})",
                          model_kind::audio));
 
+  // A model's id is its file's name.
+  CHECK(model_id_of("model.json") == "model");
+  CHECK(model_id_of("x4plus.json") == "x4plus");
+  CHECK_FALSE(model_id_of("X4.json"));
+  CHECK_FALSE(model_id_of(".json"));
+  CHECK_FALSE(model_id_of("a.onnx"));
+  CHECK_FALSE(model_id_of("../a.json"));
+  CHECK(parse_spec(R"({"kind":"audio","name":"x","summary":"Quick","weights":["a"],"run_bytes":1})",
+                   model_kind::audio)->summary == "Quick");
+
   // Values the sheet reports are checked against the knob.
   const knob& noise = s->knobs[0];
   CHECK(check_knob_value(noise, *mv::json::parse("0.5")));
@@ -340,19 +350,30 @@ TEST_CASE("enhance: prefs keep values per kind, the target and what was asked fo
   p.of(model_kind::audio)["noise"] = *mv::json::parse("0.25");
   p.of(model_kind::video)["scale"] = *mv::json::parse("\"1\"");
   p.target = clip_target::both;
-  p.want(model_kind::audio) = true;
+  p.wanted.insert("audio.model");
+  p.use_of(model_kind::video) = "best";
   const prefs q = prefs_from(prefs_json(p));
   CHECK(near(q.of(model_kind::audio).at("noise").d, 0.25));
   CHECK(q.of(model_kind::video).at("scale").s == "1");
   CHECK(q.of(model_kind::still).empty());
   CHECK(q.target == clip_target::both);
-  CHECK(q.want(model_kind::audio));
-  CHECK_FALSE(q.want(model_kind::video));
+  CHECK(q.want("audio.model"));
+  CHECK_FALSE(q.want("video.model"));
+  CHECK(q.use_of(model_kind::video) == "best");
+  CHECK(q.use_of(model_kind::still).empty());
+  // An enhance.json from before kinds had more than one model names the kind:
+  // its model.json.
+  const prefs old = prefs_from(R"({"wanted":["still","video"]})");
+  CHECK(old.want("still.model"));
+  CHECK(old.want("video.model"));
+  CHECK_FALSE(old.want("audio.model"));
   // Junk is ignored, never fatal.
-  const prefs r = prefs_from(R"({"values":{"audio":{"noise":[1]},"fax":{}},"target":"x","wanted":["fax",3]})");
+  const prefs r = prefs_from(
+      R"({"values":{"audio":{"noise":[1]},"fax":{}},"target":"x","wanted":["fax",3,"audio.A B","fax.x"],"use":{"video":"../x","fax":"y"}})");
   CHECK(r.of(model_kind::audio).empty());
   CHECK(r.target == clip_target::picture);
-  CHECK_FALSE(r.want(model_kind::audio));
+  CHECK(r.wanted.empty());
+  CHECK(r.use_of(model_kind::video).empty());
 }
 
 TEST_CASE("enhance: sizes read as the install line says them", "[enhance]") {
@@ -383,7 +404,7 @@ TEST_CASE("enhance: nothing is requested before the click, then only that kind's
   }
   CHECK(mv::test::read_bytes(f.data / "models/audio/denoise.onnx") == f.audio_weights);
   CHECK(f.eng->download_status(model_kind::video).state == dl_state::absent);
-  CHECK(f.eng->current_prefs().want(model_kind::audio));
+  CHECK(f.eng->current_prefs().want("audio.model"));
   REQUIRE(eventually([&] { return parsed(f.host.tree(kSettingsScreen)).has("remove.audio"); }));
   CHECK(parsed(f.host.tree(kSettingsScreen)).text("state.audio").rfind("Installed", 0) == 0);
 
@@ -391,7 +412,111 @@ TEST_CASE("enhance: nothing is requested before the click, then only that kind's
   f.eng->event(kSettingsScreen, "remove.audio", MV_SLOT_EVENT_CLICK, "");
   CHECK_FALSE(fs::exists(f.data / "models/audio/denoise.onnx"));
   CHECK(f.eng->download_status(model_kind::audio).state == dl_state::absent);
-  CHECK_FALSE(f.eng->current_prefs().want(model_kind::audio));
+  CHECK_FALSE(f.eng->current_prefs().want("audio.model"));
+}
+
+TEST_CASE("enhance: a kind with two models: choose one, each downloads on its own", "[enhance]") {
+  fixture f;
+  // A second video model beside model.json: bigger weights, its own pin.
+  const std::string best_url = "https://huggingface.co/mv-test/upscale/resolve/0123abcd/best.onnx";
+  const std::vector<std::uint8_t> best_weights = mv::test::pattern(120'000, 3);
+  {
+    const auto raw = mv::test::read_bytes(f.self / "manifest.json");
+    auto m = mv::json::parse(std::string(raw.begin(), raw.end()), 16);
+    REQUIRE(m);
+    mv::json::writer w;
+    w.begin_object().key("id").string("enhance").key("remote").begin_array();
+    for (const mv::json::value& r : m->find("remote")->a) {
+      w.begin_object();
+      for (const char* k : {"url", "path", "sha256", "licence"}) w.key(k).string(*r.str(k));
+      w.key("size").integer(*r.integer("size")).end_object();
+    }
+    w.begin_object().key("url").string(best_url).key("path").string("video/best.onnx")
+        .key("size").integer(static_cast<std::int64_t>(best_weights.size())).key("sha256").string(hex_of(best_weights))
+        .key("licence").string("BSD-3-Clause").end_object();
+    w.end_array().end_object();
+    write_text(f.self / "manifest.json", w.take());
+    std::string best = kVideoSpec;
+    best.replace(best.find("\"Detail\""), 8, "\"Detail, best\", \"summary\": \"Slower, finer\"");
+    best.replace(best.find("up.onnx"), 7, "best.onnx");
+    write_text(f.self / "models/video/best.json", best);
+    write_text(f.self / "models/video/Not An Id.json", kVideoSpec);  // not a model id: not offered
+    f.net->files[best_url] = best_weights;
+    f.restart();
+  }
+
+  // model.json's is the one in use until the person chooses.
+  REQUIRE(f.eng->spec(model_kind::video));
+  CHECK(f.eng->spec(model_kind::video)->id == "model");
+  f.eng->settings_opened(1);
+  {
+    parsed t(f.host.tree(kSettingsScreen));
+    REQUIRE(t.has("model.video"));
+    const auto& options = t.node("model.video")->find("options")->a;
+    REQUIRE(options.size() == 2);
+    CHECK(*options[0].str("id") == "model");
+    CHECK(*options[1].str("id") == "best");
+    CHECK(options[1].str("text")->find("not downloaded") != std::string::npos);
+    CHECK(*t.node("model.video")->str("value") == "model");
+    CHECK_FALSE(t.has("model.audio"));  // one audio model: nothing to choose
+  }
+  f.eng->event(kSettingsScreen, "install.video", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::video).state == dl_state::ready; }));
+
+  // Choosing the other: the sheet offers its Download, and clicking it there
+  // fetches only its pin.
+  f.eng->event(kSettingsScreen, "model.video", MV_SLOT_EVENT_CHANGE, "\"best\"");
+  f.eng->event(kSettingsScreen, "model.video", MV_SLOT_EVENT_CHANGE, "\"nope\"");  // not a model: ignored
+  CHECK(f.eng->current_prefs().use_of(model_kind::video) == "best");
+  CHECK(f.eng->spec(model_kind::video)->id == "best");
+  CHECK(f.eng->download_status(model_kind::video).state == dl_state::absent);
+  const fs::path clip = f.dir / "clip.mov";
+  write_bytes(clip, ftyp("qt  ", "qt  "));
+  f.host.facts = {true, false};
+  f.eng->sheet_opened(2, utf8(clip));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    CHECK(*t.node("model.video")->str("value") == "best");
+    REQUIRE(t.has("install.video"));
+    CHECK(t.node("install.video")->str("label")->find("(1 MB)") != std::string::npos);
+    CHECK(t.node("run")->boolean("disabled").value_or(false));
+  }
+  f.eng->event(kSheetScreen, "install.video", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::video).state == dl_state::ready; }));
+  {
+    std::lock_guard lock(f.net->m);
+    REQUIRE(f.net->calls.size() == 2);
+    CHECK(f.net->calls[1].first == best_url);
+  }
+  CHECK(f.eng->current_prefs().want("video.best"));
+  CHECK(f.eng->current_prefs().want("video.model"));
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).has("k.video.scale"); }));
+
+  // Both are kept; the page names the one not in use, with its own Remove.
+  f.eng->settings_opened(3);
+  {
+    parsed t(f.host.tree(kSettingsScreen));
+    CHECK(t.text("other.video.model").find("Also downloaded") != std::string::npos);
+    CHECK(t.has("remove.video.model"));
+    CHECK(t.text("summary.video") == "Slower, finer");
+  }
+  // A compiled cache beside each: Remove takes the model's own.
+  fs::create_directories(f.data / "models/video-cache");
+  fs::create_directories(f.data / "models/video-cache-best");
+  CHECK(cache_dir_for("m/video", "model") == "m/video-cache");
+  CHECK(cache_dir_for("m/video", "best") == "m/video-cache-best");
+  f.eng->event(kSettingsScreen, "remove.video.model", MV_SLOT_EVENT_CLICK, "");
+  CHECK_FALSE(fs::exists(f.data / "models/video/up.onnx"));
+  CHECK_FALSE(fs::exists(f.data / "models/video-cache"));
+  CHECK(fs::exists(f.data / "models/video/best.onnx"));
+  CHECK(fs::exists(f.data / "models/video-cache-best"));
+  CHECK_FALSE(f.eng->current_prefs().want("video.model"));
+  CHECK(f.eng->download_status(model_kind::video).state == dl_state::ready);
+
+  // The choice and the downloads survive a restart.
+  f.restart();
+  CHECK(f.eng->spec(model_kind::video)->id == "best");
+  CHECK(f.eng->download_status(model_kind::video).state == dl_state::ready);
 }
 
 TEST_CASE("enhance: a cut download resumes with Range, also after a restart", "[enhance]") {
@@ -417,7 +542,7 @@ TEST_CASE("enhance: a cut download resumes with Range, also after a restart", "[
   g.restart();  // the engine stops its download (the part stays)
   g.net->cut = [](std::size_t) { return -1LL; };
   if (g.eng->download_status(model_kind::video).state != dl_state::ready) {
-    CHECK(g.eng->current_prefs().want(model_kind::video));
+    CHECK(g.eng->current_prefs().want("video.model"));
     g.eng->resume_wanted();
     REQUIRE(eventually([&] { return g.eng->download_status(model_kind::video).state == dl_state::ready; }));
   }
@@ -470,7 +595,8 @@ TEST_CASE("enhance: the sheet shows only the item's own knobs", "[enhance]") {
   {
     parsed t(f.host.tree(kSheetScreen));
     CHECK(t.text("file") == "song.mp3");
-    CHECK(t.text("missing.audio").find("not installed") != std::string::npos);
+    CHECK(t.text("missing.audio").find("not downloaded") != std::string::npos);
+    CHECK(t.has("install.audio"));  // downloaded from the sheet, not only from Settings
     CHECK_FALSE(t.has("k.audio.noise"));
     CHECK(t.node("run")->boolean("disabled").value_or(false));
     CHECK_FALSE(t.has("target"));
@@ -1140,6 +1266,34 @@ TEST_CASE("enhance: the preview is the frame split, letterboxed to the sheet", "
   CHECK(shrink(before.rgb, 200, 50, 960).width == 200u);
 }
 
+TEST_CASE("enhance: a photo is shown being redrawn, behind a glowing front", "[enhance][preview]") {
+  // The original: grey, 100 x 100. The output being written: white, 200 x 200.
+  preview_image before;
+  before.width = before.height = 100;
+  before.rgb.assign(100 * 100 * 3, 100);
+  const std::vector<std::uint8_t> out(200 * 200 * 3, 250);
+  // The top half done, and the next band done to a quarter across.
+  const reveal_front at{0.5, 0.75, 0.25};
+  const preview_image p = partial_of(before, out, 200, 200, at);
+  REQUIRE(p.width == 100u);
+  const auto px = [&](std::uint32_t x, std::uint32_t y) { return p.rgb[(std::size_t{y} * 100 + x) * 3]; };
+  CHECK(px(50, 10) == 250);  // above the front: enhanced
+  CHECK(px(10, 60) == 250);  // in the band, left of x: enhanced
+  CHECK(px(60, 60) == 100);  // in the band, right of x: still the original
+  CHECK(px(50, 90) == 100);  // below the band: the original
+  // Composed: the part still to come is dimmer, and the front glows.
+  const auto bgra = compose_reveal(p, at, 200, 200);
+  REQUIRE(bgra.size() == 200u * 200u * 4);
+  const auto red = [&](std::uint32_t x, std::uint32_t y) { return bgra[(std::size_t{y} * 200 + x) * 4 + 2]; };
+  CHECK(red(100, 20) == 250);   // done, away from the front
+  CHECK(red(160, 190) < 100);   // still to come: dimmed
+  const std::uint8_t* line = &bgra[(std::size_t{150} * 200 + 20) * 4];  // the band's lower edge, left of x
+  CHECK((line[0] != 250 || line[1] != 250 || line[2] != 250));  // tinted by the glow
+  // Finished (the front past the end): the picture alone, nothing dimmed or tinted.
+  const auto done = compose_reveal(partial_of(before, out, 200, 200, {1, 1, 1}), {1, 1, 1}, 200, 200);
+  CHECK(done[(std::size_t{190} * 200 + 160) * 4 + 2] == 250);
+}
+
 TEST_CASE("enhance: a clip's run shows a glowing preview, held still once it ends", "[enhance][preview]") {
   fixture f;
   const fs::path clip = f.dir / "clip.mov";
@@ -1193,12 +1347,20 @@ TEST_CASE("enhance: a clip's run shows a glowing preview, held still once it end
     parsed t(f.host.tree(kSheetScreen));
     CHECK(*t.node("preview")->str("glow") == "moving");
     CHECK(*t.node("progress")->str("look") == "glow");
-    CHECK(t.node("preview")->find("marks")->a.size() == 2u);
+    CHECK(t.has("sides"));  // split from a clip's first frame, said in words under it
   }
   {
     std::lock_guard lock(f.host.m);
     CHECK(f.host.surface_w == 860u);  // the sheet's width at its backing scale
-    CHECK(f.host.surface_h == kPreviewHeight * 2);
+    // As tall as the clip's shape asks across the sheet, within 160-300 points;
+    // the tree says the same height.
+    CHECK(f.host.surface_h >= 160u * 2);
+    CHECK(f.host.surface_h <= 320u * 2);
+  }
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    std::lock_guard lock(f.host.m);
+    CHECK(static_cast<std::uint32_t>(*t.node("preview")->integer("height")) * 2 == f.host.surface_h);
   }
   allowed = 3;
   REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as") != std::string::npos; }));

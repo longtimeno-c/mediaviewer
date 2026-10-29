@@ -128,6 +128,21 @@ const knob* model_spec::find(std::string_view id) const noexcept {
   return nullptr;
 }
 
+std::string cache_dir_for(const std::string& models_dir, const std::string& id) {
+  return id.empty() || id == kDefaultModelId ? models_dir + "-cache" : models_dir + "-cache-" + id;
+}
+
+std::optional<std::string> model_id_of(std::string_view file_name) {
+  constexpr std::string_view ext = ".json";
+  if (file_name.size() <= ext.size() || file_name.substr(file_name.size() - ext.size()) != ext) return std::nullopt;
+  const std::string_view id = file_name.substr(0, file_name.size() - ext.size());
+  if (id.size() > 32) return std::nullopt;
+  for (const char c : id) {
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-')) return std::nullopt;
+  }
+  return std::string(id);
+}
+
 std::optional<model_spec> parse_spec(std::string_view json_text, model_kind expected) {
   const auto doc = json::parse(json_text, 16);
   if (!doc || doc->k != json::kind::object) return std::nullopt;
@@ -141,6 +156,10 @@ std::optional<model_spec> parse_spec(std::string_view json_text, model_kind expe
   if (const json::value* credit = doc->find("credit")) {
     if (!label_text(credit->k == json::kind::string ? &credit->s : nullptr, 200)) return std::nullopt;
     s.credit = credit->s;
+  }
+  if (const json::value* summary = doc->find("summary")) {
+    if (!label_text(summary->k == json::kind::string ? &summary->s : nullptr, 160)) return std::nullopt;
+    s.summary = summary->s;
   }
   const json::value* weights = doc->find("weights");
   if (!weights || weights->k != json::kind::array || weights->a.empty() || weights->a.size() > 8) {

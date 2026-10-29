@@ -409,6 +409,22 @@ void job_runner::run_still(job_request r, job_events ev) {
   run_port::still out;
   out.width = static_cast<std::uint32_t>(ow);
   out.height = static_cast<std::uint32_t>(oh);
+  // The sheet watches the photo being redrawn: the tiles so far, about four
+  // times a second. Nearest samples of the output (a few milliseconds), on
+  // this thread between tiles, so the run waits on nothing else.
+  auto last_reveal = std::chrono::steady_clock::now();
+  if (ev.reveal) {
+    po.placed = [&](std::uint32_t rows_done, std::uint32_t band_end, std::uint32_t x_end) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now - last_reveal < std::chrono::milliseconds(250)) return;
+      last_reveal = now;
+      reveal_front at;
+      at.y0 = static_cast<double>(rows_done) / static_cast<double>(oh);
+      at.y1 = static_cast<double>(band_end) / static_cast<double>(oh);
+      at.x = static_cast<double>(x_end) / static_cast<double>(ow);
+      ev.reveal(partial_of(before, out.rgb, out.width, out.height, at), at);
+    };
+  }
   const expected ok = enhance_picture(pic->rgb, pic->width, pic->height, **tiles, po, out.rgb);
   pic->rgb = {};  // the original's pixels go before the encode needs its own
   if (!ok) return fail(why(ok.error()));

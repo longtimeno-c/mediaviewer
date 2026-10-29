@@ -2797,6 +2797,42 @@ preview's copies are made on Enhance's runner thread from frames it already deco
 Enhance that asks for 10 needs this MediaViewer or later ("needs a newer MediaViewer" on an older
 one). Not measured: the glow's own CPU on either chrome.
 
+**Enhance offers a choice of model per kind, and the Mac host can run it (2026-10-29).** The owner
+asked why Enhance said it "cannot run its models yet", why its models were only about 5 MB, and why
+nothing led to it. Three answers. (1) **A Mac host bug:** the Mac loads slot add-ons with
+`slot_services()`, and slices 3–5 had put the sound, frame and photo rows only in the AI pack's
+`ai_services()`, so Enhance on the Mac never got a runner; Windows hands every add-on the rows. Now
+the slot services carry them too. (2) **A choice, like Local search's tiers:** every
+`models/<kind>/<id>.json` in the add-on is a model of that kind; `model.json` is the one used until
+the person picks another (Settings → Add-ons → Enhance, or the sheet), and each model downloads,
+stops and is removed on its own (keyed `<kind>.<id>`). The photo and video kinds gain **Real-ESRGAN
+x4plus** (64 MB, BSD-3-Clause, the same pinned repo and revision as x4v3, the same tensor contract)
+as "Detail, best"; x4v3 stays the default, "Detail, fast". This does not reverse "Enhance's first
+video model": x4plus was turned down as the *only* model for its cost, and it is still not the
+default. Measured with ONNX Runtime (Python) on this Mac, one 256-pixel tile: x4plus 0.135 s on
+Core ML against x4v3's 0.023 s, and 3.4 s against 0.20 s on the CPU (7 threads); peak memory about
+470 MB on Core ML and 1.8 GB on the CPU against 220 / 150 MB, hence its `run_bytes` of 2.0 GB
+(photo) and 2.2 GB (clip). On a CPU-only PC a 12 MP photo at x4plus takes minutes, which its summary
+says. Not measured: x4plus's quality against x4v3 on a set of our own (upstream's comparisons only),
+its end-to-end run times in the app, and Windows at all. (3) **A way in:** Enhance's command gets
+`Ctrl+Shift+R` / `⌘⇧R` (free in the table), the sheet downloads a missing model itself instead of
+pointing at Settings, the settings page says where Enhance opens from, and a **✦ Enhance** button
+sits in the command bar (a `bar_items` entry, contribution API 5, which add-ons already had).
+
+**Enhance's sheet, seen in the app (2026-10-29).** Run on the Mac by the owner and then by us in a
+dev copy: the sheet cut off its own buttons, a square photo sat small between dark bands with
+"Before" on the band and "Enhanced" hidden, the bar's icon-only button was not found, and the
+progress bar read as "so dead". Changed: the sheet's root is a `scroll`, with no title or Close of
+its own (the host's header has both) and a taller default (680); the preview is as tall as the
+picture asks; its labels are a caption under it (the hosts' marks are map labels, unreadable over
+a light photo); a photo is shown being redrawn tile by tile behind a glowing front; command-bar
+items show their name beside the icon on both hosts; the glow edge is three layers turning at their
+own pace with a breathing halo, and the bar's colours flow. Nothing in the tree vocabulary changed,
+so no contribution API step. Cost: the reveal samples the output four times a second on the
+runner's thread (nearest samples at 960 pixels: a few milliseconds a time, not measured
+separately); the hosts' drawing stays capped at 30 fps, only while shown, off with Reduce Motion /
+animations off. Not measured: the glow's CPU on either host, and Windows not run at all.
+
 ## Not built
 
 - Voice query add-on (PRs 27–28): no voice add-on or `search_query` host entry exists.

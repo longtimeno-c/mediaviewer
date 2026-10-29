@@ -414,7 +414,7 @@ class EnhancePackTest(unittest.TestCase):
         self.assertEqual(m["remote"], [self.pin])
         c = m["contributes"]
         self.assertEqual([s["place"] for s in c["screens"]], ["sheet", "settings"])
-        self.assertNotIn("windows", c["commands"][0])
+        self.assertEqual(c["commands"][0]["windows"], "Ctrl+Shift+R")  # docs/design/16
 
     def test_a_pin_over_5_gb_fails_the_pack(self):
         (self.src / "remote.json").write_text(json.dumps([dict(self.pin, size=5_000_000_001)]))
@@ -435,8 +435,11 @@ class EnhancePackTest(unittest.TestCase):
         m = self.pack()
         self.assertEqual(m["arch"], "arm64")
         for r in m["remote"]:
-            spec = json.loads((ROOT / "src/addons/enhance/models" / r["path"].split("/")[0] / "model.json").read_text())
-            self.assertIn(r["path"].split("/", 1)[1], spec["weights"])
+            # Each pin is a weights file of one of its kind's models (models/<kind>/<id>.json).
+            kind, name = r["path"].split("/", 1)
+            weights = [w for f in (ROOT / "src/addons/enhance/models" / kind).glob("*.json")
+                       for w in json.loads(f.read_text())["weights"]]
+            self.assertIn(name, weights)
             self.assertLessEqual(r["size"], 5_000_000_000)
 
 
