@@ -19,9 +19,11 @@ screens from its view trees.
 
 - **Its page in Settings → Add-ons** (place `settings`): one card per kind (photos, video,
   audio) with that kind's model, its credit and size, and Download / Stop / Resume / Remove.
-- **The sheet over the viewer** (place `sheet`): `Enhance…` in the palette and the context menu,
-  and `Ctrl+Shift+R` / `⌘⇧R` ([16](16-commands.md)), for the file on screen. The settings page says
-  so. No button in the viewer's bar: no contribution point puts an add-on there yet.
+- **The sheet over the viewer** (place `sheet`): the command bar's **✦ Enhance** button (a
+  `bar_items` entry), `Enhance…` in the palette and the context menu, and `Ctrl+Shift+R` / `⌘⇧R`
+  ([16](16-commands.md)), for the file on screen. The settings page says so. Its tree is a
+  `scroll` at the root, so a tall sheet scrolls rather than cutting off its button; the host's
+  header carries the title and Done.
 
 It is not part of Local search and not in the `ai` family: search reads pixels and writes an
 index, Enhance writes a new file. Settings → Add-ons lists it on Windows and on Apple silicon
@@ -130,13 +132,20 @@ Core ML compile the graph (it refuses unbounded dimensions): Apple silicon runs 
 compiled once into `models/video-cache` in the add-on's data folder; elsewhere on the CPU with all
 but one core.
 
-**The preview.** While a clip's picture or a photo runs, the sheet shows the picture split down
-the middle: the original on the left, the enhanced on the right, with a thin light divider
-(`preview.h`). The runner hands over small copies (960 pixels on the long edge, box-averaged):
-a clip's first frame and then about one a second; a photo's original at the start and both at
-the end. The engine letterboxes them to the sheet's width at its scale (at most 2048 × 1024) and
-posts them to a `surface` with a `"glow"` edge, which turns while the run goes and holds still
-once it ends; the progress bar takes the glow's colours (`"look": "glow"`). Both need
+**The preview.** While a clip's picture runs, the sheet shows the frame split down the middle:
+the original on the left, the enhanced on the right, with a thin light divider and a caption under
+it saying so (`preview.h`). The runner hands over small copies (960 pixels on the long edge,
+box-averaged): a clip's first frame and then about one a second. **A photo is shown being
+redrawn** (2026-10-29): about four times a second the runner samples the tiles written so far
+(`picture_options::placed`, nearest samples, a few milliseconds on its own thread) and the sheet
+shows them over the original, the part still to come dimmed, behind a front line in the glow's
+colours (`compose_reveal`); the split once it is done. The surface is as tall as the picture's
+shape asks across the sheet (160–320 points), and the engine letterboxes into it at the sheet's
+scale (at most 2048 × 1024), posting to a `surface` with a `"glow"` edge. The hosts draw that edge
+after Apple Intelligence's: a crisp ring, a soft glow and a wide halo turning at their own pace
+(6, 9 the other way, 13 s) with the halo breathing (2.2 s), all held still once the run ends; the
+progress bar (`"look": "glow"`) has its colours flowing along it (3 s), a sweeping highlight and a
+glow beneath (`GlowTiming` in ScreenView.swift, `GlowMath` on Windows). Both need
 contribution API 10 ([25](25-open-addons.md)), so this Enhance asks for 10. The copies are made on
 the runner's thread from the frame it already has; nothing is decoded twice, and nothing touches
 the canvas or the render device. A sound-only run shows no preview.

@@ -6,6 +6,11 @@
 // glow round (contribution API 10). The runner hands over small copies about
 // once a second; the engine letterboxes them to the surface's size.
 //
+// A photo is one picture, so while it runs (2026-10-29) the sheet shows it
+// being redrawn instead: the enhanced tiles replace the original as they are
+// made, behind a glowing front, about four times a second; the split once
+// it is done.
+//
 // Pure: no I/O, no host. The surface wants 8-bit BGRA, premultiplied, sRGB;
 // every pixel here is opaque.
 #pragma once
@@ -34,5 +39,23 @@ struct preview_image {
 // divider. With no `after`, `before` alone; with no `before`, `after` alone.
 [[nodiscard]] std::vector<std::uint8_t> compose_preview(const preview_image& before, const preview_image& after,
                                                         std::uint32_t out_w, std::uint32_t out_h, double split = 0.5);
+
+// How far a photo's run has come, as fractions of the picture: every row
+// above `y0` is enhanced, and the band from `y0` to `y1` left of `x`.
+struct reveal_front {
+  double y0 = 0, y1 = 0, x = 0;
+};
+
+// `out` (ow x oh RGB, being written) sampled at `before`'s size: the enhanced
+// pixels where the run has been, `before`'s elsewhere. Nearest samples: it is
+// made several times a second on the runner's thread.
+[[nodiscard]] preview_image partial_of(const preview_image& before, std::span<const std::uint8_t> out,
+                                       std::uint32_t ow, std::uint32_t oh, reveal_front at);
+
+// The sheet's picture while a photo runs, out_w x out_h BGRA: `partial`
+// fitted as compose_preview fits it, the part still to come a little dimmer,
+// and a line in the glow's colours along the front, with a soft halo.
+[[nodiscard]] std::vector<std::uint8_t> compose_reveal(const preview_image& partial, reveal_front at,
+                                                       std::uint32_t out_w, std::uint32_t out_h);
 
 }  // namespace mv::enhance

@@ -667,8 +667,22 @@ public static partial class IslandHost
         _slotBarPanel.Children.Clear();
         foreach (SlotItem item in _slotItems.Where(i => i.Slot == "bar"))
         {
-            Button b = PathIconButton(SlotGlyph(item.Symbol), () => InvokeSlotItem(item));
-            if (b.Content is FontIcon icon) icon.FontFamily = SymbolFont;
+            // The icon and its name, as the bar's own Open / View / Edit read: an
+            // icon alone was not found (Enhance, 2026-10-29). The Mac twin is
+            // SlotBarItems.
+            Button b = TextButton(item.Label, () => InvokeSlotItem(item));
+            if (b.Content is UIElement name)
+            {
+                b.Content = null;
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(5) };
+                row.Children.Add(new FontIcon
+                {
+                    Glyph = SlotGlyph(item.Symbol), FontFamily = SymbolFont, FontSize = 12, Foreground = Brush(Title),
+                    VerticalAlignment = VerticalAlignment.Center,
+                });
+                row.Children.Add(name);
+                b.Content = row;
+            }
             AutomationProperties.SetName(b, item.Label);
             ToolTipService.SetToolTip(b, item.Label);
             _slotBarPanel.Children.Add(b);

@@ -2113,8 +2113,9 @@ before/after preview with a glowing edge and progress bar (contribution API 10: 
 Windows `IslandHost.Glow.cs`). The release packs Enhance as a preferred add-on, like Places.
 Each kind may ship several models (`models/<kind>/<id>.json`; `model.json` is the default): photos
 and video offer "Detail, fast" (x4v3) and "Detail, best" (x4plus), chosen on the page or the sheet,
-each downloaded and removed on its own. The sheet opens on `Ctrl+Shift+R` / `⌘⇧R` and downloads a
-missing model itself.
+each downloaded and removed on its own. The sheet opens from the command bar's ✦ Enhance button or
+`Ctrl+Shift+R` / `⌘⇧R` and downloads a missing model itself; a photo's run shows it redrawn tile by
+tile behind a glowing front.
 
 Pack it from a dev build (ONNX Runtime, the models' specs and `remote.json` are staged beside the
 library by the build), then sideload as any slot add-on:

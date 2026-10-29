@@ -37,6 +37,13 @@ std::vector<std::uint8_t> head_of(const std::string& path) {
   return head;
 }
 
+// The preview's height in points for a picture of `aspect` (width / height)
+// across a sheet `width_pt` wide: the picture fills the width, within reason.
+std::uint32_t preview_height(float width_pt, double aspect) {
+  if (aspect <= 0) return kPreviewHeight;
+  return static_cast<std::uint32_t>(std::clamp(std::lround(width_pt / aspect), 160L, 320L));
+}
+
 std::string name_of(const std::string& path) {
   const std::size_t slash = path.find_last_of("/\\");
   return slash == std::string::npos ? path : path.substr(slash + 1);
@@ -249,6 +256,8 @@ sheet_view engine::sheet_locked() const {
   v.progress = progress_;
   v.eta = eta_;
   v.preview = preview_;
+  v.preview_split = preview_split_;
+  v.preview_height = preview_ ? posted_height_ : kPreviewHeight;
   v.status = status_;
   switch (item_) {
     case item_kind::animation: v.note = "Enhance has no model for animations yet."; break;
@@ -342,6 +351,8 @@ void engine::sheet_opened(std::uint64_t generation, const std::string& request_p
   if (!running_) {
     if (path != path_) status_.clear();
     preview_ = false;  // a preview belongs to the run that drew it
+    preview_split_ = false;
+    preview_aspect_ = 0;
     path_ = path;
     item_ = item;
     facts_ = facts;
@@ -450,6 +461,8 @@ void engine::run() {
     progress_ = -1;
     eta_.clear();
     preview_ = false;
+    preview_split_ = false;
+    preview_aspect_ = 0;
     run_started_ = std::chrono::steady_clock::now();
     status_.clear();
     post_sheet_locked();
@@ -475,26 +488,43 @@ void engine::run() {
     w.end_object().end_array();
     if (!port_.diff || !port_.diff(kSheetScreen, sheet_gen_, w.str())) post_sheet_locked();
   };
-  ev.preview = [this](preview_image before, preview_image after) {
-    // Composed off the lock: a letterbox at the sheet's pixel size.
+  // A preview's pixels at the sheet's size, posted to its surface. The tree
+  // goes first when the surface is new or its shape changed (pixels for a
+  // surface the tree does not show are dropped).
+  const auto post_preview = [this](const preview_image& shape, bool split,
+                                    const std::function<std::vector<std::uint8_t>(std::uint32_t, std::uint32_t)>& draw) {
     float w_pt = 420, sc = 2;
+    std::uint32_t h_pt = kPreviewHeight;
     {
       std::lock_guard lock(m_);
       if (!running_ || sheet_gen_ == 0) return;
       w_pt = sheet_width_pt_;
       sc = sheet_scale_;
+      if (!shape.empty()) preview_aspect_ = static_cast<double>(shape.width) / shape.height;
+      h_pt = preview_height(w_pt, preview_aspect_);
     }
     const auto ow = static_cast<std::uint32_t>(std::min(2048.0f, w_pt * sc));
-    const auto oh = static_cast<std::uint32_t>(std::min(1024.0f, static_cast<float>(kPreviewHeight) * sc));
-    const std::vector<std::uint8_t> bgra = compose_preview(before, after, ow, oh);
+    const auto oh = static_cast<std::uint32_t>(std::min(1024.0f, static_cast<float>(h_pt) * sc));
+    // Composed off the lock.
+    const std::vector<std::uint8_t> bgra = draw(ow, oh);
     std::lock_guard lock(m_);
     if (!running_ || sheet_gen_ == 0 || !port_.surface) return;
-    if (!preview_) {
-      // The node first: pixels for a surface the tree does not show are dropped.
+    if (!preview_ || preview_split_ != split || posted_height_ != h_pt) {
       preview_ = true;
+      preview_split_ = split;
+      posted_height_ = h_pt;
       post_sheet_locked();
     }
     (void)port_.surface(kSheetScreen, "preview", sheet_gen_, bgra, ow, oh);
+  };
+  ev.preview = [post_preview](preview_image before, preview_image after) {
+    const bool split = !before.empty() && !after.empty();
+    post_preview(before.empty() ? after : before, split, [&](std::uint32_t ow, std::uint32_t oh) {
+      return compose_preview(before, after, ow, oh);
+    });
+  };
+  ev.reveal = [post_preview](preview_image partial, reveal_front at) {
+    post_preview(partial, false, [&](std::uint32_t ow, std::uint32_t oh) { return compose_reveal(partial, at, ow, oh); });
   };
   ev.done = [this](bool ok, const std::string& output, const std::string& message) {
     std::lock_guard lock(m_);

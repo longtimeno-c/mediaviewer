@@ -1266,6 +1266,34 @@ TEST_CASE("enhance: the preview is the frame split, letterboxed to the sheet", "
   CHECK(shrink(before.rgb, 200, 50, 960).width == 200u);
 }
 
+TEST_CASE("enhance: a photo is shown being redrawn, behind a glowing front", "[enhance][preview]") {
+  // The original: grey, 100 x 100. The output being written: white, 200 x 200.
+  preview_image before;
+  before.width = before.height = 100;
+  before.rgb.assign(100 * 100 * 3, 100);
+  const std::vector<std::uint8_t> out(200 * 200 * 3, 250);
+  // The top half done, and the next band done to a quarter across.
+  const reveal_front at{0.5, 0.75, 0.25};
+  const preview_image p = partial_of(before, out, 200, 200, at);
+  REQUIRE(p.width == 100u);
+  const auto px = [&](std::uint32_t x, std::uint32_t y) { return p.rgb[(std::size_t{y} * 100 + x) * 3]; };
+  CHECK(px(50, 10) == 250);  // above the front: enhanced
+  CHECK(px(10, 60) == 250);  // in the band, left of x: enhanced
+  CHECK(px(60, 60) == 100);  // in the band, right of x: still the original
+  CHECK(px(50, 90) == 100);  // below the band: the original
+  // Composed: the part still to come is dimmer, and the front glows.
+  const auto bgra = compose_reveal(p, at, 200, 200);
+  REQUIRE(bgra.size() == 200u * 200u * 4);
+  const auto red = [&](std::uint32_t x, std::uint32_t y) { return bgra[(std::size_t{y} * 200 + x) * 4 + 2]; };
+  CHECK(red(100, 20) == 250);   // done, away from the front
+  CHECK(red(160, 190) < 100);   // still to come: dimmed
+  const std::uint8_t* line = &bgra[(std::size_t{150} * 200 + 20) * 4];  // the band's lower edge, left of x
+  CHECK((line[0] != 250 || line[1] != 250 || line[2] != 250));  // tinted by the glow
+  // Finished (the front past the end): the picture alone, nothing dimmed or tinted.
+  const auto done = compose_reveal(partial_of(before, out, 200, 200, {1, 1, 1}), {1, 1, 1}, 200, 200);
+  CHECK(done[(std::size_t{190} * 200 + 160) * 4 + 2] == 250);
+}
+
 TEST_CASE("enhance: a clip's run shows a glowing preview, held still once it ends", "[enhance][preview]") {
   fixture f;
   const fs::path clip = f.dir / "clip.mov";
@@ -1319,12 +1347,20 @@ TEST_CASE("enhance: a clip's run shows a glowing preview, held still once it end
     parsed t(f.host.tree(kSheetScreen));
     CHECK(*t.node("preview")->str("glow") == "moving");
     CHECK(*t.node("progress")->str("look") == "glow");
-    CHECK(t.node("preview")->find("marks")->a.size() == 2u);
+    CHECK(t.has("sides"));  // split from a clip's first frame, said in words under it
   }
   {
     std::lock_guard lock(f.host.m);
     CHECK(f.host.surface_w == 860u);  // the sheet's width at its backing scale
-    CHECK(f.host.surface_h == kPreviewHeight * 2);
+    // As tall as the clip's shape asks across the sheet, within 160-300 points;
+    // the tree says the same height.
+    CHECK(f.host.surface_h >= 160u * 2);
+    CHECK(f.host.surface_h <= 320u * 2);
+  }
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    std::lock_guard lock(f.host.m);
+    CHECK(static_cast<std::uint32_t>(*t.node("preview")->integer("height")) * 2 == f.host.surface_h);
   }
   allowed = 3;
   REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as") != std::string::npos; }));

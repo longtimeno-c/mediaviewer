@@ -82,6 +82,9 @@ struct job_events {
   // A picture run's latest frame, small (preview.h): the original and the
   // enhanced picture. About once a second, from the job's thread.
   std::function<void(preview_image before, preview_image after)> preview;
+  // A photo's run, several times a second: the picture so far (preview.h
+  // partial_of) and how far the run has come.
+  std::function<void(preview_image partial, reveal_front at)> reveal;
 };
 
 class runner {
@@ -174,6 +177,9 @@ class engine {
   std::chrono::steady_clock::time_point run_started_{};
   std::string eta_;  // "About 12 minutes left", once a run has gone far enough to say
   bool preview_ = false;  // the sheet shows a preview surface
+  bool preview_split_ = false;  // ...split before / after (its labels show)
+  double preview_aspect_ = 0;   // the picture's width / height, once known
+  std::uint32_t posted_height_ = 0;  // the preview's height in the last tree
   float sheet_width_pt_ = 420;
   float sheet_scale_ = 2;
   std::string status_;

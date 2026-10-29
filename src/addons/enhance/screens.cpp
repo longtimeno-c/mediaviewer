@@ -61,15 +61,12 @@ void progress(json::writer& w, const std::string& id, const std::string& label, 
 // The live preview (contribution API 10): the latest frame, the original left
 // of the split and the enhanced picture right of it, in a surface the host
 // draws a slow glow round while the run goes.
-void preview_node(json::writer& w, bool moving) {
+void preview_node(json::writer& w, const sheet_view& v) {
   w.begin_object().key("type").string("surface").key("id").string("preview").key("surface").string("preview");
-  w.key("label").string("Preview: the original on the left, enhanced on the right");
-  w.key("height").integer(kPreviewHeight);
-  w.key("glow").string(moving ? "moving" : "still");
-  w.key("marks").begin_array();
-  w.begin_object().key("x").number(0.12).key("y").number(0.9).key("text").string("Before").end_object();
-  w.begin_object().key("x").number(0.86).key("y").number(0.9).key("text").string("Enhanced").end_object();
-  w.end_array();
+  w.key("label").string(v.preview_split ? "Preview: the original on the left, enhanced on the right"
+                                        : "Preview: the photo as it is enhanced, top to bottom");
+  w.key("height").integer(v.preview_height);
+  w.key("glow").string(v.running ? "moving" : "still");
   w.end_object();
 }
 
@@ -291,8 +288,11 @@ std::string settings_tree(std::span<const model_card> cards) {
 
 std::string sheet_tree(const sheet_view& v) {
   json::writer w;
-  begin_stack(w, "root", "vertical", 12);
-  text(w, "title", "Enhance", "heading");
+  // A scroll at the root: a tall sheet (two models' sections, the preview)
+  // scrolls rather than cutting off its buttons. The host's own header
+  // carries the title and Done.
+  w.begin_object().key("type").string("scroll").key("id").string("root").key("axis").string("vertical");
+  w.key("children").begin_array();
   if (!v.file_name.empty()) text(w, "file", v.file_name, "secondary");
   if (v.item == item_kind::media) {
     const auto targets = targets_for(v.has_picture, v.has_sound);
@@ -334,22 +334,25 @@ std::string sheet_tree(const sheet_view& v) {
     end_stack(w);
   }
   if (!v.note.empty()) text(w, "note", v.note, "secondary");
-  if (v.preview) preview_node(w, v.running);
+  if (v.preview) {
+    preview_node(w, v);
+    // Said under it, not marked on it: a label over a light photo cannot be read.
+    if (v.preview_split) text(w, "sides", "Before on the left, enhanced on the right.", "caption");
+  }
   if (v.running) {
     progress(w, "progress", "Enhancing", v.progress, "glow");
     text(w, "eta", v.eta.empty() ? std::string("Working…") : v.eta, "secondary");
   }
   if (!v.status.empty()) text(w, "status", v.status, "secondary");
-  text(w, "where", "Enhance writes a new file beside the original. The original is not changed.", "caption");
   begin_stack(w, "buttons", "horizontal", 8);
   if (v.running) {
     button(w, "cancel", "Cancel", "destructive");
   } else {
-    button(w, "close", "Close");
     button(w, "run", "Enhance", "primary", !v.can_run);
   }
   end_stack(w);
-  end_stack(w);
+  text(w, "where", "A new file is written beside the original, which is never changed.", "caption");
+  w.end_array().end_object();
   return w.take();
 }
 

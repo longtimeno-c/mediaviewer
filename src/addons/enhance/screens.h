@@ -80,6 +80,8 @@ struct sheet_view {
   double progress = -1;      // -1 indeterminate
   std::string eta;           // "About 12 minutes left", or "" while it cannot tell
   bool preview = false;      // a picture run has posted its first preview
+  bool preview_split = false;      // ...split before / after (else a photo being redrawn)
+  std::uint32_t preview_height = kPreviewHeight;
   std::string status;        // "Saved as IMG_0001-enhance.m4a", or why it stopped
 };
 [[nodiscard]] std::string sheet_tree(const sheet_view& v);

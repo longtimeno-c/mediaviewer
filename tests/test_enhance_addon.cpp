@@ -174,9 +174,15 @@ TEST_CASE("enhance: the shipped manifest declares the sheet, its settings page, 
   CHECK(c.screens[0].place == mv::addon::screen_place::sheet);
   CHECK(c.screens[1].id == "settings");
   CHECK(c.screens[1].place == mv::addon::screen_place::settings);
-  REQUIRE(c.items.size() == 1);
+  REQUIRE(c.items.size() == 2);
   CHECK(c.items[0].id == "enhance");
+  CHECK(c.items[0].slot == mv::addon::item_slot::context);
   CHECK(c.items[0].target == mv::addon::item_target::file);
+  // A button in the command bar: the way in a person can see.
+  CHECK(c.items[1].id == "button");
+  CHECK(c.items[1].slot == mv::addon::item_slot::bar);
+  CHECK(c.items[1].symbol == "sparkle");
+  CHECK(c.items[1].target == mv::addon::item_target::file);
   REQUIRE(d.m.commands.size() == 1);
   CHECK(d.m.commands[0].id == "open");
   CHECK(d.m.commands[0].windows == "Ctrl+Shift+R");  // docs/design/16
@@ -245,9 +251,16 @@ TEST_CASE("enhance: the add-on answers its settings page and sheet through the v
   CHECK(sheet.find("\"run\"") != std::string::npos);
   CHECK(sheet.find("\"disabled\":true") != std::string::npos);
 
-  // Close: the add-on hears it, and its Close button hides the sheet.
-  REQUIRE(reg.send_event("enhance", "enhance", "close", MV_SLOT_EVENT_CLICK, "") == status::ok);
+  // The host's Done closes it (the sheet has no Close of its own); the add-on hears it.
+  REQUIRE(reg.close_screen("enhance", "enhance") == status::ok);
   reg.drain();
+
+  // The command bar's button opens it too, on the file on screen.
+  const fs::path clip = s / "clip.mov";
+  write_bytes(clip, {0, 0, 0, 20, 'f', 't', 'y', 'p', 'q', 't', ' ', ' ', 0, 0, 0, 0, 'q', 't', ' ', ' '});
+  REQUIRE(reg.invoke_item("enhance", "button", "[\"" + json_path(clip) + "\"]") == status::ok);
+  reg.drain();
+  REQUIRE(eventually([&] { return screen_tree(reg, "enhance").find("clip.mov") != std::string::npos; }));
   loaded->reset();
 }
 #endif

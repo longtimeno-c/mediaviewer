@@ -2,9 +2,10 @@
  "description": "Writes a restored copy of the photo, clip or audio file on screen: less noise, clearer speech, more detail. The original is never changed. Each kind's model is downloaded from Hugging Face only when you ask for it, and runs on this computer.",
  "contributes": {
   "api": {"min": 10, "max": 10},
-  "screens": [{"id": "enhance", "title": "Enhance", "place": "sheet", "width": 460, "height": 560},
+  "screens": [{"id": "enhance", "title": "Enhance", "place": "sheet", "width": 480, "height": 680},
               {"id": "settings", "title": "Enhance", "place": "settings"}],
   "context_menu": [{"id": "enhance", "label": "Enhance…", "target": "file"}],
+  "bar_items": [{"id": "button", "label": "Enhance", "symbol": "sparkle", "target": "file"}],
   "commands": [{"id": "open", "name": "Enhance…", "windows": "Ctrl+Shift+R", "mac": "Cmd+Shift+R",
                 "modes": "viewing", "payload": "marked_or_current"}]
  }
