@@ -25,7 +25,7 @@ struct edit_stack {
 | `rotate_cw`, `rotate_ccw`, `flip_h`, `flip_v` | A D4 turn of what is displayed |
 | `crop` | Set the crop rect, normalised 0..1 in the straightened, uncropped frame |
 | `straighten` | Set the angle, clockwise, ±45° (`kMaxStraighten`) |
-| `resize` | Set the output size: long edge, exact, or percent |
+| `resize` | Set the output size: long edge, exact, or percent; and the stated resolution (Adjust Size, below) |
 | `adjust` | Set one colour parameter (`adjust_param`); `count` resets every colour parameter |
 
 Undo pops the list; reset clears it and returns the original exactly. `edit_session` keeps one
@@ -99,13 +99,14 @@ Three paths, reported back so the chrome can say which ran:
 | Bake | Any colour adjust | FP16 working image at full resolution (for a RAW, LibRaw's linear develop), geometry, the C++ kernel (`edit/bake.h`), sRGB-encoded RGBA8. The bake and the preview differ by 8-bit rounding only |
 
 Output is always upright: EXIF Orientation 1, EXIF pixel dimensions patched, `tiff:Orientation`
-1 in XMP.
+1 in XMP. It states one resolution, the stack's or else the source's (Adjust Size, below).
 
 **Options** (`export_options`, the export sheet on both hosts):
 
 - Format: JPEG (libjpeg-turbo; quality 1–100, default 92; 4:2:0, 4:2:2 or 4:4:4) or PNG
   (libspng; RGB when opaque, else RGBA). The sheet offers quality 100/95/92/85/75/60.
-- Size: the long edge (full, 3840, 2560, 2048, 1600, 1080 px), applied on top of the stack.
+- Size: the long edge (full, 3840, 2560, 2048, 1600, 1080 px), applied on top of the stack
+  (it replaces the stack's pixel size; a resolution the stack states is kept).
 - Metadata policy (`metadata_policy.h`): `all` (EXIF incl. maker notes, XMP, IPTC, comments),
   `minus_gps` (GPS IFD zeroed, XMP packets naming `exif:GPS*` dropped), `none`. The ICC profile
   is kept under every policy. JPEG writes EXIF/XMP as APP1 (a block too large for one segment is
@@ -129,6 +130,62 @@ turns at once; the write follows after the host's debounce, one at a time, and t
 while a write is in flight are carried to the rewritten file. When the frame is not MCU-aligned,
 only the Orientation tag is rewritten. Pixels are not touched either way.
 
+## Adjust Size (#288, shared core)
+
+macOS Preview's Tools ▸ Adjust Size… as maths both hosts drive. The host sheets, the command
+row ([16](16-commands.md)), the Edit workspace entry and the Mac menu item are not built yet.
+
+**Maths** (`edit/adjust_size.h`, header-only, constexpr, no platform include). `adjust_size`
+is the sheet's state. It opens on the stack's current output (`placement::output`) and the
+resolution in force. Width and height can be given in px, percent, in, cm, mm or pt (1/72 in);
+resolution in pixels per inch or per cm, one value for both axes. The rules:
+
+- Sizes are kept unrounded; `output()` rounds half away from zero, to between 1 and 65500 px.
+  With "Scale proportionally" on, the other side follows the *opened* aspect, so typing a side
+  again never drifts.
+- **Resample on**: a physical size is converted at the current resolution. Changing the
+  resolution keeps the physical size, so the pixel count follows it, as in Preview.
+- **Resample off**: the pixels stay the opened ones. A physical width or height sets the
+  resolution (3000 px at 10 in is 300 ppi), a percent scales the physical size, and a pixel
+  value is refused. Turning resample off puts the pixels back to the opened size.
+- **Fit into** (`kFitPresets`, 640×480 … 3840×2160): fits inside the box as given (a portrait
+  picture is not turned to match), keeps the ratio and turns resample and the lock on. It
+  enlarges a smaller picture, because published descriptions say Preview scales up or down to
+  the box (not checked on a Mac). `fit_into(box, false)` does not enlarge.
+- **Resulting size**: `percent_of_original()` is the output's pixel count as a percent of the
+  opened size. `estimated_bytes(file_bytes, file_pixels, output)` is the file's bytes per pixel
+  times the output's pixels, or the file's own size when the pixels do not change. It is only
+  proportional: compression is not linear in pixels, and a different format or quality changes
+  the size. The sheet should show it as an estimate.
+
+**In the stack.** `resize_spec::stated` (a `resolution`: ppi plus the unit it was given in)
+holds the resolution. It is added at the end with an "unstated" default, so every older spec
+and stack means what it did. `adjust_size_op` turns a finished sheet into **one** `resize` op,
+so undo takes back one step:
+
+- Resample on with new pixels writes `exact` w × h.
+- Otherwise the stack's existing pixel spec is kept (so a resample-off change still follows the
+  crop).
+- The resolution is written only if it changed. An unstated one stays unstated.
+
+A resolution alone changes no pixel. `geometry::identity()` stays true, and a JPEG with only
+rotate / flip / aligned crop plus a resolution still exports losslessly.
+
+**In the file.** `export_image` writes one resolution. It is the stack's stated one, else the
+source's (`source_resolution`: JPEG JFIF density, else EXIF X/YResolution; PNG `pHYs`, else
+`eXIf`; other formats' carried EXIF). A source that states none is written with none.
+
+- **JPEG**: JFIF density in dots/inch or dots/cm. It is a 16-bit integer, so a fractional ppi
+  rounds. On the lossless path the density is set on the transcoder.
+- **PNG**: `pHYs` per metre. A whole ppi reads back whole (11811/m → 300).
+- **EXIF**: carried EXIF has XResolution / YResolution / ResolutionUnit rewritten in place
+  (`codec::exif_set_resolution`), so the file does not contradict itself. A block without those
+  tags is left as it is: adding entries would grow IFD0, which is the PR 12 writer's job.
+- The resolution is written under every metadata policy. It is the picture's size, like the
+  ICC profile.
+- Not covered: Enhance's `export_pixels` and the viewer's lossless `rotate_in_viewer` keep the
+  file's bytes as they were. XMP `tiff:XResolution` is not rewritten.
+
 ## Editing scope line
 
 What exists is the first editing set:
@@ -139,7 +196,8 @@ What exists is the first editing set:
 | Colour | Exposure, contrast, saturation, temperature, tint |
 | Readouts | Histogram (R, G, B, luma) and clipping percentages |
 | Lossless | JPEG rotate / flip / MCU-aligned crop, from the viewer (`[` `]` `H` `V`) or on export |
-| Export | JPEG / PNG, long-edge resize, metadata policy |
+| Export | JPEG / PNG, long-edge resize, metadata policy, stated resolution (JFIF / pHYs / EXIF) |
+| Adjust Size | Shared core only (#288): units, lock, Fit into, resample on/off, resolution in the stack |
 
 Further ops slot into the same structure: one more parameter block in `op`, one more term in the
 kernel or one more pass, evaluated in the order above.

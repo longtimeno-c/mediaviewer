@@ -23,6 +23,7 @@
 
 #include "codec/orientation.h"
 #include "core/result.h"
+#include "edit/adjust_size.h"
 #include "edit/metadata_policy.h"
 
 namespace mv::edit {
@@ -47,6 +48,10 @@ struct lossless_request {
   // output's iMCU grid; width/height are free. w == 0 means no crop.
   std::uint32_t crop_x = 0, crop_y = 0, crop_w = 0, crop_h = 0;
   metadata_policy policy = metadata_policy::all;
+  // #288: when stated, the JFIF density and EXIF X/YResolution written (the
+  // pixels are untouched either way). Not stated: the source's JFIF density
+  // is copied as it was.
+  resolution stated{};
 };
 
 // Can `req` be done without touching a pixel?

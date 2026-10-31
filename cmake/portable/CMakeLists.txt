@@ -235,3 +235,23 @@ if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
 else()
   message(STATUS "FFmpeg / libspng / libjpeg not found: the PR 13/14 clip tests are not built")
 endif()
+
+# ---- #288: Adjust Size's shared core ---------------------------------------------
+# The size and unit maths (edit/adjust_size.h), the stated resolution in the
+# edit stack, and the encoders writing it (JFIF density, pHYs, EXIF
+# X/YResolution), read back by libjpeg and libspng themselves. Needs no codec
+# registry; the export-path half (tests/test_adjust_size_export.cpp) runs in
+# mv_tests on Windows and the Mac.
+if(MV_SPNG_FOUND AND JPEG_FOUND)
+  add_executable(mv_adjust_size_tests
+    "${MV_ROOT}/tests/test_adjust_size.cpp"
+    "${MV_ROOT}/src/edit/edit_stack.cpp"
+    "${MV_ROOT}/src/edit/encode.cpp"
+    "${MV_ROOT}/src/codec/exif.cpp")
+  target_include_directories(mv_adjust_size_tests PRIVATE "${MV_ROOT}/src" "${MV_ROOT}/tests")
+  target_link_libraries(mv_adjust_size_tests PRIVATE mv_project_options PkgConfig::MV_SPNG JPEG::JPEG
+    ${MV_CATCH2_TARGET})
+  add_test(NAME mv_adjust_size_tests COMMAND mv_adjust_size_tests)
+else()
+  message(STATUS "libspng / libjpeg not found: the #288 Adjust Size tests are not built")
+endif()

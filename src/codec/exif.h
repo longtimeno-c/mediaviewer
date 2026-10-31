@@ -45,6 +45,32 @@ struct byte_range {
 [[nodiscard]] bool exif_set_pixel_dimensions(std::span<std::uint8_t> tiff, std::uint32_t width,
                                              std::uint32_t height) noexcept;
 
+// #288: IFD0's XResolution / YResolution (RATIONAL) and ResolutionUnit
+// (2 inch, the TIFF default when absent; 3 centimetre). Values are per unit.
+struct exif_resolution_tags {
+  double x = 0.0;
+  double y = 0.0;
+  int unit = 2;
+};
+// Absent, damaged, zero or ResolutionUnit 1 ("no absolute unit"): nullopt.
+[[nodiscard]] std::optional<exif_resolution_tags> exif_resolution(std::span<const std::uint8_t> tiff) noexcept;
+
+// Overwrites XResolution / YResolution (and ResolutionUnit, when that entry
+// exists) in place with `ppi`, written per centimetre when `per_cm` and the
+// block has a ResolutionUnit entry to say so, else per inch. Absent tags are
+// fine: true (adding entries would grow the block; JFIF / pHYs still state
+// the resolution). False for a damaged block or an entry of another shape.
+[[nodiscard]] bool exif_set_resolution(std::span<std::uint8_t> tiff, double ppi, bool per_cm) noexcept;
+
+// #288: a JPEG's JFIF APP0 density: unit 0 (aspect ratio only), 1 dots/inch,
+// 2 dots/cm. nullopt when there is no JFIF APP0 before the first scan.
+struct jfif_density {
+  int unit = 0;
+  std::uint16_t x = 1;
+  std::uint16_t y = 1;
+};
+[[nodiscard]] std::optional<jfif_density> jpeg_jfif_density(std::span<const std::uint8_t> jpeg) noexcept;
+
 // Removes the GPS IFD pointer from IFD0 and zeroes the GPS IFD with every
 // value it points at, so no coordinate survives in the bytes. True when there
 // was nothing to remove as well. False only for a block too damaged to walk.
