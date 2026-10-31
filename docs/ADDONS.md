@@ -92,7 +92,7 @@ my-addon/
 | `name`, `publisher.name`, `description` | Plain text. Control characters, right-to-left overrides and zero-width characters are refused |
 | `licence` | An SPDX identifier. A file with a different licence goes in `"licences": { "path": "SPDX" }` |
 | `publisher.url`, `update_url` | `https://` only, or empty |
-| `api` | The contribution API you wrote for. `1` is themes; `2` adds a settings page, key layouts and a theme's shape; `3` adds scripts. Use the lowest `min` your add-on needs (a theme-only add-on keeps `1` so older MediaViewers install it); with `max` at that API an older MediaViewer says your add-on needs a newer one instead of installing half of it |
+| `api` | The contribution API you wrote for. `1` is themes; `2` adds a settings page, key layouts and a theme's shape; `3` adds scripts; `4` to `10` are screens, the chrome slots and search providers, which only MediaViewer's own add-ons can fill so far (below). Use the lowest `min` your add-on needs (a theme-only add-on keeps `1` so older MediaViewers install it); with `max` at that API an older MediaViewer says your add-on needs a newer one instead of installing half of it |
 | `scripts`, `permissions` | A script add-on's, below ([Scripts](#scripts)) |
 
 `pack` adds the rest: the schema, your public key, and each file's size and SHA-256.
@@ -305,10 +305,10 @@ Only what is listed here exists. The parts that need a permission are **absent**
 
 | Call | Permission | What it does |
 |---|---|---|
-| `mv.id`, `mv.api` | — | Your add-on's id; the contribution API of this MediaViewer (5) |
+| `mv.id`, `mv.api` | — | Your add-on's id; the contribution API of this MediaViewer (10 today) |
 | `mv.permissions` | — | A table of what was granted: `mv.permissions["folder.read"] == true` |
 | `mv.notify(text)` | — | Shows one short line to the person, with your add-on's name in front (200 bytes at most, four a second at most). Returns whether it was shown |
-| `mv.log(...)`, `print(...)` | — | A line for you, the developer. It stays on this computer: in the macOS unified log (private), nowhere on Windows yet |
+| `mv.log(...)`, `print(...)` | — | A line for you, the developer, 50 a second at most: past that, lines are dropped and one line says how many. It stays on this computer: in the macOS unified log (private), nowhere on Windows yet |
 | `mv.on(event, fn)` | — | Answers an event a later MediaViewer sends (screens and search providers will). None is sent yet |
 | `mv.folder.count()` | `folder.read` | How many files the open folder lists, as the viewer lists them |
 | `mv.folder.name(i)` | `folder.read` | The name of the `i`th file (from 1), or `nil` |
@@ -360,7 +360,7 @@ It says what MediaViewer will say. The reasons it can give:
 | `file_missing`, `file_mismatch`, `unexpected_file` | The files are not the ones the manifest lists |
 | `unsafe_path` | A file name that leaves the folder (`..`, a drive, a backslash), or a theme whose `path` is not one of the files |
 | `malformed` | A field missing, mistyped, or not allowed. With an `api.max` this MediaViewer reaches, a key it does not know is a mistake. A script under an `api.max` below 3, a permission named twice, a `network` permission, a command whose `run` is not a Lua name, or one that sends paths without `selection` |
-| `code_not_allowed` | The manifest names `native`, `chrome` or `main` (native code is never loaded from an add-on), or it has `scripts` and this MediaViewer is older than API 3 |
+| `code_not_allowed` | The manifest names `native`, `chrome` or `main` (native code is never loaded from an add-on), or it has `scripts` and this MediaViewer is older than API 3, or it names `screens` or a chrome slot (`info_sections`, `search_providers`, `bar_items`, `path_items`, `context_menu`, `status_items`, `tile_badges`): those are filled by code, and scripts cannot fill them yet |
 | `needs_update` | `api.min` is newer than this MediaViewer, or the add-on asks for a permission only a newer one grants (`files.write`, `metadata.write`) |
 | `invalid_theme` | A theme file that does not pass the rules above; the detail names the theme and the rule |
 

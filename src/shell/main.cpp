@@ -9946,7 +9946,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // #452: a sign-in start that nothing kept removes its own entry (one registry
   // delete; the window is gone).
   if (app.remove_login_item_at_exit && g_install.installed()) (void)mv::shell::login_item::set(false, {});
-  // Scripts stop at their next instruction check; their workers are joined here.
+  // Scripts are all told to stop, then their workers are joined here (each
+  // stops at its next instruction check, together).
   (void)mv_script_set_listener(nullptr, nullptr);
   (void)mv_script_stop_all();
   const ULONGLONG addons_quit_at = ::GetTickCount64();
