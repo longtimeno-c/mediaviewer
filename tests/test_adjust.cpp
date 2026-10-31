@@ -348,6 +348,31 @@ TEST_CASE("edit session: a slider drag is one undo step, reset is one more", "[a
   CHECK(es.stack()->empty());
 }
 
+TEST_CASE("edit session: set_colour (auto tone) is one op and one undo", "[adjust][session]") {
+  mv::shell::edit_session es;
+  CHECK(es.set_colour(edit::colour{}) == mv::shell::edit_effect::refused);  // no item
+  es.set_item({"/p/a.jpg", 100, 5, 640, 480, true});
+  CHECK(es.set_adjust(adjust_param::saturation, 25.0f) == mv::shell::edit_effect::redraw);
+  edit::colour c = es.colour();
+  c.v[static_cast<std::size_t>(adjust_param::exposure)] = 0.6f;
+  c.v[static_cast<std::size_t>(adjust_param::contrast)] = 18.0f;
+  CHECK(es.set_colour(c) == mv::shell::edit_effect::redraw);
+  CHECK(es.stack()->ops.size() == 2);
+  CHECK(es.colour() == c);
+  CHECK(es.set_colour(c) == mv::shell::edit_effect::none);  // nothing changes, nothing pushed
+  CHECK(es.stack()->ops.size() == 2);
+  // A slider after it is its own op; undoing that and then the auto tone
+  // leaves the saturation the user set before.
+  CHECK(es.set_adjust(adjust_param::exposure, 0.2f) == mv::shell::edit_effect::redraw);
+  CHECK(es.stack()->ops.size() == 3);
+  CHECK(es.run(mv::shell::command_id::undo_edit) == mv::shell::edit_effect::redraw);
+  CHECK(es.colour() == c);
+  CHECK(es.run(mv::shell::command_id::undo_edit) == mv::shell::edit_effect::redraw);
+  CHECK(es.colour().get(adjust_param::exposure) == 0.0f);
+  CHECK(es.colour().get(adjust_param::contrast) == 0.0f);
+  CHECK(es.colour().get(adjust_param::saturation) == 25.0f);
+}
+
 TEST_CASE("edit session: colour makes `[` `]` a stack op, never a file rewrite", "[adjust][session]") {
   // Rule 5 via PR 10: only a stack of pure rotate / flip rewrites a JPEG.
   mv::shell::edit_session es;

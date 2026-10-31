@@ -183,7 +183,7 @@ void edit_session::land(std::uint64_t old_key, codec::d4 applied) {
     const edit::geometry g = edit::fold(it->second);
     if (g.orientation_only()) remaining = codec::compose(codec::inverse(applied), g.orient);
     for (const op& o : it->second.ops) {
-      if (o.kind == op_kind::adjust) colour_ops.push_back(o);
+      if (o.kind == op_kind::adjust || o.kind == op_kind::adjust_all) colour_ops.push_back(o);
     }
     stacks_.erase(it);
     order_.erase(std::remove(order_.begin(), order_.end(), old_key), order_.end());
@@ -253,6 +253,18 @@ edit_effect edit_session::reset_adjust() {
   if (colour().identity()) return edit_effect::none;
   op o{op_kind::adjust};
   o.param = edit::adjust_param::count;  // every colour parameter, one undo step
+  current().push(o);
+  return edit_effect::redraw;
+}
+
+edit_effect edit_session::set_colour(const edit::colour& c) {
+  if (!has_item_) return edit_effect::refused;
+  op o{op_kind::adjust_all};
+  for (int i = 0; i < edit::kAdjustParamCount; ++i) {
+    const auto p = static_cast<edit::adjust_param>(i);
+    o.values.v[static_cast<std::size_t>(i)] = edit::clamp_param(p, c.get(p));
+  }
+  if (colour() == o.values) return edit_effect::none;
   current().push(o);
   return edit_effect::redraw;
 }

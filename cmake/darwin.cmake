@@ -426,6 +426,8 @@ add_library(mv::meta ALIAS mv_meta)
 add_library(mv_edit STATIC
   src/edit/adjust.cpp
   src/edit/adjust.h
+  src/edit/auto_tone.cpp
+  src/edit/auto_tone.h
   src/edit/bake.cpp
   src/edit/bake.h
   src/edit/histogram.cpp
@@ -948,6 +950,8 @@ if(MV_BUILD_TESTS)
     tests/test_text_select.cpp
     # PR 11: colour adjusts, the FP16 working space, bake, histogram, pane state.
     tests/test_adjust.cpp
+    # #289: auto tone from the histogram (edit/auto_tone.h).
+    tests/test_auto_tone.cpp
     # PR 11 (macOS crash reporting): the scrub, now with POSIX paths.
     tests/test_minidump_scrub.cpp
     src/shell/minidump_scrub.cpp

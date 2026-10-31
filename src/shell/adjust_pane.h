@@ -82,6 +82,14 @@ class adjust_pane {
   [[nodiscard]] std::optional<std::uint64_t> take_histogram_request() noexcept;
   bool histogram_landed(std::uint64_t token, const edit::histogram& h) noexcept;
 
+  // #289 auto tone (edit/auto_tone.h). A token when the working image is
+  // ready: the host runs edit::compute_auto_tone on a worker with the colour
+  // as it is now and, if auto_tone_landed accepts the token, sets the result
+  // as one op (edit_session::set_colour). A colour change, a new item or a
+  // dropped working image in between makes the token stale.
+  [[nodiscard]] std::optional<std::uint64_t> request_auto_tone() noexcept;
+  bool auto_tone_landed(std::uint64_t token) noexcept;
+
   // The POD the chrome draws, with the current slider values.
   [[nodiscard]] adjust_view view(const edit::colour& c) const noexcept;
 
@@ -96,6 +104,7 @@ class adjust_pane {
   std::uint64_t next_token_ = 1;
   bool histogram_stale_ = true;
   std::uint64_t histogram_token_ = 0;
+  std::uint64_t auto_token_ = 0;   // the auto-tone job in flight, 0 = none
   bool histogram_valid_ = false;
   float clip_high_ = 0.0f, clip_low_ = 0.0f;
   std::uint16_t bins_[4 * edit::kHistogramBins] = {};
