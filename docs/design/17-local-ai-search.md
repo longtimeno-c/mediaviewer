@@ -1561,3 +1561,6 @@ refresh in the fourth, p99 ≤ 17.1 ms.
 - A CLAP stand-out calibration on more than one library (it is fitted on the owner's 4,331 clips).
 - Background (unrequested) People refinement; the incremental refinement path
   (`refine_begin(false)`) exists in faces.db and its tests but has no caller.
+- Inference outside the viewer's process (#390): the pack and ONNX Runtime load into the first
+  window's process. The investigation and a spike plan are in
+  [ai-out-of-process](../plans/ai-out-of-process.md); nothing is decided.
