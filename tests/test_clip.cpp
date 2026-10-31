@@ -695,6 +695,15 @@ TEST_CASE("a clip job's crash slot names the container and codec, never the path
     CHECK(slot.find("SECRET") == std::string::npos);
     CHECK(slot.find("PRIVATE") == std::string::npos);
     CHECK(slot.find(".mp4") == std::string::npos);
+    // Issue #155 (rule 6): every annotation the crash reporters register (the
+    // whole slot table, crash_reporter_win.cpp / _mac.mm), not only this
+    // thread's slot, holds no part of the path.
+    const auto table = mv::crash_context::slots();
+    const std::string all(table.data(), table.size());
+    CHECK(all.find("SECRET") == std::string::npos);
+    CHECK(all.find("PRIVATE") == std::string::npos);
+    CHECK(all.find(".mp4") == std::string::npos);
+    CHECK(all.find(utf8(d.root())) == std::string::npos);
   }
   // Closed: the slot is given back.
   CHECK(std::string(mv::crash_context::this_thread_slot()).empty());
