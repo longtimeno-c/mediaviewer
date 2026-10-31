@@ -14,6 +14,7 @@
 
 #include "codec/raster.h"
 #include "core/result.h"
+#include "edit/adjust_size.h"
 
 namespace mv::edit {
 
@@ -24,6 +25,12 @@ struct encode_options {
   image_format format = image_format::jpeg;
   int quality = 92;              // JPEG 1..100
   chroma subsampling = chroma::s420;
+  // #288: the resolution the file states. JPEG: the JFIF density (dots/inch,
+  // or dots/cm when given per cm; 16-bit, so a fractional ppi rounds). PNG:
+  // pHYs in pixels per metre. Not stated: JFIF says aspect 1:1 with no unit
+  // (libjpeg's default) and PNG has no pHYs. Written under every metadata
+  // policy: it is part of the picture's size, like the ICC profile.
+  resolution stated{};
 };
 
 // Metadata already filtered by the export policy. `exif` is a TIFF block

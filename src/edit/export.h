@@ -15,6 +15,11 @@
 //               (edit/bake.h), encoded as sRGB.
 // Either way the output is upright: EXIF Orientation = 1, EXIF pixel
 // dimensions = the written size, tiff:Orientation in XMP = 1.
+// #288: and one resolution — the stack's stated one (geometry::resize.stated),
+// else export_options::encode.stated, else the source's (source_resolution) —
+// in the JFIF density or pHYs and in
+// EXIF X/YResolution where those tags exist, so the file does not contradict
+// itself. A source that states none is written with none.
 //
 // Worker thread only. Pure bytes in, bytes out: the host reads the source and
 // writes the result (io::write_new), so this is testable without a disk.
@@ -42,7 +47,8 @@ struct export_options {
   // the requested edit stack contains only those ops"). Off forces a re-encode.
   bool prefer_lossless = true;
   // The export dialog's size: the long edge in pixels, applied on top of the
-  // stack (it replaces a resize op). 0 = the stack's own size.
+  // stack (it replaces a resize op's pixel size; a resolution the stack
+  // states is kept). 0 = the stack's own size.
   std::uint32_t long_edge = 0;
 };
 
@@ -75,6 +81,14 @@ struct export_result {
 [[nodiscard]] metadata_blobs source_metadata(std::span<const std::uint8_t> source,
                                              metadata_policy policy,
                                              const metadata_blobs* carried = nullptr);
+
+// #288: the resolution `source` states — JPEG: the JFIF density (dots/inch or
+// /cm), else EXIF X/YResolution; PNG: pHYs (per metre), else eXIf; any other
+// source: `carried`'s EXIF. Not stated when none says so in an absolute unit
+// (JFIF unit 0, EXIF ResolutionUnit 1, pHYs unit 0). The Adjust Size sheet
+// opens on it; export keeps it when the stack states none.
+[[nodiscard]] resolution source_resolution(std::span<const std::uint8_t> source,
+                                           const metadata_blobs* carried = nullptr);
 
 // Enhance (#297 slice 3): the picture a file holds at full resolution, as the
 // colour bake sees it — a RAW's own develop, ICC to sRGB, upright — encoded to

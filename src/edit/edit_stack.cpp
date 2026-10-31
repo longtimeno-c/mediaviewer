@@ -239,4 +239,21 @@ placement place(const geometry& g, size2 source, codec::d4 base, bool keep_frame
   return p;
 }
 
+resize_spec adjust_size_spec(const resize_spec& current, const adjust_size& sheet) noexcept {
+  resize_spec r = current;
+  if (sheet.resample && sheet.changes_pixels()) {
+    const size2 out = sheet.output();
+    r.mode = resize_mode::exact;
+    r.a = out.w;
+    r.b = out.h;
+    r.percent = 100.0f;
+  }
+  if (sheet.changes_resolution()) {
+    r.stated = resolution{clamp_ppi(sheet.ppi), sheet.unit};
+  } else if (r.stated.stated()) {
+    r.stated.unit = sheet.unit;  // same value, now written per inch / per cm
+  }
+  return r;
+}
+
 }  // namespace mv::edit

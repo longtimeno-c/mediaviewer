@@ -650,6 +650,7 @@ add_library(mv::meta ALIAS mv_meta)
 add_library(mv_edit STATIC
   src/edit/adjust.cpp
   src/edit/adjust.h
+  src/edit/adjust_size.h
   src/edit/bake.cpp
   src/edit/bake.h
   src/edit/histogram.cpp
@@ -1166,6 +1167,10 @@ if(MV_BUILD_TESTS)
     src/shell/meta_writer.cpp
     # PR 10: edit stack, lossless JPEG, export, and the hosts' edit session.
     tests/test_edit.cpp
+    # #288: Adjust Size — the size and unit maths, the stated resolution in
+    # the stack, and JFIF / pHYs / EXIF resolution through export.
+    tests/test_adjust_size.cpp
+    tests/test_adjust_size_export.cpp
     tests/test_edit_session.cpp
     tests/test_export_carried.cpp
     src/shell/edit_session.cpp

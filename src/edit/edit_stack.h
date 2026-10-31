@@ -25,6 +25,7 @@
 
 #include "codec/orientation.h"
 #include "edit/adjust.h"
+#include "edit/adjust_size.h"
 
 namespace mv::edit {
 
@@ -46,6 +47,13 @@ struct resize_spec {
   std::uint32_t a = 0;
   std::uint32_t b = 0;
   float percent = 100.0f;
+  // #288: the resolution the output states (JFIF density, PNG pHYs, EXIF
+  // X/YResolution). Not stated (the default) = the source's own, or none when
+  // it states none. Metadata only: it never changes a pixel, so a stack whose
+  // only change is this is still identity() and still takes the lossless
+  // JPEG path. Added last with a default, so every older stack and every
+  // `resize_spec{mode, a, b, percent}` means what it did.
+  resolution stated{};
   friend constexpr bool operator==(const resize_spec&, const resize_spec&) = default;
 };
 
@@ -100,6 +108,7 @@ struct geometry {
   rect crop{};               // in the straightened, uncropped frame
   resize_spec resize{};
 
+  // No pixel changes. A stated resolution alone (resize.stated) is not one.
   [[nodiscard]] bool identity() const noexcept {
     return orient.identity() && straighten == 0.0f && crop == rect{} &&
            resize.mode == resize_mode::none;
@@ -131,11 +140,7 @@ struct affine {
 // comes back as the identity.
 [[nodiscard]] affine invert(const affine& a) noexcept;
 
-struct size2 {
-  std::uint32_t w = 0;
-  std::uint32_t h = 0;
-  friend constexpr bool operator==(const size2&, const size2&) = default;
-};
+// size2 is edit/adjust_size.h's.
 
 // The geometry applied to a `source` of the given size, through `base` first
 // (the file's EXIF orientation when the source is the file's stored pixels;
@@ -169,5 +174,21 @@ struct placement {
 // The largest rect of the frame's own aspect that fits `straighten` —
 // the default crop the moment an angle is set.
 [[nodiscard]] rect auto_crop(float straighten, size2 frame) noexcept;
+
+// #288: the resize op an Adjust Size sheet commits, as one undo step.
+// `current` is the stack's resize now (fold(stack).resize); `sheet` was opened
+// on that stack's output. Resample on with new pixels → exact w × h of the
+// sheet's output (a crop made afterwards keeps that size, as exact does).
+// Otherwise the pixel part of `current` is kept unchanged (so a resample-off
+// change keeps following the crop). The resolution becomes the sheet's when
+// it changed, else stays what `current` stated (not stated stays not stated:
+// the source's resolution, which the sheet only showed).
+[[nodiscard]] resize_spec adjust_size_spec(const resize_spec& current,
+                                           const adjust_size& sheet) noexcept;
+[[nodiscard]] inline op adjust_size_op(const resize_spec& current, const adjust_size& sheet) noexcept {
+  op o{op_kind::resize};
+  o.resize = adjust_size_spec(current, sheet);
+  return o;
+}
 
 }  // namespace mv::edit

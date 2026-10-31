@@ -59,14 +59,44 @@ void png_metadata(std::span<const std::uint8_t> png, metadata_blobs& out) {
   }
 }
 
-// Orientation and size of what is actually written, and a thumbnail that
-// would disagree with it unlinked.
-void patch_for_output(metadata_blobs& m, std::uint32_t w, std::uint32_t h, bool changed) {
+// pHYs (unit 1, per metre) of a PNG, in ppi; 0 when absent or unitless.
+double png_phys_ppi(std::span<const std::uint8_t> png) noexcept {
+  std::size_t p = 8;
+  while (p + 12 <= png.size()) {
+    const std::uint32_t len = be32(png.data() + p);
+    if (len > png.size() - p - 12) return 0.0;
+    const char* type = reinterpret_cast<const char*>(png.data() + p + 4);
+    if (std::memcmp(type, "pHYs", 4) == 0) {
+      if (len != 9) return 0.0;
+      const std::uint8_t* d = png.data() + p + 8;
+      return d[8] == 1 ? ppi_from_per_metre(be32(d)) : 0.0;
+    }
+    if (std::memcmp(type, "IDAT", 4) == 0 || std::memcmp(type, "IEND", 4) == 0) return 0.0;
+    p += 12 + static_cast<std::size_t>(len);
+  }
+  return 0.0;
+}
+
+resolution exif_stated(std::span<const std::uint8_t> tiff) noexcept {
+  const auto r = codec::exif_resolution(tiff);
+  if (!r) return {};
+  const bool cm = r->unit == 3;
+  return resolution{cm ? r->x * kCmPerInch : r->x,
+                    cm ? resolution_unit::per_cm : resolution_unit::per_inch};
+}
+
+// Orientation, size and resolution of what is actually written, and a
+// thumbnail that would disagree with it unlinked.
+void patch_for_output(metadata_blobs& m, std::uint32_t w, std::uint32_t h, bool changed,
+                      const resolution& stated = {}) {
   if (!m.exif.empty()) {
     std::span<std::uint8_t> tiff(m.exif);
     (void)codec::exif_set_orientation(tiff, 1);
     (void)codec::exif_set_pixel_dimensions(tiff, w, h);
     if (changed) (void)codec::exif_drop_thumbnail(tiff);
+    if (stated.stated()) {
+      (void)codec::exif_set_resolution(tiff, stated.ppi, stated.unit == resolution_unit::per_cm);
+    }
   }
   if (!m.xmp.empty()) (void)codec::xmp_set_orientation(m.xmp, 1);
 }
@@ -99,6 +129,28 @@ metadata_blobs source_metadata(std::span<const std::uint8_t> source, metadata_po
   return m;
 }
 
+resolution source_resolution(std::span<const std::uint8_t> source, const metadata_blobs* carried) {
+  switch (codec::probe(source)) {
+    case codec::format_family::jpeg: {
+      if (const auto j = codec::jpeg_jfif_density(source); j && (j->unit == 1 || j->unit == 2) && j->x > 0) {
+        const bool cm = j->unit == 2;
+        return resolution{cm ? j->x * kCmPerInch : static_cast<double>(j->x),
+                          cm ? resolution_unit::per_cm : resolution_unit::per_inch};
+      }
+      if (const auto r = codec::find_jpeg_exif(source)) return exif_stated(source.subspan(r->offset, r->size));
+      return {};
+    }
+    case codec::format_family::png: {
+      if (const double ppi = png_phys_ppi(source); ppi > 0.0) return resolution{ppi, resolution_unit::per_inch};
+      metadata_blobs m;
+      png_metadata(source, m);
+      return exif_stated(m.exif);
+    }
+    default:
+      return carried ? exif_stated(carried->exif) : resolution{};
+  }
+}
+
 result<export_result> export_image(std::span<const std::uint8_t> source, const geometry& stack,
                                    const export_options& opt, const job_context* ctx,
                                    const metadata_blobs* carried) {
@@ -109,7 +161,19 @@ result<export_result> export_image(std::span<const std::uint8_t> source, const g
                                    const colour& c, const export_options& opt,
                                    const job_context* ctx, const metadata_blobs* carried) {
   geometry g = stack;
-  if (opt.long_edge != 0) g.resize = resize_spec{resize_mode::long_edge, opt.long_edge, 0, 100.0f};
+  if (opt.long_edge != 0) {
+    g.resize.mode = resize_mode::long_edge;  // the pixel size only: `stated` stays
+    g.resize.a = opt.long_edge;
+    g.resize.b = 0;
+    g.resize.percent = 100.0f;
+  }
+  // #288: one resolution for the whole file (encoder header and EXIF).
+  // The stack's, else one the caller put in the encode options, else the source's.
+  resolution stated = g.resize.stated;
+  if (!stated.stated()) stated = opt.encode.stated;
+  if (!stated.stated()) stated = source_resolution(source, carried);
+  encode_options enc = opt.encode;
+  enc.stated = stated;
 
   // PR 11 bake: colour changes every pixel, so there is no lossless path.
   if (!c.identity()) {
@@ -119,8 +183,8 @@ result<export_result> export_image(std::span<const std::uint8_t> source, const g
     MV_TRY(codec::raster out, bake(working, p, uniforms_of(c), ctx));
     working = image::linear_image{};  // release the full frame before encoding
     metadata_blobs meta = source_metadata(source, opt.policy, carried);
-    patch_for_output(meta, out.width, out.height, true);
-    MV_TRY(std::vector<std::uint8_t> bytes, encode(out, opt.encode, meta));
+    patch_for_output(meta, out.width, out.height, true, stated);
+    MV_TRY(std::vector<std::uint8_t> bytes, encode(out, enc, meta));
     export_result r;
     r.bytes = std::move(bytes);
     r.lossless = false;
@@ -139,6 +203,7 @@ result<export_result> export_image(std::span<const std::uint8_t> source, const g
       lossless_request req;
       req.transform = p.total;
       req.policy = opt.policy;
+      req.stated = stated;
       if (!(g.crop == rect{})) {
         req.crop_x = p.crop_x;
         req.crop_y = p.crop_y;
@@ -166,8 +231,8 @@ result<export_result> export_image(std::span<const std::uint8_t> source, const g
   decoded = codec::raster{};  // release the full frame before encoding
 
   metadata_blobs meta = source_metadata(source, opt.policy, carried);
-  patch_for_output(meta, out.width, out.height, !g.identity());
-  MV_TRY(std::vector<std::uint8_t> bytes, encode(out, opt.encode, meta));
+  patch_for_output(meta, out.width, out.height, !g.identity(), stated);
+  MV_TRY(std::vector<std::uint8_t> bytes, encode(out, enc, meta));
   export_result r;
   r.bytes = std::move(bytes);
   r.lossless = false;

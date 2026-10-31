@@ -1109,7 +1109,8 @@ ctest --test-dir build -C Release -R script_ --output-on-failure
 # portable-core job, Ubuntu under ASan + UBSan; SQLite, libsodium, BLAKE3 and Catch2 from vcpkg via
 # tools/portable/vcpkg.json, or the system). With FFmpeg, libspng and libjpeg
 # installed (pkg-config) it also builds the PR 13 / 14 clip suites,
-# mv_clip_tests and mv_trim_tests:
+# mv_clip_tests and mv_trim_tests; with libspng and libjpeg alone, #288's
+# Adjust Size maths and resolution writers, mv_adjust_size_tests:
 #   cmake -S cmake/portable -B build-portable \
 #     -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
 #     -DVCPKG_MANIFEST_DIR=tools/portable
@@ -1118,6 +1119,9 @@ ctest --test-dir build -C Release -R script_ --output-on-failure
 
 # PR 13 / 14 clip editing: the same suites inside the Windows / Mac mv_tests
 ctest --test-dir build -C Release -R "clip|trim" --output-on-failure
+# #288 Adjust Size: the maths, the stack's stated resolution, and export
+# writing it (JFIF, pHYs, EXIF), inside the Windows / Mac mv_tests
+build/bin/mv_tests "[adjust_size]"
 
 # policy gates (all run in CI on every push)
 .\tools\check-module-graph.ps1     # dependencies point downward only

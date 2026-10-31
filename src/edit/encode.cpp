@@ -79,6 +79,14 @@ result<std::vector<std::uint8_t>> encode_jpeg(const codec::raster& img, const en
   jpeg_set_defaults(&cinfo);
   jpeg_set_quality(&cinfo, std::clamp(opt.quality, 1, 100), TRUE);
   cinfo.optimize_coding = TRUE;
+  if (opt.stated.stated()) {
+    const bool cm = opt.stated.unit == resolution_unit::per_cm;
+    const double d = std::clamp(resolution_in(opt.stated.ppi, opt.stated.unit), 1.0, 65535.0);
+    cinfo.write_JFIF_header = TRUE;
+    cinfo.density_unit = static_cast<UINT8>(cm ? 2 : 1);
+    cinfo.X_density = static_cast<UINT16>(d + 0.5);
+    cinfo.Y_density = cinfo.X_density;
+  }
   const int h = opt.subsampling == chroma::s444 ? 1 : 2;
   const int v = opt.subsampling == chroma::s420 ? 2 : 1;
   cinfo.comp_info[0].h_samp_factor = h;
@@ -145,7 +153,8 @@ struct spng_guard {
   spng_guard& operator=(const spng_guard&) = delete;
 };
 
-result<std::vector<std::uint8_t>> encode_png(const codec::raster& img, const metadata_blobs& meta) {
+result<std::vector<std::uint8_t>> encode_png(const codec::raster& img, const encode_options& opt,
+                                             const metadata_blobs& meta) {
   bool opaque = true;
   for (std::size_t i = 3; i < img.rgba.size(); i += 4) {
     if (img.rgba[i] != 255) {
@@ -194,6 +203,13 @@ result<std::vector<std::uint8_t>> encode_png(const codec::raster& img, const met
     if (spng_set_iccp(g.ctx, &iccp) != 0) return err(status::internal);
   } else if (img.tagged_srgb) {
     if (spng_set_srgb(g.ctx, 0) != 0) return err(status::internal);
+  }
+  if (opt.stated.stated()) {
+    spng_phys phys{};
+    phys.ppu_x = per_metre(opt.stated.ppi);
+    phys.ppu_y = phys.ppu_x;
+    phys.unit_specifier = 1;  // metre
+    if (spng_set_phys(g.ctx, &phys) != 0) return err(status::internal);
   }
   std::vector<char> exif(meta.exif.begin(), meta.exif.end());
   if (!exif.empty()) {
@@ -251,7 +267,7 @@ result<std::vector<std::uint8_t>> encode(const codec::raster& img, const encode_
   if (img.width > 65500 || img.height > 65500) return err(status::unsupported_format);
   switch (opt.format) {
     case image_format::jpeg: return encode_jpeg(img, opt, meta);
-    case image_format::png: return encode_png(img, meta);
+    case image_format::png: return encode_png(img, opt, meta);
   }
   return err(status::invalid_arg);
 }
