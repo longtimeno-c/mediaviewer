@@ -20,6 +20,7 @@
 
 #include "addons/ai/fetch.h"
 #include "addons/ai/platform.h"
+#include "addons/ai/provider_verdict.h"
 #include "addons/ai/tiers.h"
 #include "infer/audio_models.h"
 #include "infer/text_models.h"
@@ -72,7 +73,7 @@ struct pack_state {
   std::condition_variable compile_cv;
   std::set<std::string> compiling;                                  // spec keys
   std::map<std::string, std::weak_ptr<infer::embedder>> upgrading;  // spec key | compute
-  std::mutex verdict_m;  // provider.txt (read_verdict / write_verdict)
+  std::optional<provider_verdicts> verdicts;  // <data>/provider.txt (provider_verdict.h)
 
   void ensure() {
     std::call_once(once, [this] {
@@ -311,79 +312,10 @@ void write_selftest(const std::string& path, const selftest_ref& r) {
   std::filesystem::rename(fs_path(tmp), fs_path(path), ec);
 }
 
-// How an accelerated provider did with a tower on this machine (2026-10-05),
-// in <data>/provider.txt, one line per "<runtime>|<provider>|<spec>":
-// "ok" or the fault's name, the open's seconds, and the provider's message
-// (session::last_error, paths replaced). Auto reads it so a large tower that
-// failed here is not run on CPU at a twelfth of the small one's speed, nor
-// compiled again (minutes, gigabytes) every start. A new runtime is a new
-// key and tries again. Holds nothing of the user's.
-struct provider_verdict {
-  std::string outcome;  // "ok" or infer::fault_name
-  double open_s = -1;
-  std::string detail;
-};
-
+// How an accelerated provider did with a tower on this machine: provider.txt
+// (provider_verdict.h), keyed by this runtime, provider and tower.
 std::string verdict_key(const infer::runtime& rt, infer::backend on, const std::string& spec_key) {
-  return rt.version() + "|" + infer::backend_name(on) + "|" + spec_key;
-}
-
-std::map<std::string, provider_verdict> read_verdicts(const std::string& path) {
-  std::map<std::string, provider_verdict> out;
-  std::ifstream in(fs_path(path), std::ios::binary);
-  std::string line;
-  if (!in || !std::getline(in, line) || line != "mv-ai-provider 1") return out;
-  while (std::getline(in, line)) {
-    const std::size_t a = line.find('\t');
-    const std::size_t b = a == std::string::npos ? a : line.find('\t', a + 1);
-    const std::size_t c = b == std::string::npos ? b : line.find('\t', b + 1);
-    if (c == std::string::npos) continue;
-    provider_verdict v;
-    v.outcome = line.substr(a + 1, b - a - 1);
-    v.open_s = std::atof(line.substr(b + 1, c - b - 1).c_str());
-    v.detail = line.substr(c + 1);
-    out[line.substr(0, a)] = std::move(v);
-  }
-  return out;
-}
-
-void write_verdict(pack_state& p, const std::string& key, provider_verdict v) {
-  for (char& ch : v.detail) {
-    if (ch == '\t' || ch == '\n' || ch == '\r') ch = ' ';
-  }
-  if (v.detail.size() > 400) v.detail.resize(400);
-  const std::string path = join(p.data_dir, "provider.txt");
-  std::lock_guard lock(p.verdict_m);
-  auto all = read_verdicts(path);
-  all[key] = std::move(v);
-  const std::string tmp = path + ".tmp";
-  {
-    std::ofstream out(fs_path(tmp), std::ios::binary | std::ios::trunc);
-    if (!out) return;
-    out << "mv-ai-provider 1\n";
-    for (const auto& [k, e] : all) out << k << '\t' << e.outcome << '\t' << e.open_s << '\t' << e.detail << '\n';
-    if (!out) return;
-  }
-  std::error_code ec;
-  std::filesystem::rename(fs_path(tmp), fs_path(path), ec);
-}
-
-void forget_verdict(pack_state& p, const std::string& key) {
-  const std::string path = join(p.data_dir, "provider.txt");
-  std::lock_guard lock(p.verdict_m);
-  auto all = read_verdicts(path);
-  if (all.erase(key) == 0) return;
-  std::ofstream out(fs_path(path), std::ios::binary | std::ios::trunc);
-  out << "mv-ai-provider 1\n";
-  for (const auto& [k, e] : all) out << k << '\t' << e.outcome << '\t' << e.open_s << '\t' << e.detail << '\n';
-}
-
-std::optional<provider_verdict> read_verdict(pack_state& p, const std::string& key) {
-  std::lock_guard lock(p.verdict_m);
-  auto all = read_verdicts(join(p.data_dir, "provider.txt"));
-  auto it = all.find(key);
-  if (it == all.end()) return std::nullopt;
-  return it->second;
+  return ai::verdict_key(rt.version(), infer::backend_name(on), spec_key);
 }
 
 // Median milliseconds of three runs of a four-image batch.
@@ -554,9 +486,8 @@ class upgrading_clip final : public infer::embedder {
         if (why == infer::provider_fault::failed) detail = infer::session::last_error();
       }
       if (!opened && why == infer::provider_fault::none) why = infer::provider_fault::failed;
-      write_verdict(*p, verdict_key(*p->rt, fast.on, key),
-                    provider_verdict{why == infer::provider_fault::none ? "ok" : infer::fault_name(why), open_s,
-                                     why == infer::provider_fault::none ? std::string() : detail});
+      p->verdicts->record(verdict_key(*p->rt, fast.on, key),
+                          verdict_of(why == infer::provider_fault::none, infer::fault_name(why), open_s, detail));
       std::lock_guard lock(m_);
       if (opened && why == infer::provider_fault::none) {
         current_ = std::shared_ptr<infer::embedder>(std::move(*opened));
@@ -699,6 +630,7 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
   p->h = &h;
   p->core_dir = self_dir;
   p->data_dir = data_dir;
+  p->verdicts.emplace(join(data_dir, "provider.txt"));
   engine_deps d;
   d.prepare = [p] { p->ensure(); };
   d.qualities = [p] {
@@ -923,14 +855,12 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     const infer::backend on = accelerated(*p->rt);
     const auto tower = p->tower(quality, false);
     if (on == infer::backend::cpu || !tower) return std::nullopt;
-    auto v = read_verdict(*p, verdict_key(*p->rt, on, tower->spec_key()));
-    if (!v || v->outcome == "ok") return std::nullopt;
-    return v->detail;
+    return p->verdicts->failure(verdict_key(*p->rt, on, tower->spec_key()));
   };
   d.forget_accelerated_failure = [p](std::uint32_t quality) {
     if (!p->ready || !p->rt) return;
     if (const auto tower = p->tower(quality, false)) {
-      forget_verdict(*p, verdict_key(*p->rt, accelerated(*p->rt), tower->spec_key()));
+      p->verdicts->forget(verdict_key(*p->rt, accelerated(*p->rt), tower->spec_key()));
     }
   };
   // A reader (engine_options::read_only, docs/design/23): text towers only, on CPU.
