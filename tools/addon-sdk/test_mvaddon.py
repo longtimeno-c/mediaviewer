@@ -11,6 +11,7 @@ second Python copy of it (docs/design/25 "Cross-check").
 import hashlib
 import importlib.util
 import json
+import re
 import os
 from pathlib import Path
 import subprocess
@@ -217,7 +218,7 @@ class Pack(unittest.TestCase):
             (source(native=["x.dll"]), "code_not_allowed"),
             (source(scripts=["main.lua"]), "malformed"),  # code under API 1
             (source(colour_scheme=True), "malformed"),
-            (source(api={"min": 4, "max": 4}), "needs_update"),
+            (source(api={"min": mvaddon.API + 1, "max": mvaddon.API + 1}), "needs_update"),
             (source(schema=2), "malformed"),
         ]
         for doc, why in cases:
@@ -437,6 +438,67 @@ class Refusals(unittest.TestCase):
             with self.subTest(manifest={k: manifest.get(k) for k in ("api", "scripts", "permissions",
                                                                        "contributes", "native")}):
                 self.refused(signed(manifest, files), why)
+
+    def test_screens_and_slots_and_the_app_agrees(self):
+        # #400: the host serves contribution API 10. Screens (4), the chrome
+        # slots and search providers (5) are filled by code, which a stranger's
+        # add-on cannot do yet: code_not_allowed from both, never malformed.
+        files = {"themes/dusk.json": THEME}
+        themes = [{"id": "dusk", "name": "Dusk", "path": "themes/dusk.json"}]
+        points = [k for k, api in mvaddon.CONTRIBUTION_POINTS.items() if api >= mvaddon.SCREENS_API]
+        self.assertEqual(len(points), 8)  # screens and the seven slots
+        for point in points:
+            for api in ({"min": 1, "max": mvaddon.API}, {"min": 5, "max": 5},
+                        {"min": 1, "max": mvaddon.API + 5}):
+                with self.subTest(point=point, api=api):
+                    manifest = manifest_for(files, api=api,
+                                            contributes={"themes": themes, point: []})
+                    self.refused(signed(manifest, files), "code_not_allowed")
+
+    def test_the_api_range_and_the_app_agrees(self):
+        files = {"themes/dusk.json": THEME}
+        themes = [{"id": "dusk", "name": "Dusk", "path": "themes/dusk.json"}]
+
+        def accepted(**changes):
+            changes.setdefault("contributes", {"themes": themes})
+            package = signed(manifest_for(files, **changes), files)
+            mvaddon.check_package(package)
+            said = AppSays.about(package)
+            if said is not None:
+                self.assertTrue(said[0]["ok"], said[0])
+
+        # Anything up to the host's own API installs; past it, needs a newer one.
+        for top in (1, 4, 5, mvaddon.API):
+            with self.subTest(api=top):
+                accepted(api={"min": top, "max": top})
+        self.refused(signed(manifest_for(files, contributes={"themes": themes},
+                                         api={"min": mvaddon.API + 1, "max": mvaddon.API + 1}),
+                            files), "needs_update")
+        # A point no API names: a mistake while the range ends at or below the
+        # host's; left for a later host when the range reaches past it.
+        for top in (mvaddon.API, 3):
+            with self.subTest(unknown_under=top):
+                self.refused(signed(manifest_for(files, api={"min": 1, "max": top},
+                                                 contributes={"themes": themes, "toolbar": []}),
+                                    files), "malformed")
+        accepted(api={"min": 1, "max": mvaddon.API + 1},
+                 contributes={"themes": themes, "toolbar": []})
+
+    def test_the_sdk_knows_the_hosts_api_and_points(self):
+        # One table on both sides: a host that serves a new API or point and
+        # an SDK that does not would give different verdicts (#400).
+        header = (Path(__file__).resolve().parents[2] / "src" / "addon" /
+                  "open_manifest.h").read_text(encoding="utf-8")
+        api = re.search(r"kContributionApi\s*=\s*(\d+);", header)
+        self.assertIsNotNone(api)
+        self.assertEqual(mvaddon.API, int(api.group(1)))
+        script_api = re.search(r"kScriptApi\s*=\s*(\d+);", header)
+        self.assertEqual(mvaddon.SCRIPT_API, int(script_api.group(1)))
+        table = header[header.index("kContributionPoints{{"):]
+        table = table[:table.index("}};")]
+        points = {k: int(v) for k, v in re.findall(r'\{"([a-z_]+)",\s*(\d+)\}', table)}
+        self.assertEqual(mvaddon.CONTRIBUTION_POINTS, points)
+        self.assertEqual(mvaddon.SCREENS_API, points["screens"])
 
     def test_a_theme_nobody_could_read(self):
         theme = json.loads(THEME)

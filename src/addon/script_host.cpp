@@ -143,8 +143,12 @@ void script_host::stop_all() {
     std::lock_guard<std::mutex> lock(m_);
     old.swap(entries_);
   }
-  // Each destructor stops its add-on and joins its worker, outside the lock:
-  // a worker's last act may be to call changed(), which reads the table.
+  // Every add-on is told first, so their workers stop together; then each
+  // destructor joins its worker, outside the lock: a worker's last act may be
+  // to call changed(), which reads the table.
+  for (entry& e : old) {
+    if (e.addon) e.addon->stop();
+  }
   old.clear();
 }
 
