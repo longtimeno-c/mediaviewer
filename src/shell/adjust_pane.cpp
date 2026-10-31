@@ -30,6 +30,7 @@ std::optional<std::uint64_t> adjust_pane::set_item(std::uint64_t item, bool has_
     histogram_stale_ = true;
     histogram_valid_ = false;
     histogram_token_ = 0;
+    auto_token_ = 0;
   }
   return want(has_colour);
 }
@@ -46,6 +47,7 @@ std::optional<std::uint64_t> adjust_pane::show(bool visible, bool has_colour) {
 
 std::optional<std::uint64_t> adjust_pane::colour_changed(bool has_colour) {
   histogram_stale_ = true;
+  auto_token_ = 0;  // an auto tone read from the old colour no longer applies
   return want(has_colour);
 }
 
@@ -63,6 +65,7 @@ void adjust_pane::working_dropped() noexcept {
   }
   token_ = 0;
   histogram_valid_ = false;
+  auto_token_ = 0;
 }
 
 std::optional<std::uint64_t> adjust_pane::take_histogram_request() noexcept {
@@ -79,6 +82,18 @@ bool adjust_pane::histogram_landed(std::uint64_t token, const edit::histogram& h
   clip_high_ = h.high_fraction();
   clip_low_ = h.low_fraction();
   histogram_valid_ = true;
+  return true;
+}
+
+std::optional<std::uint64_t> adjust_pane::request_auto_tone() noexcept {
+  if (readiness_ != adjust_readiness::ready) return std::nullopt;
+  auto_token_ = next_token_++;
+  return auto_token_;
+}
+
+bool adjust_pane::auto_tone_landed(std::uint64_t token) noexcept {
+  if (token == 0 || token != auto_token_ || readiness_ != adjust_readiness::ready) return false;
+  auto_token_ = 0;
   return true;
 }
 
