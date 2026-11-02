@@ -182,8 +182,10 @@ out the same way and store the view preferences as one flags word (`shell/settin
 `view_settings`: Windows `settings.ini` `[view]`, Mac `mv.viewFlags`). Sections: Filmstrip,
 Browsing, **Viewer** (#345: "Show a badge on AI-generated images", on by default, owner
 2026-10-11, stored inverted as `kSettingHideAiBadge` so older settings read as on), File types,
-Appearance, then updates and add-ons. A change applies at once, without a relaunch; the AI badge
-switch pokes nothing the render thread reads.
+Appearance, then updates, **Storage** (#612: what MediaViewer keeps on disk with sizes, the
+thumbnail cache's limit, off by default, and Clear; measured off the UI thread,
+[04 "Thumbnail cache upkeep"](04-image-pipeline.md#thumbnail-cache-upkeep)) and add-ons. A change
+applies at once, without a relaunch; the AI badge switch pokes nothing the render thread reads.
 
 ## Default map
 
