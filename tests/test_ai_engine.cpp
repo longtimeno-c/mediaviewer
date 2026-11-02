@@ -65,6 +65,24 @@ constexpr int kSettleMs = 60000;
 // without a core for over a minute under `ctest -j` beside other builds.
 constexpr mv::ai::engine_options kTestOptions{.background_threads = false};
 
+// #606: the route of a "route" file: Sintra east to Badajoz, 300 fixes,
+// thinned to what is asked for. A plain function, not a lambda in the rig:
+// MSVC 19.5x Debug hit an internal compiler error (C1001) on the lambda form.
+mv::result<std::vector<mv_addon_route_point>> fake_route(const std::string& name, std::uint32_t max_points) {
+  std::vector<mv_addon_route_point> out;
+  if (name.find("route") == std::string::npos) return out;
+  const std::uint32_t n = std::min<std::uint32_t>(300, max_points);
+  out.reserve(n);
+  for (std::uint32_t i = 0; i < n; ++i) {
+    const double t = n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.0;
+    mv_addon_route_point p{};
+    p.lat = 38.7975 + (38.8786 - 38.7975) * t;
+    p.lon = -9.3883 + (-6.9703 + 9.3883) * t;
+    out.push_back(p);
+  }
+  return out;
+}
+
 double ms_since(std::chrono::steady_clock::time_point t0) {
   return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
@@ -926,18 +944,9 @@ struct rig {
       std::strcpy(out.fields_utf8, fields.c_str());
       return true;
     };
-    // #606: the route of a "route" file: Sintra east to Badajoz, 300 fixes,
-    // thinned to what is asked for.
-    svc.route = [](const std::string& path, std::uint32_t max_points)
-        -> mv::result<std::vector<mv_addon_route_point>> {
-      std::vector<mv_addon_route_point> out;
-      if (utf8(fs::path(path).filename()).find("route") == std::string::npos) return out;
-      const std::uint32_t n = std::min<std::uint32_t>(300, max_points);
-      for (std::uint32_t i = 0; i < n; ++i) {
-        const double t = n > 1 ? static_cast<double>(i) / (n - 1) : 0;
-        out.push_back({38.7975 + (38.8786 - 38.7975) * t, -9.3883 + (-6.9703 + 9.3883) * t});
-      }
-      return out;
+    // #606: a "route" file's telemetry route (fake_route).
+    svc.route = [](const std::string& path, std::uint32_t max_points) {
+      return fake_route(utf8(fs::path(path).filename()), max_points);
     };
     // #406: a clip named "*cues*" has a chapter "Birthday cake" at 4 s and a
     // subtitle "suited and booted" at 7 s; "*manycues*" 200 subtitle lines a
