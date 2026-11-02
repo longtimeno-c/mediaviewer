@@ -576,6 +576,9 @@ add_library(mv_shell STATIC
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
   src/shell/edit_session.cpp
   src/shell/edit_session.h
+  # Issue #614: ⌘P's paper layout (fit / fill, the contact sheet).
+  src/shell/print_layout.cpp
+  src/shell/print_layout.h
   # Text in images (Vision is the host's, shell/text_recognition_mac.mm).
   src/shell/text_in_image.cpp
   src/shell/text_in_image.h
@@ -941,6 +944,8 @@ if(MV_BUILD_TESTS)
     # PR 10: edit stack, lossless JPEG, export, the edit session.
     tests/test_edit.cpp
     tests/test_edit_session.cpp
+    # Issue #614: ⌘P's paper layout.
+    tests/test_print_layout.cpp
     tests/test_edit_workspace.cpp
     tests/test_video_timeline.cpp
     tests/test_export_carried.cpp
