@@ -5919,6 +5919,7 @@ void browse_tick(app_state* app) noexcept {
 void persist_live_keys() noexcept {
   try {
     mv::shell::save_key_remaps(mv::shell::live_key_remaps());
+    mv::shell::save_addon_key_remaps(mv::shell::live_addon_key_remaps());
   } catch (...) {
   }
 }
@@ -9771,6 +9772,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.taskbar_restart_msg = ::RegisterWindowMessageW(L"TaskbarCreated");  // #452
   app.quit_for_update_msg = ::RegisterWindowMessageW(L"MediaViewer.QuitForUpdate");  // #532
   mv::shell::apply_key_remaps(mv::shell::load_key_remaps());
+  mv::shell::apply_addon_key_remaps(mv::shell::load_addon_key_remaps());
   app.router.rebuild(mv::shell::live_bindings());
   mv::boot::mark(mv::boot::stage::settings_loaded);
   if (!app.files.start()) MV_LOG_WARN("files: I/O worker did not start; F7 / F8 / Delete disabled");
@@ -9946,7 +9948,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // #452: a sign-in start that nothing kept removes its own entry (one registry
   // delete; the window is gone).
   if (app.remove_login_item_at_exit && g_install.installed()) (void)mv::shell::login_item::set(false, {});
-  // Scripts stop at their next instruction check; their workers are joined here.
+  // Scripts are all told to stop, then their workers are joined here (each
+  // stops at its next instruction check, together).
   (void)mv_script_set_listener(nullptr, nullptr);
   (void)mv_script_stop_all();
   const ULONGLONG addons_quit_at = ::GetTickCount64();

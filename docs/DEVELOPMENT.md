@@ -2114,7 +2114,10 @@ hardware encoder. New host rows `sound_open` … `sound_write_close` and `frames
 made on screen is not in the copy yet. While a clip's picture or a photo runs, the sheet shows a
 before/after preview with a glowing edge and progress bar (contribution API 10: a `surface`'s
 `"glow"`, `progress` `"look": "glow"`; `src/addons/enhance/preview.h`, Mac `GlowEdge`/`GlowBar`,
-Windows `IslandHost.Glow.cs`). The release packs Enhance as a preferred add-on, like Places.
+Windows `IslandHost.Glow.cs`). A stable release packs Enhance as a preferred add-on, like Places:
+`mediaviewer-addon-enhance-{win-x64,macos}.{zip,json,json.sig}` (the Mac pack arm64 only, signed
+and notarized by `macpack.py addon`) when that platform's pack is complete; a packing failure warns
+and the release publishes without it.
 
 Pack it from a dev build (ONNX Runtime, the models' specs and `remote.json` are staged beside the
 library by the build), then sideload as any slot add-on:
@@ -3540,6 +3543,8 @@ window; the host table gains `notice_post`, `notice_authorize` and `keep_alive` 
   core over 60 s (`ps`, 10 ms resolution) against 0.047 % for `"[.driftwire-idle]"`'s engine
   alone. Not seen on the Mac: a real logout/login (`keyAELaunchedAsLogInItem` on a mainApp
   item), the notification from a second machine.
+  Since 2026-10-29 every Quit on the Mac (⌘Q, the menu's, the Dock's) quits; only closing the
+  viewer window leaves the process in the menu bar ([12](design/12-decision-log.md)).
 
 ### Driftwire, AirDrop-smooth (issue #442, 2026-10-15)
 

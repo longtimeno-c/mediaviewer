@@ -156,6 +156,8 @@ final class SettingsStore: ObservableObject {
     updateAutoCheck = mv_chrome_update_auto_check()
   }
 
+  func checkForUpdates() { mv_chrome_check_for_updates() }
+
   func beginCapture(_ row: Int32) { mv_chrome_key_capture_begin(row); generation = .max; poll() }
   func cancelCapture() { mv_chrome_key_capture_cancel(); generation = .max; poll() }
   func resetKeys() { mv_chrome_keys_reset(); generation = .max; poll() }
@@ -329,6 +331,11 @@ struct SettingsView: View {
                 .toggleStyle(.switch).fixedSize()
                 .help("Asks GitHub for a newer version at launch and every 6 hours. The request reveals your IP address and app version, nothing about your files.")
             }
+          }
+          // Windows' row (issue #220): the app menu's "Check for Updates…".
+          SettingsRow(title: "Check for updates", detail: "Ask GitHub for a new version now.") {
+            Button("Check now") { store.checkForUpdates() }
+              .help("Asks GitHub for a newer version now. The request reveals your IP address and app version, nothing about your files.")
           }
           SettingsRow(title: "Update channel",
                       detail: "Preview gets signed test builds before they become stable. Switching back to Stable keeps this version until a newer stable one is released.") {

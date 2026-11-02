@@ -410,7 +410,11 @@ small vocabulary both hosts render with their own controls.
   their users will see, how to publish a link, how to keep a key.
 - **`examples/addons/`**: a theme add-on that packs and installs as-is.
 - **Cross-check:** the SDK's output is verified by the C++ reader in CI
-  (`tools/addon-verify --open`), so the two cannot drift.
+  (`tools/addon-verify --open`), so the two cannot drift. The SDK serves the host's contribution
+  API (`kContributionApi`, 10) and its point table, and a test reads both from
+  `src/addon/open_manifest.h`, so a host that gains an API or a point fails the SDK's suite until
+  the SDK knows it (#400: it had stayed at API 3, calling screens and slots `malformed` where the
+  app says `code_not_allowed`).
 
 ## 14. Roadmap (both platforms each; verify line per platform; viewer gates every PR)
 
@@ -1046,7 +1050,7 @@ Only this exists; a part whose permission was not granted is **absent** (`mv.fol
 |---|---|---|
 | `mv.id`, `mv.api`, `mv.permissions` | — | the add-on's id, 3, the granted set |
 | `mv.notify(text)` | — | one line in the host's notice (Windows: the title's; Mac: the command bar's), prefixed with the add-on's name; ≤ 200 bytes, ≤ 4 a second |
-| `mv.log(...)`, `print` | — | stays local: the macOS unified log (private); not kept on Windows yet |
+| `mv.log(...)`, `print` | — | stays local: the macOS unified log (private); not kept on Windows yet. 50 lines a second at most; the rest are counted and said in one line (#400) |
 | `mv.on(event, fn)` | — | handlers for later points' events (`script_call::call_handlers`); none sent yet |
 | `mv.folder.count()`, `.name(i)`, `.path()` | `folder.read` | the viewer's listing: Mac `folder_model`, Windows the session's `mv_folder_*` |
 | `mv.selection.current()` | `selection` | the file on screen |

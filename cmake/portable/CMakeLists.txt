@@ -130,6 +130,9 @@ add_executable(mv_import_tests
   "${MV_ROOT}/tests/test_addon_manifest.cpp"
   "${MV_ROOT}/tests/test_open_addons.cpp"
   "${MV_ROOT}/tests/test_ai_resume.cpp"
+  # #155: the AI pack's provider.txt rule, plain files (no runtime, no model).
+  "${MV_ROOT}/tests/test_ai_provider_verdict.cpp"
+  "${MV_ROOT}/src/addons/ai/provider_verdict.cpp"
   "${MV_ROOT}/tests/test_import_naming.cpp"
   "${MV_ROOT}/tests/test_import_engine.cpp"
   "${MV_ROOT}/tests/test_json.cpp"
