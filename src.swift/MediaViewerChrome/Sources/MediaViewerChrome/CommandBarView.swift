@@ -355,14 +355,29 @@ private struct UpdateBarItem: View {
     case 3:
       Button("Update ready — restart") { restart.restartToUpdateWhenIdle() }
         .buttonStyle(FlatButtonStyle())
-        .help((version.map { "Version \($0) is downloaded. Restart to use it, or it installs when you quit MediaViewer." }
-               ?? "A new version is downloaded. Restart to use it, or it installs when you quit MediaViewer.")
-              + (addons.pending.isEmpty ? "" : " " + addons.text)
-              // #620: the signed "What's new", up to three short lines.
-              + (store.updateNotes.map { "\n\nWhat's new\n" + $0 } ?? ""))
+        .help(readyHelp(version: version))
     default:
       EmptyView()
     }
+  }
+
+  /// The restart button's tooltip, built outside `body` so the type checker
+  /// sees plain String statements rather than one long `+` chain.
+  private func readyHelp(version: String?) -> String {
+    var help: String
+    if let version {
+      help = "Version \(version) is downloaded. Restart to use it, or it installs when you quit MediaViewer."
+    } else {
+      help = "A new version is downloaded. Restart to use it, or it installs when you quit MediaViewer."
+    }
+    if !addons.pending.isEmpty {
+      help += " " + addons.text
+    }
+    // #620: the signed "What's new", up to three short lines.
+    if let notes = store.updateNotes {
+      help += "\n\nWhat's new\n" + notes
+    }
+    return help
   }
 
   private func status(_ text: String, help: String) -> some View {
