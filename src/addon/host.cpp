@@ -731,6 +731,15 @@ mv_status MV_CALL t_screen_show(void* host, const char* screen, uint32_t show) {
   });
 }
 
+// #601: a Places folder-map dot asks the viewer to show its file.
+mv_status MV_CALL t_open_item(void* host, const char* screen, uint64_t g, const char* path) {
+  return guarded([&] {
+    if (!screen || !path) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    return to_mv(t.slots().open_item(t.addon_id(), screen, g, path));
+  });
+}
+
 mv_status MV_CALL t_location_of(void* host, const char* path, mv_addon_location* out) {
   return guarded([&] {
     if (!path || !out) return MV_ERR_INVALID_ARG;
@@ -1278,6 +1287,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
     api_.still_close = &t_still_close;
   }
   if (svc_.write_still) api_.still_write = &t_still_write;
+  api_.open_item = &t_open_item;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }
