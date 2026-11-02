@@ -105,6 +105,7 @@ struct person_proto {
   std::vector<std::int64_t> exemplar_ids;
   std::vector<std::int64_t> exemplar_assets;  // parallel to exemplar_ids; -1 unknown
   std::vector<float> core_mean;     // dim; unnormalised, so dot = mean pairwise cosine
+  std::uint32_t members = 0;        // the faces it was built from (refs, at most max_refs)
   // Pinned faces that agree with none of the person's other pins (or are
   // unusable): not anchors; the chrome offers to unpin them.
   std::vector<std::int64_t> doubtful_pins;

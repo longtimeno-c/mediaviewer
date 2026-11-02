@@ -113,6 +113,7 @@ person_proto build_proto(const refine_input& in, const refine_params& p, std::in
   }
   if (refs.size() > p.max_refs) refs.resize(p.max_refs);
   const std::size_t n = refs.size();
+  out.members = static_cast<std::uint32_t>(n);
   if (n == 0) return out;
 
   std::vector<float> sim(n * n, 0.0f);
@@ -373,7 +374,10 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
           const float* v = row(i);
           const float mine = support(v, rest, dim, id, p.top_k, in.faces[i].asset);
           const float other = best_rival(v, in.faces[i], person);
-          if (other >= p.join && other - mine >= p.margin) out_pins.insert(id);
+          // Only a stranger to the rest of the person (below join - margin):
+          // a lone pin the rest half-recognises is the person in another
+          // look, and a fragment of them may explain it better.
+          if (other >= p.join && other - mine >= p.margin && mine < p.join - p.margin) out_pins.insert(id);
         }
         if (out_pins.empty()) continue;
         out.distrusted.insert(out.distrusted.end(), out_pins.begin(), out_pins.end());
@@ -447,6 +451,20 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
       shortlist.clear();
       for (const person_proto* c : cands) {
         if (c->person == own || rejected_from(f, c->person) || holds_sibling(i, c->person)) continue;
+        // A smaller person whose core is no stranger to this face's own
+        // (mean pairwise cosine across the cores >= join - margin) is a
+        // fragment of the same person, not a rival: the merge joins them, a
+        // face does not leave its person for it (2026-11-02: 275 of the
+        // owner's faces went to his own fragments; two different named people
+        // sit at ~0.15). Into a larger or confirmed one it may: that is the
+        // fragment going home.
+        const bool confirmed_c = c->named || c->pinned;
+        const bool confirmed_own = own_proto && (own_proto->named || own_proto->pinned);
+        if (own_proto && own_proto->core_mean.size() == dim && !(confirmed_c && !confirmed_own) &&
+            c->members <= own_proto->members &&
+            dot(own_proto->core_mean.data(), c->core_mean.data(), dim) >= p.join - p.margin) {
+          continue;
+        }
         shortlist.emplace_back(dot(v, c->core_mean.data(), dim), c);
       }
       const std::size_t keep_n = std::min<std::size_t>(shortlist.size(), std::max<std::uint32_t>(p.shortlist, 1));
@@ -467,7 +485,13 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
       const bool weak = f.quality < p.weak_quality;
       const float rival = std::max({outranked ? kNoEvidence : vd.own, vd.second, neg(v, vd.best_person)});
       const float own_neg = own > 0 ? neg(v, own) : kNoEvidence;
-      if (!weak && vd.best_person != 0 && vd.best >= p.join && vd.best - rival >= p.margin) {
+      // A face its own person vouches for as for an unmistakable face of
+      // theirs (join + 2 margins, from its other photos and clips) is theirs:
+      // a rival that scores higher still is a tighter fragment of the same
+      // person (one session's clips), which the merge joins, not a reason to
+      // move (2026-11-02: 328 of the owner's faces went to such a fragment).
+      const bool vouched = own > 0 && !outranked && vd.own >= p.join + 2 * p.margin && own_neg < p.join;
+      if (!weak && !vouched && vd.best_person != 0 && vd.best >= p.join && vd.best - rival >= p.margin) {
         vd.change = true;
         vd.to = vd.best_person;
         vd.why = own > 0 ? refine_why::move : refine_why::admit;

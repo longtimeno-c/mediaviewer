@@ -1840,6 +1840,54 @@ TEST_CASE("People held out: a named person's faces filed again", "[.people-heldo
               " (of %zu)\n", back, other_named, someone, nobody, out.size());
 }
 
+// Why a named person's faces leave (MV_FACES_DB a copy, MV_PEOPLE_NAME the person): the
+// settle's rounds, each face's verdict tallied (aggregate counts and mean scores only).
+TEST_CASE("People why: a named person's faces through the settle, verdict by verdict", "[.people-why]") {
+  const char* file = std::getenv("MV_FACES_DB");
+  const char* who = std::getenv("MV_PEOPLE_NAME");
+  if (!file || !who) {
+    WARN("MV_FACES_DB and MV_PEOPLE_NAME are not set");
+    return;
+  }
+  mv::ai::face_tuning t;
+  t.same_person = 0.30f;
+  t.keep = 0.20f;
+  t.keep_weak = 0.24f;
+  t.margin = 0.10f;
+  t.ambiguous = 0.04f;
+  t.merge_at = 0.32f;
+  auto db = mv::ai::faces_db::open(file, t, 512, "yunet-2023mar+adaface-ir50-webface4m/1");
+  REQUIRE(db);
+  std::set<std::int64_t> his;
+  for (std::int64_t id : (*db)->people_named(who)) his.insert(id);
+  for (int round = 0; round < 3; ++round) {
+    const mv::ai::refine_snapshot snap = (*db)->refine_begin(true);
+    refine_input in = input_of(snap);
+    in.dim = 512;
+    const refine_output out = mv::ai::refine_people(in, t.refine());
+    struct tally {
+      std::size_t n = 0;
+      double own = 0, best = 0;
+    };
+    std::map<std::string, tally> by;
+    for (const refine_move& m : out.moves) {
+      if (!his.count(m.from)) continue;
+      const char* why = m.why == refine_why::move ? "move" : m.why == refine_why::evict ? "evict" : "regroup";
+      tally& x = by[std::string(why) + (m.to < 0 ? " to a new person" : m.to == 0 ? " to nobody" : " to someone")];
+      ++x.n;
+      x.own += m.own;
+      x.best += m.best;
+    }
+    std::printf("round %d: distrusted pins %zu\n", round, out.distrusted.size());
+    for (const auto& [k, x] : by) {
+      std::printf("  %-28s %5zu  own %.3f  best %.3f\n", k.c_str(), x.n, x.own / static_cast<double>(x.n),
+                  x.best / static_cast<double>(x.n));
+    }
+    const mv::ai::refine_stats st = (*db)->refine_commit(snap, out);
+    if (!st.changed()) break;
+  }
+}
+
 TEST_CASE("People bench: real face vectors through faces.db, online and settled", "[.people-bench]") {
   const char* file = std::getenv("MV_FACE_EVAL");
   if (!file) {
