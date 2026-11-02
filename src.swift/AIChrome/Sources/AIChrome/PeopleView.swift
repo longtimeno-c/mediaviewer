@@ -67,6 +67,8 @@ struct PeopleGrid: View {
   @State private var selection = Set<UInt64>()
   /// "Merge duplicates" is running in the pack.
   @State private var deduping = false
+  /// "Merge duplicates" in detail: the look, shown until Apply or Cancel.
+  @State private var dedupeLook: DedupePlan?
   /// The unknown faces sheet is open.
   @State private var showUnknown = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -102,7 +104,9 @@ struct PeopleGrid: View {
               }
               Button("Merge duplicates") { mergeDuplicates() }
                 .disabled(deduping)
-                .help("Re-check every face and merge people who are the same person. Two people you named differently are never merged; undo with Split.")
+                .help(model.canDedupeDetail
+                      ? "Re-check every face and merge people who are the same person. Two people you named differently are never merged. You see the merges before they happen, and can undo them."
+                      : "Re-check every face and merge people who are the same person. Two people you named differently are never merged; undo with Split.")
             }
           }
         }
@@ -157,6 +161,11 @@ struct PeopleGrid: View {
     .onExitCommand { selection = [] }
     .sheet(isPresented: $showUnknown) {
       UnknownFacesSheet(model: model) { showUnknown = false }
+    }
+    .sheet(isPresented: Binding(get: { dedupeLook != nil }, set: { if !$0 { dedupeLook = nil } })) {
+      if let plan = dedupeLook {
+        DedupeSheet(model: model, plan: plan, cancel: { dedupeLook = nil }, apply: applyDuplicates)
+      }
     }
   }
 
@@ -215,6 +224,7 @@ struct PeopleGrid: View {
   /// "Merge duplicates" (docs/design/17): the whole library, on request; the note
   /// under the grid says what it did.
   private func mergeDuplicates() {
+    guard !model.canDedupeDetail else { return lookDuplicates() }
     deduping = true
     Task {
       let result = await model.mergeDuplicates()
@@ -227,6 +237,33 @@ struct PeopleGrid: View {
       case let (m, f)?:
         model.note((m == 1 ? "1 person" : "\(m) people") + " merged, " + (f == 1 ? "1 face" : "\(f) faces") + " moved.")
       }
+    }
+  }
+
+  /// Merge duplicates in detail, step 1: a look (MV_AI_DRY_RUN), nothing changed.
+  private func lookDuplicates() {
+    deduping = true
+    Task {
+      let plan = await model.dedupeDetail(dry: true)
+      deduping = false
+      switch plan {
+      case nil: model.note("Couldn't check for duplicates. Try again.")
+      case let p? where p.isEmpty: model.note("No duplicates found, and every face matches.")
+      case let p?: dedupeLook = p
+      }
+    }
+  }
+
+  /// Step 2: for real; the note says what it did, with Undo of every merge.
+  private func applyDuplicates() {
+    dedupeLook = nil
+    deduping = true
+    Task {
+      let plan = await model.dedupeDetail(dry: false)
+      deduping = false
+      guard let plan else { return model.note("Couldn't merge the duplicates. Try again.") }
+      let tokens = model.table.canMergeUndo ? plan.undoTokens : []
+      model.note(plan.summary, seconds: tokens.isEmpty ? 5 : 8, undo: tokens.isEmpty ? nil : tokens)
     }
   }
 
@@ -485,6 +522,77 @@ struct AllPeopleSheet: View {
     }
     .sheet(item: $openPerson) { person in
       PersonSheet(model: model, person: person) { openPerson = nil }
+    }
+  }
+}
+
+/// "Merge duplicates" in detail: the merges a look proposes, each as the
+/// covers of the people that would go and the one they would join, with
+/// Apply and Cancel. Nothing has changed while it is up.
+struct DedupeSheet: View {
+  @ObservedObject var model: ManagementModel
+  let plan: DedupePlan
+  let cancel: () -> Void
+  let apply: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("Merge duplicates").font(AITheme.font(18)).foregroundStyle(AITheme.title)
+      Text(plan.merges.isEmpty ? "No duplicates found." : "These people look like the same person. Nothing changes until you apply.")
+        .font(AITheme.font(12)).foregroundStyle(AITheme.body)
+      ScrollView {
+        VStack(alignment: .leading, spacing: 14) {
+          ForEach(plan.merges) { merge in row(merge) }
+        }
+        .padding(4)
+      }
+      .frame(minHeight: 200)
+      if !plan.movedNote.isEmpty {
+        Text(plan.movedNote).font(AITheme.font(12)).foregroundStyle(AITheme.body)
+      }
+      HStack {
+        Spacer()
+        Button("Cancel", action: cancel)
+          .keyboardShortcut(.cancelAction)
+          .help("Leave everyone as they are")
+          .accessibilityLabel("Cancel, change nothing")
+        Button("Apply", action: apply)
+          .keyboardShortcut(.defaultAction)
+          .help("Merge these people. Undo puts them back.")
+          .accessibilityLabel(plan.merges.count == 1 ? "Apply the merge" : "Apply \(plan.merges.count) merges")
+      }
+    }
+    .padding(20)
+    .frame(width: 560, height: 480)
+    .onExitCommand(perform: cancel)
+  }
+
+  private func faces(_ n: Int) -> String { n == 1 ? "1 face" : "\(n) faces" }
+
+  private func row(_ merge: DedupePlan.Merge) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(merge.title).font(AITheme.font(13)).foregroundStyle(AITheme.title)
+      HStack(alignment: .top, spacing: 12) {
+        ForEach(merge.from) { p in
+          cover(face: p.coverFace, box: p.coverBox, name: p.name, caption: faces(p.faces))
+        }
+        Image(systemName: "arrow.right").foregroundStyle(AITheme.body).padding(.top, 18)
+          .accessibilityHidden(true)
+        cover(face: merge.coverFace, box: merge.coverBox, name: merge.intoName,
+              caption: merge.intoName.isEmpty ? faces(merge.intoFaces) : merge.intoName)
+      }
+    }
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(merge.title + ", " + merge.from.map { faces($0.faces) }.joined(separator: " and ")
+                        + " into " + faces(merge.intoFaces))
+  }
+
+  private func cover(face: UInt64, box: [Double], name: String, caption: String) -> some View {
+    VStack(spacing: 4) {
+      FaceImage(table: model.table, faceID: face, box: box, monogram: String(name.prefix(1)).uppercased())
+        .frame(width: 56, height: 56)
+      Text(caption).font(AITheme.font(11)).foregroundStyle(AITheme.body)
+        .lineLimit(1).frame(maxWidth: 80)
     }
   }
 }

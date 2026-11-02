@@ -136,4 +136,82 @@ final class PeopleCorrectionsTests: XCTestCase {
     XCTAssertEqual(groups.first { $0.pin }?.faces, [9])
     XCTAssertNil(RejectOutcome.parse(#"{"unassigned":1,"spread":0,"to":[]}"#)?.undo)
   }
+
+  func testRefineLookParsesAndCaptions() throws {
+    let json = """
+    {"dry":true,"removed":4,"faces":[
+      {"face":9,"path":"/a/b.jpg","pts_ms":-1,"box":[0.1,0.2,0.3,0.4],"why":"move","to":7,"group":0,"to_name":"Ben"},
+      {"face":10,"path":"/a/c.mov","pts_ms":4000,"box":[0,0,1,1],"why":"evict","to":0,"group":0,"to_name":""},
+      {"face":11,"path":"/a/d.jpg","pts_ms":-1,"box":[0,0,1,1],"why":"regroup","to":0,"group":1,"to_name":""},
+      {"face":12,"path":"/a/e.jpg","pts_ms":-1,"box":[0,0,1,1],"why":"move","to":8,"group":0,"to_name":""}]}
+    """
+    let look = try XCTUnwrap(RefineAnswer.parse(json))
+    XCTAssertTrue(look.dry)
+    XCTAssertEqual(look.faces.map(\.id), [9, 10, 11, 12])
+    XCTAssertEqual(look.faces[0].box, [0.1, 0.2, 0.3, 0.4])
+    XCTAssertEqual(look.faces[1].ptsMs, 4000)
+    XCTAssertEqual(look.faces.map(\.caption), ["To Ben", "To nobody", "A new person", "To someone unnamed"])
+    XCTAssertEqual(look.lookTitle(person: "Anna"), "4 faces would leave Anna")
+    XCTAssertEqual(look.lookTitle(person: ""), "4 faces would leave this person")
+    XCTAssertNil(RefineAnswer.parse(nil))
+    XCTAssertNil(RefineAnswer.parse("[]"))
+  }
+
+  func testRefineSummaryAndUndo() throws {
+    let real = try XCTUnwrap(RefineAnswer.parse(#"{"dry":false,"removed":2,"faces":[{"face":9,"to":7},{"face":10,"to":0}]}"#))
+    XCTAssertFalse(real.dry)
+    XCTAssertEqual(real.summary, "2 faces left")
+    XCTAssertEqual(real.undo(backTo: 3), .assign([AssignGroup(faces: [9, 10], person: 3, pin: false)]))
+    let one = RefineAnswer(dry: false, removed: 1, faces: [])
+    XCTAssertEqual(one.summary, "1 face left")
+    XCTAssertNil(one.undo(backTo: 3))
+    let none = try XCTUnwrap(RefineAnswer.parse(#"{"dry":true,"removed":0,"faces":[]}"#))
+    XCTAssertTrue(none.isEmpty)
+    XCTAssertEqual(none.summary, "Every face matches")
+  }
+
+  func testDedupePlanParsesAndTitles() throws {
+    let json = """
+    {"dry":true,"merged":3,"moved":12,"merges":[
+      {"into":3,"into_name":"Anna","into_faces":40,"cover_face":5,"cover_path":"/a.jpg","cover_ms":-1,
+       "cover_box":[0,0,1,1],"from":[{"id":9,"name":"","faces":4,"cover_face":6,"cover_box":[0.1,0.1,0.2,0.2],"undo":0},
+                                     {"id":10,"name":"","faces":1,"cover_face":7,"cover_box":[0,0,1,1],"undo":0}]},
+      {"into":4,"into_name":"","into_faces":8,"cover_face":8,"cover_box":[0,0,1,1],
+       "from":[{"id":11,"name":"","faces":2,"cover_face":9,"cover_box":[0,0,1,1],"undo":0}]}]}
+    """
+    let plan = try XCTUnwrap(DedupePlan.parse(json))
+    XCTAssertTrue(plan.dry)
+    XCTAssertEqual(plan.merges.map(\.into), [3, 4])
+    XCTAssertEqual(plan.merges[0].from.map(\.id), [9, 10])
+    XCTAssertEqual(plan.merges[0].from[0].coverBox, [0.1, 0.1, 0.2, 0.2])
+    XCTAssertEqual(plan.merges[0].title, "Merge 2 people into Anna")
+    XCTAssertEqual(plan.merges[1].title, "Merge 1 person into someone unnamed")
+    XCTAssertEqual(plan.movedNote, "12 faces would also move to the people they match.")
+    XCTAssertEqual(plan.summary, "3 people merged, 12 faces moved.")
+    XCTAssertNil(plan.undo)  // a look carries no tokens
+    XCTAssertNil(DedupePlan.parse("[]"))
+  }
+
+  func testDedupeRealUndoAndEmpty() throws {
+    let real = try XCTUnwrap(DedupePlan.parse(#"{"dry":false,"merged":3,"moved":1,"merges":[{"into":3,"from":[{"id":9,"undo":21},{"id":10,"undo":0}]},{"into":4,"from":[{"id":11,"undo":22}]}]}"#))
+    XCTAssertEqual(real.undoTokens, [21, 22])
+    XCTAssertEqual(real.undo, .merge([21, 22]))
+    XCTAssertEqual(real.summary, "3 people merged, 1 face moved.")
+    let empty = try XCTUnwrap(DedupePlan.parse(#"{"dry":true,"merged":0,"moved":0,"merges":[]}"#))
+    XCTAssertTrue(empty.isEmpty)
+    XCTAssertEqual(empty.summary, "No duplicates found, and every face matches.")
+    XCTAssertEqual(DedupePlan(merged: 1).summary, "1 person merged, 0 faces moved.")
+  }
+
+  func testDetailEntriesAbsentOnAShortTable() {
+    let p = UnsafeMutablePointer<mv_ai_api>.allocate(capacity: 1)
+    defer { p.deallocate() }
+    p.initialize(to: mv_ai_api())
+    p.pointee.struct_size = UInt32(MemoryLayout<mv_ai_api>.offset(of: \mv_ai_api.person_refine_json)!)
+    let t = AITable(UnsafePointer(p))
+    XCTAssertFalse(t.canRefineDetail)
+    XCTAssertFalse(t.canDedupeDetail)
+    XCTAssertNil(t.personRefineJSON(1, dry: true))
+    XCTAssertNil(t.peopleDedupeJSON(dry: true))
+  }
 }

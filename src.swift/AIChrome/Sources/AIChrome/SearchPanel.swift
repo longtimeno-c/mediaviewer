@@ -559,7 +559,9 @@ struct SearchRootView: View {
           .fixedSize(horizontal: false, vertical: true)
       } else if model.finished && (model.reference != nil || !model.query.isEmpty) {
         Image(systemName: "sparkle.magnifyingglass").font(.system(size: 30)).foregroundStyle(AITheme.body)
-        if let reference = model.reference {
+        if model.isThisPerson {
+          Text("No face found here").font(AITheme.font(15)).foregroundStyle(AITheme.title)
+        } else if let reference = model.reference {
           Text("Nothing close to \(reference.label.lowercased()) yet.")
             .font(AITheme.font(15)).foregroundStyle(AITheme.title)
         } else {

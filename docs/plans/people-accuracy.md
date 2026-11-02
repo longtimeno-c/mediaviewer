@@ -1,32 +1,22 @@
 # People accuracy: what is left
 
-The 2026-11-02 review of "the wrong person is in another person's group" found four causes, all
-in how corrections and clips were handled, not in the face model (AdaFace IR-50 separates the
-owner's named people: the closest two centroids are 0.255 apart, against a 0.30 threshold). What
-it built is in [docs/design/17 "Corrections that hold"](../design/17-local-ai-search.md#corrections-that-hold)
-and "Reviewing a person", with the numbers; the decision is in
-[12-decision-log](../design/12-decision-log.md) "Corrections hold, and a frame is evidence".
+The 2026-11-02 work on "the wrong person is in another person's group" is built and described in
+[docs/design/17 "Corrections that hold"](../design/17-local-ai-search.md#corrections-that-hold),
+"A person's own fragment", "Tracks", "Reviewing a person" and "Refine and Merge duplicates in
+detail", with its numbers; the decisions are in [12-decision-log](../design/12-decision-log.md).
+Tried and left out, with their numbers there: admitting into unconfirmed people by their average
+in the settle, and farthest-point (diverse) exemplars.
 
-Not built yet, each measured the same way (a copy of the owner's faces.db with `[.people-settle]`,
-`[.people-heldout]` and `[.people-api]`, base and new alternated; `[.people-bench]` on LFW must
-not drop):
+Not built:
 
-1. **Tracks.** Faces of one clip at neighbouring moments that agree (cosine ≥ join, or a box
-   overlap) as one track: a track counts once in a person's online average, and its weak frames
-   take the decision of its clear ones. Today a clip counts once only in the refinement's
-   exemplars and medoid, and "not this person" spreads to the same face in the clip.
-2. **The ~60 of Tristan's clip faces** that the new settle files in two unnamed groups (0.30 and
-   0.37 to his agreeing pins). "Might also be" offers them; find why the refinement moves them
-   out before changing anything.
-3. **Admission into unconfirmed people in the settle** by exemplars: an A/B of the current rule
-   against the core mean (online matching already uses the mean for them since #434).
-4. **Diverse exemplars**: farthest-point choice over pins and core, once "Yes" adds many pins.
-5. **Per-person thresholds**, stricter only, and only if `[.people-heldout]` still shows wrong
-   named people (it shows none today).
-6. **An order for the unknown faces** that settles the most faces per answer, measured with a
-   simulated user on LFW (answers needed to reach a BCubed F, against clearest-first).
-7. **Refine and Merge duplicates in detail**: what moved, to whom, with a look before it lands.
-8. **"This person"** (`search_this_person`) from the viewer: wired in neither chrome; it needs a
-   command row (docs/design/16).
-9. **Linux**: no People chrome yet; the core above is portable and the Qt half follows the AI
-   chrome's order on Linux (docs/plans/linux.md).
+1. **Per-person thresholds** (stricter only). Their condition was that `[.people-heldout]` still
+   files named people's faces under another named person; on the owner's copy it files none
+   (clear or weak), so there is nothing for them to fix. Revisit if that count rises.
+2. **A clip counted once in an unconfirmed person's online average.** Confirmed people are
+   already matched by exemplars, one per photo or clip; the average decides only for unnamed,
+   unpinned people, and no bench here measures a gain there. Build it with a bench that does.
+3. **Linux**: no People chrome, because there is no Qt AI chrome yet; the order of the Linux
+   halves is an open call (CLAUDE.md, docs/plans/linux.md §10). The core above is portable C++
+   and the ABI is the same, so the Qt half is chrome only when it comes.
+4. **Owed checks**: neither chrome has been driven against a real pack, or with VoiceOver /
+   Narrator; Windows' native build and the WinUI run are CI's and the owner's.

@@ -885,7 +885,10 @@ rejected, rejections of what is gone, two people of one frame in one person) or 
 (what each People read the chrome makes costs, the sheet's review, suggestions and unknown faces
 included, then the copy's unfiled faces offered again through `add`: ms per face and where they
 went; it writes, so use a fresh copy per run) or `"[.people-heldout]"` (a tenth of the named
-people's clear faces taken out and filed again: how many come back to their person). Compare
+people's clear faces taken out and filed again: how many come back to their person;
+`MV_HELDOUT_WEAK=1` the weak ones, `MV_HELDOUT_SETTLE=1` then settles), `"[.people-unknown-order]"`
+(the unknown-faces queue's right and wrong one-click suggestions on held-out faces) or
+`"[.people-why]"` with `MV_PEOPLE_NAME` (a named person's settle verdicts, tallied). Compare
 with the base commit's `mv_ai_tests`
 built in its own worktree, runs alternated. Delete the copy after: it is face data.
 

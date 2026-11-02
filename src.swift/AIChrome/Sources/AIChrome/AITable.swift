@@ -248,6 +248,29 @@ extension AITable {
     guard canSuggest else { return nil }
     return json { a.person_suggest_json?(ctx, person, limit, $0, $1, $2) ?? MV_ERR_INVALID_ARG }
   }
+
+  /// Refine and Merge duplicates in detail (2026-11-02): a look first
+  /// (MV_AI_DRY_RUN), then the real run. A pack without them keeps
+  /// person_refine / people_dedupe.
+  var canRefineDetail: Bool { has(\mv_ai_api.person_refine_json) && a.person_refine_json != nil }
+  var canDedupeDetail: Bool { has(\mv_ai_api.people_dedupe_json) && a.people_dedupe_json != nil }
+
+  /// person_refine_json: which faces leave `person` and where. With `dry`
+  /// nothing changes. A real run's answer is kept by the pack for the
+  /// buffer retry, so it is not run twice.
+  func personRefineJSON(_ person: UInt64, dry: Bool) -> String? {
+    guard canRefineDetail else { return nil }
+    let flags = dry ? MV_AI_DRY_RUN : 0
+    return json { a.person_refine_json?(ctx, person, flags, $0, $1, $2) ?? MV_ERR_INVALID_ARG }
+  }
+
+  /// people_dedupe_json: who merges into whom. With `dry` nothing changes;
+  /// for real each merged person carries a person_merge_undo token.
+  func peopleDedupeJSON(dry: Bool) -> String? {
+    guard canDedupeDetail else { return nil }
+    let flags = dry ? MV_AI_DRY_RUN : 0
+    return json { a.people_dedupe_json?(ctx, flags, $0, $1, $2) ?? MV_ERR_INVALID_ARG }
+  }
 }
 
 /// `body(nil)` for nil, else the C string: the table takes NULL for "no scope".

@@ -1388,6 +1388,20 @@ of 862, none to another named person either way.
 Cost: the library-wide settle 3.8 → 5.2 s on the owner's copy (once per re-run or rules change);
 `add` 0.285 → 0.297 ms a face (one run each). Rules 3 settles every library once.
 
+**A person's own fragment is no rival; tracks; the unknown faces' order (2026-11-02, later
+the same day).** The first build of the rules above moved 408 of the owner's clear faces into
+tighter fragments of himself, because a clip no longer vouched for its own frames. Now a face its
+person vouches for unmistakably stays, a smaller person whose core is no stranger to its own is no
+destination (join − margin / 2: join − margin cost LFW one correct move), and a lone pin is
+distrusted only when the rest of its person calls it a stranger. A weak clip frame follows the
+clear frames of its track. The unknown-faces queue puts suggestions of named people first. Against
+the base commit on today's copy (50,588 faces): faces better matched by a different person 45 → 5,
+unfiled 31,107 → 29,805, settle 4.6 → 4.0 s, LFW unchanged; weak held-out faces back to their person
+118 → 139 of 179; the first 60 one-click suggestions 39 right / 5 wrong → 60 / 0. Tried and left
+out, with numbers in docs/design/17 "Measured": admitting into unconfirmed people by their average
+in the settle, and farthest-point exemplars. Refine and Merge duplicates look first and can be
+undone; Find this person is Ctrl+Shift+P.
+
 **People follow the open folder (2026-10-03).** While a folder is open the People grid offers
 "This folder | + Subfolders" only; everyone shows only with no folder open. A folder open is the
 user saying what they are looking at, and everyone-from-everywhere inside one read as a leak. A

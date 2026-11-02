@@ -1337,29 +1337,62 @@ were back in the person they were rejected from, and 21 frames held two people i
   id, name, pins and corrections; the covers the merge pinned are unpinned.
 - **Rules 3** (`faces.db` meta): a library filed under older rules settles once, nothing read again.
 
-**Measured** on a copy of the owner's faces.db (48,959 faces, 13 named people), settled by the old
-and new code, alternated (`[.people-settle]`, which prints the three "never" counts, and a NumPy
-count over the copy), and LFW (`[.people-bench]`):
+### A person's own fragment is no rival
 
-| | Old settle | New settle |
+A clip's frames no longer vouch for a face, so a face is judged by the person's other photos and
+clips; a tighter fragment of the same person (one session's clips) then outscored the whole
+person by `margin`, and the first build of these rules moved 408 of the owner's clear faces into
+such fragments (his other clips vouched for them at 0.70; the fragment at 0.84) and distrusted
+four of his own pins. Three rules stop it:
+- A face its person vouches for as for an unmistakable face (≥ join + 2 margins) is not moved.
+- A smaller person whose core is no stranger to the face's own (mean pairwise cosine across the
+  cores ≥ join − margin / 2) is no destination: it is the same person, and the merge or "Might
+  also be" joins them. Into a larger or confirmed one a face may go (the fragment going home).
+  join − margin cost LFW one correct move between two lookalikes (settled F 0.9988 → 0.9985);
+  join − margin / 2 does not.
+- A lone pin is distrusted only when the rest of its person calls it a stranger (< join − margin).
+
+`[.people-why]` tallies a named person's verdicts in the settle (counts and mean scores only).
+
+### Tracks
+
+A weak clip frame (quality 0.10 to 0.35) nobody has follows its track: the clear frames of its
+clip within `track_ms` (15 s) that it resembles at `same_person`, when they are all in one person
+and the user has not said otherwise (a rejection, a frame together, its negatives); online as it
+is filed (`faces_db::track_locked`) and in the settle. A weak vector alone still files nothing.
+Not built: a clip counted once in an unconfirmed person's online average (docs/plans).
+
+### Measured
+
+On a copy of the owner's faces.db (50,588 faces, 13 named people), the base commit and this work
+built in their own worktrees, settled alternately (`[.people-settle]`, which prints the three
+"never" counts; a NumPy count over the copy, aggregate only), and LFW (`[.people-bench]`):
+
+| | Base | This work |
 |---|---|---|
 | Faces filed under a person they were rejected from | 2 | **0** |
 | Rejections of gone faces | 61 | **0** |
-| Frames with two people in one person (not one face twice) | 11 | **0** |
-| Named people's faces better matched by another person | 77 of 10,186 | 77 of 10,091 |
-| The stranger a merge glued into Tristan, moved out | 147 | 150 |
-| Settle | 3.8 s | 5.2 s |
+| Two people of one frame in one person (not one face twice) | 28 | **0** |
+| Named people's faces better matched by a different person | 45 of 10,794 | **5** of 11,478 |
+| … by a fragment of their own person (kept: same person) | 33 | 104 |
+| Unfiled faces after the settle | 31,107 | **29,805** |
+| Settle (two runs each) | 4.6 s | **4.0 s** |
 | LFW settled BCubed F, full / ~24 px | 0.9988 / 0.9980 | 0.9988 / 0.9980 (every line equal) |
-| `add` per face (3,410 offered again) | 0.285 ms | 0.297 ms (one run each) |
-| A tenth of the named people's clear faces held out and filed again (`[.people-heldout]`, 862) | 597 back to their person, 0 to another named one | **695** back, 0 to another named one |
+| `add` per face (3,410 offered again; one run each) | 0.285 ms | 0.297 ms |
 
-The held-out row is "training on the named people" as it works here: new photos are matched
-against the faces the user confirmed, and one exemplar per photo or clip gives those a person's
-range instead of twelve frames of one clip. Not better: about 60 of Tristan's clip faces (two unnamed groups, 0.30 and 0.37 to his agreeing
-pins) leave him where the old settle kept them; "Might also be" offers both back. The settle's
-extra 1.4 s is the frame and asset bookkeeping; it runs once per re-run or rules change, off the
-UI thread. The library before any settle had 409 such faces: the settle this rules change starts
-does most of the good on an existing library.
+Held out and filed again (`[.people-heldout]`, the base has no such case, so the first build of
+these rules stands in where noted):
+
+| | Before | This work |
+|---|---|---|
+| A tenth of named people's clear faces (862, the smaller copy of the morning; base build) | 597 back | **695** back, 0 to another named person |
+| The same, 903 on today's copy (the first build) | 732 | 732, 0 to another named person |
+| A tenth of their weak faces (179), tracks off / on | 118 back | **139** back, 0 to another named person |
+
+The held-out rows are "training on the named people" as it works here: new photos are matched
+against the faces the user confirmed; one exemplar per photo or clip gives those a person's
+range; a weak frame follows its clear track. Tried and left out: admitting into unconfirmed people
+by their average in the settle (16 → 18 misfiled), farthest-point exemplars (5 → 9 misfiled).
 
 ### Reviewing a person
 
@@ -1370,8 +1403,13 @@ refinement scores it), its **rival** (the best other person seen more than once,
 frame with this one: shortlist by average, rescored by exemplars where cached) and **check**: not
 pinned and support below `same_person`, or the rival within `margin`, or unusable; or a pin that
 is lone. `person_review_json` lists the checks first, least supported first. **Unknown faces**
-(`unknown_faces_json`, 32 ms for 60): unassigned faces at or above `weak_quality`, clearest first,
-each with its nearest person (≥ `same_person − 2 × margin`, never one rejected or in its frame).
+(`unknown_faces_json`): unassigned faces at or above `weak_quality`, each with its nearest person
+(≥ `same_person − 2 × margin`, never one rejected or in its frame), in the order the user answers
+best: suggested for a named person first (surest first), then for anyone, then the clearest.
+Scored outside the lock (`loose_begin` 25 ms, `loose_finish` 45 ms for the owner's 1,249) and kept
+between pages until a person's faces change. Held-out named faces made unknown
+(`[.people-unknown-order]`): of the first 60 one-click suggestions 60 right, 0 wrong (clearest
+first: 39 / 5); of the first 600, 519 / 0 (397 / 40).
 **Might also be** (`person_suggest_json`, 31 ms under the lock + 3 ms): unknown faces whose
 support by the person, and unnamed unpinned people whose average to the person's exemplars, reach
 `same_person − margin` (the user answers it, so a margin lower than filing), never one kept apart.
@@ -1394,6 +1432,20 @@ the C# compiles and its tests pass, Windows' native build is CI's.
 Timings come from `mv_ai_tests "[.people-api]"` and `"[.people-settle]"` on a copy (Apple M5);
 the "better matched" count from a NumPy script over a copy (aggregate counts only), kept with the
 owner's bench files, not in the repository. Windows is not measured.
+
+### Refine and Merge duplicates in detail
+
+`person_refine_json` and `people_dedupe_json` (2026-11-02): with `MV_AI_DRY_RUN` a look first,
+nothing changed: which faces would leave a person and where (a new person as its group number),
+which people would merge into whom (Merge duplicates' look counts the faces its check would move
+rather than moving them). For real, what was done: each face's destination, and an undo token per
+automatic merge (`merge_auto` logs one, `person_merge_undo` takes it). Undo of a refine puts each
+face back with `MV_AI_ASSIGN_UNDO`. A real run's answer is kept for the buffer retry, so it is
+never run twice. Both chromes look first, then Apply / Cancel, then Undo.
+
+**Find this person** (`Ctrl+Shift+P`, docs/design/16): the photos and moments of the largest face
+in the still or paused frame on screen (`search_this_person`), beside Find similar; only while the
+AI pack is loaded.
 
 ### Merge duplicates
 

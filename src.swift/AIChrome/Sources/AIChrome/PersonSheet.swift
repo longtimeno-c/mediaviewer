@@ -21,6 +21,9 @@ struct PersonSheet: View {
   @State private var loading = true
   @State private var refining = false
   @State private var refineNote = ""
+  /// "Refine faces" in detail: the faces a look says would leave, until
+  /// Apply or Cancel. Nothing has changed while it is up.
+  @State private var refineLook: RefineAnswer?
   @State private var sort = ReviewSort.doubtful
   /// The face the arrow keys move from (the last one clicked or reached).
   @State private var cursor: UInt64?
@@ -51,14 +54,19 @@ struct PersonSheet: View {
            ? "Check the faces that may be someone else. ⌘-click selects several, ← → move, ⇧ adds. Y yes, N not, M move, Space shows the photo."
            : "Select faces that are someone else. ⌘-click selects several, ← → move, ⇧ adds; Delete removes them from this person.")
         .font(AITheme.font(12)).foregroundStyle(AITheme.body)
-      grid
+      if let look = refineLook {
+        refineReview(look)
+      } else {
+        grid
+      }
       if !status.isEmpty { statusLine }
-      actions
+      if refineLook == nil { actions }
       if !suggestions.isEmpty { suggestionStrip }
     }
     .padding(20)
     .frame(width: 680, height: suggestions.isEmpty ? 560 : 680)
-    .onExitCommand(perform: done)  // Esc closes, as Done does (issue #192)
+    // Esc closes, as Done does (issue #192); over a refine look it cancels the look.
+    .onExitCommand { if refineLook != nil { refineLook = nil } else { done() } }
     .background {
       // ⌘Z: the last action, put back. Disabled with none (Edit ▸ Undo then has it).
       Button("Undo") { undoLast() }
@@ -273,6 +281,60 @@ struct PersonSheet: View {
     }
   }
 
+  /// A refine look: the faces that would leave, each captioned by where it
+  /// would go, with Apply and Cancel. Nothing changes until Apply.
+  private func refineReview(_ look: RefineAnswer) -> some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Text(look.lookTitle(person: name))
+        .font(AITheme.font(13)).foregroundStyle(AITheme.title)
+        .accessibilityAddTraits(.isHeader)
+      ScrollView {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 96, maximum: 120), spacing: 10)],
+                  alignment: .leading, spacing: 10) {
+          ForEach(look.faces) { face in
+            VStack(spacing: 4) {
+              FaceImage(table: model.table, faceID: face.id, box: face.box, monogram: "")
+                .frame(width: 72, height: 72)
+              Text(face.caption)
+                .font(AITheme.font(11)).foregroundStyle(AITheme.body)
+                .lineLimit(2).multilineTextAlignment(.center)
+                .frame(maxWidth: 110)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+              preview = PreviewFace(id: face.id, path: face.path, ptsMs: face.ptsMs, box: face.box)
+            }
+            .contextMenu {
+              Button("Show photo") {
+                preview = PreviewFace(id: face.id, path: face.path, ptsMs: face.ptsMs, box: face.box)
+              }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(faceAccessibilityLabel(path: face.path, ptsMs: face.ptsMs) + ", " + face.caption)
+            .accessibilityAction(named: "Show photo") {
+              preview = PreviewFace(id: face.id, path: face.path, ptsMs: face.ptsMs, box: face.box)
+            }
+          }
+        }
+        .padding(4)
+      }
+      .frame(minHeight: 260)
+      HStack {
+        Button("Apply") { applyRefine() }
+          .keyboardShortcut(.defaultAction)
+          .disabled(refining)
+          .help("Move these faces out of this person")
+          .accessibilityLabel(look.count == 1 ? "Apply, move 1 face out" : "Apply, move \(look.count) faces out")
+        Button("Cancel") { refineLook = nil }
+          .disabled(refining)
+          .help("Leave the faces as they are")
+          .accessibilityLabel("Cancel, change nothing")
+        if refining { ProgressView().controlSize(.small) }
+        Spacer()
+      }
+    }
+  }
+
   private var suggestionStrip: some View {
     VStack(alignment: .leading, spacing: 8) {
       Text(name.isEmpty ? "Might also be this person" : "Might also be \(name)")
@@ -471,6 +533,7 @@ struct PersonSheet: View {
   }
 
   private func refine() {
+    guard !model.canRefineDetail else { return lookRefine() }
     refining = true
     refineNote = ""
     selection = []
@@ -486,6 +549,39 @@ struct PersonSheet: View {
       case 1: refineNote = "1 face moved out"
       case let n?: refineNote = "\(n) faces moved out"
       }
+    }
+  }
+
+  /// Refine in detail, step 1: a look (MV_AI_DRY_RUN). Nothing changes.
+  private func lookRefine() {
+    refining = true
+    refineNote = ""
+    selection = []
+    Task {
+      let look = await model.refineDetail(person.id, dry: true)
+      refining = false
+      switch look {
+      case nil: refineNote = "Couldn't refine"
+      case let l? where l.faces.isEmpty: refineNote = "Every face matches"
+      case let l?: refineLook = l
+      }
+    }
+  }
+
+  /// Refine in detail, step 2: for real, with Undo of what the pack says left.
+  private func applyRefine() {
+    guard refineLook != nil, !refining else { return }
+    refining = true
+    Task {
+      let answer = await model.refineDetail(person.id, dry: false)
+      refining = false
+      refineLook = nil
+      if let answer {
+        say(answer.summary, undo: model.canAssign ? answer.undo(backTo: person.id) : nil)
+      } else {
+        say("Couldn't refine. Try again.", undo: nil)
+      }
+      await reload()
     }
   }
 }

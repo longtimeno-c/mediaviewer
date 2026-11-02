@@ -172,6 +172,15 @@ public final class MVAIChrome: NSObject {
                       positionMs: int64(v["position_ms"]))
         p.show(over: viewerWindow())
         return true
+      case "search_this_person":
+        // The person whose face is largest in the still, or the clip's frame.
+        let v = viewerState()
+        let path = v["path"] as? String ?? ""
+        guard !path.isEmpty, let m = searchModel(), m.canFindThisPerson, let p = panelController() else { return false }
+        m.findThisPerson(path: path, isVideo: v["video"] as? Bool ?? false,
+                         positionMs: int64(v["position_ms"]))
+        p.show(over: viewerWindow())
+        return true
       case "search_next_match", "search_prev_match":
         let v = viewerState()
         guard v["video"] as? Bool == true, let m = lister ?? searchModel() else { return false }

@@ -3,7 +3,8 @@
 // Correcting people (2026-11-02, docs/design/17 "Correcting people"): what the
 // person sheet, the unknown faces sheet and their undo work from, read from the
 // pack's JSON (person_review_json, faces_reject_json, person_suggest_json,
-// unknown_faces_json). Pure values: no table, no view, nothing logged (rule 6).
+// unknown_faces_json, person_refine_json, people_dedupe_json). Pure values: no table, no view, nothing logged
+// (rule 6).
 import Foundation
 
 private func jsonDouble(_ v: Any?, _ fallback: Double = 0) -> Double {
@@ -181,6 +182,150 @@ enum PeopleUndo: Equatable {
     if !pinned.isEmpty { groups.append(AssignGroup(faces: pinned, person: person, pin: true)) }
     return .assign(groups)
   }
+}
+
+/// "Refine faces" in detail: person_refine_json, a look (dry) or the real run.
+struct RefineAnswer: Equatable {
+  /// A face that would leave (a look) or left (for real), and where to.
+  struct Face: Identifiable, Equatable {
+    let id: UInt64
+    let path: String
+    let ptsMs: Int64
+    let box: [Double]
+    /// "move", "evict" or "regroup".
+    let why: String
+    /// The person it goes to (0: nobody, or a new person in a look).
+    let to: UInt64
+    /// A look's new person (1..): faces with the same group start one together.
+    let group: Int
+    let toName: String
+
+    /// Under the face: where it would go.
+    var caption: String {
+      if group > 0 { return "A new person" }
+      if to == 0 { return "To nobody" }
+      return toName.isEmpty ? "To someone unnamed" : "To \(toName)"
+    }
+  }
+  var dry = false
+  var removed = 0
+  var faces: [Face] = []
+
+  var isEmpty: Bool { removed == 0 && faces.isEmpty }
+  /// How many left (or would): the pack's count, else the faces listed.
+  var count: Int { max(removed, faces.count) }
+
+  /// {"dry":false,"removed":N,"faces":[{"face","path","pts_ms","box","why","to","group","to_name"}]}
+  static func parse(_ text: String?) -> RefineAnswer? {
+    guard let obj = parseJSON(text) as? [String: Any] else { return nil }
+    return RefineAnswer(
+      dry: obj["dry"] as? Bool ?? false, removed: Int(int64(obj["removed"])),
+      faces: (obj["faces"] as? [[String: Any]] ?? []).map {
+        Face(id: jsonID($0["face"]), path: $0["path"] as? String ?? "",
+             ptsMs: ($0["pts_ms"] as? NSNumber)?.int64Value ?? -1, box: jsonBox($0["box"]),
+             why: $0["why"] as? String ?? "", to: jsonID($0["to"]), group: Int(int64($0["group"])),
+             toName: $0["to_name"] as? String ?? "")
+      })
+  }
+
+  /// Over a look: "3 faces would leave Anna".
+  func lookTitle(person name: String) -> String {
+    let who = name.isEmpty ? "this person" : name
+    return count == 1 ? "1 face would leave \(who)" : "\(count) faces would leave \(who)"
+  }
+
+  /// After the real run: "3 faces left", or "Every face matches".
+  var summary: String {
+    switch count {
+    case 0: return "Every face matches"
+    case 1: return "1 face left"
+    default: return "\(count) faces left"
+    }
+  }
+
+  /// Undo of the real run: every face it lists back to `person`, unpinned
+  /// (MV_AI_ASSIGN_UNDO through PeopleUndo.assign). Nil when none left.
+  func undo(backTo person: UInt64) -> PeopleUndo? {
+    guard !faces.isEmpty else { return nil }
+    return .assign([AssignGroup(faces: faces.map(\.id), person: person, pin: false)])
+  }
+}
+
+/// "Merge duplicates" in detail: people_dedupe_json, a look (dry) or the real run.
+struct DedupePlan: Equatable {
+  struct Member: Identifiable, Equatable {
+    let id: UInt64
+    let name: String
+    let faces: Int
+    let coverFace: UInt64
+    let coverBox: [Double]
+    /// For real: the token person_merge_undo takes (0: none).
+    let undo: UInt64
+  }
+  struct Merge: Identifiable, Equatable {
+    let into: UInt64
+    let intoName: String
+    let intoFaces: Int
+    let coverFace: UInt64
+    let coverBox: [Double]
+    let from: [Member]
+    var id: UInt64 { into }
+
+    /// "Merge 2 people into Anna".
+    var title: String {
+      let target = intoName.isEmpty ? "someone unnamed" : intoName
+      return from.count == 1 ? "Merge 1 person into \(target)" : "Merge \(from.count) people into \(target)"
+    }
+  }
+  var dry = false
+  var merged = 0
+  var moved = 0
+  var merges: [Merge] = []
+
+  /// Nothing to merge and no face to move.
+  var isEmpty: Bool { merges.isEmpty && merged == 0 && moved == 0 }
+  /// People merged away: the pack's count, else the ones listed.
+  var mergedCount: Int { max(merged, merges.reduce(0) { $0 + $1.from.count }) }
+
+  /// {"dry":true,"merged":N,"moved":N,"merges":[{"into","into_name","into_faces","cover_face",
+  ///  "cover_box","from":[{"id","name","faces","cover_face","cover_box","undo"}]}]}
+  static func parse(_ text: String?) -> DedupePlan? {
+    guard let obj = parseJSON(text) as? [String: Any] else { return nil }
+    return DedupePlan(
+      dry: obj["dry"] as? Bool ?? false, merged: Int(int64(obj["merged"])), moved: Int(int64(obj["moved"])),
+      merges: (obj["merges"] as? [[String: Any]] ?? []).map { m in
+        Merge(into: jsonID(m["into"]), intoName: m["into_name"] as? String ?? "",
+              intoFaces: Int(int64(m["into_faces"])), coverFace: jsonID(m["cover_face"]),
+              coverBox: jsonBox(m["cover_box"]),
+              from: (m["from"] as? [[String: Any]] ?? []).map {
+                Member(id: jsonID($0["id"]), name: $0["name"] as? String ?? "", faces: Int(int64($0["faces"])),
+                       coverFace: jsonID($0["cover_face"]), coverBox: jsonBox($0["cover_box"]),
+                       undo: jsonID($0["undo"]))
+              })
+      })
+  }
+
+  /// Under a look's merges: the faces the check would move as well ("" for none).
+  var movedNote: String {
+    switch moved {
+    case 0: return ""
+    case 1: return "1 face would also move to the person it matches."
+    default: return "\(moved) faces would also move to the people they match."
+    }
+  }
+
+  /// After the real run: "3 people merged, 12 faces moved."
+  var summary: String {
+    let m = mergedCount
+    if m == 0 && moved == 0 { return "No duplicates found, and every face matches." }
+    return (m == 1 ? "1 person" : "\(m) people") + " merged, " + (moved == 1 ? "1 face" : "\(moved) faces") + " moved."
+  }
+
+  /// Every merge's undo token, in the order made (PeopleUndo.merge undoes the last first).
+  var undoTokens: [UInt64] { merges.flatMap { $0.from.map(\.undo) }.filter { $0 != 0 } }
+
+  /// Undo of the real run; nil with no token.
+  var undo: PeopleUndo? { undoTokens.isEmpty ? nil : .merge(undoTokens) }
 }
 
 /// "Might also be <name>": person_suggest_json.

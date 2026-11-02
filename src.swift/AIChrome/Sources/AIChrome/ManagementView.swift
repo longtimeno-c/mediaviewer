@@ -883,6 +883,30 @@ final class ManagementModel: ObservableObject {
     return removed
   }
 
+  /// Refine in detail: a look, then Apply (person_refine_json).
+  var canRefineDetail: Bool { table.canRefineDetail }
+
+  /// person_refine_json: with `dry` a look (nothing changes), else the real
+  /// run, which reloads the grid. Nil when it could not run.
+  func refineDetail(_ person: UInt64, dry: Bool) async -> RefineAnswer? {
+    let t = table
+    let answer = await Task.detached { RefineAnswer.parse(t.personRefineJSON(person, dry: dry)) }.value
+    if !dry { reloadPeople() }
+    return answer
+  }
+
+  /// Merge duplicates in detail: a look, then Apply (people_dedupe_json).
+  var canDedupeDetail: Bool { table.canDedupeDetail }
+
+  /// people_dedupe_json: with `dry` a look (nothing changes), else the real
+  /// run, which reloads the grid. Nil when it could not run.
+  func dedupeDetail(dry: Bool) async -> DedupePlan? {
+    let t = table
+    let plan = await Task.detached { DedupePlan.parse(t.peopleDedupeJSON(dry: dry)) }.value
+    if !dry { reloadPeople() }
+    return plan
+  }
+
   /// A pack built before people_dedupe was appended has no "Merge duplicates".
   var canDedupe: Bool { table.has(\mv_ai_api.people_dedupe) }
 
