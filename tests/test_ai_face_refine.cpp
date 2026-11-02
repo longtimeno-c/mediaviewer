@@ -18,6 +18,7 @@
 #include <random>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <sqlite3.h>
@@ -1143,6 +1144,42 @@ TEST_CASE("refine: a clip's own frames vouch for a face only when nothing else c
   for (std::int64_t f : own_clip) CHECK(person_after(out, w, f) == 3);
 }
 
+TEST_CASE("refine: a weak clip frame follows the clear frames of its track", "[ai][faces][refine]") {
+  world w;
+  const auto anna = w.direction();
+  const auto ben = w.direction();
+  for (int i = 0; i < 8; ++i) w.at(w.face(anna, 1)).asset = 100 + i;
+  for (int i = 0; i < 8; ++i) w.at(w.face(ben, 2)).asset = 200 + i;
+  // A clip: clear frames of Anna at 0 and 4 s, a blurred one at 2 s nobody has.
+  for (std::int64_t ms : {0, 4000}) {
+    const std::int64_t id = w.face(anna, 1);
+    w.at(id).asset = 300;
+    w.at(id).pts_ms = ms;
+  }
+  const std::int64_t blurred = w.face(anna, 0, 0.075f, 0.2f);
+  w.at(blurred).asset = 300;
+  w.at(blurred).pts_ms = 2000;
+  // The same blur a minute later, far from any clear frame: stays nobody's.
+  const std::int64_t far = w.face(anna, 0, 0.075f, 0.2f);
+  w.at(far).asset = 300;
+  w.at(far).pts_ms = 60000;
+  // A blurred frame whose neighbours are Anna and Ben both: nobody's.
+  for (auto [base, person, ms] : {std::tuple{anna, 1, 0}, std::tuple{ben, 2, 1000}}) {
+    const std::int64_t id = w.face(base, person);
+    w.at(id).asset = 400;
+    w.at(id).pts_ms = ms;
+  }
+  const std::int64_t torn = w.face(world::mix(anna, ben, 0.5f), 0, 0.03f, 0.2f);
+  w.at(torn).asset = 400;
+  w.at(torn).pts_ms = 500;
+  refine_params p;
+  p.join = 0.30f;
+  const refine_output out = w.run(p);
+  CHECK(person_after(out, w, blurred) == 1);
+  CHECK(person_after(out, w, far) == 0);
+  CHECK(person_after(out, w, torn) == 0);
+}
+
 TEST_CASE("refine: rejections count against a person, unless the person vouches for them",
           "[ai][faces][refine]") {
   world w;
@@ -1747,6 +1784,7 @@ TEST_CASE("People held out: a named person's faces filed again", "[.people-heldo
   t.ambiguous = 0.04f;
   t.merge_at = 0.32f;
   const std::string spec = "yunet-2023mar+adaface-ir50-webface4m/1";
+  const bool weak = std::getenv("MV_HELDOUT_WEAK") != nullptr;
   struct held {
     std::int64_t person, asset, pts_ms;
     mv::ai::face_in f;
@@ -1760,9 +1798,12 @@ TEST_CASE("People held out: a named person's faces filed again", "[.people-heldo
     sqlite3_prepare_v2(raw,
                        "SELECT f.id, f.person_id, f.asset_id, f.pts_ms, f.x, f.y, f.w, f.h, f.score, f.quality, f.emb,"
                        " f.path FROM faces f JOIN people p ON p.id = f.person_id WHERE p.name != '' AND f.pinned = 0"
-                       " AND f.spec = ?1 AND COALESCE(f.quality, 0) >= 0.35 ORDER BY f.id",
+                       " AND f.spec = ?1 AND COALESCE(f.quality, 0) >= ?2 AND COALESCE(f.quality, 0) < ?3 ORDER BY f.id",
                        -1, &q, nullptr);
     sqlite3_bind_text(q, 1, spec.c_str(), -1, SQLITE_TRANSIENT);
+    // MV_HELDOUT_WEAK: the weak faces (0.10..0.35, clip frames mostly) instead of the clear ones.
+    sqlite3_bind_double(q, 2, weak ? 0.10 : 0.35);
+    sqlite3_bind_double(q, 3, weak ? 0.35 : 2.0);
     std::vector<std::int64_t> gone;
     std::uint64_t k = 0;
     while (sqlite3_step(q) == SQLITE_ROW) {
@@ -1800,8 +1841,8 @@ TEST_CASE("People held out: a named person's faces filed again", "[.people-heldo
     sqlite3_exec(raw, "DELETE FROM rejected WHERE face_id NOT IN (SELECT id FROM faces); COMMIT", nullptr, nullptr,
                  nullptr);
     sqlite3_close(raw);
-    std::printf("held out %zu of %llu clear unpinned faces of named people\n", out.size(),
-                static_cast<unsigned long long>(k));
+    std::printf("held out %zu of %llu %s unpinned faces of named people\n", out.size(),
+                static_cast<unsigned long long>(k), weak ? "weak" : "clear");
   }
   auto db = mv::ai::faces_db::open(file, t, 512, spec);
   REQUIRE(db);
@@ -1810,6 +1851,16 @@ TEST_CASE("People held out: a named person's faces filed again", "[.people-heldo
   std::size_t back = 0, other_named = 0, someone = 0, nobody = 0;
   for (const held& h : out) {
     REQUIRE((*db)->add(h.asset, h.path, h.pts_ms, std::span<const mv::ai::face_in>(&h.f, 1)));
+  }
+  // MV_HELDOUT_SETTLE: then the settle, as a re-run ends.
+  if (std::getenv("MV_HELDOUT_SETTLE")) {
+    for (int round = 0; round < 3; ++round) {
+      const mv::ai::refine_snapshot snap = (*db)->refine_begin(true);
+      refine_input in = input_of(snap);
+      in.dim = 512;
+      if (!(*db)->refine_commit(snap, mv::ai::refine_people(in, t.refine())).changed()) break;
+    }
+    (void)(*db)->consolidate(t.merge_at);
   }
   // Where each landed: the row in its frame with its box.
   for (const held& h : out) {

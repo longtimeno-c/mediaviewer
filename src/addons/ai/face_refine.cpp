@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <map>
 #include <numeric>
 #include <set>
@@ -560,6 +561,38 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
     }
     std::sort(close.begin(), close.end());
     for (std::size_t i = 0; i < close.size() && i < p.max_recheck; ++i) out.recheck.push_back(close[i].second);
+  }
+
+  // Tracks: a weak clip frame nobody has follows the clear frames of its
+  // clip near it in time that it resembles at `join`, when they are all in
+  // one person (2026-11-02). A weak vector alone never files a face; the
+  // same face a few seconds away, seen clearly, does. Never against the
+  // user's word (rejected, a frame together, its negatives).
+  if (in.focus == 0) {
+    std::map<std::int64_t, std::vector<std::size_t>> clips;
+    for (std::size_t i = 0; i < nf; ++i) {
+      if (in.faces[i].asset >= 0 && in.faces[i].pts_ms >= 0) clips[in.faces[i].asset].push_back(i);
+    }
+    for (std::size_t i = 0; i < nf; ++i) {
+      const refine_face& f = in.faces[i];
+      // Only faces nobody had: an eviction this call stands.
+      if (f.person != 0 || frozen[i] || f.pinned || f.asset < 0 || f.pts_ms < 0) continue;
+      if (f.quality < p.unusable_quality || f.quality >= p.weak_quality) continue;
+      std::int64_t to = 0;
+      bool split = false;
+      for (std::size_t j : clips[f.asset]) {
+        const refine_face& g = in.faces[j];
+        if (j == i || where[j] <= 0 || g.quality < p.weak_quality) continue;
+        if (std::llabs(g.pts_ms - f.pts_ms) > p.track_ms || dot(row(i), row(j), dim) < p.join) continue;
+        if (to != 0 && to != where[j]) split = true;
+        to = where[j];
+      }
+      if (to <= 0 || split || rejected_from(f, to) || holds_sibling(i, to) || neg(row(i), to) >= p.join) continue;
+      moved[i] = refine_move{f.id, 0, to, refine_why::admit, kNoEvidence, kNoEvidence};
+      frozen[i] = true;
+      where[i] = to;
+      if (given.count(to)) stale.insert(to);
+    }
   }
 
   // Regroup: good unassigned faces that resemble each other become new people.

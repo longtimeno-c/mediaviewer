@@ -41,7 +41,10 @@
 //            the user rejected from that person more than the person (neg >=
 //            join), or a better face of its own frame is in that person (two
 //            faces in one frame are two people)
-//   joins    (unassigned) the clear winner, by the same join + margin test
+//   joins    (unassigned) the clear winner, by the same join + margin test;
+//            a weak clip frame joins the person its track is in: the clear
+//            frames of its clip within track_ms that it resembles at `join`,
+//            all in one person
 // Passes repeat until nothing changes or `passes` run; a face changes at
 // most once per call. With `regroup`, unassigned good faces that are close to
 // each other (average linkage at `join`) become new unnamed people, which is
@@ -77,6 +80,9 @@ struct refine_params {
   std::uint32_t max_regroup = 4000; // unassigned faces considered for new people per call
   std::uint32_t max_recheck = 32;   // borderline faces returned for a better embedding
   std::uint32_t max_negatives = 12; // rejected faces a person is checked against
+  // A weak clip frame follows its track: clear frames of the same clip this
+  // close in time (ms) that it resembles at `join`, when they agree on one person.
+  std::int64_t track_ms = 15000;
 };
 
 struct refine_face {

@@ -597,12 +597,36 @@ std::int64_t faces_db::assign_locked(std::span<const float> emb, float quality,
     if (!ins.run()) return 0;
     best = sqlite3_last_insert_rowid(db_);
   }
-  cluster& c = clusters_[best];
+  join_locked(best, emb);
+  return best;
+}
+
+void faces_db::join_locked(std::int64_t person, std::span<const float> emb) {
+  cluster& c = clusters_[person];
   if (c.sum.empty()) c.sum.assign(emb.size(), 0.0f);
   for (std::size_t i = 0; i < emb.size() && i < c.sum.size(); ++i) c.sum[i] += emb[i];
   ++c.n;
-  touch_locked(best);
-  return best;
+  touch_locked(person);
+}
+
+std::int64_t faces_db::track_locked(std::int64_t asset, std::int64_t pts_ms, std::span<const float> emb,
+                                    const std::set<std::int64_t>& no) {
+  if (pts_ms < 0) return 0;
+  stmt q(db_, "SELECT person_id, emb FROM faces WHERE asset_id = ?1 AND pts_ms BETWEEN ?2 AND ?3"
+              " AND person_id IS NOT NULL AND COALESCE(quality, 1) >= ?4 AND spec = ?5");
+  q.bind(1, asset).bind(2, pts_ms - rules_.track_ms).bind(3, pts_ms + rules_.track_ms);
+  q.bind_real(4, rules_.weak_quality).bind(5, spec_);
+  std::int64_t to = 0;
+  while (q.step_row()) {
+    const std::vector<float> v = q.floats(1);
+    if (v.size() != dim_ || mean_cosine(v, 1, emb) < same_) continue;
+    if (to != 0 && to != q.i64(0)) return 0;  // the clip's frames disagree
+    to = q.i64(0);
+  }
+  if (to == 0 || no.count(to)) return 0;
+  // Not against what the user rejected from it.
+  if (const person_proto* pr = exemplars_locked(to); pr && negative_support(emb, *pr, rules_.top_k) >= same_) return 0;
+  return to;
 }
 
 void faces_db::recompute_locked(std::int64_t person) {
@@ -763,7 +787,12 @@ expected faces_db::add(std::int64_t asset, const std::string& path, std::int64_t
       }
       // During a re-run a new face waits unassigned: the people it could join
       // are still mostly old vectors. The settle pass at the end files it.
-      const std::int64_t person = rerun_ ? 0 : assign_locked(f.emb, f.quality, no);
+      std::int64_t person = rerun_ ? 0 : assign_locked(f.emb, f.quality, no);
+      // A weak clip frame nobody took follows its track (refine_people's rule).
+      if (!rerun_ && person == 0 && f.quality >= rules_.unusable_quality && f.quality < rules_.weak_quality) {
+        person = track_locked(asset, pts_ms, f.emb, no);
+        if (person != 0) join_locked(person, f.emb);
+      }
       ins.reset();
       ins.bind(1, asset).bind(2, path).bind(3, pts_ms).bind_real(4, f.x).bind_real(5, f.y)
           .bind_real(6, f.w).bind_real(7, f.h).bind_real(8, f.score)

@@ -349,6 +349,11 @@ class faces_db {
   void load_locked();
   std::int64_t assign_locked(std::span<const float> emb, float quality, const std::set<std::int64_t>& rejected,
                              bool may_start = true);
+  // A weak clip frame's track (refine_params::track_ms): the one person the
+  // clear frames near it, that it resembles, are in; 0 none or several.
+  std::int64_t track_locked(std::int64_t asset, std::int64_t pts_ms, std::span<const float> emb,
+                            const std::set<std::int64_t>& no);
+  void join_locked(std::int64_t person, std::span<const float> emb);
   struct match {
     std::int64_t best = 0;
     float best_score = -2.0f, second = -2.0f;
