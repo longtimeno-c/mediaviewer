@@ -34,16 +34,17 @@ bool rejected_from(const refine_face& f, std::int64_t person) {
   return std::binary_search(f.rejected.begin(), f.rejected.end(), person);
 }
 
-// Mean of the top k cosines of `v` to the exemplars, skipping the face itself.
-float support(const float* v, const person_proto& p, std::uint32_t dim, std::int64_t self,
-              std::uint32_t top_k) {
+// Mean of the top k cosines of `v` to `count` rows of `data`, skipping rows
+// `skip(i)` says to. kNoEvidence when none is left.
+template <class Skip>
+float top_mean(const float* v, const float* data, std::size_t count, std::uint32_t dim, std::uint32_t top_k,
+               Skip&& skip) {
   float best[16];
   const std::uint32_t k_max = std::min<std::uint32_t>(std::max<std::uint32_t>(top_k, 1), 16);
   std::uint32_t have = 0;
-  const std::size_t n = p.exemplar_ids.size();
-  for (std::size_t i = 0; i < n; ++i) {
-    if (p.exemplar_ids[i] == self) continue;
-    const float s = dot(v, p.exemplars.data() + i * dim, dim);
+  for (std::size_t i = 0; i < count; ++i) {
+    if (skip(i)) continue;
+    const float s = dot(v, data + i * dim, dim);
     if (have < k_max) {
       best[have++] = s;
       std::push_heap(best, best + have, std::greater<>());
@@ -59,9 +60,34 @@ float support(const float* v, const person_proto& p, std::uint32_t dim, std::int
   return sum / static_cast<float>(have);
 }
 
+// Mean of the top k cosines of `v` to the exemplars, skipping the face itself
+// and, while the person has exemplars from other photos or clips, those of
+// the face's own: a clip's frames resemble each other more than anyone, so
+// they vouch for a face only when nothing else can (2026-11-02).
+float support(const float* v, const person_proto& p, std::uint32_t dim, std::int64_t self, std::uint32_t top_k,
+              std::int64_t self_asset = -1) {
+  const std::size_t n = p.exemplar_ids.size();
+  const bool assets = self_asset >= 0 && p.exemplar_assets.size() == n;
+  bool skip_asset = false;
+  if (assets) {
+    for (std::size_t i = 0; i < n && !skip_asset; ++i) {
+      skip_asset = p.exemplar_ids[i] != self && p.exemplar_assets[i] != self_asset;
+    }
+  }
+  return top_mean(v, p.exemplars.data(), n, dim, top_k, [&](std::size_t i) {
+    return p.exemplar_ids[i] == self || (skip_asset && p.exemplar_assets[i] == self_asset);
+  });
+}
+
+float negative(const float* v, const person_proto& p, std::uint32_t dim, std::uint32_t top_k) {
+  if (dim == 0 || p.negatives.empty()) return kNoEvidence;
+  return top_mean(v, p.negatives.data(), p.negatives.size() / dim, dim, top_k, [](std::size_t) { return false; });
+}
+
 // Builds a person's prototype from its members (indices into in.faces).
 person_proto build_proto(const refine_input& in, const refine_params& p, std::int64_t person,
-                         std::vector<std::size_t> members, bool named) {
+                         std::vector<std::size_t> members, bool named,
+                         const std::set<std::int64_t>* distrust = nullptr) {
   const std::uint32_t dim = in.dim;
   const auto row = [&](std::size_t i) { return in.emb.data() + std::size_t{in.faces[i].row} * dim; };
   person_proto out;
@@ -89,7 +115,6 @@ person_proto build_proto(const refine_input& in, const refine_params& p, std::in
   const std::size_t n = refs.size();
   if (n == 0) return out;
 
-  // Medoid: the ref most like all the others.
   std::vector<float> sim(n * n, 0.0f);
   for (std::size_t a = 0; a < n; ++a) {
     sim[a * n + a] = 1.0f;
@@ -99,24 +124,60 @@ person_proto build_proto(const refine_input& in, const refine_params& p, std::in
       sim[b * n + a] = s;
     }
   }
+  // Medoid: the ref most like all the others, each photo or clip counted
+  // once (its refs share a vote), so a long clip of a lookalike cannot
+  // outvote the photos.
+  std::map<std::int64_t, std::uint32_t> per_asset;
+  for (std::size_t a = 0; a < n; ++a) {
+    if (in.faces[refs[a]].asset >= 0) ++per_asset[in.faces[refs[a]].asset];
+  }
+  std::vector<float> weight(n, 1.0f);
+  for (std::size_t a = 0; a < n; ++a) {
+    const std::int64_t as = in.faces[refs[a]].asset;
+    if (as >= 0) weight[a] = 1.0f / static_cast<float>(per_asset[as]);
+  }
   std::size_t medoid = 0;
   float medoid_sum = -1e30f;
   for (std::size_t a = 0; a < n; ++a) {
     float s = 0;
-    for (std::size_t b = 0; b < n; ++b) s += sim[a * n + b];
+    for (std::size_t b = 0; b < n; ++b) s += sim[a * n + b] * weight[b];
     if (s > medoid_sum) {
       medoid_sum = s;
       medoid = a;
     }
   }
-  std::vector<std::size_t> anchors;
+  // The pins the person is defined by: every usable pin (the user's word),
+  // except those refine_people found another person explains clearly better
+  // (`distrust`). A pin is doubtful (the chrome asks about it) when it is
+  // unusable, distrusted, or lone: it agrees with none of the person's other
+  // pins nor with the medoid.
+  std::vector<std::size_t> pins;
   for (std::size_t a = 0; a < n; ++a) {
-    if (in.faces[refs[a]].pinned) anchors.push_back(a);
+    if (in.faces[refs[a]].pinned) pins.push_back(a);
   }
-  out.pinned = !anchors.empty();
+  out.pinned = !pins.empty();
+  std::vector<std::size_t> usable;
+  for (std::size_t a : pins) {
+    if (in.faces[refs[a]].quality >= p.unusable_quality) usable.push_back(a);
+  }
+  // Only unusable pins and nothing else to go by: still the user's word.
+  if (usable.empty() && pins.size() == n) usable = pins;
+  std::vector<std::size_t> trusted;
+  for (std::size_t a : pins) {
+    const std::int64_t id = in.faces[refs[a]].id;
+    const bool is_usable = std::find(usable.begin(), usable.end(), a) != usable.end();
+    const bool distrusted = distrust && distrust->count(id);
+    bool lone = !pins.empty() && sim[medoid * n + a] < p.core;
+    for (std::size_t b : usable) {
+      if (b != a && sim[a * n + b] >= p.core) lone = false;
+    }
+    if (is_usable && !distrusted) trusted.push_back(a);
+    if (!is_usable || distrusted || lone) out.doubtful_pins.push_back(id);
+  }
+  std::vector<std::size_t> anchors = trusted;
   if (anchors.empty()) {
     anchors.push_back(medoid);
-  } else if (!in.faces[refs[medoid]].pinned) {
+  } else if (std::find(anchors.begin(), anchors.end(), medoid) == anchors.end()) {
     // The user's faces define a person they touched; the medoid joins them
     // only when it agrees (a glued-on impostor half can hold the majority).
     const bool agrees = std::any_of(anchors.begin(), anchors.end(),
@@ -145,12 +206,17 @@ person_proto build_proto(const refine_input& in, const refine_params& p, std::in
   }
   const float inv = 1.0f / static_cast<float>(core.size());
   for (float& v : out.core_mean) v *= inv;
-  const std::size_t ex = std::min<std::size_t>(core.size(), p.max_exemplars);
-  out.exemplars.reserve(ex * dim);
-  for (std::size_t i = 0; i < ex; ++i) {
-    const std::size_t f = refs[core[i].second];
-    out.exemplar_ids.push_back(in.faces[f].id);
-    const float* v = row(f);
+  // Exemplars: one per photo or clip, except the anchors the user pinned.
+  std::set<std::int64_t> seen;
+  out.exemplars.reserve(std::min<std::size_t>(core.size(), p.max_exemplars) * dim);
+  for (const auto& [score, a] : core) {
+    if (out.exemplar_ids.size() >= p.max_exemplars) break;
+    const refine_face& f = in.faces[refs[a]];
+    const bool pinned_anchor = score >= 3.0f;
+    if (f.asset >= 0 && !seen.insert(f.asset).second && !pinned_anchor) continue;
+    out.exemplar_ids.push_back(f.id);
+    out.exemplar_assets.push_back(f.asset);
+    const float* v = row(refs[a]);
     out.exemplars.insert(out.exemplars.end(), v, v + dim);
   }
   return out;
@@ -192,6 +258,44 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
   std::vector<verdict> last(nf);
   const auto cancelled = [&] { return in.cancel && in.cancel->load(std::memory_order_relaxed); };
 
+  // Faces of one photo or frame are different people (a cannot-link), unless
+  // they are the same face twice (a mirror, a screen, a photo in the photo):
+  // as alike as an unmistakable pair, join + 2 margins (2026-11-02: 13 of
+  // the owner's frames hold two faces of one person).
+  std::map<std::pair<std::int64_t, std::int64_t>, std::vector<std::size_t>> frames;
+  for (std::size_t i = 0; i < nf; ++i) {
+    if (in.faces[i].asset >= 0) frames[{in.faces[i].asset, in.faces[i].pts_ms}].push_back(i);
+  }
+  static const std::vector<std::size_t> kAlone;
+  const auto siblings = [&](std::size_t i) -> const std::vector<std::size_t>& {
+    if (in.faces[i].asset < 0) return kAlone;
+    return frames.find({in.faces[i].asset, in.faces[i].pts_ms})->second;
+  };
+  const float twice = p.join + 2 * p.margin;
+  const auto apart = [&](std::size_t i, std::size_t j) { return j != i && dot(row(i), row(j), dim) < twice; };
+  const auto holds_sibling = [&](std::size_t i, std::int64_t person) {
+    for (std::size_t j : siblings(i)) {
+      if (where[j] == person && apart(i, j)) return true;
+    }
+    return false;
+  };
+  // What the user said is not each person ("not this person"): the clearest
+  // max_negatives of the faces rejected from it.
+  std::map<std::int64_t, person_proto> negs;  // filled in pass 0, once the persons are built
+  std::map<std::int64_t, std::vector<std::size_t>> neg_rows;
+  for (std::size_t i = 0; i < nf; ++i) {
+    for (std::int64_t r : in.faces[i].rejected) neg_rows[r].push_back(i);
+  }
+  for (auto& [person, xs] : neg_rows) {
+    std::stable_sort(xs.begin(), xs.end(),
+                     [&](std::size_t a, std::size_t b) { return in.faces[a].quality > in.faces[b].quality; });
+    if (xs.size() > p.max_negatives) xs.resize(p.max_negatives);
+  }
+  const auto neg = [&](const float* v, std::int64_t person) {
+    const auto it = negs.find(person);
+    return it == negs.end() ? kNoEvidence : negative(v, it->second, dim, p.top_k);
+  };
+
   // Prototypes by person. Pass 0 builds them all; a later pass rebuilds only
   // the persons the previous pass changed, and re-judges only their faces and
   // faces whose best rival was one of them (the rest saw no input change).
@@ -203,6 +307,14 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
   }
   std::map<std::int64_t, person_proto> built;
   std::set<std::int64_t> changed;
+  // Lone pins another person explains clearly better: not anchors (pass 0).
+  std::map<std::int64_t, std::set<std::int64_t>> distrust;
+  const auto distrust_of = [&](std::int64_t person) -> const std::set<std::int64_t>* {
+    const auto it = distrust.find(person);
+    return it == distrust.end() ? nullptr : &it->second;
+  };
+  std::map<std::int64_t, std::size_t> index_of;
+  for (std::size_t i = 0; i < nf; ++i) index_of[in.faces[i].id] = i;
   std::vector<std::pair<float, const person_proto*>> shortlist;
   for (std::uint32_t pass = 0; pass < std::max<std::uint32_t>(p.passes, 1); ++pass) {
     if (cancelled()) return refine_output{};
@@ -214,8 +326,10 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
       if (given.count(where[i]) && (pass == 0 || changed.count(where[i]))) members[where[i]].push_back(i);
     }
     for (std::int64_t person : changed) built.erase(person);
+    std::map<std::int64_t, std::vector<std::size_t>> kept_members;
     for (auto& [person, m] : members) {
-      built[person] = build_proto(in, p, person, std::move(m), is_named(person));
+      if (pass == 0) kept_members[person] = m;
+      built[person] = build_proto(in, p, person, std::move(m), is_named(person), distrust_of(person));
     }
     stale.clear();
     std::vector<const person_proto*> cands;
@@ -224,6 +338,67 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
     }
     for (const person_proto& pr : in.fixed) {
       if (!built.count(pr.person) && eligible(pr)) cands.push_back(&pr);
+    }
+    const auto best_rival = [&](const float* v, const refine_face& f, std::int64_t own) {
+      std::vector<std::pair<float, const person_proto*>> sl;
+      for (const person_proto* c : cands) {
+        if (c->person != own && !rejected_from(f, c->person)) sl.emplace_back(dot(v, c->core_mean.data(), dim), c);
+      }
+      const std::size_t k = std::min<std::size_t>(sl.size(), std::max<std::uint32_t>(p.shortlist, 1));
+      std::partial_sort(sl.begin(), sl.begin() + static_cast<std::ptrdiff_t>(k), sl.end(),
+                        [](const auto& a, const auto& b) { return a.first > b.first; });
+      float best = kNoEvidence;
+      for (std::size_t j = 0; j < k; ++j) best = std::max(best, support(v, *sl[j].second, dim, f.id, p.top_k, f.asset));
+      return best;
+    };
+    if (pass == 0) {
+      // A lone pin (it agrees with no other pin of the person, nor its
+      // medoid) that another person clearly explains is a cover pinned by
+      // mistake, typically by a merge of a lookalike: it stops anchoring the
+      // person, so the faces only it vouched for are judged on their own.
+      // Only while the person keeps another pin: the user's word still
+      // defines it. The face stays pinned where it is; the chrome asks.
+      for (auto& [person, pr] : built) {
+        if (pr.doubtful_pins.empty() || !pr.pinned) continue;
+        std::set<std::int64_t> lone(pr.doubtful_pins.begin(), pr.doubtful_pins.end());
+        std::size_t others = 0;
+        for (std::size_t i : kept_members[person]) {
+          others += in.faces[i].pinned && !lone.count(in.faces[i].id) ? 1 : 0;
+        }
+        if (others == 0) continue;
+        const person_proto rest = build_proto(in, p, person, kept_members[person], is_named(person), &lone);
+        std::set<std::int64_t> out_pins;
+        for (std::int64_t id : lone) {
+          const std::size_t i = index_of[id];
+          const float* v = row(i);
+          const float mine = support(v, rest, dim, id, p.top_k, in.faces[i].asset);
+          const float other = best_rival(v, in.faces[i], person);
+          if (other >= p.join && other - mine >= p.margin) out_pins.insert(id);
+        }
+        if (out_pins.empty()) continue;
+        out.distrusted.insert(out.distrusted.end(), out_pins.begin(), out_pins.end());
+        distrust[person] = std::move(out_pins);
+        pr = build_proto(in, p, person, kept_members[person], is_named(person), distrust_of(person));
+      }
+      // A rejection counts against a person unless the person vouches for
+      // the rejected face as strongly as for an unmistakable face of theirs
+      // (join + 2 margins): a slip of the user's is not evidence against
+      // everyone who looks like them. A lookalike that was misfiled at about
+      // `join` stays a negative: that is what negatives are for.
+      for (auto& [person, xs] : neg_rows) {
+        const person_proto* pr = nullptr;
+        if (auto it = built.find(person); it != built.end()) pr = &it->second;
+        for (const person_proto& fx : in.fixed) {
+          if (!pr && fx.person == person) pr = &fx;
+        }
+        person_proto& np = negs[person];
+        np.negatives.clear();
+        for (std::size_t i : xs) {
+          const float vouched = pr ? support(row(i), *pr, dim, in.faces[i].id, p.top_k, in.faces[i].asset) : kNoEvidence;
+          if (vouched >= p.join + 2 * p.margin) continue;
+          np.negatives.insert(np.negatives.end(), row(i), row(i) + dim);
+        }
+      }
     }
 
     std::vector<std::pair<std::size_t, verdict>> changes;
@@ -240,12 +415,14 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
       if (own > 0) {
         if (auto it = built.find(own); it != built.end()) {
           own_proto = &it->second;
-          vd.own = support(v, it->second, dim, f.id, p.top_k);
+          vd.own = support(v, it->second, dim, f.id, p.top_k, f.asset);
         }
       }
-      // Unusable, or filed under a person nothing vouches for: unassigned,
-      // and never admitted anywhere.
-      if (f.quality < p.unusable_quality || (own_proto && own_proto->weak_only)) {
+      // Unusable, or filed under a person nothing vouches for, or one the
+      // user said it is not (a merge or an old row can bring it back):
+      // unassigned, and never admitted anywhere.
+      if (f.quality < p.unusable_quality || (own_proto && own_proto->weak_only) ||
+          (own > 0 && rejected_from(f, own))) {
         if (own > 0) {
           vd.change = true;
           vd.to = 0;
@@ -255,10 +432,21 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
         }
         continue;
       }
+      // A better face of its own frame in the same person: one of them is
+      // someone else, and it is this one (pinned faces always win).
+      bool outranked = false;
+      if (own > 0 && own_proto) {
+        for (std::size_t j : siblings(i)) {
+          if (where[j] != own || !apart(i, j)) continue;
+          const refine_face& g = in.faces[j];
+          const float sj = g.pinned ? 2.0f : support(row(j), *own_proto, dim, g.id, p.top_k, g.asset);
+          if (sj > vd.own || (sj == vd.own && g.id < f.id)) outranked = true;
+        }
+      }
       // Prefilter by the core mean (mean pairwise cosine), then exemplars.
       shortlist.clear();
       for (const person_proto* c : cands) {
-        if (c->person == own || rejected_from(f, c->person)) continue;
+        if (c->person == own || rejected_from(f, c->person) || holds_sibling(i, c->person)) continue;
         shortlist.emplace_back(dot(v, c->core_mean.data(), dim), c);
       }
       const std::size_t keep_n = std::min<std::size_t>(shortlist.size(), std::max<std::uint32_t>(p.shortlist, 1));
@@ -267,7 +455,7 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
                           return a.first != b.first ? a.first > b.first : a.second->person < b.second->person;
                         });
       for (std::size_t s = 0; s < keep_n; ++s) {
-        const float sc = support(v, *shortlist[s].second, dim, f.id, p.top_k);
+        const float sc = support(v, *shortlist[s].second, dim, f.id, p.top_k, f.asset);
         if (sc > vd.best) {
           vd.second = vd.best;
           vd.best = sc;
@@ -277,18 +465,48 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
         }
       }
       const bool weak = f.quality < p.weak_quality;
-      const float rival = std::max(vd.own, vd.second);
+      const float rival = std::max({outranked ? kNoEvidence : vd.own, vd.second, neg(v, vd.best_person)});
+      const float own_neg = own > 0 ? neg(v, own) : kNoEvidence;
       if (!weak && vd.best_person != 0 && vd.best >= p.join && vd.best - rival >= p.margin) {
         vd.change = true;
         vd.to = vd.best_person;
         vd.why = own > 0 ? refine_why::move : refine_why::admit;
-      } else if (own > 0 && vd.own != kNoEvidence && vd.own < (weak ? p.keep_weak : p.keep)) {
+      } else if (own > 0 && (outranked || (own_neg >= p.join && own_neg > vd.own) ||
+                             (vd.own != kNoEvidence && vd.own < (weak ? p.keep_weak : p.keep)))) {
         vd.change = true;
         vd.to = 0;
         vd.why = refine_why::evict;
       }
       last[i] = vd;
       if (vd.change) changes.emplace_back(i, vd);
+    }
+    // Two faces of one frame moving into one person in the same pass: the
+    // better supported goes, the other stays where it was.
+    {
+      std::map<std::tuple<std::int64_t, std::int64_t, std::int64_t>, std::size_t> into;  // (asset, pts, to) -> change
+      std::vector<bool> drop(changes.size(), false);
+      for (std::size_t c = 0; c < changes.size(); ++c) {
+        const auto& [i, vd] = changes[c];
+        if (vd.to <= 0 || in.faces[i].asset < 0) continue;
+        const auto key = std::make_tuple(in.faces[i].asset, in.faces[i].pts_ms, vd.to);
+        const auto [it, fresh] = into.emplace(key, c);
+        if (fresh || !apart(i, changes[it->second].first)) continue;
+        if (vd.best > changes[it->second].second.best) {
+          drop[it->second] = true;
+          it->second = c;
+        } else {
+          drop[c] = true;
+        }
+      }
+      std::size_t k = 0;
+      for (std::size_t c = 0; c < changes.size(); ++c) {
+        if (drop[c]) {
+          last[changes[c].first].change = false;
+        } else {
+          changes[k++] = changes[c];
+        }
+      }
+      changes.resize(k);
     }
     if (changes.empty()) break;
     changed.clear();
@@ -347,8 +565,15 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
       if (near.size() + 1 < p.min_group) continue;
       std::stable_sort(near.begin(), near.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
       std::vector<std::size_t> group{a};
+      const auto same_frame = [&](std::size_t x, std::size_t y) {
+        const refine_face& fx = in.faces[pool[x]];
+        const refine_face& fy = in.faces[pool[y]];
+        return fx.asset >= 0 && fx.asset == fy.asset && fx.pts_ms == fy.pts_ms && apart(pool[x], pool[y]);
+      };
       for (const auto& [_, b] : near) {
-        // Average linkage to everyone already in: a chain cannot form.
+        // Average linkage to everyone already in: a chain cannot form. Never
+        // two faces of one frame.
+        if (std::any_of(group.begin(), group.end(), [&](std::size_t g) { return same_frame(b, g); })) continue;
         float sum = 0;
         for (std::size_t g : group) sum += dot(row(pool[b]), row(pool[g]), dim);
         if (sum / static_cast<float>(group.size()) >= p.join) group.push_back(b);
@@ -383,7 +608,7 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
     }
     for (std::int64_t person : stale) built.erase(person);
     for (auto& [person, m] : members) {
-      built[person] = build_proto(in, p, person, std::move(m), is_named(person));
+      built[person] = build_proto(in, p, person, std::move(m), is_named(person), distrust_of(person));
     }
     for (auto& [person, pr] : built) out.protos.push_back(std::move(pr));
   }
@@ -401,10 +626,17 @@ person_proto build_person_proto(std::uint32_t dim, std::span<const float> emb, s
   return build_proto(in, p, person, std::move(members), named);
 }
 
-float exemplar_support(std::span<const float> v, const person_proto& p, std::int64_t self, std::uint32_t top_k) {
+float exemplar_support(std::span<const float> v, const person_proto& p, std::int64_t self, std::uint32_t top_k,
+                       std::int64_t self_asset) {
   const auto dim = static_cast<std::uint32_t>(v.size());
   if (dim == 0 || p.exemplars.size() != p.exemplar_ids.size() * dim) return kNoEvidence;
-  return support(v.data(), p, dim, self, top_k);
+  return support(v.data(), p, dim, self, top_k, self_asset);
+}
+
+float negative_support(std::span<const float> v, const person_proto& p, std::uint32_t top_k) {
+  const auto dim = static_cast<std::uint32_t>(v.size());
+  if (dim == 0 || p.negatives.size() % dim != 0) return kNoEvidence;
+  return negative(v.data(), p, dim, top_k);
 }
 
 namespace {
