@@ -121,9 +121,9 @@ std::optional<model_kind> kind_from(std::string_view name) noexcept {
   return std::nullopt;
 }
 
-const knob* model_spec::find(std::string_view id) const noexcept {
+const knob* model_spec::find(std::string_view knob_id) const noexcept {
   for (const knob& k : knobs) {
-    if (k.id == id) return &k;
+    if (k.id == knob_id) return &k;
   }
   return nullptr;
 }

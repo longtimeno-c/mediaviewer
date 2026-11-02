@@ -82,7 +82,7 @@ struct model_spec {
   // the runner for that kind, opaque here.
   json::value io;
 
-  [[nodiscard]] const knob* find(std::string_view id) const noexcept;
+  [[nodiscard]] const knob* find(std::string_view knob_id) const noexcept;
 };
 
 // The id model.json gets: the model a kind uses until the person chooses.
