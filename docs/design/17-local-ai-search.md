@@ -142,7 +142,8 @@ src/infer   embedder { embed_image(s), embed_text }    clip_model, clap, whisper
   sessions; it does not re-index.
 - **Auto never runs the large tower on CPU because a provider failed it (2026-10-05).** How the
   provider did with each tower is kept in `data/provider.txt` (runtime | provider | spec → ok or
-  the fault, open seconds, message). Where it failed ViT-L/14, Auto opens ViT-B/32 on that provider
+  the fault, open seconds, message; `src/addons/ai/provider_verdict.h`, plain files with no ORT, so
+  `test_ai_provider_verdict.cpp` checks the rule without a runtime). Where it failed ViT-L/14, Auto opens ViT-B/32 on that provider
   instead, at once (the control thread reloads when a background upgrade fails) and on every later
   start, and sets `MV_AI_STATUS_SMALL_FALLBACK`. Settings → *Compute* then offers **Try the larger
   model again** (`"retry_large"`), which forgets the verdict. A new runtime tries again by itself.

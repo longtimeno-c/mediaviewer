@@ -1444,6 +1444,7 @@ if(MV_BUILD_TESTS)
     tests/test_ai_documents.cpp
     tests/test_ai_docs.cpp
     tests/test_ai_tiers.cpp
+    tests/test_ai_provider_verdict.cpp  # #155: provider.txt, no runtime
     tests/test_ai_contract.cpp
     tests/test_ai_fetch.cpp
     # #403: the OS text reader over a labelled set (hidden: [.ocr-fixture]).
