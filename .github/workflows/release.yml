@@ -22,6 +22,10 @@ on:
         description: 'Windows versions to withdraw, comma separated (normally empty)'
         type: string
         default: ''
+      whats_new:
+        description: "What's new in the update notice, up to 3 lines (\\n between them), 400 bytes, no links. Empty: the commit subjects since the last release"
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -48,8 +52,13 @@ jobs:
     outputs:
       version: ${{ steps.prepare.outputs.version }}
       tag: ${{ steps.prepare.outputs.tag }}
+      # #620: the update's "What's new", base64 (tools/package/whats_new.py).
+      whats_new: ${{ steps.prepare.outputs.whats_new }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The release tags and commit subjects that "What's new" is made from.
+          fetch-depth: 0
       - name: Preflight (before either expensive build)
         id: prepare
         shell: bash
@@ -57,6 +66,8 @@ jobs:
           MODE: ${{ inputs.mode }}
           MIN_VERSION: ${{ inputs.min_version }}
           BLOCKLIST: ${{ inputs.blocklist }}
+          # Literal \n in the input separates lines (a dispatch input is one line).
+          WHATS_NEW: ${{ inputs.whats_new }}
           MV_MANIFEST_SIGNING_KEY: ${{ secrets.MV_MANIFEST_SIGNING_KEY }}
           MV_MAC_CERT_P12_BASE64: ${{ secrets.MV_MAC_CERT_P12_BASE64 }}
           MV_MAC_CERT_PASSWORD: ${{ secrets.MV_MAC_CERT_PASSWORD }}
@@ -177,6 +188,7 @@ jobs:
           MANIFEST_KEY: ${{ steps.sign.outputs.key }}
           MIN_VERSION: ${{ inputs.min_version }}
           BLOCKLIST: ${{ inputs.blocklist }}
+          WHATS_NEW_B64: ${{ needs.prepare.outputs.whats_new }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -184,6 +196,12 @@ jobs:
           $a = @{ BuildDir = 'build'; Version = $env:VERSION; MinVersion = $env:MIN_VERSION; Blocklist = $env:BLOCKLIST }
           if ($env:SIGNING_METADATA) { $a.SigningMetadata = $env:SIGNING_METADATA }
           if ($env:MANIFEST_KEY) { $a.ManifestKey = $env:MANIFEST_KEY }
+          # #620: "What's new", signed into the manifest's notes.
+          if ($env:WHATS_NEW_B64) {
+            $notes = Join-Path $env:RUNNER_TEMP 'whats-new.txt'
+            [IO.File]::WriteAllBytes($notes, [Convert]::FromBase64String($env:WHATS_NEW_B64))
+            $a.NotesFile = $notes
+          }
           ./tools/package/build-release.ps1 @a
 
       # Velopack signs the payload and its setup bundle; ISCC's outer wizard
@@ -842,8 +860,15 @@ jobs:
         env:
           # #501: Driftwire's keychain app group is "<team>.<bundle id>.driftwire".
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WHATS_NEW_B64: ${{ needs.prepare.outputs.whats_new }}
         run: |
           args=(--app build/universal/MediaViewer.app --out-dir build/release)
+          # #620: "What's new", embedded in the signed appcast as the item's
+          # plain-text description (no release-notes link, no extra request).
+          if [ -n "$WHATS_NEW_B64" ]; then
+            printf '%s' "$WHATS_NEW_B64" | base64 --decode > "$RUNNER_TEMP/whats-new.txt"
+            args+=(--release-notes-file "$RUNNER_TEMP/whats-new.txt")
+          fi
           if [ "$MODE" != "artifacts" ]; then
             args+=(--identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
                    --team-id "$APPLE_TEAM_ID"
@@ -1115,6 +1140,8 @@ jobs:
           MV_RELEASE_LINUX_CLI: '0'
           VERSION: ${{ needs.prepare.outputs.version }}
           TAG: ${{ needs.prepare.outputs.tag }}
+          # #620: the release page opens with the same "What's new" the apps show.
+          WHATS_NEW_B64: ${{ needs.prepare.outputs.whats_new }}
         run: python3 tools/package/github-release.py publish release-assets
 
   # The driftwire package repository (docs/design/28 "Installing",
