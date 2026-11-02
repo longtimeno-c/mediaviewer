@@ -292,6 +292,45 @@ JPEG encode) and `thumb_store.cpp` (the SQLite index).
   generation so arrow-key navigation does not cancel the filmstrip.
 - The Explorer thumbnail handler uses `make_thumb_rgba` pixels directly.
 
+### Thumbnail cache upkeep
+
+Issue #612. The cache used to only grow: every edit, rotate or spec bump left the old JPEGs
+behind. Now it tidies itself, and Settings → Storage shows it.
+
+- **On store.** `thumb_store::store` writes the new stamp's row, then drops the path's rows of
+  any other stamp or spec and deletes their JPEGs (unlocked; a file the chrome still holds open on
+  Windows stays for the sweep). A lookup of the new stamp missed, which is what led to the store,
+  so the old rows could never be hit again. The issue's draft put this on the next lookup; on the
+  store it costs the hot lookup nothing. A clip moment (`#t=`) or a page (`#page=`) is its own
+  path and is untouched.
+- **The sweep** (`thumb_store::sweep`, `submit_sweep`): one listing of the cache folder (sizes
+  and times from the listing, no stat per row), then batches of 256 rows, one lock per batch.
+  Rows of an old spec go with their JPEGs; rows whose JPEG has gone go. JPEGs no row names
+  (16 hex digits + `.jpg`, nothing else) go once they are a minute old (a `store` in flight
+  writes the file before the row). With a cap, the oldest-written JPEGs over it go last. It runs
+  at `background_generation` and paces itself like the tag pass ([16](16-commands.md) "File
+  search"): a view job waiting for a worker gets this one (the pass re-queues itself, keeping
+  its place), and while a view job runs or `mv_present_set_busy` says the viewer pans or plays,
+  it waits. Each host runs it once a launch, after the first image is on screen (Windows: the
+  session's `IMAGE_OPENED` hook; Mac: `-startThumbSweepIfDue`, when a still shows), and again
+  when a cap is set. `stop_sweep` before the pool shuts down; a sweep refuses to start again
+  until the store reopens. Logged as counts, never a path.
+- **The cap** is off by default (owner, #612): a cap too small would bring back cold thumbnails.
+  Settings offers 1, 2, 5, 10 or 20 GB; Windows keeps it in `thumb-cap.txt` beside the theme,
+  the Mac in its defaults (`mv.thumbCacheCap`). Oldest-written, not least-recently-used: a
+  lookup stays a read, never a write.
+- **Clear** (`thumb_store::clear`) deletes every row and every cache JPEG, then vacuums the
+  index (best effort). `meta_cache.db` (the search cache, beside it) and anything else in the
+  folder are untouched; the open folder's tiles are forgotten so they regenerate on request.
+- **Metadata snapshots** (`io::metadata_snapshot_dir`, [06](06-metadata.md) "Undo") are never
+  touched by the sweep or Clear: they live in their own folder and are not a cache.
+- **Settings → Storage** lists every place with its size (`io::measure_storage`,
+  [`src/io/storage.h`](../../src/io/storage.h)): thumbnails, the search cache, clipboard copies,
+  metadata snapshots, each add-on with its data (the AI index, Places), add-ons from others,
+  add-on settings, and the host's own places (crash reports; on Windows the telemetry spool).
+  Measuring walks folders on a worker (Windows: `mv_storage_report_json` from `Task.Run`; Mac:
+  `mv_chrome_storage_report` from a detached task). Paths stay with the local chrome (rule 6).
+
 ## Animation (GIF / APNG / WebP / animated AVIF / HEIC sequences)
 
 [`src/codec/anim.h`](../../src/codec/anim.h). Treated as a mini video: frames are decoded ahead

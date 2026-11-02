@@ -346,6 +346,9 @@ add_library(mv_io STATIC
   src/io/media_extensions.h
   src/io/sort_order.cpp
   src/io/sort_order.h
+  # #612: Settings -> Storage, what MediaViewer keeps on disk.
+  src/io/storage.cpp
+  src/io/storage.h
   # Milestone G (docs/design/18): verified copy (also F8 across volumes), the file
   # and volume ports Import reaches through the add-on host table.
   src/io/content_hash.cpp
@@ -1234,6 +1237,8 @@ if(MV_BUILD_TESTS)
     tests/test_os_integration.cpp
     tests/test_thumb_pixels.cpp
     tests/test_thumb_store.cpp
+    # #612: Settings -> Storage.
+    tests/test_storage.cpp
     tests/test_thumb_request.cpp
     src/shellext/thumb_request.cpp
     tests/test_spotlight_fields.cpp
