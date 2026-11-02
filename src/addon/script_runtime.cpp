@@ -56,6 +56,11 @@ struct script_addon::impl {
   // mv.notify's rate: four lines a second at most.
   clock_type::time_point notify_window{};
   int notify_count = 0;
+  // mv.log / print's rate (#400): kLogPerSecond lines a second at most; the
+  // rest are counted and said in one line when the next second opens.
+  clock_type::time_point log_window{};
+  std::uint32_t log_count = 0;
+  std::uint64_t log_dropped = 0;
 
   script_thread worker;
 
@@ -307,10 +312,34 @@ std::string joined_args(lua_State* L) {
   return out;
 }
 
+// A script in a loop can print far faster than any log takes it, and every
+// line costs the host a call and the OS log a write (#400). Lines past the
+// cap are dropped before they are formatted (no __tostring runs for them).
+constexpr std::uint32_t kLogPerSecond = 50;
+
+std::string dropped_line(std::uint64_t n) {
+  return std::to_string(n) + (n == 1 ? " log line" : " log lines") + " dropped (at most " +
+         std::to_string(kLogPerSecond) + " a second)";
+}
+
 int mv_log(lua_State* L) {
   script_addon* a = script_owner(L);
-  const std::string text = joined_args(L);
-  if (a && a->services().log) a->services().log(a->id(), 0, text);
+  if (!a || !a->services().log) return 0;
+  script_addon::impl* I = impl_of(L);
+  const auto now = clock_type::now();
+  if (now - I->log_window >= std::chrono::seconds(1)) {
+    I->log_window = now;
+    I->log_count = 0;
+    if (I->log_dropped != 0) {
+      a->services().log(a->id(), 1, dropped_line(I->log_dropped));
+      I->log_dropped = 0;
+    }
+  }
+  if (++I->log_count > kLogPerSecond) {
+    ++I->log_dropped;
+    return 0;
+  }
+  a->services().log(a->id(), 0, joined_args(L));
   return 0;
 }
 
@@ -650,6 +679,11 @@ void script_addon::impl::close_state() {
   lua_sethook(L, count_hook, LUA_MASKCOUNT, 1);
   lua_close(L);
   L = nullptr;
+  // Lines mv_log dropped in the last second it ran are still said once.
+  if (log_dropped != 0 && self && self->services().log) {
+    self->services().log(self->id(), 1, dropped_line(log_dropped));
+    log_dropped = 0;
+  }
 }
 
 void script_addon::impl::run() {
@@ -744,7 +778,7 @@ std::unique_ptr<script_addon> script_addon::start(script_config config, script_s
   return a;
 }
 
-script_addon::~script_addon() {
+void script_addon::stop() {
   if (!impl_) return;
   {
     std::lock_guard<std::mutex> lock(impl_->m);
@@ -752,6 +786,11 @@ script_addon::~script_addon() {
   }
   impl_->request_stop(script_stop::stopped, {});
   impl_->cv.notify_all();
+}
+
+script_addon::~script_addon() {
+  if (!impl_) return;
+  stop();
   impl_->worker.join();
 }
 
