@@ -724,7 +724,7 @@ expected faces_db::add(std::int64_t asset, const std::string& path, std::int64_t
   stmt ins(db_, "INSERT INTO faces(asset_id, path, pts_ms, x, y, w, h, score, person_id, emb, quality, tta, spec)"
                 " VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)");
   stmt upd(db_, "UPDATE faces SET x = ?2, y = ?3, w = ?4, h = ?5, score = ?6, emb = ?7, quality = ?8,"
-                " tta = ?9, spec = ?10 WHERE id = ?1");
+                " tta = ?9, spec = ?10, pinned = pinned * ?11 WHERE id = ?1");
   stmt rej(db_, "INSERT OR IGNORE INTO rejected(face_id, person_id) VALUES(?1, ?2)");
   std::set<std::int64_t> refreshed;
   std::vector<std::int64_t> loose;
@@ -742,7 +742,11 @@ expected faces_db::add(std::int64_t asset, const std::string& path, std::int64_t
       } else {
         upd.bind_null(8);
       }
-      upd.bind(9, std::int64_t{f.tta ? 1 : 0}).bind(10, spec_);
+      // The same box with a face this embedder calls someone else (the file
+      // changed under it): the row keeps its person until the refinement
+      // judges it, but the user's pin was about another face.
+      const bool other_face = same[k]->emb.size() == dim_ && mean_cosine(f.emb, 1, same[k]->emb) < same_;
+      upd.bind(9, std::int64_t{f.tta ? 1 : 0}).bind(10, spec_).bind(11, std::int64_t{other_face ? 0 : 1});
       ok = upd.run();
       if (same[k]->person > 0) refreshed.insert(same[k]->person);
     } else {
@@ -1226,6 +1230,7 @@ result<reject_result> faces_db::reject(std::span<const std::int64_t> faces) {
     std::int64_t face, person;
     std::vector<float> emb;
     float quality;
+    std::int64_t asset, pts_ms;
   };
   std::vector<leaving> go;
   std::set<std::int64_t> seen;
@@ -1233,7 +1238,7 @@ result<reject_result> faces_db::reject(std::span<const std::int64_t> faces) {
     stmt q(db_, "SELECT COALESCE(person_id, 0), emb, spec, quality, asset_id, pts_ms FROM faces WHERE id = ?1");
     // A clip's other frames in the same person that are the same face (the
     // track: same_person to the rejected one) go with it.
-    stmt t(db_, "SELECT id, emb, quality FROM faces WHERE asset_id = ?1 AND person_id = ?2 AND id != ?3"
+    stmt t(db_, "SELECT id, emb, quality, pts_ms FROM faces WHERE asset_id = ?1 AND person_id = ?2 AND id != ?3"
                 " AND pts_ms >= 0 AND pinned = 0 AND spec = ?4");
     for (std::int64_t face : faces) {
       q.reset();
@@ -1242,7 +1247,7 @@ result<reject_result> faces_db::reject(std::span<const std::int64_t> faces) {
       if (person == 0 || !seen.insert(face).second) continue;
       std::vector<float> emb;
       if (q.text(2) == spec_) emb = q.floats(1);  // another embedder's: re-run files it
-      go.push_back(leaving{face, person, emb, q.null(3) ? -1.0f : static_cast<float>(q.real(3))});
+      go.push_back(leaving{face, person, emb, q.null(3) ? -1.0f : static_cast<float>(q.real(3)), q.i64(4), q.i64(5)});
       if (q.i64(5) < 0 || emb.size() != dim_) continue;
       t.reset();
       t.bind(1, q.i64(4)).bind(2, person).bind(3, face).bind(4, spec_);
@@ -1252,7 +1257,8 @@ result<reject_result> faces_db::reject(std::span<const std::int64_t> faces) {
         std::vector<float> v = t.floats(1);
         if (v.size() != dim_ || mean_cosine(emb, 1, v) < same_) continue;
         seen.insert(id);
-        go.push_back(leaving{id, person, std::move(v), t.null(2) ? -1.0f : static_cast<float>(t.real(2))});
+        go.push_back(leaving{id, person, std::move(v), t.null(2) ? -1.0f : static_cast<float>(t.real(2)), q.i64(4),
+                             t.i64(3)});
         ++out.spread;
       }
     }
@@ -1283,6 +1289,9 @@ result<reject_result> faces_db::reject(std::span<const std::int64_t> faces) {
   }
   stmt all(db_, "SELECT person_id FROM rejected WHERE face_id = ?1");
   stmt set(db_, "UPDATE faces SET person_id = ?2 WHERE id = ?1");
+  // Never into a person already in the same photo or frame (one face twice excepted).
+  stmt fr(db_, "SELECT person_id, emb FROM faces WHERE asset_id = ?1 AND pts_ms = ?2 AND id != ?3"
+               " AND person_id IS NOT NULL AND spec = ?4");
   for (const leaving& l : go) {
     std::int64_t next = 0;
     if (l.emb.size() == dim_) {
@@ -1290,6 +1299,12 @@ result<reject_result> faces_db::reject(std::span<const std::int64_t> faces) {
       all.reset();
       all.bind(1, l.face);
       while (all.step_row()) no.insert(all.i64(0));
+      fr.reset();
+      fr.bind(1, l.asset).bind(2, l.pts_ms).bind(3, l.face).bind(4, spec_);
+      while (fr.step_row()) {
+        const std::vector<float> o = fr.floats(1);
+        if (o.size() != dim_ || mean_cosine(l.emb, 1, o) < twice_locked()) no.insert(fr.i64(0));
+      }
       next = assign_locked(l.emb, l.quality, no, false);
     }
     if (next != 0) {

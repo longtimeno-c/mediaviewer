@@ -1364,6 +1364,30 @@ photos are matched against. Weak faces and unconfirmed people keep the mean. Exe
 person were tried and dropped: on LFW they cost online BCubed F 0.9975 → 0.9945, because a newcomer
 joined a lookalike. Numbers are in docs/design/17 "Online clustering".
 
+**Corrections hold, and a frame is evidence (2026-11-02, owner: "the wrong person is in another
+person's group").** Five calls, numbers in docs/design/17 "Corrections that hold":
+- The idle merge never joins two people the user confirmed (a name or a pinned face), even by way
+  of a third, and joins an unconfirmed cluster to a confirmed person only when the person's
+  exemplars do not call it a stranger. It no longer merges by average alone into a person the
+  user named: an unnamed lookalike could carry one named person's faces into another. Requiring
+  the exemplars at `merge_at` was measured and dropped: a varied person's own fragments stayed out.
+- Two faces of one photo or frame are two people (online, refinement, regroup, the merges),
+  unless they are one face twice (≥ join + 2 margins: a mirror). Without the exception the rule
+  split 113 of the owner's faces off himself.
+- A clip's frames are one sighting: one exemplar per photo or clip, the medoid counts each once,
+  and a face is not vouched for by its own clip while its person has other photos. LFW is
+  unchanged (one face a photo).
+- A lone pin another person explains clearly better stops anchoring the person (it stays pinned);
+  one nobody explains still anchors (#434's side-on cover).
+- "Not this person" counts against the person (negatives), except a rejection the person vouches
+  for as its own (a slip); corrections are remapped by every merge, kept across a changed file by
+  box, and never name a reused id. Undo for a merge; "Move to…", "Yes", an unknown-faces queue
+  and suggestions in both chromes.
+Held out and filed again, a tenth of the named people's clear faces return to their person 597 → 695
+of 862, none to another named person either way.
+Cost: the library-wide settle 3.8 → 5.2 s on the owner's copy (once per re-run or rules change);
+`add` 0.285 → 0.297 ms a face (one run each). Rules 3 settles every library once.
+
 **People follow the open folder (2026-10-03).** While a folder is open the People grid offers
 "This folder | + Subfolders" only; everyone shows only with no folder open. A folder open is the
 user saying what they are looking at, and everyone-from-everywhere inside one read as a leak. A

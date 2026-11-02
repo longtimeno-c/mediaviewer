@@ -394,9 +394,24 @@ class engine {
   [[nodiscard]] std::string people_json(const std::string& scope_dir = std::string(),
                                         std::uint32_t scope = MV_AI_SCOPE_ALL);
   [[nodiscard]] std::string person_faces_json(std::int64_t person); // [worker-thread]
-  [[nodiscard]] expected person_rename(std::int64_t person, const std::string& name);
+  [[nodiscard]] expected person_rename(std::int64_t person, const std::string& name, std::int64_t cover = 0);
   [[nodiscard]] expected person_merge(std::int64_t into, std::int64_t from);
   [[nodiscard]] expected face_reject(std::int64_t face);
+  // Correcting people (docs/design/17 "Correcting people"). [worker-thread]
+  // The user's merge, with the covers they saw; returns an undo token.
+  [[nodiscard]] result<std::int64_t> person_merge(std::int64_t into, std::int64_t from, std::int64_t cover_into,
+                                                  std::int64_t cover_from);
+  [[nodiscard]] expected person_merge_undo(std::int64_t token);
+  [[nodiscard]] expected faces_assign(const std::vector<std::int64_t>& faces, std::int64_t person, bool pin);
+  [[nodiscard]] expected faces_pin(const std::vector<std::int64_t>& faces, bool pinned);
+  // {"unassigned":N,"spread":N,"to":[{"id":7,"name":"Ben","faces":2}]}
+  [[nodiscard]] result<std::string> faces_reject_json(const std::vector<std::int64_t>& faces);
+  // A person's faces, doubtful first, with how well the person and its rival vouch for each.
+  [[nodiscard]] std::string person_review_json(std::int64_t person);
+  // {"total":N,"faces":[...]}: unassigned usable faces, clearest first, with a suggestion.
+  [[nodiscard]] std::string unknown_faces_json(std::uint32_t offset, std::uint32_t limit);
+  // {"people":[...],"faces":[...]}: "Might also be X".
+  [[nodiscard]] std::string person_suggest_json(std::int64_t person, std::uint32_t limit);
   [[nodiscard]] result<std::int64_t> face_split(const std::vector<std::int64_t>& faces);
   // "Refine": files this person's misplaced faces out (docs/design/17 "People
   // refinement"); how many left them. Only ever on request. [worker-thread]

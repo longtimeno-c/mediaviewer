@@ -1715,6 +1715,119 @@ TEST_CASE("People API: a copy of a real faces.db, call by call", "[.people-api]"
               to_known, to_new, offers.size() - to_named - to_known - to_new);
 }
 
+// What the named people teach (docs/design/17 "Corrections that hold"): a copy of a real
+// faces.db (MV_FACES_DB; this writes), a tenth of each named person's clear, unpinned faces taken
+// out (seeded) and filed again through `add` as the scan would, in their own photo or frame,
+// against the people the user named and corrected. How many come back to their person, go to
+// another named person, to someone else, or to nobody. Uses only calls the base code has, so the
+// same case runs on a base build.
+TEST_CASE("People held out: a named person's faces filed again", "[.people-heldout]") {
+  const char* file = std::getenv("MV_FACES_DB");
+  if (!file) {
+    WARN("MV_FACES_DB is not set");
+    return;
+  }
+  mv::ai::face_tuning t;
+  t.same_person = 0.30f;
+  t.keep = 0.20f;
+  t.keep_weak = 0.24f;
+  t.margin = 0.10f;
+  t.ambiguous = 0.04f;
+  t.merge_at = 0.32f;
+  const std::string spec = "yunet-2023mar+adaface-ir50-webface4m/1";
+  struct held {
+    std::int64_t person, asset, pts_ms;
+    mv::ai::face_in f;
+    std::string path;
+  };
+  std::vector<held> out;
+  {
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open_v2(file, &raw, SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK);
+    sqlite3_stmt* q = nullptr;
+    sqlite3_prepare_v2(raw,
+                       "SELECT f.id, f.person_id, f.asset_id, f.pts_ms, f.x, f.y, f.w, f.h, f.score, f.quality, f.emb,"
+                       " f.path FROM faces f JOIN people p ON p.id = f.person_id WHERE p.name != '' AND f.pinned = 0"
+                       " AND f.spec = ?1 AND COALESCE(f.quality, 0) >= 0.35 ORDER BY f.id",
+                       -1, &q, nullptr);
+    sqlite3_bind_text(q, 1, spec.c_str(), -1, SQLITE_TRANSIENT);
+    std::vector<std::int64_t> gone;
+    std::uint64_t k = 0;
+    while (sqlite3_step(q) == SQLITE_ROW) {
+      // Every tenth by a fixed hash of the id: the same faces on every build.
+      const auto id = static_cast<std::uint64_t>(sqlite3_column_int64(q, 0));
+      ++k;
+      if (((id * 2654435761ULL) >> 7) % 10 != 0) continue;
+      held h;
+      h.person = sqlite3_column_int64(q, 1);
+      h.asset = sqlite3_column_int64(q, 2);
+      h.pts_ms = sqlite3_column_int64(q, 3);
+      h.f.x = static_cast<float>(sqlite3_column_double(q, 4));
+      h.f.y = static_cast<float>(sqlite3_column_double(q, 5));
+      h.f.w = static_cast<float>(sqlite3_column_double(q, 6));
+      h.f.h = static_cast<float>(sqlite3_column_double(q, 7));
+      h.f.score = static_cast<float>(sqlite3_column_double(q, 8));
+      h.f.quality = static_cast<float>(sqlite3_column_double(q, 9));
+      const auto* b = static_cast<const float*>(sqlite3_column_blob(q, 10));
+      if (!b || sqlite3_column_bytes(q, 10) != 512 * 4) continue;
+      h.f.emb.assign(b, b + 512);
+      h.path = reinterpret_cast<const char*>(sqlite3_column_text(q, 11));
+      out.push_back(std::move(h));
+      gone.push_back(static_cast<std::int64_t>(id));
+    }
+    sqlite3_finalize(q);
+    sqlite3_exec(raw, "BEGIN", nullptr, nullptr, nullptr);
+    sqlite3_stmt* d = nullptr;
+    sqlite3_prepare_v2(raw, "DELETE FROM faces WHERE id = ?1", -1, &d, nullptr);
+    for (std::int64_t id : gone) {
+      sqlite3_reset(d);
+      sqlite3_bind_int64(d, 1, id);
+      sqlite3_step(d);
+    }
+    sqlite3_finalize(d);
+    sqlite3_exec(raw, "DELETE FROM rejected WHERE face_id NOT IN (SELECT id FROM faces); COMMIT", nullptr, nullptr,
+                 nullptr);
+    sqlite3_close(raw);
+    std::printf("held out %zu of %llu clear unpinned faces of named people\n", out.size(),
+                static_cast<unsigned long long>(k));
+  }
+  auto db = mv::ai::faces_db::open(file, t, 512, spec);
+  REQUIRE(db);
+  std::map<std::int64_t, std::string> named;
+  for (const auto& [id, name] : (*db)->names()) named[id] = name;
+  std::size_t back = 0, other_named = 0, someone = 0, nobody = 0;
+  for (const held& h : out) {
+    REQUIRE((*db)->add(h.asset, h.path, h.pts_ms, std::span<const mv::ai::face_in>(&h.f, 1)));
+  }
+  // Where each landed: the row in its frame with its box.
+  for (const held& h : out) {
+    std::int64_t to = -1;
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open_v2(file, &raw, SQLITE_OPEN_READONLY, nullptr) == SQLITE_OK);
+    sqlite3_stmt* q = nullptr;
+    sqlite3_prepare_v2(raw, "SELECT COALESCE(person_id, 0) FROM faces WHERE asset_id = ?1 AND pts_ms = ?2 AND x = ?3"
+                            " AND y = ?4 ORDER BY id DESC LIMIT 1", -1, &q, nullptr);
+    sqlite3_bind_int64(q, 1, h.asset);
+    sqlite3_bind_int64(q, 2, h.pts_ms);
+    sqlite3_bind_double(q, 3, h.f.x);
+    sqlite3_bind_double(q, 4, h.f.y);
+    if (sqlite3_step(q) == SQLITE_ROW) to = sqlite3_column_int64(q, 0);
+    sqlite3_finalize(q);
+    sqlite3_close(raw);
+    if (to == h.person) {
+      ++back;
+    } else if (to == 0) {
+      ++nobody;
+    } else if (named.count(to)) {
+      ++other_named;
+    } else {
+      ++someone;
+    }
+  }
+  std::printf("filed again: back to their person %zu, another named person %zu, someone unnamed %zu, nobody %zu"
+              " (of %zu)\n", back, other_named, someone, nobody, out.size());
+}
+
 TEST_CASE("People bench: real face vectors through faces.db, online and settled", "[.people-bench]") {
   const char* file = std::getenv("MV_FACE_EVAL");
   if (!file) {

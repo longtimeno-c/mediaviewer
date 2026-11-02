@@ -7208,22 +7208,204 @@ std::string engine::person_faces_json(std::int64_t person) {
   return w.take();
 }
 
-expected engine::person_rename(std::int64_t person, const std::string& name) {
+expected engine::person_rename(std::int64_t person, const std::string& name, std::int64_t cover) {
   if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   std::lock_guard lock(models_m_);
   if (!faces_) return err(status::invalid_arg);
-  MV_TRY_VOID(faces_->rename(person, name));
+  MV_TRY_VOID(faces_->rename(person, name, cover));
   post(MV_ADDON_EVENT_AI_PEOPLE);
   return {};
 }
 
 expected engine::person_merge(std::int64_t into, std::int64_t from) {
+  MV_TRY(std::int64_t token, person_merge(into, from, 0, 0));
+  (void)token;
+  return {};
+}
+
+result<std::int64_t> engine::person_merge(std::int64_t into, std::int64_t from, std::int64_t cover_into,
+                                          std::int64_t cover_from) {
   if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   std::lock_guard lock(models_m_);
   if (!faces_) return err(status::invalid_arg);
-  MV_TRY_VOID(faces_->merge(into, from));
+  MV_TRY(std::int64_t token, faces_->merge(into, from, cover_into, cover_from));
+  post(MV_ADDON_EVENT_AI_PEOPLE);
+  return token;
+}
+
+expected engine::person_merge_undo(std::int64_t token) {
+  if (options_.read_only) return err(status::unsupported_format);
+  std::lock_guard lock(models_m_);
+  if (!faces_) return err(status::invalid_arg);
+  MV_TRY_VOID(faces_->undo_merge(token));
   post(MV_ADDON_EVENT_AI_PEOPLE);
   return {};
+}
+
+expected engine::faces_assign(const std::vector<std::int64_t>& faces, std::int64_t person, bool pin) {
+  if (options_.read_only) return err(status::unsupported_format);
+  std::lock_guard lock(models_m_);
+  if (!faces_) return err(status::invalid_arg);
+  MV_TRY_VOID(faces_->assign(faces, person, pin));
+  post(MV_ADDON_EVENT_AI_PEOPLE);
+  return {};
+}
+
+expected engine::faces_pin(const std::vector<std::int64_t>& faces, bool pinned) {
+  if (options_.read_only) return err(status::unsupported_format);
+  std::lock_guard lock(models_m_);
+  if (!faces_) return err(status::invalid_arg);
+  MV_TRY_VOID(faces_->set_pinned(faces, pinned));
+  post(MV_ADDON_EVENT_AI_PEOPLE);
+  return {};
+}
+
+result<std::string> engine::faces_reject_json(const std::vector<std::int64_t>& faces) {
+  if (options_.read_only) return err(status::unsupported_format);
+  reject_result r;
+  std::map<std::int64_t, std::string> names;
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_) return err(status::invalid_arg);
+    MV_TRY(reject_result got, faces_->reject(faces));
+    r = std::move(got);
+    for (const auto& [id, name] : faces_->names()) names[id] = name;
+  }
+  post(MV_ADDON_EVENT_AI_PEOPLE);
+  json::writer w;
+  w.begin_object();
+  w.key("unassigned").integer(r.unassigned);
+  w.key("spread").integer(r.spread);
+  w.key("to").begin_array();
+  for (const auto& [person, n] : r.to) {
+    w.begin_object();
+    w.key("id").integer(person);
+    w.key("name").string(names.count(person) ? names[person] : std::string());
+    w.key("faces").integer(n);
+    w.end_object();
+  }
+  w.end_array();
+  w.end_object();
+  return w.take();
+}
+
+namespace {
+
+void face_fields(json::writer& w, const face_row& f) {
+  w.key("face").integer(f.id);
+  w.key("path").string(f.path);
+  w.key("pts_ms").integer(f.pts_ms);
+  w.key("box").begin_array();
+  w.number(f.x).number(f.y).number(f.w).number(f.h);
+  w.end_array();
+}
+
+}  // namespace
+
+std::string engine::person_review_json(std::int64_t person) {
+  // The vectors are copied under the People lock; the scoring (~0.1 s for a
+  // person of 5 k faces) holds nothing, so a search or a rename never waits.
+  review_snapshot snap;
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_) return "[]";
+    snap = faces_->review_begin(person);
+  }
+  const std::vector<face_review> rows = faces_db::review_finish(snap);
+  json::writer w;
+  w.begin_array();
+  for (const face_review& r : rows) {
+    w.begin_object();
+    face_fields(w, r.face);
+    w.key("score").number(r.face.score);
+    w.key("pinned").boolean(r.face.pinned);
+    w.key("quality").number(r.quality);
+    w.key("support").number(r.support);
+    w.key("rival").number(r.rival);
+    w.key("rival_id").integer(r.rival_person);
+    w.key("rival_name").string(r.rival_name);
+    w.key("check").boolean(r.check);
+    w.key("doubtful_pin").boolean(r.doubtful_pin);
+    w.end_object();
+  }
+  w.end_array();
+  return w.take();
+}
+
+std::string engine::unknown_faces_json(std::uint32_t offset, std::uint32_t limit) {
+  std::vector<loose_face> rows;
+  std::uint64_t total = 0;
+  std::map<std::int64_t, std::string> names;
+  {
+    std::lock_guard lock(models_m_);
+    if (faces_) {
+      rows = faces_->loose_faces(offset, std::min<std::uint32_t>(limit, 200));
+      total = faces_->loose_count();
+      for (const auto& [id, name] : faces_->names()) names[id] = name;
+    }
+  }
+  json::writer w;
+  w.begin_object();
+  w.key("total").integer(static_cast<std::int64_t>(total));
+  w.key("faces").begin_array();
+  for (const loose_face& l : rows) {
+    w.begin_object();
+    face_fields(w, l.face);
+    w.key("quality").number(l.quality);
+    w.key("suggest").integer(l.suggest);
+    w.key("suggest_name").string(names.count(l.suggest) ? names[l.suggest] : std::string());
+    w.key("score").number(l.score);
+    w.end_object();
+  }
+  w.end_array();
+  w.end_object();
+  return w.take();
+}
+
+std::string engine::person_suggest_json(std::int64_t person, std::uint32_t limit) {
+  suggest_snapshot snap;
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_) return "{\"people\":[],\"faces\":[]}";
+    snap = faces_->suggest_begin(person);
+  }
+  const person_suggestions sug = faces_db::suggest_finish(snap, std::min<std::uint32_t>(limit, 200));
+  std::map<std::int64_t, person_row> rows;
+  if (!sug.people.empty()) {
+    std::lock_guard lock(models_m_);
+    if (faces_) {
+      for (person_row& p : faces_->people(0)) rows[p.id] = std::move(p);
+    }
+  }
+  json::writer w;
+  w.begin_object();
+  w.key("people").begin_array();
+  for (const auto& [id, score] : sug.people) {
+    const auto it = rows.find(id);
+    if (it == rows.end()) continue;
+    w.begin_object();
+    w.key("id").integer(id);
+    w.key("score").number(score);
+    w.key("faces").integer(it->second.faces);
+    w.key("cover_face").integer(it->second.cover.id);
+    w.key("cover_path").string(it->second.cover.path);
+    w.key("cover_ms").integer(it->second.cover.pts_ms);
+    w.key("cover_box").begin_array();
+    w.number(it->second.cover.x).number(it->second.cover.y).number(it->second.cover.w).number(it->second.cover.h);
+    w.end_array();
+    w.end_object();
+  }
+  w.end_array();
+  w.key("faces").begin_array();
+  for (const auto& [f, score] : sug.faces) {
+    w.begin_object();
+    face_fields(w, f);
+    w.key("score").number(score);
+    w.end_object();
+  }
+  w.end_array();
+  w.end_object();
+  return w.take();
 }
 
 expected engine::face_reject(std::int64_t face) {

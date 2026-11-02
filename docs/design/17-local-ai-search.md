@@ -1112,10 +1112,13 @@ nothing but local search.
 
 `faces.db` schema: `people(id, name, created_at)`, `faces(id, asset_id, path, pts_ms, x, y, w, h,
 score, person_id, emb, pinned, quality, tta, spec)`, `rejected(face_id, person_id)`,
-`no_merge(a, b)`, `scanned(asset_id, spec)`, `meta`.
+`rejected_at(asset_id, pts_ms, x, y, w, h, person_id)`, `no_merge(a, b)`, `merge_log(token, …)`,
+`scanned(asset_id, spec)`, `meta`.
 
-Corrections: rename, merge, "not this person" (`face_reject`), split (`face_split`); they
-persist and re-apply.
+Corrections: rename, merge (undoable this session), "not this person" (`face_reject`,
+`faces_reject_json`), split (`face_split`), "Move to…" (`faces_assign`), "Yes" / "Unpin"
+(`faces_pin`). They persist, survive every automatic pass, and count as evidence:
+"Corrections that hold" below.
 
 ### People model
 
@@ -1183,9 +1186,14 @@ The face joins the best person at `same_person`. If a second shortlisted person 
 *unusable* face (quality < 0.10) joins nobody. A *weak* one (< 0.35) may join a person but never
 starts one, and it is matched by the mean alone, because the refinement never admits a weak face
 by exemplars either. The idle consolidate merges at mean pairwise `merge_at`, an average that
-stays an average after a merge (no chaining). The user's faces are **pinned**: faces they split
-out, the cover of a person when they name it, and both covers when they merge. Covers prefer
-pinned faces.
+stays an average after a merge (no chaining), with the limits in "Corrections that hold". The
+user's faces are **pinned**: faces they split out or moved, the cover they saw when they named a
+person (`person_rename_cover`; else the grid's cover, and never a face below `weak_quality`),
+both covers when they merge, and faces they said "Yes" to. Covers prefer pinned faces. **One face
+per frame:** a person that already has a face in the photo or frame is no candidate for another
+one there (unless the two are one face twice, below), and a frame's new faces are filed clearest
+first. **Rejections count:** a shortlisted person is passed over when the face is as like the
+faces the user rejected from it as like the person (by `margin`).
 
 **Corrections are what new faces meet (2026-10-15, #434).** Before this change a person's
 corrections counted only in the refinement. Online, a new face met the average of every member,
@@ -1246,10 +1254,33 @@ mean, the top 3 re-scored by exemplars. For every face that is not pinned:
 
 | Verdict | Rule |
 |---|---|
-| **move** to b | support(b) ≥ join (`same_person`) and beats both its own person and the runner-up by `margin`; never a weak face; never into a person it was rejected from |
-| **evict** to unassigned | support(own) < `keep` (`keep_weak` for a weak face); always when unusable, or when its person is unnamed, unpinned and has no face that is not weak (`weak_only`: nothing vouches for it, and it is no candidate) |
+| **move** to b | support(b) ≥ join (`same_person`) and beats its own person, the runner-up and neg(b) by `margin`; never a weak face; never into a person it was rejected from, nor one that holds another face of its frame |
+| **evict** to unassigned | support(own) < `keep` (`keep_weak` for a weak face); always when unusable, or when its person is unnamed, unpinned and has no face that is not weak (`weak_only`: nothing vouches for it, and it is no candidate), or it was rejected from its own person (a merge brought it back), or neg(own) ≥ join and above support(own), or a better supported face of its own frame is in the same person |
 | **admit** (unassigned) | the same test as move |
-| **regroup** | unassigned good faces within join of a leader and at join mean to the group so far (average linkage), ≥ 2, become a new unnamed person |
+| **regroup** | unassigned good faces within join of a leader and at join mean to the group so far (average linkage), ≥ 2, never two of one frame, become a new unnamed person |
+
+**A clip's frames are one sighting (2026-11-02).** Exemplars take one face per photo or clip
+(pinned anchors excepted), the medoid counts each photo or clip once (its refs share a vote), and
+a face's support skips exemplars from its own photo or clip while the person has others. Frames
+of one clip resemble each other more than anyone, so they vouched for each other; now a misfiled
+clip has to be vouched for by the person's other photos. A person seen in one clip only still has
+its own frames.
+
+**Pins that agree (2026-11-02).** A pin is *lone* when it agrees (≥ `core`) with none of the
+person's other pins nor its medoid. In pass 0, a lone pin that another person supports at ≥ join
+and by `margin` above the rest of the person stops being an anchor (`refine_output::distrusted`),
+when the person keeps another pin. It stays pinned where it is; the sheet asks about it. An
+unusable pin is no anchor while the person has anything else. A lone pin nobody explains (a
+side-on cover the user merged on purpose) keeps anchoring, as #434 wants.
+
+**Rejections are negatives.** For each person, the clearest `max_negatives` (12) faces rejected
+from it; neg(f, p) is their top-3 mean cosine to f. A rejected face the person vouches for as
+for an unmistakable face of its own (join + 2 margins) is taken for a slip and left out, so one
+mistaken "not this person" does not shut out everyone who looks like them.
+
+**One face twice.** Two faces of one frame are two people unless they are at least join + 2
+margins alike: a mirror, a screen, a photo in the photo. On the owner's library 13 frames hold
+two faces of one person; without this rule the cannot-link split 113 of his faces off.
 
 Passes are Jacobi (every face judged against the same prototypes, so order never matters), up to
 4, until nothing changes; a face changes at most once per call, and keep < join is the
@@ -1260,8 +1291,8 @@ the vector is the normalised mean (one more embedder run per face; `tta`). Borde
 before it are re-analysed, 16 assets per call and once per asset per session, replacing vectors
 box by box (IoU ≥ 0.5 keeps the row's id, person and pin).
 
-**Refinement runs only when the user asks:** "Refine faces" in the person's sheet (Mac) or detail
-pane (Windows) calls `person_refine` on a worker. It takes a full snapshot and judges **only that
+**Refinement runs only when the user asks:** "Refine faces" in the person's sheet (a sheet on the
+Mac, an owned window on Windows) calls `person_refine` on a worker. It takes a full snapshot and judges **only that
 person's faces** (`refine_input::focus`): a face may move to someone else, leave to unassigned,
 or with others that left together become a new unnamed person; nothing is admitted into the
 person. Snapshot and commit hold the People lock, the compute holds nothing. The commit skips any
@@ -1270,6 +1301,90 @@ face the user (or a scan) changed after the snapshot. The chrome reports how man
 Cost (Apple M5, one thread, synthetic 128-d vectors): 34 ms at 5 k faces / 100 people, 135 ms at
 20 k / 300, 2.7 s at 100 k / 1,500 for a full call. Tests: `tests/test_ai_face_refine.cpp`
 (`[refine]`).
+
+### Corrections that hold
+
+Before 2026-11-02 a user's corrections could be lost or undone by the automatic passes (owner:
+"there are still some cases where the wrong person is in another person's group"). On a copy of
+the owner's faces.db, 61 of 67 rejections named faces that no longer existed, two rejected faces
+were back in the person they were rejected from, and 21 frames held two people in one person.
+
+- **The idle merge never joins two confirmed people** (a name or a pinned face), not even through
+  an unconfirmed cluster that took the first one's faces: the survivor becomes confirmed. An
+  unconfirmed cluster joins a confirmed person only when the person's exemplars do not call it a
+  stranger (mean cosine across ≥ `same_person − 2 × margin`, the shortlist's bound). Stricter was
+  tried: at `merge_at` by exemplars a varied person's own fragments (0.29–0.37 to his agreeing
+  pins, his own faces 0.365) stayed out, 470 more of his faces than the old settle; the stranger a
+  merge had glued in sat at 0.04. It also skips pairs a split, a rejection either way or a frame
+  together keeps apart, and carries every correction to the survivor.
+- **A merge remaps the corrections** (`remap_corrections_locked`): rejections, kept rejections and
+  split pairs naming the merged person name the survivor; a pair that would name one person twice
+  goes. A face rejected from the survivor leaves it (unassigned). When a person row is deleted,
+  every row naming its id goes (ids are reused). Open drops rejections of gone faces or people.
+- **A changed file keeps its rejections:** before its faces are forgotten, their rejections move
+  to `rejected_at` by box; the face found again in that box (IoU ≥ 0.5) inherits them and is not
+  filed under those people; `mark_scanned` drops what was not found again.
+- **Not this person** (`faces_reject_json`): several faces at once; the frames of the same clip in
+  that person that are the same face (≥ `same_person` to it) go with it (`spread`); each is filed
+  under another existing person it clearly matches, never a new person of its own, else nobody.
+  The answer says where they went.
+- **Move to** (`faces_assign`): the faces are that person's (with `MV_AI_ASSIGN_PIN`, the user's),
+  rejected from where they were, and any rejection from the target is withdrawn. **Yes / Unpin**
+  (`faces_pin`). **Undo a merge** (`person_merge_undo`, token from `person_merge_covers`;
+  `merge_log` is cleared on open): the faces still in the survivor go back to the person with its
+  id, name, pins and corrections; the covers the merge pinned are unpinned.
+- **Rules 3** (`faces.db` meta): a library filed under older rules settles once, nothing read again.
+
+**Measured** on a copy of the owner's faces.db (48,959 faces, 13 named people), settled by the old
+and new code, alternated (`[.people-settle]`, which prints the three "never" counts, and a NumPy
+count over the copy), and LFW (`[.people-bench]`):
+
+| | Old settle | New settle |
+|---|---|---|
+| Faces filed under a person they were rejected from | 2 | **0** |
+| Rejections of gone faces | 61 | **0** |
+| Frames with two people in one person (not one face twice) | 11 | **0** |
+| Named people's faces better matched by another person | 77 of 10,186 | 77 of 10,091 |
+| The stranger a merge glued into Tristan, moved out | 147 | 150 |
+| Settle | 3.8 s | 5.2 s |
+| LFW settled BCubed F, full / ~24 px | 0.9988 / 0.9980 | 0.9988 / 0.9980 (every line equal) |
+| `add` per face (3,410 offered again) | 0.285 ms | 0.297 ms (one run each) |
+| A tenth of the named people's clear faces held out and filed again (`[.people-heldout]`, 862) | 597 back to their person, 0 to another named one | **695** back, 0 to another named one |
+
+The held-out row is "training on the named people" as it works here: new photos are matched
+against the faces the user confirmed, and one exemplar per photo or clip gives those a person's
+range instead of twelve frames of one clip. Not better: about 60 of Tristan's clip faces (two unnamed groups, 0.30 and 0.37 to his agreeing
+pins) leave him where the old settle kept them; "Might also be" offers both back. The settle's
+extra 1.4 s is the frame and asset bookkeeping; it runs once per re-run or rules change, off the
+UI thread. The library before any settle had 409 such faces: the settle this rules change starts
+does most of the good on an existing library.
+
+### Reviewing a person
+
+`faces_db::review_begin` (under the lock: the person's vectors, every other person's average and
+the cached exemplars of confirmed ones; 23 ms for the owner's largest, 5,197 faces) and
+`review_finish` (no lock: 109 ms there) give each face its **support** by the person (as the
+refinement scores it), its **rival** (the best other person seen more than once, never one in a
+frame with this one: shortlist by average, rescored by exemplars where cached) and **check**: not
+pinned and support below `same_person`, or the rival within `margin`, or unusable; or a pin that
+is lone. `person_review_json` lists the checks first, least supported first. **Unknown faces**
+(`unknown_faces_json`, 32 ms for 60): unassigned faces at or above `weak_quality`, clearest first,
+each with its nearest person (≥ `same_person − 2 × margin`, never one rejected or in its frame).
+**Might also be** (`person_suggest_json`, 31 ms under the lock + 3 ms): unknown faces whose
+support by the person, and unnamed unpinned people whose average to the person's exemplars, reach
+`same_person − margin` (the user answers it, so a margin lower than filing), never one kept apart.
+A JSON answer too large for the caller's buffer is kept for its retry (`write_out_once`), so a
+large review is computed once.
+
+The chromes (both): the person's sheet shows "Check these" first with "Looks like <name>?",
+"Pinned, but unlike the others" or "Not sure", a pin glyph, Doubtful first | Clearest, Yes / Not /
+Move to… / Unpin on the selection (sheet keys Y, N, M, Space for the whole picture with the box,
+⌘Z / Ctrl+Z undo of the last action), where rejected faces went with Undo, and a "Might also be"
+strip; the grid gains "Unknown faces (N)", rename with the cover shown, and "Merged · Undo".
+
+Timings come from `mv_ai_tests "[.people-api]"` and `"[.people-settle]"` on a copy (Apple M5);
+the "better matched" count from a NumPy script over a copy (aggregate counts only), kept with the
+owner's bench files, not in the repository. Windows is not measured.
 
 ### Merge duplicates
 
