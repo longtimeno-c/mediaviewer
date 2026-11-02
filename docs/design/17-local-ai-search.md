@@ -1108,7 +1108,11 @@ from the current frame.
 until a separate opt-in ("Find people in your photos", `faces_enable`), deleted in one click
 (the file is destroyed), never in telemetry, crash reports or minidumps, and exported only by the
 user's own index export with "Include People" ticked (off by default). Face data is used for
-nothing but local search.
+local search and, on request, for one edit: **Open closed eyes** (owner 2026-11-02,
+[12](12-decision-log.md); [plan](../plans/edit-adjust.md) slice 6), where `eyes_json` matches the
+face in the photo being edited to the same person in the frames taken within 10 s, by the People
+embedding, so their open eyes can be used. It reads the stills through the host, writes nothing
+to `faces.db`, keeps nothing, and is refused while People is off.
 
 `faces.db` schema: `people(id, name, created_at)`, `faces(id, asset_id, path, pts_ms, x, y, w, h,
 score, person_id, emb, pinned, quality, tta, spec)`, `rejected(face_id, person_id)`,

@@ -112,6 +112,7 @@ enum class adjust_section : std::uint8_t {
   selective,  // slice 3: the 24 selective colour parameters
   red_eye,    // slice 3: the red-eye spots (colour::spots), no parameter
   detail,     // slice 4: definition, brilliance, sharpen, noise reduction
+  faces,      // slice 6: Open closed eyes (a new file), no parameter
   count
 };
 

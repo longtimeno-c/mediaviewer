@@ -405,6 +405,8 @@ enum class command_id : std::uint16_t {
   // shell::adjust_pick * 1000 + (the red-eye size + 100). Selective colour's
   // sliders travel as parked text (chrome_cmd_adjust_param).
   adjust_pick,
+  // Slice 6: Open closed eyes (a new file beside the still). Island-only.
+  adjust_open_eyes,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

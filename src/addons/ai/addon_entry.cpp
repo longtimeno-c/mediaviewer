@@ -325,6 +325,26 @@ mv_status MV_CALL t_root_media(void* ctx, uint64_t root, uint32_t media) {
     return r ? MV_OK : to_mv(r.error());
   });
 }
+mv_status MV_CALL t_eyes_json(void* ctx, const char* path, const char* candidates, char* out, uint32_t cap,
+                              uint32_t* needed) {
+  return guard([&] {
+    if (!path) return MV_ERR_INVALID_ARG;
+    std::vector<std::string> list;
+    std::string cur;
+    for (const char* p = candidates ? candidates : ""; *p; ++p) {
+      if (*p == '\n') {
+        if (!cur.empty()) list.push_back(std::move(cur));
+        cur.clear();
+      } else {
+        cur.push_back(*p);
+      }
+    }
+    if (!cur.empty()) list.push_back(std::move(cur));
+    auto r = eng(ctx).eyes_json(path, list);
+    if (!r) return to_mv(r.error());
+    return write_out(*r, out, cap, needed);
+  });
+}
 mv_status MV_CALL t_root_documents(void* ctx, uint64_t root, uint32_t docs) {
   return guard([&] {
     auto r = eng(ctx).root_set_documents(static_cast<std::int64_t>(root), docs);
@@ -505,6 +525,7 @@ mv_status make(uint32_t host_api, const mv_host_api* host, mv_addon_api* out, bo
     a.people_reanalyse = &t_people_reanalyse;
     a.each_location = &t_each_location;
     a.root_set_documents = &t_root_documents;  // #354
+    a.eyes_json = &t_eyes_json;                // edit-adjust slice 6
 
     *out = mv_addon_api{};
     out->struct_size = sizeof(mv_addon_api);

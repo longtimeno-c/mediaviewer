@@ -107,6 +107,22 @@ The stack folds into two canonical states:
   Autos read that result. Measured (Apple M-series, 3072 × 2048, best of 3): sharpen or
   definition 32 ms, noise 87 ms, all four 96 ms.
 
+  **Open closed eyes** (Faces section; [plan](../plans/edit-adjust.md) slice 6, owner call
+  2026-11-02 in [12](12-decision-log.md)) writes a new file, `<stem>-eyes.jpg`, beside the photo;
+  the original and the edit stack are untouched. The host offers the AI pack the files of the same
+  folder modified within 10 s (`burst_neighbours`, nearest first, at most 12); the pack answers with
+  the photo's faces, their five landmarks, and the same person's faces in those frames by People
+  embedding (`mv_ai_api` `eyes_json`; refused while People is off). Then, per face
+  (`edit/eyes.h`): how open its eyes are (in a patch about each eye sized by the eye distance, the
+  spread of lightness times how tall the dark part is; comparable within one person's burst), the
+  most open of its three best-matching donors, and if that is at least 1.35 times as open, the
+  donor's eyes: the similarity that maps the donor's eye centres onto the target's, each eye's
+  ellipse (0.34 × 0.21 of the eye distance), its colour matched to the ring of skin round the
+  target's, blended in over its outer 35 %. Real pixels from the same moment, never generated.
+  At full resolution on a worker; the result is baked as an export is and written with the
+  photo's metadata (`write_still`). Windows reaches it through `mv_open_closed_eyes`, Mac
+  directly.
+
   The **white-balance picker** (Colour) and the **red-eye tool** (Red-Eye) make the next click on
   the photo theirs (`adjust_pick`; the canvas does not pan): the click goes through the canvas map
   and the edit's map to the working image. The picker averages 5 × 5 working pixels there
@@ -272,7 +288,7 @@ What exists is the first editing set:
 | Built | |
 |---|---|
 | Geometry | Rotate, flip, crop (aspect presets, [20](20-edit-workspace.md)), straighten ±45°, resize |
-| Colour | Light (exposure, highlights, shadows, whites, blacks, contrast), Colour (saturation, vibrance, temperature, tint), Black & White (intensity, filter, tone), Vignette (strength, radius, softness), Levels (per channel), Curves (per channel, a point editor), Selective Colour (eight bands), Red-Eye (clicks), Detail (definition, brilliance, sharpen, noise reduction); a white-balance picker; an Auto and a reset per section |
+| Colour | Light (exposure, highlights, shadows, whites, blacks, contrast), Colour (saturation, vibrance, temperature, tint), Black & White (intensity, filter, tone), Vignette (strength, radius, softness), Levels (per channel), Curves (per channel, a point editor), Selective Colour (eight bands), Red-Eye (clicks), Detail (definition, brilliance, sharpen, noise reduction), Faces (Open closed eyes, a new file); a white-balance picker; an Auto and a reset per section |
 | Readouts | Histogram (R, G, B, luma) and clipping percentages |
 | Lossless | JPEG rotate / flip / MCU-aligned crop, from the viewer (`[` `]` `H` `V`) or on export |
 | Export | JPEG / PNG, long-edge resize, metadata policy |

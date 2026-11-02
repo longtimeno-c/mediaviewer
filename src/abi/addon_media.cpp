@@ -7,14 +7,20 @@
 #include "abi/addon_media.h"
 
 #include <algorithm>
+#include <chrono>
+#include <filesystem>
 #include <iterator>
 #include <mutex>
 
 #include "codec/decode.h"
+#include "core/json.h"
+#include "edit/bake.h"
 #include "edit/clip_sample.h"
 #include "edit/export.h"
+#include "edit/eyes.h"
 #include "edit/picture_io.h"
 #include "edit/sound_writer.h"
+#include "image/linear.h"
 #include "image/pipeline.h"
 #include "image/thumb.h"
 #include "io/file.h"
@@ -377,6 +383,116 @@ result<rgb_image> full_still(const std::string& path) {
     out.rgb[i * 3 + 2] = pic.rgba[i * 4 + 2];
   }
   return out;
+}
+
+std::vector<std::string> burst_neighbours(const std::string& path) {
+  namespace fs = std::filesystem;
+  std::vector<std::string> out;
+  std::error_code ec;
+  // UTF-8 both ways (C++20: char8_t).
+  const fs::path self(std::u8string(reinterpret_cast<const char8_t*>(path.data()), path.size()));
+  auto utf8 = [](const fs::path& p) {
+    const std::u8string u = p.u8string();
+    return std::string(reinterpret_cast<const char*>(u.data()), u.size());
+  };
+  const auto t0 = fs::last_write_time(self, ec);
+  if (ec) return out;
+  std::vector<std::pair<double, std::string>> near;
+  for (const fs::directory_entry& e : fs::directory_iterator(self.parent_path(), ec)) {
+    std::error_code ec2;
+    if (!e.is_regular_file(ec2) || e.path() == self) continue;
+    const auto t = e.last_write_time(ec2);
+    if (ec2) continue;
+    const double dt = std::abs(std::chrono::duration<double>(t - t0).count());
+    if (dt <= kBurstSeconds) near.emplace_back(dt, utf8(e.path()));
+  }
+  std::sort(near.begin(), near.end());
+  for (std::size_t i = 0; i < near.size() && i < kBurstFrames; ++i) out.push_back(std::move(near[i].second));
+  return out;
+}
+
+std::string eyes_note(status pack, const result<eyes_outcome>& r) {
+  if (pack == status::not_found) return "Open closed eyes needs Local search (Settings → Add-ons)";
+  if (pack == status::invalid_arg) return "Turn on People in Local search to open closed eyes";
+  if (pack != status::ok || !r) return "Could not look for open eyes in this photo";
+  if (r->faces == 0) return "No faces found";
+  if (r->fixed == 0) return "No closed eyes with an open frame of the same moment";
+  const std::size_t slash = r->written.find_last_of("/\\");
+  const std::string name = slash == std::string::npos ? r->written : r->written.substr(slash + 1);
+  return (r->fixed == 1 ? std::string("1 face") : std::to_string(r->fixed) + " faces") + " fixed — saved " + name;
+}
+
+result<eyes_outcome> open_closed_eyes(const std::string& path, std::string_view pack_json, const job_context* ctx) {
+  auto doc = json::parse(pack_json);
+  if (!doc) return err(status::invalid_arg);
+  const json::value* faces = doc->find("faces");
+  if (!faces || faces->k != json::kind::array) return err(status::invalid_arg);
+  auto landmarks = [](const json::value* lm, edit::face_landmarks& out) {
+    if (!lm || lm->a.size() != out.size()) return false;
+    for (std::size_t i = 0; i < out.size(); ++i) out[i] = static_cast<float>(lm->a[i].d);
+    return true;
+  };
+  eyes_outcome r;
+  r.faces = static_cast<int>(faces->a.size());
+  if (faces->a.empty()) return r;
+  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(path));
+  MV_TRY(image::linear_image target, image::decode_linear(bytes, ctx));
+  std::vector<std::pair<std::string, image::linear_image>> donors;  // decoded once each
+  auto donor_image = [&](const std::string& p) -> const image::linear_image* {
+    for (const auto& [k, img] : donors) {
+      if (k == p) return &img;
+    }
+    auto b = io::read_all(p);
+    if (!b) return nullptr;
+    auto img = image::decode_linear(*b, ctx);
+    if (!img) return nullptr;
+    donors.emplace_back(p, std::move(*img));
+    return &donors.back().second;
+  };
+  for (const json::value& f : faces->a) {
+    if (ctx && ctx->cancelled()) return err(status::cancelled);
+    edit::face_landmarks t{};
+    if (!landmarks(f.find("lm"), t)) continue;
+    const float shut = edit::eye_openness(target, t);
+    const json::value* list = f.find("donors");
+    if (!list) continue;
+    const image::linear_image* best = nullptr;
+    edit::face_landmarks best_lm{};
+    float best_open = shut * edit::kEyesBetter;
+    // The three most alike are enough: further down is a worse match.
+    for (std::size_t i = 0; i < list->a.size() && i < 3; ++i) {
+      const json::value& d = list->a[i];
+      const std::string* dp = d.str("path");
+      edit::face_landmarks lm{};
+      if (!dp || !landmarks(d.find("lm"), lm)) continue;
+      const image::linear_image* img = donor_image(*dp);
+      if (!img) continue;
+      const float open = edit::eye_openness(*img, lm);
+      if (open > best_open && open > 0.0f) {
+        best_open = open;
+        best = img;
+        best_lm = lm;
+      }
+    }
+    if (best && edit::transfer_eyes(target, t, *best, best_lm)) ++r.fixed;
+  }
+  if (r.fixed == 0) return r;
+  // Upright 8-bit sRGB, as the export bake writes it, then beside the original.
+  MV_TRY(codec::raster out,
+         edit::bake(target, edit::place(edit::geometry{}, edit::size2{target.width, target.height}),
+                    edit::uniforms_of(edit::colour{}), ctx));
+  rgb_image pixels;
+  pixels.width = out.width;
+  pixels.height = out.height;
+  const std::size_t px = static_cast<std::size_t>(out.width) * out.height;
+  pixels.rgb.resize(px * 3);
+  for (std::size_t i = 0; i < px; ++i) {
+    pixels.rgb[i * 3] = out.rgba[i * 4];
+    pixels.rgb[i * 3 + 1] = out.rgba[i * 4 + 1];
+    pixels.rgb[i * 3 + 2] = out.rgba[i * 4 + 2];
+  }
+  MV_TRY(r.written, write_still(path, pixels, "eyes"));
+  return r;
 }
 
 result<std::string> write_still(const std::string& source, const rgb_image& pixels, const std::string& suffix) {

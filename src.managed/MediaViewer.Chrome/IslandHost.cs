@@ -171,6 +171,7 @@ public static partial class IslandHost
         // Slice 3: AdjustPick's arg is mode * 1000 + (red-eye size + 100);
         // AdjustParam sends parked "param\tvalue" (selective colour).
         public const int AdjustPick = 209;
+        public const int AdjustOpenEyes = 210;  // slice 6
         public const int AdjustParam = 1091;
         public const int AdjustPrompt = 1092;  // slice 5b: parked UTF-8 request
         // PR 12: the pane's stars post the rating keys' ids (commands.h

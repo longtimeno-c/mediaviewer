@@ -271,6 +271,17 @@ struct AdjustView: View {
       }
       .padding(.leading, MVTheme.space(14))
     }
+    if i == AdjustStore.facesSection {
+      VStack(alignment: .leading, spacing: MVTheme.space(4)) {
+        Button("Open closed eyes") { store.openEyes() }
+          .disabled(!store.ready)
+          .help("Eyes shut? Use the same person's open eyes from a photo taken moments before or after. Saves a new file.")
+        Text("Uses People in Local search to find the same person in the photos taken within 10 seconds.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+      .padding(.leading, MVTheme.space(14))
+    }
     if i == AdjustStore.curvesSection {
       CurveEditor(store: store, channel: curvesChannel)
         .aspectRatio(1, contentMode: .fit)

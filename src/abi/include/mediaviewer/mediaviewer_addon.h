@@ -1111,6 +1111,20 @@ MV_API mv_status MV_CALL mv_slots_place_terms(const char* query_utf8, uint32_t* 
 MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* out, uint32_t cap,
                                                  uint32_t* needed);
 
+/* docs/plans/edit-adjust.md slice 5: the edit of the still being edited, for
+ * Enhance's copy (the host table's still_open answers that path with the
+ * edit applied). `edit` is the host's edit geometry then colour as this build
+ * lays them out (the host and this library are built together); `size` must
+ * match, else MV_ERR_INVALID_ARG. A NULL path clears it. [ui-thread][no-block] */
+MV_API mv_status MV_CALL mv_edit_still_set(const char* path_utf8, const void* edit, uint32_t size);
+/* Slice 6: Open closed eyes for the still at `path_utf8`: the frames of the
+ * same moment, the AI pack's same-person faces (People must be on), the
+ * transfer, and a new file beside the photo. `note_out` gets what happened,
+ * for the adjust pane (UTF-8). Reads files and runs the pack's face model:
+ * [worker-thread]. */
+MV_API mv_status MV_CALL mv_open_closed_eyes(const char* path_utf8, char* note_out, uint32_t cap,
+                                             uint32_t* needed);
+
 /* ---------------------------------------------------------------------------
  * Open add-ons (docs/design/25): add-ons from other makers, one `.mvaddon` file
  * each, signed by its publisher. Data only under contribution API 1-2 (themes,

@@ -921,6 +921,10 @@ void mv_chrome_adjust_pick(int32_t mode, float size);
 // move as one undo step, any Auto it asks for runs, and prompt_note says what
 // happened. UTF-8.
 void mv_chrome_adjust_prompt(const char* text);
+// Slice 6: Open closed eyes: a face whose eyes are shut takes the same person's
+// open eyes from a frame of the same moment (People in Local search), written
+// as a new file beside the photo; prompt_note says what happened.
+void mv_chrome_adjust_open_eyes(void);
 void mv_chrome_adjust_close(void);
 // Esc in the pane: keyboard focus back to the canvas (the pane stays open).
 void mv_chrome_adjust_blur(void);

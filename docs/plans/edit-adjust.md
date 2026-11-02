@@ -149,7 +149,18 @@ Tested end to end in `mv_ai_tests` `[enhance][still]` with a stand-in model. As 
   every Enhance run. Owner call 2 first, and a spike measuring a candidate on both machines before
   it is planned in detail.
 
-### 6. Eyes open from the same moment ("Best take")
+### 6. Eyes open from the same moment ("Best take") — built 2026-11-02
+
+Owner call 1 answered yes (2026-11-02, [12](../design/12-decision-log.md)). As built
+([07](../design/07-photo-editing.md) "Open closed eyes"): the eye-state score is the heuristic
+below, not a model (a landmark model needs a download the owner has not yet approved; the score
+only has to rank one person's frames of one moment, which it does). Status: `mv_tests "[eyes]"`
+(score, transfer through turn, scale and light), `mv_ai_tests "[eyes]"` (the pack's same-person
+donors with the stand-in face model; nothing read while People is off; the whole job through
+real files to `<stem>-eyes.jpg`, the original untouched). The Mac app shows the refusal without a
+pack; the real face model end to end, and Windows, are owed.
+
+Planned:
 
 **Recommended approach — real pixels from a neighbouring frame, not a generated face.**
 

@@ -49,7 +49,6 @@
 
 #include <commctrl.h>  // LoadIconWithScaleDown (comctl32 v6 via app.manifest)
 
-#include "abi/addon_media.h"
 #include "abi/guard.h"
 #include "shell/app_icon.h"
 #include "core/boot_timeline.h"
@@ -308,6 +307,7 @@ struct app_state {
   mv::edit::detail_params detail_shown;
   std::uint64_t detail_token = 0;
   std::vector<mv::edit::adjust_section> pending_autos;  // slice 5b: a typed request's Autos still to run
+  bool eyes_running = false;  // slice 6: Open closed eyes is on the pool
   std::atomic<mv::generation> adjust_generation{1};
   // PR 13 / 14 (docs/design/08): trim mode on the current clip, the keyframe-index
   // request in flight for it, and the Jobs pane's wish. The jobs themselves
@@ -2146,16 +2146,18 @@ void publish_edit(app_state* app) noexcept {
   } else {
     app->input.edit[0] = mv::shell::view_of(app->edits, app->edit_key, app->edit_generation);
   }
-  // Slice 5: Enhance's copy of the photo being edited carries its edit.
-  try {
-    if (app->edits.has_item() && !app->edit_path.empty() &&
-        !(app->edits.export_geometry().identity() && app->edits.colour().identity())) {
-      mv::addon::media::set_still_edit(app->edit_path, app->edits.export_geometry(), app->edits.colour());
-    } else {
-      mv::addon::media::clear_still_edit();
-    }
-  } catch (...) {
-    mv::addon::media::clear_still_edit();  // out of memory: Enhance gets the plain photo
+  // Slice 5: Enhance's copy of the photo being edited carries its edit. The
+  // add-on media layer is in mediaviewer_core.dll: through its C entry, the
+  // edit as this build lays it out.
+  if (app->edits.has_item() && !app->edit_path.empty() &&
+      !(app->edits.export_geometry().identity() && app->edits.colour().identity())) {
+    struct {
+      mv::edit::geometry g;
+      mv::edit::colour c;
+    } blob{app->edits.export_geometry(), app->edits.colour()};
+    (void)mv_edit_still_set(app->edit_path.c_str(), &blob, static_cast<std::uint32_t>(sizeof blob));
+  } else {
+    (void)mv_edit_still_set(nullptr, nullptr, 0);
   }
   push_edit_view(app);  // the strip's edit count, the Crop pane's draft
 }
@@ -2384,6 +2386,8 @@ struct adjust_job_result {
   bool histogram = false;  // else a working-image build (or an Auto, below)
   bool auto_section = false;  // a section's Auto: `value` is its result
   bool detail = false;        // slice 4: a detail pass; `working` is its result
+  bool eyes = false;          // slice 6: Open closed eyes finished; `note` says how
+  std::string note;
   mv::edit::detail_params params;
   std::uint64_t token = 0;
   bool ok = false;
@@ -2619,6 +2623,32 @@ void set_param_from_pane(app_state* app) {
                        static_cast<float>(std::atof(parked.c_str() + tab + 1)));
 }
 
+// Slice 6: Open closed eyes, on the pool through mediaviewer_core
+// (mv_open_closed_eyes: the frames of the same moment, the AI pack's
+// same-person faces, the transfer, a new file). The note says what happened.
+void start_open_eyes(app_state* app) {
+  if (app->eyes_running || !adjust_still(app) || app->edit_path.empty() || !app->window) return;
+  app->eyes_running = true;
+  app->adjust.set_prompt_note("Looking for open eyes in the same moment…");
+  push_adjust_pane(app);
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation, [path = app->edit_path, hwnd](const mv::job_context&) -> mv::status {
+    auto* r = new (std::nothrow) adjust_job_result{};
+    if (!r) return mv::status::out_of_memory;
+    r->eyes = true;
+    std::uint32_t needed = 0;
+    std::string note(512, '\0');
+    if (mv_open_closed_eyes(path.c_str(), note.data(), static_cast<std::uint32_t>(note.size()), &needed) == MV_OK) {
+      note.resize(std::strlen(note.c_str()));
+    } else {
+      note = "Could not look for open eyes in this photo";
+    }
+    r->note = std::move(note);
+    post_adjust_result(hwnd, r);
+    return mv::status::ok;
+  });
+}
+
 void next_pending_auto(app_state* app) {
   if (app->pending_autos.empty() || app->adjust.auto_running()) return;
   const mv::edit::adjust_section s = app->pending_autos.front();
@@ -2704,6 +2734,12 @@ void start_detail(app_state* app) {
 
 void on_adjust_job_done(app_state* app, std::unique_ptr<adjust_job_result> r) {
   if (!r) return;
+  if (r->eyes) {
+    app->eyes_running = false;
+    app->adjust.set_prompt_note(r->note);
+    push_adjust_pane(app);
+    return;
+  }
   if (r->detail) {
     if (!r->ok || r->token != app->detail_token || !app->working_base) return;
     app->working = std::move(r->working);
@@ -5462,6 +5498,9 @@ bool chrome_edit_command(app_state* app, int command, float arg) {
     case static_cast<int>(mv::shell::command_id::adjust_pick):
       set_adjust_pick(app, arg);
       return true;
+    case static_cast<int>(mv::shell::command_id::adjust_open_eyes):
+      start_open_eyes(app);
+      return true;
     case static_cast<int>(mv::shell::command_id::adjust_auto):
       start_adjust_auto(app, static_cast<int>(arg));
       return true;
@@ -7953,7 +7992,7 @@ bool run_edit_command_area(app_state* app, mv::shell::command_id command) noexce
     case adjust_highlights: case adjust_shadows: case adjust_whites: case adjust_blacks:
     case adjust_vibrance: case adjust_mono: case adjust_mono_filter: case adjust_mono_tone:
     case adjust_vignette: case adjust_vignette_radius: case adjust_vignette_softness:
-    case adjust_auto: case adjust_reset_section: case adjust_pick:
+    case adjust_auto: case adjust_reset_section: case adjust_pick: case adjust_open_eyes:
     case adjust_levels_black:
     case adjust_levels_mid:
     case adjust_levels_white:

@@ -356,6 +356,9 @@ class engine {
   [[nodiscard]] expected clear_index();
   [[nodiscard]] expected root_set_media(std::int64_t id, std::uint32_t media);
   [[nodiscard]] expected root_set_documents(std::int64_t id, std::uint32_t docs);  // #354: MV_AI_DOCS_*
+  // docs/plans/edit-adjust.md slice 6 (mv_ai_api eyes_json): the faces in the
+  // still and, for each, the same person's faces in `candidates`.
+  [[nodiscard]] result<std::string> eyes_json(const std::string& path, const std::vector<std::string>& candidates);
 
   // ---- the Photos library (issue #72; macOS) --------------------------------
   // Remembers the library as a root ("photos:") and scans it. unsupported_format

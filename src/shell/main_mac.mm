@@ -78,6 +78,7 @@
 #include "shell/ai_badge.h"
 #include "abi/addon_media.h"
 #include "abi/clip_session.h"
+#include "addon/index_locations.h"
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
 #include "shell/gesture.h"
@@ -775,6 +776,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)adjustCurve:(int32_t)channel curve:(const mv::edit::curve&)k;
 - (void)adjustPick:(int32_t)mode size:(float)size;
 - (void)adjustPrompt:(const std::string&)text;
+- (void)adjustOpenEyes;
 - (BOOL)adjustPicking;
 - (void)adjustPickAtX:(float)x y:(float)y;
 - (void)adjustBlur;
@@ -1715,6 +1717,10 @@ extern "C" void mv_chrome_adjust_pick(int32_t mode, float size) {
 extern "C" void mv_chrome_adjust_prompt(const char* text) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app && text) [g_chrome_app adjustPrompt:std::string(text)];
+}
+extern "C" void mv_chrome_adjust_open_eyes(void) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app adjustOpenEyes];
 }
 extern "C" void mv_chrome_adjust_close(void) {
   if (g_chrome_app) [g_chrome_app setAdjustVisible:NO];
@@ -2943,6 +2949,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::uint64_t _adjustViewGeneration;
   float _redEyeSize;  // slice 3: the red-eye tool's size, −100..+100
   std::vector<mv::edit::adjust_section> _pendingAutos;  // slice 5b: a typed request's Autos still to run
+  BOOL _eyesRunning;  // slice 6: Open closed eyes is on the pool
   NSTimer* _histogramDebounce;
   // PR 29 (docs/design/20): the Edit workspace (shell/edit_workspace.h) and Show
   // original. _wsShown is what the panes were last synced to, so closing the
@@ -9545,21 +9552,26 @@ static std::string MvSelfTestPageSummary(const char* addon) {
                           dir:dir];
         [self editSelfTestAdjustLine:@"picked" dir:dir];
         [self editSelfTestSnap:@"s4c-picked" dir:dir];
-        [self editSelectTab:2];
+        [self adjustOpenEyes];  // slice 6: its note lands on the pool's answer
         break;
       }
-      case 8: [self editSelfTestSnap:@"s5-info" dir:dir];
+      case 8:
+        [self editSelfTestLine:[NSString stringWithFormat:@"    eyes: %s\n", _adjust.view(_edits.colour()).prompt_note]
+                          dir:dir];
+        [self editSelectTab:2];
+        break;
+      case 9: [self editSelfTestSnap:@"s5-info" dir:dir];
         // PR 29: any tag, and the date, from the Info tab.
         [self metaSetTag:"Exif.Image.Artist" value:"MV self-test"];
         [self metaSetDate:"2020-02-02 10:00:00"];
         break;
-      case 9: [self editSelfTestSnap:@"s5b-info-edited" dir:dir]; [self editSelectTab:0]; [self editShowOriginal:YES]; break;
-      case 10: [self editSelfTestSnap:@"s6-original" dir:dir]; [self editShowOriginal:NO]; [self editSaveCopy]; break;
-      case 11: [self editSelfTestSnap:@"s7-save-copy" dir:dir];
+      case 10: [self editSelfTestSnap:@"s5b-info-edited" dir:dir]; [self editSelectTab:0]; [self editShowOriginal:YES]; break;
+      case 11: [self editSelfTestSnap:@"s6-original" dir:dir]; [self editShowOriginal:NO]; [self editSaveCopy]; break;
+      case 12: [self editSelfTestSnap:@"s7-save-copy" dir:dir];
         [self confirmExport:mv::shell::pack_export(mv::edit::export_options{})];
         break;
-      case 12: [self runCommand:back back:mv::shell::back_target::pane]; [self metaRevert]; break;
-      case 13: [self editSelfTestSnap:@"s8-closed-reverted" dir:dir]; done = YES; break;
+      case 13: [self runCommand:back back:mv::shell::back_target::pane]; [self metaRevert]; break;
+      case 14: [self editSelfTestSnap:@"s8-closed-reverted" dir:dir]; done = YES; break;
     }
   }
   if (done) {
@@ -9986,6 +9998,36 @@ static double mv_wall_seconds() {
   const mv::edit::adjust_section s = _pendingAutos.front();
   _pendingAutos.erase(_pendingAutos.begin());
   [self adjustAuto:static_cast<int32_t>(s)];
+}
+
+// Slice 6: Open closed eyes. On the pool: the frames of the same moment, the
+// pack's faces and same-person donors (People data, owner 2026-11-02), then
+// the transfer and a new file beside the photo. The note says what happened.
+- (void)adjustOpenEyes {
+  if (_eyesRunning || ![self adjustStill] || _items.empty() || _index.current() >= _items.size()) return;
+  _eyesRunning = YES;
+  _adjust.set_prompt_note("Looking for open eyes in the same moment…");
+  [self bumpAdjustView];
+  const std::string path = _items[_index.current()].path_utf8;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [path, weakSelf](const mv::job_context& ctx) -> mv::status {
+    std::string candidates;
+    for (const std::string& c : mv::addon::media::burst_neighbours(path)) candidates += c + "\n";
+    auto pack = mv::addon::ai_eyes_json(path, candidates);
+    mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? mv::status::ok : pack.error());
+    if (pack) r = mv::addon::media::open_closed_eyes(path, *pack, &ctx);
+    const std::string note = mv::addon::media::eyes_note(pack ? mv::status::ok : pack.error(), r);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf eyesLanded:note];
+    });
+    return mv::status::ok;
+  });
+}
+
+- (void)eyesLanded:(const std::string&)note {
+  _eyesRunning = NO;
+  _adjust.set_prompt_note(note);
+  [self bumpAdjustView];
 }
 
 // Slice 3: what the next click on the photo does (shell::adjust_pick).
