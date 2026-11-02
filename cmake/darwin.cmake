@@ -229,6 +229,9 @@ add_library(mv_io STATIC
   src/io/replace_mac.cpp
   src/io/replace.h
   src/io/paths_mac.cpp
+  # #612: Settings -> Storage, what MediaViewer keeps on disk.
+  src/io/storage.cpp
+  src/io/storage.h
   src/io/dir.h
   src/io/media_extensions.h
   src/io/file.h
@@ -964,6 +967,8 @@ if(MV_BUILD_TESTS)
     tests/test_os_integration.cpp
     tests/test_thumb_pixels.cpp
     tests/test_thumb_store.cpp
+    # #612: Settings -> Storage.
+    tests/test_storage.cpp
     # PR 15: the Explorer handler's portable half (the COM DLL is Windows-only).
     tests/test_thumb_request.cpp
     src/shellext/thumb_request.cpp
