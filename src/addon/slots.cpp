@@ -49,6 +49,7 @@ const char* slot_name(item_slot s) noexcept {
     case item_slot::path: return "path";
     case item_slot::context: return "context";
     case item_slot::status: return "status";
+    case item_slot::editor: return "editor";
   }
   return "bar";
 }
@@ -875,6 +876,40 @@ status slot_registry::run_command(const std::string& addon_id, const std::string
     ev.screen_id = "";
     ev.node_id = command_id.c_str();
     ev.value_json = paths_json.c_str();
+    c.event(ev);
+  });
+  return status::ok;
+}
+
+status slot_registry::invoke_editor_item(const std::string& addon_id, const std::string& item_id,
+                                         const std::string& path, std::span<const std::int64_t> ranges_ns) {
+  if (path.empty() || ranges_ns.size() % 2 != 0 || ranges_ns.size() / 2 > kMaxEditorRanges) {
+    return status::invalid_arg;
+  }
+  for (std::size_t i = 0; i < ranges_ns.size(); i += 2) {
+    if (ranges_ns[i] < 0 || ranges_ns[i + 1] <= ranges_ns[i]) return status::invalid_arg;
+    if (i > 0 && ranges_ns[i] < ranges_ns[i - 1]) return status::invalid_arg;  // pieces in source order
+  }
+  json::writer w;
+  w.begin_object().key("path").string(path).key("ranges_ns").begin_array();
+  for (const std::int64_t t : ranges_ns) w.integer(t);
+  w.end_array().end_object();
+  std::string value = w.str();
+  std::lock_guard lock(m_);
+  auto it = addons_.find(addon_id);
+  if (it == addons_.end()) return status::not_found;
+  addon_entry& e = *it->second;
+  const bool has = std::any_of(e.c.items.begin(), e.c.items.end(), [&](const item_contrib& i) {
+    return i.slot == item_slot::editor && i.id == item_id;
+  });
+  if (!has) return status::not_found;
+  enqueue(e, {}, [item_id, value = std::move(value)](slot_client& c) {
+    mv_slot_event ev{};
+    ev.struct_size = sizeof ev;
+    ev.kind = MV_SLOT_EVENT_COMMAND;
+    ev.screen_id = "";
+    ev.node_id = item_id.c_str();
+    ev.value_json = value.c_str();
     c.event(ev);
   });
   return status::ok;

@@ -84,6 +84,9 @@ class sound_stream {
   [[nodiscard]] virtual const sound_facts& facts() const noexcept = 0;
   // Up to `max_frames` frames; empty at the end.
   [[nodiscard]] virtual result<std::vector<float>> read(std::size_t max_frames) = 0;
+  // The first sample's time on the player's timeline, once a read has
+  // returned (the Video Editor's cut lines the sound up by it).
+  [[nodiscard]] virtual std::int64_t first_ms() const noexcept { return 0; }
 };
 
 // A new file beside a source with sound the add-on made (edit/sound_writer.h).

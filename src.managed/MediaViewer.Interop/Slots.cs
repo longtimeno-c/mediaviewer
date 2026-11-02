@@ -127,6 +127,11 @@ public static unsafe partial class SlotNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_slots_invoke(byte* addon, byte* item, byte* paths);
 
+    // ABI 0.34: a Video Editor button (editor_items) with the edit's kept ranges.
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_slots_editor_item(byte* addon, byte* item, byte* path, long* ranges, uint count);
+
     // ABI 0.29 (#410): a slot add-on's manifest command.
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -316,6 +321,27 @@ public static unsafe partial class SlotNative
             fixed (byte* p = Z(pathsJson))
             {
                 return mv_slots_command(a, c, p) == MvStatus.Ok;
+            }
+        }, false);
+
+    /// <summary>A Video Editor button (editor_items, ABI 0.34): the clip at <paramref name="path"/>
+    /// and the edit's kept source ranges, (in, out) nanosecond pairs in source order; none when
+    /// nothing is cut.</summary>
+    public static bool EditorItem(string addon, string item, string path, (long In, long Out)[] ranges) =>
+        Try(() =>
+        {
+            long[] flat = new long[ranges.Length * 2];
+            for (int i = 0; i < ranges.Length; i++)
+            {
+                flat[2 * i] = ranges[i].In;
+                flat[2 * i + 1] = ranges[i].Out;
+            }
+            fixed (byte* a = Z(addon))
+            fixed (byte* it = Z(item))
+            fixed (byte* p = Z(path))
+            fixed (long* r = flat)
+            {
+                return mv_slots_editor_item(a, it, p, ranges.Length > 0 ? r : null, (uint)ranges.Length) == MvStatus.Ok;
             }
         }, false);
 

@@ -36,6 +36,8 @@ else()
 endif()
 
 add_library(mv_enhance_engine STATIC
+  ${_E}/brighten.cpp
+  ${_E}/brighten.h
   ${_E}/downloads.cpp
   ${_E}/downloads.h
   ${_E}/engine.cpp

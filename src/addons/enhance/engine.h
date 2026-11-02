@@ -72,6 +72,10 @@ struct job_request {
     std::map<std::string, json::value> values;
   };
   std::vector<part> parts;
+  // From the Video Editor: the edit's kept source ranges, (in, out) pairs in
+  // nanoseconds, in source order. Empty: the whole clip.
+  std::vector<std::int64_t> keep_ns;
+  bool has_sound = false;  // a clip: it holds sound (a cut one's is written again)
 };
 
 struct job_events {
@@ -118,8 +122,8 @@ class engine {
   void sheet_opened(std::uint64_t generation, const std::string& path, float width_pt = 420, float scale = 2);
   void closed(const std::string& screen);
   // The command or the context entry: these files (the first is enhanced),
-  // then the sheet.
-  void command(const std::vector<std::string>& paths);
+  // then the sheet. From the Video Editor, `keep_ns` is the edit (job_request).
+  void command(const std::vector<std::string>& paths, std::vector<std::int64_t> keep_ns = {});
   void event(const std::string& screen, const std::string& node, std::uint32_t kind, const std::string& value_json);
 
   // For tests: the specs this build found, and a kind's download status.
@@ -154,7 +158,9 @@ class engine {
   std::uint64_t settings_gen_ = 0;
   std::uint64_t sheet_gen_ = 0;
   std::string pending_path_;  // from a command, for the sheet it opens
+  std::vector<std::int64_t> pending_keep_;
   std::string path_;          // the item the sheet is about
+  std::vector<std::int64_t> keep_;  // the Video Editor's edit of it, or empty
   item_kind item_ = item_kind::unknown;
   media_facts facts_;
   bool running_ = false;

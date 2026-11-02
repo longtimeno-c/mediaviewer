@@ -614,6 +614,10 @@ bool mv_chrome_slots_event(const char* addon, const char* screen, const char* no
                            const char* value_json);
 // An item was chosen; paths_json is a JSON array of the files it targets.
 bool mv_chrome_slots_invoke(const char* addon, const char* item, const char* paths_json);
+// A Video Editor button (editor_items): the clip and the edit's kept source
+// ranges, `range_count` (in, out) pairs in ns (none when nothing is cut).
+bool mv_chrome_slots_editor_item(const char* addon, const char* item, const char* path,
+                                 const int64_t* ranges_ns, uint32_t range_count);
 // #410: one of a slot add-on's manifest commands (Settings' Open, the share icon).
 bool mv_chrome_slots_command(const char* addon, const char* command, const char* paths_json);
 // A surface's BGRA pixels (premultiplied). Returns the bytes needed (0: none);

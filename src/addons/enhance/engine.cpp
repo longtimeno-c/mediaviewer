@@ -182,6 +182,7 @@ std::vector<model_kind> engine::kinds_for_locked() const {
 sheet_view engine::sheet_locked() const {
   sheet_view v;
   v.file_name = name_of(path_);
+  v.edit = edit_text(keep_);
   v.item = item_;
   v.has_picture = facts_.picture;
   v.has_sound = facts_.sound;
@@ -257,10 +258,18 @@ void engine::settings_opened(std::uint64_t generation) {
 
 void engine::sheet_opened(std::uint64_t generation, const std::string& request_path, float width_pt, float scale) {
   std::string path;
+  std::vector<std::int64_t> keep;
   {
     std::lock_guard lock(m_);
-    path = pending_path_.empty() ? request_path : pending_path_;
+    if (!pending_path_.empty()) {
+      path = pending_path_;
+      keep = std::move(pending_keep_);
+    } else {
+      path = request_path;
+      if (path == path_) keep = keep_;  // the sheet reopened on the same edit
+    }
     pending_path_.clear();
+    pending_keep_.clear();
     if (running_ && path != path_) path = path_;  // a run keeps its item
   }
   // Read outside the lock: a slow disk delays only this sheet.
@@ -275,6 +284,7 @@ void engine::sheet_opened(std::uint64_t generation, const std::string& request_p
     if (path != path_) status_.clear();
     preview_ = false;  // a preview belongs to the run that drew it
     path_ = path;
+    keep_ = item == item_kind::media ? std::move(keep) : std::vector<std::int64_t>{};
     item_ = item;
     facts_ = facts;
   }
@@ -297,11 +307,22 @@ void engine::closed(const std::string& screen) {
   if (cancel_run) cancel();
 }
 
-void engine::command(const std::vector<std::string>& paths) {
+void engine::command(const std::vector<std::string>& paths, std::vector<std::int64_t> keep_ns) {
+  std::uint64_t open = 0;
+  float width = 420, scale = 2;
   {
     std::lock_guard lock(m_);
-    if (!paths.empty()) pending_path_ = paths.front();
+    if (!paths.empty()) {
+      pending_path_ = paths.front();
+      pending_keep_ = std::move(keep_ns);
+    }
+    open = sheet_gen_;
+    width = sheet_width_pt_;
+    scale = sheet_scale_;
   }
+  // Already open (Enhance… again, from the editor or the viewer): it moves to
+  // this file and edit now, as a fresh open would.
+  if (open != 0 && !paths.empty()) sheet_opened(open, paths.front(), width, scale);
   if (port_.show) port_.show(kSheetScreen, true);
 }
 
@@ -343,6 +364,8 @@ void engine::run() {
     const sheet_view v = sheet_locked();
     if (!v.can_run || !runner_) return;
     r.path = path_;
+    r.keep_ns = keep_;
+    r.has_sound = facts_.sound;
     r.item = item_;
     r.target = v.target;
     for (const sheet_section& s : v.sections) {

@@ -2763,6 +2763,22 @@ That is one GitHub asset per platform, not three, and no per-piece install UI in
 The command is not greyed per kind (manifest commands carry no state); the sheet opens and names
 what is missing instead.
 
+**Enhance moves into the Video Editor; Brighten dark scenes is a knob, not a model (2026-11-02,
+owner).** The owner asked for Enhance inside Edit video (and Edit image, done in its own change)
+rather than as a button of its own on the viewer's bar, and for video that brightens dark scenes.
+The editor gets a contribution point, `editor_items` (contribution API 11), not a call that names
+Enhance: the editor stays part of the base app, Enhance stays an add-on that links nothing of the
+core. **Enhance runs on the edit, not the original clip** (the alternative, the whole clip with a
+note, would surprise inside an editor): the host applies the kept ranges as it reads
+(`frames_keep` / `sound_keep`), so the add-on's runner is unchanged apart from writing a cut
+clip's sound again (packets of a cut cannot be copied whole). **Brighten dark scenes** is a fitted
+tone lift with temporal easing, in the add-on, as a knob of the video model: no new download, no
+licence to vet, deterministic, about 1.6 ms a 1080p frame. A low-light model (the Zero-DCE
+family and its kin) was set aside until one's licence and its flicker on video are checked; the
+knob can be served by one later without a change to the sheet. Cost: Enhance now asks for
+contribution API 11, so this Enhance needs this MediaViewer or later. The palette and context-menu
+`Enhance…` stay.
+
 **Enhance's first audio model, and where its sound is written (2026-10-26, #297 slice 4).**
 DeepFilterNet3 (MIT / Apache-2.0), the streaming ONNX export pinned at
 `kimtos-labs/denoiser-dfn3@888f33c4` (16.1 MB, its card's SHA-256 matches the file). Chosen over the

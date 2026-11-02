@@ -877,6 +877,19 @@ typedef struct mv_host_api {
   mv_status(MV_CALL* still_write)(void* host, const char* source_utf8, const uint8_t* rgb, uint32_t width,
                                   uint32_t height, uint32_t stride, const char* suffix_ascii, char* out_path_utf8,
                                   uint32_t capacity);
+  /* ---- the Video Editor's cut (Enhance in the editor, ABI 0.34) ------------------ */
+  /* [worker-thread] Keep only these source ranges of an open frames_open /
+   * sound_open: `count` (in, out) pairs in nanoseconds on the player's
+   * timeline, in source order (an editor_items event's "ranges_ns"). Called
+   * once, before the first read. What falls outside is decoded and dropped;
+   * what is kept comes back on the edit's own timeline (the first range's in
+   * is 0, each next range follows the last), so frames_read's pts and the
+   * sound's sample count are the program's. MV_ERR_INVALID_ARG after a read
+   * or for ranges as mv_slots_editor_item refuses them. Appended after
+   * still_write: read these two only when `struct_size` covers them and the
+   * pointers are non-NULL. */
+  mv_status(MV_CALL* frames_keep)(void* host, void* frames, const int64_t* ranges_ns, uint32_t count);
+  mv_status(MV_CALL* sound_keep)(void* host, void* sound, const int64_t* ranges_ns, uint32_t count);
 } mv_host_api;
 
 typedef struct mv_addon_api {
@@ -1085,6 +1098,15 @@ MV_API mv_status MV_CALL mv_slots_invoke(const char* addon, const char* item, co
  * gets MV_SLOT_EVENT_COMMAND with node_id = the command id. MV_ERR_NOT_FOUND
  * for an add-on or command it does not have. */
 MV_API mv_status MV_CALL mv_slots_command(const char* addon, const char* command, const char* paths_json);
+/* 0.34: a Video Editor button (`editor_items`, contribution API 11) for the
+ * clip at `path_utf8`. `ranges_ns` holds `range_count` (in, out) pairs: the
+ * edit's kept source ranges in source order, none when nothing is cut. The
+ * add-on gets MV_SLOT_EVENT_COMMAND with node_id = the item id and value
+ * {"path": "...", "ranges_ns": [in, out, ...]}. MV_ERR_INVALID_ARG for a range
+ * that is empty, negative or out of order; MV_ERR_NOT_FOUND for an add-on or
+ * item it does not have. */
+MV_API mv_status MV_CALL mv_slots_editor_item(const char* addon, const char* item, const char* path_utf8,
+                                              const int64_t* ranges_ns, uint32_t range_count);
 /* A surface's BGRA (premultiplied). *out_needed = bytes; MV_ERR_INVALID_ARG
  * when `cap` is short, MV_ERR_NOT_FOUND when there is none. */
 MV_API mv_status MV_CALL mv_slots_surface(const char* addon, const char* screen, const char* surface,
@@ -1132,8 +1154,9 @@ MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* ou
  * 7  `opens` on a status item (#512, 2026-10-20);
  * 8  a screen in place "settings", MV_SLOT_PLACE_SETTINGS (2026-10-21);
  * 9  `reveal` on a screen stack (2026-10-28);
- * 10 a surface's "glow" and a progress bar's "glow" look (2026-10-28). */
-#define MV_ADDON_CONTRIBUTION_API 10
+ * 10 a surface's "glow" and a progress bar's "glow" look (2026-10-28);
+ * 11 `editor_items`, the Video Editor's bar (2026-11-02). */
+#define MV_ADDON_CONTRIBUTION_API 11
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:
