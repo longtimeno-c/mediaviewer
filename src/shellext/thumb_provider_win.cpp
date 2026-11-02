@@ -199,8 +199,9 @@ class thumb_provider final : public IInitializeWithStream, public IThumbnailProv
     // No path, name or pixels are logged, here or by the core (rule 6).
     mv::result<mv::shellext::bgra_thumb> thumb = mv::err(mv::status::internal);
     if (clip_) {
-      // The reader takes its own reference; ours goes now, so the stream is
-      // released by whichever ends last, this object or the decode thread.
+      // The reader takes its own reference and ours goes now: the stream is
+      // released by the decode thread when it is done reading, even past the
+      // deadline, and never read after that.
       auto* source = new (std::nothrow) stream_source(clip_, clip_size_);
       clip_->Release();
       clip_ = nullptr;
