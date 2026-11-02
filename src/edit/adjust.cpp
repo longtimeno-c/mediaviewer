@@ -10,8 +10,8 @@
 namespace mv::edit {
 namespace {
 
-// Contrast ±100 maps to a slope of 2^(±0.585) ≈ ×1.5 / ÷1.5 in log exposure.
-constexpr float kContrastStops = 0.585f;
+// Contrast ±100 maps to a slope of 2^(±kContrastStops) ≈ ×1.5 / ÷1.5 in log
+// exposure (adjust.h).
 // Temperature ±100 moves the assumed illuminant ±100 mireds from D65
 // (6504 K ≈ 153.8 mired): about 3940 K to 18 600 K.
 constexpr double kMiredPerUnit = 1.0;
@@ -62,6 +62,13 @@ float clamp_param(adjust_param p, float value) noexcept {
 colour fold_colour(std::span<const op> ops) noexcept {
   colour c;
   for (const op& o : ops) {
+    if (o.kind == op_kind::adjust_all) {
+      for (int i = 0; i < kAdjustParamCount; ++i) {
+        const auto p = static_cast<adjust_param>(i);
+        c.v[static_cast<std::size_t>(i)] = clamp_param(p, o.values.get(p));
+      }
+      continue;
+    }
     if (o.kind != op_kind::adjust) continue;
     if (o.param == adjust_param::count) {  // reset every colour parameter
       c = colour{};
@@ -108,7 +115,7 @@ adjust_uniforms uniforms_of(const colour& c) noexcept {
   const float contrast = c.get(adjust_param::contrast);
   u.a0[3] = contrast == 0.0f ? 1.0f : std::exp2(contrast / 100.0f * kContrastStops);
   u.a1[0] = 1.0f + c.get(adjust_param::saturation) / 100.0f;
-  u.a1[1] = 0.18f;
+  u.a1[1] = kContrastPivot;
   return u;
 }
 

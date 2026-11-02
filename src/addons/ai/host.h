@@ -101,6 +101,12 @@ class host {
   [[nodiscard]] bool has_tag_facts() const noexcept;
   [[nodiscard]] result<mv_addon_tag_facts> tag_facts(const std::string& path) const;
 
+  // #606: a clip's GPS route from its telemetry, at most `max_points` (an
+  // older host has none: has_route_of() false). Empty for a file without one.
+  [[nodiscard]] bool has_route_of() const noexcept;
+  [[nodiscard]] result<std::vector<mv_addon_route_point>> route_of(const std::string& path,
+                                                                   std::uint32_t max_points) const;
+
   // #406: a clip's chapter titles and text subtitle cues, in start order (an
   // older host has none: has_cues() false). `visit` false stops the read.
   struct cue {

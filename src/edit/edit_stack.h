@@ -59,6 +59,8 @@ enum class op_kind : std::uint8_t {
   resize,      // set the output size to `resize`
   adjust,      // PR 11: set colour parameter `param` to `value` (edit/adjust.h);
                // `param` == adjust_param::count resets every colour parameter
+  adjust_all,  // #289: set every colour parameter to `values` at once, so a
+               // change of several (auto tone, edit/auto_tone.h) is one undo step
 };
 
 // One parameter block. POD, so a stack copies, compares and serialises as
@@ -70,6 +72,7 @@ struct op {
   resize_spec resize{};
   adjust_param param = adjust_param::exposure;
   float value = 0.0f;
+  colour values{};  // adjust_all
 };
 
 inline constexpr float kMaxStraighten = 45.0f;

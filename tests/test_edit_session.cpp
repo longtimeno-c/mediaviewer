@@ -546,3 +546,58 @@ TEST_CASE("A cycles the presets in crop; swap is a no-op on Free and 1:1", "[she
   CHECK(empty.set_straighten(1.0f) == edit_effect::refused);
   CHECK(empty.edit_count() == 0);
 }
+
+TEST_CASE("print: the picture is shrunk to the paper, never enlarged", "[shell][edit][print]") {
+  using mv::edit::shrink_to_box;
+  using mv::edit::size2;
+  // Fit: the binding axis decides.
+  CHECK(shrink_to_box(size2{6000, 4000}, size2{2400, 3150}, false) == 2400);
+  // Fill: the other axis, so the page is covered.
+  CHECK(shrink_to_box(size2{6000, 4000}, size2{2400, 3150}, true) == 4725);
+  // Already small enough, or no box: left alone.
+  CHECK(shrink_to_box(size2{800, 600}, size2{2400, 3150}, false) == 0);
+  CHECK(shrink_to_box(size2{6000, 4000}, size2{}, false) == 0);
+}
+
+TEST_CASE("print: the bake is the export's crop, in memory, nothing written", "[shell][edit][print]") {
+  temp_dir src;
+  const fs::path p = src.path / "IMG_0006.jpg";
+  const auto bytes = jpeg_bytes(64, 48);
+  {
+    std::ofstream f(p, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  }
+  mv::edit::geometry g;
+  g.crop = {0.0f, 0.0f, 0.5f, 0.5f};
+  auto full = mv::shell::render_print_picture(p.string(), g, {}, {}, false);
+  REQUIRE(full);
+  CHECK(full->width == 32);
+  CHECK(full->height == 24);
+  // A box half the crop's size: the crop shrinks into it.
+  auto small = mv::shell::render_print_picture(p.string(), g, {}, mv::edit::size2{16, 16}, false);
+  REQUIRE(small);
+  CHECK(small->width == 16);
+  CHECK(small->height == 12);
+  // The folder still holds only the original.
+  CHECK(std::distance(fs::directory_iterator(src.path), fs::directory_iterator{}) == 1);
+
+  // The sheet leaves out what does not render, and keeps the order.
+  const fs::path junk = src.path / "notes.txt";
+  {
+    std::ofstream f(junk);
+    f << "not a picture";
+  }
+  const std::vector<mv::shell::print_source> sheet = {
+      {p.string(), {}, {}},
+      {junk.string(), {}, {}},
+      {(src.path / "gone.jpg").string(), {}, {}},
+      {p.string(), g, {}},
+  };
+  auto cells = mv::shell::render_contact_pictures(sheet, mv::edit::size2{32, 32});
+  REQUIRE(cells);
+  REQUIRE(cells->size() == 2);
+  CHECK(cells->at(0).pixels.width == 32);
+  CHECK(cells->at(0).pixels.height == 24);
+  CHECK(cells->at(1).pixels.width == 32);
+  CHECK(cells->at(1).pixels.height == 24);
+}

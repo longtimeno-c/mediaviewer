@@ -178,6 +178,12 @@ public struct CommandBarView: View {
                        shortcut: key("Show in Explorer"), enabled: current != nil) {
               close(); mv_chrome_menu(kMenuReveal)
             }
+            // Issue #614: as the Windows bar's Open and File > Print…; native
+            // decides between the photo on screen and the marks as a sheet.
+            FlyoutRule()
+            FlyoutItem(title: "Print…", shortcut: key("Print…"), enabled: hasFolder) {
+              close(); mv_chrome_menu(kMenuPrint)
+            }
           }
           BarFlyout(title: "View") { close in
             FlyoutItem(title: "Zoom in", shortcut: key("Zoom in")) { close(); mv_chrome_run_command(ViewCommand.zoomIn) }

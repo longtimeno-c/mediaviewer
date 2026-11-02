@@ -473,6 +473,18 @@ final class FolderStore: ObservableObject {
 
   func select(_ index: Int) { mv_chrome_select_index(Int32(index)) }
 
+  /// #601: the item at `path` (a Places folder-map dot), if this listing holds
+  /// it; nothing otherwise. Matched by name first, then confirmed by path.
+  func select(path: String) {
+    let name = (path as NSString).lastPathComponent
+    for i in names.indices where names[i] == name {
+      if Self.bridgeString({ mv_chrome_item_path(Int32(i), $0, $1) }) == path {
+        if i != current.index { select(i) }
+        return
+      }
+    }
+  }
+
   private var rangeSet: Set<Int> = []
 
   /// Issue #413: Shift-click in the gallery. Every image from the selected cell

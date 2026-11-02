@@ -45,6 +45,8 @@ enum MvMenuCmd : int32_t {
   kMenuRename,
   // Issue #429: View > Page Sidebar (Shift+T).
   kMenuPageSidebar,
+  // Issue #614: File > Print… (Cmd+P).
+  kMenuPrint,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 
@@ -203,6 +205,21 @@ int32_t mv_chrome_tag_search(const char* query_utf8, char* buf, int32_t size);
 // Bumped when the tag pass learns more about the folder on screen: an open
 // search re-runs its tag half. [main-thread]
 uint64_t mv_chrome_tag_generation(void);
+
+// #612 (docs/design/04 "Thumbnail cache upkeep"), Settings -> Storage: what
+// MediaViewer keeps on disk, with sizes, as JSON
+//   {"rows":[{"id":"thumbnails","path":"...","bytes":n,"files":n},...],"total":n}
+// (ids in io/storage.h; the Mac adds crash_reports). Walks folders: call it
+// from a background task, never the main thread. Returns the byte length
+// needed, as the tables; a buffer too small is filled cut short. [any-thread]
+int32_t mv_chrome_storage_report(char* buf, int32_t size);
+// Clear: deletes every cached thumbnail and its row (the search cache and
+// metadata snapshots are untouched). A background task. [any-thread]
+bool mv_chrome_thumb_cache_clear(void);
+// The thumbnail cache's cap in bytes, 0 = none (the default). Setting one
+// saves it and sweeps now. [main-thread]
+uint64_t mv_chrome_thumb_cache_cap(void);
+void mv_chrome_set_thumb_cache_cap(uint64_t bytes);
 
 // Bumped when the host rewrites a listed file in place (a lossless rotate, a
 // metadata write) and updates its size / mtime without a relist, so Swift
@@ -545,6 +562,10 @@ void mv_chrome_set_update_channel(int32_t channel);
 // on checks now. [main-thread]
 int32_t mv_chrome_update_auto_check(void);
 void mv_chrome_set_update_auto_check(bool on);
+// Settings' "Check now": the app menu's "Check for Updates…", one check now
+// whether or not automatic checks are on; Sparkle shows what it found.
+// [main-thread]
+void mv_chrome_check_for_updates(void);
 
 // ---- PR 10: export sheet (docs/design/10 "SwiftUI crop mode and export sheet") -------
 //

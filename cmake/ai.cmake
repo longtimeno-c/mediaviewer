@@ -241,6 +241,8 @@ add_library(mv_ai_engine STATIC
   ${R}/src/addons/ai/engine.h
   ${R}/src/addons/ai/pack.cpp
   ${R}/src/addons/ai/pack.h
+  ${R}/src/addons/ai/provider_verdict.cpp
+  ${R}/src/addons/ai/provider_verdict.h
   ${R}/src/addons/ai/tiers.cpp
   ${R}/src/addons/ai/machine.cpp
   ${R}/src/addons/ai/machine.h

@@ -383,6 +383,16 @@ ABI returns a UTF-8 path; C# `BitmapImage` loads the file, so pixels never cross
 BC7 is not used: a BC7 blob cannot be an `Image.Source`; it is the format to take if thumbs ever
 need to be GPU-resident. The Mac uses the same spec and schema (`image/thumb_mac.cpp`, 2026-09-17).
 
+**The thumbnail cache tidies itself; no cap by default (2026-11-02, #612).** Every bump above, and
+every edit or rotate, left the old JPEGs behind: the store only ever added. Now `store` drops the
+path's rows of other stamps and specs with their files (the issue's draft said on the next lookup;
+on the store the hot lookup stays a read), and a sweep once a launch, after the first image, drops
+old-spec rows, rows whose JPEG is gone and unnamed JPEGs, paced behind the view like the tag pass.
+A size cap exists but is **off by default** (owner, in the issue): a cap too small would bring back
+cold thumbnails, the first-pixel path the cache exists for. With a cap the oldest-written go first,
+not the least recently used: recording use would turn every lookup into a write. Metadata
+snapshots are never swept (they are not a cache, docs/design/06 "Undo").
+
 **Warm browse is a five-slot GPU LRU (2026-09-07).** Current ± 2 decoded textures, not a second
 `mv_image_open`. Prefetch jobs use the view generation; thumb jobs use a folder generation so arrow
 keys do not cancel the filmstrip.
@@ -765,6 +775,15 @@ keyboard-only browse never reads anything. Selection is by whole words because
 
 ---
 
+**Contributed rows' remaps are saved too, by name (owner, 2026-10-29).** Only built-in rows were
+saved (by row index), so a key the person gave a Local search or Driftwire row came back on its
+manifest key at the next launch ("keybinds aren't saved between sessions"). A contributed row's
+index moves as add-ons come and go, so its remap is kept by `<add-on id>/<command id>`
+(`live_addon_key_remaps`; Windows `settings.ini [addon_keys]`, Mac `mv.addonKeys`), kept while its
+add-on is away, and put back when the add-on's rows are appended. Reset and a keymap pack clear it.
+
+---
+
 ## Windows chrome (XAML islands)
 
 **Island layout (2026-09-07).** Top island: command bar (48 DIP). Bottom island: filmstrip with
@@ -906,7 +925,22 @@ every still type. It reports duration, size, codecs, audio, bit rate, media type
 title and camera (`shell/spotlight_fields.h`) through `meta/`, never a decoder.
 
 **Quick Look (2026-09-23).** A sandboxed thumbnail `.appex` running `image::make_thumb_jpeg`, the
-filmstrip's pixels, with no cache of its own. Stills only.
+filmstrip's pixels, with no cache of its own. Stills only (until 2026-11-02, below).
+
+**Clip thumbnails in Explorer and Finder (issue #610, 2026-11-02).** Reverses "stills only" for
+both the Explorer handler (2026-09-25, `MediaViewer.Image` only) and Quick Look (2026-09-23). Why: a
+camera dump is photos and clips in one folder, and Windows has no thumbnail for MKV, WebM, AVI, TS
+or an AV1 / VP9 / HEVC MP4 without a Store extension (D3 says never require one); macOS has none
+for the first four. The same handler now also sits on `MediaViewer.Video`, still only on our
+ProgIds, so it serves what the user made MediaViewer the default for and replaces no other
+vendor's handler. Quick Look adds only the four containers macOS cannot thumbnail and leaves MP4 /
+QuickTime to Apple. The path is chosen by magic bytes, not ProgId or UTI. A clip is never read into
+memory (the stills' 512 MB read would refuse a long clip and is the wrong shape for one): FFmpeg
+reads the stream through a seekable reader, decodes one frame in software on one thread (no
+D3D11VA / VideoToolbox session in a shell process), and shares the stills' deadline and four-slot
+cap. Cost: the handler's folder now carries the FFmpeg DLLs (dynamic, LGPL, as everywhere), and
+`avcodec` is mapped in the surrogate, never in Explorer or Finder. The Explorer handler reads the
+shell's `IStream` from its decode thread; that it is callable there is part of the Windows verify.
 
 **Associations and the default app (2026-09-24).** Windows: the wizard writes per-user `ProgId` /
 `OpenWithProgids` / `RegisteredApplications` keys for D5 stills (`MediaViewer.Image`) and video
@@ -1841,6 +1875,13 @@ but never shows it, so a person sees only the menu-bar item / tray icon. A login
 add-on keeps within 60 s removes its own item and quits. Not a LaunchAgent with its own plist on
 the Mac (the Final Cut Pro agent's way): a login item needs no second launchd job, no bundle
 change and no separate approval path, and Login Items names it "MediaViewer".
+
+**…but ⌘Q quits (owner, 2026-10-29).** On the Mac, ⌘Q, the menu's Quit and the Dock's Quit hid
+the app while Receive when closed was on, so the app never really closed and an old version stayed
+running past updates ("when I close the application it doesn't fully close"). Every Quit now quits;
+only closing the viewer window leaves the process receiving in the menu bar. Still the same app,
+not a helper (owner chose this over a separate background process). Windows is unchanged: closing
+the window is its only quit gesture, and its tray icon's Quit quits.
 
 **Protocol 2: Noise with ML-KEM-768 beside X25519, not a bespoke handshake (2026-10-18, #472 PR 1).**
 `Noise_XXhfs_25519+MLKEM768_ChaChaPoly_BLAKE2b`: a published framework whose core is checked against

@@ -99,6 +99,9 @@ cached_facts row_of(const stmt& s) {
   r.facts.made_with = s.col_text(7);
   r.facts.ai_generated = s.col_i64(8) != 0;
   r.facts.date_taken_key = s.col_i64(9);
+  // #606: has_where is a bit set: 1 a position, 2 a telemetry route beside it
+  // (no new column: a cache row of an older version is read again anyway).
+  r.facts.has_route = (s.col_i64(10) & 2) != 0;
   if (s.col_i64(10) != 0) {
     geo_point p;
     p.lat = s.col_real(11);
@@ -261,7 +264,7 @@ expected meta_cache::store(std::span<const cached_facts> rows) {
       s.text(10, f.made_with);
       s.i64(11, f.ai_generated ? 1 : 0);
       s.i64(12, f.date_taken_key);
-      s.i64(13, f.where ? 1 : 0);
+      s.i64(13, (f.where ? 1 : 0) | (f.where && f.has_route ? 2 : 0));
       s.real(14, f.where ? f.where->lat : 0.0);
       s.real(15, f.where ? f.where->lon : 0.0);
       s.i64(16, f.where && f.where->altitude ? 1 : 0);

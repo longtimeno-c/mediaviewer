@@ -370,6 +370,10 @@ enum class command_id : std::uint16_t {
   // with the filmstrip hidden. Appended. Shift+T, beside T: the two strips
   // share the job (the folder's files, this file's pages) and never show at once.
   toggle_page_sidebar,
+  // Issue #614 (docs/design/16 "Print"): Ctrl+P / Cmd+P, the OS print dialog for
+  // the photo on screen with its edits baked, or the marks as a contact sheet.
+  // Appended.
+  print,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;
@@ -456,6 +460,23 @@ void apply_key_remaps(std::span<const key_remap> remaps) noexcept;
 [[nodiscard]] const command_info* find_command(command_id id) noexcept;
 // Bound commands whose effect has not landed yet. Empty before PR 6 ships.
 [[nodiscard]] std::span<const command_id> pending_commands() noexcept;
+
+// Remaps of contributed add-on rows (owner, 2026-10-29: a Local search or
+// Driftwire key changed in Settings came back on its default at the next launch).
+// A contributed row's index moves as add-ons come and go, so it is kept by its
+// name, "<add-on id>/<command id>", with the key it was given, key::none for a
+// row left unbound. One entry per row off its manifest key. A remap of an
+// add-on not loaded now is kept as it was, so it is back when the add-on is;
+// set_addon_commands puts the kept keys on the rows it appends. Reset (and
+// so apply_key_remaps and a keymap pack) forgets them; a reload calls
+// apply_addon_key_remaps after apply_key_remaps.
+struct addon_key_remap {
+  std::string command;  // "<add-on id>/<command id>"
+  key k = key::none;
+  std::uint8_t mods = mod_none;
+};
+[[nodiscard]] std::vector<addon_key_remap> live_addon_key_remaps();
+void apply_addon_key_remaps(std::span<const addon_key_remap> remaps);
 
 // Add-on commands (docs/design/18: "They exist only while Import is installed").
 // With the add-on absent, describe_commands() does not list them and the host

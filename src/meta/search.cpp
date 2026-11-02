@@ -178,6 +178,7 @@ search_facts search_facts_of(const metadata& m) {
   f.ai_generated = m.s.ai_generated;
   f.date_taken_key = m.s.date_taken_key;
   f.where = m.s.where;
+  f.has_route = !m.route.empty();
   f.rating = std::clamp(m.s.rating, -1, 5);
   f.label = trim(m.s.label);
   f.iso = iso_number(m.s.iso);
