@@ -41,6 +41,33 @@ public sealed record Suggestions(IReadOnlyList<SuggestedPerson> People, IReadOnl
     public static readonly Suggestions None = new(Array.Empty<SuggestedPerson>(), Array.Empty<SuggestedFace>());
 }
 
+/// <summary>
+/// A face "Refine faces" moves out (person_refine_json): where it would go (dry) or went.
+/// <see cref="To"/> 0 is nobody; <see cref="Group"/> above 0 (a look only) starts a new person.
+/// </summary>
+public sealed record RefineFace(ulong Face, string Path, long PtsMs, double[] Box, string Why, ulong To, long Group, string ToName);
+
+/// <summary>person_refine_json's answer.</summary>
+public sealed record RefineOutcome(bool Dry, long Removed, IReadOnlyList<RefineFace> Faces)
+{
+    /// <summary>How many faces left (or would): the list when the pack sent one, else its count.</summary>
+    public long Count => Faces.Count > 0 ? Faces.Count : Removed;
+}
+
+/// <summary>A person "Merge duplicates" merges, with its cover and the token person_merge_undo takes (0: none).</summary>
+public sealed record DedupePerson(ulong Id, string Name, long Faces, ulong CoverFace, string CoverPath, long CoverMs, double[] CoverBox,
+                                  ulong Undo);
+
+/// <summary>One merge: <see cref="From"/> into the person who survives.</summary>
+public sealed record DedupeMerge(DedupePerson Into, IReadOnlyList<DedupePerson> From);
+
+/// <summary>people_dedupe_json's answer.</summary>
+public sealed record DedupeOutcome(bool Dry, long Merged, long Moved, IReadOnlyList<DedupeMerge> Merges)
+{
+    /// <summary>A look with nothing to do: no merge, and no face the check would move.</summary>
+    public bool IsEmpty => Merges.Count == 0 && Merged == 0 && Moved == 0;
+}
+
 /// <summary>A person a face can move to (the "Move to…" picker).</summary>
 public sealed record PickPerson(ulong Id, string Name, long Faces);
 
@@ -66,6 +93,12 @@ public static class PeopleWords
     public const string Undone = "Undone";
     public const string OtherFaces = "Other faces";
     public const string CouldNotChange = "Couldn't change that. Try again.";
+    public const string Apply = "Apply";
+    public const string Cancel = "Cancel";
+    public const string EveryFaceMatches = "Every face matches";
+    public const string CouldNotRefine = "Couldn't refine";
+    public const string NoDuplicates = "No duplicates found, and every face matches.";
+    public const string CouldNotDedupe = "Couldn't check for duplicates. Try again.";
 
     // ---- the sheet's words --------------------------------------------------------------
 
@@ -135,6 +168,54 @@ public static class PeopleWords
 
     /// <summary>"Added 1 to Anna" (a suggested face said yes to).</summary>
     public static string Added(int n, string name) => $"Added {n:N0} to {(name.Length > 0 ? name : "this person")}";
+
+    // ---- Refine faces / Merge duplicates in detail (docs/design/17) ----------------------
+
+    /// <summary>A face in Refine's look: "To Ben", "To nobody", or "A new person" (a group of its own).</summary>
+    public static string RefineCaption(RefineFace f) =>
+        f.Group > 0 ? "A new person" : f.To == 0 ? "To nobody" : $"To {Who(f.ToName)}";
+
+    /// <summary>Refine's look: "3 faces would leave Anna" ("this person" for someone unnamed).</summary>
+    public static string RefineLookHeader(long n, string name) =>
+        $"{Faces(n)} would leave {(name.Length > 0 ? name : "this person")}";
+
+    /// <summary>After Refine applied: "1 face left" / "3 faces left"; nothing moved: "Every face matches".</summary>
+    public static string RefineLeft(long n) => n == 0 ? EveryFaceMatches : n == 1 ? "1 face left" : $"{n:N0} faces left";
+
+    /// <summary>Undo of a Refine: every face that left, once each, to go back to the person unpinned.</summary>
+    public static List<ulong> RefinePutBack(RefineOutcome o) => o.Faces.Select(f => f.Face).Where(f => f != 0).Distinct().ToList();
+
+    /// <summary>"1 person" / "3 people".</summary>
+    public static string People(long n) => n == 1 ? "1 person" : $"{n:N0} people";
+
+    /// <summary>"Merge 2 people into Anna": the person who survives counted with those merging into it.</summary>
+    public static string MergeLine(DedupeMerge m) =>
+        $"Merge {People(m.From.Count + 1)} into {(m.Into.Name.Length > 0 ? m.Into.Name : "one")}";
+
+    /// <summary>A cover tile in Merge duplicates' look: "Anna · 40 faces", "Unnamed · 4 faces".</summary>
+    public static string DedupeCaption(DedupePerson p) => $"{(p.Name.Length > 0 ? p.Name : "Unnamed")} · {Faces(p.Faces)}";
+
+    /// <summary>Merge duplicates' look: "3 people would merge, 12 faces would move."</summary>
+    public static string DedupeLookHeader(DedupeOutcome o)
+    {
+        long merged = o.Merged > 0 ? o.Merged : o.Merges.Sum(m => (long)m.From.Count);
+        var parts = new List<string>();
+        if (merged > 0) parts.Add($"{People(merged)} would merge");
+        if (o.Moved > 0) parts.Add($"{Faces(o.Moved)} would move");
+        return parts.Count == 0 ? NoDuplicates : string.Join(", ", parts) + ".";
+    }
+
+    /// <summary>After Merge duplicates: "3 people merged, 12 faces moved." (the Mac's PeopleView words).</summary>
+    public static string DedupeSummary(long merged, long moved) =>
+        merged == 0 && moved == 0 ? NoDuplicates : $"{People(merged)} merged, {Faces(moved)} moved.";
+
+    /// <summary>Undo of Merge duplicates: every merge's token (none of the zeros), last first.</summary>
+    public static List<ulong> DedupeUndoTokens(DedupeOutcome o)
+    {
+        var tokens = o.Merges.SelectMany(m => m.From).Select(p => p.Undo).Where(t => t != 0).ToList();
+        tokens.Reverse();
+        return tokens;
+    }
 
     // ---- order -------------------------------------------------------------------------
 
@@ -299,6 +380,56 @@ public static class PeopleWords
         }
         return new Suggestions(people, faces);
     }
+
+    public static RefineOutcome ParseRefine(string json)
+    {
+        using JsonDocument doc = JsonDocument.Parse(json);
+        JsonElement r = doc.RootElement;
+        var faces = new List<RefineFace>();
+        if (r.ValueKind != JsonValueKind.Object) return new RefineOutcome(false, 0, faces);
+        if (r.TryGetProperty("faces", out JsonElement a) && a.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement f in a.EnumerateArray())
+            {
+                ulong id = U64(f, "face");
+                if (id == 0) continue;
+                faces.Add(new RefineFace(id, Str(f, "path"), I64(f, "pts_ms", -1), Box(f, "box"), Str(f, "why"),
+                                         U64(f, "to"), I64(f, "group", 0), Str(f, "to_name")));
+            }
+        }
+        return new RefineOutcome(Bool(r, "dry"), I64(r, "removed", 0), faces);
+    }
+
+    public static DedupeOutcome ParseDedupe(string json)
+    {
+        using JsonDocument doc = JsonDocument.Parse(json);
+        JsonElement r = doc.RootElement;
+        var merges = new List<DedupeMerge>();
+        if (r.ValueKind != JsonValueKind.Object) return new DedupeOutcome(false, 0, 0, merges);
+        if (r.TryGetProperty("merges", out JsonElement a) && a.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement m in a.EnumerateArray())
+            {
+                ulong into = U64(m, "into");
+                if (into == 0) continue;
+                var from = new List<DedupePerson>();
+                if (m.TryGetProperty("from", out JsonElement fa) && fa.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (JsonElement f in fa.EnumerateArray())
+                    {
+                        ulong id = U64(f, "id");
+                        if (id != 0) from.Add(DedupeOne(f, id, "name", "faces"));
+                    }
+                }
+                if (from.Count > 0) merges.Add(new DedupeMerge(DedupeOne(m, into, "into_name", "into_faces"), from));
+            }
+        }
+        return new DedupeOutcome(Bool(r, "dry"), I64(r, "merged", 0), I64(r, "moved", 0), merges);
+    }
+
+    private static DedupePerson DedupeOne(JsonElement e, ulong id, string name, string faces) =>
+        new(id, Str(e, name), I64(e, faces, 0), U64(e, "cover_face"), Str(e, "cover_path"), I64(e, "cover_ms", -1),
+            Box(e, "cover_box"), U64(e, "undo"));
 
     /// <summary>people_json's rows as picker entries.</summary>
     public static List<PickPerson> ParsePeople(string json)

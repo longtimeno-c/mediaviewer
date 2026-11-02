@@ -161,4 +161,99 @@ public class PeopleWordsTests
         Assert.Equal(new ulong[] { 10, 11 }, groups.Single(g => !g.Pinned).Faces);
         Assert.Empty(PeopleWords.PutBackGroups(PeopleWords.ParseReject("{\"unassigned\":1,\"spread\":0,\"to\":[]}")));
     }
+    // ---- Refine faces / Merge duplicates in detail ----------------------------------------
+
+    private const string RefineLook = """
+        {"dry":true,"removed":3,"faces":[
+          {"face":21,"path":"a.jpg","pts_ms":-1,"box":[0.1,0.1,0.2,0.2],"why":"move","to":7,"group":0,"to_name":"Ben"},
+          {"face":22,"path":"b.mp4","pts_ms":4000,"box":[0,0,1,1],"why":"evict","to":0,"group":0,"to_name":""},
+          {"face":23,"path":"c.jpg","pts_ms":-1,"box":[0,0,1,1],"why":"regroup","to":0,"group":1,"to_name":""},
+          {"face":24,"path":"d.jpg","pts_ms":-1,"box":[0,0,1,1],"why":"move","to":9,"group":0,"to_name":""},
+          {"face":0}]}
+        """;
+
+    [Fact]
+    public void RefinesLookSaysWhereEachFaceWouldGo()
+    {
+        RefineOutcome o = PeopleWords.ParseRefine(RefineLook);
+        Assert.True(o.Dry);
+        Assert.Equal(4, o.Faces.Count);
+        Assert.Equal(4, o.Count);
+        Assert.Equal(4000, o.Faces[1].PtsMs);
+        Assert.Equal("To Ben", PeopleWords.RefineCaption(o.Faces[0]));
+        Assert.Equal("To nobody", PeopleWords.RefineCaption(o.Faces[1]));
+        Assert.Equal("A new person", PeopleWords.RefineCaption(o.Faces[2]));
+        Assert.Equal("To someone unnamed", PeopleWords.RefineCaption(o.Faces[3]));
+        Assert.Equal("4 faces would leave Anna", PeopleWords.RefineLookHeader(o.Count, "Anna"));
+        Assert.Equal("1 face would leave this person", PeopleWords.RefineLookHeader(1, ""));
+    }
+
+    [Fact]
+    public void RefineAppliedSaysHowManyLeftAndPutsEachBackOnce()
+    {
+        RefineOutcome o = PeopleWords.ParseRefine("""
+            {"dry":false,"removed":2,"faces":[{"face":21,"to":7},{"face":22,"to":0},{"face":21,"to":7}]}
+            """);
+        Assert.False(o.Dry);
+        Assert.Equal(new ulong[] { 21, 22 }, PeopleWords.RefinePutBack(o));
+        Assert.Equal("3 faces left", PeopleWords.RefineLeft(o.Count));
+        Assert.Equal("1 face left", PeopleWords.RefineLeft(1));
+        Assert.Equal("Every face matches", PeopleWords.RefineLeft(0));
+        // A count without the list: nothing to put back.
+        o = PeopleWords.ParseRefine("""{"dry":false,"removed":2}""");
+        Assert.Equal(2, o.Count);
+        Assert.Empty(PeopleWords.RefinePutBack(o));
+    }
+
+    private const string DedupeReal = """
+        {"dry":false,"merged":3,"moved":12,"merges":[
+          {"into":3,"into_name":"Anna","into_faces":40,"cover_face":30,"cover_path":"a.jpg","cover_ms":-1,"cover_box":[0,0,1,1],
+           "from":[{"id":9,"name":"","faces":4,"cover_face":90,"cover_path":"b.jpg","cover_ms":-1,"cover_box":[0,0,1,1],"undo":101},
+                   {"id":10,"name":"","faces":1,"cover_face":91,"cover_path":"c.mp4","cover_ms":2000,"cover_box":[0,0,1,1],"undo":0}]},
+          {"into":5,"into_name":"","into_faces":7,"cover_face":50,
+           "from":[{"id":11,"name":"","faces":2,"cover_face":92,"undo":102}]},
+          {"into":6,"from":[]}]}
+        """;
+
+    [Fact]
+    public void DedupeParsesEveryMergeWithCoversAndTokens()
+    {
+        DedupeOutcome o = PeopleWords.ParseDedupe(DedupeReal);
+        Assert.False(o.Dry);
+        Assert.Equal(2, o.Merges.Count);  // a merge of nobody is dropped
+        DedupeMerge m = o.Merges[0];
+        Assert.Equal(3UL, m.Into.Id);
+        Assert.Equal("Anna", m.Into.Name);
+        Assert.Equal(40, m.Into.Faces);
+        Assert.Equal(30UL, m.Into.CoverFace);
+        Assert.Equal(2000, m.From[1].CoverMs);
+        Assert.Equal("Merge 3 people into Anna", PeopleWords.MergeLine(m));
+        Assert.Equal("Merge 2 people into one", PeopleWords.MergeLine(o.Merges[1]));
+        Assert.Equal("Anna · 40 faces", PeopleWords.DedupeCaption(m.Into));
+        Assert.Equal("Unnamed · 1 face", PeopleWords.DedupeCaption(m.From[1]));
+    }
+
+    [Fact]
+    public void DedupeUndoesEveryMergeLastFirst()
+    {
+        DedupeOutcome o = PeopleWords.ParseDedupe(DedupeReal);
+        Assert.Equal(new ulong[] { 102, 101 }, PeopleWords.DedupeUndoTokens(o));
+        Assert.Equal("3 people merged, 12 faces moved.", PeopleWords.DedupeSummary(o.Merged, o.Moved));
+        Assert.Equal("1 person merged, 1 face moved.", PeopleWords.DedupeSummary(1, 1));
+        Assert.Equal("No duplicates found, and every face matches.", PeopleWords.DedupeSummary(0, 0));
+    }
+
+    [Fact]
+    public void DedupesLookSaysWhatWouldChange()
+    {
+        DedupeOutcome o = PeopleWords.ParseDedupe("""{"dry":true,"merged":2,"moved":5,"merges":[]}""");
+        Assert.True(o.Dry);
+        Assert.False(o.IsEmpty);
+        Assert.Equal("2 people would merge, 5 faces would move.", PeopleWords.DedupeLookHeader(o));
+        o = PeopleWords.ParseDedupe("""{"dry":true,"merged":0,"moved":1,"merges":[]}""");
+        Assert.Equal("1 face would move.", PeopleWords.DedupeLookHeader(o));
+        o = PeopleWords.ParseDedupe("""{"dry":true,"merged":0,"moved":0,"merges":[]}""");
+        Assert.True(o.IsEmpty);
+        Assert.Equal("No duplicates found, and every face matches.", PeopleWords.DedupeLookHeader(o));
+    }
 }

@@ -67,6 +67,13 @@ internal sealed class PersonSheet : Window
     private readonly Button _refine;
     private readonly FlatBar _refineBar;
     private readonly TextBlock _refineNote;
+    // Refine's look (person_refine_json, dry): the faces that would leave, with Apply / Cancel.
+    private readonly Grid _refineLook;
+    private readonly TextBlock _refineLookHeader;
+    private readonly ItemsRepeater _refineLookFaces;
+    private readonly Button _refineApply;
+    private readonly StackPanel _actions;
+    private bool _looking;
     private readonly FlatBar _loadingBar;
     private readonly ContentControl _focusHost;
     private readonly Grid _statusRow;
@@ -203,8 +210,52 @@ internal sealed class PersonSheet : Window
         Grid.SetRow(_focusHost, 2);
         root.Children.Add(_focusHost);
 
+        // Refine's look, in the faces' place while it shows: nothing changes until Apply.
+        _refineLook = new Grid { RowSpacing = 10, Visibility = Visibility.Collapsed };
+        _refineLook.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        _refineLook.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        _refineLook.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        _refineLookHeader = _look.Text("", 13, AddonColour.Title);
+        AutomationProperties.SetHeadingLevel(_refineLookHeader, AutomationHeadingLevel.Level2);
+        AutomationProperties.SetLiveSetting(_refineLookHeader, AutomationLiveSetting.Polite);
+        _refineLook.Children.Add(_refineLookHeader);
+        _refineLookFaces = new ItemsRepeater
+        {
+            Layout = new UniformGridLayout
+            {
+                MinItemWidth = CheckWidth,
+                MinItemHeight = FaceTile.Cell + FaceTile.CaptionHeight,
+                MinColumnSpacing = 10,
+                MinRowSpacing = 10,
+            },
+        };
+        AutomationProperties.SetName(_refineLookFaces, "Faces that would leave");
+        var lookScroller = new ScrollViewer
+        {
+            Content = _refineLookFaces,
+            Padding = new Thickness(4),
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        };
+        Grid.SetRow(lookScroller, 1);
+        _refineLook.Children.Add(lookScroller);
+        var lookButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+        Button lookCancel = _look.Button(PeopleWords.Cancel, CancelRefineLook);
+        AutomationProperties.SetName(lookCancel, "Cancel refining");
+        ToolTipService.SetToolTip(lookCancel, "Keep every face where it is (Esc)");
+        lookButtons.Children.Add(lookCancel);
+        _refineApply = _look.Button(PeopleWords.Apply, ApplyRefine, accent: true);
+        AutomationProperties.SetName(_refineApply, "Apply refine");
+        ToolTipService.SetToolTip(_refineApply, "Move these faces out of this person");
+        lookButtons.Children.Add(_refineApply);
+        Grid.SetRow(lookButtons, 2);
+        _refineLook.Children.Add(lookButtons);
+        Grid.SetRow(_refineLook, 2);
+        root.Children.Add(_refineLook);
+
         // Yes, this is … · Not … · Move to… · Unpin · Split into new person
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        _actions = actions;
         _yes = _look.Button("", Yes);
         ToolTipService.SetToolTip(_yes, "Keep these faces with this person for good (Y)");
         actions.Children.Add(_yes);
@@ -246,6 +297,7 @@ internal sealed class PersonSheet : Window
         foot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         foot.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _refine = _look.Button("Refine faces", Refine);
+        AutomationProperties.SetName(_refine, "Refine faces");
         ToolTipService.SetToolTip(_refine, "Check every face against this person and move out the ones that don't match");
         foot.Children.Add(_refine);
         var refineState = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
@@ -525,7 +577,7 @@ internal sealed class PersonSheet : Window
         _move.Button.IsEnabled = n > 0;
         _unpin.Visibility = _api.HasFacesPin && AllPinned() ? Visibility.Visible : Visibility.Collapsed;
         _split.IsEnabled = n > 0;
-        _refine.IsEnabled = !_refining && !_loading;
+        _refine.IsEnabled = !_refining && !_loading && !_looking;
         _merge.IsEnabled = _grid.People.Count > 1;
         _loadingBar.Root.Visibility = _loading ? Visibility.Visible : Visibility.Collapsed;
         _refineBar.Root.Visibility = _refining ? Visibility.Visible : Visibility.Collapsed;
@@ -818,9 +870,18 @@ internal sealed class PersonSheet : Window
         });
     }
 
+    /// <summary>
+    /// "Refine faces": with person_refine_json, a look first (nothing changes) showing
+    /// where each face would go; Apply runs it. An older pack refines at once.
+    /// </summary>
     private void Refine()
     {
-        if (_refining) return;
+        if (_refining || _looking) return;
+        if (_api.HasPersonRefineJson)
+        {
+            LookRefine();
+            return;
+        }
         _refining = true;
         _refineNote.Text = "";
         _selection.Clear();
@@ -845,6 +906,113 @@ internal sealed class PersonSheet : Window
                 UpdateButtons();
                 if (_closed) return;
                 Load();
+                _grid.Refresh();
+            });
+        });
+    }
+
+    private void LookRefine()
+    {
+        _refining = true;
+        _refineNote.Text = "";
+        _selection.Clear();
+        SetStatus("", null);
+        UpdateButtons();
+        ulong id = _person.Id;
+        AiApi api = _api;
+        _ = Task.Run(() =>
+        {
+            RefineOutcome? look = null;
+            try { look = PeopleWords.ParseRefine(api.PersonRefineJson(id, dry: true)); }
+            catch (Exception ex) when (ex is MediaViewerException or JsonException) { }
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                _refining = false;
+                UpdateButtons();
+                if (_closed || _person.Id != id) return;
+                if (look is null) _refineNote.Text = PeopleWords.CouldNotRefine;
+                else if (look.Faces.Count == 0) SetStatus(PeopleWords.EveryFaceMatches, null);
+                else ShowRefineLook(look);
+            });
+        });
+    }
+
+    private void ShowRefineLook(RefineOutcome look)
+    {
+        _looking = true;
+        _refineLookHeader.Text = PeopleWords.RefineLookHeader(look.Count, Name);
+        var tiles = new List<UIElement>();
+        foreach (RefineFace f in look.Faces)
+        {
+            var face = new TileFace(f.Face, f.Path, f.PtsMs, f.Box, Caption: PeopleWords.RefineCaption(f));
+            var tile = new FaceTile(_chrome, face, CheckWidth, captioned: true, t => Preview(t.Data));
+            tiles.Add(tile.Root);
+        }
+        _refineLookFaces.ItemsSource = tiles;
+        _refineLook.Visibility = Visibility.Visible;
+        _focusHost.Visibility = Visibility.Collapsed;
+        _actions.Visibility = Visibility.Collapsed;
+        UpdateButtons();
+        _refineApply.Focus(FocusState.Programmatic);
+    }
+
+    private void HideRefineLook()
+    {
+        _looking = false;
+        _refineLook.Visibility = Visibility.Collapsed;
+        _refineLookFaces.ItemsSource = null;
+        _focusHost.Visibility = Visibility.Visible;
+        _actions.Visibility = Visibility.Visible;
+        UpdateButtons();
+        _focusHost.Focus(FocusState.Programmatic);
+    }
+
+    private void CancelRefineLook()
+    {
+        if (!_looking) return;
+        HideRefineLook();
+    }
+
+    /// <summary>Apply: the refine for real; "3 faces left" with Undo putting each back, unpinned.</summary>
+    private void ApplyRefine()
+    {
+        if (!_looking || _refining) return;
+        HideRefineLook();
+        _refining = true;
+        SetStatus("", null);
+        UpdateButtons();
+        ulong id = _person.Id;
+        AiApi api = _api;
+        int action = ++_action;
+        _ = Task.Run(() =>
+        {
+            RefineOutcome? done = null;
+            bool failed = false;
+            try
+            {
+                string json = api.PersonRefineJson(id, dry: false);
+                try { done = PeopleWords.ParseRefine(json); }
+                catch (JsonException) { }
+            }
+            catch (MediaViewerException) { failed = true; }
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                _refining = false;
+                UpdateButtons();
+                if (!_closed)
+                {
+                    if (action == _action)
+                    {
+                        List<ulong> back = done is null ? new List<ulong>() : PeopleWords.RefinePutBack(done);
+                        string line = failed ? PeopleWords.CouldNotRefine
+                                    : done is null ? "Faces refined"
+                                    : PeopleWords.RefineLeft(done.Count);
+                        SetStatus(line, back.Count > 0 && api.HasFacesAssign
+                            ? a => a.FacesAssign(back, id, pin: false, undo: true)
+                            : null);
+                    }
+                    Load();
+                }
                 _grid.Refresh();
             });
         });
@@ -883,6 +1051,17 @@ internal sealed class PersonSheet : Window
             return;
         }
         if (typing) return;
+        if (_looking)
+        {
+            // Refine's look: its own buttons take the keys; Esc cancels it, nothing else
+            // reaches the faces hidden under it.
+            if (e.Key == VirtualKey.Escape)
+            {
+                CancelRefineLook();
+                e.Handled = true;
+            }
+            return;
+        }
         bool ctrl = Down(VirtualKey.Control);
         int n = _selection.Count;
         switch (e.Key)

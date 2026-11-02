@@ -401,6 +401,18 @@ public unsafe struct MvAiApi
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, byte*, uint, uint*, MvStatus> PersonReviewJson;
     public delegate* unmanaged[Cdecl]<IntPtr, uint, uint, byte*, uint, uint*, MvStatus> UnknownFacesJson;
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, byte*, uint, uint*, MvStatus> PersonSuggestJson;
+
+    // Refine / Merge duplicates in detail (2026-11-02, docs/design/17). Appended.
+    public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, byte*, uint, uint*, MvStatus> PersonRefineJson;
+    public delegate* unmanaged[Cdecl]<IntPtr, uint, byte*, uint, uint*, MvStatus> PeopleDedupeJson;
+}
+
+/// <summary>Mirrors <c>MV_AI_DRY_RUN</c>: person_refine_json / people_dedupe_json look first.</summary>
+[Flags]
+public enum MvAiRefine : uint
+{
+    None = 0,
+    DryRun = 1, // nothing changes: the answer says what would
 }
 
 /// <summary>Mirrors <c>MV_AI_ASSIGN_*</c>: faces_assign's flags.</summary>
@@ -473,6 +485,8 @@ public sealed unsafe class AiApi
     private static readonly uint EndPersonReviewJson = EndOf(t => (byte*)&t->PersonReviewJson);
     private static readonly uint EndUnknownFacesJson = EndOf(t => (byte*)&t->UnknownFacesJson);
     private static readonly uint EndPersonSuggestJson = EndOf(t => (byte*)&t->PersonSuggestJson);
+    private static readonly uint EndPersonRefineJson = EndOf(t => (byte*)&t->PersonRefineJson);
+    private static readonly uint EndPeopleDedupeJson = EndOf(t => (byte*)&t->PeopleDedupeJson);
 
     private static MediaViewerException Missing(string what) => new(MvStatus.UnsupportedFormat, $"ai.{what}", 0);
 
@@ -816,6 +830,8 @@ public sealed unsafe class AiApi
     public bool HasPersonReviewJson => _api->StructSize >= EndPersonReviewJson && _api->PersonReviewJson != null;
     public bool HasUnknownFacesJson => _api->StructSize >= EndUnknownFacesJson && _api->UnknownFacesJson != null;
     public bool HasPersonSuggestJson => _api->StructSize >= EndPersonSuggestJson && _api->PersonSuggestJson != null;
+    public bool HasPersonRefineJson => _api->StructSize >= EndPersonRefineJson && _api->PersonRefineJson != null;
+    public bool HasPeopleDedupeJson => _api->StructSize >= EndPeopleDedupeJson && _api->PeopleDedupeJson != null;
 
     /// <summary>Worker: "Move to": the faces are <paramref name="person"/>'s; <paramref name="pin"/> makes them the user's.</summary>
     /// <remarks><paramref name="undo"/>: putting faces back (MV_AI_ASSIGN_UNDO): nothing is recorded
@@ -898,6 +914,27 @@ public sealed unsafe class AiApi
         return ReadJson((b, c, n) => _api->PersonSuggestJson(Ctx, person, limit, b, c, n));
     }
 
+    /// <summary>
+    /// Worker: person_refine saying which faces left and where. <paramref name="dry"/> looks
+    /// first and changes nothing. A real run's answer is kept by the pack for the buffer
+    /// retry, so it is not run twice.
+    /// </summary>
+    public string PersonRefineJson(ulong person, bool dry)
+    {
+        if (!HasPersonRefineJson) throw Missing(nameof(PersonRefineJson));
+        uint flags = dry ? (uint)MvAiRefine.DryRun : 0u;
+        return ReadJson((b, c, n) => _api->PersonRefineJson(Ctx, person, flags, b, c, n));
+    }
+
+    /// <summary>Worker: people_dedupe saying who merges into whom; <paramref name="dry"/> looks first.</summary>
+    public string PeopleDedupeJson(bool dry)
+    {
+        if (!HasPeopleDedupeJson) throw Missing(nameof(PeopleDedupeJson));
+        uint flags = dry ? (uint)MvAiRefine.DryRun : 0u;
+        return ReadJson((b, c, n) => _api->PeopleDedupeJson(Ctx, flags, b, c, n));
+    }
+
+    /// <summary>Worker: "This person": a search for the person whose face is in the picture on screen.</summary>
     public ulong SearchThisPerson(string path, long ptsMs)
     {
         ulong id;

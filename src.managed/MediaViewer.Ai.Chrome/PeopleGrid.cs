@@ -65,6 +65,12 @@ internal sealed class PeopleGrid
     private readonly Grid _hintRow;
     private readonly MediaViewer.Shared.FlatBar _dedupeBar;
     private readonly Button _dedupe;
+    // Merge duplicates' look (people_dedupe_json, dry): the merges it would make, Apply / Cancel.
+    private readonly StackPanel _dedupeLook;
+    private readonly TextBlock _dedupeLookHeader;
+    private readonly StackPanel _dedupeLookMerges;
+    private readonly Button _dedupeApply;
+    private bool _dedupeLooking;
     private readonly Grid _mergeBar;
     private readonly TextBlock _mergeCount;
     private readonly Button _mergeSelected;
@@ -165,12 +171,41 @@ internal sealed class PeopleGrid
         _hintRow.Children.Add(_dedupeBar.Root);
         _dedupe = _look.Button("Merge duplicates", MergeDuplicates);
         _dedupe.VerticalAlignment = VerticalAlignment.Center;
-        ToolTipService.SetToolTip(_dedupe,
-            "Re-check every face and merge people who are the same person. Two people you named differently are never merged; undo with Split.");
+        ToolTipService.SetToolTip(_dedupe, _api.HasPeopleDedupeJson
+            ? "Re-check every face and merge people who are the same person. Two people you named differently are never merged. You see the merges before they happen, and can undo them."
+            : "Re-check every face and merge people who are the same person. Two people you named differently are never merged; undo with Split.");
         AutomationProperties.SetName(_dedupe, "Merge duplicate people");
         Grid.SetColumn(_dedupe, 2);
         _hintRow.Children.Add(_dedupe);
         _root.Children.Add(_hintRow);
+
+        // Merge duplicates' look: nothing changes until Apply.
+        _dedupeLook = new StackPanel
+        {
+            Spacing = 10,
+            Padding = new Thickness(12),
+            CornerRadius = new CornerRadius(6),
+            Background = _look.Tint(AddonColour.Accent, 20),
+            Visibility = Visibility.Collapsed,
+        };
+        _dedupeLookHeader = _look.Text("", 13, AddonColour.Title);
+        AutomationProperties.SetHeadingLevel(_dedupeLookHeader, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
+        AutomationProperties.SetLiveSetting(_dedupeLookHeader, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
+        _dedupeLook.Children.Add(_dedupeLookHeader);
+        _dedupeLookMerges = new StackPanel { Spacing = 12 };
+        AutomationProperties.SetName(_dedupeLookMerges, "Duplicates to merge");
+        _dedupeLook.Children.Add(_dedupeLookMerges);
+        var lookButtons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+        Button lookCancel = _look.Button(MediaViewer.Shared.PeopleWords.Cancel, CancelDedupeLook);
+        AutomationProperties.SetName(lookCancel, "Cancel merging duplicates");
+        ToolTipService.SetToolTip(lookCancel, "Keep everyone as they are (Esc)");
+        lookButtons.Children.Add(lookCancel);
+        _dedupeApply = _look.Button(MediaViewer.Shared.PeopleWords.Apply, ApplyDedupe, accent: true);
+        AutomationProperties.SetName(_dedupeApply, "Apply merging duplicates");
+        ToolTipService.SetToolTip(_dedupeApply, "Merge these people and move the faces that don't match");
+        lookButtons.Children.Add(_dedupeApply);
+        _dedupeLook.Children.Add(lookButtons);
+        _root.Children.Add(_dedupeLook);
 
         // "Unknown faces (N)": faces clear enough to name that nobody is filed under.
         _unknown = _look.Button("", OpenUnknown);
@@ -254,6 +289,13 @@ internal sealed class PeopleGrid
                 InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(CoreVirtualKeyStates.Down))
             {
                 UndoMerge();
+                e.Handled = true;
+                return;
+            }
+            // Esc cancels Merge duplicates' look, then clears a selection, before Settings closes.
+            if (e.Key == VirtualKey.Escape && _dedupeLooking)
+            {
+                CancelDedupeLook();
                 e.Handled = true;
                 return;
             }
@@ -484,7 +526,7 @@ internal sealed class PeopleGrid
         _mergeBar.Visibility = any && n >= 2 ? Visibility.Visible : Visibility.Collapsed;
         _mergeCount.Text = $"{n} people selected";
         _hintRow.Visibility = any && n < 2 ? Visibility.Visible : Visibility.Collapsed;
-        _dedupe.IsEnabled = !_deduping;
+        _dedupe.IsEnabled = !_deduping && !_dedupeLooking;
         _dedupeBar.Root.Visibility = _deduping ? Visibility.Visible : Visibility.Collapsed;
         _repeater.Visibility = any ? Visibility.Visible : Visibility.Collapsed;
         _unknown.Visibility = _unknownTotal > 0 && _api.HasUnknownFacesJson ? Visibility.Visible : Visibility.Collapsed;
@@ -680,10 +722,19 @@ internal sealed class PeopleGrid
         });
     }
 
-    /// <summary>"Merge duplicates" (docs/design/17): the whole library, on request.</summary>
+    /// <summary>
+    /// "Merge duplicates" (docs/design/17): the whole library, on request. With
+    /// people_dedupe_json a look first (nothing changes) and Apply / Cancel; an
+    /// older pack merges at once.
+    /// </summary>
     private void MergeDuplicates()
     {
-        if (_deduping) return;
+        if (_deduping || _dedupeLooking) return;
+        if (_api.HasPeopleDedupeJson)
+        {
+            LookDedupe();
+            return;
+        }
         _deduping = true;
         UpdateChrome();
         AiApi api = _api;
@@ -698,10 +749,128 @@ internal sealed class PeopleGrid
                 UpdateChrome();
                 Note(result switch
                 {
-                    null => "Couldn't check for duplicates. Try again.",
-                    (0, 0) => "No duplicates found, and every face matches.",
-                    var (m, f) => (m == 1 ? "1 person" : $"{m} people") + " merged, " + (f == 1 ? "1 face" : $"{f} faces") + " moved.",
+                    null => MediaViewer.Shared.PeopleWords.CouldNotDedupe,
+                    var (m, f) => MediaViewer.Shared.PeopleWords.DedupeSummary(m, f),
                 });
+                Refresh();
+            });
+        });
+    }
+
+    private void LookDedupe()
+    {
+        _deduping = true;
+        UpdateChrome();
+        AiApi api = _api;
+        _ = Task.Run(() =>
+        {
+            MediaViewer.Shared.DedupeOutcome? look = null;
+            try { look = MediaViewer.Shared.PeopleWords.ParseDedupe(api.PeopleDedupeJson(dry: true)); }
+            catch (Exception ex) when (ex is MediaViewerException or JsonException) { }
+            _root.DispatcherQueue.TryEnqueue(() =>
+            {
+                _deduping = false;
+                if (look is null) Note(MediaViewer.Shared.PeopleWords.CouldNotDedupe);
+                else if (look.IsEmpty) Note(MediaViewer.Shared.PeopleWords.NoDuplicates);
+                else ShowDedupeLook(look);
+                UpdateChrome();
+            });
+        });
+    }
+
+    private void ShowDedupeLook(MediaViewer.Shared.DedupeOutcome look)
+    {
+        _dedupeLooking = true;
+        _dedupeLookHeader.Text = MediaViewer.Shared.PeopleWords.DedupeLookHeader(look);
+        _dedupeLookMerges.Children.Clear();
+        foreach (MediaViewer.Shared.DedupeMerge m in look.Merges)
+        {
+            var row = new StackPanel { Spacing = 6 };
+            string line = MediaViewer.Shared.PeopleWords.MergeLine(m);
+            TextBlock title = _look.Text(line, 12, AddonColour.Title);
+            row.Children.Add(title);
+            var covers = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+            AutomationProperties.SetName(covers, line);
+            foreach (MediaViewer.Shared.DedupePerson p in m.From.Prepend(m.Into))
+            {
+                var face = new TileFace(p.CoverFace, p.CoverPath, p.CoverMs, p.CoverBox,
+                                        Caption: MediaViewer.Shared.PeopleWords.DedupeCaption(p));
+                var tile = new FaceTile(_chrome, face, Cover + 28, captioned: true, _ => { });
+                AutomationProperties.SetName(tile.Root, MediaViewer.Shared.PeopleWords.DedupeCaption(p));
+                covers.Children.Add(tile.Root);
+            }
+            row.Children.Add(new ScrollViewer
+            {
+                Content = covers,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                HorizontalScrollMode = ScrollMode.Auto,
+                VerticalScrollMode = ScrollMode.Disabled,
+            });
+            _dedupeLookMerges.Children.Add(row);
+        }
+        _dedupeLookMerges.Visibility = look.Merges.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        _dedupeLook.Visibility = Visibility.Visible;
+        UpdateChrome();
+        _dedupeApply.Focus(FocusState.Programmatic);
+    }
+
+    private void HideDedupeLook()
+    {
+        _dedupeLooking = false;
+        _dedupeLook.Visibility = Visibility.Collapsed;
+        _dedupeLookMerges.Children.Clear();
+        UpdateChrome();
+    }
+
+    private void CancelDedupeLook()
+    {
+        if (!_dedupeLooking) return;
+        HideDedupeLook();
+        _dedupe.Focus(FocusState.Programmatic);
+    }
+
+    /// <summary>Apply: Merge duplicates for real; "3 people merged, 12 faces moved." with Undo of every merge.</summary>
+    private void ApplyDedupe()
+    {
+        if (!_dedupeLooking || _deduping) return;
+        HideDedupeLook();
+        _deduping = true;
+        UpdateChrome();
+        AiApi api = _api;
+        _ = Task.Run(() =>
+        {
+            MediaViewer.Shared.DedupeOutcome? done = null;
+            bool failed = false;
+            try
+            {
+                string json = api.PeopleDedupeJson(dry: false);
+                try { done = MediaViewer.Shared.PeopleWords.ParseDedupe(json); }
+                catch (JsonException) { }
+            }
+            catch (MediaViewerException) { failed = true; }
+            _root.DispatcherQueue.TryEnqueue(() =>
+            {
+                _deduping = false;
+                UpdateChrome();
+                if (failed || done is null)
+                {
+                    Note(failed ? MediaViewer.Shared.PeopleWords.CouldNotDedupe : "Duplicates merged.");
+                }
+                else
+                {
+                    List<ulong> tokens = MediaViewer.Shared.PeopleWords.DedupeUndoTokens(done);
+                    string line = MediaViewer.Shared.PeopleWords.DedupeSummary(done.Merged, done.Moved);
+                    if (tokens.Count > 0 && api.HasPersonMergeUndo)
+                    {
+                        // Every merge put back, last first; "Merged · Undo" for ~8 s as a manual merge.
+                        Note(line, a =>
+                        {
+                            foreach (ulong t in tokens) a.PersonMergeUndo(t);
+                        }, 8000);
+                    }
+                    else Note(line);
+                }
                 Refresh();
             });
         });
