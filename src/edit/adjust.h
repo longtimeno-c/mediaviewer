@@ -72,6 +72,12 @@ struct adjust_uniforms {
 
 [[nodiscard]] adjust_uniforms uniforms_of(const colour& c) noexcept;
 
+// The contrast slider's scale: ±100 is a slope of 2^(±kContrastStops) in log
+// exposure, a power about kContrastPivot in linear light (the kernel's a0.w
+// and a1.y). Public so auto tone (edit/auto_tone.h) can invert it.
+inline constexpr float kContrastStops = 0.585f;
+inline constexpr float kContrastPivot = 0.18f;
+
 // White-balance gains for a temperature / tint pair, normalised so a neutral
 // grey keeps its Rec.709 luminance (white balance never brightens). (0, 0)
 // is exactly {1, 1, 1}.

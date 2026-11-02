@@ -13,9 +13,12 @@ settings page and its packaging. It fills #348's slots (info section, search pro
 host table v3 and needs PR 56 for its settings page. Without the add-on the app shows
 coordinates, as it always has. Settings → Add-ons offers the install on both hosts even when
 Places is not installed: optional, and the preferred install. Local search over the whole index
-walks the index's own coordinates (#398, doc 17 "Places over the index"). A GoPro or DJI clip's
-telemetry route is drawn on the map and searched along (#606, "Routes" below). Owed: the Windows
-half is compiled only in CI. Plan:
+walks the index's own coordinates (#398, doc 17 "Places over the index"). The folder map (#601,
+2026-11-02): a **This folder** toggle draws the open folder's geotagged items as clustered dots on
+the same map, and a click on one opens it ([below](#the-folder-map-601)); its host halves are
+written but not yet built or run on Windows or the Mac. A GoPro or DJI clip's telemetry route is
+drawn on the map, under the folder's dots, and searched along (#606, "Routes" below). Owed: the
+Windows half is compiled only in CI. Plan:
 [metadata-search-and-place.md](../plans/metadata-search-and-place.md), slices 2-3 and the place
 half of slice 4.
 
@@ -289,7 +292,10 @@ under 0.2 ms. During a gesture nothing is drawn: the chrome moves the last bitma
   points (land, water, the Tagus, the Portugal/Spain border pixel, a town dot, Fiji either side of
   180°), the rounded transparent corners, the cache (hit, theme change, zoom, size, capacity), the
   framing, the section's tree and settings, the −/+ range, gesture anchor maths and clamping, the
-  pin kept in view, `towns_in`, town marks, and search by place ("portugal" → the six Portuguese
+  pin kept in view, `towns_in`, town marks, the folder map (#601: dots where `map_pixel` puts
+  them, clusters by zoom, a pan keeping each cluster's members, the pin not a dot, the drawn dot's
+  colour, hits and misses, the toggle's tree and diff, a click's path, the cached base left
+  untouched, the folder read again for a new file or folder), and search by place ("portugal" → the six Portuguese
   fixtures; "portu", "lisbon", "sintra", "spain", "fiji"; "po", "2024" and a point at sea find nothing).
   Also non-finite and huge inputs to the view maths and `render_map`, a 1600 pt pane at 3× within
   4096 px, and, on the full blob, nine views at the poles and across 180° whose sampled pixels must
@@ -300,7 +306,10 @@ under 0.2 ms. During a gesture nothing is drawn: the chrome moves the last bitma
   the section (label, coordinates, 600 × 320 surface, pin, marks), a −, a zoom, a pan and a
   double-click, `portugal` / `place:spain` / `in:2024` over a fake `locations_in`, the AI pack's
   place terms (`portugal`, `spain`, `atlantis` through `provider_paths`, #441) over a fake
-  `locations_of_index` while Local search's own `place:portugal` asks nobody, no rows when no index
+  `locations_of_index` while Local search's own `place:portugal` asks nobody, the folder map
+  (#601: This folder reads the folder through `locations_in` and redraws, a click in a corner
+  opens nothing, a click on a dot puts a file of the folder other than the pin in `info_json`'s
+  `"open"`, and off redraws), no rows when no index
   is attached, and removal.
   Until PR 56 lands in the same host, the test leaves the settings page out of the manifest (the
   host would refuse it).
@@ -317,6 +326,7 @@ the pane shows coordinates, as it always has. Built (2026-10-12):
 | `src/addons/places/addon_entry.cpp` | `mv_addon_get` and `mv.slots.1`: the info section, the search provider, the map's events |
 | `src/addons/places/places.h/.cpp` | The engine, ABI-free: the section's view tree, the zoom and pan state, `place_query` |
 | `src/addons/places/map.h/.cpp` | The map rasteriser, the gesture maths and the picture cache |
+| `src/addons/places/folder_map.h/.cpp` | The folder map's dot layer (#601): grid clustering, drawing, the hit test |
 | `src/addons/places/self_dir_*.cpp` | The add-on's own install folder (`dladdr` / `GetModuleHandleExW`), as the AI pack finds its models |
 | `src/addons/places/manifest.json` | Description and contributions; `tools/package/addon-pack.py` packs it and the tests read it |
 | `cmake/places.cmake` | `mv_places_engine` (tests link it) and the `mv_places` module in `build/addons/places` |
@@ -365,7 +375,8 @@ backing scale; Places answers with one view tree and one surface:
    accent colour with a soft shadow and a drop-in Reduced Motion turns off), `marks` (town names)
    and `interactive` bounds. It is one accessibility element labelled "Map of <place>";
 4. a row: the caption "No street detail — offline map", and Zoom out / Zoom in buttons
-   (`minus` / `plus`), each disabled at its end of the range.
+   (`minus` / `plus`), each disabled at its end of the range;
+5. for a file that has a folder, the **This folder** toggle ([below](#the-folder-map-601)).
 
 Neither host has Places-specific code: they render the tree, the BGRA surface, the pin and the
 marks, and drop a stale generation. A file whose location changes (#352's editor) is a new info
@@ -421,6 +432,61 @@ picture lands where the transform left it), then clamped:
 It re-draws, posts the surface, then a diff moving the pin and marks and the buttons' state (the
 chrome drops its transform when the surface's revision moves). A newer gesture arrives as a newer
 delta on the state it left.
+
+### The folder map (#601)
+
+A **This folder** toggle under the map (a `toggle` node, `folder`, shown for a file that has a
+folder: not a Photos library item) draws every geotagged item of the open folder on the same map.
+It is read-only: picking a point on the map to *write* coordinates is a different, backlogged
+feature ([06](06-metadata.md)).
+
+- **One choice for the session.** The toggle is the engine's, not a setting: it stays on as the
+  person arrows through the folder and into the next one, and starts off in a new process.
+- **Where the points come from.** Turning it on (or the section asked for a file of a folder not
+  read yet) walks the folder with the host table's `locations_in`, under the section's generation:
+  the host's metadata cache serves it, so a folder the viewer has shown costs no read, and a walk
+  for a file the person has already left stops (`MV_ERR_CANCELLED`) and draws nothing. The section
+  is posted first; the dots follow once the folder is read. The points are kept per folder
+  (`folder_points`, at most 50 000), so arrowing within it reads nothing; a geotagged file the
+  held list lacks (new since) reads the folder again.
+- **Dots and clusters** (`folder_map.h/.cpp`, a layer over the picture; the base stays in the
+  cache and the dots go into a copy). Each item is projected with `map_pixel`'s projection, built
+  once per picture, and binned into a grid of 22 pt cells anchored to 0°/0° (so a pan, which keeps
+  the pixel scale, keeps every cluster's members). A cell is one dot at its items' mean; dots of
+  neighbouring cells that would overlap are merged once, the bigger taking the smaller. A lone
+  item is a 3.5 pt dot; a cluster grows with log₂ of its count to 8.5 pt and has a light centre.
+  The fill is the accent mixed toward the title text (never the pin's own colour), ringed in the
+  land colour so it reads on any border. **The current item is the pin**, never a dot.
+- **A click opens a dot's file.** Both hosts report a single click on an interactive surface as
+  `MV_SLOT_EVENT_TAP {x, y}` (#601; WinUI `Tapped`, past which a drag is not a tap; SwiftUI's
+  single tap after the double-tap fails). Places finds the dot under it (its radius plus 5 pt;
+  the nearest edge wins) and asks the host to show that item, or a cluster's first in folder
+  order, through the host table's `open_item` (appended after `still_write`). The registry takes
+  only a file of the folder of the file on screen, for the section's current generation, and
+  carries it in `info_json`'s `"open": {path, revision}` until the next file is asked for; each
+  chrome opens it once per revision, and only if its listing holds that path (Windows:
+  `SelectItem` on the strip index; Mac: `FolderStore.select(path:)`). The opened file asks the
+  section again, so the pin moves to it and the old one becomes a dot. A click off every dot does
+  nothing; the first click of a double-click on Windows is a click too (it opens only over a dot).
+- **Idle.** Nothing ticks: the layer is drawn once per section, toggle, gesture or folder read,
+  on the add-on's worker, and the chrome shows the posted pixels. With the section shown and
+  nothing moving, the canvas presents nothing.
+
+Measured (2026-11-02, Linux container shared with other builds, g++ 13 `-O2`,
+`mv_tests "places: the folder map over 600 geotagged items at 2x"` in `[.perf-bench]`; 600 items
+round four spots and over Portugal, 640 × 320 px, the eight zoom steps × three centres × five
+rounds, one thread; three runs, the range shown):
+
+| | Median | p90 | Max |
+|---|---|---|---|
+| Dot layer CPU (cluster + copy the base + draw) | 0.27–0.29 ms | 0.50–0.53 ms | 0.94–1.12 ms |
+| Clustering alone (wall, one run) | 30 µs | 42 µs | 64 µs |
+| Base map + dot layer CPU (a cache miss), on the **test** blob | 6.0–6.3 ms | 6.6–7.6 ms | 7.6–8.9 ms |
+| Engine refresh at the section's view (base a cache hit) | 0.27–0.31 ms | 0.29–0.39 ms | 0.48–0.56 ms |
+
+The full place database could not be built in that container (its downloads were refused), so a
+cache miss on the full blob is the base map's own figure above (4.5–4.7 ms median, 20 ms max at
+2×) plus the layer. The folder walk is the host's `locations_in` and is not in this bench.
 
 ### Search by place
 

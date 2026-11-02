@@ -96,21 +96,25 @@ std::uint32_t engine::surface_height(float scale) noexcept {
   return static_cast<std::uint32_t>(std::lround(k_map_height_pt * s));
 }
 
-std::shared_ptr<const map_image> engine::picture(const section_state& s) {
+std::shared_ptr<const map_image> engine::picture(section_state& s) {
   const geo::database* db = db_();
+  s.dots.clear();
   if (!db || !s.prefs.show_map) return nullptr;
   auto base = cache_.get(*db, s.view, palette_for(s.theme), s.place.at_sea ? std::string_view{} : s.place.country_code);
-  if (!base || s.route.empty()) return base;
-  // #606: the route on a copy of the cached picture, in the accent colour
-  // (the pin's) on a casing of the pane's surface.
-  std::lock_guard lock(routed_m_);
-  if (routed_ && routed_base_ == base && routed_id_ == s.route_id) return routed_;
-  auto img = std::make_shared<map_image>(*base);
-  (void)draw_route(s.view, s.route, s.theme.accent >> 8, s.theme.surface >> 8, img->bgra);
-  routed_base_ = base;
-  routed_id_ = s.route_id;
-  routed_ = std::move(img);
-  return routed_;
+  if (base && !s.route.empty()) {
+    // #606: the route on a copy of the cached picture, in the accent colour
+    // (the pin's) on a casing of the pane's surface; #601's dots go over it.
+    std::lock_guard lock(routed_m_);
+    if (!(routed_ && routed_base_ == base && routed_id_ == s.route_id)) {
+      auto img = std::make_shared<map_image>(*base);
+      (void)draw_route(s.view, s.route, s.theme.accent >> 8, s.theme.surface >> 8, img->bgra);
+      routed_base_ = base;
+      routed_id_ = s.route_id;
+      routed_ = std::move(img);
+    }
+    base = routed_;
+  }
+  return with_dots(s, std::move(base));
 }
 
 map_view frame_route(const map_view& v, double pin_lat, double pin_lon, std::span<const route_point> route) noexcept {
@@ -161,8 +165,9 @@ std::string route_why(const place_query& q, const geo::database& db, std::span<c
 
 section_result engine::section(double lat, double lon, std::string_view location_text, const theme_tokens& theme,
                                float width_pt, float scale, const settings& prefs, section_state& state,
-                               std::span<const route_point> route) {
+                               std::string_view path, std::span<const route_point> route) {
   state = section_state{};
+  state.path = std::string(path);
   state.lat = lat;
   state.lon = lon;
   state.location_text = std::string(location_text);
@@ -234,6 +239,12 @@ section_result engine::section(double lat, double lon, std::string_view location
     w.key("style").string("caption").end_object();
     zoom_buttons(w, state.view);
     w.end_array().end_object();
+    // #601: the folder's geotagged items on the same map, for a file that
+    // has a folder (not a Photos library item).
+    if (!folder_of(state.path).empty()) {
+      w.begin_object().key("type").string("toggle").key("id").string("folder");
+      w.key("label").string(k_folder_toggle).key("value").boolean(folder_layer_).end_object();
+    }
   }
   w.end_array().end_object();
   out.tree_json = w.take();
@@ -275,6 +286,77 @@ bool engine::gesture(section_state& state, double scale, double anchor_x, double
                      double pan_y, std::shared_ptr<const map_image>& map, std::string& diff_json) {
   const map_view next = apply_gesture(state.view, scale, anchor_x, anchor_y, pan_x, pan_y, state.lat, state.lon);
   return move_to(state, next, map, diff_json);
+}
+
+// ---- the folder map (#601) ------------------------------------------------------------
+
+std::shared_ptr<const map_image> engine::with_dots(section_state& s, std::shared_ptr<const map_image> base) {
+  s.dots.clear();
+  if (!base || !folder_layer_ || !folder_ || folder_->items.empty()) return base;
+  const std::string_view dir = folder_of(s.path);
+  if (dir.empty() || !same_path(dir, folder_->folder)) return base;
+  // The file on screen is the pin, not a dot.
+  std::size_t skip = k_no_item;
+  for (std::size_t i = 0; i < folder_->items.size(); ++i) {
+    if (same_path(folder_->items[i].path, s.path)) {
+      skip = i;
+      break;
+    }
+  }
+  cluster_dots(s.view, folder_->items, skip, s.dots);
+  if (s.dots.empty()) return base;
+  auto img = std::make_shared<map_image>(*base);
+  if (!draw_dots(s.view, dot_palette_for(s.theme), s.dots, img->bgra)) {
+    s.dots.clear();
+    return base;
+  }
+  return img;
+}
+
+bool engine::wants_folder(const section_state& s) const {
+  if (!folder_layer_ || !s.prefs.show_map) return false;
+  const std::string_view dir = folder_of(s.path);
+  if (dir.empty()) return false;
+  if (!folder_ || !same_path(dir, folder_->folder)) return true;
+  // A file new to the folder since it was read (it is geotagged: the section
+  // is asked only for those) means the folder changed: read it again.
+  return std::none_of(folder_->items.begin(), folder_->items.end(),
+                      [&s](const folder_item& it) { return same_path(it.path, s.path); });
+}
+
+bool engine::refresh(section_state& state, std::shared_ptr<const map_image>& map, std::string& diff_json) {
+  if (!state.prefs.show_map) return false;
+  map = picture(state);
+  if (!map) return false;
+  json::writer w;
+  w.begin_array();
+  w.begin_object().key("op").string("set").key("id").string("map").key("props").begin_object();
+  surface_props(w, state, map.get());
+  w.end_object().end_object();
+  if (!folder_of(state.path).empty()) {
+    w.begin_object().key("op").string("set").key("id").string("folder").key("props").begin_object();
+    w.key("value").boolean(folder_layer_).end_object().end_object();
+  }
+  w.end_array();
+  diff_json = w.take();
+  return true;
+}
+
+bool engine::show_folder(section_state& state, bool on, std::shared_ptr<const map_image>& map,
+                         std::string& diff_json) {
+  const bool had_dots = !state.dots.empty();
+  folder_layer_ = on;
+  // Off with nothing drawn: the toggle already shows it, there are no pixels
+  // to change. On without the folder's items: the caller reads them first.
+  if ((!on && !had_dots) || (on && wants_folder(state))) return false;
+  return refresh(state, map, diff_json);
+}
+
+std::string engine::tap(const section_state& state, double x, double y) const {
+  if (!folder_layer_ || !folder_ || state.dots.empty() || !std::isfinite(x) || !std::isfinite(y)) return {};
+  const map_dot* d = dot_at(state.dots, state.view, x * state.view.width, y * state.view.height);
+  if (!d || d->first >= folder_->items.size()) return {};
+  return folder_->items[d->first].path;
 }
 
 // ---- search -------------------------------------------------------------------------

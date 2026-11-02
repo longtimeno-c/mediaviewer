@@ -18,6 +18,7 @@
 #include <string_view>
 #include <vector>
 
+#include "addons/places/folder_map.h"
 #include "addons/places/map.h"
 #include "geo/geo.h"
 
@@ -44,6 +45,8 @@ inline constexpr float k_map_height_pt = 160.0f;
 inline constexpr float k_max_surface_px = 4096.0f;
 // What the map can and cannot show, said once under it.
 inline constexpr std::string_view k_map_caption = "No street detail \xE2\x80\x94 offline map";
+// #601: the folder map's toggle.
+inline constexpr std::string_view k_folder_toggle = "This folder";
 
 // One file's section: what the host sent and what was worked out from it.
 struct section_state {
@@ -56,6 +59,10 @@ struct section_state {
   settings prefs;
   geo::place place;           // label "" when the place database is missing
   map_view view;              // what the map shows now: centre and span (the pin is at lat/lon)
+  // #601: the file on screen ("" when the host gave none), and the folder
+  // map's dots on the picture now (empty while the layer is off).
+  std::string path;
+  std::vector<map_dot> dots;
   // #606: a GoPro or DJI clip's GPS route (the pin is its first fix), drawn
   // over the map; empty for everything else.
   std::vector<route_point> route;
@@ -74,11 +81,13 @@ class engine {
   explicit engine(std::function<const geo::database*()> db) : db_(std::move(db)) {}
 
   // The Place section for a geotagged file. Fills `state` for later zoom steps.
-  // #606: `route` (a clip's telemetry route, may be empty) is drawn over the
-  // map, and the first view frames it as well as the point's region.
+  // `path` is the file on screen: with a folder, the section offers the
+  // folder map (#601). `route` (#606, a clip's telemetry route, may be empty)
+  // is drawn over the map, and the first view frames it as well as the
+  // point's region.
   [[nodiscard]] section_result section(double lat, double lon, std::string_view location_text,
                                        const theme_tokens& theme, float width_pt, float scale,
-                                       const settings& prefs, section_state& state,
+                                       const settings& prefs, section_state& state, std::string_view path = {},
                                        std::span<const route_point> route = {});
 
   // One zoom step in (+1) or out (-1) about the picture's centre: the -/+
@@ -98,17 +107,41 @@ class engine {
   [[nodiscard]] static std::uint32_t surface_width(float width_pt, float scale) noexcept;
   [[nodiscard]] static std::uint32_t surface_height(float scale) noexcept;
 
+  // ---- the folder map (#601; docs/design/27 "The folder map") --------------------
+  // Whether the layer is on: one choice for the session, kept across files.
+  [[nodiscard]] bool folder_layer() const noexcept { return folder_layer_; }
+  // The folder's items are needed (the layer is on and what is held is
+  // another folder's, or misses the file on screen): the caller walks the
+  // folder (locations_in) and hands them to set_folder.
+  [[nodiscard]] bool wants_folder(const section_state& s) const;
+  void set_folder(std::shared_ptr<const folder_points> points) { folder_ = std::move(points); }
+  [[nodiscard]] const folder_points* folder() const noexcept { return folder_.get(); }
+  // The toggle: turns the layer on or off and redraws. Returns false when
+  // nothing changes on screen, and when the layer went on but wants_folder:
+  // the caller reads the folder, hands it to set_folder, then refreshes.
+  bool show_folder(section_state& state, bool on, std::shared_ptr<const map_image>& map, std::string& diff_json);
+  // The same view again with what set_folder handed over.
+  bool refresh(section_state& state, std::shared_ptr<const map_image>& map, std::string& diff_json);
+  // A click at (x, y), 0..1 of the picture: the path of the dot under it (a
+  // cluster's first item), or "".
+  [[nodiscard]] std::string tap(const section_state& state, double x, double y) const;
+
   [[nodiscard]] map_cache& cache() noexcept { return cache_; }
   [[nodiscard]] const geo::database* database() const { return db_(); }
 
  private:
-  [[nodiscard]] std::shared_ptr<const map_image> picture(const section_state& s);
+  [[nodiscard]] std::shared_ptr<const map_image> picture(section_state& s);
+  // The base picture with the folder's dots over it (a copy; the cache keeps
+  // the base), or the base itself while the layer is off.
+  [[nodiscard]] std::shared_ptr<const map_image> with_dots(section_state& s, std::shared_ptr<const map_image> base);
   // Moves to `next` and describes the change for the chrome.
   bool move_to(section_state& state, const map_view& next, std::shared_ptr<const map_image>& map,
                std::string& diff_json);
 
   std::function<const geo::database*()> db_;
   map_cache cache_;
+  bool folder_layer_ = false;
+  std::shared_ptr<const folder_points> folder_;
   // #606: the last picture with a route drawn on it, so a zoom back to it or
   // a re-ask (a setting, the theme) does not draw it again. The base picture
   // stays in cache_; the route goes on a copy.

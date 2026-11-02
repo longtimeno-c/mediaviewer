@@ -971,26 +971,34 @@ jobs:
              build/release/addon/mediaviewer-addon-driftwire-macos.json \
              build/release/addon/mediaviewer-addon-driftwire-macos.json.sig upload/
 
-      # Enhance (#297): preferred, arm64 only; signed and notarized like Places.
+      # Enhance (#297): preferred, arm64 only (no x86_64 join); signed and
+      # notarized like Places. Its weights are never packed: remote.json pins
+      # them into the manifest. Any failure, the copy into upload/ included,
+      # warns and leaves no partial pack there (publish refuses a half pack).
       - name: Enhance add-on (sign, notarize, pack)
         if: inputs.mode == 'stable'
+        timeout-minutes: 30
         run: |
-          set -euo pipefail
           if [[ ! -f apps/EnhanceAddon-arm64.tar ]]; then
             echo "::warning::Enhance was not built; this release will not carry it."
             exit 0
           fi
-          mkdir -p build/addons/enhance
-          tar -xf apps/EnhanceAddon-arm64.tar -C build/addons/enhance
-          if python3 tools/mac/macpack.py addon --dir build/addons/enhance \
-               --identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary &&
-             python3 tools/package/addon-pack.py pack --addon enhance --platform macos --src build/addons/enhance \
-               --version "$VERSION" --key "$RUNNER_TEMP/release.key" --out build/release/addon --require-pinned-key; then
+          if ! (
+            set -euo pipefail
+            mkdir -p build/addons/enhance
+            tar -xf apps/EnhanceAddon-arm64.tar -C build/addons/enhance
+            python3 tools/mac/macpack.py addon --dir build/addons/enhance \
+              --identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
+            python3 tools/package/addon-pack.py pack --addon enhance --platform macos --src build/addons/enhance \
+              --version "$VERSION" --key "$RUNNER_TEMP/release.key" --out build/release/addon --require-pinned-key
             cp build/release/addon/mediaviewer-addon-enhance-macos.zip \
                build/release/addon/mediaviewer-addon-enhance-macos.json \
                build/release/addon/mediaviewer-addon-enhance-macos.json.sig upload/
-          else
+          ); then
             echo "::warning::Enhance add-on was not packed; this release will not carry it."
+            rm -f upload/mediaviewer-addon-enhance-macos.zip \
+                  upload/mediaviewer-addon-enhance-macos.json \
+                  upload/mediaviewer-addon-enhance-macos.json.sig
           fi
 
       - name: Local search pack (sign, notarize, stage models, pack)

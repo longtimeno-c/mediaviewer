@@ -274,7 +274,9 @@ Velopack keeps one full package for rollback. `build-release.ps1` fails above 25
   is shared with the app process and nothing process-wide is changed (the surrogate may host
   other handlers). The entry point has its own fuzz harness. No property handler: it needs an
   HKLM registration a per-user install cannot make (macOS has a Spotlight importer instead).
-- **Jump list** of recent folders (`ICustomDestinationList`, honouring user removals).
+- **Jump list** of pinned and recent folders (`ICustomDestinationList`, honouring user removals),
+  and Tasks: New window, Open folder…, Import… while Import is installed (`AddUserTasks`, #617).
+  Committed on the pool, only when it changes.
 - **SMTC** (`SystemMediaTransportControls`) for media keys and the OS overlay during video.
   The chrome's 150 ms playback poll runs only while a clip is open, and it pushes SMTC's title,
   status and timeline only when one changes or the position jumps (a seek); the OS runs the
