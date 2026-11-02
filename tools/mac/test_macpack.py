@@ -386,6 +386,15 @@ class ReleaseNotesFeedTests(unittest.TestCase):
         html = "<item><description><![CDATA[Faster pans\nHEIC fix]]></description></item>"
         self.assertIsNotNone(macpack.release_notes_problem(html, "Faster pans\nHEIC fix"))
 
+    def test_escaped_notes_pass(self):
+        # generate_appcast may write a text node rather than CDATA.
+        feed = ('<item><description sparkle:format="plain-text">Fix A &amp; B &lt;fast&gt;\nHEIC fix'
+                '</description></item>')
+        self.assertIsNone(macpack.release_notes_problem(feed, "Fix A & B <fast>\nHEIC fix"))
+        cdata = '<item><description sparkle:format="plain-text"><![CDATA[Fix A & B]]></description></item>'
+        self.assertIsNone(macpack.release_notes_problem(cdata, "Fix A & B"))
+        self.assertIsNotNone(macpack.release_notes_problem(feed, "Fix A &amp; B"))
+
     def test_notes_file_is_held_to_the_manifest_rule(self):
         with tempfile.TemporaryDirectory() as tmp:
             good = Path(tmp) / "good.txt"

@@ -89,11 +89,30 @@ def release_notes_problem(feed: str, notes: str | None) -> str | None:
     if "releaseNotesLink" in feed:
         return "appcast.xml links release notes; the app must make no request beyond the feed"
     if notes:
-        if 'sparkle:format="plain-text"' not in feed or "<description" not in feed:
+        texts = plain_text_descriptions(feed)
+        if not texts:
             return "appcast.xml has no plain-text description for What's new"
-        if notes not in feed:
+        if notes.strip() not in texts:
             return "appcast.xml's description is not the What's new it was given"
     return None
+
+
+_DESCRIPTION = re.compile(r"<description\b([^>]*)>(.*?)</description>", re.DOTALL)
+_CDATA = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.DOTALL)
+
+
+def plain_text_descriptions(feed: str) -> list[str]:
+    """The text of each plain-text <description> in the feed, as the app reads
+    it: CDATA taken as is, anything else with its XML escapes undone, so notes
+    such as "Fix A & B" match however generate_appcast wrote them."""
+    import html
+    out = []
+    for attrs, body in _DESCRIPTION.findall(feed):
+        if not re.search(r'format\s*=\s*["\']plain-text["\']', attrs):
+            continue
+        text = "".join(_CDATA.findall(body)) if "<![CDATA[" in body else html.unescape(body)
+        out.append(text.strip())
+    return out
 
 
 def read_release_notes(path: str) -> str:
