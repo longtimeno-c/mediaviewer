@@ -105,13 +105,23 @@ struct tree_watcher::impl {
       const std::string rel = utf8(info->FileName, chars);
       const std::size_t slash = rel.find_last_of("\\/");
       const std::string parent = slash == std::string::npos ? r.given : r.given + "\\" + rel.substr(0, slash);
+      const std::wstring full = r.given_w + L"\\" + std::wstring(info->FileName, chars);
+      if (info->Action == FILE_ACTION_MODIFIED) {
+        // A folder's own last-write moves with its contents, which report
+        // themselves: walking its parent for it would be a walk a new file.
+        const DWORD attrs = ::GetFileAttributesW(full.c_str());
+        if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+          if (info->NextEntryOffset == 0) break;
+          at += info->NextEntryOffset;
+          continue;
+        }
+      }
       add(parent, 0);
       if (info->Action == FILE_ACTION_REMOVED || info->Action == FILE_ACTION_RENAMED_OLD_NAME) {
         // Gone, so it cannot say whether it was a folder: its rows are.
         add(r.given + "\\" + rel, subtree);
       } else if (info->Action == FILE_ACTION_ADDED || info->Action == FILE_ACTION_RENAMED_NEW_NAME) {
         // One attribute read a new name (local: microseconds).
-        const std::wstring full = r.given_w + L"\\" + std::wstring(info->FileName, chars);
         const DWORD attrs = ::GetFileAttributesW(full.c_str());
         if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
           add(r.given + "\\" + rel, subtree);

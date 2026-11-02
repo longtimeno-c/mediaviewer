@@ -1360,7 +1360,13 @@ TEST_CASE("a watched folder finds new, removed and moved-in files on its own", "
     const auto roots = mv::json::parse(r.eng->roots_json());
     REQUIRE(roots);
     REQUIRE(roots->a.size() == 1);
+#if defined(_WIN32) || defined(__APPLE__)
     CHECK(roots->a[0].boolean("watching").value_or(false));
+#else
+    // No tree watch on Linux yet (tree_watch_none.cpp): the 15-minute walk.
+    CHECK_FALSE(roots->a[0].boolean("watching").value_or(true));
+    SKIP("no tree watch on this OS");
+#endif
   }
   const auto eventually = [&](const std::function<bool()>& done) {
     for (int i = 0; i < 300; ++i) {
