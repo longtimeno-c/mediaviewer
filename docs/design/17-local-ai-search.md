@@ -265,11 +265,12 @@ progress(asset_id, spec, state, resume_ms, tries, indexed_at)     -- per asset a
 frames(id, asset_id, spec, pts_ms, pts_tb, tb_num, tb_den, flags, generic, scale, emb)
 speech(id, asset_id, spec, start_ms, end_ms, text)                 -- Whisper transcript lines
 cues(id, asset_id, start_ms, end_ms, kind, text)                   -- schema 6: chapters, text subtitles (#406)
+tracks(asset_id, points)                                            -- schema 11: a clip's telemetry route (#606)
 ```
 
 `emb` is the int8 vector, `scale` its per-vector scale, `generic` its best cosine against the
 tower's generic prompts. Each schema step (1 -> 2 `media`, 2 -> 3 `cloud`, 3 -> 4 tags, 4 -> 5
-rating and exposure, 5 -> 6 cues) is one
+rating and exposure, 5 -> 6 cues, ..., 10 -> 11 tracks) is one
 transaction and skips a column already there, so a crash mid-migration never leaves an index that
 will not open. A new index is made as schema 3 and takes the same 3 -> 4 step, so a fresh index and
 a migrated one cannot differ.
@@ -323,6 +324,25 @@ one, so 2 s and 1/250 both match). A clip has no exposure block: those stay NULL
 - A rating written to a RAW's XMP sidecar leaves the RAW's own stamp alone, so the index keeps
   the old rating until the file's stamp changes or the index is rebuilt (the base app's
   meta_cache drops its row; the AI index has no such signal yet).
+### Schema 11 (#606, 2026-11-02)
+
+A GoPro or DJI clip's GPS route, so `place:` matches a clip anywhere along it
+([27](27-places.md) "Routes"). `tracks(asset_id PRIMARY KEY, points BLOB)`: at most 128 points
+(`kTrackPoints`) evenly spaced along the route, the first and last kept, as int32 microdegree
+pairs (lat, lon) little-endian. The asset's own `lat` / `lon` stay the route's first fix (what the
+host's `tag_facts` gives it). An asset that goes takes its track; clearing the index empties it.
+
+- **Filling it:** `tags` level 3 (`kTagsLevel`). The backfill asks the host table's `route_of`
+  for 128 points only when the file's tag facts carry `MV_ADDON_TAG_HAS_ROUTE`, so a still or
+  an ordinary clip costs nothing more. Every level-3 read replaces the asset's track (none when
+  the file no longer has a route). A host without `route_of` keeps the backfill at level 2 for
+  the run, so the first host that has it reads the routes.
+- **The step** creates the table and moves every row already at level 2 that is not a clip
+  (`kind <> 2`) to 3, so only clips are read again.
+- **Serving it:** `located_assets` joins the track, and mv.ai.1 `each_location` sends it after
+  the asset's own row as one `MV_ADDON_LOCATION_ROUTE_POINT` row a point, under the same path.
+  `locations_of_index` passes them on; Places matches a path on any of its rows.
+
 ### Schema 6 to 10 (#406, #407, #355, #354)
 
 Schema 6 adds `cues` ("Cues" below). Schema 8 lets `assets.kind` be 4, an audio file (no table
