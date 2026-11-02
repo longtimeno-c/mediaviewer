@@ -78,9 +78,7 @@ adjust_range range_of(adjust_param p) noexcept {
     const int k = (static_cast<int>(p) - static_cast<int>(adjust_param::sel_red_hue)) % 3;
     return {-100.0f, 100.0f, 5.0f, names[k]};
   }
-  switch (p) {
-    default: return {};
-  }
+  return {};
 }
 
 adjust_section section_of(adjust_param p) noexcept {
@@ -116,9 +114,7 @@ adjust_section section_of(adjust_param p) noexcept {
     default: break;
   }
   if (p >= adjust_param::sel_red_hue && p < adjust_param::count) return adjust_section::selective;
-  switch (p) {
-    default: return adjust_section::count;
-  }
+  return adjust_section::count;
 }
 
 colour without_section(const colour& c, adjust_section s) noexcept {
