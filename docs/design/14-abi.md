@@ -1,7 +1,7 @@
 # 14 — The C ABI
 
 The flat C ABI between the hosts' chrome and the C++ core, as declared in
-[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.33**).
+[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.34**).
 
 The Windows host is C# WinUI over `mediaviewer_core.dll` and calls this ABI through P/Invoke
 ([`src.managed/MediaViewer.Interop`](../../src.managed/MediaViewer.Interop/)). The Mac host links
@@ -307,6 +307,14 @@ mv_status mv_folder_tag_generation(mv_session_t, uint64_t* out_generation);
 /* 0.28: a PR 12 write landed (maybe only in the sidecar): read its tags again */
 mv_status mv_folder_forget_tags(mv_session_t, const char* utf8_path);
 mv_status mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap, uint32_t* out_bytes);
+/* 0.34 (#612, 04 "Thumbnail cache upkeep"): Settings -> Storage. The report walks folders
+ * ([worker]); `extra_utf8` adds the shell's places as "id<TAB>path" lines. Clear deletes every
+ * cached thumbnail ([worker]); sweep queues the paced background sweep; the cap (0 = none, the
+ * default) is process-wide and applies to the next sweep. */
+mv_status mv_storage_report_json(const char* extra_utf8, char* utf8, uint32_t cap, uint32_t* out_bytes);
+mv_status mv_thumb_cache_clear(mv_session_t);
+mv_status mv_thumb_cache_sweep(mv_session_t);
+mv_status mv_thumb_cache_set_cap(uint64_t cap_bytes);
 /* 0.27 (#352): the Location editor's text -> MV_LOCATION_POINT (lat / lon, text = preview),
  * _BLANK (remove) or _INVALID (text = why). Pure, no session; mv_location_input is 152 bytes. */
 mv_status mv_meta_parse_location(const char* utf8, mv_location_input* out);
@@ -670,6 +678,7 @@ and inert unless set. The Mac host drives
 | 0.31 | Place terms (#441): `mv_slots_place_terms` (bits `MV_SLOTS_PLACE_TERMS`, `MV_SLOTS_PLACE_PROVIDER`: the Local search query has a `place:` / `in:<place>` term; a loaded add-on answers it). Host table `place_matches` appended after `locations_of_index`, with `mv_addon_path_fn`: the AI pack's engine gets the `place:` provider's paths for one place over the whole index (`slot_registry::provider_paths`), `MV_ERR_NOT_FOUND` with none. Mac bridge: the host's `placeTerms:` selector. #354 (2026-10-16): host table `document_text` appended after `keep_alive` (`mv_addon_doc_text`: a DOCX's text with each paragraph's page; a document's page as pixels is `video_frame_rgb` with `pts_ms` the page); `mediaviewer_ai.h`: `MV_AI_KIND_DOCUMENTS` (4; `MV_AI_KIND_ALL` 15), `MV_AI_FIND_TEXT`, `MV_AI_DOCS_*`, `mv_ai_status` `docs_total` / `docs_done` / `docs_locked` / `docs_failed` appended, `mv_ai_api` `root_set_documents` appended after `each_location`. #354 D2: `mv_ai_status` `pages_total` / `pages_done` appended (page pictures at `MV_AI_DOCS_PAGES`). #354 D4: `mv_ai_status` `scans_total` / `scans_done` appended (scanned PDF pages read by the OS) |
 | 0.32 | The page sidebar (#429): `mv_folder_page_thumbs`, `mv_folder_page_thumb_path`, `MV_COMPLETION_PAGE_THUMB_READY` (13). Mac bridge: `mv_chrome_request_page_thumbs`, `mv_chrome_select_page`, `kMenuPageSidebar`; `MVChromeHost.setPageSidebar` / `pageThumbReady` the other way. Island wire: `chrome_cmd_select_page` (1082), `chrome_cmd_image_opened` (1083), entries `ShowPageSidebar` / `SetPageSidebar` (`chrome_page_sidebar_args`) |
 | 0.33 | Notices and keep-alive (#452, [28 "In the background"](28-driftwire.md#in-the-background-452)): host table `notice_post` (an `mv_addon_notice`: screen, title, body, one button), `notice_authorize` and `keep_alive` appended after `place_matches`; `MV_SLOT_EVENT_NOTICE` (13) for the button; `mv_slots_notices_json` (change bit 64) and `mv_slots_notice_action`. Mac bridge: `mv_chrome_slots_notices`, `mv_chrome_slots_notice_action`, `mv_chrome_background_*`. Windows chrome entry `OpenAddonScreen`. #510 (2026-10-20): host table `busy_post` appended after `document_text` (work an add-on would not have cut off; `mv_slots_notices_json` gains `busy`), version not bumped; Mac bridge `mv_chrome_slot_addon_reload`, `mv_chrome_corner_changed`. #297 (2026-10-26, Enhance slice 4): host table `sound_open` / `sound_read` / `sound_close` (a file's sound at full quality, interleaved, the source's channels or a mix; `mv_addon_sound_info`) and `sound_write_open` / `sound_write` / `sound_write_finish` / `sound_write_close` (a new file beside the source: the OS's AAC in M4A, else FLAC; or the clip's picture stream-copied with the new sound; published under a free name only when finished) appended after `busy_post`, version not bumped. #297 slice 5: `frames_open` / `frames_read` / `frames_close` (every frame of a clip, sRGB RGB; `mv_addon_frames_info`) and `clip_write_open` / `clip_write_frame` / `clip_write_sound` / `clip_write_finish` / `clip_write_close` (a new clip on a hardware encoder, the source's sound copied or new; `mv_addon_clip_out`) appended after `sound_write_close`, version not bumped. #297 slice 3: `still_open` / `still_pixels` / `still_close` (a photo at full resolution as an export decodes it; `mv_addon_still_info`) and `still_write` (a new photo with the source's metadata, under a free name) appended after `clip_write_close`, version not bumped. #601 (2026-11-02, [27 "The folder map"](27-places.md#the-folder-map-601)): host table `open_item` appended after `still_write` (an info section asks the viewer to show a file of the folder of the file on screen; the registry carries it in `mv_slots_info_json`'s `"open": {path, revision}` and each chrome opens it once, if its listing holds it) and `MV_SLOT_EVENT_TAP` (14, a click on an interactive surface, `{x, y}`), version not bumped |
+| 0.34 | Settings → Storage (#612, [04 "Thumbnail cache upkeep"](04-image-pipeline.md#thumbnail-cache-upkeep)): `mv_storage_report_json` (every place MediaViewer keeps, with sizes; a worker call), `mv_thumb_cache_clear`, `mv_thumb_cache_sweep`, `mv_thumb_cache_set_cap`. The session sweeps the cache once, after its first `IMAGE_OPENED`. Mac bridge: `mv_chrome_storage_report`, `mv_chrome_thumb_cache_clear`, `mv_chrome_thumb_cache_cap`, `mv_chrome_set_thumb_cache_cap` |
 
 ## Not built
 
