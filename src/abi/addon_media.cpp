@@ -323,9 +323,49 @@ result<std::unique_ptr<picture_sink>> open_clip_writer(const std::string& source
   return std::unique_ptr<picture_sink>(new adapter(std::move(w)));
 }
 
+namespace {
+
+struct still_edit {
+  std::mutex m;
+  std::string path;
+  edit::geometry g;
+  edit::colour c;
+};
+
+still_edit& edit_slot() {
+  static still_edit s;
+  return s;
+}
+
+}  // namespace
+
+void set_still_edit(const std::string& path, const edit::geometry& g, const edit::colour& c) {
+  still_edit& s = edit_slot();
+  const std::lock_guard<std::mutex> lock(s.m);
+  s.path = path;
+  s.g = g;
+  s.c = c;
+}
+
+void clear_still_edit() {
+  still_edit& s = edit_slot();
+  const std::lock_guard<std::mutex> lock(s.m);
+  s.path.clear();
+}
+
 result<rgb_image> full_still(const std::string& path) {
+  edit::geometry g;
+  edit::colour c;
+  {
+    still_edit& s = edit_slot();
+    const std::lock_guard<std::mutex> lock(s.m);
+    if (!path.empty() && s.path == path) {
+      g = s.g;
+      c = s.c;
+    }
+  }
   MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(path));
-  MV_TRY(codec::raster pic, edit::full_picture(bytes));
+  MV_TRY(codec::raster pic, edit::edited_picture(bytes, g, c));
   rgb_image out;
   out.width = pic.width;
   out.height = pic.height;

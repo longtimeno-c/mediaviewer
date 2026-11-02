@@ -100,6 +100,19 @@ metadata_blobs source_metadata(std::span<const std::uint8_t> source, metadata_po
   return m;
 }
 
+result<codec::raster> edited_picture(std::span<const std::uint8_t> source, const geometry& g,
+                                     const colour& c, const job_context* ctx) {
+  if (g.identity() && c.identity()) return full_picture(source, ctx);
+  MV_TRY(image::linear_image working, image::decode_linear(source, ctx));
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  if (c.has_detail()) {
+    MV_TRY(image::linear_image detailed, apply_detail(working, detail_of(c), ctx));
+    working = std::move(detailed);
+  }
+  const placement p = place(g, size2{working.width, working.height});
+  return bake(working, p, c, ctx);
+}
+
 result<export_result> export_image(std::span<const std::uint8_t> source, const geometry& stack,
                                    const export_options& opt, const job_context* ctx,
                                    const metadata_blobs* carried) {

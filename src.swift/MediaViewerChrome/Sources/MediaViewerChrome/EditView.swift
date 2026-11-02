@@ -68,6 +68,12 @@ struct EditStripView: View {
           .help("Show the original while on (or hold Y)")
           .accessibilityHint("Shows the photo without edits; nothing is changed")
           Spacer()
+          if store.enhance && !store.isClip {
+            Button("Enhance…") { store.enhancePhoto() }
+              .buttonStyle(FlatButtonStyle(compact: true))
+              .fixedSize()
+              .help("A restored copy from the Enhance add-on, with these edits in it")
+          }
           Button("Save copy…") { store.saveCopy() }
             .buttonStyle(FlatButtonStyle(compact: true))
             .fixedSize()

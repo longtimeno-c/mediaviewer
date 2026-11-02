@@ -775,6 +775,16 @@ const addon_command_row* addon_command(command_id id) noexcept {
                                                                : nullptr;
 }
 
+command_id find_addon_command(std::string_view addon, std::string_view id) noexcept {
+  const addon_slots& s = addon_store();
+  for (std::size_t i = 0; i < s.rows.size() && i < static_cast<std::size_t>(kAddonCommandSlots); ++i) {
+    if (s.rows[i].addon == addon && s.rows[i].id == id) {
+      return static_cast<command_id>(static_cast<int>(command_id::addon_cmd_0) + static_cast<int>(i));
+    }
+  }
+  return command_id::none;
+}
+
 mode_mask parse_modes(std::string_view modes) noexcept {
   if (modes == "viewing") return kBrowse | kVideo | kIsland | kGallery;
   if (modes == "video") return kVideo;

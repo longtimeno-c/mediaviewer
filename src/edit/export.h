@@ -82,6 +82,13 @@ struct export_result {
 [[nodiscard]] result<codec::raster> full_picture(std::span<const std::uint8_t> source,
                                                  const job_context* ctx = nullptr);
 
+// docs/plans/edit-adjust.md slice 5: the same with the edit applied, as an
+// export bakes it (detail, geometry, colour), upright, 8-bit sRGB RGBA: what
+// Enhance gets for the photo being edited.
+[[nodiscard]] result<codec::raster> edited_picture(std::span<const std::uint8_t> source,
+                                                   const geometry& g, const colour& c,
+                                                   const job_context* ctx = nullptr);
+
 // New pixels for `source`, encoded with its metadata under `opt.policy`, as
 // an export carries it: Orientation 1, the written size, the EXIF thumbnail
 // dropped (it would show the old picture). `pixels` is sRGB RGBA8.

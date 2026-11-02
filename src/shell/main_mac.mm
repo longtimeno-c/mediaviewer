@@ -75,6 +75,7 @@
 #endif
 #include "shell/adjust_pane.h"
 #include "shell/ai_badge.h"
+#include "abi/addon_media.h"
 #include "abi/clip_session.h"
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
@@ -1766,6 +1767,12 @@ extern "C" void mv_chrome_edit_cancel_crop(void) {
 }
 extern "C" void mv_chrome_edit_show_original(int32_t on) {
   if (g_chrome_app) [g_chrome_app editShowOriginal:on != 0];
+}
+extern "C" void mv_chrome_edit_enhance(void) {
+  (void)mv::shell::crash::note_native_call();
+  if (!g_chrome_app) return;
+  const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
+  if (id != mv::shell::command_id::none) (void)[g_chrome_app runCommand:id back:mv::shell::back_target::none];
 }
 extern "C" void mv_chrome_edit_save_copy(void) {
   (void)mv::shell::crash::note_native_call();
@@ -7427,6 +7434,14 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     _snap.edit[0] = mv::shell::view_of(_edits, _itemId, 0);
   }
   ++_editGeneration;  // the strip's edit count, the Crop pane's draft
+  // Slice 5: Enhance's copy of the photo being edited carries its edit.
+  if (_edits.has_item() && !_items.empty() && _index.current() < _items.size() &&
+      !(_edits.export_geometry().identity() && _edits.colour().identity())) {
+    mv::addon::media::set_still_edit(_items[_index.current()].path_utf8, _edits.export_geometry(),
+                                     _edits.colour());
+  } else {
+    mv::addon::media::clear_still_edit();
+  }
   // A new item, a turn or a crop: words read before no longer line up.
   [self textSync];
 }
@@ -7559,6 +7574,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   out->straighten = _edits.crop_active() ? _edits.crop_angle() : _edits.export_geometry().straighten;
   out->edit_count = static_cast<int32_t>(_edits.edit_count());
   out->show_original = _showOriginal ? 1 : 0;
+  out->enhance = mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none ? 1 : 0;
   if (subject == mv::shell::edit_subject::still && _edits.has_item()) {
     std::uint32_t w = 0, h = 0;
     if (_lab.still_size(_itemId, &w, &h)) {

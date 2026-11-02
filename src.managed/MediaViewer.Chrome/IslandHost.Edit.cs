@@ -29,7 +29,7 @@ public static partial class IslandHost
 {
     // chrome_host.h chrome_edit_args: 12 int/float words, two pointers, two lengths,
     // then the document's app list (pointer, length) and its flag.
-    internal const int EditArgsSize = 88;
+    internal const int EditArgsSize = 96;
 
     private static DesktopWindowXamlSource? _editPane;
     private static bool _editPaneVisible;
@@ -41,6 +41,7 @@ public static partial class IslandHost
         public const int OriginalOff = 1;
         public const int OriginalOn = 2;
         public const int SaveCopy = 3;
+        public const int Enhance = 4;  // slice 5: Enhance's sheet, the copy carrying the edit
     }
 
     // shell::edit_tab and shell::crop_aspect values (both stable on the wire).
@@ -76,6 +77,7 @@ public static partial class IslandHost
     // A PDF or DOCX (docs/design/20): "Open in <app>" and a ▾ of every app,
     // in place of the Edit button. Names come from native, default first.
     private static bool _editDocument;
+    private static bool _editEnhance;  // slice 5: the Enhance add-on is loaded
     private static string[] _openApps = Array.Empty<string>();
     private static StackPanel? _openInBar;
     private static Button? _openInButton;
@@ -151,6 +153,7 @@ public static partial class IslandHost
             _openApps = Utf8(Marshal.ReadInt64(arg, 72), Marshal.ReadInt32(arg, 80))
                 .Split('\n', StringSplitOptions.RemoveEmptyEntries);
             _editDocument = Marshal.ReadInt32(arg, 84) != 0;
+            _editEnhance = Marshal.ReadInt32(arg, 88) != 0;
             RenderEditBarButton();
             if (_editPaneVisible) RenderEdit();
             return 0;
@@ -353,7 +356,7 @@ public static partial class IslandHost
     // The in/out label and whether a marker exists are updated in place, so
     // Set in / Set out keep keyboard focus on the button pressed (issue #222).
     private static string EditShape() =>
-        $"{_editTab}|{_editSubject}|{_editCropActive}|{_editTrimFlags & ~TrimHasMarkerFlag}";
+        $"{_editTab}|{_editSubject}|{_editCropActive}|{_editTrimFlags & ~TrimHasMarkerFlag}|{_editEnhance}";
 
     private static void RenderEdit()
     {
@@ -428,12 +431,21 @@ public static partial class IslandHost
             Button save = EditButton("Save copy…", () => Send(Command.EditAction, EditActions.SaveCopy),
                                      tip: WithKey("Write a new file with these edits; the original is never changed",
                                                   Command.ExportImage));
+            // Slice 5: Enhance's sheet beside Save copy…, its copy carrying
+            // these edits; only while the Enhance add-on is loaded.
+            var right = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
+            if (_editEnhance && !EditIsClip)
+            {
+                right.Children.Add(EditButton("Enhance…", () => Send(Command.EditAction, EditActions.Enhance),
+                                              tip: "A restored copy from the Enhance add-on, with these edits in it"));
+            }
+            right.Children.Add(save);
             var actions = new Grid();
             actions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             actions.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             actions.Children.Add(Row(_editUndo, _editReset, _editOriginalButton));
-            Grid.SetColumn(save, 1);
-            actions.Children.Add(save);
+            Grid.SetColumn(right, 1);
+            actions.Children.Add(right);
             col.Children.Add(actions);
         }
         _editCountText = Hint("");
