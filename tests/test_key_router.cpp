@@ -1678,6 +1678,21 @@ TEST_CASE("Ctrl+Shift+C is copy_path while Shift+C is crop_mode", "[shell][route
   CHECK_FALSE(r.on_key(rep(c, mod_ctrl | mod_shift), s).handled);
 }
 
+TEST_CASE("Ctrl+P prints while plain P stays trim preview", "[shell][router][print]") {
+  key_router r;
+  const key p = char_key('P');
+  // Issue #614: the photo on screen, the marks from a clip or the gallery.
+  CHECK(routed(r, p, mod_ctrl, still()) == command_id::print);
+  CHECK(routed(r, p, mod_ctrl, clip()) == command_id::print);
+  CHECK(routed(r, p, mod_ctrl, in_gallery()) == command_id::print);
+  CHECK(routed(r, p, mod_none, trimming()) == command_id::trim_preview);
+  // Not mid-crop (the draft is not the stack yet) and not in a slideshow.
+  CHECK_FALSE(r.on_key(down(p, mod_ctrl), cropping()).handled);
+  CHECK_FALSE(r.on_key(down(p, mod_ctrl), in_slideshow()).handled);
+  // One dialog per press.
+  CHECK_FALSE(r.on_key(rep(p, mod_ctrl), still()).handled);
+}
+
 TEST_CASE("F7 / F8 copy and move, Ctrl+D unmarks, Ctrl+Shift+F7 imports", "[shell][router][marks]") {
   key_router r;
   for (const view_state& s : {still(), clip(), in_gallery()}) {
