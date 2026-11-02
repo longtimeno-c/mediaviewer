@@ -985,6 +985,9 @@ if(MV_BUILD_TESTS)
     # PR 15: the Explorer handler's portable half (the COM DLL is Windows-only).
     tests/test_thumb_request.cpp
     src/shellext/thumb_request.cpp
+    # Issue #610: clip posters for Finder and Explorer through a seekable reader.
+    tests/test_thumb_poster.cpp
+    src/shellext/thumb_poster.cpp
     # PR 15: the Spotlight importer's field mapping.
     tests/test_spotlight_fields.cpp
     src/shell/spotlight_fields.cpp

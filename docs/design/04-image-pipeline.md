@@ -290,7 +290,9 @@ JPEG encode) and `thumb_store.cpp` (the SQLite index).
 - Visible-first: after `FOLDER_READY` the host reports the on-screen range with
   `mv_folder_thumbs_visible`; those are generated first, then the rest, at the **folder**
   generation so arrow-key navigation does not cancel the filmstrip.
-- The Explorer thumbnail handler uses `make_thumb_rgba` pixels directly.
+- The Explorer thumbnail handler uses `make_thumb_rgba` pixels directly for a still, and
+  `player::poster_frame` over a seekable reader for a clip (#610), so Explorer and Finder show the
+  same poster as the filmstrip ([09](09-build-and-test.md#windows-integration)).
 
 ### Thumbnail cache upkeep
 

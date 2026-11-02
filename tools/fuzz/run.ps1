@@ -51,7 +51,8 @@ $table = [ordered]@{
     raw         = @{ Seeds = @('raw', 'tiff');                          MaxLen = 262144 }
     raw_preview = @{ Seeds = @('raw', 'tiff', 'jpeg');                  MaxLen = 262144 }
     decode      = @{ Seeds = @('jpeg','png','bmp','gif','webp','tiff','ico','heic','avif','raw'); MaxLen = 131072 }
-    thumbnail   = @{ Seeds = @('jpeg','png','bmp','gif','webp','tiff','ico','heic','avif','raw'); MaxLen = 131072 }
+    # #610: clips take the handler's poster path; seeds\video are small MKV / AVI / TS / MP4.
+    thumbnail   = @{ Seeds = @('jpeg','png','bmp','gif','webp','tiff','ico','heic','avif','raw','video'); MaxLen = 131072 }
     animation   = @{ Seeds = @('gif', 'webp', 'png', 'heic', 'avif');   MaxLen = 131072 }
     pdf         = @{ Seeds = @('pdf');                                  MaxLen = 65536 }
     docx        = @{ Seeds = @('docx');                                 MaxLen = 65536 }

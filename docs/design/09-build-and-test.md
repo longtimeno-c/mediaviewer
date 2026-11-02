@@ -265,15 +265,25 @@ Velopack keeps one full package for rollback. `build-release.ps1` fails above 25
   and wizard. On macOS the equivalent is `MvSetDefaultViewer` (`NSWorkspace
   setDefaultApplicationAtURL`).
 - **Explorer thumbnails** (`src/shellext`, `MediaViewerThumbs.dll`): an `IThumbnailProvider`
-  over `IInitializeWithStream`, registered on the `MediaViewer.Image` ProgId only, so it never
-  replaces another vendor's handler. It runs **out of process**: stream-initialised handlers run
-  in the shell's isolated surrogate, and the class also declares its own `DllSurrogate` AppID
-  (`shell/shellext_install.cpp`). A decoder crash on a malformed file takes down `dllhost.exe`,
-  not Explorer. Limits (`shellext/thumb_request.h`): ≤ 512 MB read per request, ≤ 1024 px long
-  edge, 4 s deadline, 4 in flight; it answers "no thumbnail" rather than working hard. No state
-  is shared with the app process and nothing process-wide is changed (the surrogate may host
-  other handlers). The entry point has its own fuzz harness. No property handler: it needs an
-  HKLM registration a per-user install cannot make (macOS has a Spotlight importer instead).
+  over `IInitializeWithStream`, registered on the `MediaViewer.Image` and `MediaViewer.Video`
+  ProgIds only, so it never replaces another vendor's handler. It runs **out of process**:
+  stream-initialised handlers run in the shell's isolated surrogate, and the class also declares
+  its own `DllSurrogate` AppID (`shell/shellext_install.cpp`). A decoder crash on a malformed file
+  takes down `dllhost.exe`, not Explorer. It reads the first 4 KiB and picks a path by magic bytes
+  (`shellext::classify`): a **still** is read whole (≤ 512 MB) and decoded as the filmstrip's
+  thumbnail is; anything else is a **clip** (#610), whose stream is kept and read by FFmpeg through
+  a seekable reader (`shellext/thumb_poster.h` over `player::poster_frame`'s `byte_source`
+  overload), so a 4 GB MKV costs a few reads near its head and index, never 4 GB of memory. The
+  clip gets the filmstrip's poster: the same frame, sample aspect and display matrix, software
+  decode on one thread, no GPU. Both paths share one runner (`shellext/thumb_runner.h`): ≤ 1024 px
+  long edge, 4 s deadline (a clip's reads and FFmpeg's interrupt callback poll it), 4 in flight;
+  it answers "no thumbnail" rather than working hard. FFmpeg's DLLs join the versioned handler
+  folder through the PE import closure, so `avcodec` is mapped in `dllhost`, never in Explorer.
+  The stream is marshalled to the decode thread (`CoMarshalInterThreadInterfaceInStream`), which
+  joins the MTA to read it. No state is shared with the app process and nothing process-wide is changed (the
+  surrogate may host other handlers). The entry point has its own fuzz harness, with stills and
+  clips (`tests/data/seeds/video`). No property handler: it needs an HKLM registration a per-user
+  install cannot make (macOS has a Spotlight importer instead).
 - **Jump list** of pinned and recent folders (`ICustomDestinationList`, honouring user removals),
   and Tasks: New window, Open folder…, Import… while Import is installed (`AddUserTasks`, #617).
   Committed on the pool, only when it changes.
