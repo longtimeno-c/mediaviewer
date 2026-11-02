@@ -275,12 +275,14 @@ Velopack keeps one full package for rollback. `build-release.ps1` fails above 25
   long edge, 4 s deadline (a clip's reads and FFmpeg's interrupt callback poll it), 4 in flight;
   it answers "no thumbnail" rather than working hard. FFmpeg's DLLs join the versioned handler
   folder through the PE import closure, so `avcodec` is mapped in `dllhost`, never in Explorer.
-  The stream is read from the decode thread, which assumes the surrogate's free-threaded file
-  stream. No state is shared with the app process and nothing process-wide is changed (the
+  The stream is marshalled to the decode thread (`CoMarshalInterThreadInterfaceInStream`), which
+  joins the MTA to read it. No state is shared with the app process and nothing process-wide is changed (the
   surrogate may host other handlers). The entry point has its own fuzz harness, with stills and
   clips (`tests/data/seeds/video`). No property handler: it needs an HKLM registration a per-user
   install cannot make (macOS has a Spotlight importer instead).
-- **Jump list** of recent folders (`ICustomDestinationList`, honouring user removals).
+- **Jump list** of pinned and recent folders (`ICustomDestinationList`, honouring user removals),
+  and Tasks: New window, Open folder…, Import… while Import is installed (`AddUserTasks`, #617).
+  Committed on the pool, only when it changes.
 - **SMTC** (`SystemMediaTransportControls`) for media keys and the OS overlay during video.
   The chrome's 150 ms playback poll runs only while a clip is open, and it pushes SMTC's title,
   status and timeline only when one changes or the position jumps (a seek); the OS runs the

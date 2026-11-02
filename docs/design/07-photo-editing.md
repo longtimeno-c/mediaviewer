@@ -27,6 +27,7 @@ struct edit_stack {
 | `straighten` | Set the angle, clockwise, ±45° (`kMaxStraighten`) |
 | `resize` | Set the output size: long edge, exact, or percent |
 | `adjust` | Set one colour parameter (`adjust_param`); `count` resets every colour parameter |
+| `adjust_all` | Set every colour parameter at once (`values`), so auto tone is one undo step |
 
 Undo pops the list; reset clears it and returns the original exactly. `edit_session` keeps one
 stack per (path, size, mtime) for the session (up to 64 stacks, oldest evicted), so walking away
@@ -67,6 +68,38 @@ when the sliders settle, samples at most ~1 M pixels (`kHistogramSampleBudget`),
 B and Rec.709 luma. `pack_histogram` gives both chromes the same 64-bin view, scaled to the
 tallest non-end bin. Clipping uses the viewer blinkies' thresholds (`kClipHighLinear` 0.9911,
 `kClipLowLinear` 0.0003), so the pane's percentages count the pixels `C` blinks.
+
+**Auto tone** (`edit/auto_tone.h`, #289, Preview's Auto Levels): exposure and contrast from the
+histogram. There is no levels op, so it is a levels stretch fitted to the two tone controls the
+kernel has, a gain and a power about 18 % grey, with no new GPU op:
+
+- It reads a histogram computed with exposure and contrast at 0 (`auto_tone_basis`; temperature,
+  tint and saturation as set) and returns absolute values, so a second click gives the same
+  values as the first.
+- Percentiles, interpolated inside the bin: black and white 0.1 % from each end
+  (`kAutoToneClip`), the darkest and brightest of R, G and B, so a saturated highlight is not
+  pushed into clipping; the luma median.
+- Target: white to sRGB 250 (`kAutoToneWhiteCode`, under the blinkies' 254), black to 8
+  (`kAutoToneBlackCode`), stretched in linear light, where an underexposure is a gain (pure
+  exposure) and a haze is an added veil. A white already above 250 is never lowered (a clipped
+  sky stays white) and a black already below 8 is left where it is, so a full-range photo is its
+  own target and nothing changes.
+- Exposure and contrast put the white percentile on its target and the median where the stretch
+  puts it (two points, two unknowns, in log exposure about the pivot), with the black percentile
+  never ending up above where it was.
+- Caps, so a camera JPEG's own curve is only nudged: contrast 0 to +40 (slope ×1.18; auto tone
+  never flattens), exposure ±2 EV. Results within 0.05 EV / 2 contrast of 0 snap to 0. Exposure is
+  rounded to 0.01 EV, contrast to 1.
+- The limit of the controls: a power about 18 % grey cannot subtract an offset. When a lifted
+  (hazy) black needs more than +40 to come down, the black is held and white falls short of 250.
+  A levels or curve op would be a new op, not this one.
+
+`compute_auto_tone` is the histogram reduction plus the fit (a worker job, rule 1; the fit itself
+is a few microseconds). `adjust_pane::request_auto_tone` / `auto_tone_landed` give the job a
+token that a colour change, a new item or a dropped working image makes stale, and
+`edit_session::set_colour` lands the result as one `adjust_all` op. **Owed:** the command and
+its key ([16](16-commands.md)), the button on the Edit pane's Colour tab (the adjust pane) on
+both hosts ([20](20-edit-workspace.md)), and the host plumbing that runs the job and lands it.
 
 **Viewer clipping (`C`)** is a shader on the display blit, not an edit op; with colour edits on,
 it blinks what the edit clips.
@@ -136,7 +169,7 @@ What exists is the first editing set:
 | Built | |
 |---|---|
 | Geometry | Rotate, flip, crop (aspect presets, [20](20-edit-workspace.md)), straighten ±45°, resize |
-| Colour | Exposure, contrast, saturation, temperature, tint |
+| Colour | Exposure, contrast, saturation, temperature, tint; auto tone in the core (no button yet) |
 | Readouts | Histogram (R, G, B, luma) and clipping percentages |
 | Lossless | JPEG rotate / flip / MCU-aligned crop, from the viewer (`[` `]` `H` `V`) or on export |
 | Export | JPEG / PNG, long-edge resize, metadata policy |
@@ -152,7 +185,7 @@ kernel or one more pass, evaluated in the order above.
   curve; per-band HSL; colour grading.
 - Sharpen, noise reduction, dehaze, vignette, grain, split-tone.
 - Local adjustments: gradients, brush masks, healing / clone, red-eye.
-- Auto-straighten, auto-crop, auto-tone.
+- Auto-straighten, auto-crop. (Auto tone is in the core; its button and command are owed, above.)
 - GPU demosaic, highlight recovery, lens profiles, dual-illuminant white balance.
 - A compute-shader ping-pong chain and a cache of pipeline state after early stages (the single
   kernel on the blit does not need them).

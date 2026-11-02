@@ -138,7 +138,9 @@ installed from Settings → Add-ons, never part of the base installer or its upd
   could not reach GitHub, update ready). Download and staging happen in the background. Settings
   → *Default app* → **Make default…** opens the same `ms-settings:defaultapps` page as the
   installer's last step.
-- **macOS**: Sparkle with automatic checks and automatic download; the app also checks on every
+- **macOS**: Settings → *Updates* → *Check for updates* → **Check now** is the app menu's *Check
+  for Updates…* (2026-10-29), Sparkle's own window saying what it found.
+  Sparkle with automatic checks and automatic download; the app also checks on every
   start (Sparkle's scheduled check alone would miss a release for up to 6 h). Sparkle installs a
   zip of the stapled app, never the disk image. Settings → *Automatic update checks* and the app
   menu's **Check for Updates Automatically** are one switch (Sparkle's own

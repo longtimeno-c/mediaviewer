@@ -559,6 +559,297 @@ TEST_CASE("places: search by place finds the files taken there", "[places]") {
   CHECK(place_query::compile(db, " ").empty());
 }
 
+// ---- the folder map (#601) ------------------------------------------------------------
+
+namespace {
+
+std::vector<folder_item> trip_items() {
+  std::vector<folder_item> out;
+  for (const fake_file& f : kFolder) {
+    if (f.has) out.push_back({f.path, f.lat, f.lon});
+  }
+  return out;
+}
+
+// A folder of `n` geotagged items: most within ~30 km of a few spots
+// (a trip's days), the rest over the country, in a fixed order.
+std::vector<folder_item> synthetic_folder(std::size_t n) {
+  std::vector<folder_item> out;
+  std::uint64_t s = 0x9E3779B97F4A7C15ull;
+  const auto next = [&s] {
+    s = s * 6364136223846793005ull + 1442695040888963407ull;
+    return static_cast<double>(s >> 11) / static_cast<double>(1ull << 53);
+  };
+  const double spots[][2] = {{38.7077, -9.1365}, {38.7967, -9.3903}, {41.1413, -8.6110}, {37.0194, -7.9304}};
+  for (std::size_t i = 0; i < n; ++i) {
+    double lat = 0, lon = 0;
+    if (i % 5 == 4) {
+      lat = 37.0 + 5.0 * next();
+      lon = -9.4 + 3.0 * next();
+    } else {
+      const auto& sp = spots[(i / 7) % 4];
+      lat = sp[0] + 0.3 * (next() - 0.5);
+      lon = sp[1] + 0.3 * (next() - 0.5);
+    }
+    char name[64];
+    std::snprintf(name, sizeof name, "/trip/IMG_%04zu.jpg", i);
+    out.push_back({name, lat, lon});
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("places: folder dots land where map_pixel puts them, and cluster by zoom", "[places]") {
+  const auto items = trip_items();
+  // Close in on Lisbon: Sintra and Lisbon are ~25 km apart, two dots.
+  map_view v{38.75, -9.25, 640, 320, 2.0f, 0.6};
+  std::vector<map_dot> dots;
+  cluster_dots(v, items, k_no_item, dots);
+  REQUIRE(dots.size() == 2);
+  for (const map_dot& d : dots) {
+    CHECK(d.count == 1);
+    const folder_item& it = items[d.first];
+    double x = 0, y = 0;
+    map_pixel(v, it.lat, it.lon, x, y);
+    CHECK(d.x == Catch::Approx(x).margin(1e-6));
+    CHECK(d.y == Catch::Approx(y).margin(1e-6));
+    CHECK(d.r == Catch::Approx(k_folder_dot_pt * 2));
+  }
+  // The file on screen is the pin, not a dot.
+  cluster_dots(v, items, 0, dots);  // items[0] is Sintra
+  REQUIRE(dots.size() == 1);
+  CHECK(items[dots[0].first].path == "/trip/lisboa.heic");
+
+  // Country scale: Sintra, Lisbon (and, a cell or a merge away, the rest of
+  // the coast) become one cluster whose first item is the folder's first.
+  v = map_view{39.5, -8.0, 640, 320, 2.0f, 36.0};
+  cluster_dots(v, items, k_no_item, dots);
+  REQUIRE_FALSE(dots.empty());
+  std::uint32_t total = 0;
+  for (const map_dot& d : dots) total += d.count;
+  CHECK(total == items.size() - 1);  // all but Suva fit a 36-degree picture of Portugal
+  const auto coast = std::find_if(dots.begin(), dots.end(), [](const map_dot& d) { return d.first == 0; });
+  REQUIRE(coast != dots.end());
+  CHECK(coast->count >= 2);
+  CHECK(coast->r > k_folder_dot_pt * 2);
+  // Largest first; no two dots overlap.
+  for (std::size_t i = 1; i < dots.size(); ++i) CHECK(dots[i - 1].count >= dots[i].count);
+  for (std::size_t i = 0; i < dots.size(); ++i) {
+    for (std::size_t j = i + 1; j < dots.size(); ++j) {
+      CHECK(std::hypot(dots[i].x - dots[j].x, dots[i].y - dots[j].y) >= dots[i].r + dots[j].r);
+    }
+  }
+
+  // A pan (as the chrome reports one: the pixel scale kept) keeps each
+  // cluster's members: the grid is the world's, not the picture's.
+  std::vector<map_dot> panned;
+  const map_view w = apply_gesture(v, 1.0, 0.5, 0.5, 0.07, 0.04, v.lat, v.lon);
+  REQUIRE(w.lon != v.lon);
+  cluster_dots(w, items, k_no_item, panned);
+  REQUIRE(panned.size() == dots.size());
+  for (std::size_t i = 0; i < dots.size(); ++i) {
+    CHECK(panned[i].count == dots[i].count);
+    CHECK(panned[i].first == dots[i].first);
+  }
+
+  // Off the picture is not drawn; bad views draw nothing.
+  v = map_view{-18.14, 178.44, 640, 320, 2.0f, 1.2};  // Fiji: Suva alone
+  cluster_dots(v, items, k_no_item, dots);
+  REQUIRE(dots.size() == 1);
+  CHECK(items[dots[0].first].path == "/trip/suva.jpg");
+  v.width = 0;
+  cluster_dots(v, items, k_no_item, dots);
+  CHECK(dots.empty());
+  v = map_view{std::numeric_limits<double>::quiet_NaN(), 0, 640, 320, 2.0f, 1.2};
+  cluster_dots(v, items, k_no_item, dots);
+  CHECK(dots.empty());
+}
+
+TEST_CASE("places: folder dots are drawn, and a click finds the dot under it", "[places]") {
+  const auto items = trip_items();
+  const map_view v{38.75, -9.25, 640, 320, 2.0f, 0.6};
+  std::vector<map_dot> dots;
+  cluster_dots(v, items, k_no_item, dots);
+  REQUIRE(dots.size() == 2);
+  const map_palette mp = palette_for(light_theme());
+  const dot_palette dp = dot_palette_for(light_theme());
+  CHECK(dp.fill != (light_theme().accent >> 8));  // never the pin's colour
+  CHECK(dot_palette_for(dark_theme()) != dp);
+  const std::vector<std::uint8_t> base = draw(test_db(), v, mp, "PT");
+  std::vector<std::uint8_t> out = base;
+  REQUIRE(draw_dots(v, dp, dots, out));
+  for (const map_dot& d : dots) {
+    CHECK(distance(pixel_at(out, v.width, static_cast<int>(d.x), static_cast<int>(d.y)), dp.fill) <= 2);
+    // Just outside the ring the map is untouched.
+    const int far_x = static_cast<int>(d.x + d.r + 2 * 2 + 2);
+    const px a = pixel_at(out, v.width, far_x, static_cast<int>(d.y));
+    const px b = pixel_at(base, v.width, far_x, static_cast<int>(d.y));
+    CHECK((a.r == b.r && a.g == b.g && a.b == b.b && a.a == b.a));
+  }
+  // The corners stay transparent.
+  CHECK(pixel_at(out, v.width, 0, 0).a == 0);
+  std::vector<std::uint8_t> small(16);
+  CHECK_FALSE(draw_dots(v, dp, dots, small));
+
+  // Hits: on the dot, within the slop beside it, and nothing far away.
+  const map_dot& d = dots[0];
+  CHECK(dot_at(dots, v, d.x, d.y) == &dots[0]);
+  CHECK(dot_at(dots, v, d.x + d.r + k_folder_hit_slop_pt * 2 - 1, d.y) == &dots[0]);
+  CHECK(dot_at(dots, v, d.x + d.r + k_folder_hit_slop_pt * 2 + 1, d.y) == nullptr);
+  CHECK(dot_at(dots, v, 5, 5) == nullptr);
+
+  CHECK(folder_of("/trip/a.jpg") == "/trip");
+  CHECK(folder_of("C:\\trip\\a.jpg") == "C:\\trip");
+  CHECK(folder_of("photos:ABC") == "");
+  CHECK(folder_of("/a.jpg") == "");
+  CHECK(same_path("C:\\trip\\a.jpg", "C:/trip/a.jpg"));
+  CHECK_FALSE(same_path("/trip/a.jpg", "/trip/b.jpg"));
+}
+
+TEST_CASE("places: This folder draws the folder on the map, and a click opens a dot's file", "[places]") {
+  engine eng([] { return &test_db(); });
+  section_state st;
+  const char* coords = "38.79670\xC2\xB0 N, 9.39030\xC2\xB0 W";
+  // Without a path (or with a Photos library key) there is no folder to show.
+  auto out = eng.section(38.7967, -9.3903, coords, light_theme(), 320, 2, settings{}, st);
+  CHECK(out.tree_json.find(R"("id":"folder")") == std::string::npos);
+  out = eng.section(38.7967, -9.3903, coords, light_theme(), 320, 2, settings{}, st, "photos:ABC");
+  CHECK(out.tree_json.find(R"("id":"folder")") == std::string::npos);
+
+  out = eng.section(38.7967, -9.3903, coords, light_theme(), 320, 2, settings{}, st, "/trip/sintra.jpg");
+  const auto tree = mv::json::parse(out.tree_json);
+  REQUIRE(tree);
+  const auto& kids = tree->find("children")->a;
+  REQUIRE(kids.size() == 5);
+  CHECK(*kids[4].str("type") == "toggle");
+  CHECK(*kids[4].str("label") == std::string(k_folder_toggle));
+  CHECK(kids[4].boolean("value") == false);
+  CHECK_FALSE(eng.folder_layer());
+  CHECK_FALSE(eng.wants_folder(st));
+  REQUIRE(out.map);
+  const std::vector<std::uint8_t> plain = out.map->bgra;
+  CHECK(eng.tap(st, 0.5, 0.5).empty());
+
+  // On: the folder must be read first.
+  std::shared_ptr<const map_image> map;
+  std::string diff;
+  CHECK_FALSE(eng.show_folder(st, true, map, diff));
+  CHECK(eng.folder_layer());
+  REQUIRE(eng.wants_folder(st));
+  auto points = std::make_shared<folder_points>();
+  points->folder = "/trip";
+  points->items = trip_items();
+  eng.set_folder(points);
+  CHECK_FALSE(eng.wants_folder(st));
+  REQUIRE(eng.refresh(st, map, diff));
+  CHECK(diff.find(R"("id":"folder","props":{"value":true})") != std::string::npos);
+  CHECK(diff.find(R"("id":"map")") != std::string::npos);
+  REQUIRE(map);
+  CHECK(map->bgra != plain);
+  REQUIRE_FALSE(st.dots.empty());
+  // The cached base picture is untouched: the dots went into a copy.
+  CHECK(eng.cache().get(test_db(), st.view, palette_for(st.theme), "PT")->bgra == plain);
+  // Sintra is the pin, so no dot sits under it; Lisbon's does.
+  for (const map_dot& d : st.dots) CHECK(points->items[d.first].path != "/trip/sintra.jpg");
+  double lx = 0, ly = 0;
+  map_pixel(st.view, 38.7077, -9.1365, lx, ly);
+  CHECK(eng.tap(st, lx / st.view.width, ly / st.view.height) == "/trip/lisboa.heic");
+  CHECK(eng.tap(st, 0.02, 0.98).empty());
+
+  // Arrow to Lisbon in the same folder: the layer stays on, Lisbon is now the
+  // pin, and nothing new is read.
+  out = eng.section(38.7077, -9.1365, "", light_theme(), 320, 2, settings{}, st, "/trip/lisboa.heic");
+  CHECK(out.tree_json.find(R"("id":"folder","label":"This folder","value":true)") != std::string::npos);
+  CHECK_FALSE(eng.wants_folder(st));
+  REQUIRE_FALSE(st.dots.empty());
+  for (const map_dot& d : st.dots) CHECK(points->items[d.first].path != "/trip/lisboa.heic");
+  // A file the folder did not have when it was read: read it again.
+  out = eng.section(38.70, -9.14, "", light_theme(), 320, 2, settings{}, st, "/trip/new.jpg");
+  CHECK(eng.wants_folder(st));
+  // Another folder: read that one.
+  out = eng.section(38.70, -9.14, "", light_theme(), 320, 2, settings{}, st, "/other/x.jpg");
+  CHECK(eng.wants_folder(st));
+  CHECK(st.dots.empty());
+
+  // Off: the plain map again.
+  out = eng.section(38.7967, -9.3903, coords, light_theme(), 320, 2, settings{}, st, "/trip/sintra.jpg");
+  REQUIRE_FALSE(st.dots.empty());
+  REQUIRE(eng.show_folder(st, false, map, diff));
+  CHECK(map->bgra == plain);
+  CHECK(st.dots.empty());
+  CHECK(eng.tap(st, lx / st.view.width, ly / st.view.height).empty());
+  CHECK_FALSE(eng.show_folder(st, false, map, diff));  // already off: nothing to post
+}
+
+TEST_CASE("places: the folder map over 600 geotagged items at 2x", "[.perf-bench]") {
+  // The verify (#601): a 2,000-file folder with 600 geotagged items draws in
+  // <= 10 ms CPU at 2x on one worker. The 1,400 files without coordinates
+  // cost the walk (locations_in, the host's), not the drawing.
+  auto opened = mv::geo::open_database(full_blob());
+  const bool full = static_cast<bool>(opened);
+  const mv::geo::database& db = full ? (*opened)->db() : test_db();
+  std::printf("places folder map: %s place database\n", full ? "full" : "test (no full blob here)");
+  const auto items = synthetic_folder(600);
+  auto points = std::make_shared<folder_points>();
+  points->folder = "/trip";
+  points->items = items;
+  const map_palette mp = palette_for(light_theme());
+  const dot_palette dp = dot_palette_for(light_theme());
+  std::vector<double> layer_cpu, layer_wall, whole_cpu, cluster_us;
+  std::vector<map_dot> dots;
+  for (int round = 0; round < 5; ++round) {
+    for (int z = 0; z < k_zoom_steps; ++z) {
+      for (const auto& c : {std::pair{38.75, -9.25}, std::pair{39.6, -8.0}, std::pair{41.1, -8.6}}) {
+        const map_view v{c.first, c.second, 640, 320, 2.0f, k_zoom_span_deg[z]};
+        // The base picture (a cache hit in the pane once drawn), then the layer.
+        std::vector<std::uint8_t> base(static_cast<std::size_t>(v.width) * v.height * 4);
+        const std::clock_t b0 = std::clock();
+        REQUIRE(render_map(db, v, mp, "PT", base));
+        const double base_cpu = 1000.0 * static_cast<double>(std::clock() - b0) / CLOCKS_PER_SEC;
+        const auto t0 = std::chrono::steady_clock::now();
+        const std::clock_t c0 = std::clock();
+        cluster_dots(v, items, 0, dots);
+        const auto t1 = std::chrono::steady_clock::now();
+        std::vector<std::uint8_t> copy = base;
+        REQUIRE(draw_dots(v, dp, dots, copy));
+        const double cpu = 1000.0 * static_cast<double>(std::clock() - c0) / CLOCKS_PER_SEC;
+        layer_cpu.push_back(cpu);
+        layer_wall.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        cluster_us.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+        whole_cpu.push_back(base_cpu + cpu);
+      }
+    }
+  }
+  // Through the engine, as the add-on's worker runs it: a refresh at the
+  // section's own view (the base a cache hit, as on screen).
+  engine eng([&db] { return &db; });
+  section_state st;
+  (void)eng.section(38.7077, -9.1365, "", light_theme(), 320, 2, settings{}, st, "/trip/IMG_0000.jpg");
+  std::shared_ptr<const map_image> map;
+  std::string diff;
+  (void)eng.show_folder(st, true, map, diff);
+  eng.set_folder(points);
+  std::vector<double> refresh_cpu;
+  for (int i = 0; i < 50; ++i) {
+    const std::clock_t c0 = std::clock();
+    REQUIRE(eng.refresh(st, map, diff));
+    refresh_cpu.push_back(1000.0 * static_cast<double>(std::clock() - c0) / CLOCKS_PER_SEC);
+  }
+  const auto report = [](const char* what, std::vector<double> v, const char* unit) {
+    std::sort(v.begin(), v.end());
+    std::printf("  %s (%zu): median %.3f / p90 %.3f / max %.3f %s\n", what, v.size(), v[v.size() / 2],
+                v[v.size() * 9 / 10], v.back(), unit);
+  };
+  std::printf("places folder map, 600 items, 640x320 px (2x), %d zoom steps x 3 centres x 5 rounds:\n", k_zoom_steps);
+  report("dot layer CPU (cluster + copy + draw)", layer_cpu, "ms");
+  report("dot layer wall", layer_wall, "ms");
+  report("clustering alone, wall", cluster_us, "us");
+  report("base map + dot layer CPU (a cache miss)", whole_cpu, "ms");
+  report("engine refresh CPU (base a cache hit)", refresh_cpu, "ms");
+  std::printf("  dots at the section's view: %zu\n", st.dots.size());
+}
+
 TEST_CASE("places: map render time at pane width x 160 pt", "[.perf-bench]") {
   auto opened = mv::geo::open_database(full_blob());
   if (!opened) {
