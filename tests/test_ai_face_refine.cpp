@@ -1273,15 +1273,13 @@ TEST_CASE("faces.db: corrections survive merges, the idle merge and a changed fi
   const auto one = [&](const std::vector<float>& base) {
     const auto f = box_in(w, base, 0.1f);
     REQUIRE((*db)->add(asset, "a", -1, std::span<const mv::ai::face_in>(&f, 1)));
-    const auto rows = (*db)->people(1);
-    for (const auto& p : rows) {
-      if (p.cover.asset == asset) {
-        ++asset;
-        return std::make_pair(p.id, p.cover.id);
-      }
+    std::pair<std::int64_t, std::int64_t> found{0, 0};  // (person, face); no FAIL + return: MSVC's C4702
+    for (const auto& p : (*db)->people(1)) {
+      if (p.cover.asset == asset) found = {p.id, p.cover.id};
     }
-    FAIL("no person for the new face");
-    return std::make_pair(std::int64_t{0}, std::int64_t{0});
+    REQUIRE(found.first != 0);
+    ++asset;
+    return found;
   };
   const auto [a1, fa1] = one(anna);
   const auto [a2, fa2] = one(anna);
