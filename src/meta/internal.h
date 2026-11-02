@@ -97,9 +97,34 @@ void read_still(std::span<const std::uint8_t> bytes, bool decoder_orients, metad
 // nullopt when Exiv2 cannot parse `bytes` (a prefix cut mid-segment, say).
 [[nodiscard]] std::optional<field_state> still_fields(std::span<const std::uint8_t> bytes) noexcept;
 
+// #606: how much of a clip's telemetry (GoPro GPMF, DJI subtitle text) a read
+// takes (meta/telemetry.h). `head`: the first few packets, until the first fix
+// (the tag pass, read_location); `full`: every packet, the route thinned to
+// kRouteMaxPoints (the pane, read_route).
+enum class telemetry_read : std::uint8_t { none, head, full };
+inline constexpr std::size_t kRouteMaxPoints = 20000;
+
+struct route_read {
+  std::vector<geo_point> points;  // in order, thinned (route_builder)
+  std::size_t fixes = 0;          // fixes accepted before thinning
+  bool thinned = false;
+  std::string source;             // "GoPro GPMF", "DJI subtitle telemetry"; "" with no points
+  std::size_t packets = 0;        // telemetry-candidate packets read (the read's cost)
+};
+
+// The telemetry of an open libavformat context (an AVFormatContext*, kept
+// opaque so this header names no FFmpeg type). Reads packets of the telemetry
+// stream alone (every other stream is discarded for the read and restored
+// after). Empty when the clip has none. Never throws.
+[[nodiscard]] route_read read_telemetry(void* format_context, telemetry_read mode, std::size_t max_points) noexcept;
+// The header and the whole telemetry of the clip at `utf8_path` (no stream
+// probing). Empty when it cannot be opened or has none.
+[[nodiscard]] route_read clip_route(std::string_view utf8_path, std::size_t max_points) noexcept;
+
 // libavformat: container facts, per-stream inspector, chapters, tags.
 // Returns false when FFmpeg cannot open the file as a clip.
-[[nodiscard]] bool read_clip(std::string_view utf8_path, metadata& out, parse::evidence* ev = nullptr) noexcept;
+[[nodiscard]] bool read_clip(std::string_view utf8_path, metadata& out, parse::evidence* ev = nullptr,
+                             telemetry_read telemetry = telemetry_read::head) noexcept;
 [[nodiscard]] std::optional<std::int64_t> clip_date_key(std::string_view utf8_path) noexcept;
 
 // Parses the XMP sidecar at `sidecar_utf8_path` into `xmp`. False when there is

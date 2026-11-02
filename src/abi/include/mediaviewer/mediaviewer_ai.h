@@ -654,7 +654,10 @@ typedef struct mv_ai_api {
 
   /* ---- the index's coordinates (#398, docs/design/17 "Places over the index") -- */
   /* Every indexed asset whose tags gave coordinates (assets.lat / lon, schema
-   * 4), in id order: `path_utf8` the asset's key, `location.has` = 1. Reads
+   * 4), in id order: `path_utf8` the asset's key, `location.has` =
+   * MV_ADDON_LOCATION_HAS. #606: a GoPro or DJI clip's row is followed by
+   * its route (schema 11's tracks, at most 128 points), one row a point under
+   * the same path with MV_ADDON_LOCATION_HAS | MV_ADDON_LOCATION_ROUTE_POINT. Reads
    * index.db only, never a file; the index is locked for one batch's SELECT
    * (512 rows), never while `visit` runs, so indexing goes on between
    * batches. `visit` returning 0 stops it: MV_ERR_CANCELLED. The host serves

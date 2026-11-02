@@ -332,6 +332,9 @@ constexpr binding kBindings[] = {
     // Issue #429. Appended. Shift+T beside T (the filmstrip): browse and the
     // islands, as the page keys; the gallery types ahead.
     row(C('T'), mod_shift, kBrowse | kIsland, edge, toggle_page_sidebar),
+    // Issue #614. Appended. Ctrl+P was free; plain P stays trim preview (kTrim
+    // only). Viewing modes: the photo on screen, or the marks from the gallery.
+    row(C('P'), mod_ctrl, kViewing, edge, print),
     // docs/design/17 (2026-11-02): this person's photos, beside Find similar. Appended.
     row(C('P'), mod_ctrl | mod_shift, kViewing, edge, search_this_person),
 };
@@ -525,6 +528,7 @@ constexpr command_info kCommands[] = {
     {zoom_af_point, "Zoom to AF point"},
     {compare_two_up, "Compare with previous"},
     {toggle_page_sidebar, "Page sidebar"},
+    {print, "Print…"},
     {search_this_person, "Find this person"},
 };
 

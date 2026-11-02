@@ -3,7 +3,8 @@
 <!--
   Copyright (C) 2026 longtimeno-c
   SPDX-License-Identifier: GPL-3.0-or-later
-  MediaViewerThumbnails.appex: Finder thumbnails for the D5 still set (PR 20).
+  MediaViewerThumbnails.appex: Finder thumbnails for the D5 still set (PR 20)
+  and the clip containers macOS does not thumbnail (issue #610).
   A Quick Look thumbnail extension runs in its own sandboxed process, never in
   Finder. A decoder that crashes on a corrupt file takes down that process
   only. Loading libheif / LibRaw into Finder is the landmine docs/design/15 names,
@@ -54,6 +55,13 @@
         <string>public.avif</string>
         <string>com.microsoft.ico</string>
         <string>public.camera-raw-image</string>
+        <!-- Issue #610: the D5 clip containers macOS cannot thumbnail (the
+             same four the Spotlight importer claims). MP4 and QuickTime stay
+             with Apple's own thumbnailer. -->
+        <string>org.matroska.mkv</string>
+        <string>org.webmproject.webm</string>
+        <string>public.avi</string>
+        <string>public.mpeg-2-transport-stream</string>
       </array>
     </dict>
   </dict>

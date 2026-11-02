@@ -65,6 +65,24 @@ constexpr int kSettleMs = 60000;
 // without a core for over a minute under `ctest -j` beside other builds.
 constexpr mv::ai::engine_options kTestOptions{.background_threads = false};
 
+// #606: the route of a "route" file: Sintra east to Badajoz, 300 fixes,
+// thinned to what is asked for. A plain function, not a lambda in the rig:
+// MSVC 19.5x Debug hit an internal compiler error (C1001) on the lambda form.
+mv::result<std::vector<mv_addon_route_point>> fake_route(const std::string& name, std::uint32_t max_points) {
+  std::vector<mv_addon_route_point> out;
+  if (name.find("route") == std::string::npos) return out;
+  const std::uint32_t n = std::min<std::uint32_t>(300, max_points);
+  out.reserve(n);
+  for (std::uint32_t i = 0; i < n; ++i) {
+    const double t = n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.0;
+    mv_addon_route_point p{};
+    p.lat = 38.7975 + (38.8786 - 38.7975) * t;
+    p.lon = -9.3883 + (-6.9703 + 9.3883) * t;
+    out.push_back(p);
+  }
+  return out;
+}
+
 double ms_since(std::chrono::steady_clock::time_point t0) {
   return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
@@ -898,6 +916,12 @@ struct rig {
         out.lat = 38.7975;
         out.lon = -9.3883;
       }
+      // #606: "route" is a GoPro clip whose telemetry starts in Sintra.
+      if (name.find("route") != std::string::npos) {
+        out.flags |= MV_ADDON_TAG_HAS_LOCATION | MV_ADDON_TAG_HAS_ROUTE;
+        out.lat = 38.7975;
+        out.lon = -9.3883;
+      }
       // #405: "iso400" is ISO 400, f/2.8, 1/250 s, 35 mm, five stars, Red;
       // anything else is unrated with no exposure (a clip's case too).
       if (name.find("iso400") != std::string::npos) {
@@ -919,6 +943,10 @@ struct rig {
       }
       std::strcpy(out.fields_utf8, fields.c_str());
       return true;
+    };
+    // #606: a "route" file's telemetry route (fake_route).
+    svc.route = [](const std::string& path, std::uint32_t max_points) {
+      return fake_route(utf8(fs::path(path).filename()), max_points);
     };
     // #406: a clip named "*cues*" has a chapter "Birthday cake" at 4 s and a
     // subtitle "suited and booted" at 7 s; "*manycues*" 200 subtitle lines a
@@ -1786,7 +1814,7 @@ TEST_CASE("clearing the index frees it and a size cap stops indexing", "[ai][eng
 }
 
 // The schema a fresh or migrated index ends at (index_db.cpp kSchemaVersion).
-constexpr const char* kSchemaNow = "10";
+constexpr const char* kSchemaNow = "11";
 
 TEST_CASE("schema 8 migrates to 9: documents' passages, their words and a folder's choice (#354)",
           "[ai][engine][documents]") {
@@ -2252,6 +2280,94 @@ TEST_CASE("the index lists its geotagged assets in batches, from index.db alone"
     REQUIRE_FALSE(stopped);
     CHECK(stopped.error() == mv::status::cancelled);
     CHECK(seen == 1);
+  }
+}
+
+// #606: a GoPro or DJI clip's route, kept in tracks (schema 11) by the tag
+// backfill and streamed after its own row, under its path, to Places.
+TEST_CASE("a clip's telemetry route is kept and streamed after its position", "[ai][engine][tags][places]") {
+  SECTION("index_db: schema 10 migrates, only clips are read again, tracks round-trip") {
+    scratch_dir dir{"ai-tracks"};
+    const std::string path = utf8(dir / "index.db");
+    std::int64_t photo = 0, clip = 0;
+    {
+      auto d = mv::ai::index_db::open(path);
+      REQUIRE(d);
+      auto root = (*d)->add_root("/library", true);
+      REQUIRE(root);
+      const std::vector<mv::ai::index_db::seen_file> files = {{"/library/a.jpg", 1, 100, mv::ai::asset_kind::photo},
+                                                              {"/library/b.mp4", 1, 100, mv::ai::asset_kind::video}};
+      auto ups = (*d)->see_assets(*root, files, (*d)->next_generation());
+      REQUIRE(ups);
+      photo = (*ups)[0].id;
+      clip = (*ups)[1].id;
+      std::vector<mv::ai::asset_tags> tags(2);
+      for (int i = 0; i < 2; ++i) {
+        tags[i].id = (*ups)[i].id;
+        tags[i].mtime = 1;
+        tags[i].size = 100;
+        tags[i].level = 2;  // as a schema 10 pack read them
+      }
+      REQUIRE((*d)->commit_tags(tags));
+      // Back to schema 10, as an older pack left it.
+      REQUIRE((*d)->set_meta("schema", "10"));
+      sqlite3* raw = nullptr;
+      REQUIRE(sqlite3_open(path.c_str(), &raw) == SQLITE_OK);
+      REQUIRE(sqlite3_exec(raw, "DROP TABLE tracks;", nullptr, nullptr, nullptr) == SQLITE_OK);
+      sqlite3_close(raw);
+    }
+    auto d = mv::ai::index_db::open(path);
+    REQUIRE(d);
+    CHECK((*d)->meta("schema") == kSchemaNow);
+    // The photo has nothing more to read; the clip is read again for its route.
+    const auto todo = (*d)->assets_needing_tags(10);
+    REQUIRE(todo.size() == 1);
+    CHECK(todo[0].id == clip);
+    mv::ai::asset_tags t;
+    t.id = clip;
+    t.mtime = 1;
+    t.size = 100;
+    t.has_where = true;
+    t.lat = 38.7975;
+    t.lon = -9.3883;
+    for (int i = 0; i < 200; ++i) t.track.push_back({38.7975 + i * 1e-3, -9.3883 + i * 1e-3});
+    t.track.push_back({std::nan(""), 0});  // dropped, never stored
+    REQUIRE((*d)->commit_tags(std::span<const mv::ai::asset_tags>(&t, 1)));
+    CHECK((*d)->assets_needing_tags(10).empty());
+    auto located = (*d)->located_assets(0, 512);
+    REQUIRE(located);
+    REQUIRE(located->size() == 1);
+    const auto& l = located->front();
+    CHECK(l.id == clip);
+    REQUIRE(l.track.size() == mv::ai::kTrackPoints);  // capped
+    CHECK(std::abs(l.track.front().lat - 38.7975) < 1e-6);
+    CHECK(std::abs(l.track.back().lon - (-9.3883 + 127 * 1e-3)) < 1e-6);
+    // Read again with no route: the track goes.
+    t.track.clear();
+    REQUIRE((*d)->commit_tags(std::span<const mv::ai::asset_tags>(&t, 1)));
+    CHECK((*d)->located_assets(0, 512)->front().track.empty());
+    (void)photo;
+  }
+  SECTION("engine: the backfill reads the route of a clip that has one") {
+    rig r;
+    r.file("blue_route.jpg");
+    r.file("green_geo.jpg");
+    r.start();
+    REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+    REQUIRE(r.idle());
+    std::size_t route_points = 0, plain = 0;
+    REQUIRE(r.eng->each_location([&](const mv::ai::index_db::located& l) {
+      if (l.path.find("route") != std::string::npos) {
+        route_points = l.track.size();
+        CHECK(std::abs(l.track.back().lon + 6.9703) < 1e-6);  // it ends at Badajoz
+      } else {
+        ++plain;
+        CHECK(l.track.empty());
+      }
+      return true;
+    }));
+    CHECK(route_points == mv::ai::kTrackPoints);
+    CHECK(plain == 1);
   }
 }
 

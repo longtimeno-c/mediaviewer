@@ -4,9 +4,10 @@
 """Policy check for the macOS bundle metadata (PR 20). Runs anywhere; nothing
 here needs a Mac.
 
-  - The app's document types and the Quick Look extension's supported types
-    are the same list, and it covers every still format_family the codec
-    probes (src/codec/format.h), the D5 still set.
+  - The Quick Look extension's supported types are the app's still document
+    types plus the clip containers macOS cannot thumbnail (issue #610), and
+    the stills cover every still format_family the codec probes
+    (src/codec/format.h), the D5 still set.
   - Every document type is LSHandlerRank Alternate: listed in Open With,
     never a silent default-app hijack (docs/design/15 PR 20).
   - The extension is sandboxed and asks for nothing else.
@@ -39,7 +40,10 @@ FAMILY_UTIS = {
 }
 
 # The D5 video containers (src/shell/media_kind.h). Video has its own document
-# type; Quick Look thumbnails stay stills-only.
+# type. Quick Look thumbnails the containers macOS cannot (issue #610, the
+# Spotlight importer's four) and leaves MP4 / QuickTime to Apple.
+QL_VIDEO_UTIS = {"org.matroska.mkv", "org.webmproject.webm", "public.avi",
+                 "public.mpeg-2-transport-stream"}
 # docs/design/25: the add-on package, MediaViewer's own exported type.
 ADDON_UTIS = {"io.github.longtimeno-c.mediaviewer.addon"}
 
@@ -125,9 +129,12 @@ def main() -> int:
         problems.append("extension is not a Quick Look thumbnail extension")
     ql_utis = set(ext.get("NSExtensionAttributes", {}).get("QLSupportedContentTypes", []))
 
-    if app_utis != ql_utis:
-        problems.append(f"app and Quick Look types differ: only app {sorted(app_utis - ql_utis)}, "
-                        f"only Quick Look {sorted(ql_utis - app_utis)}")
+    if not QL_VIDEO_UTIS <= VIDEO_UTIS:
+        problems.append("Quick Look's clip types must be D5 video containers")
+    want_ql = app_utis | QL_VIDEO_UTIS
+    if want_ql != ql_utis:
+        problems.append(f"Quick Look types must be the app's stills plus {sorted(QL_VIDEO_UTIS)}: "
+                        f"missing {sorted(want_ql - ql_utis)}, extra {sorted(ql_utis - want_ql)}")
 
     families = format_families()
     for family in families:

@@ -58,6 +58,7 @@
 #include "image/page_thumbs.h"
 #include "io/collision_name.h"
 #include "io/paths.h"
+#include "io/storage.h"
 #include "io/file.h"
 #include "io/replace.h"
 #include "io/dir.h"
@@ -95,6 +96,7 @@
 #include "meta/tables.h"
 #include "shell/key_router.h"
 #include "shell/keymap.h"
+#include "shell/print_layout.h"
 #include "shell/meta_store.h"
 #include "meta/tag_index.h"
 #include "shell/present_busy.h"
@@ -710,6 +712,8 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (uint64_t)galleryRangeGeneration;
 - (NSInteger)galleryRangeCount;
 - (uint64_t)thumbGeneration;
+// #612: the thumbnail cache's sweep, now (Settings set a cap).
+- (void)startThumbSweep;
 - (std::string)thumbKeyAtIndex:(NSInteger)index;
 - (std::string)listingSnapshot;
 - (BOOL)isIndexMarked:(NSInteger)index;
@@ -1314,6 +1318,14 @@ int32_t MvCopyOut(const std::string& out, char* buf, int32_t size) {
   return static_cast<int32_t>(out.size());
 }
 
+// #612 (docs/design/04 "Thumbnail cache upkeep"): Settings -> Storage's cap
+// for the thumbnail cache in bytes, 0 (the default) none; kept in the user's
+// defaults, read at launch, applied by the next sweep. And the host's folder
+// model, for Clear from Swift's background task (it lives as long as the app).
+std::atomic<std::uint64_t> g_thumb_cache_cap{0};
+std::atomic<mv::shell::folder_model*> g_storage_folder{nullptr};
+NSString* const kThumbCacheCapDefault = @"mv.thumbCacheCap";
+
 // What a path handed to the app names: the folder to open and, for a file, the
 // file to select there. One stat (containing_dir() would take a second); false
 // when nothing exists. A worker's call, but for the launch open.
@@ -1571,6 +1583,30 @@ extern "C" int32_t mv_chrome_tag_search(const char* query_utf8, char* buf, int32
 }
 extern "C" uint64_t mv_chrome_tag_generation(void) {
   return g_chrome_app ? [g_chrome_app tagGeneration] : 0;
+}
+// #612: Settings -> Storage. [any-thread]: walks folders, called from Swift's
+// background task, never the main thread. The core's places (io/storage.h)
+// and the crash database; the Mac keeps no telemetry spool.
+extern "C" int32_t mv_chrome_storage_report(char* buf, int32_t size) {
+  std::vector<mv::io::storage_place> extra;
+  if (std::string crashes = mv::shell::crash::crashes_dir(); !crashes.empty()) {
+    extra.push_back({"crash_reports", std::move(crashes)});
+  }
+  return MvCopyOut(mv::io::storage_json(mv::io::measure_storage(extra)), buf, size);
+}
+// [any-thread], a background task: deletes every cached thumbnail.
+extern "C" bool mv_chrome_thumb_cache_clear(void) {
+  mv::shell::folder_model* folder = g_storage_folder.load(std::memory_order_acquire);
+  return folder != nullptr && folder->clear_thumb_cache().has_value();
+}
+extern "C" uint64_t mv_chrome_thumb_cache_cap(void) {
+  return g_thumb_cache_cap.load(std::memory_order_relaxed);
+}
+// [main-thread] Saves the cap, and sweeps now when there is one.
+extern "C" void mv_chrome_set_thumb_cache_cap(uint64_t bytes) {
+  g_thumb_cache_cap.store(bytes, std::memory_order_relaxed);
+  [[NSUserDefaults standardUserDefaults] setObject:@(bytes) forKey:kThumbCacheCapDefault];
+  if (bytes != 0 && g_chrome_app) [g_chrome_app startThumbSweep];
 }
 extern "C" int32_t mv_chrome_current_folder(char* buf, int32_t size) {
   if (!g_chrome_app) return MvCopyOut("", buf, size);
@@ -2563,6 +2599,244 @@ static void MvAdoptNewDefaultViewerTypes() {
 }
 #endif
 
+// ---- Issue #614: Print (⌘P; docs/design/16 "Print", shell/print_layout.h) ---------
+//
+// The bake runs on the pool before the panel opens ("Preparing to print…"),
+// sized for the paper Page Setup holds; nothing is written, so Cancel leaves no
+// file. NSPrintOperation then runs modal for the window (a sheet) over
+// MvPrintView, with MvPrintOptions as the panel's accessory: fit or fill, the
+// sheet's layout and its file names. The operation spools on its own thread
+// (canSpawnSeparateThread), so the main thread never draws a page.
+
+// A CGImage over a baked picture: tagged sRGB (the bake), or with the picture's
+// own ICC profile (the re-encode path keeps it), so Quartz colour-manages to
+// the printer what the export's PNG holds. Any thread. The pixels are copied:
+// the raster can go once this returns.
+static CGImageRef MvPrintImage(const mv::codec::raster& r) {
+  if (r.width == 0 || r.height == 0 || r.rgba.size() < static_cast<std::size_t>(r.width) * r.height * 4) {
+    return nullptr;
+  }
+  CFDataRef bytes = CFDataCreate(nullptr, r.rgba.data(), static_cast<CFIndex>(r.rgba.size()));
+  CGDataProviderRef provider = bytes ? CGDataProviderCreateWithCFData(bytes) : nullptr;
+  if (bytes) CFRelease(bytes);
+  CGColorSpaceRef space = nullptr;
+  if (!r.icc.empty()) {
+    CFDataRef icc = CFDataCreate(nullptr, r.icc.data(), static_cast<CFIndex>(r.icc.size()));
+    if (icc) {
+      space = CGColorSpaceCreateWithICCData(icc);
+      CFRelease(icc);
+    }
+  }
+  if (!space) space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGImageRef cg = provider && space
+                      ? CGImageCreate(r.width, r.height, 8, 32, static_cast<std::size_t>(r.width) * 4, space,
+                                      static_cast<CGBitmapInfo>(kCGImageAlphaLast), provider, nullptr, true,
+                                      kCGRenderingIntentPerceptual)
+                      : nullptr;
+  CGColorSpaceRelease(space);
+  CGDataProviderRelease(provider);
+  return cg;
+}
+
+// The paper NSPrintInfo describes, in print_layout's terms (top-left origin).
+static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
+  const NSSize paper = info.paperSize;
+  const NSRect ib = info.imageablePageBounds;  // bottom-left origin
+  mv::shell::print_page page;
+  page.width = paper.width;
+  page.height = paper.height;
+  page.printable = {ib.origin.x, paper.height - NSMaxY(ib), ib.size.width, ib.size.height};
+  return page;
+}
+
+// The print panel's accessory. Each property is KVO-observed by the panel
+// (keyPathsForValuesAffectingPreview), so the preview follows the controls.
+@interface MvPrintOptions : NSViewController <NSPrintPanelAccessorizing>
+@property(nonatomic) BOOL sheet;
+@property(nonatomic) BOOL fill;
+@property(nonatomic) BOOL captions;
+@property(nonatomic) NSInteger grid;  // index into kContactGrids; -1 automatic
+@end
+
+@implementation MvPrintOptions
+
+- (void)loadView {
+  NSButton* fill = [NSButton checkboxWithTitle:@"Fill the page (crops the photo to the paper’s shape)"
+                                        target:self
+                                        action:@selector(fillChanged:)];
+  fill.state = self.fill ? NSControlStateValueOn : NSControlStateValueOff;
+  fill.enabled = !self.sheet;
+  NSTextField* label = [NSTextField labelWithString:@"Contact sheet layout:"];
+  NSPopUpButton* grid = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+  for (int i = -1; i < mv::shell::kContactGridCount; ++i) {
+    [grid addItemWithTitle:@(mv::shell::contact_grid_label(i))];
+  }
+  [grid selectItemAtIndex:self.grid + 1];
+  grid.target = self;
+  grid.action = @selector(gridChanged:);
+  grid.enabled = self.sheet;
+  NSButton* captions = [NSButton checkboxWithTitle:@"Print file names" target:self action:@selector(captionsChanged:)];
+  captions.state = self.captions ? NSControlStateValueOn : NSControlStateValueOff;
+  captions.enabled = self.sheet;
+  NSStackView* row = [NSStackView stackViewWithViews:@[ label, grid ]];
+  NSStackView* stack = [NSStackView stackViewWithViews:@[ fill, row, captions ]];
+  stack.orientation = NSUserInterfaceLayoutOrientationVertical;
+  stack.alignment = NSLayoutAttributeLeading;
+  stack.edgeInsets = NSEdgeInsetsMake(12, 20, 12, 20);
+  [stack setFrameSize:stack.fittingSize];
+  self.view = stack;
+}
+
+- (void)fillChanged:(NSButton*)sender {
+  self.fill = sender.state == NSControlStateValueOn;
+}
+
+- (void)captionsChanged:(NSButton*)sender {
+  self.captions = sender.state == NSControlStateValueOn;
+}
+
+- (void)gridChanged:(NSPopUpButton*)sender {
+  self.grid = sender.indexOfSelectedItem - 1;
+}
+
+- (NSSet<NSString*>*)keyPathsForValuesAffectingPreview {
+  return [NSSet setWithObjects:@"fill", @"captions", @"grid", nil];
+}
+
+- (NSArray<NSDictionary<NSPrintPanelAccessorySummaryKey, NSString*>*>*)localizedSummaryItems {
+  NSString* layout = self.sheet ? @(mv::shell::contact_grid_label(static_cast<int>(self.grid)))
+                                : (self.fill ? @"Fill the page" : @"Fit to the page");
+  return @[ @{NSPrintPanelAccessorySummaryItemNameKey : @"Layout",
+              NSPrintPanelAccessorySummaryItemDescriptionKey : layout} ];
+}
+
+- (mv::shell::print_options)chosenOptions {
+  mv::shell::print_options o;
+  o.fit = self.fill ? mv::shell::print_fit::fill : mv::shell::print_fit::fit;
+  o.captions = self.captions;
+  o.grid = static_cast<int>(self.grid);
+  return o;
+}
+
+@end
+
+// The pages: one photo, or the sheet's cells page by page, stacked down a
+// flipped view one paper-height apart. Immutable once made, so the print
+// thread may draw it.
+@interface MvPrintView : NSView
+- (instancetype)initWithImages:(NSArray*)images
+                         names:(std::vector<std::string>)names
+                         sheet:(BOOL)sheet
+                       options:(MvPrintOptions*)options;
+@end
+
+@implementation MvPrintView {
+  NSArray* _images;  // CGImageRef, bridged
+  std::vector<std::string> _names;
+  BOOL _sheet;
+  MvPrintOptions* _options;
+  mv::shell::print_page _page;
+}
+
+- (instancetype)initWithImages:(NSArray*)images
+                         names:(std::vector<std::string>)names
+                         sheet:(BOOL)sheet
+                       options:(MvPrintOptions*)options {
+  const mv::shell::print_page page = MvPrintPage(NSPrintInfo.sharedPrintInfo);
+  self = [super initWithFrame:NSMakeRect(0, 0, page.width, page.height)];
+  if (self) {
+    _page = page;
+    _images = images;
+    _names = std::move(names);
+    _sheet = sheet;
+    _options = options;
+  }
+  return self;
+}
+
+- (BOOL)isFlipped {
+  return YES;
+}
+
+- (mv::shell::print_grid)grid {
+  return mv::shell::contact_grid(_images.count, static_cast<int>(_options.grid));
+}
+
+- (BOOL)knowsPageRange:(NSRangePointer)range {
+  NSPrintOperation* op = [NSPrintOperation currentOperation];
+  _page = MvPrintPage(op ? op.printInfo : NSPrintInfo.sharedPrintInfo);
+  const NSInteger pages =
+      _sheet ? std::max<NSInteger>(1, mv::shell::contact_pages(_images.count, [self grid])) : 1;
+  [self setFrameSize:NSMakeSize(_page.width, _page.height * pages)];
+  *range = NSMakeRange(1, static_cast<NSUInteger>(pages));
+  return YES;
+}
+
+- (NSRect)rectForPage:(NSInteger)page {
+  return NSMakeRect(0, _page.height * static_cast<CGFloat>(page - 1), _page.width, _page.height);
+}
+
+// `image` at `at` on page `page`: the drawn part of the picture into its rect.
+- (void)drawImage:(CGImageRef)image at:(const mv::shell::print_placement&)at page:(std::uint32_t)page {
+  const CGFloat w = CGImageGetWidth(image);
+  const CGFloat h = CGImageGetHeight(image);
+  NSImage* ns = [[NSImage alloc] initWithCGImage:image size:NSMakeSize(w, h)];
+  // NSImage's own space is bottom-up: the top-left source rect flips.
+  const NSRect from = NSMakeRect(at.source.x * w, (1.0 - at.source.y - at.source.h) * h, at.source.w * w,
+                                 at.source.h * h);
+  const NSRect to = NSMakeRect(at.dest.x, at.dest.y + _page.height * page, at.dest.w, at.dest.h);
+  [ns drawInRect:to fromRect:from operation:NSCompositingOperationSourceOver fraction:1.0 respectFlipped:YES hints:nil];
+}
+
+- (void)drawRect:(NSRect)dirty {
+  [[NSColor whiteColor] setFill];
+  NSRectFill(dirty);
+  const mv::shell::print_rect area = mv::shell::print_area(_page);
+  if (!_sheet) {
+    CGImageRef image = (__bridge CGImageRef)_images.firstObject;
+    if (!image) return;
+    const mv::shell::print_fit fit = _options.fill ? mv::shell::print_fit::fill : mv::shell::print_fit::fit;
+    [self drawImage:image
+                 at:mv::shell::place_picture(area, static_cast<std::uint32_t>(CGImageGetWidth(image)),
+                                             static_cast<std::uint32_t>(CGImageGetHeight(image)), fit)
+               page:0];
+    return;
+  }
+  const mv::shell::print_grid grid = [self grid];
+  const bool captions = _options.captions;
+  NSMutableParagraphStyle* para = [[NSMutableParagraphStyle alloc] init];
+  para.alignment = NSTextAlignmentCenter;
+  para.lineBreakMode = NSLineBreakByTruncatingMiddle;
+  NSDictionary* attrs = @{
+    NSFontAttributeName : [NSFont systemFontOfSize:mv::shell::kCaptionPoints],
+    NSForegroundColorAttributeName : [NSColor colorWithWhite:0.25 alpha:1.0],
+    NSParagraphStyleAttributeName : para,
+  };
+  for (NSUInteger i = 0; i < _images.count; ++i) {
+    const mv::shell::contact_cell cell = mv::shell::contact_cell_at(area, grid, i, captions);
+    const CGFloat top = _page.height * cell.page;
+    const NSRect bounds = NSMakeRect(cell.frame.x, cell.frame.y + top, cell.frame.w,
+                                     cell.frame.h + (captions ? cell.caption.h : 0.0));
+    if (!NSIntersectsRect(bounds, dirty)) continue;
+    CGImageRef image = (__bridge CGImageRef)_images[i];
+    [self drawImage:image
+                 at:mv::shell::place_picture(cell.frame, static_cast<std::uint32_t>(CGImageGetWidth(image)),
+                                             static_cast<std::uint32_t>(CGImageGetHeight(image)),
+                                             mv::shell::print_fit::fit)
+               page:cell.page];
+    if (captions && i < _names.size()) {
+      const std::string_view name = mv::shell::print_caption(_names[i]);
+      NSString* text = [[NSString alloc] initWithBytes:name.data() length:name.size() encoding:NSUTF8StringEncoding];
+      [text drawWithRect:NSMakeRect(cell.caption.x, cell.caption.y + top, cell.caption.w, cell.caption.h)
+                 options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
+              attributes:attrs
+                 context:nil];
+    }
+  }
+}
+
+@end
+
 @implementation MvLabApp {
   mv::shell::present_lab_mac _lab;
   mv::shell::input_snapshot _snap;
@@ -2706,6 +2980,8 @@ static void MvAdoptNewDefaultViewerTypes() {
   // metadata write) and refreshes its size / mtime without a relist: Swift
   // re-reads the thumbnail keys when it moves (mv_chrome_thumb_generation).
   std::uint64_t _thumbGeneration;
+  // #612: the thumbnail cache's sweep, once a launch, after the first image.
+  BOOL _thumbSweepStarted;
   BOOL _helpVisible;
 
   // Settings screen + the router. _viewFlags uses the same bit layout as
@@ -2761,6 +3037,11 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::set<std::string> _kindKept;
   BOOL _kindFilterChanged;
   BOOL _renamePending;  // issue #210: one F2 rename at a time
+  // Issue #614: ⌘P. One print prepared at a time; the panel's last answer
+  // (this run only) and the accessory of the panel on screen.
+  BOOL _printBusy;
+  mv::shell::print_options _printOptions;
+  MvPrintOptions* _printOptionsPanel;
 
   // Slideshow (docs/design/16 "Slideshow", folded into PR 18 -- stills only, no
   // video on Mac yet, PR 19). _enteredFullscreenForSlideshow distinguishes
@@ -3461,6 +3742,13 @@ static void MvAdoptNewDefaultViewerTypes() {
   // The Mac host has no mv_session: its job workers are the session's twin.
   mv::boot::mark(mv::boot::stage::session_created);
   _options.jobs = &_jobs;
+  // #612: Clear reaches the folder model from Swift's background task; the
+  // cache's cap is the user's choice from before (no file read: defaults).
+  g_storage_folder.store(&_folder, std::memory_order_release);
+  g_thumb_cache_cap.store(static_cast<std::uint64_t>(std::max<long long>(
+                              0, [[[NSUserDefaults standardUserDefaults] objectForKey:kThumbCacheCapDefault]
+                                     longLongValue])),
+                          std::memory_order_relaxed);
   _tags = std::make_unique<mv::meta::tag_index>(
       mv::meta::tag_index::cache_fn([] { return &mv::meta::default_meta_cache(); }),
       [](std::string_view path) -> mv::result<mv::meta::search_facts> {
@@ -4217,6 +4505,7 @@ static void MvAdoptNewDefaultViewerTypes() {
     }
   }
   [self startTagScanIfDue];
+  [self startThumbSweepIfDue];
   // Issue #207: ratings and labels arriving on the pool re-apply a cull filter.
   if (_meta.consume_cull_changed() && mv::io::needs_cull_marks(mv::io::kind_filter_mask(_kindFilter))) {
     _refilterListing = YES;
@@ -5804,6 +6093,7 @@ static mv::shell::command_id MvMenuCommand(NSInteger cmd) {
     case kMenuShare: return share;
     case kMenuCopyPath: return copy_path;
     case kMenuCopyEdited: return copy_flattened;
+    case kMenuPrint: return print;
     case kMenuNewWindow: return new_window;
     case kMenuRename: return rename_file;
     default: return none;
@@ -5822,6 +6112,7 @@ static mv::shell::command_id MvMenuChordCommand(NSMenuItem* item) {
     case kMenuNewWindow: return new_window;
     case kMenuOpen: return open;
     case kMenuFolderTree: return folder_tree;
+    case kMenuPrint: return print;
     default: return none;
   }
 }
@@ -5987,6 +6278,9 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     case kMenuCopyEdited:
       if (![self runCommand:mv::shell::command_id::copy_flattened back:mv::shell::back_target::none]) NSBeep();
       break;
+    case kMenuPrint:
+      if (![self runCommand:mv::shell::command_id::print back:mv::shell::back_target::none]) NSBeep();
+      break;
     case kMenuEditWorkspace: [self runCommand:mv::shell::command_id::edit_workspace back:mv::shell::back_target::none]; break;
     case kMenuEditCrop: [self runCommand:mv::shell::command_id::crop_mode back:mv::shell::back_target::none]; break;
     case kMenuEditColour: [self runCommand:mv::shell::command_id::adjust_pane back:mv::shell::back_target::none]; break;
@@ -6114,6 +6408,12 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     case kMenuSlideshow: return [self hasFolder] && !_slideshowActive;
     // A clip or an animation has no still to bake (-copyFlattened refuses it).
     case kMenuCopyEdited: return [self hasFolder] && ![self currentItemIsVideo] && !_lab.anim_active();
+    // Issue #614: the marks as a sheet, or a still (-printRequest refuses the rest).
+    // Not in a slideshow, as the key's row; mid-crop menuCmdBlocked says no.
+    case kMenuPrint:
+      return [self hasFolder] && !_slideshowActive &&
+             (mv::shell::print_as_sheet(std::max(_marks.size(), _galleryRange.size())) ||
+              (![self currentItemIsVideo] && !_lab.anim_active()));
     default:
       return [self hasFolder];
   }
@@ -6221,6 +6521,9 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   [self addMenuItem:@"Share…" cmd:kMenuShare key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Copy Path" cmd:kMenuCopyPath key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Copy Edited Image" cmd:kMenuCopyEdited key:@"" mods:0 toMenu:file];
+  [file addItem:[NSMenuItem separatorItem]];
+  // Issue #614. ⌘P comes from the live table (MvMenuChordCommand), as Open's ⌘O.
+  [self addMenuItem:@"Print…" cmd:kMenuPrint key:@"" mods:0 toMenu:file];
   [file addItem:[NSMenuItem separatorItem]];
   [file addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@""];
 
@@ -7140,6 +7443,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       return [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
     }
     case copy_flattened: return [self copyFlattened];
+    // Issue #614 (docs/design/16 "Print"): the photo on screen, or the marks as a sheet.
+    case print: return [self printRequest];
     case share: return [self shareRequest:{}];  // the key's request: the menu, on the selection
     default:
       // command_coverage.inc sent this id here. A missing case is a
@@ -10400,6 +10705,20 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
   _tagScanTimer = nil;
 }
 
+// #612 (docs/design/04 "Thumbnail cache upkeep"): the cache's sweep, once a
+// launch, when a still is on screen: never ahead of the view (CLAUDE.md). A
+// background job that waits while the viewer pans or plays.
+- (void)startThumbSweepIfDue {
+  if (_thumbSweepStarted || !_lab.showing_still()) return;
+  _thumbSweepStarted = YES;
+  [self startThumbSweep];
+}
+
+- (void)startThumbSweep {
+  _folder.start_thumb_sweep(_jobs, g_thumb_cache_cap.load(std::memory_order_relaxed),
+                            [] { return mv::shell::g_present_busy.load(std::memory_order_relaxed); });
+}
+
 - (void)startTagScanIfDue {
   if (!_tagScanPending || _listOpen || _items.empty()) return;
   if (!_lab.showing_still() && CFAbsoluteTimeGetCurrent() - _tagScanListedAt < 1.0) return;
@@ -11468,6 +11787,136 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   return YES;
 }
 
+// ---- Issue #614: Print (⌘P; docs/design/16 "Print") --------------------------------
+
+// ⌘P / File ▸ Print…: two or more marks (or a gallery range) as a contact
+// sheet, else the still on screen with its edits baked. The bake runs on the
+// pool; the panel opens when it lands. NO beeps (nothing here prints).
+- (BOOL)printRequest {
+  if (_printBusy) {
+    [self noticeShow:"Still preparing the last print"];
+    return YES;
+  }
+  const std::vector<mv::io::dir_entry> entries = [self markedOrCurrentEntries];
+  const bool sheet = mv::shell::print_as_sheet(entries.size());
+  std::vector<mv::shell::print_source> sources;
+  const std::string current =
+      !_items.empty() && _index.current() < _items.size() ? _items[_index.current()].path_utf8 : std::string();
+  if (sheet) {
+    // The file on screen keeps its session edits; the other marks print as
+    // they are on disk.
+    for (const auto& entry : entries) {
+      mv::shell::print_source s{entry.path_utf8, {}, {}};
+      if (entry.path_utf8 == current) {
+        s.g = _edits.export_geometry();
+        s.c = _edits.colour();
+      }
+      sources.push_back(std::move(s));
+    }
+  } else {
+    // As ⌘⌥C: a clip or a playing animation has no still to bake.
+    if (current.empty() || [self currentItemIsVideo] || _lab.anim_active()) return NO;
+    sources.push_back(mv::shell::print_source{current, _edits.export_geometry(), _edits.colour()});
+  }
+
+  // Sized for the paper Page Setup holds, at kPrintDpi. Fit or fill is chosen
+  // in the panel, so a photo is baked to cover the page (fill's need, which
+  // also serves fit); a sheet's cells for the grid its marks ask for.
+  const mv::shell::print_rect area = mv::shell::print_area(MvPrintPage(NSPrintInfo.sharedPrintInfo));
+  const mv::shell::print_pixels px =
+      sheet ? mv::shell::pixels_for(mv::shell::contact_frame(
+                  area, mv::shell::contact_grid(sources.size(), _printOptions.grid), false))
+            : mv::shell::pixels_for(area);
+  const mv::edit::size2 box{px.w, px.h};
+  const bool cover = !sheet;
+
+  _printBusy = YES;
+  [self noticeShow:"Preparing to print…"];
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation,
+                  [sources, box, cover, sheet, weakSelf](const mv::job_context& ctx) -> mv::status {
+                    // A pool thread has no autorelease pool of its own.
+                    @autoreleasepool {
+                      NSMutableArray* images = [[NSMutableArray alloc] init];
+                      std::vector<std::string> names;
+                      mv::status st = mv::status::ok;
+                      auto keep = [&](const mv::codec::raster& pixels, const std::string& path) {
+                        CGImageRef cg = MvPrintImage(pixels);
+                        if (!cg) return;
+                        [images addObject:(__bridge_transfer id)cg];
+                        names.push_back(path);
+                      };
+                      if (sheet) {
+                        auto pics = mv::shell::render_contact_pictures(sources, box, &ctx);
+                        if (pics) {
+                          for (const auto& p : *pics) keep(p.pixels, p.path);
+                        } else {
+                          st = pics.error();
+                        }
+                      } else {
+                        const mv::shell::print_source& s = sources.front();
+                        auto pic = mv::shell::render_print_picture(s.path, s.g, s.c, box, cover, &ctx);
+                        if (pic) {
+                          keep(*pic, s.path);
+                        } else {
+                          st = pic.error();
+                        }
+                      }
+                      dispatch_async(dispatch_get_main_queue(), ^{
+                        MvLabApp* strongSelf = weakSelf;
+                        if (strongSelf) [strongSelf printPrepared:images names:names sheet:sheet];
+                      });
+                      return st;
+                    }
+                  });
+  return YES;
+}
+
+- (void)printPrepared:(NSArray*)images names:(const std::vector<std::string>&)names sheet:(bool)sheet {
+  _printBusy = NO;
+  if (images.count == 0 || !self.window) {
+    NSBeep();
+    [self noticeShow:"Could not prepare the print"];
+    return;
+  }
+  [self noticeClear];
+  MvPrintOptions* options = [[MvPrintOptions alloc] init];
+  options.sheet = sheet;
+  options.fill = _printOptions.fit == mv::shell::print_fit::fill;
+  options.captions = _printOptions.captions;
+  options.grid = _printOptions.grid;
+  MvPrintView* view = [[MvPrintView alloc] initWithImages:images names:names sheet:sheet options:options];
+  NSPrintInfo* info = [NSPrintInfo.sharedPrintInfo copy];
+  // print_layout keeps its own margins inside the device's imageable area.
+  info.topMargin = 0;
+  info.bottomMargin = 0;
+  info.leftMargin = 0;
+  info.rightMargin = 0;
+  info.horizontallyCentered = NO;
+  info.verticallyCentered = NO;
+  NSPrintOperation* op = [NSPrintOperation printOperationWithView:view printInfo:info];
+  op.jobTitle = sheet ? @"Contact sheet" : @(std::string(mv::shell::print_caption(names.front())).c_str());
+  op.showsPrintPanel = YES;
+  op.showsProgressPanel = YES;
+  op.canSpawnSeparateThread = YES;  // pages spool off the main thread
+  op.printPanel.options |= NSPrintPanelShowsPaperSize | NSPrintPanelShowsOrientation | NSPrintPanelShowsPreview;
+  [op.printPanel addAccessoryController:options];
+  _printOptionsPanel = options;
+  [op runOperationModalForWindow:self.window
+                        delegate:self
+                  didRunSelector:@selector(printOperationDidRun:success:contextInfo:)
+                     contextInfo:nullptr];
+}
+
+// Print kept the panel's choices for the next ⌘P (this run only); Cancel drops
+// them, and nothing was written.
+- (void)printOperationDidRun:(NSPrintOperation*)op success:(BOOL)success contextInfo:(void*)contextInfo {
+  (void)op;
+  (void)contextInfo;
+  if (success && _printOptionsPanel) _printOptions = [_printOptionsPanel chosenOptions];
+  _printOptionsPanel = nil;
+}
+
 // ---- Text in images (Live Text, docs/design/16 "Text in images") -------------------
 
 // What the words on screen would be read from: the still and its geometry, or
@@ -12386,6 +12835,10 @@ static NSString* const kDefaultsPinnedFolders = @"mv.pinnedFolders";  // issue #
   // and joins running ones, so this ordering guarantees that. Both block,
   // so both run on a background queue; the window is already closed by the
   // time this method runs, so nothing user-visible waits on it.
+  // #612: a sweep waiting out a busy viewer would hold a worker the join
+  // below waits for; Clear no longer reaches the folder model.
+  g_storage_folder.store(nullptr, std::memory_order_release);
+  _folder.stop_thumb_sweep();
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
     // PR 13 / 14: running clip jobs are cancelled and their temporaries
     // removed (no partial output); joins the queue's workers.

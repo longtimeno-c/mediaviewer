@@ -100,6 +100,7 @@
 #include "shell/navigation.h"
 #include "shell/slideshow.h"
 #include "shell/present_lab.h"
+#include "shell/print_layout.h"
 #include "shell/settings.h"
 #include "shell/shellext_install.h"
 #include "shell/login_item_win.h"
@@ -163,6 +164,8 @@ constexpr UINT kMsgShareReady = WM_APP + 0x7F;  // issue #444: a share's files w
 constexpr UINT kMsgTray = WM_APP + 0x80;
 constexpr UINT kMsgBackgroundChanged = WM_APP + 0x81;
 constexpr UINT kMsgRunTask = WM_APP + 0x82;  // issue #617: a first start's --task, once the loop runs
+// Issue #614: Ctrl+P's job finished (wparam 1 printed, 0 not; the pool posts).
+constexpr UINT kMsgPrintDone = WM_APP + 0x83;
 // #452: a --background start (sign-in) that no add-on has kept by now removes its
 // Run entry and quits. Driftwire asks within ~10 s of its load.
 constexpr UINT_PTR kBackgroundStartTimerId = 0x7D01;
@@ -488,6 +491,10 @@ struct app_state {
   std::string gallery_range_anchor;
   // Issue #444: the latest share request; an older gather is dropped.
   std::uint64_t share_seq = 0;
+  // Issue #614: Ctrl+P. The Options page's last answer (this run only), and
+  // whether a print is still being prepared (one at a time).
+  mv::shell::print_options print_options;
+  bool print_busy = false;
   // Issue #206: View > Show. For this run only; the core filters the listing.
   mv::io::kind_filter kind_filter = mv::io::kind_filter::all;
   mv::shell::file_jobs files;
@@ -6604,6 +6611,397 @@ void on_flatten_done(app_state* app, std::unique_ptr<flatten_job_result> r) {
   }
 }
 
+// ---- Issue #614: Print (Ctrl+P; docs/design/16 "Print", shell/print_layout.h) ---------
+//
+// PrintDlgEx on the UI thread (a modal dialog, like Open), with an Options page
+// beside General: fit or fill, and the sheet's layout and file names. StartDoc
+// runs there too, so Microsoft Print to PDF's Save As is owned by the window
+// and cancelling it ends everything with no file. The bake and every GDI page
+// call then run on the pool (rule 1); the DC is used by one thread at a time.
+// Pixels go down as a BITMAPV5 DIB tagged sRGB, or carrying the picture's own
+// ICC profile, with ICM on, so the driver colour-manages what the export holds.
+
+constexpr WORD kPrintIdFill = 101;
+constexpr WORD kPrintIdGrid = 102;
+constexpr WORD kPrintIdCaptions = 103;
+constexpr WORD kAtomButton = 0x0080;
+constexpr WORD kAtomStatic = 0x0082;
+constexpr WORD kAtomCombo = 0x0085;
+
+// The Options page's template, built in memory (no .rc dialog): a DLGTEMPLATE
+// and its items, DWORD-aligned, controls named by their predefined class atoms.
+class print_page_template {
+ public:
+  print_page_template() {
+    dword(DS_SETFONT | DS_CONTROL | WS_CHILD | WS_CAPTION);
+    dword(0);
+    words_.push_back(0);  // cdit, counted by item()
+    words_.push_back(0);
+    words_.push_back(0);
+    words_.push_back(250);
+    words_.push_back(110);
+    words_.push_back(0);  // no menu
+    words_.push_back(0);  // the dialog class
+    text(L"Options");
+    words_.push_back(8);
+    text(L"MS Shell Dlg");
+  }
+  void item(DWORD style, short x, short y, short cx, short cy, WORD id, WORD atom, std::wstring_view label) {
+    if (words_.size() % 2 != 0) words_.push_back(0);
+    dword(style | WS_CHILD | WS_VISIBLE);
+    dword(0);
+    words_.push_back(static_cast<WORD>(x));
+    words_.push_back(static_cast<WORD>(y));
+    words_.push_back(static_cast<WORD>(cx));
+    words_.push_back(static_cast<WORD>(cy));
+    words_.push_back(id);
+    words_.push_back(0xFFFF);
+    words_.push_back(atom);
+    text(label);
+    words_.push_back(0);  // no creation data
+    ++words_[4];
+  }
+  [[nodiscard]] const DLGTEMPLATE* get() const noexcept {
+    return reinterpret_cast<const DLGTEMPLATE*>(words_.data());
+  }
+
+ private:
+  void dword(DWORD v) {
+    words_.push_back(LOWORD(v));
+    words_.push_back(HIWORD(v));
+  }
+  void text(std::wstring_view s) {
+    for (const wchar_t c : s) words_.push_back(static_cast<WORD>(c));
+    words_.push_back(0);
+  }
+  std::vector<WORD> words_;
+};
+
+struct print_page_state {
+  mv::shell::print_options* options = nullptr;
+  bool sheet = false;
+};
+
+INT_PTR CALLBACK print_options_proc(HWND dlg, UINT msg, WPARAM wparam, LPARAM lparam) {
+  switch (msg) {
+    case WM_INITDIALOG: {
+      const auto* psp = reinterpret_cast<const PROPSHEETPAGEW*>(lparam);
+      auto* st = psp ? reinterpret_cast<print_page_state*>(psp->lParam) : nullptr;
+      ::SetWindowLongPtrW(dlg, DWLP_USER, reinterpret_cast<LONG_PTR>(st));
+      if (!st || !st->options) return TRUE;
+      const mv::shell::print_options& o = *st->options;
+      ::CheckDlgButton(dlg, kPrintIdFill, o.fit == mv::shell::print_fit::fill ? BST_CHECKED : BST_UNCHECKED);
+      ::CheckDlgButton(dlg, kPrintIdCaptions, o.captions ? BST_CHECKED : BST_UNCHECKED);
+      for (int i = -1; i < mv::shell::kContactGridCount; ++i) {
+        const std::wstring label = wide_from_utf8(mv::shell::contact_grid_label(i));
+        ::SendDlgItemMessageW(dlg, kPrintIdGrid, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+      }
+      ::SendDlgItemMessageW(dlg, kPrintIdGrid, CB_SETCURSEL, static_cast<WPARAM>(o.grid + 1), 0);
+      // One page serves both: what does not apply to this print is shown, off.
+      ::EnableWindow(::GetDlgItem(dlg, kPrintIdFill), st->sheet ? FALSE : TRUE);
+      ::EnableWindow(::GetDlgItem(dlg, kPrintIdGrid), st->sheet ? TRUE : FALSE);
+      ::EnableWindow(::GetDlgItem(dlg, kPrintIdCaptions), st->sheet ? TRUE : FALSE);
+      return TRUE;
+    }
+    case WM_COMMAND: {
+      auto* st = reinterpret_cast<print_page_state*>(::GetWindowLongPtrW(dlg, DWLP_USER));
+      if (!st || !st->options) break;
+      // Each change lands at once on the caller's copy; it is kept only if the
+      // dialog's answer is Print.
+      switch (LOWORD(wparam)) {
+        case kPrintIdFill:
+          st->options->fit = ::IsDlgButtonChecked(dlg, kPrintIdFill) == BST_CHECKED ? mv::shell::print_fit::fill
+                                                                                     : mv::shell::print_fit::fit;
+          return TRUE;
+        case kPrintIdCaptions:
+          st->options->captions = ::IsDlgButtonChecked(dlg, kPrintIdCaptions) == BST_CHECKED;
+          return TRUE;
+        case kPrintIdGrid:
+          if (HIWORD(wparam) == CBN_SELCHANGE) {
+            const LRESULT sel = ::SendDlgItemMessageW(dlg, kPrintIdGrid, CB_GETCURSEL, 0, 0);
+            if (sel != CB_ERR) st->options->grid = static_cast<int>(sel) - 1;
+          }
+          return TRUE;
+        default:
+          break;
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  return FALSE;
+}
+
+// What the pool needs: the DC (StartDoc already called), the paper in points
+// and how points map to its pixels, and what to bake.
+struct print_job {
+  HDC dc = nullptr;
+  mv::shell::print_page page;
+  double dpi_x = 300.0;
+  double dpi_y = 300.0;
+  double offset_x = 0.0;  // the printable area's origin on the paper, device pixels
+  double offset_y = 0.0;
+  bool sheet = false;
+  mv::shell::print_options options;
+  std::vector<mv::shell::print_source> sources;  // one for a photo; the marks for a sheet
+};
+
+// `pixels` cropped to `source` (0..1), as GDI's 32 bpp BI_RGB order (BGRA),
+// alpha flattened over white: a printer has no alpha.
+std::vector<std::uint8_t> print_bgra(const mv::codec::raster& pixels, const mv::shell::print_rect& source,
+                                     std::uint32_t& w, std::uint32_t& h) {
+  const double pw = pixels.width;
+  const double ph = pixels.height;
+  const auto x0 = static_cast<std::uint32_t>(std::clamp(std::floor(source.x * pw), 0.0, pw - 1));
+  const auto y0 = static_cast<std::uint32_t>(std::clamp(std::floor(source.y * ph), 0.0, ph - 1));
+  const auto x1 = static_cast<std::uint32_t>(std::clamp(std::ceil((source.x + source.w) * pw), x0 + 1.0, pw));
+  const auto y1 = static_cast<std::uint32_t>(std::clamp(std::ceil((source.y + source.h) * ph), y0 + 1.0, ph));
+  w = x1 - x0;
+  h = y1 - y0;
+  std::vector<std::uint8_t> out(static_cast<std::size_t>(w) * h * 4);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    const std::uint8_t* s = pixels.rgba.data() + ((static_cast<std::size_t>(y0 + y) * pixels.width) + x0) * 4;
+    std::uint8_t* d = out.data() + static_cast<std::size_t>(y) * w * 4;
+    for (std::uint32_t x = 0; x < w; ++x, s += 4, d += 4) {
+      const unsigned a = s[3];
+      const unsigned white = 255 - a;
+      d[0] = static_cast<std::uint8_t>((s[2] * a + 127) / 255 + white);
+      d[1] = static_cast<std::uint8_t>((s[1] * a + 127) / 255 + white);
+      d[2] = static_cast<std::uint8_t>((s[0] * a + 127) / 255 + white);
+      d[3] = 255;
+    }
+  }
+  return out;
+}
+
+// Points on the paper to the DC's pixels (its origin is the printable area's).
+RECT print_device_rect(const print_job& j, const mv::shell::print_rect& r) {
+  auto px = [](double pt, double dpi, double off) { return static_cast<LONG>(std::lround(pt / 72.0 * dpi - off)); };
+  return RECT{px(r.x, j.dpi_x, j.offset_x), px(r.y, j.dpi_y, j.offset_y), px(r.x + r.w, j.dpi_x, j.offset_x),
+              px(r.y + r.h, j.dpi_y, j.offset_y)};
+}
+
+bool print_draw(const print_job& j, const mv::codec::raster& pixels, const mv::shell::print_placement& at) {
+  if (pixels.width == 0 || pixels.height == 0 ||
+      pixels.rgba.size() < static_cast<std::size_t>(pixels.width) * pixels.height * 4) {
+    return false;
+  }
+  std::uint32_t w = 0;
+  std::uint32_t h = 0;
+  const std::vector<std::uint8_t> bits = print_bgra(pixels, at.source, w, h);
+  // The header, then the profile it names (bV5ProfileData is an offset from
+  // the header's start).
+  std::vector<std::uint8_t> info(sizeof(BITMAPV5HEADER) + pixels.icc.size());
+  auto* hdr = reinterpret_cast<BITMAPV5HEADER*>(info.data());
+  hdr->bV5Size = sizeof(BITMAPV5HEADER);
+  hdr->bV5Width = static_cast<LONG>(w);
+  hdr->bV5Height = -static_cast<LONG>(h);  // top-down
+  hdr->bV5Planes = 1;
+  hdr->bV5BitCount = 32;
+  hdr->bV5Compression = BI_RGB;
+  hdr->bV5Intent = LCS_GM_IMAGES;
+  if (pixels.icc.empty()) {
+    hdr->bV5CSType = LCS_sRGB;  // the bake, or an untagged source: sRGB (D6)
+  } else {
+    hdr->bV5CSType = PROFILE_EMBEDDED;
+    hdr->bV5ProfileData = sizeof(BITMAPV5HEADER);
+    hdr->bV5ProfileSize = static_cast<DWORD>(pixels.icc.size());
+    std::memcpy(info.data() + sizeof(BITMAPV5HEADER), pixels.icc.data(), pixels.icc.size());
+  }
+  const RECT d = print_device_rect(j, at.dest);
+  ::SetStretchBltMode(j.dc, HALFTONE);
+  ::SetBrushOrgEx(j.dc, 0, 0, nullptr);
+  // StretchDIBits answers the scan lines copied, 0 on failure (GDI_ERROR is an
+  // unsigned long that some drivers return as -1; neither is a positive count).
+  return ::StretchDIBits(j.dc, d.left, d.top, d.right - d.left, d.bottom - d.top, 0, 0, static_cast<int>(w),
+                         static_cast<int>(h), bits.data(), reinterpret_cast<const BITMAPINFO*>(info.data()),
+                         DIB_RGB_COLORS, SRCCOPY) > 0;
+}
+
+void print_caption_line(const print_job& j, const mv::shell::print_rect& r, std::string_view path) {
+  const std::wstring name = wide_from_utf8(mv::shell::print_caption(path));
+  const int height = -static_cast<int>(std::lround(mv::shell::kCaptionPoints / 72.0 * j.dpi_y));
+  HFONT font = ::CreateFontW(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+  const HGDIOBJ old = font ? ::SelectObject(j.dc, font) : nullptr;
+  ::SetBkMode(j.dc, TRANSPARENT);
+  ::SetTextColor(j.dc, RGB(0x40, 0x40, 0x40));
+  RECT rc = print_device_rect(j, r);
+  ::DrawTextW(j.dc, name.c_str(), static_cast<int>(name.size()), &rc,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+  if (old) ::SelectObject(j.dc, old);
+  if (font) ::DeleteObject(font);
+}
+
+// Pool thread: bake, draw every page, end (or abort) the document, free the DC.
+bool run_print_job(const print_job& j, const mv::job_context* ctx) {
+  using namespace mv::shell;
+  bool ok = false;
+  const print_rect area = print_area(j.page);
+  ::SetICMMode(j.dc, ICM_ON);  // a driver without ICM keeps drawing; the DIB stays tagged
+  if (!j.sheet && !j.sources.empty()) {
+    const print_source& s = j.sources.front();
+    const print_pixels box = pixels_for(area);
+    const bool cover = j.options.fit == print_fit::fill;
+    mv::result<mv::codec::raster> pic = render_print_picture(s.path, s.g, s.c, {box.w, box.h}, cover, ctx);
+    if (pic && ::StartPage(j.dc) > 0) {
+      ok = print_draw(j, *pic, place_picture(area, pic->width, pic->height, j.options.fit));
+      ok = ::EndPage(j.dc) > 0 && ok;
+    }
+  } else if (j.sheet) {
+    // Bake for the grid the marks ask for; files that do not render are left
+    // out, and the sheet is laid out for what did.
+    const print_grid want = contact_grid(j.sources.size(), j.options.grid);
+    const print_pixels cell = pixels_for(contact_frame(area, want, j.options.captions));
+    mv::result<std::vector<print_picture>> pics = render_contact_pictures(j.sources, {cell.w, cell.h}, ctx);
+    if (pics && !pics->empty()) {
+      const print_grid grid = contact_grid(pics->size(), j.options.grid);
+      const std::uint32_t pages = contact_pages(pics->size(), grid);
+      ok = true;
+      for (std::uint32_t page = 0; ok && page < pages; ++page) {
+        if ((ctx && ctx->cancelled()) || ::StartPage(j.dc) <= 0) {
+          ok = false;
+          break;
+        }
+        const std::size_t first = std::size_t{page} * grid.per_page();
+        for (std::size_t i = first; i < pics->size() && i < first + grid.per_page(); ++i) {
+          const contact_cell c = contact_cell_at(area, grid, i, j.options.captions);
+          const print_picture& p = (*pics)[i];
+          ok = print_draw(j, p.pixels, place_picture(c.frame, p.pixels.width, p.pixels.height, print_fit::fit)) &&
+               ok;
+          if (j.options.captions) print_caption_line(j, c.caption, p.path);
+        }
+        ok = ::EndPage(j.dc) > 0 && ok;
+      }
+    }
+  }
+  // Nothing printed, or a page failed: the spooler drops the job, and a PDF
+  // printer writes no file.
+  if (ok) {
+    ok = ::EndDoc(j.dc) > 0;
+  } else {
+    ::AbortDoc(j.dc);
+  }
+  ::DeleteDC(j.dc);
+  return ok;
+}
+
+// Ctrl+P / the Open flyout's Print…. True when the key was taken (the dialog
+// showed, or a print is still being prepared); false beeps (nothing to print).
+bool start_print(app_state* app) {
+  using namespace mv::shell;
+  if (!app || !app->window) return false;
+  if (app->print_busy) {
+    notice_show(app, "Still preparing the last print");
+    return true;
+  }
+  print_job job;
+  const std::vector<std::string> targets = selection_targets(app);
+  job.sheet = print_as_sheet(targets.size());
+  if (job.sheet) {
+    // The file on screen prints with its session edits; the other marks as
+    // they are on disk (their stacks are keyed by size and mtime, which the
+    // UI thread does not stat).
+    for (const std::string& path : targets) {
+      print_source s{path, {}, {}};
+      if (path == app->edit_path) {
+        s.g = app->edits.export_geometry();
+        s.c = app->edits.colour();
+      }
+      job.sources.push_back(std::move(s));
+    }
+  } else {
+    // The still on screen, as Ctrl+Alt+C bakes it. A clip, audio, a document
+    // or a playing animation has no still here.
+    if (app->edit_path.empty() || video_mode(app) || app->lab.animation() != animation_state::none) return false;
+    job.sources.push_back(print_source{app->edit_path, app->edits.export_geometry(), app->edits.colour()});
+  }
+
+  print_options chosen = app->print_options;
+  print_page_state state{&chosen, job.sheet};
+  print_page_template tpl;
+  tpl.item(BS_AUTOCHECKBOX | WS_TABSTOP, 7, 7, 236, 10, kPrintIdFill, kAtomButton,
+           L"&Fill the page (one photo: crops it to the paper's shape)");
+  tpl.item(SS_LEFT, 7, 28, 236, 8, 0xFFFF, kAtomStatic, L"Marked files print as a contact sheet.");
+  tpl.item(SS_LEFT, 7, 44, 60, 8, 0xFFFF, kAtomStatic, L"&Layout:");
+  tpl.item(CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 70, 42, 90, 80, kPrintIdGrid, kAtomCombo, L"");
+  tpl.item(BS_AUTOCHECKBOX | WS_TABSTOP, 7, 62, 236, 10, kPrintIdCaptions, kAtomButton, L"Print file &names");
+  PROPSHEETPAGEW psp{};
+  psp.dwSize = sizeof(psp);
+  psp.dwFlags = PSP_DLGINDIRECT;
+  psp.hInstance = ::GetModuleHandleW(nullptr);
+  psp.pResource = tpl.get();
+  psp.pfnDlgProc = print_options_proc;
+  psp.lParam = reinterpret_cast<LPARAM>(&state);
+  HPROPSHEETPAGE page = ::CreatePropertySheetPageW(&psp);
+
+  PRINTDLGEXW pd{};
+  pd.lStructSize = sizeof(pd);
+  pd.hwndOwner = app->window;
+  pd.Flags = PD_RETURNDC | PD_NOPAGENUMS | PD_NOSELECTION | PD_NOCURRENTPAGE | PD_USEDEVMODECOPIESANDCOLLATE;
+  pd.nCopies = 1;
+  pd.nStartPage = START_PAGE_GENERAL;
+  pd.nPropertyPages = page ? 1 : 0;
+  pd.lphPropertyPages = page ? &page : nullptr;
+  const HRESULT hr = ::PrintDlgExW(&pd);
+  if (pd.hDevMode) ::GlobalFree(pd.hDevMode);
+  if (pd.hDevNames) ::GlobalFree(pd.hDevNames);
+  if (FAILED(hr) || pd.dwResultAction != PD_RESULT_PRINT || !pd.hDC) {
+    if (pd.hDC) ::DeleteDC(pd.hDC);
+    if (FAILED(hr)) ::MessageBeep(MB_ICONWARNING);
+    return true;  // cancelled: nothing baked, nothing spooled, no file
+  }
+  app->print_options = chosen;
+  job.options = chosen;
+  job.dc = pd.hDC;
+
+  // The paper, in points, from the device (PHYSICAL* include the margins the
+  // device cannot mark; HORZRES / VERTRES are the area it can).
+  job.dpi_x = std::max(1, ::GetDeviceCaps(job.dc, LOGPIXELSX));
+  job.dpi_y = std::max(1, ::GetDeviceCaps(job.dc, LOGPIXELSY));
+  job.offset_x = ::GetDeviceCaps(job.dc, PHYSICALOFFSETX);
+  job.offset_y = ::GetDeviceCaps(job.dc, PHYSICALOFFSETY);
+  job.page.width = ::GetDeviceCaps(job.dc, PHYSICALWIDTH) * 72.0 / job.dpi_x;
+  job.page.height = ::GetDeviceCaps(job.dc, PHYSICALHEIGHT) * 72.0 / job.dpi_y;
+  job.page.printable = {job.offset_x * 72.0 / job.dpi_x, job.offset_y * 72.0 / job.dpi_y,
+                        ::GetDeviceCaps(job.dc, HORZRES) * 72.0 / job.dpi_x,
+                        ::GetDeviceCaps(job.dc, VERTRES) * 72.0 / job.dpi_y};
+
+  // The spooler's document name: the file's name, or "Contact sheet".
+  const std::wstring doc_name =
+      job.sheet ? std::wstring(L"Contact sheet") : wide_from_utf8(print_caption(job.sources.front().path));
+  DOCINFOW di{};
+  di.cbSize = sizeof(di);
+  di.lpszDocName = doc_name.c_str();
+  if (::StartDocW(job.dc, &di) <= 0) {
+    // Print to PDF's Save As was cancelled (or the printer refused): no file.
+    ::DeleteDC(job.dc);
+    return true;
+  }
+
+  app->print_busy = true;
+  notice_show(app, "Preparing to print\xE2\x80\xA6");
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation, [job = std::move(job), hwnd](const mv::job_context& ctx) -> mv::status {
+    const bool ok = run_print_job(job, &ctx);
+    ::PostMessageW(hwnd, kMsgPrintDone, ok ? 1 : 0, 0);
+    return ok ? mv::status::ok : mv::status::io;
+  });
+  return true;
+}
+
+void on_print_done(app_state* app, bool ok) {
+  if (!app) return;
+  app->print_busy = false;
+  if (ok) {
+    notice_show(app, "Sent to the printer");
+  } else {
+    ::MessageBeep(MB_ICONWARNING);
+    notice_show(app, "Could not print");
+  }
+}
+
 // Text in images (Live Text; docs/design/16): shell/text_in_image.h's port on
 // Windows. Windows.Media.Ocr is WinRT, so the chrome runs it
 // (IslandHost.RecognizeText), synchronously, on the worker that calls this.
@@ -7657,6 +8055,9 @@ bool run_marks_command(app_state* app, mv::shell::command_id command) noexcept {
       return copy_paths_to_clipboard(app);
     case copy_flattened:
       return start_flatten(app);
+    // Issue #614 (docs/design/16 "Print"): the photo on screen, or the marks as a sheet.
+    case print:
+      return start_print(app);
     case share:
       return share_request_run(app, {});  // the key's request: the menu, on the selection
     // Marks (docs/design/16): a set separate from the selection, keyed by path.
@@ -9378,6 +9779,10 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
 
     case kMsgFlattenDone:
       on_flatten_done(app, std::unique_ptr<flatten_job_result>(reinterpret_cast<flatten_job_result*>(lparam)));
+      return 0;
+
+    case kMsgPrintDone:
+      on_print_done(app, wparam != 0);
       return 0;
 
     case kMsgTextRead:

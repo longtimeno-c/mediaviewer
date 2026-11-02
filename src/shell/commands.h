@@ -370,6 +370,10 @@ enum class command_id : std::uint16_t {
   // with the filmstrip hidden. Appended. Shift+T, beside T: the two strips
   // share the job (the folder's files, this file's pages) and never show at once.
   toggle_page_sidebar,
+  // Issue #614 (docs/design/16 "Print"): Ctrl+P / Cmd+P, the OS print dialog for
+  // the photo on screen with its edits baked, or the marks as a contact sheet.
+  // Appended.
+  print,
   // docs/design/17 "Reviewing a person" (2026-11-02): Ctrl+Shift+P, beside
   // Ctrl+Shift+F's "Find similar": the photos and moments of the person whose
   // face is largest in the still or paused frame on screen. Appended; only
