@@ -906,7 +906,22 @@ every still type. It reports duration, size, codecs, audio, bit rate, media type
 title and camera (`shell/spotlight_fields.h`) through `meta/`, never a decoder.
 
 **Quick Look (2026-09-23).** A sandboxed thumbnail `.appex` running `image::make_thumb_jpeg`, the
-filmstrip's pixels, with no cache of its own. Stills only.
+filmstrip's pixels, with no cache of its own. Stills only (until 2026-11-02, below).
+
+**Clip thumbnails in Explorer and Finder (issue #610, 2026-11-02).** Reverses "stills only" for
+both the Explorer handler (2026-09-25, `MediaViewer.Image` only) and Quick Look (2026-09-23). Why: a
+camera dump is photos and clips in one folder, and Windows has no thumbnail for MKV, WebM, AVI, TS
+or an AV1 / VP9 / HEVC MP4 without a Store extension (D3 says never require one); macOS has none
+for the first four. The same handler now also sits on `MediaViewer.Video`, still only on our
+ProgIds, so it serves what the user made MediaViewer the default for and replaces no other
+vendor's handler. Quick Look adds only the four containers macOS cannot thumbnail and leaves MP4 /
+QuickTime to Apple. The path is chosen by magic bytes, not ProgId or UTI. A clip is never read into
+memory (the stills' 512 MB read would refuse a long clip and is the wrong shape for one): FFmpeg
+reads the stream through a seekable reader, decodes one frame in software on one thread (no
+D3D11VA / VideoToolbox session in a shell process), and shares the stills' deadline and four-slot
+cap. Cost: the handler's folder now carries the FFmpeg DLLs (dynamic, LGPL, as everywhere), and
+`avcodec` is mapped in the surrogate, never in Explorer or Finder. The Explorer handler reads the
+shell's `IStream` from its decode thread; that it is callable there is part of the Windows verify.
 
 **Associations and the default app (2026-09-24).** Windows: the wizard writes per-user `ProgId` /
 `OpenWithProgids` / `RegisteredApplications` keys for D5 stills (`MediaViewer.Image`) and video
