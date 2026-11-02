@@ -78,23 +78,37 @@ long long read_fully(IStream* stream, std::uint8_t* out, std::size_t size) noexc
   return static_cast<long long>(got);
 }
 
-// A clip's bytes, read where FFmpeg asks (issue #610). Holds its own
-// reference on the stream: the decode thread owns this reader and may run
-// past the request's deadline, so the stream lives exactly as long as it is
-// read. Called from that one thread only, one read at a time.
+// A clip's bytes, read where FFmpeg asks (issue #610). The decode thread owns
+// this reader and may run past the request's deadline, so the stream lives
+// exactly as long as it is read. Called from that one thread only, one read at
+// a time.
 //
-// The stream is used from the decode thread, not the thread that was handed
-// it. The shell's stream over a file in the thumbnail surrogate is the
-// free-threaded file stream; that is what the Windows verify of #610 checks.
+// The shell's IStream reaches the handler on its apartment thread (the class
+// is ThreadingModel=Apartment, out of process in dllhost), where it is a proxy
+// bound to that apartment. It is therefore marshalled there
+// (CoMarshalInterThreadInterfaceInStream, in GetThumbnail) and unmarshalled
+// on the decode thread, which joins the multithreaded apartment for the read
+// and leaves it when the reader goes. The calls then go straight to the
+// stream's owner, never through the apartment thread that is waiting on the
+// deadline.
 class stream_source final : public mv::player::byte_source {
  public:
-  stream_source(IStream* stream, std::uint64_t size) noexcept : stream_(stream), size_(size) {
-    stream_->AddRef();
+  // Takes ownership of `carrier` (the marshalled stream).
+  stream_source(IStream* carrier, std::uint64_t size) noexcept : carrier_(carrier), size_(size) {}
+  ~stream_source() override {
+    if (stream_) stream_->Release();
+    if (carrier_) {
+      // Never read (refused at the cap, or the unmarshal failed): the
+      // marshalled reference is released, not leaked.
+      ::CoReleaseMarshalData(carrier_);
+      carrier_->Release();
+    }
+    if (com_joined_) ::CoUninitialize();  // the decode thread, as it joined
   }
-  ~stream_source() override { stream_->Release(); }
 
   mv::result<std::size_t> read_at(std::uint64_t offset, std::span<std::uint8_t> out) noexcept override {
     if (offset >= size_ || out.empty()) return std::size_t{0};
+    if (!stream_ && !attach()) return mv::err(mv::status::io);
     if (offset != pos_) {
       LARGE_INTEGER to{};
       to.QuadPart = static_cast<LONGLONG>(offset);
@@ -116,8 +130,27 @@ class stream_source final : public mv::player::byte_source {
   std::uint64_t size() const noexcept override { return size_; }
 
  private:
+  // On the decode thread, before the first read: join the MTA and unmarshal.
+  bool attach() noexcept {
+    if (!carrier_) return false;
+    const HRESULT joined = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    // S_FALSE: already in the MTA (still balanced by CoUninitialize).
+    // RPC_E_CHANGED_MODE: this thread has an apartment already; use it as is.
+    com_joined_ = SUCCEEDED(joined);
+    if (FAILED(joined) && joined != RPC_E_CHANGED_MODE) return false;
+    IStream* stream = nullptr;
+    // Releases the carrier whether or not it succeeds.
+    const HRESULT hr = ::CoGetInterfaceAndReleaseStream(carrier_, IID_IStream, reinterpret_cast<void**>(&stream));
+    carrier_ = nullptr;
+    if (FAILED(hr) || !stream) return false;
+    stream_ = stream;
+    return true;
+  }
+
   static constexpr std::uint64_t kUnknown = ~std::uint64_t{0};
-  IStream* stream_;
+  IStream* carrier_ = nullptr;  // the marshalled stream, until attach()
+  IStream* stream_ = nullptr;   // usable on the decode thread, after attach()
+  bool com_joined_ = false;
   std::uint64_t size_;
   std::uint64_t pos_ = kUnknown;  // where the stream is; seek before the first read
 };
@@ -199,13 +232,20 @@ class thumb_provider final : public IInitializeWithStream, public IThumbnailProv
     // No path, name or pixels are logged, here or by the core (rule 6).
     mv::result<mv::shellext::bgra_thumb> thumb = mv::err(mv::status::internal);
     if (clip_) {
-      // The reader takes its own reference and ours goes now: the stream is
-      // released by the decode thread when it is done reading, even past the
-      // deadline, and never read after that.
-      auto* source = new (std::nothrow) stream_source(clip_, clip_size_);
+      // Marshalled here, on the thread that was handed the stream, for the
+      // decode thread to unmarshal (stream_source). Our reference goes now;
+      // the decode thread releases its own when done, even past the deadline.
+      IStream* carrier = nullptr;
+      const HRESULT marshalled = ::CoMarshalInterThreadInterfaceInStream(IID_IStream, clip_, &carrier);
       clip_->Release();
       clip_ = nullptr;
-      if (!source) return E_OUTOFMEMORY;
+      if (FAILED(marshalled) || !carrier) return E_FAIL;
+      auto* source = new (std::nothrow) stream_source(carrier, clip_size_);
+      if (!source) {
+        ::CoReleaseMarshalData(carrier);
+        carrier->Release();
+        return E_OUTOFMEMORY;
+      }
       thumb = mv::shellext::render_poster_by(std::unique_ptr<mv::player::byte_source>(source), cx);
     } else {
       thumb = mv::shellext::render_thumbnail_by(std::move(bytes_), cx);
