@@ -109,7 +109,7 @@ bool wait_io(HANDLE pipe, OVERLAPPED& ov, HANDLE stop, DWORD timeout, DWORD& byt
 
 }  // namespace
 
-bool forward_to_running_instance(const std::vector<std::wstring>& paths) noexcept {
+bool forward_to_running_instance(const std::vector<std::wstring>& paths, std::wstring_view task) noexcept {
   try {
     const std::wstring name = pipe_name();
     HANDLE pipe = INVALID_HANDLE_VALUE;
@@ -129,6 +129,12 @@ bool forward_to_running_instance(const std::vector<std::wstring>& paths) noexcep
       return false;
     }
     std::wstring message;
+    if (!task.empty()) {
+      // Issue #617: a jump-list task leads, on a line of its own behind
+      // kForwardedTaskMark (never the start of an absolute path).
+      message.push_back(kForwardedTaskMark);
+      message += task;  // the paths' loop puts the '\n' after it
+    }
     for (const std::wstring& p : paths) {
       if (p.empty()) continue;
       if (!message.empty()) message.push_back(L'\n');

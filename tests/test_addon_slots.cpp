@@ -377,6 +377,42 @@ TEST_CASE("an info section that needs a location is never asked for a file witho
   REQUIRE(mv::json::parse(r.info_json())->find("sections")->a.empty());
 }
 
+TEST_CASE("an info section asks the viewer to show a file of the same folder (#601)", "[addon][slots]") {
+  slot_registry r;
+  auto client = std::make_unique<fake_client>(r, "slotstest");
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::move(client)) == status::ok);
+  const auto theme = test_theme();
+  r.request_info("/f/sintra.jpg", "", theme, 280, 2);
+  r.drain();
+  auto info = mv::json::parse(r.info_json());
+  REQUIRE(info);
+  const auto g = static_cast<std::uint64_t>(*info->integer("generation"));
+  CHECK_FALSE(info->find("open"));
+  // Only a file of the folder of the file on screen, for the current request.
+  CHECK(r.open_item("slotstest", "always", g, "/elsewhere/a.jpg") == status::invalid_arg);
+  CHECK(r.open_item("slotstest", "always", g, "/f/sub/a.jpg") == status::invalid_arg);
+  CHECK(r.open_item("slotstest", "always", g, "/f/..") == status::invalid_arg);
+  CHECK(r.open_item("slotstest", "always", g, "/f/") == status::invalid_arg);
+  CHECK(r.open_item("slotstest", "always", g, "photos:ABC") == status::invalid_arg);
+  CHECK(r.open_item("slotstest", "always", g + 1000, "/f/b.jpg") == status::cancelled);
+  CHECK(r.open_item("slotstest", "nosuch", g, "/f/b.jpg") == status::cancelled);
+  CHECK(mv::json::parse(r.info_json())->find("open") == nullptr);
+  REQUIRE(r.open_item("slotstest", "always", g, "/f/b.jpg") == status::ok);
+  info = mv::json::parse(r.info_json());
+  REQUIRE(info->find("open"));
+  CHECK(*info->find("open")->str("path") == "/f/b.jpg");
+  const auto first = *info->find("open")->integer("revision");
+  // Either separator: a Windows host hands over both.
+  REQUIRE(r.open_item("slotstest", "always", g, "\\f\\c.jpg") == status::ok);
+  info = mv::json::parse(r.info_json());
+  CHECK(*info->find("open")->integer("revision") > first);
+  // The viewer shows the next file: the request is done with.
+  r.request_info("/f/c.jpg", "", theme, 280, 2);
+  r.drain();
+  CHECK(mv::json::parse(r.info_json())->find("open") == nullptr);
+  r.clear_info();
+}
+
 TEST_CASE("a slow provider never delays typing; a stale answer is dropped", "[addon][slots]") {
   slot_registry r;
   auto client = std::make_unique<fake_client>(r, "slotstest");

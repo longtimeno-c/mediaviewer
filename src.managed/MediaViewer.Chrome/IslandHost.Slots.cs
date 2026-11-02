@@ -314,7 +314,37 @@ public static partial class IslandHost
         string json = SlotNative.InfoJson();
         // No early return on equal text: new surface pixels arrive with the same tree.
         _slotInfoJson = json;
+        OpenSlotRequest(json);
         FillSlotSections();
+    }
+
+    // #601: a section asked to show a file of this folder (a Places folder-map
+    // dot): opened once per revision (the core's only grows), and only when
+    // the listing holds it, as a click on its strip tile would.
+    private static long _slotOpenRevision;
+
+    private static void OpenSlotRequest(string json)
+    {
+        if (json.Length == 0) return;
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("open", out JsonElement open) || open.ValueKind != JsonValueKind.Object) return;
+            long revision = (long)JNum(open, "revision", 0);
+            string path = JStr(open, "path");
+            if (revision <= _slotOpenRevision || path.Length == 0) return;
+            _slotOpenRevision = revision;
+            string want = path.Replace('/', '\\');
+            for (int i = 0; i < Items.Count; ++i)
+            {
+                if (string.Equals(Items[i].Path.Replace('/', '\\'), want, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i != _selectedIndex) Send(Command.SelectItem, i);
+                    return;
+                }
+            }
+        }
+        catch (JsonException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
     }
 
     // The pane's bottom area (BuildMetaPane): the add-ons' sections after all the

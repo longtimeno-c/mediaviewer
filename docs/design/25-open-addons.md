@@ -669,10 +669,12 @@ How it works:
 - **Interactive surfaces (owner, 2026-10-12).** A surface with `"interactive": true` (or
   `{"min_scale", "max_scale"}`) takes the pointer: a mouse wheel or a trackpad pinch (on Windows a
   precision touchpad's pinch arrives as Ctrl + wheel) zooms about the pointer, a drag pans, a
-  double-click is reported; a trackpad two-finger scroll is left to the pane. During a gesture
+  double-click and a click are reported; a trackpad two-finger scroll is left to the pane. During a gesture
   the chrome scales / moves the current pixels itself, within the bounds, and when it settles
-  sends one event (`zoom` {scale, x, y}, `pan` {dx, dy}, `double` {x, y}; surface coordinates,
-  0..1); the add-on's next pixels replace the provisional transform. Nothing presents the canvas.
+  sends one event (`zoom` {scale, x, y}, `pan` {dx, dy}, `double` {x, y}, and from #601 `tap`
+  {x, y}, `MV_SLOT_EVENT_TAP`; surface coordinates, 0..1); the add-on's next pixels replace the
+  provisional transform. Nothing presents the canvas. An info section may ask the viewer to show a
+  file of the same folder through the host table's `open_item` (#601; [27](27-places.md#the-folder-map-601)).
 - **Search providers.** File search posts the typed text on every debounced change and returns;
   name hits show at once and a provider's rows join when they arrive, with its reason
   ("Portugal") or "Still reading tags — N of M" under the field. A query starting with a
