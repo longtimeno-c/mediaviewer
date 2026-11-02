@@ -27,7 +27,7 @@ struct edit_stack {
 | `straighten` | Set the angle, clockwise, ±45° (`kMaxStraighten`) |
 | `resize` | Set the output size: long edge, exact, or percent |
 | `adjust` | Set one colour parameter (`adjust_param`); `count` resets every colour parameter |
-| `adjust_all` | Set every colour parameter at once (`values`), so auto tone is one undo step |
+| `adjust_all` | Set every colour parameter at once (`values`), so an Auto or a section's reset is one undo step |
 
 Undo pops the list; reset clears it and returns the original exactly. `edit_session` keeps one
 stack per (path, size, mtime) for the session (up to 64 stacks, oldest evicted), so walking away
@@ -46,15 +46,38 @@ The stack folds into two canonical states:
   canvas blit samples the source through that map, so rotate, flip, straighten and crop cost
   nothing per frame. `constrain_crop` shrinks a crop until no corner falls outside the rotated
   source; `auto_crop` is the largest frame-aspect rect that fits an angle.
-- **Colour** (`fold_colour` → `colour`): the last value set for each of exposure (±5 EV),
-  contrast, saturation, temperature and tint (−100..+100). Order is white balance (temperature,
-  tint) → exposure → contrast → saturation → display encode. White balance and exposure are one
-  per-channel gain, so the chain is one small kernel with eight uniforms
-  (`adjust_uniforms`: RGB gains, contrast slope, saturation, pivot 0.18).
+- **Colour** (`fold_colour` → `colour`): the last value set for each of the sixteen
+  `adjust_param`s, in four sections (`adjust_section`), each with its own Auto (but the vignette)
+  and its own reset:
 
-The kernel is written once (`gfx/adjust_kernel.h`) and compiled three ways: HLSL and MSL in the
-blit's pixel shader, and C++ for export. On the canvas it runs over the FP16 working texture; a
-slider drag re-uploads 32 bytes of uniforms and never decodes.
+  | Section | Parameters |
+  |---|---|
+  | Light | exposure (±5 EV), highlights, shadows, whites, blacks, contrast |
+  | Colour | saturation, vibrance, temperature, tint |
+  | Black & White | intensity (0..100; 0 is off), filter (−100 blue .. +100 red), tone |
+  | Vignette | strength (+ darkens), radius, softness |
+
+  Every other parameter is −100..+100 and 0 is always the identity. Order: white balance
+  (temperature, tint) and exposure as one per-channel gain → **tone** (highlights, shadows,
+  whites, blacks) → contrast → saturation × vibrance → black & white → vignette → display
+  encode. Tone is a curve on p = luma^(1/2.2): highlights p³(1−p) and shadows p(1−p)³ (peaks of
+  0.105 at p = ¾ and ¼, monotone at ±100), whites p³ and blacks (1−p)³ move the ends; it is applied
+  to RGB as a ratio, so hue is kept, and what a ratio cannot lift at black is added as grey.
+  Vibrance scales saturation by 1 + v(1 − s), s the pixel's own saturation, so muted colours
+  move most. Black & white mixes towards dot(c, w), w from Rec.709 towards a red (0.60, 0.35,
+  0.05) or blue (0.10, 0.35, 0.55) filter (each sums to 1, so a grey keeps its value), with a
+  contrast slope on that grey. The vignette is ±1.5 stops at full strength, a smoothstep from
+  0.35 to 0.95 of the way to the corner (radius moves the start ±0.3, softness the width ±0.4),
+  placed on the output frame (crop and straighten included). The chain is one kernel with six
+  float4 uniforms (`adjust_uniforms` = `gfx::adjust_vectors`); each stage after saturation sits
+  behind an `if` on its own uniforms, so an edit that sets only PR 11's sliders runs PR 11's
+  arithmetic and the export bake pays for a stage only when it is set.
+
+The kernel is written once (`gfx/adjust_kernel_tokens.h`) and compiled three ways: HLSL and MSL
+in the blit's pixel shader, and C++ for export and the histogram (`gfx::adjust`). It takes the
+pixel's offset from the output's centre, corner at distance 1 (`gfx::vignette_map` on the CPU;
+`image_px` in the blits), for the vignette. On the canvas it runs over the FP16 working texture;
+a slider drag re-uploads 96 bytes of uniforms and never decodes.
 
 **Working image.** Colour edits evaluate on a linear FP16 Rec.709 working image
 (`image/linear.h`, `linear_image`). The interactive preview uses a copy downsampled to
@@ -63,15 +86,41 @@ the working image lands, the blit runs the same kernel over the 8-bit viewer tex
 adjusted photo is never shown unadjusted.
 
 **Histogram and clipping** (`edit/histogram.h`): a reduction over the preview working image
-*after* the kernel and display encode, so it shows what the canvas shows. It runs on a worker
+*after* the kernel and display encode, so it shows what the canvas shows (the vignette is placed
+on the working image's own, uncropped frame: on a cropped photo with a vignette the counts are
+near, not exact). It runs on a worker
 when the sliders settle, samples at most ~1 M pixels (`kHistogramSampleBudget`), and bins R, G,
 B and Rec.709 luma. `pack_histogram` gives both chromes the same 64-bin view, scaled to the
 tallest non-end bin. Clipping uses the viewer blinkies' thresholds (`kClipHighLinear` 0.9911,
 `kClipLowLinear` 0.0003), so the pane's percentages count the pixels `C` blinks.
 
+**Auto** (`edit/auto_adjust.h`): each section's AUTO button runs `compute_auto` on a worker
+from the preview working image and lands as one `adjust_all` op. Each returns absolute values for
+its own section, so a second click gives what the first gave.
+
+- **Light** is auto tone (below). It sets exposure and contrast and puts highlights, shadows,
+  whites and blacks back to 0 (they sit between the gain and the slope, so the fit is exact only
+  without them).
+- **Colour** is the grey world over near-neutral pixels: of the pixels neither clipped (any
+  channel ≥ 0.9) nor near black (luma ≤ 0.01), the least saturated quarter (so a frame of sea or
+  leaves reads its light from the clouds, sand or stone in it), their mean linear RGB, and the
+  temperature and tint that make it neutral (a 5-unit grid, then 1-unit about the best), taken
+  70 % of the way (`kAutoColourDamping`, so a sunset stays warm) and less the more colourful
+  those pixels still are (`neutral_confidence`: all of it at a mean saturation of 0.15 or less,
+  none at 0.35, so a frame of sea and sky with nothing grey in it is left nearly alone), capped
+  at ±60, under 3 snapping to 0. Saturation and vibrance are kept.
+- **Black & White** turns it on at full intensity (an intensity already set is kept) with the
+  filter, −100..+100 by 25, that gives grey^(1/2.2) the largest variance over the colour as it
+  reaches black & white; within 2 % of the best, the filter nearest 0 wins. Tone is kept.
+- The vignette has none.
+
+Each reads at most 65 536 pixels (`kAutoSampleBudget`). `adjust_pane::request_auto_tone(section)`
+gives the job a token that a colour change, a new item, a dropped working image or another Auto
+makes stale; `adjust_view::auto_section` tells the chromes which Auto is running.
+
 **Auto tone** (`edit/auto_tone.h`, #289, Preview's Auto Levels): exposure and contrast from the
-histogram. There is no levels op, so it is a levels stretch fitted to the two tone controls the
-kernel has, a gain and a power about 18 % grey, with no new GPU op:
+histogram, a levels stretch fitted to the two tone controls the kernel has, a gain and a power
+about 18 % grey:
 
 - It reads a histogram computed with exposure and contrast at 0 (`auto_tone_basis`; temperature,
   tint and saturation as set) and returns absolute values, so a second click gives the same
@@ -92,14 +141,10 @@ kernel has, a gain and a power about 18 % grey, with no new GPU op:
   rounded to 0.01 EV, contrast to 1.
 - The limit of the controls: a power about 18 % grey cannot subtract an offset. When a lifted
   (hazy) black needs more than +40 to come down, the black is held and white falls short of 250.
-  A levels or curve op would be a new op, not this one.
+  The Blacks slider can now take it down by hand; auto tone does not use it yet.
 
 `compute_auto_tone` is the histogram reduction plus the fit (a worker job, rule 1; the fit itself
-is a few microseconds). `adjust_pane::request_auto_tone` / `auto_tone_landed` give the job a
-token that a colour change, a new item or a dropped working image makes stale, and
-`edit_session::set_colour` lands the result as one `adjust_all` op. **Owed:** the command and
-its key ([16](16-commands.md)), the button on the Edit pane's Colour tab (the adjust pane) on
-both hosts ([20](20-edit-workspace.md)), and the host plumbing that runs the job and lands it.
+is a few microseconds). Light's AUTO runs it through `compute_auto` above.
 
 **Viewer clipping (`C`)** is a shader on the display blit, not an edit op; with colour edits on,
 it blinks what the edit clips.
@@ -169,7 +214,7 @@ What exists is the first editing set:
 | Built | |
 |---|---|
 | Geometry | Rotate, flip, crop (aspect presets, [20](20-edit-workspace.md)), straighten ±45°, resize |
-| Colour | Exposure, contrast, saturation, temperature, tint; auto tone in the core (no button yet) |
+| Colour | Light (exposure, highlights, shadows, whites, blacks, contrast), Colour (saturation, vibrance, temperature, tint), Black & White (intensity, filter, tone), Vignette (strength, radius, softness); an Auto and a reset per section |
 | Readouts | Histogram (R, G, B, luma) and clipping percentages |
 | Lossless | JPEG rotate / flip / MCU-aligned crop, from the viewer (`[` `]` `H` `V`) or on export |
 | Export | JPEG / PNG, long-edge resize, metadata policy |
@@ -181,11 +226,12 @@ kernel or one more pass, evaluated in the order above.
 
 - Persisting a stack across sessions (XMP sidecar, SQLite catalog index).
 - Redo and a named history list for stills (`edit_stack::undo` only pops).
-- Perspective / keystone, lens correction; highlights / shadows / whites / blacks, vibrance; tone
-  curve; per-band HSL; colour grading.
-- Sharpen, noise reduction, dehaze, vignette, grain, split-tone.
+- Perspective / keystone, lens correction; tone curve and levels; per-band HSL (selective
+  colour); a white-balance picker; colour grading ([plan](../plans/edit-adjust.md) slices 2–3).
+- Brilliance, definition, sharpen, noise reduction (slice 4); dehaze, grain, split-tone.
 - Local adjustments: gradients, brush masks, healing / clone, red-eye.
-- Auto-straighten, auto-crop. (Auto tone is in the core; its button and command are owed, above.)
+- Auto-straighten, auto-crop. An Auto key outside the pane (the pane's `A` runs the focused
+  slider's section).
 - GPU demosaic, highlight recovery, lens profiles, dual-illuminant white balance.
 - A compute-shader ping-pong chain and a cache of pipeline state after early stages (the single
   kernel on the blit does not need them).

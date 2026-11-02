@@ -523,6 +523,19 @@ constexpr command_info kCommands[] = {
     {zoom_af_point, "Zoom to AF point"},
     {compare_two_up, "Compare with previous"},
     {toggle_page_sidebar, "Page sidebar"},
+    {adjust_highlights, "Adjust: highlights", true},
+    {adjust_shadows, "Adjust: shadows", true},
+    {adjust_whites, "Adjust: whites", true},
+    {adjust_blacks, "Adjust: blacks", true},
+    {adjust_vibrance, "Adjust: vibrance", true},
+    {adjust_mono, "Adjust: black & white", true},
+    {adjust_mono_filter, "Adjust: black & white filter", true},
+    {adjust_mono_tone, "Adjust: black & white tone", true},
+    {adjust_vignette, "Adjust: vignette", true},
+    {adjust_vignette_radius, "Adjust: vignette radius", true},
+    {adjust_vignette_softness, "Adjust: vignette softness", true},
+    {adjust_auto, "Adjust: auto", true},
+    {adjust_reset_section, "Adjust: reset section", true},
 };
 
 const char* named_key(key k) noexcept {

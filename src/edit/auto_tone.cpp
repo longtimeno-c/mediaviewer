@@ -49,10 +49,10 @@ double stops_of(double code) noexcept {
 }  // namespace
 
 colour auto_tone_basis(const colour& c) noexcept {
-  colour b = c;
-  b.v[static_cast<std::size_t>(adjust_param::exposure)] = 0.0f;
-  b.v[static_cast<std::size_t>(adjust_param::contrast)] = 0.0f;
-  return b;
+  // The whole Light section: highlights, shadows, whites and blacks sit
+  // between the gain and the slope, so the two-point fit is exact only with
+  // them at 0, and Light's Auto sets them to 0 (edit/auto_adjust.h).
+  return without_section(c, adjust_section::light);
 }
 
 auto_tone_result auto_tone(const histogram& basis, const colour& current) noexcept {
@@ -140,6 +140,7 @@ auto_tone_result auto_tone(const histogram& basis, const colour& current) noexce
   exposure = std::clamp(exposure, -static_cast<double>(kAutoToneMaxExposure),
                         static_cast<double>(kAutoToneMaxExposure));
 
+  r.value = auto_tone_basis(current);
   r.value.v[static_cast<std::size_t>(adjust_param::exposure)] =
       clamp_param(adjust_param::exposure, static_cast<float>(exposure));
   r.value.v[static_cast<std::size_t>(adjust_param::contrast)] =
