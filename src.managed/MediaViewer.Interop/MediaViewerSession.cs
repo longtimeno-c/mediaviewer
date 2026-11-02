@@ -230,6 +230,69 @@ public sealed partial class MediaViewerSession : IDisposable
         }
     }
 
+    /// <summary>
+    /// #612 (ABI 0.34), Settings -> Storage: what MediaViewer keeps on disk, as JSON
+    /// {"rows":[{"id","path","bytes","files"},...],"total":n} (io/storage.h has the ids).
+    /// <paramref name="extra"/> adds the shell's own places, one "id\tpath" a line.
+    /// Walks folders: call it on a worker, never the UI thread. Empty on an older core.
+    /// </summary>
+    public static string StorageReportJson(string? extra)
+    {
+        try
+        {
+            // One walk when it fits: asking for the size first would walk twice.
+            uint cap = 16 * 1024;
+            for (int attempt = 0; attempt < 3; ++attempt)
+            {
+                IntPtr buf = Marshal.AllocHGlobal((int)cap);
+                try
+                {
+                    ThrowIfFailed(NativeMethods.mv_storage_report_json(extra, buf, cap, out uint need));
+                    if (need <= cap) return Marshal.PtrToStringUTF8(buf) ?? string.Empty;
+                    cap = need + 4096;
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(buf);
+                }
+            }
+            return string.Empty;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>#612: Clear. Deletes every cached thumbnail; the open folder's tiles
+    /// regenerate on request. Deletes files: a worker, never the UI thread.</summary>
+    public void ClearThumbnailCache() => ThrowIfFailed(NativeMethods.mv_thumb_cache_clear(_handle));
+
+    /// <summary>#612: queues the thumbnail cache's sweep (a background job). Any thread.</summary>
+    public void SweepThumbnailCache()
+    {
+        try
+        {
+            ThrowIfFailed(NativeMethods.mv_thumb_cache_sweep(_handle));
+        }
+        catch (EntryPointNotFoundException)
+        {
+        }
+    }
+
+    /// <summary>#612: the thumbnail cache's size cap in bytes; 0 is none (the default).
+    /// The next sweep applies it. Any thread.</summary>
+    public static void SetThumbnailCacheCap(ulong capBytes)
+    {
+        try
+        {
+            ThrowIfFailed(NativeMethods.mv_thumb_cache_set_cap(capBytes));
+        }
+        catch (EntryPointNotFoundException)
+        {
+        }
+    }
+
     /// <summary>#291: moves when the tag pass learns more (0 on an older core).</summary>
     public ulong FolderTagGeneration
     {

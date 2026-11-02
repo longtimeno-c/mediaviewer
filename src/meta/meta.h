@@ -175,6 +175,11 @@ struct metadata {
   // cannot remove that one (rule 5), so the Location row's remove needs it
   // (write.h location_rights_of).
   bool where_in_file = false;
+  // #606: a GoPro or DJI clip's GPS route from its telemetry (meta/telemetry.h),
+  // in order, thinned to at most 20 000 points. The pane's read holds all of
+  // it; the tag pass's bounded read holds only the first fix (enough to know
+  // there is a route). Empty for a still and a clip without telemetry.
+  std::vector<geo_point> route;
 };
 
 // Full read. Worker thread only. `status::io` when the file cannot be read;

@@ -373,6 +373,9 @@ bool engine::backfill_tags() {
     tags_pending_ = false;
     return false;
   }
+  // #606: a host without route_of reads to level 2 and no further this run,
+  // so the first host that has it reads the clips' routes.
+  if (!host_.has_route_of() && tags_level_.load() > 2) tags_level_ = 2;
   const auto started = std::chrono::steady_clock::now();
   // A few seconds at most per control-loop turn: a scan or a model load waits
   // no longer than that behind it.
@@ -431,6 +434,13 @@ bool engine::backfill_tags() {
             t.focal_mm = f->focal_mm;
             t.shutter_den = f->shutter_den;
             t.shutter_us = f->shutter_us;
+            // #606 (level 3): a GoPro or DJI clip's route, read once here
+            // (every telemetry packet) and kept as kTrackPoints points.
+            if (level >= 3 && (f->flags & MV_ADDON_TAG_HAS_ROUTE)) {
+              if (auto r = host_.route_of(a.path, static_cast<std::uint32_t>(kTrackPoints))) {
+                for (const mv_addon_route_point& p : *r) t.track.push_back({p.lat, p.lon});
+              }
+            }
           } else {
             // A host from before #405: read to level 1 and ask nothing more
             // of it this run (the next host that knows them reads them).

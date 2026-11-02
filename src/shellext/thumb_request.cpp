@@ -12,17 +12,50 @@
 #include <thread>
 #include <utility>
 
+#include "codec/format.h"
 #include "image/thumb.h"
+#include "shellext/thumb_runner.h"
 
 namespace mv::shellext {
 namespace {
 
-// Straight RGBA -> BGRA, premultiplied (a DIB with alpha is premultiplied).
-bgra_thumb to_bgra(image::thumb_pixels&& t) {
+// What the waiting caller and the decode thread share. The thread holds a
+// reference past the caller's deadline, so it outlives an abandoned request.
+struct pending {
+  std::mutex mu;
+  std::condition_variable done_cv;
+  bool done = false;
+  std::optional<result<bgra_thumb>> answer;
+  std::atomic<generation> current{1};  // bumped to cancel
+  std::unique_ptr<detail::thumb_work> work;
+};
+
+std::atomic<std::uint32_t> g_in_flight{0};
+
+// A still: the bytes, read whole by the host under kMaxSourceBytes.
+class still_work final : public detail::thumb_work {
+ public:
+  still_work(std::vector<std::uint8_t>&& bytes, std::uint32_t cx) noexcept
+      : bytes_(std::move(bytes)), cx_(cx) {}
+  result<bgra_thumb> run(const job_context& ctx) override {
+    return render_thumbnail(bytes_, cx_, &ctx);
+  }
+
+ private:
+  std::vector<std::uint8_t> bytes_;
+  std::uint32_t cx_;
+};
+
+}  // namespace
+
+namespace detail {
+
+bgra_thumb to_bgra(std::uint32_t width, std::uint32_t height,
+                   std::vector<std::uint8_t>&& rgba) noexcept {
   bgra_thumb out;
-  out.width = t.width;
-  out.height = t.height;
-  out.bgra = std::move(t.rgba);
+  out.width = width;
+  out.height = height;
+  out.bgra = std::move(rgba);
   std::uint8_t* p = out.bgra.data();
   const std::size_t n = static_cast<std::size_t>(out.width) * out.height;
   for (std::size_t i = 0; i < n; ++i, p += 4) {
@@ -37,38 +70,9 @@ bgra_thumb to_bgra(image::thumb_pixels&& t) {
   return out;
 }
 
-// What the waiting caller and the decode thread share. The thread holds a
-// reference past the caller's deadline, so it outlives an abandoned request.
-struct pending {
-  std::mutex mu;
-  std::condition_variable done_cv;
-  bool done = false;
-  std::optional<result<bgra_thumb>> answer;
-  std::atomic<generation> current{1};  // bumped to cancel
-  std::vector<std::uint8_t> bytes;
-};
-
-std::atomic<std::uint32_t> g_in_flight{0};
-
-}  // namespace
-
-std::uint32_t decodes_in_flight() noexcept { return g_in_flight.load(std::memory_order_acquire); }
-
-result<bgra_thumb> render_thumbnail(std::span<const std::uint8_t> bytes, std::uint32_t cx,
-                                    const job_context* ctx) {
-  if (bytes.empty() || bytes.size() > kMaxSourceBytes) return err(status::invalid_arg);
-  const std::uint32_t edge = std::clamp<std::uint32_t>(cx, 16, kMaxThumbEdge);
-  MV_TRY(image::thumb_pixels t, image::make_thumb_rgba(bytes, edge, ctx));
-  if (t.width == 0 || t.height == 0 ||
-      t.rgba.size() < static_cast<std::size_t>(t.width) * t.height * 4u) {
-    return err(status::corrupt);
-  }
-  if (ctx && ctx->cancelled()) return err(status::cancelled);
-  return to_bgra(std::move(t));
-}
-
-result<bgra_thumb> render_thumbnail_by(std::vector<std::uint8_t> bytes, std::uint32_t cx,
-                                       std::chrono::milliseconds deadline) {
+result<bgra_thumb> run_bounded(std::unique_ptr<thumb_work> work,
+                               std::chrono::milliseconds deadline) noexcept {
+  if (!work) return err(status::invalid_arg);
   // Reserve a slot before starting the thread; the thread gives it back as
   // the last thing it does, after it has released everything it holds.
   if (g_in_flight.fetch_add(1, std::memory_order_acq_rel) >= kMaxInFlight) {
@@ -78,18 +82,18 @@ result<bgra_thumb> render_thumbnail_by(std::vector<std::uint8_t> bytes, std::uin
   std::shared_ptr<pending> job;
   try {
     job = std::make_shared<pending>();
-    job->bytes = std::move(bytes);
-    std::thread([job, cx]() mutable {
+    job->work = std::move(work);
+    std::thread([job]() mutable {
       result<bgra_thumb> r = err(status::internal);
       try {
         const job_context ctx(0, 1, &job->current, 0);
-        r = render_thumbnail(job->bytes, cx, &ctx);
+        r = job->work->run(ctx);
       } catch (const std::bad_alloc&) {
         r = err(status::out_of_memory);
       } catch (...) {
         r = err(status::internal);
       }
-      job->bytes = {};
+      job->work.reset();  // the bytes, or the stream and FFmpeg's contexts
       {
         std::lock_guard lock(job->mu);
         job->answer.emplace(std::move(r));
@@ -112,6 +116,39 @@ result<bgra_thumb> render_thumbnail_by(std::vector<std::uint8_t> bytes, std::uin
     return err(status::cancelled);
   }
   return std::move(*job->answer);
+}
+
+}  // namespace detail
+
+std::uint32_t decodes_in_flight() noexcept { return g_in_flight.load(std::memory_order_acquire); }
+
+source_kind classify(std::span<const std::uint8_t> head) noexcept {
+  return codec::probe(head) == codec::format_family::unknown ? source_kind::clip
+                                                             : source_kind::still;
+}
+
+result<bgra_thumb> render_thumbnail(std::span<const std::uint8_t> bytes, std::uint32_t cx,
+                                    const job_context* ctx) {
+  if (bytes.empty() || bytes.size() > kMaxSourceBytes) return err(status::invalid_arg);
+  const std::uint32_t edge = std::clamp<std::uint32_t>(cx, 16, kMaxThumbEdge);
+  MV_TRY(image::thumb_pixels t, image::make_thumb_rgba(bytes, edge, ctx));
+  if (t.width == 0 || t.height == 0 ||
+      t.rgba.size() < static_cast<std::size_t>(t.width) * t.height * 4u) {
+    return err(status::corrupt);
+  }
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  return detail::to_bgra(t.width, t.height, std::move(t.rgba));
+}
+
+result<bgra_thumb> render_thumbnail_by(std::vector<std::uint8_t> bytes, std::uint32_t cx,
+                                       std::chrono::milliseconds deadline) {
+  std::unique_ptr<detail::thumb_work> work;
+  try {
+    work = std::make_unique<still_work>(std::move(bytes), cx);
+  } catch (const std::bad_alloc&) {
+    return err(status::out_of_memory);
+  }
+  return detail::run_bounded(std::move(work), deadline);
 }
 
 }  // namespace mv::shellext

@@ -295,6 +295,46 @@ TEST_CASE("places: the add-on answers the Place section and search through the v
   reg.drain();
   REQUIRE(eventually([&] { return pixels_now() != last; }));
 
+  // #601: the folder map. "This folder" reads the folder's geotagged items
+  // through locations_in and draws them; a click on a dot asks the host to
+  // show that file (open_item: info_json's "open"); a click elsewhere does not.
+  CHECK(reg.info_json().find(R"("id":"folder","label":"This folder","value":false)") != std::string::npos);
+  // Country scale, so Porto and Badajoz are on the picture beside Sintra.
+  for (int i = 0; i < 4; ++i) {
+    REQUIRE(reg.send_event("places", "place", "zoom_out", MV_SLOT_EVENT_CLICK, "") == status::ok);
+    reg.drain();
+  }
+  last = pixels_now();
+  REQUIRE(reg.send_event("places", "place", "folder", MV_SLOT_EVENT_CHANGE, "true") == status::ok);
+  reg.drain();
+  REQUIRE(eventually([&] { return pixels_now() != last; }));
+  CHECK(reg.info_json().find(R"("id":"folder","label":"This folder","value":true)") != std::string::npos);
+  CHECK(mv::json::parse(reg.info_json())->find("open") == nullptr);
+  REQUIRE(reg.send_event("places", "place", "map", MV_SLOT_EVENT_TAP, R"({"x":0.01,"y":0.01})") == status::ok);
+  reg.drain();
+  CHECK(mv::json::parse(reg.info_json())->find("open") == nullptr);  // a corner: no dot
+  // Somewhere on the picture is a dot: click across it until one opens.
+  std::string opened;
+  for (int yi = 1; yi < 20 && opened.empty(); ++yi) {
+    for (int xi = 1; xi < 40 && opened.empty(); ++xi) {
+      const std::string at = "{\"x\":" + std::to_string(xi / 40.0) + ",\"y\":" + std::to_string(yi / 20.0) + "}";
+      REQUIRE(reg.send_event("places", "place", "map", MV_SLOT_EVENT_TAP, at) == status::ok);
+      reg.drain();
+      const auto doc = mv::json::parse(reg.info_json());
+      if (const auto* open = doc->find("open")) opened = *open->str("path");
+    }
+  }
+  INFO(opened);
+  REQUIRE_FALSE(opened.empty());
+  CHECK(fs::path(opened).parent_path() == folder);
+  CHECK(fs::path(opened).filename() != "sintra.jpg");     // the pin, not a dot
+  CHECK(fs::path(opened).filename() != "screenshot.png");  // no coordinates, no dot
+  // Off again: the plain map.
+  last = pixels_now();
+  REQUIRE(reg.send_event("places", "place", "folder", MV_SLOT_EVENT_CHANGE, "false") == status::ok);
+  reg.drain();
+  REQUIRE(eventually([&] { return pixels_now() != last; }));
+
   // Search by place over the folder.
   reg.search(MV_SLOT_SCOPE_FILES, "portugal", utf8(folder));
   reg.drain();

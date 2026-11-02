@@ -163,6 +163,20 @@ class folder_model {
   [[nodiscard]] std::string cached_page_thumb(const std::string& path_utf8, std::int64_t mtime_unix,
                                               std::uint64_t size, std::uint32_t page) const;
 
+  // #612 (docs/design/04 "Thumbnail cache upkeep"), the Mac twin of the
+  // session's sweep in abi/abi.cpp: queues the cache's sweep on `jobs` (the
+  // host's pool, the one open() takes) behind the view, opening the cache on
+  // that worker if no thumbnail has yet. `busy` is the present loop's
+  // should_yield flag. A sweep already under way makes this a no-op. Any
+  // thread; never blocks.
+  void start_thumb_sweep(job_system& jobs, std::uint64_t cap_bytes, std::function<bool()> busy);
+  // Before the host shuts its pool down (a sweep waiting out a busy viewer
+  // holds a worker the join waits for). Any thread.
+  void stop_thumb_sweep() noexcept;
+  // Settings -> Storage -> Clear: every cached thumbnail and its row. A worker
+  // only: it deletes thousands of files.
+  [[nodiscard]] expected clear_thumb_cache();
+
  private:
   // job_system's queue can outlive this object (jobs already submitted when
   // close()/~folder_model() runs are not retracted, only not-yet-started ones

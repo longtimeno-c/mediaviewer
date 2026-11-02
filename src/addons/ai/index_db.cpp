@@ -12,7 +12,7 @@
 namespace mv::ai {
 namespace {
 
-constexpr int kSchemaVersion = 10;
+constexpr int kSchemaVersion = 11;
 
 // A prepared statement that finalizes itself; binds are 1-based.
 class stmt {
@@ -94,6 +94,38 @@ bool has_column(sqlite3* db, const char* table, const char* column) {
     if (s.text(1) == column) return true;
   }
   return false;
+}
+
+// #606: a track as tracks.points holds it: int32 microdegree pairs (lat, lon),
+// little-endian, at most kTrackPoints. Out-of-range points are dropped.
+std::vector<std::uint8_t> encode_track(std::span<const track_point> pts) {
+  std::vector<std::uint8_t> out;
+  out.reserve(std::min(pts.size(), kTrackPoints) * 8);
+  for (const track_point& p : pts) {
+    if (out.size() >= kTrackPoints * 8) break;
+    if (!std::isfinite(p.lat) || !std::isfinite(p.lon) || std::fabs(p.lat) > 90 || std::fabs(p.lon) > 180) continue;
+    for (const double d : {p.lat, p.lon}) {
+      const auto v = static_cast<std::uint32_t>(static_cast<std::int32_t>(std::llround(d * 1e6)));
+      for (int b = 0; b < 32; b += 8) out.push_back(static_cast<std::uint8_t>(v >> b));
+    }
+  }
+  return out;
+}
+
+std::vector<track_point> decode_track(std::span<const std::int8_t> blob) {
+  std::vector<track_point> out;
+  const std::size_t n = std::min(blob.size() / 8, kTrackPoints);
+  out.reserve(n);
+  const auto at = [&](std::size_t i) {
+    std::uint32_t v = 0;
+    for (int b = 0; b < 4; ++b) v |= static_cast<std::uint32_t>(static_cast<std::uint8_t>(blob[i + b])) << (8 * b);
+    return static_cast<std::int32_t>(v) / 1e6;
+  };
+  for (std::size_t i = 0; i < n; ++i) {
+    const track_point p{at(i * 8), at(i * 8 + 4)};
+    if (std::fabs(p.lat) <= 90 && std::fabs(p.lon) <= 180) out.push_back(p);
+  }
+  return out;
 }
 
 constexpr const char* kAssetCols =
@@ -360,6 +392,22 @@ result<std::unique_ptr<index_db>> index_db::open(const std::string& path) {
       return err(status::corrupt);
     }
     v = "10";
+  }
+  // Schema 10 -> 11 (#606): a clip's telemetry route. Tags level 3 reads it;
+  // a row already at level 2 that is not a clip has nothing more to read and
+  // moves to 3 here, so the backfill reads only clips again.
+  if (v == "10") {
+    if (!d->exec("BEGIN")) return err(status::corrupt);
+    const bool ok =
+        d->exec("CREATE TABLE IF NOT EXISTS tracks(asset_id INTEGER PRIMARY KEY REFERENCES assets(id)"
+                " ON DELETE CASCADE, points BLOB NOT NULL);") &&
+        d->exec("UPDATE assets SET tags = 3 WHERE tags = 2 AND kind <> 2;") &&
+        static_cast<bool>(d->set_meta("schema", "11"));
+    if (!ok || !d->exec("COMMIT")) {
+      d->exec("ROLLBACK");
+      return err(status::corrupt);
+    }
+    v = "11";
   }
   if (v != std::to_string(kSchemaVersion)) {
     return err(status::unsupported_format);  // a newer add-on's index
@@ -1435,7 +1483,7 @@ expected index_db::set_meta(const std::string& key, const std::string& value) {
 expected index_db::clear() {
   std::lock_guard lock(m_);
   if (!exec("DELETE FROM speech; DELETE FROM cues; DELETE FROM passage_vecs; DELETE FROM passages;"
-            " DELETE FROM passage_text;"
+            " DELETE FROM passage_text; DELETE FROM tracks;"
             " DELETE FROM frames; DELETE FROM progress; DELETE FROM asset_text; DELETE FROM assets; DELETE FROM roots;")) {
     return err(status::io);
   }
@@ -1482,6 +1530,9 @@ expected index_db::commit_tags(std::span<const asset_tags> rows) {
                  " WHERE id = ?1 AND mtime = ?2 AND size = ?3");
     stmt del(db_, "DELETE FROM asset_text WHERE rowid = ?1");
     stmt ins(db_, "INSERT INTO asset_text(rowid, text) VALUES(?1, ?2)");
+    // #606: the track is replaced whole whenever level 3 was read.
+    stmt tdel(db_, "DELETE FROM tracks WHERE asset_id = ?1");
+    stmt tins(db_, "INSERT INTO tracks(asset_id, points) VALUES(?1, ?2)");
     for (const asset_tags& t : rows) {
       up.reset();
       up.bind(1, t.id).bind(2, t.mtime).bind(3, static_cast<std::int64_t>(t.size));
@@ -1504,6 +1555,21 @@ expected index_db::commit_tags(std::span<const asset_tags> rows) {
         break;
       }
       if (sqlite3_changes(db_) == 0) continue;
+      if (t.level >= 3) {
+        tdel.reset();
+        if (!tdel.bind(1, t.id).run()) {
+          ok = false;
+          break;
+        }
+        if (!t.track.empty()) {
+          const std::vector<std::uint8_t> blob = encode_track(t.track);
+          tins.reset();
+          if (!tins.bind(1, t.id).bind_blob(2, blob.data(), blob.size()).run()) {
+            ok = false;
+            break;
+          }
+        }
+      }
       del.reset();
       if (!del.bind(1, t.id).run()) {
         ok = false;
@@ -1582,8 +1648,9 @@ result<std::vector<index_db::located>> index_db::located_assets(std::int64_t aft
   std::vector<located> out;
   std::lock_guard lock(m_);
   // The primary key walks in order; a row without both columns is skipped.
-  stmt s(db_, "SELECT id, path, lat, lon FROM assets WHERE id > ?1 AND lat IS NOT NULL AND lon IS NOT NULL"
-              " ORDER BY id LIMIT ?2");
+  // #606: a clip's track rides along (a primary-key lookup per located row).
+  stmt s(db_, "SELECT a.id, a.path, a.lat, a.lon, t.points FROM assets a LEFT JOIN tracks t ON t.asset_id = a.id"
+              " WHERE a.id > ?1 AND a.lat IS NOT NULL AND a.lon IS NOT NULL ORDER BY a.id LIMIT ?2");
   if (!s.ok()) return err(status::io);
   s.bind(1, after_id).bind(2, static_cast<std::int64_t>(limit));
   while (s.step_row()) {
@@ -1592,6 +1659,7 @@ result<std::vector<index_db::located>> index_db::located_assets(std::int64_t aft
     l.path = s.text(1);
     l.lat = s.real(2);
     l.lon = s.real(3);
+    if (!s.is_null(4)) l.track = decode_track(s.blob(4));
     out.push_back(std::move(l));
   }
   return out;

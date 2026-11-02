@@ -770,4 +770,114 @@ std::size_t map_cache::size() const {
   return lru_.size();
 }
 
+// ---- #606: a clip's route ---------------------------------------------------------
+
+bool draw_route(const map_view& v, std::span<const route_point> route, std::uint32_t line, std::uint32_t casing,
+                std::span<std::uint8_t> bgra) {
+  const std::uint32_t w = v.width;
+  const std::uint32_t h = v.height;
+  if (w == 0 || h == 0 || w > 4096 || h > 4096 || bgra.size() < static_cast<std::size_t>(w) * h * 4) return false;
+  if (!std::isfinite(v.lat) || !std::isfinite(v.lon) || route.empty()) return true;
+  const float scale = v.scale > 0 ? std::min(v.scale, 8.0f) : 1.0f;
+  const projection pr(v);
+  const double world = pr.world();
+
+  // Pixels, unwrapped from the first point (taken nearest the centre), with
+  // the points that do not move half a pixel dropped.
+  std::vector<double> xy;
+  xy.reserve(std::min(route.size(), k_max_route_points) * 2);
+  double prev_lon = 0;
+  for (std::size_t i = 0; i < route.size() && i < k_max_route_points; ++i) {
+    const route_point& p = route[i];
+    if (!std::isfinite(p.lat) || !std::isfinite(p.lon) || std::fabs(p.lat) > 90 || std::fabs(p.lon) > 180) continue;
+    double x;
+    if (xy.empty()) {
+      x = pr.x(wrap180(p.lon - pr.lon0));
+    } else {
+      x = xy[xy.size() - 2] + wrap180(p.lon - prev_lon) * kDeg * pr.k;
+    }
+    prev_lon = p.lon;
+    const double y = pr.y(p.lat);
+    if (!xy.empty() && std::fabs(x - xy[xy.size() - 2]) < 0.5 && std::fabs(y - xy.back()) < 0.5) continue;
+    xy.push_back(x);
+    xy.push_back(y);
+  }
+  if (xy.empty()) return true;
+
+  const double line_r = 1.0 * scale;            // a 2 pt line
+  const double casing_r = line_r + 1.0 * scale;  // on a 1 pt casing
+  std::vector<float> cov_line(static_cast<std::size_t>(w) * h, 0.0f);
+  std::vector<float> cov_casing(static_cast<std::size_t>(w) * h, 0.0f);
+  // One segment (a lone point is a segment of length 0: a dot), in every
+  // whole-world copy that reaches the picture.
+  const auto segment = [&](double ax, double ay, double bx, double by) {
+    const double lo = std::min(ax, bx), hi = std::max(ax, bx);
+    // The copies of [lo, hi] shifted by whole worlds that meet [0, w].
+    const double k0 = std::ceil((-casing_r - hi) / world), k1 = std::floor((w + casing_r - lo) / world);
+    for (double k = k0; k <= k1 && k - k0 < 4; ++k) {
+      const double sx = k * world;
+      const double x0 = ax + sx, x1 = bx + sx;
+      // Clamped as doubles first: a point far off the picture must not
+      // overflow the conversion to int.
+      const auto col = [&](double x) { return static_cast<int>(std::clamp(x, -1.0, static_cast<double>(w))); };
+      const auto row_of = [&](double y) { return static_cast<int>(std::clamp(y, -1.0, static_cast<double>(h))); };
+      const int px0 = std::max(0, col(std::floor(std::min(x0, x1) - casing_r - 1)));
+      const int px1 = std::min(static_cast<int>(w) - 1, col(std::ceil(std::max(x0, x1) + casing_r + 1)));
+      const double ylo = std::min(ay, by) - casing_r - 1, yhi = std::max(ay, by) + casing_r + 1;
+      if (!(yhi >= 0) || !(ylo <= h) || px0 > px1) continue;
+      const int py0 = std::max(0, row_of(std::floor(ylo)));
+      const int py1 = std::min(static_cast<int>(h) - 1, row_of(std::ceil(yhi)));
+      const double dx = x1 - x0, dy = by - ay;
+      const double len2 = dx * dx + dy * dy;
+      const double reach = casing_r + 1;
+      for (int py = py0; py <= py1; ++py) {
+        // Only the stretch of this row the line can reach: a long diagonal
+        // costs its length times its width, not its bounding box.
+        int xa = px0, xb = px1;
+        if (std::fabs(dy) > 1e-9) {
+          const double t = std::clamp((py + 0.5 - ay) / dy, 0.0, 1.0);
+          const double xc = x0 + t * dx;
+          const double half = reach * std::sqrt(len2) / std::fabs(dy) + reach;
+          xa = std::max(px0, col(std::floor(xc - half)));
+          xb = std::min(px1, col(std::ceil(xc + half)));
+        }
+        for (int px = xa; px <= xb; ++px) {
+          const double cx = px + 0.5 - x0, cy = py + 0.5 - ay;
+          double t = len2 > 0 ? (cx * dx + cy * dy) / len2 : 0;
+          t = std::clamp(t, 0.0, 1.0);
+          const double d = std::hypot(cx - t * dx, cy - t * dy);
+          const std::size_t i = static_cast<std::size_t>(py) * w + static_cast<std::size_t>(px);
+          cov_line[i] = std::max(cov_line[i], static_cast<float>(std::clamp(line_r + 0.5 - d, 0.0, 1.0)));
+          cov_casing[i] = std::max(cov_casing[i], static_cast<float>(std::clamp(casing_r + 0.5 - d, 0.0, 1.0)));
+        }
+      }
+    }
+  };
+  // A route that stays a few hundred pixels long is cheap; one whose bounds
+  // run past the picture by more than a world is clipped by the copies above.
+  if (xy.size() == 2) {
+    segment(xy[0], xy[1], xy[0], xy[1]);
+  } else {
+    for (std::size_t i = 2; i + 1 < xy.size(); i += 2) segment(xy[i - 2], xy[i - 1], xy[i], xy[i + 1]);
+  }
+
+  const rgb lc = unpack(line), cc = unpack(casing);
+  for (std::size_t i = 0; i < cov_line.size(); ++i) {
+    const float a_case = cov_casing[i], a_line = cov_line[i];
+    if (a_case <= 0) continue;
+    std::uint8_t* px = &bgra[i * 4];
+    const float alpha = px[3] / 255.0f;  // the frame's rounded corners stay as they are
+    if (alpha <= 0) continue;
+    // Premultiplied: colour' = colour * (1 - a) + C * alpha * a, alpha unchanged.
+    const auto over = [&](const rgb& c, float a) {
+      px[0] = static_cast<std::uint8_t>(std::clamp(px[0] * (1 - a) + c.b * alpha * a + 0.5f, 0.0f, 255.0f));
+      px[1] = static_cast<std::uint8_t>(std::clamp(px[1] * (1 - a) + c.g * alpha * a + 0.5f, 0.0f, 255.0f));
+      px[2] = static_cast<std::uint8_t>(std::clamp(px[2] * (1 - a) + c.r * alpha * a + 0.5f, 0.0f, 255.0f));
+    };
+    over(cc, a_case * 0.85f);
+    if (a_line > 0) over(lc, a_line);
+  }
+  return true;
+}
+
 }  // namespace mv::places

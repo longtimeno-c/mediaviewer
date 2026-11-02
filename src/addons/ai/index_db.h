@@ -74,6 +74,14 @@
 // a passage that goes (a changed file, a resumed read) takes its vectors
 // with it (ON DELETE CASCADE).
 //
+// Schema 11 (#606): `tracks(asset_id, points)`, a GoPro or DJI clip's GPS
+// route from its telemetry, at most kTrackPoints points evenly spaced along
+// it, as int32 microdegree pairs (lat, lon) little-endian in one BLOB. The
+// asset's own lat / lon stay its first fix. Filled by the tag backfill at
+// level 3 (kTagsLevel) from the host's route_of, only for files whose tag
+// facts say they have a route; the step leaves every non-clip row at level 3
+// so only clips are read again. An asset that goes takes its track.
+//
 // docs/design/17 sketches one assets row per (path, mtime, size, spec); progress is
 // that row's per-model half, so two models' vectors live side by side while
 // a quality change migrates (PR 23: "old index kept until the new one
@@ -203,8 +211,17 @@ struct asset_row {
 };
 
 // What the tag backfill has read of an asset (assets.tags): 0 nothing, 1 the
-// schema 4 facts, 2 (#405, schema 5) rating, label and exposure too.
-inline constexpr int kTagsLevel = 2;
+// schema 4 facts, 2 (#405, schema 5) rating, label and exposure too, 3 (#606,
+// schema 11) a clip's telemetry route too.
+inline constexpr int kTagsLevel = 3;
+// #606: the most route points a track keeps (about one a kilometre on a
+// two-hour drive), and the place search reads.
+inline constexpr std::size_t kTrackPoints = 128;
+
+// #606: one point of a clip's route, WGS 84 degrees.
+struct track_point {
+  double lat = 0, lon = 0;
+};
 
 // #291 (schema 4): what an asset's tags say, as the host's tag_facts gave
 // them. `text` is the search fields folded (core/fold.h) and joined by spaces,
@@ -228,6 +245,9 @@ struct asset_tags {
   std::int32_t focal_mm = 0;
   std::int32_t shutter_den = 0;
   std::int64_t shutter_us = 0;
+  // #606 (level 3): the clip's route (at most kTrackPoints); empty for
+  // everything else.
+  std::vector<track_point> track;
 };
 
 // One embedding to store. `emb` is float and L2-normalised; the store
@@ -510,6 +530,7 @@ class index_db {
     std::int64_t id = 0;
     std::string path;
     double lat = 0, lon = 0;
+    std::vector<track_point> track;  // #606: its route, from tracks; empty for most
   };
   [[nodiscard]] result<std::vector<located>> located_assets(std::int64_t after_id, std::size_t limit);
   // An FTS5 MATCH over asset_text (empty when the index has no FTS5). For a

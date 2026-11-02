@@ -17,6 +17,7 @@
 #include <windows.h>
 
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -27,7 +28,13 @@ namespace mv::shell {
 // running app's), it is allowed to take the foreground and true is returned:
 // exit now. False: none is running (or it did not answer in time, or the
 // pipe's server is not this user); carry on as the first instance.
-[[nodiscard]] bool forward_to_running_instance(const std::vector<std::wstring>& paths) noexcept;
+// `task` (issue #617, a jump-list task such as L"open-folder") is sent first,
+// as a line of its own that starts with kForwardedTaskMark.
+[[nodiscard]] bool forward_to_running_instance(const std::vector<std::wstring>& paths,
+                                               std::wstring_view task = {}) noexcept;
+
+// The first character of a hand-off line that names a task, not a path.
+inline constexpr wchar_t kForwardedTaskMark = L'\x01';
 
 // The first instance claims the name as soon as it knows it is one, long
 // before its window exists. A second start in that gap (Explorer starts one

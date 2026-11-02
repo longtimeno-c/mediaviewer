@@ -166,7 +166,8 @@ result<metadata> read(std::string_view utf8_path) {
   if (family == codec::format_family::unknown) {
     // Not a still we know: a clip, or a file with nothing to say. Either way
     // the answer is a (possibly empty) metadata, not an error.
-    (void)detail::read_clip(utf8_path, out, &ev);  // false = nothing to say
+    // #606: the pane keeps the whole telemetry route; the tag pass below, its head.
+    (void)detail::read_clip(utf8_path, out, &ev, detail::telemetry_read::full);  // false = nothing to say
     read_beyond(utf8_path, *prefix, family, ev, out);
     out.where_in_file = out.s.where.has_value();  // #352: before the sidecar's goes over it
     detail::overlay_sidecar(utf8_path, out);
