@@ -12,12 +12,19 @@
 //
 // The surrogate may be shared with other vendors' handlers, so nothing here
 // changes the process: no job object, no DLL search path, no global state
-// beyond the COM object count. Each request reads at most kMaxSourceBytes and
-// answers within kDeadline or not at all (shellext/thumb_request.h).
+// beyond the COM object count. Each request answers within kDeadline or not at
+// all (shellext/thumb_request.h).
 //
-// Registered on the MediaViewer.Image ProgId only (docs/design/12 2026-09-25), so it
-// runs for the types the user made MediaViewer the default for and never
-// replaces another handler.
+// Two paths, picked by the file's first bytes (shellext::classify), never by
+// extension or ProgId:
+//   * a still is read whole, at most kMaxSourceBytes, and decoded from memory;
+//   * anything else is a clip (issue #610): the stream is kept and read
+//     through a seekable reader by FFmpeg (shellext/thumb_poster.h), so a 4 GB
+//     MKV costs a few reads near its head, never 4 GB of memory.
+//
+// Registered on the MediaViewer.Image and MediaViewer.Video ProgIds only
+// (docs/design/12 2026-09-25, issue #610), so it runs for the types the user
+// made MediaViewer the default for and never replaces another handler.
 #include <windows.h>
 #include <objbase.h>
 #include <propsys.h>
@@ -27,9 +34,12 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <memory>
 #include <new>
+#include <span>
 #include <vector>
 
+#include "shellext/thumb_poster.h"
 #include "shellext/thumb_request.h"
 
 namespace {
@@ -52,6 +62,65 @@ void pin_module() noexcept {
   ::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
                        reinterpret_cast<LPCWSTR>(&pin_module), &self);
 }
+
+// Reads `out.size()` bytes or to the end of the stream, whichever comes first.
+// The count read; -1 on a failed read.
+long long read_fully(IStream* stream, std::uint8_t* out, std::size_t size) noexcept {
+  std::size_t got = 0;
+  while (got < size) {
+    const ULONG want = static_cast<ULONG>(std::min<std::size_t>(size - got, 1u << 24));
+    ULONG read = 0;
+    const HRESULT hr = stream->Read(out + got, want, &read);
+    if (FAILED(hr)) return got == 0 ? -1 : static_cast<long long>(got);
+    if (read == 0) break;
+    got += read;
+  }
+  return static_cast<long long>(got);
+}
+
+// A clip's bytes, read where FFmpeg asks (issue #610). Holds its own
+// reference on the stream: the decode thread owns this reader and may run
+// past the request's deadline, so the stream lives exactly as long as it is
+// read. Called from that one thread only, one read at a time.
+//
+// The stream is used from the decode thread, not the thread that was handed
+// it. The shell's stream over a file in the thumbnail surrogate is the
+// free-threaded file stream; that is what the Windows verify of #610 checks.
+class stream_source final : public mv::player::byte_source {
+ public:
+  stream_source(IStream* stream, std::uint64_t size) noexcept : stream_(stream), size_(size) {
+    stream_->AddRef();
+  }
+  ~stream_source() override { stream_->Release(); }
+
+  mv::result<std::size_t> read_at(std::uint64_t offset, std::span<std::uint8_t> out) noexcept override {
+    if (offset >= size_ || out.empty()) return std::size_t{0};
+    if (offset != pos_) {
+      LARGE_INTEGER to{};
+      to.QuadPart = static_cast<LONGLONG>(offset);
+      if (FAILED(stream_->Seek(to, STREAM_SEEK_SET, nullptr))) {
+        pos_ = kUnknown;
+        return mv::err(mv::status::io);
+      }
+      pos_ = offset;
+    }
+    const std::size_t want = static_cast<std::size_t>(std::min<std::uint64_t>(out.size(), size_ - offset));
+    const long long got = read_fully(stream_, out.data(), want);
+    if (got < 0) {
+      pos_ = kUnknown;
+      return mv::err(mv::status::io);
+    }
+    pos_ += static_cast<std::uint64_t>(got);
+    return static_cast<std::size_t>(got);
+  }
+  std::uint64_t size() const noexcept override { return size_; }
+
+ private:
+  static constexpr std::uint64_t kUnknown = ~std::uint64_t{0};
+  IStream* stream_;
+  std::uint64_t size_;
+  std::uint64_t pos_ = kUnknown;  // where the stream is; seek before the first read
+};
 
 class thumb_provider final : public IInitializeWithStream, public IThumbnailProvider {
  public:
@@ -80,28 +149,39 @@ class thumb_provider final : public IInitializeWithStream, public IThumbnailProv
     return static_cast<ULONG>(n);
   }
 
-  // IInitializeWithStream: the bytes are read here, once, with the size cap.
-  // The stream is not kept: the provider holds no handle to the user's file.
+  // IInitializeWithStream: the head is read here to pick the path. A still is
+  // then read whole, once, with the size cap, and the stream is not kept: the
+  // provider holds no handle to the user's file. A clip keeps the stream until
+  // GetThumbnail hands it to the decode thread; nothing more is read up front.
   IFACEMETHODIMP Initialize(IStream* stream, DWORD) override {
     if (!stream) return E_INVALIDARG;
     if (initialized_) return HRESULT_FROM_WIN32(ERROR_ALREADY_INITIALIZED);
     try {
       STATSTG stat{};
       if (FAILED(stream->Stat(&stat, STATFLAG_NONAME))) return E_FAIL;
-      if (stat.cbSize.QuadPart == 0 || stat.cbSize.QuadPart > mv::shellext::kMaxSourceBytes) {
-        return E_FAIL;
+      const std::uint64_t size = stat.cbSize.QuadPart;
+      if (size == 0) return E_FAIL;
+      const std::size_t head_size =
+          static_cast<std::size_t>(std::min<std::uint64_t>(size, mv::shellext::kProbeBytes));
+      std::vector<std::uint8_t> head(head_size);
+      const long long head_got = read_fully(stream, head.data(), head.size());
+      if (head_got <= 0) return E_FAIL;
+      head.resize(static_cast<std::size_t>(head_got));
+
+      if (mv::shellext::classify(head) == mv::shellext::source_kind::clip) {
+        stream->AddRef();
+        clip_ = stream;
+        clip_size_ = size;
+      } else {
+        if (size > mv::shellext::kMaxSourceBytes) return E_FAIL;
+        bytes_ = std::move(head);
+        if (bytes_.size() < size) {
+          const std::size_t have = bytes_.size();
+          bytes_.resize(static_cast<std::size_t>(size));
+          const long long got = read_fully(stream, bytes_.data() + have, bytes_.size() - have);
+          bytes_.resize(have + static_cast<std::size_t>(got < 0 ? 0 : got));
+        }
       }
-      bytes_.resize(static_cast<std::size_t>(stat.cbSize.QuadPart));
-      std::size_t got = 0;
-      while (got < bytes_.size()) {
-        const ULONG want = static_cast<ULONG>(std::min<std::size_t>(bytes_.size() - got, 1u << 24));
-        ULONG read = 0;
-        const HRESULT hr = stream->Read(bytes_.data() + got, want, &read);
-        if (FAILED(hr) || read == 0) break;
-        got += read;
-      }
-      if (got == 0) return E_FAIL;
-      bytes_.resize(got);
     } catch (const std::bad_alloc&) {
       bytes_ = {};
       return E_OUTOFMEMORY;
@@ -115,10 +195,21 @@ class thumb_provider final : public IInitializeWithStream, public IThumbnailProv
     if (!out || !alpha) return E_POINTER;
     *out = nullptr;
     *alpha = WTSAT_UNKNOWN;
-    if (!initialized_ || bytes_.empty()) return E_UNEXPECTED;
+    if (!initialized_ || (bytes_.empty() && !clip_)) return E_UNEXPECTED;
     // No path, name or pixels are logged, here or by the core (rule 6).
-    auto thumb = mv::shellext::render_thumbnail_by(std::move(bytes_), cx);
-    bytes_ = {};
+    mv::result<mv::shellext::bgra_thumb> thumb = mv::err(mv::status::internal);
+    if (clip_) {
+      // The reader takes its own reference; ours goes now, so the stream is
+      // released by whichever ends last, this object or the decode thread.
+      auto* source = new (std::nothrow) stream_source(clip_, clip_size_);
+      clip_->Release();
+      clip_ = nullptr;
+      if (!source) return E_OUTOFMEMORY;
+      thumb = mv::shellext::render_poster_by(std::unique_ptr<mv::player::byte_source>(source), cx);
+    } else {
+      thumb = mv::shellext::render_thumbnail_by(std::move(bytes_), cx);
+      bytes_ = {};
+    }
     // Only an abandoned decode leaves a thread of ours running; a request
     // refused at the cap (status::busy) started nothing, so it does not pin.
     if (!thumb && thumb.error() == mv::status::cancelled) pin_module();
@@ -144,11 +235,16 @@ class thumb_provider final : public IInitializeWithStream, public IThumbnailProv
   }
 
  private:
-  ~thumb_provider() { --g_objects; }
+  ~thumb_provider() {
+    if (clip_) clip_->Release();  // initialised, never asked for a thumbnail
+    --g_objects;
+  }
 
   std::atomic<long> refs_{1};
   bool initialized_ = false;
-  std::vector<std::uint8_t> bytes_;
+  std::vector<std::uint8_t> bytes_;  // a still, read whole
+  IStream* clip_ = nullptr;          // a clip: the shell's stream, until GetThumbnail
+  std::uint64_t clip_size_ = 0;
 };
 
 class class_factory final : public IClassFactory {
