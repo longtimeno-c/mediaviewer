@@ -383,6 +383,16 @@ ABI returns a UTF-8 path; C# `BitmapImage` loads the file, so pixels never cross
 BC7 is not used: a BC7 blob cannot be an `Image.Source`; it is the format to take if thumbs ever
 need to be GPU-resident. The Mac uses the same spec and schema (`image/thumb_mac.cpp`, 2026-09-17).
 
+**The thumbnail cache tidies itself; no cap by default (2026-11-02, #612).** Every bump above, and
+every edit or rotate, left the old JPEGs behind: the store only ever added. Now `store` drops the
+path's rows of other stamps and specs with their files (the issue's draft said on the next lookup;
+on the store the hot lookup stays a read), and a sweep once a launch, after the first image, drops
+old-spec rows, rows whose JPEG is gone and unnamed JPEGs, paced behind the view like the tag pass.
+A size cap exists but is **off by default** (owner, in the issue): a cap too small would bring back
+cold thumbnails, the first-pixel path the cache exists for. With a cap the oldest-written go first,
+not the least recently used: recording use would turn every lookup into a write. Metadata
+snapshots are never swept (they are not a cache, docs/design/06 "Undo").
+
 **Warm browse is a five-slot GPU LRU (2026-09-07).** Current ± 2 decoded textures, not a second
 `mv_image_open`. Prefetch jobs use the view generation; thumb jobs use a folder generation so arrow
 keys do not cancel the filmstrip.
