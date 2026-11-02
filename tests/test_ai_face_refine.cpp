@@ -1945,6 +1945,79 @@ TEST_CASE("People why: a named person's faces through the settle, verdict by ver
   }
 }
 
+// The unknown faces' order (docs/design/17 "Reviewing a person"): a copy of a real
+// faces.db (MV_FACES_DB; this writes), a tenth of each named person's clear faces made
+// unknown (their person cleared). For the first pages of the queue, how many are held-out
+// faces whose suggestion is their own person (a right one-click Yes), how many suggest
+// someone else (a wrong Yes), clearest first against named-suggestion first.
+TEST_CASE("People unknown order: right one-click answers on the first pages", "[.people-unknown-order]") {
+  const char* file = std::getenv("MV_FACES_DB");
+  if (!file) {
+    WARN("MV_FACES_DB is not set");
+    return;
+  }
+  std::map<std::int64_t, std::int64_t> truth;  // face -> its person before
+  {
+    sqlite3* raw = nullptr;
+    REQUIRE(sqlite3_open_v2(file, &raw, SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK);
+    sqlite3_stmt* q = nullptr;
+    sqlite3_prepare_v2(raw, "SELECT f.id, f.person_id FROM faces f JOIN people p ON p.id = f.person_id WHERE p.name != ''"
+                            " AND f.pinned = 0 AND COALESCE(f.quality, 0) >= 0.35", -1, &q, nullptr);
+    while (sqlite3_step(q) == SQLITE_ROW) {
+      const auto id = static_cast<std::uint64_t>(sqlite3_column_int64(q, 0));
+      if (((id * 2654435761ULL) >> 7) % 10 == 0) truth[static_cast<std::int64_t>(id)] = sqlite3_column_int64(q, 1);
+    }
+    sqlite3_finalize(q);
+    sqlite3_exec(raw, "BEGIN", nullptr, nullptr, nullptr);
+    sqlite3_stmt* u = nullptr;
+    sqlite3_prepare_v2(raw, "UPDATE faces SET person_id = NULL WHERE id = ?1", -1, &u, nullptr);
+    for (const auto& [id, person] : truth) {
+      sqlite3_reset(u);
+      sqlite3_bind_int64(u, 1, id);
+      sqlite3_step(u);
+    }
+    sqlite3_finalize(u);
+    sqlite3_exec(raw, "COMMIT", nullptr, nullptr, nullptr);
+    sqlite3_close(raw);
+  }
+  mv::ai::face_tuning t;
+  t.same_person = 0.30f;
+  t.keep = 0.20f;
+  t.keep_weak = 0.24f;
+  t.margin = 0.10f;
+  t.ambiguous = 0.04f;
+  t.merge_at = 0.32f;
+  auto db = mv::ai::faces_db::open(file, t, 512, "yunet-2023mar+adaface-ir50-webface4m/1");
+  REQUIRE(db);
+  std::set<std::int64_t> named;
+  for (const auto& [id, name] : (*db)->names()) named.insert(id);
+  std::vector<mv::ai::loose_face> all = (*db)->loose_faces(0, 1u << 30);
+  const auto count = [&](const std::vector<mv::ai::loose_face>& order, std::size_t first) {
+    std::size_t right = 0, wrong = 0, ask = 0;
+    for (std::size_t i = 0; i < order.size() && i < first; ++i) {
+      const auto& l = order[i];
+      if (l.suggest != 0) ++ask;
+      const auto it = truth.find(l.face.id);
+      if (it == truth.end() || l.suggest == 0) continue;
+      (l.suggest == it->second ? right : wrong) += 1;
+    }
+    std::printf("  first %4zu: suggestions %4zu, right for a held-out face %4zu, wrong %zu\n", first, ask, right, wrong);
+  };
+  std::printf("unknown faces %zu, held out %zu\n", all.size(), truth.size());
+  std::printf("clearest first:\n");
+  for (std::size_t n : {60, 180, 600}) count(all, n);
+  std::printf("the queue's order (loose_begin / loose_finish):\n");
+  const auto t0 = std::chrono::steady_clock::now();
+  const mv::ai::loose_snapshot snap = (*db)->loose_begin();
+  const auto t1 = std::chrono::steady_clock::now();
+  const std::vector<mv::ai::loose_face> by = mv::ai::faces_db::loose_finish(snap);
+  const auto t2 = std::chrono::steady_clock::now();
+  for (std::size_t n : {60, 180, 600}) count(by, n);
+  std::printf("  begin (locked) %.1f ms, finish %.1f ms\n",
+              std::chrono::duration<double, std::milli>(t1 - t0).count(),
+              std::chrono::duration<double, std::milli>(t2 - t1).count());
+}
+
 TEST_CASE("People bench: real face vectors through faces.db, online and settled", "[.people-bench]") {
   const char* file = std::getenv("MV_FACE_EVAL");
   if (!file) {

@@ -723,8 +723,11 @@ typedef struct mv_ai_api {
    * the person's other pins). [worker-thread] */
   mv_status(MV_CALL* person_review_json)(void* ctx, uint64_t person_id, char* out, uint32_t cap,
                                          uint32_t* needed);
-  /* Unknown faces: unassigned faces clear enough to name, clearest first,
-   * each with the person it most resembles (0: nobody near).
+  /* Unknown faces: unassigned faces clear enough to name, in the order the
+   * user answers best: suggested for a named person first (surest first),
+   * then for anyone, then the clearest; each with the person it most
+   * resembles (0: nobody near). The order is kept between pages until the
+   * people change.
    * {"total":N,"faces":[{"face":..,"path":..,"pts_ms":..,"box":[..],"quality":..,
    *   "suggest":7,"suggest_name":"Anna","score":0.27}]}  `limit` <= 200. [worker-thread] */
   mv_status(MV_CALL* unknown_faces_json)(void* ctx, uint32_t offset, uint32_t limit, char* out, uint32_t cap,

@@ -7433,16 +7433,44 @@ std::string engine::person_review_json(std::int64_t person) {
 }
 
 std::string engine::unknown_faces_json(std::uint32_t offset, std::uint32_t limit) {
+  // The queue in full, in answering order (faces_db::loose_finish), scored
+  // with no lock held and kept until a person's faces or the unknown faces
+  // change, so "Show more" pages it without scoring it again.
   std::vector<loose_face> rows;
   std::uint64_t total = 0;
   std::map<std::int64_t, std::string> names;
+  loose_snapshot snap;
+  bool fresh = false;
   {
     std::lock_guard lock(models_m_);
     if (faces_) {
-      rows = faces_->loose_faces(offset, std::min<std::uint32_t>(limit, 200));
-      total = faces_->loose_count();
       for (const auto& [id, name] : faces_->names()) names[id] = name;
+      const std::uint64_t gen = faces_->generation() ^ (faces_->serial() << 1);
+      std::lock_guard q(unknown_m_);
+      if (unknown_gen_ != gen || !unknown_) {
+        snap = faces_->loose_begin();
+        snap.generation = gen;
+        fresh = true;
+      }
     }
+  }
+  std::shared_ptr<const std::vector<loose_face>> order;
+  if (fresh) {
+    auto sorted = std::make_shared<const std::vector<loose_face>>(faces_db::loose_finish(snap));
+    std::lock_guard q(unknown_m_);
+    unknown_ = sorted;
+    unknown_gen_ = snap.generation;
+    order = sorted;
+  } else {
+    std::lock_guard q(unknown_m_);
+    order = unknown_;
+  }
+  if (order) {
+    total = order->size();
+    const std::size_t from = std::min<std::size_t>(offset, order->size());
+    const std::size_t n = std::min<std::size_t>(std::min<std::uint32_t>(limit, 200), order->size() - from);
+    rows.assign(order->begin() + static_cast<std::ptrdiff_t>(from),
+                order->begin() + static_cast<std::ptrdiff_t>(from + n));
   }
   json::writer w;
   w.begin_object();

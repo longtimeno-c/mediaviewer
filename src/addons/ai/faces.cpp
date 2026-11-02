@@ -1669,6 +1669,118 @@ std::vector<loose_face> faces_db::loose_faces(std::uint32_t offset, std::uint32_
   return out;
 }
 
+loose_snapshot faces_db::loose_begin() {
+  std::lock_guard lock(m_);
+  loose_snapshot snap;
+  snap.dim = dim_;
+  snap.rules = rules_;
+  snap.same_person = same_;
+  snap.generation = touch_gen_ ^ (static_cast<std::uint64_t>(loose_.size()) << 40);
+  const std::string sql = std::string("SELECT ") + kFaceCols +
+                          ", quality, emb FROM faces WHERE person_id IS NULL AND spec = ?1"
+                          " AND COALESCE(quality, 1) >= ?2 ORDER BY COALESCE(quality, 1) DESC, id";
+  stmt s(db_, sql.c_str());
+  s.bind(1, spec_).bind_real(2, rules_.weak_quality);
+  stmt rj(db_, "SELECT person_id FROM rejected WHERE face_id = ?1");
+  stmt fr(db_, "SELECT person_id, emb FROM faces WHERE asset_id = ?1 AND pts_ms = ?2 AND person_id IS NOT NULL"
+               " AND spec = ?3");
+  while (s.step_row()) {
+    loose_face l;
+    l.face = face_from(s);
+    l.quality = s.null(11) ? -1.0f : static_cast<float>(s.real(11));
+    const std::vector<float> v = s.floats(12);
+    if (v.size() != dim_) continue;
+    std::vector<std::int64_t> no;
+    rj.reset();
+    rj.bind(1, l.face.id);
+    while (rj.step_row()) no.push_back(rj.i64(0));
+    fr.reset();
+    fr.bind(1, l.face.asset).bind(2, l.face.pts_ms).bind(3, spec_);
+    while (fr.step_row()) {
+      const std::vector<float> o = fr.floats(1);
+      if (o.size() != dim_ || mean_cosine(v, 1, o) < twice_locked()) no.push_back(fr.i64(0));
+    }
+    snap.rows.push_back(std::move(l));
+    snap.emb.insert(snap.emb.end(), v.begin(), v.end());
+    snap.no.push_back(std::move(no));
+  }
+  std::set<std::int64_t> named;
+  {
+    stmt n(db_, "SELECT id FROM people WHERE name != ''");
+    while (n.step_row()) named.insert(n.i64(0));
+  }
+  for (const auto& [id, c] : clusters_) {
+    if (c.n == 0 || c.sum.size() != dim_) continue;
+    loose_snapshot::other o;
+    o.id = id;
+    o.named = named.count(id) != 0;
+    o.mean.resize(dim_);
+    for (std::uint32_t d = 0; d < dim_; ++d) o.mean[d] = c.sum[d] / static_cast<float>(c.n);
+    if (auto it = exemplars_.find(id); it != exemplars_.end()) o.proto = it->second.proto;
+    snap.others.push_back(std::move(o));
+  }
+  return snap;
+}
+
+std::vector<loose_face> faces_db::loose_finish(const loose_snapshot& snap) {
+  const refine_params& p = snap.rules;
+  std::vector<loose_face> out = snap.rows;
+  std::vector<std::pair<float, std::size_t>> best;
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    const std::span<const float> v(snap.emb.data() + i * snap.dim, snap.dim);
+    const std::vector<std::int64_t>& no = snap.no[i];
+    // The online matcher's scorer: the best `shortlist` by average, a
+    // confirmed person by its exemplars, none whose rejections it resembles.
+    best.clear();
+    for (std::size_t o = 0; o < snap.others.size(); ++o) {
+      if (std::find(no.begin(), no.end(), snap.others[o].id) != no.end()) continue;
+      best.emplace_back(dot8(snap.others[o].mean.data(), v.data(), snap.dim), o);
+    }
+    const std::size_t keep = std::min<std::size_t>(best.size(), std::max<std::uint32_t>(p.shortlist, 1));
+    std::partial_sort(best.begin(), best.begin() + static_cast<std::ptrdiff_t>(keep), best.end(),
+                      [](const auto& a, const auto& b) { return a.first > b.first; });
+    for (std::size_t j = 0; j < keep; ++j) {
+      const loose_snapshot::other& o = snap.others[best[j].second];
+      float sc = best[j].first;
+      if (o.proto.pinned && !o.proto.exemplar_ids.empty()) {
+        if (const float sup = exemplar_support(v, o.proto, 0, p.top_k); sup > -1.0f) sc = sup;
+      }
+      if (!o.proto.negatives.empty()) {
+        const float ng = negative_support(v, o.proto, p.top_k);
+        if (ng > -1.0f && sc - ng < p.margin) continue;
+      }
+      if (sc > out[i].score) {
+        out[i].score = sc;
+        out[i].suggest = o.id;
+      }
+    }
+    if (out[i].score < snap.same_person - 2 * p.margin) {
+      out[i].score = -1;
+      out[i].suggest = 0;
+    }
+  }
+  // A suggested named person first, surest first: one click, and on the
+  // owner's copy every one of the first 600 such held-out faces was right
+  // (clearest first: 397 right, 40 wrong). Then other suggestions, then the
+  // clearest of the rest.
+  std::set<std::int64_t> named;
+  for (const auto& o : snap.others) {
+    if (o.named) named.insert(o.id);
+  }
+  const auto rank = [&](const loose_face& l) { return l.suggest == 0 ? 2 : named.count(l.suggest) ? 0 : 1; };
+  std::stable_sort(out.begin(), out.end(), [&](const loose_face& a, const loose_face& b) {
+    const int ra = rank(a), rb = rank(b);
+    if (ra != rb) return ra < rb;
+    return ra < 2 && a.score > b.score;
+  });
+  return out;
+}
+
+std::uint64_t faces_db::generation() {
+  std::lock_guard lock(m_);
+  return touch_gen_ ^ (static_cast<std::uint64_t>(loose_.size()) << 40);
+}
+
 std::uint64_t faces_db::loose_count() {
   std::lock_guard lock(m_);
   stmt s(db_, "SELECT COUNT(*) FROM faces WHERE person_id IS NULL AND spec = ?1 AND COALESCE(quality, 1) >= ?2");

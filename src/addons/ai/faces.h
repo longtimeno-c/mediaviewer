@@ -196,6 +196,26 @@ struct suggest_snapshot {
   std::vector<unnamed> people;   // unnamed, unpinned people it may be, not kept apart from it
 };
 
+// loose_begin's copy: every unknown face clear enough to name, what keeps each
+// from someone (rejections, a frame together), and every person's average and
+// cached exemplars (with negatives).
+struct loose_snapshot {
+  std::uint32_t dim = 0;
+  refine_params rules;
+  float same_person = 0.3f;
+  std::vector<loose_face> rows;
+  std::vector<float> emb;                   // rows * dim
+  std::vector<std::vector<std::int64_t>> no;  // per row: persons it may not be
+  struct other {
+    std::int64_t id = 0;
+    std::vector<float> mean;  // sum / n
+    person_proto proto;       // cached exemplars and negatives, when there are
+    bool named = false;
+  };
+  std::vector<other> others;
+  std::uint64_t generation = 0;
+};
+
 struct person_row {
   std::int64_t id = 0;
   std::string name;
@@ -290,6 +310,14 @@ class faces_db {
   [[nodiscard]] std::vector<face_review> review(std::int64_t person) { return review_finish(review_begin(person)); }
   // Unassigned usable faces, clearest first, each with its nearest person.
   [[nodiscard]] std::vector<loose_face> loose_faces(std::uint32_t offset, std::uint32_t limit);
+  // The unknown-faces queue in full, in the order the user answers it best:
+  // suggested for a named person first (best score first), then for anyone,
+  // then clearest (docs/design/17 "Reviewing a person"). loose_begin under the
+  // lock, loose_finish with none held.
+  [[nodiscard]] loose_snapshot loose_begin();
+  [[nodiscard]] static std::vector<loose_face> loose_finish(const loose_snapshot& snap);
+  // Changes whenever a person's faces or the unknown faces change.
+  [[nodiscard]] std::uint64_t generation();
   [[nodiscard]] std::uint64_t loose_count();
   // "Might also be X": the same split as review.
   [[nodiscard]] suggest_snapshot suggest_begin(std::int64_t person);

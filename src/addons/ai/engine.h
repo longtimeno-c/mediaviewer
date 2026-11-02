@@ -897,6 +897,10 @@ class engine {
   loaded_clip answer_;  // the tower whose vectors answer queries (the active spec)
   std::uint32_t build_compute_ = MV_AI_COMPUTE_AUTO;  // the compute choice build_ opened on
   std::shared_ptr<face_analyzer> faces_model_;
+  // The unknown-faces queue in answering order, and the faces.db generation it was scored at.
+  std::mutex unknown_m_;
+  std::shared_ptr<const std::vector<loose_face>> unknown_;
+  std::uint64_t unknown_gen_ = 0;
   std::unique_ptr<faces_db> faces_;
   std::set<std::int64_t> faces_scanned_;  // under models_m_
   loaded_sound sound_;    // empty model: no ai-audio piece
