@@ -163,8 +163,9 @@ constexpr UINT kMsgShareReady = WM_APP + 0x7F;  // issue #444: a share's files w
 // (IslandHost.Notices.cs posts it).
 constexpr UINT kMsgTray = WM_APP + 0x80;
 constexpr UINT kMsgBackgroundChanged = WM_APP + 0x81;
+constexpr UINT kMsgRunTask = WM_APP + 0x82;  // issue #617: a first start's --task, once the loop runs
 // Issue #614: Ctrl+P's job finished (wparam 1 printed, 0 not; the pool posts).
-constexpr UINT kMsgPrintDone = WM_APP + 0x82;
+constexpr UINT kMsgPrintDone = WM_APP + 0x83;
 // #452: a --background start (sign-in) that no add-on has kept by now removes its
 // Run entry and quits. Driftwire asks within ~10 s of its load.
 constexpr UINT_PTR kBackgroundStartTimerId = 0x7D01;
@@ -499,8 +500,17 @@ struct app_state {
   mv::shell::file_jobs files;
   bool rename_pending = false;  // issue #210: one F2 rename at a time
   std::vector<std::string> destinations;  // F7 / F8, most recent first
-  // PR 15: the jump list's recent folders (settings.ini [recent]), most recent first.
+  // PR 15: the folders the jump list, the welcome card and Open > Recent folders
+  // show: issue #617's pins first, then the recents (pinned_then_recent). Every
+  // row index is into this list; it is rebuilt from the two below, never edited.
   std::vector<std::string> recent_folders;
+  // settings.ini [recent]: the MRU list (f0..f9), most recent first, and the
+  // pins (pinned0..pinned4), oldest pin first (shell/os_integration.h).
+  std::vector<std::string> recent_mru;
+  std::vector<std::string> pinned_folders;
+  // Issue #617: a jump-list task this start was asked for (--task), run once the
+  // window is up ("open-folder") or once Import has loaded ("import").
+  std::wstring pending_task;
   // The OneDrive folder this user has set up (the OneDrive client's %OneDrive%),
   // "" for none: the welcome card's cloud row above the recent folders, as the
   // Mac's iCloud Photos (2026-10-07). Read once from the environment, no I/O.
@@ -578,6 +588,9 @@ struct pending_restore {
 // PR 15: `--new-instance` runs a second, independent window (docs/design/09
 // "overridable"); without it a second start hands its paths to the first.
 bool g_new_instance = false;
+// Issue #617: `--task open-folder|import`, a jump-list task. Forwarded to the
+// running viewer with the paths; a first start runs it once its window is up.
+std::wstring g_start_task;
 // Issue #486: `--boot-report <path>` writes the boot timeline (core/boot_timeline.h)
 // as JSON once the launch is ready, then closes the window: a measuring run,
 // repeated by tools/perf/boot.ps1. It implies --new-instance and keeps
@@ -722,11 +735,14 @@ std::string onedrive_where(const app_state* app) noexcept {
 }
 
 // The card's rows: OneDrive first when it is set up, then the recent folders.
+// The pins lead app->recent_folders (issue #617), so their rows are the first.
 void fill_welcome_card(const app_state* app, mv::shell::welcome_recents& out) noexcept {
+  const std::size_t pinned = app->pinned_folders.size();
   if (app->onedrive_utf8.empty()) {
-    mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, out);
+    mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, out, false, pinned);
   } else {
-    mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, out, "OneDrive", onedrive_where(app));
+    mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, out, "OneDrive", onedrive_where(app),
+                                    pinned);
   }
 }
 
@@ -820,6 +836,10 @@ void note_recent_folder(app_state* app, const std::string& utf8_dir);
 void open_welcome_row(app_state* app, int row);
 void open_recent_folder(app_state* app, int index);
 void remove_welcome_row(app_state* app, int row);
+void show_welcome_row_menu(app_state* app, int card_row, POINT at);  // issue #617
+void run_pending_task(app_state* app);                                // issue #617
+void sync_jump_list_tasks(app_state* app);                            // issue #617
+bool run_session_command(app_state* app, mv::shell::command_id command) noexcept;
 void push_recent_folders(app_state* app);
 void trim_item_opened(app_state* app) noexcept;
 void set_jobs_pane(app_state* app, bool on, bool focus = true) noexcept;
@@ -5234,6 +5254,12 @@ bool chrome_session_command(app_state* app, int command, float arg) {
       const int v = static_cast<int>(arg);
       mv::shell::set_addon_commands_available(
           v >= 2 ? mv::shell::addon_family::ai : mv::shell::addon_family::import, (v & 1) != 0);
+      if (v < 2) {
+        // Issue #617: the jump list's Import… follows the add-on, and a
+        // start's --task import ran ahead of it.
+        sync_jump_list_tasks(app);
+        run_pending_task(app);
+      }
       // docs/design/25: the rows the loaded add-ons' manifests contribute, from the
       // core (it holds the verified manifests); they supersede the built-in
       // rows of the same add-on. The router re-reads the live table.
@@ -5926,6 +5952,7 @@ void browse_tick(app_state* app) noexcept {
 void persist_live_keys() noexcept {
   try {
     mv::shell::save_key_remaps(mv::shell::live_key_remaps());
+    mv::shell::save_addon_key_remaps(mv::shell::live_addon_key_remaps());
   } catch (...) {
   }
 }
@@ -7213,18 +7240,60 @@ std::wstring jump_list_arguments(const std::string& utf8_dir) {
   return L"\"" + dir + L"\"";
 }
 
-// The jump list's "Recent folders" (the Dock menu's twin). Worker thread:
-// CommitList writes the list into the user's profile. Returns the folders the
-// user removed from the list since the last commit: Windows refuses a
-// category that adds one back, so the caller drops them from the recents.
+// The jump list (the Dock menu's twin): issue #617's "Pinned folders", then
+// "Recent folders", and the Tasks: New window, Open folder… and, while the
+// Import add-on is installed, Import…. Worker thread: CommitList writes the
+// list into the user's profile, never on the UI thread. Returns the folders
+// the user removed from the list since the last commit: Windows refuses a
+// category that adds one back, so the caller drops them from the recents and
+// the pins.
 //
 // Every request takes a number on the UI thread; the pool may run two out of
 // order, so one that a newer request has overtaken commits nothing (the newer
 // one carries the newer list).
 std::atomic<std::uint64_t> g_jump_list_seq{0};
 
-std::vector<std::string> build_jump_list(const std::vector<std::string>& folders, const std::wstring& exe,
-                                         std::uint64_t seq) {
+// A jump list entry: `exe` run with `args`, labelled `title` (its PKEY_Title),
+// with `tooltip` and an icon. Null when the shell link could not be made.
+IShellLinkW* make_jump_link(const std::wstring& exe, const std::wstring& args, const std::wstring& title,
+                            const std::wstring& tooltip, const wchar_t* icon_path, int icon_index) {
+  IShellLinkW* link = nullptr;
+  if (FAILED(::CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link)))) {
+    return nullptr;
+  }
+  (void)link->SetPath(exe.c_str());
+  (void)link->SetArguments(args.c_str());
+  if (!tooltip.empty()) (void)link->SetDescription(tooltip.c_str());
+  if (icon_path && *icon_path) (void)link->SetIconLocation(icon_path, icon_index);
+  // The entry's label is its PKEY_Title (FMTID_SummaryInformation, pid 2),
+  // spelled out here so neither propkey.h's data symbols nor
+  // propvarutil.h's shlwapi-backed helpers join the link.
+  static constexpr PROPERTYKEY kTitle = {
+      {0xF29F85E0, 0x4FF9, 0x1068, {0xAB, 0x91, 0x08, 0x00, 0x2B, 0x27, 0xB3, 0xD9}}, 2};
+  IPropertyStore* props = nullptr;
+  PROPVARIANT value{};
+  bool titled = false;
+  const std::size_t bytes = (title.size() + 1) * sizeof(wchar_t);
+  if (SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(&props)))) {
+    value.pwszVal = static_cast<LPWSTR>(::CoTaskMemAlloc(bytes));
+    if (value.pwszVal) {
+      value.vt = VT_LPWSTR;
+      std::memcpy(value.pwszVal, title.c_str(), bytes);
+      titled = SUCCEEDED(props->SetValue(kTitle, value)) && SUCCEEDED(props->Commit());
+      (void)::PropVariantClear(&value);
+    }
+  }
+  if (props) props->Release();
+  if (!titled) {
+    link->Release();
+    return nullptr;
+  }
+  return link;
+}
+
+// `folders` is app->recent_folders: its first `pinned` are the pins.
+std::vector<std::string> build_jump_list(const std::vector<std::string>& folders, std::size_t pinned,
+                                         const std::wstring& exe, bool import_task, std::uint64_t seq) {
   static std::mutex one_at_a_time;
   const std::lock_guard lock(one_at_a_time);
   if (seq != g_jump_list_seq.load(std::memory_order_acquire)) return {};
@@ -7232,15 +7301,11 @@ std::vector<std::string> build_jump_list(const std::vector<std::string>& folders
   const HRESULT com = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   ICustomDestinationList* list = nullptr;
   IObjectArray* removed = nullptr;
-  IObjectCollection* items = nullptr;
-  IObjectArray* array = nullptr;
   UINT min_slots = 0;
   if (SUCCEEDED(::CoCreateInstance(CLSID_DestinationList, nullptr, CLSCTX_INPROC_SERVER,
                                    IID_PPV_ARGS(&list))) &&
       SUCCEEDED(list->SetAppID(kAppUserModelId)) &&
-      SUCCEEDED(list->BeginList(&min_slots, IID_PPV_ARGS(&removed))) &&
-      SUCCEEDED(::CoCreateInstance(CLSID_EnumerableObjectCollection, nullptr, CLSCTX_INPROC_SERVER,
-                                   IID_PPV_ARGS(&items)))) {
+      SUCCEEDED(list->BeginList(&min_slots, IID_PPV_ARGS(&removed)))) {
     std::vector<std::wstring> removed_args;
     UINT removed_count = 0;
     if (removed && SUCCEEDED(removed->GetCount(&removed_count))) {
@@ -7257,52 +7322,62 @@ std::vector<std::string> build_jump_list(const std::vector<std::string>& folders
     SHSTOCKICONINFO folder_icon{};
     folder_icon.cbSize = sizeof(folder_icon);
     const bool have_icon = SUCCEEDED(::SHGetStockIconInfo(SIID_FOLDER, SHGSI_ICONLOCATION, &folder_icon));
+    const wchar_t* folder_icon_path = have_icon ? folder_icon.szPath : nullptr;
     const std::vector<std::string> labels = mv::shell::recent_folder_labels(folders);
-    UINT added = 0;
-    for (std::size_t i = 0; !exe.empty() && i < folders.size(); ++i) {
-      const std::wstring args = jump_list_arguments(folders[i]);
-      if (std::find(removed_args.begin(), removed_args.end(), args) != removed_args.end()) {
-        pruned.push_back(folders[i]);
-        continue;
+    // One category: the folders in [from, to) that the user has not removed.
+    const auto append_category = [&](const wchar_t* name, std::size_t from, std::size_t to) {
+      IObjectCollection* items = nullptr;
+      if (FAILED(::CoCreateInstance(CLSID_EnumerableObjectCollection, nullptr, CLSCTX_INPROC_SERVER,
+                                    IID_PPV_ARGS(&items)))) {
+        return;
       }
-      IShellLinkW* link = nullptr;
-      if (FAILED(::CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link)))) {
-        continue;
-      }
-      (void)link->SetPath(exe.c_str());
-      (void)link->SetArguments(args.c_str());
-      (void)link->SetDescription(wide_from_utf8(folders[i]).c_str());  // the tooltip
-      if (have_icon) (void)link->SetIconLocation(folder_icon.szPath, folder_icon.iIcon);
-      // The entry's label is its PKEY_Title (FMTID_SummaryInformation, pid 2),
-      // spelled out here so neither propkey.h's data symbols nor
-      // propvarutil.h's shlwapi-backed helpers join the link.
-      static constexpr PROPERTYKEY kTitle = {
-          {0xF29F85E0, 0x4FF9, 0x1068, {0xAB, 0x91, 0x08, 0x00, 0x2B, 0x27, 0xB3, 0xD9}}, 2};
-      const std::wstring label = wide_from_utf8(labels[i]);
-      IPropertyStore* props = nullptr;
-      PROPVARIANT title{};
-      bool titled = false;
-      const std::size_t bytes = (label.size() + 1) * sizeof(wchar_t);
-      if (SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(&props)))) {
-        title.pwszVal = static_cast<LPWSTR>(::CoTaskMemAlloc(bytes));
-        if (title.pwszVal) {
-          title.vt = VT_LPWSTR;
-          std::memcpy(title.pwszVal, label.c_str(), bytes);
-          titled = SUCCEEDED(props->SetValue(kTitle, title)) && SUCCEEDED(props->Commit());
-          (void)::PropVariantClear(&title);
+      UINT added = 0;
+      for (std::size_t i = from; !exe.empty() && i < to && i < folders.size(); ++i) {
+        const std::wstring args = jump_list_arguments(folders[i]);
+        if (std::find(removed_args.begin(), removed_args.end(), args) != removed_args.end()) {
+          pruned.push_back(folders[i]);
+          continue;
         }
+        IShellLinkW* link = make_jump_link(exe, args, wide_from_utf8(labels[i]), wide_from_utf8(folders[i]),
+                                           folder_icon_path, have_icon ? folder_icon.iIcon : 0);
+        if (!link) continue;
+        if (SUCCEEDED(items->AddObject(link))) ++added;
+        link->Release();
       }
-      if (props) props->Release();
-      if (titled && SUCCEEDED(items->AddObject(link))) ++added;
-      link->Release();
-    }
-    if (added > 0 && SUCCEEDED(items->QueryInterface(IID_PPV_ARGS(&array)))) {
-      (void)list->AppendCategory(L"Recent folders", array);
+      IObjectArray* array = nullptr;
+      if (added > 0 && SUCCEEDED(items->QueryInterface(IID_PPV_ARGS(&array)))) {
+        (void)list->AppendCategory(name, array);
+        array->Release();
+      }
+      items->Release();
+    };
+    pinned = std::min(pinned, folders.size());
+    append_category(L"Pinned folders", 0, pinned);
+    append_category(L"Recent folders", pinned, folders.size());
+    // The Tasks (issue #617), the Dock menu's New Window and more. Each starts
+    // the root stub: New window its own process on the empty window, the
+    // others handed to the running viewer by the single-instance pipe.
+    IObjectCollection* tasks = nullptr;
+    if (!exe.empty() && SUCCEEDED(::CoCreateInstance(CLSID_EnumerableObjectCollection, nullptr,
+                                                     CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&tasks)))) {
+      const auto add_task = [&](const wchar_t* args, const wchar_t* title, const wchar_t* icon, int index) {
+        if (IShellLinkW* link = make_jump_link(exe, args, title, title, icon, index)) {
+          (void)tasks->AddObject(link);
+          link->Release();
+        }
+      };
+      add_task(L"--new-instance", L"New window", exe.c_str(), 0);
+      add_task(L"--task open-folder", L"Open folder\u2026", folder_icon_path, have_icon ? folder_icon.iIcon : 0);
+      if (import_task) add_task(L"--task import", L"Import\u2026", exe.c_str(), 0);
+      IObjectArray* array = nullptr;
+      if (SUCCEEDED(tasks->QueryInterface(IID_PPV_ARGS(&array)))) {
+        if (FAILED(list->AddUserTasks(array))) MV_LOG_WARN("jump list: AddUserTasks failed");
+        array->Release();
+      }
+      tasks->Release();
     }
     if (FAILED(list->CommitList())) MV_LOG_WARN("jump list: CommitList failed");
   }
-  if (array) array->Release();
-  if (items) items->Release();
   if (removed) removed->Release();
   if (list) list->Release();
   if (SUCCEEDED(com)) ::CoUninitialize();
@@ -7341,13 +7416,28 @@ void open_new_window() {
   ::CloseHandle(pi.hProcess);
 }
 
+// Issue #617: which Tasks the jump list last committed ("plain", or "import"
+// with Import…), in settings.ini [recent] jump_tasks. The list is committed
+// only when it changes, so a start never pays for a CommitList; this is how a
+// start knows the Tasks are already there.
+constexpr char kJumpTasksKey[] = "jump_tasks";
+
+const char* jump_tasks_wanted() noexcept {
+  return mv::shell::addon_commands_available(mv::shell::addon_family::import) ? "import" : "plain";
+}
+
+// Soaks and scripted runs (record_recent false) never touch the jump list:
+// it is the user's, as [recent] is (the PR 15 rule).
 void publish_jump_list(app_state* app) {
-  if (!app || !app->window) return;
+  if (!app || !app->window || !app->record_recent) return;
   const HWND hwnd = app->window;
+  const char* tasks = jump_tasks_wanted();
+  mv::shell::app_settings().set("recent", kJumpTasksKey, tasks);
   const std::uint64_t seq = g_jump_list_seq.fetch_add(1, std::memory_order_acq_rel) + 1;
   app->jobs.submit_at(mv::background_generation,
-                      [folders = app->recent_folders, exe = jump_list_exe(), hwnd, seq](const mv::job_context&) -> mv::status {
-                        std::vector<std::string> pruned = build_jump_list(folders, exe, seq);
+                      [folders = app->recent_folders, pinned = app->pinned_folders.size(), exe = jump_list_exe(),
+                       import_task = std::string_view(tasks) == "import", hwnd, seq](const mv::job_context&) -> mv::status {
+                        std::vector<std::string> pruned = build_jump_list(folders, pinned, exe, import_task, seq);
                         if (pruned.empty()) return mv::status::ok;
                         auto* r = new (std::nothrow) std::vector<std::string>(std::move(pruned));
                         if (r && !::PostMessageW(hwnd, kMsgJumpListPruned, 0, reinterpret_cast<LPARAM>(r))) delete r;
@@ -7355,17 +7445,50 @@ void publish_jump_list(app_state* app) {
                       });
 }
 
+// The Tasks the jump list should carry differ from the last commit's (a first
+// start of this build, or Import installed or removed): commit once more.
+void sync_jump_list_tasks(app_state* app) {
+  if (!app || !app->record_recent) return;
+  if (mv::shell::app_settings().get("recent", kJumpTasksKey) == jump_tasks_wanted()) return;
+  publish_jump_list(app);
+}
+
+// app->recent_folders from the pins and the MRU list, then every view of it:
+// the jump list (on the pool), Open > Recent folders and the card.
+void recent_folders_changed(app_state* app) {
+  app->recent_folders = mv::shell::pinned_then_recent(app->pinned_folders, app->recent_mru);
+  publish_jump_list(app);
+  push_recent_folders(app);
+  refresh_welcome_recents(app);
+}
+
 // A folder opened from Explorer, the jump list, Open, a drop or argv counts;
 // walking siblings or the tree does not (open_path's `navigation`).
 void note_recent_folder(app_state* app, const std::string& utf8_dir) {
   if (!app || !app->record_recent || utf8_dir.empty()) return;
-  std::vector<std::string> next = mv::shell::push_recent_folder(app->recent_folders, utf8_dir);
-  if (next == app->recent_folders) return;
-  app->recent_folders = std::move(next);
-  mv::shell::save_recent_folders(app->recent_folders);
-  publish_jump_list(app);
-  push_recent_folders(app);
-  refresh_welcome_recents(app);
+  std::vector<std::string> next = mv::shell::push_recent_folder(app->recent_mru, utf8_dir);
+  if (next == app->recent_mru) return;
+  app->recent_mru = std::move(next);
+  mv::shell::save_recent_folders(app->recent_mru);
+  // A pinned folder moves in the MRU list only: what is shown may not change.
+  if (mv::shell::pinned_then_recent(app->pinned_folders, app->recent_mru) == app->recent_folders) return;
+  recent_folders_changed(app);
+}
+
+// Issue #617: Pin / Unpin on a card row's context menu. A pin stays first on
+// the card, the jump list and Open > Recent folders; unpinning leaves the
+// folder where the MRU order has it. Not in a soak or a scripted run.
+void set_folder_pinned(app_state* app, const std::string& dir, bool pin) {
+  if (!app || !app->record_recent || dir.empty()) return;
+  std::vector<std::string> next = pin ? mv::shell::pin_folder(app->pinned_folders, dir)
+                                      : mv::shell::remove_folder(app->pinned_folders, dir);
+  if (next == app->pinned_folders) {
+    if (pin) ::MessageBeep(MB_ICONWARNING);  // kMaxPinnedFolders pinned already
+    return;
+  }
+  app->pinned_folders = std::move(next);
+  mv::shell::save_pinned_folders(app->pinned_folders);
+  recent_folders_changed(app);
 }
 
 // Open > Recent folders: the jump list's labels (recent_folder_labels, as the
@@ -7383,14 +7506,17 @@ void push_recent_folders(app_state* app) {
   app->chrome.set_recent_folders(lines);
 }
 
-// Drops `dir` from every recent list: settings, jump list, chrome, card.
+// Drops `dir` from every recent list: settings, jump list, chrome, card. A
+// pinned folder that is gone, or whose x was clicked, is unpinned too.
 void forget_recent_folder(app_state* app, const std::string& dir) {
   const std::string gone = dir;  // `dir` may be an element of the list
-  std::erase(app->recent_folders, gone);
-  mv::shell::save_recent_folders(app->recent_folders);
-  publish_jump_list(app);
-  push_recent_folders(app);
-  refresh_welcome_recents(app);
+  app->recent_mru = mv::shell::remove_folder(std::move(app->recent_mru), gone);
+  mv::shell::save_recent_folders(app->recent_mru);
+  if (mv::shell::is_pinned_folder(app->pinned_folders, gone)) {
+    app->pinned_folders = mv::shell::remove_folder(std::move(app->pinned_folders), gone);
+    mv::shell::save_pinned_folders(app->pinned_folders);
+  }
+  recent_folders_changed(app);
 }
 
 // A card row is a recent folder's index, one down when OneDrive leads; -1 for OneDrive.
@@ -7456,16 +7582,54 @@ void remove_welcome_row(app_state* app, int card_row) {
   publish(app);
 }
 
+// Issue #617: a folder row's context menu, at `at` (client pixels): Open, Pin
+// to top or Unpin, Remove from list. The OneDrive row has none. A native popup
+// as the tray icon's; it returns the pick, so nothing here waits on I/O.
+void show_welcome_row_menu(app_state* app, int card_row, POINT at) {
+  if (!app || !app->window) return;
+  const int row = welcome_row_folder(app, card_row);
+  if (row < 0 || static_cast<std::size_t>(row) >= app->recent_folders.size()) return;
+  const std::string dir = app->recent_folders[static_cast<std::size_t>(row)];
+  const bool pinned = mv::shell::is_pinned_folder(app->pinned_folders, dir);
+  const bool full = app->pinned_folders.size() >= mv::shell::kMaxPinnedFolders;
+  HMENU menu = ::CreatePopupMenu();
+  if (!menu) return;
+  constexpr UINT kOpen = 1, kPin = 2, kRemove = 3;
+  (void)::AppendMenuW(menu, MF_STRING, kOpen, L"Open");
+  (void)::AppendMenuW(menu, MF_STRING | (!pinned && full ? MF_GRAYED : 0u), kPin,
+                      pinned ? L"Unpin" : L"Pin to top");
+  (void)::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  (void)::AppendMenuW(menu, MF_STRING, kRemove, L"Remove from list");
+  (void)::ClientToScreen(app->window, &at);
+  const UINT picked = static_cast<UINT>(::TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                                                           at.x, at.y, app->window, nullptr));
+  ::DestroyMenu(menu);
+  if (picked == kOpen) {
+    open_recent_folder(app, row);
+  } else if (picked == kPin) {
+    set_folder_pinned(app, dir, !pinned);
+  } else if (picked == kRemove) {
+    forget_recent_folder(app, dir);
+  }
+  if (picked == kPin || picked == kRemove) {
+    update_welcome_hover(app);
+    ++app->input.activity_seq;
+    publish(app);
+  }
+}
+
 void on_jump_list_pruned(app_state* app, std::unique_ptr<std::vector<std::string>> pruned) {
   if (!app || !pruned) return;
-  const std::size_t before = app->recent_folders.size();
-  std::erase_if(app->recent_folders, [&](const std::string& f) {
-    return std::find(pruned->begin(), pruned->end(), f) != pruned->end();
-  });
-  if (app->recent_folders.size() != before) {
-    mv::shell::save_recent_folders(app->recent_folders);
-    push_recent_folders(app);
-  }
+  // Removed from the jump list is removed: from the recents and from the pins.
+  const auto drop = [&](std::vector<std::string>& list) {
+    const std::size_t before = list.size();
+    for (const std::string& f : *pruned) list = mv::shell::remove_folder(std::move(list), f);
+    return list.size() != before;
+  };
+  if (drop(app->recent_mru)) mv::shell::save_recent_folders(app->recent_mru);
+  if (drop(app->pinned_folders)) mv::shell::save_pinned_folders(app->pinned_folders);
+  app->recent_folders = mv::shell::pinned_then_recent(app->pinned_folders, app->recent_mru);
+  push_recent_folders(app);
   refresh_welcome_recents(app);
 }
 
@@ -8236,6 +8400,27 @@ bool run_session_command(app_state* app, mv::shell::command_id command) noexcept
       // no-op, the same as the old switch's default.
       return false;
   }
+}
+
+// Issue #617: the jump list's Open folder… and Import… (New window is its own
+// process, --new-instance). Open folder… is Ctrl+O; Import… is the Import
+// command, which exists only once the add-on has loaded: until then the task
+// waits, and chrome_cmd_addon_state runs it. Never in a soak or scripted run.
+void run_pending_task(app_state* app) {
+  if (!app || app->pending_task.empty() || !app->window) return;
+  if (!app->record_recent) {
+    app->pending_task.clear();
+    return;
+  }
+  if (app->pending_task == L"import") {
+    if (!mv::shell::addon_commands_available(mv::shell::addon_family::import)) return;
+    app->pending_task.clear();
+    if (!run_session_command(app, mv::shell::command_id::open_import)) ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  const bool open_folder_task = app->pending_task == L"open-folder";
+  app->pending_task.clear();
+  if (open_folder_task) open_folder_dialog(app, app->window);
 }
 
 bool run_command(app_state* app, mv::shell::command_id command) noexcept {
@@ -9432,6 +9617,18 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
       // the add-ons' context-menu entries, as its gallery tile does. The
       // chrome decides whether there is anything to show (a XAML flyout; it
       // returns at once).
+      // Issue #617: a right-click on a welcome card folder row is its menu
+      // (Open, Pin / Unpin, Remove). The card lists rows only while nothing is
+      // open, so it never competes with the add-ons' menu.
+      if (msg == WM_RBUTTONUP && welcome_lists_recents(app)) {
+        app->input.mouse_x = static_cast<float>(GET_X_LPARAM(lparam));
+        app->input.mouse_y = static_cast<float>(GET_Y_LPARAM(lparam));
+        const int row = welcome_row_at_pointer(app);
+        if (row >= 0) {
+          show_welcome_row_menu(app, row, POINT{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
+          return 0;
+        }
+      }
       if (msg == WM_RBUTTONUP && !app->gallery_visible && !app->editor.open) {
         (void)app->chrome.show_canvas_menu(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
       }
@@ -9597,14 +9794,29 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
       on_editor_loaded(app, std::unique_ptr<editor_load_result>(reinterpret_cast<editor_load_result*>(lparam)));
       return 0;
 
+    case kMsgRunTask:
+      run_pending_task(app);
+      return 0;
+
     case kMsgOpenForwarded: {
       // A second start's paths (docs/design/09): opened here, as a drop would be, and
       // the window comes forward. An empty hand-off only brings it forward.
       std::unique_ptr<std::wstring> paths(reinterpret_cast<std::wstring*>(lparam));
       leave_background(app);  // #452: a start while hidden brings the window back
+      // Issue #617: a jump-list task leads on its own line.
+      std::wstring task;
+      if (paths && !paths->empty() && paths->front() == mv::shell::kForwardedTaskMark) {
+        const std::size_t end = paths->find(L'\n');
+        task = paths->substr(1, end == std::wstring::npos ? std::wstring::npos : end - 1);
+        paths->erase(0, end == std::wstring::npos ? paths->size() : end + 1);
+      }
       if (paths && !paths->empty()) open_dropped_wide_list(app, *paths);
       if (::IsIconic(hwnd)) ::ShowWindow(hwnd, SW_RESTORE);
       ::SetForegroundWindow(hwnd);
+      if (!task.empty()) {
+        app->pending_task = std::move(task);
+        run_pending_task(app);
+      }
       return 0;
     }
 
@@ -9991,6 +10203,13 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
       if (ok) g_relaunch_after = std::wcstoul(value.c_str(), nullptr, 10);
     } else if (arg == L"--new-instance") {
       g_new_instance = true;
+    } else if (arg == L"--task") {
+      // Issue #617: a jump-list task, handed to the running viewer like a path.
+      next(g_start_task);
+      if (ok && g_start_task != L"open-folder" && g_start_task != L"import") {
+        error = L"--task must be open-folder or import";
+        ok = false;
+      }
     } else if (arg == L"--boot-report") {
       next(g_boot_report);
       if (ok) g_new_instance = true;
@@ -10117,10 +10336,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     // is; this one neither forwards nor shows anything.
     if (!instance_claim.claim()) return 0;
   } else if (single_instance) {
-    if (mv::shell::forward_to_running_instance(requested_paths)) return 0;
+    if (mv::shell::forward_to_running_instance(requested_paths, g_start_task)) return 0;
     if (!instance_claim.claim()) {
       // Another start claimed the name between our look and our claim.
-      if (mv::shell::forward_to_running_instance(requested_paths)) return 0;
+      if (mv::shell::forward_to_running_instance(requested_paths, g_start_task)) return 0;
       MV_LOG_WARN("single instance: another process owns the pipe; this one runs alone");
     }
   }
@@ -10162,7 +10381,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.input.reduce_motion = client_animations_off();
   app.input.compare = g_start_compare;
   app.destinations = mv::shell::load_destinations();
-  app.recent_folders = mv::shell::load_recent_folders();
+  app.recent_mru = mv::shell::load_recent_folders();
+  app.pinned_folders = mv::shell::load_pinned_folders();  // issue #617
+  app.recent_folders = mv::shell::pinned_then_recent(app.pinned_folders, app.recent_mru);
   app.home_utf8 = profile_folder_utf8();
   app.onedrive_utf8 = onedrive_folder_utf8();
   app.record_recent = !harness_run && g_boot_report.empty();
@@ -10176,6 +10397,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.taskbar_restart_msg = ::RegisterWindowMessageW(L"TaskbarCreated");  // #452
   app.quit_for_update_msg = ::RegisterWindowMessageW(L"MediaViewer.QuitForUpdate");  // #532
   mv::shell::apply_key_remaps(mv::shell::load_key_remaps());
+  mv::shell::apply_addon_key_remaps(mv::shell::load_addon_key_remaps());
   app.router.rebuild(mv::shell::live_bindings());
   mv::boot::mark(mv::boot::stage::settings_loaded);
   if (!app.files.start()) MV_LOG_WARN("files: I/O worker did not start; F7 / F8 / Delete disabled");
@@ -10315,6 +10537,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   }
   if (!app.chrome_enabled || app.chrome_on_screen) mv::boot::mark(mv::boot::stage::interactive);
   app.boot_with_paths = !requested_paths.empty();
+  // Issue #617: a first start from a jump-list task runs it from the loop,
+  // after the window's first frames. And the jump list carries its Tasks from
+  // the first start of a build that has them: committed once, on the pool
+  // (never a CommitList per start; the add-on's state corrects Import… later).
+  if (!g_start_task.empty()) {
+    app.pending_task = g_start_task;
+    ::PostMessageW(hwnd, kMsgRunTask, 0, 0);
+  }
+  if (app.record_recent && mv::shell::app_settings().get("recent", kJumpTasksKey).empty()) {
+    publish_jump_list(&app);
+  }
 
   MSG msg{};
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -10351,7 +10584,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // #452: a sign-in start that nothing kept removes its own entry (one registry
   // delete; the window is gone).
   if (app.remove_login_item_at_exit && g_install.installed()) (void)mv::shell::login_item::set(false, {});
-  // Scripts stop at their next instruction check; their workers are joined here.
+  // Scripts are all told to stop, then their workers are joined here (each
+  // stops at its next instruction check, together).
   (void)mv_script_set_listener(nullptr, nullptr);
   (void)mv_script_stop_all();
   const ULONGLONG addons_quit_at = ::GetTickCount64();

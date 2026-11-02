@@ -29,6 +29,33 @@ inline constexpr std::size_t kMaxRecentFolders = 10;
                                                           std::string_view utf8_dir,
                                                           std::size_t max = kMaxRecentFolders);
 
+// Issue #617: pinned folders. A pin stays at the top of every recent list (the
+// welcome card, the jump list, the Dock menu, File > Open Recent) however many
+// other folders are opened. Pins are their own list, oldest pin first, beside
+// the MRU list, and neither rule changes the other: opening a pinned folder
+// still moves it to the front of the MRU list, and unpinning leaves it exactly
+// where the MRU order has it (or off the list, if ten newer folders have been
+// opened since). Five: the welcome card keeps a row for a recent.
+inline constexpr std::size_t kMaxPinnedFolders = 5;
+
+// `utf8_dir` is in `pinned` (the same folder rule as push_recent_folder).
+[[nodiscard]] bool is_pinned_folder(std::span<const std::string> pinned, std::string_view utf8_dir) noexcept;
+
+// Pure: `pinned` with `utf8_dir` added at the end (below the older pins). A
+// folder already pinned, an empty one, or a full list changes nothing.
+[[nodiscard]] std::vector<std::string> pin_folder(std::vector<std::string> pinned, std::string_view utf8_dir,
+                                                  std::size_t max = kMaxPinnedFolders);
+
+// Pure: `list` without `utf8_dir`, under any spelling. Unpins from the pins;
+// forgets from the recents (a folder that is gone, the card's x).
+[[nodiscard]] std::vector<std::string> remove_folder(std::vector<std::string> list, std::string_view utf8_dir);
+
+// The list every host shows: the pins in their order, then the recents that
+// are not pinned, most recent first, at most `max` in all.
+[[nodiscard]] std::vector<std::string> pinned_then_recent(std::span<const std::string> pinned,
+                                                          std::span<const std::string> recent,
+                                                          std::size_t max = kMaxRecentFolders);
+
 // The label a recent folder shows: its last component ("2026-09 Iceland"),
 // or the path itself for a root ("D:\", "/"). Separators may be either kind.
 [[nodiscard]] std::string folder_display_name(std::string_view utf8_dir);
@@ -44,13 +71,15 @@ inline constexpr std::size_t kMaxRecentFolders = 10;
 // Text is cut at a UTF-8 boundary to fit. The hover is cleared. `icloud`
 // (the Mac host, while the Photos library is added: docs/design/26) puts an
 // "iCloud Photos" row first and the folders after it, still kMax rows in all.
+// The first `pinned` of `utf8_dirs` are pins (pinned_then_recent): their rows
+// are counted in out.pinned and drawn with a pin.
 void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_view home,
-                          welcome_recents& out, bool icloud = false) noexcept;
+                          welcome_recents& out, bool icloud = false, std::size_t pinned = 0) noexcept;
 // The same with any cloud place leading (Windows: "OneDrive", 2026-10-07);
 // an empty `cloud_label` is none.
 void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_view home,
                           welcome_recents& out, std::string_view cloud_label,
-                          std::string_view cloud_where) noexcept;
+                          std::string_view cloud_where, std::size_t pinned = 0) noexcept;
 
 // Ctrl+Shift+C / ⌘⇧C: the paths as text, one per line, in the order given,
 // separated by `newline` ("\r\n" on Windows, "\n" on macOS) with none after

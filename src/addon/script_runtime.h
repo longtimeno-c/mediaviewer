@@ -153,6 +153,11 @@ class script_addon {
   // at once. A load error stops the add-on (script_stop::load_error).
   static std::unique_ptr<script_addon> start(script_config config, script_services services);
   ~script_addon();  // stops it (stopped) and joins the worker
+  // Tells it to stop (stopped) at its next instruction check, and wakes its
+  // worker. Any thread, never blocks, never joins: the destructor does that.
+  // Stopping several add-ons is stop() on each, then destroying them, so
+  // their workers wind down together rather than one after another (#400).
+  void stop();
   script_addon(const script_addon&) = delete;
   script_addon& operator=(const script_addon&) = delete;
 

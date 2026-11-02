@@ -35,9 +35,16 @@ import sys
 import zlib
 
 SCHEMA = 2
-API = 3  # the contribution API this SDK knows: 1 themes; 2 settings, keymaps, shape; 3 scripts, permissions, commands
+# The contribution API this SDK knows, the host's kContributionApi (src/addon/
+# open_manifest.h): 1 themes; 2 settings, keymaps, shape; 3 scripts, permissions,
+# commands; 4 screens; 5 chrome slots and search providers; 6-10 screen
+# vocabulary only (link, copy, opens, a settings place, reveal, glow), no new
+# point. A stranger's add-on cannot fill screens or slots yet: they are filled by
+# code and scripts have no binding for them, so the app says code_not_allowed.
+API = 10
 THEME_API = 1  # what a theme-only add-on claims, so it installs on every MediaViewer with themes
 SCRIPT_API = 3  # the API that introduced code (PR 57)
+SCREENS_API = 4  # the first point filled by code: screens (PR 58), then the slots (PR 59)
 PACKAGE_MAX_BYTES = 64 << 20
 PACKAGE_MAX_ENTRIES = 2048
 MANIFEST_MAX_BYTES = 256 << 10
@@ -661,6 +668,10 @@ def check_manifest(data: bytes, signature, api: int = API) -> dict:
             if high < CONTRIBUTION_POINTS[name]:
                 raise Refused("malformed", f"{name} needs \"api\" max {CONTRIBUTION_POINTS[name]}")
             (check_settings if name == "settings" else check_keymaps)(value)
+        elif CONTRIBUTION_POINTS.get(name, 0) >= SCREENS_API and CONTRIBUTION_POINTS[name] <= api:
+            # Screens and slots (PRs 58-59) are filled by code: a stranger's
+            # add-on gets them with bindings for its scripts, not before (#400).
+            raise Refused("code_not_allowed", name)
         elif name == "commands" and api >= SCRIPT_API:
             if not scripts or not isinstance(value, list) or not value or len(value) > MAX_COMMANDS:
                 raise Refused("malformed", "commands")
