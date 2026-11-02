@@ -138,6 +138,17 @@ B and Rec.709 luma. `pack_histogram` gives both chromes the same 64-bin view, sc
 tallest non-end bin. Clipping uses the viewer blinkies' thresholds (`kClipHighLinear` 0.9911,
 `kClipLowLinear` 0.0003), so the pane's percentages count the pixels `C` blinks.
 
+**Typed requests** (`edit/prompt.h`, [plan](../plans/edit-adjust.md) slice 5b): a field at the top
+of the Adjust pane takes a sentence ("a bit brighter and warmer", "less noisy", "darker sky",
+"like an old film", "fix the white balance") and moves the sliders it names, as one op. A fixed
+vocabulary, no model: each word names a slider and a step (exposure 0.3 EV, contrast 20,
+temperature 15, shadows 30, noise reduction 30…); "less", "too", "reduce", "deeper" turn it
+around, "a bit" halves and "much" doubles it; an adjective before a region ("brighter shadows",
+"darker corners") moves the region's slider; a few looks move several ("punchy", "dramatic",
+"film", "matte", "soft"); "fix the white balance" and "auto" run the matching Autos one after
+another. Moves add to where each slider is, land on its steps and clamp. Words it does not know are
+listed back under the field ("not understood: …"), never guessed at.
+
 **Auto** (`edit/auto_adjust.h`): each section's AUTO button runs `compute_auto` on a worker
 from the preview working image and lands as one `adjust_all` op. Each returns absolute values for
 its own section, so a second click gives what the first gave.

@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 #include "edit/adjust.h"
 #include "edit/histogram.h"
@@ -59,11 +60,14 @@ struct adjust_view {
   // red-eye fixes the edit holds.
   std::int32_t picking = 0;
   std::int32_t spot_count = 0;
+  // Slice 5b: what the last typed request did (edit::prompt_summary), UTF-8,
+  // NUL-terminated, cut at a character boundary.
+  char prompt_note[128] = {};
   std::uint16_t bins[4 * edit::kHistogramBins] = {};  // edit::pack_histogram
 };
 
 static_assert(sizeof(adjust_view) == 24 + 4 * edit::kAdjustParamCount + 16 +
-                                         2 * 4 * edit::kCurveChannels * edit::kCurvePoints + 8 +
+                                         2 * 4 * edit::kCurveChannels * edit::kCurvePoints + 8 + 128 +
                                          2 * 4 * edit::kHistogramBins,
               "keep in sync with AdjustViewArgs and mv_adjust_view");
 
@@ -115,6 +119,9 @@ class adjust_pane {
   void set_pick(adjust_pick p) noexcept { pick_ = readiness_ == adjust_readiness::ready ? p : adjust_pick::none; }
   [[nodiscard]] adjust_pick pick() const noexcept { return visible_ ? pick_ : adjust_pick::none; }
 
+  // Slice 5b: the note under the request field; cleared with the item.
+  void set_prompt_note(std::string note) { prompt_note_ = std::move(note); }
+
   // The POD the chrome draws, with the current slider values.
   [[nodiscard]] adjust_view view(const edit::colour& c) const noexcept;
 
@@ -123,6 +130,7 @@ class adjust_pane {
 
   bool visible_ = false;
   adjust_pick pick_ = adjust_pick::none;
+  std::string prompt_note_;
   std::uint64_t item_ = 0;
   adjust_readiness readiness_ = adjust_readiness::none;
   bool from_raw_ = false;

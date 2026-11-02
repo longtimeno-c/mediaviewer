@@ -55,6 +55,7 @@
 #include "core/trace.h"
 #include "edit/auto_adjust.h"
 #include "edit/detail.h"
+#include "edit/prompt.h"
 #include "edit/histogram.h"
 #include "image/linear.h"
 #include "image/page_thumbs.h"
@@ -151,6 +152,7 @@ static_assert(offsetof(mv_adjust_view, histogram_valid) ==
 static_assert(offsetof(mv_adjust_view, bins) == offsetof(mv::shell::adjust_view, bins));
 static_assert(offsetof(mv_adjust_view, curve_x) == offsetof(mv::shell::adjust_view, curve_x));
 static_assert(offsetof(mv_adjust_view, picking) == offsetof(mv::shell::adjust_view, picking));
+static_assert(offsetof(mv_adjust_view, prompt_note) == offsetof(mv::shell::adjust_view, prompt_note));
 
 // Forward declaration: the globals just below need the type, but MvLabApp's
 // @interface is later in this file (it in turn needs MvMetalView, declared
@@ -772,6 +774,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)adjustResetSection:(int32_t)section;
 - (void)adjustCurve:(int32_t)channel curve:(const mv::edit::curve&)k;
 - (void)adjustPick:(int32_t)mode size:(float)size;
+- (void)adjustPrompt:(const std::string&)text;
 - (BOOL)adjustPicking;
 - (void)adjustPickAtX:(float)x y:(float)y;
 - (void)adjustBlur;
@@ -1708,6 +1711,10 @@ extern "C" void mv_chrome_adjust_curve(int32_t channel, int32_t n, const float* 
 extern "C" void mv_chrome_adjust_pick(int32_t mode, float size) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app adjustPick:mode size:size];
+}
+extern "C" void mv_chrome_adjust_prompt(const char* text) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app && text) [g_chrome_app adjustPrompt:std::string(text)];
 }
 extern "C" void mv_chrome_adjust_close(void) {
   if (g_chrome_app) [g_chrome_app setAdjustVisible:NO];
@@ -2935,6 +2942,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::atomic<mv::generation> _adjustGen;
   std::uint64_t _adjustViewGeneration;
   float _redEyeSize;  // slice 3: the red-eye tool's size, −100..+100
+  std::vector<mv::edit::adjust_section> _pendingAutos;  // slice 5b: a typed request's Autos still to run
   NSTimer* _histogramDebounce;
   // PR 29 (docs/design/20): the Edit workspace (shell/edit_workspace.h) and Show
   // original. _wsShown is what the panes were last synced to, so closing the
@@ -9532,6 +9540,9 @@ static std::string MvSelfTestPageSummary(const char* addon) {
         [self adjustSet:static_cast<int32_t>(mv::edit::adjust_param::sel_blue_sat) value:-50.0f];
         [self adjustSet:static_cast<int32_t>(mv::edit::adjust_param::sharpen) value:40.0f];
         [self adjustSet:static_cast<int32_t>(mv::edit::adjust_param::noise) value:30.0f];
+        [self adjustPrompt:"a bit warmer and less noisy, more contrast"];
+        [self editSelfTestLine:[NSString stringWithFormat:@"    prompt: %s\n", _adjust.view(_edits.colour()).prompt_note]
+                          dir:dir];
         [self editSelfTestAdjustLine:@"picked" dir:dir];
         [self editSelfTestSnap:@"s4c-picked" dir:dir];
         [self editSelectTab:2];
@@ -9955,6 +9966,28 @@ static double mv_wall_seconds() {
   [self scheduleDetail];
 }
 
+// Slice 5b (edit/prompt.h): a typed request. Its slider moves land as one
+// op; the Autos it asked for run one after another (autoLanded starts the next).
+- (void)adjustPrompt:(const std::string&)text {
+  if (!_adjust.working_ready() || ![self adjustStill]) return;
+  const mv::edit::prompt_result r = mv::edit::parse_prompt(text, _edits.colour());
+  _adjust.set_prompt_note(mv::edit::prompt_summary(r));
+  if (r.changed(_edits.colour()) && _edits.set_colour(r.value) == mv::shell::edit_effect::redraw) {
+    [self publishEdit];
+    [self pokeSnapshot];
+  }
+  _pendingAutos.assign(r.autos.begin(), r.autos.end());
+  [self adjustColourChanged];
+  [self nextPendingAuto];
+}
+
+- (void)nextPendingAuto {
+  if (_pendingAutos.empty() || _adjust.auto_running()) return;
+  const mv::edit::adjust_section s = _pendingAutos.front();
+  _pendingAutos.erase(_pendingAutos.begin());
+  [self adjustAuto:static_cast<int32_t>(s)];
+}
+
 // Slice 3: what the next click on the photo does (shell::adjust_pick).
 // `size` is the red-eye tool's −100..+100 about its default radius.
 - (void)adjustPick:(int32_t)mode size:(float)size {
@@ -10038,14 +10071,18 @@ static double mv_wall_seconds() {
 }
 
 - (void)autoLanded:(std::uint64_t)token ok:(bool)ok value:(const mv::edit::colour&)value {
-  if (!_adjust.auto_tone_landed(token)) return;
+  if (!_adjust.auto_tone_landed(token)) {
+    _pendingAutos.clear();  // the colour moved meanwhile: the rest of a typed request's Autos too
+    return;
+  }
   if (ok && [self adjustStill] && _edits.set_colour(value) == mv::shell::edit_effect::redraw) {
     [self publishEdit];
     [self pokeSnapshot];
     [self adjustColourChanged];
-    return;
+  } else {
+    [self bumpAdjustView];  // the spinner stops; nothing changed
   }
-  [self bumpAdjustView];  // the spinner stops; nothing changed
+  [self nextPendingAuto];
 }
 
 - (void)adjustBlur {

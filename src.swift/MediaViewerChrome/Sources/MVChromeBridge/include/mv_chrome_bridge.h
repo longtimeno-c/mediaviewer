@@ -892,6 +892,7 @@ typedef struct mv_adjust_view {
   float curve_y[4][8];
   int32_t picking;     // slice 3: 0 none, 1 white-balance picker, 2 red-eye tool
   int32_t spot_count;  // red-eye fixes in the edit
+  char prompt_note[128];  // slice 5b: what the last typed request did, UTF-8
   uint16_t bins[4 * 64];
 } mv_adjust_view;
 
@@ -916,6 +917,10 @@ void mv_chrome_adjust_curve(int32_t channel, int32_t n, const float* xs, const f
 // picker (one click), 2 the red-eye tool (each click, until 0); `size` is its
 // -100..100 about the default radius. Section 7 (red-eye)'s reset clears the fixes.
 void mv_chrome_adjust_pick(int32_t mode, float size);
+// Slice 5b: a typed request ("a bit brighter and warmer"): the sliders it names
+// move as one undo step, any Auto it asks for runs, and prompt_note says what
+// happened. UTF-8.
+void mv_chrome_adjust_prompt(const char* text);
 void mv_chrome_adjust_close(void);
 // Esc in the pane: keyboard focus back to the canvas (the pane stays open).
 void mv_chrome_adjust_blur(void);
