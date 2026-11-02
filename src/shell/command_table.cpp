@@ -332,6 +332,8 @@ constexpr binding kBindings[] = {
     // Issue #429. Appended. Shift+T beside T (the filmstrip): browse and the
     // islands, as the page keys; the gallery types ahead.
     row(C('T'), mod_shift, kBrowse | kIsland, edge, toggle_page_sidebar),
+    // docs/design/17 (2026-11-02): this person's photos, beside Find similar. Appended.
+    row(C('P'), mod_ctrl | mod_shift, kViewing, edge, search_this_person),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -523,6 +525,7 @@ constexpr command_info kCommands[] = {
     {zoom_af_point, "Zoom to AF point"},
     {compare_two_up, "Compare with previous"},
     {toggle_page_sidebar, "Page sidebar"},
+    {search_this_person, "Find this person"},
 };
 
 const char* named_key(key k) noexcept {
@@ -910,6 +913,7 @@ addon_family addon_family_of(command_id id) noexcept {
     case search_similar:
     case search_next_match:
     case search_prev_match:
+    case search_this_person:
       return addon_family::ai;
     default:
       return addon_family::none;
