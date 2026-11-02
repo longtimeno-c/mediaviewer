@@ -286,16 +286,17 @@ public static partial class IslandHost
         _adjustPreparing.Root.Visibility = Visibility.Collapsed;
         col.Children.Add(_adjustPreparing.Root);
 
-        // Slice 5b: say what you want; the sliders it names move (one undo step).
-        var request = new TextBox { PlaceholderText = "Describe a change — a bit warmer, less noise…" };
+        // Slice 5b: say what you want; the sliders it names move (one undo
+        // step). Not a TextBox: that control fail-fasts in these islands
+        // (see FakeInput, tools/check-winui-controls.ps1).
+        var request = new FakeInput("Describe a change — a bit warmer, less noise…");
         AutomationProperties_SetName(request, "Describe a change");
-        request.KeyDown += (_, e) =>
+        request.Submitted += () =>
         {
-            if (e.Key != Windows.System.VirtualKey.Enter || request.Text.Trim().Length == 0) return;
+            if (request.Text.Trim().Length == 0) return;
             _treePending = request.Text;
             Send(Command.AdjustPrompt);
-            request.Text = "";
-            e.Handled = true;
+            request.SetText("");
         };
         col.Children.Add(request);
         _promptNoteText = Text("", Body, UiFontSize - 2);
