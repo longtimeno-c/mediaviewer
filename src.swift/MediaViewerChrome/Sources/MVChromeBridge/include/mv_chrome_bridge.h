@@ -45,6 +45,8 @@ enum MvMenuCmd : int32_t {
   kMenuRename,
   // Issue #429: View > Page Sidebar (Shift+T).
   kMenuPageSidebar,
+  // Issue #614: File > Print… (Cmd+P).
+  kMenuPrint,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 

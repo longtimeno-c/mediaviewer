@@ -375,10 +375,11 @@ commands below act on it first.
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
 | `Ctrl+Shift+S` | Viewing | Share: the share menu (Driftwire, then Windows Share / the macOS picker) |
+| `Ctrl+P` / `⌘P` | Viewing | Print: the still on screen with edits baked, or two or more marks as a contact sheet ([Print](#print)) |
 
 These are on the mouse too: the Mac's File menu, and on Windows the command bar's **Open** flyout
 (Mark / Unmark, Copy / Move Marked To…, Move to Recycle Bin, Share…, Copy Path, Copy Edited
-Image). **View** carries Start Slideshow and a **Go** submenu (Next, Previous, First, Last), as the
+Image, Print…; the Mac bar's Open carries Print… too). **View** carries Start Slideshow and a **Go** submenu (Next, Previous, First, Last), as the
 Mac's View and Go menus do. Each item posts its command's id, so it acts as the key does.
 
 - **Move** on one volume is a rename (`MoveFileEx`); across volumes it is a **verified** copy
@@ -414,6 +415,48 @@ Mac's View and Go menus do. Each item posts its command's id, so it acts as the 
   mixed drop opens the first file's folder. Nothing existing: nothing opens and the app beeps. A
   watcher refresh keeps the current item selected; if it was removed the next one takes its
   place (the previous one at the end).
+
+### Print
+
+`Ctrl+P` / `⌘P` (issue #614; File ▸ Print… and the bar's Open flyout) opens the OS print dialog.
+Plain `P` stays trim preview, which is trim mode only. Not mid-crop (the draft is not the stack
+yet) and not in a slideshow.
+
+- **What prints.** Two or more marks (or the gallery's Shift-click range) print as an N-up
+  **contact sheet**; otherwise the **still on screen**, with its crop, turns, straighten and colour
+  adjusts baked exactly as Export / `Ctrl+Alt+C` bake them (`edit::render_picture`: the pixels the
+  export encodes, before the encode). A clip, audio or a playing animation has no still: the key
+  beeps. On a sheet the file on screen carries its session edits; the other marks print as they
+  are on disk (their stacks are keyed by size and mtime, which the UI thread does not stat). A
+  marked file that does not render as a still (a clip, audio, a file gone) is left out.
+- **Layout** ([`shell/print_layout.h`](../../src/shell/print_layout.h), pure, both hosts): points
+  on the paper, inside the device's printable area and at least a quarter inch from the edge.
+  One photo is **fit** (whole, centred, white around it; the default) or **fill** (covers the
+  area, the overflow cropped evenly). The sheet is **2×2, 3×4 or 4×5**; *Automatic* takes the
+  smallest that holds the marks on one page (12 marks are 3×4) and 4×5 over as many pages as
+  it takes past 20. Cells keep reading order with a 1/8 inch gutter; each picture fits its cell.
+  **File names** under the cells are off by default; the option adds one line of 8 pt type,
+  the name only (never the folder), truncated to the cell.
+- **Options** sit in the OS dialog: on Windows a page beside General in `PrintDlgEx` (an
+  in-memory dialog template, so no WinUI control is involved and `check-winui-controls.ps1`
+  has nothing to check); on the Mac the print panel's accessory (`NSPrintPanelAccessorizing`,
+  so the preview follows each change). The choice is kept for the run after a Print, not
+  saved; Cancel drops it.
+- **Threads** (rule 1). The bake is a full-resolution decode (a RAW develops in full), so it runs
+  on the pool and the status line says "Preparing to print…"; one print is prepared at a time.
+  It is resampled down (never up) to what the paper needs at 300 dpi
+  (`edit::shrink_to_box`). Windows shows the dialog and calls `StartDoc` on the UI thread, so
+  Microsoft Print to PDF's Save As belongs to the window, then bakes and draws every page on the
+  pool (the DC is used by one thread at a time) and posts back. The Mac bakes first, for the
+  paper Page Setup holds (a photo baked to cover it, which serves fit too), then runs
+  `NSPrintOperation` modal for the window with `canSpawnSeparateThread`, so pages spool off the
+  main thread.
+- **Colour.** The bake is sRGB (D6); a picture with no colour adjust keeps its own ICC profile,
+  as the export's PNG does. Windows draws a `BITMAPV5HEADER` DIB tagged `LCS_sRGB` or
+  `PROFILE_EMBEDDED` with ICM on; the Mac draws a `CGImage` in that colour space. The printer
+  driver / Quartz maps it to the device, so the print matches the export.
+- **Nothing is written.** The bake stays in memory. Cancelling the dialog, the PDF Save As, or a
+  failed bake (`AbortDoc` on Windows) leaves no file anywhere.
 
 ### Edit (stills)
 

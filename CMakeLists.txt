@@ -873,6 +873,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/meta_writer.h
   src/shell/edit_session.cpp
   src/shell/edit_session.h
+  src/shell/print_layout.cpp
+  src/shell/print_layout.h
   src/shell/text_in_image.cpp
   src/shell/text_in_image.h
   src/shell/text_select.cpp
@@ -1174,6 +1176,9 @@ if(MV_BUILD_TESTS)
     tests/test_edit_session.cpp
     tests/test_export_carried.cpp
     src/shell/edit_session.cpp
+    # Issue #614: Ctrl+P's paper layout (fit / fill, the contact sheet).
+    tests/test_print_layout.cpp
+    src/shell/print_layout.cpp
     # Text in images: the recogniser's pixels, the words' layout and the
     # selection (the OCR itself is the hosts' OS API).
     tests/test_text_in_image.cpp

@@ -56,6 +56,7 @@ The order is:
 | Driftwire transfer card, 2026-10-28 | **A transfer shows itself**: when a send or an offer starts, when its bytes start to move and when it ends, the Driftwire window glides to its card, which rises in when new and glows with an accent outline that fades, so a send begun from a code typed in “Send to a code” (or a tile under Nearby) is seen without scrolling up; progress alone never moves the page. A new screen key, `reveal` on a stack, contribution API 9 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11), [28](design/28-driftwire.md)) | Mac: `mv_import_tests "[driftwire]~[.driftwire-dht-live]"` (266 cases, one new) and `"[slots],[addon]"` pass; `mv_script_tests` passes; the SwiftUI package builds. Windows: the C# compiles; the native side is CI's. Owed: the glide, rise and glow seen in the running app on both hosts, with Reduce Motion / animations off, and both PR 1 gates |
 | #612 | **Settings → Storage**: what MediaViewer keeps on disk with sizes (thumbnails, file search, clipboard copies, metadata snapshots, crash reports, the telemetry spool, each add-on with its data); the thumbnail cache tidies itself (old specs, gone or changed files, an optional size cap, off by default) and has **Clear** ([docs/design/04](design/04-image-pipeline.md#thumbnail-cache-upkeep)) | Draft: the shared core is tested on Linux; both host halves are written but not built, and the verify line and both present-loop gates are not run ([below](#settings--storage-and-the-self-tidying-thumbnail-cache-612)) |
 | Linux PR 1 | **OpenGL present lab on Wayland**: a raw xdg toplevel, EGL desktop GL on an sRGB surface, frame-callback pacing at `eglSwapInterval(0)`, `wp_presentation` statistics, idle → stop presenting, F3, `frametime` on Linux ([docs/design/10](design/10-roadmap.md#linux-pr-1--opengl-present-lab), [03](design/03-rendering.md#the-linux-present-path)) | Draft. Built and run in a Linux container under headless Weston only (GL and pixman renderers): `mv_tests` and the smoke pass, the report is labelled weaker and fails the gate as it must. The Windows and Mac builds now also compile the Linux pacer and its tests: CI's. Owed: the gate on a real session (Mutter or KWin, Mesa on Intel or AMD), a Linux GPU runner, both other PR 1 gates ([Where this actually is](#linux-pr-1-the-opengl-present-lab-on-wayland-2026-10-23)) |
+| #614 | **Print** (`Ctrl+P` / `⌘P`, File ▸ Print…, the bar's Open): the photo on screen with its crop and adjusts baked, at fit or fill, or two or more marks as a 2×2 / 3×4 / 4×5 contact sheet (automatic: 12 marks are 3×4), file names off unless asked; the bake runs on the pool and nothing is written, so Cancel leaves no file ([docs/design/16 "Print"](design/16-commands.md#print)) | Draft. Core layout and bake written; `mv_tests "[print]"` layout cases and the router / command-table / snapshot tests pass on Linux. The bake tests (`test_edit_session.cpp`) and both host halves (PrintDlgEx + GDI on Windows, NSPrintOperation on the Mac) are written but not built here. Owed: both builds, the verify by hand (a cropped JPEG to PDF at fit matching the export, 12 marks as one 3×4 page, Cancel leaves no file, `?` lists the key), both PR 1 present-loop gates |
 | #617 | **Pinned folders and jump-list Tasks**: pin a folder from a welcome-card row's right-click menu and it stays first on the card, the jump list (its own "Pinned folders" category), the Dock menu and Open Recent however many folders are opened after it; the jump list gains New window, Open folder… and (with Import installed) Import… ([docs/design/10](design/10-roadmap.md#pr-15--os-integration)) | Draft. Shared rule and its tests built and run in a Linux container only; neither host built here. Owed: both host builds, both verifies, both PR 1 gates ([Where this actually is](#pinned-folders-and-jump-list-tasks-issue-617-2026-11-02)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
@@ -627,6 +628,7 @@ Use GCC there (12 or newer): clang with libstdc++ rejects `core/json.h`.
 | `F7` / `F8` | copy / move the marked items (or the current one) to the last folder used. `Shift+F7` / `Shift+F8` pick a folder. Never overwrites: a taken name becomes `name (2).ext` |
 | `Delete` | move the marked items (or the current one) to the Recycle Bin, after asking. A drive with no Recycle Bin is refused, never deleted permanently |
 | `F2` | rename the current file (File ▸ Rename… on the Mac). Type the name without its extension; `Enter` renames. Its RAW+JPEG or Live Photo partner and its `.xmp` sidecars are renamed with it. A taken name becomes `name (2)`; nothing is overwritten |
+| `Ctrl+P` | print (`⌘P`, File ▸ Print… on the Mac): the photo on screen with its edits, fit or fill; with two or more marks, a contact sheet (2×2, 3×4 or 4×5, file names optional). The options are in the print dialog |
 
 Drop files or a folder on the window, the gallery, or the filmstrip. Drag a
 thumbnail (gallery, filmstrip, or a Local search result) or the current image
@@ -2097,6 +2099,22 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Print: Ctrl+P / ⌘P (#614, docs/design/16 "Print", 2026-11-02)
+
+Written on both hosts, built on neither yet. What ran (Linux, g++ 13, `-Wall -Wextra -Werror
+-fno-rtti`): `tests/test_print_layout.cpp` against `src/shell/print_layout.cpp` (fit, fill, the
+printable area, 300 dpi pixels, 2×2 / 3×4 / 4×5 and automatic, captions: all pass), and the command
+suites (`test_key_router*.cpp`, `test_command_contract.cpp`, `test_command_coverage.cpp`,
+`test_keymap.cpp`: all pass, `tests/data/command_table.snapshot` regenerated with the `Ctrl+P`
+rows). `src/edit/export.cpp`, `src/shell/edit_session.cpp` and `tests/test_edit_session.cpp`
+compile (`-fsyntax-only`); the bake tests there (`"[print]"`) need the codec registry and run in
+CI's `mv_tests` only. `main.cpp`'s print path (PrintDlgEx, its Options page, GDI on the pool),
+`main_mac.mm`'s (NSPrintOperation, the panel accessory), the Open flyout item (C#) and the Mac
+bar item (Swift) have not been compiled. Owed: the Windows and Mac builds; the verify by hand on
+both (a cropped JPEG to PDF at fit with colours matching the export, 12 marks as one 3×4 page,
+Cancel leaves no file, `?` lists the key); both PR 1 present-loop gates. The Linux host has no
+print path (its order is open, `docs/plans/linux.md` §10); the layout is built in its tests.
 
 ### Settings → Storage and the self-tidying thumbnail cache (#612)
 
