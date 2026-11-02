@@ -453,17 +453,17 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
       for (const person_proto* c : cands) {
         if (c->person == own || rejected_from(f, c->person) || holds_sibling(i, c->person)) continue;
         // A smaller person whose core is no stranger to this face's own
-        // (mean pairwise cosine across the cores >= join - margin) is a
+        // (mean pairwise cosine across the cores >= join - margin / 2) is a
         // fragment of the same person, not a rival: the merge joins them, a
         // face does not leave its person for it (2026-11-02: 275 of the
-        // owner's faces went to his own fragments; two different named people
-        // sit at ~0.15). Into a larger or confirmed one it may: that is the
-        // fragment going home.
+        // owner's faces went to his own fragments). join - margin cost LFW one
+        // correct move between two lookalikes (settled F 0.9988 -> 0.9985).
+        // Into a larger or confirmed one it may: that is the fragment going home.
         const bool confirmed_c = c->named || c->pinned;
         const bool confirmed_own = own_proto && (own_proto->named || own_proto->pinned);
         if (own_proto && own_proto->core_mean.size() == dim && !(confirmed_c && !confirmed_own) &&
             c->members <= own_proto->members &&
-            dot(own_proto->core_mean.data(), c->core_mean.data(), dim) >= p.join - p.margin) {
+            dot(own_proto->core_mean.data(), c->core_mean.data(), dim) >= p.join - p.margin / 2) {
           continue;
         }
         shortlist.emplace_back(dot(v, c->core_mean.data(), dim), c);
@@ -474,7 +474,11 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
                           return a.first != b.first ? a.first > b.first : a.second->person < b.second->person;
                         });
       for (std::size_t s = 0; s < keep_n; ++s) {
-        const float sc = support(v, *shortlist[s].second, dim, f.id, p.top_k, f.asset);
+        const person_proto* cp = shortlist[s].second;
+        // By exemplars, confirmed or not: the person's mean instead (online's
+        // rule for unconfirmed people) was tried in the settle and left more
+        // faces misfiled on the owner's copy (16 -> 18), LFW no better.
+        const float sc = support(v, *cp, dim, f.id, p.top_k, f.asset);
         if (sc > vd.best) {
           vd.second = vd.best;
           vd.best = sc;
