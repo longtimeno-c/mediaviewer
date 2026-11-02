@@ -29,6 +29,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 #include "core/job_system.h"
@@ -66,6 +67,12 @@ inline constexpr float kAutoNeutralSure = 0.15f;
 inline constexpr float kAutoNeutralNone = 0.35f;
 [[nodiscard]] float neutral_confidence(float mean_saturation) noexcept;
 [[nodiscard]] float best_mono_filter(const std::vector<std::array<float, 3>>& samples) noexcept;
+
+// Slice 3: the mean linear RGB of the (2 half + 1)² working pixels about
+// source uv (u, v), clamped to the image; nullopt off the image. Small
+// enough for the UI thread (a click on the photo; no decode, no I/O).
+[[nodiscard]] std::optional<std::array<double, 3>> sample_mean(const image::linear_image& working,
+                                                                float u, float v, int half = 2) noexcept;
 
 [[nodiscard]] result<auto_result> compute_auto(const image::linear_image& working,
                                                const colour& current, adjust_section section,

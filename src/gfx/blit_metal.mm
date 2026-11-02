@@ -306,9 +306,10 @@ void blitter_mac::draw(void* encoder_ptr, void* texture_ptr, const blit_params_m
 
   [encoder setRenderPipelineState:pso];
   [encoder setFragmentBytes:&cb length:sizeof(cb) atIndex:0];
-  // Slice 2: the table, copied with the draw only while levels or a curve is
-  // set; otherwise one row stands in (the kernel does not read it).
-  if (p.adjust && p.adjust_u.a[5][3] > 0.5f) {
+  // Slice 2: the table, copied with the draw only while levels, a curve,
+  // selective colour or a red-eye fix is set; otherwise one row stands in
+  // (the kernel does not read it).
+  if (p.adjust && reads_table(p.adjust_u)) {
     [encoder setFragmentBytes:&p.adjust_t length:sizeof(adjust_table) atIndex:1];
   } else {
     [encoder setFragmentBytes:&p.adjust_t length:16 atIndex:1];

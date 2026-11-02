@@ -7,6 +7,7 @@
 import AppKit
 import Combine
 import MVChromeBridge
+import SwiftUI
 
 struct AdjustSpec {
   let name: String
@@ -47,7 +48,7 @@ final class AdjustStore: ObservableObject {
         AdjustSpec(name: "Mid-tones", min: -100, max: 100, step: 2, format: signed),
         AdjustSpec(name: "White", min: -100, max: 0, step: 1) { String(format: "%.0f", $0) },
       ]
-    }
+    } + (0..<8).flatMap { _ in [s("Hue"), s("Saturation"), s("Luminance")] }
   }()
   /// edit::adjust_section order.
   static let sections: [AdjustSection] = [
@@ -60,7 +61,16 @@ final class AdjustStore: ObservableObject {
     AdjustSection(name: "Levels", icon: "chart.bar", params: Array(16..<28), hasAuto: true),
     AdjustSection(name: "Curves", icon: "point.topleft.down.to.point.bottomright.curvepath", params: [],
                   hasAuto: false),
+    // Slice 3. Selective Colour's sliders are the picked band's (selectiveParams);
+    // Red-Eye has a tool, no slider.
+    AdjustSection(name: "Selective Colour", icon: "paintpalette", params: Array(28..<52), hasAuto: false),
+    AdjustSection(name: "Red-Eye", icon: "eye.slash", params: [], hasAuto: false),
   ]
+  static let selectiveSection = 6
+  static let redEyeSection = 7
+  static let bandNames = ["Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta"]
+  static let bandColours: [Color] = [.red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink]
+  static func selectiveParams(_ band: Int) -> [Int] { [28 + 3 * band, 29 + 3 * band, 30 + 3 * band] }
   static let levelsSection = 4
   static let curvesSection = 5
   static let channelNames = ["Image", "Red", "Green", "Blue"]
@@ -75,6 +85,9 @@ final class AdjustStore: ObservableObject {
   @Published var values: [Double] = Array(repeating: 0, count: AdjustStore.specs.count)
   /// The section whose Auto is running, or -1.
   @Published private(set) var autoSection: Int = -1
+  /// Slice 3: 0 nothing, 1 the white-balance picker, 2 the red-eye tool; the fixes made.
+  @Published private(set) var picking: Int32 = 0
+  @Published private(set) var spotCount = 0
   /// Slice 2: the four curves' points (image, red, green, blue); empty is the diagonal.
   @Published var curves: [[CGPoint]] = Array(repeating: [], count: 4)
   @Published private(set) var histogramValid = false
@@ -112,6 +125,8 @@ final class AdjustStore: ObservableObject {
     values = withUnsafeBytes(of: v.values) { raw in raw.bindMemory(to: Float.self).map { Double($0) } }
     histogramValid = v.histogram_valid != 0
     autoSection = Int(v.auto_section)
+    picking = v.picking
+    spotCount = Int(v.spot_count)
     let ns: [Int32] = withUnsafeBytes(of: v.curve_n) { Array($0.bindMemory(to: Int32.self)) }
     let xs: [Float] = withUnsafeBytes(of: v.curve_x) { Array($0.bindMemory(to: Float.self)) }
     let ys: [Float] = withUnsafeBytes(of: v.curve_y) { Array($0.bindMemory(to: Float.self)) }
@@ -137,11 +152,14 @@ final class AdjustStore: ObservableObject {
   }
 
   func reset() { mv_chrome_adjust_reset() }
+  /// Slice 3: what the next click on the photo does (see `picking`).
+  func pick(_ mode: Int32, size: Double = 0) { if ready { mv_chrome_adjust_pick(mode, Float(size)) } }
   func auto(_ section: Int) { if ready { mv_chrome_adjust_auto(Int32(section)) } }
   func reset(section: Int) { if ready { mv_chrome_adjust_reset_section(Int32(section)) } }
   /// A slider of `section` is away from 0 (Curves: a curve off the diagonal).
   func changed(_ section: Int) -> Bool {
     if section == Self.curvesSection { return curves.contains { !Self.diagonal($0) } }
+    if section == Self.redEyeSection { return spotCount > 0 }
     return Self.sections[section].params.contains { values[$0] != 0 }
   }
 

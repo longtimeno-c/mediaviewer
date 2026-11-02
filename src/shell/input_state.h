@@ -94,7 +94,7 @@ struct edit_view {
   // skips the kernel. A change is a redraw, never a refit or a decode.
   bool adjust = false;
   gfx::adjust_vectors adjust_u;
-  gfx::adjust_table adjust_t;  // slice 2: levels and curves, read when adjust_u.a[5][3] > 0.5
+  gfx::adjust_table adjust_t;  // slices 2-3: read when gfx::reads_table(adjust_u)
 };
 
 struct input_snapshot {

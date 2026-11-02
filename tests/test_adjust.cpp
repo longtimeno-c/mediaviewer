@@ -21,6 +21,7 @@
 
 #include "codec/decode.h"
 #include "edit/adjust.h"
+#include "edit/auto_adjust.h"
 #include "gfx/adjust_kernel.h"
 #include "edit/bake.h"
 #include "edit/edit_stack.h"
@@ -603,6 +604,132 @@ TEST_CASE("curves: a point drag is one op, reset clears curves, a lossless turn 
   const edit::colour no_curves = edit::without_section(c, edit::adjust_section::curves);
   CHECK(no_curves.curves[2].n == 0);
   CHECK(no_curves.get(adjust_param::exposure) == 1.0f);
+}
+
+// ---- slice 3: selective colour, red-eye, the white-balance picker ------------
+
+TEST_CASE("selective colour: a band moves its own hues and leaves greys and the far side alone",
+          "[adjust][selective]") {
+  edit::colour c;
+  c.v[static_cast<std::size_t>(adjust_param::sel_red_sat)] = -100.0f;  // reds to grey
+  c.v[static_cast<std::size_t>(adjust_param::sel_blue_hue)] = 100.0f;  // blues turn 30°
+  c.v[static_cast<std::size_t>(adjust_param::sel_green_lum)] = 100.0f;  // greens a stop up
+  REQUIRE(c.has_selective());
+  const auto u = edit::uniforms_of(c);
+  CHECK(u.a[4][3] == 1.0f);
+  const auto t = edit::table_of(c);
+  auto at = [&](float r, float g, float b) { return mv::gfx::adjust({r, g, b}, {}, u, &t); };
+  const auto red = at(0.6f, 0.05f, 0.05f);
+  CHECK(red.x - red.z < 0.02f);  // grey
+  const auto grey = at(0.3f, 0.3f, 0.3f);
+  CHECK(grey.x == Approx(0.3f).epsilon(1e-4));
+  CHECK(grey.z == Approx(0.3f).epsilon(1e-4));
+  // Between aqua (unchanged) and blue: part of blue's turn.
+  const auto sky = at(0.05f, 0.25f, 0.45f);
+  const auto sky_plain = mv::gfx::adjust({0.05f, 0.25f, 0.45f}, {}, edit::uniforms_of({}));
+  CHECK(sky.x > sky_plain.x + 0.005f);
+  const auto green = at(0.05f, 0.4f, 0.05f);
+  CHECK(green.y > 0.4f * 1.6f);  // most of a stop
+  const auto blue = at(0.05f, 0.05f, 0.5f);
+  CHECK(blue.x > 0.06f);  // turned toward purple
+  const auto yellow = at(0.5f, 0.5f, 0.02f);  // between orange and green: untouched bands
+  CHECK(yellow.x == Approx(0.5f).epsilon(0.05));
+  CHECK(edit::section_of(adjust_param::sel_magenta_lum) == edit::adjust_section::selective);
+  CHECK(std::string_view(edit::range_of(adjust_param::sel_aqua_sat).name) == "Saturation");
+}
+
+TEST_CASE("red-eye: a fix pulls red down inside its spot only, placed through the crop",
+          "[adjust][red_eye]") {
+  mv::shell::edit_session es;
+  es.set_item({"/p/a.jpg", 100, 5, 400, 300, true});
+  // Crop to the right half, then fix an eye at source (0.75, 0.5).
+  CHECK(es.add_red_eye({0.75f, 0.5f, 0.02f}) == mv::shell::edit_effect::redraw);
+  const edit::colour c = es.colour();
+  REQUIRE(c.spot_count == 1);
+  CHECK_FALSE(c.identity());
+  edit::geometry g;
+  g.crop = {0.5f, 0.0f, 0.5f, 1.0f};
+  const edit::placement p = edit::place(g, {400, 300});
+  mv::gfx::adjust_table t = edit::table_of(c);
+  edit::place_spots(t, c, p);
+  const float* row = t.r[mv::gfx::kAdjustSpotFirst];
+  CHECK(row[2] > 0.0f);
+  // Source (0.75, 0.5) is the middle of the cropped output: pos (0, 0).
+  CHECK(row[0] == Approx(0.0f).margin(1e-4));
+  CHECK(row[1] == Approx(0.0f).margin(1e-4));
+  const auto u = edit::uniforms_of(c);
+  CHECK(u.a[3][3] == 1.0f);
+  const auto inside = mv::gfx::adjust({0.5f, 0.05f, 0.05f}, {0.0f, 0.0f, 0, 0}, u, &t);
+  CHECK(inside.x < 0.1f);
+  const auto outside = mv::gfx::adjust({0.5f, 0.05f, 0.05f}, {0.5f, 0.5f, 0, 0}, u, &t);
+  CHECK(outside.x == Approx(0.5f));
+  const auto skin = mv::gfx::adjust({0.4f, 0.35f, 0.3f}, {0.0f, 0.0f, 0, 0}, u, &t);
+  CHECK(skin.x > 0.3f);  // not red-dominant enough to be pulled all the way
+  // The export bake places it from its own placement: the eye's pixel is fixed.
+  image::linear_image img;
+  img.width = 400;
+  img.height = 300;
+  img.rgba.assign(400 * 300 * 4, image::float_to_half(1.0f));
+  for (std::size_t i = 0; i < img.rgba.size(); i += 4) {
+    img.rgba[i] = image::float_to_half(0.5f);
+    img.rgba[i + 1] = img.rgba[i + 2] = image::float_to_half(0.05f);
+  }
+  auto out = edit::bake(img, p, c);
+  REQUIRE(out);
+  const std::size_t mid = (150 * out->width + 100) * 4, corner = 0;
+  CHECK(out->rgba[mid] < out->rgba[corner]);
+  // Eight at most; r 0 clears them all as one op.
+  for (int i = 1; i < edit::kRedEyeSpots; ++i) (void)es.add_red_eye({0.1f, 0.1f, 0.01f});
+  CHECK(es.add_red_eye({0.2f, 0.2f, 0.01f}) == mv::shell::edit_effect::refused);
+  CHECK(es.add_red_eye({0, 0, 0}) == mv::shell::edit_effect::redraw);
+  CHECK(es.colour().spot_count == 0);
+  CHECK(es.colour().identity());
+}
+
+TEST_CASE("white-balance picker: the picked pixel comes out neutral", "[adjust][picker]") {
+  for (const std::array<double, 3> rgb :
+       {std::array<double, 3>{0.30, 0.20, 0.12}, {0.15, 0.20, 0.25}, {0.2, 0.25, 0.2}}) {
+    const auto wb = edit::neutral_balance(rgb);
+    const auto g = edit::white_balance_gains(wb[0], wb[1]);
+    CHECK(std::abs(std::log(g[0] * rgb[0] / (g[1] * rgb[1]))) < 0.03);
+    CHECK(std::abs(std::log(g[2] * rgb[2] / (g[1] * rgb[1]))) < 0.03);
+  }
+  CHECK(edit::neutral_balance({0.2, 0.2, 0.2}) == std::array<float, 2>{0.0f, 0.0f});
+  // sample_mean averages the 5 x 5 about the point and refuses off the image.
+  image::linear_image img;
+  img.width = img.height = 10;
+  img.rgba.assign(10 * 10 * 4, image::float_to_half(0.0f));
+  for (int y = 0; y < 10; ++y) {
+    for (int x = 0; x < 10; ++x) {
+      std::uint16_t* q = img.rgba.data() + (static_cast<std::size_t>(y) * 10 + static_cast<std::size_t>(x)) * 4;
+      q[0] = image::float_to_half(static_cast<float>(x) / 10.0f);
+      q[3] = image::float_to_half(1.0f);
+    }
+  }
+  const auto m = edit::sample_mean(img, 0.55f, 0.55f);
+  REQUIRE(m);
+  CHECK((*m)[0] == Approx(0.5).margin(1e-3));
+  CHECK_FALSE(edit::sample_mean(img, 1.2f, 0.5f));
+}
+
+TEST_CASE("adjust pane: pick mode needs the working image and ends with the item or the pane",
+          "[adjust][picker][pane]") {
+  mv::shell::adjust_pane pane;
+  pane.set_pick(mv::shell::adjust_pick::red_eye);
+  CHECK(pane.pick() == mv::shell::adjust_pick::none);  // nothing ready
+  (void)pane.show(true, false);
+  const auto b = pane.set_item(5, false);
+  REQUIRE(b);
+  REQUIRE(pane.working_landed(*b, true, false));
+  pane.set_pick(mv::shell::adjust_pick::red_eye);
+  CHECK(pane.view(edit::colour{}).picking == 2);
+  (void)pane.set_item(6, false);
+  CHECK(pane.pick() == mv::shell::adjust_pick::none);
+  const auto b2 = pane.set_item(6, false);
+  if (b2) (void)pane.working_landed(*b2, true, false);
+  pane.set_pick(mv::shell::adjust_pick::white_balance);
+  (void)pane.show(false, false);
+  CHECK(pane.pick() == mv::shell::adjust_pick::none);
 }
 
 TEST_CASE("white balance (0, 0) is exactly unity", "[adjust][kernel]") {

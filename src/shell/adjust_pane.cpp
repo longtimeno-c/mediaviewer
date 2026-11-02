@@ -31,6 +31,7 @@ std::optional<std::uint64_t> adjust_pane::set_item(std::uint64_t item, bool has_
     histogram_valid_ = false;
     histogram_token_ = 0;
     auto_token_ = 0;
+    pick_ = adjust_pick::none;
   }
   return want(has_colour);
 }
@@ -42,6 +43,7 @@ std::optional<std::uint64_t> adjust_pane::toggle(bool has_colour) {
 std::optional<std::uint64_t> adjust_pane::show(bool visible, bool has_colour) {
   visible_ = visible;
   if (visible_) histogram_stale_ = true;
+  else pick_ = adjust_pick::none;
   return want(has_colour);
 }
 
@@ -60,6 +62,7 @@ bool adjust_pane::working_landed(std::uint64_t token, bool ok, bool from_raw) no
 }
 
 void adjust_pane::working_dropped() noexcept {
+  pick_ = adjust_pick::none;
   if (readiness_ == adjust_readiness::ready || readiness_ == adjust_readiness::preparing) {
     readiness_ = adjust_readiness::none;
   }
@@ -112,6 +115,8 @@ adjust_view adjust_pane::view(const edit::colour& c) const noexcept {
   }
   v.histogram_valid = histogram_valid_ ? 1 : 0;
   v.auto_section = auto_token_ != 0 ? static_cast<std::int32_t>(auto_section_) : -1;
+  v.picking = static_cast<std::int32_t>(pick());
+  v.spot_count = c.spot_count;
   for (int ch = 0; ch < edit::kCurveChannels; ++ch) {
     const edit::curve& k = c.curves[static_cast<std::size_t>(ch)];
     v.curve_n[ch] = k.n;

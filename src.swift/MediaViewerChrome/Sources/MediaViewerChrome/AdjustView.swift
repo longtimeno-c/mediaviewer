@@ -21,6 +21,8 @@ struct AdjustView: View {
   @State private var row = 0
   @State private var open: Set<Int> = [0, 1]
   @State private var levelsChannel = 0
+  @State private var band = 0
+  @State private var redEyeSize = 0.0
   @State private var curvesChannel = 0
   @FocusState private var focused: Bool
 
@@ -41,6 +43,7 @@ struct AdjustView: View {
   /// What a section shows: Levels only the picked channel's three, Curves none.
   private func visibleParams(_ i: Int) -> [Int] {
     if i == AdjustStore.levelsSection { return AdjustStore.levelsParams(levelsChannel) }
+    if i == AdjustStore.selectiveSection { return AdjustStore.selectiveParams(band) }
     return AdjustStore.sections[i].params
   }
 
@@ -186,28 +189,84 @@ struct AdjustView: View {
       }
       .padding(.vertical, MVTheme.space(4))
       if isOpen {
-        if i == AdjustStore.levelsSection || i == AdjustStore.curvesSection {
-          Picker("Channel", selection: i == AdjustStore.levelsSection ? $levelsChannel : $curvesChannel) {
-            ForEach(0..<4, id: \.self) { ch in Text(AdjustStore.channelNames[ch]).tag(ch) }
-          }
-          .pickerStyle(.segmented)
-          .labelsHidden()
-          .padding(.leading, MVTheme.space(14))
-        }
-        if i == AdjustStore.curvesSection {
-          CurveEditor(store: store, channel: curvesChannel)
-            .aspectRatio(1, contentMode: .fit)
-            .padding(.leading, MVTheme.space(14))
-            .disabled(!store.ready)
-          Text("Drag the line to add a point · drag a point off the square to remove it")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.leading, MVTheme.space(14))
-        }
+        sectionExtras(i)
         ForEach(visibleParams(i), id: \.self) { p in
           sliderRow(p)
         }
       }
+    }
+  }
+
+  // What a section shows above its sliders: channel and band pickers, the
+  // curve editor, the white-balance picker and the red-eye tool.
+  @ViewBuilder
+  private func sectionExtras(_ i: Int) -> some View {
+    if i == AdjustStore.levelsSection || i == AdjustStore.curvesSection {
+      Picker("Channel", selection: i == AdjustStore.levelsSection ? $levelsChannel : $curvesChannel) {
+        ForEach(0..<4, id: \.self) { ch in Text(AdjustStore.channelNames[ch]).tag(ch) }
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .padding(.leading, MVTheme.space(14))
+    }
+    if i == 1 {
+      Button {
+        store.pick(store.picking == 1 ? 0 : 1)
+      } label: {
+        Label(store.picking == 1 ? "Click something white or grey…" : "Pick white balance",
+              systemImage: "eyedropper")
+      }
+      .buttonStyle(.plain)
+      .foregroundStyle(store.picking == 1 ? Color.accentColor : .secondary)
+      .disabled(!store.ready)
+      .padding(.leading, MVTheme.space(14))
+      .help("Click a neutral part of the photo to set temperature and tint")
+    }
+    if i == AdjustStore.selectiveSection {
+      HStack(spacing: MVTheme.space(6)) {
+        ForEach(0..<8, id: \.self) { b in
+          Button { band = b } label: {
+            Circle().fill(AdjustStore.bandColours[b]).frame(width: 18, height: 18)
+              .overlay(Circle().stroke(Color.primary, lineWidth: band == b ? 2 : 0))
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel(AdjustStore.bandNames[b])
+          .help(AdjustStore.bandNames[b])
+        }
+      }
+      .padding(.leading, MVTheme.space(14))
+    }
+    if i == AdjustStore.redEyeSection {
+      VStack(alignment: .leading, spacing: MVTheme.space(4)) {
+        Button {
+          store.pick(store.picking == 2 ? 0 : 2, size: redEyeSize)
+        } label: {
+          Label(store.picking == 2 ? "Click each red eye — click here when done" : "Fix red eyes",
+                systemImage: "eye")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(store.picking == 2 ? Color.accentColor : .secondary)
+        .disabled(!store.ready)
+        HStack {
+          Text("Size").foregroundStyle(.secondary)
+          Slider(value: $redEyeSize, in: -100...100, step: 5)
+            .onChange(of: redEyeSize) { _, v in if store.picking == 2 { store.pick(2, size: v) } }
+        }
+        if store.spotCount > 0 {
+          Text("\(store.spotCount) fixed").font(.caption).foregroundStyle(.secondary)
+        }
+      }
+      .padding(.leading, MVTheme.space(14))
+    }
+    if i == AdjustStore.curvesSection {
+      CurveEditor(store: store, channel: curvesChannel)
+        .aspectRatio(1, contentMode: .fit)
+        .padding(.leading, MVTheme.space(14))
+        .disabled(!store.ready)
+      Text("Drag the line to add a point · drag a point off the square to remove it")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.leading, MVTheme.space(14))
     }
   }
 

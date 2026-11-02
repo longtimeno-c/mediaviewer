@@ -34,7 +34,9 @@ in the core (`edit/`, `shell/edit_session`).
    White and Vignette sections, each collapsible with its own reset (↺, shown once a slider in it
    moved) and, but the vignette and curves, an AUTO; Black & White has an on switch; Levels and
    Curves pick a channel (Image, Red, Green, Blue), and Curves has a point editor over the histogram
-   (drag the line to add a point, drag a point off the square to remove it)
+   (drag the line to add a point, drag a point off the square to remove it); Selective Colour picks
+   a band (eight swatches); Colour has **Pick white balance** and Red-Eye **Fix red eyes** with a
+   size, each taking the next click (or clicks) on the photo
    ([07](07-photo-editing.md) "Evaluation", "Auto").
 
    | Subject | Tabs (`edit_tab`) |

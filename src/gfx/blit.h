@@ -58,7 +58,7 @@ struct blit_params {
   // The uniforms are edit::adjust_uniforms' a0 .. a5.
   bool adjust = false;
   adjust_vectors adjust_u;
-  adjust_table adjust_t;  // slice 2: read when adjust_u.a[5][3] > 0.5
+  adjust_table adjust_t;  // slices 2-3: read when reads_table(adjust_u)
 };
 
 // One tile of a tiled pyramid (image/tiles.h), as the render thread draws it.

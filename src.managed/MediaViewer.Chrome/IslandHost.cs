@@ -168,6 +168,10 @@ public static partial class IslandHost
         // curve goes as parked "channel\tx,y;x,y" (chrome_cmd_adjust_curve).
         public const int AdjustLevelsBlack = 197;
         public const int AdjustCurve = 1090;
+        // Slice 3: AdjustPick's arg is mode * 1000 + (red-eye size + 100);
+        // AdjustParam sends parked "param\tvalue" (selective colour).
+        public const int AdjustPick = 209;
+        public const int AdjustParam = 1091;
         // PR 12: the pane's stars post the rating keys' ids (commands.h
         // set_rating_0..5); 0 clears.
         public const int SetRating0 = 127;

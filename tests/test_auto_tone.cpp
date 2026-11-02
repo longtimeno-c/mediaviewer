@@ -299,7 +299,7 @@ TEST_CASE("auto tone is deterministic", "[auto_tone]") {
   const auto h = band(25, 205);
   const auto a = edit::auto_tone(h, edit::colour{});
   const auto b = edit::auto_tone(h, edit::colour{});
-  CHECK(std::memcmp(&a.value, &b.value, sizeof a.value) == 0);
+  CHECK(a.value == b.value);  // colour has padding now (curves, spots): compare, never memcmp
   CHECK(a.black == b.black);
   CHECK(a.median == b.median);
   CHECK(a.white == b.white);

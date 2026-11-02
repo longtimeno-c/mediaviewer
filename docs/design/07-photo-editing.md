@@ -29,6 +29,7 @@ struct edit_stack {
 | `adjust` | Set one colour parameter (`adjust_param`); `count` resets every colour parameter |
 | `adjust_all` | Set every colour parameter at once (`values`), so an Auto or a section's reset is one undo step |
 | `curve` | Set one channel's tone curve (`channel`, `values.curves[channel]`); a point drag is one op |
+| `red_eye` | Add a red-eye fix at `spot` (source uv, radius a fraction of the diagonal); radius 0 clears them all |
 
 Undo pops the list; reset clears it and returns the original exactly. `edit_session` keeps one
 stack per (path, size, mtime) for the session (up to 64 stacks, oldest evicted), so walking away
@@ -59,6 +60,8 @@ The stack folds into two canonical states:
   | Vignette | strength (+ darkens), radius, softness |
   | Levels | black (0..100), mid-tones (−100..+100), white (−100..0), for the image, red, green and blue |
   | Curves | up to 8 points per channel (image, red, green, blue), no parameter |
+  | Selective Colour | hue (±30°), saturation, luminance for red, orange, yellow, green, aqua, blue, purple, magenta |
+  | Red-Eye | up to 8 fixes, each a click on a pupil, no parameter |
 
   Every other parameter is −100..+100 and 0 is always the identity. Order: white balance
   (temperature, tint) and exposure as one per-channel gain → **tone** (highlights, shadows,
@@ -80,7 +83,22 @@ The stack folds into two canonical states:
   which the kernel reads with linear interpolation after saturation and before black & white
   (above p 1, a RAW's headroom, the end plus the overshoot). The table travels in the edit view;
   D3D11 holds it in its own constant buffer (`b1`) uploaded only when it changes, Metal copies it
-  with the draw only while a table is on. The chain is one kernel with six
+  with the draw only while a table is on. **Selective colour** measures the pixel's hue on an
+  opponent wheel (a = r − (g+b)/2, b = √3/2 (g − b); red 0, yellow ⅙, green ⅓, aqua ½, blue ⅔,
+  magenta ⅚) and reads 64 more table rows, built by interpolating the eight bands between their
+  centres: it rotates (a, b) by the hue shift, scales it by the saturation, and multiplies the pixel
+  by 2^(luminance × its own saturation), so greys never move. It sits after saturation, before
+  levels and curves. **Red-eye** fixes are the table's last 8 rows, placed through the geometry
+  (`place_spots`: the canvas from the preview placement, the bake from its own, the histogram on
+  the working frame); inside a spot, red above green and blue is pulled to their mean, fading over
+  the outer 30 %. It runs first, on the gains. The table is 200 rows, 3.2 KB.
+
+  The **white-balance picker** (Colour) and the **red-eye tool** (Red-Eye) make the next click on
+  the photo theirs (`adjust_pick`; the canvas does not pan): the click goes through the canvas map
+  and the edit's map to the working image. The picker averages 5 × 5 working pixels there
+  (`sample_mean`, memory already decoded, on the UI thread) and sets the temperature and tint that
+  make them neutral (`neutral_balance`, ±100), then ends; the red-eye tool adds a fix at each click
+  (radius 1.2 % of the diagonal times 2^(size/100)) until it is turned off. The chain is one kernel with six
   float4 uniforms (`adjust_uniforms` = `gfx::adjust_vectors`); each stage after saturation sits
   behind an `if` on its own uniforms, so an edit that sets only PR 11's sliders runs PR 11's
   arithmetic and the export bake pays for a stage only when it is set.
@@ -229,7 +247,7 @@ What exists is the first editing set:
 | Built | |
 |---|---|
 | Geometry | Rotate, flip, crop (aspect presets, [20](20-edit-workspace.md)), straighten ±45°, resize |
-| Colour | Light (exposure, highlights, shadows, whites, blacks, contrast), Colour (saturation, vibrance, temperature, tint), Black & White (intensity, filter, tone), Vignette (strength, radius, softness), Levels (per channel), Curves (per channel, a point editor); an Auto and a reset per section |
+| Colour | Light (exposure, highlights, shadows, whites, blacks, contrast), Colour (saturation, vibrance, temperature, tint), Black & White (intensity, filter, tone), Vignette (strength, radius, softness), Levels (per channel), Curves (per channel, a point editor), Selective Colour (eight bands), Red-Eye (clicks); a white-balance picker; an Auto and a reset per section |
 | Readouts | Histogram (R, G, B, luma) and clipping percentages |
 | Lossless | JPEG rotate / flip / MCU-aligned crop, from the viewer (`[` `]` `H` `V`) or on export |
 | Export | JPEG / PNG, long-edge resize, metadata policy |
@@ -241,10 +259,10 @@ kernel or one more pass, evaluated in the order above.
 
 - Persisting a stack across sessions (XMP sidecar, SQLite catalog index).
 - Redo and a named history list for stills (`edit_stack::undo` only pops).
-- Perspective / keystone, lens correction; per-band HSL (selective colour); a white-balance
-  picker; colour grading ([plan](../plans/edit-adjust.md) slice 3).
+- Perspective / keystone, lens correction; colour grading; automatic red-eye (it needs the
+  faces of the AI pack; [plan](../plans/edit-adjust.md) slice 6 reads them).
 - Brilliance, definition, sharpen, noise reduction (slice 4); dehaze, grain, split-tone.
-- Local adjustments: gradients, brush masks, healing / clone, red-eye.
+- Local adjustments: gradients, brush masks, healing / clone.
 - Auto-straighten, auto-crop. An Auto key outside the pane (the pane's `A` runs the focused
   slider's section).
 - GPU demosaic, highlight recovery, lens profiles, dual-illuminant white balance.

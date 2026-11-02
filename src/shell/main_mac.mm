@@ -148,6 +148,7 @@ static_assert(offsetof(mv_adjust_view, histogram_valid) ==
               offsetof(mv::shell::adjust_view, histogram_valid));
 static_assert(offsetof(mv_adjust_view, bins) == offsetof(mv::shell::adjust_view, bins));
 static_assert(offsetof(mv_adjust_view, curve_x) == offsetof(mv::shell::adjust_view, curve_x));
+static_assert(offsetof(mv_adjust_view, picking) == offsetof(mv::shell::adjust_view, picking));
 
 // Forward declaration: the globals just below need the type, but MvLabApp's
 // @interface is later in this file (it in turn needs MvMetalView, declared
@@ -768,6 +769,9 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)adjustAuto:(int32_t)section;
 - (void)adjustResetSection:(int32_t)section;
 - (void)adjustCurve:(int32_t)channel curve:(const mv::edit::curve&)k;
+- (void)adjustPick:(int32_t)mode size:(float)size;
+- (BOOL)adjustPicking;
+- (void)adjustPickAtX:(float)x y:(float)y;
 - (void)adjustBlur;
 // PR 12
 - (int32_t)metaRating;
@@ -1699,6 +1703,10 @@ extern "C" void mv_chrome_adjust_curve(int32_t channel, int32_t n, const float* 
   }
   [g_chrome_app adjustCurve:channel curve:k];
 }
+extern "C" void mv_chrome_adjust_pick(int32_t mode, float size) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app adjustPick:mode size:size];
+}
 extern "C" void mv_chrome_adjust_close(void) {
   if (g_chrome_app) [g_chrome_app setAdjustVisible:NO];
 }
@@ -2295,6 +2303,12 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     }
   }
   [self trackPointer:event];
+  // Slice 3: the adjust pane's white-balance picker or red-eye tool takes the
+  // click on the photo; nothing pans.
+  if (self.app && [self.app adjustPicking]) {
+    [self.app adjustPickAtX:self.snap->mouse_x y:self.snap->mouse_y];
+    return;
+  }
   _welcomePress = self.app ? [self.app welcomeRowAtPointerOnRemove:&_welcomePressRemove] + 1 : 0;
   // Text in images: a press on a word selects (published with the press, so
   // the render thread never starts a pan for it).
@@ -2906,6 +2920,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::shared_ptr<const mv::image::linear_image> _working;
   std::atomic<mv::generation> _adjustGen;
   std::uint64_t _adjustViewGeneration;
+  float _redEyeSize;  // slice 3: the red-eye tool's size, −100..+100
   NSTimer* _histogramDebounce;
   // PR 29 (docs/design/20): the Edit workspace (shell/edit_workspace.h) and Show
   // original. _wsShown is what the panes were last synced to, so closing the
@@ -9285,6 +9300,7 @@ static std::string MvSelfTestPageSummary(const char* addon) {
   for (int ch = 0; ch < mv::edit::kCurveChannels; ++ch) {
     if (c.curves[static_cast<std::size_t>(ch)].n > 0) [line appendFormat:@" curve%d=%d", ch, c.curves[static_cast<std::size_t>(ch)].n];
   }
+  if (c.spot_count > 0) [line appendFormat:@" red_eye=%d", c.spot_count];
   [line appendString:@"\n"];
   [self editSelfTestLine:line dir:dir];
 }
@@ -9480,10 +9496,22 @@ static std::string MvSelfTestPageSummary(const char* addon) {
           [self adjustAuto:static_cast<int32_t>(mv::edit::adjust_section::levels)];
         }
         break;
-      case 7:
+      case 7: {
         [self editSelfTestAdjustLine:@"mono-reset" dir:dir];
+        // Slice 3: the white-balance picker and the red-eye tool clicked in
+        // the middle of the view, and a selective colour band.
+        const mv::shell::canvas_map map = _lab.still_map();
+        [self adjustPick:1 size:0];
+        [self adjustPickAtX:map.centre_x y:map.centre_y];
+        [self adjustPick:2 size:0];
+        [self adjustPickAtX:map.centre_x y:map.centre_y];
+        [self adjustPick:0 size:0];
+        [self adjustSet:static_cast<int32_t>(mv::edit::adjust_param::sel_blue_sat) value:-50.0f];
+        [self editSelfTestAdjustLine:@"picked" dir:dir];
+        [self editSelfTestSnap:@"s4c-picked" dir:dir];
         [self editSelectTab:2];
         break;
+      }
       case 8: [self editSelfTestSnap:@"s5-info" dir:dir];
         // PR 29: any tag, and the date, from the Info tab.
         [self metaSetTag:"Exif.Image.Artist" value:"MV self-test"];
@@ -9829,6 +9857,48 @@ static double mv_wall_seconds() {
   const bool has_colour = !_edits.colour().identity();
   [self adjustBuildIf:_adjust.colour_changed(has_colour)];
   [self scheduleHistogram];
+}
+
+// Slice 3: what the next click on the photo does (shell::adjust_pick).
+// `size` is the red-eye tool's −100..+100 about its default radius.
+- (void)adjustPick:(int32_t)mode size:(float)size {
+  if (mode < 0 || mode > static_cast<int32_t>(mv::shell::adjust_pick::red_eye)) return;
+  _redEyeSize = std::clamp(size, -100.0f, 100.0f);
+  _adjust.set_pick(static_cast<mv::shell::adjust_pick>(mode));
+  [self bumpAdjustView];
+}
+
+- (BOOL)adjustPicking {
+  return _adjust.pick() != mv::shell::adjust_pick::none && [self adjustStill] && _working ? YES : NO;
+}
+
+// A click on the photo while picking: screen → the shown (edited) image's
+// uv → the source's uv through the edit's map → the working image.
+- (void)adjustPickAtX:(float)x y:(float)y {
+  float u = 0, v = 0;
+  if (!_lab.still_map().to_uv(x, y, u, v) || u < 0 || u > 1 || v < 0 || v > 1) return;
+  const mv::edit::placement p = _edits.preview_placement();
+  const float* m = p.map.m;
+  const float su = m[0] * u + m[1] * v + m[2], sv = m[3] * u + m[4] * v + m[5];
+  mv::shell::edit_effect e = mv::shell::edit_effect::none;
+  if (_adjust.pick() == mv::shell::adjust_pick::white_balance) {
+    const auto mean = mv::edit::sample_mean(*_working, su, sv);
+    if (!mean) return;
+    const std::array<float, 2> wb = mv::edit::neutral_balance(*mean);
+    mv::edit::colour c = _edits.colour();
+    c.v[static_cast<std::size_t>(mv::edit::adjust_param::temperature)] = wb[0];
+    c.v[static_cast<std::size_t>(mv::edit::adjust_param::tint)] = wb[1];
+    e = _edits.set_colour(c);
+    _adjust.set_pick(mv::shell::adjust_pick::none);  // one click
+  } else {
+    const float r = mv::edit::kRedEyeDefaultRadius * std::exp2(_redEyeSize / 100.0f);
+    e = _edits.add_red_eye({su, sv, r});
+  }
+  if (e == mv::shell::edit_effect::redraw) {
+    [self publishEdit];
+    [self pokeSnapshot];
+  }
+  [self adjustColourChanged];
 }
 
 // A section's Reset: its sliders back to 0, one undo step.

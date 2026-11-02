@@ -100,7 +100,7 @@ struct source_view {
   if (a.adjust != b.adjust) return false;
   if (!a.adjust) return true;
   if (!(a.adjust_u == b.adjust_u)) return false;
-  return a.adjust_u.a[5][3] <= 0.5f || a.adjust_t == b.adjust_t;
+  return !gfx::reads_table(a.adjust_u) || a.adjust_t == b.adjust_t;
 }
 
 // The colour uniforms of `v` onto a blit's parameters (either host's
@@ -110,7 +110,7 @@ inline void apply_adjust(const edit_view* v, BlitParams& bp) noexcept {
   bp.adjust = v != nullptr && v->adjust;
   if (!bp.adjust) return;
   bp.adjust_u = v->adjust_u;
-  if (v->adjust_u.a[5][3] > 0.5f) bp.adjust_t = v->adjust_t;
+  if (gfx::reads_table(v->adjust_u)) bp.adjust_t = v->adjust_t;
 }
 
 [[nodiscard]] inline bool same_overlay(const edit_view& a, const edit_view& b) noexcept {
@@ -147,7 +147,10 @@ template <class Session>
   if (!c.identity()) {
     v.adjust = true;
     v.adjust_u = edit::uniforms_of(c);
-    if (c.has_table()) v.adjust_t = edit::table_of(c);
+    if (gfx::reads_table(v.adjust_u)) {
+      v.adjust_t = edit::table_of(c);
+      edit::place_spots(v.adjust_t, c, s.preview_placement());
+    }
   }
   return v;
 }

@@ -195,6 +195,9 @@ enum chrome_command : int {
   // pulls "channel\tx,y;x,y;..." (0 image, 1 red, 2 green, 3 blue; x and y
   // 0..1, at most 8 points) with take_parked_text. 1090 up for edit-adjust.
   chrome_cmd_adjust_curve = 1090,
+  // Slice 3: one adjust parameter as parked "param\tvalue" (edit::adjust_param;
+  // selective colour's sliders, which have no command of their own).
+  chrome_cmd_adjust_param = 1091,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -234,7 +237,7 @@ enum class chrome_edit_action : std::int32_t {
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
-static_assert(chrome_cmd_adjust_curve >= kCommandCount);
+static_assert(chrome_cmd_adjust_curve >= kCommandCount && chrome_cmd_adjust_param >= kCommandCount);
 
 // Which flyout ShowPopup opens (0 closes whatever is up). The C# side mirrors it.
 enum class chrome_popup : std::int32_t {

@@ -98,7 +98,8 @@ void bake_pixel(const float rgb_linear[3], const adjust_uniforms& u, std::uint8_
 
 result<codec::raster> bake(const image::linear_image& src, const placement& p, const colour& c,
                            const job_context* ctx) {
-  const gfx::adjust_table t = table_of(c);
+  gfx::adjust_table t = table_of(c);
+  place_spots(t, c, p);
   return bake(src, p, uniforms_of(c), ctx, &t);
 }
 
@@ -128,8 +129,9 @@ result<codec::raster> bake(const image::linear_image& src, const placement& p,
   const encode_table& t = table();
   const gfx::vignette_map vmap(static_cast<float>(out.width), static_cast<float>(out.height));
   const gfx::adjust_args args(u, lut);
-  // Only the vignette reads a pixel's place: without one, it is not worked out.
-  const bool placed = args.v[5].x != 0.0f;
+  // Only the vignette and red-eye fixes read a pixel's place: without them,
+  // it is not worked out.
+  const bool placed = args.v[5].x != 0.0f || args.v[3].w > 0.5f;
   auto pos = [&vmap, placed](std::uint32_t x, std::uint32_t y) {
     return placed ? vmap.at(x, y) : kernel::float4{};
   };

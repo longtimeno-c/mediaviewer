@@ -548,6 +548,7 @@ constexpr command_info kCommands[] = {
     {adjust_levels_blue_black, "Adjust: levels blue black", true},
     {adjust_levels_blue_mid, "Adjust: levels blue mid-tones", true},
     {adjust_levels_blue_white, "Adjust: levels blue white", true},
+    {adjust_pick, "Adjust: pick on the photo", true},
 };
 
 const char* named_key(key k) noexcept {

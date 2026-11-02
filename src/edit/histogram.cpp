@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "edit/edit_stack.h"
 #include "gfx/adjust_kernel.h"
 #include "image/half.h"
 
@@ -27,7 +28,10 @@ std::size_t code(float lin) noexcept {
 
 result<histogram> compute_histogram(const image::linear_image& working, const colour& c,
                                     const job_context* ctx) {
-  const gfx::adjust_table t = table_of(c);
+  // The red-eye fixes placed on the working image's own frame, as the
+  // vignette is (near, not exact, on a cropped photo).
+  gfx::adjust_table t = table_of(c);
+  place_spots(t, c, place(geometry{}, size2{working.width, working.height}));
   return compute_histogram(working, uniforms_of(c), ctx, &t);
 }
 
