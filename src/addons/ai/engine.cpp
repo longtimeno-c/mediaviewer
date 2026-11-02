@@ -7242,11 +7242,11 @@ expected engine::person_merge_undo(std::int64_t token) {
   return {};
 }
 
-expected engine::faces_assign(const std::vector<std::int64_t>& faces, std::int64_t person, bool pin) {
+expected engine::faces_assign(const std::vector<std::int64_t>& faces, std::int64_t person, bool pin, bool undo) {
   if (options_.read_only) return err(status::unsupported_format);
   std::lock_guard lock(models_m_);
   if (!faces_) return err(status::invalid_arg);
-  MV_TRY_VOID(faces_->assign(faces, person, pin));
+  MV_TRY_VOID(faces_->assign(faces, person, pin, undo));
   post(MV_ADDON_EVENT_AI_PEOPLE);
   return {};
 }

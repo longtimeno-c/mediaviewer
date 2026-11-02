@@ -265,7 +265,11 @@ class faces_db {
   // "Move to": these faces are `person` (it must exist): they leave where they
   // were (rejected from it), any rejection from `person` is withdrawn, and
   // with `pin` they become the user's (anchors the refinement never moves).
-  [[nodiscard]] expected assign(std::span<const std::int64_t> faces, std::int64_t person, bool pin);
+  // `undo`: the faces are put back where they were before the user's last
+  // action, so nothing is recorded against where they are now, and person 0
+  // leaves them unassigned.
+  [[nodiscard]] expected assign(std::span<const std::int64_t> faces, std::int64_t person, bool pin,
+                                bool undo = false);
   // "Yes, this is X" (pin) / "Unpin": a face's place is the user's, or not.
   [[nodiscard]] expected set_pinned(std::span<const std::int64_t> faces, bool pinned);
   // Every face of a person with its review (face_review), doubtful first:

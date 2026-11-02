@@ -21,8 +21,6 @@ internal sealed record PersonVm(ulong Id, string Name, long Faces, ulong CoverFa
     public string Photos => Faces == 1 ? "1 photo" : $"{Faces:N0} photos";
 }
 
-internal sealed record FaceVm(ulong Id, string Path, long PtsMs, double[] Box);
-
 /// <summary>
 /// Circular face crops, made in the view from the stored box (an ImageBrush
 /// transform over the JPEG face_thumb hands out): nothing is ever written to
@@ -105,6 +103,33 @@ internal sealed class FaceCrops(AiApi api, Look look)
             });
         });
         return grid;
+    }
+
+    /// <summary>
+    /// The picture a face was found in (face_thumb, made on a worker on a miss),
+    /// for the sheets' "Show photo": <paramref name="done"/> runs on
+    /// <paramref name="queue"/> with its path, or "" when there is none.
+    /// </summary>
+    public void Picture(ulong face, DispatcherQueue queue, Action<string> done)
+    {
+        if (_thumbPaths.TryGetValue(face, out string? known))
+        {
+            done(known);
+            return;
+        }
+        _ = Task.Run(async () =>
+        {
+            await _gate.WaitAsync().ConfigureAwait(false);
+            string path = "";
+            try { path = api.FaceThumb(face); }  // [worker-thread]
+            catch (MediaViewerException) { }
+            finally { _gate.Release(); }
+            queue.TryEnqueue(() =>
+            {
+                if (path.Length > 0) _thumbPaths[face] = path;
+                done(path);
+            });
+        });
     }
 
     /// <summary>"T" for Tristan; nothing for an unnamed person (the Mac's monogram).</summary>

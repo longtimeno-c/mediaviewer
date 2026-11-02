@@ -1329,7 +1329,9 @@ were back in the person they were rejected from, and 21 frames held two people i
   under another existing person it clearly matches, never a new person of its own, else nobody.
   The answer says where they went.
 - **Move to** (`faces_assign`): the faces are that person's (with `MV_AI_ASSIGN_PIN`, the user's),
-  rejected from where they were, and any rejection from the target is withdrawn. **Yes / Unpin**
+  rejected from where they were, and any rejection from the target is withdrawn. With
+  `MV_AI_ASSIGN_UNDO` (a chrome's Undo) nothing is recorded against where they are, and person 0
+  returns them to nobody. **Yes / Unpin**
   (`faces_pin`). **Undo a merge** (`person_merge_undo`, token from `person_merge_covers`;
   `merge_log` is cleared on open): the faces still in the survivor go back to the person with its
   id, name, pins and corrections; the covers the merge pinned are unpinned.
@@ -1381,6 +1383,12 @@ The chromes (both): the person's sheet shows "Check these" first with "Looks lik
 Move to… / Unpin on the selection (sheet keys Y, N, M, Space for the whole picture with the box,
 ⌘Z / Ctrl+Z undo of the last action), where rejected faces went with Undo, and a "Might also be"
 strip; the grid gains "Unknown faces (N)", rename with the cover shown, and "Merged · Undo".
+Undo of a move or a reject puts the faces back with `MV_AI_ASSIGN_UNDO` (nothing recorded
+against where they went; each face's earlier pin restored). Not yet: Undo does not bring back
+the other frames of a clip that went with a reject (the answer gives only their count); a "Yes"
+on an unknown face has no Undo in the chromes (the flag's person 0 allows one); on the Mac,
+Return still means Done in the sheet. Neither chrome has been run against a real pack or with
+VoiceOver / Narrator: SwiftUI builds and its tests pass, the C# compiles and its tests pass.
 
 Timings come from `mv_ai_tests "[.people-api]"` and `"[.people-settle]"` on a copy (Apple M5);
 the "better matched" count from a NumPy script over a copy (aggregate counts only), kept with the

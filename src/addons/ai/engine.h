@@ -402,7 +402,8 @@ class engine {
   [[nodiscard]] result<std::int64_t> person_merge(std::int64_t into, std::int64_t from, std::int64_t cover_into,
                                                   std::int64_t cover_from);
   [[nodiscard]] expected person_merge_undo(std::int64_t token);
-  [[nodiscard]] expected faces_assign(const std::vector<std::int64_t>& faces, std::int64_t person, bool pin);
+  [[nodiscard]] expected faces_assign(const std::vector<std::int64_t>& faces, std::int64_t person, bool pin,
+                                      bool undo = false);
   [[nodiscard]] expected faces_pin(const std::vector<std::int64_t>& faces, bool pinned);
   // {"unassigned":N,"spread":N,"to":[{"id":7,"name":"Ben","faces":2}]}
   [[nodiscard]] result<std::string> faces_reject_json(const std::vector<std::int64_t>& faces);

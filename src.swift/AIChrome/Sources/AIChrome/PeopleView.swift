@@ -11,7 +11,7 @@ import AppKit
 import SwiftUI
 
 /// A face or cover, cropped in memory. Monogram until (or unless) it decodes.
-private struct FaceImage: View {
+struct FaceImage: View {
   let table: AITable
   let faceID: UInt64
   let box: [Double]
@@ -67,6 +67,8 @@ struct PeopleGrid: View {
   @State private var selection = Set<UInt64>()
   /// "Merge duplicates" is running in the pack.
   @State private var deduping = false
+  /// The unknown faces sheet is open.
+  @State private var showUnknown = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
@@ -112,14 +114,30 @@ struct PeopleGrid: View {
               .equatable()
           }
         }
-        if let showAll, shown.count < model.people.count {
-          Button("Show all \(model.people.count) people…", action: showAll)
-            .help(model.readOnly ? "Every person found" : "Every person found, to name, merge and correct")
+        HStack(spacing: 12) {
+          if let showAll, shown.count < model.people.count {
+            Button("Show all \(model.people.count) people…", action: showAll)
+              .help(model.readOnly ? "Every person found" : "Every person found, to name, merge and correct")
+          }
+          // Faces filed under nobody, clear enough to name (docs/design/17
+          // "Correcting people"). Hidden with none, or with an older pack.
+          if model.unknownCount > 0 && !model.readOnly {
+            Button("Unknown faces (\(countText(UInt64(model.unknownCount))))") { showUnknown = true }
+              .help("Faces not filed under anyone yet. Say who they are.")
+              .accessibilityLabel("Unknown faces, \(model.unknownCount)")
+          }
         }
       }
       if !model.peopleNote.isEmpty {
-        Text(model.peopleNote).font(AITheme.font(12)).foregroundStyle(AITheme.title)
-          .transition(.opacity)
+        HStack(spacing: 10) {
+          Text(model.peopleNote).font(AITheme.font(12)).foregroundStyle(AITheme.title)
+          if model.mergeUndo != nil {
+            Button("Undo") { model.undoGridMerge() }
+              .help("Put the people back as they were")
+              .accessibilityLabel("Undo merge")
+          }
+        }
+        .transition(.opacity)
       }
     }
     .padding(12)
@@ -137,6 +155,9 @@ struct PeopleGrid: View {
       if !selection.isSubset(of: ids) { selection.formIntersection(ids) }
     }
     .onExitCommand { selection = [] }
+    .sheet(isPresented: $showUnknown) {
+      UnknownFacesSheet(model: model) { showUnknown = false }
+    }
   }
 
   /// The people this grid shows: the first `limit`, or everyone.
@@ -435,7 +456,6 @@ private struct PersonName: View, Equatable {
   }
 }
 
-/// A person's faces: "Not this person", split, merge, show photos.
 /// Everyone, from "Show all … people" under the Settings grid: the same grid,
 /// in a scroll view of its own so only the cards on screen are live.
 struct AllPeopleSheet: View {
@@ -466,193 +486,5 @@ struct AllPeopleSheet: View {
     .sheet(item: $openPerson) { person in
       PersonSheet(model: model, person: person) { openPerson = nil }
     }
-  }
-}
-
-struct PersonSheet: View {
-  @ObservedObject var model: ManagementModel
-  let person: Person
-  let done: () -> Void
-  @State private var faces: [Face] = []
-  @State private var selection = Set<UInt64>()
-  @State private var loading = true
-  @State private var refining = false
-  @State private var refineNote = ""
-  /// The face the arrow keys move from (the last one clicked or reached).
-  @State private var cursor: Int?
-  @FocusState private var focused: Bool
-
-  private func toggle(_ id: UInt64, at index: Int) {
-    if !selection.insert(id).inserted { selection.remove(id) }
-    cursor = index
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack {
-        Text(person.name.isEmpty ? "Unnamed person" : person.name)
-          .font(AITheme.font(18)).foregroundStyle(AITheme.title)
-        Spacer()
-        Button("Show photos") { done(); model.showPhotos(of: person) }
-        Menu("Merge into…") {
-          ForEach(model.people.filter { $0.id != person.id }) { other in
-            Button(model.displayName(other)) {
-              model.merge(into: other.id, from: person.id)
-              done()
-            }
-          }
-        }
-        .fixedSize()
-      }
-      Text("Select faces that are someone else. ⌘-click selects several, ← → move, ⇧ adds; Delete removes them from this person.")
-        .font(AITheme.font(12)).foregroundStyle(AITheme.body)
-      ScrollViewReader { proxy in
-        ScrollView {
-          if loading {
-            ProgressView().frame(maxWidth: .infinity).padding(40)
-          }
-          LazyVGrid(columns: [GridItem(.adaptive(minimum: 76, maximum: 92), spacing: 10)], spacing: 10) {
-            ForEach(Array(faces.enumerated()), id: \.element.id) { i, face in
-              FaceCell(table: model.table, face: face, selected: selection.contains(face.id),
-                       toggle: { toggle(face.id, at: i) },
-                       reject: { reject([face.id]) })
-                .id(face.id)
-                .onTapGesture {
-                  if NSEvent.modifierFlags.contains(.command) || NSEvent.modifierFlags.contains(.shift) {
-                    toggle(face.id, at: i)
-                  } else {
-                    selection = [face.id]
-                    cursor = i
-                  }
-                }
-            }
-          }
-          .padding(4)
-        }
-        .frame(minHeight: 280)
-        .focusable()
-        .focused($focused)
-        .focusEffectDisabled()
-        .onKeyPress(keys: [.delete, .deleteForward]) { _ in
-          guard !selection.isEmpty else { return .ignored }
-          reject(Array(selection))
-          return .handled
-        }
-        // Selection from the keyboard (issue #192): "Not this person" and
-        // Split were mouse-only. ← → move it, ⇧ adds to it.
-        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
-          guard !faces.isEmpty else { return .ignored }
-          let step = press.key == .leftArrow ? -1 : 1
-          let next = cursor.map { min(max($0 + step, 0), faces.count - 1) } ?? (step < 0 ? faces.count - 1 : 0)
-          cursor = next
-          let id = faces[next].id
-          if press.modifiers.contains(.shift) { selection.insert(id) } else { selection = [id] }
-          proxy.scrollTo(id)
-          return .handled
-        }
-      }
-      HStack {
-        Button("Not this person") { reject(Array(selection)) }
-          .disabled(selection.isEmpty)
-        Button("Split into new person") {
-          model.split(Array(selection))
-          faces.removeAll { selection.contains($0.id) }
-          selection = []
-        }
-        .disabled(selection.count < 1)
-        if model.canRefine {
-          Button("Refine faces") { refine() }
-            .disabled(refining || loading)
-            .help("Check every face against this person and move out the ones that don't match")
-          if refining {
-            ProgressView().controlSize(.small)
-          } else if !refineNote.isEmpty {
-            Text(refineNote).font(AITheme.font(12)).foregroundStyle(AITheme.body)
-          }
-        }
-        Spacer()
-        Button("Done", action: done).keyboardShortcut(.defaultAction)
-      }
-    }
-    .padding(20)
-    .frame(width: 620, height: 520)
-    .onExitCommand(perform: done)  // Esc closes, as Done does (issue #192)
-    .task {
-      faces = await model.faces(of: person.id)
-      loading = false
-      focused = true
-    }
-  }
-
-  private func refine() {
-    refining = true
-    refineNote = ""
-    selection = []
-    Task {
-      let removed = await model.refine(person.id)
-      let now = await model.faces(of: person.id)
-      withAnimation(.easeOut(duration: 0.18)) { faces = now }
-      refining = false
-      switch removed {
-      case nil: refineNote = "Couldn't refine"
-      case 0: refineNote = "All faces match"
-      case 1: refineNote = "1 face moved out"
-      case let n?: refineNote = "\(n) faces moved out"
-      }
-    }
-  }
-
-  private func reject(_ ids: [UInt64]) {
-    model.reject(ids)
-    withAnimation(.easeOut(duration: 0.18)) {
-      faces.removeAll { ids.contains($0.id) }
-      selection.subtract(ids)
-    }
-  }
-}
-
-private struct FaceCell: View {
-  let table: AITable
-  let face: Face
-  let selected: Bool
-  let toggle: () -> Void
-  let reject: () -> Void
-  @State private var hover = false
-
-  /// What VoiceOver reads: the file the face is in, and the moment for a clip.
-  private var label: String {
-    let name = (face.path as NSString).lastPathComponent
-    guard face.ptsMs >= 0 else { return name.isEmpty ? "Face" : "Face in \(name)" }
-    let s = face.ptsMs / 1000
-    let at = s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
-                       : String(format: "%d:%02d", s / 60, s % 60)
-    return "Face in \(name) at \(at)"
-  }
-
-  var body: some View {
-    FaceImage(table: table, faceID: face.id, box: face.box, monogram: "")
-      .frame(width: 72, height: 72)
-      .overlay(Circle().stroke(selected ? AITheme.accent : .clear, lineWidth: 2.5).padding(-2))
-      .overlay(alignment: .topTrailing) {
-        if hover {
-          Button(action: reject) {
-            Image(systemName: "xmark.circle.fill")
-              .symbolRenderingMode(.palette)
-              .foregroundStyle(.white, .black.opacity(0.65))
-              .font(.system(size: 16))
-          }
-          .buttonStyle(.plain)
-          .help("Not this person")
-          .accessibilityLabel("Not this person")
-          .transition(.opacity)
-        }
-      }
-      .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hover = h } }
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel(label)
-      .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
-      .accessibilityHint("Selects or deselects this face")
-      .accessibilityAction { toggle() }
-      .accessibilityAction(named: "Not this person") { reject() }
   }
 }

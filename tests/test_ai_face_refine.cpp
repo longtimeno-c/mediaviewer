@@ -1354,6 +1354,16 @@ TEST_CASE("faces.db: move to, yes, unpin and not this person", "[ai][faces][refi
   CHECK((*db)->face(f)->pinned);
   REQUIRE((*db)->set_pinned(std::vector<std::int64_t>{f}, false));
   CHECK_FALSE((*db)->face(f)->pinned);
+  // Undo of a move: back to Anna, and nothing says it is not Ben.
+  REQUIRE((*db)->assign(std::vector<std::int64_t>{f}, a, false, true));
+  CHECK(person_of(**db, f) == a);
+  CHECK((*db)->merge_blocks().empty());
+  REQUIRE((*db)->assign(std::vector<std::int64_t>{f}, b, true));
+  // Undo of a Yes on an unknown face: back to nobody.
+  REQUIRE((*db)->assign(std::vector<std::int64_t>{f}, 0, false, true));
+  CHECK(person_of(**db, f) == 0);
+  CHECK_FALSE((*db)->assign(std::vector<std::int64_t>{f}, 0, false));  // nobody needs the undo flag
+  REQUIRE((*db)->assign(std::vector<std::int64_t>{f}, b, true));
   CHECK_FALSE((*db)->assign(std::vector<std::int64_t>{f}, 999, true));  // no such person
   // Not this person: it goes back to the only other person it matches, never
   // to a new person of its own.

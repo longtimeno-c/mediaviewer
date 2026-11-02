@@ -200,6 +200,9 @@ typedef enum mv_ai_photos_access {
 /* Sharing an index (2026-09-28, docs/design/17 "Sharing an index"): what an export
  * carries besides the index rows, and what an import takes from a file. */
 #define MV_AI_ASSIGN_PIN 1u            /* faces_assign: the faces become the user's */
+#define MV_AI_ASSIGN_UNDO 2u           /* faces_assign: an undo, putting faces back where they
+                                          were: nothing is recorded against where they are
+                                          now, and person 0 leaves them unassigned */
 #define MV_AI_TRANSFER_PEOPLE 1u       /* face vectors, people and their names: the file
                                           then identifies the people in it. Off by default */
 #define MV_AI_TRANSFER_THUMBS 2u       /* the viewer's cached JPEG-512 tiles (never made) */
@@ -674,8 +677,11 @@ typedef struct mv_ai_api {
   /* "Move to": these faces are `person_id` (an existing person): each leaves
    * the person it was in for good (as "not this person"), and any "not this
    * person" from `person_id` is withdrawn. MV_AI_ASSIGN_PIN makes them the
-   * user's: anchors the refinement never moves. MV_ERR_INVALID_ARG for a face
-   * or person that does not exist. [worker-thread] */
+   * user's: anchors the refinement never moves. MV_AI_ASSIGN_UNDO is a
+   * chrome's Undo of its last action (a move, a reject, a Yes on an unknown
+   * face): the faces go back with no "not this person" recorded against
+   * where they are now, and `person_id` 0 returns them to nobody.
+   * MV_ERR_INVALID_ARG for a face or person that does not exist. [worker-thread] */
   mv_status(MV_CALL* faces_assign)(void* ctx, const uint64_t* face_ids, uint32_t count, uint64_t person_id,
                                    uint32_t flags);
   /* "Yes, this is <name>" (1) / "Unpin" (0): a face's place becomes the

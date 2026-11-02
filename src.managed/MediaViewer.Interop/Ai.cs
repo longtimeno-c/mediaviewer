@@ -389,6 +389,27 @@ public unsafe struct MvAiApi
 
     // #354, a folder's Documents choice. Appended: read only when StructSize covers it.
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, MvStatus> RootSetDocuments;
+
+    // correcting people (2026-11-02, docs/design/17 "People"). Appended: each is read
+    // only when StructSize covers it and it is non-null (AiApi.Has*).
+    public delegate* unmanaged[Cdecl]<IntPtr, ulong*, uint, ulong, uint, MvStatus> FacesAssign;
+    public delegate* unmanaged[Cdecl]<IntPtr, ulong*, uint, uint, MvStatus> FacesPin;
+    public delegate* unmanaged[Cdecl]<IntPtr, ulong*, uint, byte*, uint, uint*, MvStatus> FacesRejectJson;
+    public delegate* unmanaged[Cdecl]<IntPtr, ulong, byte*, ulong, MvStatus> PersonRenameCover;
+    public delegate* unmanaged[Cdecl]<IntPtr, ulong, ulong, ulong, ulong, ulong*, MvStatus> PersonMergeCovers;
+    public delegate* unmanaged[Cdecl]<IntPtr, ulong, MvStatus> PersonMergeUndo;
+    public delegate* unmanaged[Cdecl]<IntPtr, ulong, byte*, uint, uint*, MvStatus> PersonReviewJson;
+    public delegate* unmanaged[Cdecl]<IntPtr, uint, uint, byte*, uint, uint*, MvStatus> UnknownFacesJson;
+    public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, byte*, uint, uint*, MvStatus> PersonSuggestJson;
+}
+
+/// <summary>Mirrors <c>MV_AI_ASSIGN_*</c>: faces_assign's flags.</summary>
+[Flags]
+public enum MvAiAssign : uint
+{
+    None = 0,
+    Pin = 1,  // the faces become the user's: anchors the refinement never moves
+    Undo = 2, // putting faces back: nothing recorded against where they are; person 0 = nobody
 }
 
 /// <summary>
@@ -431,6 +452,29 @@ public sealed unsafe class AiApi
         MvAiApi table = default;
         return (uint)((byte*)&table.EachLocation - (byte*)&table);
     }
+
+    private delegate byte* FieldAt(MvAiApi* table);
+
+    // Where an appended entry ends: a pack whose StructSize reaches it has it.
+    // Measured on a real (default) table, as RequiredSize is (issue #509).
+    private static uint EndOf(FieldAt at)
+    {
+        MvAiApi table = default;
+        return (uint)(at(&table) - (byte*)&table) + (uint)sizeof(IntPtr);
+    }
+
+    private static readonly uint EndRootSetDocuments = EndOf(t => (byte*)&t->RootSetDocuments);
+    private static readonly uint EndFacesAssign = EndOf(t => (byte*)&t->FacesAssign);
+    private static readonly uint EndFacesPin = EndOf(t => (byte*)&t->FacesPin);
+    private static readonly uint EndFacesRejectJson = EndOf(t => (byte*)&t->FacesRejectJson);
+    private static readonly uint EndPersonRenameCover = EndOf(t => (byte*)&t->PersonRenameCover);
+    private static readonly uint EndPersonMergeCovers = EndOf(t => (byte*)&t->PersonMergeCovers);
+    private static readonly uint EndPersonMergeUndo = EndOf(t => (byte*)&t->PersonMergeUndo);
+    private static readonly uint EndPersonReviewJson = EndOf(t => (byte*)&t->PersonReviewJson);
+    private static readonly uint EndUnknownFacesJson = EndOf(t => (byte*)&t->UnknownFacesJson);
+    private static readonly uint EndPersonSuggestJson = EndOf(t => (byte*)&t->PersonSuggestJson);
+
+    private static MediaViewerException Missing(string what) => new(MvStatus.UnsupportedFormat, $"ai.{what}", 0);
 
     private IntPtr Ctx => _api->Ctx;
 
@@ -660,7 +704,7 @@ public sealed unsafe class AiApi
     public void RootSetMedia(ulong root, MvAiMedia media) => Check(_api->RootSetMedia(Ctx, root, (uint)media));
 
     /// <summary>#354: whether this pack has a folder's Documents choice.</summary>
-    public bool HasRootSetDocuments => _api->StructSize >= (uint)sizeof(MvAiApi) && _api->RootSetDocuments != null;
+    public bool HasRootSetDocuments => _api->StructSize >= EndRootSetDocuments && _api->RootSetDocuments != null;
 
     /// <summary>#354: what a folder's documents are indexed for (no-block).</summary>
     public void RootSetDocuments(ulong root, MvAiDocs docs)
@@ -757,6 +801,102 @@ public sealed unsafe class AiApi
     public string TransferJson() => ReadJson((b, c, n) => _api->TransferJson(Ctx, b, c, n));
 
     public void TransferCancel() => Check(_api->TransferCancel(Ctx));
+
+    // ---- correcting people (2026-11-02, docs/design/17 "People") ----
+    // Appended entries: each Has* says whether this pack has it; without it the
+    // chrome falls back to person_faces_json / person_rename / person_merge /
+    // face_reject. Every one is [worker-thread] and every write posts AI_PEOPLE.
+
+    public bool HasFacesAssign => _api->StructSize >= EndFacesAssign && _api->FacesAssign != null;
+    public bool HasFacesPin => _api->StructSize >= EndFacesPin && _api->FacesPin != null;
+    public bool HasFacesRejectJson => _api->StructSize >= EndFacesRejectJson && _api->FacesRejectJson != null;
+    public bool HasPersonRenameCover => _api->StructSize >= EndPersonRenameCover && _api->PersonRenameCover != null;
+    public bool HasPersonMergeCovers => _api->StructSize >= EndPersonMergeCovers && _api->PersonMergeCovers != null;
+    public bool HasPersonMergeUndo => _api->StructSize >= EndPersonMergeUndo && _api->PersonMergeUndo != null;
+    public bool HasPersonReviewJson => _api->StructSize >= EndPersonReviewJson && _api->PersonReviewJson != null;
+    public bool HasUnknownFacesJson => _api->StructSize >= EndUnknownFacesJson && _api->UnknownFacesJson != null;
+    public bool HasPersonSuggestJson => _api->StructSize >= EndPersonSuggestJson && _api->PersonSuggestJson != null;
+
+    /// <summary>Worker: "Move to": the faces are <paramref name="person"/>'s; <paramref name="pin"/> makes them the user's.</summary>
+    /// <remarks><paramref name="undo"/>: putting faces back (MV_AI_ASSIGN_UNDO): nothing is recorded
+    /// against where they are now, and person 0 returns them to nobody.</remarks>
+    public void FacesAssign(IReadOnlyList<ulong> faces, ulong person, bool pin, bool undo = false)
+    {
+        if (!HasFacesAssign) throw Missing(nameof(FacesAssign));
+        ulong[] ids = faces.ToArray();
+        if (ids.Length == 0) return;
+        uint flags = (pin ? (uint)MvAiAssign.Pin : 0u) | (undo ? (uint)MvAiAssign.Undo : 0u);
+        fixed (ulong* p = ids)
+            Check(_api->FacesAssign(Ctx, p, (uint)ids.Length, person, flags));
+    }
+
+    /// <summary>Worker: "Yes, this is …" (true) / "Unpin" (false).</summary>
+    public void FacesPin(IReadOnlyList<ulong> faces, bool pinned)
+    {
+        if (!HasFacesPin) throw Missing(nameof(FacesPin));
+        ulong[] ids = faces.ToArray();
+        if (ids.Length == 0) return;
+        fixed (ulong* p = ids) Check(_api->FacesPin(Ctx, p, (uint)ids.Length, pinned ? 1u : 0u));
+    }
+
+    /// <summary>
+    /// Worker: "Not this person" for several faces, and where they went:
+    /// <c>{"unassigned":N,"spread":N,"to":[{"id":7,"name":"Ben","faces":2}]}</c>.
+    /// A write: the pack keeps its answer, so the buffer retry does not reject twice.
+    /// </summary>
+    public string FacesRejectJson(IReadOnlyList<ulong> faces)
+    {
+        if (!HasFacesRejectJson) throw Missing(nameof(FacesRejectJson));
+        ulong[] ids = faces.ToArray();
+        return ReadJson((b, c, n) =>
+        {
+            fixed (ulong* p = ids) return _api->FacesRejectJson(Ctx, p, (uint)ids.Length, b, c, n);
+        });
+    }
+
+    /// <summary>Worker: person_rename, pinning the cover the user saw (0: the grid's).</summary>
+    public void PersonRenameCover(ulong person, string name, ulong coverFace)
+    {
+        if (!HasPersonRenameCover) throw Missing(nameof(PersonRenameCover));
+        fixed (byte* p = Z(name)) Check(_api->PersonRenameCover(Ctx, person, p, coverFace));
+    }
+
+    /// <summary>Worker: person_merge with the covers the user saw; the token <see cref="PersonMergeUndo"/> takes.</summary>
+    public ulong PersonMergeCovers(ulong into, ulong from, ulong coverInto, ulong coverFrom)
+    {
+        if (!HasPersonMergeCovers) throw Missing(nameof(PersonMergeCovers));
+        ulong token = 0;
+        Check(_api->PersonMergeCovers(Ctx, into, from, coverInto, coverFrom, &token));
+        return token;
+    }
+
+    /// <summary>Worker: puts a merge of this session back. NotFound when it no longer can be.</summary>
+    public void PersonMergeUndo(ulong token)
+    {
+        if (!HasPersonMergeUndo) throw Missing(nameof(PersonMergeUndo));
+        Check(_api->PersonMergeUndo(Ctx, token));
+    }
+
+    /// <summary>Worker: a person's faces for the sheet, doubtful first, with pin, support and rival.</summary>
+    public string PersonReviewJson(ulong person)
+    {
+        if (!HasPersonReviewJson) throw Missing(nameof(PersonReviewJson));
+        return ReadJson((b, c, n) => _api->PersonReviewJson(Ctx, person, b, c, n));
+    }
+
+    /// <summary>Worker: unassigned faces clear enough to name, clearest first (<paramref name="limit"/> ≤ 200).</summary>
+    public string UnknownFacesJson(uint offset, uint limit)
+    {
+        if (!HasUnknownFacesJson) throw Missing(nameof(UnknownFacesJson));
+        return ReadJson((b, c, n) => _api->UnknownFacesJson(Ctx, offset, Math.Min(limit, 200u), b, c, n));
+    }
+
+    /// <summary>Worker: "Might also be …": unnamed people and unknown faces like this person.</summary>
+    public string PersonSuggestJson(ulong person, uint limit)
+    {
+        if (!HasPersonSuggestJson) throw Missing(nameof(PersonSuggestJson));
+        return ReadJson((b, c, n) => _api->PersonSuggestJson(Ctx, person, limit, b, c, n));
+    }
 
     public ulong SearchThisPerson(string path, long ptsMs)
     {

@@ -1325,19 +1325,20 @@ expected faces_db::reject(std::int64_t face) {
   return {};
 }
 
-expected faces_db::assign(std::span<const std::int64_t> faces, std::int64_t person, bool pin) {
+expected faces_db::assign(std::span<const std::int64_t> faces, std::int64_t person, bool pin, bool undo) {
   std::lock_guard lock(m_);
-  if (faces.empty() || person <= 0) return err(status::invalid_arg);
-  {
+  if (faces.empty() || person < 0 || (person == 0 && !undo)) return err(status::invalid_arg);
+  if (person > 0) {
     stmt q(db_, "SELECT 1 FROM people WHERE id = ?1");
     if (!q.bind(1, person).step_row()) return err(status::invalid_arg);
   }
-  std::set<std::int64_t> touched{person};
+  std::set<std::int64_t> touched;
+  if (person > 0) touched.insert(person);
   if (!exec("BEGIN")) return err(status::io);
   stmt q(db_, "SELECT COALESCE(person_id, 0) FROM faces WHERE id = ?1");
   stmt r(db_, "INSERT OR IGNORE INTO rejected(face_id, person_id) VALUES(?1, ?2)");
   stmt w(db_, "DELETE FROM rejected WHERE face_id = ?1 AND person_id = ?2");
-  stmt u(db_, "UPDATE faces SET person_id = ?2, pinned = ?3 WHERE id = ?1");
+  stmt u(db_, "UPDATE faces SET person_id = NULLIF(?2, 0), pinned = ?3 WHERE id = ?1");
   bool ok = true;
   for (std::int64_t f : faces) {
     q.reset();
@@ -1347,14 +1348,21 @@ expected faces_db::assign(std::span<const std::int64_t> faces, std::int64_t pers
     }
     const std::int64_t was = q.i64(0);
     if (was != 0 && was != person) {
-      r.reset();
-      ok = ok && r.bind(1, f).bind(2, was).run();
+      if (!undo) {
+        r.reset();
+        ok = ok && r.bind(1, f).bind(2, was).run();
+      }
       touched.insert(was);
     }
     w.reset();
     u.reset();
-    ok = ok && w.bind(1, f).bind(2, person).run() && u.bind(1, f).bind(2, person).bind(3, std::int64_t{pin ? 1 : 0}).run();
-    loose_.erase(f);
+    ok = ok && w.bind(1, f).bind(2, person).run() &&
+         u.bind(1, f).bind(2, person).bind(3, std::int64_t{pin && person > 0 ? 1 : 0}).run();
+    if (person > 0) {
+      loose_.erase(f);
+    } else {
+      loose_.insert(f);
+    }
   }
   if (!ok || !exec("COMMIT")) {
     exec("ROLLBACK");

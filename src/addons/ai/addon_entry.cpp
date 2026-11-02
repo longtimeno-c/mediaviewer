@@ -311,7 +311,7 @@ mv_status MV_CALL t_faces_assign(void* ctx, const uint64_t* faces, uint32_t coun
   return guard([&] {
     if (!faces || count == 0) return MV_ERR_INVALID_ARG;
     auto r = eng(ctx).faces_assign(ids_of(faces, count), static_cast<std::int64_t>(person),
-                                   (flags & MV_AI_ASSIGN_PIN) != 0);
+                                   (flags & MV_AI_ASSIGN_PIN) != 0, (flags & MV_AI_ASSIGN_UNDO) != 0);
     return r ? MV_OK : to_mv(r.error());
   });
 }
