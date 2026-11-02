@@ -357,7 +357,9 @@ private struct UpdateBarItem: View {
         .buttonStyle(FlatButtonStyle())
         .help((version.map { "Version \($0) is downloaded. Restart to use it, or it installs when you quit MediaViewer." }
                ?? "A new version is downloaded. Restart to use it, or it installs when you quit MediaViewer.")
-              + (addons.pending.isEmpty ? "" : " " + addons.text))
+              + (addons.pending.isEmpty ? "" : " " + addons.text)
+              // #620: the signed "What's new", up to three short lines.
+              + (store.updateNotes.map { "\n\nWhat's new\n" + $0 } ?? ""))
     default:
       EmptyView()
     }

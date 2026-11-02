@@ -247,6 +247,9 @@ void mv_chrome_set_gallery_columns(int32_t columns);
 // file. [main-thread]
 int32_t mv_chrome_update_phase(void);
 bool mv_chrome_update_version(char* out, int32_t cap);
+// #620: the staged update's "What's new" (phase 3 only): up to three lines of
+// plain text, at most 400 bytes, from the signed appcast. False if none.
+bool mv_chrome_update_notes(char* out, int32_t cap);
 void mv_chrome_restart_to_update(void);
 // #532: other running copies of this app, and asking them to quit once idle
 // (each finishes a Driftwire transfer first). Restart waits until none is

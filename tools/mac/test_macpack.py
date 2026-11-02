@@ -80,6 +80,9 @@ class ReleaseSigningTests(unittest.TestCase):
                 self.assertEqual(cmd[cmd.index("--ed-key-file") + 1], self.args.sparkle_key_file)
                 self.assertNotIn("test-key", cmd)
                 self.assertEqual(kwargs["timeout"], 300)
+                self.appcast_cmd = cmd
+                notes = Path(cmd[-1]) / "MediaViewer-0.1.1.txt"
+                self.notes_beside_archive = notes.read_text(encoding="utf-8") if notes.exists() else None
                 (Path(cmd[-1]) / "appcast.xml").write_text(feed, encoding="utf-8")
             return ""
         with patch.object(macpack, "run", side_effect=fake_run), \
@@ -89,6 +92,26 @@ class ReleaseSigningTests(unittest.TestCase):
 
     def test_ci_key_file_signs_feed_without_keychain(self):
         self.release_with_feed("<!-- sparkle-signatures -->\n<rss/>")
+
+    def test_whats_new_is_embedded_not_linked(self):
+        """#620: <archive>.txt plus --embed-release-notes: a plain-text description."""
+        notes = Path(self.temp.name) / "whats-new.txt"
+        notes.write_text("Faster pans\nHEIC fix", encoding="utf-8")
+        self.args.release_notes_file = str(notes)
+        self.release_with_feed('<!-- sparkle-signatures -->\n<rss><item><description sparkle:format="plain-text">'
+                               '<![CDATA[Faster pans\nHEIC fix]]></description></item></rss>')
+        self.assertIn("--embed-release-notes", self.appcast_cmd)
+        self.assertEqual(self.notes_beside_archive, "Faster pans\nHEIC fix")
+        with self.assertRaisesRegex(SystemExit, "plain-text description"):
+            self.release_with_feed("<!-- sparkle-signatures -->\n<rss/>")
+
+    def test_no_whats_new_leaves_no_stale_notes(self):
+        updates = Path(self.args.out_dir) / "updates"
+        updates.mkdir(parents=True)
+        (updates / "MediaViewer-0.1.1.txt").write_text("old", encoding="utf-8")
+        self.release_with_feed("<!-- sparkle-signatures -->\n<rss/>")
+        self.assertNotIn("--embed-release-notes", self.appcast_cmd)
+        self.assertIsNone(self.notes_beside_archive)
 
     def test_developer_id_release_without_a_team_fails_before_signing(self):
         """#501: without the team there is no Driftwire app group, so no keychain."""
@@ -341,6 +364,44 @@ class CrashpadHandlerTests(unittest.TestCase):
                           "--icon-png", "c", "--font", "f", "--dylib-dir", "d",
                           "--crashpad-handler", "h"])
         self.assertEqual(assemble.call_args[0][0].crashpad_handler, "h")
+class ReleaseNotesFeedTests(unittest.TestCase):
+    """#620: What's new is the signed feed's plain-text description, never a link."""
+    EMBEDDED = ('<item><description sparkle:format="plain-text"><![CDATA[Faster pans\nHEIC fix]]>'
+                '</description></item>')
+
+    def test_embedded_notes_pass(self):
+        self.assertIsNone(macpack.release_notes_problem(self.EMBEDDED, "Faster pans\nHEIC fix"))
+
+    def test_no_notes_needs_no_description(self):
+        self.assertIsNone(macpack.release_notes_problem("<item/>", ""))
+
+    def test_a_release_notes_link_fails(self):
+        feed = "<item><sparkle:releaseNotesLink>https://x/notes.html</sparkle:releaseNotesLink></item>"
+        self.assertIsNotNone(macpack.release_notes_problem(feed, ""))
+        self.assertIsNotNone(macpack.release_notes_problem(feed + self.EMBEDDED, "Faster pans\nHEIC fix"))
+
+    def test_missing_or_other_notes_fail(self):
+        self.assertIsNotNone(macpack.release_notes_problem("<item/>", "Faster pans"))
+        self.assertIsNotNone(macpack.release_notes_problem(self.EMBEDDED, "Something else"))
+        html = "<item><description><![CDATA[Faster pans\nHEIC fix]]></description></item>"
+        self.assertIsNotNone(macpack.release_notes_problem(html, "Faster pans\nHEIC fix"))
+
+    def test_notes_file_is_held_to_the_manifest_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            good = Path(tmp) / "good.txt"
+            good.write_text("Faster pans\r\nHEIC fix\n", encoding="utf-8")
+            self.assertEqual(macpack.read_release_notes(str(good)), "Faster pans\nHEIC fix")
+            bad = Path(tmp) / "bad.txt"
+            bad.write_text("see https://example.com", encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                macpack.read_release_notes(str(bad))
+
+    def test_release_accepts_the_notes_option(self):
+        with patch.object(macpack, "cmd_release") as release:
+            macpack.main(["release", "--identity", "-", "--skip-notarize", "--release-notes-file", "n.txt"])
+        self.assertEqual(release.call_args[0][0].release_notes_file, "n.txt")
+
+
 class UniversalFeedTests(unittest.TestCase):
     def test_universal_app_with_arch_restriction_fails(self):
         self.assertIsNotNone(macpack.universal_feed_problem(

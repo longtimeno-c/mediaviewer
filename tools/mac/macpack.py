@@ -81,6 +81,32 @@ def universal_feed_problem(feed: str, archs: Iterable[str]) -> str | None:
     return None
 
 
+def release_notes_problem(feed: str, notes: str | None) -> str | None:
+    """#620: "What's new" rides in the signed appcast as the item's plain-text
+    description. A release-notes link would be a second request (and an
+    unsigned page), so the feed never carries one; given notes, the feed
+    must hold them."""
+    if "releaseNotesLink" in feed:
+        return "appcast.xml links release notes; the app must make no request beyond the feed"
+    if notes:
+        if 'sparkle:format="plain-text"' not in feed or "<description" not in feed:
+            return "appcast.xml has no plain-text description for What's new"
+        if notes not in feed:
+            return "appcast.xml's description is not the What's new it was given"
+    return None
+
+
+def read_release_notes(path: str) -> str:
+    """The run's "What's new" (tools/package/whats_new.py), held to the rule the
+    Windows manifest applies, so both apps show the same bounded text."""
+    sys.path.insert(0, str(REPO_ROOT / "tools" / "package"))
+    import whats_new  # noqa: E402
+    notes = Path(path).read_text(encoding="utf-8").replace("\r\n", "\n").rstrip("\n")
+    if notes and not whats_new.valid(notes):
+        raise SystemExit("macpack: What's new does not meet the rule in tools/package/whats_new.py")
+    return notes
+
+
 def parse_otool_rpaths(output: str) -> list[str]:
     """LC_RPATH entries from `otool -l`."""
     rpaths: list[str] = []
@@ -715,6 +741,16 @@ def cmd_release(args: argparse.Namespace) -> None:
     if archive.exists():
         archive.unlink()
     run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app), str(archive)])
+    # #620: generate_appcast takes <archive>.txt as plain-text release notes;
+    # --embed-release-notes puts them in the item's <description>, which the
+    # feed signature covers, instead of a releaseNotesLink the app would fetch.
+    notes_path = getattr(args, "release_notes_file", None)
+    notes = read_release_notes(notes_path) if notes_path else ""
+    notes_file = archive.with_suffix(".txt")
+    if notes_file.exists():
+        notes_file.unlink()
+    if notes:
+        notes_file.write_text(notes, encoding="utf-8")
 
     # 5. The signed appcast. generate_appcast signs the enclosure and embeds a
     #    feed signature with the private key from a file (CI) or keychain (local);
@@ -727,6 +763,8 @@ def cmd_release(args: argparse.Namespace) -> None:
             cmd += ["--download-url-prefix", args.download_url_prefix]
         if args.phased_rollout_seconds:
             cmd += ["--phased-rollout-interval", str(args.phased_rollout_seconds)]
+        if notes:
+            cmd.append("--embed-release-notes")
         cmd.append(str(updates))
         run(cmd, timeout=300)
         feed = (updates / "appcast.xml").read_text()
@@ -735,7 +773,7 @@ def cmd_release(args: argparse.Namespace) -> None:
                              "the app (SURequireSignedFeed) would reject it")
         archs = run(["lipo", "-archs", str(app / "Contents" / "MacOS" / APP_NAME)],
                     capture=True).split()
-        problem = universal_feed_problem(feed, archs)
+        problem = universal_feed_problem(feed, archs) or release_notes_problem(feed, notes)
         if problem:
             raise SystemExit(f"macpack: {problem}")
     print(f"macpack: first install {dmg}\nmacpack: update archive {archive}")
@@ -784,6 +822,8 @@ def main(argv: list[str]) -> None:
                    help="where the update zips are served, e.g. a GitHub release URL")
     r.add_argument("--phased-rollout-seconds", type=int, default=0,
                    help="Sparkle phased rollout interval (docs/design/13 staged rollout)")
+    r.add_argument("--release-notes-file",
+                   help="#620: the update's What's new (tools/package/whats_new.py), embedded in the appcast")
     r.set_defaults(func=cmd_release)
 
     d = sub.add_parser("addon", help="sign (and notarize) an add-on folder before addon-pack.py packs it")
