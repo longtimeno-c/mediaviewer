@@ -65,9 +65,12 @@ coverage file says so. A new `command_id` fails the test until it has a row.
   rather than swapped. Unknown commands and keys are skipped and listed, not refused. The Mac
   also refuses a chord a fixed menu item owns at capture; a layout is not checked against the
   menu (owed). A saved table is put back exactly (`set_live_key`), unbound rows included.
-  What is saved is `live_key_remaps`: built-in rows off their default, never a contributed row
-  and never a built-in row its add-on's own rows supersede, whose missing key exists only
-  while that add-on is loaded; it is saved as its default (issue #357).
+  What is saved is `live_key_remaps`: built-in rows off their default, never a built-in row its
+  add-on's own rows supersede, whose missing key exists only while that add-on is loaded; it is
+  saved as its default (issue #357). A contributed row's remap is saved apart, by its
+  `<add-on id>/<command id>` (`live_addon_key_remaps`: Windows `settings.ini [addon_keys]`, Mac
+  `mv.addonKeys`), since its index moves as add-ons come and go; it is kept while the add-on is
+  away and put back on the row when it returns. Reset clears it (2026-10-29).
 - **Add-on commands** (Import: `open_import`, `import_now`; Local search: `search_*`) are listed,
   routed and shown only while their add-on is loaded (`set_addon_commands_available` per
   family); otherwise the key falls through as if unbound. The exception is `Ctrl+F`, which runs
@@ -224,7 +227,8 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Esc` | all | Back (above) |
 | *(unbound)* | browse, video | **Open RAW of pair** / **Open JPEG of pair** — listed in Settings. **Mac: not built** (not listed) |
 | *(unbound)* | Viewing | **Show next kind**: cycle View ▸ Show (All → Photos → Videos → RAW → Marked → Picks → Not rejected → Red … Purple; Marked is passed over when nothing is marked), below. Listed in Settings |
-| *(menu)* | — | **Recent folders**: the jump-list folders; Windows: Open ▸ Recent folders on the command bar; Mac: File ▸ Open Recent. A folder that has gone beeps and leaves the list |
+| *(menu)* | — | **Recent folders**: the jump-list folders; Windows: Open ▸ Recent folders on the command bar; Mac: File ▸ Open Recent. A folder that has gone beeps and leaves the list. Pinned folders lead it (#617) |
+| *(context menu)* | — | **Pin to top / Unpin** (#617): a welcome-card folder row's right-click menu (with Open and Remove from list); no key. Pins stay first on the card, the jump list, the Dock menu and Open Recent |
 
 ### View
 

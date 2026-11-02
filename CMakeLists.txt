@@ -45,7 +45,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Lin
 endif()
 
 project(mediaviewer
-  VERSION 0.1.39
+  VERSION 0.1.40
   DESCRIPTION "Media viewer for a real camera dump"
   LANGUAGES CXX)
 
@@ -653,6 +653,8 @@ add_library(mv::meta ALIAS mv_meta)
 add_library(mv_edit STATIC
   src/edit/adjust.cpp
   src/edit/adjust.h
+  src/edit/auto_tone.cpp
+  src/edit/auto_tone.h
   src/edit/bake.cpp
   src/edit/bake.h
   src/edit/histogram.cpp
@@ -1187,6 +1189,8 @@ if(MV_BUILD_TESTS)
     # PR 11: colour adjusts, FP16 working space, bake, histogram, the pane state.
     tests/test_adjust.cpp
     src/shell/adjust_pane.cpp
+    # #289: auto tone from the histogram (edit/auto_tone.h).
+    tests/test_auto_tone.cpp
     # PR 13 / 14: clip core on synthetic clips, the ABI's clip session, trim mode.
     tests/test_clip.cpp
     # #297: Enhance's sound in and out (edit/sound_writer.h).
@@ -1449,6 +1453,7 @@ if(MV_BUILD_TESTS)
     tests/test_ai_documents.cpp
     tests/test_ai_docs.cpp
     tests/test_ai_tiers.cpp
+    tests/test_ai_provider_verdict.cpp  # #155: provider.txt, no runtime
     tests/test_ai_contract.cpp
     tests/test_ai_fetch.cpp
     # #403: the OS text reader over a labelled set (hidden: [.ocr-fixture]).

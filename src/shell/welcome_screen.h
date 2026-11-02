@@ -160,6 +160,14 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
       bg->AddRectFilled(ImVec2(fx, fy), ImVec2(fx + 7.0f * scale, fy + 3.0f * scale), c_glyph, 1.0f * scale);
       bg->AddRectFilled(ImVec2(fx, fy + 2.0f * scale), ImVec2(fx + 16.0f * scale, fy + 12.0f * scale), c_glyph,
                         2.0f * scale);
+      // Issue #617: a pinned folder wears a pin on its corner, a title-colour
+      // head ringed in the card's colour, so the top rows read as kept.
+      const int folder = i - (g.lead ? 1 : 0);
+      if (folder >= 0 && folder < recents->pinned) {
+        const ImVec2 head(fx + 16.0f * scale, fy + 1.0f * scale);
+        bg->AddCircleFilled(head, 4.5f * scale, c_fill);
+        bg->AddCircleFilled(head, 3.0f * scale, c_title);
+      }
     }
 
     const float fs_label = 15.0f * scale;

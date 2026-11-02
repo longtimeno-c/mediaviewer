@@ -686,3 +686,90 @@ TEST_CASE("mv.notify shows at most 200 bytes of a long line, cut on a character"
   REQUIRE(p.notices.size() == 1);
   REQUIRE(p.notices[0] == std::string(199, 'x'));  // the two-byte e-acute would cross 200
 }
+
+TEST_CASE("mv.log and print keep to a rate and say how many lines they dropped", "[script][runtime]") {
+  // #400: a script in a loop could hand the host's log a line per call.
+  probe p;
+  auto a = start(p, R"lua(
+    function flood()
+      for i = 1, 10000 do mv.log("line", i) end
+      print("after")
+    end
+  )lua");
+  REQUIRE(a->wait_idle(5s));
+  run(*a, "flood");
+  REQUIRE(a->status().running);
+  const auto logs = p.log_lines();
+  REQUIRE(logs.size() == 50);
+  REQUIRE(logs.front() == "line\t1");
+  REQUIRE(logs.back() == "line\t50");
+  {
+    std::lock_guard<std::mutex> lock(p.m);
+    REQUIRE(p.errors.empty());  // said once, when the next second opens or it stops
+  }
+  a.reset();
+  std::lock_guard<std::mutex> lock(p.m);
+  REQUIRE(p.errors.size() == 1);
+  REQUIRE(p.errors.front() == "9951 log lines dropped (at most 50 a second)");
+}
+
+TEST_CASE("the log's second opens again: lines flow and the count is said first", "[script][runtime]") {
+  probe p;
+  auto a = start(p, R"lua(
+    function burst(payload) for i = 1, 60 do mv.log(payload.tag, i) end end
+  )lua");
+  REQUIRE(a->wait_idle(5s));
+  auto tagged = [](const char* tag) {
+    mv::json::value v;
+    v.k = mv::json::kind::object;
+    mv::json::value s;
+    s.k = mv::json::kind::string;
+    s.s = tag;
+    v.o.emplace_back("tag", s);
+    return v;
+  };
+  REQUIRE(a->run_function("burst", "burst", tagged("a")));
+  REQUIRE(a->wait_idle(5s));
+  std::this_thread::sleep_for(1100ms);
+  REQUIRE(a->run_function("burst", "burst", tagged("b")));
+  REQUIRE(a->wait_idle(5s));
+  const auto logs = p.log_lines();
+  REQUIRE(logs.size() == 100);
+  REQUIRE(logs[49] == "a\t50");
+  REQUIRE(logs[50] == "b\t1");
+  std::lock_guard<std::mutex> lock(p.m);
+  REQUIRE(p.errors == std::vector<std::string>{"10 log lines dropped (at most 50 a second)"});
+}
+
+TEST_CASE("stop() returns at once and the workers it stops wind down together", "[script][runtime]") {
+  // #400: mv_script_stop_all tells every add-on first, then joins, so N
+  // spinning add-ons cost about one stop, not N in turn.
+  script_limits generous = fast_limits();
+  generous.wall = 60s;
+  generous.instructions = 1'000'000'000'000ull;
+  constexpr int kAddons = 4;
+  std::vector<std::unique_ptr<probe>> probes;
+  std::vector<std::unique_ptr<script_addon>> addons;
+  for (int i = 0; i < kAddons; ++i) {
+    probes.push_back(std::make_unique<probe>());
+    addons.push_back(start(*probes.back(), "function spin() while true do end end", 0, generous));
+    REQUIRE(addons.back()->wait_idle(5s));
+    REQUIRE(addons.back()->run_function("spin", "spin", {}));
+  }
+  std::this_thread::sleep_for(50ms);
+  const auto t0 = clk::now();
+  for (auto& a : addons) a->stop();
+  REQUIRE(clk::now() - t0 < 50ms);  // no join
+  for (auto& p : probes) REQUIRE(p->wait_stopped(kStopSlack));
+  for (auto& a : addons) REQUIRE_FALSE(a->post(mv::addon::script_task{}));
+  for (auto& a : addons) REQUIRE(destroys_within(a, 500ms));
+  for (auto& p : probes) REQUIRE(p->why == script_stop::stopped);
+  // Stopping twice, or stopping one that already stopped, is harmless.
+  probe q;
+  auto b = start(q, "function f() end");
+  REQUIRE(b->wait_idle(5s));
+  b->stop();
+  b->stop();
+  REQUIRE(q.wait_stopped(kStopSlack));
+  REQUIRE(destroys_within(b, 500ms));
+}
