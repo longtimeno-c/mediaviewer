@@ -462,6 +462,11 @@ typedef struct mv_slot_badges_request {
  * node_id = its action_id, value_json = the notice id as a JSON string. Not
  * checked against a tree (the window may be closed). */
 #define MV_SLOT_EVENT_NOTICE 13u
+/* #601: a single click on an "interactive" surface (no drag, not the first
+ * click of a double-click where the chrome can tell): {"x", "y"}, 0..1 from
+ * its top-left, as MV_SLOT_EVENT_DOUBLE. An add-on that does not use it
+ * ignores it. */
+#define MV_SLOT_EVENT_TAP 14u
 
 /* 0.33 (#452): a system notification an add-on asks for (notice_post). The
  * host shows it unless the screen it is about is the window in front of an
@@ -877,6 +882,17 @@ typedef struct mv_host_api {
   mv_status(MV_CALL* still_write)(void* host, const char* source_utf8, const uint8_t* rgb, uint32_t width,
                                   uint32_t height, uint32_t stride, const char* suffix_ascii, char* out_path_utf8,
                                   uint32_t capacity);
+  /* ---- select this path (#601, docs/design/27 "The folder map") ------------------ */
+  /* [any-thread][no-block] Asks the viewer to show `path_utf8`, as a click on
+   * its gallery tile would: a Places folder-map dot. `screen_id` / `generation`
+   * name the info section the request comes from (the file on screen when it
+   * was asked); the path must be a file of that file's own folder. The chrome
+   * opens it only if its listing holds it, and never opens a folder or
+   * another app. MV_ERR_CANCELLED for a stale generation; MV_ERR_INVALID_ARG
+   * for a path outside that folder or a screen that is not an info section
+   * (a window has no file to step from). Appended after still_write: read it
+   * only when `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* open_item)(void* host, const char* screen_id, uint64_t generation, const char* path_utf8);
 } mv_host_api;
 
 typedef struct mv_addon_api {
