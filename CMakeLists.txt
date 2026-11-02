@@ -650,6 +650,8 @@ add_library(mv::meta ALIAS mv_meta)
 add_library(mv_edit STATIC
   src/edit/adjust.cpp
   src/edit/adjust.h
+  src/edit/auto_tone.cpp
+  src/edit/auto_tone.h
   src/edit/bake.cpp
   src/edit/bake.h
   src/edit/histogram.cpp
@@ -1184,6 +1186,8 @@ if(MV_BUILD_TESTS)
     # PR 11: colour adjusts, FP16 working space, bake, histogram, the pane state.
     tests/test_adjust.cpp
     src/shell/adjust_pane.cpp
+    # #289: auto tone from the histogram (edit/auto_tone.h).
+    tests/test_auto_tone.cpp
     # PR 13 / 14: clip core on synthetic clips, the ABI's clip session, trim mode.
     tests/test_clip.cpp
     # #297: Enhance's sound in and out (edit/sound_writer.h).
