@@ -1175,6 +1175,10 @@ cmake --build build-fuzz --config Release --target mv_fuzzers
 #   /opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -fsanitize=fuzzer,address,undefined -fno-rtti -Isrc \
 #     -Itools/fuzz tools/fuzz/fuzz_meta_location.cpp src/meta/location_edit.cpp -o fuzz_meta_location
 #   ASAN_OPTIONS=detect_leaks=0 ./fuzz_meta_location -max_total_time=600 -max_len=512 corpus tests/data/seeds/location
+# #606: fuzz_meta_gpmf (a GoPro GPMF packet and a DJI subtitle cue) is pure too:
+#   clang++ -std=c++20 -fsanitize=fuzzer,address,undefined -fno-rtti -Isrc -Itools/fuzz \
+#     tools/fuzz/fuzz_meta_gpmf.cpp src/meta/gpmf.cpp -o fuzz_meta_gpmf
+#   ASAN_OPTIONS=detect_leaks=0 ./fuzz_meta_gpmf -max_total_time=600 corpus tests/data/seeds/gpmf
 # On a Mac, Homebrew's LLVM has libFuzzer (Apple clang does not): build
 # tools/fuzz/fuzz_script.cpp, third_party/lua/src/*.c (as C++),
 # src/addon/script_runtime.cpp, script_thread_posix.cpp, open_manifest.cpp and
@@ -2838,6 +2842,49 @@ Five changes to the AI pack's index and query language
   by CI there. The cue and text counts are appended on `MvAiStatus` (1,672 bytes). `AiApi` does not
   pin that size (#388); the ABI smoke test compares the C# mirror with the header. Windows OCR on
   clips, both PR 1 gates with the pack indexing are owed.
+
+### GoPro and DJI clips: position, route and `place:` along it (#606, 2026-11-02)
+
+A GoPro or DJI clip now has a position: the first fix of the GPS route in its telemetry (GoPro's
+GPMF `gpmd` track, GPS5 and GPS9; DJI's subtitle telemetry text), read by a bounded, fuzzed
+reader in `mv_meta_parse` ([06](design/06-metadata.md) "Telemetry routes"). The tag pass reads
+the telemetry's head (until the first fix, at most 8 packets); the pane's read takes the whole
+route. Places draws the route on its map and matches `place:` anywhere along it, by folder
+(host table `route_of`, 128 points) and over the whole index (AI pack schema 11 `tracks`,
+streamed as route-point rows) ([27](design/27-places.md) "Routes", [17](design/17-local-ai-search.md)
+"Schema 11", ABI note under 0.33).
+
+- **Tests:** `mv_tests "[telemetry]"` (`tests/test_meta_telemetry.cpp`: GPMF payloads built byte
+  for byte from the published layout, GPS5 and GPS9, no lock / poor DOP / no SCAL / 0, 0
+  refused, truncation and lying sizes, nesting capped, route thinning, DJI's two text shapes; an
+  MP4 with a `gpmd` track written in-process: the head read stops at the first fix after two
+  packets without lock, the full read's route within 20 m of every fix, a clip that never locks,
+  a DJI `mov_text` track, a film's subtitles ignored); `mv_tests "[meta][location]"`
+  (`read_location` and `read_route` on a GoPro clip; a still has no route); `mv_tests "[places]"`
+  (`draw_route`, the section framing and drawing a route, `route_why`); `mv_ai_tests "[places]"`
+  (schema 10 -> 11 reads only clips again, tracks round-trip and cap, the backfill reads a fake
+  host's route). Seeds: `MV_SEED_DIR=tests/data/seeds mv_tests "[.write-seeds]"` writes
+  `tests/data/seeds/gpmf`.
+- **Verified here (Linux container, g++ 13, ASan + UBSan, 2026-11-02):** a scratch build of
+  `test_meta_telemetry.cpp` with `gpmf.cpp`, `clip.cpp` and `format.cpp` against the system
+  FFmpeg 6.1: 9 cases, all passed. `test_places.cpp` with the Places engine and `src/geo` on the
+  test blob: 15 cases, 14 passed, 1 skipped (full blob). The index_db half of the AI test, with
+  `index_db.cpp` and SQLite: passed. `fuzz_meta_gpmf` under a seed-and-mutate driver (this
+  machine has no libFuzzer runtime), ASan + UBSan, 600 s: 97 million executions, clean. Every other
+  touched source (`host.cpp`, `addon_media.cpp`, the AI pack's `engine.cpp` / `host.cpp` /
+  `addon_entry.cpp`, Places' `addon_entry.cpp`) compiles here with `-Wall -Wextra -Werror`.
+- **Perf (same container, warm cache, Release `-O2`, alternated, 200 runs):** the tag pass's clip
+  read of a 60 s 320 × 240 MPEG-4 clip with a 1 Hz `gpmd` track (lock after 3 s): median 0.466 ms
+  without the telemetry read, 0.482 ms with it (+0.016 ms; p90 0.540 → 0.547); a clip with no
+  telemetry 0.441 ms. The pane's full read adds ~0.4 ms for 60 packets. Synthetic, small packets
+  (real GoPro packets carry the IMU too, tens of kilobytes) on a shared container: the verify's
+  "at most 2 ms per clip" is owed on the owner's real clips on both platforms.
+- **Not built or run:** `mv_tests`, `mv_ai_tests` and `mv_import_tests` as whole suites (Exiv2,
+  MSVC and Xcode are not on this machine); the Windows and Mac builds; both PR 1 present-loop
+  gates (the change adds no render-thread or UI-thread work: the telemetry read is on the
+  metadata worker, the route drawing on Places' worker); the verify's three GoPro and one DJI
+  fixtures against the device's own export (no real camera file was at hand). DJI's newer `djmd`
+  protobuf track is not read.
 
 ### Place terms need Places, and intersect (#441, 2026-10-16)
 

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 #include "core/json.h"
 #include "geo/fold.h"
@@ -99,13 +100,72 @@ std::shared_ptr<const map_image> engine::picture(section_state& s) {
   const geo::database* db = db_();
   s.dots.clear();
   if (!db || !s.prefs.show_map) return nullptr;
-  return with_dots(s, cache_.get(*db, s.view, palette_for(s.theme),
-                                 s.place.at_sea ? std::string_view{} : s.place.country_code));
+  auto base = cache_.get(*db, s.view, palette_for(s.theme), s.place.at_sea ? std::string_view{} : s.place.country_code);
+  if (base && !s.route.empty()) {
+    // #606: the route on a copy of the cached picture, in the accent colour
+    // (the pin's) on a casing of the pane's surface; #601's dots go over it.
+    std::lock_guard lock(routed_m_);
+    if (!(routed_ && routed_base_ == base && routed_id_ == s.route_id)) {
+      auto img = std::make_shared<map_image>(*base);
+      (void)draw_route(s.view, s.route, s.theme.accent >> 8, s.theme.surface >> 8, img->bgra);
+      routed_base_ = base;
+      routed_id_ = s.route_id;
+      routed_ = std::move(img);
+    }
+    base = routed_;
+  }
+  return with_dots(s, std::move(base));
+}
+
+map_view frame_route(const map_view& v, double pin_lat, double pin_lon, std::span<const route_point> route) noexcept {
+  if (route.empty() || v.width == 0 || v.height == 0) return v;
+  // The route's box, longitudes unwrapped from the pin so a route across 180
+  // degrees is one box.
+  double lat0 = pin_lat, lat1 = pin_lat, dl0 = 0, dl1 = 0;
+  for (const route_point& p : route) {
+    if (!std::isfinite(p.lat) || !std::isfinite(p.lon)) continue;
+    double dl = std::fmod(p.lon - pin_lon + 540.0, 360.0) - 180.0;
+    if (!std::isfinite(dl)) continue;
+    lat0 = std::min(lat0, p.lat);
+    lat1 = std::max(lat1, p.lat);
+    dl0 = std::min(dl0, dl);
+    dl1 = std::max(dl1, dl);
+  }
+  const double mid_lat = std::clamp((lat0 + lat1) / 2, -85.0, 85.0);
+  // The span (degrees of latitude the picture is tall) that holds the box
+  // with a quarter more round it: the width holds w/h times as many degrees
+  // of longitude, fewer by cos(latitude) on the ground.
+  const double aspect = static_cast<double>(v.width) / v.height;
+  const double need = 1.25 * std::max(lat1 - lat0, (dl1 - dl0) * std::cos(mid_lat * 3.14159265358979323846 / 180.0) / aspect);
+  if (!std::isfinite(need)) return v;
+  // Centred on the route's box, at the wider of the two spans.
+  map_view out = v;
+  out.span_deg = clamp_span(std::max(need, v.span_deg));
+  out.lat = mid_lat;
+  out.lon = pin_lon + (dl0 + dl1) / 2;
+  if (out.lon > 180) out.lon -= 360;
+  if (out.lon < -180) out.lon += 360;
+  return keep_pin_in_view(out, pin_lat, pin_lon);
+}
+
+std::string route_why(const place_query& q, const geo::database& db, std::span<const route_point> route,
+                      const geo::lookup_options& opts, std::size_t max_points) {
+  if (q.empty() || route.empty() || max_points == 0) return {};
+  const std::size_t n = std::min(route.size(), max_points);
+  const std::size_t last = route.size() - 1;
+  for (std::size_t k = 0; k < n; ++k) {
+    const std::size_t i = n == 1 ? 0 : k * last / (n - 1);
+    const route_point& p = route[i];
+    if (!std::isfinite(p.lat) || !std::isfinite(p.lon) || std::fabs(p.lat) > 90 || std::fabs(p.lon) > 180) continue;
+    std::string why = q.why(db, p.lat, p.lon, opts);
+    if (!why.empty()) return why;
+  }
+  return {};
 }
 
 section_result engine::section(double lat, double lon, std::string_view location_text, const theme_tokens& theme,
                                float width_pt, float scale, const settings& prefs, section_state& state,
-                               std::string_view path) {
+                               std::string_view path, std::span<const route_point> route) {
   state = section_state{};
   state.path = std::string(path);
   state.lat = lat;
@@ -130,6 +190,21 @@ section_result engine::section(double lat, double lon, std::string_view location
     state.view.span_deg = k_zoom_span_deg[std::clamp(z, 0, k_zoom_steps - 1)];
   }
   state.view = keep_pin_in_view(state.view, lat, lon);
+  if (!route.empty()) {
+    // #606: the clip's route, capped as draw_route reads it, and the first
+    // view wide enough to show it.
+    state.route.assign(route.begin(), route.begin() + static_cast<std::ptrdiff_t>(std::min(route.size(), k_max_route_points)));
+    std::uint64_t id = 1469598103934665603ull;  // FNV-1a over the coordinates
+    for (const route_point& p : state.route) {
+      for (const double d : {p.lat, p.lon}) {
+        std::uint64_t bits;
+        std::memcpy(&bits, &d, sizeof bits);
+        id = (id ^ bits) * 1099511628211ull;
+      }
+    }
+    state.route_id = id;
+    state.view = frame_route(state.view, lat, lon, state.route);
+  }
   const std::string& label = state.place.label;
 
   section_result out;

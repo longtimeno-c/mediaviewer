@@ -1189,6 +1189,66 @@ mv_status MV_CALL t_still_write(void* host, const char* source, const uint8_t* r
   });
 }
 
+// #606: the last routes asked for, by path + size + mtime + cap. Places asks
+// for the file on screen on every info request (a theme change, a settings
+// change), and search asks again for a clip a later query passes over; the
+// telemetry read is a few hundred small reads, so a repeat is a lookup.
+struct route_entry {
+  std::string path;
+  std::uint64_t size = 0;
+  std::int64_t mtime = 0;
+  std::uint32_t cap = 0;
+  std::vector<mv_addon_route_point> points;
+};
+std::mutex& route_cache_m() {
+  static std::mutex m;
+  return m;
+}
+std::vector<route_entry>& route_cache() {
+  static std::vector<route_entry> c;  // most recent last
+  return c;
+}
+constexpr std::size_t kRouteCacheEntries = 32;
+
+mv_status MV_CALL t_route_of(void* host, const char* path, mv_addon_route_point* out, uint32_t capacity,
+                             uint32_t* out_count) {
+  return guarded([&] {
+    if (!path || !out_count || (capacity > 0 && !out)) return MV_ERR_INVALID_ARG;
+    *out_count = 0;
+    if (capacity == 0) return MV_OK;
+    const auto& fn = self(host).services().route;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto st = io::stat_path(path);
+    if (!st || st->is_directory) return MV_ERR_IO;
+    const auto give = [&](const std::vector<mv_addon_route_point>& pts) {
+      const auto n = static_cast<uint32_t>(std::min<std::size_t>(pts.size(), capacity));
+      std::copy_n(pts.begin(), n, out);
+      *out_count = n;
+      return MV_OK;
+    };
+    {
+      std::lock_guard lock(route_cache_m());
+      auto& c = route_cache();
+      for (auto it = c.begin(); it != c.end(); ++it) {
+        if (it->path == path && it->size == st->size && it->mtime == st->mtime_unix && it->cap == capacity) {
+          route_entry e = std::move(*it);
+          c.erase(it);
+          c.push_back(std::move(e));
+          return give(c.back().points);
+        }
+      }
+    }
+    // Read outside the lock: another add-on's ask for another file goes on.
+    auto r = fn(path, capacity);
+    if (!r) return to_mv(r.error());
+    std::lock_guard lock(route_cache_m());
+    auto& c = route_cache();
+    if (c.size() >= kRouteCacheEntries) c.erase(c.begin());
+    c.push_back(route_entry{path, st->size, st->mtime_unix, capacity, std::move(*r)});
+    return give(c.back().points);
+  });
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -1288,6 +1348,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   }
   if (svc_.write_still) api_.still_write = &t_still_write;
   api_.open_item = &t_open_item;
+  if (svc_.route) api_.route_of = &t_route_of;  // #606
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

@@ -130,6 +130,10 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    built from `src/meta/location_edit.cpp` alone): an accepted point is finite, in range and
    never `-0`, a refusal is one UTF-8 line that fits the ABI's 128 bytes, and the editor's
    starting text reads back to the point. Seeds: `tests/data/seeds/location`.
+   #606 adds `fuzz_meta_gpmf` (a clip's telemetry: one GoPro GPMF packet through
+   `meta::read_gpmf`, and the same bytes as a DJI subtitle cue through `meta::parse_dji_text`;
+   built from `src/meta/gpmf.cpp` alone): every fix finite, on the globe and never 0, 0, the
+   route within its cap, sampling it keeping its ends. Seeds: `tests/data/seeds/gpmf`.
    #345 adds `fuzz_meta_probe` (the AI badge's provenance probe). #291 adds `fuzz_meta_search`
    (the folder tag pass's bounded read and the search text it builds; it links `mv_meta`, so
    Exiv2 and FFmpeg come in as uninstrumented DLLs) and `fuzz_ai_query` (the Local search query
