@@ -14,7 +14,7 @@
 //     pixels per inch or per centimetre. One resolution for both axes
 //     (square pixels), as Preview's single Resolution field.
 //   • Unrounded state. Width and height are kept as doubles; only `output()`
-//     rounds (half away from zero, at least 1, at most kMaxPixels). So a
+//     rounds (half away from zero, at least 1, at most kMaxOutputSide). So a
 //     round-trip through any unit, or a lock that follows the other side,
 //     never drifts by a pixel per edit.
 //   • Scale proportionally. The followed side is derived from the *opened*
@@ -68,7 +68,7 @@ inline constexpr double kMetresPerInch = 0.0254;
 inline constexpr double kDefaultPpi = 72.0;
 inline constexpr double kMinPpi = 1.0;
 inline constexpr double kMaxPpi = 65535.0;    // JFIF's 16-bit density, per inch
-inline constexpr std::uint32_t kMaxPixels = 65500;  // edit/encode.h's ceiling
+inline constexpr std::uint32_t kMaxOutputSide = 65500;  // edit/encode.h's ceiling
 
 // A stated output resolution. `ppi` 0 = none stated. `unit` is how the user
 // gave it, and so how JFIF and EXIF write it (dots/inch or dots/cm).
@@ -122,10 +122,10 @@ struct resolution {
   return per > 0 ? px / per : 0.0;
 }
 
-// Half away from zero (values are positive), at least 1, at most kMaxPixels.
+// Half away from zero (values are positive), at least 1, at most kMaxOutputSide.
 [[nodiscard]] constexpr std::uint32_t round_pixels(double v) noexcept {
   if (!(v >= 1.0)) return 1;  // also NaN
-  if (v >= static_cast<double>(kMaxPixels)) return kMaxPixels;
+  if (v >= static_cast<double>(kMaxOutputSide)) return kMaxOutputSide;
   return static_cast<std::uint32_t>(v + 0.5);
 }
 

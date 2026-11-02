@@ -45,7 +45,7 @@ static_assert(edit::to_pixels(1.0, size_unit::inches, 300.0, 0.0) == 300.0);
 static_assert(edit::to_pixels(72.0, size_unit::points, 300.0, 0.0) == 300.0);
 static_assert(edit::ppi_from(1.0, resolution_unit::per_cm) == 2.54);
 static_assert(edit::round_pixels(0.2) == 1 && edit::round_pixels(2.5) == 3 &&
-              edit::round_pixels(1e12) == edit::kMaxPixels);
+              edit::round_pixels(1e12) == edit::kMaxOutputSide);
 static_assert(edit::adjust_size::open({4000, 3000}, {}).output() == size2{4000, 3000});
 static_assert(edit::per_metre(300.0) == 11811 && edit::ppi_from_per_metre(11811) == 300.0);
 
@@ -236,7 +236,7 @@ TEST_CASE("scale proportionally follows the opened aspect, rounded once", "[edit
   CHECK(s.output() == before);
   // Clamped to the encoder's ceiling, never 0.
   REQUIRE(s.set_width(1e8, size_unit::pixels));
-  CHECK(s.output().w == edit::kMaxPixels);
+  CHECK(s.output().w == edit::kMaxOutputSide);
   REQUIRE(s.set_width(0.01, size_unit::pixels));
   CHECK(s.output() == size2{1, 1});
 }
