@@ -148,7 +148,7 @@ a few percent in.
 VideoEditorView.swift; `RebuildEditorAddons` in IslandHost.VideoEditor.cs), drawn from the
 add-on's `editor_items` like any slot item, so the app never names Enhance. A click hands the
 add-on the clip on screen and, when anything is cut, the edit's kept pieces (`(in, out)` source
-nanoseconds; `mv_slots_editor_item`, ABI 0.34; the Mac calls the registry's
+nanoseconds; `mv_slots_editor_item`, ABI 0.35; the Mac calls the registry's
 `invoke_editor_item`). The sheet opens over the editor (Mac: a sheet on the editor window, the
 main one while it is open; Windows: centred over it, still owned by the viewer) and says so: "The
 edit from the Video Editor: 3 pieces, 1:24 in all. The new clip is the edit, enhanced; the original

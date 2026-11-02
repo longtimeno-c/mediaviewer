@@ -1178,7 +1178,7 @@ jobs:
         continue-on-error: true
         run: |
           $harnesses = 'meta_c2pa','meta_jpeg','meta_png','meta_webp','meta_bmff','meta_xmp','meta_icc',
-                       'meta_location','meta_probe','meta_search','geo','places_map',
+                       'meta_location','meta_gpmf','meta_probe','meta_search','geo','places_map',
                        'addon_contributions','ai_query'
           ./tools/fuzz/run.ps1 -BuildDir build -Seconds 30 -Harness $harnesses
 

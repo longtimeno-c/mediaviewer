@@ -190,6 +190,7 @@ constexpr slug_row kSlugs[] = {
     {zoom_af_point, "zoom_af_point"},  // #209
     {compare_two_up, "compare_two_up"},  // #208
     {toggle_page_sidebar, "toggle_page_sidebar"},
+    {print, "print"},  // #614
 };
 
 struct claim {

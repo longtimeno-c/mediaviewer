@@ -370,6 +370,10 @@ enum class command_id : std::uint16_t {
   // with the filmstrip hidden. Appended. Shift+T, beside T: the two strips
   // share the job (the folder's files, this file's pages) and never show at once.
   toggle_page_sidebar,
+  // Issue #614 (docs/design/16 "Print"): Ctrl+P / Cmd+P, the OS print dialog for
+  // the photo on screen with its edits baked, or the marks as a contact sheet.
+  // Appended.
+  print,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

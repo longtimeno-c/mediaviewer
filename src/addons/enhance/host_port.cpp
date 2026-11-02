@@ -27,7 +27,7 @@ bool has_picture_rows(const mv_host_api* h) {
          h->clip_write_sound && h->clip_write_finish && h->clip_write_close;
 }
 
-// The Video Editor's cut (ABI 0.34): frames_keep and sound_keep.
+// The Video Editor's cut (ABI 0.35): frames_keep and sound_keep.
 bool has_keep_rows(const mv_host_api* h) {
   return h->struct_size >= offsetof(mv_host_api, sound_keep) + sizeof(h->sound_keep) && h->frames_keep &&
          h->sound_keep;

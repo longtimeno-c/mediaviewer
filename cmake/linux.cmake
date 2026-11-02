@@ -181,6 +181,10 @@ if(MV_BUILD_TESTS)
     tests/test_metal_pacer.cpp
     tests/test_presentation_pacer.cpp
     tests/test_frametime_report.cpp
+    # Issue #614: the print layout is shared code with no OS call; it stays
+    # hostable on Linux (D9) though the Linux host has no print path yet.
+    tests/test_print_layout.cpp
+    src/shell/print_layout.cpp
   )
   target_link_libraries(mv_tests PRIVATE mv_gfx mv_canvas mv_core Catch2::Catch2WithMain)
   target_include_directories(mv_tests PRIVATE src tools tests)

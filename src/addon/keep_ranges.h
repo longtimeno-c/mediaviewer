@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The Video Editor's cut applied to a clip's frames and sound (Enhance in the
-// editor, the host table's frames_keep / sound_keep rows, ABI 0.34).
+// editor, the host table's frames_keep / sound_keep rows, ABI 0.35).
 //
 // The edit is a list of kept source ranges, (in, out) in nanoseconds on the
 // player's timeline, in source order (shell/video_timeline's pieces). What

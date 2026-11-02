@@ -127,7 +127,7 @@ public static unsafe partial class SlotNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_slots_invoke(byte* addon, byte* item, byte* paths);
 
-    // ABI 0.34: a Video Editor button (editor_items) with the edit's kept ranges.
+    // ABI 0.35: a Video Editor button (editor_items) with the edit's kept ranges.
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_slots_editor_item(byte* addon, byte* item, byte* path, long* ranges, uint count);
@@ -324,7 +324,7 @@ public static unsafe partial class SlotNative
             }
         }, false);
 
-    /// <summary>A Video Editor button (editor_items, ABI 0.34): the clip at <paramref name="path"/>
+    /// <summary>A Video Editor button (editor_items, ABI 0.35): the clip at <paramref name="path"/>
     /// and the edit's kept source ranges, (in, out) nanosecond pairs in source order; none when
     /// nothing is cut.</summary>
     public static bool EditorItem(string addon, string item, string path, (long In, long Out)[] ranges) =>

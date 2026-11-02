@@ -23,8 +23,8 @@ namespace mv::enhance {
 // The picture rows (slice 5), appended after the sound rows.
 [[nodiscard]] bool has_picture_rows(const mv_host_api* h);
 
-// The Video Editor's cut (frames_keep, sound_keep: ABI 0.34), appended after
-// the photo rows. Without them an edit from the editor is refused.
+// The Video Editor's cut (frames_keep, sound_keep: ABI 0.35), appended after
+// route_of (#606). Without them an edit from the editor is refused.
 [[nodiscard]] bool has_keep_rows(const mv_host_api* h);
 
 // `self_dir` holds ONNX Runtime (beside the add-on's library). The table
