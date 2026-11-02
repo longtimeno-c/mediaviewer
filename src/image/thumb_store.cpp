@@ -168,6 +168,7 @@ expected thumb_store::open(std::string_view dir_utf8) {
   if (db_ != nullptr && dir_ == dir_utf8) return {};
   finalize_locked();
   dir_.assign(dir_utf8);
+  sweeps_stopped_.store(false, std::memory_order_release);
   const std::string db_path = join_dir(dir_, "thumbs.sqlite");
   sqlite3* db = nullptr;
   // NOMUTEX: mutex_ already serialises every use of the handle, so SQLite's
@@ -320,7 +321,10 @@ std::uint64_t thumb_store::total_bytes(bool* known) const noexcept {
   return total_bytes_.load(std::memory_order_relaxed);
 }
 
-void thumb_store::stop_sweep() noexcept { sweep_token_.fetch_add(1, std::memory_order_acq_rel); }
+void thumb_store::stop_sweep() noexcept {
+  sweeps_stopped_.store(true, std::memory_order_release);
+  sweep_token_.fetch_add(1, std::memory_order_acq_rel);
+}
 
 result<bool> thumb_store::sweep(thumb_sweep& st, std::uint64_t cap_bytes, const job_context& ctx,
                                 const sweep_pacer& pacer) {
@@ -350,6 +354,7 @@ result<bool> thumb_store::sweep(thumb_sweep& st, std::uint64_t cap_bytes, const 
     {
       std::lock_guard lock(mutex_);
       if (!db_) return err(status::invalid_arg);
+      if (sweeps_stopped_.load(std::memory_order_acquire)) return err(status::cancelled);
       st.token = sweep_token_.load(std::memory_order_acquire);
       dir = dir_;
       sqlite3_stmt* max = nullptr;

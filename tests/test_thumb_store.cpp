@@ -429,6 +429,14 @@ TEST_CASE("thumb store: a sweep that steps aside resumes where it was; stop ends
   auto stopped = store.sweep(st, 0, background_ctx(), stop_then_go);
   REQUIRE_FALSE(stopped);
   CHECK(stopped.error() == mv::status::cancelled);
+  // ...and refuses a new one until the store is opened again.
+  mv::image::thumb_sweep refused;
+  auto again = store.sweep(refused, 0, background_ctx());
+  REQUIRE_FALSE(again);
+  CHECK(again.error() == mv::status::cancelled);
+  store.close();
+  REQUIRE(store.open(tc.dir.string()));
+  CHECK(sweep_all(store));
 }
 
 TEST_CASE("thumb store: Clear empties the cache and leaves everything else",

@@ -160,8 +160,10 @@ class thumb_store {
   // regenerate. Worker thread only.
   [[nodiscard]] expected clear();
 
-  // Stops a sweep in progress at its next step (a host calls this before
-  // shutting its pool down: a waiting sweep would otherwise hold a worker).
+  // Stops a sweep in progress at its next step, and refuses new ones until
+  // the next open(). A host calls it before shutting its pool down: a sweep
+  // waiting out a busy viewer would otherwise hold the worker the join waits
+  // for.
   void stop_sweep() noexcept;
 
   // #612, both hosts: queues sweep() on `jobs` at background_generation,
@@ -210,6 +212,7 @@ class thumb_store {
   std::atomic<std::uint64_t> total_bytes_{0};
   std::atomic<bool> total_known_{false};
   std::atomic<bool> sweep_running_{false};
+  std::atomic<bool> sweeps_stopped_{false};  // stop_sweep() until the next open()
 
   struct sweep_pass;
   void queue_sweep_step(const std::shared_ptr<sweep_pass>& pass);
