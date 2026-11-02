@@ -21,16 +21,25 @@
 //                   pixel's own saturation, so muted colours move most
 //   black & white   a3.y > 0: a mix of grey dot(c, a4.xyz) at a3.y, with a
 //                   contrast slope a3.z on that grey about the pivot
+//   table           a5.w > 0.5 (slice 2: levels and curves): each channel's
+//                   p = c^(1/2.2) through its column of `lut` (128 rows,
+//                   row i is p = i / 127, linear between rows; above 1 the
+//                   curve's end plus the overshoot), back to linear
+//   black & white   (after the table)
 //   vignette        a5.x != 0: a5.x stops (+ darkens) from a5.y to a5.z of
 //                   the distance to the corner; pos.xy is the pixel's offset
 //                   from the centre, scaled so a corner is at distance 1
+//
+// `lut` is the one thing the three languages pass differently, so the
+// signature starts with MV_ADJUST_LUT_PARAM, which each defines: C++ and MSL
+// a pointer and a comma, HLSL nothing (its `lut` is a cbuffer array).
 #ifndef MV_GFX_ADJUST_KERNEL_TOKENS_H
 #define MV_GFX_ADJUST_KERNEL_TOKENS_H
 
 // clang-format off
 #define MV_ADJUST_KERNEL                                                        \
-  float3 mv_adjust(float3 c, float4 pos, float4 a0, float4 a1, float4 a2,       \
-                   float4 a3, float4 a4, float4 a5) {                           \
+  float3 mv_adjust(MV_ADJUST_LUT_PARAM float3 c, float4 pos, float4 a0,         \
+                   float4 a1, float4 a2, float4 a3, float4 a4, float4 a5) {     \
     float3 zero = float3(0.0f, 0.0f, 0.0f);                                     \
     float3 w = float3(0.2126f, 0.7152f, 0.0722f);                               \
     c = max(c * float3(a0.x, a0.y, a0.z), zero);                                \
@@ -58,6 +67,22 @@
       sat = sat * max(1.0f + a3.x * (1.0f - s), 0.0f);                          \
     }                                                                           \
     c = max(grey + (c - grey) * sat, zero);                                     \
+    if (a5.w > 0.5f) {                                                          \
+      float3 p = pow(c, float3(0.45454545f, 0.45454545f, 0.45454545f));         \
+      float fr = min(p.x, 1.0f) * 127.0f;                                       \
+      float fg = min(p.y, 1.0f) * 127.0f;                                       \
+      float fb = min(p.z, 1.0f) * 127.0f;                                       \
+      int ir = int(min(fr, 126.0f));                                            \
+      int ig = int(min(fg, 126.0f));                                            \
+      int ib = int(min(fb, 126.0f));                                            \
+      float qr = lut[ir].x + (lut[ir + 1].x - lut[ir].x) * (fr - float(ir))     \
+                 + max(p.x - 1.0f, 0.0f);                                       \
+      float qg = lut[ig].y + (lut[ig + 1].y - lut[ig].y) * (fg - float(ig))     \
+                 + max(p.y - 1.0f, 0.0f);                                       \
+      float qb = lut[ib].z + (lut[ib + 1].z - lut[ib].z) * (fb - float(ib))     \
+                 + max(p.z - 1.0f, 0.0f);                                       \
+      c = pow(max(float3(qr, qg, qb), zero), float3(2.2f, 2.2f, 2.2f));         \
+    }                                                                           \
     if (a3.y > 0.0f) {                                                          \
       float m = max(dot(c, float3(a4.x, a4.y, a4.z)), 0.0f);                    \
       m = a1.y * pow(m / a1.y, a3.z);                                           \

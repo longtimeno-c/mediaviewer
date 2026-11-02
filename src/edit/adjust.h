@@ -49,6 +49,20 @@ enum class adjust_param : std::uint8_t {
   vignette,          // −100 (lighten) .. +100 (darken the edges)
   vignette_radius,   // −100 .. +100 about the default
   vignette_softness, // −100 .. +100 about the default
+  // docs/plans/edit-adjust.md slice 2: Levels, for the image (master) and
+  // then red, green and blue, in display-encoded light (p = linear^(1/2.2)).
+  levels_black,        // 0 .. 100: the input black point, up to p = 0.5
+  levels_mid,          // −100 (darker) .. +100 (lighter): the mid-tone gamma
+  levels_white,        // −100 .. 0: the input white point, down to p = 0.5
+  levels_red_black,
+  levels_red_mid,
+  levels_red_white,
+  levels_green_black,
+  levels_green_mid,
+  levels_green_white,
+  levels_blue_black,
+  levels_blue_mid,
+  levels_blue_white,
   count
 };
 
@@ -61,6 +75,8 @@ enum class adjust_section : std::uint8_t {
   colour,     // saturation, vibrance, temperature, tint
   mono,       // black & white
   vignette,
+  levels,     // slice 2: the twelve levels parameters
+  curves,     // slice 2: the four curves (colour::curves), no parameter
   count
 };
 
@@ -77,17 +93,54 @@ struct adjust_range {
 
 [[nodiscard]] adjust_range range_of(adjust_param p) noexcept;
 
-// The folded colour state: the last value set for each parameter.
+// A tone curve (slice 2): up to kCurvePoints points in display-encoded light
+// (0..1 both ways), x strictly increasing, evaluated as a monotone cubic
+// (Fritsch–Carlson) and held flat past the end points. n == 0 is the
+// identity, as is any curve whose points all sit on the diagonal.
+inline constexpr int kCurvePoints = 8;
+
+enum class curve_channel : std::uint8_t { master = 0, red, green, blue, count };
+inline constexpr int kCurveChannels = static_cast<int>(curve_channel::count);
+
+struct curve {
+  std::uint8_t n = 0;
+  float x[kCurvePoints] = {};
+  float y[kCurvePoints] = {};
+
+  [[nodiscard]] bool identity() const noexcept {
+    for (int i = 0; i < n; ++i) {
+      if (x[i] != y[i]) return false;
+    }
+    return true;
+  }
+  friend constexpr bool operator==(const curve&, const curve&) = default;
+};
+
+// Points sorted, clamped to 0..1, x at least 1/64 apart (a later duplicate
+// dropped), at most kCurvePoints; a curve of one point or fewer is n == 0.
+[[nodiscard]] curve sanitise(const curve& c) noexcept;
+// The curve at p (0..1).
+[[nodiscard]] float evaluate(const curve& c, float p) noexcept;
+
+// The folded colour state: the last value set for each parameter, and the
+// four curves.
 struct colour {
   std::array<float, kAdjustParamCount> v{};  // 0 = unchanged, for every parameter
+  std::array<curve, kCurveChannels> curves{};
 
   [[nodiscard]] float get(adjust_param p) const noexcept { return v[static_cast<std::size_t>(p)]; }
+  [[nodiscard]] const curve& curve_of(curve_channel ch) const noexcept {
+    return curves[static_cast<std::size_t>(ch)];
+  }
+  // No parameter moved and every curve the identity: the kernel is skipped.
   [[nodiscard]] bool identity() const noexcept {
     for (const float x : v) {
       if (x != 0.0f) return false;
     }
-    return true;
+    return !has_table();
   }
+  // Levels or a curve is set: the kernel reads the table (table_of).
+  [[nodiscard]] bool has_table() const noexcept;
   friend constexpr bool operator==(const colour&, const colour&) = default;
 };
 
@@ -98,6 +151,14 @@ struct colour {
 [[nodiscard]] colour without_section(const colour& c, adjust_section s) noexcept;
 
 [[nodiscard]] colour fold_colour(std::span<const op> ops) noexcept;
+
+// The ops that set colour (adjust, adjust_all, curve): kept when a lossless
+// turn is written under them.
+[[nodiscard]] bool is_colour_op(const op& o) noexcept;
+
+// Levels then the curve, per channel, after the master channel's levels and
+// curve, as the kernel's table (gfx::adjust_table): row i is p = i / 127.
+[[nodiscard]] gfx::adjust_table table_of(const colour& c) noexcept;
 
 // The kernel's uniforms, a0 .. a5 (gfx/adjust_kernel.h). Both shaders take
 // them as six float4s in their constant buffers.

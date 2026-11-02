@@ -18,7 +18,11 @@
 //           filter that spreads the grey the most: the variance of
 //           grey^(1/2.2) over the filters −100 .. +100 in steps of 25, a
 //           near-tie going to the filter nearest 0. Tone is kept.
-//   vignette has no Auto.
+//   levels  per channel (red, green, blue), the input black and white points
+//           at kAutoLevelsClip from each end of that channel's p as it
+//           reaches the table, within kAutoLevelsReach (so a cast in the
+//           ends goes too); the image's own row and the mid-tones are 0.
+//   vignette and curves have no Auto.
 //
 // Worker only (rule 1): each reads at most kAutoSampleBudget pixels.
 #pragma once
@@ -38,6 +42,12 @@ inline constexpr std::uint64_t kAutoSampleBudget = 1u << 16;
 inline constexpr float kAutoColourDamping = 0.7f;  // of the way to neutral
 inline constexpr float kAutoColourMax = 60.0f;     // temperature / tint, either way
 inline constexpr float kAutoColourMin = 3.0f;      // closer to 0 snaps to 0
+
+inline constexpr float kAutoLevelsClip = 0.001f;   // 0.1 % at each end
+inline constexpr float kAutoLevelsReach = 40.0f;   // slider units, either point
+
+// The sections with an Auto button.
+[[nodiscard]] bool has_auto(adjust_section s) noexcept;
 
 struct auto_result {
   colour value;          // `current` with the section replaced

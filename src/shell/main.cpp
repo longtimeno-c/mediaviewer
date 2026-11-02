@@ -2449,7 +2449,7 @@ void start_histogram(app_state* app) {
   if (!token) return;
   const HWND hwnd = app->window;
   app->jobs.submit_at(mv::background_generation,
-                      [working = app->working, u = mv::edit::uniforms_of(app->edits.colour()),
+                      [working = app->working, u = app->edits.colour(),
                        t = *token, hwnd](const mv::job_context&) -> mv::status {
                         auto* r = new (std::nothrow) adjust_job_result{};
                         if (!r) return mv::status::out_of_memory;
@@ -2466,7 +2466,10 @@ void start_histogram(app_state* app) {
 // A section's Auto (edit/auto_adjust.h): read on the pool from the working
 // image, landed on the UI thread as one op if nothing moved meanwhile.
 void start_adjust_auto(app_state* app, int section) {
-  if (section < 0 || section >= static_cast<int>(mv::edit::adjust_section::vignette)) return;
+  if (section < 0 || section >= mv::edit::kAdjustSectionCount ||
+      !mv::edit::has_auto(static_cast<mv::edit::adjust_section>(section))) {
+    return;
+  }
   if (!app->working || !adjust_still(app)) return;
   const auto sec = static_cast<mv::edit::adjust_section>(section);
   const std::optional<std::uint64_t> token = app->adjust.request_auto_tone(sec);
@@ -2486,6 +2489,40 @@ void start_adjust_auto(app_state* app, int section) {
                         post_adjust_result(hwnd, r);
                         return a ? mv::status::ok : a.error();
                       });
+}
+
+// Slice 2: a curve from the pane, parked as "channel\tx,y;x,y;...". A drag of a
+// point is one op; no push back (the pane already shows it).
+void set_curve_from_pane(app_state* app) {
+  std::string parked;
+  if (!app->chrome.take_parked_text(parked)) return;
+  if (!app->adjust.working_ready() || !adjust_still(app)) return;
+  const std::size_t tab = parked.find('\t');
+  if (tab == std::string::npos) return;
+  const int ch = std::atoi(parked.substr(0, tab).c_str());
+  if (ch < 0 || ch >= mv::edit::kCurveChannels) return;
+  mv::edit::curve k;
+  std::size_t at = tab + 1;
+  while (at < parked.size() && k.n < mv::edit::kCurvePoints) {
+    std::size_t end = parked.find(';', at);
+    if (end == std::string::npos) end = parked.size();
+    float x = 0.0f, y = 0.0f;
+    if (std::sscanf(parked.substr(at, end - at).c_str(), "%f,%f", &x, &y) == 2) {
+      k.x[k.n] = x;
+      k.y[k.n] = y;
+      ++k.n;
+    }
+    at = end + 1;
+  }
+  if (app->edits.set_curve(static_cast<mv::edit::curve_channel>(ch), k) != mv::shell::edit_effect::redraw) {
+    return;
+  }
+  publish_edit(app);
+  ++app->input.activity_seq;
+  publish(app);
+  const bool has_colour = !app->edits.colour().identity();
+  adjust_build_if(app, app->adjust.colour_changed(has_colour));
+  schedule_histogram(app);
 }
 
 // A section's Reset: its sliders back to 0, one undo step.
@@ -5198,6 +5235,28 @@ bool chrome_edit_command(app_state* app, int command, float arg) {
     case static_cast<int>(mv::shell::command_id::adjust_reset):
       reset_adjust_from_pane(app);
       return true;
+    case static_cast<int>(mv::shell::command_id::adjust_levels_black):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_mid):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_white):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_red_black):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_red_mid):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_red_white):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_green_black):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_green_mid):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_green_white):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_blue_black):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_blue_mid):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_blue_white):
+      set_adjust_from_pane(
+          app,
+          static_cast<mv::edit::adjust_param>(
+              static_cast<int>(mv::edit::adjust_param::levels_black) + command -
+              static_cast<int>(mv::shell::command_id::adjust_levels_black)),
+          arg);
+      return true;
+    case mv::shell::chrome_cmd_adjust_curve:
+      set_curve_from_pane(app);
+      return true;
     case static_cast<int>(mv::shell::command_id::adjust_auto):
       start_adjust_auto(app, static_cast<int>(arg));
       return true;
@@ -7690,6 +7749,18 @@ bool run_edit_command_area(app_state* app, mv::shell::command_id command) noexce
     case adjust_vibrance: case adjust_mono: case adjust_mono_filter: case adjust_mono_tone:
     case adjust_vignette: case adjust_vignette_radius: case adjust_vignette_softness:
     case adjust_auto: case adjust_reset_section:
+    case adjust_levels_black:
+    case adjust_levels_mid:
+    case adjust_levels_white:
+    case adjust_levels_red_black:
+    case adjust_levels_red_mid:
+    case adjust_levels_red_white:
+    case adjust_levels_green_black:
+    case adjust_levels_green_mid:
+    case adjust_levels_green_white:
+    case adjust_levels_blue_black:
+    case adjust_levels_blue_mid:
+    case adjust_levels_blue_white:
       return false;  // island-only: they carry a value (chrome_on_command)
     default:
       // command_coverage.inc sent this id here. A missing case is a

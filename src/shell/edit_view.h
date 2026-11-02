@@ -98,7 +98,9 @@ struct source_view {
 // redraws without refitting the camera.
 [[nodiscard]] inline bool same_adjust(const edit_view& a, const edit_view& b) noexcept {
   if (a.adjust != b.adjust) return false;
-  return !a.adjust || a.adjust_u == b.adjust_u;
+  if (!a.adjust) return true;
+  if (!(a.adjust_u == b.adjust_u)) return false;
+  return a.adjust_u.a[5][3] <= 0.5f || a.adjust_t == b.adjust_t;
 }
 
 // The colour uniforms of `v` onto a blit's parameters (either host's
@@ -108,6 +110,7 @@ inline void apply_adjust(const edit_view* v, BlitParams& bp) noexcept {
   bp.adjust = v != nullptr && v->adjust;
   if (!bp.adjust) return;
   bp.adjust_u = v->adjust_u;
+  if (v->adjust_u.a[5][3] > 0.5f) bp.adjust_t = v->adjust_t;
 }
 
 [[nodiscard]] inline bool same_overlay(const edit_view& a, const edit_view& b) noexcept {
@@ -144,6 +147,7 @@ template <class Session>
   if (!c.identity()) {
     v.adjust = true;
     v.adjust_u = edit::uniforms_of(c);
+    if (c.has_table()) v.adjust_t = edit::table_of(c);
   }
   return v;
 }

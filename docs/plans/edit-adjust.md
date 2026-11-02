@@ -68,15 +68,22 @@ Status (2026-11-02, Apple M-series, Release):
   `main.cpp`'s new handlers are compiled by CI only. The Windows pane, its PR 1 gate and
   Narrator / VoiceOver on the new controls are owed.
 
-### 2. Curves and levels (a LUT, no new pass)
+### 2. Curves and levels (a LUT, no new pass) — built 2026-11-02
 
 One 1D texture, 256 × 4 (R, G, B, master), sampled in the kernel after contrast. **Levels**
 (black, grey, white in and out per channel) and **Curves** (points per channel, a monotone cubic)
 both compile to that LUT on the UI thread (microseconds). The C++ export samples the same table.
 Curve and levels points are new op kinds; the op block stays POD (fixed max points).
 
-The pane's histogram sits under the curve. Auto levels reuses `auto_tone`'s percentiles per
-channel.
+The pane's histogram sits under the curve. Auto levels takes percentiles per channel (as built:
+of the colour as it reaches the table, not `auto_tone`'s histogram).
+
+As built: 128 rows of float4 rather than 256 × 4 (one row holds red, green and blue, read with
+linear interpolation); the table sits after saturation, before black & white. Curve points cross
+the island as parked text (`chrome_cmd_adjust_curve`, 1090); Levels are twelve appended island
+commands (197–208). Status: `mv_tests` `[curves]`, `[auto_levels]` and the full suite pass; the
+Mac self-test sets an S curve and runs Levels' Auto, and the saved copy carries both; the C#
+compiles; Windows native is CI's. Mac PR 1 gate: see the PR.
 
 ### 3. White balance picker and selective colour
 

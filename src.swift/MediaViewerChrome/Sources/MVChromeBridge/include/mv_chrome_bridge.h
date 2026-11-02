@@ -872,16 +872,21 @@ int32_t mv_chrome_scrub_markers(int64_t* out, int32_t cap, int32_t* current);
 //   values:    edit::adjust_param order: exposure (EV, -5..5), contrast, saturation,
 //              temperature, tint, highlights, shadows, whites, blacks, vibrance (-100..100),
 //              mono (0..100), mono_filter, mono_tone, vignette, vignette_radius,
-//              vignette_softness (-100..100)
+//              vignette_softness (-100..100), then levels black (0..100), mid (-100..100)
+//              and white (-100..0) for the image, red, green and blue
+//   curve_*:   the master, red, green and blue curves' points (0..1), curve_n of each
 //   bins:      64 bins each of R, G, B, luma, 0..1000 (edit::pack_histogram)
 typedef struct mv_adjust_view {
   int32_t readiness;
   int32_t from_raw;
-  float values[16];
+  float values[28];
   float clip_high;
   float clip_low;
   int32_t histogram_valid;
   int32_t auto_section;  // the section whose Auto is running, -1 none
+  int32_t curve_n[4];
+  float curve_x[4][8];
+  float curve_y[4][8];
   uint16_t bins[4 * 64];
 } mv_adjust_view;
 
@@ -899,6 +904,9 @@ void mv_chrome_adjust_reset(void);
 // puts that section's sliders back to 0, one undo step.
 void mv_chrome_adjust_auto(int32_t section);
 void mv_chrome_adjust_reset_section(int32_t section);
+// Slice 2: curve `channel` (0 image, 1 red, 2 green, 3 blue) is `n` points
+// (at most 8; x and y 0..1). A drag of a point is one undo step.
+void mv_chrome_adjust_curve(int32_t channel, int32_t n, const float* xs, const float* ys);
 void mv_chrome_adjust_close(void);
 // Esc in the pane: keyboard focus back to the canvas (the pane stays open).
 void mv_chrome_adjust_blur(void);

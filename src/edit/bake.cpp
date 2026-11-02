@@ -96,8 +96,15 @@ void bake_pixel(const float rgb_linear[3], const adjust_uniforms& u, std::uint8_
   out[2] = o[2];
 }
 
+result<codec::raster> bake(const image::linear_image& src, const placement& p, const colour& c,
+                           const job_context* ctx) {
+  const gfx::adjust_table t = table_of(c);
+  return bake(src, p, uniforms_of(c), ctx, &t);
+}
+
 result<codec::raster> bake(const image::linear_image& src, const placement& p,
-                           const adjust_uniforms& u, const job_context* ctx) {
+                           const adjust_uniforms& u, const job_context* ctx,
+                           const gfx::adjust_table* lut) {
   if (!src.valid()) return err(status::invalid_arg);
   const size2 expect =
       p.total.transposes() ? size2{src.height, src.width} : size2{src.width, src.height};
@@ -120,7 +127,7 @@ result<codec::raster> bake(const image::linear_image& src, const placement& p,
   }
   const encode_table& t = table();
   const gfx::vignette_map vmap(static_cast<float>(out.width), static_cast<float>(out.height));
-  const gfx::adjust_args args(u);
+  const gfx::adjust_args args(u, lut);
   // Only the vignette reads a pixel's place: without one, it is not worked out.
   const bool placed = args.v[5].x != 0.0f;
   auto pos = [&vmap, placed](std::uint32_t x, std::uint32_t y) {

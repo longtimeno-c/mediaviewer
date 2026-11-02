@@ -536,6 +536,18 @@ constexpr command_info kCommands[] = {
     {adjust_vignette_softness, "Adjust: vignette softness", true},
     {adjust_auto, "Adjust: auto", true},
     {adjust_reset_section, "Adjust: reset section", true},
+    {adjust_levels_black, "Adjust: levels black", true},
+    {adjust_levels_mid, "Adjust: levels mid-tones", true},
+    {adjust_levels_white, "Adjust: levels white", true},
+    {adjust_levels_red_black, "Adjust: levels red black", true},
+    {adjust_levels_red_mid, "Adjust: levels red mid-tones", true},
+    {adjust_levels_red_white, "Adjust: levels red white", true},
+    {adjust_levels_green_black, "Adjust: levels green black", true},
+    {adjust_levels_green_mid, "Adjust: levels green mid-tones", true},
+    {adjust_levels_green_white, "Adjust: levels green white", true},
+    {adjust_levels_blue_black, "Adjust: levels blue black", true},
+    {adjust_levels_blue_mid, "Adjust: levels blue mid-tones", true},
+    {adjust_levels_blue_white, "Adjust: levels blue white", true},
 };
 
 const char* named_key(key k) noexcept {

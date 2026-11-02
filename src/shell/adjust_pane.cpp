@@ -112,6 +112,14 @@ adjust_view adjust_pane::view(const edit::colour& c) const noexcept {
   }
   v.histogram_valid = histogram_valid_ ? 1 : 0;
   v.auto_section = auto_token_ != 0 ? static_cast<std::int32_t>(auto_section_) : -1;
+  for (int ch = 0; ch < edit::kCurveChannels; ++ch) {
+    const edit::curve& k = c.curves[static_cast<std::size_t>(ch)];
+    v.curve_n[ch] = k.n;
+    for (int i = 0; i < k.n; ++i) {
+      v.curve_x[ch][i] = k.x[i];
+      v.curve_y[ch][i] = k.y[i];
+    }
+  }
   if (histogram_valid_) {
     v.clip_high = clip_high_;
     v.clip_low = clip_low_;

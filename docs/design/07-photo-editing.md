@@ -28,6 +28,7 @@ struct edit_stack {
 | `resize` | Set the output size: long edge, exact, or percent |
 | `adjust` | Set one colour parameter (`adjust_param`); `count` resets every colour parameter |
 | `adjust_all` | Set every colour parameter at once (`values`), so an Auto or a section's reset is one undo step |
+| `curve` | Set one channel's tone curve (`channel`, `values.curves[channel]`); a point drag is one op |
 
 Undo pops the list; reset clears it and returns the original exactly. `edit_session` keeps one
 stack per (path, size, mtime) for the session (up to 64 stacks, oldest evicted), so walking away
@@ -56,6 +57,8 @@ The stack folds into two canonical states:
   | Colour | saturation, vibrance, temperature, tint |
   | Black & White | intensity (0..100; 0 is off), filter (−100 blue .. +100 red), tone |
   | Vignette | strength (+ darkens), radius, softness |
+  | Levels | black (0..100), mid-tones (−100..+100), white (−100..0), for the image, red, green and blue |
+  | Curves | up to 8 points per channel (image, red, green, blue), no parameter |
 
   Every other parameter is −100..+100 and 0 is always the identity. Order: white balance
   (temperature, tint) and exposure as one per-channel gain → **tone** (highlights, shadows,
@@ -68,7 +71,16 @@ The stack folds into two canonical states:
   0.05) or blue (0.10, 0.35, 0.55) filter (each sums to 1, so a grey keeps its value), with a
   contrast slope on that grey. The vignette is ±1.5 stops at full strength, a smoothstep from
   0.35 to 0.95 of the way to the corner (radius moves the start ±0.3, softness the width ±0.4),
-  placed on the output frame (crop and straighten included). The chain is one kernel with six
+  placed on the output frame (crop and straighten included). **Levels and curves** work in
+  p = linear^(1/2.2): per channel, the image's levels then its curve, then the channel's own levels
+  then curve. Levels map black (up to p 0.5) and white (down to p 0.5) to the ends with a mid-tone
+  gamma of 2^(mid/100). A curve is a monotone cubic (Fritsch–Carlson) through its points, held
+  flat past the ends; points are sorted, clamped and at least 1/64 apart (`sanitise`). Both are
+  compiled on the CPU (`table_of`, microseconds) into one 128-row table (`gfx::adjust_table`),
+  which the kernel reads with linear interpolation after saturation and before black & white
+  (above p 1, a RAW's headroom, the end plus the overshoot). The table travels in the edit view;
+  D3D11 holds it in its own constant buffer (`b1`) uploaded only when it changes, Metal copies it
+  with the draw only while a table is on. The chain is one kernel with six
   float4 uniforms (`adjust_uniforms` = `gfx::adjust_vectors`); each stage after saturation sits
   behind an `if` on its own uniforms, so an edit that sets only PR 11's sliders runs PR 11's
   arithmetic and the export bake pays for a stage only when it is set.
@@ -112,7 +124,10 @@ its own section, so a second click gives what the first gave.
 - **Black & White** turns it on at full intensity (an intensity already set is kept) with the
   filter, −100..+100 by 25, that gives grey^(1/2.2) the largest variance over the colour as it
   reaches black & white; within 2 % of the best, the filter nearest 0 wins. Tone is kept.
-- The vignette has none.
+- **Levels** sets, per red, green and blue, the input black and white at 0.1 % from each end
+  of that channel as it reaches the table (within ±40), the image's own row and the mid-tones
+  at 0 (`kAutoLevelsClip`, `kAutoLevelsReach`).
+- The vignette and curves have none.
 
 Each reads at most 65 536 pixels (`kAutoSampleBudget`). `adjust_pane::request_auto_tone(section)`
 gives the job a token that a colour change, a new item, a dropped working image or another Auto
@@ -214,7 +229,7 @@ What exists is the first editing set:
 | Built | |
 |---|---|
 | Geometry | Rotate, flip, crop (aspect presets, [20](20-edit-workspace.md)), straighten ±45°, resize |
-| Colour | Light (exposure, highlights, shadows, whites, blacks, contrast), Colour (saturation, vibrance, temperature, tint), Black & White (intensity, filter, tone), Vignette (strength, radius, softness); an Auto and a reset per section |
+| Colour | Light (exposure, highlights, shadows, whites, blacks, contrast), Colour (saturation, vibrance, temperature, tint), Black & White (intensity, filter, tone), Vignette (strength, radius, softness), Levels (per channel), Curves (per channel, a point editor); an Auto and a reset per section |
 | Readouts | Histogram (R, G, B, luma) and clipping percentages |
 | Lossless | JPEG rotate / flip / MCU-aligned crop, from the viewer (`[` `]` `H` `V`) or on export |
 | Export | JPEG / PNG, long-edge resize, metadata policy |
@@ -226,8 +241,8 @@ kernel or one more pass, evaluated in the order above.
 
 - Persisting a stack across sessions (XMP sidecar, SQLite catalog index).
 - Redo and a named history list for stills (`edit_stack::undo` only pops).
-- Perspective / keystone, lens correction; tone curve and levels; per-band HSL (selective
-  colour); a white-balance picker; colour grading ([plan](../plans/edit-adjust.md) slices 2–3).
+- Perspective / keystone, lens correction; per-band HSL (selective colour); a white-balance
+  picker; colour grading ([plan](../plans/edit-adjust.md) slice 3).
 - Brilliance, definition, sharpen, noise reduction (slice 4); dehaze, grain, split-tone.
 - Local adjustments: gradients, brush masks, healing / clone, red-eye.
 - Auto-straighten, auto-crop. An Auto key outside the pane (the pane's `A` runs the focused

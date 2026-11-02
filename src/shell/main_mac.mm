@@ -147,6 +147,7 @@ static_assert(offsetof(mv_adjust_view, clip_high) == offsetof(mv::shell::adjust_
 static_assert(offsetof(mv_adjust_view, histogram_valid) ==
               offsetof(mv::shell::adjust_view, histogram_valid));
 static_assert(offsetof(mv_adjust_view, bins) == offsetof(mv::shell::adjust_view, bins));
+static_assert(offsetof(mv_adjust_view, curve_x) == offsetof(mv::shell::adjust_view, curve_x));
 
 // Forward declaration: the globals just below need the type, but MvLabApp's
 // @interface is later in this file (it in turn needs MvMetalView, declared
@@ -766,6 +767,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)adjustReset;
 - (void)adjustAuto:(int32_t)section;
 - (void)adjustResetSection:(int32_t)section;
+- (void)adjustCurve:(int32_t)channel curve:(const mv::edit::curve&)k;
 - (void)adjustBlur;
 // PR 12
 - (int32_t)metaRating;
@@ -1685,6 +1687,17 @@ extern "C" void mv_chrome_adjust_auto(int32_t section) {
 extern "C" void mv_chrome_adjust_reset_section(int32_t section) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app adjustResetSection:section];
+}
+extern "C" void mv_chrome_adjust_curve(int32_t channel, int32_t n, const float* xs, const float* ys) {
+  (void)mv::shell::crash::note_native_call();
+  if (!g_chrome_app || xs == nullptr || ys == nullptr) return;
+  mv::edit::curve k;
+  k.n = static_cast<std::uint8_t>(std::clamp<int32_t>(n, 0, mv::edit::kCurvePoints));
+  for (int i = 0; i < k.n; ++i) {
+    k.x[i] = xs[i];
+    k.y[i] = ys[i];
+  }
+  [g_chrome_app adjustCurve:channel curve:k];
 }
 extern "C" void mv_chrome_adjust_close(void) {
   if (g_chrome_app) [g_chrome_app setAdjustVisible:NO];
@@ -9269,6 +9282,9 @@ static std::string MvSelfTestPageSummary(const char* addon) {
     const auto p = static_cast<mv::edit::adjust_param>(i);
     if (c.get(p) != 0.0f) [line appendFormat:@" %s=%g", mv::edit::range_of(p).name, c.get(p)];
   }
+  for (int ch = 0; ch < mv::edit::kCurveChannels; ++ch) {
+    if (c.curves[static_cast<std::size_t>(ch)].n > 0) [line appendFormat:@" curve%d=%d", ch, c.curves[static_cast<std::size_t>(ch)].n];
+  }
   [line appendString:@"\n"];
   [self editSelfTestLine:line dir:dir];
 }
@@ -9451,6 +9467,18 @@ static std::string MvSelfTestPageSummary(const char* addon) {
         [self editSelfTestSnap:@"s4b-adjusted" dir:dir];
         [self editSelfTestAdjustLine:@"adjusted" dir:dir];
         [self adjustResetSection:static_cast<int32_t>(mv::edit::adjust_section::mono)];
+        {
+          // Slice 2: an S curve on the image, then Levels' Auto.
+          mv::edit::curve s;
+          s.n = 4;
+          const float xs[] = {0.0f, 0.25f, 0.75f, 1.0f}, ys[] = {0.0f, 0.2f, 0.8f, 1.0f};
+          for (int i = 0; i < 4; ++i) {
+            s.x[i] = xs[i];
+            s.y[i] = ys[i];
+          }
+          [self adjustCurve:0 curve:s];
+          [self adjustAuto:static_cast<int32_t>(mv::edit::adjust_section::levels)];
+        }
         break;
       case 7:
         [self editSelfTestAdjustLine:@"mono-reset" dir:dir];
@@ -9713,7 +9741,7 @@ static double mv_wall_seconds() {
   const std::optional<std::uint64_t> token = _adjust.take_histogram_request();
   if (!token) return;
   const std::shared_ptr<const mv::image::linear_image> working = _working;
-  const mv::edit::adjust_uniforms u = mv::edit::uniforms_of(_edits.colour());
+  const mv::edit::colour u = _edits.colour();
   const std::uint64_t t = *token;
   __weak MvLabApp* weakSelf = self;
   _jobs.submit_at(mv::background_generation, [working, u, t, weakSelf](const mv::job_context&) -> mv::status {
@@ -9788,6 +9816,21 @@ static double mv_wall_seconds() {
   [self adjustColourChanged];
 }
 
+// Slice 2: a curve from the pane. A drag of a point is one op; no echo back
+// (the pane already shows it), the histogram follows when it settles.
+- (void)adjustCurve:(int32_t)channel curve:(const mv::edit::curve&)k {
+  if (channel < 0 || channel >= mv::edit::kCurveChannels) return;
+  if (!_adjust.working_ready() || ![self adjustStill]) return;
+  if (_edits.set_curve(static_cast<mv::edit::curve_channel>(channel), k) != mv::shell::edit_effect::redraw) {
+    return;
+  }
+  [self publishEdit];
+  [self pokeSnapshot];
+  const bool has_colour = !_edits.colour().identity();
+  [self adjustBuildIf:_adjust.colour_changed(has_colour)];
+  [self scheduleHistogram];
+}
+
 // A section's Reset: its sliders back to 0, one undo step.
 - (void)adjustResetSection:(int32_t)section {
   if (section < 0 || section >= mv::edit::kAdjustSectionCount) return;
@@ -9803,7 +9846,10 @@ static double mv_wall_seconds() {
 // A section's Auto (edit/auto_adjust.h): read on the pool from the working
 // image, landed on the main thread as one op if nothing moved meanwhile.
 - (void)adjustAuto:(int32_t)section {
-  if (section < 0 || section >= static_cast<int32_t>(mv::edit::adjust_section::vignette)) return;
+  if (section < 0 || section >= mv::edit::kAdjustSectionCount ||
+      !mv::edit::has_auto(static_cast<mv::edit::adjust_section>(section))) {
+    return;
+  }
   if (!_working || ![self adjustStill]) return;
   const auto sec = static_cast<mv::edit::adjust_section>(section);
   const std::optional<std::uint64_t> token = _adjust.request_auto_tone(sec);

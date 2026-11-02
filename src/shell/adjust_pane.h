@@ -44,10 +44,16 @@ struct adjust_view {
   float clip_low = 0.0f;
   std::int32_t histogram_valid = 0;
   std::int32_t auto_section = -1;  // edit::adjust_section whose Auto is running, -1 none
+  // Slice 2: the four curves (master, red, green, blue), edit::curve's points.
+  std::int32_t curve_n[edit::kCurveChannels] = {};
+  float curve_x[edit::kCurveChannels][edit::kCurvePoints] = {};
+  float curve_y[edit::kCurveChannels][edit::kCurvePoints] = {};
   std::uint16_t bins[4 * edit::kHistogramBins] = {};  // edit::pack_histogram
 };
 
-static_assert(sizeof(adjust_view) == 24 + 4 * edit::kAdjustParamCount + 2 * 4 * edit::kHistogramBins,
+static_assert(sizeof(adjust_view) == 24 + 4 * edit::kAdjustParamCount + 16 +
+                                         2 * 4 * edit::kCurveChannels * edit::kCurvePoints +
+                                         2 * 4 * edit::kHistogramBins,
               "keep in sync with AdjustViewArgs and mv_adjust_view");
 
 class adjust_pane {
