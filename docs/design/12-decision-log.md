@@ -976,6 +976,19 @@ ignored. Previews are signed exactly like stable. `github-release.py` refuses a 
 not exceed every published one, so switching back to Stable never downgrades. Add-ons ship on stable
 releases only.
 
+**"What's new" rides in what is already signed and fetched; the manifest stays schema 1 on the
+wire (2026-11-02, #620).** The update notice's short notes are the Windows manifest's optional
+`notes` and the Mac appcast item's embedded plain-text description, both under the existing
+signature, so no request is added (a Sparkle `releaseNotesLink` would be one, and an unsigned
+page). The Windows reader accepts schema 1 and 2 (2 = 1 with `notes` defined), but the release
+tool keeps writing `"schema": 1` with `notes` in it: every installed reader before this one
+rejects any schema but 1 as `UnsupportedSchema` and ignores unknown members, so a schema 2
+manifest would strand every existing install on its version for good. The bump to 2 waits until
+no supported version predates the schema 2 reader. Notes that break the bound (3 lines, 400 bytes,
+no links, a fixed list of forbidden characters) make the manifest malformed rather than being
+trimmed: they are ours and signed, and the release's own `verify-release` step and the writers
+check the same rule first.
+
 **Add-on updates are offered, not silent (2026-09-27).** Opening Settings probes the channel for
 installed add-ons; a newer signed manifest shows **Update to X**. Nothing is fetched without a
 click (up to ~1.2 GB). The store writes `prune.pending` naming the new version and removes the rest
