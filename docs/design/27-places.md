@@ -16,8 +16,9 @@ Places is not installed: optional, and the preferred install. Local search over 
 walks the index's own coordinates (#398, doc 17 "Places over the index"). The folder map (#601,
 2026-11-02): a **This folder** toggle draws the open folder's geotagged items as clustered dots on
 the same map, and a click on one opens it ([below](#the-folder-map-601)); its host halves are
-written but not yet built or run on Windows or the Mac. Owed: the Windows half
-is compiled only in CI. Plan:
+written but not yet built or run on Windows or the Mac. A GoPro or DJI clip's telemetry route is
+drawn on the map, under the folder's dots, and searched along (#606, "Routes" below). Owed: the
+Windows half is compiled only in CI. Plan:
 [metadata-search-and-place.md](../plans/metadata-search-and-place.md), slices 2-3 and the place
 half of slice 4.
 
@@ -282,6 +283,11 @@ under 0.2 ms. During a gesture nothing is drawn: the chrome moves the last bitma
   the map code as first written it times out within two minutes in `wrap180`, which looped
   forever on a huge longitude (now constant time); over the fixed code a 5-minute run (71.8 k
   executions, ASan + UBSan, Homebrew clang on the Mac) was clean.
+- `mv_tests "[places]"` (#606): `draw_route` (the accent on the line, the map untouched off it,
+  the corners still transparent, nothing drawn for an empty, non-finite or off-picture route, a
+  short buffer refused), the section framing and drawing a Lisbon-to-Badajoz route (the routed
+  picture memoised, a short walk keeping the region framing), and `route_why` (`spain` matches
+  the route but not its first fix; `fiji` matches nothing).
 - `mv_tests "[places]"` (`tests/test_places.cpp`, on the test blob): the map's colours at known
   points (land, water, the Tagus, the Portugal/Spain border pixel, a town dot, Fiji either side of
   180°), the rounded transparent corners, the cache (hit, theme change, zoom, size, capacity), the
@@ -507,6 +513,43 @@ no borders, so the search panel says "Place search needs the Places add-on. Inst
 Settings → Add-ons", and its help line leaves `place:` out while Places is not loaded. File search
 (the path bar's field) routes `place:` to Places as before.
 
+### Routes (#606)
+
+A GoPro or DJI clip has no ISO 6709 tag; its position is the first fix of the GPS route in its
+telemetry ([06](06-metadata.md) "Telemetry routes"), so it gets a Place section, a label and a
+pin like a photo. The rest of the route reaches Places through the host table:
+
+- **`route_of(path, out, capacity, &count)`** (appended after `still_write`): the route, read
+  whole from the telemetry track and thinned to `capacity` points evenly spaced, the first and
+  last kept (`meta::read_route`; each host installs it through `abi/addon_media`). A still is
+  answered from its first kilobyte, with no FFmpeg open; a clip with no fix is 0 points. The host
+  keeps its last 32 answers by path, size, mtime and capacity, so asking again (a theme change, a
+  later search) is a lookup.
+- **`mv_addon_location.has` is a bit set** (`MV_ADDON_LOCATION_*`): `HAS` as before; `ROUTE` on
+  a clip whose position is a route's first fix (`location_of`, `locations_in`, from
+  meta_cache.db's `has_route`); `ROUTE_POINT` on a row that is one more point of the previous
+  row's route, under the same path (`locations_of_index`, from the AI pack's `tracks`). `HAS` is
+  set on every row with coordinates, so a reader that only knows `has != 0` takes a route point as
+  one more position of that path.
+
+**On the map.** The section asks `route_of` (up to 4 096 points) for the file on screen when the
+map is on. `draw_route` (`map.cpp`) draws it over the cached picture, on a copy: a 2 pt line in
+the theme's accent (the pin's colour) on a 1 pt casing in the pane's surface colour, anti-aliased,
+inside the frame's rounded corners, longitudes unwrapped point to point so a route across 180° is
+one line; points that do not move half a pixel are skipped. The base picture stays in the cache
+as before, and the engine keeps the last routed picture beside it, so zooming back to it or a
+re-ask does not draw it again. The first view (`frame_route`) is centred on the route's box and
+widened, never narrowed, until the route shows whole with a quarter more round it, within the
+map's range; the pin stays on the picture.
+
+**In search.** By folder (`locations_in`), a file whose own position does not match and whose
+row says `ROUTE` has its route asked for (128 points, about one a kilometre on a two-hour drive)
+and looked up point by point (`route_why`); the first point in the place gives the result's
+`why`. Over the whole index (`locations_of_index`), the AI pack streams a clip's stored track
+(schema 11, [17](17-local-ai-search.md)) as `ROUTE_POINT` rows after its own, so no file is
+read; Places looks each up until one matches and skips the rest of that path. So `place:spain`
+finds a drive that starts in Lisbon and ends in Badajoz.
+
 ### Settings (PR 56 schema)
 
 **Offered before it is installed.** Settings → Add-ons lists Places on both hosts even when it
@@ -547,6 +590,9 @@ names a settings page, so the add-on needs PR 56 and #348 both.
 - The map has no streets, rivers, roads or terrain, and no labels but town names; at town scale
   the coast shows its ~1 km simplification. Inland at region scale (Colorado) it can be nearly
   blank but for borders and dots.
+- A route is searched at 128 points (folder) or the index's 128 (Local search), evenly spaced:
+  a place the route crosses for less than the spacing (a corner of a region on a long drive) can
+  be missed. A route longer than the map's widest view (40°) shows its part around the pin.
 
 ## Open owner calls
 

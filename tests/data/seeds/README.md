@@ -36,6 +36,7 @@ safe to redistribute. The real format corpus stays out of git (docs/design/09).
 | ICC (#290) | a v4 display profile with `desc` (mluc) and `cprt` | the same |
 | Location (#352) | what a person types in the Location editor: decimal, DMS with `°′″`, spaces, `º` and `''`, lettered and swapped, blank | hand-written text |
 | Video (#610) | 32×24, four frames of MPEG-4 Part 2 in Matroska, AVI and MPEG-TS, and an MP4 with a 90° display matrix; the corpus of `fuzz_thumbnail`'s clip path, not read by the broken-corpus test | `mv_tests "[.write-seeds]"` (`tests/test_thumb_poster.cpp`, FFmpeg's own LGPL encoder via `tests/clip_fixture.h`) |
+| Telemetry (#606, `gpmf/`) | GoPro GPMF packets (GPS5 with lock, GPS5 without, GPS9) and two DJI subtitle cue texts, the corpus of `fuzz_meta_gpmf` | `mv_tests "[.write-seeds]"` (`tests/test_meta_telemetry.cpp`, built from the published GPMF layout) |
 | Query (#291) | Local search queries (`fuzz_ai_query`): people, `or`, `-`, quotes, tag, date, place, rating and exposure terms, a name with a diaeresis | hand-written text |
 
 The #290 families are written by the test builders instead:

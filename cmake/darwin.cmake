@@ -364,6 +364,8 @@ add_library(mv_meta_parse STATIC
   src/meta/xmp_raw.cpp
   src/meta/generators.cpp
   src/meta/probe.cpp
+  src/meta/gpmf.cpp
+  src/meta/telemetry.h
   src/meta/probe.h
   src/meta/parse.h
   src/meta/parse_util.h
@@ -513,7 +515,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/driftwire.cmake")
 # pipeline, the clip sampler and the JPEG-512 cache. In the app; knows no
 # add-on. The AI pack itself is cmake/ai.cmake.
 add_library(mv_addon_media STATIC src/abi/addon_media.cpp src/abi/addon_media.h src/addon/media.h)
-target_include_directories(mv_addon_media PUBLIC src)
+target_include_directories(mv_addon_media PUBLIC src src/abi/include)
 target_link_libraries(mv_addon_media PUBLIC mv_core mv_io PRIVATE mv_image mv_clip mv_edit mv_meta)
 
 # Milestone H: the AI pack (libmv_ai.dylib, arm64, packed and signed
@@ -581,6 +583,9 @@ add_library(mv_shell STATIC
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
   src/shell/edit_session.cpp
   src/shell/edit_session.h
+  # Issue #614: ⌘P's paper layout (fit / fill, the contact sheet).
+  src/shell/print_layout.cpp
+  src/shell/print_layout.h
   # Text in images (Vision is the host's, shell/text_recognition_mac.mm).
   src/shell/text_in_image.cpp
   src/shell/text_in_image.h
@@ -933,6 +938,8 @@ if(MV_BUILD_TESTS)
     tests/test_meta_provenance.cpp
     tests/test_meta_bench.cpp
     tests/test_meta_location.cpp
+    # #606: GoPro GPMF and DJI subtitle telemetry, a clip's route.
+    tests/test_meta_telemetry.cpp
     tests/test_meta_store.cpp
     # #345: the canvas's AI badge (setting, evidence text, the store's probe).
     tests/test_ai_badge.cpp
@@ -946,6 +953,8 @@ if(MV_BUILD_TESTS)
     # PR 10: edit stack, lossless JPEG, export, the edit session.
     tests/test_edit.cpp
     tests/test_edit_session.cpp
+    # Issue #614: ⌘P's paper layout.
+    tests/test_print_layout.cpp
     tests/test_edit_workspace.cpp
     tests/test_video_timeline.cpp
     tests/test_export_carried.cpp

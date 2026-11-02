@@ -67,6 +67,8 @@ $table = [ordered]@{
     meta_icc    = @{ Seeds = @('icc');                                  MaxLen = 65536 }
     # #352: the Location editor's parser; the text is capped at 256 bytes.
     meta_location = @{ Seeds = @('location');                           MaxLen = 512 }
+    # #606: one telemetry packet (GoPro GPMF) and one DJI subtitle cue.
+    meta_gpmf   = @{ Seeds = @('gpmf');                                 MaxLen = 65536 }
     meta_probe  = @{ Seeds = @('jpeg', 'png', 'webp', 'heic', 'avif', 'c2pa', 'probe'); MaxLen = 131072 }
     # #291: the folder tag pass (meta/search.h): any still or clip, read whole.
     meta_search = @{ Seeds = @('jpeg', 'png', 'webp', 'tiff', 'heic', 'avif', 'raw', 'c2pa'); MaxLen = 131072 }

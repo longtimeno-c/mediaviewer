@@ -57,6 +57,7 @@ The order is:
 | #612 | **Settings → Storage**: what MediaViewer keeps on disk with sizes (thumbnails, file search, clipboard copies, metadata snapshots, crash reports, the telemetry spool, each add-on with its data); the thumbnail cache tidies itself (old specs, gone or changed files, an optional size cap, off by default) and has **Clear** ([docs/design/04](design/04-image-pipeline.md#thumbnail-cache-upkeep)) | Draft: the shared core is tested on Linux; both host halves are written but not built, and the verify line and both present-loop gates are not run ([below](#settings--storage-and-the-self-tidying-thumbnail-cache-612)) |
 | Linux PR 1 | **OpenGL present lab on Wayland**: a raw xdg toplevel, EGL desktop GL on an sRGB surface, frame-callback pacing at `eglSwapInterval(0)`, `wp_presentation` statistics, idle → stop presenting, F3, `frametime` on Linux ([docs/design/10](design/10-roadmap.md#linux-pr-1--opengl-present-lab), [03](design/03-rendering.md#the-linux-present-path)) | Draft. Built and run in a Linux container under headless Weston only (GL and pixman renderers): `mv_tests` and the smoke pass, the report is labelled weaker and fails the gate as it must. The Windows and Mac builds now also compile the Linux pacer and its tests: CI's. Owed: the gate on a real session (Mutter or KWin, Mesa on Intel or AMD), a Linux GPU runner, both other PR 1 gates ([Where this actually is](#linux-pr-1-the-opengl-present-lab-on-wayland-2026-10-23)) |
 | #610 | **Clip thumbnails in Explorer and Finder**: MKV, WebM, AVI and TS (and, in Explorer, any clip MediaViewer is the default for, such as an AV1 or VP9 MP4 without a Store extension) get the filmstrip's poster instead of a generic icon; read through a seekable reader, never whole, under the handler's 4 s deadline and in-flight cap ([docs/design/09](design/09-build-and-test.md#windows-integration), [12](design/12-decision-log.md)) | Draft. The shared core (`shellext/thumb_poster`, `player::poster_frame` over a `byte_source`) built and its tests run on Linux, also under ASan / UBSan; the Windows handler and the Quick Look extension are written, not compiled here. Owed: both builds, the hands-on verify on both, both PR 1 gates ([Where this actually is](#clip-thumbnails-in-explorer-and-finder-issue-610-2026-11-02)) |
+| #614 | **Print** (`Ctrl+P` / `⌘P`, File ▸ Print…, the bar's Open): the photo on screen with its crop and adjusts baked, at fit or fill, or two or more marks as a 2×2 / 3×4 / 4×5 contact sheet (automatic: 12 marks are 3×4), file names off unless asked; the bake runs on the pool and nothing is written, so Cancel leaves no file ([docs/design/16 "Print"](design/16-commands.md#print)) | Draft. Core layout and bake written; `mv_tests "[print]"` layout cases and the router / command-table / snapshot tests pass on Linux. The bake tests (`test_edit_session.cpp`) and both host halves (PrintDlgEx + GDI on Windows, NSPrintOperation on the Mac) are written but not built here. Owed: both builds, the verify by hand (a cropped JPEG to PDF at fit matching the export, 12 marks as one 3×4 page, Cancel leaves no file, `?` lists the key), both PR 1 present-loop gates |
 | #617 | **Pinned folders and jump-list Tasks**: pin a folder from a welcome-card row's right-click menu and it stays first on the card, the jump list (its own "Pinned folders" category), the Dock menu and Open Recent however many folders are opened after it; the jump list gains New window, Open folder… and (with Import installed) Import… ([docs/design/10](design/10-roadmap.md#pr-15--os-integration)) | Draft. Shared rule and its tests built and run in a Linux container only; neither host built here. Owed: both host builds, both verifies, both PR 1 gates ([Where this actually is](#pinned-folders-and-jump-list-tasks-issue-617-2026-11-02)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
@@ -628,6 +629,7 @@ Use GCC there (12 or newer): clang with libstdc++ rejects `core/json.h`.
 | `F7` / `F8` | copy / move the marked items (or the current one) to the last folder used. `Shift+F7` / `Shift+F8` pick a folder. Never overwrites: a taken name becomes `name (2).ext` |
 | `Delete` | move the marked items (or the current one) to the Recycle Bin, after asking. A drive with no Recycle Bin is refused, never deleted permanently |
 | `F2` | rename the current file (File ▸ Rename… on the Mac). Type the name without its extension; `Enter` renames. Its RAW+JPEG or Live Photo partner and its `.xmp` sidecars are renamed with it. A taken name becomes `name (2)`; nothing is overwritten |
+| `Ctrl+P` | print (`⌘P`, File ▸ Print… on the Mac): the photo on screen with its edits, fit or fill; with two or more marks, a contact sheet (2×2, 3×4 or 4×5, file names optional). The options are in the print dialog |
 
 Drop files or a folder on the window, the gallery, or the filmstrip. Drag a
 thumbnail (gallery, filmstrip, or a Local search result) or the current image
@@ -1174,6 +1176,10 @@ cmake --build build-fuzz --config Release --target mv_fuzzers
 #   /opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -fsanitize=fuzzer,address,undefined -fno-rtti -Isrc \
 #     -Itools/fuzz tools/fuzz/fuzz_meta_location.cpp src/meta/location_edit.cpp -o fuzz_meta_location
 #   ASAN_OPTIONS=detect_leaks=0 ./fuzz_meta_location -max_total_time=600 -max_len=512 corpus tests/data/seeds/location
+# #606: fuzz_meta_gpmf (a GoPro GPMF packet and a DJI subtitle cue) is pure too:
+#   clang++ -std=c++20 -fsanitize=fuzzer,address,undefined -fno-rtti -Isrc -Itools/fuzz \
+#     tools/fuzz/fuzz_meta_gpmf.cpp src/meta/gpmf.cpp -o fuzz_meta_gpmf
+#   ASAN_OPTIONS=detect_leaks=0 ./fuzz_meta_gpmf -max_total_time=600 corpus tests/data/seeds/gpmf
 # On a Mac, Homebrew's LLVM has libFuzzer (Apple clang does not): build
 # tools/fuzz/fuzz_script.cpp, third_party/lua/src/*.c (as C++),
 # src/addon/script_runtime.cpp, script_thread_posix.cpp, open_manifest.cpp and
@@ -2128,6 +2134,22 @@ present-loop gates. WebM is tested through the Matroska demuxer it shares, not w
 (the fixture encodes MPEG-4 Part 2 only). Linux: the planned thumbnailer (docs/plans/linux.md §5)
 can call `render_poster_by(open_file_source(path), …)`; nothing Linux-specific was built.
 
+### Print: Ctrl+P / ⌘P (#614, docs/design/16 "Print", 2026-11-02)
+
+Written on both hosts, built on neither yet. What ran (Linux, g++ 13, `-Wall -Wextra -Werror
+-fno-rtti`): `tests/test_print_layout.cpp` against `src/shell/print_layout.cpp` (fit, fill, the
+printable area, 300 dpi pixels, 2×2 / 3×4 / 4×5 and automatic, captions: all pass), and the command
+suites (`test_key_router*.cpp`, `test_command_contract.cpp`, `test_command_coverage.cpp`,
+`test_keymap.cpp`: all pass, `tests/data/command_table.snapshot` regenerated with the `Ctrl+P`
+rows). `src/edit/export.cpp`, `src/shell/edit_session.cpp` and `tests/test_edit_session.cpp`
+compile (`-fsyntax-only`); the bake tests there (`"[print]"`) need the codec registry and run in
+CI's `mv_tests` only. `main.cpp`'s print path (PrintDlgEx, its Options page, GDI on the pool),
+`main_mac.mm`'s (NSPrintOperation, the panel accessory), the Open flyout item (C#) and the Mac
+bar item (Swift) have not been compiled. Owed: the Windows and Mac builds; the verify by hand on
+both (a cropped JPEG to PDF at fit with colours matching the export, 12 marks as one 3×4 page,
+Cancel leaves no file, `?` lists the key); both PR 1 present-loop gates. The Linux host has no
+print path (its order is open, `docs/plans/linux.md` §10); the layout is built in its tests.
+
 ### Settings → Storage and the self-tidying thumbnail cache (#612)
 
 The core is in `src/image/thumb_store.cpp` (`sweep`, `submit_sweep`, `clear`, and `store` dropping a
@@ -2850,6 +2872,49 @@ Five changes to the AI pack's index and query language
   by CI there. The cue and text counts are appended on `MvAiStatus` (1,672 bytes). `AiApi` does not
   pin that size (#388); the ABI smoke test compares the C# mirror with the header. Windows OCR on
   clips, both PR 1 gates with the pack indexing are owed.
+
+### GoPro and DJI clips: position, route and `place:` along it (#606, 2026-11-02)
+
+A GoPro or DJI clip now has a position: the first fix of the GPS route in its telemetry (GoPro's
+GPMF `gpmd` track, GPS5 and GPS9; DJI's subtitle telemetry text), read by a bounded, fuzzed
+reader in `mv_meta_parse` ([06](design/06-metadata.md) "Telemetry routes"). The tag pass reads
+the telemetry's head (until the first fix, at most 8 packets); the pane's read takes the whole
+route. Places draws the route on its map and matches `place:` anywhere along it, by folder
+(host table `route_of`, 128 points) and over the whole index (AI pack schema 11 `tracks`,
+streamed as route-point rows) ([27](design/27-places.md) "Routes", [17](design/17-local-ai-search.md)
+"Schema 11", ABI note under 0.33).
+
+- **Tests:** `mv_tests "[telemetry]"` (`tests/test_meta_telemetry.cpp`: GPMF payloads built byte
+  for byte from the published layout, GPS5 and GPS9, no lock / poor DOP / no SCAL / 0, 0
+  refused, truncation and lying sizes, nesting capped, route thinning, DJI's two text shapes; an
+  MP4 with a `gpmd` track written in-process: the head read stops at the first fix after two
+  packets without lock, the full read's route within 20 m of every fix, a clip that never locks,
+  a DJI `mov_text` track, a film's subtitles ignored); `mv_tests "[meta][location]"`
+  (`read_location` and `read_route` on a GoPro clip; a still has no route); `mv_tests "[places]"`
+  (`draw_route`, the section framing and drawing a route, `route_why`); `mv_ai_tests "[places]"`
+  (schema 10 -> 11 reads only clips again, tracks round-trip and cap, the backfill reads a fake
+  host's route). Seeds: `MV_SEED_DIR=tests/data/seeds mv_tests "[.write-seeds]"` writes
+  `tests/data/seeds/gpmf`.
+- **Verified here (Linux container, g++ 13, ASan + UBSan, 2026-11-02):** a scratch build of
+  `test_meta_telemetry.cpp` with `gpmf.cpp`, `clip.cpp` and `format.cpp` against the system
+  FFmpeg 6.1: 9 cases, all passed. `test_places.cpp` with the Places engine and `src/geo` on the
+  test blob: 15 cases, 14 passed, 1 skipped (full blob). The index_db half of the AI test, with
+  `index_db.cpp` and SQLite: passed. `fuzz_meta_gpmf` under a seed-and-mutate driver (this
+  machine has no libFuzzer runtime), ASan + UBSan, 600 s: 97 million executions, clean. Every other
+  touched source (`host.cpp`, `addon_media.cpp`, the AI pack's `engine.cpp` / `host.cpp` /
+  `addon_entry.cpp`, Places' `addon_entry.cpp`) compiles here with `-Wall -Wextra -Werror`.
+- **Perf (same container, warm cache, Release `-O2`, alternated, 200 runs):** the tag pass's clip
+  read of a 60 s 320 × 240 MPEG-4 clip with a 1 Hz `gpmd` track (lock after 3 s): median 0.466 ms
+  without the telemetry read, 0.482 ms with it (+0.016 ms; p90 0.540 → 0.547); a clip with no
+  telemetry 0.441 ms. The pane's full read adds ~0.4 ms for 60 packets. Synthetic, small packets
+  (real GoPro packets carry the IMU too, tens of kilobytes) on a shared container: the verify's
+  "at most 2 ms per clip" is owed on the owner's real clips on both platforms.
+- **Not built or run:** `mv_tests`, `mv_ai_tests` and `mv_import_tests` as whole suites (Exiv2,
+  MSVC and Xcode are not on this machine); the Windows and Mac builds; both PR 1 present-loop
+  gates (the change adds no render-thread or UI-thread work: the telemetry read is on the
+  metadata worker, the route drawing on Places' worker); the verify's three GoPro and one DJI
+  fixtures against the device's own export (no real camera file was at hand). DJI's newer `djmd`
+  protobuf track is not read.
 
 ### Place terms need Places, and intersect (#441, 2026-10-16)
 

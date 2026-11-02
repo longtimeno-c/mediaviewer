@@ -50,6 +50,9 @@ constexpr uint32_t kHostApiMin = 3;
 constexpr uint32_t kHostApiMax = 3;
 // Search rows go out in batches so a long folder shows results as it reads.
 constexpr uint32_t kSearchBatch = 128;
+// #606: the points of a clip's route a search looks up, evenly spaced along
+// it: about one a kilometre on a two-hour drive, finer than a town's radius.
+constexpr uint32_t kRouteSearchPoints = 128;
 
 struct addon_state {
   const mv_host_api* host = nullptr;
@@ -136,6 +139,25 @@ mv::places::theme_tokens tokens(const mv_slot_theme& t) {
   return o;
 }
 
+// #606: appended after open_item; an older host's table stops before it.
+bool has_route_of(const mv_host_api* host) {
+  return host->struct_size >= offsetof(mv_host_api, route_of) + sizeof(host->route_of) && host->route_of != nullptr;
+}
+
+// A clip's telemetry route from the host (cached there by path + size +
+// mtime), at most `cap` points; empty for a still, a clip without one, or a
+// host without route_of.
+std::vector<mv::places::route_point> route_of(const char* path, uint32_t cap) {
+  std::vector<mv::places::route_point> out;
+  if (!path || !*path || !has_route_of(g->host)) return out;
+  std::vector<mv_addon_route_point> pts(cap);
+  uint32_t n = 0;
+  if (g->host->route_of(g->host->host, path, pts.data(), cap, &n) != MV_OK) return out;
+  out.reserve(std::min(n, cap));
+  for (uint32_t i = 0; i < n && i < cap; ++i) out.push_back({pts[i].lat, pts[i].lon});
+  return out;
+}
+
 // #601: appended after still_write; an older host's table stops before it.
 bool has_open_item(const mv_host_api* host) {
   return host->struct_size >= offsetof(mv_host_api, open_item) + sizeof(host->open_item) && host->open_item != nullptr;
@@ -190,9 +212,14 @@ mv_status MV_CALL info_section(void*, const mv_slot_info_request* r) {
       return MV_ERR_INVALID_ARG;
     }
     mv::places::section_state state;
+    const mv::places::settings prefs = read_settings();
+    // #606: a GoPro or DJI clip's route goes on the map (only when there is a
+    // map to draw it on; the host answers a still from its first kilobyte).
+    std::vector<mv::places::route_point> route;
+    if (prefs.show_map) route = route_of(r->path_utf8, static_cast<uint32_t>(mv::places::k_max_route_points));
     const auto out = g->eng->section(lat, lon, r->location_text ? r->location_text : "",
-                                     tokens(r->theme), r->width_pt, r->scale, read_settings(), state,
-                                     r->path_utf8 ? r->path_utf8 : "");
+                                     tokens(r->theme), r->width_pt, r->scale, prefs, state,
+                                     r->path_utf8 ? r->path_utf8 : "", route);
     if (g->host->screen_post(g->host->host, r->section_id, r->generation, out.tree_json.c_str()) != MV_OK) {
       return MV_OK;  // stale: another file is on screen now
     }
@@ -300,6 +327,10 @@ struct search_ctx {
   const mv::places::place_query* q = nullptr;
   mv::geo::lookup_options opts;
   uint32_t seen = 0;
+  // #606: the index walk sends a clip's route points as rows after its own,
+  // under the same path; once that path matched, the rest are skipped.
+  std::string last_path;
+  bool last_matched = false;
   std::vector<std::string> paths;
   std::vector<std::string> whys;
   bool stale = false;
@@ -327,12 +358,27 @@ void flush(search_ctx& c, bool done) {
 int32_t MV_CALL visit_location(void* user, const mv_addon_location_entry* e) {
   auto& c = *static_cast<search_ctx*>(user);
   try {
-    ++c.seen;
+    const bool point_of_route = e && (e->location.has & MV_ADDON_LOCATION_ROUTE_POINT) != 0;
+    if (!point_of_route) ++c.seen;  // progress counts files, not the points of their routes
     if (e && e->path_utf8 && e->location.has) {
-      std::string why = c.q->why(*c.db, e->location.lat, e->location.lon, c.opts);
-      if (!why.empty()) {
-        c.paths.emplace_back(e->path_utf8);
-        c.whys.push_back(std::move(why));
+      const bool same = point_of_route && c.last_path == e->path_utf8;
+      if (!same) {
+        c.last_path = e->path_utf8;
+        c.last_matched = false;
+      }
+      if (!c.last_matched) {
+        std::string why = c.q->why(*c.db, e->location.lat, e->location.lon, c.opts);
+        // #606: a clip from a folder whose own position (the route's first
+        // fix) is elsewhere: does the rest of its route pass through?
+        if (why.empty() && (e->location.has & MV_ADDON_LOCATION_ROUTE)) {
+          const auto route = route_of(e->path_utf8, kRouteSearchPoints);
+          why = mv::places::route_why(*c.q, *c.db, route, c.opts, kRouteSearchPoints);
+        }
+        if (!why.empty()) {
+          c.last_matched = true;
+          c.paths.emplace_back(e->path_utf8);
+          c.whys.push_back(std::move(why));
+        }
       }
     }
     if (c.seen % kSearchBatch == 0) {

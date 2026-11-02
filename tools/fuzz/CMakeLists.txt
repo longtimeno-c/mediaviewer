@@ -143,6 +143,8 @@ set(MV_FUZZ_HARNESSES
   meta_c2pa meta_jpeg meta_png meta_webp meta_bmff meta_xmp meta_icc
   # #352: the Location editor's parser (pure; built from its one source file).
   meta_location
+  # #606: a clip's telemetry packets (GoPro GPMF, DJI subtitle text); pure.
+  meta_gpmf
   # #345: the AI badge's provenance probe, every container it seeks through.
   meta_probe
   # #291: the folder tag pass's bounded read and the search text it builds (mv_meta).
