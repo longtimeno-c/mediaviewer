@@ -559,6 +559,103 @@ TEST_CASE("places: search by place finds the files taken there", "[places]") {
   CHECK(place_query::compile(db, " ").empty());
 }
 
+// #606: a GoPro clip's route from Lisbon toward Elvas, crossing into Spain at
+// Badajoz: the pin is its first fix (Lisbon), the rest is telemetry.
+std::vector<route_point> lisbon_to_badajoz() {
+  std::vector<route_point> r;
+  for (int i = 0; i <= 200; ++i) {
+    const double t = i / 200.0;
+    r.push_back({38.7077 + (38.8786 - 38.7077) * t, -9.1365 + (-6.9703 + 9.1365) * t});
+  }
+  return r;
+}
+
+TEST_CASE("places: a clip's route is drawn over the map in the accent colour", "[places]") {
+  const auto& db = test_db();
+  const theme_tokens t = light_theme();
+  map_view v;
+  v.lat = 38.80;
+  v.lon = -8.05;
+  v.width = 600;
+  v.height = 320;
+  v.scale = 2;
+  v.span_deg = 2.25;
+  auto bgra = draw(db, v, palette_for(t), "PT");
+  const auto before = bgra;
+  const auto route = lisbon_to_badajoz();
+  REQUIRE(draw_route(v, route, t.accent >> 8, t.surface >> 8, bgra));
+  // On the line: the accent; well off it: the map as it was.
+  const route_point mid = route[100];
+  CHECK(distance(pixel_of(bgra, v, mid.lat, mid.lon), t.accent >> 8) < 40);
+  CHECK(distance(pixel_of(bgra, v, 38.2, -8.05), t.accent >> 8) > 60);
+  const px off_before = pixel_of(before, v, 38.2, -8.05);
+  const px off_after = pixel_of(bgra, v, 38.2, -8.05);
+  CHECK(off_before.r == off_after.r);
+  CHECK(off_before.a == off_after.a);
+  // The rounded corners stay transparent.
+  CHECK(pixel_at(bgra, v.width, 0, 0).a == 0);
+  // Nothing to draw, and nonsense, change nothing and do not fail.
+  auto copy = before;
+  CHECK(draw_route(v, {}, 0xff0000, 0xffffff, copy));
+  CHECK(copy == before);
+  const std::vector<route_point> junk = {{std::nan(""), 1}, {1e300, -1e300}, {91, 0}};
+  CHECK(draw_route(v, junk, 0xff0000, 0xffffff, copy));
+  CHECK(copy == before);
+  // A route far off the picture draws nothing on it.
+  CHECK(draw_route(v, std::vector<route_point>{{-60, 100}, {-61, 101}}, 0xff0000, 0xffffff, copy));
+  CHECK(copy == before);
+  std::vector<std::uint8_t> small(16);
+  CHECK_FALSE(draw_route(v, route, 0xff0000, 0xffffff, small));
+}
+
+TEST_CASE("places: the Place section frames and draws a clip's route", "[places]") {
+  engine eng([] { return &test_db(); });
+  const auto route = lisbon_to_badajoz();
+  section_state plain;
+  const auto a = eng.section(38.7077, -9.1365, "", light_theme(), 300, 2, settings{}, plain);
+  section_state routed;
+  const auto b = eng.section(38.7077, -9.1365, "", light_theme(), 300, 2, settings{}, routed, route);
+  REQUIRE(a.map);
+  REQUIRE(b.map);
+  CHECK(routed.route.size() == route.size());
+  CHECK(routed.route_id != 0);
+  // Wide enough for Lisbon to Badajoz (about 190 km east), the pin still on it.
+  CHECK(routed.view.span_deg >= plain.view.span_deg);
+  double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  map_pixel(routed.view, route.front().lat, route.front().lon, x0, y0);
+  map_pixel(routed.view, route.back().lat, route.back().lon, x1, y1);
+  CHECK(x0 >= 0);
+  CHECK(x1 < routed.view.width);
+  CHECK(b.map->bgra != a.map->bgra);
+  // The base picture is the cache's; the routed one is a copy, kept once.
+  section_state again;
+  const auto c = eng.section(38.7077, -9.1365, "", light_theme(), 300, 2, settings{}, again, route);
+  CHECK(c.map == b.map);
+  // A short walk keeps the region framing.
+  const std::vector<route_point> walk = {{38.7077, -9.1365}, {38.7080, -9.1360}};
+  section_state w;
+  (void)eng.section(38.7077, -9.1365, "", light_theme(), 300, 2, settings{}, w, walk);
+  CHECK(w.view.span_deg == plain.view.span_deg);
+}
+
+TEST_CASE("places: place search matches a clip anywhere along its route", "[places]") {
+  const auto& db = test_db();
+  const auto route = lisbon_to_badajoz();
+  const auto opts = settings{}.lookup();
+  // Its own position (the first fix) is Lisbon: "spain" does not match it,
+  // the route does, with the label of the first point in Spain.
+  const auto spain = place_query::compile(db, "spain");
+  CHECK(spain.why(db, route.front().lat, route.front().lon, opts).empty());
+  const std::string why = route_why(spain, db, route, opts);
+  CHECK(why.find("Spain") != std::string::npos);
+  CHECK_FALSE(route_why(place_query::compile(db, "portugal"), db, route, opts).empty());
+  CHECK(route_why(place_query::compile(db, "fiji"), db, route, opts).empty());
+  CHECK(route_why(spain, db, {}, opts).empty());
+  CHECK(route_why(spain, db, route, opts, 0).empty());
+  // Two points looked at: the first and the last, which is Badajoz.
+  CHECK_FALSE(route_why(spain, db, route, opts, 2).empty());
+}
+
 TEST_CASE("places: map render time at pane width x 160 pt", "[.perf-bench]") {
   auto opened = mv::geo::open_database(full_blob());
   if (!opened) {

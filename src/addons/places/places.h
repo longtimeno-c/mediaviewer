@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -54,6 +56,10 @@ struct section_state {
   settings prefs;
   geo::place place;           // label "" when the place database is missing
   map_view view;              // what the map shows now: centre and span (the pin is at lat/lon)
+  // #606: a GoPro or DJI clip's GPS route (the pin is its first fix), drawn
+  // over the map; empty for everything else.
+  std::vector<route_point> route;
+  std::uint64_t route_id = 0;  // a hash of `route`, for the routed picture's memo
 };
 
 struct section_result {
@@ -68,9 +74,12 @@ class engine {
   explicit engine(std::function<const geo::database*()> db) : db_(std::move(db)) {}
 
   // The Place section for a geotagged file. Fills `state` for later zoom steps.
+  // #606: `route` (a clip's telemetry route, may be empty) is drawn over the
+  // map, and the first view frames it as well as the point's region.
   [[nodiscard]] section_result section(double lat, double lon, std::string_view location_text,
                                        const theme_tokens& theme, float width_pt, float scale,
-                                       const settings& prefs, section_state& state);
+                                       const settings& prefs, section_state& state,
+                                       std::span<const route_point> route = {});
 
   // One zoom step in (+1) or out (-1) about the picture's centre: the -/+
   // buttons and the keyboard. Returns false at the end of the range (nothing
@@ -100,7 +109,21 @@ class engine {
 
   std::function<const geo::database*()> db_;
   map_cache cache_;
+  // #606: the last picture with a route drawn on it, so a zoom back to it or
+  // a re-ask (a setting, the theme) does not draw it again. The base picture
+  // stays in cache_; the route goes on a copy.
+  std::mutex routed_m_;
+  std::shared_ptr<const map_image> routed_base_;
+  std::uint64_t routed_id_ = 0;
+  std::shared_ptr<const map_image> routed_;
 };
+
+// #606: `v` centred on `route`'s box, widened (never narrowed) so the route
+// shows whole with a margin. The span is clamped to the map's range, so a very
+// long route shows its part around the pin, which stays on the picture.
+[[nodiscard]] map_view frame_route(const map_view& v, double pin_lat, double pin_lon,
+                                   std::span<const route_point> route) noexcept;
+
 
 // ---- search by place (the "place" search provider) -------------------------------
 
@@ -128,5 +151,11 @@ class place_query {
   std::vector<std::string> countries_;
   std::vector<std::string> regions_;
 };
+
+// #606: does the route pass through the place? The label of the first point
+// along it that `q` matches ("" when none). Points are looked up in order, at
+// most `max_points` of them, evenly spaced (the first and last kept).
+[[nodiscard]] std::string route_why(const place_query& q, const geo::database& db, std::span<const route_point> route,
+                                    const geo::lookup_options& opts, std::size_t max_points = 128);
 
 }  // namespace mv::places
