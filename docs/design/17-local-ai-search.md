@@ -352,7 +352,8 @@ the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model
   - **Mac** (`tree_watch_mac.cpp`): one FSEvents stream over every root, with file events and a
     0.5 s latency, on a private serial queue. Paths come back under each root as it was given
     (FSEvents reports `/private/var` for `/var`).
-  - **Linux:** no watch yet; a Linux host without `watch_tree` keeps the 15-minute walk.
+  - **Linux:** no watch yet (`tree_watch_none.cpp` watches nothing), so a root there keeps the
+    15-minute walk.
 
   The pack notes each folder (`on_tree_change`, on the host's thread) and the control thread walks
   them once the changes have been quiet for 2 s, or 10 s after the first during a long copy

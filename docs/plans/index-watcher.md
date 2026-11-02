@@ -11,7 +11,8 @@ folder root", and the Photos library's iCloud-only assets), [12](../design/12-de
 [14](../design/14-abi.md). Where the build differs from the plan below:
 
 - The watcher is its own header, `src/io/tree_watch.h`, with `tree_watch_win.cpp` and
-  `tree_watch_mac.cpp`; `dir.h` is unchanged. Linux has no file yet (its io is not built).
+  `tree_watch_mac.cpp`; `dir.h` is unchanged. Linux (the portable core) gets `tree_watch_none.cpp`,
+  which watches nothing.
 - On Windows a new name (`ADDED`, `RENAMED_NEW_NAME`) is asked whether it is a folder, one
   attribute read each. A folder moved in from outside the tree is a single `ADDED` with nothing
   for its contents, so a parent walk alone would miss them.
