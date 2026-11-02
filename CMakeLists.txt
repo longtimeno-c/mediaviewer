@@ -717,13 +717,21 @@ add_library(mv::clip ALIAS mv_clip)
 # (with the DLLs listed in MediaViewerThumbs.files) to <root>\shellext\<version>
 # and registers it there (shell/shellext_install.cpp), so an update never
 # replaces a DLL a surrogate still holds.
+#
+# Issue #610: clips too, through player/poster.cpp alone (a static link pulls
+# that one object, which software-decodes one frame; no D3D11VA, no WASAPI).
+# The FFmpeg DLLs it imports join the versioned folder through the PE import
+# closure shellext_install.cpp already walks. Still a surrogate, never Explorer.
 add_library(MediaViewerThumbs SHARED
   src/shellext/thumb_request.cpp
   src/shellext/thumb_request.h
+  src/shellext/thumb_runner.h
+  src/shellext/thumb_poster.cpp
+  src/shellext/thumb_poster.h
   src/shellext/thumb_provider_win.cpp
   src/shellext/MediaViewerThumbs.def
 )
-target_link_libraries(MediaViewerThumbs PRIVATE mv_image mv_codec mv_core mv_project_options ole32 uuid)
+target_link_libraries(MediaViewerThumbs PRIVATE mv_image mv_player mv_codec mv_core mv_project_options ole32 uuid)
 target_include_directories(MediaViewerThumbs PRIVATE src)
 set_target_properties(MediaViewerThumbs PROPERTIES OUTPUT_NAME "MediaViewerThumbs")
 mv_asan_runtime_beside(MediaViewerThumbs)
@@ -1232,6 +1240,9 @@ if(MV_BUILD_TESTS)
     tests/test_thumb_store.cpp
     tests/test_thumb_request.cpp
     src/shellext/thumb_request.cpp
+    # Issue #610: the handler's clip posters through a seekable reader.
+    tests/test_thumb_poster.cpp
+    src/shellext/thumb_poster.cpp
     tests/test_spotlight_fields.cpp
     src/shell/spotlight_fields.cpp
     tests/test_slideshow.cpp
