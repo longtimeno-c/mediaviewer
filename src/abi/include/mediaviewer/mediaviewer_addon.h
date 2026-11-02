@@ -1234,7 +1234,12 @@ MV_API mv_status MV_CALL mv_script_reload(mv_session_t session);
 /* Settings "Start again" for one add-on. [worker-thread] */
 MV_API mv_status MV_CALL mv_script_restart(const char* addon_id);
 
-/* Quit: every script stops at its next instruction check. [any-thread] */
+/* Quit: every script is told to stop at once, then its worker is joined.
+ * A script stops at its next instruction check (every few thousand VM
+ * instructions, and inside the library loops that can run long), so this
+ * waits that long, not for a task to finish; the workers wind down
+ * together. It joins threads: call it at quit, never on the render thread
+ * and never from a script's own callback. [any-thread], not [no-block] */
 MV_API mv_status MV_CALL mv_script_stop_all(void);
 
 /* The commands of the add-ons running (or starting), for the command table:

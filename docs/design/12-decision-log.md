@@ -765,6 +765,15 @@ keyboard-only browse never reads anything. Selection is by whole words because
 
 ---
 
+**Contributed rows' remaps are saved too, by name (owner, 2026-10-29).** Only built-in rows were
+saved (by row index), so a key the person gave a Local search or Driftwire row came back on its
+manifest key at the next launch ("keybinds aren't saved between sessions"). A contributed row's
+index moves as add-ons come and go, so its remap is kept by `<add-on id>/<command id>`
+(`live_addon_key_remaps`; Windows `settings.ini [addon_keys]`, Mac `mv.addonKeys`), kept while its
+add-on is away, and put back when the add-on's rows are appended. Reset and a keymap pack clear it.
+
+---
+
 ## Windows chrome (XAML islands)
 
 **Island layout (2026-09-07).** Top island: command bar (48 DIP). Bottom island: filmstrip with
@@ -1828,6 +1837,13 @@ but never shows it, so a person sees only the menu-bar item / tray icon. A login
 add-on keeps within 60 s removes its own item and quits. Not a LaunchAgent with its own plist on
 the Mac (the Final Cut Pro agent's way): a login item needs no second launchd job, no bundle
 change and no separate approval path, and Login Items names it "MediaViewer".
+
+**…but ⌘Q quits (owner, 2026-10-29).** On the Mac, ⌘Q, the menu's Quit and the Dock's Quit hid
+the app while Receive when closed was on, so the app never really closed and an old version stayed
+running past updates ("when I close the application it doesn't fully close"). Every Quit now quits;
+only closing the viewer window leaves the process receiving in the menu bar. Still the same app,
+not a helper (owner chose this over a separate background process). Windows is unchanged: closing
+the window is its only quit gesture, and its tray icon's Quit quits.
 
 **Protocol 2: Noise with ML-KEM-768 beside X25519, not a bespoke handshake (2026-10-18, #472 PR 1).**
 `Noise_XXhfs_25519+MLKEM768_ChaChaPoly_BLAKE2b`: a published framework whose core is checked against
