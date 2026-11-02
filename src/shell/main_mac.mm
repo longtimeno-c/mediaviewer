@@ -58,6 +58,7 @@
 #include "image/page_thumbs.h"
 #include "io/collision_name.h"
 #include "io/paths.h"
+#include "io/storage.h"
 #include "io/file.h"
 #include "io/replace.h"
 #include "io/dir.h"
@@ -709,6 +710,8 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (uint64_t)galleryRangeGeneration;
 - (NSInteger)galleryRangeCount;
 - (uint64_t)thumbGeneration;
+// #612: the thumbnail cache's sweep, now (Settings set a cap).
+- (void)startThumbSweep;
 - (std::string)thumbKeyAtIndex:(NSInteger)index;
 - (std::string)listingSnapshot;
 - (BOOL)isIndexMarked:(NSInteger)index;
@@ -1313,6 +1316,14 @@ int32_t MvCopyOut(const std::string& out, char* buf, int32_t size) {
   return static_cast<int32_t>(out.size());
 }
 
+// #612 (docs/design/04 "Thumbnail cache upkeep"): Settings -> Storage's cap
+// for the thumbnail cache in bytes, 0 (the default) none; kept in the user's
+// defaults, read at launch, applied by the next sweep. And the host's folder
+// model, for Clear from Swift's background task (it lives as long as the app).
+std::atomic<std::uint64_t> g_thumb_cache_cap{0};
+std::atomic<mv::shell::folder_model*> g_storage_folder{nullptr};
+NSString* const kThumbCacheCapDefault = @"mv.thumbCacheCap";
+
 // What a path handed to the app names: the folder to open and, for a file, the
 // file to select there. One stat (containing_dir() would take a second); false
 // when nothing exists. A worker's call, but for the launch open.
@@ -1570,6 +1581,30 @@ extern "C" int32_t mv_chrome_tag_search(const char* query_utf8, char* buf, int32
 }
 extern "C" uint64_t mv_chrome_tag_generation(void) {
   return g_chrome_app ? [g_chrome_app tagGeneration] : 0;
+}
+// #612: Settings -> Storage. [any-thread]: walks folders, called from Swift's
+// background task, never the main thread. The core's places (io/storage.h)
+// and the crash database; the Mac keeps no telemetry spool.
+extern "C" int32_t mv_chrome_storage_report(char* buf, int32_t size) {
+  std::vector<mv::io::storage_place> extra;
+  if (std::string crashes = mv::shell::crash::crashes_dir(); !crashes.empty()) {
+    extra.push_back({"crash_reports", std::move(crashes)});
+  }
+  return MvCopyOut(mv::io::storage_json(mv::io::measure_storage(extra)), buf, size);
+}
+// [any-thread], a background task: deletes every cached thumbnail.
+extern "C" bool mv_chrome_thumb_cache_clear(void) {
+  mv::shell::folder_model* folder = g_storage_folder.load(std::memory_order_acquire);
+  return folder != nullptr && folder->clear_thumb_cache().has_value();
+}
+extern "C" uint64_t mv_chrome_thumb_cache_cap(void) {
+  return g_thumb_cache_cap.load(std::memory_order_relaxed);
+}
+// [main-thread] Saves the cap, and sweeps now when there is one.
+extern "C" void mv_chrome_set_thumb_cache_cap(uint64_t bytes) {
+  g_thumb_cache_cap.store(bytes, std::memory_order_relaxed);
+  [[NSUserDefaults standardUserDefaults] setObject:@(bytes) forKey:kThumbCacheCapDefault];
+  if (bytes != 0 && g_chrome_app) [g_chrome_app startThumbSweep];
 }
 extern "C" int32_t mv_chrome_current_folder(char* buf, int32_t size) {
   if (!g_chrome_app) return MvCopyOut("", buf, size);
@@ -2705,6 +2740,8 @@ static void MvAdoptNewDefaultViewerTypes() {
   // metadata write) and refreshes its size / mtime without a relist: Swift
   // re-reads the thumbnail keys when it moves (mv_chrome_thumb_generation).
   std::uint64_t _thumbGeneration;
+  // #612: the thumbnail cache's sweep, once a launch, after the first image.
+  BOOL _thumbSweepStarted;
   BOOL _helpVisible;
 
   // Settings screen + the router. _viewFlags uses the same bit layout as
@@ -3460,6 +3497,13 @@ static void MvAdoptNewDefaultViewerTypes() {
   // The Mac host has no mv_session: its job workers are the session's twin.
   mv::boot::mark(mv::boot::stage::session_created);
   _options.jobs = &_jobs;
+  // #612: Clear reaches the folder model from Swift's background task; the
+  // cache's cap is the user's choice from before (no file read: defaults).
+  g_storage_folder.store(&_folder, std::memory_order_release);
+  g_thumb_cache_cap.store(static_cast<std::uint64_t>(std::max<long long>(
+                              0, [[[NSUserDefaults standardUserDefaults] objectForKey:kThumbCacheCapDefault]
+                                     longLongValue])),
+                          std::memory_order_relaxed);
   _tags = std::make_unique<mv::meta::tag_index>(
       mv::meta::tag_index::cache_fn([] { return &mv::meta::default_meta_cache(); }),
       [](std::string_view path) -> mv::result<mv::meta::search_facts> {
@@ -4216,6 +4260,7 @@ static void MvAdoptNewDefaultViewerTypes() {
     }
   }
   [self startTagScanIfDue];
+  [self startThumbSweepIfDue];
   // Issue #207: ratings and labels arriving on the pool re-apply a cull filter.
   if (_meta.consume_cull_changed() && mv::io::needs_cull_marks(mv::io::kind_filter_mask(_kindFilter))) {
     _refilterListing = YES;
@@ -10397,6 +10442,20 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
   _tagScanTimer = nil;
 }
 
+// #612 (docs/design/04 "Thumbnail cache upkeep"): the cache's sweep, once a
+// launch, when a still is on screen: never ahead of the view (CLAUDE.md). A
+// background job that waits while the viewer pans or plays.
+- (void)startThumbSweepIfDue {
+  if (_thumbSweepStarted || !_lab.showing_still()) return;
+  _thumbSweepStarted = YES;
+  [self startThumbSweep];
+}
+
+- (void)startThumbSweep {
+  _folder.start_thumb_sweep(_jobs, g_thumb_cache_cap.load(std::memory_order_relaxed),
+                            [] { return mv::shell::g_present_busy.load(std::memory_order_relaxed); });
+}
+
 - (void)startTagScanIfDue {
   if (!_tagScanPending || _listOpen || _items.empty()) return;
   if (!_lab.showing_still() && CFAbsoluteTimeGetCurrent() - _tagScanListedAt < 1.0) return;
@@ -12383,6 +12442,10 @@ static NSString* const kDefaultsPinnedFolders = @"mv.pinnedFolders";  // issue #
   // and joins running ones, so this ordering guarantees that. Both block,
   // so both run on a background queue; the window is already closed by the
   // time this method runs, so nothing user-visible waits on it.
+  // #612: a sweep waiting out a busy viewer would hold a worker the join
+  // below waits for; Clear no longer reaches the folder model.
+  g_storage_folder.store(nullptr, std::memory_order_release);
+  _folder.stop_thumb_sweep();
   dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
     // PR 13 / 14: running clip jobs are cancelled and their temporaries
     // removed (no partial output); joins the queue's workers.
