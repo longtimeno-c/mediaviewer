@@ -70,6 +70,7 @@
 #include "shell/video_timeline.h"
 #include "edit/auto_adjust.h"
 #include "edit/clip_strip.h"
+#include "edit/detail.h"
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
 #include "shell/file_jobs.h"
@@ -144,6 +145,9 @@ constexpr UINT kMsgSiblingsReady = WM_APP + 0x73;  // parent listing for Ctrl+Le
 constexpr UINT_PTR kHistogramTimerId = 0x7701;
 constexpr UINT kHistogramDebounceMs = 120;
 constexpr UINT kMsgAdjustJobDone = WM_APP + 0x74;
+// Slice 4: the detail pass waits for its sliders to settle too.
+constexpr UINT_PTR kDetailTimerId = 0x7703;
+constexpr UINT kDetailDebounceMs = 150;
 // PR 15 (docs/design/10 "OS integration").
 constexpr UINT kMsgFlattenDone = WM_APP + 0x76;     // Ctrl+Alt+C's bake finished (any thread posts)
 constexpr UINT kMsgJumpListPruned = WM_APP + 0x77;  // folders the user removed from the jump list
@@ -296,6 +300,11 @@ struct app_state {
   mv::shell::adjust_pane adjust;
   std::shared_ptr<const mv::image::linear_image> working;
   float red_eye_size = 0.0f;  // slice 3: the red-eye tool's size, −100..+100
+  // Slice 4: the working image as built, before the detail pass; the pass on
+  // the canvas (`working` is its result), and the one in flight.
+  std::shared_ptr<const mv::image::linear_image> working_base;
+  mv::edit::detail_params detail_shown;
+  std::uint64_t detail_token = 0;
   std::atomic<mv::generation> adjust_generation{1};
   // PR 13 / 14 (docs/design/08): trim mode on the current clip, the keyframe-index
   // request in flight for it, and the Jobs pane's wish. The jobs themselves
@@ -2143,6 +2152,7 @@ void schedule_rotation_write(app_state* app) noexcept {
 
 void adjust_item_changed(app_state* app);
 void adjust_colour_changed(app_state* app);
+void schedule_detail(app_state* app) noexcept;
 void strip_hint_show(app_state* app);
 bool sync_page_stop(app_state* app, bool opened);
 void page_sidebar_changed(app_state* app);
@@ -2359,6 +2369,8 @@ bool run_edit_command(app_state* app, mv::shell::command_id command) {
 struct adjust_job_result {
   bool histogram = false;  // else a working-image build (or an Auto, below)
   bool auto_section = false;  // a section's Auto: `value` is its result
+  bool detail = false;        // slice 4: a detail pass; `working` is its result
+  mv::edit::detail_params params;
   std::uint64_t token = 0;
   bool ok = false;
   bool from_raw = false;
@@ -2399,6 +2411,9 @@ void push_adjust_pane(app_state* app) noexcept {
 void start_working_build(app_state* app, std::uint64_t token) {
   if (!app->window) return;
   app->working.reset();
+  app->working_base.reset();
+  app->detail_shown = {};
+  ++app->detail_token;  // a detail pass for the item left is dropped when it lands
   app->lab.drop_working();
   const mv::generation gen = app->adjust_generation.load(std::memory_order_relaxed);
   const HWND hwnd = app->window;
@@ -2524,6 +2539,7 @@ void set_curve_from_pane(app_state* app) {
   const bool has_colour = !app->edits.colour().identity();
   adjust_build_if(app, app->adjust.colour_changed(has_colour));
   schedule_histogram(app);
+  schedule_detail(app);
 }
 
 // Slice 3: what the next click on the photo does. The island's argument is
@@ -2602,8 +2618,63 @@ void reset_adjust_section(app_state* app, int section) {
   adjust_colour_changed(app);
 }
 
+// Slice 4 (edit/detail.h): when the detail sliders differ from the pass on
+// the canvas, run it again on the pool once they settle, from the working
+// image as built, and upload the result as the working texture.
+void schedule_detail(app_state* app) noexcept {
+  if (!app->window || !app->working_base) return;
+  if (mv::edit::detail_of(app->edits.colour()) == app->detail_shown) return;
+  ::SetTimer(app->window, kDetailTimerId, kDetailDebounceMs, nullptr);
+}
+
+void start_detail(app_state* app) {
+  if (app->window) ::KillTimer(app->window, kDetailTimerId);
+  if (!app->working_base) return;
+  const mv::edit::detail_params d = mv::edit::detail_of(app->edits.colour());
+  if (d == app->detail_shown) return;
+  const std::uint64_t token = ++app->detail_token;
+  const mv::generation gen = app->adjust_generation.load(std::memory_order_relaxed);
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(
+      mv::background_generation,
+      [base = app->working_base, d, token, gen, hwnd, item = app->edit_key, view_gen = app->edit_generation,
+       app](const mv::job_context&) -> mv::status {
+        const mv::job_context ctx(0, gen, &app->adjust_generation, 0);
+        std::shared_ptr<const mv::image::linear_image> shown = base;
+        if (!d.identity()) {
+          auto out = mv::edit::apply_detail(*base, d, &ctx);
+          if (!out) return out.error();
+          try {
+            shown = std::make_shared<const mv::image::linear_image>(std::move(out).value());
+          } catch (...) {
+            return mv::status::out_of_memory;
+          }
+        }
+        if (ctx.cancelled()) return mv::status::cancelled;
+        auto* r = new (std::nothrow) adjust_job_result{};
+        if (!r) return mv::status::out_of_memory;
+        r->detail = true;
+        r->token = token;
+        r->params = d;
+        r->ok = app->lab.upload_working(*shown, item, view_gen);
+        r->working = std::move(shown);
+        post_adjust_result(hwnd, r);
+        return r->ok ? mv::status::ok : mv::status::internal;
+      });
+}
+
 void on_adjust_job_done(app_state* app, std::unique_ptr<adjust_job_result> r) {
   if (!r) return;
+  if (r->detail) {
+    if (!r->ok || r->token != app->detail_token || !app->working_base) return;
+    app->working = std::move(r->working);
+    app->detail_shown = r->params;
+    ++app->input.activity_seq;
+    publish(app);
+    schedule_histogram(app);
+    schedule_detail(app);  // a slider that moved while this ran
+    return;
+  }
   if (r->auto_section) {
     if (!app->adjust.auto_tone_landed(r->token)) return;
     if (r->ok && adjust_still(app) &&
@@ -2623,7 +2694,10 @@ void on_adjust_job_done(app_state* app, std::unique_ptr<adjust_job_result> r) {
   }
   if (app->adjust.working_landed(r->token, r->ok, r->from_raw)) {
     app->working = std::move(r->working);
+    app->working_base = app->working;
+    app->detail_shown = {};
     schedule_histogram(app);
+    schedule_detail(app);
   }
   push_adjust_pane(app);
 }
@@ -2642,6 +2716,8 @@ void adjust_item_changed(app_state* app) {
     // Left the item: stop its build and release its textures.
     app->adjust_generation.fetch_add(1, std::memory_order_relaxed);
     app->working.reset();
+    app->working_base.reset();
+    ++app->detail_token;
     app->lab.drop_working();
   }
   if (token) {
@@ -2655,6 +2731,7 @@ void adjust_colour_changed(app_state* app) {
   const bool has_colour = app->edits.has_item() && !app->edits.colour().identity();
   adjust_build_if(app, app->adjust.colour_changed(has_colour));
   schedule_histogram(app);
+  schedule_detail(app);
   push_adjust_pane(app);
 }
 
@@ -2679,6 +2756,8 @@ void set_adjust_pane(app_state* app, bool on) {
     // Nothing on the canvas needs the working image now; a reopen rebuilds it.
     app->adjust_generation.fetch_add(1, std::memory_order_relaxed);
     app->working.reset();
+    app->working_base.reset();
+    ++app->detail_token;
     app->lab.drop_working();
     app->adjust.working_dropped();
   }
@@ -2705,6 +2784,7 @@ void set_adjust_from_pane(app_state* app, mv::edit::adjust_param p, float value)
   const bool has_colour = !app->edits.colour().identity();
   adjust_build_if(app, app->adjust.colour_changed(has_colour));
   schedule_histogram(app);
+  schedule_detail(app);
 }
 
 void reset_adjust_from_pane(app_state* app) {
@@ -9611,6 +9691,10 @@ std::optional<LRESULT> window_on_timer(HWND hwnd, UINT msg, WPARAM wparam, LPARA
       }
       if (wparam == kHistogramTimerId) {
         start_histogram(app);
+        return 0;
+      }
+      if (wparam == kDetailTimerId) {
+        start_detail(app);
         return 0;
       }
       if (wparam == kMetaTimerId) {

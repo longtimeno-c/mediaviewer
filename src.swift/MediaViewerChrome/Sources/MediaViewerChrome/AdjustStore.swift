@@ -48,7 +48,11 @@ final class AdjustStore: ObservableObject {
         AdjustSpec(name: "Mid-tones", min: -100, max: 100, step: 2, format: signed),
         AdjustSpec(name: "White", min: -100, max: 0, step: 1) { String(format: "%.0f", $0) },
       ]
-    } + (0..<8).flatMap { _ in [s("Hue"), s("Saturation"), s("Luminance")] }
+    } + (0..<8).flatMap { _ in [s("Hue"), s("Saturation"), s("Luminance")] } + [
+      s("Definition"), s("Brilliance"),
+      AdjustSpec(name: "Sharpen", min: 0, max: 100, step: 5) { String(format: "%.0f", $0) },
+      AdjustSpec(name: "Noise reduction", min: 0, max: 100, step: 5) { String(format: "%.0f", $0) },
+    ]
   }()
   /// edit::adjust_section order.
   static let sections: [AdjustSection] = [
@@ -65,6 +69,8 @@ final class AdjustStore: ObservableObject {
     // Red-Eye has a tool, no slider.
     AdjustSection(name: "Selective Colour", icon: "paintpalette", params: Array(28..<52), hasAuto: false),
     AdjustSection(name: "Red-Eye", icon: "eye.slash", params: [], hasAuto: false),
+    // Slice 4: a pass over the working image; the canvas follows when it settles.
+    AdjustSection(name: "Detail", icon: "triangle", params: [52, 53, 54, 55], hasAuto: false),
   ]
   static let selectiveSection = 6
   static let redEyeSection = 7

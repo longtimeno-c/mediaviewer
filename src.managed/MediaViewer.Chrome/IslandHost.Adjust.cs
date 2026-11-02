@@ -37,10 +37,10 @@ namespace MediaViewer.Chrome;
 /// </remarks>
 public static partial class IslandHost
 {
-    // shell/adjust_pane.h adjust_view: 2 ints, 52 floats, 2 floats, 2 ints,
+    // shell/adjust_pane.h adjust_view: 2 ints, 56 floats, 2 floats, 2 ints,
     // 4 ints (curve_n), 2 x 4 x 8 floats (curve x, y), 2 ints (picking,
     // spot_count), then 4 x 64 uint16.
-    internal const int AdjustParamCount = 52;
+    internal const int AdjustParamCount = 56;
     internal const int CurvePoints = 8;
     internal const int AdjustViewSize =
         24 + 4 * AdjustParamCount + 16 + 2 * 4 * 4 * CurvePoints + 8 + 2 * 4 * HistogramBins;
@@ -110,6 +110,9 @@ public static partial class IslandHost
         new("Hue", -1, -100, 100, 5, Signed), new("Saturation", -1, -100, 100, 5, Signed), new("Luminance", -1, -100, 100, 5, Signed),
         new("Hue", -1, -100, 100, 5, Signed), new("Saturation", -1, -100, 100, 5, Signed), new("Luminance", -1, -100, 100, 5, Signed),
         new("Hue", -1, -100, 100, 5, Signed), new("Saturation", -1, -100, 100, 5, Signed), new("Luminance", -1, -100, 100, 5, Signed),
+        // Slice 4: Detail, parked through AdjustParam too.
+        new("Definition", -1, -100, 100, 5, Signed), new("Brilliance", -1, -100, 100, 5, Signed),
+        new("Sharpen", -1, 0, 100, 5, v => $"{v:0}"), new("Noise reduction", -1, 0, 100, 5, v => $"{v:0}"),
     };
 
     // edit::adjust_section order: name, Segoe Fluent glyph, parameters as shown, Auto.
@@ -125,6 +128,7 @@ public static partial class IslandHost
         new("Curves", "\uE9D9", Array.Empty<int>(), false),                // Diagnostic
         new("Selective Colour", "\uE790", Enumerable.Range(28, 24).ToArray(), false),  // Color
         new("Red-Eye", "\uE7B3", Array.Empty<int>(), false),               // RedEye
+        new("Detail", "\uE9F5", new[] { 52, 53, 54, 55 }, false),          // Processing
     };
 
     // Last view native pushed.
@@ -137,7 +141,7 @@ public static partial class IslandHost
     private static int _autoSection = -1;
     private static readonly ushort[] _histBins = new ushort[4 * HistogramBins];
     // Which sections are open; kept while the pane is rebuilt.
-    private static readonly bool[] _sectionOpen = { true, true, false, false, false, false, false, false };
+    private static readonly bool[] _sectionOpen = { true, true, false, false, false, false, false, false, false };
     // Slice 3: the band Selective Colour shows, the pick mode and fixes from
     // native, the red-eye tool's size, and their controls.
     private static int _band;
@@ -559,7 +563,7 @@ public static partial class IslandHost
 
     // Levels shows the picked channel's three sliders only.
     private static bool RowShown(int param) =>
-        param < 16 || (param < 28 ? (param - 16) / 3 == _levelsChannel : (param - 28) / 3 == _band);
+        param < 16 || param >= 52 || (param < 28 ? (param - 16) / 3 == _levelsChannel : (param - 28) / 3 == _band);
 
     private static List<Point> CurvePointsOf(int ch) =>
         _curves[ch].Count >= 2 ? new List<Point>(_curves[ch]) : new List<Point> { new(0, 0), new(1, 1) };

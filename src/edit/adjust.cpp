@@ -73,7 +73,14 @@ adjust_range range_of(adjust_param p) noexcept {
     case adjust_param::levels_blue_white: return {-100.0f, 0.0f, 1.0f, "White"};
     default: break;
   }
-  if (p >= adjust_param::sel_red_hue && p < adjust_param::count) {
+  switch (p) {
+    case adjust_param::definition: return {-100.0f, 100.0f, 5.0f, "Definition"};
+    case adjust_param::brilliance: return {-100.0f, 100.0f, 5.0f, "Brilliance"};
+    case adjust_param::sharpen: return {0.0f, 100.0f, 5.0f, "Sharpen"};
+    case adjust_param::noise: return {0.0f, 100.0f, 5.0f, "Noise reduction"};
+    default: break;
+  }
+  if (p >= adjust_param::sel_red_hue && p <= adjust_param::sel_magenta_lum) {
     constexpr const char* names[3] = {"Hue", "Saturation", "Luminance"};
     const int k = (static_cast<int>(p) - static_cast<int>(adjust_param::sel_red_hue)) % 3;
     return {-100.0f, 100.0f, 5.0f, names[k]};
@@ -115,7 +122,8 @@ adjust_section section_of(adjust_param p) noexcept {
     case adjust_param::levels_blue_white: return adjust_section::levels;
     default: break;
   }
-  if (p >= adjust_param::sel_red_hue && p < adjust_param::count) return adjust_section::selective;
+  if (p >= adjust_param::sel_red_hue && p <= adjust_param::sel_magenta_lum) return adjust_section::selective;
+  if (p >= adjust_param::definition && p <= adjust_param::noise) return adjust_section::detail;
   switch (p) {
     default: return adjust_section::count;
   }
@@ -134,8 +142,15 @@ colour without_section(const colour& c, adjust_section s) noexcept {
   return out;
 }
 
+bool colour::has_detail() const noexcept {
+  for (int i = static_cast<int>(adjust_param::definition); i <= static_cast<int>(adjust_param::noise); ++i) {
+    if (v[static_cast<std::size_t>(i)] != 0.0f) return true;
+  }
+  return false;
+}
+
 bool colour::has_selective() const noexcept {
-  for (int i = static_cast<int>(adjust_param::sel_red_hue); i < kAdjustParamCount; ++i) {
+  for (int i = static_cast<int>(adjust_param::sel_red_hue); i <= static_cast<int>(adjust_param::sel_magenta_lum); ++i) {
     if (v[static_cast<std::size_t>(i)] != 0.0f) return true;
   }
   return false;

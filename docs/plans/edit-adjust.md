@@ -101,7 +101,7 @@ red-eye brush landed here too (8 fixes, table rows, placed through the geometry)
 pass; the Mac self-test clicks the picker and the red-eye tool on the photo and moves a band;
 the C# compiles; Windows native is CI's.
 
-### 4. Detail: definition, brilliance, sharpen, noise reduction (one cached pass)
+### 4. Detail: definition, brilliance, sharpen, noise reduction (one cached pass) — built 2026-11-02
 
 These are local, so they need neighbours. One **base layer** (an edge-aware blur of luma at a
 quarter of the preview size) built on a worker when the detail sliders change, uploaded as an
@@ -111,6 +111,15 @@ bilateral / non-local means pass on a worker, at preview size while dragging and
 export; its result replaces the working image for the kernel. The render thread never runs the
 pass. Budget: the pass's time is reported; the drag stays at display rate because the kernel only
 samples the last finished layer.
+
+**As built, changed from the above:** the pass runs on the CPU over the working image (not a GPU
+base layer read by the kernel), and its result replaces the working texture. Why: no new texture
+binding or shader twin on either GPU, and the export runs the very same code at full size, so it
+matches the preview by construction. The cost: the canvas follows a detail slider 150 ms after it
+settles plus the pass (32–96 ms at the preview size), not during the drag. Status: `mv_tests`
+`[detail]` (each slider's effect, identity, scale-invariance between 3072 and 6144 px) and the
+full suite pass; the Mac self-test sets Sharpen and Noise reduction and exports; the C# compiles;
+Windows native is CI's.
 
 ### 5. Enhance inside Edit
 

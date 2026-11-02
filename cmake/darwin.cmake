@@ -430,6 +430,7 @@ add_library(mv_edit STATIC
   src/edit/auto_tone.cpp
   src/edit/auto_tone.h
   src/edit/bake.cpp
+  src/edit/detail.cpp
   src/edit/bake.h
   src/edit/histogram.cpp
   src/edit/histogram.h

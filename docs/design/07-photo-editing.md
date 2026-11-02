@@ -62,6 +62,7 @@ The stack folds into two canonical states:
   | Curves | up to 8 points per channel (image, red, green, blue), no parameter |
   | Selective Colour | hue (±30°), saturation, luminance for red, orange, yellow, green, aqua, blue, purple, magenta |
   | Red-Eye | up to 8 fixes, each a click on a pupil, no parameter |
+  | Detail | definition, brilliance (−100..+100), sharpen, noise reduction (0..100) |
 
   Every other parameter is −100..+100 and 0 is always the identity. Order: white balance
   (temperature, tint) and exposure as one per-channel gain → **tone** (highlights, shadows,
@@ -92,6 +93,19 @@ The stack folds into two canonical states:
   (`place_spots`: the canvas from the preview placement, the bake from its own, the histogram on
   the working frame); inside a spot, red above green and blue is pulled to their mean, fading over
   the outer 30 %. It runs first, on the gains. The table is 200 rows, 3.2 KB.
+
+  **Detail** is not in the kernel: it needs neighbours. It is one CPU pass over the linear
+  working image before the kernel (`edit/detail.h`, `apply_detail`), on perceptual lightness
+  L = luma^(1/2.2), put back as a ratio (hue kept): noise reduction (L toward a range-weighted
+  mean, weight 1 / (1 + (ΔL/σ)²), and each channel's ratio to luma toward its wide box mean),
+  definition (L − a wide base, 1 % of the long edge, times a mid-tone weight), brilliance (lift what
+  sits in a dark neighbourhood, hold back what sits in a bright one), sharpen (an unsharp mask,
+  each step capped at 0.08 of L). Radii scale with the picture's long edge against
+  `kWorkingPreviewEdge`, so the export (the same pass at full size, before the bake) looks like the
+  preview. On the canvas the host runs it on a worker 150 ms after a detail slider settles, from
+  the working image as built, and uploads the result as the working texture; the histogram and the
+  Autos read that result. Measured (Apple M-series, 3072 × 2048, best of 3): sharpen or
+  definition 32 ms, noise 87 ms, all four 96 ms.
 
   The **white-balance picker** (Colour) and the **red-eye tool** (Red-Eye) make the next click on
   the photo theirs (`adjust_pick`; the canvas does not pan): the click goes through the canvas map
@@ -247,7 +261,7 @@ What exists is the first editing set:
 | Built | |
 |---|---|
 | Geometry | Rotate, flip, crop (aspect presets, [20](20-edit-workspace.md)), straighten ±45°, resize |
-| Colour | Light (exposure, highlights, shadows, whites, blacks, contrast), Colour (saturation, vibrance, temperature, tint), Black & White (intensity, filter, tone), Vignette (strength, radius, softness), Levels (per channel), Curves (per channel, a point editor), Selective Colour (eight bands), Red-Eye (clicks); a white-balance picker; an Auto and a reset per section |
+| Colour | Light (exposure, highlights, shadows, whites, blacks, contrast), Colour (saturation, vibrance, temperature, tint), Black & White (intensity, filter, tone), Vignette (strength, radius, softness), Levels (per channel), Curves (per channel, a point editor), Selective Colour (eight bands), Red-Eye (clicks), Detail (definition, brilliance, sharpen, noise reduction); a white-balance picker; an Auto and a reset per section |
 | Readouts | Histogram (R, G, B, luma) and clipping percentages |
 | Lossless | JPEG rotate / flip / MCU-aligned crop, from the viewer (`[` `]` `H` `V`) or on export |
 | Export | JPEG / PNG, long-edge resize, metadata policy |
@@ -261,7 +275,8 @@ kernel or one more pass, evaluated in the order above.
 - Redo and a named history list for stills (`edit_stack::undo` only pops).
 - Perspective / keystone, lens correction; colour grading; automatic red-eye (it needs the
   faces of the AI pack; [plan](../plans/edit-adjust.md) slice 6 reads them).
-- Brilliance, definition, sharpen, noise reduction (slice 4); dehaze, grain, split-tone.
+- Dehaze, grain, split-tone; detail on the GPU (the pass is on the CPU, so the canvas follows a
+  detail slider when it settles, not during the drag).
 - Local adjustments: gradients, brush masks, healing / clone.
 - Auto-straighten, auto-crop. An Auto key outside the pane (the pane's `A` runs the focused
   slider's section).
