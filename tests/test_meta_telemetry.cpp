@@ -275,6 +275,55 @@ TEST_CASE("telemetry: a DJI clip's subtitle track places it; a film's subtitles 
   CHECK(m.route.empty());
 }
 
+// #606 review: a film's subtitles are not walked. In an MP4 a text track
+// whose first cues do not parse as DJI's stops being read after a few; an
+// MKV's or AVI's text tracks are never DJI candidates (their demuxers read
+// through discarded streams), even with DJI-shaped text. A DJI clip whose
+// first cues come before lock (0, 0) is still DJI.
+TEST_CASE("telemetry: a film's subtitles cost a few cues, never the whole file", "[meta][telemetry]") {
+  auto dji_line = [](int i) {
+    char buf[200];
+    std::snprintf(buf, sizeof buf, "FrameCnt: %d [latitude: %.6f] [longitude: %.6f]", i, 38.79 + i * 1e-4,
+                  -9.39 - i * 1e-4);
+    return std::string(buf);
+  };
+  {
+    // 300 film lines, then DJI-shaped text from cue 200: never reached.
+    temp_file film("long_film.mp4");
+    std::vector<mv::test::cuefx::line> lines;
+    for (int i = 0; i < 300; ++i) {
+      lines.push_back({i * 1000, i * 1000 + 900, i < 200 ? "Line " + std::to_string(i) + " of the film." : dji_line(i)});
+    }
+    REQUIRE(mv::test::cuefx::make(film.path.string(), "mp4", {}, lines));
+    const auto r = meta::detail::clip_route(film.path.string(), 1000);
+    CHECK(r.points.empty());
+    CHECK(r.packets <= 10);
+  }
+  {
+    // DJI text in a Matroska file: not a candidate at all.
+    temp_file mkv("dji_text.mkv");
+    std::vector<mv::test::cuefx::line> lines;
+    for (int i = 1; i < 40; ++i) lines.push_back({i * 33, i * 33 + 33, dji_line(i)});
+    REQUIRE(mv::test::cuefx::make(mkv.path.string(), "matroska", {}, lines));
+    const auto r = meta::detail::clip_route(mkv.path.string(), 1000);
+    CHECK(r.points.empty());
+    CHECK(r.packets == 0);
+  }
+  {
+    // A drone's first 30 cues before lock still choose the track.
+    temp_file dji("late_lock.mp4");
+    std::vector<mv::test::cuefx::line> lines;
+    for (int i = 0; i < 30; ++i) {
+      lines.push_back({i * 33, i * 33 + 33, "FrameCnt: " + std::to_string(i) + " [latitude: 0.000000] [longitude: 0.000000]"});
+    }
+    for (int i = 30; i < 60; ++i) lines.push_back({i * 33, i * 33 + 33, dji_line(i)});
+    REQUIRE(mv::test::cuefx::make(dji.path.string(), "mp4", {}, lines));
+    const auto r = meta::detail::clip_route(dji.path.string(), 1000);
+    REQUIRE(r.points.size() == 30);
+    CHECK(r.points.front().lat == Approx(38.79 + 30 * 1e-4).margin(1e-6));
+  }
+}
+
 // The corpus of tools/fuzz/fuzz_meta_gpmf.cpp, from the builders above.
 // Hidden: `MV_SEED_DIR=tests/data/seeds mv_tests "[.write-seeds]"`.
 TEST_CASE("write the telemetry fuzz seeds", "[.write-seeds]") {

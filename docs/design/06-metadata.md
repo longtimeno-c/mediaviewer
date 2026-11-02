@@ -130,6 +130,18 @@ many fixes a second. [`src/meta/telemetry.h`](../../src/meta/telemetry.h) reads 
   (`location.h`) is the header and the whole telemetry, thinned to `n` points evenly spaced, the
   first and last kept; a still is refused from its first kilobyte without an FFmpeg open. It
   serves the add-on host table's `route_of` ([27](27-places.md) "Routes").
+- **Which text tracks are DJI's.** Only an MP4 / MOV's text tracks are candidates (DJI writes
+  those; Matroska's and AVI's demuxers read through every cluster of a discarded stream, so a
+  film's subtitles there would walk the file). A candidate whose first 10 cues have neither a fix
+  nor DJI's shape (`dji_text_shape`: the latitude / longitude keys or a `GPS(` group, whatever the
+  values, so a drone's cues before lock still count) stops being read, and the read stops when no
+  candidate is left: a film's subtitles cost ten cues.
+- **Who else does the full read.** `meta::read` serves Import's capture record and the Mac's
+  Spotlight importer as well as the pane, so those read a GoPro or DJI clip's whole telemetry too
+  (one small `gpmd` packet a second, on their workers).
+- **A late lock.** The tag pass stops after 8 `gpmd` packets (about 8 s): a GoPro clip whose GPS
+  locks later has no `where` in meta_cache.db, so Places, `location_of` and folder `place:` miss it,
+  and the AI pack does not ask for its track. Its pane still shows the position and the route.
 - An ISO 6709 tag, when a clip has one, stays its position; the route is kept beside it.
 - **Not read:** DJI's newer `djmd` protobuf track (Mini 4 Pro, Avata 2, Osmo Action 4 and later)
   has no published schema, and no sample was at hand to build it from; those clips get no route

@@ -83,6 +83,10 @@ std::size_t read_gpmf(std::span<const std::uint8_t> payload, route_builder& out)
 // The fix it carries, or nullopt when the text is not DJI telemetry or has no
 // fix (0, 0 before lock). Bounded: only the first 4 KB is looked at.
 [[nodiscard]] std::optional<geo_point> parse_dji_text(std::string_view text) noexcept;
+// True when the cue has DJI's telemetry shape (its latitude / longitude keys,
+// or a GPS(...) group), whatever the values: a drone's cues before lock carry
+// 0, 0, which parse_dji_text refuses, yet the track is still DJI's.
+[[nodiscard]] bool dji_text_shape(std::string_view text) noexcept;
 
 // The route as the search side keeps it: at most `max_points`, the first and
 // the last fix always kept, the rest evenly spaced along the list.

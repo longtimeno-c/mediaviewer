@@ -109,6 +109,7 @@ struct route_read {
   std::size_t fixes = 0;          // fixes accepted before thinning
   bool thinned = false;
   std::string source;             // "GoPro GPMF", "DJI subtitle telemetry"; "" with no points
+  std::size_t packets = 0;        // telemetry-candidate packets read (the read's cost)
 };
 
 // The telemetry of an open libavformat context (an AVFormatContext*, kept

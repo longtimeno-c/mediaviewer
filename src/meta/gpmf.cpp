@@ -396,6 +396,21 @@ std::optional<geo_point> parse_dji_text(std::string_view text) noexcept {
   return p;
 }
 
+bool dji_text_shape(std::string_view text) noexcept {
+  if (text.size() > 4096) text = text.substr(0, 4096);
+  if (find_word(text, "latitude") != std::string_view::npos &&
+      (find_word(text, "longitude") != std::string_view::npos ||
+       find_word(text, "longtitude") != std::string_view::npos)) {
+    return true;
+  }
+  for (std::size_t g = find_word(text, "gps"); g != std::string_view::npos; g = find_word(text, "gps", g + 3)) {
+    std::size_t i = g + 3;
+    skip_spaces(text, i);
+    if (i < text.size() && text[i] == '(') return true;
+  }
+  return false;
+}
+
 std::vector<geo_point> sample_route(std::span<const geo_point> route, std::size_t max_points) {
   std::vector<geo_point> out;
   if (route.empty() || max_points == 0) return out;

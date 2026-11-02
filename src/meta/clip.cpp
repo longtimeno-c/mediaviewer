@@ -279,6 +279,9 @@ const char* text_codec(AVCodecID id) {
 constexpr int kHeadGpmfPackets = 8;
 constexpr int kHeadDjiPackets = 60;
 constexpr int kMaxTelemetryPackets = 250000;
+// A text track is DJI telemetry only if its cues parse as DJI's text; a
+// track whose first cues do not (a film's subtitles) stops being read.
+constexpr int kDjiProbeCues = 10;
 
 struct telemetry_source {
   int stream = -1;
@@ -286,8 +289,15 @@ struct telemetry_source {
   const char* text = nullptr;   // the subtitle codec's name for cue_text
 };
 
-// The GoPro MET track (codec tag `gpmd`) wins; else every text subtitle
-// track is a DJI candidate, decided by its first cues.
+// DJI drones write MP4 / MOV. Only there is a text track a DJI candidate:
+// Matroska and AVI demuxers read through the clusters of streams they discard,
+// so probing a film's subtitles there would walk the file.
+bool mov_family(const AVFormatContext& ctx) {
+  return ctx.iformat && ctx.iformat->name && std::string_view(ctx.iformat->name).find("mov") != std::string_view::npos;
+}
+
+// The GoPro MET track (codec tag `gpmd`) wins; else, in an MP4 / MOV, every
+// text subtitle track is a DJI candidate, decided by its first cues.
 std::vector<telemetry_source> telemetry_sources(const AVFormatContext& ctx) {
   std::vector<telemetry_source> out;
   for (unsigned i = 0; i < ctx.nb_streams; ++i) {
@@ -297,6 +307,7 @@ std::vector<telemetry_source> telemetry_sources(const AVFormatContext& ctx) {
       return out;
     }
   }
+  if (!mov_family(ctx)) return out;
   for (unsigned i = 0; i < ctx.nb_streams; ++i) {
     const AVCodecParameters& p = *ctx.streams[i]->codecpar;
     if (p.codec_type != AVMEDIA_TYPE_SUBTITLE) continue;
@@ -334,6 +345,8 @@ route_read read_telemetry(void* fmt_ctx, telemetry_read mode, std::size_t max_po
     // others (a film's subtitles) stop counting once one has been chosen.
     int dji_stream = -1;
     int read = 0;
+    std::size_t live = sources.size();                     // candidates still read
+    std::vector<int> misses(ctx->nb_streams, 0);           // DJI cues that did not parse
     AVPacket* pkt = av_packet_alloc();
     if (pkt) {
       struct packet_free {
@@ -358,7 +371,18 @@ route_read read_telemetry(void* fmt_ctx, telemetry_read mode, std::size_t max_po
           if (const auto p = parse_dji_text(text)) {
             dji_stream = si;
             r.source = "DJI subtitle telemetry";
-            route.add(*p);
+            route.add(*p);  // a fix before lock (0, 0) is refused here
+          } else if (dji_text_shape(text)) {
+            dji_stream = si;  // DJI's, before lock: keep reading it alone
+          } else if (dji_stream < 0 && ++misses[static_cast<unsigned>(si)] >= kDjiProbeCues) {
+            // Not DJI's text: stop reading this track, and stop altogether
+            // when no candidate is left.
+            ctx->streams[si]->discard = AVDISCARD_ALL;
+            by_stream[static_cast<unsigned>(si)] = nullptr;
+            if (--live == 0) {
+              av_packet_unref(pkt);
+              break;
+            }
           }
         }
         av_packet_unref(pkt);
@@ -369,6 +393,7 @@ route_read read_telemetry(void* fmt_ctx, telemetry_read mode, std::size_t max_po
     for (unsigned i = 0; i < ctx->nb_streams; ++i) ctx->streams[i]->discard = was[i];
     r.fixes = route.accepted();
     r.thinned = route.thinned();
+    r.packets = static_cast<std::size_t>(read);
     r.points = route.take();
     if (head && r.points.size() > 1) r.points.resize(1);  // the first fix is all the tag pass keeps
     if (r.points.empty()) r.source.clear();
