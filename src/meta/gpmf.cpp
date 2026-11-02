@@ -286,6 +286,7 @@ route_builder::route_builder(route_limits limits) noexcept
 void route_builder::add(const geo_point& p) noexcept {
   if (!valid_fix(p)) return;
   ++accepted_;
+  last_ = p;
   if (!points_.empty() && step_m_ > 0 && distance_m(points_.back(), p) < step_m_) return;
   try {
     if (points_.size() >= limits_.max_points) {
@@ -301,6 +302,24 @@ void route_builder::add(const geo_point& p) noexcept {
   } catch (...) {
     // Out of memory: what is held stands.
   }
+}
+
+std::vector<geo_point> route_builder::take() noexcept {
+  // A route ends where the clip did: the last fix may have been inside the
+  // step of the point before it, or dropped while the route was full.
+  if (accepted_ > 0 && !points_.empty() &&
+      (points_.back().lat != last_.lat || points_.back().lon != last_.lon)) {
+    if (points_.size() >= limits_.max_points) {
+      points_.back() = last_;
+    } else {
+      try {
+        points_.push_back(last_);
+      } catch (...) {
+        points_.back() = last_;  // out of memory: the end still wins
+      }
+    }
+  }
+  return std::move(points_);
 }
 
 double distance_m(const geo_point& a, const geo_point& b) noexcept {

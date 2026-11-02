@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <limits>
 #include <span>
 #include <string>
 
@@ -204,7 +205,11 @@ std::vector<geo_point> read_route(std::string_view utf8_path, std::size_t max_po
   auto prefix = io::read_prefix(utf8_path, 1024);
   if (!prefix) return {};
   if (codec::probe(*prefix) != codec::format_family::unknown) return {};  // a still: no telemetry
-  detail::route_read r = detail::clip_route(utf8_path, std::max<std::size_t>(max_points, 2));
+  // Built at twice the cap: halving leaves the builder between half and all
+  // of what it is given, so twice the cap holds at least `max_points` once it
+  // has thinned, and sample_route then gives exactly `max_points`, both ends kept.
+  const std::size_t build_cap = max_points > std::numeric_limits<std::size_t>::max() / 2 ? max_points : max_points * 2;
+  detail::route_read r = detail::clip_route(utf8_path, std::max<std::size_t>(build_cap, 2));
   if (r.points.size() <= max_points) return std::move(r.points);
   return sample_route(r.points, max_points);
 }

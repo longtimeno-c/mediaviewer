@@ -48,7 +48,9 @@ class route_builder {
   // failure keeps what is held.
   void add(const geo_point& p) noexcept;
   [[nodiscard]] const std::vector<geo_point>& points() const noexcept { return points_; }
-  [[nodiscard]] std::vector<geo_point> take() noexcept { return std::move(points_); }
+  // The route, ending at the last fix accepted even when thinning or the
+  // minimum step skipped it (it replaces the final point when full).
+  [[nodiscard]] std::vector<geo_point> take() noexcept;
   // Fixes offered and accepted (before thinning); true once thinning dropped any.
   [[nodiscard]] std::size_t accepted() const noexcept { return accepted_; }
   [[nodiscard]] bool thinned() const noexcept { return thinned_; }
@@ -59,6 +61,7 @@ class route_builder {
   std::vector<geo_point> points_;
   std::size_t accepted_ = 0;
   bool thinned_ = false;
+  geo_point last_{};  // the latest fix accepted (valid), kept or not
 };
 
 // Ground distance in metres between two points (haversine, mean Earth radius).
