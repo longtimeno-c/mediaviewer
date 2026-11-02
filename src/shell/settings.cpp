@@ -19,6 +19,7 @@ constexpr char kView[] = "view";
 constexpr char kDestinations[] = "destinations";
 constexpr char kRecent[] = "recent";
 constexpr char kKeys[] = "keys";
+constexpr char kAddonKeys[] = "addon_keys";
 constexpr char kCrash[] = "crash";
 constexpr char kHints[] = "hints";
 
@@ -233,6 +234,46 @@ void save_key_remaps(settings_store& store, std::span<const key_remap> list) noe
     save_key_overrides(store, out);
   } catch (...) {
   }
+}
+std::vector<addon_key_remap> load_addon_key_remaps(const settings_store& store) noexcept {
+  try {
+    std::vector<addon_key_remap> out;
+    const auto doc = store.snapshot();
+    if (!doc) return out;
+    const int n = doc->get_int(kAddonKeys, "n", 0);
+    for (int i = 0; i < n && i < 255; ++i) {
+      const std::string* v = doc->find(kAddonKeys, "r" + std::to_string(i));
+      if (!v || v->empty()) continue;
+      int k = 0, mods = 0, used = 0;
+      if (std::sscanf(v->c_str(), "%d,%d,%n", &k, &mods, &used) != 2 || used <= 0) continue;
+      if (k < 0 || k >= kKeyCount || mods < 0 || mods >= kModCombos) continue;
+      const std::string name = v->substr(static_cast<std::size_t>(used));
+      if (name.empty()) continue;
+      out.push_back(addon_key_remap{name, static_cast<key>(k), static_cast<std::uint8_t>(mods)});
+    }
+    return out;
+  } catch (...) {
+    return {};
+  }
+}
+void save_addon_key_remaps(settings_store& store, std::span<const addon_key_remap> list) noexcept {
+  try {
+    store.update([&](settings_doc& d) {
+      d.erase_prefix(kAddonKeys, "");
+      const std::size_t n = std::min<std::size_t>(list.size(), 255);
+      d.set(kAddonKeys, "n", std::to_string(n));
+      for (std::size_t i = 0; i < n; ++i) {
+        d.set(kAddonKeys, "r" + std::to_string(i),
+              std::to_string(static_cast<int>(list[i].k)) + "," + std::to_string(static_cast<int>(list[i].mods)) +
+                  "," + list[i].command);
+      }
+    });
+  } catch (...) {
+  }
+}
+std::vector<addon_key_remap> load_addon_key_remaps() noexcept { return load_addon_key_remaps(app_settings()); }
+void save_addon_key_remaps(std::span<const addon_key_remap> list) noexcept {
+  save_addon_key_remaps(app_settings(), list);
 }
 std::vector<key_remap> load_key_remaps() noexcept { return load_key_remaps(app_settings()); }
 void save_key_remaps(std::span<const key_remap> list) noexcept { save_key_remaps(app_settings(), list); }

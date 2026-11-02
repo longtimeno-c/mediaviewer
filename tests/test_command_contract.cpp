@@ -277,6 +277,50 @@ TEST_CASE("key remaps: superseded built-in rows are saved as their defaults",
   REQUIRE(live_bindings()[static_cast<std::size_t>(help)].mods == (mod_ctrl | mod_alt));
 }
 
+// Owner, 2026-10-29: a contributed row's remap (Local search, Driftwire) came back
+// on its manifest key at the next launch. It is kept by name, across a restart
+// that loads the add-on after the saved keys, and across the add-on going.
+TEST_CASE("key remaps: a contributed row's remap survives a restart and the add-on going",
+          "[shell][commands][remap]") {
+  const clean_table clean;
+  addon_command_row row;
+  row.addon = "example.addon";
+  row.id = "go";
+  row.name = "Go";
+  row.k = char_key('G');
+  row.mods = mod_ctrl | mod_shift;
+  row.modes = mask_of(mode::browse);
+  set_addon_commands(std::span<const addon_command_row>(&row, 1));
+  const std::size_t at = default_bindings().size();
+  REQUIRE(live_bindings().size() == at + 1);
+  REQUIRE(live_addon_key_remaps().empty());
+  REQUIRE(rebind_live(static_cast<int>(at), key::f9, mod_ctrl | mod_alt));
+
+  const auto saved = live_addon_key_remaps();
+  REQUIRE(saved.size() == 1);
+  REQUIRE(saved[0].command == "example.addon/go");
+  REQUIRE(live_key_remaps().empty());
+
+  // A restart: defaults and the saved lists, then the add-on's rows.
+  set_addon_commands({});
+  apply_key_remaps({});
+  apply_addon_key_remaps(saved);
+  set_addon_commands(std::span<const addon_command_row>(&row, 1));
+  REQUIRE(live_bindings()[at].k == key::f9);
+  REQUIRE(live_bindings()[at].mods == (mod_ctrl | mod_alt));
+
+  // The add-on goes and comes back: what it had is still saved, and back on it.
+  set_addon_commands({});
+  REQUIRE(live_addon_key_remaps().size() == 1);
+  set_addon_commands(std::span<const addon_command_row>(&row, 1));
+  REQUIRE(live_bindings()[at].k == key::f9);
+
+  // Reset is the defaults, the contributed row's too.
+  reset_live_bindings();
+  REQUIRE(live_bindings()[at].k == row.k);
+  REQUIRE(live_addon_key_remaps().empty());
+}
+
 #if defined(_WIN32)
 TEST_CASE("key remaps: round trip through settings.ini and a restart", "[shell][commands][remap][settings]") {
   const clean_table clean;

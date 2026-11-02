@@ -111,6 +111,12 @@ void save_key_overrides(std::span<const key_override> list) noexcept;
 void save_key_remaps(settings_store& store, std::span<const key_remap> list) noexcept;
 [[nodiscard]] std::vector<key_remap> load_key_remaps() noexcept;
 void save_key_remaps(std::span<const key_remap> list) noexcept;
+// Contributed add-on rows' remaps (commands.h live_addon_key_remaps), in their
+// own [addon_keys] section: "k,mods,<add-on id>/<command id>" each.
+[[nodiscard]] std::vector<addon_key_remap> load_addon_key_remaps(const settings_store& store) noexcept;
+void save_addon_key_remaps(settings_store& store, std::span<const addon_key_remap> list) noexcept;
+[[nodiscard]] std::vector<addon_key_remap> load_addon_key_remaps() noexcept;
+void save_addon_key_remaps(std::span<const addon_key_remap> list) noexcept;
 
 // Never fails loudly: a missing or unreadable file is the defaults above.
 [[nodiscard]] view_settings load_view_settings(const settings_store& store) noexcept;

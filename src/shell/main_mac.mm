@@ -743,6 +743,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 // "Check for Updates Automatically" and Settings share it.
 - (int32_t)updateAutoCheck;
 - (void)setUpdateAutoCheck:(BOOL)on;
+- (void)checkForUpdatesNow;
 // PR 11
 - (BOOL)adjustVisible;
 - (void)setAdjustVisible:(BOOL)visible;
@@ -1638,6 +1639,9 @@ extern "C" int32_t mv_chrome_update_auto_check(void) {
 }
 extern "C" void mv_chrome_set_update_auto_check(bool on) {
   if (g_chrome_app) [g_chrome_app setUpdateAutoCheck:on ? YES : NO];
+}
+extern "C" void mv_chrome_check_for_updates(void) {
+  if (g_chrome_app) [g_chrome_app checkForUpdatesNow];
 }
 
 extern "C" int32_t mv_chrome_export_last_choice(void) {
@@ -6718,6 +6722,14 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 #endif
 }
 
+// Settings' "Check now" (Windows' row, issue #220): what the app menu's
+// "Check for Updates…" does, Sparkle's own window saying what it found.
+- (void)checkForUpdatesNow {
+#if MV_WITH_SPARKLE
+  if (_updater) [_updater checkForUpdates:nil];
+#endif
+}
+
 // ---- Keys, commands, settings -----------------------------------------------
 
 - (void)pokeSnapshot {
@@ -8577,19 +8589,12 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
 // with no window left the app leaves the Dock (accessory). The add-on's own
 // threads are all that run; the canvas presents nothing.
 
+// ⌘Q (owner, 2026-10-29): Quit quits, background or not. Only closing the
+// viewer window leaves the process receiving in the menu bar; a Quit that hid
+// the app kept an old version running past updates and was not a quit.
 - (void)quitFromMenu:(id)sender {
   (void)sender;
-  if (!_quitForReal && mv::addon::default_slots().keeping_alive()) {
-    // Every window goes: add-on windows close (their add-on hears it), Settings closes.
-    for (NSWindow* w in [NSApp.windows copy]) {
-      if (w == self.window || !w.isVisible || w.sheetParent != nil) continue;
-      if (w == self.editorWindow) continue;  // windowShouldClose: of the viewer handles it
-      if ([w isKindOfClass:NSClassFromString(@"NSStatusBarWindow")]) continue;  // the menu-bar item stays
-      [w close];
-    }
-    if ([self windowShouldClose:self.window]) [self.window close];
-    return;
-  }
+  _quitForReal = true;
   [NSApp terminate:nil];
 }
 
@@ -11652,6 +11657,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 // ---- Settings -----------------------------------------------------------------
 static NSString* const kDefaultsViewFlags = @"mv.viewFlags";
 static NSString* const kDefaultsKeys = @"mv.keys";
+static NSString* const kDefaultsAddonKeys = @"mv.addonKeys";
 static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 
 - (BOOL)settingsVisible { return _settingsVisible; }
@@ -11709,6 +11715,13 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
                                                 static_cast<int>(r.mods)]];
   }
   [[NSUserDefaults standardUserDefaults] setObject:rows forKey:kDefaultsKeys];
+  // Contributed add-on rows, by name: "k,mods,<add-on id>/<command id>".
+  NSMutableArray<NSString*>* addonRows = [NSMutableArray array];
+  for (const mv::shell::addon_key_remap& r : mv::shell::live_addon_key_remaps()) {
+    [addonRows addObject:[NSString stringWithFormat:@"%d,%d,%s", static_cast<int>(r.k), static_cast<int>(r.mods),
+                                                     r.command.c_str()]];
+  }
+  [[NSUserDefaults standardUserDefaults] setObject:addonRows forKey:kDefaultsAddonKeys];
 }
 
 - (void)loadSettings {
@@ -11730,6 +11743,19 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
     }
   }
   mv::shell::apply_key_remaps(remaps);  // resets the live table first
+  std::vector<mv::shell::addon_key_remap> addonRemaps;
+  for (NSString* row in [d arrayForKey:kDefaultsAddonKeys]) {
+    int k = 0, m = 0, used = 0;
+    if ([row isKindOfClass:[NSString class]] && sscanf(row.UTF8String, "%d,%d,%n", &k, &m, &used) == 2 &&
+        used > 0 && k >= 0 && k < mv::shell::kKeyCount && m >= 0 && m < mv::shell::kModCombos) {
+      std::string name(row.UTF8String + used);
+      if (!name.empty()) {
+        addonRemaps.push_back(
+            mv::shell::addon_key_remap{std::move(name), static_cast<mv::shell::key>(k), static_cast<std::uint8_t>(m)});
+      }
+    }
+  }
+  mv::shell::apply_addon_key_remaps(addonRemaps);
   [self rebuildKeys];
   _sort = mv::io::unpack_sort(static_cast<std::int32_t>([d integerForKey:@"mv.sort"]));
   _recentFolders.clear();
@@ -12214,18 +12240,9 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
     _quitForReal = true;
   }
 #endif
-  // #452: a Quit the person asked for (the Dock's, or another app's quit
-  // event) goes to the background while an add-on keeps the process, as ⌘Q
-  // does. Logout, restart and shut down carry a reason and quit; the app's own
-  // terminate: calls (an update's restart) have no event and quit.
-  if (!_terminating && !_quitForReal && mv::addon::default_slots().keeping_alive()) {
-    NSAppleEventDescriptor* event = NSAppleEventManager.sharedAppleEventManager.currentAppleEvent;
-    if (event.eventClass == kCoreEventClass && event.eventID == kAEQuitApplication &&
-        [event paramDescriptorForKeyword:kAEQuitReason] == nil) {
-      [self quitFromMenu:nil];
-      return NSTerminateCancel;
-    }
-  }
+  // #452 hid the app for a Quit (⌘Q, the Dock's, another app's quit event)
+  // while an add-on kept the process; since 2026-10-29 every Quit quits, and
+  // only closing the viewer window leaves it in the menu bar.
   if (_terminating) return NSTerminateLater;
   _terminating = true;
   // PR 12: writes the user asked for and has not seen land -- a rating inside

@@ -592,6 +592,14 @@ addon_slots& addon_store() {
   return *s;
 }
 
+// live_addon_key_remaps: what the person gave contributed rows, by name.
+std::vector<addon_key_remap>& addon_remap_store() {
+  static auto* const s = new std::vector<addon_key_remap>;
+  return *s;
+}
+
+std::string addon_row_name(const addon_command_row& r) { return r.addon + "/" + r.id; }
+
 int addon_slot_of(command_id id) noexcept {
   const int n = static_cast<int>(id) - static_cast<int>(addon_cmd_0);
   return n >= 0 && n < kAddonCommandSlots ? n : -1;
@@ -599,9 +607,20 @@ int addon_slot_of(command_id id) noexcept {
 
 void append_addon_rows(std::vector<binding>& live) {
   const addon_slots& s = addon_store();
+  const auto& kept = addon_remap_store();
   for (std::size_t i = 0; i < s.rows.size(); ++i) {
     const addon_command_row& r = s.rows[i];
-    live.push_back(row(r.k, r.mods, r.modes, edge,
+    key k = r.k;
+    std::uint8_t mods = r.mods;
+    const std::string name = addon_row_name(r);
+    for (const addon_key_remap& m : kept) {
+      if (m.command == name) {
+        k = m.k;
+        mods = m.k == key::none ? static_cast<std::uint8_t>(mod_none) : m.mods;
+        break;
+      }
+    }
+    live.push_back(row(k, mods, r.modes, edge,
                        static_cast<command_id>(static_cast<int>(addon_cmd_0) + static_cast<int>(i))));
   }
 }
@@ -640,6 +659,7 @@ static void apply_superseded(std::vector<binding>& table) {
 }
 
 void reset_live_bindings() noexcept {
+  addon_remap_store().clear();  // Reset is the defaults, contributed rows' too
   live_store().assign(std::begin(kBindings), std::end(kBindings));
   // Reset is the defaults as they stand with these add-ons loaded: a
   // superseded built-in row stays without its key (PR 56 found it came back).
@@ -659,6 +679,8 @@ bool set_live_key(int index, key k, std::uint8_t mods) noexcept {
 }
 
 void set_addon_commands(std::span<const addon_command_row> rows) {
+  // The rows going take their remaps with them only into the kept list.
+  (void)live_addon_key_remaps();
   addon_slots& s = addon_store();
   const std::size_t kept = std::min<std::size_t>(rows.size(), kAddonCommandSlots);
   s.rows.assign(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(kept));
@@ -833,6 +855,40 @@ void apply_key_remaps(std::span<const key_remap> remaps) noexcept {
   // modes overlap (the router's row order decides), and a rebind_live swap only
   // moves the first such row, so Settings itself can save a shared key. A stale
   // or hand-edited file that shares one is routed by the same row order.
+}
+
+std::vector<addon_key_remap> live_addon_key_remaps() {
+  const addon_slots& s = addon_store();
+  const auto live = live_bindings();
+  auto& kept = addon_remap_store();
+  std::vector<addon_key_remap> out;
+  // An add-on not loaded now keeps what it had.
+  for (const addon_key_remap& m : kept) {
+    const bool loaded = std::any_of(s.rows.begin(), s.rows.end(),
+                                    [&m](const addon_command_row& r) { return addon_row_name(r) == m.command; });
+    if (!loaded) out.push_back(m);
+  }
+  for (std::size_t i = 0; i < s.rows.size(); ++i) {
+    const std::size_t at = std::size(kBindings) + i;
+    if (at >= live.size()) break;
+    const addon_command_row& r = s.rows[i];
+    if (live[at].k == r.k && live[at].mods == r.mods) continue;
+    out.push_back(addon_key_remap{addon_row_name(r), live[at].k, live[at].mods});
+  }
+  kept = out;
+  return out;
+}
+
+void apply_addon_key_remaps(std::span<const addon_key_remap> remaps) {
+  auto& kept = addon_remap_store();
+  kept.clear();
+  for (const addon_key_remap& m : remaps) {
+    if (m.command.empty() || static_cast<int>(m.k) >= kKeyCount || m.mods >= kModCombos) continue;
+    kept.push_back(m);
+  }
+  auto& table = live_store();
+  table.resize(std::size(kBindings));
+  append_addon_rows(table);
 }
 
 std::span<const command_info> command_infos() noexcept { return kCommands; }

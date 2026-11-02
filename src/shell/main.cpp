@@ -5919,6 +5919,7 @@ void browse_tick(app_state* app) noexcept {
 void persist_live_keys() noexcept {
   try {
     mv::shell::save_key_remaps(mv::shell::live_key_remaps());
+    mv::shell::save_addon_key_remaps(mv::shell::live_addon_key_remaps());
   } catch (...) {
   }
 }
@@ -9771,6 +9772,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.taskbar_restart_msg = ::RegisterWindowMessageW(L"TaskbarCreated");  // #452
   app.quit_for_update_msg = ::RegisterWindowMessageW(L"MediaViewer.QuitForUpdate");  // #532
   mv::shell::apply_key_remaps(mv::shell::load_key_remaps());
+  mv::shell::apply_addon_key_remaps(mv::shell::load_addon_key_remaps());
   app.router.rebuild(mv::shell::live_bindings());
   mv::boot::mark(mv::boot::stage::settings_loaded);
   if (!app.files.start()) MV_LOG_WARN("files: I/O worker did not start; F7 / F8 / Delete disabled");
