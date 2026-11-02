@@ -386,6 +386,43 @@ mv_status MV_CALL t_person_suggest_json(void* ctx, uint64_t person, uint32_t lim
                           out, cap, needed);
   });
 }
+mv_status MV_CALL t_person_refine_json(void* ctx, uint64_t person, uint32_t flags, char* out, uint32_t cap,
+                                       uint32_t* needed) {
+  return guard([&] {
+    const bool dry = (flags & MV_AI_DRY_RUN) != 0;
+    mv_status failed = MV_OK;
+    const mv_status s = write_out_once(
+        std::string(dry ? "refine-look:" : "refine:") + std::to_string(person),
+        [&] {
+          auto r = eng(ctx).person_refine_json(static_cast<std::int64_t>(person), dry);
+          if (!r) {
+            failed = to_mv(r.error());
+            return std::string();
+          }
+          return std::move(r.value());
+        },
+        out, cap, needed);
+    return failed != MV_OK ? failed : s;
+  });
+}
+mv_status MV_CALL t_people_dedupe_json(void* ctx, uint32_t flags, char* out, uint32_t cap, uint32_t* needed) {
+  return guard([&] {
+    const bool dry = (flags & MV_AI_DRY_RUN) != 0;
+    mv_status failed = MV_OK;
+    const mv_status s = write_out_once(
+        dry ? "dedupe-look" : "dedupe",
+        [&] {
+          auto r = eng(ctx).people_dedupe_json(dry);
+          if (!r) {
+            failed = to_mv(r.error());
+            return std::string();
+          }
+          return std::move(r.value());
+        },
+        out, cap, needed);
+    return failed != MV_OK ? failed : s;
+  });
+}
 mv_status MV_CALL t_people_reanalyse(void* ctx) {
   return guard([&] {
     auto r = eng(ctx).people_reanalyse();
@@ -624,6 +661,8 @@ mv_status make(uint32_t host_api, const mv_host_api* host, mv_addon_api* out, bo
     a.person_review_json = &t_person_review_json;
     a.unknown_faces_json = &t_unknown_faces_json;
     a.person_suggest_json = &t_person_suggest_json;
+    a.person_refine_json = &t_person_refine_json;  // 2026-11-02, in detail
+    a.people_dedupe_json = &t_people_dedupe_json;
 
     *out = mv_addon_api{};
     out->struct_size = sizeof(mv_addon_api);

@@ -1006,6 +1006,13 @@ result<std::int64_t> faces_db::merge(std::int64_t into, std::int64_t from, std::
                                      std::int64_t cover_from) {
   std::lock_guard lock(m_);
   if (into == from) return std::int64_t{0};
+  return merge_logged_locked(into, from, cover_into, cover_from, true);
+}
+
+// A merge with what undo_merge needs to put it back. `pin`: the user's merge
+// pins both covers; Merge duplicates' pins nothing.
+result<std::int64_t> faces_db::merge_logged_locked(std::int64_t into, std::int64_t from, std::int64_t cover_into,
+                                                   std::int64_t cover_from, bool pin) {
   // What undo_merge needs to put it back, read before anything changes.
   std::string from_name, into_name;
   std::int64_t from_created = 0;
@@ -1038,8 +1045,10 @@ result<std::int64_t> faces_db::merge(std::int64_t into, std::int64_t from, std::
     pinned_before.push_back(f);
   }
   // Both covers were on screen when the user said "same person": anchors.
-  pin_cover_locked(into, cover_into);
-  pin_cover_locked(from, cover_from);
+  if (pin) {
+    pin_cover_locked(into, cover_into);
+    pin_cover_locked(from, cover_from);
+  }
   std::vector<std::int64_t> pinned_now;
   {
     std::set<std::int64_t> before(pinned_before.begin(), pinned_before.end());
@@ -1128,7 +1137,7 @@ expected faces_db::undo_merge(std::int64_t token) {
   return {};
 }
 
-result<bool> faces_db::merge_auto(std::int64_t into, std::int64_t from) {
+result<bool> faces_db::merge_auto(std::int64_t into, std::int64_t from, std::int64_t* undo) {
   std::lock_guard lock(m_);
   if (into == from || !clusters_.count(into) || !clusters_.count(from)) return false;
   // The user kept them apart (a split), or said a face of one is not the
@@ -1139,7 +1148,8 @@ result<bool> faces_db::merge_auto(std::int64_t into, std::int64_t from) {
                " WHERE (f.person_id = ?1 AND r.person_id = ?2) OR (f.person_id = ?2 AND r.person_id = ?1)");
   if (rj.bind(1, into).bind(2, from).step_row()) return false;
   if (share_frame_locked(into, from)) return false;
-  MV_TRY_VOID(merge_locked(into, from));
+  MV_TRY(std::int64_t token, merge_logged_locked(into, from, 0, 0, false));
+  if (undo) *undo = token;
   return true;
 }
 
@@ -2041,6 +2051,7 @@ refine_stats faces_db::refine_commit(const refine_snapshot& snap, const refine_o
       ok = clear.bind(1, m.face).run();
     }
     if (!ok) break;
+    st.applied.push_back(refine_move{m.face, m.from, to, m.why, m.own, m.best});
     if (m.from > 0) emptied_or_changed.insert(m.from);
     if (to > 0) {
       emptied_or_changed.insert(to);

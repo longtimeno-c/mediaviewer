@@ -109,6 +109,7 @@ struct refine_stats {
   std::uint32_t evicted = 0, moved = 0, admitted = 0, regrouped = 0, groups = 0;
   std::uint32_t skipped = 0;  // the user (or a scan) changed the face meanwhile
   std::vector<std::int64_t> recheck_assets;  // stills worth re-analysing (flip-averaged)
+  std::vector<refine_move> applied;          // what was done, `to` the person it went to (0 nobody)
   [[nodiscard]] bool changed() const noexcept { return evicted + moved + admitted + regrouped > 0; }
 };
 
@@ -259,7 +260,8 @@ class faces_db {
   // merge, unless a split kept them apart (no_merge) or a face of one was
   // rejected from the other. Pins nothing: the user did not say so. False
   // when the pair is left alone.
-  [[nodiscard]] result<bool> merge_auto(std::int64_t into, std::int64_t from);
+  // `undo` (may be null): a token undo_merge takes.
+  [[nodiscard]] result<bool> merge_auto(std::int64_t into, std::int64_t from, std::int64_t* undo = nullptr);
   // Pairs (min, max) never merged automatically: a split kept them apart, a
   // face of one was rejected from the other, or both have a face in one
   // photo or frame. Sorted.
@@ -362,6 +364,8 @@ class faces_db {
   const person_proto* exemplars_locked(std::int64_t person);
   void recompute_locked(std::int64_t person);
   expected merge_locked(std::int64_t into, std::int64_t from);
+  result<std::int64_t> merge_logged_locked(std::int64_t into, std::int64_t from, std::int64_t cover_into,
+                                           std::int64_t cover_from, bool pin);
   void remap_corrections_locked(std::int64_t into, std::int64_t from);
   void drop_person_locked(std::int64_t person);
   std::set<std::pair<std::int64_t, std::int64_t>> blocks_locked();

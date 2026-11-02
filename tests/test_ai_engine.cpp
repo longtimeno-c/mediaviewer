@@ -2609,6 +2609,21 @@ TEST_CASE("people: the sheet's review, move to, yes, not this person, merge and 
   CHECK(mv::json::parse(r.eng->people_json())->a.size() == 1);
   REQUIRE(r.eng->person_merge_undo(*token));
   CHECK(mv::json::parse(r.eng->people_json())->a.size() == 2);
+  // Refine and Merge duplicates in detail: a look first changes nothing.
+  const auto before = r.eng->people_json();
+  auto look = r.eng->person_refine_json(anna, true);
+  REQUIRE(look);
+  auto lj = mv::json::parse(*look);
+  REQUIRE(lj);
+  CHECK(lj->boolean("dry").value_or(false));
+  CHECK(lj->find("faces"));
+  auto dlook = r.eng->people_dedupe_json(true);
+  REQUIRE(dlook);
+  REQUIRE(mv::json::parse(*dlook));
+  CHECK(r.eng->people_json() == before);
+  auto done = r.eng->person_refine_json(anna, false);
+  REQUIRE(done);
+  CHECK(mv::json::parse(*done));
   // Suggestions and unknown faces answer well-formed JSON.
   auto sug = mv::json::parse(r.eng->person_suggest_json(anna, 10));
   REQUIRE(sug);

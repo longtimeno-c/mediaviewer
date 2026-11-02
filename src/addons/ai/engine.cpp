@@ -1608,14 +1608,25 @@ std::uint64_t engine::settled_answer_gen() const {
 // nothing, so an indexing worker or a People call never waits on it, and a
 // user correction made meanwhile wins (the commit skips any face that changed).
 result<std::uint32_t> engine::person_refine(std::int64_t person) {
+  MV_TRY(refine_run r, refine_person_run(person, false));
+  // Every move leaves `person` (focus): to someone else, to nobody, or to a
+  // new person made of faces that left together.
+  return r.stats.evicted + r.stats.moved + r.stats.regrouped;
+}
+
+// The refinement of one person (focus) or of everyone (0), as a look first
+// (`dry`: nothing committed) or for real. Same lock discipline as before: the
+// snapshot and the commit hold the People lock, the compute holds nothing.
+result<engine::refine_run> engine::refine_person_run(std::int64_t person, bool dry) {
   refine_snapshot snap;
   refine_params params;
   std::string spec;
   std::uint32_t dim = 0;
   {
     std::lock_guard lock(models_m_);
-    if (!faces_ || !faces_model_ || person <= 0) return err(status::invalid_arg);
-    params = faces_model_->tuning().refine();
+    if (!faces_ || !faces_model_ || person < 0) return err(status::invalid_arg);
+    if (!dry && options_.read_only) return err(status::unsupported_format);
+    params = faces_model_->tuning().refine();  // the model's own (model.json)
     spec = faces_model_->spec_key();
     dim = faces_model_->dim();
     snap = faces_->refine_begin(true);
@@ -1629,17 +1640,21 @@ result<std::uint32_t> engine::person_refine(std::int64_t person) {
   in.regroup = true;
   in.focus = person;
   in.cancel = &stopping_;
-  const refine_output out = refine_people(in, params);
+  refine_run r;
+  r.out = refine_people(in, params);
+  r.params = params;
+  r.dim = dim;
+  r.serial = snap.serial;
   if (stopping_) return err(status::cancelled);
-  refine_stats st;
+  if (dry) return r;
   std::size_t rescanned = 0;
   {
     std::lock_guard lock(models_m_);
     if (!faces_ || faces_->serial() != snap.serial) return err(status::cancelled);  // People turned off or reopened
-    st = faces_->refine_commit(snap, out);
+    r.stats = faces_->refine_commit(snap, r.out);
     // Borderline stills from before flip averaging: the People pass looks
     // at them again, and the new vectors replace the old box by box.
-    for (std::int64_t asset : st.recheck_assets) {
+    for (std::int64_t asset : r.stats.recheck_assets) {
       if (faces_->rescan(asset, spec)) {
         faces_scanned_.erase(asset);
         ++rescanned;
@@ -1651,87 +1666,175 @@ result<std::uint32_t> engine::person_refine(std::int64_t person) {
     queue_exhausted_ = false;
     work_cv_.notify_all();
   }
-  if (st.changed()) post(MV_ADDON_EVENT_AI_PEOPLE);
-  // Every move leaves `person` (focus): to someone else, to nobody, or to a
-  // new person made of faces that left together.
-  return st.evicted + st.moved + st.regrouped;
+  if (r.stats.changed()) post(MV_ADDON_EVENT_AI_PEOPLE);
+  return r;
+}
+
+namespace {
+
+void face_fields(json::writer& w, const face_row& f) {
+  w.key("face").integer(f.id);
+  w.key("path").string(f.path);
+  w.key("pts_ms").integer(f.pts_ms);
+  w.key("box").begin_array();
+  w.number(f.x).number(f.y).number(f.w).number(f.h);
+  w.end_array();
+}
+
+const char* why_name(refine_why w) {
+  switch (w) {
+    case refine_why::move: return "move";
+    case refine_why::evict: return "evict";
+    case refine_why::admit: return "admit";
+    case refine_why::regroup: return "regroup";
+  }
+  return "move";
+}
+
+void cover_fields(json::writer& w, const face_row& c) {
+  w.key("cover_face").integer(c.id);
+  w.key("cover_path").string(c.path);
+  w.key("cover_ms").integer(c.pts_ms);
+  w.key("cover_box").begin_array();
+  w.number(c.x).number(c.y).number(c.w).number(c.h);
+  w.end_array();
+}
+
+}  // namespace
+
+result<std::string> engine::person_refine_json(std::int64_t person, bool dry) {
+  if (person <= 0) return err(status::invalid_arg);
+  MV_TRY(refine_run r, refine_person_run(person, dry));
+  // A look first lists what the refinement would do (a new person as its
+  // group number); for real, what it did, `to` the person each face went to.
+  const std::vector<refine_move>& moves = dry ? r.out.moves : r.stats.applied;
+  std::vector<std::pair<refine_move, face_row>> rows;
+  std::map<std::int64_t, std::string> names;
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_) return err(status::invalid_arg);
+    for (const auto& [id, name] : faces_->names()) names[id] = name;
+    for (const refine_move& m : moves) {
+      if (m.from != person) continue;
+      if (auto f = faces_->face(m.face)) rows.emplace_back(m, std::move(*f));
+    }
+  }
+  json::writer w;
+  w.begin_object();
+  w.key("dry").boolean(dry);
+  w.key("removed").integer(static_cast<std::int64_t>(rows.size()));
+  w.key("faces").begin_array();
+  for (const auto& [m, f] : rows) {
+    w.begin_object();
+    face_fields(w, f);
+    w.key("why").string(why_name(m.why));
+    w.key("to").integer(m.to > 0 ? m.to : 0);
+    w.key("group").integer(m.to < 0 ? -m.to : 0);
+    w.key("to_name").string(m.to > 0 && names.count(m.to) ? names[m.to] : std::string());
+    w.end_object();
+  }
+  w.end_array();
+  w.end_object();
+  return w.take();
 }
 
 result<engine::dedupe_result> engine::people_dedupe() {
-  refine_snapshot snap;
-  refine_params params;
-  std::string spec;
-  std::uint32_t dim = 0;
-  {
-    std::lock_guard lock(models_m_);
-    if (!faces_ || !faces_model_) return err(status::invalid_arg);
-    params = faces_model_->tuning().refine();  // the model's own (model.json)
-    spec = faces_model_->spec_key();
-    dim = faces_model_->dim();
-    snap = faces_->refine_begin(true);
-  }
+  MV_TRY(dedupe_run r, people_dedupe_run(false));
+  dedupe_result out;
+  out.merged = r.merged;
+  out.moved = r.moved;
+  return out;
+}
+
+result<engine::dedupe_run> engine::people_dedupe_run(bool dry) {
   // 1. Every face re-checked: person_refine's pass, for everyone at once.
   //    Misfiled faces move, unassigned faces join or regroup.
-  refine_input in;
-  in.dim = dim;
-  in.emb = snap.emb;
-  in.faces = snap.faces;
-  in.fixed = snap.fixed;
-  in.named = snap.named;
-  in.regroup = true;
-  in.cancel = &stopping_;
-  const refine_output out = refine_people(in, params);
-  if (stopping_) return err(status::cancelled);
-
-  // 2. Commit the moves (the user's later changes win), then read who is
-  //    named, how large, and which pairs the user kept apart.
-  dedupe_result r;
-  refine_stats st;
-  std::size_t rescanned = 0;
+  MV_TRY(refine_run rr, refine_person_run(0, dry));
+  // 2. Who is named, how large, and which pairs the user kept apart, after
+  //    the moves (committed, unless this is a look first).
+  dedupe_run r;
   std::vector<dedupe_person> people;
   std::vector<std::pair<std::int64_t, std::int64_t>> apart;
   {
     std::lock_guard lock(models_m_);
-    if (!faces_ || faces_->serial() != snap.serial) return err(status::cancelled);  // People turned off or reopened
-    st = faces_->refine_commit(snap, out);
-    for (std::int64_t asset : st.recheck_assets) {
-      if (faces_->rescan(asset, spec)) {
-        faces_scanned_.erase(asset);
-        ++rescanned;
-      }
+    if (!faces_ || faces_->serial() != rr.serial) return err(status::cancelled);  // People turned off or reopened
+    for (const person_row& p : faces_->people(0, nullptr)) {
+      people.push_back({p.id, p.name, p.faces});
+      r.rows[p.id] = p;
     }
-    for (const person_row& p : faces_->people(0, nullptr)) people.push_back({p.id, p.name, p.faces});
     apart = faces_->merge_blocks();
   }
   // 3. The same person twice (face_refine.h find_duplicates), computed with
   //    no lock held; then the merges, survivor first. merge_auto checks the
   //    pair again (a split or a rejection since) and pins nothing.
   dedupe_input din;
-  din.dim = dim;
-  din.protos = out.protos;
+  din.dim = rr.dim;
+  din.protos = rr.out.protos;
   din.people = people;
   din.apart = apart;
   din.cancel = &stopping_;
-  const auto groups = find_duplicates(din, params);
+  r.groups = find_duplicates(din, rr.params);
   if (stopping_) return err(status::cancelled);
-  {
+  r.tokens.assign(r.groups.size(), {});
+  if (!dry) {
     std::lock_guard lock(models_m_);
-    if (!faces_ || faces_->serial() != snap.serial) return err(status::cancelled);
-    for (const std::vector<std::int64_t>& g : groups) {
-      for (std::size_t i = 1; i < g.size(); ++i) {
-        const auto merged = faces_->merge_auto(g[0], g[i]);
-        if (merged && merged.value()) ++r.merged;
+    if (!faces_ || faces_->serial() != rr.serial) return err(status::cancelled);
+    for (std::size_t g = 0; g < r.groups.size(); ++g) {
+      r.tokens[g].assign(r.groups[g].size(), 0);
+      for (std::size_t i = 1; i < r.groups[g].size(); ++i) {
+        std::int64_t token = 0;
+        const auto merged = faces_->merge_auto(r.groups[g][0], r.groups[g][i], &token);
+        if (merged && merged.value()) {
+          ++r.merged;
+          r.tokens[g][i] = token;
+        }
       }
     }
+  } else {
+    for (const auto& g : r.groups) r.merged += static_cast<std::uint32_t>(g.size() - 1);
   }
-  if (rescanned > 0) {
-    std::lock_guard lock(work_m_);
-    queue_exhausted_ = false;
-    work_cv_.notify_all();
-  }
-  r.moved = st.evicted + st.moved + st.admitted + st.regrouped;
-  if (st.changed() || r.merged > 0) post(MV_ADDON_EVENT_AI_PEOPLE);
+  r.moved = dry ? static_cast<std::uint32_t>(rr.out.moves.size())
+                : rr.stats.evicted + rr.stats.moved + rr.stats.admitted + rr.stats.regrouped;
+  if (!dry && r.merged > 0) post(MV_ADDON_EVENT_AI_PEOPLE);
   return r;
+}
+
+result<std::string> engine::people_dedupe_json(bool dry) {
+  MV_TRY(dedupe_run r, people_dedupe_run(dry));
+  json::writer w;
+  w.begin_object();
+  w.key("dry").boolean(dry);
+  w.key("merged").integer(r.merged);
+  w.key("moved").integer(r.moved);
+  w.key("merges").begin_array();
+  for (std::size_t g = 0; g < r.groups.size(); ++g) {
+    const std::int64_t into = r.groups[g][0];
+    const person_row& in = r.rows[into];
+    w.begin_object();
+    w.key("into").integer(into);
+    w.key("into_name").string(in.name);
+    w.key("into_faces").integer(in.faces);
+    cover_fields(w, in.cover);
+    w.key("from").begin_array();
+    for (std::size_t i = 1; i < r.groups[g].size(); ++i) {
+      const std::int64_t id = r.groups[g][i];
+      // For real, only the merges that happened (a pair kept apart since is left).
+      if (!dry && (r.tokens[g].size() <= i || r.tokens[g][i] == 0)) continue;
+      const person_row& p = r.rows[id];
+      w.begin_object();
+      w.key("id").integer(id);
+      w.key("name").string(p.name);
+      w.key("faces").integer(p.faces);
+      cover_fields(w, p.cover);
+      w.key("undo").integer(dry ? 0 : r.tokens[g][i]);
+      w.end_object();
+    }
+    w.end_array();
+    w.end_object();
+  }
+  w.end_array();
+  w.end_object();
+  return w.take();
 }
 
 // "Re-analyse faces" (docs/design/17 "People model"): forget what the People pass
@@ -7298,19 +7401,6 @@ result<std::string> engine::faces_reject_json(const std::vector<std::int64_t>& f
   w.end_object();
   return w.take();
 }
-
-namespace {
-
-void face_fields(json::writer& w, const face_row& f) {
-  w.key("face").integer(f.id);
-  w.key("path").string(f.path);
-  w.key("pts_ms").integer(f.pts_ms);
-  w.key("box").begin_array();
-  w.number(f.x).number(f.y).number(f.w).number(f.h);
-  w.end_array();
-}
-
-}  // namespace
 
 std::string engine::person_review_json(std::int64_t person) {
   // The vectors are copied under the People lock; the scoring (~0.1 s for a

@@ -199,6 +199,7 @@ typedef enum mv_ai_photos_access {
 
 /* Sharing an index (2026-09-28, docs/design/17 "Sharing an index"): what an export
  * carries besides the index rows, and what an import takes from a file. */
+#define MV_AI_DRY_RUN 1u               /* person_refine_json / people_dedupe_json: look first */
 #define MV_AI_ASSIGN_PIN 1u            /* faces_assign: the faces become the user's */
 #define MV_AI_ASSIGN_UNDO 2u           /* faces_assign: an undo, putting faces back where they
                                           were: nothing is recorded against where they are
@@ -735,6 +736,27 @@ typedef struct mv_ai_api {
    *   "cover_ms":..,"cover_box":[..]}],"faces":[{"face":..,..,"score":..}]} [worker-thread] */
   mv_status(MV_CALL* person_suggest_json)(void* ctx, uint64_t person_id, uint32_t limit, char* out, uint32_t cap,
                                           uint32_t* needed);
+
+  /* ---- Refine / Merge duplicates in detail (2026-11-02, docs/design/17) ------------ */
+  /* person_refine, saying which faces left and where. MV_AI_DRY_RUN looks
+   * first: nothing changes, and a face that would start a new person names
+   * its "group" (1..). For real, "to" is the person each face went to (0:
+   * nobody); an Undo puts each back with faces_assign(MV_AI_ASSIGN_UNDO).
+   * {"dry":false,"removed":N,"faces":[{"face":..,"path":..,"pts_ms":..,"box":[..],
+   *   "why":"move|evict|regroup","to":7,"group":0,"to_name":"Ben"}]}
+   * A real run's answer is kept for the buffer retry (it is not run twice).
+   * Appended: check struct_size. [worker-thread] */
+  mv_status(MV_CALL* person_refine_json)(void* ctx, uint64_t person_id, uint32_t flags, char* out, uint32_t cap,
+                                         uint32_t* needed);
+  /* people_dedupe, saying who merges into whom. MV_AI_DRY_RUN looks first
+   * (nothing changes; the faces the check would move are counted, not
+   * moved). For real, each merged person carries an "undo" token for
+   * person_merge_undo.
+   * {"dry":true,"merged":N,"moved":N,"merges":[{"into":3,"into_name":"Anna","into_faces":40,
+   *   "cover_face":..,"cover_path":..,"cover_ms":..,"cover_box":[..],
+   *   "from":[{"id":9,"name":"","faces":4,"cover_face":..,..,"undo":0}]}]}
+   * Appended: check struct_size. [worker-thread] */
+  mv_status(MV_CALL* people_dedupe_json)(void* ctx, uint32_t flags, char* out, uint32_t cap, uint32_t* needed);
 } mv_ai_api;
 
 #ifdef __cplusplus

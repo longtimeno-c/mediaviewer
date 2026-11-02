@@ -208,7 +208,10 @@ person_proto build_proto(const refine_input& in, const refine_params& p, std::in
   }
   const float inv = 1.0f / static_cast<float>(core.size());
   for (float& v : out.core_mean) v *= inv;
-  // Exemplars: one per photo or clip, except the anchors the user pinned.
+  // Exemplars: one per photo or clip, except the anchors the user pinned;
+  // the closest and clearest first. Farthest-point choice (the person's
+  // range) was tried 2026-11-02: LFW the same, the owner's copy 5 -> 9 faces
+  // better matched by a different person.
   std::set<std::int64_t> seen;
   out.exemplars.reserve(std::min<std::size_t>(core.size(), p.max_exemplars) * dim);
   for (const auto& [score, a] : core) {

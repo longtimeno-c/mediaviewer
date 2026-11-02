@@ -672,8 +672,16 @@ TEST_CASE("dedupe through faces.db: merge_auto pins nothing and leaves a split p
   auto people = (*db)->people(1);
   REQUIRE(people.size() == 2);
   const std::int64_t first = people[0].id, second = people[1].id;
-  // merge_auto merges what it is told (the engine decides who) and pins nothing.
-  auto merged = (*db)->merge_auto(first, second);
+  // merge_auto merges what it is told (the engine decides who) and pins
+  // nothing; its token puts it back (Merge duplicates' Undo).
+  std::int64_t token = 0;
+  auto merged = (*db)->merge_auto(first, second, &token);
+  REQUIRE(merged);
+  CHECK(merged.value());
+  CHECK(token > 0);
+  REQUIRE((*db)->undo_merge(token));
+  CHECK((*db)->people(1).size() == 2);
+  merged = (*db)->merge_auto(first, second);
   REQUIRE(merged);
   CHECK(merged.value());
   people = (*db)->people(1);
