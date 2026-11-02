@@ -2167,6 +2167,8 @@ void schedule_rotation_write(app_state* app) noexcept {
 void adjust_item_changed(app_state* app);
 void adjust_colour_changed(app_state* app);
 void schedule_detail(app_state* app) noexcept;
+void adjust_build_if(app_state* app, std::optional<std::uint64_t> token);
+void set_adjust_from_pane(app_state* app, mv::edit::adjust_param p, float value);
 void strip_hint_show(app_state* app);
 bool sync_page_stop(app_state* app, bool opened);
 void page_sidebar_changed(app_state* app);
