@@ -691,8 +691,12 @@ typedef struct mv_ai_api {
    * leaves its person for good, with the frames of the same clip in that
    * person that are the same face, and is filed under another existing
    * person it clearly matches, else nobody (never a new person of its own).
-   * {"unassigned":N,"spread":N,"to":[{"id":7,"name":"Ben","faces":2}]}
-   * ("spread": frames that went with them). [worker-thread] */
+   * {"unassigned":N,"spread":N,"to":[{"id":7,"name":"Ben","faces":2}],
+   *  "faces":[{"face":9,"from":3,"to":7,"pinned":false}]}
+   * ("spread": frames that went with them; "faces": every face that left,
+   * those frames included, with the person it left and whether it was
+   * pinned, so an Undo can put each back with faces_assign and
+   * MV_AI_ASSIGN_UNDO). [worker-thread] */
   mv_status(MV_CALL* faces_reject_json)(void* ctx, const uint64_t* face_ids, uint32_t count, char* out,
                                         uint32_t cap, uint32_t* needed);
   /* person_rename, pinning `cover_face` (0: the grid's cover), the face the

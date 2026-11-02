@@ -1231,11 +1231,12 @@ result<reject_result> faces_db::reject(std::span<const std::int64_t> faces) {
     std::vector<float> emb;
     float quality;
     std::int64_t asset, pts_ms;
+    bool pinned = false;
   };
   std::vector<leaving> go;
   std::set<std::int64_t> seen;
   {
-    stmt q(db_, "SELECT COALESCE(person_id, 0), emb, spec, quality, asset_id, pts_ms FROM faces WHERE id = ?1");
+    stmt q(db_, "SELECT COALESCE(person_id, 0), emb, spec, quality, asset_id, pts_ms, pinned FROM faces WHERE id = ?1");
     // A clip's other frames in the same person that are the same face (the
     // track: same_person to the rejected one) go with it.
     stmt t(db_, "SELECT id, emb, quality, pts_ms FROM faces WHERE asset_id = ?1 AND person_id = ?2 AND id != ?3"
@@ -1247,7 +1248,8 @@ result<reject_result> faces_db::reject(std::span<const std::int64_t> faces) {
       if (person == 0 || !seen.insert(face).second) continue;
       std::vector<float> emb;
       if (q.text(2) == spec_) emb = q.floats(1);  // another embedder's: re-run files it
-      go.push_back(leaving{face, person, emb, q.null(3) ? -1.0f : static_cast<float>(q.real(3)), q.i64(4), q.i64(5)});
+      go.push_back(leaving{face, person, emb, q.null(3) ? -1.0f : static_cast<float>(q.real(3)), q.i64(4), q.i64(5),
+                           q.i64(6) != 0});
       if (q.i64(5) < 0 || emb.size() != dim_) continue;
       t.reset();
       t.bind(1, q.i64(4)).bind(2, person).bind(3, face).bind(4, spec_);
@@ -1315,6 +1317,7 @@ result<reject_result> faces_db::reject(std::span<const std::int64_t> faces) {
       loose_.insert(l.face);
       ++out.unassigned;
     }
+    out.faces.push_back(reject_result::moved{l.face, l.person, next, l.pinned});
   }
   return out;
 }

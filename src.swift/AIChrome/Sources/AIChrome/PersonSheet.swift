@@ -389,7 +389,7 @@ struct PersonSheet: View {
       let outcome = await model.rejectReporting(picked)
       busy = false
       if let outcome {
-        say(outcome.summary, undo: model.canAssign ? .restoring(removed, to: person.id) : nil)
+        say(outcome.summary, undo: model.canAssign ? (outcome.undo ?? .restoring(removed, to: person.id)) : nil)
       } else if reporting {
         say("Couldn't remove the faces. Try again.", undo: nil)
       } else {
@@ -448,7 +448,7 @@ struct PersonSheet: View {
       busy = false
       if ok {
         suggestions.faces.removeAll { $0.id == f.id }
-        say("Added 1 face", undo: nil)
+        say("Added 1 face", undo: .unknownAgain([f.id]))
       } else {
         say("Couldn't add the face. Try again.", undo: nil)
       }
@@ -716,6 +716,7 @@ struct UnknownFacesSheet: View {
   @State private var busy = false
   @State private var picking = false
   @State private var preview: PreviewFace?
+  @State private var lastUndo: PeopleUndo?
   @FocusState private var focused: Bool
 
   private static let page = 60
@@ -781,7 +782,16 @@ struct UnknownFacesSheet: View {
         }
       }
       if !status.isEmpty {
-        Text(status).font(AITheme.font(12)).foregroundStyle(AITheme.title)
+        HStack(spacing: 10) {
+          Text(status).font(AITheme.font(12)).foregroundStyle(AITheme.title)
+          if lastUndo != nil {
+            Button("Undo") { undoLast() }
+              .disabled(busy)
+              .help("Put it back (⌘Z)")
+              .accessibilityLabel("Undo")
+          }
+        }
+        .accessibilityElement(children: .contain)
       }
       HStack {
         Button("Yes") { yes(selected) }
@@ -806,6 +816,14 @@ struct UnknownFacesSheet: View {
     .padding(20)
     .frame(width: 680, height: 560)
     .onExitCommand(perform: done)
+    .background {
+      // ⌘Z: the last Yes or Move, put back (as the person's sheet).
+      Button("Undo") { undoLast() }
+        .keyboardShortcut("z", modifiers: .command)
+        .disabled(lastUndo == nil || busy)
+        .opacity(0).frame(width: 0, height: 0)
+        .accessibilityHidden(true)
+    }
     .sheet(item: $preview) { p in
       PhotoPreview(table: model.table, face: p) { preview = nil }
     }
@@ -913,6 +931,20 @@ struct UnknownFacesSheet: View {
     }
     total = max(0, total - moved.count)
     status = failed ? (moved.isEmpty ? "Couldn't move the faces. Try again." : text + ". Some could not be moved.") : text
+    lastUndo = moved.isEmpty ? nil : .unknownAgain(moved)
     model.reloadPeople()
+  }
+
+  /// Puts the last Yes or Move back: the faces are nobody's again.
+  private func undoLast() {
+    guard let action = lastUndo, !busy else { return }
+    lastUndo = nil
+    busy = true
+    Task {
+      let ok = await model.undo(action)
+      busy = false
+      status = ok ? "Undone" : "That can no longer be undone."
+      await load(more: false)
+    }
   }
 }

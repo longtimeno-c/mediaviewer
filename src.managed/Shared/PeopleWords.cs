@@ -14,7 +14,14 @@ public sealed record ReviewFace(
 public sealed record RejectedTo(ulong Id, string Name, long Faces);
 
 /// <summary>faces_reject_json's answer.</summary>
-public sealed record RejectOutcome(long Unassigned, long Spread, IReadOnlyList<RejectedTo> To);
+/// <summary>A face that left on "Not …" (the clip's frames that went too included): where it was, and its pin.</summary>
+public sealed record RejectedFace(ulong Face, ulong From, bool Pinned);
+
+public sealed record RejectOutcome(long Unassigned, long Spread, IReadOnlyList<RejectedTo> To)
+{
+    /// <summary>Every face that left; empty from a pack before 2026-11-02's "faces".</summary>
+    public IReadOnlyList<RejectedFace> Left { get; init; } = Array.Empty<RejectedFace>();
+}
 
 /// <summary>An unassigned face clear enough to name, and who it most resembles (0: nobody near).</summary>
 public sealed record UnknownFace(
@@ -226,8 +233,24 @@ public static class PeopleWords
                 if (id != 0) to.Add(new RejectedTo(id, Str(t, "name"), I64(t, "faces", 0)));
             }
         }
-        return new RejectOutcome(I64(r, "unassigned", 0), I64(r, "spread", 0), to);
+        var left = new List<RejectedFace>();
+        if (r.TryGetProperty("faces", out JsonElement fs) && fs.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement f in fs.EnumerateArray())
+            {
+                ulong face = U64(f, "face");
+                if (face != 0) left.Add(new RejectedFace(face, U64(f, "from"), Bool(f, "pinned")));
+            }
+        }
+        return new RejectOutcome(I64(r, "unassigned", 0), I64(r, "spread", 0), to) { Left = left };
     }
+
+    /// <summary>Undo of a reject: each (person, pinned) group of faces to put back, the clip's frames included.</summary>
+    public static IReadOnlyList<(ulong Person, bool Pinned, List<ulong> Faces)> PutBackGroups(RejectOutcome o) =>
+        o.Left.GroupBy(f => (f.From, f.Pinned))
+            .OrderBy(g => g.Key.From).ThenBy(g => g.Key.Pinned)
+            .Select(g => (g.Key.From, g.Key.Pinned, g.Select(f => f.Face).ToList()))
+            .ToList();
 
     public static UnknownPage ParseUnknown(string json)
     {

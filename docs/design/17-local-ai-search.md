@@ -1384,11 +1384,12 @@ Move to… / Unpin on the selection (sheet keys Y, N, M, Space for the whole pic
 ⌘Z / Ctrl+Z undo of the last action), where rejected faces went with Undo, and a "Might also be"
 strip; the grid gains "Unknown faces (N)", rename with the cover shown, and "Merged · Undo".
 Undo of a move or a reject puts the faces back with `MV_AI_ASSIGN_UNDO` (nothing recorded
-against where they went; each face's earlier pin restored). Not yet: Undo does not bring back
-the other frames of a clip that went with a reject (the answer gives only their count); a "Yes"
-on an unknown face has no Undo in the chromes (the flag's person 0 allows one); on the Mac,
-Return still means Done in the sheet. Neither chrome has been run against a real pack or with
-VoiceOver / Narrator: SwiftUI builds and its tests pass, the C# compiles and its tests pass.
+against where they went; each face's earlier pin restored), the frames of a clip that went with
+a reject included (`faces_reject_json` lists every face that left); Undo of a "Yes" on an unknown
+or suggested face makes it nobody's again (person 0). On the Mac, Return means Done in the sheet,
+as in every Mac sheet; on Windows, Enter on a focused face no longer closes it. Neither chrome
+has been run against a real pack or with VoiceOver / Narrator: SwiftUI builds and its tests pass,
+the C# compiles and its tests pass, Windows' native build is CI's.
 
 Timings come from `mv_ai_tests "[.people-api]"` and `"[.people-settle]"` on a copy (Apple M5);
 the "better matched" count from a NumPy script over a copy (aggregate counts only), kept with the

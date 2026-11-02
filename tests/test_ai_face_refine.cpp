@@ -1396,6 +1396,8 @@ TEST_CASE("faces.db: move to, yes, unpin and not this person", "[ai][faces][refi
   const auto spread = (*db2)->reject(std::vector<std::int64_t>{frame});
   REQUIRE(spread);
   CHECK(spread->spread == 3);
+  CHECK(spread->faces.size() == 4);
+  for (const auto& m : spread->faces) CHECK(m.from == all[0].id);
   for (const auto& g : (*db2)->faces_of(all[0].id)) CHECK(g.asset != 300);
 }
 

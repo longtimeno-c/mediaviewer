@@ -94,19 +94,43 @@ struct RejectOutcome: Equatable {
     let name: String
     let faces: Int
   }
+  /// A face that left, frames of the same clip included: where it was, and its pin.
+  struct Left: Equatable {
+    let face: UInt64
+    let from: UInt64
+    let pinned: Bool
+  }
   var unassigned = 0
   /// Frames of the same clip that went with them.
   var spread = 0
   var to: [Destination] = []
+  /// Every face that left (a pack before 2026-11-02's "faces" gives none).
+  var left: [Left] = []
 
-  /// {"unassigned":N,"spread":N,"to":[{"id":7,"name":"Ben","faces":2}]}
+  /// {"unassigned":N,"spread":N,"to":[{"id":7,"name":"Ben","faces":2}],
+  ///  "faces":[{"face":9,"from":3,"to":7,"pinned":false}]}
   static func parse(_ text: String?) -> RejectOutcome? {
     guard let obj = parseJSON(text) as? [String: Any] else { return nil }
     return RejectOutcome(
       unassigned: Int(int64(obj["unassigned"])), spread: Int(int64(obj["spread"])),
       to: (obj["to"] as? [[String: Any]] ?? []).map {
         Destination(id: jsonID($0["id"]), name: $0["name"] as? String ?? "", faces: Int(int64($0["faces"])))
+      },
+      left: (obj["faces"] as? [[String: Any]] ?? []).map {
+        Left(face: jsonID($0["face"]), from: jsonID($0["from"]), pinned: ($0["pinned"] as? Bool) ?? false)
       })
+  }
+
+  /// Undo: every face back where it was, with its pin, the clip's frames
+  /// that went too included. Nil when the pack listed none.
+  var undo: PeopleUndo? {
+    guard !left.isEmpty else { return nil }
+    var groups: [AssignGroup] = []
+    for (key, items) in Dictionary(grouping: left, by: { "\($0.from):\($0.pinned)" }).sorted(by: { $0.key < $1.key }) {
+      _ = key
+      groups.append(AssignGroup(faces: items.map(\.face), person: items[0].from, pin: items[0].pinned))
+    }
+    return .assign(groups)
   }
 
   /// "2 now with Carl, 1 unknown, 3 frames of the same clip went too".
@@ -143,6 +167,11 @@ enum PeopleUndo: Equatable {
   case merge([UInt64])
   /// faces_pin these faces back to `pinned`.
   case pin([UInt64], Bool)
+
+  /// Faces the user said Yes to that were nobody's: back to nobody.
+  static func unknownAgain(_ faces: [UInt64]) -> PeopleUndo {
+    .assign([AssignGroup(faces: faces, person: 0, pin: false)])
+  }
 
   /// Faces back to `person`, each with the pin it had: one call per pin state.
   static func restoring(_ faces: [ReviewFace], to person: UInt64) -> PeopleUndo {

@@ -146,4 +146,19 @@ public class PeopleWordsTests
         Assert.Equal(2, PeopleWords.Step(1, 5, 1));
         Assert.Equal(-1, PeopleWords.Step(0, 0, 1));
     }
+
+    [Fact]
+    public void RejectUndoPutsEveryFaceBackWithItsPin()
+    {
+        RejectOutcome o = PeopleWords.ParseReject(
+            "{\"unassigned\":1,\"spread\":2,\"to\":[{\"id\":7,\"name\":\"Ben\",\"faces\":2}]," +
+            "\"faces\":[{\"face\":9,\"from\":3,\"to\":7,\"pinned\":true},{\"face\":10,\"from\":3,\"to\":7,\"pinned\":false}," +
+            "{\"face\":11,\"from\":3,\"to\":0,\"pinned\":false}]}");
+        Assert.Equal(3, o.Left.Count);
+        var groups = PeopleWords.PutBackGroups(o);
+        Assert.All(groups, g => Assert.Equal(3UL, g.Person));
+        Assert.Equal(new ulong[] { 9 }, groups.Single(g => g.Pinned).Faces);
+        Assert.Equal(new ulong[] { 10, 11 }, groups.Single(g => !g.Pinned).Faces);
+        Assert.Empty(PeopleWords.PutBackGroups(PeopleWords.ParseReject("{\"unassigned\":1,\"spread\":0,\"to\":[]}")));
+    }
 }

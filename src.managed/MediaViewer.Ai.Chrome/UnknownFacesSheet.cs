@@ -45,6 +45,9 @@ internal sealed class UnknownFacesSheet : Window
     private readonly Button _yes;
     private readonly PersonPicker _move;
     private readonly TextBlock _status;
+    private readonly Button _undoButton;
+    // The last Yes or Move: those faces, to be nobody's again (only the last action's).
+    private List<ulong>? _undoFaces;
     private readonly ContentControl _focusHost;
     private readonly PhotoPreview _preview;
     private long _total;
@@ -155,12 +158,19 @@ internal sealed class UnknownFacesSheet : Window
         var foot = new Grid { ColumnSpacing = 8 };
         foot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         foot.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        foot.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _status = _look.Text("", 12, AddonColour.Title);
         _status.VerticalAlignment = VerticalAlignment.Center;
         AutomationProperties.SetLiveSetting(_status, AutomationLiveSetting.Polite);
         foot.Children.Add(_status);
+        _undoButton = _look.Button(PeopleWords.Undo, Undo);
+        ToolTipService.SetToolTip(_undoButton, "Undo (Ctrl+Z)");
+        AutomationProperties.SetName(_undoButton, "Undo");
+        _undoButton.Visibility = Visibility.Collapsed;
+        Grid.SetColumn(_undoButton, 1);
+        foot.Children.Add(_undoButton);
         Button done = _look.Button("Done", Close, accent: true);
-        Grid.SetColumn(done, 1);
+        Grid.SetColumn(done, 2);
         foot.Children.Add(done);
         Grid.SetRow(foot, 4);
         root.Children.Add(foot);
@@ -355,11 +365,14 @@ internal sealed class UnknownFacesSheet : Window
     {
         RemoveLocal(groups.SelectMany(g => g.Faces));
         _status.Text = "";
+        _undoFaces = null;
+        _undoButton.Visibility = Visibility.Collapsed;
         ++_generation;
         AiApi api = _api;
         _ = Task.Run(() =>
         {
             var moved = new List<(string Name, int Count)>();
+            var done = new List<ulong>();
             bool failed = false;
             foreach ((ulong person, string name, List<ulong> faces) in groups)
             {
@@ -367,6 +380,7 @@ internal sealed class UnknownFacesSheet : Window
                 {
                     api.FacesAssign(faces, person, pin: true);
                     moved.Add((name, faces.Count));
+                    done.AddRange(faces);
                 }
                 catch (MediaViewerException) { failed = true; }
             }
@@ -375,8 +389,32 @@ internal sealed class UnknownFacesSheet : Window
                 _grid.Refresh();
                 if (_closed) return;
                 _status.Text = failed ? PeopleWords.CouldNotChange : PeopleWords.MovedEach(moved);
+                _undoFaces = done.Count > 0 ? done : null;
+                _undoButton.Visibility = _undoFaces is null ? Visibility.Collapsed : Visibility.Visible;
                 // A short page after naming: fill it from the pack again.
                 if (failed || (_items.Count < Page && _items.Count < _total)) Reload();
+            });
+        });
+    }
+
+    /// <summary>The Undo button and Ctrl+Z: the last Yes or Move put back, the faces nobody's again.</summary>
+    private void Undo()
+    {
+        if (_undoFaces is not List<ulong> faces) return;
+        _undoFaces = null;
+        _undoButton.Visibility = Visibility.Collapsed;
+        AiApi api = _api;
+        _ = Task.Run(() =>
+        {
+            bool ok = true;
+            try { api.FacesAssign(faces, 0, pin: false, undo: true); }
+            catch (MediaViewerException) { ok = false; }
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                _grid.Refresh();
+                if (_closed) return;
+                _status.Text = ok ? "Undone" : "That can no longer be undone.";
+                Reload();
             });
         });
     }
@@ -412,6 +450,10 @@ internal sealed class UnknownFacesSheet : Window
         {
             case VirtualKey.Y when !ctrl && n > 0:
                 Yes();
+                e.Handled = true;
+                break;
+            case VirtualKey.Z when ctrl && _undoFaces is not null:
+                Undo();
                 e.Handled = true;
                 break;
             case VirtualKey.M when !ctrl && n > 0 && _api.HasFacesAssign:

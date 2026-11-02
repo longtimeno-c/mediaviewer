@@ -130,6 +130,14 @@ struct reject_result {
   std::uint32_t unassigned = 0;
   std::map<std::int64_t, std::uint32_t> to;  // person -> faces
   std::uint32_t spread = 0;                   // frames of the same clip that went with them
+  // Every face that left, the ones asked about and the frames that went with
+  // them: (face, person it left, person it went to or 0, was pinned). An
+  // Undo puts each back.
+  struct moved {
+    std::int64_t face = 0, from = 0, to = 0;
+    bool pinned = false;
+  };
+  std::vector<moved> faces;
 };
 
 // An unassigned face worth a name, with the person it most resembles.

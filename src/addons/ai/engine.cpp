@@ -7276,6 +7276,16 @@ result<std::string> engine::faces_reject_json(const std::vector<std::int64_t>& f
   w.begin_object();
   w.key("unassigned").integer(r.unassigned);
   w.key("spread").integer(r.spread);
+  w.key("faces").begin_array();
+  for (const reject_result::moved& m : r.faces) {
+    w.begin_object();
+    w.key("face").integer(m.face);
+    w.key("from").integer(m.from);
+    w.key("to").integer(m.to);
+    w.key("pinned").boolean(m.pinned);
+    w.end_object();
+  }
+  w.end_array();
   w.key("to").begin_array();
   for (const auto& [person, n] : r.to) {
     w.begin_object();

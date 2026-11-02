@@ -659,11 +659,19 @@ internal sealed class PersonSheet : Window
                 {
                     string json = api.FacesRejectJson(ids);
                     string line;
-                    try { line = PeopleWords.RejectSummary(PeopleWords.ParseReject(json), ids.Count); }
+                    RejectOutcome? outcome = null;
+                    try
+                    {
+                        outcome = PeopleWords.ParseReject(json);
+                        line = PeopleWords.RejectSummary(outcome, ids.Count);
+                    }
                     catch (JsonException) { line = PeopleWords.Removed(ids.Count); }
-                    return (Line: line, Undoable: api.HasFacesAssign, Failed: false);
+                    return (Line: line, Undoable: api.HasFacesAssign, Failed: false, Outcome: outcome);
                 }
-                catch (MediaViewerException) { return (Line: PeopleWords.CouldNotChange, Undoable: false, Failed: true); }
+                catch (MediaViewerException)
+                {
+                    return (Line: PeopleWords.CouldNotChange, Undoable: false, Failed: true, Outcome: (RejectOutcome?)null);
+                }
             }
             // An older pack: one at a time, nothing to say where they went.
             bool failed = false;
@@ -672,10 +680,17 @@ internal sealed class PersonSheet : Window
                 try { api.FaceReject(f); }
                 catch (MediaViewerException) { failed = true; }
             }
-            return (Line: failed ? PeopleWords.CouldNotChange : PeopleWords.Removed(ids.Count), Undoable: false, Failed: failed);
+            return (Line: failed ? PeopleWords.CouldNotChange : PeopleWords.Removed(ids.Count), Undoable: false, Failed: failed,
+                    Outcome: (RejectOutcome?)null);
         }, r =>
         {
-            SetStatus(r.Line, r.Undoable ? api => PutBack(api, ids, person, pinnedBefore) : null);
+            // Every face that left, the clip's frames that went too included, when the pack lists them.
+            var groups = r.Outcome is null ? null : PeopleWords.PutBackGroups(r.Outcome);
+            Action<AiApi>? undo = !r.Undoable ? null
+                : groups is { Count: > 0 }
+                    ? api => { foreach (var g in groups) api.FacesAssign(g.Faces, g.Person, pin: g.Pinned, undo: true); }
+                    : api => PutBack(api, ids, person, pinnedBefore);
+            SetStatus(r.Line, undo);
             if (r.Failed) Load();
         });
     }
@@ -779,7 +794,9 @@ internal sealed class PersonSheet : Window
             catch (MediaViewerException) { return false; }
         }, ok =>
         {
-            SetStatus(ok ? PeopleWords.Added(1, name) : PeopleWords.CouldNotChange, null);
+            // Undo: the face was nobody's, and is again.
+            SetStatus(ok ? PeopleWords.Added(1, name) : PeopleWords.CouldNotChange,
+                      ok ? api => api.FacesAssign(new[] { sf.Face }, 0, pin: false, undo: true) : null);
             Load();
         });
     }

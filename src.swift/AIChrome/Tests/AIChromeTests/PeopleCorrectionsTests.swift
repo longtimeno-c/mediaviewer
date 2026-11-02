@@ -126,4 +126,14 @@ final class PeopleCorrectionsTests: XCTestCase {
     XCTAssertNil(t.personReviewJSON(1))
     XCTAssertNil(t.unknownFacesJSON(offset: 0, limit: 1))
   }
+
+  func testRejectUndoPutsEveryFaceBackWithItsPin() {
+    let o = RejectOutcome.parse(#"{"unassigned":1,"spread":2,"to":[{"id":7,"name":"Ben","faces":2}],"faces":[{"face":9,"from":3,"to":7,"pinned":true},{"face":10,"from":3,"to":7,"pinned":false},{"face":11,"from":3,"to":0,"pinned":false}]}"#)
+    XCTAssertEqual(o?.left.count, 3)
+    guard case .assign(let groups)? = o?.undo else { return XCTFail("no undo") }
+    XCTAssertEqual(Set(groups.flatMap(\.faces)), [9, 10, 11])
+    XCTAssertTrue(groups.allSatisfy { $0.person == 3 })
+    XCTAssertEqual(groups.first { $0.pin }?.faces, [9])
+    XCTAssertNil(RejectOutcome.parse(#"{"unassigned":1,"spread":0,"to":[]}"#)?.undo)
+  }
 }
