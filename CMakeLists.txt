@@ -765,7 +765,7 @@ include("${CMAKE_SOURCE_DIR}/cmake/driftwire.cmake")
 # still pipeline, the clip sampler and the JPEG-512 cache. In the base app;
 # it knows no add-on. The AI pack itself is cmake/ai.cmake.
 add_library(mv_addon_media STATIC src/abi/addon_media.cpp src/abi/addon_media.h src/addon/media.h)
-target_include_directories(mv_addon_media PUBLIC src)
+target_include_directories(mv_addon_media PUBLIC src src/abi/include)
 target_link_libraries(mv_addon_media PUBLIC mv_core mv_io PRIVATE mv_image mv_clip mv_edit mv_meta)
 
 # Milestone H: the AI pack (mv_ai, packed separately; never installed with the
