@@ -6785,9 +6785,11 @@ bool print_draw(const print_job& j, const mv::codec::raster& pixels, const mv::s
   const RECT d = print_device_rect(j, at.dest);
   ::SetStretchBltMode(j.dc, HALFTONE);
   ::SetBrushOrgEx(j.dc, 0, 0, nullptr);
+  // StretchDIBits answers the scan lines copied, 0 on failure (GDI_ERROR is an
+  // unsigned long that some drivers return as -1; neither is a positive count).
   return ::StretchDIBits(j.dc, d.left, d.top, d.right - d.left, d.bottom - d.top, 0, 0, static_cast<int>(w),
                          static_cast<int>(h), bits.data(), reinterpret_cast<const BITMAPINFO*>(info.data()),
-                         DIB_RGB_COLORS, SRCCOPY) != GDI_ERROR;
+                         DIB_RGB_COLORS, SRCCOPY) > 0;
 }
 
 void print_caption_line(const print_job& j, const mv::shell::print_rect& r, std::string_view path) {
