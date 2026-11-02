@@ -584,6 +584,8 @@ add_library(mv_meta_parse STATIC
   src/meta/xmp_raw.cpp
   src/meta/generators.cpp
   src/meta/probe.cpp
+  src/meta/gpmf.cpp
+  src/meta/telemetry.h
   src/meta/probe.h
   src/meta/parse.h
   src/meta/parse_util.h
@@ -1148,6 +1150,8 @@ if(MV_BUILD_TESTS)
     tests/test_meta_provenance.cpp
     tests/test_meta_bench.cpp
     tests/test_meta_location.cpp
+    # #606: GoPro GPMF and DJI subtitle telemetry, a clip's route.
+    tests/test_meta_telemetry.cpp
     tests/test_meta_store.cpp
     # #345: the canvas's AI badge (setting, evidence text, the store's probe).
     tests/test_ai_badge.cpp

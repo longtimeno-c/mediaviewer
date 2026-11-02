@@ -28,6 +28,7 @@ extern "C" {
 
 #include "meta/cues.h"
 #include "meta/internal.h"
+#include "meta/telemetry.h"
 
 namespace mv::meta::detail {
 namespace {
@@ -255,9 +256,153 @@ void add_tags(metadata& out, const char* group, const AVDictionary* d) {
   }
 }
 
+const char* text_codec(AVCodecID id) {
+  switch (id) {
+    case AV_CODEC_ID_MOV_TEXT: return "mov_text";
+    case AV_CODEC_ID_SUBRIP:
+    case AV_CODEC_ID_SRT: return "subrip";
+    case AV_CODEC_ID_ASS:
+    case AV_CODEC_ID_SSA: return "ass";
+    case AV_CODEC_ID_WEBVTT: return "webvtt";
+    case AV_CODEC_ID_TEXT: return "text";
+    default: return nullptr;  // bitmap subtitles (DVD, PGS, DVB) and the rest
+  }
+}
+
+
+// ---- #606: telemetry (meta/telemetry.h) ------------------------------------------
+
+// The tag pass reads only the head of the telemetry: enough packets for the
+// first fix (GoPro writes one gpmd packet a second, DJI one cue a frame), so a
+// clip costs a few small reads more, never a walk of the file. The pane's full
+// read takes every packet, up to the cap.
+constexpr int kHeadGpmfPackets = 8;
+constexpr int kHeadDjiPackets = 60;
+constexpr int kMaxTelemetryPackets = 250000;
+
+struct telemetry_source {
+  int stream = -1;
+  bool gpmf = false;            // else DJI subtitle text
+  const char* text = nullptr;   // the subtitle codec's name for cue_text
+};
+
+// The GoPro MET track (codec tag `gpmd`) wins; else every text subtitle
+// track is a DJI candidate, decided by its first cues.
+std::vector<telemetry_source> telemetry_sources(const AVFormatContext& ctx) {
+  std::vector<telemetry_source> out;
+  for (unsigned i = 0; i < ctx.nb_streams; ++i) {
+    const AVCodecParameters& p = *ctx.streams[i]->codecpar;
+    if (p.codec_tag == MKTAG('g', 'p', 'm', 'd')) {
+      out.push_back(telemetry_source{static_cast<int>(i), true, nullptr});
+      return out;
+    }
+  }
+  for (unsigned i = 0; i < ctx.nb_streams; ++i) {
+    const AVCodecParameters& p = *ctx.streams[i]->codecpar;
+    if (p.codec_type != AVMEDIA_TYPE_SUBTITLE) continue;
+    if (const char* t = text_codec(p.codec_id)) out.push_back({static_cast<int>(i), false, t});
+  }
+  return out;
+}
+
 }  // namespace
 
-bool read_clip(std::string_view utf8_path, metadata& out, parse::evidence* ev) noexcept {
+route_read read_telemetry(void* fmt_ctx, telemetry_read mode, std::size_t max_points) noexcept {
+  route_read r;
+  if (mode == telemetry_read::none || !fmt_ctx) return r;
+  auto* ctx = static_cast<AVFormatContext*>(fmt_ctx);
+  std::vector<AVDiscard> was;
+  try {
+    const std::vector<telemetry_source> sources = telemetry_sources(*ctx);
+    if (sources.empty()) return r;
+    std::vector<const telemetry_source*> by_stream(ctx->nb_streams, nullptr);
+    was.resize(ctx->nb_streams);
+    for (unsigned i = 0; i < ctx->nb_streams; ++i) {
+      was[i] = ctx->streams[i]->discard;
+      ctx->streams[i]->discard = AVDISCARD_ALL;  // only the telemetry's packets are read
+    }
+    for (const telemetry_source& t : sources) {
+      by_stream[static_cast<unsigned>(t.stream)] = &t;
+      ctx->streams[t.stream]->discard = AVDISCARD_DEFAULT;
+    }
+    route_limits limits;
+    limits.max_points = std::max<std::size_t>(2, max_points);
+    route_builder route(limits);
+    const bool head = mode == telemetry_read::head;
+    const int cap = head ? (sources.front().gpmf ? kHeadGpmfPackets : kHeadDjiPackets) : kMaxTelemetryPackets;
+    // DJI: the first text track whose cues carry a fix is the telemetry; the
+    // others (a film's subtitles) stop counting once one has been chosen.
+    int dji_stream = -1;
+    int read = 0;
+    AVPacket* pkt = av_packet_alloc();
+    if (pkt) {
+      struct packet_free {
+        AVPacket*& p;
+        ~packet_free() { av_packet_free(&p); }
+      } const free_it{pkt};
+      while (read < cap && av_read_frame(ctx, pkt) >= 0) {
+        const int si = pkt->stream_index;
+        const telemetry_source* t =
+            si >= 0 && static_cast<unsigned>(si) < by_stream.size() ? by_stream[static_cast<unsigned>(si)] : nullptr;
+        if (!t || !pkt->data || pkt->size <= 0 || (dji_stream >= 0 && si != dji_stream)) {
+          av_packet_unref(pkt);
+          continue;
+        }
+        ++read;
+        const std::span<const std::uint8_t> bytes(pkt->data, static_cast<std::size_t>(pkt->size));
+        if (t->gpmf) {
+          if (read_gpmf(bytes, route) > 0) r.source = "GoPro GPMF";
+        } else {
+          const std::string text =
+              cue_text(t->text, std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+          if (const auto p = parse_dji_text(text)) {
+            dji_stream = si;
+            r.source = "DJI subtitle telemetry";
+            route.add(*p);
+          }
+        }
+        av_packet_unref(pkt);
+        // The tag pass wants the first fix: once it has one, it stops.
+        if (head && !route.points().empty()) break;
+      }
+    }
+    for (unsigned i = 0; i < ctx->nb_streams; ++i) ctx->streams[i]->discard = was[i];
+    r.fixes = route.accepted();
+    r.thinned = route.thinned();
+    r.points = route.take();
+    if (head && r.points.size() > 1) r.points.resize(1);  // the first fix is all the tag pass keeps
+    if (r.points.empty()) r.source.clear();
+    return r;
+  } catch (...) {
+    for (unsigned i = 0; i < was.size(); ++i) ctx->streams[i]->discard = was[i];
+    return route_read{};
+  }
+}
+
+namespace {
+
+// The telemetry's rows for the pane, and its first fix as the clip's position
+// when the container has no ISO 6709 tag (the camera's own tag wins).
+void apply_route(route_read&& r, metadata& out) {
+  if (r.points.empty()) return;
+  summary& s = out.s;
+  if (!s.where) {
+    s.where = r.points.front();
+    s.gps = format_point(*s.where);
+  }
+  const auto row = [&](const char* name, const char* label, const std::string& value) {
+    out.properties.push_back(
+        {origin::computed, "Telemetry", name, label, value, value, std::string("Telemetry.") + name});
+  };
+  row("Source", "Source", r.source);
+  row("GPSFixes", "GPS fixes", std::to_string(r.fixes));
+  row("RoutePoints", "Route points", std::to_string(r.points.size()) + (r.thinned ? " (thinned)" : ""));
+  out.route = std::move(r.points);
+}
+
+}  // namespace
+
+bool read_clip(std::string_view utf8_path, metadata& out, parse::evidence* ev, telemetry_read telemetry) noexcept {
   try {
     format_ptr ctx = open(utf8_path, true);
     if (!ctx) return false;
@@ -350,6 +495,10 @@ bool read_clip(std::string_view utf8_path, metadata& out, parse::evidence* ev) n
         break;
       }
     }
+    // #606: GoPro and DJI write no ISO 6709 tag; their position is in the
+    // telemetry. Read last, after every header fact. The tag pass keeps the
+    // first fix (and so knows the clip has a route); the pane keeps the route.
+    apply_route(read_telemetry(ctx.get(), telemetry, telemetry == telemetry_read::full ? kRouteMaxPoints : 2), out);
     // #290: the generator evidence a clip's tags can carry.
     if (ev) {
       ev->exif_software = tag(ctx->metadata, "com.apple.quicktime.software");
@@ -358,6 +507,17 @@ bool read_clip(std::string_view utf8_path, metadata& out, parse::evidence* ev) n
     return true;
   } catch (...) {
     return false;
+  }
+}
+
+// #606 (location.h read_route): the header only, then the whole telemetry.
+route_read clip_route(std::string_view utf8_path, std::size_t max_points) noexcept {
+  try {
+    format_ptr ctx = open(utf8_path, false);
+    if (!ctx) return {};
+    return read_telemetry(ctx.get(), telemetry_read::full, max_points);
+  } catch (...) {
+    return {};
   }
 }
 
@@ -447,18 +607,6 @@ std::string clean_line(std::string_view s, bool ass) {
   return out;
 }
 
-const char* text_codec(AVCodecID id) {
-  switch (id) {
-    case AV_CODEC_ID_MOV_TEXT: return "mov_text";
-    case AV_CODEC_ID_SUBRIP:
-    case AV_CODEC_ID_SRT: return "subrip";
-    case AV_CODEC_ID_ASS:
-    case AV_CODEC_ID_SSA: return "ass";
-    case AV_CODEC_ID_WEBVTT: return "webvtt";
-    case AV_CODEC_ID_TEXT: return "text";
-    default: return nullptr;  // bitmap subtitles (DVD, PGS, DVB) and the rest
-  }
-}
 
 }  // namespace
 
@@ -524,7 +672,7 @@ expected read_cues(std::string_view utf8_path, const cue_limits& limits,
     bool any_text = false;
     for (unsigned i = 0; i < ctx->nb_streams; ++i) {
       AVStream* st = ctx->streams[i];
-      if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) codec_of[i] = text_codec(st->codecpar->codec_id);
+      if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) codec_of[i] = detail::text_codec(st->codecpar->codec_id);
       if (codec_of[i]) {
         any_text = true;
       } else {
