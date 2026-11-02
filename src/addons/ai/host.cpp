@@ -166,6 +166,24 @@ expected host::walk(const std::string& root, int max_depth,
   return s == MV_OK ? expected{} : err(to_status(s));
 }
 
+bool host::has_watch_tree() const noexcept {
+  return api_ && api_->struct_size >= offsetof(mv_host_api, watch_tree) + sizeof(api_->watch_tree) &&
+         api_->watch_tree;
+}
+
+result<std::vector<bool>> host::watch_tree(const std::vector<std::string>& roots, tree_change_fn on_change,
+                                           void* user) const {
+  if (!has_watch_tree()) return err(status::unsupported_format);
+  std::vector<const char*> raw;
+  raw.reserve(roots.size());
+  for (const std::string& r : roots) raw.push_back(r.c_str());
+  std::vector<std::uint8_t> ok(roots.size(), 0);
+  const mv_status s = api_->watch_tree(api_->host, raw.data(), static_cast<std::uint32_t>(raw.size()),
+                                       roots.empty() ? nullptr : on_change, user, ok.data());
+  if (s != MV_OK) return err(to_status(s));
+  return std::vector<bool>(ok.begin(), ok.end());
+}
+
 result<host::stat_result> host::stat(const std::string& path) const {
   stat_result r;
   uint32_t dir = 0;

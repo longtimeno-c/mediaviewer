@@ -225,6 +225,9 @@ target_link_libraries(mv_codec PRIVATE mv_raw_openmp)
 add_library(mv_io STATIC
   src/io/dir_mac.cpp
   src/io/dir_tree.cpp
+  # docs/plans/index-watcher.md: Local search's roots, through watch_tree.
+  src/io/tree_watch.h
+  src/io/tree_watch_mac.cpp
   src/io/file_mac.cpp
   src/io/replace_mac.cpp
   src/io/replace.h
@@ -879,6 +882,8 @@ if(MV_BUILD_TESTS)
     tests/test_dir_tree.cpp
     # Issue #167: the folder listing reads size + mtime in bulk; links stat'ed.
     tests/test_dir_mac.cpp
+    # docs/plans/index-watcher.md: Local search's tree watch.
+    tests/test_tree_watch.cpp
     tests/test_key_router.cpp
     # Issue #239: every command id is handled or explicitly excluded, per host.
     tests/test_command_coverage.cpp

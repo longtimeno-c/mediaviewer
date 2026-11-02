@@ -48,6 +48,15 @@ class host {
   [[nodiscard]] bool has_walk2() const noexcept;
   [[nodiscard]] expected walk(const std::string& root, int max_depth,
                               const std::function<bool(const entry&)>& visit) const;
+  // docs/plans/index-watcher.md: the host watches these folder trees and
+  // calls `on_change` (its watcher thread; must not block) with the folder
+  // whose listing changed and MV_ADDON_TREE_* flags. Replaces the last set;
+  // empty stops. Per root, whether it is watched. An older host has none:
+  // has_watch_tree() false.
+  using tree_change_fn = void(MV_CALL*)(void* user, std::uint32_t root, const char* dir_utf8, std::uint32_t flags);
+  [[nodiscard]] bool has_watch_tree() const noexcept;
+  [[nodiscard]] result<std::vector<bool>> watch_tree(const std::vector<std::string>& roots, tree_change_fn on_change,
+                                                     void* user) const;
   struct stat_result {
     std::uint64_t size = 0;
     std::int64_t mtime = 0;

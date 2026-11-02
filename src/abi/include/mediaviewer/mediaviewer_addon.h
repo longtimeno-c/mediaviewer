@@ -877,7 +877,26 @@ typedef struct mv_host_api {
   mv_status(MV_CALL* still_write)(void* host, const char* source_utf8, const uint8_t* rgb, uint32_t width,
                                   uint32_t height, uint32_t stride, const char* suffix_ascii, char* out_path_utf8,
                                   uint32_t capacity);
+  /* ---- watching folder trees (docs/plans/index-watcher.md) ---------------------- */
+  /* [worker-thread] Watches `count` folder trees for the add-on, replacing the
+   * set it watched before; count 0 stops. `on_change` runs on the host's
+   * watcher thread and must not block: `root` indexes `roots_utf8`, `dir_utf8`
+   * is the folder whose listing changed (under that root, spelled from it).
+   * Flags: MV_ADDON_TREE_SUBTREE, everything below `dir_utf8` (a folder moved
+   * in, renamed or removed; or a name that may have been one, or is gone);
+   * MV_ADDON_TREE_OVERFLOW, events were lost: the whole root (`dir_utf8` is
+   * the root). out_ok (count bytes, may be NULL) is 0 for a root that could
+   * not be watched. Once a call returns, no callback of the old set runs.
+   * MV_ERR_IO: none could be watched. Appended after still_write: read it only
+   * when `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* watch_tree)(void* host, const char* const* roots_utf8, uint32_t count,
+                                 void(MV_CALL* on_change)(void* user, uint32_t root, const char* dir_utf8,
+                                                          uint32_t flags),
+                                 void* user, uint8_t* out_ok);
 } mv_host_api;
+
+#define MV_ADDON_TREE_SUBTREE 1u
+#define MV_ADDON_TREE_OVERFLOW 2u
 
 typedef struct mv_addon_api {
   uint32_t struct_size;
