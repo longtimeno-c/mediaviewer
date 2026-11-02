@@ -645,6 +645,9 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (BOOL)welcomePointerMoved;
 - (void)openWelcomeRow:(int)row;
 - (void)removeWelcomeRow:(int)row;
+// Issue #617: a folder row's context menu (Open, Pin to Top / Unpin, Remove
+// from List); nil for the iCloud row or no row.
+- (NSMenu*)welcomeRowMenu:(int)row;
 // Settings screen (docs/design/16 Settings): view preferences, persisted in
 // NSUserDefaults, and the remappable key table.
 - (BOOL)settingsVisible;
@@ -2324,9 +2327,15 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 // so no menu, over the gallery, the editor, an empty window, or when no add-on
 // contributes an entry.
 - (NSMenu*)menuForEvent:(NSEvent*)event {
-  (void)event;
   NSMenu* menu = nil;
-  if (self.app && ![self.app galleryVisible] && ![self.app editorOwnsCanvas] && [self.app hasFolder]) {
+  // Issue #617: a welcome card folder row's own menu. The card lists rows only
+  // while nothing is open, so it never competes with the add-ons' menu.
+  if (self.app) {
+    [self trackPointer:event];
+    const int row = [self.app welcomeRowAtPointer];
+    if (row >= 0) menu = [self.app welcomeRowMenu:row];
+  }
+  if (!menu && self.app && ![self.app galleryVisible] && ![self.app editorOwnsCanvas] && [self.app hasFolder]) {
     menu = [MVChromeHost canvasContextMenu];
   }
   _contextMenuShown = menu != nil;
@@ -2921,6 +2930,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::string _currentDir;
   // PR 15: the Dock menu's recent folders (mv.recentFolders), most recent first.
   std::vector<std::string> _recentFolders;
+  // Issue #617: the pinned folders (mv.pinnedFolders), oldest pin first. They
+  // lead the card, the Dock menu and Open Recent (-shownFolders); the MRU
+  // list above is kept as it would be without them.
+  std::vector<std::string> _pinnedFolders;
   NSMenu* _openRecentMenu;  // File > Open Recent, rebuilt as it opens
   // PR 15: Now Playing. The timer runs only while a clip is on the canvas.
   NSTimer* _nowPlayingTimer;
@@ -11159,6 +11172,95 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   [self persistRecentFolders];
 }
 
+// Issue #617: what the card, the Dock menu and File > Open Recent list: the
+// pins first, then the recents that are not pinned (os_integration.h). Every
+// row index is into this list.
+- (std::vector<std::string>)shownFolders {
+  return mv::shell::pinned_then_recent(_pinnedFolders, _recentFolders);
+}
+
+- (void)persistPinnedFolders {
+  NSMutableArray<NSString*>* list = [NSMutableArray array];
+  for (const auto& p : _pinnedFolders) {
+    if (NSString* s = [NSString stringWithUTF8String:p.c_str()]) [list addObject:s];
+  }
+  [NSUserDefaults.standardUserDefaults setObject:list forKey:kDefaultsPinnedFolders];
+}
+
+// Pin / Unpin from a card row's menu. A soak or a --boot-report records nothing
+// (the PR 15 rule), and a full list beeps.
+- (void)setFolder:(const std::string&)dir pinned:(BOOL)pin {
+  if (_options.soak_seconds > 0.0 || !g_boot_report.empty() || dir.empty()) return;
+  std::vector<std::string> next = pin ? mv::shell::pin_folder(_pinnedFolders, dir)
+                                      : mv::shell::remove_folder(_pinnedFolders, dir);
+  if (next == _pinnedFolders) {
+    if (pin) NSBeep();
+    return;
+  }
+  _pinnedFolders = std::move(next);
+  [self persistPinnedFolders];
+  [self refreshWelcomeRecents];
+}
+
+// A folder leaves every list: the recents and, if it was pinned, the pins.
+- (void)forgetFolder:(const std::string&)dir {
+  _recentFolders = mv::shell::remove_folder(std::move(_recentFolders), dir);
+  [self persistRecentFolders];
+  if (mv::shell::is_pinned_folder(_pinnedFolders, dir)) {
+    _pinnedFolders = mv::shell::remove_folder(std::move(_pinnedFolders), dir);
+    [self persistPinnedFolders];
+  }
+  [self refreshWelcomeRecents];
+}
+
+// The shown folder a card row stands for ("" for the iCloud row or none).
+- (std::string)welcomeRowFolder:(int)row {
+  if (_snap.recents.icloud) {
+    if (row == 0) return {};
+    --row;
+  }
+  const std::vector<std::string> shown = [self shownFolders];
+  if (row < 0 || static_cast<std::size_t>(row) >= shown.size()) return {};
+  return shown[static_cast<std::size_t>(row)];
+}
+
+- (NSMenu*)welcomeRowMenu:(int)row {
+  const std::string dir = [self welcomeRowFolder:row];
+  NSString* path = dir.empty() ? nil : [NSString stringWithUTF8String:dir.c_str()];
+  if (!path) return nil;
+  const bool pinned = mv::shell::is_pinned_folder(_pinnedFolders, dir);
+  NSMenu* menu = [[NSMenu alloc] initWithTitle:@""];
+  menu.autoenablesItems = NO;
+  NSMenuItem* open = [menu addItemWithTitle:@"Open" action:@selector(openRecentFolder:) keyEquivalent:@""];
+  open.target = self;
+  open.representedObject = path;
+  NSMenuItem* pin = [menu addItemWithTitle:pinned ? @"Unpin" : @"Pin to Top"
+                                    action:@selector(togglePinnedFolder:)
+                             keyEquivalent:@""];
+  pin.target = self;
+  pin.representedObject = path;
+  pin.enabled = pinned || _pinnedFolders.size() < mv::shell::kMaxPinnedFolders;
+  [menu addItem:[NSMenuItem separatorItem]];
+  NSMenuItem* remove = [menu addItemWithTitle:@"Remove from List" action:@selector(forgetFolderFromMenu:)
+                                keyEquivalent:@""];
+  remove.target = self;
+  remove.representedObject = path;
+  return menu;
+}
+
+- (void)togglePinnedFolder:(NSMenuItem*)item {
+  NSString* path = item.representedObject;
+  if (![path isKindOfClass:[NSString class]]) return;
+  const std::string dir = path.UTF8String;
+  [self setFolder:dir pinned:mv::shell::is_pinned_folder(_pinnedFolders, dir) ? NO : YES];
+}
+
+- (void)forgetFolderFromMenu:(NSMenuItem*)item {
+  NSString* path = item.representedObject;
+  if (![path isKindOfClass:[NSString class]]) return;
+  [self forgetFolder:path.UTF8String];
+}
+
 // The welcome card lists recent folders only while nothing has been opened:
 // once a folder or file is chosen the card is a hint again, not a menu.
 - (BOOL)welcomeListsRecents {
@@ -11170,10 +11272,12 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   mv::shell::welcome_recents next;
   if ([self welcomeListsRecents]) {
     const char* home = NSHomeDirectory().fileSystemRepresentation;
-    mv::shell::fill_welcome_recents(_recentFolders, home ? home : "", next, [self photosLibraryAvailable] == YES);
+    mv::shell::fill_welcome_recents([self shownFolders], home ? home : "", next,
+                                    [self photosLibraryAvailable] == YES, _pinnedFolders.size());
   }
   // A row index survives the refresh only if the rows did not move.
-  if (next.count == _snap.recents.count && next.icloud == _snap.recents.icloud) {
+  if (next.count == _snap.recents.count && next.icloud == _snap.recents.icloud &&
+      next.pinned == _snap.recents.pinned) {
     next.hover = _snap.recents.hover;
     next.hover_remove = _snap.recents.hover_remove;
   }
@@ -11217,30 +11321,23 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 // The x on a welcome card row: the folder leaves the card, the Dock menu and
 // File > Open Recent. The folder itself is not touched.
 - (void)removeWelcomeRow:(int)row {
-  if (_snap.recents.icloud) {
-    if (row == 0) return;  // the library leaves from Settings, not the card
-    --row;
-  }
-  if (row < 0 || static_cast<std::size_t>(row) >= _recentFolders.size()) return;
-  _recentFolders.erase(_recentFolders.begin() + row);
-  [self persistRecentFolders];
-  [self refreshWelcomeRecents];
+  // The library leaves from Settings, not the card (its row has no folder).
+  const std::string dir = [self welcomeRowFolder:row];
+  if (dir.empty()) return;
+  [self forgetFolder:dir];  // a pinned folder's x unpins it too
 }
 
 - (void)openWelcomeRow:(int)row {
-  if (_snap.recents.icloud) {
-    if (row == 0) {
-      // The library's settings (its backup), not the library itself: listing
-      // every asset is File > Open Photos Library and the folder tree's row.
-      [NSCursor.arrowCursor set];
-      [self setSettingsVisible:YES];
-      [MVChromeHost revealPhotosSettings];
-      return;
-    }
-    --row;
+  if (_snap.recents.icloud && row == 0) {
+    // The library's settings (its backup), not the library itself: listing
+    // every asset is File > Open Photos Library and the folder tree's row.
+    [NSCursor.arrowCursor set];
+    [self setSettingsVisible:YES];
+    [MVChromeHost revealPhotosSettings];
+    return;
   }
-  if (row < 0 || static_cast<std::size_t>(row) >= _recentFolders.size()) return;
-  NSString* path = [NSString stringWithUTF8String:_recentFolders[static_cast<std::size_t>(row)].c_str()];
+  const std::string dir = [self welcomeRowFolder:row];
+  NSString* path = dir.empty() ? nil : [NSString stringWithUTF8String:dir.c_str()];
   if (!path) return;
   [NSCursor.arrowCursor set];
   NSMenuItem* item = [[NSMenuItem alloc] init];
@@ -11262,10 +11359,9 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   NSMenuItem* newWindow = [menu addItemWithTitle:@"New Window" action:@selector(menuAction:) keyEquivalent:@""];
   newWindow.target = self;
   newWindow.tag = kMenuNewWindow;
-  if (_recentFolders.empty() && ![self photosLibraryAvailable]) return menu;
+  if (_recentFolders.empty() && _pinnedFolders.empty() && ![self photosLibraryAvailable]) return menu;
   [menu addItem:[NSMenuItem separatorItem]];
-  [menu addItem:[NSMenuItem sectionHeaderWithTitle:@"Recent Folders"]];
-  [self addRecentFolderItemsTo:menu];
+  [self addRecentFolderItemsTo:menu headers:YES];
   return menu;
 }
 
@@ -11274,27 +11370,36 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 - (void)menuNeedsUpdate:(NSMenu*)menu {
   if (menu != _openRecentMenu) return;
   [menu removeAllItems];
-  [self addRecentFolderItemsTo:menu];
+  [self addRecentFolderItemsTo:menu headers:NO];
   if (menu.numberOfItems == 0) [menu addItemWithTitle:@"No Recent Folders" action:nil keyEquivalent:@""];
 }
 
-- (void)addRecentFolderItemsTo:(NSMenu*)menu {
+// Issue #617: the pins first (a pin glyph on each; under a "Pinned Folders"
+// header in the Dock menu), a separator, then the recents (under "Recent
+// Folders" there). Open Recent has no headers, as the system's own.
+- (void)addRecentFolderItemsTo:(NSMenu*)menu headers:(BOOL)headers {
+  const std::vector<std::string> shown = [self shownFolders];
+  const std::size_t pinned = std::min(_pinnedFolders.size(), shown.size());
   // docs/design/26: the iCloud Photos library first, while it is added in Settings.
   if ([self photosLibraryAvailable]) {
     NSMenuItem* icloud = [menu addItemWithTitle:@"iCloud Photos" action:@selector(openPhotosLibraryFromMenu:)
                                   keyEquivalent:@""];
     icloud.target = self;
     icloud.image = [NSImage imageWithSystemSymbolName:@"icloud" accessibilityDescription:@"iCloud"];
-    if (!_recentFolders.empty()) [menu addItem:[NSMenuItem separatorItem]];
+    if (!shown.empty()) [menu addItem:[NSMenuItem separatorItem]];
   }
-  const std::vector<std::string> labels = mv::shell::recent_folder_labels(_recentFolders);
-  for (std::size_t i = 0; i < _recentFolders.size(); ++i) {
-    NSString* path = [NSString stringWithUTF8String:_recentFolders[i].c_str()];
+  const std::vector<std::string> labels = mv::shell::recent_folder_labels(shown);
+  for (std::size_t i = 0; i < shown.size(); ++i) {
+    if (headers && i == 0 && pinned > 0) [menu addItem:[NSMenuItem sectionHeaderWithTitle:@"Pinned Folders"]];
+    if (i == pinned && pinned > 0) [menu addItem:[NSMenuItem separatorItem]];
+    if (headers && i == pinned) [menu addItem:[NSMenuItem sectionHeaderWithTitle:@"Recent Folders"]];
+    NSString* path = [NSString stringWithUTF8String:shown[i].c_str()];
     NSString* title = [NSString stringWithUTF8String:labels[i].c_str()];
     if (!path || !title) continue;
     NSMenuItem* item = [menu addItemWithTitle:title action:@selector(openRecentFolder:) keyEquivalent:@""];
     item.target = self;
     item.representedObject = path;
+    if (i < pinned) item.image = [NSImage imageWithSystemSymbolName:@"pin" accessibilityDescription:@"Pinned"];
   }
 }
 
@@ -11318,9 +11423,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
                   MvLabApp* app = weakSelf;
                   NSBeep();
                   if (!app) return;
-                  std::erase(app->_recentFolders, gone);
-                  [app persistRecentFolders];
-                  [app refreshWelcomeRecents];
+                  [app forgetFolder:gone];  // and its pin, if it had one
                 }];
 }
 
@@ -11653,6 +11756,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 static NSString* const kDefaultsViewFlags = @"mv.viewFlags";
 static NSString* const kDefaultsKeys = @"mv.keys";
 static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
+static NSString* const kDefaultsPinnedFolders = @"mv.pinnedFolders";  // issue #617
 
 - (BOOL)settingsVisible { return _settingsVisible; }
 - (void)setSettingsVisible:(BOOL)visible {
@@ -11739,11 +11843,17 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
       _recentFolders.emplace_back([entry UTF8String]);
     }
   }
+  _pinnedFolders.clear();
+  for (id entry in [d arrayForKey:kDefaultsPinnedFolders]) {
+    if ([entry isKindOfClass:[NSString class]] && [entry length] > 0) {
+      _pinnedFolders = mv::shell::pin_folder(std::move(_pinnedFolders), [entry UTF8String]);  // capped, no repeats
+    }
+  }
   // A launch with a path to open never shows the rows, not even for a frame.
   if (_options.open_path.empty() && [self welcomeListsRecents]) {
     const char* home = NSHomeDirectory().fileSystemRepresentation;
-    mv::shell::fill_welcome_recents(_recentFolders, home ? home : "", _snap.recents,
-                                    [self photosLibraryAvailable] == YES);
+    mv::shell::fill_welcome_recents([self shownFolders], home ? home : "", _snap.recents,
+                                    [self photosLibraryAvailable] == YES, _pinnedFolders.size());
   }
   // Straight into the state (no publish: the render thread is not up yet at
   // launch, and the next input publishes the snapshot anyway).
