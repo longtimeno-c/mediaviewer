@@ -190,6 +190,20 @@ constexpr slug_row kSlugs[] = {
     {zoom_af_point, "zoom_af_point"},  // #209
     {compare_two_up, "compare_two_up"},  // #208
     {toggle_page_sidebar, "toggle_page_sidebar"},
+    {print, "print"},  // #614
+    {adjust_highlights, "adjust_highlights"},
+    {adjust_shadows, "adjust_shadows"},
+    {adjust_whites, "adjust_whites"},
+    {adjust_blacks, "adjust_blacks"},
+    {adjust_vibrance, "adjust_vibrance"},
+    {adjust_mono, "adjust_mono"},
+    {adjust_mono_filter, "adjust_mono_filter"},
+    {adjust_mono_tone, "adjust_mono_tone"},
+    {adjust_vignette, "adjust_vignette"},
+    {adjust_vignette_radius, "adjust_vignette_radius"},
+    {adjust_vignette_softness, "adjust_vignette_softness"},
+    {adjust_auto, "adjust_auto"},
+    {adjust_reset_section, "adjust_reset_section"},
 };
 
 struct claim {

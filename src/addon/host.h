@@ -26,6 +26,7 @@
 #include "addon/slots.h"
 #include "addon/store.h"
 #include "core/result.h"
+#include "io/tree_watch.h"
 #include "io/volume.h"
 
 namespace mv::addon {
@@ -125,6 +126,10 @@ struct host_services {
   std::function<result<rgb_image>(const std::string& path)> full_still;
   std::function<result<std::string>(const std::string& source, const rgb_image& pixels, const std::string& suffix)>
       write_still;
+  // #606: a clip's GPS route from its telemetry (meta::read_route in both
+  // hosts), thinned to at most the given points. Empty leaves the table's
+  // route_of NULL. An empty vector: a still, or a clip without a fix.
+  std::function<result<std::vector<mv_addon_route_point>>(const std::string& path, std::uint32_t max_points)> route;
   std::string data_dir;         // created by the table
   std::string default_library;  // Pictures\MediaViewer
   // Honour mv_addon_copy_request's fault injection (tests, the verify rig).
@@ -162,6 +167,16 @@ class host_table {
   // Unregisters the add-on's volume callback and stops the watcher; returns
   // only when no callback is running. Idempotent.
   void stop_watch() noexcept;
+  // watch_tree's folder trees (docs/plans/index-watcher.md).
+  struct tree_state {
+    std::mutex control;  // start / stop
+    std::mutex m;        // cb and user
+    io::tree_watcher watcher;
+    void(MV_CALL* cb)(void*, std::uint32_t, const char*, std::uint32_t) = nullptr;
+    void* user = nullptr;
+  };
+  tree_state trees;
+  void stop_trees() noexcept;
 
  private:
   host_services svc_;

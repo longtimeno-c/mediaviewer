@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.WindowsRuntime;
+using MediaViewer.Interop;
 using Microsoft.UI;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
@@ -117,6 +118,7 @@ public static partial class IslandHost
     private static Button? _editorRedo;
     private static Button? _editorExport;
     private static Button? _editorExportExact;
+    private static StackPanel? _editorAddons;  // add-ons' buttons (editor_items): Enhance…
     private static TextBlock? _editorAwayName;
 
     private const double RulerH = 18, VideoH = 76, AudioH = 52, TrackGap = 6;
@@ -331,6 +333,7 @@ public static partial class IslandHost
         _editorReading = null;
         _editorSpinner = null;
         _editorPlay = _editorDelete = _editorUndo = _editorRedo = _editorExport = _editorExportExact = null;
+        _editorAddons = null;
         _editorAwayName = null;
         _editorAwayVisible = false;
         if (_editorTimeline is not null) _editorTimeline.TakeFocusRequested -= OnTakeFocusRequested;
@@ -437,7 +440,9 @@ public static partial class IslandHost
             tip: "Write the edit as a new file, cut on keyframes: instant, no quality loss  Ctrl+E");
         _editorExportExact = EditButton("Export exact", () => SendEditor(EditorActions.ExportExact),
             tip: "Frame-accurate: re-encoded on the hardware encoder, slower  Ctrl+Shift+E");
-        var right = Row(_editorExport, _editorExportExact, EditorDivider(),
+        _editorAddons = Row();
+        RebuildEditorAddons();
+        var right = Row(_editorAddons, _editorExport, _editorExportExact, EditorDivider(),
                         EditButton("Done", () => SendEditor(EditorActions.Close), tip: "Close the editor  Esc or Ctrl+W"));
         Grid.SetColumn(right, 2);
         bar.Children.Add(right);
@@ -643,6 +648,33 @@ public static partial class IslandHost
         if (_editorSpinner is not null) _editorSpinner.Active = !_editorReady;
         if (_editorAwayName is not null) _editorAwayName.Text = _editorName;
         DrawEditorTrack();
+    }
+
+    // Add-ons' buttons in the bar (editor_items, contribution API 11), before
+    // Export, with a divider after them; none without one. Each runs on the
+    // edit: the clip on screen and its kept pieces, or all of it when nothing
+    // is cut. The add-on opens its own sheet (centred over this window).
+    private static void RebuildEditorAddons()
+    {
+        StackPanel? panel = _editorAddons;
+        if (panel is null) return;
+        panel.Children.Clear();
+        List<SlotItem> items = _slotItems.Where(i => i.Slot == "editor").ToList();
+        foreach (SlotItem item in items)
+        {
+            string verb = item.Label.Replace("…", "");
+            panel.Children.Add(EditButton(item.Label, () => RunEditorAddon(item),
+                tip: verb + " the edit (or the whole clip, when nothing is cut) as a new clip; the original is not changed"));
+        }
+        if (items.Count > 0) panel.Children.Add(EditorDivider());
+        panel.Visibility = items.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private static void RunEditorAddon(SlotItem item)
+    {
+        if (!_editorReady || _selectedIndex < 0 || _selectedIndex >= Items.Count) return;
+        SlotNative.EditorItem(item.Addon, item.Id, Items[_selectedIndex].Path,
+                              _editorEdited ? _editorPieces : Array.Empty<(long, long)>());
     }
 
     private static void DrawEditorTrack()

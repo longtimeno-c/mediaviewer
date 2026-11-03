@@ -678,7 +678,7 @@ private struct ImageNode: View {
 ///
 /// An "interactive" surface (owner, 2026-10-12: zoom the map with the trackpad
 /// or the mouse) reports a pinch or a mouse wheel as a zoom (scale and anchor),
-/// a drag as a pan and a double-click, each to the add-on's worker once the
+/// a drag as a pan, a double-click and a click (#601), each to the add-on's worker once the
 /// gesture ends. A trackpad two-finger scroll is not taken: the pane scrolls.
 /// While a gesture runs the current pixels are scaled / moved at once, until
 /// the add-on posts new ones. None of this presents the canvas.
@@ -766,6 +766,12 @@ private struct SurfaceNode: View {
       .onTapGesture(count: 2, coordinateSpace: .local) { at in
         guard live, geo.size.width > 0, geo.size.height > 0 else { return }
         send(12, ["x": clamp(at.x / geo.size.width), "y": clamp(at.y / geo.size.height)])
+      }
+      // #601: a click (after the double-click above has failed, so the first
+      // click of a double is not one), for a Places folder-map dot.
+      .onTapGesture(count: 1, coordinateSpace: .local) { at in
+        guard live, geo.size.width > 0, geo.size.height > 0 else { return }
+        send(14, ["x": clamp(at.x / geo.size.width), "y": clamp(at.y / geo.size.height)])
       }
       .onContinuousHover { phase in
         guard live else { return }

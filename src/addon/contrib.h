@@ -23,16 +23,19 @@ namespace mv::addon {
 // (#512, 2026-10-20), 8 = a screen in place "settings" (2026-10-21): drawn on
 // the add-on's own page in Settings -> Add-ons, 9 = `reveal` on a screen stack
 // (2026-10-28): the host scrolls it into view and marks it, 10 = a surface's
-// `glow` and a progress bar's "glow" look (2026-10-28, Enhance). Points of an
+// `glow` and a progress bar's "glow" look (2026-10-28, Enhance), 11 =
+// `editor_items`, the Video Editor's bar (2026-11-02, Enhance). Points of an
 // API this host knows but has not built (settings pages, keymaps: PR 56; script commands: PR 57) make
 // a manifest that names them "needs a newer MediaViewer", never half-loaded.
-inline constexpr std::uint32_t kSlotsContributionApi = 10;
+inline constexpr std::uint32_t kSlotsContributionApi = 11;
 // The contribution API from which a status item may name the screen it opens.
 inline constexpr std::uint32_t kStatusOpensApi = 7;
 // The contribution API from which a screen may be in place "settings".
 inline constexpr std::uint32_t kSettingsScreenApi = 8;
 inline constexpr std::uint32_t kScreensApi = 4;
 inline constexpr std::uint32_t kSlotsApi = 5;
+// The contribution API that introduces `editor_items`.
+inline constexpr std::uint32_t kEditorItemsApi = 11;
 // The host function table version that carries the screen / slot calls
 // (mediaviewer_addon.h, v3). A manifest naming a point needs host_api.min >= this.
 inline constexpr std::uint32_t kSlotsHostApi = 3;
@@ -81,8 +84,10 @@ struct search_provider_contrib {
   bool local = false;                 // answers Local search (the AI panel)
 };
 
-// A command-bar, path-bar, context-menu or status item.
-enum class item_slot : std::uint8_t { bar, path, context, status };
+// A command-bar, path-bar, context-menu or status item, or a button in the
+// Video Editor's bar (`editor`, API 11): the add-on gets the clip and the
+// edit's kept source ranges (slot_registry::invoke_editor_item).
+enum class item_slot : std::uint8_t { bar, path, context, status, editor };
 enum class item_target : std::uint8_t { none, file, files, folder };
 
 struct item_contrib {

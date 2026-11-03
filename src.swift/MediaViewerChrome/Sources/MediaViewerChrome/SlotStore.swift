@@ -77,7 +77,7 @@ struct SlotItem: Identifiable {
   var id: String { "\(addon)/\(item)" }
   let addon: String
   let item: String
-  let slot: String    // bar | path | context | status
+  let slot: String    // bar | path | context | status | editor
   let label: String
   let symbol: String
   let target: String  // none | file | files | folder
@@ -179,6 +179,8 @@ final class SlotStore: ObservableObject {
   private var badgeDefs: [String: SlotBadge] = [:]
   private var badgeFolder = ""
   private var infoKey = ""
+  /// #601: the last info "open" request acted on.
+  private var openRevision: Int64 = 0
 
   private init() {
     mv_chrome_slots_set_callback { bits in
@@ -278,6 +280,14 @@ final class SlotStore: ObservableObject {
       else { return nil }
       return SlotSection(addon: a, section: id, title: $0["title"] as? String ?? "", revision: $0["revision"] as? Int ?? 0,
                          tree: tree)
+    }
+    // #601: a section asked to show a file of this folder (a Places
+    // folder-map dot): once per revision (the core's only grows), and only
+    // when the listing holds it.
+    if let open = doc["open"] as? [String: Any], let path = open["path"] as? String,
+       let revision = (open["revision"] as? NSNumber)?.int64Value, revision > openRevision {
+      openRevision = revision
+      FolderStore.shared.select(path: path)
     }
   }
 
@@ -426,6 +436,20 @@ final class SlotStore: ObservableObject {
     }
     _ = at.addon.withCString { a in
       at.screen.withCString { s in node.withCString { n in text.withCString { mv_chrome_slots_event(a, s, n, kind, $0) } } }
+    }
+  }
+
+  /// A Video Editor button (editor_items): the clip on screen and the edit's
+  /// kept source ranges (empty when nothing is cut). The add-on opens its own
+  /// screen; a sheet lands on the editor window, the main one while it is open.
+  func invokeEditor(_ item: SlotItem, path: String, ranges: [(inNs: Int64, outNs: Int64)]) {
+    let flat = ranges.flatMap { [$0.inNs, $0.outNs] }
+    _ = item.addon.withCString { a in
+      item.item.withCString { i in
+        path.withCString { p in
+          flat.withUnsafeBufferPointer { mv_chrome_slots_editor_item(a, i, p, $0.baseAddress, UInt32(ranges.count)) }
+        }
+      }
     }
   }
 

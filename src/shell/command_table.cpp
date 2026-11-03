@@ -332,6 +332,9 @@ constexpr binding kBindings[] = {
     // Issue #429. Appended. Shift+T beside T (the filmstrip): browse and the
     // islands, as the page keys; the gallery types ahead.
     row(C('T'), mod_shift, kBrowse | kIsland, edge, toggle_page_sidebar),
+    // Issue #614. Appended. Ctrl+P was free; plain P stays trim preview (kTrim
+    // only). Viewing modes: the photo on screen, or the marks from the gallery.
+    row(C('P'), mod_ctrl, kViewing, edge, print),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -523,6 +526,20 @@ constexpr command_info kCommands[] = {
     {zoom_af_point, "Zoom to AF point"},
     {compare_two_up, "Compare with previous"},
     {toggle_page_sidebar, "Page sidebar"},
+    {print, "Print…"},
+    {adjust_highlights, "Adjust: highlights", true},
+    {adjust_shadows, "Adjust: shadows", true},
+    {adjust_whites, "Adjust: whites", true},
+    {adjust_blacks, "Adjust: blacks", true},
+    {adjust_vibrance, "Adjust: vibrance", true},
+    {adjust_mono, "Adjust: black & white", true},
+    {adjust_mono_filter, "Adjust: black & white filter", true},
+    {adjust_mono_tone, "Adjust: black & white tone", true},
+    {adjust_vignette, "Adjust: vignette", true},
+    {adjust_vignette_radius, "Adjust: vignette radius", true},
+    {adjust_vignette_softness, "Adjust: vignette softness", true},
+    {adjust_auto, "Adjust: auto", true},
+    {adjust_reset_section, "Adjust: reset section", true},
 };
 
 const char* named_key(key k) noexcept {

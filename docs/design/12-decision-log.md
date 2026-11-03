@@ -383,6 +383,16 @@ ABI returns a UTF-8 path; C# `BitmapImage` loads the file, so pixels never cross
 BC7 is not used: a BC7 blob cannot be an `Image.Source`; it is the format to take if thumbs ever
 need to be GPU-resident. The Mac uses the same spec and schema (`image/thumb_mac.cpp`, 2026-09-17).
 
+**The thumbnail cache tidies itself; no cap by default (2026-11-02, #612).** Every bump above, and
+every edit or rotate, left the old JPEGs behind: the store only ever added. Now `store` drops the
+path's rows of other stamps and specs with their files (the issue's draft said on the next lookup;
+on the store the hot lookup stays a read), and a sweep once a launch, after the first image, drops
+old-spec rows, rows whose JPEG is gone and unnamed JPEGs, paced behind the view like the tag pass.
+A size cap exists but is **off by default** (owner, in the issue): a cap too small would bring back
+cold thumbnails, the first-pixel path the cache exists for. With a cap the oldest-written go first,
+not the least recently used: recording use would turn every lookup into a write. Metadata
+snapshots are never swept (they are not a cache, docs/design/06 "Undo").
+
 **Warm browse is a five-slot GPU LRU (2026-09-07).** Current ± 2 decoded textures, not a second
 `mv_image_open`. Prefetch jobs use the view generation; thumb jobs use a folder generation so arrow
 keys do not cancel the filmstrip.
@@ -915,7 +925,22 @@ every still type. It reports duration, size, codecs, audio, bit rate, media type
 title and camera (`shell/spotlight_fields.h`) through `meta/`, never a decoder.
 
 **Quick Look (2026-09-23).** A sandboxed thumbnail `.appex` running `image::make_thumb_jpeg`, the
-filmstrip's pixels, with no cache of its own. Stills only.
+filmstrip's pixels, with no cache of its own. Stills only (until 2026-11-02, below).
+
+**Clip thumbnails in Explorer and Finder (issue #610, 2026-11-02).** Reverses "stills only" for
+both the Explorer handler (2026-09-25, `MediaViewer.Image` only) and Quick Look (2026-09-23). Why: a
+camera dump is photos and clips in one folder, and Windows has no thumbnail for MKV, WebM, AVI, TS
+or an AV1 / VP9 / HEVC MP4 without a Store extension (D3 says never require one); macOS has none
+for the first four. The same handler now also sits on `MediaViewer.Video`, still only on our
+ProgIds, so it serves what the user made MediaViewer the default for and replaces no other
+vendor's handler. Quick Look adds only the four containers macOS cannot thumbnail and leaves MP4 /
+QuickTime to Apple. The path is chosen by magic bytes, not ProgId or UTI. A clip is never read into
+memory (the stills' 512 MB read would refuse a long clip and is the wrong shape for one): FFmpeg
+reads the stream through a seekable reader, decodes one frame in software on one thread (no
+D3D11VA / VideoToolbox session in a shell process), and shares the stills' deadline and four-slot
+cap. Cost: the handler's folder now carries the FFmpeg DLLs (dynamic, LGPL, as everywhere), and
+`avcodec` is mapped in the surrogate, never in Explorer or Finder. The Explorer handler reads the
+shell's `IStream` from its decode thread; that it is callable there is part of the Windows verify.
 
 **Associations and the default app (2026-09-24).** Windows: the wizard writes per-user `ProgId` /
 `OpenWithProgids` / `RegisteredApplications` keys for D5 stills (`MediaViewer.Image`) and video
@@ -984,6 +1009,19 @@ and "newer than running" checks are unchanged, and asset URLs outside the repo's
 ignored. Previews are signed exactly like stable. `github-release.py` refuses a release that does
 not exceed every published one, so switching back to Stable never downgrades. Add-ons ship on stable
 releases only.
+
+**"What's new" rides in what is already signed and fetched; the manifest stays schema 1 on the
+wire (2026-11-02, #620).** The update notice's short notes are the Windows manifest's optional
+`notes` and the Mac appcast item's embedded plain-text description, both under the existing
+signature, so no request is added (a Sparkle `releaseNotesLink` would be one, and an unsigned
+page). The Windows reader accepts schema 1 and 2 (2 = 1 with `notes` defined), but the release
+tool keeps writing `"schema": 1` with `notes` in it: every installed reader before this one
+rejects any schema but 1 as `UnsupportedSchema` and ignores unknown members, so a schema 2
+manifest would strand every existing install on its version for good. The bump to 2 waits until
+no supported version predates the schema 2 reader. Notes that break the bound (3 lines, 400 bytes,
+no links, a fixed list of forbidden characters) make the manifest malformed rather than being
+trimmed: they are ours and signed, and the release's own `verify-release` step and the writers
+check the same rule first.
 
 **Add-on updates are offered, not silent (2026-09-27).** Opening Settings probes the channel for
 installed add-ons; a newer signed manifest shows **Update to X**. Nothing is fetched without a
@@ -1641,6 +1679,20 @@ calls, each because the alternative measured or reasoned worse:
 `mv_ai_status` appends `scans_total`, `scans_done`.
 
 ---
+
+**Local search watches its folders; the full walk becomes a backstop (2026-11-02, owner; docs/plans/index-watcher.md).**
+[17](17-local-ai-search.md) said folder roots had a watcher, but the pack had none: a file added
+to an indexed folder waited for the next full walk of every root (every 15 minutes) unless the
+viewer opened its folder, and a OneDrive file made available offline waited the same. The host
+now watches each enabled, unheld folder root's tree (`watch_tree`, `io::tree_watcher`) and the
+pack walks only the folders it names. **Budget change:** a root the host watches is walked whole
+once an hour instead of every 15 minutes; a root it could not watch, and one on a network share,
+keep 15 minutes. **Photos:** an iCloud-only asset first seen this session is asked again at each
+change notice, not only at the next launch; the launch check of every iCloud-only asset is
+unchanged (asking all ~4,000 on each change was the cost rejected before). **Not changed:**
+nothing is noticed before the pack loads (#292), and a held root is not watched (#299).
+**Not measured:** idle CPU with watched roots, and the PR 1 gates during a large copy into a
+watched root, on either platform; the Windows watcher has been compiled only by CI.
 
 ## Final Cut Pro search (Mac)
 
@@ -2762,6 +2814,22 @@ own Download, Resume and Remove on the one add-on's page, drawn by the hosts fro
 That is one GitHub asset per platform, not three, and no per-piece install UI in either host.
 The command is not greyed per kind (manifest commands carry no state); the sheet opens and names
 what is missing instead.
+
+**Enhance moves into the Video Editor; Brighten dark scenes is a knob, not a model (2026-11-02,
+owner).** The owner asked for Enhance inside Edit video (and Edit image, done in its own change)
+rather than as a button of its own on the viewer's bar, and for video that brightens dark scenes.
+The editor gets a contribution point, `editor_items` (contribution API 11), not a call that names
+Enhance: the editor stays part of the base app, Enhance stays an add-on that links nothing of the
+core. **Enhance runs on the edit, not the original clip** (the alternative, the whole clip with a
+note, would surprise inside an editor): the host applies the kept ranges as it reads
+(`frames_keep` / `sound_keep`), so the add-on's runner is unchanged apart from writing a cut
+clip's sound again (packets of a cut cannot be copied whole). **Brighten dark scenes** is a fitted
+tone lift with temporal easing, in the add-on, as a knob of the video model: no new download, no
+licence to vet, deterministic, about 1.6 ms a 1080p frame. A low-light model (the Zero-DCE
+family and its kin) was set aside until one's licence and its flicker on video are checked; the
+knob can be served by one later without a change to the sheet. Cost: Enhance now asks for
+contribution API 11, so this Enhance needs this MediaViewer or later. The palette and context-menu
+`Enhance…` stay.
 
 **Enhance's first audio model, and where its sound is written (2026-10-26, #297 slice 4).**
 DeepFilterNet3 (MIT / Apache-2.0), the streaming ONNX export pinned at

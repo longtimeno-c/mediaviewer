@@ -185,8 +185,10 @@ out the same way and store the view preferences as one flags word (`shell/settin
 `view_settings`: Windows `settings.ini` `[view]`, Mac `mv.viewFlags`). Sections: Filmstrip,
 Browsing, **Viewer** (#345: "Show a badge on AI-generated images", on by default, owner
 2026-10-11, stored inverted as `kSettingHideAiBadge` so older settings read as on), File types,
-Appearance, then updates and add-ons. A change applies at once, without a relaunch; the AI badge
-switch pokes nothing the render thread reads.
+Appearance, then updates, **Storage** (#612: what MediaViewer keeps on disk with sizes, the
+thumbnail cache's limit, off by default, and Clear; measured off the UI thread,
+[04 "Thumbnail cache upkeep"](04-image-pipeline.md#thumbnail-cache-upkeep)) and add-ons. A change
+applies at once, without a relaunch; the AI badge switch pokes nothing the render thread reads.
 
 ## Default map
 
@@ -225,7 +227,8 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Esc` | all | Back (above) |
 | *(unbound)* | browse, video | **Open RAW of pair** / **Open JPEG of pair** — listed in Settings. **Mac: not built** (not listed) |
 | *(unbound)* | Viewing | **Show next kind**: cycle View ▸ Show (All → Photos → Videos → RAW → Marked → Picks → Not rejected → Red … Purple; Marked is passed over when nothing is marked), below. Listed in Settings |
-| *(menu)* | — | **Recent folders**: the jump-list folders; Windows: Open ▸ Recent folders on the command bar; Mac: File ▸ Open Recent. A folder that has gone beeps and leaves the list |
+| *(menu)* | — | **Recent folders**: the jump-list folders; Windows: Open ▸ Recent folders on the command bar; Mac: File ▸ Open Recent. A folder that has gone beeps and leaves the list. Pinned folders lead it (#617) |
+| *(context menu)* | — | **Pin to top / Unpin** (#617): a welcome-card folder row's right-click menu (with Open and Remove from list); no key. Pins stay first on the card, the jump list, the Dock menu and Open Recent |
 
 ### View
 
@@ -372,10 +375,11 @@ commands below act on it first.
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
 | `Ctrl+Shift+S` | Viewing | Share: the share menu (Driftwire, then Windows Share / the macOS picker) |
+| `Ctrl+P` / `⌘P` | Viewing | Print: the still on screen with edits baked, or two or more marks as a contact sheet ([Print](#print)) |
 
 These are on the mouse too: the Mac's File menu, and on Windows the command bar's **Open** flyout
 (Mark / Unmark, Copy / Move Marked To…, Move to Recycle Bin, Share…, Copy Path, Copy Edited
-Image). **View** carries Start Slideshow and a **Go** submenu (Next, Previous, First, Last), as the
+Image, Print…; the Mac bar's Open carries Print… too). **View** carries Start Slideshow and a **Go** submenu (Next, Previous, First, Last), as the
 Mac's View and Go menus do. Each item posts its command's id, so it acts as the key does.
 
 - **Move** on one volume is a rename (`MoveFileEx`); across volumes it is a **verified** copy
@@ -412,6 +416,48 @@ Mac's View and Go menus do. Each item posts its command's id, so it acts as the 
   watcher refresh keeps the current item selected; if it was removed the next one takes its
   place (the previous one at the end).
 
+### Print
+
+`Ctrl+P` / `⌘P` (issue #614; File ▸ Print… and the bar's Open flyout) opens the OS print dialog.
+Plain `P` stays trim preview, which is trim mode only. Not mid-crop (the draft is not the stack
+yet) and not in a slideshow.
+
+- **What prints.** Two or more marks (or the gallery's Shift-click range) print as an N-up
+  **contact sheet**; otherwise the **still on screen**, with its crop, turns, straighten and colour
+  adjusts baked exactly as Export / `Ctrl+Alt+C` bake them (`edit::render_picture`: the pixels the
+  export encodes, before the encode). A clip, audio or a playing animation has no still: the key
+  beeps. On a sheet the file on screen carries its session edits; the other marks print as they
+  are on disk (their stacks are keyed by size and mtime, which the UI thread does not stat). A
+  marked file that does not render as a still (a clip, audio, a file gone) is left out.
+- **Layout** ([`shell/print_layout.h`](../../src/shell/print_layout.h), pure, both hosts): points
+  on the paper, inside the device's printable area and at least a quarter inch from the edge.
+  One photo is **fit** (whole, centred, white around it; the default) or **fill** (covers the
+  area, the overflow cropped evenly). The sheet is **2×2, 3×4 or 4×5**; *Automatic* takes the
+  smallest that holds the marks on one page (12 marks are 3×4) and 4×5 over as many pages as
+  it takes past 20. Cells keep reading order with a 1/8 inch gutter; each picture fits its cell.
+  **File names** under the cells are off by default; the option adds one line of 8 pt type,
+  the name only (never the folder), truncated to the cell.
+- **Options** sit in the OS dialog: on Windows a page beside General in `PrintDlgEx` (an
+  in-memory dialog template, so no WinUI control is involved and `check-winui-controls.ps1`
+  has nothing to check); on the Mac the print panel's accessory (`NSPrintPanelAccessorizing`,
+  so the preview follows each change). The choice is kept for the run after a Print, not
+  saved; Cancel drops it.
+- **Threads** (rule 1). The bake is a full-resolution decode (a RAW develops in full), so it runs
+  on the pool and the status line says "Preparing to print…"; one print is prepared at a time.
+  It is resampled down (never up) to what the paper needs at 300 dpi
+  (`edit::shrink_to_box`). Windows shows the dialog and calls `StartDoc` on the UI thread, so
+  Microsoft Print to PDF's Save As belongs to the window, then bakes and draws every page on the
+  pool (the DC is used by one thread at a time) and posts back. The Mac bakes first, for the
+  paper Page Setup holds (a photo baked to cover it, which serves fit too), then runs
+  `NSPrintOperation` modal for the window with `canSpawnSeparateThread`, so pages spool off the
+  main thread.
+- **Colour.** The bake is sRGB (D6); a picture with no colour adjust keeps its own ICC profile,
+  as the export's PNG does. Windows draws a `BITMAPV5HEADER` DIB tagged `LCS_sRGB` or
+  `PROFILE_EMBEDDED` with ICM on; the Mac draws a `CGImage` in that colour space. The printer
+  driver / Quartz maps it to the device, so the print matches the export.
+- **Nothing is written.** The bake stays in memory. Cancelling the dialog, the PDF Save As, or a
+  failed bake (`AbortDoc` on Windows) leaves no file anywhere.
+
 ### Edit (stills)
 
 | Key | Modes | Command |
@@ -419,7 +465,7 @@ Mac's View and Go menus do. Each item posts its command's id, so it acts as the 
 | `[` `]` | browse, crop | Rotate −90° / +90°. On a JPEG with nothing else in its stack, a lossless rewrite 0.4 s after the last key, atomically; the preview turns at once |
 | `H` / `V` | browse, crop | Flip horizontal / vertical (lossless on a JPEG, like rotate) |
 | `Shift+C` | browse | Crop / straighten mode |
-| `Shift+A` | browse | Adjust pane: show and focus its first slider; again hides it. In it `↑` `↓` choose a slider, `←` `→` change it (`Shift` ×10), `0` zeroes it, `R` resets all (both hosts) |
+| `Shift+A` | browse | Adjust pane: show and focus its first slider; again hides it. In it `↑` `↓` choose a slider of an open section, `←` `→` change it (`Shift` ×10), `0` zeroes it, `A` runs its section's Auto, `R` resets all (both hosts) |
 | `Ctrl+Z` / `Ctrl+R` | browse, crop | Undo the last edit / reset to the original |
 | `Ctrl+S` | browse | Export the edits to a new file beside the original (`<name>-edit.jpg`); never overwrites |
 | hold `Y` | browse | Show the original (edit stack untouched) |

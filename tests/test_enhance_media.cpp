@@ -304,6 +304,129 @@ TEST_CASE("enhance: a clip at twice the size, through the host table and a hardw
   CHECK_FALSE(table.api()->clip_write_open == nullptr);
 }
 
+// The Video Editor's cut through the host table (frames_keep, sound_keep):
+// only the kept frames, on the edit's timeline, and the kept sound; then a
+// cut clip end to end, its sound read through the cut and written again.
+TEST_CASE("enhance: the Video Editor's edit through the host table", "[enhance][picture][edit]") {
+  scratch_dir s("enhance_edit");
+  const std::string clip = utf8(s / "clip.mp4");
+  mv::test::clipfx::spec spec;
+  spec.frames = 30;  // 1 s at 30 fps, with a 48 kHz tone
+  REQUIRE(mv::test::clipfx::make(clip, spec));
+  mv::addon::host_table table(picture_services());
+  const mv_host_api* h = table.api();
+  REQUIRE(has_keep_rows(h));
+  // Frames 0-5 and 15-20 (each frame's luma says which it is), the edges
+  // between frames: 183 ms, then 200 ms. On the edit, frame i is at i / 30 s.
+  const std::int64_t edit[] = {0, 183'000'000, 483'000'000, 683'000'000};
+
+  {
+    mv_addon_frames_info info{};
+    info.struct_size = sizeof info;
+    void* frames = nullptr;
+    REQUIRE(h->frames_open(h->host, clip.c_str(), &info, &frames) == MV_OK);
+    REQUIRE(h->frames_keep(h->host, frames, edit, 2) == MV_OK);
+    std::vector<std::uint8_t> rgb(std::size_t{info.width} * info.height * 3);
+    std::vector<int> lumas;
+    std::vector<std::int64_t> times;
+    for (;;) {
+      std::int64_t pts = 0;
+      std::uint32_t got = 0;
+      REQUIRE(h->frames_read(h->host, frames, rgb.data(), rgb.size(), &pts, &got) == MV_OK);
+      if (!got) break;
+      lumas.push_back(rgb[(std::size_t{info.height * 3 / 4} * info.width + info.width / 2) * 3 + 1]);
+      times.push_back(pts);
+    }
+    // Once read, the cut cannot change.
+    CHECK(h->frames_keep(h->host, frames, edit, 2) == MV_ERR_INVALID_ARG);
+    h->frames_close(h->host, frames);
+    REQUIRE(lumas.size() == 12u);
+    for (std::size_t i = 0; i < 12; ++i) {
+      INFO(i);
+      // RGB from limited-range YUV: compare the order, not the level.
+      if (i > 0) CHECK(lumas[i] > lumas[i - 1]);
+      CHECK(std::abs(times[i] - static_cast<std::int64_t>(i) * 33'333) <= 1000);
+    }
+    // Frame 15 follows frame 5 (luma 76 against 36): nothing between.
+    CHECK(lumas[6] - lumas[5] > 4 * (lumas[5] - lumas[4]));
+  }
+  {
+    mv_addon_sound_info info{};
+    info.struct_size = sizeof info;
+    void* sound = nullptr;
+    REQUIRE(h->sound_open(h->host, clip.c_str(), 48000, 0, &info, &sound) == MV_OK);
+    REQUIRE(h->sound_keep(h->host, sound, edit, 2) == MV_OK);
+    std::vector<float> buf(4096 * info.channels);
+    std::uint64_t total = 0;
+    for (;;) {
+      std::uint32_t got = 0;
+      REQUIRE(h->sound_read(h->host, sound, buf.data(), 4096, &got) == MV_OK);
+      if (!got) break;
+      total += got;
+    }
+    h->sound_close(h->host, sound);
+    // 383 ms at 48 kHz, give or take the encoder's priming and the 1 ms the
+    // reader's first time is rounded to.
+    CHECK(total >= 18'384u - 1100u);
+    CHECK(total <= 18'384u + 100u);
+  }
+
+  // End to end: the picture alone at the same size, so the cut clip's own
+  // sound is written again (it cannot be copied whole).
+  run_port port = run_port_of(h, "");
+  port.load_tiles = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<tile_model>> {
+    return std::unique_ptr<tile_model>(new nearest());
+  };
+  const model_spec video = video_spec(64);
+  job_runner r(std::move(port));
+  job_request req;
+  req.path = clip;
+  req.item = item_kind::media;
+  req.target = clip_target::picture;
+  req.has_sound = true;
+  req.keep_ns.assign(std::begin(edit), std::end(edit));
+  job_request::part v;
+  v.kind = model_kind::video;
+  v.spec = &video;
+  v.models_dir = "unused";
+  v.values["scale"] = *mv::json::parse("\"1\"");
+  req.parts.push_back(v);
+  REQUIRE(r.check(req).empty());
+  outcome a;
+  job_events ev;
+  ev.done = [&](bool ok, const std::string& name, const std::string& message) {
+    std::lock_guard lock(a.m);
+    a.done = true;
+    a.ok = ok;
+    a.name = name;
+    a.message = message;
+  };
+  r.start(std::move(req), std::move(ev));
+  for (int i = 0; i < 60000; ++i) {
+    {
+      std::lock_guard lock(a.m);
+      if (a.done) break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  std::lock_guard lock(a.m);
+  REQUIRE(a.done);
+  if (!a.ok && a.message.find("hardware video encoder") != std::string::npos) {
+    SKIP("no hardware video encoder on this machine");
+  }
+  INFO(a.message);
+  REQUIRE(a.ok);
+  mv::test::clipfx::decoded d;
+  REQUIRE(mv::test::clipfx::decode_all(utf8(s / a.name), d));
+  REQUIRE(d.luma.size() == 12u);
+  CHECK(std::abs(d.luma[5] - mv::test::clipfx::luma_of_frame(5)) <= 4);
+  CHECK(std::abs(d.luma[6] - mv::test::clipfx::luma_of_frame(15)) <= 4);
+  CHECK(d.audio_packets > 0);
+  auto out = mv::edit::clip::audio_reader::open(utf8(s / a.name), 48000, 0);
+  REQUIRE(out);
+  CHECK(std::abs((*out)->facts().duration_ms - 383) <= 60);
+}
+
 // The real Real-ESRGAN on ONNX Runtime: tiled as the add-on runs it, against
 // one pass over the whole picture; and a clip end to end with both models,
 // timed. MV_ENHANCE_ESRGAN names realesr-general-x4v3.onnx.

@@ -383,6 +383,7 @@ bool tag_facts(const std::string& path, mv_addon_tag_facts& out) {
     out.flags |= MV_ADDON_TAG_HAS_LOCATION;
     out.lat = f.where->lat;
     out.lon = f.where->lon;
+    if (f.has_route) out.flags |= MV_ADDON_TAG_HAS_ROUTE;  // #606: the first fix of a telemetry route
   }
   if (f.ai_generated) out.flags |= MV_ADDON_TAG_AI_GENERATED;
   put(out.camera_utf8, sizeof(out.camera_utf8), f.camera);
@@ -674,6 +675,7 @@ mv::addon::host_services ai_services() {
   svc.open_clip_writer = &mv::addon::media::open_clip_writer;  // #297 slice 5
   svc.full_still = &mv::addon::media::full_still;    // #297 slice 3
   svc.write_still = &mv::addon::media::write_still;  // #297 slice 3
+  svc.route = &mv::addon::media::route;              // #606: the index's tracks
   // piece_dir is left empty: loaded_addon::load serves the family's own
   // verified pieces from the store.
   return svc;
@@ -2086,7 +2088,8 @@ std::optional<mv_addon_location> read_location(const std::string& path) {
   if (!row || !row->facts.where) return std::nullopt;
   const mv::meta::geo_point* fix = &*row->facts.where;
   mv_addon_location l{};
-  l.has = 1;
+  l.has = MV_ADDON_LOCATION_HAS;
+  if (row->facts.has_route) l.has |= MV_ADDON_LOCATION_ROUTE;  // #606: route_of has the rest
   l.lat = fix->lat;
   l.lon = fix->lon;
   if (fix->altitude) {
@@ -2103,6 +2106,7 @@ mv::addon::host_services slot_services() {
   svc.should_yield = [] { return mv::shell::g_present_busy.load(std::memory_order_relaxed); };
   svc.post = [](const mv_addon_event&) {};  // slot add-ons answer through the v3 rows
   svc.location = &read_location;
+  svc.route = &mv::addon::media::route;  // #606: Places' route on the map and along it
   if (auto lib = mv::io::default_library_dir()) svc.default_library = *lib;
   // Enhance (#297) is a slot add-on: its runs read and write through these
   // rows. Without them it loads, downloads its models and cannot run one.

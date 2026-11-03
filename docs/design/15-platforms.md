@@ -32,7 +32,7 @@ on the Windows C++": present, hardware decode, audio, I/O and shipping are per-O
 | File reads | Overlapped handles (`io/file_port_win.cpp`) | POSIX (`io/file_port_mac.cpp`) |
 | OS codec hook | WIC for qualifying HEIC (`codec/os_decode_win.cpp`) | Declines; bundled libheif (`codec/os_decode_mac.cpp`) |
 | Crash reports | Crashpad + minidump scrub (`shell/crash_reporter_win.cpp`) | Crashpad (`shell/crash_reporter_mac.mm`), same privacy line |
-| Thumbnails in the OS | Explorer thumbnail handler DLL in a `dllhost` surrogate (`src/shellext/`) | Quick Look extension (`.appex`, own process) and a Spotlight importer |
+| Thumbnails in the OS | Explorer thumbnail handler DLL in a `dllhost` surrogate (`src/shellext/`), stills and clips (#610) | Quick Look extension (`.appex`, own process; stills, and MKV / WebM / AVI / TS posters through the same `shellext/thumb_poster`) and a Spotlight importer |
 
 There is no `AVPlayer` in the viewer and no second display layer: video is drawn on the same Metal layer
 as photos. (The Final Cut Pro extension's preview uses `AVPlayerView`; that extension is a separate
@@ -157,7 +157,7 @@ Every feature exists on both platforms; this table records where the per-OS half
 | Geometry, lossless rotate, adjust (PR 10–11) | `edit/` | HLSL kernels | MSL twins |
 | Rating / orientation / comment, XMP sidecar (PR 12) | `meta/` writers | `ReplaceFileW` | POSIX `rename` |
 | Trim, extract, remux (PR 13–14) | `edit/clip_*` | NVENC / QSV / AMF / MF | VideoToolbox encode |
-| OS integration (PR 15) | thumb request | Explorer associations, OOP thumbnail handler | Quick Look, Spotlight importer, Dock menu, Share |
+| OS integration (PR 15) | thumb request, clip poster over a seekable reader (#610) | Explorer associations, OOP thumbnail handler | Quick Look, Spotlight importer, Dock menu, Share |
 | Import add-on (PR 16–19) | `addons/import`, BLAKE3, `import.db` | WinUI Import chrome | SwiftUI Import chrome ([18-import.md](18-import.md)) |
 | Local AI search (PR 20–24) | `infer/`, `addons/ai` | ONNX Runtime | ONNX Runtime + Core ML ([17-local-ai-search.md](17-local-ai-search.md)) |
 | Edit workspace, Video Editor (PR 29–31) | `edit/` | WinUI | SwiftUI ([20](20-edit-workspace.md), [21](21-video-editor.md)) |

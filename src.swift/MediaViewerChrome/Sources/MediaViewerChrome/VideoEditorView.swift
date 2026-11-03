@@ -193,6 +193,12 @@ final class VideoEditorStore: ObservableObject {
   func setMarkOut() { mv_chrome_editor_edit(15) }
   func clearMarks() { mv_chrome_editor_edit(16) }
   func export(exact: Bool) { mv_chrome_editor_export(exact ? 1 : 0) }
+  /// An add-on's button in the bar (editor_items: Enhance…), on the edit: the
+  /// clip on screen with the kept pieces, or the whole clip when nothing is cut.
+  func runAddon(_ item: SlotItem) {
+    guard let path = SlotTargets.path(at: FolderStore.shared.currentIndex) else { return }
+    SlotStore.shared.invokeEditor(item, path: path, ranges: edited ? pieces : [])
+  }
   func close() { mv_chrome_editor_close() }
   func shuttle(_ key: Int32, _ phase: Int32) { mv_chrome_editor_shuttle(key, phase) }
   func trimBegin(_ index: Int, inEdge: Bool) -> Bool { mv_chrome_editor_trim_begin(Int32(index), inEdge ? 0 : 1) }
@@ -324,6 +330,7 @@ struct VideoEditorView: View {
       Button("Undo") { store.undo() }.disabled(!store.canUndo).help("Undo (⌘Z)")
       Button("Redo") { store.redo() }.disabled(!store.canRedo).help("Redo (⇧⌘Z)")
       Spacer(minLength: MVTheme.space(8))
+      EditorAddonItems(store: store)
       Button("Export") { store.export(exact: false) }
         .disabled(!store.edited)
         .help("Write the edit as a new file, cut on keyframes: instant, no quality loss (⌘E)")
@@ -338,6 +345,26 @@ struct VideoEditorView: View {
 
   private var divider: some View {
     Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 18).padding(.horizontal, MVTheme.space(6))
+  }
+}
+
+/// Add-ons' buttons in the bar (editor_items, contribution API 11): Enhance….
+/// Each runs on the edit, never the clip itself; none shows without one.
+struct EditorAddonItems: View {
+  @ObservedObject var store: VideoEditorStore
+  @ObservedObject private var slots = SlotStore.shared
+
+  var body: some View {
+    let items = slots.items(in: "editor")
+    if !items.isEmpty {
+      ForEach(items) { item in
+        Button(item.label) { store.runAddon(item) }
+          .disabled(!store.ready)
+          .help(store.edited ? "\(item.label.replacingOccurrences(of: "…", with: "")) the edit as a new clip; the original is not changed"
+                             : "\(item.label.replacingOccurrences(of: "…", with: "")) the clip as a new clip; the original is not changed")
+      }
+      Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 18).padding(.horizontal, MVTheme.space(6))
+    }
   }
 }
 

@@ -286,6 +286,22 @@ std::string settings_tree(std::span<const model_card> cards) {
   return w.take();
 }
 
+std::string edit_text(std::span<const std::int64_t> keep_ns) {
+  const std::size_t pieces = keep_ns.size() / 2;
+  if (pieces == 0) return {};
+  std::int64_t ns = 0;
+  for (std::size_t i = 0; i + 1 < keep_ns.size(); i += 2) ns += keep_ns[i + 1] - keep_ns[i];
+  const std::int64_t s = (ns + 500'000'000) / 1'000'000'000;
+  std::string len = std::to_string(s / 60) + ":" + (s % 60 < 10 ? "0" : "") + std::to_string(s % 60);
+  if (s >= 3600) {
+    const std::int64_t m = s / 60 % 60;
+    len = std::to_string(s / 3600) + ":" + (m < 10 ? "0" : "") + std::to_string(m) + ":" +
+          (s % 60 < 10 ? "0" : "") + std::to_string(s % 60);
+  }
+  return "The edit from the Video Editor: " + std::to_string(pieces) + (pieces == 1 ? " piece, " : " pieces, ") +
+         len + " in all. The new clip is the edit, enhanced; the original is not changed.";
+}
+
 std::string sheet_tree(const sheet_view& v) {
   json::writer w;
   // A scroll at the root: a tall sheet (two models' sections, the preview)
@@ -294,6 +310,7 @@ std::string sheet_tree(const sheet_view& v) {
   w.begin_object().key("type").string("scroll").key("id").string("root").key("axis").string("vertical");
   w.key("children").begin_array();
   if (!v.file_name.empty()) text(w, "file", v.file_name, "secondary");
+  if (!v.edit.empty()) text(w, "edit", v.edit, "secondary");
   if (v.item == item_kind::media) {
     const auto targets = targets_for(v.has_picture, v.has_sound);
     if (targets.size() > 1) {

@@ -156,6 +156,14 @@ void save_recent_folders(settings_store& store, const std::vector<std::string>& 
 [[nodiscard]] std::vector<std::string> load_recent_folders() noexcept;
 void save_recent_folders(const std::vector<std::string>& list) noexcept;
 
+// Issue #617: the pinned folders, oldest pin first, at most kMaxPinnedFolders
+// (`[recent] pinned0`..`pinned4`, beside the MRU's f0..f9; os_integration.h
+// owns the rule). Saved only when a pin changes.
+[[nodiscard]] std::vector<std::string> load_pinned_folders(const settings_store& store) noexcept;
+void save_pinned_folders(settings_store& store, const std::vector<std::string>& list) noexcept;
+[[nodiscard]] std::vector<std::string> load_pinned_folders() noexcept;
+void save_pinned_folders(const std::vector<std::string>& list) noexcept;
+
 // Pure: the list after `utf8_dir` was used. Moves it to the front, drops an
 // earlier spelling of the same folder (Windows paths ignore ASCII case and a
 // trailing separator), and keeps at most `max`.

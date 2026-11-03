@@ -1368,7 +1368,7 @@ public static partial class IslandHost
     // or the mouse): a mouse wheel, or a precision touchpad pinch (which arrives
     // as Ctrl + wheel), zooms about the pointer; a touchpad two-finger scroll
     // without Ctrl is left to the pane's ScrollViewer. A drag pans, a double-click
-    // is reported. While a gesture runs the current pixels are scaled / moved at
+    // and a click (#601) are reported. While a gesture runs the current pixels are scaled / moved at
     // once (a RenderTransform, no present), and each gesture is reported to the
     // add-on's worker once it settles; the add-on's next pixels rebuild the node.
     private static UIElement BuildSurface(JsonElement n, ScreenAt at)
@@ -1534,6 +1534,20 @@ public static partial class IslandHost
             var pos = e.GetPosition(frame);
             double w = Math.Max(1, frame.ActualWidth), h = Math.Max(1, frame.ActualHeight);
             SendScreenEvent(at, id, 12, JsonSerializer.Serialize(new
+            {
+                x = Math.Clamp(pos.X / w, 0, 1),
+                y = Math.Clamp(pos.Y / h, 0, 1),
+            }));
+        };
+        // #601: a click (no drag: Tapped is not raised past the drag threshold)
+        // is reported too, so a Places folder-map dot opens its file. The
+        // first click of a double-click is one as well; the add-on acts only
+        // on a click over a dot, and the file it opens asks the section again.
+        frame.Tapped += (_, e) =>
+        {
+            var pos = e.GetPosition(frame);
+            double w = Math.Max(1, frame.ActualWidth), h = Math.Max(1, frame.ActualHeight);
+            SendScreenEvent(at, id, 14, JsonSerializer.Serialize(new
             {
                 x = Math.Clamp(pos.X / w, 0, 1),
                 y = Math.Clamp(pos.Y / h, 0, 1),
@@ -1837,6 +1851,13 @@ public static partial class IslandHost
         int width = (int)JNum(s, "width", 0), height = (int)JNum(s, "height", 0);
         SlotRect main = default;
         bool haveMain = _themeWindow != IntPtr.Zero && SlotGetWindowRect(_themeWindow, out main);
+        // A sheet opened while the Video Editor is up (its Enhance…) is centred
+        // over the editor, where it was asked for; still owned by the viewer.
+        if (place == "sheet" && _editorThemeWindow != IntPtr.Zero && SlotGetWindowRect(_editorThemeWindow, out SlotRect ed))
+        {
+            main = ed;
+            haveMain = true;
+        }
         uint dpi = _themeWindow != IntPtr.Zero ? SlotGetDpiForWindow(_themeWindow) : 0;
         double scale = dpi > 0 ? dpi / 96.0 : 1.0;
         int Px(double dip) => (int)Math.Round(dip * scale);

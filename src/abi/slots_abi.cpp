@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstring>
 #include <mutex>
+#include <span>
 #include <string>
 
 #include "abi/guard.h"
@@ -178,6 +179,16 @@ MV_API mv_status MV_CALL mv_slots_invoke(const char* addon, const char* item, co
   return static_cast<mv_status>(mv::abi::guard("mv_slots_invoke", [&] {
     MV_REQUIRE(addon && item, "addon and item required");
     return mv::addon::default_slots().invoke_item(addon, item, paths_json ? std::string(paths_json) : "[]");
+  }));
+}
+
+MV_API mv_status MV_CALL mv_slots_editor_item(const char* addon, const char* item, const char* path_utf8,
+                                              const int64_t* ranges_ns, uint32_t range_count) {
+  return static_cast<mv_status>(mv::abi::guard("mv_slots_editor_item", [&] {
+    MV_REQUIRE(addon && item && path_utf8, "addon, item and path required");
+    MV_REQUIRE(range_count == 0 || ranges_ns, "ranges required");
+    return mv::addon::default_slots().invoke_editor_item(
+        addon, item, path_utf8, std::span<const std::int64_t>(ranges_ns, std::size_t{range_count} * 2));
   }));
 }
 

@@ -30,7 +30,10 @@ in the core (`edit/`, `shell/edit_session`).
    (`input_snapshot.chrome_right_px`, the blit's `origin_x`), so the pane never covers the image;
    the strip starts under the path row. Docking is a refit, not a swapchain resize. The Colour,
    Info and Jobs tabs *are* the existing Adjust, Metadata and Jobs panes; Crop and Trim are panes
-   that drive the existing commands.
+   that drive the existing commands. The Colour tab is the full Adjust list: Light, Colour, Black &
+   White and Vignette sections, each collapsible with its own reset (↺, shown once a slider in it
+   moved) and, but the vignette, an AUTO; Black & White has an on switch
+   ([07](07-photo-editing.md) "Evaluation", "Auto").
 
    | Subject | Tabs (`edit_tab`) |
    |---|---|
