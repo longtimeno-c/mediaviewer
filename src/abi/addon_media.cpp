@@ -336,6 +336,8 @@ struct still_edit {
   std::string path;
   edit::geometry g;
   edit::colour c;
+  std::string mask_path;
+  std::vector<float> mask;
 };
 
 still_edit& edit_slot() {
@@ -357,6 +359,20 @@ void clear_still_edit() {
   still_edit& s = edit_slot();
   const std::lock_guard<std::mutex> lock(s.m);
   s.path.clear();
+}
+
+void set_still_mask(const std::string& path, std::vector<float> dabs) {
+  still_edit& s = edit_slot();
+  const std::lock_guard<std::mutex> lock(s.m);
+  s.mask_path = path;
+  s.mask = std::move(dabs);
+}
+
+std::vector<float> still_mask(const std::string& path) {
+  still_edit& s = edit_slot();
+  const std::lock_guard<std::mutex> lock(s.m);
+  if (path.empty() || s.mask_path != path) return {};
+  return s.mask;
 }
 
 result<rgb_image> full_still(const std::string& path) {

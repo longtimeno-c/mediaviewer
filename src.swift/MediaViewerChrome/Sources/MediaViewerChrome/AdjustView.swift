@@ -24,6 +24,7 @@ struct AdjustView: View {
   @State private var band = 0
   @State private var request = ""
   @State private var redEyeSize = 0.0
+  @State private var brushSize = 0.0
   @State private var curvesChannel = 0
   @FocusState private var focused: Bool
 
@@ -267,6 +268,36 @@ struct AdjustView: View {
         }
         if store.spotCount > 0 {
           Text("\(store.spotCount) fixed").font(.caption).foregroundStyle(.secondary)
+        }
+      }
+      .padding(.leading, MVTheme.space(14))
+    }
+    if i == AdjustStore.removeSection {
+      VStack(alignment: .leading, spacing: MVTheme.space(4)) {
+        Button {
+          store.pick(store.picking == 3 ? 0 : 3, size: brushSize)
+        } label: {
+          Label(store.picking == 3 ? "Brushing — click here when done" : "Brush over what to remove",
+                systemImage: "paintbrush.pointed")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(store.picking == 3 ? Color.accentColor : .secondary)
+        .disabled(!store.ready)
+        HStack {
+          Text("Size").foregroundStyle(.secondary)
+          Slider(value: $brushSize, in: -100...100, step: 5)
+            .onChange(of: brushSize) { _, v in if store.picking == 3 { store.pick(3, size: v) } }
+        }
+        HStack {
+          Button("Undo stroke") { store.brush(0) }.disabled(store.brushStrokes == 0)
+          Button("Clear") { store.brush(1) }.disabled(store.brushStrokes == 0)
+          Spacer()
+          Button("Remove…") { store.brush(2) }
+            .disabled(store.brushStrokes == 0)
+            .help("Enhance fills in what you brushed from its surroundings and saves a new file.")
+        }
+        if store.brushFull {
+          Text("The brush is full: remove this, then brush more.").font(.caption).foregroundStyle(.secondary)
         }
       }
       .padding(.leading, MVTheme.space(14))

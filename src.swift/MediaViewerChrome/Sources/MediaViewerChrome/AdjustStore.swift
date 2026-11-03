@@ -73,8 +73,11 @@ final class AdjustStore: ObservableObject {
     AdjustSection(name: "Detail", icon: "triangle", params: [52, 53, 54, 55], hasAuto: false),
     // Slice 6: a button, no slider.
     AdjustSection(name: "Faces", icon: "face.smiling", params: [], hasAuto: false),
+    // Slice 7: a brush over the photo; Enhance takes out what it covers.
+    AdjustSection(name: "Remove", icon: "eraser", params: [], hasAuto: false),
   ]
   static let facesSection = 9
+  static let removeSection = 10
   static let selectiveSection = 6
   static let redEyeSection = 7
   static let bandNames = ["Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta"]
@@ -97,6 +100,9 @@ final class AdjustStore: ObservableObject {
   /// Slice 3: 0 nothing, 1 the white-balance picker, 2 the red-eye tool; the fixes made.
   @Published private(set) var picking: Int32 = 0
   @Published private(set) var spotCount = 0
+  /// Slice 7: the Remove brush's strokes, and whether it can take no more.
+  @Published private(set) var brushStrokes = 0
+  @Published private(set) var brushFull = false
   /// Slice 5b: what the last typed request did.
   @Published private(set) var promptNote = ""
   /// Slice 2: the four curves' points (image, red, green, blue); empty is the diagonal.
@@ -138,6 +144,8 @@ final class AdjustStore: ObservableObject {
     autoSection = Int(v.auto_section)
     picking = v.picking
     spotCount = Int(v.spot_count)
+    brushStrokes = Int(v.brush_strokes)
+    brushFull = v.brush_full != 0
     promptNote = withUnsafeBytes(of: v.prompt_note) { raw in
       String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
     }
@@ -169,14 +177,20 @@ final class AdjustStore: ObservableObject {
   /// Slice 5b: a typed request; the host moves the sliders it names.
   func prompt(_ text: String) { if ready { mv_chrome_adjust_prompt(text) } }
   func openEyes() { if ready { mv_chrome_adjust_open_eyes() } }
+  /// Slice 7: 0 the last stroke off, 1 every stroke off, 2 Remove (Enhance's sheet).
+  func brush(_ action: Int32) { if ready { mv_chrome_adjust_brush(action) } }
   /// Slice 3: what the next click on the photo does (see `picking`).
   func pick(_ mode: Int32, size: Double = 0) { if ready { mv_chrome_adjust_pick(mode, Float(size)) } }
   func auto(_ section: Int) { if ready { mv_chrome_adjust_auto(Int32(section)) } }
-  func reset(section: Int) { if ready { mv_chrome_adjust_reset_section(Int32(section)) } }
+  func reset(section: Int) {
+    guard ready else { return }
+    if section == Self.removeSection { brush(1) } else { mv_chrome_adjust_reset_section(Int32(section)) }
+  }
   /// A slider of `section` is away from 0 (Curves: a curve off the diagonal).
   func changed(_ section: Int) -> Bool {
     if section == Self.curvesSection { return curves.contains { !Self.diagonal($0) } }
     if section == Self.redEyeSection { return spotCount > 0 }
+    if section == Self.removeSection { return brushStrokes > 0 }
     return Self.sections[section].params.contains { values[$0] != 0 }
   }
 

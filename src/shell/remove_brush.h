@@ -18,6 +18,9 @@ namespace mv::shell {
 // The most dabs a brushing holds (and the canvas draws): edit_view carries
 // them by value.
 inline constexpr std::size_t kBrushDabs = 512;
+// A dab's radius at size 0 (the pane's −100..+100 halves or doubles it), over
+// the shown image's long side.
+inline constexpr float kBrushDefaultRadius = 0.025f;
 
 struct brush_dab {
   float u = 0.0f, v = 0.0f;  // the shown image's uv

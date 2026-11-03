@@ -265,6 +265,17 @@ MV_API mv_status MV_CALL mv_edit_still_set(const char* path_utf8, const void* ed
   }));
 }
 
+MV_API mv_status MV_CALL mv_edit_still_mask(const char* path_utf8, const float* dabs, uint32_t count) {
+  return static_cast<mv_status>(mv::abi::guard("mv_edit_still_mask", [&] {
+    MV_REQUIRE(count == 0 || dabs, "dabs required");
+    MV_REQUIRE(count <= 4096, "at most 4096 dabs");
+    std::vector<float> v;
+    if (path_utf8 && count > 0) v.assign(dabs, dabs + std::size_t{count} * 3);
+    mv::addon::media::set_still_mask(path_utf8 ? path_utf8 : "", std::move(v));
+    return status::ok;
+  }));
+}
+
 MV_API mv_status MV_CALL mv_open_closed_eyes(const char* path_utf8, char* note_out, uint32_t cap,
                                              uint32_t* needed) {
   return static_cast<mv_status>(mv::abi::guard("mv_open_closed_eyes", [&] {
@@ -731,6 +742,7 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     svc.open_clip_writer = &mv::addon::media::open_clip_writer;  // #297 slice 5
     svc.full_still = &mv::addon::media::full_still;    // #297 slice 3
     svc.write_still = &mv::addon::media::write_still;  // #297 slice 3
+    svc.still_mask = &mv::addon::media::still_mask;    // slice 7: the Remove brush
     // Find duplicates (PR 54): the Recycle Bin, refused where there is none.
     svc.recycle = [](const std::string& path) -> mv::result<bool> {
       auto r = mv::io::recycle_file(path);

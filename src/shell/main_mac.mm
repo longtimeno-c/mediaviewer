@@ -75,6 +75,7 @@
 #include "nle/mac/agent_mac.h"
 #endif
 #include "shell/adjust_pane.h"
+#include "shell/remove_brush.h"
 #include "shell/ai_badge.h"
 #include "abi/addon_media.h"
 #include "abi/clip_session.h"
@@ -779,6 +780,13 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)adjustOpenEyes;
 - (BOOL)adjustPicking;
 - (void)adjustPickAtX:(float)x y:(float)y;
+- (BOOL)brushActive;
+- (void)adjustBrush:(int32_t)action;
+- (void)brushPublish;
+- (BOOL)brushPressX:(float)x y:(float)y;
+- (void)brushDragX:(float)x y:(float)y;
+- (void)brushHoverX:(float)x y:(float)y;
+- (void)brushRelease;
 - (void)adjustBlur;
 // PR 12
 - (int32_t)metaRating;
@@ -1722,6 +1730,10 @@ extern "C" void mv_chrome_adjust_open_eyes(void) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app adjustOpenEyes];
 }
+extern "C" void mv_chrome_adjust_brush(int32_t action) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app adjustBrush:action];
+}
 extern "C" void mv_chrome_adjust_close(void) {
   if (g_chrome_app) [g_chrome_app setAdjustVisible:NO];
 }
@@ -2153,6 +2165,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 @implementation MvMetalView {
   int _welcomePress;  // welcome row under the left press, + 1; 0 = none
   BOOL _welcomePressRemove;  // ... and the press was on its remove button
+  BOOL _brushStroke;  // slice 7: the left press is a Remove brush stroke
   BOOL _textBeam;            // the I-beam is up over text in a still
   // Issue #212 (shell/gesture.h): a pinch's sub-notch remainder, and the
   // two-finger sideways swipe that steps one item.
@@ -2327,7 +2340,12 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // Slice 3: the adjust pane's white-balance picker or red-eye tool takes the
   // click on the photo; nothing pans.
   if (self.app && [self.app adjustPicking]) {
-    [self.app adjustPickAtX:self.snap->mouse_x y:self.snap->mouse_y];
+    // Slice 7: the Remove brush strokes while the button is down.
+    if ([self.app brushActive]) {
+      _brushStroke = [self.app brushPressX:self.snap->mouse_x y:self.snap->mouse_y];
+    } else {
+      [self.app adjustPickAtX:self.snap->mouse_x y:self.snap->mouse_y];
+    }
     return;
   }
   _welcomePress = self.app ? [self.app welcomeRowAtPointerOnRemove:&_welcomePressRemove] + 1 : 0;
@@ -2343,6 +2361,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.app) [self.app transportActivity];
 }
 - (void)mouseUp:(NSEvent*)event {
+  if (_brushStroke) {
+    _brushStroke = NO;
+    if (self.app) [self.app brushRelease];
+  }
   self.snap->mouse_down[0] = false;
   if (self.snap->text_press) {
     self.snap->text_press = false;
@@ -2487,6 +2509,11 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 - (void)mouseMoved:(NSEvent*)event {
   [self trackPointer:event];
+  // Slice 7: the brush's ring follows the pointer; a drag paints.
+  if (self.app && [self.app brushActive]) {
+    if (_brushStroke) [self.app brushDragX:self.snap->mouse_x y:self.snap->mouse_y];
+    else [self.app brushHoverX:self.snap->mouse_x y:self.snap->mouse_y];
+  }
   // A recent folder under the pointer reads as a link. Only a change of row
   // redraws (the app bumps the snapshot); an empty welcome stays idle.
   if (self.app && self.snap->recents.count > 0) {
@@ -2948,6 +2975,13 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::atomic<mv::generation> _adjustGen;
   std::uint64_t _adjustViewGeneration;
   float _redEyeSize;  // slice 3: the red-eye tool's size, −100..+100
+  // Slice 7: the Remove brush's strokes over the shown still, its size
+  // (−100..+100 about kBrushDefaultRadius), the ring under the pointer, and a
+  // count of changes the canvas redraws on.
+  mv::shell::remove_brush _brush;
+  float _brushSize;
+  float _brushCursor[3];
+  std::uint32_t _brushRev;
   std::vector<mv::edit::adjust_section> _pendingAutos;  // slice 5b: a typed request's Autos still to run
   BOOL _eyesRunning;  // slice 6: Open closed eyes is on the pool
   NSTimer* _histogramDebounce;
@@ -7446,7 +7480,18 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     v.item = _itemId;
     _snap.edit[0] = v;
   } else {
+    const mv::shell::edit_view before = _snap.edit[0];
     _snap.edit[0] = mv::shell::view_of(_edits, _itemId, 0);
+    // Slice 7: strokes lie over what was brushed only while the item and its
+    // geometry stay; otherwise they go (and Enhance's copy of them).
+    if (!_brush.empty() &&
+        (before.item != _itemId || !mv::shell::same_geometry(before, _snap.edit[0]) || _edits.crop_active())) {
+      _brush.clear();
+      mv::addon::media::set_still_mask({}, {});
+      [self bumpAdjustView];
+    }
+    ++_brushRev;
+    mv::shell::apply_brush(_snap.edit[0], _brush, [self brushActive] == YES, _brushRev, _brushCursor);
   }
   ++_editGeneration;  // the strip's edit count, the Crop pane's draft
   // Slice 5: Enhance's copy of the photo being edited carries its edit.
@@ -9713,7 +9758,12 @@ static double mv_wall_seconds() {
 
 - (BOOL)adjustVisible { return _adjust.visible() ? YES : NO; }
 - (uint64_t)adjustGeneration { return _adjustViewGeneration; }
-- (mv::shell::adjust_view)adjustView { return _adjust.view(_edits.colour()); }
+- (mv::shell::adjust_view)adjustView {
+  mv::shell::adjust_view v = _adjust.view(_edits.colour());
+  v.brush_strokes = static_cast<std::int32_t>(_brush.strokes());
+  v.brush_full = _brush.full() ? 1 : 0;
+  return v;
+}
 - (void)bumpAdjustView { ++_adjustViewGeneration; }
 
 // Read, develop (a RAW: LibRaw's linear 16-bit develop — docs/design/07 waits for it,
@@ -9915,6 +9965,7 @@ static double mv_wall_seconds() {
   if (visible && _jobsVisible) [self setJobsVisible:NO];
   const bool has_colour = _edits.has_item() && !_edits.colour().identity();
   [self adjustBuildIf:_adjust.show(visible, has_colour)];
+  [self brushPublish];  // slice 7: the strokes show only with the pane's brush on
   if (!visible && !has_colour) {
     // Nothing on the canvas needs the working image now; a reopen rebuilds it.
     _adjustGen.fetch_add(1, std::memory_order_relaxed);
@@ -10033,9 +10084,106 @@ static double mv_wall_seconds() {
 // Slice 3: what the next click on the photo does (shell::adjust_pick).
 // `size` is the red-eye tool's −100..+100 about its default radius.
 - (void)adjustPick:(int32_t)mode size:(float)size {
-  if (mode < 0 || mode > static_cast<int32_t>(mv::shell::adjust_pick::red_eye)) return;
-  _redEyeSize = std::clamp(size, -100.0f, 100.0f);
+  if (mode < 0 || mode > static_cast<int32_t>(mv::shell::adjust_pick::remove)) return;
+  if (mode == static_cast<int32_t>(mv::shell::adjust_pick::remove)) {
+    _brushSize = std::clamp(size, -100.0f, 100.0f);
+  } else {
+    _redEyeSize = std::clamp(size, -100.0f, 100.0f);
+  }
   _adjust.set_pick(static_cast<mv::shell::adjust_pick>(mode));
+  _brushCursor[0] = -1.0f;
+  [self brushPublish];
+  [self bumpAdjustView];
+}
+
+// ---- Slice 7: the Remove brush ---------------------------------------------------
+
+- (BOOL)brushActive {
+  return _adjust.pick() == mv::shell::adjust_pick::remove && [self adjustStill] && !_edits.crop_active() ? YES : NO;
+}
+
+- (float)brushRadius {
+  return mv::shell::kBrushDefaultRadius * std::exp2(_brushSize / 100.0f);
+}
+
+// Screen → the shown (edited) image's uv; false off the picture.
+- (BOOL)brushUV:(float)x y:(float)y u:(float*)u v:(float*)v {
+  return _lab.still_map().to_uv(x, y, *u, *v) ? YES : NO;
+}
+
+// The strokes and the ring onto the canvas's edit view (a redraw, no decode).
+- (void)brushPublish {
+  if (_snap.edit[0].item != _itemId) return;
+  ++_brushRev;
+  mv::shell::apply_brush(_snap.edit[0], _brush, [self brushActive] == YES, _brushRev, _brushCursor);
+  [self pokeSnapshot];
+}
+
+- (BOOL)brushPressX:(float)x y:(float)y {
+  float u = 0, v = 0;
+  if (![self brushUV:x y:y u:&u v:&v] || u < 0 || u > 1 || v < 0 || v > 1) return NO;
+  const mv::edit::placement p = _edits.preview_placement();
+  _brush.set_frame(p.cropped.w, p.cropped.h);
+  if (!_brush.begin(u, v, [self brushRadius])) {
+    NSBeep();  // full
+    return NO;
+  }
+  _brushCursor[0] = u;
+  _brushCursor[1] = v;
+  _brushCursor[2] = [self brushRadius];
+  [self brushPublish];
+  [self bumpAdjustView];
+  return YES;
+}
+
+- (void)brushDragX:(float)x y:(float)y {
+  float u = 0, v = 0;
+  if (![self brushUV:x y:y u:&u v:&v]) return;
+  (void)_brush.drag(u, v);
+  _brushCursor[0] = u;
+  _brushCursor[1] = v;
+  [self brushPublish];
+}
+
+- (void)brushHoverX:(float)x y:(float)y {
+  float u = 0, v = 0;
+  const BOOL on = [self brushUV:x y:y u:&u v:&v] && u >= 0 && u <= 1 && v >= 0 && v <= 1;
+  if (!on && _brushCursor[0] < 0.0f) return;
+  _brushCursor[0] = on ? u : -1.0f;
+  _brushCursor[1] = v;
+  _brushCursor[2] = [self brushRadius];
+  [self brushPublish];
+}
+
+- (void)brushRelease {
+  _brush.end();
+  [self bumpAdjustView];
+}
+
+// 0 the last stroke off, 1 all of them, 2 Remove: Enhance's sheet takes it.
+- (void)adjustBrush:(int32_t)action {
+  if (action == 0) {
+    (void)_brush.undo_stroke();
+  } else if (action == 1) {
+    _brush.clear();
+  } else if (action == 2) {
+    if (_brush.empty() || _items.empty() || _index.current() >= _items.size()) {
+      NSBeep();
+      return;
+    }
+    const auto dabs = _brush.dabs();
+    std::vector<float> flat;
+    flat.reserve(dabs.size() * 3);
+    for (const mv::shell::brush_dab& d : dabs) flat.insert(flat.end(), {d.u, d.v, d.r});
+    mv::addon::media::set_still_mask(_items[_index.current()].path_utf8, std::move(flat));
+    const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
+    if (id == mv::shell::command_id::none) {
+      _adjust.set_prompt_note("Remove needs the Enhance add-on (Settings → Add-ons).");
+    } else {
+      (void)[self runCommand:id back:mv::shell::back_target::none];
+    }
+  }
+  [self brushPublish];
   [self bumpAdjustView];
 }
 

@@ -1447,8 +1447,11 @@ TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {
   auto t0 = std::chrono::steady_clock::now();
   auto model = restyle_model::open(**rt, dir, utf8(cache.root()));
   REQUIRE(model);
+  // MV_RESTYLE_EDGE: a quality's long edge (768 High, 1024 Best), to measure it.
+  const char* edge_env = std::getenv("MV_RESTYLE_EDGE");
+  const std::uint32_t edge = edge_env ? static_cast<std::uint32_t>(std::atoi(edge_env)) : kRestyleEdge;
   std::uint32_t w = 0, h = 0;
-  restyle_size(full.width, full.height, kRestyleEdge, w, h);
+  restyle_size(full.width, full.height, edge, w, h);
   const rgb8 small = resize_rgb(full, w, h);
   for (const char* prompt : {"make it black and white", "make it a snowy winter day"}) {
     restyle_params p;
@@ -1478,7 +1481,9 @@ TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {
     }
   }
 
-  // The same through the job runner, as the sheet's Run starts it.
+  // The same through the job runner, as the sheet's Run starts it (one
+  // model in memory at a time, so a peak measured is one run's).
+  model->reset();
   run_port port;
   port.open_still = [&](const std::string&) -> mv::result<run_port::still> {
     run_port::still s;
