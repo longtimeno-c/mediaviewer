@@ -147,8 +147,8 @@ class engine {
   engine_port port_;
   std::string self_dir_;
   std::string data_dir_;
-  std::array<std::optional<model_spec>, 3> specs_;
-  std::array<model_files, 3> files_;
+  std::array<std::optional<model_spec>, kKindCount> specs_;
+  std::array<model_files, kKindCount> files_;
   std::unique_ptr<downloads> dl_;
   std::unique_ptr<runner> runner_;
   std::thread resume_;

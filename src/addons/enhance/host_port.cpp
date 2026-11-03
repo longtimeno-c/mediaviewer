@@ -188,6 +188,12 @@ run_port run_port_of(const mv_host_api* h, const std::string& self_dir) {
     };
   }
   // Photos and a clip's picture: one tiled model runner.
+  p.load_restyle = [runtime](const model_spec& spec, const std::string& models_dir)
+      -> result<std::unique_ptr<restyle_model>> {
+    (void)spec;
+    MV_TRY(infer::runtime * rt, runtime->runtime());
+    return restyle_model::open(*rt, models_dir, models_dir + "-cache");
+  };
   p.load_tiles = [runtime](const model_spec& spec, const std::string& models_dir) {
     // Core ML's compiled model, kept beside the weights (Remove deletes it).
     return runtime->open_tiles(spec, models_dir, models_dir + "-cache");

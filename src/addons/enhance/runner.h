@@ -19,6 +19,7 @@
 #include <string>
 #include <thread>
 
+#include "addons/enhance/diffusion.h"
 #include "addons/enhance/engine.h"
 #include "addons/enhance/picture_job.h"
 #include "addons/enhance/sound_job.h"
@@ -78,6 +79,11 @@ struct run_port {
   std::function<result<still>(const std::string& path)> open_still;
   // [job thread] The new photo beside `source`; its path.
   std::function<result<std::string>(const std::string& source, const still& pixels)> write_still;
+
+  // ---- Restyle (docs/plans/edit-adjust.md slice 5b) ----
+  // [job thread] The restyle model from its files in `models_dir`.
+  std::function<result<std::unique_ptr<restyle_model>>(const model_spec& spec, const std::string& models_dir)>
+      load_restyle;
 };
 
 // The largest photo Enhance writes: 100 megapixels (a 4x of a 25 MP photo is
@@ -104,6 +110,7 @@ class job_runner final : public runner {
   void run_sound(job_request r, job_events events);
   void run_picture(job_request r, job_events events);
   void run_still(job_request r, job_events events);
+  void run_restyle(job_request r, job_events events);
 
   run_port port_;
   std::mutex m_;

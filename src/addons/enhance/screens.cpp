@@ -14,6 +14,7 @@ const char* card_title(model_kind k) {
     case model_kind::still: return "Photos";
     case model_kind::video: return "Video";
     case model_kind::audio: return "Audio";
+    case model_kind::restyle: return "Restyle (photos)";
   }
   return "";
 }
@@ -23,6 +24,7 @@ const char* model_noun(model_kind k) {
     case model_kind::still: return "photo model";
     case model_kind::video: return "video model";
     case model_kind::audio: return "audio model";
+    case model_kind::restyle: return "restyle model";
   }
   return "model";
 }
@@ -161,6 +163,10 @@ void knob_node(json::writer& w, model_kind k, const knob& kb, const json::value&
     case knob::type::toggle:
       w.key("type").string("toggle").key("value").boolean(v.k == json::kind::boolean ? v.b : kb.def_on);
       break;
+    case knob::type::text:
+      w.key("type").string("text_field").key("value").string(v.k == json::kind::string ? v.s : kb.def_text);
+      if (!kb.placeholder.empty()) w.key("placeholder").string(kb.placeholder);
+      break;
   }
   w.end_object();
 }
@@ -171,6 +177,7 @@ const char* section_title(const sheet_view& v, model_kind k) {
     case model_kind::still: return "Photo";
     case model_kind::video: return "Picture";
     case model_kind::audio: return "Sound";
+    case model_kind::restyle: return "Restyle";
   }
   return "";
 }
@@ -264,6 +271,16 @@ std::string sheet_tree(const sheet_view& v) {
       if (v.running) w.key("disabled").boolean(true);
       w.end_object();
     }
+  }
+  if (v.item == item_kind::still && v.offers_restyle) {
+    w.begin_object().key("type").string("choice").key("id").string("photo").key("label").string("Enhance");
+    w.key("options").begin_array();
+    w.begin_object().key("id").string(photo_target_name(photo_target::detail)).key("text").string("More detail").end_object();
+    w.begin_object().key("id").string(photo_target_name(photo_target::restyle)).key("text").string("Restyle with words").end_object();
+    w.end_array();
+    w.key("value").string(photo_target_name(v.photo));
+    if (v.running) w.key("disabled").boolean(true);
+    w.end_object();
   }
   for (const sheet_section& s : v.sections) {
     begin_stack(w, id_of("sec", s.kind), "vertical", 8, "card");
