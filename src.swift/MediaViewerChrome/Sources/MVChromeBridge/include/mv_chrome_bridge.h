@@ -899,13 +899,14 @@ int32_t mv_chrome_scrub_markers(int64_t* out, int32_t cap, int32_t* current);
 //              vignette_softness (-100..100), then levels black (0..100), mid (-100..100)
 //              and white (-100..0) for the image, red, green and blue, then selective
 //              colour's hue, saturation and luminance (-100..100) for red, orange, yellow,
-//              green, aqua, blue, purple and magenta
+//              green, aqua, blue, purple and magenta, then definition, brilliance
+//              (-100..100), sharpen and noise reduction (0..100)
 //   curve_*:   the master, red, green and blue curves' points (0..1), curve_n of each
 //   bins:      64 bins each of R, G, B, luma, 0..1000 (edit::pack_histogram)
 typedef struct mv_adjust_view {
   int32_t readiness;
   int32_t from_raw;
-  float values[52];
+  float values[56];
   float clip_high;
   float clip_low;
   int32_t histogram_valid;

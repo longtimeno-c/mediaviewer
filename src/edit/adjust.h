@@ -90,6 +90,11 @@ enum class adjust_param : std::uint8_t {
   sel_magenta_hue,
   sel_magenta_sat,
   sel_magenta_lum,
+  // Slice 4: Detail (edit/detail.h), a CPU pass before the kernel.
+  definition,  // −100 .. +100: local contrast
+  brilliance,  // −100 .. +100: lift dark neighbourhoods, hold bright ones
+  sharpen,     // 0 .. 100
+  noise,       // 0 .. 100: noise reduction
   count
 };
 
@@ -106,6 +111,7 @@ enum class adjust_section : std::uint8_t {
   curves,     // slice 2: the four curves (colour::curves), no parameter
   selective,  // slice 3: the 24 selective colour parameters
   red_eye,    // slice 3: the red-eye spots (colour::spots), no parameter
+  detail,     // slice 4: definition, brilliance, sharpen, noise reduction
   count
 };
 
@@ -190,6 +196,8 @@ struct colour {
   }
   // Slice 3: a selective colour band moved.
   [[nodiscard]] bool has_selective() const noexcept;
+  // Slice 4: a detail slider moved (the working image needs edit/detail.h's pass).
+  [[nodiscard]] bool has_detail() const noexcept;
   // Levels or a curve is set: the kernel reads the table (table_of).
   [[nodiscard]] bool has_table() const noexcept;
   friend constexpr bool operator==(const colour&, const colour&) = default;

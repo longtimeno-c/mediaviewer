@@ -11,6 +11,7 @@
 #include "codec/exif.h"
 #include "codec/format.h"
 #include "edit/bake.h"
+#include "edit/detail.h"
 #include "edit/geometry.h"
 #include "edit/lossless_jpeg.h"
 #include "image/linear.h"
@@ -117,6 +118,12 @@ result<export_result> export_image(std::span<const std::uint8_t> source, const g
   if (!c.identity()) {
     MV_TRY(image::linear_image working, image::decode_linear(source, ctx));
     if (ctx && ctx->cancelled()) return err(status::cancelled);
+    // Slice 4: the detail pass at full resolution, as the canvas ran it on
+    // the preview (its radii scale with the picture).
+    if (c.has_detail()) {
+      MV_TRY(image::linear_image detailed, apply_detail(working, detail_of(c), ctx));
+      working = std::move(detailed);
+    }
     const placement p = place(g, size2{working.width, working.height});
     MV_TRY(codec::raster out, bake(working, p, c, ctx));
     working = image::linear_image{};  // release the full frame before encoding

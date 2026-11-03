@@ -24,6 +24,7 @@
 #include "edit/auto_adjust.h"
 #include "gfx/adjust_kernel.h"
 #include "edit/bake.h"
+#include "edit/detail.h"
 #include "edit/edit_stack.h"
 #include "edit/encode.h"
 #include "edit/export.h"
@@ -732,6 +733,120 @@ TEST_CASE("adjust pane: pick mode needs the working image and ends with the item
   CHECK(pane.pick() == mv::shell::adjust_pick::none);
 }
 
+// ---- slice 4: detail ----------------------------------------------------------
+
+namespace {
+
+// A w × h picture, grey g(x, y) with colour noise of `chroma` and lightness
+// noise of `luma` (a fixed pattern, not random).
+image::linear_image detail_picture(std::uint32_t w, std::uint32_t h, float luma, float chroma,
+                                   float (*g)(std::uint32_t, std::uint32_t, std::uint32_t)) {
+  image::linear_image img;
+  img.width = w;
+  img.height = h;
+  img.rgba.resize(static_cast<std::size_t>(w) * h * 4);
+  std::uint32_t seed = 12345;
+  auto next = [&seed] {
+    seed = seed * 1664525u + 1013904223u;
+    return static_cast<float>(seed >> 8) / 16777216.0f - 0.5f;
+  };
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      const float v = std::max(0.0f, g(x, y, w) * (1.0f + luma * next()));
+      std::uint16_t* p = img.rgba.data() + (static_cast<std::size_t>(y) * w + x) * 4;
+      p[0] = image::float_to_half(std::max(0.0f, v * (1.0f + chroma * next())));
+      p[1] = image::float_to_half(v);
+      p[2] = image::float_to_half(std::max(0.0f, v * (1.0f + chroma * next())));
+      p[3] = image::float_to_half(1.0f);
+    }
+  }
+  return img;
+}
+
+float green_at(const image::linear_image& img, std::uint32_t x, std::uint32_t y) {
+  return image::half_to_float(img.rgba[(static_cast<std::size_t>(y) * img.width + x) * 4 + 1]);
+}
+
+double variance(const image::linear_image& img, int ch, std::uint32_t x0, std::uint32_t x1) {
+  double s = 0, s2 = 0;
+  std::size_t n = 0;
+  for (std::uint32_t y = 8; y + 8 < img.height; ++y) {
+    for (std::uint32_t x = x0; x < x1; ++x) {
+      const double v = image::half_to_float(img.rgba[(static_cast<std::size_t>(y) * img.width + x) * 4 + static_cast<std::size_t>(ch)]);
+      s += v;
+      s2 += v * v;
+      ++n;
+    }
+  }
+  return s2 / static_cast<double>(n) - (s / static_cast<double>(n)) * (s / static_cast<double>(n));
+}
+
+}  // namespace
+
+TEST_CASE("detail: identity is a copy; each slider does what its name says", "[adjust][detail]") {
+  const auto edge = [](std::uint32_t x, std::uint32_t, std::uint32_t w) { return x < w / 2 ? 0.05f : 0.4f; };
+  const image::linear_image step = detail_picture(256, 64, 0.0f, 0.0f, edge);
+  auto same = edit::apply_detail(step, {});
+  REQUIRE(same);
+  CHECK(same->rgba == step.rgba);
+
+  // Sharpen: an undershoot before the edge and an overshoot after it, capped.
+  auto sharp = edit::apply_detail(step, {0, 0, 1.0f, 0});
+  REQUIRE(sharp);
+  CHECK(green_at(*sharp, 127, 32) < green_at(step, 127, 32));
+  CHECK(green_at(*sharp, 128, 32) > green_at(step, 128, 32));
+  CHECK(green_at(*sharp, 20, 32) == Approx(green_at(step, 20, 32)).epsilon(0.01));  // flat stays flat
+  CHECK(std::pow(green_at(*sharp, 128, 32), 1 / 2.2f) - std::pow(0.4f, 1 / 2.2f) <= 0.081f);
+
+  // Definition: the same, wider (local contrast across the edge).
+  auto def = edit::apply_detail(step, {1.0f, 0, 0, 0});
+  REQUIRE(def);
+  CHECK(green_at(*def, 124, 32) < green_at(step, 124, 32));
+  CHECK(green_at(*def, 131, 32) > green_at(step, 131, 32));
+
+  // Brilliance: a dark neighbourhood lifted, a bright one held back.
+  auto bril = edit::apply_detail(step, {0, 1.0f, 0, 0});
+  REQUIRE(bril);
+  CHECK(green_at(*bril, 30, 32) > green_at(step, 30, 32));
+  CHECK(green_at(*bril, 220, 32) < green_at(step, 220, 32));
+
+  // Noise reduction: a noisy flat field gets quieter in lightness and colour,
+  // and the step between halves survives.
+  const image::linear_image noisy = detail_picture(256, 64, 0.2f, 0.3f, edge);
+  auto clean = edit::apply_detail(noisy, {0, 0, 0, 1.0f});
+  REQUIRE(clean);
+  CHECK(variance(*clean, 1, 150, 240) < variance(noisy, 1, 150, 240) * 0.5);
+  CHECK(variance(*clean, 0, 150, 240) < variance(noisy, 0, 150, 240) * 0.5);
+  CHECK(green_at(*clean, 200, 32) > 0.25f);
+  CHECK(green_at(*clean, 40, 32) < 0.1f);
+
+  // Slider values arrive through the colour.
+  edit::colour c;
+  c.v[static_cast<std::size_t>(adjust_param::sharpen)] = 50.0f;
+  CHECK(c.has_detail());
+  CHECK(edit::detail_of(c).sharpen == 0.5f);
+  CHECK(edit::section_of(adjust_param::noise) == edit::adjust_section::detail);
+  CHECK_FALSE(edit::apply_detail(image::linear_image{}, {0, 0, 1, 0}));
+}
+
+TEST_CASE("detail: radii scale with the picture, so the preview and a bigger export agree",
+          "[adjust][detail]") {
+  const auto ramp = [](std::uint32_t x, std::uint32_t, std::uint32_t w) {
+    return x < w / 2 ? 0.06f : 0.3f;
+  };
+  const image::linear_image small = detail_picture(3072, 16, 0.0f, 0.0f, ramp);
+  const image::linear_image big = detail_picture(6144, 16, 0.0f, 0.0f, ramp);
+  const edit::detail_params d{0.8f, 0.0f, 0.0f, 0.0f};
+  auto a = edit::apply_detail(small, d);
+  auto b = edit::apply_detail(big, d);
+  REQUIRE(a);
+  REQUIRE(b);
+  // The same place across the edge, in each picture's own pixels.
+  for (std::uint32_t x : {1500u, 1530u, 1560u, 1600u}) {
+    CHECK(green_at(*a, x, 8) == Approx(green_at(*b, 2 * x, 8)).epsilon(0.03));
+  }
+}
+
 TEST_CASE("white balance (0, 0) is exactly unity", "[adjust][kernel]") {
   const auto g = edit::white_balance_gains(0.0f, 0.0f);
   CHECK(g[0] == 1.0f);
@@ -1088,4 +1203,25 @@ TEST_CASE("bake: 24 MP with every stage", "[.perf-bench][adjust-bench]") {
     best = std::min(best, ms);
   }
   std::printf("{\"bench\":\"bake24mp_all\",\"best_ms\":%.1f}\n", best);
+}
+
+// Hidden: the detail pass at the preview size, everything on (slice 4).
+TEST_CASE("detail: 3072 x 2048, every slider", "[.perf-bench][adjust-bench]") {
+  const auto g = [](std::uint32_t x, std::uint32_t, std::uint32_t w) {
+    return 0.02f + 0.5f * static_cast<float>(x) / static_cast<float>(w);
+  };
+  const image::linear_image img = detail_picture(3072, 2048, 0.1f, 0.1f, g);
+  for (const auto& [name, d] : {std::pair{"sharpen", edit::detail_params{0, 0, 0.5f, 0}},
+                                std::pair{"definition", edit::detail_params{0.5f, 0.5f, 0, 0}},
+                                std::pair{"noise", edit::detail_params{0, 0, 0, 0.5f}},
+                                std::pair{"all", edit::detail_params{0.5f, 0.5f, 0.5f, 0.5f}}}) {
+    double best = 1e9;
+    for (int run = 0; run < 3; ++run) {
+      const auto t0 = std::chrono::steady_clock::now();
+      auto out = edit::apply_detail(img, d);
+      REQUIRE(out);
+      best = std::min(best, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    }
+    std::printf("{\"bench\":\"detail_preview_%s\",\"best_ms\":%.1f}\n", name, best);
+  }
 }

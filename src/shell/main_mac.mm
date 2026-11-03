@@ -54,6 +54,7 @@
 #include "core/json.h"
 #include "core/trace.h"
 #include "edit/auto_adjust.h"
+#include "edit/detail.h"
 #include "edit/histogram.h"
 #include "image/linear.h"
 #include "image/page_thumbs.h"
@@ -3217,6 +3218,12 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   BOOL _jobsVisible;
   BOOL _clipToolsVisible;
   std::shared_ptr<const mv::image::linear_image> _working;
+  // Slice 4: the working image as built, before the detail pass; the pass
+  // shown on the canvas (_working is its result), and the one in flight.
+  std::shared_ptr<const mv::image::linear_image> _workingBase;
+  mv::edit::detail_params _detailShown;
+  std::uint64_t _detailToken;
+  NSTimer* _detailDebounce;
   std::atomic<mv::generation> _adjustGen;
   std::uint64_t _adjustViewGeneration;
   float _redEyeSize;  // slice 3: the red-eye tool's size, −100..+100
@@ -9858,6 +9865,8 @@ static std::string MvSelfTestPageSummary(const char* addon) {
         [self adjustPickAtX:map.centre_x y:map.centre_y];
         [self adjustPick:0 size:0];
         [self adjustSet:static_cast<int32_t>(mv::edit::adjust_param::sel_blue_sat) value:-50.0f];
+        [self adjustSet:static_cast<int32_t>(mv::edit::adjust_param::sharpen) value:40.0f];
+        [self adjustSet:static_cast<int32_t>(mv::edit::adjust_param::noise) value:30.0f];
         [self editSelfTestAdjustLine:@"picked" dir:dir];
         [self editSelfTestSnap:@"s4c-picked" dir:dir];
         [self editSelectTab:2];
@@ -10025,6 +10034,9 @@ static double mv_wall_seconds() {
 // lab's decode uses, so it is drained before the Metal device goes away.
 - (void)startWorkingBuild:(std::uint64_t)token {
   _working.reset();
+  _workingBase.reset();
+  _detailShown = {};
+  ++_detailToken;  // a pass for the item left is dropped when it lands
   _lab.drop_working();
   if (_items.empty() || _index.current() >= _items.size()) return;
   const std::string path = _items[_index.current()].path_utf8;
@@ -10069,9 +10081,70 @@ static double mv_wall_seconds() {
               working:(std::shared_ptr<const mv::image::linear_image>)working {
   if (_adjust.working_landed(token, ok, fromRaw)) {
     _working = std::move(working);
+    _workingBase = _working;
+    _detailShown = {};
     [self scheduleHistogram];
+    [self scheduleDetail];
   }
   [self bumpAdjustView];
+}
+
+// Slice 4 (edit/detail.h): when the detail sliders differ from the pass on
+// the canvas, run it again on the pool once they settle, from the working
+// image as built, and upload the result as the working texture. The canvas
+// shows the last finished pass meanwhile.
+- (void)scheduleDetail {
+  if (!_workingBase) return;
+  if (mv::edit::detail_of(_edits.colour()) == _detailShown) return;
+  [_detailDebounce invalidate];
+  __weak MvLabApp* weakSelf = self;
+  _detailDebounce = [NSTimer scheduledTimerWithTimeInterval:0.15
+                                                    repeats:NO
+                                                      block:^(NSTimer* timer) {
+                                                        (void)timer;
+                                                        [weakSelf startDetail];
+                                                      }];
+}
+
+- (void)startDetail {
+  _detailDebounce = nil;
+  if (!_workingBase) return;
+  const mv::edit::detail_params d = mv::edit::detail_of(_edits.colour());
+  if (d == _detailShown) return;
+  const std::uint64_t token = ++_detailToken;
+  const std::shared_ptr<const mv::image::linear_image> base = _workingBase;
+  const std::uint64_t item = _itemId;
+  const mv::generation gen = _adjustGen.load(std::memory_order_relaxed);
+  std::atomic<mv::generation>* current = &_adjustGen;
+  mv::shell::present_lab_mac* lab = &_lab;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [base, d, item, gen, current, lab, token,
+                                              weakSelf](const mv::job_context&) -> mv::status {
+    const mv::job_context ctx(0, gen, current, 0);
+    std::shared_ptr<const mv::image::linear_image> shown = base;
+    if (!d.identity()) {
+      auto out = mv::edit::apply_detail(*base, d, &ctx);
+      if (!out) return out.error();
+      shown = std::make_shared<const mv::image::linear_image>(std::move(out).value());
+    }
+    if (ctx.cancelled()) return mv::status::cancelled;
+    if (!lab->upload_working(*shown, item)) return mv::status::internal;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf detailLanded:token params:d working:shown];
+    });
+    return mv::status::ok;
+  });
+}
+
+- (void)detailLanded:(std::uint64_t)token
+              params:(mv::edit::detail_params)d
+             working:(std::shared_ptr<const mv::image::linear_image>)working {
+  if (token != _detailToken || !_workingBase) return;
+  _working = std::move(working);
+  _detailShown = d;
+  [self pokeSnapshot];
+  [self scheduleHistogram];
+  [self scheduleDetail];  // a slider that moved while this ran
 }
 
 - (void)adjustBuildIf:(std::optional<std::uint64_t>)token {
@@ -10089,6 +10162,8 @@ static double mv_wall_seconds() {
       before != mv::shell::adjust_readiness::none) {
     _adjustGen.fetch_add(1, std::memory_order_relaxed);
     _working.reset();
+    _workingBase.reset();
+    ++_detailToken;
     _lab.drop_working();
   }
   [self adjustBuildIf:token];
@@ -10099,6 +10174,7 @@ static double mv_wall_seconds() {
   const bool has_colour = _edits.has_item() && !_edits.colour().identity();
   [self adjustBuildIf:_adjust.colour_changed(has_colour)];
   [self scheduleHistogram];
+  [self scheduleDetail];
   [self bumpAdjustView];
 }
 
@@ -10155,6 +10231,8 @@ static double mv_wall_seconds() {
     // Nothing on the canvas needs the working image now; a reopen rebuilds it.
     _adjustGen.fetch_add(1, std::memory_order_relaxed);
     _working.reset();
+    _workingBase.reset();
+    ++_detailToken;
     _lab.drop_working();
     _adjust.working_dropped();
   }
@@ -10185,6 +10263,7 @@ static double mv_wall_seconds() {
   const bool has_colour = !_edits.colour().identity();
   [self adjustBuildIf:_adjust.colour_changed(has_colour)];
   [self scheduleHistogram];
+  [self scheduleDetail];
 }
 
 - (void)adjustReset {
@@ -10208,6 +10287,7 @@ static double mv_wall_seconds() {
   const bool has_colour = !_edits.colour().identity();
   [self adjustBuildIf:_adjust.colour_changed(has_colour)];
   [self scheduleHistogram];
+  [self scheduleDetail];
 }
 
 // Slice 3: what the next click on the photo does (shell::adjust_pick).
