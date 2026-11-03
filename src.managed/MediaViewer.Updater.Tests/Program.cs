@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using MediaViewer.Updater;
 using Org.BouncyCastle.Crypto.Generators;
 using Org.BouncyCastle.Crypto.Parameters;
@@ -14,8 +15,9 @@ using Velopack.Sources;
 // Modes:
 //   (none)                                       run the tests
 //   keygen <dir>                                 dev keypair: <dir>\dev.key (private hex), dev.pub (public hex)
-//   manifest <releasesDir> <version> <minVersion> [blocklist,csv] [channel]
-//                                                write <releasesDir>\mediaviewer-manifest.json from its *.nupkg
+//   manifest <releasesDir> <version> <minVersion> [blocklist,csv] [channel] [notesFile]
+//                                                write <releasesDir>\mediaviewer-manifest.json from its *.nupkg;
+//                                                notesFile (UTF-8, "-" for none) is the #620 "What's new"
 //   sign <file> <privateKeyHexFile>              write <file>.sig (Ed25519, detached, exact bytes)
 //   verify-release <releasesDir>                 verify with the production key and check payload hashes
 return args.Length switch
@@ -30,7 +32,7 @@ return args.Length switch
 
 static int Usage()
 {
-    Console.Error.WriteLine("usage: (no args) | keygen <dir> | manifest <dir> <ver> <min> [blocklist] [channel] | sign <file> <keyfile> | verify-release <dir>");
+    Console.Error.WriteLine("usage: (no args) | keygen <dir> | manifest <dir> <ver> <min> [blocklist] [channel] [notesFile] | sign <file> <keyfile> | verify-release <dir>");
     return 2;
 }
 
@@ -55,7 +57,7 @@ internal static class Dev
 
     public static string ManifestJson(string version, string min, string[] blocklist, string channel,
         IEnumerable<(string File, string Sha, long Size, string Kind)> packages, int schema = 1,
-        string? releasedAt = null)
+        string? releasedAt = null, string? notes = null)
     {
         releasedAt ??= DateTimeOffset.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'");
         var sb = new StringBuilder();
@@ -65,6 +67,8 @@ internal static class Dev
         sb.Append("  \"min_version\": \"").Append(min).Append("\",\n");
         sb.Append("  \"blocklist\": [").Append(string.Join(", ", blocklist.Select(b => $"\"{b}\""))).Append("],\n");
         sb.Append("  \"released_at\": \"").Append(releasedAt).Append("\",\n");
+        // #620: JSON-escaped; readers before it ignore the member.
+        if (notes is not null) sb.Append("  \"notes\": ").Append(JsonSerializer.Serialize(notes)).Append(",\n");
         sb.Append("  \"packages\": [\n");
         sb.Append(string.Join(",\n", packages.Select(p =>
             $"    {{\"file\": \"{p.File}\", \"sha256\": \"{p.Sha}\", \"size\": {p.Size}, \"kind\": \"{p.Kind}\"}}")));
@@ -95,6 +99,18 @@ internal static class Tool
         string blockArg = a.Length > 4 && a[4] != "-" ? a[4] : "";
         string[] block = blockArg.Length > 0 ? blockArg.Split(',') : Array.Empty<string>();
         string channel = a.Length > 5 ? a[5] : "win";
+        // #620: the "What's new" tools/package/whats_new.py wrote; "-" or an empty file is none.
+        string? notes = null;
+        if (a.Length > 6 && a[6] != "-")
+        {
+            notes = File.ReadAllText(a[6], Encoding.UTF8).Replace("\r\n", "\n").TrimEnd('\n');
+            if (notes.Length == 0) notes = null;
+            else if (!ManifestNotes.IsValid(notes))
+            {
+                Console.Error.WriteLine("What's new does not meet the manifest rule (whats_new.py)");
+                return 1;
+            }
+        }
         var packages = Directory.EnumerateFiles(dir, $"*-{version}-*.nupkg").Select(f =>
         {
             using FileStream fs = File.OpenRead(f);
@@ -104,7 +120,7 @@ internal static class Tool
         }).ToList();
         if (packages.Count == 0) { Console.Error.WriteLine("no packages for " + version); return 1; }
         File.WriteAllText(Path.Combine(dir, UpdateKeys.ManifestAssetName),
-            Dev.ManifestJson(version, min, block, channel, packages));
+            Dev.ManifestJson(version, min, block, channel, packages, notes: notes));
         return 0;
     }
 
@@ -217,7 +233,11 @@ internal static class Tests
         Check(below.Trusted && below.Urgency == UpdateUrgency.BelowMinimum, "below min_version flagged");
         Check(Signed(Json(), failed: new[] { V011 }).Rejection == ManifestRejection.TargetFailedLocally,
             "version rolled back on this machine rejects");
-        Check(Signed(Json(schema: 2)).Rejection == ManifestRejection.UnsupportedSchema, "schema 2 rejects");
+        Check(Signed(Json(schema: 3)).Rejection == ManifestRejection.UnsupportedSchema, "schema 3 rejects");
+        Check(Signed(Json(schema: 0)).Rejection == ManifestRejection.UnsupportedSchema, "schema 0 rejects");
+
+        // --- #620: "What's new" ---
+        NotesTests(priv, pub);
         Check(Signed(Encoding.UTF8.GetBytes("{\"schema\":1}")).Rejection == ManifestRejection.Malformed, "signed but incomplete rejects");
         Check(Signed(Encoding.UTF8.GetBytes("not json")).Rejection == ManifestRejection.Malformed, "signed garbage rejects");
         Check(Signed(Encoding.UTF8.GetBytes(Dev.ManifestJson("0.1.1", "0.1.0", Array.Empty<string>(), "win",
@@ -254,6 +274,70 @@ internal static class Tests
         Console.WriteLine($"{_passes} passed, {_failures} failed");
         return _failures == 0 ? 0 : 1;
     }
+
+    private static byte[] WithNotes(string? notes, int schema = 2) =>
+        Encoding.UTF8.GetBytes(Dev.ManifestJson("0.1.1", "0.1.0", Array.Empty<string>(), "win", Pkg, schema, notes: notes));
+
+    private static byte[] Json1() => WithNotes(null, schema: 1);
+
+    private static byte[] Inject(string member) =>
+        Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Json1()).Replace("\"packages\"", member + ",\n  \"packages\""));
+
+    private static void NotesTests(byte[] priv, byte[] pub)
+    {
+        ManifestDecision Signed(byte[] m) =>
+            ManifestVerifier.Evaluate(m, Dev.Sign(m, priv), pub, "win", V010);
+
+        // Verify: a schema 1 manifest still updates, with no notes.
+        ManifestDecision v1 = Signed(Json1());
+        Check(v1.Trusted && v1.UpdateAvailable && v1.Manifest!.Schema == 1 && v1.Manifest.Notes is null,
+            "notes: schema 1 without notes still updates");
+        ManifestDecision v2 = Signed(WithNotes(null));
+        Check(v2.Trusted && v2.UpdateAvailable && v2.Manifest!.Notes is null, "notes: schema 2 without notes updates");
+
+        const string text = "Faster RAW previews\nHEIC \"quoted\" \\ café — 日本語 <b>\nand 3 more changes";
+        ManifestDecision with2 = Signed(WithNotes(text));
+        Check(with2.Trusted && with2.UpdateAvailable && with2.Manifest!.Notes == text,
+            "notes: schema 2 carries them, escapes round-trip");
+        ManifestDecision with1 = Signed(WithNotes(text, schema: 1));
+        Check(with1.Trusted && with1.Manifest!.Notes == text, "notes: schema 1 may carry them (older readers ignore them)");
+
+        // Verify: a manifest whose notes were altered fails the signature check.
+        byte[] good = WithNotes("Faster RAW previews");
+        byte[] sig = Dev.Sign(good, priv);
+        Check(Signed(good).Trusted, "notes: the unaltered manifest passes");
+        byte[] altered = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(good).Replace("Faster", "Slower"));
+        Check(altered.Length == good.Length &&
+              ManifestVerifier.Evaluate(altered, sig, pub, "win", V010).Rejection == ManifestRejection.BadSignature,
+            "notes: altered notes fail the signature check");
+        byte[] added = Inject("\"notes\": \"Free upgrade\"");
+        Check(ManifestVerifier.Evaluate(added, Dev.Sign(Json1(), priv), pub, "win", V010).Rejection == ManifestRejection.BadSignature,
+            "notes: notes added to a signed manifest fail the signature check");
+
+        Check(Signed(WithNotes(new string('x', 400))).Trusted, "notes: 400 bytes pass");
+        Check(Signed(WithNotes("One\nTwo\nThree")).Trusted, "notes: three lines pass");
+        Check(Signed(WithNotes("\U0001F600 emoji")).Trusted, "notes: a surrogate pair passes");
+        string[] bad =
+        {
+            "", new string('x', 401), new string('é', 201), "a\nb\nc\nd", "a\n\nb", " lead", "trail ", "a\r\nb",
+            "tab\there", "bell\u0007", "del\u007f", "c1\u0085", "rtl\u202eevil", "iso\u2066x", "zero\u200bwidth",
+            "bom\ufeff", "line\u2028sep", "https://example.com", "see WWW.example.com", "mailto:me", "ftp://x",
+            "lone \ud800 surrogate",
+        };
+        for (int i = 0; i < bad.Length; i++)
+        {
+            Check(!ManifestNotes.IsValid(bad[i]), $"notes rule rejects case {i}");
+            // A lone surrogate cannot be written as UTF-8 text; the escaped form is below.
+            if (i == bad.Length - 1) continue;
+            Check(Signed(WithNotes(bad[i])).Rejection == ManifestRejection.Malformed,
+                $"notes: signed manifest with case {i} rejects");
+        }
+        Check(Signed(Inject("\"notes\": 7")).Rejection == ManifestRejection.Malformed, "notes: a non-string rejects");
+        Check(Signed(Inject("\"notes\": null")).Rejection == ManifestRejection.Malformed, "notes: null rejects");
+        Check(Signed(Inject("\"notes\": \"x\\ud800\"")).Rejection == ManifestRejection.Malformed,
+            "notes: an escaped lone surrogate rejects");
+    }
+
 
     private static string ReleaseJson(string tag, bool draft, bool prerelease, bool withManifest, string? host = null)
     {

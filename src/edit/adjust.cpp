@@ -48,8 +48,59 @@ adjust_range range_of(adjust_param p) noexcept {
     case adjust_param::saturation: return {-100.0f, 100.0f, 5.0f, "Saturation"};
     case adjust_param::temperature: return {-100.0f, 100.0f, 5.0f, "Temperature"};
     case adjust_param::tint: return {-100.0f, 100.0f, 5.0f, "Tint"};
+    case adjust_param::highlights: return {-100.0f, 100.0f, 5.0f, "Highlights"};
+    case adjust_param::shadows: return {-100.0f, 100.0f, 5.0f, "Shadows"};
+    case adjust_param::whites: return {-100.0f, 100.0f, 5.0f, "Whites"};
+    case adjust_param::blacks: return {-100.0f, 100.0f, 5.0f, "Blacks"};
+    case adjust_param::vibrance: return {-100.0f, 100.0f, 5.0f, "Vibrance"};
+    case adjust_param::mono: return {0.0f, 100.0f, 5.0f, "Intensity"};
+    case adjust_param::mono_filter: return {-100.0f, 100.0f, 5.0f, "Filter"};
+    case adjust_param::mono_tone: return {-100.0f, 100.0f, 5.0f, "Tone"};
+    case adjust_param::vignette: return {-100.0f, 100.0f, 5.0f, "Strength"};
+    case adjust_param::vignette_radius: return {-100.0f, 100.0f, 5.0f, "Radius"};
+    case adjust_param::vignette_softness: return {-100.0f, 100.0f, 5.0f, "Softness"};
     default: return {};
   }
+}
+
+adjust_section section_of(adjust_param p) noexcept {
+  switch (p) {
+    case adjust_param::exposure:
+    case adjust_param::contrast:
+    case adjust_param::highlights:
+    case adjust_param::shadows:
+    case adjust_param::whites:
+    case adjust_param::blacks: return adjust_section::light;
+    case adjust_param::saturation:
+    case adjust_param::temperature:
+    case adjust_param::tint:
+    case adjust_param::vibrance: return adjust_section::colour;
+    case adjust_param::mono:
+    case adjust_param::mono_filter:
+    case adjust_param::mono_tone: return adjust_section::mono;
+    case adjust_param::vignette:
+    case adjust_param::vignette_radius:
+    case adjust_param::vignette_softness: return adjust_section::vignette;
+    default: return adjust_section::count;
+  }
+}
+
+colour without_section(const colour& c, adjust_section s) noexcept {
+  colour out = c;
+  for (int i = 0; i < kAdjustParamCount; ++i) {
+    if (section_of(static_cast<adjust_param>(i)) == s) out.v[static_cast<std::size_t>(i)] = 0.0f;
+  }
+  return out;
+}
+
+std::array<float, 3> mono_weights(float filter) noexcept {
+  constexpr std::array<float, 3> k709{0.2126f, 0.7152f, 0.0722f};
+  if (filter == 0.0f) return k709;
+  const std::array<float, 3>& end = filter > 0.0f ? kMonoRed : kMonoBlue;
+  const float t = std::min(std::abs(filter) / 100.0f, 1.0f);
+  std::array<float, 3> w{};
+  for (std::size_t i = 0; i < 3; ++i) w[i] = k709[i] + (end[i] - k709[i]) * t;
+  return w;
 }
 
 float clamp_param(adjust_param p, float value) noexcept {
@@ -105,17 +156,48 @@ std::array<float, 3> white_balance_gains(float temperature, float tint) noexcept
 
 adjust_uniforms uniforms_of(const colour& c) noexcept {
   adjust_uniforms u;
+  auto& a = u.a;
   const std::array<float, 3> wb =
       white_balance_gains(c.get(adjust_param::temperature), c.get(adjust_param::tint));
   const float ev = c.get(adjust_param::exposure);
   const float gain = ev == 0.0f ? 1.0f : std::exp2(ev);
-  u.a0[0] = wb[0] * gain;
-  u.a0[1] = wb[1] * gain;
-  u.a0[2] = wb[2] * gain;
+  a[0][0] = wb[0] * gain;
+  a[0][1] = wb[1] * gain;
+  a[0][2] = wb[2] * gain;
   const float contrast = c.get(adjust_param::contrast);
-  u.a0[3] = contrast == 0.0f ? 1.0f : std::exp2(contrast / 100.0f * kContrastStops);
-  u.a1[0] = 1.0f + c.get(adjust_param::saturation) / 100.0f;
-  u.a1[1] = kContrastPivot;
+  a[0][3] = contrast == 0.0f ? 1.0f : std::exp2(contrast / 100.0f * kContrastStops);
+  a[1][0] = 1.0f + c.get(adjust_param::saturation) / 100.0f;
+  a[1][1] = kContrastPivot;
+
+  // Tone: the curve's terms on p = luma^(1/2.2) (adjust_kernel_tokens.h).
+  // Highlights (p³(1−p)) and shadows (p(1−p)³) peak at 0.105 of p, at
+  // p = 3/4 and 1/4, leave the other end nearly alone, and stay monotone at
+  // ±100; whites (p³) and blacks ((1−p)³) move the ends.
+  a[2][0] = c.get(adjust_param::highlights) / 100.0f;
+  a[2][1] = c.get(adjust_param::shadows) / 100.0f;
+  a[2][2] = c.get(adjust_param::whites) / 100.0f * kWhitesReach;
+  a[2][3] = c.get(adjust_param::blacks) / 100.0f * kBlacksReach;
+  const bool tone = a[2][0] != 0.0f || a[2][1] != 0.0f || a[2][2] != 0.0f || a[2][3] != 0.0f;
+  a[1][2] = tone ? 1.0f : 0.0f;
+
+  a[3][0] = c.get(adjust_param::vibrance) / 100.0f;
+  a[3][1] = c.get(adjust_param::mono) / 100.0f;
+  const float mono_tone = c.get(adjust_param::mono_tone);
+  a[3][2] = mono_tone == 0.0f ? 1.0f : std::exp2(mono_tone / 100.0f * kContrastStops);
+  const std::array<float, 3> mw = mono_weights(c.get(adjust_param::mono_filter));
+  a[4][0] = mw[0];
+  a[4][1] = mw[1];
+  a[4][2] = mw[2];
+
+  // Vignette: from `inner` to `inner + width` of the way to the corner.
+  // Radius moves the start (0.05 .. 0.65), softness the width (0.2 .. 1.0).
+  a[5][0] = c.get(adjust_param::vignette) / 100.0f * kVignetteStops;
+  const float radius = c.get(adjust_param::vignette_radius) / 100.0f;
+  const float softness = c.get(adjust_param::vignette_softness) / 100.0f;
+  const float inner = radius == 0.0f ? gfx::kVignetteInner : gfx::kVignetteInner + 0.3f * radius;
+  const float width = softness == 0.0f ? gfx::kVignetteWidth : gfx::kVignetteWidth + 0.4f * softness;
+  a[5][1] = inner;
+  a[5][2] = inner + width;
   return u;
 }
 

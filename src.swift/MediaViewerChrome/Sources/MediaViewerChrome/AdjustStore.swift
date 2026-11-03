@@ -16,24 +16,49 @@ struct AdjustSpec {
   let format: (Double) -> String
 }
 
+/// edit::adjust_section: a group of sliders with its own reset and, but for
+/// the vignette, its own Auto. `params` are edit::adjust_param values, in the
+/// order the pane shows them.
+struct AdjustSection {
+  let name: String
+  let icon: String
+  let params: [Int]
+  let hasAuto: Bool
+}
+
 @MainActor
 final class AdjustStore: ObservableObject {
   static let shared = AdjustStore()
 
   /// edit::adjust_param order and edit::range_of, the Windows pane's table too.
-  static let specs: [AdjustSpec] = [
-    AdjustSpec(name: "Exposure", min: -5, max: 5, step: 0.1) { String(format: "%+.1f EV", $0) },
-    AdjustSpec(name: "Contrast", min: -100, max: 100, step: 5) { String(format: "%+.0f", $0) },
-    AdjustSpec(name: "Saturation", min: -100, max: 100, step: 5) { String(format: "%+.0f", $0) },
-    AdjustSpec(name: "Temperature", min: -100, max: 100, step: 5) { String(format: "%+.0f", $0) },
-    AdjustSpec(name: "Tint", min: -100, max: 100, step: 5) { String(format: "%+.0f", $0) },
+  static let specs: [AdjustSpec] = {
+    let signed: (Double) -> String = { String(format: "%+.0f", $0) }
+    func s(_ name: String) -> AdjustSpec { AdjustSpec(name: name, min: -100, max: 100, step: 5, format: signed) }
+    return [
+      AdjustSpec(name: "Exposure", min: -5, max: 5, step: 0.1) { String(format: "%+.1f EV", $0) },
+      s("Contrast"), s("Saturation"), s("Temperature"), s("Tint"),
+      s("Highlights"), s("Shadows"), s("Whites"), s("Blacks"), s("Vibrance"),
+      AdjustSpec(name: "Intensity", min: 0, max: 100, step: 5) { String(format: "%.0f", $0) },
+      s("Filter"), s("Tone"),
+      s("Strength"), s("Radius"), s("Softness"),
+    ]
+  }()
+  /// edit::adjust_section order.
+  static let sections: [AdjustSection] = [
+    AdjustSection(name: "Light", icon: "sun.max", params: [0, 5, 6, 7, 8, 1], hasAuto: true),
+    AdjustSection(name: "Colour", icon: "circle.lefthalf.filled", params: [2, 9, 3, 4], hasAuto: true),
+    AdjustSection(name: "Black & White", icon: "circle.righthalf.filled", params: [10, 11, 12], hasAuto: true),
+    AdjustSection(name: "Vignette", icon: "circle.dashed", params: [13, 14, 15], hasAuto: false),
   ]
+  static let monoParam = 10
   static let bins = 64
 
   @Published private(set) var visible = false
   @Published private(set) var readiness: Int32 = 0  // 0 none, 1 preparing, 2 ready, 3 failed
   @Published private(set) var fromRaw = false
-  @Published var values: [Double] = Array(repeating: 0, count: 5)
+  @Published var values: [Double] = Array(repeating: 0, count: AdjustStore.specs.count)
+  /// The section whose Auto is running, or -1.
+  @Published private(set) var autoSection: Int = -1
   @Published private(set) var histogramValid = false
   @Published private(set) var histogram: [[Double]] = Array(repeating: [], count: 4)  // R, G, B, luma; 0..1
   @Published private(set) var clipHigh: Double = 0
@@ -68,6 +93,7 @@ final class AdjustStore: ObservableObject {
     fromRaw = v.from_raw != 0
     values = withUnsafeBytes(of: v.values) { raw in raw.bindMemory(to: Float.self).map { Double($0) } }
     histogramValid = v.histogram_valid != 0
+    autoSection = Int(v.auto_section)
     clipHigh = Double(v.clip_high)
     clipLow = Double(v.clip_low)
     let flat: [UInt16] = withUnsafeBytes(of: v.bins) { raw in Array(raw.bindMemory(to: UInt16.self)) }
@@ -87,6 +113,10 @@ final class AdjustStore: ObservableObject {
   }
 
   func reset() { mv_chrome_adjust_reset() }
+  func auto(_ section: Int) { if ready { mv_chrome_adjust_auto(Int32(section)) } }
+  func reset(section: Int) { if ready { mv_chrome_adjust_reset_section(Int32(section)) } }
+  /// A slider of `section` is away from 0.
+  func changed(_ section: Int) -> Bool { Self.sections[section].params.contains { values[$0] != 0 } }
   func close() { mv_chrome_adjust_close() }
   func blur() { mv_chrome_adjust_blur() }
 }

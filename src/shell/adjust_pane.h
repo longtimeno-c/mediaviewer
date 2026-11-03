@@ -43,11 +43,11 @@ struct adjust_view {
   float clip_high = 0.0f;       // fraction of shown pixels, 0..1
   float clip_low = 0.0f;
   std::int32_t histogram_valid = 0;
-  std::int32_t reserved = 0;
+  std::int32_t auto_section = -1;  // edit::adjust_section whose Auto is running, -1 none
   std::uint16_t bins[4 * edit::kHistogramBins] = {};  // edit::pack_histogram
 };
 
-static_assert(sizeof(adjust_view) == 44 + 2 * 4 * edit::kHistogramBins,
+static_assert(sizeof(adjust_view) == 24 + 4 * edit::kAdjustParamCount + 2 * 4 * edit::kHistogramBins,
               "keep in sync with AdjustViewArgs and mv_adjust_view");
 
 class adjust_pane {
@@ -82,13 +82,17 @@ class adjust_pane {
   [[nodiscard]] std::optional<std::uint64_t> take_histogram_request() noexcept;
   bool histogram_landed(std::uint64_t token, const edit::histogram& h) noexcept;
 
-  // #289 auto tone (edit/auto_tone.h). A token when the working image is
-  // ready: the host runs edit::compute_auto_tone on a worker with the colour
-  // as it is now and, if auto_tone_landed accepts the token, sets the result
-  // as one op (edit_session::set_colour). A colour change, a new item or a
-  // dropped working image in between makes the token stale.
-  [[nodiscard]] std::optional<std::uint64_t> request_auto_tone() noexcept;
+  // A section's Auto (#289 auto tone for Light; edit/auto_adjust.h). A token
+  // when the working image is ready: the host runs edit::compute_auto on a
+  // worker with the colour as it is now and, if auto_tone_landed accepts the
+  // token, sets the result as one op (edit_session::set_colour). A colour
+  // change, a new item, a dropped working image or another Auto in between
+  // makes the token stale.
+  [[nodiscard]] std::optional<std::uint64_t> request_auto_tone(
+      edit::adjust_section section = edit::adjust_section::light) noexcept;
   bool auto_tone_landed(std::uint64_t token) noexcept;
+  // The section of the Auto in flight (the view's auto_section).
+  [[nodiscard]] std::optional<edit::adjust_section> auto_running() const noexcept;
 
   // The POD the chrome draws, with the current slider values.
   [[nodiscard]] adjust_view view(const edit::colour& c) const noexcept;
@@ -104,7 +108,8 @@ class adjust_pane {
   std::uint64_t next_token_ = 1;
   bool histogram_stale_ = true;
   std::uint64_t histogram_token_ = 0;
-  std::uint64_t auto_token_ = 0;   // the auto-tone job in flight, 0 = none
+  std::uint64_t auto_token_ = 0;   // the Auto job in flight, 0 = none
+  edit::adjust_section auto_section_ = edit::adjust_section::light;
   bool histogram_valid_ = false;
   float clip_high_ = 0.0f, clip_low_ = 0.0f;
   std::uint16_t bins_[4 * edit::kHistogramBins] = {};

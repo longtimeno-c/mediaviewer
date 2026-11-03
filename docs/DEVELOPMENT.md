@@ -54,6 +54,7 @@ The order is:
 | Driftwire settings page, 2026-10-21 | **Driftwire's settings in Settings → Add-ons → Driftwire**, in the window's cards and controls: Nearby (Keep receiving, Receive when MediaViewer is closed), Received files (Save to), Over the internet and, while on, Remembered devices and Internet options. A new screen place, `settings` (contribution API 8, `MV_SLOT_PLACE_SETTINGS`): an add-on's own tree drawn on its page, opened only while that page shows; Driftwire's manifest asks for 8 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11), [28](design/28-driftwire.md), [12](design/12-decision-log.md)) | Mac: `mv_import_tests` passes (296 cases, new `[slots]` and `[driftwire]` cases); the app built and run with a dev-signed Driftwire: the page shows its settings, a switch there changes the window and back, the screen closes when the page does. Windows: the C# compiles; the native side is CI's. Owed: the Windows page seen in the app, Narrator / VoiceOver on the page; no perf run (Settings chrome and the add-on only, nothing on the present or decode path) |
 | `driftwire`, 2026-10-23 | **The `driftwire` command line**: Driftwire in a terminal on Linux, Windows and macOS, a host of the same engine: send nearby (the code typed off the other screen) or to a code, receive with a typed Accept, remember devices, the window's internet options; interactive only, no secret on the command line, its own identity and data folder, a look after Claude Code's terminal UI. Linux packages: `.deb`, `.rpm` and a tarball, x86_64 and arm64, from signed apt and dnf repositories on GitHub Pages with a one-line installer; macOS from a Homebrew tap (a universal program, signed and notarized), Windows from a PowerShell one-liner (a zip, per user, Authenticode-signed when Trusted Signing is configured); all three published by stable releases once `MV_DRIFTWIRE_REPO=1` (2026-10-24, [Publishing the command line](#publishing-the-command-line)) ([docs/design/28](design/28-driftwire.md#from-a-terminal-driftwire), [12](design/12-decision-log.md#driftwire)) | Linux container only: `"[cli]"` passes (63 cases) in RelWithDebInfo, Debug + ASan / UBSan and the packaging build (GCC 13 and GCC 12), the whole `"[driftwire]"` (237 cases) in RelWithDebInfo (234 in Debug + ASan / UBSan, before the review fixes), idle measured; the three packages built here, the `.deb` installed and run; the package repository built, installed from with apt, upgraded and removed, its signatures refused when changed (apt and dnf), here only; the Windows one-liner run in its test mode under pwsh, the formula under Ruby. Windows and macOS: compiled by CI only, and their release jobs, Homebrew and the one-liner on Windows not run. Owed: a real two-machine transfer over Wi-Fi with the command line on Linux and the app on a Mac or a PC; CI's Ubuntu 22.04 and arm64 legs and its Windows installer check; the site and the tap live (the owner's setup) ([Where this actually is](#the-driftwire-command-line-2026-10-23)) |
 | Driftwire transfer card, 2026-10-28 | **A transfer shows itself**: when a send or an offer starts, when its bytes start to move and when it ends, the Driftwire window glides to its card, which rises in when new and glows with an accent outline that fades, so a send begun from a code typed in “Send to a code” (or a tile under Nearby) is seen without scrolling up; progress alone never moves the page. A new screen key, `reveal` on a stack, contribution API 9 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11), [28](design/28-driftwire.md)) | Mac: `mv_import_tests "[driftwire]~[.driftwire-dht-live]"` (266 cases, one new) and `"[slots],[addon]"` pass; `mv_script_tests` passes; the SwiftUI package builds. Windows: the C# compiles; the native side is CI's. Owed: the glide, rise and glow seen in the running app on both hosts, with Reduce Motion / animations off, and both PR 1 gates |
+| #620 | **What's new in the update notice**: "Update ready — restart" ends its tooltip with up to three signed lines of what changed; Windows reads the manifest's `notes` (schema 2 accepted, 1 still written), the Mac the appcast's embedded plain-text description; no extra request ([docs/design/13](design/13-updates-and-telemetry.md#staging-and-restart)) | Draft. Linux container: the updater suite (112 cases) and the release / macpack / whats_new Python suites pass. Owed: both hosts built and the notice seen, a proxy log, both PR 1 gates ([Where this actually is](#whats-new-in-the-update-notice-620-both-hosts)) |
 | #612 | **Settings → Storage**: what MediaViewer keeps on disk with sizes (thumbnails, file search, clipboard copies, metadata snapshots, crash reports, the telemetry spool, each add-on with its data); the thumbnail cache tidies itself (old specs, gone or changed files, an optional size cap, off by default) and has **Clear** ([docs/design/04](design/04-image-pipeline.md#thumbnail-cache-upkeep)) | Draft: the shared core is tested on Linux; both host halves are written but not built, and the verify line and both present-loop gates are not run ([below](#settings--storage-and-the-self-tidying-thumbnail-cache-612)) |
 | Linux PR 1 | **OpenGL present lab on Wayland**: a raw xdg toplevel, EGL desktop GL on an sRGB surface, frame-callback pacing at `eglSwapInterval(0)`, `wp_presentation` statistics, idle → stop presenting, F3, `frametime` on Linux ([docs/design/10](design/10-roadmap.md#linux-pr-1--opengl-present-lab), [03](design/03-rendering.md#the-linux-present-path)) | Draft. Built and run in a Linux container under headless Weston only (GL and pixman renderers): `mv_tests` and the smoke pass, the report is labelled weaker and fails the gate as it must. The Windows and Mac builds now also compile the Linux pacer and its tests: CI's. Owed: the gate on a real session (Mutter or KWin, Mesa on Intel or AMD), a Linux GPU runner, both other PR 1 gates ([Where this actually is](#linux-pr-1-the-opengl-present-lab-on-wayland-2026-10-23)) |
 | #610 | **Clip thumbnails in Explorer and Finder**: MKV, WebM, AVI and TS (and, in Explorer, any clip MediaViewer is the default for, such as an AV1 or VP9 MP4 without a Store extension) get the filmstrip's poster instead of a generic icon; read through a seekable reader, never whole, under the handler's 4 s deadline and in-flight cap ([docs/design/09](design/09-build-and-test.md#windows-integration), [12](design/12-decision-log.md)) | Draft. The shared core (`shellext/thumb_poster`, `player::poster_frame` over a `byte_source`) built and its tests run on Linux, also under ASan / UBSan; the Windows handler and the Quick Look extension are written, not compiled here. Owed: both builds, the hands-on verify on both, both PR 1 gates ([Where this actually is](#clip-thumbnails-in-explorer-and-finder-issue-610-2026-11-02)) |
@@ -684,7 +685,7 @@ original is only ever rewritten by a lossless JPEG rotate / flip.
 | `Shift+C` | crop / straighten. Arrows move the crop, `Shift`+arrows resize it, `,` / `.` straighten by 0.5°, `Enter` applies, `Esc` cancels |
 | `Ctrl+Z` / `Ctrl+R` | undo the last edit / reset to the original |
 | `Ctrl+S` | export dialog: JPEG / PNG, quality, long edge, metadata (all / no GPS / none). `↑` `↓` choose, `←` `→` change, `Enter` exports to `<name>-edit.jpg` beside the original; never overwrites |
-| `Shift+A` | adjust pane (PR 11): exposure, contrast, saturation, temperature, tint, histogram and clipping. It takes the keyboard: on Windows `Tab` walks the sliders and the arrows step them; on Mac `↑` `↓` pick a slider, `←` `→` step it (`⇧` ×10), `0` zeroes it, `R` resets. `Esc` hands the keyboard back to the photo; `Shift+A` again closes the pane. A slider drag is one `Ctrl+Z`. Colour never rewrites the file: a JPEG with a colour edit keeps `[` `]` in the stack for export |
+| `Shift+A` | adjust pane (PR 11, grown by [edit-adjust](plans/edit-adjust.md) slice 1): Light (exposure, highlights, shadows, whites, blacks, contrast), Colour (saturation, vibrance, temperature, tint), Black & White and Vignette sections, each with an Auto (not the vignette) and a reset, histogram and clipping. It takes the keyboard: `↑` `↓` pick a slider of an open section, `←` `→` step it (`⇧` ×10), `0` zeroes it, `A` runs its section's Auto, `R` resets all. `Esc` hands the keyboard back to the photo; `Shift+A` again closes the pane. A slider drag is one `Ctrl+Z`. Colour never rewrites the file: a JPEG with a colour edit keeps `[` `]` in the stack for export |
 
 **Clips (PR 13 / 14, Windows and macOS).** Nothing here changes the
 clip: every result is a new file beside it, and a cancelled job leaves nothing behind.
@@ -1457,6 +1458,28 @@ The settings / keymap / theme parsers have a libFuzzer harness, `tools/fuzz/fuzz
 in the Windows clang-cl fuzz build (`mv_fuzzers`, seeds in `tests/data/seeds/addon`); its header
 has the one-line Homebrew LLVM build for a quick run on a Mac.
 
+### "What's new" in the update notice (#620, both hosts)
+
+The release writes a short "What's new" once (`tools/package/whats_new.py`, from the run's
+`whats_new` input or the commit subjects since the last release) and puts it where each app
+already looks: the Windows manifest's signed `notes` and the Mac appcast's embedded plain-text
+description ([docs/design/13](design/13-updates-and-telemetry.md#staging-and-restart)). Both
+bars add it to the "Update ready — restart" tooltip. Tests:
+
+```sh
+python3 tools/package/test_whats_new.py -v        # the rule, fitting, the git history
+python3 tools/package/test_github_release.py -v   # prepare's output, the release page
+python3 tools/mac/test_macpack.py -v              # embedded, never a releaseNotesLink
+dotnet run --project src.managed/MediaViewer.Updater.Tests -c Release   # add -p:EnableWindowsTargeting=true off Windows
+```
+
+Where it is (2026-11-02): the updater suite (112 cases, the notes rule, altered notes failing the
+signature, schema 1 still updating) and the three Python suites pass in a Linux container with
+the .NET 8 SDK; the manifest tool wrote and signed a manifest with notes there. Not built or run:
+the WinUI chrome and the Mac host (`main_mac.mm`, the Swift bar), `generate_appcast` on a real
+feed, a release run. Owed: an update with notes shown in the restart notice on both hosts, a
+proxy log showing no request beyond today's fixed asset URLs, both PR 1 present-loop gates.
+
 ### Add-on restart card (#510, both hosts)
 
 The card that asks for a restart after an add-on update ([docs/design/18](design/18-import.md)
@@ -1771,6 +1794,11 @@ line. Signing needs credentials the repo does not and must not hold:
   -SigningMetadata trusted-signing.json `     # Azure Trusted Signing
   -ManifestKey C:\offline\release.key         # Ed25519, signs the update manifest
 ```
+
+`-NotesFile whats-new.txt` signs a "What's new" into the manifest (#620; write it with
+`python3 tools/package/whats_new.py`, which holds it to the manifest's rule); the release
+workflow passes the one it made. On the Mac, `macpack.py release --release-notes-file` embeds
+the same text in the signed appcast.
 
 Without Authenticode, Windows SmartScreen may warn. Without a correctly signed update
 manifest, clients reject updates. The production public key is already pinned in

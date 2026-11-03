@@ -85,10 +85,16 @@ bool adjust_pane::histogram_landed(std::uint64_t token, const edit::histogram& h
   return true;
 }
 
-std::optional<std::uint64_t> adjust_pane::request_auto_tone() noexcept {
+std::optional<std::uint64_t> adjust_pane::request_auto_tone(edit::adjust_section section) noexcept {
   if (readiness_ != adjust_readiness::ready) return std::nullopt;
   auto_token_ = next_token_++;
+  auto_section_ = section;
   return auto_token_;
+}
+
+std::optional<edit::adjust_section> adjust_pane::auto_running() const noexcept {
+  if (auto_token_ == 0) return std::nullopt;
+  return auto_section_;
 }
 
 bool adjust_pane::auto_tone_landed(std::uint64_t token) noexcept {
@@ -105,6 +111,7 @@ adjust_view adjust_pane::view(const edit::colour& c) const noexcept {
     v.values[i] = c.get(static_cast<edit::adjust_param>(i));
   }
   v.histogram_valid = histogram_valid_ ? 1 : 0;
+  v.auto_section = auto_token_ != 0 ? static_cast<std::int32_t>(auto_section_) : -1;
   if (histogram_valid_) {
     v.clip_high = clip_high_;
     v.clip_low = clip_low_;
