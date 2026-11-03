@@ -48,6 +48,10 @@ struct RootRow: Identifiable, Equatable {
   var docs: UInt32 = 0
   var documents: Int64 = 0
   var documentsDone: Int64 = 0
+  // docs/plans/index-watcher.md: new files are noticed as they land. False
+  // when the watch could not start (a drive that refused it): then only the
+  // walk every 15 minutes finds them. An older pack sends nothing: true.
+  var watching = true
   var isPhotos: Bool { kind == "photos" }
 }
 
@@ -404,7 +408,7 @@ final class ManagementModel: ObservableObject {
                 unreadable: $0["error"] as? String == "unreadable", lastScan: int64($0["last_scan"]),
                 held: $0["held"] as? Bool ?? false, audio: int64($0["audio"]),
                 docs: UInt32(clamping: int64($0["docs"])), documents: int64($0["documents"]),
-                documentsDone: int64($0["documents_done"]))
+                documentsDone: int64($0["documents_done"]), watching: $0["watching"] as? Bool ?? true)
       }
       let suggested = Self.suggestions(t)
       await MainActor.run {
@@ -1367,6 +1371,9 @@ struct ManagementView: View {
       let n = UInt64(root.documents)
       text += n == 1 ? " · 1 document" : " · \(countText(n)) documents"
       if root.documentsDone < root.documents { text += " (\(countText(UInt64(max(0, root.documentsDone)))) read)" }
+    }
+    if root.kind != "photos" && root.enabled && !root.held && !root.watching {
+      text += " · new files found every 15 minutes"
     }
     return text
   }

@@ -10,8 +10,10 @@
 // clip's ISO 6709 tag through libavformat. Never throws. Read-only (rule 5).
 #pragma once
 
+#include <cstddef>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 #include "meta/meta.h"
 
@@ -22,6 +24,13 @@ namespace mv::meta {
 using gps_fix = geo_point;
 
 [[nodiscard]] std::optional<geo_point> read_location(std::string_view utf8_path);
+
+// #606: a GoPro or DJI clip's GPS route from its telemetry (meta/telemetry.h):
+// every packet of the telemetry track, the route thinned to `max_points` (the
+// first and last fix kept). Empty for a still (its first kilobyte says so, no
+// libavformat open), a clip without telemetry, or a file that cannot be read.
+// Worker thread only: a long clip is a few hundred small reads. Never throws.
+[[nodiscard]] std::vector<geo_point> read_route(std::string_view utf8_path, std::size_t max_points = 20000);
 
 // Pure helpers, exposed for tests.
 // "38,47.886N" / "38,47,53.16N" (XMP exif:GPSLatitude) -> 38.7981.

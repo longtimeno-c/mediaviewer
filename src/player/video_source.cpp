@@ -16,21 +16,9 @@
 
 namespace mv::player {
 
-int stream_rotation_degrees(const AVStream* stream) noexcept {
-  if (!stream || !stream->codecpar) return 0;
-  const AVCodecParameters* p = stream->codecpar;
-  const AVPacketSideData* sd = av_packet_side_data_get(p->coded_side_data, p->nb_coded_side_data,
-                                                       AV_PKT_DATA_DISPLAYMATRIX);
-  if (sd == nullptr || sd->size < 9 * sizeof(std::int32_t)) return 0;
-  // av_display_rotation_get is counter-clockwise; a player turns the other way
-  // (the same convention as edit/clip_common.cpp's stream_rotation).
-  const double ccw = av_display_rotation_get(reinterpret_cast<const std::int32_t*>(sd->data));
-  if (ccw != ccw) return 0;  // NaN: a degenerate matrix
-  int cw = static_cast<int>(std::lround(-ccw / 90.0)) * 90;
-  cw %= 360;
-  if (cw < 0) cw += 360;
-  return cw;
-}
+// stream_rotation_degrees is defined in poster.cpp: the Explorer thumbnail
+// handler links poster.cpp alone and must not pull this file's D3D11 /
+// VideoToolbox decode path into its surrogate (issue #610).
 
 gfx::colour_desc colour_from_stream(int avcol_space, int avcol_primaries, int avcol_trc,
                                     int avcol_range, int bit_depth) noexcept {

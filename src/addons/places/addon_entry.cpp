@@ -11,6 +11,11 @@
 // leaves the machine (rule 6). The add-on links nothing of the core: the host
 // function table is its only way in, and src/geo is its own code.
 //
+// The folder map (#601): with the section's "This folder" toggle on, the
+// folder's geotagged items (locations_in, served from the host's metadata
+// cache) are dots on the same map, and a click on one asks the host to show
+// that file (open_item). Read-only.
+//
 // Every thunk is the ABI boundary: no exception crosses it (docs/design/14),
 // and nothing here logs a path, a place or a coordinate (rule 6).
 #include <mediaviewer/mediaviewer_addon.h>
@@ -45,6 +50,9 @@ constexpr uint32_t kHostApiMin = 3;
 constexpr uint32_t kHostApiMax = 3;
 // Search rows go out in batches so a long folder shows results as it reads.
 constexpr uint32_t kSearchBatch = 128;
+// #606: the points of a clip's route a search looks up, evenly spaced along
+// it: about one a kilometre on a two-hour drive, finer than a town's radius.
+constexpr uint32_t kRouteSearchPoints = 128;
 
 struct addon_state {
   const mv_host_api* host = nullptr;
@@ -131,6 +139,63 @@ mv::places::theme_tokens tokens(const mv_slot_theme& t) {
   return o;
 }
 
+// #606: appended after open_item; an older host's table stops before it.
+bool has_route_of(const mv_host_api* host) {
+  return host->struct_size >= offsetof(mv_host_api, route_of) + sizeof(host->route_of) && host->route_of != nullptr;
+}
+
+// A clip's telemetry route from the host (cached there by path + size +
+// mtime), at most `cap` points; empty for a still, a clip without one, or a
+// host without route_of.
+std::vector<mv::places::route_point> route_of(const char* path, uint32_t cap) {
+  std::vector<mv::places::route_point> out;
+  if (!path || !*path || !has_route_of(g->host)) return out;
+  std::vector<mv_addon_route_point> pts(cap);
+  uint32_t n = 0;
+  if (g->host->route_of(g->host->host, path, pts.data(), cap, &n) != MV_OK) return out;
+  out.reserve(std::min(n, cap));
+  for (uint32_t i = 0; i < n && i < cap; ++i) out.push_back({pts[i].lat, pts[i].lon});
+  return out;
+}
+
+// #601: appended after still_write; an older host's table stops before it.
+bool has_open_item(const mv_host_api* host) {
+  return host->struct_size >= offsetof(mv_host_api, open_item) + sizeof(host->open_item) && host->open_item != nullptr;
+}
+
+// The folder of the file on screen, every geotagged item in it, read through
+// the host (its metadata cache: a folder the viewer has shown costs no read)
+// under the request's generation. nullptr when the request went stale or the
+// walk failed: nothing is drawn, and the next file asks again.
+struct folder_walk {
+  mv::places::folder_points* out = nullptr;
+};
+
+int32_t MV_CALL visit_folder(void* user, const mv_addon_location_entry* e) {
+  auto& w = *static_cast<folder_walk*>(user);
+  try {
+    if (e && e->path_utf8 && e->location.has && std::isfinite(e->location.lat) && std::isfinite(e->location.lon) &&
+        std::fabs(e->location.lat) <= 90 && std::fabs(e->location.lon) <= 180) {
+      w.out->items.push_back({e->path_utf8, e->location.lat, e->location.lon});
+    }
+    return w.out->items.size() < mv::places::k_max_folder_items ? 1 : 0;
+  } catch (...) {
+    return 0;
+  }
+}
+
+std::shared_ptr<const mv::places::folder_points> read_folder(const std::string& path, uint64_t generation) {
+  const std::string_view dir = mv::places::folder_of(path);
+  if (dir.empty()) return nullptr;
+  auto points = std::make_shared<mv::places::folder_points>();
+  points->folder = std::string(dir);
+  folder_walk w{points.get()};
+  if (g->host->locations_in(g->host->host, points->folder.c_str(), generation, &visit_folder, &w) != MV_OK) {
+    return nullptr;
+  }
+  return points;
+}
+
 void post_map(const char* section_id, uint64_t generation, const mv::places::map_image& m) {
   (void)g->host->surface_post(g->host->host, section_id, "map", generation, m.bgra.data(), m.width, m.height,
                               m.width * 4);
@@ -147,16 +212,41 @@ mv_status MV_CALL info_section(void*, const mv_slot_info_request* r) {
       return MV_ERR_INVALID_ARG;
     }
     mv::places::section_state state;
+    const mv::places::settings prefs = read_settings();
+    // #606: a GoPro or DJI clip's route goes on the map (only when there is a
+    // map to draw it on; the host answers a still from its first kilobyte).
+    std::vector<mv::places::route_point> route;
+    if (prefs.show_map) route = route_of(r->path_utf8, static_cast<uint32_t>(mv::places::k_max_route_points));
     const auto out = g->eng->section(lat, lon, r->location_text ? r->location_text : "",
-                                     tokens(r->theme), r->width_pt, r->scale, read_settings(), state);
+                                     tokens(r->theme), r->width_pt, r->scale, prefs, state,
+                                     r->path_utf8 ? r->path_utf8 : "", route);
     if (g->host->screen_post(g->host->host, r->section_id, r->generation, out.tree_json.c_str()) != MV_OK) {
       return MV_OK;  // stale: another file is on screen now
     }
     if (out.map) post_map(r->section_id, r->generation, *out.map);
-    std::lock_guard lock(g->section_m);
-    g->section_id = r->section_id;
-    g->section_generation = r->generation;
-    g->section = std::move(state);
+    const bool wants_folder = g->eng->wants_folder(state);
+    const std::string path = state.path;
+    {
+      std::lock_guard lock(g->section_m);
+      g->section_id = r->section_id;
+      g->section_generation = r->generation;
+      g->section = std::move(state);
+    }
+    // #601: the section is on screen first; the folder's dots follow once its
+    // items are read (once per folder: arrowing through it reads nothing).
+    if (wants_folder) {
+      auto points = read_folder(path, r->generation);
+      if (!points) return MV_OK;
+      std::lock_guard lock(g->section_m);
+      g->eng->set_folder(std::move(points));
+      if (g->section_generation != r->generation) return MV_OK;
+      std::shared_ptr<const mv::places::map_image> map;
+      std::string diff;
+      if (g->eng->refresh(g->section, map, diff)) {
+        post_map(r->section_id, r->generation, *map);
+        (void)g->host->screen_diff(g->host->host, r->section_id, r->generation, diff.c_str());
+      }
+    }
     return MV_OK;
   });
 }
@@ -181,6 +271,23 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
       // The -/+ buttons (and the keyboard, which presses them).
       const int delta = node == "zoom_in" ? 1 : node == "zoom_out" ? -1 : 0;
       if (delta == 0 || !g->eng->zoom(g->section, delta, map, diff)) return MV_OK;
+    } else if (e->kind == MV_SLOT_EVENT_CHANGE && node == "folder") {
+      // #601: the "This folder" toggle (the host checked the value is a boolean).
+      const bool on = e->value_json && std::strcmp(e->value_json, "true") == 0;
+      if (!g->eng->show_folder(g->section, on, map, diff)) {
+        if (!on || !g->eng->wants_folder(g->section)) return MV_OK;
+        auto points = read_folder(g->section.path, e->generation);
+        if (!points) return MV_OK;
+        g->eng->set_folder(std::move(points));
+        if (!g->eng->refresh(g->section, map, diff)) return MV_OK;
+      }
+    } else if (e->kind == MV_SLOT_EVENT_TAP && node == "map") {
+      // #601: a click on a dot or a cluster opens that item, or its first.
+      const auto v = mv::json::parse(e->value_json ? e->value_json : "");
+      if (!v || v->k != mv::json::kind::object || !has_open_item(g->host)) return MV_OK;
+      const std::string path = g->eng->tap(g->section, num(v->find("x"), -1), num(v->find("y"), -1));
+      if (!path.empty()) (void)g->host->open_item(g->host->host, e->screen_id, e->generation, path.c_str());
+      return MV_OK;
     } else if ((e->kind == MV_SLOT_EVENT_ZOOM || e->kind == MV_SLOT_EVENT_PAN || e->kind == MV_SLOT_EVENT_DOUBLE) &&
                node == "map") {
       // A settled pinch / wheel (zoom about the cursor), drag (pan) or
@@ -220,6 +327,10 @@ struct search_ctx {
   const mv::places::place_query* q = nullptr;
   mv::geo::lookup_options opts;
   uint32_t seen = 0;
+  // #606: the index walk sends a clip's route points as rows after its own,
+  // under the same path; once that path matched, the rest are skipped.
+  std::string last_path;
+  bool last_matched = false;
   std::vector<std::string> paths;
   std::vector<std::string> whys;
   bool stale = false;
@@ -247,12 +358,27 @@ void flush(search_ctx& c, bool done) {
 int32_t MV_CALL visit_location(void* user, const mv_addon_location_entry* e) {
   auto& c = *static_cast<search_ctx*>(user);
   try {
-    ++c.seen;
+    const bool point_of_route = e && (e->location.has & MV_ADDON_LOCATION_ROUTE_POINT) != 0;
+    if (!point_of_route) ++c.seen;  // progress counts files, not the points of their routes
     if (e && e->path_utf8 && e->location.has) {
-      std::string why = c.q->why(*c.db, e->location.lat, e->location.lon, c.opts);
-      if (!why.empty()) {
-        c.paths.emplace_back(e->path_utf8);
-        c.whys.push_back(std::move(why));
+      const bool same = point_of_route && c.last_path == e->path_utf8;
+      if (!same) {
+        c.last_path = e->path_utf8;
+        c.last_matched = false;
+      }
+      if (!c.last_matched) {
+        std::string why = c.q->why(*c.db, e->location.lat, e->location.lon, c.opts);
+        // #606: a clip from a folder whose own position (the route's first
+        // fix) is elsewhere: does the rest of its route pass through?
+        if (why.empty() && (e->location.has & MV_ADDON_LOCATION_ROUTE)) {
+          const auto route = route_of(e->path_utf8, kRouteSearchPoints);
+          why = mv::places::route_why(*c.q, *c.db, route, c.opts, kRouteSearchPoints);
+        }
+        if (!why.empty()) {
+          c.last_matched = true;
+          c.paths.emplace_back(e->path_utf8);
+          c.whys.push_back(std::move(why));
+        }
       }
     }
     if (c.seen % kSearchBatch == 0) {

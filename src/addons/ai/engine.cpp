@@ -373,6 +373,9 @@ bool engine::backfill_tags() {
     tags_pending_ = false;
     return false;
   }
+  // #606: a host without route_of reads to level 2 and no further this run,
+  // so the first host that has it reads the clips' routes.
+  if (!host_.has_route_of() && tags_level_.load() > 2) tags_level_ = 2;
   const auto started = std::chrono::steady_clock::now();
   // A few seconds at most per control-loop turn: a scan or a model load waits
   // no longer than that behind it.
@@ -431,6 +434,13 @@ bool engine::backfill_tags() {
             t.focal_mm = f->focal_mm;
             t.shutter_den = f->shutter_den;
             t.shutter_us = f->shutter_us;
+            // #606 (level 3): a GoPro or DJI clip's route, read once here
+            // (every telemetry packet) and kept as kTrackPoints points.
+            if (level >= 3 && (f->flags & MV_ADDON_TAG_HAS_ROUTE)) {
+              if (auto r = host_.route_of(a.path, static_cast<std::uint32_t>(kTrackPoints))) {
+                for (const mv_addon_route_point& p : *r) t.track.push_back({p.lat, p.lon});
+              }
+            }
           } else {
             // A host from before #405: read to level 1 and ask nothing more
             // of it this run (the next host that knows them reads them).
@@ -519,6 +529,11 @@ void engine::stop() noexcept {
   dl_cv_.notify_all();
   if (download_thread_.joinable()) download_thread_.join();  // a model download stops between chunks
   if (control_.joinable()) control_.join();
+  // After the control thread (which sets it): no change is called in after this.
+  if (watching_) {
+    (void)host_.watch_tree({}, nullptr, nullptr);
+    watching_ = false;
+  }
   for (std::thread& t : workers_) {
     if (t.joinable()) t.join();
   }
@@ -2256,6 +2271,7 @@ void engine::control_loop() {
   const unsigned n = std::max(1u, std::min(2u, cores / 4));
   for (unsigned i = 0; i < n; ++i) workers_.emplace_back([this, i] { worker_loop(i); });
   double last_full_scan = 0;
+  double last_watched_scan = 0;
   double last_photos_scan = 0;
   double last_consolidate = now_s();
   double last_resume_write = 0;
@@ -2296,26 +2312,41 @@ void engine::control_loop() {
       std::lock_guard lock(control_m_);
       rescan_roots_.insert(photos_root_);
     }
+    std::map<std::string, std::uint32_t> changes;  // the host's watch, once due
     {
       std::lock_guard lock(control_m_);
       all = rescan_all_;
       rescan_all_ = false;
       some.swap(rescan_roots_);
-      scanning_ = all || !some.empty();
+      if (!dirty_dirs_.empty() &&
+          (t - dirty_last_ >= deps_.tree_quiet_s || t - dirty_first_ >= deps_.tree_max_wait_s)) {
+        changes.swap(dirty_dirs_);
+      }
+      scanning_ = all || !some.empty() || !changes.empty();
       scanning_roots_ = some;
       if (all) scanning_roots_.insert(0);
     }
-    const bool walked = all || !some.empty();
+    const bool walked = all || !some.empty() || !changes.empty();
+    // docs/plans/index-watcher.md: the watch is set before any walk, so
+    // nothing that lands between a walk and the watch is missed; a root it
+    // could not watch is tried again with the backstop.
+    const bool backstop = all || (t - last_full_scan) > 15 * 60;
+    sync_watch(backstop, all || !some.empty() || backstop);
     if (walked) post(MV_ADDON_EVENT_AI_ROOTS);  // "Checking for changes…"
     if (all || some.count(photos_root_)) last_photos_scan = t;
-    if (all || (t - last_full_scan) > 15 * 60) {
-      scan_all();
+    if (backstop) {
+      // A root the host watches is walked whole once an hour, for what the
+      // OS may have dropped without saying (docs/plans/index-watcher.md).
+      const bool hourly = all || (t - last_watched_scan) > 60 * 60;
+      scan_all(hourly);
       last_full_scan = t;
+      if (hourly) last_watched_scan = t;
     } else {
       for (const root_row& r : db_->roots()) {
         if (some.count(r.id) && r.enabled && !held(r.id)) scan_root(r);
       }
     }
+    if (!changes.empty()) scan_changes(changes);
     {
       std::lock_guard lock(control_m_);
       scanning_roots_.clear();
@@ -2583,10 +2614,136 @@ void engine::catch_up_reader() {
   end_answer_swap();
 }
 
-void engine::scan_all() {
+void engine::scan_all(bool watched) {
+  std::set<std::int64_t> skip;
+  if (!watched) {
+    std::lock_guard lock(status_m_);
+    skip = watched_roots_;
+  }
   for (const root_row& r : db_->roots()) {
     if (stopping_) return;
+    // A share keeps its 15-minute walk: its server can stop telling without an error.
+    if (skip.count(r.id) && !network_roots_.count(r.id)) continue;
     if (r.enabled && !held(r.id)) scan_root(r);  // a held root waits for Resume (issue #299)
+  }
+}
+
+// ---- the host's watch (docs/plans/index-watcher.md) ---------------------------------------
+
+void engine::sync_watch(bool retry, bool fresh) {
+  if (options_.read_only || !host_.has_watch_tree()) return;
+  std::vector<root_row> roots;
+  if (fresh) {
+    roots = db_->roots();
+  } else {
+    // Idle: refresh_counts read them this pass already.
+    std::lock_guard lock(status_m_);
+    roots = roots_cache_;
+  }
+  std::vector<std::int64_t> ids;
+  std::vector<std::string> paths;
+  for (const root_row& r : roots) {
+    // A held root is not walked, so not watched either: Resume walks it whole.
+    if (!r.enabled || held(r.id) || is_photos_key(r.path)) continue;
+    ids.push_back(r.id);
+    paths.push_back(r.path);
+  }
+  bool missing = false;
+  {
+    std::lock_guard lock(status_m_);
+    for (std::int64_t id : ids) missing = missing || watched_roots_.count(id) == 0;
+  }
+  if (ids == watch_ids_ && paths == watch_paths_ && !(retry && missing)) return;
+  std::set<std::int64_t> on;
+  if (ids.empty()) {
+    if (watching_) (void)host_.watch_tree({}, nullptr, nullptr);
+    watching_ = false;
+  } else {
+    const auto ok = host_.watch_tree(paths, &engine::on_tree_change, this);
+    watching_ = true;  // even on an error: stop() still says "none"
+    if (ok) {
+      for (std::size_t i = 0; i < ids.size() && i < ok.value().size(); ++i) {
+        if (ok.value()[i]) on.insert(ids[i]);
+      }
+    }
+  }
+  network_roots_.clear();
+  if (host_.api()->volume_of) {
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+      mv_addon_volume v{};
+      if (host_.api()->volume_of(host_.api()->host, paths[i].c_str(), &v) == MV_OK && v.network) {
+        network_roots_.insert(ids[i]);
+      }
+    }
+  }
+  watch_ids_ = std::move(ids);
+  watch_paths_ = std::move(paths);
+  bool moved = false;
+  {
+    std::lock_guard lock(status_m_);
+    moved = on != watched_roots_;
+    watched_roots_ = std::move(on);
+  }
+  if (moved) post(MV_ADDON_EVENT_AI_ROOTS);
+}
+
+void MV_CALL engine::on_tree_change(void* user, std::uint32_t, const char* dir, std::uint32_t flags) {
+  // The host's watcher thread: note it and go (the control thread walks it).
+  auto* self = static_cast<engine*>(user);
+  if (!self || !dir) return;
+  const double t = now_s();
+  {
+    std::lock_guard lock(self->control_m_);
+    if (self->dirty_dirs_.empty()) self->dirty_first_ = t;
+    self->dirty_last_ = t;
+    self->dirty_dirs_[dir] |= flags;
+  }
+  self->control_cv_.notify_all();
+}
+
+void engine::scan_changes(const std::map<std::string, std::uint32_t>& changes) {
+  // More folders than this in one root is a copy across the tree: one walk
+  // of the root is cheaper than a walk and a stat each. Names that may have
+  // been folders (MV_ADDON_TREE_SUBTREE, mostly files deleted) cost a stat
+  // and no walk, so many more of them are taken one by one.
+  constexpr std::size_t kWholeRootAt = 64;
+  constexpr std::size_t kWholeRootAtNames = 4096;
+  std::vector<std::string> keys;
+  keys.reserve(watch_paths_.size());
+  for (const std::string& p : watch_paths_) keys.push_back(path_key(p));
+  std::map<std::int64_t, std::map<std::string, std::uint32_t>> by_root;
+  for (const auto& [dir, flags] : changes) {
+    // The innermost watched root it is in (a root inside another is its own).
+    const std::string key = path_key(dir);
+    std::size_t best = keys.size();
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+      if ((key == keys[i] || under(key, keys[i])) && (best == keys.size() || keys[i].size() > keys[best].size())) {
+        best = i;
+      }
+    }
+    if (best != keys.size()) by_root[watch_ids_[best]][dir] |= flags;
+  }
+  for (const root_row& r : db_->roots()) {
+    if (stopping_) return;
+    const auto it = by_root.find(r.id);
+    if (it == by_root.end() || !r.enabled || held(r.id)) continue;
+    {
+      std::lock_guard lock(control_m_);
+      scanning_roots_.insert(r.id);
+    }
+    post(MV_ADDON_EVENT_AI_ROOTS);  // "Checking for changes…"
+    std::size_t folders = 0;
+    bool whole = it->second.size() > kWholeRootAtNames;
+    for (const auto& [dir, flags] : it->second) {
+      whole = whole || (flags & MV_ADDON_TREE_OVERFLOW) != 0;
+      if ((flags & MV_ADDON_TREE_SUBTREE) == 0) ++folders;
+    }
+    whole = whole || folders > kWholeRootAt;
+    if (whole) {
+      scan_root(r);
+    } else {
+      scan_dirs(r, it->second);
+    }
   }
 }
 
@@ -2605,6 +2762,7 @@ bool engine::see_batch(const root_row& root, std::vector<index_db::seen_file>& b
     const index_db::upsert& u = (*r)[i];
     if (u.changed) changed.push_back(u.id);
     if (u.motion_changed && !u.changed) motion.push_back(u.id);
+    if (u.added && photos_note_new_ && root.id == photos_root_) photos_new_.insert(u.id);  // control thread
     asset_meta& m = assets_[u.id];
     if (u.changed || u.added) {
       m.tags = false;  // read again by the backfill (the index set tags = 0)
@@ -2671,28 +2829,13 @@ void engine::scan_root(const root_row& root) {
   const std::int64_t gen = db_->next_generation();
   // One value for the whole walk: a toggle mid-walk is the next walk's (on)
   // or drop_audio's (off).
-  const bool audio_files = audio_files_.load();
   // #354: documents while they are shown and this folder indexes them; off,
   // a walk no longer sees them, so end_scan drops them and their text.
-  const bool documents = document_files_.load() && docs_level(root.docs) >= 1;
+  const walk_kinds kinds{audio_files_.load(), document_files_.load() && docs_level(root.docs) >= 1};
   std::vector<index_db::seen_file> batch;
   std::vector<std::int64_t> changed;
   bool failed = false;
-  const auto flush = [&] {
-    if (!see_batch(root, batch, gen, changed)) failed = true;
-  };
-  // Live Photo / RAW+JPEG: one row per pair, on the still (docs/design/17 step 6).
-  // The host's own pairing decides, per directory.
-  std::map<std::string, std::vector<host::entry>> by_dir;
-  const expected walked = host_.walk(root.path, root.recursive ? 64 : 0, [&](const host::entry& e) {
-    if (stopping_) return false;
-    const std::string key = path_key(e.path);
-    const int k = media_kind_of_name(e.path);
-    // #355: audio only while the setting is on; off, it costs nothing past the name.
-    if (housekeeping(key) || k == 0 || (k == 3 && !audio_files) || (k == 4 && !documents)) return true;
-    by_dir[key_parent(key)].push_back(e);
-    return true;
-  });
+  const expected walked = walk_dir(root, root.path, root.recursive ? 64 : 0, kinds, gen, batch, changed, failed);
   if (!walked && walked.error() != status::cancelled) {
     // An unreachable root (a share offline, a card pulled) keeps its index:
     // deleting rows because a drive is absent would throw work away. Settings
@@ -2710,8 +2853,33 @@ void engine::scan_root(const root_row& root) {
     was_error = root_errors_.erase(root.id) != 0;
   }
   if (was_error) post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(root.id));
-  if (stopping_) return;
-  for (auto& [dir, files] : by_dir) {
+  if (stopping_ || !walked) return;
+  if (!see_batch(root, batch, gen, changed)) failed = true;
+  if (failed) return;
+  end_root_scan(root, gen, changed);
+}
+
+expected engine::walk_dir(const root_row& root, const std::string& dir, int depth, walk_kinds kinds,
+                          std::int64_t gen, std::vector<index_db::seen_file>& batch,
+                          std::vector<std::int64_t>& changed, bool& failed) {
+  const auto flush = [&] {
+    if (!see_batch(root, batch, gen, changed)) failed = true;
+  };
+  // Live Photo / RAW+JPEG: one row per pair, on the still (docs/design/17 step 6).
+  // The host's own pairing decides, per directory.
+  std::map<std::string, std::vector<host::entry>> by_dir;
+  const expected walked = host_.walk(dir, depth, [&](const host::entry& e) {
+    if (stopping_) return false;
+    const std::string key = path_key(e.path);
+    const int k = media_kind_of_name(e.path);
+    // #355: audio only while the setting is on; off, it costs nothing past the name.
+    if (housekeeping(key) || k == 0 || (k == 3 && !kinds.audio) || (k == 4 && !kinds.documents)) return true;
+    by_dir[key_parent(key)].push_back(e);
+    return true;
+  });
+  if (!walked) return walked;
+  if (stopping_) return err(status::cancelled);
+  for (auto& [parent, files] : by_dir) {
     std::vector<std::string> names;
     names.reserve(files.size());
     for (const host::entry& e : files) {
@@ -2767,9 +2935,56 @@ void engine::scan_root(const root_row& root) {
       if (batch.size() >= 512) flush();
     }
   }
-  flush();
-  if (failed) return;
-  end_root_scan(root, gen, changed);
+  return {};
+}
+
+void engine::scan_dirs(const root_row& root, const std::map<std::string, std::uint32_t>& dirs) {
+  {
+    std::lock_guard lock(status_m_);
+    active_root_ = root.path;
+  }
+  const std::int64_t gen = db_->next_generation();
+  const walk_kinds kinds{audio_files_.load(), document_files_.load() && docs_level(root.docs) >= 1};
+  const std::string root_key = path_key(root.path);
+  std::vector<index_db::seen_file> batch;
+  std::vector<std::int64_t> changed;
+  std::vector<std::string> plain, trees;  // walked: their unseen rows are gone
+  bool failed = false;
+  bool root_checked = false;
+  for (const auto& [dir, flags] : dirs) {
+    if (stopping_ || failed) return;
+    const std::string key = path_key(dir);
+    if (key != root_key && !under(key, root_key)) continue;
+    // A root that is only its own folder: what happens below it is not ours
+    // (a name in it that changed is in the root's own listing, also reported).
+    if (!root.recursive && key != root_key) continue;
+    const bool deep = (flags & MV_ADDON_TREE_SUBTREE) != 0;
+    const auto st = host_.stat(dir);
+    if (!st) {
+      // Gone, or the whole root is (a card pulled): only when the root still
+      // answers is it gone, and everything that was under it with it.
+      if (!root_checked) {
+        const auto rs = host_.stat(root.path);
+        if (!rs || !rs->is_directory) return;  // the backstop's walk says "unreadable"
+        root_checked = true;
+      }
+      trees.push_back(dir);
+      continue;
+    }
+    // A file: the name was reported because it might have been a folder; its
+    // folder is reported (and walked) as well.
+    if (!st->is_directory) continue;
+    const int depth = deep && root.recursive ? 64 : 0;
+    const expected walked = walk_dir(root, dir, depth, kinds, gen, batch, changed, failed);
+    if (!walked) {
+      if (walked.error() == status::cancelled) return;
+      continue;  // not walked: nothing under it is taken for gone
+    }
+    (depth > 0 ? trees : plain).push_back(dir);
+  }
+  if (!see_batch(root, batch, gen, changed) || failed) return;
+  auto gone = db_->end_scan_dirs(root.id, gen, plain, trees);
+  after_scan(root, gone ? *gone : std::vector<std::int64_t>{}, changed);
 }
 
 // The Photos library (issue #72): PhotoKit's enumeration in place of the
@@ -2810,6 +3025,18 @@ void engine::scan_photos(const root_row& root) {
       if (photos_local(a)) again.push_back(a.id);
     }
     if (!again.empty() && db_->requeue_unavailable(again)) forget_vectors(again);
+  } else if (!photos_new_.empty()) {
+    // An asset that arrived this session only in iCloud (a photo taken on
+    // the phone): when Photos then brings it down, its date and size stay
+    // the same and the walk below would not re-queue it. Only these are
+    // asked at each change, so the thousands of old iCloud-only assets cost
+    // nothing (docs/plans/index-watcher.md).
+    std::vector<std::int64_t> again;
+    for (const asset_row& a : db_->unavailable_assets(root.id)) {
+      if (stopping_) return;
+      if (photos_new_.count(a.id) && photos_local(a)) again.push_back(a.id);
+    }
+    if (!again.empty() && db_->requeue_unavailable(again)) forget_vectors(again);
   }
   {
     std::lock_guard lock(status_m_);
@@ -2819,6 +3046,8 @@ void engine::scan_photos(const root_row& root) {
   std::vector<index_db::seen_file> batch;
   std::vector<std::int64_t> changed;
   bool failed = false;
+  // The library's first walk adds everything; only later walks add news.
+  photos_note_new_ = db_->assets_in_root(root.id) > 0;
   const expected walked = photos_->enumerate([&](const photos_item& it) {
     if (stopping_ || failed) return false;
     batch.push_back(index_db::seen_file{photos_key(it.id), it.mtime, it.size, it.kind});
@@ -2937,25 +3166,30 @@ void engine::forget_vectors(const std::vector<std::int64_t>& ids) {
 
 void engine::end_root_scan(const root_row& root, std::int64_t gen, const std::vector<std::int64_t>& changed) {
   auto gone = db_->end_scan(root.id, gen);
-  if (gone) {
+  after_scan(root, gone ? *gone : std::vector<std::int64_t>{}, changed);
+}
+
+void engine::after_scan(const root_row& root, const std::vector<std::int64_t>& gone,
+                        const std::vector<std::int64_t>& changed) {
+  if (!gone.empty()) {
     std::lock_guard lock(assets_m_);
-    for (std::int64_t id : *gone) erase_asset_locked(id);
-    store_.remove_assets(*gone);
-    sounds_.remove_assets(*gone);
-    meanings_.remove_assets(*gone);
+    for (std::int64_t id : gone) erase_asset_locked(id);
+    store_.remove_assets(gone);
+    sounds_.remove_assets(gone);
+    meanings_.remove_assets(gone);
   }
-  if (gone) {
+  if (!gone.empty()) {
     std::lock_guard lock(models_m_);
     if (faces_) {
-      for (std::int64_t id : *gone) {
+      for (std::int64_t id : gone) {
         (void)faces_->forget_asset(id);
         faces_scanned_.erase(id);
       }
     }
   }
-  if (gone || !changed.empty()) {
+  if (!gone.empty() || !changed.empty()) {
     std::set<std::int64_t> drop(changed.begin(), changed.end());
-    if (gone) drop.insert(gone->begin(), gone->end());
+    drop.insert(gone.begin(), gone.end());
     std::lock_guard lock(speech_m_);
     speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
@@ -4499,7 +4733,7 @@ bool engine::wait_idle(int ms) {
       const bool reloading = reload_models_.load() || loading_.load();
       if (models_ready_ && !reloading && queue_exhausted_ && busy_workers_ == 0 && in_flight_.empty()) {
         std::lock_guard cl(control_m_);
-        idle = !rescan_all_ && rescan_roots_.empty() && !scanning_ &&
+        idle = !rescan_all_ && rescan_roots_.empty() && dirty_dirs_.empty() && !scanning_ &&
                (options_.read_only || !tags_pending_.load());  // #291: the tag backfill too
       }
     }
@@ -4577,10 +4811,16 @@ std::string engine::roots_json() {
     w.key("last_scan").integer(r.last_scan_at);
     if (!photos) w.key("cloud_only").integer(static_cast<std::int64_t>(db_->cloud_in_root(r.id)));
     bool unreadable = false;
+    bool watched = false;
     {
       std::lock_guard lock(status_m_);
       unreadable = root_errors_.count(r.id) != 0;
+      watched = watched_roots_.count(r.id) != 0;
     }
+    // docs/plans/index-watcher.md: new files are noticed as they land, or
+    // only by the 15-minute walk (no watch: an older host, a drive that
+    // refused it).
+    if (!photos) w.key("watching").boolean(watched);
     if (unreadable) w.key("error").string("unreadable");
     w.end_object();
   }
