@@ -70,6 +70,7 @@ public static partial class IslandHost
         public const int AutoLight = 28;
         public const int ResetLight = 29;
         public const int ToggleMute = 30;
+        public const int SpeedHalf = 31;  // 31-33: 0.5x, 1x, 2x
     }
 
     // PR 11's five sliders (edit/adjust.cpp range_of), as on the Mac.
@@ -83,6 +84,8 @@ public static partial class IslandHost
     private static bool _editorMuted;
     private static float _editorVolume = 1;
     private static int _editorFadeInMs, _editorFadeOutMs;
+    private static float _editorSpeed = 1;  // slice 4: 0.5, 1 or 2
+    private static Button? _editorSpeedButton;
 
     private static readonly string[] EditorCropNames = { "Original", "16:9", "9:16", "1:1", "4:3", "4:5" };
 
@@ -268,6 +271,8 @@ public static partial class IslandHost
                 _editorVolume = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, 144));
                 _editorFadeInMs = Marshal.ReadInt32(arg, 148);
                 _editorFadeOutMs = Marshal.ReadInt32(arg, 152);
+                _editorSpeed = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, 156));
+                if (_editorSpeedButton is not null) SetButtonText(_editorSpeedButton, EditorSpeedName(_editorSpeed));
                 long pieces = Marshal.ReadInt64(arg, 64);
                 var list = new (long, long)[pieces == 0 ? 0 : count];
                 for (int i = 0; i < list.Length; i++)
@@ -368,7 +373,7 @@ public static partial class IslandHost
         _editorStatus = null;
         _editorReading = null;
         _editorSpinner = null;
-        _editorPlay = _editorDelete = _editorUndo = _editorRedo = _editorExport = _editorExportExact = null;
+        _editorPlay = _editorDelete = _editorUndo = _editorRedo = _editorExport = _editorExportExact = _editorSpeedButton = null;
         _editorAddons = null;
         _editorAwayName = null;
         _editorAwayVisible = false;
@@ -477,6 +482,7 @@ public static partial class IslandHost
             EditorCropButton(),
             EditorLightButton(),
             EditorSoundButton(),
+            EditorSpeedButton(),
             EditButton("Save frame", () => SendEditor(EditorActions.SaveFrame),
                        tip: "Save this frame as a photo  Ctrl+Shift+S"));
         bar.Children.Add(left);
@@ -841,6 +847,29 @@ public static partial class IslandHost
         flyout.Closed += (_, _) => Send(Command.EditorLightDrag, 0);
         sound.Flyout = flyout;
         return sound;
+    }
+
+    private static string EditorSpeedName(float s) => s < 0.75f ? "0.5×" : s < 1.5f ? "1×" : "2×";
+
+    // The edit's speed (slice 4): 0.5x, 1x, 2x, for playback and Export exact.
+    private static Button EditorSpeedButton()
+    {
+        _editorSpeedButton = EditButton(EditorSpeedName(_editorSpeed), () => { },
+                                        tip: "Speed of the whole clip: playback and Export exact");
+        var menu = new MenuFlyout { MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle() };
+        menu.Opening += (_, _) =>
+        {
+            menu.Items.Clear();
+            float[] speeds = { 0.5f, 1f, 2f };
+            for (int i = 0; i < speeds.Length; i++)
+            {
+                int code = EditorActions.SpeedHalf + i;
+                string label = (speeds[i] == _editorSpeed ? "\u2713 " : "    ") + EditorSpeedName(speeds[i]);
+                menu.Items.Add(Item(label, null, () => SendEditor(code)));
+            }
+        };
+        _editorSpeedButton.Flyout = menu;
+        return _editorSpeedButton;
     }
 
     private static void RebuildEditorAddons()

@@ -1062,3 +1062,56 @@ TEST_CASE("Export exact writes the volume and the fades", "[clip][look][sound]")
   CHECK(20 * std::log10(head / full_rms + 1e-12) < -30.0);
   CHECK(20 * std::log10(tail / full_rms + 1e-12) < -40.0);
 }
+
+TEST_CASE("Export exact at 2x and 0.5x: half and double the length, in sync", "[clip][look][speed]") {
+  scratch_dir d("clip_look_speed");
+  const fs::path src = d / "clip.mp4";
+  fx::spec s;
+  s.frames = 300;  // 10 s at 30 fps, a 440 Hz tone
+  REQUIRE(fx::make(utf8(src), s));
+  const auto sound_s = [](const std::string& path) {
+    auto reader = clip::audio_reader::open(path, 48000, 0, nullptr, 1);
+    REQUIRE(reader);
+    std::size_t n = 0;
+    std::int64_t start = 0;
+    for (;;) {
+      auto chunk = (*reader)->read(48000, start);
+      REQUIRE(chunk);
+      if (chunk->empty()) break;
+      n += chunk->size();
+    }
+    return static_cast<double>(n) / 48000.0;
+  };
+  auto r = req_for(clip::op::keep_ranges, src);
+  r.ranges_exact = true;
+  r.ranges = {{0, -1}};
+  r.look.speed = 2.0f;
+  auto fast = run_soft(r);
+  REQUIRE(fast);
+  fx::decoded a;
+  REQUIRE(fx::decode_all(fast->outputs[0], a));
+  REQUIRE(a.pts_ns.size() > 2);
+  const double frame_s = 1.0 / 30.0;
+  const double picture_s = static_cast<double>(a.pts_ns.back() - a.pts_ns.front()) / 1e9 + frame_s;
+  INFO("2x: " << a.pts_ns.size() << " frames, " << picture_s << " s picture, " << sound_s(fast->outputs[0])
+              << " s sound");
+  CHECK(std::abs(picture_s - 5.0) <= frame_s + 1e-6);
+  CHECK(a.pts_ns.size() >= 149);  // every other frame, on the clip's own 30 fps grid
+  CHECK(a.pts_ns.size() <= 151);
+  CHECK(std::abs(sound_s(fast->outputs[0]) - picture_s) < 0.04);
+
+  r.ranges = {{0, 3'000'000'000}};
+  r.look.speed = 0.5f;
+  auto slow = run_soft(r);
+  REQUIRE(slow);
+  fx::decoded b;
+  REQUIRE(fx::decode_all(slow->outputs[0], b));
+  const double slow_s = static_cast<double>(b.pts_ns.back() - b.pts_ns.front()) / 1e9 + frame_s;
+  INFO("0.5x: " << b.pts_ns.size() << " frames, " << slow_s << " s picture, " << sound_s(slow->outputs[0])
+                << " s sound");
+  CHECK(std::abs(slow_s - 6.0) <= frame_s + 1e-6);
+  CHECK(std::abs(sound_s(slow->outputs[0]) - slow_s) < 0.04);
+  // Speed is not something packet copy can carry.
+  r.ranges_exact = false;
+  CHECK(clip::run(r, {}).error() == mv::status::invalid_arg);
+}

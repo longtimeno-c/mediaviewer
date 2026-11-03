@@ -838,6 +838,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)editorExport:(BOOL)exact;
 - (void)editorSetLight:(int32_t)param value:(float)value phase:(int32_t)phase;
 - (void)editorSetSound:(int32_t)param value:(float)value phase:(int32_t)phase;
+- (void)editorPlayRate:(double)rate;
 - (BOOL)editorTrimBegin:(int32_t)index edge:(int32_t)edge;
 - (int64_t)editorTrimTo:(int64_t)source_ns;
 - (void)editorTrimEnd;
@@ -8437,6 +8438,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   out->look_volume = lk.volume;
   out->look_fade_in_ms = lk.fade_in_ms;
   out->look_fade_out_ms = lk.fade_out_ms;
+  out->look_speed = lk.speed;
 }
 
 - (void)setEditorOpen:(BOOL)open {
@@ -8696,7 +8698,7 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
 - (void)editorTogglePlay {
   if (!_timeline.loaded()) return;
   _shuttle.stop();
-  [self editorSetRate:1.0];
+  [self editorPlayRate:1.0];
   const auto st = _lab.video_status_snapshot();
   // At the end, Play starts the program again.
   if (!st.playing && _timeline.next_play_start(st.position_ns, 20'000'000) < 0) {
@@ -8856,6 +8858,16 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
       changed = _timeline.set_look(l);
       break;
     }
+    case 31:
+    case 32:
+    case 33: {
+      // The speed: 0.5x, 1x, 2x. Playback follows at once.
+      mv::edit::clip::look l = _timeline.look();
+      l.speed = what == 31 ? 0.5f : what == 32 ? 1.0f : 2.0f;
+      changed = _timeline.set_look(l);
+      if (changed) [self editorPlayRate:_shuttle.rate()];
+      break;
+    }
     case 29: {
       mv::edit::clip::look l = _timeline.look();
       l.light = {};
@@ -8922,6 +8934,12 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
 
 // The speed ladder is the viewer's (present_lab_mac.mm kLadder); the editor
 // moves along it by rungs, as the viewer's speed keys do.
+// The editor's playback at the edit's speed (the look, slice 4): Space and
+// J K L ask for 1x, 2x, 4x of it. Leaving the editor uses editorSetRate.
+- (void)editorPlayRate:(double)rate {
+  [self editorSetRate:rate * static_cast<double>(_timeline.look().speed)];
+}
+
 - (void)editorSetRate:(double)rate {
   static constexpr int kRates[] = {25, 50, 100, 150, 200, 400};
   auto rung = [](int x100) {
@@ -8952,7 +8970,7 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
         return;
       }
       if (st.playing) mv_chrome_video_toggle();
-      [self editorSetRate:1.0];
+      [self editorPlayRate:1.0];
       const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
                            std::chrono::steady_clock::now().time_since_epoch()).count();
       const std::int64_t to = _shuttle.back([self editorTimelinePosition], now, phase == 1);
@@ -8972,12 +8990,12 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
       if (phase != 0) return;
       _shuttle.stop();
       if (st.playing) mv_chrome_video_toggle();
-      [self editorSetRate:1.0];
+      [self editorPlayRate:1.0];
       return;
     case 2: {  // L: play, faster on each press
       if (phase != 0) return;
       const double rate = _shuttle.forward();
-      [self editorSetRate:rate];
+      [self editorPlayRate:rate];
       if (!st.playing) {
         if (_timeline.next_play_start(st.position_ns, 20'000'000) < 0) {
           [self editorSeekSource:_timeline.pieces().front().in_ns];

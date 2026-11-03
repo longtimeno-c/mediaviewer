@@ -1068,6 +1068,7 @@ typedef struct mv_editor_view {
   float look_volume;
   int32_t look_fade_in_ms;
   int32_t look_fade_out_ms;
+  float look_speed;  // 0.5, 1 or 2 (slice 4)
 } mv_editor_view;
 uint64_t mv_chrome_editor_generation(void);
 bool mv_chrome_editor_view(mv_editor_view* out);
@@ -1090,7 +1091,8 @@ void mv_chrome_editor_step(int32_t frames);
 // (docs/plans/video-editor-look.md): 17 turn left, 18 turn right, 19 mirror
 // left-right, 20 upside down, 21-26 crop original / 16:9 / 9:16 / 1:1 / 4:3 /
 // 4:5, 27 save the frame at the playhead, 28 Auto light (auto tone on the frame
-// at the playhead), 29 reset light and colour, 30 mute / unmute. A change that
+// at the playhead), 29 reset light and colour, 30 mute / unmute, 31-33 the
+// speed 0.5x / 1x / 2x. A change that
 // changes nothing beeps.
 void mv_chrome_editor_edit(int32_t what);
 // The look's light and colour (slice 2): slider `param` (0 exposure,
