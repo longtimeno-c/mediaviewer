@@ -97,6 +97,8 @@ public static partial class IslandHost
         // docs/design/25: the theme in use, from its cached tokens, before the first
         // brush exists; its add-on is verified on a worker afterwards.
         LoadCachedTheme();
+        // #612: the thumbnail cache's limit, for the core's first sweep (a worker reads it).
+        LoadThumbCacheCap();
         ResolveThemeShape();
         // Brushes first: every Brush(role) lookup depends on them, so a failed
         // change hook below must still leave a complete palette.

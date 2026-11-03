@@ -94,6 +94,8 @@ add_library(mv_io STATIC
   "${MV_ROOT}/src/io/paths_mac.cpp"
   "${MV_ROOT}/src/io/replace_mac.cpp"
   "${MV_ROOT}/src/io/child_process_posix.cpp"
+  # Local search's tree watch (docs/plans/index-watcher.md): none on Linux yet.
+  "${MV_ROOT}/src/io/tree_watch_none.cpp"
 )
 target_include_directories(mv_io PUBLIC "${MV_ROOT}/src")
 target_link_libraries(mv_io PUBLIC mv_project_options PRIVATE ${MV_BLAKE3_TARGET})

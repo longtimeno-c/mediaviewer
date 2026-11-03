@@ -12,7 +12,7 @@ namespace MediaViewer.Chrome;
 /// </summary>
 public static partial class IslandHost
 {
-    /// <summary>Open: Mark / Unmark, Copy / Move Marked To…, Recycle Bin, Share, Copy Path, Copy Edited Image.</summary>
+    /// <summary>Open: Mark / Unmark, Copy / Move Marked To…, Recycle Bin, Share, Copy Path, Copy Edited Image, Print….</summary>
     private static void AddFileCommandItems(MenuFlyout flyout)
     {
         bool any = _selectedIndex >= 0 && _selectedIndex < Items.Count;
@@ -25,6 +25,8 @@ public static partial class IslandHost
         flyout.Items.Add(FileItem("Share…", Command.Share, any));
         flyout.Items.Add(FileItem("Copy Path", Command.CopyPath, any));
         flyout.Items.Add(FileItem("Copy Edited Image", Command.CopyFlattened, any));
+        flyout.Items.Add(Sep());
+        flyout.Items.Add(FileItem("Print…", Command.Print, any));
     }
 
     /// <summary>View: Start Slideshow and a Go submenu (Next, Previous, First, Last).</summary>

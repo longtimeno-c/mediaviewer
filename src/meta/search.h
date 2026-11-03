@@ -32,7 +32,8 @@ namespace mv::meta {
 // Bump when search_facts_of changes what it extracts: meta_cache.db rows of an
 // older version are read again. 2 (#405): rating, colour label and exposure.
 // 3 (#355): an audio file's album, album artist, composer and genre.
-inline constexpr std::int32_t kSearchFactsVersion = 3;
+// 4 (#606): a GoPro / DJI clip's first telemetry fix as `where`, and has_route.
+inline constexpr std::int32_t kSearchFactsVersion = 4;
 
 // Between two folded fields. Never typed, never in a fold.
 inline constexpr char kFieldSeparator = '\x1f';
@@ -47,6 +48,10 @@ struct search_facts {
   bool ai_generated = false;
   std::int64_t date_taken_key = 0;  // 0 = none (summary::date_taken_key)
   std::optional<geo_point> where;
+  // #606: the clip carries a GPS route in its telemetry (GoPro GPMF, DJI); its
+  // `where` is the route's first fix. The route itself is read on demand
+  // (location.h read_route), never in this bounded pass.
+  bool has_route = false;
   // #405: what Local search's rating: / label: / iso: / f: / mm: / shutter:
   // terms ask. Never search fields: a word search for "400" must not return
   // every ISO 400 frame. 0 = absent for every number.

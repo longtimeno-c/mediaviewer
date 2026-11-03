@@ -152,6 +152,7 @@ enum event_kind : std::uint32_t {
   ev_zoom = 10,     // {"scale": factor 0.05..20, "x": 0..1, "y": 0..1} -- the anchor, in the surface
   ev_pan = 11,      // {"dx": -10..10, "dy": -10..10} -- the drag, in surface widths / heights
   ev_double = 12,   // {"x": 0..1, "y": 0..1} -- a double-click
+  ev_tap = 14,      // {"x": 0..1, "y": 0..1} -- a single click (#601: a folder-map dot)
 };
 
 // One node, checked: used by `tree` and exposed for tests.

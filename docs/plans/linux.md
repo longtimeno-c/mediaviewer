@@ -129,7 +129,10 @@ Shared, unchanged: `codec/`, `image/` colour, `edit/` op graph, `meta/`, `canvas
 - `.desktop` with `MimeType=` for the D5 still and video set; audio and documents as Open With only
   (D5). Never `xdg-mime default` without the person asking.
 - The thumbnailer runs out of process from `/usr` (GNOME's bwrap sandbox binds only `/usr`): that,
-  and the Open With entries, are why the app ships as native packages.
+  and the Open With entries, are why the app ships as native packages. It is handed a path, so it
+  can be the portable handler as it stands (#610): `shellext::classify` on the head, then
+  `render_thumbnail_by` for a still or `render_poster_by(open_file_source(path), …)` for a clip,
+  the same deadline and cap as Explorer and Finder. Packaging and the channel stay open call 4.
 
 ## 6. The GLSL twin
 
