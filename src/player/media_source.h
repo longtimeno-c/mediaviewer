@@ -11,6 +11,7 @@
 #include <cstdint>
 
 #include "core/result.h"
+#include "core/sound_envelope.h"
 #include "player/av_clock.h"
 #include "player/audio_sink.h"
 #include "player/video_source.h"
@@ -65,6 +66,10 @@ class media_source {
   virtual void set_rate(double rate) noexcept = 0;   // 0.25 .. 4.0, pitch-corrected
   virtual void set_volume(float volume) noexcept = 0;
   virtual void set_muted(bool muted) noexcept = 0;
+  // The Video Editor's sound look: a gain on every decoded sample from the
+  // edit's pieces, volume and fades (core/sound_envelope.h). An inactive
+  // envelope clears it. Any thread; applied from the next decoded block.
+  virtual void set_sound_envelope(const sound_envelope& e) noexcept = 0;
   virtual void select_audio_track(std::uint32_t index) noexcept = 0;
 
   // A-B loop. b_ns < 0 clears.

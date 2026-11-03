@@ -179,6 +179,8 @@ public static partial class IslandHost
         // one id per slider from 1100 (arg the value), 1105 a drag (1 start, 0 end).
         public const int EditorLightExposure = 1100;
         public const int EditorLightDrag = 1105;
+        // Its sound: volume 1106, fade in 1107, fade out 1108 (ms).
+        public const int EditorSoundVolume = 1106;
         // Drag-out (IslandHost.DragDrop.cs). DragItems: a cell starts a drag,
         // arg is its folder index; native answers inside the call with
         // SetDragPaths. DragEnded: that drag finished. OpenRecent: arg is the

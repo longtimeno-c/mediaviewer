@@ -129,6 +129,13 @@ class ffmpeg_media_source final : public media_source {
   }
   void set_volume(float volume) noexcept override { pipe_->clock.set_volume(volume); }
   void set_muted(bool muted) noexcept override { pipe_->clock.set_muted(muted); }
+  void set_sound_envelope(const sound_envelope& e) noexcept override {
+    {
+      std::lock_guard lock(pipe_->envelope_mu);
+      pipe_->envelope = e;
+    }
+    pipe_->envelope_seq.fetch_add(1, std::memory_order_release);
+  }
   void select_audio_track(std::uint32_t index) noexcept override {
     unsigned n = 0;
     for (unsigned i = 0; i < pipe_->format->nb_streams; ++i) {

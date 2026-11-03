@@ -85,7 +85,7 @@ prompt; *Keep editing* leaves both windows open.
 ## Timeline UI
 
 Transport, timecode (frames at the clip's rate), Split / Delete / Mark in / Mark out / Trim start /
-Trim end / Undo / Redo, Turn left / Turn right / Crop (mirror and crop menu) / Light / Save frame, an
+Trim end / Undo / Redo, Turn left / Turn right / Crop (mirror and crop menu) / Light / Sound / Save frame, an
 add-on's buttons (`editor_items`, contribution API 11: Enhance… when
 Enhance is installed, [29](29-enhance.md) "In the Video Editor"; each gets the clip and the kept
 pieces, or the whole clip when nothing is cut, and writes a new file), Export / Export exact, Done. A ruler, one thumbnail track and one waveform
@@ -93,12 +93,13 @@ per piece, a draggable playhead that snaps to joins and marks, piece selection, 
 edges (the preview shows the edge frame). On Mac the playhead is its own layer, so the thumbnail
 canvas does not redraw while playing, and the timeline stops polling when the window closes.
 
-Windows island ABI (`chrome_host.h`): native pushes `chrome_editor_view_args` (144 bytes; the look's turns, mirror, crop and whether keyframe Export carries it at 104, its five light values at 120) on each
+Windows island ABI (`chrome_host.h`): native pushes `chrome_editor_view_args` (160 bytes; the look's turns, mirror, crop and whether keyframe Export carries it at 104, its five light values at 120, mute, volume and fades at 140) on each
 edit and the playhead on the tick, and `chrome_editor_strip_args` once per clip. The island sends
 `editor_seek` (1023, program milliseconds), `editor_action` (1024, `chrome_editor_action`; 1–6, 14–16
 and the look's 17–27 are the Mac bridge's `mv_chrome_editor_edit` codes), `editor_trim_grab` (1028), `editor_trim_to`
 (1029), and the light sliders `editor_light_*` (1100–1104, arg the value) and
-`editor_light_drag` (1105, 1 start, 0 end). Both sides' checksum tests pin the ids.
+`editor_light_drag` (1105, 1 start, 0 end), and the sound's `editor_sound_volume` / `_fade_in` /
+`_fade_out` (1106–1108). Both sides' checksum tests pin the ids.
 
 ## Keys
 
@@ -141,6 +142,15 @@ canvas runs the same kernel tokens as the photo blit in the video blit, on the l
 already decodes, before its sRGB encode; the export and Save frame run them through
 `colour_table` on 8-bit frames, decoding with the canvas's BT.1886 power so the kernel sees the
 light the preview shows (per channel exact, the saturation mix in linear light).
+
+**Sound** (slice 3): Mute, Volume (0–200 %), Fade in and Fade out (0–5 s each, on the program's
+start and end) in a popover / flyout. Playback hears them through a gain on every decoded block
+(`core/sound_envelope.h`, applied in `player/audio_decode.cpp` by each sample's source time: the
+pieces place the fades; in a cut it is the volume alone). Windows sends it with
+`mv_video_set_sound_look` (ABI 0.37); the Mac hands it to the render thread, which passes it to
+the clip playing (`present_lab_mac::set_sound_envelope`). It is separate from the listener's own
+volume and mute, and cleared when the editor closes. Export exact writes the same gains on the
+program's sound (`clip_look_run.cpp`); Export on keyframes writes mute only (no sound stream).
 
 - **Preview:** the host puts the turn, mirror and crop on the input snapshot
   (`video_look_*`); the render thread adds the turn to the clip's own and passes the mirror and

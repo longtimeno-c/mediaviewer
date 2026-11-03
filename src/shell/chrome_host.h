@@ -201,6 +201,11 @@ enum chrome_command : int {
   chrome_cmd_editor_light_temperature = 1103,
   chrome_cmd_editor_light_tint = 1104,
   chrome_cmd_editor_light_drag = 1105,
+  // Its sound (slice 3): volume (0..2), fade in and fade out (ms); a drag is
+  // chrome_cmd_editor_light_drag's too.
+  chrome_cmd_editor_sound_volume = 1106,
+  chrome_cmd_editor_sound_fade_in = 1107,
+  chrome_cmd_editor_sound_fade_out = 1108,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -243,6 +248,7 @@ enum class chrome_editor_action : std::int32_t {
   save_frame = 27,   // the frame at the playhead as a JPEG, with the look
   auto_light = 28,   // auto tone on the frame at the playhead (exposure, contrast)
   reset_light = 29,  // every light and colour slider back to 0
+  toggle_mute = 30,  // the edit's sound off / on
 };
 
 // chrome_cmd_edit_action's argument. The C# side mirrors it.
@@ -688,10 +694,14 @@ struct chrome_editor_view_args {
   std::int32_t look_copyable;
   // Light and colour: exposure (EV), contrast, saturation, temperature, tint.
   float look_light[5];
-  std::int32_t pad_light;
+  std::int32_t look_mute;       // sound (slice 3)
+  float look_volume;            // 0..2
+  std::int32_t look_fade_in_ms;
+  std::int32_t look_fade_out_ms;
+  std::int32_t pad_sound;
 };
 
-static_assert(sizeof(chrome_editor_view_args) == 144, "keep in sync with IslandHost.VideoEditor");
+static_assert(sizeof(chrome_editor_view_args) == 160, "keep in sync with IslandHost.VideoEditor");
 
 // One timeline thumbnail (edit/clip_strip.h strip_frame): RGBA8, sRGB.
 struct chrome_editor_thumb {

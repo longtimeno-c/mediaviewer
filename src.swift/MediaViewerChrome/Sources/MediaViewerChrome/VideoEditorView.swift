@@ -62,6 +62,11 @@ final class VideoEditorStore: ObservableObject {
   @Published private(set) var lookCopyable = true
   /// Light and colour: exposure (EV), contrast, saturation, temperature, tint.
   @Published private(set) var light: [Float] = [0, 0, 0, 0, 0]
+  /// Sound: mute, volume (0..2), fades in seconds.
+  @Published private(set) var muted = false
+  @Published private(set) var volume: Float = 1
+  @Published private(set) var fadeIn: Float = 0
+  @Published private(set) var fadeOut: Float = 0
   @Published private(set) var thumbs: [EditorThumb] = []
   @Published private(set) var peaks: [Float] = []
 
@@ -139,6 +144,10 @@ final class VideoEditorStore: ObservableObject {
     if lookCopyable != (v.look_copyable != 0) { lookCopyable = v.look_copyable != 0 }
     let l = withUnsafeBytes(of: v.look_light) { Array($0.bindMemory(to: Float.self)) }
     if light != l { light = l }
+    if muted != (v.look_mute != 0) { muted = v.look_mute != 0 }
+    if volume != v.look_volume { volume = v.look_volume }
+    if fadeIn != Float(v.look_fade_in_ms) / 1000 { fadeIn = Float(v.look_fade_in_ms) / 1000 }
+    if fadeOut != Float(v.look_fade_out_ms) / 1000 { fadeOut = Float(v.look_fade_out_ms) / 1000 }
     var buf = [CChar](repeating: 0, count: 1024)
     _ = mv_chrome_editor_name(&buf, Int32(buf.count))
     let newName = String(cString: buf)
@@ -213,6 +222,16 @@ final class VideoEditorStore: ObservableObject {
   func crop(_ ratio: Int) { mv_chrome_editor_edit(Int32(21 + ratio)) }
   func saveFrame() { mv_chrome_editor_edit(27) }
   func autoLight() { mv_chrome_editor_edit(28) }
+  func toggleMute() { mv_chrome_editor_edit(30) }
+  /// param 0 volume (0..2), 1 fade in, 2 fade out (seconds); phase as setLight.
+  func setSound(_ param: Int, _ value: Float, phase: Int32) {
+    switch param {
+    case 0: volume = value
+    case 1: fadeIn = value
+    default: fadeOut = value
+    }
+    mv_chrome_editor_set_sound(Int32(param), value, phase)
+  }
   func resetLight() { mv_chrome_editor_edit(29) }
   /// phase 0 starts a drag (one undo step), 1 moves it, 2 ends it.
   func setLight(_ param: Int, _ value: Float, phase: Int32) {
@@ -391,6 +410,7 @@ struct VideoEditorView: View {
       .help("Mirror and crop the whole clip")
       .accessibilityLabel("Mirror and crop")
       EditorLightButton(store: store)
+      EditorSoundButton(store: store)
       Button { store.saveFrame() } label: { Image(systemName: "camera") }
         .help("Save this frame as a photo (⇧⌘S)").accessibilityLabel("Save frame")
       Spacer(minLength: MVTheme.space(8))
@@ -743,5 +763,49 @@ struct EditorLightButton: View {
         .padding(MVTheme.space(14))
         .frame(width: 280)
       }
+  }
+}
+
+/// The edit's sound (docs/plans/video-editor-look.md slice 3): mute, volume
+/// and fades on the program's start and end. Playback hears them; Export
+/// exact writes them (Export on keyframes carries mute only).
+struct EditorSoundButton: View {
+  @ObservedObject var store: VideoEditorStore
+  @State private var shown = false
+
+  private func row(_ name: String, _ readout: String, _ value: Float, _ range: ClosedRange<Float>,
+                   _ step: Float, _ param: Int) -> some View {
+    VStack(alignment: .leading, spacing: MVTheme.space(2)) {
+      HStack {
+        Text(name).font(MVTheme.font(13))
+        Spacer()
+        Text(readout).font(MVTheme.font(12)).monospacedDigit()
+      }
+      Slider(value: Binding(get: { value }, set: { store.setSound(param, $0, phase: 1) }),
+             in: range, step: step) { editing in
+        store.setSound(param, value, phase: editing ? 0 : 2)
+      }
+      .accessibilityLabel(name)
+    }
+  }
+
+  var body: some View {
+    Button { shown.toggle() } label: {
+      Image(systemName: store.muted ? "speaker.slash" : "speaker.wave.2")
+    }
+    .help("Sound for the whole clip").accessibilityLabel("Sound")
+    .popover(isPresented: $shown, arrowEdge: .bottom) {
+      VStack(alignment: .leading, spacing: MVTheme.space(8)) {
+        Toggle("Mute", isOn: Binding(get: { store.muted }, set: { _ in store.toggleMute() }))
+        row("Volume", String(format: "%.0f %%", store.volume * 100), store.volume, 0...2, 0.05, 0)
+          .disabled(store.muted)
+        row("Fade in", String(format: "%.1f s", store.fadeIn), store.fadeIn, 0...5, 0.1, 1)
+          .disabled(store.muted)
+        row("Fade out", String(format: "%.1f s", store.fadeOut), store.fadeOut, 0...5, 0.1, 2)
+          .disabled(store.muted)
+      }
+      .padding(MVTheme.space(14))
+      .frame(width: 260)
+    }
   }
 }
