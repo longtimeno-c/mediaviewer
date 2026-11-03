@@ -268,6 +268,49 @@ mv_status MV_CALL t_watch(void* host, void(MV_CALL* cb)(void*, std::uint32_t, co
   });
 }
 
+void on_io_tree(void* user, std::uint32_t root, std::string_view dir, std::uint32_t flags) {
+  auto& t = *static_cast<host_table::tree_state*>(user);
+  void(MV_CALL* cb)(void*, std::uint32_t, const char*, std::uint32_t) = nullptr;
+  void* cb_user = nullptr;
+  {
+    std::lock_guard lock(t.m);
+    cb = t.cb;
+    cb_user = t.user;
+  }
+  if (!cb) return;
+  const std::string z(dir);
+  cb(cb_user, root, z.c_str(), flags);
+}
+
+mv_status MV_CALL t_watch_tree(void* host, const char* const* roots, uint32_t count,
+                               void(MV_CALL* cb)(void*, uint32_t, const char*, uint32_t), void* user,
+                               uint8_t* out_ok) {
+  return guarded([&] {
+    if (out_ok) std::fill(out_ok, out_ok + count, std::uint8_t{0});
+    if (count == 0 || !cb) {
+      self(host).stop_trees();
+      return MV_OK;
+    }
+    if (!roots) return MV_ERR_INVALID_ARG;
+    std::vector<std::string> list;
+    list.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) list.emplace_back(roots[i] ? roots[i] : "");
+    auto& t = self(host).trees;
+    std::lock_guard control(t.control);
+    {
+      std::lock_guard lock(t.m);
+      t.cb = cb;
+      t.user = user;
+    }
+    std::vector<bool> ok;
+    const auto started = t.watcher.start(list, &on_io_tree, &t, ok);
+    if (out_ok) {
+      for (uint32_t i = 0; i < count && i < ok.size(); ++i) out_ok[i] = ok[i] ? 1 : 0;
+    }
+    return started ? MV_OK : to_mv(started.error());
+  });
+}
+
 mv_status MV_CALL t_capture(void* host, const char* path, mv_addon_capture* out) {
   return guarded([&] {
     if (!path || !out) return MV_ERR_INVALID_ARG;
@@ -1421,11 +1464,27 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   if (svc_.write_still) api_.still_write = &t_still_write;
   api_.open_item = &t_open_item;
   if (svc_.route) api_.route_of = &t_route_of;  // #606
+  api_.watch_tree = &t_watch_tree;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }
 
-host_table::~host_table() { stop_watch(); }
+host_table::~host_table() {
+  stop_watch();
+  stop_trees();
+}
+
+void host_table::stop_trees() noexcept {
+  std::lock_guard control(trees.control);
+  {
+    std::lock_guard lock(trees.m);
+    trees.cb = nullptr;
+    trees.user = nullptr;
+  }
+  // Not under `m`: stop() drains the watcher thread, which may be inside
+  // on_io_tree waiting for `m`.
+  trees.watcher.stop();
+}
 
 void host_table::stop_watch() noexcept {
   std::lock_guard control(watch.control);
@@ -1465,9 +1524,12 @@ loaded_addon::~loaded_addon() {
   // The add-on stops its threads before its code goes away, and the host
   // table (whose thunks it calls) outlives both.
   if (api_.shutdown && api_.addon) api_.shutdown(api_.addon);
-  // An add-on that left its volume callback registered must not be called
-  // after its code is unmapped.
-  if (table_) table_->stop_watch();
+  // An add-on that left its volume or tree callback registered must not be
+  // called after its code is unmapped.
+  if (table_) {
+    table_->stop_watch();
+    table_->stop_trees();
+  }
   lib_.close();
   table_.reset();
 }

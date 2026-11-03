@@ -933,6 +933,22 @@ typedef struct mv_host_api {
    * only when `struct_size` covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* route_of)(void* host, const char* path_utf8, mv_addon_route_point* out, uint32_t capacity,
                                uint32_t* out_count);
+  /* ---- watching folder trees (docs/plans/index-watcher.md) ---------------------- */
+  /* [worker-thread] Watches `count` folder trees for the add-on, replacing the
+   * set it watched before; count 0 stops. `on_change` runs on the host's
+   * watcher thread and must not block: `root` indexes `roots_utf8`, `dir_utf8`
+   * is the folder whose listing changed (under that root, spelled from it).
+   * Flags: MV_ADDON_TREE_SUBTREE, everything below `dir_utf8` (a folder moved
+   * in, renamed or removed; or a name that may have been one, or is gone);
+   * MV_ADDON_TREE_OVERFLOW, events were lost: the whole root (`dir_utf8` is
+   * the root). out_ok (count bytes, may be NULL) is 0 for a root that could
+   * not be watched. Once a call returns, no callback of the old set runs.
+   * MV_ERR_IO: none could be watched. Appended after route_of: read it only
+   * when `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* watch_tree)(void* host, const char* const* roots_utf8, uint32_t count,
+                                 void(MV_CALL* on_change)(void* user, uint32_t root, const char* dir_utf8,
+                                                          uint32_t flags),
+                                 void* user, uint8_t* out_ok);
   /* ---- the Video Editor's cut (Enhance in the editor, ABI 0.35) ------------------ */
   /* [worker-thread] Keep only these source ranges of an open frames_open /
    * sound_open: `count` (in, out) pairs in nanoseconds on the player's
@@ -942,11 +958,14 @@ typedef struct mv_host_api {
    * is 0, each next range follows the last), so frames_read's pts and the
    * sound's sample count are the program's. MV_ERR_INVALID_ARG after a read
    * or for ranges as mv_slots_editor_item refuses them. Appended after
-   * route_of: read these two only when `struct_size` covers them and the
+   * watch_tree: read these two only when `struct_size` covers them and the
    * pointers are non-NULL. */
   mv_status(MV_CALL* frames_keep)(void* host, void* frames, const int64_t* ranges_ns, uint32_t count);
   mv_status(MV_CALL* sound_keep)(void* host, void* sound, const int64_t* ranges_ns, uint32_t count);
 } mv_host_api;
+
+#define MV_ADDON_TREE_SUBTREE 1u
+#define MV_ADDON_TREE_OVERFLOW 2u
 
 typedef struct mv_addon_api {
   uint32_t struct_size;

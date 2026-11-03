@@ -26,6 +26,7 @@
 #include "addon/slots.h"
 #include "addon/store.h"
 #include "core/result.h"
+#include "io/tree_watch.h"
 #include "io/volume.h"
 
 namespace mv::addon {
@@ -166,6 +167,16 @@ class host_table {
   // Unregisters the add-on's volume callback and stops the watcher; returns
   // only when no callback is running. Idempotent.
   void stop_watch() noexcept;
+  // watch_tree's folder trees (docs/plans/index-watcher.md).
+  struct tree_state {
+    std::mutex control;  // start / stop
+    std::mutex m;        // cb and user
+    io::tree_watcher watcher;
+    void(MV_CALL* cb)(void*, std::uint32_t, const char*, std::uint32_t) = nullptr;
+    void* user = nullptr;
+  };
+  tree_state trees;
+  void stop_trees() noexcept;
 
  private:
   host_services svc_;
