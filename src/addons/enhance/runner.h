@@ -15,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <thread>
 
@@ -35,8 +36,11 @@ struct run_port {
     std::function<expected(std::span<const float> interleaved)> write;
     std::function<result<std::string>()> finish;  // the new file's path; destroyed unfinished, nothing is left
   };
-  // [job thread] A file's sound at `rate`, its own channels.
-  std::function<result<reader>(const std::string& path, std::uint32_t rate)> open_sound;
+  // [job thread] A file's sound at `rate`, its own channels. `keep`: the
+  // Video Editor's kept source ranges ((in, out) ns pairs; empty: all of it),
+  // the sound then on the edit's own timeline.
+  std::function<result<reader>(const std::string& path, std::uint32_t rate, std::span<const std::int64_t> keep)>
+      open_sound;
   // [job thread] The new file beside `source`.
   std::function<result<writer>(const std::string& source, std::uint32_t rate, std::uint32_t channels)> create;
   // [job thread] The kind's model, from its weights in `models_dir`.
@@ -48,7 +52,8 @@ struct run_port {
   struct picture_reader {
     std::uint32_t width = 0, height = 0;
     bool hdr = false;
-    std::int64_t total_frames = 0;  // an estimate
+    std::int64_t total_frames = 0;  // an estimate, of the whole clip
+    std::int64_t duration_ms = 0;   // of the whole clip
     std::function<result<bool>(std::vector<std::uint8_t>& rgb, std::int64_t& pts_us)> next;
   };
   struct clip_writer {
@@ -56,7 +61,8 @@ struct run_port {
     std::function<expected(std::span<const float> interleaved)> sound;
     std::function<result<std::string>()> finish;
   };
-  std::function<result<picture_reader>(const std::string& path)> open_frames;
+  // `keep` as open_sound's: the frames' times are then the edit's.
+  std::function<result<picture_reader>(const std::string& path, std::span<const std::int64_t> keep)> open_frames;
   // `sound_rate` 0: the source's own sound is copied.
   std::function<result<clip_writer>(const std::string& source, std::uint32_t width, std::uint32_t height,
                                     std::uint32_t sound_rate, std::uint32_t sound_channels)>

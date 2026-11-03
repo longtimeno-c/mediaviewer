@@ -440,13 +440,13 @@ class Refusals(unittest.TestCase):
                 self.refused(signed(manifest, files), why)
 
     def test_screens_and_slots_and_the_app_agrees(self):
-        # #400: the host serves contribution API 10. Screens (4), the chrome
+        # #400: the host serves contribution API 11. Screens (4), the chrome
         # slots and search providers (5) are filled by code, which a stranger's
         # add-on cannot do yet: code_not_allowed from both, never malformed.
         files = {"themes/dusk.json": THEME}
         themes = [{"id": "dusk", "name": "Dusk", "path": "themes/dusk.json"}]
         points = [k for k, api in mvaddon.CONTRIBUTION_POINTS.items() if api >= mvaddon.SCREENS_API]
-        self.assertEqual(len(points), 8)  # screens and the seven slots
+        self.assertEqual(len(points), 9)  # screens, the seven slots and the editor (11)
         for point in points:
             for api in ({"min": 1, "max": mvaddon.API}, {"min": 5, "max": 5},
                         {"min": 1, "max": mvaddon.API + 5}):

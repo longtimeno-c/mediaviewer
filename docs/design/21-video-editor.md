@@ -14,7 +14,7 @@ download; it is built on the clip core ([08](08-video-editing.md)).
 │                     preview: the viewer's own canvas, moved into this window              │
 │                                                                                           │
 ├───────────────────────────────────────────────────────────────────────────────────────────┤
-│ ◁| ❚❚ |▷  0:07.57 / 0:10.70 │ Split  Delete  Mark in  Mark out  Trim start  Trim end │ Undo  Redo   Export  Export exact │ Done │
+│ ◁| ❚❚ |▷  0:07.57 / 0:10.70 │ Split  Delete  Mark in  Mark out  Trim start  Trim end │ Undo  Redo   Enhance… │ Export  Export exact │ Done │
 │ 0:00      0:01      0:02      0:03      0:04      0:05      0:06    ▼ 0:07      0:08      0:09   │
 │ [▣▣▣▣▣▣ piece 1 (thumbnails) ▣▣▣▣▣▣][▣▣▣▣ piece 2, selected ▣▣▣▣▣▣▣▣▣▣]                        │
 │ [∿∿∿∿∿∿∿ waveform ∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿][∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿∿]                        │
@@ -36,6 +36,7 @@ Scope: one clip, one video track and its audio, cuts only.
 | Mac timeline UI | `VideoEditorView.swift` |
 | Windows window, canvas hand-off, keys, playback follow | `main.cpp` (`set_editor_open`, `editor_window_proc`, `editor_key`, `editor_follow_playback`); `gfx/swapchain` `retarget`, `present_lab.cpp` |
 | Windows timeline island and the viewer's "away" card | `IslandHost.VideoEditor.cs` (`BuildEditorAway`), `chrome_host.h` |
+| Add-ons' buttons in the bar (`editor_items`: Enhance…) | `EditorAddonItems` (VideoEditorView.swift), `RebuildEditorAddons` (IslandHost.VideoEditor.cs); `mv_slots_editor_item` / `slot_registry::invoke_editor_item` |
 
 ## The cut list
 
@@ -82,7 +83,9 @@ prompt; *Keep editing* leaves both windows open.
 ## Timeline UI
 
 Transport, timecode (frames at the clip's rate), Split / Delete / Mark in / Mark out / Trim start /
-Trim end / Undo / Redo, Export / Export exact, Done. A ruler, one thumbnail track and one waveform
+Trim end / Undo / Redo, an add-on's buttons (`editor_items`, contribution API 11: Enhance… when
+Enhance is installed, [29](29-enhance.md) "In the Video Editor"; each gets the clip and the kept
+pieces, or the whole clip when nothing is cut, and writes a new file), Export / Export exact, Done. A ruler, one thumbnail track and one waveform
 per piece, a draggable playhead that snaps to joins and marks, piece selection, draggable piece
 edges (the preview shows the edge frame). On Mac the playhead is its own layer, so the thumbnail
 canvas does not redraw while playing, and the timeline stops polling when the window closes.

@@ -51,6 +51,7 @@ struct sheet_section {
 
 struct sheet_view {
   std::string file_name;     // shown, never logged (rule 6)
+  std::string edit;          // edit_text: the Video Editor's cut, or ""
   item_kind item = item_kind::unknown;
   bool has_picture = false;  // media: what the clip holds
   bool has_sound = false;
@@ -70,6 +71,10 @@ struct sheet_view {
   std::string status;        // "Saved as IMG_0001-enhance.m4a", or why it stopped
 };
 [[nodiscard]] std::string sheet_tree(const sheet_view& v);
+
+// The Video Editor's cut, in the sheet's words ("The edit from the Video
+// Editor: 3 pieces, 1:24 in all. …"); "" for the whole clip.
+[[nodiscard]] std::string edit_text(std::span<const std::int64_t> keep_ns);
 
 // The targets a clip offers, from what it holds.
 [[nodiscard]] std::vector<clip_target> targets_for(bool has_picture, bool has_sound);

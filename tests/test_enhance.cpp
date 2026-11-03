@@ -32,6 +32,8 @@
 
 #include "addons/ai/sha256.h"
 #include "addons/enhance/diffusion.h"
+#include "addon/keep_ranges.h"
+#include "addons/enhance/brighten.h"
 #include "addons/enhance/engine.h"
 #include "addons/enhance/picture_job.h"
 #include "addons/enhance/preview.h"
@@ -683,7 +685,7 @@ TEST_CASE("enhance: Enhance on an audio file runs the model and names the new fi
   std::atomic<bool> finished{false};
   std::atomic<std::uint64_t> free_memory{8ull << 30};
   run_port port;
-  port.open_sound = [&](const std::string& path, std::uint32_t rate) -> mv::result<run_port::reader> {
+  port.open_sound = [&](const std::string& path, std::uint32_t rate, std::span<const std::int64_t>) -> mv::result<run_port::reader> {
     CHECK(path == utf8(song));
     CHECK(rate == 48000u);
     run_port::reader r;
@@ -934,8 +936,10 @@ TEST_CASE("enhance: a clip's picture, and its sound too, through the runner", "[
   std::vector<written_frame> frames;
   std::vector<float> sound;
   std::uint32_t clip_w = 0, clip_h = 0, clip_rate = 0;
+  std::vector<std::int64_t> sound_keep, frames_keep;
   run_port port;
-  port.open_sound = [&](const std::string&, std::uint32_t) -> mv::result<run_port::reader> {
+  port.open_sound = [&](const std::string&, std::uint32_t, std::span<const std::int64_t> keep) -> mv::result<run_port::reader> {
+    sound_keep.assign(keep.begin(), keep.end());
     run_port::reader r;
     r.channels = 2;
     r.total_frames = 14'400;
@@ -956,7 +960,8 @@ TEST_CASE("enhance: a clip's picture, and its sound too, through the runner", "[
     return std::unique_ptr<frame_model>(new lag_model(480, 1440, 1.0f));
   };
   port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
-  port.open_frames = [&](const std::string&) -> mv::result<run_port::picture_reader> {
+  port.open_frames = [&](const std::string&, std::span<const std::int64_t> keep) -> mv::result<run_port::picture_reader> {
+    frames_keep.assign(keep.begin(), keep.end());
     run_port::picture_reader r;
     r.width = frame_w;
     r.height = frame_h;
@@ -1037,6 +1042,167 @@ TEST_CASE("enhance: a clip's picture, and its sound too, through the runner", "[
   f.eng->event(kSheetScreen, "k.video.scale", MV_SLOT_EVENT_CHANGE, "\"4\"");
   f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
   REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("larger than 4K") != std::string::npos; }));
+
+  // From the Video Editor: the edit's kept ranges reach both readers, and the
+  // open sheet moves to the edit at once.
+  frame_w = 40;
+  frame_h = 30;
+  f.eng->event(kSheetScreen, "k.video.scale", MV_SLOT_EVENT_CHANGE, "\"1\"");
+  const std::vector<std::int64_t> edit{0, 150'000'000, 250'000'000, 300'000'000};
+  f.eng->command({utf8(clip)}, edit);
+  CHECK(parsed(f.host.tree(kSheetScreen)).text("edit") ==
+        "The edit from the Video Editor: 2 pieces, 0:00 in all. The new clip is the edit, enhanced; the original is "
+        "not changed.");
+  // The picture alone: the cut clip's own sound cannot be copied whole, so it
+  // is read through the cut and written again, as it was.
+  frames.clear();
+  sound.clear();
+  f.eng->event(kSheetScreen, "target", MV_SLOT_EVENT_CHANGE, "\"picture\"");
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as") != std::string::npos; }));
+  CHECK(frames_keep == edit);
+  CHECK(sound_keep == edit);
+  CHECK(clip_rate == 48000u);
+  REQUIRE(sound.size() == pcm.size());
+  CHECK(sound[777] == pcm[777]);  // not run through the sound model
+  // The sound alone: its picture is written again, unchanged, at its own size.
+  frames.clear();
+  sound.clear();
+  f.eng->event(kSheetScreen, "target", MV_SLOT_EVENT_CHANGE, "\"sound\"");
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as") != std::string::npos; }));
+  CHECK(clip_w == 40u);
+  CHECK(frames.size() == 3u);
+  REQUIRE(sound.size() == pcm.size());
+  CHECK(near(sound[777], pcm[777]));
+  // The context entry again: the whole clip, no edit.
+  f.eng->command({utf8(clip)});
+  CHECK_FALSE(parsed(f.host.tree(kSheetScreen)).has("edit"));
+}
+
+// ---- the Video Editor's cut and Brighten dark scenes (2026-11-02) ------------------
+
+TEST_CASE("enhance: the Video Editor's kept ranges, on frames and samples", "[enhance][edit]") {
+  mv::addon::keep_ranges k;
+  CHECK_FALSE(k.set(std::vector<std::int64_t>{0, 10, 5}));         // odd
+  CHECK_FALSE(k.set(std::vector<std::int64_t>{0, 10, 5, 20}));     // overlapping
+  CHECK_FALSE(k.set(std::vector<std::int64_t>{10, 10}));           // empty
+  CHECK_FALSE(k.active());
+  REQUIRE(k.set(std::vector<std::int64_t>{1'000'000'000, 2'000'000'000, 5'000'000'000, 5'500'000'000}));
+  CHECK(k.kept_ns() == 1'500'000'000);
+  CHECK_FALSE(k.program_of(999'999'999));
+  CHECK(k.program_of(1'000'000'000) == 0);
+  CHECK(k.program_of(1'999'999'999) == 999'999'999);
+  CHECK_FALSE(k.program_of(2'000'000'000));  // out is exclusive
+  CHECK(k.program_of(5'250'000'000) == 1'250'000'000);
+  CHECK_FALSE(k.past_end(5'499'999'999));
+  CHECK(k.past_end(5'500'000'000));
+
+  // Sound at 1 kHz from 0 s, one channel: sample i is i / 1000 s, and holds i.
+  std::vector<float> pcm(6000);
+  for (std::size_t i = 0; i < pcm.size(); ++i) pcm[i] = static_cast<float>(i);
+  std::vector<float> out;
+  // In two reads, split inside the first range: nothing is lost or repeated.
+  k.keep_sound(std::span<const float>(pcm).first(1500), 0, 0, 1000, 1, out);
+  k.keep_sound(std::span<const float>(pcm).subspan(1500), 1500, 0, 1000, 1, out);
+  REQUIRE(out.size() == 1500u);
+  CHECK(out[0] == 1000.0f);
+  CHECK(out[999] == 1999.0f);
+  CHECK(out[1000] == 5000.0f);
+  CHECK(out[1499] == 5499.0f);
+
+  // Sound that starts after the first range does: the gap is silence, so the
+  // edit's sound still lines up with its pictures.
+  REQUIRE(k.set(std::vector<std::int64_t>{0, 1'000'000'000}));
+  out.clear();
+  k.keep_sound(std::span<const float>(pcm).first(2000), 0, 200'000'000, 1000, 1, out);
+  REQUIRE(out.size() == 1000u);
+  CHECK(out[199] == 0.0f);
+  CHECK(out[200] == 0.0f);  // the source's sample 0
+  CHECK(out[201] == 1.0f);
+  CHECK(out[999] == 799.0f);
+
+  // Stereo, and a range edge between samples (ceil: the first sample at or after it).
+  REQUIRE(k.set(std::vector<std::int64_t>{1'500'000, 3'000'000}));
+  std::vector<float> st{0, 0, 1, -1, 2, -2, 3, -3, 4, -4};
+  out.clear();
+  k.keep_sound(st, 0, 0, 1000, 2, out);
+  CHECK(out == std::vector<float>{2, -2});
+}
+
+namespace {
+std::vector<std::uint8_t> flat_rgb(std::uint32_t w, std::uint32_t h, std::uint8_t v) {
+  return std::vector<std::uint8_t>(std::size_t{w} * h * 3, v);
+}
+}  // namespace
+
+TEST_CASE("enhance: Brighten dark scenes lifts dark ones, leaves lit ones, and follows the scenes", "[enhance][edit]") {
+  // The curve: a lift of g at black, never past white, monotonic.
+  CHECK(brighten_curve(0.0, 3.0) == 0.0);
+  CHECK(near(brighten_curve(1.0, 3.0), 1.0));
+  CHECK(std::fabs(brighten_curve(0.01, 3.0) - 0.0294) < 1e-3);
+  for (double x = 0; x < 1; x += 0.01) CHECK(brighten_curve(x + 0.01, 4.0) > brighten_curve(x, 4.0));
+  CHECK(brighten_of("some") == brighten_amount::some);
+  CHECK(brighten_of("more") == brighten_amount::more);
+  CHECK(brighten_of("bright") == brighten_amount::off);
+
+  const std::uint32_t w = 64, h = 36;
+  std::vector<std::uint8_t> out;
+  {
+    // Off: the frame as it was.
+    brightener off(brighten_amount::off);
+    const auto dark = flat_rgb(w, h, 20);
+    (void)off.apply(dark, w, h, 0, out);
+    CHECK(out == dark);
+  }
+  {
+    // A lit scene (sRGB 140, about 0.26 linear): left alone.
+    brightener b(brighten_amount::more);
+    const auto lit = flat_rgb(w, h, 140);
+    const brighten_fit fit = b.apply(lit, w, h, 0, out);
+    CHECK(near(fit.gain, 1.0));
+    CHECK(out == lit);
+  }
+  {
+    // A night scene (sRGB 30, about 0.013 linear): lifted, more for "more",
+    // capped, and never clipped.
+    brightener some(brighten_amount::some), more(brighten_amount::more);
+    const auto night = flat_rgb(w, h, 30);
+    const brighten_fit fs = some.apply(night, w, h, 0, out);
+    const std::uint8_t lifted_some = out[0];
+    const brighten_fit fm = more.apply(night, w, h, 0, out);
+    CHECK(fs.cut);  // the first frame sets the gain at once
+    CHECK(near(fs.gain, 3.0));
+    CHECK(near(fm.gain, 6.0));
+    CHECK(lifted_some > 30);
+    CHECK(out[0] > lifted_some);
+    CHECK(out[0] < 255);
+  }
+  {
+    // Within one scene the gain eases (no jump when a light passes); at a cut
+    // it moves at once.
+    brightener b(brighten_amount::more);
+    std::vector<std::uint8_t> frame = flat_rgb(w, h, 30);
+    (void)b.apply(frame, w, h, 0, out);
+    // A light in a quarter of the frame: the scene is brighter, the same scene.
+    for (std::uint32_t y = 0; y < h / 2; ++y) {
+      for (std::uint32_t x = 0; x < w / 2; ++x) {
+        for (int c = 0; c < 3; ++c) frame[(std::size_t{y} * w + x) * 3 + c] = 200;
+      }
+    }
+    const brighten_fit eased = b.apply(frame, w, h, 33'333, out);
+    CHECK_FALSE(eased.cut);
+    CHECK(eased.target < 6.0);
+    CHECK(eased.gain > eased.target);  // still most of the way back at the old gain
+    CHECK(eased.gain < 6.0);
+    // Half a second later of the same frame: most of the way there.
+    const brighten_fit later = b.apply(frame, w, h, 533'333, out);
+    CHECK(std::abs(std::log(later.gain / later.target)) < std::abs(std::log(eased.gain / eased.target)) * 0.5);
+    // A cut to a lit scene: at once.
+    const brighten_fit cut = b.apply(flat_rgb(w, h, 150), w, h, 566'666, out);
+    CHECK(cut.cut);
+    CHECK(near(cut.gain, 1.0));
+  }
 }
 
 // ---- slice 3: a photo --------------------------------------------------------------
@@ -1161,7 +1327,7 @@ TEST_CASE("enhance: a clip's run shows a glowing preview, held still once it end
   std::atomic<int> allowed{1};
   run_port port;
   port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
-  port.open_frames = [&](const std::string&) -> mv::result<run_port::picture_reader> {
+  port.open_frames = [&](const std::string&, std::span<const std::int64_t>) -> mv::result<run_port::picture_reader> {
     run_port::picture_reader r;
     r.width = 40;
     r.height = 30;
