@@ -236,13 +236,56 @@ Where it lives: the AI pack has the detector and `faces.db`; the edit core does 
 same detector; its **manual** brush (click a pupil, desaturate the red disc) is classical and goes
 in slice 3 in the core.
 
+### 7. Remove: brush over it, the background filled in (owner go-ahead 2026-11-03)
+
+Restyle cannot remove things ("remove the rocks" tints them). The owner asked for removal on
+2026-11-03, with the same go-ahead for a Restyle **Quality** choice (built: Standard 512, High
+768, Best 1024 px, [29](../design/29-enhance.md) "Restyle"; the owner: render time is of little
+concern).
+
+**Model: LaMa** (Suvorov et al., big-lama), Apache-2.0. The ONNX port `Carve/LaMa-ONNX` @
+`c3c0c9e4`, `lama_fp32.onnx` (208,044,816 bytes, SHA-256 `1faef530…68d6`, opset 17, fixed
+512 × 512 input: image + mask → image), the authors' recommended file. **The download needs the
+owner's OK first** (named here; nothing fetched yet). LaMa fills from the surroundings (no words, no
+new objects), built for large masks and repeating texture; to be judged on real photos in the
+spike before the host halves start.
+
+The flow:
+
+1. **Edit → Remove** (a tool in the Adjust pane, key in [16](../design/16-commands.md)): a round
+   brush, size on `[` / `]`, paints a mask over the canvas. The mask is drawn by the canvas's own
+   shader as an overlay (HLSL + MSL twins; a GLSL twin kept hostable), at screen resolution, mapped
+   to image space through the view transform; an undo step per stroke. Presents only while a stroke
+   is moving; a still with the brush on presents nothing.
+2. **Remove** sends the photo and the mask to Enhance, which owns the model (a new kind,
+   `remove`, downloaded on request like Restyle; `cpu: true` — LaMa at 512 px is about a second on
+   a CPU, so Windows runs it too). A new host-table row hands the add-on the mask (8-bit, image
+   size) beside `full_still`.
+3. **Crop, fill, paste back:** the mask's bounding box, grown by its own size for context
+   (at least 256 px), cropped from the **full-resolution** photo; scaled to 512 × 512 (down for a
+   large object, up for a small one), filled, scaled back; only the masked pixels pasted in,
+   feathered over a few pixels. Everything outside the grown box is the original's pixels. A box
+   larger than about 2× 512 runs a second pass at the full crop's resolution on 512 tiles over the
+   mask (fine texture in large fills), measured before it is kept.
+4. A new file, `<stem>-removed.jpg`, like every Enhance run. The original is never written.
+
+Not in this slice: **tap to select** a person or object (a segmentation model, a download of its
+own; People's face boxes are not person masks), and words ("remove the person"), which need it.
+
+Verify (both hosts): brush over an object, Remove writes `<stem>-removed.jpg` whose pixels outside
+the grown box decode equal to the original's same encode, and the masked area is filled; the
+hidden `[.remove-model]` case fills a test hole with the real LaMa and scores the fill against the
+untouched picture; the Windows PR 1 and Mac PR 1 gates hold, and a still with the brush on presents
+0 frames.
+
 ## Order
 
 1 → 2 → 3 → 4 are independent of the owner calls and each ships alone. 5a can run beside them.
 5b's parser after slice 2 (it needs the sliders it drives). 6 after owner call 1 and the eye-state
-spike. 5b's generative layer after owner call 2 and its spike.
+spike. 5b's generative layer after owner call 2 and its spike. 7 after the owner OKs LaMa's download.
 
 ## Not in this plan
 
-Masks, brushes, gradients, healing and clone (a local-adjustments plan of its own); presets and
+Gradients, healing and clone, and masked adjustments (a local-adjustments plan of its own; slice 7's
+brush is for removal only); presets and
 filters; persisting the stack; HDR output; redo and history (owed in [07](../design/07-photo-editing.md)).
