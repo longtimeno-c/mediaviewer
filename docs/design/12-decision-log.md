@@ -1667,6 +1667,20 @@ calls, each because the alternative measured or reasoned worse:
 
 ---
 
+**Local search watches its folders; the full walk becomes a backstop (2026-11-02, owner; docs/plans/index-watcher.md).**
+[17](17-local-ai-search.md) said folder roots had a watcher, but the pack had none: a file added
+to an indexed folder waited for the next full walk of every root (every 15 minutes) unless the
+viewer opened its folder, and a OneDrive file made available offline waited the same. The host
+now watches each enabled, unheld folder root's tree (`watch_tree`, `io::tree_watcher`) and the
+pack walks only the folders it names. **Budget change:** a root the host watches is walked whole
+once an hour instead of every 15 minutes; a root it could not watch, and one on a network share,
+keep 15 minutes. **Photos:** an iCloud-only asset first seen this session is asked again at each
+change notice, not only at the next launch; the launch check of every iCloud-only asset is
+unchanged (asking all ~4,000 on each change was the cost rejected before). **Not changed:**
+nothing is noticed before the pack loads (#292), and a held root is not watched (#299).
+**Not measured:** idle CPU with watched roots, and the PR 1 gates during a large copy into a
+watched root, on either platform; the Windows watcher has been compiled only by CI.
+
 ## Final Cut Pro search (Mac)
 
 **Mac-only, over a shared reader (2026-09-28).** FCP is Mac-only, so the extension and agent have

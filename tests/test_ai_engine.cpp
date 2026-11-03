@@ -690,6 +690,8 @@ struct walk2_ctx {
 };
 std::mutex g_walks_m;
 std::map<void*, std::pair<decltype(mv_host_api::walk_files2), cloud_world*>> g_walks;  // by host
+// Every walk the engine asked for: (folder, depth) (docs/plans/index-watcher.md).
+std::vector<std::pair<std::string, int>> g_walk_log;
 
 int32_t MV_CALL flag_cloud(void* user, const mv_addon_file_entry2* e) {
   auto* c = static_cast<walk2_ctx*>(user);
@@ -707,6 +709,7 @@ mv_status MV_CALL walk2_with_cloud(void* host, const char* root, int32_t depth, 
     if (it == g_walks.end()) return MV_ERR_INTERNAL;
     real = it->second.first;
     world = it->second.second;
+    g_walk_log.emplace_back(root ? root : "", depth);
   }
   walk2_ctx c{world, visit, user};
   return real(host, root, depth, &flag_cloud, &c);
@@ -1104,6 +1107,8 @@ struct rig {
     };
     d.photos = [this] { return std::unique_ptr<mv::ai::photos_source>(new fake_photos(library)); };
     d.photos_rescan_gap_s = 0;
+    d.tree_quiet_s = 0.05;  // docs/plans/index-watcher.md: the host's watch, walked at once
+    d.tree_max_wait_s = 0.5;
     d.cloud = [this] { return std::unique_ptr<mv::ai::cloud_files>(new fake_cloud(cloud)); };
     d.pdf = [this]() -> std::unique_ptr<mv::ai::pdf_reader> {
       if (!pdf_available) return nullptr;
@@ -1366,6 +1371,102 @@ TEST_CASE("an edited file is re-queued and a reopened tree queues only its delta
   REQUIRE(r.eng->root_rescan(1));
   REQUIRE(r.idle());
   CHECK(r.search("red").size() == 1);
+}
+
+// docs/plans/index-watcher.md: the host watches a remembered folder's tree,
+// and the engine walks only the folders it says changed: a file added deep
+// down, a file removed, a folder moved in. No rescan and no folder opened.
+TEST_CASE("a watched folder finds new, removed and moved-in files on its own", "[ai][engine][watch]") {
+  rig r;
+  r.file("a/b/red_1.jpg");
+  r.file("c/blue_2.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  REQUIRE(r.search("red").size() == 1);
+  {
+    const auto roots = mv::json::parse(r.eng->roots_json());
+    REQUIRE(roots);
+    REQUIRE(roots->a.size() == 1);
+#if defined(_WIN32) || defined(__APPLE__)
+    CHECK(roots->a[0].boolean("watching").value_or(false));
+#else
+    // No tree watch on Linux yet (tree_watch_none.cpp): the 15-minute walk.
+    CHECK_FALSE(roots->a[0].boolean("watching").value_or(true));
+    SKIP("no tree watch on this OS");
+#endif
+  }
+  const auto eventually = [&](const std::function<bool()>& done) {
+    for (int i = 0; i < 300; ++i) {
+      if (done()) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return done();
+  };
+  const auto walks_since = [](std::size_t from) {
+    std::lock_guard lock(g_walks_m);
+    return std::vector<std::pair<std::string, int>>(g_walk_log.begin() + static_cast<std::ptrdiff_t>(from),
+                                                    g_walk_log.end());
+  };
+  const auto walk_count = [] {
+    std::lock_guard lock(g_walks_m);
+    return g_walk_log.size();
+  };
+  const int decoded = r.stills_decoded.load();
+
+  // A new file three folders down: its folder alone is walked.
+  std::size_t mark = walk_count();
+  r.file("a/b/green_3.jpg");
+  REQUIRE(eventually([&] { return r.idle() && r.search("green").size() == 1; }));
+  CHECK(r.stills_decoded.load() == decoded + 1);
+  for (const auto& [dir, depth] : walks_since(mark)) {
+    CHECK(fs::path(dir).filename() == "b");
+    CHECK(depth == 0);
+  }
+
+  // A file removed leaves the results.
+  fs::remove(r.photos() / "c/blue_2.jpg");
+  REQUIRE(eventually([&] { return r.idle() && r.status().assets_total == 2; }));
+
+  // A folder moved in from outside the root: everything in it is found.
+  const fs::path outside = r.dir / "elsewhere";
+  write_bytes(outside / "trip/red_4.jpg", pattern(16, 7));
+  write_bytes(outside / "trip/day2/blue_5.jpg", pattern(16, 7));
+  fs::rename(outside / "trip", r.photos() / "trip");
+  REQUIRE(eventually([&] { return r.idle() && r.status().assets_total == 4; }));
+  CHECK(r.search("red").size() == 2);
+
+  // ... and a folder moved out takes its files with it.
+  fs::rename(r.photos() / "trip", outside / "trip");
+  REQUIRE(eventually([&] { return r.idle() && r.status().assets_total == 2; }));
+  CHECK(r.search("red").size() == 1);
+}
+
+TEST_CASE("a paused or turned-off folder is not watched", "[ai][engine][watch]") {
+  rig r;
+  r.file("red_1.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  REQUIRE(r.eng->root_set_enabled(1, false));
+  REQUIRE(r.idle());
+  const auto watching = [&] {
+    const auto roots = mv::json::parse(r.eng->roots_json());
+    REQUIRE(roots);
+    return roots->a[0].boolean("watching").value_or(true);
+  };
+  for (int i = 0; i < 100 && watching(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  CHECK_FALSE(watching());
+  std::size_t before = 0;
+  {
+    std::lock_guard lock(g_walks_m);
+    before = g_walk_log.size();
+  }
+  r.file("green_2.jpg");
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  REQUIRE(r.idle());
+  std::lock_guard lock(g_walks_m);
+  CHECK(g_walk_log.size() == before);  // nothing walked it
 }
 
 // Issue #299: a root left part-way by a quit is held at the next start (when
@@ -5043,6 +5144,38 @@ TEST_CASE("an iCloud-only asset is tried again after a restart and indexes once 
   // its poster row stayed, and nothing was re-embedded for it.
   CHECK(has_row(r.answered("red"), "photos:red-cloudclip"));
   CHECK(r.library->stills == posters + 2);  // the photo: the launch check, then its embedding
+}
+
+// docs/plans/index-watcher.md: a photo taken on the phone reaches the
+// library only in iCloud; when Photos brings it down later that session its
+// date and size are the same, so the change notice asks again about it alone
+// (not every iCloud-only asset in the library, and not only at the next launch).
+TEST_CASE("an iCloud-only asset that arrives this session indexes when Photos downloads it",
+          "[ai][engine][photos][watch]") {
+  rig r;
+  r.library->items = {{"red-old", 1, mv::ai::asset_kind::photo, false, ""}};  // in iCloud since before
+  r.start();
+  REQUIRE(r.eng->index_photos_library());
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_unavailable == 1);
+  {
+    std::lock_guard lock(r.library->m);
+    r.library->items.push_back({"blue-new", 1, mv::ai::asset_kind::photo, false, ""});  // taken on the phone
+  }
+  r.library->notify();
+  REQUIRE(eventually([&] { return r.status().assets_unavailable == 2; }));
+  REQUIRE(r.idle());
+  const int asked = r.library->stills;
+  {
+    std::lock_guard lock(r.library->m);
+    r.library->items[1].local = true;  // Photos downloaded it
+  }
+  r.library->notify();
+  REQUIRE(eventually([&] { return r.status().assets_unavailable == 1 && r.status().assets_done == 1; }));
+  REQUIRE(r.idle());
+  CHECK(has_row(r.answered("blue"), "photos:blue-new"));
+  // The new asset was asked about and embedded; the old one was never asked.
+  CHECK(r.library->stills == asked + 2);
 }
 
 TEST_CASE("the opt-in iCloud fetch downloads iCloud-only clips, indexes them, then deletes the files",

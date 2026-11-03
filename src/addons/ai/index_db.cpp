@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <set>
 
 namespace mv::ai {
 namespace {
@@ -644,6 +645,46 @@ result<std::vector<std::int64_t>> index_db::end_scan(std::int64_t root, std::int
   stmt d(db_, "DELETE FROM assets WHERE root_id = ?1 AND seen != ?2");
   if (!d.bind(1, root).bind(2, generation).run()) return err(status::io);
   return gone;
+}
+
+result<std::vector<std::int64_t>> index_db::end_scan_dirs(std::int64_t root, std::int64_t generation,
+                                                         const std::vector<std::string>& dirs,
+                                                         const std::vector<std::string>& trees) {
+  std::lock_guard lock(m_);
+  std::set<std::int64_t> gone;
+  // A range on the path (UNIQUE, so indexed) per folder and separator: the
+  // host spells paths with either, and the next character up bounds it.
+  stmt q(db_, "SELECT id, path FROM assets WHERE root_id = ?1 AND seen != ?2 AND path > ?3 AND path < ?4");
+  const auto collect = [&](const std::string& dir, bool deep) {
+    for (const char sep : {'/', '\\'}) {
+      std::string lo = dir;
+      while (lo.size() > 1 && (lo.back() == '/' || lo.back() == '\\')) lo.pop_back();
+      std::string hi = lo;
+      lo.push_back(sep);
+      hi.push_back(static_cast<char>(sep + 1));
+      q.reset();
+      q.bind(1, root).bind(2, generation).bind(3, lo).bind(4, hi);
+      while (q.step_row()) {
+        const std::string path = q.text(1);
+        if (!deep && path.find_first_of("/\\", lo.size()) != std::string::npos) continue;
+        gone.insert(q.i64(0));
+      }
+    }
+  };
+  for (const std::string& d : dirs) collect(d, false);
+  for (const std::string& t : trees) collect(t, true);
+  if (gone.empty()) return std::vector<std::int64_t>{};
+  if (!exec("BEGIN")) return err(status::io);
+  stmt d(db_, "DELETE FROM assets WHERE id = ?1");
+  for (const std::int64_t id : gone) {
+    d.reset();
+    if (!d.bind(1, id).run()) {
+      (void)exec("ROLLBACK");
+      return err(status::io);
+    }
+  }
+  if (!exec("COMMIT")) return err(status::io);
+  return std::vector<std::int64_t>(gone.begin(), gone.end());
 }
 
 // The assets a track covers (track_filter), as SQL over `a` and `r`. An audio

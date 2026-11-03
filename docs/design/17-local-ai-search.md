@@ -359,8 +359,34 @@ People live in a separate `faces.db`; the label bars in `labels.f32`;
 the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model and piece).
 
 - **Folder roots persist.** Indexing a folder (with its subfolders) writes a `roots` row.
-  Reopening the app or the folder does not rebuild it: a watcher plus a startup delta scan
-  queues only new, changed or removed assets. Each root can be paused, rescanned or removed.
+  Reopening the app or the folder does not rebuild it: a startup delta scan, then the host's
+  watch, queue only new, changed or removed assets. Each root can be paused, rescanned or removed.
+- **The host watches each folder root (2026-11-02, [12](12-decision-log.md)).** The pack asks the
+  host to watch every enabled folder root that is not held (`watch_tree`, appended to the host
+  table; [14](14-abi.md)). The host's `io::tree_watcher` (`src/io/tree_watch.h`) watches the
+  whole tree and names the folder whose listing changed:
+  - **Windows** (`tree_watch_win.cpp`): `ReadDirectoryChangesW` over the subtree, every root on
+    one thread and one completion port. Attributes are watched too, which is how OneDrive making
+    a file available offline (or freeing it) shows. A new name is asked whether it is a folder
+    (a folder moved in from outside the tree is one name, with nothing for what is inside).
+  - **Mac** (`tree_watch_mac.cpp`): one FSEvents stream over every root, with file events and a
+    0.5 s latency, on a private serial queue. Paths come back under each root as it was given
+    (FSEvents reports `/private/var` for `/var`).
+  - **Linux:** no watch yet (`tree_watch_none.cpp` watches nothing), so a root there keeps the
+    15-minute walk.
+
+  The pack notes each folder (`on_tree_change`, on the host's thread) and the control thread walks
+  them once the changes have been quiet for 2 s, or 10 s after the first during a long copy
+  (`engine_deps::tree_quiet_s` / `tree_max_wait_s`). A changed folder's own files are walked
+  (`scan_dirs`, `walk_files2` at depth 0, the same pairing as a full walk); a folder that came,
+  was renamed or may have gone is walked to the root's depth, or, gone, takes its rows with it
+  (`index_db::end_scan_dirs` removes only rows under walked folders). More than 64 folders, or
+  lost events (`MV_ADDON_TREE_OVERFLOW`), and the root is walked whole. A held root is not
+  watched: Resume walks it whole. A root on a network share is watched but keeps the 15-minute
+  walk (a server can stop telling without an error); every other watched root is walked whole
+  once an hour as a backstop, and an unwatched one every 15 minutes, as before. `roots_json`
+  says `"watching"`; Settings' folder row says "new files found every 15 minutes" when it is
+  false. Not changed: nothing is noticed before the pack loads (#292, below).
 - Keyed like the thumbnail cache: change `(path, mtime, size)` or the model `spec` and the row
   is stale and re-queued. No content hashing.
 - Result tiles are the existing **JPEG-512 cache**; moment thumbnails are stored there as
@@ -1432,6 +1458,10 @@ as Photos shows it, colour-matched to sRGB). A clip is sampled from its local fi
 - An iCloud-only clip is found by its local poster, stored as one row at 0 ms.
 - Once per launch, and when access returns, each is asked whether it is on this Mac now; only
   those that are go back to pending. The People pass treats them the same way.
+- One that first appeared this session (a photo taken on the phone, arrived only in iCloud) is
+  asked again at each change notice too (2026-11-02): when Photos downloads it, its
+  `(modificationDate, pixel count)` stays the same, so the re-enumeration alone would not
+  re-queue it until the next launch. Only these are asked; the library's first walk notes none.
 
 **Downloading iCloud-only clips (opt-in, 2026-10-05).** Settings → Photos Library → *Download
 iCloud videos to index them* (`"icloud_videos"`, off by default; [12](12-decision-log.md)). The

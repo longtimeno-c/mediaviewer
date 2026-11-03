@@ -849,6 +849,15 @@ owed: [docs/design/17](design/17-local-ai-search.md); the Mac checklist is
    old wait of up to 5 s, `--quit-hash` re-verifies the pack meanwhile as Settings does, and a
    larger `--quit-after` quits once the pack is idle.
 
+**Indexed folders are watched** (docs/design/17 "The host watches each folder root"). New,
+removed and moved-in files are found without a rescan. Tests, no pack needed:
+`mv_tests "[tree_watch]"` (the host's `io::tree_watcher`, on real files) and
+`mv_ai_tests "[watch]"` (the engine through the real host table: a file added three folders
+down walks only its folder; removed files and folders moved in or out; a paused folder is not
+watched; a Photos asset that came only in iCloud this session indexes once Photos downloads it).
+In the app, with a sideloaded pack: index a folder, copy a photo into a subfolder of it, and
+search for it within a few seconds without opening that folder.
+
 **An unfinished index waits for Resume** (issue #299; docs/design/17 "Unfinished roots wait for
 Resume"). A root left mid-index is held at the next start, and the window asks "Resume indexing
 …?" in a bottom-right notice without loading the pack. Tests, no pack needed:
