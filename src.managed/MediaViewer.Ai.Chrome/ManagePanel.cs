@@ -974,7 +974,8 @@ internal sealed partial class ManagePanel
     // Held (issue #299): left unfinished last session, it waits for Resume.
     private sealed record RootRow(ulong Id, string Path, bool Recursive, bool Enabled, long Assets, long Done, long Bytes,
                                   MvAiMedia Media, bool Scanning, long CloudOnly, bool Unreadable, long LastScan,
-                                  bool Held, long Audio, MvAiDocs Docs, long Documents, long DocumentsDone);
+                                  bool Held, long Audio, MvAiDocs Docs, long Documents, long DocumentsDone,
+                                  bool Watching);
 
     // #355: the Settings line under "Audio files". Indexed only while File
     // types "Show audio files" is on; then by their tags and cover art.
@@ -1019,7 +1020,9 @@ internal sealed partial class ManagePanel
                         r.TryGetProperty("docs", out JsonElement ds) && ds.GetUInt32() <= 3
                             ? (MvAiDocs)ds.GetUInt32() : MvAiDocs.Default,
                         r.TryGetProperty("documents", out JsonElement dn) ? dn.GetInt64() : 0,
-                        r.TryGetProperty("documents_done", out JsonElement dd) ? dd.GetInt64() : 0));
+                        r.TryGetProperty("documents_done", out JsonElement dd) ? dd.GetInt64() : 0,
+                        // docs/plans/index-watcher.md: absent (an older pack) claims nothing.
+                        !r.TryGetProperty("watching", out JsonElement wt) || wt.ValueKind != JsonValueKind.False));
                 }
             }
             catch (Exception ex) when (ex is MediaViewerException or JsonException or KeyNotFoundException
@@ -1091,6 +1094,9 @@ internal sealed partial class ManagePanel
                 state += r.Documents == 1 ? " · 1 document" : $" · {r.Documents:N0} documents";
                 if (r.DocumentsDone < r.Documents) state += $" ({r.DocumentsDone:N0} read)";
             }
+            // docs/plans/index-watcher.md: no watch (the drive refused it), so
+            // only the 15-minute walk finds what lands here.
+            if (r.Enabled && !r.Held && !r.Watching && !r.Unreadable) state += " · new files found every 15 minutes";
             labels.Children.Add(_look.Text((r.Recursive ? "and subfolders · " : "") + state + " · " + MediaViewer.Shared.ByteSize.Text(r.Bytes), 12,
                 r.Unreadable ? AddonColour.Accent : AddonColour.Body));
             // Paused folders' bars are quiet (the Mac tints them secondary).

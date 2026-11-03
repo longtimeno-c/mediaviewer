@@ -726,6 +726,9 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 // 3 ready (mv_chrome_bridge.h).
 - (int32_t)updatePhase;
 - (NSString*)updateVersion;
+// #620: the staged update's "What's new" (the appcast item's signed plain-text
+// description, up to three lines); nil when it carries none.
+- (NSString*)updateNotes;
 - (void)restartToUpdate;
 // An add-on update waits on a restart (mv_chrome_restart_for_addons).
 - (void)restartForAddons;
@@ -2007,6 +2010,12 @@ extern "C" bool mv_chrome_update_version(char* out, int32_t cap) {
   if (v.length == 0) return false;
   return [v getCString:out maxLength:static_cast<NSUInteger>(cap) encoding:NSUTF8StringEncoding];
 }
+extern "C" bool mv_chrome_update_notes(char* out, int32_t cap) {
+  if (!g_chrome_app || !out || cap <= 0) return false;
+  NSString* n = [g_chrome_app updateNotes];
+  if (n.length == 0) return false;
+  return [n getCString:out maxLength:static_cast<NSUInteger>(cap) encoding:NSUTF8StringEncoding];
+}
 extern "C" void mv_chrome_restart_to_update(void) {
   if (g_chrome_app) [g_chrome_app restartToUpdate];
 }
@@ -3251,6 +3260,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // while Sparkle is in that step; ready while _installUpdateNow is held.
   int32_t _updateActivity;  // 0 idle, 1 checking, 2 downloading
   NSString* _updateVersionShown;
+  NSString* _updateNotesShown;  // #620: -updateNotes
   // The preview channel's appcast: the newest release's, stable or not
   // (-resolveFeedThenCheck:). nil = Info.plist SUFeedURL, the stable feed.
   NSString* _previewFeedURL;
@@ -6736,6 +6746,14 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
 #endif
 }
 
+- (NSString*)updateNotes {
+#if MV_WITH_SPARKLE
+  return _installUpdateNow != nil ? _updateNotesShown : nil;
+#else
+  return nil;
+#endif
+}
+
 - (void)restartToUpdate {
 #if MV_WITH_SPARKLE
   if (!_installUpdateNow) return;
@@ -6828,6 +6846,20 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
 }
 
 #if MV_WITH_SPARKLE
+// #620: "What's new" is the appcast item's description, which the feed's EdDSA
+// signature covers and which arrived with the feed (the release embeds it;
+// tools/mac/macpack.py refuses a releaseNotesLink, so nothing else is fetched).
+// Only plain text is shown, and only within the rule the Windows manifest
+// applies (tools/package/whats_new.py): up to three lines, 400 bytes.
+static NSString* MvUpdateNotes(SUAppcastItem* item) {
+  NSString* text = item.itemDescription;
+  if (text.length == 0 || ![item.itemDescriptionFormat isEqualToString:@"plain-text"]) return nil;
+  text = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (text.length == 0 || [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > 400) return nil;
+  if ([text componentsSeparatedByString:@"\n"].count > 3) return nil;
+  return text;
+}
+
 // Sparkle has a verified update staged. YES = we own the timing: nothing
 // installs until the user clicks "Update ready — restart", or quits normally
 // (then it installs on the way out, without a relaunch). Never a modal, never
@@ -6839,6 +6871,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   _installUpdateNow = [immediateInstallHandler copy];
   _updateActivity = 0;
   _updateVersionShown = [item.displayVersionString copy];
+  _updateNotesShown = MvUpdateNotes(item);
   dispatch_async(dispatch_get_main_queue(), ^{
     [self applyUpdateInBackground];
   });

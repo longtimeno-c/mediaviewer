@@ -360,6 +360,13 @@ class index_db {
   // Deletes `root`'s assets not seen in `generation` (removed files). Returns
   // their ids so the search matrix can drop them.
   [[nodiscard]] result<std::vector<std::int64_t>> end_scan(std::int64_t root, std::int64_t generation);
+  // end_scan for a walk of some folders only (docs/plans/index-watcher.md):
+  // deletes `root`'s assets not seen in `generation` that are files of a
+  // folder in `dirs`, or anywhere below a folder in `trees`. The rest of the
+  // root is left as it is.
+  [[nodiscard]] result<std::vector<std::int64_t>> end_scan_dirs(std::int64_t root, std::int64_t generation,
+                                                                const std::vector<std::string>& dirs,
+                                                                const std::vector<std::string>& trees);
   [[nodiscard]] std::int64_t next_generation();
 
   // ---- work ---------------------------------------------------------------------

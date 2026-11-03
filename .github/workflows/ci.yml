@@ -225,6 +225,8 @@ jobs:
       - run: python3 tools/mac/test_macpack.py -v
       - run: python3 tools/mac/test_check_minos.py -v
       - run: python3 tools/package/test_github_release.py -v
+      # #620: the update's "What's new" and its manifest rule.
+      - run: python3 tools/package/test_whats_new.py -v
       # The driftwire command line's Windows zip (pwsh reads tiny PE files) and
       # the Homebrew tap's formula (ruby checks and evaluates it).
       - run: python3 tools/package/test_driftwire_windows.py -v
