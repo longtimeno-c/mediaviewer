@@ -27,18 +27,38 @@ bool has_picture_rows(const mv_host_api* h) {
          h->clip_write_sound && h->clip_write_finish && h->clip_write_close;
 }
 
+// The Video Editor's cut (ABI 0.35): frames_keep and sound_keep.
+bool has_keep_rows(const mv_host_api* h) {
+  return h->struct_size >= offsetof(mv_host_api, sound_keep) + sizeof(h->sound_keep) && h->frames_keep &&
+         h->sound_keep;
+}
+
+namespace {
+std::int64_t kept_ms(std::span<const std::int64_t> keep) {
+  std::int64_t ns = 0;
+  for (std::size_t i = 0; i + 1 < keep.size(); i += 2) ns += keep[i + 1] - keep[i];
+  return ns / 1'000'000;
+}
+}  // namespace
+
 run_port run_port_of(const mv_host_api* h, const std::string& self_dir) {
   run_port p;
-  p.open_sound = [h](const std::string& path, uint32_t rate) -> mv::result<run_port::reader> {
+  p.open_sound = [h](const std::string& path, uint32_t rate,
+                     std::span<const std::int64_t> keep) -> mv::result<run_port::reader> {
+    if (!keep.empty() && !has_keep_rows(h)) return mv::err(mv::status::unsupported_format);
     mv_addon_sound_info info{};
     info.struct_size = sizeof info;
     void* raw = nullptr;
     const mv_status st = h->sound_open(h->host, path.c_str(), rate, 0, &info, &raw);
     if (st != MV_OK || !raw) return mv::err(st == MV_ERR_CANCELLED ? mv::status::cancelled : mv::status::unsupported_format);
     std::shared_ptr<void> sound(raw, [h](void* s) { h->sound_close(h->host, s); });
+    if (!keep.empty() &&
+        h->sound_keep(h->host, sound.get(), keep.data(), static_cast<uint32_t>(keep.size() / 2)) != MV_OK) {
+      return mv::err(mv::status::invalid_arg);
+    }
     run_port::reader r;
     r.channels = info.channels;
-    r.total_frames = info.duration_ms * static_cast<int64_t>(rate) / 1000;
+    r.total_frames = (keep.empty() ? info.duration_ms : kept_ms(keep)) * static_cast<int64_t>(rate) / 1000;
     const uint32_t ch = info.channels;
     r.read = [h, sound, ch](std::size_t max_frames) -> mv::result<std::vector<float>> {
       std::vector<float> buf(max_frames * ch);
@@ -104,18 +124,25 @@ run_port run_port_of(const mv_host_api* h, const std::string& self_dir) {
 
   // Slice 5: a clip's picture, when the host has those rows too.
   if (has_picture_rows(h)) {
-    p.open_frames = [h](const std::string& path) -> mv::result<run_port::picture_reader> {
+    p.open_frames = [h](const std::string& path,
+                        std::span<const std::int64_t> keep) -> mv::result<run_port::picture_reader> {
+      if (!keep.empty() && !has_keep_rows(h)) return mv::err(mv::status::unsupported_format);
       mv_addon_frames_info info{};
       info.struct_size = sizeof info;
       void* raw = nullptr;
       const mv_status st = h->frames_open(h->host, path.c_str(), &info, &raw);
       if (st != MV_OK || !raw) return mv::err(st == MV_ERR_CANCELLED ? mv::status::cancelled : mv::status::unsupported_format);
       std::shared_ptr<void> frames(raw, [h](void* f) { h->frames_close(h->host, f); });
+      if (!keep.empty() &&
+          h->frames_keep(h->host, frames.get(), keep.data(), static_cast<uint32_t>(keep.size() / 2)) != MV_OK) {
+        return mv::err(mv::status::invalid_arg);
+      }
       run_port::picture_reader r;
       r.width = info.width;
       r.height = info.height;
       r.hdr = info.hdr != 0;
       r.total_frames = info.frame_count;
+      r.duration_ms = info.duration_ms;
       const std::size_t bytes = std::size_t{info.width} * info.height * 3;
       r.next = [h, frames, bytes](std::vector<std::uint8_t>& rgb, std::int64_t& pts_us) -> mv::result<bool> {
         rgb.resize(bytes);

@@ -39,9 +39,9 @@ SCHEMA = 2
 # open_manifest.h): 1 themes; 2 settings, keymaps, shape; 3 scripts, permissions,
 # commands; 4 screens; 5 chrome slots and search providers; 6-10 screen
 # vocabulary only (link, copy, opens, a settings place, reveal, glow), no new
-# point. A stranger's add-on cannot fill screens or slots yet: they are filled by
+# point; 11 editor_items (the Video Editor's bar). A stranger's add-on cannot fill screens or slots yet: they are filled by
 # code and scripts have no binding for them, so the app says code_not_allowed.
-API = 10
+API = 11
 THEME_API = 1  # what a theme-only add-on claims, so it installs on every MediaViewer with themes
 SCRIPT_API = 3  # the API that introduced code (PR 57)
 SCREENS_API = 4  # the first point filled by code: screens (PR 58), then the slots (PR 59)
@@ -62,7 +62,8 @@ TOP_LEVEL_KEYS = {"schema", "id", "name", "version", "description", "licence", "
 # (src/addon/open_manifest.h kContributionPoints).
 CONTRIBUTION_POINTS = {"themes": 1, "settings": 2, "keymaps": 2, "commands": 3, "screens": 4,
                        "info_sections": 5, "search_providers": 5, "bar_items": 5,
-                       "path_items": 5, "context_menu": 5, "status_items": 5, "tile_badges": 5}
+                       "path_items": 5, "context_menu": 5, "status_items": 5, "tile_badges": 5,
+                       "editor_items": 11}
 THEME_SCHEMA = 2  # 2 adds "shape"
 SHAPE_RANGES = {"radius": (0.0, 2.0), "density": (0.75, 1.25), "type_scale": (0.85, 1.25)}
 # Native code, by any name: refused by every MediaViewer. Other makers' code

@@ -246,12 +246,20 @@ result<std::unique_ptr<sound_stream>> open_sound(const std::string& path, std::u
     const sound_facts& facts() const noexcept override { return f_; }
     result<std::vector<float>> read(std::size_t max_frames) override {
       std::int64_t start_ms = 0;
-      return r_->read(max_frames * f_.channels, start_ms);
+      auto r = r_->read(max_frames * f_.channels, start_ms);
+      if (r && !read_) {
+        read_ = true;
+        first_ms_ = start_ms;
+      }
+      return r;
     }
+    std::int64_t first_ms() const noexcept override { return first_ms_; }
 
    private:
     std::unique_ptr<edit::clip::audio_reader> r_;
     sound_facts f_;
+    bool read_ = false;
+    std::int64_t first_ms_ = 0;
   };
   MV_TRY(auto r, edit::clip::audio_reader::open(path, sample_rate, 0, nullptr, channels));
   return std::unique_ptr<sound_stream>(new adapter(std::move(r), sample_rate));

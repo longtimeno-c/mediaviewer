@@ -2256,9 +2256,13 @@ library by the build), then sideload as any slot add-on:
 python3 tools/package/addon-pack.py pack --addon enhance --platform macos --src build/addons/enhance --version 0.1.0 --key <dev key> --out dist/addon
 ```
 
+In the Video Editor (2026-11-02) its `Enhance…` button (`editor_items`, contribution API 11) runs
+on the edit's kept pieces, which the host applies as it reads (`frames_keep` / `sound_keep`), and
+the video model's sheet has **Brighten dark scenes** (`brighten.h`; no model of its own).
+
 Tests: `build/bin/mv_import_tests "[enhance]"` (the engine and runner over fakes: downloads, the
-sheet, the sound pipeline's alignment and mix, the run gate), `build/bin/mv_ai_tests "[enhance],[still]"`
-(end to end through the host table's rows and FFmpeg), `build/bin/mv_tests "[sound],[picture]"`
+sheet, the sound pipeline's alignment and mix, the run gate, the editor's cut and Brighten), `build/bin/mv_ai_tests "[enhance],[still]"`
+(end to end through the host table's rows and FFmpeg, the editor's cut included), `build/bin/mv_tests "[sound],[picture]"`
 (the reader's channels, `sound_writer`, `frame_reader`, `picture_writer`), `python3 -m unittest test_addon_pack.EnhancePackTest
 test_github_release` in `tools/package`. With the model downloaded (from its pinned URL), the
 hidden cases run it for real:

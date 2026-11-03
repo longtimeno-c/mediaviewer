@@ -7,11 +7,13 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <optional>
 #include <string_view>
 #include <span>
 #include <thread>
 #include <vector>
 
+#include "addon/keep_ranges.h"
 #include "addon/settings_values.h"
 #include "io/content_hash.h"
 #include "io/file_port.h"
@@ -934,6 +936,12 @@ mv_status MV_CALL t_busy_post(void* host, const char* what) {
 
 struct sound_box {
   std::unique_ptr<sound_stream> s;
+  // The Video Editor's cut (sound_keep): what is read is filtered through it.
+  keep_ranges keep;
+  bool read = false;
+  std::uint64_t position = 0;  // frames read from the source so far
+  std::vector<float> held;     // kept frames not yet handed out
+  bool ended = false;
 };
 
 mv_status MV_CALL t_sound_open(void* host, const char* path, uint32_t rate, uint32_t channels,
@@ -968,7 +976,35 @@ mv_status MV_CALL t_sound_open(void* host, const char* path, uint32_t rate, uint
 mv_status MV_CALL t_sound_read(void*, void* sound, float* out, uint32_t max_frames, uint32_t* frames) {
   return guarded([&] {
     if (!sound || !out || !frames || max_frames == 0) return MV_ERR_INVALID_ARG;
-    auto& s = *static_cast<sound_box*>(sound)->s;
+    auto* box = static_cast<sound_box*>(sound);
+    box->read = true;
+    auto& s = *box->s;
+    if (box->keep.active()) {
+      // Read the source until enough is kept (or it ends); hand out at most
+      // max_frames, keeping the rest for the next call.
+      const std::size_t ch = std::max<std::uint32_t>(1, s.facts().channels);
+      const std::uint32_t rate = s.facts().sample_rate;
+      while (!box->ended && box->held.size() < static_cast<std::size_t>(max_frames) * ch) {
+        auto r = s.read(max_frames);
+        if (!r) return to_mv(r.error());
+        if (r->empty()) {
+          box->ended = true;
+          break;
+        }
+        const std::int64_t base_ns = s.first_ms() * 1'000'000;
+        box->keep.keep_sound(*r, box->position, base_ns, rate, static_cast<std::uint32_t>(ch), box->held);
+        box->position += r->size() / ch;
+        const std::uint64_t r1 = std::max<std::uint32_t>(1, rate);
+        const auto now_ns = base_ns + static_cast<std::int64_t>(box->position / r1 * 1'000'000'000 +
+                                                                box->position % r1 * 1'000'000'000 / r1);
+        if (box->keep.past_end(now_ns)) box->ended = true;  // the rest is cut
+      }
+      const std::size_t n = std::min(box->held.size(), static_cast<std::size_t>(max_frames) * ch);
+      std::memcpy(out, box->held.data(), n * sizeof(float));
+      box->held.erase(box->held.begin(), box->held.begin() + static_cast<std::ptrdiff_t>(n));
+      *frames = static_cast<uint32_t>(n / ch);
+      return MV_OK;
+    }
     auto r = s.read(max_frames);
     if (!r) return to_mv(r.error());
     const std::size_t ch = std::max<std::uint32_t>(1, s.facts().channels);
@@ -976,6 +1012,15 @@ mv_status MV_CALL t_sound_read(void*, void* sound, float* out, uint32_t max_fram
     std::memcpy(out, r->data(), r->size() * sizeof(float));
     *frames = static_cast<uint32_t>(r->size() / ch);
     return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_sound_keep(void*, void* sound, const int64_t* ranges, uint32_t count) {
+  return guarded([&] {
+    auto* box = static_cast<sound_box*>(sound);
+    if (!box || box->read || (count > 0 && !ranges)) return MV_ERR_INVALID_ARG;
+    if (count == 0) return MV_OK;
+    return box->keep.set(std::span<const std::int64_t>(ranges, std::size_t{count} * 2)) ? MV_OK : MV_ERR_INVALID_ARG;
   });
 }
 
@@ -1043,6 +1088,8 @@ void MV_CALL t_sound_write_close(void*, void* writer) {
 struct frames_box {
   std::unique_ptr<picture_source> s;
   std::vector<std::uint8_t> rgb;
+  keep_ranges keep;  // the Video Editor's cut (frames_keep)
+  bool read = false;
 };
 
 mv_status MV_CALL t_frames_open(void* host, const char* path, mv_addon_frames_info* info, void** out) {
@@ -1080,9 +1127,23 @@ mv_status MV_CALL t_frames_read(void*, void* frames, uint8_t* out, uint64_t cap,
     if (!box || !out || !got) return MV_ERR_INVALID_ARG;
     const picture_facts& f = box->s->facts();
     if (cap < static_cast<uint64_t>(f.width) * f.height * 3) return MV_ERR_INVALID_ARG;
+    box->read = true;
     std::int64_t t = 0;
     auto more = box->s->next(box->rgb, t);
     if (!more) return to_mv(more.error());
+    if (box->keep.active()) {
+      // Frames in a cut are decoded and dropped; past the last piece, the end.
+      std::optional<std::int64_t> program;
+      while (*more && !(program = box->keep.program_of(t * 1000))) {
+        if (box->keep.past_end(t * 1000)) {
+          *more = false;
+          break;
+        }
+        more = box->s->next(box->rgb, t);
+        if (!more) return to_mv(more.error());
+      }
+      if (*more) t = *program / 1000;
+    }
     *got = *more ? 1 : 0;
     if (*more) {
       if (box->rgb.size() > cap) return MV_ERR_INTERNAL;
@@ -1090,6 +1151,15 @@ mv_status MV_CALL t_frames_read(void*, void* frames, uint8_t* out, uint64_t cap,
       if (pts_us) *pts_us = t;
     }
     return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_frames_keep(void*, void* frames, const int64_t* ranges, uint32_t count) {
+  return guarded([&] {
+    auto* box = static_cast<frames_box*>(frames);
+    if (!box || box->read || (count > 0 && !ranges)) return MV_ERR_INVALID_ARG;
+    if (count == 0) return MV_OK;
+    return box->keep.set(std::span<const std::int64_t>(ranges, std::size_t{count} * 2)) ? MV_OK : MV_ERR_INVALID_ARG;
   });
 }
 
@@ -1365,6 +1435,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
     api_.sound_open = &t_sound_open;
     api_.sound_read = &t_sound_read;
     api_.sound_close = &t_sound_close;
+    api_.sound_keep = &t_sound_keep;
   }
   if (svc_.open_sound_writer) {
     api_.sound_write_open = &t_sound_write_open;
@@ -1376,6 +1447,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
     api_.frames_open = &t_frames_open;
     api_.frames_read = &t_frames_read;
     api_.frames_close = &t_frames_close;
+    api_.frames_keep = &t_frames_keep;
   }
   if (svc_.open_clip_writer) {
     api_.clip_write_open = &t_clip_write_open;

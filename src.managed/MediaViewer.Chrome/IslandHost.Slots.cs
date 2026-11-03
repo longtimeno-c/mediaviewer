@@ -245,6 +245,7 @@ public static partial class IslandHost
         }
         RebuildSlotBar();
         RebuildSlotPathItems();
+        RebuildEditorAddons();
         // Gallery tiles carry badge / context wrappers only while something fills
         // them: when that changes, the realised tiles are made again.
         bool badges = SlotBadgeDefs.Count > 0;

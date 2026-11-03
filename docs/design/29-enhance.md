@@ -21,6 +21,9 @@ screens from its view trees.
   audio) with that kind's model, its credit and size, and Download / Stop / Resume / Remove.
 - **The sheet over the viewer** (place `sheet`): `Enhance…` in the palette and the context menu
   (no default key, [16](16-commands.md)), for the file on screen.
+- **`Enhance…` in the Video Editor's bar** (`editor_items`, contribution API 11): the same sheet,
+  over the editor, for the edit ("In the Video Editor" below). It has no button on the viewer's
+  command bar.
 
 It is not part of Local search and not in the `ai` family: search reads pixels and writes an
 index, Enhance writes a new file. Settings → Add-ons lists it on Windows and on Apple silicon
@@ -139,6 +142,54 @@ through a bounded queue (five seconds), so neither is held whole. With no hardwa
 that size the sheet says so and nothing is written. The sheet shows the time left once a run is
 a few percent in.
 
+## In the Video Editor (2026-11-02)
+
+`Enhance…` sits in the editor's bar before Export, on both hosts (`EditorAddonItems` in
+VideoEditorView.swift; `RebuildEditorAddons` in IslandHost.VideoEditor.cs), drawn from the
+add-on's `editor_items` like any slot item, so the app never names Enhance. A click hands the
+add-on the clip on screen and, when anything is cut, the edit's kept pieces (`(in, out)` source
+nanoseconds; `mv_slots_editor_item`, ABI 0.35; the Mac calls the registry's
+`invoke_editor_item`). The sheet opens over the editor (Mac: a sheet on the editor window, the
+main one while it is open; Windows: centred over it, still owned by the viewer) and says so: "The
+edit from the Video Editor: 3 pieces, 1:24 in all. The new clip is the edit, enhanced; the original
+is not changed." With nothing cut it is the whole clip, as from the viewer. `Enhance…` again on an
+open sheet moves it to the new file and edit.
+
+The cut is applied by the host as it reads, not by the add-on: two rows appended to the table,
+`frames_keep` and `sound_keep` (`src/addon/keep_ranges.h`, in the thunks of `addon/host.cpp`),
+called once after `frames_open` / `sound_open`. Frames and samples outside the pieces are dropped;
+what is kept comes back on the edit's own timeline (each piece follows the last), so the writer
+gets the program's times and sound lines up with picture as it does for the whole clip (sound that
+starts after the first piece is padded with silence). A frame is kept when `in <= pts < out`, as
+the editor's Export cuts.
+
+A cut clip's sound cannot be packet-copied whole, so every run on a cut goes through the
+picture writer (`run_picture`): with the picture model, as before; with the sound alone, the
+picture is written again unchanged (same size, hardware encoder); with the picture alone, the
+edit's own sound is read through the cut at 48 kHz and encoded again (the OS's AAC), not run
+through the sound model. One generation of re-encode, as Export exact.
+
+## Brighten dark scenes (2026-11-02)
+
+A choice on the clip's picture, in the video model's `model.json` (`brighten`: Off, A little,
+More), so it shows with the model's other knobs. No model and no download of its own: a tone lift
+fitted to each frame (`brighten.h`), applied before the Detail model, which then sees the
+lifted frame.
+
+- Each frame's brightness is the geometric mean of its linear luminance (every fourth pixel each
+  way). A scene darker than the target (0.09 for A little, 0.15 for More) gets a gain up to 3× or
+  6×, through `f(x) = g x / (1 + (g − 1) x)` in linear light on R, G and B alike: the shadows rise
+  by g, white stays white, nothing clips. A scene at or above the target is untouched.
+- The gain eases over time (its log, half a second's time constant on the frames' own times), so a
+  passing light does not pump the picture; a cut (half the brightness histogram moved) takes the
+  new scene's gain at once.
+- One 256-entry table a frame over 8-bit sRGB: about 1.6 ms for a 1080p frame on one core of this
+  Mac (100 frames, three runs: 1.72, 1.56, 1.55 ms), against about 0.2 s a frame for the model.
+- **Strength 0 at the same size skips the model**, so Brighten alone runs at decode-and-encode
+  speed. The model's 4.9 MB is still the door to the knob (it lives in the video model's sheet).
+- Lifting dark footage lifts its noise, and an 8-bit frame can band in lifted shadows; the help
+  text says the first. HDR clips are still refused.
+
 ## Measured (2026-10-26, Apple M-series; sound on CPU, one thread)
 
 | | |
@@ -167,3 +218,8 @@ installed (it loads no runtime until a run, and runs nothing at launch).
 - Loudness: an "even out loudness" knob needs a second pass over the result.
 - Keeping an MP3 an MP3: there is no MP3 encoder in the LGPL build; the result is an M4A.
 - A live preview on the playback clock (not in #297); the preview above is the run's own frames.
+- In the Video Editor, frames inside a cut are decoded and dropped rather than skipped by a seek
+  (the frame reader has no seek): a short edit of a long clip reads the whole clip.
+- Brighten dark scenes on photos (the still model has no `brighten` knob), and a denoise pass
+  for what it lifts.
+- Not measured: an editor run on Windows (C# compile-checked only), and a long clip's cut.
