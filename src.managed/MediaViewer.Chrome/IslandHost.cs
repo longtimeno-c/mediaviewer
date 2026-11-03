@@ -174,6 +174,8 @@ public static partial class IslandHost
         public const int AdjustOpenEyes = 210;  // slice 6
         public const int AdjustParam = 1091;
         public const int AdjustPrompt = 1092;  // slice 5b: parked UTF-8 request
+        // Slice 7: the Remove brush: 0 the last stroke off, 1 all, 2 Remove.
+        public const int AdjustBrush = 1093;
         // PR 12: the pane's stars post the rating keys' ids (commands.h
         // set_rating_0..5); 0 clears.
         public const int SetRating0 = 127;
