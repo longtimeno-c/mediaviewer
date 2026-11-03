@@ -22,6 +22,7 @@ struct AdjustView: View {
   @State private var open: Set<Int> = [0, 1]
   @State private var levelsChannel = 0
   @State private var band = 0
+  @State private var request = ""
   @State private var redEyeSize = 0.0
   @State private var curvesChannel = 0
   @FocusState private var focused: Bool
@@ -81,6 +82,18 @@ struct AdjustView: View {
       }
       if !status.isEmpty {
         Text(status).foregroundStyle(.secondary)
+      }
+      // Slice 5b: say what you want; the sliders it names move (one undo step).
+      TextField("Describe a change — a bit warmer, less noise…", text: $request)
+        .textFieldStyle(.roundedBorder)
+        .disabled(!store.ready)
+        .onSubmit {
+          store.prompt(request)
+          request = ""
+        }
+        .accessibilityLabel("Describe a change")
+      if !store.promptNote.isEmpty {
+        Text(store.promptNote).font(.caption).foregroundStyle(.secondary).lineLimit(2)
       }
       ScrollView {
         VStack(alignment: .leading, spacing: MVTheme.space(4)) {

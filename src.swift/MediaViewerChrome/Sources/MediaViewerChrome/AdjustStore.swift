@@ -94,6 +94,8 @@ final class AdjustStore: ObservableObject {
   /// Slice 3: 0 nothing, 1 the white-balance picker, 2 the red-eye tool; the fixes made.
   @Published private(set) var picking: Int32 = 0
   @Published private(set) var spotCount = 0
+  /// Slice 5b: what the last typed request did.
+  @Published private(set) var promptNote = ""
   /// Slice 2: the four curves' points (image, red, green, blue); empty is the diagonal.
   @Published var curves: [[CGPoint]] = Array(repeating: [], count: 4)
   @Published private(set) var histogramValid = false
@@ -133,6 +135,9 @@ final class AdjustStore: ObservableObject {
     autoSection = Int(v.auto_section)
     picking = v.picking
     spotCount = Int(v.spot_count)
+    promptNote = withUnsafeBytes(of: v.prompt_note) { raw in
+      String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+    }
     let ns: [Int32] = withUnsafeBytes(of: v.curve_n) { Array($0.bindMemory(to: Int32.self)) }
     let xs: [Float] = withUnsafeBytes(of: v.curve_x) { Array($0.bindMemory(to: Float.self)) }
     let ys: [Float] = withUnsafeBytes(of: v.curve_y) { Array($0.bindMemory(to: Float.self)) }
@@ -158,6 +163,8 @@ final class AdjustStore: ObservableObject {
   }
 
   func reset() { mv_chrome_adjust_reset() }
+  /// Slice 5b: a typed request; the host moves the sliders it names.
+  func prompt(_ text: String) { if ready { mv_chrome_adjust_prompt(text) } }
   /// Slice 3: what the next click on the photo does (see `picking`).
   func pick(_ mode: Int32, size: Double = 0) { if ready { mv_chrome_adjust_pick(mode, Float(size)) } }
   func auto(_ section: Int) { if ready { mv_chrome_adjust_auto(Int32(section)) } }

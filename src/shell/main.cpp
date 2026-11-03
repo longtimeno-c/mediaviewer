@@ -71,6 +71,7 @@
 #include "edit/auto_adjust.h"
 #include "edit/clip_strip.h"
 #include "edit/detail.h"
+#include "edit/prompt.h"
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
 #include "shell/file_jobs.h"
@@ -309,6 +310,7 @@ struct app_state {
   std::shared_ptr<const mv::image::linear_image> working_base;
   mv::edit::detail_params detail_shown;
   std::uint64_t detail_token = 0;
+  std::vector<mv::edit::adjust_section> pending_autos;  // slice 5b: a typed request's Autos still to run
   std::atomic<mv::generation> adjust_generation{1};
   // PR 13 / 14 (docs/design/08): trim mode on the current clip, the keyframe-index
   // request in flight for it, and the Jobs pane's wish. The jobs themselves
@@ -2647,6 +2649,31 @@ void set_param_from_pane(app_state* app) {
                        static_cast<float>(std::atof(parked.c_str() + tab + 1)));
 }
 
+void next_pending_auto(app_state* app) {
+  if (app->pending_autos.empty() || app->adjust.auto_running()) return;
+  const mv::edit::adjust_section s = app->pending_autos.front();
+  app->pending_autos.erase(app->pending_autos.begin());
+  start_adjust_auto(app, static_cast<int>(s));
+}
+
+// Slice 5b (edit/prompt.h): a typed request, parked by the island. Its slider
+// moves land as one op; the Autos it asked for run one after another.
+void prompt_from_pane(app_state* app) {
+  std::string text;
+  if (!app->chrome.take_parked_text(text)) return;
+  if (!app->adjust.working_ready() || !adjust_still(app)) return;
+  const mv::edit::prompt_result r = mv::edit::parse_prompt(text, app->edits.colour());
+  app->adjust.set_prompt_note(mv::edit::prompt_summary(r));
+  if (r.changed(app->edits.colour()) && app->edits.set_colour(r.value) == mv::shell::edit_effect::redraw) {
+    publish_edit(app);
+    ++app->input.activity_seq;
+    publish(app);
+  }
+  app->pending_autos.assign(r.autos.begin(), r.autos.end());
+  adjust_colour_changed(app);
+  next_pending_auto(app);
+}
+
 // A section's Reset: its sliders back to 0, one undo step.
 void reset_adjust_section(app_state* app, int section) {
   if (section < 0 || section >= mv::edit::kAdjustSectionCount) return;
@@ -2718,16 +2745,20 @@ void on_adjust_job_done(app_state* app, std::unique_ptr<adjust_job_result> r) {
     return;
   }
   if (r->auto_section) {
-    if (!app->adjust.auto_tone_landed(r->token)) return;
+    if (!app->adjust.auto_tone_landed(r->token)) {
+      app->pending_autos.clear();  // the colour moved meanwhile: the rest of a typed request's too
+      return;
+    }
     if (r->ok && adjust_still(app) &&
         app->edits.set_colour(r->value) == mv::shell::edit_effect::redraw) {
       publish_edit(app);
       ++app->input.activity_seq;
       publish(app);
       adjust_colour_changed(app);
-      return;
+    } else {
+      push_adjust_pane(app);  // the Auto stops showing; nothing changed
     }
-    push_adjust_pane(app);  // the Auto stops showing; nothing changed
+    next_pending_auto(app);
     return;
   }
   if (r->histogram) {
@@ -5454,6 +5485,9 @@ bool chrome_edit_command(app_state* app, int command, float arg) {
       return true;
     case mv::shell::chrome_cmd_adjust_param:
       set_param_from_pane(app);
+      return true;
+    case mv::shell::chrome_cmd_adjust_prompt:
+      prompt_from_pane(app);
       return true;
     case static_cast<int>(mv::shell::command_id::adjust_pick):
       set_adjust_pick(app, arg);

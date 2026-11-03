@@ -136,7 +136,8 @@ Tested end to end in `mv_ai_tests` `[enhance][still]` with a stand-in model. As 
 
 **5b. Type what you want.** One text field at the top of the Adjust pane, two layers:
 
-- **Words → sliders (first, in the core).** A small deterministic parser in the style of the voice
+- **Words → sliders (first, in the core).** — built 2026-11-02 (`edit/prompt.h`; `mv_tests
+  "[prompt]"`; the Mac self-test types "a bit warmer and less noisy, more contrast"). A small deterministic parser in the style of the voice
   query parser ([19](../design/19-voice.md)): "warmer", "brighter", "less noisy", "black and white",
   "more contrast but keep the sky", "like a film photo" → slider deltas, shown as the sliders
   moving, one undo step. No model, no download, instant, offline, every result editable by hand.

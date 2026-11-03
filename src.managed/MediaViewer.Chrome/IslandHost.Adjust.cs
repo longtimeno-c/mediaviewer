@@ -39,11 +39,13 @@ public static partial class IslandHost
 {
     // shell/adjust_pane.h adjust_view: 2 ints, 56 floats, 2 floats, 2 ints,
     // 4 ints (curve_n), 2 x 4 x 8 floats (curve x, y), 2 ints (picking,
-    // spot_count), then 4 x 64 uint16.
+    // spot_count), 128 bytes of prompt note (UTF-8, NUL-terminated), then
+    // 4 x 64 uint16.
     internal const int AdjustParamCount = 56;
     internal const int CurvePoints = 8;
     internal const int AdjustViewSize =
-        24 + 4 * AdjustParamCount + 16 + 2 * 4 * 4 * CurvePoints + 8 + 2 * 4 * HistogramBins;
+        24 + 4 * AdjustParamCount + 16 + 2 * 4 * 4 * CurvePoints + 8 + PromptNoteBytes + 2 * 4 * HistogramBins;
+    private const int PromptNoteBytes = 128;
     private const int SelectiveSection = 6;
     private const int RedEyeSection = 7;
     private static readonly string[] BandNames = { "Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta" };
@@ -145,6 +147,8 @@ public static partial class IslandHost
     // Slice 3: the band Selective Colour shows, the pick mode and fixes from
     // native, the red-eye tool's size, and their controls.
     private static int _band;
+    private static string _promptNote = "";
+    private static TextBlock? _promptNoteText;
     private static int _picking;
     private static int _spotCount;
     private static double _redEyeSize;
@@ -196,6 +200,7 @@ public static partial class IslandHost
         _monoSwitch = null;
         _curveCanvas = null;
         _wbPick = null;
+        _promptNoteText = null;
         _redEyePick = null;
         _redEyeCount = null;
         _bandPicks = null;
@@ -249,8 +254,9 @@ public static partial class IslandHost
             int pick = curves + 16 + 2 * 4 * 4 * CurvePoints;
             _picking = Marshal.ReadInt32(arg, pick);
             _spotCount = Marshal.ReadInt32(arg, pick + 4);
+            _promptNote = Marshal.PtrToStringUTF8(arg + pick + 8) ?? "";
             var raw = new short[_histBins.Length];
-            Marshal.Copy(arg + pick + 8, raw, 0, raw.Length);
+            Marshal.Copy(arg + pick + 8 + PromptNoteBytes, raw, 0, raw.Length);
             for (int i = 0; i < raw.Length; i++) _histBins[i] = unchecked((ushort)raw[i]);
             if (_adjustPaneVisible) RenderAdjust();
             return 0;
@@ -279,6 +285,22 @@ public static partial class IslandHost
         _adjustPreparing = new JobBar { IsIndeterminate = true };
         _adjustPreparing.Root.Visibility = Visibility.Collapsed;
         col.Children.Add(_adjustPreparing.Root);
+
+        // Slice 5b: say what you want; the sliders it names move (one undo
+        // step). Not a TextBox: that control fail-fasts in these islands
+        // (see FakeInput, tools/check-winui-controls.ps1).
+        var request = new FakeInput("Describe a change — a bit warmer, less noise…");
+        AutomationProperties_SetName(request, "Describe a change");
+        request.Submitted += () =>
+        {
+            if (request.Text.Trim().Length == 0) return;
+            _treePending = request.Text;
+            Send(Command.AdjustPrompt);
+            request.SetText("");
+        };
+        col.Children.Add(request);
+        _promptNoteText = Text("", Body, UiFontSize - 2);
+        col.Children.Add(_promptNoteText);
 
         _adjustSliders = new Slider[AdjustSpecs.Length];
         _adjustReadouts = new TextBlock[AdjustSpecs.Length];
@@ -831,6 +853,7 @@ public static partial class IslandHost
             _redEyePick.IsEnabled = ready;
         }
         if (_redEyeCount is not null) _redEyeCount.Text = _spotCount > 0 ? $"{_spotCount} fixed" : "";
+        if (_promptNoteText is not null) _promptNoteText.Text = _promptNote;
         if (_bandPicks is not null)
         {
             for (int b = 0; b < _bandPicks.Length; b++) _bandPicks[b].BorderThickness = new Thickness(b == _band ? 2 : 0);

@@ -439,6 +439,7 @@ add_library(mv_edit STATIC
   src/edit/auto_tone.h
   src/edit/bake.cpp
   src/edit/detail.cpp
+  src/edit/prompt.cpp
   src/edit/bake.h
   src/edit/histogram.cpp
   src/edit/histogram.h
@@ -971,6 +972,7 @@ if(MV_BUILD_TESTS)
     tests/test_adjust.cpp
     # #289: auto tone from the histogram (edit/auto_tone.h).
     tests/test_auto_tone.cpp
+    tests/test_prompt.cpp
     # PR 11 (macOS crash reporting): the scrub, now with POSIX paths.
     tests/test_minidump_scrub.cpp
     src/shell/minidump_scrub.cpp

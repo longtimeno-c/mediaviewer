@@ -436,8 +436,11 @@ public static partial class IslandHost
             var right = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
             if (_editEnhance && !EditIsClip)
             {
-                right.Children.Add(EditButton("Enhance…", () => Send(Command.EditAction, EditActions.Enhance),
-                                              tip: "A restored copy from the Enhance add-on, with these edits in it"));
+                // An icon, as on the Mac, so the strip keeps "Original" whole.
+                right.Children.Add(ChromeButton(
+                    new FontIcon { Glyph = "\uE9F5", FontFamily = SymbolFont, FontSize = UiFontSize - 2, Foreground = Brush(Title) },
+                    CompactButtonPadding, () => Send(Command.EditAction, EditActions.Enhance), name: "Enhance…",
+                    tip: "Enhance… — a restored copy from the Enhance add-on, with these edits in it"));
             }
             right.Children.Add(save);
             var actions = new Grid();
