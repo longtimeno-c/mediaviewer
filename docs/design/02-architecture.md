@@ -26,7 +26,7 @@ src/
   nle/         Local search from an editing app, FCPXML ([23-nle-search.md](23-nle-search.md))
   shell/       Windows host (Win32 window, island bridge, key router, CLI, OS integration) and the
                Mac host (AppKit + Metal, *_mac.mm)
-  shellext/    Explorer thumbnail handler (out-of-process DLL)
+  shellext/    Explorer thumbnail handler (out-of-process DLL) and its portable half, shared with Quick Look
   addons/      add-ons (import, ai) — reach the core only through the host function table
 
 src.managed/   C# WinUI 3 chrome (Windows)
@@ -56,8 +56,8 @@ Dependencies point **downward only**. The enforced map
 | `addons` | `core` header-only pieces (`result.h`, `status.h`, `json.h`), `geo`; the AI pack also `infer` |
 | `abi` | everything below it |
 | `nle` | `addon`, `image`, `io`, `core` |
-| `shellext` | `image`, `codec`, `gfx`, `io`, `core` |
-| `shell` | everything, including `abi` and `nle` |
+| `shellext` | `image`, `player` (`poster.h`, a clip's poster, #610), `codec`, `gfx`, `io`, `core` |
+| `shell` | everything, including `abi`, `nle` and `shellext` (the Quick Look extension only, #610) |
 
 `codec` does not include `io`. A document page still picks font files lazily, including per-character
 fallbacks, so the caller cannot pass the bytes in at `codec::decode`. `codec/fonts.h` only names the

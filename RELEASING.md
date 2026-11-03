@@ -47,6 +47,14 @@ Leave `min_version=0.0.0` and `blocklist` empty normally. These are Windows upda
 withdrawal controls. A blocklist is comma-separated strict versions without spaces;
 it must not contain the release being published.
 
+`whats_new` is the short "What's new" both apps show in "Update ready — restart" and the
+release page opens with: up to three lines, typed as one with `\n` between them
+(`-f whats_new='Faster RAW previews\nHEIC thumbnails load sooner'`), 400 bytes, no links.
+Left empty, it is the subjects of the commits since the previous release tag (a pull
+request's merge gives its title). It is signed into the Windows manifest and embedded in the
+signed appcast, so the apps fetch nothing more for it. Check what an empty input would give
+with `python3 tools/package/whats_new.py --version <x.y.z>`.
+
 Required secrets are checked before the expensive builds. Windows, Mac and the Linux packages
 (`linux-cli`) build independently; a final job validates every asset set, uploads into a draft, checks the
 uploaded names and sizes, and only then publishes. A failed platform leaves the previous

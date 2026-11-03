@@ -741,4 +741,28 @@ result<flattened_copy> run_flatten(std::string_view source_path, const edit::geo
   return out;
 }
 
+result<codec::raster> render_print_picture(std::string_view source_path, const edit::geometry& g,
+                                           const edit::colour& c, edit::size2 box, bool cover,
+                                           const job_context* ctx) {
+  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(source_path));
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  return edit::render_picture(bytes, g, c, box, cover, ctx);
+}
+
+result<std::vector<print_picture>> render_contact_pictures(std::span<const print_source> sources,
+                                                           edit::size2 cell, const job_context* ctx) {
+  std::vector<print_picture> out;
+  out.reserve(sources.size());
+  for (const print_source& s : sources) {
+    if (ctx && ctx->cancelled()) return err(status::cancelled);
+    result<codec::raster> r = render_print_picture(s.path, s.g, s.c, cell, false, ctx);
+    if (!r) {
+      if (r.error() == status::cancelled) return err(status::cancelled);
+      continue;  // a clip, audio, a file gone since it was marked: left out
+    }
+    out.push_back(print_picture{s.path, std::move(*r)});
+  }
+  return out;
+}
+
 }  // namespace mv::shell
