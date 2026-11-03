@@ -135,6 +135,8 @@ public static partial class IslandHost
         public const int CopyPath = 147;
         public const int CopyFlattened = 148;
         public const int Share = 149;
+        // Issue #614: Ctrl+P's Print… (the photo on screen, or the marks as a sheet).
+        public const int Print = 184;
         // Keyed commands the View menu and the panes' close buttons also send
         // (mirrors command_id; chrome_host.h pins both with static_asserts).
         public const int FolderTree = 78;
