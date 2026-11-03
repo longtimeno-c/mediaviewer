@@ -17,8 +17,10 @@ public enum UpdatePhase
 }
 
 /// <param name="Percent">Download progress 0–100 while <see cref="UpdatePhase.Downloading"/>; null otherwise.</param>
+/// <param name="Notes">#620: the staged version's signed "What's new" (<see cref="ManifestNotes"/>), while
+/// <see cref="UpdatePhase.Ready"/>; null when its manifest carries none.</param>
 public sealed record UpdateStatus(UpdatePhase Phase, string? Version, UpdateUrgency Urgency, string? RolledBackFrom,
-    int? Percent = null);
+    int? Percent = null, string? Notes = null);
 
 /// <summary>
 /// docs/design/13 Part 1 behaviour on top of Velopack. One background thread at
@@ -224,7 +226,7 @@ public sealed class UpdateService
             return;
         }
 
-        SetStatus(Status with { Phase = UpdatePhase.Downloading, Version = target.Version.ToString(), Percent = 0 });
+        SetStatus(Status with { Phase = UpdatePhase.Downloading, Version = target.Version.ToString(), Percent = 0, Notes = null });
         try
         {
             KeepPriorPackage();
@@ -240,13 +242,15 @@ public sealed class UpdateService
         catch (Exception ex)
         {
             _log("updater: download rejected " + ex.GetType().Name);
-            SetStatus(Status with { Phase = UpdatePhase.Failed, Version = null, Percent = null });
+            SetStatus(Status with { Phase = UpdatePhase.Failed, Version = null, Percent = null, Notes = null });
             return;
         }
         lock (_gate) _staged = target;
         _log($"updater: staged {target.Version}");
+        // The notes came in the manifest this check verified; nothing else is fetched.
+        string? notes = d?.Manifest is { } m && m.Version.ToString() == target.Version.ToString() ? m.Notes : null;
         SetStatus(new UpdateStatus(UpdatePhase.Ready, target.Version.ToString(),
-            d?.Urgency ?? UpdateUrgency.Normal, Status.RolledBackFrom));
+            d?.Urgency ?? UpdateUrgency.Normal, Status.RolledBackFrom, null, notes));
     }
 
     /// <summary>

@@ -45,6 +45,8 @@ enum MvMenuCmd : int32_t {
   kMenuRename,
   // Issue #429: View > Page Sidebar (Shift+T).
   kMenuPageSidebar,
+  // Issue #614: File > Print… (Cmd+P).
+  kMenuPrint,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 
@@ -204,6 +206,21 @@ int32_t mv_chrome_tag_search(const char* query_utf8, char* buf, int32_t size);
 // search re-runs its tag half. [main-thread]
 uint64_t mv_chrome_tag_generation(void);
 
+// #612 (docs/design/04 "Thumbnail cache upkeep"), Settings -> Storage: what
+// MediaViewer keeps on disk, with sizes, as JSON
+//   {"rows":[{"id":"thumbnails","path":"...","bytes":n,"files":n},...],"total":n}
+// (ids in io/storage.h; the Mac adds crash_reports). Walks folders: call it
+// from a background task, never the main thread. Returns the byte length
+// needed, as the tables; a buffer too small is filled cut short. [any-thread]
+int32_t mv_chrome_storage_report(char* buf, int32_t size);
+// Clear: deletes every cached thumbnail and its row (the search cache and
+// metadata snapshots are untouched). A background task. [any-thread]
+bool mv_chrome_thumb_cache_clear(void);
+// The thumbnail cache's cap in bytes, 0 = none (the default). Setting one
+// saves it and sweeps now. [main-thread]
+uint64_t mv_chrome_thumb_cache_cap(void);
+void mv_chrome_set_thumb_cache_cap(uint64_t bytes);
+
 // Bumped when the host rewrites a listed file in place (a lossless rotate, a
 // metadata write) and updates its size / mtime without a relist, so Swift
 // re-reads mv_chrome_item_thumb_key and the cell asks for the new thumbnail.
@@ -247,6 +264,9 @@ void mv_chrome_set_gallery_columns(int32_t columns);
 // file. [main-thread]
 int32_t mv_chrome_update_phase(void);
 bool mv_chrome_update_version(char* out, int32_t cap);
+// #620: the staged update's "What's new" (phase 3 only): up to three lines of
+// plain text, at most 400 bytes, from the signed appcast. False if none.
+bool mv_chrome_update_notes(char* out, int32_t cap);
 void mv_chrome_restart_to_update(void);
 // #532: other running copies of this app, and asking them to quit once idle
 // (each finishes a Driftwire transfer first). Restart waits until none is

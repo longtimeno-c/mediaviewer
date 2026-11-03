@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Preflight and publish a complete release: both installers, and the driftwire command line's
 macOS and Windows archives once it is published (MV_RELEASE_CLI). No build secrets are logged."""
+import base64
 import hashlib
 import json
 import os
@@ -13,6 +14,9 @@ import sys
 import tarfile
 import xml.etree.ElementTree as ET
 import zipfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import whats_new  # noqa: E402  (#620: the update's short "What's new")
 
 
 def version_tuple(value):
@@ -84,9 +88,16 @@ def prepare():
                              + f' {"is" if one else "are"} not set: add {"it" if one else "them"} (docs/DEVELOPMENT.md, '
                              '"Publishing the command line") or set MV_DRIFTWIRE_REPO to 0.')
     tag = f'v{version}'
+    # #620: the update's "What's new", once for both apps and the release page:
+    # the run's own words (WHATS_NEW) or the commit subjects since the previous
+    # release. Base64, so its line breaks survive a job output.
+    # A dispatch input is one line: a literal \n in it separates lines.
+    notes = whats_new.whats_new(os.environ.get('WHATS_NEW', '').replace('\\n', '\n'), '.', version)
+    encoded = base64.b64encode(notes.encode('utf-8')).decode('ascii')
     with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-        output.write(f'version={version}\ntag={tag}\n')
+        output.write(f'version={version}\ntag={tag}\nwhats_new={encoded}\n')
     print(f'{mode}: {version} ({tag})')
+    print("What's new:\n" + (notes or '(none)'))
 
 
 # The optional add-ons, one signed package per add-on and platform. The apps
@@ -354,9 +365,20 @@ def cli_notes(version, repo, base, names):
             f'[Windows zip]({base}/{windows}) are below too.\n')
 
 
-def release_notes(version, mode, repo, tag, sha, cli=None):
+def decoded_whats_new():
+    """prepare's whats_new output, as publish is given it (WHATS_NEW_B64)."""
+    encoded = os.environ.get('WHATS_NEW_B64', '')
+    notes = base64.b64decode(encoded).decode('utf-8') if encoded else ''
+    if notes and not whats_new.valid(notes):
+        raise ValueError("What's new does not meet the manifest rule (whats_new.py)")
+    return notes
+
+
+def release_notes(version, mode, repo, tag, sha, cli=None, notes=''):
     base = f'https://github.com/{repo}/releases/download/{tag}'
-    text = ('## Downloads\n\n'
+    # #620: the same words the apps show in "Update ready - restart".
+    text = ("## What's new\n\n" + ''.join(f'- {line}\n' for line in notes.split('\n')) + '\n') if notes else ''
+    text += ('## Downloads\n\n'
             f'- **[Download for Windows (x64)]({base}/MediaViewer-{version}-Setup.exe)** '
             '- run the installer.\n'
             f'- **[Download for Mac (Apple Silicon and Intel, macOS 14+)]({base}/MediaViewer-{version}.dmg)** '
@@ -417,7 +439,7 @@ def publish(folder):
     assets.append(checksums)
     notes = folder / 'release-notes.md'
     cli = cli_asset_names(folder, version) if mode == 'stable' and cli_published() else None
-    notes.write_text(release_notes(version, mode, repo, tag, sha, cli), encoding='utf-8')
+    notes.write_text(release_notes(version, mode, repo, tag, sha, cli, decoded_whats_new()), encoding='utf-8')
     if not existing:
         gh('release', 'create', tag, '--repo', repo, '--target', sha, '--draft',
            '--title', f'MediaViewer {version}' + (' (preview)' if mode == 'preview' else ''),

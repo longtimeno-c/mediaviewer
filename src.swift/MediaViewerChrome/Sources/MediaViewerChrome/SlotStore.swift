@@ -179,6 +179,8 @@ final class SlotStore: ObservableObject {
   private var badgeDefs: [String: SlotBadge] = [:]
   private var badgeFolder = ""
   private var infoKey = ""
+  /// #601: the last info "open" request acted on.
+  private var openRevision: Int64 = 0
 
   private init() {
     mv_chrome_slots_set_callback { bits in
@@ -278,6 +280,14 @@ final class SlotStore: ObservableObject {
       else { return nil }
       return SlotSection(addon: a, section: id, title: $0["title"] as? String ?? "", revision: $0["revision"] as? Int ?? 0,
                          tree: tree)
+    }
+    // #601: a section asked to show a file of this folder (a Places
+    // folder-map dot): once per revision (the core's only grows), and only
+    // when the listing holds it.
+    if let open = doc["open"] as? [String: Any], let path = open["path"] as? String,
+       let revision = (open["revision"] as? NSNumber)?.int64Value, revision > openRevision {
+      openRevision = revision
+      FolderStore.shared.select(path: path)
     }
   }
 
