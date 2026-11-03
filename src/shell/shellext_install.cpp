@@ -222,9 +222,15 @@ void install_thumbnail_handler(const std::wstring& root, const std::string& vers
     // The handler's own surrogate: an empty DllSurrogate is the system dllhost.
     changed |= write_reg_string(std::wstring(L"Software\\Classes\\AppID\\") + kThumbHandlerAppId,
                                 L"DllSurrogate", L"", failed);
-    changed |= write_reg_string(std::wstring(L"Software\\Classes\\MediaViewer.Image\\ShellEx\\") +
-                                    kThumbnailShellEx,
-                                nullptr, kThumbHandlerClsid, failed);
+    // Stills and, from issue #610, clips: the same handler picks its path by
+    // the file's first bytes. Only on our own ProgIds, so it serves the types
+    // the user made MediaViewer the default for (an MKV, or an AV1 MP4 with no
+    // Store extension) and never replaces another vendor's handler.
+    for (const wchar_t* progid : {L"MediaViewer.Image", L"MediaViewer.Video"}) {
+      changed |= write_reg_string(std::wstring(L"Software\\Classes\\") + progid + L"\\ShellEx\\" +
+                                      kThumbnailShellEx,
+                                  nullptr, kThumbHandlerClsid, failed);
+    }
     if (failed) MV_LOG_WARN("shellext: a registry write failed; thumbnails may not show");
     if (changed) ::SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
 

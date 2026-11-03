@@ -167,6 +167,69 @@ expected remove_tree(std::string_view utf8_dir) {
   return ok && ::rmdir(dir.c_str()) == 0 ? expected{} : err(status::io);
 }
 
+result<std::vector<dir_child>> list_children(std::string_view utf8_dir, bool with_directories) {
+  if (utf8_dir.empty()) return err(status::invalid_arg);
+  const std::string dir(utf8_dir);
+  std::vector<dir_child> out;
+  DIR* d = ::opendir(dir.c_str());
+  if (!d) return errno == ENOENT ? result<std::vector<dir_child>>(std::move(out)) : err(status::io);
+  const int dfd = ::dirfd(d);
+  while (dirent* ent = ::readdir(d)) {
+    const std::string_view name(ent->d_name);
+    if (name == "." || name == "..") continue;
+    struct stat st{};
+    // fstatat on the open directory: no path rebuilt per entry, and a link is
+    // seen as a link (AT_SYMLINK_NOFOLLOW), never followed.
+    if (::fstatat(dfd, ent->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) continue;
+    const bool is_dir = S_ISDIR(st.st_mode);
+    if (!S_ISREG(st.st_mode) && !(is_dir && with_directories)) continue;
+    dir_child f;
+    f.name.assign(name);
+    f.is_directory = is_dir;
+    f.size = st.st_size > 0 ? static_cast<std::uint64_t>(st.st_size) : 0;
+    f.mtime_unix = mtime_of(st);
+    out.push_back(std::move(f));
+  }
+  ::closedir(d);
+  return out;
+}
+
+tree_usage tree_size(std::string_view utf8_path) {
+  tree_usage total;
+  if (utf8_path.empty()) return total;
+  const std::string root(utf8_path);
+  struct stat st{};
+  if (::lstat(root.c_str(), &st) != 0) return total;
+  if (S_ISREG(st.st_mode)) {
+    total.bytes = st.st_size > 0 ? static_cast<std::uint64_t>(st.st_size) : 0;
+    total.files = 1;
+    return total;
+  }
+  if (!S_ISDIR(st.st_mode)) return total;  // a link, a socket: nothing of ours
+  std::vector<std::string> pending{root};
+  while (!pending.empty()) {
+    const std::string dir = std::move(pending.back());
+    pending.pop_back();
+    DIR* d = ::opendir(dir.c_str());
+    if (!d) continue;
+    const int dfd = ::dirfd(d);
+    while (dirent* ent = ::readdir(d)) {
+      const std::string_view name(ent->d_name);
+      if (name == "." || name == "..") continue;
+      struct stat cst{};
+      if (::fstatat(dfd, ent->d_name, &cst, AT_SYMLINK_NOFOLLOW) != 0) continue;
+      if (S_ISDIR(cst.st_mode)) {
+        pending.push_back(join_path(dir, name));
+      } else if (S_ISREG(cst.st_mode)) {
+        total.bytes += cst.st_size > 0 ? static_cast<std::uint64_t>(cst.st_size) : 0;
+        ++total.files;
+      }
+    }
+    ::closedir(d);
+  }
+  return total;
+}
+
 result<std::string> make_directories_beneath(std::string_view base_utf8, std::string_view relative_slash) {
   if (base_utf8.empty()) return err(status::invalid_arg);
   std::string path(base_utf8);

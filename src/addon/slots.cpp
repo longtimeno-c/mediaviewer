@@ -471,6 +471,7 @@ std::uint64_t slot_registry::request_info(const std::string& path, const std::st
     info_.clear();
     info_generation_ = g;
     info_path_ = path;
+    open_path_.clear();
     info_location_text_ = location_text;
     info_theme_ = theme;
     info_width_pt_ = width_pt;
@@ -552,6 +553,7 @@ void slot_registry::clear_info() {
     info_generation_ = 0;
     info_path_.clear();
     info_location_text_.clear();
+    open_path_.clear();
   }
   if (had) notify(slot_changed_info);
 }
@@ -1056,6 +1058,12 @@ std::string slot_registry::info_json() const {
         .end_object();
   }
   w.end_array();
+  if (!open_path_.empty()) {
+    w.key("open").begin_object();
+    w.key("path").string(open_path_);
+    w.key("revision").integer(static_cast<std::int64_t>(open_revision_));
+    w.end_object();
+  }
   w.end_object();
   return w.take();
 }
@@ -1485,6 +1493,49 @@ status slot_registry::show_screen(const std::string& addon_id, const std::string
   }
   if (st == status::ok) notify(slot_changed_screens);
   return st;
+}
+
+// ---- #601: select this path ------------------------------------------------------------
+
+namespace {
+// The folder part of a path, either separator (Windows hosts hand over both).
+std::string_view folder_of(std::string_view path) {
+  const auto cut = path.find_last_of("/\\");
+  return cut == std::string_view::npos ? std::string_view{} : path.substr(0, cut);
+}
+bool same_folder(std::string_view a, std::string_view b) {
+  if (a.size() != b.size()) return false;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    const char x = a[i] == '\\' ? '/' : a[i];
+    const char y = b[i] == '\\' ? '/' : b[i];
+    if (x != y) return false;
+  }
+  return true;
+}
+}  // namespace
+
+status slot_registry::open_item(const std::string& addon_id, const std::string& screen_id, std::uint64_t generation,
+                                const std::string& path) {
+  {
+    std::lock_guard lock(m_);
+    status why = status::ok;
+    screen_state* st = addressed(addon_id, screen_id, generation, why);
+    if (!st) return why;
+    if (st->place != screen_place::info_section) return status::invalid_arg;
+    // A file of the folder of the file on screen, by name: never a folder
+    // itself, a parent, a relative step or a Photos library key.
+    const std::string_view dir = folder_of(path);
+    const std::string_view name = path.size() > dir.size() ? std::string_view(path).substr(dir.size() + 1) : "";
+    if (dir.empty() || name.empty() || name == "." || name == ".." || path.size() > 4096 ||
+        !json::detail::valid_utf8(path) || path.find('\0') != std::string::npos ||
+        !same_folder(dir, folder_of(info_path_))) {
+      return status::invalid_arg;
+    }
+    open_path_ = path;
+    ++open_revision_;
+  }
+  notify(slot_changed_info);
+  return status::ok;
 }
 
 // ---- #452: notices and keep-alive ---------------------------------------------------

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Crypto.Signers;
@@ -50,7 +51,61 @@ public readonly record struct ReleaseVersion(int Major, int Minor, int Patch) : 
 
 public sealed record ManifestPackage(string File, string Sha256, long Size, string Kind);
 
-/// <summary>The signed update manifest (schema 1). Only ever built from verified bytes.</summary>
+/// <summary>
+/// #620: the short "What's new" a manifest may carry (<c>notes</c>), shown in the
+/// "Update ready — restart" tooltip. Signed with the rest of the manifest, so no
+/// request fetches it. The rule is tools/package/whats_new.py's, which writes it:
+/// one to three non-empty lines joined by <c>\n</c>, at most 400 UTF-8 bytes, no
+/// leading or trailing space on a line, no link, and none of a fixed list of
+/// invisible or control characters (fixed, so every .NET runtime agrees).
+/// </summary>
+public static class ManifestNotes
+{
+    public const int MaxBytes = 400;
+    public const int MaxLines = 3;
+
+    private static readonly string[] LinkMarkers = { "://", "www.", "mailto:" };
+
+    private static bool Forbidden(char c) =>
+        c < 0x20 || c == 0x7F || (c >= 0x80 && c <= 0x9F) || c == 0x061C ||
+        (c >= 0x200B && c <= 0x200F) || (c >= 0x2028 && c <= 0x202E) || (c >= 0x2060 && c <= 0x2069) ||
+        c == 0xFEFF;
+
+    public static bool IsValid(string? notes)
+    {
+        if (string.IsNullOrEmpty(notes)) return false;
+        // Surrogates first: a lone one has no UTF-8 form to count.
+        for (int i = 0; i < notes.Length; i++)
+        {
+            char c = notes[i];
+            if (char.IsHighSurrogate(c))
+            {
+                if (i + 1 >= notes.Length || !char.IsLowSurrogate(notes[i + 1])) return false;
+                i++;
+            }
+            else if (char.IsLowSurrogate(c)) return false;
+            else if (c != '\n' && Forbidden(c)) return false;
+        }
+        if (Encoding.UTF8.GetByteCount(notes) > MaxBytes) return false;
+        string[] lines = notes.Split('\n');
+        if (lines.Length > MaxLines) return false;
+        foreach (string line in lines)
+        {
+            if (line.Length == 0 || line[0] == ' ' || line[^1] == ' ') return false;
+        }
+        foreach (string marker in LinkMarkers)
+        {
+            if (notes.Contains(marker, StringComparison.OrdinalIgnoreCase)) return false;
+        }
+        return true;
+    }
+}
+
+/// <summary>
+/// The signed update manifest. Only ever built from verified bytes. Schema 1 and 2
+/// have the same shape; both may carry the optional <see cref="Notes"/> (#620,
+/// docs/design/13 "What's new"), which readers before it ignore.
+/// </summary>
 public sealed record UpdateManifest(
     int Schema,
     string Channel,
@@ -58,7 +113,8 @@ public sealed record UpdateManifest(
     ReleaseVersion MinVersion,
     IReadOnlyList<ReleaseVersion> Blocklist,
     DateTimeOffset ReleasedAt,
-    IReadOnlyList<ManifestPackage> Packages)
+    IReadOnlyList<ManifestPackage> Packages,
+    string? Notes = null)
 {
     public ManifestPackage? FindPackage(string fileName) =>
         Packages.FirstOrDefault(p => string.Equals(p.File, fileName, StringComparison.OrdinalIgnoreCase));
@@ -101,10 +157,24 @@ public sealed record UpdateManifest(
                     !size.TryGetInt64(out long sizeValue) || sizeValue <= 0) return null;
                 packages.Add(new ManifestPackage(file, sha!.ToLowerInvariant(), sizeValue, kind));
             }
-            return new UpdateManifest(schemaValue, channel, version, minVersion, blocklist, released, packages);
+            // Optional; present means a string that meets the rule, else the
+            // whole manifest is malformed (the release tool checks it first).
+            string? notes = null;
+            if (root.TryGetProperty("notes", out JsonElement n))
+            {
+                if (n.ValueKind != JsonValueKind.String) return null;
+                notes = n.GetString();
+                if (!ManifestNotes.IsValid(notes)) return null;
+            }
+            return new UpdateManifest(schemaValue, channel, version, minVersion, blocklist, released, packages, notes);
         }
         catch (JsonException)
         {
+            return null;
+        }
+        catch (InvalidOperationException)
+        {
+            // GetString of an escaped lone surrogate.
             return null;
         }
     }
@@ -153,7 +223,12 @@ public sealed record ManifestDecision(
 /// </summary>
 public static class ManifestVerifier
 {
-    public const int SupportedSchema = 1;
+    /// <summary>
+    /// Schemas this reader accepts. 2 is 1's shape with <c>notes</c> defined (#620); the
+    /// release tool writes 1 until no installed reader refuses 2 (docs/design/12, 2026-11-02).
+    /// </summary>
+    public const int MinSchema = 1;
+    public const int SupportedSchema = 2;
 
     /// <summary>Ed25519, detached, over the exact manifest bytes.</summary>
     public static bool VerifySignature(ReadOnlySpan<byte> manifest, ReadOnlySpan<byte> signature, ReadOnlySpan<byte> publicKey)
@@ -191,7 +266,7 @@ public static class ManifestVerifier
         // 2. Shape.
         UpdateManifest? m = UpdateManifest.Parse(manifestBytes);
         if (m is null) return ManifestDecision.Reject(ManifestRejection.Malformed);
-        if (m.Schema != SupportedSchema) return ManifestDecision.Reject(ManifestRejection.UnsupportedSchema, m);
+        if (m.Schema < MinSchema || m.Schema > SupportedSchema) return ManifestDecision.Reject(ManifestRejection.UnsupportedSchema, m);
         if (!string.Equals(m.Channel, expectedChannel, StringComparison.Ordinal))
             return ManifestDecision.Reject(ManifestRejection.ChannelMismatch, m);
 

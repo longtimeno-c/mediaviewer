@@ -221,6 +221,79 @@ expected remove_tree(std::string_view utf8_dir) {
   return remove_tree_w(dir) ? expected{} : err(status::io);
 }
 
+result<std::vector<dir_child>> list_children(std::string_view utf8_dir, bool with_directories) {
+  std::wstring dir = wide(utf8_dir);
+  if (dir.empty()) return err(status::invalid_arg);
+  while (dir.size() > 3 && (dir.back() == L'\\' || dir.back() == L'/')) dir.pop_back();
+  std::vector<dir_child> out;
+  WIN32_FIND_DATAW fd{};
+  const std::wstring glob = dir + L"\\*";
+  // FindExInfoBasic + LARGE_FETCH: size and write time come with the entry,
+  // no open or stat per file.
+  HANDLE find = ::FindFirstFileExW(glob.c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch,
+                                   nullptr, FIND_FIRST_EX_LARGE_FETCH);
+  if (find == INVALID_HANDLE_VALUE) {
+    const DWORD e = ::GetLastError();
+    if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) return out;
+    return err(status::io);
+  }
+  do {
+    if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;  // a link: never ours
+    const bool is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    if (is_dir && !with_directories) continue;
+    const std::wstring_view wname(fd.cFileName);
+    if (wname == L"." || wname == L"..") continue;
+    dir_child f;
+    f.name = narrow(wname);
+    if (f.name.empty()) continue;
+    f.is_directory = is_dir;
+    f.size = (static_cast<std::uint64_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
+    f.mtime_unix = unix_from_filetime(fd.ftLastWriteTime);
+    out.push_back(std::move(f));
+  } while (::FindNextFileW(find, &fd));
+  ::FindClose(find);
+  return out;
+}
+
+tree_usage tree_size(std::string_view utf8_path) {
+  tree_usage total;
+  std::wstring root = wide(utf8_path);
+  if (root.empty()) return total;
+  while (root.size() > 3 && (root.back() == L'\\' || root.back() == L'/')) root.pop_back();
+  WIN32_FILE_ATTRIBUTE_DATA data{};
+  if (!::GetFileAttributesExW(root.c_str(), GetFileExInfoStandard, &data)) return total;
+  // A junction or symlink leads out of our folder: it counts as nothing.
+  if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) return total;
+  if (!(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+    total.bytes = (static_cast<std::uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+    total.files = 1;
+    return total;
+  }
+  std::vector<std::wstring> pending{root};
+  while (!pending.empty()) {
+    const std::wstring dir = std::move(pending.back());
+    pending.pop_back();
+    WIN32_FIND_DATAW fd{};
+    const std::wstring glob = dir + L"\\*";
+    HANDLE find = ::FindFirstFileExW(glob.c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch,
+                                     nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    if (find == INVALID_HANDLE_VALUE) continue;
+    do {
+      const std::wstring_view name(fd.cFileName);
+      if (name == L"." || name == L"..") continue;
+      if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+      if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+        pending.push_back(dir + L"\\" + std::wstring(name));
+      } else {
+        total.bytes += (static_cast<std::uint64_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
+        ++total.files;
+      }
+    } while (::FindNextFileW(find, &fd));
+    ::FindClose(find);
+  }
+  return total;
+}
+
 result<std::string> make_directories_beneath(std::string_view base_utf8, std::string_view relative_slash) {
   std::wstring base = wide(base_utf8);
   if (base.empty()) return err(status::invalid_arg);

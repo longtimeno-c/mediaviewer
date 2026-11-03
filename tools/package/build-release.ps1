@@ -40,6 +40,9 @@ param(
     [string]$Blocklist = "",
     # Oldest version allowed to stay on the channel.
     [string]$MinVersion,
+    # #620: the update's "What's new" (UTF-8, from tools/package/whats_new.py),
+    # signed into the manifest's notes. Optional; none leaves the field out.
+    [string]$NotesFile,
     [string]$Iscc,
     # A local copy of the .NET runtime ZIP, for an offline or air-gapped
     # build. Must be the exact pinned version below; its SHA-256 is checked
@@ -319,7 +322,12 @@ $tool = Join-Path $repo "src.managed\MediaViewer.Updater.Tests"
 # "-" for an empty blocklist: Windows PowerShell 5.1 drops an empty string
 # argument to a native command, which shifted $channel into the blocklist slot.
 $blockArg = if ($Blocklist) { $Blocklist } else { '-' }
-& dotnet run --project $tool -c Release -- manifest $releases $Version $MinVersion $blockArg $channel
+$notesArg = '-'
+if ($NotesFile) {
+    if (-not (Test-Path -LiteralPath $NotesFile -PathType Leaf)) { Fail "Notes file not found: $NotesFile" }
+    $notesArg = (Resolve-Path -LiteralPath $NotesFile).Path
+}
+& dotnet run --project $tool -c Release -- manifest $releases $Version $MinVersion $blockArg $channel $notesArg
 if ($LASTEXITCODE) { Fail "manifest generation failed" }
 $manifest = Join-Path $releases "mediaviewer-manifest.json"
 if ($ManifestKey) {

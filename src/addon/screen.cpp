@@ -749,7 +749,7 @@ error tree::check_event(std::string_view node_id, std::uint32_t kind, std::strin
   if (!root_) return error::no_such_node;
   node* n = find_mut(*root_, node_id);
   if (!n) return error::no_such_node;
-  // A surface takes zoom, pan and double-click only when its tree says so.
+  // A surface takes zoom, pan, double-click and click only when its tree says so.
   const bool live_surface =
       n->type == node_type::surface && n->props.find("interactive") &&
       (n->props.find("interactive")->k == json::kind::object || n->props.boolean("interactive").value_or(false));
@@ -776,6 +776,7 @@ error tree::check_event(std::string_view node_id, std::uint32_t kind, std::strin
         return v->o.size() == 2 && field("dx", -10.0, 10.0) && field("dy", -10.0, 10.0) ? error::none
                                                                                        : error::bad_value;
       case ev_double:
+      case ev_tap:
         return v->o.size() == 2 && field("x", 0.0, 1.0) && field("y", 0.0, 1.0) ? error::none
                                                                                : error::bad_value;
       default:

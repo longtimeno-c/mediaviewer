@@ -135,6 +135,8 @@ public static partial class IslandHost
         public const int CopyPath = 147;
         public const int CopyFlattened = 148;
         public const int Share = 149;
+        // Issue #614: Ctrl+P's Print… (the photo on screen, or the marks as a sheet).
+        public const int Print = 184;
         // Keyed commands the View menu and the panes' close buttons also send
         // (mirrors command_id; chrome_host.h pins both with static_asserts).
         public const int FolderTree = 78;
@@ -151,19 +153,19 @@ public static partial class IslandHost
         // The full Adjust list (docs/plans/edit-adjust.md slice 1): sliders in
         // edit::adjust_param order from highlights, then a section's Auto and
         // Reset, whose arg is the edit::adjust_section.
-        public const int AdjustHighlights = 184;
-        public const int AdjustShadows = 185;
-        public const int AdjustWhites = 186;
-        public const int AdjustBlacks = 187;
-        public const int AdjustVibrance = 188;
-        public const int AdjustMono = 189;
-        public const int AdjustMonoFilter = 190;
-        public const int AdjustMonoTone = 191;
-        public const int AdjustVignette = 192;
-        public const int AdjustVignetteRadius = 193;
-        public const int AdjustVignetteSoftness = 194;
-        public const int AdjustAuto = 195;
-        public const int AdjustResetSection = 196;
+        public const int AdjustHighlights = 185;
+        public const int AdjustShadows = 186;
+        public const int AdjustWhites = 187;
+        public const int AdjustBlacks = 188;
+        public const int AdjustVibrance = 189;
+        public const int AdjustMono = 190;
+        public const int AdjustMonoFilter = 191;
+        public const int AdjustMonoTone = 192;
+        public const int AdjustVignette = 193;
+        public const int AdjustVignetteRadius = 194;
+        public const int AdjustVignetteSoftness = 195;
+        public const int AdjustAuto = 196;
+        public const int AdjustResetSection = 197;
         // PR 12: the pane's stars post the rating keys' ids (commands.h
         // set_rating_0..5); 0 clears.
         public const int SetRating0 = 127;
