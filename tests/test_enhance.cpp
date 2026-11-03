@@ -32,6 +32,7 @@
 
 #include "addons/ai/sha256.h"
 #include "addons/enhance/diffusion.h"
+#include "addons/enhance/remove.h"
 #include "addons/enhance/engine.h"
 #include "addons/enhance/picture_job.h"
 #include "addons/enhance/preview.h"
@@ -1348,6 +1349,84 @@ TEST_CASE("restyle: the shipped model's qualities", "[enhance][restyle]") {
     last = *edge;
     CHECK(one->integer("run_bytes").value_or(0) > 0);
   }
+}
+
+TEST_CASE("remove: the box around a stroke, the crop, and only brushed pixels pasted back", "[enhance][remove]") {
+  mask8 mask;
+  mask.width = 1200;
+  mask.height = 800;
+  mask.a.assign(std::size_t{mask.width} * mask.height, 0);
+  CHECK_FALSE(remove_box(mask));
+  // A 40 x 20 stroke at (600, 400).
+  for (std::uint32_t y = 400; y < 420; ++y) {
+    for (std::uint32_t x = 600; x < 640; ++x) mask.a[std::size_t{y} * mask.width + x] = 255;
+  }
+  auto box = remove_box(mask);
+  REQUIRE(box);
+  // Context of at least kRemoveMinContext each side, square, inside the photo.
+  CHECK(box->width == box->height);
+  CHECK(box->x + kRemoveMinContext <= 600);
+  CHECK(box->x + box->width >= 640 + kRemoveMinContext);
+  CHECK(box->y + kRemoveMinContext <= 400);
+  CHECK(box->y + box->height >= 420 + kRemoveMinContext);
+
+  // At the photo's corner: shifted inside, still square where it fits.
+  mask8 corner = mask;
+  std::fill(corner.a.begin(), corner.a.end(), 0);
+  for (std::uint32_t y = 0; y < 30; ++y) {
+    for (std::uint32_t x = 1170; x < 1200; ++x) corner.a[std::size_t{y} * corner.width + x] = 255;
+  }
+  const auto edge = remove_box(corner);
+  REQUIRE(edge);
+  CHECK(edge->x + edge->width == 1200);
+  CHECK(edge->y == 0);
+  CHECK(edge->width == edge->height);
+  // A stroke taller than the photo allows square: as tall as the photo.
+  mask8 tall = mask;
+  std::fill(tall.a.begin(), tall.a.end(), 0);
+  for (std::uint32_t y = 10; y < 790; ++y) tall.a[std::size_t{y} * tall.width + 100] = 255;
+  const auto t = remove_box(tall);
+  REQUIRE(t);
+  CHECK(t->y == 0);
+  CHECK(t->height == 800);
+
+  rgb8 photo;
+  photo.width = mask.width;
+  photo.height = mask.height;
+  photo.rgb.resize(std::size_t{photo.width} * photo.height * 3);
+  for (std::size_t i = 0; i < photo.rgb.size(); ++i) photo.rgb[i] = static_cast<std::uint8_t>(i * 7 % 251);
+  const rgb8 original = photo;
+  const rgb8 crop = crop_rgb(photo, *box);
+  CHECK(crop.rgb[0] == photo.rgb[(std::size_t{box->y} * photo.width + box->x) * 3]);
+  const mask8 small = crop_mask(mask, *box, 512, 512);
+  CHECK(small.width == 512);
+  CHECK(std::count(small.a.begin(), small.a.end(), 255) > 0);
+  CHECK(std::all_of(small.a.begin(), small.a.end(), [](std::uint8_t v) { return v == 0 || v == 255; }));
+
+  rgb8 filled = crop;
+  std::fill(filled.rgb.begin(), filled.rgb.end(), std::uint8_t{200});
+  const std::uint32_t feather = 4;
+  paste_back(photo, *box, filled, mask, feather);
+  std::size_t changed_far = 0;
+  for (std::uint32_t y = 0; y < photo.height; ++y) {
+    for (std::uint32_t x = 0; x < photo.width; ++x) {
+      const std::size_t at = (std::size_t{y} * photo.width + x) * 3;
+      const bool brushed = mask.a[std::size_t{y} * photo.width + x] > 127;
+      const bool near = x + 2 * feather >= 600 && x < 640 + 2 * feather && y + 2 * feather >= 400 &&
+                        y < 420 + 2 * feather;
+      if (brushed) {
+        CHECK(photo.rgb[at] == 200);
+      } else if (!near) {
+        changed_far += photo.rgb[at] != original.rgb[at] || photo.rgb[at + 1] != original.rgb[at + 1] ||
+                       photo.rgb[at + 2] != original.rgb[at + 2];
+      }
+    }
+  }
+  CHECK(changed_far == 0);
+  // The feather: just outside the stroke is a blend, not the fill.
+  const std::size_t just_out = (std::size_t{410} * photo.width + 642) * 3;
+  CHECK(photo.rgb[just_out] != 200);
+  CHECK(photo.rgb[just_out] != original.rgb[just_out]);
 }
 
 TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {
