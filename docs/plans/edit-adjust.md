@@ -20,7 +20,8 @@ stack.
    [12](../design/12-decision-log.md), and the People opt-in text changed to say so. Without the
    yes, slice 6 runs on the burst alone (no identity: same position in neighbouring frames), which
    is weaker but uses no face data.
-2. **A generative model in Enhance** (slice 5b): which weights, under which licence. Most
+2. **A generative model in Enhance** (slice 5b): which weights, under which licence. **Answered
+   2026-11-03: OpenRAIL-M is acceptable**; the spike is below (slice 5b, "Spike"). Most
    instruction-editing and identity-preserving face models are non-commercial or OpenRAIL-M with use
    restrictions; [11](../design/11-licensing.md) has no rule for model weights in a first-party
    add-on yet.
@@ -148,6 +149,39 @@ Tested end to end in `mv_ai_tests` `[enhance][still]` with a stand-in model. As 
   pass; on Windows the bundled ONNX Runtime is CPU only, so minutes. It writes a new file like
   every Enhance run. Owner call 2 first, and a spike measuring a candidate on both machines before
   it is planned in detail.
+
+#### Spike: InstructPix2Pix (2026-11-03)
+
+Weights `timbrooks/instruct-pix2pix` (CreativeML OpenRAIL-M, accepted by the owner), fp16, run
+through `diffusers` 0.42 on PyTorch MPS (Apple M-series), 20 Euler-ancestral steps, image guidance
+1.5, text guidance 7.5, on the sample coastal photo. Kept outside the repo
+(`~/Dev/.mv-toolchain/genedit`).
+
+| | 512 px long edge | 768 px long edge |
+|---|---|---|
+| Time a request (warm) | 9.3–9.5 s (16 s first) | 36–38 s |
+| GPU memory (driver) | 4.2 GB | 9.6 GB |
+| Weights on disk | 2.0 GB | |
+
+What it does well: whole-picture restyles. "Make it a snowy winter day" turned the scene
+convincingly to winter (snow on the rocks, colder water). What it does not do: removal. "Remove
+the rocks" tinted the rocks green and removed nothing; it has no notion of filling in behind an
+object. Its output is at most ~768 px, far under a camera's 12–45 MP.
+
+Recommendation, for the owner:
+
+1. If built, it is an Enhance kind ("Restyle"), never the Adjust pane's own path: it is slow, large
+   and approximate, and the words→sliders layer already covers tone and colour requests at once.
+2. Run at 512 px (4 GB) and carry its change back onto the full-resolution photo as low-frequency
+   colour and tone (the ratio of the edited to the original small picture, blurred, applied to
+   the original), so the photo keeps its own detail; a full-size copy of a diffusion output would
+   look soft. Offer it only on machines with 8 GB+ of unified memory or a GPU with 6 GB.
+3. On Windows the bundled ONNX Runtime is the CPU build: not measured here (no Windows machine);
+   expect minutes a request until a DirectML or CUDA piece exists. Measure before offering it.
+4. Removal ("remove the person behind her") needs a different model: an inpainting model with a
+   brush mask (LaMa is Apache-2.0), planned with local adjustments, not here.
+5. OpenRAIL-M's use restrictions must be passed on to users (shown with the model's credit in
+   Settings → Add-ons → Enhance, as the other models' licences are).
 
 ### 6. Eyes open from the same moment ("Best take") — built 2026-11-02
 
