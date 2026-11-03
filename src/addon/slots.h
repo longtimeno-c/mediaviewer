@@ -183,8 +183,10 @@ class slot_registry {
   //  "items":[{"addon","id","slot":"bar|path|context|status","label","symbol","opens","target"}],
   //  "badges":[{"addon","id","key","label","symbol"}],"local_search":bool}
   [[nodiscard]] std::string contributions_json() const;
-  // {"generation","path","sections":[{"addon","id","title","revision","tree":{..}}]}
-  // -- only the sections that have answered for the current file, in order.
+  // {"generation","path","sections":[{"addon","id","title","revision","tree":{..}}],
+  //  "open":{"path","revision"}?}
+  // -- only the sections that have answered for the current file, in order;
+  // "open" while a section's open_item is waiting (#601).
   [[nodiscard]] std::string info_json() const;
   // [{"addon","id","title","place","width","height","generation","revision","pixels","tree":{..}|null}]
   [[nodiscard]] std::string screens_json() const;
@@ -244,6 +246,15 @@ class slot_registry {
                      std::uint64_t generation, std::vector<std::string> paths, bool replace);
   status post_status(const std::string& addon_id, const std::string& item_id, std::string text);
   status show_screen(const std::string& addon_id, const std::string& screen_id, bool show);
+  // #601 (host table open_item): `addon_id`'s info section `screen_id`, asked
+  // under `generation` for the file on screen, asks the viewer to show `path`,
+  // a file of that file's own folder (a Places folder-map dot). The request
+  // rides in info_json's "open" ({"path","revision"}; the revision only grows)
+  // until the next file is asked for; the chrome opens it once, and only if
+  // its listing holds it. cancelled for a stale generation, invalid_arg for a
+  // path outside the folder or a screen that is not an info section.
+  status open_item(const std::string& addon_id, const std::string& screen_id, std::uint64_t generation,
+                   const std::string& path);
   // #452 (host table notice_post / notice_authorize / keep_alive).
   struct notice_fields {
     std::string screen, title, body, action, action_label;
@@ -312,6 +323,10 @@ class slot_registry {
   float info_width_pt_ = 0;
   float info_scale_ = 1.0f;
   std::map<std::pair<std::string, std::string>, screen_state> info_;  // (addon, section)
+  // #601: the file an info section asked the viewer to show; cleared when the
+  // next file is asked for. The revision only grows, so a chrome opens it once.
+  std::string open_path_;
+  std::uint64_t open_revision_ = 0;
   // Windows, panes and sheets that are open.
   std::map<std::pair<std::string, std::string>, screen_state> screens_;
   search_state search_[2];  // [0] files, [1] local

@@ -266,6 +266,49 @@ mv_status MV_CALL t_watch(void* host, void(MV_CALL* cb)(void*, std::uint32_t, co
   });
 }
 
+void on_io_tree(void* user, std::uint32_t root, std::string_view dir, std::uint32_t flags) {
+  auto& t = *static_cast<host_table::tree_state*>(user);
+  void(MV_CALL* cb)(void*, std::uint32_t, const char*, std::uint32_t) = nullptr;
+  void* cb_user = nullptr;
+  {
+    std::lock_guard lock(t.m);
+    cb = t.cb;
+    cb_user = t.user;
+  }
+  if (!cb) return;
+  const std::string z(dir);
+  cb(cb_user, root, z.c_str(), flags);
+}
+
+mv_status MV_CALL t_watch_tree(void* host, const char* const* roots, uint32_t count,
+                               void(MV_CALL* cb)(void*, uint32_t, const char*, uint32_t), void* user,
+                               uint8_t* out_ok) {
+  return guarded([&] {
+    if (out_ok) std::fill(out_ok, out_ok + count, std::uint8_t{0});
+    if (count == 0 || !cb) {
+      self(host).stop_trees();
+      return MV_OK;
+    }
+    if (!roots) return MV_ERR_INVALID_ARG;
+    std::vector<std::string> list;
+    list.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) list.emplace_back(roots[i] ? roots[i] : "");
+    auto& t = self(host).trees;
+    std::lock_guard control(t.control);
+    {
+      std::lock_guard lock(t.m);
+      t.cb = cb;
+      t.user = user;
+    }
+    std::vector<bool> ok;
+    const auto started = t.watcher.start(list, &on_io_tree, &t, ok);
+    if (out_ok) {
+      for (uint32_t i = 0; i < count && i < ok.size(); ++i) out_ok[i] = ok[i] ? 1 : 0;
+    }
+    return started ? MV_OK : to_mv(started.error());
+  });
+}
+
 mv_status MV_CALL t_capture(void* host, const char* path, mv_addon_capture* out) {
   return guarded([&] {
     if (!path || !out) return MV_ERR_INVALID_ARG;
@@ -731,6 +774,15 @@ mv_status MV_CALL t_screen_show(void* host, const char* screen, uint32_t show) {
   });
 }
 
+// #601: a Places folder-map dot asks the viewer to show its file.
+mv_status MV_CALL t_open_item(void* host, const char* screen, uint64_t g, const char* path) {
+  return guarded([&] {
+    if (!screen || !path) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    return to_mv(t.slots().open_item(t.addon_id(), screen, g, path));
+  });
+}
+
 mv_status MV_CALL t_location_of(void* host, const char* path, mv_addon_location* out) {
   return guarded([&] {
     if (!path || !out) return MV_ERR_INVALID_ARG;
@@ -1180,6 +1232,66 @@ mv_status MV_CALL t_still_write(void* host, const char* source, const uint8_t* r
   });
 }
 
+// #606: the last routes asked for, by path + size + mtime + cap. Places asks
+// for the file on screen on every info request (a theme change, a settings
+// change), and search asks again for a clip a later query passes over; the
+// telemetry read is a few hundred small reads, so a repeat is a lookup.
+struct route_entry {
+  std::string path;
+  std::uint64_t size = 0;
+  std::int64_t mtime = 0;
+  std::uint32_t cap = 0;
+  std::vector<mv_addon_route_point> points;
+};
+std::mutex& route_cache_m() {
+  static std::mutex m;
+  return m;
+}
+std::vector<route_entry>& route_cache() {
+  static std::vector<route_entry> c;  // most recent last
+  return c;
+}
+constexpr std::size_t kRouteCacheEntries = 32;
+
+mv_status MV_CALL t_route_of(void* host, const char* path, mv_addon_route_point* out, uint32_t capacity,
+                             uint32_t* out_count) {
+  return guarded([&] {
+    if (!path || !out_count || (capacity > 0 && !out)) return MV_ERR_INVALID_ARG;
+    *out_count = 0;
+    if (capacity == 0) return MV_OK;
+    const auto& fn = self(host).services().route;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto st = io::stat_path(path);
+    if (!st || st->is_directory) return MV_ERR_IO;
+    const auto give = [&](const std::vector<mv_addon_route_point>& pts) {
+      const auto n = static_cast<uint32_t>(std::min<std::size_t>(pts.size(), capacity));
+      std::copy_n(pts.begin(), n, out);
+      *out_count = n;
+      return MV_OK;
+    };
+    {
+      std::lock_guard lock(route_cache_m());
+      auto& c = route_cache();
+      for (auto it = c.begin(); it != c.end(); ++it) {
+        if (it->path == path && it->size == st->size && it->mtime == st->mtime_unix && it->cap == capacity) {
+          route_entry e = std::move(*it);
+          c.erase(it);
+          c.push_back(std::move(e));
+          return give(c.back().points);
+        }
+      }
+    }
+    // Read outside the lock: another add-on's ask for another file goes on.
+    auto r = fn(path, capacity);
+    if (!r) return to_mv(r.error());
+    std::lock_guard lock(route_cache_m());
+    auto& c = route_cache();
+    if (c.size() >= kRouteCacheEntries) c.erase(c.begin());
+    c.push_back(route_entry{path, st->size, st->mtime_unix, capacity, std::move(*r)});
+    return give(c.back().points);
+  });
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -1278,11 +1390,29 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
     api_.still_close = &t_still_close;
   }
   if (svc_.write_still) api_.still_write = &t_still_write;
+  api_.open_item = &t_open_item;
+  if (svc_.route) api_.route_of = &t_route_of;  // #606
+  api_.watch_tree = &t_watch_tree;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }
 
-host_table::~host_table() { stop_watch(); }
+host_table::~host_table() {
+  stop_watch();
+  stop_trees();
+}
+
+void host_table::stop_trees() noexcept {
+  std::lock_guard control(trees.control);
+  {
+    std::lock_guard lock(trees.m);
+    trees.cb = nullptr;
+    trees.user = nullptr;
+  }
+  // Not under `m`: stop() drains the watcher thread, which may be inside
+  // on_io_tree waiting for `m`.
+  trees.watcher.stop();
+}
 
 void host_table::stop_watch() noexcept {
   std::lock_guard control(watch.control);
@@ -1322,9 +1452,12 @@ loaded_addon::~loaded_addon() {
   // The add-on stops its threads before its code goes away, and the host
   // table (whose thunks it calls) outlives both.
   if (api_.shutdown && api_.addon) api_.shutdown(api_.addon);
-  // An add-on that left its volume callback registered must not be called
-  // after its code is unmapped.
-  if (table_) table_->stop_watch();
+  // An add-on that left its volume or tree callback registered must not be
+  // called after its code is unmapped.
+  if (table_) {
+    table_->stop_watch();
+    table_->stop_trees();
+  }
   lib_.close();
   table_.reset();
 }

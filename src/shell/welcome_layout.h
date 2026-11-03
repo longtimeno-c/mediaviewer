@@ -29,6 +29,9 @@ struct welcome_recents {
   // while it is added in Settings. Windows: OneDrive, while it is set up on
   // this PC (2026-10-07). The name is the Mac's, from before Windows had one.
   bool icloud = false;
+  // Issue #617: the first `pinned` folder rows (after the cloud row, if any)
+  // are pinned folders, drawn with a pin; the rest are recents.
+  std::uint8_t pinned = 0;
   char label[kMax][96] = {};
   char where[kMax][192] = {};
 };

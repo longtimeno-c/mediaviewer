@@ -151,6 +151,7 @@ bool tag_facts(const std::string& path, mv_addon_tag_facts& out) {
     out.flags |= MV_ADDON_TAG_HAS_LOCATION;
     out.lat = f.where->lat;
     out.lon = f.where->lon;
+    if (f.has_route) out.flags |= MV_ADDON_TAG_HAS_ROUTE;  // #606: the first fix of a telemetry route
   }
   if (f.ai_generated) out.flags |= MV_ADDON_TAG_AI_GENERATED;
   put(out.camera_utf8, sizeof(out.camera_utf8), f.camera);
@@ -706,7 +707,8 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
       if (!row || !row->facts.where) return std::nullopt;
       const mv::meta::geo_point* fix = &*row->facts.where;
       mv_addon_location l{};
-      l.has = 1;
+      l.has = MV_ADDON_LOCATION_HAS;
+      if (row->facts.has_route) l.has |= MV_ADDON_LOCATION_ROUTE;  // #606: route_of has the rest
       l.lat = fix->lat;
       l.lon = fix->lon;
       if (fix->altitude) {
@@ -731,6 +733,7 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     svc.open_clip_writer = &mv::addon::media::open_clip_writer;  // #297 slice 5
     svc.full_still = &mv::addon::media::full_still;    // #297 slice 3
     svc.write_still = &mv::addon::media::write_still;  // #297 slice 3
+    svc.route = &mv::addon::media::route;              // #606
     // Find duplicates (PR 54): the Recycle Bin, refused where there is none.
     svc.recycle = [](const std::string& path) -> mv::result<bool> {
       auto r = mv::io::recycle_file(path);

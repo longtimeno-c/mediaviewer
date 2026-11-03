@@ -262,6 +262,11 @@ struct engine_deps {
   // At most one change-driven Photos library rescan per this many seconds
   // (PhotoKit reports an iCloud sync as a burst of changes).
   double photos_rescan_gap_s = 10;
+  // docs/plans/index-watcher.md: the folders a watched root's host said
+  // changed are walked once the changes have been quiet this long, or this
+  // long after the first at most (a long copy).
+  double tree_quiet_s = 2;
+  double tree_max_wait_s = 10;
 };
 
 // How an engine runs. The app's engine indexes and owns the index; a reader
@@ -652,15 +657,42 @@ class engine {
   // scans
   void scan_root(const root_row& root);
   void scan_photos(const root_row& root);
+  // One folder of `root` into `batch` as scan_root walks it (`depth` as
+  // host::walk), with its pairs; the walk's own result (cancelled: stopping).
+  struct walk_kinds {
+    bool audio = false;      // #355
+    bool documents = false;  // #354
+  };
+  [[nodiscard]] expected walk_dir(const root_row& root, const std::string& dir, int depth, walk_kinds kinds,
+                                  std::int64_t gen, std::vector<index_db::seen_file>& batch,
+                                  std::vector<std::int64_t>& changed, bool& failed);
+  // docs/plans/index-watcher.md: walks only the folders the host said
+  // changed (MV_ADDON_TREE_* flags; a folder gone takes its rows with it).
+  void scan_dirs(const root_row& root, const std::map<std::string, std::uint32_t>& dirs);
+  // Tells the host which folder roots to watch when that changed (or, with
+  // `retry`, to try again those it could not). `fresh` reads the roots from
+  // the index rather than refresh_counts' copy (a walk is about to start).
+  // Control thread.
+  void sync_watch(bool retry, bool fresh);
+  static void MV_CALL on_tree_change(void* user, std::uint32_t root, const char* dir_utf8, std::uint32_t flags);
+  // The host's changes, once due (tree_quiet_s / tree_max_wait_s), walked
+  // by root: a root with too many, or that lost some, is walked whole.
+  void scan_changes(const std::map<std::string, std::uint32_t>& changes);
   // A scan's batch into the index and the asset map; false on a write error.
   bool see_batch(const root_row& root, std::vector<index_db::seen_file>& batch, std::int64_t gen,
                  std::vector<std::int64_t>& changed);
   // A scan's end: removed assets leave every index, changed ones their vectors.
   void end_root_scan(const root_row& root, std::int64_t gen, const std::vector<std::int64_t>& changed);
+  // end_root_scan's part after the index: `gone` and `changed` leave the
+  // matrices, faces and text rows.
+  void after_scan(const root_row& root, const std::vector<std::int64_t>& gone,
+                  const std::vector<std::int64_t>& changed);
   void forget_vectors(const std::vector<std::int64_t>& ids);
   // Whether an unavailable Photos asset is on this Mac now (the launch check).
   [[nodiscard]] bool photos_local(const asset_row& a) const;
-  void scan_all();
+  // Every enabled root not held; with `watched` false, not those the host
+  // watches either (the hourly backstop takes them, docs/plans/index-watcher.md).
+  void scan_all(bool watched = true);
   // #291: reads the tags of assets that have none yet (new, changed, or an
   // index migrated from schema 3) through the host's tag_facts, in batches,
   // yielding to the viewer. Resumable: the index's `tags` column is the
@@ -849,6 +881,10 @@ class engine {
   std::atomic<std::int64_t> photos_root_{0};
   std::atomic<bool> photos_readable_{false};
   std::atomic<bool> photos_changed_{false};  // PhotoKit said so; the control thread rescans
+  // Photos assets first seen this session (control thread): one that came
+  // only in iCloud is asked again at each change, not only at launch.
+  std::set<std::int64_t> photos_new_;
+  bool photos_note_new_ = false;  // this walk's additions are new (not the library's first walk)
   std::string data_dir_;
   std::unique_ptr<index_db> db_;
 
@@ -978,6 +1014,18 @@ class engine {
   std::condition_variable control_cv_;
   std::set<std::int64_t> rescan_roots_;
   bool rescan_all_ = true;
+  // What the host's watch said changed (control_m_): folder -> flags, and
+  // when the first and the last came (now_s()).
+  std::map<std::string, std::uint32_t> dirty_dirs_;
+  double dirty_first_ = 0;
+  double dirty_last_ = 0;
+  // The set last sent to watch_tree (control thread), and whether one is on.
+  std::vector<std::int64_t> watch_ids_;
+  std::vector<std::string> watch_paths_;
+  bool watching_ = false;
+  // Roots on a network share (control thread): the host may stop telling
+  // without an error, so they keep the 15-minute walk.
+  std::set<std::int64_t> network_roots_;
   std::atomic<bool> scanning_{true};  // the control thread is scanning (wait_idle)
   // The roots the control thread is walking now (control_m_; 0 = every root):
   // roots_json's "scanning", so Rescan shows it is working.
@@ -1043,6 +1091,9 @@ class engine {
   std::atomic<std::uint64_t> cloud_fetched_count_{0};
   // Roots whose last walk failed (unreadable, offline), under status_m_.
   std::set<std::int64_t> root_errors_;
+  // docs/plans/index-watcher.md: the folder roots the host watches for us
+  // (status_m_; roots_json's "watching", the backstop's skip).
+  std::set<std::int64_t> watched_roots_;
 
   // status
   mutable std::mutex status_m_;

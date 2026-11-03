@@ -3,11 +3,34 @@
 #include "player/poster.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <memory>
 
 #include "codec/card.h"
 #include "player/video_internal.h"
 
 namespace mv::player {
+
+// Here rather than in video_source.cpp (where the player also uses it) so the
+// Explorer thumbnail handler, which links this file alone, does not pull the
+// hardware decode path into its surrogate (issue #610).
+int stream_rotation_degrees(const AVStream* stream) noexcept {
+  if (!stream || !stream->codecpar) return 0;
+  const AVCodecParameters* p = stream->codecpar;
+  const AVPacketSideData* sd = av_packet_side_data_get(p->coded_side_data, p->nb_coded_side_data,
+                                                       AV_PKT_DATA_DISPLAYMATRIX);
+  if (sd == nullptr || sd->size < 9 * sizeof(std::int32_t)) return 0;
+  // av_display_rotation_get is counter-clockwise; a player turns the other way
+  // (the same convention as edit/clip_common.cpp's stream_rotation).
+  const double ccw = av_display_rotation_get(reinterpret_cast<const std::int32_t*>(sd->data));
+  if (ccw != ccw) return 0;  // NaN: a degenerate matrix
+  int cw = static_cast<int>(std::lround(-ccw / 90.0)) * 90;
+  cw %= 360;
+  if (cw < 0) cw += 360;
+  return cw;
+}
+
 namespace {
 
 // Clips very often open on black, a slate, or a fade. Landing 10 % in gives a
@@ -58,7 +81,106 @@ void rotate_rgba(poster_image& img, unsigned turns) {
   img.rgba.swap(out);
 }
 
+// --- byte_source -> AVIOContext (issue #610) ---------------------------------
+
+// FFmpeg's read size. Big enough that an MKV's cluster walk is a handful of
+// calls into the source (an IStream round trip each on Windows), small enough
+// that a surrogate holding four of these does not notice.
+constexpr int kIoBufferBytes = 64 * 1024;
+
+struct avio_state {
+  byte_source* source = nullptr;
+  const job_context* ctx = nullptr;
+  std::uint64_t size = 0;
+  std::uint64_t pos = 0;
+};
+
+int avio_read(void* opaque, std::uint8_t* buf, int buf_size) {
+  auto* s = static_cast<avio_state*>(opaque);
+  if (cancelled(s->ctx)) return AVERROR_EXIT;
+  if (buf_size <= 0) return AVERROR(EINVAL);
+  if (s->pos >= s->size) return AVERROR_EOF;
+  const std::uint64_t left = s->size - s->pos;
+  const std::size_t want =
+      static_cast<std::size_t>(std::min<std::uint64_t>(left, static_cast<std::uint64_t>(buf_size)));
+  const result<std::size_t> got = s->source->read_at(s->pos, std::span<std::uint8_t>(buf, want));
+  if (!got) return AVERROR(EIO);
+  if (got.value() == 0) return AVERROR_EOF;
+  const std::size_t n = std::min(got.value(), want);
+  s->pos += n;
+  return static_cast<int>(n);
+}
+
+std::int64_t avio_seek(void* opaque, std::int64_t offset, int whence) {
+  auto* s = static_cast<avio_state*>(opaque);
+  whence &= ~AVSEEK_FORCE;
+  if (whence == AVSEEK_SIZE) return static_cast<std::int64_t>(s->size);
+  std::int64_t base = 0;
+  if (whence == SEEK_CUR) {
+    base = static_cast<std::int64_t>(s->pos);
+  } else if (whence == SEEK_END) {
+    base = static_cast<std::int64_t>(s->size);
+  } else if (whence != SEEK_SET) {
+    return AVERROR(EINVAL);
+  }
+  // Past the end is allowed (a read there is EOF), before the start is not.
+  if (offset < 0 && -offset > base) return AVERROR(EINVAL);
+  s->pos = static_cast<std::uint64_t>(base + offset);
+  return static_cast<std::int64_t>(s->pos);
+}
+
+// Polled by FFmpeg inside blocking demuxer work (stream probing, a seek).
+int interrupt_requested(void* opaque) {
+  return cancelled(static_cast<const job_context*>(opaque)) ? 1 : 0;
+}
+
+struct avio_deleter {
+  void operator()(AVIOContext* io) const noexcept {
+    // A custom AVIOContext is not freed by avformat_close_input, and its
+    // buffer may have been reallocated by FFmpeg: free what it holds now.
+    av_freep(&io->buffer);
+    avio_context_free(&io);
+  }
+};
+using avio_ptr = std::unique_ptr<AVIOContext, avio_deleter>;
+
+result<poster_image> poster_from(AVFormatContext* format, std::uint32_t max_long_edge,
+                                 const job_context* ctx);
+
 }  // namespace
+
+result<poster_image> poster_frame(byte_source& source, std::uint32_t max_long_edge,
+                                  const job_context* ctx) {
+  if (max_long_edge == 0) return err(status::invalid_arg);
+  avio_state state;
+  state.source = &source;
+  state.ctx = ctx;
+  state.size = source.size();
+  if (state.size == 0) return err(status::corrupt);
+
+  auto* buffer = static_cast<std::uint8_t*>(av_malloc(kIoBufferBytes));
+  if (!buffer) return err(status::out_of_memory);
+  // Declared before `format`, so it is freed after avformat_close_input.
+  avio_ptr io(avio_alloc_context(buffer, kIoBufferBytes, 0, &state, &avio_read, nullptr, &avio_seek));
+  if (!io) {
+    av_free(buffer);
+    return err(status::out_of_memory);
+  }
+  AVFormatContext* raw_format = avformat_alloc_context();
+  if (!raw_format) return err(status::out_of_memory);
+  raw_format->pb = io.get();
+  raw_format->flags |= AVFMT_FLAG_CUSTOM_IO;
+  raw_format->interrupt_callback.callback = &interrupt_requested;
+  raw_format->interrupt_callback.opaque = const_cast<job_context*>(ctx);
+  // On failure avformat_open_input frees the context (not our AVIO) and nulls it.
+  if (avformat_open_input(&raw_format, nullptr, nullptr, nullptr) < 0) {
+    return err(cancelled(ctx) ? status::cancelled : status::unsupported_format);
+  }
+  format_ctx_ptr format(raw_format);
+  auto out = poster_from(format.get(), max_long_edge, ctx);
+  if (!out && cancelled(ctx)) return err(status::cancelled);
+  return out;
+}
 
 result<poster_image> poster_frame(const char* utf8_path, std::uint32_t max_long_edge,
                                   const job_context* ctx) {
@@ -67,12 +189,21 @@ result<poster_image> poster_frame(const char* utf8_path, std::uint32_t max_long_
   AVFormatContext* raw_format = nullptr;
   if (avformat_open_input(&raw_format, utf8_path, nullptr, nullptr) < 0) return err(status::io);
   format_ctx_ptr format(raw_format);
-  if (avformat_find_stream_info(format.get(), nullptr) < 0) return err(status::corrupt);
+  return poster_from(format.get(), max_long_edge, ctx);
+}
+
+namespace {
+
+// Everything after the open: one frame near the head, scaled and turned.
+// `format` is borrowed: the caller owns it and closes it.
+result<poster_image> poster_from(AVFormatContext* format, std::uint32_t max_long_edge,
+                                 const job_context* ctx) {
+  if (avformat_find_stream_info(format, nullptr) < 0) return err(status::corrupt);
   if (cancelled(ctx)) return err(status::cancelled);
 
-  const int stream_index = av_find_best_stream(format.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+  const int stream_index = av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
   if (stream_index < 0) {
-    const int audio = av_find_best_stream(format.get(), AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    const int audio = av_find_best_stream(format, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
     if (audio < 0) return err(status::unsupported_format);
     return card_poster(is_protected_audio(format->streams[audio]) ? codec::card_kind::locked
                                                                : codec::card_kind::music,
@@ -103,7 +234,7 @@ result<poster_image> poster_frame(const char* utf8_path, std::uint32_t max_long_
     const std::int64_t target =
         av_rescale_q(want_ns, AVRational{1, 1'000'000'000}, stream->time_base) +
         (stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time);
-    if (av_seek_frame(format.get(), stream_index, target, AVSEEK_FLAG_BACKWARD) >= 0) {
+    if (av_seek_frame(format, stream_index, target, AVSEEK_FLAG_BACKWARD) >= 0) {
       avcodec_flush_buffers(decoder.get());
     }
   }
@@ -129,7 +260,7 @@ result<poster_image> poster_frame(const char* utf8_path, std::uint32_t max_long_
     int read = 0;
     do {
       av_packet_unref(packet.get());
-      read = av_read_frame(format.get(), packet.get());
+      read = av_read_frame(format, packet.get());
       if (cancelled(ctx)) return err(status::cancelled);
     } while (read >= 0 && packet->stream_index != stream_index);
 
@@ -149,7 +280,7 @@ result<poster_image> poster_frame(const char* utf8_path, std::uint32_t max_long_
   // to the photos they were shot alongside.
   std::uint32_t src_w = static_cast<std::uint32_t>(frame->width);
   std::uint32_t src_h = static_cast<std::uint32_t>(frame->height);
-  const AVRational sar = av_guess_sample_aspect_ratio(format.get(), stream, frame.get());
+  const AVRational sar = av_guess_sample_aspect_ratio(format, stream, frame.get());
   std::uint32_t display_w = src_w;
   std::uint32_t display_h = src_h;
   if (sar.num > 0 && sar.den > 0 && sar.num != sar.den) {
@@ -202,4 +333,5 @@ result<poster_image> poster_frame(const char* utf8_path, std::uint32_t max_long_
   return out;
 }
 
+}  // namespace
 }  // namespace mv::player

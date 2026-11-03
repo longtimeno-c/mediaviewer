@@ -51,7 +51,8 @@ $table = [ordered]@{
     raw         = @{ Seeds = @('raw', 'tiff');                          MaxLen = 262144 }
     raw_preview = @{ Seeds = @('raw', 'tiff', 'jpeg');                  MaxLen = 262144 }
     decode      = @{ Seeds = @('jpeg','png','bmp','gif','webp','tiff','ico','heic','avif','raw'); MaxLen = 131072 }
-    thumbnail   = @{ Seeds = @('jpeg','png','bmp','gif','webp','tiff','ico','heic','avif','raw'); MaxLen = 131072 }
+    # #610: clips take the handler's poster path; seeds\video are small MKV / AVI / TS / MP4.
+    thumbnail   = @{ Seeds = @('jpeg','png','bmp','gif','webp','tiff','ico','heic','avif','raw','video'); MaxLen = 131072 }
     animation   = @{ Seeds = @('gif', 'webp', 'png', 'heic', 'avif');   MaxLen = 131072 }
     pdf         = @{ Seeds = @('pdf');                                  MaxLen = 65536 }
     docx        = @{ Seeds = @('docx');                                 MaxLen = 65536 }
@@ -66,6 +67,8 @@ $table = [ordered]@{
     meta_icc    = @{ Seeds = @('icc');                                  MaxLen = 65536 }
     # #352: the Location editor's parser; the text is capped at 256 bytes.
     meta_location = @{ Seeds = @('location');                           MaxLen = 512 }
+    # #606: one telemetry packet (GoPro GPMF) and one DJI subtitle cue.
+    meta_gpmf   = @{ Seeds = @('gpmf');                                 MaxLen = 65536 }
     meta_probe  = @{ Seeds = @('jpeg', 'png', 'webp', 'heic', 'avif', 'c2pa', 'probe'); MaxLen = 131072 }
     # #291: the folder tag pass (meta/search.h): any still or clip, read whole.
     meta_search = @{ Seeds = @('jpeg', 'png', 'webp', 'tiff', 'heic', 'avif', 'raw', 'c2pa'); MaxLen = 131072 }

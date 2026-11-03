@@ -148,6 +148,21 @@ installed from Settings → Add-ons, never part of the base installer or its upd
 - **Never interrupt.** No modal, no forced restart. The command bar shows "Checking for
   updates…" / "Downloading update…" quietly, then **"Update ready — restart"**. Ignored, a staged
   update applies on exit (Windows) or is held for the user (macOS delegate).
+- **What's new (#620).** The "Update ready — restart" tooltip (Windows) / help (Mac) ends with a
+  short "What's new": at most three lines and 400 UTF-8 bytes of printable text, no links, no
+  control or invisible characters (a fixed list, the same in `ManifestNotes` and
+  `tools/package/whats_new.py`). It arrives with what the updater already fetches and is covered
+  by the same signature, so there is **no extra request**: on Windows the signed manifest's
+  optional `notes` (checked with the rest of the manifest, after the signature; a `notes` that
+  breaks the rule makes the manifest malformed), carried in `UpdateStatus.Notes`; on the Mac the
+  appcast item's `<description sparkle:format="plain-text">`, which `generate_appcast
+  --embed-release-notes` writes from `MediaViewer-<version>.txt` beside the archive, inside the
+  signed feed (`macpack.py release` refuses a feed with a `releaseNotesLink`), read from
+  `SUAppcastItem.itemDescription` and shown only when it is plain text within the same bounds.
+  The release writes it once for both apps and the release page (`github-release.py prepare`):
+  the run's own words (the `whats_new` input) or else the subjects of the commits since the
+  previous release tag, a pull request's merge giving its title; more than three become two and
+  "and N more changes". No notes, no section: the tooltip is as before.
 - **An update never cuts a transfer (#532).** Clicked while an add-on reports work under way
   (`busy_post`: a Driftwire transfer), the bar says "The update will install when the transfer
   finishes" and restarts once it has ended. A process kept in the background (#452) never exits,
@@ -188,7 +203,10 @@ installed from Settings → Add-ons, never part of the base installer or its upd
   is listed under `[failed]` so it is never offered again on that machine, and the user is told
   once. Native, because a version that fails to start usually dies before .NET loads.
 - **Manifest policy** (`UpdateManifest.cs`, pure): the signed manifest carries `version`,
-  `min_version`, a `blocklist`, channel, release time and packages (file, SHA-256, size, kind).
+  `min_version`, a `blocklist`, channel, release time, packages (file, SHA-256, size, kind) and
+  optionally `notes` ("What's new", above). The reader takes schema 1 and 2 (the same shape,
+  `notes` defined); the release tool writes 1, because a reader from before #620 refuses any
+  other schema but ignores a member it does not know ([log](12-decision-log.md#packaging-install-and-updates), 2026-11-02).
   A manifest is rejected if it is a downgrade, its own version is blocklisted, or this machine
   already rolled that version back. A running version below `min_version` or on the blocklist
   raises the urgency shown to the user.

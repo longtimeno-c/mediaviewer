@@ -11,8 +11,10 @@
 //     swaps current\ and never has to replace a DLL in use.
 //   * Per-user COM (HKCU\Software\Classes): the CLSID with its
 //     InprocServer32 and a DllSurrogate AppID, and the thumbnail ShellEx on
-//     the MediaViewer.Image ProgId only, so it runs for the types the user
-//     made MediaViewer the default for and never replaces another handler.
+//     the MediaViewer.Image and MediaViewer.Video ProgIds only (clips from
+//     issue #610), so it runs for the types the user made MediaViewer the
+//     default for and never replaces another handler. The FFmpeg DLLs the
+//     clip path imports join the version folder through the import closure.
 //   * Older version folders are removed when nothing holds them any more, and
 //     only once InprocServer32 reads back as this version's DLL: a failed write,
 //     or another MediaViewer registering its own version at the same moment,
