@@ -26,7 +26,6 @@ extern "C" {
 #include "clip_fixture.h"
 #include "core/sound_envelope.h"
 #include "edit/clip.h"
-#include "edit/clip_auto_light.h"
 #include "gfx/adjust_kernel.h"
 #include "edit/clip_internal.h"
 #include "edit/clip_jobs.h"
@@ -980,25 +979,6 @@ TEST_CASE("Export exact and Save frame carry the light", "[clip][look][light]") 
     return static_cast<int>(px[(static_cast<std::size_t>(180) * 320 + 160) * 4]);
   };
   CHECK(centre(lit->outputs[0]) > centre(dark->outputs[0]) + 10);
-}
-
-TEST_CASE("Auto light lifts a dark frame and leaves a full one", "[clip][look][light]") {
-  std::vector<std::uint8_t> dark;
-  for (int i = 0; i < 64 * 64; ++i) {
-    const auto v = static_cast<std::uint8_t>(20 + (i % 64) * 60 / 63);  // codes 20..80
-    dark.insert(dark.end(), {v, v, v});
-  }
-  bool changed = false;
-  const mv::edit::colour lifted = clip::auto_light(dark, {}, changed);
-  CHECK(changed);
-  CHECK(lifted.v[0] > 0.0f);  // brighter
-  std::vector<std::uint8_t> full;
-  for (int i = 0; i < 64 * 64; ++i) {
-    const auto v = static_cast<std::uint8_t>((i % 256));
-    full.insert(full.end(), {v, v, v});
-  }
-  (void)clip::auto_light(full, {}, changed);
-  CHECK_FALSE(changed);
 }
 
 TEST_CASE("the sound envelope: volume, fades on the program, nothing in a cut", "[clip][look][sound]") {

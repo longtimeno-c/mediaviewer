@@ -825,8 +825,8 @@ public static partial class IslandHost
             return slider;
         }
         Slider volume = Row("Volume", 0, 2, 0.05, Command.EditorSoundVolume, v => $"{v * 100:0} %");
-        Slider fadeIn = Row("Fade in", 0, 5000, 100, Command.EditorSoundVolume + 1, v => $"{v / 1000:0.0} s");
-        Slider fadeOut = Row("Fade out", 0, 5000, 100, Command.EditorSoundVolume + 2, v => $"{v / 1000:0.0} s");
+        Slider fadeIn = Row("Fade in", 0, 5000, 100, Command.EditorSoundFadeIn, v => $"{v / 1000:0.0} s");
+        Slider fadeOut = Row("Fade out", 0, 5000, 100, Command.EditorSoundFadeOut, v => $"{v / 1000:0.0} s");
         flyout.Content = col;
         flyout.Opening += (_, _) =>
         {
