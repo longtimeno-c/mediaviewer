@@ -18,6 +18,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 #include "abi/addon_bridge.h"
 #include "abi/guard.h"
@@ -242,6 +243,25 @@ MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* ou
     auto made = thumbnail(path_utf8);
     if (!made) return made.error();
     return write_out(*made, out, cap, needed);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_edit_still_set(const char* path_utf8, const void* edit, uint32_t size) {
+  return static_cast<mv_status>(mv::abi::guard("mv_edit_still_set", [&] {
+    if (!path_utf8) {
+      mv::addon::media::clear_still_edit();
+      return status::ok;
+    }
+    struct blob {
+      mv::edit::geometry g;
+      mv::edit::colour c;
+    };
+    static_assert(std::is_trivially_copyable_v<blob>);
+    MV_REQUIRE(edit && size == sizeof(blob), "edit blob of this build's size required");
+    blob b;
+    std::memcpy(&b, edit, sizeof b);
+    mv::addon::media::set_still_edit(path_utf8, b.g, b.c);
+    return status::ok;
   }));
 }
 
