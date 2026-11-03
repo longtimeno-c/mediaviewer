@@ -4,7 +4,7 @@
  "credit": "InstructPix2Pix, Tim Brooks, Aleksander Holynski, Alexei A. Efros (CreativeML OpenRAIL-M: its use restrictions apply)",
  "weights": ["text_encoder.onnx", "unet.onnx", "unet.onnx.data", "vae_encoder.onnx", "vae_decoder.onnx",
              "vocab.json", "merges.txt"],
- "run_bytes": 8000000000,
+ "run_bytes": 12000000000,
  "cpu": false,
  "knobs": [
   {"id": "prompt", "label": "Change", "type": "text", "default": "",
@@ -19,7 +19,7 @@
    "help": "How much of the change the new photo carries."}
  ],
  "io": {"runner": "diffusion", "edge": 512, "steps": 20,
-        "qualities": {"standard": {"edge": 512, "run_bytes": 8000000000},
-                      "high": {"edge": 768, "run_bytes": 12000000000},
-                      "best": {"edge": 1024, "run_bytes": 24000000000}}}
+        "qualities": {"standard": {"edge": 512, "run_bytes": 12000000000},
+                      "high": {"edge": 768, "run_bytes": 18000000000},
+                      "best": {"edge": 1024, "run_bytes": 32000000000}}}
 }
