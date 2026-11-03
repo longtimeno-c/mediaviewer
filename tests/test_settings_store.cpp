@@ -75,6 +75,7 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
     save_view_settings(store, v);
     save_destinations(store, {"D:\\Cull", "E:\\K\xC3\xA9" "ep"});  // non-ANSI survives
     save_recent_folders(store, {"F:\\DCIM\\100CANON", "D:\\Iceland"});  // PR 15 jump list
+    save_pinned_folders(store, {"\\\\nas\\photos", "D:\\2026"});  // #617, beside the recents
     const key_override keys[] = {{4, 0x41, 2}, {9, 0x70, 0}};
     save_key_overrides(store, keys);
     store.set_int("update", "auto_check", 0);
@@ -97,6 +98,13 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
   again.set_int("view", "sort", 2 | 8);
   REQUIRE(load_destinations(again) == std::vector<std::string>{"D:\\Cull", "E:\\K\xC3\xA9" "ep"});
   REQUIRE(load_recent_folders(again) == std::vector<std::string>{"F:\\DCIM\\100CANON", "D:\\Iceland"});
+  REQUIRE(load_pinned_folders(again) == std::vector<std::string>{"\\\\nas\\photos", "D:\\2026"});
+  // A recents save leaves the pins alone (and the other way round).
+  save_recent_folders(again, {"D:\\Iceland"});
+  REQUIRE(load_pinned_folders(again).size() == 2);
+  save_pinned_folders(again, {});
+  REQUIRE(load_recent_folders(again) == std::vector<std::string>{"D:\\Iceland"});
+  REQUIRE(load_pinned_folders(again).empty());
   const auto keys = load_key_overrides(again);
   REQUIRE(keys.size() == 2);
   REQUIRE((keys[1].row == 9 && keys[1].k == 0x70 && keys[1].mods == 0));

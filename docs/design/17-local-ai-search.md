@@ -266,11 +266,12 @@ progress(asset_id, spec, state, resume_ms, tries, indexed_at)     -- per asset a
 frames(id, asset_id, spec, pts_ms, pts_tb, tb_num, tb_den, flags, generic, scale, emb)
 speech(id, asset_id, spec, start_ms, end_ms, text)                 -- Whisper transcript lines
 cues(id, asset_id, start_ms, end_ms, kind, text)                   -- schema 6: chapters, text subtitles (#406)
+tracks(asset_id, points)                                            -- schema 11: a clip's telemetry route (#606)
 ```
 
 `emb` is the int8 vector, `scale` its per-vector scale, `generic` its best cosine against the
 tower's generic prompts. Each schema step (1 -> 2 `media`, 2 -> 3 `cloud`, 3 -> 4 tags, 4 -> 5
-rating and exposure, 5 -> 6 cues) is one
+rating and exposure, 5 -> 6 cues, ..., 10 -> 11 tracks) is one
 transaction and skips a column already there, so a crash mid-migration never leaves an index that
 will not open. A new index is made as schema 3 and takes the same 3 -> 4 step, so a fresh index and
 a migrated one cannot differ.
@@ -324,6 +325,25 @@ one, so 2 s and 1/250 both match). A clip has no exposure block: those stay NULL
 - A rating written to a RAW's XMP sidecar leaves the RAW's own stamp alone, so the index keeps
   the old rating until the file's stamp changes or the index is rebuilt (the base app's
   meta_cache drops its row; the AI index has no such signal yet).
+### Schema 11 (#606, 2026-11-02)
+
+A GoPro or DJI clip's GPS route, so `place:` matches a clip anywhere along it
+([27](27-places.md) "Routes"). `tracks(asset_id PRIMARY KEY, points BLOB)`: at most 128 points
+(`kTrackPoints`) evenly spaced along the route, the first and last kept, as int32 microdegree
+pairs (lat, lon) little-endian. The asset's own `lat` / `lon` stay the route's first fix (what the
+host's `tag_facts` gives it). An asset that goes takes its track; clearing the index empties it.
+
+- **Filling it:** `tags` level 3 (`kTagsLevel`). The backfill asks the host table's `route_of`
+  for 128 points only when the file's tag facts carry `MV_ADDON_TAG_HAS_ROUTE`, so a still or
+  an ordinary clip costs nothing more. Every level-3 read replaces the asset's track (none when
+  the file no longer has a route). A host without `route_of` keeps the backfill at level 2 for
+  the run, so the first host that has it reads the routes.
+- **The step** creates the table and moves every row already at level 2 that is not a clip
+  (`kind <> 2`) to 3, so only clips are read again.
+- **Serving it:** `located_assets` joins the track, and mv.ai.1 `each_location` sends it after
+  the asset's own row as one `MV_ADDON_LOCATION_ROUTE_POINT` row a point, under the same path.
+  `locations_of_index` passes them on; Places matches a path on any of its rows.
+
 ### Schema 6 to 10 (#406, #407, #355, #354)
 
 Schema 6 adds `cues` ("Cues" below). Schema 8 lets `assets.kind` be 4, an audio file (no table
@@ -339,8 +359,34 @@ People live in a separate `faces.db`; the label bars in `labels.f32`;
 the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model and piece).
 
 - **Folder roots persist.** Indexing a folder (with its subfolders) writes a `roots` row.
-  Reopening the app or the folder does not rebuild it: a watcher plus a startup delta scan
-  queues only new, changed or removed assets. Each root can be paused, rescanned or removed.
+  Reopening the app or the folder does not rebuild it: a startup delta scan, then the host's
+  watch, queue only new, changed or removed assets. Each root can be paused, rescanned or removed.
+- **The host watches each folder root (2026-11-02, [12](12-decision-log.md)).** The pack asks the
+  host to watch every enabled folder root that is not held (`watch_tree`, appended to the host
+  table; [14](14-abi.md)). The host's `io::tree_watcher` (`src/io/tree_watch.h`) watches the
+  whole tree and names the folder whose listing changed:
+  - **Windows** (`tree_watch_win.cpp`): `ReadDirectoryChangesW` over the subtree, every root on
+    one thread and one completion port. Attributes are watched too, which is how OneDrive making
+    a file available offline (or freeing it) shows. A new name is asked whether it is a folder
+    (a folder moved in from outside the tree is one name, with nothing for what is inside).
+  - **Mac** (`tree_watch_mac.cpp`): one FSEvents stream over every root, with file events and a
+    0.5 s latency, on a private serial queue. Paths come back under each root as it was given
+    (FSEvents reports `/private/var` for `/var`).
+  - **Linux:** no watch yet (`tree_watch_none.cpp` watches nothing), so a root there keeps the
+    15-minute walk.
+
+  The pack notes each folder (`on_tree_change`, on the host's thread) and the control thread walks
+  them once the changes have been quiet for 2 s, or 10 s after the first during a long copy
+  (`engine_deps::tree_quiet_s` / `tree_max_wait_s`). A changed folder's own files are walked
+  (`scan_dirs`, `walk_files2` at depth 0, the same pairing as a full walk); a folder that came,
+  was renamed or may have gone is walked to the root's depth, or, gone, takes its rows with it
+  (`index_db::end_scan_dirs` removes only rows under walked folders). More than 64 folders, or
+  lost events (`MV_ADDON_TREE_OVERFLOW`), and the root is walked whole. A held root is not
+  watched: Resume walks it whole. A root on a network share is watched but keeps the 15-minute
+  walk (a server can stop telling without an error); every other watched root is walked whole
+  once an hour as a backstop, and an unwatched one every 15 minutes, as before. `roots_json`
+  says `"watching"`; Settings' folder row says "new files found every 15 minutes" when it is
+  false. Not changed: nothing is noticed before the pack loads (#292, below).
 - Keyed like the thumbnail cache: change `(path, mtime, size)` or the model `spec` and the row
   is stale and re-queued. No content hashing.
 - Result tiles are the existing **JPEG-512 cache**; moment thumbnails are stored there as
@@ -1412,6 +1458,10 @@ as Photos shows it, colour-matched to sRGB). A clip is sampled from its local fi
 - An iCloud-only clip is found by its local poster, stored as one row at 0 ms.
 - Once per launch, and when access returns, each is asked whether it is on this Mac now; only
   those that are go back to pending. The People pass treats them the same way.
+- One that first appeared this session (a photo taken on the phone, arrived only in iCloud) is
+  asked again at each change notice too (2026-11-02): when Photos downloads it, its
+  `(modificationDate, pixel count)` stays the same, so the re-enumeration alone would not
+  re-queue it until the next launch. Only these are asked; the library's first walk notes none.
 
 **Downloading iCloud-only clips (opt-in, 2026-10-05).** Settings → Photos Library → *Download
 iCloud videos to index them* (`"icloud_videos"`, off by default; [12](12-decision-log.md)). The

@@ -27,6 +27,8 @@ endif()
 set(_P "${MV_SOURCE_ROOT}/src/addons/places")
 
 add_library(mv_places_engine STATIC
+  ${_P}/folder_map.cpp
+  ${_P}/folder_map.h
   ${_P}/map.cpp
   ${_P}/map.h
   ${_P}/places.cpp
