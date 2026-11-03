@@ -178,6 +178,10 @@ public static partial class IslandHost
         // The Video Editor's light and colour (chrome_cmd_editor_light_*):
         // one id per slider from 1100 (arg the value), 1105 a drag (1 start, 0 end).
         public const int EditorLightExposure = 1100;
+        public const int EditorLightContrast = 1101;
+        public const int EditorLightSaturation = 1102;
+        public const int EditorLightTemperature = 1103;
+        public const int EditorLightTint = 1104;
         public const int EditorLightDrag = 1105;
         // Drag-out (IslandHost.DragDrop.cs). DragItems: a cell starts a drag,
         // arg is its folder index; native answers inside the call with
