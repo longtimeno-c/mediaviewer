@@ -157,7 +157,7 @@ request is refused before a run. The run (`diffusion.h`, `io.runner: diffusion`)
 
 1. The edited still is scaled to the long edge its **Quality** names (`io.qualities`: Standard
    512 px, High 768 px, Best 1024 px), each side a multiple of 64. Each quality has its own
-   memory gate (8, 12 and 24 GB); a request over it is refused with a lower quality suggested.
+   memory gate (12, 18 and 32 GB); a request over it is refused with a lower quality suggested.
    A larger copy changes finer things, takes longer, and compiles once on Core ML per size.
 2. CLIP's tokenizer and the text encoder turn the words (and an empty prompt) into the conditions.
 3. The VAE encodes the small picture; 20 Euler-ancestral steps (linspace timesteps, the
@@ -213,12 +213,16 @@ is filled at that size and scaled up, so a large fill is softer than the photo a
 | A 4032 × 3024 photo (EXIF-turned) to 6048 × 8064, Core ML, read to written | 8.7 s, about 850 MB peak (`run_bytes` 700 MB + the picture in and out) |
 
 Restyle (2026-11-03, the same Mac, the hidden `[.restyle-model]` case on a 512 × 320 picture):
-14–16 s a request on Core ML at Standard once the size is compiled. **High and Best are not
-measured yet**: their memory gates (12 and 24 GB) are estimates from the UNet's attention
-growing with the square of the latent's area, to be replaced by measured peaks. The first run at a new size takes about
-200–230 s (Core ML compilation). About 7 GB a model instance with the fp16 UNet (`run_bytes`
-8 GB). "Black and white" took colourfulness from 83.4 to 1.9. fp16 output looks the same as fp32
+14–16 s a request on Core ML at Standard once the size is compiled. The first run at a new size
+took about 200–230 s (Core ML compilation) on a quiet machine. "Black and white" took colourfulness from 83.4 to 1.9. fp16 output looks the same as fp32
 by eye.
+
+Measured again on the exported files (2026-11-03, a 24 GB M-series Mac, `MV_RESTYLE_EDGE`, peak
+memory footprint from `time -l`): **Standard** 16 s a request warm, peak 12.1 GB; **High** (768 ×
+448) 43 s warm, peak 17.4 GB; Core ML could not place High on the Neural Engine and ran it on the
+GPU. A first request at a size compiled for 14–18 minutes while the machine was busy. The gates
+(12 and 18 GB) are those peaks. **Best is not measured**: extrapolated to 25–30 GB, it would swap
+this machine, so its 32 GB gate is an estimate, and machines like this one are refused it.
 
 Not measured: Windows (Restyle is refused there without a GPU provider), a long file's memory over time, and the viewer's own gates with Enhance
 installed (it loads no runtime until a run, and runs nothing at launch).
