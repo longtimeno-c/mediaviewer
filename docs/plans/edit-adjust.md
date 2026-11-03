@@ -158,7 +158,10 @@ only has to rank one person's frames of one moment, which it does). Status: `mv_
 (score, transfer through turn, scale and light), `mv_ai_tests "[eyes]"` (the pack's same-person
 donors with the stand-in face model; nothing read while People is off; the whole job through
 real files to `<stem>-eyes.jpg`, the original untouched). The Mac app shows the refusal without a
-pack; the real face model end to end, and Windows, are owed.
+pack. With the real YuNet and AdaFace (`mv_ai_tests "[.eyes-real]"`, two LFW photos of one
+person, the first's eyes painted shut at the real landmarks, 2026-11-02): same-person similarity
+0.44 with eyes shut (line 0.30), openness shut 0.072 → fixed 0.152 (the photo's own 0.149), the
+donor's eyes in place and colour-matched by eye. Owed: real bursts from a camera, and Windows.
 
 Planned:
 
