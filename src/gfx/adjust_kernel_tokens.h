@@ -13,6 +13,9 @@
 // with only exposure set runs what PR 11 ran, and the export bake pays for a
 // stage only when it is set. The stages, in order:
 //   gains           a0.xyz (white balance * exposure)
+//   red-eye         a3.w > 0.5 (slice 3): within each spot of rows 192..199
+//                   (x, y, radius in pos units), red above green and blue is
+//                   pulled to their mean, fading over the outer 30 %
 //   tone            a1.z > 0.5: highlights a2.x, shadows a2.y, whites a2.z,
 //                   blacks a2.w — a curve on p = luma^(1/2.2), applied as a
 //                   ratio so hue is kept, the rest added as grey at black
@@ -21,19 +24,46 @@
 //                   pixel's own saturation, so muted colours move most
 //   black & white   a3.y > 0: a mix of grey dot(c, a4.xyz) at a3.y, with a
 //                   contrast slope a3.z on that grey about the pivot
+//   selective       a4.w > 0.5 (slice 3): the pixel's hue on the opponent
+//                   wheel (a = r − (g+b)/2, b = √3/2 (g − b)) picks rows
+//                   128..191: rotate (a, b) by x turns, scale it by y, and
+//                   2^(z × its saturation) on the whole pixel
+//   table           a5.w > 0.5 (slice 2: levels and curves): each channel's
+//                   p = c^(1/2.2) through its column of `lut` (128 rows,
+//                   row i is p = i / 127, linear between rows; above 1 the
+//                   curve's end plus the overshoot), back to linear
+//   black & white   (after the table)
 //   vignette        a5.x != 0: a5.x stops (+ darkens) from a5.y to a5.z of
 //                   the distance to the corner; pos.xy is the pixel's offset
 //                   from the centre, scaled so a corner is at distance 1
+//
+// `lut` is the one thing the three languages pass differently, so the
+// signature starts with MV_ADJUST_LUT_PARAM, which each defines: C++ and MSL
+// a pointer and a comma, HLSL nothing (its `lut` is a cbuffer array).
 #ifndef MV_GFX_ADJUST_KERNEL_TOKENS_H
 #define MV_GFX_ADJUST_KERNEL_TOKENS_H
 
 // clang-format off
 #define MV_ADJUST_KERNEL                                                        \
-  float3 mv_adjust(float3 c, float4 pos, float4 a0, float4 a1, float4 a2,       \
-                   float4 a3, float4 a4, float4 a5) {                           \
+  float3 mv_adjust(MV_ADJUST_LUT_PARAM float3 c, float4 pos, float4 a0,         \
+                   float4 a1, float4 a2, float4 a3, float4 a4, float4 a5) {     \
     float3 zero = float3(0.0f, 0.0f, 0.0f);                                     \
     float3 w = float3(0.2126f, 0.7152f, 0.0722f);                               \
     c = max(c * float3(a0.x, a0.y, a0.z), zero);                                \
+    if (a3.w > 0.5f) {                                                          \
+      for (int si = 0; si < 8; ++si) {                                          \
+        float4 sp = lut[192 + si];                                              \
+        float sd = sqrt((pos.x - sp.x) * (pos.x - sp.x)                         \
+                        + (pos.y - sp.y) * (pos.y - sp.y));                     \
+        float sred = c.x - max(c.y, c.z);                                       \
+        if (sp.z > 0.0f && sd < sp.z && sred > 0.0f) {                          \
+          float sw = min(sred / max(c.x, 0.0001f) * 2.0f, 1.0f)                 \
+                     * (1.0f - max(sd / sp.z - 0.7f, 0.0f) / 0.3f);             \
+          float srx = c.x + ((c.y + c.z) * 0.5f - c.x) * sw;                    \
+          c = float3(srx, c.y, c.z);                                            \
+        }                                                                       \
+      }                                                                         \
+    }                                                                           \
     if (a1.z > 0.5f) {                                                          \
       float l = max(dot(c, w), 0.0f);                                           \
       float p = pow(l, 0.45454545f);                                            \
@@ -58,6 +88,46 @@
       sat = sat * max(1.0f + a3.x * (1.0f - s), 0.0f);                          \
     }                                                                           \
     c = max(grey + (c - grey) * sat, zero);                                     \
+    if (a4.w > 0.5f) {                                                          \
+      float om = (c.x + c.y + c.z) / 3.0f;                                      \
+      float oa = c.x - (c.y + c.z) * 0.5f;                                      \
+      float ob = (c.y - c.z) * 0.8660254f;                                      \
+      float oc = sqrt(oa * oa + ob * ob);                                       \
+      if (oc > 0.000001f) {                                                     \
+        float oh = atan2(ob, oa) * 0.15915494f;                                 \
+        oh = oh - floor(oh);                                                    \
+        float ofh = oh * 64.0f;                                                 \
+        int oi = int(min(ofh, 63.0f));                                          \
+        int oj = oi < 63 ? oi + 1 : 0;                                          \
+        float4 os0 = lut[128 + oi];                                             \
+        float4 os = os0 + (lut[128 + oj] - os0) * (ofh - float(oi));            \
+        float oca = cos(os.x * 6.2831853f);                                     \
+        float osa = sin(os.x * 6.2831853f);                                     \
+        float na = (oa * oca - ob * osa) * os.y;                                \
+        float nb = (oa * osa + ob * oca) * os.y;                                \
+        float ocs = min(oc / max(max(c.x, max(c.y, c.z)), 0.0001f), 1.0f);      \
+        float ok = pow(2.0f, os.z * ocs);                                       \
+        c = max(float3(om + na * 0.6666667f,                                    \
+                       om - na * 0.3333333f + nb * 0.5773503f,                  \
+                       om - na * 0.3333333f - nb * 0.5773503f) * ok, zero);     \
+      }                                                                         \
+    }                                                                           \
+    if (a5.w > 0.5f) {                                                          \
+      float3 p = pow(c, float3(0.45454545f, 0.45454545f, 0.45454545f));         \
+      float fr = min(p.x, 1.0f) * 127.0f;                                       \
+      float fg = min(p.y, 1.0f) * 127.0f;                                       \
+      float fb = min(p.z, 1.0f) * 127.0f;                                       \
+      int ir = int(min(fr, 126.0f));                                            \
+      int ig = int(min(fg, 126.0f));                                            \
+      int ib = int(min(fb, 126.0f));                                            \
+      float qr = lut[ir].x + (lut[ir + 1].x - lut[ir].x) * (fr - float(ir))     \
+                 + max(p.x - 1.0f, 0.0f);                                       \
+      float qg = lut[ig].y + (lut[ig + 1].y - lut[ig].y) * (fg - float(ig))     \
+                 + max(p.y - 1.0f, 0.0f);                                       \
+      float qb = lut[ib].z + (lut[ib + 1].z - lut[ib].z) * (fb - float(ib))     \
+                 + max(p.z - 1.0f, 0.0f);                                       \
+      c = pow(max(float3(qr, qg, qb), zero), float3(2.2f, 2.2f, 2.2f));         \
+    }                                                                           \
     if (a3.y > 0.0f) {                                                          \
       float m = max(dot(c, float3(a4.x, a4.y, a4.z)), 0.0f);                    \
       m = a1.y * pow(m / a1.y, a3.z);                                           \

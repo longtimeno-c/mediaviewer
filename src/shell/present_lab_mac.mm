@@ -3,6 +3,7 @@
 #include "shell/present_lab_mac.h"
 #include "shell/present_busy.h"
 #include "shell/video_report.h"
+#include "shell/brush_overlay.h"
 #include "shell/edit_view.h"
 #include "shell/af_focus.h"
 #include "shell/compare.h"
@@ -706,6 +707,20 @@ edit::placement present_lab_mac::place_image(const image::gpu_image_mac& img) co
 void present_lab_mac::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
   if (!current_image_ || video_frame_) return;
   const edit_view* v = edit_for(current_image_->item_id);
+  if (v && v->brush_on && !v->crop_overlay) {
+    float pw = 0.0f, ph = 0.0f;
+    if (!picture_size(&pw, &ph)) return;
+    const float win_w = usable_window_w(snapshot), win_h = usable_window_h(snapshot);
+    const float origin_x = canvas_origin_x(snapshot);
+    const float origin_y = static_cast<float>(snapshot.chrome_height_px);
+    const float zoom = camera_.zoom();
+    draw_brush_overlay(*v, pw, ph, zoom, snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f,
+                       [&](float ix, float iy) {
+                         return ImVec2(origin_x + win_w * 0.5f + (ix - camera_.pan_x()) * zoom,
+                                       origin_y + win_h * 0.5f + (iy - camera_.pan_y()) * zoom);
+                       });
+    return;
+  }
   if (!v || !v->crop_overlay) return;
   float pw = 0.0f, ph = 0.0f;
   if (!picture_size(&pw, &ph)) return;

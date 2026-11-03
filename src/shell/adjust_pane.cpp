@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "shell/adjust_pane.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace mv::shell {
@@ -31,6 +32,8 @@ std::optional<std::uint64_t> adjust_pane::set_item(std::uint64_t item, bool has_
     histogram_valid_ = false;
     histogram_token_ = 0;
     auto_token_ = 0;
+    pick_ = adjust_pick::none;
+    prompt_note_.clear();
   }
   return want(has_colour);
 }
@@ -42,6 +45,7 @@ std::optional<std::uint64_t> adjust_pane::toggle(bool has_colour) {
 std::optional<std::uint64_t> adjust_pane::show(bool visible, bool has_colour) {
   visible_ = visible;
   if (visible_) histogram_stale_ = true;
+  else pick_ = adjust_pick::none;
   return want(has_colour);
 }
 
@@ -60,6 +64,7 @@ bool adjust_pane::working_landed(std::uint64_t token, bool ok, bool from_raw) no
 }
 
 void adjust_pane::working_dropped() noexcept {
+  pick_ = adjust_pick::none;
   if (readiness_ == adjust_readiness::ready || readiness_ == adjust_readiness::preparing) {
     readiness_ = adjust_readiness::none;
   }
@@ -112,6 +117,21 @@ adjust_view adjust_pane::view(const edit::colour& c) const noexcept {
   }
   v.histogram_valid = histogram_valid_ ? 1 : 0;
   v.auto_section = auto_token_ != 0 ? static_cast<std::int32_t>(auto_section_) : -1;
+  v.picking = static_cast<std::int32_t>(pick());
+  v.spot_count = c.spot_count;
+  // Cut at a UTF-8 boundary that fits with its NUL.
+  std::size_t n = std::min(prompt_note_.size(), sizeof v.prompt_note - 1);
+  while (n > 0 && n < prompt_note_.size() && (static_cast<unsigned char>(prompt_note_[n]) & 0xC0) == 0x80) --n;
+  std::memcpy(v.prompt_note, prompt_note_.data(), n);
+  v.prompt_note[n] = '\0';
+  for (int ch = 0; ch < edit::kCurveChannels; ++ch) {
+    const edit::curve& k = c.curves[static_cast<std::size_t>(ch)];
+    v.curve_n[ch] = k.n;
+    for (int i = 0; i < k.n; ++i) {
+      v.curve_x[ch][i] = k.x[i];
+      v.curve_y[ch][i] = k.y[i];
+    }
+  }
   if (histogram_valid_) {
     v.clip_high = clip_high_;
     v.clip_low = clip_low_;

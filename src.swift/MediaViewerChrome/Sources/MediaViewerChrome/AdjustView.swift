@@ -20,6 +20,12 @@ struct AdjustView: View {
   @ObservedObject private var store = AdjustStore.shared
   @State private var row = 0
   @State private var open: Set<Int> = [0, 1]
+  @State private var levelsChannel = 0
+  @State private var band = 0
+  @State private var request = ""
+  @State private var redEyeSize = 0.0
+  @State private var brushSize = 0.0
+  @State private var curvesChannel = 0
   @FocusState private var focused: Bool
 
   private var status: String {
@@ -33,7 +39,14 @@ struct AdjustView: View {
 
   /// The sliders of the open sections, top to bottom: what ↑ ↓ walk.
   private var rows: [Int] {
-    AdjustStore.sections.indices.filter { open.contains($0) }.flatMap { AdjustStore.sections[$0].params }
+    AdjustStore.sections.indices.filter { open.contains($0) }.flatMap { visibleParams($0) }
+  }
+
+  /// What a section shows: Levels only the picked channel's three, Curves none.
+  private func visibleParams(_ i: Int) -> [Int] {
+    if i == AdjustStore.levelsSection { return AdjustStore.levelsParams(levelsChannel) }
+    if i == AdjustStore.selectiveSection { return AdjustStore.selectiveParams(band) }
+    return AdjustStore.sections[i].params
   }
 
   private var current: Int? {
@@ -70,6 +83,18 @@ struct AdjustView: View {
       }
       if !status.isEmpty {
         Text(status).foregroundStyle(.secondary)
+      }
+      // Slice 5b: say what you want; the sliders it names move (one undo step).
+      TextField("Describe a change — a bit warmer, less noise…", text: $request)
+        .textFieldStyle(.roundedBorder)
+        .disabled(!store.ready)
+        .onSubmit {
+          store.prompt(request)
+          request = ""
+        }
+        .accessibilityLabel("Describe a change")
+      if !store.promptNote.isEmpty {
+        Text(store.promptNote).font(.caption).foregroundStyle(.secondary).lineLimit(2)
       }
       ScrollView {
         VStack(alignment: .leading, spacing: MVTheme.space(4)) {
@@ -178,10 +203,125 @@ struct AdjustView: View {
       }
       .padding(.vertical, MVTheme.space(4))
       if isOpen {
-        ForEach(section.params, id: \.self) { p in
+        sectionExtras(i)
+        ForEach(visibleParams(i), id: \.self) { p in
           sliderRow(p)
         }
       }
+    }
+  }
+
+  // What a section shows above its sliders: channel and band pickers, the
+  // curve editor, the white-balance picker and the red-eye tool.
+  @ViewBuilder
+  private func sectionExtras(_ i: Int) -> some View {
+    if i == AdjustStore.levelsSection || i == AdjustStore.curvesSection {
+      Picker("Channel", selection: i == AdjustStore.levelsSection ? $levelsChannel : $curvesChannel) {
+        ForEach(0..<4, id: \.self) { ch in Text(AdjustStore.channelNames[ch]).tag(ch) }
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .padding(.leading, MVTheme.space(14))
+    }
+    if i == 1 {
+      Button {
+        store.pick(store.picking == 1 ? 0 : 1)
+      } label: {
+        Label(store.picking == 1 ? "Click something white or grey…" : "Pick white balance",
+              systemImage: "eyedropper")
+      }
+      .buttonStyle(.plain)
+      .foregroundStyle(store.picking == 1 ? Color.accentColor : .secondary)
+      .disabled(!store.ready)
+      .padding(.leading, MVTheme.space(14))
+      .help("Click a neutral part of the photo to set temperature and tint")
+    }
+    if i == AdjustStore.selectiveSection {
+      HStack(spacing: MVTheme.space(6)) {
+        ForEach(0..<8, id: \.self) { b in
+          Button { band = b } label: {
+            Circle().fill(AdjustStore.bandColours[b]).frame(width: 18, height: 18)
+              .overlay(Circle().stroke(Color.primary, lineWidth: band == b ? 2 : 0))
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel(AdjustStore.bandNames[b])
+          .help(AdjustStore.bandNames[b])
+        }
+      }
+      .padding(.leading, MVTheme.space(14))
+    }
+    if i == AdjustStore.redEyeSection {
+      VStack(alignment: .leading, spacing: MVTheme.space(4)) {
+        Button {
+          store.pick(store.picking == 2 ? 0 : 2, size: redEyeSize)
+        } label: {
+          Label(store.picking == 2 ? "Click each red eye — click here when done" : "Fix red eyes",
+                systemImage: "eye")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(store.picking == 2 ? Color.accentColor : .secondary)
+        .disabled(!store.ready)
+        HStack {
+          Text("Size").foregroundStyle(.secondary)
+          Slider(value: $redEyeSize, in: -100...100, step: 5)
+            .onChange(of: redEyeSize) { _, v in if store.picking == 2 { store.pick(2, size: v) } }
+        }
+        if store.spotCount > 0 {
+          Text("\(store.spotCount) fixed").font(.caption).foregroundStyle(.secondary)
+        }
+      }
+      .padding(.leading, MVTheme.space(14))
+    }
+    if i == AdjustStore.removeSection {
+      VStack(alignment: .leading, spacing: MVTheme.space(4)) {
+        Button {
+          store.pick(store.picking == 3 ? 0 : 3, size: brushSize)
+        } label: {
+          Label(store.picking == 3 ? "Brushing — click here when done" : "Brush over what to remove",
+                systemImage: "paintbrush.pointed")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(store.picking == 3 ? Color.accentColor : .secondary)
+        .disabled(!store.ready)
+        HStack {
+          Text("Size").foregroundStyle(.secondary)
+          Slider(value: $brushSize, in: -100...100, step: 5)
+            .onChange(of: brushSize) { _, v in if store.picking == 3 { store.pick(3, size: v) } }
+        }
+        HStack {
+          Button("Undo stroke") { store.brush(0) }.disabled(store.brushStrokes == 0)
+          Button("Clear") { store.brush(1) }.disabled(store.brushStrokes == 0)
+          Spacer()
+          Button("Remove…") { store.brush(2) }
+            .disabled(store.brushStrokes == 0)
+            .help("Enhance fills in what you brushed from its surroundings and saves a new file.")
+        }
+        if store.brushFull {
+          Text("The brush is full: remove this, then brush more.").font(.caption).foregroundStyle(.secondary)
+        }
+      }
+      .padding(.leading, MVTheme.space(14))
+    }
+    if i == AdjustStore.facesSection {
+      VStack(alignment: .leading, spacing: MVTheme.space(4)) {
+        Button("Open closed eyes") { store.openEyes() }
+          .disabled(!store.ready)
+          .help("Eyes shut? Use the same person's open eyes from a photo taken moments before or after. Saves a new file.")
+        Text("Uses People in Local search to find the same person in the photos taken within 10 seconds.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+      .padding(.leading, MVTheme.space(14))
+    }
+    if i == AdjustStore.curvesSection {
+      CurveEditor(store: store, channel: curvesChannel)
+        .aspectRatio(1, contentMode: .fit)
+        .padding(.leading, MVTheme.space(14))
+        .disabled(!store.ready)
+      Text("Drag the line to add a point · drag a point off the square to remove it")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.leading, MVTheme.space(14))
     }
   }
 
@@ -235,5 +375,101 @@ struct AdjustView: View {
       }
     }
     .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(4)))
+  }
+}
+
+/// Slice 2: one channel's curve, drawn over the luma histogram. A drag that
+/// starts near a point moves it (the ends move up and down only); one that
+/// starts on the line adds a point there; a point dragged off the square goes.
+/// Every move is sent (AdjustStore.setCurve); the core makes one drag one op.
+struct CurveEditor: View {
+  @ObservedObject var store: AdjustStore
+  let channel: Int
+  @State private var dragging: Int? = nil
+
+  private var points: [CGPoint] {
+    let p = store.curves[channel]
+    return p.count >= 2 ? p : [CGPoint(x: 0, y: 0), CGPoint(x: 1, y: 1)]
+  }
+
+  private static let tints: [Color] = [.primary, .red, .green, .blue]
+
+  var body: some View {
+    GeometryReader { geo in
+      let size = geo.size
+      Canvas { ctx, sz in
+        ctx.fill(Path(CGRect(origin: .zero, size: sz)), with: .color(Color(nsColor: .textBackgroundColor)))
+        if store.histogramValid {
+          let bins = store.histogram[channel == 0 ? 3 : channel - 1]
+          var h = Path()
+          h.move(to: CGPoint(x: 0, y: sz.height))
+          for (i, v) in bins.enumerated() {
+            h.addLine(to: CGPoint(x: sz.width * (Double(i) + 0.5) / Double(bins.count), y: sz.height * (1 - v)))
+          }
+          h.addLine(to: CGPoint(x: sz.width, y: sz.height))
+          ctx.fill(h, with: .color(Color.secondary.opacity(0.25)))
+        }
+        var grid = Path()
+        for k in 1..<4 {
+          let t = Double(k) / 4
+          grid.move(to: CGPoint(x: sz.width * t, y: 0)); grid.addLine(to: CGPoint(x: sz.width * t, y: sz.height))
+          grid.move(to: CGPoint(x: 0, y: sz.height * t)); grid.addLine(to: CGPoint(x: sz.width, y: sz.height * t))
+        }
+        ctx.stroke(grid, with: .color(Color.secondary.opacity(0.2)), lineWidth: 0.5)
+        var line = Path()
+        let pts = points
+        for s in 0...96 {
+          let x = Double(s) / 96
+          let pt = CGPoint(x: x * sz.width, y: (1 - AdjustStore.evaluate(pts, x)) * sz.height)
+          if s == 0 { line.move(to: pt) } else { line.addLine(to: pt) }
+        }
+        ctx.stroke(line, with: .color(Self.tints[channel]), lineWidth: 1.5)
+        for p in pts {
+          let c = CGPoint(x: p.x * sz.width, y: (1 - p.y) * sz.height)
+          ctx.fill(Path(ellipseIn: CGRect(x: c.x - 4, y: c.y - 4, width: 8, height: 8)),
+                   with: .color(Self.tints[channel]))
+        }
+      }
+      .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(4)))
+      .contentShape(Rectangle())
+      .gesture(DragGesture(minimumDistance: 0)
+        .onChanged { g in drag(g.startLocation, g.location, size) }
+        .onEnded { _ in dragging = nil })
+      .accessibilityLabel("\(AdjustStore.channelNames[channel]) curve")
+    }
+  }
+
+  private func drag(_ start: CGPoint, _ at: CGPoint, _ size: CGSize) {
+    guard size.width > 0, size.height > 0 else { return }
+    var pts = points
+    func unit(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x / size.width, y: 1 - p.y / size.height) }
+    if dragging == nil {
+      let s = unit(start)
+      let near = pts.indices.min { hypot(pts[$0].x - s.x, pts[$0].y - s.y) < hypot(pts[$1].x - s.x, pts[$1].y - s.y) }
+      if let n = near, hypot(pts[n].x - s.x, pts[n].y - s.y) < 0.06 {
+        dragging = n
+      } else if pts.count < 8, s.x > 0.02, s.x < 0.98 {
+        pts.append(CGPoint(x: s.x, y: AdjustStore.evaluate(pts, s.x)))
+        pts.sort { $0.x < $1.x }
+        dragging = pts.firstIndex { $0.x == s.x }
+      } else {
+        return
+      }
+    }
+    guard let d = dragging, d < pts.count else { return }
+    let u = unit(at)
+    let end = d == 0 || d == pts.count - 1
+    // Off the square: an inner point goes.
+    if !end && (u.y < -0.08 || u.y > 1.08 || u.x < -0.08 || u.x > 1.08) {
+      pts.remove(at: d)
+      dragging = nil
+      store.setCurve(channel, pts)
+      return
+    }
+    let lo = d > 0 ? pts[d - 1].x + 1.0 / 64 : 0
+    let hi = d < pts.count - 1 ? pts[d + 1].x - 1.0 / 64 : 1
+    let x = end ? pts[d].x : min(max(u.x, lo), hi)
+    pts[d] = CGPoint(x: x, y: min(max(u.y, 0), 1))
+    store.setCurve(channel, pts)
   }
 }

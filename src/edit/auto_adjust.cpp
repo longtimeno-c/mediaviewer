@@ -56,6 +56,30 @@ float neutral_confidence(float mean_saturation) noexcept {
                     1.0f);
 }
 
+std::optional<std::array<double, 3>> sample_mean(const image::linear_image& working, float u, float v,
+                                                 int half) noexcept {
+  if (!working.valid() || !(u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f)) return std::nullopt;
+  const int w = static_cast<int>(working.width), h = static_cast<int>(working.height);
+  const int cx = std::clamp(static_cast<int>(u * static_cast<float>(w)), 0, w - 1);
+  const int cy = std::clamp(static_cast<int>(v * static_cast<float>(h)), 0, h - 1);
+  std::array<double, 3> sum{};
+  int n = 0;
+  for (int y = std::max(0, cy - half); y <= std::min(h - 1, cy + half); ++y) {
+    for (int x = std::max(0, cx - half); x <= std::min(w - 1, cx + half); ++x) {
+      const std::uint16_t* p = working.rgba.data() + (static_cast<std::size_t>(y) * working.width + static_cast<std::size_t>(x)) * 4;
+      for (std::size_t k = 0; k < 3; ++k) sum[k] += image::half_to_float(p[k]);
+      ++n;
+    }
+  }
+  if (n == 0) return std::nullopt;
+  return std::array<double, 3>{sum[0] / n, sum[1] / n, sum[2] / n};
+}
+
+bool has_auto(adjust_section s) noexcept {
+  return s == adjust_section::light || s == adjust_section::colour || s == adjust_section::mono ||
+         s == adjust_section::levels;
+}
+
 std::array<float, 2> grey_world(const std::array<double, 3>& mean, float strength) noexcept {
   if (!(mean[0] > 0.0 && mean[1] > 0.0 && mean[2] > 0.0)) return {0.0f, 0.0f};
   // A coarse grid, then a fine one about its best point: ~1 700 calls of
@@ -160,19 +184,60 @@ result<auto_result> compute_auto(const image::linear_image& working, const colou
     case adjust_section::mono: {
       // The colour as it reaches black & white: the current edit with black
       // & white and the vignette off.
-      const adjust_uniforms u =
-          uniforms_of(without_section(without_section(current, adjust_section::mono),
-                                      adjust_section::vignette));
+      const colour before = without_section(without_section(current, adjust_section::mono),
+                                            adjust_section::vignette);
+      const gfx::adjust_table table = table_of(before);
+      const gfx::adjust_args args(uniforms_of(before), &table);
       std::vector<std::array<float, 3>> samples;
       samples.reserve(static_cast<std::size_t>(kAutoSampleBudget));
       const bool done = for_samples(working, ctx, [&](float red, float green, float blue) {
-        const kernel::float3 c = gfx::adjust({red, green, blue}, kernel::float4{}, u);
+        const kernel::float3 c = gfx::adjust({red, green, blue}, kernel::float4{}, args);
         samples.push_back({c.x, c.y, c.z});
       });
       if (!done) return err(status::cancelled);
       const float mono = current.get(adjust_param::mono);
       set(r.value, adjust_param::mono, mono > 0.0f ? mono : 100.0f);
       set(r.value, adjust_param::mono_filter, best_mono_filter(samples));
+      break;
+    }
+    case adjust_section::levels: {
+      // p of each channel as it reaches the table: the edit with levels,
+      // curves, black & white and the vignette off.
+      colour before = current;
+      for (adjust_section s : {adjust_section::levels, adjust_section::curves, adjust_section::mono,
+                               adjust_section::vignette}) {
+        before = without_section(before, s);
+      }
+      const gfx::adjust_args args(uniforms_of(before));
+      std::array<std::vector<float>, 3> ps;
+      for (auto& v : ps) v.reserve(static_cast<std::size_t>(kAutoSampleBudget));
+      const bool done = for_samples(working, ctx, [&](float red, float green, float blue) {
+        const kernel::float3 c = gfx::adjust({red, green, blue}, kernel::float4{}, args);
+        ps[0].push_back(std::pow(std::max(c.x, 0.0f), 1.0f / 2.2f));
+        ps[1].push_back(std::pow(std::max(c.y, 0.0f), 1.0f / 2.2f));
+        ps[2].push_back(std::pow(std::max(c.z, 0.0f), 1.0f / 2.2f));
+      });
+      if (!done) return err(status::cancelled);
+      if (ps[0].size() < 64) break;
+      r.value = without_section(current, adjust_section::levels);
+      constexpr adjust_param firsts[3] = {adjust_param::levels_red_black, adjust_param::levels_green_black,
+                                          adjust_param::levels_blue_black};
+      for (std::size_t ch = 0; ch < 3; ++ch) {
+        std::vector<float>& v = ps[ch];
+        const auto at = [&v](double q) {
+          const auto k = static_cast<std::size_t>(q * static_cast<double>(v.size() - 1));
+          std::nth_element(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(k), v.end());
+          return v[k];
+        };
+        const float lo = at(kAutoLevelsClip), hi = at(1.0 - kAutoLevelsClip);
+        if (hi - lo < 0.05f) continue;  // flat: nothing to stretch
+        // Black p = black/100 * 0.5; white p = 1 + white/100 * 0.5 (adjust.cpp).
+        const float black = std::clamp(std::round(lo / 0.5f * 100.0f), 0.0f, kAutoLevelsReach);
+        const float white = std::clamp(std::round((std::min(hi, 1.0f) - 1.0f) / 0.5f * 100.0f),
+                                       -kAutoLevelsReach, 0.0f);
+        set(r.value, firsts[ch], black < 1.0f ? 0.0f : black);
+        set(r.value, static_cast<adjust_param>(static_cast<int>(firsts[ch]) + 2), white > -1.0f ? 0.0f : white);
+      }
       break;
     }
     default: break;

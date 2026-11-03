@@ -540,6 +540,20 @@ constexpr command_info kCommands[] = {
     {adjust_vignette_softness, "Adjust: vignette softness", true},
     {adjust_auto, "Adjust: auto", true},
     {adjust_reset_section, "Adjust: reset section", true},
+    {adjust_levels_black, "Adjust: levels black", true},
+    {adjust_levels_mid, "Adjust: levels mid-tones", true},
+    {adjust_levels_white, "Adjust: levels white", true},
+    {adjust_levels_red_black, "Adjust: levels red black", true},
+    {adjust_levels_red_mid, "Adjust: levels red mid-tones", true},
+    {adjust_levels_red_white, "Adjust: levels red white", true},
+    {adjust_levels_green_black, "Adjust: levels green black", true},
+    {adjust_levels_green_mid, "Adjust: levels green mid-tones", true},
+    {adjust_levels_green_white, "Adjust: levels green white", true},
+    {adjust_levels_blue_black, "Adjust: levels blue black", true},
+    {adjust_levels_blue_mid, "Adjust: levels blue mid-tones", true},
+    {adjust_levels_blue_white, "Adjust: levels blue white", true},
+    {adjust_pick, "Adjust: pick on the photo", true},
+    {adjust_open_eyes, "Open closed eyes", true},
 };
 
 const char* named_key(key k) noexcept {
@@ -764,6 +778,16 @@ const addon_command_row* addon_command(command_id id) noexcept {
   const addon_slots& s = addon_store();
   return n >= 0 && static_cast<std::size_t>(n) < s.rows.size() ? &s.rows[static_cast<std::size_t>(n)]
                                                                : nullptr;
+}
+
+command_id find_addon_command(std::string_view addon, std::string_view id) noexcept {
+  const addon_slots& s = addon_store();
+  for (std::size_t i = 0; i < s.rows.size() && i < static_cast<std::size_t>(kAddonCommandSlots); ++i) {
+    if (s.rows[i].addon == addon && s.rows[i].id == id) {
+      return static_cast<command_id>(static_cast<int>(command_id::addon_cmd_0) + static_cast<int>(i));
+    }
+  }
+  return command_id::none;
 }
 
 mode_mask parse_modes(std::string_view modes) noexcept {

@@ -204,6 +204,20 @@ constexpr slug_row kSlugs[] = {
     {adjust_vignette_softness, "adjust_vignette_softness"},
     {adjust_auto, "adjust_auto"},
     {adjust_reset_section, "adjust_reset_section"},
+    {adjust_levels_black, "adjust_levels_black"},
+    {adjust_levels_mid, "adjust_levels_mid"},
+    {adjust_levels_white, "adjust_levels_white"},
+    {adjust_levels_red_black, "adjust_levels_red_black"},
+    {adjust_levels_red_mid, "adjust_levels_red_mid"},
+    {adjust_levels_red_white, "adjust_levels_red_white"},
+    {adjust_levels_green_black, "adjust_levels_green_black"},
+    {adjust_levels_green_mid, "adjust_levels_green_mid"},
+    {adjust_levels_green_white, "adjust_levels_green_white"},
+    {adjust_levels_blue_black, "adjust_levels_blue_black"},
+    {adjust_levels_blue_mid, "adjust_levels_blue_mid"},
+    {adjust_levels_blue_white, "adjust_levels_blue_white"},
+    {adjust_pick, "adjust_pick"},
+    {adjust_open_eyes, "adjust_open_eyes"},
 };
 
 struct claim {

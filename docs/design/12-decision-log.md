@@ -634,6 +634,22 @@ disabled until the working image exists.
 menu open a workspace of tabs over the existing panes, a base feature with no new engine. It docks
 (see "Panes float" above).
 
+**Face data may serve one edit: Open closed eyes (owner, 2026-11-02).** The People promise was
+"face data is used for nothing but local search". The owner approved its use for the eyes-open
+edit ([plan](../plans/edit-adjust.md) slice 6): the AI pack matches the face in the photo being
+edited to the same person in the frames of the same moment (within 10 s, same folder) by the
+People embedding. Bounds kept: only on a click, only while People is on, nothing written to
+`faces.db`, nothing kept, the result a new file beside the original. Why: matching by position
+alone picks the wrong person in a group shot. The generative alternative (eyes drawn from the
+person's other photos) was not taken: gigabytes of weights, minutes on Windows' CPU, eyes that may
+not be theirs, and identity models under non-commercial licences.
+
+**Detail is a CPU pass, not a kernel term (2026-11-02).** Definition, brilliance, sharpen and
+noise reduction need neighbours. They run on the working image on a worker after the slider
+settles and replace the working texture; the export runs the same code at full size. Not a GPU
+base layer: no new texture binding or shader twin on either GPU, and export matches the preview
+by construction. Cost: the canvas follows a detail slider a quarter second after it settles.
+
 ---
 
 ## Clip editing and the Video Editor

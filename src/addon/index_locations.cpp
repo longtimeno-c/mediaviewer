@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <utility>
 
@@ -16,6 +17,7 @@ struct source_state {
   std::mutex m;
   std::condition_variable idle;
   index_location_source source;  // under m
+  eyes_source eyes;              // under m (slice 6)
   std::uint32_t in_flight = 0;   // under m
   // Bumped by every publish and retract; a call in flight compares it per row
   // without the lock.
@@ -59,6 +61,7 @@ void retract_index_locations() noexcept {
     std::lock_guard lock(s.m);
     gone = std::move(s.source);
     s.source = nullptr;
+    s.eyes = nullptr;
     s.epoch.fetch_add(1, std::memory_order_acq_rel);
   }
 }
@@ -97,6 +100,51 @@ expected each_index_location(const index_location_visit& visit) {
   });
   if (retracted) return err(status::cancelled);
   return r;
+}
+
+void publish_ai_eyes(eyes_source source) {
+  source_state& s = state();
+  std::lock_guard lock(s.m);
+  s.eyes = std::move(source);
+}
+
+result<std::string> ai_eyes_json(const std::string& path, const std::string& candidates) {
+  source_state& s = state();
+  eyes_source eyes;
+  {
+    std::lock_guard lock(s.m);
+    if (!s.eyes) return err(status::not_found);
+    eyes = s.eyes;
+    ++s.in_flight;
+  }
+  struct leave {
+    source_state& s;
+    ~leave() {
+      std::lock_guard lock(s.m);
+      if (--s.in_flight == 0) s.idle.notify_all();
+    }
+  } on_leave{s};
+  return eyes(path, candidates);
+}
+
+eyes_source ai_eyes(const mv_ai_api* api) {
+  if (!api || api->struct_size < offsetof(mv_ai_api, eyes_json) + sizeof(api->eyes_json) || !api->eyes_json) {
+    return nullptr;
+  }
+  return [api](const std::string& path, const std::string& candidates) -> result<std::string> {
+    std::string out(64 * 1024, '\0');
+    std::uint32_t needed = 0;
+    mv_status st = api->eyes_json(api->ctx, path.c_str(), candidates.c_str(), out.data(),
+                                  static_cast<std::uint32_t>(out.size()), &needed);
+    if (st == MV_ERR_INVALID_ARG && needed > out.size()) {
+      out.assign(needed, '\0');
+      st = api->eyes_json(api->ctx, path.c_str(), candidates.c_str(), out.data(),
+                          static_cast<std::uint32_t>(out.size()), &needed);
+    }
+    if (st != MV_OK) return err(static_cast<status>(st));
+    out.resize(std::strlen(out.c_str()));
+    return out;
+  };
 }
 
 index_location_source ai_index_locations(const mv_ai_api* api) {
