@@ -193,7 +193,8 @@ brushed offers **Remove what you brushed** and starts on it. The run (`remove.h`
    than twice the feather from the brush is the photo's own, bit for bit.
 5. A new file, as every run.
 
-It fills from the surroundings; it adds nothing and takes no words. A box much larger than 512 px
+Measured 2026-11-03 (M-series, CPU, the hidden `[.remove-model]` case): an 832 × 832 box
+filled in 1.73 s. It fills from the surroundings; it adds nothing and takes no words. A box much larger than 512 px
 is filled at that size and scaled up, so a large fill is softer than the photo around it.
 
 ## Measured (2026-10-26, Apple M-series; sound on CPU, one thread)

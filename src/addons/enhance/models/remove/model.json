@@ -6,5 +6,5 @@
  "run_bytes": 1500000000,
  "cpu": true,
  "knobs": [],
- "io": {"runner": "inpaint", "side": 512, "image": "image", "mask": "mask", "output": "output", "out_scale": 255}
+ "io": {"runner": "inpaint", "side": 512, "image": "image", "mask": "mask", "output": "output", "out_scale": 1}
 }

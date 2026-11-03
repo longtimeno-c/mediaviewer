@@ -1548,6 +1548,79 @@ TEST_CASE("remove: the box around a stroke, the crop, and only brushed pixels pa
   CHECK(photo.rgb[just_out] != original.rgb[just_out]);
 }
 
+// The real LaMa (MV_REMOVE_MODEL: lama_fp32.onnx) on a photo
+// (MV_RESTYLE_RGB / _W / _H, raw RGB): a hole brushed over its middle is
+// filled with something like its surroundings, and everything away from the
+// brush is the photo's own. MV_REMOVE_OUT keeps the result as raw RGB.
+TEST_CASE("remove: LaMa through ONNX Runtime", "[.remove-model]") {
+  const char* file = std::getenv("MV_REMOVE_MODEL");
+  const char* ort = std::getenv("MV_ENHANCE_RUNTIME_DIR");
+  const char* raw = std::getenv("MV_RESTYLE_RGB");
+  const char* ws = std::getenv("MV_RESTYLE_W");
+  const char* hs = std::getenv("MV_RESTYLE_H");
+  if (!file || !ort || !raw || !ws || !hs) SKIP("MV_REMOVE_MODEL / MV_ENHANCE_RUNTIME_DIR / MV_RESTYLE_RGB not set");
+  rgb8 full;
+  full.width = static_cast<std::uint32_t>(std::atoi(ws));
+  full.height = static_cast<std::uint32_t>(std::atoi(hs));
+  full.rgb = mv::test::read_bytes(raw);
+  REQUIRE(full.rgb.size() == std::size_t{full.width} * full.height * 3);
+  auto rt = mv::infer::runtime::load(ort);
+  REQUIRE(rt);
+  auto model = inpaint_model::open(**rt, file, inpaint_io{});
+  INFO(mv::infer::session::last_error());
+  REQUIRE(model);
+  // A stroke across the middle, radius 3% of the long side.
+  std::vector<float> dabs;
+  for (float u = 0.4f; u <= 0.6f; u += 0.005f) dabs.insert(dabs.end(), {u, 0.5f, 0.03f});
+  const mask8 mask = mask_from_dabs(dabs, full.width, full.height);
+  const auto box = remove_box(mask);
+  REQUIRE(box);
+  const std::uint32_t side = (*model)->side();
+  const rgb8 crop = crop_rgb(full, *box);
+  const auto t0 = std::chrono::steady_clock::now();
+  auto filled = (*model)->fill(resize_rgb(crop, side, side), crop_mask(mask, *box, side, side));
+  const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  REQUIRE(filled);
+  rgb8 out = full;
+  paste_back(out, *box, resize_rgb(*filled, box->width, box->height), mask, 4);
+  // The fill's mean against the ring just outside the brush: close, and
+  // nothing like white or black.
+  double in_sum = 0, ring_sum = 0;
+  std::size_t in_n = 0, ring_n = 0, far_changed = 0;
+  const mask8 grown = mask_from_dabs([&] {
+    std::vector<float> g = dabs;
+    for (std::size_t i = 2; i < g.size(); i += 3) g[i] = 0.06f;
+    return g;
+  }(), full.width, full.height);
+  const mask8 far = mask_from_dabs([&] {
+    std::vector<float> g = dabs;
+    for (std::size_t i = 2; i < g.size(); i += 3) g[i] = 0.045f;
+    return g;
+  }(), full.width, full.height);
+  for (std::size_t i = 0; i < mask.a.size(); ++i) {
+    const double l = (out.rgb[i * 3] + out.rgb[i * 3 + 1] + out.rgb[i * 3 + 2]) / 3.0;
+    if (mask.a[i]) {
+      in_sum += l;
+      ++in_n;
+    } else if (grown.a[i]) {
+      ring_sum += l;
+      ++ring_n;
+    }
+    if (!far.a[i]) {
+      far_changed += out.rgb[i * 3] != full.rgb[i * 3] || out.rgb[i * 3 + 1] != full.rgb[i * 3 + 1] ||
+                     out.rgb[i * 3 + 2] != full.rgb[i * 3 + 2];
+    }
+  }
+  REQUIRE(in_n > 0);
+  REQUIRE(ring_n > 0);
+  const double in_mean = in_sum / in_n, ring_mean = ring_sum / ring_n;
+  std::printf("remove: %ux%u box filled at %u px in %.2f s on CPU; fill mean %.1f, surroundings %.1f\n", box->width,
+              box->height, side, s, in_mean, ring_mean);
+  CHECK(std::abs(in_mean - ring_mean) < 30.0);
+  CHECK(far_changed == 0);
+  if (const char* keep = std::getenv("MV_REMOVE_OUT")) write_bytes(std::string(keep), out.rgb);
+}
+
 TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {
   const char* dir = std::getenv("MV_RESTYLE_DIR");
   const char* ort = std::getenv("MV_ENHANCE_RUNTIME_DIR");

@@ -54,11 +54,12 @@ void paste_back(rgb8& photo, const pixel_box& box, const rgb8& filled, const mas
 
 // The model's tensors, from its spec's io: a square `side`, the picture and
 // mask inputs (NCHW, 0..1, the mask 1 where brushed) and the filled output,
-// whose values `out_scale` takes to 0..255.
+// whose values `out_scale` takes to 0..255 (LaMa's port already gives
+// 0..255, measured: 1).
 struct inpaint_io {
   std::uint32_t side = 512;
   std::string image = "image", mask = "mask", output = "output";
-  float out_scale = 255.0f;
+  float out_scale = 1.0f;
 };
 
 // What the runner fills with (a stand-in in the tests).
