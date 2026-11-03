@@ -54,6 +54,8 @@
 #include "core/json.h"
 #include "core/trace.h"
 #include "edit/auto_adjust.h"
+#include "edit/detail.h"
+#include "edit/prompt.h"
 #include "edit/histogram.h"
 #include "image/linear.h"
 #include "image/page_thumbs.h"
@@ -74,8 +76,11 @@
 #include "nle/mac/agent_mac.h"
 #endif
 #include "shell/adjust_pane.h"
+#include "shell/remove_brush.h"
 #include "shell/ai_badge.h"
+#include "abi/addon_media.h"
 #include "abi/clip_session.h"
+#include "addon/index_locations.h"
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
 #include "shell/gesture.h"
@@ -150,6 +155,9 @@ static_assert(offsetof(mv_adjust_view, clip_high) == offsetof(mv::shell::adjust_
 static_assert(offsetof(mv_adjust_view, histogram_valid) ==
               offsetof(mv::shell::adjust_view, histogram_valid));
 static_assert(offsetof(mv_adjust_view, bins) == offsetof(mv::shell::adjust_view, bins));
+static_assert(offsetof(mv_adjust_view, curve_x) == offsetof(mv::shell::adjust_view, curve_x));
+static_assert(offsetof(mv_adjust_view, picking) == offsetof(mv::shell::adjust_view, picking));
+static_assert(offsetof(mv_adjust_view, prompt_note) == offsetof(mv::shell::adjust_view, prompt_note));
 
 // Forward declaration: the globals just below need the type, but MvLabApp's
 // @interface is later in this file (it in turn needs MvMetalView, declared
@@ -777,6 +785,19 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)adjustReset;
 - (void)adjustAuto:(int32_t)section;
 - (void)adjustResetSection:(int32_t)section;
+- (void)adjustCurve:(int32_t)channel curve:(const mv::edit::curve&)k;
+- (void)adjustPick:(int32_t)mode size:(float)size;
+- (void)adjustPrompt:(const std::string&)text;
+- (void)adjustOpenEyes;
+- (BOOL)adjustPicking;
+- (void)adjustPickAtX:(float)x y:(float)y;
+- (BOOL)brushActive;
+- (void)adjustBrush:(int32_t)action;
+- (void)brushPublish;
+- (BOOL)brushPressX:(float)x y:(float)y;
+- (void)brushDragX:(float)x y:(float)y;
+- (void)brushHoverX:(float)x y:(float)y;
+- (void)brushRelease;
 - (void)adjustBlur;
 // PR 12
 - (int32_t)metaRating;
@@ -1729,6 +1750,33 @@ extern "C" void mv_chrome_adjust_reset_section(int32_t section) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app adjustResetSection:section];
 }
+extern "C" void mv_chrome_adjust_curve(int32_t channel, int32_t n, const float* xs, const float* ys) {
+  (void)mv::shell::crash::note_native_call();
+  if (!g_chrome_app || xs == nullptr || ys == nullptr) return;
+  mv::edit::curve k;
+  k.n = static_cast<std::uint8_t>(std::clamp<int32_t>(n, 0, mv::edit::kCurvePoints));
+  for (int i = 0; i < k.n; ++i) {
+    k.x[i] = xs[i];
+    k.y[i] = ys[i];
+  }
+  [g_chrome_app adjustCurve:channel curve:k];
+}
+extern "C" void mv_chrome_adjust_pick(int32_t mode, float size) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app adjustPick:mode size:size];
+}
+extern "C" void mv_chrome_adjust_prompt(const char* text) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app && text) [g_chrome_app adjustPrompt:std::string(text)];
+}
+extern "C" void mv_chrome_adjust_open_eyes(void) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app adjustOpenEyes];
+}
+extern "C" void mv_chrome_adjust_brush(int32_t action) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app adjustBrush:action];
+}
 extern "C" void mv_chrome_adjust_close(void) {
   if (g_chrome_app) [g_chrome_app setAdjustVisible:NO];
 }
@@ -1787,6 +1835,12 @@ extern "C" void mv_chrome_edit_cancel_crop(void) {
 }
 extern "C" void mv_chrome_edit_show_original(int32_t on) {
   if (g_chrome_app) [g_chrome_app editShowOriginal:on != 0];
+}
+extern "C" void mv_chrome_edit_enhance(void) {
+  (void)mv::shell::crash::note_native_call();
+  if (!g_chrome_app) return;
+  const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
+  if (id != mv::shell::command_id::none) (void)[g_chrome_app runCommand:id back:mv::shell::back_target::none];
 }
 extern "C" void mv_chrome_edit_save_copy(void) {
   (void)mv::shell::crash::note_native_call();
@@ -2160,6 +2214,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 @implementation MvMetalView {
   int _welcomePress;  // welcome row under the left press, + 1; 0 = none
   BOOL _welcomePressRemove;  // ... and the press was on its remove button
+  BOOL _brushStroke;  // slice 7: the left press is a Remove brush stroke
   BOOL _textBeam;            // the I-beam is up over text in a still
   // Issue #212 (shell/gesture.h): a pinch's sub-notch remainder, and the
   // two-finger sideways swipe that steps one item.
@@ -2331,6 +2386,17 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     }
   }
   [self trackPointer:event];
+  // Slice 3: the adjust pane's white-balance picker or red-eye tool takes the
+  // click on the photo; nothing pans.
+  if (self.app && [self.app adjustPicking]) {
+    // Slice 7: the Remove brush strokes while the button is down.
+    if ([self.app brushActive]) {
+      _brushStroke = [self.app brushPressX:self.snap->mouse_x y:self.snap->mouse_y];
+    } else {
+      [self.app adjustPickAtX:self.snap->mouse_x y:self.snap->mouse_y];
+    }
+    return;
+  }
   _welcomePress = self.app ? [self.app welcomeRowAtPointerOnRemove:&_welcomePressRemove] + 1 : 0;
   // Text in images: a press on a word selects (published with the press, so
   // the render thread never starts a pan for it).
@@ -2344,6 +2410,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.app) [self.app transportActivity];
 }
 - (void)mouseUp:(NSEvent*)event {
+  if (_brushStroke) {
+    _brushStroke = NO;
+    if (self.app) [self.app brushRelease];
+  }
   self.snap->mouse_down[0] = false;
   if (self.snap->text_press) {
     self.snap->text_press = false;
@@ -2494,6 +2564,11 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 - (void)mouseMoved:(NSEvent*)event {
   [self trackPointer:event];
+  // Slice 7: the brush's ring follows the pointer; a drag paints.
+  if (self.app && [self.app brushActive]) {
+    if (_brushStroke) [self.app brushDragX:self.snap->mouse_x y:self.snap->mouse_y];
+    else [self.app brushHoverX:self.snap->mouse_x y:self.snap->mouse_y];
+  }
   // A recent folder under the pointer reads as a link. Only a change of row
   // redraws (the app bumps the snapshot); an empty welcome stays idle.
   if (self.app && self.snap->recents.count > 0) {
@@ -3191,8 +3266,24 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   BOOL _jobsVisible;
   BOOL _clipToolsVisible;
   std::shared_ptr<const mv::image::linear_image> _working;
+  // Slice 4: the working image as built, before the detail pass; the pass
+  // shown on the canvas (_working is its result), and the one in flight.
+  std::shared_ptr<const mv::image::linear_image> _workingBase;
+  mv::edit::detail_params _detailShown;
+  std::uint64_t _detailToken;
+  NSTimer* _detailDebounce;
   std::atomic<mv::generation> _adjustGen;
   std::uint64_t _adjustViewGeneration;
+  float _redEyeSize;  // slice 3: the red-eye tool's size, −100..+100
+  // Slice 7: the Remove brush's strokes over the shown still, its size
+  // (−100..+100 about kBrushDefaultRadius), the ring under the pointer, and a
+  // count of changes the canvas redraws on.
+  mv::shell::remove_brush _brush;
+  float _brushSize;
+  float _brushCursor[3];
+  std::uint32_t _brushRev;
+  std::vector<mv::edit::adjust_section> _pendingAutos;  // slice 5b: a typed request's Autos still to run
+  BOOL _eyesRunning;  // slice 6: Open closed eyes is on the pool
   NSTimer* _histogramDebounce;
   // PR 29 (docs/design/20): the Edit workspace (shell/edit_workspace.h) and Show
   // original. _wsShown is what the panes were last synced to, so closing the
@@ -7741,9 +7832,28 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     v.item = _itemId;
     _snap.edit[0] = v;
   } else {
+    const mv::shell::edit_view before = _snap.edit[0];
     _snap.edit[0] = mv::shell::view_of(_edits, _itemId, 0);
+    // Slice 7: strokes lie over what was brushed only while the item and its
+    // geometry stay; otherwise they go (and Enhance's copy of them).
+    if (!_brush.empty() &&
+        (before.item != _itemId || !mv::shell::same_geometry(before, _snap.edit[0]) || _edits.crop_active())) {
+      _brush.clear();
+      mv::addon::media::set_still_mask({}, {});
+      [self bumpAdjustView];
+    }
+    ++_brushRev;
+    mv::shell::apply_brush(_snap.edit[0], _brush, [self brushActive] == YES, _brushRev, _brushCursor);
   }
   ++_editGeneration;  // the strip's edit count, the Crop pane's draft
+  // Slice 5: Enhance's copy of the photo being edited carries its edit.
+  if (_edits.has_item() && !_items.empty() && _index.current() < _items.size() &&
+      !(_edits.export_geometry().identity() && _edits.colour().identity())) {
+    mv::addon::media::set_still_edit(_items[_index.current()].path_utf8, _edits.export_geometry(),
+                                     _edits.colour());
+  } else {
+    mv::addon::media::clear_still_edit();
+  }
   // A new item, a turn or a crop: words read before no longer line up.
   [self textSync];
 }
@@ -7876,6 +7986,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   out->straighten = _edits.crop_active() ? _edits.crop_angle() : _edits.export_geometry().straighten;
   out->edit_count = static_cast<int32_t>(_edits.edit_count());
   out->show_original = _showOriginal ? 1 : 0;
+  out->enhance = mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none ? 1 : 0;
   if (subject == mv::shell::edit_subject::still && _edits.has_item()) {
     std::uint32_t w = 0, h = 0;
     if (_lab.still_size(_itemId, &w, &h)) {
@@ -9684,6 +9795,10 @@ static std::string MvSelfTestPageSummary(const char* addon) {
     const auto p = static_cast<mv::edit::adjust_param>(i);
     if (c.get(p) != 0.0f) [line appendFormat:@" %s=%g", mv::edit::range_of(p).name, c.get(p)];
   }
+  for (int ch = 0; ch < mv::edit::kCurveChannels; ++ch) {
+    if (c.curves[static_cast<std::size_t>(ch)].n > 0) [line appendFormat:@" curve%d=%d", ch, c.curves[static_cast<std::size_t>(ch)].n];
+  }
+  if (c.spot_count > 0) [line appendFormat:@" red_eye=%d", c.spot_count];
   [line appendString:@"\n"];
   [self editSelfTestLine:line dir:dir];
 }
@@ -9866,23 +9981,57 @@ static std::string MvSelfTestPageSummary(const char* addon) {
         [self editSelfTestSnap:@"s4b-adjusted" dir:dir];
         [self editSelfTestAdjustLine:@"adjusted" dir:dir];
         [self adjustResetSection:static_cast<int32_t>(mv::edit::adjust_section::mono)];
+        {
+          // Slice 2: an S curve on the image, then Levels' Auto.
+          mv::edit::curve s;
+          s.n = 4;
+          const float xs[] = {0.0f, 0.25f, 0.75f, 1.0f}, ys[] = {0.0f, 0.2f, 0.8f, 1.0f};
+          for (int i = 0; i < 4; ++i) {
+            s.x[i] = xs[i];
+            s.y[i] = ys[i];
+          }
+          [self adjustCurve:0 curve:s];
+          [self adjustAuto:static_cast<int32_t>(mv::edit::adjust_section::levels)];
+        }
         break;
-      case 7:
+      case 7: {
         [self editSelfTestAdjustLine:@"mono-reset" dir:dir];
+        // Slice 3: the white-balance picker and the red-eye tool clicked in
+        // the middle of the view, and a selective colour band.
+        const mv::shell::canvas_map map = _lab.still_map();
+        [self adjustPick:1 size:0];
+        [self adjustPickAtX:map.centre_x y:map.centre_y];
+        [self adjustPick:2 size:0];
+        [self adjustPickAtX:map.centre_x y:map.centre_y];
+        [self adjustPick:0 size:0];
+        [self adjustSet:static_cast<int32_t>(mv::edit::adjust_param::sel_blue_sat) value:-50.0f];
+        [self adjustSet:static_cast<int32_t>(mv::edit::adjust_param::sharpen) value:40.0f];
+        [self adjustSet:static_cast<int32_t>(mv::edit::adjust_param::noise) value:30.0f];
+        [self adjustPrompt:"a bit warmer and less noisy, more contrast"];
+        [self editSelfTestLine:[NSString stringWithFormat:@"    prompt: %s\n", _adjust.view(_edits.colour()).prompt_note]
+                          dir:dir];
+        [self editSelfTestAdjustLine:@"picked" dir:dir];
+        [self editSelfTestSnap:@"s4c-picked" dir:dir];
+        [self adjustOpenEyes];  // slice 6: its note lands on the pool's answer
+        break;
+      }
+      case 8:
+        [self editSelfTestLine:[NSString stringWithFormat:@"    eyes: %s\n", _adjust.view(_edits.colour()).prompt_note]
+                          dir:dir];
         [self editSelectTab:2];
         break;
-      case 8: [self editSelfTestSnap:@"s5-info" dir:dir];
+      case 9: [self editSelfTestSnap:@"s5-info" dir:dir];
         // PR 29: any tag, and the date, from the Info tab.
         [self metaSetTag:"Exif.Image.Artist" value:"MV self-test"];
         [self metaSetDate:"2020-02-02 10:00:00"];
         break;
-      case 9: [self editSelfTestSnap:@"s5b-info-edited" dir:dir]; [self editSelectTab:0]; [self editShowOriginal:YES]; break;
-      case 10: [self editSelfTestSnap:@"s6-original" dir:dir]; [self editShowOriginal:NO]; [self editSaveCopy]; break;
-      case 11: [self editSelfTestSnap:@"s7-save-copy" dir:dir];
+      case 10: [self editSelfTestSnap:@"s5b-info-edited" dir:dir]; [self editSelectTab:0]; [self editShowOriginal:YES]; break;
+      case 11: [self editSelfTestSnap:@"s6-original" dir:dir]; [self editShowOriginal:NO]; [self editSaveCopy]; break;
+      case 12: [self editSelfTestSnap:@"s7-save-copy" dir:dir];
         [self confirmExport:mv::shell::pack_export(mv::edit::export_options{})];
         break;
-      case 12: [self runCommand:back back:mv::shell::back_target::pane]; [self metaRevert]; break;
-      case 13: [self editSelfTestSnap:@"s8-closed-reverted" dir:dir]; done = YES; break;
+      case 13: [self runCommand:back back:mv::shell::back_target::pane]; [self metaRevert]; break;
+      case 14: [self editSelfTestSnap:@"s8-closed-reverted" dir:dir]; done = YES; break;
     }
   }
   if (done) {
@@ -10024,7 +10173,12 @@ static double mv_wall_seconds() {
 
 - (BOOL)adjustVisible { return _adjust.visible() ? YES : NO; }
 - (uint64_t)adjustGeneration { return _adjustViewGeneration; }
-- (mv::shell::adjust_view)adjustView { return _adjust.view(_edits.colour()); }
+- (mv::shell::adjust_view)adjustView {
+  mv::shell::adjust_view v = _adjust.view(_edits.colour());
+  v.brush_strokes = static_cast<std::int32_t>(_brush.strokes());
+  v.brush_full = _brush.full() ? 1 : 0;
+  return v;
+}
 - (void)bumpAdjustView { ++_adjustViewGeneration; }
 
 // Read, develop (a RAW: LibRaw's linear 16-bit develop — docs/design/07 waits for it,
@@ -10033,6 +10187,9 @@ static double mv_wall_seconds() {
 // lab's decode uses, so it is drained before the Metal device goes away.
 - (void)startWorkingBuild:(std::uint64_t)token {
   _working.reset();
+  _workingBase.reset();
+  _detailShown = {};
+  ++_detailToken;  // a pass for the item left is dropped when it lands
   _lab.drop_working();
   if (_items.empty() || _index.current() >= _items.size()) return;
   const std::string path = _items[_index.current()].path_utf8;
@@ -10077,9 +10234,70 @@ static double mv_wall_seconds() {
               working:(std::shared_ptr<const mv::image::linear_image>)working {
   if (_adjust.working_landed(token, ok, fromRaw)) {
     _working = std::move(working);
+    _workingBase = _working;
+    _detailShown = {};
     [self scheduleHistogram];
+    [self scheduleDetail];
   }
   [self bumpAdjustView];
+}
+
+// Slice 4 (edit/detail.h): when the detail sliders differ from the pass on
+// the canvas, run it again on the pool once they settle, from the working
+// image as built, and upload the result as the working texture. The canvas
+// shows the last finished pass meanwhile.
+- (void)scheduleDetail {
+  if (!_workingBase) return;
+  if (mv::edit::detail_of(_edits.colour()) == _detailShown) return;
+  [_detailDebounce invalidate];
+  __weak MvLabApp* weakSelf = self;
+  _detailDebounce = [NSTimer scheduledTimerWithTimeInterval:0.15
+                                                    repeats:NO
+                                                      block:^(NSTimer* timer) {
+                                                        (void)timer;
+                                                        [weakSelf startDetail];
+                                                      }];
+}
+
+- (void)startDetail {
+  _detailDebounce = nil;
+  if (!_workingBase) return;
+  const mv::edit::detail_params d = mv::edit::detail_of(_edits.colour());
+  if (d == _detailShown) return;
+  const std::uint64_t token = ++_detailToken;
+  const std::shared_ptr<const mv::image::linear_image> base = _workingBase;
+  const std::uint64_t item = _itemId;
+  const mv::generation gen = _adjustGen.load(std::memory_order_relaxed);
+  std::atomic<mv::generation>* current = &_adjustGen;
+  mv::shell::present_lab_mac* lab = &_lab;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [base, d, item, gen, current, lab, token,
+                                              weakSelf](const mv::job_context&) -> mv::status {
+    const mv::job_context ctx(0, gen, current, 0);
+    std::shared_ptr<const mv::image::linear_image> shown = base;
+    if (!d.identity()) {
+      auto out = mv::edit::apply_detail(*base, d, &ctx);
+      if (!out) return out.error();
+      shown = std::make_shared<const mv::image::linear_image>(std::move(out).value());
+    }
+    if (ctx.cancelled()) return mv::status::cancelled;
+    if (!lab->upload_working(*shown, item)) return mv::status::internal;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf detailLanded:token params:d working:shown];
+    });
+    return mv::status::ok;
+  });
+}
+
+- (void)detailLanded:(std::uint64_t)token
+              params:(mv::edit::detail_params)d
+             working:(std::shared_ptr<const mv::image::linear_image>)working {
+  if (token != _detailToken || !_workingBase) return;
+  _working = std::move(working);
+  _detailShown = d;
+  [self pokeSnapshot];
+  [self scheduleHistogram];
+  [self scheduleDetail];  // a slider that moved while this ran
 }
 
 - (void)adjustBuildIf:(std::optional<std::uint64_t>)token {
@@ -10097,6 +10315,8 @@ static double mv_wall_seconds() {
       before != mv::shell::adjust_readiness::none) {
     _adjustGen.fetch_add(1, std::memory_order_relaxed);
     _working.reset();
+    _workingBase.reset();
+    ++_detailToken;
     _lab.drop_working();
   }
   [self adjustBuildIf:token];
@@ -10107,6 +10327,7 @@ static double mv_wall_seconds() {
   const bool has_colour = _edits.has_item() && !_edits.colour().identity();
   [self adjustBuildIf:_adjust.colour_changed(has_colour)];
   [self scheduleHistogram];
+  [self scheduleDetail];
   [self bumpAdjustView];
 }
 
@@ -10128,7 +10349,7 @@ static double mv_wall_seconds() {
   const std::optional<std::uint64_t> token = _adjust.take_histogram_request();
   if (!token) return;
   const std::shared_ptr<const mv::image::linear_image> working = _working;
-  const mv::edit::adjust_uniforms u = mv::edit::uniforms_of(_edits.colour());
+  const mv::edit::colour u = _edits.colour();
   const std::uint64_t t = *token;
   __weak MvLabApp* weakSelf = self;
   _jobs.submit_at(mv::background_generation, [working, u, t, weakSelf](const mv::job_context&) -> mv::status {
@@ -10159,10 +10380,13 @@ static double mv_wall_seconds() {
   if (visible && _jobsVisible) [self setJobsVisible:NO];
   const bool has_colour = _edits.has_item() && !_edits.colour().identity();
   [self adjustBuildIf:_adjust.show(visible, has_colour)];
+  [self brushPublish];  // slice 7: the strokes show only with the pane's brush on
   if (!visible && !has_colour) {
     // Nothing on the canvas needs the working image now; a reopen rebuilds it.
     _adjustGen.fetch_add(1, std::memory_order_relaxed);
     _working.reset();
+    _workingBase.reset();
+    ++_detailToken;
     _lab.drop_working();
     _adjust.working_dropped();
   }
@@ -10193,6 +10417,7 @@ static double mv_wall_seconds() {
   const bool has_colour = !_edits.colour().identity();
   [self adjustBuildIf:_adjust.colour_changed(has_colour)];
   [self scheduleHistogram];
+  [self scheduleDetail];
 }
 
 - (void)adjustReset {
@@ -10200,6 +10425,213 @@ static double mv_wall_seconds() {
   if (_edits.reset_adjust() != mv::shell::edit_effect::redraw) return;
   [self publishEdit];
   [self pokeSnapshot];
+  [self adjustColourChanged];
+}
+
+// Slice 2: a curve from the pane. A drag of a point is one op; no echo back
+// (the pane already shows it), the histogram follows when it settles.
+- (void)adjustCurve:(int32_t)channel curve:(const mv::edit::curve&)k {
+  if (channel < 0 || channel >= mv::edit::kCurveChannels) return;
+  if (!_adjust.working_ready() || ![self adjustStill]) return;
+  if (_edits.set_curve(static_cast<mv::edit::curve_channel>(channel), k) != mv::shell::edit_effect::redraw) {
+    return;
+  }
+  [self publishEdit];
+  [self pokeSnapshot];
+  const bool has_colour = !_edits.colour().identity();
+  [self adjustBuildIf:_adjust.colour_changed(has_colour)];
+  [self scheduleHistogram];
+  [self scheduleDetail];
+}
+
+// Slice 5b (edit/prompt.h): a typed request. Its slider moves land as one
+// op; the Autos it asked for run one after another (autoLanded starts the next).
+- (void)adjustPrompt:(const std::string&)text {
+  if (!_adjust.working_ready() || ![self adjustStill]) return;
+  const mv::edit::prompt_result r = mv::edit::parse_prompt(text, _edits.colour());
+  _adjust.set_prompt_note(mv::edit::prompt_summary(r));
+  if (r.changed(_edits.colour()) && _edits.set_colour(r.value) == mv::shell::edit_effect::redraw) {
+    [self publishEdit];
+    [self pokeSnapshot];
+  }
+  _pendingAutos.assign(r.autos.begin(), r.autos.end());
+  [self adjustColourChanged];
+  [self nextPendingAuto];
+}
+
+- (void)nextPendingAuto {
+  if (_pendingAutos.empty() || _adjust.auto_running()) return;
+  const mv::edit::adjust_section s = _pendingAutos.front();
+  _pendingAutos.erase(_pendingAutos.begin());
+  [self adjustAuto:static_cast<int32_t>(s)];
+}
+
+// Slice 6: Open closed eyes. On the pool: the frames of the same moment, the
+// pack's faces and same-person donors (People data, owner 2026-11-02), then
+// the transfer and a new file beside the photo. The note says what happened.
+- (void)adjustOpenEyes {
+  if (_eyesRunning || ![self adjustStill] || _items.empty() || _index.current() >= _items.size()) return;
+  _eyesRunning = YES;
+  _adjust.set_prompt_note("Looking for open eyes in the same moment…");
+  [self bumpAdjustView];
+  const std::string path = _items[_index.current()].path_utf8;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [path, weakSelf](const mv::job_context& ctx) -> mv::status {
+    std::string candidates;
+    for (const std::string& c : mv::addon::media::burst_neighbours(path)) candidates += c + "\n";
+    auto pack = mv::addon::ai_eyes_json(path, candidates);
+    mv::result<mv::addon::media::eyes_outcome> r = mv::err(pack ? mv::status::ok : pack.error());
+    if (pack) r = mv::addon::media::open_closed_eyes(path, *pack, &ctx);
+    const std::string note = mv::addon::media::eyes_note(pack ? mv::status::ok : pack.error(), r);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [weakSelf eyesLanded:note];
+    });
+    return mv::status::ok;
+  });
+}
+
+- (void)eyesLanded:(const std::string&)note {
+  _eyesRunning = NO;
+  _adjust.set_prompt_note(note);
+  [self bumpAdjustView];
+}
+
+// Slice 3: what the next click on the photo does (shell::adjust_pick).
+// `size` is the red-eye tool's −100..+100 about its default radius.
+- (void)adjustPick:(int32_t)mode size:(float)size {
+  if (mode < 0 || mode > static_cast<int32_t>(mv::shell::adjust_pick::remove)) return;
+  if (mode == static_cast<int32_t>(mv::shell::adjust_pick::remove)) {
+    _brushSize = std::clamp(size, -100.0f, 100.0f);
+  } else {
+    _redEyeSize = std::clamp(size, -100.0f, 100.0f);
+  }
+  _adjust.set_pick(static_cast<mv::shell::adjust_pick>(mode));
+  _brushCursor[0] = -1.0f;
+  [self brushPublish];
+  [self bumpAdjustView];
+}
+
+// ---- Slice 7: the Remove brush ---------------------------------------------------
+
+- (BOOL)brushActive {
+  return _adjust.pick() == mv::shell::adjust_pick::remove && [self adjustStill] && !_edits.crop_active() ? YES : NO;
+}
+
+- (float)brushRadius {
+  return mv::shell::kBrushDefaultRadius * std::exp2(_brushSize / 100.0f);
+}
+
+// Screen → the shown (edited) image's uv; false off the picture.
+- (BOOL)brushUV:(float)x y:(float)y u:(float*)u v:(float*)v {
+  return _lab.still_map().to_uv(x, y, *u, *v) ? YES : NO;
+}
+
+// The strokes and the ring onto the canvas's edit view (a redraw, no decode).
+- (void)brushPublish {
+  if (_snap.edit[0].item != _itemId) return;
+  ++_brushRev;
+  mv::shell::apply_brush(_snap.edit[0], _brush, [self brushActive] == YES, _brushRev, _brushCursor);
+  [self pokeSnapshot];
+}
+
+- (BOOL)brushPressX:(float)x y:(float)y {
+  float u = 0, v = 0;
+  if (![self brushUV:x y:y u:&u v:&v] || u < 0 || u > 1 || v < 0 || v > 1) return NO;
+  const mv::edit::placement p = _edits.preview_placement();
+  _brush.set_frame(p.cropped.w, p.cropped.h);
+  if (!_brush.begin(u, v, [self brushRadius])) {
+    NSBeep();  // full
+    return NO;
+  }
+  _brushCursor[0] = u;
+  _brushCursor[1] = v;
+  _brushCursor[2] = [self brushRadius];
+  [self brushPublish];
+  [self bumpAdjustView];
+  return YES;
+}
+
+- (void)brushDragX:(float)x y:(float)y {
+  float u = 0, v = 0;
+  if (![self brushUV:x y:y u:&u v:&v]) return;
+  (void)_brush.drag(u, v);
+  _brushCursor[0] = u;
+  _brushCursor[1] = v;
+  [self brushPublish];
+}
+
+- (void)brushHoverX:(float)x y:(float)y {
+  float u = 0, v = 0;
+  const BOOL on = [self brushUV:x y:y u:&u v:&v] && u >= 0 && u <= 1 && v >= 0 && v <= 1;
+  if (!on && _brushCursor[0] < 0.0f) return;
+  _brushCursor[0] = on ? u : -1.0f;
+  _brushCursor[1] = v;
+  _brushCursor[2] = [self brushRadius];
+  [self brushPublish];
+}
+
+- (void)brushRelease {
+  _brush.end();
+  [self bumpAdjustView];
+}
+
+// 0 the last stroke off, 1 all of them, 2 Remove: Enhance's sheet takes it.
+- (void)adjustBrush:(int32_t)action {
+  if (action == 0) {
+    (void)_brush.undo_stroke();
+  } else if (action == 1) {
+    _brush.clear();
+  } else if (action == 2) {
+    if (_brush.empty() || _items.empty() || _index.current() >= _items.size()) {
+      NSBeep();
+      return;
+    }
+    const auto dabs = _brush.dabs();
+    std::vector<float> flat;
+    flat.reserve(dabs.size() * 3);
+    for (const mv::shell::brush_dab& d : dabs) flat.insert(flat.end(), {d.u, d.v, d.r});
+    mv::addon::media::set_still_mask(_items[_index.current()].path_utf8, std::move(flat));
+    const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
+    if (id == mv::shell::command_id::none) {
+      _adjust.set_prompt_note("Remove needs the Enhance add-on (Settings → Add-ons).");
+    } else {
+      (void)[self runCommand:id back:mv::shell::back_target::none];
+    }
+  }
+  [self brushPublish];
+  [self bumpAdjustView];
+}
+
+- (BOOL)adjustPicking {
+  return _adjust.pick() != mv::shell::adjust_pick::none && [self adjustStill] && _working ? YES : NO;
+}
+
+// A click on the photo while picking: screen → the shown (edited) image's
+// uv → the source's uv through the edit's map → the working image.
+- (void)adjustPickAtX:(float)x y:(float)y {
+  float u = 0, v = 0;
+  if (!_lab.still_map().to_uv(x, y, u, v) || u < 0 || u > 1 || v < 0 || v > 1) return;
+  const mv::edit::placement p = _edits.preview_placement();
+  const float* m = p.map.m;
+  const float su = m[0] * u + m[1] * v + m[2], sv = m[3] * u + m[4] * v + m[5];
+  mv::shell::edit_effect e = mv::shell::edit_effect::none;
+  if (_adjust.pick() == mv::shell::adjust_pick::white_balance) {
+    const auto mean = mv::edit::sample_mean(*_working, su, sv);
+    if (!mean) return;
+    const std::array<float, 2> wb = mv::edit::neutral_balance(*mean);
+    mv::edit::colour c = _edits.colour();
+    c.v[static_cast<std::size_t>(mv::edit::adjust_param::temperature)] = wb[0];
+    c.v[static_cast<std::size_t>(mv::edit::adjust_param::tint)] = wb[1];
+    e = _edits.set_colour(c);
+    _adjust.set_pick(mv::shell::adjust_pick::none);  // one click
+  } else {
+    const float r = mv::edit::kRedEyeDefaultRadius * std::exp2(_redEyeSize / 100.0f);
+    e = _edits.add_red_eye({su, sv, r});
+  }
+  if (e == mv::shell::edit_effect::redraw) {
+    [self publishEdit];
+    [self pokeSnapshot];
+  }
   [self adjustColourChanged];
 }
 
@@ -10218,7 +10650,10 @@ static double mv_wall_seconds() {
 // A section's Auto (edit/auto_adjust.h): read on the pool from the working
 // image, landed on the main thread as one op if nothing moved meanwhile.
 - (void)adjustAuto:(int32_t)section {
-  if (section < 0 || section >= static_cast<int32_t>(mv::edit::adjust_section::vignette)) return;
+  if (section < 0 || section >= mv::edit::kAdjustSectionCount ||
+      !mv::edit::has_auto(static_cast<mv::edit::adjust_section>(section))) {
+    return;
+  }
   if (!_working || ![self adjustStill]) return;
   const auto sec = static_cast<mv::edit::adjust_section>(section);
   const std::optional<std::uint64_t> token = _adjust.request_auto_tone(sec);
@@ -10241,14 +10676,18 @@ static double mv_wall_seconds() {
 }
 
 - (void)autoLanded:(std::uint64_t)token ok:(bool)ok value:(const mv::edit::colour&)value {
-  if (!_adjust.auto_tone_landed(token)) return;
+  if (!_adjust.auto_tone_landed(token)) {
+    _pendingAutos.clear();  // the colour moved meanwhile: the rest of a typed request's Autos too
+    return;
+  }
   if (ok && [self adjustStill] && _edits.set_colour(value) == mv::shell::edit_effect::redraw) {
     [self publishEdit];
     [self pokeSnapshot];
     [self adjustColourChanged];
-    return;
+  } else {
+    [self bumpAdjustView];  // the spinner stops; nothing changed
   }
-  [self bumpAdjustView];  // the spinner stops; nothing changed
+  [self nextPendingAuto];
 }
 
 - (void)adjustBlur {

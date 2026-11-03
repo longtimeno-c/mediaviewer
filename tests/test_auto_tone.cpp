@@ -299,7 +299,7 @@ TEST_CASE("auto tone is deterministic", "[auto_tone]") {
   const auto h = band(25, 205);
   const auto a = edit::auto_tone(h, edit::colour{});
   const auto b = edit::auto_tone(h, edit::colour{});
-  CHECK(std::memcmp(&a.value, &b.value, sizeof a.value) == 0);
+  CHECK(a.value == b.value);  // colour has padding now (curves, spots): compare, never memcmp
   CHECK(a.black == b.black);
   CHECK(a.median == b.median);
   CHECK(a.white == b.white);
@@ -546,4 +546,37 @@ TEST_CASE("adjust pane: the view says which section's Auto is running", "[auto_t
   CHECK(pane.view(edit::colour{}).auto_section == static_cast<int>(edit::adjust_section::mono));
   CHECK(pane.auto_tone_landed(*t));
   CHECK(pane.view(edit::colour{}).auto_section == -1);
+}
+
+TEST_CASE("auto levels: each channel stretched to its ends, within reach", "[auto_tone][auto_levels]") {
+  // A flat, faintly blue frame: every channel short of black and white.
+  const image::linear_image img = picture(128, 32, [](std::uint32_t x, std::uint32_t) {
+    const float t = static_cast<float>(x) / 127.0f;
+    const float p = 0.15f + 0.65f * t;  // display-encoded 0.15 .. 0.8
+    const float v = std::pow(p, 2.2f);
+    return std::array<float, 3>{v * 0.9f, v, std::min(v * 1.1f, 0.95f)};
+  });
+  auto r = edit::compute_auto(img, edit::colour{}, edit::adjust_section::levels);
+  REQUIRE(r);
+  REQUIRE(r->changed);
+  for (adjust_param p : {adjust_param::levels_red_black, adjust_param::levels_green_black,
+                         adjust_param::levels_blue_black}) {
+    CHECK(r->value.get(p) > 0.0f);
+    CHECK(r->value.get(p) <= edit::kAutoLevelsReach);
+  }
+  CHECK(r->value.get(adjust_param::levels_green_white) < 0.0f);
+  CHECK(r->value.get(adjust_param::levels_black) == 0.0f);  // the image's own row untouched
+  // Shown, green now spans nearly black to nearly white.
+  const auto t = edit::table_of(r->value);
+  const auto u = edit::uniforms_of(r->value);
+  const auto lo = mv::gfx::adjust({std::pow(0.16f, 2.2f), std::pow(0.16f, 2.2f), std::pow(0.16f, 2.2f)},
+                                  {}, u, &t);
+  CHECK(std::pow(lo.y, 1.0f / 2.2f) < 0.05f);
+  // Idempotent, and the vignette and curves have no Auto.
+  auto again = edit::compute_auto(img, r->value, edit::adjust_section::levels);
+  REQUIRE(again);
+  CHECK_FALSE(again->changed);
+  CHECK_FALSE(edit::has_auto(edit::adjust_section::vignette));
+  CHECK_FALSE(edit::has_auto(edit::adjust_section::curves));
+  CHECK(edit::has_auto(edit::adjust_section::levels));
 }

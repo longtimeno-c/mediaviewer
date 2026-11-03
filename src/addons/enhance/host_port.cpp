@@ -21,6 +21,11 @@ bool has_still_rows(const mv_host_api* h) {
          h->still_pixels && h->still_close && h->still_write;
 }
 
+// Slice 7: the Remove brush's row, appended after sound_keep.
+bool has_mask_row(const mv_host_api* h) {
+  return h->struct_size >= offsetof(mv_host_api, still_mask) + sizeof(h->still_mask) && h->still_mask;
+}
+
 bool has_picture_rows(const mv_host_api* h) {
   return h->struct_size >= offsetof(mv_host_api, clip_write_close) + sizeof(h->clip_write_close) &&
          h->frames_open && h->frames_read && h->frames_close && h->clip_write_open && h->clip_write_frame &&
@@ -188,6 +193,40 @@ run_port run_port_of(const mv_host_api* h, const std::string& self_dir) {
     };
   }
   // Photos and a clip's picture: one tiled model runner.
+  p.load_restyle = [runtime](const model_spec& spec, const std::string& models_dir)
+      -> result<std::unique_ptr<restyle_model>> {
+    (void)spec;
+    MV_TRY(infer::runtime * rt, runtime->runtime());
+    return restyle_model::open(*rt, models_dir, models_dir + "-cache");
+  };
+  // Slice 7: the brush and the inpainting model.
+  if (has_mask_row(h)) {
+    p.still_mask = [h](const std::string& path) {
+      std::uint32_t n = 0;
+      if (h->still_mask(h->host, path.c_str(), nullptr, 0, &n) != MV_OK || n == 0) return std::vector<float>{};
+      std::vector<float> dabs(std::size_t{n} * 3);
+      if (h->still_mask(h->host, path.c_str(), dabs.data(), n, &n) != MV_OK) return std::vector<float>{};
+      dabs.resize(std::min<std::size_t>(dabs.size(), std::size_t{n} * 3));
+      return dabs;
+    };
+  }
+  p.load_inpaint = [runtime](const model_spec& spec, const std::string& models_dir)
+      -> result<std::unique_ptr<inpaint_filler>> {
+    if (spec.weights.empty()) return mv::err(mv::status::unsupported_format);
+    inpaint_io io;
+    if (const auto side = spec.io.integer("side"); side && *side >= 64 && *side <= 2048) {
+      io.side = static_cast<std::uint32_t>(*side);
+    }
+    if (const std::string* v = spec.io.str("image")) io.image = *v;
+    if (const std::string* v = spec.io.str("mask")) io.mask = *v;
+    if (const std::string* v = spec.io.str("output")) io.output = *v;
+    if (const json::value* v = spec.io.find("out_scale"); v && v->k == json::kind::number) {
+      io.out_scale = static_cast<float>(v->is_integer ? static_cast<double>(v->i) : v->d);
+    }
+    MV_TRY(infer::runtime * rt, runtime->runtime());
+    MV_TRY(auto model, inpaint_model::open(*rt, models_dir + "/" + spec.weights.front(), io));
+    return std::unique_ptr<inpaint_filler>(std::move(model));
+  };
   p.load_tiles = [runtime](const model_spec& spec, const std::string& models_dir) {
     // Core ML's compiled model, kept beside the weights (Remove deletes it).
     return runtime->open_tiles(spec, models_dir, models_dir + "-cache");

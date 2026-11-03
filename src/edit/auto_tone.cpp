@@ -151,7 +151,7 @@ auto_tone_result auto_tone(const histogram& basis, const colour& current) noexce
 
 result<auto_tone_result> compute_auto_tone(const image::linear_image& working,
                                            const colour& current, const job_context* ctx) {
-  auto h = compute_histogram(working, uniforms_of(auto_tone_basis(current)), ctx);
+  auto h = compute_histogram(working, auto_tone_basis(current), ctx);
   if (!h) return err(h.error());
   return auto_tone(*h, current);
 }

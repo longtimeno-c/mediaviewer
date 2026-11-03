@@ -31,6 +31,7 @@
 // the add-on's heaps).
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -75,6 +76,9 @@ struct face_in {
   float quality = -1;                // 0..1 (face_quality); < 0 unknown
   bool tta = false;                  // the embedding averages the face and its mirror
   std::vector<float> emb;            // L2-normalised
+  // YuNet's five points (right eye, left eye, nose, mouth corners; x, y),
+  // 0..1 of the image: eyes open (mv_ai_api eyes_json).
+  std::array<float, 10> landmarks{};
 };
 
 struct face_row {

@@ -87,6 +87,16 @@ std::optional<knob> read_knob(const json::value& v, model_kind own) {
     const auto def = v.boolean("default");
     if (!def) return std::nullopt;
     k.def_on = *def;
+  } else if (*type == "text") {
+    k.t = knob::type::text;
+    if (const std::string* def = v.str("default")) {
+      if (def->size() > kMaxKnobText) return std::nullopt;
+      k.def_text = *def;
+    }
+    if (const std::string* ph = v.str("placeholder")) {
+      if (!label_text(ph, 64)) return std::nullopt;
+      k.placeholder = *ph;
+    }
   } else {
     return std::nullopt;
   }
@@ -110,6 +120,8 @@ const char* kind_name(model_kind k) noexcept {
     case model_kind::still: return "still";
     case model_kind::video: return "video";
     case model_kind::audio: return "audio";
+    case model_kind::restyle: return "restyle";
+    case model_kind::remove: return "remove";
   }
   return "still";
 }
@@ -189,6 +201,10 @@ json::value knob_value(const knob& k, const json::value* stored) {
       v.k = json::kind::boolean;
       v.b = k.def_on;
       break;
+    case knob::type::text:
+      v.k = json::kind::string;
+      v.s = k.def_text;
+      break;
   }
   return v;
 }
@@ -226,6 +242,9 @@ std::optional<json::value> check_knob_value(const knob& k, const json::value& v)
       return v;
     case knob::type::toggle:
       if (v.k != json::kind::boolean) return std::nullopt;
+      return v;
+    case knob::type::text:
+      if (v.k != json::kind::string || v.s.size() > kMaxKnobText) return std::nullopt;
       return v;
   }
   return std::nullopt;

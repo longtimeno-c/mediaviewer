@@ -896,16 +896,29 @@ int32_t mv_chrome_scrub_markers(int64_t* out, int32_t cap, int32_t* current);
 //   values:    edit::adjust_param order: exposure (EV, -5..5), contrast, saturation,
 //              temperature, tint, highlights, shadows, whites, blacks, vibrance (-100..100),
 //              mono (0..100), mono_filter, mono_tone, vignette, vignette_radius,
-//              vignette_softness (-100..100)
+//              vignette_softness (-100..100), then levels black (0..100), mid (-100..100)
+//              and white (-100..0) for the image, red, green and blue, then selective
+//              colour's hue, saturation and luminance (-100..100) for red, orange, yellow,
+//              green, aqua, blue, purple and magenta, then definition, brilliance
+//              (-100..100), sharpen and noise reduction (0..100)
+//   curve_*:   the master, red, green and blue curves' points (0..1), curve_n of each
 //   bins:      64 bins each of R, G, B, luma, 0..1000 (edit::pack_histogram)
 typedef struct mv_adjust_view {
   int32_t readiness;
   int32_t from_raw;
-  float values[16];
+  float values[56];
   float clip_high;
   float clip_low;
   int32_t histogram_valid;
   int32_t auto_section;  // the section whose Auto is running, -1 none
+  int32_t curve_n[4];
+  float curve_x[4][8];
+  float curve_y[4][8];
+  int32_t picking;     // slice 3: 0 none, 1 white-balance picker, 2 red-eye tool, 3 Remove brush
+  int32_t spot_count;  // red-eye fixes in the edit
+  int32_t brush_strokes;  // slice 7: the Remove brush's strokes
+  int32_t brush_full;     // ... and 1 when it holds as many dabs as it can
+  char prompt_note[128];  // slice 5b: what the last typed request did, UTF-8
   uint16_t bins[4 * 64];
 } mv_adjust_view;
 
@@ -923,6 +936,25 @@ void mv_chrome_adjust_reset(void);
 // puts that section's sliders back to 0, one undo step.
 void mv_chrome_adjust_auto(int32_t section);
 void mv_chrome_adjust_reset_section(int32_t section);
+// Slice 2: curve `channel` (0 image, 1 red, 2 green, 3 blue) is `n` points
+// (at most 8; x and y 0..1). A drag of a point is one undo step.
+void mv_chrome_adjust_curve(int32_t channel, int32_t n, const float* xs, const float* ys);
+// Slice 3: what the next click on the photo does: 0 nothing, 1 the white-balance
+// picker (one click), 2 the red-eye tool (each click, until 0); `size` is its
+// -100..100 about the default radius. Section 7 (red-eye)'s reset clears the fixes.
+void mv_chrome_adjust_pick(int32_t mode, float size);
+// Slice 5b: a typed request ("a bit brighter and warmer"): the sliders it names
+// move as one undo step, any Auto it asks for runs, and prompt_note says what
+// happened. UTF-8.
+void mv_chrome_adjust_prompt(const char* text);
+// Slice 6: Open closed eyes: a face whose eyes are shut takes the same person's
+// open eyes from a frame of the same moment (People in Local search), written
+// as a new file beside the photo; prompt_note says what happened.
+void mv_chrome_adjust_open_eyes(void);
+// Slice 7: the Remove brush (picking 3, mv_chrome_adjust_pick's `size` its
+// −100..100 about the default): 0 the last stroke off, 1 every stroke off,
+// 2 Remove — Enhance's sheet opens to take out what is brushed.
+void mv_chrome_adjust_brush(int32_t action);
 void mv_chrome_adjust_close(void);
 // Esc in the pane: keyboard focus back to the canvas (the pane stays open).
 void mv_chrome_adjust_blur(void);
@@ -1018,6 +1050,7 @@ typedef struct mv_edit_view {
   int32_t crop_width;     // what Apply would keep, in pixels (0 = not known yet)
   int32_t crop_height;
   int32_t document;       // a PDF or DOCX: nothing to edit; the bar offers "Open in <app>"
+  int32_t enhance;        // edit-adjust slice 5: the Enhance add-on is loaded (the strip offers Enhance…)
 } mv_edit_view;
 uint64_t mv_chrome_edit_generation(void);
 bool mv_chrome_edit_view(mv_edit_view* out);
@@ -1036,6 +1069,9 @@ void mv_chrome_edit_cancel_crop(void);
 void mv_chrome_edit_show_original(int32_t on);
 // Save copy…: applies a crop draft, then opens the export sheet (PR 10).
 void mv_chrome_edit_save_copy(void);
+// Slice 5: Enhance… from the strip: Enhance's own sheet for the photo, whose
+// copy carries the crop, colour and detail being edited.
+void mv_chrome_edit_enhance(void);
 // A document's "Open in <app>" (docs/design/20): opens the file on the canvas in
 // the app at `app_path_utf8`, or in its default app (never this one) when NULL
 // or "". Asynchronous; never blocks the caller. [main-thread]

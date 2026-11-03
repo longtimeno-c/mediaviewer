@@ -41,6 +41,11 @@ inline constexpr std::uint64_t kHistogramSampleBudget = 1u << 20;
 
 [[nodiscard]] result<histogram> compute_histogram(const image::linear_image& working,
                                                   const adjust_uniforms& u,
+                                                  const job_context* ctx = nullptr,
+                                                  const gfx::adjust_table* table = nullptr);
+// The same for a folded colour: its uniforms and its table (levels, curves).
+[[nodiscard]] result<histogram> compute_histogram(const image::linear_image& working,
+                                                  const colour& c,
                                                   const job_context* ctx = nullptr);
 
 // What both chromes draw: kHistogramBins bins per channel (R, G, B, luma, in

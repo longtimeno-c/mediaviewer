@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "edit/edit_stack.h"
 #include "gfx/adjust_kernel.h"
 #include "image/half.h"
 
@@ -25,8 +26,17 @@ std::size_t code(float lin) noexcept {
 
 }  // namespace
 
-result<histogram> compute_histogram(const image::linear_image& working, const adjust_uniforms& u,
+result<histogram> compute_histogram(const image::linear_image& working, const colour& c,
                                     const job_context* ctx) {
+  // The red-eye fixes placed on the working image's own frame, as the
+  // vignette is (near, not exact, on a cropped photo).
+  gfx::adjust_table t = table_of(c);
+  place_spots(t, c, place(geometry{}, size2{working.width, working.height}));
+  return compute_histogram(working, uniforms_of(c), ctx, &t);
+}
+
+result<histogram> compute_histogram(const image::linear_image& working, const adjust_uniforms& u,
+                                    const job_context* ctx, const gfx::adjust_table* table) {
   if (!working.valid()) return err(status::invalid_arg);
   const std::uint64_t pixels = static_cast<std::uint64_t>(working.width) * working.height;
   std::uint32_t step = 1;
@@ -36,7 +46,7 @@ result<histogram> compute_histogram(const image::linear_image& working, const ad
   // the real one, so on a cropped photo with a vignette the counts are near,
   // not exact.
   const gfx::vignette_map vmap(static_cast<float>(working.width), static_cast<float>(working.height));
-  const gfx::adjust_args args(u);
+  const gfx::adjust_args args(u, table);
   histogram h;
   for (std::uint32_t y = step / 2; y < working.height; y += step) {
     if (ctx && ctx->cancelled()) return err(status::cancelled);

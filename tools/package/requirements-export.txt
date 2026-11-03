@@ -1,7 +1,8 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 # tools/package/face-export.py and clip-export.py (ai-models.py stage): the People
-# embedder's and the Potato / Maxxed picture towers' checkpoints -> ONNX (#482).
+# embedder's and the Potato / Maxxed picture towers' checkpoints -> ONNX (#482); restyle-export.py:
+# InstructPix2Pix for Enhance's Restyle (diffusers, accelerate).
 # Pack builders only; the app never loads these.
 torch==2.14.1
 safetensors==0.8.0
@@ -11,3 +12,5 @@ numpy
 onnxscript==0.7.2
 transformers==5.20.1
 onnxconverter-common==1.16.0
+diffusers==0.42.1
+accelerate==1.15.0

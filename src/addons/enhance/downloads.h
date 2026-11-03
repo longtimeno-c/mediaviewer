@@ -124,7 +124,7 @@ class downloads {
   port port_;
   ai::fetch_options opt_;
   mutable std::mutex m_;
-  std::array<std::unique_ptr<run>, 3> runs_;
+  std::array<std::unique_ptr<run>, kKindCount> runs_;
 };
 
 }  // namespace mv::enhance

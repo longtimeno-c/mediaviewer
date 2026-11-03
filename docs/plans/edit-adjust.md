@@ -20,7 +20,8 @@ stack.
    [12](../design/12-decision-log.md), and the People opt-in text changed to say so. Without the
    yes, slice 6 runs on the burst alone (no identity: same position in neighbouring frames), which
    is weaker but uses no face data.
-2. **A generative model in Enhance** (slice 5b): which weights, under which licence. Most
+2. **A generative model in Enhance** (slice 5b): which weights, under which licence. **Answered
+   2026-11-03: OpenRAIL-M is acceptable**; the spike is below (slice 5b, "Spike"). Most
    instruction-editing and identity-preserving face models are non-commercial or OpenRAIL-M with use
    restrictions; [11](../design/11-licensing.md) has no rule for model weights in a first-party
    add-on yet.
@@ -68,17 +69,24 @@ Status (2026-11-02, Apple M-series, Release):
   `main.cpp`'s new handlers are compiled by CI only. The Windows pane, its PR 1 gate and
   Narrator / VoiceOver on the new controls are owed.
 
-### 2. Curves and levels (a LUT, no new pass)
+### 2. Curves and levels (a LUT, no new pass) — built 2026-11-02
 
 One 1D texture, 256 × 4 (R, G, B, master), sampled in the kernel after contrast. **Levels**
 (black, grey, white in and out per channel) and **Curves** (points per channel, a monotone cubic)
 both compile to that LUT on the UI thread (microseconds). The C++ export samples the same table.
 Curve and levels points are new op kinds; the op block stays POD (fixed max points).
 
-The pane's histogram sits under the curve. Auto levels reuses `auto_tone`'s percentiles per
-channel.
+The pane's histogram sits under the curve. Auto levels takes percentiles per channel (as built:
+of the colour as it reaches the table, not `auto_tone`'s histogram).
 
-### 3. White balance picker and selective colour
+As built: 128 rows of float4 rather than 256 × 4 (one row holds red, green and blue, read with
+linear interpolation); the table sits after saturation, before black & white. Curve points cross
+the island as parked text (`chrome_cmd_adjust_curve`, 1090); Levels are twelve appended island
+commands (197–208). Status: `mv_tests` `[curves]`, `[auto_levels]` and the full suite pass; the
+Mac self-test sets an S curve and runs Levels' Auto, and the saved copy carries both; the C#
+compiles; Windows native is CI's. Mac PR 1 gate: see the PR.
+
+### 3. White balance picker and selective colour — built 2026-11-02
 
 - **White balance:** neutral grey, skin tone and temperature/tint modes; an eyedropper on the
   canvas (click → the host reads one averaged 5 × 5 sample from the preview working image on a
@@ -86,7 +94,15 @@ channel.
 - **Selective colour:** hue, saturation, luminance for eight hue bands, smooth band weights in the
   kernel (no 3D LUT).
 
-### 4. Detail: definition, brilliance, sharpen, noise reduction (one cached pass)
+As built ([07](../design/07-photo-editing.md)): the bands are 64 rows of the slice 2 table; the
+picker reads the click on the UI thread (25 pixels of memory, no worker needed); the manual
+red-eye brush landed here too (8 fixes, table rows, placed through the geometry). Windows: the
+24 selective sliders cross as parked text (`chrome_cmd_adjust_param`, 1091), the pick as
+`adjust_pick` (209). Status: `mv_tests` `[selective]`, `[red_eye]`, `[picker]` and the full suite
+pass; the Mac self-test clicks the picker and the red-eye tool on the photo and moves a band;
+the C# compiles; Windows native is CI's.
+
+### 4. Detail: definition, brilliance, sharpen, noise reduction (one cached pass) — built 2026-11-02
 
 These are local, so they need neighbours. One **base layer** (an edge-aware blur of luma at a
 quarter of the preview size) built on a worker when the detail sliders change, uploaded as an
@@ -97,9 +113,23 @@ export; its result replaces the working image for the kernel. The render thread 
 pass. Budget: the pass's time is reported; the drag stays at display rate because the kernel only
 samples the last finished layer.
 
+**As built, changed from the above:** the pass runs on the CPU over the working image (not a GPU
+base layer read by the kernel), and its result replaces the working texture. Why: no new texture
+binding or shader twin on either GPU, and the export runs the very same code at full size, so it
+matches the preview by construction. The cost: the canvas follows a detail slider 150 ms after it
+settles plus the pass (32–96 ms at the preview size), not during the drag. Status: `mv_tests`
+`[detail]` (each slider's effect, identity, scale-invariance between 3072 and 6144 px) and the
+full suite pass; the Mac self-test sets Sharpen and Noise reduction and exports; the C# compiles;
+Windows native is CI's.
+
 ### 5. Enhance inside Edit
 
-**5a. The Enhance tab and the edit stack.** When the add-on is installed, the workspace offers an
+**5a. The Enhance tab and the edit stack.** — built 2026-11-02, as an **Enhance…** button in the
+Edit strip that opens Enhance's own sheet rather than a tab hosting its view tree (the sheet is
+already the add-on's whole UI; docking view trees as tabs stays in [20](../design/20-edit-workspace.md)
+"Not built"). The edit reaches the add-on without a new host-table row: the host's `full_still`
+answers with the edited picture for the photo being edited ([29](../design/29-enhance.md)).
+Tested end to end in `mv_ai_tests` `[enhance][still]` with a stand-in model. As planned: When the add-on is installed, the workspace offers an
 **Enhance** tab that hosts the add-on's `sheet` view tree in the pane ([20](../design/20-edit-workspace.md)
 "Editor add-on panes docking as extra tabs" is this). The host hands the folded edit stack
 (geometry + colour, POD) to the add-on through a new host-table row, closing the gap in
@@ -107,19 +137,70 @@ samples the last finished layer.
 
 **5b. Type what you want.** One text field at the top of the Adjust pane, two layers:
 
-- **Words → sliders (first, in the core).** A small deterministic parser in the style of the voice
+- **Words → sliders (first, in the core).** — built 2026-11-02 (`edit/prompt.h`; `mv_tests
+  "[prompt]"`; the Mac self-test types "a bit warmer and less noisy, more contrast"). A small deterministic parser in the style of the voice
   query parser ([19](../design/19-voice.md)): "warmer", "brighter", "less noisy", "black and white",
   "more contrast but keep the sky", "like a film photo" → slider deltas, shown as the sliders
   moving, one undo step. No model, no download, instant, offline, every result editable by hand.
   This covers most of what people type.
-- **Words → a generated edit (later, in Enhance, opt-in download).** For what sliders cannot do
+- **Words → a generated edit (later, in Enhance, opt-in download).** — built 2026-11-03 on the
+  Mac as Enhance's **Restyle** kind ([29](../design/29-enhance.md) "Restyle"), following the
+  recommendation below; not offered until its weights are hosted and pinned; Windows refused
+  without a GPU provider. As planned: For what sliders cannot do
   ("remove the person behind her", "make the sky blue"): an instruction-following image model.
   Cost, honestly: 1–4 GB of weights; on Apple silicon (Core ML) about 5–20 s for a 512–1024 px
   pass; on Windows the bundled ONNX Runtime is CPU only, so minutes. It writes a new file like
   every Enhance run. Owner call 2 first, and a spike measuring a candidate on both machines before
   it is planned in detail.
 
-### 6. Eyes open from the same moment ("Best take")
+#### Spike: InstructPix2Pix (2026-11-03)
+
+Weights `timbrooks/instruct-pix2pix` (CreativeML OpenRAIL-M, accepted by the owner), fp16, run
+through `diffusers` 0.42 on PyTorch MPS (Apple M-series), 20 Euler-ancestral steps, image guidance
+1.5, text guidance 7.5, on the sample coastal photo. Kept outside the repo
+(`~/Dev/.mv-toolchain/genedit`).
+
+| | 512 px long edge | 768 px long edge |
+|---|---|---|
+| Time a request (warm) | 9.3–9.5 s (16 s first) | 36–38 s |
+| GPU memory (driver) | 4.2 GB | 9.6 GB |
+| Weights on disk | 2.0 GB | |
+
+What it does well: whole-picture restyles. "Make it a snowy winter day" turned the scene
+convincingly to winter (snow on the rocks, colder water). What it does not do: removal. "Remove
+the rocks" tinted the rocks green and removed nothing; it has no notion of filling in behind an
+object. Its output is at most ~768 px, far under a camera's 12–45 MP.
+
+Recommendation, for the owner:
+
+1. If built, it is an Enhance kind ("Restyle"), never the Adjust pane's own path: it is slow, large
+   and approximate, and the words→sliders layer already covers tone and colour requests at once.
+2. Run at 512 px (4 GB) and carry its change back onto the full-resolution photo as low-frequency
+   colour and tone (the ratio of the edited to the original small picture, blurred, applied to
+   the original), so the photo keeps its own detail; a full-size copy of a diffusion output would
+   look soft. Offer it only on machines with 8 GB+ of unified memory or a GPU with 6 GB.
+3. On Windows the bundled ONNX Runtime is the CPU build: not measured here (no Windows machine);
+   expect minutes a request until a DirectML or CUDA piece exists. Measure before offering it.
+4. Removal ("remove the person behind her") needs a different model: an inpainting model with a
+   brush mask (LaMa is Apache-2.0), planned with local adjustments, not here.
+5. OpenRAIL-M's use restrictions must be passed on to users (shown with the model's credit in
+   Settings → Add-ons → Enhance, as the other models' licences are).
+
+### 6. Eyes open from the same moment ("Best take") — built 2026-11-02
+
+Owner call 1 answered yes (2026-11-02, [12](../design/12-decision-log.md)). As built
+([07](../design/07-photo-editing.md) "Open closed eyes"): the eye-state score is the heuristic
+below, not a model (a landmark model needs a download the owner has not yet approved; the score
+only has to rank one person's frames of one moment, which it does). Status: `mv_tests "[eyes]"`
+(score, transfer through turn, scale and light), `mv_ai_tests "[eyes]"` (the pack's same-person
+donors with the stand-in face model; nothing read while People is off; the whole job through
+real files to `<stem>-eyes.jpg`, the original untouched). The Mac app shows the refusal without a
+pack. With the real YuNet and AdaFace (`mv_ai_tests "[.eyes-real]"`, two LFW photos of one
+person, the first's eyes painted shut at the real landmarks, 2026-11-02): same-person similarity
+0.44 with eyes shut (line 0.30), openness shut 0.072 → fixed 0.152 (the photo's own 0.149), the
+donor's eyes in place and colour-matched by eye. Owed: real bursts from a camera, and Windows.
+
+Planned:
 
 **Recommended approach — real pixels from a neighbouring frame, not a generated face.**
 
@@ -155,13 +236,66 @@ Where it lives: the AI pack has the detector and `faces.db`; the edit core does 
 same detector; its **manual** brush (click a pupil, desaturate the red disc) is classical and goes
 in slice 3 in the core.
 
+### 7. Remove: brush over it, the background filled in (owner go-ahead 2026-11-03)
+
+Status 2026-11-03: built on both hosts as planned ([07](../design/07-photo-editing.md) "Remove",
+[29](../design/29-enhance.md) "Remove"), with a stand-in model in the tests (`mv_tests
+"[remove-brush]"`, `mv_import_tests "[remove]"`). LaMa is pinned for each user's Download. With
+the real file (owner OK, 2026-11-03; `mv_import_tests "[.remove-model]"`): its tensors are
+`image` / `mask` → `output`, 512 × 512, and its output is already 0..255 (`out_scale` 1). A stroke
+across the sample photo's back rocks (an 832 × 832 box) filled in 1.73 s on CPU (M-series),
+water and shore continuing by eye, a faint smear left at a large rock's base; every pixel away from
+the brush unchanged. The second pass for large boxes is not built. Windows' `main.cpp` is
+compiled only by CI.
+
+Restyle cannot remove things ("remove the rocks" tints them). The owner asked for removal on
+2026-11-03, with the same go-ahead for a Restyle **Quality** choice (built: Standard 512, High
+768, Best 1024 px, [29](../design/29-enhance.md) "Restyle"; the owner: render time is of little
+concern).
+
+**Model: LaMa** (Suvorov et al., big-lama), Apache-2.0. The ONNX port `Carve/LaMa-ONNX` @
+`c3c0c9e4`, `lama_fp32.onnx` (208,044,816 bytes, SHA-256 `1faef530…68d6`, opset 17, fixed
+512 × 512 input: image + mask → image), the authors' recommended file. **The download needs the
+owner's OK first** (named here; nothing fetched yet). LaMa fills from the surroundings (no words, no
+new objects), built for large masks and repeating texture; to be judged on real photos in the
+spike before the host halves start.
+
+The flow:
+
+1. **Edit → Remove** (a tool in the Adjust pane, key in [16](../design/16-commands.md)): a round
+   brush, size on `[` / `]`, paints a mask over the canvas. The mask is drawn by the canvas's own
+   shader as an overlay (HLSL + MSL twins; a GLSL twin kept hostable), at screen resolution, mapped
+   to image space through the view transform; an undo step per stroke. Presents only while a stroke
+   is moving; a still with the brush on presents nothing.
+2. **Remove** sends the photo and the mask to Enhance, which owns the model (a new kind,
+   `remove`, downloaded on request like Restyle; `cpu: true` — LaMa at 512 px is about a second on
+   a CPU, so Windows runs it too). A new host-table row hands the add-on the mask (8-bit, image
+   size) beside `full_still`.
+3. **Crop, fill, paste back:** the mask's bounding box, grown by its own size for context
+   (at least 256 px), cropped from the **full-resolution** photo; scaled to 512 × 512 (down for a
+   large object, up for a small one), filled, scaled back; only the masked pixels pasted in,
+   feathered over a few pixels. Everything outside the grown box is the original's pixels. A box
+   larger than about 2× 512 runs a second pass at the full crop's resolution on 512 tiles over the
+   mask (fine texture in large fills), measured before it is kept.
+4. A new file, `<stem>-removed.jpg`, like every Enhance run. The original is never written.
+
+Not in this slice: **tap to select** a person or object (a segmentation model, a download of its
+own; People's face boxes are not person masks), and words ("remove the person"), which need it.
+
+Verify (both hosts): brush over an object, Remove writes `<stem>-removed.jpg` whose pixels outside
+the grown box decode equal to the original's same encode, and the masked area is filled; the
+hidden `[.remove-model]` case fills a test hole with the real LaMa and scores the fill against the
+untouched picture; the Windows PR 1 and Mac PR 1 gates hold, and a still with the brush on presents
+0 frames.
+
 ## Order
 
 1 → 2 → 3 → 4 are independent of the owner calls and each ships alone. 5a can run beside them.
 5b's parser after slice 2 (it needs the sliders it drives). 6 after owner call 1 and the eye-state
-spike. 5b's generative layer after owner call 2 and its spike.
+spike. 5b's generative layer after owner call 2 and its spike. 7 after the owner OKs LaMa's download.
 
 ## Not in this plan
 
-Masks, brushes, gradients, healing and clone (a local-adjustments plan of its own); presets and
+Gradients, healing and clone, and masked adjustments (a local-adjustments plan of its own; slice 7's
+brush is for removal only); presets and
 filters; persisting the stack; HDR output; redo and history (owed in [07](../design/07-photo-editing.md)).

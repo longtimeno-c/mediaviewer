@@ -3,6 +3,7 @@
 #include "shell/present_lab.h"
 #include "core/boot_timeline.h"
 #include "shell/video_report.h"
+#include "shell/brush_overlay.h"
 #include "shell/dino_draw.h"
 #include "shell/error_screen.h"
 #include "shell/af_focus.h"
@@ -1635,6 +1636,17 @@ void present_lab::note_still_landed() noexcept {
 void present_lab::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
   if (!current_image_ || current_video_.texture || snapshot.blackout) return;
   const edit_view* v = edit_for(*current_image_);
+  // Slice 7: the Remove brush, the same body as the Mac's (brush_overlay.h).
+  if (v && v->brush_on && !v->crop_overlay) {
+    const float pw = media_width(), ph = media_height(), zoom = camera_.zoom();
+    const auto view = usable_canvas(snapshot);
+    const float cx = view.x + view.w * 0.5f, cy = view.y + view.h * 0.5f;
+    draw_brush_overlay(*v, pw, ph, zoom, snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f,
+                       [&](float ix, float iy) {
+                         return ImVec2(cx + (ix - camera_.pan_x()) * zoom, cy + (iy - camera_.pan_y()) * zoom);
+                       });
+    return;
+  }
   if (!v || !v->crop_overlay) return;
   const float pw = media_width();
   const float ph = media_height();

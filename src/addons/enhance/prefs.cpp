@@ -29,6 +29,15 @@ const char* target_name(clip_target t) noexcept {
   return "picture";
 }
 
+const char* photo_target_name(photo_target t) noexcept {
+  switch (t) {
+    case photo_target::restyle: return "restyle";
+    case photo_target::remove: return "remove";
+    case photo_target::detail: break;
+  }
+  return "detail";
+}
+
 std::string prefs_json(const prefs& p) {
   json::writer w;
   w.begin_object();
@@ -43,6 +52,7 @@ std::string prefs_json(const prefs& p) {
   }
   w.end_object();
   w.key("target").string(target_name(p.target));
+  w.key("photo").string(photo_target_name(p.photo));
   w.key("wanted").begin_array();
   for (const model_kind k : kModelKinds) {
     if (p.want(k)) w.string(kind_name(k));
@@ -68,6 +78,11 @@ prefs prefs_from(std::string_view json_text) {
   if (const std::string* t = doc->str("target")) {
     for (const clip_target c : {clip_target::picture, clip_target::sound, clip_target::both}) {
       if (*t == target_name(c)) p.target = c;
+    }
+  }
+  if (const std::string* t = doc->str("photo")) {
+    for (const photo_target c : kPhotoTargets) {
+      if (*t == photo_target_name(c)) p.photo = c;
     }
   }
   if (const json::value* wanted = doc->find("wanted"); wanted && wanted->k == json::kind::array) {
