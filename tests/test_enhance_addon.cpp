@@ -254,15 +254,15 @@ TEST_CASE("enhance: the add-on answers its settings page and sheet through the v
 
   // The Video Editor's button: the sheet names the edit it will enhance.
   // (The file is a clip by name only here; the sheet reads it as it can.)
-  const fs::path cut = s / "clip.mp4";
-  write_bytes(cut, {0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 1});
+  const fs::path cut_clip = s / "clip.mp4";
+  write_bytes(cut_clip, {0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 1});
   const std::int64_t edit[] = {0, 1'000'000'000, 3'000'000'000, 4'500'000'000};
-  CHECK(reg.invoke_editor_item("enhance", "edit", utf8(cut), std::span<const std::int64_t>(edit, 3)) ==
+  CHECK(reg.invoke_editor_item("enhance", "edit", utf8(cut_clip), std::span<const std::int64_t>(edit, 3)) ==
         status::invalid_arg);  // an odd count
   const std::int64_t backwards[] = {3'000'000'000, 4'000'000'000, 0, 1'000'000'000};
-  CHECK(reg.invoke_editor_item("enhance", "edit", utf8(cut), backwards) == status::invalid_arg);
-  CHECK(reg.invoke_editor_item("enhance", "enhance", utf8(cut), edit) == status::not_found);  // not an editor item
-  REQUIRE(reg.invoke_editor_item("enhance", "edit", utf8(cut), edit) == status::ok);
+  CHECK(reg.invoke_editor_item("enhance", "edit", utf8(cut_clip), backwards) == status::invalid_arg);
+  CHECK(reg.invoke_editor_item("enhance", "enhance", utf8(cut_clip), edit) == status::not_found);  // not an editor item
+  REQUIRE(reg.invoke_editor_item("enhance", "edit", utf8(cut_clip), edit) == status::ok);
   reg.drain();
   REQUIRE(eventually([&] { return screen_tree(reg, "enhance").find("clip.mp4") != std::string::npos; }));
   {
@@ -271,7 +271,7 @@ TEST_CASE("enhance: the add-on answers its settings page and sheet through the v
     CHECK(cut.find("The edit from the Video Editor: 2 pieces, 0:03 in all.") != std::string::npos);
   }
   // The context entry on the same clip is the whole clip again.
-  REQUIRE(reg.invoke_item("enhance", "enhance", "[\"" + json_path(cut) + "\"]") == status::ok);
+  REQUIRE(reg.invoke_item("enhance", "enhance", "[\"" + json_path(cut_clip) + "\"]") == status::ok);
   reg.drain();
   REQUIRE(eventually([&] { return screen_tree(reg, "enhance").find("The edit from") == std::string::npos; }));
 
