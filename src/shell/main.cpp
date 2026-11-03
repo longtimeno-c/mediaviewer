@@ -67,6 +67,7 @@
 #include "shell/text_select.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
+#include "shell/clip_look_abi.h"
 #include "shell/video_timeline.h"
 #include "edit/clip_strip.h"
 #include "shell/trim_state.h"
@@ -3144,6 +3145,9 @@ bool submit_clip_job(app_state* app, const mv::edit::clip::request& r) noexcept 
     q.range_count = static_cast<std::uint32_t>(r.ranges.size());
     q.option = r.ranges_exact ? 2u : 1u;
   }
+  // ABI 0.36: the Video Editor's look (its pieces' export, Save frame).
+  const mv_clip_look look = mv::shell::abi_look(r.look);
+  if (!r.look.identity()) q.look = &look;
   std::uint64_t job = 0;
   if (mv_clip_submit(app->session, r.source.c_str(), &q, &job) != MV_OK) {
     ::MessageBeep(MB_ICONWARNING);
@@ -4079,6 +4083,11 @@ void push_editor_view(app_state* app, bool edit) noexcept {
     a.frame_rate_milli = static_cast<std::int32_t>(std::lround(ed.fps * 1000.0));
     a.mark_in_ns = ed.timeline.marked_in();
     a.mark_out_ns = ed.timeline.marked_out();
+    const mv::edit::clip::look& lk = ed.timeline.look();
+    a.look_turns = lk.turns;
+    a.look_mirror = (lk.flip_h ? 1 : 0) | (lk.flip_v ? 2 : 0);
+    a.look_crop = static_cast<std::int32_t>(lk.crop);
+    a.look_copyable = lk.copyable() ? 1 : 0;
     app->chrome.set_editor_view(a);
   } catch (...) {
   }
@@ -4231,6 +4240,37 @@ void editor_follow_playback(app_state* app) noexcept {
 // 1 split at the playhead, 2 delete (the marked range, else the selected
 // piece), 3 set in, 4 set out, 5 undo, 6 redo, 14 mark in, 15 mark out,
 // 16 clear the marks (chrome_editor_action, and the Mac bridge's codes).
+// The look's geometry on the canvas (docs/plans/video-editor-look.md); none
+// once the editor closes.
+void editor_publish_look(app_state* app) noexcept {
+  const auto& ed = app->editor;
+  const mv::edit::clip::look& l = ed.timeline.look();
+  const bool on = ed.open && ed.timeline.loaded();
+  app->input.video_look_turns = on ? l.turns : 0;
+  app->input.video_look_mirror = on ? static_cast<std::uint8_t>((l.flip_h ? 1 : 0) | (l.flip_v ? 2 : 0)) : 0;
+  app->input.video_look_crop = on ? static_cast<std::uint8_t>(l.crop) : 0;
+  publish(app);
+}
+
+// The frame at the playhead as a JPEG beside the clip, with the look's turn,
+// mirror and crop (op::frame in the helper; the Jobs pane shows it).
+void editor_save_frame(app_state* app) noexcept {
+  auto& ed = app->editor;
+  if (!ed.timeline.loaded() || ed.path.empty()) return;
+  try {
+    mv::edit::clip::request r;
+    r.kind = mv::edit::clip::op::frame;
+    r.source = ed.path;
+    r.in_ns = ed.timeline.to_source(editor_timeline_position(app));
+    r.frame = mv::edit::clip::frame_format::jpeg;
+    r.look = ed.timeline.look();
+    (void)submit_clip_job(app, r);
+  } catch (...) {
+    ::MessageBeep(MB_ICONWARNING);
+  }
+}
+
+// what: chrome_editor_action's edit codes (1-6, 14-16) and the look (17-26).
 void editor_edit(app_state* app, int what) noexcept {
   auto& ed = app->editor;
   if (!ed.timeline.loaded()) return;
@@ -4270,8 +4310,28 @@ void editor_edit(app_state* app, int what) noexcept {
       ed.timeline.clear_marks();
       push_editor_view(app, true);
       return;
+    case 17:
+    case 18:
+    case 19:
+    case 20:
+    case 21:
+    case 22:
+    case 23:
+    case 24:
+    case 25:
+    case 26: {
+      mv::edit::clip::look l = ed.timeline.look();
+      if (what == 17) l.turns = static_cast<std::uint8_t>((l.turns + 3) & 3);
+      if (what == 18) l.turns = static_cast<std::uint8_t>((l.turns + 1) & 3);
+      if (what == 19) l.flip_h = !l.flip_h;
+      if (what == 20) l.flip_v = !l.flip_v;
+      if (what >= 21) l.crop = static_cast<mv::edit::clip::crop_ratio>(what - 21);
+      changed = ed.timeline.set_look(l);
+      break;
+    }
     default: break;
   }
+  editor_publish_look(app);
   if (!changed) ::MessageBeep(MB_ICONWARNING);
   if (ed.selected >= static_cast<std::int32_t>(ed.timeline.pieces().size())) ed.selected = -1;
   push_editor_view(app, true);
@@ -4288,7 +4348,13 @@ void editor_export(app_state* app, bool exact) noexcept {
   if (!ed.timeline.loaded() || ed.path.empty()) return;
   if (!ed.timeline.edited()) {
     ::MessageBeep(MB_ICONWARNING);
-    notice_show(app, "Nothing has been cut yet");
+    notice_show(app, "Nothing has been changed yet");
+    return;
+  }
+  if (!exact && !ed.timeline.look().copyable()) {
+    // Packet copy carries a turn and mute only (docs/plans/video-editor-look.md).
+    ::MessageBeep(MB_ICONWARNING);
+    notice_show(app, "Crop, mirror, colour, sound and speed need Export exact");
     return;
   }
   try {
@@ -4426,7 +4492,18 @@ void editor_run_action(app_state* app, int action) {
     case chrome_editor_action::redo:
     case chrome_editor_action::mark_in:
     case chrome_editor_action::mark_out:
-    case chrome_editor_action::clear_marks: editor_edit(app, action); break;
+    case chrome_editor_action::clear_marks:
+    case chrome_editor_action::turn_left:
+    case chrome_editor_action::turn_right:
+    case chrome_editor_action::mirror_h:
+    case chrome_editor_action::mirror_v:
+    case chrome_editor_action::crop_original:
+    case chrome_editor_action::crop_16_9:
+    case chrome_editor_action::crop_9_16:
+    case chrome_editor_action::crop_1_1:
+    case chrome_editor_action::crop_4_3:
+    case chrome_editor_action::crop_4_5: editor_edit(app, action); break;
+    case chrome_editor_action::save_frame: editor_save_frame(app); break;
     case chrome_editor_action::toggle_play: editor_toggle_play(app); break;
     case chrome_editor_action::step_back:
     case chrome_editor_action::step_forward:
@@ -4484,6 +4561,7 @@ bool editor_key(app_state* app, const MSG& msg) {
     case 'Z': if (ctrl) editor_edit(app, shift ? 6 : 5); return true;
     case 'Y': if (ctrl) editor_edit(app, 6); return true;
     case 'E': if (ctrl) editor_export(app, shift); return true;
+    case 'S': if (ctrl && shift) editor_save_frame(app); return true;
     case 'W': if (ctrl) editor_request_close(app); return true;
     default: return false;
   }
@@ -4705,6 +4783,7 @@ void set_editor_open(app_state* app, bool open) {
     ::SetTimer(hwnd, kEditorTickTimerId, kEditorTickMs, nullptr);
     push_editor_view(app, true);
     push_edit_view(app);  // the command bar's button reads Done
+    editor_publish_look(app);
   } else {
     const HWND hwnd = ed.window;
     editor_set_rate(app, 1.0);  // the viewer gets its clip back at 1x
@@ -4733,6 +4812,7 @@ void set_editor_open(app_state* app, bool open) {
     }
     apply_view_state(app);  // metrics back to the viewer's window, and a resize
     push_edit_view(app);
+    editor_publish_look(app);  // the viewer shows the clip as it is
   }
 }
 

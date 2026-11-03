@@ -16,6 +16,8 @@ void video_timeline::load(time_ns duration_ns) {
   redo_.clear();
   clear_marks();
   trim_index_ = kNoTrim;
+  look_ = {};
+  look_drag_ = look_pushed_ = false;
   ++revision_;
 }
 
@@ -68,7 +70,7 @@ video_timeline::time_ns video_timeline::next_play_start(time_ns source_t, time_n
 }
 
 void video_timeline::push_history() {
-  undo_.push_back(pieces_);
+  undo_.push_back(current());
   if (undo_.size() > kMaxHistory) undo_.erase(undo_.begin());
   redo_.clear();
 }
@@ -199,16 +201,41 @@ video_timeline::time_ns video_timeline::trim_to(time_ns source_t) {
 
 void video_timeline::end_trim() {
   // A drag that came back to where it started is not an edit.
-  if (trim_pushed_ && !undo_.empty() && undo_.back() == pieces_) undo_.pop_back();
+  if (trim_pushed_ && !undo_.empty() && undo_.back() == current()) undo_.pop_back();
   trim_index_ = kNoTrim;
   trim_pushed_ = false;
+}
+
+bool video_timeline::set_look(const edit::clip::look& next) {
+  const edit::clip::look l = edit::clip::sanitised(next);
+  if (l == look_) return false;
+  if (!look_drag_ || !look_pushed_) {
+    push_history();
+    look_pushed_ = look_drag_;
+  }
+  look_ = l;
+  ++revision_;
+  return true;
+}
+
+void video_timeline::end_look_drag() {
+  // A drag that came back to where it started is not an edit.
+  if (look_pushed_ && !undo_.empty() && undo_.back() == current()) undo_.pop_back();
+  look_drag_ = look_pushed_ = false;
+}
+
+void video_timeline::restore(state s) {
+  pieces_ = std::move(s.pieces);
+  look_ = s.look;
 }
 
 bool video_timeline::undo() {
   if (undo_.empty()) return false;
   end_trim();
-  redo_.push_back(std::move(pieces_));
-  pieces_ = std::move(undo_.back());
+  end_look_drag();
+  if (undo_.empty()) return false;
+  redo_.push_back(current());
+  restore(std::move(undo_.back()));
   undo_.pop_back();
   clear_marks();
   ++revision_;
@@ -218,8 +245,9 @@ bool video_timeline::undo() {
 bool video_timeline::redo() {
   if (redo_.empty()) return false;
   end_trim();
-  undo_.push_back(std::move(pieces_));
-  pieces_ = std::move(redo_.back());
+  end_look_drag();
+  undo_.push_back(current());
+  restore(std::move(redo_.back()));
   redo_.pop_back();
   clear_marks();
   ++revision_;
@@ -227,7 +255,8 @@ bool video_timeline::redo() {
 }
 
 bool video_timeline::edited() const noexcept {
-  return !(pieces_.size() == 1 && pieces_.front().in_ns == 0 && pieces_.front().out_ns == duration_);
+  return !(pieces_.size() == 1 && pieces_.front().in_ns == 0 && pieces_.front().out_ns == duration_) ||
+         !look_.identity();
 }
 
 edit::clip::request video_timeline::export_request(std::string source, bool exact) const {
@@ -236,6 +265,7 @@ edit::clip::request video_timeline::export_request(std::string source, bool exac
   r.source = std::move(source);
   r.ranges = pieces_;
   r.ranges_exact = exact;
+  r.look = look_;
   // The last piece to the end of the clip is "to the end", whatever rounding
   // the duration had.
   if (!r.ranges.empty() && r.ranges.back().out_ns >= duration_) r.ranges.back().out_ns = -1;

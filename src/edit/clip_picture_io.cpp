@@ -281,6 +281,7 @@ result<std::unique_ptr<picture_writer>> picture_writer::open(std::string_view so
                                                              const std::atomic<bool>* cancel) {
   if (options.width < 16 || options.height < 16 || options.width > 8192 || options.height > 8192 ||
       (options.width & 1) || (options.height & 1) || !suffix_ok(options.suffix) ||
+      (options.out_stem.size() > 200) ||
       (options.sound_rate != 0 && (options.sound_channels < 1 || options.sound_channels > 8 ||
                                    options.sound_rate < 8000 || options.sound_rate > 192000))) {
     return err(status::invalid_arg);
@@ -302,8 +303,10 @@ result<std::unique_ptr<picture_writer>> picture_writer::open(std::string_view so
   const bool flac = p->sound && p->sound->lossless();
   const char* muxer = !flac && family == "mp4" ? "mp4" : !flac && family == "mov" ? "mov" : "matroska";
   const std::string ext = std::strcmp(muxer, "matroska") == 0 ? ".mkv" : extension_for_muxer(muxer);
-  p->staged = staged_output(std::string(io::parent_of(source_utf8)),
-                            stem_of(source_utf8) + "-" + options.suffix + ext);
+  p->staged = staged_output(options.out_dir.empty() ? std::string(io::parent_of(source_utf8)) : options.out_dir,
+                            (options.out_stem.empty() ? stem_of(source_utf8) + "-" + options.suffix
+                                                      : options.out_stem) +
+                                ext);
   MV_TRY(output_ptr out, open_output(muxer, p->staged.temp_path(), p->cancel));
   p->out = std::move(out);
 
@@ -362,7 +365,10 @@ result<std::unique_ptr<picture_writer>> picture_writer::open(std::string_view so
   AVStream* vost = avformat_new_stream(p->out.get(), nullptr);
   if (!vost || avcodec_parameters_from_context(vost->codecpar, p->enc.get()) < 0) return err(status::out_of_memory);
   vost->time_base = p->enc->time_base;
-  if (const int rot = stream_rotation(ist); rot != 0 && !set_rotation(vost, rot)) return err(status::out_of_memory);
+  if (const int rot = options.rotation >= 0 ? options.rotation % 360 : stream_rotation(ist);
+      rot != 0 && !set_rotation(vost, rot)) {
+    return err(status::out_of_memory);
+  }
   av_dict_copy(&vost->metadata, ist->metadata, 0);
   av_dict_set(&vost->metadata, "encoder", nullptr, 0);
   p->video_out = vost->index;
@@ -379,7 +385,7 @@ result<std::unique_ptr<picture_writer>> picture_writer::open(std::string_view so
   }
   for (unsigned i = 0; i < in->nb_streams; ++i) {
     AVStream* st = in->streams[i];
-    const bool keep = !p->sound && st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO &&
+    const bool keep = !p->sound && !options.drop_sound && st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO &&
                       avformat_query_codec(p->out->oformat, st->codecpar->codec_id, FF_COMPLIANCE_NORMAL) != 0;
     if (!keep) {
       st->discard = AVDISCARD_ALL;

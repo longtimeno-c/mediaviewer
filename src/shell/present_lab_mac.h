@@ -414,6 +414,10 @@ class present_lab_mac {
   // Docks the split on the render thread's copy of the snapshot (chrome_left_px)
   // and refits a fitted / filled camera when it moves. True when it changed.
   bool apply_compare_split(input_snapshot& snapshot, std::uint32_t host_chrome_left) noexcept;
+  // The Video Editor's look from the snapshot; a fitted clip refits. True when it changed.
+  bool apply_video_look(const input_snapshot& snapshot) noexcept;
+  [[nodiscard]] edit::clip::frame_geometry video_geometry() const noexcept;
+  edit::clip::look video_look_{};
   canvas::crossfade fade_;
   std::atomic<std::uint32_t> stills_shown_{0};
 

@@ -14,7 +14,8 @@ cbuffer VideoCamera : register(b0) {
   float2 texture_size;  // the decoder's ALLOCATION, padded up to its alignment
   float2 origin;
   uint4  colour_a;      // x matrix, y transfer, z range, w bit_depth
-  uint4  colour_b;      // x primaries, y quarter turns clockwise, zw unused
+  uint4  colour_b;      // x primaries, y quarter turns clockwise, z mirror (1 h, 2 v), w unused
+  float4 crop;          // the Video Editor's crop of the turned picture: xy origin, zw size (0..1)
 };
 
 Texture2D<float>  luma_tex   : register(t0);
@@ -112,12 +113,18 @@ float4 ps_main(VSOut vin) : SV_Target {
 
   // The camera frames the DISPLAYED picture: the coded frame turned by the
   // container's matrix (a portrait phone clip is coded landscape).
-  float2 shown_size = ((turns & 1) != 0) ? image_size.yx : image_size;
+  // The Video Editor's look (edit/clip_look.h) crops the turned picture and
+  // mirrors it; the camera frames what is left.
+  float2 turned_size = ((turns & 1) != 0) ? image_size.yx : image_size;
+  float2 shown_size = turned_size * crop.zw;
   float2 image_px = pan + (vin.pos.xy - (origin + window_size * 0.5)) / zoom;
   float2 uv = image_px / shown_size;
   if (any(uv < 0.0) || any(uv > 1.0)) {
     return float4(0.016, 0.018, 0.024, 1.0);
   }
+  uv = crop.xy + uv * crop.zw;
+  if ((colour_b.z & 1) != 0) uv.x = 1.0 - uv.x;
+  if ((colour_b.z & 2) != 0) uv.y = 1.0 - uv.y;
   // Back from the displayed picture to the coded frame: the inverse of a
   // clockwise turn. 90: shown (x, y) came from coded (y, 1 - x).
   if (turns == 1)      uv = float2(uv.y, 1.0 - uv.x);
