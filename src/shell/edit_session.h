@@ -134,6 +134,9 @@ class edit_session {
   [[nodiscard]] edit_effect set_colour(const edit::colour& c);
   // Slice 2: one channel's curve (sanitised). A drag of a point is one op.
   [[nodiscard]] edit_effect set_curve(edit::curve_channel ch, const edit::curve& k);
+  // Slice 3: one red-eye fix at `s` (source uv, radius a fraction of the
+  // diagonal), one op; r 0 clears every fix. `refused` past kRedEyeSpots.
+  [[nodiscard]] edit_effect add_red_eye(const edit::red_eye_spot& s);
 
   // PR 12. A metadata write (rating, comment, orientation tag) landed on
   // `path`: the bytes changed (size, mtime), the pixels did not. Moves the

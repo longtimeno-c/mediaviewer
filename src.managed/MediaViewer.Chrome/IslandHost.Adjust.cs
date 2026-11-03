@@ -37,11 +37,23 @@ namespace MediaViewer.Chrome;
 /// </remarks>
 public static partial class IslandHost
 {
-    // shell/adjust_pane.h adjust_view: 2 ints, 28 floats, 2 floats, 2 ints,
-    // 4 ints (curve_n), 2 x 4 x 8 floats (curve x, y), then 4 x 64 uint16.
-    internal const int AdjustParamCount = 28;
+    // shell/adjust_pane.h adjust_view: 2 ints, 52 floats, 2 floats, 2 ints,
+    // 4 ints (curve_n), 2 x 4 x 8 floats (curve x, y), 2 ints (picking,
+    // spot_count), then 4 x 64 uint16.
+    internal const int AdjustParamCount = 52;
     internal const int CurvePoints = 8;
-    internal const int AdjustViewSize = 24 + 4 * AdjustParamCount + 16 + 2 * 4 * 4 * CurvePoints + 2 * 4 * HistogramBins;
+    internal const int AdjustViewSize =
+        24 + 4 * AdjustParamCount + 16 + 2 * 4 * 4 * CurvePoints + 8 + 2 * 4 * HistogramBins;
+    private const int SelectiveSection = 6;
+    private const int RedEyeSection = 7;
+    private static readonly string[] BandNames = { "Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta" };
+    private static readonly Color[] BandColours =
+    {
+        ColorHelper.FromArgb(255, 230, 60, 60), ColorHelper.FromArgb(255, 240, 150, 40),
+        ColorHelper.FromArgb(255, 235, 215, 50), ColorHelper.FromArgb(255, 70, 190, 80),
+        ColorHelper.FromArgb(255, 60, 200, 210), ColorHelper.FromArgb(255, 60, 110, 230),
+        ColorHelper.FromArgb(255, 150, 80, 220), ColorHelper.FromArgb(255, 225, 80, 170),
+    };
     private const int LevelsSection = 4;
     private const int CurvesSection = 5;
     private static readonly string[] ChannelNames = { "Image", "Red", "Green", "Blue" };
@@ -88,6 +100,16 @@ public static partial class IslandHost
         new("Black", Command.AdjustLevelsBlack + 9, 0, 100, 1, v => $"{v:0}"),
         new("Mid-tones", Command.AdjustLevelsBlack + 10, -100, 100, 2, Signed),
         new("White", Command.AdjustLevelsBlack + 11, -100, 0, 1, v => $"{v:0}"),
+        // Slice 3: selective colour, eight bands; no command each (-1: parked
+        // through AdjustParam).
+        new("Hue", -1, -100, 100, 5, Signed), new("Saturation", -1, -100, 100, 5, Signed), new("Luminance", -1, -100, 100, 5, Signed),
+        new("Hue", -1, -100, 100, 5, Signed), new("Saturation", -1, -100, 100, 5, Signed), new("Luminance", -1, -100, 100, 5, Signed),
+        new("Hue", -1, -100, 100, 5, Signed), new("Saturation", -1, -100, 100, 5, Signed), new("Luminance", -1, -100, 100, 5, Signed),
+        new("Hue", -1, -100, 100, 5, Signed), new("Saturation", -1, -100, 100, 5, Signed), new("Luminance", -1, -100, 100, 5, Signed),
+        new("Hue", -1, -100, 100, 5, Signed), new("Saturation", -1, -100, 100, 5, Signed), new("Luminance", -1, -100, 100, 5, Signed),
+        new("Hue", -1, -100, 100, 5, Signed), new("Saturation", -1, -100, 100, 5, Signed), new("Luminance", -1, -100, 100, 5, Signed),
+        new("Hue", -1, -100, 100, 5, Signed), new("Saturation", -1, -100, 100, 5, Signed), new("Luminance", -1, -100, 100, 5, Signed),
+        new("Hue", -1, -100, 100, 5, Signed), new("Saturation", -1, -100, 100, 5, Signed), new("Luminance", -1, -100, 100, 5, Signed),
     };
 
     // edit::adjust_section order: name, Segoe Fluent glyph, parameters as shown, Auto.
@@ -101,6 +123,8 @@ public static partial class IslandHost
         new("Vignette", "\uEA3A", new[] { 13, 14, 15 }, false),             // CircleRing
         new("Levels", "\uE9D2", new[] { 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27 }, true),  // AreaChart
         new("Curves", "\uE9D9", Array.Empty<int>(), false),                // Diagnostic
+        new("Selective Colour", "\uE790", Enumerable.Range(28, 24).ToArray(), false),  // Color
+        new("Red-Eye", "\uE7B3", Array.Empty<int>(), false),               // RedEye
     };
 
     // Last view native pushed.
@@ -113,7 +137,17 @@ public static partial class IslandHost
     private static int _autoSection = -1;
     private static readonly ushort[] _histBins = new ushort[4 * HistogramBins];
     // Which sections are open; kept while the pane is rebuilt.
-    private static readonly bool[] _sectionOpen = { true, true, false, false, false, false };
+    private static readonly bool[] _sectionOpen = { true, true, false, false, false, false, false, false };
+    // Slice 3: the band Selective Colour shows, the pick mode and fixes from
+    // native, the red-eye tool's size, and their controls.
+    private static int _band;
+    private static int _picking;
+    private static int _spotCount;
+    private static double _redEyeSize;
+    private static Button? _wbPick;
+    private static Button? _redEyePick;
+    private static TextBlock? _redEyeCount;
+    private static Border[]? _bandPicks;
     // Slice 2: the curves from native (image, red, green, blue) and the channel
     // each picker shows.
     private static readonly List<Point>[] _curves = { new(), new(), new(), new() };
@@ -157,6 +191,10 @@ public static partial class IslandHost
         _sectionAutos = null;
         _monoSwitch = null;
         _curveCanvas = null;
+        _wbPick = null;
+        _redEyePick = null;
+        _redEyeCount = null;
+        _bandPicks = null;
         _levelsPicks = null;
         _curvesPicks = null;
     }
@@ -204,8 +242,11 @@ public static partial class IslandHost
                     _curves[ch].Add(new Point(x, y));
                 }
             }
+            int pick = curves + 16 + 2 * 4 * 4 * CurvePoints;
+            _picking = Marshal.ReadInt32(arg, pick);
+            _spotCount = Marshal.ReadInt32(arg, pick + 4);
             var raw = new short[_histBins.Length];
-            Marshal.Copy(arg + curves + 16 + 2 * 4 * 4 * CurvePoints, raw, 0, raw.Length);
+            Marshal.Copy(arg + pick + 8, raw, 0, raw.Length);
             for (int i = 0; i < raw.Length; i++) _histBins[i] = unchecked((ushort)raw[i]);
             if (_adjustPaneVisible) RenderAdjust();
             return 0;
@@ -370,6 +411,53 @@ public static partial class IslandHost
             if (s == LevelsSection) _levelsPicks = picks; else _curvesPicks = picks;
             bodyStack.Children.Add(row);
         }
+        if (s == 1)
+        {
+            _wbPick = EditButton("Pick white balance", () => SendPick(_picking == 1 ? 0 : 1),
+                                 tip: "Click a neutral part of the photo to set temperature and tint");
+            _wbPick.TabIndex = tab++;
+            bodyStack.Children.Add(_wbPick);
+        }
+        if (s == SelectiveSection)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
+            _bandPicks = new Border[8];
+            for (int b = 0; b < 8; b++)
+            {
+                int band = b;
+                var dot = new Border
+                {
+                    Width = 18,
+                    Height = 18,
+                    CornerRadius = new CornerRadius(9),
+                    Background = Brush(BandColours[b]),
+                    BorderBrush = Brush(Title),
+                };
+                Button pickBand = ChromeButton(dot, Pad(2, 2, 2, 2), () => { _band = band; RenderAdjust(); },
+                                               name: BandNames[b], tip: BandNames[b]);
+                pickBand.TabIndex = tab++;
+                _bandPicks[b] = dot;
+                row.Children.Add(pickBand);
+            }
+            bodyStack.Children.Add(row);
+        }
+        if (s == RedEyeSection)
+        {
+            _redEyePick = EditButton("Fix red eyes", () => SendPick(_picking == 2 ? 0 : 2));
+            _redEyePick.TabIndex = tab++;
+            bodyStack.Children.Add(_redEyePick);
+            var size = new Slider { Minimum = -100, Maximum = 100, StepFrequency = 5, Value = _redEyeSize, TabIndex = tab++ };
+            AutomationProperties_SetName(size, "Red-eye size");
+            size.ValueChanged += (_, e) =>
+            {
+                _redEyeSize = e.NewValue;
+                if (_picking == 2) SendPick(2);
+            };
+            bodyStack.Children.Add(Text("Size", Body));
+            bodyStack.Children.Add(size);
+            _redEyeCount = Text("", Body, UiFontSize - 2);
+            bodyStack.Children.Add(_redEyeCount);
+        }
         if (s == CurvesSection)
         {
             _curveCanvas = new Canvas { Height = 220, Background = Brush(ChromeColour.Surface) };
@@ -421,7 +509,16 @@ public static partial class IslandHost
             _adjustReadouts![p].Text = AdjustSpecs[p].Format(e.NewValue);
             if (_updatingAdjust) return;
             _adjustValues[p] = (float)e.NewValue;
-            Send(AdjustSpecs[p].Command, (float)e.NewValue);
+            if (AdjustSpecs[p].Command >= 0)
+            {
+                Send(AdjustSpecs[p].Command, (float)e.NewValue);
+            }
+            else
+            {
+                var inv = System.Globalization.CultureInfo.InvariantCulture;
+                _treePending = p.ToString(inv) + "\t" + e.NewValue.ToString("0.###", inv);
+                Send(Command.AdjustParam);
+            }
         };
         // Double-click a slider: that parameter back to 0.
         slider.DoubleTapped += (_, _) => slider.Value = 0;
@@ -450,6 +547,10 @@ public static partial class IslandHost
         if (_sectionChevrons is not null) _sectionChevrons[s].Glyph = _sectionOpen[s] ? "\uE70D" : "\uE76C";
     }
 
+    // Slice 3: what the next click on the photo does (shell::adjust_pick).
+    private static void SendPick(int mode) =>
+        Send(Command.AdjustPick, mode * 1000 + (float)Math.Round(_redEyeSize + 100));
+
     private static void PickChannel(int section, int channel)
     {
         if (section == LevelsSection) _levelsChannel = channel; else _curvesChannel = channel;
@@ -458,7 +559,7 @@ public static partial class IslandHost
 
     // Levels shows the picked channel's three sliders only.
     private static bool RowShown(int param) =>
-        param < 16 || (param - 16) / 3 == _levelsChannel;
+        param < 16 || (param < 28 ? (param - 16) / 3 == _levelsChannel : (param - 28) / 3 == _band);
 
     private static List<Point> CurvePointsOf(int ch) =>
         _curves[ch].Count >= 2 ? new List<Point>(_curves[ch]) : new List<Point> { new(0, 0), new(1, 1) };
@@ -713,10 +814,28 @@ public static partial class IslandHost
             if (_curvesPicks is not null) _curvesPicks[ch].Opacity = ch == _curvesChannel ? 1.0 : 0.55;
         }
         RenderCurve();
+        if (_wbPick is not null)
+        {
+            _wbPick.Content = ButtonLabel(_picking == 1 ? "Click something white or grey…" : "Pick white balance",
+                                          UiFontSize - 2, trim: true);
+            _wbPick.IsEnabled = ready;
+        }
+        if (_redEyePick is not null)
+        {
+            _redEyePick.Content = ButtonLabel(_picking == 2 ? "Click each red eye — click here when done" : "Fix red eyes",
+                                              UiFontSize - 2, trim: true);
+            _redEyePick.IsEnabled = ready;
+        }
+        if (_redEyeCount is not null) _redEyeCount.Text = _spotCount > 0 ? $"{_spotCount} fixed" : "";
+        if (_bandPicks is not null)
+        {
+            for (int b = 0; b < _bandPicks.Length; b++) _bandPicks[b].BorderThickness = new Thickness(b == _band ? 2 : 0);
+        }
         for (int s = 0; s < AdjustSections.Length; s++)
         {
             bool changed = s == CurvesSection
                 ? Array.Exists(_curves, c => c.Exists(p => p.X != p.Y))
+                : s == RedEyeSection ? _spotCount > 0
                 : Array.Exists(AdjustSections[s].Params, p => _adjustValues[p] != 0);
             if (_sectionResets?[s] is Button reset)
             {

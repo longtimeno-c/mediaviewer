@@ -218,7 +218,7 @@ void blitter::bind_camera(ID3D11DeviceContext* ctx, const blit_params& p, float 
   cb.adj[1][3] = p.adjust ? 1.0f : 0.0f;
   (void)upload_cb(ctx, cb_.Get(), &cb, sizeof(cb));
   // The table only changes with a levels or curve edit: compared, not resent.
-  if (p.adjust && p.adjust_u.a[5][3] > 0.5f && !(p.adjust_t == lut_shown_)) {
+  if (p.adjust && reads_table(p.adjust_u) && !(p.adjust_t == lut_shown_)) {
     if (upload_cb(ctx, lut_cb_.Get(), &p.adjust_t, sizeof(adjust_table))) lut_shown_ = p.adjust_t;
   }
 

@@ -85,13 +85,21 @@ commands (197–208). Status: `mv_tests` `[curves]`, `[auto_levels]` and the ful
 Mac self-test sets an S curve and runs Levels' Auto, and the saved copy carries both; the C#
 compiles; Windows native is CI's. Mac PR 1 gate: see the PR.
 
-### 3. White balance picker and selective colour
+### 3. White balance picker and selective colour — built 2026-11-02
 
 - **White balance:** neutral grey, skin tone and temperature/tint modes; an eyedropper on the
   canvas (click → the host reads one averaged 5 × 5 sample from the preview working image on a
   worker, never a GPU readback on the render thread) that solves temperature and tint.
 - **Selective colour:** hue, saturation, luminance for eight hue bands, smooth band weights in the
   kernel (no 3D LUT).
+
+As built ([07](../design/07-photo-editing.md)): the bands are 64 rows of the slice 2 table; the
+picker reads the click on the UI thread (25 pixels of memory, no worker needed); the manual
+red-eye brush landed here too (8 fixes, table rows, placed through the geometry). Windows: the
+24 selective sliders cross as parked text (`chrome_cmd_adjust_param`, 1091), the pick as
+`adjust_pick` (209). Status: `mv_tests` `[selective]`, `[red_eye]`, `[picker]` and the full suite
+pass; the Mac self-test clicks the picker and the red-eye tool on the photo and moves a band;
+the C# compiles; Windows native is CI's.
 
 ### 4. Detail: definition, brilliance, sharpen, noise reduction (one cached pass)
 

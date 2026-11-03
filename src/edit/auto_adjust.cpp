@@ -56,6 +56,25 @@ float neutral_confidence(float mean_saturation) noexcept {
                     1.0f);
 }
 
+std::optional<std::array<double, 3>> sample_mean(const image::linear_image& working, float u, float v,
+                                                 int half) noexcept {
+  if (!working.valid() || !(u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f)) return std::nullopt;
+  const int w = static_cast<int>(working.width), h = static_cast<int>(working.height);
+  const int cx = std::clamp(static_cast<int>(u * static_cast<float>(w)), 0, w - 1);
+  const int cy = std::clamp(static_cast<int>(v * static_cast<float>(h)), 0, h - 1);
+  std::array<double, 3> sum{};
+  int n = 0;
+  for (int y = std::max(0, cy - half); y <= std::min(h - 1, cy + half); ++y) {
+    for (int x = std::max(0, cx - half); x <= std::min(w - 1, cx + half); ++x) {
+      const std::uint16_t* p = working.rgba.data() + (static_cast<std::size_t>(y) * working.width + static_cast<std::size_t>(x)) * 4;
+      for (std::size_t k = 0; k < 3; ++k) sum[k] += image::half_to_float(p[k]);
+      ++n;
+    }
+  }
+  if (n == 0) return std::nullopt;
+  return std::array<double, 3>{sum[0] / n, sum[1] / n, sum[2] / n};
+}
+
 bool has_auto(adjust_section s) noexcept {
   return s == adjust_section::light || s == adjust_section::colour || s == adjust_section::mono ||
          s == adjust_section::levels;

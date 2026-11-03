@@ -41,7 +41,7 @@ cbuffer Camera : register(b0) {
 // Slice 2: the levels and curves table (gfx::adjust_table), its own cbuffer,
 // uploaded only when it changes. The kernel reads it as the global `lut`.
 cbuffer Lut : register(b1) {
-  float4 lut[128];
+  float4 lut[200];  // gfx::kAdjustTableSize: curves, selective colour, red-eye
 };
 
 #define MV_ADJUST_LUT_PARAM

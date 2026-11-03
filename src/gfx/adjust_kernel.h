@@ -60,6 +60,9 @@ constexpr float3 operator-(float3 a, float3 b) { return {a.x - b.x, a.y - b.y, a
 constexpr float3 operator*(float3 a, float3 b) { return {a.x * b.x, a.y * b.y, a.z * b.z}; }
 constexpr float3 operator/(float3 a, float3 b) { return {a.x / b.x, a.y / b.y, a.z / b.z}; }
 constexpr float3 operator*(float3 a, float k) { return {a.x * k, a.y * k, a.z * k}; }
+constexpr float4 operator+(float4 a, float4 b) { return {a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w}; }
+constexpr float4 operator-(float4 a, float4 b) { return {a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w}; }
+constexpr float4 operator*(float4 a, float k) { return {a.x * k, a.y * k, a.z * k, a.w * k}; }
 inline float3 max(float3 a, float3 b) {
   return {a.x > b.x ? a.x : b.x, a.y > b.y ? a.y : b.y, a.z > b.z ? a.z : b.z};
 }
@@ -71,6 +74,10 @@ inline float max(float a, float b) { return a > b ? a : b; }
 inline float min(float a, float b) { return a < b ? a : b; }
 inline float pow(float a, float b) { return std::pow(a, b); }
 inline float sqrt(float a) { return std::sqrt(a); }
+inline float cos(float a) { return std::cos(a); }
+inline float sin(float a) { return std::sin(a); }
+inline float atan2(float y, float x) { return std::atan2(y, x); }
+inline float floor(float a) { return std::floor(a); }
 
 // MV_ADJUST_KERNEL itself is in gfx/adjust_kernel_tokens.h (included above),
 // which has no C++ in it so the build-time HLSL compile can include it too.
@@ -110,16 +117,30 @@ inline constexpr float kVignetteWidth = 0.6f;   // and is this wide (softness 0)
 // p = i / 127, red, green and blue in x, y, z (w unused). The identity is
 // the diagonal. Both blits bind it apart from the uniforms and upload it only
 // when it changes.
+// Slice 3 appends 64 hue rows (selective colour: hue shift in turns,
+// saturation scale, luminance in stops) and 8 red-eye spots (x, y, radius in
+// `pos` units; radius 0 is no spot).
 inline constexpr int kAdjustTableRows = 128;
+inline constexpr int kAdjustHueRows = 64;
+inline constexpr int kAdjustSpotRows = 8;
+inline constexpr int kAdjustHueFirst = kAdjustTableRows;
+inline constexpr int kAdjustSpotFirst = kAdjustTableRows + kAdjustHueRows;
+inline constexpr int kAdjustTableSize = kAdjustSpotFirst + kAdjustSpotRows;
 
 struct adjust_table {
-  float r[kAdjustTableRows][4];
+  float r[kAdjustTableSize][4];
   adjust_table() noexcept {
     for (int i = 0; i < kAdjustTableRows; ++i) {
       const float p = static_cast<float>(i) / static_cast<float>(kAdjustTableRows - 1);
       r[i][0] = r[i][1] = r[i][2] = p;
       r[i][3] = 0.0f;
     }
+    for (int i = kAdjustHueFirst; i < kAdjustSpotFirst; ++i) {
+      r[i][0] = 0.0f;
+      r[i][1] = 1.0f;
+      r[i][2] = r[i][3] = 0.0f;
+    }
+    for (int i = kAdjustSpotFirst; i < kAdjustTableSize; ++i) r[i][0] = r[i][1] = r[i][2] = r[i][3] = 0.0f;
   }
   friend constexpr bool operator==(const adjust_table&, const adjust_table&) = default;
 };
@@ -129,12 +150,17 @@ struct adjust_vectors {
       {1.0f, 1.0f, 1.0f, 1.0f},                  // gains; contrast slope
       {1.0f, 0.18f, 0.0f, 0.0f},                 // saturation; pivot; tone on; (blit on)
       {0.0f, 0.0f, 0.0f, 0.0f},                  // highlights, shadows, whites, blacks
-      {0.0f, 0.0f, 1.0f, 0.0f},                  // vibrance; mono mix; mono slope
-      {0.2126f, 0.7152f, 0.0722f, 0.0f},         // mono weights
+      {0.0f, 0.0f, 1.0f, 0.0f},                  // vibrance; mono mix; mono slope; red-eye on
+      {0.2126f, 0.7152f, 0.0722f, 0.0f},         // mono weights; selective on
       {0.0f, kVignetteInner, kVignetteInner + kVignetteWidth, 0.0f},  // vignette stops, from, to; table on
   };
   friend constexpr bool operator==(const adjust_vectors&, const adjust_vectors&) = default;
 };
+
+// The kernel reads the table: levels or curves, selective colour or red-eye.
+[[nodiscard]] inline bool reads_table(const adjust_vectors& u) noexcept {
+  return u.a[5][3] > 0.5f || u.a[4][3] > 0.5f || u.a[3][3] > 0.5f;
+}
 
 // The kernel's `pos` over a w × h output: built once per image, then one
 // multiply-add a pixel. at(x, y) takes the pixel's index; its centre is used.
@@ -153,12 +179,12 @@ struct vignette_map {
 // The table rides along (by pointer, it is 2 KB); null is the identity.
 struct adjust_args {
   kernel::float4 v[kAdjustVectors];
-  kernel::float4 lut[kAdjustTableRows];
+  kernel::float4 lut[kAdjustTableSize];
   explicit adjust_args(const adjust_vectors& u, const adjust_table* t = nullptr) noexcept {
     for (int i = 0; i < kAdjustVectors; ++i) v[i] = {u.a[i][0], u.a[i][1], u.a[i][2], u.a[i][3]};
     const adjust_table id;
     const adjust_table& src = t != nullptr ? *t : id;
-    for (int i = 0; i < kAdjustTableRows; ++i) {
+    for (int i = 0; i < kAdjustTableSize; ++i) {
       lut[i] = {src.r[i][0], src.r[i][1], src.r[i][2], src.r[i][3]};
     }
   }

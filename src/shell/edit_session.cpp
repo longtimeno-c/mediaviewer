@@ -278,6 +278,17 @@ edit_effect edit_session::set_curve(edit::curve_channel ch, const edit::curve& k
   return edit_effect::redraw;
 }
 
+edit_effect edit_session::add_red_eye(const edit::red_eye_spot& s) {
+  if (!has_item_) return edit_effect::refused;
+  const edit::colour now = colour();
+  if (s.r > 0.0f && now.spot_count >= edit::kRedEyeSpots) return edit_effect::refused;
+  if (s.r <= 0.0f && now.spot_count == 0) return edit_effect::none;
+  op o{op_kind::red_eye};
+  o.spot = s;
+  current().push(o);
+  return edit_effect::redraw;
+}
+
 edit_effect edit_session::set_colour(const edit::colour& c) {
   if (!has_item_) return edit_effect::refused;
   op o{op_kind::adjust_all};
@@ -286,6 +297,8 @@ edit_effect edit_session::set_colour(const edit::colour& c) {
     o.values.v[static_cast<std::size_t>(i)] = edit::clamp_param(p, c.get(p));
   }
   for (std::size_t k = 0; k < o.values.curves.size(); ++k) o.values.curves[k] = edit::sanitise(c.curves[k]);
+  o.values.spots = c.spots;
+  o.values.spot_count = c.spot_count;
   if (colour() == o.values) return edit_effect::none;
   current().push(o);
   return edit_effect::redraw;

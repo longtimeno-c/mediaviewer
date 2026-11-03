@@ -405,6 +405,10 @@ enum class command_id : std::uint16_t {
   adjust_levels_blue_black,
   adjust_levels_blue_mid,
   adjust_levels_blue_white,
+  // Slice 3: what the next click on the photo does; the argument is
+  // shell::adjust_pick * 1000 + (the red-eye size + 100). Selective colour's
+  // sliders travel as parked text (chrome_cmd_adjust_param).
+  adjust_pick,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

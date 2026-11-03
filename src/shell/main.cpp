@@ -299,6 +299,7 @@ struct app_state {
   // finishes for a photo no longer on screen.
   mv::shell::adjust_pane adjust;
   std::shared_ptr<const mv::image::linear_image> working;
+  float red_eye_size = 0.0f;  // slice 3: the red-eye tool's size, −100..+100
   std::atomic<mv::generation> adjust_generation{1};
   // PR 13 / 14 (docs/design/08): trim mode on the current clip, the keyframe-index
   // request in flight for it, and the Jobs pane's wish. The jobs themselves
@@ -2170,6 +2171,7 @@ void schedule_rotation_write(app_state* app) noexcept {
 void adjust_item_changed(app_state* app);
 void adjust_colour_changed(app_state* app);
 void adjust_build_if(app_state* app, std::optional<std::uint64_t> token);
+void set_adjust_from_pane(app_state* app, mv::edit::adjust_param p, float value);
 void strip_hint_show(app_state* app);
 bool sync_page_stop(app_state* app, bool opened);
 void page_sidebar_changed(app_state* app);
@@ -2551,6 +2553,69 @@ void set_curve_from_pane(app_state* app) {
   const bool has_colour = !app->edits.colour().identity();
   adjust_build_if(app, app->adjust.colour_changed(has_colour));
   schedule_histogram(app);
+}
+
+// Slice 3: what the next click on the photo does. The island's argument is
+// mode * 1000 + (size + 100): mode a shell::adjust_pick, size the red-eye
+// tool's −100..+100 about its default radius.
+void set_adjust_pick(app_state* app, float arg) {
+  const int packed = static_cast<int>(std::lround(arg));
+  const int mode = packed / 1000;
+  if (mode < 0 || mode > static_cast<int>(mv::shell::adjust_pick::red_eye)) return;
+  app->red_eye_size = std::clamp(static_cast<float>(packed % 1000 - 100), -100.0f, 100.0f);
+  app->adjust.set_pick(static_cast<mv::shell::adjust_pick>(mode));
+  push_adjust_pane(app);
+}
+
+bool adjust_picking(app_state* app) noexcept {
+  return app->adjust.pick() != mv::shell::adjust_pick::none && adjust_still(app) && app->working;
+}
+
+// A click on the photo while picking: client pixel → the shown (edited)
+// image's uv → the source's uv through the edit's map → the working image.
+// A 5 x 5 read of memory already decoded: fine on the UI thread.
+void adjust_pick_at(app_state* app, int x, int y) {
+  float u = 0, v = 0;
+  if (!app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v) || u < 0 || u > 1 ||
+      v < 0 || v > 1) {
+    return;
+  }
+  const mv::edit::placement p = app->edits.preview_placement();
+  const float* m = p.map.m;
+  const float su = m[0] * u + m[1] * v + m[2], sv = m[3] * u + m[4] * v + m[5];
+  mv::shell::edit_effect e = mv::shell::edit_effect::none;
+  if (app->adjust.pick() == mv::shell::adjust_pick::white_balance) {
+    const auto mean = mv::edit::sample_mean(*app->working, su, sv);
+    if (!mean) return;
+    const std::array<float, 2> wb = mv::edit::neutral_balance(*mean);
+    mv::edit::colour c = app->edits.colour();
+    c.v[static_cast<std::size_t>(mv::edit::adjust_param::temperature)] = wb[0];
+    c.v[static_cast<std::size_t>(mv::edit::adjust_param::tint)] = wb[1];
+    e = app->edits.set_colour(c);
+    app->adjust.set_pick(mv::shell::adjust_pick::none);  // one click
+  } else {
+    const float r = mv::edit::kRedEyeDefaultRadius * std::exp2(app->red_eye_size / 100.0f);
+    e = app->edits.add_red_eye({su, sv, r});
+  }
+  if (e == mv::shell::edit_effect::redraw) {
+    publish_edit(app);
+    ++app->input.activity_seq;
+    publish(app);
+  }
+  adjust_colour_changed(app);
+}
+
+// Slice 3: a parameter from the island as parked "param\tvalue" (selective
+// colour's 24 sliders; chrome_cmd_adjust_param).
+void set_param_from_pane(app_state* app) {
+  std::string parked;
+  if (!app->chrome.take_parked_text(parked)) return;
+  const std::size_t tab = parked.find('\t');
+  if (tab == std::string::npos) return;
+  const int param = std::atoi(parked.substr(0, tab).c_str());
+  if (param < 0 || param >= mv::edit::kAdjustParamCount) return;
+  set_adjust_from_pane(app, static_cast<mv::edit::adjust_param>(param),
+                       static_cast<float>(std::atof(parked.c_str() + tab + 1)));
 }
 
 // A section's Reset: its sliders back to 0, one undo step.
@@ -5284,6 +5349,12 @@ bool chrome_edit_command(app_state* app, int command, float arg) {
       return true;
     case mv::shell::chrome_cmd_adjust_curve:
       set_curve_from_pane(app);
+      return true;
+    case mv::shell::chrome_cmd_adjust_param:
+      set_param_from_pane(app);
+      return true;
+    case static_cast<int>(mv::shell::command_id::adjust_pick):
+      set_adjust_pick(app, arg);
       return true;
     case static_cast<int>(mv::shell::command_id::adjust_auto):
       start_adjust_auto(app, static_cast<int>(arg));
@@ -8313,7 +8384,7 @@ bool run_edit_command_area(app_state* app, mv::shell::command_id command) noexce
     case adjust_highlights: case adjust_shadows: case adjust_whites: case adjust_blacks:
     case adjust_vibrance: case adjust_mono: case adjust_mono_filter: case adjust_mono_tone:
     case adjust_vignette: case adjust_vignette_radius: case adjust_vignette_softness:
-    case adjust_auto: case adjust_reset_section:
+    case adjust_auto: case adjust_reset_section: case adjust_pick:
     case adjust_levels_black:
     case adjust_levels_mid:
     case adjust_levels_white:
@@ -9725,6 +9796,13 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
     case WM_RBUTTONDOWN: case WM_RBUTTONUP:
     case WM_MBUTTONDOWN: case WM_MBUTTONUP: {
       const bool down = msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN;
+      // Slice 3: the adjust pane's white-balance picker or red-eye tool takes
+      // the click on the photo; nothing pans.
+      if (msg == WM_LBUTTONDOWN && adjust_picking(app)) {
+        ::SetFocus(hwnd);
+        adjust_pick_at(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        return 0;
+      }
       const int index = (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP)   ? 0
                         : (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP) ? 1
                                                                          : 2;
