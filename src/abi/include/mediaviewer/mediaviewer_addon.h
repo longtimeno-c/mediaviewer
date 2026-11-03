@@ -962,6 +962,16 @@ typedef struct mv_host_api {
    * pointers are non-NULL. */
   mv_status(MV_CALL* frames_keep)(void* host, void* frames, const int64_t* ranges_ns, uint32_t count);
   mv_status(MV_CALL* sound_keep)(void* host, void* sound, const int64_t* ranges_ns, uint32_t count);
+  /* ---- the Remove brush (docs/plans/edit-adjust.md slice 7) ----------------------- */
+  /* [any-thread] What the person brushed over the photo being edited at
+   * `path_utf8`, as round dabs of three floats each: u and v across and down
+   * the edited picture still_open answers with (0..1), and the radius over its
+   * longer side. Up to `capacity` dabs into `out_dabs` (NULL with 0 asks the
+   * count); `*out_count` is how many there are, 0 when nothing is brushed or
+   * another photo is being edited. Appended after sound_keep: read only when
+   * `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* still_mask)(void* host, const char* path_utf8, float* out_dabs, uint32_t capacity,
+                                 uint32_t* out_count);
 } mv_host_api;
 
 #define MV_ADDON_TREE_SUBTREE 1u
@@ -1214,6 +1224,10 @@ MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* ou
  * lays them out (the host and this library are built together); `size` must
  * match, else MV_ERR_INVALID_ARG. A NULL path clears it. [ui-thread][no-block] */
 MV_API mv_status MV_CALL mv_edit_still_set(const char* path_utf8, const void* edit, uint32_t size);
+/* Slice 7: the Remove brush over that still, `count` dabs of three floats (u,
+ * v, radius; the host table's still_mask says how), for Enhance's Remove. A
+ * NULL path or 0 dabs clears it. [ui-thread][no-block] */
+MV_API mv_status MV_CALL mv_edit_still_mask(const char* path_utf8, const float* dabs, uint32_t count);
 /* Slice 6: Open closed eyes for the still at `path_utf8`: the frames of the
  * same moment, the AI pack's same-person faces (People must be on), the
  * transfer, and a new file beside the photo. `note_out` gets what happened,

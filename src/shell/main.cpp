@@ -305,6 +305,14 @@ struct app_state {
   mv::shell::adjust_pane adjust;
   std::shared_ptr<const mv::image::linear_image> working;
   float red_eye_size = 0.0f;  // slice 3: the red-eye tool's size, −100..+100
+  // Slice 7: the Remove brush's strokes over the shown still, its size
+  // (−100..+100 about kBrushDefaultRadius), the ring under the pointer, a
+  // count of changes the canvas redraws on, and whether a stroke is down.
+  mv::shell::remove_brush brush;
+  float brush_size = 0.0f;
+  float brush_cursor[3] = {-1.0f, -1.0f, 0.0f};
+  std::uint32_t brush_rev = 0;
+  bool brush_stroke = false;
   // Slice 4: the working image as built, before the detail pass; the pass on
   // the canvas (`working` is its result), and the one in flight.
   std::shared_ptr<const mv::image::linear_image> working_base;
@@ -2171,7 +2179,17 @@ void publish_edit(app_state* app) noexcept {
     v.generation = app->edit_generation;
     app->input.edit[0] = v;
   } else {
+    const mv::shell::edit_view before = app->input.edit[0];
     app->input.edit[0] = mv::shell::view_of(app->edits, app->edit_key, app->edit_generation);
+    // Slice 7: strokes lie over what was brushed only while the item and its
+    // geometry stay; otherwise they go (and Enhance's copy of them).
+    if (!app->brush.empty() && (before.item != app->edit_key || !mv::shell::same_geometry(before, app->input.edit[0]) ||
+                                app->edits.crop_active())) {
+      app->brush.clear();
+      (void)mv_edit_still_mask(nullptr, nullptr, 0);
+    }
+    const bool brush_on = app->adjust.pick() == mv::shell::adjust_pick::remove && !app->edits.crop_active();
+    mv::shell::apply_brush(app->input.edit[0], app->brush, brush_on, ++app->brush_rev, app->brush_cursor);
   }
   // Slice 5: Enhance's copy of the photo being edited carries its edit. The
   // add-on media layer is in mediaviewer_core.dll: through its C entry, the
@@ -2448,7 +2466,10 @@ std::uint64_t adjust_item_id(app_state* app) noexcept {
 
 void push_adjust_pane(app_state* app) noexcept {
   if (!app->chrome.adjust_pane_visible()) return;
-  app->chrome.set_adjust_view(app->adjust.view(app->edits.colour()));
+  mv::shell::adjust_view v = app->adjust.view(app->edits.colour());
+  v.brush_strokes = static_cast<std::int32_t>(app->brush.strokes());
+  v.brush_full = app->brush.full() ? 1 : 0;
+  app->chrome.set_adjust_view(v);
 }
 
 // Read, develop (for a RAW: LibRaw's linear 16-bit develop — docs/design/07 waits for
@@ -2595,9 +2616,17 @@ void set_curve_from_pane(app_state* app) {
 void set_adjust_pick(app_state* app, float arg) {
   const int packed = static_cast<int>(std::lround(arg));
   const int mode = packed / 1000;
-  if (mode < 0 || mode > static_cast<int>(mv::shell::adjust_pick::red_eye)) return;
-  app->red_eye_size = std::clamp(static_cast<float>(packed % 1000 - 100), -100.0f, 100.0f);
+  if (mode < 0 || mode > static_cast<int>(mv::shell::adjust_pick::remove)) return;
+  const float size = std::clamp(static_cast<float>(packed % 1000 - 100), -100.0f, 100.0f);
+  if (mode == static_cast<int>(mv::shell::adjust_pick::remove)) {
+    app->brush_size = size;
+  } else {
+    app->red_eye_size = size;
+  }
   app->adjust.set_pick(static_cast<mv::shell::adjust_pick>(mode));
+  app->brush_cursor[0] = -1.0f;
+  publish_edit(app);  // the brush shows or goes
+  publish(app);
   push_adjust_pane(app);
 }
 
@@ -2637,6 +2666,90 @@ void adjust_pick_at(app_state* app, int x, int y) {
     publish(app);
   }
   adjust_colour_changed(app);
+}
+
+// ---- Slice 7: the Remove brush (the twin of main_mac.mm's brush methods) ----
+
+bool brush_active(app_state* app) noexcept {
+  return app->adjust.pick() == mv::shell::adjust_pick::remove && adjust_still(app) && !app->edits.crop_active();
+}
+
+float brush_radius(const app_state* app) noexcept {
+  return mv::shell::kBrushDefaultRadius * std::exp2(app->brush_size / 100.0f);
+}
+
+// The strokes and the ring onto the canvas's edit view (a redraw, no decode).
+void brush_publish(app_state* app) noexcept {
+  if (app->input.edit[0].item != app->edit_key) return;
+  mv::shell::apply_brush(app->input.edit[0], app->brush, brush_active(app), ++app->brush_rev, app->brush_cursor);
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+bool brush_press(app_state* app, int x, int y) {
+  float u = 0, v = 0;
+  if (!app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v) || u < 0 || u > 1 || v < 0 ||
+      v > 1) {
+    return false;
+  }
+  const mv::edit::placement p = app->edits.preview_placement();
+  app->brush.set_frame(p.cropped.w, p.cropped.h);
+  if (!app->brush.begin(u, v, brush_radius(app))) {
+    ::MessageBeep(MB_OK);  // full
+    return false;
+  }
+  app->brush_cursor[0] = u;
+  app->brush_cursor[1] = v;
+  app->brush_cursor[2] = brush_radius(app);
+  brush_publish(app);
+  push_adjust_pane(app);
+  return true;
+}
+
+// A move: paints while a stroke is down, else moves the ring.
+void brush_move(app_state* app, int x, int y) {
+  float u = 0, v = 0;
+  const bool on = app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v);
+  if (app->brush_stroke) {
+    if (!on) return;
+    (void)app->brush.drag(u, v);
+  } else {
+    const bool inside = on && u >= 0 && u <= 1 && v >= 0 && v <= 1;
+    if (!inside && app->brush_cursor[0] < 0.0f) return;
+    if (!inside) u = -1.0f;
+  }
+  app->brush_cursor[0] = u;
+  app->brush_cursor[1] = v;
+  app->brush_cursor[2] = brush_radius(app);
+  brush_publish(app);
+}
+
+// 0 the last stroke off, 1 all of them, 2 Remove: Enhance's sheet takes it.
+void adjust_brush(app_state* app, int action) {
+  if (action == 0) {
+    (void)app->brush.undo_stroke();
+  } else if (action == 1) {
+    app->brush.clear();
+  } else if (action == 2) {
+    if (app->brush.empty() || app->edit_path.empty()) {
+      ::MessageBeep(MB_OK);
+      return;
+    }
+    const auto dabs = app->brush.dabs();
+    std::vector<float> flat;
+    flat.reserve(dabs.size() * 3);
+    for (const mv::shell::brush_dab& d : dabs) flat.insert(flat.end(), {d.u, d.v, d.r});
+    // The add-on media layer is in mediaviewer_core.dll: through its C entry.
+    (void)mv_edit_still_mask(app->edit_path.c_str(), flat.data(), static_cast<std::uint32_t>(dabs.size()));
+    const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
+    if (id == mv::shell::command_id::none) {
+      app->adjust.set_prompt_note("Remove needs the Enhance add-on (Settings → Add-ons).");
+    } else {
+      (void)run_command(app, id);
+    }
+  }
+  brush_publish(app);
+  push_adjust_pane(app);
 }
 
 // Slice 3: a parameter from the island as parked "param\tvalue" (selective
@@ -5529,6 +5642,9 @@ bool chrome_edit_command(app_state* app, int command, float arg) {
       return true;
     case static_cast<int>(mv::shell::command_id::adjust_open_eyes):
       start_open_eyes(app);
+      return true;
+    case mv::shell::chrome_cmd_adjust_brush:
+      adjust_brush(app, static_cast<int>(arg));
       return true;
     case static_cast<int>(mv::shell::command_id::adjust_auto):
       start_adjust_auto(app, static_cast<int>(arg));
@@ -9883,6 +9999,7 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
                          app->input.mouse_x != static_cast<float>(GET_X_LPARAM(lparam)) ||
                          app->input.mouse_y != static_cast<float>(GET_Y_LPARAM(lparam));
       if (moved) ++app->input.activity_seq;
+      if (moved && brush_active(app)) brush_move(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
       app->input.mouse_x = static_cast<float>(GET_X_LPARAM(lparam));
       app->input.mouse_y = static_cast<float>(GET_Y_LPARAM(lparam));
       app->input.mouse_in_client = true;
@@ -9974,7 +10091,20 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
       // the click on the photo; nothing pans.
       if (msg == WM_LBUTTONDOWN && adjust_picking(app)) {
         ::SetFocus(hwnd);
-        adjust_pick_at(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        // Slice 7: the Remove brush strokes while the button is down.
+        if (brush_active(app)) {
+          app->brush_stroke = brush_press(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+          if (app->brush_stroke) ::SetCapture(hwnd);
+        } else {
+          adjust_pick_at(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        }
+        return 0;
+      }
+      if (msg == WM_LBUTTONUP && app->brush_stroke) {
+        app->brush_stroke = false;
+        app->brush.end();
+        ::ReleaseCapture();
+        push_adjust_pane(app);
         return 0;
       }
       const int index = (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP)   ? 0

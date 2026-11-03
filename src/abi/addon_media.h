@@ -80,6 +80,11 @@ namespace media {
 // never held across the decode.
 void set_still_edit(const std::string& path, const edit::geometry& g, const edit::colour& c);
 void clear_still_edit();
+// Slice 7: the Remove brush over that photo, as u, v, r triples in the edited
+// picture full_still answers with (empty: nothing brushed). The UI thread
+// sets it before Enhance's sheet opens; still_mask answers the add-on.
+void set_still_mask(const std::string& path, std::vector<float> dabs);
+[[nodiscard]] std::vector<float> still_mask(const std::string& path);
 // docs/plans/edit-adjust.md slice 6: eyes open from the same moment.
 // The frames of the same moment as `path`: the other files of its folder
 // modified within kBurstSeconds of it, nearest first, at most kBurstFrames.

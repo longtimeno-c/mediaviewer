@@ -38,13 +38,13 @@ namespace MediaViewer.Chrome;
 public static partial class IslandHost
 {
     // shell/adjust_pane.h adjust_view: 2 ints, 56 floats, 2 floats, 2 ints,
-    // 4 ints (curve_n), 2 x 4 x 8 floats (curve x, y), 2 ints (picking,
-    // spot_count), 128 bytes of prompt note (UTF-8, NUL-terminated), then
-    // 4 x 64 uint16.
+    // 4 ints (curve_n), 2 x 4 x 8 floats (curve x, y), 4 ints (picking,
+    // spot_count, brush_strokes, brush_full), 128 bytes of prompt note
+    // (UTF-8, NUL-terminated), then 4 x 64 uint16.
     internal const int AdjustParamCount = 56;
     internal const int CurvePoints = 8;
     internal const int AdjustViewSize =
-        24 + 4 * AdjustParamCount + 16 + 2 * 4 * 4 * CurvePoints + 8 + PromptNoteBytes + 2 * 4 * HistogramBins;
+        24 + 4 * AdjustParamCount + 16 + 2 * 4 * 4 * CurvePoints + 16 + PromptNoteBytes + 2 * 4 * HistogramBins;
     private const int PromptNoteBytes = 128;
     private const int SelectiveSection = 6;
     private const int RedEyeSection = 7;
@@ -132,6 +132,7 @@ public static partial class IslandHost
         new("Red-Eye", "\uE7B3", Array.Empty<int>(), false),               // RedEye
         new("Detail", "\uE9F5", new[] { 52, 53, 54, 55 }, false),          // Processing
         new("Faces", "\uE77B", Array.Empty<int>(), false),                 // Contact
+        new("Remove", "\uE75C", Array.Empty<int>(), false),                // EraseTool (slice 7)
     };
 
     // Last view native pushed.
@@ -144,8 +145,18 @@ public static partial class IslandHost
     private static int _autoSection = -1;
     private static readonly ushort[] _histBins = new ushort[4 * HistogramBins];
     // Which sections are open; kept while the pane is rebuilt.
-    private static readonly bool[] _sectionOpen = { true, true, false, false, false, false, false, false, false, false };
+    private static readonly bool[] _sectionOpen = { true, true, false, false, false, false, false, false, false, false, false };
     private const int FacesSection = 9;
+    private const int RemoveSection = 10;
+    // Slice 7: the Remove brush from native, its size, and its controls.
+    private static int _brushStrokes;
+    private static bool _brushFull;
+    private static double _brushSize;
+    private static Button? _brushPick;
+    private static Button? _brushUndo;
+    private static Button? _brushClear;
+    private static Button? _brushRemove;
+    private static TextBlock? _brushNote;
     // Slice 3: the band Selective Colour shows, the pick mode and fixes from
     // native, the red-eye tool's size, and their controls.
     private static int _band;
@@ -205,6 +216,11 @@ public static partial class IslandHost
         _promptNoteText = null;
         _redEyePick = null;
         _redEyeCount = null;
+        _brushPick = null;
+        _brushUndo = null;
+        _brushClear = null;
+        _brushRemove = null;
+        _brushNote = null;
         _bandPicks = null;
         _levelsPicks = null;
         _curvesPicks = null;
@@ -256,9 +272,11 @@ public static partial class IslandHost
             int pick = curves + 16 + 2 * 4 * 4 * CurvePoints;
             _picking = Marshal.ReadInt32(arg, pick);
             _spotCount = Marshal.ReadInt32(arg, pick + 4);
-            _promptNote = Marshal.PtrToStringUTF8(arg + pick + 8) ?? "";
+            _brushStrokes = Marshal.ReadInt32(arg, pick + 8);
+            _brushFull = Marshal.ReadInt32(arg, pick + 12) != 0;
+            _promptNote = Marshal.PtrToStringUTF8(arg + pick + 16) ?? "";
             var raw = new short[_histBins.Length];
-            Marshal.Copy(arg + pick + 8 + PromptNoteBytes, raw, 0, raw.Length);
+            Marshal.Copy(arg + pick + 16 + PromptNoteBytes, raw, 0, raw.Length);
             for (int i = 0; i < raw.Length; i++) _histBins[i] = unchecked((ushort)raw[i]);
             if (_adjustPaneVisible) RenderAdjust();
             return 0;
@@ -382,7 +400,12 @@ public static partial class IslandHost
             FontFamily = SymbolFont,
             FontSize = UiFontSize - 2,
             Foreground = Brush(Body),
-        }, CompactButtonPadding, () => Send(Command.AdjustResetSection, index),
+        }, CompactButtonPadding, () =>
+        {
+            // Remove's reset takes every stroke off (it has no parameters).
+            if (index == RemoveSection) Send(Command.AdjustBrush, 1);
+            else Send(Command.AdjustResetSection, index);
+        },
             name: $"Reset {section.Name}", tip: $"Reset {section.Name}");
         reset.TabIndex = tab++;
         Grid.SetColumn(reset, 1);
@@ -486,6 +509,36 @@ public static partial class IslandHost
             _redEyeCount = Text("", Body, UiFontSize - 2);
             bodyStack.Children.Add(_redEyeCount);
         }
+        if (s == RemoveSection)
+        {
+            // Slice 7: brush on the photo; Enhance fills it in, a new file.
+            _brushPick = EditButton("Brush over what to remove", () => SendPick(_picking == 3 ? 0 : 3));
+            _brushPick.TabIndex = tab++;
+            bodyStack.Children.Add(_brushPick);
+            var size = new Slider { Minimum = -100, Maximum = 100, StepFrequency = 5, Value = _brushSize, TabIndex = tab++ };
+            AutomationProperties_SetName(size, "Brush size");
+            size.ValueChanged += (_, e) =>
+            {
+                _brushSize = e.NewValue;
+                if (_picking == 3) SendPick(3);
+            };
+            bodyStack.Children.Add(Text("Size", Body));
+            bodyStack.Children.Add(size);
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
+            _brushUndo = EditButton("Undo stroke", () => Send(Command.AdjustBrush, 0));
+            _brushUndo.TabIndex = tab++;
+            _brushClear = EditButton("Clear", () => Send(Command.AdjustBrush, 1));
+            _brushClear.TabIndex = tab++;
+            _brushRemove = EditButton("Remove…", () => Send(Command.AdjustBrush, 2),
+                                      tip: "Enhance fills in what you brushed from its surroundings and saves a new file.");
+            _brushRemove.TabIndex = tab++;
+            row.Children.Add(_brushUndo);
+            row.Children.Add(_brushClear);
+            row.Children.Add(_brushRemove);
+            bodyStack.Children.Add(row);
+            _brushNote = Text("", Body, UiFontSize - 3);
+            bodyStack.Children.Add(_brushNote);
+        }
         if (s == FacesSection)
         {
             // Slice 6: real pixels from a frame of the same moment, a new file.
@@ -586,8 +639,9 @@ public static partial class IslandHost
     }
 
     // Slice 3: what the next click on the photo does (shell::adjust_pick).
+    // The size is the red-eye tool's, or the Remove brush's (mode 3).
     private static void SendPick(int mode) =>
-        Send(Command.AdjustPick, mode * 1000 + (float)Math.Round(_redEyeSize + 100));
+        Send(Command.AdjustPick, mode * 1000 + (float)Math.Round((mode == 3 ? _brushSize : _redEyeSize) + 100));
 
     private static void PickChannel(int section, int channel)
     {
@@ -865,6 +919,16 @@ public static partial class IslandHost
             _redEyePick.IsEnabled = ready;
         }
         if (_redEyeCount is not null) _redEyeCount.Text = _spotCount > 0 ? $"{_spotCount} fixed" : "";
+        if (_brushPick is not null)
+        {
+            _brushPick.Content = ButtonLabel(_picking == 3 ? "Brushing — click here when done" : "Brush over what to remove",
+                                             UiFontSize - 2, trim: true);
+            _brushPick.IsEnabled = ready;
+        }
+        if (_brushUndo is not null) _brushUndo.IsEnabled = ready && _brushStrokes > 0;
+        if (_brushClear is not null) _brushClear.IsEnabled = ready && _brushStrokes > 0;
+        if (_brushRemove is not null) _brushRemove.IsEnabled = ready && _brushStrokes > 0;
+        if (_brushNote is not null) _brushNote.Text = _brushFull ? "The brush is full: remove this, then brush more." : "";
         if (_promptNoteText is not null) _promptNoteText.Text = _promptNote;
         if (_bandPicks is not null)
         {
@@ -875,6 +939,7 @@ public static partial class IslandHost
             bool changed = s == CurvesSection
                 ? Array.Exists(_curves, c => c.Exists(p => p.X != p.Y))
                 : s == RedEyeSection ? _spotCount > 0
+                : s == RemoveSection ? _brushStrokes > 0
                 : Array.Exists(AdjustSections[s].Params, p => _adjustValues[p] != 0);
             if (_sectionResets?[s] is Button reset)
             {

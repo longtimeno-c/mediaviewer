@@ -506,6 +506,11 @@ nothing of the core and reaches it only through the host function table.
   `moment_thumbnail`, `piece_dir`, `audio_*` (mono float PCM), `thumbnail_jpeg` /
   `thumbnail_store_jpeg`, and `recycle_file` (Recycle Bin / Trash only). Pixels are 8-bit sRGB
   RGB, stride `width * 3`, worker threads only.
+- **Edit ↔ add-ons, the Remove brush** ([plan](../plans/edit-adjust.md) slice 7). The host
+  table's `still_mask` (appended after `sound_keep`, version not bumped) answers what was brushed
+  over the photo being edited: dabs of three floats, u and v across the edited picture
+  `still_open` returns and the radius over its longer side. The Windows host sets them through
+  `mv_edit_still_mask`, the Mac host directly (`addon_media::set_still_mask`).
 - **Edit ↔ add-ons** ([plan](../plans/edit-adjust.md) slices 5–6). `still_open` answers the
   still being edited with its edit applied; the Windows host sets that edit through
   `mv_edit_still_set` (an opaque blob of this build's edit geometry and colour; host and

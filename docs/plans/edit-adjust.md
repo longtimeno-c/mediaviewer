@@ -238,6 +238,16 @@ in slice 3 in the core.
 
 ### 7. Remove: brush over it, the background filled in (owner go-ahead 2026-11-03)
 
+Status 2026-11-03: built on both hosts as planned ([07](../design/07-photo-editing.md) "Remove",
+[29](../design/29-enhance.md) "Remove"), with a stand-in model in the tests (`mv_tests
+"[remove-brush]"`, `mv_import_tests "[remove]"`). LaMa is pinned for each user's Download. With
+the real file (owner OK, 2026-11-03; `mv_import_tests "[.remove-model]"`): its tensors are
+`image` / `mask` → `output`, 512 × 512, and its output is already 0..255 (`out_scale` 1). A stroke
+across the sample photo's back rocks (an 832 × 832 box) filled in 1.73 s on CPU (M-series),
+water and shore continuing by eye, a faint smear left at a large rock's base; every pixel away from
+the brush unchanged. The second pass for large boxes is not built. Windows' `main.cpp` is
+compiled only by CI.
+
 Restyle cannot remove things ("remove the rocks" tints them). The owner asked for removal on
 2026-11-03, with the same go-ahead for a Restyle **Quality** choice (built: Standard 512, High
 768, Best 1024 px, [29](../design/29-enhance.md) "Restyle"; the owner: render time is of little

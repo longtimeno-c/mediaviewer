@@ -20,6 +20,7 @@
 #include <thread>
 
 #include "addons/enhance/diffusion.h"
+#include "addons/enhance/remove.h"
 #include "addons/enhance/engine.h"
 #include "addons/enhance/picture_job.h"
 #include "addons/enhance/sound_job.h"
@@ -84,6 +85,13 @@ struct run_port {
   // [job thread] The restyle model from its files in `models_dir`.
   std::function<result<std::unique_ptr<restyle_model>>(const model_spec& spec, const std::string& models_dir)>
       load_restyle;
+
+  // ---- Remove (docs/plans/edit-adjust.md slice 7) ----
+  // [job thread] The inpainting model from its files in `models_dir`.
+  std::function<result<std::unique_ptr<inpaint_filler>>(const model_spec& spec, const std::string& models_dir)>
+      load_inpaint;
+  // [any thread] The brush over the photo at `path` (u, v, r triples); empty none.
+  std::function<std::vector<float>(const std::string& path)> still_mask;
 };
 
 // The largest photo Enhance writes: 100 megapixels (a 4x of a 25 MP photo is
@@ -111,6 +119,7 @@ class job_runner final : public runner {
   void run_picture(job_request r, job_events events);
   void run_still(job_request r, job_events events);
   void run_restyle(job_request r, job_events events);
+  void run_remove(job_request r, job_events events);
 
   run_port port_;
   std::mutex m_;

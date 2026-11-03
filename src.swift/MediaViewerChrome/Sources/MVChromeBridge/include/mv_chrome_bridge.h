@@ -914,8 +914,10 @@ typedef struct mv_adjust_view {
   int32_t curve_n[4];
   float curve_x[4][8];
   float curve_y[4][8];
-  int32_t picking;     // slice 3: 0 none, 1 white-balance picker, 2 red-eye tool
+  int32_t picking;     // slice 3: 0 none, 1 white-balance picker, 2 red-eye tool, 3 Remove brush
   int32_t spot_count;  // red-eye fixes in the edit
+  int32_t brush_strokes;  // slice 7: the Remove brush's strokes
+  int32_t brush_full;     // ... and 1 when it holds as many dabs as it can
   char prompt_note[128];  // slice 5b: what the last typed request did, UTF-8
   uint16_t bins[4 * 64];
 } mv_adjust_view;
@@ -949,6 +951,10 @@ void mv_chrome_adjust_prompt(const char* text);
 // open eyes from a frame of the same moment (People in Local search), written
 // as a new file beside the photo; prompt_note says what happened.
 void mv_chrome_adjust_open_eyes(void);
+// Slice 7: the Remove brush (picking 3, mv_chrome_adjust_pick's `size` its
+// −100..100 about the default): 0 the last stroke off, 1 every stroke off,
+// 2 Remove — Enhance's sheet opens to take out what is brushed.
+void mv_chrome_adjust_brush(int32_t action);
 void mv_chrome_adjust_close(void);
 // Esc in the pane: keyboard focus back to the canvas (the pane stays open).
 void mv_chrome_adjust_blur(void);

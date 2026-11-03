@@ -6,6 +6,7 @@
 // PR 11 adds the colour uniforms (same_adjust, apply_adjust).
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 
 #include "edit/adjust.h"
@@ -116,7 +117,23 @@ inline void apply_adjust(const edit_view* v, BlitParams& bp) noexcept {
 [[nodiscard]] inline bool same_overlay(const edit_view& a, const edit_view& b) noexcept {
   return a.crop_overlay == b.crop_overlay && a.overlay[0] == b.overlay[0] &&
          a.overlay[1] == b.overlay[1] && a.overlay[2] == b.overlay[2] &&
-         a.overlay[3] == b.overlay[3];
+         a.overlay[3] == b.overlay[3] && a.brush_on == b.brush_on && a.brush_rev == b.brush_rev &&
+         a.brush_cursor[0] == b.brush_cursor[0] && a.brush_cursor[1] == b.brush_cursor[1] &&
+         a.brush_cursor[2] == b.brush_cursor[2];
+}
+
+// Slice 7: the Remove brush onto a published view. `rev` is the host's count
+// of brush changes; `cursor` the ring under the pointer (u < 0 for none).
+inline void apply_brush(edit_view& v, const remove_brush& b, bool on, std::uint32_t rev,
+                        const float (&cursor)[3]) noexcept {
+  v.brush_on = on;
+  v.brush_rev = rev;
+  v.brush_cursor[0] = cursor[0];
+  v.brush_cursor[1] = cursor[1];
+  v.brush_cursor[2] = cursor[2];
+  const auto dabs = b.dabs();
+  v.brush_count = static_cast<std::uint32_t>(std::min(dabs.size(), kBrushDabs));
+  for (std::uint32_t i = 0; i < v.brush_count; ++i) v.brush[i] = dabs[i];
 }
 
 // The edit_view the UI publishes for a session's current item.

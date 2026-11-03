@@ -32,6 +32,7 @@ enum class adjust_pick : std::int32_t {
   none = 0,
   white_balance = 1,  // one click: temperature and tint that make it neutral
   red_eye = 2,        // each click: a red-eye fix there, until turned off
+  remove = 3,         // slice 7: drag to brush what Remove takes out, until turned off
 };
 
 enum class adjust_readiness : std::int32_t {
@@ -60,6 +61,9 @@ struct adjust_view {
   // red-eye fixes the edit holds.
   std::int32_t picking = 0;
   std::int32_t spot_count = 0;
+  // Slice 7: the Remove brush's strokes, and whether it is full (kBrushDabs).
+  std::int32_t brush_strokes = 0;
+  std::int32_t brush_full = 0;
   // Slice 5b: what the last typed request did (edit::prompt_summary), UTF-8,
   // NUL-terminated, cut at a character boundary.
   char prompt_note[128] = {};
@@ -67,7 +71,7 @@ struct adjust_view {
 };
 
 static_assert(sizeof(adjust_view) == 24 + 4 * edit::kAdjustParamCount + 16 +
-                                         2 * 4 * edit::kCurveChannels * edit::kCurvePoints + 8 + 128 +
+                                         2 * 4 * edit::kCurveChannels * edit::kCurvePoints + 16 + 128 +
                                          2 * 4 * edit::kHistogramBins,
               "keep in sync with AdjustViewArgs and mv_adjust_view");
 

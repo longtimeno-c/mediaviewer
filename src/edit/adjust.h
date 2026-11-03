@@ -113,6 +113,7 @@ enum class adjust_section : std::uint8_t {
   red_eye,    // slice 3: the red-eye spots (colour::spots), no parameter
   detail,     // slice 4: definition, brilliance, sharpen, noise reduction
   faces,      // slice 6: Open closed eyes (a new file), no parameter
+  remove,     // slice 7: the Remove brush (a new file from Enhance), no parameter
   count
 };
 

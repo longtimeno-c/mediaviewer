@@ -57,6 +57,7 @@ still to come (plus a tenth). `addon-pack.py` refuses a pin over 5 GB too.
 | audio | DeepFilterNet3 (Schröter et al.), streaming ONNX export (`kimtos-labs/denoiser-dfn3` @ `888f33c4`) | 16.1 MB | MIT (dual MIT / Apache-2.0) |
 | video | Real-ESRGAN general x4v3 (Wang et al.), ONNX export (`jonathanst29/tinier-upscale-models` @ `899dc1e4`) | 4.9 MB | BSD-3-Clause |
 | still | the same file, pinned again under `still/` (each kind downloads its own) | 4.9 MB | BSD-3-Clause |
+| remove | LaMa (Suvorov et al.), ONNX port `Carve/LaMa-ONNX` @ `c3c0c9e4`, `lama_fp32.onnx` | 208 MB | Apache-2.0 |
 | restyle | InstructPix2Pix (Brooks et al., `timbrooks/instruct-pix2pix` @ `31519b5c`), exported by `tools/package/restyle-export.py`: fp32 text encoder and VAE, fp16 UNet | about 2.5 GB | CreativeML OpenRAIL-M (owner, 2026-11-03); its use restrictions are shown with the credit |
 
 Restyle is **not pinned yet**: its files must be hosted at a fixed revision before
@@ -225,6 +226,27 @@ lifted frame.
   speed. The model's 4.9 MB is still the door to the knob (it lives in the video model's sheet).
 - Lifting dark footage lifts its noise, and an 8-bit frame can band in lifted shadows; the help
   text says the first. HDR clips are still refused.
+
+## Remove: what was brushed in Edit, filled in
+
+Edit → Adjust → **Remove** paints over the photo ([07](07-photo-editing.md)); **Remove…** opens
+this sheet with the dabs held by the host (`still_mask`). A sheet opened on a photo with something
+brushed offers **Remove what you brushed** and starts on it. The run (`remove.h`,
+`io.runner: inpaint`):
+
+1. The dabs drawn as a mask of the full-resolution edited picture.
+2. Its box: the brushed bounds grown by half their longer side (at least 128 px a side), square
+   where the photo allows.
+3. The box's crop and mask scaled to the model's side (512), filled by **LaMa** (big-lama, Suvorov
+   et al., Apache-2.0; the ONNX port `Carve/LaMa-ONNX` @ `c3c0c9e4`, `lama_fp32.onnx`, 208 MB,
+   CPU: `cpu: true`, so Windows runs it too), scaled back.
+4. Only the brushed pixels pasted, feathered outward (2–16 px with the box's size); a pixel more
+   than twice the feather from the brush is the photo's own, bit for bit.
+5. A new file, as every run.
+
+Measured 2026-11-03 (M-series, CPU, the hidden `[.remove-model]` case): an 832 × 832 box
+filled in 1.73 s. It fills from the surroundings; it adds nothing and takes no words. A box much larger than 512 px
+is filled at that size and scaled up, so a large fill is softer than the photo around it.
 
 ## Measured (2026-10-26, Apple M-series; sound on CPU, one thread)
 

@@ -32,6 +32,7 @@
 
 #include "addons/ai/sha256.h"
 #include "addons/enhance/diffusion.h"
+#include "addons/enhance/remove.h"
 #include "addon/keep_ranges.h"
 #include "addons/enhance/brighten.h"
 #include "addons/enhance/engine.h"
@@ -131,6 +132,7 @@ struct fake_host {
   std::vector<std::string> logs;
   std::uint64_t free = 1ull << 40;
   mv::enhance::media_facts facts{true, true};
+  std::vector<float> brush;  // slice 7: the dabs the host holds over a photo
   // The preview's last pixels and how many were posted.
   std::uint32_t surface_w = 0, surface_h = 0;
   int surfaces = 0;
@@ -220,6 +222,10 @@ struct fixture {
       host.shown[screen] = show ? 1 : 0;
     };
     p.probe = [this](const std::string&) { return host.facts; };
+    p.brushed = [this](const std::string&) {
+      std::lock_guard lock(host.m);
+      return static_cast<std::uint32_t>(host.brush.size() / 3);
+    };
     p.free_disk = [this](const std::string&) -> std::optional<std::uint64_t> { return host.free; };
     auto shared = net;
     p.transport = [shared] { return std::make_unique<fake_net>(shared); };
@@ -1281,6 +1287,120 @@ TEST_CASE("enhance: a photo through the sheet and the runner, within its limits"
   REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("free memory") != std::string::npos; }));
 }
 
+// Slice 7: Remove. A stand-in fills what is brushed with one grey.
+struct grey_fill final : inpaint_filler {
+  std::uint32_t side() const noexcept override { return 64; }
+  mv::result<rgb8> fill(const rgb8& image, const mask8& mask) override {
+    CHECK(image.width == 64);
+    CHECK(mask.width == 64);
+    CHECK(std::count(mask.a.begin(), mask.a.end(), 255) > 0);
+    rgb8 out = image;
+    for (std::size_t i = 0; i < mask.a.size(); ++i) {
+      if (mask.a[i] == 255) out.rgb[i * 3] = out.rgb[i * 3 + 1] = out.rgb[i * 3 + 2] = 128;
+    }
+    return out;
+  }
+};
+
+TEST_CASE("remove: offered on a brushed photo, the brushed area filled and the rest the photo's own",
+          "[enhance][remove]") {
+  fixture f;
+  const fs::path photo = f.dir / "IMG_0003.JPG";
+  write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  write_text(f.self / "models/remove/model.json", R"json({
+    "kind": "remove", "name": "Remove", "weights": ["r.onnx"], "run_bytes": 1000, "cpu": true, "knobs": [],
+    "io": {"runner": "inpaint", "side": 64}})json");
+  {
+    const auto text = mv::test::read_bytes(f.self / "manifest.json");
+    std::string m(text.begin(), text.end());
+    const std::string pin = R"json({"url": "https://huggingface.co/mv-test/upscale/resolve/0123abcd/up.onnx",
+      "path": "remove/r.onnx", "size": )json" + std::to_string(f.video_weights.size()) + R"json(, "sha256": ")json" +
+                            hex_of(f.video_weights) + R"json(", "licence": "Apache-2.0"},)json";
+    m.insert(m.find("[") + 1, pin);
+    write_text(f.self / "manifest.json", m);
+  }
+  f.restart();
+  // Nothing brushed: the photo's sheet has no Remove.
+  f.eng->sheet_opened(1, utf8(photo));
+  CHECK_FALSE(parsed(f.host.tree(kSheetScreen)).has("photo"));
+
+  // A dab at the centre of a 400 x 300 photo, radius 5% of 400 = 20 px.
+  {
+    std::lock_guard lock(f.host.m);
+    f.host.brush = {0.5f, 0.5f, 0.05f};
+  }
+  f.eng->sheet_opened(2, utf8(photo));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    REQUIRE(t.has("photo"));
+    CHECK(t.node("photo")->find("options")->a.size() == 2);  // More detail, Remove
+    CHECK(*t.node("photo")->str("value") == "remove");       // Remove… opened it
+    CHECK(t.text("missing.remove").find("not installed") != std::string::npos);
+  }
+  f.eng->event(kSettingsScreen, "install.remove", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::remove).state == dl_state::ready; }));
+
+  const std::uint32_t w = 400, h = 300;
+  const std::vector<std::uint8_t> original = noise_rgb(w, h);
+  std::vector<std::uint8_t> written;
+  run_port port;
+  port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
+  port.load_inpaint = [](const model_spec&, const std::string& dir) -> mv::result<std::unique_ptr<inpaint_filler>> {
+    CHECK(dir.find("models/remove") != std::string::npos);
+    return std::unique_ptr<inpaint_filler>(new grey_fill);
+  };
+  port.still_mask = [&](const std::string& path) {
+    CHECK(path == utf8(photo));
+    std::lock_guard lock(f.host.m);
+    return f.host.brush;
+  };
+  port.open_still = [&](const std::string&) -> mv::result<run_port::still> {
+    run_port::still s;
+    s.width = w;
+    s.height = h;
+    s.rgb = original;
+    return s;
+  };
+  port.write_still = [&](const std::string&, const run_port::still& pic) -> mv::result<std::string> {
+    CHECK(pic.width == w);
+    CHECK(pic.height == h);
+    written = pic.rgb;
+    return utf8(f.dir / "IMG_0003-enhance.jpg");
+  };
+  f.eng->set_runner(std::make_unique<job_runner>(port));
+  f.eng->sheet_opened(3, utf8(photo));
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as") != std::string::npos; }));
+  REQUIRE(written.size() == original.size());
+  // The centre is the fill; a pixel well away from the dab is the photo's own.
+  CHECK(written[(150 * w + 200) * 3] == 128);
+  std::size_t changed_far = 0;
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      const float dx = static_cast<float>(x) + 0.5f - 200.0f, dy = static_cast<float>(y) + 0.5f - 150.0f;
+      if (dx * dx + dy * dy < 60.0f * 60.0f) continue;  // the dab, its feather and the resize's reach
+      const std::size_t i = (std::size_t{y} * w + x) * 3;
+      changed_far += written[i] != original[i] || written[i + 1] != original[i + 1] || written[i + 2] != original[i + 2];
+    }
+  }
+  CHECK(changed_far == 0);
+
+  // The brush cleared in Edit: refused before anything runs.
+  {
+    std::lock_guard lock(f.host.m);
+    f.host.brush.clear();
+  }
+  job_runner jr(port);
+  job_request req;
+  req.path = utf8(photo);
+  req.item = item_kind::still;
+  job_request::part part;
+  part.kind = model_kind::remove;
+  part.spec = f.eng->spec(model_kind::remove);
+  req.parts.push_back(part);
+  CHECK(jr.check(req).find("Nothing is brushed") != std::string::npos);
+}
+
 // ---- the live preview and its glow (contribution API 10) ------------------------------
 
 TEST_CASE("enhance: the preview is the frame split, letterboxed to the sheet", "[enhance][preview]") {
@@ -1516,6 +1636,157 @@ TEST_CASE("restyle: the shipped model's qualities", "[enhance][restyle]") {
   }
 }
 
+TEST_CASE("remove: the box around a stroke, the crop, and only brushed pixels pasted back", "[enhance][remove]") {
+  mask8 mask;
+  mask.width = 1200;
+  mask.height = 800;
+  mask.a.assign(std::size_t{mask.width} * mask.height, 0);
+  CHECK_FALSE(remove_box(mask));
+  // A 40 x 20 stroke at (600, 400).
+  for (std::uint32_t y = 400; y < 420; ++y) {
+    for (std::uint32_t x = 600; x < 640; ++x) mask.a[std::size_t{y} * mask.width + x] = 255;
+  }
+  auto box = remove_box(mask);
+  REQUIRE(box);
+  // Context of at least kRemoveMinContext each side, square, inside the photo.
+  CHECK(box->width == box->height);
+  CHECK(box->x + kRemoveMinContext <= 600);
+  CHECK(box->x + box->width >= 640 + kRemoveMinContext);
+  CHECK(box->y + kRemoveMinContext <= 400);
+  CHECK(box->y + box->height >= 420 + kRemoveMinContext);
+
+  // At the photo's corner: shifted inside, still square where it fits.
+  mask8 corner = mask;
+  std::fill(corner.a.begin(), corner.a.end(), 0);
+  for (std::uint32_t y = 0; y < 30; ++y) {
+    for (std::uint32_t x = 1170; x < 1200; ++x) corner.a[std::size_t{y} * corner.width + x] = 255;
+  }
+  const auto edge = remove_box(corner);
+  REQUIRE(edge);
+  CHECK(edge->x + edge->width == 1200);
+  CHECK(edge->y == 0);
+  CHECK(edge->width == edge->height);
+  // A stroke taller than the photo allows square: as tall as the photo.
+  mask8 tall = mask;
+  std::fill(tall.a.begin(), tall.a.end(), 0);
+  for (std::uint32_t y = 10; y < 790; ++y) tall.a[std::size_t{y} * tall.width + 100] = 255;
+  const auto t = remove_box(tall);
+  REQUIRE(t);
+  CHECK(t->y == 0);
+  CHECK(t->height == 800);
+
+  rgb8 photo;
+  photo.width = mask.width;
+  photo.height = mask.height;
+  photo.rgb.resize(std::size_t{photo.width} * photo.height * 3);
+  for (std::size_t i = 0; i < photo.rgb.size(); ++i) photo.rgb[i] = static_cast<std::uint8_t>(i * 7 % 251);
+  const rgb8 original = photo;
+  const rgb8 crop = crop_rgb(photo, *box);
+  CHECK(crop.rgb[0] == photo.rgb[(std::size_t{box->y} * photo.width + box->x) * 3]);
+  const mask8 small = crop_mask(mask, *box, 512, 512);
+  CHECK(small.width == 512);
+  CHECK(std::count(small.a.begin(), small.a.end(), 255) > 0);
+  CHECK(std::all_of(small.a.begin(), small.a.end(), [](std::uint8_t v) { return v == 0 || v == 255; }));
+
+  rgb8 filled = crop;
+  std::fill(filled.rgb.begin(), filled.rgb.end(), std::uint8_t{200});
+  const std::uint32_t feather = 4;
+  paste_back(photo, *box, filled, mask, feather);
+  std::size_t changed_far = 0;
+  for (std::uint32_t y = 0; y < photo.height; ++y) {
+    for (std::uint32_t x = 0; x < photo.width; ++x) {
+      const std::size_t at = (std::size_t{y} * photo.width + x) * 3;
+      const bool brushed = mask.a[std::size_t{y} * photo.width + x] > 127;
+      const bool near = x + 2 * feather >= 600 && x < 640 + 2 * feather && y + 2 * feather >= 400 &&
+                        y < 420 + 2 * feather;
+      if (brushed) {
+        CHECK(photo.rgb[at] == 200);
+      } else if (!near) {
+        changed_far += photo.rgb[at] != original.rgb[at] || photo.rgb[at + 1] != original.rgb[at + 1] ||
+                       photo.rgb[at + 2] != original.rgb[at + 2];
+      }
+    }
+  }
+  CHECK(changed_far == 0);
+  // The feather: just outside the stroke is a blend, not the fill.
+  const std::size_t just_out = (std::size_t{410} * photo.width + 642) * 3;
+  CHECK(photo.rgb[just_out] != 200);
+  CHECK(photo.rgb[just_out] != original.rgb[just_out]);
+}
+
+// The real LaMa (MV_REMOVE_MODEL: lama_fp32.onnx) on a photo
+// (MV_RESTYLE_RGB / _W / _H, raw RGB): a hole brushed over its middle is
+// filled with something like its surroundings, and everything away from the
+// brush is the photo's own. MV_REMOVE_OUT keeps the result as raw RGB.
+TEST_CASE("remove: LaMa through ONNX Runtime", "[.remove-model]") {
+  const char* file = std::getenv("MV_REMOVE_MODEL");
+  const char* ort = std::getenv("MV_ENHANCE_RUNTIME_DIR");
+  const char* raw = std::getenv("MV_RESTYLE_RGB");
+  const char* ws = std::getenv("MV_RESTYLE_W");
+  const char* hs = std::getenv("MV_RESTYLE_H");
+  if (!file || !ort || !raw || !ws || !hs) SKIP("MV_REMOVE_MODEL / MV_ENHANCE_RUNTIME_DIR / MV_RESTYLE_RGB not set");
+  rgb8 full;
+  full.width = static_cast<std::uint32_t>(std::atoi(ws));
+  full.height = static_cast<std::uint32_t>(std::atoi(hs));
+  full.rgb = mv::test::read_bytes(raw);
+  REQUIRE(full.rgb.size() == std::size_t{full.width} * full.height * 3);
+  auto rt = mv::infer::runtime::load(ort);
+  REQUIRE(rt);
+  auto model = inpaint_model::open(**rt, file, inpaint_io{});
+  INFO(mv::infer::session::last_error());
+  REQUIRE(model);
+  // A stroke across the middle, radius 3% of the long side.
+  std::vector<float> dabs;
+  for (float u = 0.4f; u <= 0.6f; u += 0.005f) dabs.insert(dabs.end(), {u, 0.5f, 0.03f});
+  const mask8 mask = mask_from_dabs(dabs, full.width, full.height);
+  const auto box = remove_box(mask);
+  REQUIRE(box);
+  const std::uint32_t side = (*model)->side();
+  const rgb8 crop = crop_rgb(full, *box);
+  const auto t0 = std::chrono::steady_clock::now();
+  auto filled = (*model)->fill(resize_rgb(crop, side, side), crop_mask(mask, *box, side, side));
+  const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  REQUIRE(filled);
+  rgb8 out = full;
+  paste_back(out, *box, resize_rgb(*filled, box->width, box->height), mask, 4);
+  // The fill's mean against the ring just outside the brush: close, and
+  // nothing like white or black.
+  double in_sum = 0, ring_sum = 0;
+  std::size_t in_n = 0, ring_n = 0, far_changed = 0;
+  const mask8 grown = mask_from_dabs([&] {
+    std::vector<float> g = dabs;
+    for (std::size_t i = 2; i < g.size(); i += 3) g[i] = 0.06f;
+    return g;
+  }(), full.width, full.height);
+  const mask8 far = mask_from_dabs([&] {
+    std::vector<float> g = dabs;
+    for (std::size_t i = 2; i < g.size(); i += 3) g[i] = 0.045f;
+    return g;
+  }(), full.width, full.height);
+  for (std::size_t i = 0; i < mask.a.size(); ++i) {
+    const double l = (out.rgb[i * 3] + out.rgb[i * 3 + 1] + out.rgb[i * 3 + 2]) / 3.0;
+    if (mask.a[i]) {
+      in_sum += l;
+      ++in_n;
+    } else if (grown.a[i]) {
+      ring_sum += l;
+      ++ring_n;
+    }
+    if (!far.a[i]) {
+      far_changed += out.rgb[i * 3] != full.rgb[i * 3] || out.rgb[i * 3 + 1] != full.rgb[i * 3 + 1] ||
+                     out.rgb[i * 3 + 2] != full.rgb[i * 3 + 2];
+    }
+  }
+  REQUIRE(in_n > 0);
+  REQUIRE(ring_n > 0);
+  const double in_mean = in_sum / in_n, ring_mean = ring_sum / ring_n;
+  std::printf("remove: %ux%u box filled at %u px in %.2f s on CPU; fill mean %.1f, surroundings %.1f\n", box->width,
+              box->height, side, s, in_mean, ring_mean);
+  CHECK(std::abs(in_mean - ring_mean) < 30.0);
+  CHECK(far_changed == 0);
+  if (const char* keep = std::getenv("MV_REMOVE_OUT")) write_bytes(std::string(keep), out.rgb);
+}
+
 TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {
   const char* dir = std::getenv("MV_RESTYLE_DIR");
   const char* ort = std::getenv("MV_ENHANCE_RUNTIME_DIR");
@@ -1534,8 +1805,11 @@ TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {
   auto t0 = std::chrono::steady_clock::now();
   auto model = restyle_model::open(**rt, dir, utf8(cache.root()));
   REQUIRE(model);
+  // MV_RESTYLE_EDGE: a quality's long edge (768 High, 1024 Best), to measure it.
+  const char* edge_env = std::getenv("MV_RESTYLE_EDGE");
+  const std::uint32_t edge = edge_env ? static_cast<std::uint32_t>(std::atoi(edge_env)) : kRestyleEdge;
   std::uint32_t w = 0, h = 0;
-  restyle_size(full.width, full.height, kRestyleEdge, w, h);
+  restyle_size(full.width, full.height, edge, w, h);
   const rgb8 small = resize_rgb(full, w, h);
   for (const char* prompt : {"make it black and white", "make it a snowy winter day"}) {
     restyle_params p;
@@ -1565,7 +1839,9 @@ TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {
     }
   }
 
-  // The same through the job runner, as the sheet's Run starts it.
+  // The same through the job runner, as the sheet's Run starts it (one
+  // model in memory at a time, so a peak measured is one run's).
+  model->reset();
   run_port port;
   port.open_still = [&](const std::string&) -> mv::result<run_port::still> {
     run_port::still s;
@@ -1585,6 +1861,8 @@ TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {
   job_runner jr(port);
   model_spec spec;
   spec.kind = model_kind::restyle;
+  // The runner at the edge measured above, so it reuses that compile.
+  spec.io = *mv::json::parse("{\"edge\": " + std::to_string(edge) + "}");
   job_request req;
   req.path = "photo.jpg";
   req.item = item_kind::still;

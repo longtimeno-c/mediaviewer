@@ -124,6 +124,9 @@ struct host_services {
   // #297 slice 3: a photo at full resolution, and a new photo beside it
   // (abi/addon_media.h). Empty leaves the table's still_* rows NULL.
   std::function<result<rgb_image>(const std::string& path)> full_still;
+  // Slice 7: the Remove brush's dabs (u, v, r triples) over the photo being
+  // edited at `path`; empty when none.
+  std::function<std::vector<float>(const std::string& path)> still_mask;
   std::function<result<std::string>(const std::string& source, const rgb_image& pixels, const std::string& suffix)>
       write_still;
   // #606: a clip's GPS route from its telemetry (meta::read_route in both

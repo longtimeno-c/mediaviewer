@@ -2271,6 +2271,10 @@ hidden cases run it for real:
 MV_ENHANCE_DFN3=<dir>/denoiser_model.onnx MV_ENHANCE_ESRGAN=<dir>/realesr-general-x4v3.onnx MV_ENHANCE_RUNTIME_DIR=build/addons/enhance build/bin/mv_ai_tests "[.enhance-model]"
 ```
 
+**Remove** (LaMa, slice 7): `build/bin/mv_tests "[remove-brush]"` (the brush's strokes and mask)
+and `build/bin/mv_import_tests "[remove]"` (box, crop, feathered paste-back, and the run with a
+stand-in model). LaMa's file is pinned in `remote.json`; Enhance's Download fetches it.
+
 **Restyle** (InstructPix2Pix, 2026-11-03) is not pinned yet. Export its files with
 `tools/package/restyle-export.py --out <dir>` (requirements-export.txt, about 2 GB download and
 16 GB of memory while exporting). It prints each file's size and SHA-256 for `remote.json` once

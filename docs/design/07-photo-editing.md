@@ -107,6 +107,15 @@ The stack folds into two canonical states:
   Autos read that result. Measured (Apple M-series, 3072 × 2048, best of 3): sharpen or
   definition 32 ms, noise 87 ms, all four 96 ms.
 
+  **Remove** (its own section; [plan](../plans/edit-adjust.md) slice 7) is a brush: the pane's
+  button turns it on (`adjust_pick::remove`), a drag on the photo paints round dabs in the shown
+  picture's uv (`shell/remove_brush.h`, at most 512, one undo step a stroke), and the canvas draws
+  them and a ring under the pointer in the crop overlay's pass (`shell/brush_overlay.h`, both
+  labs), presenting only while they change. A new item, a geometry change or crop mode clears them.
+  **Remove…** hands the dabs to Enhance (`still_mask`, [14](14-abi.md)) and opens its sheet, which
+  fills what is brushed with LaMa and writes a new file ([29](29-enhance.md) "Remove"); the stack
+  and the original are untouched.
+
   **Open closed eyes** (Faces section; [plan](../plans/edit-adjust.md) slice 6, owner call
   2026-11-02 in [12](12-decision-log.md)) writes a new file, `<stem>-eyes.jpg`, beside the photo;
   the original and the edit stack are untouched. The host offers the AI pack the files of the same
@@ -294,7 +303,7 @@ What exists is the first editing set:
 | Built | |
 |---|---|
 | Geometry | Rotate, flip, crop (aspect presets, [20](20-edit-workspace.md)), straighten ±45°, resize |
-| Colour | Light (exposure, highlights, shadows, whites, blacks, contrast), Colour (saturation, vibrance, temperature, tint), Black & White (intensity, filter, tone), Vignette (strength, radius, softness), Levels (per channel), Curves (per channel, a point editor), Selective Colour (eight bands), Red-Eye (clicks), Detail (definition, brilliance, sharpen, noise reduction), Faces (Open closed eyes, a new file); a white-balance picker; an Auto and a reset per section |
+| Colour | Light (exposure, highlights, shadows, whites, blacks, contrast), Colour (saturation, vibrance, temperature, tint), Black & White (intensity, filter, tone), Vignette (strength, radius, softness), Levels (per channel), Curves (per channel, a point editor), Selective Colour (eight bands), Red-Eye (clicks), Detail (definition, brilliance, sharpen, noise reduction), Faces (Open closed eyes, a new file), Remove (a brush; Enhance fills it in, a new file); a white-balance picker; an Auto and a reset per section |
 | Readouts | Histogram (R, G, B, luma) and clipping percentages |
 | Lossless | JPEG rotate / flip / MCU-aligned crop, from the viewer (`[` `]` `H` `V`) or on export |
 | Export | JPEG / PNG, long-edge resize, metadata policy |
