@@ -534,16 +534,19 @@ TEST_CASE("the folder pass waits for view jobs and gives a queued one its worker
   REQUIRE(wait_until([&] { return reads.load() > 0; }));
   // A view job arrives while the pass holds the only worker: it runs within
   // a file's read, not after the chunk or the folder.
+  // Counted in files read, not milliseconds: a loaded runner's scheduling
+  // stretched a wall-clock bound (58 ms against 40 on CI, 2026-11-03), while
+  // the claim is that the job waits for the read in progress, not the chunk.
   std::atomic<bool> ran{false};
-  const auto t0 = std::chrono::steady_clock::now();
-  std::atomic<std::int64_t> waited_ms{-1};
+  const int reads_at_submit = reads.load();
+  std::atomic<int> reads_at_run{-1};
   (void)jobs.submit([&](const mv::job_context&) {
-    waited_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    reads_at_run = reads.load();
     ran = true;
     return mv::status::ok;
   });
   REQUIRE(wait_until([&] { return ran.load(); }));
-  CHECK(waited_ms.load() < 40);
+  CHECK(reads_at_run.load() - reads_at_submit <= 2);
   CHECK(index.progress().reading);  // the pass is not done, it stepped aside
   REQUIRE(wait_until([&] { return !index.progress().reading; }));
   CHECK(reads.load() == 200);  // and resumed where it stopped: each file once
