@@ -143,7 +143,10 @@ Tested end to end in `mv_ai_tests` `[enhance][still]` with a stand-in model. As 
   "more contrast but keep the sky", "like a film photo" → slider deltas, shown as the sliders
   moving, one undo step. No model, no download, instant, offline, every result editable by hand.
   This covers most of what people type.
-- **Words → a generated edit (later, in Enhance, opt-in download).** For what sliders cannot do
+- **Words → a generated edit (later, in Enhance, opt-in download).** — built 2026-11-03 on the
+  Mac as Enhance's **Restyle** kind ([29](../design/29-enhance.md) "Restyle"), following the
+  recommendation below; not offered until its weights are hosted and pinned; Windows refused
+  without a GPU provider. As planned: For what sliders cannot do
   ("remove the person behind her", "make the sky blue"): an instruction-following image model.
   Cost, honestly: 1–4 GB of weights; on Apple silicon (Core ML) about 5–20 s for a 512–1024 px
   pass; on Windows the bundled ONNX Runtime is CPU only, so minutes. It writes a new file like

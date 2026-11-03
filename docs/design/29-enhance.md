@@ -37,7 +37,7 @@ Each kind Enhance can run ships `models/<kind>/model.json` in its signed zip:
 | `weights` | the files it needs, pinned under the manifest's `remote` at `<kind>/<file>` |
 | `run_bytes` | free memory a run needs: the run gate |
 | `cpu` | one unit of work finishes inside a measured budget on CPU |
-| `knobs` | `slider` / `choice` / `toggle`, each with the kinds of target it applies to |
+| `knobs` | `slider` / `choice` / `toggle` / `text` (a typed request, up to 200 bytes), each with the kinds of target it applies to |
 | `io` | the runner's own section (sound: `runner: stream`, rate, frame, state, delay; pictures: `runner: tiles`, scale, tile, overlap, the graph's free dims) |
 
 The weights are never in the zip or a release asset. The signed manifest pins each file under
@@ -54,6 +54,10 @@ still to come (plus a tenth). `addon-pack.py` refuses a pin over 5 GB too.
 | audio | DeepFilterNet3 (Schröter et al.), streaming ONNX export (`kimtos-labs/denoiser-dfn3` @ `888f33c4`) | 16.1 MB | MIT (dual MIT / Apache-2.0) |
 | video | Real-ESRGAN general x4v3 (Wang et al.), ONNX export (`jonathanst29/tinier-upscale-models` @ `899dc1e4`) | 4.9 MB | BSD-3-Clause |
 | still | the same file, pinned again under `still/` (each kind downloads its own) | 4.9 MB | BSD-3-Clause |
+| restyle | InstructPix2Pix (Brooks et al., `timbrooks/instruct-pix2pix` @ `31519b5c`), exported by `tools/package/restyle-export.py`: fp32 text encoder and VAE, fp16 UNet | about 2.5 GB | CreativeML OpenRAIL-M (owner, 2026-11-03); its use restrictions are shown with the credit |
+
+Restyle is **not pinned yet**: its files must be hosted at a fixed revision before
+`remote.json` lists them, and until then no kind offers it.
 
 ## The sheet
 
@@ -144,6 +148,30 @@ through a bounded queue (five seconds), so neither is held whole. With no hardwa
 that size the sheet says so and nothing is written. The sheet shows the time left once a run is
 a few percent in.
 
+## Restyle: a typed request on a photo
+
+With Restyle's model downloaded, the sheet's **Photo** choice offers *More detail* (the still
+model) or *Restyle with words*, which adds a text field ("make it a snowy winter day"). An empty
+request is refused before a run. The run (`diffusion.h`, `io.runner: diffusion`):
+
+1. The edited still is scaled to about 512 px on its long edge, each side a multiple of 64.
+2. CLIP's tokenizer and the text encoder turn the words (and an empty prompt) into the conditions.
+3. The VAE encodes the small picture; 20 Euler-ancestral steps (linspace timesteps, the
+   reference schedule, a fixed seed) run the UNet over a batch of three — text and picture,
+   picture only, neither — combined with the *Follow the words* (7.5) and *Keep the photo*
+   (1.5) guidances.
+4. The VAE decodes, and `carry_back` applies the blurred ratio of after to before onto the
+   full-resolution photo, scaled by *Strength*, so the photo keeps its own detail.
+5. The result is written as a new file, like every Enhance run.
+
+The UNet opens on Core ML with its dims fixed to the run's size (a size is compiled once, then
+cached), else the CPU. The model is not `cpu`-capable, so a machine with no GPU provider
+(Windows today) is refused rather than left running for minutes.
+
+Restyle changes the look of the whole picture: season, light, colour, style. It cannot remove an
+object ("remove the person" tints it; nothing is filled in). That needs an inpainting model and
+a mask ([plan](../plans/edit-adjust.md) slice 5b).
+
 ## Measured (2026-10-26, Apple M-series; sound on CPU, one thread)
 
 | | |
@@ -159,10 +187,19 @@ a few percent in.
 | Peak memory of that run, both models and a reference session | about 330 MB (`run_bytes` 600 MB) |
 | A 4032 × 3024 photo (EXIF-turned) to 6048 × 8064, Core ML, read to written | 8.7 s, about 850 MB peak (`run_bytes` 700 MB + the picture in and out) |
 
-Not measured: Windows, a long file's memory over time, and the viewer's own gates with Enhance
+Restyle (2026-11-03, the same Mac, the hidden `[.restyle-model]` case on a 512 × 320 picture):
+14–16 s a request on Core ML once the size is compiled. The first run at a new size takes about
+200–230 s (Core ML compilation). About 7 GB a model instance with the fp16 UNet (`run_bytes`
+8 GB). "Black and white" took colourfulness from 83.4 to 1.9. fp16 output looks the same as fp32
+by eye.
+
+Not measured: Windows (Restyle is refused there without a GPU provider), a long file's memory over time, and the viewer's own gates with Enhance
 installed (it loads no runtime until a run, and runs nothing at launch).
 
 ## Not built
+
+- Hosting Restyle's weights and pinning them in `remote.json` (the owner's upload).
+- Restyle on Windows: needs a DirectML or CUDA ONNX Runtime piece; measure before offering it.
 
 - HDR clips: the picture would come back SDR; refused for now.
 - A GPU on Windows: the bundled ONNX Runtime is the CPU build, so a clip's picture there runs on
