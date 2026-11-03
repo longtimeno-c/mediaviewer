@@ -49,7 +49,6 @@
 
 #include <commctrl.h>  // LoadIconWithScaleDown (comctl32 v6 via app.manifest)
 
-#include "abi/addon_media.h"
 #include "abi/guard.h"
 #include "shell/app_icon.h"
 #include "core/boot_timeline.h"
@@ -2144,16 +2143,18 @@ void publish_edit(app_state* app) noexcept {
   } else {
     app->input.edit[0] = mv::shell::view_of(app->edits, app->edit_key, app->edit_generation);
   }
-  // Slice 5: Enhance's copy of the photo being edited carries its edit.
-  try {
-    if (app->edits.has_item() && !app->edit_path.empty() &&
-        !(app->edits.export_geometry().identity() && app->edits.colour().identity())) {
-      mv::addon::media::set_still_edit(app->edit_path, app->edits.export_geometry(), app->edits.colour());
-    } else {
-      mv::addon::media::clear_still_edit();
-    }
-  } catch (...) {
-    mv::addon::media::clear_still_edit();  // out of memory: Enhance gets the plain photo
+  // Slice 5: Enhance's copy of the photo being edited carries its edit. The
+  // add-on media layer is in mediaviewer_core.dll: through its C entry, the
+  // edit as this build lays it out.
+  if (app->edits.has_item() && !app->edit_path.empty() &&
+      !(app->edits.export_geometry().identity() && app->edits.colour().identity())) {
+    struct {
+      mv::edit::geometry g;
+      mv::edit::colour c;
+    } blob{app->edits.export_geometry(), app->edits.colour()};
+    (void)mv_edit_still_set(app->edit_path.c_str(), &blob, static_cast<std::uint32_t>(sizeof blob));
+  } else {
+    (void)mv_edit_still_set(nullptr, nullptr, 0);
   }
   push_edit_view(app);  // the strip's edit count, the Crop pane's draft
 }
