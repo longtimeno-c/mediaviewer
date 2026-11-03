@@ -2150,10 +2150,7 @@ void present_lab_mac::render_thread_main() noexcept {
           vp.crop_w = uc.size[0];
           vp.crop_h = uc.size[1];
           vp.adjust = !video_look_.light.identity();
-          for (int i = 0; i < 4; ++i) {
-            vp.adjust0[i] = video_light_.a0[i];
-            vp.adjust1[i] = video_light_.a1[i];
-          }
+          vp.adjust_u = video_light_;
           id<MTLTexture> luma_tex = (__bridge id<MTLTexture>)video_frame_->luma;
           vp.texture_w = static_cast<float>(luma_tex.width);
           vp.texture_h = static_cast<float>(luma_tex.height);

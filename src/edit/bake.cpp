@@ -71,15 +71,14 @@ px4 bilinear(const image::linear_image& src, double sx, double sy) noexcept {
              lerp(lerp(a.a, b.a, ax), lerp(c.a, d.a, ax), ay)};
 }
 
-void write_pixel(float r, float g, float b, float a, const adjust_uniforms& u,
+// `pos`: the output pixel's place for the vignette (gfx::vignette_map).
+void write_pixel(float r, float g, float b, float a, kernel::float4 pos, const gfx::adjust_args& u,
                  const encode_table& t, std::uint8_t* o) noexcept {
   if (a <= 0.0f) {
     o[0] = o[1] = o[2] = o[3] = 0;
     return;
   }
-  const kernel::float4 a0{u.a0[0], u.a0[1], u.a0[2], u.a0[3]};
-  const kernel::float4 a1{u.a1[0], u.a1[1], u.a1[2], u.a1[3]};
-  const kernel::float3 c = kernel::mv_adjust(kernel::float3{r, g, b}, a0, a1);
+  const kernel::float3 c = gfx::adjust(kernel::float3{r, g, b}, pos, u);
   o[0] = encode(c.x, t);
   o[1] = encode(c.y, t);
   o[2] = encode(c.z, t);
@@ -90,7 +89,8 @@ void write_pixel(float r, float g, float b, float a, const adjust_uniforms& u,
 
 void bake_pixel(const float rgb_linear[3], const adjust_uniforms& u, std::uint8_t out[3]) noexcept {
   std::uint8_t o[4];
-  write_pixel(rgb_linear[0], rgb_linear[1], rgb_linear[2], 1.0f, u, table(), o);
+  write_pixel(rgb_linear[0], rgb_linear[1], rgb_linear[2], 1.0f, kernel::float4{}, gfx::adjust_args(u),
+              table(), o);
   out[0] = o[0];
   out[1] = o[1];
   out[2] = o[2];
@@ -119,6 +119,13 @@ result<codec::raster> bake(const image::linear_image& src, const placement& p,
     return err(status::out_of_memory);
   }
   const encode_table& t = table();
+  const gfx::vignette_map vmap(static_cast<float>(out.width), static_cast<float>(out.height));
+  const gfx::adjust_args args(u);
+  // Only the vignette reads a pixel's place: without one, it is not worked out.
+  const bool placed = args.v[5].x != 0.0f;
+  auto pos = [&vmap, placed](std::uint32_t x, std::uint32_t y) {
+    return placed ? vmap.at(x, y) : kernel::float4{};
+  };
 
   if (p.exact_copy) {
     // Rotate / flip / unscaled crop: each output pixel is one source texel,
@@ -139,7 +146,8 @@ result<codec::raster> bake(const image::linear_image& src, const placement& p,
         const std::uint32_t sy = tr ? px : py;
         const std::uint16_t* s = src.rgba.data() + (static_cast<std::size_t>(sy) * src.width + sx) * 4;
         write_pixel(image::half_to_float(s[0]), image::half_to_float(s[1]),
-                    image::half_to_float(s[2]), image::half_to_float(s[3]), u, t,
+                    image::half_to_float(s[2]), image::half_to_float(s[3]),
+                    pos(x, y), args, t,
                     row + static_cast<std::size_t>(x) * 4);
       }
     }
@@ -173,7 +181,8 @@ result<codec::raster> bake(const image::linear_image& src, const placement& p,
       }
       const float a = acc.a * inv_n;
       const float k = a > 0.0f ? inv_n / a : 0.0f;
-      write_pixel(acc.r * k, acc.g * k, acc.b * k, a, u, t, row + static_cast<std::size_t>(x) * 4);
+      write_pixel(acc.r * k, acc.g * k, acc.b * k, a, pos(x, y), args, t,
+                  row + static_cast<std::size_t>(x) * 4);
     }
   }
   return out;

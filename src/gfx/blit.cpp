@@ -31,12 +31,11 @@ struct alignas(16) blit_cb {
   float inv0[4];
   float inv1[4];
   float source_size[4];
-  float adj0[4];
-  float adj1[4];
+  float adj[kAdjustVectors][4];  // adj0 .. adj5
   float theme_background[4];
 };
 
-static_assert(sizeof(blit_cb) == 192, "keep in sync with cbuffer Camera");
+static_assert(sizeof(blit_cb) == 256, "keep in sync with cbuffer Camera");
 
 // One tile's per-instance record (vs_tile's TILE0 / TILE1).
 struct tile_instance {
@@ -201,11 +200,10 @@ void blitter::bind_camera(ID3D11DeviceContext* ctx, const blit_params& p, float 
   }
   cb.source_size[0] = p.source_w > 0.0f ? p.source_w : p.image_w;
   cb.source_size[1] = p.source_h > 0.0f ? p.source_h : p.image_h;
-  for (int i = 0; i < 4; ++i) {
-    cb.adj0[i] = p.adjust0[i];
-    cb.adj1[i] = p.adjust1[i];
+  for (int v = 0; v < kAdjustVectors; ++v) {
+    for (int i = 0; i < 4; ++i) cb.adj[v][i] = p.adjust_u.a[v][i];
   }
-  cb.adj1[3] = p.adjust ? 1.0f : 0.0f;
+  cb.adj[1][3] = p.adjust ? 1.0f : 0.0f;
   (void)upload_cb(ctx, cb_.Get(), &cb, sizeof(cb));
 
   ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);

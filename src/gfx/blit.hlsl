@@ -27,10 +27,14 @@ cbuffer Camera : register(b0) {
   float4 inv0;
   float4 inv1;
   float4 source_size;  // xy
-  // PR 11 colour adjust (edit::adjust_uniforms a0 / a1). adj1.w > 0.5 runs
+  // PR 11 colour adjust (edit::adjust_uniforms a0 .. a5). adj1.w > 0.5 runs
   // mv_adjust on every sample; the kernel itself never reads adj1.w.
   float4 adj0;
   float4 adj1;
+  float4 adj2;
+  float4 adj3;
+  float4 adj4;
+  float4 adj5;
   float4 theme_background;  // the theme's canvas, linear RGB
 };
 
@@ -141,7 +145,11 @@ float2 image_px_at(float2 screen) {
 
 float4 finish(float4 c, float2 screen, float2 image_px) {
   // PR 11: the edit's colour, in linear light, before anything is composited.
-  if (adj1.w > 0.5) c.rgb = mv_adjust(c.rgb, adj0, adj1);
+  // The vignette's place: offset from the output's centre, corner at 1.
+  if (adj1.w > 0.5) {
+    float4 pos = float4((image_px - image_size * 0.5) * (2.0 / length(image_size)), 0.0, 0.0);
+    c.rgb = mv_adjust(c.rgb, pos, adj0, adj1, adj2, adj3, adj4, adj5);
+  }
   float3 bg = background_at(screen);
   float3 rgb = lerp(bg, c.rgb, saturate(c.a));
 

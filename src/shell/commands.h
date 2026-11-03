@@ -374,6 +374,23 @@ enum class command_id : std::uint16_t {
   // the photo on screen with its edits baked, or the marks as a contact sheet.
   // Appended.
   print,
+  // docs/plans/edit-adjust.md slice 1: the full Adjust list. Island-only,
+  // appended. The sliders carry their value, in edit::adjust_param order from
+  // highlights; adjust_auto and adjust_reset_section carry an
+  // edit::adjust_section.
+  adjust_highlights,
+  adjust_shadows,
+  adjust_whites,
+  adjust_blacks,
+  adjust_vibrance,
+  adjust_mono,
+  adjust_mono_filter,
+  adjust_mono_tone,
+  adjust_vignette,
+  adjust_vignette_radius,
+  adjust_vignette_softness,
+  adjust_auto,           // a section's Auto (edit/auto_adjust.h), one undo step
+  adjust_reset_section,  // a section's sliders back to 0, one undo step
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

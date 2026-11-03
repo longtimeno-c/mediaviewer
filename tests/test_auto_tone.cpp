@@ -6,9 +6,11 @@
 // Synthetic histograms are neutral (R = G = B = luma) unless a case says
 // otherwise; "where a code lands" runs a neutral grey through the real kernel
 // (gfx/adjust_kernel.h) and the sRGB encode, as the canvas does.
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -16,6 +18,7 @@
 #include <vector>
 
 #include "edit/adjust.h"
+#include "edit/auto_adjust.h"
 #include "edit/auto_tone.h"
 #include "edit/clip_auto_light.h"
 #include "edit/edit_stack.h"
@@ -59,12 +62,9 @@ edit::histogram band(int lo, int hi, std::uint32_t n = 1000) {
 // Where a displayed grey at `code` (with exposure and contrast at 0) lands
 // under `c`, as an sRGB code.
 double lands(double code, const edit::colour& c) {
-  const edit::adjust_uniforms u = edit::uniforms_of(c);
   namespace k = mv::gfx::kernel;
   const float v = static_cast<float>(srgb_to_linear(code / 255.0));
-  const k::float3 out =
-      k::mv_adjust(k::float3{v, v, v}, k::float4{u.a0[0], u.a0[1], u.a0[2], u.a0[3]},
-                   k::float4{u.a1[0], u.a1[1], u.a1[2], u.a1[3]});
+  const k::float3 out = mv::gfx::adjust(k::float3{v, v, v}, k::float4{}, edit::uniforms_of(c));
   return linear_to_srgb(out.y) * 255.0;
 }
 
@@ -94,6 +94,24 @@ image::linear_image scene(int lo, int hi, std::uint32_t w = 256, std::uint32_t h
       p[0] = image::float_to_half(static_cast<float>(v * 0.92));
       p[1] = image::float_to_half(static_cast<float>(v));
       p[2] = image::float_to_half(static_cast<float>(v * 0.85));
+      p[3] = image::float_to_half(1.0f);
+    }
+  }
+  return img;
+}
+
+// A w × h picture whose pixel (x, y) is f(x, y) in linear RGB.
+template <class F>
+image::linear_image picture(std::uint32_t w, std::uint32_t h, F&& f) {
+  image::linear_image img;
+  img.width = w;
+  img.height = h;
+  img.rgba.resize(static_cast<std::size_t>(w) * h * 4);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      const std::array<float, 3> c = f(x, y);
+      std::uint16_t* p = img.rgba.data() + (static_cast<std::size_t>(y) * w + x) * 4;
+      for (int i = 0; i < 3; ++i) p[i] = image::float_to_half(c[static_cast<std::size_t>(i)]);
       p[3] = image::float_to_half(1.0f);
     }
   }
@@ -267,6 +285,16 @@ TEST_CASE("auto tone sets exposure and contrast absolutely and keeps the rest", 
   CHECK(ev(basis) == 0.0f);
   CHECK(con(basis) == 0.0f);
   CHECK(basis.get(adjust_param::saturation) == 20.0f);
+
+  // The rest of the Light section is part of what Auto sets: back to 0.
+  user.v[static_cast<std::size_t>(adjust_param::highlights)] = -40.0f;
+  user.v[static_cast<std::size_t>(adjust_param::blacks)] = 25.0f;
+  user.v[static_cast<std::size_t>(adjust_param::vignette)] = 30.0f;
+  const auto c = edit::auto_tone(h, user);
+  CHECK(c.value.get(adjust_param::highlights) == 0.0f);
+  CHECK(c.value.get(adjust_param::blacks) == 0.0f);
+  CHECK(c.value.get(adjust_param::vignette) == 30.0f);
+  CHECK(ev(c.value) == ev(b.value));
 }
 
 TEST_CASE("auto tone is deterministic", "[auto_tone]") {
@@ -395,6 +423,131 @@ TEST_CASE("adjust pane: an auto-tone result lands only on the colour it was read
   CHECK_FALSE(pane.auto_tone_landed(*t5));
 
   CHECK(pane.auto_tone_landed(0) == false);
+}
+
+// ---- the other sections' Auto (edit/auto_adjust.h) -------------------------------------
+
+TEST_CASE("auto colour: a neutral grey world is left alone, a cast is mostly taken out",
+          "[auto_tone][auto_colour]") {
+  CHECK(edit::grey_world({0.2, 0.2, 0.2}) == std::array<float, 2>{0.0f, 0.0f});
+  CHECK(edit::grey_world({0.0, 0.2, 0.2}) == std::array<float, 2>{0.0f, 0.0f});  // degenerate
+
+  // Lit by a warm light: the sliders go cooler, and the result is neutral to
+  // within the damping (a sunset keeps some warmth).
+  const std::array<double, 3> warm{0.30, 0.20, 0.12};
+  const auto wb = edit::grey_world(warm);
+  CHECK(wb[0] < -edit::kAutoColourMin);
+  const auto full = edit::white_balance_gains(wb[0] / edit::kAutoColourDamping,
+                                              wb[1] / edit::kAutoColourDamping);
+  const double r = full[0] * warm[0] / (full[1] * warm[1]);
+  const double b = full[2] * warm[2] / (full[1] * warm[1]);
+  // The search's 1-unit grid plus the rounding after damping.
+  CHECK(std::abs(std::log(r)) < 0.08);
+  CHECK(std::abs(std::log(b)) < 0.08);
+  // Strength scales the move; confidence fades with the neutrals' colour.
+  CHECK(edit::grey_world(warm, 0.0f) == std::array<float, 2>{0.0f, 0.0f});
+  CHECK(std::abs(edit::grey_world(warm, 0.5f)[0]) < std::abs(wb[0]));
+  CHECK(edit::neutral_confidence(0.05f) == 1.0f);
+  CHECK(edit::neutral_confidence(0.25f) == Catch::Approx(0.5f));
+  CHECK(edit::neutral_confidence(0.6f) == 0.0f);
+  // Never past the cap.
+  const auto extreme = edit::grey_world({0.9, 0.05, 0.01});
+  CHECK(std::abs(extreme[0]) <= edit::kAutoColourMax);
+  CHECK(std::abs(extreme[1]) <= edit::kAutoColourMax);
+}
+
+TEST_CASE("auto colour on the working image: absolute, idempotent, keeps the rest",
+          "[auto_tone][auto_colour]") {
+  // A greenish-blue cast over a grey ramp, a clipped highlight strip on top
+  // that must not vote.
+  const image::linear_image img = picture(128, 64, [](std::uint32_t x, std::uint32_t y) {
+    if (y < 4) return std::array<float, 3>{1.0f, 0.95f, 0.2f};
+    const float v = 0.03f + 0.5f * static_cast<float>(x) / 127.0f;
+    return std::array<float, 3>{v * 0.9f, v * 1.0f, v * 1.12f};
+  });
+  edit::colour user;
+  user.v[static_cast<std::size_t>(adjust_param::saturation)] = 15.0f;
+  user.v[static_cast<std::size_t>(adjust_param::temperature)] = -70.0f;
+  auto first = edit::compute_auto(img, user, edit::adjust_section::colour);
+  REQUIRE(first);
+  CHECK(first->changed);
+  CHECK(first->value.get(adjust_param::temperature) > 0.0f);  // warmer than as shot
+  CHECK(first->value.get(adjust_param::saturation) == 15.0f);
+  auto second = edit::compute_auto(img, first->value, edit::adjust_section::colour);
+  REQUIRE(second);
+  CHECK_FALSE(second->changed);
+
+  // A frame mostly of blue sea under neutral light, with grey stone in it:
+  // the stone sets the light, the sea is not a cast. And a frame of sea
+  // alone, nothing grey in it, is left nearly as it is.
+  const image::linear_image sea = picture(128, 64, [](std::uint32_t x, std::uint32_t y) {
+    if (x < 24) {
+      const float v = 0.05f + 0.3f * static_cast<float>(y) / 63.0f;
+      return std::array<float, 3>{v, v, v};
+    }
+    const float v = 0.04f + 0.1f * static_cast<float>(x % 17) / 16.0f;
+    return std::array<float, 3>{v * 0.3f, v * 0.7f, v * 1.4f};
+  });
+  auto calm = edit::compute_auto(sea, edit::colour{}, edit::adjust_section::colour);
+  REQUIRE(calm);
+  CHECK(std::abs(calm->value.get(adjust_param::temperature)) < 10.0f);
+  CHECK(std::abs(calm->value.get(adjust_param::tint)) < 10.0f);
+  const image::linear_image open_sea = picture(64, 64, [](std::uint32_t x, std::uint32_t) {
+    const float v = 0.04f + 0.1f * static_cast<float>(x % 17) / 16.0f;
+    return std::array<float, 3>{v * 0.3f, v * 0.7f, v * 1.4f};
+  });
+  auto open = edit::compute_auto(open_sea, edit::colour{}, edit::adjust_section::colour);
+  REQUIRE(open);
+  CHECK_FALSE(open->changed);
+}
+
+TEST_CASE("auto black & white: on at full intensity, the filter that spreads the grey",
+          "[auto_tone][auto_mono]") {
+  // Red flowers against green leaves of the same luma: a red filter splits
+  // them, Rec.709 does not.
+  const image::linear_image img = picture(64, 64, [](std::uint32_t x, std::uint32_t) {
+    return x < 32 ? std::array<float, 3>{0.6f, 0.08f, 0.05f}
+                  : std::array<float, 3>{0.05f, 0.21f, 0.05f};
+  });
+  auto r = edit::compute_auto(img, edit::colour{}, edit::adjust_section::mono);
+  REQUIRE(r);
+  CHECK(r->value.get(adjust_param::mono) == 100.0f);
+  CHECK(r->value.get(adjust_param::mono_filter) != 0.0f);
+
+  // A grey picture gains nothing from a filter: the tie goes to 0.
+  const image::linear_image grey = picture(32, 32, [](std::uint32_t x, std::uint32_t) {
+    const float v = 0.02f + 0.02f * static_cast<float>(x);
+    return std::array<float, 3>{v, v, v};
+  });
+  auto g = edit::compute_auto(grey, edit::colour{}, edit::adjust_section::mono);
+  REQUIRE(g);
+  CHECK(g->value.get(adjust_param::mono_filter) == 0.0f);
+
+  // An intensity the user chose is kept.
+  edit::colour half;
+  half.v[static_cast<std::size_t>(adjust_param::mono)] = 40.0f;
+  auto k = edit::compute_auto(img, half, edit::adjust_section::mono);
+  REQUIRE(k);
+  CHECK(k->value.get(adjust_param::mono) == 40.0f);
+
+  // The vignette has no Auto: nothing changes.
+  auto v = edit::compute_auto(img, half, edit::adjust_section::vignette);
+  REQUIRE(v);
+  CHECK_FALSE(v->changed);
+}
+
+TEST_CASE("adjust pane: the view says which section's Auto is running", "[auto_tone][pane]") {
+  mv::shell::adjust_pane pane;
+  (void)pane.show(true, false);
+  const auto build = pane.set_item(31, false);
+  REQUIRE(build.has_value());
+  REQUIRE(pane.working_landed(*build, true, false));
+  CHECK(pane.view(edit::colour{}).auto_section == -1);
+  const auto t = pane.request_auto_tone(edit::adjust_section::mono);
+  REQUIRE(t.has_value());
+  CHECK(pane.view(edit::colour{}).auto_section == static_cast<int>(edit::adjust_section::mono));
+  CHECK(pane.auto_tone_landed(*t));
+  CHECK(pane.view(edit::colour{}).auto_section == -1);
 }
 
 // The Video Editor's Auto light (edit/clip_auto_light.h): auto tone on one video frame.

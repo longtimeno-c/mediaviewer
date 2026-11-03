@@ -8,6 +8,7 @@
 #include <span>
 
 #include "core/result.h"
+#include "gfx/adjust_kernel.h"
 #include "gfx/device.h"
 
 namespace mv::gfx {
@@ -54,10 +55,9 @@ struct blit_params {
   // PR 11 colour adjust, twin of blit_params_mac: gfx/adjust_kernel.h's
   // MV_ADJUST_KERNEL on every sample, tiles included, before the background
   // blend and the clipping blinkies (so `C` blinks what the edit clips).
-  // The uniforms are edit::adjust_uniforms' a0 / a1.
+  // The uniforms are edit::adjust_uniforms' a0 .. a5.
   bool adjust = false;
-  float adjust0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-  float adjust1[4] = {1.0f, 0.18f, 0.0f, 0.0f};
+  adjust_vectors adjust_u;
 };
 
 // One tile of a tiled pyramid (image/tiles.h), as the render thread draws it.

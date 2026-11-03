@@ -1467,7 +1467,7 @@ void present_lab::render_thread_main() noexcept {
       bp.mirror = (g.flip_h ? 1u : 0u) | (g.flip_v ? 2u : 0u);
       bp.crop_x = uc.origin[0]; bp.crop_y = uc.origin[1]; bp.crop_w = uc.size[0]; bp.crop_h = uc.size[1];
       bp.adjust = !video_look_.light.identity();
-      for (int i = 0; i < 4; ++i) { bp.adjust0[i] = video_light_.a0[i]; bp.adjust1[i] = video_light_.a1[i]; }
+      bp.adjust_u = video_light_;
       bp.texture_w = static_cast<float>(desc.Width); bp.texture_h = static_cast<float>(desc.Height);
       video_blitter_.draw(device_.context(), current_video_.luma.Get(), current_video_.chroma.Get(), current_video_.colour, bp);
     }

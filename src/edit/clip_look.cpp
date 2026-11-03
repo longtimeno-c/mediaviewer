@@ -117,13 +117,16 @@ void apply_geometry(const frame_geometry& g, std::span<const std::uint8_t> src, 
 colour_table::colour_table(const colour& c) : identity_(c.identity()) {
   if (identity_) return;
   constexpr double kGamma = 2.4;  // BT.1886, as the canvas decodes SDR video
+  // PR 11's five sliders only (kLookLightParams): their stages are a0
+  // (gains, contrast slope) and a1 (saturation, pivot); the kernel's later
+  // stages stay the identity on a clip.
   const adjust_uniforms u = uniforms_of(c);
-  saturation_ = u.a1[0];
-  const double pivot = u.a1[1];
+  saturation_ = u.a[1][0];
+  const double pivot = u.a[1][1];
   for (int ch = 0; ch < 3; ++ch) {
     for (int code = 0; code < 256; ++code) {
-      const double x = std::pow(code / 255.0, kGamma) * u.a0[ch];
-      const double t = x <= 0.0 ? 0.0 : pivot * std::pow(x / pivot, static_cast<double>(u.a0[3]));
+      const double x = std::pow(code / 255.0, kGamma) * u.a[0][ch];
+      const double t = x <= 0.0 ? 0.0 : pivot * std::pow(x / pivot, static_cast<double>(u.a[0][3]));
       linear_[static_cast<std::size_t>(ch)][static_cast<std::size_t>(code)] = static_cast<float>(t);
     }
   }
