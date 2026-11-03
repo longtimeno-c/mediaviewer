@@ -110,15 +110,19 @@ def main():
                       dynamic_axes={"sample": {0: "b", 2: "h", 3: "w"}, "timestep": {0: "b"}, "hidden": {0: "b"},
                                     "eps": {0: "b", 2: "h", 3: "w"}}, opset_version=17, dynamo=False)
     model = onnx.load(export_path)
+    # onnx appends external data to a file already there: start clean.
+    for f in ("unet.onnx", "unet.onnx.data"):
+        if os.path.exists(os.path.join(a.out, f)):
+            os.remove(os.path.join(a.out, f))
     onnx.save_model(model, os.path.join(a.out, "unet.onnx"), save_as_external_data=True,
                     all_tensors_to_one_file=True, location="unet.onnx.data", size_threshold=1024)
     shutil.rmtree(tmp)
 
-    tok = pipe.tokenizer
-    tok.save_pretrained(os.path.join(a.out, "_tok"))
+    # The tokenizer's files as upstream has them at REVISION (transformers 5
+    # saves only tokenizer.json).
+    from huggingface_hub import hf_hub_download
     for f in ("vocab.json", "merges.txt"):
-        shutil.copy(os.path.join(a.out, "_tok", f), os.path.join(a.out, f))
-    shutil.rmtree(os.path.join(a.out, "_tok"))
+        shutil.copy(hf_hub_download(REPO, "tokenizer/" + f, revision=REVISION, cache_dir=a.cache), os.path.join(a.out, f))
 
     for f in ("text_encoder.onnx", "unet.onnx", "unet.onnx.data", "vae_encoder.onnx", "vae_decoder.onnx",
               "vocab.json", "merges.txt"):
