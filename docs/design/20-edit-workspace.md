@@ -25,7 +25,8 @@ in the core (`edit/`, `shell/edit_session`).
      Windows: `shell/open_with_win.cpp` (Explorer's recommended Open with handlers, on a thread
      of its own), pushed through `chrome_edit_args.open_apps`, run by `chrome_cmd_open_in_app`.
 2. **One pane, tabs, docked.** The workspace is a strip at the top of the right pane column
-   (title, file name and edit count, tabs, Undo / Reset / Show original / Save copy…) over one
+   (title, file name and edit count, tabs, Undo / Reset / Show original / Enhance… (while the
+   Enhance add-on is loaded; its copy carries the edit, [29](29-enhance.md)) / Save copy…) over one
    tab's pane. It docks: the canvas frames the picture in the rect beside it
    (`input_snapshot.chrome_right_px`, the blit's `origin_x`), so the pane never covers the image;
    the strip starts under the path row. Docking is a refit, not a swapchain resize. The Colour,

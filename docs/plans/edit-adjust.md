@@ -123,7 +123,12 @@ Windows native is CI's.
 
 ### 5. Enhance inside Edit
 
-**5a. The Enhance tab and the edit stack.** When the add-on is installed, the workspace offers an
+**5a. The Enhance tab and the edit stack.** — built 2026-11-02, as an **Enhance…** button in the
+Edit strip that opens Enhance's own sheet rather than a tab hosting its view tree (the sheet is
+already the add-on's whole UI; docking view trees as tabs stays in [20](../design/20-edit-workspace.md)
+"Not built"). The edit reaches the add-on without a new host-table row: the host's `full_still`
+answers with the edited picture for the photo being edited ([29](../design/29-enhance.md)).
+Tested end to end in `mv_ai_tests` `[enhance][still]` with a stand-in model. As planned: When the add-on is installed, the workspace offers an
 **Enhance** tab that hosts the add-on's `sheet` view tree in the pane ([20](../design/20-edit-workspace.md)
 "Editor add-on panes docking as extra tabs" is this). The host hands the folded edit stack
 (geometry + colour, POD) to the add-on through a new host-table row, closing the gap in

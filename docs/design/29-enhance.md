@@ -107,8 +107,13 @@ the same tiles as a clip's frame (below), reporting each tile, and the host writ
 export carries it (`edit::export_pixels`: Orientation 1, the written size, no stale thumbnail;
 Exiv2 for HEIC, TIFF, RAW and WebP), under the first free name. Same size, twice or four times, at
 most 100 megapixels (16384 on the long edge); the run gate adds the picture in and out to the
-model's `run_bytes`. **Not yet:** a crop or colour change made on screen is not in the copy — the
-edit stack lives in the host's UI-thread edit session and is not handed to add-ons.
+model's `run_bytes`. **The photo being edited carries its edit** ([plan](../plans/edit-adjust.md)
+slice 5): the UI thread hands the edit of the item on screen to `addon_media::set_still_edit`
+whenever it changes (a copy of a few hundred bytes under a mutex, never held across a decode), and
+`full_still` for that path returns `edit::edited_picture` (detail, geometry, colour, as an export
+bakes them) instead of the plain picture; any other path, or no edit, gets the plain picture. The
+host table and the add-on are unchanged. The Edit strip offers **Enhance…** beside Save copy…
+while Enhance is loaded: it runs Enhance's own `open` row (`find_addon_command`).
 
 **A clip's picture.** The host decodes every frame in display order on a decoder of its own
 (`edit/picture_io.h`'s `frame_reader`), to 8-bit sRGB through the same colour path as frame
@@ -210,8 +215,6 @@ installed (it loads no runtime until a run, and runs nothing at launch).
 
 ## Not built
 
-- A photo's on-screen crop and colour in its enhanced copy (#297 asks for it): needs the host's
-  edit stack handed to the add-on.
 - HDR clips: the picture would come back SDR; refused for now.
 - A GPU on Windows: the bundled ONNX Runtime is the CPU build, so a clip's picture there runs on
   the CPU (about a quarter of Core ML's speed on this Mac's CPU; not measured on Windows).

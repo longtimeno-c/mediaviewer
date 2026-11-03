@@ -674,6 +674,47 @@ TEST_CASE("enhance: a photo at twice the size, upright, with its metadata, besid
   CHECK(c.name == "shot-enhance.png");
 }
 
+// docs/plans/edit-adjust.md slice 5: the photo being edited carries its edit
+// into Enhance's copy; any other photo, or none registered, does not.
+TEST_CASE("enhance: the photo being edited is enhanced with its crop and colour", "[enhance][still]") {
+  scratch_dir s("enhance_edited");
+  const fs::path photo = s / "IMG_0003.JPG";
+  mv::test::write_bytes(photo, sideways_jpeg(64, 48));  // 48 x 64 shown
+  mv::addon::host_table table(still_services());
+  run_port port = run_port_of(table.api(), "");
+  port.load_tiles = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<tile_model>> {
+    return std::unique_ptr<tile_model>(new nearest());
+  };
+  const model_spec spec = still_spec();
+
+  mv::edit::geometry g;
+  g.crop = {0.0f, 0.0f, 1.0f, 0.75f};  // the top 48 x 48
+  mv::edit::colour c;
+  c.v[static_cast<std::size_t>(mv::edit::adjust_param::mono)] = 100.0f;
+  mv::addon::media::set_still_edit(utf8(photo), g, c);
+  outcome a;
+  run_photo(port, utf8(photo), spec, a);
+  INFO(a.message);
+  REQUIRE(a.ok);
+  auto edited = mv::codec::decode(mv::test::read_bytes(s / a.name));
+  REQUIRE(edited);
+  CHECK(edited->width == 96u);
+  CHECK(edited->height == 96u);
+  // Black & white came along: a pixel's channels agree (JPEG rounding aside).
+  const std::uint8_t* px = &edited->rgba[(std::size_t{40} * edited->width + 30) * 4];
+  CHECK(std::abs(int(px[0]) - int(px[2])) <= 6);
+
+  // Another photo is not the one being edited: its own pixels.
+  mv::addon::media::set_still_edit(utf8(s / "other.jpg"), g, c);
+  outcome b;
+  run_photo(port, utf8(photo), spec, b);
+  REQUIRE(b.ok);
+  auto plain = mv::codec::decode(mv::test::read_bytes(s / b.name));
+  REQUIRE(plain);
+  CHECK(plain->height == 128u);
+  mv::addon::media::clear_still_edit();
+}
+
 // A 12-megapixel photo with the real model, to twice the size, timed.
 TEST_CASE("enhance: Real-ESRGAN on a 12 MP photo", "[.enhance-model]") {
   const char* esr = std::getenv("MV_ENHANCE_ESRGAN");

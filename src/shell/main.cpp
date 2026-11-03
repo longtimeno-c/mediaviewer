@@ -2170,6 +2170,19 @@ void publish_edit(app_state* app) noexcept {
   } else {
     app->input.edit[0] = mv::shell::view_of(app->edits, app->edit_key, app->edit_generation);
   }
+  // Slice 5: Enhance's copy of the photo being edited carries its edit. The
+  // add-on media layer is in mediaviewer_core.dll: through its C entry, the
+  // edit as this build lays it out.
+  if (app->edits.has_item() && !app->edit_path.empty() &&
+      !(app->edits.export_geometry().identity() && app->edits.colour().identity())) {
+    struct {
+      mv::edit::geometry g;
+      mv::edit::colour c;
+    } blob{app->edits.export_geometry(), app->edits.colour()};
+    (void)mv_edit_still_set(app->edit_path.c_str(), &blob, static_cast<std::uint32_t>(sizeof blob));
+  } else {
+    (void)mv_edit_still_set(nullptr, nullptr, 0);
+  }
   push_edit_view(app);  // the strip's edit count, the Crop pane's draft
 }
 
@@ -3644,6 +3657,7 @@ void push_edit_view(app_state* app) noexcept {
     a.trim_label_len = static_cast<std::int32_t>(label.size());
     // A document: the bar's "Open in <app>" rows, one name a line, default first.
     std::string apps;
+    a.enhance = mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none ? 1 : 0;
     if (mv::io::is_document_name(app->edit_path)) {
       a.document = 1;
       refresh_open_with(app);
@@ -3797,6 +3811,14 @@ void run_edit_action(app_state* app, int action) {
       if (app->edits.crop_active()) (void)run_edit_command(app, mv::shell::command_id::crop_commit);
       (void)run_edit_command(app, mv::shell::command_id::export_image);
       return;
+    case mv::shell::chrome_edit_action::enhance: {
+      // Slice 5: Enhance's own "open" row; its copy carries the edit
+      // (addon_media's still edit, set by publish_edit).
+      if (app->edits.crop_active()) (void)run_edit_command(app, mv::shell::command_id::crop_commit);
+      const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
+      if (id != mv::shell::command_id::none) (void)run_command(app, id);
+      return;
+    }
   }
 }
 

@@ -562,6 +562,10 @@ void set_addon_commands(std::span<const addon_command_row> rows);
 [[nodiscard]] std::string addon_command_notes_json();
 // The row behind addon_cmd_n, or null when that slot is empty.
 [[nodiscard]] const addon_command_row* addon_command(command_id id) noexcept;
+// The slot `addon`'s command `id` is in now, or command_id::none (the add-on
+// is not loaded). docs/plans/edit-adjust.md slice 5: the Edit strip's
+// Enhance… runs Enhance's own "open" row.
+[[nodiscard]] command_id find_addon_command(std::string_view addon, std::string_view id) noexcept;
 // "Ctrl+Shift+I" / "Cmd+Shift+F7" (Cmd and Option are the Mac spellings of
 // Ctrl and Alt) to a key and modifiers; false for anything else. The inverse
 // of key_label for the keys it names.

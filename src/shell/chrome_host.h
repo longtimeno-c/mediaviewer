@@ -234,6 +234,7 @@ enum class chrome_edit_action : std::int32_t {
   original_off = 1,  // the strip's Original toggle
   original_on = 2,
   save_copy = 3,     // applies a crop draft, then the PR 10 export dialog
+  enhance = 4,       // slice 5: Enhance's sheet for the photo, with the edit in its copy
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
@@ -613,9 +614,12 @@ struct chrome_edit_args {
   std::uint64_t open_apps_utf8;
   std::int32_t open_apps_len;
   std::int32_t document;
+  // edit-adjust slice 5: the Enhance add-on is loaded; the strip offers Enhance….
+  std::int32_t enhance;
+  std::int32_t reserved;
 };
 
-static_assert(sizeof(chrome_edit_args) == 88, "keep in sync with IslandHost.Edit EditArgsSize");
+static_assert(sizeof(chrome_edit_args) == 96, "keep in sync with IslandHost.Edit EditArgsSize");
 
 // PR 30 (docs/design/21): the Video Editor window. Its timeline is an island on the
 // editor's own top-level window; the card that says where the picture went is

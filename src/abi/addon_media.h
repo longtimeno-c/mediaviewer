@@ -20,6 +20,7 @@
 
 #include "addon/media.h"
 #include "core/result.h"
+#include "edit/edit_stack.h"
 
 namespace mv::addon {
 
@@ -71,6 +72,13 @@ namespace media {
 // carried (edit::export_pixels; Exiv2 for HEIC, TIFF, RAW, WebP), named
 // "<stem>-<suffix>.jpg" (".png" for a PNG) under the first free name.
 [[nodiscard]] result<rgb_image> full_still(const std::string& path);
+// docs/plans/edit-adjust.md slice 5: the edit of the photo being edited on
+// screen, which full_still then applies (Enhance's copy carries the crop,
+// colour and detail). The UI thread sets it as the edit changes; clear() when
+// nothing is being edited. A mutex guards a copy of a few hundred bytes; it is
+// never held across the decode.
+void set_still_edit(const std::string& path, const edit::geometry& g, const edit::colour& c);
+void clear_still_edit();
 [[nodiscard]] result<std::string> write_still(const std::string& source, const rgb_image& pixels,
                                               const std::string& suffix);
 // #354: a document's text in reading order with the page each paragraph
