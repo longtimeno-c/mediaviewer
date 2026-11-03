@@ -22,6 +22,7 @@
 #pragma once
 
 #include <functional>
+#include <string>
 
 #include <mediaviewer/mediaviewer_addon.h>
 #include <mediaviewer/mediaviewer_ai.h>
@@ -51,5 +52,17 @@ void wait_index_locations_idle() noexcept;
 // The AI pack's mv.ai.1 table as a source: its each_location row. Empty when
 // the table is NULL or predates the row (an older pack).
 [[nodiscard]] index_location_source ai_index_locations(const mv_ai_api* api);
+
+// docs/plans/edit-adjust.md slice 6: the pack's eyes_json row, published and
+// retracted with the locations source (the same lifetime: retract stops new
+// calls, wait_index_locations_idle waits out a call in flight). A host's
+// Open closed eyes reads it on a worker.
+using eyes_source = std::function<result<std::string>(const std::string& path, const std::string& candidates)>;
+void publish_ai_eyes(eyes_source source);
+// The pack's answer for `path` and the candidate frames (one path a line).
+// status::not_found when no pack is loaded or it predates the row.
+[[nodiscard]] result<std::string> ai_eyes_json(const std::string& path, const std::string& candidates);
+// The table's eyes_json row as a source; empty for an older pack.
+[[nodiscard]] eyes_source ai_eyes(const mv_ai_api* api);
 
 }  // namespace mv::addon

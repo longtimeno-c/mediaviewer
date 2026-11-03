@@ -19,6 +19,7 @@
 #include <mediaviewer/mediaviewer_addon.h>
 
 #include "addon/media.h"
+#include "core/job_system.h"
 #include "core/result.h"
 #include "edit/edit_stack.h"
 
@@ -79,6 +80,28 @@ namespace media {
 // never held across the decode.
 void set_still_edit(const std::string& path, const edit::geometry& g, const edit::colour& c);
 void clear_still_edit();
+// docs/plans/edit-adjust.md slice 6: eyes open from the same moment.
+// The frames of the same moment as `path`: the other files of its folder
+// modified within kBurstSeconds of it, nearest first, at most kBurstFrames.
+inline constexpr double kBurstSeconds = 10.0;
+inline constexpr std::size_t kBurstFrames = 12;
+[[nodiscard]] std::vector<std::string> burst_neighbours(const std::string& path);
+// What Open closed eyes did.
+struct eyes_outcome {
+  int faces = 0;        // faces the pack found in the photo
+  int fixed = 0;        // of them, given a donor's eyes
+  std::string written;  // the new file's path, empty when nothing was fixed
+};
+// For each face of the pack's eyes_json answer (mv_ai_api) whose eyes are
+// less open than a donor's by kEyesBetter, the most open donor's eyes
+// (edit/eyes.h), at full resolution; then a new photo beside the original,
+// "<stem>-eyes.jpg", its metadata carried as write_still does. The original
+// is never written. Worker only.
+// The pane's note for an outcome, or for the pack's refusal (`pack` the
+// status of ai_eyes_json: not_found no pack, invalid_arg People off).
+[[nodiscard]] std::string eyes_note(status pack, const result<eyes_outcome>& r);
+[[nodiscard]] result<eyes_outcome> open_closed_eyes(const std::string& path, std::string_view pack_json,
+                                                    const job_context* ctx = nullptr);
 [[nodiscard]] result<std::string> write_still(const std::string& source, const rgb_image& pixels,
                                               const std::string& suffix);
 // #354: a document's text in reading order with the page each paragraph

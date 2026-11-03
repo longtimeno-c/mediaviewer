@@ -71,7 +71,10 @@ final class AdjustStore: ObservableObject {
     AdjustSection(name: "Red-Eye", icon: "eye.slash", params: [], hasAuto: false),
     // Slice 4: a pass over the working image; the canvas follows when it settles.
     AdjustSection(name: "Detail", icon: "triangle", params: [52, 53, 54, 55], hasAuto: false),
+    // Slice 6: a button, no slider.
+    AdjustSection(name: "Faces", icon: "face.smiling", params: [], hasAuto: false),
   ]
+  static let facesSection = 9
   static let selectiveSection = 6
   static let redEyeSection = 7
   static let bandNames = ["Red", "Orange", "Yellow", "Green", "Aqua", "Blue", "Purple", "Magenta"]
@@ -165,6 +168,7 @@ final class AdjustStore: ObservableObject {
   func reset() { mv_chrome_adjust_reset() }
   /// Slice 5b: a typed request; the host moves the sliders it names.
   func prompt(_ text: String) { if ready { mv_chrome_adjust_prompt(text) } }
+  func openEyes() { if ready { mv_chrome_adjust_open_eyes() } }
   /// Slice 3: what the next click on the photo does (see `picking`).
   func pick(_ mode: Int32, size: Double = 0) { if ready { mv_chrome_adjust_pick(mode, Float(size)) } }
   func auto(_ section: Int) { if ready { mv_chrome_adjust_auto(Int32(section)) } }

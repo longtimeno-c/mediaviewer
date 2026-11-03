@@ -131,6 +131,7 @@ public static partial class IslandHost
         new("Selective Colour", "\uE790", Enumerable.Range(28, 24).ToArray(), false),  // Color
         new("Red-Eye", "\uE7B3", Array.Empty<int>(), false),               // RedEye
         new("Detail", "\uE9F5", new[] { 52, 53, 54, 55 }, false),          // Processing
+        new("Faces", "\uE77B", Array.Empty<int>(), false),                 // Contact
     };
 
     // Last view native pushed.
@@ -143,7 +144,8 @@ public static partial class IslandHost
     private static int _autoSection = -1;
     private static readonly ushort[] _histBins = new ushort[4 * HistogramBins];
     // Which sections are open; kept while the pane is rebuilt.
-    private static readonly bool[] _sectionOpen = { true, true, false, false, false, false, false, false, false };
+    private static readonly bool[] _sectionOpen = { true, true, false, false, false, false, false, false, false, false };
+    private const int FacesSection = 9;
     // Slice 3: the band Selective Colour shows, the pick mode and fixes from
     // native, the red-eye tool's size, and their controls.
     private static int _band;
@@ -483,6 +485,16 @@ public static partial class IslandHost
             bodyStack.Children.Add(size);
             _redEyeCount = Text("", Body, UiFontSize - 2);
             bodyStack.Children.Add(_redEyeCount);
+        }
+        if (s == FacesSection)
+        {
+            // Slice 6: real pixels from a frame of the same moment, a new file.
+            Button eyes = EditButton("Open closed eyes", () => Send(Command.AdjustOpenEyes),
+                                     tip: "Eyes shut? Use the same person's open eyes from a photo taken moments before or after. Saves a new file.");
+            eyes.TabIndex = tab++;
+            bodyStack.Children.Add(eyes);
+            bodyStack.Children.Add(Text("Uses People in Local search to find the same person in the photos taken within 10 seconds.",
+                                        Body, UiFontSize - 3));
         }
         if (s == CurvesSection)
         {
