@@ -47,6 +47,7 @@ const char* model_noun(model_kind k) {
     case model_kind::still: return "photo model";
     case model_kind::video: return "video model";
     case model_kind::audio: return "audio model";
+    case model_kind::restyle: return "restyle model";
   }
   return "model";
 }
@@ -162,7 +163,13 @@ void engine::post_settings_locked() {
 
 std::vector<model_kind> engine::kinds_for_locked() const {
   switch (item_) {
-    case item_kind::still: return {model_kind::still};
+    case item_kind::still:
+      // Offered only once its weights are pinned (a model.json alone is not a
+      // model anyone can download).
+      return specs_[static_cast<int>(model_kind::restyle)] && files_[static_cast<int>(model_kind::restyle)].usable() &&
+                     prefs_.photo == photo_target::restyle
+                 ? std::vector{model_kind::restyle}
+                 : std::vector{model_kind::still};
     case item_kind::audio: return facts_.sound ? std::vector{model_kind::audio} : std::vector<model_kind>{};
     case item_kind::media:
       if (facts_.picture && facts_.sound) {
@@ -186,6 +193,9 @@ sheet_view engine::sheet_locked() const {
   v.has_picture = facts_.picture;
   v.has_sound = facts_.sound;
   v.target = prefs_.target;
+  v.offers_restyle = specs_[static_cast<int>(model_kind::restyle)].has_value() &&
+                     files_[static_cast<int>(model_kind::restyle)].usable();
+  v.photo = v.offers_restyle ? prefs_.photo : photo_target::detail;
   if (v.item == item_kind::media && !(facts_.picture && facts_.sound)) {
     v.target = facts_.picture ? clip_target::picture : clip_target::sound;
   }
@@ -460,6 +470,15 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
   if (!v) return;
   std::lock_guard lock(m_);
   if (running_) return;
+  if (node == "photo") {
+    if (v->k != json::kind::string) return;
+    for (const photo_target t : {photo_target::detail, photo_target::restyle}) {
+      if (v->s == photo_target_name(t)) prefs_.photo = t;
+    }
+    save_locked();
+    post_sheet_locked();
+    return;
+  }
   if (node == "target") {
     if (v->k != json::kind::string) return;
     for (const clip_target t : {clip_target::picture, clip_target::sound, clip_target::both}) {

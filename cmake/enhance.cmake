@@ -36,6 +36,8 @@ else()
 endif()
 
 add_library(mv_enhance_engine STATIC
+  ${_E}/diffusion.cpp
+  ${_E}/diffusion.h
   ${_E}/downloads.cpp
   ${_E}/downloads.h
   ${_E}/engine.cpp

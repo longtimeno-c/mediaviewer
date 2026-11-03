@@ -25,15 +25,21 @@
 namespace mv::enhance {
 
 // What a model enhances. A clip's picture is `video`, its sound `audio`.
-enum class model_kind : std::uint8_t { still = 0, video = 1, audio = 2 };
-inline constexpr std::array<model_kind, 3> kModelKinds{model_kind::still, model_kind::video, model_kind::audio};
+// `restyle` (docs/plans/edit-adjust.md slice 5b) changes a photo as a typed
+// request asks; a photo offers it beside `still`.
+enum class model_kind : std::uint8_t { still = 0, video = 1, audio = 2, restyle = 3 };
+inline constexpr std::array<model_kind, 4> kModelKinds{model_kind::still, model_kind::video, model_kind::audio,
+                                                       model_kind::restyle};
+inline constexpr std::size_t kKindCount = kModelKinds.size();
 
-[[nodiscard]] const char* kind_name(model_kind k) noexcept;  // "still" | "video" | "audio"
+[[nodiscard]] const char* kind_name(model_kind k) noexcept;  // "still" | "video" | "audio" | "restyle"
 [[nodiscard]] std::optional<model_kind> kind_from(std::string_view name) noexcept;
 
 // One weights file is at most this (#297, owner 2026-10-10): a pin over it is
 // refused before anything is requested. Not a budget shared across kinds.
 inline constexpr std::uint64_t kMaxWeightsBytes = 5'000'000'000ull;
+
+inline constexpr std::size_t kMaxKnobText = 200;
 
 struct knob_option {
   std::string id;
@@ -41,7 +47,8 @@ struct knob_option {
 };
 
 struct knob {
-  enum class type : std::uint8_t { slider, choice, toggle };
+  // text (Restyle's request): a line of words, at most kMaxKnobText bytes.
+  enum class type : std::uint8_t { slider, choice, toggle, text };
   std::string id;     // [a-z0-9_]{1,32}, unique in its model
   std::string label;  // "Noise reduction"
   std::string help;   // may be empty
@@ -53,6 +60,9 @@ struct knob {
   std::string def_choice;
   // toggle
   bool def_on = false;
+  // text
+  std::string def_text;
+  std::string placeholder;
   // Which kinds of target it shows for ("still", "video", "audio"). The
   // model's own kind when the file names none.
   std::vector<model_kind> kinds;

@@ -55,6 +55,10 @@ struct sheet_view {
   bool has_picture = false;  // media: what the clip holds
   bool has_sound = false;
   clip_target target = clip_target::picture;
+  // A photo with Restyle shipped: the choice between more detail and a
+  // typed restyle (slice 5b).
+  bool offers_restyle = false;
+  photo_target photo = photo_target::detail;
   std::vector<sheet_section> sections;
   std::string note;          // why Enhance cannot run on this item, or ""
   bool can_run = false;

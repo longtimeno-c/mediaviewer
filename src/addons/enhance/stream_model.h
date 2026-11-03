@@ -64,9 +64,10 @@ class runtime_holder {
   // once into `cache_dir`), else the CPU with all but one core.
   [[nodiscard]] result<std::unique_ptr<tile_model>> open_tiles(const model_spec& spec, const std::string& models_dir,
                                                                const std::string& cache_dir);
+  // The runtime itself, loaded once (Restyle opens its own sessions on it).
+  [[nodiscard]] result<infer::runtime*> runtime();
 
  private:
-  [[nodiscard]] result<infer::runtime*> runtime();
   struct impl;
   std::unique_ptr<impl> p_;
 };

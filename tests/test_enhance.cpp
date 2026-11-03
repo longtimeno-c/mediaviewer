@@ -14,6 +14,7 @@
 // sound or both; values persist per kind; a kind with no installed model is
 // named, not offered.
 #include "catch_compat.h"
+#include <catch2/catch_approx.hpp>
 
 #include <atomic>
 #include <cmath>
@@ -30,6 +31,7 @@
 #include <mediaviewer/mediaviewer_addon.h>
 
 #include "addons/ai/sha256.h"
+#include "addons/enhance/diffusion.h"
 #include "addons/enhance/engine.h"
 #include "addons/enhance/picture_job.h"
 #include "addons/enhance/preview.h"
@@ -40,6 +42,7 @@
 #include "addons/enhance/sniff.h"
 #include "addons/enhance/spec.h"
 #include "core/json.h"
+#include "infer/ort.h"
 #include "import_fixture.h"
 
 using namespace mv::enhance;
@@ -47,6 +50,7 @@ using mv::test::scratch_dir;
 using mv::test::utf8;
 using mv::test::write_bytes;
 using mv::test::write_text;
+using Catch::Approx;
 
 namespace {
 
@@ -1210,4 +1214,246 @@ TEST_CASE("enhance: a clip's run shows a glowing preview, held still once it end
   // Another item: no preview from a run that was not its own.
   f.eng->sheet_opened(2, utf8(f.dir / "other.mov"), 430, 2);
   CHECK_FALSE(parsed(f.host.tree(kSheetScreen)).has("preview"));
+}
+
+// ---- Restyle (docs/plans/edit-adjust.md slice 5b) ----------------------------------
+
+TEST_CASE("restyle: the Euler-ancestral schedule matches the reference pipeline's", "[enhance][restyle]") {
+  // diffusers 0.42 EulerAncestralDiscreteScheduler, InstructPix2Pix's config, 20 steps.
+  const euler_schedule s = make_euler_schedule(20);
+  REQUIRE(s.timesteps.size() == 20);
+  REQUIRE(s.sigmas.size() == 21);
+  CHECK(s.init == Approx(14.6146f).epsilon(1e-4));
+  CHECK(s.timesteps[0] == 999.0f);
+  CHECK(s.timesteps[1] == Approx(946.421f).epsilon(1e-5));
+  CHECK(s.timesteps[3] == Approx(841.263f).epsilon(1e-5));
+  CHECK(s.timesteps[19] == 0.0f);
+  CHECK(s.sigmas[1] == Approx(10.7469f).epsilon(1e-4));
+  CHECK(s.sigmas[3] == Approx(6.205f).epsilon(1e-3));
+  CHECK(s.sigmas[17] == Approx(0.35555f).epsilon(1e-3));
+  CHECK(s.sigmas[19] == Approx(0.02917f).epsilon(2e-3));
+  CHECK(s.sigmas[20] == 0.0f);
+  CHECK(make_euler_schedule(0).sigmas.empty());
+}
+
+TEST_CASE("restyle: sizes on eights, and a change carried back keeps the photo's detail", "[enhance][restyle]") {
+  std::uint32_t w = 0, h = 0;
+  restyle_size(4032, 3024, 512, w, h);
+  CHECK(w == 512);
+  CHECK(h == 384);
+  restyle_size(1000, 333, 512, w, h);
+  CHECK(w % 64 == 0);
+  CHECK(h % 64 == 0);
+  restyle_size(1600, 900, 512, w, h);
+  CHECK(w == 512);
+  CHECK(h == 320);  // 288 would not halve three times in the latent
+  // A full photo with fine detail (a checker), its small copy, and an "edit"
+  // that warmed the small copy: the result is warmer, and the checker is
+  // still there at full size.
+  rgb8 full;
+  full.width = 256;
+  full.height = 128;
+  full.rgb.resize(256 * 128 * 3);
+  for (std::uint32_t y = 0; y < 128; ++y) {
+    for (std::uint32_t x = 0; x < 256; ++x) {
+      const std::uint8_t v = ((x / 2 + y / 2) % 2) ? 160 : 100;
+      std::uint8_t* p = &full.rgb[(std::size_t{y} * 256 + x) * 3];
+      p[0] = p[1] = p[2] = v;
+    }
+  }
+  const rgb8 before = resize_rgb(full, 64, 32);
+  rgb8 after = before;
+  for (std::size_t i = 0; i < after.rgb.size(); i += 3) {
+    after.rgb[i] = static_cast<std::uint8_t>(std::min(255, after.rgb[i] + 40));
+    after.rgb[i + 2] = static_cast<std::uint8_t>(std::max(0, after.rgb[i + 2] - 40));
+  }
+  const rgb8 out = carry_back(full, before, after, 1.0f);
+  REQUIRE(out.width == 256);
+  const std::uint8_t* a = &out.rgb[(std::size_t{64} * 256 + 100) * 3];
+  const std::uint8_t* b = &out.rgb[(std::size_t{64} * 256 + 102) * 3];
+  CHECK(a[0] > a[2]);                    // warmer
+  CHECK(std::abs(int(a[1]) - int(b[1])) > 30);  // the checker survived
+  // Strength 0 is the photo itself.
+  CHECK(carry_back(full, before, after, 0.0f).rgb == full.rgb);
+}
+
+// Hidden: the exported model end to end (MV_RESTYLE_DIR: the ONNX files,
+// MV_ENHANCE_RUNTIME_DIR: libonnxruntime, MV_RESTYLE_PHOTO: a JPEG or PNG
+// decoded by the test's caller into MV_RESTYLE_RGB, a raw 8-bit RGB file of
+// MV_RESTYLE_W x MV_RESTYLE_H).
+TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {
+  const char* dir = std::getenv("MV_RESTYLE_DIR");
+  const char* ort = std::getenv("MV_ENHANCE_RUNTIME_DIR");
+  const char* raw = std::getenv("MV_RESTYLE_RGB");
+  const char* ws = std::getenv("MV_RESTYLE_W");
+  const char* hs = std::getenv("MV_RESTYLE_H");
+  if (!dir || !ort || !raw || !ws || !hs) SKIP("MV_RESTYLE_DIR / MV_ENHANCE_RUNTIME_DIR / MV_RESTYLE_RGB not set");
+  rgb8 full;
+  full.width = static_cast<std::uint32_t>(std::atoi(ws));
+  full.height = static_cast<std::uint32_t>(std::atoi(hs));
+  full.rgb = mv::test::read_bytes(raw);
+  REQUIRE(full.rgb.size() == std::size_t{full.width} * full.height * 3);
+  auto rt = mv::infer::runtime::load(ort);
+  REQUIRE(rt);
+  scratch_dir cache("restyle_cache");
+  auto t0 = std::chrono::steady_clock::now();
+  auto model = restyle_model::open(**rt, dir, utf8(cache.root()));
+  REQUIRE(model);
+  std::uint32_t w = 0, h = 0;
+  restyle_size(full.width, full.height, kRestyleEdge, w, h);
+  const rgb8 small = resize_rgb(full, w, h);
+  for (const char* prompt : {"make it black and white", "make it a snowy winter day"}) {
+    restyle_params p;
+    p.prompt = prompt;
+    t0 = std::chrono::steady_clock::now();
+    int last = -1;
+    auto out = (*model)->run(small, p, [&](int i, int) { last = i; return true; });
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    INFO("status " << mv::status_name(out ? mv::status::ok : out.error()) << ": " << mv::infer::session::last_error());
+    REQUIRE(out);
+    CHECK(last == 20);
+    double sat = 0, sat0 = 0;
+    for (std::size_t i = 0; i < out->rgb.size(); i += 3) {
+      auto spread = [](const std::uint8_t* q) { return std::max({q[0], q[1], q[2]}) - std::min({q[0], q[1], q[2]}); };
+      sat += spread(&out->rgb[i]);
+      sat0 += spread(&small.rgb[i]);
+    }
+    std::printf("restyle: \"%s\" at %ux%u in %.1f s on %s, colourfulness %.1f -> %.1f\n", prompt, w, h, s,
+                (*model)->on_gpu() ? "Core ML" : "CPU", sat0 / (out->rgb.size() / 3), sat / (out->rgb.size() / 3));
+    if (std::string(prompt).find("black") != std::string::npos) CHECK(sat < sat0 * 0.5);
+    const rgb8 back = carry_back(full, small, *out, 1.0f);
+    if (const char* keep = std::getenv("MV_RESTYLE_OUT")) {
+      const std::string base = std::string(keep) + "/" + (prompt[7] == 'i' ? "bw" : "snow");
+      std::vector<std::uint8_t> a(out->rgb), b(back.rgb);
+      write_bytes(base + "_small.rgb", a);
+      write_bytes(base + "_full.rgb", b);
+    }
+  }
+
+  // The same through the job runner, as the sheet's Run starts it.
+  run_port port;
+  port.open_still = [&](const std::string&) -> mv::result<run_port::still> {
+    run_port::still s;
+    s.width = full.width;
+    s.height = full.height;
+    s.rgb = full.rgb;
+    return s;
+  };
+  run_port::still written;
+  port.write_still = [&](const std::string&, const run_port::still& s) -> mv::result<std::string> {
+    written = s;
+    return std::string("/tmp/photo-enhance.jpg");
+  };
+  port.load_restyle = [&](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<restyle_model>> {
+    return restyle_model::open(**rt, dir, utf8(cache.root()));
+  };
+  job_runner jr(port);
+  model_spec spec;
+  spec.kind = model_kind::restyle;
+  job_request req;
+  req.path = "photo.jpg";
+  req.item = item_kind::still;
+  job_request::part part;
+  part.kind = model_kind::restyle;
+  part.spec = &spec;
+  part.values["prompt"] = *mv::json::parse("\"make it black and white\"");
+  req.parts.push_back(part);
+  std::atomic<bool> done{false};
+  bool ok = false;
+  std::string name, message;
+  double last_progress = -2;
+  job_events ev;
+  ev.progress = [&](double f) { last_progress = f; };
+  ev.done = [&](bool k, const std::string& n, const std::string& m) {
+    ok = k;
+    name = n;
+    message = m;
+    done = true;
+  };
+  jr.start(req, ev);
+  for (int i = 0; i < 6000 && !done; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  INFO(message);
+  REQUIRE(done);
+  CHECK(ok);
+  CHECK(name == "photo-enhance.jpg");
+  CHECK(written.width == full.width);
+  CHECK(last_progress > 0.5);
+}
+
+TEST_CASE("restyle: offered on a photo once pinned, with a text knob, and an empty request refused",
+          "[enhance][restyle]") {
+  fixture f;
+  const fs::path photo = f.dir / "IMG_0002.JPG";
+  write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  write_text(f.self / "models/restyle/model.json", R"json({
+    "kind": "restyle", "name": "Restyle", "weights": ["r.onnx"], "run_bytes": 1000, "cpu": false,
+    "knobs": [{"id": "prompt", "label": "Change", "type": "text", "default": "", "placeholder": "make it winter"},
+              {"id": "keep", "label": "Keep the photo", "type": "slider", "min": 1, "max": 2.5, "default": 1.5}],
+    "io": {"runner": "diffusion", "edge": 512, "steps": 20}})json");
+  f.restart();
+  // Its model.json alone is not a model anyone can download: not offered.
+  f.eng->sheet_opened(3, utf8(photo));
+  CHECK_FALSE(parsed(f.host.tree(kSheetScreen)).has("photo"));
+
+  {
+    const auto text = mv::test::read_bytes(f.self / "manifest.json");
+    std::string m(text.begin(), text.end());
+    const std::string pin = R"json({"url": "https://huggingface.co/mv-test/upscale/resolve/0123abcd/up.onnx",
+      "path": "restyle/r.onnx", "size": )json" + std::to_string(f.video_weights.size()) + R"json(, "sha256": ")json" +
+                            hex_of(f.video_weights) + R"json(", "licence": "CreativeML OpenRAIL-M"},)json";
+    m.insert(m.find("[") + 1, pin);
+    write_text(f.self / "manifest.json", m);
+  }
+  f.restart();
+  f.eng->sheet_opened(4, utf8(photo));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    REQUIRE(t.has("photo"));
+    CHECK(t.node("photo")->find("options")->a.size() == 2);
+    CHECK_FALSE(t.has("k.restyle.prompt"));  // more detail by default
+  }
+  f.eng->event(kSheetScreen, "photo", MV_SLOT_EVENT_CHANGE, "\"restyle\"");
+  CHECK(parsed(f.host.tree(kSheetScreen)).text("missing.restyle").find("not installed") != std::string::npos);
+  f.eng->event(kSettingsScreen, "install.restyle", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::restyle).state == dl_state::ready; }));
+  f.eng->sheet_opened(5, utf8(photo));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    REQUIRE(t.has("k.restyle.prompt"));
+    CHECK(*t.node("k.restyle.prompt")->str("type") == "text_field");
+    CHECK(*t.node("k.restyle.prompt")->str("placeholder") == "make it winter");
+    CHECK(t.has("k.restyle.keep"));
+  }
+  // The words are remembered; a request too long is refused.
+  f.eng->event(kSheetScreen, "k.restyle.prompt", MV_SLOT_EVENT_CHANGE, "\"make it a snowy winter day\"");
+  CHECK(f.eng->current_prefs().of(model_kind::restyle).at("prompt").s == "make it a snowy winter day");
+  f.eng->event(kSheetScreen, "k.restyle.prompt", MV_SLOT_EVENT_CHANGE, "\"" + std::string(300, 'x') + "\"");
+  CHECK(f.eng->current_prefs().of(model_kind::restyle).at("prompt").s == "make it a snowy winter day");
+  CHECK(f.eng->current_prefs().photo == photo_target::restyle);
+
+  // The runner: Restyle runs on a still once it can load the model, and
+  // an empty request is refused before anything starts.
+  run_port port;
+  port.open_still = [](const std::string&) -> mv::result<run_port::still> { return mv::err(mv::status::io); };
+  port.write_still = [](const std::string&, const run_port::still&) -> mv::result<std::string> { return std::string(); };
+  CHECK_FALSE(job_runner(port).supports(model_kind::restyle, item_kind::still));
+  port.load_restyle = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<restyle_model>> {
+    return mv::err(mv::status::unsupported_format);
+  };
+  job_runner jr(port);
+  CHECK(jr.supports(model_kind::restyle, item_kind::still));
+  CHECK_FALSE(jr.supports(model_kind::restyle, item_kind::media));
+  const model_spec* spec = f.eng->spec(model_kind::restyle);
+  REQUIRE(spec);
+  job_request req;
+  req.path = utf8(photo);
+  req.item = item_kind::still;
+  job_request::part part;
+  part.kind = model_kind::restyle;
+  part.spec = spec;
+  part.values["prompt"] = *mv::json::parse("\"   \"");
+  req.parts.push_back(part);
+  CHECK(jr.check(req).find("Type what to change") != std::string::npos);
+  req.parts[0].values["prompt"] = *mv::json::parse("\"make it winter\"");
+  CHECK(jr.check(req).empty());
 }
