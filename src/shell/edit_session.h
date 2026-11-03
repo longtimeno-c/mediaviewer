@@ -132,6 +132,8 @@ class edit_session {
   // #289: every colour parameter at once (auto tone, edit/auto_tone.h), each
   // clamped: one op, so one Ctrl+Z undoes it. `none` when nothing changes.
   [[nodiscard]] edit_effect set_colour(const edit::colour& c);
+  // Slice 2: one channel's curve (sanitised). A drag of a point is one op.
+  [[nodiscard]] edit_effect set_curve(edit::curve_channel ch, const edit::curve& k);
 
   // PR 12. A metadata write (rating, comment, orientation tag) landed on
   // `path`: the bytes changed (size, mtime), the pixels did not. Moves the

@@ -61,6 +61,7 @@ enum class op_kind : std::uint8_t {
                // `param` == adjust_param::count resets every colour parameter
   adjust_all,  // #289: set every colour parameter to `values` at once, so a
                // change of several (auto tone, edit/auto_tone.h) is one undo step
+  curve,       // slice 2: set curve `channel` to `values.curves[channel]`
 };
 
 // One parameter block. POD, so a stack copies, compares and serialises as
@@ -72,7 +73,8 @@ struct op {
   resize_spec resize{};
   adjust_param param = adjust_param::exposure;
   float value = 0.0f;
-  colour values{};  // adjust_all
+  colour values{};  // adjust_all; curve (its channel's entry)
+  curve_channel channel = curve_channel::master;  // curve
 };
 
 inline constexpr float kMaxStraighten = 45.0f;

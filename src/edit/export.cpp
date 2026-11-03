@@ -118,7 +118,7 @@ result<export_result> export_image(std::span<const std::uint8_t> source, const g
     MV_TRY(image::linear_image working, image::decode_linear(source, ctx));
     if (ctx && ctx->cancelled()) return err(status::cancelled);
     const placement p = place(g, size2{working.width, working.height});
-    MV_TRY(codec::raster out, bake(working, p, uniforms_of(c), ctx));
+    MV_TRY(codec::raster out, bake(working, p, c, ctx));
     working = image::linear_image{};  // release the full frame before encoding
     metadata_blobs meta = source_metadata(source, opt.policy, carried);
     patch_for_output(meta, out.width, out.height, true);

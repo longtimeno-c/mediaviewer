@@ -28,7 +28,8 @@
 //   a1.x    saturation: 1 = unchanged, 0 = Rec.709 luma
 //   a1.y    contrast pivot, 18 % grey
 //   a1.z    > 0.5 runs the tone stage (a2); a1.w is the blits' on switch
-//   a2..a5  tone, vibrance, black & white, vignette (adjust_kernel_tokens.h)
+//   a2..a5  tone, vibrance, black & white, vignette, table on (adjust_kernel_tokens.h)
+//   lut     the levels and curves table (adjust_table), read when a5.w > 0.5
 //   pos     the pixel's offset from the output's centre, corner at distance 1
 //           (vignette_map); only the vignette reads it
 // Identity uniforms leave every non-negative input unchanged (to within the
@@ -83,7 +84,11 @@ inline float sqrt(float a) { return std::sqrt(a); }
 #else
 #define MV_ADJUST_INLINE inline __attribute__((always_inline))
 #endif
+#define MV_ADJUST_LUT_PARAM const float4* lut,
 MV_ADJUST_INLINE MV_ADJUST_KERNEL
+// Undefined again before the text is made, so the shaders' copy keeps the
+// name and each shader defines it its own way.
+#undef MV_ADJUST_LUT_PARAM
 
 #define MV_ADJUST_STRINGIFY_(...) #__VA_ARGS__
 #define MV_ADJUST_STRINGIFY(...) MV_ADJUST_STRINGIFY_(__VA_ARGS__)
@@ -101,6 +106,24 @@ inline constexpr int kAdjustVectors = 6;
 inline constexpr float kVignetteInner = 0.35f;  // falloff starts here (radius 0)
 inline constexpr float kVignetteWidth = 0.6f;   // and is this wide (softness 0)
 
+// The levels and curves table (slice 2): row i is the output for
+// p = i / 127, red, green and blue in x, y, z (w unused). The identity is
+// the diagonal. Both blits bind it apart from the uniforms and upload it only
+// when it changes.
+inline constexpr int kAdjustTableRows = 128;
+
+struct adjust_table {
+  float r[kAdjustTableRows][4];
+  adjust_table() noexcept {
+    for (int i = 0; i < kAdjustTableRows; ++i) {
+      const float p = static_cast<float>(i) / static_cast<float>(kAdjustTableRows - 1);
+      r[i][0] = r[i][1] = r[i][2] = p;
+      r[i][3] = 0.0f;
+    }
+  }
+  friend constexpr bool operator==(const adjust_table&, const adjust_table&) = default;
+};
+
 struct adjust_vectors {
   float a[kAdjustVectors][4] = {
       {1.0f, 1.0f, 1.0f, 1.0f},                  // gains; contrast slope
@@ -108,7 +131,7 @@ struct adjust_vectors {
       {0.0f, 0.0f, 0.0f, 0.0f},                  // highlights, shadows, whites, blacks
       {0.0f, 0.0f, 1.0f, 0.0f},                  // vibrance; mono mix; mono slope
       {0.2126f, 0.7152f, 0.0722f, 0.0f},         // mono weights
-      {0.0f, kVignetteInner, kVignetteInner + kVignetteWidth, 0.0f},  // vignette stops, from, to
+      {0.0f, kVignetteInner, kVignetteInner + kVignetteWidth, 0.0f},  // vignette stops, from, to; table on
   };
   friend constexpr bool operator==(const adjust_vectors&, const adjust_vectors&) = default;
 };
@@ -127,21 +150,29 @@ struct vignette_map {
 // The uniforms as the kernel's own vectors, built once per image: a loop
 // that writes bytes cannot keep reloading them from `adjust_vectors` (a
 // byte store may alias it), so the CPU users hold one of these in a local.
+// The table rides along (by pointer, it is 2 KB); null is the identity.
 struct adjust_args {
   kernel::float4 v[kAdjustVectors];
-  explicit adjust_args(const adjust_vectors& u) noexcept {
+  kernel::float4 lut[kAdjustTableRows];
+  explicit adjust_args(const adjust_vectors& u, const adjust_table* t = nullptr) noexcept {
     for (int i = 0; i < kAdjustVectors; ++i) v[i] = {u.a[i][0], u.a[i][1], u.a[i][2], u.a[i][3]};
+    const adjust_table id;
+    const adjust_table& src = t != nullptr ? *t : id;
+    for (int i = 0; i < kAdjustTableRows; ++i) {
+      lut[i] = {src.r[i][0], src.r[i][1], src.r[i][2], src.r[i][3]};
+    }
   }
 };
 
 // The kernel on the CPU (the export bake, the histogram, tests).
 [[nodiscard]] inline kernel::float3 adjust(kernel::float3 c, kernel::float4 pos,
                                            const adjust_args& a) noexcept {
-  return kernel::mv_adjust(c, pos, a.v[0], a.v[1], a.v[2], a.v[3], a.v[4], a.v[5]);
+  return kernel::mv_adjust(a.lut, c, pos, a.v[0], a.v[1], a.v[2], a.v[3], a.v[4], a.v[5]);
 }
 [[nodiscard]] inline kernel::float3 adjust(kernel::float3 c, kernel::float4 pos,
-                                           const adjust_vectors& u) noexcept {
-  return adjust(c, pos, adjust_args(u));
+                                           const adjust_vectors& u,
+                                           const adjust_table* t = nullptr) noexcept {
+  return adjust(c, pos, adjust_args(u, t));
 }
 
 }  // namespace mv::gfx

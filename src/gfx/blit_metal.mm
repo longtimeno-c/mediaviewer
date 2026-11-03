@@ -50,6 +50,9 @@ struct Camera {
   float4 adj5;
   float4 theme_background;  // the theme's canvas, linear RGB
 };
+
+// Slice 2: the levels and curves table is buffer(1) (gfx::adjust_table).
+#define MV_ADJUST_LUT_PARAM constant float4* lut,
 )";
 
 constexpr const char kMsl[] = R"(
@@ -109,12 +112,13 @@ static float2 image_px_at(constant Camera& cam, float2 screen) {
   return cam.pan + (screen - (cam.origin + cam.window_size * 0.5)) / cam.zoom;
 }
 
-static float4 finish(constant Camera& cam, float4 c, float2 screen, float2 image_px) {
+static float4 finish(constant Camera& cam, constant float4* lut, float4 c, float2 screen,
+                     float2 image_px) {
   // PR 11: the edit's colour, in linear light, before anything is composited.
   // The vignette's place: offset from the output's centre, corner at 1.
   if (cam.adj1.w > 0.5) {
     float4 pos = float4((image_px - cam.image_size * 0.5) * (2.0 / length(cam.image_size)), 0.0, 0.0);
-    c.rgb = mv_adjust(c.rgb, pos, cam.adj0, cam.adj1, cam.adj2, cam.adj3, cam.adj4, cam.adj5);
+    c.rgb = mv_adjust(lut, c.rgb, pos, cam.adj0, cam.adj1, cam.adj2, cam.adj3, cam.adj4, cam.adj5);
   }
   float3 bg = background_at(cam, screen);
   float3 rgb = mix(bg, c.rgb, saturate(c.a));
@@ -135,6 +139,7 @@ static float4 finish(constant Camera& cam, float4 c, float2 screen, float2 image
 
 fragment float4 ps_main(VSOut vin [[stage_in]],
                         constant Camera& cam [[buffer(0)]],
+                        constant float4* lut [[buffer(1)]],
                         texture2d<float> img [[texture(0)]],
                         sampler samp_aniso [[sampler(0)]],
                         sampler samp_point [[sampler(1)]]) {
@@ -148,7 +153,7 @@ fragment float4 ps_main(VSOut vin [[stage_in]],
   if (cam.map0.w > 0.5 && (any(src < 0.0) || any(src > 1.0))) {
     return float4(background_at(cam, vin.pos.xy), cam.opacity);
   }
-  return finish(cam, sample_filtered(cam, img, samp_aniso, samp_point, src, cam.texture_size),
+  return finish(cam, lut, sample_filtered(cam, img, samp_aniso, samp_point, src, cam.texture_size),
                vin.pos.xy, image_px);
 }
 )";
@@ -301,6 +306,13 @@ void blitter_mac::draw(void* encoder_ptr, void* texture_ptr, const blit_params_m
 
   [encoder setRenderPipelineState:pso];
   [encoder setFragmentBytes:&cb length:sizeof(cb) atIndex:0];
+  // Slice 2: the table, copied with the draw only while levels or a curve is
+  // set; otherwise one row stands in (the kernel does not read it).
+  if (p.adjust && p.adjust_u.a[5][3] > 0.5f) {
+    [encoder setFragmentBytes:&p.adjust_t length:sizeof(adjust_table) atIndex:1];
+  } else {
+    [encoder setFragmentBytes:&p.adjust_t length:16 atIndex:1];
+  }
   [encoder setFragmentTexture:texture atIndex:0];
   [encoder setFragmentSamplerState:(__bridge id<MTLSamplerState>)sampler_aniso_ atIndex:0];
   [encoder setFragmentSamplerState:(__bridge id<MTLSamplerState>)sampler_point_ atIndex:1];

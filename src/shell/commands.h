@@ -391,6 +391,20 @@ enum class command_id : std::uint16_t {
   adjust_vignette_softness,
   adjust_auto,           // a section's Auto (edit/auto_adjust.h), one undo step
   adjust_reset_section,  // a section's sliders back to 0, one undo step
+  // Slice 2: Levels, island-only sliders in edit::adjust_param order from
+  // levels_black. (A curve travels as parked text, chrome_cmd_adjust_curve.)
+  adjust_levels_black,
+  adjust_levels_mid,
+  adjust_levels_white,
+  adjust_levels_red_black,
+  adjust_levels_red_mid,
+  adjust_levels_red_white,
+  adjust_levels_green_black,
+  adjust_levels_green_mid,
+  adjust_levels_green_white,
+  adjust_levels_blue_black,
+  adjust_levels_blue_mid,
+  adjust_levels_blue_white,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

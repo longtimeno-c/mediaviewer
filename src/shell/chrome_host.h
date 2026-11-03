@@ -191,6 +191,10 @@ enum chrome_command : int {
   // drain while it is attached), so the page count of what is on screen is
   // known: native shows or updates the page sidebar.
   chrome_cmd_image_opened = 1083,
+  // docs/plans/edit-adjust.md slice 2: a curve from the adjust pane. Native
+  // pulls "channel\tx,y;x,y;..." (0 image, 1 red, 2 green, 3 blue; x and y
+  // 0..1, at most 8 points) with take_parked_text. 1090 up for edit-adjust.
+  chrome_cmd_adjust_curve = 1090,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -230,6 +234,7 @@ enum class chrome_edit_action : std::int32_t {
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
+static_assert(chrome_cmd_adjust_curve >= kCommandCount);
 
 // Which flyout ShowPopup opens (0 closes whatever is up). The C# side mirrors it.
 enum class chrome_popup : std::int32_t {

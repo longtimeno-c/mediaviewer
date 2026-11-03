@@ -37,10 +37,14 @@ namespace MediaViewer.Chrome;
 /// </remarks>
 public static partial class IslandHost
 {
-    // shell/adjust_pane.h adjust_view: 2 ints, 16 floats, 2 floats, 2 ints,
-    // then 4 x 64 uint16.
-    internal const int AdjustParamCount = 16;
-    internal const int AdjustViewSize = 24 + 4 * AdjustParamCount + 2 * 4 * HistogramBins;
+    // shell/adjust_pane.h adjust_view: 2 ints, 28 floats, 2 floats, 2 ints,
+    // 4 ints (curve_n), 2 x 4 x 8 floats (curve x, y), then 4 x 64 uint16.
+    internal const int AdjustParamCount = 28;
+    internal const int CurvePoints = 8;
+    internal const int AdjustViewSize = 24 + 4 * AdjustParamCount + 16 + 2 * 4 * 4 * CurvePoints + 2 * 4 * HistogramBins;
+    private const int LevelsSection = 4;
+    private const int CurvesSection = 5;
+    private static readonly string[] ChannelNames = { "Image", "Red", "Green", "Blue" };
     internal const int HistogramBins = 64;
     private const int MonoParam = 10;
 
@@ -71,6 +75,19 @@ public static partial class IslandHost
         new("Strength", Command.AdjustVignette, -100, 100, 5, Signed),
         new("Radius", Command.AdjustVignetteRadius, -100, 100, 5, Signed),
         new("Softness", Command.AdjustVignetteSoftness, -100, 100, 5, Signed),
+        // Slice 2: Levels for the image, red, green and blue.
+        new("Black", Command.AdjustLevelsBlack + 0, 0, 100, 1, v => $"{v:0}"),
+        new("Mid-tones", Command.AdjustLevelsBlack + 1, -100, 100, 2, Signed),
+        new("White", Command.AdjustLevelsBlack + 2, -100, 0, 1, v => $"{v:0}"),
+        new("Black", Command.AdjustLevelsBlack + 3, 0, 100, 1, v => $"{v:0}"),
+        new("Mid-tones", Command.AdjustLevelsBlack + 4, -100, 100, 2, Signed),
+        new("White", Command.AdjustLevelsBlack + 5, -100, 0, 1, v => $"{v:0}"),
+        new("Black", Command.AdjustLevelsBlack + 6, 0, 100, 1, v => $"{v:0}"),
+        new("Mid-tones", Command.AdjustLevelsBlack + 7, -100, 100, 2, Signed),
+        new("White", Command.AdjustLevelsBlack + 8, -100, 0, 1, v => $"{v:0}"),
+        new("Black", Command.AdjustLevelsBlack + 9, 0, 100, 1, v => $"{v:0}"),
+        new("Mid-tones", Command.AdjustLevelsBlack + 10, -100, 100, 2, Signed),
+        new("White", Command.AdjustLevelsBlack + 11, -100, 0, 1, v => $"{v:0}"),
     };
 
     // edit::adjust_section order: name, Segoe Fluent glyph, parameters as shown, Auto.
@@ -82,6 +99,8 @@ public static partial class IslandHost
         new("Colour", "\uE790", new[] { 2, 9, 3, 4 }, true),                // Color
         new("Black & White", "\uE793", new[] { 10, 11, 12 }, true),         // Contrast
         new("Vignette", "\uEA3A", new[] { 13, 14, 15 }, false),             // CircleRing
+        new("Levels", "\uE9D2", new[] { 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27 }, true),  // AreaChart
+        new("Curves", "\uE9D9", Array.Empty<int>(), false),                // Diagnostic
     };
 
     // Last view native pushed.
@@ -94,7 +113,16 @@ public static partial class IslandHost
     private static int _autoSection = -1;
     private static readonly ushort[] _histBins = new ushort[4 * HistogramBins];
     // Which sections are open; kept while the pane is rebuilt.
-    private static readonly bool[] _sectionOpen = { true, true, false, false };
+    private static readonly bool[] _sectionOpen = { true, true, false, false, false, false };
+    // Slice 2: the curves from native (image, red, green, blue) and the channel
+    // each picker shows.
+    private static readonly List<Point>[] _curves = { new(), new(), new(), new() };
+    private static int _levelsChannel;
+    private static int _curvesChannel;
+    private static Canvas? _curveCanvas;
+    private static int _curveDrag = -1;
+    private static Button[]? _levelsPicks;
+    private static Button[]? _curvesPicks;
 
     private static Slider[]? _adjustSliders;  // by parameter
     private static TextBlock[]? _adjustReadouts;
@@ -128,6 +156,9 @@ public static partial class IslandHost
         _sectionResets = null;
         _sectionAutos = null;
         _monoSwitch = null;
+        _curveCanvas = null;
+        _levelsPicks = null;
+        _curvesPicks = null;
     }
 
     public static int ShowAdjustPane(IntPtr arg, int sizeBytes) => ShowPanel(
@@ -160,8 +191,21 @@ public static partial class IslandHost
             _clipLow = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, at + 4));
             _histValid = Marshal.ReadInt32(arg, at + 8) != 0;
             _autoSection = Marshal.ReadInt32(arg, at + 12);
+            int curves = at + 16;
+            for (int ch = 0; ch < 4; ch++)
+            {
+                int n = Math.Clamp(Marshal.ReadInt32(arg, curves + 4 * ch), 0, CurvePoints);
+                _curves[ch].Clear();
+                for (int i = 0; i < n; i++)
+                {
+                    float x = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, curves + 16 + 4 * (ch * CurvePoints + i)));
+                    float y = BitConverter.Int32BitsToSingle(
+                        Marshal.ReadInt32(arg, curves + 16 + 4 * 4 * CurvePoints + 4 * (ch * CurvePoints + i)));
+                    _curves[ch].Add(new Point(x, y));
+                }
+            }
             var raw = new short[_histBins.Length];
-            Marshal.Copy(arg + at + 16, raw, 0, raw.Length);
+            Marshal.Copy(arg + curves + 16 + 2 * 4 * 4 * CurvePoints, raw, 0, raw.Length);
             for (int i = 0; i < raw.Length; i++) _histBins[i] = unchecked((ushort)raw[i]);
             if (_adjustPaneVisible) RenderAdjust();
             return 0;
@@ -312,6 +356,32 @@ public static partial class IslandHost
             Padding = Pad(14, 0, 0, 0),
             Visibility = _sectionOpen[s] ? Visibility.Visible : Visibility.Collapsed,
         };
+        if (s == LevelsSection || s == CurvesSection)
+        {
+            var picks = new Button[4];
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
+            for (int ch = 0; ch < 4; ch++)
+            {
+                int channel = ch;
+                picks[ch] = EditButton(ChannelNames[ch], () => PickChannel(index, channel));
+                picks[ch].TabIndex = tab++;
+                row.Children.Add(picks[ch]);
+            }
+            if (s == LevelsSection) _levelsPicks = picks; else _curvesPicks = picks;
+            bodyStack.Children.Add(row);
+        }
+        if (s == CurvesSection)
+        {
+            _curveCanvas = new Canvas { Height = 220, Background = Brush(ChromeColour.Surface) };
+            AutomationProperties_SetName(_curveCanvas, "Curve");
+            _curveCanvas.PointerPressed += OnCurvePressed;
+            _curveCanvas.PointerMoved += OnCurveMoved;
+            _curveCanvas.PointerReleased += (_, _) => _curveDrag = -1;
+            _curveCanvas.SizeChanged += (_, _) => RenderCurve();
+            bodyStack.Children.Add(new Border { CornerRadius = Corner(RadiusButton), Child = _curveCanvas });
+            bodyStack.Children.Add(Text("Drag the line to add a point · drag a point off the square to remove it",
+                                        Body, UiFontSize - 3));
+        }
         foreach (int p in section.Params) bodyStack.Children.Add(BuildAdjustRow(p, tab++));
         _sectionBodies![s] = bodyStack;
         outer.Children.Add(bodyStack);
@@ -380,6 +450,158 @@ public static partial class IslandHost
         if (_sectionChevrons is not null) _sectionChevrons[s].Glyph = _sectionOpen[s] ? "\uE70D" : "\uE76C";
     }
 
+    private static void PickChannel(int section, int channel)
+    {
+        if (section == LevelsSection) _levelsChannel = channel; else _curvesChannel = channel;
+        RenderAdjust();
+    }
+
+    // Levels shows the picked channel's three sliders only.
+    private static bool RowShown(int param) =>
+        param < 16 || (param - 16) / 3 == _levelsChannel;
+
+    private static List<Point> CurvePointsOf(int ch) =>
+        _curves[ch].Count >= 2 ? new List<Point>(_curves[ch]) : new List<Point> { new(0, 0), new(1, 1) };
+
+    // edit::evaluate: a monotone cubic (Fritsch–Carlson), flat past the ends.
+    private static double EvaluateCurve(List<Point> pts, double p)
+    {
+        int n = pts.Count;
+        if (n < 2) return p;
+        if (p <= pts[0].X) return pts[0].Y;
+        if (p >= pts[n - 1].X) return pts[n - 1].Y;
+        var d = new double[n - 1];
+        for (int i = 0; i < n - 1; i++) d[i] = (pts[i + 1].Y - pts[i].Y) / (pts[i + 1].X - pts[i].X);
+        var m = new double[n];
+        m[0] = d[0];
+        m[n - 1] = d[n - 2];
+        for (int i = 1; i < n - 1; i++) m[i] = d[i - 1] * d[i] <= 0 ? 0 : (d[i - 1] + d[i]) / 2;
+        for (int i = 0; i < n - 1; i++)
+        {
+            if (d[i] == 0) { m[i] = 0; m[i + 1] = 0; continue; }
+            double a = m[i] / d[i], b = m[i + 1] / d[i], h2 = a * a + b * b;
+            if (h2 > 9) { double t0 = 3 / Math.Sqrt(h2); m[i] = t0 * a * d[i]; m[i + 1] = t0 * b * d[i]; }
+        }
+        int k = 0;
+        while (k + 2 < n && p > pts[k + 1].X) k++;
+        double h = pts[k + 1].X - pts[k].X, t = (p - pts[k].X) / h, tt = t * t, ttt = tt * t;
+        return (2 * ttt - 3 * tt + 1) * pts[k].Y + (ttt - 2 * tt + t) * h * m[k]
+               + (-2 * ttt + 3 * tt) * pts[k + 1].Y + (ttt - tt) * h * m[k + 1];
+    }
+
+    private static Point CurveUnit(Point screen)
+    {
+        double w = _curveCanvas!.ActualWidth, h = _curveCanvas.ActualHeight;
+        return new Point(screen.X / Math.Max(w, 1), 1 - screen.Y / Math.Max(h, 1));
+    }
+
+    private static void OnCurvePressed(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        if (_curveCanvas is null || _adjustReadiness != 2) return;
+        Point u = CurveUnit(e.GetCurrentPoint(_curveCanvas).Position);
+        List<Point> pts = CurvePointsOf(_curvesChannel);
+        int near = -1;
+        double best = 0.06;
+        for (int i = 0; i < pts.Count; i++)
+        {
+            double dist = Math.Sqrt((pts[i].X - u.X) * (pts[i].X - u.X) + (pts[i].Y - u.Y) * (pts[i].Y - u.Y));
+            if (dist < best) { best = dist; near = i; }
+        }
+        if (near < 0)
+        {
+            if (pts.Count >= CurvePoints || u.X <= 0.02 || u.X >= 0.98) return;
+            var added = new Point(u.X, EvaluateCurve(pts, u.X));
+            pts.Add(added);
+            pts.Sort((a, b) => a.X.CompareTo(b.X));
+            near = pts.IndexOf(added);
+            SendCurve(pts);
+        }
+        _curveDrag = near;
+        _curveCanvas.CapturePointer(e.Pointer);
+    }
+
+    private static void OnCurveMoved(object sender, Microsoft.UI.Xaml.Input.PointerRoutedEventArgs e)
+    {
+        if (_curveCanvas is null || _curveDrag < 0) return;
+        Point u = CurveUnit(e.GetCurrentPoint(_curveCanvas).Position);
+        List<Point> pts = CurvePointsOf(_curvesChannel);
+        int d = _curveDrag;
+        if (d >= pts.Count) return;
+        bool end = d == 0 || d == pts.Count - 1;
+        if (!end && (u.Y < -0.08 || u.Y > 1.08 || u.X < -0.08 || u.X > 1.08))
+        {
+            pts.RemoveAt(d);
+            _curveDrag = -1;
+            SendCurve(pts);
+            return;
+        }
+        double lo = d > 0 ? pts[d - 1].X + 1.0 / 64 : 0;
+        double hi = d < pts.Count - 1 ? pts[d + 1].X - 1.0 / 64 : 1;
+        double x = end ? pts[d].X : Math.Clamp(u.X, lo, hi);
+        pts[d] = new Point(x, Math.Clamp(u.Y, 0, 1));
+        SendCurve(pts);
+    }
+
+    // Parked "channel\tx,y;x,y" (chrome_cmd_adjust_curve); shown at once, as a
+    // slider is, without waiting for native's echo.
+    private static void SendCurve(List<Point> pts)
+    {
+        _curves[_curvesChannel].Clear();
+        _curves[_curvesChannel].AddRange(pts);
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        _treePending = _curvesChannel.ToString(inv) + "\t" +
+                       string.Join(";", pts.Select(p => p.X.ToString("0.#####", inv) + "," + p.Y.ToString("0.#####", inv)));
+        Send(Command.AdjustCurve);
+        RenderCurve();
+    }
+
+    private static void RenderCurve()
+    {
+        if (_curveCanvas is null) return;
+        _curveCanvas.Children.Clear();
+        double w = _curveCanvas.ActualWidth > 1 ? _curveCanvas.ActualWidth : 260;
+        double h = _curveCanvas.ActualHeight > 1 ? _curveCanvas.ActualHeight : 220;
+        Color[] tints =
+        {
+            ColorHelper.FromArgb(255, 210, 212, 218),
+            ColorHelper.FromArgb(255, 235, 80, 80),
+            ColorHelper.FromArgb(255, 90, 210, 110),
+            ColorHelper.FromArgb(255, 90, 140, 240),
+        };
+        if (_histValid)
+        {
+            int c = _curvesChannel == 0 ? 3 : _curvesChannel - 1;
+            var hp = new PointCollection { new Point(0, h) };
+            for (int i = 0; i < HistogramBins; i++)
+            {
+                hp.Add(new Point(w * (i + 0.5) / HistogramBins,
+                                 h - h * Math.Min(_histBins[c * HistogramBins + i], (ushort)1000) / 1000.0));
+            }
+            hp.Add(new Point(w, h));
+            _curveCanvas.Children.Add(new Polygon { Points = hp, Fill = Brush(Body), Opacity = 0.2 });
+        }
+        for (int k = 1; k < 4; k++)
+        {
+            _curveCanvas.Children.Add(new Line { X1 = w * k / 4, X2 = w * k / 4, Y1 = 0, Y2 = h, Stroke = Brush(Body), Opacity = 0.2 });
+            _curveCanvas.Children.Add(new Line { X1 = 0, X2 = w, Y1 = h * k / 4, Y2 = h * k / 4, Stroke = Brush(Body), Opacity = 0.2 });
+        }
+        List<Point> pts = CurvePointsOf(_curvesChannel);
+        var line = new PointCollection();
+        for (int s = 0; s <= 96; s++)
+        {
+            double x = s / 96.0;
+            line.Add(new Point(x * w, (1 - EvaluateCurve(pts, x)) * h));
+        }
+        _curveCanvas.Children.Add(new Polyline { Points = line, Stroke = Brush(tints[_curvesChannel]), StrokeThickness = 1.5 });
+        foreach (Point p in pts)
+        {
+            var dot = new Ellipse { Width = 8, Height = 8, Fill = Brush(tints[_curvesChannel]) };
+            Microsoft.UI.Xaml.Controls.Canvas.SetLeft(dot, p.X * w - 4);
+            Microsoft.UI.Xaml.Controls.Canvas.SetTop(dot, (1 - p.Y) * h - 4);
+            _curveCanvas.Children.Add(dot);
+        }
+    }
+
     private static int SectionOf(int param) =>
         Array.FindIndex(AdjustSections, s => Array.IndexOf(s.Params, param) >= 0);
 
@@ -407,7 +629,7 @@ public static partial class IslandHost
                 var rows = new List<int>();
                 for (int s = 0; s < AdjustSections.Length; s++)
                 {
-                    if (_sectionOpen[s]) rows.AddRange(AdjustSections[s].Params);
+                    if (_sectionOpen[s]) rows.AddRange(AdjustSections[s].Params.Where(RowShown));
                 }
                 int at = rows.IndexOf(param);
                 if (at < 0 || rows.Count == 0) return;
@@ -480,9 +702,22 @@ public static partial class IslandHost
         {
             _updatingAdjust = false;
         }
+        if (_adjustRows is not null)
+        {
+            for (int p = 0; p < _adjustRows.Length; p++)
+                _adjustRows[p].Visibility = RowShown(p) ? Visibility.Visible : Visibility.Collapsed;
+        }
+        for (int ch = 0; ch < 4; ch++)
+        {
+            if (_levelsPicks is not null) _levelsPicks[ch].Opacity = ch == _levelsChannel ? 1.0 : 0.55;
+            if (_curvesPicks is not null) _curvesPicks[ch].Opacity = ch == _curvesChannel ? 1.0 : 0.55;
+        }
+        RenderCurve();
         for (int s = 0; s < AdjustSections.Length; s++)
         {
-            bool changed = Array.Exists(AdjustSections[s].Params, p => _adjustValues[p] != 0);
+            bool changed = s == CurvesSection
+                ? Array.Exists(_curves, c => c.Exists(p => p.X != p.Y))
+                : Array.Exists(AdjustSections[s].Params, p => _adjustValues[p] != 0);
             if (_sectionResets?[s] is Button reset)
             {
                 reset.Visibility = changed ? Visibility.Visible : Visibility.Collapsed;

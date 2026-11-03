@@ -43,6 +43,7 @@ struct blit_params_mac {
   // background blend and the blinkies. edit::adjust_uniforms' a0 .. a5.
   bool adjust = false;
   adjust_vectors adjust_u;
+  adjust_table adjust_t;  // slice 2: read when adjust_u.a[5][3] > 0.5
 };
 
 class blitter_mac {

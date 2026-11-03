@@ -166,6 +166,10 @@ public static partial class IslandHost
         public const int AdjustVignetteSoftness = 195;
         public const int AdjustAuto = 196;
         public const int AdjustResetSection = 197;
+        // Slice 2: Levels, edit::adjust_param order from levels_black; a
+        // curve goes as parked "channel\tx,y;x,y" (chrome_cmd_adjust_curve).
+        public const int AdjustLevelsBlack = 198;
+        public const int AdjustCurve = 1090;
         // PR 12: the pane's stars post the rating keys' ids (commands.h
         // set_rating_0..5); 0 clears.
         public const int SetRating0 = 127;

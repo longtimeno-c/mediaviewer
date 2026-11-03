@@ -32,7 +32,9 @@ in the core (`edit/`, `shell/edit_session`).
    Info and Jobs tabs *are* the existing Adjust, Metadata and Jobs panes; Crop and Trim are panes
    that drive the existing commands. The Colour tab is the full Adjust list: Light, Colour, Black &
    White and Vignette sections, each collapsible with its own reset (↺, shown once a slider in it
-   moved) and, but the vignette, an AUTO; Black & White has an on switch
+   moved) and, but the vignette and curves, an AUTO; Black & White has an on switch; Levels and
+   Curves pick a channel (Image, Red, Green, Blue), and Curves has a point editor over the histogram
+   (drag the line to add a point, drag a point off the square to remove it)
    ([07](07-photo-editing.md) "Evaluation", "Auto").
 
    | Subject | Tabs (`edit_tab`) |
