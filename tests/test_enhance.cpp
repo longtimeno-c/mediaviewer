@@ -1695,6 +1695,8 @@ TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {
   job_runner jr(port);
   model_spec spec;
   spec.kind = model_kind::restyle;
+  // The runner at the edge measured above, so it reuses that compile.
+  spec.io = *mv::json::parse("{\"edge\": " + std::to_string(edge) + "}");
   job_request req;
   req.path = "photo.jpg";
   req.item = item_kind::still;
