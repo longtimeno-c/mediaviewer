@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <deque>
 
+#include "addons/enhance/brighten.h"
 #include "addons/enhance/preview.h"
 #include "addons/enhance/screens.h"
 #include "addons/enhance/stream_model.h"
@@ -39,6 +40,16 @@ double strength_of(const job_request::part& p) {
 
 // The long edge of the small copies handed to the sheet's preview.
 constexpr std::uint32_t kPreviewEdge = 960;
+
+// A choice knob's value ("" when it is not set).
+std::string choice_of(const job_request::part& p, const char* id) {
+  const auto it = p.values.find(id);
+  return it == p.values.end() || it->second.k != json::kind::string ? std::string() : it->second.s;
+}
+
+// The rate a cut clip's own sound is read and written at when it is not
+// enhanced (the writer's encoder takes 48 kHz on every OS).
+constexpr std::uint32_t kCutSoundRate = 48000;
 
 std::uint32_t scale_of(const job_request::part& p) {
   const auto it = p.values.find("scale");
@@ -201,6 +212,9 @@ std::string job_runner::check(const job_request& r) const {
     video = still;  // the same runner, and its memory below
   }
   if (!video && !audio) return "There is nothing for Enhance to run.";
+  if (!r.keep_ns.empty() && (!port_.open_frames || !port_.create_clip)) {
+    return "This version of Enhance cannot enhance an edit from the Video Editor.";
+  }
   if (audio && !stream_shape_of(*audio->spec)) return "This audio model is not one this version of Enhance can run.";
   if (video && !tile_shape_of(*video->spec)) return "This video model is not one this version of Enhance can run.";
   std::uint64_t need = 0;
@@ -242,7 +256,9 @@ void job_runner::run(job_request r, job_events ev) {
     run_restyle(std::move(r), std::move(ev));
   } else if (part_of(r, model_kind::still)) {
     run_still(std::move(r), std::move(ev));
-  } else if (part_of(r, model_kind::video)) {
+  } else if (part_of(r, model_kind::video) || !r.keep_ns.empty()) {
+    // A cut clip's sound alone goes through here too: its picture is cut
+    // and written again, unchanged.
     run_picture(std::move(r), std::move(ev));
   } else {
     run_sound(std::move(r), std::move(ev));
@@ -258,7 +274,7 @@ void job_runner::run_sound(job_request r, job_events ev) {
   if (!shape) return report(err(status::unsupported_format), "");
   auto model = port_.load_model(*part.spec, part.models_dir);
   if (!model) return report(err(model.error() == status::out_of_memory ? status::out_of_memory : status::internal), "");
-  auto reader = port_.open_sound(r.path, shape->rate);
+  auto reader = port_.open_sound(r.path, shape->rate, {});
   if (!reader) return report(err(reader.error() == status::cancelled ? status::cancelled : status::unsupported_format), "");
   auto writer = port_.create(r.path, shape->rate, reader->channels);
   if (!writer) return report(err(writer.error() == status::unsupported_format ? status::unsupported_format : status::io), "");
@@ -290,13 +306,27 @@ void job_runner::run_picture(job_request r, job_events ev) {
     if (ev.done) ev.done(false, "", message);
   };
   const auto failed = [&](status s) { fail(why(s)); };
-  const job_request::part& video = *part_of(r, model_kind::video);
+  // The picture model's part, or none: a cut clip's sound alone still writes
+  // its picture, unchanged, so the new clip is the edit.
+  const job_request::part* video = part_of(r, model_kind::video);
   const job_request::part* audio = part_of(r, model_kind::audio);
-  const auto shape = tile_shape_of(*video.spec);
-  if (!shape) return failed(status::unsupported_format);
-  const std::uint32_t scale = std::min(scale_of(video), shape->scale);
+  const bool cut = !r.keep_ns.empty();
+  std::uint32_t scale = 1;
+  std::uint32_t overlap = 0;
+  double strength = 0;
+  brighten_amount bright = brighten_amount::off;
+  if (video) {
+    const auto shape = tile_shape_of(*video->spec);
+    if (!shape) return failed(status::unsupported_format);
+    scale = std::min(scale_of(*video), shape->scale);
+    overlap = shape->overlap;
+    strength = strength_of(*video);
+    bright = brighten_of(choice_of(*video, "brighten"));
+  }
+  // Strength 0 at the same size is the frame as it was: the model is not run.
+  const bool model = video && !(scale == 1 && strength <= 0.0);
 
-  auto reader = port_.open_frames(r.path);
+  auto reader = port_.open_frames(r.path, r.keep_ns);
   if (!reader) return fail(reader.error() == status::cancelled ? why(status::cancelled)
                                                                 : "Enhance cannot read this clip's picture.");
   if (reader->hdr) return fail("This is an HDR clip. Enhance cannot enhance HDR video yet.");
@@ -305,24 +335,36 @@ void job_runner::run_picture(job_request r, job_events ev) {
     return fail("At this scale the new clip would be larger than 4K (" + std::to_string(ow) + " x " +
                 std::to_string(oh) + "). Choose a smaller scale.");
   }
-  auto tiles = port_.load_tiles(*video.spec, video.models_dir);
-  if (!tiles) return failed(tiles.error() == status::out_of_memory ? status::out_of_memory : status::internal);
+  std::unique_ptr<tile_model> tiles;
+  if (model) {
+    auto t = port_.load_tiles(*video->spec, video->models_dir);
+    if (!t) return failed(t.error() == status::out_of_memory ? status::out_of_memory : status::internal);
+    tiles = std::move(*t);
+  }
 
-  // The sound, when it is enhanced too: on a thread of its own, through a
-  // queue the frame loop drains as the picture's time advances.
+  // The sound, when it is enhanced too, or the edit's own sound when the clip
+  // is cut (the source's cannot be copied whole): on a thread of its own,
+  // through a queue the frame loop drains as the picture's time advances.
   std::optional<run_port::reader> sound_in;
   std::unique_ptr<frame_model> sound_model;
   std::uint32_t rate = 0;
+  double sound_strength = 1.0;
   if (audio) {
     const auto sshape = stream_shape_of(*audio->spec);
     if (!sshape) return failed(status::unsupported_format);
     rate = sshape->rate;
-    auto rd = port_.open_sound(r.path, rate);
+    auto rd = port_.open_sound(r.path, rate, r.keep_ns);
     if (!rd) return fail("Enhance cannot read this clip's sound.");
     auto m = port_.load_model(*audio->spec, audio->models_dir);
     if (!m) return failed(status::internal);
     sound_in = std::move(*rd);
     sound_model = std::move(*m);
+    sound_strength = strength_of(*audio);
+  } else if (cut && r.has_sound) {
+    rate = kCutSoundRate;
+    auto rd = port_.open_sound(r.path, rate, r.keep_ns);
+    if (!rd) return fail("Enhance cannot read this clip's sound.");
+    sound_in = std::move(*rd);
   }
   auto writer = port_.create_clip(r.path, ow, oh, rate, sound_in ? sound_in->channels : 0);
   if (!writer) {
@@ -339,7 +381,22 @@ void job_runner::run_picture(job_request r, job_events ev) {
   };
   if (sound_in) {
     queue = std::make_unique<sound_queue>(sound_in->channels, rate * 5);
-    sound_thread = std::thread([&, strength = strength_of(*audio)] {
+    sound_thread = std::thread([&] {
+      if (!sound_model) {
+        // The edit's sound as it is: read and handed on.
+        bool ok = true;
+        while (ok && !cancel_.load()) {
+          auto chunk = sound_in->read(rate / 10);
+          if (!chunk) {
+            ok = false;
+            break;
+          }
+          if (chunk->empty()) break;
+          if (!queue->push(*chunk)) break;
+        }
+        queue->close(ok && !cancel_.load());
+        return;
+      }
       sound_source src;
       src.channels = sound_in->channels;
       src.total_frames = sound_in->total_frames;
@@ -349,7 +406,7 @@ void job_runner::run_picture(job_request r, job_events ev) {
         return queue->push(v) ? expected{} : expected{err(status::cancelled)};
       };
       sound_job_options o;
-      o.strength = strength;
+      o.strength = sound_strength;
       o.cancel = &cancel_;
       queue->close(static_cast<bool>(run_sound_job(src, *sound_model, sink, o)));
     });
@@ -371,12 +428,21 @@ void job_runner::run_picture(job_request r, job_events ev) {
 
   picture_options po;
   po.out_scale = scale;
-  po.overlap = shape->overlap;
-  po.strength = strength_of(video);
-  std::vector<std::uint8_t> frame, big;
+  po.overlap = overlap;
+  po.strength = strength;
+  brightener lift(bright);
+  std::vector<std::uint8_t> frame, lit, big;
   std::int64_t done = 0;
   auto last_preview = std::chrono::steady_clock::now();
-  const std::int64_t total = std::max<std::int64_t>(1, reader->total_frames);
+  std::int64_t total = reader->total_frames;
+  if (cut && reader->duration_ms > 0) {
+    // The edit's share of the clip's frames.
+    std::int64_t kept_ns = 0;
+    for (std::size_t i = 0; i + 1 < r.keep_ns.size(); i += 2) kept_ns += r.keep_ns[i + 1] - r.keep_ns[i];
+    total = static_cast<std::int64_t>(static_cast<double>(total) * static_cast<double>(kept_ns) /
+                                      (static_cast<double>(reader->duration_ms) * 1e6));
+  }
+  total = std::max<std::int64_t>(1, total);
   expected ok;
   while (ok) {
     if (cancel_.load()) {
@@ -390,8 +456,17 @@ void job_runner::run_picture(job_request r, job_events ev) {
       break;
     }
     if (!*more) break;
-    ok = enhance_picture(frame, reader->width, reader->height, **tiles, po, big);
-    if (!ok) break;
+    const std::vector<std::uint8_t>* in = &frame;
+    if (lift.active()) {
+      (void)lift.apply(frame, reader->width, reader->height, pts, lit);
+      in = &lit;
+    }
+    if (model) {
+      ok = enhance_picture(*in, reader->width, reader->height, *tiles, po, big);
+      if (!ok) break;
+    } else {
+      big = *in;  // the same size
+    }
     if (ow != reader->width * scale || oh != reader->height * scale) {
       // An odd size made even: the last column / row goes.
       std::vector<std::uint8_t> even(std::size_t{ow} * oh * 3);

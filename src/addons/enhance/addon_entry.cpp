@@ -15,6 +15,7 @@
 #include <mediaviewer/mediaviewer_addon.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <new>
@@ -135,6 +136,22 @@ std::vector<std::string> paths_of(const char* value_json) {
   return out;
 }
 
+// The Video Editor's button (editor_items): {"path": "...", "ranges_ns": [...]}.
+// false when it is not that shape; the ranges are checked again on the host.
+bool edit_of(const char* value_json, std::string& path, std::vector<std::int64_t>& keep) {
+  const auto doc = mv::json::parse(value_json ? value_json : "", 4);
+  if (!doc || doc->k != mv::json::kind::object) return false;
+  const std::string* p = doc->str("path");
+  const mv::json::value* r = doc->find("ranges_ns");
+  if (!p || p->empty() || !r || r->k != mv::json::kind::array || r->a.size() % 2 != 0) return false;
+  for (const auto& v : r->a) {
+    if (v.k != mv::json::kind::number || !v.is_integer) return false;
+    keep.push_back(v.i);
+  }
+  path = *p;
+  return true;
+}
+
 mv_status MV_CALL screen_open(void*, const mv_slot_screen_request* r) {
   return guard([&] {
     if (!r || !r->screen_id) return MV_ERR_INVALID_ARG;
@@ -161,6 +178,10 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
       // then the sheet.
       const std::string node = e->node_id;
       if (node == "open" || node == "enhance") g->eng->command(paths_of(e->value_json));
+      // The Video Editor's Enhance…: the clip, and the edit's kept ranges.
+      std::string path;
+      std::vector<std::int64_t> keep;
+      if (node == "edit" && edit_of(e->value_json, path, keep)) g->eng->command({path}, std::move(keep));
       return MV_OK;
     }
     g->eng->event(screen, e->node_id, e->kind, e->value_json ? e->value_json : "");

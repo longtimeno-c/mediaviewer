@@ -40,6 +40,8 @@ add_library(mv_enhance_engine STATIC
   ${_E}/diffusion.h
   ${_E}/remove.cpp
   ${_E}/remove.h
+  ${_E}/brighten.cpp
+  ${_E}/brighten.h
   ${_E}/downloads.cpp
   ${_E}/downloads.h
   ${_E}/engine.cpp

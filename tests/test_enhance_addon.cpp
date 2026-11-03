@@ -156,7 +156,8 @@ std::string screen_tree(const slot_registry& reg, const std::string& screen) {
 
 }  // namespace
 
-TEST_CASE("enhance: the shipped manifest declares the sheet, its settings page, the context entry and the command",
+TEST_CASE("enhance: the shipped manifest declares the sheet, its settings page, the context entry, the Video "
+          "Editor's button and the command",
           "[addon][enhance]") {
   keypair k;
   const std::vector<packed_file> files{{"libmv_enhance.dylib", {1, 2, 3}, "GPL-3.0-or-later"},
@@ -174,9 +175,14 @@ TEST_CASE("enhance: the shipped manifest declares the sheet, its settings page, 
   CHECK(c.screens[0].place == mv::addon::screen_place::sheet);
   CHECK(c.screens[1].id == "settings");
   CHECK(c.screens[1].place == mv::addon::screen_place::settings);
-  REQUIRE(c.items.size() == 1);
+  REQUIRE(c.items.size() == 2);
   CHECK(c.items[0].id == "enhance");
+  CHECK(c.items[0].slot == mv::addon::item_slot::context);
   CHECK(c.items[0].target == mv::addon::item_target::file);
+  CHECK(c.items[1].id == "edit");  // the Video Editor's Enhance… (contribution API 11)
+  CHECK(c.items[1].slot == mv::addon::item_slot::editor);
+  CHECK(c.items[1].label == "Enhance…");
+  CHECK(c.api_min == 11);
   REQUIRE(d.m.commands.size() == 1);
   CHECK(d.m.commands[0].id == "open");
   CHECK(d.m.commands[0].windows.empty());  // no default key (docs/design/16)
@@ -243,6 +249,29 @@ TEST_CASE("enhance: the add-on answers its settings page and sheet through the v
   CHECK(sheet.find("cannot be read") != std::string::npos);
   CHECK(sheet.find("\"run\"") != std::string::npos);
   CHECK(sheet.find("\"disabled\":true") != std::string::npos);
+
+  // The Video Editor's button: the sheet names the edit it will enhance.
+  // (The file is a clip by name only here; the sheet reads it as it can.)
+  const fs::path clip = s / "clip.mp4";
+  write_bytes(clip, {0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 1});
+  const std::int64_t edit[] = {0, 1'000'000'000, 3'000'000'000, 4'500'000'000};
+  CHECK(reg.invoke_editor_item("enhance", "edit", utf8(clip), std::span<const std::int64_t>(edit, 3)) ==
+        status::invalid_arg);  // an odd count
+  const std::int64_t backwards[] = {3'000'000'000, 4'000'000'000, 0, 1'000'000'000};
+  CHECK(reg.invoke_editor_item("enhance", "edit", utf8(clip), backwards) == status::invalid_arg);
+  CHECK(reg.invoke_editor_item("enhance", "enhance", utf8(clip), edit) == status::not_found);  // not an editor item
+  REQUIRE(reg.invoke_editor_item("enhance", "edit", utf8(clip), edit) == status::ok);
+  reg.drain();
+  REQUIRE(eventually([&] { return screen_tree(reg, "enhance").find("clip.mp4") != std::string::npos; }));
+  {
+    const std::string cut = screen_tree(reg, "enhance");
+    INFO(cut);
+    CHECK(cut.find("The edit from the Video Editor: 2 pieces, 0:03 in all.") != std::string::npos);
+  }
+  // The context entry on the same clip is the whole clip again.
+  REQUIRE(reg.invoke_item("enhance", "enhance", "[\"" + json_path(clip) + "\"]") == status::ok);
+  reg.drain();
+  REQUIRE(eventually([&] { return screen_tree(reg, "enhance").find("The edit from") == std::string::npos; }));
 
   // Close: the add-on hears it, and its Close button hides the sheet.
   REQUIRE(reg.send_event("enhance", "enhance", "close", MV_SLOT_EVENT_CLICK, "") == status::ok);

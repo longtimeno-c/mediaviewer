@@ -1851,6 +1851,13 @@ public static partial class IslandHost
         int width = (int)JNum(s, "width", 0), height = (int)JNum(s, "height", 0);
         SlotRect main = default;
         bool haveMain = _themeWindow != IntPtr.Zero && SlotGetWindowRect(_themeWindow, out main);
+        // A sheet opened while the Video Editor is up (its Enhance…) is centred
+        // over the editor, where it was asked for; still owned by the viewer.
+        if (place == "sheet" && _editorThemeWindow != IntPtr.Zero && SlotGetWindowRect(_editorThemeWindow, out SlotRect ed))
+        {
+            main = ed;
+            haveMain = true;
+        }
         uint dpi = _themeWindow != IntPtr.Zero ? SlotGetDpiForWindow(_themeWindow) : 0;
         double scale = dpi > 0 ? dpi / 96.0 : 1.0;
         int Px(double dip) => (int)Math.Round(dip * scale);

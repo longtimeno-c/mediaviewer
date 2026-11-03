@@ -949,13 +949,26 @@ typedef struct mv_host_api {
                                  void(MV_CALL* on_change)(void* user, uint32_t root, const char* dir_utf8,
                                                           uint32_t flags),
                                  void* user, uint8_t* out_ok);
+  /* ---- the Video Editor's cut (Enhance in the editor, ABI 0.35) ------------------ */
+  /* [worker-thread] Keep only these source ranges of an open frames_open /
+   * sound_open: `count` (in, out) pairs in nanoseconds on the player's
+   * timeline, in source order (an editor_items event's "ranges_ns"). Called
+   * once, before the first read. What falls outside is decoded and dropped;
+   * what is kept comes back on the edit's own timeline (the first range's in
+   * is 0, each next range follows the last), so frames_read's pts and the
+   * sound's sample count are the program's. MV_ERR_INVALID_ARG after a read
+   * or for ranges as mv_slots_editor_item refuses them. Appended after
+   * watch_tree: read these two only when `struct_size` covers them and the
+   * pointers are non-NULL. */
+  mv_status(MV_CALL* frames_keep)(void* host, void* frames, const int64_t* ranges_ns, uint32_t count);
+  mv_status(MV_CALL* sound_keep)(void* host, void* sound, const int64_t* ranges_ns, uint32_t count);
   /* ---- the Remove brush (docs/plans/edit-adjust.md slice 7) ----------------------- */
   /* [any-thread] What the person brushed over the photo being edited at
    * `path_utf8`, as round dabs of three floats each: u and v across and down
    * the edited picture still_open answers with (0..1), and the radius over its
    * longer side. Up to `capacity` dabs into `out_dabs` (NULL with 0 asks the
    * count); `*out_count` is how many there are, 0 when nothing is brushed or
-   * another photo is being edited. Appended after watch_tree: read only when
+   * another photo is being edited. Appended after sound_keep: read only when
    * `struct_size` covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* still_mask)(void* host, const char* path_utf8, float* out_dabs, uint32_t capacity,
                                  uint32_t* out_count);
@@ -1170,6 +1183,15 @@ MV_API mv_status MV_CALL mv_slots_invoke(const char* addon, const char* item, co
  * gets MV_SLOT_EVENT_COMMAND with node_id = the command id. MV_ERR_NOT_FOUND
  * for an add-on or command it does not have. */
 MV_API mv_status MV_CALL mv_slots_command(const char* addon, const char* command, const char* paths_json);
+/* 0.35: a Video Editor button (`editor_items`, contribution API 11) for the
+ * clip at `path_utf8`. `ranges_ns` holds `range_count` (in, out) pairs: the
+ * edit's kept source ranges in source order, none when nothing is cut. The
+ * add-on gets MV_SLOT_EVENT_COMMAND with node_id = the item id and value
+ * {"path": "...", "ranges_ns": [in, out, ...]}. MV_ERR_INVALID_ARG for a range
+ * that is empty, negative or out of order; MV_ERR_NOT_FOUND for an add-on or
+ * item it does not have. */
+MV_API mv_status MV_CALL mv_slots_editor_item(const char* addon, const char* item, const char* path_utf8,
+                                              const int64_t* ranges_ns, uint32_t range_count);
 /* A surface's BGRA (premultiplied). *out_needed = bytes; MV_ERR_INVALID_ARG
  * when `cap` is short, MV_ERR_NOT_FOUND when there is none. */
 MV_API mv_status MV_CALL mv_slots_surface(const char* addon, const char* screen, const char* surface,
@@ -1235,8 +1257,9 @@ MV_API mv_status MV_CALL mv_open_closed_eyes(const char* path_utf8, char* note_o
  * 7  `opens` on a status item (#512, 2026-10-20);
  * 8  a screen in place "settings", MV_SLOT_PLACE_SETTINGS (2026-10-21);
  * 9  `reveal` on a screen stack (2026-10-28);
- * 10 a surface's "glow" and a progress bar's "glow" look (2026-10-28). */
-#define MV_ADDON_CONTRIBUTION_API 10
+ * 10 a surface's "glow" and a progress bar's "glow" look (2026-10-28);
+ * 11 `editor_items`, the Video Editor's bar (2026-11-02). */
+#define MV_ADDON_CONTRIBUTION_API 11
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:
