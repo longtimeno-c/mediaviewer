@@ -18,5 +18,9 @@ Not built:
 3. **Linux**: no People chrome, because there is no Qt AI chrome yet; the order of the Linux
    halves is an open call (CLAUDE.md, docs/plans/linux.md §10). The core above is portable C++
    and the ABI is the same, so the Qt half is chrome only when it comes.
-4. **Owed checks**: neither chrome has been driven against a real pack, or with VoiceOver /
-   Narrator; Windows' native build and the WinUI run are CI's and the owner's.
+4. **Owed checks**: the Mac chrome was driven (2026-11-03) against a dev-signed pack on a copy
+   of the owner's index and faces.db: People, Show all, Unknown faces and Merge duplicates
+   (look, then apply 31 merges; no pinned face moved). Its accessibility tree showed every
+   person whose cover had decoded missing (FaceImage's picture is decorative, so the label had
+   nothing to sit on); fixed, and the "Might also be" faces with it. Still owed: a pass with
+   VoiceOver itself and with Narrator, and the WinUI run (Windows' native build is CI's).

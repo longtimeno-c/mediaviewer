@@ -422,6 +422,10 @@ private struct PersonCover: View, Equatable {
       } isTargeted: { dropTarget = $0 }
       .help(model.readOnly ? "Click to see this person's photos."
             : "Click to see this person's photos. Drag onto another person to merge them.")
+      // One element whatever it draws: once the cover decodes, FaceImage's
+      // picture is decorative and the monogram is gone, and without this the
+      // label had nothing to sit on, so VoiceOver skipped the person.
+      .accessibilityElement(children: .ignore)
       .accessibilityLabel(person.name.isEmpty ? "Unnamed person" : person.name)
       .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
       .accessibilityHint("Shows their photos in the gallery")

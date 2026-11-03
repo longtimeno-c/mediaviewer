@@ -366,6 +366,7 @@ struct PersonSheet: View {
                 .contextMenu {
                   Button("Show photo") { preview = PreviewFace(id: f.id, path: f.path, ptsMs: f.ptsMs, box: f.box) }
                 }
+                .accessibilityElement(children: .ignore)  // the picture is decorative (PeopleView)
                 .accessibilityLabel(faceAccessibilityLabel(path: f.path, ptsMs: f.ptsMs))
               Button("Yes") { acceptSuggested(f) }
                 .controlSize(.small).disabled(busy || !model.canAssign)
