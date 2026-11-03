@@ -1,0 +1,10 @@
+{
+ "kind": "remove",
+ "name": "Remove",
+ "credit": "LaMa (big-lama), Roman Suvorov et al.; ONNX port by Carve (Apache-2.0)",
+ "weights": ["lama_fp32.onnx"],
+ "run_bytes": 1500000000,
+ "cpu": true,
+ "knobs": [],
+ "io": {"runner": "inpaint", "side": 512, "image": "image", "mask": "mask", "output": "output", "out_scale": 255}
+}

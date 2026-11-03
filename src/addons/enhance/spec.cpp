@@ -121,6 +121,7 @@ const char* kind_name(model_kind k) noexcept {
     case model_kind::video: return "video";
     case model_kind::audio: return "audio";
     case model_kind::restyle: return "restyle";
+    case model_kind::remove: return "remove";
   }
   return "still";
 }

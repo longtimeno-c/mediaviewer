@@ -30,7 +30,12 @@ const char* target_name(clip_target t) noexcept {
 }
 
 const char* photo_target_name(photo_target t) noexcept {
-  return t == photo_target::restyle ? "restyle" : "detail";
+  switch (t) {
+    case photo_target::restyle: return "restyle";
+    case photo_target::remove: return "remove";
+    case photo_target::detail: break;
+  }
+  return "detail";
 }
 
 std::string prefs_json(const prefs& p) {
@@ -76,7 +81,7 @@ prefs prefs_from(std::string_view json_text) {
     }
   }
   if (const std::string* t = doc->str("photo")) {
-    for (const photo_target c : {photo_target::detail, photo_target::restyle}) {
+    for (const photo_target c : kPhotoTargets) {
       if (*t == photo_target_name(c)) p.photo = c;
     }
   }

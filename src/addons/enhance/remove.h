@@ -15,7 +15,9 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "addons/enhance/diffusion.h"
@@ -45,5 +47,41 @@ inline constexpr std::uint32_t kRemoveMinContext = 128;
 // over `feather` pixels outward. Pixels farther than 2 * feather from a
 // brushed one are left exactly as they were.
 void paste_back(rgb8& photo, const pixel_box& box, const rgb8& filled, const mask8& mask, std::uint32_t feather);
+
+// The host's brush (u, v, r triples: the picture's uv, the radius over its
+// longer side) as a mask of a width x height picture.
+[[nodiscard]] mask8 mask_from_dabs(const std::vector<float>& dabs, std::uint32_t width, std::uint32_t height);
+
+// The model's tensors, from its spec's io: a square `side`, the picture and
+// mask inputs (NCHW, 0..1, the mask 1 where brushed) and the filled output,
+// whose values `out_scale` takes to 0..255.
+struct inpaint_io {
+  std::uint32_t side = 512;
+  std::string image = "image", mask = "mask", output = "output";
+  float out_scale = 255.0f;
+};
+
+// What the runner fills with (a stand-in in the tests).
+class inpaint_filler {
+ public:
+  virtual ~inpaint_filler() = default;
+  [[nodiscard]] virtual std::uint32_t side() const noexcept = 0;
+  // `image` and `mask` are side x side.
+  [[nodiscard]] virtual result<rgb8> fill(const rgb8& image, const mask8& mask) = 0;
+};
+
+class inpaint_model final : public inpaint_filler {
+ public:
+  ~inpaint_model() override;
+  [[nodiscard]] static result<std::unique_ptr<inpaint_model>> open(infer::runtime& rt, const std::string& file,
+                                                                   const inpaint_io& io);
+  [[nodiscard]] std::uint32_t side() const noexcept override;
+  [[nodiscard]] result<rgb8> fill(const rgb8& image, const mask8& mask) override;
+
+ private:
+  struct impl;
+  explicit inpaint_model(std::unique_ptr<impl> p);
+  std::unique_ptr<impl> p_;
+};
 
 }  // namespace mv::enhance

@@ -3,6 +3,11 @@
 #include "addons/enhance/remove.h"
 
 #include <algorithm>
+#include <cmath>
+#include <span>
+#include <thread>
+
+#include "infer/ort.h"
 
 namespace mv::enhance {
 
@@ -121,6 +126,84 @@ void paste_back(rgb8& photo, const pixel_box& box, const rgb8& filled, const mas
       }
     }
   }
+}
+
+mask8 mask_from_dabs(const std::vector<float>& dabs, std::uint32_t width, std::uint32_t height) {
+  mask8 out;
+  out.width = width;
+  out.height = height;
+  out.a.assign(std::size_t{width} * height, 0);
+  if (width == 0 || height == 0) return out;
+  const float l = static_cast<float>(std::max(width, height));
+  for (std::size_t i = 0; i + 2 < dabs.size(); i += 3) {
+    const float cx = dabs[i] * static_cast<float>(width), cy = dabs[i + 1] * static_cast<float>(height);
+    const float r = dabs[i + 2] * l;
+    if (!(r > 0.0f) || !std::isfinite(cx) || !std::isfinite(cy)) continue;
+    const auto lo = [](float v) { return static_cast<std::int64_t>(std::floor(v)); };
+    const std::int64_t x0 = std::max<std::int64_t>(0, lo(cx - r));
+    const std::int64_t x1 = std::min<std::int64_t>(std::int64_t{width} - 1, lo(cx + r));
+    const std::int64_t y0 = std::max<std::int64_t>(0, lo(cy - r));
+    const std::int64_t y1 = std::min<std::int64_t>(std::int64_t{height} - 1, lo(cy + r));
+    for (std::int64_t y = y0; y <= y1; ++y) {
+      for (std::int64_t x = x0; x <= x1; ++x) {
+        const float px = static_cast<float>(x) + 0.5f - cx, py = static_cast<float>(y) + 0.5f - cy;
+        if (px * px + py * py <= r * r) out.a[static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x)] = 255;
+      }
+    }
+  }
+  return out;
+}
+
+struct inpaint_model::impl {
+  std::unique_ptr<infer::session> s;
+  inpaint_io io;
+};
+
+inpaint_model::inpaint_model(std::unique_ptr<impl> p) : p_(std::move(p)) {}
+inpaint_model::~inpaint_model() = default;
+std::uint32_t inpaint_model::side() const noexcept { return p_->io.side; }
+
+result<std::unique_ptr<inpaint_model>> inpaint_model::open(infer::runtime& rt, const std::string& file,
+                                                           const inpaint_io& io) {
+  auto p = std::make_unique<impl>();
+  p->io = io;
+  // CPU: the model is small (about a second a fill at 512 px), and its FFT
+  // layers are not ones Core ML is known to take.
+  infer::session_options o;
+  o.on = infer::backend::cpu;
+  o.threads = static_cast<int>(std::clamp(std::thread::hardware_concurrency(), 2u, 9u) - 1);
+  MV_TRY(p->s, infer::session::open(rt, file, o));
+  return std::unique_ptr<inpaint_model>(new inpaint_model(std::move(p)));
+}
+
+result<rgb8> inpaint_model::fill(const rgb8& image, const mask8& mask) {
+  const std::uint32_t n = p_->io.side;
+  if (image.width != n || image.height != n || mask.width != n || mask.height != n) return err(status::invalid_arg);
+  const std::size_t px = std::size_t{n} * n;
+  std::vector<float> pic(3 * px), m(px);
+  for (std::size_t i = 0; i < px; ++i) {
+    for (std::size_t k = 0; k < 3; ++k) pic[k * px + i] = image.rgb[i * 3 + k] / 255.0f;
+    m[i] = mask.a[i] > 127 ? 1.0f : 0.0f;
+  }
+  const std::int64_t side = n;
+  const infer::session::named_input in[2] = {
+      {p_->io.image, {1, 3, side, side}, infer::session::element::f32, pic.data(), nullptr, nullptr, pic.size()},
+      {p_->io.mask, {1, 1, side, side}, infer::session::element::f32, m.data(), nullptr, nullptr, m.size()},
+  };
+  MV_TRY(auto out, p_->s->run_named(std::span(in, 2)));
+  if (out.empty() || out[0].data.size() != 3 * px) return err(status::internal);
+  rgb8 r;
+  r.width = n;
+  r.height = n;
+  r.rgb.resize(3 * px);
+  const float scale = p_->io.out_scale;
+  for (std::size_t i = 0; i < px; ++i) {
+    for (std::size_t k = 0; k < 3; ++k) {
+      const float v = out[0].data[k * px + i] * scale;
+      r.rgb[i * 3 + k] = static_cast<std::uint8_t>(std::clamp(std::lround(v), 0l, 255l));
+    }
+  }
+  return r;
 }
 
 }  // namespace mv::enhance

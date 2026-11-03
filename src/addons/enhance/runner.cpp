@@ -159,10 +159,26 @@ bool job_runner::supports(model_kind k, item_kind item) const {
   if (k == model_kind::restyle) {
     return item == item_kind::still && port_.open_still && port_.write_still && port_.load_restyle;
   }
+  if (k == model_kind::remove) {
+    return item == item_kind::still && port_.open_still && port_.write_still && port_.load_inpaint &&
+           port_.still_mask;
+  }
   return false;
 }
 
 std::string job_runner::check(const job_request& r) const {
+  if (const job_request::part* remove = part_of(r, model_kind::remove)) {
+    if (!port_.still_mask || port_.still_mask(r.path).empty()) {
+      return "Nothing is brushed. In Edit, open Adjust → Remove, brush over what to take out, then Remove.";
+    }
+    if (port_.free_memory) {
+      if (const auto free = port_.free_memory(); free && *free < remove->spec->run_bytes) {
+        return "Needs " + size_text(remove->spec->run_bytes) + " of free memory to run; " + size_text(*free) +
+               " is free. Close something and try again.";
+      }
+    }
+    return {};
+  }
   if (const job_request::part* restyle = part_of(r, model_kind::restyle)) {
     const auto it = restyle->values.find("prompt");
     const bool empty = it == restyle->values.end() || it->second.k != json::kind::string ||
@@ -220,7 +236,9 @@ void job_runner::cancel() {
 }
 
 void job_runner::run(job_request r, job_events ev) {
-  if (part_of(r, model_kind::restyle)) {
+  if (part_of(r, model_kind::remove)) {
+    run_remove(std::move(r), std::move(ev));
+  } else if (part_of(r, model_kind::restyle)) {
     run_restyle(std::move(r), std::move(ev));
   } else if (part_of(r, model_kind::still)) {
     run_still(std::move(r), std::move(ev));
@@ -520,6 +538,51 @@ void job_runner::run_restyle(job_request r, job_events ev) {
   still.width = out.width;
   still.height = out.height;
   still.rgb = out.rgb;
+  auto path = port_.write_still(r.path, still);
+  if (!path) return fail(why(path.error()));
+  if (ev.done) ev.done(true, name_of(*path), "");
+}
+
+// Slice 7: what was brushed in Edit, filled in from its surroundings on a
+// crop of the full photo (remove.h); every pixel away from the brush is the
+// photo's own. The original is never written.
+void job_runner::run_remove(job_request r, job_events ev) {
+  const auto fail = [&](const std::string& message) {
+    if (ev.done) ev.done(false, "", message);
+  };
+  const job_request::part& part = *part_of(r, model_kind::remove);
+  if (ev.progress) ev.progress(-1);
+  const std::vector<float> dabs = port_.still_mask(r.path);
+  auto pic = port_.open_still(r.path);
+  if (!pic) return fail(pic.error() == status::cancelled ? why(status::cancelled) : "Enhance cannot read this photo.");
+  if (cancel_.load()) return fail(why(status::cancelled));
+  rgb8 full;
+  full.width = pic->width;
+  full.height = pic->height;
+  full.rgb = std::move(pic->rgb);
+  const preview_image before = shrink(full.rgb, full.width, full.height, kPreviewEdge);
+  if (ev.preview) ev.preview(before, {});
+  const mask8 mask = mask_from_dabs(dabs, full.width, full.height);
+  const auto box = remove_box(mask);
+  if (!box) return fail("Nothing is brushed on this photo. Brush over what to take out, then Remove.");
+  auto model = port_.load_inpaint(*part.spec, part.models_dir);
+  if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));
+  if (ev.progress) ev.progress(0.2);
+  const std::uint32_t side = (*model)->side();
+  const rgb8 crop = crop_rgb(full, *box);
+  auto filled = (*model)->fill(resize_rgb(crop, side, side), crop_mask(mask, *box, side, side));
+  if (!filled) return fail(why(filled.error()));
+  if (cancel_.load()) return fail(why(status::cancelled));
+  if (ev.progress) ev.progress(0.9);
+  // The feather grows with the box: a few pixels on a small fix, more on a
+  // large one the model filled at a fraction of its size.
+  const std::uint32_t feather = std::clamp<std::uint32_t>(box->width / 256, 2, 16);
+  paste_back(full, *box, resize_rgb(*filled, box->width, box->height), mask, feather);
+  if (ev.preview) ev.preview(before, shrink(full.rgb, full.width, full.height, kPreviewEdge));
+  run_port::still still;
+  still.width = full.width;
+  still.height = full.height;
+  still.rgb = std::move(full.rgb);
   auto path = port_.write_still(r.path, still);
   if (!path) return fail(why(path.error()));
   if (ev.done) ev.done(true, name_of(*path), "");

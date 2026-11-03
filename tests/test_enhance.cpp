@@ -130,6 +130,7 @@ struct fake_host {
   std::vector<std::string> logs;
   std::uint64_t free = 1ull << 40;
   mv::enhance::media_facts facts{true, true};
+  std::vector<float> brush;  // slice 7: the dabs the host holds over a photo
   // The preview's last pixels and how many were posted.
   std::uint32_t surface_w = 0, surface_h = 0;
   int surfaces = 0;
@@ -219,6 +220,10 @@ struct fixture {
       host.shown[screen] = show ? 1 : 0;
     };
     p.probe = [this](const std::string&) { return host.facts; };
+    p.brushed = [this](const std::string&) {
+      std::lock_guard lock(host.m);
+      return static_cast<std::uint32_t>(host.brush.size() / 3);
+    };
     p.free_disk = [this](const std::string&) -> std::optional<std::uint64_t> { return host.free; };
     auto shared = net;
     p.transport = [shared] { return std::make_unique<fake_net>(shared); };
@@ -1114,6 +1119,120 @@ TEST_CASE("enhance: a photo through the sheet and the runner, within its limits"
   free = 50'000'000;
   f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
   REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("free memory") != std::string::npos; }));
+}
+
+// Slice 7: Remove. A stand-in fills what is brushed with one grey.
+struct grey_fill final : inpaint_filler {
+  std::uint32_t side() const noexcept override { return 64; }
+  mv::result<rgb8> fill(const rgb8& image, const mask8& mask) override {
+    CHECK(image.width == 64);
+    CHECK(mask.width == 64);
+    CHECK(std::count(mask.a.begin(), mask.a.end(), 255) > 0);
+    rgb8 out = image;
+    for (std::size_t i = 0; i < mask.a.size(); ++i) {
+      if (mask.a[i] == 255) out.rgb[i * 3] = out.rgb[i * 3 + 1] = out.rgb[i * 3 + 2] = 128;
+    }
+    return out;
+  }
+};
+
+TEST_CASE("remove: offered on a brushed photo, the brushed area filled and the rest the photo's own",
+          "[enhance][remove]") {
+  fixture f;
+  const fs::path photo = f.dir / "IMG_0003.JPG";
+  write_bytes(photo, bytes({0xFF, 0xD8, 0xFF, 0xE1}));
+  write_text(f.self / "models/remove/model.json", R"json({
+    "kind": "remove", "name": "Remove", "weights": ["r.onnx"], "run_bytes": 1000, "cpu": true, "knobs": [],
+    "io": {"runner": "inpaint", "side": 64}})json");
+  {
+    const auto text = mv::test::read_bytes(f.self / "manifest.json");
+    std::string m(text.begin(), text.end());
+    const std::string pin = R"json({"url": "https://huggingface.co/mv-test/upscale/resolve/0123abcd/up.onnx",
+      "path": "remove/r.onnx", "size": )json" + std::to_string(f.video_weights.size()) + R"json(, "sha256": ")json" +
+                            hex_of(f.video_weights) + R"json(", "licence": "Apache-2.0"},)json";
+    m.insert(m.find("[") + 1, pin);
+    write_text(f.self / "manifest.json", m);
+  }
+  f.restart();
+  // Nothing brushed: the photo's sheet has no Remove.
+  f.eng->sheet_opened(1, utf8(photo));
+  CHECK_FALSE(parsed(f.host.tree(kSheetScreen)).has("photo"));
+
+  // A dab at the centre of a 400 x 300 photo, radius 5% of 400 = 20 px.
+  {
+    std::lock_guard lock(f.host.m);
+    f.host.brush = {0.5f, 0.5f, 0.05f};
+  }
+  f.eng->sheet_opened(2, utf8(photo));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    REQUIRE(t.has("photo"));
+    CHECK(t.node("photo")->find("options")->a.size() == 2);  // More detail, Remove
+    CHECK(*t.node("photo")->str("value") == "remove");       // Remove… opened it
+    CHECK(t.text("missing.remove").find("not installed") != std::string::npos);
+  }
+  f.eng->event(kSettingsScreen, "install.remove", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return f.eng->download_status(model_kind::remove).state == dl_state::ready; }));
+
+  const std::uint32_t w = 400, h = 300;
+  const std::vector<std::uint8_t> original = noise_rgb(w, h);
+  std::vector<std::uint8_t> written;
+  run_port port;
+  port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
+  port.load_inpaint = [](const model_spec&, const std::string& dir) -> mv::result<std::unique_ptr<inpaint_filler>> {
+    CHECK(dir.find("models/remove") != std::string::npos);
+    return std::unique_ptr<inpaint_filler>(new grey_fill);
+  };
+  port.still_mask = [&](const std::string& path) {
+    CHECK(path == utf8(photo));
+    std::lock_guard lock(f.host.m);
+    return f.host.brush;
+  };
+  port.open_still = [&](const std::string&) -> mv::result<run_port::still> {
+    run_port::still s;
+    s.width = w;
+    s.height = h;
+    s.rgb = original;
+    return s;
+  };
+  port.write_still = [&](const std::string&, const run_port::still& pic) -> mv::result<std::string> {
+    CHECK(pic.width == w);
+    CHECK(pic.height == h);
+    written = pic.rgb;
+    return utf8(f.dir / "IMG_0003-enhance.jpg");
+  };
+  f.eng->set_runner(std::make_unique<job_runner>(port));
+  f.eng->sheet_opened(3, utf8(photo));
+  f.eng->event(kSheetScreen, "run", MV_SLOT_EVENT_CLICK, "");
+  REQUIRE(eventually([&] { return parsed(f.host.tree(kSheetScreen)).text("status").find("Saved as") != std::string::npos; }));
+  REQUIRE(written.size() == original.size());
+  // The centre is the fill; a pixel well away from the dab is the photo's own.
+  CHECK(written[(150 * w + 200) * 3] == 128);
+  std::size_t changed_far = 0;
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      const float dx = static_cast<float>(x) + 0.5f - 200.0f, dy = static_cast<float>(y) + 0.5f - 150.0f;
+      if (dx * dx + dy * dy < 60.0f * 60.0f) continue;  // the dab, its feather and the resize's reach
+      const std::size_t i = (std::size_t{y} * w + x) * 3;
+      changed_far += written[i] != original[i] || written[i + 1] != original[i + 1] || written[i + 2] != original[i + 2];
+    }
+  }
+  CHECK(changed_far == 0);
+
+  // The brush cleared in Edit: refused before anything runs.
+  {
+    std::lock_guard lock(f.host.m);
+    f.host.brush.clear();
+  }
+  job_runner jr(port);
+  job_request req;
+  req.path = utf8(photo);
+  req.item = item_kind::still;
+  job_request::part part;
+  part.kind = model_kind::remove;
+  part.spec = f.eng->spec(model_kind::remove);
+  req.parts.push_back(part);
+  CHECK(jr.check(req).find("Nothing is brushed") != std::string::npos);
 }
 
 // ---- the live preview and its glow (contribution API 10) ------------------------------

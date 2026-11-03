@@ -103,6 +103,13 @@ mv::enhance::engine_port make_port(const mv_host_api* h) {
     return h->surface_post(h->host, screen, surface, gen, bgra.data(), w, ht, w * 4) == MV_OK;
   };
   p.probe = [h](const std::string& path) { return probe(h, path); };
+  // Slice 7: how much is brushed over a photo (the sheet offers Remove then).
+  if (h->struct_size >= offsetof(mv_host_api, still_mask) + sizeof(h->still_mask) && h->still_mask) {
+    p.brushed = [h](const std::string& path) {
+      std::uint32_t n = 0;
+      return h->still_mask(h->host, path.c_str(), nullptr, 0, &n) == MV_OK ? n : 0u;
+    };
+  }
   p.free_disk = [h](const std::string& dir) -> std::optional<uint64_t> {
     if (!h->volume_of) return std::nullopt;
     mv_addon_volume v{};
