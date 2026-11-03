@@ -5,7 +5,6 @@
   "screens": [{"id": "enhance", "title": "Enhance", "place": "sheet", "width": 480, "height": 680},
               {"id": "settings", "title": "Enhance", "place": "settings"}],
   "context_menu": [{"id": "enhance", "label": "Enhance…", "target": "file"}],
-  "bar_items": [{"id": "button", "label": "Enhance", "symbol": "sparkle", "target": "file"}],
   "commands": [{"id": "open", "name": "Enhance…", "windows": "Ctrl+Shift+R", "mac": "Cmd+Shift+R",
                 "modes": "viewing", "payload": "marked_or_current"}]
  }

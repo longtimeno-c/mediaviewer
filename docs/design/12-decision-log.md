@@ -2832,8 +2832,9 @@ Core ML against x4v3's 0.023 s, and 3.4 s against 0.20 s on the CPU (7 threads);
 says. Not measured: x4plus's quality against x4v3 on a set of our own (upstream's comparisons only),
 its end-to-end run times in the app, and Windows at all. (3) **A way in:** Enhance's command gets
 `Ctrl+Shift+R` / `⌘⇧R` (free in the table), the sheet downloads a missing model itself instead of
-pointing at Settings, the settings page says where Enhance opens from, and a **✦ Enhance** button
-sits in the command bar (a `bar_items` entry, contribution API 5, which add-ons already had).
+pointing at Settings, and the settings page says where Enhance opens from. A **✦ Enhance**
+button in the command bar was built here and dropped before merge (owner, 2026-11-03): Enhance
+belongs in Edit image and Edit video, not on the bar beside them.
 
 **Enhance's sheet, seen in the app (2026-10-29).** Run on the Mac by the owner and then by us in a
 dev copy: the sheet cut off its own buttons, a square photo sat small between dark bands with

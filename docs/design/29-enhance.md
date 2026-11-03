@@ -19,8 +19,8 @@ screens from its view trees.
 
 - **Its page in Settings → Add-ons** (place `settings`): one card per kind (photos, video,
   audio) with that kind's model, its credit and size, and Download / Stop / Resume / Remove.
-- **The sheet over the viewer** (place `sheet`): the command bar's **✦ Enhance** button (a
-  `bar_items` entry), `Enhance…` in the palette and the context menu, and `Ctrl+Shift+R` / `⌘⇧R`
+- **The sheet over the viewer** (place `sheet`): `Enhance…` in the palette and the context menu,
+  and `Ctrl+Shift+R` / `⌘⇧R`
   ([16](16-commands.md)), for the file on screen. The settings page says so. Its tree is a
   `scroll` at the root, so a tall sheet scrolls rather than cutting off its button; the host's
   header carries the title and Done.

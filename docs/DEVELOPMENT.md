@@ -2116,7 +2116,7 @@ and notarized by `macpack.py addon`) when that platform's pack is complete; a pa
 and the release publishes without it.
 Each kind may ship several models (`models/<kind>/<id>.json`; `model.json` is the default): photos
 and video offer "Detail, fast" (x4v3) and "Detail, best" (x4plus), chosen on the page or the sheet,
-each downloaded and removed on its own. The sheet opens from the command bar's ✦ Enhance button or
+each downloaded and removed on its own. The sheet opens from Enhance… in the context menu or
 `Ctrl+Shift+R` / `⌘⇧R` and downloads a missing model itself; a photo's run shows it redrawn tile by
 tile behind a glowing front.
 
