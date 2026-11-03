@@ -1060,6 +1060,9 @@ typedef struct mv_editor_view {
   int32_t look_mirror;
   int32_t look_crop;
   int32_t look_copyable;
+  // Light and colour: exposure (EV, ±5), contrast, saturation, temperature,
+  // tint (±100); 0 = unchanged.
+  float look_light[5];
 } mv_editor_view;
 uint64_t mv_chrome_editor_generation(void);
 bool mv_chrome_editor_view(mv_editor_view* out);
@@ -1081,9 +1084,15 @@ void mv_chrome_editor_step(int32_t frames);
 // 5 undo, 6 redo, 14 mark in, 15 mark out, 16 clear the marks; the look
 // (docs/plans/video-editor-look.md): 17 turn left, 18 turn right, 19 mirror
 // left-right, 20 upside down, 21-26 crop original / 16:9 / 9:16 / 1:1 / 4:3 /
-// 4:5, 27 save the frame at the playhead. A change that
+// 4:5, 27 save the frame at the playhead, 28 Auto light (auto tone on the frame
+// at the playhead), 29 reset light and colour. A change that
 // changes nothing beeps.
 void mv_chrome_editor_edit(int32_t what);
+// The look's light and colour (slice 2): slider `param` (0 exposure,
+// 1 contrast, 2 saturation, 3 temperature, 4 tint) to `value`; phase 0 starts
+// a drag (one undo step), 1 moves it, 2 ends it. Auto and Reset are
+// mv_chrome_editor_edit 28 and 29.
+void mv_chrome_editor_set_light(int32_t param, float value, int32_t phase);
 void mv_chrome_editor_select(int32_t index);
 // Queues keep_ranges on the Jobs pane: 0 keyframe cuts (instant), 1 exact.
 void mv_chrome_editor_export(int32_t exact);

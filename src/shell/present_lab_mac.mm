@@ -658,8 +658,10 @@ edit::clip::frame_geometry present_lab_mac::video_geometry() const noexcept {
 bool present_lab_mac::apply_video_look(const input_snapshot& snapshot) noexcept {
   const edit::clip::look l = canvas_look_of(snapshot);
   if (l == video_look_) return false;
+  const bool geometry = l.turns != video_look_.turns || l.crop != video_look_.crop;
   video_look_ = l;
-  if (float pw = 0, ph = 0; video_frame_ && picture_size(&pw, &ph)) {
+  video_light_ = edit::uniforms_of(l.light);
+  if (float pw = 0, ph = 0; geometry && video_frame_ && picture_size(&pw, &ph)) {
     // A fitted (or filled) clip stays fitted as it turns or its crop changes.
     if (camera_.fit_mode()) {
       camera_.fit(pw, ph, usable_window_w(snapshot), usable_window_h(snapshot), /*immediate=*/true);
@@ -2147,6 +2149,11 @@ void present_lab_mac::render_thread_main() noexcept {
           vp.crop_y = uc.origin[1];
           vp.crop_w = uc.size[0];
           vp.crop_h = uc.size[1];
+          vp.adjust = !video_look_.light.identity();
+          for (int i = 0; i < 4; ++i) {
+            vp.adjust0[i] = video_light_.a0[i];
+            vp.adjust1[i] = video_light_.a1[i];
+          }
           id<MTLTexture> luma_tex = (__bridge id<MTLTexture>)video_frame_->luma;
           vp.texture_w = static_cast<float>(luma_tex.width);
           vp.texture_h = static_cast<float>(luma_tex.height);

@@ -158,6 +158,7 @@ result<render_done> render_look(std::string_view src_path, const render_spec& sp
 
   std::vector<std::uint8_t> rgb, out;
   if (turn_pixels) out.resize(static_cast<std::size_t>(g.out_w) * g.out_h * 3);
+  const colour_table light(l.light);
   std::int64_t pts_us = 0;
   for (;;) {
     if (cancelled(ctl.cancel)) return err(status::cancelled);
@@ -168,13 +169,16 @@ result<render_done> render_look(std::string_view src_path, const render_spec& sp
     const auto prog = keep.program_of(src_ns);
     if (!prog) continue;
     if (sound) MV_TRY_VOID(sound->write_until(*w, *prog + kSoundLeadNs));
-    const std::uint8_t* px = rgb.data();
+    std::uint8_t* px = rgb.data();
     std::uint32_t stride = f.width * 3;
+    std::size_t bytes = static_cast<std::size_t>(f.width) * f.height * 3;
     if (turn_pixels) {
       apply_geometry(g, rgb, f.width, f.height, 3, out);
       px = out.data();
       stride = g.out_w * 3;
+      bytes = out.size();
     }
+    light.apply(std::span<std::uint8_t>(px, bytes), 3);
     MV_TRY_VOID(w->write_frame(px, stride, *prog / kNsPerUs));
     if (ctl.progress && program_ns > 0) {
       ctl.progress(ctl.user, std::min(1.0, static_cast<double>(*prog) / static_cast<double>(program_ns)));

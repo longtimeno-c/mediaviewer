@@ -191,6 +191,7 @@ if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
     "${MV_ROOT}/src/edit/clip_picture_io.cpp"
     "${MV_ROOT}/src/edit/clip_look_run.cpp"
     "${MV_ROOT}/src/edit/clip_look.cpp"
+    "${MV_ROOT}/src/edit/adjust.cpp"
     "${MV_ROOT}/src/edit/clip_run.cpp"
     "${MV_ROOT}/src/edit/clip_jobs.cpp"
     "${MV_ROOT}/src/edit/clip_wire.cpp"

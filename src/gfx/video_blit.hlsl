@@ -16,7 +16,15 @@ cbuffer VideoCamera : register(b0) {
   uint4  colour_a;      // x matrix, y transfer, z range, w bit_depth
   uint4  colour_b;      // x primaries, y quarter turns clockwise, z mirror (1 h, 2 v), w unused
   float4 crop;          // the Video Editor's crop of the turned picture: xy origin, zw size (0..1)
+  // The Video Editor's light and colour: PR 11's kernel and uniforms
+  // (edit::adjust_uniforms a0 / a1); adj1.w > 0.5 runs it.
+  float4 adj0;
+  float4 adj1;
 };
+
+// PR 11's colour kernel, the same tokens as gfx/blit.hlsl and the export.
+#include "adjust_kernel_tokens.h"
+MV_ADJUST_KERNEL
 
 Texture2D<float>  luma_tex   : register(t0);
 Texture2D<float2> chroma_tex : register(t1);
@@ -200,6 +208,8 @@ float4 ps_main(VSOut vin) : SV_Target {
     linear_rgb = to_bt709(eotf_bt1886(saturate(rgb)), primaries);
   }
 
+  if (adj1.w > 0.5) linear_rgb = mv_adjust(linear_rgb, adj0, adj1);
+  if (adj1.w > 0.5) linear_rgb = mv_adjust(linear_rgb, adj0, adj1);
   // The RTV is _SRGB, so the hardware encodes on write and this stays linear.
   return float4(saturate(linear_rgb), 1.0);
 }

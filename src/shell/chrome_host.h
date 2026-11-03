@@ -191,6 +191,16 @@ enum chrome_command : int {
   // drain while it is attached), so the page count of what is on screen is
   // known: native shows or updates the page sidebar.
   chrome_cmd_image_opened = 1083,
+  // The Video Editor's light and colour (docs/plans/video-editor-look.md
+  // slice 2): one id per slider, arg the value (exposure in EV, the rest
+  // -100..100); chrome_cmd_editor_light_drag arg 1 starts a drag (one undo
+  // step), 0 ends it.
+  chrome_cmd_editor_light_exposure = 1100,
+  chrome_cmd_editor_light_contrast = 1101,
+  chrome_cmd_editor_light_saturation = 1102,
+  chrome_cmd_editor_light_temperature = 1103,
+  chrome_cmd_editor_light_tint = 1104,
+  chrome_cmd_editor_light_drag = 1105,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -231,6 +241,8 @@ enum class chrome_editor_action : std::int32_t {
   crop_4_3 = 25,
   crop_4_5 = 26,
   save_frame = 27,   // the frame at the playhead as a JPEG, with the look
+  auto_light = 28,   // auto tone on the frame at the playhead (exposure, contrast)
+  reset_light = 29,  // every light and colour slider back to 0
 };
 
 // chrome_cmd_edit_action's argument. The C# side mirrors it.
@@ -674,9 +686,12 @@ struct chrome_editor_view_args {
   std::int32_t look_mirror;
   std::int32_t look_crop;
   std::int32_t look_copyable;
+  // Light and colour: exposure (EV), contrast, saturation, temperature, tint.
+  float look_light[5];
+  std::int32_t pad_light;
 };
 
-static_assert(sizeof(chrome_editor_view_args) == 120, "keep in sync with IslandHost.VideoEditor");
+static_assert(sizeof(chrome_editor_view_args) == 144, "keep in sync with IslandHost.VideoEditor");
 
 // One timeline thumbnail (edit/clip_strip.h strip_frame): RGBA8, sRGB.
 struct chrome_editor_thumb {

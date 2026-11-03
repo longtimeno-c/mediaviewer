@@ -114,6 +114,44 @@ void apply_geometry(const frame_geometry& g, std::span<const std::uint8_t> src, 
   }
 }
 
+colour_table::colour_table(const colour& c) : identity_(c.identity()) {
+  if (identity_) return;
+  constexpr double kGamma = 2.4;  // BT.1886, as the canvas decodes SDR video
+  const adjust_uniforms u = uniforms_of(c);
+  saturation_ = u.a1[0];
+  const double pivot = u.a1[1];
+  for (int ch = 0; ch < 3; ++ch) {
+    for (int code = 0; code < 256; ++code) {
+      const double x = std::pow(code / 255.0, kGamma) * u.a0[ch];
+      const double t = x <= 0.0 ? 0.0 : pivot * std::pow(x / pivot, static_cast<double>(u.a0[3]));
+      linear_[static_cast<std::size_t>(ch)][static_cast<std::size_t>(code)] = static_cast<float>(t);
+    }
+  }
+  encode_.resize(kEncodeSteps + 1);
+  for (int i = 0; i <= kEncodeSteps; ++i) {
+    const double v = std::pow(static_cast<double>(i) / kEncodeSteps, 1.0 / kGamma);
+    encode_[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(std::lround(std::clamp(v, 0.0, 1.0) * 255.0));
+  }
+}
+
+void colour_table::apply(std::span<std::uint8_t> px, std::uint32_t channels) const noexcept {
+  if (identity_ || channels < 3) return;
+  const std::size_t n = px.size() / channels;
+  std::uint8_t* p = px.data();
+  for (std::size_t i = 0; i < n; ++i, p += channels) {
+    const float r = linear_[0][p[0]];
+    const float g = linear_[1][p[1]];
+    const float b = linear_[2][p[2]];
+    const float luma = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+    const float out[3] = {luma + (r - luma) * saturation_, luma + (g - luma) * saturation_,
+                          luma + (b - luma) * saturation_};
+    for (int c = 0; c < 3; ++c) {
+      const float v = std::clamp(out[c], 0.0f, 1.0f);
+      p[c] = encode_[static_cast<std::size_t>(v * static_cast<float>(kEncodeSteps) + 0.5f)];
+    }
+  }
+}
+
 uv_crop uv_crop_of(const frame_geometry& g) noexcept {
   uv_crop u;
   if (g.shown_w == 0 || g.shown_h == 0) return u;

@@ -13,6 +13,7 @@
 // threading model the one the plan describes.
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 #include "edit/clip_look.h"
@@ -271,9 +272,11 @@ struct input_snapshot {
   std::uint8_t video_look_turns = 0;
   std::uint8_t video_look_mirror = 0;
   std::uint8_t video_look_crop = 0;
+  // Its light and colour (edit::colour values, PR 11's five sliders).
+  std::array<float, edit::kAdjustParamCount> video_look_light{};
 };
 
-// The look as the canvas needs it (geometry only).
+// The look as the canvas needs it (geometry, light and colour).
 [[nodiscard]] inline edit::clip::look canvas_look_of(const input_snapshot& s) noexcept {
   edit::clip::look l;
   l.turns = static_cast<std::uint8_t>(s.video_look_turns & 3u);
@@ -282,6 +285,7 @@ struct input_snapshot {
   l.crop = s.video_look_crop < static_cast<std::uint8_t>(edit::clip::crop_ratio::count)
                ? static_cast<edit::clip::crop_ratio>(s.video_look_crop)
                : edit::clip::crop_ratio::original;
+  l.light.v = s.video_look_light;
   return l;
 }
 

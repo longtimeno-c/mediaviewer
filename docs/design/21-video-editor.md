@@ -85,7 +85,7 @@ prompt; *Keep editing* leaves both windows open.
 ## Timeline UI
 
 Transport, timecode (frames at the clip's rate), Split / Delete / Mark in / Mark out / Trim start /
-Trim end / Undo / Redo, Turn left / Turn right / Crop (mirror and crop menu) / Save frame, an
+Trim end / Undo / Redo, Turn left / Turn right / Crop (mirror and crop menu) / Light / Save frame, an
 add-on's buttons (`editor_items`, contribution API 11: Enhance… when
 Enhance is installed, [29](29-enhance.md) "In the Video Editor"; each gets the clip and the kept
 pieces, or the whole clip when nothing is cut, and writes a new file), Export / Export exact, Done. A ruler, one thumbnail track and one waveform
@@ -93,11 +93,12 @@ per piece, a draggable playhead that snaps to joins and marks, piece selection, 
 edges (the preview shows the edge frame). On Mac the playhead is its own layer, so the thumbnail
 canvas does not redraw while playing, and the timeline stops polling when the window closes.
 
-Windows island ABI (`chrome_host.h`): native pushes `chrome_editor_view_args` (120 bytes; the look's turns, mirror, crop and whether keyframe Export carries it at 104) on each
+Windows island ABI (`chrome_host.h`): native pushes `chrome_editor_view_args` (144 bytes; the look's turns, mirror, crop and whether keyframe Export carries it at 104, its five light values at 120) on each
 edit and the playhead on the tick, and `chrome_editor_strip_args` once per clip. The island sends
 `editor_seek` (1023, program milliseconds), `editor_action` (1024, `chrome_editor_action`; 1–6, 14–16
-and the look's 17–27 are the Mac bridge's `mv_chrome_editor_edit` codes), `editor_trim_grab` (1028) and `editor_trim_to`
-(1029). Both sides' checksum tests pin the ids.
+and the look's 17–27 are the Mac bridge's `mv_chrome_editor_edit` codes), `editor_trim_grab` (1028), `editor_trim_to`
+(1029), and the light sliders `editor_light_*` (1100–1104, arg the value) and
+`editor_light_drag` (1105, 1 start, 0 end). Both sides' checksum tests pin the ids.
 
 ## Keys
 
@@ -132,6 +133,15 @@ right, upside down) and crops it to Original, 16:9, 9:16, 1:1, 4:3 or 4:5 about 
 `<name>_frame_<time>.jpg` with the turn, mirror and crop (`op::frame`, in the helper). The
 order is the same everywhere: turned, mirrored, cropped (`geometry_of`).
 
+**Light** (slice 2) is PR 11's five sliders for the whole clip (Exposure, Contrast, Saturation,
+Temperature, Tint) in a popover (Mac) or flyout (Windows), with **Auto** (#289's auto tone on the
+frame at the playhead, decoded on a worker, `clip_auto_light.h`) and **Reset**. A Mac slider drag
+is one undo step; on Windows a flyout session is (the drag ids wrap its open and close). The
+canvas runs the same kernel tokens as the photo blit in the video blit, on the linear light it
+already decodes, before its sRGB encode; the export and Save frame run them through
+`colour_table` on 8-bit frames, decoding with the canvas's BT.1886 power so the kernel sees the
+light the preview shows (per channel exact, the saturation mix in linear light).
+
 - **Preview:** the host puts the turn, mirror and crop on the input snapshot
   (`video_look_*`); the render thread adds the turn to the clip's own and passes the mirror and
   crop to the video blit, whose uv map applies them, and the camera fits the cropped picture.
@@ -141,6 +151,7 @@ order is the same everywhere: turned, mirrored, cropped (`geometry_of`).
   `picture_writer` on the hardware encoder, the pixels upright and no display matrix; the sound
   read through the same cut (48 kHz) and encoded by the OS (AAC, else FLAC in Matroska), or none
   when muted. 8-bit BT.709 SDR out.
+- **Export exact** and **Save frame** apply the light after the geometry (`colour_table`).
 - **Export on keyframes** carries a turn (the display matrix) and mute only; with anything else
   in the look the button is greyed ("needs Export exact").
 

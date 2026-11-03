@@ -49,8 +49,10 @@ struct alignas(16) video_blit_cb {
   std::uint32_t matrix, transfer, range, bit_depth;
   std::uint32_t primaries, turns, mirror, pad3;
   float crop_x, crop_y, crop_w, crop_h;
+  float adj0[4];
+  float adj1[4];
 };
-static_assert(sizeof(video_blit_cb) == 96, "cbuffer layout must match the HLSL declaration");
+static_assert(sizeof(video_blit_cb) == 128, "cbuffer layout must match the HLSL declaration");
 
 }  // namespace
 
@@ -147,6 +149,11 @@ void video_blitter::draw(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* lum
   cb.crop_y = crop_ok ? p.crop_y : 0.0f;
   cb.crop_w = crop_ok ? p.crop_w : 1.0f;
   cb.crop_h = crop_ok ? p.crop_h : 1.0f;
+  for (int i = 0; i < 4; ++i) {
+    cb.adj0[i] = p.adjust0[i];
+    cb.adj1[i] = p.adjust1[i];
+  }
+  cb.adj1[3] = p.adjust ? 1.0f : 0.0f;
 
   D3D11_MAPPED_SUBRESOURCE mapped{};
   if (SUCCEEDED(ctx->Map(cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {

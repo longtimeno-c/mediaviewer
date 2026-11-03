@@ -67,6 +67,8 @@
 #include "shell/text_select.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
+#include "edit/clip_auto_light.h"
+#include "edit/clip_sample.h"
 #include "shell/clip_look_abi.h"
 #include "shell/video_timeline.h"
 #include "edit/clip_strip.h"
@@ -4008,6 +4010,7 @@ constexpr UINT_PTR kEditorReleaseTimerId = 0x7B02;
 constexpr UINT kEditorReleaseMs = 16;
 constexpr int kEditorReleaseTries = 120;
 constexpr UINT kMsgEditorLoaded = WM_APP + 0x79;  // the probe + strip job finished (any thread posts)
+constexpr UINT kMsgEditorAutoLight = WM_APP + 0x84;  // the Video Editor's Auto read its frame (any thread posts)
 
 struct editor_load_result {
   std::uint64_t token = 0;
@@ -4088,6 +4091,7 @@ void push_editor_view(app_state* app, bool edit) noexcept {
     a.look_mirror = (lk.flip_h ? 1 : 0) | (lk.flip_v ? 2 : 0);
     a.look_crop = static_cast<std::int32_t>(lk.crop);
     a.look_copyable = lk.copyable() ? 1 : 0;
+    for (std::size_t i = 0; i < lk.light.v.size(); ++i) a.look_light[i] = lk.light.v[i];
     app->chrome.set_editor_view(a);
   } catch (...) {
   }
@@ -4249,6 +4253,7 @@ void editor_publish_look(app_state* app) noexcept {
   app->input.video_look_turns = on ? l.turns : 0;
   app->input.video_look_mirror = on ? static_cast<std::uint8_t>((l.flip_h ? 1 : 0) | (l.flip_v ? 2 : 0)) : 0;
   app->input.video_look_crop = on ? static_cast<std::uint8_t>(l.crop) : 0;
+  app->input.video_look_light = on ? l.light.v : decltype(l.light.v){};
   publish(app);
 }
 
@@ -4270,7 +4275,58 @@ void editor_save_frame(app_state* app) noexcept {
   }
 }
 
-// what: chrome_editor_action's edit codes (1-6, 14-16) and the look (17-26).
+// A light and colour slider (param: edit::adjust_param) moved to `value`.
+void editor_set_light(app_state* app, int param, float value) noexcept {
+  auto& ed = app->editor;
+  if (!ed.timeline.loaded() || param < 0 || param >= mv::edit::kAdjustParamCount) return;
+  mv::edit::clip::look l = ed.timeline.look();
+  l.light.v[static_cast<std::size_t>(param)] = value;
+  if (ed.timeline.set_look(l)) {
+    editor_publish_look(app);
+    push_editor_view(app, true);
+  }
+}
+
+struct editor_auto_light_result {
+  std::uint64_t token = 0;
+  bool changed = false;
+  mv::edit::colour light;
+};
+
+// Auto: auto tone (#289) on the frame at the playhead, read on a worker.
+void editor_auto_light(app_state* app) noexcept {
+  auto& ed = app->editor;
+  if (!ed.timeline.loaded() || ed.path.empty()) return;
+  const HWND hwnd = app->window;
+  const std::int64_t at_ms = ed.timeline.to_source(editor_timeline_position(app)) / 1'000'000;
+  app->jobs.submit_at(mv::background_generation,
+                      [path = ed.path, token = ed.token, at_ms, current = ed.timeline.look().light,
+                       hwnd](const mv::job_context&) -> mv::status {
+                        auto frame = mv::edit::clip::frame_rgb_at(path, at_ms, 512);
+                        if (!frame) return frame.error();
+                        auto* r = new (std::nothrow) editor_auto_light_result{};
+                        if (!r) return mv::status::out_of_memory;
+                        r->token = token;
+                        r->light = mv::edit::clip::auto_light(frame->rgb, current, r->changed);
+                        if (!::PostMessageW(hwnd, kMsgEditorAutoLight, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return mv::status::ok;
+                      });
+}
+
+void on_editor_auto_light(app_state* app, std::unique_ptr<editor_auto_light_result> r) noexcept {
+  auto& ed = app->editor;
+  if (!r || r->token != ed.token || !ed.open) return;  // another clip, or closed
+  mv::edit::clip::look l = ed.timeline.look();
+  l.light = r->light;
+  if (!r->changed || !ed.timeline.set_look(l)) {
+    ::MessageBeep(MB_ICONWARNING);  // a flat frame, or one that already fills the range
+    return;
+  }
+  editor_publish_look(app);
+  push_editor_view(app, true);
+}
+
+// what: chrome_editor_action's edit codes (1-6, 14-16) and the look (17-26, 29).
 void editor_edit(app_state* app, int what) noexcept {
   auto& ed = app->editor;
   if (!ed.timeline.loaded()) return;
@@ -4326,6 +4382,12 @@ void editor_edit(app_state* app, int what) noexcept {
       if (what == 19) l.flip_h = !l.flip_h;
       if (what == 20) l.flip_v = !l.flip_v;
       if (what >= 21) l.crop = static_cast<mv::edit::clip::crop_ratio>(what - 21);
+      changed = ed.timeline.set_look(l);
+      break;
+    }
+    case 29: {
+      mv::edit::clip::look l = ed.timeline.look();
+      l.light = {};
       changed = ed.timeline.set_look(l);
       break;
     }
@@ -4502,7 +4564,9 @@ void editor_run_action(app_state* app, int action) {
     case chrome_editor_action::crop_9_16:
     case chrome_editor_action::crop_1_1:
     case chrome_editor_action::crop_4_3:
-    case chrome_editor_action::crop_4_5: editor_edit(app, action); break;
+    case chrome_editor_action::crop_4_5:
+    case chrome_editor_action::reset_light: editor_edit(app, action); break;
+    case chrome_editor_action::auto_light: editor_auto_light(app); break;
     case chrome_editor_action::save_frame: editor_save_frame(app); break;
     case chrome_editor_action::toggle_play: editor_toggle_play(app); break;
     case chrome_editor_action::step_back:
@@ -5187,6 +5251,21 @@ bool chrome_edit_command(app_state* app, int command, float arg) {
       return true;
     case mv::shell::chrome_cmd_editor_action:
       editor_run_action(app, static_cast<int>(arg));
+      return true;
+    case mv::shell::chrome_cmd_editor_light_exposure:
+    case mv::shell::chrome_cmd_editor_light_contrast:
+    case mv::shell::chrome_cmd_editor_light_saturation:
+    case mv::shell::chrome_cmd_editor_light_temperature:
+    case mv::shell::chrome_cmd_editor_light_tint:
+      editor_set_light(app, command - static_cast<int>(mv::shell::chrome_cmd_editor_light_exposure), arg);
+      return true;
+    case mv::shell::chrome_cmd_editor_light_drag:
+      if (arg != 0.0f) {
+        app->editor.timeline.begin_look_drag();
+      } else {
+        app->editor.timeline.end_look_drag();
+        push_editor_view(app, true);
+      }
       return true;
     case mv::shell::chrome_cmd_editor_trim_grab:
       editor_trim_grab(app, static_cast<int>(arg));
@@ -9868,6 +9947,11 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
 
     case kMsgShareReady:
       on_share_ready(app, std::unique_ptr<share_gathered>(reinterpret_cast<share_gathered*>(lparam)));
+      return 0;
+
+    case kMsgEditorAutoLight:  // the Video Editor's Auto light
+      on_editor_auto_light(app, std::unique_ptr<editor_auto_light_result>(
+                                    reinterpret_cast<editor_auto_light_result*>(lparam)));
       return 0;
 
     case kMsgEditorLoaded:  // PR 30: the Video Editor's probe and strip

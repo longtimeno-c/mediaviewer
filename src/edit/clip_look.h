@@ -12,8 +12,10 @@
 // Pure: no FFmpeg, no GPU, no I/O.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <span>
+#include <vector>
 
 #include "edit/adjust.h"
 
@@ -101,5 +103,28 @@ struct uv_crop {
   float size[2] = {1.0f, 1.0f};
 };
 [[nodiscard]] uv_crop uv_crop_of(const frame_geometry& g) noexcept;
+
+// Light and colour on 8-bit video pixels, as the canvas's kernel does it
+// (gfx/adjust_kernel.h, edit::uniforms_of). Codes are decoded with the
+// BT.1886 power the canvas uses for SDR video and encoded back with its
+// inverse, so an identity look leaves every code alone and the kernel works
+// on the light the preview shows. The gains and the contrast power act per
+// channel (a table per channel, exact); the saturation mix is done in linear
+// light; the encode reads a fine table (kEncodeSteps).
+class colour_table {
+ public:
+  explicit colour_table(const colour& c);
+  [[nodiscard]] bool identity() const noexcept { return identity_; }
+  // `px`: whole pixels of `channels` bytes (3 RGB, 4 RGBA: alpha untouched).
+  void apply(std::span<std::uint8_t> px, std::uint32_t channels) const noexcept;
+
+  static constexpr int kEncodeSteps = 16384;
+
+ private:
+  bool identity_ = true;
+  float saturation_ = 1.0f;
+  std::array<std::array<float, 256>, 3> linear_{};
+  std::vector<std::uint8_t> encode_;
+};
 
 }  // namespace mv::edit::clip
