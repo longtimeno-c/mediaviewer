@@ -85,6 +85,8 @@ final class EditStore: ObservableObject {
   @Published private(set) var galleryVisible = false
   /// A PDF or DOCX: the bar offers "Open in <app>" instead (OpenInStore).
   @Published private(set) var document = false
+  /// Slice 5: the Enhance add-on is loaded; the strip offers Enhance….
+  @Published private(set) var enhance = false
   @Published private(set) var cropActive = false
   @Published private(set) var aspect: CropAspect = .free
   @Published private(set) var portrait = false
@@ -121,6 +123,7 @@ final class EditStore: ObservableObject {
     guard mv_chrome_edit_view(&v) else { return }
     if v.subject != subject { subject = v.subject }
     if (v.document != 0) != document { document = v.document != 0 }
+    if (v.enhance != 0) != enhance { enhance = v.enhance != 0 }
     if document { OpenInStore.shared.follow() }
     let gallery = mv_chrome_gallery_visible()
     if gallery != galleryVisible { galleryVisible = gallery }
@@ -154,4 +157,5 @@ final class EditStore: ObservableObject {
   func cancelCrop() { mv_chrome_edit_cancel_crop() }
   func setShowOriginal(_ on: Bool) { mv_chrome_edit_show_original(on ? 1 : 0) }
   func saveCopy() { mv_chrome_edit_save_copy() }
+  func enhancePhoto() { mv_chrome_edit_enhance() }
 }

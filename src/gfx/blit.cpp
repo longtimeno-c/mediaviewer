@@ -31,12 +31,11 @@ struct alignas(16) blit_cb {
   float inv0[4];
   float inv1[4];
   float source_size[4];
-  float adj0[4];
-  float adj1[4];
+  float adj[kAdjustVectors][4];  // adj0 .. adj5
   float theme_background[4];
 };
 
-static_assert(sizeof(blit_cb) == 192, "keep in sync with cbuffer Camera");
+static_assert(sizeof(blit_cb) == 256, "keep in sync with cbuffer Camera");
 
 // One tile's per-instance record (vs_tile's TILE0 / TILE1).
 struct tile_instance {
@@ -101,6 +100,17 @@ expected blitter::create(ID3D11Device* device) {
   cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
   hr = device->CreateBuffer(&cbd, nullptr, cb_.GetAddressOf());
   if (FAILED(hr)) return err(status::internal);
+  // Slice 2: the levels and curves table, created as the identity.
+  const adjust_table identity;
+  D3D11_BUFFER_DESC lbd{};
+  lbd.ByteWidth = sizeof(adjust_table);
+  lbd.Usage = D3D11_USAGE_DYNAMIC;
+  lbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+  lbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+  D3D11_SUBRESOURCE_DATA lsd{&identity, 0, 0};
+  hr = device->CreateBuffer(&lbd, &lsd, lut_cb_.GetAddressOf());
+  if (FAILED(hr)) return err(status::internal);
+  lut_shown_ = identity;
   D3D11_BUFFER_DESC ibd{};
   ibd.ByteWidth = static_cast<UINT>(sizeof(tile_instance)) * k_tile_batch;
   ibd.Usage = D3D11_USAGE_DYNAMIC;
@@ -158,6 +168,7 @@ void blitter::destroy() noexcept {
   point_.Reset();
   aniso_.Reset();
   tile_instances_.Reset();
+  lut_cb_.Reset();
   cb_.Reset();
   tile_layout_.Reset();
   tile_ps_.Reset();
@@ -201,18 +212,21 @@ void blitter::bind_camera(ID3D11DeviceContext* ctx, const blit_params& p, float 
   }
   cb.source_size[0] = p.source_w > 0.0f ? p.source_w : p.image_w;
   cb.source_size[1] = p.source_h > 0.0f ? p.source_h : p.image_h;
-  for (int i = 0; i < 4; ++i) {
-    cb.adj0[i] = p.adjust0[i];
-    cb.adj1[i] = p.adjust1[i];
+  for (int v = 0; v < kAdjustVectors; ++v) {
+    for (int i = 0; i < 4; ++i) cb.adj[v][i] = p.adjust_u.a[v][i];
   }
-  cb.adj1[3] = p.adjust ? 1.0f : 0.0f;
+  cb.adj[1][3] = p.adjust ? 1.0f : 0.0f;
   (void)upload_cb(ctx, cb_.Get(), &cb, sizeof(cb));
+  // The table only changes with a levels or curve edit: compared, not resent.
+  if (p.adjust && reads_table(p.adjust_u) && !(p.adjust_t == lut_shown_)) {
+    if (upload_cb(ctx, lut_cb_.Get(), &p.adjust_t, sizeof(adjust_table))) lut_shown_ = p.adjust_t;
+  }
 
   ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   ctx->IASetInputLayout(nullptr);
-  ID3D11Buffer* cbs[] = {cb_.Get()};
+  ID3D11Buffer* cbs[] = {cb_.Get(), lut_cb_.Get()};
   ctx->VSSetConstantBuffers(0, 1, cbs);
-  ctx->PSSetConstantBuffers(0, 1, cbs);
+  ctx->PSSetConstantBuffers(0, 2, cbs);
   ID3D11SamplerState* samps[] = {aniso_.Get(), point_.Get()};
   ctx->PSSetSamplers(0, 2, samps);
   ctx->OMSetBlendState(cb.opacity < 0.999f ? blend_alpha_.Get() : blend_.Get(), nullptr,

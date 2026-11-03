@@ -9,6 +9,7 @@
 #include <cstdint>
 
 #include "core/result.h"
+#include "gfx/adjust_kernel.h"
 
 namespace mv::gfx {
 
@@ -39,10 +40,10 @@ struct blit_params_mac {
   bool clip_to_source = false;
   // PR 11 colour adjust, twin of blit_params: MV_ADJUST_KERNEL (the same
   // tokens as the HLSL, gfx/adjust_kernel.h) on the sample, before the
-  // background blend and the blinkies. edit::adjust_uniforms' a0 / a1.
+  // background blend and the blinkies. edit::adjust_uniforms' a0 .. a5.
   bool adjust = false;
-  float adjust0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-  float adjust1[4] = {1.0f, 0.18f, 0.0f, 0.0f};
+  adjust_vectors adjust_u;
+  adjust_table adjust_t;  // slices 2-3: read when reads_table(adjust_u)
 };
 
 class blitter_mac {

@@ -1,6 +1,7 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Release safety checks, using temporary assets and a mocked GitHub CLI."""
+import base64
 import importlib.util
 import hashlib
 import io
@@ -65,6 +66,24 @@ class ReleaseTests(unittest.TestCase):
     def test_artifacts_preflight_needs_no_secrets(self):
         release.prepare()
         self.assertIn('tag=v0.1.1', (self.folder / 'output').read_text())
+
+    def test_preflight_writes_whats_new_for_both_apps(self):
+        # #620: the run's own words win over the commit subjects; base64 keeps the lines.
+        os.environ['WHATS_NEW'] = r'Faster pans\nHEIC fix'  # one line, as a dispatch input
+        release.prepare()
+        out = (self.folder / 'output').read_text()
+        encoded = re.search(r'^whats_new=(.*)$', out, re.M)[1]
+        self.assertEqual(base64.b64decode(encoded).decode('utf-8'), 'Faster pans\nHEIC fix')
+
+    def test_release_page_carries_the_same_whats_new(self):
+        os.environ['WHATS_NEW_B64'] = base64.b64encode('Faster pans\nHEIC fix'.encode()).decode()
+        notes = release.release_notes('0.1.1', 'stable', 'owner/repo', 'v0.1.1', 'abc',
+                                      notes=release.decoded_whats_new())
+        self.assertTrue(notes.startswith("## What's new\n\n- Faster pans\n- HEIC fix\n\n## Downloads"))
+        self.assertNotIn("What's new", release.release_notes('0.1.1', 'stable', 'owner/repo', 'v0.1.1', 'abc'))
+        os.environ['WHATS_NEW_B64'] = base64.b64encode(b'see https://example.com').decode()
+        with self.assertRaisesRegex(ValueError, "What's new"):
+            release.decoded_whats_new()
 
     def test_signed_preflight_fails_before_build_without_credentials(self):
         for mode in ('preview', 'stable'):

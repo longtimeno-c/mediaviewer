@@ -904,9 +904,7 @@ TEST_CASE("the export's colour table is the canvas's kernel", "[clip][look][ligh
   c.v[3] = 20.0f;    // warmer
   const clip::colour_table t(c);
   REQUIRE_FALSE(t.identity());
-  const auto u = mv::edit::uniforms_of(c);
-  const kernel::float4 a0{u.a0[0], u.a0[1], u.a0[2], u.a0[3]};
-  const kernel::float4 a1{u.a1[0], u.a1[1], u.a1[2], u.a1[3]};
+  const mv::gfx::adjust_args args(mv::edit::uniforms_of(c));
   int worst = 0;
   for (int r = 0; r < 256; r += 15) {
     for (int g = 0; g < 256; g += 15) {
@@ -915,7 +913,7 @@ TEST_CASE("the export's colour table is the canvas's kernel", "[clip][look][ligh
                                         static_cast<std::uint8_t>(b)};
         t.apply(px, 3);
         const auto dec = [](int v) { return static_cast<float>(std::pow(v / 255.0, 2.4)); };
-        const kernel::float3 o = kernel::mv_adjust(kernel::float3{dec(r), dec(g), dec(b)}, a0, a1);
+        const kernel::float3 o = mv::gfx::adjust(kernel::float3{dec(r), dec(g), dec(b)}, {}, args);
         const float want[3] = {o.x, o.y, o.z};
         for (int ch = 0; ch < 3; ++ch) {
           const int code = static_cast<int>(

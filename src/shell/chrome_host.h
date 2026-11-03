@@ -191,6 +191,18 @@ enum chrome_command : int {
   // drain while it is attached), so the page count of what is on screen is
   // known: native shows or updates the page sidebar.
   chrome_cmd_image_opened = 1083,
+  // docs/plans/edit-adjust.md slice 2: a curve from the adjust pane. Native
+  // pulls "channel\tx,y;x,y;..." (0 image, 1 red, 2 green, 3 blue; x and y
+  // 0..1, at most 8 points) with take_parked_text. 1090 up for edit-adjust.
+  chrome_cmd_adjust_curve = 1090,
+  // Slice 3: one adjust parameter as parked "param\tvalue" (edit::adjust_param;
+  // selective colour's sliders, which have no command of their own).
+  chrome_cmd_adjust_param = 1091,
+  // Slice 5b: a typed request (edit/prompt.h), parked as UTF-8 text.
+  chrome_cmd_adjust_prompt = 1092,
+  // Slice 7: the Remove brush; the argument 0 the last stroke off, 1 all of
+  // them, 2 Remove (Enhance's sheet takes what is brushed).
+  chrome_cmd_adjust_brush = 1093,
   // The Video Editor's light and colour (docs/plans/video-editor-look.md
   // slice 2): one id per slider, arg the value (exposure in EV, the rest
   // -100..100); chrome_cmd_editor_light_drag arg 1 starts a drag (one undo
@@ -257,9 +269,12 @@ enum class chrome_edit_action : std::int32_t {
   original_off = 1,  // the strip's Original toggle
   original_on = 2,
   save_copy = 3,     // applies a crop draft, then the PR 10 export dialog
+  enhance = 4,       // slice 5: Enhance's sheet for the photo, with the edit in its copy
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
+static_assert(chrome_cmd_adjust_curve >= kCommandCount && chrome_cmd_adjust_param >= kCommandCount &&
+              chrome_cmd_adjust_prompt >= kCommandCount && chrome_cmd_adjust_brush >= kCommandCount);
 
 // Which flyout ShowPopup opens (0 closes whatever is up). The C# side mirrors it.
 enum class chrome_popup : std::int32_t {
@@ -635,9 +650,12 @@ struct chrome_edit_args {
   std::uint64_t open_apps_utf8;
   std::int32_t open_apps_len;
   std::int32_t document;
+  // edit-adjust slice 5: the Enhance add-on is loaded; the strip offers Enhance….
+  std::int32_t enhance;
+  std::int32_t reserved;
 };
 
-static_assert(sizeof(chrome_edit_args) == 88, "keep in sync with IslandHost.Edit EditArgsSize");
+static_assert(sizeof(chrome_edit_args) == 96, "keep in sync with IslandHost.Edit EditArgsSize");
 
 // PR 30 (docs/design/21): the Video Editor window. Its timeline is an island on the
 // editor's own top-level window; the card that says where the picture went is
