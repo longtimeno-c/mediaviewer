@@ -97,6 +97,29 @@ struct file_id {
 // folder); never pointed at anything of the user's.
 [[nodiscard]] expected remove_tree(std::string_view utf8_dir);
 
+// #612: the plain files directly in `utf8_dir` (and, with `with_directories`,
+// its child directories), with size and mtime from the listing itself (no
+// open per file). Links are always left out, as are "." and "..". A missing
+// directory is an empty list, not an error. Worker threads only.
+struct dir_child {
+  std::string name;
+  std::uint64_t size = 0;
+  std::int64_t mtime_unix = 0;
+  bool is_directory = false;
+};
+[[nodiscard]] result<std::vector<dir_child>> list_children(std::string_view utf8_dir,
+                                                           bool with_directories = false);
+
+// #612 (Settings -> Storage): the bytes and files under `utf8_path`, walked
+// without following a link out of it (a link counts as nothing). A file is
+// its own size; a missing path is zero, not an error. Worker threads only:
+// on a big add-on folder this is thousands of directory entries.
+struct tree_usage {
+  std::uint64_t bytes = 0;
+  std::uint64_t files = 0;
+};
+[[nodiscard]] tree_usage tree_size(std::string_view utf8_path);
+
 enum class rename_outcome : std::uint8_t { renamed, name_taken };
 
 // Renames within one volume and never replaces: a taken `to` is

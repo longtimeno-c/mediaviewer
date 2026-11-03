@@ -49,11 +49,17 @@ The order is:
 | Driftwire window, 2026-10-19 | **Simpler Driftwire window**: no address field (a code finds its own); a transfer under way is a card at the top with a picture of its path, its own shape, colour and badge for Wi-Fi, Bluetooth, internet direct, internet met on the DHT, through one of your computers, or through your relay server, dots moving while bytes do; the receive code is selectable with **Copy code** / **Copy link**; the internet part reads receive, send to a code, then options. New screen vocabulary on both hosts: a `link` node and a button's `copy`, contribution API 6 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11), [28](design/28-driftwire.md#what-a-person-sees)) | Mac: built; `"[driftwire]"` (124 cases) and `"[addon]"` (60) pass; the Swift chrome builds; the link picture rendered offscreen for every bearer and state, light and dark. Windows: the C# compiles. Owed: the window opened in the app on both hosts with a live transfer, the animation's idle cost measured (it runs only while bytes move), Narrator on the picture |
 | #501 | **Driftwire privacy**: a nearby handshake's static is a key of that link; the identity goes sealed in the offer (after the code) and the accept (after Accept); the beacon and Bluetooth INFO carry the name only while the window is open and a new id while idle (10 min) and at every open and close; the Mac keeps the identity and remembered devices in the data protection keychain in the app's access group, or nowhere; Windows seals each Credential Manager value with DPAPI; key material is wiped when it goes; a ProVerif model of the internet handshake (`tools/formal/internet.pv`) ([docs/design/28](design/28-driftwire.md#privacy-rule-6), [12](design/12-decision-log.md#driftwire)) | Mac: built; `"[driftwire]~[.driftwire-dht-live]"` passes (130 cases) with new ones: a connector never sees the receiver's identity, the sender's goes only in the offer after the right code, both sides remember the other's identity after a nearby send, the id rotates and the name is off the air, a planted login-keychain item is removed and never read. Windows: portable C++ only, CI's. The release adds Driftwire's app group `<team>.<bundle id>.driftwire` when it signs (`macpack.py release --team-id`, `APPLE_TEAM_ID`; `test_macpack.py` covers it); dev builds have no store. Owed: a signed build's Keychain path, two machines, v0.1.35 interop by hand |
 | #512 | **A status item opens its add-on's screen**: "Driftwire: receiving" in the command bar is a flat button that opens the Driftwire window (or brings it forward), on both hosts; any add-on whose status item names a screen, or that has exactly one window / pane / sheet, gets the same; a manifest may name it on a status item from contribution API 7 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)) | Mac: `mv_import_tests` passes (a new `[slots]` case for `status_json`'s `opens`); the Mac app builds. Windows: the C# compiles; the native side is CI's. Owed: the click, hover, hand cursor, keyboard and VoiceOver / Narrator checked in the running app on both hosts |
+| #601 | **Places: a folder map**: a **This folder** toggle on the Place section draws every geotagged item of the open folder on the same offline map as dots that cluster by zoom; the current item is the pin; a click on a dot or cluster opens that item, or its first. Read-only. Host table `open_item` and `MV_SLOT_EVENT_TAP` appended, version not bumped ([docs/design/27](design/27-places.md#the-folder-map-601)) | Linux container: the Places engine and its tests built with g++ 13 (`-Wall -Wextra -Werror -fno-rtti`); `"[places]"` 15 cases pass (1 skipped: no full blob); the `[.perf-bench]` case: the dot layer for 600 items at 2x in 0.27–0.29 ms CPU median, at most 1.12 ms (three runs); ASan + UBSan clean. `addon_entry.cpp`, `slots.cpp`, `screen.cpp` and `host.cpp` compile. Not built or run: `mv_import_tests` (no libsodium here), either app, either PR 1 gate, the click and `--browse-soak` with the pane open ([Where this actually is](#places-folder-map-issue-601-2026-11-02)) |
 | #529, #530, #531 | **Driftwire faster over the DHT, with the time left, and resumable**: the UDP stream paces and follows a model of the path (BBR, simplified) instead of halving on every loss, and acks name the runs past the 256-packet bitmap; both windows show the speed and the time left; a receive that stops keeps what arrived (the partial hidden under `.mvtmp`) and the same sender's next send of the same files resumes it, the whole-file read-back unchanged; "Unfinished transfers" with Discard, gone after 7 days; neither machine sleeps from idleness while bytes move; a transfer's end stays until OK ([docs/design/28](design/28-driftwire.md#resuming-a-receive-that-stopped-530)) | Linux container only: `"[driftwire]"` 166 cases passed (2026-10-21), 174 with the Linux ports (2026-10-23: the Secret Service, logind; the stream case's IPv6 step runs only where `::1` binds) in RelWithDebInfo and Debug + ASan / UBSan; `[.driftwire-stream-bench]` alternated 3 × 15 s, every profile better ([docs/design/28](design/28-driftwire.md#four-words-over-the-dht-472-pr-3)). Not built on either host: the Windows and Mac power requests, the file port's `open_resume` / `set_hidden` on Windows and macOS. Owed: both hosts' builds and suites, both PR 1 gates, a real DHT transfer between two machines, sleep held off (`powercfg /requests`, `pmset -g assertions`), a resume after a real power-off ([Where this actually is](#driftwire-speed-time-left-and-resume-issues-529-530-2026-10-21)) |
 | Driftwire settings page, 2026-10-21 | **Driftwire's settings in Settings → Add-ons → Driftwire**, in the window's cards and controls: Nearby (Keep receiving, Receive when MediaViewer is closed), Received files (Save to), Over the internet and, while on, Remembered devices and Internet options. A new screen place, `settings` (contribution API 8, `MV_SLOT_PLACE_SETTINGS`): an add-on's own tree drawn on its page, opened only while that page shows; Driftwire's manifest asks for 8 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11), [28](design/28-driftwire.md), [12](design/12-decision-log.md)) | Mac: `mv_import_tests` passes (296 cases, new `[slots]` and `[driftwire]` cases); the app built and run with a dev-signed Driftwire: the page shows its settings, a switch there changes the window and back, the screen closes when the page does. Windows: the C# compiles; the native side is CI's. Owed: the Windows page seen in the app, Narrator / VoiceOver on the page; no perf run (Settings chrome and the add-on only, nothing on the present or decode path) |
 | `driftwire`, 2026-10-23 | **The `driftwire` command line**: Driftwire in a terminal on Linux, Windows and macOS, a host of the same engine: send nearby (the code typed off the other screen) or to a code, receive with a typed Accept, remember devices, the window's internet options; interactive only, no secret on the command line, its own identity and data folder, a look after Claude Code's terminal UI. Linux packages: `.deb`, `.rpm` and a tarball, x86_64 and arm64, from signed apt and dnf repositories on GitHub Pages with a one-line installer; macOS from a Homebrew tap (a universal program, signed and notarized), Windows from a PowerShell one-liner (a zip, per user, Authenticode-signed when Trusted Signing is configured); all three published by stable releases once `MV_DRIFTWIRE_REPO=1` (2026-10-24, [Publishing the command line](#publishing-the-command-line)) ([docs/design/28](design/28-driftwire.md#from-a-terminal-driftwire), [12](design/12-decision-log.md#driftwire)) | Linux container only: `"[cli]"` passes (63 cases) in RelWithDebInfo, Debug + ASan / UBSan and the packaging build (GCC 13 and GCC 12), the whole `"[driftwire]"` (237 cases) in RelWithDebInfo (234 in Debug + ASan / UBSan, before the review fixes), idle measured; the three packages built here, the `.deb` installed and run; the package repository built, installed from with apt, upgraded and removed, its signatures refused when changed (apt and dnf), here only; the Windows one-liner run in its test mode under pwsh, the formula under Ruby. Windows and macOS: compiled by CI only, and their release jobs, Homebrew and the one-liner on Windows not run. Owed: a real two-machine transfer over Wi-Fi with the command line on Linux and the app on a Mac or a PC; CI's Ubuntu 22.04 and arm64 legs and its Windows installer check; the site and the tap live (the owner's setup) ([Where this actually is](#the-driftwire-command-line-2026-10-23)) |
 | Driftwire transfer card, 2026-10-28 | **A transfer shows itself**: when a send or an offer starts, when its bytes start to move and when it ends, the Driftwire window glides to its card, which rises in when new and glows with an accent outline that fades, so a send begun from a code typed in “Send to a code” (or a tile under Nearby) is seen without scrolling up; progress alone never moves the page. A new screen key, `reveal` on a stack, contribution API 9 ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11), [28](design/28-driftwire.md)) | Mac: `mv_import_tests "[driftwire]~[.driftwire-dht-live]"` (266 cases, one new) and `"[slots],[addon]"` pass; `mv_script_tests` passes; the SwiftUI package builds. Windows: the C# compiles; the native side is CI's. Owed: the glide, rise and glow seen in the running app on both hosts, with Reduce Motion / animations off, and both PR 1 gates |
+| #620 | **What's new in the update notice**: "Update ready — restart" ends its tooltip with up to three signed lines of what changed; Windows reads the manifest's `notes` (schema 2 accepted, 1 still written), the Mac the appcast's embedded plain-text description; no extra request ([docs/design/13](design/13-updates-and-telemetry.md#staging-and-restart)) | Draft. Linux container: the updater suite (112 cases) and the release / macpack / whats_new Python suites pass. Owed: both hosts built and the notice seen, a proxy log, both PR 1 gates ([Where this actually is](#whats-new-in-the-update-notice-620-both-hosts)) |
+| #612 | **Settings → Storage**: what MediaViewer keeps on disk with sizes (thumbnails, file search, clipboard copies, metadata snapshots, crash reports, the telemetry spool, each add-on with its data); the thumbnail cache tidies itself (old specs, gone or changed files, an optional size cap, off by default) and has **Clear** ([docs/design/04](design/04-image-pipeline.md#thumbnail-cache-upkeep)) | Draft: the shared core is tested on Linux; both host halves are written but not built, and the verify line and both present-loop gates are not run ([below](#settings--storage-and-the-self-tidying-thumbnail-cache-612)) |
 | Linux PR 1 | **OpenGL present lab on Wayland**: a raw xdg toplevel, EGL desktop GL on an sRGB surface, frame-callback pacing at `eglSwapInterval(0)`, `wp_presentation` statistics, idle → stop presenting, F3, `frametime` on Linux ([docs/design/10](design/10-roadmap.md#linux-pr-1--opengl-present-lab), [03](design/03-rendering.md#the-linux-present-path)) | Draft. Built and run in a Linux container under headless Weston only (GL and pixman renderers): `mv_tests` and the smoke pass, the report is labelled weaker and fails the gate as it must. The Windows and Mac builds now also compile the Linux pacer and its tests: CI's. Owed: the gate on a real session (Mutter or KWin, Mesa on Intel or AMD), a Linux GPU runner, both other PR 1 gates ([Where this actually is](#linux-pr-1-the-opengl-present-lab-on-wayland-2026-10-23)) |
+| #610 | **Clip thumbnails in Explorer and Finder**: MKV, WebM, AVI and TS (and, in Explorer, any clip MediaViewer is the default for, such as an AV1 or VP9 MP4 without a Store extension) get the filmstrip's poster instead of a generic icon; read through a seekable reader, never whole, under the handler's 4 s deadline and in-flight cap ([docs/design/09](design/09-build-and-test.md#windows-integration), [12](design/12-decision-log.md)) | Draft. The shared core (`shellext/thumb_poster`, `player::poster_frame` over a `byte_source`) built and its tests run on Linux, also under ASan / UBSan; the Windows handler and the Quick Look extension are written, not compiled here. Owed: both builds, the hands-on verify on both, both PR 1 gates ([Where this actually is](#clip-thumbnails-in-explorer-and-finder-issue-610-2026-11-02)) |
+| #614 | **Print** (`Ctrl+P` / `⌘P`, File ▸ Print…, the bar's Open): the photo on screen with its crop and adjusts baked, at fit or fill, or two or more marks as a 2×2 / 3×4 / 4×5 contact sheet (automatic: 12 marks are 3×4), file names off unless asked; the bake runs on the pool and nothing is written, so Cancel leaves no file ([docs/design/16 "Print"](design/16-commands.md#print)) | Draft. Core layout and bake written; `mv_tests "[print]"` layout cases and the router / command-table / snapshot tests pass on Linux. The bake tests (`test_edit_session.cpp`) and both host halves (PrintDlgEx + GDI on Windows, NSPrintOperation on the Mac) are written but not built here. Owed: both builds, the verify by hand (a cropped JPEG to PDF at fit matching the export, 12 marks as one 3×4 page, Cancel leaves no file, `?` lists the key), both PR 1 present-loop gates |
+| #617 | **Pinned folders and jump-list Tasks**: pin a folder from a welcome-card row's right-click menu and it stays first on the card, the jump list (its own "Pinned folders" category), the Dock menu and Open Recent however many folders are opened after it; the jump list gains New window, Open folder… and (with Import installed) Import… ([docs/design/10](design/10-roadmap.md#pr-15--os-integration)) | Draft. Shared rule and its tests built and run in a Linux container only; neither host built here. Owed: both host builds, both verifies, both PR 1 gates ([Where this actually is](#pinned-folders-and-jump-list-tasks-issue-617-2026-11-02)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -129,7 +135,7 @@ Then the **PR 12 metadata writes** (Windows and macOS, same core): keypad `0`–
 
 And **PR 13 / 14 clip editing** (Windows and macOS, same core): on a clip, `Ctrl+T` (`⌘T`) arms trim — `[` `]` set in and out, the scrub bar shows the keyframe grid and what will be kept, `P` previews the cut as a loop, `Enter` saves an instant keyframe cut (stream copy, no quality loss) and `Shift+Enter` a frame-accurate re-encode on the GPU's hardware encoder (NVENC / Quick Sync / AMF / Media Foundation, VideoToolbox on Mac; labelled slower). `Ctrl+S` on a clip opens the clip tools: lossless rotate, split, remove in–out, MP4 ↔ MKV remux, save the frame as PNG / JPEG, extract the audio (copy, WAV or FLAC), and GIF / WebP. Every result is a new file beside the clip (`<name>_trimmed.mp4`, …); the original is never touched, and jobs run in a Jobs pane (`Ctrl+J`) where they can be cancelled without leaving a partial file. Anything that decodes or encodes runs in a separate helper process (`MediaViewerClipJob`), so a crash in a GPU driver fails that one job and never the viewer. The shared core is also tested headless on Linux ([tools/portable](../tools/portable/README.md)).
 
-**PR 15 OS integration** (Windows and macOS, same command rows): `Ctrl+Shift+C` (`⌘⇧C`) copies the marked or current file's path as text; `Ctrl+Alt+C` (`⌘⌥C`) copies the photo as you see it, edits applied, as a PNG (both a file and an image, so it pastes into Explorer / Finder and into Word, Keynote or a chat; no EXIF rides along); `Ctrl+Shift+S` (`⌘⇧S`) opens the share menu: Driftwire, then the system Share sheet (#444). The folders you open show up as **Recent folders** in the taskbar jump list and in the Dock icon's menu, in File ▸ Open Recent on the Mac, and as clickable rows on the empty window's welcome card (up to six, as many as the window has room for; a folder that has gone is dropped when clicked, and the × on a hovered row removes a folder from every recent list without touching it on disk). The card and the host share one layout (`src/shell/welcome_layout.h`), so the row drawn and the row hit are the same. The taskbar thumbnail gains previous / play-pause / next buttons, and on the Mac, Control Centre, the media keys and AirPods drive a clip through Now Playing. Explorer gets MediaViewer's thumbnails (HEIC, AVIF, RAW and the rest) for the file types you make MediaViewer the default for; the handler runs outside Explorer, so a damaged file can't take Explorer down. Explorer's Details-pane properties need a machine-wide install and are deferred. On the Mac, Spotlight learns the length, size and codecs of MKV, WebM, AVI and TS clips (macOS already indexes photos and MP4/MOV itself). `Ctrl+Alt`-drag (`⌘⌥`-drag) drags out the edited copy, and opening a file while MediaViewer is running opens it in the running window instead of starting a second one (`--new-instance` overrides). `Ctrl+N` (`⌘N`, File ▸ New Window) opens another window as its own process. Several windows grouped as tabs come in a later update ([docs/design/10](design/10-roadmap.md) PR 15). The macOS half is built, its tests pass and the Metal present-loop gate holds; the Windows half builds in CI. Neither platform's hands-on verify (Explorer / Finder, installed builds) has been run yet.
+**PR 15 OS integration** (Windows and macOS, same command rows): `Ctrl+Shift+C` (`⌘⇧C`) copies the marked or current file's path as text; `Ctrl+Alt+C` (`⌘⌥C`) copies the photo as you see it, edits applied, as a PNG (both a file and an image, so it pastes into Explorer / Finder and into Word, Keynote or a chat; no EXIF rides along); `Ctrl+Shift+S` (`⌘⇧S`) opens the share menu: Driftwire, then the system Share sheet (#444). The folders you open show up as **Recent folders** in the taskbar jump list and in the Dock icon's menu, in File ▸ Open Recent on the Mac, and as clickable rows on the empty window's welcome card (up to six, as many as the window has room for; a folder that has gone is dropped when clicked, and the × on a hovered row removes a folder from every recent list without touching it on disk). Right-click a card row for **Pin to top** / **Unpin** (#617): up to five pinned folders stay first, with a pin on the card, in the jump list's own **Pinned folders** category, in the Dock menu and in Open Recent, however many other folders are opened; unpinning puts the recents back in plain most-recent order. The jump list also has Tasks: **New window**, **Open folder…** and, while Import is installed, **Import…** (the Mac's Dock menu already had New Window). The card and the host share one layout (`src/shell/welcome_layout.h`), so the row drawn and the row hit are the same. The taskbar thumbnail gains previous / play-pause / next buttons, and on the Mac, Control Centre, the media keys and AirPods drive a clip through Now Playing. Explorer gets MediaViewer's thumbnails (HEIC, AVIF, RAW and the rest, and from #610 a poster for clips such as MKV, WebM, AVI and TS) for the file types you make MediaViewer the default for; the handler runs outside Explorer, so a damaged file can't take Explorer down. Explorer's Details-pane properties need a machine-wide install and are deferred. On the Mac, Spotlight learns the length, size and codecs of MKV, WebM, AVI and TS clips (macOS already indexes photos and MP4/MOV itself). `Ctrl+Alt`-drag (`⌘⌥`-drag) drags out the edited copy, and opening a file while MediaViewer is running opens it in the running window instead of starting a second one (`--new-instance` overrides). `Ctrl+N` (`⌘N`, File ▸ New Window) opens another window as its own process. Several windows grouped as tabs come in a later update ([docs/design/10](design/10-roadmap.md) PR 15). The macOS half is built, its tests pass and the Metal present-loop gate holds; the Windows half builds in CI. Neither platform's hands-on verify (Explorer / Finder, installed builds) has been run yet.
 Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
@@ -373,7 +379,7 @@ open build-darwin/MediaViewer.app
 ```
 
 The bundle holds the app, `MediaViewerThumbnails.appex` (Finder thumbnails for the D5
-still set, run by Quick Look in its own sandboxed process, never inside Finder), the LGPL
+still set and for MKV, WebM, AVI and TS clips, run by Quick Look in its own sandboxed process, never inside Finder), the LGPL
 dylibs in `Contents/Frameworks`, and, when configured, Sparkle. It registers the D5 still
 and video types at rank *Alternate*: MediaViewer shows up in Finder's **Open With** and never
 makes itself the default merely by being installed. First launch shows a setup sheet with
@@ -624,6 +630,7 @@ Use GCC there (12 or newer): clang with libstdc++ rejects `core/json.h`.
 | `F7` / `F8` | copy / move the marked items (or the current one) to the last folder used. `Shift+F7` / `Shift+F8` pick a folder. Never overwrites: a taken name becomes `name (2).ext` |
 | `Delete` | move the marked items (or the current one) to the Recycle Bin, after asking. A drive with no Recycle Bin is refused, never deleted permanently |
 | `F2` | rename the current file (File ▸ Rename… on the Mac). Type the name without its extension; `Enter` renames. Its RAW+JPEG or Live Photo partner and its `.xmp` sidecars are renamed with it. A taken name becomes `name (2)`; nothing is overwritten |
+| `Ctrl+P` | print (`⌘P`, File ▸ Print… on the Mac): the photo on screen with its edits, fit or fill; with two or more marks, a contact sheet (2×2, 3×4 or 4×5, file names optional). The options are in the print dialog |
 
 Drop files or a folder on the window, the gallery, or the filmstrip. Drag a
 thumbnail (gallery, filmstrip, or a Local search result) or the current image
@@ -643,7 +650,7 @@ A one-pixel grid appears at 400 % and above.
 | `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP/GIF/WebP/TIFF/ICO/HEIC/AVIF/RAW, MP4/MOV/MKV/WebM/AVI/TS) |
 | `Ctrl+Shift+O` | open a folder |
 | `Ctrl+E` | show the current file in Explorer, selected (`⌘E`: Finder; a Photos library item opens in Photos, selected). Open menu: **Show in Explorer** (Mac: **Show in Finder**, or **Open in Photos** while a Photos library item is current; `?` and Settings use the same words) |
-| Open ▸ **Recent folders** | the folders you opened lately, the jump list's (File ▸ Open Recent on the Mac). From the keyboard: `Tab` to the command bar, `Enter` on Open, arrow to Recent folders, `Right`. A folder that has gone beeps and leaves the list, as a welcome-card row does. The welcome card writes your profile folder as `~` (`~\Pictures`). With OneDrive set up, a **OneDrive** row leads the card, above Recent folders, as iCloud Photos does on the Mac: it opens OneDrive's Pictures folder (OneDrive itself if there is none) |
+| Open ▸ **Recent folders** | the folders you opened lately, the jump list's (File ▸ Open Recent on the Mac); pinned folders first (#617: right-click a welcome-card row to pin or unpin). From the keyboard: `Tab` to the command bar, `Enter` on Open, arrow to Recent folders, `Right`. A folder that has gone beeps and leaves the list, as a welcome-card row does. The welcome card writes your profile folder as `~` (`~\Pictures`). With OneDrive set up, a **OneDrive** row leads the card, above Recent folders, as iCloud Photos does on the Mac: it opens OneDrive's Pictures folder (OneDrive itself if there is none) |
 | `Space` / `,` / `.` on an animation | play or pause (a finished one plays again) / previous frame / next frame, like a clip. Delays follow browsers: 10 ms or less plays as 100 ms |
 | `?` | the shortcuts for what you are doing right now. Also the `?` button on the right of the command bar |
 | `Ctrl+,` | Settings: **General** has grouped preferences with aligned switches and automatic saving; **Keyboard shortcuts** has the searchable remapping list. Both pages scroll independently of the header and Done button. Search the list by command or shortcut. Choose a shortcut and press its replacement; viewer shortcuts are suspended while Settings is open. Escape or Cancel change cancels capture; Escape otherwise closes Settings. Conflicts swap shortcuts, and Reset to default restores the map. `?` lists whatever you bind |
@@ -842,6 +849,15 @@ owed: [docs/design/17](design/17-local-ai-search.md); the Mac checklist is
    destructors; `src/addon/host.h`, "Quit") and prints the time it took; `--quit-legacy` is the
    old wait of up to 5 s, `--quit-hash` re-verifies the pack meanwhile as Settings does, and a
    larger `--quit-after` quits once the pack is idle.
+
+**Indexed folders are watched** (docs/design/17 "The host watches each folder root"). New,
+removed and moved-in files are found without a rescan. Tests, no pack needed:
+`mv_tests "[tree_watch]"` (the host's `io::tree_watcher`, on real files) and
+`mv_ai_tests "[watch]"` (the engine through the real host table: a file added three folders
+down walks only its folder; removed files and folders moved in or out; a paused folder is not
+watched; a Photos asset that came only in iCloud this session indexes once Photos downloads it).
+In the app, with a sideloaded pack: index a folder, copy a photo into a subfolder of it, and
+search for it within a few seconds without opening that folder.
 
 **An unfinished index waits for Resume** (issue #299; docs/design/17 "Unfinished roots wait for
 Resume"). A root left mid-index is held at the next start, and the window asks "Resume indexing
@@ -1170,6 +1186,10 @@ cmake --build build-fuzz --config Release --target mv_fuzzers
 #   /opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -fsanitize=fuzzer,address,undefined -fno-rtti -Isrc \
 #     -Itools/fuzz tools/fuzz/fuzz_meta_location.cpp src/meta/location_edit.cpp -o fuzz_meta_location
 #   ASAN_OPTIONS=detect_leaks=0 ./fuzz_meta_location -max_total_time=600 -max_len=512 corpus tests/data/seeds/location
+# #606: fuzz_meta_gpmf (a GoPro GPMF packet and a DJI subtitle cue) is pure too:
+#   clang++ -std=c++20 -fsanitize=fuzzer,address,undefined -fno-rtti -Isrc -Itools/fuzz \
+#     tools/fuzz/fuzz_meta_gpmf.cpp src/meta/gpmf.cpp -o fuzz_meta_gpmf
+#   ASAN_OPTIONS=detect_leaks=0 ./fuzz_meta_gpmf -max_total_time=600 corpus tests/data/seeds/gpmf
 # On a Mac, Homebrew's LLVM has libFuzzer (Apple clang does not): build
 # tools/fuzz/fuzz_script.cpp, third_party/lua/src/*.c (as C++),
 # src/addon/script_runtime.cpp, script_thread_posix.cpp, open_manifest.cpp and
@@ -1235,6 +1255,7 @@ cmake --build build --target mv_places
 build/bin/mv_tests "[places]"                  # map pixels, cache, gestures, section, search
 build/bin/mv_import_tests "[places]"           # its manifest, then the add-on through a signed store
 build/bin/mv_tests "places: map render time at pane width x 160 pt"   # in "[.perf-bench]"
+build/bin/mv_tests "places: the folder map over 600 geotagged items at 2x"   # #601, in "[.perf-bench]"
 MV_PLACES_MAP_DUMP=<dir> build/bin/mv_tests "[.places-map-dump]"      # BMPs of the map to look at
 # the map's fuzzer is fuzz_places_map in mv_fuzzers (run.ps1 -Harness places_map)
 # Package it (release: the workflow does this after signing the code)
@@ -1435,6 +1456,28 @@ the settings file was kept.
 The settings / keymap / theme parsers have a libFuzzer harness, `tools/fuzz/fuzz_addon_contributions.cpp`,
 in the Windows clang-cl fuzz build (`mv_fuzzers`, seeds in `tests/data/seeds/addon`); its header
 has the one-line Homebrew LLVM build for a quick run on a Mac.
+
+### "What's new" in the update notice (#620, both hosts)
+
+The release writes a short "What's new" once (`tools/package/whats_new.py`, from the run's
+`whats_new` input or the commit subjects since the last release) and puts it where each app
+already looks: the Windows manifest's signed `notes` and the Mac appcast's embedded plain-text
+description ([docs/design/13](design/13-updates-and-telemetry.md#staging-and-restart)). Both
+bars add it to the "Update ready — restart" tooltip. Tests:
+
+```sh
+python3 tools/package/test_whats_new.py -v        # the rule, fitting, the git history
+python3 tools/package/test_github_release.py -v   # prepare's output, the release page
+python3 tools/mac/test_macpack.py -v              # embedded, never a releaseNotesLink
+dotnet run --project src.managed/MediaViewer.Updater.Tests -c Release   # add -p:EnableWindowsTargeting=true off Windows
+```
+
+Where it is (2026-11-02): the updater suite (112 cases, the notes rule, altered notes failing the
+signature, schema 1 still updating) and the three Python suites pass in a Linux container with
+the .NET 8 SDK; the manifest tool wrote and signed a manifest with notes there. Not built or run:
+the WinUI chrome and the Mac host (`main_mac.mm`, the Swift bar), `generate_appcast` on a real
+feed, a release run. Owed: an update with notes shown in the restart notice on both hosts, a
+proxy log showing no request beyond today's fixed asset URLs, both PR 1 present-loop gates.
 
 ### Add-on restart card (#510, both hosts)
 
@@ -1750,6 +1793,11 @@ line. Signing needs credentials the repo does not and must not hold:
   -SigningMetadata trusted-signing.json `     # Azure Trusted Signing
   -ManifestKey C:\offline\release.key         # Ed25519, signs the update manifest
 ```
+
+`-NotesFile whats-new.txt` signs a "What's new" into the manifest (#620; write it with
+`python3 tools/package/whats_new.py`, which holds it to the manifest's rule); the release
+workflow passes the one it made. On the Mac, `macpack.py release --release-notes-file` embeds
+the same text in the signed appcast.
 
 Without Authenticode, Windows SmartScreen may warn. Without a correctly signed update
 manifest, clients reject updates. The production public key is already pinned in
@@ -2093,6 +2141,92 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Clip thumbnails in Explorer and Finder (issue #610, 2026-11-02)
+
+`src/shellext/thumb_poster.{h,cpp}` beside `thumb_request`: `render_poster(byte_source&, cx)` and
+`render_poster_by` (its own thread, the same 4 s deadline and the same four-slot in-flight cap as
+stills, through one runner, `thumb_runner.h`). `player::poster_frame` gained a `byte_source`
+overload: FFmpeg reads through a custom `AVIOContext` with seek, polls the job context from its
+reads and the demuxer's interrupt callback, and produces the filmstrip's poster (same frame, sample
+aspect, display matrix). `shellext::classify` picks still or clip from the first 4 KiB. Explorer's
+handler keeps the shell's `IStream` for a clip, marshals it to the decode thread and reads it there; the ShellEx is now
+on `MediaViewer.Video` too. The Quick Look extension lists MKV, WebM, AVI and TS and reads a clip
+through a file reader. `fuzz_thumbnail` takes the clip path; seeds in `tests/data/seeds/video`.
+
+Run here (Linux container, g++ 13, system FFmpeg 6.1): `test_thumb_poster.cpp` and `test_poster.cpp`
+against the touched sources (the still decoder stubbed), plain and under ASan / UBSan: all pass —
+a poster per container (MKV, AVI, TS, MP4) byte-identical to `poster_frame(path)`, the display
+matrix, truncations, junk, a failing reader, a 4 GiB source read under 16 MB, cancellation, the
+deadline and shared cap, the file reader. The harness replayed over the video seeds, their
+truncations and 1,600 byte-flip mutants under ASan: clean (no libFuzzer runtime here).
+`tools/mac/check_plists.py` passes.
+
+Not run: the Windows DLL and the Quick Look extension were not compiled (no MSVC or Xcode here), so
+neither host half has run. Owed on Windows: with MediaViewer the default for `.mkv` / `.webm`, a
+poster in Explorer that matches the filmstrip; a truncated MKV and a 4 GB clip leave Explorer
+running and answer within 4 s; no Explorer process maps `avcodec` (the handler loads only in
+`dllhost`); and that the shell's `IStream`, marshalled to the decode thread, reads there. Owed on the Mac: the same in Finder. Both PR 1
+present-loop gates. WebM is tested through the Matroska demuxer it shares, not with a VP8/VP9 file
+(the fixture encodes MPEG-4 Part 2 only). Linux: the planned thumbnailer (docs/plans/linux.md §5)
+can call `render_poster_by(open_file_source(path), …)`; nothing Linux-specific was built.
+
+### Print: Ctrl+P / ⌘P (#614, docs/design/16 "Print", 2026-11-02)
+
+Written on both hosts, built on neither yet. What ran (Linux, g++ 13, `-Wall -Wextra -Werror
+-fno-rtti`): `tests/test_print_layout.cpp` against `src/shell/print_layout.cpp` (fit, fill, the
+printable area, 300 dpi pixels, 2×2 / 3×4 / 4×5 and automatic, captions: all pass), and the command
+suites (`test_key_router*.cpp`, `test_command_contract.cpp`, `test_command_coverage.cpp`,
+`test_keymap.cpp`: all pass, `tests/data/command_table.snapshot` regenerated with the `Ctrl+P`
+rows). `src/edit/export.cpp`, `src/shell/edit_session.cpp` and `tests/test_edit_session.cpp`
+compile (`-fsyntax-only`); the bake tests there (`"[print]"`) need the codec registry and run in
+CI's `mv_tests` only. `main.cpp`'s print path (PrintDlgEx, its Options page, GDI on the pool),
+`main_mac.mm`'s (NSPrintOperation, the panel accessory), the Open flyout item (C#) and the Mac
+bar item (Swift) have not been compiled. Owed: the Windows and Mac builds; the verify by hand on
+both (a cropped JPEG to PDF at fit with colours matching the export, 12 marks as one 3×4 page,
+Cancel leaves no file, `?` lists the key); both PR 1 present-loop gates. The Linux host has no
+print path (its order is open, `docs/plans/linux.md` §10); the layout is built in its tests.
+
+### Settings → Storage and the self-tidying thumbnail cache (#612)
+
+The core is in `src/image/thumb_store.cpp` (`sweep`, `submit_sweep`, `clear`, and `store` dropping a
+path's other stamps) and `src/io/storage.cpp` (`measure_storage`, on `io::list_children` and
+`io::tree_size` in the file port). Tests: `mv_tests "[thumb],[storage]"`; the 10,000-file spec-bump
+case is `mv_tests "[.perf-bench]"` ("thumb store sweep after a spec bump"). Windows: ABI 0.34
+(`mv_storage_report_json`, `mv_thumb_cache_clear` / `_sweep` / `_set_cap`), the session's sweep
+after the first `IMAGE_OPENED`, and `IslandHost.Storage.cs`. Mac: `folder_model::start_thumb_sweep`,
+the `mv_chrome_storage_report` / `mv_chrome_thumb_cache_*` bridge and `SettingsView.swift`'s
+Storage section.
+
+Only the core has been built and run, on Linux (g++ 13, `-Wall -Wextra -Werror -fno-rtti`, and
+again under ASan/UBSan): the `[thumb]` and `[storage]` cases pass, and the bench swept 10,000
+old-spec rows (191 MB) and kept 1,000 current ones in about 120 ms on a shared container. Not yet
+done: the Windows and Mac builds, the issue's verify line by hand on either platform (a second
+folder visit after a sweep, Clear then a visit, idle at 0 presents outside the sweep), and both
+present-loop gates during a sweep.
+
+### Pinned folders and jump-list Tasks (issue #617, 2026-11-02)
+
+How it works is in [docs/design/10](design/10-roadmap.md#pr-15--os-integration) (PR 15, "Pinned
+folders and Tasks"). The rule is shared C++ (`src/shell/os_integration.h`: `pin_folder`,
+`remove_folder`, `pinned_then_recent`); settings keep the pins in `[recent] pinned0`…`pinned4` on
+Windows and `mv.pinnedFolders` on the Mac.
+
+- **Built and run, Linux container only** (GCC 13, `-Wall -Wextra -Werror -fno-rtti`): a scratch
+  CMake build of `tests/test_os_integration.cpp` + `src/shell/os_integration.cpp` against
+  Catch2 3.4 — all 10 cases pass, among them the two new `[pinned]` ones (a pin survives ten newer
+  opens on the shown list and the card; unpinning gives back the MRU list unchanged).
+  `src/shell/settings.cpp` compiles there (`-fsyntax-only`). The new `load_pinned_folders` /
+  `save_pinned_folders` round-trip in `tests/test_settings_store.cpp` is Windows-only and was not run.
+- **Not built:** the Windows host (`main.cpp`: the jump list's categories and `AddUserTasks`,
+  `--task open-folder|import` over the single-instance pipe, the card row's menu) and the Mac host
+  (`main_mac.mm`: the Dock menu, Open Recent, the card row's menu), and the card's pin glyph
+  (`welcome_screen.h`, ImGui).
+- **Owed:** both host builds; the verify on both (the jump list shows New window / Open folder…
+  and New window opens a second empty window; a pin survives 10 newer opens on the card, the jump
+  list and the Dock menu; unpinning restores MRU order; soak and scripted runs record nothing;
+  `CommitList` stays on the pool); both PR 1 present-loop gates. Two windows still overwrite each
+  other's `settings.ini` (#575), pins included, until that issue is fixed.
 
 ### Enhance: model downloads, the sheet, photos, sound and a clip's picture (#297, docs/design/29-enhance.md, 2026-10-26)
 
@@ -2791,6 +2925,49 @@ Five changes to the AI pack's index and query language
   pin that size (#388); the ABI smoke test compares the C# mirror with the header. Windows OCR on
   clips, both PR 1 gates with the pack indexing are owed.
 
+### GoPro and DJI clips: position, route and `place:` along it (#606, 2026-11-02)
+
+A GoPro or DJI clip now has a position: the first fix of the GPS route in its telemetry (GoPro's
+GPMF `gpmd` track, GPS5 and GPS9; DJI's subtitle telemetry text), read by a bounded, fuzzed
+reader in `mv_meta_parse` ([06](design/06-metadata.md) "Telemetry routes"). The tag pass reads
+the telemetry's head (until the first fix, at most 8 packets); the pane's read takes the whole
+route. Places draws the route on its map and matches `place:` anywhere along it, by folder
+(host table `route_of`, 128 points) and over the whole index (AI pack schema 11 `tracks`,
+streamed as route-point rows) ([27](design/27-places.md) "Routes", [17](design/17-local-ai-search.md)
+"Schema 11", ABI note under 0.33).
+
+- **Tests:** `mv_tests "[telemetry]"` (`tests/test_meta_telemetry.cpp`: GPMF payloads built byte
+  for byte from the published layout, GPS5 and GPS9, no lock / poor DOP / no SCAL / 0, 0
+  refused, truncation and lying sizes, nesting capped, route thinning, DJI's two text shapes; an
+  MP4 with a `gpmd` track written in-process: the head read stops at the first fix after two
+  packets without lock, the full read's route within 20 m of every fix, a clip that never locks,
+  a DJI `mov_text` track, a film's subtitles ignored); `mv_tests "[meta][location]"`
+  (`read_location` and `read_route` on a GoPro clip; a still has no route); `mv_tests "[places]"`
+  (`draw_route`, the section framing and drawing a route, `route_why`); `mv_ai_tests "[places]"`
+  (schema 10 -> 11 reads only clips again, tracks round-trip and cap, the backfill reads a fake
+  host's route). Seeds: `MV_SEED_DIR=tests/data/seeds mv_tests "[.write-seeds]"` writes
+  `tests/data/seeds/gpmf`.
+- **Verified here (Linux container, g++ 13, ASan + UBSan, 2026-11-02):** a scratch build of
+  `test_meta_telemetry.cpp` with `gpmf.cpp`, `clip.cpp` and `format.cpp` against the system
+  FFmpeg 6.1: 9 cases, all passed. `test_places.cpp` with the Places engine and `src/geo` on the
+  test blob: 15 cases, 14 passed, 1 skipped (full blob). The index_db half of the AI test, with
+  `index_db.cpp` and SQLite: passed. `fuzz_meta_gpmf` under a seed-and-mutate driver (this
+  machine has no libFuzzer runtime), ASan + UBSan, 600 s: 97 million executions, clean. Every other
+  touched source (`host.cpp`, `addon_media.cpp`, the AI pack's `engine.cpp` / `host.cpp` /
+  `addon_entry.cpp`, Places' `addon_entry.cpp`) compiles here with `-Wall -Wextra -Werror`.
+- **Perf (same container, warm cache, Release `-O2`, alternated, 200 runs):** the tag pass's clip
+  read of a 60 s 320 × 240 MPEG-4 clip with a 1 Hz `gpmd` track (lock after 3 s): median 0.466 ms
+  without the telemetry read, 0.482 ms with it (+0.016 ms; p90 0.540 → 0.547); a clip with no
+  telemetry 0.441 ms. The pane's full read adds ~0.4 ms for 60 packets. Synthetic, small packets
+  (real GoPro packets carry the IMU too, tens of kilobytes) on a shared container: the verify's
+  "at most 2 ms per clip" is owed on the owner's real clips on both platforms.
+- **Not built or run:** `mv_tests`, `mv_ai_tests` and `mv_import_tests` as whole suites (Exiv2,
+  MSVC and Xcode are not on this machine); the Windows and Mac builds; both PR 1 present-loop
+  gates (the change adds no render-thread or UI-thread work: the telemetry read is on the
+  metadata worker, the route drawing on Places' worker); the verify's three GoPro and one DJI
+  fixtures against the device's own export (no real camera file was at hand). DJI's newer `djmd`
+  protobuf track is not read.
+
 ### Place terms need Places, and intersect (#441, 2026-10-16)
 
 Without the Places add-on, `place:portugal` in Local search now shows no results and "Place search
@@ -2929,6 +3106,32 @@ installed (optional; coordinates still show without it).
   machine was loaded), launch → first pixel with the add-on installed (alternated), pinch and
   mouse-wheel zoom by hand (computer use cannot send them; the gesture maths is unit-tested and
   #348's chrome sends the events), Windows anything: the add-on compiles in CI only.
+
+### Places folder map (issue #601, 2026-11-02)
+
+Built on `claude/nice-thompson-5f7qjp-601`: the dot layer (`src/addons/places/folder_map.*`), the
+engine's toggle, refresh and hit test, the add-on's walk (`locations_in`) and click
+(`open_item`), the registry's `open_item` and `info_json` `"open"`, `MV_SLOT_EVENT_TAP` checked by
+`screen::tree`, and both chromes' halves (WinUI `Tapped` on an interactive surface and the strip
+selection; SwiftUI's single tap after the double and `FolderStore.select(path:)`).
+
+- **Run (Linux container, g++ 13, shared with other builds):** `mv_tests "[places]"` from a scratch
+  build of the Places engine and `tests/test_places.cpp` (the repo's CMake was not used): 15 cases
+  pass, 1 skipped (the full blob). The new `[.perf-bench]` case, 600 items, 640 x 320 px, every
+  zoom step, three runs: dot layer 0.27–0.29 ms CPU median / 0.50–0.53 p90 / 0.94–1.12 max; base
+  map (test blob) plus the layer 6.0–6.3 / 6.6–7.6 / 7.6–8.9 ms; an engine refresh with the base
+  cached 0.27–0.31 ms median. The same tests pass under ASan + UBSan.
+  `addon_entry.cpp`, `src/addon/slots.cpp`, `screen.cpp` and `host.cpp` compile
+  (`-fsyntax-only`, `-Werror`).
+- **Written, not run here:** the new `[slots]` case (`open_item`'s rules), the `[screens]` tap
+  check and the `mv_import_tests "[places]"` folder-map steps (toggle, a click in a corner, a
+  click that opens, off) need libsodium 1.0.21, which this container lacks. The C# and Swift
+  halves are not compiled.
+- **Owed:** both apps built; a click on a dot opening the right file, by hand, on both;
+  the full-blob bench (the container could not download the data); 0 presents idle with the
+  section shown and the layer on, and `--browse-soak` with the pane open against base, on both,
+  with both PR 1 gates; the folder walk's cost on a real 2,000-file folder (it is the host's
+  `locations_in`, served from the metadata cache).
 
 ### Screens and slots (PRs 58-59, 2026-10-11)
 

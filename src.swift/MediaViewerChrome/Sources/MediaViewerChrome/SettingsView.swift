@@ -230,6 +230,155 @@ private struct SettingsButtonStyle: ButtonStyle {
   }
 }
 
+// #612 (docs/design/04 "Thumbnail cache upkeep"), Settings -> Storage, the twin
+// of IslandHost.Storage.cs: what MediaViewer keeps on disk with sizes, the
+// thumbnail cache's limit and Clear. Sizes are measured and Clear runs on a
+// background task, never the main thread (rule 1).
+struct StorageRow: Identifiable, Equatable {
+  let id: String
+  let bytes: Int64
+}
+
+@MainActor
+final class StorageStore: ObservableObject {
+  static let shared = StorageStore()
+
+  /// The limit's choices. 0, the default, is none: a cap too small brings back
+  /// cold thumbnails, so none smaller than 1 GB is offered.
+  static let capChoices: [UInt64] = [0, 1_000_000_000, 2_000_000_000, 5_000_000_000, 10_000_000_000,
+                                     20_000_000_000]
+
+  @Published private(set) var rows: [StorageRow] = []
+  @Published private(set) var measuring = false
+  @Published private(set) var clearing = false
+  @Published private(set) var cap: UInt64 = 0
+
+  private init() {}
+
+  func refresh() {
+    cap = mv_chrome_thumb_cache_cap()
+    guard !measuring else { return }
+    measuring = true
+    Task.detached(priority: .utility) {
+      // One walk when it fits: asking for the size first would walk twice.
+      var size = 64 * 1024
+      var json = ""
+      for _ in 0..<3 {
+        var buf = [CChar](repeating: 0, count: size)
+        let need = Int(mv_chrome_storage_report(&buf, Int32(buf.count)))
+        if need < size { json = String(cString: buf); break }
+        size = need + 4096
+      }
+      let obj = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
+      let rows = (obj["rows"] as? [[String: Any]] ?? []).compactMap { r -> StorageRow? in
+        guard let id = r["id"] as? String else { return nil }
+        return StorageRow(id: id, bytes: (r["bytes"] as? NSNumber)?.int64Value ?? 0)
+      }
+      await MainActor.run {
+        self.rows = rows
+        self.measuring = false
+      }
+    }
+  }
+
+  func clear() {
+    guard !clearing else { return }
+    clearing = true
+    Task.detached(priority: .userInitiated) {
+      _ = mv_chrome_thumb_cache_clear()
+      await MainActor.run {
+        self.clearing = false
+        self.refresh()
+      }
+    }
+  }
+
+  func setCap(_ bytes: UInt64) {
+    mv_chrome_set_thumb_cache_cap(bytes)
+    cap = mv_chrome_thumb_cache_cap()
+  }
+
+  /// What each row is called (io/storage.h has the ids).
+  static func words(_ id: String) -> (title: String, detail: String)? {
+    switch id {
+    case "thumbnails":
+      return ("Thumbnails", "Previews of the photos and videos you have browsed. They tidy themselves; Clear removes them all, and they are made again as you browse.")
+    case "search_cache":
+      return ("File search", "The tags of files in folders you have searched or sorted by date taken.")
+    case "clipboard":
+      return ("Clipboard copies", "Images copied with ⌘⌥C.")
+    case "metadata_snapshots":
+      return ("Metadata snapshots", "What a file's details were before you changed them, so you can revert. Never removed automatically.")
+    case "crash_reports":
+      return ("Crash reports", "Kept on this Mac. Nothing is sent without your answer.")
+    case "addon_settings":
+      return ("Add-on settings", "What you chose on add-ons' settings pages.")
+    default:
+      break
+    }
+    if id.hasPrefix("addon:") {
+      let folder = String(id.dropFirst("addon:".count))
+      switch folder {
+      case "ai": return ("AI search", "The add-on and its index of your photos.")
+      case "places": return ("Places", "The add-on and its place database.")
+      case "import": return ("Import", "The add-on.")
+      case "driftwire": return ("Driftwire", "The add-on.")
+      case "enhance": return ("Enhance", "The add-on and the models it downloaded.")
+      default: return (folder, "An add-on and its data.")
+      }
+    }
+    if id.hasPrefix("open_addon:") {
+      return (String(id.dropFirst("open_addon:".count)), "An add-on from another maker.")
+    }
+    return nil
+  }
+
+  static func sizeText(_ bytes: Int64) -> String {
+    ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+  }
+}
+
+private struct StorageSection: View {
+  @ObservedObject var storage = StorageStore.shared
+  @ObservedObject var settings = SettingsStore.shared
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: MVTheme.space(8)) {
+      if storage.rows.isEmpty {
+        Text(storage.measuring ? "Measuring…" : "Sizes are not available.")
+          .font(MVTheme.font()).foregroundStyle(MVTheme.body)
+      }
+      ForEach(storage.rows) { row in
+        if let w = StorageStore.words(row.id) {
+          SettingsRow(title: w.title, detail: w.detail) {
+            HStack(spacing: MVTheme.space(12)) {
+              Text(StorageStore.sizeText(row.bytes)).font(MVTheme.font()).foregroundStyle(MVTheme.body)
+              if row.id == "thumbnails" {
+                SettingsButton(title: storage.clearing ? "Clearing…" : "Clear") { storage.clear() }
+                  .disabled(storage.clearing || row.bytes == 0)
+                  .accessibilityLabel("Clear thumbnails")
+              }
+            }
+          }
+        }
+      }
+      SettingsRow(title: "Thumbnail cache limit",
+                  detail: "The cache already removes thumbnails of files that are gone or changed. A limit also removes the oldest; with a small one, folders open slower.") {
+        Picker("Thumbnail cache limit", selection: Binding(get: { storage.cap },
+                                                           set: { storage.setCap($0) })) {
+          ForEach(StorageStore.capChoices, id: \.self) { choice in
+            Text(choice == 0 ? "No limit" : StorageStore.sizeText(Int64(choice))).tag(choice)
+          }
+        }
+        .pickerStyle(.menu).frame(width: 180)
+      }
+    }
+    .onAppear { storage.refresh() }
+    // Settings stays built while hidden: each opening measures again.
+    .onChange(of: settings.visible) { _, visible in if visible { storage.refresh() } }
+  }
+}
+
 struct SettingsView: View {
   @ObservedObject private var store = SettingsStore.shared
   @ObservedObject private var theme = ThemeStore.shared
@@ -347,6 +496,9 @@ struct SettingsView: View {
             .pickerStyle(.menu).frame(width: 180)
           }
         }
+        // #612: what MediaViewer keeps on disk, the thumbnail cache's limit and Clear.
+        section("Storage")
+        StorageSection()
         // docs/design/26: the Photos library's backup, once the library was added
         // (Local search -> Add Photos Library); absent otherwise.
         PhotosBackupSection()

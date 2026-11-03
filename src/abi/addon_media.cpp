@@ -29,6 +29,7 @@
 #include "io/paths.h"
 #include "io/collision_name.h"
 #include "io/replace.h"
+#include "meta/location.h"
 #include "meta/meta.h"
 
 namespace mv::addon::media {
@@ -659,6 +660,12 @@ expected document_text(const std::string& path, const std::function<bool(const d
     if (!visit(document_line{p.page, pages, p.text})) return err(status::cancelled);
   }
   return {};
+}
+
+result<std::vector<mv_addon_route_point>> route(const std::string& path, std::uint32_t max_points) {
+  std::vector<mv_addon_route_point> out;
+  for (const meta::geo_point& p : meta::read_route(path, max_points)) out.push_back({p.lat, p.lon});
+  return out;
 }
 
 }  // namespace mv::addon::media

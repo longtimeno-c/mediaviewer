@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "abi/addon_media.h"
+#include "core/trace.h"
 #include "image/page_thumbs.h"
 #include "image/thumb.h"
 #include "io/file.h"
@@ -181,6 +182,47 @@ void folder_model::close() noexcept {
   // Jobs already submitted to `jobs_` (relist/thumb) keep their own
   // std::shared_ptr<shared_state> and finish safely against it; this object
   // is free to be destroyed without waiting for them.
+}
+
+void folder_model::start_thumb_sweep(job_system& jobs, std::uint64_t cap_bytes, std::function<bool()> busy) {
+  std::shared_ptr<shared_state> state = state_;
+  job_system* pool = &jobs;
+  (void)jobs.submit_at(
+      background_generation,
+      [state, pool, cap_bytes, busy = std::move(busy)](const job_context&) -> status {
+        if (!state->thumbs.is_open()) {
+          auto cache = io::thumb_cache_dir();
+          if (!cache) return cache.error();
+          if (auto opened = state->thumbs.open(cache.value()); !opened) return opened.error();
+        }
+        (void)state->thumbs.submit_sweep(
+            *pool, cap_bytes, busy,
+            [](result<image::thumb_sweep_stats> r) {
+              if (!r) return;
+              const image::thumb_sweep_stats& s = r.value();
+              // Counts only: never a path or a name (rule 6).
+              MV_LOG_INFO("thumb sweep: %llu rows and %llu files (%llu bytes) removed; %llu files "
+                          "(%llu bytes) kept",
+                          static_cast<unsigned long long>(s.rows_removed),
+                          static_cast<unsigned long long>(s.files_removed),
+                          static_cast<unsigned long long>(s.bytes_removed),
+                          static_cast<unsigned long long>(s.files_kept),
+                          static_cast<unsigned long long>(s.bytes_kept));
+            },
+            state);  // the pass keeps the cache alive, as a thumb job does
+        return status::ok;
+      });
+}
+
+void folder_model::stop_thumb_sweep() noexcept { state_->thumbs.stop_sweep(); }
+
+expected folder_model::clear_thumb_cache() {
+  if (!state_->thumbs.is_open()) {
+    auto cache = io::thumb_cache_dir();
+    if (!cache) return err(cache.error());
+    if (auto opened = state_->thumbs.open(cache.value()); !opened) return opened;
+  }
+  return state_->thumbs.clear();
 }
 
 std::vector<io::dir_entry> folder_model::items() const {

@@ -148,5 +148,21 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     }
     if (map && map->bgra.size() != static_cast<std::size_t>(map->width) * map->height * 4) std::abort();
   }
+
+  // #601: the folder map's dots over raw points (the host bounds them; the
+  // layer must not trust that), drawn into a picture of `v`, then a click.
+  std::vector<folder_item> items(in.take<std::uint8_t>() % 48);
+  for (folder_item& it : items) {
+    it.path = "/f/x.jpg";
+    it.lat = in.number(-90, 90);
+    it.lon = in.number(-180, 180);
+  }
+  std::vector<map_dot> dots;
+  cluster_dots(v, items, in.take<std::uint8_t>() % 50, dots);
+  if (v.width <= 640 && v.height <= 400) {
+    std::vector<std::uint8_t> out(static_cast<std::size_t>(v.width) * v.height * 4, 0xff);
+    (void)draw_dots(v, dot_palette_for(theme_tokens{}), dots, out);
+  }
+  (void)dot_at(dots, v, in.number(-100, 700), in.number(-100, 500));
   return 0;
 }

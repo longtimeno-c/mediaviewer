@@ -133,6 +133,8 @@ final class FolderStore: ObservableObject {
   @Published private(set) var updatePhase: Int32 = 0
   /// The version being downloaded or staged; nil until Sparkle names one.
   @Published private(set) var updateVersion: String?
+  /// #620: the staged update's signed "What's new"; nil when it carries none.
+  @Published private(set) var updateNotes: String?
   /// Milestone H: a search result list is open instead of a folder; its title
   /// (the query, or "Similar to …") replaces the breadcrumb. Nil for a folder.
   @Published private(set) var listTitle: String?
@@ -239,6 +241,13 @@ final class FolderStore: ObservableObject {
         return mv_chrome_update_version(base, Int32(ptr.count))
       }
       updateVersion = named ? String(cString: buf) : nil
+      // 400 bytes of notes, NUL and room to spare.
+      var notes = [CChar](repeating: 0, count: 512)
+      let noted = notes.withUnsafeMutableBufferPointer { ptr -> Bool in
+        guard let base = ptr.baseAddress else { return false }
+        return mv_chrome_update_notes(base, Int32(ptr.count))
+      }
+      updateNotes = noted ? String(cString: notes) : nil
     }
     if index != current.index {
       highlights[current.index]?.isCurrent = false
@@ -463,6 +472,18 @@ final class FolderStore: ObservableObject {
   }
 
   func select(_ index: Int) { mv_chrome_select_index(Int32(index)) }
+
+  /// #601: the item at `path` (a Places folder-map dot), if this listing holds
+  /// it; nothing otherwise. Matched by name first, then confirmed by path.
+  func select(path: String) {
+    let name = (path as NSString).lastPathComponent
+    for i in names.indices where names[i] == name {
+      if Self.bridgeString({ mv_chrome_item_path(Int32(i), $0, $1) }) == path {
+        if i != current.index { select(i) }
+        return
+      }
+    }
+  }
 
   private var rangeSet: Set<Int> = []
 

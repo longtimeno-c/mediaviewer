@@ -276,6 +276,12 @@ Output is always upright: EXIF Orientation 1, EXIF pixel dimensions patched, `ti
 `Ctrl+Alt+C` / `Cmd+Opt+C` (`copy_flattened`) copies the current still with its edits baked, as
 a PNG.
 
+**Print** (`Ctrl+P` / `⌘P`, issue #614, [16 "Print"](16-commands.md#print)) takes the same
+pixels before the encode: `edit::render_picture` is the export's re-encode or bake path (the
+bake's sRGB, or the decoded source through the geometry with its ICC kept), resampled down to a
+box for the paper (`shrink_to_box`, never up). The lossless JPEG path is not taken: a print needs
+pixels, and for a crop or turn the decode-and-place is the same picture. Nothing is written.
+
 ### Lossless JPEG
 
 `lossless_jpeg.h` is jpegtran's transform on the plain libjpeg coefficient API. Only perfect

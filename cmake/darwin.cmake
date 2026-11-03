@@ -225,10 +225,16 @@ target_link_libraries(mv_codec PRIVATE mv_raw_openmp)
 add_library(mv_io STATIC
   src/io/dir_mac.cpp
   src/io/dir_tree.cpp
+  # docs/plans/index-watcher.md: Local search's roots, through watch_tree.
+  src/io/tree_watch.h
+  src/io/tree_watch_mac.cpp
   src/io/file_mac.cpp
   src/io/replace_mac.cpp
   src/io/replace.h
   src/io/paths_mac.cpp
+  # #612: Settings -> Storage, what MediaViewer keeps on disk.
+  src/io/storage.cpp
+  src/io/storage.h
   src/io/dir.h
   src/io/media_extensions.h
   src/io/file.h
@@ -361,6 +367,8 @@ add_library(mv_meta_parse STATIC
   src/meta/xmp_raw.cpp
   src/meta/generators.cpp
   src/meta/probe.cpp
+  src/meta/gpmf.cpp
+  src/meta/telemetry.h
   src/meta/probe.h
   src/meta/parse.h
   src/meta/parse_util.h
@@ -514,7 +522,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/driftwire.cmake")
 # pipeline, the clip sampler and the JPEG-512 cache. In the app; knows no
 # add-on. The AI pack itself is cmake/ai.cmake.
 add_library(mv_addon_media STATIC src/abi/addon_media.cpp src/abi/addon_media.h src/addon/media.h)
-target_include_directories(mv_addon_media PUBLIC src)
+target_include_directories(mv_addon_media PUBLIC src src/abi/include)
 target_link_libraries(mv_addon_media PUBLIC mv_core mv_io PRIVATE mv_image mv_clip mv_edit mv_meta)
 
 # Milestone H: the AI pack (libmv_ai.dylib, arm64, packed and signed
@@ -582,6 +590,9 @@ add_library(mv_shell STATIC
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
   src/shell/edit_session.cpp
   src/shell/edit_session.h
+  # Issue #614: ⌘P's paper layout (fit / fill, the contact sheet).
+  src/shell/print_layout.cpp
+  src/shell/print_layout.h
   # Text in images (Vision is the host's, shell/text_recognition_mac.mm).
   src/shell/text_in_image.cpp
   src/shell/text_in_image.h
@@ -886,6 +897,8 @@ if(MV_BUILD_TESTS)
     tests/test_dir_tree.cpp
     # Issue #167: the folder listing reads size + mtime in bulk; links stat'ed.
     tests/test_dir_mac.cpp
+    # docs/plans/index-watcher.md: Local search's tree watch.
+    tests/test_tree_watch.cpp
     tests/test_key_router.cpp
     # Issue #239: every command id is handled or explicitly excluded, per host.
     tests/test_command_coverage.cpp
@@ -937,6 +950,8 @@ if(MV_BUILD_TESTS)
     tests/test_meta_provenance.cpp
     tests/test_meta_bench.cpp
     tests/test_meta_location.cpp
+    # #606: GoPro GPMF and DJI subtitle telemetry, a clip's route.
+    tests/test_meta_telemetry.cpp
     tests/test_meta_store.cpp
     # #345: the canvas's AI badge (setting, evidence text, the store's probe).
     tests/test_ai_badge.cpp
@@ -950,6 +965,8 @@ if(MV_BUILD_TESTS)
     # PR 10: edit stack, lossless JPEG, export, the edit session.
     tests/test_edit.cpp
     tests/test_edit_session.cpp
+    # Issue #614: ⌘P's paper layout.
+    tests/test_print_layout.cpp
     tests/test_edit_workspace.cpp
     tests/test_video_timeline.cpp
     tests/test_export_carried.cpp
@@ -978,9 +995,14 @@ if(MV_BUILD_TESTS)
     tests/test_os_integration.cpp
     tests/test_thumb_pixels.cpp
     tests/test_thumb_store.cpp
+    # #612: Settings -> Storage.
+    tests/test_storage.cpp
     # PR 15: the Explorer handler's portable half (the COM DLL is Windows-only).
     tests/test_thumb_request.cpp
     src/shellext/thumb_request.cpp
+    # Issue #610: clip posters for Finder and Explorer through a seekable reader.
+    tests/test_thumb_poster.cpp
+    src/shellext/thumb_poster.cpp
     # PR 15: the Spotlight importer's field mapping.
     tests/test_spotlight_fields.cpp
     src/shell/spotlight_fields.cpp

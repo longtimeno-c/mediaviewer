@@ -1,0 +1,1 @@
+FrameCnt: 2, DiffTime: 33ms [iso : 100] [latitude: 38.797912] [longtitude: -9.390722] [rel_alt: 1.200 abs_alt: 85.912]

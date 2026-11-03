@@ -21,7 +21,7 @@ bool has_still_rows(const mv_host_api* h) {
          h->still_pixels && h->still_close && h->still_write;
 }
 
-// Slice 7: the Remove brush's row, appended after still_write.
+// Slice 7: the Remove brush's row, appended after watch_tree.
 bool has_mask_row(const mv_host_api* h) {
   return h->struct_size >= offsetof(mv_host_api, still_mask) + sizeof(h->still_mask) && h->still_mask;
 }

@@ -56,6 +56,45 @@ std::vector<std::string> push_recent_folder(std::vector<std::string> list, std::
   return list;
 }
 
+bool is_pinned_folder(std::span<const std::string> pinned, std::string_view utf8_dir) noexcept {
+  if (trim_separator(utf8_dir).empty()) return false;
+  return std::any_of(pinned.begin(), pinned.end(),
+                     [&](const std::string& p) { return !p.empty() && same_folder(p, utf8_dir); });
+}
+
+std::vector<std::string> pin_folder(std::vector<std::string> pinned, std::string_view utf8_dir,
+                                    std::size_t max) {
+  std::string dir(trim_separator(utf8_dir));
+  if (dir.empty()) return pinned;
+  if (dir.size() == 2 && dir[1] == ':') dir.push_back('\\');  // as push_recent_folder
+  std::erase_if(pinned, [](const std::string& p) { return p.empty(); });
+  if (is_pinned_folder(pinned, dir) || pinned.size() >= max) return pinned;
+  pinned.push_back(std::move(dir));
+  return pinned;
+}
+
+std::vector<std::string> remove_folder(std::vector<std::string> list, std::string_view utf8_dir) {
+  if (trim_separator(utf8_dir).empty()) return list;
+  std::erase_if(list, [&](const std::string& p) { return same_folder(p, utf8_dir); });
+  return list;
+}
+
+std::vector<std::string> pinned_then_recent(std::span<const std::string> pinned,
+                                            std::span<const std::string> recent, std::size_t max) {
+  std::vector<std::string> out;
+  out.reserve(std::min(max, pinned.size() + recent.size()));
+  for (const std::string& p : pinned) {
+    if (out.size() >= max) break;
+    if (!p.empty() && !is_pinned_folder(out, p)) out.push_back(p);
+  }
+  const std::span<const std::string> pins(pinned);
+  for (const std::string& r : recent) {
+    if (out.size() >= max) break;
+    if (!r.empty() && !is_pinned_folder(pins, r)) out.push_back(r);
+  }
+  return out;
+}
+
 std::string folder_display_name(std::string_view utf8_dir) {
   const std::string_view dir = trim_separator(utf8_dir);
   const std::size_t sep = dir.find_last_of("/\\");
@@ -99,16 +138,17 @@ void copy_utf8(std::string_view src, char* dst, std::size_t cap) noexcept {
 }  // namespace
 
 void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_view home,
-                          welcome_recents& out, bool icloud) noexcept {
-  fill_welcome_recents(utf8_dirs, home, out, icloud ? "iCloud Photos" : "", "Photos Library");
+                          welcome_recents& out, bool icloud, std::size_t pinned) noexcept {
+  fill_welcome_recents(utf8_dirs, home, out, icloud ? "iCloud Photos" : "", "Photos Library", pinned);
 }
 
 void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_view home,
                           welcome_recents& out, std::string_view cloud_label,
-                          std::string_view cloud_where) noexcept {
+                          std::string_view cloud_where, std::size_t pinned) noexcept {
   out.count = 0;
   out.hover = -1;
   out.hover_remove = false;
+  out.pinned = 0;
   out.icloud = !cloud_label.empty();
   if (out.icloud) {
     const int i = out.count++;
@@ -116,11 +156,12 @@ void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_vi
     copy_utf8(cloud_where, out.where[i], sizeof(out.where[i]));
   }
   home = trim_separator(home);
-  for (const std::string& d : utf8_dirs) {
+  for (std::size_t k = 0; k < utf8_dirs.size(); ++k) {
     if (out.count >= welcome_recents::kMax) break;
-    const std::string_view dir = trim_separator(d);
+    const std::string_view dir = trim_separator(utf8_dirs[k]);
     if (dir.empty()) continue;
     const int i = out.count++;
+    if (k < pinned) ++out.pinned;  // the pins lead, so theirs are the first folder rows
     // A root ("/", "D:\") is its own label and lives nowhere.
     const std::size_t sep = dir.find_last_of("/\\");
     if (sep == std::string_view::npos || sep + 1 == dir.size()) {

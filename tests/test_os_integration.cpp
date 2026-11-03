@@ -43,6 +43,97 @@ TEST_CASE("recent folders are most recent first, one entry per folder", "[shell]
   }
 }
 
+// Issue #617: pins lead every recent list and survive any number of newer opens.
+TEST_CASE("a pinned folder stays first however many folders are opened", "[shell][os][pinned]") {
+  std::vector<std::string> recent;
+  std::vector<std::string> pinned;
+  recent = push_recent_folder(recent, "\\\\nas\\photos");
+  recent = push_recent_folder(recent, "D:\\2026");
+  pinned = pin_folder(pinned, "\\\\nas\\photos");
+  REQUIRE(pinned == std::vector<std::string>{"\\\\nas\\photos"});
+  REQUIRE(is_pinned_folder(pinned, "\\\\NAS\\Photos\\"));
+  REQUIRE_FALSE(is_pinned_folder(pinned, "D:\\2026"));
+
+  // The verify: ten newer opens.
+  for (int i = 0; i < 10; ++i) recent = push_recent_folder(recent, "E:\\card\\" + std::to_string(i));
+  REQUIRE_FALSE(std::count(recent.begin(), recent.end(), std::string("\\\\nas\\photos")));
+  const std::vector<std::string> shown = pinned_then_recent(pinned, recent);
+  REQUIRE(shown.size() == kMaxRecentFolders);
+  REQUIRE(shown.front() == "\\\\nas\\photos");
+  REQUIRE(shown[1] == "E:\\card\\9");
+  REQUIRE(shown.back() == "E:\\card\\1");  // the pin takes one recent's place
+
+  welcome_recents card;
+  fill_welcome_recents(shown, "", card, false, pinned.size());
+  REQUIRE(card.count == welcome_recents::kMax);
+  REQUIRE(card.pinned == 1);
+  REQUIRE(std::string(card.label[0]) == "photos");
+  welcome_recents with_cloud;
+  fill_welcome_recents(shown, "", with_cloud, "OneDrive", "~\\OneDrive", pinned.size());
+  REQUIRE(with_cloud.icloud);
+  REQUIRE(with_cloud.pinned == 1);
+  REQUIRE(std::string(with_cloud.label[1]) == "photos");
+  welcome_recents none;
+  fill_welcome_recents(shown, "", none);
+  REQUIRE(none.pinned == 0);
+
+  SECTION("opening a pinned folder moves it in the MRU list, not among the pins") {
+    pinned = pin_folder(pinned, "D:\\2026");
+    recent = push_recent_folder(recent, "D:\\2026");
+    const auto again = pinned_then_recent(pinned, recent);
+    REQUIRE(again[0] == "\\\\nas\\photos");
+    REQUIRE(again[1] == "D:\\2026");
+    REQUIRE(again[2] == "E:\\card\\9");
+    REQUIRE(std::count(again.begin(), again.end(), std::string("D:\\2026")) == 1);
+  }
+  SECTION("unpinning restores MRU order") {
+    pinned = remove_folder(pinned, "\\\\nas\\photos\\");
+    REQUIRE(pinned.empty());
+    REQUIRE(pinned_then_recent(pinned, recent) == recent);
+  }
+  SECTION("an unpinned folder still in the MRU list goes back to its MRU place") {
+    recent = push_recent_folder(recent, "\\\\nas\\photos");
+    recent = push_recent_folder(recent, "E:\\card\\5");
+    REQUIRE(pinned_then_recent(pinned, recent)[0] == "\\\\nas\\photos");
+    pinned = remove_folder(pinned, "\\\\nas\\photos");
+    const auto mru = pinned_then_recent(pinned, recent);
+    REQUIRE(mru == recent);
+    REQUIRE(mru[0] == "E:\\card\\5");
+    REQUIRE(mru[1] == "\\\\nas\\photos");
+  }
+}
+
+TEST_CASE("pins are one entry per folder, in the order pinned, capped", "[shell][os][pinned]") {
+  std::vector<std::string> pinned;
+  pinned = pin_folder(pinned, "/Volumes/NAS/Photos");
+  pinned = pin_folder(pinned, "/Users/me/Pictures/2026/");
+  REQUIRE(pinned == std::vector<std::string>{"/Volumes/NAS/Photos", "/Users/me/Pictures/2026"});
+  SECTION("pinning again changes nothing") {
+    REQUIRE(pin_folder(pinned, "/volumes/nas/photos/") == pinned);
+  }
+  SECTION("an empty folder is not a pin") {
+    REQUIRE(pin_folder(pinned, "") == pinned);
+    REQUIRE_FALSE(is_pinned_folder(pinned, ""));
+    REQUIRE(remove_folder(pinned, "") == pinned);
+  }
+  SECTION("a bare drive pins its root") {
+    REQUIRE(pin_folder({}, "D:") == std::vector<std::string>{"D:\\"});
+  }
+  SECTION("a full list takes no more") {
+    for (int i = 0; i < 10; ++i) pinned = pin_folder(pinned, "/p/" + std::to_string(i));
+    REQUIRE(pinned.size() == kMaxPinnedFolders);
+    REQUIRE(pinned.back() == "/p/2");
+    REQUIRE(pin_folder(pinned, "/q") == pinned);
+  }
+  SECTION("the shown list never repeats a folder and stops at max") {
+    const std::vector<std::string> recent = {"/Users/me/Pictures/2026", "/a", "/b", "/c"};
+    const auto shown = pinned_then_recent(pinned, recent, 4);
+    REQUIRE(shown == std::vector<std::string>{"/Volumes/NAS/Photos", "/Users/me/Pictures/2026", "/a", "/b"});
+    REQUIRE(pinned_then_recent(pinned, recent, 1) == std::vector<std::string>{"/Volumes/NAS/Photos"});
+    REQUIRE(pinned_then_recent({}, {}).empty());
+  }
+}
+
 TEST_CASE("a recent folder is labelled by its last component", "[shell][os]") {
   REQUIRE(folder_display_name("C:\\Photos\\2026-09 Iceland") == "2026-09 Iceland");
   REQUIRE(folder_display_name("/Users/me/Pictures/dump/") == "dump");
