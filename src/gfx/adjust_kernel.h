@@ -27,11 +27,16 @@
 //           straight line of slope a0.w through the pivot in log exposure
 //   a1.x    saturation: 1 = unchanged, 0 = Rec.709 luma
 //   a1.y    contrast pivot, 18 % grey
+//   a1.z    > 0.5 runs the tone stage (a2); a1.w is the blits' on switch
+//   a2..a5  tone, vibrance, black & white, vignette (adjust_kernel_tokens.h)
+//   pos     the pixel's offset from the output's centre, corner at distance 1
+//           (vignette_map); only the vignette reads it
 // Identity uniforms leave every non-negative input unchanged (to within the
 // pow's rounding); negative input clamps to 0.
 #pragma once
 
 #include <cmath>
+#include <cstdint>
 
 #include "gfx/adjust_kernel_tokens.h"
 
@@ -61,12 +66,24 @@ inline float3 pow(float3 a, float3 b) {
   return {std::pow(a.x, b.x), std::pow(a.y, b.y), std::pow(a.z, b.z)};
 }
 constexpr float dot(float3 a, float3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+inline float max(float a, float b) { return a > b ? a : b; }
+inline float min(float a, float b) { return a < b ? a : b; }
+inline float pow(float a, float b) { return std::pow(a, b); }
+inline float sqrt(float a) { return std::sqrt(a); }
 
 // MV_ADJUST_KERNEL itself is in gfx/adjust_kernel_tokens.h (included above),
 // which has no C++ in it so the build-time HLSL compile can include it too.
 
 // `inline` is C++'s, outside the shared tokens: HLSL and MSL do not need it.
-inline MV_ADJUST_KERNEL
+// Forced: the export bake and the histogram call it once a pixel, and out of
+// line its eight float4 arguments go through the stack (+12 % on a 24 MP
+// bake, measured).
+#if defined(_MSC_VER)
+#define MV_ADJUST_INLINE __forceinline
+#else
+#define MV_ADJUST_INLINE inline __attribute__((always_inline))
+#endif
+MV_ADJUST_INLINE MV_ADJUST_KERNEL
 
 #define MV_ADJUST_STRINGIFY_(...) #__VA_ARGS__
 #define MV_ADJUST_STRINGIFY(...) MV_ADJUST_STRINGIFY_(__VA_ARGS__)
@@ -75,3 +92,56 @@ inline MV_ADJUST_KERNEL
 inline constexpr char kAdjustKernelText[] = MV_ADJUST_STRINGIFY(MV_ADJUST_KERNEL);
 
 }  // namespace mv::gfx::kernel
+
+namespace mv::gfx {
+
+// The kernel's uniforms, a0 .. a5, as both blits' constant buffers carry them
+// (edit::adjust_uniforms is this type). The defaults are the identity.
+inline constexpr int kAdjustVectors = 6;
+inline constexpr float kVignetteInner = 0.35f;  // falloff starts here (radius 0)
+inline constexpr float kVignetteWidth = 0.6f;   // and is this wide (softness 0)
+
+struct adjust_vectors {
+  float a[kAdjustVectors][4] = {
+      {1.0f, 1.0f, 1.0f, 1.0f},                  // gains; contrast slope
+      {1.0f, 0.18f, 0.0f, 0.0f},                 // saturation; pivot; tone on; (blit on)
+      {0.0f, 0.0f, 0.0f, 0.0f},                  // highlights, shadows, whites, blacks
+      {0.0f, 0.0f, 1.0f, 0.0f},                  // vibrance; mono mix; mono slope
+      {0.2126f, 0.7152f, 0.0722f, 0.0f},         // mono weights
+      {0.0f, kVignetteInner, kVignetteInner + kVignetteWidth, 0.0f},  // vignette stops, from, to
+  };
+  friend constexpr bool operator==(const adjust_vectors&, const adjust_vectors&) = default;
+};
+
+// The kernel's `pos` over a w × h output: built once per image, then one
+// multiply-add a pixel. at(x, y) takes the pixel's index; its centre is used.
+struct vignette_map {
+  float cx = 0.0f, cy = 0.0f, k = 0.0f;
+  vignette_map(float w, float h) noexcept
+      : cx(0.5f * w - 0.5f), cy(0.5f * h - 0.5f), k(2.0f / std::sqrt(w * w + h * h)) {}
+  [[nodiscard]] kernel::float4 at(std::uint32_t x, std::uint32_t y) const noexcept {
+    return {(static_cast<float>(x) - cx) * k, (static_cast<float>(y) - cy) * k, 0.0f, 0.0f};
+  }
+};
+
+// The uniforms as the kernel's own vectors, built once per image: a loop
+// that writes bytes cannot keep reloading them from `adjust_vectors` (a
+// byte store may alias it), so the CPU users hold one of these in a local.
+struct adjust_args {
+  kernel::float4 v[kAdjustVectors];
+  explicit adjust_args(const adjust_vectors& u) noexcept {
+    for (int i = 0; i < kAdjustVectors; ++i) v[i] = {u.a[i][0], u.a[i][1], u.a[i][2], u.a[i][3]};
+  }
+};
+
+// The kernel on the CPU (the export bake, the histogram, tests).
+[[nodiscard]] inline kernel::float3 adjust(kernel::float3 c, kernel::float4 pos,
+                                           const adjust_args& a) noexcept {
+  return kernel::mv_adjust(c, pos, a.v[0], a.v[1], a.v[2], a.v[3], a.v[4], a.v[5]);
+}
+[[nodiscard]] inline kernel::float3 adjust(kernel::float3 c, kernel::float4 pos,
+                                           const adjust_vectors& u) noexcept {
+  return adjust(c, pos, adjust_args(u));
+}
+
+}  // namespace mv::gfx

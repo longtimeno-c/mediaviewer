@@ -32,8 +32,11 @@ result<histogram> compute_histogram(const image::linear_image& working, const ad
   std::uint32_t step = 1;
   while (pixels / (static_cast<std::uint64_t>(step) * step) > kHistogramSampleBudget) ++step;
 
-  const kernel::float4 a0{u.a0[0], u.a0[1], u.a0[2], u.a0[3]};
-  const kernel::float4 a1{u.a1[0], u.a1[1], u.a1[2], u.a1[3]};
+  // The vignette is placed on the working image's own frame: a crop moves
+  // the real one, so on a cropped photo with a vignette the counts are near,
+  // not exact.
+  const gfx::vignette_map vmap(static_cast<float>(working.width), static_cast<float>(working.height));
+  const gfx::adjust_args args(u);
   histogram h;
   for (std::uint32_t y = step / 2; y < working.height; y += step) {
     if (ctx && ctx->cancelled()) return err(status::cancelled);
@@ -41,10 +44,10 @@ result<histogram> compute_histogram(const image::linear_image& working, const ad
     for (std::uint32_t x = step / 2; x < working.width; x += step) {
       const std::uint16_t* p = row + static_cast<std::size_t>(x) * 4;
       if (!(image::half_to_float(p[3]) > 0.0f)) continue;  // transparent: nothing is shown
-      const kernel::float3 c = kernel::mv_adjust(
+      const kernel::float3 c = gfx::adjust(
           kernel::float3{image::half_to_float(p[0]), image::half_to_float(p[1]),
                          image::half_to_float(p[2])},
-          a0, a1);
+          vmap.at(x, y), args);
       ++h.r[code(c.x)];
       ++h.g[code(c.y)];
       ++h.b[code(c.z)];

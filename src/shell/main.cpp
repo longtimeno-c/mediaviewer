@@ -68,6 +68,7 @@
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
 #include "shell/video_timeline.h"
+#include "edit/auto_adjust.h"
 #include "edit/clip_strip.h"
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
@@ -2382,12 +2383,14 @@ bool run_edit_command(app_state* app, mv::shell::command_id command) {
 
 // What an adjust job posts back (kMsgAdjustJobDone's LPARAM, owned by the handler).
 struct adjust_job_result {
-  bool histogram = false;  // else a working-image build
+  bool histogram = false;  // else a working-image build (or an Auto, below)
+  bool auto_section = false;  // a section's Auto: `value` is its result
   std::uint64_t token = 0;
   bool ok = false;
   bool from_raw = false;
   std::shared_ptr<const mv::image::linear_image> working;
   mv::edit::histogram hist;
+  mv::edit::colour value;
 };
 
 void post_adjust_result(HWND hwnd, adjust_job_result* r) noexcept {
@@ -2487,8 +2490,59 @@ void start_histogram(app_state* app) {
                       });
 }
 
+// A section's Auto (edit/auto_adjust.h): read on the pool from the working
+// image, landed on the UI thread as one op if nothing moved meanwhile.
+void start_adjust_auto(app_state* app, int section) {
+  if (section < 0 || section >= static_cast<int>(mv::edit::adjust_section::vignette)) return;
+  if (!app->working || !adjust_still(app)) return;
+  const auto sec = static_cast<mv::edit::adjust_section>(section);
+  const std::optional<std::uint64_t> token = app->adjust.request_auto_tone(sec);
+  if (!token) return;
+  push_adjust_pane(app);  // the section's Auto shows it is running
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [working = app->working, current = app->edits.colour(), sec, t = *token,
+                       hwnd](const mv::job_context& ctx) -> mv::status {
+                        auto* r = new (std::nothrow) adjust_job_result{};
+                        if (!r) return mv::status::out_of_memory;
+                        r->auto_section = true;
+                        r->token = t;
+                        auto a = mv::edit::compute_auto(*working, current, sec, &ctx);
+                        r->ok = static_cast<bool>(a);
+                        if (a) r->value = a->value;
+                        post_adjust_result(hwnd, r);
+                        return a ? mv::status::ok : a.error();
+                      });
+}
+
+// A section's Reset: its sliders back to 0, one undo step.
+void reset_adjust_section(app_state* app, int section) {
+  if (section < 0 || section >= mv::edit::kAdjustSectionCount) return;
+  if (!app->adjust.working_ready() || !adjust_still(app)) return;
+  const mv::edit::colour c = mv::edit::without_section(
+      app->edits.colour(), static_cast<mv::edit::adjust_section>(section));
+  if (app->edits.set_colour(c) != mv::shell::edit_effect::redraw) return;
+  publish_edit(app);
+  ++app->input.activity_seq;
+  publish(app);
+  adjust_colour_changed(app);
+}
+
 void on_adjust_job_done(app_state* app, std::unique_ptr<adjust_job_result> r) {
   if (!r) return;
+  if (r->auto_section) {
+    if (!app->adjust.auto_tone_landed(r->token)) return;
+    if (r->ok && adjust_still(app) &&
+        app->edits.set_colour(r->value) == mv::shell::edit_effect::redraw) {
+      publish_edit(app);
+      ++app->input.activity_seq;
+      publish(app);
+      adjust_colour_changed(app);
+      return;
+    }
+    push_adjust_pane(app);  // the Auto stops showing; nothing changed
+    return;
+  }
   if (r->histogram) {
     if (r->ok && app->adjust.histogram_landed(r->token, r->hist)) push_adjust_pane(app);
     return;
@@ -5148,8 +5202,34 @@ bool chrome_edit_command(app_state* app, int command, float arg) {
                                command - static_cast<int>(mv::shell::command_id::adjust_exposure)),
                            arg);
       return true;
+    // The full Adjust list (docs/plans/edit-adjust.md slice 1): appended ids,
+    // in edit::adjust_param order from highlights.
+    case static_cast<int>(mv::shell::command_id::adjust_highlights):
+    case static_cast<int>(mv::shell::command_id::adjust_shadows):
+    case static_cast<int>(mv::shell::command_id::adjust_whites):
+    case static_cast<int>(mv::shell::command_id::adjust_blacks):
+    case static_cast<int>(mv::shell::command_id::adjust_vibrance):
+    case static_cast<int>(mv::shell::command_id::adjust_mono):
+    case static_cast<int>(mv::shell::command_id::adjust_mono_filter):
+    case static_cast<int>(mv::shell::command_id::adjust_mono_tone):
+    case static_cast<int>(mv::shell::command_id::adjust_vignette):
+    case static_cast<int>(mv::shell::command_id::adjust_vignette_radius):
+    case static_cast<int>(mv::shell::command_id::adjust_vignette_softness):
+      set_adjust_from_pane(
+          app,
+          static_cast<mv::edit::adjust_param>(
+              static_cast<int>(mv::edit::adjust_param::highlights) + command -
+              static_cast<int>(mv::shell::command_id::adjust_highlights)),
+          arg);
+      return true;
     case static_cast<int>(mv::shell::command_id::adjust_reset):
       reset_adjust_from_pane(app);
+      return true;
+    case static_cast<int>(mv::shell::command_id::adjust_auto):
+      start_adjust_auto(app, static_cast<int>(arg));
+      return true;
+    case static_cast<int>(mv::shell::command_id::adjust_reset_section):
+      reset_adjust_section(app, static_cast<int>(arg));
       return true;
     // PR 12: the pane's comment field and Revert button. Return hands the
     // keyboard back to the canvas; leaving the field by mouse already did.
@@ -8170,6 +8250,10 @@ bool run_edit_command_area(app_state* app, mv::shell::command_id command) noexce
       return true;
     case adjust_exposure: case adjust_contrast: case adjust_saturation:
     case adjust_temperature: case adjust_tint: case adjust_reset:
+    case adjust_highlights: case adjust_shadows: case adjust_whites: case adjust_blacks:
+    case adjust_vibrance: case adjust_mono: case adjust_mono_filter: case adjust_mono_tone:
+    case adjust_vignette: case adjust_vignette_radius: case adjust_vignette_softness:
+    case adjust_auto: case adjust_reset_section:
       return false;  // island-only: they carry a value (chrome_on_command)
     default:
       // command_coverage.inc sent this id here. A missing case is a

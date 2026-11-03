@@ -658,6 +658,7 @@ add_library(mv::meta ALIAS mv_meta)
 add_library(mv_edit STATIC
   src/edit/adjust.cpp
   src/edit/adjust.h
+  src/edit/auto_adjust.cpp
   src/edit/auto_tone.cpp
   src/edit/auto_tone.h
   src/edit/bake.cpp

@@ -53,6 +53,7 @@
 #include "core/job_system.h"
 #include "core/json.h"
 #include "core/trace.h"
+#include "edit/auto_adjust.h"
 #include "edit/histogram.h"
 #include "image/linear.h"
 #include "image/page_thumbs.h"
@@ -773,6 +774,8 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (mv::abi::clip_session*)clipJobs;
 - (void)jobsBlur;
 - (void)adjustReset;
+- (void)adjustAuto:(int32_t)section;
+- (void)adjustResetSection:(int32_t)section;
 - (void)adjustBlur;
 // PR 12
 - (int32_t)metaRating;
@@ -1716,6 +1719,14 @@ extern "C" void mv_chrome_adjust_set(int32_t param, float value) {
 extern "C" void mv_chrome_adjust_reset(void) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app adjustReset];
+}
+extern "C" void mv_chrome_adjust_auto(int32_t section) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app adjustAuto:section];
+}
+extern "C" void mv_chrome_adjust_reset_section(int32_t section) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app adjustResetSection:section];
 }
 extern "C" void mv_chrome_adjust_close(void) {
   if (g_chrome_app) [g_chrome_app setAdjustVisible:NO];
@@ -9599,6 +9610,20 @@ static std::string MvSelfTestPageSummary(const char* addon) {
   [self editSelfTestStep:0 dir:out];
 }
 
+// The colour sliders' values and the stack's length, one `adjust:` line.
+- (void)editSelfTestAdjustLine:(NSString*)name dir:(NSString*)dir {
+  const mv::edit::colour c = _edits.colour();
+  NSMutableString* line = [NSMutableString stringWithFormat:@"    adjust %@: edits=%d auto=%d", name,
+                                                            static_cast<int>(_edits.edit_count()),
+                                                            _adjust.auto_running() ? 1 : 0];
+  for (int i = 0; i < mv::edit::kAdjustParamCount; ++i) {
+    const auto p = static_cast<mv::edit::adjust_param>(i);
+    if (c.get(p) != 0.0f) [line appendFormat:@" %s=%g", mv::edit::range_of(p).name, c.get(p)];
+  }
+  [line appendString:@"\n"];
+  [self editSelfTestLine:line dir:dir];
+}
+
 - (void)editSelfTestSnap:(NSString*)name dir:(NSString*)dir {
   NSView* v = self.window.contentView;
   [v layoutSubtreeIfNeeded];
@@ -9762,19 +9787,38 @@ static std::string MvSelfTestPageSummary(const char* addon) {
       case 2: [self editSelfTestSnap:@"s1-workspace" dir:dir]; [self editSetAspect:2 portrait:NO]; break;
       case 3: [self editSelfTestSnap:@"s2-crop-1x1" dir:dir]; [self runCommand:crop_commit back:kNoBack]; break;
       case 4: [self editSelfTestSnap:@"s3-applied" dir:dir]; [self editSelectTab:1]; break;
-      case 5: [self editSelfTestSnap:@"s4-colour" dir:dir]; [self editSelectTab:2]; break;
-      case 6: [self editSelfTestSnap:@"s5-info" dir:dir];
+      case 5: {
+        // docs/plans/edit-adjust.md slice 1: the new sliders, then Colour's Auto.
+        [self editSelfTestSnap:@"s4-colour" dir:dir];
+        using mv::edit::adjust_param;
+        [self adjustSet:static_cast<int32_t>(adjust_param::highlights) value:-40.0f];
+        [self adjustSet:static_cast<int32_t>(adjust_param::shadows) value:40.0f];
+        [self adjustSet:static_cast<int32_t>(adjust_param::vignette) value:60.0f];
+        [self adjustSet:static_cast<int32_t>(adjust_param::mono) value:100.0f];
+        [self adjustAuto:static_cast<int32_t>(mv::edit::adjust_section::colour)];
+        break;
+      }
+      case 6:
+        [self editSelfTestSnap:@"s4b-adjusted" dir:dir];
+        [self editSelfTestAdjustLine:@"adjusted" dir:dir];
+        [self adjustResetSection:static_cast<int32_t>(mv::edit::adjust_section::mono)];
+        break;
+      case 7:
+        [self editSelfTestAdjustLine:@"mono-reset" dir:dir];
+        [self editSelectTab:2];
+        break;
+      case 8: [self editSelfTestSnap:@"s5-info" dir:dir];
         // PR 29: any tag, and the date, from the Info tab.
         [self metaSetTag:"Exif.Image.Artist" value:"MV self-test"];
         [self metaSetDate:"2020-02-02 10:00:00"];
         break;
-      case 7: [self editSelfTestSnap:@"s5b-info-edited" dir:dir]; [self editSelectTab:0]; [self editShowOriginal:YES]; break;
-      case 8: [self editSelfTestSnap:@"s6-original" dir:dir]; [self editShowOriginal:NO]; [self editSaveCopy]; break;
-      case 9: [self editSelfTestSnap:@"s7-save-copy" dir:dir];
+      case 9: [self editSelfTestSnap:@"s5b-info-edited" dir:dir]; [self editSelectTab:0]; [self editShowOriginal:YES]; break;
+      case 10: [self editSelfTestSnap:@"s6-original" dir:dir]; [self editShowOriginal:NO]; [self editSaveCopy]; break;
+      case 11: [self editSelfTestSnap:@"s7-save-copy" dir:dir];
         [self confirmExport:mv::shell::pack_export(mv::edit::export_options{})];
         break;
-      case 10: [self runCommand:back back:mv::shell::back_target::pane]; [self metaRevert]; break;
-      case 11: [self editSelfTestSnap:@"s8-closed-reverted" dir:dir]; done = YES; break;
+      case 12: [self runCommand:back back:mv::shell::back_target::pane]; [self metaRevert]; break;
+      case 13: [self editSelfTestSnap:@"s8-closed-reverted" dir:dir]; done = YES; break;
     }
   }
   if (done) {
@@ -10093,6 +10137,54 @@ static double mv_wall_seconds() {
   [self publishEdit];
   [self pokeSnapshot];
   [self adjustColourChanged];
+}
+
+// A section's Reset: its sliders back to 0, one undo step.
+- (void)adjustResetSection:(int32_t)section {
+  if (section < 0 || section >= mv::edit::kAdjustSectionCount) return;
+  if (!_adjust.working_ready() || ![self adjustStill]) return;
+  const mv::edit::colour c =
+      mv::edit::without_section(_edits.colour(), static_cast<mv::edit::adjust_section>(section));
+  if (_edits.set_colour(c) != mv::shell::edit_effect::redraw) return;
+  [self publishEdit];
+  [self pokeSnapshot];
+  [self adjustColourChanged];
+}
+
+// A section's Auto (edit/auto_adjust.h): read on the pool from the working
+// image, landed on the main thread as one op if nothing moved meanwhile.
+- (void)adjustAuto:(int32_t)section {
+  if (section < 0 || section >= static_cast<int32_t>(mv::edit::adjust_section::vignette)) return;
+  if (!_working || ![self adjustStill]) return;
+  const auto sec = static_cast<mv::edit::adjust_section>(section);
+  const std::optional<std::uint64_t> token = _adjust.request_auto_tone(sec);
+  if (!token) return;
+  [self bumpAdjustView];
+  const std::shared_ptr<const mv::image::linear_image> working = _working;
+  const mv::edit::colour current = _edits.colour();
+  const std::uint64_t t = *token;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation,
+                  [working, current, sec, t, weakSelf](const mv::job_context& ctx) -> mv::status {
+                    auto r = mv::edit::compute_auto(*working, current, sec, &ctx);
+                    const bool ok = r.has_value();
+                    const mv::edit::colour value = ok ? r->value : current;
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                      [weakSelf autoLanded:t ok:ok value:value];
+                    });
+                    return ok ? mv::status::ok : r.error();
+                  });
+}
+
+- (void)autoLanded:(std::uint64_t)token ok:(bool)ok value:(const mv::edit::colour&)value {
+  if (!_adjust.auto_tone_landed(token)) return;
+  if (ok && [self adjustStill] && _edits.set_colour(value) == mv::shell::edit_effect::redraw) {
+    [self publishEdit];
+    [self pokeSnapshot];
+    [self adjustColourChanged];
+    return;
+  }
+  [self bumpAdjustView];  // the spinner stops; nothing changed
 }
 
 - (void)adjustBlur {

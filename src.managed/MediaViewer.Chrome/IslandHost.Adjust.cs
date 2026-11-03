@@ -14,27 +14,35 @@ using Windows.UI;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// PR 11: the adjust pane — exposure, contrast, saturation, temperature and
-/// tint, a histogram and the clipping readout. The third panel island, on the
-/// right edge the metadata pane also uses (native shows one at a time).
+/// PR 11: the adjust pane, grown into the full Adjust list (docs/plans/
+/// edit-adjust.md slice 1): Light, Colour, Black &amp; White and Vignette
+/// sections, each collapsible with its own reset and (but the vignette) its
+/// own Auto; a histogram and the clipping readout. The third panel island, on
+/// the right edge the metadata pane also uses (native shows one at a time).
 /// </summary>
 /// <remarks>
 /// The sliders post their value as the command's float (one command id per
-/// parameter, commands.h); native owns the edit stack and pushes back what the
-/// pane shows (<c>shell::adjust_view</c>). Nothing here touches pixels: the
-/// canvas redraws from the new uniforms on the render thread, and the
-/// histogram is a reduction a worker ran. The sliders stay disabled until the
-/// FP16 working image is built — for a RAW, LibRaw's full linear develop
-/// (docs/design/07: never the embedded preview). Keyboard-complete: Shift+A shows the
-/// pane focused on its first slider (ShowPanel's focus flag), Tab walks the
-/// sliders, arrows step, Esc returns to the canvas — a focused pane owns its
-/// keys (FocusKind.Pane, docs/design/16 "Pane").
+/// parameter, commands.h); Auto and a section's reset post the section.
+/// Native owns the edit stack and pushes back what the pane shows
+/// (<c>shell::adjust_view</c>). Nothing here touches pixels: the canvas
+/// redraws from the new uniforms on the render thread, and the histogram and
+/// Auto are worker jobs. The sliders stay disabled until the FP16 working
+/// image is built — for a RAW, LibRaw's full linear develop (docs/design/07:
+/// never the embedded preview). Keyboard-complete: Shift+A shows the pane
+/// focused on its first slider (ShowPanel's focus flag), Tab walks the
+/// controls, ↑ ↓ the sliders of open sections, arrows step, A runs the
+/// focused slider's section's Auto, Esc returns to the canvas — a focused
+/// pane owns its keys (FocusKind.Pane, docs/design/16 "Pane"). The twin of
+/// AdjustView.swift.
 /// </remarks>
 public static partial class IslandHost
 {
-    // shell/adjust_pane.h adjust_view: 11 int/float words, then 4 x 64 uint16.
-    internal const int AdjustViewSize = 44 + 2 * 4 * HistogramBins;
+    // shell/adjust_pane.h adjust_view: 2 ints, 16 floats, 2 floats, 2 ints,
+    // then 4 x 64 uint16.
+    internal const int AdjustParamCount = 16;
+    internal const int AdjustViewSize = 24 + 4 * AdjustParamCount + 2 * 4 * HistogramBins;
     internal const int HistogramBins = 64;
+    private const int MonoParam = 10;
 
     private static DesktopWindowXamlSource? _adjustPane;
     private static bool _adjustPaneVisible;
@@ -43,25 +51,52 @@ public static partial class IslandHost
     private sealed record AdjustSpec(string Name, int Command, double Min, double Max, double Step,
                                      Func<double, string> Format);
 
+    private static readonly Func<double, string> Signed = v => $"{v:+0;-0;0}";
+
     private static readonly AdjustSpec[] AdjustSpecs =
     {
         new("Exposure", Command.AdjustExposure, -5, 5, 0.1, v => $"{v:+0.0;-0.0;0.0} EV"),
-        new("Contrast", Command.AdjustContrast, -100, 100, 5, v => $"{v:+0;-0;0}"),
-        new("Saturation", Command.AdjustSaturation, -100, 100, 5, v => $"{v:+0;-0;0}"),
-        new("Temperature", Command.AdjustTemperature, -100, 100, 5, v => $"{v:+0;-0;0}"),
-        new("Tint", Command.AdjustTint, -100, 100, 5, v => $"{v:+0;-0;0}"),
+        new("Contrast", Command.AdjustContrast, -100, 100, 5, Signed),
+        new("Saturation", Command.AdjustSaturation, -100, 100, 5, Signed),
+        new("Temperature", Command.AdjustTemperature, -100, 100, 5, Signed),
+        new("Tint", Command.AdjustTint, -100, 100, 5, Signed),
+        new("Highlights", Command.AdjustHighlights, -100, 100, 5, Signed),
+        new("Shadows", Command.AdjustShadows, -100, 100, 5, Signed),
+        new("Whites", Command.AdjustWhites, -100, 100, 5, Signed),
+        new("Blacks", Command.AdjustBlacks, -100, 100, 5, Signed),
+        new("Vibrance", Command.AdjustVibrance, -100, 100, 5, Signed),
+        new("Intensity", Command.AdjustMono, 0, 100, 5, v => $"{v:0}"),
+        new("Filter", Command.AdjustMonoFilter, -100, 100, 5, Signed),
+        new("Tone", Command.AdjustMonoTone, -100, 100, 5, Signed),
+        new("Strength", Command.AdjustVignette, -100, 100, 5, Signed),
+        new("Radius", Command.AdjustVignetteRadius, -100, 100, 5, Signed),
+        new("Softness", Command.AdjustVignetteSoftness, -100, 100, 5, Signed),
+    };
+
+    // edit::adjust_section order: name, Segoe Fluent glyph, parameters as shown, Auto.
+    private sealed record AdjustSection(string Name, string Glyph, int[] Params, bool HasAuto);
+
+    private static readonly AdjustSection[] AdjustSections =
+    {
+        new("Light", "\uE706", new[] { 0, 5, 6, 7, 8, 1 }, true),           // Brightness
+        new("Colour", "\uE790", new[] { 2, 9, 3, 4 }, true),                // Color
+        new("Black & White", "\uE793", new[] { 10, 11, 12 }, true),         // Contrast
+        new("Vignette", "\uEA3A", new[] { 13, 14, 15 }, false),             // CircleRing
     };
 
     // Last view native pushed.
     private static int _adjustReadiness;  // shell::adjust_readiness
     private static bool _adjustFromRaw;
-    private static readonly float[] _adjustValues = new float[5];
+    private static readonly float[] _adjustValues = new float[AdjustParamCount];
     private static float _clipHigh;
     private static float _clipLow;
     private static bool _histValid;
+    private static int _autoSection = -1;
     private static readonly ushort[] _histBins = new ushort[4 * HistogramBins];
+    // Which sections are open; kept while the pane is rebuilt.
+    private static readonly bool[] _sectionOpen = { true, true, false, false };
 
-    private static Slider[]? _adjustSliders;
+    private static Slider[]? _adjustSliders;  // by parameter
     private static TextBlock[]? _adjustReadouts;
     private static TextBlock? _adjustStatus;
     private static TextBlock? _adjustClip;
@@ -70,6 +105,11 @@ public static partial class IslandHost
     private static JobBar? _adjustPreparing;
     private static Border[]? _adjustRows;
     private static TextBlock[]? _adjustNames;
+    private static StackPanel[]? _sectionBodies;
+    private static FontIcon[]? _sectionChevrons;
+    private static Button[]? _sectionResets;
+    private static Button?[]? _sectionAutos;
+    private static ToggleSwitch? _monoSwitch;
     private static bool _updatingAdjust;
 
     private static void DropAdjustUi()
@@ -83,6 +123,11 @@ public static partial class IslandHost
         _adjustPreparing = null;
         _adjustRows = null;
         _adjustNames = null;
+        _sectionBodies = null;
+        _sectionChevrons = null;
+        _sectionResets = null;
+        _sectionAutos = null;
+        _monoSwitch = null;
     }
 
     public static int ShowAdjustPane(IntPtr arg, int sizeBytes) => ShowPanel(
@@ -95,8 +140,9 @@ public static partial class IslandHost
         });
 
     /// <summary>
-    /// Native pushes readiness, values, histogram and clipping whenever any of
-    /// them changes. In: shell::adjust_view (blittable, AdjustViewSize bytes).
+    /// Native pushes readiness, values, histogram, clipping and the running
+    /// Auto whenever any of them changes. In: shell::adjust_view (blittable,
+    /// AdjustViewSize bytes).
     /// </summary>
     public static int SetAdjustView(IntPtr arg, int sizeBytes)
     {
@@ -105,15 +151,17 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < AdjustViewSize) return unchecked((int)0x80070057);
             _adjustReadiness = Marshal.ReadInt32(arg, 0);
             _adjustFromRaw = Marshal.ReadInt32(arg, 4) != 0;
-            for (int i = 0; i < 5; i++)
+            for (int i = 0; i < AdjustParamCount; i++)
             {
                 _adjustValues[i] = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, 8 + 4 * i));
             }
-            _clipHigh = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, 28));
-            _clipLow = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, 32));
-            _histValid = Marshal.ReadInt32(arg, 36) != 0;
+            int at = 8 + 4 * AdjustParamCount;
+            _clipHigh = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, at));
+            _clipLow = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, at + 4));
+            _histValid = Marshal.ReadInt32(arg, at + 8) != 0;
+            _autoSection = Marshal.ReadInt32(arg, at + 12);
             var raw = new short[_histBins.Length];
-            Marshal.Copy(arg + 44, raw, 0, raw.Length);
+            Marshal.Copy(arg + at + 16, raw, 0, raw.Length);
             for (int i = 0; i < raw.Length; i++) _histBins[i] = unchecked((ushort)raw[i]);
             if (_adjustPaneVisible) RenderAdjust();
             return 0;
@@ -147,76 +195,193 @@ public static partial class IslandHost
         _adjustReadouts = new TextBlock[AdjustSpecs.Length];
         _adjustRows = new Border[AdjustSpecs.Length];
         _adjustNames = new TextBlock[AdjustSpecs.Length];
-        for (int i = 0; i < AdjustSpecs.Length; i++)
+        _sectionBodies = new StackPanel[AdjustSections.Length];
+        _sectionChevrons = new FontIcon[AdjustSections.Length];
+        _sectionResets = new Button[AdjustSections.Length];
+        _sectionAutos = new Button?[AdjustSections.Length];
+        int tab = 0;
+        for (int s = 0; s < AdjustSections.Length; s++)
         {
-            AdjustSpec spec = AdjustSpecs[i];
-            var rowStack = new StackPanel { Spacing = Space(2) };
-            var head = new Grid();
-            head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            // The focused row's name is Title, the others Body (AdjustView.swift).
-            TextBlock name = Text(spec.Name, Body);
-            head.Children.Add(name);
-            _adjustNames[i] = name;
-            TextBlock readout = Text(spec.Format(0), Body);
-            Grid.SetColumn(readout, 1);
-            head.Children.Add(readout);
-            _adjustReadouts[i] = readout;
-            rowStack.Children.Add(head);
-
-            var slider = new Slider
-            {
-                Minimum = spec.Min,
-                Maximum = spec.Max,
-                StepFrequency = spec.Step,
-                SmallChange = spec.Step,
-                LargeChange = spec.Step * 10,
-                IsThumbToolTipEnabled = false,
-                TabIndex = i,
-            };
-            AutomationProperties_SetName(slider, spec.Name);
-            int index = i;
-            slider.ValueChanged += (_, e) =>
-            {
-                _adjustReadouts![index].Text = AdjustSpecs[index].Format(e.NewValue);
-                if (_updatingAdjust) return;
-                _adjustValues[index] = (float)e.NewValue;
-                Send(AdjustSpecs[index].Command, (float)e.NewValue);
-            };
-            // Double-click a slider: that parameter back to 0.
-            slider.DoubleTapped += (_, _) => slider.Value = 0;
-            _adjustSliders[i] = slider;
-            rowStack.Children.Add(slider);
-            // The focused row carries a wash (the Mac's primary at 0.08,
-            // radius 6), so the keys below have a visible target.
-            var row = new Border
-            {
-                Child = rowStack,
-                Padding = Pad(4, 2, 4, 2),
-                CornerRadius = Corner(6),
-                Background = Brush(Colors.Transparent),
-            };
-            slider.GotFocus += (_, _) => FocusAdjustRow(index, true);
-            slider.LostFocus += (_, _) => FocusAdjustRow(index, false);
-            _adjustRows[i] = row;
-            col.Children.Add(row);
+            col.Children.Add(BuildAdjustSection(s, ref tab));
         }
 
-        _adjustResetButton = EditButton("Reset colour", () => Send(Command.AdjustReset), compact: false);
-        _adjustResetButton.TabIndex = AdjustSpecs.Length;
+        _adjustResetButton = EditButton("Reset adjustments", () => Send(Command.AdjustReset), compact: false);
+        _adjustResetButton.TabIndex = tab;
         col.Children.Add(_adjustResetButton);
-        col.Children.Add(Text("↑ ↓ choose · ← → change (Shift ×10) · 0 zero · R reset · Esc photo · Shift+A closes · Ctrl+S exports",
+        col.Children.Add(Text("↑ ↓ choose · ← → change (Shift ×10) · 0 zero · A auto · R reset · Esc photo · Shift+A closes",
                               Body, UiFontSize - 3));
         // The Mac's keys (AdjustView.swift), on a focused slider: ↑ ↓ choose
-        // a row rather than nudge it, Shift+← → step ten, 0 zeroes the row
-        // and R resets every slider. A focused pane owns its keys
-        // (key_router: focus_kind::pane), so these reach XAML.
+        // a row rather than nudge it, Shift+← → step ten, 0 zeroes the row,
+        // A runs its section's Auto and R resets every slider. A focused pane
+        // owns its keys (key_router: focus_kind::pane), so these reach XAML.
         col.PreviewKeyDown += OnAdjustKey;
 
         body.Children.Add(new ScrollViewer { Content = col, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         RenderAdjust();
         return root;
     }
+
+    // A section's header (chevron, glyph and name to open or close it; its
+    // reset; its Auto; Black & White's on switch) over its sliders.
+    private static UIElement BuildAdjustSection(int s, ref int tab)
+    {
+        AdjustSection section = AdjustSections[s];
+        var outer = new StackPanel { Spacing = Space(2) };
+
+        var head = new Grid { ColumnSpacing = Space(6) };
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var title = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
+        var chevron = new FontIcon
+        {
+            Glyph = _sectionOpen[s] ? "\uE70D" : "\uE76C",  // ChevronDown / ChevronRight
+            FontFamily = SymbolFont,
+            FontSize = UiFontSize - 3,
+            Foreground = Brush(Body),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _sectionChevrons![s] = chevron;
+        title.Children.Add(chevron);
+        title.Children.Add(new FontIcon
+        {
+            Glyph = section.Glyph,
+            FontFamily = SymbolFont,
+            FontSize = UiFontSize,
+            Foreground = Brush(Title),
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        TextBlock name = Text(section.Name, Title, UiFontSize + 2);
+        name.VerticalAlignment = VerticalAlignment.Center;
+        title.Children.Add(name);
+        int index = s;
+        Button toggle = ChromeButton(title, Pad(2, 4, 2, 4), () => ToggleSection(index),
+                                     align: HorizontalAlignment.Stretch, contentAlign: HorizontalAlignment.Left,
+                                     name: section.Name);
+        toggle.TabIndex = tab++;
+        head.Children.Add(toggle);
+
+        Button reset = ChromeButton(new FontIcon
+        {
+            Glyph = "\uE7A7",  // Undo
+            FontFamily = SymbolFont,
+            FontSize = UiFontSize - 2,
+            Foreground = Brush(Body),
+        }, CompactButtonPadding, () => Send(Command.AdjustResetSection, index),
+            name: $"Reset {section.Name}", tip: $"Reset {section.Name}");
+        reset.TabIndex = tab++;
+        Grid.SetColumn(reset, 1);
+        head.Children.Add(reset);
+        _sectionResets![s] = reset;
+
+        if (section.HasAuto)
+        {
+            Button auto = EditButton("AUTO", () => Send(Command.AdjustAuto, index), tip: $"Auto {section.Name}");
+            AutomationProperties_SetName(auto, $"Auto {section.Name}");
+            auto.TabIndex = tab++;
+            Grid.SetColumn(auto, 2);
+            head.Children.Add(auto);
+            _sectionAutos![s] = auto;
+        }
+        if (s == 2)
+        {
+            _monoSwitch = new ToggleSwitch
+            {
+                OnContent = "",
+                OffContent = "",
+                MinWidth = 0,
+                Width = 48,
+                TabIndex = tab++,
+            };
+            AutomationProperties_SetName(_monoSwitch, "Black and white");
+            _monoSwitch.Toggled += (_, _) =>
+            {
+                if (_updatingAdjust || _monoSwitch is null) return;
+                Send(AdjustSpecs[MonoParam].Command, _monoSwitch.IsOn ? 100f : 0f);
+            };
+            Grid.SetColumn(_monoSwitch, 3);
+            head.Children.Add(_monoSwitch);
+        }
+        outer.Children.Add(head);
+
+        var bodyStack = new StackPanel
+        {
+            Spacing = Space(2),
+            Padding = Pad(14, 0, 0, 0),
+            Visibility = _sectionOpen[s] ? Visibility.Visible : Visibility.Collapsed,
+        };
+        foreach (int p in section.Params) bodyStack.Children.Add(BuildAdjustRow(p, tab++));
+        _sectionBodies![s] = bodyStack;
+        outer.Children.Add(bodyStack);
+        return outer;
+    }
+
+    private static Border BuildAdjustRow(int p, int tabIndex)
+    {
+        AdjustSpec spec = AdjustSpecs[p];
+        var rowStack = new StackPanel { Spacing = Space(2) };
+        var head = new Grid();
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        // The focused row's name is Title, the others Body (AdjustView.swift).
+        TextBlock name = Text(spec.Name, Body);
+        head.Children.Add(name);
+        _adjustNames![p] = name;
+        TextBlock readout = Text(spec.Format(0), Body);
+        Grid.SetColumn(readout, 1);
+        head.Children.Add(readout);
+        _adjustReadouts![p] = readout;
+        rowStack.Children.Add(head);
+
+        var slider = new Slider
+        {
+            Minimum = spec.Min,
+            Maximum = spec.Max,
+            StepFrequency = spec.Step,
+            SmallChange = spec.Step,
+            LargeChange = spec.Step * 10,
+            IsThumbToolTipEnabled = false,
+            TabIndex = tabIndex,
+        };
+        AutomationProperties_SetName(slider, spec.Name);
+        slider.ValueChanged += (_, e) =>
+        {
+            _adjustReadouts![p].Text = AdjustSpecs[p].Format(e.NewValue);
+            if (_updatingAdjust) return;
+            _adjustValues[p] = (float)e.NewValue;
+            Send(AdjustSpecs[p].Command, (float)e.NewValue);
+        };
+        // Double-click a slider: that parameter back to 0.
+        slider.DoubleTapped += (_, _) => slider.Value = 0;
+        _adjustSliders![p] = slider;
+        rowStack.Children.Add(slider);
+        // The focused row carries a wash (the Mac's primary at 0.08,
+        // radius 6), so the keys below have a visible target.
+        var row = new Border
+        {
+            Child = rowStack,
+            Padding = Pad(4, 2, 4, 2),
+            CornerRadius = Corner(6),
+            Background = Brush(Colors.Transparent),
+        };
+        slider.GotFocus += (_, _) => FocusAdjustRow(p, true);
+        slider.LostFocus += (_, _) => FocusAdjustRow(p, false);
+        _adjustRows![p] = row;
+        return row;
+    }
+
+    private static void ToggleSection(int s)
+    {
+        _sectionOpen[s] = !_sectionOpen[s];
+        if (_sectionBodies is not null)
+            _sectionBodies[s].Visibility = _sectionOpen[s] ? Visibility.Visible : Visibility.Collapsed;
+        if (_sectionChevrons is not null) _sectionChevrons[s].Glyph = _sectionOpen[s] ? "\uE70D" : "\uE76C";
+    }
+
+    private static int SectionOf(int param) =>
+        Array.FindIndex(AdjustSections, s => Array.IndexOf(s.Params, param) >= 0);
 
     private static void FocusAdjustRow(int index, bool focused)
     {
@@ -228,9 +393,9 @@ public static partial class IslandHost
     private static void OnAdjustKey(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
     {
         if (_adjustSliders is null) return;
-        int row = Array.FindIndex(_adjustSliders, s => s.FocusState != FocusState.Unfocused);
-        if (row < 0) return;
-        Slider slider = _adjustSliders[row];
+        int param = Array.FindIndex(_adjustSliders, s => s.FocusState != FocusState.Unfocused);
+        if (param < 0) return;
+        Slider slider = _adjustSliders[param];
         bool shift = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Shift)
             .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
         switch (e.Key)
@@ -238,16 +403,24 @@ public static partial class IslandHost
             case Windows.System.VirtualKey.Up:
             case Windows.System.VirtualKey.Down:
             {
-                int n = _adjustSliders.Length;
-                int next = (row + (e.Key == Windows.System.VirtualKey.Up ? n - 1 : 1)) % n;
-                _adjustSliders[next].Focus(FocusState.Keyboard);
+                // The sliders of the open sections, top to bottom.
+                var rows = new List<int>();
+                for (int s = 0; s < AdjustSections.Length; s++)
+                {
+                    if (_sectionOpen[s]) rows.AddRange(AdjustSections[s].Params);
+                }
+                int at = rows.IndexOf(param);
+                if (at < 0 || rows.Count == 0) return;
+                int n = rows.Count;
+                int next = (at + (e.Key == Windows.System.VirtualKey.Up ? n - 1 : 1)) % n;
+                _adjustSliders[rows[next]].Focus(FocusState.Keyboard);
                 e.Handled = true;
                 break;
             }
             case Windows.System.VirtualKey.Left when shift:
             case Windows.System.VirtualKey.Right when shift:
                 if (!slider.IsEnabled) return;
-                slider.Value += (e.Key == Windows.System.VirtualKey.Left ? -10 : 10) * AdjustSpecs[row].Step;
+                slider.Value += (e.Key == Windows.System.VirtualKey.Left ? -10 : 10) * AdjustSpecs[param].Step;
                 e.Handled = true;
                 break;
             case Windows.System.VirtualKey.Number0:
@@ -256,6 +429,13 @@ public static partial class IslandHost
                 slider.Value = 0;
                 e.Handled = true;
                 break;
+            case Windows.System.VirtualKey.A:
+            {
+                int s = SectionOf(param);
+                if (_adjustReadiness == 2 && s >= 0 && AdjustSections[s].HasAuto) Send(Command.AdjustAuto, s);
+                e.Handled = true;
+                break;
+            }
             case Windows.System.VirtualKey.R:
                 if (_adjustReadiness == 2) Send(Command.AdjustReset);
                 e.Handled = true;
@@ -290,10 +470,31 @@ public static partial class IslandHost
                 }
                 _adjustReadouts[i].Text = AdjustSpecs[i].Format(_adjustValues[i]);
             }
+            if (_monoSwitch is not null)
+            {
+                _monoSwitch.IsEnabled = ready;
+                _monoSwitch.IsOn = _adjustValues[MonoParam] > 0;
+            }
         }
         finally
         {
             _updatingAdjust = false;
+        }
+        for (int s = 0; s < AdjustSections.Length; s++)
+        {
+            bool changed = Array.Exists(AdjustSections[s].Params, p => _adjustValues[p] != 0);
+            if (_sectionResets?[s] is Button reset)
+            {
+                reset.Visibility = changed ? Visibility.Visible : Visibility.Collapsed;
+                reset.IsEnabled = ready;
+            }
+            if (_sectionAutos?[s] is Button auto)
+            {
+                // While a section's Auto runs it reads "…" and no Auto takes a
+                // second click (the Mac shows a spinner).
+                auto.IsEnabled = ready && _autoSection < 0;
+                auto.Content = ButtonLabel(_autoSection == s ? "…" : "AUTO", UiFontSize - 2, trim: true);
+            }
         }
         if (_adjustResetButton is not null) _adjustResetButton.IsEnabled = ready;
         if (_adjustPreparing is not null)
