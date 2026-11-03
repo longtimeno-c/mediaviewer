@@ -1281,6 +1281,75 @@ TEST_CASE("restyle: sizes on eights, and a change carried back keeps the photo's
 // MV_ENHANCE_RUNTIME_DIR: libonnxruntime, MV_RESTYLE_PHOTO: a JPEG or PNG
 // decoded by the test's caller into MV_RESTYLE_RGB, a raw 8-bit RGB file of
 // MV_RESTYLE_W x MV_RESTYLE_H).
+TEST_CASE("restyle: the quality picks its size and the memory it needs", "[enhance][restyle]") {
+  const auto spec = parse_spec(R"json({
+    "kind": "restyle", "name": "Restyle", "weights": ["r.onnx"], "run_bytes": 8000, "cpu": false,
+    "knobs": [{"id": "prompt", "label": "Change", "type": "text", "default": ""},
+              {"id": "quality", "label": "Quality", "type": "choice", "default": "standard",
+               "options": [{"id": "standard", "text": "Standard"}, {"id": "best", "text": "Best"},
+                           {"id": "odd", "text": "Odd"}]}],
+    "io": {"runner": "diffusion", "edge": 512, "steps": 20,
+           "qualities": {"standard": {"edge": 512, "run_bytes": 8000}, "best": {"edge": 1024, "run_bytes": 24000},
+                         "odd": {"edge": 700}}}})json",
+                               model_kind::restyle);
+  REQUIRE(spec);
+  std::uint64_t free = 10000;
+  run_port port;
+  port.open_still = [](const std::string&) -> mv::result<run_port::still> { return mv::err(mv::status::io); };
+  port.write_still = [](const std::string&, const run_port::still&) -> mv::result<std::string> { return std::string(); };
+  port.load_restyle = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<restyle_model>> {
+    return mv::err(mv::status::unsupported_format);
+  };
+  port.free_memory = [&]() -> std::optional<std::uint64_t> { return free; };
+  job_runner jr(port);
+  job_request req;
+  req.path = "IMG_0002.JPG";
+  req.item = item_kind::still;
+  job_request::part part;
+  part.kind = model_kind::restyle;
+  part.spec = &*spec;
+  part.values["prompt"] = *mv::json::parse("\"make it winter\"");
+  part.values["quality"] = *mv::json::parse("\"standard\"");
+  req.parts.push_back(part);
+  CHECK(jr.check(req).empty());
+  // Best needs its own memory, and says how to get under it.
+  req.parts[0].values["quality"] = *mv::json::parse("\"best\"");
+  const std::string refused = jr.check(req);
+  CHECK(refused.find("at this quality") != std::string::npos);
+  CHECK(refused.find("lower quality") != std::string::npos);
+  free = 30000;
+  CHECK(jr.check(req).empty());
+  // A quality with no memory of its own falls back to the spec's run_bytes.
+  free = 9000;
+  req.parts[0].values["quality"] = *mv::json::parse("\"odd\"");
+  CHECK(jr.check(req).empty());
+}
+
+// The model.json Enhance ships parses, and every quality it offers has an
+// edge the UNet can take and memory of its own.
+TEST_CASE("restyle: the shipped model's qualities", "[enhance][restyle]") {
+  const auto text = mv::test::read_bytes(MV_ENHANCE_RESTYLE_SPEC);
+  const auto spec = parse_spec(std::string_view(reinterpret_cast<const char*>(text.data()), text.size()),
+                               model_kind::restyle);
+  REQUIRE(spec);
+  const knob* q = spec->find("quality");
+  REQUIRE(q);
+  CHECK(q->def_choice == "standard");
+  const mv::json::value* qualities = spec->io.find("qualities");
+  REQUIRE(qualities);
+  std::int64_t last = 0;
+  for (const knob_option& o : q->options) {
+    const mv::json::value* one = qualities->find(o.id);
+    REQUIRE(one);
+    const auto edge = one->integer("edge");
+    REQUIRE(edge);
+    CHECK(*edge % 64 == 0);
+    CHECK(*edge > last);
+    last = *edge;
+    CHECK(one->integer("run_bytes").value_or(0) > 0);
+  }
+}
+
 TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {
   const char* dir = std::getenv("MV_RESTYLE_DIR");
   const char* ort = std::getenv("MV_ENHANCE_RUNTIME_DIR");

@@ -154,7 +154,10 @@ With Restyle's model downloaded, the sheet's **Photo** choice offers *More detai
 model) or *Restyle with words*, which adds a text field ("make it a snowy winter day"). An empty
 request is refused before a run. The run (`diffusion.h`, `io.runner: diffusion`):
 
-1. The edited still is scaled to about 512 px on its long edge, each side a multiple of 64.
+1. The edited still is scaled to the long edge its **Quality** names (`io.qualities`: Standard
+   512 px, High 768 px, Best 1024 px), each side a multiple of 64. Each quality has its own
+   memory gate (8, 12 and 24 GB); a request over it is refused with a lower quality suggested.
+   A larger copy changes finer things, takes longer, and compiles once on Core ML per size.
 2. CLIP's tokenizer and the text encoder turn the words (and an empty prompt) into the conditions.
 3. The VAE encodes the small picture; 20 Euler-ancestral steps (linspace timesteps, the
    reference schedule, a fixed seed) run the UNet over a batch of three — text and picture,
@@ -188,7 +191,9 @@ a mask ([plan](../plans/edit-adjust.md) slice 5b).
 | A 4032 × 3024 photo (EXIF-turned) to 6048 × 8064, Core ML, read to written | 8.7 s, about 850 MB peak (`run_bytes` 700 MB + the picture in and out) |
 
 Restyle (2026-11-03, the same Mac, the hidden `[.restyle-model]` case on a 512 × 320 picture):
-14–16 s a request on Core ML once the size is compiled. The first run at a new size takes about
+14–16 s a request on Core ML at Standard once the size is compiled. **High and Best are not
+measured yet**: their memory gates (12 and 24 GB) are estimates from the UNet's attention
+growing with the square of the latent's area, to be replaced by measured peaks. The first run at a new size takes about
 200–230 s (Core ML compilation). About 7 GB a model instance with the fp16 UNet (`run_bytes`
 8 GB). "Black and white" took colourfulness from 83.4 to 1.9. fp16 output looks the same as fp32
 by eye.

@@ -108,6 +108,33 @@ class sound_queue {
   bool done_ = false, ok_ = true, stopped_ = false;
 };
 
+// Restyle's quality: the long edge it runs at and the free memory that needs,
+// from the spec's io.qualities by the "quality" knob; io.edge and run_bytes
+// when the spec or the request names none. An edge outside 256..1536 or not
+// a multiple of 64 is not taken.
+struct restyle_quality {
+  std::uint32_t edge = kRestyleEdge;
+  std::uint64_t run_bytes = 0;
+};
+
+restyle_quality quality_of(const job_request::part& part) {
+  restyle_quality q;
+  q.run_bytes = part.spec->run_bytes;
+  const auto take_edge = [&](std::optional<std::int64_t> e) {
+    if (e && *e >= 256 && *e <= 1536 && *e % 64 == 0) q.edge = static_cast<std::uint32_t>(*e);
+  };
+  const json::value& io = part.spec->io;
+  take_edge(io.integer("edge"));
+  const auto it = part.values.find("quality");
+  if (it == part.values.end() || it->second.k != json::kind::string) return q;
+  const json::value* qualities = io.find("qualities");
+  const json::value* one = qualities ? qualities->find(it->second.s) : nullptr;
+  if (!one) return q;
+  take_edge(one->integer("edge"));
+  if (const auto bytes = one->integer("run_bytes"); bytes && *bytes > 0) q.run_bytes = static_cast<std::uint64_t>(*bytes);
+  return q;
+}
+
 }  // namespace
 
 job_runner::job_runner(run_port port) : port_(std::move(port)) {}
@@ -142,9 +169,10 @@ std::string job_runner::check(const job_request& r) const {
                        it->second.s.find_first_not_of(" \t") == std::string::npos;
     if (empty) return "Type what to change, for example \"make it a snowy winter day\".";
     if (port_.free_memory) {
-      if (const auto free = port_.free_memory(); free && *free < restyle->spec->run_bytes) {
-        return "Needs " + size_text(restyle->spec->run_bytes) + " of free memory to run; " + size_text(*free) +
-               " is free. Close something and try again.";
+      const std::uint64_t need = quality_of(*restyle).run_bytes;
+      if (const auto free = port_.free_memory(); free && *free < need) {
+        return "Needs " + size_text(need) + " of free memory at this quality; " + size_text(*free) +
+               " is free. Choose a lower quality, or close something and try again.";
       }
     }
     return {};
@@ -470,6 +498,7 @@ void job_runner::run_restyle(job_request r, job_events ev) {
   full.height = pic->height;
   full.rgb = std::move(pic->rgb);
   std::uint32_t w = 0, h = 0;
+  p.edge = quality_of(part).edge;
   restyle_size(full.width, full.height, p.edge, w, h);
   // A model that needs the GPU (its spec's cpu false) is refused where its
   // UNet would run on the CPU: many minutes a request (on Windows the bundled
