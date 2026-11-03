@@ -655,9 +655,16 @@ TEST_CASE("eyes: a shut-eyed photo becomes a new file with a neighbour's open ey
   CHECK(near[0] == utf8(open));
 
   // What the pack answers: this face, and the same person in the open frame.
+  // Paths through the JSON writer, as the pack writes them (a Windows path's
+  // backslashes need escaping).
+  auto quoted = [](const std::string& p) {
+    mv::json::writer w;
+    w.string(p);
+    return w.take();
+  };
   const std::string pack = std::string("{\"faces\":[{\"x\":0.3,\"y\":0.3,\"w\":0.4,\"h\":0.5,\"lm\":") +
-                           lm_json(400, 300, 200, 150, 120) + ",\"person\":7,\"donors\":[{\"path\":\"" +
-                           near[0] + "\",\"lm\":" + lm_json(400, 300, 210, 145, 124) + ",\"sim\":0.9}]}]}";
+                           lm_json(400, 300, 200, 150, 120) + ",\"person\":7,\"donors\":[{\"path\":" +
+                           quoted(near[0]) + ",\"lm\":" + lm_json(400, 300, 210, 145, 124) + ",\"sim\":0.9}]}]}";
   auto r = mv::addon::media::open_closed_eyes(utf8(shut), pack);
   REQUIRE(r);
   CHECK(r->faces == 1);
@@ -676,7 +683,7 @@ TEST_CASE("eyes: a shut-eyed photo becomes a new file with a neighbour's open ey
 
   // Eyes already open: nothing better to give, no file.
   const std::string none = std::string("{\"faces\":[{\"lm\":") + lm_json(400, 300, 210, 145, 124) +
-                           ",\"donors\":[{\"path\":\"" + utf8(shut) + "\",\"lm\":" +
+                           ",\"donors\":[{\"path\":" + quoted(utf8(shut)) + ",\"lm\":" +
                            lm_json(400, 300, 200, 150, 120) + "}]}]}";
   auto n = mv::addon::media::open_closed_eyes(utf8(open), none);
   REQUIRE(n);

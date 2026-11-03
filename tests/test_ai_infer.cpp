@@ -1965,8 +1965,10 @@ TEST_CASE("eyes: real YuNet and AdaFace on real photos of one person", "[.eyes-r
               spec->same_person);
   CHECK(sim >= spec->same_person);  // eyes shut, still the same person to the model
 
-  const std::string json = "{\"faces\":[{\"lm\":" + lm_json(t) + ",\"donors\":[{\"path\":\"" + utf8(donor) +
-                           "\",\"lm\":" + lm_json(dn) + ",\"sim\":" + std::to_string(sim) + "}]}]}";
+  mv::json::writer quoted;
+  quoted.string(utf8(donor));  // escaped, as the pack writes it
+  const std::string json = "{\"faces\":[{\"lm\":" + lm_json(t) + ",\"donors\":[{\"path\":" + quoted.take() +
+                           ",\"lm\":" + lm_json(dn) + ",\"sim\":" + std::to_string(sim) + "}]}]}";
   auto r = mv::addon::media::open_closed_eyes(utf8(target), json);
   REQUIRE(r);
   CHECK(r->fixed == 1);
