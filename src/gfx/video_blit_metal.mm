@@ -50,7 +50,12 @@ struct VideoCamera {
   // The Video Editor's light and colour: PR 11's kernel and uniforms; adj1.w > 0.5 runs it.
   float4 adj0;
   float4 adj1;
+  float4 adj2;
+  float4 adj3;
+  float4 adj4;
+  float4 adj5;
 };
+#define MV_ADJUST_LUT_PARAM constant float4* lut,
 )";
 // PR 11's colour kernel (gfx/adjust_kernel.h) goes between the two halves,
 // the same tokens as the HLSL twin, the photo blit and the export.
@@ -121,6 +126,7 @@ static float3 tone_map(float3 linear_scene, float peak_over_white) {
 
 fragment float4 ps_video(VSOut vin [[stage_in]],
                          constant VideoCamera& cam [[buffer(0)]],
+                         constant float4* lut [[buffer(1)]],
                          texture2d<float> luma_tex [[texture(0)]],
                          texture2d<float> chroma_tex [[texture(1)]],
                          sampler samp [[sampler(0)]]) {
@@ -212,7 +218,12 @@ fragment float4 ps_video(VSOut vin [[stage_in]],
     // SDR video: display-referred, NOT tone-mapped (like a camera JPEG, D6).
     linear_rgb = to_bt709(eotf_bt1886(saturate(rgb)), primaries);
   }
-  if (cam.adj1.w > 0.5) linear_rgb = mv_adjust(linear_rgb, cam.adj0, cam.adj1);
+  // No vignette on a clip: `pos` is the centre. The table is never read
+  // (a5.w stays 0): the blitter binds 16 bytes there.
+  if (cam.adj1.w > 0.5) {
+    linear_rgb = mv_adjust(lut, linear_rgb, float4(0.0, 0.0, 0.0, 0.0), cam.adj0, cam.adj1, cam.adj2, cam.adj3,
+                           cam.adj4, cam.adj5);
+  }
   return float4(saturate(linear_rgb), 1.0);
 }
 )";
@@ -228,10 +239,9 @@ struct alignas(16) video_camera_cb {
   std::uint32_t matrix, transfer, range, bit_depth;
   std::uint32_t primaries, turns, mirror, pad3;
   float crop_x, crop_y, crop_w, crop_h;
-  float adj0[4];
-  float adj1[4];
+  float adj[kAdjustVectors][4];  // a0 .. a5
 };
-static_assert(sizeof(video_camera_cb) == 128, "keep in sync with the MSL VideoCamera struct");
+static_assert(sizeof(video_camera_cb) == 192, "keep in sync with the MSL VideoCamera struct");
 
 }  // namespace
 
@@ -315,14 +325,16 @@ void video_blitter_mac::draw(void* encoder_ptr, void* luma, void* chroma,
   cb.crop_y = crop_ok ? p.crop_y : 0.0f;
   cb.crop_w = crop_ok ? p.crop_w : 1.0f;
   cb.crop_h = crop_ok ? p.crop_h : 1.0f;
-  for (int i = 0; i < 4; ++i) {
-    cb.adj0[i] = p.adjust0[i];
-    cb.adj1[i] = p.adjust1[i];
-  }
-  cb.adj1[3] = p.adjust ? 1.0f : 0.0f;
+  std::memcpy(cb.adj, p.adjust_u.a, sizeof(cb.adj));
+  cb.adj[1][3] = p.adjust ? 1.0f : 0.0f;
+  cb.adj[5][3] = 0.0f;  // never the table: the editor sets PR 11's five only
 
   [encoder setRenderPipelineState:(__bridge id<MTLRenderPipelineState>)pipeline_];
   [encoder setFragmentBytes:&cb length:sizeof(cb) atIndex:0];
+  // The kernel's table is never read on a clip (a5.w is 0): 16 bytes hold the
+  // slot, as the photo blit does with no table.
+  static const float kNoTable[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  [encoder setFragmentBytes:kNoTable length:sizeof(kNoTable) atIndex:1];
   [encoder setFragmentTexture:(__bridge id<MTLTexture>)luma atIndex:0];
   [encoder setFragmentTexture:(__bridge id<MTLTexture>)chroma atIndex:1];
   [encoder setFragmentSamplerState:(__bridge id<MTLSamplerState>)sampler_ atIndex:0];

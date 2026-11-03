@@ -29,6 +29,9 @@
 #include "codec/exif.h"
 #include "edit/clip_sample.h"
 #include "edit/encode.h"
+#include "core/json.h"
+#include "image/linear.h"
+#include "edit/eyes.h"
 #include "edit/picture_io.h"
 #include "infer/ort.h"
 #include "import_fixture.h"
@@ -672,6 +675,144 @@ TEST_CASE("enhance: a photo at twice the size, upright, with its metadata, besid
   INFO(c.message);
   REQUIRE(c.ok);
   CHECK(c.name == "shot-enhance.png");
+}
+
+// docs/plans/edit-adjust.md slice 5: the photo being edited carries its edit
+// into Enhance's copy; any other photo, or none registered, does not.
+TEST_CASE("enhance: the photo being edited is enhanced with its crop and colour", "[enhance][still]") {
+  scratch_dir s("enhance_edited");
+  const fs::path photo = s / "IMG_0003.JPG";
+  mv::test::write_bytes(photo, sideways_jpeg(64, 48));  // 48 x 64 shown
+  mv::addon::host_table table(still_services());
+  run_port port = run_port_of(table.api(), "");
+  port.load_tiles = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<tile_model>> {
+    return std::unique_ptr<tile_model>(new nearest());
+  };
+  const model_spec spec = still_spec();
+
+  mv::edit::geometry g;
+  g.crop = {0.0f, 0.0f, 1.0f, 0.75f};  // the top 48 x 48
+  mv::edit::colour c;
+  c.v[static_cast<std::size_t>(mv::edit::adjust_param::mono)] = 100.0f;
+  mv::addon::media::set_still_edit(utf8(photo), g, c);
+  outcome a;
+  run_photo(port, utf8(photo), spec, a);
+  INFO(a.message);
+  REQUIRE(a.ok);
+  auto edited = mv::codec::decode(mv::test::read_bytes(s / a.name));
+  REQUIRE(edited);
+  CHECK(edited->width == 96u);
+  CHECK(edited->height == 96u);
+  // Black & white came along: a pixel's channels agree (JPEG rounding aside).
+  const std::uint8_t* px = &edited->rgba[(std::size_t{40} * edited->width + 30) * 4];
+  CHECK(std::abs(int(px[0]) - int(px[2])) <= 6);
+
+  // Another photo is not the one being edited: its own pixels.
+  mv::addon::media::set_still_edit(utf8(s / "other.jpg"), g, c);
+  outcome b;
+  run_photo(port, utf8(photo), spec, b);
+  REQUIRE(b.ok);
+  auto plain = mv::codec::decode(mv::test::read_bytes(s / b.name));
+  REQUIRE(plain);
+  CHECK(plain->height == 128u);
+  mv::addon::media::clear_still_edit();
+}
+
+// docs/plans/edit-adjust.md slice 6: Open closed eyes, from the pack's answer
+// to a new file. The faces here are drawn: skin, and two eyes either open (a
+// white almond, a dark iris) or shut (a line of lashes).
+namespace {
+
+std::vector<std::uint8_t> face_jpeg(std::uint32_t w, std::uint32_t h, float cx, float cy, float d, bool open) {
+  mv::codec::raster r;
+  r.width = w;
+  r.height = h;
+  r.format = mv::codec::format_family::jpeg;
+  r.rgba.assign(std::size_t{w} * h * 4, 255);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      std::uint8_t* p = &r.rgba[(std::size_t{y} * w + x) * 4];
+      p[0] = 200, p[1] = 150, p[2] = 125;
+      for (float side : {-0.5f, 0.5f}) {
+        const float ux = static_cast<float>(x) - (cx + side * d), uy = static_cast<float>(y) - cy;
+        if (open) {
+          if ((ux / (0.25f * d)) * (ux / (0.25f * d)) + (uy / (0.11f * d)) * (uy / (0.11f * d)) < 1.0f) {
+            p[0] = p[1] = p[2] = 235;
+          }
+          if (ux * ux + uy * uy < (0.09f * d) * (0.09f * d)) p[0] = 25, p[1] = 20, p[2] = 18;
+        } else if (std::abs(uy) < 1.5f && std::abs(ux) < 0.25f * d) {
+          p[0] = 30, p[1] = 25, p[2] = 25;
+        }
+      }
+    }
+  }
+  mv::edit::encode_options o;
+  o.quality = 95;
+  auto bytes = mv::edit::encode(r, o, {});
+  REQUIRE(bytes);
+  return *bytes;
+}
+
+std::string lm_json(float w, float h, float cx, float cy, float d) {
+  char buf[256];
+  std::snprintf(buf, sizeof buf, "[%g,%g,%g,%g,%g,%g,%g,%g,%g,%g]", (cx - d / 2) / w, cy / h, (cx + d / 2) / w,
+                cy / h, cx / w, (cy + d / 2) / h, (cx - d / 3) / w, (cy + d) / h, (cx + d / 3) / w, (cy + d) / h);
+  return buf;
+}
+
+}  // namespace
+
+TEST_CASE("eyes: a shut-eyed photo becomes a new file with a neighbour's open eyes", "[enhance][eyes]") {
+  scratch_dir s("open_eyes");
+  const fs::path shut = s / "IMG_0101.JPG", open = s / "IMG_0102.JPG", far = s / "IMG_0200.JPG";
+  mv::test::write_bytes(shut, face_jpeg(400, 300, 200, 150, 120, false));
+  mv::test::write_bytes(open, face_jpeg(400, 300, 210, 145, 124, true));
+  mv::test::write_bytes(far, face_jpeg(400, 300, 200, 150, 120, true));
+  const auto before = mv::test::read_bytes(shut);
+  // The burst: the open frame was taken 2 s later, the far one a minute on.
+  const auto t0 = fs::last_write_time(shut);
+  fs::last_write_time(open, t0 + std::chrono::seconds(2));
+  fs::last_write_time(far, t0 + std::chrono::seconds(60));
+  const std::vector<std::string> near = mv::addon::media::burst_neighbours(utf8(shut));
+  REQUIRE(near.size() == 1);
+  CHECK(near[0] == utf8(open));
+
+  // What the pack answers: this face, and the same person in the open frame.
+  // Paths through the JSON writer, as the pack writes them (a Windows path's
+  // backslashes need escaping).
+  auto quoted = [](const std::string& p) {
+    mv::json::writer w;
+    w.string(p);
+    return w.take();
+  };
+  const std::string pack = std::string("{\"faces\":[{\"x\":0.3,\"y\":0.3,\"w\":0.4,\"h\":0.5,\"lm\":") +
+                           lm_json(400, 300, 200, 150, 120) + ",\"person\":7,\"donors\":[{\"path\":" +
+                           quoted(near[0]) + ",\"lm\":" + lm_json(400, 300, 210, 145, 124) + ",\"sim\":0.9}]}]}";
+  auto r = mv::addon::media::open_closed_eyes(utf8(shut), pack);
+  REQUIRE(r);
+  CHECK(r->faces == 1);
+  CHECK(r->fixed == 1);
+  CHECK(fs::path(r->written).filename() == "IMG_0101-eyes.jpg");
+  CHECK(mv::test::read_bytes(shut) == before);  // the original is never written
+  auto fixed = mv::image::decode_linear(mv::test::read_bytes(fs::path(r->written)));
+  auto was = mv::image::decode_linear(before);
+  REQUIRE(fixed);
+  REQUIRE(was);
+  mv::edit::face_landmarks lm{};
+  auto parsed = mv::json::parse(lm_json(400, 300, 200, 150, 120));
+  REQUIRE(parsed);
+  for (std::size_t i = 0; i < lm.size(); ++i) lm[i] = static_cast<float>(parsed->a[i].d);
+  CHECK(mv::edit::eye_openness(*fixed, lm) > mv::edit::eye_openness(*was, lm) * mv::edit::kEyesBetter);
+
+  // Eyes already open: nothing better to give, no file.
+  const std::string none = std::string("{\"faces\":[{\"lm\":") + lm_json(400, 300, 210, 145, 124) +
+                           ",\"donors\":[{\"path\":" + quoted(utf8(shut)) + ",\"lm\":" +
+                           lm_json(400, 300, 200, 150, 120) + "}]}]}";
+  auto n = mv::addon::media::open_closed_eyes(utf8(open), none);
+  REQUIRE(n);
+  CHECK(n->fixed == 0);
+  CHECK(n->written.empty());
+  CHECK_FALSE(mv::addon::media::open_closed_eyes(utf8(shut), "not json"));
 }
 
 // A 12-megapixel photo with the real model, to twice the size, timed.

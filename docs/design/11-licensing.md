@@ -137,6 +137,16 @@ pack's manifest labels the library with their conjunction, `addon-pack.py` allow
 identifiers, and the upstream notices ship as `LICENSES/pdfium` in the pack. Nothing of PDFium
 is in the base install tree.
 
+## Model weights fetched on request
+
+An add-on's model weights are not in its zip or the install tree: the signed manifest pins them
+under `remote` and the add-on downloads them when the user clicks Download
+([29](29-enhance.md)). `addon-pack.py` accepts a pin under the allowed set above, plus
+**CreativeML OpenRAIL-M** for remote weights only (owner, 2026-11-03), for Enhance's Restyle
+(InstructPix2Pix). OpenRAIL-M is not an open-source licence: it adds use restrictions, which are
+passed on to the user with the model's credit in Settings → Add-ons → Enhance. Nothing under it
+is linked into or shipped with the program.
+
 ## Source offer
 
 About reads the version from the host exe's `VERSIONINFO` (filled from CMake's

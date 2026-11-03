@@ -634,6 +634,22 @@ disabled until the working image exists.
 menu open a workspace of tabs over the existing panes, a base feature with no new engine. It docks
 (see "Panes float" above).
 
+**Face data may serve one edit: Open closed eyes (owner, 2026-11-02).** The People promise was
+"face data is used for nothing but local search". The owner approved its use for the eyes-open
+edit ([plan](../plans/edit-adjust.md) slice 6): the AI pack matches the face in the photo being
+edited to the same person in the frames of the same moment (within 10 s, same folder) by the
+People embedding. Bounds kept: only on a click, only while People is on, nothing written to
+`faces.db`, nothing kept, the result a new file beside the original. Why: matching by position
+alone picks the wrong person in a group shot. The generative alternative (eyes drawn from the
+person's other photos) was not taken: gigabytes of weights, minutes on Windows' CPU, eyes that may
+not be theirs, and identity models under non-commercial licences.
+
+**Detail is a CPU pass, not a kernel term (2026-11-02).** Definition, brilliance, sharpen and
+noise reduction need neighbours. They run on the working image on a worker after the slider
+settles and replace the working texture; the export runs the same code at full size. Not a GPU
+base layer: no new texture binding or shader twin on either GPU, and export matches the preview
+by construction. Cost: the canvas follows a detail slider a quarter second after it settles.
+
 ---
 
 ## Clip editing and the Video Editor
@@ -1009,6 +1025,19 @@ and "newer than running" checks are unchanged, and asset URLs outside the repo's
 ignored. Previews are signed exactly like stable. `github-release.py` refuses a release that does
 not exceed every published one, so switching back to Stable never downgrades. Add-ons ship on stable
 releases only.
+
+**"What's new" rides in what is already signed and fetched; the manifest stays schema 1 on the
+wire (2026-11-02, #620).** The update notice's short notes are the Windows manifest's optional
+`notes` and the Mac appcast item's embedded plain-text description, both under the existing
+signature, so no request is added (a Sparkle `releaseNotesLink` would be one, and an unsigned
+page). The Windows reader accepts schema 1 and 2 (2 = 1 with `notes` defined), but the release
+tool keeps writing `"schema": 1` with `notes` in it: every installed reader before this one
+rejects any schema but 1 as `UnsupportedSchema` and ignores unknown members, so a schema 2
+manifest would strand every existing install on its version for good. The bump to 2 waits until
+no supported version predates the schema 2 reader. Notes that break the bound (3 lines, 400 bytes,
+no links, a fixed list of forbidden characters) make the manifest malformed rather than being
+trimmed: they are ours and signed, and the release's own `verify-release` step and the writers
+check the same rule first.
 
 **Add-on updates are offered, not silent (2026-09-27).** Opening Settings probes the channel for
 installed add-ons; a newer signed manifest shows **Update to X**. Nothing is fetched without a

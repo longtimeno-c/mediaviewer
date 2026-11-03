@@ -317,6 +317,8 @@ public static partial class IslandHost
                 };
                 // The restart loads the newest add-ons too.
                 if (_addonRestartFor.Count > 0) tip += " " + AddonRestartText();
+                // #620: the signed "What's new", up to three short lines.
+                if (s.Notes is not null) tip += "\n\nWhat's new\n" + s.Notes;
                 clickable = true;
             }
             else if (_addonRestartFor.Count > 0)

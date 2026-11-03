@@ -184,7 +184,7 @@ bool clip_session::to_request(const mv_clip_request& in, std::string source, cli
     l.flip_v = (lk.flags & MV_CLIP_LOOK_FLIP_V) != 0;
     l.mute = (lk.flags & MV_CLIP_LOOK_MUTE) != 0;
     l.crop = static_cast<clip::crop_ratio>(lk.crop);
-    for (std::size_t i = 0; i < l.light.v.size(); ++i) l.light.v[i] = lk.light[i];
+    for (std::size_t i = 0; i < clip::kLookLightParams; ++i) l.light.v[i] = lk.light[i];
     l.volume = lk.volume;
     l.fade_in_ms = lk.fade_in_ms;
     l.fade_out_ms = lk.fade_out_ms;

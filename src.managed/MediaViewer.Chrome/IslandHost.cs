@@ -150,6 +150,34 @@ public static partial class IslandHost
         public const int AdjustTemperature = 122;
         public const int AdjustTint = 123;
         public const int AdjustReset = 124;
+        // The full Adjust list (docs/plans/edit-adjust.md slice 1): sliders in
+        // edit::adjust_param order from highlights, then a section's Auto and
+        // Reset, whose arg is the edit::adjust_section.
+        public const int AdjustHighlights = 185;
+        public const int AdjustShadows = 186;
+        public const int AdjustWhites = 187;
+        public const int AdjustBlacks = 188;
+        public const int AdjustVibrance = 189;
+        public const int AdjustMono = 190;
+        public const int AdjustMonoFilter = 191;
+        public const int AdjustMonoTone = 192;
+        public const int AdjustVignette = 193;
+        public const int AdjustVignetteRadius = 194;
+        public const int AdjustVignetteSoftness = 195;
+        public const int AdjustAuto = 196;
+        public const int AdjustResetSection = 197;
+        // Slice 2: Levels, edit::adjust_param order from levels_black; a
+        // curve goes as parked "channel\tx,y;x,y" (chrome_cmd_adjust_curve).
+        public const int AdjustLevelsBlack = 198;
+        public const int AdjustCurve = 1090;
+        // Slice 3: AdjustPick's arg is mode * 1000 + (red-eye size + 100);
+        // AdjustParam sends parked "param\tvalue" (selective colour).
+        public const int AdjustPick = 210;
+        public const int AdjustOpenEyes = 211;  // slice 6
+        public const int AdjustParam = 1091;
+        public const int AdjustPrompt = 1092;  // slice 5b: parked UTF-8 request
+        // Slice 7: the Remove brush: 0 the last stroke off, 1 all, 2 Remove.
+        public const int AdjustBrush = 1093;
         // PR 12: the pane's stars post the rating keys' ids (commands.h
         // set_rating_0..5); 0 clears.
         public const int SetRating0 = 127;

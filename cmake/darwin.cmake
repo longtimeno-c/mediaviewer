@@ -438,9 +438,13 @@ add_library(mv_edit STATIC
   src/edit/clip_auto_light.cpp
   src/edit/clip_auto_light.h
   src/edit/adjust.h
+  src/edit/auto_adjust.cpp
   src/edit/auto_tone.cpp
   src/edit/auto_tone.h
   src/edit/bake.cpp
+  src/edit/detail.cpp
+  src/edit/eyes.cpp
+  src/edit/prompt.cpp
   src/edit/bake.h
   src/edit/histogram.cpp
   src/edit/histogram.h
@@ -607,6 +611,9 @@ add_library(mv_shell STATIC
   # PR 11: the adjust pane's state (readiness, tokens, histogram), shared.
   src/shell/adjust_pane.cpp
   src/shell/adjust_pane.h
+  # Slice 7: the Remove brush's strokes and mask, shared.
+  src/shell/remove_brush.cpp
+  src/shell/remove_brush.h
   # PR 13 / 14: trim mode and the clip tools (shared with Windows), and the
   # clip job queue + keyframe index behind the Windows ABI, reused as is.
   src/shell/trim_state.cpp
@@ -972,8 +979,11 @@ if(MV_BUILD_TESTS)
     tests/test_text_select.cpp
     # PR 11: colour adjusts, the FP16 working space, bake, histogram, pane state.
     tests/test_adjust.cpp
+    tests/test_remove_brush.cpp
     # #289: auto tone from the histogram (edit/auto_tone.h).
     tests/test_auto_tone.cpp
+    tests/test_prompt.cpp
+    tests/test_eyes.cpp
     # PR 11 (macOS crash reporting): the scrub, now with POSIX paths.
     tests/test_minidump_scrub.cpp
     src/shell/minidump_scrub.cpp

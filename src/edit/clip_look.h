@@ -13,6 +13,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -54,6 +55,10 @@ struct look {
 };
 
 inline constexpr std::int32_t kMaxFadeMs = 5000;
+// The look's light is PR 11's five sliders (adjust_param exposure .. tint, the
+// first five): what the editor sets and mv_clip_look carries. The rest of the
+// photo set (docs/plans/edit-adjust.md) stays 0 on a clip.
+inline constexpr std::size_t kLookLightParams = 5;
 
 // Clamped and snapped: turns mod 4, ratio in range, volume 0..2, fades
 // 0..kMaxFadeMs, speed one of 0.5 / 1 / 2, colour through clamp_param.

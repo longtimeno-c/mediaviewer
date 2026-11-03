@@ -15,6 +15,7 @@
 #include <cstdint>
 
 #include "core/result.h"
+#include "gfx/adjust_kernel.h"
 #include "gfx/colour_desc.h"
 #include "gfx/device.h"
 
@@ -50,11 +51,11 @@ struct video_blit_params {
   float crop_y = 0.0f;
   float crop_w = 1.0f;
   float crop_h = 1.0f;
-  // The Video Editor's light and colour: PR 11's kernel (gfx/adjust_kernel.h)
-  // with edit::adjust_uniforms a0 / a1, run only when `adjust` is set.
+  // The Video Editor's light and colour: the shared kernel
+  // (gfx/adjust_kernel.h) with edit::adjust_uniforms, run only when `adjust`
+  // is set.
   bool adjust = false;
-  float adjust0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-  float adjust1[4] = {1.0f, 0.18f, 0.0f, 0.0f};
+  adjust_vectors adjust_u{};
 };
 
 class video_blitter {
@@ -79,6 +80,7 @@ class video_blitter {
   com_ptr<ID3D11VertexShader> vs_;
   com_ptr<ID3D11PixelShader> ps_;
   com_ptr<ID3D11Buffer> cb_;
+  com_ptr<ID3D11Buffer> lut_cb_;  // the kernel's table slot (b1): identity
   com_ptr<ID3D11SamplerState> linear_;
   com_ptr<ID3D11SamplerState> point_;
   com_ptr<ID3D11BlendState> blend_;
