@@ -103,6 +103,7 @@
 #include "shell/navigation.h"
 #include "shell/slideshow.h"
 #include "shell/present_lab.h"
+#include "shell/print_layout.h"
 #include "shell/settings.h"
 #include "shell/shellext_install.h"
 #include "shell/login_item_win.h"
@@ -168,6 +169,9 @@ constexpr UINT kMsgShareReady = WM_APP + 0x7F;  // issue #444: a share's files w
 // (IslandHost.Notices.cs posts it).
 constexpr UINT kMsgTray = WM_APP + 0x80;
 constexpr UINT kMsgBackgroundChanged = WM_APP + 0x81;
+constexpr UINT kMsgRunTask = WM_APP + 0x82;  // issue #617: a first start's --task, once the loop runs
+// Issue #614: Ctrl+P's job finished (wparam 1 printed, 0 not; the pool posts).
+constexpr UINT kMsgPrintDone = WM_APP + 0x83;
 // #452: a --background start (sign-in) that no add-on has kept by now removes its
 // Run entry and quits. Driftwire asks within ~10 s of its load.
 constexpr UINT_PTR kBackgroundStartTimerId = 0x7D01;
@@ -500,13 +504,26 @@ struct app_state {
   std::string gallery_range_anchor;
   // Issue #444: the latest share request; an older gather is dropped.
   std::uint64_t share_seq = 0;
+  // Issue #614: Ctrl+P. The Options page's last answer (this run only), and
+  // whether a print is still being prepared (one at a time).
+  mv::shell::print_options print_options;
+  bool print_busy = false;
   // Issue #206: View > Show. For this run only; the core filters the listing.
   mv::io::kind_filter kind_filter = mv::io::kind_filter::all;
   mv::shell::file_jobs files;
   bool rename_pending = false;  // issue #210: one F2 rename at a time
   std::vector<std::string> destinations;  // F7 / F8, most recent first
-  // PR 15: the jump list's recent folders (settings.ini [recent]), most recent first.
+  // PR 15: the folders the jump list, the welcome card and Open > Recent folders
+  // show: issue #617's pins first, then the recents (pinned_then_recent). Every
+  // row index is into this list; it is rebuilt from the two below, never edited.
   std::vector<std::string> recent_folders;
+  // settings.ini [recent]: the MRU list (f0..f9), most recent first, and the
+  // pins (pinned0..pinned4), oldest pin first (shell/os_integration.h).
+  std::vector<std::string> recent_mru;
+  std::vector<std::string> pinned_folders;
+  // Issue #617: a jump-list task this start was asked for (--task), run once the
+  // window is up ("open-folder") or once Import has loaded ("import").
+  std::wstring pending_task;
   // The OneDrive folder this user has set up (the OneDrive client's %OneDrive%),
   // "" for none: the welcome card's cloud row above the recent folders, as the
   // Mac's iCloud Photos (2026-10-07). Read once from the environment, no I/O.
@@ -584,6 +601,9 @@ struct pending_restore {
 // PR 15: `--new-instance` runs a second, independent window (docs/design/09
 // "overridable"); without it a second start hands its paths to the first.
 bool g_new_instance = false;
+// Issue #617: `--task open-folder|import`, a jump-list task. Forwarded to the
+// running viewer with the paths; a first start runs it once its window is up.
+std::wstring g_start_task;
 // Issue #486: `--boot-report <path>` writes the boot timeline (core/boot_timeline.h)
 // as JSON once the launch is ready, then closes the window: a measuring run,
 // repeated by tools/perf/boot.ps1. It implies --new-instance and keeps
@@ -728,11 +748,14 @@ std::string onedrive_where(const app_state* app) noexcept {
 }
 
 // The card's rows: OneDrive first when it is set up, then the recent folders.
+// The pins lead app->recent_folders (issue #617), so their rows are the first.
 void fill_welcome_card(const app_state* app, mv::shell::welcome_recents& out) noexcept {
+  const std::size_t pinned = app->pinned_folders.size();
   if (app->onedrive_utf8.empty()) {
-    mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, out);
+    mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, out, false, pinned);
   } else {
-    mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, out, "OneDrive", onedrive_where(app));
+    mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, out, "OneDrive", onedrive_where(app),
+                                    pinned);
   }
 }
 
@@ -826,6 +849,10 @@ void note_recent_folder(app_state* app, const std::string& utf8_dir);
 void open_welcome_row(app_state* app, int row);
 void open_recent_folder(app_state* app, int index);
 void remove_welcome_row(app_state* app, int row);
+void show_welcome_row_menu(app_state* app, int card_row, POINT at);  // issue #617
+void run_pending_task(app_state* app);                                // issue #617
+void sync_jump_list_tasks(app_state* app);                            // issue #617
+bool run_session_command(app_state* app, mv::shell::command_id command) noexcept;
 void push_recent_folders(app_state* app);
 void trim_item_opened(app_state* app) noexcept;
 void set_jobs_pane(app_state* app, bool on, bool focus = true) noexcept;
@@ -5574,6 +5601,12 @@ bool chrome_session_command(app_state* app, int command, float arg) {
       const int v = static_cast<int>(arg);
       mv::shell::set_addon_commands_available(
           v >= 2 ? mv::shell::addon_family::ai : mv::shell::addon_family::import, (v & 1) != 0);
+      if (v < 2) {
+        // Issue #617: the jump list's Import… follows the add-on, and a
+        // start's --task import ran ahead of it.
+        sync_jump_list_tasks(app);
+        run_pending_task(app);
+      }
       // docs/design/25: the rows the loaded add-ons' manifests contribute, from the
       // core (it holds the verified manifests); they supersede the built-in
       // rows of the same add-on. The router re-reads the live table.
@@ -6925,6 +6958,397 @@ void on_flatten_done(app_state* app, std::unique_ptr<flatten_job_result> r) {
   }
 }
 
+// ---- Issue #614: Print (Ctrl+P; docs/design/16 "Print", shell/print_layout.h) ---------
+//
+// PrintDlgEx on the UI thread (a modal dialog, like Open), with an Options page
+// beside General: fit or fill, and the sheet's layout and file names. StartDoc
+// runs there too, so Microsoft Print to PDF's Save As is owned by the window
+// and cancelling it ends everything with no file. The bake and every GDI page
+// call then run on the pool (rule 1); the DC is used by one thread at a time.
+// Pixels go down as a BITMAPV5 DIB tagged sRGB, or carrying the picture's own
+// ICC profile, with ICM on, so the driver colour-manages what the export holds.
+
+constexpr WORD kPrintIdFill = 101;
+constexpr WORD kPrintIdGrid = 102;
+constexpr WORD kPrintIdCaptions = 103;
+constexpr WORD kAtomButton = 0x0080;
+constexpr WORD kAtomStatic = 0x0082;
+constexpr WORD kAtomCombo = 0x0085;
+
+// The Options page's template, built in memory (no .rc dialog): a DLGTEMPLATE
+// and its items, DWORD-aligned, controls named by their predefined class atoms.
+class print_page_template {
+ public:
+  print_page_template() {
+    dword(DS_SETFONT | DS_CONTROL | WS_CHILD | WS_CAPTION);
+    dword(0);
+    words_.push_back(0);  // cdit, counted by item()
+    words_.push_back(0);
+    words_.push_back(0);
+    words_.push_back(250);
+    words_.push_back(110);
+    words_.push_back(0);  // no menu
+    words_.push_back(0);  // the dialog class
+    text(L"Options");
+    words_.push_back(8);
+    text(L"MS Shell Dlg");
+  }
+  void item(DWORD style, short x, short y, short cx, short cy, WORD id, WORD atom, std::wstring_view label) {
+    if (words_.size() % 2 != 0) words_.push_back(0);
+    dword(style | WS_CHILD | WS_VISIBLE);
+    dword(0);
+    words_.push_back(static_cast<WORD>(x));
+    words_.push_back(static_cast<WORD>(y));
+    words_.push_back(static_cast<WORD>(cx));
+    words_.push_back(static_cast<WORD>(cy));
+    words_.push_back(id);
+    words_.push_back(0xFFFF);
+    words_.push_back(atom);
+    text(label);
+    words_.push_back(0);  // no creation data
+    ++words_[4];
+  }
+  [[nodiscard]] const DLGTEMPLATE* get() const noexcept {
+    return reinterpret_cast<const DLGTEMPLATE*>(words_.data());
+  }
+
+ private:
+  void dword(DWORD v) {
+    words_.push_back(LOWORD(v));
+    words_.push_back(HIWORD(v));
+  }
+  void text(std::wstring_view s) {
+    for (const wchar_t c : s) words_.push_back(static_cast<WORD>(c));
+    words_.push_back(0);
+  }
+  std::vector<WORD> words_;
+};
+
+struct print_page_state {
+  mv::shell::print_options* options = nullptr;
+  bool sheet = false;
+};
+
+INT_PTR CALLBACK print_options_proc(HWND dlg, UINT msg, WPARAM wparam, LPARAM lparam) {
+  switch (msg) {
+    case WM_INITDIALOG: {
+      const auto* psp = reinterpret_cast<const PROPSHEETPAGEW*>(lparam);
+      auto* st = psp ? reinterpret_cast<print_page_state*>(psp->lParam) : nullptr;
+      ::SetWindowLongPtrW(dlg, DWLP_USER, reinterpret_cast<LONG_PTR>(st));
+      if (!st || !st->options) return TRUE;
+      const mv::shell::print_options& o = *st->options;
+      ::CheckDlgButton(dlg, kPrintIdFill, o.fit == mv::shell::print_fit::fill ? BST_CHECKED : BST_UNCHECKED);
+      ::CheckDlgButton(dlg, kPrintIdCaptions, o.captions ? BST_CHECKED : BST_UNCHECKED);
+      for (int i = -1; i < mv::shell::kContactGridCount; ++i) {
+        const std::wstring label = wide_from_utf8(mv::shell::contact_grid_label(i));
+        ::SendDlgItemMessageW(dlg, kPrintIdGrid, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+      }
+      ::SendDlgItemMessageW(dlg, kPrintIdGrid, CB_SETCURSEL, static_cast<WPARAM>(o.grid + 1), 0);
+      // One page serves both: what does not apply to this print is shown, off.
+      ::EnableWindow(::GetDlgItem(dlg, kPrintIdFill), st->sheet ? FALSE : TRUE);
+      ::EnableWindow(::GetDlgItem(dlg, kPrintIdGrid), st->sheet ? TRUE : FALSE);
+      ::EnableWindow(::GetDlgItem(dlg, kPrintIdCaptions), st->sheet ? TRUE : FALSE);
+      return TRUE;
+    }
+    case WM_COMMAND: {
+      auto* st = reinterpret_cast<print_page_state*>(::GetWindowLongPtrW(dlg, DWLP_USER));
+      if (!st || !st->options) break;
+      // Each change lands at once on the caller's copy; it is kept only if the
+      // dialog's answer is Print.
+      switch (LOWORD(wparam)) {
+        case kPrintIdFill:
+          st->options->fit = ::IsDlgButtonChecked(dlg, kPrintIdFill) == BST_CHECKED ? mv::shell::print_fit::fill
+                                                                                     : mv::shell::print_fit::fit;
+          return TRUE;
+        case kPrintIdCaptions:
+          st->options->captions = ::IsDlgButtonChecked(dlg, kPrintIdCaptions) == BST_CHECKED;
+          return TRUE;
+        case kPrintIdGrid:
+          if (HIWORD(wparam) == CBN_SELCHANGE) {
+            const LRESULT sel = ::SendDlgItemMessageW(dlg, kPrintIdGrid, CB_GETCURSEL, 0, 0);
+            if (sel != CB_ERR) st->options->grid = static_cast<int>(sel) - 1;
+          }
+          return TRUE;
+        default:
+          break;
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  return FALSE;
+}
+
+// What the pool needs: the DC (StartDoc already called), the paper in points
+// and how points map to its pixels, and what to bake.
+struct print_job {
+  HDC dc = nullptr;
+  mv::shell::print_page page;
+  double dpi_x = 300.0;
+  double dpi_y = 300.0;
+  double offset_x = 0.0;  // the printable area's origin on the paper, device pixels
+  double offset_y = 0.0;
+  bool sheet = false;
+  mv::shell::print_options options;
+  std::vector<mv::shell::print_source> sources;  // one for a photo; the marks for a sheet
+};
+
+// `pixels` cropped to `source` (0..1), as GDI's 32 bpp BI_RGB order (BGRA),
+// alpha flattened over white: a printer has no alpha.
+std::vector<std::uint8_t> print_bgra(const mv::codec::raster& pixels, const mv::shell::print_rect& source,
+                                     std::uint32_t& w, std::uint32_t& h) {
+  const double pw = pixels.width;
+  const double ph = pixels.height;
+  const auto x0 = static_cast<std::uint32_t>(std::clamp(std::floor(source.x * pw), 0.0, pw - 1));
+  const auto y0 = static_cast<std::uint32_t>(std::clamp(std::floor(source.y * ph), 0.0, ph - 1));
+  const auto x1 = static_cast<std::uint32_t>(std::clamp(std::ceil((source.x + source.w) * pw), x0 + 1.0, pw));
+  const auto y1 = static_cast<std::uint32_t>(std::clamp(std::ceil((source.y + source.h) * ph), y0 + 1.0, ph));
+  w = x1 - x0;
+  h = y1 - y0;
+  std::vector<std::uint8_t> out(static_cast<std::size_t>(w) * h * 4);
+  for (std::uint32_t y = 0; y < h; ++y) {
+    const std::uint8_t* s = pixels.rgba.data() + ((static_cast<std::size_t>(y0 + y) * pixels.width) + x0) * 4;
+    std::uint8_t* d = out.data() + static_cast<std::size_t>(y) * w * 4;
+    for (std::uint32_t x = 0; x < w; ++x, s += 4, d += 4) {
+      const unsigned a = s[3];
+      const unsigned white = 255 - a;
+      d[0] = static_cast<std::uint8_t>((s[2] * a + 127) / 255 + white);
+      d[1] = static_cast<std::uint8_t>((s[1] * a + 127) / 255 + white);
+      d[2] = static_cast<std::uint8_t>((s[0] * a + 127) / 255 + white);
+      d[3] = 255;
+    }
+  }
+  return out;
+}
+
+// Points on the paper to the DC's pixels (its origin is the printable area's).
+RECT print_device_rect(const print_job& j, const mv::shell::print_rect& r) {
+  auto px = [](double pt, double dpi, double off) { return static_cast<LONG>(std::lround(pt / 72.0 * dpi - off)); };
+  return RECT{px(r.x, j.dpi_x, j.offset_x), px(r.y, j.dpi_y, j.offset_y), px(r.x + r.w, j.dpi_x, j.offset_x),
+              px(r.y + r.h, j.dpi_y, j.offset_y)};
+}
+
+bool print_draw(const print_job& j, const mv::codec::raster& pixels, const mv::shell::print_placement& at) {
+  if (pixels.width == 0 || pixels.height == 0 ||
+      pixels.rgba.size() < static_cast<std::size_t>(pixels.width) * pixels.height * 4) {
+    return false;
+  }
+  std::uint32_t w = 0;
+  std::uint32_t h = 0;
+  const std::vector<std::uint8_t> bits = print_bgra(pixels, at.source, w, h);
+  // The header, then the profile it names (bV5ProfileData is an offset from
+  // the header's start).
+  std::vector<std::uint8_t> info(sizeof(BITMAPV5HEADER) + pixels.icc.size());
+  auto* hdr = reinterpret_cast<BITMAPV5HEADER*>(info.data());
+  hdr->bV5Size = sizeof(BITMAPV5HEADER);
+  hdr->bV5Width = static_cast<LONG>(w);
+  hdr->bV5Height = -static_cast<LONG>(h);  // top-down
+  hdr->bV5Planes = 1;
+  hdr->bV5BitCount = 32;
+  hdr->bV5Compression = BI_RGB;
+  hdr->bV5Intent = LCS_GM_IMAGES;
+  if (pixels.icc.empty()) {
+    hdr->bV5CSType = LCS_sRGB;  // the bake, or an untagged source: sRGB (D6)
+  } else {
+    hdr->bV5CSType = PROFILE_EMBEDDED;
+    hdr->bV5ProfileData = sizeof(BITMAPV5HEADER);
+    hdr->bV5ProfileSize = static_cast<DWORD>(pixels.icc.size());
+    std::memcpy(info.data() + sizeof(BITMAPV5HEADER), pixels.icc.data(), pixels.icc.size());
+  }
+  const RECT d = print_device_rect(j, at.dest);
+  ::SetStretchBltMode(j.dc, HALFTONE);
+  ::SetBrushOrgEx(j.dc, 0, 0, nullptr);
+  // StretchDIBits answers the scan lines copied, 0 on failure (GDI_ERROR is an
+  // unsigned long that some drivers return as -1; neither is a positive count).
+  return ::StretchDIBits(j.dc, d.left, d.top, d.right - d.left, d.bottom - d.top, 0, 0, static_cast<int>(w),
+                         static_cast<int>(h), bits.data(), reinterpret_cast<const BITMAPINFO*>(info.data()),
+                         DIB_RGB_COLORS, SRCCOPY) > 0;
+}
+
+void print_caption_line(const print_job& j, const mv::shell::print_rect& r, std::string_view path) {
+  const std::wstring name = wide_from_utf8(mv::shell::print_caption(path));
+  const int height = -static_cast<int>(std::lround(mv::shell::kCaptionPoints / 72.0 * j.dpi_y));
+  HFONT font = ::CreateFontW(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+  const HGDIOBJ old = font ? ::SelectObject(j.dc, font) : nullptr;
+  ::SetBkMode(j.dc, TRANSPARENT);
+  ::SetTextColor(j.dc, RGB(0x40, 0x40, 0x40));
+  RECT rc = print_device_rect(j, r);
+  ::DrawTextW(j.dc, name.c_str(), static_cast<int>(name.size()), &rc,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+  if (old) ::SelectObject(j.dc, old);
+  if (font) ::DeleteObject(font);
+}
+
+// Pool thread: bake, draw every page, end (or abort) the document, free the DC.
+bool run_print_job(const print_job& j, const mv::job_context* ctx) {
+  using namespace mv::shell;
+  bool ok = false;
+  const print_rect area = print_area(j.page);
+  ::SetICMMode(j.dc, ICM_ON);  // a driver without ICM keeps drawing; the DIB stays tagged
+  if (!j.sheet && !j.sources.empty()) {
+    const print_source& s = j.sources.front();
+    const print_pixels box = pixels_for(area);
+    const bool cover = j.options.fit == print_fit::fill;
+    mv::result<mv::codec::raster> pic = render_print_picture(s.path, s.g, s.c, {box.w, box.h}, cover, ctx);
+    if (pic && ::StartPage(j.dc) > 0) {
+      ok = print_draw(j, *pic, place_picture(area, pic->width, pic->height, j.options.fit));
+      ok = ::EndPage(j.dc) > 0 && ok;
+    }
+  } else if (j.sheet) {
+    // Bake for the grid the marks ask for; files that do not render are left
+    // out, and the sheet is laid out for what did.
+    const print_grid want = contact_grid(j.sources.size(), j.options.grid);
+    const print_pixels cell = pixels_for(contact_frame(area, want, j.options.captions));
+    mv::result<std::vector<print_picture>> pics = render_contact_pictures(j.sources, {cell.w, cell.h}, ctx);
+    if (pics && !pics->empty()) {
+      const print_grid grid = contact_grid(pics->size(), j.options.grid);
+      const std::uint32_t pages = contact_pages(pics->size(), grid);
+      ok = true;
+      for (std::uint32_t page = 0; ok && page < pages; ++page) {
+        if ((ctx && ctx->cancelled()) || ::StartPage(j.dc) <= 0) {
+          ok = false;
+          break;
+        }
+        const std::size_t first = std::size_t{page} * grid.per_page();
+        for (std::size_t i = first; i < pics->size() && i < first + grid.per_page(); ++i) {
+          const contact_cell c = contact_cell_at(area, grid, i, j.options.captions);
+          const print_picture& p = (*pics)[i];
+          ok = print_draw(j, p.pixels, place_picture(c.frame, p.pixels.width, p.pixels.height, print_fit::fit)) &&
+               ok;
+          if (j.options.captions) print_caption_line(j, c.caption, p.path);
+        }
+        ok = ::EndPage(j.dc) > 0 && ok;
+      }
+    }
+  }
+  // Nothing printed, or a page failed: the spooler drops the job, and a PDF
+  // printer writes no file.
+  if (ok) {
+    ok = ::EndDoc(j.dc) > 0;
+  } else {
+    ::AbortDoc(j.dc);
+  }
+  ::DeleteDC(j.dc);
+  return ok;
+}
+
+// Ctrl+P / the Open flyout's Print…. True when the key was taken (the dialog
+// showed, or a print is still being prepared); false beeps (nothing to print).
+bool start_print(app_state* app) {
+  using namespace mv::shell;
+  if (!app || !app->window) return false;
+  if (app->print_busy) {
+    notice_show(app, "Still preparing the last print");
+    return true;
+  }
+  print_job job;
+  const std::vector<std::string> targets = selection_targets(app);
+  job.sheet = print_as_sheet(targets.size());
+  if (job.sheet) {
+    // The file on screen prints with its session edits; the other marks as
+    // they are on disk (their stacks are keyed by size and mtime, which the
+    // UI thread does not stat).
+    for (const std::string& path : targets) {
+      print_source s{path, {}, {}};
+      if (path == app->edit_path) {
+        s.g = app->edits.export_geometry();
+        s.c = app->edits.colour();
+      }
+      job.sources.push_back(std::move(s));
+    }
+  } else {
+    // The still on screen, as Ctrl+Alt+C bakes it. A clip, audio, a document
+    // or a playing animation has no still here.
+    if (app->edit_path.empty() || video_mode(app) || app->lab.animation() != animation_state::none) return false;
+    job.sources.push_back(print_source{app->edit_path, app->edits.export_geometry(), app->edits.colour()});
+  }
+
+  print_options chosen = app->print_options;
+  print_page_state state{&chosen, job.sheet};
+  print_page_template tpl;
+  tpl.item(BS_AUTOCHECKBOX | WS_TABSTOP, 7, 7, 236, 10, kPrintIdFill, kAtomButton,
+           L"&Fill the page (one photo: crops it to the paper's shape)");
+  tpl.item(SS_LEFT, 7, 28, 236, 8, 0xFFFF, kAtomStatic, L"Marked files print as a contact sheet.");
+  tpl.item(SS_LEFT, 7, 44, 60, 8, 0xFFFF, kAtomStatic, L"&Layout:");
+  tpl.item(CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, 70, 42, 90, 80, kPrintIdGrid, kAtomCombo, L"");
+  tpl.item(BS_AUTOCHECKBOX | WS_TABSTOP, 7, 62, 236, 10, kPrintIdCaptions, kAtomButton, L"Print file &names");
+  PROPSHEETPAGEW psp{};
+  psp.dwSize = sizeof(psp);
+  psp.dwFlags = PSP_DLGINDIRECT;
+  psp.hInstance = ::GetModuleHandleW(nullptr);
+  psp.pResource = tpl.get();
+  psp.pfnDlgProc = print_options_proc;
+  psp.lParam = reinterpret_cast<LPARAM>(&state);
+  HPROPSHEETPAGE page = ::CreatePropertySheetPageW(&psp);
+
+  PRINTDLGEXW pd{};
+  pd.lStructSize = sizeof(pd);
+  pd.hwndOwner = app->window;
+  pd.Flags = PD_RETURNDC | PD_NOPAGENUMS | PD_NOSELECTION | PD_NOCURRENTPAGE | PD_USEDEVMODECOPIESANDCOLLATE;
+  pd.nCopies = 1;
+  pd.nStartPage = START_PAGE_GENERAL;
+  pd.nPropertyPages = page ? 1 : 0;
+  pd.lphPropertyPages = page ? &page : nullptr;
+  const HRESULT hr = ::PrintDlgExW(&pd);
+  if (pd.hDevMode) ::GlobalFree(pd.hDevMode);
+  if (pd.hDevNames) ::GlobalFree(pd.hDevNames);
+  if (FAILED(hr) || pd.dwResultAction != PD_RESULT_PRINT || !pd.hDC) {
+    if (pd.hDC) ::DeleteDC(pd.hDC);
+    if (FAILED(hr)) ::MessageBeep(MB_ICONWARNING);
+    return true;  // cancelled: nothing baked, nothing spooled, no file
+  }
+  app->print_options = chosen;
+  job.options = chosen;
+  job.dc = pd.hDC;
+
+  // The paper, in points, from the device (PHYSICAL* include the margins the
+  // device cannot mark; HORZRES / VERTRES are the area it can).
+  job.dpi_x = std::max(1, ::GetDeviceCaps(job.dc, LOGPIXELSX));
+  job.dpi_y = std::max(1, ::GetDeviceCaps(job.dc, LOGPIXELSY));
+  job.offset_x = ::GetDeviceCaps(job.dc, PHYSICALOFFSETX);
+  job.offset_y = ::GetDeviceCaps(job.dc, PHYSICALOFFSETY);
+  job.page.width = ::GetDeviceCaps(job.dc, PHYSICALWIDTH) * 72.0 / job.dpi_x;
+  job.page.height = ::GetDeviceCaps(job.dc, PHYSICALHEIGHT) * 72.0 / job.dpi_y;
+  job.page.printable = {job.offset_x * 72.0 / job.dpi_x, job.offset_y * 72.0 / job.dpi_y,
+                        ::GetDeviceCaps(job.dc, HORZRES) * 72.0 / job.dpi_x,
+                        ::GetDeviceCaps(job.dc, VERTRES) * 72.0 / job.dpi_y};
+
+  // The spooler's document name: the file's name, or "Contact sheet".
+  const std::wstring doc_name =
+      job.sheet ? std::wstring(L"Contact sheet") : wide_from_utf8(print_caption(job.sources.front().path));
+  DOCINFOW di{};
+  di.cbSize = sizeof(di);
+  di.lpszDocName = doc_name.c_str();
+  if (::StartDocW(job.dc, &di) <= 0) {
+    // Print to PDF's Save As was cancelled (or the printer refused): no file.
+    ::DeleteDC(job.dc);
+    return true;
+  }
+
+  app->print_busy = true;
+  notice_show(app, "Preparing to print\xE2\x80\xA6");
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation, [job = std::move(job), hwnd](const mv::job_context& ctx) -> mv::status {
+    const bool ok = run_print_job(job, &ctx);
+    ::PostMessageW(hwnd, kMsgPrintDone, ok ? 1 : 0, 0);
+    return ok ? mv::status::ok : mv::status::io;
+  });
+  return true;
+}
+
+void on_print_done(app_state* app, bool ok) {
+  if (!app) return;
+  app->print_busy = false;
+  if (ok) {
+    notice_show(app, "Sent to the printer");
+  } else {
+    ::MessageBeep(MB_ICONWARNING);
+    notice_show(app, "Could not print");
+  }
+}
+
 // Text in images (Live Text; docs/design/16): shell/text_in_image.h's port on
 // Windows. Windows.Media.Ocr is WinRT, so the chrome runs it
 // (IslandHost.RecognizeText), synchronously, on the worker that calls this.
@@ -7163,18 +7587,60 @@ std::wstring jump_list_arguments(const std::string& utf8_dir) {
   return L"\"" + dir + L"\"";
 }
 
-// The jump list's "Recent folders" (the Dock menu's twin). Worker thread:
-// CommitList writes the list into the user's profile. Returns the folders the
-// user removed from the list since the last commit: Windows refuses a
-// category that adds one back, so the caller drops them from the recents.
+// The jump list (the Dock menu's twin): issue #617's "Pinned folders", then
+// "Recent folders", and the Tasks: New window, Open folder… and, while the
+// Import add-on is installed, Import…. Worker thread: CommitList writes the
+// list into the user's profile, never on the UI thread. Returns the folders
+// the user removed from the list since the last commit: Windows refuses a
+// category that adds one back, so the caller drops them from the recents and
+// the pins.
 //
 // Every request takes a number on the UI thread; the pool may run two out of
 // order, so one that a newer request has overtaken commits nothing (the newer
 // one carries the newer list).
 std::atomic<std::uint64_t> g_jump_list_seq{0};
 
-std::vector<std::string> build_jump_list(const std::vector<std::string>& folders, const std::wstring& exe,
-                                         std::uint64_t seq) {
+// A jump list entry: `exe` run with `args`, labelled `title` (its PKEY_Title),
+// with `tooltip` and an icon. Null when the shell link could not be made.
+IShellLinkW* make_jump_link(const std::wstring& exe, const std::wstring& args, const std::wstring& title,
+                            const std::wstring& tooltip, const wchar_t* icon_path, int icon_index) {
+  IShellLinkW* link = nullptr;
+  if (FAILED(::CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link)))) {
+    return nullptr;
+  }
+  (void)link->SetPath(exe.c_str());
+  (void)link->SetArguments(args.c_str());
+  if (!tooltip.empty()) (void)link->SetDescription(tooltip.c_str());
+  if (icon_path && *icon_path) (void)link->SetIconLocation(icon_path, icon_index);
+  // The entry's label is its PKEY_Title (FMTID_SummaryInformation, pid 2),
+  // spelled out here so neither propkey.h's data symbols nor
+  // propvarutil.h's shlwapi-backed helpers join the link.
+  static constexpr PROPERTYKEY kTitle = {
+      {0xF29F85E0, 0x4FF9, 0x1068, {0xAB, 0x91, 0x08, 0x00, 0x2B, 0x27, 0xB3, 0xD9}}, 2};
+  IPropertyStore* props = nullptr;
+  PROPVARIANT value{};
+  bool titled = false;
+  const std::size_t bytes = (title.size() + 1) * sizeof(wchar_t);
+  if (SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(&props)))) {
+    value.pwszVal = static_cast<LPWSTR>(::CoTaskMemAlloc(bytes));
+    if (value.pwszVal) {
+      value.vt = VT_LPWSTR;
+      std::memcpy(value.pwszVal, title.c_str(), bytes);
+      titled = SUCCEEDED(props->SetValue(kTitle, value)) && SUCCEEDED(props->Commit());
+      (void)::PropVariantClear(&value);
+    }
+  }
+  if (props) props->Release();
+  if (!titled) {
+    link->Release();
+    return nullptr;
+  }
+  return link;
+}
+
+// `folders` is app->recent_folders: its first `pinned` are the pins.
+std::vector<std::string> build_jump_list(const std::vector<std::string>& folders, std::size_t pinned,
+                                         const std::wstring& exe, bool import_task, std::uint64_t seq) {
   static std::mutex one_at_a_time;
   const std::lock_guard lock(one_at_a_time);
   if (seq != g_jump_list_seq.load(std::memory_order_acquire)) return {};
@@ -7182,15 +7648,11 @@ std::vector<std::string> build_jump_list(const std::vector<std::string>& folders
   const HRESULT com = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   ICustomDestinationList* list = nullptr;
   IObjectArray* removed = nullptr;
-  IObjectCollection* items = nullptr;
-  IObjectArray* array = nullptr;
   UINT min_slots = 0;
   if (SUCCEEDED(::CoCreateInstance(CLSID_DestinationList, nullptr, CLSCTX_INPROC_SERVER,
                                    IID_PPV_ARGS(&list))) &&
       SUCCEEDED(list->SetAppID(kAppUserModelId)) &&
-      SUCCEEDED(list->BeginList(&min_slots, IID_PPV_ARGS(&removed))) &&
-      SUCCEEDED(::CoCreateInstance(CLSID_EnumerableObjectCollection, nullptr, CLSCTX_INPROC_SERVER,
-                                   IID_PPV_ARGS(&items)))) {
+      SUCCEEDED(list->BeginList(&min_slots, IID_PPV_ARGS(&removed)))) {
     std::vector<std::wstring> removed_args;
     UINT removed_count = 0;
     if (removed && SUCCEEDED(removed->GetCount(&removed_count))) {
@@ -7207,52 +7669,62 @@ std::vector<std::string> build_jump_list(const std::vector<std::string>& folders
     SHSTOCKICONINFO folder_icon{};
     folder_icon.cbSize = sizeof(folder_icon);
     const bool have_icon = SUCCEEDED(::SHGetStockIconInfo(SIID_FOLDER, SHGSI_ICONLOCATION, &folder_icon));
+    const wchar_t* folder_icon_path = have_icon ? folder_icon.szPath : nullptr;
     const std::vector<std::string> labels = mv::shell::recent_folder_labels(folders);
-    UINT added = 0;
-    for (std::size_t i = 0; !exe.empty() && i < folders.size(); ++i) {
-      const std::wstring args = jump_list_arguments(folders[i]);
-      if (std::find(removed_args.begin(), removed_args.end(), args) != removed_args.end()) {
-        pruned.push_back(folders[i]);
-        continue;
+    // One category: the folders in [from, to) that the user has not removed.
+    const auto append_category = [&](const wchar_t* name, std::size_t from, std::size_t to) {
+      IObjectCollection* items = nullptr;
+      if (FAILED(::CoCreateInstance(CLSID_EnumerableObjectCollection, nullptr, CLSCTX_INPROC_SERVER,
+                                    IID_PPV_ARGS(&items)))) {
+        return;
       }
-      IShellLinkW* link = nullptr;
-      if (FAILED(::CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link)))) {
-        continue;
-      }
-      (void)link->SetPath(exe.c_str());
-      (void)link->SetArguments(args.c_str());
-      (void)link->SetDescription(wide_from_utf8(folders[i]).c_str());  // the tooltip
-      if (have_icon) (void)link->SetIconLocation(folder_icon.szPath, folder_icon.iIcon);
-      // The entry's label is its PKEY_Title (FMTID_SummaryInformation, pid 2),
-      // spelled out here so neither propkey.h's data symbols nor
-      // propvarutil.h's shlwapi-backed helpers join the link.
-      static constexpr PROPERTYKEY kTitle = {
-          {0xF29F85E0, 0x4FF9, 0x1068, {0xAB, 0x91, 0x08, 0x00, 0x2B, 0x27, 0xB3, 0xD9}}, 2};
-      const std::wstring label = wide_from_utf8(labels[i]);
-      IPropertyStore* props = nullptr;
-      PROPVARIANT title{};
-      bool titled = false;
-      const std::size_t bytes = (label.size() + 1) * sizeof(wchar_t);
-      if (SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(&props)))) {
-        title.pwszVal = static_cast<LPWSTR>(::CoTaskMemAlloc(bytes));
-        if (title.pwszVal) {
-          title.vt = VT_LPWSTR;
-          std::memcpy(title.pwszVal, label.c_str(), bytes);
-          titled = SUCCEEDED(props->SetValue(kTitle, title)) && SUCCEEDED(props->Commit());
-          (void)::PropVariantClear(&title);
+      UINT added = 0;
+      for (std::size_t i = from; !exe.empty() && i < to && i < folders.size(); ++i) {
+        const std::wstring args = jump_list_arguments(folders[i]);
+        if (std::find(removed_args.begin(), removed_args.end(), args) != removed_args.end()) {
+          pruned.push_back(folders[i]);
+          continue;
         }
+        IShellLinkW* link = make_jump_link(exe, args, wide_from_utf8(labels[i]), wide_from_utf8(folders[i]),
+                                           folder_icon_path, have_icon ? folder_icon.iIcon : 0);
+        if (!link) continue;
+        if (SUCCEEDED(items->AddObject(link))) ++added;
+        link->Release();
       }
-      if (props) props->Release();
-      if (titled && SUCCEEDED(items->AddObject(link))) ++added;
-      link->Release();
-    }
-    if (added > 0 && SUCCEEDED(items->QueryInterface(IID_PPV_ARGS(&array)))) {
-      (void)list->AppendCategory(L"Recent folders", array);
+      IObjectArray* array = nullptr;
+      if (added > 0 && SUCCEEDED(items->QueryInterface(IID_PPV_ARGS(&array)))) {
+        (void)list->AppendCategory(name, array);
+        array->Release();
+      }
+      items->Release();
+    };
+    pinned = std::min(pinned, folders.size());
+    append_category(L"Pinned folders", 0, pinned);
+    append_category(L"Recent folders", pinned, folders.size());
+    // The Tasks (issue #617), the Dock menu's New Window and more. Each starts
+    // the root stub: New window its own process on the empty window, the
+    // others handed to the running viewer by the single-instance pipe.
+    IObjectCollection* tasks = nullptr;
+    if (!exe.empty() && SUCCEEDED(::CoCreateInstance(CLSID_EnumerableObjectCollection, nullptr,
+                                                     CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&tasks)))) {
+      const auto add_task = [&](const wchar_t* args, const wchar_t* title, const wchar_t* icon, int index) {
+        if (IShellLinkW* link = make_jump_link(exe, args, title, title, icon, index)) {
+          (void)tasks->AddObject(link);
+          link->Release();
+        }
+      };
+      add_task(L"--new-instance", L"New window", exe.c_str(), 0);
+      add_task(L"--task open-folder", L"Open folder\u2026", folder_icon_path, have_icon ? folder_icon.iIcon : 0);
+      if (import_task) add_task(L"--task import", L"Import\u2026", exe.c_str(), 0);
+      IObjectArray* array = nullptr;
+      if (SUCCEEDED(tasks->QueryInterface(IID_PPV_ARGS(&array)))) {
+        if (FAILED(list->AddUserTasks(array))) MV_LOG_WARN("jump list: AddUserTasks failed");
+        array->Release();
+      }
+      tasks->Release();
     }
     if (FAILED(list->CommitList())) MV_LOG_WARN("jump list: CommitList failed");
   }
-  if (array) array->Release();
-  if (items) items->Release();
   if (removed) removed->Release();
   if (list) list->Release();
   if (SUCCEEDED(com)) ::CoUninitialize();
@@ -7291,13 +7763,28 @@ void open_new_window() {
   ::CloseHandle(pi.hProcess);
 }
 
+// Issue #617: which Tasks the jump list last committed ("plain", or "import"
+// with Import…), in settings.ini [recent] jump_tasks. The list is committed
+// only when it changes, so a start never pays for a CommitList; this is how a
+// start knows the Tasks are already there.
+constexpr char kJumpTasksKey[] = "jump_tasks";
+
+const char* jump_tasks_wanted() noexcept {
+  return mv::shell::addon_commands_available(mv::shell::addon_family::import) ? "import" : "plain";
+}
+
+// Soaks and scripted runs (record_recent false) never touch the jump list:
+// it is the user's, as [recent] is (the PR 15 rule).
 void publish_jump_list(app_state* app) {
-  if (!app || !app->window) return;
+  if (!app || !app->window || !app->record_recent) return;
   const HWND hwnd = app->window;
+  const char* tasks = jump_tasks_wanted();
+  mv::shell::app_settings().set("recent", kJumpTasksKey, tasks);
   const std::uint64_t seq = g_jump_list_seq.fetch_add(1, std::memory_order_acq_rel) + 1;
   app->jobs.submit_at(mv::background_generation,
-                      [folders = app->recent_folders, exe = jump_list_exe(), hwnd, seq](const mv::job_context&) -> mv::status {
-                        std::vector<std::string> pruned = build_jump_list(folders, exe, seq);
+                      [folders = app->recent_folders, pinned = app->pinned_folders.size(), exe = jump_list_exe(),
+                       import_task = std::string_view(tasks) == "import", hwnd, seq](const mv::job_context&) -> mv::status {
+                        std::vector<std::string> pruned = build_jump_list(folders, pinned, exe, import_task, seq);
                         if (pruned.empty()) return mv::status::ok;
                         auto* r = new (std::nothrow) std::vector<std::string>(std::move(pruned));
                         if (r && !::PostMessageW(hwnd, kMsgJumpListPruned, 0, reinterpret_cast<LPARAM>(r))) delete r;
@@ -7305,17 +7792,50 @@ void publish_jump_list(app_state* app) {
                       });
 }
 
+// The Tasks the jump list should carry differ from the last commit's (a first
+// start of this build, or Import installed or removed): commit once more.
+void sync_jump_list_tasks(app_state* app) {
+  if (!app || !app->record_recent) return;
+  if (mv::shell::app_settings().get("recent", kJumpTasksKey) == jump_tasks_wanted()) return;
+  publish_jump_list(app);
+}
+
+// app->recent_folders from the pins and the MRU list, then every view of it:
+// the jump list (on the pool), Open > Recent folders and the card.
+void recent_folders_changed(app_state* app) {
+  app->recent_folders = mv::shell::pinned_then_recent(app->pinned_folders, app->recent_mru);
+  publish_jump_list(app);
+  push_recent_folders(app);
+  refresh_welcome_recents(app);
+}
+
 // A folder opened from Explorer, the jump list, Open, a drop or argv counts;
 // walking siblings or the tree does not (open_path's `navigation`).
 void note_recent_folder(app_state* app, const std::string& utf8_dir) {
   if (!app || !app->record_recent || utf8_dir.empty()) return;
-  std::vector<std::string> next = mv::shell::push_recent_folder(app->recent_folders, utf8_dir);
-  if (next == app->recent_folders) return;
-  app->recent_folders = std::move(next);
-  mv::shell::save_recent_folders(app->recent_folders);
-  publish_jump_list(app);
-  push_recent_folders(app);
-  refresh_welcome_recents(app);
+  std::vector<std::string> next = mv::shell::push_recent_folder(app->recent_mru, utf8_dir);
+  if (next == app->recent_mru) return;
+  app->recent_mru = std::move(next);
+  mv::shell::save_recent_folders(app->recent_mru);
+  // A pinned folder moves in the MRU list only: what is shown may not change.
+  if (mv::shell::pinned_then_recent(app->pinned_folders, app->recent_mru) == app->recent_folders) return;
+  recent_folders_changed(app);
+}
+
+// Issue #617: Pin / Unpin on a card row's context menu. A pin stays first on
+// the card, the jump list and Open > Recent folders; unpinning leaves the
+// folder where the MRU order has it. Not in a soak or a scripted run.
+void set_folder_pinned(app_state* app, const std::string& dir, bool pin) {
+  if (!app || !app->record_recent || dir.empty()) return;
+  std::vector<std::string> next = pin ? mv::shell::pin_folder(app->pinned_folders, dir)
+                                      : mv::shell::remove_folder(app->pinned_folders, dir);
+  if (next == app->pinned_folders) {
+    if (pin) ::MessageBeep(MB_ICONWARNING);  // kMaxPinnedFolders pinned already
+    return;
+  }
+  app->pinned_folders = std::move(next);
+  mv::shell::save_pinned_folders(app->pinned_folders);
+  recent_folders_changed(app);
 }
 
 // Open > Recent folders: the jump list's labels (recent_folder_labels, as the
@@ -7333,14 +7853,17 @@ void push_recent_folders(app_state* app) {
   app->chrome.set_recent_folders(lines);
 }
 
-// Drops `dir` from every recent list: settings, jump list, chrome, card.
+// Drops `dir` from every recent list: settings, jump list, chrome, card. A
+// pinned folder that is gone, or whose x was clicked, is unpinned too.
 void forget_recent_folder(app_state* app, const std::string& dir) {
   const std::string gone = dir;  // `dir` may be an element of the list
-  std::erase(app->recent_folders, gone);
-  mv::shell::save_recent_folders(app->recent_folders);
-  publish_jump_list(app);
-  push_recent_folders(app);
-  refresh_welcome_recents(app);
+  app->recent_mru = mv::shell::remove_folder(std::move(app->recent_mru), gone);
+  mv::shell::save_recent_folders(app->recent_mru);
+  if (mv::shell::is_pinned_folder(app->pinned_folders, gone)) {
+    app->pinned_folders = mv::shell::remove_folder(std::move(app->pinned_folders), gone);
+    mv::shell::save_pinned_folders(app->pinned_folders);
+  }
+  recent_folders_changed(app);
 }
 
 // A card row is a recent folder's index, one down when OneDrive leads; -1 for OneDrive.
@@ -7406,16 +7929,54 @@ void remove_welcome_row(app_state* app, int card_row) {
   publish(app);
 }
 
+// Issue #617: a folder row's context menu, at `at` (client pixels): Open, Pin
+// to top or Unpin, Remove from list. The OneDrive row has none. A native popup
+// as the tray icon's; it returns the pick, so nothing here waits on I/O.
+void show_welcome_row_menu(app_state* app, int card_row, POINT at) {
+  if (!app || !app->window) return;
+  const int row = welcome_row_folder(app, card_row);
+  if (row < 0 || static_cast<std::size_t>(row) >= app->recent_folders.size()) return;
+  const std::string dir = app->recent_folders[static_cast<std::size_t>(row)];
+  const bool pinned = mv::shell::is_pinned_folder(app->pinned_folders, dir);
+  const bool full = app->pinned_folders.size() >= mv::shell::kMaxPinnedFolders;
+  HMENU menu = ::CreatePopupMenu();
+  if (!menu) return;
+  constexpr UINT kOpen = 1, kPin = 2, kRemove = 3;
+  (void)::AppendMenuW(menu, MF_STRING, kOpen, L"Open");
+  (void)::AppendMenuW(menu, MF_STRING | (!pinned && full ? MF_GRAYED : 0u), kPin,
+                      pinned ? L"Unpin" : L"Pin to top");
+  (void)::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  (void)::AppendMenuW(menu, MF_STRING, kRemove, L"Remove from list");
+  (void)::ClientToScreen(app->window, &at);
+  const UINT picked = static_cast<UINT>(::TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                                                           at.x, at.y, app->window, nullptr));
+  ::DestroyMenu(menu);
+  if (picked == kOpen) {
+    open_recent_folder(app, row);
+  } else if (picked == kPin) {
+    set_folder_pinned(app, dir, !pinned);
+  } else if (picked == kRemove) {
+    forget_recent_folder(app, dir);
+  }
+  if (picked == kPin || picked == kRemove) {
+    update_welcome_hover(app);
+    ++app->input.activity_seq;
+    publish(app);
+  }
+}
+
 void on_jump_list_pruned(app_state* app, std::unique_ptr<std::vector<std::string>> pruned) {
   if (!app || !pruned) return;
-  const std::size_t before = app->recent_folders.size();
-  std::erase_if(app->recent_folders, [&](const std::string& f) {
-    return std::find(pruned->begin(), pruned->end(), f) != pruned->end();
-  });
-  if (app->recent_folders.size() != before) {
-    mv::shell::save_recent_folders(app->recent_folders);
-    push_recent_folders(app);
-  }
+  // Removed from the jump list is removed: from the recents and from the pins.
+  const auto drop = [&](std::vector<std::string>& list) {
+    const std::size_t before = list.size();
+    for (const std::string& f : *pruned) list = mv::shell::remove_folder(std::move(list), f);
+    return list.size() != before;
+  };
+  if (drop(app->recent_mru)) mv::shell::save_recent_folders(app->recent_mru);
+  if (drop(app->pinned_folders)) mv::shell::save_pinned_folders(app->pinned_folders);
+  app->recent_folders = mv::shell::pinned_then_recent(app->pinned_folders, app->recent_mru);
+  push_recent_folders(app);
   refresh_welcome_recents(app);
 }
 
@@ -7841,6 +8402,9 @@ bool run_marks_command(app_state* app, mv::shell::command_id command) noexcept {
       return copy_paths_to_clipboard(app);
     case copy_flattened:
       return start_flatten(app);
+    // Issue #614 (docs/design/16 "Print"): the photo on screen, or the marks as a sheet.
+    case print:
+      return start_print(app);
     case share:
       return share_request_run(app, {});  // the key's request: the menu, on the selection
     // Marks (docs/design/16): a set separate from the selection, keyed by path.
@@ -8199,6 +8763,27 @@ bool run_session_command(app_state* app, mv::shell::command_id command) noexcept
       // no-op, the same as the old switch's default.
       return false;
   }
+}
+
+// Issue #617: the jump list's Open folder… and Import… (New window is its own
+// process, --new-instance). Open folder… is Ctrl+O; Import… is the Import
+// command, which exists only once the add-on has loaded: until then the task
+// waits, and chrome_cmd_addon_state runs it. Never in a soak or scripted run.
+void run_pending_task(app_state* app) {
+  if (!app || app->pending_task.empty() || !app->window) return;
+  if (!app->record_recent) {
+    app->pending_task.clear();
+    return;
+  }
+  if (app->pending_task == L"import") {
+    if (!mv::shell::addon_commands_available(mv::shell::addon_family::import)) return;
+    app->pending_task.clear();
+    if (!run_session_command(app, mv::shell::command_id::open_import)) ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  const bool open_folder_task = app->pending_task == L"open-folder";
+  app->pending_task.clear();
+  if (open_folder_task) open_folder_dialog(app, app->window);
 }
 
 bool run_command(app_state* app, mv::shell::command_id command) noexcept {
@@ -9402,6 +9987,18 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
       // the add-ons' context-menu entries, as its gallery tile does. The
       // chrome decides whether there is anything to show (a XAML flyout; it
       // returns at once).
+      // Issue #617: a right-click on a welcome card folder row is its menu
+      // (Open, Pin / Unpin, Remove). The card lists rows only while nothing is
+      // open, so it never competes with the add-ons' menu.
+      if (msg == WM_RBUTTONUP && welcome_lists_recents(app)) {
+        app->input.mouse_x = static_cast<float>(GET_X_LPARAM(lparam));
+        app->input.mouse_y = static_cast<float>(GET_Y_LPARAM(lparam));
+        const int row = welcome_row_at_pointer(app);
+        if (row >= 0) {
+          show_welcome_row_menu(app, row, POINT{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)});
+          return 0;
+        }
+      }
       if (msg == WM_RBUTTONUP && !app->gallery_visible && !app->editor.open) {
         (void)app->chrome.show_canvas_menu(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
       }
@@ -9551,6 +10148,10 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
       on_flatten_done(app, std::unique_ptr<flatten_job_result>(reinterpret_cast<flatten_job_result*>(lparam)));
       return 0;
 
+    case kMsgPrintDone:
+      on_print_done(app, wparam != 0);
+      return 0;
+
     case kMsgTextRead:
       on_text_read(app, std::unique_ptr<text_read_result>(reinterpret_cast<text_read_result*>(lparam)));
       return 0;
@@ -9563,14 +10164,29 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
       on_editor_loaded(app, std::unique_ptr<editor_load_result>(reinterpret_cast<editor_load_result*>(lparam)));
       return 0;
 
+    case kMsgRunTask:
+      run_pending_task(app);
+      return 0;
+
     case kMsgOpenForwarded: {
       // A second start's paths (docs/design/09): opened here, as a drop would be, and
       // the window comes forward. An empty hand-off only brings it forward.
       std::unique_ptr<std::wstring> paths(reinterpret_cast<std::wstring*>(lparam));
       leave_background(app);  // #452: a start while hidden brings the window back
+      // Issue #617: a jump-list task leads on its own line.
+      std::wstring task;
+      if (paths && !paths->empty() && paths->front() == mv::shell::kForwardedTaskMark) {
+        const std::size_t end = paths->find(L'\n');
+        task = paths->substr(1, end == std::wstring::npos ? std::wstring::npos : end - 1);
+        paths->erase(0, end == std::wstring::npos ? paths->size() : end + 1);
+      }
       if (paths && !paths->empty()) open_dropped_wide_list(app, *paths);
       if (::IsIconic(hwnd)) ::ShowWindow(hwnd, SW_RESTORE);
       ::SetForegroundWindow(hwnd);
+      if (!task.empty()) {
+        app->pending_task = std::move(task);
+        run_pending_task(app);
+      }
       return 0;
     }
 
@@ -9961,6 +10577,13 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
       if (ok) g_relaunch_after = std::wcstoul(value.c_str(), nullptr, 10);
     } else if (arg == L"--new-instance") {
       g_new_instance = true;
+    } else if (arg == L"--task") {
+      // Issue #617: a jump-list task, handed to the running viewer like a path.
+      next(g_start_task);
+      if (ok && g_start_task != L"open-folder" && g_start_task != L"import") {
+        error = L"--task must be open-folder or import";
+        ok = false;
+      }
     } else if (arg == L"--boot-report") {
       next(g_boot_report);
       if (ok) g_new_instance = true;
@@ -10087,10 +10710,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     // is; this one neither forwards nor shows anything.
     if (!instance_claim.claim()) return 0;
   } else if (single_instance) {
-    if (mv::shell::forward_to_running_instance(requested_paths)) return 0;
+    if (mv::shell::forward_to_running_instance(requested_paths, g_start_task)) return 0;
     if (!instance_claim.claim()) {
       // Another start claimed the name between our look and our claim.
-      if (mv::shell::forward_to_running_instance(requested_paths)) return 0;
+      if (mv::shell::forward_to_running_instance(requested_paths, g_start_task)) return 0;
       MV_LOG_WARN("single instance: another process owns the pipe; this one runs alone");
     }
   }
@@ -10132,7 +10755,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.input.reduce_motion = client_animations_off();
   app.input.compare = g_start_compare;
   app.destinations = mv::shell::load_destinations();
-  app.recent_folders = mv::shell::load_recent_folders();
+  app.recent_mru = mv::shell::load_recent_folders();
+  app.pinned_folders = mv::shell::load_pinned_folders();  // issue #617
+  app.recent_folders = mv::shell::pinned_then_recent(app.pinned_folders, app.recent_mru);
   app.home_utf8 = profile_folder_utf8();
   app.onedrive_utf8 = onedrive_folder_utf8();
   app.record_recent = !harness_run && g_boot_report.empty();
@@ -10286,6 +10911,17 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   }
   if (!app.chrome_enabled || app.chrome_on_screen) mv::boot::mark(mv::boot::stage::interactive);
   app.boot_with_paths = !requested_paths.empty();
+  // Issue #617: a first start from a jump-list task runs it from the loop,
+  // after the window's first frames. And the jump list carries its Tasks from
+  // the first start of a build that has them: committed once, on the pool
+  // (never a CommitList per start; the add-on's state corrects Import… later).
+  if (!g_start_task.empty()) {
+    app.pending_task = g_start_task;
+    ::PostMessageW(hwnd, kMsgRunTask, 0, 0);
+  }
+  if (app.record_recent && mv::shell::app_settings().get("recent", kJumpTasksKey).empty()) {
+    publish_jump_list(&app);
+  }
 
   MSG msg{};
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {

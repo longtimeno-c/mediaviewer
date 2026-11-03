@@ -16,6 +16,8 @@
 #include <string>
 #include <vector>
 
+#include <mediaviewer/mediaviewer_addon.h>
+
 #include "addon/media.h"
 #include "core/result.h"
 #include "edit/edit_stack.h"
@@ -85,6 +87,10 @@ void clear_still_edit();
 // the read (status::cancelled). Worker threads: it lays the document out.
 [[nodiscard]] expected document_text(const std::string& path,
                                      const std::function<bool(const document_line&)>& visit);
+// #606: a clip's GPS route from its telemetry (meta::read_route), at most
+// `max_points`, for the host table's route_of. Empty for a still or a clip
+// without a fix. Worker threads: it reads every telemetry packet.
+[[nodiscard]] result<std::vector<mv_addon_route_point>> route(const std::string& path, std::uint32_t max_points);
 }  // namespace media
 
 }  // namespace mv::addon

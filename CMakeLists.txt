@@ -336,6 +336,9 @@ add_library(mv_io STATIC
   src/io/replace_win.cpp
   src/io/dir_win.cpp
   src/io/dir_tree.cpp
+  # docs/plans/index-watcher.md: Local search's roots, through watch_tree.
+  src/io/tree_watch.h
+  src/io/tree_watch_win.cpp
   src/io/dir.h
   src/io/paths_win.cpp
   src/io/paths.h
@@ -346,6 +349,9 @@ add_library(mv_io STATIC
   src/io/media_extensions.h
   src/io/sort_order.cpp
   src/io/sort_order.h
+  # #612: Settings -> Storage, what MediaViewer keeps on disk.
+  src/io/storage.cpp
+  src/io/storage.h
   # Milestone G (docs/design/18): verified copy (also F8 across volumes), the file
   # and volume ports Import reaches through the add-on host table.
   src/io/content_hash.cpp
@@ -584,6 +590,8 @@ add_library(mv_meta_parse STATIC
   src/meta/xmp_raw.cpp
   src/meta/generators.cpp
   src/meta/probe.cpp
+  src/meta/gpmf.cpp
+  src/meta/telemetry.h
   src/meta/probe.h
   src/meta/parse.h
   src/meta/parse_util.h
@@ -722,13 +730,21 @@ add_library(mv::clip ALIAS mv_clip)
 # (with the DLLs listed in MediaViewerThumbs.files) to <root>\shellext\<version>
 # and registers it there (shell/shellext_install.cpp), so an update never
 # replaces a DLL a surrogate still holds.
+#
+# Issue #610: clips too, through player/poster.cpp alone (a static link pulls
+# that one object, which software-decodes one frame; no D3D11VA, no WASAPI).
+# The FFmpeg DLLs it imports join the versioned folder through the PE import
+# closure shellext_install.cpp already walks. Still a surrogate, never Explorer.
 add_library(MediaViewerThumbs SHARED
   src/shellext/thumb_request.cpp
   src/shellext/thumb_request.h
+  src/shellext/thumb_runner.h
+  src/shellext/thumb_poster.cpp
+  src/shellext/thumb_poster.h
   src/shellext/thumb_provider_win.cpp
   src/shellext/MediaViewerThumbs.def
 )
-target_link_libraries(MediaViewerThumbs PRIVATE mv_image mv_codec mv_core mv_project_options ole32 uuid)
+target_link_libraries(MediaViewerThumbs PRIVATE mv_image mv_player mv_codec mv_core mv_project_options ole32 uuid)
 target_include_directories(MediaViewerThumbs PRIVATE src)
 set_target_properties(MediaViewerThumbs PROPERTIES OUTPUT_NAME "MediaViewerThumbs")
 mv_asan_runtime_beside(MediaViewerThumbs)
@@ -768,7 +784,7 @@ include("${CMAKE_SOURCE_DIR}/cmake/driftwire.cmake")
 # still pipeline, the clip sampler and the JPEG-512 cache. In the base app;
 # it knows no add-on. The AI pack itself is cmake/ai.cmake.
 add_library(mv_addon_media STATIC src/abi/addon_media.cpp src/abi/addon_media.h src/addon/media.h)
-target_include_directories(mv_addon_media PUBLIC src)
+target_include_directories(mv_addon_media PUBLIC src src/abi/include)
 target_link_libraries(mv_addon_media PUBLIC mv_core mv_io PRIVATE mv_image mv_clip mv_edit mv_meta)
 
 # Milestone H: the AI pack (mv_ai, packed separately; never installed with the
@@ -873,6 +889,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/meta_writer.h
   src/shell/edit_session.cpp
   src/shell/edit_session.h
+  src/shell/print_layout.cpp
+  src/shell/print_layout.h
   src/shell/text_in_image.cpp
   src/shell/text_in_image.h
   src/shell/text_select.cpp
@@ -1130,6 +1148,8 @@ if(MV_BUILD_TESTS)
     tests/test_refinement.cpp
     tests/test_chrome_host.cpp
     tests/test_dir.cpp
+    # docs/plans/index-watcher.md: Local search's tree watch.
+    tests/test_tree_watch.cpp
     tests/test_dir_tree.cpp
     tests/test_browse_path.cpp
     tests/test_folder.cpp
@@ -1153,6 +1173,8 @@ if(MV_BUILD_TESTS)
     tests/test_meta_provenance.cpp
     tests/test_meta_bench.cpp
     tests/test_meta_location.cpp
+    # #606: GoPro GPMF and DJI subtitle telemetry, a clip's route.
+    tests/test_meta_telemetry.cpp
     tests/test_meta_store.cpp
     # #345: the canvas's AI badge (setting, evidence text, the store's probe).
     tests/test_ai_badge.cpp
@@ -1174,6 +1196,9 @@ if(MV_BUILD_TESTS)
     tests/test_edit_session.cpp
     tests/test_export_carried.cpp
     src/shell/edit_session.cpp
+    # Issue #614: Ctrl+P's paper layout (fit / fill, the contact sheet).
+    tests/test_print_layout.cpp
+    src/shell/print_layout.cpp
     # Text in images: the recogniser's pixels, the words' layout and the
     # selection (the OCR itself is the hosts' OS API).
     tests/test_text_in_image.cpp
@@ -1238,8 +1263,13 @@ if(MV_BUILD_TESTS)
     tests/test_os_integration.cpp
     tests/test_thumb_pixels.cpp
     tests/test_thumb_store.cpp
+    # #612: Settings -> Storage.
+    tests/test_storage.cpp
     tests/test_thumb_request.cpp
     src/shellext/thumb_request.cpp
+    # Issue #610: the handler's clip posters through a seekable reader.
+    tests/test_thumb_poster.cpp
+    src/shellext/thumb_poster.cpp
     tests/test_spotlight_fields.cpp
     src/shell/spotlight_fields.cpp
     tests/test_slideshow.cpp

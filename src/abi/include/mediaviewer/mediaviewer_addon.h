@@ -174,6 +174,10 @@ typedef struct mv_addon_capture {
 #define MV_ADDON_TAG_HAS_DATE 0x1u
 #define MV_ADDON_TAG_HAS_LOCATION 0x2u
 #define MV_ADDON_TAG_AI_GENERATED 0x4u
+/* #606: the file is a clip with a GPS route in its telemetry (GoPro GPMF,
+ * DJI); lat / lon are its first fix. The route is route_of's. An older host
+ * never sets it. */
+#define MV_ADDON_TAG_HAS_ROUTE 0x8u
 typedef struct mv_addon_tag_facts {
   uint32_t struct_size;     /* the caller's sizeof */
   uint32_t flags;           /* MV_ADDON_TAG_* */
@@ -359,8 +363,25 @@ typedef struct mv_slot_theme {
   uint32_t dark;            /* 1 when the chrome is dark */
 } mv_slot_theme;
 
+/* mv_addon_location.has is a set of bits (#606). Bit 0 alone was all an older
+ * host sent, so `has != 0` still means "has coordinates":
+ *   MV_ADDON_LOCATION_HAS          the file carries coordinates (lat / lon)
+ *   MV_ADDON_LOCATION_ROUTE        it is a clip whose coordinates are the first
+ *                                  fix of a GPS route in its telemetry (GoPro,
+ *                                  DJI); route_of gives the route (locations_in,
+ *                                  location_of)
+ *   MV_ADDON_LOCATION_ROUTE_POINT  a point along the route of the asset the
+ *                                  previous row named, under the same path
+ *                                  (locations_of_index, from the index's
+ *                                  tracks); HAS is set too, so a reader that
+ *                                  only knows bit 0 takes it as one more
+ *                                  position of that path */
+#define MV_ADDON_LOCATION_HAS 0x1u
+#define MV_ADDON_LOCATION_ROUTE 0x2u
+#define MV_ADDON_LOCATION_ROUTE_POINT 0x4u
+
 typedef struct mv_addon_location {
-  uint32_t has;             /* 0: the file carries no coordinates */
+  uint32_t has;             /* 0: the file carries no coordinates; MV_ADDON_LOCATION_* */
   uint32_t has_altitude;
   double lat;               /* degrees, north positive */
   double lon;               /* degrees, east positive */
@@ -373,6 +394,12 @@ typedef struct mv_addon_location_entry {
 } mv_addon_location_entry;
 /* Return non-zero to continue, zero to stop. */
 typedef int32_t(MV_CALL* mv_addon_location_fn)(void* user, const mv_addon_location_entry* entry);
+
+/* #606: one point of a clip's GPS route (route_of), WGS 84 degrees. */
+typedef struct mv_addon_route_point {
+  double lat;               /* north positive */
+  double lon;               /* east positive */
+} mv_addon_route_point;
 /* One path (place_matches). NULL `path_utf8`: nothing new yet, still wanted?
  * Return non-zero to continue, zero to stop. */
 typedef int32_t(MV_CALL* mv_addon_path_fn)(void* user, const char* path_utf8);
@@ -462,6 +489,11 @@ typedef struct mv_slot_badges_request {
  * node_id = its action_id, value_json = the notice id as a JSON string. Not
  * checked against a tree (the window may be closed). */
 #define MV_SLOT_EVENT_NOTICE 13u
+/* #601: a single click on an "interactive" surface (no drag, not the first
+ * click of a double-click where the chrome can tell): {"x", "y"}, 0..1 from
+ * its top-left, as MV_SLOT_EVENT_DOUBLE. An add-on that does not use it
+ * ignores it. */
+#define MV_SLOT_EVENT_TAP 14u
 
 /* 0.33 (#452): a system notification an add-on asks for (notice_post). The
  * host shows it unless the screen it is about is the window in front of an
@@ -877,7 +909,50 @@ typedef struct mv_host_api {
   mv_status(MV_CALL* still_write)(void* host, const char* source_utf8, const uint8_t* rgb, uint32_t width,
                                   uint32_t height, uint32_t stride, const char* suffix_ascii, char* out_path_utf8,
                                   uint32_t capacity);
+  /* ---- select this path (#601, docs/design/27 "The folder map") ------------------ */
+  /* [any-thread][no-block] Asks the viewer to show `path_utf8`, as a click on
+   * its gallery tile would: a Places folder-map dot. `screen_id` / `generation`
+   * name the info section the request comes from (the file on screen when it
+   * was asked); the path must be a file of that file's own folder. The chrome
+   * opens it only if its listing holds it, and never opens a folder or
+   * another app. MV_ERR_CANCELLED for a stale generation; MV_ERR_INVALID_ARG
+   * for a path outside that folder or a screen that is not an info section
+   * (a window has no file to step from). Appended after still_write: read it
+   * only when `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* open_item)(void* host, const char* screen_id, uint64_t generation, const char* path_utf8);
+  /* ---- a clip's route (#606, docs/design/27 "Routes") ------------------------- */
+  /* [worker-thread] The GPS route in a clip's telemetry (GoPro GPMF, DJI
+   * subtitle telemetry), in order, at most `capacity` points: the whole
+   * route thinned so the first and last fix are kept and the rest evenly
+   * spaced. `*out_count` is how many were written. MV_OK with 0 for a still
+   * (its first kilobyte says so; nothing opens it as a clip) or a clip with
+   * no telemetry fix. MV_ERR_IO when the file cannot be read. Every packet of
+   * the telemetry track is read, so a long clip costs a few hundred small
+   * reads; the host keeps the last answers by path + size + mtime. Never a
+   * path or a point in a log (rule 6). Appended after open_item: read it
+   * only when `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* route_of)(void* host, const char* path_utf8, mv_addon_route_point* out, uint32_t capacity,
+                               uint32_t* out_count);
+  /* ---- watching folder trees (docs/plans/index-watcher.md) ---------------------- */
+  /* [worker-thread] Watches `count` folder trees for the add-on, replacing the
+   * set it watched before; count 0 stops. `on_change` runs on the host's
+   * watcher thread and must not block: `root` indexes `roots_utf8`, `dir_utf8`
+   * is the folder whose listing changed (under that root, spelled from it).
+   * Flags: MV_ADDON_TREE_SUBTREE, everything below `dir_utf8` (a folder moved
+   * in, renamed or removed; or a name that may have been one, or is gone);
+   * MV_ADDON_TREE_OVERFLOW, events were lost: the whole root (`dir_utf8` is
+   * the root). out_ok (count bytes, may be NULL) is 0 for a root that could
+   * not be watched. Once a call returns, no callback of the old set runs.
+   * MV_ERR_IO: none could be watched. Appended after route_of: read it only
+   * when `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* watch_tree)(void* host, const char* const* roots_utf8, uint32_t count,
+                                 void(MV_CALL* on_change)(void* user, uint32_t root, const char* dir_utf8,
+                                                          uint32_t flags),
+                                 void* user, uint8_t* out_ok);
 } mv_host_api;
+
+#define MV_ADDON_TREE_SUBTREE 1u
+#define MV_ADDON_TREE_OVERFLOW 2u
 
 typedef struct mv_addon_api {
   uint32_t struct_size;

@@ -119,7 +119,10 @@ endif()
 
 # Instrument everything that links mv_project_options.
 set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io mv_meta_parse mv_meta mv_geo mv_places_engine
-  mv_driftwire_engine)
+  mv_driftwire_engine
+  # Issue #610: fuzz_thumbnail's clip path (player/poster.cpp; FFmpeg stays a
+  # prebuilt DLL, uninstrumented, like the other dependencies).
+  mv_player)
 set_target_properties(${MV_FUZZ_INSTRUMENTED} PROPERTIES
   MSVC_RUNTIME_LIBRARY "${MV_FUZZ_CRT}")
 target_compile_options(mv_project_options INTERFACE
@@ -140,6 +143,8 @@ set(MV_FUZZ_HARNESSES
   meta_c2pa meta_jpeg meta_png meta_webp meta_bmff meta_xmp meta_icc
   # #352: the Location editor's parser (pure; built from its one source file).
   meta_location
+  # #606: a clip's telemetry packets (GoPro GPMF, DJI subtitle text); pure.
+  meta_gpmf
   # #345: the AI badge's provenance probe, every container it seeks through.
   meta_probe
   # #291: the folder tag pass's bounded read and the search text it builds (mv_meta).
@@ -213,10 +218,12 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   if(name STREQUAL "docx" OR name STREQUAL "pptx")
     target_link_libraries(${target} PRIVATE mv_io)
   endif()
-  # PR 15: the Explorer handler's request path, built from its source.
+  # PR 15: the Explorer handler's request path, built from its source; issue
+  # #610: its clip poster too, through the seekable reader and player/poster.
   if(name STREQUAL "thumbnail")
-    target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src/shellext/thumb_request.cpp")
-    target_link_libraries(${target} PRIVATE mv_image)
+    target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src/shellext/thumb_request.cpp"
+                                     "${CMAKE_SOURCE_DIR}/src/shellext/thumb_poster.cpp")
+    target_link_libraries(${target} PRIVATE mv_image mv_player)
   endif()
   # The linker is not the clang driver, so name the runtimes the driver would
   # for -fsanitize=fuzzer,address: libFuzzer (with its main) and the ASan

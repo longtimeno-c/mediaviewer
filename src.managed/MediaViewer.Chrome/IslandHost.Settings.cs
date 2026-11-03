@@ -162,6 +162,8 @@ public static partial class IslandHost
         view.Children.Add(SettingsSection("Updates and privacy"));
         AddUpdateSettingsRow(view);
         AddTelemetrySettingsRow(view);
+        // #612: what MediaViewer keeps on disk, the thumbnail cache's limit and Clear.
+        AddStorageSettings(view);
         // #510: Add-ons is a list of rows; each add-on's install, update,
         // remove and settings are on its own page (IslandHost.AddonList.cs).
         // The pages are built here, with the rest, and refreshed in place.
@@ -447,6 +449,8 @@ public static partial class IslandHost
             RefreshOpenAddons();
             // PR 56: the first-party add-ons' settings pages, values re-read.
             RefreshFirstPartyPages();
+            // #612: sizes measured again, on a worker.
+            RefreshStorage();
             _settingsHost.Visibility = Visibility.Visible;
             _chromeRoot.UpdateLayout();
             FocusSettings();
@@ -550,6 +554,7 @@ public static partial class IslandHost
             RefreshTelemetrySettingsRow();
             if (_sortKey is not null) _sortKey.SelectedIndex = Math.Clamp(_sortPacked & 7, 0, SortNames.Length - 1);
             if (_sortDescending is not null) _sortDescending.IsOn = (_sortPacked & 8) != 0;
+            if (_thumbCap is not null) _thumbCap.SelectedIndex = Math.Max(0, Array.IndexOf(ThumbCapChoices, _thumbCapBytes));
         }
         finally
         {

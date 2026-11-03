@@ -104,13 +104,21 @@ include("${CMAKE_CURRENT_LIST_DIR}/darwin-fcp.cmake")
 # --- MediaViewerThumbnails: the Quick Look thumbnail extension -----------------
 # An app extension's entry point is NSExtensionMain; the principal class is
 # MVThumbnailProvider (packaging/macos/QuickLook-Info.plist.in).
-add_executable(MediaViewerThumbnails src/shell/quicklook_mac.mm)
+# Issue #610: the clip containers macOS cannot thumbnail take the Explorer
+# handler's portable poster path (shellext/thumb_poster: player/poster.cpp,
+# software decode, the shared deadline); macpack.py bundles the FFmpeg dylibs
+# it pulls in, as for the app.
+add_executable(MediaViewerThumbnails
+  src/shell/quicklook_mac.mm
+  src/shellext/thumb_request.cpp
+  src/shellext/thumb_poster.cpp)
 set_source_files_properties(src/shell/quicklook_mac.mm
   PROPERTIES COMPILE_FLAGS "-fobjc-arc -fapplication-extension")
 target_include_directories(MediaViewerThumbnails PRIVATE src)
 target_link_options(MediaViewerThumbnails PRIVATE "-e" "_NSExtensionMain" "-fapplication-extension")
 target_link_libraries(MediaViewerThumbnails PRIVATE
   mv_image
+  mv_player
   "-framework Foundation"
   "-framework AppKit"
   "-framework CoreGraphics"

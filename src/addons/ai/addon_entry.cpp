@@ -288,10 +288,19 @@ mv_status MV_CALL t_each_location(void* ctx, mv_addon_location_fn visit, void* u
     auto r = eng(ctx).each_location([&](const mv::ai::index_db::located& l) {
       mv_addon_location_entry e{};
       e.path_utf8 = l.path.c_str();
-      e.location.has = 1;
+      e.location.has = MV_ADDON_LOCATION_HAS;
       e.location.lat = l.lat;
       e.location.lon = l.lon;
-      return visit(user, &e) != 0;
+      if (visit(user, &e) == 0) return false;
+      // #606: a clip's route, point by point under the same path, after its
+      // own row (mediaviewer_addon.h MV_ADDON_LOCATION_ROUTE_POINT).
+      for (const mv::ai::track_point& p : l.track) {
+        e.location.has = MV_ADDON_LOCATION_HAS | MV_ADDON_LOCATION_ROUTE_POINT;
+        e.location.lat = p.lat;
+        e.location.lon = p.lon;
+        if (visit(user, &e) == 0) return false;
+      }
+      return true;
     });
     return r ? MV_OK : to_mv(r.error());
   });

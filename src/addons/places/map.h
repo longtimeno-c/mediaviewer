@@ -134,6 +134,26 @@ void map_point(const map_view& v, double x, double y, double& lat, double& lon) 
 [[nodiscard]] map_view keep_pin_in_view(const map_view& v, double pin_lat, double pin_lon,
                                         double margin = 0.08) noexcept;
 
+// ---- #606: a clip's route ------------------------------------------------------
+
+// One point of a GoPro or DJI clip's GPS route (the host table's route_of).
+struct route_point {
+  double lat = 0;
+  double lon = 0;
+};
+
+// The most points draw_route looks at; route_of is asked for no more.
+inline constexpr std::size_t k_max_route_points = 4096;
+
+// Draws the route over a picture render_map made for `v` (`bgra`: width *
+// height * 4, premultiplied): a 2 pt line in `line` (0xRRGGBB) on a 1 pt
+// casing in `casing`, anti-aliased, clipped to the picture's rounded frame
+// (transparent pixels stay transparent). Longitudes are unwrapped point to
+// point, so a route across 180 degrees stays one line. Points closer than half
+// a pixel to the last one drawn are skipped. Returns false only for a bad size.
+bool draw_route(const map_view& v, std::span<const route_point> route, std::uint32_t line, std::uint32_t casing,
+                std::span<std::uint8_t> bgra);
+
 // A finished picture, shared between the cache and whoever posts it.
 struct map_image {
   std::uint32_t width = 0;

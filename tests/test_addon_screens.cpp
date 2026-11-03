@@ -347,6 +347,10 @@ TEST_CASE("an interactive surface takes zoom, pan and double-click", "[addon][sc
   REQUIRE(t.check_event("s", ev_pan, R"({"dx":-0.1,"dy":0.05})") == error::none);
   REQUIRE(t.check_event("s", ev_pan, R"({"dx":"left","dy":0})") == error::bad_value);
   REQUIRE(t.check_event("s", ev_double, R"({"x":0.3,"y":0.7})") == error::none);
+  // #601: a single click, as a double-click is reported.
+  REQUIRE(t.check_event("s", ev_tap, R"({"x":0.3,"y":0.7})") == error::none);
+  REQUIRE(t.check_event("s", ev_tap, R"({"x":1.3,"y":0.7})") == error::bad_value);
+  REQUIRE(t.check_event("s", ev_tap, R"({"x":0.3,"y":0.7,"z":1})") == error::bad_value);
   REQUIRE(t.check_event("s", ev_click, "") == error::bad_value);
   REQUIRE(t.set(R"({"type":"surface","id":"s","surface":"px","label":"L","height":40,"interactive":"yes"})") ==
           error::bad_prop);

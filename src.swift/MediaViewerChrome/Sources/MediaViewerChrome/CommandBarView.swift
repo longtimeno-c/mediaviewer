@@ -178,6 +178,12 @@ public struct CommandBarView: View {
                        shortcut: key("Show in Explorer"), enabled: current != nil) {
               close(); mv_chrome_menu(kMenuReveal)
             }
+            // Issue #614: as the Windows bar's Open and File > Print…; native
+            // decides between the photo on screen and the marks as a sheet.
+            FlyoutRule()
+            FlyoutItem(title: "Print…", shortcut: key("Print…"), enabled: hasFolder) {
+              close(); mv_chrome_menu(kMenuPrint)
+            }
           }
           BarFlyout(title: "View") { close in
             FlyoutItem(title: "Zoom in", shortcut: key("Zoom in")) { close(); mv_chrome_run_command(ViewCommand.zoomIn) }
@@ -355,12 +361,29 @@ private struct UpdateBarItem: View {
     case 3:
       Button("Update ready — restart") { restart.restartToUpdateWhenIdle() }
         .buttonStyle(FlatButtonStyle())
-        .help((version.map { "Version \($0) is downloaded. Restart to use it, or it installs when you quit MediaViewer." }
-               ?? "A new version is downloaded. Restart to use it, or it installs when you quit MediaViewer.")
-              + (addons.pending.isEmpty ? "" : " " + addons.text))
+        .help(readyHelp(version: version))
     default:
       EmptyView()
     }
+  }
+
+  /// The restart button's tooltip, built outside `body` so the type checker
+  /// sees plain String statements rather than one long `+` chain.
+  private func readyHelp(version: String?) -> String {
+    var help: String
+    if let version {
+      help = "Version \(version) is downloaded. Restart to use it, or it installs when you quit MediaViewer."
+    } else {
+      help = "A new version is downloaded. Restart to use it, or it installs when you quit MediaViewer."
+    }
+    if !addons.pending.isEmpty {
+      help += " " + addons.text
+    }
+    // #620: the signed "What's new", up to three short lines.
+    if let notes = store.updateNotes {
+      help += "\n\nWhat's new\n" + notes
+    }
+    return help
   }
 
   private func status(_ text: String, help: String) -> some View {

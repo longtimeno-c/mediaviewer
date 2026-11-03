@@ -97,7 +97,55 @@ level) when the file gives one. Sources in order: EXIF `GPSLatitude/Longitude` (
 `GPSAltitude`/`GPSAltitudeRef`); else XMP `exif:GPSLatitude/GPSLongitude` in XMP's
 `"DDD,MM.mmmk"` / `"DDD,MM,SSk"` form (drones such as DJI write only these) with
 `exif:GPSAltitude`; else a clip's ISO 6709 `com.apple.quicktime.location.ISO6709` /
-`location`, altitude included. Place names and the map (#344) read `where`, never the string.
+`location`, altitude included; else (#606) the first fix of a clip's telemetry route (below).
+Place names and the map (#344) read `where`, never the string.
+
+## Telemetry routes (#606)
+
+GoPro cameras and DJI drones write no ISO 6709 tag: the position is in a telemetry stream,
+many fixes a second. [`src/meta/telemetry.h`](../../src/meta/telemetry.h) reads it, in
+`mv_meta_parse` with the other portable readers (bytes or text in, points out, capped, fuzzed by
+`fuzz_meta_gpmf`); `clip.cpp` hands it packets through libavformat.
+
+| Source | Track | What is read |
+|---|---|---|
+| GoPro (HERO5 on) | the "GoPro MET" data track, codec tag `gpmd`, one GPMF payload a second | KLVs (FourCC, type, struct size, big-endian repeat, 4-byte padding), `DEVC` > `STRM`; `GPS5` (lat, lon, alt, 2D and 3D speed as int32 over `SCAL`) with the stream's `GPSF` fix and `GPSP` precision; `GPS9` (HERO11 on, its `TYPE` "lllllllSS") with fix and DOP per sample |
+| DJI | the text subtitle track drones write beside the picture (the same text as their `.SRT`) | `[latitude: …] [longitude: …]` (or DJI's `longtitude`, a space before the colon), `abs_alt` / `altitude`; older models' `GPS(lon, lat, alt)`, longitude first |
+
+- **Which fixes count:** a 2D or 3D fix (`GPSF` ≥ 2; a stream with no `GPSF` is taken at its
+  word) with a dilution of precision of 5 or better (`GPSP` ≤ 500, `GPS9`'s DOP ≤ 5); never
+  exactly 0, 0 (what a receiver without lock reports, and what DJI writes every frame before it
+  has one); never off the globe. A `STRM` with no `SCAL` cannot be read and is skipped.
+- **The route** (`route_builder`): fixes in order, a point within 1 m of the last one kept is
+  dropped (a camera on a tripod writes the same fix 18 times a second), and past 20 000 points
+  every other point goes and the step doubles, so a long drive keeps its shape at a coarser
+  spacing. `metadata::route` holds it; the pane's All tags gain a `Telemetry` group (source,
+  fixes, route points).
+- **How much is read.** The **tag pass** (`read_search_facts`, `read_location`, the folder walk's
+  meta_cache.db) reads the telemetry's head only: packets of that one track (every other stream
+  discarded), until the first fix, at most 8 `gpmd` packets or 60 DJI cues. It keeps the first fix
+  as `where` and `search_facts::has_route` (meta_cache.db's `has_where` bit 2; facts version 4,
+  so each cached row is read once more). The **pane's read** (`meta::read`, when the pane or the
+  info overlay wants the record) takes every packet, up to 250 000. `meta::read_route(path, n)`
+  (`location.h`) is the header and the whole telemetry, thinned to `n` points evenly spaced, the
+  first and last kept; a still is refused from its first kilobyte without an FFmpeg open. It
+  serves the add-on host table's `route_of` ([27](27-places.md) "Routes").
+- **Which text tracks are DJI's.** Only an MP4 / MOV's text tracks are candidates (DJI writes
+  those; Matroska's and AVI's demuxers read through every cluster of a discarded stream, so a
+  film's subtitles there would walk the file). A candidate whose first 10 cues have neither a fix
+  nor DJI's shape (`dji_text_shape`: the latitude / longitude keys or a `GPS(` group, whatever the
+  values, so a drone's cues before lock still count) stops being read, and the read stops when no
+  candidate is left: a film's subtitles cost ten cues.
+- **Who else does the full read.** `meta::read` serves Import's capture record and the Mac's
+  Spotlight importer as well as the pane, so those read a GoPro or DJI clip's whole telemetry too
+  (one small `gpmd` packet a second, on their workers).
+- **A late lock.** The tag pass stops after 8 `gpmd` packets (about 8 s): a GoPro clip whose GPS
+  locks later has no `where` in meta_cache.db, so Places, `location_of` and folder `place:` miss it,
+  and the AI pack does not ask for its track. Its pane still shows the position and the route.
+- An ISO 6709 tag, when a clip has one, stays its position; the route is kept beside it.
+- **Not read:** DJI's newer `djmd` protobuf track (Mini 4 Pro, Avata 2, Osmo Action 4 and later)
+  has no published schema, and no sample was at hand to build it from; those clips get no route
+  until it is. Nor are speed, the IMU streams or the GPS time used.
 
 ## Beyond Exiv2 (#290)
 
