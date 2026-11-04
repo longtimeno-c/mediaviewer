@@ -31,6 +31,7 @@
 #include "addons/enhance/screens.h"
 #include "addons/enhance/sniff.h"
 #include "addons/enhance/spec.h"
+#include "addons/enhance/tier.h"
 
 namespace mv::enhance {
 
@@ -78,6 +79,8 @@ struct job_request {
   // From the Video Editor: the edit's kept source ranges, (in, out) pairs in
   // nanoseconds, in source order. Empty: the whole clip.
   std::vector<std::int64_t> keep_ns;
+  // The performance level's bounds (tier.h).
+  tier_policy policy = policy_of(tier::standard);
   bool has_sound = false;  // a clip: it holds sound (a cut one's is written again)
 };
 
@@ -127,6 +130,8 @@ class engine {
   // The command or the context entry: these files (the first is enhanced),
   // then the sheet. From the Video Editor, `keep_ns` is the edit (job_request).
   // `start_on`: the wand menu's Restyle opens the sheet on it (when offered).
+  // The level in force: the chosen one, else the recommendation.
+  [[nodiscard]] tier effective_tier() const;
   void command(const std::vector<std::string>& paths, std::vector<std::int64_t> keep_ns = {},
                std::optional<photo_target> start_on = std::nullopt);
   void event(const std::string& screen, const std::string& node, std::uint32_t kind, const std::string& value_json);
@@ -168,6 +173,7 @@ class engine {
   std::vector<std::int64_t> keep_;  // the Video Editor's edit of it, or empty
   item_kind item_ = item_kind::unknown;
   media_facts facts_;
+  tier recommended_ = tier::standard;  // this computer's, by Local search's rule
   std::uint32_t brushed_ = 0;  // slice 7: dabs brushed over the photo, when the sheet opened
   bool running_ = false;
   double progress_ = -1;

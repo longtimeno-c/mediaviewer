@@ -57,6 +57,7 @@ struct restyle_io {
   // compiles there but fails to run (2026-11-04), so its spec turns it off:
   // the CPU, about 5 s a step at Standard on an M-series Mac.
   bool coreml = true;
+  int threads = 0;  // the CPU sessions' threads (the performance level); 0 cores - 1, at most 8
 };
 
 struct restyle_params {

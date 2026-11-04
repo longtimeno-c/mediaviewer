@@ -1583,7 +1583,7 @@ TEST_CASE("restyle: the quality picks its size and the memory it needs", "[enhan
   run_port port;
   port.open_still = [](const std::string&) -> mv::result<run_port::still> { return mv::err(mv::status::io); };
   port.write_still = [](const std::string&, const run_port::still&) -> mv::result<std::string> { return std::string(); };
-  port.load_restyle = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<restyle_model>> {
+  port.load_restyle = [](const model_spec&, const std::string&, int) -> mv::result<std::unique_ptr<restyle_model>> {
     return mv::err(mv::status::unsupported_format);
   };
   port.free_memory = [&]() -> std::optional<std::uint64_t> { return free; };
@@ -1598,8 +1598,16 @@ TEST_CASE("restyle: the quality picks its size and the memory it needs", "[enhan
   part.values["quality"] = *mv::json::parse("\"standard\"");
   req.parts.push_back(part);
   CHECK(jr.check(req).empty());
-  // Best needs its own memory, and says how to get under it.
+  // The performance level bounds the quality (tier.h): Default stops at High
+  // and says which level Best needs; Potato keeps Standard.
   req.parts[0].values["quality"] = *mv::json::parse("\"best\"");
+  req.policy = mv::enhance::policy_of(mv::enhance::tier::standard);
+  CHECK(jr.check(req).find("Maxxed performance level") != std::string::npos);
+  req.policy = mv::enhance::policy_of(mv::enhance::tier::maxxed);
+  CHECK(mv::enhance::policy_of(mv::enhance::tier::potato).max_quality == 0);
+  CHECK(mv::enhance::policy_of(mv::enhance::tier::potato).restyle_steps <
+        mv::enhance::policy_of(mv::enhance::tier::maxxed).restyle_steps);
+  // Best needs its own memory, and says how to get under it.
   const std::string refused = jr.check(req);
   CHECK(refused.find("at this quality") != std::string::npos);
   CHECK(refused.find("lower quality") != std::string::npos);
@@ -1613,6 +1621,30 @@ TEST_CASE("restyle: the quality picks its size and the memory it needs", "[enhan
 
 // The model.json Enhance ships parses, and every quality it offers has an
 // edge the UNet can take and memory of its own.
+TEST_CASE("enhance: the performance level is chosen in Settings and kept", "[enhance][tier]") {
+  fixture f;
+  f.eng->settings_opened(1);
+  {
+    parsed t(f.host.tree(kSettingsScreen));
+    REQUIRE(t.has("tier"));
+    CHECK(*t.node("tier")->str("value") == "auto");
+    CHECK(t.node("tier")->find("options")->a.size() == 5);  // Automatic, Potato, Intel, Default, Maxxed
+  }
+  f.eng->event(kSettingsScreen, "tier", MV_SLOT_EVENT_CHANGE, "\"potato\"");
+  CHECK(f.eng->effective_tier() == mv::enhance::tier::potato);
+  CHECK(*parsed(f.host.tree(kSettingsScreen)).node("tier")->str("value") == "potato");
+  f.eng->event(kSettingsScreen, "tier", MV_SLOT_EVENT_CHANGE, "\"fast\"");  // not a level: ignored
+  CHECK(f.eng->effective_tier() == mv::enhance::tier::potato);
+  f.restart();
+  CHECK(f.eng->effective_tier() == mv::enhance::tier::potato);  // kept in enhance.json
+  // The recommendation, by Local search's rule.
+  constexpr std::uint64_t GiB = 1024ull * 1024 * 1024;
+  CHECK(mv::enhance::recommend_tier(8, 8 * GiB, true) == mv::enhance::tier::potato);
+  CHECK(mv::enhance::recommend_tier(8, 16 * GiB, false) == mv::enhance::tier::intel);
+  CHECK(mv::enhance::recommend_tier(10, 24 * GiB, true) == mv::enhance::tier::standard);
+  CHECK(mv::enhance::recommend_tier(12, 32 * GiB, true) == mv::enhance::tier::maxxed);
+}
+
 TEST_CASE("restyle: the shipped model's qualities", "[enhance][restyle]") {
   const auto text = mv::test::read_bytes(MV_ENHANCE_RESTYLE_SPEC);
   const auto spec = parse_spec(std::string_view(reinterpret_cast<const char*>(text.data()), text.size()),
@@ -1865,7 +1897,7 @@ TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {
     written = s;
     return std::string("/tmp/photo-enhance.jpg");
   };
-  port.load_restyle = [&](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<restyle_model>> {
+  port.load_restyle = [&](const model_spec&, const std::string&, int) -> mv::result<std::unique_ptr<restyle_model>> {
     return restyle_model::open(**rt, dir, utf8(cache.root()), io);
   };
   job_runner jr(port);
@@ -1962,7 +1994,7 @@ TEST_CASE("restyle: offered on a photo once pinned, with a text knob, and an emp
   port.open_still = [](const std::string&) -> mv::result<run_port::still> { return mv::err(mv::status::io); };
   port.write_still = [](const std::string&, const run_port::still&) -> mv::result<std::string> { return std::string(); };
   CHECK_FALSE(job_runner(port).supports(model_kind::restyle, item_kind::still));
-  port.load_restyle = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<restyle_model>> {
+  port.load_restyle = [](const model_spec&, const std::string&, int) -> mv::result<std::unique_ptr<restyle_model>> {
     return mv::err(mv::status::unsupported_format);
   };
   job_runner jr(port);

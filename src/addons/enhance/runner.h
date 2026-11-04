@@ -83,7 +83,7 @@ struct run_port {
 
   // ---- Restyle (docs/plans/edit-adjust.md slice 5b) ----
   // [job thread] The restyle model from its files in `models_dir`.
-  std::function<result<std::unique_ptr<restyle_model>>(const model_spec& spec, const std::string& models_dir)>
+  std::function<result<std::unique_ptr<restyle_model>>(const model_spec& spec, const std::string& models_dir, int threads)>
       load_restyle;
 
   // ---- Remove (docs/plans/edit-adjust.md slice 7) ----

@@ -53,6 +53,7 @@ std::string prefs_json(const prefs& p) {
   w.end_object();
   w.key("target").string(target_name(p.target));
   w.key("photo").string(photo_target_name(p.photo));
+  w.key("tier").string(p.tier);
   w.key("wanted").begin_array();
   for (const model_kind k : kModelKinds) {
     if (p.want(k)) w.string(kind_name(k));
@@ -79,6 +80,9 @@ prefs prefs_from(std::string_view json_text) {
     for (const clip_target c : {clip_target::picture, clip_target::sound, clip_target::both}) {
       if (*t == target_name(c)) p.target = c;
     }
+  }
+  if (const std::string* t = doc->str("tier")) {
+    if (*t == "auto" || *t == "potato" || *t == "intel" || *t == "default" || *t == "maxxed") p.tier = *t;
   }
   if (const std::string* t = doc->str("photo")) {
     for (const photo_target c : kPhotoTargets) {

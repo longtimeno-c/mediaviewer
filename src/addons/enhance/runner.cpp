@@ -221,6 +221,21 @@ std::string job_runner::check(const job_request& r) const {
     const bool empty = it == restyle->values.end() || it->second.k != json::kind::string ||
                        it->second.s.find_first_not_of(" \t") == std::string::npos;
     if (empty) return "Type what to change, for example \"make it a snowy winter day\".";
+    // The performance level bounds the quality (tier.h).
+    if (const knob* qk = restyle->spec->find("quality")) {
+      const auto qv = restyle->values.find("quality");
+      if (qv != restyle->values.end() && qv->second.k == json::kind::string) {
+        // By the quality's id (Standard 0, High 1, Best 2); another id is Standard.
+        const std::string& id = qv->second.s;
+        const int rank = id == "best" ? 2 : id == "high" ? 1 : 0;
+        if (rank > r.policy.max_quality) {
+          const auto opt = std::find_if(qk->options.begin(), qk->options.end(),
+                                        [&](const knob_option& o) { return o.id == id; });
+          return (opt != qk->options.end() ? opt->text : id) + " quality needs the " +
+                 (rank >= 2 ? "Maxxed" : "Default") + " performance level (Settings → Add-ons → Enhance).";
+        }
+      }
+    }
     if (port_.free_memory) {
       const std::uint64_t need = quality_of(*restyle).run_bytes;
       if (const auto free = port_.free_memory(); free && *free < need) {
@@ -610,7 +625,7 @@ void job_runner::run_restyle(job_request r, job_events ev) {
   if (cancel_.load()) return fail(why(status::cancelled));
   const preview_image before = shrink(pic->rgb, pic->width, pic->height, kPreviewEdge);
   if (ev.preview) ev.preview(before, {});
-  auto model = port_.load_restyle(*part.spec, part.models_dir);
+  auto model = port_.load_restyle(*part.spec, part.models_dir, r.policy.threads);
   if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));
   rgb8 full;
   full.width = pic->width;
@@ -618,6 +633,7 @@ void job_runner::run_restyle(job_request r, job_events ev) {
   full.rgb = std::move(pic->rgb);
   std::uint32_t w = 0, h = 0;
   p.edge = quality_of(part).edge;
+  p.steps = r.policy.restyle_steps;
   restyle_size(full.width, full.height, p.edge, w, h);
   // A model that needs the GPU (its spec's cpu false) is refused where its
   // UNet would run on the CPU: many minutes a request (on Windows the bundled

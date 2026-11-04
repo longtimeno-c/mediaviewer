@@ -12,5 +12,7 @@ namespace mv::enhance {
 // Physical memory available now without paging out (free plus reclaimable);
 // nullopt when the OS does not say.
 [[nodiscard]] std::optional<std::uint64_t> available_memory() noexcept;
+// All of this computer's memory (the performance level's recommendation).
+[[nodiscard]] std::optional<std::uint64_t> total_memory() noexcept;
 
 }  // namespace mv::enhance

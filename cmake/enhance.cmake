@@ -67,6 +67,7 @@ add_library(mv_enhance_engine STATIC
   ${_E}/stream_model.cpp
   ${_E}/stream_model.h
   ${_E}/memory.h
+  ${_E}/tier.h
   ${_enhance_memory}
 )
 target_include_directories(mv_enhance_engine PUBLIC "${MV_SOURCE_ROOT}/src" "${MV_SOURCE_ROOT}/src/abi/include")

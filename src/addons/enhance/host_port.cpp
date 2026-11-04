@@ -193,9 +193,10 @@ run_port run_port_of(const mv_host_api* h, const std::string& self_dir) {
     };
   }
   // Photos and a clip's picture: one tiled model runner.
-  p.load_restyle = [runtime](const model_spec& spec, const std::string& models_dir)
+  p.load_restyle = [runtime](const model_spec& spec, const std::string& models_dir, int threads)
       -> result<std::unique_ptr<restyle_model>> {
     restyle_io io = restyle_io_of(spec);
+    io.threads = threads;
     MV_TRY(infer::runtime * rt, runtime->runtime());
     return restyle_model::open(*rt, models_dir, models_dir + "-cache", std::move(io));
   };

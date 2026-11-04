@@ -21,6 +21,7 @@
 #include "addons/enhance/prefs.h"
 #include "addons/enhance/sniff.h"
 #include "addons/enhance/spec.h"
+#include "addons/enhance/tier.h"
 
 namespace mv::enhance {
 
@@ -38,7 +39,13 @@ struct model_card {
   model_files files;
   dl_status st;
 };
-[[nodiscard]] std::string settings_tree(std::span<const model_card> cards);
+// The performance level's row: what is chosen ("auto" or a tier name) and
+// this computer's recommendation.
+struct tier_view {
+  std::string chosen = "auto";
+  tier recommended = tier::standard;
+};
+[[nodiscard]] std::string settings_tree(std::span<const model_card> cards, const tier_view& tiers = {});
 
 struct sheet_section {
   model_kind kind = model_kind::still;

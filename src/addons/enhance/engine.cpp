@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/enhance/engine.h"
 
+#include "addons/enhance/memory.h"
+
 #include <mediaviewer/mediaviewer_addon.h>
 
 #include <algorithm>
@@ -75,6 +77,12 @@ std::optional<model_kind> action_kind(const std::string& node, std::string_view 
 
 engine::engine(engine_port port, std::string self_dir, std::string data_dir, ai::fetch_options fetch)
     : port_(std::move(port)), self_dir_(std::move(self_dir)), data_dir_(std::move(data_dir)) {
+#if defined(__APPLE__) && defined(__aarch64__)
+  constexpr bool kAppleSilicon = true;
+#else
+  constexpr bool kAppleSilicon = false;
+#endif
+  recommended_ = recommend_tier(std::thread::hardware_concurrency(), total_memory().value_or(0), kAppleSilicon);
   std::vector<pin> pins;
   if (auto manifest = read_text(self_dir_ + "/manifest.json", 4u << 20)) pins = read_pins(*manifest);
   for (const model_kind k : kModelKinds) {
@@ -159,7 +167,10 @@ void engine::post_settings_locked() {
     // issue promises (photos): video and audio always are.
     cards.push_back(std::move(c));
   }
-  if (!port_.post(kSettingsScreen, settings_gen_, settings_tree(cards))) settings_gen_ = 0;
+  tier_view tv;  // m_ is held (the _locked suffix)
+  tv.chosen = prefs_.tier;
+  tv.recommended = recommended_;
+  if (!port_.post(kSettingsScreen, settings_gen_, settings_tree(cards, tv))) settings_gen_ = 0;
 }
 
 std::vector<model_kind> engine::kinds_for_locked() const {
@@ -388,6 +399,12 @@ void engine::remove(model_kind k) {
   dl_->remove(k, files_[static_cast<int>(k)]);
 }
 
+tier engine::effective_tier() const {
+  tier t = recommended_;
+  if (prefs_.tier != "auto") (void)tier_from(prefs_.tier, t);
+  return t;
+}
+
 void engine::run() {
   job_request r;
   runner* run = nullptr;
@@ -400,6 +417,7 @@ void engine::run() {
     r.has_sound = facts_.sound;
     r.item = item_;
     r.target = v.target;
+    r.policy = policy_of(effective_tier());
     for (const sheet_section& s : v.sections) {
       job_request::part p;
       p.kind = s.kind;
@@ -489,6 +507,18 @@ void engine::cancel() {
 void engine::event(const std::string& screen, const std::string& node, std::uint32_t kind,
                    const std::string& value_json) {
   if (screen == kSettingsScreen) {
+    // The performance level (owner 2026-11-04).
+    if (kind == MV_SLOT_EVENT_CHANGE && node == "tier") {
+      const auto v = json::parse(value_json, 4);
+      tier t{};
+      std::lock_guard lock(m_);
+      if (v && v->k == json::kind::string && (v->s == "auto" || tier_from(v->s, t))) {
+        prefs_.tier = v->s;
+        save_locked();
+      }
+      post_settings_locked();
+      return;
+    }
     if (kind != MV_SLOT_EVENT_CLICK) return;
     if (const auto k = action_kind(node, "install")) {
       install(*k);

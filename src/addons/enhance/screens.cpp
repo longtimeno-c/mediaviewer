@@ -218,12 +218,30 @@ std::vector<clip_target> targets_for(bool has_picture, bool has_sound) {
   return out;
 }
 
-std::string settings_tree(std::span<const model_card> cards) {
+std::string settings_tree(std::span<const model_card> cards, const tier_view& tiers) {
   json::writer w;
   begin_stack(w, "root", "vertical", 12);
   text(w, "intro",
        "Enhance writes a restored copy of the photo, clip or audio file on screen. The original is never changed. "
        "Each kind has its own model, downloaded only when you ask for it.");
+  // The performance level, as Local search's (owner 2026-11-04).
+  begin_stack(w, "tiercard", "vertical", 8, "card");
+  text(w, "tiertitle", "Performance", "heading");
+  w.begin_object().key("type").string("choice").key("id").string("tier").key("label").string("Level");
+  w.key("options").begin_array();
+  w.begin_object().key("id").string("auto").key("text")
+      .string(std::string("Automatic (") + tier_words(tiers.recommended) + " on this computer)").end_object();
+  for (const tier t : {tier::potato, tier::intel, tier::standard, tier::maxxed}) {
+    w.begin_object().key("id").string(tier_name(t)).key("text").string(tier_words(t)).end_object();
+  }
+  w.end_array();
+  w.key("value").string(tiers.chosen);
+  w.end_object();
+  text(w, "tierhelp",
+       "Potato and Intel use fewer cores and fewer steps, and keep Restyle at Standard quality. Default allows High; "
+       "Maxxed uses every core, more steps and allows Best.",
+       "caption");
+  end_stack(w);
   for (const model_card& c : cards) {
     begin_stack(w, id_of("card", c.kind), "vertical", 8, "card");
     text(w, id_of("title", c.kind), card_title(c.kind), "heading");

@@ -186,7 +186,7 @@ struct restyle_model::impl {
     }
     o.on = infer::backend::cpu;
     o.cache_dir_utf8.clear();
-    o.threads = static_cast<int>(std::clamp(std::thread::hardware_concurrency(), 2u, 9u) - 1);
+    o.threads = io.threads > 0 ? io.threads : static_cast<int>(std::clamp(std::thread::hardware_concurrency(), 2u, 9u) - 1);
     MV_TRY(auto s, infer::session::open(*rt, file, o));
     return (unets[key] = std::move(s)).get();
   }
@@ -216,7 +216,8 @@ result<std::unique_ptr<restyle_model>> restyle_model::open(infer::runtime& rt, c
   p->tok = std::make_unique<infer::clip_tokenizer>(std::move(tok));
   infer::session_options cpu;
   cpu.on = infer::backend::cpu;
-  cpu.threads = static_cast<int>(std::clamp(std::thread::hardware_concurrency(), 2u, 9u) - 1);
+  cpu.threads = p->io.threads > 0 ? p->io.threads
+                                  : static_cast<int>(std::clamp(std::thread::hardware_concurrency(), 2u, 9u) - 1);
   MV_TRY(p->text, infer::session::open(rt, dir + "/text_encoder.onnx", cpu));
   MV_TRY(p->enc, infer::session::open(rt, dir + "/vae_encoder.onnx", cpu));
   MV_TRY(p->dec, infer::session::open(rt, dir + "/vae_decoder.onnx", cpu));
