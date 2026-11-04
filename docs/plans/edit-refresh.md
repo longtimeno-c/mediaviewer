@@ -518,6 +518,22 @@ Each slice updates the docs it changes:
 | S9 | `"[enhance][tier]"` still passes. The hub chip shows the effective level. Quality above the level is disabled with its reason. With per-level files: switching level fetches only the delta, the old files answer until the new ones verify, and choosing the same level again means Retry. |
 | S10 | Spike report: licence check and identity-guard drift threshold on LFW pairs (`~/Dev/.mv-toolchain/faceeval`). Nothing is merged without owner call C. |
 
+## Quality over speed (owner, 2026-11-04)
+
+"Quality is preferred over speed" for every Enhance result (the viewer's own perf rules stay strict).
+Concretely, applied in the second build round:
+- **Restyle:** steps by level Potato 20, Intel 25, Default 40, Maxxed 50. The quality default is the
+  highest the level allows (Default → High). Text guidance stays 7.5.
+- **Remove:** after the 512-px LaMa fill, a second pass refines large boxes. A box over 1.5× the model's
+  side is filled again on 512 tiles at full resolution, blended by weight as Extend is. The feather
+  scales with the box.
+- **Extend:** tiles of at least 768 px when the photo allows, two-thirds overlapping. Every margin pixel
+  is in at least three tiles.
+- **Faces (GFPGAN):** the fp32 file, alignment by the FFHQ template, strength default 0.7, the People
+  guard on. Eyes and whole-face transfer keep their look-matching.
+- **Enhance image:** Real-ESRGAN tiles with more overlap, and the app's own noise reduction before it.
+- Every run shows progress with the time left and can be cancelled.
+
 ## Owner calls
 
 Resolved 2026-11-04 by the owner's brief ("the UI should be unreal… get it done"): **A** yes (the tool
