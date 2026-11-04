@@ -99,9 +99,12 @@ sheet says how to allow it.
 
 **iCloud-only originals.** The fetch reports progress (`PHAssetResourceRequestOptions.progressHandler`)
 to the notice, *Downloading from iCloud… 40 %*, for the viewer's own refinement and for a
-writer's read alike, and clears it when the fetch ends. A job's cancel stops a writer's fetch
-(the hook's `job_context`); navigating away stops the viewer's. Two fetches of one original never
-write at once: the second waits for the first's file. The Edit pane's sliders wait for the
+writer's read alike, and clears it when the fetch ends. A job's cancel stops a writer's fetch at
+its next progress report when the writer passes its `job_context` to the hook (Open closed eyes,
+Improve faces, Save copy); Enhance's reads go through `full_still`, whose host-table row carries no
+context, so its Cancel does not stop the download yet. Navigating away stops the viewer's fetch.
+Two fetches of one original never write at once: the second waits for the first's file (a writer
+waiting behind the viewer's fetch cannot be cancelled until that fetch ends). The Edit pane's sliders wait for the
 original as they wait for a RAW's develop (*Preparing…*): a preview never becomes the working
 image; when the fetch fails the pane says it could not be prepared and the notice says the
 picture is a preview.

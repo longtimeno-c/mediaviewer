@@ -8558,11 +8558,15 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   if (library && !mv::shell::photos::can_add()) {
     __weak MvLabApp* weakAsk = self;
     const mv::edit::export_options again = options;
-    mv::shell::photos::request_add_access([weakAsk, again](bool granted) {
+    mv::shell::photos::request_add_access([weakAsk, again, path](bool granted) {
       MvLabApp* strong = weakAsk;
       if (!strong) return;
       if (granted) {
-        [strong exportCurrentItem:again];
+        // Only the photo the click was for: the prompt may have been
+        // answered after a move to another item.
+        const bool same = !strong->_items.empty() && strong->_index.current() < strong->_items.size() &&
+                          strong->_items[strong->_index.current()].path_utf8 == path;
+        if (same) [strong exportCurrentItem:again];
       } else {
         [strong noticeShow:std::string(mv::shell::photos::kAddRefusedNotice)];
       }
@@ -8609,8 +8613,12 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
         NSBeep();
       }
       // Where it went (S0): -photosAdded:source: lists it beside this photo
-      // and says so when this list holds it; otherwise this is the word.
-      if (ok && library) [weakSelf noticeShow:std::string(mv::shell::photos::kAddedNotice)];
+      // and says so when this list holds it; otherwise this is the word. Its
+      // describe job can land first: never overwrite the more exact notice.
+      MvLabApp* strong = weakSelf;
+      if (ok && library && strong && [strong noticeText] != mv::shell::photos::kAddedBesideNotice) {
+        [strong noticeShow:std::string(mv::shell::photos::kAddedNotice)];
+      }
     });
     return why;
   });
@@ -12036,7 +12044,9 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
     dispatch_async(dispatch_get_main_queue(), ^{
       MvLabApp* strongSelf = weakSelf;
       if (!strongSelf) return;
-      if (strongSelf->_photosFetchingKey == key) strongSelf->_photosFetchingKey.clear();
+      // Only this fetch's own mark: a cancelled fetch of the same key landing
+      // after a new one started must not make the new one look idle.
+      if (strongSelf->_photosFetchCancel == cancel) strongSelf->_photosFetchingKey.clear();
       if (fetched) [strongSelf photosFetchEnded];
       if (cancel->load(std::memory_order_acquire)) return;
       const bool here = !strongSelf->_items.empty() && strongSelf->_index.current() < strongSelf->_items.size() &&
