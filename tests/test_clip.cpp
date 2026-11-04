@@ -9,7 +9,9 @@
 //   * each PR 14 operation round-trips; lossless rotate does not re-encode.
 #include "catch_compat.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -23,6 +25,7 @@ extern "C" {
 
 #include "clip_fixture.h"
 #include "edit/clip.h"
+#include "gfx/adjust_kernel.h"
 #include "edit/clip_internal.h"
 #include "edit/clip_jobs.h"
 #include "edit/clip_strip.h"
@@ -887,4 +890,89 @@ TEST_CASE("Save frame bakes the look's turn, mirror and crop", "[clip][look]") {
   spng_ctx_free(ctx);
   CHECK(ihdr.width == 240);
   CHECK(ihdr.height == 240);
+}
+
+TEST_CASE("the export's colour table is the canvas's kernel", "[clip][look][light]") {
+  namespace kernel = mv::gfx::kernel;
+  CHECK(clip::colour_table({}).identity());
+  mv::edit::colour c;
+  c.v[0] = 1.0f;     // exposure +1 EV
+  c.v[1] = 30.0f;    // contrast
+  c.v[2] = -40.0f;   // saturation
+  c.v[3] = 20.0f;    // warmer
+  const clip::colour_table t(c);
+  REQUIRE_FALSE(t.identity());
+  const mv::gfx::adjust_args args(mv::edit::uniforms_of(c));
+  int worst = 0;
+  for (int r = 0; r < 256; r += 15) {
+    for (int g = 0; g < 256; g += 15) {
+      for (int b = 0; b < 256; b += 15) {
+        std::vector<std::uint8_t> px = {static_cast<std::uint8_t>(r), static_cast<std::uint8_t>(g),
+                                        static_cast<std::uint8_t>(b)};
+        t.apply(px, 3);
+        const auto dec = [](int v) { return static_cast<float>(std::pow(v / 255.0, 2.4)); };
+        const kernel::float3 o = mv::gfx::adjust(kernel::float3{dec(r), dec(g), dec(b)}, {}, args);
+        const float want[3] = {o.x, o.y, o.z};
+        for (int ch = 0; ch < 3; ++ch) {
+          const int code = static_cast<int>(
+              std::lround(std::pow(std::clamp(static_cast<double>(want[ch]), 0.0, 1.0), 1.0 / 2.4) * 255.0));
+          worst = std::max(worst, std::abs(code - px[static_cast<std::size_t>(ch)]));
+        }
+      }
+    }
+  }
+  CHECK(worst <= 1);
+  // RGBA: alpha is left alone.
+  std::vector<std::uint8_t> rgba = {100, 100, 100, 77};
+  t.apply(rgba, 4);
+  CHECK(rgba[3] == 77);
+  CHECK(rgba[0] > 100);
+}
+
+TEST_CASE("Export exact and Save frame carry the light", "[clip][look][light]") {
+  scratch_dir d("clip_look_light");
+  const fs::path src = d / "clip.mp4";
+  fx::spec s;
+  s.frames = 30;
+  REQUIRE(fx::make(utf8(src), s));
+  auto r = req_for(clip::op::keep_ranges, src);
+  r.ranges_exact = true;
+  r.ranges = {{0, 20 * kFrameNs}};
+  r.look.flip_h = true;  // a look either way, so both runs render
+  auto plain = run_soft(r);
+  REQUIRE(plain);
+  r.look.light.v[0] = 1.0f;  // +1 EV
+  auto bright = run_soft(r);
+  REQUIRE(bright);
+  fx::decoded a, b;
+  REQUIRE(fx::decode_all(plain->outputs[0], a));
+  REQUIRE(fx::decode_all(bright->outputs[0], b));
+  REQUIRE(a.luma.size() == b.luma.size());
+  // +1 EV on BT.1886 light scales a full-range code by 2^(1/2.4) (limited
+  // range luma, 16..235, around its 16).
+  const double k = std::pow(2.0, 1.0 / 2.4);
+  for (std::size_t i = 0; i < a.luma.size(); ++i) {
+    const double want = std::min(235.0, 16.0 + (a.luma[i] - 16) * k);
+    CHECK(std::abs(b.luma[i] - want) <= 3.0);
+  }
+
+  auto f = req_for(clip::op::frame, src);
+  f.in_ns = 10 * kFrameNs;
+  auto dark = clip::run(f, {});
+  f.look.light.v[0] = 1.0f;
+  auto lit = clip::run(f, {});
+  REQUIRE(dark);
+  REQUIRE(lit);
+  const auto centre = [](const std::string& path) {
+    const auto bytes = read_bytes(path);
+    spng_ctx* ctx = spng_ctx_new(0);
+    spng_set_png_buffer(ctx, bytes.data(), bytes.size());
+    std::size_t size = 0;
+    spng_decoded_image_size(ctx, SPNG_FMT_RGBA8, &size);
+    std::vector<std::uint8_t> px(size);
+    spng_decode_image(ctx, px.data(), size, SPNG_FMT_RGBA8, 0);
+    spng_ctx_free(ctx);
+    return static_cast<int>(px[(static_cast<std::size_t>(180) * 320 + 160) * 4]);
+  };
+  CHECK(centre(lit->outputs[0]) > centre(dark->outputs[0]) + 10);
 }

@@ -435,6 +435,7 @@ class present_lab {
   // The Video Editor's look from the snapshot; a fitted clip refits. True when it changed.
   bool apply_video_look(const input_snapshot& snapshot) noexcept;
   edit::clip::look video_look_{};
+  edit::adjust_uniforms video_light_{};  // uniforms_of(video_look_.light)
   // The previous still in the left half of the split (or, in a --pan-soak,
   // the current one, so the soak measures two full draws with one file).
   void draw_compare_left(const input_snapshot& snapshot, double elapsed,

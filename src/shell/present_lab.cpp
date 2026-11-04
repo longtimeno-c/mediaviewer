@@ -1467,6 +1467,8 @@ void present_lab::render_thread_main() noexcept {
       bp.rotation = g.turns;
       bp.mirror = (g.flip_h ? 1u : 0u) | (g.flip_v ? 2u : 0u);
       bp.crop_x = uc.origin[0]; bp.crop_y = uc.origin[1]; bp.crop_w = uc.size[0]; bp.crop_h = uc.size[1];
+      bp.adjust = !video_look_.light.identity();
+      bp.adjust_u = video_light_;
       bp.texture_w = static_cast<float>(desc.Width); bp.texture_h = static_cast<float>(desc.Height);
       video_blitter_.draw(device_.context(), current_video_.luma.Get(), current_video_.chroma.Get(), current_video_.colour, bp);
     }
@@ -1692,8 +1694,10 @@ void present_lab::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
 bool present_lab::apply_video_look(const input_snapshot& snapshot) noexcept {
   const edit::clip::look l = canvas_look_of(snapshot);
   if (l == video_look_) return false;
+  const bool geometry = l.turns != video_look_.turns || l.crop != video_look_.crop;
   video_look_ = l;
-  if (current_video_.texture) {
+  video_light_ = edit::uniforms_of(l.light);
+  if (current_video_.texture && geometry) {
     // A fitted (or filled) clip stays fitted as it turns or its crop changes.
     const canvas_view view = usable_canvas(snapshot);
     if (camera_.fit_mode()) {

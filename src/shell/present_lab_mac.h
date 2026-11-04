@@ -418,6 +418,7 @@ class present_lab_mac {
   bool apply_video_look(const input_snapshot& snapshot) noexcept;
   [[nodiscard]] edit::clip::frame_geometry video_geometry() const noexcept;
   edit::clip::look video_look_{};
+  edit::adjust_uniforms video_light_{};  // uniforms_of(video_look_.light)
   canvas::crossfade fade_;
   std::atomic<std::uint32_t> stills_shown_{0};
 

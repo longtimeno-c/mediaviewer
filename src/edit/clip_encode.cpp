@@ -433,6 +433,7 @@ result<std::vector<std::uint8_t>> frame_image(std::string_view src_path, time_ns
     w = static_cast<int>(g.out_w);
     h = static_cast<int>(g.out_h);
   }
+  colour_table(sanitised(lk).light).apply(img.rgba, 4);  // the look's light and colour
   img.width = static_cast<std::uint32_t>(w);
   img.height = static_cast<std::uint32_t>(h);
   img.tagged_srgb = true;

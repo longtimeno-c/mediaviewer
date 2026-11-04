@@ -49,8 +49,9 @@ struct alignas(16) video_blit_cb {
   std::uint32_t matrix, transfer, range, bit_depth;
   std::uint32_t primaries, turns, mirror, pad3;
   float crop_x, crop_y, crop_w, crop_h;
+  float adj[kAdjustVectors][4];  // a0 .. a5
 };
-static_assert(sizeof(video_blit_cb) == 96, "cbuffer layout must match the HLSL declaration");
+static_assert(sizeof(video_blit_cb) == 192, "cbuffer layout must match the HLSL declaration");
 
 }  // namespace
 
@@ -73,6 +74,19 @@ expected video_blitter::create(ID3D11Device* device) {
   cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
   cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
   hr = device->CreateBuffer(&cbd, nullptr, cb_.GetAddressOf());
+  if (FAILED(hr)) return err(status::out_of_memory);
+  // The kernel's table slot (b1): an identity table, immutable. A clip never
+  // turns the table on (a5.w is 0), but the slot is never left empty.
+  {
+    static const adjust_table identity{};
+    D3D11_BUFFER_DESC lbd{};
+    lbd.ByteWidth = sizeof(adjust_table);
+    lbd.Usage = D3D11_USAGE_IMMUTABLE;
+    lbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    D3D11_SUBRESOURCE_DATA lsd{};
+    lsd.pSysMem = &identity;
+    hr = device->CreateBuffer(&lbd, &lsd, lut_cb_.GetAddressOf());
+  }
   if (FAILED(hr)) return err(status::internal);
 
   // Linear, not anisotropic: the chroma plane is half resolution and an
@@ -112,6 +126,7 @@ void video_blitter::destroy() noexcept {
   point_.Reset();
   linear_.Reset();
   cb_.Reset();
+  lut_cb_.Reset();
   ps_.Reset();
   vs_.Reset();
 }
@@ -147,6 +162,9 @@ void video_blitter::draw(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* lum
   cb.crop_y = crop_ok ? p.crop_y : 0.0f;
   cb.crop_w = crop_ok ? p.crop_w : 1.0f;
   cb.crop_h = crop_ok ? p.crop_h : 1.0f;
+  std::memcpy(cb.adj, p.adjust_u.a, sizeof(cb.adj));
+  cb.adj[1][3] = p.adjust ? 1.0f : 0.0f;
+  cb.adj[5][3] = 0.0f;  // never the table: the editor sets PR 11's five only
 
   D3D11_MAPPED_SUBRESOURCE mapped{};
   if (SUCCEEDED(ctx->Map(cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
@@ -158,9 +176,9 @@ void video_blitter::draw(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* lum
   ctx->IASetInputLayout(nullptr);
   ctx->VSSetShader(vs_.Get(), nullptr, 0);
   ctx->PSSetShader(ps_.Get(), nullptr, 0);
-  ID3D11Buffer* cbs[] = {cb_.Get()};
+  ID3D11Buffer* cbs[] = {cb_.Get(), lut_cb_.Get()};
   ctx->VSSetConstantBuffers(0, 1, cbs);
-  ctx->PSSetConstantBuffers(0, 1, cbs);
+  ctx->PSSetConstantBuffers(0, 2, cbs);
   ID3D11ShaderResourceView* srvs[] = {luma, chroma};
   ctx->PSSetShaderResources(0, 2, srvs);
   ID3D11SamplerState* samps[] = {linear_.Get(), point_.Get()};

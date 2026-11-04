@@ -95,6 +95,8 @@
 #include "shell/text_recognition_mac.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
+#include "edit/clip_auto_light.h"
+#include "edit/clip_sample.h"
 #include "shell/clip_look_abi.h"
 #include "shell/video_timeline.h"
 #include "edit/clip_strip.h"
@@ -861,6 +863,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)editorEdit:(int32_t)what;
 - (void)editorSelect:(int32_t)index;
 - (void)editorExport:(BOOL)exact;
+- (void)editorSetLight:(int32_t)param value:(float)value phase:(int32_t)phase;
 - (BOOL)editorTrimBegin:(int32_t)index edge:(int32_t)edge;
 - (int64_t)editorTrimTo:(int64_t)source_ns;
 - (void)editorTrimEnd;
@@ -1895,6 +1898,10 @@ extern "C" void mv_chrome_editor_toggle_play(void) {
 }
 extern "C" void mv_chrome_editor_step(int32_t frames) {
   if (g_chrome_app) [g_chrome_app editorStep:frames];
+}
+extern "C" void mv_chrome_editor_set_light(int32_t param, float value, int32_t phase) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app editorSetLight:param value:value phase:phase];
 }
 extern "C" void mv_chrome_editor_edit(int32_t what) {
   (void)mv::shell::crash::note_native_call();
@@ -8575,6 +8582,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   out->look_mirror = (lk.flip_h ? 1 : 0) | (lk.flip_v ? 2 : 0);
   out->look_crop = static_cast<int32_t>(lk.crop);
   out->look_copyable = lk.copyable() ? 1 : 0;
+  for (std::size_t i = 0; i < lk.light.v.size(); ++i) out->look_light[i] = lk.light.v[i];
 }
 
 - (void)setEditorOpen:(BOOL)open {
@@ -8855,7 +8863,44 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   _snap.video_look_turns = on ? l.turns : 0;
   _snap.video_look_mirror = on ? static_cast<std::uint8_t>((l.flip_h ? 1 : 0) | (l.flip_v ? 2 : 0)) : 0;
   _snap.video_look_crop = on ? static_cast<std::uint8_t>(l.crop) : 0;
+  _snap.video_look_light = on ? l.light.v : decltype(l.light.v){};
   [self publish];
+}
+
+// A light and colour slider (param: edit::adjust_param); a drag is one undo step.
+- (void)editorSetLight:(int32_t)param value:(float)value phase:(int32_t)phase {
+  if (!_timeline.loaded() || param < 0 || param >= mv::edit::kAdjustParamCount) return;
+  if (phase == 0) _timeline.begin_look_drag();
+  mv::edit::clip::look l = _timeline.look();
+  l.light.v[static_cast<std::size_t>(param)] = value;
+  if (_timeline.set_look(l)) [self editorPublishLook];
+  if (phase == 2) _timeline.end_look_drag();
+  ++_editorGeneration;
+}
+
+// Auto: auto tone (#289) on the frame at the playhead, read on a worker.
+- (void)editorAutoLight {
+  if (!_timeline.loaded() || _editorPath.empty()) return;
+  const std::string path = _editorPath;
+  const std::uint64_t token = _editorToken;
+  const std::int64_t at_ms = _timeline.to_source([self editorTimelinePosition]) / 1'000'000;
+  const mv::edit::colour current = _timeline.look().light;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    auto frame = mv::edit::clip::frame_rgb_at(path, at_ms, 512);
+    bool changed = false;
+    const mv::edit::colour light = frame ? mv::edit::clip::auto_light(frame->rgb, current, changed) : current;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (token != self->_editorToken || !self->_editorOpen) return;  // another clip, or closed
+      mv::edit::clip::look l = self->_timeline.look();
+      l.light = light;
+      if (!changed || !self->_timeline.set_look(l)) {
+        NSBeep();  // a flat frame, or one that already fills the range
+        return;
+      }
+      [self editorPublishLook];
+      ++self->_editorGeneration;
+    });
+  });
 }
 
 // The frame at the playhead as a JPEG beside the clip, with the look's turn,
@@ -8928,6 +8973,13 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
       break;
     }
     case 27: [self editorSaveFrame]; return;
+    case 28: [self editorAutoLight]; return;
+    case 29: {
+      mv::edit::clip::look l = _timeline.look();
+      l.light = {};
+      changed = _timeline.set_look(l);
+      break;
+    }
     default: break;
   }
   [self editorPublishLook];

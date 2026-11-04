@@ -60,6 +60,8 @@ final class VideoEditorStore: ObservableObject {
   @Published private(set) var lookMirror = 0
   @Published private(set) var lookCrop = 0
   @Published private(set) var lookCopyable = true
+  /// Light and colour: exposure (EV), contrast, saturation, temperature, tint.
+  @Published private(set) var light: [Float] = [0, 0, 0, 0, 0]
   @Published private(set) var thumbs: [EditorThumb] = []
   @Published private(set) var peaks: [Float] = []
 
@@ -135,6 +137,8 @@ final class VideoEditorStore: ObservableObject {
     if lookMirror != Int(v.look_mirror) { lookMirror = Int(v.look_mirror) }
     if lookCrop != Int(v.look_crop) { lookCrop = Int(v.look_crop) }
     if lookCopyable != (v.look_copyable != 0) { lookCopyable = v.look_copyable != 0 }
+    let l = withUnsafeBytes(of: v.look_light) { Array($0.bindMemory(to: Float.self)) }
+    if light != l { light = l }
     var buf = [CChar](repeating: 0, count: 1024)
     _ = mv_chrome_editor_name(&buf, Int32(buf.count))
     let newName = String(cString: buf)
@@ -208,6 +212,18 @@ final class VideoEditorStore: ObservableObject {
   /// 0 original, 1 16:9, 2 9:16, 3 1:1, 4 4:3, 5 4:5.
   func crop(_ ratio: Int) { mv_chrome_editor_edit(Int32(21 + ratio)) }
   func saveFrame() { mv_chrome_editor_edit(27) }
+  func autoLight() { mv_chrome_editor_edit(28) }
+  func resetLight() { mv_chrome_editor_edit(29) }
+  /// phase 0 starts a drag (one undo step), 1 moves it, 2 ends it.
+  func setLight(_ param: Int, _ value: Float, phase: Int32) {
+    if param < light.count { light[param] = value }
+    mv_chrome_editor_set_light(Int32(param), value, phase)
+  }
+  /// The five sliders: PR 11's names, ranges and steps (edit/adjust.cpp range_of).
+  static let lightSpecs: [(name: String, min: Float, max: Float, step: Float)] = [
+    ("Exposure", -5, 5, 0.1), ("Contrast", -100, 100, 5), ("Saturation", -100, 100, 5),
+    ("Temperature", -100, 100, 5), ("Tint", -100, 100, 5),
+  ]
   static let cropNames = ["Original", "16:9", "9:16", "1:1", "4:3", "4:5"]
   func export(exact: Bool) { mv_chrome_editor_export(exact ? 1 : 0) }
   /// An add-on's button in the bar (editor_items: Enhance…), on the edit: the
@@ -374,6 +390,7 @@ struct VideoEditorView: View {
       .fixedSize()
       .help("Mirror and crop the whole clip")
       .accessibilityLabel("Mirror and crop")
+      EditorLightButton(store: store)
       Button { store.saveFrame() } label: { Image(systemName: "camera") }
         .help("Save this frame as a photo (⇧⌘S)").accessibilityLabel("Save frame")
       Spacer(minLength: MVTheme.space(8))
@@ -684,5 +701,47 @@ private struct EditorPlayhead: View {
       ctx.fill(head, with: .color(.red))
     }
     .allowsHitTesting(false)
+  }
+}
+
+/// Light and colour for the whole clip (docs/plans/video-editor-look.md
+/// slice 2): PR 11's five sliders, Auto (auto tone on the frame at the
+/// playhead) and Reset, in a popover. The preview follows as a slider moves;
+/// a drag is one undo step.
+struct EditorLightButton: View {
+  @ObservedObject var store: VideoEditorStore
+  @State private var shown = false
+
+  var body: some View {
+    Button { shown.toggle() } label: { Image(systemName: "sun.max") }
+      .help("Light and colour for the whole clip").accessibilityLabel("Light and colour")
+      .popover(isPresented: $shown, arrowEdge: .bottom) {
+        VStack(alignment: .leading, spacing: MVTheme.space(8)) {
+          ForEach(0..<VideoEditorStore.lightSpecs.count, id: \.self) { i in
+            let spec = VideoEditorStore.lightSpecs[i]
+            VStack(alignment: .leading, spacing: MVTheme.space(2)) {
+              HStack {
+                Text(spec.name).font(MVTheme.font(13))
+                Spacer()
+                Text(i == 0 ? String(format: "%+.1f", store.light[i]) : String(format: "%+.0f", store.light[i]))
+                  .font(MVTheme.font(12)).monospacedDigit()
+              }
+              Slider(value: Binding(get: { store.light[i] },
+                                    set: { store.setLight(i, $0, phase: 1) }),
+                     in: spec.min...spec.max, step: spec.step) { editing in
+                store.setLight(i, store.light[i], phase: editing ? 0 : 2)
+              }
+              .accessibilityLabel(spec.name)
+            }
+          }
+          HStack {
+            Button("Auto") { store.autoLight() }.help("Exposure and contrast from the frame on screen")
+            Spacer()
+            Button("Reset") { store.resetLight() }.disabled(store.light.allSatisfy { $0 == 0 })
+          }
+        }
+        .padding(MVTheme.space(14))
+        .frame(width: 280)
+      }
   }
 }

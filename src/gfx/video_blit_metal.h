@@ -10,6 +10,7 @@
 #include <cstdint>
 
 #include "core/result.h"
+#include "gfx/adjust_kernel.h"
 #include "gfx/colour_desc.h"
 
 namespace mv::gfx {
@@ -40,6 +41,11 @@ struct video_blit_params_mac {
   float crop_y = 0.0f;
   float crop_w = 1.0f;
   float crop_h = 1.0f;
+  // The Video Editor's light and colour: the shared kernel
+  // (gfx/adjust_kernel.h) with edit::adjust_uniforms, run only when `adjust`
+  // is set.
+  bool adjust = false;
+  adjust_vectors adjust_u{};
 };
 
 class video_blitter_mac {

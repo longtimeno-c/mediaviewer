@@ -38,7 +38,7 @@ public static partial class IslandHost
     // chrome_host.h chrome_editor_*_args.
     internal const int EditorAttachArgsSize = 16;
     internal const int EditorLayoutArgsSize = 40;
-    internal const int EditorViewArgsSize = 120;
+    internal const int EditorViewArgsSize = 144;
     internal const int EditorStripArgsSize = 24;
     internal const int EditorThumbSize = 24;
 
@@ -67,7 +67,17 @@ public static partial class IslandHost
         public const int MirrorV = 20;
         public const int CropOriginal = 21;  // 21-26: original, 16:9, 9:16, 1:1, 4:3, 4:5
         public const int SaveFrame = 27;
+        public const int AutoLight = 28;
+        public const int ResetLight = 29;
     }
+
+    // PR 11's five sliders (edit/adjust.cpp range_of), as on the Mac.
+    private static readonly (string Name, double Min, double Max, double Step)[] EditorLightSpecs =
+    {
+        ("Exposure", -5, 5, 0.1), ("Contrast", -100, 100, 5), ("Saturation", -100, 100, 5),
+        ("Temperature", -100, 100, 5), ("Tint", -100, 100, 5),
+    };
+    private static readonly float[] _editorLight = new float[5];
 
     private static readonly string[] EditorCropNames = { "Original", "16:9", "9:16", "1:1", "4:3", "4:5" };
 
@@ -245,6 +255,10 @@ public static partial class IslandHost
                 _editorMarkOut = Marshal.ReadInt64(arg, 96);
                 _editorLookCrop = Marshal.ReadInt32(arg, 112);
                 _editorLookCopyable = Marshal.ReadInt32(arg, 116) != 0;
+                for (int i = 0; i < _editorLight.Length; i++)
+                {
+                    _editorLight[i] = BitConverter.Int32BitsToSingle(Marshal.ReadInt32(arg, 120 + 4 * i));
+                }
                 long pieces = Marshal.ReadInt64(arg, 64);
                 var list = new (long, long)[pieces == 0 ? 0 : count];
                 for (int i = 0; i < list.Length; i++)
@@ -452,6 +466,7 @@ public static partial class IslandHost
             EditButton("Turn left", () => SendEditor(EditorActions.TurnLeft), tip: "Turn the clip left"),
             EditButton("Turn right", () => SendEditor(EditorActions.TurnRight), tip: "Turn the clip right"),
             EditorCropButton(),
+            EditorLightButton(),
             EditButton("Save frame", () => SendEditor(EditorActions.SaveFrame),
                        tip: "Save this frame as a photo  Ctrl+Shift+S"));
         bar.Children.Add(left);
@@ -701,6 +716,67 @@ public static partial class IslandHost
         };
         crop.Flyout = menu;
         return crop;
+    }
+
+    // Light and colour for the whole clip (docs/plans/video-editor-look.md
+    // slice 2): the five sliders, Auto and Reset in a flyout. Each move goes
+    // to native at once (the preview follows); a flyout session is one undo
+    // step (chrome_cmd_editor_light_drag on open and close).
+    private static Button EditorLightButton()
+    {
+        Button light = EditButton("Light", () => { }, tip: "Light and colour for the whole clip");
+        var flyout = new Flyout();
+        bool updating = false;
+        var sliders = new Slider[EditorLightSpecs.Length];
+        var readouts = new TextBlock[EditorLightSpecs.Length];
+        var col = new StackPanel { Spacing = Space(6), Width = 280 };
+        for (int i = 0; i < EditorLightSpecs.Length; i++)
+        {
+            var spec = EditorLightSpecs[i];
+            var head = new Grid();
+            head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            head.Children.Add(Text(spec.Name, Body));
+            readouts[i] = Text("", Body);
+            Grid.SetColumn(readouts[i], 1);
+            head.Children.Add(readouts[i]);
+            col.Children.Add(head);
+            var slider = new Slider
+            {
+                Minimum = spec.Min,
+                Maximum = spec.Max,
+                StepFrequency = spec.Step,
+                SmallChange = spec.Step,
+                LargeChange = spec.Step * 10,
+                IsThumbToolTipEnabled = false,
+            };
+            AutomationProperties_SetName(slider, spec.Name);
+            int index = i;
+            slider.ValueChanged += (_, e) =>
+            {
+                readouts[index].Text = index == 0 ? $"{e.NewValue:+0.0;-0.0;0.0}" : $"{e.NewValue:+0;-0;0}";
+                if (updating) return;
+                _editorLight[index] = (float)e.NewValue;
+                Send(Command.EditorLightExposure + index, (float)e.NewValue);
+            };
+            slider.DoubleTapped += (_, _) => slider.Value = 0;
+            sliders[i] = slider;
+            col.Children.Add(slider);
+        }
+        col.Children.Add(Row(
+            EditButton("Auto", () => SendEditor(EditorActions.AutoLight), tip: "Exposure and contrast from the frame on screen"),
+            EditButton("Reset", () => SendEditor(EditorActions.ResetLight), tip: "Every slider back to 0")));
+        flyout.Content = col;
+        flyout.Opening += (_, _) =>
+        {
+            updating = true;
+            for (int i = 0; i < sliders.Length; i++) sliders[i].Value = _editorLight[i];
+            updating = false;
+            Send(Command.EditorLightDrag, 1);
+        };
+        flyout.Closed += (_, _) => Send(Command.EditorLightDrag, 0);
+        light.Flyout = flyout;
+        return light;
     }
 
     private static void RebuildEditorAddons()

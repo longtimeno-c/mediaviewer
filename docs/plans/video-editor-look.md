@@ -50,7 +50,8 @@ decision log records the line.
    writes 608 × 1080 at the clip's rate (turned once as well, 1080 × 1920), frame N matching the
    preview's frame N within 2 8-bit codes on a flat patch; keyframe Export with only a turn writes
    no re-encode and a display matrix of 90°.
-2. **Light and colour.** Exposure, contrast, saturation, temperature, tint and Auto (#289's auto
+2. **Light and colour** — built 2026-11-03 (Mac verified by tests; the Windows native half, both
+   apps' clicks and the 4K playback soak owed). Exposure, contrast, saturation, temperature, tint and Auto (#289's auto
    tone on the frame at the playhead) in a Colour popover; the kernel in the video blit; the
    table in the render op; Save frame applies it.
    *Verify:* the exported frame and the preview agree within 2 codes at five patches for each
