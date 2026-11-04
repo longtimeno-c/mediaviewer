@@ -901,6 +901,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)paneEdgeUp:(NSEvent*)event;
 - (void)paneEdgeReset;
 - (void)paneStep:(int)direction;
+- (void)paneThemeChanged;
 // Issue #429: the page sidebar is on screen (MvMetalView's -syncSize reserves it).
 - (BOOL)pageSidebarShown;
 - (void)requestPageThumbsFrom:(int32_t)first count:(int32_t)count;
@@ -2287,6 +2288,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 // pane_narrower.
 @interface MvPaneEdgeView : NSView
 @property(nonatomic, assign) MvLabApp* app;
+// The theme's hairline and accent changed (MVChromeThemeDidChange).
+- (void)restyle;
 @end
 
 @implementation MvPaneEdgeView {
@@ -4043,8 +4046,8 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // The column's edge: above every right pane (Info, Adjust and Jobs are added
   // over the transport, the workspace's strip and pane under it), so all 6 pt
   // of it take the pointer. The transport centres on the canvas guide, clear
-  // of a docked column. Settings and the gallery, added later, cover it; it
-  // shows only while a right pane does (-syncPaneEdge).
+  // of a docked column. It shows only while a right pane does and the
+  // gallery, Settings and the Video Editor are away (-syncPaneEdge).
   {
     MvPaneEdgeView* edge = [[MvPaneEdgeView alloc] initWithFrame:NSZeroRect];
     edge.app = self;
@@ -4058,6 +4061,18 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
       [edge.bottomAnchor constraintEqualToAnchor:self.adjustHost.bottomAnchor],
     ]];
     self.paneEdge = edge;
+    // A theme's density or type scale moves the column's minimum, and its
+    // hairline and accent are the edge's colours: re-clamp and repaint when
+    // the chrome repaints (posted after every theme change, Theme.swift).
+    __weak MvLabApp* weakSelf = self;
+    __weak MvPaneEdgeView* weakEdge = edge;
+    (void)[NSNotificationCenter.defaultCenter addObserverForName:@"MVChromeThemeDidChange"
+                                                          object:nil
+                                                           queue:NSOperationQueue.mainQueue
+                                                      usingBlock:^(NSNotification*) {
+                                                        [weakEdge restyle];
+                                                        [weakSelf paneThemeChanged];
+                                                      }];
   }
   self.canvasTrailingDocked = [self.canvasGuide.trailingAnchor constraintEqualToAnchor:self.rightColumn.leadingAnchor];
   // The clip job queue. Its completions arrive on its workers and hop to the
@@ -8508,11 +8523,21 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 
 // The picture tracks the edge exactly: an immediate refit per step (AppKit
 // already coalesces drags to one per frame). Nothing is saved until release.
+// A pointer where the column already is leaves the preference alone (a click
+// on the edge in a narrow window keeps a wider wish; the Windows twin too).
 - (void)paneDragTo:(CGFloat)leading {
   const CGFloat client = [self paneClientPoints];
-  _panePref = mv::shell::shown_inspector(static_cast<float>(client - kPaneLimits.rail - leading),
-                                         static_cast<float>(client),
-                                         static_cast<float>(MVChromeHost.inspectorMinimumWidth), kPaneLimits);
+  const CGFloat shown = mv::shell::shown_inspector(static_cast<float>(client - kPaneLimits.rail - leading),
+                                                   static_cast<float>(client),
+                                                   static_cast<float>(MVChromeHost.inspectorMinimumWidth),
+                                                   kPaneLimits);
+  if (shown <= 0.0 || shown == self.rightColumnWidth.constant) return;
+  _panePref = shown;
+  if ([self layoutPaneWidth] && _ws.open) [self.view syncChrome];
+}
+
+// MVChromeThemeDidChange: the theme's minimum may have moved under the column.
+- (void)paneThemeChanged {
   if ([self layoutPaneWidth] && _ws.open) [self.view syncChrome];
 }
 

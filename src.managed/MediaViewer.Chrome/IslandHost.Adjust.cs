@@ -653,12 +653,12 @@ public static partial class IslandHost
         if (s == CurvesSection)
         {
             // A square (FitCurveSquare): its width is the pane's content, at
-            // most 340; its height follows on the next frame.
+            // most 340; its height follows on the next frame. A Canvas measures
+            // to no width of its own, so it stretches across its frame's one
+            // column (capped below), never left-aligned to nothing.
             _curveCanvas = new Canvas
             {
                 Height = 260,
-                MaxWidth = CurveMaxSide,
-                HorizontalAlignment = HorizontalAlignment.Left,
                 Background = Brush(ChromeColour.Surface),
             };
             AutomationProperties_SetName(_curveCanvas, "Curve");
@@ -672,7 +672,14 @@ public static partial class IslandHost
             _curveCanvas.PointerCaptureLost += (_, _) => EndCurveDrag();
             _curveCanvas.SizeChanged += (_, _) => QueueAdjustRedraw();
             // The frame is a border, not a clip: a point on a corner is whole.
-            var curveFrame = new Grid { MaxWidth = CurveMaxSide, HorizontalAlignment = HorizontalAlignment.Left };
+            // One star column capped at 340: the frame is the content's width up
+            // to that, on the left (the Mac's .frame(maxWidth: 340, alignment: .leading)).
+            var curveFrame = new Grid();
+            curveFrame.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = new GridLength(1, GridUnitType.Star),
+                MaxWidth = CurveMaxSide,
+            });
             curveFrame.Children.Add(new Border
             {
                 CornerRadius = Corner(RadiusButton),

@@ -102,6 +102,10 @@ the Windows theme minimum is 300 DIP flat until the island sends its type scale
 (`chrome_cmd_*`, S2's ids), and the edge's hot / drag feedback on Windows
 (`chrome_cmd_pane_edge_state`, 1095). Not run here: the soak (either lab), the in-app checks,
 both PR 1 gates and the selftest; the Windows halves are not compiled on the Mac (C# is).
+S1 review (2026-11-04): Windows no longer re-pushes the Info / Adjust content on every drag step
+(once on release), a lost capture before any move no longer snaps an unset width to 280, a click
+that does not move the column keeps the preference (both hosts), `apply_view_state` falls back to
+`resize_seq` if the size or scale did change, and the Mac re-clamps on a theme change.
 
 ### 2.2 Canvas refit without touching the swapchain (both present labs)
 

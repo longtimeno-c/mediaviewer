@@ -133,11 +133,17 @@ the edge exactly and springs into place on release; nothing resizes the swapchai
   to it. `MvPaneEdgeView` (6 pt, centred on the column's edge, above the panes, below the transport)
   shows the resize cursor and a hairline that turns into a 2 pt accent line with a grip while
   hovered or dragged; it is an accessibility splitter whose value steps like the commands. The Info
-  pane's add-on sections are measured once on release, not per step.
+  pane's add-on sections are measured once on release, not per step. A theme change
+  (`MVChromeThemeDidChange`) re-clamps the column to the new minimum and repaints the edge.
 - **Windows:** the islands are child windows, so the grab strip is the main window's own client
   area, 6 DIP left of the column; `WM_SETCURSOR` shows `IDC_SIZEWE`, a press captures, moves re-lay
   the islands at most once per refresh interval, release (or `WM_CAPTURECHANGED`) snaps and saves.
+  Mid-drag only the islands move: the Info and Adjust panes' content is pushed once, on release.
   The type-scale minimum is 300 DIP until the island sends its type scale.
+
+On both hosts a press that does not move the column leaves the preference as it was (a click on the
+edge of a window too narrow for the wish keeps the wish), and a chrome change that does alter the
+canvas's size or scale after all is a resize, not a refit.
 
 The Adjust tab's ask field stays under the header; everything below it (histogram, readouts,
 sections, Reset) scrolls. The histogram's corner triangles light when shadows crush or highlights

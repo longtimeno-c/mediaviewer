@@ -335,6 +335,7 @@ struct app_state {
   int pane_pending_x = 0;
   DWORD pane_click_time = 0;  // the last press on the edge, for a double-click
   int pane_click_x = 0;
+  double pane_refresh_s = 1.0 / 60.0;  // the display's refresh, read once per press
   bool rail_collapsed = false;  // the inspector refresh's rail (none yet)
   // Slice 4: the working image as built, before the detail pass; the pass on
   // the canvas (`working` is its result), and the one in flight.
@@ -9546,8 +9547,13 @@ void layout_panels(app_state* app) noexcept {
   if (want_meta && !want_adjust && !want_jobs) app->focus_meta_next = false;
   if (want_adjust) app->focus_adjust_next = false;
   if (want_tree) app->focus_tree_next = false;
-  if (want_meta && !want_adjust && !want_jobs) push_meta_pane(app);
-  if (want_adjust) push_adjust_pane(app);
+  // docs/plans/edit-refresh.md §2.4: while the column's edge is dragged only
+  // the islands move; their content is pushed once, on release (the Mac's
+  // Info pane asks its add-ons once too). Nothing shows or hides mid-drag.
+  if (!app->pane_edge_drag) {
+    if (want_meta && !want_adjust && !want_jobs) push_meta_pane(app);
+    if (want_adjust) push_adjust_pane(app);
+  }
   layout_editor(app);  // PR 30: the card beside whatever pane is up
   layout_ai_badge(app);  // #345: clear of the panes, the strip and the transport
 }
@@ -9678,6 +9684,21 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept {
           : 0;
 }
 
+// The chrome moved the canvas rect: update the metrics and bump refit_seq, or
+// resize_seq if the size or scale did change under it after all (the Mac's
+// -syncChrome guard), so a swapchain never misses a real resize.
+void bump_chrome_refit(app_state* app) noexcept {
+  const std::uint32_t w = app->input.width;
+  const std::uint32_t h = app->input.height;
+  const float scale = app->input.dpi_scale;
+  update_client_metrics(app, app->window);
+  if (app->input.width != w || app->input.height != h || app->input.dpi_scale != scale) {
+    ++app->input.resize_seq;
+  } else {
+    ++app->input.refit_seq;
+  }
+}
+
 // Single place that decides which islands are on screen, so the strip, the
 // gallery and the canvas rectangle can never disagree. Cheap and idempotent:
 // the show_* calls are no-ops when nothing changed.
@@ -9729,12 +9750,11 @@ void apply_view_state(app_state* app) noexcept {
     app->chrome.resize_transport(width, height, strip, dpi);
   }
   layout_panels(app);
-  update_client_metrics(app, app->window);
-  apply_transport_autohide(app);
   // docs/design/12 2026-11-04: the islands moved, the window did not. A refit
   // only (refit_seq): the swapchain is never resized for chrome. WM_SIZE and
   // WM_DPICHANGED keep resize_seq.
-  ++app->input.refit_seq;
+  bump_chrome_refit(app);
+  apply_transport_autohide(app);
   ++app->input.activity_seq;
   publish(app);
 }
@@ -9781,26 +9801,28 @@ double pane_refresh_seconds() noexcept {
 // The islands follow the column and the canvas refits into what is left.
 void pane_relayout(app_state* app) noexcept {
   layout_panels(app);
-  update_client_metrics(app, app->window);
-  ++app->input.refit_seq;
+  bump_chrome_refit(app);
   ++app->input.activity_seq;
   publish(app);
 }
 
 // The pointer at `x`: the column's leading edge goes to x - grab offset. True
-// when the width changed (and the islands moved).
+// when the width on screen changed (and the islands moved). A pointer that
+// lands where the column already is leaves the preference alone (a click on
+// the edge in a narrow window keeps a wider wish).
 bool pane_edge_apply(app_state* app, int x) noexcept {
   RECT rc{};
   ::GetClientRect(app->window, &rc);
   const auto dpi = ::GetDpiForWindow(app->window);
+  const int width = rc.right - rc.left;
   const float scale = 96.0f / static_cast<float>(std::max(dpi, 1u));
-  const float client = static_cast<float>(rc.right - rc.left) * scale;
+  const float client = static_cast<float>(width) * scale;
   const float leading = static_cast<float>(x - app->pane_grab_dx) * scale;
   const float shown = mv::shell::shown_inspector(client - kPaneLimits.rail - leading, client, kPaneThemeMinDip,
                                                  kPaneLimits);
   const auto dip = static_cast<std::int32_t>(std::lround(shown));
   app->pane_last_layout = std::chrono::steady_clock::now();
-  if (dip <= 0 || dip == app->settings.right_pane_dip) return false;
+  if (dip <= 0 || dip == static_cast<std::int32_t>(std::lround(pane_shown_dip(*app, width, dpi)))) return false;
   app->settings.right_pane_dip = dip;
   pane_relayout(app);
   return true;
@@ -9818,7 +9840,7 @@ void pane_edge_move(app_state* app, int x) noexcept {
   app->pane_move_pending = true;
   const double since =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - app->pane_last_layout).count();
-  const double interval = pane_refresh_seconds();
+  const double interval = app->pane_refresh_s;
   if (since >= interval) {
     pane_edge_flush(app);
   } else {
@@ -9849,7 +9871,9 @@ void pane_edge_end(app_state* app) noexcept {
   pane_edge_flush(app);
   app->pane_edge_drag = false;
   app->input.chrome_live_resize = 0;
-  pane_set_preference(app, mv::shell::snap_inspector(static_cast<float>(app->settings.right_pane_dip)));
+  // The preference, not the raw value: 0 (never set) is 360, not the minimum.
+  pane_set_preference(app, mv::shell::snap_inspector(mv::shell::preferred_width(app->settings.right_pane_dip,
+                                                                                kPaneLimits)));
   if (::GetCapture() == app->window) ::ReleaseCapture();
 }
 
@@ -9858,7 +9882,7 @@ bool pane_edge_press(app_state* app, int x, int y) noexcept {
   ::SetFocus(app->window);
   // A double-click resets (no CS_DBLCLKS: two presses on the edge within the
   // system's time and distance).
-  const DWORD t = ::GetMessageTime();
+  const auto t = static_cast<DWORD>(::GetMessageTime());
   if (app->pane_click_time != 0 && t - app->pane_click_time <= ::GetDoubleClickTime() &&
       std::abs(x - app->pane_click_x) <= ::GetSystemMetrics(SM_CXDOUBLECLK)) {
     app->pane_click_time = 0;
@@ -9874,6 +9898,7 @@ bool pane_edge_press(app_state* app, int x, int y) noexcept {
   app->pane_edge_drag = true;
   app->pane_move_pending = false;
   app->pane_last_layout = {};
+  app->pane_refresh_s = pane_refresh_seconds();
   ::SetCapture(app->window);
   app->input.chrome_live_resize = 1;
   publish(app);
@@ -10376,7 +10401,7 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
       // docs/plans/edit-refresh.md §2.4: the column's edge is being dragged.
       // Nothing else (brush, text, drag-out) sees these moves.
       if (app->pane_edge_drag) {
-        pane_edge_move(app, GET_X_LPARAM(lparam));
+        if (!g_pane_drag.enabled) pane_edge_move(app, GET_X_LPARAM(lparam));  // the soak drives its own
         return 0;
       }
       // Fullscreen hot-edge: the bottom few pixels reveal the strips.
