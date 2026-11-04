@@ -119,6 +119,33 @@ class sound_queue {
   bool done_ = false, ok_ = true, stopped_ = false;
 };
 
+// Restyle's quality: the long edge it runs at and the free memory that needs,
+// from the spec's io.qualities by the "quality" knob; io.edge and run_bytes
+// when the spec or the request names none. An edge outside 256..1536 or not
+// a multiple of 64 is not taken.
+struct restyle_quality {
+  std::uint32_t edge = kRestyleEdge;
+  std::uint64_t run_bytes = 0;
+};
+
+restyle_quality quality_of(const job_request::part& part) {
+  restyle_quality q;
+  q.run_bytes = part.spec->run_bytes;
+  const auto take_edge = [&](std::optional<std::int64_t> e) {
+    if (e && *e >= 256 && *e <= 1536 && *e % 64 == 0) q.edge = static_cast<std::uint32_t>(*e);
+  };
+  const json::value& io = part.spec->io;
+  take_edge(io.integer("edge"));
+  const auto it = part.values.find("quality");
+  if (it == part.values.end() || it->second.k != json::kind::string) return q;
+  const json::value* qualities = io.find("qualities");
+  const json::value* one = qualities ? qualities->find(it->second.s) : nullptr;
+  if (!one) return q;
+  take_edge(one->integer("edge"));
+  if (const auto bytes = one->integer("run_bytes"); bytes && *bytes > 0) q.run_bytes = static_cast<std::uint64_t>(*bytes);
+  return q;
+}
+
 }  // namespace
 
 job_runner::job_runner(run_port port) : port_(std::move(port)) {}
@@ -140,10 +167,43 @@ bool job_runner::supports(model_kind k, item_kind item) const {
   if (k == model_kind::still) {
     return item == item_kind::still && port_.open_still && port_.write_still && port_.load_tiles;
   }
+  if (k == model_kind::restyle) {
+    return item == item_kind::still && port_.open_still && port_.write_still && port_.load_restyle;
+  }
+  if (k == model_kind::remove) {
+    return item == item_kind::still && port_.open_still && port_.write_still && port_.load_inpaint &&
+           port_.still_mask;
+  }
   return false;
 }
 
 std::string job_runner::check(const job_request& r) const {
+  if (const job_request::part* remove = part_of(r, model_kind::remove)) {
+    if (!port_.still_mask || port_.still_mask(r.path).empty()) {
+      return "Nothing is brushed. In Edit, open Adjust → Remove, brush over what to take out, then Remove.";
+    }
+    if (port_.free_memory) {
+      if (const auto free = port_.free_memory(); free && *free < remove->spec->run_bytes) {
+        return "Needs " + size_text(remove->spec->run_bytes) + " of free memory to run; " + size_text(*free) +
+               " is free. Close something and try again.";
+      }
+    }
+    return {};
+  }
+  if (const job_request::part* restyle = part_of(r, model_kind::restyle)) {
+    const auto it = restyle->values.find("prompt");
+    const bool empty = it == restyle->values.end() || it->second.k != json::kind::string ||
+                       it->second.s.find_first_not_of(" \t") == std::string::npos;
+    if (empty) return "Type what to change, for example \"make it a snowy winter day\".";
+    if (port_.free_memory) {
+      const std::uint64_t need = quality_of(*restyle).run_bytes;
+      if (const auto free = port_.free_memory(); free && *free < need) {
+        return "Needs " + size_text(need) + " of free memory at this quality; " + size_text(*free) +
+               " is free. Choose a lower quality, or close something and try again.";
+      }
+    }
+    return {};
+  }
   const job_request::part* video = part_of(r, model_kind::video);
   const job_request::part* audio = part_of(r, model_kind::audio);
   const job_request::part* still = part_of(r, model_kind::still);
@@ -190,7 +250,11 @@ void job_runner::cancel() {
 }
 
 void job_runner::run(job_request r, job_events ev) {
-  if (part_of(r, model_kind::still)) {
+  if (part_of(r, model_kind::remove)) {
+    run_remove(std::move(r), std::move(ev));
+  } else if (part_of(r, model_kind::restyle)) {
+    run_restyle(std::move(r), std::move(ev));
+  } else if (part_of(r, model_kind::still)) {
     run_still(std::move(r), std::move(ev));
   } else if (part_of(r, model_kind::video) || !r.keep_ns.empty()) {
     // A cut clip's sound alone goes through here too: its picture is cut
@@ -506,6 +570,111 @@ void job_runner::run_still(job_request r, job_events ev) {
   if (ev.preview) ev.preview(before, shrink(out.rgb, out.width, out.height, kPreviewEdge));
   if (cancel_.load()) return fail(why(status::cancelled));
   auto path = port_.write_still(r.path, out);
+  if (!path) return fail(why(path.error()));
+  if (ev.done) ev.done(true, name_of(*path), "");
+}
+
+// Slice 5b: the photo small, restyled by the words, the change carried back
+// onto the full photo (diffusion.h). The original is never written.
+void job_runner::run_restyle(job_request r, job_events ev) {
+  const auto fail = [&](const std::string& message) {
+    if (ev.done) ev.done(false, "", message);
+  };
+  const job_request::part& part = *part_of(r, model_kind::restyle);
+  restyle_params p;
+  auto value = [&](const char* id) -> const json::value* {
+    const auto it = part.values.find(id);
+    return it == part.values.end() ? nullptr : &it->second;
+  };
+  if (const json::value* v = value("prompt"); v && v->k == json::kind::string) p.prompt = v->s;
+  if (const json::value* v = value("keep"); v && v->k == json::kind::number) {
+    p.image_guidance = static_cast<float>(v->is_integer ? static_cast<double>(v->i) : v->d);
+  }
+  float strength = 1.0f;
+  if (const json::value* v = value("strength"); v && v->k == json::kind::number) {
+    strength = static_cast<float>(v->is_integer ? static_cast<double>(v->i) : v->d);
+  }
+  if (ev.progress) ev.progress(-1);
+  auto pic = port_.open_still(r.path);
+  if (!pic) return fail(pic.error() == status::cancelled ? why(status::cancelled) : "Enhance cannot read this photo.");
+  if (cancel_.load()) return fail(why(status::cancelled));
+  const preview_image before = shrink(pic->rgb, pic->width, pic->height, kPreviewEdge);
+  if (ev.preview) ev.preview(before, {});
+  auto model = port_.load_restyle(*part.spec, part.models_dir);
+  if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));
+  rgb8 full;
+  full.width = pic->width;
+  full.height = pic->height;
+  full.rgb = std::move(pic->rgb);
+  std::uint32_t w = 0, h = 0;
+  p.edge = quality_of(part).edge;
+  restyle_size(full.width, full.height, p.edge, w, h);
+  // A model that needs the GPU (its spec's cpu false) is refused where its
+  // UNet would run on the CPU: many minutes a request (on Windows the bundled
+  // runtime is the CPU build).
+  if (const expected ready = (*model)->prepare(w, h); !ready) return fail(why(ready.error()));
+  if (!part.spec->cpu && !(*model)->on_gpu()) {
+    return fail("Restyle needs a graphics processor Enhance can use, and this computer has none it can use yet.");
+  }
+  const rgb8 small = resize_rgb(full, w, h);
+  auto edited = (*model)->run(small, p, [&](int step, int steps) {
+    if (ev.progress) ev.progress(std::min(0.95, static_cast<double>(step) / std::max(steps, 1)));
+    return !cancel_.load();
+  });
+  if (!edited) return fail(why(edited.error()));
+  const rgb8 out = carry_back(full, small, *edited, strength);
+  if (ev.preview) ev.preview(before, shrink(out.rgb, out.width, out.height, kPreviewEdge));
+  if (cancel_.load()) return fail(why(status::cancelled));
+  run_port::still still;
+  still.width = out.width;
+  still.height = out.height;
+  still.rgb = out.rgb;
+  auto path = port_.write_still(r.path, still);
+  if (!path) return fail(why(path.error()));
+  if (ev.done) ev.done(true, name_of(*path), "");
+}
+
+// Slice 7: what was brushed in Edit, filled in from its surroundings on a
+// crop of the full photo (remove.h); every pixel away from the brush is the
+// photo's own. The original is never written.
+void job_runner::run_remove(job_request r, job_events ev) {
+  const auto fail = [&](const std::string& message) {
+    if (ev.done) ev.done(false, "", message);
+  };
+  const job_request::part& part = *part_of(r, model_kind::remove);
+  if (ev.progress) ev.progress(-1);
+  const std::vector<float> dabs = port_.still_mask(r.path);
+  auto pic = port_.open_still(r.path);
+  if (!pic) return fail(pic.error() == status::cancelled ? why(status::cancelled) : "Enhance cannot read this photo.");
+  if (cancel_.load()) return fail(why(status::cancelled));
+  rgb8 full;
+  full.width = pic->width;
+  full.height = pic->height;
+  full.rgb = std::move(pic->rgb);
+  const preview_image before = shrink(full.rgb, full.width, full.height, kPreviewEdge);
+  if (ev.preview) ev.preview(before, {});
+  const mask8 mask = mask_from_dabs(dabs, full.width, full.height);
+  const auto box = remove_box(mask);
+  if (!box) return fail("Nothing is brushed on this photo. Brush over what to take out, then Remove.");
+  auto model = port_.load_inpaint(*part.spec, part.models_dir);
+  if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));
+  if (ev.progress) ev.progress(0.2);
+  const std::uint32_t side = (*model)->side();
+  const rgb8 crop = crop_rgb(full, *box);
+  auto filled = (*model)->fill(resize_rgb(crop, side, side), crop_mask(mask, *box, side, side));
+  if (!filled) return fail(why(filled.error()));
+  if (cancel_.load()) return fail(why(status::cancelled));
+  if (ev.progress) ev.progress(0.9);
+  // The feather grows with the box: a few pixels on a small fix, more on a
+  // large one the model filled at a fraction of its size.
+  const std::uint32_t feather = std::clamp<std::uint32_t>(box->width / 256, 2, 16);
+  paste_back(full, *box, resize_rgb(*filled, box->width, box->height), mask, feather);
+  if (ev.preview) ev.preview(before, shrink(full.rgb, full.width, full.height, kPreviewEdge));
+  run_port::still still;
+  still.width = full.width;
+  still.height = full.height;
+  still.rgb = std::move(full.rgb);
+  auto path = port_.write_still(r.path, still);
   if (!path) return fail(why(path.error()));
   if (ev.done) ev.done(true, name_of(*path), "");
 }

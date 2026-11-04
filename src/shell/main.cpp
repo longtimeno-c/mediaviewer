@@ -70,6 +70,8 @@
 #include "shell/video_timeline.h"
 #include "edit/auto_adjust.h"
 #include "edit/clip_strip.h"
+#include "edit/detail.h"
+#include "edit/prompt.h"
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
 #include "shell/file_jobs.h"
@@ -145,6 +147,9 @@ constexpr UINT kMsgSiblingsReady = WM_APP + 0x73;  // parent listing for Ctrl+Le
 constexpr UINT_PTR kHistogramTimerId = 0x7701;
 constexpr UINT kHistogramDebounceMs = 120;
 constexpr UINT kMsgAdjustJobDone = WM_APP + 0x74;
+// Slice 4: the detail pass waits for its sliders to settle too.
+constexpr UINT_PTR kDetailTimerId = 0x7703;
+constexpr UINT kDetailDebounceMs = 150;
 // PR 15 (docs/design/10 "OS integration").
 constexpr UINT kMsgFlattenDone = WM_APP + 0x76;     // Ctrl+Alt+C's bake finished (any thread posts)
 constexpr UINT kMsgJumpListPruned = WM_APP + 0x77;  // folders the user removed from the jump list
@@ -299,6 +304,22 @@ struct app_state {
   // finishes for a photo no longer on screen.
   mv::shell::adjust_pane adjust;
   std::shared_ptr<const mv::image::linear_image> working;
+  float red_eye_size = 0.0f;  // slice 3: the red-eye tool's size, −100..+100
+  // Slice 7: the Remove brush's strokes over the shown still, its size
+  // (−100..+100 about kBrushDefaultRadius), the ring under the pointer, a
+  // count of changes the canvas redraws on, and whether a stroke is down.
+  mv::shell::remove_brush brush;
+  float brush_size = 0.0f;
+  float brush_cursor[3] = {-1.0f, -1.0f, 0.0f};
+  std::uint32_t brush_rev = 0;
+  bool brush_stroke = false;
+  // Slice 4: the working image as built, before the detail pass; the pass on
+  // the canvas (`working` is its result), and the one in flight.
+  std::shared_ptr<const mv::image::linear_image> working_base;
+  mv::edit::detail_params detail_shown;
+  std::uint64_t detail_token = 0;
+  std::vector<mv::edit::adjust_section> pending_autos;  // slice 5b: a typed request's Autos still to run
+  bool eyes_running = false;  // slice 6: Open closed eyes is on the pool
   std::atomic<mv::generation> adjust_generation{1};
   // PR 13 / 14 (docs/design/08): trim mode on the current clip, the keyframe-index
   // request in flight for it, and the Jobs pane's wish. The jobs themselves
@@ -2158,7 +2179,30 @@ void publish_edit(app_state* app) noexcept {
     v.generation = app->edit_generation;
     app->input.edit[0] = v;
   } else {
+    const mv::shell::edit_view before = app->input.edit[0];
     app->input.edit[0] = mv::shell::view_of(app->edits, app->edit_key, app->edit_generation);
+    // Slice 7: strokes lie over what was brushed only while the item and its
+    // geometry stay; otherwise they go (and Enhance's copy of them).
+    if (!app->brush.empty() && (before.item != app->edit_key || !mv::shell::same_geometry(before, app->input.edit[0]) ||
+                                app->edits.crop_active())) {
+      app->brush.clear();
+      (void)mv_edit_still_mask(nullptr, nullptr, 0);
+    }
+    const bool brush_on = app->adjust.pick() == mv::shell::adjust_pick::remove && !app->edits.crop_active();
+    mv::shell::apply_brush(app->input.edit[0], app->brush, brush_on, ++app->brush_rev, app->brush_cursor);
+  }
+  // Slice 5: Enhance's copy of the photo being edited carries its edit. The
+  // add-on media layer is in mediaviewer_core.dll: through its C entry, the
+  // edit as this build lays it out.
+  if (app->edits.has_item() && !app->edit_path.empty() &&
+      !(app->edits.export_geometry().identity() && app->edits.colour().identity())) {
+    struct {
+      mv::edit::geometry g;
+      mv::edit::colour c;
+    } blob{app->edits.export_geometry(), app->edits.colour()};
+    (void)mv_edit_still_set(app->edit_path.c_str(), &blob, static_cast<std::uint32_t>(sizeof blob));
+  } else {
+    (void)mv_edit_still_set(nullptr, nullptr, 0);
   }
   push_edit_view(app);  // the strip's edit count, the Crop pane's draft
 }
@@ -2169,6 +2213,9 @@ void schedule_rotation_write(app_state* app) noexcept {
 
 void adjust_item_changed(app_state* app);
 void adjust_colour_changed(app_state* app);
+void schedule_detail(app_state* app) noexcept;
+void adjust_build_if(app_state* app, std::optional<std::uint64_t> token);
+void set_adjust_from_pane(app_state* app, mv::edit::adjust_param p, float value);
 void strip_hint_show(app_state* app);
 bool sync_page_stop(app_state* app, bool opened);
 void page_sidebar_changed(app_state* app);
@@ -2385,6 +2432,10 @@ bool run_edit_command(app_state* app, mv::shell::command_id command) {
 struct adjust_job_result {
   bool histogram = false;  // else a working-image build (or an Auto, below)
   bool auto_section = false;  // a section's Auto: `value` is its result
+  bool detail = false;        // slice 4: a detail pass; `working` is its result
+  bool eyes = false;          // slice 6: Open closed eyes finished; `note` says how
+  std::string note;
+  mv::edit::detail_params params;
   std::uint64_t token = 0;
   bool ok = false;
   bool from_raw = false;
@@ -2415,7 +2466,10 @@ std::uint64_t adjust_item_id(app_state* app) noexcept {
 
 void push_adjust_pane(app_state* app) noexcept {
   if (!app->chrome.adjust_pane_visible()) return;
-  app->chrome.set_adjust_view(app->adjust.view(app->edits.colour()));
+  mv::shell::adjust_view v = app->adjust.view(app->edits.colour());
+  v.brush_strokes = static_cast<std::int32_t>(app->brush.strokes());
+  v.brush_full = app->brush.full() ? 1 : 0;
+  app->chrome.set_adjust_view(v);
 }
 
 // Read, develop (for a RAW: LibRaw's linear 16-bit develop — docs/design/07 waits for
@@ -2425,6 +2479,9 @@ void push_adjust_pane(app_state* app) noexcept {
 void start_working_build(app_state* app, std::uint64_t token) {
   if (!app->window) return;
   app->working.reset();
+  app->working_base.reset();
+  app->detail_shown = {};
+  ++app->detail_token;  // a detail pass for the item left is dropped when it lands
   app->lab.drop_working();
   const mv::generation gen = app->adjust_generation.load(std::memory_order_relaxed);
   const HWND hwnd = app->window;
@@ -2476,7 +2533,7 @@ void start_histogram(app_state* app) {
   if (!token) return;
   const HWND hwnd = app->window;
   app->jobs.submit_at(mv::background_generation,
-                      [working = app->working, u = mv::edit::uniforms_of(app->edits.colour()),
+                      [working = app->working, u = app->edits.colour(),
                        t = *token, hwnd](const mv::job_context&) -> mv::status {
                         auto* r = new (std::nothrow) adjust_job_result{};
                         if (!r) return mv::status::out_of_memory;
@@ -2493,7 +2550,10 @@ void start_histogram(app_state* app) {
 // A section's Auto (edit/auto_adjust.h): read on the pool from the working
 // image, landed on the UI thread as one op if nothing moved meanwhile.
 void start_adjust_auto(app_state* app, int section) {
-  if (section < 0 || section >= static_cast<int>(mv::edit::adjust_section::vignette)) return;
+  if (section < 0 || section >= mv::edit::kAdjustSectionCount ||
+      !mv::edit::has_auto(static_cast<mv::edit::adjust_section>(section))) {
+    return;
+  }
   if (!app->working || !adjust_still(app)) return;
   const auto sec = static_cast<mv::edit::adjust_section>(section);
   const std::optional<std::uint64_t> token = app->adjust.request_auto_tone(sec);
@@ -2515,6 +2575,247 @@ void start_adjust_auto(app_state* app, int section) {
                       });
 }
 
+// Slice 2: a curve from the pane, parked as "channel\tx,y;x,y;...". A drag of a
+// point is one op; no push back (the pane already shows it).
+void set_curve_from_pane(app_state* app) {
+  std::string parked;
+  if (!app->chrome.take_parked_text(parked)) return;
+  if (!app->adjust.working_ready() || !adjust_still(app)) return;
+  const std::size_t tab = parked.find('\t');
+  if (tab == std::string::npos) return;
+  const int ch = std::atoi(parked.substr(0, tab).c_str());
+  if (ch < 0 || ch >= mv::edit::kCurveChannels) return;
+  mv::edit::curve k;
+  std::size_t at = tab + 1;
+  while (at < parked.size() && k.n < mv::edit::kCurvePoints) {
+    std::size_t end = parked.find(';', at);
+    if (end == std::string::npos) end = parked.size();
+    float x = 0.0f, y = 0.0f;
+    if (std::sscanf(parked.substr(at, end - at).c_str(), "%f,%f", &x, &y) == 2) {
+      k.x[k.n] = x;
+      k.y[k.n] = y;
+      ++k.n;
+    }
+    at = end + 1;
+  }
+  if (app->edits.set_curve(static_cast<mv::edit::curve_channel>(ch), k) != mv::shell::edit_effect::redraw) {
+    return;
+  }
+  publish_edit(app);
+  ++app->input.activity_seq;
+  publish(app);
+  const bool has_colour = !app->edits.colour().identity();
+  adjust_build_if(app, app->adjust.colour_changed(has_colour));
+  schedule_histogram(app);
+  schedule_detail(app);
+}
+
+// Slice 3: what the next click on the photo does. The island's argument is
+// mode * 1000 + (size + 100): mode a shell::adjust_pick, size the red-eye
+// tool's −100..+100 about its default radius.
+void set_adjust_pick(app_state* app, float arg) {
+  const int packed = static_cast<int>(std::lround(arg));
+  const int mode = packed / 1000;
+  if (mode < 0 || mode > static_cast<int>(mv::shell::adjust_pick::remove)) return;
+  const float size = std::clamp(static_cast<float>(packed % 1000 - 100), -100.0f, 100.0f);
+  if (mode == static_cast<int>(mv::shell::adjust_pick::remove)) {
+    app->brush_size = size;
+  } else {
+    app->red_eye_size = size;
+  }
+  app->adjust.set_pick(static_cast<mv::shell::adjust_pick>(mode));
+  app->brush_cursor[0] = -1.0f;
+  publish_edit(app);  // the brush shows or goes
+  publish(app);
+  push_adjust_pane(app);
+}
+
+bool adjust_picking(app_state* app) noexcept {
+  return app->adjust.pick() != mv::shell::adjust_pick::none && adjust_still(app) && app->working;
+}
+
+// A click on the photo while picking: client pixel → the shown (edited)
+// image's uv → the source's uv through the edit's map → the working image.
+// A 5 x 5 read of memory already decoded: fine on the UI thread.
+void adjust_pick_at(app_state* app, int x, int y) {
+  float u = 0, v = 0;
+  if (!app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v) || u < 0 || u > 1 ||
+      v < 0 || v > 1) {
+    return;
+  }
+  const mv::edit::placement p = app->edits.preview_placement();
+  const float* m = p.map.m;
+  const float su = m[0] * u + m[1] * v + m[2], sv = m[3] * u + m[4] * v + m[5];
+  mv::shell::edit_effect e = mv::shell::edit_effect::none;
+  if (app->adjust.pick() == mv::shell::adjust_pick::white_balance) {
+    const auto mean = mv::edit::sample_mean(*app->working, su, sv);
+    if (!mean) return;
+    const std::array<float, 2> wb = mv::edit::neutral_balance(*mean);
+    mv::edit::colour c = app->edits.colour();
+    c.v[static_cast<std::size_t>(mv::edit::adjust_param::temperature)] = wb[0];
+    c.v[static_cast<std::size_t>(mv::edit::adjust_param::tint)] = wb[1];
+    e = app->edits.set_colour(c);
+    app->adjust.set_pick(mv::shell::adjust_pick::none);  // one click
+  } else {
+    const float r = mv::edit::kRedEyeDefaultRadius * std::exp2(app->red_eye_size / 100.0f);
+    e = app->edits.add_red_eye({su, sv, r});
+  }
+  if (e == mv::shell::edit_effect::redraw) {
+    publish_edit(app);
+    ++app->input.activity_seq;
+    publish(app);
+  }
+  adjust_colour_changed(app);
+}
+
+// ---- Slice 7: the Remove brush (the twin of main_mac.mm's brush methods) ----
+
+bool brush_active(app_state* app) noexcept {
+  return app->adjust.pick() == mv::shell::adjust_pick::remove && adjust_still(app) && !app->edits.crop_active();
+}
+
+float brush_radius(const app_state* app) noexcept {
+  return mv::shell::kBrushDefaultRadius * std::exp2(app->brush_size / 100.0f);
+}
+
+// The strokes and the ring onto the canvas's edit view (a redraw, no decode).
+void brush_publish(app_state* app) noexcept {
+  if (app->input.edit[0].item != app->edit_key) return;
+  mv::shell::apply_brush(app->input.edit[0], app->brush, brush_active(app), ++app->brush_rev, app->brush_cursor);
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+bool brush_press(app_state* app, int x, int y) {
+  float u = 0, v = 0;
+  if (!app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v) || u < 0 || u > 1 || v < 0 ||
+      v > 1) {
+    return false;
+  }
+  const mv::edit::placement p = app->edits.preview_placement();
+  app->brush.set_frame(p.cropped.w, p.cropped.h);
+  if (!app->brush.begin(u, v, brush_radius(app))) {
+    ::MessageBeep(MB_OK);  // full
+    return false;
+  }
+  app->brush_cursor[0] = u;
+  app->brush_cursor[1] = v;
+  app->brush_cursor[2] = brush_radius(app);
+  brush_publish(app);
+  push_adjust_pane(app);
+  return true;
+}
+
+// A move: paints while a stroke is down, else moves the ring.
+void brush_move(app_state* app, int x, int y) {
+  float u = 0, v = 0;
+  const bool on = app->lab.still_map().to_uv(static_cast<float>(x), static_cast<float>(y), u, v);
+  if (app->brush_stroke) {
+    if (!on) return;
+    (void)app->brush.drag(u, v);
+  } else {
+    const bool inside = on && u >= 0 && u <= 1 && v >= 0 && v <= 1;
+    if (!inside && app->brush_cursor[0] < 0.0f) return;
+    if (!inside) u = -1.0f;
+  }
+  app->brush_cursor[0] = u;
+  app->brush_cursor[1] = v;
+  app->brush_cursor[2] = brush_radius(app);
+  brush_publish(app);
+}
+
+// 0 the last stroke off, 1 all of them, 2 Remove: Enhance's sheet takes it.
+void adjust_brush(app_state* app, int action) {
+  if (action == 0) {
+    (void)app->brush.undo_stroke();
+  } else if (action == 1) {
+    app->brush.clear();
+  } else if (action == 2) {
+    if (app->brush.empty() || app->edit_path.empty()) {
+      ::MessageBeep(MB_OK);
+      return;
+    }
+    const auto dabs = app->brush.dabs();
+    std::vector<float> flat;
+    flat.reserve(dabs.size() * 3);
+    for (const mv::shell::brush_dab& d : dabs) flat.insert(flat.end(), {d.u, d.v, d.r});
+    // The add-on media layer is in mediaviewer_core.dll: through its C entry.
+    (void)mv_edit_still_mask(app->edit_path.c_str(), flat.data(), static_cast<std::uint32_t>(dabs.size()));
+    const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
+    if (id == mv::shell::command_id::none) {
+      app->adjust.set_prompt_note("Remove needs the Enhance add-on (Settings → Add-ons).");
+    } else {
+      (void)run_command(app, id);
+    }
+  }
+  brush_publish(app);
+  push_adjust_pane(app);
+}
+
+// Slice 3: a parameter from the island as parked "param\tvalue" (selective
+// colour's 24 sliders; chrome_cmd_adjust_param).
+void set_param_from_pane(app_state* app) {
+  std::string parked;
+  if (!app->chrome.take_parked_text(parked)) return;
+  const std::size_t tab = parked.find('\t');
+  if (tab == std::string::npos) return;
+  const int param = std::atoi(parked.substr(0, tab).c_str());
+  if (param < 0 || param >= mv::edit::kAdjustParamCount) return;
+  set_adjust_from_pane(app, static_cast<mv::edit::adjust_param>(param),
+                       static_cast<float>(std::atof(parked.c_str() + tab + 1)));
+}
+
+// Slice 6: Open closed eyes, on the pool through mediaviewer_core
+// (mv_open_closed_eyes: the frames of the same moment, the AI pack's
+// same-person faces, the transfer, a new file). The note says what happened.
+void start_open_eyes(app_state* app) {
+  if (app->eyes_running || !adjust_still(app) || app->edit_path.empty() || !app->window) return;
+  app->eyes_running = true;
+  app->adjust.set_prompt_note("Looking for open eyes in the same moment…");
+  push_adjust_pane(app);
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation, [path = app->edit_path, hwnd](const mv::job_context&) -> mv::status {
+    auto* r = new (std::nothrow) adjust_job_result{};
+    if (!r) return mv::status::out_of_memory;
+    r->eyes = true;
+    std::uint32_t needed = 0;
+    std::string note(512, '\0');
+    if (mv_open_closed_eyes(path.c_str(), note.data(), static_cast<std::uint32_t>(note.size()), &needed) == MV_OK) {
+      note.resize(std::strlen(note.c_str()));
+    } else {
+      note = "Could not look for open eyes in this photo";
+    }
+    r->note = std::move(note);
+    post_adjust_result(hwnd, r);
+    return mv::status::ok;
+  });
+}
+
+void next_pending_auto(app_state* app) {
+  if (app->pending_autos.empty() || app->adjust.auto_running()) return;
+  const mv::edit::adjust_section s = app->pending_autos.front();
+  app->pending_autos.erase(app->pending_autos.begin());
+  start_adjust_auto(app, static_cast<int>(s));
+}
+
+// Slice 5b (edit/prompt.h): a typed request, parked by the island. Its slider
+// moves land as one op; the Autos it asked for run one after another.
+void prompt_from_pane(app_state* app) {
+  std::string text;
+  if (!app->chrome.take_parked_text(text)) return;
+  if (!app->adjust.working_ready() || !adjust_still(app)) return;
+  const mv::edit::prompt_result r = mv::edit::parse_prompt(text, app->edits.colour());
+  app->adjust.set_prompt_note(mv::edit::prompt_summary(r));
+  if (r.changed(app->edits.colour()) && app->edits.set_colour(r.value) == mv::shell::edit_effect::redraw) {
+    publish_edit(app);
+    ++app->input.activity_seq;
+    publish(app);
+  }
+  app->pending_autos.assign(r.autos.begin(), r.autos.end());
+  adjust_colour_changed(app);
+  next_pending_auto(app);
+}
+
 // A section's Reset: its sliders back to 0, one undo step.
 void reset_adjust_section(app_state* app, int section) {
   if (section < 0 || section >= mv::edit::kAdjustSectionCount) return;
@@ -2528,19 +2829,84 @@ void reset_adjust_section(app_state* app, int section) {
   adjust_colour_changed(app);
 }
 
+// Slice 4 (edit/detail.h): when the detail sliders differ from the pass on
+// the canvas, run it again on the pool once they settle, from the working
+// image as built, and upload the result as the working texture.
+void schedule_detail(app_state* app) noexcept {
+  if (!app->window || !app->working_base) return;
+  if (mv::edit::detail_of(app->edits.colour()) == app->detail_shown) return;
+  ::SetTimer(app->window, kDetailTimerId, kDetailDebounceMs, nullptr);
+}
+
+void start_detail(app_state* app) {
+  if (app->window) ::KillTimer(app->window, kDetailTimerId);
+  if (!app->working_base) return;
+  const mv::edit::detail_params d = mv::edit::detail_of(app->edits.colour());
+  if (d == app->detail_shown) return;
+  const std::uint64_t token = ++app->detail_token;
+  const mv::generation gen = app->adjust_generation.load(std::memory_order_relaxed);
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(
+      mv::background_generation,
+      [base = app->working_base, d, token, gen, hwnd, item = app->edit_key, view_gen = app->edit_generation,
+       app](const mv::job_context&) -> mv::status {
+        const mv::job_context ctx(0, gen, &app->adjust_generation, 0);
+        std::shared_ptr<const mv::image::linear_image> shown = base;
+        if (!d.identity()) {
+          auto out = mv::edit::apply_detail(*base, d, &ctx);
+          if (!out) return out.error();
+          try {
+            shown = std::make_shared<const mv::image::linear_image>(std::move(out).value());
+          } catch (...) {
+            return mv::status::out_of_memory;
+          }
+        }
+        if (ctx.cancelled()) return mv::status::cancelled;
+        auto* r = new (std::nothrow) adjust_job_result{};
+        if (!r) return mv::status::out_of_memory;
+        r->detail = true;
+        r->token = token;
+        r->params = d;
+        r->ok = app->lab.upload_working(*shown, item, view_gen);
+        r->working = std::move(shown);
+        post_adjust_result(hwnd, r);
+        return r->ok ? mv::status::ok : mv::status::internal;
+      });
+}
+
 void on_adjust_job_done(app_state* app, std::unique_ptr<adjust_job_result> r) {
   if (!r) return;
+  if (r->eyes) {
+    app->eyes_running = false;
+    app->adjust.set_prompt_note(r->note);
+    push_adjust_pane(app);
+    return;
+  }
+  if (r->detail) {
+    if (!r->ok || r->token != app->detail_token || !app->working_base) return;
+    app->working = std::move(r->working);
+    app->detail_shown = r->params;
+    ++app->input.activity_seq;
+    publish(app);
+    schedule_histogram(app);
+    schedule_detail(app);  // a slider that moved while this ran
+    return;
+  }
   if (r->auto_section) {
-    if (!app->adjust.auto_tone_landed(r->token)) return;
+    if (!app->adjust.auto_tone_landed(r->token)) {
+      app->pending_autos.clear();  // the colour moved meanwhile: the rest of a typed request's too
+      return;
+    }
     if (r->ok && adjust_still(app) &&
         app->edits.set_colour(r->value) == mv::shell::edit_effect::redraw) {
       publish_edit(app);
       ++app->input.activity_seq;
       publish(app);
       adjust_colour_changed(app);
-      return;
+    } else {
+      push_adjust_pane(app);  // the Auto stops showing; nothing changed
     }
-    push_adjust_pane(app);  // the Auto stops showing; nothing changed
+    next_pending_auto(app);
     return;
   }
   if (r->histogram) {
@@ -2549,7 +2915,10 @@ void on_adjust_job_done(app_state* app, std::unique_ptr<adjust_job_result> r) {
   }
   if (app->adjust.working_landed(r->token, r->ok, r->from_raw)) {
     app->working = std::move(r->working);
+    app->working_base = app->working;
+    app->detail_shown = {};
     schedule_histogram(app);
+    schedule_detail(app);
   }
   push_adjust_pane(app);
 }
@@ -2568,6 +2937,8 @@ void adjust_item_changed(app_state* app) {
     // Left the item: stop its build and release its textures.
     app->adjust_generation.fetch_add(1, std::memory_order_relaxed);
     app->working.reset();
+    app->working_base.reset();
+    ++app->detail_token;
     app->lab.drop_working();
   }
   if (token) {
@@ -2581,6 +2952,7 @@ void adjust_colour_changed(app_state* app) {
   const bool has_colour = app->edits.has_item() && !app->edits.colour().identity();
   adjust_build_if(app, app->adjust.colour_changed(has_colour));
   schedule_histogram(app);
+  schedule_detail(app);
   push_adjust_pane(app);
 }
 
@@ -2605,6 +2977,8 @@ void set_adjust_pane(app_state* app, bool on) {
     // Nothing on the canvas needs the working image now; a reopen rebuilds it.
     app->adjust_generation.fetch_add(1, std::memory_order_relaxed);
     app->working.reset();
+    app->working_base.reset();
+    ++app->detail_token;
     app->lab.drop_working();
     app->adjust.working_dropped();
   }
@@ -2631,6 +3005,7 @@ void set_adjust_from_pane(app_state* app, mv::edit::adjust_param p, float value)
   const bool has_colour = !app->edits.colour().identity();
   adjust_build_if(app, app->adjust.colour_changed(has_colour));
   schedule_histogram(app);
+  schedule_detail(app);
 }
 
 void reset_adjust_from_pane(app_state* app) {
@@ -3461,6 +3836,7 @@ void push_edit_view(app_state* app) noexcept {
     a.trim_label_len = static_cast<std::int32_t>(label.size());
     // A document: the bar's "Open in <app>" rows, one name a line, default first.
     std::string apps;
+    a.enhance = mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none ? 1 : 0;
     if (mv::io::is_document_name(app->edit_path)) {
       a.document = 1;
       refresh_open_with(app);
@@ -3614,6 +3990,14 @@ void run_edit_action(app_state* app, int action) {
       if (app->edits.crop_active()) (void)run_edit_command(app, mv::shell::command_id::crop_commit);
       (void)run_edit_command(app, mv::shell::command_id::export_image);
       return;
+    case mv::shell::chrome_edit_action::enhance: {
+      // Slice 5: Enhance's own "open" row; its copy carries the edit
+      // (addon_media's still edit, set by publish_edit).
+      if (app->edits.crop_active()) (void)run_edit_command(app, mv::shell::command_id::crop_commit);
+      const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
+      if (id != mv::shell::command_id::none) (void)run_command(app, id);
+      return;
+    }
   }
 }
 
@@ -5224,6 +5608,43 @@ bool chrome_edit_command(app_state* app, int command, float arg) {
       return true;
     case static_cast<int>(mv::shell::command_id::adjust_reset):
       reset_adjust_from_pane(app);
+      return true;
+    case static_cast<int>(mv::shell::command_id::adjust_levels_black):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_mid):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_white):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_red_black):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_red_mid):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_red_white):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_green_black):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_green_mid):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_green_white):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_blue_black):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_blue_mid):
+    case static_cast<int>(mv::shell::command_id::adjust_levels_blue_white):
+      set_adjust_from_pane(
+          app,
+          static_cast<mv::edit::adjust_param>(
+              static_cast<int>(mv::edit::adjust_param::levels_black) + command -
+              static_cast<int>(mv::shell::command_id::adjust_levels_black)),
+          arg);
+      return true;
+    case mv::shell::chrome_cmd_adjust_curve:
+      set_curve_from_pane(app);
+      return true;
+    case mv::shell::chrome_cmd_adjust_param:
+      set_param_from_pane(app);
+      return true;
+    case mv::shell::chrome_cmd_adjust_prompt:
+      prompt_from_pane(app);
+      return true;
+    case static_cast<int>(mv::shell::command_id::adjust_pick):
+      set_adjust_pick(app, arg);
+      return true;
+    case static_cast<int>(mv::shell::command_id::adjust_open_eyes):
+      start_open_eyes(app);
+      return true;
+    case mv::shell::chrome_cmd_adjust_brush:
+      adjust_brush(app, static_cast<int>(arg));
       return true;
     case static_cast<int>(mv::shell::command_id::adjust_auto):
       start_adjust_auto(app, static_cast<int>(arg));
@@ -8253,7 +8674,19 @@ bool run_edit_command_area(app_state* app, mv::shell::command_id command) noexce
     case adjust_highlights: case adjust_shadows: case adjust_whites: case adjust_blacks:
     case adjust_vibrance: case adjust_mono: case adjust_mono_filter: case adjust_mono_tone:
     case adjust_vignette: case adjust_vignette_radius: case adjust_vignette_softness:
-    case adjust_auto: case adjust_reset_section:
+    case adjust_auto: case adjust_reset_section: case adjust_pick: case adjust_open_eyes:
+    case adjust_levels_black:
+    case adjust_levels_mid:
+    case adjust_levels_white:
+    case adjust_levels_red_black:
+    case adjust_levels_red_mid:
+    case adjust_levels_red_white:
+    case adjust_levels_green_black:
+    case adjust_levels_green_mid:
+    case adjust_levels_green_white:
+    case adjust_levels_blue_black:
+    case adjust_levels_blue_mid:
+    case adjust_levels_blue_white:
       return false;  // island-only: they carry a value (chrome_on_command)
     default:
       // command_coverage.inc sent this id here. A missing case is a
@@ -9566,6 +9999,7 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
                          app->input.mouse_x != static_cast<float>(GET_X_LPARAM(lparam)) ||
                          app->input.mouse_y != static_cast<float>(GET_Y_LPARAM(lparam));
       if (moved) ++app->input.activity_seq;
+      if (moved && brush_active(app)) brush_move(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
       app->input.mouse_x = static_cast<float>(GET_X_LPARAM(lparam));
       app->input.mouse_y = static_cast<float>(GET_Y_LPARAM(lparam));
       app->input.mouse_in_client = true;
@@ -9653,6 +10087,26 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
     case WM_RBUTTONDOWN: case WM_RBUTTONUP:
     case WM_MBUTTONDOWN: case WM_MBUTTONUP: {
       const bool down = msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN;
+      // Slice 3: the adjust pane's white-balance picker or red-eye tool takes
+      // the click on the photo; nothing pans.
+      if (msg == WM_LBUTTONDOWN && adjust_picking(app)) {
+        ::SetFocus(hwnd);
+        // Slice 7: the Remove brush strokes while the button is down.
+        if (brush_active(app)) {
+          app->brush_stroke = brush_press(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+          if (app->brush_stroke) ::SetCapture(hwnd);
+        } else {
+          adjust_pick_at(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        }
+        return 0;
+      }
+      if (msg == WM_LBUTTONUP && app->brush_stroke) {
+        app->brush_stroke = false;
+        app->brush.end();
+        ::ReleaseCapture();
+        push_adjust_pane(app);
+        return 0;
+      }
       const int index = (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP)   ? 0
                         : (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP) ? 1
                                                                          : 2;
@@ -10079,6 +10533,10 @@ std::optional<LRESULT> window_on_timer(HWND hwnd, UINT msg, WPARAM wparam, LPARA
       }
       if (wparam == kHistogramTimerId) {
         start_histogram(app);
+        return 0;
+      }
+      if (wparam == kDetailTimerId) {
+        start_detail(app);
         return 0;
       }
       if (wparam == kMetaTimerId) {

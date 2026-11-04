@@ -662,6 +662,9 @@ add_library(mv_edit STATIC
   src/edit/auto_tone.cpp
   src/edit/auto_tone.h
   src/edit/bake.cpp
+  src/edit/detail.cpp
+  src/edit/eyes.cpp
+  src/edit/prompt.cpp
   src/edit/bake.h
   src/edit/histogram.cpp
   src/edit/histogram.h
@@ -900,6 +903,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/edit_view.h
   src/shell/adjust_pane.cpp
   src/shell/adjust_pane.h
+  src/shell/remove_brush.cpp
+  src/shell/remove_brush.h
   src/shell/trim_state.cpp
   src/shell/trim_state.h
   src/shell/open_request.cpp
@@ -1212,8 +1217,13 @@ if(MV_BUILD_TESTS)
     # PR 11: colour adjusts, FP16 working space, bake, histogram, the pane state.
     tests/test_adjust.cpp
     src/shell/adjust_pane.cpp
+    # Slice 7: the Remove brush's strokes and mask.
+    tests/test_remove_brush.cpp
+    src/shell/remove_brush.cpp
     # #289: auto tone from the histogram (edit/auto_tone.h).
     tests/test_auto_tone.cpp
+    tests/test_prompt.cpp
+    tests/test_eyes.cpp
     # PR 13 / 14: clip core on synthetic clips, the ABI's clip session, trim mode.
     tests/test_clip.cpp
     # #297: Enhance's sound in and out (edit/sound_writer.h).

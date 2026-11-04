@@ -1,0 +1,25 @@
+{
+ "kind": "restyle",
+ "name": "Restyle",
+ "credit": "InstructPix2Pix, Tim Brooks, Aleksander Holynski, Alexei A. Efros (CreativeML OpenRAIL-M: its use restrictions apply)",
+ "weights": ["text_encoder.onnx", "unet.onnx", "unet.onnx.data", "vae_encoder.onnx", "vae_decoder.onnx",
+             "vocab.json", "merges.txt"],
+ "run_bytes": 12000000000,
+ "cpu": false,
+ "knobs": [
+  {"id": "prompt", "label": "Change", "type": "text", "default": "",
+   "placeholder": "make it a snowy winter day",
+   "help": "Whole-picture changes: season, weather, time of day, mood. It cannot remove or add things."},
+  {"id": "quality", "label": "Quality", "type": "choice", "default": "standard",
+   "options": [{"id": "standard", "text": "Standard"}, {"id": "high", "text": "High"}, {"id": "best", "text": "Best"}],
+   "help": "Higher works on a larger copy of the photo: finer changes, slower, more memory. The first run at each quality prepares the graphics processor once, which takes a few minutes."},
+  {"id": "keep", "label": "Keep the photo", "type": "slider", "min": 1, "max": 2.5, "step": 0.1, "default": 1.5,
+   "help": "Higher keeps more of the photo as it was."},
+  {"id": "strength", "label": "Strength", "type": "slider", "min": 0, "max": 1, "step": 0.05, "default": 1,
+   "help": "How much of the change the new photo carries."}
+ ],
+ "io": {"runner": "diffusion", "edge": 512, "steps": 20,
+        "qualities": {"standard": {"edge": 512, "run_bytes": 12000000000},
+                      "high": {"edge": 768, "run_bytes": 18000000000},
+                      "best": {"edge": 1024, "run_bytes": 32000000000}}}
+}

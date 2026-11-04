@@ -28,7 +28,11 @@ namespace mv::edit {
 // what is written is sRGB; tagged_srgb is set), `display_referred`.
 [[nodiscard]] result<codec::raster> bake(const image::linear_image& src, const placement& p,
                                          const adjust_uniforms& u,
-                                         const job_context* ctx = nullptr);
+                                         const job_context* ctx = nullptr,
+                                         const gfx::adjust_table* lut = nullptr);
+// The same for a folded colour: its uniforms and its table (levels, curves).
+[[nodiscard]] result<codec::raster> bake(const image::linear_image& src, const placement& p,
+                                         const colour& c, const job_context* ctx = nullptr);
 
 // One pixel of the chain, for tests and tools: linear in, the 8-bit sRGB
 // codes the bake writes out.

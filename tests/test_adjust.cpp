@@ -21,8 +21,10 @@
 
 #include "codec/decode.h"
 #include "edit/adjust.h"
+#include "edit/auto_adjust.h"
 #include "gfx/adjust_kernel.h"
 #include "edit/bake.h"
+#include "edit/detail.h"
 #include "edit/edit_stack.h"
 #include "edit/encode.h"
 #include "edit/export.h"
@@ -482,6 +484,369 @@ TEST_CASE("export with a vignette: corners darker than the centre, in the bake",
   CHECK(px(32, 24) == px(31, 23));  // the middle is untouched
 }
 
+// ---- slice 2: levels and curves ----------------------------------------------
+
+TEST_CASE("curves: sanitised, monotone between points, identity on the diagonal", "[adjust][curves]") {
+  edit::curve k;
+  k.n = 4;
+  const float xs[] = {1.0f, 0.0f, 0.5f, 0.505f};  // unsorted, one point too close
+  const float ys[] = {1.0f, 0.0f, 0.7f, 0.2f};
+  for (int i = 0; i < 4; ++i) {
+    k.x[i] = xs[i];
+    k.y[i] = ys[i];
+  }
+  const edit::curve c = edit::sanitise(k);
+  REQUIRE(c.n == 3);
+  CHECK(c.x[0] == 0.0f);
+  CHECK(c.x[1] == 0.5f);
+  CHECK(c.x[2] == 1.0f);
+  CHECK(edit::evaluate(c, 0.5f) == Approx(0.7f));
+  CHECK(edit::evaluate(c, 0.0f) == 0.0f);
+  CHECK(edit::evaluate(c, 1.0f) == 1.0f);
+  // Monotone points: a monotone curve, no overshoot past its neighbours.
+  float last = -1.0f;
+  for (int i = 0; i <= 100; ++i) {
+    const float y = edit::evaluate(c, static_cast<float>(i) / 100.0f);
+    CHECK(y >= last - 1e-6f);
+    CHECK(y <= 1.0f + 1e-6f);
+    last = y;
+  }
+  // A curve on the diagonal is the identity; one point is no curve.
+  edit::curve diag;
+  diag.n = 3;
+  diag.x[1] = diag.y[1] = 0.4f;
+  diag.x[2] = diag.y[2] = 1.0f;
+  CHECK(diag.identity());
+  edit::curve one;
+  one.n = 1;
+  CHECK(edit::sanitise(one).n == 0);
+  edit::colour col;
+  col.curves[0] = diag;
+  CHECK(col.identity());
+  CHECK_FALSE(col.has_table());
+}
+
+TEST_CASE("levels and curves: the table, the kernel and the written-out chain agree",
+          "[adjust][curves]") {
+  edit::colour c;
+  c.v[static_cast<std::size_t>(adjust_param::levels_black)] = 20.0f;   // p 0.1 -> 0
+  c.v[static_cast<std::size_t>(adjust_param::levels_white)] = -20.0f;  // p 0.9 -> 1
+  c.v[static_cast<std::size_t>(adjust_param::levels_red_mid)] = 50.0f;
+  edit::curve s;  // an S on the image
+  s.n = 4;
+  const float xs[] = {0.0f, 0.25f, 0.75f, 1.0f}, ys[] = {0.0f, 0.18f, 0.82f, 1.0f};
+  for (int i = 0; i < 4; ++i) {
+    s.x[i] = xs[i];
+    s.y[i] = ys[i];
+  }
+  c.curves[0] = edit::sanitise(s);
+  REQUIRE(c.has_table());
+  REQUIRE_FALSE(c.identity());
+  const edit::adjust_uniforms u = edit::uniforms_of(c);
+  CHECK(u.a[5][3] == 1.0f);
+  const mv::gfx::adjust_table t = edit::table_of(c);
+  auto want = [&](int ch, float p) {
+    float m = std::clamp((p - 0.1f) / 0.8f, 0.0f, 1.0f);
+    m = edit::evaluate(c.curves[0], m);
+    if (ch == 0) m = std::pow(m, 1.0f / std::exp2(0.5f));
+    return m;
+  };
+  for (int i = 0; i < mv::gfx::kAdjustTableRows; ++i) {
+    const float p = static_cast<float>(i) / 127.0f;
+    CHECK(t.r[i][0] == Approx(want(0, p)).margin(1e-5));
+    CHECK(t.r[i][1] == Approx(want(1, p)).margin(1e-5));
+  }
+  // Through the kernel: a grey between rows interpolates, within 8-bit.
+  for (float lin : {0.004f, 0.05f, 0.2f, 0.45f, 0.8f}) {
+    const auto out = mv::gfx::adjust({lin, lin, lin}, {}, u, &t);
+    const float p = std::pow(lin, 1.0f / 2.2f);
+    CHECK(std::abs(std::pow(out.y, 1.0f / 2.2f) - want(1, p)) < 1.0f / 255.0f);
+    if (out.y > 0.0f && out.y < 0.9f) CHECK(out.x > out.y);  // the red mid-tones are lifted
+  }
+  // Over 1 (a RAW's headroom) keeps its overshoot past the curve's end.
+  const auto hot = mv::gfx::adjust({1.5f, 1.5f, 1.5f}, {}, u, &t);
+  CHECK(hot.y > 1.0f);
+  // The export bake reads the table too.
+  image::linear_image flat;
+  flat.width = flat.height = 4;
+  flat.rgba.assign(4 * 4 * 4, image::float_to_half(1.0f));
+  for (std::size_t i = 0; i < flat.rgba.size(); i += 4) {
+    flat.rgba[i] = flat.rgba[i + 1] = flat.rgba[i + 2] = image::float_to_half(0.2f);
+  }
+  auto baked = edit::bake(flat, edit::place(edit::geometry{}, {4, 4}), c);
+  REQUIRE(baked);
+  auto plain = edit::bake(flat, edit::place(edit::geometry{}, {4, 4}), edit::uniforms_of(c));
+  REQUIRE(plain);
+  CHECK(baked->rgba[0] != plain->rgba[0]);
+}
+
+TEST_CASE("curves: a point drag is one op, reset clears curves, a lossless turn keeps them",
+          "[adjust][curves][session]") {
+  mv::shell::edit_session es;
+  es.set_item({"/p/a.jpg", 100, 5, 640, 480, true});
+  edit::curve k;
+  k.n = 3;
+  k.x[1] = 0.5f;
+  k.x[2] = k.y[2] = 1.0f;
+  for (float y : {0.55f, 0.6f, 0.65f}) {
+    k.y[1] = y;
+    CHECK(es.set_curve(edit::curve_channel::green, k) == mv::shell::edit_effect::redraw);
+  }
+  CHECK(es.edit_count() == 1);
+  CHECK(es.colour().curves[2].y[1] == 0.65f);
+  CHECK(es.set_curve(edit::curve_channel::green, k) == mv::shell::edit_effect::none);
+  CHECK(es.reset_adjust() == mv::shell::edit_effect::redraw);
+  CHECK(es.colour().identity());
+  CHECK(es.run(mv::shell::command_id::undo_edit) == mv::shell::edit_effect::redraw);
+  CHECK(es.colour().curves[2].n == 3);
+  // without_section(curves) drops every curve and nothing else.
+  edit::colour c = es.colour();
+  c.v[static_cast<std::size_t>(adjust_param::exposure)] = 1.0f;
+  const edit::colour no_curves = edit::without_section(c, edit::adjust_section::curves);
+  CHECK(no_curves.curves[2].n == 0);
+  CHECK(no_curves.get(adjust_param::exposure) == 1.0f);
+}
+
+// ---- slice 3: selective colour, red-eye, the white-balance picker ------------
+
+TEST_CASE("selective colour: a band moves its own hues and leaves greys and the far side alone",
+          "[adjust][selective]") {
+  edit::colour c;
+  c.v[static_cast<std::size_t>(adjust_param::sel_red_sat)] = -100.0f;  // reds to grey
+  c.v[static_cast<std::size_t>(adjust_param::sel_blue_hue)] = 100.0f;  // blues turn 30°
+  c.v[static_cast<std::size_t>(adjust_param::sel_green_lum)] = 100.0f;  // greens a stop up
+  REQUIRE(c.has_selective());
+  const auto u = edit::uniforms_of(c);
+  CHECK(u.a[4][3] == 1.0f);
+  const auto t = edit::table_of(c);
+  auto at = [&](float r, float g, float b) { return mv::gfx::adjust({r, g, b}, {}, u, &t); };
+  const auto red = at(0.6f, 0.05f, 0.05f);
+  CHECK(red.x - red.z < 0.02f);  // grey
+  const auto grey = at(0.3f, 0.3f, 0.3f);
+  CHECK(grey.x == Approx(0.3f).epsilon(1e-4));
+  CHECK(grey.z == Approx(0.3f).epsilon(1e-4));
+  // Between aqua (unchanged) and blue: part of blue's turn.
+  const auto sky = at(0.05f, 0.25f, 0.45f);
+  const auto sky_plain = mv::gfx::adjust({0.05f, 0.25f, 0.45f}, {}, edit::uniforms_of({}));
+  CHECK(sky.x > sky_plain.x + 0.005f);
+  const auto green = at(0.05f, 0.4f, 0.05f);
+  CHECK(green.y > 0.4f * 1.6f);  // most of a stop
+  const auto blue = at(0.05f, 0.05f, 0.5f);
+  CHECK(blue.x > 0.06f);  // turned toward purple
+  const auto yellow = at(0.5f, 0.5f, 0.02f);  // between orange and green: untouched bands
+  CHECK(yellow.x == Approx(0.5f).epsilon(0.05));
+  CHECK(edit::section_of(adjust_param::sel_magenta_lum) == edit::adjust_section::selective);
+  CHECK(std::string_view(edit::range_of(adjust_param::sel_aqua_sat).name) == "Saturation");
+}
+
+TEST_CASE("red-eye: a fix pulls red down inside its spot only, placed through the crop",
+          "[adjust][red_eye]") {
+  mv::shell::edit_session es;
+  es.set_item({"/p/a.jpg", 100, 5, 400, 300, true});
+  // Crop to the right half, then fix an eye at source (0.75, 0.5).
+  CHECK(es.add_red_eye({0.75f, 0.5f, 0.02f}) == mv::shell::edit_effect::redraw);
+  const edit::colour c = es.colour();
+  REQUIRE(c.spot_count == 1);
+  CHECK_FALSE(c.identity());
+  edit::geometry g;
+  g.crop = {0.5f, 0.0f, 0.5f, 1.0f};
+  const edit::placement p = edit::place(g, {400, 300});
+  mv::gfx::adjust_table t = edit::table_of(c);
+  edit::place_spots(t, c, p);
+  const float* row = t.r[mv::gfx::kAdjustSpotFirst];
+  CHECK(row[2] > 0.0f);
+  // Source (0.75, 0.5) is the middle of the cropped output: pos (0, 0).
+  CHECK(row[0] == Approx(0.0f).margin(1e-4));
+  CHECK(row[1] == Approx(0.0f).margin(1e-4));
+  const auto u = edit::uniforms_of(c);
+  CHECK(u.a[3][3] == 1.0f);
+  const auto inside = mv::gfx::adjust({0.5f, 0.05f, 0.05f}, {0.0f, 0.0f, 0, 0}, u, &t);
+  CHECK(inside.x < 0.1f);
+  const auto outside = mv::gfx::adjust({0.5f, 0.05f, 0.05f}, {0.5f, 0.5f, 0, 0}, u, &t);
+  CHECK(outside.x == Approx(0.5f));
+  const auto skin = mv::gfx::adjust({0.4f, 0.35f, 0.3f}, {0.0f, 0.0f, 0, 0}, u, &t);
+  CHECK(skin.x > 0.3f);  // not red-dominant enough to be pulled all the way
+  // The export bake places it from its own placement: the eye's pixel is fixed.
+  image::linear_image img;
+  img.width = 400;
+  img.height = 300;
+  img.rgba.assign(400 * 300 * 4, image::float_to_half(1.0f));
+  for (std::size_t i = 0; i < img.rgba.size(); i += 4) {
+    img.rgba[i] = image::float_to_half(0.5f);
+    img.rgba[i + 1] = img.rgba[i + 2] = image::float_to_half(0.05f);
+  }
+  auto out = edit::bake(img, p, c);
+  REQUIRE(out);
+  const std::size_t mid = (150 * out->width + 100) * 4, corner = 0;
+  CHECK(out->rgba[mid] < out->rgba[corner]);
+  // Eight at most; r 0 clears them all as one op.
+  for (int i = 1; i < edit::kRedEyeSpots; ++i) (void)es.add_red_eye({0.1f, 0.1f, 0.01f});
+  CHECK(es.add_red_eye({0.2f, 0.2f, 0.01f}) == mv::shell::edit_effect::refused);
+  CHECK(es.add_red_eye({0, 0, 0}) == mv::shell::edit_effect::redraw);
+  CHECK(es.colour().spot_count == 0);
+  CHECK(es.colour().identity());
+}
+
+TEST_CASE("white-balance picker: the picked pixel comes out neutral", "[adjust][picker]") {
+  for (const std::array<double, 3> rgb :
+       {std::array<double, 3>{0.30, 0.20, 0.12}, {0.15, 0.20, 0.25}, {0.2, 0.25, 0.2}}) {
+    const auto wb = edit::neutral_balance(rgb);
+    const auto g = edit::white_balance_gains(wb[0], wb[1]);
+    CHECK(std::abs(std::log(g[0] * rgb[0] / (g[1] * rgb[1]))) < 0.03);
+    CHECK(std::abs(std::log(g[2] * rgb[2] / (g[1] * rgb[1]))) < 0.03);
+  }
+  CHECK(edit::neutral_balance({0.2, 0.2, 0.2}) == std::array<float, 2>{0.0f, 0.0f});
+  // sample_mean averages the 5 x 5 about the point and refuses off the image.
+  image::linear_image img;
+  img.width = img.height = 10;
+  img.rgba.assign(10 * 10 * 4, image::float_to_half(0.0f));
+  for (int y = 0; y < 10; ++y) {
+    for (int x = 0; x < 10; ++x) {
+      std::uint16_t* q = img.rgba.data() + (static_cast<std::size_t>(y) * 10 + static_cast<std::size_t>(x)) * 4;
+      q[0] = image::float_to_half(static_cast<float>(x) / 10.0f);
+      q[3] = image::float_to_half(1.0f);
+    }
+  }
+  const auto m = edit::sample_mean(img, 0.55f, 0.55f);
+  REQUIRE(m);
+  CHECK((*m)[0] == Approx(0.5).margin(1e-3));
+  CHECK_FALSE(edit::sample_mean(img, 1.2f, 0.5f));
+}
+
+TEST_CASE("adjust pane: pick mode needs the working image and ends with the item or the pane",
+          "[adjust][picker][pane]") {
+  mv::shell::adjust_pane pane;
+  pane.set_pick(mv::shell::adjust_pick::red_eye);
+  CHECK(pane.pick() == mv::shell::adjust_pick::none);  // nothing ready
+  (void)pane.show(true, false);
+  const auto b = pane.set_item(5, false);
+  REQUIRE(b);
+  REQUIRE(pane.working_landed(*b, true, false));
+  pane.set_pick(mv::shell::adjust_pick::red_eye);
+  CHECK(pane.view(edit::colour{}).picking == 2);
+  (void)pane.set_item(6, false);
+  CHECK(pane.pick() == mv::shell::adjust_pick::none);
+  const auto b2 = pane.set_item(6, false);
+  if (b2) (void)pane.working_landed(*b2, true, false);
+  pane.set_pick(mv::shell::adjust_pick::white_balance);
+  (void)pane.show(false, false);
+  CHECK(pane.pick() == mv::shell::adjust_pick::none);
+}
+
+// ---- slice 4: detail ----------------------------------------------------------
+
+namespace {
+
+// A w × h picture, grey g(x, y) with colour noise of `chroma` and lightness
+// noise of `luma` (a fixed pattern, not random).
+image::linear_image detail_picture(std::uint32_t w, std::uint32_t h, float luma, float chroma,
+                                   float (*g)(std::uint32_t, std::uint32_t, std::uint32_t)) {
+  image::linear_image img;
+  img.width = w;
+  img.height = h;
+  img.rgba.resize(static_cast<std::size_t>(w) * h * 4);
+  std::uint32_t seed = 12345;
+  auto next = [&seed] {
+    seed = seed * 1664525u + 1013904223u;
+    return static_cast<float>(seed >> 8) / 16777216.0f - 0.5f;
+  };
+  for (std::uint32_t y = 0; y < h; ++y) {
+    for (std::uint32_t x = 0; x < w; ++x) {
+      const float v = std::max(0.0f, g(x, y, w) * (1.0f + luma * next()));
+      std::uint16_t* p = img.rgba.data() + (static_cast<std::size_t>(y) * w + x) * 4;
+      p[0] = image::float_to_half(std::max(0.0f, v * (1.0f + chroma * next())));
+      p[1] = image::float_to_half(v);
+      p[2] = image::float_to_half(std::max(0.0f, v * (1.0f + chroma * next())));
+      p[3] = image::float_to_half(1.0f);
+    }
+  }
+  return img;
+}
+
+float green_at(const image::linear_image& img, std::uint32_t x, std::uint32_t y) {
+  return image::half_to_float(img.rgba[(static_cast<std::size_t>(y) * img.width + x) * 4 + 1]);
+}
+
+double variance(const image::linear_image& img, int ch, std::uint32_t x0, std::uint32_t x1) {
+  double s = 0, s2 = 0;
+  std::size_t n = 0;
+  for (std::uint32_t y = 8; y + 8 < img.height; ++y) {
+    for (std::uint32_t x = x0; x < x1; ++x) {
+      const double v = image::half_to_float(img.rgba[(static_cast<std::size_t>(y) * img.width + x) * 4 + static_cast<std::size_t>(ch)]);
+      s += v;
+      s2 += v * v;
+      ++n;
+    }
+  }
+  return s2 / static_cast<double>(n) - (s / static_cast<double>(n)) * (s / static_cast<double>(n));
+}
+
+}  // namespace
+
+TEST_CASE("detail: identity is a copy; each slider does what its name says", "[adjust][detail]") {
+  const auto edge = [](std::uint32_t x, std::uint32_t, std::uint32_t w) { return x < w / 2 ? 0.05f : 0.4f; };
+  const image::linear_image step = detail_picture(256, 64, 0.0f, 0.0f, edge);
+  auto same = edit::apply_detail(step, {});
+  REQUIRE(same);
+  CHECK(same->rgba == step.rgba);
+
+  // Sharpen: an undershoot before the edge and an overshoot after it, capped.
+  auto sharp = edit::apply_detail(step, {0, 0, 1.0f, 0});
+  REQUIRE(sharp);
+  CHECK(green_at(*sharp, 127, 32) < green_at(step, 127, 32));
+  CHECK(green_at(*sharp, 128, 32) > green_at(step, 128, 32));
+  CHECK(green_at(*sharp, 20, 32) == Approx(green_at(step, 20, 32)).epsilon(0.01));  // flat stays flat
+  CHECK(std::pow(green_at(*sharp, 128, 32), 1 / 2.2f) - std::pow(0.4f, 1 / 2.2f) <= 0.081f);
+
+  // Definition: the same, wider (local contrast across the edge).
+  auto def = edit::apply_detail(step, {1.0f, 0, 0, 0});
+  REQUIRE(def);
+  CHECK(green_at(*def, 124, 32) < green_at(step, 124, 32));
+  CHECK(green_at(*def, 131, 32) > green_at(step, 131, 32));
+
+  // Brilliance: a dark neighbourhood lifted, a bright one held back.
+  auto bril = edit::apply_detail(step, {0, 1.0f, 0, 0});
+  REQUIRE(bril);
+  CHECK(green_at(*bril, 30, 32) > green_at(step, 30, 32));
+  CHECK(green_at(*bril, 220, 32) < green_at(step, 220, 32));
+
+  // Noise reduction: a noisy flat field gets quieter in lightness and colour,
+  // and the step between halves survives.
+  const image::linear_image noisy = detail_picture(256, 64, 0.2f, 0.3f, edge);
+  auto clean = edit::apply_detail(noisy, {0, 0, 0, 1.0f});
+  REQUIRE(clean);
+  CHECK(variance(*clean, 1, 150, 240) < variance(noisy, 1, 150, 240) * 0.5);
+  CHECK(variance(*clean, 0, 150, 240) < variance(noisy, 0, 150, 240) * 0.5);
+  CHECK(green_at(*clean, 200, 32) > 0.25f);
+  CHECK(green_at(*clean, 40, 32) < 0.1f);
+
+  // Slider values arrive through the colour.
+  edit::colour c;
+  c.v[static_cast<std::size_t>(adjust_param::sharpen)] = 50.0f;
+  CHECK(c.has_detail());
+  CHECK(edit::detail_of(c).sharpen == 0.5f);
+  CHECK(edit::section_of(adjust_param::noise) == edit::adjust_section::detail);
+  CHECK_FALSE(edit::apply_detail(image::linear_image{}, {0, 0, 1, 0}));
+}
+
+TEST_CASE("detail: radii scale with the picture, so the preview and a bigger export agree",
+          "[adjust][detail]") {
+  const auto ramp = [](std::uint32_t x, std::uint32_t, std::uint32_t w) {
+    return x < w / 2 ? 0.06f : 0.3f;
+  };
+  const image::linear_image small = detail_picture(3072, 16, 0.0f, 0.0f, ramp);
+  const image::linear_image big = detail_picture(6144, 16, 0.0f, 0.0f, ramp);
+  const edit::detail_params d{0.8f, 0.0f, 0.0f, 0.0f};
+  auto a = edit::apply_detail(small, d);
+  auto b = edit::apply_detail(big, d);
+  REQUIRE(a);
+  REQUIRE(b);
+  // The same place across the edge, in each picture's own pixels.
+  for (std::uint32_t x : {1500u, 1530u, 1560u, 1600u}) {
+    CHECK(green_at(*a, x, 8) == Approx(green_at(*b, 2 * x, 8)).epsilon(0.03));
+  }
+}
+
 TEST_CASE("white balance (0, 0) is exactly unity", "[adjust][kernel]") {
   const auto g = edit::white_balance_gains(0.0f, 0.0f);
   CHECK(g[0] == 1.0f);
@@ -494,8 +859,10 @@ TEST_CASE("white balance (0, 0) is exactly unity", "[adjust][kernel]") {
 TEST_CASE("the shader text is the kernel's own tokens, in the HLSL / MSL / C++ subset",
           "[adjust][kernel]") {
   const std::string_view text = mv::gfx::kernel::kAdjustKernelText;
-  CHECK(text.find("float3 mv_adjust(float3 c, float4 pos, float4 a0, float4 a1, float4 a2, "
-                  "float4 a3, float4 a4, float4 a5)") != std::string_view::npos);
+  CHECK(text.find("float3 mv_adjust(MV_ADJUST_LUT_PARAM float3 c, float4 pos, float4 a0, "
+                  "float4 a1, float4 a2, float4 a3, float4 a4, float4 a5)") != std::string_view::npos);
+  // The one per-language name stays a name in the shaders' copy.
+  CHECK(text.find("const float4* lut") == std::string_view::npos);
   CHECK(text.find("pow(") != std::string_view::npos);
   CHECK(text.find("dot(") != std::string_view::npos);
   // Nothing that exists in only one of the three languages.
@@ -836,4 +1203,25 @@ TEST_CASE("bake: 24 MP with every stage", "[.perf-bench][adjust-bench]") {
     best = std::min(best, ms);
   }
   std::printf("{\"bench\":\"bake24mp_all\",\"best_ms\":%.1f}\n", best);
+}
+
+// Hidden: the detail pass at the preview size, everything on (slice 4).
+TEST_CASE("detail: 3072 x 2048, every slider", "[.perf-bench][adjust-bench]") {
+  const auto g = [](std::uint32_t x, std::uint32_t, std::uint32_t w) {
+    return 0.02f + 0.5f * static_cast<float>(x) / static_cast<float>(w);
+  };
+  const image::linear_image img = detail_picture(3072, 2048, 0.1f, 0.1f, g);
+  for (const auto& [name, d] : {std::pair{"sharpen", edit::detail_params{0, 0, 0.5f, 0}},
+                                std::pair{"definition", edit::detail_params{0.5f, 0.5f, 0, 0}},
+                                std::pair{"noise", edit::detail_params{0, 0, 0, 0.5f}},
+                                std::pair{"all", edit::detail_params{0.5f, 0.5f, 0.5f, 0.5f}}}) {
+    double best = 1e9;
+    for (int run = 0; run < 3; ++run) {
+      const auto t0 = std::chrono::steady_clock::now();
+      auto out = edit::apply_detail(img, d);
+      REQUIRE(out);
+      best = std::min(best, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    }
+    std::printf("{\"bench\":\"detail_preview_%s\",\"best_ms\":%.1f}\n", name, best);
+  }
 }

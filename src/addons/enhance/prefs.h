@@ -25,13 +25,20 @@ enum class clip_target : std::uint8_t { picture = 0, sound = 1, both = 2 };
 // A model's key, "<kind>.<id>": its download and its place in `wanted`.
 [[nodiscard]] std::string model_key(model_kind k, const std::string& id);
 
+// What Enhance does to a photo (slice 5b): more detail (the still model) or
+// a typed restyle.
+// remove (slice 7): fill in what was brushed in Edit, offered while it is.
+enum class photo_target : std::uint8_t { detail = 0, restyle = 1, remove = 2 };
+inline constexpr photo_target kPhotoTargets[] = {photo_target::detail, photo_target::restyle, photo_target::remove};
+[[nodiscard]] const char* photo_target_name(photo_target t) noexcept;  // "detail" | "restyle" | "remove"
 
 struct prefs {
   // values[kind][knob id], for a target of that kind.
-  std::array<std::map<std::string, json::value>, 3> values;
+  std::array<std::map<std::string, json::value>, kKindCount> values;
   clip_target target = clip_target::picture;
+  photo_target photo = photo_target::detail;
   // The model each kind uses, by id; "" until the person chooses (model.json's).
-  std::array<std::string, 3> use;
+  std::array<std::string, kKindCount> use;
   // The person clicked Install for these models (and did not Remove them),
   // by key "<kind>.<id>". An enhance.json from before models had ids names a
   // kind alone: that kind's model.json ("<kind>.model").

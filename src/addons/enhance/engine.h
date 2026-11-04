@@ -52,6 +52,9 @@ struct engine_port {
   std::function<void(const char* screen, bool show)> show;
   // [worker] What a file holds; called for an item that sniffs as media or audio.
   std::function<media_facts(const std::string& path)> probe;
+  // [worker] Slice 7: how many brush dabs the host holds over the photo at
+  // `path` (Edit → Adjust → Remove); 0 none.
+  std::function<std::uint32_t(const std::string& path)> brushed;
   std::function<std::optional<std::uint64_t>(const std::string& dir)> free_disk;
   std::function<std::unique_ptr<ai::http_transport>()> transport;
   // Never a path or a name (rule 6).
@@ -163,7 +166,7 @@ class engine {
   std::string data_dir_;
   // Per kind: model.json's first, then the others, smallest download first.
   // Fixed after construction: read without the lock.
-  std::array<std::vector<model_entry>, 3> models_;
+  std::array<std::vector<model_entry>, kKindCount> models_;
   std::unique_ptr<downloads> dl_;
   std::unique_ptr<runner> runner_;
   std::thread resume_;
@@ -178,6 +181,7 @@ class engine {
   std::vector<std::int64_t> keep_;  // the Video Editor's edit of it, or empty
   item_kind item_ = item_kind::unknown;
   media_facts facts_;
+  std::uint32_t brushed_ = 0;  // slice 7: dabs brushed over the photo, when the sheet opened
   bool running_ = false;
   double progress_ = -1;
   std::chrono::steady_clock::time_point run_started_{};

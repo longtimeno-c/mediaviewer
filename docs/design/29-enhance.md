@@ -52,7 +52,7 @@ with. Core ML's compiled cache is per model: `models/<kind>-cache` for `model.js
 | `weights` | the files it needs, pinned under the manifest's `remote` at `<kind>/<file>` |
 | `run_bytes` | free memory a run needs: the run gate |
 | `cpu` | one unit of work finishes inside a measured budget on CPU |
-| `knobs` | `slider` / `choice` / `toggle`, each with the kinds of target it applies to |
+| `knobs` | `slider` / `choice` / `toggle` / `text` (a typed request, up to 200 bytes), each with the kinds of target it applies to |
 | `io` | the runner's own section (sound: `runner: stream`, rate, frame, state, delay; pictures: `runner: tiles`, scale, tile, overlap, the graph's free dims) |
 
 The weights are never in the zip or a release asset. The signed manifest pins each file under
@@ -70,6 +70,14 @@ still to come (plus a tenth). `addon-pack.py` refuses a pin over 5 GB too.
 | video | "Detail, fast" (`model.json`): Real-ESRGAN general x4v3 (Wang et al.), ONNX export (`jonathanst29/tinier-upscale-models` @ `899dc1e4`) | 4.9 MB | BSD-3-Clause |
 | video | "Detail, best" (`x4plus.json`): Real-ESRGAN x4plus, the same repo and revision; same contract (`input` [1, 3, h, w] → `output` [1, 3, 4h, 4w]) | 67.1 MB | BSD-3-Clause |
 | still | the same two files, pinned again under `still/` (each kind downloads its own) | 4.9 / 67.1 MB | BSD-3-Clause |
+| remove | `model.json`: LaMa (Suvorov et al.), ONNX port `Carve/LaMa-ONNX` @ `c3c0c9e4`, `lama_fp32.onnx` | 208 MB | Apache-2.0 |
+| restyle | `model.json`: InstructPix2Pix (Brooks et al., `timbrooks/instruct-pix2pix` @ `31519b5c`), exported by `tools/package/restyle-export.py`: fp32 text encoder and VAE, fp16 UNet | about 2.5 GB | CreativeML OpenRAIL-M (owner, 2026-11-03); its use restrictions are shown with the credit |
+
+Video and still offer a choice of two models; audio, remove and restyle have one each, so
+their card and section show no `Model` choice. A photo's sheet chooses first what Enhance does
+(more detail, Restyle, Remove: `photo` in `enhance.json`), then, for more detail, which still
+model. Restyle is **not pinned yet**: its files must be hosted at a fixed revision before
+`remote.json` lists them, and until then no kind offers it.
 
 ## The sheet
 
@@ -120,8 +128,13 @@ the same tiles as a clip's frame (below), reporting each tile, and the host writ
 export carries it (`edit::export_pixels`: Orientation 1, the written size, no stale thumbnail;
 Exiv2 for HEIC, TIFF, RAW and WebP), under the first free name. Same size, twice or four times, at
 most 100 megapixels (16384 on the long edge); the run gate adds the picture in and out to the
-model's `run_bytes`. **Not yet:** a crop or colour change made on screen is not in the copy — the
-edit stack lives in the host's UI-thread edit session and is not handed to add-ons.
+model's `run_bytes`. **The photo being edited carries its edit** ([plan](../plans/edit-adjust.md)
+slice 5): the UI thread hands the edit of the item on screen to `addon_media::set_still_edit`
+whenever it changes (a copy of a few hundred bytes under a mutex, never held across a decode), and
+`full_still` for that path returns `edit::edited_picture` (detail, geometry, colour, as an export
+bakes them) instead of the plain picture; any other path, or no edit, gets the plain picture. The
+host table and the add-on are unchanged. The Edit strip offers **Enhance…** beside Save copy…
+while Enhance is loaded: it runs Enhance's own `open` row (`find_addon_command`).
 
 **A clip's picture.** The host decodes every frame in display order on a decoder of its own
 (`edit/picture_io.h`'s `frame_reader`), to 8-bit sRGB through the same colour path as frame
@@ -161,6 +174,33 @@ sound, made by the audio model on a thread of its own and fed to the writer ahea
 through a bounded queue (five seconds), so neither is held whole. With no hardware encoder at
 that size the sheet says so and nothing is written. The sheet shows the time left once a run is
 a few percent in.
+
+## Restyle: a typed request on a photo
+
+With Restyle's model downloaded, the sheet's **Photo** choice offers *More detail* (the still
+model) or *Restyle with words*, which adds a text field ("make it a snowy winter day"). An empty
+request is refused before a run. The run (`diffusion.h`, `io.runner: diffusion`):
+
+1. The edited still is scaled to the long edge its **Quality** names (`io.qualities`: Standard
+   512 px, High 768 px, Best 1024 px), each side a multiple of 64. Each quality has its own
+   memory gate (12, 18 and 32 GB); a request over it is refused with a lower quality suggested.
+   A larger copy changes finer things, takes longer, and compiles once on Core ML per size.
+2. CLIP's tokenizer and the text encoder turn the words (and an empty prompt) into the conditions.
+3. The VAE encodes the small picture; 20 Euler-ancestral steps (linspace timesteps, the
+   reference schedule, a fixed seed) run the UNet over a batch of three — text and picture,
+   picture only, neither — combined with the *Follow the words* (7.5) and *Keep the photo*
+   (1.5) guidances.
+4. The VAE decodes, and `carry_back` applies the blurred ratio of after to before onto the
+   full-resolution photo, scaled by *Strength*, so the photo keeps its own detail.
+5. The result is written as a new file, like every Enhance run.
+
+The UNet opens on Core ML with its dims fixed to the run's size (a size is compiled once, then
+cached), else the CPU. The model is not `cpu`-capable, so a machine with no GPU provider
+(Windows today) is refused rather than left running for minutes.
+
+Restyle changes the look of the whole picture: season, light, colour, style. It cannot remove an
+object ("remove the person" tints it; nothing is filled in). That needs an inpainting model and
+a mask ([plan](../plans/edit-adjust.md) slice 5b).
 
 ## In the Video Editor (2026-11-02)
 
@@ -210,6 +250,27 @@ lifted frame.
 - Lifting dark footage lifts its noise, and an 8-bit frame can band in lifted shadows; the help
   text says the first. HDR clips are still refused.
 
+## Remove: what was brushed in Edit, filled in
+
+Edit → Adjust → **Remove** paints over the photo ([07](07-photo-editing.md)); **Remove…** opens
+this sheet with the dabs held by the host (`still_mask`). A sheet opened on a photo with something
+brushed offers **Remove what you brushed** and starts on it. The run (`remove.h`,
+`io.runner: inpaint`):
+
+1. The dabs drawn as a mask of the full-resolution edited picture.
+2. Its box: the brushed bounds grown by half their longer side (at least 128 px a side), square
+   where the photo allows.
+3. The box's crop and mask scaled to the model's side (512), filled by **LaMa** (big-lama, Suvorov
+   et al., Apache-2.0; the ONNX port `Carve/LaMa-ONNX` @ `c3c0c9e4`, `lama_fp32.onnx`, 208 MB,
+   CPU: `cpu: true`, so Windows runs it too), scaled back.
+4. Only the brushed pixels pasted, feathered outward (2–16 px with the box's size); a pixel more
+   than twice the feather from the brush is the photo's own, bit for bit.
+5. A new file, as every run.
+
+Measured 2026-11-03 (M-series, CPU, the hidden `[.remove-model]` case): an 832 × 832 box
+filled in 1.73 s. It fills from the surroundings; it adds nothing and takes no words. A box much larger than 512 px
+is filled at that size and scaled up, so a large fill is softer than the photo around it.
+
 ## Measured (2026-10-26, Apple M-series; sound on CPU, one thread)
 
 | | |
@@ -226,13 +287,26 @@ lifted frame.
 | A 4032 × 3024 photo (EXIF-turned) to 6048 × 8064, Core ML, read to written | 8.7 s, about 850 MB peak (`run_bytes` 700 MB + the picture in and out) |
 | One 256-px tile, x4plus vs x4v3 (Python, 2026-10-29): Core ML / CPU 7 threads | 0.135 / 3.4 s vs 0.023 / 0.20 s; peak about 470 MB / 1.8 GB vs 220 / 150 MB |
 
-Not measured: Windows, a long file's memory over time, and the viewer's own gates with Enhance
+Restyle (2026-11-03, the same Mac, the hidden `[.restyle-model]` case on a 512 × 320 picture):
+14–16 s a request on Core ML at Standard once the size is compiled. The first run at a new size
+took about 200–230 s (Core ML compilation) on a quiet machine. "Black and white" took colourfulness from 83.4 to 1.9. fp16 output looks the same as fp32
+by eye.
+
+Measured again on the exported files (2026-11-03, a 24 GB M-series Mac, `MV_RESTYLE_EDGE`, peak
+memory footprint from `time -l`): **Standard** 16 s a request warm, peak 12.1 GB; **High** (768 ×
+448) 43 s warm, peak 17.4 GB; Core ML could not place High on the Neural Engine and ran it on the
+GPU. A first request at a size compiled for 14–18 minutes while the machine was busy. The gates
+(12 and 18 GB) are those peaks. **Best is not measured**: extrapolated to 25–30 GB, it would swap
+this machine, so its 32 GB gate is an estimate, and machines like this one are refused it.
+
+Not measured: Windows (Restyle is refused there without a GPU provider), a long file's memory over time, and the viewer's own gates with Enhance
 installed (it loads no runtime until a run, and runs nothing at launch).
 
 ## Not built
 
-- A photo's on-screen crop and colour in its enhanced copy (#297 asks for it): needs the host's
-  edit stack handed to the add-on.
+- Hosting Restyle's weights and pinning them in `remote.json` (the owner's upload).
+- Restyle on Windows: needs a DirectML or CUDA ONNX Runtime piece; measure before offering it.
+
 - HDR clips: the picture would come back SDR; refused for now.
 - A GPU on Windows: the bundled ONNX Runtime is the CPU build, so a clip's picture there runs on
   the CPU (about a quarter of Core ML's speed on this Mac's CPU; not measured on Windows).

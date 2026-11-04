@@ -2276,6 +2276,21 @@ hidden cases run it for real:
 MV_ENHANCE_DFN3=<dir>/denoiser_model.onnx MV_ENHANCE_ESRGAN=<dir>/realesr-general-x4v3.onnx MV_ENHANCE_RUNTIME_DIR=build/addons/enhance build/bin/mv_ai_tests "[.enhance-model]"
 ```
 
+**Remove** (LaMa, slice 7): `build/bin/mv_tests "[remove-brush]"` (the brush's strokes and mask)
+and `build/bin/mv_import_tests "[remove]"` (box, crop, feathered paste-back, and the run with a
+stand-in model). LaMa's file is pinned in `remote.json`; Enhance's Download fetches it.
+
+**Restyle** (InstructPix2Pix, 2026-11-03) is not pinned yet. Export its files with
+`tools/package/restyle-export.py --out <dir>` (requirements-export.txt, about 2 GB download and
+16 GB of memory while exporting). It prints each file's size and SHA-256 for `remote.json` once
+the files are hosted. The unit cases (schedule, sizes, `carry_back`, the sheet's text knob) are in
+`build/bin/mv_import_tests "[restyle]"`. A real run, which takes about 200 s the first time Core ML
+compiles a size and then about 15 s:
+
+```bash
+MV_RESTYLE_DIR=<dir> MV_ENHANCE_RUNTIME_DIR=build/addons/enhance MV_RESTYLE_RGB=<raw rgb8> MV_RESTYLE_W=512 MV_RESTYLE_H=320 build/bin/mv_import_tests "[.restyle-model]"
+```
+
 ### The driftwire command line (2026-10-23)
 
 What is built is in [docs/design/28](design/28-driftwire.md#from-a-terminal-driftwire) ("From a

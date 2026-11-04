@@ -54,6 +54,8 @@ const char* model_noun(model_kind k) {
     case model_kind::still: return "photo model";
     case model_kind::video: return "video model";
     case model_kind::audio: return "audio model";
+    case model_kind::restyle: return "restyle model";
+    case model_kind::remove: return "remove model";
   }
   return "model";
 }
@@ -225,7 +227,17 @@ void engine::post_settings_locked() {
 
 std::vector<model_kind> engine::kinds_for_locked() const {
   switch (item_) {
-    case item_kind::still: return {model_kind::still};
+    case item_kind::still:
+      // Offered only once its weights are pinned (a model.json alone is not a
+      // model anyone can download).
+      if (prefs_.photo == photo_target::remove && brushed_ > 0 && chosen_locked(model_kind::remove)) {
+        return {model_kind::remove};
+      }
+      if (prefs_.photo == photo_target::restyle) {
+        const model_entry* restyle = chosen_locked(model_kind::restyle);
+        if (restyle && restyle->files.usable()) return {model_kind::restyle};
+      }
+      return {model_kind::still};
     case item_kind::audio: return facts_.sound ? std::vector{model_kind::audio} : std::vector<model_kind>{};
     case item_kind::media:
       if (facts_.picture && facts_.sound) {
@@ -250,6 +262,15 @@ sheet_view engine::sheet_locked() const {
   v.has_picture = facts_.picture;
   v.has_sound = facts_.sound;
   v.target = prefs_.target;
+  const model_entry* restyle = chosen_locked(model_kind::restyle);
+  v.offers_restyle = restyle && restyle->files.usable();
+  // Remove is offered whenever something is brushed: a model not yet
+  // downloaded shows as not downloaded yet, as any kind does.
+  v.offers_remove = brushed_ > 0 && chosen_locked(model_kind::remove) != nullptr;
+  v.photo = prefs_.photo;
+  if ((v.photo == photo_target::restyle && !v.offers_restyle) || (v.photo == photo_target::remove && !v.offers_remove)) {
+    v.photo = photo_target::detail;
+  }
   if (v.item == item_kind::media && !(facts_.picture && facts_.sound)) {
     v.target = facts_.picture ? clip_target::picture : clip_target::sound;
   }
@@ -353,6 +374,7 @@ void engine::sheet_opened(std::uint64_t generation, const std::string& request_p
   const item_kind item = path.empty() ? item_kind::unknown : sniff(head_of(path));
   media_facts facts;
   if ((item == item_kind::media || item == item_kind::audio) && port_.probe) facts = port_.probe(path);
+  const std::uint32_t brushed = item == item_kind::still && port_.brushed ? port_.brushed(path) : 0;
   std::lock_guard lock(m_);
   sheet_gen_ = generation;
   if (width_pt >= 100 && width_pt <= 2000) sheet_width_pt_ = width_pt;
@@ -366,6 +388,10 @@ void engine::sheet_opened(std::uint64_t generation, const std::string& request_p
     keep_ = item == item_kind::media ? std::move(keep) : std::vector<std::int64_t>{};
     item_ = item;
     facts_ = facts;
+    // Remove… in Edit opened this sheet: it starts on Remove (not saved as
+    // the photo's choice: it is offered only while something is brushed).
+    if (brushed > 0 && brushed_ == 0) prefs_.photo = photo_target::remove;
+    brushed_ = brushed;
   }
   post_sheet_locked();
 }
@@ -610,6 +636,15 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
   if (!v) return;
   std::lock_guard lock(m_);
   if (running_) return;
+  if (node == "photo") {
+    if (v->k != json::kind::string) return;
+    for (const photo_target t : kPhotoTargets) {
+      if (v->s == photo_target_name(t)) prefs_.photo = t;
+    }
+    save_locked();
+    post_sheet_locked();
+    return;
+  }
   if (node == "target") {
     if (v->k != json::kind::string) return;
     for (const clip_target t : {clip_target::picture, clip_target::sound, clip_target::both}) {

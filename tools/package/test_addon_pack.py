@@ -555,5 +555,20 @@ class PlacesPackTest(unittest.TestCase):
             self.assertEqual(r.stdout.strip().splitlines()[0] if r.stdout.strip() else r.stdout, "ok")
 
 
+    def test_openrail_is_allowed_for_remote_weights_only(self):
+        """Restyle's weights (OpenRAIL-M, owner 2026-11-03) may be pinned under
+        `remote`; a shipped file under that licence still fails the gate."""
+        self.assertFalse(addon_pack.licence_allowed("CreativeML-OpenRAIL-M"))
+        with tempfile.TemporaryDirectory() as d:
+            pin = {"url": "https://huggingface.co/owner/repo/resolve/0123abc/unet.onnx",
+                   "path": "restyle/unet.onnx", "size": 10, "sha256": "0" * 64,
+                   "licence": "CreativeML-OpenRAIL-M"}
+            Path(d, "remote.json").write_text(json.dumps([pin]), encoding="utf-8")
+            self.assertEqual(addon_pack.read_remote(Path(d))[0]["licence"], "CreativeML-OpenRAIL-M")
+            pin["licence"] = "CC-BY-NC-4.0"
+            Path(d, "remote.json").write_text(json.dumps([pin]), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                addon_pack.read_remote(Path(d))
+
 if __name__ == "__main__":
     unittest.main()

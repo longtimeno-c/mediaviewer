@@ -20,11 +20,20 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 #include "edit/adjust.h"
 #include "edit/histogram.h"
 
 namespace mv::shell {
+
+// Slice 3: what the next click on the photo does while the pane is open.
+enum class adjust_pick : std::int32_t {
+  none = 0,
+  white_balance = 1,  // one click: temperature and tint that make it neutral
+  red_eye = 2,        // each click: a red-eye fix there, until turned off
+  remove = 3,         // slice 7: drag to brush what Remove takes out, until turned off
+};
 
 enum class adjust_readiness : std::int32_t {
   none = 0,       // no still on the canvas (or a clip): the pane says so
@@ -44,10 +53,26 @@ struct adjust_view {
   float clip_low = 0.0f;
   std::int32_t histogram_valid = 0;
   std::int32_t auto_section = -1;  // edit::adjust_section whose Auto is running, -1 none
+  // Slice 2: the four curves (master, red, green, blue), edit::curve's points.
+  std::int32_t curve_n[edit::kCurveChannels] = {};
+  float curve_x[edit::kCurveChannels][edit::kCurvePoints] = {};
+  float curve_y[edit::kCurveChannels][edit::kCurvePoints] = {};
+  // Slice 3: what a click on the photo does now (adjust_pick), and how many
+  // red-eye fixes the edit holds.
+  std::int32_t picking = 0;
+  std::int32_t spot_count = 0;
+  // Slice 7: the Remove brush's strokes, and whether it is full (kBrushDabs).
+  std::int32_t brush_strokes = 0;
+  std::int32_t brush_full = 0;
+  // Slice 5b: what the last typed request did (edit::prompt_summary), UTF-8,
+  // NUL-terminated, cut at a character boundary.
+  char prompt_note[128] = {};
   std::uint16_t bins[4 * edit::kHistogramBins] = {};  // edit::pack_histogram
 };
 
-static_assert(sizeof(adjust_view) == 24 + 4 * edit::kAdjustParamCount + 2 * 4 * edit::kHistogramBins,
+static_assert(sizeof(adjust_view) == 24 + 4 * edit::kAdjustParamCount + 16 +
+                                         2 * 4 * edit::kCurveChannels * edit::kCurvePoints + 16 + 128 +
+                                         2 * 4 * edit::kHistogramBins,
               "keep in sync with AdjustViewArgs and mv_adjust_view");
 
 class adjust_pane {
@@ -94,6 +119,13 @@ class adjust_pane {
   // The section of the Auto in flight (the view's auto_section).
   [[nodiscard]] std::optional<edit::adjust_section> auto_running() const noexcept;
 
+  // Slice 3: the pick mode (cleared with the item, the working image or the pane).
+  void set_pick(adjust_pick p) noexcept { pick_ = readiness_ == adjust_readiness::ready ? p : adjust_pick::none; }
+  [[nodiscard]] adjust_pick pick() const noexcept { return visible_ ? pick_ : adjust_pick::none; }
+
+  // Slice 5b: the note under the request field; cleared with the item.
+  void set_prompt_note(std::string note) { prompt_note_ = std::move(note); }
+
   // The POD the chrome draws, with the current slider values.
   [[nodiscard]] adjust_view view(const edit::colour& c) const noexcept;
 
@@ -101,6 +133,8 @@ class adjust_pane {
   [[nodiscard]] std::optional<std::uint64_t> want(bool has_colour);
 
   bool visible_ = false;
+  adjust_pick pick_ = adjust_pick::none;
+  std::string prompt_note_;
   std::uint64_t item_ = 0;
   adjust_readiness readiness_ = adjust_readiness::none;
   bool from_raw_ = false;

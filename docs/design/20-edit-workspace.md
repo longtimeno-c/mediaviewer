@@ -25,14 +25,20 @@ in the core (`edit/`, `shell/edit_session`).
      Windows: `shell/open_with_win.cpp` (Explorer's recommended Open with handlers, on a thread
      of its own), pushed through `chrome_edit_args.open_apps`, run by `chrome_cmd_open_in_app`.
 2. **One pane, tabs, docked.** The workspace is a strip at the top of the right pane column
-   (title, file name and edit count, tabs, Undo / Reset / Show original / Save copy…) over one
+   (title, file name and edit count, tabs, Undo / Reset / Show original / Enhance… (while the
+   Enhance add-on is loaded; its copy carries the edit, [29](29-enhance.md)) / Save copy…) over one
    tab's pane. It docks: the canvas frames the picture in the rect beside it
    (`input_snapshot.chrome_right_px`, the blit's `origin_x`), so the pane never covers the image;
    the strip starts under the path row. Docking is a refit, not a swapchain resize. The Colour,
    Info and Jobs tabs *are* the existing Adjust, Metadata and Jobs panes; Crop and Trim are panes
    that drive the existing commands. The Colour tab is the full Adjust list: Light, Colour, Black &
    White and Vignette sections, each collapsible with its own reset (↺, shown once a slider in it
-   moved) and, but the vignette, an AUTO; Black & White has an on switch
+   moved) and, but the vignette and curves, an AUTO; above them, a field takes a typed request and
+   says what it changed ([07](07-photo-editing.md) "Typed requests"); Black & White has an on switch; Levels and
+   Curves pick a channel (Image, Red, Green, Blue), and Curves has a point editor over the histogram
+   (drag the line to add a point, drag a point off the square to remove it); Selective Colour picks
+   a band (eight swatches); Colour has **Pick white balance** and Red-Eye **Fix red eyes** with a
+   size, each taking the next click (or clicks) on the photo
    ([07](07-photo-editing.md) "Evaluation", "Auto").
 
    | Subject | Tabs (`edit_tab`) |

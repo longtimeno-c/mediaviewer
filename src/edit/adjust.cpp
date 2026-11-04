@@ -59,8 +59,33 @@ adjust_range range_of(adjust_param p) noexcept {
     case adjust_param::vignette: return {-100.0f, 100.0f, 5.0f, "Strength"};
     case adjust_param::vignette_radius: return {-100.0f, 100.0f, 5.0f, "Radius"};
     case adjust_param::vignette_softness: return {-100.0f, 100.0f, 5.0f, "Softness"};
-    default: return {};
+    case adjust_param::levels_black:
+    case adjust_param::levels_red_black:
+    case adjust_param::levels_green_black:
+    case adjust_param::levels_blue_black: return {0.0f, 100.0f, 1.0f, "Black"};
+    case adjust_param::levels_mid:
+    case adjust_param::levels_red_mid:
+    case adjust_param::levels_green_mid:
+    case adjust_param::levels_blue_mid: return {-100.0f, 100.0f, 2.0f, "Mid-tones"};
+    case adjust_param::levels_white:
+    case adjust_param::levels_red_white:
+    case adjust_param::levels_green_white:
+    case adjust_param::levels_blue_white: return {-100.0f, 0.0f, 1.0f, "White"};
+    default: break;
   }
+  switch (p) {
+    case adjust_param::definition: return {-100.0f, 100.0f, 5.0f, "Definition"};
+    case adjust_param::brilliance: return {-100.0f, 100.0f, 5.0f, "Brilliance"};
+    case adjust_param::sharpen: return {0.0f, 100.0f, 5.0f, "Sharpen"};
+    case adjust_param::noise: return {0.0f, 100.0f, 5.0f, "Noise reduction"};
+    default: break;
+  }
+  if (p >= adjust_param::sel_red_hue && p <= adjust_param::sel_magenta_lum) {
+    constexpr const char* names[3] = {"Hue", "Saturation", "Luminance"};
+    const int k = (static_cast<int>(p) - static_cast<int>(adjust_param::sel_red_hue)) % 3;
+    return {-100.0f, 100.0f, 5.0f, names[k]};
+  }
+  return {};
 }
 
 adjust_section section_of(adjust_param p) noexcept {
@@ -81,8 +106,23 @@ adjust_section section_of(adjust_param p) noexcept {
     case adjust_param::vignette:
     case adjust_param::vignette_radius:
     case adjust_param::vignette_softness: return adjust_section::vignette;
-    default: return adjust_section::count;
+    case adjust_param::levels_black:
+    case adjust_param::levels_mid:
+    case adjust_param::levels_white:
+    case adjust_param::levels_red_black:
+    case adjust_param::levels_red_mid:
+    case adjust_param::levels_red_white:
+    case adjust_param::levels_green_black:
+    case adjust_param::levels_green_mid:
+    case adjust_param::levels_green_white:
+    case adjust_param::levels_blue_black:
+    case adjust_param::levels_blue_mid:
+    case adjust_param::levels_blue_white: return adjust_section::levels;
+    default: break;
   }
+  if (p >= adjust_param::sel_red_hue && p <= adjust_param::sel_magenta_lum) return adjust_section::selective;
+  if (p >= adjust_param::definition && p <= adjust_param::noise) return adjust_section::detail;
+  return adjust_section::count;
 }
 
 colour without_section(const colour& c, adjust_section s) noexcept {
@@ -90,7 +130,211 @@ colour without_section(const colour& c, adjust_section s) noexcept {
   for (int i = 0; i < kAdjustParamCount; ++i) {
     if (section_of(static_cast<adjust_param>(i)) == s) out.v[static_cast<std::size_t>(i)] = 0.0f;
   }
+  if (s == adjust_section::curves) out.curves = {};
+  if (s == adjust_section::red_eye) {
+    out.spots = {};
+    out.spot_count = 0;
+  }
   return out;
+}
+
+bool colour::has_detail() const noexcept {
+  for (int i = static_cast<int>(adjust_param::definition); i <= static_cast<int>(adjust_param::noise); ++i) {
+    if (v[static_cast<std::size_t>(i)] != 0.0f) return true;
+  }
+  return false;
+}
+
+bool colour::has_selective() const noexcept {
+  for (int i = static_cast<int>(adjust_param::sel_red_hue); i <= static_cast<int>(adjust_param::sel_magenta_lum); ++i) {
+    if (v[static_cast<std::size_t>(i)] != 0.0f) return true;
+  }
+  return false;
+}
+
+std::array<float, 2> neutral_balance(const std::array<double, 3>& rgb) noexcept {
+  if (!(rgb[0] > 0.0 && rgb[1] > 0.0 && rgb[2] > 0.0)) return {0.0f, 0.0f};
+  auto err = [&](float t, float n) {
+    const std::array<float, 3> g = white_balance_gains(t, n);
+    const double r = std::log(g[0] * rgb[0]), gr = std::log(g[1] * rgb[1]), b = std::log(g[2] * rgb[2]);
+    return (r - gr) * (r - gr) + (b - gr) * (b - gr);
+  };
+  float bt = 0.0f, bn = 0.0f;
+  double best = err(0.0f, 0.0f);
+  auto search = [&](float t0, float n0, int reach, float step) {
+    for (int i = -reach; i <= reach; ++i) {
+      for (int j = -reach; j <= reach; ++j) {
+        const float t = std::clamp(t0 + step * static_cast<float>(i), -100.0f, 100.0f);
+        const float n = std::clamp(n0 + step * static_cast<float>(j), -100.0f, 100.0f);
+        const double e = err(t, n);
+        if (e < best) {
+          best = e;
+          bt = t;
+          bn = n;
+        }
+      }
+    }
+  };
+  search(0.0f, 0.0f, 20, 5.0f);
+  search(bt, bn, 5, 1.0f);
+  search(bt, bn, 5, 0.2f);
+  return {std::round(bt), std::round(bn)};
+}
+
+curve sanitise(const curve& c) noexcept {
+  struct pt {
+    float x, y;
+  };
+  pt p[kCurvePoints];
+  int n = 0;
+  for (int i = 0; i < std::min<int>(c.n, kCurvePoints); ++i) {
+    if (!std::isfinite(c.x[i]) || !std::isfinite(c.y[i])) continue;
+    p[n++] = {std::clamp(c.x[i], 0.0f, 1.0f), std::clamp(c.y[i], 0.0f, 1.0f)};
+  }
+  std::stable_sort(p, p + n, [](const pt& a, const pt& b) { return a.x < b.x; });
+  curve out;
+  for (int i = 0; i < n; ++i) {
+    if (out.n > 0 && p[i].x - out.x[out.n - 1] < 1.0f / 64.0f) continue;
+    out.x[out.n] = p[i].x == -0.0f ? 0.0f : p[i].x;
+    out.y[out.n] = p[i].y == -0.0f ? 0.0f : p[i].y;
+    ++out.n;
+  }
+  if (out.n < 2) return curve{};
+  return out;
+}
+
+float evaluate(const curve& c, float p) noexcept {
+  if (c.n < 2) return p;
+  const int n = c.n;
+  if (p <= c.x[0]) return c.y[0];
+  if (p >= c.x[n - 1]) return c.y[n - 1];
+  // Fritsch–Carlson: secants, then tangents limited so each segment stays
+  // monotone where its ends are (no overshoot between points).
+  float d[kCurvePoints], m[kCurvePoints];
+  for (int i = 0; i + 1 < n; ++i) d[i] = (c.y[i + 1] - c.y[i]) / (c.x[i + 1] - c.x[i]);
+  m[0] = d[0];
+  m[n - 1] = d[n - 2];
+  for (int i = 1; i + 1 < n; ++i) m[i] = d[i - 1] * d[i] <= 0.0f ? 0.0f : (d[i - 1] + d[i]) / 2.0f;
+  for (int i = 0; i + 1 < n; ++i) {
+    if (d[i] == 0.0f) {
+      m[i] = m[i + 1] = 0.0f;
+      continue;
+    }
+    const float a = m[i] / d[i], b = m[i + 1] / d[i];
+    const float h = a * a + b * b;
+    if (h > 9.0f) {
+      const float t = 3.0f / std::sqrt(h);
+      m[i] = t * a * d[i];
+      m[i + 1] = t * b * d[i];
+    }
+  }
+  int k = 0;
+  while (k + 2 < n && p > c.x[k + 1]) ++k;
+  const float h = c.x[k + 1] - c.x[k];
+  const float t = (p - c.x[k]) / h;
+  const float t2 = t * t, t3 = t2 * t;
+  return (2 * t3 - 3 * t2 + 1) * c.y[k] + (t3 - 2 * t2 + t) * h * m[k] + (-2 * t3 + 3 * t2) * c.y[k + 1] +
+         (t3 - t2) * h * m[k + 1];
+}
+
+bool colour::has_table() const noexcept {
+  for (int i = 0; i < kAdjustParamCount; ++i) {
+    if (section_of(static_cast<adjust_param>(i)) == adjust_section::levels &&
+        v[static_cast<std::size_t>(i)] != 0.0f) {
+      return true;
+    }
+  }
+  for (const curve& k : curves) {
+    if (!k.identity()) return true;
+  }
+  return false;
+}
+
+namespace {
+
+// Levels for one channel: `first` is its black parameter (mid and white follow).
+float levels(const colour& c, adjust_param first, float p) noexcept {
+  const auto at = [&](int k) { return c.v[static_cast<std::size_t>(first) + static_cast<std::size_t>(k)]; };
+  const float black = at(0) / 100.0f * 0.5f;
+  const float white = 1.0f + at(2) / 100.0f * 0.5f;
+  const float gamma = std::exp2(at(1) / 100.0f);  // +100: twice as light in the mid-tones
+  float t = (p - black) / std::max(white - black, 1e-3f);
+  t = std::clamp(t, 0.0f, 1.0f);
+  return gamma == 1.0f ? t : std::pow(t, 1.0f / gamma);
+}
+
+}  // namespace
+
+gfx::adjust_table table_of(const colour& c) noexcept {
+  gfx::adjust_table t;
+  if (c.has_selective()) {
+    // Each band's three values at its centre, linear between neighbouring
+    // centres around the wheel.
+    for (int k = 0; k < gfx::kAdjustHueRows; ++k) {
+      const float h = static_cast<float>(k) / static_cast<float>(gfx::kAdjustHueRows);
+      int a = kSelectiveBands - 1;
+      for (int b = 0; b < kSelectiveBands; ++b) {
+        if (kSelectiveCentres[b] <= h) a = b;
+      }
+      const int b = (a + 1) % kSelectiveBands;
+      float span = kSelectiveCentres[b] - kSelectiveCentres[a];
+      if (span <= 0.0f) span += 1.0f;
+      float off = h - kSelectiveCentres[a];
+      if (off < 0.0f) off += 1.0f;
+      const float w = off / span;
+      auto band = [&](int n, int field) {
+        return c.v[static_cast<std::size_t>(adjust_param::sel_red_hue) + static_cast<std::size_t>(n * 3 + field)] /
+               100.0f;
+      };
+      float* row = t.r[gfx::kAdjustHueFirst + k];
+      const auto mix = [&](int field) { return band(a, field) + (band(b, field) - band(a, field)) * w; };
+      row[0] = mix(0) * kSelectiveHueTurns;
+      row[1] = 1.0f + mix(1);
+      row[2] = mix(2) * kSelectiveLumStops;
+      row[3] = 0.0f;
+    }
+  }
+  if (!c.has_table()) return t;
+  constexpr adjust_param firsts[3] = {adjust_param::levels_red_black, adjust_param::levels_green_black,
+                                      adjust_param::levels_blue_black};
+  for (int i = 0; i < gfx::kAdjustTableRows; ++i) {
+    const float p = static_cast<float>(i) / static_cast<float>(gfx::kAdjustTableRows - 1);
+    const float m = evaluate(c.curve_of(curve_channel::master), levels(c, adjust_param::levels_black, p));
+    for (int ch = 0; ch < 3; ++ch) {
+      const curve& k = c.curves[static_cast<std::size_t>(ch) + 1];
+      t.r[i][ch] = evaluate(k, levels(c, firsts[ch], m));
+    }
+  }
+  return t;
+}
+
+bool is_colour_op(const op& o) noexcept {
+  return o.kind == op_kind::adjust || o.kind == op_kind::adjust_all || o.kind == op_kind::curve ||
+         o.kind == op_kind::red_eye;
+}
+
+void place_spots(gfx::adjust_table& t, const colour& c, const placement& p) noexcept {
+  for (int i = 0; i < gfx::kAdjustSpotRows; ++i) {
+    for (float& x : t.r[gfx::kAdjustSpotFirst + i]) x = 0.0f;
+  }
+  if (c.spot_count == 0 || p.cropped.w == 0 || p.cropped.h == 0) return;
+  const affine inv = invert(p.map);
+  // pos units: 2 / the output's diagonal per output pixel, and an oriented
+  // source pixel is output.w / cropped.w output pixels.
+  const double ow = p.output.w, oh = p.output.h;
+  const double out_diag = std::sqrt(ow * ow + oh * oh);
+  const double sw = p.oriented.w, sh = p.oriented.h;
+  const double src_diag = std::sqrt(sw * sw + sh * sh);
+  const double scale = ow / static_cast<double>(p.cropped.w);  // output px per source px
+  for (int i = 0; i < std::min<int>(c.spot_count, gfx::kAdjustSpotRows); ++i) {
+    const red_eye_spot& s = c.spots[static_cast<std::size_t>(i)];
+    const double u = inv.m[0] * s.x + inv.m[1] * s.y + inv.m[2];
+    const double v = inv.m[3] * s.x + inv.m[4] * s.y + inv.m[5];
+    float* row = t.r[gfx::kAdjustSpotFirst + i];
+    row[0] = static_cast<float>((u - 0.5) * ow * 2.0 / out_diag);
+    row[1] = static_cast<float>((v - 0.5) * oh * 2.0 / out_diag);
+    row[2] = static_cast<float>(s.r * src_diag * scale * 2.0 / out_diag);
+  }
 }
 
 std::array<float, 3> mono_weights(float filter) noexcept {
@@ -118,6 +362,24 @@ colour fold_colour(std::span<const op> ops) noexcept {
         const auto p = static_cast<adjust_param>(i);
         c.v[static_cast<std::size_t>(i)] = clamp_param(p, o.values.get(p));
       }
+      for (std::size_t k = 0; k < c.curves.size(); ++k) c.curves[k] = sanitise(o.values.curves[k]);
+      c.spots = o.values.spots;
+      c.spot_count = std::min<std::uint8_t>(o.values.spot_count, kRedEyeSpots);
+      continue;
+    }
+    if (o.kind == op_kind::red_eye) {
+      if (o.spot.r <= 0.0f) {
+        c.spots = {};
+        c.spot_count = 0;
+      } else if (c.spot_count < kRedEyeSpots && std::isfinite(o.spot.x) && std::isfinite(o.spot.y)) {
+        c.spots[c.spot_count++] = {std::clamp(o.spot.x, 0.0f, 1.0f), std::clamp(o.spot.y, 0.0f, 1.0f),
+                                   std::clamp(o.spot.r, 0.001f, 0.1f)};
+      }
+      continue;
+    }
+    if (o.kind == op_kind::curve) {
+      const auto k = static_cast<std::size_t>(o.channel);
+      if (k < c.curves.size()) c.curves[k] = sanitise(o.values.curves[k]);
       continue;
     }
     if (o.kind != op_kind::adjust) continue;
@@ -198,6 +460,9 @@ adjust_uniforms uniforms_of(const colour& c) noexcept {
   const float width = softness == 0.0f ? gfx::kVignetteWidth : gfx::kVignetteWidth + 0.4f * softness;
   a[5][1] = inner;
   a[5][2] = inner + width;
+  a[5][3] = c.has_table() ? 1.0f : 0.0f;
+  a[3][3] = c.spot_count > 0 ? 1.0f : 0.0f;
+  a[4][3] = c.has_selective() ? 1.0f : 0.0f;
   return u;
 }
 

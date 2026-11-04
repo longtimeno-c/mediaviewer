@@ -58,6 +58,7 @@ struct blit_params {
   // The uniforms are edit::adjust_uniforms' a0 .. a5.
   bool adjust = false;
   adjust_vectors adjust_u;
+  adjust_table adjust_t;  // slices 2-3: read when reads_table(adjust_u)
 };
 
 // One tile of a tiled pyramid (image/tiles.h), as the render thread draws it.
@@ -109,6 +110,8 @@ class blitter {
   com_ptr<ID3D11PixelShader> tile_ps_;
   com_ptr<ID3D11InputLayout> tile_layout_;
   com_ptr<ID3D11Buffer> cb_;
+  com_ptr<ID3D11Buffer> lut_cb_;  // slice 2: register(b1), the levels and curves table
+  adjust_table lut_shown_;        // what lut_cb_ holds
   com_ptr<ID3D11Buffer> tile_instances_;  // dynamic per-instance tile records
   com_ptr<ID3D11SamplerState> aniso_;
   com_ptr<ID3D11SamplerState> point_;

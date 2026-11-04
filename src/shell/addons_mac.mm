@@ -763,6 +763,7 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   // both read index.db), its index's coordinates serve every add-on's
   // locations_of_index (Places' place: over the whole index).
   mv::addon::publish_index_locations(mv::addon::ai_index_locations(static_cast<const mv_ai_api*>(table)));
+  mv::addon::publish_ai_eyes(mv::addon::ai_eyes(static_cast<const mv_ai_api*>(table)));  // edit-adjust slice 6
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, true);
   register_local_search_provider(true);
   // #355: before anything is searched, whether audio files are.

@@ -1280,6 +1280,18 @@ void MV_CALL t_still_close(void*, void* still) {
   }
 }
 
+mv_status MV_CALL t_still_mask(void* host, const char* path, float* out, uint32_t cap, uint32_t* count) {
+  return guarded([&] {
+    if (!path || !count || (cap > 0 && !out)) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().still_mask;
+    const std::vector<float> dabs = fn ? fn(path) : std::vector<float>{};
+    *count = static_cast<uint32_t>(dabs.size() / 3);
+    const std::size_t n = std::min<std::size_t>(cap, *count) * 3;
+    if (n > 0) std::memcpy(out, dabs.data(), n * sizeof(float));
+    return MV_OK;
+  });
+}
+
 mv_status MV_CALL t_still_write(void* host, const char* source, const uint8_t* rgb, uint32_t w, uint32_t h,
                                 uint32_t stride, const char* suffix, char* out, uint32_t cap) {
   return guarded([&] {
@@ -1465,6 +1477,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.open_item = &t_open_item;
   if (svc_.route) api_.route_of = &t_route_of;  // #606
   api_.watch_tree = &t_watch_tree;
+  if (svc_.still_mask) api_.still_mask = &t_still_mask;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }
