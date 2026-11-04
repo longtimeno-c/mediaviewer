@@ -191,7 +191,10 @@ if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
     "${MV_ROOT}/src/edit/clip_picture_io.cpp"
     "${MV_ROOT}/src/edit/clip_look_run.cpp"
     "${MV_ROOT}/src/edit/clip_look.cpp"
+    # The look's colour (edit::colour, uniforms_of) is the photo edit's: its
+    # two TUs need nothing else (edit/adjust.cpp calls edit_stack.cpp's invert).
     "${MV_ROOT}/src/edit/adjust.cpp"
+    "${MV_ROOT}/src/edit/edit_stack.cpp"
     "${MV_ROOT}/src/edit/clip_run.cpp"
     "${MV_ROOT}/src/edit/clip_jobs.cpp"
     "${MV_ROOT}/src/edit/clip_wire.cpp"
