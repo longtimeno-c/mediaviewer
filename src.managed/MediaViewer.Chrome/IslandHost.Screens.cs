@@ -342,10 +342,19 @@ public static partial class IslandHost
                     box.Items.Add(new ComboBoxItem { Content = JStr(o, "text"), IsEnabled = !disabled });
                 }
                 box.SelectedIndex = ids.IndexOf(value);
+                int chosen = box.SelectedIndex;
                 box.SelectionChanged += (_, _) =>
                 {
-                    if (box.SelectedIndex >= 0 && box.SelectedIndex < ids.Count && !off.Contains(box.SelectedIndex))
-                        SendScreenEvent(at, id, SlotNative.EventChange, JsonString(ids[box.SelectedIndex]));
+                    int i = box.SelectedIndex;
+                    if (i < 0 || i >= ids.Count || i == chosen) return;
+                    // A disabled option reached by the keyboard: back to the one chosen.
+                    if (off.Contains(i))
+                    {
+                        box.SelectedIndex = chosen;
+                        return;
+                    }
+                    chosen = i;
+                    SendScreenEvent(at, id, SlotNative.EventChange, JsonString(ids[i]));
                 };
                 return box;
             }

@@ -348,6 +348,9 @@ hosts draw it (`ScreenView.swift` `ChoiceNode`, `IslandHost.Screens.cs`). The hu
 `NoteEnhanceLevel` (`IslandHost.EnhanceHub.cs`); the tab opens Enhance's settings screen while it
 shows to read `tierlevel`. Potato shows Restyle with Standard only (the default). Per-level files:
 not built (call F). Not run: either host in the app (no windows here); Windows C# compiled only.
+S9 review: a level changed in Settings reposts an open sheet (its gating and quality follow at
+once); Windows asks for Enhance's page again when the add-on loads while the tab shows, and its
+ComboBox goes back from a disabled option the keyboard reaches.
 
 ---
 

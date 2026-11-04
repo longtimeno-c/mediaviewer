@@ -71,6 +71,9 @@ public static partial class IslandHost
         }
         RefreshSlotSettings();
         SyncAddonSettingsScreen(reopen: true);
+        // Enhance loaded (or again) while its Edit tab shows: ask for its page,
+        // whose "tierlevel" the tab's chip reads (a no-op in the core while open).
+        if (_enhanceLevelChip is not null) OpenEnhanceLevel();
     }
 
     // ---- the share menu's Driftwire entry (#413, #444) ----------------------------------

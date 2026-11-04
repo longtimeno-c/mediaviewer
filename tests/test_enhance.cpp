@@ -1879,6 +1879,22 @@ TEST_CASE("enhance: the sheet's Restyle quality follows the level", "[enhance][t
   f.eng->sheet_opened(6, utf8(photo));
   CHECK(quality() == "standard");
   CHECK(f.eng->current_prefs().of(model_kind::restyle).at("quality").s == "best");
+  // The level changed in Settings while the sheet is open: the sheet follows
+  // at once, its options and the quality it shows (and runs).
+  f.eng->event(kSettingsScreen, "tier", MV_SLOT_EVENT_CHANGE, "\"maxxed\"");
+  CHECK(quality() == "best");
+  f.eng->event(kSettingsScreen, "tier", MV_SLOT_EVENT_CHANGE, "\"intel\"");
+  CHECK(quality() == "standard");
+  {
+    const parsed t(f.host.tree(kSheetScreen));
+    const mv::json::value* best = nullptr;
+    for (const mv::json::value& o : t.node("k.restyle.quality")->find("options")->a) {
+      if (*o.str("id") == "best") best = &o;
+    }
+    REQUIRE(best);
+    REQUIRE(best->find("disabled"));
+    CHECK(best->find("disabled")->b);
+  }
 }
 
 TEST_CASE("restyle: the shipped model's qualities", "[enhance][restyle]") {

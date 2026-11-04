@@ -535,6 +535,9 @@ void engine::event(const std::string& screen, const std::string& node, std::uint
         save_locked();
       }
       post_settings_locked();
+      // An open sheet's Restyle quality follows the level (S9): the options it
+      // gates and the quality it shows and runs.
+      post_sheet_locked();
       return;
     }
     if (kind != MV_SLOT_EVENT_CLICK) return;

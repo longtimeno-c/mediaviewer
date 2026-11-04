@@ -852,7 +852,7 @@ own: an older core refuses a tree that uses it, so the step is taken with this r
 additions (the Edit pane's `place "edit"`) when its number is chosen:
 
 - **A `choice` option's `"disabled": true`**: listed, never chosen. The core refuses a change to
-  it (`"[screens]"`); the Mac's Picker greys the item and ignores it, Windows' `ComboBoxItem` is
+  it (`"[screens]"`); the Mac's Picker marks the item `.disabled` and ignores a choice of it, Windows' `ComboBoxItem` is
   not enabled. The option's text says why (Enhance: *Best (needs Maxxed level)*).
 
 For a script add-on (PR 57): the registry reaches code through `slot_client`; a script runtime
