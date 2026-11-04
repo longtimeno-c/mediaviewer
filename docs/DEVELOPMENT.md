@@ -2252,6 +2252,11 @@ Windows `IslandHost.Glow.cs`). A stable release packs Enhance as a preferred add
 `mediaviewer-addon-enhance-{win-x64,macos}.{zip,json,json.sig}` (the Mac pack arm64 only, signed
 and notarized by `macpack.py addon`) when that platform's pack is complete; a packing failure warns
 and the release publishes without it.
+Each kind may ship several models (`models/<kind>/<id>.json`; `model.json` is the default): photos
+and video offer "Detail, fast" (x4v3) and "Detail, best" (x4plus), chosen on the page or the sheet,
+each downloaded and removed on its own. The sheet opens from Enhance… in the context menu or
+`Ctrl+Shift+R` / `⌘⇧R` and downloads a missing model itself; a photo's run shows it redrawn tile by
+tile behind a glowing front.
 
 Pack it from a dev build (ONNX Runtime, the models' specs and `remote.json` are staged beside the
 library by the build), then sideload as any slot add-on:
