@@ -619,6 +619,9 @@ TEST_CASE("adjust pane: ✦ Auto is one token, no section spinner, and a second 
   (void)pane.show(true, false);
   const auto build = pane.set_item(41, false);
   REQUIRE(build.has_value());
+  // The host's waiting ✦ Auto keys on the item (auto_enhance_settle).
+  CHECK(pane.item() == 41u);
+  CHECK(pane.readiness() == mv::shell::adjust_readiness::preparing);
   REQUIRE(pane.working_landed(*build, true, false));
 
   CHECK_FALSE(pane.request_auto(0).has_value());
@@ -646,4 +649,5 @@ TEST_CASE("adjust pane: ✦ Auto is one token, no section spinner, and a second 
   // A new item forgets it.
   (void)pane.set_item(42, false);
   CHECK_FALSE(pane.auto_enhance_on(3, landed));
+  CHECK(pane.item() == 42u);
 }

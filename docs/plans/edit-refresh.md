@@ -123,6 +123,14 @@ stay S3's), ✦ Auto (`auto_enhance` = 214; `edit::compute_auto_sections`,
 cards and the ✦ popover / Flyout launching the existing sheet (B's docked run is S5's). Not run
 here: the app on either host (no screenshots at 320/420/640/760 yet), both PR 1 gates, the
 selftest; the Windows native and C# are compiled only as far as the Mac allows (C# compiles).
+S2 review (2026-11-04): a ✦ Auto waiting for the working image now runs only on the photo it was
+pressed on (`adjust_pane::item`, `auto_enhance_settle` / `-autoEnhanceSettle`); moving on, the
+pane dropping the image or a failed read ends the wait instead of leaving ✦ busy or running Auto on
+the next photo. The Windows selftest presses ✦ Auto on the Adjust tab (a still with no colour drops
+its working image when Adjust hides) and gains the "a bit warmer" line; the rail is in the Windows
+Tab ring and its tooltips follow a remap; `chrome_cmd_inspector_min` joins both checksums; the
+Windows header reports only height changes and re-lays only on a class change; the Mac title row's
+ideal width no longer includes the whole file name, so a long name does not drop ✦ Auto's label.
 
 ### 2.2 Canvas refit without touching the swapchain (both present labs)
 

@@ -295,7 +295,7 @@ public static partial class IslandHost
                 EditorTrimGrab, EditorTrimTo, OpenInApp,
                 VideoVolume, VideoMuted, VideoTrack, VideoLoop,
                 Rename, GalleryRange,
-                EditStripHeight, PaneEdgeState,
+                EditStripHeight, PaneEdgeState, InspectorMin,
             };
             unchecked
             {
@@ -601,6 +601,7 @@ public static partial class IslandHost
                 else if (OwnsRoot(_transport, root)) kind = FocusKind.Transport;
                 else if (OwnsRoot(_metaPane, root) || OwnsRoot(_tree, root) || OwnsRoot(_adjustPane, root) ||
                          OwnsRoot(_editPane, root) || OwnsRoot(_jobsPane, root) ||
+                         OwnsRoot(_editRail, root) ||  // docs/plans/edit-refresh.md S2: the icon rail
                          OwnsRoot(_editorTimeline, root) || OwnsRoot(_editorAway, root))
                 {
                     // PR 11: the adjust pane too — its sliders own the arrows.
@@ -927,13 +928,14 @@ public static partial class IslandHost
 
     // docs/design/16 Focus: the rings Tab crosses, in screen reading order —
     // command bar, folder tree, gallery, the right column (Edit, metadata,
-    // adjust, jobs), transport, filmstrip, the AI badge while it is up (#345:
+    // adjust, jobs, then the Edit rail at the window's edge), transport,
+    // filmstrip, the AI badge while it is up (#345:
     // it sits on the canvas, so it is the last ring before it) — and then the
     // canvas. A ring is visible while its island has content (hidden ones are
     // dropped and parked).
     private static DesktopWindowXamlSource?[] FocusOrder() => new[]
     {
-        _source, _tree, _gallery, _editPane, _metaPane, _adjustPane, _jobsPane, _transport, _filmstrip,
+        _source, _tree, _gallery, _editPane, _metaPane, _adjustPane, _jobsPane, _editRail, _transport, _filmstrip,
         _aiBadgeShown ? _aiBadge : null,
     };
 

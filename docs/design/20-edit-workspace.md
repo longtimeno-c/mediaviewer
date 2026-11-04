@@ -257,9 +257,9 @@ same commands its buttons run, writing a window capture (Windows: `PrintWindow`,
 islands included) and a state line per step. Inert unless set; it counts as a harness run (no
 hand-off to a running viewer, no `[recent]` entry).
 
-On a still: open → pick 3:2 (or 1:1) → Apply → Adjust → Enhance tab and ✦ Auto (the Mac logs
-`auto_enhance:` with the op count before, after and after a second press, and
-`prompt_temperature:` for "a bit warmer"; capture `s4d-enhance`) → Info (set `Exif.Image.Artist`
+On a still: open → pick 3:2 (or 1:1) → Apply → Adjust → ✦ Auto and the Enhance tab (both hosts
+log `auto_enhance:` with the op count before, after and after a second press, and
+`prompt_temperature:` for a typed "a bit warmer"; capture `s4d-enhance`) → Info (set `Exif.Image.Artist`
 and the date, read both back) → Original → Save copy → Esc → Revert. It checks that the copy's ratio
 matches the preset within a pixel and that the original's SHA-1 is unchanged after the revert.
 On a clip: open on Trim → arm → Jobs → Esc.

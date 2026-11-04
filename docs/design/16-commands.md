@@ -156,7 +156,8 @@ Rings, visible: **canvas** (default), **filmstrip**, **gallery**, **pane** (fold
 metadata, adjust, Edit, jobs), plus the command bar and the transport. `Tab` / `Shift+Tab` cross the
 island boundary; `Esc` returns to the canvas. Fullscreen hides chrome.
 On Windows `Tab` from the canvas walks the visible rings in reading order — command bar, folder
-tree, gallery, Edit, metadata, adjust, jobs, transport, filmstrip, the AI badge while it is up —
+tree, gallery, Edit, metadata, adjust, jobs, the Edit icon rail (docs/plans/edit-refresh.md S2),
+transport, filmstrip, the AI badge while it is up —
 and then back to the canvas;
 `Shift+Tab` walks it backwards (`IslandHost.FocusOrder`, issue #217).
 

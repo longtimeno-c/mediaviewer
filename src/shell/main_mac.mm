@@ -921,6 +921,7 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)editRailPick:(int32_t)tab;
 - (void)editTool:(int32_t)tool;
 - (void)autoEnhance;
+- (void)autoEnhanceSettle;
 - (void)editClose;
 - (void)editSetAspect:(int32_t)aspect portrait:(BOOL)portrait;
 - (void)editSetStraighten:(float)degrees;
@@ -3583,6 +3584,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // last sync; ✦ Auto waiting for the working image, and its job's token.
   BOOL _wsFolded;
   BOOL _autoEnhancePending;
+  std::uint64_t _autoEnhanceItem;  // the adjust item the waiting click was for
   std::uint64_t _autoEnhanceToken;
   int _selfTestEditsBeforeAuto;  // MV_EDIT_SELFTEST's ✦ Auto line
   BOOL _showOriginal;
@@ -8835,9 +8837,15 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   if (_adjust.auto_busy()) return;
   if (!_working) {
     // The working image is not there yet (Adjust builds it): ask for it and
-    // run once it lands.
-    _autoEnhancePending = YES;
+    // run once it lands, on this photo only (-autoEnhanceSettle).
     [self adjustBuildIf:_adjust.show(_adjust.visible(), true)];
+    if (_adjust.readiness() != mv::shell::adjust_readiness::preparing) {
+      NSBeep();  // it cannot be read: nothing will land
+      return;
+    }
+    _autoEnhancePending = YES;
+    _autoEnhanceItem = _adjust.item();
+    ++_editGeneration;  // the header's ✦ shows it is waiting
     [self noticeShow:std::string("Preparing the photo for Auto…")];
     return;
   }
@@ -8860,6 +8868,22 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
                     });
                     return ok ? mv::status::ok : r.error();
                   });
+}
+
+// ✦ Auto waiting for the working image: it runs once the image is ready for
+// the photo it was clicked on; when the build stopped instead (another photo,
+// the pane dropped the image, it failed), the wait ends and nothing runs.
+- (void)autoEnhanceSettle {
+  if (!_autoEnhancePending) return;
+  const bool same = _adjust.item() == _autoEnhanceItem;
+  const mv::shell::adjust_readiness r = _adjust.readiness();
+  if (same && r == mv::shell::adjust_readiness::preparing) return;
+  _autoEnhancePending = NO;
+  if (same && r == mv::shell::adjust_readiness::ready && _working) {
+    [self autoEnhance];
+  } else {
+    ++_editGeneration;  // the header's ✦ stops waiting
+  }
 }
 
 - (void)editClose {
@@ -11143,13 +11167,8 @@ static double mv_wall_seconds() {
     _detailShown = {};
     [self scheduleHistogram];
     [self scheduleDetail];
-    if (_autoEnhancePending) {
-      _autoEnhancePending = NO;
-      [self autoEnhance];  // ✦ Auto was pressed before the photo was ready
-    }
-  } else if (_autoEnhancePending && !ok) {
-    _autoEnhancePending = NO;
   }
+  [self autoEnhanceSettle];  // ✦ Auto clicked before the photo was ready
   [self bumpAdjustView];
 }
 
@@ -11231,6 +11250,7 @@ static double mv_wall_seconds() {
     _lab.drop_working();
   }
   [self adjustBuildIf:token];
+  [self autoEnhanceSettle];  // a ✦ Auto waiting for another photo ends
   [self bumpAdjustView];
 }
 
@@ -11300,6 +11320,7 @@ static double mv_wall_seconds() {
     ++_detailToken;
     _lab.drop_working();
     _adjust.working_dropped();
+    [self autoEnhanceSettle];  // its build went with it
   }
   self.adjustHost.hidden = !visible;
   [self layoutAIBadge];  // #345

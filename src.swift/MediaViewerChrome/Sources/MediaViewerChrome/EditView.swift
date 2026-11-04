@@ -60,34 +60,40 @@ struct EditStripView: View {
   @ViewBuilder
   private func titleRow(labels: Bool) -> some View {
     HStack(spacing: MVTheme.space(6)) {
-      Text(store.name.isEmpty ? store.title : store.name)
-        .font(MVTheme.font(15))
-        .foregroundStyle(MVTheme.title)
-        .lineLimit(1)
-        .truncationMode(.middle)
-        .layoutPriority(-1)
-        .help(store.name)
-        .accessibilityLabel("\(store.title): \(store.name)")
-      if store.editCount > 0 && !store.isClip {
-        Text(labels ? countText : "\(store.editCount)")
-          .font(MVTheme.font(11).monospacedDigit())
-          .foregroundStyle(MVTheme.body)
-          .padding(.horizontal, MVTheme.space(6))
-          .padding(.vertical, MVTheme.space(1))
-          .background(Capsule().fill(MVTheme.surface2))
-          .overlay(Capsule().stroke(MVTheme.hairline, lineWidth: 0.5))
-          .fixedSize()
-          .help("\(countText) on this photo; the original is never changed")
-          .accessibilityLabel(countText)
+      // The name, its count and chip take what Auto leaves. Their ideal width
+      // is small on purpose: ViewThatFits measures ideal widths, and a long
+      // file name (it truncates in the middle anyway) must not cost ✦ Auto
+      // its label.
+      HStack(spacing: MVTheme.space(6)) {
+        Text(store.name.isEmpty ? store.title : store.name)
+          .font(MVTheme.font(15))
+          .foregroundStyle(MVTheme.title)
+          .lineLimit(1)
+          .truncationMode(.middle)
+          .layoutPriority(-1)
+          .help(store.name)
+          .accessibilityLabel("\(store.title): \(store.name)")
+        if store.editCount > 0 && !store.isClip {
+          Text(labels ? countText : "\(store.editCount)")
+            .font(MVTheme.font(11).monospacedDigit())
+            .foregroundStyle(MVTheme.body)
+            .padding(.horizontal, MVTheme.space(6))
+            .padding(.vertical, MVTheme.space(1))
+            .background(Capsule().fill(MVTheme.surface2))
+            .overlay(Capsule().stroke(MVTheme.hairline, lineWidth: 0.5))
+            .fixedSize()
+            .help("\(countText) on this photo; the original is never changed")
+            .accessibilityLabel(countText)
+        }
+        if store.chips & 2 != 0 {
+          chip(labels ? "iCloud" : nil, symbol: "icloud.and.arrow.down",
+               help: "Downloading the original from iCloud…")
+        } else if store.chips & 1 != 0 {
+          chip(labels ? "Photos" : nil, symbol: "photo.on.rectangle",
+               help: "A photo in your Photos library: results are added as new photos")
+        }
       }
-      if store.chips & 2 != 0 {
-        chip(labels ? "iCloud" : nil, symbol: "icloud.and.arrow.down",
-             help: "Downloading the original from iCloud…")
-      } else if store.chips & 1 != 0 {
-        chip(labels ? "Photos" : nil, symbol: "photo.on.rectangle",
-             help: "A photo in your Photos library: results are added as new photos")
-      }
-      Spacer(minLength: MVTheme.space(4))
+      .frame(minWidth: 0, idealWidth: 96, maxWidth: .infinity, alignment: .leading)
       if !store.isClip {
         autoButton(labels: labels)
       }

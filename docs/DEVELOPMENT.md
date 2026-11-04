@@ -1639,8 +1639,9 @@ It quits when done, leaving `s0-viewer` … `s8-closed-reverted` captures (PNG o
 Windows; a clip gives `c0` … `c4`) and `state.txt` in the folder. Since the inspector refresh
 (docs/plans/edit-refresh.md S2) a still also passes the Enhance tab (`s4d-enhance`) and presses
 ✦ Auto twice: `state.txt`'s `auto_enhance:` line should read `after` one more than
-`edits_before`, `on=1`, and `after_second_press` back at `edits_before`. On the Mac the typed
-request's `prompt_temperature:` line should read `rose=1`. On the Mac,
+`edits_before`, `on=1`, and `after_second_press` back at `edits_before`. The typed request's
+`prompt_temperature:` line (both hosts; "a bit warmer" on Windows, a longer request on the Mac)
+should read `rose=1`. On the Mac,
 `MV_EDIT_SELFTEST_DARK=1` or `0` forces Dark or Light Mode; Windows follows the system theme.
 
 On a clip it opens the Video Editor and, on the Mac, also walks a marked range, a dragged edge,

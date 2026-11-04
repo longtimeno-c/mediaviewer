@@ -447,7 +447,7 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_editor_trim_grab, chrome_cmd_editor_trim_to, chrome_cmd_open_in_app,
       chrome_cmd_video_volume, chrome_cmd_video_muted, chrome_cmd_video_track,
       chrome_cmd_video_loop, chrome_cmd_rename, chrome_cmd_gallery_range,
-      chrome_cmd_edit_strip_height, chrome_cmd_pane_edge_state};
+      chrome_cmd_edit_strip_height, chrome_cmd_pane_edge_state, chrome_cmd_inspector_min};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);

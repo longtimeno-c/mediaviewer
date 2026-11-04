@@ -114,6 +114,8 @@ class adjust_pane {
   // rebuilds it.
   void working_dropped() noexcept;
   [[nodiscard]] adjust_readiness readiness() const noexcept { return readiness_; }
+  // The item set_item last named (0 = none).
+  [[nodiscard]] std::uint64_t item() const noexcept { return item_; }
   [[nodiscard]] bool working_ready() const noexcept { return readiness_ == adjust_readiness::ready; }
 
   // Histogram requests: the host debounces, then asks. A token when the

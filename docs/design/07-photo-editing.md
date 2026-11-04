@@ -208,7 +208,8 @@ Light's Auto, then Colour's on what Light left (`compute_auto_sections` with
 does, `kWandAutoBusy`). When it lands the pane records the stack's op count and colour
 (`auto_enhance_landed`); while the stack is still exactly that (`auto_enhance_on`, `kWandAutoOn`)
 the next press is an undo of that one op, so a second click takes it back. Pressed before the
-working image exists, it asks for the image and runs when it lands.
+working image exists, it asks for the image and runs when it lands, on that photo only: moving
+to another photo, the pane dropping the image or a failed read ends the wait and nothing runs.
 
 **Auto tone** (`edit/auto_tone.h`, #289, Preview's Auto Levels): exposure and contrast from the
 histogram, a levels stretch fitted to the two tone controls the kernel has, a gain and a power

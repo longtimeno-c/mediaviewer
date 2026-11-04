@@ -402,7 +402,12 @@ public static partial class IslandHost
         // docs/plans/edit-refresh.md S2: the header is as tall as its content (one
         // row or two, labels or icons, the type scale); native lays the panes
         // under it. Sent when it changes, never per frame.
-        strip.SizeChanged += (_, e) => Send(Command.EditStripHeight, (float)Math.Ceiling(e.NewSize.Height + 1));
+        strip.SizeChanged += (_, e) =>
+        {
+            // Only the height matters (a drag of the column's edge changes the width every frame).
+            if (Math.Abs(e.NewSize.Height - e.PreviousSize.Height) < 0.5) return;
+            Send(Command.EditStripHeight, (float)Math.Ceiling(e.NewSize.Height + 1));
+        };
         // The width class: labels or icons, one column or two. Nothing is rebuilt
         // for a width; the same controls change in place.
         root.SizeChanged += (_, e) => ApplyEditWidthClass(e.NewSize.Width);
@@ -439,13 +444,15 @@ public static partial class IslandHost
     // cards are two columns.
     private static void ApplyEditWidthClass(double width)
     {
+        // Everything is built for the current class (BuildEditStrip, the Crop
+        // pane and the hub lay themselves out with it), so a drag inside one
+        // class costs nothing here.
         int cls = WidthClassOf(width);
-        if (cls == _editWidthClass && EditCompactHidden.Count == 0 && _editAspectGrid is null) return;
-        bool changed = cls != _editWidthClass;
+        if (cls == _editWidthClass) return;
         _editWidthClass = cls;
         Visibility labels = cls == WidthCompact ? Visibility.Collapsed : Visibility.Visible;
         foreach (UIElement e in EditCompactHidden) e.Visibility = labels;
-        if (changed || _editAspectGrid is not null) LayAspectGrid();
+        LayAspectGrid();
         LayStraightenTurn();
         LayEnhanceGrid();
     }

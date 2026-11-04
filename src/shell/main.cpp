@@ -348,6 +348,7 @@ struct app_state {
   // working image.
   std::uint64_t auto_enhance_token = 0;
   bool auto_enhance_pending = false;
+  std::uint64_t auto_enhance_item = 0;  // the adjust item the waiting press was for
   // Slice 4: the working image as built, before the detail pass; the pass on
   // the canvas (`working` is its result), and the one in flight.
   std::shared_ptr<const mv::image::linear_image> working_base;
@@ -2696,9 +2697,14 @@ void run_auto_enhance(app_state* app) {
   if (app->adjust.auto_busy()) return;
   if (!app->working) {
     // The working image is not there yet (Adjust builds it): ask for it and
-    // run once it lands.
-    app->auto_enhance_pending = true;
+    // run once it lands, on this photo only (auto_enhance_settle).
     adjust_build_if(app, app->adjust.show(app->adjust.visible(), true));
+    if (app->adjust.readiness() != mv::shell::adjust_readiness::preparing) {
+      ::MessageBeep(MB_ICONWARNING);  // it cannot be read: nothing will land
+      return;
+    }
+    app->auto_enhance_pending = true;
+    app->auto_enhance_item = app->adjust.item();
     notice_show(app, "Preparing the photo for Auto…");
     push_edit_view(app);
     return;
@@ -2723,6 +2729,22 @@ void run_auto_enhance(app_state* app) {
                         post_adjust_result(hwnd, r);
                         return a ? mv::status::ok : a.error();
                       });
+}
+
+// ✦ Auto waiting for the working image: it runs once the image is ready for
+// the photo it was pressed on; when the build stopped instead (another photo,
+// the pane dropped the image, it failed), the wait ends and nothing runs.
+void auto_enhance_settle(app_state* app) {
+  if (!app->auto_enhance_pending) return;
+  const bool same = app->adjust.item() == app->auto_enhance_item;
+  const mv::shell::adjust_readiness r = app->adjust.readiness();
+  if (same && r == mv::shell::adjust_readiness::preparing) return;
+  app->auto_enhance_pending = false;
+  if (same && r == mv::shell::adjust_readiness::ready && app->working) {
+    run_auto_enhance(app);
+  } else {
+    push_edit_view(app);
+  }
 }
 
 // Slice 2: a curve from the pane, parked as "channel\tx,y;x,y;...". A drag of a
@@ -2952,9 +2974,7 @@ void next_pending_auto(app_state* app) {
 
 // Slice 5b (edit/prompt.h): a typed request, parked by the island. Its slider
 // moves land as one op; the Autos it asked for run one after another.
-void prompt_from_pane(app_state* app) {
-  std::string text;
-  if (!app->chrome.take_parked_text(text)) return;
+void run_adjust_prompt(app_state* app, const std::string& text) {
   if (!app->adjust.working_ready() || !adjust_still(app)) return;
   const mv::edit::prompt_result r = mv::edit::parse_prompt(text, app->edits.colour());
   app->adjust.set_prompt_note(mv::edit::prompt_summary(r));
@@ -2966,6 +2986,12 @@ void prompt_from_pane(app_state* app) {
   app->pending_autos.assign(r.autos.begin(), r.autos.end());
   adjust_colour_changed(app);
   next_pending_auto(app);
+}
+
+void prompt_from_pane(app_state* app) {
+  std::string text;
+  if (!app->chrome.take_parked_text(text)) return;
+  run_adjust_prompt(app, text);
 }
 
 // A section's Reset: its sliders back to 0, one undo step.
@@ -3078,14 +3104,8 @@ void on_adjust_job_done(app_state* app, std::unique_ptr<adjust_job_result> r) {
     app->detail_shown = {};
     schedule_histogram(app);
     schedule_detail(app);
-    if (app->auto_enhance_pending) {
-      app->auto_enhance_pending = false;
-      run_auto_enhance(app);  // ✦ Auto was pressed before the photo was ready
-    }
-  } else if (app->auto_enhance_pending && !r->ok) {
-    app->auto_enhance_pending = false;
-    push_edit_view(app);
   }
+  auto_enhance_settle(app);  // ✦ Auto pressed before the photo was ready
   push_adjust_pane(app);
 }
 
@@ -3111,6 +3131,7 @@ void adjust_item_changed(app_state* app) {
     app->adjust_generation.fetch_add(1, std::memory_order_relaxed);
     start_working_build(app, *token);
   }
+  auto_enhance_settle(app);  // a ✦ Auto waiting for another photo ends
   push_adjust_pane(app);
 }
 
@@ -3147,6 +3168,7 @@ void set_adjust_pane(app_state* app, bool on) {
     ++app->detail_token;
     app->lab.drop_working();
     app->adjust.working_dropped();
+    auto_enhance_settle(app);  // its build went with it
   }
   app->focus_adjust_next = on;  // docs/design/16 "Pane": opening focuses it; Esc returns to the canvas
   apply_view_state(app);
@@ -9581,28 +9603,38 @@ void edit_selftest_tick(app_state* app) {
         break;
       case 5:
         edit_selftest_snap(app, "s4-colour");
-        // docs/plans/edit-refresh.md S2: the Enhance tab, and ✦ Auto (one op).
-        edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::enhance));
+        // docs/plans/edit-refresh.md S2: ✦ Auto (one op), pressed on the Adjust
+        // tab where the working image is (a still with no colour drops it when
+        // the pane goes, and its Auto with it).
         g_edit_selftest_edits_before_auto = static_cast<int>(app->edits.edit_count());
         run_auto_enhance(app);
         break;
       case 6: {
-        edit_selftest_snap(app, "s4d-enhance");
         const int after = static_cast<int>(app->edits.edit_count());
         const bool on = app->adjust.auto_enhance_on(app->edits.edit_count(), app->edits.colour());
         run_auto_enhance(app);  // a second press takes it back
-        char line[160];
+        char line[256];
         std::snprintf(line, sizeof(line), "    auto_enhance: edits_before=%d after=%d on=%d after_second_press=%d\n",
                       g_edit_selftest_edits_before_auto, after, on ? 1 : 0,
                       static_cast<int>(app->edits.edit_count()));
+        // §7 S2: a typed "a bit warmer" moves the temperature one step.
+        const float warm_before = app->edits.colour().get(mv::edit::adjust_param::temperature);
+        run_adjust_prompt(app, "a bit warmer");
+        const float warm_after = app->edits.colour().get(mv::edit::adjust_param::temperature);
+        char warm[160];
+        std::snprintf(warm, sizeof(warm), "    prompt_temperature: before=%g after=%g rose=%d\n",
+                      static_cast<double>(warm_before), static_cast<double>(warm_after),
+                      warm_after > warm_before ? 1 : 0);
         if (FILE* f = _wfopen((g_edit_selftest_dir + L"\\state.txt").c_str(), L"ab")) {
           std::fputs(line, f);
+          std::fputs(warm, f);
           std::fclose(f);
         }
-        edit_select_tab(app, 2);
+        edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::enhance));
         break;
       }
-      case 7: {
+      case 7: edit_selftest_snap(app, "s4d-enhance"); edit_select_tab(app, 2); break;
+      case 8: {
         edit_selftest_snap(app, "s5-info");
         // Any tag, and the date, from the Info tab (what its Enter sends).
         const std::string path = current_item_path(app);
@@ -9613,24 +9645,24 @@ void edit_selftest_tick(app_state* app) {
         schedule_meta_write(app, kCommentDebounceMs);
         break;
       }
-      case 8:
+      case 9:
         edit_selftest_snap(app, "s5b-info-edited");
         edit_select_tab(app, 0);
         run_edit_action(app, static_cast<int>(mv::shell::chrome_edit_action::original_on));
         break;
-      case 9:
+      case 10:
         edit_selftest_snap(app, "s6-original");
         run_edit_action(app, static_cast<int>(mv::shell::chrome_edit_action::original_off));
         run_edit_action(app, static_cast<int>(mv::shell::chrome_edit_action::save_copy));
         break;
-      case 10:
+      case 11:
         edit_selftest_snap(app, "s7-save-copy");
         // The dialog's Save with its defaults (what chrome_cmd_export runs).
         app->chrome.show_popup(mv::shell::chrome_popup::close, 0);
         app->popup_open = false;
         start_export(app, mv::shell::unpack_export(app->export_choice));
         break;
-      case 11:
+      case 12:
         walk_back(app, mv::shell::back_target::pane);
         revert_current_metadata(app);
         break;
