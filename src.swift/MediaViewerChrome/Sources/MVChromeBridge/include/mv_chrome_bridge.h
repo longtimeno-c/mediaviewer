@@ -49,6 +49,8 @@ enum MvMenuCmd : int32_t {
   kMenuPrint,
   // docs/plans/edit-refresh.md S1: View > Wider / Narrower Side Pane.
   kMenuPaneWider, kMenuPaneNarrower,
+  // S2: Edit > Auto Enhance.
+  kMenuAutoEnhance,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 
@@ -1059,8 +1061,14 @@ typedef struct mv_edit_view {
   int32_t enhance;        // edit-adjust slice 5: the Enhance add-on is loaded (the strip offers Enhance…)
   // The wand menu's state, bits: 1 the Remove brush is on, 2 something is
   // brushed, 4 the brush is full, 8 Enhance offers Restyle, 16 Open closed eyes
-  // is running (shell/adjust_pane.h kWand*).
+  // is running; docs/plans/edit-refresh.md S2: 32 Extend, 64 more detail,
+  // 128 the faces can run (the AI pack), 256 ✦ Auto is the last edit (a click
+  // takes it back), 512 ✦ Auto is running (shell/adjust_pane.h kWand*).
   int32_t wand;
+  // S2: the header's chip, bits: 1 a Photos-library photo, 2 its original is
+  // being fetched from iCloud. And the inspector folded to the rail.
+  int32_t chips;
+  int32_t collapsed;
 } mv_edit_view;
 uint64_t mv_chrome_edit_generation(void);
 bool mv_chrome_edit_view(mv_edit_view* out);
@@ -1068,6 +1076,15 @@ bool mv_chrome_edit_view(mv_edit_view* out);
 int32_t mv_chrome_edit_name(char* buf, int32_t size);
 // A tab the subject offers; others are ignored.
 void mv_chrome_edit_select_tab(int32_t tab);
+// docs/plans/edit-refresh.md S2: a click on the rail's icon for `tab` (another
+// tab selects it; the active one folds the inspector to the rail; a folded
+// rail unfolds on that tab).
+void mv_chrome_edit_rail(int32_t tab);
+// The rail's and the Enhance tab's tools: 0 Remove (the brush), 1 Red-eye,
+// 2 Faces, 3 Extend (Enhance's sheet).
+void mv_chrome_edit_tool(int32_t tool);
+// ✦ Auto (auto_enhance): one undo step; right after, a second call takes it back.
+void mv_chrome_edit_auto(void);
 // Done / the close button: applies a crop draft, then closes.
 void mv_chrome_edit_close(void);
 // The Crop pane: a preset (+ orientation), the straighten slider (degrees),

@@ -203,6 +203,19 @@ enum chrome_command : int {
   // Slice 7: the Remove brush; the argument 0 the last stroke off, 1 all of
   // them, 2 Remove (Enhance's sheet takes what is brushed).
   chrome_cmd_adjust_brush = 1093,
+  // docs/plans/edit-refresh.md S2 (ids reserved in that plan). edit_strip_height:
+  // the Edit header's own height in DIPs (it is intrinsic: one row or two,
+  // labels or icons, the type scale); native clamps it to [72, 220] and lays
+  // the panes out under it, re-laying only on a change of more than 1 DIP.
+  chrome_cmd_edit_strip_height = 1094,
+  // The other way, through notify(): native tells the panes the column edge's
+  // state, arg 0 idle, 1 hot (the pointer is on it), 2 dragged. The pane on
+  // top turns its left border to the accent at 2 px (the Mac's MvPaneEdgeView).
+  chrome_cmd_pane_edge_state = 1095,
+  // 1096-1098 are S3's (the canvas tool). inspector_min: the narrowest
+  // inspector the island lays out unclipped, in DIPs (300 x the theme's type
+  // scale; shell/pane_width.h theme_min). Sent with the theme; native re-clamps.
+  chrome_cmd_inspector_min = 1099,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -241,11 +254,18 @@ enum class chrome_edit_action : std::int32_t {
   save_copy = 3,     // applies a crop draft, then the PR 10 export dialog
   enhance = 4,       // slice 5: Enhance's sheet for the photo, with the edit in its copy
   restyle = 5,       // the wand menu: Enhance's sheet, started on Restyle with words
+  // docs/plans/edit-refresh.md S2: the Enhance tab's Remove card and the
+  // wand's Remove row: the Remove brush on (Adjust shows its Remove section).
+  arm_brush = 6,
+  arm_red_eye = 7,   // the rail's Red-eye: Adjust, with the red-eye picker on
+  show_enhance = 8,  // the rail's Faces, the flyout's last row: the Enhance tab
 };
 
 static_assert(chrome_cmd_popup >= kCommandCount);
 static_assert(chrome_cmd_adjust_curve >= kCommandCount && chrome_cmd_adjust_param >= kCommandCount &&
               chrome_cmd_adjust_prompt >= kCommandCount && chrome_cmd_adjust_brush >= kCommandCount);
+static_assert(chrome_cmd_edit_strip_height >= kCommandCount && chrome_cmd_pane_edge_state >= kCommandCount &&
+              chrome_cmd_inspector_min >= kCommandCount);
 
 // Which flyout ShowPopup opens (0 closes whatever is up). The C# side mirrors it.
 enum class chrome_popup : std::int32_t {
@@ -385,6 +405,10 @@ static_assert(static_cast<int>(command_id::search_open) == 157);
 static_assert(static_cast<int>(command_id::kind_filter_set) == 174);
 // Issue #614: the Open flyout's Print… (IslandHost.Command.Print).
 static_assert(static_cast<int>(command_id::print) == 184);
+// docs/plans/edit-refresh.md S1 / S2 (IslandHost.cs Command.PaneWider .. AutoEnhance).
+static_assert(static_cast<int>(command_id::pane_wider) == 212 &&
+              static_cast<int>(command_id::pane_narrower) == 213 &&
+              static_cast<int>(command_id::auto_enhance) == 214);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);
@@ -422,7 +446,8 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_drag_items, chrome_cmd_drag_ended, chrome_cmd_open_recent,
       chrome_cmd_editor_trim_grab, chrome_cmd_editor_trim_to, chrome_cmd_open_in_app,
       chrome_cmd_video_volume, chrome_cmd_video_muted, chrome_cmd_video_track,
-      chrome_cmd_video_loop, chrome_cmd_rename, chrome_cmd_gallery_range};
+      chrome_cmd_video_loop, chrome_cmd_rename, chrome_cmd_gallery_range,
+      chrome_cmd_edit_strip_height, chrome_cmd_pane_edge_state};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -625,9 +650,27 @@ struct chrome_edit_args {
   std::int32_t enhance;
   // The wand menu (adjust_pane.h kWand*): the Remove brush and what Enhance offers.
   std::int32_t wand;
+  // docs/plans/edit-refresh.md S2: the header's chip (kEditChip*), and the
+  // inspector folded to the rail (edit_workspace::collapsed).
+  std::int32_t chips;
+  std::int32_t collapsed;
 };
 
-static_assert(sizeof(chrome_edit_args) == 96, "keep in sync with IslandHost.Edit EditArgsSize");
+static_assert(sizeof(chrome_edit_args) == 104, "keep in sync with IslandHost.Edit EditArgsSize");
+
+// docs/plans/edit-refresh.md S2: what the Edit header's chip says about the item
+// (the Mac bridge's mv_edit_view.chips too).
+inline constexpr std::int32_t kEditChipLibrary = 1;  // a Photos-library item (the Mac only)
+inline constexpr std::int32_t kEditChipCloud = 2;    // in the cloud: reading it downloads it
+
+// docs/plans/edit-refresh.md S2: native to the island, a notification with one
+// number (chrome_command ids used the other way; chrome_cmd_pane_edge_state).
+struct chrome_notify_args {
+  std::int32_t id;
+  float value;
+};
+
+static_assert(sizeof(chrome_notify_args) == 8, "keep in sync with IslandHost.Notify");
 
 // PR 30 (docs/design/21): the Video Editor window. Its timeline is an island on the
 // editor's own top-level window; the card that says where the picture went is
@@ -830,7 +873,8 @@ struct chrome_rect {
 // (PR 29), Jobs (PR 13). The C# side numbers them the same (IslandHost.cs).
 // A pane missing here falls through to command_bar and the router runs viewer
 // commands on keys meant for it (issue #213).
-inline constexpr std::int32_t kPaneIslandIds[] = {6, 7, 8, 9, 10};
+// docs/plans/edit-refresh.md S2: 11, the Edit workspace's icon rail.
+inline constexpr std::int32_t kPaneIslandIds[] = {6, 7, 8, 9, 10, 11};
 inline constexpr int kPaneIslandCount = static_cast<int>(std::size(kPaneIslandIds));
 
 // classify_focus over explicit bridge windows. `islands` is indexed by
@@ -1001,6 +1045,14 @@ class chrome_host {
   // The strip, its pane and the command bar's Edit button read this. Pushed
   // whether or not the pane is up, so the button follows the item.
   void set_edit_view(const chrome_edit_args& args) noexcept;
+  // docs/plans/edit-refresh.md S2: the workspace's 44 DIP icon rail, its own
+  // island at the right edge (Crop, Adjust, Enhance, Info, the tools, Undo,
+  // Compare, Done). It reads set_edit_view. Optional like the panes.
+  void show_edit_rail(bool visible, int x, int y, int width, int height) noexcept;
+  [[nodiscard]] bool edit_rail_visible() const noexcept { return panels_attached_ && rail_visible_; }
+  // A notification to the islands (chrome_notify_args). Optional: an older
+  // chrome ignores it.
+  void notify(chrome_command id, float value) noexcept;
 
   // PR 30 (docs/design/21): the Video Editor window's islands -- its timeline, on the
   // editor's own window, and the card on the viewer's that says where the
@@ -1226,6 +1278,8 @@ class chrome_host {
   chrome_entry_fn set_trim_ = nullptr;        // PR 13
   chrome_entry_fn show_edit_pane_ = nullptr;  // PR 29
   chrome_entry_fn set_edit_view_ = nullptr;   // PR 29
+  chrome_entry_fn show_edit_rail_ = nullptr;  // docs/plans/edit-refresh.md S2
+  chrome_entry_fn notify_ = nullptr;          // S2
   chrome_entry_fn attach_editor_ = nullptr;   // PR 30
   chrome_entry_fn layout_editor_ = nullptr;
   chrome_entry_fn set_editor_view_ = nullptr;
@@ -1252,6 +1306,7 @@ class chrome_host {
   bool adjust_visible_ = false;
   bool jobs_visible_ = false;
   bool edit_visible_ = false;
+  bool rail_visible_ = false;  // S2
   chrome_entry_fn island_window_ = nullptr;
   chrome_entry_fn begin_detach_ = nullptr;  // unhooks static XAML events first
   chrome_entry_fn shutdown_for_exit_ = nullptr;

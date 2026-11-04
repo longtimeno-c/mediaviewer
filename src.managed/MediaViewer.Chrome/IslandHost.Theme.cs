@@ -37,7 +37,18 @@ public static partial class IslandHost
         // Tiles (issue #201): a thumbnail not yet arrived, the gallery's range
         // over a thumbnail, and a folder tile's count capsule.
         Placeholder, RangeWash, Capsule,
+        // docs/plans/edit-refresh.md S2, the Mac's MVTheme twins: a raised surface on
+        // the panel (a card, a well), and the accent's wash under a selected
+        // rail icon, an armed tool, a focused slider row.
+        Surface2, SelectionWash,
     }
+
+    // Slider tracks that show what the slider does to the photo (S2): picture
+    // colours, not chrome ones, the same on every theme (MVTheme.warm .. tintM).
+    private static readonly Color TrackWarm = ColorHelper.FromArgb(255, 250, 184, 77);
+    private static readonly Color TrackCool = ColorHelper.FromArgb(255, 92, 158, 250);
+    private static readonly Color TrackTintG = ColorHelper.FromArgb(255, 97, 199, 107);
+    private static readonly Color TrackTintM = ColorHelper.FromArgb(255, 219, 97, 204);
 
     private static readonly Dictionary<ChromeColour, SolidColorBrush> ThemeBrushes = new();
     private static UISettings? _themeSettings;
@@ -76,6 +87,10 @@ public static partial class IslandHost
 
     private static Thickness Pad(double left, double top, double right, double bottom) =>
         new(Space(left), Space(top), Space(right), Space(bottom));
+
+    /// <summary>docs/plans/edit-refresh.md §2.1: 300 DIP at the default shape, wider
+    /// as the type scale or density grows (never narrower).</summary>
+    private static double InspectorMinimumDip() => Math.Round(300 * Math.Max(1, Math.Max(_typeScale, _density)));
 
     // Chrome start, after LoadCachedTheme and before the first control.
     private static void ResolveThemeShape()
@@ -240,6 +255,10 @@ public static partial class IslandHost
         Set(ChromeColour.Capsule, contrast ? surface
             : ColorHelper.FromArgb(CapsuleAlpha, surface.R, surface.G, surface.B));
         Set(ChromeColour.AccentInk, contrast ? SystemColour(14) : Rgb(255, 255, 255));  // COLOR_HIGHLIGHTTEXT
+        // S2: in a contrast theme a card is the window colour (its outline carries it).
+        Set(ChromeColour.Surface2, contrast ? canvas : Blend(panel, title, 0.055));
+        Set(ChromeColour.SelectionWash, contrast ? SystemColour(13)
+            : ColorHelper.FromArgb(41, accent.R, accent.G, accent.B));
         Set(ChromeColour.ControlAccent, controlAccent);
         // White on a dark accent, black on a light one; the contrast theme's
         // highlight text on its highlight.
@@ -271,6 +290,9 @@ public static partial class IslandHost
             _onCommand?.Invoke(_context, Command.HomeEffectSize, (float)item.Size);
         }
         _onCommand?.Invoke(_context, Command.HomeColour, Pack(canvas));
+        // docs/plans/edit-refresh.md §2.1: the narrowest inspector this shape lays
+        // out unclipped (the Mac's EditLayout.minimumWidth): native re-clamps.
+        _onCommand?.Invoke(_context, Command.InspectorMin, (float)InspectorMinimumDip());
 
         ApplyIslandTheme(themed is null ? ElementTheme.Default
             : dark ? ElementTheme.Dark : ElementTheme.Light);

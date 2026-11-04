@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "shell/adjust_pane.h"
 
+#include "edit/auto_adjust.h"
+
 #include <algorithm>
 #include <cstring>
 
@@ -32,6 +34,8 @@ std::optional<std::uint64_t> adjust_pane::set_item(std::uint64_t item, bool has_
     histogram_valid_ = false;
     histogram_token_ = 0;
     auto_token_ = 0;
+    auto_mask_ = 0;
+    auto_mark_ = false;
     pick_ = adjust_pick::none;
     prompt_note_.clear();
   }
@@ -91,20 +95,43 @@ bool adjust_pane::histogram_landed(std::uint64_t token, const edit::histogram& h
 }
 
 std::optional<std::uint64_t> adjust_pane::request_auto_tone(edit::adjust_section section) noexcept {
-  if (readiness_ != adjust_readiness::ready) return std::nullopt;
+  return request_auto(edit::section_bit(section));
+}
+
+std::optional<std::uint64_t> adjust_pane::request_auto(std::uint32_t sections) noexcept {
+  if (readiness_ != adjust_readiness::ready || sections == 0) return std::nullopt;
   auto_token_ = next_token_++;
-  auto_section_ = section;
+  auto_mask_ = sections;
+  auto_section_ = edit::adjust_section::light;
+  for (int i = 0; i < static_cast<int>(edit::adjust_section::count); ++i) {
+    if (sections & (1u << static_cast<unsigned>(i))) {
+      auto_section_ = static_cast<edit::adjust_section>(i);
+      break;
+    }
+  }
   return auto_token_;
 }
 
 std::optional<edit::adjust_section> adjust_pane::auto_running() const noexcept {
-  if (auto_token_ == 0) return std::nullopt;
+  // Several sections at once is not one section's Auto: no section spinner.
+  if (auto_token_ == 0 || auto_mask_ != edit::section_bit(auto_section_)) return std::nullopt;
   return auto_section_;
+}
+
+void adjust_pane::auto_enhance_landed(std::size_t edit_count, const edit::colour& c) noexcept {
+  auto_mark_ = true;
+  auto_mark_count_ = edit_count;
+  auto_mark_colour_ = c;
+}
+
+bool adjust_pane::auto_enhance_on(std::size_t edit_count, const edit::colour& c) const noexcept {
+  return auto_mark_ && item_ != 0 && edit_count == auto_mark_count_ && c == auto_mark_colour_;
 }
 
 bool adjust_pane::auto_tone_landed(std::uint64_t token) noexcept {
   if (token == 0 || token != auto_token_ || readiness_ != adjust_readiness::ready) return false;
   auto_token_ = 0;
+  auto_mask_ = 0;
   return true;
 }
 
@@ -116,7 +143,8 @@ adjust_view adjust_pane::view(const edit::colour& c) const noexcept {
     v.values[i] = c.get(static_cast<edit::adjust_param>(i));
   }
   v.histogram_valid = histogram_valid_ ? 1 : 0;
-  v.auto_section = auto_token_ != 0 ? static_cast<std::int32_t>(auto_section_) : -1;
+  const std::optional<edit::adjust_section> running = auto_running();
+  v.auto_section = running ? static_cast<std::int32_t>(*running) : -1;
   v.picking = static_cast<std::int32_t>(pick());
   v.spot_count = c.spot_count;
   // Cut at a UTF-8 boundary that fits with its NUL.

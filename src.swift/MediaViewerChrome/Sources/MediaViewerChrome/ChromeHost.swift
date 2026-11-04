@@ -239,8 +239,19 @@ public final class MVChromeHost: NSObject {
   }
 
   /// PR 29 (docs/design/20): the Edit workspace's strip and its Crop / Trim pane.
+  /// docs/plans/edit-refresh.md S2: the strip is the header and is as tall as its
+  /// content (one row or two, the type scale): its intrinsic height, never its
+  /// width (main_mac.mm pins the width and lowers horizontal hugging).
   @objc public static func makeEditStripView() -> NSView {
-    lazyHost { EditStripView() }
+    let hosting = LazyHostingView { AnyView(ThemedRoot(content: EditStripView().fixedSize(horizontal: false, vertical: true))) }
+    hosting.sizingOptions = [.intrinsicContentSize]
+    hosting.translatesAutoresizingMaskIntoConstraints = false
+    return hosting
+  }
+
+  /// docs/plans/edit-refresh.md S2: the workspace's 44 pt icon rail.
+  @objc public static func makeEditRailView() -> NSView {
+    lazyHost { EditRailView() }
   }
 
   @objc public static func makeEditPaneView() -> NSView {

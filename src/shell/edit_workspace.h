@@ -24,6 +24,10 @@ enum class edit_tab : std::uint8_t {
   info = 2,    // still: the PR 9 / 12 metadata pane (rating, comment)
   trim = 3,    // clip: in / out, save, split, clip tools
   jobs = 4,    // clip: the PR 13 job queue
+  // docs/plans/edit-refresh.md S2: the Enhance tab (the rail's third icon):
+  // Remove objects, Restyle, Faces, Enhance image, Extend edges. Any still;
+  // without the Enhance add-on its cards offer to install it.
+  enhance = 5,
   count
 };
 
@@ -36,19 +40,24 @@ enum class edit_subject : std::uint8_t {
 [[nodiscard]] std::span<const edit_tab> tabs_for(edit_subject s) noexcept;
 [[nodiscard]] bool tab_offered(edit_subject s, edit_tab t) noexcept;
 [[nodiscard]] edit_tab default_tab(edit_subject s) noexcept;
-[[nodiscard]] const char* tab_label(edit_tab t) noexcept;       // "Crop", "Colour", ...
+[[nodiscard]] const char* tab_label(edit_tab t) noexcept;       // "Crop", "Adjust", ...
 [[nodiscard]] const char* workspace_title(edit_subject s) noexcept;  // "Edit image" / "Edit video"
 
 struct edit_workspace {
   bool open = false;
   edit_tab tab = edit_tab::crop;
+  // docs/plans/edit-refresh.md S2: the inspector folded away, the rail alone
+  // beside the canvas (a click on the rail's active icon). Opening, selecting
+  // a tab or closing unfolds it.
+  bool collapsed = false;
 };
 
 enum class workspace_action : std::uint8_t {
   none,    // not the workspace's command here: the host does what it always did
   open,    // open on `tab`
-  select,  // already open: show `tab`
+  select,  // already open: show `tab` (and unfold a collapsed inspector)
   close,
+  collapse,  // S2: fold the inspector to the rail; the tab stays chosen
 };
 
 struct workspace_step {
@@ -66,6 +75,12 @@ struct workspace_step {
 //   jobs_pane       only while open on a clip: selects Jobs; on Jobs it closes
 [[nodiscard]] workspace_step route_workspace(const edit_workspace& ws, edit_subject subject,
                                              command_id id) noexcept;
+
+// docs/plans/edit-refresh.md S2: a click on the rail's icon for `t`. Another
+// tab selects it; the active tab's icon folds the inspector to the rail, and
+// any icon of a folded rail unfolds it on that tab. A tab the subject lacks
+// does nothing.
+[[nodiscard]] workspace_step rail_pick(const edit_workspace& ws, edit_subject subject, edit_tab t) noexcept;
 
 // Applies a step. Returns true when anything changed.
 bool apply_step(edit_workspace& ws, const workspace_step& step) noexcept;

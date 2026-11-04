@@ -313,6 +313,10 @@ expected chrome_host::load_now() noexcept {
   // PR 29, optional the same way: without it there is no Edit workspace.
   show_edit_pane_ = get_entry(L"ShowEditPane");
   set_edit_view_ = get_entry(L"SetEditView");
+  // docs/plans/edit-refresh.md S2, optional the same way: without them there is
+  // no icon rail and the panes show no edge feedback.
+  show_edit_rail_ = get_entry(L"ShowEditRail");
+  notify_ = get_entry(L"Notify");
   // PR 30 (docs/design/21): the Video Editor window. Optional, like the panes.
   attach_editor_ = get_entry(L"AttachVideoEditor");
   layout_editor_ = get_entry(L"LayoutVideoEditor");
@@ -742,6 +746,7 @@ expected chrome_host::attach_panels(HWND parent, void* context, chrome_command_f
   adjust_visible_ = false;
   jobs_visible_ = false;
   edit_visible_ = false;
+  rail_visible_ = false;
   page_sidebar_visible_ = false;
   page_sidebar_sent_ = {-1, -1, -1};
 
@@ -836,6 +841,18 @@ void chrome_host::show_edit_pane(bool visible, int x, int y, int width, int heig
 void chrome_host::set_edit_view(const chrome_edit_args& args) noexcept {
   if (!attached_ || !set_edit_view_) return;
   (void)set_edit_view_(const_cast<chrome_edit_args*>(&args), static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::show_edit_rail(bool visible, int x, int y, int width, int height) noexcept {
+  if (!panels_attached_ || !show_edit_rail_) return;
+  show_panel(show_edit_rail_, visible, x, y, width, height, false, y + height + 1);
+  rail_visible_ = visible;
+}
+
+void chrome_host::notify(chrome_command id, float value) noexcept {
+  if (!attached_ || !notify_) return;
+  chrome_notify_args args{static_cast<std::int32_t>(id), value};
+  (void)notify_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 bool chrome_host::attach_editor(HWND editor, HWND viewer) noexcept {
@@ -1203,6 +1220,7 @@ void chrome_host::detach() noexcept {
     adjust_visible_ = false;
     jobs_visible_ = false;
     edit_visible_ = false;
+    rail_visible_ = false;
     ai_badge_visible_ = false;
     ai_badge_sent_ = false;
   }

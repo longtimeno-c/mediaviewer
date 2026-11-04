@@ -336,7 +336,18 @@ struct app_state {
   DWORD pane_click_time = 0;  // the last press on the edge, for a double-click
   int pane_click_x = 0;
   double pane_refresh_s = 1.0 / 60.0;  // the display's refresh, read once per press
-  bool rail_collapsed = false;  // the inspector refresh's rail (none yet)
+  // docs/plans/edit-refresh.md S2: the Edit header's height as the island
+  // measured it (chrome_cmd_edit_strip_height, DIP, [72, 220]); the theme's
+  // narrowest inspector (chrome_cmd_inspector_min, DIP); the edge's feedback
+  // as last sent (chrome_cmd_pane_edge_state: 0 idle, 1 hot, 2 drag).
+  int edit_strip_dip = 140;
+  float inspector_min_dip = 300.0f;
+  int pane_edge_state = 0;
+  bool folded_sent = false;  // the rail last heard the inspector was folded
+  // ✦ Auto (auto_enhance): its job's token, and a press waiting for the
+  // working image.
+  std::uint64_t auto_enhance_token = 0;
+  bool auto_enhance_pending = false;
   // Slice 4: the working image as built, before the detail pass; the pass on
   // the canvas (`working` is its result), and the one in flight.
   std::shared_ptr<const mv::image::linear_image> working_base;
@@ -1405,6 +1416,11 @@ void refresh_item_info(app_state* app) noexcept {
 void ai_badge_refresh(app_state* app);
 void layout_ai_badge(app_state* app) noexcept;
 int right_pane_px(const app_state& app, int client_width, std::uint32_t dpi) noexcept;
+// docs/plans/edit-refresh.md S2: the rail and the folded inspector (defined with
+// the right column, below).
+bool inspector_folded(const app_state& app, int client_width, std::uint32_t dpi) noexcept;
+void layout_panels(app_state* app) noexcept;
+void pane_relayout(app_state* app) noexcept;
 
 // ---- PR 9: metadata for the overlays ---------------------------------------
 
@@ -1581,7 +1597,8 @@ void layout_ai_badge(app_state* app) noexcept {
   const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
   const bool covered = app->gallery_visible || app->settings_open || app->editor.open || chrome_hidden;
   const bool right_pane = app->chrome.meta_pane_visible() || app->chrome.adjust_pane_visible() ||
-                          app->chrome.jobs_pane_visible() || app->chrome.edit_pane_visible();
+                          app->chrome.jobs_pane_visible() || app->chrome.edit_pane_visible() ||
+                          app->chrome.edit_rail_visible();  // S2: the rail alone when folded
   const int strip = app->chrome.filmstrip_visible() ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
   const mv::shell::chrome_rect at = mv::shell::ai_badge_rect(
       width, height, strip, right_pane ? right_pane_px(*app, width, dpi) : 0, app->chrome.transport_visible(), dpi);
@@ -2393,10 +2410,12 @@ void on_cloud_fetch(app_state* app, bool began) noexcept {
     notice_show(app, std::string(mv::shell::kCloudFetchNotice));
     app->notice_until = ~0ULL;
     update_title(app);
+    if (app->cloud_fetches == 1) push_edit_view(app);  // S2: the Edit header's cloud chip
     return;
   }
   if (app->cloud_fetches > 0) --app->cloud_fetches;
   if (app->cloud_fetches != 0) return;
+  push_edit_view(app);
   try {
     if (app->notice != wide_from_utf8(std::string(mv::shell::kCloudFetchNotice))) return;
   } catch (...) {
@@ -2660,6 +2679,52 @@ void start_adjust_auto(app_state* app, int section) {
                       });
 }
 
+// docs/plans/edit-refresh.md S2 (auto_enhance, the header's ✦ Auto): tone, then
+// white balance, read on the pool from the working image and landed as one
+// op. Right after it landed (the stack still exactly that), a press undoes it.
+// The Mac twin is -[MvLabApp autoEnhance].
+void run_auto_enhance(app_state* app) {
+  if (!adjust_still(app)) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  if (app->adjust.auto_enhance_on(app->edits.edit_count(), app->edits.colour())) {
+    (void)run_edit_command(app, mv::shell::command_id::undo_edit);  // one step: Auto's own
+    push_edit_view(app);
+    return;
+  }
+  if (app->adjust.auto_busy()) return;
+  if (!app->working) {
+    // The working image is not there yet (Adjust builds it): ask for it and
+    // run once it lands.
+    app->auto_enhance_pending = true;
+    adjust_build_if(app, app->adjust.show(app->adjust.visible(), true));
+    notice_show(app, "Preparing the photo for Auto…");
+    push_edit_view(app);
+    return;
+  }
+  const std::optional<std::uint64_t> token = app->adjust.request_auto(mv::edit::kAutoEnhanceSections);
+  if (!token) return;
+  app->auto_enhance_token = *token;
+  push_edit_view(app);  // the header's ✦ shows it is working
+  push_adjust_pane(app);
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [working = app->working, current = app->edits.colour(), t = *token,
+                       hwnd](const mv::job_context& ctx) -> mv::status {
+                        auto* r = new (std::nothrow) adjust_job_result{};
+                        if (!r) return mv::status::out_of_memory;
+                        r->auto_section = true;
+                        r->token = t;
+                        auto a = mv::edit::compute_auto_sections(*working, current, mv::edit::kAutoEnhanceSections,
+                                                                 &ctx);
+                        r->ok = static_cast<bool>(a);
+                        if (a) r->value = a->value;
+                        post_adjust_result(hwnd, r);
+                        return a ? mv::status::ok : a.error();
+                      });
+}
+
 // Slice 2: a curve from the pane, parked as "channel\tx,y;x,y;...". A drag of a
 // point is one op; no push back (the pane already shows it).
 void set_curve_from_pane(app_state* app) {
@@ -2713,6 +2778,7 @@ void set_adjust_pick(app_state* app, float arg) {
   publish_edit(app);  // the brush shows or goes
   publish(app);
   push_adjust_pane(app);
+  push_edit_view(app);  // S2: the rail's Remove and the Enhance tab's card
 }
 
 bool adjust_picking(app_state* app) noexcept {
@@ -2835,6 +2901,7 @@ void adjust_brush(app_state* app, int action) {
   }
   brush_publish(app);
   push_adjust_pane(app);
+  push_edit_view(app);  // S2: the Enhance tab's card counts strokes too
 }
 
 // Slice 3: a parameter from the island as parked "param\tvalue" (selective
@@ -2978,8 +3045,11 @@ void on_adjust_job_done(app_state* app, std::unique_ptr<adjust_job_result> r) {
     return;
   }
   if (r->auto_section) {
+    const bool enhance = r->token != 0 && r->token == app->auto_enhance_token;
+    if (enhance) app->auto_enhance_token = 0;
     if (!app->adjust.auto_tone_landed(r->token)) {
       app->pending_autos.clear();  // the colour moved meanwhile: the rest of a typed request's too
+      if (enhance) push_edit_view(app);
       return;
     }
     if (r->ok && adjust_still(app) &&
@@ -2988,9 +3058,13 @@ void on_adjust_job_done(app_state* app, std::unique_ptr<adjust_job_result> r) {
       ++app->input.activity_seq;
       publish(app);
       adjust_colour_changed(app);
+      // ✦ Auto is one undo step; a second press right after takes it back.
+      if (enhance) app->adjust.auto_enhance_landed(app->edits.edit_count(), app->edits.colour());
     } else {
+      if (enhance && r->ok) notice_show(app, "Auto found nothing to change in this photo");
       push_adjust_pane(app);  // the Auto stops showing; nothing changed
     }
+    if (enhance) push_edit_view(app);
     next_pending_auto(app);
     return;
   }
@@ -3004,6 +3078,13 @@ void on_adjust_job_done(app_state* app, std::unique_ptr<adjust_job_result> r) {
     app->detail_shown = {};
     schedule_histogram(app);
     schedule_detail(app);
+    if (app->auto_enhance_pending) {
+      app->auto_enhance_pending = false;
+      run_auto_enhance(app);  // ✦ Auto was pressed before the photo was ready
+    }
+  } else if (app->auto_enhance_pending && !r->ok) {
+    app->auto_enhance_pending = false;
+    push_edit_view(app);
   }
   push_adjust_pane(app);
 }
@@ -3819,8 +3900,10 @@ void run_clip_tool(app_state* app, std::int32_t packed) noexcept {
 // it (input.chrome_right_px) instead of under it. The Mac host's twin is
 // main_mac.mm "PR 29".
 
-// DIP height of the strip (title, tabs, actions) at the top of the right column.
-constexpr int kEditStripDip = 140;
+// The header's height at the top of the right column is the island's own
+// (app_state::edit_strip_dip, docs/plans/edit-refresh.md S2), within these.
+constexpr int kEditStripMinDip = 72;
+constexpr int kEditStripMaxDip = 220;
 
 mv::shell::edit_subject edit_subject_of(app_state* app) noexcept {
   if (!app || app->mode == open_mode::none || app->edit_path.empty()) return mv::shell::edit_subject::none;
@@ -3922,6 +4005,26 @@ void push_edit_view(app_state* app) noexcept {
     // A document: the bar's "Open in <app>" rows, one name a line, default first.
     std::string apps;
     a.enhance = mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none ? 1 : 0;
+    // The wand (adjust_pane.h kWand*): the Remove brush, what Enhance offers,
+    // the faces, and docs/plans/edit-refresh.md S2's ✦ Auto. The Windows brush is
+    // the adjust pane's pick (S3/S4a give it a tool of its own).
+    a.wand = (app->adjust.pick() == mv::shell::adjust_pick::remove ? mv::shell::kWandBrushOn : 0) |
+             (app->brush.empty() ? 0 : mv::shell::kWandBrushStrokes) |
+             (app->brush.full() ? mv::shell::kWandBrushFull : 0) |
+             (mv::shell::find_addon_command("enhance", "restyle") != mv::shell::command_id::none
+                  ? mv::shell::kWandRestyle : 0) |
+             (app->eyes_running ? mv::shell::kWandEyesBusy : 0) |
+             (a.enhance != 0 ? mv::shell::kWandExtend | mv::shell::kWandDetail : 0) |
+             (mv::shell::addon_commands_available(mv::shell::addon_family::ai) ? mv::shell::kWandFacesReady : 0) |
+             (app->adjust.auto_enhance_on(app->edits.edit_count(), app->edits.colour()) ? mv::shell::kWandAutoOn
+                                                                                       : 0) |
+             (app->auto_enhance_token != 0 || app->auto_enhance_pending ? mv::shell::kWandAutoBusy : 0);
+    a.chips = app->cloud_fetches > 0 ? mv::shell::kEditChipCloud : 0;
+    if (app->window) {
+      RECT rc{};
+      ::GetClientRect(app->window, &rc);
+      a.collapsed = inspector_folded(*app, rc.right - rc.left, ::GetDpiForWindow(app->window)) ? 1 : 0;
+    }
     if (mv::io::is_document_name(app->edit_path)) {
       a.document = 1;
       refresh_open_with(app);
@@ -3966,8 +4069,9 @@ void sync_workspace(app_state* app) {
   // them (or back): one layout, one resize_seq, the same swapchain.
   apply_view_state(app);
   push_edit_view(app);
-  // Crop and Trim keys are the canvas's: keep the keyboard there.
-  if (open && (tab == edit_tab::crop || tab == edit_tab::trim)) focus_canvas(app);
+  // Crop and Trim keys are the canvas's (and a folded inspector has nothing
+  // to type into): keep the keyboard there.
+  if (open && (tab == edit_tab::crop || tab == edit_tab::trim || app->ws.collapsed)) focus_canvas(app);
 }
 
 void close_workspace(app_state* app) {
@@ -4013,12 +4117,22 @@ void workspace_follow_settled(app_state* app) noexcept {
   }
 }
 
-// The strip's tab row.
+// A tab chosen from code (the self-test, a card): select it, unfolding a folded inspector.
 void edit_select_tab(app_state* app, int tab) {
   if (tab < 0 || tab >= static_cast<int>(mv::shell::edit_tab::count)) return;
   const auto t = static_cast<mv::shell::edit_tab>(tab);
   if (!mv::shell::tab_offered(edit_subject_of(app), t)) return;
   if (mv::shell::apply_step(app->ws, {mv::shell::workspace_action::select, t})) sync_workspace(app);
+}
+
+// docs/plans/edit-refresh.md S2: the rail's icons (chrome_cmd_edit_tab). Another
+// tab selects it; the active one folds the inspector to the rail; a folded
+// rail unfolds on the tab clicked (shell/edit_workspace.h rail_pick).
+void edit_rail_pick(app_state* app, int tab) {
+  if (tab < 0 || tab >= static_cast<int>(mv::shell::edit_tab::count)) return;
+  const mv::shell::workspace_step step =
+      mv::shell::rail_pick(app->ws, edit_subject_of(app), static_cast<mv::shell::edit_tab>(tab));
+  if (mv::shell::apply_step(app->ws, step)) sync_workspace(app);
 }
 
 // The Crop pane's buttons and slider: stills only, once the pixels are known.
@@ -4075,14 +4189,45 @@ void run_edit_action(app_state* app, int action) {
       if (app->edits.crop_active()) (void)run_edit_command(app, mv::shell::command_id::crop_commit);
       (void)run_edit_command(app, mv::shell::command_id::export_image);
       return;
-    case mv::shell::chrome_edit_action::enhance: {
-      // Slice 5: Enhance's own "open" row; its copy carries the edit
-      // (addon_media's still edit, set by publish_edit).
+    case mv::shell::chrome_edit_action::enhance:
+    case mv::shell::chrome_edit_action::restyle: {
+      // Slice 5: Enhance's own "open" row (or, from the wand and the Enhance
+      // tab's Restyle card, "restyle": the sheet started on Restyle with
+      // words); its copy carries the edit (addon_media's still edit, set by
+      // publish_edit).
       if (app->edits.crop_active()) (void)run_edit_command(app, mv::shell::command_id::crop_commit);
-      const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
+      const bool restyle = action == static_cast<int>(mv::shell::chrome_edit_action::restyle);
+      mv::shell::command_id id = mv::shell::find_addon_command("enhance", restyle ? "restyle" : "open");
+      if (id == mv::shell::command_id::none && restyle) id = mv::shell::find_addon_command("enhance", "open");
       if (id != mv::shell::command_id::none) (void)run_command(app, id);
       return;
     }
+    case mv::shell::chrome_edit_action::arm_brush: {
+      // docs/plans/edit-refresh.md S2: the Remove card and the wand's Remove row.
+      // On Windows the brush is the adjust pane's pick, so Adjust shows (its
+      // Remove section) with the brush on; S3/S4a make it a tool of its own.
+      if (edit_subject_of(app) != mv::shell::edit_subject::still) {
+        ::MessageBeep(MB_ICONWARNING);
+        return;
+      }
+      edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::colour));
+      set_adjust_pick(app, static_cast<float>(static_cast<int>(mv::shell::adjust_pick::remove) * 1000 +
+                                              static_cast<int>(std::lround(app->brush_size)) + 100));
+      push_edit_view(app);
+      return;
+    }
+    case mv::shell::chrome_edit_action::arm_red_eye:
+      if (edit_subject_of(app) != mv::shell::edit_subject::still) {
+        ::MessageBeep(MB_ICONWARNING);
+        return;
+      }
+      edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::colour));
+      set_adjust_pick(app, static_cast<float>(static_cast<int>(mv::shell::adjust_pick::red_eye) * 1000 +
+                                              static_cast<int>(std::lround(app->red_eye_size)) + 100));
+      return;
+    case mv::shell::chrome_edit_action::show_enhance:
+      edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::enhance));
+      return;
   }
 }
 
@@ -5617,8 +5762,25 @@ bool chrome_edit_command(app_state* app, int command, float arg) {
     // PR 29 (docs/design/20): the Edit workspace's strip, and the Crop pane's presets
     // (arg = preset, + 16 portrait) and straighten slider (arg = degrees).
     case mv::shell::chrome_cmd_edit_tab:
-      edit_select_tab(app, static_cast<int>(arg));
+      edit_rail_pick(app, static_cast<int>(arg));
       return true;
+    // docs/plans/edit-refresh.md S2: the header's own height, and the theme's
+    // narrowest inspector; each re-lays the column only when it moved.
+    case mv::shell::chrome_cmd_edit_strip_height: {
+      const int dip = std::clamp(static_cast<int>(std::lround(arg)), kEditStripMinDip, kEditStripMaxDip);
+      if (std::abs(dip - app->edit_strip_dip) <= 1) return true;
+      app->edit_strip_dip = dip;
+      if (app->ws.open) layout_panels(app);
+      return true;
+    }
+    case mv::shell::chrome_cmd_inspector_min: {
+      const mv::shell::pane_width_limits limits{};
+      const float dip = std::clamp(arg, limits.min, limits.max);
+      if (std::fabs(dip - app->inspector_min_dip) < 1.0f) return true;
+      app->inspector_min_dip = dip;
+      pane_relayout(app);
+      return true;
+    }
     // A document's "Open in <app>": arg is the row SetEditView listed, -1 the default.
     case mv::shell::chrome_cmd_open_in_app:
       open_document_with(app, static_cast<int>(arg));
@@ -8428,6 +8590,7 @@ bool run_canvas_command(app_state* app, mv::shell::command_id command) noexcept 
     case toggle_page_sidebar: toggle_page_sidebar_setting(app); return true;
     case pane_wider: pane_step(app, 1); return true;
     case pane_narrower: pane_step(app, -1); return true;
+    case auto_enhance: run_auto_enhance(app); return true;
     case fit:
       app->zoom_intent_tick = 0;
       return bump_input(app, app->input.fit_seq);
@@ -9195,6 +9358,7 @@ constexpr UINT_PTR kEditSelfTestTimerId = 0x7A01;
 constexpr UINT kEditSelfTestStepMs = 1500;
 std::wstring g_edit_selftest_dir;
 int g_edit_selftest_step = 0;
+int g_edit_selftest_edits_before_auto = 0;  // S2: the ✦ Auto line
 
 void edit_selftest_capture(HWND window, const std::wstring& path) noexcept {
   RECT rc{};
@@ -9415,8 +9579,30 @@ void edit_selftest_tick(app_state* app) {
         // through the drag's own code (s4-colour shows pane_dip=600); never saved.
         pane_drag_to_for_test(app, 600.0f);
         break;
-      case 5: edit_selftest_snap(app, "s4-colour"); edit_select_tab(app, 2); break;
+      case 5:
+        edit_selftest_snap(app, "s4-colour");
+        // docs/plans/edit-refresh.md S2: the Enhance tab, and ✦ Auto (one op).
+        edit_select_tab(app, static_cast<int>(mv::shell::edit_tab::enhance));
+        g_edit_selftest_edits_before_auto = static_cast<int>(app->edits.edit_count());
+        run_auto_enhance(app);
+        break;
       case 6: {
+        edit_selftest_snap(app, "s4d-enhance");
+        const int after = static_cast<int>(app->edits.edit_count());
+        const bool on = app->adjust.auto_enhance_on(app->edits.edit_count(), app->edits.colour());
+        run_auto_enhance(app);  // a second press takes it back
+        char line[160];
+        std::snprintf(line, sizeof(line), "    auto_enhance: edits_before=%d after=%d on=%d after_second_press=%d\n",
+                      g_edit_selftest_edits_before_auto, after, on ? 1 : 0,
+                      static_cast<int>(app->edits.edit_count()));
+        if (FILE* f = _wfopen((g_edit_selftest_dir + L"\\state.txt").c_str(), L"ab")) {
+          std::fputs(line, f);
+          std::fclose(f);
+        }
+        edit_select_tab(app, 2);
+        break;
+      }
+      case 7: {
         edit_selftest_snap(app, "s5-info");
         // Any tag, and the date, from the Info tab (what its Enter sends).
         const std::string path = current_item_path(app);
@@ -9427,24 +9613,24 @@ void edit_selftest_tick(app_state* app) {
         schedule_meta_write(app, kCommentDebounceMs);
         break;
       }
-      case 7:
+      case 8:
         edit_selftest_snap(app, "s5b-info-edited");
         edit_select_tab(app, 0);
         run_edit_action(app, static_cast<int>(mv::shell::chrome_edit_action::original_on));
         break;
-      case 8:
+      case 9:
         edit_selftest_snap(app, "s6-original");
         run_edit_action(app, static_cast<int>(mv::shell::chrome_edit_action::original_off));
         run_edit_action(app, static_cast<int>(mv::shell::chrome_edit_action::save_copy));
         break;
-      case 9:
+      case 10:
         edit_selftest_snap(app, "s7-save-copy");
         // The dialog's Save with its defaults (what chrome_cmd_export runs).
         app->chrome.show_popup(mv::shell::chrome_popup::close, 0);
         app->popup_open = false;
         start_export(app, mv::shell::unpack_export(app->export_choice));
         break;
-      case 10:
+      case 11:
         walk_back(app, mv::shell::back_target::pane);
         revert_current_metadata(app);
         break;
@@ -9459,24 +9645,43 @@ void edit_selftest_tick(app_state* app) {
 
 // The right column (docs/plans/edit-refresh.md §2.1, shell/pane_width.h): one
 // width for the metadata, adjust, Jobs and (PR 29) Edit panes, the user's,
-// dragged by its edge. No rail yet (the inspector refresh adds it).
+// dragged by its edge. S2: the docked workspace has the 44 DIP icon rail at
+// the window's edge beside it; the floating panes (the workspace closed) none.
 constexpr mv::shell::pane_width_limits kPaneLimits{.rail = 0.0f};
-// The chrome's own minimum, 300 x the theme's type scale. The island does not
-// send its type scale yet (the inspector refresh's chrome_cmd ids), so this is
-// the 1.0 value.
-constexpr float kPaneThemeMinDip = 300.0f;
+constexpr mv::shell::pane_width_limits kRailLimits{};
 
-float pane_shown_dip(const app_state& app, int client_width, std::uint32_t dpi) noexcept {
-  const float client = static_cast<float>(client_width) * 96.0f / static_cast<float>(std::max(dpi, 1u));
-  return mv::shell::shown_inspector(mv::shell::preferred_width(app.settings.right_pane_dip, kPaneLimits), client,
-                                    kPaneThemeMinDip, kPaneLimits);
+mv::shell::pane_width_limits pane_limits(const app_state& app) noexcept {
+  return app.ws.open ? kRailLimits : kPaneLimits;
 }
 
-// The right column's width in pixels: the inspector and the rail beside it.
+// The inspector's width in DIP; 0 with the workspace open means the window is
+// too narrow for one beside the canvas (the rail alone shows).
+float pane_shown_dip(const app_state& app, int client_width, std::uint32_t dpi) noexcept {
+  const float client = static_cast<float>(client_width) * 96.0f / static_cast<float>(std::max(dpi, 1u));
+  const mv::shell::pane_width_limits l = pane_limits(app);
+  return mv::shell::shown_inspector(mv::shell::preferred_width(app.settings.right_pane_dip, l), client,
+                                    app.inspector_min_dip, l);
+}
+
+// The inspector is folded to the rail: by the rail's active icon, or because
+// the window is too narrow for any.
+bool inspector_folded(const app_state& app, int client_width, std::uint32_t dpi) noexcept {
+  return app.ws.open && (app.ws.collapsed || pane_shown_dip(app, client_width, dpi) <= 0.0f);
+}
+
+// The right column's width in pixels: the inspector and the rail beside it
+// (the rail alone when folded); a floating pane's own width otherwise.
 int right_pane_px(const app_state& app, int client_width, std::uint32_t dpi) noexcept {
-  const float dip = mv::shell::docked_right(pane_shown_dip(app, client_width, dpi), true, app.rail_collapsed,
-                                            kPaneLimits);
+  const float shown = pane_shown_dip(app, client_width, dpi);
+  const float dip = app.ws.open ? mv::shell::docked_right(shown, true, inspector_folded(app, client_width, dpi),
+                                                          kRailLimits)
+                                : shown;
   return ::MulDiv(static_cast<int>(std::lround(dip)), static_cast<int>(dpi), 96);
+}
+
+// The rail's width in pixels (0 while the workspace is closed).
+int rail_px(const app_state& app, std::uint32_t dpi) noexcept {
+  return app.ws.open ? ::MulDiv(static_cast<int>(kRailLimits.rail), static_cast<int>(dpi), 96) : 0;
 }
 
 // PR 9. The panes float over the canvas: the metadata pane on the right, the tree
@@ -9504,34 +9709,49 @@ void layout_panels(app_state* app) noexcept {
   // Settings; the wish survives and the pane returns with them.
   const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
   const bool covered = app->gallery_visible || app->settings_open || chrome_hidden;
-  const int side = right_pane_px(*app, width, dpi);
+  // docs/plans/edit-refresh.md S2: with the workspace open the rail takes the
+  // window's right edge and the inspector sits left of it; folded, the rail
+  // alone. `side` is the inspector's width.
+  const int rail = rail_px(*app, dpi);
+  const bool folded = inspector_folded(*app, width, dpi);
+  const int side = std::max(right_pane_px(*app, width, dpi) - rail, 1);
+  const int pane_x = width - rail - side;
   const int tree_w = std::min(width / 2, ::MulDiv(280, static_cast<int>(dpi), 96));
-  const bool want_meta = app->meta_pane_visible && !covered;
+  const bool want_meta = app->meta_pane_visible && !covered && !folded;
   const bool want_tree = app->tree_visible && !covered;
   // PR 13 / 14: the Jobs pane takes the right edge over adjust and metadata
   // (one at a time; their wishes survive and they return when it closes).
-  const bool want_jobs = app->jobs_pane_visible && !covered;
+  const bool want_jobs = app->jobs_pane_visible && !covered && !folded;
   // PR 11: the adjust pane takes the metadata pane's edge (one at a time).
-  const bool want_adjust = app->adjust.visible() && !covered && !want_jobs;
-  // PR 29: the Edit workspace. Crop and Trim are its own island's pane, so it
-  // spans the column; on Colour / Info / Jobs it is the strip alone and that
-  // pane starts under it.
-  const bool want_edit = app->ws.open && !covered;
+  const bool want_adjust = app->adjust.visible() && !covered && !want_jobs && !folded;
+  // PR 29: the Edit workspace. Crop, Trim and (S2) Enhance are its own
+  // island's pane, so it spans the column; on Adjust / Info / Jobs it is the
+  // header alone and that pane starts under it.
+  const bool want_rail = app->ws.open && !covered;
+  const bool want_edit = want_rail && !folded;
+  if (folded != app->folded_sent) {
+    // A window narrowed past the inspector (or widened back): the rail's
+    // icons say so.
+    app->folded_sent = folded;
+    push_edit_view(app);
+  }
+  app->chrome.show_edit_rail(want_rail, width - std::max(rail, 1), top, std::max(rail, 1), span);
   int pane_top = top;
   int pane_span = span;
   if (want_edit) {
-    const int strip_h = std::min(::MulDiv(kEditStripDip, static_cast<int>(dpi), 96), span);
-    const bool own_pane = app->ws.tab == mv::shell::edit_tab::crop || app->ws.tab == mv::shell::edit_tab::trim;
-    app->chrome.show_edit_pane(true, width - side, top, side, own_pane ? span : strip_h);
+    const int strip_h = std::min(::MulDiv(app->edit_strip_dip, static_cast<int>(dpi), 96), span);
+    const bool own_pane = app->ws.tab == mv::shell::edit_tab::crop || app->ws.tab == mv::shell::edit_tab::trim ||
+                          app->ws.tab == mv::shell::edit_tab::enhance;
+    app->chrome.show_edit_pane(true, pane_x, top, side, own_pane ? span : strip_h);
     pane_top = top + strip_h;
     pane_span = std::max(span - strip_h, 1);
   } else {
-    app->chrome.show_edit_pane(false, width - side, top, side, span);
+    app->chrome.show_edit_pane(false, pane_x, top, side, span);
   }
-  app->chrome.show_meta_pane(want_meta && !want_adjust && !want_jobs, width - side, pane_top, side, pane_span,
+  app->chrome.show_meta_pane(want_meta && !want_adjust && !want_jobs, pane_x, pane_top, side, pane_span,
                              app->focus_meta_next);
-  app->chrome.show_adjust_pane(want_adjust, width - side, pane_top, side, pane_span, app->focus_adjust_next);
-  app->chrome.show_jobs_pane(want_jobs, width - side, pane_top, side, pane_span, app->focus_jobs_next);
+  app->chrome.show_adjust_pane(want_adjust, pane_x, pane_top, side, pane_span, app->focus_adjust_next);
+  app->chrome.show_jobs_pane(want_jobs, pane_x, pane_top, side, pane_span, app->focus_jobs_next);
   if (want_jobs) app->focus_jobs_next = false;
   // Issue #429: the page sidebar on the left edge; the tree, when open, sits
   // beside it rather than over it.
@@ -9678,8 +9898,9 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept {
           ? static_cast<std::uint32_t>(std::min(static_cast<int>(app->input.width) / 3, page_sidebar_px(dpi)))
           : 0;
   // PR 29: the docked Edit workspace; the canvas frames the picture left of it.
+  // S2: the rail docks too, alone when the inspector is folded.
   app->input.chrome_right_px =
-      app->chrome.edit_pane_visible()
+      app->chrome.edit_pane_visible() || app->chrome.edit_rail_visible()
           ? static_cast<std::uint32_t>(right_pane_px(*app, static_cast<int>(app->input.width), dpi))
           : 0;
 }
@@ -9788,6 +10009,15 @@ bool pane_edge_hit(app_state* app, int x, int y) noexcept {
   return x >= edge - grab && x < edge && y >= top && y < bottom;
 }
 
+// docs/plans/edit-refresh.md S2: the edge's feedback (the Mac's MvPaneEdgeView):
+// the pane on top turns its left border to the accent while the pointer is on
+// the edge (1) or drags it (2). Sent only on a change.
+void set_pane_edge_state(app_state* app, int state) noexcept {
+  if (!app || app->pane_edge_state == state) return;
+  app->pane_edge_state = state;
+  app->chrome.notify(mv::shell::chrome_cmd_pane_edge_state, static_cast<float>(state));
+}
+
 double pane_refresh_seconds() noexcept {
   DWM_TIMING_INFO info{};
   info.cbSize = sizeof info;
@@ -9818,8 +10048,8 @@ bool pane_edge_apply(app_state* app, int x) noexcept {
   const float scale = 96.0f / static_cast<float>(std::max(dpi, 1u));
   const float client = static_cast<float>(width) * scale;
   const float leading = static_cast<float>(x - app->pane_grab_dx) * scale;
-  const float shown = mv::shell::shown_inspector(client - kPaneLimits.rail - leading, client, kPaneThemeMinDip,
-                                                 kPaneLimits);
+  const mv::shell::pane_width_limits l = pane_limits(*app);
+  const float shown = mv::shell::shown_inspector(client - l.rail - leading, client, app->inspector_min_dip, l);
   const auto dip = static_cast<std::int32_t>(std::lround(shown));
   app->pane_last_layout = std::chrono::steady_clock::now();
   if (dip <= 0 || dip == static_cast<std::int32_t>(std::lround(pane_shown_dip(*app, width, dpi)))) return false;
@@ -9870,6 +10100,7 @@ void pane_edge_end(app_state* app) noexcept {
   if (!app->pane_edge_drag) return;
   pane_edge_flush(app);
   app->pane_edge_drag = false;
+  set_pane_edge_state(app, 0);  // the next move over it lights it again
   app->input.chrome_live_resize = 0;
   // The preference, not the raw value: 0 (never set) is 360, not the minimum.
   pane_set_preference(app, mv::shell::snap_inspector(mv::shell::preferred_width(app->settings.right_pane_dip,
@@ -9900,6 +10131,7 @@ bool pane_edge_press(app_state* app, int x, int y) noexcept {
   app->pane_last_layout = {};
   app->pane_refresh_s = pane_refresh_seconds();
   ::SetCapture(app->window);
+  set_pane_edge_state(app, 2);
   app->input.chrome_live_resize = 1;
   publish(app);
   return true;
@@ -9917,7 +10149,7 @@ void pane_drag_to_for_test(app_state* app, float width) noexcept {
   app->pane_move_pending = false;
   app->input.chrome_live_resize = 1;
   (void)pane_edge_apply(app, (rc.right - rc.left) -
-                                 ::MulDiv(static_cast<int>(std::lround(width + kPaneLimits.rail)), dpi, 96));
+                                 ::MulDiv(static_cast<int>(std::lround(width + pane_limits(*app).rail)), dpi, 96));
   pane_edge_end(app);
 }
 
@@ -10010,7 +10242,8 @@ void pane_drag_tick(app_state* app) noexcept {
       RECT rc{};
       ::GetClientRect(app->window, &rc);
       const auto dpi = static_cast<int>(::GetDpiForWindow(app->window));
-      const int x = (rc.right - rc.left) - ::MulDiv(static_cast<int>(std::lround(want + kPaneLimits.rail)), dpi, 96);
+      const int x =
+          (rc.right - rc.left) - ::MulDiv(static_cast<int>(std::lround(want + pane_limits(*app).rail)), dpi, 96);
       const auto t_layout = std::chrono::steady_clock::now();
       if (pane_edge_apply(app, x)) {
         d.layout_ms.push_back(static_cast<float>(
@@ -10404,6 +10637,8 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
         if (!g_pane_drag.enabled) pane_edge_move(app, GET_X_LPARAM(lparam));  // the soak drives its own
         return 0;
       }
+      // S2: the edge lights under the pointer (the mouse-leave below puts it out).
+      set_pane_edge_state(app, pane_edge_hit(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)) ? 1 : 0);
       // Fullscreen hot-edge: the bottom few pixels reveal the strips.
       if (app->fullscreen) {
         RECT rc{};
@@ -10474,6 +10709,7 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
     case WM_MOUSELEAVE: {
       ++app->input.activity_seq;
       app->tracking_mouse = false;
+      if (!app->pane_edge_drag) set_pane_edge_state(app, 0);
       app->input.mouse_in_client = false;
       app->text_beam = false;
       app->input.recents.hover = -1;
@@ -10545,6 +10781,7 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
         app->brush.end();
         ::ReleaseCapture();
         push_adjust_pane(app);
+        push_edit_view(app);  // S2: "Brushed" on the Enhance tab's Remove card
         return 0;
       }
       const int index = (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP)   ? 0

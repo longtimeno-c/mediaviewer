@@ -415,6 +415,11 @@ enum class command_id : std::uint16_t {
   // default key: the View menu and Settings (remappable).
   pane_wider,
   pane_narrower,
+  // docs/plans/edit-refresh.md S2: the Edit header's one-click ✦ Auto (tone,
+  // then white balance; edit::kAutoEnhanceSections), one undo step; again
+  // right after, it takes itself back. No default key: the Edit menu, the
+  // header and Settings (remappable).
+  auto_enhance,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

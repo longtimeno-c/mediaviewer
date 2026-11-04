@@ -449,13 +449,13 @@ constexpr CGFloat kFilmstripHeightPoints = 96.0;
 // right pane (Info, Adjust, Jobs, the Edit workspace) shares one width, the
 // user's, dragged by its edge and kept in the defaults (MVRightPaneWidth).
 constexpr CGFloat kInspectorDefaultPoints = 360.0;
-// No rail yet: the inspector refresh adds it (rail = 44).
+// The floating panes (Info, Adjust, Jobs with the workspace closed) have no
+// rail; the docked workspace has the 44 pt icon rail at the window's edge
+// (docs/plans/edit-refresh.md S2, -paneLimits).
 const mv::shell::pane_width_limits kPaneLimits{.def = static_cast<float>(kInspectorDefaultPoints),
                                                .rail = 0.0f};
+const mv::shell::pane_width_limits kRailLimits{.def = static_cast<float>(kInspectorDefaultPoints)};
 NSString* const kRightPaneWidthKey = @"MVRightPaneWidth";
-// PR 29 (docs/design/20): the Edit workspace's strip (title, tabs, actions) at the top
-// of the right pane column; the tab's pane hangs under it.
-constexpr CGFloat kEditStripHeightPoints = 124.0;
 // PR 30 (docs/design/21): the Video Editor window's timeline area under the preview.
 constexpr CGFloat kEditorTimelinePoints = 280.0;
 constexpr int kEditorThumbs = 48;          // thumbnails across the source
@@ -528,7 +528,16 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 @property(nonatomic, strong) NSLayoutConstraint* metaTop;
 @property(nonatomic, strong) NSLayoutConstraint* adjustTop;
 @property(nonatomic, strong) NSLayoutConstraint* jobsTop;
-@property(nonatomic, strong) NSLayoutConstraint* editPaneTop;
+// docs/plans/edit-refresh.md S2: the header's height is its own (intrinsic):
+// while the workspace is open the panes start under it, not at a constant.
+@property(nonatomic, strong) NSLayoutConstraint* metaTopUnder;
+@property(nonatomic, strong) NSLayoutConstraint* adjustTopUnder;
+@property(nonatomic, strong) NSLayoutConstraint* jobsTopUnder;
+// The workspace's 44 pt icon rail at the window's right edge, and which edge
+// the column's trailing side pins to (the rail's leading edge while open).
+@property(nonatomic, strong) NSView* railHost;
+@property(nonatomic, strong) NSLayoutConstraint* columnTrailingFull;
+@property(nonatomic, strong) NSLayoutConstraint* columnTrailingRail;
 // docs/plans/edit-refresh.md §2.3: the right column every right pane pins its
 // leading edge to, its one width constraint, and the edge that drags it.
 @property(nonatomic, strong) NSLayoutGuide* rightColumn;
@@ -909,6 +918,9 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)editViewInto:(mv_edit_view*)out;
 - (std::string)editName;
 - (void)editSelectTab:(int32_t)tab;
+- (void)editRailPick:(int32_t)tab;
+- (void)editTool:(int32_t)tool;
+- (void)autoEnhance;
 - (void)editClose;
 - (void)editSetAspect:(int32_t)aspect portrait:(BOOL)portrait;
 - (void)editSetStraighten:(float)degrees;
@@ -1862,6 +1874,8 @@ extern "C" void mv_chrome_adjust_blur(void) {
 // The Swift views hard-code these (EditStore.swift): keep them in step.
 static_assert(static_cast<int>(mv::shell::command_id::edit_workspace) == 150);
 static_assert(static_cast<int>(mv::shell::edit_tab::jobs) == 4);
+static_assert(static_cast<int>(mv::shell::edit_tab::enhance) == 5);
+static_assert(sizeof(mv_edit_view) == 4 * 16, "mv_edit_view: 16 words (EditStore.swift reads them)");
 static_assert(static_cast<int>(mv::shell::crop_aspect::r5_4) == 6);
 extern "C" uint64_t mv_chrome_edit_generation(void) {
   return g_chrome_app ? [g_chrome_app editGeneration] : 0;
@@ -1903,6 +1917,18 @@ extern "C" void mv_chrome_open_in_app(const char* app_path_utf8) {
                    ? [NSURL fileURLWithPath:[NSString stringWithUTF8String:app_path_utf8] isDirectory:YES]
                    : nil;
   [g_chrome_app openDocumentInApp:app];
+}
+extern "C" void mv_chrome_edit_rail(int32_t tab) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app editRailPick:tab];
+}
+extern "C" void mv_chrome_edit_tool(int32_t tool) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app editTool:tool];
+}
+extern "C" void mv_chrome_edit_auto(void) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) (void)[g_chrome_app runCommand:mv::shell::command_id::auto_enhance back:mv::shell::back_target::none];
 }
 extern "C" void mv_chrome_edit_cancel_crop(void) {
   if (g_chrome_app) [g_chrome_app editCancelCrop];
@@ -3553,6 +3579,12 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   mv::shell::edit_workspace _ws;
   BOOL _wsShown;
   BOOL _wsSyncing;
+  // docs/plans/edit-refresh.md S2: the inspector was folded to the rail at the
+  // last sync; ✦ Auto waiting for the working image, and its job's token.
+  BOOL _wsFolded;
+  BOOL _autoEnhancePending;
+  std::uint64_t _autoEnhanceToken;
+  int _selfTestEditsBeforeAuto;  // MV_EDIT_SELFTEST's ✦ Auto line
   BOOL _showOriginal;
   std::uint64_t _editGeneration;
   // PR 30 (docs/design/21): the Video Editor. _editorToken bumps on open and close, so
@@ -3983,8 +4015,9 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
                                                            static_cast<float>(NSWidth(container.bounds)),
                                                            static_cast<float>(MVChromeHost.inspectorMinimumWidth),
                                                            kPaneLimits)];
+  self.columnTrailingFull = [self.rightColumn.trailingAnchor constraintEqualToAnchor:container.trailingAnchor];
   [NSLayoutConstraint activateConstraints:@[
-    [self.rightColumn.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    self.columnTrailingFull,
     [self.rightColumn.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
     [self.rightColumn.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
     self.rightColumnWidth,
@@ -3996,8 +4029,12 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   [container addSubview:self.adjustHost];
   self.adjustBottom = [self.adjustHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
                                                                    constant:0.0];
+  // docs/plans/edit-refresh.md S2: the Adjust pane's cards and scopes never spill
+  // over the command bar or the rail.
+  self.adjustHost.wantsLayer = YES;
+  self.adjustHost.layer.masksToBounds = YES;
   [NSLayoutConstraint activateConstraints:@[
-    [self.adjustHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    [self.adjustHost.trailingAnchor constraintEqualToAnchor:self.rightColumn.trailingAnchor],
     self.adjustTop = [self.adjustHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
     [self.adjustHost.leadingAnchor constraintEqualToAnchor:self.rightColumn.leadingAnchor],
     self.adjustBottom,
@@ -4010,14 +4047,24 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   self.jobsBottom = [self.jobsHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
                                                                constant:0.0];
   [NSLayoutConstraint activateConstraints:@[
-    [self.jobsHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    [self.jobsHost.trailingAnchor constraintEqualToAnchor:self.rightColumn.trailingAnchor],
     self.jobsTop = [self.jobsHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
     [self.jobsHost.leadingAnchor constraintEqualToAnchor:self.rightColumn.leadingAnchor],
     self.jobsBottom,
   ]];
   // PR 29 (docs/design/20): the Edit workspace. The strip sits where the panes'
-  // tops were; while it is open they (and the Crop / Trim pane) start under it.
+  // tops were; while it is open they (and the Crop / Trim / Enhance pane)
+  // start under it. docs/plans/edit-refresh.md S2: the strip is the header,
+  // as tall as its content (one row or two, labels or icons, the type scale).
   self.editStripHost = [MVChromeHost makeEditStripView];
+  [self.editStripHost setContentHuggingPriority:NSLayoutPriorityDefaultLow
+                                 forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [self.editStripHost setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                               forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [self.editStripHost setContentHuggingPriority:NSLayoutPriorityRequired
+                                 forOrientation:NSLayoutConstraintOrientationVertical];
+  [self.editStripHost setContentCompressionResistancePriority:NSLayoutPriorityRequired
+                                               forOrientation:NSLayoutConstraintOrientationVertical];
   self.editStripHost.hidden = YES;
   self.editStripHost.translatesAutoresizingMaskIntoConstraints = NO;
   // Below the transport, so a clip's volume and More stay on top of the pane.
@@ -4033,16 +4080,30 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
     host.layer.masksToBounds = YES;
   }
   [NSLayoutConstraint activateConstraints:@[
-    [self.editStripHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    [self.editStripHost.trailingAnchor constraintEqualToAnchor:self.rightColumn.trailingAnchor],
     [self.editStripHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
     [self.editStripHost.leadingAnchor constraintEqualToAnchor:self.rightColumn.leadingAnchor],
-    [self.editStripHost.heightAnchor constraintEqualToConstant:kEditStripHeightPoints],
-    [self.editPaneHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-    self.editPaneTop = [self.editPaneHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor
-                                                                   constant:kEditStripHeightPoints],
+    [self.editPaneHost.trailingAnchor constraintEqualToAnchor:self.rightColumn.trailingAnchor],
+    [self.editPaneHost.topAnchor constraintEqualToAnchor:self.editStripHost.bottomAnchor],
     [self.editPaneHost.leadingAnchor constraintEqualToAnchor:self.rightColumn.leadingAnchor],
     [self.editPaneHost.bottomAnchor constraintEqualToAnchor:self.adjustHost.bottomAnchor],
   ]];
+  self.adjustTopUnder = [self.adjustHost.topAnchor constraintEqualToAnchor:self.editStripHost.bottomAnchor];
+  self.jobsTopUnder = [self.jobsHost.topAnchor constraintEqualToAnchor:self.editStripHost.bottomAnchor];
+  // The icon rail (EditRailView.swift): the window's right edge, from the
+  // command bar to where the panes end (above the filmstrip), only while the
+  // workspace is open. The column's trailing edge moves to its leading edge.
+  self.railHost = [MVChromeHost makeEditRailView];
+  self.railHost.hidden = YES;
+  self.railHost.translatesAutoresizingMaskIntoConstraints = NO;
+  [container addSubview:self.railHost positioned:NSWindowBelow relativeTo:self.transportHost];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.railHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    [self.railHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
+    [self.railHost.bottomAnchor constraintEqualToAnchor:self.adjustHost.bottomAnchor],
+    [self.railHost.widthAnchor constraintEqualToConstant:kRailLimits.rail],
+  ]];
+  self.columnTrailingRail = [self.rightColumn.trailingAnchor constraintEqualToAnchor:self.railHost.leadingAnchor];
   // The column's edge: above every right pane (Info, Adjust and Jobs are added
   // over the transport, the workspace's strip and pane under it), so all 6 pt
   // of it take the pointer. The transport centres on the canvas guide, clear
@@ -4096,8 +4157,9 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
     NSString* helper = [fm isExecutableFileAtPath:bundled] || ![fm isExecutableFileAtPath:beside] ? bundled : beside;
     _clipJobs->set_helper(helper.UTF8String ? helper.UTF8String : "");
   }
+  self.metaTopUnder = [self.metaHost.topAnchor constraintEqualToAnchor:self.editStripHost.bottomAnchor];
   [NSLayoutConstraint activateConstraints:@[
-    [self.metaHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    [self.metaHost.trailingAnchor constraintEqualToAnchor:self.rightColumn.trailingAnchor],
     self.metaTop = [self.metaHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
     [self.metaHost.leadingAnchor constraintEqualToAnchor:self.rightColumn.leadingAnchor],
     self.metaBottom,
@@ -4632,7 +4694,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
       const double tri = phase <= 1.0 ? phase : 2.0 - phase;
       const CGFloat want = kPaneLimits.min + (kPaneLimits.max - kPaneLimits.min) * tri;
       const double t_layout = browse_now();
-      [self paneDragTo:[self paneClientPoints] - kPaneLimits.rail - want];
+      [self paneDragTo:[self paneClientPoints] - [self paneLimits].rail - want];
       [self.window.contentView layoutSubtreeIfNeeded];
       d.layout_ms.push_back(static_cast<float>((browse_now() - t_layout) * 1000.0));
       return;
@@ -6663,6 +6725,7 @@ static mv::shell::command_id MvMenuCommand(NSInteger cmd) {
     case kMenuPageSidebar: return toggle_page_sidebar;
     case kMenuPaneWider: return pane_wider;
     case kMenuPaneNarrower: return pane_narrower;
+    case kMenuAutoEnhance: return auto_enhance;
     case kMenuGallery: return toggle_gallery;
     case kMenuFullscreen: return fullscreen;
     case kMenuSlideshow: return slideshow_start;
@@ -6848,6 +6911,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     case kMenuPageSidebar: [self togglePageSidebar]; break;
     case kMenuPaneWider: [self paneStep:1]; break;
     case kMenuPaneNarrower: [self paneStep:-1]; break;
+    case kMenuAutoEnhance: [self autoEnhance]; break;
     case kMenuGallery: [self toggleGallery]; break;
     case kMenuFullscreen: [self toggleFullscreen]; break;
     case kMenuSlideshow: [self startSlideshow]; break;
@@ -7121,7 +7185,8 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   [self addMenuItem:@"Edit Image" cmd:kMenuEditWorkspace key:@"" mods:0 toMenu:edit];
   [edit addItem:[NSMenuItem separatorItem]];
   [self addMenuItem:@"Crop and Straighten" cmd:kMenuEditCrop key:@"" mods:0 toMenu:edit];
-  [self addMenuItem:@"Colour" cmd:kMenuEditColour key:@"" mods:0 toMenu:edit];
+  [self addMenuItem:@"Adjust" cmd:kMenuEditColour key:@"" mods:0 toMenu:edit];
+  [self addMenuItem:@"Auto Enhance" cmd:kMenuAutoEnhance key:@"" mods:0 toMenu:edit];
   [self addMenuItem:@"Rotate Left" cmd:kMenuRotateLeft key:@"" mods:0 toMenu:edit];
   [self addMenuItem:@"Rotate Right" cmd:kMenuRotateRight key:@"" mods:0 toMenu:edit];
   [self addMenuItem:@"Flip Horizontal" cmd:kMenuFlipH key:@"" mods:0 toMenu:edit];
@@ -7843,6 +7908,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case toggle_page_sidebar: [self togglePageSidebar]; return YES;
     case pane_wider: [self paneStep:1]; return YES;
     case pane_narrower: [self paneStep:-1]; return YES;
+    case auto_enhance: [self autoEnhance]; return YES;
     case gallery_up: [self galleryMoveRows:-1]; return YES;
     case gallery_down: [self galleryMoveRows:1]; return YES;
     case gallery_open_selected:
@@ -8416,19 +8482,46 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   if (_edits.crop_active() && !(open && tab == edit_tab::crop)) {
     [self runEditCommand:mv::shell::command_id::crop_commit];
   }
-  self.editStripHost.hidden = !open;
+  // docs/plans/edit-refresh.md S2: the icon rail docks at the window's edge
+  // while the workspace is open, and the column (the inspector) beside it. A
+  // folded inspector (the rail's active icon, or a window too narrow for any)
+  // shows the rail alone.
+  self.railHost.hidden = !open;
+  if (open != self.columnTrailingRail.active) {
+    if (open) {
+      self.columnTrailingFull.active = NO;
+      self.columnTrailingRail.active = YES;
+    } else {
+      self.columnTrailingRail.active = NO;
+      self.columnTrailingFull.active = YES;
+    }
+  }
+  (void)[self layoutPaneWidth];
+  const BOOL shown = open && ![self inspectorFolded];
+  self.editStripHost.hidden = !shown;
   [self textSync];
-  const CGFloat top = open ? kEditStripHeightPoints : 0.0;
-  self.metaTop.constant = top;
-  self.adjustTop.constant = top;
-  self.jobsTop.constant = top;
-  self.editPaneHost.hidden = !(open && (tab == edit_tab::crop || tab == edit_tab::trim));
+  // The panes start under the header while it shows (its height is its own).
+  for (NSArray<NSLayoutConstraint*>* pair in @[ @[ self.metaTop, self.metaTopUnder ],
+                                                 @[ self.adjustTop, self.adjustTopUnder ],
+                                                 @[ self.jobsTop, self.jobsTopUnder ] ]) {
+    if (pair[1].active != shown) {
+      if (shown) {
+        pair[0].active = NO;
+        pair[1].active = YES;
+      } else {
+        pair[1].active = NO;
+        pair[0].active = YES;
+      }
+    }
+  }
+  self.editPaneHost.hidden =
+      !(shown && (tab == edit_tab::crop || tab == edit_tab::trim || tab == edit_tab::enhance));
   [self layoutAIBadge];  // #345
   if (open || _wsShown) {
     // One right-edge pane at a time: each setter below closes the others.
-    const BOOL colour = open && tab == edit_tab::colour;
-    const BOOL info = open && tab == edit_tab::info;
-    const BOOL jobs = open && tab == edit_tab::jobs;
+    const BOOL colour = shown && tab == edit_tab::colour;
+    const BOOL info = shown && tab == edit_tab::info;
+    const BOOL jobs = shown && tab == edit_tab::jobs;
     if (!colour && _adjust.visible()) [self setAdjustVisible:NO];
     if (!info && _metaPaneVisible) [self setMetaPaneVisible:NO];
     if (!jobs && _jobsVisible) [self setJobsVisible:NO];
@@ -8437,9 +8530,10 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     if (jobs) [self setJobsVisible:YES focus:NO];
   }
   // Crop and Trim keys are the canvas's: keep the keyboard there.
-  if (open && (tab == edit_tab::crop || tab == edit_tab::trim)) [self.window makeFirstResponder:self.view];
-  const BOOL redock = _wsShown != open;
+  if (open && (tab == edit_tab::crop || tab == edit_tab::trim || !shown)) [self.window makeFirstResponder:self.view];
+  const BOOL redock = _wsShown != open || _wsFolded != !shown;
   _wsShown = open;
+  _wsFolded = !shown;
   [self syncCanvasGuide];
   _wsSyncing = NO;
   ++_editGeneration;
@@ -8449,7 +8543,20 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 }
 
 - (CGFloat)dockedRightPoints {
-  return mv::shell::docked_right(static_cast<float>([self paneShownPoints]), _ws.open, false, kPaneLimits);
+  return mv::shell::docked_right(static_cast<float>([self paneShownPoints]), _ws.open, [self inspectorFolded],
+                                 [self paneLimits]);
+}
+
+// docs/plans/edit-refresh.md S2: the docked workspace has the 44 pt rail beside
+// its inspector; the floating panes (the workspace closed) have none.
+- (mv::shell::pane_width_limits)paneLimits {
+  return _ws.open ? kRailLimits : kPaneLimits;
+}
+
+// The inspector is folded to the rail: by the rail's active icon, or because
+// the window is too narrow for any inspector beside the canvas.
+- (BOOL)inspectorFolded {
+  return _ws.open && (_ws.collapsed || [self paneShownPoints] <= 0.0);
 }
 
 // ---- The right column (docs/plans/edit-refresh.md §2.1, §2.3) ------------------------
@@ -8465,22 +8572,27 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 
 - (CGFloat)paneShownPoints {
   return mv::shell::shown_inspector(static_cast<float>(_panePref), static_cast<float>([self paneClientPoints]),
-                                    static_cast<float>(MVChromeHost.inspectorMinimumWidth), kPaneLimits);
+                                    static_cast<float>(MVChromeHost.inspectorMinimumWidth), [self paneLimits]);
 }
 
 // Lays the column out at the preference, re-clamped. True when its width changed.
 - (BOOL)layoutPaneWidth {
   if (!self.rightColumnWidth) return NO;
-  const CGFloat w = [self paneShownPoints];
+  // Folded to the rail: the column has no width, so the canvas guide (and the
+  // transport centred on it) ends at the rail.
+  const CGFloat w = [self inspectorFolded] ? 0.0 : [self paneShownPoints];
   if (self.rightColumnWidth.constant == w) return NO;
   self.rightColumnWidth.constant = w;
   [self layoutAIBadge];
   return YES;
 }
 
-// -[MvMetalView setFrameSize:] (the window resized): it publishes itself.
+// -[MvMetalView setFrameSize:] (the window resized): it publishes itself. A
+// window too narrow for an inspector beside the canvas folds it to the rail
+// (and wide enough again, unfolds it).
 - (void)applyPaneWidth {
   (void)[self layoutPaneWidth];
+  if (_ws.open && !_wsSyncing && _wsFolded != [self inspectorFolded]) [self syncWorkspace];
 }
 
 // A new preference from a step, a reset or a drag's release: laid out, kept,
@@ -8512,7 +8624,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   if (event) {
     NSView* container = self.window.contentView;
     const NSPoint at = [container convertPoint:event.locationInWindow fromView:nil];
-    const CGFloat edge = [self paneClientPoints] - kPaneLimits.rail - self.rightColumnWidth.constant;
+    const CGFloat edge = [self paneClientPoints] - [self paneLimits].rail - self.rightColumnWidth.constant;
     _paneGrabDx = at.x - edge;
   }
   _paneDragging = YES;
@@ -8527,10 +8639,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 // on the edge in a narrow window keeps a wider wish; the Windows twin too).
 - (void)paneDragTo:(CGFloat)leading {
   const CGFloat client = [self paneClientPoints];
-  const CGFloat shown = mv::shell::shown_inspector(static_cast<float>(client - kPaneLimits.rail - leading),
+  const mv::shell::pane_width_limits limits = [self paneLimits];
+  const CGFloat shown = mv::shell::shown_inspector(static_cast<float>(client - limits.rail - leading),
                                                    static_cast<float>(client),
                                                    static_cast<float>(MVChromeHost.inspectorMinimumWidth),
-                                                   kPaneLimits);
+                                                   limits);
   if (shown <= 0.0 || shown == self.rightColumnWidth.constant) return;
   _panePref = shown;
   if ([self layoutPaneWidth] && _ws.open) [self.view syncChrome];
@@ -8539,6 +8652,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 // MVChromeThemeDidChange: the theme's minimum may have moved under the column.
 - (void)paneThemeChanged {
   if ([self layoutPaneWidth] && _ws.open) [self.view syncChrome];
+  if (_ws.open && !_wsSyncing && _wsFolded != [self inspectorFolded]) [self syncWorkspace];
 }
 
 - (void)paneEdgeDragged:(NSEvent*)event {
@@ -8612,11 +8726,26 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   out->edit_count = static_cast<int32_t>(_edits.edit_count());
   out->show_original = _showOriginal ? 1 : 0;
   out->enhance = mv::shell::find_addon_command("enhance", "open") != mv::shell::command_id::none ? 1 : 0;
+  const bool enhance_loaded = out->enhance != 0;
   out->wand = (_brushOn ? mv::shell::kWandBrushOn : 0) | (_brush.empty() ? 0 : mv::shell::kWandBrushStrokes) |
               (_brush.full() ? mv::shell::kWandBrushFull : 0) |
               (mv::shell::find_addon_command("enhance", "restyle") != mv::shell::command_id::none
                    ? mv::shell::kWandRestyle : 0) |
-              (_eyesRunning ? mv::shell::kWandEyesBusy : 0);
+              (_eyesRunning ? mv::shell::kWandEyesBusy : 0) |
+              // docs/plans/edit-refresh.md S2: the Enhance tab's cards and ✦ Auto.
+              // Extend is served by Enhance's Remove model (the add-on's photo
+              // choice); the faces need the AI pack (People).
+              (enhance_loaded ? mv::shell::kWandExtend | mv::shell::kWandDetail : 0) |
+              (mv::shell::addon_commands_available(mv::shell::addon_family::ai) ? mv::shell::kWandFacesReady : 0) |
+              (_adjust.auto_enhance_on(_edits.edit_count(), _edits.colour()) ? mv::shell::kWandAutoOn : 0) |
+              (_autoEnhanceToken != 0 || _autoEnhancePending ? mv::shell::kWandAutoBusy : 0);
+  out->collapsed = [self inspectorFolded] ? 1 : 0;
+  // The header's chip: a Photos-library item, or an iCloud original being fetched.
+  if (!_items.empty() && _index.current() < _items.size()) {
+    const std::string& path = _items[_index.current()].path_utf8;
+    if (mv::shell::photos::is_key(path)) out->chips |= 1;
+    if (!_photosFetchingKey.empty() && _photosFetchingKey == path) out->chips |= 2;
+  }
   if (subject == mv::shell::edit_subject::still && _edits.has_item()) {
     std::uint32_t w = 0, h = 0;
     if (_lab.still_size(_itemId, &w, &h)) {
@@ -8644,6 +8773,93 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   const auto t = static_cast<mv::shell::edit_tab>(tab);
   if (!mv::shell::tab_offered([self editSubject], t)) return;
   if (mv::shell::apply_step(_ws, {mv::shell::workspace_action::select, t})) [self syncWorkspace];
+}
+
+// docs/plans/edit-refresh.md S2: a click on the rail's icon for `tab` (another
+// tab selects it, the active one folds the inspector, a folded rail unfolds).
+- (void)editRailPick:(int32_t)tab {
+  if (tab < 0 || tab >= static_cast<int32_t>(mv::shell::edit_tab::count)) return;
+  const mv::shell::workspace_step step =
+      mv::shell::rail_pick(_ws, [self editSubject], static_cast<mv::shell::edit_tab>(tab));
+  if (mv::shell::apply_step(_ws, step)) [self syncWorkspace];
+}
+
+// The rail's and the Enhance tab's tools (EditRailView / EnhanceHubView):
+// 0 Remove (the brush, on the Enhance tab), 1 Red-eye (Adjust's picker),
+// 2 Faces (the Enhance tab), 3 Extend (Enhance's sheet; its photo choice
+// offers Extend the picture). S3 makes these canvas tools of their own.
+- (void)editTool:(int32_t)tool {
+  if ([self editSubject] != mv::shell::edit_subject::still) {
+    NSBeep();
+    return;
+  }
+  using mv::shell::edit_tab;
+  switch (tool) {
+    case 0:
+      [self editSelectTab:static_cast<int32_t>(edit_tab::enhance)];
+      [self adjustPick:static_cast<int32_t>(mv::shell::adjust_pick::remove) size:_brushSize];
+      break;
+    case 1:
+      [self editSelectTab:static_cast<int32_t>(edit_tab::colour)];
+      [self adjustPick:static_cast<int32_t>(mv::shell::adjust_pick::red_eye) size:_redEyeSize];
+      break;
+    case 2:
+      [self editSelectTab:static_cast<int32_t>(edit_tab::enhance)];
+      break;
+    case 3: {
+      const mv::shell::command_id id = mv::shell::find_addon_command("enhance", "open");
+      if (id == mv::shell::command_id::none) {
+        [self editSelectTab:static_cast<int32_t>(edit_tab::enhance)];  // its card offers the add-on
+      } else {
+        (void)[self runCommand:id back:mv::shell::back_target::none];
+      }
+      break;
+    }
+    default: break;
+  }
+}
+
+// docs/plans/edit-refresh.md S2 (auto_enhance, the header's ✦ Auto): tone, then
+// white balance, read on the pool from the working image and landed as one op.
+// Right after it landed (the stack still exactly that), a click undoes it.
+- (void)autoEnhance {
+  if (![self adjustStill]) {
+    NSBeep();
+    return;
+  }
+  if (_adjust.auto_enhance_on(_edits.edit_count(), _edits.colour())) {
+    (void)[self runEditCommand:mv::shell::command_id::undo_edit];  // one step: Auto's own
+    ++_editGeneration;
+    return;
+  }
+  if (_adjust.auto_busy()) return;
+  if (!_working) {
+    // The working image is not there yet (Adjust builds it): ask for it and
+    // run once it lands.
+    _autoEnhancePending = YES;
+    [self adjustBuildIf:_adjust.show(_adjust.visible(), true)];
+    [self noticeShow:std::string("Preparing the photo for Auto…")];
+    return;
+  }
+  const std::optional<std::uint64_t> token = _adjust.request_auto(mv::edit::kAutoEnhanceSections);
+  if (!token) return;
+  _autoEnhanceToken = *token;
+  ++_editGeneration;  // the header's ✦ shows it is working
+  [self bumpAdjustView];
+  const std::shared_ptr<const mv::image::linear_image> working = _working;
+  const mv::edit::colour current = _edits.colour();
+  const std::uint64_t t = *token;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation,
+                  [working, current, t, weakSelf](const mv::job_context& ctx) -> mv::status {
+                    auto r = mv::edit::compute_auto_sections(*working, current, mv::edit::kAutoEnhanceSections, &ctx);
+                    const bool ok = r.has_value();
+                    const mv::edit::colour value = ok ? r->value : current;
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                      [weakSelf autoLanded:t ok:ok value:value];
+                    });
+                    return ok ? mv::status::ok : r.error();
+                  });
 }
 
 - (void)editClose {
@@ -10602,7 +10818,7 @@ static std::string MvSelfTestPageSummary(const char* addon) {
         // docs/plans/edit-refresh.md S1: the column's edge dragged to 600 through
         // the drag's own code (s4-colour shows pane_pt=600); never saved here.
         [self paneEdgeDown:nil];
-        [self paneDragTo:[self paneClientPoints] - kPaneLimits.rail - 600.0];
+        [self paneDragTo:[self paneClientPoints] - [self paneLimits].rail - 600.0];
         [self paneEdgeUp:nil];
         break;
       case 5: {
@@ -10646,8 +10862,15 @@ static std::string MvSelfTestPageSummary(const char* addon) {
         [self adjustSet:static_cast<int32_t>(mv::edit::adjust_param::sel_blue_sat) value:-50.0f];
         [self adjustSet:static_cast<int32_t>(mv::edit::adjust_param::sharpen) value:40.0f];
         [self adjustSet:static_cast<int32_t>(mv::edit::adjust_param::noise) value:30.0f];
+        // docs/plans/edit-refresh.md §7 S2: "a bit warmer" moves the
+        // temperature one step (the prompt parser's small step).
+        const float warm_before = _edits.colour().get(mv::edit::adjust_param::temperature);
         [self adjustPrompt:"a bit warmer and less noisy, more contrast"];
+        const float warm_after = _edits.colour().get(mv::edit::adjust_param::temperature);
         [self editSelfTestLine:[NSString stringWithFormat:@"    prompt: %s\n", _adjust.view(_edits.colour()).prompt_note]
+                          dir:dir];
+        [self editSelfTestLine:[NSString stringWithFormat:@"    prompt_temperature: before=%g after=%g rose=%d\n",
+                                                          warm_before, warm_after, warm_after > warm_before ? 1 : 0]
                           dir:dir];
         [self editSelfTestAdjustLine:@"picked" dir:dir];
         [self editSelfTestSnap:@"s4c-picked" dir:dir];
@@ -10657,13 +10880,27 @@ static std::string MvSelfTestPageSummary(const char* addon) {
       case 8:
         [self editSelfTestLine:[NSString stringWithFormat:@"    eyes: %s\n", _adjust.view(_edits.colour()).prompt_note]
                           dir:dir];
-        [self editSelectTab:2];
+        // docs/plans/edit-refresh.md S2: the Enhance tab, and ✦ Auto (one op).
+        [self editSelectTab:static_cast<int32_t>(mv::shell::edit_tab::enhance)];
+        _selfTestEditsBeforeAuto = static_cast<int>(_edits.edit_count());
+        [self autoEnhance];
         break;
-      case 9: [self editSelfTestSnap:@"s5-info" dir:dir];
+      case 9: {
+        [self editSelfTestSnap:@"s4d-enhance" dir:dir];
+        const int after = static_cast<int>(_edits.edit_count());
+        const BOOL on = _adjust.auto_enhance_on(_edits.edit_count(), _edits.colour());
+        [self autoEnhance];  // a second press takes it back
+        [self editSelfTestLine:[NSString stringWithFormat:@"    auto_enhance: edits_before=%d after=%d on=%d "
+                                                          @"after_second_press=%d\n",
+                                                          _selfTestEditsBeforeAuto, after, on ? 1 : 0,
+                                                          static_cast<int>(_edits.edit_count())]
+                          dir:dir];
+        [self editSelectTab:2];
         // PR 29: any tag, and the date, from the Info tab.
         [self metaSetTag:"Exif.Image.Artist" value:"MV self-test"];
         [self metaSetDate:"2020-02-02 10:00:00"];
         break;
+      }
       case 10: [self editSelfTestSnap:@"s5b-info-edited" dir:dir]; [self editSelectTab:0]; [self editShowOriginal:YES]; break;
       case 11: [self editSelfTestSnap:@"s6-original" dir:dir]; [self editShowOriginal:NO]; [self editSaveCopy]; break;
       case 12: [self editSelfTestSnap:@"s7-save-copy" dir:dir];
@@ -10906,6 +11143,12 @@ static double mv_wall_seconds() {
     _detailShown = {};
     [self scheduleHistogram];
     [self scheduleDetail];
+    if (_autoEnhancePending) {
+      _autoEnhancePending = NO;
+      [self autoEnhance];  // ✦ Auto was pressed before the photo was ready
+    }
+  } else if (_autoEnhancePending && !ok) {
+    _autoEnhancePending = NO;
   }
   [self bumpAdjustView];
 }
@@ -11374,6 +11617,11 @@ static double mv_wall_seconds() {
 }
 
 - (void)autoLanded:(std::uint64_t)token ok:(bool)ok value:(const mv::edit::colour&)value {
+  const BOOL enhance = token != 0 && token == _autoEnhanceToken;
+  if (enhance) {
+    _autoEnhanceToken = 0;
+    ++_editGeneration;  // the header's ✦ stops
+  }
   if (!_adjust.auto_tone_landed(token)) {
     _pendingAutos.clear();  // the colour moved meanwhile: the rest of a typed request's Autos too
     return;
@@ -11382,6 +11630,11 @@ static double mv_wall_seconds() {
     [self publishEdit];
     [self pokeSnapshot];
     [self adjustColourChanged];
+    // ✦ Auto is one undo step; a second click right after takes it back.
+    if (enhance) _adjust.auto_enhance_landed(_edits.edit_count(), _edits.colour());
+  } else if (enhance && ok) {
+    [self noticeShow:std::string("Auto found nothing to change in this photo")];
+    [self bumpAdjustView];
   } else {
     [self bumpAdjustView];  // the spinner stops; nothing changed
   }
@@ -11606,8 +11859,8 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
   if (want) {
     const BOOL rightPane = !self.metaHost.hidden || !self.adjustHost.hidden || !self.jobsHost.hidden ||
                            !self.editPaneHost.hidden || !self.editStripHost.hidden;
-    const CGFloat trailing =
-        -(16.0 + (rightPane ? kPaneLimits.rail + self.rightColumnWidth.constant : 0.0));
+    const CGFloat rail = self.railHost.hidden ? 0.0 : [self paneLimits].rail;
+    const CGFloat trailing = -(16.0 + rail + (rightPane ? self.rightColumnWidth.constant : 0.0));
     CGFloat bottom = -(([self filmstripVisible] ? kFilmstripHeightPoints : 0.0) + 10.0);
     if (_transportClip) bottom -= 44.0 + 8.0;  // the strip's height and a gap
     if (self.aiBadgeTrailing.constant != trailing) self.aiBadgeTrailing.constant = trailing;

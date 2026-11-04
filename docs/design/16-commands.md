@@ -245,6 +245,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Enter` | gallery | Open the selection in the viewer (leaving fullscreen / slideshow, restoring the filmstrip if enabled) |
 | `T` | all | Filmstrip show / hide (stored per mode: folder open or single image) |
 | `Shift+T` | browse, island | Page sidebar show / hide: page thumbnails down the left of a PDF, DOCX or PPTX while the filmstrip is hidden (below). Remembered (Windows `settings.ini` `[view] page_sidebar`, Mac `mv.pageSidebar`), on by default. Also View ▸ Page Sidebar |
+| *(unbound)* | browse | **Auto enhance** (`auto_enhance`): the Edit header's ✦ Auto on a still: tone, then white balance, one undo step; again right after takes it back ([20](20-edit-workspace.md) "Header", [07](07-photo-editing.md) "Auto"). Also Edit ▸ Auto Enhance on the Mac; listed in Settings |
 | *(unbound)* | Viewing | **Wider side pane** / **Narrower side pane** (`pane_wider` / `pane_narrower`): the right column 40 wider or narrower, 280–720 ([20](20-edit-workspace.md) "The right column"). Also View ▸ Wider / Narrower Side Pane; listed in Settings. Its edge drags too, and a double-click on the edge resets it to 360 |
 | `S` | browse, video, island | Sticky zoom on advance |
 | `C` | Viewing | Clipping blinkies |

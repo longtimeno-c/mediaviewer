@@ -340,6 +340,10 @@ constexpr binding kBindings[] = {
     // them in Settings. The panes' own islands too, where the column has focus.
     row(key::none, mod_none, kViewing, edge, pane_wider),
     row(key::none, mod_none, kViewing, edge, pane_narrower),
+    // docs/plans/edit-refresh.md S2. Appended, unbound: one-click auto enhance
+    // on a still (the Edit header's ✦ Auto), from the Edit menu or a key the
+    // user gives it in Settings.
+    row(key::none, mod_none, kBrowse, edge, auto_enhance),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -561,6 +565,7 @@ constexpr command_info kCommands[] = {
     {adjust_open_eyes, "Open closed eyes", true},
     {pane_wider, "Wider side pane"},
     {pane_narrower, "Narrower side pane"},
+    {auto_enhance, "Auto enhance"},
 };
 
 const char* named_key(key k) noexcept {

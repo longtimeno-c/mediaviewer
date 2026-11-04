@@ -153,6 +153,17 @@ tracks the edge; on release it springs (ω = 18, ζ = 1). The Mac `metal_layer::
 returns early when the size and scale are unchanged. `--pane-drag-soak` measures the drag
 (docs/plans/edit-refresh.md S1).
 
+**The Edit tabs move to a 44 pt icon rail; the strip becomes a header (2026-11-04).** The tab
+row and Done left the strip for a rail at the window's right edge, beside the inspector, while
+the workspace is open (docs/plans/edit-refresh.md S2): Crop, Adjust (tab 1, the wire value
+kept), Enhance (tab 5, new) and Info, then the tools (Remove, Red-eye, Faces, Extend), then
+Undo, Compare and Done. A click on the active tab's icon folds the inspector to the rail (the
+picture refits into the wider rect); any icon unfolds it; a window too narrow for any inspector
+beside the canvas folds it too. The strip is now a header as tall as its content (the Mac
+hosts it with an intrinsic height; Windows sends `chrome_cmd_edit_strip_height`), so a theme's
+type scale or a narrow pane never clips it. ✦ Auto (`auto_enhance`, tone then white balance) is
+one undo step, and a second click right after takes it back.
+
 **One right column, 280–720 wide, the user's (2026-11-04).** The metadata, adjust, Jobs and Edit
 panes share one width (`shell/pane_width.h`): 360 by default (it was 360 pt on the Mac and
 min(half the client, 340 DIP) on Windows), dragged by its edge from 280 (or the theme's minimum,

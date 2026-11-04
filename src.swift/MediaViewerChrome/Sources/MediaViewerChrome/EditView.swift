@@ -1,98 +1,213 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 29 (docs/design/20): the Edit workspace. The strip (title, tabs, Undo / Reset /
-// Original / Save copy) sits at the top of the right pane column; under it is
-// the tab's pane: Crop and Trim here, Colour / Info / Jobs the existing
+// PR 29 (docs/design/20): the Edit workspace. The header (name, ✦ Auto, Undo /
+// Reset / Compare / Save copy) sits at the top of the right pane column, the
+// icon rail (EditRailView) beside it; under it is the tab's pane: Crop, Trim
+// and Enhance (EnhanceHubView) here, Adjust / Info / Jobs the existing
 // AdjustView / MetadataView / JobsView. Every control runs a command the
 // keyboard already has, and says which key in its help and accessibility hint,
 // so the pane teaches the keys rather than replacing them.
 import MVChromeBridge
 import SwiftUI
 
-// ---- the strip -------------------------------------------------------------------
+// ---- the header -------------------------------------------------------------------
+// docs/plans/edit-refresh.md S2 (§2.5): the strip is the inspector's header, as
+// tall as its content (main_mac.mm hosts it with an intrinsic height). Row 1:
+// the file name (truncated in the middle), the edit count, a Photos / iCloud
+// chip and ✦ Auto with the tools popover. Row 2: Undo · Reset · Compare, and
+// Save copy… filled with the accent. Below 340 pt both rows are icons only
+// (ViewThatFits); tooltips and the screen reader carry the live keys. The tabs
+// moved to the rail (EditRailView), and so did Done.
 
 struct EditStripView: View {
   @ObservedObject private var store = EditStore.shared
+  @State private var toolsShown = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
-      HStack(alignment: .firstTextBaseline) {
-        Text(store.title).font(MVTheme.font()).foregroundStyle(MVTheme.title)
-        Text(store.name)
-          .font(MVTheme.font(14))
-          .foregroundStyle(MVTheme.body)
-          .lineLimit(1)
-          .truncationMode(.middle)
-        Spacer()
-        // No .keyboardShortcut: the router owns Esc (it cancels a crop first).
-        Button("Done") { store.close() }
-          .buttonStyle(FlatButtonStyle(compact: true))
-          .help("Close the editor (Esc, or Return again)")
-          .accessibilityHint("Applies a crop in progress and closes the editor")
-      }
-      // Tabs: a segmented row of plain buttons so each can carry its key.
-      HStack(spacing: MVTheme.space(4)) {
-        ForEach(store.tabs, id: \.rawValue) { t in
-          let selected = store.tab == t
-          Button { store.select(t) } label: { Text(t.label).frame(maxWidth: .infinity) }
-          .buttonStyle(FlatButtonStyle(selected: selected, compact: true))
-          .help("\(t.label) (\(t.key))")
-          .accessibilityLabel(t.label)
-          .accessibilityHint("Key \(t.key)")
-          .accessibilityAddTraits(selected ? [.isSelected] : [])
-        }
+      ViewThatFits(in: .horizontal) {
+        titleRow(labels: true)
+        titleRow(labels: false)
       }
       if store.isClip {
-        HStack(spacing: MVTheme.space(8)) {
+        HStack(spacing: MVTheme.space(6)) {
           Button("Clip tools…") { store.run(EditCommand.clipTools) }
             .buttonStyle(FlatButtonStyle(compact: true))
             .help("Rotate, split, remux, save a frame, audio, GIF (⌘S)")
-          Spacer()
+          Spacer(minLength: 0)
         }
       } else {
-        HStack(spacing: MVTheme.space(8)) {
-          Button("Undo") { store.run(EditCommand.undo) }
-            .buttonStyle(FlatButtonStyle(compact: true))
-            .disabled(store.editCount == 0)
-            .help("Undo the last edit (⌘Z)")
-            .accessibilityLabel("Undo edit")
-            .accessibilityHint("Key Command Z")
-          Button("Reset") { store.run(EditCommand.reset) }
-            .buttonStyle(FlatButtonStyle(compact: true))
-            .disabled(store.editCount == 0 && !store.cropActive)
-            .help("Reset to the original, exactly (⌘R)")
-            .accessibilityLabel("Reset to original")
-            .accessibilityHint("Key Command R")
-          Button("Original") { store.setShowOriginal(!store.showOriginal) }
-          .buttonStyle(FlatButtonStyle(selected: store.showOriginal, compact: true))
-          .accessibilityAddTraits(store.showOriginal ? [.isSelected] : [])
-          .help("Show the original while on (or hold Y)")
-          .accessibilityHint("Shows the photo without edits; nothing is changed")
-          Spacer()
-          // The wand: every Enhance feature for the photo, in one menu. An
-          // icon, so the strip keeps "Original" whole.
-          if !store.isClip {
-            WandMenu(store: store)
-          }
-          Button("Save copy…") { store.saveCopy() }
-            .buttonStyle(FlatButtonStyle(compact: true))
-            .fixedSize()
-            .help("Write a new file with these edits; the original is never changed (⌘S)")
+        ViewThatFits(in: .horizontal) {
+          actionRow(labels: true)
+          actionRow(labels: false)
         }
       }
-      Text(store.isClip ? "Trims and tools write new files; the clip is never changed."
-                        : (store.editCount == 1 ? "1 edit · the original is never changed"
-                                                : "\(store.editCount) edits · the original is never changed"))
-        .font(MVTheme.font(12))
-        .foregroundStyle(MVTheme.body)
     }
-    .padding(MVTheme.space(12))
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .padding(.horizontal, MVTheme.space(12))
+    .padding(.top, MVTheme.space(10))
+    .padding(.bottom, MVTheme.space(10))
+    .frame(maxWidth: .infinity, alignment: .topLeading)
     .background(ThemeField())
     .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
     .overlay(alignment: .bottom) { Rectangle().fill(MVTheme.hairline).frame(height: 1) }
-    .clipped()
     .accessibilityElement(children: .contain)
     .accessibilityLabel(store.title)
+  }
+
+  private var countText: String {
+    store.editCount == 1 ? "1 edit" : "\(store.editCount) edits"
+  }
+
+  @ViewBuilder
+  private func titleRow(labels: Bool) -> some View {
+    HStack(spacing: MVTheme.space(6)) {
+      Text(store.name.isEmpty ? store.title : store.name)
+        .font(MVTheme.font(15))
+        .foregroundStyle(MVTheme.title)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .layoutPriority(-1)
+        .help(store.name)
+        .accessibilityLabel("\(store.title): \(store.name)")
+      if store.editCount > 0 && !store.isClip {
+        Text(labels ? countText : "\(store.editCount)")
+          .font(MVTheme.font(11).monospacedDigit())
+          .foregroundStyle(MVTheme.body)
+          .padding(.horizontal, MVTheme.space(6))
+          .padding(.vertical, MVTheme.space(1))
+          .background(Capsule().fill(MVTheme.surface2))
+          .overlay(Capsule().stroke(MVTheme.hairline, lineWidth: 0.5))
+          .fixedSize()
+          .help("\(countText) on this photo; the original is never changed")
+          .accessibilityLabel(countText)
+      }
+      if store.chips & 2 != 0 {
+        chip(labels ? "iCloud" : nil, symbol: "icloud.and.arrow.down",
+             help: "Downloading the original from iCloud…")
+      } else if store.chips & 1 != 0 {
+        chip(labels ? "Photos" : nil, symbol: "photo.on.rectangle",
+             help: "A photo in your Photos library: results are added as new photos")
+      }
+      Spacer(minLength: MVTheme.space(4))
+      if !store.isClip {
+        autoButton(labels: labels)
+      }
+    }
+  }
+
+  private func chip(_ text: String?, symbol: String, help: String) -> some View {
+    HStack(spacing: MVTheme.space(3)) {
+      Image(systemName: symbol).font(.system(size: 10))
+      if let text { Text(text).font(MVTheme.font(11)) }
+    }
+    .foregroundStyle(MVTheme.body)
+    .padding(.horizontal, MVTheme.space(6))
+    .padding(.vertical, MVTheme.space(2))
+    .background(Capsule().fill(MVTheme.surface2))
+    .fixedSize()
+    .help(help)
+    .accessibilityLabel(help)
+  }
+
+  /// ✦ Auto (one undo step; filled while it is the last edit, and a click then
+  /// takes it back) beside the chevron that opens the tools popover.
+  private func autoButton(labels: Bool) -> some View {
+    HStack(spacing: 0) {
+      Button { store.autoEnhance() } label: {
+        HStack(spacing: MVTheme.space(4)) {
+          if store.autoBusy {
+            ProgressView().controlSize(.mini)
+          } else {
+            Image(systemName: store.autoOn ? "checkmark" : "sparkles").font(.system(size: 11, weight: .semibold))
+          }
+          if labels { Text("Auto").font(MVTheme.font(13)) }
+        }
+        .padding(.leading, MVTheme.space(9))
+        .padding(.trailing, MVTheme.space(6))
+        .padding(.vertical, MVTheme.space(4))
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(!store.canEdit || store.autoBusy)
+      .help(store.autoOn ? withKey("Auto is on: click to take it back", "Auto enhance")
+                         : withKey("Auto: better light and colour in one click (one undo step)", "Auto enhance"))
+      .accessibilityLabel(store.autoOn ? "Auto enhance, on" : "Auto enhance")
+      Rectangle().fill(store.autoOn ? MVTheme.onAccent.opacity(0.4) : MVTheme.hairline).frame(width: 1, height: 16)
+      Button { toolsShown.toggle() } label: {
+        Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+          .padding(.horizontal, MVTheme.space(6))
+          .padding(.vertical, MVTheme.space(6))
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .help("Enhance tools: Remove, Restyle, Faces, Enhance image, Extend")
+      .accessibilityLabel("Enhance tools")
+      .popover(isPresented: $toolsShown, arrowEdge: .bottom) {
+        EnhanceToolsPopover { toolsShown = false }
+      }
+    }
+    .foregroundStyle(store.autoOn ? MVTheme.onAccent : MVTheme.accent)
+    .background(Capsule().fill(store.autoOn ? MVTheme.accent : MVTheme.selectionWash))
+    .overlay(Capsule().stroke(MVTheme.accent.opacity(store.autoOn ? 0 : 0.5), lineWidth: 1))
+    .fixedSize()
+  }
+
+  @ViewBuilder
+  private func actionRow(labels: Bool) -> some View {
+    HStack(spacing: MVTheme.space(4)) {
+      HeaderButton(title: "Undo", symbol: "arrow.uturn.backward", labels: labels,
+                   help: withKey("Undo the last edit", "Undo edit")) { store.run(EditCommand.undo) }
+        .disabled(store.editCount == 0)
+        .accessibilityLabel("Undo edit")
+      HeaderButton(title: "Reset", symbol: "arrow.counterclockwise", labels: labels,
+                   help: withKey("Reset to the original, exactly", "Reset edits")) { store.run(EditCommand.reset) }
+        .disabled(store.editCount == 0 && !store.cropActive)
+        .accessibilityLabel("Reset to original")
+      HeaderButton(title: "Compare", symbol: "square.split.2x1", labels: labels,
+                   help: withKey("Show the original while on (or hold the key); nothing is changed",
+                                 "Show original (hold)"),
+                   selected: store.showOriginal) { store.setShowOriginal(!store.showOriginal) }
+        .accessibilityAddTraits(store.showOriginal ? [.isSelected] : [])
+      Spacer(minLength: MVTheme.space(6))
+      Button { store.saveCopy() } label: {
+        if labels { Text("Save copy…") } else { Image(systemName: "square.and.arrow.down") }
+      }
+      .buttonStyle(AccentButtonStyle())
+      .help(withKey("Write a new file with these edits; the original is never changed", "Export…"))
+      .accessibilityLabel("Save copy")
+      .fixedSize()
+    }
+  }
+}
+
+/// A header action: an icon and its name (or the icon alone below 340 pt),
+/// a wash on hover, the selected wash while on.
+private struct HeaderButton: View {
+  let title: String
+  let symbol: String
+  let labels: Bool
+  let help: String
+  var selected = false
+  let action: () -> Void
+  @State private var hover = false
+  @Environment(\.isEnabled) private var enabled
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: MVTheme.space(4)) {
+        Image(systemName: symbol).font(.system(size: 12, weight: .medium))
+        if labels { Text(title).font(MVTheme.font(13)).lineLimit(1) }
+      }
+      .foregroundStyle(!enabled ? MVTheme.disabled : (selected ? MVTheme.accent : MVTheme.title))
+      .padding(.horizontal, MVTheme.space(labels ? 8 : 7))
+      .padding(.vertical, MVTheme.space(5))
+      .background(RoundedRectangle(cornerRadius: MVTheme.radius(6))
+        .fill(selected ? MVTheme.selectionWash : (hover && enabled ? MVTheme.hoverWash : .clear)))
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .onHover { hover = $0 }
+    .help(help)
+    .fixedSize()
   }
 }
 
@@ -102,51 +217,61 @@ struct EditPaneView: View {
   @ObservedObject private var store = EditStore.shared
 
   var body: some View {
-    ScrollView {
-      Group {
-        if store.tab == .trim {
-          TrimPane()
-        } else {
-          CropPane()
+    // The width class (docs/plans/edit-refresh.md §2.5) for the Crop and
+    // Enhance layouts; read once at the root, so a drag does not rebuild.
+    WidthClassReader { _ in
+      ScrollView {
+        Group {
+          switch store.tab {
+          case .trim: TrimPane()
+          case .enhance: EnhanceHubView()
+          default: CropPane()
+          }
         }
+        .padding(MVTheme.space(14))
+        .frame(maxWidth: .infinity, alignment: .topLeading)
       }
-      .padding(MVTheme.space(14))
-      .frame(maxWidth: .infinity, alignment: .topLeading)
     }
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .background(ThemeField())
     .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
-    .clipped()
   }
 }
 
 private struct SectionTitle: View {
   let text: String
   var body: some View {
-    Text(text).font(MVTheme.font(14)).foregroundStyle(MVTheme.body)
+    Text(text.uppercased()).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+      .tracking(0.6)
       .accessibilityAddTraits(.isHeader)
+      .accessibilityLabel(text)
   }
 }
 
 private struct CropPane: View {
   @ObservedObject private var store = EditStore.shared
-  private let columns = [GridItem(.adaptive(minimum: 64), spacing: MVTheme.space(6))]
+  @Environment(\.paneWidthClass) private var cls
+
+  private var columns: [GridItem] {
+    // Wide: the seven ratios in one row (docs/plans/edit-refresh.md §2.5).
+    cls.twoColumns ? Array(repeating: GridItem(.flexible(), spacing: MVTheme.space(6)), count: CropAspect.allCases.count)
+                   : [GridItem(.adaptive(minimum: 64), spacing: MVTheme.space(6))]
+  }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: MVTheme.space(14)) {
+    VStack(alignment: .leading, spacing: MVTheme.space(18)) {
       // Start / apply / cancel.
-      VStack(alignment: .leading, spacing: MVTheme.space(6)) {
+      VStack(alignment: .leading, spacing: MVTheme.space(8)) {
         SectionTitle(text: "Crop")
         if store.cropActive {
           if store.cropWidth > 0 {
             Text("\(store.cropWidth) × \(store.cropHeight) px")
-              .font(MVTheme.font(14))
+              .font(MVTheme.font(15).monospacedDigit())
               .foregroundStyle(MVTheme.title)
               .accessibilityLabel("Crop size \(store.cropWidth) by \(store.cropHeight) pixels")
           }
-          HStack {
+          HStack(spacing: MVTheme.space(6)) {
             Button("Apply") { store.run(EditCommand.cropCommit) }
-              .buttonStyle(FlatButtonStyle(compact: true))
+              .buttonStyle(AccentButtonStyle())
               .help("Apply the crop (Return)")
               .accessibilityHint("Key Return")
             Button("Cancel") { store.cancelCrop() }
@@ -155,64 +280,54 @@ private struct CropPane: View {
               .accessibilityHint("Key Escape")
           }
         } else {
-          Button("Crop and straighten") { store.run(EditCommand.cropMode) }
-          .buttonStyle(FlatButtonStyle(compact: true))
+          Button { store.run(EditCommand.cropMode) } label: {
+            Label("Crop and straighten", systemImage: "crop")
+          }
+          .buttonStyle(AccentButtonStyle(filled: false))
           .disabled(!store.canEdit)
-          .help("Start cropping (⇧C)")
-          .accessibilityHint("Key Shift C")
+          .help(withKey("Start cropping", "Crop / straighten"))
+          .accessibilityHint("Key \(liveKey("Crop / straighten"))")
         }
       }
 
-      VStack(alignment: .leading, spacing: MVTheme.space(6)) {
+      VStack(alignment: .leading, spacing: MVTheme.space(8)) {
         SectionTitle(text: "Aspect ratio")
         LazyVGrid(columns: columns, alignment: .leading, spacing: MVTheme.space(6)) {
           ForEach(CropAspect.allCases, id: \.rawValue) { a in
             let selected = store.aspect == a
             Button { store.setAspect(a, portrait: store.portrait) } label: {
-              Text(a.label).frame(maxWidth: .infinity)
+              Text(a.label).lineLimit(1).minimumScaleFactor(0.8).frame(maxWidth: .infinity)
             }
               .buttonStyle(FlatButtonStyle(selected: selected, compact: true))
+              .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(4))
+                .stroke(selected ? MVTheme.accent : MVTheme.hairline, lineWidth: selected ? 1.5 : 0.5))
               .accessibilityLabel("Aspect \(a.label)")
               .accessibilityAddTraits(selected ? [.isSelected] : [])
           }
         }
-        Button(store.portrait ? "Portrait ⇄" : "Landscape ⇄") {
-          store.setAspect(store.aspect, portrait: !store.portrait)
-        }
-          .buttonStyle(FlatButtonStyle(compact: true))
-          .disabled(!store.aspect.hasOrientation)
-          .help("Swap portrait / landscape (X while cropping)")
-        Text("A next ratio · X swap, while cropping").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
-      }
-
-      VStack(alignment: .leading, spacing: MVTheme.space(6)) {
-        HStack {
-          SectionTitle(text: "Straighten")
-          Spacer()
-          Text(String(format: "%+.1f°", store.straighten)).font(MVTheme.font(14)).foregroundStyle(MVTheme.body)
-          Button("0") { store.setStraighten(0) }
-            .buttonStyle(FlatButtonStyle(compact: true))
-            .help("Level")
-            .accessibilityLabel("Straighten to zero")
-        }
-        Slider(value: Binding(get: { store.straighten }, set: { store.setStraighten(($0 * 2).rounded() / 2) }),
-               in: -45...45) { editing in store.draggingStraighten = editing }
-          .accessibilityLabel("Straighten")
-          .accessibilityValue(String(format: "%.1f degrees", store.straighten))
-        Text(", . tilt 0.5° while cropping").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
-      }
-
-      VStack(alignment: .leading, spacing: MVTheme.space(6)) {
-        SectionTitle(text: "Rotate and flip")
         HStack(spacing: MVTheme.space(8)) {
-          iconButton("rotate.left", "Rotate left", "[", EditCommand.rotateLeft)
-          iconButton("rotate.right", "Rotate right", "]", EditCommand.rotateRight)
-          iconButton("arrow.left.and.right.righttriangle.left.righttriangle.right", "Flip horizontal", "H",
-                     EditCommand.flipH)
-          iconButton("arrow.up.and.down.righttriangle.up.righttriangle.down", "Flip vertical", "V",
-                     EditCommand.flipV)
+          Button {
+            store.setAspect(store.aspect, portrait: !store.portrait)
+          } label: {
+            Label(store.portrait ? "Portrait" : "Landscape",
+                  systemImage: store.portrait ? "rectangle.portrait" : "rectangle")
+          }
+            .buttonStyle(FlatButtonStyle(compact: true))
+            .disabled(!store.aspect.hasOrientation)
+            .help("Swap portrait / landscape (X while cropping)")
+          Text("A next ratio · X swap").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
         }
-        Text("A JPEG with only turns is rewritten losslessly.").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+      }
+
+      if cls.twoColumns {
+        // Wide: straighten beside rotate and flip.
+        HStack(alignment: .top, spacing: MVTheme.space(18)) {
+          straighten.frame(maxWidth: .infinity, alignment: .leading)
+          rotate.frame(maxWidth: .infinity, alignment: .leading)
+        }
+      } else {
+        straighten
+        rotate
       }
 
       Text("While cropping: ← → ↑ ↓ move · ⇧ + arrows resize · Return apply · Esc cancel")
@@ -223,9 +338,47 @@ private struct CropPane: View {
     .disabled(!store.canEdit)
   }
 
+  private var straighten: some View {
+    VStack(alignment: .leading, spacing: MVTheme.space(8)) {
+      HStack(spacing: MVTheme.space(6)) {
+        SectionTitle(text: "Straighten")
+        Spacer()
+        Text(String(format: "%+.1f°", store.straighten))
+          .font(MVTheme.font(14).monospacedDigit())
+          .foregroundStyle(store.straighten == 0 ? MVTheme.body : MVTheme.title)
+        IconButton(symbol: "arrow.counterclockwise", help: "Level (0°)") { store.setStraighten(0) }
+          .disabled(store.straighten == 0)
+          .accessibilityLabel("Straighten to zero")
+      }
+      Slider(value: Binding(get: { store.straighten }, set: { store.setStraighten(($0 * 2).rounded() / 2) }),
+             in: -45...45) { editing in store.draggingStraighten = editing }
+        .controlSize(.small)
+        .accessibilityLabel("Straighten")
+        .accessibilityValue(String(format: "%.1f degrees", store.straighten))
+      Text(", . tilt 0.5° while cropping").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+    }
+  }
+
+  private var rotate: some View {
+    VStack(alignment: .leading, spacing: MVTheme.space(8)) {
+      SectionTitle(text: "Rotate and flip")
+      HStack(spacing: MVTheme.space(6)) {
+        iconButton("rotate.left", "Rotate left", "[", EditCommand.rotateLeft)
+        iconButton("rotate.right", "Rotate right", "]", EditCommand.rotateRight)
+        iconButton("arrow.left.and.right.righttriangle.left.righttriangle.right", "Flip horizontal", "H",
+                   EditCommand.flipH)
+        iconButton("arrow.up.and.down.righttriangle.up.righttriangle.down", "Flip vertical", "V",
+                   EditCommand.flipV)
+      }
+      Text("A JPEG with only turns is rewritten losslessly.").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+  }
+
   private func iconButton(_ symbol: String, _ label: String, _ key: String, _ command: Int32) -> some View {
-    Button { store.run(command) } label: { Image(systemName: symbol).frame(width: 22, height: 18) }
+    Button { store.run(command) } label: { Image(systemName: symbol).font(.system(size: 14)).frame(width: 26, height: 22) }
       .buttonStyle(FlatButtonStyle(compact: true))
+      .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(4)).stroke(MVTheme.hairline, lineWidth: 0.5))
       .help("\(label) (\(key))")
       .accessibilityLabel(label)
       .accessibilityHint("Key \(key)")
@@ -290,61 +443,3 @@ private struct TrimPane: View {
       .accessibilityHint("Key \(key)")
   }
 }
-
-/// The Edit strip's wand: Enhance (more detail), Restyle with words, the
-/// Remove brush and Open closed eyes. Every action writes a new file; the
-/// photo's own edits are carried into it.
-private struct WandMenu: View {
-  @ObservedObject var store: EditStore
-  @State private var brushSize = 0.0
-
-  var body: some View {
-    Menu {
-      if store.enhance {
-        Button("Enhance photo…") { store.enhancePhoto() }
-          .help("A restored copy with more detail, from the Enhance add-on")
-        if store.offersRestyle {
-          Button("Restyle with words…") { store.restylePhoto() }
-            .help("Describe a new look (\"a snowy winter day\"); a new file is written")
-        }
-        Divider()
-      }
-      Section("Remove") {
-        Toggle("Brush over what to remove", isOn: Binding(get: { store.brushOn },
-                                                          set: { store.setBrush($0, size: brushSize) }))
-        Picker("Brush size", selection: Binding(get: { brushSize }, set: { size in
-          brushSize = size
-          if store.brushOn { store.setBrush(true, size: size) }
-        })) {
-          Text("Small").tag(-60.0)
-          Text("Medium").tag(0.0)
-          Text("Large").tag(60.0)
-        }
-        Button("Undo last stroke") { store.brushAction(0) }.disabled(!store.brushed)
-        Button("Clear brush") { store.brushAction(1) }.disabled(!store.brushed)
-        Button(store.enhance ? "Remove brushed area…" : "Remove brushed area… (needs Enhance)") {
-          store.brushAction(2)
-        }
-        .disabled(!store.brushed || !store.enhance)
-      }
-      Divider()
-      Section("Faces") {
-        Button("Open closed eyes") { store.openClosedEyes() }
-          .disabled(store.eyesBusy)
-          .help("This person's open eyes from another of their photos, turned the same way and in this photo's light. Saves a new file.")
-        Button("Improve faces from your photos") { store.improveFaces() }
-          .disabled(store.eyesBusy)
-          .help("Each face replaced by a clearly better one of the same person from your photos (People in Local search), turned the same way and in this photo's light. Saves a new file.")
-        if store.eyesBusy { Text("Looking through their photos…") }
-      }
-    } label: {
-      Image(systemName: store.brushOn ? "paintbrush.pointed.fill" : "wand.and.stars")
-    }
-    .menuStyle(.borderlessButton)
-    .menuIndicator(.hidden)
-    .fixedSize()
-    .help("Enhance, restyle, remove and fix faces — each writes a new file")
-    .accessibilityLabel("Enhance tools")
-  }
-}
-

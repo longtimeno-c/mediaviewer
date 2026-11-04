@@ -580,3 +580,70 @@ TEST_CASE("auto levels: each channel stretched to its ends, within reach", "[aut
   CHECK_FALSE(edit::has_auto(edit::adjust_section::curves));
   CHECK(edit::has_auto(edit::adjust_section::levels));
 }
+
+// ---- docs/plans/edit-refresh.md S2: the header's one-click ✦ Auto ------------------------
+
+TEST_CASE("auto enhance: tone then white balance in one result", "[auto_tone][auto_enhance]") {
+  // Dark and warm: a one-click Auto lifts it and cools it, as the two
+  // sections' Autos one after the other would.
+  const image::linear_image img = picture(128, 64, [](std::uint32_t x, std::uint32_t) {
+    const float v = 0.01f + 0.12f * static_cast<float>(x) / 127.0f;
+    return std::array<float, 3>{v * 1.12f, v * 1.0f, v * 0.86f};
+  });
+  edit::colour user;
+  user.v[static_cast<std::size_t>(adjust_param::vignette)] = -30.0f;  // not an Auto's: kept
+  auto both = edit::compute_auto_sections(img, user, edit::kAutoEnhanceSections);
+  REQUIRE(both);
+  CHECK(both->changed);
+  CHECK(both->value.get(adjust_param::exposure) > 0.0f);
+  CHECK(both->value.get(adjust_param::temperature) < 0.0f);
+  CHECK(both->value.get(adjust_param::vignette) == -30.0f);
+  CHECK(both->value.get(adjust_param::mono) == 0.0f);  // never turned grey
+  // The same as light, then colour on light's result.
+  auto light = edit::compute_auto(img, user, edit::adjust_section::light);
+  REQUIRE(light);
+  auto colour = edit::compute_auto(img, light->value, edit::adjust_section::colour);
+  REQUIRE(colour);
+  CHECK(colour->value == both->value);
+  // Sections without an Auto are skipped; no section is no change.
+  auto none = edit::compute_auto_sections(img, user, edit::section_bit(edit::adjust_section::vignette));
+  REQUIRE(none);
+  CHECK_FALSE(none->changed);
+  CHECK_FALSE(edit::compute_auto_sections(image::linear_image{}, user, edit::kAutoEnhanceSections));
+}
+
+TEST_CASE("adjust pane: ✦ Auto is one token, no section spinner, and a second click takes it back",
+          "[auto_tone][auto_enhance][pane]") {
+  mv::shell::adjust_pane pane;
+  CHECK_FALSE(pane.request_auto(edit::kAutoEnhanceSections).has_value());  // nothing on the canvas
+  (void)pane.show(true, false);
+  const auto build = pane.set_item(41, false);
+  REQUIRE(build.has_value());
+  REQUIRE(pane.working_landed(*build, true, false));
+
+  CHECK_FALSE(pane.request_auto(0).has_value());
+  const auto t = pane.request_auto(edit::kAutoEnhanceSections);
+  REQUIRE(t.has_value());
+  CHECK(pane.auto_busy());
+  CHECK(pane.auto_sections() == edit::kAutoEnhanceSections);
+  CHECK_FALSE(pane.auto_running().has_value());  // not one section's Auto
+  CHECK(pane.view(edit::colour{}).auto_section == -1);
+  CHECK(pane.auto_tone_landed(*t));
+  CHECK_FALSE(pane.auto_busy());
+  CHECK(pane.auto_sections() == 0u);
+
+  // Landed as op 3 with this colour: on while the stack is exactly that.
+  edit::colour landed;
+  landed.v[static_cast<std::size_t>(adjust_param::exposure)] = 0.6f;
+  CHECK_FALSE(pane.auto_enhance_on(3, landed));
+  pane.auto_enhance_landed(3, landed);
+  CHECK(pane.auto_enhance_on(3, landed));
+  CHECK_FALSE(pane.auto_enhance_on(4, landed));     // another op since
+  CHECK_FALSE(pane.auto_enhance_on(2, landed));     // undone
+  edit::colour moved = landed;
+  moved.v[static_cast<std::size_t>(adjust_param::contrast)] = 5.0f;
+  CHECK_FALSE(pane.auto_enhance_on(3, moved));      // a slider moved it
+  // A new item forgets it.
+  (void)pane.set_item(42, false);
+  CHECK_FALSE(pane.auto_enhance_on(3, landed));
+}

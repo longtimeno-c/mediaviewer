@@ -36,6 +36,9 @@ struct MetadataView: View {
   // ↓ reaches tag search, Esc hands the keyboard back to the canvas.
   @FocusState private var paneFocused: Bool
   @FocusState private var searchFocused: Bool
+  /// docs/plans/edit-refresh.md §2.5: the label column, min(100, 30 % of the
+  /// pane), so a 280 pt pane keeps room for the values.
+  @State private var labelWidth: CGFloat = 100
 
   private enum Tab: String, CaseIterable, Identifiable {
     case summary = "Summary"
@@ -45,6 +48,8 @@ struct MetadataView: View {
   }
 
   private var tabs: [Tab] { store.isClip ? Tab.allCases : [.summary, .tags] }
+
+  private static func labelWidth(_ pane: CGFloat) -> CGFloat { min(100, max(64, (pane * 0.3).rounded())) }
 
   var body: some View {
     VStack(spacing: 0) {
@@ -88,8 +93,15 @@ struct MetadataView: View {
     // The pane's width, for the add-ons' surfaces (docs/design/25 PR 59).
     .background(GeometryReader { geo in
       Color.clear
-        .onAppear { store.setPaneWidth(geo.size.width) }
-        .onChange(of: geo.size.width) { _, w in store.setPaneWidth(w) }
+        .onAppear {
+          store.setPaneWidth(geo.size.width)
+          labelWidth = Self.labelWidth(geo.size.width)
+        }
+        .onChange(of: geo.size.width) { _, w in
+          store.setPaneWidth(w)
+          let lw = Self.labelWidth(w)
+          if lw != labelWidth { labelWidth = lw }
+        }
     })
     .focusable()
     .focusEffectDisabled()
@@ -161,7 +173,7 @@ struct MetadataView: View {
               labelRow(row)
             } else {
               HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(10)) {
-                Text(row.label).foregroundStyle(MVTheme.body).frame(width: 100, alignment: .leading)
+                Text(row.label).foregroundStyle(MVTheme.body).frame(width: labelWidth, alignment: .leading)
                 Text(row.value.isEmpty ? "—" : row.value)
                   .foregroundStyle(row.value.isEmpty ? MVTheme.disabled : MVTheme.title)
                   .textSelection(.enabled)
@@ -200,7 +212,7 @@ struct MetadataView: View {
 
   private func labelRow(_ row: MetaRow) -> some View {
     HStack(alignment: .center, spacing: MVTheme.space(10)) {
-      Text(row.label).foregroundStyle(MVTheme.body).frame(width: 100, alignment: .leading)
+      Text(row.label).foregroundStyle(MVTheme.body).frame(width: labelWidth, alignment: .leading)
       Text(row.value.isEmpty ? "—" : row.value)
         .foregroundStyle(row.value.isEmpty ? MVTheme.disabled : MVTheme.title)
         .textSelection(.enabled)
@@ -236,7 +248,7 @@ struct MetadataView: View {
     let taken = row.label == "Date taken"
     return VStack(alignment: .leading, spacing: MVTheme.space(6)) {
       HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(10)) {
-        Text(editingDate ? "Date taken" : row.label).foregroundStyle(MVTheme.body).frame(width: 100, alignment: .leading)
+        Text(editingDate ? "Date taken" : row.label).foregroundStyle(MVTheme.body).frame(width: labelWidth, alignment: .leading)
         if editingDate {
           TextField("YYYY-MM-DD HH:MM:SS", text: $dateDraft)
             .textFieldStyle(.roundedBorder)
@@ -264,7 +276,7 @@ struct MetadataView: View {
       }
       if editingDate {
         HStack(spacing: MVTheme.space(6)) {
-          Spacer().frame(width: 100)
+          Spacer().frame(width: labelWidth)
           Button("Save") { saveDate() }.buttonStyle(FlatButtonStyle(selected: true, compact: true))
           Button("Remove") {
             store.removeDate()
@@ -308,7 +320,7 @@ struct MetadataView: View {
     let note = locationNote(store.parseLocation(locationDraft))
     return VStack(alignment: .leading, spacing: MVTheme.space(6)) {
       HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(10)) {
-        Text(row.label).foregroundStyle(MVTheme.body).frame(width: 100, alignment: .leading)
+        Text(row.label).foregroundStyle(MVTheme.body).frame(width: labelWidth, alignment: .leading)
         if editingLocation {
           TextField("38.7979, -9.3907", text: $locationDraft)
             .textFieldStyle(.roundedBorder)
@@ -337,7 +349,7 @@ struct MetadataView: View {
       }
       if editingLocation {
         HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(4)) {
-          Spacer().frame(width: 106)
+          Spacer().frame(width: labelWidth + 6)
           if note.error {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Color(nsColor: .systemRed))
               .accessibilityHidden(true)
@@ -349,7 +361,7 @@ struct MetadataView: View {
             .accessibilityLabel(note.error ? "Error: " + note.text : note.text)
         }
         HStack(spacing: MVTheme.space(6)) {
-          Spacer().frame(width: 100)
+          Spacer().frame(width: labelWidth)
           Button("Save") { saveLocation() }.buttonStyle(FlatButtonStyle(selected: true, compact: true))
             .help("Return")
           Button("Cancel") { cancelEdits(); store.blur() }.buttonStyle(FlatButtonStyle(compact: true))
@@ -567,7 +579,7 @@ struct MetadataView: View {
               .font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
             ForEach(stream.fields) { f in
               HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(10)) {
-                Text(f.label).foregroundStyle(MVTheme.body).frame(width: 130, alignment: .leading)
+                Text(f.label).foregroundStyle(MVTheme.body).frame(width: labelWidth * 1.3, alignment: .leading)
                 Text(f.value).foregroundStyle(MVTheme.title).textSelection(.enabled)
                   .frame(maxWidth: .infinity, alignment: .leading)
               }

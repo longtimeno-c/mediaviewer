@@ -18,6 +18,7 @@
 //     is dropped, never shown on the wrong photo.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -42,6 +43,12 @@ inline constexpr std::int32_t kWandBrushStrokes = 2;  // something is brushed
 inline constexpr std::int32_t kWandBrushFull = 4;     // the brush holds all it can
 inline constexpr std::int32_t kWandRestyle = 8;       // Enhance has its "restyle" command
 inline constexpr std::int32_t kWandEyesBusy = 16;     // Open closed eyes is running
+// docs/plans/edit-refresh.md S2: the Enhance tab's cards and the header's ✦ Auto.
+inline constexpr std::int32_t kWandExtend = 32;       // Enhance can extend the picture (Remove's model spec)
+inline constexpr std::int32_t kWandDetail = 64;       // Enhance offers "more detail" (its "open" command)
+inline constexpr std::int32_t kWandFacesReady = 128;  // the AI pack is there: Open eyes / Improve faces can run
+inline constexpr std::int32_t kWandAutoOn = 256;      // ✦ Auto is the last edit: a second click takes it back
+inline constexpr std::int32_t kWandAutoBusy = 512;    // ✦ Auto is reading the photo
 
 enum class adjust_readiness : std::int32_t {
   none = 0,       // no still on the canvas (or a clip): the pane says so
@@ -123,9 +130,25 @@ class adjust_pane {
   // makes the token stale.
   [[nodiscard]] std::optional<std::uint64_t> request_auto_tone(
       edit::adjust_section section = edit::adjust_section::light) noexcept;
+  // docs/plans/edit-refresh.md S2: several sections at once (edit::section_bit
+  // mask; the host runs edit::compute_auto_sections), e.g. the header's ✦ Auto
+  // (edit::kAutoEnhanceSections). Same token rules as one section's.
+  [[nodiscard]] std::optional<std::uint64_t> request_auto(std::uint32_t sections) noexcept;
   bool auto_tone_landed(std::uint64_t token) noexcept;
-  // The section of the Auto in flight (the view's auto_section).
+  // The section of the Auto in flight (the view's auto_section). For several
+  // sections at once: nullopt here, auto_sections() says which.
   [[nodiscard]] std::optional<edit::adjust_section> auto_running() const noexcept;
+  // The mask of the Auto in flight, 0 = none.
+  [[nodiscard]] std::uint32_t auto_sections() const noexcept { return auto_token_ != 0 ? auto_mask_ : 0u; }
+  [[nodiscard]] bool auto_busy() const noexcept { return auto_token_ != 0; }
+
+  // ✦ Auto (auto_enhance) is one undo step, and a second click takes it back:
+  // the host records what the stack looked like when it landed; while the
+  // stack still is exactly that (same op count, same colour), the next click
+  // is an undo. Anything else (a slider, another op, a new item) and the next
+  // click runs Auto again.
+  void auto_enhance_landed(std::size_t edit_count, const edit::colour& c) noexcept;
+  [[nodiscard]] bool auto_enhance_on(std::size_t edit_count, const edit::colour& c) const noexcept;
 
   // Slice 3: the pick mode (cleared with the item, the working image or the pane).
   void set_pick(adjust_pick p) noexcept { pick_ = readiness_ == adjust_readiness::ready ? p : adjust_pick::none; }
@@ -152,6 +175,10 @@ class adjust_pane {
   std::uint64_t histogram_token_ = 0;
   std::uint64_t auto_token_ = 0;   // the Auto job in flight, 0 = none
   edit::adjust_section auto_section_ = edit::adjust_section::light;
+  std::uint32_t auto_mask_ = 0;     // the sections of the Auto in flight
+  bool auto_mark_ = false;          // ✦ Auto landed at auto_mark_count_ / auto_mark_colour_
+  std::size_t auto_mark_count_ = 0;
+  edit::colour auto_mark_colour_{};
   bool histogram_valid_ = false;
   float clip_high_ = 0.0f, clip_low_ = 0.0f;
   std::uint16_t bins_[4 * edit::kHistogramBins] = {};

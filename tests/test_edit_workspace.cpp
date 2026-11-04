@@ -10,8 +10,13 @@
 
 using namespace mv::shell;
 
-TEST_CASE("a still offers Crop, Colour and Info; a clip Trim and Jobs", "[edit_workspace][pr29]") {
-  CHECK(tabs_for(edit_subject::still).size() == 3);
+TEST_CASE("a still offers Crop, Adjust, Enhance and Info; a clip Trim and Jobs", "[edit_workspace][pr29]") {
+  CHECK(tabs_for(edit_subject::still).size() == 4);
+  // The rail's order (docs/plans/edit-refresh.md §1).
+  CHECK(tabs_for(edit_subject::still)[0] == edit_tab::crop);
+  CHECK(tabs_for(edit_subject::still)[1] == edit_tab::colour);
+  CHECK(tabs_for(edit_subject::still)[2] == edit_tab::enhance);
+  CHECK(tabs_for(edit_subject::still)[3] == edit_tab::info);
   CHECK(tabs_for(edit_subject::clip).size() == 2);
   CHECK(tabs_for(edit_subject::none).empty());
   CHECK(default_tab(edit_subject::still) == edit_tab::crop);
@@ -21,6 +26,11 @@ TEST_CASE("a still offers Crop, Colour and Info; a clip Trim and Jobs", "[edit_w
   CHECK_FALSE(tab_offered(edit_subject::clip, edit_tab::crop));
   CHECK(std::string(workspace_title(edit_subject::still)) == "Edit image");
   CHECK(std::string(workspace_title(edit_subject::clip)) == "Edit video");
+  // The wire values stay; tab 1 is labelled Adjust now, tab 5 is new.
+  CHECK(static_cast<int>(edit_tab::colour) == 1);
+  CHECK(static_cast<int>(edit_tab::enhance) == 5);
+  CHECK(std::string(tab_label(edit_tab::colour)) == "Adjust");
+  CHECK(std::string(tab_label(edit_tab::enhance)) == "Enhance");
 }
 
 TEST_CASE("Enter toggles the workspace on its subject's first tab", "[edit_workspace][pr29]") {
@@ -123,4 +133,78 @@ TEST_CASE("Enter opens the workspace; crop and trim keep their Enter", "[edit_wo
   // The gallery keeps its own Enter.
   s.gallery_open = true;
   CHECK(router.on_key({key::enter, mod_none}, s).command == command_id::gallery_open_selected);
+}
+
+TEST_CASE("the Enhance tab is any still's, and follows the subject", "[edit_workspace][edit-refresh]") {
+  CHECK(tab_offered(edit_subject::still, edit_tab::enhance));
+  CHECK_FALSE(tab_offered(edit_subject::clip, edit_tab::enhance));
+  CHECK_FALSE(tab_offered(edit_subject::none, edit_tab::enhance));
+  // Selected from the rail, open or closed.
+  edit_workspace ws;
+  auto step = rail_pick(ws, edit_subject::still, edit_tab::enhance);
+  CHECK(step.action == workspace_action::open);
+  CHECK(step.tab == edit_tab::enhance);
+  CHECK(apply_step(ws, step));
+  CHECK(ws.open);
+  CHECK(ws.tab == edit_tab::enhance);
+  // Another still keeps it; a clip has no Enhance tab (Trim); back on a still, Crop.
+  CHECK_FALSE(follow_subject(ws, edit_subject::still));
+  CHECK(ws.tab == edit_tab::enhance);
+  CHECK(follow_subject(ws, edit_subject::clip));
+  CHECK(ws.tab == edit_tab::trim);
+  CHECK(follow_subject(ws, edit_subject::still));
+  CHECK(ws.tab == edit_tab::crop);
+  // A clip's rail offers no Enhance: nothing happens.
+  CHECK(rail_pick(ws, edit_subject::clip, edit_tab::enhance).action == workspace_action::none);
+  // The keys of the other tabs move off Enhance as from any tab.
+  ws = {true, edit_tab::enhance};
+  CHECK(route_workspace(ws, edit_subject::still, command_id::adjust_pane).action == workspace_action::select);
+  CHECK(route_workspace(ws, edit_subject::still, command_id::metadata_pane).tab == edit_tab::info);
+  CHECK(route_workspace(ws, edit_subject::still, command_id::crop_mode).tab == edit_tab::crop);
+  // Enter closes it, as any tab.
+  CHECK(route_workspace(ws, edit_subject::still, command_id::edit_workspace).action == workspace_action::close);
+}
+
+TEST_CASE("the rail's active icon folds the inspector; any icon unfolds it", "[edit_workspace][edit-refresh]") {
+  edit_workspace ws{true, edit_tab::colour};
+  // Another tab: select.
+  auto step = rail_pick(ws, edit_subject::still, edit_tab::info);
+  CHECK(step.action == workspace_action::select);
+  CHECK(apply_step(ws, step));
+  // The active one: collapse, the tab kept.
+  step = rail_pick(ws, edit_subject::still, edit_tab::info);
+  CHECK(step.action == workspace_action::collapse);
+  CHECK(apply_step(ws, step));
+  CHECK(ws.open);
+  CHECK(ws.collapsed);
+  CHECK(ws.tab == edit_tab::info);
+  CHECK_FALSE(apply_step(ws, step));  // already folded
+  // Folded: the same icon unfolds it, another unfolds on that tab.
+  step = rail_pick(ws, edit_subject::still, edit_tab::info);
+  CHECK(step.action == workspace_action::select);
+  CHECK(apply_step(ws, step));
+  CHECK_FALSE(ws.collapsed);
+  ws.collapsed = true;
+  CHECK(apply_step(ws, rail_pick(ws, edit_subject::still, edit_tab::crop)));
+  CHECK_FALSE(ws.collapsed);
+  CHECK(ws.tab == edit_tab::crop);
+  // A tab's own key unfolds a folded inspector rather than closing it.
+  ws = {true, edit_tab::colour, true};
+  step = route_workspace(ws, edit_subject::still, command_id::adjust_pane);
+  CHECK(step.action == workspace_action::select);
+  CHECK(apply_step(ws, step));
+  CHECK_FALSE(ws.collapsed);
+  ws = {true, edit_tab::info, true};
+  CHECK(route_workspace(ws, edit_subject::still, command_id::metadata_pane).action == workspace_action::select);
+  // Closing (or the subject going) forgets the fold: the next open shows the inspector.
+  ws = {true, edit_tab::crop, true};
+  CHECK(apply_step(ws, {workspace_action::close, ws.tab}));
+  CHECK_FALSE(ws.collapsed);
+  ws = {true, edit_tab::crop, true};
+  CHECK(follow_subject(ws, edit_subject::none));
+  CHECK_FALSE(ws.collapsed);
+  // A closed workspace cannot fold.
+  edit_workspace closed;
+  CHECK_FALSE(apply_step(closed, {workspace_action::collapse, edit_tab::crop}));
+  CHECK_FALSE(closed.open);
 }

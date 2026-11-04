@@ -8,28 +8,66 @@ import MVChromeBridge
 
 /// shell::edit_tab and shell::crop_aspect values (main_mac.mm static_asserts them).
 enum EditTab: Int32, CaseIterable {
-  case crop = 0, colour = 1, info = 2, trim = 3, jobs = 4
+  // The wire values stay (colour is labelled Adjust); docs/plans/edit-refresh.md
+  // S2 appends Enhance.
+  case crop = 0, colour = 1, info = 2, trim = 3, jobs = 4, enhance = 5
 
   var label: String {
     switch self {
     case .crop: return "Crop"
-    case .colour: return "Colour"
+    case .colour: return "Adjust"
     case .info: return "Info"
     case .trim: return "Trim"
     case .jobs: return "Jobs"
+    case .enhance: return "Enhance"
+    }
+  }
+
+  /// The rail's icon (SF Symbols).
+  var symbol: String {
+    switch self {
+    case .crop: return "crop"
+    case .colour: return "slider.horizontal.3"
+    case .info: return "info.circle"
+    case .trim: return "timeline.selection"
+    case .jobs: return "list.bullet.rectangle"
+    case .enhance: return "sparkles"
+    }
+  }
+
+  /// The command table's name of the key that opens this tab (the live key,
+  /// as remapped in Settings, comes from SettingsStore.keyLabel).
+  var commandName: String? {
+    switch self {
+    case .crop: return "Crop / straighten"
+    case .colour: return "Adjust pane"
+    case .info: return "Metadata pane"
+    case .trim: return "Trim clip"
+    case .jobs: return "Jobs"
+    case .enhance: return nil
     }
   }
 
   /// The key that opens this tab, for the label and the accessibility hint.
-  var key: String {
+  @MainActor var key: String {
+    if let name = commandName, let live = SettingsStore.keyLabel(name) { return live }
     switch self {
     case .crop: return "⇧C"
     case .colour: return "⇧A"
     case .info: return "I"
     case .trim: return "⌘T"
     case .jobs: return "⌘J"
+    case .enhance: return ""
     }
   }
+}
+
+/// The live key of a command-table row, "" when it has none (remappable in Settings).
+@MainActor func liveKey(_ name: String) -> String { SettingsStore.keyLabel(name) ?? "" }
+/// "Text (key)" when the command has a key, else "Text".
+@MainActor func withKey(_ text: String, _ name: String) -> String {
+  let k = liveKey(name)
+  return k.isEmpty ? text : "\(text) (\(k))"
 }
 
 enum CropAspect: Int32, CaseIterable {
@@ -94,6 +132,16 @@ final class EditStore: ObservableObject {
   var brushFull: Bool { wand & 4 != 0 }
   var offersRestyle: Bool { wand & 8 != 0 }
   var eyesBusy: Bool { wand & 16 != 0 }
+  // docs/plans/edit-refresh.md S2 (shell/adjust_pane.h kWand*).
+  var offersExtend: Bool { wand & 32 != 0 }
+  var offersDetail: Bool { wand & 64 != 0 }
+  var facesReady: Bool { wand & 128 != 0 }
+  var autoOn: Bool { wand & 256 != 0 }
+  var autoBusy: Bool { wand & 512 != 0 }
+  /// The header's chip: 1 a Photos-library photo, 2 fetching its original.
+  @Published private(set) var chips: Int32 = 0
+  /// The inspector is folded to the rail.
+  @Published private(set) var collapsed = false
   @Published private(set) var cropActive = false
   @Published private(set) var aspect: CropAspect = .free
   @Published private(set) var portrait = false
@@ -111,7 +159,8 @@ final class EditStore: ObservableObject {
   /// The bar button shows only over media: not on the empty start, not over the gallery.
   var showsBarButton: Bool { open || (canEdit && !galleryVisible) }
   var title: String { isClip ? "Edit video" : "Edit image" }
-  var tabs: [EditTab] { isClip ? [.trim, .jobs] : [.crop, .colour, .info] }
+  /// The rail's order (shell/edit_workspace.cpp kStillTabs).
+  var tabs: [EditTab] { isClip ? [.trim, .jobs] : [.crop, .colour, .enhance, .info] }
 
   private var generation: UInt64 = .max
 
@@ -132,6 +181,8 @@ final class EditStore: ObservableObject {
     if (v.document != 0) != document { document = v.document != 0 }
     if (v.enhance != 0) != enhance { enhance = v.enhance != 0 }
     if v.wand != wand { wand = v.wand }
+    if v.chips != chips { chips = v.chips }
+    if (v.collapsed != 0) != collapsed { collapsed = v.collapsed != 0 }
     if document { OpenInStore.shared.follow() }
     let gallery = mv_chrome_gallery_visible()
     if gallery != galleryVisible { galleryVisible = gallery }
@@ -156,6 +207,13 @@ final class EditStore: ObservableObject {
   func run(_ command: Int32) { mv_chrome_run_command(command) }
   func toggle() { run(EditCommand.editWorkspace) }
   func select(_ t: EditTab) { mv_chrome_edit_select_tab(t.rawValue) }
+  /// The rail's icon: select, fold (the active one) or unfold.
+  func rail(_ t: EditTab) { mv_chrome_edit_rail(t.rawValue) }
+  /// The rail's and the Enhance tab's tools.
+  enum Tool: Int32 { case remove = 0, redEye = 1, faces = 2, extend = 3 }
+  func tool(_ t: Tool) { mv_chrome_edit_tool(t.rawValue) }
+  /// ✦ Auto: one undo step; again right after takes it back.
+  func autoEnhance() { mv_chrome_edit_auto() }
   func close() { mv_chrome_edit_close() }
   func setAspect(_ a: CropAspect, portrait p: Bool) { mv_chrome_edit_set_aspect(a.rawValue, p ? 1 : 0) }
   func setStraighten(_ degrees: Double) {

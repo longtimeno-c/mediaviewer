@@ -72,12 +72,15 @@ public static partial class IslandHost
             MoveAt(NewIsland(ref _adjustPane, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
             MoveAt(NewIsland(ref _jobsPane, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
             MoveAt(NewIsland(ref _editPane, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
+            // docs/plans/edit-refresh.md S2: the workspace's icon rail at the right edge.
+            MoveAt(NewIsland(ref _editRail, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
             // Issue #429: the page sidebar, on the tree's edge.
             MoveAt(NewIsland(ref _pageSidebar, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
             // #345: the AI badge, a small island of its own (IslandHost.AiBadge.cs).
             AttachAiBadge(parent, args.ClientHeight);
             _metaPaneVisible = false;
             _editPaneVisible = false;
+            _editRailVisible = false;
             _treeVisible = false;
             _adjustPaneVisible = false;
             return 0;
@@ -100,12 +103,14 @@ public static partial class IslandHost
             _adjustPaneVisible = false;
             _jobsPaneVisible = false;
             _editPaneVisible = false;
+            _editRailVisible = false;
             _jobsTimer?.Stop();
             DropMetaUi();
             DropJobsUi();
             DropTreeUi();
             DropAdjustUi();
             DropEditUi();
+            DropRailUi();
             DropPageSidebarUi();
             DetachAiBadge();
             DisposeSource(ref _metaPane);
@@ -113,6 +118,7 @@ public static partial class IslandHost
             DisposeSource(ref _adjustPane);
             DisposeSource(ref _jobsPane);
             DisposeSource(ref _editPane);
+            DisposeSource(ref _editRail);
             DisposeSource(ref _pageSidebar);
             return 0;
         }
@@ -298,6 +304,10 @@ public static partial class IslandHost
             // No XY focus navigation: FocusManager.TryMoveFocus fail-fasts in these
             // islands (0xC000027B), so the arrows are handled explicitly per pane.
         };
+        // docs/plans/edit-refresh.md S2: a right pane's left border is the column's
+        // edge (the accent at 2 DIP while hot or dragged, Notify). The folder
+        // tree is on the left and has none.
+        if (closeCommand != Command.FolderTree) PaintPaneEdge(root);
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         var header = new Grid { Padding = Pad(14, 10, 6, 6) };

@@ -11,10 +11,13 @@ namespace MediaViewer.Chrome;
 
 /// <summary>
 /// PR 29 (docs/design/20): the Edit workspace — one visible door to the PR 10–14 edits.
-/// A fifth panel island at the top of the right column: the strip (title, tabs,
-/// Undo / Reset / Original / Save copy) and, under it, the Crop or Trim pane.
-/// The Colour, Info and Jobs tabs are the adjust, metadata and Jobs panes,
-/// which native places under the strip. The Mac twin is EditView.swift.
+/// A fifth panel island at the top of the right column: the header (name, edit
+/// count, ✦ Auto with the tools flyout; Undo / Reset / Compare / Save copy) and,
+/// under it, the Crop, Trim or Enhance pane. The Adjust, Info and Jobs tabs are
+/// the adjust, metadata and Jobs panes, which native places under the header.
+/// docs/plans/edit-refresh.md S2: the tabs and Done moved to the icon rail
+/// (IslandHost.Rail.cs); the header is as tall as its content and says so
+/// (chrome_cmd_edit_strip_height). The Mac twin is EditView.swift.
 /// </summary>
 /// <remarks>
 /// Every control sends a command the keyboard already has, and its tooltip and
@@ -28,8 +31,9 @@ namespace MediaViewer.Chrome;
 public static partial class IslandHost
 {
     // chrome_host.h chrome_edit_args: 12 int/float words, two pointers, two lengths,
-    // then the document's app list (pointer, length) and its flag.
-    internal const int EditArgsSize = 96;
+    // then the document's app list (pointer, length) and its flag, Enhance, the
+    // wand bits, and (S2) the header's chips and the folded inspector.
+    internal const int EditArgsSize = 104;
 
     private static DesktopWindowXamlSource? _editPane;
     private static bool _editPaneVisible;
@@ -42,10 +46,18 @@ public static partial class IslandHost
         public const int OriginalOn = 2;
         public const int SaveCopy = 3;
         public const int Enhance = 4;  // slice 5: Enhance's sheet, the copy carrying the edit
+        public const int Restyle = 5;  // the sheet started on Restyle with words
+        // docs/plans/edit-refresh.md S2: the Remove brush on (Adjust shows its
+        // Remove section), the red-eye picker on (Adjust), the Enhance tab shown.
+        public const int ArmBrush = 6;
+        public const int ArmRedEye = 7;
+        public const int ShowEnhance = 8;
     }
 
     // shell::edit_tab and shell::crop_aspect values (both stable on the wire).
-    private const int TabCrop = 0, TabColour = 1, TabInfo = 2, TabTrim = 3, TabJobs = 4;
+    private const int TabCrop = 0, TabColour = 1, TabInfo = 2, TabTrim = 3, TabJobs = 4, TabEnhance = 5;
+    // chrome_host.h kEditChip*.
+    private const int ChipLibrary = 1, ChipCloud = 2;
     private const int SubjectNone = 0, SubjectClip = 2;
     private static readonly string[] AspectLabels = { "Free", "Original", "1:1", "4:3", "3:2", "16:9", "5:4" };
 
@@ -67,6 +79,9 @@ public static partial class IslandHost
     private static int _editTrimFlags;
     private static string _editName = "";
     private static string _editTrimLabel = "";
+    private static int _editWand;       // shell/adjust_pane.h kWand*
+    private static int _editChips;      // kEditChip*
+    private static bool _editCollapsed; // the inspector folded to the rail
 
     // What the island was built for; anything else is updated in place, so a
     // straighten drag is never interrupted by a rebuild.
@@ -85,16 +100,29 @@ public static partial class IslandHost
     private static MenuFlyout? _openInFlyout;
     private static TextBlock? _editNameText;
     private static TextBlock? _editCountText;
+    private static Border? _editCountPill;
+    private static Border? _editChip;
+    private static TextBlock? _editChipText;
     private static Button? _editUndo;
     private static Button? _editReset;
     private static Button? _editOriginalButton;
+    private static Border? _editAuto;
+    private static Button? _editAutoMain;
+    private static FontIcon? _editAutoIcon;
+    private static TextBlock? _editAutoLabel;
+    private static Spinner? _editAutoSpinner;
+    private static Button? _editAutoMore;
+    private static Button? _editSave;
+    // Labels hidden below 340 DIP (the icons stay): ApplyEditWidthClass.
+    private static readonly List<UIElement> EditCompactHidden = new();
+    private static Grid? _editStraightenTurn;
+    private static Grid? _editAspectGrid;
     private static TextBlock? _editCropSize;
     private static Button? _editOrient;
     private static Slider? _editStraightenSlider;
     private static TextBlock? _editStraightenText;
     private static TextBlock? _editTrimLabelText;
     private static readonly List<Button> EditTrimSaveButtons = new();
-    private static readonly List<(Button Button, int Tab)> EditTabButtons = new();
     private static readonly List<Button> EditAspectButtons = new();
 
     private static void DropEditUi()
@@ -102,16 +130,30 @@ public static partial class IslandHost
         _editShape = "";
         _editNameText = null;
         _editCountText = null;
+        _editCountPill = null;
+        _editChip = null;
+        _editChipText = null;
         _editUndo = null;
         _editReset = null;
         _editOriginalButton = null;
+        _editAuto = null;
+        _editAutoMain = null;
+        _editAutoIcon = null;
+        _editAutoLabel = null;
+        _editAutoSpinner = null;
+        _editAutoMore = null;
+        _editSave = null;
+        EditCompactHidden.Clear();
+        _editStraightenTurn = null;
+        _editAspectGrid = null;
+        _enhanceGrid = null;
+        DropEnhanceUi();
         _editCropSize = null;
         _editOrient = null;
         _editStraightenSlider = null;
         _editStraightenText = null;
         _editTrimLabelText = null;
         EditTrimSaveButtons.Clear();
-        EditTabButtons.Clear();
         EditAspectButtons.Clear();
     }
 
@@ -154,8 +196,12 @@ public static partial class IslandHost
                 .Split('\n', StringSplitOptions.RemoveEmptyEntries);
             _editDocument = Marshal.ReadInt32(arg, 84) != 0;
             _editEnhance = Marshal.ReadInt32(arg, 88) != 0;
+            _editWand = Marshal.ReadInt32(arg, 92);
+            _editChips = Marshal.ReadInt32(arg, 96);
+            _editCollapsed = Marshal.ReadInt32(arg, 100) != 0;
             RenderEditBarButton();
             if (_editPaneVisible) RenderEdit();
+            RenderRail();
             return 0;
         }
         catch (Exception ex)
@@ -316,6 +362,14 @@ public static partial class IslandHost
 
     // ---- the island --------------------------------------------------------------
 
+    // The inspector's width class (shell/pane_width.h class_of), from the island's
+    // own width: compact < 340, regular < 560, wide < 720, xwide.
+    private const int WidthCompact = 0, WidthRegular = 1, WidthWide = 2, WidthXWide = 3;
+    private static int _editWidthClass = WidthRegular;
+
+    private static int WidthClassOf(double width) =>
+        width < 340 ? WidthCompact : width < 560 ? WidthRegular : width < 720 ? WidthWide : WidthXWide;
+
     private static UIElement BuildEditPane()
     {
         DropEditUi();
@@ -330,22 +384,32 @@ public static partial class IslandHost
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        root.Children.Add(BuildEditStrip());
+        FrameworkElement strip = BuildEditStrip();
+        root.Children.Add(strip);
         var rule = new Border { Height = 1, Background = Brush(Hairline) };
         Grid.SetRow(rule, 1);
         root.Children.Add(rule);
-        if (_editTab == TabCrop || _editTab == TabTrim)
+        if (_editTab == TabCrop || _editTab == TabTrim || _editTab == TabEnhance)
         {
-            var pane = new StackPanel { Spacing = Space(14), Padding = Pad(14, 12, 14, 14) };
+            var pane = new StackPanel { Spacing = Space(16), Padding = Pad(14, 12, 14, 14) };
             if (_editTab == TabTrim) BuildTrimPane(pane);
+            else if (_editTab == TabEnhance) BuildEnhanceHub(pane);
             else BuildCropPane(pane);
             var scroll = new ScrollViewer { Content = pane, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
             Grid.SetRow(scroll, 2);
             root.Children.Add(scroll);
         }
+        // docs/plans/edit-refresh.md S2: the header is as tall as its content (one
+        // row or two, labels or icons, the type scale); native lays the panes
+        // under it. Sent when it changes, never per frame.
+        strip.SizeChanged += (_, e) => Send(Command.EditStripHeight, (float)Math.Ceiling(e.NewSize.Height + 1));
+        // The width class: labels or icons, one column or two. Nothing is rebuilt
+        // for a width; the same controls change in place.
+        root.SizeChanged += (_, e) => ApplyEditWidthClass(e.NewSize.Width);
         AutomationProperties_SetName(root, EditTitle);
         // Issue #224: the island covers the canvas's WM_DROPFILES.
         WireFileDrop(root);
+        PaintPaneEdge(root);
         RenderEditInPlace();
         ThemeField.Lay(root);
         return root;
@@ -355,6 +419,7 @@ public static partial class IslandHost
     // ending, trim arming or previewing (their panes list different buttons).
     // The in/out label and whether a marker exists are updated in place, so
     // Set in / Set out keep keyboard focus on the button pressed (issue #222).
+    // The width is not part of it (ApplyEditWidthClass).
     private static string EditShape() =>
         $"{_editTab}|{_editSubject}|{_editCropActive}|{_editTrimFlags & ~TrimHasMarkerFlag}|{_editEnhance}";
 
@@ -369,46 +434,79 @@ public static partial class IslandHost
         RenderEditInPlace();
     }
 
-    private static UIElement BuildEditStrip()
+    // Below 340 DIP the header is icons only; at 560 and up the Crop pane's
+    // ratios are one row and straighten sits beside rotate, and the Enhance
+    // cards are two columns.
+    private static void ApplyEditWidthClass(double width)
     {
-        var col = new StackPanel { Spacing = Space(6), Padding = Pad(12, 10, 8, 8) };
+        int cls = WidthClassOf(width);
+        if (cls == _editWidthClass && EditCompactHidden.Count == 0 && _editAspectGrid is null) return;
+        bool changed = cls != _editWidthClass;
+        _editWidthClass = cls;
+        Visibility labels = cls == WidthCompact ? Visibility.Collapsed : Visibility.Visible;
+        foreach (UIElement e in EditCompactHidden) e.Visibility = labels;
+        if (changed || _editAspectGrid is not null) LayAspectGrid();
+        LayStraightenTurn();
+        LayEnhanceGrid();
+    }
 
-        var head = new Grid();
-        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+    private static UIElement Capsule(UIElement child, ChromeColour fill)
+    {
+        return new Border
+        {
+            Child = child,
+            Padding = Pad(6, 1, 6, 1),
+            CornerRadius = new CornerRadius(999),
+            Background = Brush(fill),
+            BorderBrush = Brush(Hairline),
+            BorderThickness = new Thickness(0.5),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+    }
+
+    // A header action: an icon and its name (the name hidden below 340 DIP).
+    private static Button HeaderButton(string glyph, string label, string tip, Action click)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(5) };
+        row.Children.Add(new FontIcon { Glyph = glyph, FontFamily = IconFont, FontSize = TypeSize(13) });
+        TextBlock text = ButtonLabel(label, UiFontSize - 3);
+        text.VerticalAlignment = VerticalAlignment.Center;
+        row.Children.Add(text);
+        EditCompactHidden.Add(text);
+        return ChromeButton(row, Pad(8, 5, 8, 5), click, align: HorizontalAlignment.Left, name: label, tip: tip);
+    }
+
+    private static FrameworkElement BuildEditStrip()
+    {
+        var col = new StackPanel { Spacing = Space(8), Padding = Pad(12, 10, 10, 10) };
+
+        // Row 1: the name (truncated in the middle is not a WinUI trimming; the
+        // end is), the edit count, a cloud chip, and ✦ Auto with its chevron.
+        var head = new Grid { ColumnSpacing = Space(6) };
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        TextBlock title = Text(EditTitle, Title, UiFontSize, bold: true);
-        title.VerticalAlignment = VerticalAlignment.Center;
-        head.Children.Add(title);
-        _editNameText = Text("", Body, UiFontSize - 2, maxLines: 1);
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        _editNameText = Text("", Title, UiFontSize - 1, maxLines: 1);
         _editNameText.TextTrimming = TextTrimming.CharacterEllipsis;
+        _editNameText.TextWrapping = TextWrapping.NoWrap;
         _editNameText.VerticalAlignment = VerticalAlignment.Center;
-        _editNameText.Margin = Pad(8, 0, 4, 0);
-        Grid.SetColumn(_editNameText, 1);
         head.Children.Add(_editNameText);
-        string? enter = KeyOf(Command.EditWorkspace);
-        Button done = EditButton("Done", () => Send(Command.EditWorkspace),
-                                 tip: enter is null ? "Close the editor  Esc" : $"Close the editor  Esc, or {enter} again");
-        Grid.SetColumn(done, 2);
-        head.Children.Add(done);
-        col.Children.Add(head);
-
-        // Tabs: a row of plain buttons so each can carry its key.
-        var tabs = new Grid { ColumnSpacing = Space(4) };
-        (int Tab, string Label, int KeyedBy)[] list = EditIsClip
-            ? new[] { (TabTrim, "Trim", Command.TrimMode), (TabJobs, "Jobs", Command.JobsPane) }
-            : new[] { (TabCrop, "Crop", Command.CropMode), (TabColour, "Colour", Command.AdjustPane),
-                      (TabInfo, "Info", Command.MetadataPane) };
-        for (int i = 0; i < list.Length; i++)
+        _editCountText = Text("", Body, UiFontSize - 5, maxLines: 1);
+        _editCountPill = (Border)Capsule(_editCountText, ChromeColour.Surface2);
+        Grid.SetColumn(_editCountPill, 1);
+        head.Children.Add(_editCountPill);
+        _editChipText = Text("", Body, UiFontSize - 5, maxLines: 1);
+        _editChip = (Border)Capsule(_editChipText, ChromeColour.Surface2);
+        Grid.SetColumn(_editChip, 2);
+        head.Children.Add(_editChip);
+        if (!EditIsClip)
         {
-            (int tab, string label, int keyedBy) = list[i];
-            tabs.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            Button b = EditButton(label, () => Send(Command.EditTab, tab), tip: WithKey(label, keyedBy), stretch: true);
-            Grid.SetColumn(b, i);
-            tabs.Children.Add(b);
-            EditTabButtons.Add((b, tab));
+            UIElement auto = BuildAutoButton();
+            Grid.SetColumn((FrameworkElement)auto, 3);
+            head.Children.Add(auto);
         }
-        col.Children.Add(tabs);
+        col.Children.Add(head);
 
         if (EditIsClip)
         {
@@ -418,42 +516,105 @@ public static partial class IslandHost
         }
         else
         {
-            _editUndo = EditButton("Undo", () => Send(Command.UndoEdit),
-                                   tip: WithKey("Undo the last edit", Command.UndoEdit));
-            _editReset = EditButton("Reset", () => Send(Command.ResetEdits),
-                                    tip: WithKey("Reset to the original, exactly", Command.ResetEdits));
+            // Row 2: Undo · Reset · Compare, then Save copy… filled with the accent.
+            _editUndo = HeaderButton("\uE7A7", "Undo", WithKey("Undo the last edit", Command.UndoEdit),
+                                     () => Send(Command.UndoEdit));
+            AutomationProperties_SetName(_editUndo, "Undo edit");
+            _editReset = HeaderButton("\uE72C", "Reset", WithKey("Reset to the original, exactly", Command.ResetEdits),
+                                      () => Send(Command.ResetEdits));
+            AutomationProperties_SetName(_editReset, "Reset to original");
             // The Y row is momentary, so its label already reads "hold Y".
             string? hold = KeyOf(Command.ShowOriginal);
-            _editOriginalButton = EditButton("Original",
-                () => Send(Command.EditAction, _editOriginal ? EditActions.OriginalOff : EditActions.OriginalOn),
-                tip: hold is null ? "Show the original while on; nothing is changed"
-                                  : $"Show the original while on (or {hold}); nothing is changed");
-            Button save = EditButton("Save copy…", () => Send(Command.EditAction, EditActions.SaveCopy),
-                                     tip: WithKey("Write a new file with these edits; the original is never changed",
-                                                  Command.ExportImage));
-            // Slice 5: Enhance's sheet beside Save copy…, its copy carrying
-            // these edits; only while the Enhance add-on is loaded.
-            var right = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
-            if (_editEnhance && !EditIsClip)
-            {
-                // An icon, as on the Mac, so the strip keeps "Original" whole.
-                right.Children.Add(ChromeButton(
-                    new FontIcon { Glyph = "\uE9F5", FontFamily = SymbolFont, FontSize = UiFontSize - 2, Foreground = Brush(Title) },
-                    CompactButtonPadding, () => Send(Command.EditAction, EditActions.Enhance), name: "Enhance…",
-                    tip: "Enhance… — a restored copy from the Enhance add-on, with these edits in it"));
-            }
-            right.Children.Add(save);
-            var actions = new Grid();
+            _editOriginalButton = HeaderButton(RailGlyph.Compare, "Compare",
+                hold is null ? "Compare with the original while on; nothing is changed"
+                             : $"Compare with the original while on (or {hold}); nothing is changed",
+                () => Send(Command.EditAction, _editOriginal ? EditActions.OriginalOff : EditActions.OriginalOn));
+            AutomationProperties_SetName(_editOriginalButton, "Compare with the original");
+            _editSave = AccentButton("Save copy…", () => Send(Command.EditAction, EditActions.SaveCopy));
+            _editSave.Padding = Pad(12, 5, 12, 5);
+            if (_editSave.Content is TextBlock saveText) saveText.FontSize = UiFontSize - 2;
+            ToolTipService.SetToolTip(_editSave, WithKey("Write a new file with these edits; the original is never changed",
+                                                         Command.ExportImage));
+            AutomationProperties_SetName(_editSave, "Save copy");
+            var actions = new Grid { ColumnSpacing = Space(4) };
             actions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             actions.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            actions.Children.Add(Row(_editUndo, _editReset, _editOriginalButton));
-            Grid.SetColumn(right, 1);
-            actions.Children.Add(right);
+            var left = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(2) };
+            left.Children.Add(_editUndo);
+            left.Children.Add(_editReset);
+            left.Children.Add(_editOriginalButton);
+            actions.Children.Add(left);
+            Grid.SetColumn(_editSave, 1);
+            actions.Children.Add(_editSave);
             col.Children.Add(actions);
         }
-        _editCountText = Hint("");
-        col.Children.Add(_editCountText);
+        // Applied once built: the class may already be compact.
+        Visibility labels = _editWidthClass == WidthCompact ? Visibility.Collapsed : Visibility.Visible;
+        foreach (UIElement e in EditCompactHidden) e.Visibility = labels;
         return col;
+    }
+
+    // ✦ Auto (one undo step; filled while it is the last edit, a click then takes
+    // it back) and its chevron, which opens the five tools (the Mac's popover).
+    private static UIElement BuildAutoButton()
+    {
+        _editAutoIcon = new FontIcon { Glyph = RailGlyph.Enhance, FontFamily = IconFont, FontSize = TypeSize(12) };
+        _editAutoSpinner = new Spinner(12);
+        _editAutoSpinner.Root.Visibility = Visibility.Collapsed;
+        _editAutoLabel = ButtonLabel("Auto", UiFontSize - 3);
+        _editAutoLabel.VerticalAlignment = VerticalAlignment.Center;
+        EditCompactHidden.Add(_editAutoLabel);
+        var face = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
+        face.Children.Add(_editAutoIcon);
+        face.Children.Add(_editAutoSpinner.Root);
+        face.Children.Add(_editAutoLabel);
+        _editAutoMain = ChromeButton(face, Pad(9, 4, 6, 4), () => Send(Command.AutoEnhance), name: "Auto enhance");
+        _editAutoMain.CornerRadius = new CornerRadius(999, 0, 0, 999);
+        _editAutoMore = ChromeButton(new FontIcon { Glyph = "\uE70D", FontFamily = IconFont, FontSize = TypeSize(9) },
+                                     Pad(6, 4, 8, 4), name: "Enhance tools",
+                                     tip: "Enhance tools: Remove, Restyle, Faces, Enhance image, Extend");
+        _editAutoMore.CornerRadius = new CornerRadius(0, 999, 999, 0);
+        Button more = _editAutoMore;
+        _editAutoMore.Click += (_, _) => Guarded(() => OpenEnhanceFlyout(more));
+        var pair = new StackPanel { Orientation = Orientation.Horizontal };
+        pair.Children.Add(_editAutoMain);
+        pair.Children.Add(new Border { Width = 1, Height = 16, Background = Brush(Hairline), VerticalAlignment = VerticalAlignment.Center });
+        pair.Children.Add(_editAutoMore);
+        _editAuto = new Border
+        {
+            Child = pair,
+            CornerRadius = new CornerRadius(999),
+            BorderThickness = new Thickness(1),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        return _editAuto;
+    }
+
+    private static void RenderAutoButton()
+    {
+        if (_editAuto is null || _editAutoMain is null || _editAutoMore is null) return;
+        bool on = (_editWand & WandAutoOn) != 0;
+        bool busy = (_editWand & WandAutoBusy) != 0;
+        _editAuto.Background = on ? Brush(ChromeColour.ControlAccent) : Brush(ChromeColour.SelectionWash);
+        _editAuto.BorderBrush = on ? Brush(ChromeColour.ControlAccent) : Brush(ChromeColour.Accent);
+        SolidColorBrush ink = on ? Brush(ChromeColour.OnAccent) : Brush(ChromeColour.Accent);
+        _editAutoMain.Foreground = ink;
+        _editAutoMore.Foreground = ink;
+        if (_editAutoLabel is not null) _editAutoLabel.Foreground = ink;
+        if (_editAutoIcon is not null)
+        {
+            _editAutoIcon.Glyph = on ? "\uE73E" : RailGlyph.Enhance;  // CheckMark while it is on
+            _editAutoIcon.Visibility = busy ? Visibility.Collapsed : Visibility.Visible;
+        }
+        if (_editAutoSpinner is not null)
+        {
+            _editAutoSpinner.Root.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+            _editAutoSpinner.Active = busy;
+        }
+        _editAutoMain.IsEnabled = !busy && _editSubject != SubjectNone;
+        string tip = on ? "Auto is on: click to take it back" : "Auto: better light and colour in one click (one undo step)";
+        ToolTipService.SetToolTip(_editAutoMain, WithKey(tip, Command.AutoEnhance));
+        AutomationProperties_SetName(_editAutoMain, on ? "Auto enhance, on" : "Auto enhance");
     }
 
     private static void BuildCropPane(StackPanel pane)
@@ -465,8 +626,11 @@ public static partial class IslandHost
         {
             _editCropSize = Text("", Title, UiFontSize - 2);
             crop.Children.Add(_editCropSize);
+            Button apply = AccentButton("Apply", () => Send(Command.CropCommit));
+            apply.Padding = Pad(12, 5, 12, 5);
+            ToolTipService.SetToolTip(apply, WithKey("Apply the crop", Command.CropCommit));
             crop.Children.Add(Row(
-                EditButton("Apply", () => Send(Command.CropCommit), tip: WithKey("Apply the crop", Command.CropCommit)),
+                apply,
                 EditButton("Cancel", () => Send(Command.EditAction, EditActions.CancelCrop),
                            tip: "Drop this crop  Esc")));
         }
@@ -477,16 +641,12 @@ public static partial class IslandHost
         }
         pane.Children.Add(crop);
 
-        // Aspect presets: two rows of plain buttons, the chosen one washed.
+        // Aspect presets: two rows of plain buttons (one row from 560 DIP,
+        // LayAspectGrid), the chosen one washed and outlined.
         var aspect = new StackPanel { Spacing = Space(6) };
         aspect.Children.Add(SectionTitle("Aspect ratio"));
         var grid = new Grid { ColumnSpacing = Space(4), RowSpacing = Space(4) };
-        for (int c = 0; c < 4; c++)
-        {
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        }
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        _editAspectGrid = grid;
         string? cycle = KeyOf(Command.CropAspectCycle);
         string? swap = KeyOf(Command.CropAspectSwap);
         for (int a = 0; a < AspectLabels.Length; a++)
@@ -497,11 +657,12 @@ public static partial class IslandHost
                 tip: cycle is null ? $"Aspect {AspectLabels[a]}" : $"Aspect {AspectLabels[a]}  {cycle} cycles while cropping",
                 stretch: true);
             AutomationProperties_SetName(b, $"Aspect {AspectLabels[a]}");
-            Grid.SetRow(b, a / 4);
-            Grid.SetColumn(b, a % 4);
+            b.BorderBrush = Brush(Hairline);
+            b.BorderThickness = new Thickness(0.5);
             grid.Children.Add(b);
             EditAspectButtons.Add(b);
         }
+        LayAspectGrid();
         aspect.Children.Add(grid);
         _editOrient = EditButton("Landscape",
             () => Send(Command.CropAspectSet, _editAspect + (_editPortrait ? 0 : 16)),
@@ -548,7 +709,11 @@ public static partial class IslandHost
         };
         straighten.Children.Add(_editStraightenSlider);
         straighten.Children.Add(Hint(", . tilt 0.5° while cropping"));
-        pane.Children.Add(straighten);
+        // Straighten beside rotate from 560 DIP, under it below (LayStraightenTurn).
+        var pair = new Grid { ColumnSpacing = Space(18), RowSpacing = Space(16) };
+        _editStraightenTurn = pair;
+        pair.Children.Add(straighten);
+        pane.Children.Add(pair);
 
         // Rotate and flip: the PR 10 keys.
         var turn = new StackPanel { Spacing = Space(6) };
@@ -564,7 +729,8 @@ public static partial class IslandHost
             PaneIconButton(Glyph.FlipArrows, "Flip vertical", KeyOf(Command.FlipVertical),
                            () => Send(Command.FlipVertical), new RotateTransform { Angle = 90 })));
         turn.Children.Add(Hint("A JPEG with only turns is rewritten losslessly."));
-        pane.Children.Add(turn);
+        pair.Children.Add(turn);
+        LayStraightenTurn();
 
         pane.Children.Add(Hint("While cropping: arrows move · Shift+arrows resize · Enter apply · Esc cancel"));
     }
@@ -618,6 +784,51 @@ public static partial class IslandHost
         pane.Children.Add(Hint("Space play · , . frame step · J K L shuttle · Q E skip"));
     }
 
+    // The seven ratios: four a row below 560 DIP, all seven in one from it.
+    private static void LayAspectGrid()
+    {
+        if (_editAspectGrid is null) return;
+        int columns = _editWidthClass >= WidthWide ? AspectLabels.Length : 4;
+        if (_editAspectGrid.ColumnDefinitions.Count != columns)
+        {
+            _editAspectGrid.ColumnDefinitions.Clear();
+            for (int c = 0; c < columns; c++)
+                _editAspectGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        }
+        int rows = (AspectLabels.Length + columns - 1) / columns;
+        while (_editAspectGrid.RowDefinitions.Count < rows) _editAspectGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        while (_editAspectGrid.RowDefinitions.Count > rows) _editAspectGrid.RowDefinitions.RemoveAt(_editAspectGrid.RowDefinitions.Count - 1);
+        for (int a = 0; a < EditAspectButtons.Count; a++)
+        {
+            Grid.SetRow(EditAspectButtons[a], a / columns);
+            Grid.SetColumn(EditAspectButtons[a], a % columns);
+        }
+    }
+
+    // Straighten and Rotate side by side from 560 DIP, stacked below (the same
+    // two panels, moved between cells: never rebuilt, so a slider keeps focus).
+    private static void LayStraightenTurn()
+    {
+        if (_editStraightenTurn is null || _editStraightenTurn.Children.Count < 2) return;
+        bool side = _editWidthClass >= WidthWide;
+        Grid g = _editStraightenTurn;
+        int columns = side ? 2 : 1;
+        if (g.ColumnDefinitions.Count != columns)
+        {
+            g.ColumnDefinitions.Clear();
+            for (int c = 0; c < columns; c++) g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        }
+        int rows = side ? 1 : 2;
+        while (g.RowDefinitions.Count < rows) g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        while (g.RowDefinitions.Count > rows) g.RowDefinitions.RemoveAt(g.RowDefinitions.Count - 1);
+        var first = (FrameworkElement)g.Children[0];
+        var second = (FrameworkElement)g.Children[1];
+        Grid.SetRow(first, 0);
+        Grid.SetColumn(first, 0);
+        Grid.SetRow(second, side ? 0 : 1);
+        Grid.SetColumn(second, side ? 1 : 0);
+    }
+
     // Free has none and a square's is itself; Original swaps like the ratios
     // (edit_session.cpp, EditStore.swift hasOrientation).
     private static bool HasOrientation(int aspect) => aspect != 0 && aspect != 2;
@@ -626,19 +837,29 @@ public static partial class IslandHost
     // and the slider (guarded, so native's echo of a drag is not re-sent).
     private static void RenderEditInPlace()
     {
-        if (_editNameText is not null) _editNameText.Text = _editName;
-        if (_editCountText is not null)
+        if (_editNameText is not null)
         {
-            _editCountText.Text = EditIsClip
-                ? "Trims and tools write new files; the clip is never changed."
-                : (_editCount == 1 ? "1 edit" : $"{_editCount} edits") + " · the original is never changed";
+            _editNameText.Text = _editName.Length > 0 ? _editName : EditTitle;
+            ToolTipService.SetToolTip(_editNameText, _editName.Length > 0 ? _editName : null);
+            AutomationProperties_SetName(_editNameText, $"{EditTitle}: {_editName}");
         }
-        foreach ((Button b, int tab) in EditTabButtons)
+        if (_editCountText is not null && _editCountPill is not null)
         {
-            bool on = tab == _editTab;
-            SetSelected(b, on);
-            Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(b, on ? "Selected" : "");
+            string count = _editCount == 1 ? "1 edit" : $"{_editCount} edits";
+            _editCountText.Text = _editWidthClass == WidthCompact ? $"{_editCount}" : count;
+            _editCountPill.Visibility = _editCount > 0 && !EditIsClip ? Visibility.Visible : Visibility.Collapsed;
+            ToolTipService.SetToolTip(_editCountPill, count + " on this photo; the original is never changed");
+            AutomationProperties_SetName(_editCountPill, count);
         }
+        if (_editChip is not null && _editChipText is not null)
+        {
+            bool cloud = (_editChips & ChipCloud) != 0;
+            _editChip.Visibility = cloud ? Visibility.Visible : Visibility.Collapsed;
+            _editChipText.Text = "Cloud";
+            ToolTipService.SetToolTip(_editChip, "Downloading the file from the cloud…");
+        }
+        RenderAutoButton();
+        if (_editTab == TabEnhance) RenderEnhanceInPlace();
         bool canEdit = _editSubject != SubjectNone;
         if (_editUndo is not null) _editUndo.IsEnabled = _editCount > 0;
         if (_editReset is not null) _editReset.IsEnabled = _editCount > 0 || _editCropActive;
@@ -655,6 +876,8 @@ public static partial class IslandHost
         for (int i = 0; i < EditAspectButtons.Count; i++)
         {
             SetSelected(EditAspectButtons[i], i == _editAspect);
+            EditAspectButtons[i].BorderBrush = i == _editAspect ? Brush(ChromeColour.Accent) : Brush(Hairline);
+            EditAspectButtons[i].BorderThickness = new Thickness(i == _editAspect ? 1.5 : 0.5);
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetItemStatus(
                 EditAspectButtons[i], i == _editAspect ? "Selected" : "");
         }

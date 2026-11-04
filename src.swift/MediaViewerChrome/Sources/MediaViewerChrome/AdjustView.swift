@@ -9,14 +9,75 @@
 // stay disabled until the FP16 working image exists, which for a RAW is
 // LibRaw's full linear develop, never the embedded preview (docs/design/07).
 //
+// docs/plans/edit-refresh.md S2 (§2.5): the layout follows the inspector's
+// width class (shell/pane_width.h class_of), read by one GeometryReader at the
+// root and handed down only when the class changes, so a drag of the column's
+// edge does not rebuild the sections. compact (280–339): one column, labels
+// above the sliders, histogram 72. regular (340–559): one column, labels
+// inline, histogram 96. wide (560–719): the histogram across, then two
+// independent columns (Light, Colour, B&W, Vignette, Detail | Levels, Curves,
+// Selective Colour, Red-Eye). xwide (≥ 720): wide plus a scopes row, the
+// histogram and a square Curves side by side. Each section is a card with a
+// chevron, a changed dot, an AUTO pill and ↺; a value readout is clickable
+// to type a number, and a double-click on a slider sets it back to 0.
+//
 // Keyboard-complete without Full Keyboard Access: ↑ ↓ pick a slider of an open
-// section, ← → step it (⇧ for ten steps), 0 sets it back to zero, A runs its
-// section's Auto, R resets every slider, Esc returns the keyboard to the
-// photo. ⇧A closes the pane.
+// section (the left column, then the right), ← → step it (⇧ for ten steps),
+// 0 sets it back to zero, A runs its section's Auto, R resets every slider,
+// Esc returns the keyboard to the photo. ⇧A closes the pane.
 import MVChromeBridge
 import SwiftUI
 
+/// The inspector's layout class (shell/pane_width.h width_class, class_of).
+enum PaneWidthClass: Int {
+  case compact, regular, wide, xwide
+
+  init(width: CGFloat) {
+    if width < 340 { self = .compact } else if width < 560 { self = .regular } else if width < 720 {
+      self = .wide
+    } else { self = .xwide }
+  }
+
+  var twoColumns: Bool { self == .wide || self == .xwide }
+}
+
+private struct PaneWidthClassKey: EnvironmentKey {
+  static let defaultValue = PaneWidthClass.regular
+}
+
+extension EnvironmentValues {
+  var paneWidthClass: PaneWidthClass {
+    get { self[PaneWidthClassKey.self] }
+    set { self[PaneWidthClassKey.self] = newValue }
+  }
+}
+
+/// Reads the pane's width once at the root and hands its class down: the
+/// content is rebuilt when the class changes, not on every point of a drag.
+struct WidthClassReader<Content: View>: View {
+  @ViewBuilder let content: (PaneWidthClass) -> Content
+  @State private var cls = PaneWidthClass.regular
+
+  var body: some View {
+    content(cls)
+      .environment(\.paneWidthClass, cls)
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+      .background(GeometryReader { geo in
+        Color.clear
+          .onAppear { cls = PaneWidthClass(width: geo.size.width) }
+          .onChange(of: PaneWidthClass(width: geo.size.width)) { _, now in cls = now }
+      })
+  }
+}
+
 struct AdjustView: View {
+  var body: some View {
+    WidthClassReader { cls in AdjustPane(cls: cls) }
+  }
+}
+
+private struct AdjustPane: View {
+  let cls: PaneWidthClass
   @ObservedObject private var store = AdjustStore.shared
   @State private var row = 0
   @State private var open: Set<Int> = [0, 1]
@@ -24,12 +85,21 @@ struct AdjustView: View {
   @State private var band = 0
   @State private var request = ""
   @State private var redEyeSize = 0.0
-  @State private var brushSize = 0.0
   @State private var curvesChannel = 0
+  /// A value readout being typed into (its parameter): the pane's keys step aside.
+  @State private var editingValue: Int? = nil
   @FocusState private var focused: Bool
   /// The request field has the keyboard: the pane's own keys (0, A, R, arrows)
   /// step aside, or typing "warmer" would reset every slider on its "r".
   @FocusState private var typing: Bool
+
+  /// Faces and Remove live in the Enhance tab (EnhanceHubView); the pane is
+  /// colour and tone.
+  private static let leftSections = [0, 1, 2, 3, 8]
+  private static let rightSections = [4, 5, 6, 7]
+  private static let oneColumn = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+
+  private var keysOff: Bool { typing || editingValue != nil }
 
   private var status: String {
     switch store.readiness {
@@ -40,9 +110,15 @@ struct AdjustView: View {
     }
   }
 
-  /// The sliders of the open sections, top to bottom: what ↑ ↓ walk.
+  /// The sections in walking order: one column, or the left then the right.
+  private var walkOrder: [Int] {
+    cls.twoColumns ? Self.leftSections + Self.rightSections.filter { !(cls == .xwide && $0 == AdjustStore.curvesSection) }
+                   : Self.oneColumn
+  }
+
+  /// The sliders of the open sections in walking order: what ↑ ↓ walk.
   private var rows: [Int] {
-    AdjustStore.sections.indices.filter { open.contains($0) }.flatMap { visibleParams($0) }
+    walkOrder.filter { open.contains($0) }.flatMap { visibleParams($0) }
   }
 
   /// What a section shows: Levels only the picked channel's three, Curves none.
@@ -66,103 +142,144 @@ struct AdjustView: View {
     AdjustStore.sections.firstIndex { $0.params.contains(param) }
   }
 
+  private var histogramHeight: CGFloat { cls == .compact ? 72 : 96 }
+
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(10)) {
-      HStack {
-        Text("Adjust").font(.headline)
-        Spacer()
+      HStack(spacing: MVTheme.space(8)) {
+        Text("Adjust").font(MVTheme.font(16)).foregroundStyle(MVTheme.title)
+          .accessibilityAddTraits(.isHeader)
         if store.readiness == 1 { ProgressView().controlSize(.small) }
-        Button { store.close() } label: { Image(systemName: "xmark") }
-          .buttonStyle(.plain)
-          .help("Close (⇧A)")
+        Spacer()
+        Button { store.close() } label: {
+          Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).frame(width: 22, height: 22)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(MVTheme.body)
+        .help(withKey("Close", "Adjust pane"))
+        .accessibilityLabel("Close Adjust")
       }
       // Slice 5b: say what you want; the sliders it names move (one undo step).
       // It and the header stay put; everything under them scrolls
       // (docs/plans/edit-refresh.md §2.5 "Height rule"), so nothing is cut off
       // at any width or height.
-      TextField("Describe a change — a bit warmer, less noise…", text: $request)
-        .textFieldStyle(.roundedBorder)
-        .disabled(!store.ready)
-        .focused($typing)
-        .onSubmit {
-          store.prompt(request)
-          request = ""
-        }
-        .accessibilityLabel("Describe a change")
+      HStack(spacing: MVTheme.space(6)) {
+        Image(systemName: "text.bubble").foregroundStyle(MVTheme.body)
+        TextField("Describe a change — a bit warmer, less noise…", text: $request)
+          .textFieldStyle(.plain)
+          .font(MVTheme.font(14))
+          .disabled(!store.ready)
+          .focused($typing)
+          .onSubmit {
+            store.prompt(request)
+            request = ""
+          }
+          .accessibilityLabel("Describe a change")
+      }
+      .padding(.horizontal, MVTheme.space(10))
+      .padding(.vertical, MVTheme.space(7))
+      .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface2))
+      .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8))
+        .stroke(typing ? MVTheme.accent : MVTheme.hairline, lineWidth: typing ? 1.5 : 1))
       ScrollView {
         VStack(alignment: .leading, spacing: MVTheme.space(10)) {
           if !store.promptNote.isEmpty {
-            Text(store.promptNote).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            Text(store.promptNote).font(MVTheme.font(12)).foregroundStyle(MVTheme.body).lineLimit(2)
           }
-          histogramView
-            .frame(height: 96)
+          if cls == .xwide {
+            scopesRow
+          } else {
+            histogramView.frame(height: histogramHeight)
+          }
           if store.histogramValid {
-            Text(String(format: "Clipped highlights %.1f %%   ·   crushed shadows %.1f %%",
+            Text(String(format: "Clipped highlights %.1f %%  ·  crushed shadows %.1f %%",
                         store.clipHigh * 100, store.clipLow * 100))
-              .font(.caption)
-              .foregroundStyle(.secondary)
+              .font(MVTheme.font(12))
+              .foregroundStyle(MVTheme.body)
+              .lineLimit(2)
           }
           if !status.isEmpty {
-            Text(status).foregroundStyle(.secondary)
+            Text(status).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
           }
-          VStack(alignment: .leading, spacing: MVTheme.space(4)) {
-            // Faces and Remove live in the Edit strip's wand menu, with the
-            // other Enhance features; the pane is colour and tone.
-            ForEach(AdjustStore.sections.indices.filter {
-              $0 != AdjustStore.facesSection && $0 != AdjustStore.removeSection
-            }, id: \.self) { i in
-              sectionView(i)
+          if cls.twoColumns {
+            // Two independent stacks: a section opening on one side never
+            // moves the other.
+            HStack(alignment: .top, spacing: MVTheme.space(10)) {
+              VStack(alignment: .leading, spacing: MVTheme.space(8)) {
+                ForEach(Self.leftSections, id: \.self) { sectionView($0) }
+              }
+              .frame(maxWidth: .infinity, alignment: .topLeading)
+              VStack(alignment: .leading, spacing: MVTheme.space(8)) {
+                ForEach(Self.rightSections.filter { !(cls == .xwide && $0 == AdjustStore.curvesSection) },
+                        id: \.self) { sectionView($0) }
+              }
+              .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+          } else {
+            VStack(alignment: .leading, spacing: MVTheme.space(8)) {
+              ForEach(Self.oneColumn, id: \.self) { sectionView($0) }
             }
           }
-          Button("Reset adjustments") { store.reset() }
-            .disabled(!store.ready)
+          HStack {
+            Button("Reset adjustments") { store.reset() }
+              .buttonStyle(FlatButtonStyle(compact: true))
+              .disabled(!store.ready)
+              .help(withKey("Every slider back to 0, one undo step", "Adjust: reset"))
+            Spacer()
+          }
           Text("↑ ↓ choose   ← → change (⇧ ×10)   0 zero   A auto   R reset   Esc photo")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .font(MVTheme.font(12))
+            .foregroundStyle(MVTheme.body)
+            .fixedSize(horizontal: false, vertical: true)
         }
+        .padding(.bottom, MVTheme.space(8))
       }
     }
     .padding(MVTheme.space(14))
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(.regularMaterial)
-    .overlay(alignment: .leading) { Rectangle().fill(Color.primary.opacity(0.15)).frame(width: 1) }
+    .background(ThemeField())
+    .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
     .focusable()
     .focused($focused)
     .onKeyPress(.upArrow) {
-      if typing { return .ignored }
+      if keysOff { return .ignored }
       let n = rows.count
       if n > 0 { row = (min(row, n - 1) + n - 1) % n }
       return .handled
     }
     .onKeyPress(.downArrow) {
-      if typing { return .ignored }
+      if keysOff { return .ignored }
       let n = rows.count
       if n > 0 { row = (min(row, n - 1) + 1) % n }
       return .handled
     }
     .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
-      if typing { return .ignored }
+      if keysOff { return .ignored }
       guard let p = current else { return .ignored }
       let sign: Double = press.key == .leftArrow ? -1 : 1
       step(p, sign * (press.modifiers.contains(.shift) ? 10 : 1))
       return .handled
     }
     .onKeyPress("0") {
-      if typing { return .ignored }
+      if keysOff { return .ignored }
       if let p = current { store.set(p, 0) }
       return .handled
     }
     .onKeyPress("a") {
-      if typing { return .ignored }
+      if keysOff { return .ignored }
       if let p = current, let sec = sectionOf(p), AdjustStore.sections[sec].hasAuto { store.auto(sec) }
       return .handled
     }
     .onKeyPress("r") {
-      if typing { return .ignored }
+      if keysOff { return .ignored }
       store.reset()
       return .handled
     }
     .onKeyPress(.escape) {
+      if editingValue != nil {
+        editingValue = nil
+        return .handled
+      }
       if typing {
         typing = false  // out of the field, still in the pane
         return .handled
@@ -174,50 +291,65 @@ struct AdjustView: View {
     .onChange(of: store.visible) { _, nowVisible in if nowVisible { focused = true } }
   }
 
-  // A section's header (chevron, icon, name, reset, Auto; Black & White's on
-  // switch) and, when open, its sliders.
+  // xwide: the histogram and a square Curves side by side, each half the width
+  // (the curve's channel picker under it).
+  private var scopesRow: some View {
+    VStack(alignment: .leading, spacing: MVTheme.space(6)) {
+      Color.clear
+        .aspectRatio(2, contentMode: .fit)
+        .overlay {
+          HStack(spacing: MVTheme.space(12)) {
+            histogramView.frame(maxWidth: .infinity, maxHeight: .infinity)
+            CurveEditor(store: store, channel: curvesChannel)
+              .aspectRatio(1, contentMode: .fit)
+              .disabled(!store.ready)
+          }
+        }
+      HStack(spacing: MVTheme.space(8)) {
+        Spacer(minLength: 0)
+        channelPicker($curvesChannel)
+          .frame(maxWidth: 260)
+      }
+    }
+  }
+
+  private func channelPicker(_ binding: Binding<Int>) -> some View {
+    Picker("Channel", selection: binding) {
+      ForEach(0..<4, id: \.self) { ch in Text(AdjustStore.channelNames[ch]).tag(ch) }
+    }
+    .pickerStyle(.segmented)
+    .labelsHidden()
+    .controlSize(.small)
+  }
+
+  // A section's card: its header (chevron, icon, name, the changed dot, AUTO,
+  // reset; Black & White's on switch) and, when open, its sliders.
   private func sectionView(_ i: Int) -> some View {
     let section = AdjustStore.sections[i]
     let isOpen = open.contains(i)
     let isMono = i == 2
-    return VStack(alignment: .leading, spacing: MVTheme.space(2)) {
+    let changed = store.changed(i)
+    return VStack(alignment: .leading, spacing: MVTheme.space(4)) {
       HStack(spacing: MVTheme.space(6)) {
-        Button {
-          if isOpen { open.remove(i) } else { open.insert(i) }
-        } label: {
-          HStack(spacing: MVTheme.space(6)) {
-            Image(systemName: "chevron.right")
-              .rotationEffect(.degrees(isOpen ? 90 : 0))
-              .frame(width: 12)
-            Image(systemName: section.icon)
-            Text(section.name).font(.title3)
+        SectionHeaderButton(name: section.name, icon: section.icon, open: isOpen, changed: changed) {
+          withAnimation(.easeOut(duration: 0.15)) {
+            if isOpen { open.remove(i) } else { open.insert(i) }
           }
-          .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(section.name), \(isOpen ? "open" : "closed")")
-        Spacer()
-        if store.changed(i) {
-          Button { store.reset(section: i) } label: { Image(systemName: "arrow.uturn.backward") }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .disabled(!store.ready)
-            .help("Reset \(section.name)")
-        }
+        Spacer(minLength: MVTheme.space(4))
         if section.hasAuto {
           if store.autoSection == i {
-            ProgressView().controlSize(.small)
+            ProgressView().controlSize(.small).frame(width: 38)
           } else {
-            Button { store.auto(i) } label: {
-              Text("AUTO").font(.caption2.weight(.semibold))
-                .padding(.horizontal, MVTheme.space(5))
-                .padding(.vertical, MVTheme.space(1))
-                .overlay(Capsule().stroke(Color.secondary, lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-            .disabled(!store.ready || store.autoSection >= 0)
-            .help("Auto \(section.name)")
+            AutoPill(enabled: store.ready && store.autoSection < 0) { store.auto(i) }
+              .help("Auto \(section.name): one undo step")
+              .accessibilityLabel("Auto \(section.name)")
           }
+        }
+        if changed {
+          IconButton(symbol: "arrow.uturn.backward", help: "Reset \(section.name)") { store.reset(section: i) }
+            .disabled(!store.ready)
+            .accessibilityLabel("Reset \(section.name)")
         }
         if isMono {
           Toggle("", isOn: Binding(
@@ -230,157 +362,146 @@ struct AdjustView: View {
             .accessibilityLabel("Black and white")
         }
       }
-      .padding(.vertical, MVTheme.space(4))
       if isOpen {
-        sectionExtras(i)
-        ForEach(visibleParams(i), id: \.self) { p in
-          sliderRow(p)
+        VStack(alignment: .leading, spacing: MVTheme.space(4)) {
+          sectionExtras(i)
+          ForEach(visibleParams(i), id: \.self) { p in
+            sliderRow(p)
+          }
         }
+        .padding(.top, MVTheme.space(2))
+        .transition(.opacity)
       }
     }
+    .padding(.horizontal, MVTheme.space(10))
+    .padding(.vertical, MVTheme.space(8))
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(9)).fill(MVTheme.surface2))
+    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(9)).stroke(MVTheme.hairline.opacity(0.6), lineWidth: 0.5))
   }
 
   // What a section shows above its sliders: channel and band pickers, the
   // curve editor, the white-balance picker and the red-eye tool.
   @ViewBuilder
   private func sectionExtras(_ i: Int) -> some View {
-    if i == AdjustStore.levelsSection || i == AdjustStore.curvesSection {
-      Picker("Channel", selection: i == AdjustStore.levelsSection ? $levelsChannel : $curvesChannel) {
-        ForEach(0..<4, id: \.self) { ch in Text(AdjustStore.channelNames[ch]).tag(ch) }
-      }
-      .pickerStyle(.segmented)
-      .labelsHidden()
-      .padding(.leading, MVTheme.space(14))
+    if i == AdjustStore.levelsSection {
+      channelPicker($levelsChannel)
+    }
+    if i == AdjustStore.curvesSection {
+      channelPicker($curvesChannel)
     }
     if i == 1 {
-      Button {
-        store.pick(store.picking == 1 ? 0 : 1)
-      } label: {
-        Label(store.picking == 1 ? "Click something white or grey…" : "Pick white balance",
-              systemImage: "eyedropper")
-      }
-      .buttonStyle(.plain)
-      .foregroundStyle(store.picking == 1 ? Color.accentColor : .secondary)
-      .disabled(!store.ready)
-      .padding(.leading, MVTheme.space(14))
-      .help("Click a neutral part of the photo to set temperature and tint")
+      ToolChip(symbol: "eyedropper",
+               title: store.picking == 1 ? "Click something white or grey…" : "Pick white balance",
+               on: store.picking == 1) { store.pick(store.picking == 1 ? 0 : 1) }
+        .disabled(!store.ready)
+        .help("Click a neutral part of the photo to set temperature and tint")
     }
     if i == AdjustStore.selectiveSection {
       HStack(spacing: MVTheme.space(6)) {
         ForEach(0..<8, id: \.self) { b in
           Button { band = b } label: {
             Circle().fill(AdjustStore.bandColours[b]).frame(width: 18, height: 18)
-              .overlay(Circle().stroke(Color.primary, lineWidth: band == b ? 2 : 0))
+              .overlay(Circle().stroke(MVTheme.title, lineWidth: band == b ? 2 : 0).padding(-2))
+              .padding(2)
+              .contentShape(Circle())
           }
           .buttonStyle(.plain)
           .accessibilityLabel(AdjustStore.bandNames[b])
+          .accessibilityAddTraits(band == b ? [.isSelected] : [])
           .help(AdjustStore.bandNames[b])
         }
       }
-      .padding(.leading, MVTheme.space(14))
     }
     if i == AdjustStore.redEyeSection {
-      VStack(alignment: .leading, spacing: MVTheme.space(4)) {
-        Button {
-          store.pick(store.picking == 2 ? 0 : 2, size: redEyeSize)
-        } label: {
-          Label(store.picking == 2 ? "Click each red eye — click here when done" : "Fix red eyes",
-                systemImage: "eye")
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(store.picking == 2 ? Color.accentColor : .secondary)
-        .disabled(!store.ready)
-        HStack {
-          Text("Size").foregroundStyle(.secondary)
+      VStack(alignment: .leading, spacing: MVTheme.space(6)) {
+        ToolChip(symbol: "eye",
+                 title: store.picking == 2 ? "Click each red eye — click here when done" : "Fix red eyes",
+                 on: store.picking == 2) { store.pick(store.picking == 2 ? 0 : 2, size: redEyeSize) }
+          .disabled(!store.ready)
+        HStack(spacing: MVTheme.space(8)) {
+          Text("Size").font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
           Slider(value: $redEyeSize, in: -100...100, step: 5)
+            .controlSize(.small)
             // Moving the size picks the tool up: the next click on a pupil fixes it.
             .onChange(of: redEyeSize) { _, v in store.pick(2, size: v) }
+            .accessibilityLabel("Red-eye size")
         }
         if store.spotCount > 0 {
-          Text("\(store.spotCount) fixed").font(.caption).foregroundStyle(.secondary)
+          Text(store.spotCount == 1 ? "1 fixed" : "\(store.spotCount) fixed")
+            .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
         }
       }
-      .padding(.leading, MVTheme.space(14))
-    }
-    if i == AdjustStore.removeSection {
-      VStack(alignment: .leading, spacing: MVTheme.space(4)) {
-        Button {
-          store.pick(store.picking == 3 ? 0 : 3, size: brushSize)
-        } label: {
-          Label(store.picking == 3 ? "Brushing — click here when done" : "Brush over what to remove",
-                systemImage: "paintbrush.pointed")
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(store.picking == 3 ? Color.accentColor : .secondary)
-        .disabled(!store.ready)
-        HStack {
-          Text("Size").foregroundStyle(.secondary)
-          Slider(value: $brushSize, in: -100...100, step: 5)
-            .onChange(of: brushSize) { _, v in if store.picking == 3 { store.pick(3, size: v) } }
-        }
-        HStack {
-          Button("Undo stroke") { store.brush(0) }.disabled(store.brushStrokes == 0)
-          Button("Clear") { store.brush(1) }.disabled(store.brushStrokes == 0)
-          Spacer()
-          Button("Remove…") { store.brush(2) }
-            .disabled(store.brushStrokes == 0)
-            .help("Enhance fills in what you brushed from its surroundings and saves a new file.")
-        }
-        if store.brushFull {
-          Text("The brush is full: remove this, then brush more.").font(.caption).foregroundStyle(.secondary)
-        }
-      }
-      .padding(.leading, MVTheme.space(14))
-    }
-    if i == AdjustStore.facesSection {
-      VStack(alignment: .leading, spacing: MVTheme.space(4)) {
-        Button("Open closed eyes") { store.openEyes() }
-          .disabled(!store.ready)
-          .help("Eyes shut? Use the same person's open eyes from a photo taken moments before or after. Saves a new file.")
-        Text("Uses People in Local search to find the same person in the photos taken within 10 seconds.")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
-      .padding(.leading, MVTheme.space(14))
     }
     if i == AdjustStore.curvesSection {
       // A square, fully visible at every width (docs/plans/edit-refresh.md §2.6):
-      // the pane's content width when compact, at most 340 from regular up
-      // (shell/pane_width.h curve_side).
+      // the card's content width when compact, at most 340 from regular up
+      // (shell/pane_width.h curve_side). At xwide it is in the scopes row.
       CurveEditor(store: store, channel: curvesChannel)
         .aspectRatio(1, contentMode: .fit)
-        .frame(maxWidth: 340, alignment: .leading)
-        .padding(.leading, MVTheme.space(14))
+        .frame(maxWidth: cls == .compact ? .infinity : 340, alignment: .leading)
         .disabled(!store.ready)
       Text("Drag the line to add a point · double-click or drag a point off the square to remove it")
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.leading, MVTheme.space(14))
+        .font(MVTheme.font(12))
+        .foregroundStyle(MVTheme.body)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+  }
+
+  /// Sliders whose track shows what they do to the picture.
+  private func gradient(_ p: Int) -> [Color]? {
+    switch p {
+    case 0: return [Color(white: 0.08), Color(white: 0.95)]                      // exposure
+    case 2, 9: return [Color(white: 0.55), MVTheme.warm, MVTheme.tintM, MVTheme.cool]  // saturation, vibrance
+    case 3: return [MVTheme.cool, Color(white: 0.85), MVTheme.warm]              // temperature
+    case 4: return [MVTheme.tintG, Color(white: 0.85), MVTheme.tintM]            // tint
+    default:
+      // Selective colour's hue: the band's neighbours either side.
+      if p >= 28 && p < 52 && (p - 28) % 3 == 0 {
+        let b = (p - 28) / 3
+        return [AdjustStore.bandColours[(b + 7) % 8], AdjustStore.bandColours[b], AdjustStore.bandColours[(b + 1) % 8]]
+      }
+      return nil
     }
   }
 
   private func sliderRow(_ p: Int) -> some View {
     let spec = AdjustStore.specs[p]
-    let binding = Binding<Double>(
-      get: { store.values[p] },
-      set: { store.set(p, $0) })
     let selected = focused && current == p
-    return VStack(alignment: .leading, spacing: MVTheme.space(2)) {
-      HStack {
-        Text(spec.name).foregroundStyle(selected ? .primary : .secondary)
-        Spacer()
-        Text(spec.format(store.values[p])).monospacedDigit().foregroundStyle(.secondary)
-      }
-      Slider(value: binding, in: spec.min...spec.max, step: spec.step)
-        .disabled(!store.ready)
-        .onTapGesture(count: 2) { store.set(p, 0) }
-        .accessibilityLabel(spec.name)
+    let inline = cls == .regular || cls == .xwide
+    let name = Text(spec.name)
+      .font(MVTheme.font(13))
+      .foregroundStyle(selected ? MVTheme.title : MVTheme.body)
+      .lineLimit(1)
+    let slider = ToneSlider(value: store.values[p], spec: spec, gradient: gradient(p), enabled: store.ready) {
+      store.set(p, $0)
     }
-    .padding(.vertical, MVTheme.space(2))
-    .padding(.horizontal, MVTheme.space(4))
-    .padding(.leading, MVTheme.space(14))
-    .background(selected ? Color.primary.opacity(0.08) : .clear,
+    .accessibilityLabel(spec.name)
+    let readout = ValueReadout(text: spec.format(store.values[p]), value: store.values[p], enabled: store.ready,
+                               param: p, editing: $editingValue) { store.set(p, $0) }
+    return Group {
+      if inline {
+        HStack(spacing: MVTheme.space(8)) {
+          name.frame(width: 92, alignment: .leading)
+            .onTapGesture(count: 2) { store.set(p, 0) }
+          slider
+          readout
+        }
+      } else {
+        VStack(alignment: .leading, spacing: MVTheme.space(1)) {
+          HStack {
+            name.onTapGesture(count: 2) { store.set(p, 0) }
+            Spacer(minLength: MVTheme.space(4))
+            readout
+          }
+          slider
+        }
+      }
+    }
+    .padding(.vertical, MVTheme.space(3))
+    .padding(.horizontal, MVTheme.space(6))
+    .background(selected ? MVTheme.selectionWash : .clear,
                 in: RoundedRectangle(cornerRadius: MVTheme.radius(6)))
+    .help("\(spec.name): double-click to set it back to 0")
   }
 
   // R, G, B and luma as four translucent filled paths, the Windows pane's drawing.
@@ -404,10 +525,10 @@ struct AdjustView: View {
           p.move(to: .zero); p.addLine(to: CGPoint(x: size.width, y: 0)); p.addLine(to: CGPoint(x: size.width, y: size.height))
         }
         p.closeSubpath()
-        ctx.fill(p, with: .color(lit ? (left ? Color.blue : Color.red) : Color.secondary.opacity(0.35)))
+        ctx.fill(p, with: .color(lit ? (left ? Color.blue : Color.red) : MVTheme.body.opacity(0.35)))
       }
       .frame(width: 12, height: 12)
-      .padding(3)
+      .padding(4)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -417,29 +538,292 @@ struct AdjustView: View {
 
   private var histogramPlot: some View {
     Canvas { ctx, size in
-      ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(nsColor: .textBackgroundColor)))
-      guard store.histogramValid else { return }
-      let colours: [Color] = [
-        Color(red: 0.92, green: 0.31, blue: 0.31).opacity(0.45),
-        Color(red: 0.35, green: 0.82, blue: 0.43).opacity(0.45),
-        Color(red: 0.35, green: 0.55, blue: 0.94).opacity(0.45),
-        Color.primary.opacity(0.6),
-      ]
-      for c in 0..<4 {
-        let bins = store.histogram[c]
-        guard !bins.isEmpty else { continue }
-        var path = Path()
-        path.move(to: CGPoint(x: 0, y: size.height))
-        for (i, v) in bins.enumerated() {
-          let x = size.width * (Double(i) + 0.5) / Double(bins.count)
-          path.addLine(to: CGPoint(x: x, y: size.height * (1 - v)))
+      let frame = RoundedRectangle(cornerRadius: MVTheme.radius(6)).path(in: CGRect(origin: .zero, size: size))
+      ctx.fill(frame, with: .color(Color(nsColor: .textBackgroundColor)))
+      if store.histogramValid {
+        let colours: [Color] = [
+          Color(red: 0.92, green: 0.31, blue: 0.31).opacity(0.45),
+          Color(red: 0.35, green: 0.82, blue: 0.43).opacity(0.45),
+          Color(red: 0.35, green: 0.55, blue: 0.94).opacity(0.45),
+          Color.primary.opacity(0.6),
+        ]
+        for c in 0..<4 {
+          let bins = store.histogram[c]
+          guard !bins.isEmpty else { continue }
+          var path = Path()
+          path.move(to: CGPoint(x: 0, y: size.height))
+          for (i, v) in bins.enumerated() {
+            let x = size.width * (Double(i) + 0.5) / Double(bins.count)
+            path.addLine(to: CGPoint(x: x, y: size.height * (1 - v)))
+          }
+          path.addLine(to: CGPoint(x: size.width, y: size.height))
+          path.closeSubpath()
+          ctx.fill(path, with: .color(colours[c]))
         }
-        path.addLine(to: CGPoint(x: size.width, y: size.height))
-        path.closeSubpath()
-        ctx.fill(path, with: .color(colours[c]))
+      }
+      ctx.stroke(RoundedRectangle(cornerRadius: MVTheme.radius(6))
+        .path(in: CGRect(origin: .zero, size: size).insetBy(dx: 0.5, dy: 0.5)),
+                 with: .color(MVTheme.hairline), lineWidth: 1)
+    }
+    .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(6)))
+    .accessibilityLabel("Histogram")
+  }
+}
+
+// ---- the pane's controls ---------------------------------------------------------------
+
+/// A section card's title: chevron, icon and name, one button; the changed
+/// dot beside the name says a slider of it is away from 0.
+private struct SectionHeaderButton: View {
+  let name: String
+  let icon: String
+  let open: Bool
+  let changed: Bool
+  let action: () -> Void
+  @State private var hover = false
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: MVTheme.space(7)) {
+        Image(systemName: "chevron.right")
+          .font(.system(size: 10, weight: .semibold))
+          .rotationEffect(.degrees(open ? 90 : 0))
+          .frame(width: 12)
+          .foregroundStyle(MVTheme.body)
+        Image(systemName: icon)
+          .font(.system(size: 13))
+          .frame(width: 18)
+          .foregroundStyle(changed ? MVTheme.accent : MVTheme.title)
+        Text(name)
+          .font(MVTheme.font(15))
+          .foregroundStyle(MVTheme.title)
+          .lineLimit(1)
+        if changed {
+          Circle().fill(MVTheme.accent).frame(width: 6, height: 6)
+            .accessibilityHidden(true)
+        }
+      }
+      .padding(.vertical, MVTheme.space(3))
+      .padding(.horizontal, MVTheme.space(2))
+      .background(RoundedRectangle(cornerRadius: MVTheme.radius(5)).fill(hover ? MVTheme.hoverWash : .clear))
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .onHover { hover = $0 }
+    .accessibilityLabel("\(name), \(open ? "open" : "closed")\(changed ? ", changed" : "")")
+    .accessibilityAddTraits(.isHeader)
+  }
+}
+
+/// A section's AUTO: a small capsule that fills on hover.
+private struct AutoPill: View {
+  let enabled: Bool
+  let action: () -> Void
+  @State private var hover = false
+
+  var body: some View {
+    Button(action: action) {
+      Text("AUTO")
+        .font(MVTheme.font(11))
+        .foregroundStyle(enabled ? (hover ? MVTheme.accent : MVTheme.body) : MVTheme.disabled)
+        .padding(.horizontal, MVTheme.space(7))
+        .padding(.vertical, MVTheme.space(2))
+        .background(Capsule().fill(hover && enabled ? MVTheme.selectionWash : .clear))
+        .overlay(Capsule().stroke(hover && enabled ? MVTheme.accent : MVTheme.hairline, lineWidth: 1))
+        .contentShape(Capsule())
+    }
+    .buttonStyle(.plain)
+    .disabled(!enabled)
+    .onHover { hover = $0 }
+  }
+}
+
+/// A small icon button with a hover wash.
+struct IconButton: View {
+  let symbol: String
+  let help: String
+  let action: () -> Void
+  @State private var hover = false
+  @Environment(\.isEnabled) private var enabled
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: symbol)
+        .font(.system(size: 11, weight: .semibold))
+        .frame(width: 22, height: 22)
+        .foregroundStyle(enabled ? MVTheme.body : MVTheme.disabled)
+        .background(RoundedRectangle(cornerRadius: MVTheme.radius(5)).fill(hover && enabled ? MVTheme.hoverWash : .clear))
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .onHover { hover = $0 }
+    .help(help)
+  }
+}
+
+/// A tool that a click on the photo uses (white balance, red-eye): washed in
+/// the accent while it is armed.
+private struct ToolChip: View {
+  let symbol: String
+  let title: String
+  let on: Bool
+  let action: () -> Void
+  @State private var hover = false
+  @Environment(\.isEnabled) private var enabled
+
+  var body: some View {
+    Button(action: action) {
+      Label(title, systemImage: symbol)
+        .font(MVTheme.font(13))
+        .foregroundStyle(!enabled ? MVTheme.disabled : (on ? MVTheme.accent : MVTheme.title))
+        .padding(.horizontal, MVTheme.space(8))
+        .padding(.vertical, MVTheme.space(4))
+        .background(RoundedRectangle(cornerRadius: MVTheme.radius(6))
+          .fill(on ? MVTheme.selectionWash : (hover && enabled ? MVTheme.hoverWash : .clear)))
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .onHover { hover = $0 }
+    .accessibilityAddTraits(on ? [.isSelected] : [])
+  }
+}
+
+/// A slider drawn by the chrome: a 4 pt track (a gradient for the sliders that
+/// show what they do, else the accent from 0 to the value), a round thumb,
+/// a drag anywhere on it, a double-click back to 0, and the screen reader's
+/// increment and decrement in the parameter's own step.
+struct ToneSlider: View {
+  let value: Double
+  let spec: AdjustSpec
+  let gradient: [Color]?
+  let enabled: Bool
+  let set: (Double) -> Void
+  @State private var hover = false
+  @State private var dragging = false
+
+  private static let thumb: CGFloat = 14
+
+  private var zero: Double { min(max(0, spec.min), spec.max) }
+
+  private func fraction(_ v: Double) -> CGFloat {
+    let span = spec.max - spec.min
+    return span > 0 ? CGFloat((min(max(v, spec.min), spec.max) - spec.min) / span) : 0
+  }
+
+  var body: some View {
+    GeometryReader { geo in
+      let r = Self.thumb / 2
+      let usable = max(geo.size.width - Self.thumb, 1)
+      let t = fraction(value)
+      let z = fraction(zero)
+      let midY = geo.size.height / 2
+      ZStack(alignment: .topLeading) {
+        Group {
+          if let gradient {
+            Capsule().fill(LinearGradient(colors: gradient, startPoint: .leading, endPoint: .trailing))
+          } else {
+            Capsule().fill(MVTheme.title.opacity(0.14))
+          }
+        }
+        .frame(width: usable, height: 4)
+        .offset(x: r, y: midY - 2)
+        if gradient == nil {
+          Capsule().fill(enabled ? MVTheme.accent : MVTheme.disabled)
+            .frame(width: abs(t - z) * usable, height: 4)
+            .offset(x: r + min(t, z) * usable, y: midY - 2)
+        }
+        Circle()
+          .fill(Color.white)
+          .overlay(Circle().stroke(Color.black.opacity(0.18), lineWidth: 0.5))
+          .shadow(color: .black.opacity(0.25), radius: dragging ? 2.5 : 1.5, y: 0.5)
+          .frame(width: Self.thumb, height: Self.thumb)
+          .scaleEffect(dragging ? 1.12 : (hover ? 1.06 : 1))
+          .offset(x: t * usable, y: midY - r)
+      }
+      .contentShape(Rectangle())
+      .gesture(DragGesture(minimumDistance: 0)
+        .onChanged { g in
+          dragging = true
+          let f = min(max((g.location.x - r) / usable, 0), 1)
+          set(spec.min + Double(f) * (spec.max - spec.min))
+        }
+        .onEnded { _ in dragging = false })
+      .simultaneousGesture(TapGesture(count: 2).onEnded { set(zero) })
+    }
+    .frame(height: 20)
+    .frame(minWidth: 60)
+    .opacity(enabled ? 1 : 0.45)
+    .allowsHitTesting(enabled)
+    .onHover { hover = $0 }
+    .animation(.easeOut(duration: 0.1), value: hover)
+    .accessibilityElement()
+    .accessibilityValue(spec.format(value))
+    .accessibilityAdjustableAction { direction in
+      switch direction {
+      case .increment: set(value + spec.step)
+      case .decrement: set(value - spec.step)
+      @unknown default: break
       }
     }
-    .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(4)))
+  }
+}
+
+/// A slider's value: click it to type a number (Return sets it, Esc leaves it).
+private struct ValueReadout: View {
+  let text: String
+  let value: Double
+  let enabled: Bool
+  let param: Int
+  @Binding var editing: Int?
+  let commit: (Double) -> Void
+  @State private var draft = ""
+  @State private var hover = false
+  @FocusState private var focus: Bool
+
+  var body: some View {
+    Group {
+      if editing == param {
+        TextField("", text: $draft)
+          .textFieldStyle(.plain)
+          .font(MVTheme.font(13).monospacedDigit())
+          .multilineTextAlignment(.trailing)
+          .focused($focus)
+          .onSubmit {
+            let cleaned = draft.replacingOccurrences(of: "EV", with: "")
+              .replacingOccurrences(of: ",", with: ".")
+              .trimmingCharacters(in: .whitespaces)
+            if let v = Double(cleaned) { commit(v) }
+            editing = nil
+          }
+          .onExitCommand { editing = nil }
+          .onChange(of: focus) { _, now in if !now && editing == param { editing = nil } }
+          .onAppear {
+            draft = String(format: abs(value.rounded() - value) < 0.0001 ? "%.0f" : "%.1f", value)
+            focus = true
+          }
+          .padding(.horizontal, MVTheme.space(4))
+          .padding(.vertical, MVTheme.space(1))
+          .background(RoundedRectangle(cornerRadius: MVTheme.radius(4)).fill(MVTheme.canvas))
+          .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(4)).stroke(MVTheme.accent, lineWidth: 1))
+          .accessibilityLabel("Type a value")
+      } else {
+        Button { if enabled { editing = param } } label: {
+          Text(text)
+            .font(MVTheme.font(13).monospacedDigit())
+            .foregroundStyle(enabled ? (hover ? MVTheme.title : MVTheme.body) : MVTheme.disabled)
+            .lineLimit(1)
+            .padding(.horizontal, MVTheme.space(4))
+            .padding(.vertical, MVTheme.space(1))
+            .background(RoundedRectangle(cornerRadius: MVTheme.radius(4)).fill(hover && enabled ? MVTheme.hoverWash : .clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help("Click to type a value")
+        .accessibilityLabel("Value \(text), click to type")
+      }
+    }
+    .frame(width: 70, alignment: .trailing)
   }
 }
 

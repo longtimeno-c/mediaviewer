@@ -53,7 +53,8 @@ TEST_CASE("no two bindings share a key, modifiers and mode", "[shell][commands]"
     if (b.k == key::none) {
       REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg ||
                b.command == command_id::kind_filter_next || b.command == command_id::pane_wider ||
-               b.command == command_id::pane_narrower));
+               b.command == command_id::pane_narrower ||
+               b.command == command_id::auto_enhance));
       continue;
     }
     for (int m = 0; m < kModeCount; ++m) {

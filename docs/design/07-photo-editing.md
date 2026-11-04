@@ -201,6 +201,15 @@ Each reads at most 65 536 pixels (`kAutoSampleBudget`). `adjust_pane::request_au
 gives the job a token that a colour change, a new item, a dropped working image or another Auto
 makes stale; `adjust_view::auto_section` tells the chromes which Auto is running.
 
+**✦ Auto** (`auto_enhance`, the Edit header's one-click enhance; docs/plans/edit-refresh.md S2):
+Light's Auto, then Colour's on what Light left (`compute_auto_sections` with
+`kAutoEnhanceSections`), landed as one `adjust_all` op. Black & white and levels are left alone.
+`adjust_pane::request_auto(mask)` carries the token (no section's spinner shows; the header's
+does, `kWandAutoBusy`). When it lands the pane records the stack's op count and colour
+(`auto_enhance_landed`); while the stack is still exactly that (`auto_enhance_on`, `kWandAutoOn`)
+the next press is an undo of that one op, so a second click takes it back. Pressed before the
+working image exists, it asks for the image and runs when it lands.
+
 **Auto tone** (`edit/auto_tone.h`, #289, Preview's Auto Levels): exposure and contrast from the
 histogram, a levels stretch fitted to the two tone controls the kernel has, a gain and a power
 about 18 % grey:
@@ -320,8 +329,8 @@ kernel or one more pass, evaluated in the order above.
 - Dehaze, grain, split-tone; detail on the GPU (the pass is on the CPU, so the canvas follows a
   detail slider when it settles, not during the drag).
 - Local adjustments: gradients, brush masks, healing / clone.
-- Auto-straighten, auto-crop. An Auto key outside the pane (the pane's `A` runs the focused
-  slider's section).
+- Auto-straighten, auto-crop. A default key for ✦ Auto (`auto_enhance` is unbound; the pane's
+  `A` runs the focused slider's section).
 - GPU demosaic, highlight recovery, lens profiles, dual-illuminant white balance.
 - A compute-shader ping-pong chain and a cache of pipeline state after early stages (the single
   kernel on the blit does not need them).

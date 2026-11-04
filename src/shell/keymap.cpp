@@ -220,6 +220,7 @@ constexpr slug_row kSlugs[] = {
     {adjust_open_eyes, "adjust_open_eyes"},
     {pane_wider, "pane_wider"},
     {pane_narrower, "pane_narrower"},
+    {auto_enhance, "auto_enhance"},
 };
 
 struct claim {

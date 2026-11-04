@@ -246,4 +246,19 @@ result<auto_result> compute_auto(const image::linear_image& working, const colou
   return r;
 }
 
+result<auto_result> compute_auto_sections(const image::linear_image& working, const colour& current,
+                                          std::uint32_t sections, const job_context* ctx) {
+  if (!working.valid()) return err(status::invalid_arg);
+  auto_result r;
+  r.value = current;
+  for (int i = 0; i < static_cast<int>(adjust_section::count); ++i) {
+    const auto s = static_cast<adjust_section>(i);
+    if ((sections & section_bit(s)) == 0 || !has_auto(s)) continue;
+    MV_TRY(auto_result step, compute_auto(working, r.value, s, ctx));
+    r.value = step.value;
+  }
+  r.changed = r.value != current;
+  return r;
+}
+
 }  // namespace mv::edit

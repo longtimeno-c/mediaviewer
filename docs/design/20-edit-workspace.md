@@ -24,14 +24,15 @@ in the core (`edit/`, `shell/edit_session`).
      default. Mac: `OpenInStore.swift` asks Launch Services; `-openDocumentInApp:` opens it.
      Windows: `shell/open_with_win.cpp` (Explorer's recommended Open with handlers, on a thread
      of its own), pushed through `chrome_edit_args.open_apps`, run by `chrome_cmd_open_in_app`.
-2. **One pane, tabs, docked.** The workspace is a strip at the top of the right pane column
-   (title, file name and edit count, tabs, Undo / Reset / Show original / Enhance… (while the
-   Enhance add-on is loaded; its copy carries the edit, [29](29-enhance.md)) / Save copy…) over one
-   tab's pane. It docks: the canvas frames the picture in the rect beside it
-   (`input_snapshot.chrome_right_px`, the blit's `origin_x`), so the pane never covers the image;
-   the strip starts under the path row. Docking is a refit, not a swapchain resize. The Colour,
-   Info and Jobs tabs *are* the existing Adjust, Metadata and Jobs panes; Crop and Trim are panes
-   that drive the existing commands. The Colour tab is the full Adjust list: Light, Colour, Black &
+2. **A rail, a header, one pane, docked.** The workspace is a 44 pt icon **rail** at the window's
+   right edge (the tabs, the tools, Undo, Compare, Done; "The rail and the header" below) and,
+   beside it, the **inspector**: a header (file name, edit count, a Photos / cloud chip, ✦ Auto;
+   Undo / Reset / Compare / Save copy…) over one tab's pane. It docks: the canvas frames the
+   picture in the rect beside it (`input_snapshot.chrome_right_px`, the blit's `origin_x`), so
+   the pane never covers the image; the header starts under the path row. Docking is a refit,
+   not a swapchain resize. The Adjust, Info and Jobs tabs *are* the existing Adjust, Metadata and
+   Jobs panes; Crop, Trim and Enhance are panes that drive existing commands. The Adjust tab
+   (`edit_tab::colour`, labelled Adjust since docs/plans/edit-refresh.md S2) is the full Adjust list: Light, Colour, Black &
    White and Vignette sections, each collapsible with its own reset (↺, shown once a slider in it
    moved) and, but the vignette and curves, an AUTO; above them, a field takes a typed request and
    says what it changed ([07](07-photo-editing.md) "Typed requests"); Black & White has an on switch; Levels and
@@ -41,14 +42,14 @@ in the core (`edit/`, `shell/edit_session`).
    size, each taking the next click (or clicks) on the photo
    ([07](07-photo-editing.md) "Evaluation", "Auto").
 
-   | Subject | Tabs (`edit_tab`) |
+   | Subject | Tabs (`edit_tab`), in the rail's order |
    |---|---|
-   | Still | Crop (0), Colour (1), Info (2) |
+   | Still | Crop (0), Adjust (1), Enhance (5), Info (2) |
    | Clip | Trim (3), Jobs (4) |
 
 3. **The old keys land in the workspace.** `Shift+C` opens it on Crop and starts cropping;
-   `Shift+A` opens it on Colour (and closes it from Colour); `Ctrl+T` opens it on Trim and arms
-   trim. While open, `I` and `Ctrl+J` select Info and Jobs (and close from them). Closed, `I` and
+   `Shift+A` opens it on Adjust (and closes it from Adjust, or unfolds a folded inspector);
+   `Ctrl+T` opens it on Trim and arms trim. While open, `I` and `Ctrl+J` select Info and Jobs (and close from them). Closed, `I` and
    `Ctrl+J` open their panes alone. When the item changes, the workspace stays open on a tab the
    new subject offers, or closes when nothing is editable (`follow_subject`).
 4. **Crop** has aspect presets Free, Original, 1:1, 4:3, 3:2, 16:9 and 5:4, with a
@@ -57,8 +58,8 @@ in the core (`edit/`, `shell/edit_session`).
    draft; `Shift`+arrows resize keeping the ratio; a straighten shrinks it evenly. Straighten is a
    ±45° slider (`,` `.` step 0.5°). Rotate, flip, Apply and Cancel are buttons; the arrows move
    the rect (1 % of the frame per press).
-5. **Show original** is `Y`, held (and a strip button). It publishes an identity edit view on the
-   same blit and never touches the stack.
+5. **Show original** is `Y`, held (and the header's and the rail's Compare). It publishes an
+   identity edit view on the same blit and never touches the stack.
 6. **Originals stay protected.** Everything goes through `edit_session`: the stack is
    non-destructive, *Save copy…* is the export ([07](07-photo-editing.md) "Export", a new file),
    and the lossless viewer rotate is the same debounced write as before.
@@ -75,25 +76,25 @@ in the core (`edit/`, `shell/edit_session`).
 
 ## Layout
 
-Still, Crop tab, a 3:2 preset locked:
+Still, Crop tab, a 3:2 preset locked (regular width):
 
 ```
-┌ Open  View  Settings  About ─────────────────────────────── [ Edit image ] ? ┐
-│                                                         ┌ Edit image ───────── ✕ ┐
-│                                                         │ IMG_2041.JPG · 3 edits  │
-│        ┌──────────────────────────────┐                 │ [Crop] Colour  Info      │
-│   dim  │  ·  ·  ·  thirds grid  ·  ·  │  dim            │ ↶ Undo  ⟲ Reset  ◐ Orig. │
-│        │                              │                 │ [ Save copy… ]           │
-│        └──────────────────────────────┘                 ├──────────────────────────┤
-│         5472 × 3648  +1.5°                              │ Aspect                    │
-│                                                         │ Free Orig 1:1 4:3 [3:2]   │
-│                                                         │ 16:9 5:4   ⇄ Portrait     │
-│                                                         │ Straighten  ──●──  +1.5°  │
-│                                                         │ Rotate ⟲ ⟳   Flip ⇋ ⇵     │
-│                                                         │ [ Apply  ⏎ ] [ Cancel ⎋ ] │
-│                                                         │ ←→↑↓ move · ⇧ resize      │
-│                                                         │ A aspect · X swap         │
-└─────────────────────────────────────────────────────────┴──────────────────────────┘
+┌ Open  View  Settings  About ──────────────────────────────── [ Done ] ? ┐
+│                                                 ┌ IMG_2041.JPG (3 edits) [✦ Auto ▾]┬────┐
+│                                                 │ ↶ Undo ⟲ Reset ◐ Compare [Save…] │▌⌗ │ Crop
+│        ┌──────────────────────────┐             ├──────────────────────────────────┤ ≡  │ Adjust
+│   dim  │  ·  ·  thirds grid  ·  · │  dim        │ CROP                             │ ✦  │ Enhance
+│        │                          │             │ [ Apply ] [ Cancel ]             │ ⓘ  │ Info
+│        └──────────────────────────┘             │ ASPECT RATIO                     │ ── │
+│         5472 × 3648  +1.5°                      │ Free Orig 1:1 4:3 [3:2]          │ ⌫  │ Remove
+│                                                 │ 16:9 5:4   ▭ Landscape           │ ◉  │ Red-eye
+│                                                 │ STRAIGHTEN  ──●──  +1.5°  ↺      │ ☺  │ Faces
+│                                                 │ ROTATE AND FLIP ⟲ ⟳ ⇋ ⇵          │ ⤢  │ Extend
+│                                                 │ ←→↑↓ move · ⇧ resize · ⏎ apply   │    │
+│                                                 │                                  │ ↶  │ Undo
+│                                                 │                                  │ ◐  │ Compare
+│                                                 │                                  │ ✓  │ Done
+└─────────────────────────────────────────────────┴──────────────────────────────────┴────┘
 ```
 
 Clip, Trim tab (`Ctrl+T`), trim armed:
@@ -115,7 +116,75 @@ Clip, Trim tab (`Ctrl+T`), trim armed:
 ```
 
 Buttons use the command bar's flat style (`FlatButtonStyle`: CozetteVector, no border, a hover
-wash, a held wash when selected) throughout the workspace and the metadata pane.
+wash, a held wash when selected) throughout the workspace and the metadata pane; a primary action
+(Save copy…, Apply, a card's button) is filled with the accent.
+
+### The rail and the header
+
+docs/plans/edit-refresh.md S2. While the workspace is open a **44 pt rail** docks at the window's
+right edge, from the command bar to the filmstrip; the column (the inspector) sits left of it.
+
+- **Tabs:** Crop, Adjust, Enhance, Info on a still; Trim, Jobs on a clip. The selected icon wears
+  the accent wash and a 2 pt accent bar on its leading edge. A click on another tab selects it;
+  on the active one it **folds the inspector to the rail** (the picture refits into the wider
+  rect); any icon of a folded rail unfolds it on that tab (`edit_workspace.collapsed`,
+  `rail_pick`). A window too narrow for any inspector beside the canvas (`clamp_inspector`
+  returns 0) folds it too, and unfolds when it is wide enough again. A tab's own key unfolds a
+  folded inspector rather than closing it. Closing forgets the fold.
+- **Tools:** Remove (the Remove brush, on the Enhance tab; on Windows the brush is still the
+  Adjust pane's pick, so Adjust shows with its Remove section), Red-eye (Adjust's picker on),
+  Faces (the Enhance tab), Extend (Enhance's sheet, whose photo choice offers *Extend the
+  picture*). S3 makes these canvas tools of their own.
+- **Foot:** Undo, Compare (Show original), Done. Tooltips and screen-reader names carry the live
+  keys (`SettingsStore.keyLabel` / `KeyOf`, so a remap shows).
+
+The **header** is as tall as its content (the Mac hosts it with an intrinsic height; Windows
+measures it and sends `chrome_cmd_edit_strip_height`, clamped to 72–220 DIP, re-laid only on a
+change of more than 1 DIP), so the panes start right under it at any type scale. Row 1: the file
+name (truncated), an edit-count pill, a chip (*Photos* for a Photos-library item, *iCloud* while
+its original downloads; on Windows *Cloud* while a placeholder hydrates), and **✦ Auto** with a
+chevron. Row 2: Undo · Reset · Compare, and **Save copy…** filled with the accent. Below 340 both
+rows are icons only (Mac `ViewThatFits`; Windows hides the labels in place).
+
+**✦ Auto** (`auto_enhance`, unbound, Edit ▸ Auto Enhance on the Mac): tone, then white balance,
+one undo step ([07](07-photo-editing.md) "✦ Auto"). It fills with the accent while it is the last
+edit, and a click then takes it back. The chevron opens the five Enhance tools (a popover on the
+Mac, a `Flyout` of buttons on Windows: the Windows wand twin) with each one's state, and *Show the
+Enhance tab*.
+
+### The Enhance tab
+
+Tab 5, any still. Five cards: **Remove objects · Restyle · Faces · Enhance image · Extend edges**,
+each an icon, a one-line purpose, a state chip (*Ready*, *Brushing*, *Brushed*, *Brush full*,
+*Needs Enhance*, *Needs People*, *Working…*) from the edit view's wand bits
+(`adjust_pane.h` `kWand*`) and one primary button: *Start brushing* / *Remove* (the brush, then
+Enhance's sheet on what is brushed), *Restyle…* (Enhance's `restyle` command), *Open closed eyes*
+and *Improve faces* (the Mac; Windows has Open closed eyes, its Improve faces twin is S8's),
+*Enhance…* and *Extend…* (Enhance's `open`; Extend is the sheet's photo choice). Without the
+Enhance add-on a banner and each card offer **Get Enhance…** (Settings → Add-ons → Enhance).
+Cards are one column, two from 560. Running inside the pane (`place "edit"`) and the result row are
+S5's; every result is a new file today, as before.
+
+### Width classes
+
+The inspector's layout follows its width (`shell/pane_width.h` `class_of`), read once at the
+root and handed down only when the class changes, so a drag of the edge rebuilds nothing:
+
+| Class | Width | Adjust | Other |
+|---|---|---|---|
+| compact | 280–339 | one column, labels above the sliders, histogram 72, Curves the content width | header icons only |
+| regular | 340–559 | one column, labels inline, histogram 96, Curves ≤ 340 | |
+| wide | 560–719 | two independent columns of section cards (Light, Colour, B&W, Vignette, Detail · Levels, Curves, Selective Colour, Red-Eye; Windows adds Faces and Remove on the right), labels above | Crop's ratios in one row, straighten beside rotate; Enhance cards two columns |
+| xwide | ≥ 720 | wide, labels inline, and a **scopes row**: the histogram and a square Curves side by side | |
+
+`↑` `↓` walk the left column, then the right. Windows moves the same section cards, histogram and
+Curves square between panels (never rebuilt, so slider state and focus survive). Each section is a
+card with a chevron, a changed dot, an AUTO pill and ↺; a slider's value is a button that becomes a
+field to type a number into (Return sets it, Esc leaves it; Windows uses `FakeInput`), and a
+double-click on a slider (or its row) sets it back to 0. Exposure, saturation, vibrance,
+temperature, tint and a selective band's hue draw their track as a gradient of what they do (Mac:
+the pane's own `ToneSlider`; Windows: the `Slider`'s track resources). The Info pane's labels are
+min(100, 30 % of the pane) wide.
 
 ### The right column
 
@@ -139,7 +208,10 @@ the edge exactly and springs into place on release; nothing resizes the swapchai
   area, 6 DIP left of the column; `WM_SETCURSOR` shows `IDC_SIZEWE`, a press captures, moves re-lay
   the islands at most once per refresh interval, release (or `WM_CAPTURECHANGED`) snaps and saves.
   Mid-drag only the islands move: the Info and Adjust panes' content is pushed once, on release.
-  The type-scale minimum is 300 DIP until the island sends its type scale.
+  The theme's minimum is 300 DIP × the type scale (or density), sent by the island with the
+  theme (`chrome_cmd_inspector_min`). The edge lights like the Mac's: native tells the islands its
+  state (`chrome_host::notify`, `chrome_cmd_pane_edge_state`: idle, hot, dragged) and the pane on
+  top turns its left border to the accent at 2 DIP.
 
 On both hosts a press that does not move the column leaves the preference as it was (a click on the
 edge of a window too narrow for the wish keeps the wish), and a chrome change that does alter the
@@ -161,8 +233,8 @@ sits under the line in its tint.
 | Core, shared | `shell/commands.h`, `command_table.cpp` | `edit_workspace` (`Enter` in browse and video), `crop_aspect_cycle` (`A` in crop), `crop_aspect_swap` (`X` in crop), `show_original` / `show_original_release` (`Y` held, stills), and the island-only, keyless `crop_aspect_set` (argument = preset, +16 for portrait) and `crop_straighten_set` (argument = degrees) |
 | Core, shared | `meta/write` | `write_fields::tags` (any Exif / Iptc / Xmp key, set or remove) and `date_taken`; `access_of()`; a whole-metadata snapshot that `revert` splices back |
 | Core, shared | `meta/tables` | `editable_properties_table`: the properties table plus each tag's raw value and access |
-| Mac host | `main_mac.mm`, SwiftUI | `EditView.swift` (strip, `CropPane`, `TrimPane`), `EditStore` (polls one POD view by generation), the Edit menu, the command-bar button, `MetadataView`'s tag editor. Right-edge panes hang under the strip while it is open and the canvas docks beside them |
-| Windows host | `main.cpp`, WinUI | A fifth panel island (`IslandHost.Edit.cs`): the strip and, under it, the Crop or Trim pane; on Colour / Info / Jobs the island is the strip alone and native places that pane under it. One blittable `SetEditView` entry (`chrome_edit_args`, 72 bytes) feeds the strip, panes and the button. The island sends keyed command ids plus four notifications (`edit_tab`, `edit_action`, `meta_tags`, `meta_date`). The canvas docks through `chrome_right_px` (`present_lab.cpp` `usable_canvas`). The metadata editor is in `IslandHost.Panels.cs` |
+| Mac host | `main_mac.mm`, SwiftUI | `EditView.swift` (the header, `CropPane`, `TrimPane`), `EditRailView.swift` (the rail, `railHost`), `EnhanceHubView.swift` (the Enhance tab and the ✦ popover), `EditStore` (polls one POD view by generation; the wand bits, chips and fold every pulse), the Edit menu, the command-bar button, `MetadataView`'s tag editor. Right-edge panes hang under the header while it shows (`metaTopUnder` …) and the canvas docks beside them and the rail |
+| Windows host | `main.cpp`, WinUI | A fifth panel island (`IslandHost.Edit.cs`): the header and, under it, the Crop, Trim or Enhance pane (`IslandHost.EnhanceHub.cs`); on Adjust / Info / Jobs the island is the header alone and native places that pane under it. A sixth, the rail (`IslandHost.Rail.cs`, `ShowEditRail`, pane island id 11). One blittable `SetEditView` entry (`chrome_edit_args`, 104 bytes) feeds the header, the rail, the panes and the button. The island sends keyed command ids plus the notifications `edit_tab` (a rail click), `edit_action`, `edit_strip_height`, `inspector_min`, `meta_tags`, `meta_date`; native sends `Notify` (`pane_edge_state`). The canvas docks through `chrome_right_px` (`present_lab.cpp` `usable_canvas`). The metadata editor is in `IslandHost.Panels.cs` |
 
 Nothing here blocks the UI thread (the view is POD; the work is the existing edit, export, metadata
 and clip jobs), and no canvas path is added (Show original publishes an identity `edit_view` on
@@ -185,8 +257,10 @@ same commands its buttons run, writing a window capture (Windows: `PrintWindow`,
 islands included) and a state line per step. Inert unless set; it counts as a harness run (no
 hand-off to a running viewer, no `[recent]` entry).
 
-On a still: open → pick 3:2 (or 1:1) → Apply → Colour → Info (set `Exif.Image.Artist` and the
-date, read both back) → Original → Save copy → Esc → Revert. It checks that the copy's ratio
+On a still: open → pick 3:2 (or 1:1) → Apply → Adjust → Enhance tab and ✦ Auto (the Mac logs
+`auto_enhance:` with the op count before, after and after a second press, and
+`prompt_temperature:` for "a bit warmer"; capture `s4d-enhance`) → Info (set `Exif.Image.Artist`
+and the date, read both back) → Original → Save copy → Esc → Revert. It checks that the copy's ratio
 matches the preset within a pixel and that the original's SHA-1 is unchanged after the revert.
 On a clip: open on Trim → arm → Jobs → Esc.
 
@@ -199,7 +273,8 @@ The behaviour it pins:
    original while held and changes nothing.
 4. Keyboard only: `Enter`, `Shift+C`, `A` until 3:2, `Enter`, `Ctrl+S`.
 
-Tests: `test_edit_workspace`, `test_pane_width` (`mv_tests "[pane-width]"`: the clamp, the
+Tests: `test_edit_workspace` (tab 5 routing, the rail's fold), `test_auto_tone` (`[auto_enhance]`:
+one result, one token, the take-back mark), `test_pane_width` (`mv_tests "[pane-width]"`: the clamp, the
 rail-only collapse, the 60 % cap, snaps, steps, the drag soak's frame log), and the workspace cases
 in `test_edit_session`, `test_key_router` and `test_meta_write`. The column drag's pacing is
 `--pane-drag-soak` ([DEVELOPMENT](../DEVELOPMENT.md)).

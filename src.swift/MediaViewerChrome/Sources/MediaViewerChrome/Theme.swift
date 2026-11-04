@@ -32,6 +32,25 @@ enum MVTheme {
   /// Selection, progress, the focused control. The system's accent by default.
   static var accent: Color { themed?.accent ?? Color.accentColor }
 
+  // docs/plans/edit-refresh.md S2: the inspector's derived tokens. Each is made
+  // from the seven above, so every theme (built in or an add-on's) gets them
+  // with its own contrast; none is a new theme field.
+  /// A raised surface on `surface`: a card, a well (the histogram, Curves).
+  static var surface2: Color { title.opacity(0.055) }
+  /// Hover over a row or an icon.
+  static var hoverWash: Color { title.opacity(0.07) }
+  /// The selected rail icon, an armed tool, the focused slider row.
+  static var selectionWash: Color { accent.opacity(0.16) }
+  /// Text on an accent fill (Save copy…, ✦ Auto while on).
+  static var onAccent: Color { Color.white }
+  // Slider tracks that show what the slider does to the photo. Picture
+  // colours, not chrome ones (as the histogram's channels are not tokens):
+  // the same on every theme.
+  static let warm = Color(red: 0.98, green: 0.72, blue: 0.30)
+  static let cool = Color(red: 0.36, green: 0.62, blue: 0.98)
+  static let tintG = Color(red: 0.38, green: 0.78, blue: 0.42)
+  static let tintM = Color(red: 0.86, green: 0.38, blue: 0.80)
+
   /// Built once when a theme is applied, never per view body.
   struct Colours {
     let canvas, surface, title, body, disabled, hairline, accent: Color

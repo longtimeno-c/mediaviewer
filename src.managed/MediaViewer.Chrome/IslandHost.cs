@@ -178,10 +178,19 @@ public static partial class IslandHost
         // narrower. No default key; the View menu sends them.
         public const int PaneWider = 212;
         public const int PaneNarrower = 213;
+        // docs/plans/edit-refresh.md S2: the Edit header's ✦ Auto (one undo
+        // step; again right after takes it back). No default key.
+        public const int AutoEnhance = 214;
         public const int AdjustParam = 1091;
         public const int AdjustPrompt = 1092;  // slice 5b: parked UTF-8 request
         // Slice 7: the Remove brush: 0 the last stroke off, 1 all, 2 Remove.
         public const int AdjustBrush = 1093;
+        // docs/plans/edit-refresh.md S2 (chrome_host.h): the Edit header's own
+        // height in DIPs; the column edge's state, native to the island through
+        // Notify (0 idle, 1 hot, 2 drag); the theme's narrowest inspector, DIPs.
+        public const int EditStripHeight = 1094;
+        public const int PaneEdgeState = 1095;
+        public const int InspectorMin = 1099;
         // PR 12: the pane's stars post the rating keys' ids (commands.h
         // set_rating_0..5); 0 clears.
         public const int SetRating0 = 127;
@@ -286,6 +295,7 @@ public static partial class IslandHost
                 EditorTrimGrab, EditorTrimTo, OpenInApp,
                 VideoVolume, VideoMuted, VideoTrack, VideoLoop,
                 Rename, GalleryRange,
+                EditStripHeight, PaneEdgeState,
             };
             unchecked
             {
@@ -316,6 +326,8 @@ public static partial class IslandHost
     internal const int PaneAdjustIsland = 8;
     internal const int PaneEditIsland = 9;
     internal const int PaneJobsIsland = 10;
+    // docs/plans/edit-refresh.md S2: the Edit workspace's icon rail.
+    internal const int PaneRailIsland = 11;
 
     // Mirrors mv::shell::view_settings. The native side owns the file; the
     // menu is a view of it, pushed in by ApplySettings so a T keypress and the
@@ -405,6 +417,7 @@ public static partial class IslandHost
                 PaneAdjustIsland => _adjustPane,
                 PaneEditIsland => _editPane,
                 PaneJobsIsland => _jobsPane,
+                PaneRailIsland => _editRail,
                 _ => null,
             };
             long hwnd = source?.SiteBridge is null

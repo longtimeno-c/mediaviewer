@@ -215,3 +215,4 @@ MV_COMMAND(adjust_pick, excluded, edit, excludes, handles, "island button; the M
 MV_COMMAND(adjust_open_eyes, excluded, edit, excludes, handles, "island button; the Mac pane calls mv_chrome_adjust_open_eyes", nullptr)
 MV_COMMAND(pane_wider, canvas, canvas, handles, handles, nullptr, nullptr)
 MV_COMMAND(pane_narrower, canvas, canvas, handles, handles, nullptr, nullptr)
+MV_COMMAND(auto_enhance, canvas, canvas, handles, handles, nullptr, nullptr)

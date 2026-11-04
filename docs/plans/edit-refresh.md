@@ -107,6 +107,23 @@ S1 review (2026-11-04): Windows no longer re-pushes the Info / Adjust content on
 that does not move the column keeps the preference (both hosts), `apply_view_state` falls back to
 `resize_seq` if the size or scale did change, and the Mac re-clamps on a theme change.
 
+**S2 built (2026-11-04):** the rail (both hosts: Mac `EditRailView` / `railHost`, Windows
+`IslandHost.Rail.cs`, pane island id 11, `ShowEditRail`), the intrinsic header (Mac
+`sizingOptions = [.intrinsicContentSize]` and `*TopUnder` constraints; Windows
+`chrome_cmd_edit_strip_height` = 1094), the edge feedback on Windows (`chrome_cmd_pane_edge_state`
+= 1095, sent native → island through a new `Notify` entry, `chrome_notify_args`), the Windows
+theme minimum (`chrome_cmd_inspector_min` = **1099**, an id this plan did not reserve; 1096–1098
+stay S3's), ✦ Auto (`auto_enhance` = 214; `edit::compute_auto_sections`,
+`adjust_pane::request_auto` / `auto_enhance_on`), the wand bits 32–256 plus `kWandAutoBusy` = 512,
+`chrome_edit_args` 96 → 104 bytes (`chips`, `collapsed`) and `mv_edit_view` likewise,
+`edit_tab::enhance` = 5 with `edit_workspace.collapsed` and `rail_pick`, `chrome_edit_action`
+`arm_brush` / `arm_red_eye` / `show_enhance` (6–8), the theme tokens (`surface2`, `hoverWash`,
+`selectionWash`, `onAccent`, `warm`, `cool`, `tintG`, `tintM`; Windows `Surface2`,
+`SelectionWash`, `Track*`), the four width classes on both hosts, and the Enhance tab's five
+cards and the ✦ popover / Flyout launching the existing sheet (B's docked run is S5's). Not run
+here: the app on either host (no screenshots at 320/420/640/760 yet), both PR 1 gates, the
+selftest; the Windows native and C# are compiled only as far as the Mac allows (C# compiles).
+
 ### 2.2 Canvas refit without touching the swapchain (both present labs)
 
 - **`src/shell/input_state.h`.** Add `std::uint32_t refit_seq` beside `resize_seq` (line 269), plus `std::uint8_t chrome_live_resize`.
