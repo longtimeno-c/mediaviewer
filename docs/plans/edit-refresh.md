@@ -551,6 +551,29 @@ Concretely, applied in the second build round:
 - **Enhance image:** Real-ESRGAN tiles with more overlap, and the app's own noise reduction before it.
 - Every run shows progress with the time left and can be cancelled.
 
+## Models (owner OK 2026-11-04; downloaded and checked here, `~/Dev/.mv-toolchain/enhance-models/`)
+
+From a surveyed and adversarially verified shortlist (licences checked at the source, not by HF tags).
+Each is pinned in `src/addons/enhance/remote.json` and fetched by a user only when they use the tool.
+Measured on a blurred, noisy, JPEG-35 crop (192 px, M-series CPU):
+
+| Tool | Model | Pin (repo @ revision, file) | Bytes, SHA-256 | Licence | Tensors | Measured |
+|---|---|---|---|---|---|---|
+| Restore faces (main) | RestoreFormer++ | facefusion/models-3.0.0 @ 728b9659bd9691bf32cbf7f61af478d94b7ba81e, restoreformer_plus_plus.onnx | 294,264,232, 164818b70d1745da4108a45c9263b05452236d14ac0ffab2202af0ac4a438195 | Apache-2.0 (wzhouxiff/RestoreFormerPlusPlus; credit them) | `input` [1,3,512,512] RGB -1..1, output 0 (ignore 1, 2) | best identity of 11 methods (PMRF, ICLR 2025) |
+| Restore faces (natural) | GFPGAN v1.4 | neurobytemind/GFPGANv1.4.onnx @ e3fd467e3a83420614abb9bf0b1c2c3addd359bc, GFPGANv1.4.onnx | 340,256,686, cd7311b8d9e13cdb1e208b12363182da58c7bf45e26d1aa67bbeac4751aae92e | Apache-2.0 | `input` → `1288`, 512, -1..1 | 0.8 s a face |
+| Enhance image: maximum detail (default) | Real-HAT-GAN SRx4 "sharper" | MahoCommerce/Real_HAT_GAN_sharper-ONNX @ f0c8c3a46b1a45706d34ac73cbd71c21893a1ebb, onnx/model.onnx | 161,105,121, b3df277d8f68cf440eca120d39aa659fb08e2537a22d368646e79acfc2062db6 | Apache-2.0 (XPixelGroup/HAT) | `pixel_values` [1,3,192,192] RGB 0..1 → `reconstruction` [1,3,768,768]; fixed: tile at 192, overlap, fp32 only | 5.7 s a 192 tile; by far the sharpest |
+| Enhance image: natural | 4xRealWebPhoto v4 (DAT-2) | Phips/4xRealWebPhoto_v4_dat2 @ 95e9cd50553951c27d86bafbdc1bc27ca8e750d2, 4xRealWebPhoto_v4_fp32_opset17.onnx | 48,760,847, a9a3a9099e0108b793556ed9cf2123a61a727bbc611dd8d93475f7144596589e | CC-BY-4.0 (credit Philip Hofmann) | `input` → `output`, dynamic, ×4, RGB 0..1 | 4.7 s a 192 tile; faithful, soft |
+| Remove noise | SCUNet real-PSNR | deepghs/image_restoration @ 77885239ff28876d6b37dd080ab86aa1de2c49cc, SCUNet-PSNR.onnx | 91,264,256, b0f8c12f1575bb49e39a85924152f1c6d4b527a4aae0432c9e5c7397123465e3 | Apache-2.0 (KAIR MIT) | `input` → `output`, dynamic, same size, RGB 0..1 | 0.4 s a 192 tile |
+| Remove blur (focus, JPEG) | NAFNet-REDS-width64 | the same repo @ 77885239…, NAFNet-REDS-width64.onnx | 275,371,113, fb5b264996d26cb1f7399a0af4e25cd26dbd5241910e58f7a4f1275734f76ea1 | MIT | as SCUNet | 0.1 s a 192 tile |
+| Remove motion blur | NAFNet-GoPro-width64 | the same repo @ 77885239…, NAFNet-GoPro-width64.onnx | 275,371,113, 00c07294585512d162bc2313a2a12cd8d9cd532d0981d0d01f444bd48c4330cd | MIT | as SCUNet | — |
+
+Enhance image offers: **Sharpen & restore** (HAT; at the same size, ×4 then a high-quality downscale)
+as the default, **Natural** (RealWebPhoto), **Remove noise**, **Remove blur**, **Remove motion blur**;
+and the size (same, ×2, ×4) where the model upscales. Every tiled model blends overlapping tiles by
+weight, as Extend does. Restore faces offers RestoreFormer++ (default) or GFPGAN ("natural"), aligned to
+the FFHQ 5-point template, pasted back with a feathered mask, at a Strength (default 0.7), with the
+People guard. CC-BY-4.0 credit lines go in each kind's model.json credit and the add-on's notices.
+
 ## Owner calls
 
 Resolved 2026-11-04 by the owner's brief ("the UI should be unreal… get it done"): **A** yes (the tool
