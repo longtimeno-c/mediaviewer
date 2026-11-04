@@ -679,6 +679,48 @@ TEST_CASE("enhance: a photo at twice the size, upright, with its metadata, besid
 
 // docs/plans/edit-adjust.md slice 5: the photo being edited carries its edit
 // into Enhance's copy; any other photo, or none registered, does not.
+TEST_CASE("enhance: a Photos-library item is read through the host and saved into the library",
+          "[enhance][still][photos]") {
+  // Owner 2026-11-04: edits of library photos. The key is resolved to a file
+  // to read; what is made is staged outside the library and handed to the
+  // library as a new photo; nothing is written beside the file.
+  scratch_dir s("enhance_photos");
+  const fs::path library = s.root() / "Photos Library.photoslibrary" / "originals";
+  fs::create_directories(library);
+  const fs::path original = library / "IMG_0412.JPG";
+  mv::test::write_bytes(original, sideways_jpeg(48, 32));
+  std::string asked, added;
+  mv::addon::media::set_photos_hooks(
+      [&](const std::string& key) -> mv::result<std::string> {
+        asked = key;
+        return original.string();
+      },
+      [&](const std::string& file) -> mv::result<std::string> {
+        added = file;
+        CHECK(fs::exists(fs::path(file)));  // staged until the library has it
+        fs::remove(fs::path(file));
+        return std::string("IMG_0412-enhance.jpg");
+      });
+  const auto pic = mv::addon::media::full_still("photos:ABC-123/L0/001");
+  REQUIRE(pic);
+  CHECK(asked == "photos:ABC-123/L0/001");
+  CHECK(pic->width == 32);  // upright, as any file's
+  mv::addon::rgb_image out;
+  out.width = pic->width;
+  out.height = pic->height;
+  out.rgb = pic->rgb;
+  const auto written = mv::addon::media::write_still("photos:ABC-123/L0/001", out, "enhance");
+  REQUIRE(written);
+  CHECK(written.value() == "IMG_0412-enhance.jpg");
+  CHECK(added.find("MediaViewer Saves") != std::string::npos);
+  CHECK(added.find(".photoslibrary") == std::string::npos);
+  std::size_t files = 0;
+  for (const auto& e : fs::directory_iterator(library)) files += e.is_regular_file() ? 1 : 0;
+  CHECK(files == 1);  // only the original
+  mv::addon::media::set_photos_hooks(nullptr, nullptr);
+  CHECK_FALSE(mv::addon::media::full_still("photos:ABC-123/L0/001"));  // no hooks: not found
+}
+
 TEST_CASE("enhance: the photo being edited is enhanced with its crop and colour", "[enhance][still]") {
   scratch_dir s("enhance_edited");
   const fs::path photo = s / "IMG_0003.JPG";

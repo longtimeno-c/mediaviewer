@@ -3961,6 +3961,14 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // "photos:" key; every file in the cache folder (previews, on-view
   // downloads) is read-only; the folder starts the session empty.
   mv::shell::set_read_only_prefix(mv::shell::photos::cache_dir());
+  // Owner 2026-11-04: Enhance, faces and Save copy read a library item's file
+  // and add what they make back to the library as a new photo.
+  mv::addon::media::set_photos_hooks(
+      [](const std::string& key) -> mv::result<std::string> {
+        MV_TRY(mv::shell::photos::resolved r, mv::shell::photos::resolve(key, /*want_original=*/true));
+        return r.path;
+      },
+      [](const std::string& file) { return mv::shell::photos::add_photo(file); });
   _folder.set_virtual_items(std::string(mv::shell::photos::kKeyPrefix), [](const std::string& key) {
     return mv::shell::photos::thumb_jpeg(key, mv::image::kThumbLongEdge);
   });
@@ -7887,11 +7895,13 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   // it; neither is allowed (issue #72). Cropping and the adjust sliders only
   // change the view, and stay.
   using mv::shell::command_id;
-  if ((command == command_id::rotate_ccw || command == command_id::rotate_cw ||
-       command == command_id::flip_horizontal || command == command_id::flip_vertical ||
-       command == command_id::export_image) &&
-      [self refuseWriteTo:_items[std::min(_index.current(), _items.size() - 1)].path_utf8]) {
-    return YES;
+  // Owner 2026-11-04: a turn stays an edit (never written into the library;
+  // startRotationWrite skips protected files) and Save copy adds a new photo
+  // to the library (exportCurrentItem); a file merely inside the cache folder
+  // (not a library item) is still refused.
+  if (command == command_id::export_image) {
+    const std::string& current = _items[std::min(_index.current(), _items.size() - 1)].path_utf8;
+    if (!mv::shell::photos::is_key(current) && [self refuseWriteTo:current]) return YES;
   }
   [self applyEditEffect:_edits.run(command)];
   return YES;
@@ -8496,15 +8506,28 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 - (void)exportCurrentItem:(const mv::edit::export_options&)options {
   if (_items.empty() || _index.current() >= _items.size()) return;
   const std::string path = _items[_index.current()].path_utf8;
-  if ([self refuseWriteTo:path]) return;  // it would save beside a Photos library file
+  // A library item: its file, exported into our staging folder, then added to
+  // the library as a new photo (owner 2026-11-04). Anything else protected is
+  // still refused (it would save beside a library file).
+  const bool library = mv::shell::photos::is_key(path);
+  if (!library && [self refuseWriteTo:path]) return;
   const mv::edit::geometry g = _edits.export_geometry();
   const mv::edit::colour c = _edits.colour();
   const mv::edit::export_options opt = options;
-  _jobs.submit_at(mv::background_generation, [path, g, c, opt](const mv::job_context&) -> mv::status {
-    const mv::result<std::string> out = mv::shell::run_export(path, g, opt, c);
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [path, library, g, c, opt, weakSelf](const mv::job_context&) -> mv::status {
+    mv::result<std::string> out = mv::err(mv::status::io);
+    if (library) {
+      auto file = mv::addon::media::readable_path(path);
+      if (file) out = mv::shell::run_export(*file, g, opt, c, mv::shell::photos::staging_dir());
+      if (out) out = mv::shell::photos::add_photo(*out);
+    } else {
+      out = mv::shell::run_export(path, g, opt, c);
+    }
     const bool ok = static_cast<bool>(out);
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!ok) NSBeep();
+      if (ok && library) [weakSelf noticeShow:"Saved to your Photos library as a new photo"];
     });
     return ok ? mv::status::ok : out.error();
   });

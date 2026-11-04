@@ -103,6 +103,14 @@ struct resolved {
 [[nodiscard]] result<resolved> resolve(std::string_view key, bool want_original,
                                        const std::atomic<bool>* cancel = nullptr);
 
+// Owner 2026-11-04: an edit of a library item (Save copy, Enhance, faces) goes
+// back into the library as a new photo; nothing existing changes. `file` is
+// removed once Photos has its copy. Returns the new photo's file name.
+// [worker] (waits on PhotoKit).
+[[nodiscard]] result<std::string> add_photo(std::string_view file);
+// Where such a file is staged first (a temporary folder of ours), ending in "/".
+[[nodiscard]] std::string staging_dir();
+
 // ---- For the backup (shell/photos_backup.h; docs/design/26 "Backup"), all [worker].
 // `kind`: 0 the original photo or video as shot, 1 a Live Photo's paired
 // video, 2 a RAW+JPEG pair's RAW (backup::file_kind).

@@ -73,6 +73,17 @@ namespace media {
 // carried (edit::export_pixels; Exiv2 for HEIC, TIFF, RAW, WebP), named
 // "<stem>-<suffix>.jpg" (".png" for a PNG) under the first free name.
 [[nodiscard]] result<rgb_image> full_still(const std::string& path);
+// Owner 2026-11-04: edits of a Photos-library item ("photos:<id>", docs/design/26).
+// The Mac host sets these at launch: `resolve` gives the item's file to read
+// (the original, fetched from iCloud when only it has it), and `add` puts a
+// new file into the library as a new photo (nothing existing changes) and
+// returns how to name it. Unset elsewhere: a key then reads as not found.
+using photos_resolve_fn = std::function<result<std::string>(const std::string& key)>;
+using photos_add_fn = std::function<result<std::string>(const std::string& file)>;
+void set_photos_hooks(photos_resolve_fn resolve, photos_add_fn add);
+// The file to read for `path`: itself, or a Photos key's file.
+[[nodiscard]] result<std::string> readable_path(const std::string& path);
+[[nodiscard]] bool is_photos_key(std::string_view path) noexcept;
 // docs/plans/edit-adjust.md slice 5: the edit of the photo being edited on
 // screen, which full_still then applies (Enhance's copy carries the crop,
 // colour and detail). The UI thread sets it as the edit changes; clear() when

@@ -660,4 +660,26 @@ void clear_cache() noexcept {
   }
 }
 
+result<std::string> add_photo(std::string_view file) {
+  if (!readable()) return err(status::permission_denied);
+  @autoreleasepool {
+    NSString* path = [[NSString alloc] initWithBytes:file.data() length:file.size() encoding:NSUTF8StringEncoding];
+    if (!path) return err(status::invalid_arg);
+    NSURL* url = [NSURL fileURLWithPath:path];
+    NSError* error = nil;
+    const BOOL ok = [[PHPhotoLibrary sharedPhotoLibrary] performChangesAndWait:^{
+      (void)[PHAssetChangeRequest creationRequestForAssetFromImageAtFileURL:url];
+    } error:&error];
+    [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+    if (!ok) return err(status::io);
+    return std::string(url.lastPathComponent.UTF8String ?: "");
+  }
+}
+
+std::string staging_dir() {
+  NSString* dir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"MediaViewer Saves"];
+  [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+  return std::string(dir.UTF8String) + "/";
+}
+
 }  // namespace mv::shell::photos

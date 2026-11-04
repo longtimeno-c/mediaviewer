@@ -356,6 +356,39 @@ still_edit& edit_slot() {
 
 }  // namespace
 
+namespace {
+struct photos_hooks {
+  std::mutex m;
+  photos_resolve_fn resolve;
+  photos_add_fn add;
+};
+photos_hooks& hooks() {
+  static photos_hooks h;
+  return h;
+}
+}  // namespace
+
+void set_photos_hooks(photos_resolve_fn resolve, photos_add_fn add) {
+  photos_hooks& h = hooks();
+  const std::lock_guard<std::mutex> lock(h.m);
+  h.resolve = std::move(resolve);
+  h.add = std::move(add);
+}
+
+bool is_photos_key(std::string_view path) noexcept { return path.size() > 7 && path.substr(0, 7) == "photos:"; }
+
+result<std::string> readable_path(const std::string& path) {
+  if (!is_photos_key(path)) return path;
+  photos_resolve_fn resolve;
+  {
+    photos_hooks& h = hooks();
+    const std::lock_guard<std::mutex> lock(h.m);
+    resolve = h.resolve;
+  }
+  if (!resolve) return err(status::not_found);
+  return resolve(path);
+}
+
 void set_still_edit(const std::string& path, const edit::geometry& g, const edit::colour& c) {
   still_edit& s = edit_slot();
   const std::lock_guard<std::mutex> lock(s.m);
@@ -395,7 +428,8 @@ result<rgb_image> full_still(const std::string& path) {
       c = s.c;
     }
   }
-  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(path));
+  MV_TRY(const std::string file, readable_path(path));
+  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(file));
   MV_TRY(codec::raster pic, edit::edited_picture(bytes, g, c));
   rgb_image out;
   out.width = pic.width;
@@ -463,14 +497,17 @@ result<eyes_outcome> open_closed_eyes(const std::string& path, std::string_view 
   eyes_outcome r;
   r.faces = static_cast<int>(faces->a.size());
   if (faces->a.empty()) return r;
-  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(path));
+  MV_TRY(const std::string file, readable_path(path));
+  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(file));
   MV_TRY(image::linear_image target, image::decode_linear(bytes, ctx));
   std::vector<std::pair<std::string, image::linear_image>> donors;  // decoded once each
   auto donor_image = [&](const std::string& p) -> const image::linear_image* {
     for (const auto& [k, img] : donors) {
       if (k == p) return &img;
     }
-    auto b = io::read_all(p);
+    auto readable = readable_path(p);
+    if (!readable) return nullptr;
+    auto b = io::read_all(*readable);
     if (!b) return nullptr;
     auto img = image::decode_linear(*b, ctx);
     if (!img) return nullptr;
@@ -551,14 +588,17 @@ result<eyes_outcome> improve_faces(const std::string& path, std::string_view pac
   eyes_outcome r;
   r.faces = static_cast<int>(faces->a.size());
   if (faces->a.empty()) return r;
-  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(path));
+  MV_TRY(const std::string file, readable_path(path));
+  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(file));
   MV_TRY(image::linear_image target, image::decode_linear(bytes, ctx));
   std::vector<std::pair<std::string, image::linear_image>> donors;  // decoded once each
   auto donor_image = [&](const std::string& p) -> const image::linear_image* {
     for (const auto& [k, img] : donors) {
       if (k == p) return &img;
     }
-    auto b = io::read_all(p);
+    auto readable = readable_path(p);
+    if (!readable) return nullptr;
+    auto b = io::read_all(*readable);
     if (!b) return nullptr;
     auto img = image::decode_linear(*b, ctx);
     if (!img) return nullptr;
@@ -639,7 +679,11 @@ result<std::string> write_still(const std::string& source, const rgb_image& pixe
       })) {
     return err(status::invalid_arg);
   }
-  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(source));
+  // A Photos item: read its file, write beside nothing of the library's, and
+  // hand the new file to the library as a new photo (docs/design/26).
+  const bool to_library = is_photos_key(source);
+  MV_TRY(const std::string source_file, readable_path(source));
+  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(source_file));
   const codec::format_family family = codec::probe(bytes);
   // HEIC, TIFF, RAW, WebP: their metadata from Exiv2 (meta/), as an export does.
   edit::metadata_blobs carried;
@@ -666,9 +710,17 @@ result<std::string> write_still(const std::string& source, const rgb_image& pixe
   MV_TRY(edit::export_result r, edit::export_pixels(bytes, pic, opt, &carried));
   pic = codec::raster{};
 
-  const std::size_t sep = source.find_last_of("/\\");
-  const std::string dir = sep == std::string::npos ? std::string() : source.substr(0, sep + 1);
-  const std::string name = sep == std::string::npos ? source : source.substr(sep + 1);
+  const std::size_t sep = source_file.find_last_of("/\\");
+  std::string dir = sep == std::string::npos ? std::string() : source_file.substr(0, sep + 1);
+  const std::string name = sep == std::string::npos ? source_file : source_file.substr(sep + 1);
+  if (to_library) {
+    std::error_code ec;
+    const std::filesystem::path staging = std::filesystem::temp_directory_path(ec) / "MediaViewer Saves";
+    std::filesystem::create_directories(staging, ec);
+    if (ec) return err(status::io);
+    const std::u8string u = staging.u8string();
+    dir = std::string(reinterpret_cast<const char*>(u.data()), u.size()) + "/";
+  }
   std::size_t dot = name.rfind('.');
   if (dot == std::string::npos || dot == 0) dot = name.size();
   const std::string wanted =
@@ -679,7 +731,17 @@ result<std::string> write_still(const std::string& source, const rgb_image& pixe
         io::unique_name(wanted, [&](std::string_view candidate) { return io::file_exists(dir + std::string(candidate)); });
     if (file.empty()) return err(status::io);
     const std::string out = dir + file;
-    if (io::write_new(out, r.bytes)) return out;
+    if (io::write_new(out, r.bytes)) {
+      if (!to_library) return out;
+      photos_add_fn add;
+      {
+        photos_hooks& h = hooks();
+        const std::lock_guard<std::mutex> lock(h.m);
+        add = h.add;
+      }
+      if (!add) return err(status::unsupported_format);
+      return add(out);  // the library has its own copy; the hook removes ours
+    }
     if (!io::file_exists(out)) return err(status::io);
   }
   return err(status::io);

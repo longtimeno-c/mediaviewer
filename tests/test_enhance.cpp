@@ -1871,6 +1871,8 @@ TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {
   job_runner jr(port);
   model_spec spec;
   spec.kind = model_kind::restyle;
+  // The pinned export runs on the CPU (its spec's cpu true); our own needs the GPU.
+  spec.cpu = std::getenv("MV_RESTYLE_OURS") == nullptr;
   // The runner at the edge measured above, so it reuses that compile.
   spec.io = *mv::json::parse("{\"edge\": " + std::to_string(edge) + "}");
   job_request req;

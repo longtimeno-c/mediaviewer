@@ -650,7 +650,7 @@ expected run_rotation_write(const rotation_write& w) {
 }
 
 result<std::string> run_export(std::string_view source_path, const edit::geometry& g,
-                               const edit::export_options& opt, const edit::colour& c) {
+                               const edit::export_options& opt, const edit::colour& c, std::string_view out_dir) {
   MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(source_path));
   // HEIC, TIFF, RAW, WebP: the metadata comes from Exiv2 (meta/), which edit/
   // cannot call; JPEG and PNG are read by edit/ itself.
@@ -665,7 +665,9 @@ result<std::string> run_export(std::string_view source_path, const edit::geometr
   MV_TRY(edit::export_result r, edit::export_image(bytes, g, c, opt, nullptr, &carried));
 
   const std::size_t sep = source_path.find_last_of("/\\");
-  const std::string dir = sep == std::string_view::npos ? std::string() : std::string(source_path.substr(0, sep + 1));
+  const std::string dir = !out_dir.empty()                ? std::string(out_dir)
+                          : sep == std::string_view::npos ? std::string()
+                                                          : std::string(source_path.substr(0, sep + 1));
   const std::string_view name = sep == std::string_view::npos ? source_path : source_path.substr(sep + 1);
   const std::string wanted = edit::export_file_name(name, opt.encode.format);
   // write_new refuses an existing name, so a race between the check and the

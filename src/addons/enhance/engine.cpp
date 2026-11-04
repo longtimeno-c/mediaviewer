@@ -293,7 +293,12 @@ void engine::sheet_opened(std::uint64_t generation, const std::string& request_p
     if (running_ && path != path_) path = path_;  // a run keeps its item
   }
   // Read outside the lock: a slow disk delays only this sheet.
-  const item_kind item = path.empty() ? item_kind::unknown : sniff(head_of(path));
+  // A Photos-library item ("photos:<id>", docs/design/26) is not a file the
+  // add-on can read: the host's still rows resolve it, so it is a photo here
+  // (owner 2026-11-04: edits of library photos). A library video fails at
+  // its read with the photo's message.
+  const bool library = path.rfind("photos:", 0) == 0;
+  const item_kind item = path.empty() ? item_kind::unknown : library ? item_kind::still : sniff(head_of(path));
   media_facts facts;
   if ((item == item_kind::media || item == item_kind::audio) && port_.probe) facts = port_.probe(path);
   const std::uint32_t brushed = item == item_kind::still && port_.brushed ? port_.brushed(path) : 0;

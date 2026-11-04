@@ -234,9 +234,11 @@ inline constexpr int kExportLongEdgeCount =
 
 // Exports next to the original as "<name>-edit.jpg" (or " (2)", …: never an
 // overwrite). Returns the path written. `c` is the PR 11 colour state.
+// `out_dir` (ending in a separator), when set, is where it goes instead: a
+// Photos-library item's export is staged there, then added to the library.
 [[nodiscard]] result<std::string> run_export(std::string_view source_path, const edit::geometry& g,
                                              const edit::export_options& opt,
-                                             const edit::colour& c = {});
+                                             const edit::colour& c = {}, std::string_view out_dir = {});
 
 // PR 15, Ctrl+Alt+C / ⌘⌥C (docs/design/16 View): the still with its stack baked, as a
 // PNG, for the clipboard. Written to a folder of its own under
