@@ -331,15 +331,20 @@ public static partial class IslandHost
                 var box = new ComboBox { Header = SText(JStr(n, "label"), Title, UiFontSize - 2), MinWidth = 160 };
                 string value = JStr(n, "value");
                 var ids = new List<string>();
+                var off = new HashSet<int>();
                 foreach (JsonElement o in JArr(n, "options"))
                 {
+                    // "disabled" (2026-11-04): shown, never chosen (Enhance's
+                    // quality above the performance level says what it needs).
+                    bool disabled = JFlag(o, "disabled");
+                    if (disabled) off.Add(ids.Count);
                     ids.Add(JStr(o, "id"));
-                    box.Items.Add(new ComboBoxItem { Content = JStr(o, "text") });
+                    box.Items.Add(new ComboBoxItem { Content = JStr(o, "text"), IsEnabled = !disabled });
                 }
                 box.SelectedIndex = ids.IndexOf(value);
                 box.SelectionChanged += (_, _) =>
                 {
-                    if (box.SelectedIndex >= 0 && box.SelectedIndex < ids.Count)
+                    if (box.SelectedIndex >= 0 && box.SelectedIndex < ids.Count && !off.Contains(box.SelectedIndex))
                         SendScreenEvent(at, id, SlotNative.EventChange, JsonString(ids[box.SelectedIndex]));
                 };
                 return box;
@@ -1651,6 +1656,7 @@ public static partial class IslandHost
     {
         var wanted = new HashSet<ScreenAt>();
         SyncSettingsScreen(list);  // a settings page is drawn in Settings, never a window
+        NoteEnhanceLevel(list);    // the Enhance tab's level chip reads Enhance's settings page
         foreach (JsonElement s in list.EnumerateArray())
         {
             string place = JStr(s, "place");

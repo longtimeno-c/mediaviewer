@@ -335,6 +335,20 @@ ideal width no longer includes the whole file name, so a long name does not drop
 - **Optional, needs the owner's download OK:** a per-level model file (Maxxed → RealESRGAN_x4plus) via `tier_policy.still_file`. Fetch only the delta, keep the old files until the new ones verify by SHA-256, then prune. The 5 GB pin and the free-space rule still apply.
 - `machine.{h,cpp}` stays in `src/addons/ai/`. `tier.h` already reproduces the rule, so it is not moved.
 
+**S9 built (2026-11-04):** `tier.h`: Restyle's steps Potato 20, Intel 25, Default 40, Maxxed 50
+(`tier_policy.restyle_steps`), text guidance 7.5 unchanged; `quality_rank`,
+`tier_for_quality`, `level_words`. `screens.{h,cpp}`: `level_quality` (the quality a Restyle
+section shows and runs: the person's while the level allows it, else the level's highest, so
+Default starts at High), `sheet_view.level`, Restyle's options above the level emitted with
+`"disabled": true` and "(needs Default level)" / "(needs Maxxed level)", and the settings page's
+"In use: <Level> level" (`tierlevel`). `engine.cpp`: the sheet's level, a change above it not kept.
+Core `addon/screen.cpp`: a choice option's `"disabled"` (checked, and a change to it refused);
+hosts draw it (`ScreenView.swift` `ChoiceNode`, `IslandHost.Screens.cs`). The hub chip: Mac
+`EnhanceLevel` / `LevelChip` (`EnhanceHubView.swift`), Windows `BuildEnhanceLevelChip` /
+`NoteEnhanceLevel` (`IslandHost.EnhanceHub.cs`); the tab opens Enhance's settings screen while it
+shows to read `tierlevel`. Potato shows Restyle with Standard only (the default). Per-level files:
+not built (call F). Not run: either host in the app (no windows here); Windows C# compiled only.
+
 ---
 
 ## 4. Canvas tools: keys, context bar, overlay

@@ -238,12 +238,12 @@ std::string job_runner::check(const job_request& r) const {
       if (qv != restyle->values.end() && qv->second.k == json::kind::string) {
         // By the quality's id (Standard 0, High 1, Best 2); another id is Standard.
         const std::string& id = qv->second.s;
-        const int rank = id == "best" ? 2 : id == "high" ? 1 : 0;
+        const int rank = quality_rank(id);
         if (rank > r.policy.max_quality) {
           const auto opt = std::find_if(qk->options.begin(), qk->options.end(),
                                         [&](const knob_option& o) { return o.id == id; });
           return (opt != qk->options.end() ? opt->text : id) + " quality needs the " +
-                 (rank >= 2 ? "Maxxed" : "Default") + " performance level (Settings → Add-ons → Enhance).";
+                 tier_words(tier_for_quality(rank)) + " performance level (Settings → Add-ons → Enhance).";
         }
       }
     }

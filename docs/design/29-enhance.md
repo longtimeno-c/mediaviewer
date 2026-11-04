@@ -167,8 +167,9 @@ request is refused before a run. The run (`diffusion.h`, `io.runner: diffusion`)
    memory gate (12, 18 and 32 GB); a request over it is refused with a lower quality suggested.
    A larger copy changes finer things, takes longer, and compiles once on Core ML per size.
 2. CLIP's tokenizer and the text encoder turn the words (and an empty prompt) into the conditions.
-3. The VAE encodes the small picture; 20 Euler-ancestral steps (linspace timesteps, the
-   reference schedule, a fixed seed) run the UNet over a batch of three — text and picture,
+3. The VAE encodes the small picture; Euler-ancestral steps by the performance level (Potato 20,
+   Intel 25, Default 40, Maxxed 50: linspace timesteps, the reference schedule, a fixed seed) run
+   the UNet over a batch of three — text and picture,
    picture only, neither — combined with the *Follow the words* (7.5) and *Keep the photo*
    (1.5) guidances.
 4. The VAE decodes, and `carry_back` applies the blurred ratio of after to before onto the
@@ -182,6 +183,34 @@ cached), else the CPU. The model is not `cpu`-capable, so a machine with no GPU 
 Restyle changes the look of the whole picture: season, light, colour, style. It cannot remove an
 object ("remove the person" tints it; nothing is filled in). That needs an inpainting model and
 a mask ([plan](../plans/edit-adjust.md) slice 5b).
+
+## The performance level (2026-11-04)
+
+Settings → Add-ons → Enhance opens on a **Performance** card, as Local search's: *Automatic*
+(recommended for this computer by Local search's rule, `addons/enhance/tier.h` `recommend_tier`),
+*Potato*, *Intel*, *Default* or *Maxxed*, kept in `enhance.json`; under it, *In use: Default level*
+(node `tierlevel`). A level bounds a run (`tier_policy`): the CPU models' threads, Restyle's steps
+and its largest quality. The owner prefers quality over speed for every Enhance result
+(docs/plans/edit-refresh.md "Quality over speed"), so each level takes as many steps as it bears
+and Restyle starts at the best quality its level allows:
+
+| Level | Threads | Restyle steps | Restyle quality (the default is the highest) |
+|---|---|---|---|
+| Potato | 2 | 20 | Standard |
+| Intel | half the cores | 25 | Standard |
+| Default | all cores but one | 40 | High |
+| Maxxed | every core | 50 | Best |
+
+The words' guidance stays 7.5 at every level. In the sheet a quality above the level is listed,
+disabled, with the level it needs (*Best (needs Maxxed level)*; a choice option's `"disabled"`,
+[25](25-open-addons.md)), and a change to it is not kept. A quality the person chose is theirs
+while the level allows it; above it, or with none chosen, the sheet shows and runs the level's
+highest (`screens.h` `level_quality`), and the chosen one comes back when the level does. A
+request that still names a quality above the level is refused with the level it needs. Potato
+shows Restyle with Standard only (the owner's default; "Needs Intel or higher" was the
+alternative). The Edit pane's Enhance tab shows the level in effect as a chip in its header
+([20](20-edit-workspace.md) "The Enhance tab"). Per-level model files are not built (owner call F:
+no new downloads for them).
 
 ## In the Video Editor (2026-11-02)
 

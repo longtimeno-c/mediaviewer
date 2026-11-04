@@ -165,6 +165,14 @@ Enhance add-on a banner and each card offer **Get Enhance…** (Settings → Add
 Cards are one column, two from 560. Running inside the pane (`place "edit"`) and the result row are
 S5's; every result is a new file today, as before.
 
+The tab's header carries Enhance's **performance level** as a chip (*Default level*; docs/plans/
+edit-refresh.md S9), a click away from Settings → Add-ons → Enhance, whose first card is
+Performance ([29](29-enhance.md) "The performance level"). The text is the add-on's own: the
+`tierlevel` node of its settings page. That page's screen is open while it shows in Settings; the
+tab opens it too while it shows (Mac `EnhanceLevel`, Windows `OpenEnhanceLevel`, closed a hop
+after the tab goes unless Settings is drawing it) and keeps the last text read, since the level
+changes only in Settings, whose trees pass through the same list. Without Enhance there is no chip.
+
 ### Canvas tools
 
 docs/plans/edit-refresh.md S3. A **canvas tool** is what a press on the photo does while it is armed

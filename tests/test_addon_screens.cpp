@@ -440,3 +440,25 @@ TEST_CASE("contribution API 10: a surface's glow and a glowing progress bar", "[
     CHECK(b.set(bad) == error::bad_prop);
   }
 }
+
+TEST_CASE("a choice's option can be shown disabled and is never chosen", "[addon][screens]") {
+  using namespace mv::addon::screen;
+  tree t;
+  REQUIRE(t.set(R"({"type":"choice","id":"q","label":"Quality","value":"standard","options":[)"
+                R"({"id":"standard","text":"Standard"},{"id":"high","text":"High","disabled":false},)"
+                R"j({"id":"best","text":"Best (needs Maxxed level)","disabled":true}]})j") == error::none);
+  CHECK(t.check_event("q", ev_change, R"("high")") == error::none);
+  CHECK(t.check_event("q", ev_change, R"("best")") == error::bad_value);
+  CHECK(*t.find("q")->props.str("value") == "high");  // the refused change left it
+  const char* bad[] = {
+      R"({"type":"choice","id":"q","label":"Q","options":[{"id":"a","text":"A","disabled":"yes"}]})",
+      R"({"type":"choice","id":"q","label":"Q","options":[{"id":"a","text":"A","needs":"x"}]})",
+      R"({"type":"choice","id":"q","label":"Q","options":[{"id":"a"}]})",
+      R"({"type":"choice","id":"q","label":"Q","options":[{"id":"a","text":"A"},{"id":"a","text":"B"}]})",
+  };
+  for (const char* b : bad) {
+    INFO(b);
+    tree x;
+    CHECK(x.set(b) != error::none);
+  }
+}

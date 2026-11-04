@@ -6,7 +6,9 @@
 // viewer, built from the installed models' knobs for the item on screen
 // (slice 2). Pure functions of a view struct, so tests read the trees whole.
 //
-// Node ids: "install.<kind>", "stop.<kind>", "remove.<kind>" on the page;
+// Node ids: "install.<kind>", "stop.<kind>", "remove.<kind>" on the page,
+// "tier" (the level's choice) and "tierlevel" (the level in effect, "Default
+// level": the text the Edit pane's Enhance tab shows in its chip);
 // "target", "k.<kind>.<knob>", "run", "cancel", "close" on the sheet.
 #pragma once
 
@@ -44,6 +46,12 @@ struct model_card {
 struct tier_view {
   std::string chosen = "auto";
   tier recommended = tier::standard;
+  // What a run uses: the chosen level, or the recommendation for "auto".
+  [[nodiscard]] tier effective() const noexcept {
+    tier t = recommended;
+    if (chosen != "auto") (void)tier_from(chosen, t);
+    return t;
+  }
 };
 [[nodiscard]] std::string settings_tree(std::span<const model_card> cards, const tier_view& tiers = {});
 
@@ -69,6 +77,9 @@ struct sheet_view {
   bool offers_remove = false;  // slice 7: something is brushed and Remove has a model
   bool offers_extend = false;  // Remove's model, extending the picture's edges
   photo_target photo = photo_target::detail;
+  // The performance level in effect: Restyle's qualities above what it allows
+  // are shown disabled with the level they need (docs/plans/edit-refresh.md S9).
+  tier level = tier::standard;
   std::vector<sheet_section> sections;
   std::string note;          // why Enhance cannot run on this item, or ""
   bool can_run = false;
@@ -80,6 +91,12 @@ struct sheet_view {
   std::string status;        // "Saved as IMG_0001-enhance.m4a", or why it stopped
 };
 [[nodiscard]] std::string sheet_tree(const sheet_view& v);
+
+// Restyle's quality at a performance level (quality over speed, owner
+// 2026-11-04): the person's choice while the level allows it; with none
+// chosen, or one above the level, the highest the level allows (Default ->
+// High). `values` are a restyle section's; another kind's spec is left alone.
+void level_quality(std::map<std::string, json::value>& values, const model_spec& spec, tier level);
 
 // The Video Editor's cut, in the sheet's words ("The edit from the Video
 // Editor: 3 pieces, 1:24 in all. …"); "" for the whole clip.
