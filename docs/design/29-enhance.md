@@ -117,7 +117,11 @@ slice 5): the UI thread hands the edit of the item on screen to `addon_media::se
 whenever it changes (a copy of a few hundred bytes under a mutex, never held across a decode), and
 `full_still` for that path returns `edit::edited_picture` (detail, geometry, colour, as an export
 bakes them) instead of the plain picture; any other path, or no edit, gets the plain picture. The
-host table and the add-on are unchanged. The Edit strip offers **Enhance…** beside Save copy…
+host table and the add-on are unchanged. **A Photos-library photo** (`photos:<id>`, Mac) is read
+through the host's resolve hook and its result becomes a new photo in the library
+([26](26-photos-library.md) "Edits of a library photo"): `still_write` then writes the new
+photo's key, and the sheet says *Added to your Photos library as a new photo.* (a key is never
+shown); a refused Photos permission says how to allow it. The Edit strip offers **Enhance…** beside Save copy…
 while Enhance is loaded: it runs Enhance's own `open` row (`find_addon_command`).
 
 **A clip's picture.** The host decodes every frame in display order on a decoder of its own

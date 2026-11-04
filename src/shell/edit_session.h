@@ -232,6 +232,12 @@ inline constexpr int kExportLongEdgeCount =
 // rotates losslessly and swaps the result in (io::replace_atomic).
 [[nodiscard]] expected run_rotation_write(const rotation_write& w);
 
+// S0 (docs/plans/edit-refresh.md §5): a file the sync client keeps only in the
+// cloud (OneDrive, iCloud Drive: io::file_stat::cloud_placeholder) comes down
+// with the worker's read of it (the export's, the working image's). The
+// notice says so meanwhile; both hosts clear it when the read ends.
+inline constexpr std::string_view kCloudFetchNotice = "Downloading this file from the cloud\xE2\x80\xA6";
+
 // Exports next to the original as "<name>-edit.jpg" (or " (2)", …: never an
 // overwrite). Returns the path written. `c` is the PR 11 colour state.
 // `out_dir` (ending in a separator), when set, is where it goes instead: a

@@ -14,6 +14,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <mediaviewer/mediaviewer_addon.h>
@@ -75,15 +76,35 @@ namespace media {
 [[nodiscard]] result<rgb_image> full_still(const std::string& path);
 // Owner 2026-11-04: edits of a Photos-library item ("photos:<id>", docs/design/26).
 // The Mac host sets these at launch: `resolve` gives the item's file to read
-// (the original, fetched from iCloud when only it has it), and `add` puts a
-// new file into the library as a new photo (nothing existing changes) and
-// returns how to name it. Unset elsewhere: a key then reads as not found.
-using photos_resolve_fn = std::function<result<std::string>(const std::string& key)>;
-using photos_add_fn = std::function<result<std::string>(const std::string& file)>;
+// (the original, fetched from iCloud when only it has it; the host shows the
+// fetch's progress, and `ctx`, when given, cancels it), and `add` puts a new
+// file into the library as a new photo (nothing existing changes), removes
+// the file, and returns the new item's key ("photos:<id>"); `source` is the
+// key it was made from (the host lists the new photo beside it). Unset
+// elsewhere: a key then reads as not found. Worker threads only.
+using photos_resolve_fn = std::function<result<std::string>(const std::string& key, const job_context* ctx)>;
+using photos_add_fn = std::function<result<std::string>(const std::string& file, const std::string& source)>;
 void set_photos_hooks(photos_resolve_fn resolve, photos_add_fn add);
 // The file to read for `path`: itself, or a Photos key's file.
-[[nodiscard]] result<std::string> readable_path(const std::string& path);
+[[nodiscard]] result<std::string> readable_path(const std::string& path, const job_context* ctx = nullptr);
 [[nodiscard]] bool is_photos_key(std::string_view path) noexcept;
+// S0 (docs/plans/edit-refresh.md §5): every writer of a library item's result
+// goes through these two. The folder a result is written to first (ours,
+// under the temporary folder; never beside a library file), ending in a
+// separator; and the hand-over: `file` (in that folder) becomes a new photo
+// made from `source`, and is gone afterwards whatever the outcome. Returns the
+// new item's key. unsupported_format with no hook.
+[[nodiscard]] result<std::string> staging_dir();
+[[nodiscard]] result<std::string> add_to_library(const std::string& file, const std::string& source);
+// Save copy of a library item (the hosts' Ctrl+S / ⌘S): `source`'s file
+// exported by `exporter` into staging_dir(), then added. `exporter(file,
+// out_dir)` returns the path it wrote.
+using library_exporter = std::function<result<std::string>(const std::string& file, const std::string& out_dir)>;
+[[nodiscard]] result<std::string> save_copy_to_library(const std::string& source, const library_exporter& exporter,
+                                                       const job_context* ctx = nullptr);
+// What a note says of a written result: its file name, or, for a library
+// item's key, that it is in the library (a key is never shown, rule 6).
+[[nodiscard]] std::string result_name(const std::string& written);
 // docs/plans/edit-adjust.md slice 5: the edit of the photo being edited on
 // screen, which full_still then applies (Enhance's copy carries the crop,
 // colour and detail). The UI thread sets it as the edit changes; clear() when

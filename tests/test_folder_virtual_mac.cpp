@@ -133,3 +133,48 @@ TEST_CASE("a list of virtual items lists as given and tiles through the provider
   jobs.shutdown();
   mv::io::set_thumb_cache_dir_override("");
 }
+
+// docs/plans/edit-refresh.md S0: a saved edit of a library photo is a new photo,
+// listed right after the one it was made from, with the change published as a
+// relist is; never twice, never into a list that does not hold its source.
+TEST_CASE("a new library photo is listed right after its source", "[shell][folder][photos]") {
+  scratch_dir d("folder_virtual_insert");
+  fs::create_directories(d / "thumbs");
+  mv::io::set_thumb_cache_dir_override(utf8(d / "thumbs"));
+  mv::job_system jobs;
+  REQUIRE(jobs.start(1) == mv::status::ok);
+  mv::shell::folder_model folder;
+  auto entry = [](const char* key, const char* name) {
+    mv::shell::folder_model::list_entry e;
+    e.path_utf8 = key;
+    e.is_virtual = true;
+    e.name_utf8 = name;
+    e.mtime_unix = 1'700'000'000;
+    e.size = 12'000'000;
+    return e;
+  };
+  // No list open: nothing to add to.
+  CHECK_FALSE(folder.insert_virtual("photos:A", entry("photos:NEW", "IMG_0001-edit.jpg")));
+  REQUIRE(folder.open_list("Photos Library", {entry("photos:A", "IMG_0001.HEIC"), entry("photos:B", "IMG_0002.HEIC")},
+                           jobs));
+  (void)folder.consume_changed();
+  CHECK(folder.insert_virtual("photos:A", entry("photos:NEW", "IMG_0001-edit.jpg")));
+  CHECK(folder.consume_changed());
+  auto listing = folder.snapshot();
+  REQUIRE(listing.items.size() == 3);
+  CHECK(listing.items[0].path_utf8 == "photos:A");
+  CHECK(listing.items[1].path_utf8 == "photos:NEW");
+  CHECK(listing.items[1].name_utf8 == "IMG_0001-edit.jpg");
+  CHECK(listing.items[2].path_utf8 == "photos:B");
+  CHECK(listing.moments.size() == listing.items.size());
+  // Already listed, an unknown source, or not virtual: refused.
+  CHECK_FALSE(folder.insert_virtual("photos:B", entry("photos:NEW", "IMG_0001-edit.jpg")));
+  CHECK_FALSE(folder.insert_virtual("photos:ZZZ", entry("photos:NEW2", "IMG_0009-edit.jpg")));
+  auto plain = entry("photos:NEW3", "IMG_0003.jpg");
+  plain.is_virtual = false;
+  CHECK_FALSE(folder.insert_virtual("photos:A", plain));
+  CHECK(folder.snapshot().items.size() == 3);
+  folder.close();
+  jobs.shutdown();
+  mv::io::set_thumb_cache_dir_override("");
+}

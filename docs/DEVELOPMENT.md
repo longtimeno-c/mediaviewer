@@ -1040,7 +1040,15 @@ File gains *Open Photos Library*: the host lists the library as **virtual items*
 needed: `mv_tests "[folder][photos]"` (virtual entries and tiles over a fake provider),
 `"[photos_backup]"` (the engine over a fake library: each folder layout, verified copies, the
 manifest across a layout change and a remount, a collision, a cancel), `"[write_guard]"` and `"[poster]"` (a clip's display matrix turns its
-poster; the thumbnail spec is `jpg512.4`). A dev build shows the row and the section only when
+poster; the thumbnail spec is `jpg512.4`). Edits of a library photo (docs/design/26 "Edits of a library
+photo", docs/plans/edit-refresh.md S0): `mv_ai_tests "[photos]"`, with the writer audit
+`"[photos][audit]"` (Detail, Remove, Extend, Open closed eyes, Improve faces and Save copy on a
+`photos:` key with fake hooks: one add each, staged outside the library, nothing beside the
+source, the staging folder `$TMPDIR/MediaViewer Saves` left empty), and `mv_tests "[photos]"`. On
+a real library the result lands next to its source in the list and the notice says so; an
+iCloud-only original shows *Downloading from iCloud… N %* while it comes. On Windows a OneDrive
+placeholder shows *Downloading this file from the cloud…* in the title while Save copy or the
+Edit pane reads it. A dev build shows the row and the section only when
 its own bundle id has Photos access and the flag `mv.photosLibrary.added` is set in its
 defaults; the flag is set by the pack's Settings when the library is a root, so a dev build
 without the pack loaded can be pointed at it by hand (`defaults write

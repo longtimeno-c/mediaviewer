@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "shell/folder_model_mac.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "abi/addon_media.h"
@@ -112,6 +113,32 @@ expected folder_model::open_list(std::string title_utf8, std::vector<list_entry>
   state_->changed.store(true, std::memory_order_release);
   if (state_->notify) state_->notify(state_->notify_user);
   return {};
+}
+
+bool folder_model::insert_virtual(std::string_view after_path, list_entry entry) {
+  if (!entry.is_virtual || entry.path_utf8.empty() || entry.name_utf8.empty()) return false;
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if (!state_->is_list) return false;
+    std::vector<io::dir_entry>& items = state_->items;
+    std::size_t at = 0;
+    for (std::size_t i = 0; i < items.size(); ++i) {
+      if (items[i].path_utf8 == entry.path_utf8) return false;
+      if (at == 0 && items[i].path_utf8 == after_path) at = i + 1;
+    }
+    if (at == 0) return false;
+    io::dir_entry d;
+    d.path_utf8 = std::move(entry.path_utf8);
+    d.name_utf8 = std::move(entry.name_utf8);
+    d.size = entry.size;
+    d.mtime_unix = entry.mtime_unix;
+    items.insert(items.begin() + static_cast<std::ptrdiff_t>(at), std::move(d));
+    std::vector<std::int64_t>& moments = state_->moments;  // one per item
+    moments.insert(moments.begin() + static_cast<std::ptrdiff_t>(std::min(at, moments.size())), entry.moment_ms);
+  }
+  state_->changed.store(true, std::memory_order_release);
+  if (state_->notify) state_->notify(state_->notify_user);
+  return true;
 }
 
 folder_model::listing folder_model::snapshot() const {

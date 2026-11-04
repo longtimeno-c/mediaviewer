@@ -377,7 +377,7 @@ void set_photos_hooks(photos_resolve_fn resolve, photos_add_fn add) {
 
 bool is_photos_key(std::string_view path) noexcept { return path.size() > 7 && path.substr(0, 7) == "photos:"; }
 
-result<std::string> readable_path(const std::string& path) {
+result<std::string> readable_path(const std::string& path, const job_context* ctx) {
   if (!is_photos_key(path)) return path;
   photos_resolve_fn resolve;
   {
@@ -386,7 +386,46 @@ result<std::string> readable_path(const std::string& path) {
     resolve = h.resolve;
   }
   if (!resolve) return err(status::not_found);
-  return resolve(path);
+  return resolve(path, ctx);
+}
+
+result<std::string> staging_dir() {
+  std::error_code ec;
+  const std::filesystem::path staging = std::filesystem::temp_directory_path(ec) / "MediaViewer Saves";
+  if (ec) return err(status::io);
+  std::filesystem::create_directories(staging, ec);
+  if (ec) return err(status::io);
+  const std::u8string u = staging.u8string();
+  return std::string(reinterpret_cast<const char*>(u.data()), u.size()) + "/";
+}
+
+result<std::string> add_to_library(const std::string& file, const std::string& source) {
+  photos_add_fn add;
+  {
+    photos_hooks& h = hooks();
+    const std::lock_guard<std::mutex> lock(h.m);
+    add = h.add;
+  }
+  result<std::string> key = add ? add(file, source) : result<std::string>(err(status::unsupported_format));
+  // The library has its own copy, or none: ours never stays behind.
+  (void)io::remove_file(file);
+  return key;
+}
+
+result<std::string> save_copy_to_library(const std::string& source, const library_exporter& exporter,
+                                         const job_context* ctx) {
+  if (!is_photos_key(source) || !exporter) return err(status::invalid_arg);
+  MV_TRY(const std::string file, readable_path(source, ctx));
+  MV_TRY(const std::string dir, staging_dir());
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  MV_TRY(const std::string written, exporter(file, dir));
+  return add_to_library(written, source);
+}
+
+std::string result_name(const std::string& written) {
+  if (is_photos_key(written)) return "to your Photos library";
+  const std::size_t slash = written.find_last_of("/\\");
+  return slash == std::string::npos ? written : written.substr(slash + 1);
 }
 
 void set_still_edit(const std::string& path, const edit::geometry& g, const edit::colour& c) {
@@ -479,9 +518,9 @@ std::string eyes_note(status pack, const result<eyes_outcome>& r) {
     return "No open eyes to use: no photo of the same moment, and none of this person in People "
            "with their head turned the same way";
   }
-  const std::size_t slash = r->written.find_last_of("/\\");
-  const std::string name = slash == std::string::npos ? r->written : r->written.substr(slash + 1);
-  return (r->fixed == 1 ? std::string("1 face") : std::to_string(r->fixed) + " faces") + " fixed — saved " + name;
+  // A library photo's result is a new photo there (S0): "added to your Photos library".
+  const std::string verb = is_photos_key(r->written) ? " fixed — added " : " fixed — saved ";
+  return (r->fixed == 1 ? std::string("1 face") : std::to_string(r->fixed) + " faces") + verb + result_name(r->written);
 }
 
 result<eyes_outcome> open_closed_eyes(const std::string& path, std::string_view pack_json, const job_context* ctx) {
@@ -497,7 +536,7 @@ result<eyes_outcome> open_closed_eyes(const std::string& path, std::string_view 
   eyes_outcome r;
   r.faces = static_cast<int>(faces->a.size());
   if (faces->a.empty()) return r;
-  MV_TRY(const std::string file, readable_path(path));
+  MV_TRY(const std::string file, readable_path(path, ctx));
   MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(file));
   MV_TRY(image::linear_image target, image::decode_linear(bytes, ctx));
   std::vector<std::pair<std::string, image::linear_image>> donors;  // decoded once each
@@ -505,7 +544,7 @@ result<eyes_outcome> open_closed_eyes(const std::string& path, std::string_view 
     for (const auto& [k, img] : donors) {
       if (k == p) return &img;
     }
-    auto readable = readable_path(p);
+    auto readable = readable_path(p, ctx);
     if (!readable) return nullptr;
     auto b = io::read_all(*readable);
     if (!b) return nullptr;
@@ -588,7 +627,7 @@ result<eyes_outcome> improve_faces(const std::string& path, std::string_view pac
   eyes_outcome r;
   r.faces = static_cast<int>(faces->a.size());
   if (faces->a.empty()) return r;
-  MV_TRY(const std::string file, readable_path(path));
+  MV_TRY(const std::string file, readable_path(path, ctx));
   MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(file));
   MV_TRY(image::linear_image target, image::decode_linear(bytes, ctx));
   std::vector<std::pair<std::string, image::linear_image>> donors;  // decoded once each
@@ -596,7 +635,7 @@ result<eyes_outcome> improve_faces(const std::string& path, std::string_view pac
     for (const auto& [k, img] : donors) {
       if (k == p) return &img;
     }
-    auto readable = readable_path(p);
+    auto readable = readable_path(p, ctx);
     if (!readable) return nullptr;
     auto b = io::read_all(*readable);
     if (!b) return nullptr;
@@ -667,9 +706,8 @@ std::string faces_note(status pack, const result<eyes_outcome>& r) {
   if (r->fixed == 0) {
     return "No clearly better photo of these people with their head turned the same way";
   }
-  const std::size_t slash = r->written.find_last_of("/\\");
-  const std::string name = slash == std::string::npos ? r->written : r->written.substr(slash + 1);
-  return (r->fixed == 1 ? std::string("1 face") : std::to_string(r->fixed) + " faces") + " improved — saved " + name;
+  const std::string verb = is_photos_key(r->written) ? " improved — added " : " improved — saved ";
+  return (r->fixed == 1 ? std::string("1 face") : std::to_string(r->fixed) + " faces") + verb + result_name(r->written);
 }
 
 result<std::string> write_still(const std::string& source, const rgb_image& pixels, const std::string& suffix) {
@@ -714,12 +752,8 @@ result<std::string> write_still(const std::string& source, const rgb_image& pixe
   std::string dir = sep == std::string::npos ? std::string() : source_file.substr(0, sep + 1);
   const std::string name = sep == std::string::npos ? source_file : source_file.substr(sep + 1);
   if (to_library) {
-    std::error_code ec;
-    const std::filesystem::path staging = std::filesystem::temp_directory_path(ec) / "MediaViewer Saves";
-    std::filesystem::create_directories(staging, ec);
-    if (ec) return err(status::io);
-    const std::u8string u = staging.u8string();
-    dir = std::string(reinterpret_cast<const char*>(u.data()), u.size()) + "/";
+    MV_TRY(std::string staging, staging_dir());
+    dir = std::move(staging);
   }
   std::size_t dot = name.rfind('.');
   if (dot == std::string::npos || dot == 0) dot = name.size();
@@ -733,14 +767,7 @@ result<std::string> write_still(const std::string& source, const rgb_image& pixe
     const std::string out = dir + file;
     if (io::write_new(out, r.bytes)) {
       if (!to_library) return out;
-      photos_add_fn add;
-      {
-        photos_hooks& h = hooks();
-        const std::lock_guard<std::mutex> lock(h.m);
-        add = h.add;
-      }
-      if (!add) return err(status::unsupported_format);
-      return add(out);  // the library has its own copy; the hook removes ours
+      return add_to_library(out, source);  // the new photo's key; our copy is gone
     }
     if (!io::file_exists(out)) return err(status::io);
   }

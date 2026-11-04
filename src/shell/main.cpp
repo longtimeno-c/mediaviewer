@@ -172,6 +172,10 @@ constexpr UINT kMsgBackgroundChanged = WM_APP + 0x81;
 constexpr UINT kMsgRunTask = WM_APP + 0x82;  // issue #617: a first start's --task, once the loop runs
 // Issue #614: Ctrl+P's job finished (wparam 1 printed, 0 not; the pool posts).
 constexpr UINT kMsgPrintDone = WM_APP + 0x83;
+// S0 (docs/plans/edit-refresh.md §5): a worker began (wparam 1) or ended (0)
+// reading a cloud placeholder (OneDrive, iCloud for Windows), which comes
+// down with that read. The status line says so meanwhile.
+constexpr UINT kMsgCloudFetch = WM_APP + 0x84;
 // #452: a --background start (sign-in) that no add-on has kept by now removes its
 // Run entry and quits. Driftwire asks within ~10 s of its load.
 constexpr UINT_PTR kBackgroundStartTimerId = 0x7D01;
@@ -387,6 +391,7 @@ struct app_state {
   bool focus_comment_next = false;  // Ctrl+I: the next pane push focuses the comment
   std::wstring notice;
   ULONGLONG notice_until = 0;
+  int cloud_fetches = 0;  // S0: placeholder reads in flight (kMsgCloudFetch)
   // Pages of the selected stop (docs/plans/audio-and-documents.md §2.3): the page
   // on screen, the folder index it belongs to (another stop starts at page 0)
   // and the last page count the core reported for it (0 unknown).
@@ -2328,15 +2333,54 @@ void start_rotation_write(app_state* app) {
                       });
 }
 
+// S0: [worker] before a read of `path`: when it is a cloud placeholder, the
+// status line says it is coming down (kMsgCloudFetch). Returns whether it
+// was, for cloud_fetch_end after the read.
+bool cloud_fetch_begin(HWND hwnd, const std::string& path) {
+  const auto st = mv::io::stat_path(path);
+  if (!st || !st->cloud_placeholder) return false;
+  return ::PostMessageW(hwnd, kMsgCloudFetch, 1, 0) != 0;
+}
+
+void cloud_fetch_end(HWND hwnd, bool began) noexcept {
+  if (began) ::PostMessageW(hwnd, kMsgCloudFetch, 0, 0);
+}
+
+// [UI] The notice stays while any such read is in flight, then goes (unless
+// another notice has replaced it meanwhile).
+void on_cloud_fetch(app_state* app, bool began) noexcept {
+  if (began) {
+    ++app->cloud_fetches;
+    notice_show(app, std::string(mv::shell::kCloudFetchNotice));
+    app->notice_until = ~0ULL;
+    update_title(app);
+    return;
+  }
+  if (app->cloud_fetches > 0) --app->cloud_fetches;
+  if (app->cloud_fetches != 0) return;
+  try {
+    if (app->notice != wide_from_utf8(std::string(mv::shell::kCloudFetchNotice))) return;
+  } catch (...) {
+    return;
+  }
+  app->notice.clear();
+  app->notice_until = 0;
+  update_title(app);
+}
+
 // Ctrl+S: the stack baked into "<name>-edit.jpg" beside the original (never
 // over it). `opt` comes from the export dialog, or the defaults without chrome.
+// A cloud placeholder is hydrated by this read (the status line says so) and
+// the copy is written beside it, where the sync client uploads it.
 void start_export(app_state* app, const mv::edit::export_options& opt) {
   if (app->edit_path.empty()) return;
   const HWND hwnd = app->window;
   app->jobs.submit_at(mv::background_generation,
                       [path = app->edit_path, g = app->edits.export_geometry(), opt,
                        c = app->edits.colour(), hwnd](const mv::job_context&) -> mv::status {
+                        const bool fetching = cloud_fetch_begin(hwnd, path);
                         const mv::result<std::string> out = mv::shell::run_export(path, g, opt, c);
+                        cloud_fetch_end(hwnd, fetching);
                         auto* r = new (std::nothrow) edit_job_result{};
                         if (r) {
                           r->export_job = true;
@@ -2494,7 +2538,9 @@ void start_working_build(app_state* app, std::uint64_t token) {
         if (!r) return mv::status::out_of_memory;
         r->token = token;
         mv::status st = mv::status::ok;
+        const bool fetching = cloud_fetch_begin(hwnd, path);  // S0: a placeholder comes down here
         auto bytes = mv::io::read_all(path);
+        cloud_fetch_end(hwnd, fetching);
         if (!bytes) {
           st = bytes.error();
         } else if (auto full = mv::image::decode_linear(*bytes, &ctx); !full) {
@@ -10318,6 +10364,10 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
 
     case kMsgPrintDone:
       on_print_done(app, wparam != 0);
+      return 0;
+
+    case kMsgCloudFetch:
+      on_cloud_fetch(app, wparam != 0);
       return 0;
 
     case kMsgTextRead:

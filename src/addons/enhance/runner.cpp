@@ -15,7 +15,11 @@
 namespace mv::enhance {
 namespace {
 
+// What `done` reports: a file's name, or a Photos-library photo's key whole
+// (S0: the host added the result to the library; the engine says so and
+// never shows the key).
 std::string name_of(const std::string& path) {
+  if (path.rfind("photos:", 0) == 0) return path;
   const std::size_t slash = path.find_last_of("/\\");
   return slash == std::string::npos ? path : path.substr(slash + 1);
 }
@@ -28,6 +32,10 @@ std::string why(status s) {
     case status::unsupported_format: return "Enhance cannot read this file's sound.";
     case status::io: return "The new file could not be written. Check the folder has room and can be written to.";
     case status::out_of_memory: return "There was not enough memory to finish.";
+    // A library photo's result could not be added (S0): Photos access.
+    case status::permission_denied:
+      return "MediaViewer may not add photos to your Photos library. Allow it in System Settings, "
+             "Privacy & Security, Photos.";
     default: return "Enhance stopped before it finished. Nothing was written.";
   }
 }

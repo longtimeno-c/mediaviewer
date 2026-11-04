@@ -62,9 +62,62 @@ sort-free list order, duplicate names) works on it unchanged; three things learn
   first-picture-then-full-resolution refinement, over the network. Navigating away cancels the
   fetch and removes its part file.
 - **Writes.** `shell/write_guard.h` protects the key itself and everything under the cache
-  folder: Move, Trash, ratings, every metadata edit, rotate / flip, Save copy and trims are
-  refused with the docs/design/17 notice. **Copy To** and drag-out copy the original, fetched from
-  iCloud for it if this Mac does not hold it (the user asked for the file).
+  folder: Move, Trash, ratings, every metadata edit and trims are refused with the
+  docs/design/17 notice; rotate / flip stay edits (never written into the library). **Copy To**
+  and drag-out copy the original, fetched from iCloud for it if this Mac does not hold it (the
+  user asked for the file). A saved edit is a new photo in the library: see below.
+
+## Edits of a library photo (owner 2026-11-04; docs/plans/edit-refresh.md S0)
+
+Save copy, Enhance (Detail, Restyle, Remove, Extend), Open closed eyes and Improve faces work on a
+library item, and what they make goes **into the library as a new photo**; nothing already there
+changes (rule 5). One sink, `abi/addon_media.h`, which the Mac host feeds through two hooks set at
+launch (`set_photos_hooks`):
+
+- **resolve(key, ctx)** gives the file to read: the current rendition in place, or the original
+  fetched from iCloud into the cache folder. Every writer reads through it (`readable_path`):
+  `full_still` (Enhance's `open_still`, so Detail, Restyle, Remove and Extend), the faces jobs
+  (target and donors) and Save copy (`save_copy_to_library`).
+- **add(file, source)** hands a file staged in `staging_dir()` (`$TMPDIR/MediaViewer Saves/`, never
+  beside a library file) to PhotoKit (`creationRequestForAssetFromImageAtFileURL`) and returns the
+  new asset's key, `"photos:" + placeholderForCreatedAsset.localIdentifier`. `add_to_library`
+  removes the staged file whatever the outcome, so the staging folder is empty afterwards.
+
+**Where the result goes.** The add hook tells the host (`-photosAdded:source:`): when the list on
+screen holds the source, the new photo is listed right after it (`folder_model::insert_virtual`,
+named and stamped by one PhotoKit `describe`), so → reaches it, and the notice says *Added to your
+Photos library, next to this photo*. Otherwise the notice is *Added to your Photos library as a
+new photo*. The Enhance sheet says the same instead of a file name, the faces notes say
+*added to your Photos library*, and a key is never shown (rule 6). The Edit pane's result row
+(docs/plans/edit-refresh.md S5) is to select the new key in that listing; until it lands, the notice and the arrow are how to reach it.
+
+**Permission.** Adding needs read-write access (full or limited) or add-only access
+(`photos::can_add`). A library item is only listed with read access, so this holds in practice;
+when neither was ever asked, Save copy asks for add-only access on the click
+(`NSPhotoLibraryAddUsageDescription`). A refusal is a notice, never a silent failure; Enhance's
+sheet says how to allow it.
+
+**iCloud-only originals.** The fetch reports progress (`PHAssetResourceRequestOptions.progressHandler`)
+to the notice, *Downloading from iCloud… 40 %*, for the viewer's own refinement and for a
+writer's read alike, and clears it when the fetch ends. A job's cancel stops a writer's fetch
+(the hook's `job_context`); navigating away stops the viewer's. Two fetches of one original never
+write at once: the second waits for the first's file. The Edit pane's sliders wait for the
+original as they wait for a RAW's develop (*Preparing…*): a preview never becomes the working
+image; when the fetch fails the pane says it could not be prepared and the notice says the
+picture is a preview.
+
+**Windows** has no library. A OneDrive or iCloud-for-Windows placeholder
+(`FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`, `io::file_stat::cloud_placeholder`) is hydrated by the
+worker's read for Save copy and the working image, the status line saying *Downloading this file
+from the cloud…* meanwhile; the result is written beside the original and the sync client uploads
+it. The Mac shows the same notice for an evicted iCloud Drive file (`SF_DATALESS`).
+
+Tests: `mv_ai_tests "[photos]"`, whose writer audit (`[audit]`) runs every writer above on a
+`photos:` key with fake hooks and checks that each calls add exactly once, from the source's key,
+with its file staged outside the library, that nothing is written beside the source (bytes and
+stamp unchanged) and that the staging folder is left empty; and `mv_tests "[photos]"` (Save copy
+into another folder writes nothing beside the source; a new photo is listed right after its
+source, never twice).
 
 **Search results use the same path.** The AI chrome used to resolve every Photos result into a
 file before opening the list ("Getting N items from your Photos library…", previews written
@@ -179,7 +232,10 @@ iPhone portrait clip sat pinned left and ran off the bottom).
 - In a Mac build: a 640×360 clip with a 90° matrix shows 360×640, upright, with the fixture's
   flat half on the left; with the library added, the tree shows **Photos Library**, opening it
   lists the library in the gallery, an iCloud-only item opens as a preview and becomes the
-  original after a moment, Move / Trash / edits are refused, Copy To copies the original;
+  original after a moment, Move / Trash / metadata edits are refused, Copy To copies the original;
+  Save copy, Detail and Open eyes on an iCloud-only photo each add one asset (the source asset's
+  modification date unchanged, the staging folder empty), the progress notice shows while the
+  original comes, and the new photo is listed next to its source;
   Settings → Photos Library backs up to a chosen folder, a second run writes nothing; the Mac
   PR 1 present-loop gate still holds.
 

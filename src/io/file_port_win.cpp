@@ -148,6 +148,8 @@ result<file_stat> stat_path(std::string_view utf8_path) {
   if (!::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) return err(status::io);
   file_stat out;
   out.is_directory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+  out.cloud_placeholder = (data.dwFileAttributes & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS |
+                                                     FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_OFFLINE)) != 0;
   out.size = (static_cast<std::uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
   out.mtime_unix = unix_from_filetime(data.ftLastWriteTime);
   const std::int64_t ticks = (static_cast<std::int64_t>(data.ftLastWriteTime.dwHighDateTime) << 32) |

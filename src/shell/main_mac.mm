@@ -556,6 +556,13 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
                      entry:(const mv::io::dir_entry&)entry
                     moment:(std::int64_t)moment;
 - (void)fetchPhotosOriginal:(const std::string&)key;
+// S0 (docs/plans/edit-refresh.md §5): an iCloud fetch's progress in the notice
+// (any fetch: the viewer's own, or a writer's through the media hook), and
+// its end. -photosAdded:source: lists a new library photo (a saved edit)
+// beside the one it was made from when that list is on screen.
+- (void)photosFetchProgress:(double)fraction;
+- (void)photosFetchEnded;
+- (void)photosAdded:(const std::string&)key source:(const std::string&)source;
 // docs/design/26 "Backup" (shell/photos_backup.h), from Settings.
 - (BOOL)startPhotosBackupTo:(const std::string&)destination;
 - (void)cancelPhotosBackup;
@@ -3256,6 +3263,13 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   std::uint64_t _photosResolveSeq;
   NSTimer* _photosFetchTimer;
   std::shared_ptr<std::atomic<bool>> _photosFetchCancel;
+  // S0: the last whole percent of an iCloud fetch the notice shows (it
+  // changes once a percent, not per report); the working-image build waiting
+  // for the original of a library item (its token, 0 none): the sliders say
+  // Preparing meanwhile, as for a RAW.
+  int _photosFetchPercent;
+  std::uint64_t _adjustAwaitingOriginal;
+  std::string _photosFetchingKey;  // the viewer's own fetch in flight ("" none)
   // A library listing is on a worker: a second Open Photos Library waits for it
   // rather than starting another (#420).
   BOOL _photosListing;
@@ -3962,13 +3976,41 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // downloads) is read-only; the folder starts the session empty.
   mv::shell::set_read_only_prefix(mv::shell::photos::cache_dir());
   // Owner 2026-11-04: Enhance, faces and Save copy read a library item's file
-  // and add what they make back to the library as a new photo.
+  // and add what they make back to the library as a new photo. S0: an
+  // original only iCloud has shows its progress in the notice while it comes
+  // (the job's cancel stops it), and the new photo is listed beside its
+  // source (Show, or the arrow, reaches it).
   mv::addon::media::set_photos_hooks(
-      [](const std::string& key) -> mv::result<std::string> {
-        MV_TRY(mv::shell::photos::resolved r, mv::shell::photos::resolve(key, /*want_original=*/true));
-        return r.path;
+      [](const std::string& key, const mv::job_context* ctx) -> mv::result<std::string> {
+        auto reported = std::make_shared<std::atomic<bool>>(false);
+        const mv::shell::photos::fetch_progress progress = [ctx, reported](double fraction) {
+          reported->store(true, std::memory_order_release);
+          dispatch_async(dispatch_get_main_queue(), ^{
+            [g_chrome_app photosFetchProgress:fraction];
+          });
+          return !(ctx && ctx->cancelled());
+        };
+        auto r = mv::shell::photos::resolve(key, /*want_original=*/true, nullptr, progress);
+        // Only a fetch from iCloud reports progress (PhotoKit's queue, before
+        // resolve returns); a file this Mac has says nothing.
+        if (reported->load(std::memory_order_acquire)) {
+          dispatch_async(dispatch_get_main_queue(), ^{
+            [g_chrome_app photosFetchEnded];
+          });
+        }
+        if (!r) return mv::err(r.error());
+        return std::move(r).value().path;
       },
-      [](const std::string& file) { return mv::shell::photos::add_photo(file); });
+      [](const std::string& file, const std::string& source) -> mv::result<std::string> {
+        auto key = mv::shell::photos::add_photo(file);
+        if (key) {
+          const std::string added = *key;
+          dispatch_async(dispatch_get_main_queue(), ^{
+            [g_chrome_app photosAdded:added source:source];
+          });
+        }
+        return key;
+      });
   _folder.set_virtual_items(std::string(mv::shell::photos::kKeyPrefix), [](const std::string& key) {
     return mv::shell::photos::thumb_jpeg(key, mv::image::kThumbLongEdge);
   });
@@ -8511,25 +8553,66 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   // still refused (it would save beside a library file).
   const bool library = mv::shell::photos::is_key(path);
   if (!library && [self refuseWriteTo:path]) return;
+  // S0: adding needs Photos access (read-write or add-only); asked here, on
+  // the click, when it was never asked.
+  if (library && !mv::shell::photos::can_add()) {
+    __weak MvLabApp* weakAsk = self;
+    const mv::edit::export_options again = options;
+    mv::shell::photos::request_add_access([weakAsk, again](bool granted) {
+      MvLabApp* strong = weakAsk;
+      if (!strong) return;
+      if (granted) {
+        [strong exportCurrentItem:again];
+      } else {
+        [strong noticeShow:std::string(mv::shell::photos::kAddRefusedNotice)];
+      }
+    });
+    return;
+  }
   const mv::edit::geometry g = _edits.export_geometry();
   const mv::edit::colour c = _edits.colour();
   const mv::edit::export_options opt = options;
   __weak MvLabApp* weakSelf = self;
-  _jobs.submit_at(mv::background_generation, [path, library, g, c, opt, weakSelf](const mv::job_context&) -> mv::status {
+  _jobs.submit_at(mv::background_generation, [path, library, g, c, opt,
+                                              weakSelf](const mv::job_context& ctx) -> mv::status {
     mv::result<std::string> out = mv::err(mv::status::io);
     if (library) {
-      auto file = mv::addon::media::readable_path(path);
-      if (file) out = mv::shell::run_export(*file, g, opt, c, mv::shell::photos::staging_dir());
-      if (out) out = mv::shell::photos::add_photo(*out);
+      // Read through the media hook (an iCloud original shows its progress),
+      // written to the staging folder, added, and the staged file removed.
+      out = mv::addon::media::save_copy_to_library(
+          path,
+          [&](const std::string& file, const std::string& dir) { return mv::shell::run_export(file, g, opt, c, dir); },
+          &ctx);
     } else {
+      // A cloud placeholder (iCloud Drive) comes down with this read: say so.
+      const auto st = mv::io::stat_path(path);
+      const bool fetching = st && st->cloud_placeholder;
+      if (fetching) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [weakSelf noticeShowUntilCleared:std::string(mv::shell::kCloudFetchNotice)];
+        });
+      }
       out = mv::shell::run_export(path, g, opt, c);
+      if (fetching) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          MvLabApp* strong = weakSelf;
+          if (strong && [strong noticeText] == mv::shell::kCloudFetchNotice) [strong noticeClear];
+        });
+      }
     }
     const bool ok = static_cast<bool>(out);
+    const mv::status why = ok ? mv::status::ok : out.error();
     dispatch_async(dispatch_get_main_queue(), ^{
-      if (!ok) NSBeep();
-      if (ok && library) [weakSelf noticeShow:"Saved to your Photos library as a new photo"];
+      if (!ok && library && why == mv::status::permission_denied) {
+        [weakSelf noticeShow:std::string(mv::shell::photos::kAddRefusedNotice)];
+      } else if (!ok) {
+        NSBeep();
+      }
+      // Where it went (S0): -photosAdded:source: lists it beside this photo
+      // and says so when this list holds it; otherwise this is the word.
+      if (ok && library) [weakSelf noticeShow:std::string(mv::shell::photos::kAddedNotice)];
     });
-    return ok ? mv::status::ok : out.error();
+    return why;
   });
 }
 
@@ -10178,8 +10261,22 @@ static double mv_wall_seconds() {
   _detailShown = {};
   ++_detailToken;  // a pass for the item left is dropped when it lands
   _lab.drop_working();
+  _adjustAwaitingOriginal = 0;
   if (_items.empty() || _index.current() >= _items.size()) return;
-  const std::string path = _items[_index.current()].path_utf8;
+  std::string path = _items[_index.current()].path_utf8;
+  if (mv::shell::photos::is_key(path)) {
+    // docs/design/26 + S0: a library item's file. docs/design/07 waits for the
+    // real data, as for a RAW: while only a preview is here the sliders say
+    // Preparing, the original comes from iCloud (its progress in the notice),
+    // and its arrival reopens the item, which builds again.
+    const mv::io::dir_entry& entry = _items[_index.current()];
+    path = [self fileForEntry:entry];
+    if (path.empty()) {
+      _adjustAwaitingOriginal = token;
+      if (!_photosFetchTimer) [self fetchPhotosOriginal:entry.path_utf8];
+      return;
+    }
+  }
   const std::uint64_t item = _itemId;
   const mv::generation gen = _adjustGen.load(std::memory_order_relaxed);
   std::atomic<mv::generation>* current = &_adjustGen;
@@ -10192,7 +10289,21 @@ static double mv_wall_seconds() {
     bool ok = false;
     bool from_raw = false;
     mv::status st = mv::status::ok;
+    // S0: an evicted iCloud Drive file comes down with this read; say so.
+    const auto stamp = mv::io::stat_path(path);
+    const bool fetching = stamp && stamp->cloud_placeholder;
+    if (fetching) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf noticeShowUntilCleared:std::string(mv::shell::kCloudFetchNotice)];
+      });
+    }
     auto bytes = mv::io::read_all(path);
+    if (fetching) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        MvLabApp* strong = weakSelf;
+        if (strong && [strong noticeText] == mv::shell::kCloudFetchNotice) [strong noticeClear];
+      });
+    }
     if (!bytes) {
       st = bytes.error();
     } else if (auto full = mv::image::decode_linear(*bytes, &ctx); !full) {
@@ -11898,24 +12009,100 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
 - (void)fetchPhotosOriginal:(const std::string&)key {
   _photosFetchTimer = nil;
   if (_items.empty() || _index.current() >= _items.size() || _items[_index.current()].path_utf8 != key) return;
+  // Already coming (the Edit pane asked too), and not stopped by a navigation.
+  if (_photosFetchingKey == key && _photosFetchCancel && !_photosFetchCancel->load(std::memory_order_acquire)) return;
   if (_photosFetchCancel) _photosFetchCancel->store(true, std::memory_order_release);
   auto cancel = std::make_shared<std::atomic<bool>>(false);
   _photosFetchCancel = cancel;
+  _photosFetchingKey = key;
   MvLabApp* __weak weakSelf = self;
   // Background generation: the download outlives a navigation; the cancel
   // flag, not the generation, is what stops it (and removes the part file).
+  // S0: its progress shows in the notice ("Downloading from iCloud… 40 %").
   _jobs.submit_at(mv::background_generation, [weakSelf, key, cancel](const mv::job_context&) -> mv::status {
-    auto got = mv::shell::photos::resolve(key, true, cancel.get());
-    if (!got) return got.error();
-    auto resolved = std::make_shared<mv::shell::photos::resolved>(std::move(got).value());
+    auto reported = std::make_shared<std::atomic<bool>>(false);
+    const mv::shell::photos::fetch_progress progress = [weakSelf, cancel, reported](double fraction) {
+      reported->store(true, std::memory_order_release);
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (!cancel->load(std::memory_order_acquire)) [weakSelf photosFetchProgress:fraction];
+      });
+      return true;  // `cancel` stops it
+    };
+    auto got = mv::shell::photos::resolve(key, true, cancel.get(), progress);
+    const mv::status st = got ? mv::status::ok : got.error();
+    auto resolved = std::make_shared<std::optional<mv::shell::photos::resolved>>();
+    if (got) *resolved = std::move(got).value();
+    const bool fetched = reported->load(std::memory_order_acquire);
     dispatch_async(dispatch_get_main_queue(), ^{
       MvLabApp* strongSelf = weakSelf;
-      if (!strongSelf || cancel->load(std::memory_order_acquire)) return;
-      strongSelf->_photosResolved[key] = *resolved;
-      if (strongSelf->_items.empty() || strongSelf->_index.current() >= strongSelf->_items.size()) return;
-      if (strongSelf->_items[strongSelf->_index.current()].path_utf8 != key) return;
+      if (!strongSelf) return;
+      if (strongSelf->_photosFetchingKey == key) strongSelf->_photosFetchingKey.clear();
+      if (fetched) [strongSelf photosFetchEnded];
+      if (cancel->load(std::memory_order_acquire)) return;
+      const bool here = !strongSelf->_items.empty() && strongSelf->_index.current() < strongSelf->_items.size() &&
+                        strongSelf->_items[strongSelf->_index.current()].path_utf8 == key;
+      if (!*resolved) {
+        // Offline, or iCloud refused: the preview stays; the sliders, which
+        // wait for the original, say they could not get it.
+        if (!here) return;
+        [strongSelf noticeShow:"The original could not be downloaded from iCloud. The picture shown is a preview."];
+        if (const std::uint64_t token = strongSelf->_adjustAwaitingOriginal; token != 0) {
+          strongSelf->_adjustAwaitingOriginal = 0;
+          [strongSelf workingLanded:token ok:false fromRaw:false working:nullptr];
+        }
+        return;
+      }
+      strongSelf->_photosResolved[key] = **resolved;
+      if (!here) return;
       strongSelf->_shownItem = 0;  // the bytes changed: reopen on the original
       [strongSelf selectIndex:strongSelf->_index.current()];
+    });
+    return st;
+  });
+}
+
+- (void)photosFetchProgress:(double)fraction {
+  const int pct = static_cast<int>(std::clamp(fraction, 0.0, 1.0) * 100.0);
+  const bool showing = [self noticeText].rfind(mv::shell::photos::kFetchNoticePrefix, 0) == 0;
+  if (showing && pct == _photosFetchPercent) return;
+  _photosFetchPercent = pct;
+  [self noticeShowUntilCleared:mv::shell::photos::fetch_notice(fraction)];
+}
+
+- (void)photosFetchEnded {
+  _photosFetchPercent = -1;
+  if ([self noticeText].rfind(mv::shell::photos::kFetchNoticePrefix, 0) == 0) [self noticeClear];
+}
+
+// S0: a saved edit of a library item is a new photo (the media hook's add).
+// When the list on screen holds the photo it was made from, it is listed
+// right after it, so the arrow (or Show) reaches it, and the notice says so.
+// Its name and stamp come from PhotoKit on a worker.
+- (void)photosAdded:(const std::string&)key source:(const std::string&)source {
+  if (!_listOpen || key.empty()) return;
+  if (std::none_of(_items.begin(), _items.end(), [&](const mv::io::dir_entry& e) { return e.path_utf8 == source; })) {
+    return;
+  }
+  mv::shell::folder_model* folder = &_folder;
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [weakSelf, folder, key, source](const mv::job_context&) -> mv::status {
+    const std::string one[] = {key};
+    auto described = mv::shell::photos::describe(std::span<const std::string>(one));
+    if (!described) return described.error();
+    if (described->empty() || !(*described)[0]) return mv::status::not_found;
+    mv::shell::folder_model::list_entry e;
+    e.path_utf8 = key;
+    e.is_virtual = true;
+    e.name_utf8 = (*described)[0]->name;
+    e.mtime_unix = (*described)[0]->mtime;
+    e.size = (*described)[0]->size;
+    auto entry = std::make_shared<mv::shell::folder_model::list_entry>(std::move(e));
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* strongSelf = weakSelf;
+      if (!strongSelf || !strongSelf->_listOpen) return;
+      if (folder->insert_virtual(source, std::move(*entry))) {
+        [strongSelf noticeShow:std::string(mv::shell::photos::kAddedBesideNotice)];
+      }
     });
     return mv::status::ok;
   });

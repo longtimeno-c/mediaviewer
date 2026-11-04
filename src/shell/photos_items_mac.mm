@@ -13,7 +13,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
+#include <memory>
 #include <mutex>
+#include <set>
 #include <unordered_map>
 
 #include "image/thumb.h"
@@ -278,7 +281,8 @@ NSURL* local_video_url(PHAsset* a) {
 // request), through a part file beside it: a cancel or a failure leaves
 // nothing in place. The chunked request rather than writeData...: it hands
 // back a request id the cancel can stop.
-expected stream_resource(PHAssetResource* res, NSURL* dst, const std::atomic<bool>* cancel) {
+expected stream_resource(PHAssetResource* res, NSURL* dst, const std::atomic<bool>* cancel,
+                         const fetch_progress* progress = nullptr) {
   if (!res || !dst) return err(status::invalid_arg);
   NSFileManager* fm = [NSFileManager defaultManager];
   NSURL* dir = dst.URLByDeletingLastPathComponent;
@@ -296,9 +300,16 @@ expected stream_resource(PHAssetResource* res, NSURL* dst, const std::atomic<boo
   __block PHAssetResourceDataRequestID request = PHInvalidAssetResourceDataRequestID;
   __block bool stopped = false;
   __block bool write_failed = false;
-  if (cancel) {
-    o.progressHandler = ^(double) {
-      if (cancel->load(std::memory_order_acquire) && !stopped) {
+  // S0: a progress listener that says stop is a cancel too.
+  auto halt = std::make_shared<std::atomic<bool>>(false);
+  auto halted = [cancel, halt] {
+    return halt->load(std::memory_order_acquire) || (cancel && cancel->load(std::memory_order_acquire));
+  };
+  if (cancel || (progress && *progress)) {
+    const fetch_progress report = progress ? *progress : fetch_progress{};
+    o.progressHandler = ^(double fraction) {
+      if (report && !report(fraction)) halt->store(true, std::memory_order_release);
+      if (halted() && !stopped) {
         stopped = true;
         [mgr cancelDataRequest:request];
       }
@@ -312,7 +323,7 @@ expected stream_resource(PHAssetResource* res, NSURL* dst, const std::atomic<boo
                            if (write_failed) return;
                            NSError* werr = nil;
                            if (![sink writeData:data error:&werr]) write_failed = true;
-                           if (cancel && cancel->load(std::memory_order_acquire) && !stopped) {
+                           if (halted() && !stopped) {
                              stopped = true;
                              [mgr cancelDataRequest:request];
                            }
@@ -324,9 +335,9 @@ expected stream_resource(PHAssetResource* res, NSURL* dst, const std::atomic<boo
   // No deadline: a 4K clip over a slow link takes what it takes; cancel stops it.
   dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
   [sink closeFile];
-  if (!ok || write_failed || (cancel && cancel->load(std::memory_order_acquire))) {
+  if (!ok || write_failed || halted()) {
     [fm removeItemAtURL:part error:nil];
-    return err(cancel && cancel->load() ? status::cancelled : status::io);
+    return err(halted() ? status::cancelled : status::io);
   }
   [fm removeItemAtURL:dst error:nil];
   if (![fm moveItemAtURL:part toURL:dst error:nil]) {
@@ -336,15 +347,46 @@ expected stream_resource(PHAssetResource* res, NSURL* dst, const std::atomic<boo
   return {};
 }
 
+// S0: the originals being fetched now, by destination. The viewer's own fetch
+// (the item on screen) and a writer's (Enhance, faces, Save copy reading the
+// same item) would otherwise stream into the same part file at once.
+struct fetches {
+  std::mutex m;
+  std::condition_variable cv;
+  std::set<std::string> busy;
+};
+fetches& in_flight() {
+  static fetches f;
+  return f;
+}
+
 // The original from iCloud, into `dir`, for viewing or copying out.
-result<std::string> download_original(PHAsset* a, NSURL* dir, const std::atomic<bool>* cancel) {
+result<std::string> download_original(PHAsset* a, NSURL* dir, const std::atomic<bool>* cancel,
+                                      const fetch_progress& progress) {
   PHAssetResource* res = original_resource(a);
   if (!res) return err(status::unsupported_format);
   NSString* file = res.originalFilename.length ? res.originalFilename : @"Original";
   NSURL* dst = [dir URLByAppendingPathComponent:file];
-  if ([[NSFileManager defaultManager] fileExistsAtPath:dst.path]) return utf8(dst.path);
-  if (auto streamed = stream_resource(res, dst, cancel); !streamed) return err(streamed.error());
-  return utf8(dst.path);
+  const std::string where = utf8(dst.path);
+  fetches& f = in_flight();
+  {
+    std::unique_lock lock(f.m);
+    // Another fetch of it: wait for its file (polling the cancel meanwhile).
+    while (f.busy.count(where) != 0) {
+      if (cancel && cancel->load(std::memory_order_acquire)) return err(status::cancelled);
+      f.cv.wait_for(lock, std::chrono::milliseconds(100));
+    }
+    if ([[NSFileManager defaultManager] fileExistsAtPath:dst.path]) return where;
+    f.busy.insert(where);
+  }
+  const expected streamed = stream_resource(res, dst, cancel, &progress);
+  {
+    const std::lock_guard lock(f.m);
+    f.busy.erase(where);
+  }
+  f.cv.notify_all();
+  if (!streamed) return err(streamed.error());
+  return where;
 }
 
 // The backup's view of an asset: its ORIGINAL files, by backup kind (0 the
@@ -448,7 +490,8 @@ result<std::vector<std::uint8_t>> thumb_jpeg(std::string_view key, std::uint32_t
   }
 }
 
-result<resolved> resolve(std::string_view key, bool want_original, const std::atomic<bool>* cancel) {
+result<resolved> resolve(std::string_view key, bool want_original, const std::atomic<bool>* cancel,
+                         const fetch_progress& progress) {
   if (!readable()) return err(status::permission_denied);
   @autoreleasepool {
     PHAsset* a = asset_for(key);
@@ -458,7 +501,7 @@ result<resolved> resolve(std::string_view key, bool want_original, const std::at
     if (local) return stamped(utf8(local.path), false, false);
     if (cancel && cancel->load(std::memory_order_acquire)) return err(status::cancelled);
     if (want_original) {
-      auto got = download_original(a, folder_for(a, key, @"icloud"), cancel);
+      auto got = download_original(a, folder_for(a, key, @"icloud"), cancel, progress);
       if (!got) return err(got.error());
       return stamped(std::move(got).value(), false, true);
     }
@@ -660,26 +703,56 @@ void clear_cache() noexcept {
   }
 }
 
+std::string fetch_notice(double fraction) {
+  std::string text = std::string(kFetchNoticePrefix) + "\u2026";
+  if (fraction > 0.0) {
+    const int pct = static_cast<int>(std::clamp(fraction, 0.0, 1.0) * 100.0);
+    text += " " + std::to_string(pct) + " %";
+  }
+  return text;
+}
+
+bool can_add() noexcept {
+  if (readable()) return true;
+  const PHAuthorizationStatus s = [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelAddOnly];
+  return s == PHAuthorizationStatusAuthorized || s == PHAuthorizationStatusLimited;
+}
+
+void request_add_access(std::function<void(bool granted)> done) {
+  if (can_add() ||
+      [PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelAddOnly] != PHAuthorizationStatusNotDetermined) {
+    const bool granted = can_add();
+    if (done) done(granted);
+    return;
+  }
+  auto cb = std::make_shared<std::function<void(bool)>>(std::move(done));
+  [PHPhotoLibrary requestAuthorizationForAccessLevel:PHAccessLevelAddOnly
+                                             handler:^(PHAuthorizationStatus) {
+                                               dispatch_async(dispatch_get_main_queue(), ^{
+                                                 if (*cb) (*cb)(can_add());
+                                               });
+                                             }];
+}
+
 result<std::string> add_photo(std::string_view file) {
-  if (!readable()) return err(status::permission_denied);
   @autoreleasepool {
     NSString* path = [[NSString alloc] initWithBytes:file.data() length:file.size() encoding:NSUTF8StringEncoding];
     if (!path) return err(status::invalid_arg);
     NSURL* url = [NSURL fileURLWithPath:path];
+    if (!can_add()) {
+      [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+      return err(status::permission_denied);
+    }
     NSError* error = nil;
+    __block NSString* created = nil;
     const BOOL ok = [[PHPhotoLibrary sharedPhotoLibrary] performChangesAndWait:^{
-      (void)[PHAssetChangeRequest creationRequestForAssetFromImageAtFileURL:url];
+      PHAssetChangeRequest* req = [PHAssetChangeRequest creationRequestForAssetFromImageAtFileURL:url];
+      created = req.placeholderForCreatedAsset.localIdentifier;
     } error:&error];
     [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
-    if (!ok) return err(status::io);
-    return std::string(url.lastPathComponent.UTF8String ?: "");
+    if (!ok || created.length == 0) return err(status::io);
+    return std::string(kKeyPrefix) + utf8(created);
   }
-}
-
-std::string staging_dir() {
-  NSString* dir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"MediaViewer Saves"];
-  [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-  return std::string(dir.UTF8String) + "/";
 }
 
 }  // namespace mv::shell::photos

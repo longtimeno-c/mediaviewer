@@ -39,7 +39,12 @@ std::vector<std::uint8_t> head_of(const std::string& path) {
   return head;
 }
 
+bool library_key(const std::string& path) { return path.rfind("photos:", 0) == 0; }
+
+// A Photos-library item ("photos:<id>", docs/design/26) has no file name to
+// show, and its key is never shown (rule 6).
 std::string name_of(const std::string& path) {
+  if (library_key(path)) return "Photo in your Photos library";
   const std::size_t slash = path.find_last_of("/\\");
   return slash == std::string::npos ? path : path.substr(slash + 1);
 }
@@ -313,7 +318,7 @@ void engine::sheet_opened(std::uint64_t generation, const std::string& request_p
   // add-on can read: the host's still rows resolve it, so it is a photo here
   // (owner 2026-11-04: edits of library photos). A library video fails at
   // its read with the photo's message.
-  const bool library = path.rfind("photos:", 0) == 0;
+  const bool library = library_key(path);
   const item_kind item = path.empty() ? item_kind::unknown : library ? item_kind::still : sniff(head_of(path));
   media_facts facts;
   if ((item == item_kind::media || item == item_kind::audio) && port_.probe) facts = port_.probe(path);
@@ -495,7 +500,11 @@ void engine::run() {
     std::lock_guard lock(m_);
     running_ = false;
     progress_ = -1;
-    status_ = ok ? "Saved as " + output + "." : message;
+    // S0: a library photo's result is a new photo in the library (the host
+    // lists it beside the one it was made from).
+    status_ = !ok                  ? message
+              : library_key(output) ? std::string("Added to your Photos library as a new photo.")
+                                    : "Saved as " + output + ".";
     post_sheet_locked();
   };
   run->start(std::move(r), std::move(ev));

@@ -691,15 +691,15 @@ TEST_CASE("enhance: a Photos-library item is read through the host and saved int
   mv::test::write_bytes(original, sideways_jpeg(48, 32));
   std::string asked, added;
   mv::addon::media::set_photos_hooks(
-      [&](const std::string& key) -> mv::result<std::string> {
+      [&](const std::string& key, const mv::job_context*) -> mv::result<std::string> {
         asked = key;
         return original.string();
       },
-      [&](const std::string& file) -> mv::result<std::string> {
+      [&](const std::string& file, const std::string& source) -> mv::result<std::string> {
         added = file;
+        CHECK(source == "photos:ABC-123/L0/001");
         CHECK(fs::exists(fs::path(file)));  // staged until the library has it
-        fs::remove(fs::path(file));
-        return std::string("IMG_0412-enhance.jpg");
+        return std::string("photos:NEW-456/L0/001");  // the new photo's key
       });
   const auto pic = mv::addon::media::full_still("photos:ABC-123/L0/001");
   REQUIRE(pic);
@@ -711,8 +711,10 @@ TEST_CASE("enhance: a Photos-library item is read through the host and saved int
   out.rgb = pic->rgb;
   const auto written = mv::addon::media::write_still("photos:ABC-123/L0/001", out, "enhance");
   REQUIRE(written);
-  CHECK(written.value() == "IMG_0412-enhance.jpg");
+  CHECK(written.value() == "photos:NEW-456/L0/001");
   CHECK(added.find("MediaViewer Saves") != std::string::npos);
+  CHECK(fs::path(added).filename() == "IMG_0412-enhance.jpg");
+  CHECK_FALSE(fs::exists(fs::path(added)));  // the staged file is gone once added
   CHECK(added.find(".photoslibrary") == std::string::npos);
   std::size_t files = 0;
   for (const auto& e : fs::directory_iterator(library)) files += e.is_regular_file() ? 1 : 0;
@@ -855,6 +857,234 @@ TEST_CASE("eyes: a shut-eyed photo becomes a new file with a neighbour's open ey
   CHECK(n->fixed == 0);
   CHECK(n->written.empty());
   CHECK_FALSE(mv::addon::media::open_closed_eyes(utf8(shut), "not json"));
+}
+
+// S0 (docs/plans/edit-refresh.md §5): the writer audit. Every writer of a
+// Photos-library item's result (Enhance's Detail, Remove and Extend through
+// the host table; Open closed eyes; Improve faces; Save copy) reads the item
+// through the resolve hook, stages its file outside the library, calls add
+// exactly once with the source's key, and leaves nothing beside the source,
+// whose bytes and stamp stay as they were; the staging folder is empty after.
+namespace {
+
+struct inpaint_grey final : inpaint_filler {
+  std::uint32_t side() const noexcept override { return 64; }
+  mv::result<rgb8> fill(const rgb8& image, const mask8& mask) override {
+    rgb8 out = image;
+    for (std::size_t i = 0; i < mask.a.size(); ++i) {
+      if (mask.a[i] == 255) out.rgb[i * 3] = out.rgb[i * 3 + 1] = out.rgb[i * 3 + 2] = 128;
+    }
+    return out;
+  }
+};
+
+void run_request(run_port port, job_request req, outcome& out) {
+  job_runner r(std::move(port));
+  REQUIRE(r.check(req).empty());
+  job_events ev;
+  ev.done = [&](bool ok, const std::string& name, const std::string& message) {
+    std::lock_guard lock(out.m);
+    out.done = true;
+    out.ok = ok;
+    out.name = name;
+    out.message = message;
+  };
+  r.start(std::move(req), std::move(ev));
+  for (int i = 0; i < 6000; ++i) {
+    {
+      std::lock_guard lock(out.m);
+      if (out.done) break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  std::lock_guard lock(out.m);
+  REQUIRE(out.done);
+}
+
+}  // namespace
+
+TEST_CASE("photos: every writer of a library photo adds it once and writes nothing beside it",
+          "[enhance][photos][audit]") {
+  scratch_dir s("photos_audit");
+  const fs::path library = s.root() / "Photos Library.photoslibrary" / "originals";
+  fs::create_directories(library);
+  const fs::path shut = library / "IMG_0101.JPG", open = library / "IMG_0102.JPG";
+  mv::test::write_bytes(shut, face_jpeg(400, 300, 200, 150, 120, false));
+  mv::test::write_bytes(open, face_jpeg(400, 300, 210, 145, 124, true));
+  const auto shut_bytes = mv::test::read_bytes(shut), open_bytes = mv::test::read_bytes(open);
+  const auto shut_stamp = fs::last_write_time(shut);
+  const std::string kShut = "photos:SHUT-1/L0/001", kOpen = "photos:OPEN-2/L0/001";
+  const auto staging = mv::addon::media::staging_dir();
+  REQUIRE(staging);
+  const fs::path staged_dir = fs::path(staging.value()).parent_path();
+
+  struct calls {
+    std::mutex m;
+    std::vector<std::string> resolved;
+    std::vector<std::pair<std::string, std::string>> added;  // staged file name, source
+    bool staged_ok = true;  // every file handed over existed, in the staging folder
+  } c;
+  mv::addon::media::set_photos_hooks(
+      [&](const std::string& key, const mv::job_context*) -> mv::result<std::string> {
+        std::lock_guard lock(c.m);
+        c.resolved.push_back(key);
+        if (key == kShut) return utf8(shut);
+        if (key == kOpen) return utf8(open);
+        return mv::err(mv::status::not_found);
+      },
+      [&](const std::string& file, const std::string& source) -> mv::result<std::string> {
+        // The runner's own thread for Enhance: no CHECK here, a flag instead.
+        const fs::path f(file);
+        const bool ok = fs::exists(f) && f.parent_path() == staged_dir &&  // staged outside the library
+                        file.find(".photoslibrary") == std::string::npos;
+        std::lock_guard lock(c.m);
+        c.staged_ok = c.staged_ok && ok;
+        c.added.emplace_back(utf8(f.filename()), source);
+        return "photos:NEW-" + std::to_string(c.added.size()) + "/L0/001";
+      });
+
+  // After each writer: one more add, from the shut photo's key; the library
+  // holds its two originals, unchanged; nothing of ours is left staged.
+  std::size_t adds = 0;
+  auto audit = [&](const char* writer, const std::string& suffix) {
+    INFO(writer);
+    std::lock_guard lock(c.m);
+    REQUIRE(c.added.size() == adds + 1);
+    CHECK(c.staged_ok);
+    CHECK(c.added.back().second == kShut);
+    CHECK(c.added.back().first.rfind("IMG_0101-" + suffix, 0) == 0);
+    adds = c.added.size();
+    std::size_t files = 0;
+    for (const auto& e : fs::directory_iterator(library)) files += e.is_regular_file() ? 1 : 0;
+    CHECK(files == 2);
+    CHECK(mv::test::read_bytes(shut) == shut_bytes);
+    CHECK(mv::test::read_bytes(open) == open_bytes);
+    CHECK((fs::last_write_time(shut) == shut_stamp));
+    for (const auto& e : fs::directory_iterator(staged_dir)) {
+      CHECK(utf8(e.path().filename()).rfind("IMG_0101", 0) != 0);
+    }
+  };
+
+  // Enhance: Detail, Remove and Extend, through the host table's still rows.
+  mv::addon::host_table table(still_services());
+  run_port port = run_port_of(table.api(), "");
+  port.load_tiles = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<tile_model>> {
+    return std::unique_ptr<tile_model>(new nearest());
+  };
+  port.load_inpaint = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<inpaint_filler>> {
+    return std::unique_ptr<inpaint_filler>(new inpaint_grey);
+  };
+  port.still_mask = [](const std::string& path) { return mv::addon::media::still_mask(path); };
+  {
+    const model_spec spec = still_spec();
+    outcome o;
+    run_photo(port, kShut, spec, o);
+    INFO(o.message);
+    REQUIRE(o.ok);
+    CHECK(o.name.rfind("photos:NEW-", 0) == 0);  // the engine says "Added to your Photos library"
+    audit("detail", "enhance");
+  }
+  model_spec remove_spec;
+  remove_spec.kind = model_kind::remove;
+  remove_spec.run_bytes = 1;
+  {
+    mv::addon::media::set_still_mask(kShut, {0.5f, 0.5f, 0.05f});
+    job_request req;
+    req.path = kShut;
+    req.item = item_kind::still;
+    job_request::part p;
+    p.kind = model_kind::remove;
+    p.spec = &remove_spec;
+    p.models_dir = "unused";
+    req.parts.push_back(p);
+    outcome o;
+    run_request(port, req, o);
+    INFO(o.message);
+    REQUIRE(o.ok);
+    audit("remove", "enhance");
+    mv::addon::media::set_still_mask(kShut, {});
+  }
+  {
+    job_request req;
+    req.path = kShut;
+    req.item = item_kind::still;
+    job_request::part p;
+    p.kind = model_kind::remove;
+    p.spec = &remove_spec;
+    p.models_dir = "unused";
+    p.values["mode"] = *mv::json::parse("\"extend\"");
+    p.values["extend"] = *mv::json::parse("\"wider\"");
+    req.parts.push_back(p);
+    outcome o;
+    run_request(port, req, o);
+    INFO(o.message);
+    REQUIRE(o.ok);
+    audit("extend", "enhance");
+  }
+
+  // Open closed eyes and Improve faces: the target and the donor both by key.
+  auto quoted = [](const std::string& v) {
+    mv::json::writer w;
+    w.string(v);
+    return w.take();
+  };
+  {
+    const std::string pack = std::string("{\"faces\":[{\"lm\":") + lm_json(400, 300, 200, 150, 120) +
+                             ",\"donors\":[{\"path\":" + quoted(kOpen) + ",\"lm\":" + lm_json(400, 300, 210, 145, 124) +
+                             "}]}]}";
+    auto r = mv::addon::media::open_closed_eyes(kShut, pack);
+    REQUIRE(r);
+    CHECK(r->fixed == 1);
+    CHECK(r->written.rfind("photos:NEW-", 0) == 0);
+    CHECK(mv::addon::media::eyes_note(mv::status::ok, r).find("added to your Photos library") != std::string::npos);
+    audit("eyes", "eyes");
+  }
+  {
+    const std::string pack = std::string("{\"faces\":[{\"quality\":0.2,\"lm\":") + lm_json(400, 300, 200, 150, 120) +
+                             ",\"donors\":[{\"path\":" + quoted(kOpen) + ",\"quality\":0.9,\"lm\":" +
+                             lm_json(400, 300, 210, 145, 124) + "}]}]}";
+    auto r = mv::addon::media::improve_faces(kShut, pack);
+    REQUIRE(r);
+    REQUIRE(r->fixed == 1);
+    CHECK(r->written.rfind("photos:NEW-", 0) == 0);
+    audit("faces", "faces");
+  }
+
+  // Save copy (the hosts' ⌘S on a library item): the item's file, exported
+  // into the staging folder by the export (here a stand-in), then added.
+  {
+    auto r = mv::addon::media::save_copy_to_library(
+        kShut, [&](const std::string& file, const std::string& dir) -> mv::result<std::string> {
+          CHECK(file == utf8(shut));
+          const std::string out = dir + "IMG_0101-edit.jpg";
+          mv::test::write_bytes(fs::path(out), mv::test::read_bytes(fs::path(file)));
+          return out;
+        });
+    REQUIRE(r);
+    CHECK(r.value().rfind("photos:NEW-", 0) == 0);
+    audit("save copy", "edit");
+  }
+  {
+    std::lock_guard lock(c.m);
+    CHECK(c.added.size() == 6);
+    for (const std::string& k : c.resolved) CHECK((k == kShut || k == kOpen));
+  }
+
+  // A refusal (no access): nothing added, nothing left staged, the reason kept.
+  mv::addon::media::set_photos_hooks(
+      [&](const std::string&, const mv::job_context*) -> mv::result<std::string> { return utf8(shut); },
+      [](const std::string&, const std::string&) -> mv::result<std::string> {
+        return mv::err(mv::status::permission_denied);
+      });
+  mv::addon::rgb_image px;
+  px.width = 8;
+  px.height = 8;
+  px.rgb.assign(8 * 8 * 3, 100);
+  auto refused = mv::addon::media::write_still(kShut, px, "enhance");
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error() == mv::status::permission_denied);
+  for (const auto& e : fs::directory_iterator(staged_dir)) CHECK(utf8(e.path().filename()).rfind("IMG_0101", 0) != 0);
+  mv::addon::media::set_photos_hooks(nullptr, nullptr);
 }
 
 // A 12-megapixel photo with the real model, to twice the size, timed.

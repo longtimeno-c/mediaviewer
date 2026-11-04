@@ -436,6 +436,12 @@ width_class class_of(float w);
 
 ## 5. iCloud / Photos-library results
 
+**S0 built (2026-11-04):** items 1–5 below, as [docs/design/26](../design/26-photos-library.md)
+"Edits of a library photo" describes. Show is the arrow and the notice until S5's result row: the
+new photo is listed next to its source (`folder_model::insert_virtual`); S5's **Show** selects that
+key. The hydration notice on Windows is the title's status line (no chrome change). Not verified
+here: the real-library walk-through and the Windows placeholder run (no Windows build on the Mac).
+
 `d7e8929f` made `addon_media` the single sink: `readable_path`, `full_still` and `write_still` all go through the `resolve` / `add` hooks. What remains:
 
 1. **Navigate to the new photo.** `photos_add_fn` returns the new item's key: `"photos:" + placeholderForCreatedAsset.localIdentifier`, read inside `performChangesAndWait` (`photos_items_mac.mm`). The host refreshes the virtual list and the result row's **Show** selects it. Notice: "Added to your Photos library".

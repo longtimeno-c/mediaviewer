@@ -278,6 +278,37 @@ TEST_CASE("the I/O jobs rotate in place and export beside the original", "[shell
   CHECK(lo->height == 32);
 }
 
+// S0 (docs/plans/edit-refresh.md §5): Save copy of a Photos-library item
+// exports the library's file into the staging folder (then hands it to the
+// library): nothing is written beside the source, which stays as it was.
+TEST_CASE("Save copy into another folder writes nothing beside the source", "[shell][edit][io][photos]") {
+  temp_dir library, staging;
+  const fs::path p = library.path / "IMG_0412.JPG";
+  const auto bytes = jpeg_bytes(64, 48);
+  {
+    std::ofstream f(p, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  }
+  const auto stamp = fs::last_write_time(p);
+  mv::edit::geometry g;
+  g.crop = {0.0f, 0.0f, 0.5f, 1.0f};
+  const std::string out_dir = staging.path.string() + "/";
+  auto a = mv::shell::run_export(p.string(), g, {}, {}, out_dir);
+  REQUIRE(a);
+  CHECK(fs::path(*a).parent_path() == staging.path);
+  CHECK(fs::path(*a).filename() == "IMG_0412-edit.jpg");
+  auto b = mv::shell::run_export(p.string(), g, {}, {}, out_dir);  // the next free name, there
+  REQUIRE(b);
+  CHECK(fs::path(*b).filename() == "IMG_0412-edit (2).jpg");
+  std::size_t beside = 0;
+  for (const auto& e : fs::directory_iterator(library.path)) beside += e.is_regular_file() ? 1 : 0;
+  CHECK(beside == 1);  // only the source
+  CHECK((fs::last_write_time(p) == stamp));
+  std::ifstream in(p, std::ios::binary);
+  const std::vector<std::uint8_t> now{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  CHECK(now == bytes);
+}
+
 TEST_CASE("a flattened copy is a PNG in the app's own folder, a few at a time", "[shell][edit][io]") {
   temp_dir src;
   temp_dir clip;
