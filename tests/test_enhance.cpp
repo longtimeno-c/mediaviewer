@@ -1906,6 +1906,23 @@ TEST_CASE("remove: LaMa through ONNX Runtime", "[.remove-model]") {
   CHECK(std::abs(in_mean - ring_mean) < 30.0);
   CHECK(far_changed == 0);
   if (const char* keep = std::getenv("MV_REMOVE_OUT")) write_bytes(std::string(keep), out.rgb);
+
+  // Extend (owner 2026-11-04): the photo grown a tenth all round, the real
+  // model filling the margins tile by tile; MV_EXTEND_OUT keeps it (raw RGB,
+  // the size printed).
+  const extend_margins em = extend_preset("all", full.width, full.height);
+  rgb8 bigger;
+  mask8 gmask;
+  extend_canvas(full, em, bigger, gmask);
+  const auto e0 = std::chrono::steady_clock::now();
+  REQUIRE(extend_fill(bigger, gmask, extend_tiles(bigger.width, bigger.height, em), **model, nullptr));
+  for (std::uint32_t y = 0; y < full.height; ++y) {
+    std::copy_n(full.rgb.data() + std::size_t{y} * full.width * 3, std::size_t{full.width} * 3,
+                bigger.rgb.data() + (std::size_t{y + em.top} * bigger.width + em.left) * 3);
+  }
+  std::printf("extend: %ux%u -> %ux%u in %.2f s on CPU\n", full.width, full.height, bigger.width, bigger.height,
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - e0).count());
+  if (const char* keep = std::getenv("MV_EXTEND_OUT")) write_bytes(std::string(keep), bigger.rgb);
 }
 
 TEST_CASE("restyle: InstructPix2Pix through ONNX Runtime", "[.restyle-model]") {

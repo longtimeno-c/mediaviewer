@@ -741,34 +741,19 @@ void job_runner::run_extend(job_request r, job_events ev) {
   extend_canvas(photo, m, out, mask);
   const preview_image before = shrink(photo.rgb, photo.width, photo.height, kPreviewEdge);
   if (ev.preview) ev.preview(before, {});
-  photo = rgb8{};
+  const rgb8 original = std::move(photo);
   auto model = port_.load_inpaint(*part.spec, part.models_dir);
   if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));
-  const std::uint32_t side = (*model)->side();
   const std::vector<pixel_box> tiles = extend_tiles(out.width, out.height, m);
-  for (std::size_t i = 0; i < tiles.size(); ++i) {
-    if (cancel_.load()) return fail(why(status::cancelled));
-    const pixel_box& box = tiles[i];
-    // Only a tile with something still to fill runs the model.
-    bool any = false;
-    for (std::uint32_t y = box.y; y < box.y + box.height && !any; ++y) {
-      for (std::uint32_t x = box.x; x < box.x + box.width; ++x) {
-        if (mask.a[std::size_t{y} * mask.width + x] > 127) {
-          any = true;
-          break;
-        }
-      }
-    }
-    if (!any) continue;
-    auto filled = (*model)->fill(resize_rgb(crop_rgb(out, box), side, side), crop_mask(mask, box, side, side));
-    if (!filled) return fail(why(filled.error()));
-    paste_back(out, box, resize_rgb(*filled, box.width, box.height), mask, 2);
-    // What this tile filled is photo to the next one.
-    for (std::uint32_t y = box.y; y < box.y + box.height; ++y) {
-      std::fill_n(mask.a.begin() + static_cast<std::ptrdiff_t>(std::size_t{y} * mask.width + box.x), box.width,
-                  std::uint8_t{0});
-    }
-    if (ev.progress) ev.progress(0.1 + 0.85 * static_cast<double>(i + 1) / tiles.size());
+  const expected filled = extend_fill(out, mask, tiles, **model, [&](std::size_t done, std::size_t total) {
+    if (ev.progress) ev.progress(0.1 + 0.85 * static_cast<double>(done) / std::max<std::size_t>(total, 1));
+    return !cancel_.load();
+  });
+  if (!filled) return fail(why(filled.error()));
+  // The photo, exactly as it was, in the middle.
+  for (std::uint32_t y = 0; y < original.height; ++y) {
+    std::copy_n(original.rgb.data() + std::size_t{y} * original.width * 3, std::size_t{original.width} * 3,
+                out.rgb.data() + (std::size_t{y + m.top} * out.width + m.left) * 3);
   }
   if (ev.preview) ev.preview(before, shrink(out.rgb, out.width, out.height, kPreviewEdge));
   run_port::still still;

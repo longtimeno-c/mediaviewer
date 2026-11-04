@@ -204,10 +204,18 @@ void extend_canvas(const rgb8& photo, const extend_margins& m, rgb8& out, mask8&
   mask.width = out.width;
   mask.height = out.height;
   mask.a.assign(std::size_t{out.width} * out.height, 255);
+  // The margins start as the photo mirrored at its edge (texture for the
+  // model to continue; a stretched edge pixel gave streaks, 2026-11-04).
+  const auto mirror = [](std::int64_t v, std::uint32_t n) {
+    const std::int64_t period = 2 * static_cast<std::int64_t>(n);
+    std::int64_t r = ((v % period) + period) % period;
+    if (r >= n) r = period - 1 - r;
+    return static_cast<std::uint32_t>(r);
+  };
   for (std::uint32_t y = 0; y < out.height; ++y) {
-    const std::uint32_t sy = std::min(photo.height - 1, y < m.top ? 0u : y - m.top);
+    const std::uint32_t sy = mirror(static_cast<std::int64_t>(y) - m.top, photo.height);
     for (std::uint32_t x = 0; x < out.width; ++x) {
-      const std::uint32_t sx = std::min(photo.width - 1, x < m.left ? 0u : x - m.left);
+      const std::uint32_t sx = mirror(static_cast<std::int64_t>(x) - m.left, photo.width);
       const std::uint8_t* s = photo.rgb.data() + (std::size_t{sy} * photo.width + sx) * 3;
       std::uint8_t* d = out.rgb.data() + (std::size_t{y} * out.width + x) * 3;
       d[0] = s[0], d[1] = s[1], d[2] = s[2];
@@ -222,9 +230,9 @@ std::vector<pixel_box> extend_tiles(std::uint32_t w, std::uint32_t h, const exte
   const std::uint32_t shorter = std::min(w, h);
   // A tile reaches as far into the photo as the margin is deep (context), at
   // least 256 and at most the picture's shorter side.
-  const auto side_for = [&](std::uint32_t margin) { return std::clamp(margin * 2 + 64, 256u, shorter); };
+  const auto side_for = [&](std::uint32_t margin) { return std::clamp(std::max(margin * 3, 512u), 256u, shorter); };
   const auto along = [&](std::uint32_t length, std::uint32_t tile, auto&& place) {
-    const std::uint32_t step = std::max(1u, tile * 3 / 4);  // a quarter overlapping
+    const std::uint32_t step = std::max(1u, tile / 2);  // half overlapping: every pixel in two tiles
     for (std::uint32_t at = 0;; at += step) {
       const std::uint32_t start = std::min(at, length > tile ? length - tile : 0u);
       place(start);
@@ -248,6 +256,39 @@ std::vector<pixel_box> extend_tiles(std::uint32_t w, std::uint32_t h, const exte
     along(w, t, [&](std::uint32_t x) { out.push_back({x, h - t, std::min(t, w - x), t}); });
   }
   return out;
+}
+
+expected extend_fill(rgb8& canvas, const mask8& mask, const std::vector<pixel_box>& tiles, inpaint_filler& model,
+                     const std::function<bool(std::size_t, std::size_t)>& progress) {
+  const std::uint32_t w = canvas.width, h = canvas.height, side = model.side();
+  std::vector<float> sum(std::size_t{w} * h * 3, 0.0f), weight(std::size_t{w} * h, 0.0f);
+  for (std::size_t i = 0; i < tiles.size(); ++i) {
+    if (progress && !progress(i, tiles.size())) return err(status::cancelled);
+    const pixel_box& b = tiles[i];
+    MV_TRY(rgb8 filled, model.fill(resize_rgb(crop_rgb(canvas, b), side, side), crop_mask(mask, b, side, side)));
+    const rgb8 back = resize_rgb(filled, b.width, b.height);
+    for (std::uint32_t y = 0; y < b.height; ++y) {
+      // A tent across the tile, never 0 inside it (a tile at the picture's
+      // edge is the only one there).
+      const float wy = (std::min(y, b.height - 1 - y) + 1.0f) / (b.height * 0.5f + 1.0f);
+      for (std::uint32_t x = 0; x < b.width; ++x) {
+        const std::size_t at = std::size_t{b.y + y} * w + b.x + x;
+        if (mask.a[at] <= 127) continue;
+        const float wt = wy * (std::min(x, b.width - 1 - x) + 1.0f) / (b.width * 0.5f + 1.0f);
+        const std::uint8_t* f = back.rgb.data() + (std::size_t{y} * b.width + x) * 3;
+        for (int c = 0; c < 3; ++c) sum[at * 3 + c] += wt * f[c];
+        weight[at] += wt;
+      }
+    }
+  }
+  for (std::size_t at = 0; at < weight.size(); ++at) {
+    if (mask.a[at] <= 127 || weight[at] <= 0.0f) continue;
+    for (int c = 0; c < 3; ++c) {
+      canvas.rgb[at * 3 + c] = static_cast<std::uint8_t>(std::clamp(sum[at * 3 + c] / weight[at] + 0.5f, 0.0f, 255.0f));
+    }
+  }
+  if (progress) (void)progress(tiles.size(), tiles.size());
+  return {};
 }
 
 struct inpaint_model::impl {

@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -89,6 +90,14 @@ class inpaint_filler {
   // `image` and `mask` are side x side.
   [[nodiscard]] virtual result<rgb8> fill(const rgb8& image, const mask8& mask) = 0;
 };
+
+// The margins of `canvas` (where `mask` is set) filled through `tiles`: each
+// tile filled at the model's side against the photo only, and every margin
+// pixel the weighted mean of the tiles over it (weights highest at a tile's
+// middle), so neighbouring tiles fade into each other with no seam. The
+// photo's own pixels are not touched. `progress(done, total)` false cancels.
+[[nodiscard]] expected extend_fill(rgb8& canvas, const mask8& mask, const std::vector<pixel_box>& tiles,
+                                   inpaint_filler& model, const std::function<bool(std::size_t, std::size_t)>& progress);
 
 class inpaint_model final : public inpaint_filler {
  public:
