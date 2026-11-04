@@ -355,8 +355,11 @@ Extend Edges. Windows: the same in `main.cpp` (decoupled from the Colour pane's 
 `SC_KEYMENU` swallowed. The S2 Flyout wand was already built. The Adjust pane's dead size sliders
 are gone (the size is the bar's). Not built here: the crop "Discard 3 strokes?" question in the bar
 (crop is refused while a tool is armed; with the tool down a crop still clears strokes silently),
-the brush's tint texture and the 64-stroke cap (S4a), Faces and Extend as canvas tools (S8, S6),
-the Windows ring re-dashing on Alt before the next move (the Mac's `flagsChanged:` twin). Not run
+the brush's tint texture and the 64-stroke cap (S4a), Faces and Extend as canvas tools (S8, S6).
+S3 review: the Windows ring re-dashes on Alt at once (`handle_app_key`, the Mac's `flagsChanged:`
+twin), `?` lists browse under tool mode on Windows too, a red-eye eyes fetch that lands for a photo
+left behind reads the one on screen, the Windows bar refreshes on every edit publish, and
+`Ctrl/⌘+Z` with the brush armed and no stroke left is the edit's own undo. Not run
 here: the app on either host, both PR 1 gates, the 0-presents check with a tool armed; the Windows
 native C++ is not compiled (C# compiles).
 

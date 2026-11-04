@@ -1909,6 +1909,15 @@ TEST_CASE("tool mode: sizes, never rotates or trashes, walks only when nothing i
   // A held key says why once, not per repeat.
   CHECK_FALSE(r.on_key(rep(char_key('D')), s).blocked);
   s.tool_pending = false;
+  // A walk held from before a stroke landed stops once strokes are pending.
+  CHECK(r.on_key(down(char_key('D')), s).command == command_id::next);
+  CHECK(r.on_key(rep(char_key('D')), s).command == command_id::next);
+  s.tool_pending = true;
+  const route held_walk = r.on_key(rep(char_key('D')), s);
+  CHECK(held_walk.command == command_id::none);
+  CHECK(held_walk.handled);
+  (void)r.on_key(up(char_key('D')), s);
+  s.tool_pending = false;
 
   // Space pans (momentary), and is never next.
   const route pan = r.on_key(down(key::space), s);

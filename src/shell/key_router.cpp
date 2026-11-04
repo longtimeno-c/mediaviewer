@@ -231,6 +231,11 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
   if (e.repeat) {
     if (held* h = find_held(e.k); h && !h->momentary && h->hold != command_id::none) {
       h->repeated = true;
+      // S3: a walk held from before a stroke landed stops once strokes are
+      // pending (the refusal was said at the press that started it, if any).
+      if (resolve_mode(s) == mode::tool && blocked_in_tool(h->hold, s.tool_pending)) {
+        return {command_id::none, back_target::none, true};
+      }
       return {h->hold, back_target::none, true};
     }
   }

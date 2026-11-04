@@ -485,7 +485,7 @@ mode **tool**; everything else is the browse row underneath, minus what `blocked
 |---|---|---|
 | `B` | browse, tool | **Remove brush** (`tool_brush`): opens Edit on the Enhance tab with the brush armed (owner call D). `Ctrl+B` stays the clip split |
 | `[` `]` (repeat) | tool | **Smaller / Bigger brush** (`tool_smaller` / `tool_bigger`): the ring ×1/1.2 / ×1.2, 4–400 px on screen, with a fading "48 px" beside it. Never rotates in this mode |
-| `Ctrl+Z` / `Ctrl+Shift+Z` | tool | **Undo / Redo stroke** (`tool_undo` / `tool_redo`): one stroke; with red-eye, one fix (the edit stack's undo) |
+| `Ctrl+Z` / `Ctrl+Shift+Z` | tool | **Undo / Redo stroke** (`tool_undo` / `tool_redo`): one stroke; with red-eye, one fix (the edit stack's undo); with the brush and no stroke left, the edit's own undo |
 | `Backspace`, `Delete` | tool | **Clear strokes** (`tool_clear`); with red-eye, every fix off as one step. Never the Bin |
 | `Enter` | tool | **Apply tool** (`tool_apply`): Remove (Enhance takes what is brushed); otherwise the tool goes down |
 | hold `Space` | tool | **Pan while brushing** (`tool_pan` / `tool_pan_release`): a drag pans, the open hand shows. Never next |

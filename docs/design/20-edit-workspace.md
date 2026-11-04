@@ -178,7 +178,8 @@ Arming a tool opens the workspace on the tool's home tab, unfolded, and applies 
 animation or with the workspace closed it goes down.
 
 - **Keys:** tool mode ([16](16-commands.md) "Canvas tools"): `[` `]` size, `Ctrl/⌘+Z` and
-  `Ctrl/⌘+Shift+Z` one stroke or fix, `Backspace` / `Delete` clear, `Enter` applies, hold `Space` to
+  `Ctrl/⌘+Shift+Z` one stroke or fix (with no stroke left, the edit's own undo), `Backspace` /
+  `Delete` clear, `Enter` applies, hold `Space` to
   pan, `Alt` / `⌥` held erases, `Esc` puts the tool down with the strokes kept (dimmed). Rotate,
   flip, crop and the Bin are refused while a tool is armed, and walking away (`A` `D` …) while
   strokes are pending (owner call G); the notice says why. The menus grey the same.

@@ -2254,6 +2254,7 @@ struct sibling_job_result {
 // docs/plans/edit-refresh.md S3 (the canvas tools, below).
 bool brush_active(app_state* app) noexcept;
 void tool_apply_view(app_state* app) noexcept;
+void push_tool_bar(app_state* app) noexcept;
 
 void publish_edit(app_state* app) noexcept {
   if (app->show_original && app->edits.has_item() && app->edit_key != 0) {
@@ -2275,6 +2276,7 @@ void publish_edit(app_state* app) noexcept {
     }
     mv::shell::apply_brush(app->input.edit[0], app->brush, brush_active(app), ++app->brush_rev, app->brush_cursor);
     tool_apply_view(app);  // S3: the tool's ring and red-eye fixes survive the new view
+    push_tool_bar(app);    // the bar's "2 fixed" follows any undo, from any control
   }
   // Slice 5: Enhance's copy of the photo being edited carries its edit. The
   // add-on media layer is in mediaviewer_core.dll: through its C entry, the
@@ -3259,7 +3261,12 @@ void on_tool_job(app_state* app, std::unique_ptr<tool_job_result> r) {
   if (!r) return;
   if (!r->found) {
     app->eyes_fetching = false;
-    if (r->item != app->edit_key) return;
+    if (r->item != app->edit_key) {
+      // The photo changed while these were read (its own fetch was skipped as
+      // one was in flight): read the one on screen now.
+      if (app->tool.tool == mv::shell::canvas_tool::red_eye) tool_fetch_eyes(app);
+      return;
+    }
     app->eyes_item = r->item;
     app->eyes = std::move(r->eyes);
     push_tool_bar(app);  // "2 eyes found", Find eyes enabled
@@ -3338,7 +3345,9 @@ bool run_tool_command(app_state* app, mv::shell::command_id command) {
       return true;
     case tool_undo:
       if (active == canvas_tool::remove_brush) {
-        if (!app->brush.undo_stroke()) return false;
+        // No stroke left: Ctrl+Z is the edit's own undo again (the last Auto,
+        // a slider), so an armed brush never makes it dead.
+        if (!app->brush.undo_stroke()) return run_edit_command(app, undo_edit);
         brush_publish(app);
         push_adjust_pane(app);
         push_tool_bar(app);
@@ -9645,6 +9654,8 @@ bool run_session_command(app_state* app, mv::shell::command_id command) noexcept
       if (under_mode == mv::shell::mode::trim || under_mode == mv::shell::mode::skim) {
         modes |= mv::shell::kVideo;
       }
+      // docs/plans/edit-refresh.md S3: a canvas tool layers over browse (the Mac's twin).
+      if (under_mode == mv::shell::mode::tool) modes |= mv::shell::kBrowse;
       app->popup_open = true;
       if (app->fullscreen) layout_chrome(app);  // the flyouts hang off the bar
       app->chrome.show_popup(kind, modes);
@@ -9875,6 +9886,16 @@ bool handle_app_key(app_state* app, const MSG& msg) noexcept {
       return true;
     }
     if (msg.message == WM_KEYUP) return true;
+  }
+  // docs/plans/edit-refresh.md S3: Alt held makes the brush erase; its ring
+  // dashes at once, before the next move (the Mac's flagsChanged:). The key
+  // goes on as before (SC_KEYMENU is swallowed while a tool is armed).
+  if (msg.wParam == VK_MENU && brush_active(app)) {
+    const bool held = is_down;
+    if (app->tool.erase_held != held) {
+      app->tool.erase_held = held;
+      brush_publish(app);
+    }
   }
   const auto event = translate_key(msg, is_up);
   if (event.k == mv::shell::key::none) return false;

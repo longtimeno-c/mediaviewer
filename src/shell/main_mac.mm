@@ -11966,7 +11966,12 @@ static double mv_wall_seconds() {
 
 - (void)toolEyesLanded:(std::uint64_t)item eyes:(const std::vector<mv::shell::eye_point>&)eyes {
   _eyesFetching = NO;
-  if (item != _itemId) return;
+  if (item != _itemId) {
+    // The photo changed while these were read (its own fetch was skipped as one
+    // was in flight): read the one on screen now.
+    if (_tool.tool == mv::shell::canvas_tool::red_eye) [self toolFetchEyes];
+    return;
+  }
   _eyesItem = item;
   _eyes = eyes;
   ++_editGeneration;  // the bar: "2 eyes found", Find eyes enabled
@@ -12054,7 +12059,9 @@ static double mv_wall_seconds() {
       return YES;
     case tool_undo:
       if (active == canvas_tool::remove_brush) {
-        if (!_brush.undo_stroke()) return NO;
+        // No stroke left: ⌘Z is the edit's own undo again (the last Auto, a
+        // slider), so an armed brush never makes it dead.
+        if (!_brush.undo_stroke()) return [self runEditCommand:undo_edit];
         [self brushPublish];
         [self bumpAdjustView];
         ++_editGeneration;
