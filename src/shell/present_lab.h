@@ -38,6 +38,7 @@
 #include "shell/dino_game.h"
 #include "shell/edit_view.h"
 #include "shell/compare.h"
+#include "shell/drag_frames.h"
 #include "shell/home_theme.h"
 #include "shell/input_state.h"
 
@@ -57,6 +58,12 @@ struct lab_options {
   // Soak only: once a still is up, pan it at 100 % across the whole image on
   // a fixed path (tiled pyramid / cached-image pan measurement). `--pan-soak`.
   bool scripted_pan = false;
+  // --pane-drag-soak (docs/plans/edit-refresh.md §7 S1): the host drags the
+  // right column's edge. While it does (input_snapshot::chrome_live_resize),
+  // the lab pans the still at 100 % on the --pan-soak path for 10 s, then
+  // fits it so the rest of the drag refits live, and logs every
+  // present-to-present interval (drag_log()).
+  bool pane_drag_soak = false;
   // Keep presenting while the window is in the background. `--browse-soak`
   // drives itself and must not stall if it is not the foreground window.
   bool present_when_inactive = false;
@@ -186,6 +193,9 @@ class present_lab {
     int cached = 0;
     int valid = 0;
   };
+  // --pane-drag-soak: what the render thread presented during the drag. [any thread]
+  [[nodiscard]] const drag_frame_log& drag_log() const noexcept { return drag_log_; }
+
   [[nodiscard]] std::uint64_t mark_navigation() noexcept;
   [[nodiscard]] bool navigation_done(std::uint64_t seq) const noexcept;
   [[nodiscard]] bool navigation_full(std::uint64_t seq) const noexcept;
@@ -396,6 +406,9 @@ class present_lab {
   bool boot_full_due_ = false;
   double tiles_complete_seconds_ = -1.0;
   double scripted_pan_start_ = -1.0;
+  drag_frame_log drag_log_;
+  double drag_pan_start_ = -1.0;  // --pane-drag-soak: the drag's pan began
+  bool drag_pan_done_ = false;
   // The last different still that was on screen, for hold `\` (docs/design/16). Kept
   // here, so showing it is a draw of a texture already in VRAM — never a
   // second session or an mv_image_open.
@@ -500,6 +513,7 @@ class present_lab {
   double last_game_elapsed_ = 0.0;
   std::uint32_t seen_reset_seq_ = 0;
   std::uint32_t seen_resize_seq_ = 0;
+  std::uint32_t seen_refit_seq_ = 0;
   std::uint32_t seen_display_seq_ = 0;
   std::uint32_t seen_fit_seq_ = 0;
   std::uint32_t seen_one_seq_ = 0;

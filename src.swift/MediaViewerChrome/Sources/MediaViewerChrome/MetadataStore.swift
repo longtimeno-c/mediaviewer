@@ -263,7 +263,21 @@ final class MetadataStore: ObservableObject {
 
   /// The pane's width (MetadataView), so an add-on's surface is drawn pixel-exact.
   private var paneWidth: CGFloat = 320
+  /// While the right column's edge is dragged the width is held: askSlots once
+  /// on release, never per step (docs/plans/edit-refresh.md §2.3).
+  private var heldWidth: CGFloat?
+  var liveResize = false {
+    didSet {
+      guard !liveResize, let w = heldWidth else { return }
+      heldWidth = nil
+      setPaneWidth(w)
+    }
+  }
   func setPaneWidth(_ width: CGFloat) {
+    if liveResize {
+      heldWidth = width
+      return
+    }
     let rounded = (width / 8).rounded() * 8
     guard rounded != paneWidth, rounded > 0 else { return }
     paneWidth = rounded

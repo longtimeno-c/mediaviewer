@@ -142,6 +142,26 @@ docks through `input_snapshot.chrome_right_px`, which narrows the rect the pictu
 The swapchain is never resized, only refitted. Panes hide under the gallery, Settings and
 chrome-off fullscreen.
 
+**`refit_seq`: chrome moves refit, only the window resizes (2026-11-04).** Docking was meant to
+be "a refit, not a swapchain resize", but both hosts bumped `resize_seq` for it, so every dock,
+filmstrip toggle, bar-height or page-sidebar change also ran `swapchain_.resize` /
+`layer_.resize` (the Mac reassigned `drawableSize` and re-probed the refresh each time).
+`input_snapshot.refit_seq` now carries every chrome-only change of the canvas rect, and both labs
+re-run only the fit or fill on it; `resize_seq` means a real window, DPI or backing change. While
+the right column's edge is dragged (`chrome_live_resize`) the refit is immediate, so the picture
+tracks the edge; on release it springs (ω = 18, ζ = 1). The Mac `metal_layer::resize` also
+returns early when the size and scale are unchanged. `--pane-drag-soak` measures the drag
+(docs/plans/edit-refresh.md S1).
+
+**One right column, 280–720 wide, the user's (2026-11-04).** The metadata, adjust, Jobs and Edit
+panes share one width (`shell/pane_width.h`): 360 by default (it was 360 pt on the Mac and
+min(half the client, 340 DIP) on Windows), dragged by its edge from 280 (or the theme's minimum,
+which density and type scale widen) to 720, never more than 60 % of the client and never so wide
+the canvas drops under 320. The preference is kept (Mac defaults `MVRightPaneWidth`, Windows
+`[view] right_pane_dip`), rounded to 4 and saved on release; a release within 6 of 360 or 560
+snaps to it; a double-click on the edge resets it. `pane_wider` / `pane_narrower` (±40) have no
+default key. The panes still float except the Edit workspace, which docks as before.
+
 **The clip transport floats and auto-hides (2026-09-26).** Issue #38: one layout on both hosts,
 over the video rather than a reserved strip (auto-hiding a strip would refit the video on every
 wake). One portable rule, `shell/transport_autohide.h`: hide after 2.5 s idle while playing; held

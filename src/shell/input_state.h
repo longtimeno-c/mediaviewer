@@ -266,7 +266,18 @@ struct input_snapshot {
 
   // Bumped by the UI thread when the swapchain must be rebuilt: a resize, a DPI
   // change, or the window moving to a monitor on a different adapter.
+  // Only a real window, DPI or backing change bumps it (docs/design/12,
+  // 2026-11-04 "refit_seq").
   std::uint32_t resize_seq = 0;
+  // The chrome moved the canvas rectangle (chrome_* above) without the
+  // window changing: a pane docked or undocked, the right column's edge
+  // dragged, the filmstrip or the bar's height. The render thread re-fits or
+  // re-fills the picture into the new rect and never touches the swapchain
+  // (no resize, no ResizeBuffers, no drawable size, no refresh probe).
+  std::uint32_t refit_seq = 0;
+  // Non-zero while the user drags the right column's edge: the picture
+  // tracks the edge exactly (an immediate fit); on release it springs.
+  std::uint8_t chrome_live_resize = 0;
   std::uint32_t display_change_seq = 0;
   // PR 30 (docs/design/21): the window the canvas presents into, as an opaque host
   // handle (an HWND on Windows); 0 = the viewer's own window. The Video Editor

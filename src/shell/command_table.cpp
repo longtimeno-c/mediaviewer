@@ -335,6 +335,11 @@ constexpr binding kBindings[] = {
     // Issue #614. Appended. Ctrl+P was free; plain P stays trim preview (kTrim
     // only). Viewing modes: the photo on screen, or the marks from the gallery.
     row(C('P'), mod_ctrl, kViewing, edge, print),
+    // docs/plans/edit-refresh.md S1. Appended, unbound: the right column one
+    // step (40) wider or narrower, from the View menu or a key the user gives
+    // them in Settings. The panes' own islands too, where the column has focus.
+    row(key::none, mod_none, kViewing, edge, pane_wider),
+    row(key::none, mod_none, kViewing, edge, pane_narrower),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -554,6 +559,8 @@ constexpr command_info kCommands[] = {
     {adjust_levels_blue_white, "Adjust: levels blue white", true},
     {adjust_pick, "Adjust: pick on the photo", true},
     {adjust_open_eyes, "Open closed eyes", true},
+    {pane_wider, "Wider side pane"},
+    {pane_narrower, "Narrower side pane"},
 };
 
 const char* named_key(key k) noexcept {

@@ -411,6 +411,10 @@ enum class command_id : std::uint16_t {
   adjust_pick,
   // Slice 6: Open closed eyes (a new file beside the still). Island-only.
   adjust_open_eyes,
+  // docs/plans/edit-refresh.md S1: the right column 40 wider / narrower. No
+  // default key: the View menu and Settings (remappable).
+  pane_wider,
+  pane_narrower,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

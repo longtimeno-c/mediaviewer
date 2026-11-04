@@ -199,6 +199,9 @@ public struct CommandBarView: View {
             FlyoutItem(title: "Full screen", shortcut: key("Fullscreen")) { close(); mv_chrome_menu(kMenuFullscreen) }
             FlyoutItem(title: "Filmstrip", shortcut: key("Filmstrip"), enabled: hasFolder) { close(); mv_chrome_menu(kMenuFilmstrip) }
             FlyoutItem(title: "Page sidebar", shortcut: key("Page sidebar"), enabled: hasFolder) { close(); mv_chrome_menu(kMenuPageSidebar) }
+            // docs/plans/edit-refresh.md S1: the right column a step wider or narrower.
+            FlyoutItem(title: "Wider side pane", shortcut: key("Wider side pane")) { close(); mv_chrome_menu(kMenuPaneWider) }
+            FlyoutItem(title: "Narrower side pane", shortcut: key("Narrower side pane")) { close(); mv_chrome_menu(kMenuPaneNarrower) }
             FlyoutRule()
             // Issue #206: View > Show, as on the Windows bar. The dot is the
             // filter native applied, read when the flyout opens.

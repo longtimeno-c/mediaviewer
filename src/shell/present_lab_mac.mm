@@ -982,6 +982,7 @@ expected present_lab_mac::start(void* nsview, const mac_lab_options& options) no
   overlay_visible_ = options.overlay_visible;
   animating_ = options.start_animating;
   sweep_mode_ = options.soak_seconds > 0.0;
+  if (options.pane_drag_soak) drag_log_.arm();
 
   running_.store(true, std::memory_order_release);
   render_thread_ = std::thread([this] { render_thread_main(); });
@@ -1441,20 +1442,40 @@ void present_lab_mac::render_thread_main() noexcept {
           pacer_.set_refresh(layer_.refresh_interval_seconds());
           redraw = true;
         }
+        bool resized_now = false;
         if (snapshot.resize_seq != seen_resize_seq_) {
           seen_resize_seq_ = snapshot.resize_seq;
+          resized_now = true;
           const double sc =
               snapshot.dpi_scale > 0.0f ? static_cast<double>(snapshot.dpi_scale) : 1.0;
           if (auto r = layer_.resize(snapshot.width, snapshot.height, sc); !r) {
             MV_LOG_WARN("present_lab_mac: resize failed (%s)", status_name(r.error()));
             measurement_valid_ = false;
           }
+          drawable_sets_.store(layer_.drawable_sets(), std::memory_order_relaxed);
           pacer_.set_refresh(layer_.refresh_interval_seconds());
           if (float pw = 0, ph = 0; picture_size(&pw, &ph) && camera_.fit_mode()) {
             camera_.fit(pw, ph, usable_window_w(snapshot), usable_window_h(snapshot),
                         /*immediate=*/false);
           }
           redraw = true;
+        }
+        // docs/design/12 2026-11-04 (refit_seq): the chrome moved the canvas
+        // rect (a pane docked, the right column's edge, the filmstrip, the
+        // bar's height), the window did not. Only the fit or fill re-runs: the
+        // layer's drawable size and the refresh probe are never touched. While
+        // the edge is dragged the picture tracks it exactly; on release it springs.
+        if (snapshot.refit_seq != seen_refit_seq_) {
+          seen_refit_seq_ = snapshot.refit_seq;
+          redraw = true;
+          const bool immediate = snapshot.chrome_live_resize != 0;
+          if (float pw = 0, ph = 0; !resized_now && picture_size(&pw, &ph)) {
+            if (camera_.fit_mode()) {
+              camera_.fit(pw, ph, usable_window_w(snapshot), usable_window_h(snapshot), immediate);
+            } else if (camera_.fill_mode()) {
+              camera_.fill(pw, ph, usable_window_w(snapshot), usable_window_h(snapshot), immediate);
+            }
+          }
         }
 
         // close_item(): the canvas goes back to the welcome. A clip closes on
@@ -1767,6 +1788,39 @@ void present_lab_mac::render_thread_main() noexcept {
           }
           last_mouse_x_ = snapshot.mouse_x;
           last_mouse_y_ = snapshot.mouse_y;
+
+          // --pane-drag-soak (the Windows lab's twin): while the host drags
+          // the right column's edge, pan at 100 % on the --pan-soak path for
+          // 10 s, then fit, so the rest of the drag refits the picture live.
+          if (options_.pane_drag_soak && current_image_ && !video_frame_) {
+            const bool dragging_edge = snapshot.chrome_live_resize != 0;
+            if (dragging_edge && drag_pan_start_ < 0.0) {
+              drag_pan_start_ = elapsed;
+              camera_.set_zoom(1.0f, image_w, image_h, window_w, window_h);
+              camera_.carry(image_w, image_h, image_w, image_h, window_w, window_h);
+              camera_.drag_begin();
+            }
+            if (dragging_edge && !drag_pan_done_ && camera_.dragging()) {
+              const double t = elapsed - drag_pan_start_;
+              if (t >= 10.0) {
+                camera_.drag_end();
+                camera_.fit(image_w, image_h, window_w, window_h, /*immediate=*/true);
+                drag_pan_done_ = true;
+              } else {
+                const float ax = std::max(0.0f, (image_w - window_w) * 0.5f);
+                const float ay = std::max(0.0f, (image_h - window_h) * 0.5f);
+                const float want_x = image_w * 0.5f + ax * static_cast<float>(std::sin(t * 6.2831853 / 20.0));
+                const float want_y = image_h * 0.5f + ay * static_cast<float>(std::sin(t * 6.2831853 / 13.0));
+                const float z = camera_.zoom() > 0.0f ? camera_.zoom() : 1.0f;
+                camera_.drag_delta((camera_.pan_x() - want_x) * z, (camera_.pan_y() - want_y) * z);
+              }
+              redraw = true;
+            }
+            if (!dragging_edge && camera_.dragging() && drag_pan_start_ >= 0.0 && !drag_pan_done_) {
+              camera_.drag_end();
+              drag_pan_done_ = true;
+            }
+          }
 
           if (wheel != 0.0f && snapshot.mouse_in_client) {
             // Over either half of a compare, toward the same spot of the picture.
@@ -2298,6 +2352,8 @@ void present_lab_mac::render_thread_main() noexcept {
 
         if (warmed_up_ && !options_.start_animating) ++idle_stats_.presents;
         ++total_presents_;
+        drag_log_.on_present(monotonic_seconds() - start, snapshot.chrome_live_resize != 0,
+                             layer_.refresh_interval_seconds());
         // Issue #486. First marks win, so these cost a load after launch.
         mv::boot::mark(mv::boot::stage::first_frame);
         if (boot_pixel_due_) mv::boot::mark(mv::boot::stage::first_pixel);

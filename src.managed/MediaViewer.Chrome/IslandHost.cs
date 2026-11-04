@@ -174,6 +174,10 @@ public static partial class IslandHost
         // AdjustParam sends parked "param\tvalue" (selective colour).
         public const int AdjustPick = 210;
         public const int AdjustOpenEyes = 211;  // slice 6
+        // docs/plans/edit-refresh.md S1: the right column a step (40) wider or
+        // narrower. No default key; the View menu sends them.
+        public const int PaneWider = 212;
+        public const int PaneNarrower = 213;
         public const int AdjustParam = 1091;
         public const int AdjustPrompt = 1092;  // slice 5b: parked UTF-8 request
         // Slice 7: the Remove brush: 0 the last stroke off, 1 all, 2 Remove.
@@ -1440,6 +1444,8 @@ public static partial class IslandHost
         flyout.Items.Add(Item("Filmstrip", KeyOf(Command.ToggleFilmstrip), () => Send(Command.ToggleFilmstrip)));
         flyout.Items.Add(Item("Metadata pane", KeyOf(Command.MetadataPane), () => Send(Command.MetadataPane)));
         flyout.Items.Add(Item("Folder tree", KeyOf(Command.FolderTree), () => Send(Command.FolderTree)));
+        flyout.Items.Add(Item("Wider side pane", KeyOf(Command.PaneWider), () => Send(Command.PaneWider)));
+        flyout.Items.Add(Item("Narrower side pane", KeyOf(Command.PaneNarrower), () => Send(Command.PaneNarrower)));
         flyout.Items.Add(sortMenu);
         flyout.Items.Add(kindMenu);
         AddGoItems(flyout);  // issue #220 (IslandHost.FileMenu.cs)

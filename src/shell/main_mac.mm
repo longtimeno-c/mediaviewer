@@ -95,6 +95,7 @@
 #include "shell/text_recognition_mac.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
+#include "shell/pane_width.h"
 #include "shell/video_timeline.h"
 #include "edit/clip_strip.h"
 #include "shell/folder_model_mac.h"
@@ -348,6 +349,38 @@ void browse_json_string(FILE* f, const std::string& s) {
   }
   std::fputc('"', f);
 }
+
+// --pane-drag-soak (docs/plans/edit-refresh.md §7 S1; the Windows lab's twin):
+// open the still, open the Edit workspace (the docked column), then drag the
+// column's edge 280 <-> 720 and back every 4 s (one way in 2 s) for 20 s
+// through the same code the mouse drag runs, while the lab pans the still at
+// 100 % for 10 s and then refits it live (present_lab_mac pane_drag_soak).
+// Reports the render thread's present intervals during the drag (none over 2x
+// the refresh), the main thread's layout time per step, the layer's drawable
+// size assignments during the drag (must be 0), and the presents in 2 s after
+// a 1.5 s settle (must be 0). The p99 against a base --pan-soak run is the
+// reader's. The width is never saved.
+enum class mac_pane_drag_phase { wait_media, dwell, drag, settle, measure, finish };
+struct mac_pane_drag_run {
+  bool enabled = false;
+  std::string json_path;
+  mac_pane_drag_phase step = mac_pane_drag_phase::wait_media;
+  double t0 = 0.0;
+  double phase_t = 0.0;
+  std::vector<float> layout_ms;
+  std::uint32_t drawable_sets_before = 0;
+  std::uint32_t drawable_sets_during = 0;
+  std::uint64_t presents_before = 0;
+  std::uint64_t presents_after_settle = 0;
+  double hidden_s = 0.0;
+  double last_tick = 0.0;
+} g_pane_drag;
+constexpr double kPaneDragSweepSeconds = 20.0;
+constexpr double kPaneDragLegSeconds = 2.0;
+constexpr double kPaneDragDwellSeconds = 2.0;
+constexpr double kPaneDragSettleSeconds = 1.5;
+constexpr double kPaneDragMeasureSeconds = 2.0;
+
 // Registered once by Swift via mv_chrome_set_thumb_ready_callback. A plain
 // C function pointer, not a std::function: this crosses the same boundary
 // mv_chrome_bridge.h's other declarations do, POD only.
@@ -412,7 +445,14 @@ constexpr CGFloat kChromeBarHeightPoints = 48.0;  // Windows bar height
 // Filmstrip strip height, in points -- same conversion-to-backing-pixels
 // treatment as kChromeBarHeightPoints, landing in input_snapshot.chrome_bottom_px.
 constexpr CGFloat kFilmstripHeightPoints = 96.0;
-constexpr CGFloat kMetaPaneWidthPoints = 360.0;  // PR 9 panes float over the canvas
+// The right column (docs/plans/edit-refresh.md §2.1, shell/pane_width.h): every
+// right pane (Info, Adjust, Jobs, the Edit workspace) shares one width, the
+// user's, dragged by its edge and kept in the defaults (MVRightPaneWidth).
+constexpr CGFloat kInspectorDefaultPoints = 360.0;
+// No rail yet: the inspector refresh adds it (rail = 44).
+const mv::shell::pane_width_limits kPaneLimits{.def = static_cast<float>(kInspectorDefaultPoints),
+                                               .rail = 0.0f};
+NSString* const kRightPaneWidthKey = @"MVRightPaneWidth";
 // PR 29 (docs/design/20): the Edit workspace's strip (title, tabs, actions) at the top
 // of the right pane column; the tab's pane hangs under it.
 constexpr CGFloat kEditStripHeightPoints = 124.0;
@@ -489,6 +529,18 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 @property(nonatomic, strong) NSLayoutConstraint* adjustTop;
 @property(nonatomic, strong) NSLayoutConstraint* jobsTop;
 @property(nonatomic, strong) NSLayoutConstraint* editPaneTop;
+// docs/plans/edit-refresh.md §2.3: the right column every right pane pins its
+// leading edge to, its one width constraint, and the edge that drags it.
+@property(nonatomic, strong) NSLayoutGuide* rightColumn;
+@property(nonatomic, strong) NSLayoutConstraint* rightColumnWidth;
+@property(nonatomic, strong) NSView* paneEdge;
+// The canvas's own rect left of the docked column (and right of the page
+// sidebar): the clip transport centres on it, so it is not off-centre while
+// the workspace is docked.
+@property(nonatomic, strong) NSLayoutGuide* canvasGuide;
+@property(nonatomic, strong) NSLayoutConstraint* canvasLeading;
+@property(nonatomic, strong) NSLayoutConstraint* canvasTrailingFull;
+@property(nonatomic, strong) NSLayoutConstraint* canvasTrailingDocked;
 // PR 30 (docs/design/21): the Video Editor window. The canvas moves into its preview
 // while it is open (one canvas, one present path) and back when it closes.
 @property(nonatomic, strong) NSWindow* editorWindow;
@@ -840,6 +892,15 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 // Points the Edit workspace docks on the right (0 when closed): the canvas
 // frames the picture left of it (input_snapshot.chrome_right_px).
 - (CGFloat)dockedRightPoints;
+// The right column (docs/plans/edit-refresh.md §2.3): its width re-clamped to the
+// window, and its edge's drag. MvMetalView's -setFrameSize: and MvPaneEdgeView.
+- (void)applyPaneWidth;
+- (CGFloat)paneShownPoints;
+- (void)paneEdgeDown:(NSEvent*)event;
+- (void)paneEdgeDragged:(NSEvent*)event;
+- (void)paneEdgeUp:(NSEvent*)event;
+- (void)paneEdgeReset;
+- (void)paneStep:(int)direction;
 // Issue #429: the page sidebar is on screen (MvMetalView's -syncSize reserves it).
 - (BOOL)pageSidebarShown;
 - (void)requestPageThumbsFrom:(int32_t)first count:(int32_t)count;
@@ -2218,6 +2279,138 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 @end
 
+// docs/plans/edit-refresh.md §2.3: the right column's edge. 6 pt wide and centred
+// on the column's leading edge, above the panes; drag it to widen or narrow
+// every right pane at once, double-click for the default. Its own layer draws
+// a 1 px hairline, a 2 px accent line with a grip pill while hovered or
+// dragged. Accessibility: a splitter whose value steps like pane_wider /
+// pane_narrower.
+@interface MvPaneEdgeView : NSView
+@property(nonatomic, assign) MvLabApp* app;
+@end
+
+@implementation MvPaneEdgeView {
+  CALayer* _line;
+  CALayer* _grip;
+  NSTrackingArea* _tracking;
+  BOOL _hot;
+  BOOL _dragging;
+}
+- (instancetype)initWithFrame:(NSRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    self.wantsLayer = YES;
+    _line = [CALayer layer];
+    _grip = [CALayer layer];
+    _grip.cornerRadius = 2.0;
+    [self.layer addSublayer:_line];
+    [self.layer addSublayer:_grip];
+  }
+  return self;
+}
+- (BOOL)isFlipped {
+  return YES;
+}
+- (BOOL)acceptsFirstMouse:(NSEvent*)event {
+  (void)event;
+  return YES;
+}
+- (void)layout {
+  [super layout];
+  [self restyle];
+}
+- (void)viewDidChangeEffectiveAppearance {
+  [super viewDidChangeEffectiveAppearance];
+  [self restyle];
+}
+- (void)restyle {
+  const BOOL lit = _hot || _dragging;
+  const NSRect b = self.bounds;
+  const CGFloat w = lit ? 2.0 : 1.0;
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  _line.frame = CGRectMake(NSMidX(b) - w * 0.5, 0.0, w, NSHeight(b));
+  _grip.frame = CGRectMake(NSMidX(b) - 2.0, NSMidY(b) - 14.0, 4.0, 28.0);
+  _grip.hidden = !lit;
+  NSColor* line = lit ? MVChromeHost.paneEdgeAccent : MVChromeHost.paneEdgeHairline;
+  NSColor* grip = MVChromeHost.paneEdgeAccent;
+  CALayer* lineLayer = _line;
+  CALayer* gripLayer = _grip;
+  [self.effectiveAppearance performAsCurrentDrawingAppearance:^{
+    lineLayer.backgroundColor = line.CGColor;
+    gripLayer.backgroundColor = grip.CGColor;
+  }];
+  [CATransaction commit];
+}
+- (void)resetCursorRects {
+  [self addCursorRect:self.bounds cursor:[NSCursor resizeLeftRightCursor]];
+}
+- (void)updateTrackingAreas {
+  [super updateTrackingAreas];
+  if (_tracking) [self removeTrackingArea:_tracking];
+  _tracking = [[NSTrackingArea alloc]
+      initWithRect:self.bounds
+           options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
+             owner:self
+          userInfo:nil];
+  [self addTrackingArea:_tracking];
+}
+- (void)mouseEntered:(NSEvent*)event {
+  (void)event;
+  _hot = YES;
+  [self restyle];
+}
+- (void)mouseExited:(NSEvent*)event {
+  (void)event;
+  _hot = NO;
+  [self restyle];
+}
+- (void)mouseDown:(NSEvent*)event {
+  if (event.clickCount == 2) {
+    [self.app paneEdgeReset];
+    return;
+  }
+  _dragging = YES;
+  [self restyle];
+  [self.app paneEdgeDown:event];
+}
+- (void)mouseDragged:(NSEvent*)event {
+  if (_dragging) [self.app paneEdgeDragged:event];
+}
+- (void)mouseUp:(NSEvent*)event {
+  if (!_dragging) return;
+  _dragging = NO;
+  [self restyle];
+  [self.app paneEdgeUp:event];
+}
+- (void)setHidden:(BOOL)hidden {
+  [super setHidden:hidden];
+  if (hidden && _hot) {
+    _hot = NO;
+    [self restyle];
+  }
+}
+- (BOOL)isAccessibilityElement {
+  return YES;
+}
+- (NSAccessibilityRole)accessibilityRole {
+  return NSAccessibilitySplitterRole;
+}
+- (NSString*)accessibilityLabel {
+  return @"Side pane width";
+}
+- (id)accessibilityValue {
+  return @(static_cast<int>(self.app ? [self.app paneShownPoints] : 0.0));
+}
+- (BOOL)accessibilityPerformIncrement {
+  [self.app paneStep:1];
+  return YES;
+}
+- (BOOL)accessibilityPerformDecrement {
+  [self.app paneStep:-1];
+  return YES;
+}
+@end
+
 @interface MvMetalView : NSView <NSDraggingSource>
 @property(nonatomic, assign) mv::shell::present_lab_mac* lab;
 @property(nonatomic, assign) mv::shell::input_snapshot* snap;
@@ -2227,6 +2420,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 // that need folder_model/browse_index state MvLabApp owns, not just an
 // input_snapshot bump like every other key here.
 @property(nonatomic, assign) MvLabApp* app;
+- (void)syncSize;
+- (void)syncChrome;
 @end
 
 @implementation MvMetalView {
@@ -2291,7 +2486,34 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.lab && self.snap) self.lab->publish(*self.snap);
 }
 
+// A real size, scale or backing change: the layer's drawable follows it
+// (resize_seq). setFrameSize and the backing properties only.
 - (void)syncSize {
+  [self fillCanvasRect];
+  ++self.snap->resize_seq;
+  [self publish];
+  if (self.lab) self.lab->wake();
+}
+
+// docs/design/12 2026-11-04 (refit_seq): the chrome moved the canvas rect (a
+// pane docked, the right column's edge, the filmstrip, the bar, the page
+// sidebar) and the window did not. The render thread re-fits the picture and
+// never touches the layer. If the backing size did change under it (it should
+// not: setFrameSize comes first), it is a resize after all.
+- (void)syncChrome {
+  const std::uint32_t w = self.snap->width, h = self.snap->height;
+  const float scale = self.snap->dpi_scale;
+  [self fillCanvasRect];
+  if (self.snap->width != w || self.snap->height != h || self.snap->dpi_scale != scale) {
+    ++self.snap->resize_seq;
+  } else {
+    ++self.snap->refit_seq;
+  }
+  [self publish];
+  if (self.lab) self.lab->wake();
+}
+
+- (void)fillCanvasRect {
   const NSSize backing = [self convertSizeToBacking:self.bounds.size];
   self.snap->width = static_cast<std::uint32_t>(std::max(1.0, backing.width));
   self.snap->height = static_cast<std::uint32_t>(std::max(1.0, backing.height));
@@ -2316,9 +2538,6 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   self.snap->chrome_right_px = self.app
       ? static_cast<std::uint32_t>([self.app dockedRightPoints] * self.window.backingScaleFactor)
       : 0;
-  ++self.snap->resize_seq;
-  [self publish];
-  if (self.lab) self.lab->wake();
 }
 
 - (void)viewDidMoveToWindow {
@@ -2365,6 +2584,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 
 - (void)setFrameSize:(NSSize)newSize {
   [super setFrameSize:newSize];
+  // The right column re-clamps to the new width first (pane_width.h), so the
+  // docked rect this publishes is the one laid out.
+  if (self.app) [self.app applyPaneWidth];
   [self syncSize];
 }
 
@@ -2954,6 +3176,13 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
 @end
 
 @implementation MvLabApp {
+  // docs/plans/edit-refresh.md §2.3: the right column's preferred width (points),
+  // the edge drag's grab offset, and whether a drag is under way. A
+  // --pane-drag-soak never saves the width.
+  CGFloat _panePref;
+  CGFloat _paneGrabDx;
+  BOOL _paneDragging;
+  BOOL _paneDragSoak;
   mv::shell::present_lab_mac _lab;
   mv::shell::input_snapshot _snap;
   mv::job_system _jobs;
@@ -3079,6 +3308,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   std::int64_t _shownMoment;
   NSTimer* _browseTimer;
   NSTimer* _pageSoakTimer;  // --page-soak (issue #429)
+  NSTimer* _paneDragTimer;  // --pane-drag-soak (docs/plans/edit-refresh.md S1)
   // Issue #486: polls for "ready" until the boot timeline is logged / reported.
   NSTimer* _bootTimer;
   BOOL _bootWithPath;
@@ -3408,6 +3638,13 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
     // context must start at a real view intent.
     _adjustGen.store(1, std::memory_order_relaxed);
     _loginItemKept = -1;
+    // The right column's width, read before the first layout (never waited
+    // on by the core open: a defaults read).
+    _panePref = mv::shell::preferred_width(
+        static_cast<std::int32_t>([NSUserDefaults.standardUserDefaults integerForKey:kRightPaneWidthKey]),
+        kPaneLimits);
+    // A harness never saves the width it drags to.
+    _paneDragSoak = g_pane_drag.enabled || std::getenv("MV_EDIT_SELFTEST") != nullptr;
   }
   return self;
 }
@@ -3629,12 +3866,24 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   NSLayoutConstraint* preferredWidth =
       [self.transportHost.widthAnchor constraintEqualToConstant:720.0];
   preferredWidth.priority = NSLayoutPriorityDefaultHigh;
+  // Centred on the canvas, not the window (docs/plans/edit-refresh.md §2.3):
+  // the right column's guide pins the docked edge (-syncCanvasGuide).
+  self.canvasGuide = [[NSLayoutGuide alloc] init];
+  [container addLayoutGuide:self.canvasGuide];
+  self.canvasLeading = [self.canvasGuide.leadingAnchor constraintEqualToAnchor:container.leadingAnchor];
+  self.canvasTrailingFull = [self.canvasGuide.trailingAnchor constraintEqualToAnchor:container.trailingAnchor];
   [NSLayoutConstraint activateConstraints:@[
-    [self.transportHost.centerXAnchor constraintEqualToAnchor:container.centerXAnchor],
+    self.canvasLeading,
+    self.canvasTrailingFull,
+    [self.canvasGuide.topAnchor constraintEqualToAnchor:container.topAnchor],
+    [self.canvasGuide.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+  ]];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.transportHost.centerXAnchor constraintEqualToAnchor:self.canvasGuide.centerXAnchor],
     [self.transportHost.widthAnchor constraintLessThanOrEqualToConstant:720.0],
-    [self.transportHost.leadingAnchor constraintGreaterThanOrEqualToAnchor:container.leadingAnchor
+    [self.transportHost.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.canvasGuide.leadingAnchor
                                                                   constant:16.0],
-    [self.transportHost.trailingAnchor constraintLessThanOrEqualToAnchor:container.trailingAnchor
+    [self.transportHost.trailingAnchor constraintLessThanOrEqualToAnchor:self.canvasGuide.trailingAnchor
                                                                 constant:-16.0],
     [self.transportHost.heightAnchor constraintEqualToConstant:44.0],
     self.transportBottom,
@@ -3722,6 +3971,21 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   [container addSubview:self.treeHost];
   self.treeBottom = [self.treeHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
                                                                constant:0.0];
+  // docs/plans/edit-refresh.md §2.3: the right column. Every right pane pins its
+  // leading edge to it; its one width is the user's (-applyPaneWidth).
+  self.rightColumn = [[NSLayoutGuide alloc] init];
+  [container addLayoutGuide:self.rightColumn];
+  self.rightColumnWidth = [self.rightColumn.widthAnchor
+      constraintEqualToConstant:mv::shell::shown_inspector(static_cast<float>(_panePref),
+                                                           static_cast<float>(NSWidth(container.bounds)),
+                                                           static_cast<float>(MVChromeHost.inspectorMinimumWidth),
+                                                           kPaneLimits)];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.rightColumn.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+    [self.rightColumn.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
+    [self.rightColumn.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+    self.rightColumnWidth,
+  ]];
   // PR 11: the adjust pane, same edge and width as the metadata pane.
   self.adjustHost = [MVChromeHost makeAdjustView];
   self.adjustHost.hidden = YES;
@@ -3732,7 +3996,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   [NSLayoutConstraint activateConstraints:@[
     [self.adjustHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
     self.adjustTop = [self.adjustHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
-    [self.adjustHost.widthAnchor constraintEqualToConstant:kMetaPaneWidthPoints],
+    [self.adjustHost.leadingAnchor constraintEqualToAnchor:self.rightColumn.leadingAnchor],
     self.adjustBottom,
   ]];
   // PR 13 / 14: the Jobs pane, same edge and width again (one at a time).
@@ -3745,7 +4009,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   [NSLayoutConstraint activateConstraints:@[
     [self.jobsHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
     self.jobsTop = [self.jobsHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
-    [self.jobsHost.widthAnchor constraintEqualToConstant:kMetaPaneWidthPoints],
+    [self.jobsHost.leadingAnchor constraintEqualToAnchor:self.rightColumn.leadingAnchor],
     self.jobsBottom,
   ]];
   // PR 29 (docs/design/20): the Edit workspace. The strip sits where the panes'
@@ -3768,14 +4032,34 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   [NSLayoutConstraint activateConstraints:@[
     [self.editStripHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
     [self.editStripHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
-    [self.editStripHost.widthAnchor constraintEqualToConstant:kMetaPaneWidthPoints],
+    [self.editStripHost.leadingAnchor constraintEqualToAnchor:self.rightColumn.leadingAnchor],
     [self.editStripHost.heightAnchor constraintEqualToConstant:kEditStripHeightPoints],
     [self.editPaneHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
     self.editPaneTop = [self.editPaneHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor
                                                                    constant:kEditStripHeightPoints],
-    [self.editPaneHost.widthAnchor constraintEqualToConstant:kMetaPaneWidthPoints],
+    [self.editPaneHost.leadingAnchor constraintEqualToAnchor:self.rightColumn.leadingAnchor],
     [self.editPaneHost.bottomAnchor constraintEqualToAnchor:self.adjustHost.bottomAnchor],
   ]];
+  // The column's edge: above every right pane (Info, Adjust and Jobs are added
+  // over the transport, the workspace's strip and pane under it), so all 6 pt
+  // of it take the pointer. The transport centres on the canvas guide, clear
+  // of a docked column. Settings and the gallery, added later, cover it; it
+  // shows only while a right pane does (-syncPaneEdge).
+  {
+    MvPaneEdgeView* edge = [[MvPaneEdgeView alloc] initWithFrame:NSZeroRect];
+    edge.app = self;
+    edge.hidden = YES;
+    edge.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:edge];
+    [NSLayoutConstraint activateConstraints:@[
+      [edge.centerXAnchor constraintEqualToAnchor:self.rightColumn.leadingAnchor],
+      [edge.widthAnchor constraintEqualToConstant:mv::shell::kPaneEdgeGrab],
+      [edge.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
+      [edge.bottomAnchor constraintEqualToAnchor:self.adjustHost.bottomAnchor],
+    ]];
+    self.paneEdge = edge;
+  }
+  self.canvasTrailingDocked = [self.canvasGuide.trailingAnchor constraintEqualToAnchor:self.rightColumn.leadingAnchor];
   // The clip job queue. Its completions arrive on its workers and hop to the
   // main queue here (docs/design/14: the core never calls the host's dispatcher).
   {
@@ -3800,7 +4084,7 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   [NSLayoutConstraint activateConstraints:@[
     [self.metaHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
     self.metaTop = [self.metaHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
-    [self.metaHost.widthAnchor constraintEqualToConstant:kMetaPaneWidthPoints],
+    [self.metaHost.leadingAnchor constraintEqualToAnchor:self.rightColumn.leadingAnchor],
     self.metaBottom,
     [self.treeHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
     [self.treeHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
@@ -4045,6 +4329,13 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
                                                     userInfo:nil
                                                      repeats:YES];
   }
+  if (g_pane_drag.enabled) {
+    _paneDragTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 120.0
+                                                      target:self
+                                                    selector:@selector(paneDragTick)
+                                                    userInfo:nil
+                                                     repeats:YES];
+  }
   if (g_mac_browse.enabled) {
     _browseTimer = [NSTimer scheduledTimerWithTimeInterval:0.01
                                                     target:self
@@ -4243,6 +4534,106 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
       return;
     }
     case mac_page_phase::finish:
+      return;
+  }
+}
+
+// --- --pane-drag-soak (see mac_pane_drag_run) -------------------------------
+
+- (void)paneDragFinish:(const char*)error {
+  auto& d = g_pane_drag;
+  if (d.step == mac_pane_drag_phase::finish) return;
+  d.step = mac_pane_drag_phase::finish;
+  [_paneDragTimer invalidate];
+  _paneDragTimer = nil;
+  char hidden[128];
+  if (!error && d.hidden_s > 0.5) {
+    std::snprintf(hidden, sizeof hidden, "window hidden for %.1f s; rerun with it on screen", d.hidden_s);
+    error = hidden;
+  }
+  const auto frames = mv::shell::summarise(_lab.drag_log().intervals(), _lab.drag_log().refresh_ms());
+  const float layout_p50 = mv::shell::percentile(d.layout_ms, 0.50);
+  const float layout_p95 = mv::shell::percentile(d.layout_ms, 0.95);
+  const float layout_max = d.layout_ms.empty() ? 0.0f : *std::max_element(d.layout_ms.begin(), d.layout_ms.end());
+  const bool pass = !error && frames.frames > 0 && frames.over_2x == 0 && d.presents_after_settle == 0 &&
+                    d.drawable_sets_during == 0;
+  if (FILE* f = std::fopen(d.json_path.c_str(), "wb")) {
+    std::fputs("{\n  \"schema\": 1,\n  \"host\": \"mac\",\n  \"error\": ", f);
+    if (error) browse_json_string(f, error);
+    else std::fputs("null", f);
+    std::fprintf(f,
+                 ",\n  \"sweep_s\": %.1f,\n  \"leg_s\": %.1f,\n  \"min_width\": %.0f,\n  \"max_width\": %.0f,\n"
+                 "  \"frames\": %u,\n  \"refresh_ms\": %.3f,\n  \"p50_ms\": %.3f,\n  \"p99_ms\": %.3f,\n"
+                 "  \"max_ms\": %.3f,\n  \"over_2x\": %u,\n  \"layout_steps\": %zu,\n"
+                 "  \"layout_p50_ms\": %.3f,\n  \"layout_p95_ms\": %.3f,\n  \"layout_max_ms\": %.3f,\n"
+                 "  \"drawable_sets_during_drag\": %u,\n  \"presents_after_settle\": %llu,\n  \"pass\": %s\n}\n",
+                 kPaneDragSweepSeconds, kPaneDragLegSeconds, kPaneLimits.min, kPaneLimits.max, frames.frames,
+                 frames.refresh_ms, frames.p50_ms, frames.p99_ms, frames.max_ms, frames.over_2x, d.layout_ms.size(),
+                 layout_p50, layout_p95, layout_max, d.drawable_sets_during,
+                 static_cast<unsigned long long>(d.presents_after_settle), pass ? "true" : "false");
+    std::fclose(f);
+  }
+  [NSApp terminate:nil];
+}
+
+- (void)paneDragTick {
+  auto& d = g_pane_drag;
+  const double now = browse_now();
+  if (d.t0 == 0.0) d.t0 = d.phase_t = d.last_tick = now;
+  if (d.step != mac_pane_drag_phase::finish && !(self.window.occlusionState & NSWindowOcclusionStateVisible)) {
+    d.hidden_s += now - d.last_tick;
+  }
+  d.last_tick = now;
+  switch (d.step) {
+    case mac_pane_drag_phase::wait_media:
+      if (_lab.showing_still()) {
+        // The docked column: the Edit workspace takes its width from the canvas.
+        if (!_ws.open) (void)[self runCommand:mv::shell::command_id::edit_workspace back:mv::shell::back_target::none];
+        if (!_ws.open) return [self paneDragFinish:"the Edit workspace did not open"];
+        d.step = mac_pane_drag_phase::dwell;
+        d.phase_t = now;
+      } else if (now - d.t0 > kMacBrowseOpenTimeout) {
+        [self paneDragFinish:"no photo appeared"];
+      }
+      return;
+    case mac_pane_drag_phase::dwell:
+      if (now - d.phase_t < kPaneDragDwellSeconds) return;
+      d.drawable_sets_before = _lab.drawable_sets();
+      [self paneEdgeDown:nil];
+      d.step = mac_pane_drag_phase::drag;
+      d.phase_t = now;
+      return;
+    case mac_pane_drag_phase::drag: {
+      const double t = now - d.phase_t;
+      if (t >= kPaneDragSweepSeconds) {
+        d.drawable_sets_during = _lab.drawable_sets() - d.drawable_sets_before;
+        [self paneEdgeUp:nil];
+        d.step = mac_pane_drag_phase::settle;
+        d.phase_t = now;
+        return;
+      }
+      // A triangle: min -> max in one leg, back in the next.
+      const double phase = std::fmod(t, 2.0 * kPaneDragLegSeconds) / kPaneDragLegSeconds;
+      const double tri = phase <= 1.0 ? phase : 2.0 - phase;
+      const CGFloat want = kPaneLimits.min + (kPaneLimits.max - kPaneLimits.min) * tri;
+      const double t_layout = browse_now();
+      [self paneDragTo:[self paneClientPoints] - kPaneLimits.rail - want];
+      [self.window.contentView layoutSubtreeIfNeeded];
+      d.layout_ms.push_back(static_cast<float>((browse_now() - t_layout) * 1000.0));
+      return;
+    }
+    case mac_pane_drag_phase::settle:
+      if (now - d.phase_t < kPaneDragSettleSeconds) return;
+      d.presents_before = _lab.drag_log().presents();
+      d.step = mac_pane_drag_phase::measure;
+      d.phase_t = now;
+      return;
+    case mac_pane_drag_phase::measure:
+      if (now - d.phase_t < kPaneDragMeasureSeconds) return;
+      d.presents_after_settle = _lab.drag_log().presents() - d.presents_before;
+      [self paneDragFinish:nullptr];
+      return;
+    case mac_pane_drag_phase::finish:
       return;
   }
 }
@@ -5660,8 +6051,9 @@ static mv::shell::print_page MvPrintPage(NSPrintInfo* info) {
   // chrome_bottom_px must reflect the toggle immediately (canvas fit/pan
   // math reads it via present_lab_mac.mm's usable_window_h()) -- -syncSize
   // already recomputes it from -filmstripVisible and republishes, the same
-  // "single source of truth" shape chrome_height_px already has.
-  [self.view syncSize];
+  // "single source of truth" shape chrome_height_px already has. A refit:
+  // the window did not change (refit_seq).
+  [self.view syncChrome];
 }
 - (void)toggleGallery {
   [self setGalleryVisible:!_galleryVisible];
@@ -6066,7 +6458,7 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
 
 - (void)updateChromeBarHeight {
   if (self.commandBarHeight) self.commandBarHeight.constant = [self chromeBarHeight];
-  if (self.view) [self.view syncSize];
+  if (self.view) [self.view syncChrome];
 }
 
 - (void)refreshSiblings {
@@ -6254,6 +6646,8 @@ static mv::shell::command_id MvMenuCommand(NSInteger cmd) {
     case kMenuOneToOne: return one_to_one;
     case kMenuFilmstrip: return toggle_filmstrip;
     case kMenuPageSidebar: return toggle_page_sidebar;
+    case kMenuPaneWider: return pane_wider;
+    case kMenuPaneNarrower: return pane_narrower;
     case kMenuGallery: return toggle_gallery;
     case kMenuFullscreen: return fullscreen;
     case kMenuSlideshow: return slideshow_start;
@@ -6437,6 +6831,8 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     case kMenuOneToOne: mv_chrome_one_to_one(); break;
     case kMenuFilmstrip: [self toggleFilmstrip]; break;
     case kMenuPageSidebar: [self togglePageSidebar]; break;
+    case kMenuPaneWider: [self paneStep:1]; break;
+    case kMenuPaneNarrower: [self paneStep:-1]; break;
     case kMenuGallery: [self toggleGallery]; break;
     case kMenuFullscreen: [self toggleFullscreen]; break;
     case kMenuSlideshow: [self startSlideshow]; break;
@@ -6731,6 +7127,8 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   [self addMenuItem:@"Gallery" cmd:kMenuGallery key:@"" mods:0 toMenu:view];
   [self addMenuItem:@"Metadata" cmd:kMenuMetadata key:@"" mods:0 toMenu:view];
   [self addMenuItem:@"Folder Tree" cmd:kMenuFolderTree key:@"" mods:0 toMenu:view];
+  [self addMenuItem:@"Wider Side Pane" cmd:kMenuPaneWider key:@"" mods:0 toMenu:view];
+  [self addMenuItem:@"Narrower Side Pane" cmd:kMenuPaneNarrower key:@"" mods:0 toMenu:view];
   NSMenuItem* sortHolder = [view addItemWithTitle:@"Sort By" action:nil keyEquivalent:@""];
   NSMenu* sortMenu = [[NSMenu alloc] initWithTitle:@"Sort By"];
   sortHolder.submenu = sortMenu;
@@ -7428,6 +7826,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case toggle_gallery: [self toggleGallery]; return YES;
     case toggle_filmstrip: [self toggleFilmstrip]; return YES;
     case toggle_page_sidebar: [self togglePageSidebar]; return YES;
+    case pane_wider: [self paneStep:1]; return YES;
+    case pane_narrower: [self paneStep:-1]; return YES;
     case gallery_up: [self galleryMoveRows:-1]; return YES;
     case gallery_down: [self galleryMoveRows:1]; return YES;
     case gallery_open_selected:
@@ -8025,14 +8425,141 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   if (open && (tab == edit_tab::crop || tab == edit_tab::trim)) [self.window makeFirstResponder:self.view];
   const BOOL redock = _wsShown != open;
   _wsShown = open;
+  [self syncCanvasGuide];
   _wsSyncing = NO;
   ++_editGeneration;
-  // The canvas refits into the rect beside the docked pane (or back).
-  if (redock) [self.view syncSize];
+  // The canvas refits into the rect beside the docked pane (or back): the
+  // window did not change, so no drawable size (refit_seq).
+  if (redock) [self.view syncChrome];
 }
 
 - (CGFloat)dockedRightPoints {
-  return _ws.open ? kMetaPaneWidthPoints : 0.0;
+  return mv::shell::docked_right(static_cast<float>([self paneShownPoints]), _ws.open, false, kPaneLimits);
+}
+
+// ---- The right column (docs/plans/edit-refresh.md §2.1, §2.3) ------------------------
+// One width for every right pane. The preference is the user's (the defaults'
+// MVRightPaneWidth, rounded to 4, saved on release); what is laid out is that
+// clamped to the window (shell/pane_width.h). Only the docked workspace takes
+// the width from the canvas, as before; the floating panes cover it.
+
+- (CGFloat)paneClientPoints {
+  NSView* container = self.window.contentView;
+  return container ? NSWidth(container.bounds) : 0.0;
+}
+
+- (CGFloat)paneShownPoints {
+  return mv::shell::shown_inspector(static_cast<float>(_panePref), static_cast<float>([self paneClientPoints]),
+                                    static_cast<float>(MVChromeHost.inspectorMinimumWidth), kPaneLimits);
+}
+
+// Lays the column out at the preference, re-clamped. True when its width changed.
+- (BOOL)layoutPaneWidth {
+  if (!self.rightColumnWidth) return NO;
+  const CGFloat w = [self paneShownPoints];
+  if (self.rightColumnWidth.constant == w) return NO;
+  self.rightColumnWidth.constant = w;
+  [self layoutAIBadge];
+  return YES;
+}
+
+// -[MvMetalView setFrameSize:] (the window resized): it publishes itself.
+- (void)applyPaneWidth {
+  (void)[self layoutPaneWidth];
+}
+
+// A new preference from a step, a reset or a drag's release: laid out, kept,
+// and the docked canvas refitted with the spring.
+- (void)setPanePreference:(CGFloat)want persist:(BOOL)persist {
+  _panePref = std::clamp(want, static_cast<CGFloat>(kPaneLimits.min), static_cast<CGFloat>(kPaneLimits.max));
+  (void)[self layoutPaneWidth];
+  if (persist) {
+    [NSUserDefaults.standardUserDefaults setInteger:mv::shell::stored_width(static_cast<float>(_panePref))
+                                             forKey:kRightPaneWidthKey];
+  }
+  [self.view syncChrome];
+}
+
+- (void)paneStep:(int)direction {
+  [self setPanePreference:mv::shell::step_inspector(static_cast<float>([self paneShownPoints]), direction,
+                                                    kPaneLimits)
+                  persist:!_paneDragSoak];
+}
+
+- (void)paneEdgeReset {
+  [self setPanePreference:kInspectorDefaultPoints persist:!_paneDragSoak];
+}
+
+- (void)paneEdgeDown:(NSEvent*)event {
+  // A scripted drag (the self-test, --pane-drag-soak) has no event and grabs
+  // the edge itself.
+  _paneGrabDx = 0.0;
+  if (event) {
+    NSView* container = self.window.contentView;
+    const NSPoint at = [container convertPoint:event.locationInWindow fromView:nil];
+    const CGFloat edge = [self paneClientPoints] - kPaneLimits.rail - self.rightColumnWidth.constant;
+    _paneGrabDx = at.x - edge;
+  }
+  _paneDragging = YES;
+  [MVChromeHost setPaneLiveResize:YES];
+  _snap.chrome_live_resize = 1;
+  [self.view publish];
+}
+
+// The picture tracks the edge exactly: an immediate refit per step (AppKit
+// already coalesces drags to one per frame). Nothing is saved until release.
+- (void)paneDragTo:(CGFloat)leading {
+  const CGFloat client = [self paneClientPoints];
+  _panePref = mv::shell::shown_inspector(static_cast<float>(client - kPaneLimits.rail - leading),
+                                         static_cast<float>(client),
+                                         static_cast<float>(MVChromeHost.inspectorMinimumWidth), kPaneLimits);
+  if ([self layoutPaneWidth] && _ws.open) [self.view syncChrome];
+}
+
+- (void)paneEdgeDragged:(NSEvent*)event {
+  if (!_paneDragging) return;
+  NSView* container = self.window.contentView;
+  const NSPoint at = [container convertPoint:event.locationInWindow fromView:nil];
+  [self paneDragTo:at.x - _paneGrabDx];
+}
+
+- (void)paneEdgeUp:(NSEvent*)event {
+  (void)event;
+  if (!_paneDragging) return;
+  _paneDragging = NO;
+  _snap.chrome_live_resize = 0;
+  [MVChromeHost setPaneLiveResize:NO];  // the Info pane asks its add-ons once
+  [self setPanePreference:mv::shell::snap_inspector(static_cast<float>(_panePref)) persist:!_paneDragSoak];
+}
+
+// The canvas guide follows what the canvas frames the picture in: right of the
+// page sidebar, left of the docked workspace (dockedRightPoints).
+- (void)syncCanvasGuide {
+  if (!self.canvasGuide) return;
+  const CGFloat lead = _pageSidebarShown ? kPageSidebarWidthPoints : 0.0;
+  if (self.canvasLeading.constant != lead) self.canvasLeading.constant = lead;
+  const BOOL docked = _ws.open;
+  if (self.canvasTrailingDocked.active != docked) {
+    if (docked) {
+      self.canvasTrailingFull.active = NO;
+      self.canvasTrailingDocked.active = YES;
+    } else {
+      self.canvasTrailingDocked.active = NO;
+      self.canvasTrailingFull.active = YES;
+    }
+  }
+}
+
+// The edge shows while a right pane does and nothing covers it.
+- (void)syncPaneEdge {
+  if (!self.paneEdge) return;
+  const BOOL covered = _galleryVisible || _settingsVisible || _editorOpen;
+  const BOOL pane = !self.metaHost.hidden || !self.adjustHost.hidden || !self.jobsHost.hidden ||
+                    !self.editPaneHost.hidden || !self.editStripHost.hidden;
+  const BOOL want = pane && !covered;
+  if (self.paneEdge.hidden == !want) return;
+  self.paneEdge.hidden = !want;
+  [self.window invalidateCursorRectsForView:self.paneEdge];
 }
 
 // A pane's own close button (or its key) while it is the workspace's tab
@@ -9920,11 +10447,13 @@ static std::string MvSelfTestPageSummary(const char* addon) {
   [self editViewInto:&e];
   __block NSString* line = [NSString
       stringWithFormat:@"%@ open=%d tab=%d subject=%d crop=%d aspect=%d portrait=%d crop_px=%dx%d edits=%d "
-                       @"original=%d strip=%d pane=%d adjust=%d meta=%d jobs=%d trim=%d export=%d\n",
+                       @"original=%d strip=%d pane=%d adjust=%d meta=%d jobs=%d trim=%d export=%d "
+                       @"pane_pt=%d right_px=%u\n",
                        name, e.open, e.tab, e.subject, e.crop_active, e.aspect, e.portrait, e.crop_width,
                        e.crop_height, e.edit_count, e.show_original, self.editStripHost.hidden ? 0 : 1,
                        self.editPaneHost.hidden ? 0 : 1, _adjust.visible() ? 1 : 0, _metaPaneVisible ? 1 : 0,
-                       _jobsVisible ? 1 : 0, _trim.armed() ? 1 : 0, self.exportHost != nil ? 1 : 0];
+                       _jobsVisible ? 1 : 0, _trim.armed() ? 1 : 0, self.exportHost != nil ? 1 : 0,
+                       static_cast<int>(self.rightColumnWidth.constant), _snap.chrome_right_px];
   if (_editorOpen || _timeline.loaded()) {
     line = [line stringByAppendingFormat:@"    editor: open=%d pieces=%zu length_ms=%lld edited=%d strip=%zu peaks=%zu\n",
                                          _editorOpen ? 1 : 0, _timeline.pieces().size(),
@@ -10042,7 +10571,15 @@ static std::string MvSelfTestPageSummary(const char* addon) {
       case 1: [self editSelfTestSnap:@"s0-viewer" dir:dir]; [self runCommand:edit_workspace back:kNoBack]; break;
       case 2: [self editSelfTestSnap:@"s1-workspace" dir:dir]; [self editSetAspect:2 portrait:NO]; break;
       case 3: [self editSelfTestSnap:@"s2-crop-1x1" dir:dir]; [self runCommand:crop_commit back:kNoBack]; break;
-      case 4: [self editSelfTestSnap:@"s3-applied" dir:dir]; [self editSelectTab:1]; break;
+      case 4:
+        [self editSelfTestSnap:@"s3-applied" dir:dir];
+        [self editSelectTab:1];
+        // docs/plans/edit-refresh.md S1: the column's edge dragged to 600 through
+        // the drag's own code (s4-colour shows pane_pt=600); never saved here.
+        [self paneEdgeDown:nil];
+        [self paneDragTo:[self paneClientPoints] - kPaneLimits.rail - 600.0];
+        [self paneEdgeUp:nil];
+        break;
       case 5: {
         // docs/plans/edit-adjust.md slice 1: the new sliders, then Colour's Auto.
         [self editSelfTestSnap:@"s4-colour" dir:dir];
@@ -11034,6 +11571,9 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
 // Bottom-right of the canvas: above the filmstrip, above a clip's transport,
 // left of a right-hand pane; gone under the gallery, Settings or the Video Editor.
 - (void)layoutAIBadge {
+  // Every right pane's show and hide comes through here (#345), and so does
+  // the gallery, Settings and the Video Editor: the column's edge follows.
+  [self syncPaneEdge];
   NSView* host = self.aiBadgeHost;
   if (!host) return;
   const BOOL covered = _galleryVisible || _settingsVisible || _editorOpen;
@@ -11041,7 +11581,8 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
   if (want) {
     const BOOL rightPane = !self.metaHost.hidden || !self.adjustHost.hidden || !self.jobsHost.hidden ||
                            !self.editPaneHost.hidden || !self.editStripHost.hidden;
-    const CGFloat trailing = -(16.0 + (rightPane ? kMetaPaneWidthPoints : 0.0));
+    const CGFloat trailing =
+        -(16.0 + (rightPane ? kPaneLimits.rail + self.rightColumnWidth.constant : 0.0));
     CGFloat bottom = -(([self filmstripVisible] ? kFilmstripHeightPoints : 0.0) + 10.0);
     if (_transportClip) bottom -= 44.0 + 8.0;  // the strip's height and a gap
     if (self.aiBadgeTrailing.constant != trailing) self.aiBadgeTrailing.constant = trailing;
@@ -13428,7 +13969,8 @@ static NSString* const kDefaultsPinnedFolders = @"mv.pinnedFolders";  // issue #
   _pageSidebarShown = shown;
   self.pageSidebarHost.hidden = !shown;
   [self layoutHintNotice];
-  [self.view syncSize];  // chrome_left_px: the canvas frames right of it
+  [self syncCanvasGuide];
+  [self.view syncChrome];  // chrome_left_px: the canvas frames right of it
 }
 - (void)togglePageSidebar {
   _pageSidebarWanted = !_pageSidebarWanted;
@@ -13858,6 +14400,7 @@ void usage() {
                "                  folder browse + drag-drop (PR 18)\n"
                "  --soak N --json PATH [--gate] [--static] [--no-overlay]\n"
                "  --browse-soak --json PATH FOLDER   time arrows and jumps (tools/perf)\n"
+               "  --pane-drag-soak --json PATH STILL drag the right column 280<->720 for 20 s\n"
                "  --page-soak PATH DOCUMENT          fling the page sidebar, time page jumps\n"
                "  --compare     start with the two-up compare on (`|`)\n"
                "  --boot-report PATH   write the launch's boot timeline as JSON once ready, then quit\n"
@@ -13919,6 +14462,8 @@ int main(int argc, char** argv) {
       g_new_window_from = NSMakePoint(x, y);
     } else if (std::strcmp(arg, "--browse-soak") == 0) {
       g_mac_browse.enabled = true;
+    } else if (std::strcmp(arg, "--pane-drag-soak") == 0) {
+      g_pane_drag.enabled = true;
     } else if (std::strcmp(arg, "--page-soak") == 0) {
       g_mac_pages.enabled = true;
       g_mac_pages.json_path = next();
@@ -13956,6 +14501,17 @@ int main(int argc, char** argv) {
     options.harness = true;
   }
   if (!g_boot_report.empty()) options.harness = true;
+  if (g_pane_drag.enabled) {
+    if (g_mac_browse.enabled || options.soak_seconds > 0.0 || options.json_report_path.empty() ||
+        options.open_path.empty()) {
+      std::fprintf(stderr, "mediaviewer_lab: --pane-drag-soak needs --json PATH and a still, not --soak\n");
+      return 2;
+    }
+    g_pane_drag.json_path = std::move(options.json_report_path);
+    options.json_report_path.clear();
+    options.harness = true;
+    options.pane_drag_soak = true;
+  }
   if (g_mac_browse.enabled) {
     if (options.soak_seconds > 0.0 || options.json_report_path.empty() || options.open_path.empty()) {
       std::fprintf(stderr, "mediaviewer_lab: --browse-soak needs --json PATH and a folder, not --soak\n");

@@ -34,13 +34,18 @@ class metal_layer {
   [[nodiscard]] std::uint32_t height() const noexcept { return height_; }
   [[nodiscard]] double refresh_interval_seconds() const noexcept { return refresh_seconds_; }
   void refresh_output_info() noexcept;
+  // How many times resize() assigned the drawable size (a real change only):
+  // --pane-drag-soak checks a column drag never does.
+  [[nodiscard]] std::uint32_t drawable_sets() const noexcept { return drawable_sets_; }
 
  private:
   void* view_ = nullptr;
   void* layer_ = nullptr;
   std::uint32_t width_ = 0;
   std::uint32_t height_ = 0;
+  double scale_ = 0.0;
   double refresh_seconds_ = 0.0;
+  std::uint32_t drawable_sets_ = 0;
 };
 
 }  // namespace mv::gfx

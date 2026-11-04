@@ -1211,6 +1211,8 @@ if(MV_BUILD_TESTS)
     # PR 29: the Edit workspace's tab model.
     tests/test_edit_workspace.cpp
     src/shell/edit_workspace.cpp
+    # The right column's width (docs/plans/edit-refresh.md §2.1).
+    tests/test_pane_width.cpp
     # PR 30: the Video Editor's timeline.
     tests/test_video_timeline.cpp
     src/shell/video_timeline.cpp

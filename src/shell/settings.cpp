@@ -6,6 +6,7 @@
 #include "shell/settings.h"
 
 #include "io/sort_order.h"
+#include "shell/pane_width.h"
 #include "shell/os_integration.h"
 
 #include <algorithm>
@@ -74,6 +75,9 @@ view_settings load_view_settings(const settings_store& store) noexcept {
   s.ai_badge = doc->get_int(kView, "ai_badge", s.ai_badge ? 1 : 0) != 0;
   // Normalised, so a hand-edited or future value cannot leave an unknown key.
   s.sort = io::pack_sort(io::unpack_sort(doc->get_int(kView, "sort", 0)));
+  // Normalised too: 0 (the default) or a width the column can take, rounded to 4.
+  const int pane = doc->get_int(kView, "right_pane_dip", 0);
+  s.right_pane_dip = pane > 0 ? stored_width(preferred_width(pane)) : 0;
   return s;
 }
 
@@ -89,6 +93,7 @@ void save_view_settings(settings_store& store, const view_settings& s) noexcept 
     // Issue #408: no canvas background. An old file's `background` stays as
     // it was (unread); nothing writes it again.
     d.set(kView, "sort", std::to_string(s.sort));
+    d.set(kView, "right_pane_dip", std::to_string(s.right_pane_dip));
   });
 }
 

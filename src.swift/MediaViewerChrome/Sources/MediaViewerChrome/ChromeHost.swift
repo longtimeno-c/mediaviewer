@@ -67,6 +67,21 @@ public final class MVChromeHost: NSObject {
   @objc public static var aiBadgeWidth: CGFloat { AIBadgeView.width }
   @objc public static var aiBadgeHeight: CGFloat { AIBadgeView.height }
 
+  // The right column (docs/plans/edit-refresh.md §2.1). Its narrowest width for
+  // the theme in use: density and type scale widen it (shell/pane_width.h's
+  // theme_min).
+  @MainActor @objc public static var inspectorMinimumWidth: CGFloat {
+    EditLayout.minimumWidth(density: MVTheme.density, typeScale: MVTheme.typeScale)
+  }
+  /// The column edge's line, idle and while hovered or dragged.
+  @MainActor @objc public static var paneEdgeHairline: NSColor { NSColor(MVTheme.hairline) }
+  @MainActor @objc public static var paneEdgeAccent: NSColor { NSColor(MVTheme.accent) }
+  /// The edge is being dragged: the Info pane holds its add-on sections' width
+  /// (askSlots) until it is let go, then asks once.
+  @MainActor @objc public static func setPaneLiveResize(_ live: Bool) {
+    MetadataStore.shared.liveResize = live
+  }
+
   @MainActor @objc public static func setAIBadge(title: String, evidence: String) {
     AIBadgeStore.shared.set(title: title, evidence: evidence)
   }
@@ -344,5 +359,14 @@ final class LazyHostingView: NSHostingView<AnyView> {
     guard let make else { return }
     self.make = nil
     rootView = make()
+  }
+}
+
+/// The right column's layout numbers the chrome owns (docs/plans/edit-refresh.md §2.1).
+enum EditLayout {
+  /// The narrowest inspector this theme lays out without clipping: 280 at the
+  /// default shape, wider as density or type scale grow (never narrower).
+  static func minimumWidth(density: CGFloat, typeScale: CGFloat) -> CGFloat {
+    (280 * max(1, max(density, typeScale))).rounded()
   }
 }

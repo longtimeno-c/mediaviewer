@@ -67,6 +67,7 @@
 #include "shell/text_select.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
+#include "shell/pane_width.h"
 #include "shell/video_timeline.h"
 #include "edit/auto_adjust.h"
 #include "edit/clip_strip.h"
@@ -243,6 +244,12 @@ constexpr UINT kBrowseTickMs = 50;
 constexpr ULONGLONG kBrowseDwellMs = 3000;
 constexpr ULONGLONG kBrowseStepTimeoutMs = 20000;
 constexpr ULONGLONG kBrowseOpenTimeoutMs = 60000;
+// docs/plans/edit-refresh.md §2.4: a column-edge move held back by the
+// once-per-refresh throttle lands when this fires (the pointer stopped).
+constexpr UINT_PTR kPaneEdgeTimerId = 0x7E01;
+// --pane-drag-soak (docs/plans/edit-refresh.md §7 S1): the scripted drag's tick.
+constexpr UINT_PTR kPaneDragSoakTimerId = 0x7E02;
+constexpr UINT kPaneDragSoakTickMs = 8;
 
 struct app_state {
   present_lab lab;
@@ -317,6 +324,18 @@ struct app_state {
   float brush_cursor[3] = {-1.0f, -1.0f, 0.0f};
   std::uint32_t brush_rev = 0;
   bool brush_stroke = false;
+  // docs/plans/edit-refresh.md §2.4: the right column's edge. Its preferred
+  // width is settings.right_pane_dip (0 = 360); while it is dragged that holds
+  // the live width and is saved on release. The grab offset keeps the edge
+  // under the pointer; a move inside one refresh interval waits (pane_pending_x).
+  bool pane_edge_drag = false;
+  int pane_grab_dx = 0;
+  std::chrono::steady_clock::time_point pane_last_layout{};
+  bool pane_move_pending = false;
+  int pane_pending_x = 0;
+  DWORD pane_click_time = 0;  // the last press on the edge, for a double-click
+  int pane_click_x = 0;
+  bool rail_collapsed = false;  // the inspector refresh's rail (none yet)
   // Slice 4: the working image as built, before the detail pass; the pass on
   // the canvas (`working` is its result), and the one in flight.
   std::shared_ptr<const mv::image::linear_image> working_base;
@@ -701,6 +720,25 @@ struct browse_run {
   browse_row rows[32]{};
   int nrows = 0;
 } g_browse;
+
+// --pane-drag-soak (pane_drag_tick).
+enum class pane_drag_phase { wait_media, dwell, drag, settle, measure, finish };
+struct pane_drag_run {
+  bool enabled = false;
+  std::wstring json_path;
+  pane_drag_phase step = pane_drag_phase::wait_media;
+  bool started = false;
+  std::chrono::steady_clock::time_point t0{};
+  std::chrono::steady_clock::time_point phase_t{};
+  std::vector<float> layout_ms;
+  std::uint64_t presents_before = 0;
+  std::uint64_t presents_after_settle = 0;
+} g_pane_drag;
+constexpr double kPaneDragSweepSeconds = 20.0;
+constexpr double kPaneDragLegSeconds = 2.0;
+constexpr double kPaneDragDwellSeconds = 2.0;
+constexpr double kPaneDragSettleSeconds = 1.5;
+constexpr double kPaneDragMeasureSeconds = 2.0;
 
 void confirm_update_start_async() noexcept {
   if (g_start_confirmed || !g_install.installed()) return;
@@ -1365,7 +1403,7 @@ void refresh_item_info(app_state* app) noexcept {
 
 void ai_badge_refresh(app_state* app);
 void layout_ai_badge(app_state* app) noexcept;
-int right_pane_px(int client_width, std::uint32_t dpi) noexcept;
+int right_pane_px(const app_state& app, int client_width, std::uint32_t dpi) noexcept;
 
 // ---- PR 9: metadata for the overlays ---------------------------------------
 
@@ -1545,7 +1583,7 @@ void layout_ai_badge(app_state* app) noexcept {
                           app->chrome.jobs_pane_visible() || app->chrome.edit_pane_visible();
   const int strip = app->chrome.filmstrip_visible() ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
   const mv::shell::chrome_rect at = mv::shell::ai_badge_rect(
-      width, height, strip, right_pane ? right_pane_px(width, dpi) : 0, app->chrome.transport_visible(), dpi);
+      width, height, strip, right_pane ? right_pane_px(*app, width, dpi) : 0, app->chrome.transport_visible(), dpi);
   const bool want = app->ai_badge.shown && !covered;
   // Hidden: parked below the client area, so it never takes the canvas's clicks.
   const mv::shell::chrome_rect parked{at.x, height + 1, at.width, at.height};
@@ -4498,7 +4536,9 @@ struct editor_load_result {
 };
 
 void update_client_metrics(app_state* app, HWND hwnd) noexcept;
-int right_pane_px(int client_width, std::uint32_t dpi) noexcept;
+int right_pane_px(const app_state& app, int client_width, std::uint32_t dpi) noexcept;
+void pane_step(app_state* app, int direction) noexcept;
+void pane_drag_to_for_test(app_state* app, float width) noexcept;
 void enable_dark_titlebar(HWND hwnd) noexcept;
 void set_editor_open(app_state* app, bool open);
 bool share_request_run(app_state* app, mv::shell::share_request request);
@@ -4638,7 +4678,7 @@ void layout_editor(app_state* app, bool focus = false) noexcept {
                             app->chrome.adjust_pane_visible();
     const int left =
         app->chrome.folder_tree_visible() ? std::min(vw / 2, ::MulDiv(280, static_cast<int>(vdpi), 96)) : 0;
-    const int right = right_pane ? right_pane_px(vw, vdpi) : 0;
+    const int right = right_pane ? right_pane_px(*app, vw, vdpi) : 0;
     a.away_visible = 1;
     a.away_x = left;
     a.away_y = bar;
@@ -8385,6 +8425,8 @@ bool run_canvas_command(app_state* app, mv::shell::command_id command) noexcept 
     }
     case toggle_filmstrip: toggle_filmstrip_setting(app); return true;
     case toggle_page_sidebar: toggle_page_sidebar_setting(app); return true;
+    case pane_wider: pane_step(app, 1); return true;
+    case pane_narrower: pane_step(app, -1); return true;
     case fit:
       app->zoom_intent_tick = 0;
       return bump_input(app, app->input.fit_seq);
@@ -9213,13 +9255,14 @@ void edit_selftest_snap(app_state* app, const char* name) noexcept {
     char line[512];
     std::snprintf(line, sizeof(line),
                   "%s open=%d tab=%d subject=%d crop=%d aspect=%d portrait=%d crop_px=%dx%d edits=%d "
-                  "original=%d edit_pane=%d adjust=%d meta=%d jobs=%d trim=%d right_px=%u\n",
+                  "original=%d edit_pane=%d adjust=%d meta=%d jobs=%d trim=%d right_px=%u pane_dip=%d\n",
                   name, app->ws.open ? 1 : 0, static_cast<int>(app->ws.tab), static_cast<int>(subject),
                   app->edits.crop_active() ? 1 : 0, static_cast<int>(app->edits.aspect()),
                   app->edits.aspect_portrait() ? 1 : 0, crop_w, crop_h, static_cast<int>(app->edits.edit_count()),
                   app->show_original ? 1 : 0, app->chrome.edit_pane_visible() ? 1 : 0,
                   app->chrome.adjust_pane_visible() ? 1 : 0, app->chrome.meta_pane_visible() ? 1 : 0,
-                  app->chrome.jobs_pane_visible() ? 1 : 0, app->trim.armed() ? 1 : 0, app->input.chrome_right_px);
+                  app->chrome.jobs_pane_visible() ? 1 : 0, app->trim.armed() ? 1 : 0, app->input.chrome_right_px,
+                  static_cast<int>(app->settings.right_pane_dip));
     std::string text = line;
     if (app->editor.open || app->editor.timeline.loaded()) {
       std::snprintf(line, sizeof(line),
@@ -9364,7 +9407,13 @@ void edit_selftest_tick(app_state* app) {
       case 1: edit_selftest_snap(app, "s0-viewer"); (void)run_command(app, edit_workspace); break;
       case 2: edit_selftest_snap(app, "s1-workspace"); edit_set_aspect(app, 4); break;  // 3:2
       case 3: edit_selftest_snap(app, "s2-crop-3x2"); (void)run_command(app, crop_commit); break;
-      case 4: edit_selftest_snap(app, "s3-applied"); edit_select_tab(app, 1); break;
+      case 4:
+        edit_selftest_snap(app, "s3-applied");
+        edit_select_tab(app, 1);
+        // docs/plans/edit-refresh.md S1: the column's edge dragged to 600 DIP
+        // through the drag's own code (s4-colour shows pane_dip=600); never saved.
+        pane_drag_to_for_test(app, 600.0f);
+        break;
       case 5: edit_selftest_snap(app, "s4-colour"); edit_select_tab(app, 2); break;
       case 6: {
         edit_selftest_snap(app, "s5-info");
@@ -9407,9 +9456,26 @@ void edit_selftest_tick(app_state* app) {
   }
 }
 
-// The right column's width: the metadata, adjust, Jobs and (PR 29) Edit panes.
-int right_pane_px(int client_width, std::uint32_t dpi) noexcept {
-  return std::min(client_width / 2, ::MulDiv(340, static_cast<int>(dpi), 96));
+// The right column (docs/plans/edit-refresh.md §2.1, shell/pane_width.h): one
+// width for the metadata, adjust, Jobs and (PR 29) Edit panes, the user's,
+// dragged by its edge. No rail yet (the inspector refresh adds it).
+constexpr mv::shell::pane_width_limits kPaneLimits{.rail = 0.0f};
+// The chrome's own minimum, 300 x the theme's type scale. The island does not
+// send its type scale yet (the inspector refresh's chrome_cmd ids), so this is
+// the 1.0 value.
+constexpr float kPaneThemeMinDip = 300.0f;
+
+float pane_shown_dip(const app_state& app, int client_width, std::uint32_t dpi) noexcept {
+  const float client = static_cast<float>(client_width) * 96.0f / static_cast<float>(std::max(dpi, 1u));
+  return mv::shell::shown_inspector(mv::shell::preferred_width(app.settings.right_pane_dip, kPaneLimits), client,
+                                    kPaneThemeMinDip, kPaneLimits);
+}
+
+// The right column's width in pixels: the inspector and the rail beside it.
+int right_pane_px(const app_state& app, int client_width, std::uint32_t dpi) noexcept {
+  const float dip = mv::shell::docked_right(pane_shown_dip(app, client_width, dpi), true, app.rail_collapsed,
+                                            kPaneLimits);
+  return ::MulDiv(static_cast<int>(std::lround(dip)), static_cast<int>(dpi), 96);
 }
 
 // PR 9. The panes float over the canvas: the metadata pane on the right, the tree
@@ -9437,7 +9503,7 @@ void layout_panels(app_state* app) noexcept {
   // Settings; the wish survives and the pane returns with them.
   const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
   const bool covered = app->gallery_visible || app->settings_open || chrome_hidden;
-  const int side = right_pane_px(width, dpi);
+  const int side = right_pane_px(*app, width, dpi);
   const int tree_w = std::min(width / 2, ::MulDiv(280, static_cast<int>(dpi), 96));
   const bool want_meta = app->meta_pane_visible && !covered;
   const bool want_tree = app->tree_visible && !covered;
@@ -9608,7 +9674,7 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept {
   // PR 29: the docked Edit workspace; the canvas frames the picture left of it.
   app->input.chrome_right_px =
       app->chrome.edit_pane_visible()
-          ? static_cast<std::uint32_t>(right_pane_px(static_cast<int>(app->input.width), dpi))
+          ? static_cast<std::uint32_t>(right_pane_px(*app, static_cast<int>(app->input.width), dpi))
           : 0;
 }
 
@@ -9665,9 +9731,282 @@ void apply_view_state(app_state* app) noexcept {
   layout_panels(app);
   update_client_metrics(app, app->window);
   apply_transport_autohide(app);
-  ++app->input.resize_seq;
+  // docs/design/12 2026-11-04: the islands moved, the window did not. A refit
+  // only (refit_seq): the swapchain is never resized for chrome. WM_SIZE and
+  // WM_DPICHANGED keep resize_seq.
+  ++app->input.refit_seq;
   ++app->input.activity_seq;
   publish(app);
+}
+
+// ---- The right column's edge (docs/plans/edit-refresh.md §2.4) ----------------------
+// The islands are child HWNDs, so the grab strip is this window's own client
+// area: 6 DIP left of the column, over the canvas, while a right pane shows
+// and nothing covers it. A drag re-lays the islands at most once per refresh
+// interval and refits the picture exactly under the edge (chrome_live_resize);
+// the release snaps, saves view_settings and lets the picture spring.
+
+bool right_pane_shown(const app_state* app) noexcept {
+  return app->chrome.meta_pane_visible() || app->chrome.adjust_pane_visible() ||
+         app->chrome.jobs_pane_visible() || app->chrome.edit_pane_visible();
+}
+
+bool pane_edge_hit(app_state* app, int x, int y) noexcept {
+  if (!app || !app->window || !app->chrome.panels_attached()) return false;
+  const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
+  if (app->gallery_visible || app->settings_open || app->editor.open || chrome_hidden) return false;
+  if (!right_pane_shown(app)) return false;
+  RECT rc{};
+  ::GetClientRect(app->window, &rc);
+  const auto dpi = ::GetDpiForWindow(app->window);
+  const int width = rc.right - rc.left;
+  const int height = rc.bottom - rc.top;
+  const int edge = width - right_pane_px(*app, width, dpi);
+  const int grab = ::MulDiv(static_cast<int>(mv::shell::kPaneEdgeGrab), static_cast<int>(dpi), 96);
+  const int top = chrome_bar_px(app, dpi);
+  const int bottom = height - (app->chrome.filmstrip_visible() ? mv::shell::chrome_filmstrip_height_px(dpi) : 0);
+  return x >= edge - grab && x < edge && y >= top && y < bottom;
+}
+
+double pane_refresh_seconds() noexcept {
+  DWM_TIMING_INFO info{};
+  info.cbSize = sizeof info;
+  if (SUCCEEDED(::DwmGetCompositionTimingInfo(nullptr, &info)) && info.rateRefresh.uiNumerator != 0 &&
+      info.rateRefresh.uiDenominator != 0) {
+    return static_cast<double>(info.rateRefresh.uiDenominator) / static_cast<double>(info.rateRefresh.uiNumerator);
+  }
+  return 1.0 / 60.0;
+}
+
+// The islands follow the column and the canvas refits into what is left.
+void pane_relayout(app_state* app) noexcept {
+  layout_panels(app);
+  update_client_metrics(app, app->window);
+  ++app->input.refit_seq;
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+// The pointer at `x`: the column's leading edge goes to x - grab offset. True
+// when the width changed (and the islands moved).
+bool pane_edge_apply(app_state* app, int x) noexcept {
+  RECT rc{};
+  ::GetClientRect(app->window, &rc);
+  const auto dpi = ::GetDpiForWindow(app->window);
+  const float scale = 96.0f / static_cast<float>(std::max(dpi, 1u));
+  const float client = static_cast<float>(rc.right - rc.left) * scale;
+  const float leading = static_cast<float>(x - app->pane_grab_dx) * scale;
+  const float shown = mv::shell::shown_inspector(client - kPaneLimits.rail - leading, client, kPaneThemeMinDip,
+                                                 kPaneLimits);
+  const auto dip = static_cast<std::int32_t>(std::lround(shown));
+  app->pane_last_layout = std::chrono::steady_clock::now();
+  if (dip <= 0 || dip == app->settings.right_pane_dip) return false;
+  app->settings.right_pane_dip = dip;
+  pane_relayout(app);
+  return true;
+}
+
+void pane_edge_flush(app_state* app) noexcept {
+  if (app->window) ::KillTimer(app->window, kPaneEdgeTimerId);
+  if (!app->pane_move_pending) return;
+  app->pane_move_pending = false;
+  (void)pane_edge_apply(app, app->pane_pending_x);
+}
+
+void pane_edge_move(app_state* app, int x) noexcept {
+  app->pane_pending_x = x;
+  app->pane_move_pending = true;
+  const double since =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - app->pane_last_layout).count();
+  const double interval = pane_refresh_seconds();
+  if (since >= interval) {
+    pane_edge_flush(app);
+  } else {
+    const auto wait_ms = static_cast<UINT>(std::ceil((interval - since) * 1000.0));
+    ::SetTimer(app->window, kPaneEdgeTimerId, std::max<UINT>(wait_ms, USER_TIMER_MINIMUM), nullptr);
+  }
+}
+
+// A new preference (a step, a reset, a release): rounded to 4, saved, laid out,
+// and the docked picture springs to it (chrome_live_resize is 0).
+void pane_set_preference(app_state* app, float want) noexcept {
+  app->settings.right_pane_dip = mv::shell::stored_width(std::clamp(want, kPaneLimits.min, kPaneLimits.max));
+  // A harness (the drag soak, the edit self-test) never saves what it drags to.
+  if (!g_pane_drag.enabled && g_edit_selftest_dir.empty()) mv::shell::save_view_settings(app->settings);
+  pane_relayout(app);
+}
+
+void pane_step(app_state* app, int direction) noexcept {
+  if (!app || !app->window) return;
+  RECT rc{};
+  ::GetClientRect(app->window, &rc);
+  const float shown = pane_shown_dip(*app, rc.right - rc.left, ::GetDpiForWindow(app->window));
+  pane_set_preference(app, mv::shell::step_inspector(shown, direction, kPaneLimits));
+}
+
+void pane_edge_end(app_state* app) noexcept {
+  if (!app->pane_edge_drag) return;
+  pane_edge_flush(app);
+  app->pane_edge_drag = false;
+  app->input.chrome_live_resize = 0;
+  pane_set_preference(app, mv::shell::snap_inspector(static_cast<float>(app->settings.right_pane_dip)));
+  if (::GetCapture() == app->window) ::ReleaseCapture();
+}
+
+bool pane_edge_press(app_state* app, int x, int y) noexcept {
+  if (!pane_edge_hit(app, x, y)) return false;
+  ::SetFocus(app->window);
+  // A double-click resets (no CS_DBLCLKS: two presses on the edge within the
+  // system's time and distance).
+  const DWORD t = ::GetMessageTime();
+  if (app->pane_click_time != 0 && t - app->pane_click_time <= ::GetDoubleClickTime() &&
+      std::abs(x - app->pane_click_x) <= ::GetSystemMetrics(SM_CXDOUBLECLK)) {
+    app->pane_click_time = 0;
+    pane_set_preference(app, kPaneLimits.def);
+    return true;
+  }
+  app->pane_click_time = t;
+  app->pane_click_x = x;
+  RECT rc{};
+  ::GetClientRect(app->window, &rc);
+  const int width = rc.right - rc.left;
+  app->pane_grab_dx = x - (width - right_pane_px(*app, width, ::GetDpiForWindow(app->window)));
+  app->pane_edge_drag = true;
+  app->pane_move_pending = false;
+  app->pane_last_layout = {};
+  ::SetCapture(app->window);
+  app->input.chrome_live_resize = 1;
+  publish(app);
+  return true;
+}
+
+// A scripted drag of the edge to `width` DIP and its release (the edit
+// self-test): the same press, move and release a pointer makes.
+void pane_drag_to_for_test(app_state* app, float width) noexcept {
+  if (!app || !app->window) return;
+  RECT rc{};
+  ::GetClientRect(app->window, &rc);
+  const int dpi = static_cast<int>(::GetDpiForWindow(app->window));
+  app->pane_edge_drag = true;
+  app->pane_grab_dx = 0;
+  app->pane_move_pending = false;
+  app->input.chrome_live_resize = 1;
+  (void)pane_edge_apply(app, (rc.right - rc.left) -
+                                 ::MulDiv(static_cast<int>(std::lround(width + kPaneLimits.rail)), dpi, 96));
+  pane_edge_end(app);
+}
+
+// ---- --pane-drag-soak (docs/plans/edit-refresh.md §7 S1) -------------------------
+// The Mac lab's twin (main_mac.mm mac_pane_drag_run): open the still, open the
+// Edit workspace (the docked column), drag the edge 280 <-> 720 and back every
+// 4 s for 20 s through pane_edge_apply, while the lab pans the still at 100 %
+// for 10 s and then refits it live. Reports the render thread's present
+// intervals during the drag, the UI thread's layout_panels -> island layout
+// time per step (p95 over 12 ms means the drag should show a guide line and
+// move the islands on release, §2.4 "Measured fallback"), and the presents in
+// 2 s after a 1.5 s settle. The p99 against a base --pan-soak is the reader's.
+void pane_drag_finish(app_state* app, const char* error) noexcept {
+  auto& d = g_pane_drag;
+  if (d.step == pane_drag_phase::finish) return;
+  d.step = pane_drag_phase::finish;
+  if (app->window) ::KillTimer(app->window, kPaneDragSoakTimerId);
+  const auto frames = mv::shell::summarise(app->lab.drag_log().intervals(), app->lab.drag_log().refresh_ms());
+  const float layout_p50 = mv::shell::percentile(d.layout_ms, 0.50);
+  const float layout_p95 = mv::shell::percentile(d.layout_ms, 0.95);
+  const float layout_max = d.layout_ms.empty() ? 0.0f : *std::max_element(d.layout_ms.begin(), d.layout_ms.end());
+  const bool pass = !error && frames.frames > 0 && frames.over_2x == 0 && d.presents_after_settle == 0;
+  FILE* f = nullptr;
+  if (!d.json_path.empty() && ::_wfopen_s(&f, d.json_path.c_str(), L"wb") == 0 && f != nullptr) {
+    std::fputs("{\n  \"schema\": 1,\n  \"host\": \"windows\",\n  \"error\": ", f);
+    if (error) browse_json_string(f, error);
+    else std::fputs("null", f);
+    std::fprintf(f,
+                 ",\n  \"sweep_s\": %.1f,\n  \"leg_s\": %.1f,\n  \"min_width\": %.0f,\n  \"max_width\": %.0f,\n"
+                 "  \"frames\": %u,\n  \"refresh_ms\": %.3f,\n  \"p50_ms\": %.3f,\n  \"p99_ms\": %.3f,\n"
+                 "  \"max_ms\": %.3f,\n  \"over_2x\": %u,\n  \"layout_steps\": %zu,\n"
+                 "  \"layout_p50_ms\": %.3f,\n  \"layout_p95_ms\": %.3f,\n  \"layout_max_ms\": %.3f,\n"
+                 "  \"guide_line_fallback\": %s,\n  \"presents_after_settle\": %llu,\n  \"pass\": %s\n}\n",
+                 kPaneDragSweepSeconds, kPaneDragLegSeconds, static_cast<double>(kPaneLimits.min),
+                 static_cast<double>(kPaneLimits.max), frames.frames, static_cast<double>(frames.refresh_ms),
+                 static_cast<double>(frames.p50_ms), static_cast<double>(frames.p99_ms),
+                 static_cast<double>(frames.max_ms), frames.over_2x, d.layout_ms.size(),
+                 static_cast<double>(layout_p50), static_cast<double>(layout_p95), static_cast<double>(layout_max),
+                 layout_p95 > 12.0f ? "true" : "false", static_cast<unsigned long long>(d.presents_after_settle),
+                 pass ? "true" : "false");
+    std::fclose(f);
+  }
+  if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
+}
+
+void pane_drag_tick(app_state* app) noexcept {
+  auto& d = g_pane_drag;
+  if (!d.enabled || !app || !app->window) return;
+  const auto now = std::chrono::steady_clock::now();
+  const auto since = [&](std::chrono::steady_clock::time_point t) {
+    return std::chrono::duration<double>(now - t).count();
+  };
+  if (!d.started) {
+    d.started = true;
+    d.t0 = d.phase_t = now;
+  }
+  switch (d.step) {
+    case pane_drag_phase::wait_media:
+      if (app->lab.showing_still()) {
+        if (!app->ws.open) (void)run_command(app, mv::shell::command_id::edit_workspace);
+        if (!app->ws.open) return pane_drag_finish(app, "the Edit workspace did not open");
+        d.step = pane_drag_phase::dwell;
+        d.phase_t = now;
+      } else if (since(d.t0) * 1000.0 > static_cast<double>(kBrowseOpenTimeoutMs)) {
+        pane_drag_finish(app, "no photo appeared");
+      }
+      return;
+    case pane_drag_phase::dwell:
+      if (since(d.phase_t) < kPaneDragDwellSeconds) return;
+      app->pane_edge_drag = true;
+      app->pane_grab_dx = 0;
+      app->pane_move_pending = false;
+      app->input.chrome_live_resize = 1;
+      publish(app);
+      d.step = pane_drag_phase::drag;
+      d.phase_t = now;
+      return;
+    case pane_drag_phase::drag: {
+      const double t = since(d.phase_t);
+      if (t >= kPaneDragSweepSeconds) {
+        pane_edge_end(app);
+        d.step = pane_drag_phase::settle;
+        d.phase_t = now;
+        return;
+      }
+      // A triangle: min -> max in one leg, back in the next.
+      const double phase = std::fmod(t, 2.0 * kPaneDragLegSeconds) / kPaneDragLegSeconds;
+      const double tri = phase <= 1.0 ? phase : 2.0 - phase;
+      const double want = kPaneLimits.min + (kPaneLimits.max - kPaneLimits.min) * tri;
+      RECT rc{};
+      ::GetClientRect(app->window, &rc);
+      const auto dpi = static_cast<int>(::GetDpiForWindow(app->window));
+      const int x = (rc.right - rc.left) - ::MulDiv(static_cast<int>(std::lround(want + kPaneLimits.rail)), dpi, 96);
+      const auto t_layout = std::chrono::steady_clock::now();
+      if (pane_edge_apply(app, x)) {
+        d.layout_ms.push_back(static_cast<float>(
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_layout).count()));
+      }
+      return;
+    }
+    case pane_drag_phase::settle:
+      if (since(d.phase_t) < kPaneDragSettleSeconds) return;
+      d.presents_before = app->lab.drag_log().presents();
+      d.step = pane_drag_phase::measure;
+      d.phase_t = now;
+      return;
+    case pane_drag_phase::measure:
+      if (since(d.phase_t) < kPaneDragMeasureSeconds) return;
+      d.presents_after_settle = app->lab.drag_log().presents() - d.presents_before;
+      pane_drag_finish(app, nullptr);
+      return;
+    case pane_drag_phase::finish:
+      return;
+  }
 }
 
 // Issue #38. The rule is shell/transport_autohide.h, shared with the Mac host;
@@ -10034,6 +10373,12 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
                                           app_state* app) {
   switch (msg) {
     case WM_MOUSEMOVE: {
+      // docs/plans/edit-refresh.md §2.4: the column's edge is being dragged.
+      // Nothing else (brush, text, drag-out) sees these moves.
+      if (app->pane_edge_drag) {
+        pane_edge_move(app, GET_X_LPARAM(lparam));
+        return 0;
+      }
       // Fullscreen hot-edge: the bottom few pixels reveal the strips.
       if (app->fullscreen) {
         RECT rc{};
@@ -10095,6 +10440,12 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
       return 0;
     }
 
+    case WM_CAPTURECHANGED:
+      // Something else took the mouse mid-drag (a menu, another window): the
+      // drag ends where it was.
+      if (app->pane_edge_drag && reinterpret_cast<HWND>(lparam) != hwnd) pane_edge_end(app);
+      break;
+
     case WM_MOUSELEAVE: {
       ++app->input.activity_seq;
       app->tracking_mouse = false;
@@ -10108,6 +10459,15 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
     }
 
     case WM_SETCURSOR:
+      // docs/plans/edit-refresh.md §2.4: the right column's edge.
+      if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT) {
+        POINT at{};
+        if (app->pane_edge_drag ||
+            (::GetCursorPos(&at) && ::ScreenToClient(hwnd, &at) && pane_edge_hit(app, at.x, at.y))) {
+          ::SetCursor(::LoadCursorW(nullptr, IDC_SIZEWE));
+          return TRUE;
+        }
+      }
       // Issue #38: fullscreen, playing, idle, over the video. Anything else is
       // the class cursor, so the windowed pointer is never touched.
       if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT &&
@@ -10133,6 +10493,15 @@ std::optional<LRESULT> window_on_pointer(HWND hwnd, UINT msg, WPARAM wparam, LPA
     case WM_RBUTTONDOWN: case WM_RBUTTONUP:
     case WM_MBUTTONDOWN: case WM_MBUTTONUP: {
       const bool down = msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN;
+      // docs/plans/edit-refresh.md §2.4: the right column's edge, before the
+      // pickers and the brush: a press there drags the column, never the photo.
+      if (msg == WM_LBUTTONDOWN && pane_edge_press(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam))) return 0;
+      if (msg == WM_LBUTTONUP && app->pane_edge_drag) {
+        app->pane_pending_x = GET_X_LPARAM(lparam);
+        app->pane_move_pending = true;
+        pane_edge_end(app);
+        return 0;
+      }
       // Slice 3: the adjust pane's white-balance picker or red-eye tool takes
       // the click on the photo; nothing pans.
       if (msg == WM_LBUTTONDOWN && adjust_picking(app)) {
@@ -10648,6 +11017,15 @@ std::optional<LRESULT> window_on_timer(HWND hwnd, UINT msg, WPARAM wparam, LPARA
         browse_tick(app);
         return 0;
       }
+      if (wparam == kPaneEdgeTimerId) {
+        if (app->pane_edge_drag) pane_edge_flush(app);
+        else ::KillTimer(hwnd, kPaneEdgeTimerId);
+        return 0;
+      }
+      if (wparam == kPaneDragSoakTimerId) {
+        pane_drag_tick(app);
+        return 0;
+      }
       if (wparam == kWorkspaceFollowTimerId) {
         workspace_follow_settled(app);
         return 0;
@@ -10774,6 +11152,9 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
       options.scripted_pan = true;
     } else if (arg == L"--browse-soak") {
       g_browse.enabled = true;
+    } else if (arg == L"--pane-drag-soak") {
+      g_pane_drag.enabled = true;
+      options.pane_drag_soak = true;
     } else if (arg == L"--open") {
       std::wstring value;
       next(value);
@@ -10835,6 +11216,18 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
       ok = false;
     } else {
       g_browse.json_path = options.json_report_path;
+    }
+  }
+  if (ok && g_pane_drag.enabled) {
+    if (options.soak_seconds > 0.0 || g_browse.enabled) {
+      error = L"--pane-drag-soak cannot be combined with --soak or --browse-soak";
+      ok = false;
+    } else if (options.json_report_path.empty()) {
+      error = L"--pane-drag-soak needs --json PATH";
+      ok = false;
+    } else {
+      g_pane_drag.json_path = options.json_report_path;
+      options.json_report_path.clear();
     }
   }
   // Interactive: drop-target empty view. Soak: the PR 1 sweep unless --static.
@@ -10911,7 +11304,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // must not reach [recent].
   const bool edit_selftest = ::GetEnvironmentVariableW(L"MV_EDIT_SELFTEST", nullptr, 0) > 0;
   const bool harness_run = options.soak_seconds != 0.0 || options.av_soak_seconds != 0 || g_browse.enabled ||
-                           options.scripted_pan || edit_selftest;
+                           g_pane_drag.enabled || options.scripted_pan || edit_selftest;
   // An add-on update's restart waits for the old process to be gone first, so
   // it claims the name like any start instead of handing its paths to the
   // window that is closing (the restore flags do not opt it out).
@@ -11065,7 +11458,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // unless --static). Interactive empty view is the drop target, not the sweep.
   if (options.soak_seconds == 0.0) options.overlay_visible = false;
 
-  if (g_browse.enabled) options.present_when_inactive = true;
+  if (g_browse.enabled || g_pane_drag.enabled) options.present_when_inactive = true;
   if (auto started = app.lab.start(hwnd, options); !started) {
     ::MessageBoxA(nullptr, "render thread failed to start", "MediaViewer", MB_ICONERROR | MB_OK);
     mv_session_release(app.session);
@@ -11113,6 +11506,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   if (!requested_paths.empty()) open_paths(&app, requested_paths);
   start_scripts(&app);  // docs/design/25 PR 57: after the chrome, on a worker
   if (g_browse.enabled) ::SetTimer(hwnd, kBrowseTimerId, kBrowseTickMs, nullptr);
+  if (g_pane_drag.enabled) ::SetTimer(hwnd, kPaneDragSoakTimerId, kPaneDragSoakTickMs, nullptr);
   // PR 29: MV_EDIT_SELFTEST=<folder> walks the Edit workspace (docs/design/20 verify).
   if (wchar_t dir[MAX_PATH]{}; ::GetEnvironmentVariableW(L"MV_EDIT_SELFTEST", dir, MAX_PATH) > 0) {
     g_edit_selftest_dir = dir;

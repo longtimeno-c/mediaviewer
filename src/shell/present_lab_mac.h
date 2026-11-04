@@ -35,6 +35,7 @@
 #include "player/playback_hold.h"
 #include "shell/dino_game.h"
 #include "shell/compare.h"
+#include "shell/drag_frames.h"
 #include "shell/home_theme.h"
 #include "shell/input_state.h"
 
@@ -50,6 +51,11 @@ struct mac_lab_options {
   // not the window has focus, as a soak does, so a person using the machine
   // does not stall it.
   bool harness = false;
+  // --pane-drag-soak (docs/plans/edit-refresh.md §7 S1), the Windows lab's
+  // twin: while the host drags the right column's edge, pan the still at
+  // 100 % for 10 s, then fit it so the rest of the drag refits live, and log
+  // every present-to-present interval (drag_log()).
+  bool pane_drag_soak = false;
   // PR 17: a still to open on start (--open PATH), decoded and uploaded on a
   // job_system worker, never on the render thread (rule 1, docs/design/02).
   std::string open_path;
@@ -158,6 +164,14 @@ class present_lab_mac {
     int cached = 0;
     int valid = 0;
   };
+  // --pane-drag-soak: what the render thread presented during the drag, and
+  // how many times the layer's drawable size was assigned (a column drag
+  // must not). [any thread]
+  [[nodiscard]] const drag_frame_log& drag_log() const noexcept { return drag_log_; }
+  [[nodiscard]] std::uint32_t drawable_sets() const noexcept {
+    return drawable_sets_.load(std::memory_order_relaxed);
+  }
+
   [[nodiscard]] std::uint64_t mark_navigation() noexcept;
   [[nodiscard]] bool navigation_done(std::uint64_t seq) const noexcept;
   [[nodiscard]] nav_sample navigation_sample(std::uint64_t seq) const noexcept;
@@ -514,6 +528,10 @@ class present_lab_mac {
   bool boot_full_due_ = false;
   bool soak_complete_ = false;
   std::uint64_t total_presents_ = 0;
+  drag_frame_log drag_log_;
+  std::atomic<std::uint32_t> drawable_sets_{0};
+  double drag_pan_start_ = -1.0;  // --pane-drag-soak: the drag's pan began
+  bool drag_pan_done_ = false;
   bool was_presenting_ = false;
   // docs/design/17 "Yield policy": the last dropped frame holds the busy signal for
   // background add-on work (the AI indexer) for two seconds.
@@ -538,6 +556,7 @@ class present_lab_mac {
   double last_game_elapsed_ = 0.0;
   std::uint32_t seen_reset_seq_ = 0;
   std::uint32_t seen_resize_seq_ = 0;
+  std::uint32_t seen_refit_seq_ = 0;
   std::uint32_t seen_display_seq_ = 0;
   // Issue #408: the theme's tokens (one redraw when they change) and the
   // home's ground effect, which ticks at 10 Hz by its rest rule.

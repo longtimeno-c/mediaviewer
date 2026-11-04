@@ -92,6 +92,17 @@ width_class class_of(float w);
 - New commands `pane_wider` / `pane_narrower` (±40) are appended with no default key, so they show in the View menu and can be remapped.
 - Mac accessibility: the edge view has `NSAccessibilitySplitterRole` with an adjustable value.
 
+**S1 built (2026-11-04):** §2.1, §2.2, the column and edge of §2.3 / §2.4 (no rail yet: hosts use
+`pane_width_limits{.rail = 0}` and `shown_inspector`, which keeps a pane at its minimum where the
+clamp says "rail only"), `pane_wider` / `pane_narrower` (ids 212, 213), §2.6's Curves and
+histogram fit on both hosts, the Mac canvas guide (the transport centres on the canvas), and
+`--pane-drag-soak` on both labs. One change to §2.1: the clamp's maximum also keeps the canvas at
+`canvas_min` or wider (`client - rail - canvas_min`), so 644 pt gives 280, not 342. Owed by S2:
+the Windows theme minimum is 300 DIP flat until the island sends its type scale
+(`chrome_cmd_*`, S2's ids), and the edge's hot / drag feedback on Windows
+(`chrome_cmd_pane_edge_state`, 1095). Not run here: the soak (either lab), the in-app checks,
+both PR 1 gates and the selftest; the Windows halves are not compiled on the Mac (C# is).
+
 ### 2.2 Canvas refit without touching the swapchain (both present labs)
 
 - **`src/shell/input_state.h`.** Add `std::uint32_t refit_seq` beside `resize_seq` (line 269), plus `std::uint8_t chrome_live_resize`.

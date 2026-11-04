@@ -76,18 +76,10 @@ struct AdjustView: View {
           .buttonStyle(.plain)
           .help("Close (⇧A)")
       }
-      histogramView
-        .frame(height: 96)
-      if store.histogramValid {
-        Text(String(format: "Clipped highlights %.1f %%   ·   crushed shadows %.1f %%",
-                    store.clipHigh * 100, store.clipLow * 100))
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
-      if !status.isEmpty {
-        Text(status).foregroundStyle(.secondary)
-      }
       // Slice 5b: say what you want; the sliders it names move (one undo step).
+      // It and the header stay put; everything under them scrolls
+      // (docs/plans/edit-refresh.md §2.5 "Height rule"), so nothing is cut off
+      // at any width or height.
       TextField("Describe a change — a bit warmer, less noise…", text: $request)
         .textFieldStyle(.roundedBorder)
         .disabled(!store.ready)
@@ -97,25 +89,38 @@ struct AdjustView: View {
           request = ""
         }
         .accessibilityLabel("Describe a change")
-      if !store.promptNote.isEmpty {
-        Text(store.promptNote).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-      }
       ScrollView {
-        VStack(alignment: .leading, spacing: MVTheme.space(4)) {
-          // Faces and Remove live in the Edit strip's wand menu, with the
-          // other Enhance features; the pane is colour and tone.
-          ForEach(AdjustStore.sections.indices.filter {
-            $0 != AdjustStore.facesSection && $0 != AdjustStore.removeSection
-          }, id: \.self) { i in
-            sectionView(i)
+        VStack(alignment: .leading, spacing: MVTheme.space(10)) {
+          if !store.promptNote.isEmpty {
+            Text(store.promptNote).font(.caption).foregroundStyle(.secondary).lineLimit(2)
           }
+          histogramView
+            .frame(height: 96)
+          if store.histogramValid {
+            Text(String(format: "Clipped highlights %.1f %%   ·   crushed shadows %.1f %%",
+                        store.clipHigh * 100, store.clipLow * 100))
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+          if !status.isEmpty {
+            Text(status).foregroundStyle(.secondary)
+          }
+          VStack(alignment: .leading, spacing: MVTheme.space(4)) {
+            // Faces and Remove live in the Edit strip's wand menu, with the
+            // other Enhance features; the pane is colour and tone.
+            ForEach(AdjustStore.sections.indices.filter {
+              $0 != AdjustStore.facesSection && $0 != AdjustStore.removeSection
+            }, id: \.self) { i in
+              sectionView(i)
+            }
+          }
+          Button("Reset adjustments") { store.reset() }
+            .disabled(!store.ready)
+          Text("↑ ↓ choose   ← → change (⇧ ×10)   0 zero   A auto   R reset   Esc photo")
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
       }
-      Button("Reset adjustments") { store.reset() }
-        .disabled(!store.ready)
-      Text("↑ ↓ choose   ← → change (⇧ ×10)   0 zero   A auto   R reset   Esc photo")
-        .font(.caption)
-        .foregroundStyle(.secondary)
     }
     .padding(MVTheme.space(14))
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -339,11 +344,15 @@ struct AdjustView: View {
       .padding(.leading, MVTheme.space(14))
     }
     if i == AdjustStore.curvesSection {
+      // A square, fully visible at every width (docs/plans/edit-refresh.md §2.6):
+      // the pane's content width when compact, at most 340 from regular up
+      // (shell/pane_width.h curve_side).
       CurveEditor(store: store, channel: curvesChannel)
         .aspectRatio(1, contentMode: .fit)
+        .frame(maxWidth: 340, alignment: .leading)
         .padding(.leading, MVTheme.space(14))
         .disabled(!store.ready)
-      Text("Drag the line to add a point · drag a point off the square to remove it")
+      Text("Drag the line to add a point · double-click or drag a point off the square to remove it")
         .font(.caption)
         .foregroundStyle(.secondary)
         .padding(.leading, MVTheme.space(14))
@@ -375,7 +384,38 @@ struct AdjustView: View {
   }
 
   // R, G, B and luma as four translucent filled paths, the Windows pane's drawing.
+  // The clipping triangles at the top corners light when shadows crush or
+  // highlights clip; a click shows the blinkies (`C`) on the photo.
   private var histogramView: some View {
+    histogramPlot
+      .overlay(alignment: .topLeading) { clipTriangle(lit: store.histogramValid && store.clipLow > 0, left: true) }
+      .overlay(alignment: .topTrailing) { clipTriangle(lit: store.histogramValid && store.clipHigh > 0, left: false) }
+  }
+
+  private func clipTriangle(lit: Bool, left: Bool) -> some View {
+    Button {
+      mv_chrome_run_command(ViewCommand.clipping)
+    } label: {
+      Canvas { ctx, size in
+        var p = Path()
+        if left {
+          p.move(to: .zero); p.addLine(to: CGPoint(x: size.width, y: 0)); p.addLine(to: CGPoint(x: 0, y: size.height))
+        } else {
+          p.move(to: .zero); p.addLine(to: CGPoint(x: size.width, y: 0)); p.addLine(to: CGPoint(x: size.width, y: size.height))
+        }
+        p.closeSubpath()
+        ctx.fill(p, with: .color(lit ? (left ? Color.blue : Color.red) : Color.secondary.opacity(0.35)))
+      }
+      .frame(width: 12, height: 12)
+      .padding(3)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .help(left ? "Crushed shadows: show clipping on the photo (C)" : "Clipped highlights: show clipping on the photo (C)")
+    .accessibilityLabel(left ? "Show crushed shadows" : "Show clipped highlights")
+  }
+
+  private var histogramPlot: some View {
     Canvas { ctx, size in
       ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(nsColor: .textBackgroundColor)))
       guard store.histogramValid else { return }
@@ -403,14 +443,20 @@ struct AdjustView: View {
   }
 }
 
-/// Slice 2: one channel's curve, drawn over the luma histogram. A drag that
+/// Slice 2: one channel's curve, drawn over its channel's histogram. A drag that
 /// starts near a point moves it (the ends move up and down only); one that
-/// starts on the line adds a point there; a point dragged off the square goes.
-/// Every move is sent (AdjustStore.setCurve); the core makes one drag one op.
+/// starts on the line adds a point there; a point dragged off the square, or
+/// double-clicked, goes. Every move is sent (AdjustStore.setCurve); the core
+/// makes one drag one op. The plot sits 6 pt inside the frame, so the end
+/// points and the edge lines are whole and hittable (docs/plans/edit-refresh.md
+/// §2.6); drawing and hit-testing share that one rect.
 struct CurveEditor: View {
   @ObservedObject var store: AdjustStore
   let channel: Int
   @State private var dragging: Int? = nil
+  @State private var lastPress: (index: Int, at: Date)? = nil
+
+  static let inset: CGFloat = 6
 
   private var points: [CGPoint] {
     let p = store.curves[channel]
@@ -419,43 +465,64 @@ struct CurveEditor: View {
 
   private static let tints: [Color] = [.primary, .red, .green, .blue]
 
+  static func plotRect(_ size: CGSize) -> CGRect {
+    CGRect(origin: .zero, size: size).insetBy(dx: inset, dy: inset)
+  }
+
   var body: some View {
     GeometryReader { geo in
       let size = geo.size
       Canvas { ctx, sz in
-        ctx.fill(Path(CGRect(origin: .zero, size: sz)), with: .color(Color(nsColor: .textBackgroundColor)))
+        let frame = CGRect(origin: .zero, size: sz)
+        let r = Self.plotRect(sz)
+        let shape = RoundedRectangle(cornerRadius: MVTheme.radius(4))
+        ctx.fill(shape.path(in: frame), with: .color(Color(nsColor: .textBackgroundColor)))
+        func at(_ x: Double, _ y: Double) -> CGPoint { CGPoint(x: r.minX + x * r.width, y: r.minY + (1 - y) * r.height) }
         if store.histogramValid {
           let bins = store.histogram[channel == 0 ? 3 : channel - 1]
           var h = Path()
-          h.move(to: CGPoint(x: 0, y: sz.height))
+          h.move(to: at(0, 0))
           for (i, v) in bins.enumerated() {
-            h.addLine(to: CGPoint(x: sz.width * (Double(i) + 0.5) / Double(bins.count), y: sz.height * (1 - v)))
+            h.addLine(to: at((Double(i) + 0.5) / Double(bins.count), v))
           }
-          h.addLine(to: CGPoint(x: sz.width, y: sz.height))
-          ctx.fill(h, with: .color(Color.secondary.opacity(0.25)))
+          h.addLine(to: at(1, 0))
+          ctx.fill(h, with: .color(Self.tints[channel].opacity(channel == 0 ? 0.18 : 0.25)))
         }
         var grid = Path()
         for k in 1..<4 {
           let t = Double(k) / 4
-          grid.move(to: CGPoint(x: sz.width * t, y: 0)); grid.addLine(to: CGPoint(x: sz.width * t, y: sz.height))
-          grid.move(to: CGPoint(x: 0, y: sz.height * t)); grid.addLine(to: CGPoint(x: sz.width, y: sz.height * t))
+          grid.move(to: at(t, 0)); grid.addLine(to: at(t, 1))
+          grid.move(to: at(0, t)); grid.addLine(to: at(1, t))
         }
         ctx.stroke(grid, with: .color(Color.secondary.opacity(0.2)), lineWidth: 0.5)
+        ctx.stroke(Path(r), with: .color(Color.secondary.opacity(0.35)), lineWidth: 0.5)
         var line = Path()
         let pts = points
         for s in 0...96 {
           let x = Double(s) / 96
-          let pt = CGPoint(x: x * sz.width, y: (1 - AdjustStore.evaluate(pts, x)) * sz.height)
+          let pt = at(x, AdjustStore.evaluate(pts, x))
           if s == 0 { line.move(to: pt) } else { line.addLine(to: pt) }
         }
         ctx.stroke(line, with: .color(Self.tints[channel]), lineWidth: 1.5)
         for p in pts {
-          let c = CGPoint(x: p.x * sz.width, y: (1 - p.y) * sz.height)
+          let c = at(p.x, p.y)
           ctx.fill(Path(ellipseIn: CGRect(x: c.x - 4, y: c.y - 4, width: 8, height: 8)),
                    with: .color(Self.tints[channel]))
         }
+        // The frame is a stroke, not a clip: nothing of a point at a corner is cut.
+        ctx.stroke(shape.path(in: frame.insetBy(dx: 0.5, dy: 0.5)), with: .color(MVTheme.hairline), lineWidth: 1)
       }
-      .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(4)))
+      .overlay(alignment: .topLeading) {
+        if let d = dragging, d >= 0, d < points.count {
+          let p = points[d]
+          Text("\(Int((p.x * 255).rounded())) → \(Int((p.y * 255).rounded()))")
+            .font(.caption.monospacedDigit())
+            .padding(.horizontal, 4)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 3))
+            .padding(Self.inset + 2)
+            .allowsHitTesting(false)
+        }
+      }
       .contentShape(Rectangle())
       .gesture(DragGesture(minimumDistance: 0)
         .onChanged { g in drag(g.startLocation, g.location, size) }
@@ -465,29 +532,42 @@ struct CurveEditor: View {
   }
 
   private func drag(_ start: CGPoint, _ at: CGPoint, _ size: CGSize) {
-    guard size.width > 0, size.height > 0 else { return }
+    let r = Self.plotRect(size)
+    guard r.width > 0, r.height > 0 else { return }
     var pts = points
-    func unit(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x / size.width, y: 1 - p.y / size.height) }
+    func unit(_ p: CGPoint) -> CGPoint { CGPoint(x: (p.x - r.minX) / r.width, y: 1 - (p.y - r.minY) / r.height) }
     if dragging == nil {
       let s = unit(start)
       let near = pts.indices.min { hypot(pts[$0].x - s.x, pts[$0].y - s.y) < hypot(pts[$1].x - s.x, pts[$1].y - s.y) }
       if let n = near, hypot(pts[n].x - s.x, pts[n].y - s.y) < 0.06 {
+        // A double-click on an inner point removes it.
+        let now = Date()
+        if n > 0, n < pts.count - 1, let last = lastPress, last.index == n,
+           now.timeIntervalSince(last.at) < NSEvent.doubleClickInterval {
+          lastPress = nil
+          pts.remove(at: n)
+          dragging = -1  // the rest of this press moves nothing
+          store.setCurve(channel, pts)
+          return
+        }
+        lastPress = (n, now)
         dragging = n
       } else if pts.count < 8, s.x > 0.02, s.x < 0.98 {
         pts.append(CGPoint(x: s.x, y: AdjustStore.evaluate(pts, s.x)))
         pts.sort { $0.x < $1.x }
         dragging = pts.firstIndex { $0.x == s.x }
+        lastPress = nil
       } else {
         return
       }
     }
-    guard let d = dragging, d < pts.count else { return }
+    guard let d = dragging, d >= 0, d < pts.count else { return }
     let u = unit(at)
     let end = d == 0 || d == pts.count - 1
     // Off the square: an inner point goes.
     if !end && (u.y < -0.08 || u.y > 1.08 || u.x < -0.08 || u.x > 1.08) {
       pts.remove(at: d)
-      dragging = nil
+      dragging = -1
       store.setCurve(channel, pts)
       return
     }

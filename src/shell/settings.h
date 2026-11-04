@@ -65,6 +65,10 @@ struct view_settings {
   // PR 9: the folder sort, packed by io::pack_sort (key in bits 0-2, descending
   // in bit 3). Not part of flags(): the chrome gets it beside them.
   std::int32_t sort = 0;
+  // docs/plans/edit-refresh.md §2.1: the right column's preferred width in DIPs,
+  // rounded to 4 (shell/pane_width.h stored_width); 0 = the default, 360. Not
+  // part of flags(); it travels beside `sort`. Saved when the edge is let go.
+  std::int32_t right_pane_dip = 0;
 
   [[nodiscard]] std::int32_t flags() const noexcept {
     return (filmstrip_for_folder ? kSettingFilmstripFolder : 0) |

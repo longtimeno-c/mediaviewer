@@ -47,6 +47,8 @@ enum MvMenuCmd : int32_t {
   kMenuPageSidebar,
   // Issue #614: File > Print… (Cmd+P).
   kMenuPrint,
+  // docs/plans/edit-refresh.md S1: View > Wider / Narrower Side Pane.
+  kMenuPaneWider, kMenuPaneNarrower,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 

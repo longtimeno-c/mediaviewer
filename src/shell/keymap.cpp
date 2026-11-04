@@ -218,6 +218,8 @@ constexpr slug_row kSlugs[] = {
     {adjust_levels_blue_white, "adjust_levels_blue_white"},
     {adjust_pick, "adjust_pick"},
     {adjust_open_eyes, "adjust_open_eyes"},
+    {pane_wider, "pane_wider"},
+    {pane_narrower, "pane_narrower"},
 };
 
 struct claim {

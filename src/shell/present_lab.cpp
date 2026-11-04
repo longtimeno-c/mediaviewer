@@ -145,6 +145,7 @@ expected present_lab::start(HWND window, const lab_options& options) noexcept {
   overlay_visible_ = options.overlay_visible;
   animating_ = options.start_animating;
   sweep_mode_ = options.soak_seconds > 0.0;
+  if (options.pane_drag_soak) drag_log_.arm();
 
   wake_event_ = ::CreateEventW(nullptr, FALSE /*auto-reset*/, FALSE, nullptr);
   if (!wake_event_) return err(status::internal);
@@ -511,9 +512,11 @@ void present_lab::render_thread_main() noexcept {
       canvas_window_now_.store(host == window_ ? 0 : snapshot.canvas_window, std::memory_order_release);
       if (warmed_up_ && options_.soak_seconds > 0.0) measurement_valid_ = false;
     }
+    bool resized_now = false;
     if (snapshot.resize_seq != seen_resize_seq_ || resize_pending_) {
       seen_resize_seq_ = snapshot.resize_seq;
       resize_pending_ = false;
+      resized_now = true;
       redraw = true;
       if (auto r = swapchain_.resize(snapshot.width, snapshot.height); !r) {
         MV_LOG_WARN("present_lab: resize failed (%s); rebuilding", status_name(r.error()));
@@ -531,6 +534,24 @@ void present_lab::render_thread_main() noexcept {
         // Fill is a mode too: `4` then `F` must still cover the new canvas.
         const auto view = usable_canvas(snapshot);
         camera_.fill(media_width(), media_height(), view.w, view.h, true);
+      }
+    }
+    // docs/design/12 2026-11-04 (refit_seq): the chrome moved the canvas
+    // rectangle (a pane docked, the right column's edge, the filmstrip), the
+    // window did not. Only the fit or fill is re-run into the new rect: the
+    // swapchain, its buffers and the pacer's refresh are never touched. While
+    // the edge is dragged the picture tracks it exactly; on release it springs.
+    if (snapshot.refit_seq != seen_refit_seq_) {
+      seen_refit_seq_ = snapshot.refit_seq;
+      redraw = true;
+      const bool immediate = snapshot.chrome_live_resize != 0;
+      if (!resized_now && (current_image_ || current_video_.texture)) {
+        const auto view = usable_canvas(snapshot);
+        if (camera_.fit_mode()) {
+          camera_.fit(media_width(), media_height(), view.w, view.h, immediate);
+        } else if (camera_.fill_mode()) {
+          camera_.fill(media_width(), media_height(), view.w, view.h, immediate);
+        }
       }
     }
 
@@ -1107,6 +1128,41 @@ void present_lab::render_thread_main() noexcept {
       }
     }
 
+    // --pane-drag-soak: while the host drags the right column's edge, the
+    // --pan-soak path for 10 s, then fit, so the rest of the drag refits the
+    // picture live (the refit_seq branch above). Only the camera moves.
+    if (options_.pane_drag_soak && current_image_) {
+      const bool dragging_edge = snapshot.chrome_live_resize != 0;
+      const auto view = usable_canvas(snapshot);
+      const float w = media_width();
+      const float h = media_height();
+      if (dragging_edge && drag_pan_start_ < 0.0) {
+        drag_pan_start_ = elapsed;
+        camera_.set_zoom(1.0f, w, h, view.w, view.h);
+        camera_.carry(w, h, w, h, view.w, view.h);
+        camera_.drag_begin();
+      }
+      if (dragging_edge && !drag_pan_done_ && camera_.dragging()) {
+        const double t = elapsed - drag_pan_start_;
+        if (t >= 10.0) {
+          camera_.drag_end();
+          camera_.fit(w, h, view.w, view.h, true);
+          drag_pan_done_ = true;
+        } else {
+          const float ax = std::max(0.0f, (w - view.w) * 0.5f);
+          const float ay = std::max(0.0f, (h - view.h) * 0.5f);
+          const float want_x = w * 0.5f + ax * static_cast<float>(std::sin(t * 6.2831853 / 20.0));
+          const float want_y = h * 0.5f + ay * static_cast<float>(std::sin(t * 6.2831853 / 13.0));
+          const float z = camera_.zoom() > 0.0f ? camera_.zoom() : 1.0f;
+          camera_.drag_delta((camera_.pan_x() - want_x) * z, (camera_.pan_y() - want_y) * z);
+        }
+      }
+      if (!dragging_edge && camera_.dragging() && drag_pan_start_ >= 0.0 && !drag_pan_done_) {
+        camera_.drag_end();
+        drag_pan_done_ = true;
+      }
+    }
+
     // --- Should we present at all? --------------------------------------
     // docs/design/03 rule 4: idle means stop presenting entirely (0 % GPU on a static
     // image), and keep presenting for ~500 ms after the last input so a flick
@@ -1473,6 +1529,8 @@ void present_lab::render_thread_main() noexcept {
     if (warmed_up_ && !options_.start_animating) ++idle_stats_.presents;
     if (hr == S_OK) {
       ++total_presents_;
+      drag_log_.on_present(qpc_seconds(qpc_now() - start_qpc), snapshot.chrome_live_resize != 0,
+                           swapchain_.refresh_interval_seconds());
       // Issue #486. First marks win, so these cost a load after launch.
       mv::boot::mark(mv::boot::stage::first_frame);
       if (boot_pixel_due_) mv::boot::mark(mv::boot::stage::first_pixel);

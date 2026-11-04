@@ -117,6 +117,35 @@ Clip, Trim tab (`Ctrl+T`), trim armed:
 Buttons use the command bar's flat style (`FlatButtonStyle`: CozetteVector, no border, a hover
 wash, a held wash when selected) throughout the workspace and the metadata pane.
 
+### The right column
+
+Every right pane (the workspace, Adjust, Info, Jobs) is one column with one width, the user's
+(`shell/pane_width.h`, docs/design/12 2026-11-04). Its left edge drags: 280 to 720 wide (wider
+minimums for a dense or large-type theme), at most 60 % of the window and never leaving the canvas
+under 320; a release within 6 of 360 or 560 snaps there; a double-click resets to 360. View →
+Wider / Narrower side pane step 40 (`pane_wider` / `pane_narrower`, no default key, remappable).
+The width is kept across launches (Mac defaults `MVRightPaneWidth`; Windows `[view]
+right_pane_dip`), saved when the edge is let go. While the workspace is docked the picture tracks
+the edge exactly and springs into place on release; nothing resizes the swapchain
+(`input_snapshot.refit_seq`).
+
+- **Mac:** `NSLayoutGuide rightColumn` with one width constraint; every pane pins its leading edge
+  to it. `MvPaneEdgeView` (6 pt, centred on the column's edge, above the panes, below the transport)
+  shows the resize cursor and a hairline that turns into a 2 pt accent line with a grip while
+  hovered or dragged; it is an accessibility splitter whose value steps like the commands. The Info
+  pane's add-on sections are measured once on release, not per step.
+- **Windows:** the islands are child windows, so the grab strip is the main window's own client
+  area, 6 DIP left of the column; `WM_SETCURSOR` shows `IDC_SIZEWE`, a press captures, moves re-lay
+  the islands at most once per refresh interval, release (or `WM_CAPTURECHANGED`) snaps and saves.
+  The type-scale minimum is 300 DIP until the island sends its type scale.
+
+The Adjust tab's ask field stays under the header; everything below it (histogram, readouts,
+sections, Reset) scrolls. The histogram's corner triangles light when shadows crush or highlights
+clip, and a click on either shows the blinkies (`C`). Curves is a square as wide as the pane's
+content, at most 340, its plot inset 6 so the end points are whole and hittable; it shows "in → out"
+while a point is dragged, a double-click removes an inner point, and the channel's own histogram
+sits under the line in its tint.
+
 ## Architecture
 
 | Layer | Piece | Role |
@@ -164,8 +193,10 @@ The behaviour it pins:
    original while held and changes nothing.
 4. Keyboard only: `Enter`, `Shift+C`, `A` until 3:2, `Enter`, `Ctrl+S`.
 
-Tests: `test_edit_workspace`, and the workspace cases in `test_edit_session`, `test_key_router`
-and `test_meta_write`.
+Tests: `test_edit_workspace`, `test_pane_width` (`mv_tests "[pane-width]"`: the clamp, the
+rail-only collapse, the 60 % cap, snaps, steps, the drag soak's frame log), and the workspace cases
+in `test_edit_session`, `test_key_router` and `test_meta_write`. The column drag's pacing is
+`--pane-drag-soak` ([DEVELOPMENT](../DEVELOPMENT.md)).
 
 ## Not built
 

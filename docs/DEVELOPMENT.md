@@ -742,6 +742,15 @@ showing it and the full-size page; add `--soak N` to have the canvas pacing meas
 `--av-soak <seconds> --csv <path>` (headless A/V drift soak on a clip — see
 [Test](#test)), `--pan-soak` (with `--soak` and `--open`: pan the still at 100 % across
 the whole frame on a fixed path, to measure cached-image and tiled-pyramid pan),
+`--pane-drag-soak` (both labs, docs/plans/edit-refresh.md S1: with `--json PATH` and a still, not
+`--soak`: opens the Edit workspace and drags the right column's edge 280 ↔ 720 and back every
+4 s for 20 s through the drag's own code, while the still pans at 100 % for 10 s and then refits
+live. The JSON has the present intervals during the drag (`frames`, `p50_ms`, `p99_ms`,
+`max_ms`, `over_2x`), the UI thread's layout time per step (`layout_p95_ms`; Windows also says
+`guide_line_fallback` when that is over 12 ms), the Mac's drawable-size assignments during the
+drag (must be 0) and `presents_after_settle` (2 s after a 1.5 s settle, must be 0); `pass` is
+none over 2× refresh and 0 presents after settle. Compare its `p99_ms` with a base `--pan-soak`
+run's by hand. The width it drags to is never saved),
 `--compare` (start in the two-up compare; add it to `--pan-soak` to pan both halves, the
 left one drawing the same still again since one file has no previous, or to `--browse-soak`
 to walk a folder with the split up; `compare_frames` in the soak JSON counts the two-half

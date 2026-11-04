@@ -968,6 +968,7 @@ if(MV_BUILD_TESTS)
     # Issue #614: ⌘P's paper layout.
     tests/test_print_layout.cpp
     tests/test_edit_workspace.cpp
+    tests/test_pane_width.cpp
     tests/test_video_timeline.cpp
     tests/test_export_carried.cpp
     tests/test_text_in_image.cpp
