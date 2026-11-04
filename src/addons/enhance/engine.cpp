@@ -181,6 +181,9 @@ std::vector<model_kind> engine::kinds_for_locked() const {
       if (prefs_.photo == photo_target::remove && brushed_ > 0 && specs_[static_cast<int>(model_kind::remove)]) {
         return {model_kind::remove};
       }
+      if (prefs_.photo == photo_target::extend && specs_[static_cast<int>(model_kind::remove)]) {
+        return {model_kind::remove};  // Remove's model, in its extend mode
+      }
       return specs_[static_cast<int>(model_kind::restyle)] && files_[static_cast<int>(model_kind::restyle)].usable() &&
                      prefs_.photo == photo_target::restyle
                  ? std::vector{model_kind::restyle}
@@ -214,8 +217,10 @@ sheet_view engine::sheet_locked() const {
   // Remove is offered whenever something is brushed: a model not yet
   // downloaded shows as not installed, as any kind does.
   v.offers_remove = brushed_ > 0 && specs_[static_cast<int>(model_kind::remove)].has_value();
+  v.offers_extend = specs_[static_cast<int>(model_kind::remove)].has_value();
   v.photo = prefs_.photo;
-  if ((v.photo == photo_target::restyle && !v.offers_restyle) || (v.photo == photo_target::remove && !v.offers_remove)) {
+  if ((v.photo == photo_target::restyle && !v.offers_restyle) || (v.photo == photo_target::remove && !v.offers_remove) ||
+      (v.photo == photo_target::extend && !v.offers_extend)) {
     v.photo = photo_target::detail;
   }
   if (v.item == item_kind::media && !(facts_.picture && facts_.sound)) {
@@ -427,6 +432,8 @@ void engine::run() {
         const auto it = s.values.find(kb.id);
         p.values[kb.id] = knob_value(kb, it == s.values.end() ? nullptr : &it->second);
       }
+      if (s.kind == model_kind::remove) p.values["mode"].k = json::kind::string;
+      if (s.kind == model_kind::remove) p.values["mode"].s = v.photo == photo_target::extend ? "extend" : "remove";
       r.parts.push_back(std::move(p));
     }
     if (std::string why = runner_->check(r); !why.empty()) {

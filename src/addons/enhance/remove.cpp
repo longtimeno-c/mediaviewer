@@ -154,6 +154,102 @@ mask8 mask_from_dabs(const std::vector<float>& dabs, std::uint32_t width, std::u
   return out;
 }
 
+extend_margins extend_preset(std::string_view preset, std::uint32_t w, std::uint32_t h) noexcept {
+  extend_margins m;
+  if (w == 0 || h == 0) return m;
+  const auto to_aspect = [&](double aspect) {  // aspect = width / height, grown on one axis only
+    const double now = static_cast<double>(w) / h;
+    if (aspect > now) {
+      const auto extra = static_cast<std::uint32_t>(h * aspect - w);
+      m.left = extra / 2;
+      m.right = extra - m.left;
+    } else if (aspect < now) {
+      const auto extra = static_cast<std::uint32_t>(w / aspect - h);
+      m.top = extra / 2;
+      m.bottom = extra - m.top;
+    }
+  };
+  if (preset == "wider") {
+    m.left = m.right = w / 8;
+  } else if (preset == "taller") {
+    m.top = m.bottom = h / 8;
+  } else if (preset == "all") {
+    m.left = m.right = w / 10;
+    m.top = m.bottom = h / 10;
+  } else if (preset == "square") {
+    to_aspect(1.0);
+  } else if (preset == "16x9") {
+    to_aspect(16.0 / 9.0);
+  } else if (preset == "4x5") {
+    to_aspect(4.0 / 5.0);
+  }
+  // At most twice the size each way, and 16384 a side.
+  const auto cap = [](std::uint32_t& a, std::uint32_t& b, std::uint32_t side) {
+    const std::uint32_t most = std::min(side, 16384u > side ? 16384u - side : 0u);
+    if (a + b > most) {
+      const double k = static_cast<double>(most) / (a + b);
+      a = static_cast<std::uint32_t>(a * k);
+      b = static_cast<std::uint32_t>(b * k);
+    }
+  };
+  cap(m.left, m.right, w);
+  cap(m.top, m.bottom, h);
+  return m;
+}
+
+void extend_canvas(const rgb8& photo, const extend_margins& m, rgb8& out, mask8& mask) {
+  out.width = photo.width + m.left + m.right;
+  out.height = photo.height + m.top + m.bottom;
+  out.rgb.assign(std::size_t{out.width} * out.height * 3, 0);
+  mask.width = out.width;
+  mask.height = out.height;
+  mask.a.assign(std::size_t{out.width} * out.height, 255);
+  for (std::uint32_t y = 0; y < out.height; ++y) {
+    const std::uint32_t sy = std::min(photo.height - 1, y < m.top ? 0u : y - m.top);
+    for (std::uint32_t x = 0; x < out.width; ++x) {
+      const std::uint32_t sx = std::min(photo.width - 1, x < m.left ? 0u : x - m.left);
+      const std::uint8_t* s = photo.rgb.data() + (std::size_t{sy} * photo.width + sx) * 3;
+      std::uint8_t* d = out.rgb.data() + (std::size_t{y} * out.width + x) * 3;
+      d[0] = s[0], d[1] = s[1], d[2] = s[2];
+      const bool inside = x >= m.left && x < m.left + photo.width && y >= m.top && y < m.top + photo.height;
+      if (inside) mask.a[std::size_t{y} * out.width + x] = 0;
+    }
+  }
+}
+
+std::vector<pixel_box> extend_tiles(std::uint32_t w, std::uint32_t h, const extend_margins& m) {
+  std::vector<pixel_box> out;
+  const std::uint32_t shorter = std::min(w, h);
+  // A tile reaches as far into the photo as the margin is deep (context), at
+  // least 256 and at most the picture's shorter side.
+  const auto side_for = [&](std::uint32_t margin) { return std::clamp(margin * 2 + 64, 256u, shorter); };
+  const auto along = [&](std::uint32_t length, std::uint32_t tile, auto&& place) {
+    const std::uint32_t step = std::max(1u, tile * 3 / 4);  // a quarter overlapping
+    for (std::uint32_t at = 0;; at += step) {
+      const std::uint32_t start = std::min(at, length > tile ? length - tile : 0u);
+      place(start);
+      if (start + tile >= length) break;
+    }
+  };
+  if (m.left) {
+    const std::uint32_t t = side_for(m.left);
+    along(h, t, [&](std::uint32_t y) { out.push_back({0, y, t, std::min(t, h - y)}); });
+  }
+  if (m.right) {
+    const std::uint32_t t = side_for(m.right);
+    along(h, t, [&](std::uint32_t y) { out.push_back({w - t, y, t, std::min(t, h - y)}); });
+  }
+  if (m.top) {
+    const std::uint32_t t = side_for(m.top);
+    along(w, t, [&](std::uint32_t x) { out.push_back({x, 0, std::min(t, w - x), t}); });
+  }
+  if (m.bottom) {
+    const std::uint32_t t = side_for(m.bottom);
+    along(w, t, [&](std::uint32_t x) { out.push_back({x, h - t, std::min(t, w - x), t}); });
+  }
+  return out;
+}
+
 struct inpaint_model::impl {
   std::unique_ptr<infer::session> s;
   inpaint_io io;

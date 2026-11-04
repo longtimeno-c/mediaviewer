@@ -180,7 +180,7 @@ const char* section_title(const sheet_view& v, model_kind k) {
     case model_kind::video: return "Picture";
     case model_kind::audio: return "Sound";
     case model_kind::restyle: return "Restyle";
-    case model_kind::remove: return "Remove what you brushed";
+    case model_kind::remove: return v.photo == photo_target::extend ? "Extend the picture" : "Remove what you brushed";
   }
   return "";
 }
@@ -293,7 +293,7 @@ std::string sheet_tree(const sheet_view& v) {
       w.end_object();
     }
   }
-  if (v.item == item_kind::still && (v.offers_restyle || v.offers_remove)) {
+  if (v.item == item_kind::still && (v.offers_restyle || v.offers_remove || v.offers_extend)) {
     w.begin_object().key("type").string("choice").key("id").string("photo").key("label").string("Enhance");
     w.key("options").begin_array();
     w.begin_object().key("id").string(photo_target_name(photo_target::detail)).key("text").string("More detail").end_object();
@@ -302,6 +302,9 @@ std::string sheet_tree(const sheet_view& v) {
     }
     if (v.offers_remove) {
       w.begin_object().key("id").string(photo_target_name(photo_target::remove)).key("text").string("Remove what you brushed").end_object();
+    }
+    if (v.offers_extend) {
+      w.begin_object().key("id").string(photo_target_name(photo_target::extend)).key("text").string("Extend the picture").end_object();
     }
     w.end_array();
     w.key("value").string(photo_target_name(v.photo));
@@ -315,6 +318,8 @@ std::string sheet_tree(const sheet_view& v) {
       std::size_t shown = 0;
       for (const knob& kb : s.spec->knobs) {
         if (std::find(kb.kinds.begin(), kb.kinds.end(), s.kind) == kb.kinds.end()) continue;
+        // Remove's "extend" choice is for extending only.
+        if (kb.id == "extend" && v.photo != photo_target::extend) continue;
         const auto it = s.values.find(kb.id);
         knob_node(w, s.kind, kb, knob_value(kb, it == s.values.end() ? nullptr : &it->second));
         ++shown;

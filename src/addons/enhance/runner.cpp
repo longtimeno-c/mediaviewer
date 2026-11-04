@@ -205,7 +205,10 @@ bool job_runner::supports(model_kind k, item_kind item) const {
 
 std::string job_runner::check(const job_request& r) const {
   if (const job_request::part* remove = part_of(r, model_kind::remove)) {
-    if (!port_.still_mask || port_.still_mask(r.path).empty()) {
+    const auto mode = remove->values.find("mode");
+    const bool extending = mode != remove->values.end() && mode->second.k == json::kind::string &&
+                           mode->second.s == "extend";
+    if (!extending && (!port_.still_mask || port_.still_mask(r.path).empty())) {
       return "Nothing is brushed. In Edit, open Adjust → Remove, brush over what to take out, then Remove.";
     }
     if (port_.free_memory) {
@@ -668,6 +671,10 @@ void job_runner::run_remove(job_request r, job_events ev) {
     if (ev.done) ev.done(false, "", message);
   };
   const job_request::part& part = *part_of(r, model_kind::remove);
+  if (const auto mode = part.values.find("mode");
+      mode != part.values.end() && mode->second.k == json::kind::string && mode->second.s == "extend") {
+    return run_extend(std::move(r), std::move(ev));
+  }
   if (ev.progress) ev.progress(-1);
   const std::vector<float> dabs = port_.still_mask(r.path);
   auto pic = port_.open_still(r.path);
@@ -700,6 +707,74 @@ void job_runner::run_remove(job_request r, job_events ev) {
   still.width = full.width;
   still.height = full.height;
   still.rgb = std::move(full.rgb);
+  auto path = port_.write_still(r.path, still);
+  if (!path) return fail(why(path.error()));
+  if (ev.done) ev.done(true, name_of(*path), "");
+}
+
+// Owner 2026-11-04: the picture extended past its edges, Remove's model
+// filling the new margins tile by tile (remove.h extend_*), each tile seeing
+// the photo and the tiles filled before it. The photo's own pixels are kept.
+void job_runner::run_extend(job_request r, job_events ev) {
+  const auto fail = [&](const std::string& message) {
+    if (ev.done) ev.done(false, "", message);
+  };
+  const job_request::part& part = *part_of(r, model_kind::remove);
+  if (ev.progress) ev.progress(-1);
+  auto pic = port_.open_still(r.path);
+  if (!pic) return fail(pic.error() == status::cancelled ? why(status::cancelled) : "Enhance cannot read this photo.");
+  rgb8 photo;
+  photo.width = pic->width;
+  photo.height = pic->height;
+  photo.rgb = std::move(pic->rgb);
+  std::string preset = "wider";
+  if (const auto it = part.values.find("extend"); it != part.values.end() && it->second.k == json::kind::string) {
+    preset = it->second.s;
+  }
+  const extend_margins m = extend_preset(preset, photo.width, photo.height);
+  if (m.empty()) return fail("The photo is already that shape.");
+  if (std::uint64_t{photo.width + m.left + m.right} * (photo.height + m.top + m.bottom) > kMaxStillPixels) {
+    return fail("The extended picture would be over 100 megapixels.");
+  }
+  rgb8 out;
+  mask8 mask;
+  extend_canvas(photo, m, out, mask);
+  const preview_image before = shrink(photo.rgb, photo.width, photo.height, kPreviewEdge);
+  if (ev.preview) ev.preview(before, {});
+  photo = rgb8{};
+  auto model = port_.load_inpaint(*part.spec, part.models_dir);
+  if (!model) return fail(why(model.error() == status::out_of_memory ? status::out_of_memory : status::internal));
+  const std::uint32_t side = (*model)->side();
+  const std::vector<pixel_box> tiles = extend_tiles(out.width, out.height, m);
+  for (std::size_t i = 0; i < tiles.size(); ++i) {
+    if (cancel_.load()) return fail(why(status::cancelled));
+    const pixel_box& box = tiles[i];
+    // Only a tile with something still to fill runs the model.
+    bool any = false;
+    for (std::uint32_t y = box.y; y < box.y + box.height && !any; ++y) {
+      for (std::uint32_t x = box.x; x < box.x + box.width; ++x) {
+        if (mask.a[std::size_t{y} * mask.width + x] > 127) {
+          any = true;
+          break;
+        }
+      }
+    }
+    if (!any) continue;
+    auto filled = (*model)->fill(resize_rgb(crop_rgb(out, box), side, side), crop_mask(mask, box, side, side));
+    if (!filled) return fail(why(filled.error()));
+    paste_back(out, box, resize_rgb(*filled, box.width, box.height), mask, 2);
+    // What this tile filled is photo to the next one.
+    for (std::uint32_t y = box.y; y < box.y + box.height; ++y) {
+      std::fill_n(mask.a.begin() + static_cast<std::ptrdiff_t>(std::size_t{y} * mask.width + box.x), box.width,
+                  std::uint8_t{0});
+    }
+    if (ev.progress) ev.progress(0.1 + 0.85 * static_cast<double>(i + 1) / tiles.size());
+  }
+  if (ev.preview) ev.preview(before, shrink(out.rgb, out.width, out.height, kPreviewEdge));
+  run_port::still still;
+  still.width = out.width;
+  still.height = out.height;
+  still.rgb = std::move(out.rgb);
   auto path = port_.write_still(r.path, still);
   if (!path) return fail(why(path.error()));
   if (ev.done) ev.done(true, name_of(*path), "");

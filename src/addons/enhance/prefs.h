@@ -23,8 +23,10 @@ enum class clip_target : std::uint8_t { picture = 0, sound = 1, both = 2 };
 // What Enhance does to a photo (slice 5b): more detail (the still model) or
 // a typed restyle.
 // remove (slice 7): fill in what was brushed in Edit, offered while it is.
-enum class photo_target : std::uint8_t { detail = 0, restyle = 1, remove = 2 };
-inline constexpr photo_target kPhotoTargets[] = {photo_target::detail, photo_target::restyle, photo_target::remove};
+// extend (owner 2026-11-04): new edges around the photo, Remove's model.
+enum class photo_target : std::uint8_t { detail = 0, restyle = 1, remove = 2, extend = 3 };
+inline constexpr photo_target kPhotoTargets[] = {photo_target::detail, photo_target::restyle, photo_target::remove,
+                                                 photo_target::extend};
 [[nodiscard]] const char* photo_target_name(photo_target t) noexcept;  // "detail" | "restyle" | "remove"
 
 struct prefs {

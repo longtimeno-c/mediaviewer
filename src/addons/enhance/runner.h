@@ -123,6 +123,7 @@ class job_runner final : public runner {
   void run_still(job_request r, job_events events);
   void run_restyle(job_request r, job_events events);
   void run_remove(job_request r, job_events events);
+  void run_extend(job_request r, job_events events);
 
   run_port port_;
   std::mutex m_;

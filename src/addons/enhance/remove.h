@@ -18,6 +18,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "addons/enhance/diffusion.h"
@@ -47,6 +48,24 @@ inline constexpr std::uint32_t kRemoveMinContext = 128;
 // over `feather` pixels outward. Pixels farther than 2 * feather from a
 // brushed one are left exactly as they were.
 void paste_back(rgb8& photo, const pixel_box& box, const rgb8& filled, const mask8& mask, std::uint32_t feather);
+
+// ---- Extend the picture (owner 2026-11-04: "recropping that extends") ----
+// New margins around the photo, in pixels, filled from it by the inpainting
+// model. A preset ("wider", "taller", "all", "square", "16x9", "4x5") or the
+// host's own drag (later) gives them.
+struct extend_margins {
+  std::uint32_t left = 0, top = 0, right = 0, bottom = 0;
+  [[nodiscard]] bool empty() const noexcept { return left + top + right + bottom == 0; }
+};
+// The largest a picture grows: twice its size each way, and 16384 a side.
+[[nodiscard]] extend_margins extend_preset(std::string_view preset, std::uint32_t w, std::uint32_t h) noexcept;
+// The photo in the middle of a bigger picture, the new margins filled with
+// its nearest edge pixel (a start the model refines), and the mask of them.
+void extend_canvas(const rgb8& photo, const extend_margins& m, rgb8& out, mask8& mask);
+// Overlapping square boxes along the margins, each half margin half photo
+// (context for the model), in the order they are filled: each sees the ones
+// before it as photo.
+[[nodiscard]] std::vector<pixel_box> extend_tiles(std::uint32_t w, std::uint32_t h, const extend_margins& m);
 
 // The host's brush (u, v, r triples: the picture's uv, the radius over its
 // longer side) as a mask of a width x height picture.

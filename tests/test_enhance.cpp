@@ -1320,9 +1320,13 @@ TEST_CASE("remove: offered on a brushed photo, the brushed area filled and the r
     write_text(f.self / "manifest.json", m);
   }
   f.restart();
-  // Nothing brushed: the photo's sheet has no Remove.
+  // Nothing brushed: the photo's sheet has no Remove, only Extend (the same model).
   f.eng->sheet_opened(1, utf8(photo));
-  CHECK_FALSE(parsed(f.host.tree(kSheetScreen)).has("photo"));
+  {
+    parsed t(f.host.tree(kSheetScreen));
+    REQUIRE(t.has("photo"));
+    CHECK(t.node("photo")->find("options")->a.size() == 2);  // More detail, Extend
+  }
 
   // A dab at the centre of a 400 x 300 photo, radius 5% of 400 = 20 px.
   {
@@ -1333,7 +1337,7 @@ TEST_CASE("remove: offered on a brushed photo, the brushed area filled and the r
   {
     parsed t(f.host.tree(kSheetScreen));
     REQUIRE(t.has("photo"));
-    CHECK(t.node("photo")->find("options")->a.size() == 2);  // More detail, Remove
+    CHECK(t.node("photo")->find("options")->a.size() == 3);  // More detail, Remove, Extend
     CHECK(*t.node("photo")->str("value") == "remove");       // Remove… opened it
     CHECK(t.text("missing.remove").find("not installed") != std::string::npos);
   }
@@ -1399,6 +1403,91 @@ TEST_CASE("remove: offered on a brushed photo, the brushed area filled and the r
   part.spec = f.eng->spec(model_kind::remove);
   req.parts.push_back(part);
   CHECK(jr.check(req).find("Nothing is brushed") != std::string::npos);
+}
+
+TEST_CASE("extend: new edges filled tile by tile, the photo's own pixels kept", "[enhance][extend]") {
+  // The planner: Wider adds an eighth each side; tiles cover every margin pixel.
+  const extend_margins m = extend_preset("wider", 400, 300);
+  CHECK(m.left == 50);
+  CHECK(m.right == 50);
+  CHECK(m.top == 0);
+  CHECK(extend_preset("square", 400, 300).top + extend_preset("square", 400, 300).bottom == 100);
+  CHECK(extend_preset("16x9", 1600, 900).empty());  // already 16:9
+  rgb8 photo;
+  photo.width = 400;
+  photo.height = 300;
+  photo.rgb = noise_rgb(400, 300);
+  rgb8 out;
+  mask8 mask;
+  extend_canvas(photo, m, out, mask);
+  CHECK(out.width == 500);
+  CHECK(out.height == 300);
+  std::vector<std::uint8_t> covered(std::size_t{out.width} * out.height, 0);
+  for (const pixel_box& b : extend_tiles(out.width, out.height, m)) {
+    CHECK(b.x + b.width <= out.width);
+    CHECK(b.y + b.height <= out.height);
+    for (std::uint32_t y = b.y; y < b.y + b.height; ++y) {
+      for (std::uint32_t x = b.x; x < b.x + b.width; ++x) covered[std::size_t{y} * out.width + x] = 1;
+    }
+  }
+  for (std::size_t i = 0; i < covered.size(); ++i) {
+    if (mask.a[i] > 127) REQUIRE(covered[i] == 1);
+  }
+
+  // The run, with the stand-in that fills with grey.
+  run_port port;
+  port.free_memory = []() -> std::optional<std::uint64_t> { return 8ull << 30; };
+  port.load_inpaint = [](const model_spec&, const std::string&) -> mv::result<std::unique_ptr<inpaint_filler>> {
+    return std::unique_ptr<inpaint_filler>(new grey_fill);
+  };
+  port.still_mask = [](const std::string&) { return std::vector<float>{}; };  // nothing brushed: fine for Extend
+  port.open_still = [&](const std::string&) -> mv::result<run_port::still> {
+    run_port::still st;
+    st.width = photo.width;
+    st.height = photo.height;
+    st.rgb = photo.rgb;
+    return st;
+  };
+  run_port::still written;
+  port.write_still = [&](const std::string&, const run_port::still& pic) -> mv::result<std::string> {
+    written = pic;
+    return std::string("/tmp/photo-enhance.jpg");
+  };
+  model_spec spec;
+  spec.kind = model_kind::remove;
+  job_runner jr(port);
+  job_request req;
+  req.path = "photo.jpg";
+  req.item = item_kind::still;
+  job_request::part part;
+  part.kind = model_kind::remove;
+  part.spec = &spec;
+  part.values["mode"] = *mv::json::parse("\"extend\"");
+  part.values["extend"] = *mv::json::parse("\"wider\"");
+  req.parts.push_back(part);
+  CHECK(jr.check(req).empty());  // no brush needed
+  std::atomic<bool> done{false};
+  bool ok = false;
+  job_events ev;
+  ev.done = [&](bool k, const std::string&, const std::string&) {
+    ok = k;
+    done = true;
+  };
+  jr.start(req, ev);
+  REQUIRE(eventually([&] { return done.load(); }));
+  REQUIRE(ok);
+  CHECK(written.width == 500);
+  CHECK(written.height == 300);
+  // The photo's middle is its own; the new edge is the fill.
+  std::size_t changed = 0;
+  for (std::uint32_t y = 0; y < 300; ++y) {
+    for (std::uint32_t x = 8; x < 392; ++x) {
+      const std::size_t a = (std::size_t{y} * 400 + x) * 3, b = (std::size_t{y} * 500 + x + 50) * 3;
+      changed += photo.rgb[a] != written.rgb[b];
+    }
+  }
+  CHECK(changed == 0);
+  CHECK(written.rgb[(std::size_t{150} * 500 + 10) * 3] == 128);
 }
 
 // ---- the live preview and its glow (contribution API 10) ------------------------------
