@@ -333,6 +333,47 @@ final class StorageStore: ObservableObject {
     return nil
   }
 
+  /// An add-on store folder ("addon:AI Audio"), or nil for the app's own rows.
+  static func addonFolder(_ id: String) -> String? {
+    id.hasPrefix("addon:") ? String(id.dropFirst("addon:".count)) : nil
+  }
+
+  /// The add-on page a store folder belongs to (owner 2026-11-04: each add-on's
+  /// storage on its own page; Local search's pieces "AI Audio", "AI Documents",
+  /// "AI Faces" with it). On the Mac a folder is the add-on's manifest name.
+  static func page(ofFolder folder: String) -> String {
+    if folder == "AI" || folder.hasPrefix("AI ") { return AddonNav.localSearchPage }
+    switch folder {
+    case "Import": return AddonNav.importPage
+    case "Places": return "places"
+    case "Driftwire": return DriftwireStore.addonID
+    case "Enhance": return SlotAddonOffer.enhanceID
+    default: return folder.lowercased()
+    }
+  }
+
+  /// What a folder holds, in the add-on page's words.
+  static func pieceWords(_ folder: String) -> String {
+    switch folder {
+    case "AI": return "Photo and video search: the add-on, its models and the index"
+    case "AI Audio": return "Sound and speech search models"
+    case "AI Documents": return "Document search model"
+    case "AI Faces": return "People: the face models"
+    case "AI Large": return "The large picture model (Maxxed)"
+    case "Enhance": return "The add-on and the models it downloaded"
+    case "Places": return "The add-on and its place database"
+    default: return "The add-on and its data"
+    }
+  }
+
+  /// The rows on an add-on's page.
+  func rows(forPage page: String) -> [StorageRow] {
+    rows.filter { row in
+      guard let folder = Self.addonFolder(row.id) else { return false }
+      return Self.page(ofFolder: folder) == page
+    }
+  }
+
   static func sizeText(_ bytes: Int64) -> String {
     ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
   }
@@ -348,7 +389,10 @@ private struct StorageSection: View {
         Text(storage.measuring ? "Measuring…" : "Sizes are not available.")
           .font(MVTheme.font()).foregroundStyle(MVTheme.body)
       }
-      ForEach(storage.rows) { row in
+      // Add-ons' storage is on each add-on's page (Settings → Add-ons); here,
+      // their total.
+      let addonBytes = storage.rows.filter { StorageStore.addonFolder($0.id) != nil }.reduce(Int64(0)) { $0 + $1.bytes }
+      ForEach(storage.rows.filter { StorageStore.addonFolder($0.id) == nil }) { row in
         if let w = StorageStore.words(row.id) {
           SettingsRow(title: w.title, detail: w.detail) {
             HStack(spacing: MVTheme.space(12)) {
@@ -360,6 +404,11 @@ private struct StorageSection: View {
               }
             }
           }
+        }
+      }
+      if addonBytes > 0 {
+        SettingsRow(title: "Add-ons", detail: "Each add-on's page (Settings → Add-ons) shows what it keeps.") {
+          Text(StorageStore.sizeText(addonBytes)).font(MVTheme.font()).foregroundStyle(MVTheme.body)
         }
       }
       SettingsRow(title: "Thumbnail cache limit",

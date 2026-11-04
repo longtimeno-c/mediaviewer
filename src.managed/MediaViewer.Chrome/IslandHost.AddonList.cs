@@ -46,6 +46,7 @@ public static partial class IslandHost
     private static StackPanel? _addonPageView;
     private static TextBlock? _addonPageTitle;
     private static Border? _addonPageBody;
+    private static StackPanel? _addonPageStorage;
     private static Button? _addonPageBack;
     private static FrameworkElement? _importPage, _localSearchPage, _slotsPage, _othersPage;
     private static double _settingsListOffset;
@@ -114,6 +115,9 @@ public static partial class IslandHost
             BorderThickness = new Thickness(1),
         };
         view.Children.Add(_addonPageBody);
+        // What the add-on keeps on this PC (IslandHost.Storage.cs).
+        _addonPageStorage = new StackPanel { Spacing = Space(6) };
+        view.Children.Add(_addonPageStorage);
         // The add-on's own settings (place "settings"), its cards under the page's.
         view.Children.Add(BuildAddonPageSettings());
         _addonPageView = view;
@@ -259,6 +263,7 @@ public static partial class IslandHost
         _slotConfirming = null;
         if (slot) RefreshSlotSettings();
         _addonPageBody.Child = page;
+        FillAddonPageStorage(id);
         _settingsScroll.Content = _addonPageView;
         RefreshAddonList();  // the title
         _settingsScroll.ChangeView(null, 0, null, disableAnimation: true);

@@ -256,6 +256,7 @@ struct AddonPageView: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
       .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
+      AddonStorageBlock(page: id)
       // The add-on's own settings (place "settings"), its cards under this one:
       // never a card in a card.
       if let screen = slots.settingsScreens[id] {
@@ -297,3 +298,36 @@ struct AddonSettingsScreen: View {
     .onChange(of: slots.settingsScreens) { _, _ in if settings.visible { slots.openSettingsScreen(address) } }
   }
 }
+
+/// What an add-on keeps on this Mac, on its own page (owner 2026-11-04): one line
+/// a store folder, Local search's pieces together. Absent when it keeps nothing.
+private struct AddonStorageBlock: View {
+  let page: String
+  @ObservedObject private var storage = StorageStore.shared
+  @ObservedObject private var settings = SettingsStore.shared
+
+  var body: some View {
+    let rows = storage.rows(forPage: page)
+    VStack(alignment: .leading, spacing: MVTheme.space(6)) {
+      if !rows.isEmpty {
+        HStack {
+          Text("On this Mac").font(MVTheme.font(15)).foregroundStyle(MVTheme.title)
+          Spacer()
+          Text(StorageStore.sizeText(rows.reduce(Int64(0)) { $0 + $1.bytes }))
+            .font(MVTheme.font()).foregroundStyle(MVTheme.title)
+        }
+        ForEach(rows) { row in
+          let folder = StorageStore.addonFolder(row.id) ?? ""
+          HStack {
+            Text(StorageStore.pieceWords(folder)).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+            Spacer()
+            Text(StorageStore.sizeText(row.bytes)).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+          }
+        }
+      }
+    }
+    .onAppear { storage.refresh() }
+    .onChange(of: settings.visible) { _, visible in if visible { storage.refresh() } }
+  }
+}
+
