@@ -46,6 +46,7 @@
 #include <vector>
 
 #include "core/result.h"
+#include "edit/clip_look.h"
 
 namespace mv::edit::clip {
 
@@ -141,6 +142,10 @@ struct request {
   // keep_ranges: false = cut on keyframes, copying packets (instant); true =
   // frame-accurate, re-encoded on a hardware encoder like Path 2 (slower).
   bool ranges_exact = false;
+  // keep_ranges / frame: the Video Editor's look (clip_look.h). keep_ranges
+  // on keyframes carries only what look::copyable() allows; exact with a
+  // non-identity look renders in the helper (clip_look_run.cpp).
+  ::mv::edit::clip::look look{};
 };
 
 struct outcome {

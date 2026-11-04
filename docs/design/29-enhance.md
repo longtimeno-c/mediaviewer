@@ -193,7 +193,7 @@ is not changed." With nothing cut it is the whole clip, as from the viewer. `Enh
 open sheet moves it to the new file and edit.
 
 The cut is applied by the host as it reads, not by the add-on: two rows appended to the table,
-`frames_keep` and `sound_keep` (`src/addon/keep_ranges.h`, in the thunks of `addon/host.cpp`),
+`frames_keep` and `sound_keep` (`src/core/keep_ranges.h`, in the thunks of `addon/host.cpp`),
 called once after `frames_open` / `sound_open`. Frames and samples outside the pieces are dropped;
 what is kept comes back on the edit's own timeline (each piece follows the last), so the writer
 gets the program's times and sound lines up with picture as it does for the whole clip (sound that

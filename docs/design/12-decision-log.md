@@ -2845,7 +2845,23 @@ licence to vet, deterministic, about 1.6 ms a 1080p frame. A low-light model (th
 family and its kin) was set aside until one's licence and its flicker on video are checked; the
 knob can be served by one later without a change to the sheet. Cost: Enhance now asks for
 contribution API 11, so this Enhance needs this MediaViewer or later. The palette and context-menu
-`Enhance…` stay.
+`Enhance…` stay. **The command-bar ✦ Enhance button (#570) is dropped (2026-11-03, owner):**
+Enhance lives in the editors, not on the bar beside them.
+
+**The Video Editor gets a look: turn, mirror, crop, colour, sound, speed, Save frame
+(2026-11-03, owner).** The owner asked for the edits a photo gets in Edit image to reach Edit
+video. 21 said the base editor is "cuts only" and 22 keeps grading, an audio engine and
+multi-track for the Editor add-on; the line now drawn: **one set of settings for the whole edit**
+(`edit::clip::look`), each one a photo edit's twin (PR 11's five colour sliders, the photo crop's
+ratios, quarter turns), plus mute, volume, fades and 0.5× / 2×, stays in the base app; anything
+keyframed, per-piece, graded beyond PR 11's sliders, or mixed stays the add-on's. The look shares
+the pieces' undo history. **Preview** is the canvas's own video blit (turn, mirror and crop in its
+uv map, HLSL and MSL twins; the colour kernel in slice 2), not a second present path. **Export
+exact with a look** renders in the clip helper through Enhance's `frame_reader` /
+`picture_writer` (the hardware encoder, the OS's AAC) rather than a new FFmpeg filter graph:
+8-bit BT.709 SDR out, as Enhance's clips are, and stated. **Export on keyframes** carries only what
+packet copy can: a turn (the display matrix) and mute (no sound stream); it is greyed otherwise.
+ABI 0.36 (`mv_clip_look`). Plan: [`docs/plans/video-editor-look.md`](../plans/video-editor-look.md).
 
 **Enhance's first audio model, and where its sound is written (2026-10-26, #297 slice 4).**
 DeepFilterNet3 (MIT / Apache-2.0), the streaming ONNX export pinned at

@@ -33,7 +33,6 @@
 #include "addons/ai/sha256.h"
 #include "addons/enhance/diffusion.h"
 #include "addons/enhance/remove.h"
-#include "addon/keep_ranges.h"
 #include "addons/enhance/brighten.h"
 #include "addons/enhance/engine.h"
 #include "addons/enhance/picture_job.h"
@@ -44,6 +43,7 @@
 #include "addons/enhance/screens.h"
 #include "addons/enhance/sniff.h"
 #include "addons/enhance/spec.h"
+#include "core/keep_ranges.h"
 #include "core/json.h"
 #include "infer/ort.h"
 #include "import_fixture.h"
@@ -1089,7 +1089,7 @@ TEST_CASE("enhance: a clip's picture, and its sound too, through the runner", "[
 // ---- the Video Editor's cut and Brighten dark scenes (2026-11-02) ------------------
 
 TEST_CASE("enhance: the Video Editor's kept ranges, on frames and samples", "[enhance][edit]") {
-  mv::addon::keep_ranges k;
+  mv::keep_ranges k;
   CHECK_FALSE(k.set(std::vector<std::int64_t>{0, 10, 5}));         // odd
   CHECK_FALSE(k.set(std::vector<std::int64_t>{0, 10, 5, 20}));     // overlapping
   CHECK_FALSE(k.set(std::vector<std::int64_t>{10, 10}));           // empty

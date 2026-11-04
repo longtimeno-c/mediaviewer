@@ -1100,6 +1100,13 @@ typedef struct mv_editor_view {
   int64_t mark_in_ns;     // the marked range on the program; -1 unset
   int64_t mark_out_ns;
   double frame_rate;      // the clip's; 0 unknown (timecode falls back to hundredths)
+  // The look (docs/plans/video-editor-look.md): extra quarter turns, mirror
+  // (1 left-right, 2 upside down), crop (0 original, 1 16:9, 2 9:16, 3 1:1,
+  // 4 4:3, 5 4:5), and whether Export on keyframes can carry it.
+  int32_t look_turns;
+  int32_t look_mirror;
+  int32_t look_crop;
+  int32_t look_copyable;
 } mv_editor_view;
 uint64_t mv_chrome_editor_generation(void);
 bool mv_chrome_editor_view(mv_editor_view* out);
@@ -1118,7 +1125,10 @@ void mv_chrome_editor_toggle_play(void);
 void mv_chrome_editor_step(int32_t frames);
 // 1 split at the playhead, 2 delete (the marked range, else the selected
 // piece), 3 set in (cut everything before), 4 set out (cut everything after),
-// 5 undo, 6 redo, 14 mark in, 15 mark out, 16 clear the marks. A change that
+// 5 undo, 6 redo, 14 mark in, 15 mark out, 16 clear the marks; the look
+// (docs/plans/video-editor-look.md): 17 turn left, 18 turn right, 19 mirror
+// left-right, 20 upside down, 21-26 crop original / 16:9 / 9:16 / 1:1 / 4:3 /
+// 4:5, 27 save the frame at the playhead. A change that
 // changes nothing beeps.
 void mv_chrome_editor_edit(int32_t what);
 void mv_chrome_editor_select(int32_t index);

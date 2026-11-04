@@ -38,7 +38,7 @@ public static partial class IslandHost
     // chrome_host.h chrome_editor_*_args.
     internal const int EditorAttachArgsSize = 16;
     internal const int EditorLayoutArgsSize = 40;
-    internal const int EditorViewArgsSize = 104;
+    internal const int EditorViewArgsSize = 120;
     internal const int EditorStripArgsSize = 24;
     internal const int EditorThumbSize = 24;
 
@@ -61,7 +61,15 @@ public static partial class IslandHost
         public const int MarkIn = 14;
         public const int MarkOut = 15;
         public const int ClearMarks = 16;
+        public const int TurnLeft = 17;
+        public const int TurnRight = 18;
+        public const int MirrorH = 19;
+        public const int MirrorV = 20;
+        public const int CropOriginal = 21;  // 21-26: original, 16:9, 9:16, 1:1, 4:3, 4:5
+        public const int SaveFrame = 27;
     }
+
+    private static readonly string[] EditorCropNames = { "Original", "16:9", "9:16", "1:1", "4:3", "4:5" };
 
     private static DesktopWindowXamlSource? _editorTimeline;
     private static DesktopWindowXamlSource? _editorAway;
@@ -77,6 +85,9 @@ public static partial class IslandHost
     private static bool _editorCanUndo;
     private static bool _editorCanRedo;
     private static bool _editorEdited;
+    // The look (docs/plans/video-editor-look.md).
+    private static int _editorLookCrop;
+    private static bool _editorLookCopyable = true;
     private static ulong _editorGeneration = ulong.MaxValue;
     private static string _editorName = "";
     private static (long In, long Out)[] _editorPieces = Array.Empty<(long, long)>();
@@ -232,6 +243,8 @@ public static partial class IslandHost
                 _editorFps = Marshal.ReadInt32(arg, 84) / 1000.0;
                 _editorMarkIn = Marshal.ReadInt64(arg, 88);
                 _editorMarkOut = Marshal.ReadInt64(arg, 96);
+                _editorLookCrop = Marshal.ReadInt32(arg, 112);
+                _editorLookCopyable = Marshal.ReadInt32(arg, 116) != 0;
                 long pieces = Marshal.ReadInt64(arg, 64);
                 var list = new (long, long)[pieces == 0 ? 0 : count];
                 for (int i = 0; i < list.Length; i++)
@@ -434,7 +447,13 @@ public static partial class IslandHost
             EditButton("Trim end", () => SendEditor(EditorActions.SetOut), tip: "Cut everything after the playhead  ]"),
             EditorDivider(),
             _editorUndo,
-            _editorRedo);
+            _editorRedo,
+            EditorDivider(),
+            EditButton("Turn left", () => SendEditor(EditorActions.TurnLeft), tip: "Turn the clip left"),
+            EditButton("Turn right", () => SendEditor(EditorActions.TurnRight), tip: "Turn the clip right"),
+            EditorCropButton(),
+            EditButton("Save frame", () => SendEditor(EditorActions.SaveFrame),
+                       tip: "Save this frame as a photo  Ctrl+Shift+S"));
         bar.Children.Add(left);
         _editorExport = EditButton("Export", () => SendEditor(EditorActions.Export),
             tip: "Write the edit as a new file, cut on keyframes: instant, no quality loss  Ctrl+E");
@@ -642,7 +661,14 @@ public static partial class IslandHost
         if (_editorDelete is not null) _editorDelete.IsEnabled = EditorHasMarks || _editorPieces.Length > 1;
         if (_editorUndo is not null) _editorUndo.IsEnabled = _editorCanUndo;
         if (_editorRedo is not null) _editorRedo.IsEnabled = _editorCanRedo;
-        if (_editorExport is not null) _editorExport.IsEnabled = _editorEdited;
+        if (_editorExport is not null)
+        {
+            // Packet copy carries a turn and mute only: the rest needs Export exact.
+            _editorExport.IsEnabled = _editorEdited && _editorLookCopyable;
+            ToolTipService.SetToolTip(_editorExport, _editorLookCopyable
+                ? "Write the edit as a new file, cut on keyframes: instant, no quality loss  Ctrl+E"
+                : "Crop, mirror, colour, sound and speed need Export exact");
+        }
         if (_editorExportExact is not null) _editorExportExact.IsEnabled = _editorEdited;
         if (_editorReading is not null) _editorReading.Visibility = _editorReady ? Visibility.Collapsed : Visibility.Visible;
         if (_editorSpinner is not null) _editorSpinner.Active = !_editorReady;
@@ -654,6 +680,29 @@ public static partial class IslandHost
     // Export, with a divider after them; none without one. Each runs on the
     // edit: the clip on screen and its kept pieces, or all of it when nothing
     // is cut. The add-on opens its own sheet (centred over this window).
+    // Mirror and crop the whole clip: a menu, as on the Mac. The crop shown
+    // checked is the one the last view pushed.
+    private static Button EditorCropButton()
+    {
+        Button crop = EditButton("Crop", () => { }, tip: "Mirror and crop the whole clip");
+        var menu = new MenuFlyout { MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle() };
+        menu.Opening += (_, _) =>
+        {
+            menu.Items.Clear();
+            menu.Items.Add(Item("Mirror left to right", null, () => SendEditor(EditorActions.MirrorH)));
+            menu.Items.Add(Item("Mirror upside down", null, () => SendEditor(EditorActions.MirrorV)));
+            menu.Items.Add(new MenuFlyoutSeparator());
+            for (int i = 0; i < EditorCropNames.Length; i++)
+            {
+                int ratio = i;
+                string label = (ratio == _editorLookCrop ? "\u2713 " : "    ") + EditorCropNames[ratio];
+                menu.Items.Add(Item(label, null, () => SendEditor(EditorActions.CropOriginal + ratio)));
+            }
+        };
+        crop.Flyout = menu;
+        return crop;
+    }
+
     private static void RebuildEditorAddons()
     {
         StackPanel? panel = _editorAddons;

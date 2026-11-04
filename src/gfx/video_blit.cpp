@@ -47,9 +47,10 @@ struct alignas(16) video_blit_cb {
   float texture_w, texture_h;
   float origin_x, origin_y;
   std::uint32_t matrix, transfer, range, bit_depth;
-  std::uint32_t primaries, turns, pad2, pad3;
+  std::uint32_t primaries, turns, mirror, pad3;
+  float crop_x, crop_y, crop_w, crop_h;
 };
-static_assert(sizeof(video_blit_cb) == 80, "cbuffer layout must match the HLSL declaration");
+static_assert(sizeof(video_blit_cb) == 96, "cbuffer layout must match the HLSL declaration");
 
 }  // namespace
 
@@ -139,6 +140,13 @@ void video_blitter::draw(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* lum
   cb.bit_depth = colour.bit_depth;
   cb.primaries = static_cast<std::uint32_t>(colour.primaries);
   cb.turns = p.rotation & 3u;
+  cb.mirror = p.mirror & 3u;
+  // An empty crop would hide the picture: the whole of it instead.
+  const bool crop_ok = p.crop_w > 0.0f && p.crop_h > 0.0f;
+  cb.crop_x = crop_ok ? p.crop_x : 0.0f;
+  cb.crop_y = crop_ok ? p.crop_y : 0.0f;
+  cb.crop_w = crop_ok ? p.crop_w : 1.0f;
+  cb.crop_h = crop_ok ? p.crop_h : 1.0f;
 
   D3D11_MAPPED_SUBRESOURCE mapped{};
   if (SUCCEEDED(ctx->Map(cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {

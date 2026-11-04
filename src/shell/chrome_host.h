@@ -231,6 +231,18 @@ enum class chrome_editor_action : std::int32_t {
   mark_in = 14,      // I: marks, cuts nothing (the Mac bridge's codes too)
   mark_out = 15,     // O
   clear_marks = 16,  // X
+  // The look (docs/plans/video-editor-look.md); the Mac bridge's codes too.
+  turn_left = 17,
+  turn_right = 18,
+  mirror_h = 19,     // left to right
+  mirror_v = 20,     // upside down
+  crop_original = 21,  // 21-26: original, 16:9, 9:16, 1:1, 4:3, 4:5
+  crop_16_9 = 22,
+  crop_9_16 = 23,
+  crop_1_1 = 24,
+  crop_4_3 = 25,
+  crop_4_5 = 26,
+  save_frame = 27,   // the frame at the playhead as a JPEG, with the look
 };
 
 // chrome_cmd_edit_action's argument. The C# side mirrors it.
@@ -674,9 +686,15 @@ struct chrome_editor_view_args {
   std::int32_t frame_rate_milli;  // the clip's rate x 1000 (29970); 0 unknown
   std::int64_t mark_in_ns;        // the marked range on the program; -1 unset
   std::int64_t mark_out_ns;
+  // The look: extra quarter turns, mirror (1 left-right, 2 upside down), crop
+  // (chrome_editor_action crop_* - 21), whether Export on keyframes carries it.
+  std::int32_t look_turns;
+  std::int32_t look_mirror;
+  std::int32_t look_crop;
+  std::int32_t look_copyable;
 };
 
-static_assert(sizeof(chrome_editor_view_args) == 104, "keep in sync with IslandHost.VideoEditor");
+static_assert(sizeof(chrome_editor_view_args) == 120, "keep in sync with IslandHost.VideoEditor");
 
 // One timeline thumbnail (edit/clip_strip.h strip_frame): RGBA8, sRGB.
 struct chrome_editor_thumb {

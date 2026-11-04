@@ -13,7 +13,7 @@
 #include <thread>
 #include <vector>
 
-#include "addon/keep_ranges.h"
+#include "core/keep_ranges.h"
 #include "addon/settings_values.h"
 #include "io/content_hash.h"
 #include "io/file_port.h"

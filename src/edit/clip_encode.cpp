@@ -393,7 +393,7 @@ result<std::string> reencode(std::string_view src_path, const std::string& out_p
 // ---- frame -> PNG / JPEG ---------------------------------------------------------
 
 result<std::vector<std::uint8_t>> frame_image(std::string_view src_path, time_ns at, frame_format fmt,
-                                              int jpeg_quality, const control& ctl) {
+                                              int jpeg_quality, const control& ctl, const look& lk) {
   MV_TRY(source s, open_source(src_path, ctl.cancel));
   if (s.video < 0) return err(status::unsupported_format);
   AVStream* ist = s.format->streams[s.video];
@@ -421,7 +421,18 @@ result<std::vector<std::uint8_t>> frame_image(std::string_view src_path, time_ns
   codec::raster img;
   int w = held->width, h = held->height;
   if (!conv.convert(held.get(), ist->codecpar, w, h, img.rgba)) return err(status::internal);
-  rotate_rgba(img.rgba, w, h, stream_rotation(ist));
+  if (lk.geometry_identity()) {
+    rotate_rgba(img.rgba, w, h, stream_rotation(ist));
+  } else {
+    // The Video Editor's Save frame: the look's turn, mirror and crop.
+    const frame_geometry g = geometry_of(static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h),
+                                         stream_rotation(ist), sanitised(lk));
+    std::vector<std::uint8_t> out(static_cast<std::size_t>(g.out_w) * g.out_h * 4);
+    apply_geometry(g, img.rgba, static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h), 4, out);
+    img.rgba = std::move(out);
+    w = static_cast<int>(g.out_w);
+    h = static_cast<int>(g.out_h);
+  }
   img.width = static_cast<std::uint32_t>(w);
   img.height = static_cast<std::uint32_t>(h);
   img.tagged_srgb = true;

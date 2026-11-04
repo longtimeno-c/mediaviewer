@@ -657,6 +657,8 @@ add_library(mv::meta ALIAS mv_meta)
 # ---------------------------------------------------------------------------
 add_library(mv_edit STATIC
   src/edit/adjust.cpp
+  src/edit/clip_look.cpp
+  src/edit/clip_look.h
   src/edit/adjust.h
   src/edit/auto_adjust.cpp
   src/edit/auto_tone.cpp
@@ -704,6 +706,7 @@ add_library(mv_clip STATIC
   src/edit/clip_sound_write.cpp
   src/edit/clip_audio_enc.cpp
   src/edit/clip_picture_io.cpp
+  src/edit/clip_look_run.cpp
   src/edit/clip_sample.h
   src/edit/clip_run.cpp
   src/edit/clip_jobs.cpp

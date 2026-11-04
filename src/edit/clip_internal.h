@@ -140,7 +140,7 @@ struct segment {
   time_ns end_ns = -1;   // a keyframe, or < 0 for the end of the clip
 };
 
-enum class stream_pick : std::uint8_t { all_av, audio_only };
+enum class stream_pick : std::uint8_t { all_av, audio_only, video_only };
 
 struct copy_spec {
   std::vector<segment> segments;  // written back to back into one file
@@ -170,9 +170,26 @@ struct reencode_spec {
 [[nodiscard]] result<std::string> reencode(std::string_view src_path, const std::string& out_path,
                                            const reencode_spec& spec, const control& ctl);
 
+// The Video Editor's Export exact with a look (clip_look_run.cpp): the
+// pieces through frame_reader, the look baked, picture_writer's hardware
+// encoder; the sound through the same cut with the look's volume and fades.
+struct render_spec {
+  std::vector<range> ranges;
+  look lk{};
+  std::string out_dir;   // where the output goes
+  std::string out_stem;  // its name without the extension ("clip_edit")
+  std::vector<std::string> encoders;  // tests only; empty: the hardware list
+  bool allow_software = false;
+};
+struct render_done {
+  std::string path;
+  std::string encoder;
+};
+[[nodiscard]] result<render_done> render_look(std::string_view src_path, const render_spec& spec, const control& ctl);
+
 [[nodiscard]] result<std::vector<std::uint8_t>> frame_image(std::string_view src_path, time_ns at,
                                                             frame_format fmt, int jpeg_quality,
-                                                            const control& ctl);
+                                                            const control& ctl, const look& lk = {});
 
 [[nodiscard]] expected audio_transcode(std::string_view src_path, const std::string& out_path,
                                        audio_format fmt, time_ns in_ns, time_ns out_ns,

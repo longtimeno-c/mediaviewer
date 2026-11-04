@@ -218,3 +218,62 @@ TEST_CASE("J K L: L goes faster, K stops, J skims back further in a burst", "[ti
   CHECK(s.back(3 * kS, 800 * ms) == 0);         // never before the start
   CHECK(s.back(20 * kS, 5000 * ms) == 19 * kS);  // a pause ends the burst
 }
+
+// docs/plans/video-editor-look.md: the look rides in the same history as the cuts.
+TEST_CASE("the look is one history with the pieces; a drag is one step", "[timeline][look]") {
+  namespace clip = mv::edit::clip;
+  video_timeline t;
+  t.load(10 * kS);
+  CHECK_FALSE(t.edited());
+  clip::look l = t.look();
+  l.turns = 1;
+  REQUIRE(t.set_look(l));
+  CHECK(t.edited());  // a turn alone is an edit worth exporting
+  CHECK_FALSE(t.set_look(l));  // no change
+  REQUIRE(t.split(4 * kS));
+  l.crop = clip::crop_ratio::r9_16;
+  REQUIRE(t.set_look(l));
+  CHECK(t.export_request("a.mp4", true).look.crop == clip::crop_ratio::r9_16);
+  REQUIRE(t.undo());  // the crop
+  CHECK(t.look().crop == clip::crop_ratio::original);
+  CHECK(t.pieces().size() == 2);
+  REQUIRE(t.undo());  // the split
+  CHECK(t.pieces().size() == 1);
+  CHECK(t.look().turns == 1);
+  REQUIRE(t.undo());  // the turn
+  CHECK(t.look().identity());
+  CHECK_FALSE(t.edited());
+  REQUIRE(t.redo());
+  CHECK(t.look().turns == 1);
+
+  // A slider drag: many values, one undo step; a drag back to the start is none.
+  t.begin_look_drag();
+  for (float v = 0.1f; v <= 1.0f; v += 0.1f) {
+    l = t.look();
+    l.volume = 1.0f + v;
+    (void)t.set_look(l);
+  }
+  t.end_look_drag();
+  REQUIRE(t.undo());
+  CHECK(t.look().volume == 1.0f);
+  CHECK(t.look().turns == 1);
+  t.begin_look_drag();
+  l = t.look();
+  l.volume = 1.5f;
+  REQUIRE(t.set_look(l));
+  l.volume = 1.0f;
+  REQUIRE(t.set_look(l));
+  t.end_look_drag();
+  REQUIRE(t.undo());  // back past the turn: the drag left nothing behind
+  CHECK(t.look().identity());
+
+  // A look edit keeps the marks; a new clip clears the look.
+  REQUIRE(t.redo());
+  t.mark_in(1 * kS);
+  l = t.look();
+  l.flip_h = true;
+  REQUIRE(t.set_look(l));
+  CHECK(t.has_marks());
+  t.load(5 * kS);
+  CHECK(t.look().identity());
+}

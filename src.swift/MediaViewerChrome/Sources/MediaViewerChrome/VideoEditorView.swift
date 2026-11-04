@@ -55,6 +55,11 @@ final class VideoEditorStore: ObservableObject {
   @Published private(set) var markIn: Int64 = -1
   @Published private(set) var markOut: Int64 = -1
   @Published private(set) var fps: Double = 0
+  // The look (docs/plans/video-editor-look.md): turn, mirror, crop.
+  @Published private(set) var lookTurns = 0
+  @Published private(set) var lookMirror = 0
+  @Published private(set) var lookCrop = 0
+  @Published private(set) var lookCopyable = true
   @Published private(set) var thumbs: [EditorThumb] = []
   @Published private(set) var peaks: [Float] = []
 
@@ -126,6 +131,10 @@ final class VideoEditorStore: ObservableObject {
     if markIn != v.mark_in_ns { markIn = v.mark_in_ns }
     if markOut != v.mark_out_ns { markOut = v.mark_out_ns }
     if fps != v.frame_rate { fps = v.frame_rate }
+    if lookTurns != Int(v.look_turns) { lookTurns = Int(v.look_turns) }
+    if lookMirror != Int(v.look_mirror) { lookMirror = Int(v.look_mirror) }
+    if lookCrop != Int(v.look_crop) { lookCrop = Int(v.look_crop) }
+    if lookCopyable != (v.look_copyable != 0) { lookCopyable = v.look_copyable != 0 }
     var buf = [CChar](repeating: 0, count: 1024)
     _ = mv_chrome_editor_name(&buf, Int32(buf.count))
     let newName = String(cString: buf)
@@ -192,6 +201,14 @@ final class VideoEditorStore: ObservableObject {
   func setMarkIn() { mv_chrome_editor_edit(14) }
   func setMarkOut() { mv_chrome_editor_edit(15) }
   func clearMarks() { mv_chrome_editor_edit(16) }
+  func turnLeft() { mv_chrome_editor_edit(17) }
+  func turnRight() { mv_chrome_editor_edit(18) }
+  func mirrorLeftRight() { mv_chrome_editor_edit(19) }
+  func mirrorUpsideDown() { mv_chrome_editor_edit(20) }
+  /// 0 original, 1 16:9, 2 9:16, 3 1:1, 4 4:3, 5 4:5.
+  func crop(_ ratio: Int) { mv_chrome_editor_edit(Int32(21 + ratio)) }
+  func saveFrame() { mv_chrome_editor_edit(27) }
+  static let cropNames = ["Original", "16:9", "9:16", "1:1", "4:3", "4:5"]
   func export(exact: Bool) { mv_chrome_editor_export(exact ? 1 : 0) }
   /// An add-on's button in the bar (editor_items: Enhance…), on the edit: the
   /// clip on screen with the kept pieces, or the whole clip when nothing is cut.
@@ -256,7 +273,7 @@ struct VideoEditorView: View {
         .frame(maxWidth: .infinity)
       }
       HStack {
-        Text("Space play · ← → frame · J K L shuttle · I O mark · X clear · [ ] trim · ⌘B split · ⌫ delete · ⌘Z undo · ⌘E export")
+        Text("Space play · ← → frame · J K L shuttle · I O mark · X clear · [ ] trim · ⌘B split · ⌫ delete · ⌘Z undo · ⇧⌘S save frame · ⌘E export")
           .font(MVTheme.font(12))
           .foregroundStyle(MVTheme.body)
         Spacer()
@@ -289,7 +306,7 @@ struct VideoEditorView: View {
       store.shuttle(key, phase)
       return .handled
     }
-    .onKeyPress(characters: .init(charactersIn: "iobezxIOBEZX[]")) { press in
+    .onKeyPress(characters: .init(charactersIn: "iobezxsIOBEZXS[]")) { press in
       let cmd = press.modifiers.contains(.command)
       switch press.characters.lowercased() {
       case "i" where !cmd: store.setMarkIn()
@@ -300,6 +317,7 @@ struct VideoEditorView: View {
       case "b" where cmd: store.split()
       case "e" where cmd: store.export(exact: press.modifiers.contains(.shift))
       case "z" where cmd: press.modifiers.contains(.shift) ? store.redo() : store.undo()
+      case "s" where cmd && press.modifiers.contains(.shift): store.saveFrame()
       default: return .ignored
       }
       return .handled
@@ -329,11 +347,42 @@ struct VideoEditorView: View {
       divider
       Button("Undo") { store.undo() }.disabled(!store.canUndo).help("Undo (⌘Z)")
       Button("Redo") { store.redo() }.disabled(!store.canRedo).help("Redo (⇧⌘Z)")
+      divider
+      Button { store.turnLeft() } label: { Image(systemName: "rotate.left") }
+        .help("Turn left").accessibilityLabel("Turn left")
+      Button { store.turnRight() } label: { Image(systemName: "rotate.right") }
+        .help("Turn right").accessibilityLabel("Turn right")
+      Menu {
+        Button("Mirror left to right") { store.mirrorLeftRight() }
+        Button("Mirror upside down") { store.mirrorUpsideDown() }
+        Divider()
+        ForEach(0..<VideoEditorStore.cropNames.count, id: \.self) { i in
+          Button {
+            store.crop(i)
+          } label: {
+            if store.lookCrop == i {
+              Label(VideoEditorStore.cropNames[i], systemImage: "checkmark")
+            } else {
+              Text(VideoEditorStore.cropNames[i])
+            }
+          }
+        }
+      } label: {
+        Image(systemName: "crop")
+      }
+      .menuStyle(.borderlessButton)
+      .fixedSize()
+      .help("Mirror and crop the whole clip")
+      .accessibilityLabel("Mirror and crop")
+      Button { store.saveFrame() } label: { Image(systemName: "camera") }
+        .help("Save this frame as a photo (⇧⌘S)").accessibilityLabel("Save frame")
       Spacer(minLength: MVTheme.space(8))
       EditorAddonItems(store: store)
       Button("Export") { store.export(exact: false) }
-        .disabled(!store.edited)
-        .help("Write the edit as a new file, cut on keyframes: instant, no quality loss (⌘E)")
+        .disabled(!store.edited || !store.lookCopyable)
+        .help(store.lookCopyable
+          ? "Write the edit as a new file, cut on keyframes: instant, no quality loss (⌘E)"
+          : "Crop, mirror, colour, sound and speed need Export exact")
       Button("Export exact") { store.export(exact: true) }
         .disabled(!store.edited)
         .help("Frame-accurate: re-encoded on the hardware encoder, slower (⇧⌘E)")

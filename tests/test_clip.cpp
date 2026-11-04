@@ -708,3 +708,183 @@ TEST_CASE("a clip job's crash slot names the container and codec, never the path
   // Closed: the slot is given back.
   CHECK(std::string(mv::crash_context::this_thread_slot()).empty());
 }
+
+// ---- the Video Editor's look (docs/plans/video-editor-look.md) -----------------------
+
+TEST_CASE("the look's geometry: turn, mirror, crop, in one map", "[clip][look]") {
+  clip::look l;
+  // 320 x 240 coded, no rotation: 9:16 of a landscape picture is a centred strip.
+  l.crop = clip::crop_ratio::r9_16;
+  auto g = clip::geometry_of(320, 240, 0, l);
+  CHECK(g.shown_w == 320);
+  CHECK(g.out_h == 240);
+  CHECK(g.out_w == 134);  // 240 * 9 / 16 = 135, even
+  CHECK(g.crop_x == (320 - 134) / 2);
+  // Turned once more on top of a 90° matrix: upside down, landscape again.
+  l = {};
+  l.turns = 1;
+  g = clip::geometry_of(320, 240, 90, l);
+  CHECK(g.turns == 2);
+  CHECK(g.out_w == 320);
+  CHECK(g.out_h == 240);
+  // 1080p turned once is already 9:16; cropped 9:16 unturned it is the
+  // plan's verify shape, 608 x 1080.
+  l.crop = clip::crop_ratio::r9_16;
+  g = clip::geometry_of(1920, 1080, 0, l);
+  CHECK(g.out_w == 1080);
+  CHECK(g.out_h == 1920);
+  l.turns = 0;
+  g = clip::geometry_of(1920, 1080, 0, l);
+  CHECK(g.out_w == 608);
+  CHECK(g.out_h == 1080);
+  const auto uv = clip::uv_crop_of(g);
+  CHECK(std::abs(uv.size[0] - 608.0f / 1920.0f) < 1e-6f);
+  CHECK(uv.size[1] == 1.0f);
+
+  // The pixel bake against the definition, on a 4 x 2 picture of indices.
+  const std::vector<std::uint8_t> src = {0, 1, 2, 3, 4, 5, 6, 7};
+  const auto bake = [&](const clip::look& lk, int rot) {
+    const auto gg = clip::geometry_of(4, 2, rot, lk);
+    std::vector<std::uint8_t> out(static_cast<std::size_t>(gg.out_w) * gg.out_h);
+    clip::apply_geometry(gg, src, 4, 2, 1, out);
+    return out;
+  };
+  clip::look t1;
+  t1.turns = 1;  // clockwise: the bottom row becomes the left column
+  CHECK(bake(t1, 0) == std::vector<std::uint8_t>{4, 0, 5, 1, 6, 2, 7, 3});
+  clip::look t3;
+  t3.turns = 3;
+  CHECK(bake(t3, 0) == std::vector<std::uint8_t>{3, 7, 2, 6, 1, 5, 0, 4});
+  CHECK(bake({}, 180) == std::vector<std::uint8_t>{7, 6, 5, 4, 3, 2, 1, 0});
+  clip::look fh;
+  fh.flip_h = true;
+  CHECK(bake(fh, 0) == std::vector<std::uint8_t>{3, 2, 1, 0, 7, 6, 5, 4});
+  clip::look fv;
+  fv.flip_v = true;
+  CHECK(bake(fv, 0) == std::vector<std::uint8_t>{4, 5, 6, 7, 0, 1, 2, 3});
+  clip::look sq;
+  sq.crop = clip::crop_ratio::r1_1;  // the middle 2 x 2
+  CHECK(bake(sq, 0) == std::vector<std::uint8_t>{1, 2, 5, 6});
+
+  // What packet copy can carry, and sanitising.
+  clip::look c;
+  c.turns = 3;
+  c.mute = true;
+  CHECK(c.copyable());
+  c.crop = clip::crop_ratio::r1_1;
+  CHECK_FALSE(c.copyable());
+  clip::look wild;
+  wild.turns = 7;
+  wild.volume = 9.0f;
+  wild.fade_in_ms = -4;
+  wild.speed = 1.7f;
+  wild.light.v[0] = 40.0f;
+  const auto s = clip::sanitised(wild);
+  CHECK(s.turns == 3);
+  CHECK(s.volume == 2.0f);
+  CHECK(s.fade_in_ms == 0);
+  CHECK(s.speed == 2.0f);
+  CHECK(s.light.v[0] == 5.0f);
+  clip::crop_ratio r{};
+  CHECK(clip::crop_from_name(clip::crop_name(clip::crop_ratio::r4_5), r));
+  CHECK(r == clip::crop_ratio::r4_5);
+}
+
+TEST_CASE("Export exact with a look: turned, cropped, the pieces, sound or none", "[clip][look]") {
+  scratch_dir d("clip_look_exact");
+  const fs::path src = d / "clip.mp4";
+  fx::spec s;
+  s.frames = 90;
+  REQUIRE(fx::make(utf8(src), s));
+  const auto before = read_bytes(src);
+  auto r = req_for(clip::op::keep_ranges, src);
+  r.ranges_exact = true;
+  r.ranges = {{10 * kFrameNs, 30 * kFrameNs}, {60 * kFrameNs, 70 * kFrameNs}};
+  r.look.turns = 1;
+  r.look.crop = clip::crop_ratio::r9_16;
+  auto done = run_soft(r);
+  REQUIRE(done);
+  CHECK(done->encoder == "mpeg4");
+  CHECK(fs::path(done->outputs[0]).stem() == "clip_edit");
+  fx::decoded out;
+  REQUIRE(fx::decode_all(done->outputs[0], out));
+  // 320 x 240 turned is 240 x 320; 9:16 of that is 180 x 320.
+  CHECK(out.width == 180);
+  CHECK(out.height == 320);
+  CHECK(out.luma.size() == 30);  // 20 + 10 frames, nothing between
+  for (std::size_t i = 1; i < out.pts_ns.size(); ++i) CHECK(out.pts_ns[i] > out.pts_ns[i - 1]);
+  CHECK(out.audio_packets > 0);  // the sound, through the same cut
+  auto info = clip::probe(done->outputs[0]);
+  REQUIRE(info);
+  CHECK(info->rotation == 0);  // the pixels were turned: no matrix on top
+  CHECK(read_bytes(src) == before);
+
+  // Mute: no sound stream at all.
+  r.look = {};
+  r.look.mute = true;
+  r.look.flip_h = true;
+  done = run_soft(r);
+  REQUIRE(done);
+  fx::decoded muted;
+  REQUIRE(fx::decode_all(done->outputs[0], muted));
+  CHECK(muted.width == 320);
+  CHECK(muted.audio_packets == 0);
+
+  // The helper's wire carries the look.
+  r.look = {};
+  r.look.turns = 2;
+  r.look.flip_v = true;
+  r.look.crop = clip::crop_ratio::r4_5;
+  r.look.light.v[1] = 25.0f;
+  r.look.volume = 0.5f;
+  r.look.fade_out_ms = 1200;
+  r.look.speed = 2.0f;
+  clip::request back;
+  REQUIRE(clip::wire::decode_request(clip::wire::encode_request(r), back));
+  CHECK(back.look == r.look);
+  clip::request plain = req_for(clip::op::keep_ranges, src);
+  plain.ranges = r.ranges;
+  REQUIRE(clip::wire::decode_request(clip::wire::encode_request(plain), back));
+  CHECK(back.look.identity());
+}
+
+TEST_CASE("Export on keyframes carries a turn and mute, nothing else", "[clip][look]") {
+  scratch_dir d("clip_look_copy");
+  const fs::path src = d / "clip.mp4";
+  REQUIRE(fx::make(utf8(src), {}));
+  auto r = req_for(clip::op::keep_ranges, src);
+  r.ranges = {{0, 2'000'000'000}};
+  r.look.turns = 1;
+  r.look.mute = true;
+  auto done = clip::run(r, {});
+  REQUIRE(done);
+  auto info = clip::probe(done->outputs[0]);
+  REQUIRE(info);
+  CHECK(info->rotation == 90);
+  fx::decoded out;
+  REQUIRE(fx::decode_all(done->outputs[0], out));
+  CHECK(out.audio_packets == 0);
+  CHECK(out.width == 320);  // packets copied: the coded size
+  r.look.crop = clip::crop_ratio::r1_1;
+  CHECK(clip::run(r, {}).error() == mv::status::invalid_arg);
+}
+
+TEST_CASE("Save frame bakes the look's turn, mirror and crop", "[clip][look]") {
+  scratch_dir d("clip_look_frame");
+  const fs::path src = d / "clip.mp4";
+  REQUIRE(fx::make(utf8(src), {}));
+  auto r = req_for(clip::op::frame, src);
+  r.in_ns = 10 * kFrameNs;
+  r.look.turns = 1;
+  r.look.crop = clip::crop_ratio::r1_1;
+  auto png = clip::run(r, {});
+  REQUIRE(png);
+  const auto bytes = read_bytes(png->outputs[0]);
+  spng_ctx* ctx = spng_ctx_new(0);
+  REQUIRE(spng_set_png_buffer(ctx, bytes.data(), bytes.size()) == 0);
+  spng_ihdr ihdr{};
+  REQUIRE(spng_get_ihdr(ctx, &ihdr) == 0);
+  spng_ctx_free(ctx);
+  CHECK(ihdr.width == 240);
+  CHECK(ihdr.height == 240);
+}

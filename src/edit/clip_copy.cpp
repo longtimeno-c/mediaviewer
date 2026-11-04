@@ -47,7 +47,7 @@ expected copy_segments(std::string_view src_path, const std::string& out_path,
       // The main picture and every audio track. Timecode, chapter-text and
       // maker data tracks do not survive a change of container, and a second
       // video track (a phone's depth map) is not what "trim" means.
-      want = idx == s.video || type == AVMEDIA_TYPE_AUDIO;
+      want = idx == s.video || (type == AVMEDIA_TYPE_AUDIO && spec.pick != stream_pick::video_only);
     }
     if (!want) {
       ist->discard = AVDISCARD_ALL;
