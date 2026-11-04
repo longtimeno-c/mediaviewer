@@ -523,9 +523,18 @@ Each slice updates the docs it changes:
 Resolved 2026-11-04 by the owner's brief ("the UI should be unreal… get it done"): **A** yes (the tool
 bar takes the transport band on stills, nothing floats over the photo), **B** yes (Enhance tools dock
 in the Edit pane, the sheet as fallback), **D** yes (plain `B` arms the brush), **E** yes (warn at 25 %,
-stop at 50 % a side), **G** yes (A/D dead while strokes are pending). Still open, not built until the
-owner answers: **C** (a generative face restorer) and **F** (new model downloads: wdn x4v3, per-level
-files). S7 builds only what needs no new download; S10 waits.
+stop at 50 % a side), **G** yes (A/D dead while strokes are pending). **C** yes (owner, 2026-11-04): GFPGAN v1.4,
+the ONNX export `neurobytemind/GFPGANv1.4.onnx` @ `e3fd467e3a83420614abb9bf0b1c2c3addd359bc`,
+`GFPGANv1.4.onnx`, 340,256,686 bytes, SHA-256
+`cd7311b8d9e13cdb1e208b12363182da58c7bf45e26d1aa67bbeac4751aae92e`, Apache-2.0 (GFPGAN's licence).
+Measured here: input `input` [1,3,512,512] RGB scaled to -1..1, output `1288` [1,3,512,512] in about
+-1..1 (clip), 0.8 s a face on CPU (M-series); on a blurred unaligned LFW face it restores detail, with
+small artefacts where the face was not aligned, so S10 aligns each face to the FFHQ 5-point template at
+512 (similarity from the pack's landmarks), restores, and pastes back through an inverse warp with a
+feathered face mask, blended at a Strength knob (default 0.7) and guarded by People (the restored
+face's embedding must stay the same person, else that face is left as it was). Test copy at
+`~/Dev/.mv-toolchain/gfpgan/`. **F** no: there is no ONNX of wdn x4v3 on Hugging Face (only a .pth
+mirror), so S7 builds only what needs no new download; per-level files are not built.
 
 ### As proposed
 
